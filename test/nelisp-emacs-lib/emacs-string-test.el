@@ -93,6 +93,18 @@ string-collate-lessp / string-collate-equalp / string-to-vector."
   ;; string-to-vector
   (should (equal [97 98 99] (string-to-vector "abc"))))
 
+(ert-deftest emacs-string-test/doc16-round12-subr-string-utils ()
+  "Doc 16 round 12: subst-char-in-string / combine-and-quote-strings /
+split-string-and-unquote."
+  (should (equal "bXnXnX" (subst-char-in-string ?a ?X "banana")))
+  (should (equal "banana" (subst-char-in-string ?z ?Q "banana")))
+  (should (equal "a \"b c\" d" (combine-and-quote-strings '("a" "b c" "d"))))
+  (should (equal '("a" "b c" "d") (split-string-and-unquote "a \"b c\" d")))
+  ;; round trip
+  (should (equal '("x" "y z" "q")
+                 (split-string-and-unquote
+                  (combine-and-quote-strings '("x" "y z" "q"))))))
+
 (provide 'emacs-string-test)
 
 ;;; emacs-string-test.el ends here

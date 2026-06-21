@@ -375,6 +375,20 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 11 の知見*: runtime の =(equal VEC1 VEC2)= は要素比較せず *vector を常に non-equal*
   と返す (reader-core bug、=string-to-vector= 等の検証は =(append vec nil)= で list 化して比較)。
   reader-core gap で別 repo (=vendor/nelisp=) 管轄。
+- *Doc 16 breadth round 12 — subr.el/macroexp 残 関数 6 個 (2026-06-21)*:
+  VOID だった =subst-char-in-string= / =combine-and-quote-strings= /
+  =split-string-and-unquote= を =emacs-string.el=、=delete-consecutive-dups= /
+  =rassq-delete-all= / =macroexp-quote= を =emacs-stub.el= に補完。実 Emacs 定義を mirror
+  (combine/split は read-from-string ベースの quoting も含め roundtrip 検証)。検証: full
+  runtime functional 13 ケース → full boot 11/11 ok (string-distance/cl-member/ignore-error
+  regression 維持、105 files)、host ERT emacs-string-test + emacs-stub-residuals-test 36/36、
+  byte-compile 新規警告 0。
+- *round 12 で見つけた reader-core bug 2 件 (+ 延期 2)*: (1) =aset= は *vector では効くが
+  string では no-op* (string 不変) → =subst-char-in-string= は =string-replace= ベースに。
+  (2) runtime の =let= は *lexical* で =(defvar X)= + =let= + =symbol-value= の dynamic 経路が
+  crash → =dlet= は dynamic binding が効かず *延期*。=with-output-to-string= も =princ= が
+  buffer/function =standard-output= を無視 (stdout 直書き) のため *延期*。いずれも reader-core
+  (=vendor/nelisp=) gap ([[feedback_nelisp_equal_vector_broken]] と同列)。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 

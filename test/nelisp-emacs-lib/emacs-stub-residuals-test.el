@@ -467,6 +467,20 @@ these use gv.el / the real macro; the standalone shims pin this contract."
       (should (equal 100 b))
       (should (equal 1 n)))))
 
+;;;; L. Doc 16 round 12 — subr.el / macroexp list helpers
+
+(ert-deftest emacs-stub-residuals-test/doc16-round12-subr-list-helpers ()
+  "Doc 16 round 12: delete-consecutive-dups / rassq-delete-all / macroexp-quote."
+  (should (equal '(1 2 3 1) (delete-consecutive-dups (list 1 1 2 2 2 3 1 1))))
+  (should (equal '(1 2 3) (delete-consecutive-dups (list 1 2 3 1) t)))
+  (should (equal '((a . 1))
+                 (rassq-delete-all 2 (list (cons 'a 1) (cons 'b 2) (cons 'c 2)))))
+  (should (equal 5 (macroexp-quote 5)))
+  (should (equal :k (macroexp-quote :k)))
+  (should (equal "x" (macroexp-quote "x")))
+  (should (equal '(quote foo) (macroexp-quote 'foo)))
+  (should (equal '(quote (1 2)) (macroexp-quote (list 1 2)))))
+
 (provide 'emacs-stub-residuals-test)
 
 ;;; emacs-stub-residuals-test.el ends here
