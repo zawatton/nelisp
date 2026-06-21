@@ -362,6 +362,19 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   (cl-remove-duplicates/cl-reduce/with-memoization regression 維持、104 files)、host ERT
   emacs-cl-macros-test 15/15 (実 cl-lib と一致)、byte-compile 新規警告 0。cl-lib の主要
   sequence/list/assoc/map API は実用域に到達。
+- *Doc 16 breadth round 11 — string 比較/変換 関数 5 個 (2026-06-21)*:
+  VOID だった =string-distance= (Levenshtein DP、1-column) / =string-version-lessp=
+  (digit run を数値比較、=foo2= < =foo10=) / =string-collate-lessp= / =string-collate-equalp=
+  (locale collation 無いので byte-order = =string-lessp=/=string-equal= fallback + ignore-case
+  は downcase) / =string-to-vector= (=vconcat=) を =emacs-string.el= に補完。実 Emacs 挙動を
+  host 確認して mirror。=string-reverse= は実 Emacs にも無い (=reverse= で足りる) ので除外、
+  =string-fill= / =string-pixel-width= / =string-byte-to-char= / =string-glyph-split= は
+  fill/display/multibyte 機構依存で除外。検証: full runtime functional 13 ケース → full boot
+  12/12 ok (string-clean-whitespace/string-equal-ignore-case/cl-member regression 維持、
+  104 files)、host ERT emacs-string-test 7/7 (実 Emacs と一致)、byte-compile 新規警告 0。
+- *round 11 の知見*: runtime の =(equal VEC1 VEC2)= は要素比較せず *vector を常に non-equal*
+  と返す (reader-core bug、=string-to-vector= 等の検証は =(append vec nil)= で list 化して比較)。
+  reader-core gap で別 repo (=vendor/nelisp=) 管轄。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 

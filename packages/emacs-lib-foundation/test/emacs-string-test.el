@@ -71,6 +71,28 @@ string-split were void in the standalone runtime."
   (should (equal '("a" "b" "c") (string-split "a,b,c" ",")))
   (should (equal '("a" "b") (string-split "  a b  "))))
 
+(ert-deftest emacs-string-test/doc16-round11-compare-convert ()
+  "Doc 16 round 11: string-distance / string-version-lessp /
+string-collate-lessp / string-collate-equalp / string-to-vector."
+  ;; string-distance (Levenshtein)
+  (should (equal 0 (string-distance "abc" "abc")))
+  (should (equal 1 (string-distance "ab" "abc")))
+  (should (equal 3 (string-distance "kitten" "sitting")))
+  (should (equal 3 (string-distance "" "abc")))
+  (should (equal 2 (string-distance "flaw" "lawn")))
+  ;; string-version-lessp (digit runs by value)
+  (should (string-version-lessp "foo2" "foo10"))
+  (should-not (string-version-lessp "foo10" "foo2"))
+  (should (string-version-lessp "a" "b"))
+  (should-not (string-version-lessp "abc" "abc"))
+  ;; string-collate-lessp / -equalp (byte-order fallback + ignore-case)
+  (should (string-collate-lessp "a" "b"))
+  (should (string-collate-lessp "A" "b" nil t))
+  (should (string-collate-equalp "a" "a"))
+  (should (string-collate-equalp "ABC" "abc" nil t))
+  ;; string-to-vector
+  (should (equal [97 98 99] (string-to-vector "abc"))))
+
 (provide 'emacs-string-test)
 
 ;;; emacs-string-test.el ends here
