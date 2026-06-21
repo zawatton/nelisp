@@ -2464,6 +2464,13 @@ argument (reachability + in-arena bounds checks).")
                                       (seq (mut-str-make-empty ms 64)
                                            (m5_json ms (wf_arg_ptr args 0))
                                            (mut-str-finalize ms out) 0)))
+    ((:lit "nelisp--string-search") . (let* ((idx (m5_string_search
+                                                    (wf_arg_ptr args 1)
+                                                    (wf_arg_ptr args 0)
+                                                    (wf_argval args 2))))
+                                        (if (< idx 0)
+                                            (wf_write_nil out)
+                                          (wf_write_int out idx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
@@ -3104,6 +3111,27 @@ unresolved at link time."
            (mut-str-push-byte ms 106) (mut-str-push-byte ms 101)
            (mut-str-push-byte ms 99) (mut-str-push-byte ms 116)
            (mut-str-push-byte ms 62) 1))
+    ;; ---- m5_string_search: native substring search (byte compare, no
+    ;; per-position allocation).  Backs `nelisp--string-search'; replaces the
+    ;; interpreted O(n*m)-with-`substring'-allocation scans that dominate the
+    ;; lock-file text parser.  Returns the 0-based index or -1 (-> nil).
+    (defun m5_strmatch_at (hay hpos needle npos nlen)
+      (if (>= npos nlen) 1
+        (if (= (str-byte-at hay (+ hpos npos)) (str-byte-at needle npos))
+            (m5_strmatch_at hay hpos needle (+ npos 1) nlen)
+          0)))
+    (defun m5_string_search (hay needle start)
+      (let* ((hlen (str-len hay))
+             (nlen (str-len needle))
+             (i start)
+             (found -1))
+        (while (= found -1)
+          (if (> (+ i nlen) hlen)
+              (setq found -2)
+            (if (= (m5_strmatch_at hay i needle 0 nlen) 1)
+                (setq found i)
+              (setq i (+ i 1)))))
+        found))
     ;; ---- m5_json: native JSON encoder (mirrors nelix-cli--json-normalize +
     ;; --json-encode in one native pass).  Output rules: plist(keyword car,even
     ;; len)->object, alist->object, proper list->array, dotted->{car,cdr},
@@ -6107,7 +6135,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
