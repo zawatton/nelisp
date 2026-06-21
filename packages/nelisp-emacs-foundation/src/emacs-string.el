@@ -208,6 +208,90 @@ space character, and leading/trailing whitespace is removed."
   (defalias 'string-split #'split-string
     "Split STRING into a list of substrings.  Alias of `split-string'."))
 
+;;;; --- Doc 16 breadth round 11: string comparison / conversion ---------
+;; string-distance / string-version-lessp / string-collate-lessp /
+;; string-collate-equalp / string-to-vector were void.  All gated on
+;; `unless (fboundp ...)'.  collate-* fall back to byte order (no locale
+;; collation in the standalone runtime).
+
+(unless (fboundp 'string-distance)
+  (defun string-distance (string1 string2 &optional _bytecompare)
+    "Return the Levenshtein edit distance between STRING1 and STRING2.
+Characters are compared by code point (the BYTECOMPARE argument, which
+would switch to a byte-wise comparison, is ignored)."
+    (let* ((l1 (length string1))
+           (l2 (length string2))
+           (col (make-vector (1+ l2) 0))
+           (prev 0)
+           (cur 0))
+      (dotimes (j (1+ l2)) (aset col j j))
+      (dotimes (i l1)
+        (setq prev (aref col 0))
+        (aset col 0 (1+ i))
+        (dotimes (j l2)
+          (setq cur (aref col (1+ j)))
+          (aset col (1+ j)
+                (min (1+ (aref col (1+ j)))
+                     (1+ (aref col j))
+                     (+ prev (if (= (aref string1 i) (aref string2 j)) 0 1))))
+          (setq prev cur)))
+      (aref col l2))))
+
+(unless (fboundp 'string-version-lessp)
+  (defun string-version-lessp (string1 string2)
+    "Return non-nil if STRING1 is less than STRING2 in version order.
+Runs of digits are compared by numeric value, so e.g. \"foo2\" sorts
+before \"foo10\".  (Very long digit runs are compared via
+`string-to-number' and so lose precision beyond the float range.)"
+    (let ((i 0) (j 0)
+          (n1 (length string1)) (n2 (length string2))
+          (result nil) (done nil))
+      (while (not done)
+        (cond
+         ((and (>= i n1) (>= j n2)) (setq done t result nil))
+         ((>= i n1) (setq done t result t))
+         ((>= j n2) (setq done t result nil))
+         (t
+          (let* ((c1 (aref string1 i)) (c2 (aref string2 j))
+                 (d1 (and (>= c1 ?0) (<= c1 ?9)))
+                 (d2 (and (>= c2 ?0) (<= c2 ?9))))
+            (if (and d1 d2)
+                (let ((si i) (sj j))
+                  (while (and (< i n1) (>= (aref string1 i) ?0) (<= (aref string1 i) ?9))
+                    (setq i (1+ i)))
+                  (while (and (< j n2) (>= (aref string2 j) ?0) (<= (aref string2 j) ?9))
+                    (setq j (1+ j)))
+                  (let ((v1 (string-to-number (substring string1 si i)))
+                        (v2 (string-to-number (substring string2 sj j))))
+                    (cond ((< v1 v2) (setq done t result t))
+                          ((> v1 v2) (setq done t result nil)))))
+              (cond ((< c1 c2) (setq done t result t))
+                    ((> c1 c2) (setq done t result nil))
+                    (t (setq i (1+ i) j (1+ j)))))))))
+      result)))
+
+(unless (fboundp 'string-collate-lessp)
+  (defun string-collate-lessp (s1 s2 &optional _locale ignore-case)
+    "Return non-nil if S1 is less than S2.
+The standalone runtime has no locale collation, so this falls back to
+byte order (`string-lessp'); IGNORE-CASE folds with `downcase'."
+    (if ignore-case
+        (string-lessp (downcase s1) (downcase s2))
+      (string-lessp s1 s2))))
+
+(unless (fboundp 'string-collate-equalp)
+  (defun string-collate-equalp (s1 s2 &optional _locale ignore-case)
+    "Return non-nil if S1 and S2 are equal.
+Falls back to `string-equal'; IGNORE-CASE folds with `downcase'."
+    (if ignore-case
+        (string-equal (downcase s1) (downcase s2))
+      (string-equal s1 s2))))
+
+(unless (fboundp 'string-to-vector)
+  (defun string-to-vector (string)
+    "Return a vector of the characters in STRING."
+    (vconcat string)))
+
 (provide 'emacs-string)
 
 ;;; emacs-string.el ends here
