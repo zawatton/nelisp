@@ -2134,6 +2134,30 @@ reachable with (go LABEL).  Always returns nil."
     "Evaluate FORM1, FORM2 and BODY; return the value of FORM2."
     (list 'progn form1 (cons 'cl-prog1 (cons form2 body)))))
 
+;;;; --- Doc 16 breadth round 24: struct/OOP residuals -------------------
+;; The runtime already supports `cl-defstruct' (constructor / accessors /
+;; predicate) and `cl-defgeneric' / `cl-defmethod' single+specific dispatch.
+;; Still void: `cl-defsubst' and `cl-struct-slot-value'.  (`cl-call-next-method'
+;; / `cl-next-method-p' are also void but need cl-generic internals and cannot
+;; be shimmed standalone; `aref' on a struct instance SEGFAULTS = Doc 22 A14,
+;; so slot access must go through the generated accessor, not an index.)
+;; Gated `unless (fboundp ...)'; these live in emacs-cl-macros, not cl-macs.el.
+
+(unless (fboundp 'cl-defsubst)
+  (defmacro cl-defsubst (name arglist &rest body)
+    "Define NAME like `cl-defun' (this shim does not perform inlining).
+Accepts the same &optional / &rest / &key arglist as `cl-defun'."
+    (cons 'cl-defun (cons name (cons arglist body)))))
+
+(unless (fboundp 'cl-struct-slot-value)
+  (defun cl-struct-slot-value (struct-type slot-name inst)
+    "Return slot SLOT-NAME of struct INST of type STRUCT-TYPE.
+Dispatches to the generated `STRUCT-TYPE-SLOT-NAME' accessor (default
+`:conc-name').  This avoids `aref', which crashes on struct instances on
+this runtime (Doc 22 A14); structs declared with a custom `:conc-name'
+are therefore not supported by this shim."
+    (funcall (intern (format "%s-%s" struct-type slot-name)) inst)))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here

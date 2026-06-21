@@ -377,6 +377,19 @@ The batch host autoloads the real cl-lib macros, pinning the contract."
   (should (= 1 (let ((l (list 1 2))) (cl-prog1 (car l) (setcar l 99)))))
   (should (= 2 (cl-prog2 1 2 3))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round24-struct-oop ()
+  "Doc 16 round 24: cl-defsubst / cl-struct-slot-value.
+The batch host autoloads the real cl-lib versions, pinning the contract."
+  ;; cl-defsubst defines a callable function with the cl arglist
+  (cl-defsubst emacs-cl-macros-test--add (x y &optional (z 0)) (+ x y z))
+  (should (= 7 (emacs-cl-macros-test--add 3 4)))
+  (should (= 12 (emacs-cl-macros-test--add 3 4 5)))
+  ;; cl-struct-slot-value reads a slot by name (default conc-name)
+  (cl-defstruct emacs-cl-macros-test--pt x y)
+  (let ((p (make-emacs-cl-macros-test--pt :x 9 :y 11)))
+    (should (= 9 (cl-struct-slot-value 'emacs-cl-macros-test--pt 'x p)))
+    (should (= 11 (cl-struct-slot-value 'emacs-cl-macros-test--pt 'y p)))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here
