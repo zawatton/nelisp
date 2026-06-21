@@ -125,7 +125,7 @@ TYPE can be `list', `vector', `string', or `sequence'."
 (defun seq-subseq (sequence start &optional end)
   "Return the subsequence of SEQUENCE from START to END."
   (cond
-   ((or (stringp sequence) (vectorp sequence))
+   ((stringp sequence)
     (substring sequence start end))
    ((listp sequence)
     (let* ((len (length sequence))
@@ -143,6 +143,10 @@ TYPE can be `list', `vector', `string', or `sequence'."
           (setq rest (cdr rest)
                 n (1- n)))
         (nreverse out))))
+   ((vectorp sequence)
+    ;; The runtime's `substring' mishandles vectors, so slice via a list copy
+    ;; and convert back; seq-take / seq-drop / seq-rest all delegate here.
+    (seq--same-type (seq-subseq (append sequence nil) start end) sequence))
    (t (signal 'wrong-type-argument (list 'sequencep sequence)))))
 
 (defun seq-take (sequence n)

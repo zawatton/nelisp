@@ -406,6 +406,20 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 13 の知見*: facade を bundle 収録する時は *list だけでなく vector/string でも検証*
   する (round 2 の seq.el は list のみ検証で vector regression を見逃した)。runtime の
   =mapc=/=mapcar= は list only ([[feedback_nelisp_aset_string_noop]] 系の reader-core gap)。
+- *Doc 16 breadth round 14 — seq.el vector/string 安全性 audit (2026-06-21)*:
+  全 42 seq 関数を vector + string 入力で functional audit。round 13 で seq-do/seq-map を
+  直したので大半 (string 含む) は OK だったが、*=seq-subseq= と delegate する
+  =seq-take= / =seq-drop= / =seq-rest= が vector で破損* (4 件)。原因 = seq-subseq の
+  vector/string 分岐が =(substring sequence start end)= だが、*runtime の =substring= は
+  vector で壊れる* (=(substring [1 2 3 4] 1 3)= = garbage、reader-core gap)。修正: seq-subseq
+  の vector を =(seq--same-type (seq-subseq (append sequence nil) start end) sequence)= =
+  list copy で slice → 元 type に戻す (string は substring 維持、list は既存 path)。これで
+  =seq-take/drop/rest= も transitively 修正。検証: audit 39 + 修正後 15 ケース → full boot
+  全 ok (105 files)、host ERT seq-test 9/9、byte-compile 新規警告 0。*round 13+14 で全 seq
+  関数が vector/string 対応* に。
+- *round 14 の知見*: runtime の =substring= は string では OK だが *vector で壊れる*
+  (=mapc=/=mapcar=/=aset-string=/=equal-vector= と同じ reader-core gap 群)。seq facade で
+  vector を扱う path は =seq--list= / list copy 経由にする。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
