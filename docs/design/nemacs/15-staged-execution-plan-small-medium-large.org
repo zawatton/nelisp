@@ -319,6 +319,23 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 7 の知見*: 標準 backquote は runtime macro で安全に使える。private =internal--=
   helper も VOID なら shim する (= compat 層なので方針 OK)。次の macro/place 系
   (=with-memoization= 等) は =setf=/=gv= の place 拡張 (gethash 等) が前提 = 別 gap。
+- *Doc 16 breadth round 8 — setf place 拡張 + with-memoization (place 系) (2026-06-21)*:
+  active な =setf= は reader-core (=vendor/nelisp= の stdlib prelude) で symbol/car/cdr/
+  aref/nth/struct のみ対応、gethash/get/symbol-value は非対応 (cl-lib.el 側の gethash 対応
+  setf は =emacs-version= sentinel bound で gate off)。*reader-core macro を override せず
+  additive に拡張*: prelude setf は =(get FN 'cl-simple-setter)= を expand 時参照するので、
+  =cl-lib.el= で in-place mutator を登録 — =gethash= は引数順違い (=puthash= は KEY VALUE
+  TABLE) のため reorder ラッパー =nelisp-place--set-gethash= 経由、=get= →=put=・
+  =symbol-value= →=set=・=symbol-function= →=fset=・=symbol-plist= →=setplist=。standalone-
+  gate (emacs-version 非 string)。=plist-get= は除外 (=plist-put= が新 plist を返し place 再
+  代入不可 = silent-broken 回避)。=with-memoization= は gv-letplace 不使用で =setf= ベース実装
+  (=emacs-stub.el=、PLACE subform は複数評価 = 単純 subform 前提)。検証: full boot 9/9 ok
+  (setf gethash/get/symbol-value + with-memoization cache =(100 100 1)= + setf-car/cl-incf/
+  ignore-error/cl-floor regression、104 files)、host ERT emacs-stub-residuals-test 27/27、
+  byte-compile 新規警告 0。cl-push/cl-pop は実 Emacs にも無いので除外。
+- *round 8 の知見*: reader-core の =setf= macro は触らずとも =cl-simple-setter= property +
+  reorder ラッパーで place を additive 拡張できる。gv 完全対応 (gv-letplace / 任意 place /
+  単一評価) は別 gap だが、=setf= ベースで実用 macro (with-memoization) は供給可能。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 

@@ -1380,8 +1380,8 @@ which covers ASCII plus any cased letter in the runtime case table."
 ;; (also void here -- the runtime's when-let*/if-let* are implemented
 ;; without it), so the binding-builder is shimmed too.  All gated on
 ;; `unless (fboundp ...)' so host Emacs keeps its own.
-;; (`with-memoization' is deferred: it needs `setf'/`gv' place support for
-;; e.g. `(gethash ...)', which the runtime does not yet provide.)
+;; `with-memoization' is added in round 8 below, once the extra `setf'
+;; places (notably `(gethash ...)') were registered in `cl-lib.el'.
 
 (unless (fboundp 'internal--build-bindings)
   (defun internal--build-binding (binding prev-var)
@@ -1432,6 +1432,24 @@ result is the value of the last binding."
              (when ,(setq res (caar (last varlist)))
                ,@(or body `(,res))))
         `(let* () ,@(or body '(t)))))))
+
+;;;; --- Doc 16 breadth round 8: with-memoization (setf-based) -----------
+;; The Emacs `with-memoization' uses `gv-letplace'; the standalone reader
+;; lacks full `gv', so this shim expands to `setf' instead (which round 8
+;; taught `gethash'/`get'/... places via `cl-simple-setter').  Trade-off:
+;; PLACE's subforms are evaluated more than once, so callers should use
+;; simple subforms (e.g. `(gethash KEY TABLE)' with variable KEY/TABLE).
+
+(unless (fboundp 'with-memoization)
+  (defmacro with-memoization (place &rest code)
+    "Return the value of CODE, caching it in PLACE.
+If PLACE is already non-nil, return it without evaluating CODE."
+    (declare (indent 1) (debug (gv-place body)))
+    (let ((val (make-symbol "val")))
+      `(or ,place
+           (let ((,val (progn ,@code)))
+             (setf ,place ,val)
+             ,val)))))
 
 (provide 'emacs-stub)
 
