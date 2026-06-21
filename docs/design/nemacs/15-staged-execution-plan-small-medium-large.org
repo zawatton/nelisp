@@ -462,6 +462,17 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   byte-compile 新規警告 0 (既存 cl-progv/loop warning は round 17 と無関係)、bundle
   再生成 105 files。commit 182162c。
 
+- *Doc 16 breadth round 18 — cl binding macros (2026-06-21)*:
+  full-runtime void だった cl binding macro 群を =src/emacs-cl-macros.el= に追加:
+  =cl-destructuring-bind= (required / &optional+default / &rest / &body / &key+default /
+  &aux、nested pattern は scope 外 = cl-defun と同方針、既存 =--split-arglist= /
+  =--key-bindings= helper を再利用)、=cl-multiple-value-bind= (cl-destructuring-bind の
+  薄い wrapper、余剰値は無視)、=cl-multiple-value-setq= (list 要素を setq、primary 値を
+  返す)。全て =unless (fboundp)= gate、hygiene は make-symbol。
+  検証: bare-reader inline 17/17、full-runtime 8/8 (mvb→ds-bind の入れ子 macro 展開を
+  含む)、host ERT =emacs-cl-macros= 20/20 (round-18 で +2)、byte-compile 新規警告 0、
+  bundle 再生成 105 files。commit e13f7c3。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
