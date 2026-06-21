@@ -273,6 +273,22 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   buffer/process/eval facade は load 通過しても runtime 機構が不完全で no-op/crash する。
   clean な pure-data facade (json/seq/map/range) は round 2-3 で出尽くした。残 orphan の
   前進には buffer/process 機構の dedicated 調査 (eval facade を機能させる前提) が要る。
+- *Doc 16 breadth round 5 — cl 数値/list helper 8 個 (個別 builtin 回帰) (2026-06-21)*:
+  full-runtime fboundp probe で VOID な keyword-free cl 関数を補完 (=emacs-cl-macros.el=、
+  全 =unless (fboundp)= gate): =cl-caddr= / =cl-signum= / =cl-gcd= / =cl-lcm= /
+  =cl-isqrt= / =cl-list*= / =cl-revappend= / =cl-ldiff=。functional light-check で
+  *runtime の数値 primitive バグ* を発見: =%= は bare で void、=round= も bare void、
+  =floor= / =ceiling= / =truncate= の *2-arg(除数)形が除数を無視* (=(floor 7 2)=7=)、
+  =mod= が負で truncate 意味論 (=(mod -7 3)=-1=)。=/= は toward-zero truncate で正常。
+  → cl-gcd は =mod= + 正の operand のみ、cl-isqrt は integer Newton (=sqrt= 不使用) で
+  これら破損 primitive を回避。division 系 (=cl-floor/ceiling/round/truncate/mod/rem=) は
+  破損 primitive 回避 + int/float 処理が要るため *別の numeric round に延期*。
+  =cl-signum= は実 Emacs が常に整数を返す (=(cl-signum 2.0)=1=, =0.0=0=) ので float-preserve を
+  廃し =(t 0)=。検証: full boot 12/12 ok (cl-evenp/seq-partition regression 維持)、host ERT
+  emacs-cl-macros-test 12/12、byte-compile 新規警告 0。commit (round 5)。
+- *round 5 の知見*: runtime の数値 primitive (=floor/ceiling/truncate= 2-arg, 負 =mod=,
+  =round=) は要修正の別 gap。cl breadth で division 系を足す前にこれを fix する必要 (要 reader/
+  Rust 側調査の可能性、nelisp-emacs 範囲外なら issue 化)。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 

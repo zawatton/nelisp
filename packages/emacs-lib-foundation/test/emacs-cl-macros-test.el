@@ -92,6 +92,32 @@
     (should (= 42 (funcall countdown 3))))
   (should (equal (cl-progv nil nil 'ok) 'ok)))
 
+(ert-deftest emacs-cl-macros-test/doc16-round5-cl-numeric-list ()
+  "Doc 16 round 5: cl-caddr / cl-signum / cl-gcd / cl-lcm / cl-isqrt /
+cl-list* / cl-revappend / cl-ldiff were void in the standalone runtime."
+  (should (equal 3 (cl-caddr '(1 2 3 4))))
+  (should (equal 1 (cl-signum 5)))
+  (should (equal -1 (cl-signum -3)))
+  (should (equal 0 (cl-signum 0)))
+  (should (equal 1 (cl-signum 2.0)))
+  (should (equal 0 (cl-signum 0.0)))
+  (should (equal -1 (cl-signum -2.5)))
+  (should (equal 6 (cl-gcd 12 18)))
+  (should (equal 12 (cl-gcd 24 36 60)))
+  (should (equal 7 (cl-gcd 7)))
+  (should (equal 12 (cl-lcm 4 6)))
+  (should (equal 12 (cl-lcm 2 3 4)))
+  (should (equal 0 (cl-lcm 3 0)))
+  (should (equal 3 (cl-isqrt 10)))
+  (should (equal 4 (cl-isqrt 16)))
+  (should (equal 0 (cl-isqrt 0)))
+  (should (equal 9 (cl-isqrt 99)))
+  (should (equal '(1 2 . 3) (cl-list* 1 2 3)))
+  (should (equal '(1 2 3 4) (cl-list* 1 2 '(3 4))))
+  (should (equal '(3 2 1 4 5) (cl-revappend '(1 2 3) '(4 5))))
+  (should (equal '(1 2)
+                 (let* ((tl '(3 4)) (l (cons 1 (cons 2 tl)))) (cl-ldiff l tl)))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here

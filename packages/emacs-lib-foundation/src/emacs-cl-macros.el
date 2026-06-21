@@ -1253,6 +1253,74 @@ defining `emit-before-strings' / `emit-after-strings')."
 (unless (featurep 'cl-extra) (provide 'cl-extra))
 (unless (featurep 'cl-generic) (provide 'cl-generic))
 
+;;;; --- Doc 16 breadth round 5: cl numeric + list helpers (were void) ---
+;; cl-caddr / cl-signum / cl-gcd / cl-lcm / cl-isqrt / cl-list* /
+;; cl-revappend / cl-ldiff were void in the standalone runtime.  All are
+;; keyword-free and gated on `unless (fboundp ...)'.  cl-gcd uses `mod'
+;; with positive operands only (the bare reader has no `/=', and the
+;; runtime's `mod' is truncate-semantics for negatives + 2-arg `floor' is
+;; broken -- so the division-family cl helpers are deferred to a numeric
+;; round and these stay clear of those primitives).
+
+(unless (fboundp 'cl-caddr)
+  (defun cl-caddr (x) "Return the `car' of the `cddr' of X." (car (cddr x))))
+
+(unless (fboundp 'cl-signum)
+  (defun cl-signum (x)
+    "Return 1 if X is positive, -1 if negative, 0 if zero.
+Matches Emacs `cl-signum', which always returns an integer sign."
+    (cond ((> x 0) 1)
+          ((< x 0) -1)
+          (t 0))))
+
+(unless (fboundp 'cl-gcd)
+  (defun cl-gcd (&rest args)
+    "Return the greatest common divisor of the integer ARGS."
+    (let ((g 0))
+      (dolist (a args g)
+        (setq a (abs a))
+        (while (not (= a 0))
+          (let ((r (mod g a))) (setq g a a r)))))))
+
+(unless (fboundp 'cl-lcm)
+  (defun cl-lcm (&rest args)
+    "Return the least common multiple of the integer ARGS."
+    (if (memq 0 args)
+        0
+      (let ((l 1))
+        (dolist (a args l)
+          (setq a (abs a))
+          (setq l (/ (* l a) (cl-gcd l a))))))))
+
+(unless (fboundp 'cl-isqrt)
+  (defun cl-isqrt (n)
+    "Return the integer square root of the non-negative integer N."
+    (if (< n 2)
+        n
+      (let ((x n) (y (/ (+ 1 n) 2)))
+        (while (< y x)
+          (setq x y y (/ (+ x (/ n x)) 2)))
+        x))))
+
+(unless (fboundp 'cl-list*)
+  (defun cl-list* (arg &rest args)
+    "Return a list of ARG and ARGS, using the last argument as the tail."
+    (if args (cons arg (apply #'cl-list* args)) arg)))
+
+(unless (fboundp 'cl-revappend)
+  (defun cl-revappend (list tail)
+    "Return a copy of LIST reversed, with TAIL appended to the end."
+    (append (reverse list) tail)))
+
+(unless (fboundp 'cl-ldiff)
+  (defun cl-ldiff (list sublist)
+    "Return a copy of LIST up to (but not including) the cons cell SUBLIST."
+    (let ((result nil))
+      (while (and (consp list) (not (eq list sublist)))
+        (push (car list) result)
+        (setq list (cdr list)))
+      (nreverse result))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
