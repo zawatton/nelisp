@@ -303,6 +303,22 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 6 の知見*: runtime の壊れた数値 primitive (=floor/mod= 2-arg・負) 自体の fix は
   reader-core 案件で別 repo (=vendor/nelisp=) 管轄。nelisp-emacs 側は「正常 primitive のみで
   上位 API を組む」回避で対処可能 ([[feedback_nelisp_numeric_primitive_bugs]])。
+- *Doc 16 breadth round 7 — subr.el binding macro 3 個 (macro round) (2026-06-21)*:
+  VOID だった subr.el 系 macro を =emacs-stub.el= に gated 補完: =ignore-error= /
+  =while-let= / =and-let*=。前提検証: *runtime の標準 backquote は macro 内で完全動作*
+  (=,X= / =,@X= splice とも、macroexpand=clean) — round 1 の =(comma X)= 問題は
+  define-inline の inline-quote DSL 固有で標準 backquote は無問題と判明。よって 3 macro は
+  実 Emacs 定義を backquote でそのまま mirror。=and-let*= は =internal--build-bindings=
+  に依存するが runtime で VOID (runtime の when-let*/if-let* は別実装で不使用) のため
+  binding-builder (=internal--build-binding= / =internal--build-bindings=) も shim。
+  =with-memoization= は =setf=/=gv= が =(gethash ...)= place 非対応 (=setf: unsupported
+  place=) のため *延期*。検証: full-runtime functional (ignore-error 3 / while-let 2 /
+  and-let* 9 ケース = value-claw・短絡・空 body 含む) → bundle 再生成後 full boot 9/9 ok
+  (cl-floor/xor/seq-partition regression 維持、104 files)、host ERT emacs-stub-residuals-test
+  26/26、byte-compile 新規警告 0。
+- *round 7 の知見*: 標準 backquote は runtime macro で安全に使える。private =internal--=
+  helper も VOID なら shim する (= compat 層なので方針 OK)。次の macro/place 系
+  (=with-memoization= 等) は =setf=/=gv= の place 拡張 (gethash 等) が前提 = 別 gap。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 

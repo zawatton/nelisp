@@ -1373,6 +1373,66 @@ A character is upper-case when it differs from its `downcase' form,
 which covers ASCII plus any cased letter in the runtime case table."
     (and (natnump char) (not (= char (downcase char))))))
 
+;;;; --- Doc 16 breadth round 7: subr.el binding macros (were void) ------
+;; `ignore-error' (subr.el), `while-let' + `and-let*' (subr-x bindings)
+;; were void.  Standard backquote works in runtime macros, so these mirror
+;; the Emacs definitions.  `and-let*' needs `internal--build-bindings'
+;; (also void here -- the runtime's when-let*/if-let* are implemented
+;; without it), so the binding-builder is shimmed too.  All gated on
+;; `unless (fboundp ...)' so host Emacs keeps its own.
+;; (`with-memoization' is deferred: it needs `setf'/`gv' place support for
+;; e.g. `(gethash ...)', which the runtime does not yet provide.)
+
+(unless (fboundp 'internal--build-bindings)
+  (defun internal--build-binding (binding prev-var)
+    "Normalize a `when-let*'/`and-let*' BINDING, chaining PREV-VAR with `and'."
+    (setq binding
+          (cond ((symbolp binding) (list binding binding))
+                ((null (cdr binding)) (list (gensym "s") (car binding)))
+                (t binding)))
+    (list (car binding) (list 'and prev-var (cadr binding))))
+
+  (defun internal--build-bindings (bindings)
+    "Normalize BINDINGS into short-circuiting `let*' bindings."
+    (let ((prev-var t))
+      (mapcar (lambda (binding)
+                (let ((b (internal--build-binding binding prev-var)))
+                  (setq prev-var (car b))
+                  b))
+              bindings))))
+
+(unless (fboundp 'ignore-error)
+  (defmacro ignore-error (condition &rest body)
+    "Execute BODY; if the error CONDITION occurs, return nil.
+CONDITION is a (list of) error symbol(s) and is not evaluated."
+    (declare (debug t) (indent 1))
+    `(condition-case nil (progn ,@body) (,condition nil))))
+
+(unless (fboundp 'while-let)
+  (defmacro while-let (spec &rest body)
+    "Bind variables per SPEC and evaluate BODY while all bindings are non-nil.
+SPEC has the same shape as in `if-let*'."
+    (declare (indent 1) (debug if-let))
+    (let ((done (gensym "done")))
+      `(catch ',done
+         (while t
+           (if-let* ,spec
+               (progn ,@body)
+             (throw ',done nil)))))))
+
+(unless (fboundp 'and-let*)
+  (defmacro and-let* (varlist &rest body)
+    "Bind variables per VARLIST and conditionally evaluate BODY.
+Like `when-let*', but when BODY is empty and all bindings are non-nil the
+result is the value of the last binding."
+    (declare (indent 1) (debug if-let*))
+    (let (res)
+      (if varlist
+          `(let* ,(setq varlist (internal--build-bindings varlist))
+             (when ,(setq res (caar (last varlist)))
+               ,@(or body `(,res))))
+        `(let* () ,@(or body '(t)))))))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
