@@ -1388,6 +1388,125 @@ Y defaults to 1.  Float arguments use the runtime's 1-arg `round'."
     "Return the remainder of X / Y truncated toward zero (same sign as X)."
     (nth 1 (cl-truncate x y))))
 
+;;;; --- Doc 16 breadth round 9: keyword cl sequence helpers (were void) -
+;; cl-remove-duplicates / cl-count / cl-count-if / cl-reduce / cl-adjoin /
+;; cl-set-exclusive-or / cl-substitute were void.  Each honours the common
+;; `:test' / `:key' (and `:from-end' / `:initial-value' where applicable)
+;; keywords via `&rest keys' + `plist-get', matching the local `cl-position'
+;; convention.  Default `:test' is `eql' (correct for numbers/chars and,
+;; like `eq', non-recursive so cyclic structures are safe).  Gated on
+;; `unless (fboundp ...)'.
+
+(defun emacs-cl-macros--member-test (item list test key)
+  "Return non-nil if key ITEM matches any element of LIST under TEST/KEY."
+  (let ((found nil))
+    (while (and list (not found))
+      (when (funcall test item (if key (funcall key (car list)) (car list)))
+        (setq found t))
+      (setq list (cdr list)))
+    found))
+
+(unless (fboundp 'cl-remove-duplicates)
+  (defun cl-remove-duplicates (seq &rest keys)
+    "Return a copy of SEQ (as a list) with duplicate elements removed.
+By default the last of each set of duplicates is kept; `:from-end t'
+keeps the first.  Honours `:test' and `:key'."
+    (let* ((test (or (plist-get keys :test) #'eql))
+           (key (plist-get keys :key))
+           (from-end (plist-get keys :from-end))
+           (list (append seq nil))
+           (result nil))
+      (if from-end
+          (dolist (elt list)
+            (let ((k (if key (funcall key elt) elt)))
+              (unless (emacs-cl-macros--member-test k result test key)
+                (push elt result))))
+        (let ((tail list))
+          (while tail
+            (let ((k (if key (funcall key (car tail)) (car tail))))
+              (unless (emacs-cl-macros--member-test k (cdr tail) test key)
+                (push (car tail) result)))
+            (setq tail (cdr tail)))))
+      (nreverse result))))
+
+(unless (fboundp 'cl-count)
+  (defun cl-count (item seq &rest keys)
+    "Return the number of elements of SEQ equal to ITEM.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key))
+          (n 0))
+      (dolist (elt (append seq nil) n)
+        (when (funcall test item (if key (funcall key elt) elt))
+          (setq n (1+ n)))))))
+
+(unless (fboundp 'cl-count-if)
+  (defun cl-count-if (pred seq &rest keys)
+    "Return the number of elements of SEQ that satisfy PRED.  Honours `:key'."
+    (let ((key (plist-get keys :key))
+          (n 0))
+      (dolist (elt (append seq nil) n)
+        (when (funcall pred (if key (funcall key elt) elt))
+          (setq n (1+ n)))))))
+
+(unless (fboundp 'cl-reduce)
+  (defun cl-reduce (fn seq &rest keys)
+    "Reduce SEQ using the binary function FN.
+Honours `:initial-value', `:from-end' and `:key'.  With `:from-end t'
+FN is applied right-to-left as (FN ELT ACC); otherwise left-to-right as
+(FN ACC ELT).  With no elements and no `:initial-value', returns (FN)."
+    (let* ((key (plist-get keys :key))
+           (from-end (plist-get keys :from-end))
+           (has-init (plist-member keys :initial-value))
+           (init (plist-get keys :initial-value))
+           (list (append seq nil)))
+      (when key (setq list (mapcar (lambda (e) (funcall key e)) list)))
+      (when from-end (setq list (reverse list)))
+      (let (acc rest)
+        (cond (has-init (setq acc init rest list))
+              (list (setq acc (car list) rest (cdr list)))
+              (t (setq acc (funcall fn) rest nil)))
+        (dolist (elt rest acc)
+          (setq acc (if from-end (funcall fn elt acc) (funcall fn acc elt))))))))
+
+(unless (fboundp 'cl-adjoin)
+  (defun cl-adjoin (item list &rest keys)
+    "Return LIST, or (cons ITEM LIST) if ITEM is not already a member.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key)))
+      (if (emacs-cl-macros--member-test (if key (funcall key item) item)
+                                        list test key)
+          list
+        (cons item list)))))
+
+(unless (fboundp 'cl-set-exclusive-or)
+  (defun cl-set-exclusive-or (list1 list2 &rest keys)
+    "Return the symmetric difference of LIST1 and LIST2.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key))
+          (result nil))
+      (dolist (e list1)
+        (unless (emacs-cl-macros--member-test (if key (funcall key e) e)
+                                              list2 test key)
+          (push e result)))
+      (dolist (e list2)
+        (unless (emacs-cl-macros--member-test (if key (funcall key e) e)
+                                              list1 test key)
+          (push e result)))
+      (nreverse result))))
+
+(unless (fboundp 'cl-substitute)
+  (defun cl-substitute (new old seq &rest keys)
+    "Return a copy of SEQ (as a list) with each OLD replaced by NEW.
+Honours `:test' and `:key' (the `:count' keyword is not supported)."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key)))
+      (mapcar (lambda (elt)
+                (if (funcall test old (if key (funcall key elt) elt)) new elt))
+              (append seq nil)))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
