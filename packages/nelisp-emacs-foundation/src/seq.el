@@ -77,7 +77,11 @@ TYPE can be `list', `vector', `string', or `sequence'."
 
 (defun seq-do (function sequence)
   "Call FUNCTION for every element of SEQUENCE and return SEQUENCE."
-  (mapc function sequence)
+  ;; Go through `seq--list': the standalone runtime's `mapc' only iterates
+  ;; lists, so vectors/strings must be converted first.  This also fixes the
+  ;; many seq fns (seq-filter / seq-find / seq-reduce / seq-doseq ...) that
+  ;; delegate here.
+  (mapc function (seq--list sequence))
   sequence)
 
 (defalias 'seq-each #'seq-do)
@@ -98,7 +102,8 @@ TYPE can be `list', `vector', `string', or `sequence'."
 
 (defun seq-map (function sequence)
   "Return a list of FUNCTION applied to each element of SEQUENCE."
-  (mapcar function sequence))
+  ;; `seq--list' first: the runtime's `mapcar' only handles lists.
+  (mapcar function (seq--list sequence)))
 
 (defun seq-map-indexed (function sequence)
   "Return a list of FUNCTION applied to each element and index."
@@ -346,6 +351,35 @@ Equality is tested with TESTFN (default `equal')."
 Equality is tested with TESTFN (default `equal')."
   (append (append sequence1 nil)
           (seq-difference sequence2 sequence1 testfn)))
+
+;;; Doc 16 breadth round 13 — seq-let destructuring macro.
+;; The Emacs `seq-let' expands to `pcase-let' + `seq--make-pcase-patterns',
+;; which the standalone runtime lacks.  This shim destructures by position
+;; with `seq-elt' / `seq-drop' over a list copy of SEQUENCE (so short and
+;; vector/string sequences bind missing variables to nil rather than
+;; erroring).  Flat ARGS plus a trailing `&rest VAR' are supported; nested
+;; destructuring patterns are not.  Gated so host Emacs keeps its own.
+(unless (fboundp 'seq-let)
+  (defmacro seq-let (args sequence &rest body)
+    "Bind the variables in ARGS to the elements of SEQUENCE, eval BODY.
+ARGS may end with `&rest VAR' to bind VAR to the remaining elements."
+    (declare (indent 2))
+    (let ((seq-var (make-symbol "seq"))
+          (bindings nil)
+          (index 0)
+          (tail args))
+      (while tail
+        (let ((arg (car tail)))
+          (cond
+           ((eq arg '&rest)
+            (push (list (cadr tail) (list 'seq-drop seq-var index)) bindings)
+            (setq tail nil))
+           (t
+            (push (list arg (list 'seq-elt seq-var index)) bindings)
+            (setq index (1+ index)
+                  tail (cdr tail))))))
+      (list 'let (list (list seq-var (list 'append sequence nil)))
+            (append (list 'let (nreverse bindings)) body)))))
 
 (provide 'seq)
 

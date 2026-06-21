@@ -90,6 +90,23 @@ NeLisp seq facade was missing."
   (should (equal '(1 2 3 4 5) (seq-union '(1 2 3) '(3 4 5))))
   (should (equal '(3 2 1) (seq-reverse '(1 2 3)))))
 
+(ert-deftest seq-test/doc16-round13-seq-let-and-vectors ()
+  "Doc 16 round 13: seq-let destructuring, and seq ops over vectors after
+the seq-do/seq-map list-conversion fix."
+  ;; seq-let
+  (should (equal '(10 20 30) (seq-let (a b c) '(10 20 30) (list a b c))))
+  (should (equal '(1 (2 3 4)) (seq-let (a &rest r) '(1 2 3 4) (list a r))))
+  (should (equal '(1 2 nil) (seq-let (a b c) '(1 2) (list a b c))))
+  (should (equal '(10 20) (seq-let (a b) [10 20] (list a b))))
+  ;; seq ops over vectors (these delegate through seq-do / seq-map)
+  (should (equal '(2 3 4) (seq-map #'1+ [1 2 3])))
+  (should (equal '(2 4) (seq-filter (lambda (x) (= 0 (% x 2))) [1 2 3 4])))
+  (should (equal 6 (seq-reduce #'+ [1 2 3] 0)))
+  (should (equal '(1 4 9)
+                 (let (acc)
+                   (seq-doseq (x [1 2 3]) (push (* x x) acc))
+                   (nreverse acc)))))
+
 (provide 'seq-test)
 
 ;;; seq-test.el ends here
