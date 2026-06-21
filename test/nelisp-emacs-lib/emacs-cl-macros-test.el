@@ -144,6 +144,29 @@ cl-rem each return (Q R); built around the runtime's broken 2-arg floor/mod."
   (should (equal -1 (cl-rem -7 3)))
   (should (equal 1 (cl-rem 7 3))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round9-keyword-cl-sequence ()
+  "Doc 16 round 9: cl-remove-duplicates / cl-count(-if) / cl-reduce /
+cl-adjoin / cl-set-exclusive-or / cl-substitute with :test/:key keywords."
+  ;; cl-remove-duplicates (keep last by default, first with :from-end)
+  (should (equal '(1 3 2) (cl-remove-duplicates '(1 2 1 3 2))))
+  (should (equal '(1 2 3) (cl-remove-duplicates '(1 2 1 3 2) :from-end t)))
+  (should (equal '(3 4) (cl-remove-duplicates '(1 2 3 4) :key (lambda (x) (% x 2)))))
+  ;; cl-count / cl-count-if
+  (should (equal 3 (cl-count 2 '(1 2 2 3 2))))
+  (should (equal 2 (cl-count-if (lambda (x) (= 0 (% x 2))) '(1 2 3 4))))
+  ;; cl-reduce (left fold, :initial-value, right fold, :key, empty)
+  (should (equal -8 (cl-reduce #'- '(1 2 3 4))))
+  (should (equal 16 (cl-reduce #'+ '(1 2 3) :initial-value 10)))
+  (should (equal -2 (cl-reduce #'- '(1 2 3 4) :from-end t)))
+  (should (equal 6 (cl-reduce #'+ '((1) (2) (3)) :key #'car)))
+  (should (equal 5 (cl-reduce #'+ '() :initial-value 5)))
+  ;; cl-adjoin
+  (should (equal '(1 2 3) (cl-adjoin 2 '(1 2 3))))
+  (should (equal '(9 1 2 3) (cl-adjoin 9 '(1 2 3))))
+  ;; cl-set-exclusive-or / cl-substitute
+  (should (equal '(1 4) (cl-set-exclusive-or '(1 2 3) '(2 3 4))))
+  (should (equal '(1 9 3 9) (cl-substitute 9 2 '(1 2 3 2)))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here

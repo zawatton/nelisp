@@ -336,6 +336,18 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 8 の知見*: reader-core の =setf= macro は触らずとも =cl-simple-setter= property +
   reorder ラッパーで place を additive 拡張できる。gv 完全対応 (gv-letplace / 任意 place /
   単一評価) は別 gap だが、=setf= ベースで実用 macro (with-memoization) は供給可能。
+- *Doc 16 breadth round 9 — keyword 取る cl sequence 関数 7 個 (2026-06-21)*:
+  VOID だった =cl-remove-duplicates= / =cl-count= / =cl-count-if= / =cl-reduce= /
+  =cl-adjoin= / =cl-set-exclusive-or= / =cl-substitute= を =emacs-cl-macros.el= に補完。
+  既存 =cl-position= の規約 (=&rest keys= + =plist-get keys :test/:key/:from-end=) に合わせ
+  =:test= / =:key= (+ =:from-end= / =:initial-value=) を honour。default =:test= は =eql=
+  (数値/char 正しく、=eq= 同様 非再帰で cyclic 安全)。private helper
+  =emacs-cl-macros--member-test= で test/key 付き membership を共通化。実 Emacs 挙動を
+  host で確認して mirror: =cl-remove-duplicates= は default keep-last / =:from-end t= keep-first、
+  =cl-reduce= は left fold =(FN ACC ELT)= / =:from-end t= で right fold =(FN ELT ACC)=。
+  検証: full runtime functional 15 ケース → bundle 再生成後 full boot 12/12 ok
+  (cl-floor/cl-gcd/with-memoization regression 維持、104 files)、host ERT
+  emacs-cl-macros-test 14/14 (実 cl-lib と完全一致)、byte-compile 新規警告 0。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
