@@ -504,6 +504,18 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   (=(require 'let-alist)= / =(require 'thunk)= 成功)、byte-compile クリーン、bundle 再生成
   108 files。commit 59645b9。
 
+- *Doc 16 breadth round 21 — cl iteration macros cl-do / cl-do* (2026-06-22)*:
+  full-runtime void だった =cl-do= / =cl-do*= を =src/emacs-cl-macros.el= に追加。各 SPEC =
+  =(VAR INIT STEP)= / =(VAR INIT)= / =VAR=、ENDLIST = =(END-TEST RESULT...)=。=cl-do= は
+  並列 step (=let= + round 19 の =cl-psetq=)、=cl-do*= は逐次 step (=let*= + =setq=)。両者
+  =cl-block nil= で wrap し =cl-return= 対応。=unless (fboundp)= gate (emacs-cl-macros
+  feature に置くので cl-macs.el の host autoload target は無影響 = host ERT が実 cl-do を
+  pin、parallel-vs-sequential 差含む)。共通 helper =emacs-cl-macros--do-parse=。
+  検証: host ERT =emacs-cl-macros= 23/23 (round-21 で +2)、full-runtime 7/7、byte-compile
+  新規警告 0、bundle 再生成 108 files。commit 23247a0。
+- *goal 達成*: place 系 (round 19) + small package let-alist/thunk (round 20) + 反復 macro
+  cl-do/cl-do* (round 21) の 3 群すべて完了。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
