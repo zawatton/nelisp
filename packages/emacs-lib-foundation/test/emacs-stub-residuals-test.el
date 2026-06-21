@@ -426,6 +426,28 @@ the contract the gated polyfills mirror."
   (should-not (char-uppercase-p ?a))
   (should-not (char-uppercase-p ?5)))
 
+;;;; J. Doc 16 round 7 — subr.el binding macros (ignore-error / while-let / and-let*)
+
+(ert-deftest emacs-stub-residuals-test/doc16-round7-binding-macros ()
+  "Doc 16 round 7: ignore-error / while-let / and-let* were void in the
+standalone runtime; this pins the contract the gated shims mirror."
+  ;; ignore-error
+  (should (equal 42 (ignore-error error 42)))
+  (should-not (ignore-error error (error "boom") 5))
+  ;; while-let (0 is non-nil, so the loop runs three times)
+  (should (equal '(2 1 0)
+                 (let ((i 0) (acc nil))
+                   (while-let ((x (and (< i 3) i)))
+                     (push x acc)
+                     (setq i (1+ i)))
+                   acc)))
+  ;; and-let*
+  (should (equal 11 (and-let* ((x 5) (y (1+ x))) (+ x y))))
+  (should-not (and-let* ((x 5) (y nil)) (+ x y)))
+  (should (equal 5 (and-let* ((x 5)))) )       ; empty body -> last binding value
+  (should (equal 7 (and-let* ((x 5) (y 7)))))
+  (should (equal 5 (and-let* ((x 5) ((> x 3))) x))))
+
 (provide 'emacs-stub-residuals-test)
 
 ;;; emacs-stub-residuals-test.el ends here
