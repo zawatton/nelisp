@@ -546,6 +546,23 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - 検証: host ERT generator 3/3、bundle 再生成 115 files (require 成功、type-of probe で gap
   確認)。深い実装は「vendor + 真因の reader-core gap 特定」で着地。
 
+- *Doc 16 breadth round 24 — struct/OOP residuals (2026-06-22)*:
+  probe で判明: runtime は =cl-defstruct= (constructor/accessor/predicate) と
+  =cl-defgeneric=/=cl-defmethod= の単一・特定 dispatch を *既に正常サポート*。残 void を
+  =src/emacs-cl-macros.el= に追加: =cl-defsubst= (→ =cl-defun= 委譲、inline 無)、
+  =cl-struct-slot-value= (=(funcall (intern "TYPE-SLOT") inst)= の accessor dispatch、
+  default conc-name)。=unless (fboundp)= gate。
+- *round 24 の新 reader-core gap A14 (crash)*: =aref= を struct インスタンス (vectorp=nil の
+  length-3 record 様 obj) に適用すると *segfault*。誤値でなく crash。struct introspection を
+  index 経由でできず、accessor dispatch で回避。=record= primitive 自体も壊れ
+  (=(record ...)= → nil)。Doc 22 A14 + issue #7。
+- *残 void (polyfill 不可)*: =cl-call-next-method= / =cl-next-method-p= (cl-generic 内部依存)、
+  =cl-struct-slot-info= (aref 阻害)。
+- 検証: host ERT =emacs-cl-macros= 26/26 (round-24 で +1)、runtime 機構は個別 probe で確認
+  (accessor dispatch = slot 値、cl-defun は round 18-23 実証)。*full-bundle chk は保留* —
+  並行 C1 session の未 commit WIP が共有ツリーで =make build-nelisp-bootstrap= を劣化
+  (114→43 files、repl 出力無)。tree 安定後に再検証。commit 9fb7385。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |

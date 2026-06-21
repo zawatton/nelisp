@@ -221,6 +221,29 @@ cons / symbol 等は正常。
   壊れる。round 23 で generator 調査中に発見 (generator 自体は type-of 不使用なので
   この gap は generator block の主因ではない)。
 
+** A14. =aref= を struct インスタンスに適用すると SEGFAULT
+
+#+begin_src elisp
+(cl-defstruct r24s a b)
+(let ((o (make-r24s :a 1 :b 2)))
+  (vectorp o)   ;=> nil   (struct は vector でない record 様 obj、length=3)
+  (aref o 0))   ;=> *** SEGMENTATION FAULT ***  (期待: tag 取得 or type-error)
+#+end_src
+
+=cl-defstruct= の生成する struct インスタンスは =vectorp= = nil の length-3 record 様
+オブジェクト。これに =aref= を適用すると runtime が *segfault* する (誤値でなく crash)。
+accessor (=r24s-a=) 経由のアクセスは正常 (= 別経路)。=record= primitive 自体も別途
+壊れている (=(record 'foo 1 2)= → nil、=make-record= VOID、=recordp= → nil)。
+
+- *impact*: struct introspection (=cl-struct-slot-value= / =cl-struct-slot-info=、Doc 16
+  round 24) を index 経由で実装できない。回避: =cl-struct-slot-value= を =(funcall (intern
+  "TYPE-SLOT") inst)= の accessor dispatch で実装 (default conc-name のみ)。crash bug の
+  ため最優先級。round 24 で発見。
+- 関連 VOID (B 群): =cl-call-next-method= / =cl-next-method-p= (cl-generic 内部機構依存で
+  polyfill 不可)、=cl-struct-slot-info= (aref 阻害)、=make-record= / =copy-r24s= copier。
+  一方 =cl-defstruct= の constructor/accessor/predicate と =cl-defgeneric=/=cl-defmethod=
+  の単一・特定 dispatch は *正常動作*。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
