@@ -563,6 +563,19 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   並行 C1 session の未 commit WIP が共有ツリーで =make build-nelisp-bootstrap= を劣化
   (114→43 files、repl 出力無)。tree 安定後に再検証。commit 9fb7385。
 
+- *Doc 16 breadth round 25 — cl-defun optional-default 調査 → reader-core gap A15 (2026-06-22)*:
+  round 24 の =cl-defsubst= が =&optional (z DEFAULT)= で crash する件を追跡。=cl-defun= が
+  optional default を desugar せず raw arglist を lambda に渡しており、その lambda を *呼ぶ*
+  と runtime が crash (=funcall (lambda (x &optional (z 9)) ...) 5)= = 無音 process 死、
+  catch 不能) = *reader-core gap A15*。
+  - src 修正を試行 (=emacs-stub.el= / =emacs-cl-macros.el= 両 cl-defun に optional-default
+    desugar helper を追加) したが *両 shim とも =unless (fboundp 'cl-defun)= / =--define-p= で
+    gate-out* され効かないことを実証 (active な cl-defun は core 側)。→ src 編集を revert、
+    A15 を Doc 22 + issue #7 に記録。code 成果なしの gap-discovery round。
+  - 回避: optional default は使わず =&optional z= + body =(unless z (setq z DEFAULT))= を手書き。
+  - 環境: 並行 C1 session の共有ツリー汚染を避けるため =git worktree= (=.wt-breadth=、branch
+    feat/breadth-cl-residuals、vendor/nelisp symlink) で作業。clean build = 107 files。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
