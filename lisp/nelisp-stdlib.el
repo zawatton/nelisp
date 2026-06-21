@@ -236,18 +236,24 @@
 ;; Doc 126.C (2026-05-18): `macroexpand-1' now lives in elisp.  The
 ;; body keeps the retired Rust contract exactly: non-cons / non-symbol
 ;; head / unbound head / non-macro head all return FORM unchanged;
-;; macro cells apply their wrapped lambda to raw arg forms.  `ENV'
-;; stays accepted and ignored for parity.
-(defun macroexpand-1 (form &optional _env)
-  "Expand FORM by one macro layer or return FORM unchanged."
+;; macro cells apply their wrapped lambda to raw arg forms.  `ENV' is
+;; now honored (Doc 22 A12): its entries shadow the global mirror.
+(defun macroexpand-1 (form &optional env)
+  "Expand FORM by one macro layer or return FORM unchanged.
+ENV is a macro environment alist whose entries (SYMBOL . EXPANDER) shadow
+the global binding (Doc 22 A12): a non-nil EXPANDER is applied to the arg
+forms, a nil EXPANDER marks the head as locally not-a-macro."
   (if (and (consp form) (symbolp (car form)))
-      (if (nelisp--env-globals-is-fbound (car form))
-          (let ((fn (nelisp--env-globals-get-function (car form))))
-            (if (and (consp fn) (eq (car fn) 'macro))
-                (let ((inner (cdr fn)))
-                  (apply (if (consp inner) (car inner) inner) (cdr form)))
-              form))
-        form)
+      (let ((cell (and env (assq (car form) env))))
+        (if cell
+            (if (cdr cell) (apply (cdr cell) (cdr form)) form)
+          (if (nelisp--env-globals-is-fbound (car form))
+              (let ((fn (nelisp--env-globals-get-function (car form))))
+                (if (and (consp fn) (eq (car fn) 'macro))
+                    (let ((inner (cdr fn)))
+                      (apply (if (consp inner) (car inner) inner) (cdr form)))
+                  form))
+            form)))
     form))
 
 (defun macroexp-parse-body (body)

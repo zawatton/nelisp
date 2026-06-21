@@ -940,25 +940,28 @@ traps), and only recognises the `(macro CLOSURE)' shape."
           nil))
     nil))
 
-(defun macroexpand-1 (form)
-  "Expand FORM by one macro step if its head is a macro; else return FORM."
+(defun macroexpand-1 (form &optional env)
+  "Expand FORM by one macro step if its head is a macro; else return FORM.
+ENV is a macro environment alist; an entry (SYMBOL . EXPANDER) shadows the
+global binding (Emacs semantics): a non-nil EXPANDER is applied to the arg
+forms, a nil EXPANDER marks the head as locally not-a-macro.  Honoring ENV
+fixes Doc 22 A12 (env-driven local macros, e.g. generator.el iter-yield)."
   (if (consp form)
-      (let ((mfn (nelisp--macro-function (car form))))
-        (if mfn (apply mfn (cdr form)) form))
+      (let ((cell (and env (symbolp (car form)) (assq (car form) env))))
+        (if cell
+            (if (cdr cell) (apply (cdr cell) (cdr form)) form)
+          (let ((mfn (nelisp--macro-function (car form))))
+            (if mfn (apply mfn (cdr form)) form))))
     form))
 
-(defun macroexpand (form &optional _environment)
+(defun macroexpand (form &optional environment)
   "Repeatedly macroexpand FORM until its head is no longer a macro.
-ENVIRONMENT is accepted for host compatibility and ignored (the standalone
-reader resolves macros through the global function mirror)."
+ENVIRONMENT is the macro environment alist threaded to `macroexpand-1'
+(Doc 22 A12); local macros in ENVIRONMENT shadow the global mirror."
   (let ((cur form) (again t))
     (while again
-      (if (consp cur)
-          (let ((mfn (nelisp--macro-function (car cur))))
-            (if mfn
-                (setq cur (apply mfn (cdr cur)))
-              (setq again nil)))
-        (setq again nil)))
+      (let ((next (macroexpand-1 cur environment)))
+        (if (eq next cur) (setq again nil) (setq cur next))))
     cur))
 
 (unless (fboundp 'macroexp-parse-body)
