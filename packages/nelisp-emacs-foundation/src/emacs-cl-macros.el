@@ -1981,6 +1981,59 @@ FUNC is spliced literally into the call, matching `cl-callf2'."
     (let ((call (cons func (cons arg1 (cons place args)))))
       (if (symbolp place) (list 'setq place call) (list 'setf place call)))))
 
+;;;; --- Doc 16 breadth round 21: cl iteration macros (cl-do / cl-do*) ----
+;; cl-do / cl-do*, both void on the runtime.  Each SPEC is (VAR INIT STEP),
+;; (VAR INIT) or VAR; ENDLIST is (END-TEST RESULT...).  cl-do steps in
+;; parallel (let + cl-psetq, round 19); cl-do* steps sequentially (let* +
+;; setq).  Both wrap in `cl-block nil' so `cl-return' works.  Gated
+;; `unless (fboundp ...)' — these live here (feature emacs-cl-macros), not
+;; in cl-macs.el, so the host autoload target is unaffected.
+
+(defun emacs-cl-macros--do-parse (specs)
+  "Parse cl-do SPECS into (BINDINGS . FLAT-STEPS).
+BINDINGS = list of (VAR INIT); FLAT-STEPS = (VAR1 STEP1 VAR2 STEP2 ...)
+for the specs that carry a STEP form."
+  (let ((binds nil) (steps nil))
+    (dolist (s specs)
+      (let* ((var (if (consp s) (car s) s))
+             (init (if (and (consp s) (cdr s)) (car (cdr s)) nil))
+             (has-step (and (consp s) (cdr s) (cdr (cdr s))))
+             (step (if has-step (car (cdr (cdr s))) nil)))
+        (setq binds (cons (list var init) binds))
+        (when has-step
+          (setq steps (cons step (cons var steps))))))
+    (cons (nreverse binds) (nreverse steps))))
+
+(unless (fboundp 'cl-do)
+  (defmacro cl-do (specs endlist &rest body)
+    "Iterate with parallel stepping (Common Lisp `do').
+SPECS are (VAR INIT STEP); ENDLIST is (END-TEST RESULT...)."
+    (let* ((parsed (emacs-cl-macros--do-parse specs))
+           (binds (car parsed))
+           (steps (cdr parsed))
+           (end (car endlist))
+           (result (cdr endlist))
+           (loop (list 'while (list 'not end))))
+      (setq loop (append loop body))
+      (when steps (setq loop (append loop (list (cons 'cl-psetq steps)))))
+      (list 'cl-block nil
+            (append (list 'let binds loop) result)))))
+
+(unless (fboundp 'cl-do*)
+  (defmacro cl-do* (specs endlist &rest body)
+    "Iterate with sequential stepping (Common Lisp `do*').
+Like `cl-do' but bindings init and step left-to-right (let* + setq)."
+    (let* ((parsed (emacs-cl-macros--do-parse specs))
+           (binds (car parsed))
+           (steps (cdr parsed))
+           (end (car endlist))
+           (result (cdr endlist))
+           (loop (list 'while (list 'not end))))
+      (setq loop (append loop body))
+      (when steps (setq loop (append loop (list (cons 'setq steps)))))
+      (list 'cl-block nil
+            (append (list 'let* binds loop) result)))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
