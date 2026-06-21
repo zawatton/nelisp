@@ -1495,6 +1495,20 @@ E is V itself when V is self-quoting, otherwise (quote V)."
         v
       (list 'quote v))))
 
+;;;; --- Doc 16 breadth round 15: copy-hash-table (was void) -------------
+;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The
+;; runtime does not expose `hash-table-test', so the copy uses the default
+;; test -- correct for the common `eql'/`eq'-keyed tables.
+
+(unless (fboundp 'copy-hash-table)
+  (defun copy-hash-table (table)
+    "Return a shallow copy of hash TABLE.
+The copy uses the default hash test, since the runtime does not expose
+`hash-table-test'."
+    (let ((new (make-hash-table)))
+      (maphash (lambda (k v) (puthash k v new)) table)
+      new)))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
