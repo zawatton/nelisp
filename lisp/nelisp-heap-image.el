@@ -106,6 +106,11 @@ while dumping or restoring an Env.")
    ((consp obj) 'cons)
    ((vectorp obj) 'vector)
    ((recordp obj) 'record)
+   ;; `bool-vector-p' is not present in the bare standalone runtime yet, so
+   ;; guard the probe with `fboundp': under a runtime without bool-vectors
+   ;; this clause is inert (no value can be a bool-vector there) and the
+   ;; encoder falls through to the unsupported-object signal as before.
+   ((and (fboundp 'bool-vector-p) (bool-vector-p obj)) 'bool-vector)
    (t (signal 'wrong-type-argument (list 'nelisp-heap-image-object obj)))))
 
 (defun nelisp-heap-image--encode-ref (obj seen objects next-id-cell)
@@ -156,6 +161,16 @@ holding the next integer id in its car."
                              (nelisp-heap-image--encode-ref
                               type-tag seen objects next-id-cell)
                              (nreverse refs))))
+                    ((eq kind 'bool-vector)
+                     (let ((refs nil)
+                           (i 0)
+                           (n (length obj)))
+                       (while (< i n)
+                         (setq refs
+                               (cons (if (aref obj i) '(imm t) '(imm nil))
+                                     refs))
+                         (setq i (1+ i)))
+                       (list id 'bool-vector (nreverse refs))))
                     (t (signal 'error (list "unknown heap image kind"))))))
               (setcdr objects (cons desc (cdr objects)))
               (list 'ref id)))))))
@@ -294,8 +309,12 @@ the S-expression form until NeLisp has a byte-level string codec here."
      (t (signal 'error (list "heap-v0-lines unsupported object" kind))))))
 
 (defun nelisp-heap-image--byte (n)
-  "Return one byte string for N."
-  (string (logand n 255)))
+  "Return one raw byte for N as a unibyte string.
+`unibyte-string' keeps structural bytes >= 128 as raw bytes; `string'
+would promote them to multibyte characters, turning the whole image into
+a multibyte string so that `--binary-source-to-form' UTF-8-re-encodes
+those bytes and corrupts negative / large integers and high object ids."
+  (unibyte-string (logand n 255)))
 
 (defun nelisp-heap-image--u32-le (n)
   "Return N as a little-endian unsigned 32-bit string."
@@ -316,9 +335,12 @@ the S-expression form until NeLisp has a byte-level string codec here."
           (nelisp-heap-image--byte (ash n -56))))
 
 (defun nelisp-heap-image--i64-le (n)
-  "Return N as a little-endian signed 64-bit string."
-  (when (< n 0)
-    (setq n (+ n (ash 1 64))))
+  "Return N as a little-endian signed 64-bit string.
+`--u64-le' emits the two's-complement low bytes of N directly via
+`logand'/`ash', which is correct for negative N on both bignum and
+native-i64 runtimes, so no 2^64 bias is applied here.  The previous
+\(+ n (ash 1 64)) bias is wrong under a native-i64 runtime, where
+\(ash 1 64) masks its shift count to 0 and evaluates to 1."
   (nelisp-heap-image--u64-le n))
 
 (defun nelisp-heap-image--binary-string (string)
@@ -382,6 +404,9 @@ the S-expression form until NeLisp has a byte-level string codec here."
       (concat (nelisp-heap-image--byte nelisp-heap-image--binary-obj-record)
               (nelisp-heap-image--binary-ref (nth 2 desc))
               (nelisp-heap-image--binary-ref-list (nth 3 desc))))
+     ((eq kind 'bool-vector)
+      (concat (nelisp-heap-image--byte nelisp-heap-image--binary-obj-bool-vector)
+              (nelisp-heap-image--binary-ref-list (nth 2 desc))))
      (t (signal 'error (list "heap-v0-bin unsupported object" kind))))))
 
 (defun nelisp-heap-image--binary-form (form)
@@ -550,11 +575,24 @@ the S-expression form until NeLisp has a byte-level string codec here."
     out))
 
 (defun nelisp-heap-image--binary-read-i64 (source pos-cell)
-  "Read little-endian i64 from SOURCE at POS-CELL."
-  (let ((n (nelisp-heap-image--binary-read-u64 source pos-cell)))
-    (if (>= n (ash 1 63))
-        (- n (ash 1 64))
-      n)))
+  "Read little-endian signed i64 from SOURCE at POS-CELL.
+Portable across bignum and native-i64 runtimes.  The most-significant
+byte's top bit gives the sign.  On a native-i64 runtime the accumulated
+value is already the correct signed i64 (the high bit lands in the sign
+position), so it is returned as-is; on a bignum runtime the value is in
+\[2^63, 2^64) and is wrapped by subtracting 2^64.  We must not test the
+sign with (ash 1 63) nor wrap with (ash 1 64): both assume bignum
+semantics and misbehave under native-i64 (where (ash 1 64) = 1)."
+  (let ((i 0) (shift 0) (out 0) (msb 0))
+    (while (< i 8)
+      (setq msb (nelisp-heap-image--binary-read-u8 source pos-cell))
+      (setq out (+ out (ash msb shift)))
+      (setq i (1+ i)
+            shift (+ shift 8)))
+    (if (and (= (logand (ash msb -7) 1) 1) (> out 0))
+        ;; bignum runtime: high bit set but value came out positive -> wrap.
+        (- out (ash (ash 1 32) 32))
+      out)))
 
 (defun nelisp-heap-image--binary-read-string (source pos-cell)
   "Read a heap-v0-bin length-prefixed string from SOURCE at POS-CELL."
@@ -616,9 +654,11 @@ the S-expression form until NeLisp has a byte-level string codec here."
       (list id 'record
             (nelisp-heap-image--binary-read-ref source pos-cell)
             (nelisp-heap-image--binary-read-ref-list source pos-cell)))
+     ((= kind nelisp-heap-image--binary-obj-bool-vector)
+      (list id 'bool-vector
+            (nelisp-heap-image--binary-read-ref-list source pos-cell)))
      ((or (= kind nelisp-heap-image--binary-obj-mut-str)
           (= kind nelisp-heap-image--binary-obj-cell)
-          (= kind nelisp-heap-image--binary-obj-bool-vector)
           (= kind nelisp-heap-image--binary-obj-char-table))
       (signal 'error (list "heap-v0-bin object kind is not available in pure Elisp yet" kind)))
      (t (signal 'error (list "unknown heap-v0-bin object kind" kind))))))
@@ -711,6 +751,8 @@ the S-expression form until NeLisp has a byte-level string codec here."
                ((eq kind 'record)
                 (nelisp-heap-image--decode-record-placeholder
                  (nth 2 desc) (nth 3 desc) table))
+               ((eq kind 'bool-vector)
+                (make-bool-vector (length (nth 2 desc)) nil))
                (t (signal 'error (list "unknown heap image object" kind)))))
         (puthash id placeholder table))
       (setq cur (cdr cur)))
@@ -725,6 +767,13 @@ the S-expression form until NeLisp has a byte-level string codec here."
           (setcar obj (nelisp-heap-image--decode-ref (nth 2 desc) table))
           (setcdr obj (nelisp-heap-image--decode-ref (nth 3 desc) table)))
          ((eq kind 'vector)
+          (let ((refs (nth 2 desc))
+                (i 0))
+            (while refs
+              (aset obj i (nelisp-heap-image--decode-ref (car refs) table))
+              (setq refs (cdr refs))
+              (setq i (1+ i)))))
+         ((eq kind 'bool-vector)
           (let ((refs (nth 2 desc))
                 (i 0))
             (while refs
