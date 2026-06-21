@@ -1813,6 +1813,76 @@ A TYPE of t or `otherwise' is the default clause."
                                       (1+ emacs-cl-macros--gentemp-counter))))))
       (intern sym))))
 
+;;;; --- Doc 16 breadth round 18: cl binding macros -----------------------
+;; cl-destructuring-bind / cl-multiple-value-bind / cl-multiple-value-setq,
+;; all void on the runtime.  cl-destructuring-bind reuses the existing
+;; `emacs-cl-macros--split-arglist' / `--key-bindings' helpers (the same
+;; ones backing `cl-defun'); the multiple-value macros are thin layers on
+;; top.  Nested destructuring patterns are not supported (matches the
+;; cl-defun shim's scope).  Hygienic temporaries via `make-symbol'.  Same
+;; `unless (fboundp ...)' gating: host Emacs keeps its real cl-lib versions.
+
+(unless (fboundp 'cl-destructuring-bind)
+  (defmacro cl-destructuring-bind (arglist expr &rest body)
+    "Bind the variables in ARGLIST to successive elements of the list EXPR.
+Supports &optional (with defaults), &rest/&body, &key (with defaults) and
+&aux.  Nested destructuring patterns are not supported by this shim."
+    (let* ((parts (emacs-cl-macros--split-arglist arglist))
+           (positional (nth 0 parts))
+           (optionals (nth 1 parts))
+           (restsym (nth 2 parts))
+           (keys (nth 3 parts))
+           (vsym (make-symbol "--cl-ds--"))
+           (restvar (or restsym
+                        (and keys (make-symbol "--cl-ds-rest--"))))
+           (idx 0)
+           (bindings (list (list vsym expr))))
+      ;; positionals: (POS (nth IDX V))
+      (dolist (p positional)
+        (setq bindings (cons (list p (list 'nth idx vsym)) bindings))
+        (setq idx (1+ idx)))
+      ;; optionals: token is VAR or (VAR DEFAULT); present iff the cons exists
+      (dolist (o optionals)
+        (let ((osym (if (consp o) (car o) o))
+              (odef (if (consp o) (car (cdr o)) nil)))
+          (setq bindings
+                (cons (list osym
+                            (list 'if (list 'nthcdr idx vsym)
+                                  (list 'nth idx vsym)
+                                  odef))
+                      bindings))
+          (setq idx (1+ idx))))
+      ;; &rest / the list scanned for &key values
+      (when restvar
+        (setq bindings (cons (list restvar (list 'nthcdr idx vsym)) bindings)))
+      ;; &key: (SYM (or (cadr (memq :SYM RESTVAR)) DEFAULT))
+      (when keys
+        (dolist (kb (emacs-cl-macros--key-bindings keys restvar))
+          (setq bindings (cons kb bindings))))
+      (cons 'let* (cons (nreverse bindings) body)))))
+
+(unless (fboundp 'cl-multiple-value-bind)
+  (defmacro cl-multiple-value-bind (vars form &rest body)
+    "Bind VARS to successive elements of the list produced by FORM.
+Extra values are ignored (Emacs models multiple values as a list)."
+    (cons 'cl-destructuring-bind
+          (cons (append vars (list '&rest (make-symbol "--cl-mvb-rest--")))
+                (cons form body)))))
+
+(unless (fboundp 'cl-multiple-value-setq)
+  (defmacro cl-multiple-value-setq (vars form)
+    "Set VARS to successive elements of the list produced by FORM.
+Return the primary (first) value."
+    (let ((tmp (make-symbol "--cl-mvs--"))
+          (sets nil)
+          (idx 0))
+      (dolist (v vars)
+        (setq sets (cons (list 'setq v (list 'nth idx tmp)) sets))
+        (setq idx (1+ idx)))
+      (cons 'let
+            (cons (list (list tmp form))
+                  (append (nreverse sets) (list (list 'car tmp))))))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here

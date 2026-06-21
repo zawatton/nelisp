@@ -256,6 +256,31 @@ cl-etypecase / cl-ecase."
     (should (symbolp s))
     (should (string-prefix-p "R17" (symbol-name s)))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round18-destructuring-bind ()
+  "Doc 16 round 18: cl-destructuring-bind over flat lambda-lists.
+The batch host runs the real macro, pinning the contract the NeLisp
+runtime shim must reproduce (nested patterns are out of scope)."
+  (should (equal '(1 2 3) (cl-destructuring-bind (a b c) '(1 2 3) (list a b c))))
+  (should (equal '(1 (2 3 4)) (cl-destructuring-bind (a &rest r) '(1 2 3 4) (list a r))))
+  (should (equal '(1 (2 3)) (cl-destructuring-bind (a &body r) '(1 2 3) (list a r))))
+  (should (equal '(1 2 9) (cl-destructuring-bind (a b &optional c) '(1 2 9) (list a b c))))
+  (should (equal '(1 2 nil) (cl-destructuring-bind (a b &optional c) '(1 2) (list a b c))))
+  (should (equal '(1 2 7) (cl-destructuring-bind (a b &optional (c 7)) '(1 2) (list a b c))))
+  (should (equal '(1 2 5) (cl-destructuring-bind (a b &optional (c 7)) '(1 2 5) (list a b c))))
+  (should (equal '(1 10 20) (cl-destructuring-bind (a &key x y) '(1 :x 10 :y 20) (list a x y))))
+  (should (equal '(1 99 nil) (cl-destructuring-bind (a &key (x 99) y) '(1) (list a x y))))
+  (should (equal '(1 nil 5) (cl-destructuring-bind (a &key x y) '(1 :y 5) (list a x y))))
+  (should (equal '(1 2 (3 4)) (cl-destructuring-bind (a &optional b &rest r) '(1 2 3 4) (list a b r))))
+  (should (= 6 (cl-destructuring-bind (a b) '(2 4) (ignore a) (+ a b)))))
+
+(ert-deftest emacs-cl-macros-test/doc16-round18-multiple-value ()
+  "Doc 16 round 18: cl-multiple-value-bind / cl-multiple-value-setq."
+  (should (equal '(1 2) (cl-multiple-value-bind (a b) '(1 2 3) (list a b))))
+  (should (equal '(1 2) (cl-multiple-value-bind (a b) '(1 2 3 4 5) (list a b))))
+  (should (equal '(1 nil) (cl-multiple-value-bind (a b) '(1) (list a b))))
+  (should (equal '(10 20) (let (p q) (cl-multiple-value-setq (p q) '(10 20)) (list p q))))
+  (should (= 10 (let (p q) (cl-multiple-value-setq (p q) '(10 20))))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here
