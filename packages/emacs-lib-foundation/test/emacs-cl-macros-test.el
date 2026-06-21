@@ -118,6 +118,32 @@ cl-list* / cl-revappend / cl-ldiff were void in the standalone runtime."
   (should (equal '(1 2)
                  (let* ((tl '(3 4)) (l (cons 1 (cons 2 tl)))) (cl-ldiff l tl)))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round6-cl-division-family ()
+  "Doc 16 round 6: cl-floor / cl-ceiling / cl-round / cl-truncate / cl-mod /
+cl-rem each return (Q R); built around the runtime's broken 2-arg floor/mod."
+  ;; cl-truncate (toward zero)
+  (should (equal '(3 1) (cl-truncate 7 2)))
+  (should (equal '(-3 -1) (cl-truncate -7 2)))
+  (should (equal '(3 1.5) (cl-truncate 7.5 2)))
+  ;; cl-floor (toward -inf)
+  (should (equal '(3 1) (cl-floor 7 2)))
+  (should (equal '(-4 1) (cl-floor -7 2)))
+  (should (equal '(-4 -1) (cl-floor 7 -2)))
+  (should (equal '(-4 0.5) (cl-floor -7.5 2)))
+  ;; cl-ceiling (toward +inf)
+  (should (equal '(4 -1) (cl-ceiling 7 2)))
+  (should (equal '(-3 -1) (cl-ceiling -7 2)))
+  ;; cl-round (ties to even)
+  (should (equal '(4 -1) (cl-round 7 2)))
+  (should (equal '(2 1) (cl-round 5 2)))
+  (should (equal '(6 -1) (cl-round 11 2)))
+  (should (equal '(-2 -1) (cl-round -5 2)))
+  ;; cl-mod (sign of Y) / cl-rem (sign of X)
+  (should (equal 2 (cl-mod -7 3)))
+  (should (equal -2 (cl-mod 7 -3)))
+  (should (equal -1 (cl-rem -7 3)))
+  (should (equal 1 (cl-rem 7 3))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here
