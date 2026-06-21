@@ -448,6 +448,25 @@ standalone runtime; this pins the contract the gated shims mirror."
   (should (equal 7 (and-let* ((x 5) (y 7)))))
   (should (equal 5 (and-let* ((x 5) ((> x 3))) x))))
 
+;;;; K. Doc 16 round 8 — extra setf places + with-memoization
+
+(ert-deftest emacs-stub-residuals-test/doc16-round8-setf-and-memoization ()
+  "Doc 16 round 8: gethash/get setf places + with-memoization.  On host
+these use gv.el / the real macro; the standalone shims pin this contract."
+  ;; setf places
+  (let ((h (make-hash-table)))
+    (setf (gethash 'k h) 9)
+    (should (equal 9 (gethash 'k h))))
+  (setf (get 'emacs-stub-residuals-test--r8 'prop) 7)
+  (should (equal 7 (get 'emacs-stub-residuals-test--r8 'prop)))
+  ;; with-memoization caches and does not re-run the body on a hit
+  (let ((h (make-hash-table)) (n 0))
+    (let ((a (with-memoization (gethash 'k h) (setq n (1+ n)) 100))
+          (b (with-memoization (gethash 'k h) (setq n (1+ n)) 200)))
+      (should (equal 100 a))
+      (should (equal 100 b))
+      (should (equal 1 n)))))
+
 (provide 'emacs-stub-residuals-test)
 
 ;;; emacs-stub-residuals-test.el ends here

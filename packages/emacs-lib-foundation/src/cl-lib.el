@@ -251,6 +251,31 @@ For unrecognised places, signals an error at expansion time."
            forms)))
       (cons 'progn (nreverse forms)))))
 
+;;;; --- Doc 16 breadth round 8: extra setf places (standalone) ----------
+;; The standalone reader's `setf' (nelisp's stdlib prelude) consults the
+;; `cl-simple-setter' property: a place (FN ARGS...) expands to
+;; (funcall SETTER ARGS... VALUE).  Register setters for common in-place
+;; places the prelude omits.  `gethash' needs an argument reorder (puthash
+;; is KEY VALUE TABLE, not KEY TABLE VALUE) so it routes through a wrapper.
+;; Only in-place mutators are registered -- `plist-get' is deliberately
+;; left out because `plist-put' may return a fresh list without updating
+;; the place, which a simple setter cannot reassign.
+;; Host Emacs uses gv.el and ignores `cl-simple-setter', so this is gated
+;; to the standalone runtime (emacs-version is a sentinel there, not a
+;; version string).
+
+(when (not (stringp (and (boundp 'emacs-version) emacs-version)))
+  (unless (fboundp 'nelisp-place--set-gethash)
+    (defun nelisp-place--set-gethash (key table value)
+      "`setf' setter for (gethash KEY TABLE); reorders args for `puthash'."
+      (puthash key value table)
+      value))
+  (put 'gethash 'cl-simple-setter 'nelisp-place--set-gethash)
+  (put 'get 'cl-simple-setter 'put)
+  (put 'symbol-value 'cl-simple-setter 'set)
+  (put 'symbol-function 'cl-simple-setter 'fset)
+  (put 'symbol-plist 'cl-simple-setter 'setplist))
+
 ;;;; --- list / alist polyfills ------------------------------------------
 
 (unless (fboundp 'assoc-delete-all)
