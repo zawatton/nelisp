@@ -964,6 +964,91 @@ ENVIRONMENT is the macro environment alist threaded to `macroexpand-1'
         (if (eq next cur) (setq again nil) (setq cur next))))
     cur))
 
+(defun nelisp--macroexpand-all-map (forms environment)
+  "Apply `macroexpand-all' (threading ENVIRONMENT) to each of FORMS."
+  (let ((out nil))
+    (while forms
+      (setq out (cons (macroexpand-all (car forms) environment) out)
+            forms (cdr forms)))
+    (nreverse out)))
+
+(defun macroexpand-all (form &optional environment)
+  "Expand every macro call reachable from FORM, honoring ENVIRONMENT.
+Doc 22 A12: ENVIRONMENT is threaded to `macroexpand' at every node, so
+env-driven local macros (e.g. the macro-environment generator.el passes
+to intercept `iter-yield') expand.  Non-evaluated positions are kept
+literal: `quote' datums, lambda/`function' parameter lists, `let'/`let*'
+binding variables, and `condition-case' VAR pass through unchanged; every
+other special form has only evaluated args (or atomic name/doc slots that
+pass through), so the default recursion into the cdr is correct for them."
+  (if (not (consp form))
+      form
+    (let ((expanded (macroexpand form environment)))
+      (if (not (consp expanded))
+          expanded
+        (let ((head (car expanded)))
+          (cond
+           ((eq head 'quote) expanded)
+           ((eq head 'function)
+            (let ((arg (cadr expanded)))
+              (if (and (consp arg) (eq (car arg) 'lambda))
+                  (list 'function
+                        (cons 'lambda
+                              (cons (cadr arg)
+                                    (nelisp--macroexpand-all-map (cddr arg)
+                                                                 environment))))
+                expanded)))
+           ((eq head 'lambda)
+            (cons 'lambda
+                  (cons (cadr expanded)
+                        (nelisp--macroexpand-all-map (cddr expanded)
+                                                     environment))))
+           ((or (eq head 'let) (eq head 'let*))
+            (cons head
+                  (cons (mapcar (lambda (b)
+                                  (if (and (consp b) (consp (cdr b)))
+                                      (list (car b)
+                                            (macroexpand-all (cadr b) environment))
+                                    b))
+                                (cadr expanded))
+                        (nelisp--macroexpand-all-map (cddr expanded)
+                                                     environment))))
+           ((or (eq head 'defun) (eq head 'defmacro))
+            (cons head
+                  (cons (cadr expanded)
+                        (cons (caddr expanded)
+                              (nelisp--macroexpand-all-map (cdddr expanded)
+                                                           environment)))))
+           ((eq head 'setq)
+            (let ((rest (cdr expanded)) (out nil))
+              (while rest
+                (setq out (cons (car rest) out) rest (cdr rest))
+                (when rest
+                  (setq out (cons (macroexpand-all (car rest) environment) out)
+                        rest (cdr rest))))
+              (cons 'setq (nreverse out))))
+           ((eq head 'cond)
+            (cons 'cond
+                  (mapcar (lambda (clause)
+                            (if (consp clause)
+                                (nelisp--macroexpand-all-map clause environment)
+                              clause))
+                          (cdr expanded))))
+           ((eq head 'condition-case)
+            (cons 'condition-case
+                  (cons (cadr expanded)
+                        (cons (macroexpand-all (caddr expanded) environment)
+                              (mapcar (lambda (h)
+                                        (if (consp h)
+                                            (cons (car h)
+                                                  (nelisp--macroexpand-all-map
+                                                   (cdr h) environment))
+                                          h))
+                                      (cdddr expanded))))))
+           (t
+            (cons head (nelisp--macroexpand-all-map (cdr expanded)
+                                                    environment)))))))))
+
 (unless (fboundp 'macroexp-parse-body)
   (defun macroexp-parse-body (body)
     "Split BODY into declarations and remaining forms.
