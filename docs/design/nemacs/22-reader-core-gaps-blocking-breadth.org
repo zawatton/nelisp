@@ -3,7 +3,8 @@
 #+DATE: 2026-06-21
 #+STATUS: FILED — github.com/zawatton/nelisp#7 (2026-06-21)
 #+PROGRESS: 2026-06-22 — A16/A17/A18/A19 (rx 系) + A1/A2/A3/A5/A6/A7/A9/A10/A12/A13 を全て
-#+PROGRESS:   *pure-elisp で FIXED*、A8 は dlet を partial FIXED (prelude commits 81eaf9e3 /
+#+PROGRESS:   *pure-elisp で FIXED*、A8 は dlet を partial FIXED、A11/A20 を native build-script で
+#+PROGRESS:   FIXED (prelude commits 81eaf9e3 /
 #+PROGRESS:   a61c8efe / 8ca03316 / f3767c71)。重要な発見: bare reader の native primitive は
 #+PROGRESS:   prelude (=scripts/nelisp-stdlib-prelude.el=) の override で訂正可能 (=fset= の
 #+PROGRESS:   function-cell 解決を実証)、かつ dynamic binding も機能する (A8 の crash 主張は誤り、
@@ -11,8 +12,8 @@
 #+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
 #+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。A15 (=&optional (VAR DEFAULT)=)
 #+PROGRESS:   は crash でなく誤値と判明し cl-defun desugar (commit 50cf2b2e) で FIXED。残:
-#+PROGRESS:   A4(aset string=immutable)、A11(make-symbol identity)、A8 の symbol-value 誤値、
-#+PROGRESS:   C1(hash-table-test)、A14(aref struct segfault=bundle 専用、bare で record 生成不可)。
+#+PROGRESS:   A4(aset string=immutable)、A8 の symbol-value 誤値、C1(hash-table-test)、
+#+PROGRESS:   A14(aref struct segfault=bundle 専用、bare で record 生成不可)。
 
 * 0. Purpose
 
@@ -228,7 +229,19 @@ with-output-to-string (basic/terpri/nested/empty)。*注*: buffer は insert し
   (stringp val))= で回避。=arrayp= を内部使用する builtin / facade は全て同様に破損
   の疑い。round 17 で発見。
 
-** A11. =make-symbol= の uninterned symbol が名前で解決される (同名衝突)
+** A11. =make-symbol= の uninterned symbol が名前で解決される (同名衝突) — *FIXED 2026-06-22 (native)*
+
+*FIXED* in =scripts/nelisp-standalone-build.el= (vendor/nelisp commit cf6af09d): reader は obarray を
+持たず、変数 lookup と =eq= は symbol を *名前で比較* (name == identity、=bf_eq2= の tag-4 arm =
+=symbol-eq= は name 比較)。reader applyfn が =make-symbol= を =bf_intern= に流していたため 2 つの
+=(make-symbol "g")= が同名 "g" になり =eq= 衝突 → hygiene 崩壊 (parallel-assignment temp が 1 cell に融合、
+two-temp let が (2 2) を返した)。out-of-band な =nl_jit_make_symbol= kernel を模した reader-local
+=bf_make_symbol= を追加: counter を Rust extern (=nl_make_symbol_counter_ptr=、reader 未配線) でなく
+*in-reader の mutation-epoch slot 268435544* (=atomic-fetch-add=、reset 無効＝安定 per-process counter)
+から取り、name を =NAME__nelisp-uninterned-XXXXXXXXXXXXXXXX= (16 hex) に一意化。name 基準の =eq=/binding が
+uninterned symbol を区別。=intern= は不変 (同名共有維持)。検証: =(eq (make-symbol "g") (make-symbol "g"))=
+→nil、=(eq a a)=→t、two-temp let → (1 2)、3 個 pairwise distinct、intern/symbol-name/let/set 無改変、
+repl smoke + standalone-reader-test green。pure elisp build-script、Rust 不変。
 
 #+begin_src elisp
 (let ((a (make-symbol "g")) (b (make-symbol "g")))
