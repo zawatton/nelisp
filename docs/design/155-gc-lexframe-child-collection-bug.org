@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: OPEN — root cause CONFIRMED (§8: arena chunk-growth corrupts frame objects under no-reclaim); fix pending
+#+STATUS: OPEN — root cause NARROWED (§8.6: a stray write zeroes a live cloned Sexp box between frame_push and find, ONLY after arena growth; allocator/read/clone all exonerated by exit-code probes); stray-writer pinpoint + fix pending
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -239,3 +239,59 @@ inside the 256 MiB first chunk → no growth → no corruption.
   keep box+buffer co-located; or (b) instrument =nl_alloc_bytes= to log a 0
   return / a cross-chunk vector-data allocation during audit (write a marker
   byte via =nl_os_write_stderr= so it survives the crash).
+
+** 8.6 Exit-code dissection: allocator/read/clone all EXONERATED (2026-06-22 b)
+
+Method: a worktree at =838605da= (the last commit that crashes 5/5 at the
+256 MiB default; HEAD no longer grows that far because =3f318889= alloc-free
+dispatch dropped audit's allocation pressure below the first-chunk size — the
+crash is now LATENT, not fixed).  Probes use distinct =exit(N)= codes
+(=syscall-direct 60 N=) instead of stderr — the process crashes, so the exit
+code is the only reliable channel.  ((b)'s stderr "G" marker via
+=syscall-direct 4 2= never surfaced even though growth ran 29× on a cons churn
+— a separate puzzle; exit codes work.)  Each probe is byte-for-byte the
+original on the valid path.
+
+Findings, in order (all on the crashing 838605da/256 MiB binary):
+1. =nl_alloc_bytes= growth branch: post-growth =nl_chunk_try_alloc= NEVER
+   returns 0 (no exit 77) and the returned obj is ALWAYS in
+   [chunk_base, chunk_base+size) (no exit 78).  A 1M-cons churn grew the arena
+   29× (=arena-stats[9]= 1->30) with rc=0.  Freelist reuse is impossible
+   (=nl_dealloc_bytes= is a no-op, sweep is OFF).  => the ALLOCATOR returns
+   valid, in-range, fresh pointers across growth.  EXONERATED.
+2. =nl_vector_slot_ptr= split into hops: the fault is hop-1, =sexp+8= (the
+   NlVector box pointer) == 0, NOT hop-2 (=box+8= data_ptr).  Encoding the slot
+   tag in the exit code gave =exit 90= => the slot reads tag 0 (Nil), box 0.
+   The lexframe hash-table's slot 1 (which must hold the buckets vector)
+   reads as Nil.
+3. =nl_record_slot_ptr= split into hops: the ht record's box (=sexp+8=) and
+   data_ptr (=box+40=) are BOTH valid (no exit 85 / 100+tag).  The record READ
+   path is clean — it correctly addresses a slot that genuinely contains Nil.
+   EXONERATED.
+4. The write path: =record-slot-set= -> =nl_record_set_slot= -> =nl_val_clone_into=
+   -> (boxed) =nl_vci_box= -> =nl_sexp_clone_into=.  A read-back guard in
+   =nl_vci_box= (after the clone, assert =box.tag == src.tag=) NEVER fires
+   (no exit 110+tag).  => at WRITE time the cloned buckets-vector Sexp box is
+   correctly populated (tag 8, valid child box).  The clone is EXONERATED.
+
+Conclusion (precise root cause):
+  A live, correctly-created 32-byte Sexp box — the cloned buckets vector stored
+  in =lexframe.ht.slot1= — is ZEROED by a STRAY WRITE sometime BETWEEN its
+  creation (=frame_push= step 3) and its read (=find_in_frame=), and ONLY once
+  the arena has grown past the first chunk.  It is not an allocation fault, not
+  a read-side addressing fault, and not a clone fault — it is a post-write
+  corruption.  This supersedes §8.4 #2 (the allocator-growth-bug hunt) and §8.5
+  (the "alloc returns 0 / bad ptr" micro-suspect): both are now ruled out.
+
+Leading remaining hypothesis: the bump allocator hands out an already-live
+address a second time (a growth-induced cursor / chunk-bookkeeping desync), and
+the reuse zeroes the old box (e.g. a later =nl_sexp_clone_into= of a Nil value,
+or =nl_alloc_zero_fill=, writes over it).  mmap(NULL) chunks cannot overlap, so
+the suspect is intra-chunk cursor reuse or the first-chunk fixed-cursor
+(=nl_chunk_cursor_addr= -> =268435456=) desynchronising after a growth.
+
+Next probe: an address-reuse / high-water-mark detector in =nl_alloc_bytes=
+(assert each returned obj is disjoint from the last live allocation on its
+chunk), or a per-chunk cursor-monotonicity assertion across the growth event.
+Diagnostic worktree was at =/tmp/nelisp-838-diag= (removed); production restored
+to clean feat/256 MiB.
