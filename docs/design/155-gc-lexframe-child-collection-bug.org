@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: OPEN — root-caused, fix deferred to a dedicated GC-mark debugging effort
+#+STATUS: OPEN — root cause CONFIRMED (§8: arena chunk-growth corrupts frame objects under no-reclaim); fix pending
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -144,43 +144,64 @@ This SHARPENS §3: the crash is *not* a live object freed by a running collector
 
 ⇒ During audit NO collector runs; the arena only GROWS.
 
-** 8.2 Leading hypothesis: arena chunk-growth corruption under no-reclaim
+** 8.2 CONFIRMED: arena chunk-growth corruption (frame-object-specific)
 
 The Linux arena is a 256 MiB FIRST CHUNK (=nelisp-standalone--linux-arena-size=,
 =#x10000000=) plus =nl_chunk_alloc_new= growth chunks.  With no reclamation,
-audit's deep eval (~606 frames) + packaged-registry processing keeps allocating.
-The NULL frame-child (hash-table OR buckets — varies) is most likely either:
-(a) arena chunk-growth corruption — crossing the 256 MiB first chunk adds a
-growth chunk and a pointer/metadata bug across the boundary nulls a live
-frame-child slot; or (b) an uninitialised / overwritten slot in the
-frame-push/grow path that only surfaces at that allocation volume.
+audit's deep eval (~606 frames) + packaged-registry processing keeps allocating
+and crosses the 256 MiB first chunk → chunk growth.
+
+CONFIRMED by the arena-size experiment (rebuild with =NELISP_LINUX_ARENA_SIZE=,
+forcing a rebuild via =touch scripts/nelisp-standalone-build.el= since a plain
+=make standalone-reader= does NOT re-pick the env):
+- *512 MiB first chunk → =nelix audit m3= is 5/5 rc=0* (audit fits in one chunk,
+  no growth), output correct.  vs *256 MiB → 5/5 SIGSEGV*.
+  ⇒ The crash IS arena chunk-growth corruption.
+- =2 GiB= first chunk produces a non-working binary (empty output) — =0x80000000=
+  hits the signed-imm32 address-materialisation boundary; keep test sizes
+  < 2 GiB (512 MiB is a good probe).
+
+The corruption is FRAME-OBJECT-SPECIFIC, not generic:
+- A plain cons churn that DOES force growth (700k conses ≈ 22 MB with a 16 MiB
+  first chunk) SURVIVES (rc=0).  So =nl_chunk_alloc_new= growth works for plain
+  cons allocation.
+- Yet audit's growth nulls a lexframe child (hash-table / buckets — a
+  Record/Vector reached via =record-slot-ref-ptr=).  So the bug is in how
+  growth (or a pointer computed relative to the first-chunk base) handles
+  RECORD / VECTOR frame objects specifically, OR an object that straddles /
+  is reached across the chunk boundary.
 
 This explains the MASKING precisely: Doc 154 churn reduction (=3f318889=
 alloc-free dispatch removed ~per-comparison symbol allocs across the 606-frame
 eval; =c435946= native lock-read) lowers audit's allocation enough to stay
-inside the first chunk → no growth → no corruption.
+inside the 256 MiB first chunk → no growth → no corruption.
 
 ** 8.3 Reproducer notes (what does NOT trigger it)
 
-- Plain deep =let= recursion (300+), =while= loops, and explicit
-  =(garbage-collect)= (mode 0 — *does* a conservative stack scan) all complete
-  cleanly.  The mode-1 safepoint collect must be explicitly armed.
-- A minimal repro must match audit's allocation volume + frame pattern; the
-  registry / backend-resolution eval shape is the likely missing ingredient.
+- Plain deep =let= recursion (300+), =while= loops, explicit =(garbage-collect)=
+  (mode 0 — does a conservative scan), and *cons churn that forces growth* all
+  complete cleanly.
+- The trigger needs BOTH (i) allocation crossing the first-chunk boundary AND
+  (ii) live lexframe RECORD/VECTOR children reachable across the growth.  The
+  audit/manifest-load + packaged-registry eval shape supplies both; a minimal
+  repro should pair a deep frame stack with > first-chunk allocation (tune a
+  small first chunk + a frame-heavy loop allocating records/vectors).
 
 ** 8.4 Next steps (supersede §6)
 
-1. Confirm arena-growth: CLEAN rebuild (=make clean= first — a plain
-   =make standalone-reader= did NOT pick up =NELISP_LINUX_ARENA_SIZE=; the
-   arena-init unit was cached so the binary kept 256 MiB) with a LARGE first
-   chunk (e.g. 2 GiB) so audit fits in one chunk.  If audit stops crashing →
-   growth-corruption confirmed.  A TINY first chunk should then crash even
-   trivial ops.
-2. If confirmed: audit =nl_chunk_alloc_new= / =nl_alloc_bytes= chunk-boundary
-   handling — base/desc seeding for growth chunks and any pointer computed
-   relative to the first-chunk base.
+1. [DONE] Arena-growth confirmed (512 MiB avoids it; cons-growth survives →
+   frame-object-specific).
+2. Find the growth bug: audit =nl_chunk_alloc_new= / =nl_alloc_bytes= +
+   =nl_gc_in_arena= / =nl_gc_chunk_contains_any= for RECORD/VECTOR objects on a
+   growth chunk — esp. any pointer/membership test computed relative to the
+   FIRST-chunk base (=record-slot-ref-ptr= / =vector-ref-ptr= reaching a child
+   that landed on a growth chunk).  Compare the cons path (works) vs the
+   record/vector path (breaks) for what differs across the chunk boundary.
 3. Proper fix: land a SOUND reclaiming GC (fix the root/mark gap so
-   =nl_gc_collect= can be re-enabled, keeping the arena bounded).  Existing
-   machinery to make sound: =nl_gc_mark_published_contexts= (precise roots,
-   capacity 64; the frame stack is a shared backing, so one published env marks
-   all frames) + the mode-0 conservative scan (=nl_gc_conserv_maybe=).
+   =nl_gc_collect= can be re-enabled, keeping the arena bounded so growth is
+   rarely/never needed).  Existing machinery to make sound:
+   =nl_gc_mark_published_contexts= (precise roots, capacity 64; the frame stack
+   is a shared backing, so one published env marks all frames) + the mode-0
+   conservative scan (=nl_gc_conserv_maybe=).
+4. Interim mitigation option: a larger first chunk reduces growth frequency but
+   is not a fix (any unbounded no-reclaim workload eventually grows).
