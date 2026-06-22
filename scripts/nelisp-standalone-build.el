@@ -2484,6 +2484,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-image-root-verify") . (bf_arena_image_root_verify out))
     ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
     ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
+    ((:lit "nelisp--arena-dump-image-stream") . (bf_arena_dump_image_stream args out))
     ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
     ((:lit "nelisp--env-capture-roots") . (bf_env_capture_roots out))
     ((:lit "nelisp--record-expand") . (bf_record_expand args out))
@@ -3422,6 +3423,85 @@ unresolved at link time."
             (nl_fa_write_all fd tbl (* tlen 8) 0)
             (nl_fa_write_all fd dest (+ slen isz) 0)
             (nl_os_close_handle fd)
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
+    ;; STREAMING dump (flat-arena boot-wiring 12): dump WITHOUT the full-heap
+    ;; `dest' scratch copy that `bf_arena_dump_image_to_file' uses.  That copy
+    ;; doubles the in-arena footprint (~2*heap), which -- with the <2GB arena cap
+    ;; (Phase47 signed-imm32 materialization) -- makes the ~882MB full-nemacs env
+    ;; undumpable.  Here we swizzle the LIVE arena IN-PLACE: passing dest = sstart
+    ;; (= ds) makes `nl_fa_field's loc = dest+(waddr-ds) = waddr, so the swizzle
+    ;; rewrites the live fields directly (pointer -> image offset).  The relocation
+    ;; table + counters land in the chunk-0 free area past the live bump (cin/cout
+    ;; @ sstart+slen+isz, tbl @ +256 -- the same dest-relative slots nl_fa_emit
+    ;; computes).  We then stream header + table + live chunk-0 + live intern to
+    ;; the file (reading the live regions directly, no copy), and RESTORE the live
+    ;; arena in place via a table-driven offset->pointer relocate.  CRITICAL: from
+    ;; the swizzle to the restore the arena holds offsets (corrupt), so the body
+    ;; does NO allocation / GC / eval -- only file writes (which just read bytes).
+    ;; This keeps the footprint at ~heap (+ a few-MB table) instead of 2*heap, so
+    ;; an ~882MB env dumps inside a 1GB chunk.  `nl_cold_reloc' lives in the
+    ;; driver unit, so the inverse relocate is reimplemented here in applyfn-unit.
+    (defun bf_arena_inplace_restore (tbl tlen ds slen ib)
+      (let ((i 0))
+        (seq
+         (while (< i tlen)
+           (let* ((f (ptr-read-u64 (+ tbl (* i 8)) 0))
+                  (o (ptr-read-u64 (+ ds f) 0)))
+             (nl_seq2
+              (if (< o slen)
+                  (ptr-write-u64 (+ ds f) 0 (+ ds o))
+                (ptr-write-u64 (+ ds f) 0 (+ ib (- o slen))))
+              (setq i (+ i 1)))))
+         0)))
+    (defun bf_arena_dump_image_stream (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
+             (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
+             (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
+             ;; in-place: counters + table in the chunk-0 free area past the bump,
+             ;; exactly the dest-relative slots nl_fa_emit computes for dest=sstart.
+             (cin (+ sstart (+ slen isz)))
+             (cout (+ cin 8))
+             (tbl (+ sstart (+ slen (+ isz 256))))
+             (goff (nl_img_off gbox sstart slen ib ie))
+             (foff (nl_img_off fbox sstart slen ib ie))
+             (uoff (nl_img_off ubox sstart slen ib ie))
+             (hdr (alloc-bytes 64 8))   ; allocate the header BEFORE the swizzle
+             (tlen 0) (fd 0))
+        (seq
+         ;; header is fully built from pre-swizzle reads (tlen patched after swizzle)
+         (ptr-write-u64 hdr 0 1179407692)
+         (ptr-write-u64 hdr 16 isz)
+         (ptr-write-u64 hdr 32 goff) (ptr-write-u64 hdr 40 foff) (ptr-write-u64 hdr 48 uoff)
+         (ptr-write-u64 hdr 56 ib)
+         (setq fd (nl_os_open_write_truncate cpath))
+         (if (< fd 0)
+             (wf_write_int out -1)
+           (seq
+            ;; ---- from here to the restore: NO alloc / GC / eval (arena is swizzled) ----
+            (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_roots sstart slen sstart cin cout 3)   ; dest=sstart => in-place swizzle
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (setq tlen (ptr-read-u64 cin 0))
+            (ptr-write-u64 hdr 8 slen) (ptr-write-u64 hdr 24 tlen)
+            (nl_fa_write_all fd hdr 64 0)
+            (nl_fa_write_all fd tbl (* tlen 8) 0)
+            (nl_fa_write_all fd sstart slen 0)   ; live chunk-0 (now swizzled)
+            (nl_fa_write_all fd ib isz 0)         ; live intern (un-swizzled, fixed on load)
+            (nl_os_close_handle fd)
+            (bf_arena_inplace_restore tbl tlen sstart slen ib)   ; restore the live arena
             (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
     (defun bf_arena_load_image_from_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
@@ -7186,7 +7266,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
     "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
     "nelisp--arena-dump-table-verify"
-    "nelisp--arena-dump-image-to-file" "nelisp--arena-load-image-from-file"
+    "nelisp--arena-dump-image-to-file" "nelisp--arena-dump-image-stream" "nelisp--arena-load-image-from-file"
     "nelisp--arena-boot-load-verify" "nelisp--arena-load-split-verify"
     "nelisp--env-capture-roots" "nelisp--record-expand"
     ;; M7 file I/O
