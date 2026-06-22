@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: ROOT CAUSE FOUND (§8.8: the DYNAMIC arena init enables unsound form-boundary mark-sweep — base+160=0 at line 1053 — so nl_gc_collect frees live growth-chunk lexframe ht children that the precise marker misses; the "stray write" is the free-link write over a live box). Verified one-line fix (line 1053 → 1, collection disabled): audit 5/5 rc=0. Fix not yet applied to HEAD (gated on container RC gate + fix-path choice A=disable vs B=sound-GC).
+#+STATUS: FIXED (§8.8: the DYNAMIC arena init enabled unsound form-boundary mark-sweep — base+160=0 at line 1053 — so nl_gc_collect freed live growth-chunk lexframe ht children the precise marker misses; the "stray write" was the free-link write over a live box). Fix A (line 1053 → 1, collection disabled, matching the documented intent) committed as d5724bb3 and pushed to feat. VALIDATED: full Debian no-Nix RC container gate (474-test nelix RC gate) GREEN against the fixed nelisp; the previously-SIGSEGV'ing audit runs clean. Path B (sound-GC: mark growth-chunk frame children) remains a future option to re-enable reclamation.
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
