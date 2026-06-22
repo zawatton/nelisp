@@ -450,3 +450,46 @@ scoped follow-up; the concrete next step is to instrument the FREEING site
 (=nl_gc_free_block=) to dump, for the first frame-/ht-shaped block it frees,
 the chain of referrers (memory-search up to a root) — that names the exact
 unmarked retention edge to teach the marker.
+
+** 8.10 HW-watchpoint: the ENTIRE ht is unmarked + swept; referrer elusive (2026-06-22 f)
+
+Caught the exact free with a HARDWARE watchpoint (gdb disables ASLR, so the
+crash-run addresses are stable; break at first =nl_gc_collect=, then
+=watch *(hdr) if (*(hdr)&7)==2= on the bucket-count box header):
+
+- The header transitions 40 -> 42 (BT=40, mark 0 -> 2 = FREE).  Backtrace:
+  =nl_hdr_set_mark <- nl_gc_free_block_link <- nl_gc_free_block <-
+  nl_gc_sweep_one <- nl_gc_sweep_step <- nl_gc_sweep_chunk <-
+  nl_gc_sweep_chunks ×4 <- nl_gc_sweep <- nl_gc_collect <- bf_load_eval_loop
+  <- bf_load=.  So it is the BOUNDARY collect's sweep, fired during a NESTED
+  =bf_load= (loading a nelix file mid-audit).
+- Mark bits of the whole ht cluster at that moment (low3: 0=unmarked,
+  1=live-marked, 2=free): ht record box = 0 (UNMARKED), and its slots buffer
+  + bucket-count box + buckets box all sweep to 2.  So the ENTIRE ht record —
+  not just one child slot — is unmarked.  => marking never reached the ht
+  record at all; this is NOT a per-slot recursion miss.
+- Walked UP for the ht record box's referrer: NOT found in the first chunk
+  ([arena_base, +256 MiB]) NOR in the searched growth region.  The retention
+  edge to the live ht is not where the obvious roots point.
+
+Two refined hypotheses (next experiments):
+1. ROOT-COVERAGE: the ht's frame is on some env's frame stack that the
+   boundary collect does not mark — but the published-context fix (§8.9) marks
+   ALL published envs and did NOT help, and the referrer isn't in chunk 0, so
+   the retaining env/edge is genuinely outside the marked set (closure capture,
+   a detached frames-record, or an arena-scratch-only reference).
+2. STALE-FRAME (use-after-pop): the ht's frame was already POPPED (dead, so
+   correctly unmarked+freed), but =nelisp_frame_stack_find_descend= later walks
+   it via a STALE backing-vector slot / wrong depth.  Under Path A (no reclaim)
+   the popped frame's memory persists intact, so the stale read silently
+   "works" — masking a frame-stack-management bug (pop not clearing
+   backing[depth], or depth off-by).  Collection ON frees the popped frame ->
+   the stale read crashes.  If true, the FIX is in frame pop/depth, NOT the GC.
+
+Decisive next step for (2): at the crash, read env+32 frames-record depth and
+verify whether the crashing frame's index is < live depth (in-bounds = root
+gap) or >= depth / a stale slot (use-after-pop).  Tooling notes: gdb conditional
+breakpoints on =nl_gc_free_block= are far too slow to reach the relevant sweep
+(millions of frees) — use a HW watchpoint (debug register, no per-free cost);
+stderr writes (=syscall-direct 4 2=) from the GC/arena units never surface and
+nelix redirects the runtime stderr, so use exit codes or gdb only.
