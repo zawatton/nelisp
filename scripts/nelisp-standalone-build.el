@@ -1050,7 +1050,7 @@ with the base literal)."
       (ptr-write-u64 (+ ,b 120) 0 0)        ; live bytes
       (ptr-write-u64 (+ ,b 128) 0 0)        ; sweep free dead blocks
       (ptr-write-u64 (+ ,b 136) 0 0)        ; mark phase enabled
-      (ptr-write-u64 (+ ,b 160) 0 0)        ; collect ENABLED (S0 sound-GC: form-boundary mark-sweep)
+      (ptr-write-u64 (+ ,b 160) 0 1)        ; collect DISABLED (Doc155 §8.8: form-boundary mark-sweep frees live growth-chunk lexframe ht children — standalone root/mark gap unfixed; the prior "S0 sound-GC" enable was unsound, see Doc 155)
       (ptr-write-u64 (+ ,b 168) 0 0)        ; free-list reuse
       (ptr-write-u64 (+ ,b 192) 0 0)        ; probe off
       (ptr-write-u64 (+ ,b 200) 0 0)        ; min reuse block_total
