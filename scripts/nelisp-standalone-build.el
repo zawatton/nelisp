@@ -10163,8 +10163,13 @@ correctly."
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
               (seq (nl_cli_write_help fbuf) 2)
             (seq
-             ,@(nelisp-standalone--reader-repl-prelude-forms
-                'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             ;; cold path: the loaded image already carries the prelude; skip the
+             ;; redundant (and free/reuse-risky) re-eval.  Normal boot runs it.
+             (if (< _cl 0)
+                 (seq
+                  ,@(nelisp-standalone--reader-repl-prelude-forms
+                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+               0)
              (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (ptr-write-u64 268436216 0 1)
@@ -10210,8 +10215,13 @@ correctly."
                ;; native builtins.  Without this, a loaded file that does
                ;; `(defun ...)' / `(when ...)' aborts (void-function), which blocks
                ;; runtime loading of any real elisp package.
-               ,@(nelisp-standalone--reader-repl-prelude-forms
-                  'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+               ;; cold path: the loaded image already carries the prelude; skip the
+               ;; redundant (and free/reuse-risky) re-eval.  Normal boot runs it.
+               (if (< _cl 0)
+                   (seq
+                    ,@(nelisp-standalone--reader-repl-prelude-forms
+                       'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+                 0)
                (let* ((n (nl_os_read_file_cpath
                           arg2 fbuf
                           ,nelisp-standalone--reader-read-cap)))
@@ -10235,8 +10245,13 @@ correctly."
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
               (seq (nl_cli_write_help fbuf) 2)
             (seq
-             ,@(nelisp-standalone--reader-repl-prelude-forms
-                'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             ;; cold path: the loaded image already carries the prelude; skip the
+             ;; redundant (and free/reuse-risky) re-eval.  Normal boot runs it.
+             (if (< _cl 0)
+                 (seq
+                  ,@(nelisp-standalone--reader-repl-prelude-forms
+                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+               0)
              (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (ptr-write-u64 268436216 0 1)
