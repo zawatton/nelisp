@@ -166,6 +166,13 @@ emits every bootstrap form directly.")
         (when (file-readable-p file)
           (setq out (nelisp-bootstrap--insert-after file anchor out))
           (setq anchor file))))
+    ;; Systemic fix (Doc 22 A19): load emacs-stub-bulk LAST so its bulk
+    ;; no-op stubs only fill names still void after every real
+    ;; implementation has loaded.  Loaded early, the stubs shadow real
+    ;; impls gated with `unless (fboundp ...)' (e.g. mapcan / regexp-opt).
+    (let ((bulk (expand-file-name "emacs-stub-bulk.el" src)))
+      (when (member bulk out)
+        (setq out (append (delete bulk out) (list bulk)))))
     out))
 
 (defun nelisp-bootstrap--write-bundle (files output)
