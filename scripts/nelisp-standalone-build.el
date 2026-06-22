@@ -2476,6 +2476,7 @@ argument (reachability + in-arena bounds checks).")
                                             (wf_write_nil out)
                                           (wf_write_int out idx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2722,6 +2723,60 @@ unresolved at link time."
          (wf_cons_int bump s3 s2)
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
+         0)))
+    ;; flat-arena spike step 2 (READ-ONLY): full multi-chunk heap walk at
+    ;; native speed.  Walks every chunk in the descriptor chain, and within
+    ;; each chunk follows the [header][object] BLOCK_TOTAL sequence from the
+    ;; chunk's data-start to its live end (`bf_arena_chunk_cursor', the same
+    ;; cursor the GC mark/sweep uses), reaching the end EXACTLY.  Accumulates
+    ;; into caller-supplied scratch slots; never mutates a heap object.  A
+    ;; malformed block (BT < 8 or overrunning the chunk end) clears the OK
+    ;; flag and ends that chunk's walk.  This verifies the invariant a
+    ;; flat-arena dump relies on: the heap is a contiguous, self-describing
+    ;; block sequence safe to bulk-copy.
+    (defun bf_arena_wv_chunk (chunk cb cl cf cby cok)
+      (let* ((cbase (ptr-read-u64 chunk 0))
+             (end (+ cbase (bf_arena_chunk_cursor chunk)))
+             (hdr (ptr-read-u64 (+ chunk 24) 0)))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (let* ((bt (nl_hdr_bt hdr))
+                  (mark (nl_hdr_mark hdr)))
+             (if (< bt 8)
+                 (seq (ptr-write-u64 cok 0 0) (setq hdr end))
+               (if (> (+ hdr bt) end)
+                   (seq (ptr-write-u64 cok 0 0) (setq hdr end))
+                 (seq
+                  (ptr-write-u64 cb 0 (+ (ptr-read-u64 cb 0) 1))
+                  (ptr-write-u64 cby 0 (+ (ptr-read-u64 cby 0) bt))
+                  (if (= mark 2)
+                      (ptr-write-u64 cf 0 (+ (ptr-read-u64 cf 0) 1))
+                    (ptr-write-u64 cl 0 (+ (ptr-read-u64 cl 0) 1)))
+                  (setq hdr (+ hdr bt)))))))
+         0)))
+    (defun bf_arena_wv_chunks (chunk cb cl cf cby cok)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (bf_arena_wv_chunk chunk cb cl cf cby cok)
+                 (bf_arena_wv_chunks (ptr-read-u64 (+ chunk 48) 0)
+                                     cb cl cf cby cok))))
+    (defun bf_arena_walk_verify (out)
+      (let* ((cb (alloc-bytes 8 8)) (cl (alloc-bytes 8 8)) (cf (alloc-bytes 8 8))
+             (cby (alloc-bytes 8 8)) (cok (alloc-bytes 8 8))
+             (nil-slot (alloc-bytes 32 8))
+             (s4 (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cb 0 0) (ptr-write-u64 cl 0 0) (ptr-write-u64 cf 0 0)
+         (ptr-write-u64 cby 0 0) (ptr-write-u64 cok 0 1)
+         (bf_arena_wv_chunks (ptr-read-u64 268436160 0) cb cl cf cby cok)
+         (wf_write_nil nil-slot)
+         ;; result list: (blocks live free bytes wellformed)
+         (wf_cons_int (ptr-read-u64 cok 0) nil-slot s4)
+         (wf_cons_int (ptr-read-u64 cby 0) s4 s3)
+         (wf_cons_int (ptr-read-u64 cf 0) s3 s2)
+         (wf_cons_int (ptr-read-u64 cl 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 cb 0) s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6314,7 +6369,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
-    "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
+    "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"

@@ -59,14 +59,22 @@
 ;;     `header + 8'; the next header is `header + BLOCK_TOTAL'.  This is
 ;;     the same walk the GC sweep uses.
 ;;
+;; STEP 2 (DONE): a baked, native-speed `nelisp--arena-walk-verify' op now
+;; walks the FULL multi-chunk arena (the interpreted walk below times out on
+;; the ~28 MB eval-interpreter arena).  It follows the chunk-descriptor
+;; chain and, within each chunk, the [header][object] sequence to the
+;; chunk's live end (`bf_arena_chunk_cursor', the GC's own cursor),
+;; returning (BLOCKS LIVE FREE BYTES WELLFORMED).  On a normal heap every
+;; block is well-formed (BLOCKS = LIVE + FREE); it also correctly flags a
+;; malformed/gappy state (e.g. after `nelisp--arena-force-grow-smoke', which
+;; artificially inflates the cursor past the live data).  See
+;; `nelisp-flat-arena-probe-verify-full'.  Implemented in
+;; `scripts/nelisp-standalone-build.el' (`bf_arena_walk_verify').
+;;
 ;; NEXT STEPS (not in this file):
-;;   step 2  bake a fast full-arena `bf_arena_walk_verify' op (this probe
-;;           is interpreted, so the full ~28 MB eval-interpreter arena is
-;;           slow; a baked op walks it at native speed) modelled on
-;;           `bf_arena_stats'; reach the bump cursor EXACTLY.
-;;   step 3  emit the dump: bulk-copy [data-start, bump) + walk the live
-;;           object graph from the 3 EvalCtx roots (globals_record @ +0,
-;;           frames_record @ +32, unbound_marker @ +64) with
+;;   step 3  emit the dump: bulk-copy [data-start, cursor) per chunk + walk
+;;           the live object graph from the 3 EvalCtx roots (globals_record
+;;           @ +0, frames_record @ +32, unbound_marker @ +64) with
 ;;           `nelisp_gc_walk_children' to enumerate pointer fields, and
 ;;           swizzle each pointer to (chunk, offset).
 ;;   step 4  load: alloc fresh chunks, memcpy, unswizzle to the new base,
@@ -80,6 +88,7 @@
 ;; stays clean.
 (declare-function ptr-read-u64 "ext" (addr off))
 (declare-function nelisp--arena-stats "ext" ())
+(declare-function nelisp--arena-walk-verify "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
 (defconst nelisp-flat-arena-probe--chunk-count-offset #x2d0)
@@ -130,9 +139,23 @@ Return a plist of the verification result."
           :wellformed (= wellformed 1)
           :hit-cap (= n cap))))
 
+(defun nelisp-flat-arena-probe-verify-full ()
+  "Full multi-chunk arena walk via the baked `nelisp--arena-walk-verify' op.
+Native speed (the interpreted `nelisp-flat-arena-probe-walk' only checks a
+bounded prefix).  Return a labelled plist; READ-ONLY, never mutates."
+  (let ((wv (nelisp--arena-walk-verify)))
+    (list :blocks (nth 0 wv)
+          :live (nth 1 wv)
+          :free (nth 2 wv)
+          :bytes (nth 3 wv)
+          :wellformed (= (nth 4 wv) 1)
+          :blocks-eq-live+free (= (nth 0 wv) (+ (nth 1 wv) (nth 2 wv))))))
+
 (defun nelisp-flat-arena-probe-report (&optional limit)
-  "Print `nelisp-flat-arena-probe-walk' result for a quick CLI check."
-  (princ (nelisp-flat-arena-probe-walk limit)))
+  "Print the bounded interpreted walk then the full baked walk for a CLI check."
+  (princ (nelisp-flat-arena-probe-walk limit))
+  (princ "\n")
+  (princ (nelisp-flat-arena-probe-verify-full)))
 
 (provide 'nelisp-flat-arena-probe)
 
