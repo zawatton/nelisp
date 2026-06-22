@@ -589,6 +589,20 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   override は危険なため rx vendoring は revert (stub のまま)、A16 を Doc 22 + issue #7 記録。
   commit d7d279b。
 
+- *Doc 16 breadth round 27 — reader-core gap A16 を vendor/nelisp で修正 (2026-06-22)*:
+  user 指示で reader-core 修正に pivot。発見: nelisp standalone reader は *pure-elisp*
+  (953 .rs は =.claude/worktrees/= の stale コピー)、=scripts/nelisp-standalone-build.el= が
+  ELF を生成。*A16 修正* (vendor/nelisp commit 4575471): =m5_concat_walk= が nil 引数を
+  skip するよう変更 (=m5_emit_value= は format と共有なので walker 側で fix)。=make
+  standalone-reader= で =target/nelisp= 再ビルド → =(concat "a" nil "b")= → "ab"、format は
+  "nil" 維持を検証。rx 再 vendor で end-to-end 確認 → trailing-"nil" 汚染解消 (=(rx (+ digit))=
+  = "[[:digit:]]+")。
+- *残課題で rx は依然未収録*: (a) *A17* = regex engine が POSIX class =[[:digit:]]= を match
+  しない (=[0-9]= は OK) → =(rx (+ digit))= が実 match せず。(b) =(rx (or "a" "b"))= が silent
+  nil。両者 A16 と別軸。Doc 22 A16=FIXED / A17 追記、issue #7 更新。
+- *git 衛生*: vendor/nelisp に他者の未 commit WIP (ptr-read/write dispatch 追加) があり、
+  最初の commit に巻き込んだため reset して concat-only に分離、WIP を未 commit に復元。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
