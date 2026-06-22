@@ -275,6 +275,103 @@ it regardless of representation."
            when (emacs-keymap--slot-p e)
            return e))
 
+;;;###autoload
+(defun emacs-keymap-full-slot (keymap)
+  "Return KEYMAP's full slot, or nil if KEYMAP is sparse.
+This public adapter exists for runner/front-end code that needs the
+full-keymap fast path without depending on private helper names."
+  (emacs-keymap--full-slot keymap))
+
+;;;###autoload
+(defun emacs-keymap-direct-slot-vector (keymap)
+  "Return KEYMAP's direct low-character binding vector, or nil.
+This is the stable frontend/runner adapter for the full-keymap fast path.
+It accepts both the current char-table slot representation and the older
+legacy =(t . VECTOR)= shape."
+  (let ((slot (emacs-keymap-full-slot keymap)))
+    (cond
+     ((emacs-char-table-p slot)
+      (emacs-char-table-ascii-vector slot))
+     ((and (consp slot) (vectorp (cdr slot)))
+      (cdr slot))
+     (t nil))))
+
+;;;###autoload
+(defun emacs-keymap-define-key-fast (keymap key def &optional slot-vector)
+  "Bind KEY to DEF in KEYMAP, using SLOT-VECTOR when possible.
+SLOT-VECTOR, when non-nil, is the result of
+`emacs-keymap-direct-slot-vector'.  This keeps concrete event loops from
+duplicating full-keymap mutation details."
+  (cond
+   ((and slot-vector
+         (vectorp key)
+         (= (length key) 1)
+         (integerp (aref key 0))
+         (>= (aref key 0) 0)
+         (< (aref key 0) (length slot-vector)))
+    (aset slot-vector (aref key 0) def)
+    def)
+   ((fboundp 'define-key)
+    (define-key keymap key def))
+   ((fboundp 'emacs-keymap-define-key)
+    (emacs-keymap-define-key keymap key def))
+   (t nil)))
+
+;;;###autoload
+(defun emacs-keymap-make-compatible-full-keymap ()
+  "Return a full keymap using the best available runtime constructor.
+Host Emacs prefers `make-keymap'; standalone images can use the
+`emacs-keymap-make-keymap' substrate; sparse keymaps are a last fallback."
+  (cond
+   ((and (boundp 'emacs-version) (fboundp 'make-keymap))
+    (make-keymap))
+   ((fboundp 'emacs-keymap-make-keymap)
+    (emacs-keymap-make-keymap))
+   ((fboundp 'make-keymap)
+    (make-keymap))
+   ((fboundp 'make-sparse-keymap)
+    (make-sparse-keymap))
+   (t (list 'keymap))))
+
+;;;###autoload
+(defun emacs-keymap-build-single-key-cache
+    (keymap &optional lookup-function)
+  "Return a 256-slot direct lookup cache for KEYMAP.
+LOOKUP-FUNCTION, when non-nil, is called as (LOOKUP-FUNCTION KEYMAP
+KEY-VECTOR) for fallback lookup.  Otherwise `lookup-key' is used when
+available."
+  (let ((cache (make-vector 256 nil))
+        (vec (emacs-keymap-direct-slot-vector keymap))
+        (lookup (or lookup-function
+                    (and (fboundp 'lookup-key) #'lookup-key)))
+        (c 0))
+    (while (< c 256)
+      (aset cache c
+            (if (and vec (< c (length vec)))
+                (aref vec c)
+              (and lookup (funcall lookup keymap (vector c)))))
+      (setq c (1+ c)))
+    cache))
+
+;;;###autoload
+(defun emacs-keymap-install-overriding-terminal-map
+    (keymap &optional parent)
+  "Install KEYMAP as `overriding-terminal-local-map' when available.
+PARENT, when non-nil, is installed as KEYMAP's parent first.  Return
+KEYMAP when installed, otherwise nil."
+  (when (and (or (not (boundp 'noninteractive)) (not noninteractive))
+             (boundp 'overriding-terminal-local-map))
+    (when (and parent (fboundp 'set-keymap-parent))
+      (set-keymap-parent keymap parent))
+    (set 'overriding-terminal-local-map keymap)
+    keymap))
+
+;;;###autoload
+(defun emacs-keymap-clear-overriding-terminal-map ()
+  "Clear `overriding-terminal-local-map' when that variable exists."
+  (when (boundp 'overriding-terminal-local-map)
+    (set 'overriding-terminal-local-map nil)))
+
 (defun emacs-keymap--slot-char-p (k)
   "Return non-nil when K is a character handled by a full slot's fast path."
   (and (integerp k) (>= k 0) (< k emacs-keymap--full-slot-size)))
@@ -410,6 +507,11 @@ Returns nil if not found in this keymap or any ancestor."
   (or (emacs-keymap--get-binding keymap k)
       (let ((p (emacs-keymap-keymap-parent keymap)))
         (and p (emacs-keymap--lookup-with-parent p k)))))
+
+;;;###autoload
+(defun emacs-keymap-lookup-with-parent (keymap k)
+  "Return KEYMAP's binding for K, walking parent inheritance."
+  (emacs-keymap--lookup-with-parent keymap k))
 
 ;;;###autoload
 (defun emacs-keymap-lookup-key (keymap key &optional accept-default)

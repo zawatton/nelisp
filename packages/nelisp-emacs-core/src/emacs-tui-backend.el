@@ -345,6 +345,11 @@ falls back to `princ' on `standard-output' for terminal use."
       (funcall emacs-tui-backend-output-fn string)
     (princ string)))
 
+;;;###autoload
+(defun emacs-tui-backend-emit (string)
+  "Write STRING to the configured TUI output sink."
+  (emacs-tui-backend--emit string))
+
 ;;; Logging
 
 (defun emacs-tui-backend--log (fmt &rest args)

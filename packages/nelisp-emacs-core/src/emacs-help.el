@@ -81,6 +81,27 @@ Each value is a plist with keys:
 (defvar emacs-help-gui-status "ok"
   "Last GUI help command status.")
 
+(defconst emacs-help-gui-standard-keymap-source-bindings
+  '(("C-f" . "forward-char")
+    ("C-b" . "backward-char")
+    ("C-n" . "next-line")
+    ("C-p" . "previous-line")
+    ("C-x C-f" . "find-file")
+    ("C-x C-s" . "save-buffer")
+    ("C-x C-c" . "save-buffers-kill-terminal")
+    ("M-x" . "nemacs-main-execute-extended-command"))
+  "Default key binding source used by lightweight Help frontends.")
+
+;;;###autoload
+(defun emacs-help-gui-standard-keymap-source (&optional bindings)
+  "Return tab-separated key binding source for Help views.
+BINDINGS defaults to `emacs-help-gui-standard-keymap-source-bindings'."
+  (mapconcat
+   (lambda (binding)
+     (concat (car binding) "\t" (cdr binding) "\n"))
+   (or bindings emacs-help-gui-standard-keymap-source-bindings)
+   ""))
+
 (defun emacs-help-gui-register-backend (&rest backend)
   "Register BACKEND plist for GUI help display."
   (setq emacs-help-gui-backend backend))
@@ -276,6 +297,115 @@ KIND is either `function' or `variable'."
              (push sym acc))))
         acc)))
 
+(defun emacs-help-prefix-candidates (input names)
+  "Return sorted strings from NAMES whose prefix matches INPUT."
+  (let ((prefix (or input ""))
+        (acc '()))
+    (dolist (name names)
+      (when (and (stringp name) (string-prefix-p prefix name))
+        (push name acc)))
+    (sort acc #'string<)))
+
+(defun emacs-help-describe-function-text (symbol)
+  "Return display text describing SYMBOL as a function, or nil."
+  (when (fboundp symbol)
+    (let ((definition (symbol-function symbol)))
+      (concat
+       (format "%s is " (symbol-name symbol))
+       (cond
+        ((subrp definition)
+         (format "a built-in function.\n\n%S" definition))
+        ((byte-code-function-p definition)
+         (format "a compiled function.\n\n%S" definition))
+        ((and (consp definition) (eq (car definition) 'closure))
+         (format "an interpreted closure.\n\n%S" definition))
+        ((and (consp definition) (eq (car definition) 'lambda))
+         (format "an interpreted function.\n\n%S" definition))
+        ((and (consp definition) (eq (car definition) 'macro))
+         (format "a macro.\n\n%S" definition))
+        ((symbolp definition)
+         (format "an alias for `%s'.\n\n%S" definition definition))
+        (t
+         (format "a function.\n\n%S" definition)))))))
+
+(defun emacs-help-describe-variable-text (symbol)
+  "Return display text describing SYMBOL as a variable, or nil."
+  (when (boundp symbol)
+    (format "%s is a variable.\n\nValue: %S"
+            (symbol-name symbol) (symbol-value symbol))))
+
+(defun emacs-help-apropos-matches (input names)
+  "Return sorted strings from NAMES containing INPUT case-insensitively."
+  (let ((needle (downcase (or input "")))
+        (acc '()))
+    (dolist (name names)
+      (when (and (stringp name)
+                 (string-match-p (regexp-quote needle) (downcase name)))
+        (push name acc)))
+    (sort acc #'string<)))
+
+(defun emacs-help-apropos-text (input names)
+  "Return a plist with apropos match list and display text for INPUT.
+The return value contains `:matches' and `:text'."
+  (let* ((display-input (or input ""))
+         (matches (emacs-help-apropos-matches display-input names))
+         (text (concat
+                (format "Apropos: %s\n\n%d matches:\n\n"
+                        display-input (length matches))
+                (mapconcat (lambda (name) (format "  %s" name))
+                           matches
+                           "\n")
+                (when matches "\n"))))
+    (list :matches matches :text text)))
+
+(defun emacs-help-key-vector-description (vector)
+  "Return a human-readable description for key event VECTOR."
+  (let ((parts '())
+        (index 0)
+        (count (length vector)))
+    (while (< index count)
+      (let ((event (aref vector index)))
+        (push
+         (cond
+          ((symbolp event) (symbol-name event))
+          ((and (integerp event) (> event 0) (< event 27))
+           (format "C-%c" (+ event (1- ?a))))
+          ((integerp event) (format "%c" event))
+          (t (format "%S" event)))
+         parts))
+      (setq index (1+ index)))
+    (mapconcat #'identity (nreverse parts) " ")))
+
+(defun emacs-help-key-binding-summary (vector binding &optional keymap-p)
+  "Return an echo-style summary for VECTOR resolved to BINDING.
+KEYMAP-P is an optional predicate for prefix keymap bindings."
+  (let ((label (emacs-help-key-vector-description vector)))
+    (cond
+     ((null binding) (format "%s is unbound" label))
+     ((and keymap-p (funcall keymap-p binding))
+      (format "%s (prefix)" label))
+     ((symbolp binding) (format "%s runs %s" label (symbol-name binding)))
+     (t (format "%s runs %S" label binding)))))
+
+(defun emacs-help-key-lookup-summary (vector lookup-fn &optional keymap-p)
+  "Return an echo-style summary for VECTOR resolved through LOOKUP-FN.
+LOOKUP-FN is called with VECTOR and should return the binding, or nil.
+KEYMAP-P is forwarded to `emacs-help-key-binding-summary'."
+  (emacs-help-key-binding-summary
+   vector
+   (and lookup-fn (funcall lookup-fn vector))
+   keymap-p))
+
+(defun emacs-help-key-event-description (keysym mods unicode &optional names)
+  "Return a human-readable description for KEYSYM, MODS, and UNICODE.
+NAMES is an optional alist mapping integer keysyms to display strings."
+  (let* ((named (or (cdr (assq keysym names))
+                    (format "key#%d" keysym)))
+         (uni (if (and (> unicode 31) (< unicode 127))
+                  (format " '%c'" unicode)
+                "")))
+    (format "%s mods=%d%s" named mods uni)))
+
 (defun emacs-help--read-symbol (prompt candidates predicate)
   "Read a symbol with PROMPT from CANDIDATES satisfying PREDICATE."
   (let* ((choice (completing-read prompt candidates predicate t nil nil))
@@ -423,6 +553,29 @@ display core."
   (emacs-help-gui-refresh-context-from-backend)
   (let ((entry (funcall core)))
     (emacs-help-gui--show-help-buffer (car entry) (cdr entry))))
+
+(defun emacs-help-gui--read-symbol-name (prompt)
+  "Read a Help symbol name with PROMPT through the registered backend."
+  (let ((reader (emacs-help-gui--backend-function :read-symbol-name)))
+    (if reader
+        (funcall reader prompt)
+      nil)))
+
+(defun emacs-help-gui--prompt-current-context-command (prompt command)
+  "Read a symbol name with PROMPT, then run Help COMMAND for it."
+  (let ((async-reader
+         (emacs-help-gui--backend-function :read-symbol-name-async)))
+    (if async-reader
+        (funcall
+         async-reader prompt
+         (lambda (name)
+           (when (and name (> (length name) 0))
+             (setq emacs-help-gui-arg name)
+             (emacs-help-gui-current-context-command command))))
+      (let ((name (emacs-help-gui--read-symbol-name prompt)))
+        (when (and name (> (length name) 0))
+          (setq emacs-help-gui-arg name)
+          (emacs-help-gui-current-context-command command))))))
 
 (defun emacs-help-gui--normalize-arg (&optional arg)
   "Return ARG or the current GUI help argument, defaulting to unknown."
@@ -844,11 +997,17 @@ display core."
 
 (defun emacs-help-gui-apropos-command (&optional pattern)
   "Render GUI apropos-command help for PATTERN."
-  (let ((arg (or pattern emacs-help-gui-arg)))
-    (emacs-help-gui--show-help-buffer
-     "Apropos Commands"
-     (concat "Apropos command search is not yet backed by the full command index.\nPattern: "
-             arg))))
+  (let* ((arg (or pattern emacs-help-gui-arg))
+         (names-fn (emacs-help-gui--backend-function :apropos-command-names))
+         (names (and names-fn (funcall names-fn))))
+    (if names
+        (let ((result (emacs-help-apropos-text arg names)))
+          (emacs-help-gui--show-help-buffer
+           "Apropos Commands" (plist-get result :text)))
+      (emacs-help-gui--show-help-buffer
+       "Apropos Commands"
+       (concat "Apropos command search is not yet backed by the full command index.\nPattern: "
+               arg)))))
 
 (defun emacs-help-gui-apropos-documentation (&optional pattern)
   "Render GUI apropos-documentation help for PATTERN."
@@ -1007,15 +1166,81 @@ etc.) is silently re-shadowed before the binding step."
   (emacs-help-gui--run-core-current-context
    'emacs-help-gui-describe-function-core))
 
+(defun emacs-help-gui-describe-function-prompt-command ()
+  "Prompt for a function name and run `describe-function'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Describe function: " 'describe-function))
+
 (defun emacs-help-gui-describe-variable-current-context-command ()
   "Refresh GUI help context, then run `describe-variable'."
   (emacs-help-gui--run-core-current-context
    'emacs-help-gui-describe-variable-core))
 
+(defun emacs-help-gui-describe-variable-prompt-command ()
+  "Prompt for a variable name and run `describe-variable'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Describe variable: " 'describe-variable))
+
 (defun emacs-help-gui-describe-key-current-context-command ()
   "Refresh GUI help context, then run `describe-key'."
   (emacs-help-gui--run-core-current-context
    'emacs-help-gui-describe-key-core))
+
+(defun emacs-help-gui-begin-key-help-command (&rest plist)
+  "Begin a deferred frontend key-help command.
+PLIST accepts `:message', `:pending-function', and `:status-function'.
+The returned plist contains `:pending' and `:message'."
+  (let ((message (or (plist-get plist :message)
+                     "Describe key (press a key)..."))
+        (pending-function (plist-get plist :pending-function))
+        (status-function (plist-get plist :status-function)))
+    (when pending-function
+      (funcall pending-function t))
+    (when status-function
+      (funcall status-function message))
+    (list :pending t :message message)))
+
+(defun emacs-help-gui-consume-key-help-event (&rest plist)
+  "Consume one deferred key-help event and return its status plan.
+PLIST accepts `:vector', `:lookup-function', `:keymap-p',
+`:pending-function', and `:status-function'."
+  (let* ((vector (plist-get plist :vector))
+         (lookup-function (plist-get plist :lookup-function))
+         (keymap-p (plist-get plist :keymap-p))
+         (pending-function (plist-get plist :pending-function))
+         (status-function (plist-get plist :status-function))
+         (message (emacs-help-key-lookup-summary
+                   vector lookup-function keymap-p)))
+    (when pending-function
+      (funcall pending-function nil))
+    (when status-function
+      (funcall status-function message))
+    (list :pending nil :message message)))
+
+(defun emacs-help-gui-run-key-help-command (&rest plist)
+  "Run a frontend key-help command through the shared Help core.
+PLIST accepts `:install-function', `:read-key', `:key-description',
+`:timeout', and `:command'.  The frontend owns raw key input and event
+formatting; this helper owns setting Help context and dispatching the
+Help command."
+  (let* ((install-function (plist-get plist :install-function))
+         (read-key (plist-get plist :read-key))
+         (key-description (plist-get plist :key-description))
+         (timeout (or (plist-get plist :timeout) 1000))
+         (command (or (plist-get plist :command) 'describe-key))
+         (event nil)
+         (key nil))
+    (when install-function
+      (funcall install-function))
+    (setq event (and read-key (funcall read-key timeout)))
+    (setq key
+          (if key-description
+              (funcall key-description event)
+            (if (stringp event) event "unknown")))
+    (setq emacs-help-gui-arg key)
+    (emacs-help-gui-current-context-command command)))
 
 (defun emacs-help-gui-describe-key-briefly-current-context-command ()
   "Refresh GUI help context, then run `describe-key-briefly'."
@@ -1057,10 +1282,22 @@ etc.) is silently re-shadowed before the binding step."
   (emacs-help-gui-refresh-context-from-backend)
   (emacs-help-gui-apropos-command))
 
+(defun emacs-help-gui-apropos-command-prompt-command ()
+  "Prompt for an apropos pattern and run `apropos-command'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Apropos command: " 'apropos-command))
+
 (defun emacs-help-gui-apropos-documentation-current-context-command ()
   "Refresh GUI help context, then run `apropos-documentation'."
   (emacs-help-gui-refresh-context-from-backend)
   (emacs-help-gui-apropos-documentation))
+
+(defun emacs-help-gui-apropos-documentation-prompt-command ()
+  "Prompt for an apropos pattern and run `apropos-documentation'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Apropos documentation: " 'apropos-documentation))
 
 (defun emacs-help-gui-writeback-spec (&optional command)
   "Return GUI transport writeback spec for Help COMMAND.

@@ -164,7 +164,7 @@ Return the last value, or nil when TEXT contains no forms."
      (emacs-elisp-eval--echo-error err))))
 
 ;;;###autoload
-(defun eval-region (beg end &optional stream read-function)
+(defun emacs-elisp-eval-eval-region (beg end &optional stream read-function)
   "Evaluate each top-level form between BEG and END and echo the last result."
   (interactive "r")
   (if (and load-in-progress emacs-elisp-eval--orig-eval-region)
@@ -181,7 +181,8 @@ Return the last value, or nil when TEXT contains no forms."
        (emacs-elisp-eval--echo-error err)))))
 
 ;;;###autoload
-(defun eval-buffer (&optional buffer printflag filename unibyte do-allow-print)
+(defun emacs-elisp-eval-eval-buffer
+    (&optional buffer printflag filename unibyte do-allow-print)
   "Evaluate every top-level form in the current buffer and echo the last result."
   (interactive)
   (if (and load-in-progress emacs-elisp-eval--orig-eval-buffer)
@@ -196,7 +197,14 @@ Return the last value, or nil when TEXT contains no forms."
     (save-current-buffer
       (when buffer
         (set-buffer buffer))
-      (eval-region (point-min) (point-max)))))
+      (emacs-elisp-eval-eval-region (point-min) (point-max)))))
+
+;; Host Emacs native-comp may install subr trampolines when replacing C
+;; subrs.  Package smoke intentionally shadows host `cl-lib', so keep that
+;; trampoline path off while installing the compatibility command names.
+(let ((native-comp-enable-subr-trampolines nil))
+  (fset 'eval-region #'emacs-elisp-eval-eval-region)
+  (fset 'eval-buffer #'emacs-elisp-eval-eval-buffer))
 
 (emacs-elisp-eval--install-bindings)
 

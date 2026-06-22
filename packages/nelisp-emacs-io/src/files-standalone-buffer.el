@@ -13,6 +13,8 @@
 
 ;;; Code:
 
+(require 'files-runtime)
+
 (defvar files--buffer-string ""
   "Fallback current-buffer contents for the lightweight files shim.")
 
@@ -37,7 +39,7 @@
 (defvar files--buffer-file-names nil
   "Alist of (BUFFER . FILENAME) for lightweight file-visiting buffers.")
 
-(defvar files--standalone-runtime-p (not (boundp 'emacs-version))
+(defvar files--standalone-runtime-p (files-standalone-runtime-p)
   "Non-nil when this fallback is loaded in standalone NeLisp.")
 
 (defvar files--native-write-region
@@ -672,6 +674,11 @@ Falls back to a read-based existence check when the reader exposes no
                                      (files--expand-file-name filename) mode))
     (or (files--native-access-ok-p filename mode)
         (files--rdf-nonempty-p filename))))
+
+;;;###autoload
+(defun files-access-ok-p (filename mode)
+  "Return non-nil when access(2) on FILENAME with MODE succeeds."
+  (files--access-ok-p filename mode))
 
 (when (files--install-fallback-function-p 'file-exists-p)
   (defun file-exists-p (filename)

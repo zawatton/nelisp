@@ -130,6 +130,67 @@ EVENTS are fed to the minibuffer key reader."
       (should (string-match-p "I-search: foo\\'" captured-prompt))
       (should (= 4 (emacs-isearch-test--point buf))))))
 
+(ert-deftest isearch-search-from-start-direct-reports-states ()
+  (emacs-isearch-test--with-fresh-world
+    (let ((buf (emacs-isearch-test--make-buffer "foo bar foo" 5)))
+      (nelisp-ec-with-current-buffer buf
+        (let ((empty (emacs-isearch-search-from-start-direct
+                      "" 'forward 5)))
+          (should (eq 'empty (plist-get empty :status)))
+          (should-not (plist-get empty :failing))
+          (should (= 5 (plist-get empty :point)))
+          (should (= 5 (nelisp-ec-point))))
+        (let ((found (emacs-isearch-search-from-start-direct
+                      "foo" 'forward 1)))
+          (should (eq 'found (plist-get found :status)))
+          (should-not (plist-get found :failing))
+          (should (= 4 (plist-get found :point)))
+          (should (= 4 (nelisp-ec-point))))
+        (let ((backward (emacs-isearch-search-from-start-direct
+                         "foo" 'backward (nelisp-ec-point-max))))
+          (should (eq 'found (plist-get backward :status)))
+          (should (= 9 (plist-get backward :point)))
+          (should (= 9 (nelisp-ec-point))))
+        (let ((missing (emacs-isearch-search-from-start-direct
+                        "zzz" 'forward 5)))
+          (should (eq 'failing (plist-get missing :status)))
+          (should (plist-get missing :failing))
+          (should (= 5 (plist-get missing :point)))
+          (should (= 5 (nelisp-ec-point))))))))
+
+(ert-deftest isearch-restore-start-direct-moves-point ()
+  (emacs-isearch-test--with-fresh-world
+    (let ((buf (emacs-isearch-test--make-buffer "foo bar" 7)))
+      (nelisp-ec-with-current-buffer buf
+        (let ((result (emacs-isearch-restore-start-direct 3)))
+          (should (eq 'restored (plist-get result :status)))
+          (should (= 3 (plist-get result :point)))
+          (should (= 3 (nelisp-ec-point))))))))
+
+(ert-deftest isearch-repeat-direct-reports-states ()
+  (emacs-isearch-test--with-fresh-world
+    (let ((buf (emacs-isearch-test--make-buffer "foo bar foo" 4)))
+      (nelisp-ec-with-current-buffer buf
+        (let ((empty (emacs-isearch-repeat-direct "" 'forward)))
+          (should (eq 'empty (plist-get empty :status)))
+          (should-not (plist-get empty :failing))
+          (should (= 4 (plist-get empty :point)))
+          (should (= 4 (nelisp-ec-point))))
+        (let ((found (emacs-isearch-repeat-direct "foo" 'forward)))
+          (should (eq 'found (plist-get found :status)))
+          (should-not (plist-get found :failing))
+          (should (= 12 (plist-get found :point)))
+          (should (= 12 (nelisp-ec-point))))
+        (let ((backward (emacs-isearch-repeat-direct "foo" 'backward)))
+          (should (eq 'found (plist-get backward :status)))
+          (should (= 9 (plist-get backward :point)))
+          (should (= 9 (nelisp-ec-point))))
+        (let ((missing (emacs-isearch-repeat-direct "zzz" 'forward)))
+          (should (eq 'failing (plist-get missing :status)))
+          (should (plist-get missing :failing))
+          (should (= 9 (plist-get missing :point)))
+          (should (= 9 (nelisp-ec-point))))))))
+
 (provide 'emacs-isearch-test)
 
 ;;; emacs-isearch-test.el ends here

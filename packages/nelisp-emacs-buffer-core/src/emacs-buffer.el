@@ -143,6 +143,11 @@ it for symbols that pass through this module's API.")
   (or (nelisp-ec-current-buffer)
       (signal 'nelisp-ec-no-current-buffer nil)))
 
+;;;###autoload
+(defun emacs-buffer-current ()
+  "Return the current buffer or signal `nelisp-ec-no-current-buffer'."
+  (emacs-buffer--current))
+
 (defun emacs-buffer--forget (buf)
   "Drop the extended state for BUF.  Idempotent.
 Call from a kill-buffer hook (host integration job)."
@@ -685,22 +690,38 @@ Honours `category' inheritance for the comparison.  Returns LIMIT
               (throw 'done prev))
             (setq scan prev))))))))
 
+(defun emacs-buffer--overlay-property-priority (ov)
+  "Return OV's numeric overlay priority for property precedence."
+  (let ((priority (plist-get (emacs-buffer--overlay-rec-properties ov)
+                             'priority)))
+    (if (integerp priority) priority 0)))
+
+(defun emacs-buffer--sort-overlays-for-property (overlays)
+  "Return OVERLAYS sorted by property precedence.
+Higher numeric `priority' wins.  Ties are resolved by later insertion."
+  (sort (copy-sequence overlays)
+        (lambda (a b)
+          (let ((pa (emacs-buffer--overlay-property-priority a))
+                (pb (emacs-buffer--overlay-property-priority b)))
+            (if (= pa pb)
+                (> (emacs-buffer--overlay-rec-id a)
+                   (emacs-buffer--overlay-rec-id b))
+              (> pa pb))))))
+
 ;;;###autoload
 (defun emacs-buffer-get-char-property (pos prop &optional buf)
   "Return the value of PROP at POS, checking overlays first, then text-props.
-Overlays are inspected in `emacs-buffer-overlays-at' priority order
-(later insertion wins ties).  Falls back to
+Overlay properties use numeric `priority' first; later insertion wins ties.
+Falls back to
 `emacs-buffer-get-text-property' (which honours `category' inheritance)
 when no overlay carries PROP."
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
-         (overlays (emacs-buffer-overlays-at pos b))
-         ;; Later insertion wins — walk the list in reverse so the
-         ;; first match below is the most-recent overlay.
-         (rev (reverse overlays)))
+         (overlays (emacs-buffer--sort-overlays-for-property
+                    (emacs-buffer-overlays-at pos b))))
     (or (catch 'hit
-          (dolist (ov rev)
+          (dolist (ov overlays)
             (let ((plist (emacs-buffer--overlay-rec-properties ov)))
               (when (plist-member plist prop)
                 (throw 'hit (plist-get plist prop))))))
@@ -720,6 +741,44 @@ when no overlay carries PROP."
                 (e (emacs-buffer--tp-end cell)))
             (when (and (<= s pos) (< pos e))
               (throw 'found (copy-sequence (emacs-buffer--tp-plist cell))))))))))
+
+;;;###autoload
+(defun emacs-buffer-text-property-view (start end &optional properties buf)
+  "Return text-property intervals intersecting [START, END) in BUF.
+Each result is (SPAN-START SPAN-END PLIST), with SPAN-START and
+SPAN-END clipped to the requested range.  When PROPERTIES is non-nil,
+PLIST contains only those properties whose resolved value is non-nil,
+honouring `category' inheritance in the same way as
+`emacs-buffer-get-text-property'.  When PROPERTIES is nil, PLIST is a
+copy of the raw interval plist.  The result is a snapshot; callers may
+freely mutate returned plists."
+  (unless (and (integerp start) (integerp end))
+    (signal 'wrong-type-argument (list 'integerp start end)))
+  (when (> start end)
+    (signal 'nelisp-ec-args-out-of-range (list start end)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (gethash b emacs-buffer--state))
+         (props (and properties
+                     (if (listp properties)
+                         properties
+                       (list properties))))
+         out)
+    (when ext
+      (dolist (cell (emacs-buffer--ext-text-props ext))
+        (let ((s (emacs-buffer--tp-start cell))
+              (e (emacs-buffer--tp-end cell))
+              (p (emacs-buffer--tp-plist cell)))
+          (when (and (< s end) (> e start))
+            (let ((view nil))
+              (if props
+                  (dolist (prop props)
+                    (let ((value (emacs-buffer--tp-resolve-prop p prop)))
+                      (when value
+                        (setq view (plist-put view prop value)))))
+                (setq view (copy-sequence p)))
+              (when view
+                (push (list (max s start) (min e end) view) out)))))))
+    (nreverse out)))
 
 ;;; C. undo system  (5 APIs)
 ;;
@@ -844,6 +903,27 @@ automatically bump the tick on flag changes."
   (emacs-buffer-set-buffer-modified-p flag buf))
 
 ;;;###autoload
+(defun emacs-buffer-toggle-read-only-direct (&optional buf)
+  "Toggle BUF's `buffer-read-only' flag and return a result plist.
+BUF defaults to the current buffer.  The result contains `:read-only' and
+`:message', suitable for frontend echo/status display."
+  (let ((buffer (or buf (emacs-buffer--current))))
+    (if (and (fboundp 'nelisp-ec-buffer-p)
+             (nelisp-ec-buffer-p buffer))
+        (nelisp-ec-with-current-buffer buffer
+          (setq buffer-read-only (not buffer-read-only))
+          (list :read-only buffer-read-only
+                :message
+                (format "buffer-read-only: %s"
+                        (if buffer-read-only "on" "off"))))
+      (with-current-buffer buffer
+        (setq buffer-read-only (not buffer-read-only))
+        (list :read-only buffer-read-only
+              :message
+              (format "buffer-read-only: %s"
+                      (if buffer-read-only "on" "off")))))))
+
+;;;###autoload
 (defun emacs-buffer-buffer-chars-modified-tick (&optional buf)
   "Return the chars-modification tick of BUF (monotonic counter).
 Bumped via `emacs-buffer-bump-modified-tick' which callers invoke
@@ -858,8 +938,8 @@ after each text mutation (MVP cannot auto-instrument nelisp-ec-*)."
 Distinct from the chars-modified-tick: this counter is bumped only
 when the buffer's text bytes change (= insert / delete via
 `nelisp-ec-insert' / `nelisp-ec-delete-region'), not when text-
-properties or overlays change.  Useful as a cache key for the
-buffer's textual snapshot (= `emacs-redisplay--buffer-string')."
+properties or overlays change.  Useful as a cache key for consumers
+that cache textual buffer snapshots."
   (let* ((b (or buf (emacs-buffer--current)))
          (ext (and b (gethash b emacs-buffer--state))))
     (if ext (emacs-buffer--ext-text-tick ext) 0)))

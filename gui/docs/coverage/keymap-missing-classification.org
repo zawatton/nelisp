@@ -1,0 +1,281 @@
+#+title: GUI Keymap Missing Coverage Classification
+#+date: 2026-06-10
+
+* Source Snapshot
+
+This memo classifies the current =nemacs-gui-keymap-coverage= gaps for
+planning only.  It does not move command ownership into =nelisp-gui=:
+key lookup, command dispatch, and command semantics remain owned by
+=nelisp-emacs=.  The GUI repo transports key sequences and renders the
+snapshot it receives.
+
+Coverage command inspected:
+
+#+begin_src sh
+make -C ../nelisp-emacs nemacs-gui-keymap-coverage
+#+end_src
+
+Current summary:
+
+| status | count |
+|--------+-------|
+| implemented | 492 |
+| different | 0 |
+| command-missing | 0 |
+| missing key bindings | 0 |
+| unique missing commands | 0 |
+| runtime-only | 0 |
+
+Primary bucket count for the 0 missing key bindings:
+
+| bucket | count |
+|--------+-------|
+| immediately implementable | 0 |
+| GUI drawing dependent | 0 |
+| process/syscall dependent | 0 |
+| major-mode/package dependent | 0 |
+
+The target is defined in =../nelisp-emacs/Makefile= and runs
+=../nelisp-emacs/scripts/nemacs-gui-keymap-coverage.el=.  The script compares
+host GNU Emacs =global-map= with keymap literals and =fset= command
+definitions in =../nelisp-emacs/src/nemacs-gui-file-bridge-runtime.el=.
+
+* Classification Rules
+
+- *Immediately implementable* means no new GUI rendering primitive, process
+  substrate, or large package surface is the main blocker.  These still need
+  runtime semantic tests and a bridge smoke.
+- *GUI drawing dependent* means the command changes visible frame/window/tab,
+  text-scale, rectangle/selection, or display target state that the GUI must
+  render correctly.
+- *Process/syscall dependent* means useful behavior needs process creation,
+  pipes/stdin/stdout/stderr, async process events, external tools, network, or
+  VC subprocesses.
+- *Major-mode/package dependent* means the missing binding is mainly blocked
+  by a larger Emacs Lisp package, mode-specific indexer, input/coding system,
+  mail, project, abbrev, or imenu subsystem.
+
+When a command touches multiple areas, it is listed under the first blocker
+that would make a user-visible smoke meaningful.
+
+* Immediately Implementable
+
+The previous low-risk window routing prefixes are now implemented:
+=C-x 4 1= -> =same-window-prefix= and =C-x 4 4= ->
+=other-window-prefix=.  No pure runtime/keymap candidates remain in this
+bucket.
+
+| family | keys / commands |
+|--------+-----------------|
+| none | none |
+
+Notes:
+
+- The =C-x C-k= kmacro extended map is implemented in =nelisp-emacs= using
+  runtime-owned macro state and buffer facades.
+- The =C-x n= narrowing family in host =global-map= is implemented in the GUI
+  bridge runtime.
+
+* GUI Drawing Dependent
+
+These need runtime semantics plus GUI verification that the visible frame,
+window, tab, or selected region changes naturally.
+
+| family | keys / commands |
+|--------+-----------------|
+| frames | none; the previous =C-x 5= command-missing set is implemented in =nelisp-emacs= using the existing frame transport facade. |
+| root/side/dedicated windows | none; the previous =C-x w= command-missing set is implemented in =nelisp-emacs= using the existing window/frame transport facade. |
+| tabs | none |
+| selective display | none; =C-x $= is implemented in =nelisp-emacs= using runtime-owned =nemacs-selective-display= state. |
+| highlights / overlays | none; =M-s h= highlight commands are implemented in =nelisp-emacs= using runtime-owned =nemacs-highlight-patterns= state and read-only facade buffers. |
+
+* Process / Syscall Dependent
+
+No global-map key binding is missing in the current coverage snapshot.
+Process-backed commands remain intentionally facade-level where side effects
+would be destructive or require external/network integration.
+
+| family | keys / commands |
+|--------+-----------------|
+| web / spell | none; =M-s M-w= -> =eww-search-words= and =M-$= -> =ispell-word= are implemented in =nelisp-emacs= as runtime-owned facades. |
+| VC | none; the remaining =C-x v= family is implemented in =nelisp-emacs= as read-only git output buffers or explicit no-side-effect VC intent buffers. |
+| process coding | none; =C-x RET p= is implemented in =nelisp-emacs= using runtime-owned coding state. |
+
+* Major Mode / Package Dependent
+
+These are better handled after the related package surface is loaded enough
+to make a direct runtime smoke meaningful.
+
+| family | keys / commands |
+|--------+-----------------|
+| input methods and coding systems | none; =C-\=, =C-x \=, and =C-x RET= coding/input commands are implemented in =nelisp-emacs= using runtime-owned state files. |
+| kmacro extended map | none; =C-x C-k= commands are implemented in =nelisp-emacs= using runtime-owned kmacro state and facade buffers. |
+| project navigation | none |
+
+* Next 10 Priority Commands
+
+| priority | key | command | category | why next |
+|----------+-----+---------+----------+----------|
+| Done | =M-!= | =shell-command= | process/syscall | Added on 2026-06-09. |
+| Done | =M-|= | =shell-command-on-region= | process/syscall | Added on 2026-06-09. |
+| Done | =M-&= | =async-shell-command= | process/syscall | Added on 2026-06-09. |
+| Done | =C-x n d= | =narrow-to-defun= | immediately implementable | Added on 2026-06-09. |
+| Done | =C-x n n= | =narrow-to-region= | immediately implementable | Added on 2026-06-09. |
+| Done | =C-x n p= | =narrow-to-page= | immediately implementable | Added on 2026-06-09. |
+| Done | =C-x n w= | =widen= | immediately implementable | Added on 2026-06-09. |
+| Done | =C-x (= | =kmacro-start-macro= | immediately implementable | Added on 2026-06-09 with raw key recording state. |
+| Done | =C-x 4 1= | =same-window-prefix= | immediately implementable | Added on 2026-06-09 as display routing prefix state. |
+| Done | =C-x 4 4= | =other-window-prefix= | immediately implementable | Added on 2026-06-09 as display routing prefix state. |
+| Done | =C-x ^= | =enlarge-window= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-window-split-delta=. |
+| Done | =C-x {= | =shrink-window-horizontally= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-window-split-delta=. |
+| Done | =C-x }= | =enlarge-window-horizontally= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-window-split-delta=. |
+| Done | =C-x t 1= | =tab-close-other= | GUI drawing dependent | Added on 2026-06-09 using existing =nemacs-tab-state=. |
+| Done | =C-x t n= | =tab-duplicate= | GUI drawing dependent | Added on 2026-06-09 using existing =nemacs-tab-state=. |
+| Done | =C-x SPC= | =rectangle-mark-mode= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-rectangle-mark-mode= state. |
+| Done | =C-x )= | =kmacro-end-macro= | immediately implementable | Added on 2026-06-09 with raw key recording state. |
+| Done | =C-x e= | =kmacro-end-and-call-macro= | immediately implementable | Added on 2026-06-09 with raw key replay. |
+| Done | =C-x q= | =kbd-macro-query= | immediately implementable | Added on 2026-06-09 as a no-op query checkpoint for core kmacro compatibility. |
+| Done | =C-x `=, =M-g n=, =M-g M-n= | =next-error= | process/syscall | Added on 2026-06-09 as a visible =*compilation*= facade; full compile/grep navigation remains process-backed work. |
+| Done | =M-g p=, =M-g M-p= | =previous-error= | process/syscall | Added on 2026-06-09 as the matching =*compilation*= facade. |
+| Done | =C-x p != | =project-shell-command= | process/syscall | Added on 2026-06-09 using the existing shell-command substrate and current-file directory facade. |
+| Done | =C-x p &= | =project-async-shell-command= | process/syscall | Added on 2026-06-09 using the existing async shell substrate and current-file directory facade. |
+| Done | =C-x 4 c= | =clone-indirect-buffer-other-window= | GUI drawing dependent | Added on 2026-06-09 as an other-window indirect clone facade. |
+| Done | =C-x w -= | =fit-window-to-buffer= | GUI drawing dependent | Added on 2026-06-09 using buffer line count plus =nemacs-window-split-delta=. |
+| Done | =C-x t RET= | =tab-switch= | GUI drawing dependent | Added on 2026-06-09 using existing =nemacs-tab-state=; name-list resolution remains future tab-state work. |
+| Done | =C-x t C-f=, =C-x t f= | =find-file-other-tab= | GUI drawing dependent | Added on 2026-06-09 using file open plus =nemacs-tab-state=. |
+| Done | =C-x t C-r= | =find-file-read-only-other-tab= | GUI drawing dependent | Added on 2026-06-09 using read-only file open plus =nemacs-tab-state=. |
+| Done | =C-x t b= | =switch-to-buffer-other-tab= | GUI drawing dependent | Added on 2026-06-09 using buffer switching plus =nemacs-tab-state=. |
+| Done | =C-x t d= | =dired-other-tab= | GUI drawing dependent | Added on 2026-06-09 using directory display plus =nemacs-tab-state=. |
+| Done | =C-x 4 a= | =add-change-log-entry-other-window= | major-mode/package dependent | Added on 2026-06-09 as an other-window ChangeLog entry facade. |
+| Done | =M-g i= | =imenu= | major-mode/package dependent | Added on 2026-06-09 as a source-local =*Imenu*= index facade. |
+| Done | =C-x p c= | =project-compile= | process/syscall | Added on 2026-06-09 using the existing call-process substrate and visible =*compilation*= facade. |
+| Done | =C-x p g= | =project-find-regexp= | process/syscall | Added on 2026-06-09 using the existing call-process substrate and visible grep-style =*compilation*= facade. |
+| Done | =C-x p f= | =project-find-file= | major-mode/package dependent | Added on 2026-06-09 as a current-file-directory relative project file open facade. |
+| Done | =C-x p b= | =project-switch-to-buffer= | major-mode/package dependent | Added on 2026-06-09 using project-scoped buffer completion and existing buffer switching. |
+| Done | =C-x p d= | =project-find-dir= | major-mode/package dependent | Added on 2026-06-09 as a project-relative directory display facade. |
+| Done | =C-x t N= | =tab-new-to= | GUI drawing dependent | Added on 2026-06-09 using existing =nemacs-tab-state= with right-of-current and numeric-position facades. |
+| Done | =C-x t m= | =tab-move= | GUI drawing dependent | Added on 2026-06-09 using selected tab index movement in existing =nemacs-tab-state=. |
+| Done | =C-x t M= | =tab-move-to= | GUI drawing dependent | Added on 2026-06-09 using absolute selected tab index movement in existing =nemacs-tab-state=. |
+| Done | =C-x p C-b= | =project-list-buffers= | major-mode/package dependent | Added on 2026-06-09 using project-scoped buffer-list rendering and existing =*Buffer List*= writeback. |
+| Done | =C-x p D= | =project-dired= | major-mode/package dependent | Added on 2026-06-09 using the current project directory facade and existing dired rendering. |
+| Done | =C-x p k= | =project-kill-buffers= | major-mode/package dependent | Added on 2026-06-09 using project-scoped buffer membership and existing buffer store cleanup. |
+| Done | =C-x p p= | =project-switch-project= | major-mode/package dependent | Added on 2026-06-09 as a project directory switch facade using existing dired rendering; full dispatch menu remains future work. |
+| Done | =C-x p o= | =project-any-command= | major-mode/package dependent | Added on 2026-06-09 as a command-name dispatch facade using existing command execution and project command state. |
+| Done | =C-x p x= | =project-execute-extended-command= | major-mode/package dependent | Added on 2026-06-09 as the project-scoped M-x facade using existing command execution and project command state. |
+| Done | =C-x 4 p= | =project-other-window-command= | major-mode/package dependent | Added on 2026-06-09 using project command dispatch plus existing other-window display-prefix state. |
+| Done | =C-x t G= | =tab-group= | GUI drawing dependent | Added on 2026-06-09 using optional =nemacs-tab-state= group field plus tabline-safe parsing. |
+| Done | =C-x t u= | =tab-undo= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-tab-undo-state= to restore the last closed selected tab. |
+| Done | =C-x t t= | =other-tab-prefix= | GUI drawing dependent | Added on 2026-06-09 as a display-routing prefix that sends the next buffer display to a tab. |
+| Done | =C-x t p= | =project-other-tab-command= | GUI drawing dependent | Added on 2026-06-09 using project command dispatch plus tab display-prefix state. |
+| Done | =C-x p e= | =project-eshell= | process/syscall dependent | Added on 2026-06-09 as a project-directory =*eshell*= buffer facade; attaching a live process remains future work. |
+| Done | =C-x p s= | =project-shell= | process/syscall dependent | Added on 2026-06-09 as a project-directory =*shell*= buffer facade; attaching a live process remains future work. |
+| Done | =C-x p F= | =project-or-external-find-file= | process/syscall dependent | Added on 2026-06-09 as a project-relative file open with external-path fallback. |
+| Done | =C-x p G= | =project-or-external-find-regexp= | process/syscall dependent | Added on 2026-06-09 using the existing grep facade with project/external-root-labelled output. |
+| Done | =C-x p r= | =project-query-replace-regexp= | process/syscall dependent | Added on 2026-06-09 by opening the first matching project file and reusing the existing query-replace confirmation loop. |
+| Done | =C-x p v= | =project-vc-dir= | process/syscall dependent | Added on 2026-06-09 using =git rev-parse= root detection plus =git status --short --branch= in a read-only =*vc-dir*= facade. |
+| Done | =C-x t ^ f= | =tab-detach= | GUI drawing dependent | Added on 2026-06-09 as a single-frame detach facade that removes the selected tab from =nemacs-tab-state= and preserves it in =nemacs-tab-undo-state=. |
+| Done | =C-x C-k C-a= | =kmacro-add-counter= | major-mode/package dependent | Current runtime keymap coverage reports this kmacro counter facade as implemented. |
+| Done | =C-x C-k C-c= | =kmacro-set-counter= | major-mode/package dependent | Current runtime keymap coverage reports this kmacro counter facade as implemented. |
+| Done | =C-x C-k TAB= | =kmacro-insert-counter= | major-mode/package dependent | Current runtime keymap coverage reports this kmacro counter insertion facade as implemented. |
+| Done | =C-x w ^ t= | =tab-window-detach= | GUI drawing dependent | Added on 2026-06-09 as a single-frame facade that creates a new selected tab for the current window snapshot. |
+| Done | =C-x 5 p= | =project-other-frame-command= | GUI drawing dependent | Added on 2026-06-09 using project command dispatch plus =nemacs-frame-state=. |
+| Done | =C-x 5 5= | =other-frame-prefix= | GUI drawing dependent | Added on 2026-06-09 as a display-routing prefix that sends the next buffer display to =nemacs-frame-state=. |
+| Done | =C-x 5 C-f=, =C-x 5 f= | =find-file-other-frame= | GUI drawing dependent | Added on 2026-06-09 using file open plus =nemacs-frame-state=. |
+| Done | =C-x 5 r= | =find-file-read-only-other-frame= | GUI drawing dependent | Added on 2026-06-09 using read-only file open plus =nemacs-frame-state=. |
+| Done | =C-x 5 C-o= | =display-buffer-other-frame= | GUI drawing dependent | Added on 2026-06-09 using buffer display plus =nemacs-frame-state=. |
+| Done | =C-x 5 b= | =switch-to-buffer-other-frame= | GUI drawing dependent | Added on 2026-06-09 using buffer switching plus =nemacs-frame-state=. |
+| Done | =C-x 5 d= | =dired-other-frame= | GUI drawing dependent | Added on 2026-06-09 using directory display plus =nemacs-frame-state=. |
+| Done | =C-x 5 0= | =delete-frame= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-frame-state= plus =nemacs-frame-undo-state=. |
+| Done | =C-x 5 1= | =delete-other-frames= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-frame-state= normalization. |
+| Done | =C-x 5 2= | =make-frame-command= | GUI drawing dependent | Added on 2026-06-09 using the frame display facade. |
+| Done | =C-x 5 o= | =other-frame= | GUI drawing dependent | Added on 2026-06-09 using selected-frame cycling in =nemacs-frame-state=. |
+| Done | =C-x 5 c= | =clone-frame= | GUI drawing dependent | Added on 2026-06-09 using the frame display facade. |
+| Done | =C-x 5 u= | =undelete-frame= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-frame-undo-state=. |
+| Done | =C-x v == | =vc-diff= | process/syscall dependent | Current runtime keymap coverage reports this VC diff facade as implemented. |
+| Done | =C-x v l= | =vc-print-log= | process/syscall dependent | Current runtime keymap coverage reports this VC log facade as implemented. |
+| Done | =C-x w 0= | =delete-windows-on= | GUI drawing dependent | Added on 2026-06-09 using the existing two-window transport facade. |
+| Done | =C-x w q= | =quit-window= | GUI drawing dependent | Added on 2026-06-09 using the existing two-window transport facade. |
+| Done | =C-x w d= | =toggle-window-dedicated= | GUI drawing dependent | Added on 2026-06-09 with =nemacs-window-dedicated= transport state. |
+| Done | =C-x w 2= | =split-root-window-below= | GUI drawing dependent | Added on 2026-06-09 using the existing horizontal window transport facade. |
+| Done | =C-x w 3= | =split-root-window-right= | GUI drawing dependent | Added on 2026-06-09 using the existing vertical window transport facade. |
+| Done | =C-x w s= | =window-toggle-side-windows= | GUI drawing dependent | Added on 2026-06-09 with =nemacs-side-windows-visible= transport state. |
+| Done | =C-x w ^ f= | =tear-off-window= | GUI drawing dependent | Added on 2026-06-09 using =nemacs-frame-state= plus the existing two-window facade. |
+| Done | =C-x m= | =compose-mail= | major-mode/package dependent | Added on 2026-06-09 as an editable =*mail*= buffer facade. |
+| Done | =C-x 4 m= | =compose-mail-other-window= | major-mode/package dependent | Added on 2026-06-09 using the =*mail*= facade plus existing other-window routing. |
+| Done | =C-x 5 m= | =compose-mail-other-frame= | major-mode/package dependent | Added on 2026-06-09 using the =*mail*= facade plus existing frame routing. |
+| Done | =C-x r f= | =frameset-to-register= | GUI drawing dependent | Added on 2026-06-09 using register-backed =nemacs-frame-state= snapshots. |
+| Done | =C-x r w= | =window-configuration-to-register= | GUI drawing dependent | Added on 2026-06-09 using register-backed window layout snapshots. |
+| Done | =C-x '=, =C-x a '=, =C-x a e= | =expand-abbrev= | major-mode/package dependent | Added on 2026-06-09 using a transport-backed abbrev table. |
+| Done | =C-x a +=, =C-x a C-a=, =C-x a l= | =add-mode-abbrev= | major-mode/package dependent | Added on 2026-06-09 as a mode/global abbrev facade. |
+| Done | =C-x a g= | =add-global-abbrev= | major-mode/package dependent | Added on 2026-06-09 using the word before point as expansion. |
+| Done | =C-x a -=, =C-x a i g= | =inverse-add-global-abbrev= | major-mode/package dependent | Added on 2026-06-09 using the word before point as abbrev. |
+| Done | =C-x a i l= | =inverse-add-mode-abbrev= | major-mode/package dependent | Added on 2026-06-09 as the mode-table variant of inverse add. |
+| Done | =M-'= | =abbrev-prefix-mark= | major-mode/package dependent | Added on 2026-06-09 by marking the start of the abbrev prefix word. |
+| Done | =C-x a n= | =expand-jump-to-next-slot= | major-mode/package dependent | Added on 2026-06-09 as next =<>= slot navigation. |
+| Done | =C-x a p= | =expand-jump-to-previous-slot= | major-mode/package dependent | Added on 2026-06-09 as previous =<>= slot navigation. |
+| Done | =C-x *= | =calc-dispatch= | major-mode/package dependent | Added on 2026-06-09 as a scratch =*Calculator*= facade. |
+| Done | =C-x 6= | =2C-command= | major-mode/package dependent | Added on 2026-06-09 using the two-column buffer facade. |
+| Done | =C-x 6 2= | =2C-two-columns= | major-mode/package dependent | Added on 2026-06-09 using the two-column buffer facade. |
+| Done | =C-x 6 b= | =2C-associate-buffer= | major-mode/package dependent | Added on 2026-06-09 with buffer-name completion and right-buffer rendering. |
+| Done | =C-x 6 s= | =2C-split= | major-mode/package dependent | Added on 2026-06-09 using the two-column split facade. |
+| Done | =C-x 8 e += | =emoji-zoom-increase= | major-mode/package dependent | Added on 2026-06-10 as an emoji zoom modeline facade. |
+| Done | =C-x 8 e -= | =emoji-zoom-decrease= | major-mode/package dependent | Added on 2026-06-10 as an emoji zoom modeline facade. |
+| Done | =C-x 8 e 0= | =emoji-zoom-reset= | major-mode/package dependent | Added on 2026-06-10 as an emoji zoom modeline facade. |
+| Done | =C-x 8 e d= | =emoji-describe= | major-mode/package dependent | Added on 2026-06-10 using a bridge-owned emoji help buffer facade. |
+| Done | =C-x 8 e e=, =C-x 8 e i= | =emoji-insert= | major-mode/package dependent | Added on 2026-06-10 using UTF-8 byte-sequence emoji insertion in the bridge runtime. |
+| Done | =C-x 8 e l= | =emoji-list= | major-mode/package dependent | Added on 2026-06-10 using a read-only =*Emoji List*= facade. |
+| Done | =C-x 8 e r= | =emoji-recent= | major-mode/package dependent | Added on 2026-06-10 using a transport-backed recent emoji list. |
+| Done | =C-x 8 e s= | =emoji-search= | major-mode/package dependent | Added on 2026-06-10 using minibuffer completion plus a read-only search-result facade. |
+| Done | =C-x C-+=, =C-x C--=, =C-x C-0=, =C-x C-== | =text-scale-adjust= | GUI drawing dependent | Added on 2026-06-10 using runtime-owned =nemacs-text-scale= state and modeline feedback. |
+| Done | =C-x C-M-+=, =C-x C-M--=, =C-x C-M-0=, =C-x C-M-== | =global-text-scale-adjust= | GUI drawing dependent | Added on 2026-06-10 using runtime-owned =nemacs-global-text-scale= state and modeline feedback. |
+| Done | =C-z=, =C-x C-z= | =suspend-frame= | GUI drawing dependent | Added on 2026-06-10 using runtime-owned =nemacs-frame-suspended= state and modeline feedback. |
+| Done | =M-`= | =tmm-menubar= | GUI drawing dependent | Added on 2026-06-10 using a read-only =*Menu Bar*= buffer facade. |
+| Done | =C-x $= | =set-selective-display= | GUI drawing dependent | Added on 2026-06-10 using runtime-owned =nemacs-selective-display= state and modeline feedback. |
+| Done | =M-s h .= | =highlight-symbol-at-point= | GUI drawing dependent | Added on 2026-06-10 using runtime-owned =nemacs-highlight-patterns= state. |
+| Done | =M-s h f= | =hi-lock-find-patterns= | GUI drawing dependent | Added on 2026-06-10 using a read-only =*Hi Lock Patterns*= facade. |
+| Done | =M-s h l= | =highlight-lines-matching-regexp= | GUI drawing dependent | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h p= | =highlight-phrase= | GUI drawing dependent | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h r= | =highlight-regexp= | GUI drawing dependent | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h u= | =unhighlight-regexp= | GUI drawing dependent | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h w= | =hi-lock-write-interactive-patterns= | GUI drawing dependent | Added on 2026-06-10 using runtime-owned =nemacs-highlight-patterns= writeback. |
+| Done | =C-\= | =toggle-input-method= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned =nemacs-input-method= state and modeline feedback. |
+| Done | =C-x \= | =activate-transient-input-method= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned =nemacs-transient-input-method= state. |
+| Done | =C-x RET C-\= | =set-input-method= | major-mode/package dependent | Added on 2026-06-10 using minibuffer input and =nemacs-input-method= state. |
+| Done | =C-x RET F= | =set-file-name-coding-system= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET X= | =set-next-selection-coding-system= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET c= | =universal-coding-system-argument= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned =nemacs-universal-coding-system= state. |
+| Done | =C-x RET f= | =set-buffer-file-coding-system= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned =nemacs-buffer-file-coding-system= state. |
+| Done | =C-x RET k= | =set-keyboard-coding-system= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET l= | =set-language-environment= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned =nemacs-language-environment= state. |
+| Done | =C-x RET p= | =set-buffer-process-coding-system= | process/syscall dependent | Added on 2026-06-10 as runtime-owned process-coding state; live process integration remains future work. |
+| Done | =C-x RET r= | =revert-buffer-with-coding-system= | major-mode/package dependent | Added on 2026-06-10 by recording coding state and reusing runtime =revert-buffer=. |
+| Done | =C-x RET t= | =set-terminal-coding-system= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET x= | =set-selection-coding-system= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x C-k= | =kmacro-keymap= | major-mode/package dependent | Added on 2026-06-10 as a runtime-owned kmacro prefix facade. |
+| Done | =C-x C-k C-d= | =kmacro-delete-ring-head= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned kmacro ring state. |
+| Done | =C-x C-k C-e=, =C-x C-k RET=, =C-x C-k SPC=, =C-x C-k e=, =C-x C-k l= | kmacro edit/view facades | major-mode/package dependent | Added on 2026-06-10 using bridge-owned editable/read-only kmacro buffers. |
+| Done | =C-x C-k C-f= | =kmacro-set-format= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned kmacro format state. |
+| Done | =C-x C-k C-k= | =kmacro-end-or-call-macro-repeat= | major-mode/package dependent | Added on 2026-06-10 by reusing runtime macro end/replay. |
+| Done | =C-x C-k C-l= | =kmacro-call-ring-2nd-repeat= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned kmacro ring state. |
+| Done | =C-x C-k C-n=, =C-x C-k C-p=, =C-x C-k C-t= | kmacro ring navigation | major-mode/package dependent | Added on 2026-06-10 using runtime-owned ring swap state. |
+| Done | =C-x C-k C-s=, =C-x C-k s= | =kmacro-start-macro= | major-mode/package dependent | Added on 2026-06-10 as aliases for the existing runtime macro start command. |
+| Done | =C-x C-k C-v= | =kmacro-view-macro-repeat= | major-mode/package dependent | Added on 2026-06-10 using a read-only =*Keyboard Macro*= facade. |
+| Done | =C-x C-k b= | =kmacro-bind-to-key= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned bound-key state. |
+| Done | =C-x C-k d= | =kmacro-redisplay= | major-mode/package dependent | Added on 2026-06-10 as modeline feedback for current macro state. |
+| Done | =C-x C-k n= | =kmacro-name-last-macro= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned macro name state. |
+| Done | =C-x C-k q= | =kbd-macro-query= | major-mode/package dependent | Added on 2026-06-10 as an alias for the existing query checkpoint. |
+| Done | =C-x C-k r= | =apply-macro-to-region-lines= | major-mode/package dependent | Added on 2026-06-10 as a runtime macro replay facade. |
+| Done | =C-x C-k x= | =kmacro-to-register= | major-mode/package dependent | Added on 2026-06-10 using runtime-owned macro register state. |
+| Done | =M-$= | =ispell-word= | process/syscall dependent | Added on 2026-06-10 as modeline feedback for the runtime-owned word-at-point spell request. |
+| Done | =M-s M-w= | =eww-search-words= | process/syscall dependent | Added on 2026-06-10 as a read-only =*eww search*= request buffer; network browsing remains future process work. |
+| Done | =C-x v ...= | VC command family | process/syscall dependent | Added on 2026-06-10 using runtime-owned git output buffers for read-only queries and explicit no-side-effect intent buffers for destructive/network VC commands. |
+
+Deferred on purpose:
+
+- Full =C-x C-k= kmacro key coverage is now runtime-owned; richer interactive
+  macro editing can build on the facade buffers later.
+- Frame/tab families are broad and GUI-heavy; implement after single-frame
+  window resizing is stable.
+- VC families now have keymap coverage; richer branch/tag/network side effects
+  should wait until process/syscall and project root discovery are reliable
+  enough for non-host-fallback smokes.

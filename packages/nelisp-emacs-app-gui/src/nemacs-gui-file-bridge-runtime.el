@@ -857,7 +857,7 @@
       (lambda (filename text)
         (nl-write-file filename text)))
 
-(fset 'files--access-ok-p
+(fset 'files-access-ok-p
       (lambda (filename mode)
         (setq files--access-path filename)
         (if (fboundp 'nl-syscall-access)
@@ -18644,31 +18644,35 @@
             (cons purpose (cons purpose text))))
   nil)
 
-(if (not (fboundp 'emacs-minibuffer-gui--finish-followup))
-    (fset 'emacs-minibuffer-gui--finish-followup
+(if (not (fboundp 'emacs-minibuffer-gui-finish-followup))
+    (fset 'emacs-minibuffer-gui-finish-followup
           (lambda (purpose prompt)
-            (files--minibuffer-gui-backend-start-followup purpose prompt)
-            (let ((prefill (or (files--minibuffer-gui-backend-followup-prefill-text)
+            (emacs-minibuffer-gui-backend-call
+             :start-followup purpose prompt)
+            (let ((prefill (or (emacs-minibuffer-gui-backend-call
+                                :followup-prefill-text)
                                "")))
               (if (not (equal prefill ""))
                   (progn
-                    (files--minibuffer-gui-backend-set-text prefill)
-                    (files--minibuffer-gui-backend-set-cursor
+                    (emacs-minibuffer-gui-backend-call :set-text prefill)
+                    (emacs-minibuffer-gui-backend-call
+                     :set-cursor
                      (length prefill))
                     (emacs-minibuffer-gui-finish-read))
                 nil))
             t))
   nil)
 
-(if (not (fboundp 'emacs-minibuffer-gui--execute-command-spec))
-    (fset 'emacs-minibuffer-gui--execute-command-spec
+(if (not (fboundp 'emacs-minibuffer-gui-execute-command-spec))
+    (fset 'emacs-minibuffer-gui-execute-command-spec
           (lambda (spec &optional save-undo)
             (if spec
                 (progn
                   (if save-undo
                       (files--bridge-save-undo-if-needed)
                     nil)
-                  (files--minibuffer-gui-backend-execute-command-spec
+                  (emacs-minibuffer-gui-backend-call
+                   :execute-command-spec
                    (car spec)
                    (car (cdr spec))
                    (cdr (cdr spec)))
@@ -18679,7 +18683,7 @@
 (if (not (fboundp 'emacs-minibuffer-gui-finish-read))
     (fset 'emacs-minibuffer-gui-finish-read
           (lambda ()
-            (let ((purpose (or (files--minibuffer-gui-backend-purpose)
+            (let ((purpose (or (emacs-minibuffer-gui-backend-call :purpose)
                                emacs-minibuffer-gui-purpose
                                ""))
                   (text (emacs-minibuffer-gui-commit-read)))
@@ -18694,12 +18698,12 @@
                   nil)
                 (if followup
                     (progn
-                      (emacs-minibuffer-gui--finish-followup
+                      (emacs-minibuffer-gui-finish-followup
                        (car followup) (cdr followup))
                       (setq purpose ""))
                   nil))
               (if (equal purpose "execute-extended-command")
-                  (if (emacs-minibuffer-gui--execute-command-spec
+                  (if (emacs-minibuffer-gui-execute-command-spec
                        (emacs-minibuffer-gui-extended-command-commit-spec
                         text)
                        nil)
@@ -18712,8 +18716,9 @@
                       (emacs-minibuffer-gui-replace-followup purpose text))
                 (if replace-followup
                     (progn
-                      (files--minibuffer-gui-backend-set-replace-from text)
-                      (emacs-minibuffer-gui--finish-followup
+                      (emacs-minibuffer-gui-backend-call
+                       :set-replace-from text)
+                      (emacs-minibuffer-gui-finish-followup
                        (car replace-followup) (cdr replace-followup))
                       (setq purpose ""))
                   (progn
@@ -18722,18 +18727,21 @@
                            purpose))
                     (if replace-command
                         (progn
-                          (files--minibuffer-gui-backend-execute-replace-command
+                          (emacs-minibuffer-gui-backend-call
+                           :execute-replace-command
                            replace-command
-                           (or (files--minibuffer-gui-backend-replace-from)
+                           (or (emacs-minibuffer-gui-backend-call
+                                :replace-from)
                                "")
                            text)
-                          (files--minibuffer-gui-backend-clear-replace-from)
+                          (emacs-minibuffer-gui-backend-call
+                           :clear-replace-from)
                           (setq purpose ""))
                       nil))))
               (if (if (not (equal purpose ""))
                       (not (equal purpose "execute-extended-command"))
                     nil)
-                  (emacs-minibuffer-gui--execute-command-spec
+                  (emacs-minibuffer-gui-execute-command-spec
                    (emacs-minibuffer-gui-command-commit-spec purpose text)
                    t)
                 nil)
@@ -18906,13 +18914,13 @@
                     (if (and initial-input
                              (not (equal initial-input "")))
                         (progn
-                          (if (fboundp 'files--minibuffer-gui-backend-set-text)
-                              (files--minibuffer-gui-backend-set-text
-                               initial-input)
+                          (if (emacs-minibuffer-gui-backend-call
+                               :set-text initial-input)
+                              nil
                             (setq files--minibuffer-text initial-input))
-                          (if (fboundp 'files--minibuffer-gui-backend-set-cursor)
-                              (files--minibuffer-gui-backend-set-cursor
-                               (length initial-input))
+                          (if (emacs-minibuffer-gui-backend-call
+                               :set-cursor (length initial-input))
+                              nil
                             (setq files--minibuffer-cursor
                                   (length initial-input)))
                           (if (fboundp 'files--minibuffer-finish)
@@ -19064,233 +19072,394 @@
              prefix)))
   nil)
 
-		(fset 'files--refresh-minibuffer-candidates
-		      (lambda ()
-            (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
-            (setq files--minibuffer-candidates
-                  (emacs-minibuffer-gui-filtered-candidates-for-purpose
-                   files--minibuffer-purpose files--minibuffer-text))
-	          files--minibuffer-candidates))
+(if (not (fboundp 'emacs-minibuffer-gui-candidate-refresh-state))
+    (fset 'emacs-minibuffer-gui-candidate-refresh-state
+          (lambda (purpose text)
+            (let ((purpose (or purpose "")))
+              (list :purpose purpose
+                    :candidates
+                    (emacs-minibuffer-gui-filtered-candidates-for-purpose
+                     purpose (or text ""))))))
+  nil)
 
-(defun files--minibuffer-gui-backend-begin-read ()
-  (emacs-minibuffer-gui-history-symbol-for-purpose)
-  (setq files--minibuffer-purpose emacs-minibuffer-gui-purpose)
-  (setq files--minibuffer-prompt emacs-minibuffer-gui-prompt)
-  (setq files--minibuffer-active t)
-  (setq files--minibuffer-text "")
-  (setq files--minibuffer-cursor 0)
-  (setq files--minibuffer-candidates "")
-  (files--refresh-minibuffer-candidates)
-  (setq files--bridge-effective-command "minibuffer")
-  (setq files--bridge-status "minibuffer"))
+(if (not (fboundp 'emacs-minibuffer-gui-session-begin-state))
+    (fset 'emacs-minibuffer-gui-session-begin-state
+          (lambda (purpose prompt)
+            (list :purpose (or purpose "")
+                  :prompt (or prompt "")
+                  :active t
+                  :text ""
+                  :cursor 0
+                  :candidates ""
+                  :effective-command "minibuffer"
+                  :status "minibuffer")))
+  nil)
 
-(defun files--minibuffer-gui-backend-set-initial-input ()
-  (if (if emacs-minibuffer-gui-initial-input
-          (not (equal emacs-minibuffer-gui-initial-input ""))
-        nil)
-      (progn
-        (setq files--minibuffer-text emacs-minibuffer-gui-initial-input)
-        (setq files--minibuffer-cursor (length files--minibuffer-text))
-        (files--refresh-minibuffer-candidates))
-    nil))
+(if (not (fboundp 'emacs-minibuffer-gui-session-initial-input-state))
+    (fset 'emacs-minibuffer-gui-session-initial-input-state
+          (lambda (initial-input)
+            (let ((input (or initial-input "")))
+              (if (not (equal input ""))
+                  (list :text input
+                        :cursor (length input)
+                        :changed t)
+                nil))))
+  nil)
 
-(defun files--minibuffer-gui-backend-commit-read ()
-  (let ((text files--minibuffer-text))
-    (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
-    (emacs-minibuffer-gui-history-symbol-for-purpose)
-    (if (not (equal text ""))
-        (setq files--minibuffer-history
-              (concat files--minibuffer-history
-                      files--minibuffer-purpose "\t" text "\n"
-                      emacs-minibuffer-gui-history-symbol "\t" text "\n"))
-      nil)
-    (setq files--minibuffer-active nil)
-    (setq files--minibuffer-prompt "")
-    (setq files--minibuffer-text "")
-    (setq files--minibuffer-cursor 0)
-    (setq files--minibuffer-candidates "")
-    (setq emacs-minibuffer-gui-require-match nil)
-    text))
+(if (not (fboundp 'emacs-minibuffer-gui-session-commit-state))
+    (fset 'emacs-minibuffer-gui-session-commit-state
+          (lambda (purpose text history history-symbol)
+            (let ((next-history (or history ""))
+                  (purpose (or purpose ""))
+                  (text (or text ""))
+                  (history-symbol (or history-symbol "")))
+              (if (not (equal text ""))
+                  (setq next-history
+                        (concat next-history
+                                purpose "\t" text "\n"
+                                history-symbol "\t" text "\n"))
+                nil)
+              (list :committed-text text
+                    :history next-history
+                    :active nil
+                    :prompt ""
+                    :text ""
+                    :cursor 0
+                    :candidates ""
+                    :require-match nil))))
+  nil)
 
-(defun files--minibuffer-gui-backend-complete ()
-  (files--refresh-minibuffer-candidates)
-  (let ((candidates files--minibuffer-candidates)
-        (index 0))
-    (while (if (< index (length candidates))
-               (not (= (aref candidates index) 10))
-             nil)
-      (setq index (+ index 1)))
-    (if (> index 0)
-        (progn
-          (setq files--minibuffer-text (substring candidates 0 index))
-          (setq files--minibuffer-cursor (length files--minibuffer-text))
-          (files--refresh-minibuffer-candidates))
-      nil)
-    (setq files--bridge-effective-command "minibuffer")
-    (setq files--bridge-status "minibuffer")))
+(if (not (fboundp 'emacs-minibuffer-gui-replace-from-store-state))
+    (fset 'emacs-minibuffer-gui-replace-from-store-state
+          (lambda (text)
+            (list :replace-from (or text "")
+                  :changed t)))
+  nil)
 
-(defun files--minibuffer-gui-backend-key ()
-  files--bridge-keys)
+(if (not (fboundp 'emacs-minibuffer-gui-replace-from-clear-state))
+    (fset 'emacs-minibuffer-gui-replace-from-clear-state
+          (lambda ()
+            (list :replace-from ""
+                  :changed t)))
+  nil)
 
-(defun files--minibuffer-gui-backend-purpose ()
-  files--minibuffer-purpose)
+(if (not (fboundp 'emacs-command-loop-gui-command-execution-state))
+    (fset 'emacs-command-loop-gui-command-execution-state
+          (lambda (command effective arg &optional status)
+            (let ((command-symbol
+                   (if (symbolp command)
+                       command
+                     (if (if (stringp command)
+                             (not (equal command ""))
+                           nil)
+                         (intern command)
+                       nil)))
+                  (effective-name
+                   (or effective
+                       (if (symbolp command)
+                           (symbol-name command)
+                         (if (stringp command) command "")))))
+              (list :command command-symbol
+                    :effective-command effective-name
+                    :arg (or arg "")
+                    :status (or status "ok")))))
+  nil)
 
-(defun files--minibuffer-gui-backend-prompt ()
-  files--minibuffer-prompt)
+(if (not (fboundp 'emacs-command-loop-gui-replace-execution-state))
+    (fset 'emacs-command-loop-gui-replace-execution-state
+          (lambda (command from to)
+            (append
+             (emacs-command-loop-gui-command-execution-state
+              command command from "ok")
+             (list :minibuffer-arg (or to "")
+                   :save-undo t))))
+  nil)
 
-(defun files--minibuffer-gui-backend-initial-input ()
-  files--bridge-arg)
+				(fset 'files--refresh-minibuffer-candidates
+				      (lambda ()
+            (let ((state (emacs-minibuffer-gui-candidate-refresh-state
+                          files--minibuffer-purpose
+                          files--minibuffer-text)))
+              (setq emacs-minibuffer-gui-purpose
+                    (plist-get state :purpose))
+              (setq files--minibuffer-candidates
+                    (plist-get state :candidates))
+		          files--minibuffer-candidates)))
 
-(defun files--minibuffer-gui-backend-set-text (text)
-  (setq files--minibuffer-text text))
+(defconst files--minibuffer-gui-backend-operation-table
+  (list
+   (cons
+    'files--minibuffer-gui-backend-begin-read
+    (lambda ()
+      (emacs-minibuffer-gui-history-symbol-for-purpose)
+      (let ((state (emacs-minibuffer-gui-session-begin-state
+                    emacs-minibuffer-gui-purpose
+                    emacs-minibuffer-gui-prompt)))
+        (setq files--minibuffer-purpose (plist-get state :purpose))
+        (setq files--minibuffer-prompt (plist-get state :prompt))
+        (setq files--minibuffer-active (plist-get state :active))
+        (setq files--minibuffer-text (plist-get state :text))
+        (setq files--minibuffer-cursor (plist-get state :cursor))
+        (setq files--minibuffer-candidates (plist-get state :candidates))
+        (files--refresh-minibuffer-candidates)
+        (setq files--bridge-effective-command
+              (plist-get state :effective-command))
+        (setq files--bridge-status (plist-get state :status)))))
+   (cons
+    'files--minibuffer-gui-backend-set-initial-input
+    (lambda ()
+      (let ((state (emacs-minibuffer-gui-session-initial-input-state
+                    emacs-minibuffer-gui-initial-input)))
+        (if state
+            (progn
+              (setq files--minibuffer-text (plist-get state :text))
+              (setq files--minibuffer-cursor (plist-get state :cursor))
+              (files--refresh-minibuffer-candidates))
+          nil))))
+   (cons
+    'files--minibuffer-gui-backend-commit-read
+    (lambda ()
+      (let ((text files--minibuffer-text))
+        (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
+        (emacs-minibuffer-gui-history-symbol-for-purpose)
+        (let ((state (emacs-minibuffer-gui-session-commit-state
+                      files--minibuffer-purpose
+                      text
+                      files--minibuffer-history
+                      emacs-minibuffer-gui-history-symbol)))
+          (setq files--minibuffer-history (plist-get state :history))
+          (setq files--minibuffer-active (plist-get state :active))
+          (setq files--minibuffer-prompt (plist-get state :prompt))
+          (setq files--minibuffer-text (plist-get state :text))
+          (setq files--minibuffer-cursor (plist-get state :cursor))
+          (setq files--minibuffer-candidates (plist-get state :candidates))
+          (setq emacs-minibuffer-gui-require-match
+                (plist-get state :require-match))
+          (plist-get state :committed-text)))))
+   (cons
+    'files--minibuffer-gui-backend-complete
+    (lambda ()
+      (files--refresh-minibuffer-candidates)
+      (let ((state (emacs-minibuffer-gui-complete-first-line-state
+                    files--minibuffer-candidates)))
+        (if state
+            (progn
+              (setq files--minibuffer-text (plist-get state :text))
+              (setq files--minibuffer-cursor (plist-get state :cursor))
+              (files--refresh-minibuffer-candidates))
+          nil)
+        (setq files--bridge-effective-command "minibuffer")
+        (setq files--bridge-status "minibuffer"))))
+   (cons
+    'files--minibuffer-gui-backend-purpose
+    (lambda ()
+      files--minibuffer-purpose))
+   (cons
+    'files--minibuffer-gui-backend-set-text
+    (lambda (text)
+      (setq files--minibuffer-text text)))
+   (cons
+    'files--minibuffer-gui-backend-set-cursor
+    (lambda (cursor)
+      (setq files--minibuffer-cursor cursor)))
+   (cons
+    'files--minibuffer-gui-backend-delete-backward-char
+    (lambda ()
+      (let ((state (emacs-minibuffer-gui-text-delete-backward-state
+                    files--minibuffer-text files--minibuffer-cursor)))
+        (setq files--minibuffer-text (plist-get state :text))
+        (setq files--minibuffer-cursor (plist-get state :cursor)))))
+   (cons
+    'files--minibuffer-gui-backend-insert-text
+    (lambda (text)
+      (let ((state (emacs-minibuffer-gui-text-insert-state
+                    files--minibuffer-text files--minibuffer-cursor text)))
+        (setq files--minibuffer-text (plist-get state :text))
+        (setq files--minibuffer-cursor (plist-get state :cursor)))))
+   (cons
+    'files--minibuffer-gui-backend-start-followup
+    (lambda (purpose prompt)
+      (setq files--minibuffer-purpose purpose)
+      (setq files--minibuffer-prompt prompt)
+      (files--start-minibuffer)))
+   (cons
+    'files--minibuffer-gui-backend-followup-prefill-text
+    (lambda ()
+      files--bridge-minibuffer-arg))
+   (cons
+    'files--minibuffer-gui-backend-set-replace-from
+    (lambda (text)
+      (let ((state (emacs-minibuffer-gui-replace-from-store-state text)))
+        (setq files--replace-string-from (plist-get state :replace-from))
+        files--replace-string-from)))
+   (cons
+    'files--minibuffer-gui-backend-replace-from
+    (lambda ()
+      files--replace-string-from))
+   (cons
+    'files--minibuffer-gui-backend-clear-replace-from
+    (lambda ()
+      (let ((state (emacs-minibuffer-gui-replace-from-clear-state)))
+        (setq files--replace-string-from (plist-get state :replace-from)))))
+   (cons
+    'files--minibuffer-gui-backend-execute-command-spec
+    (lambda (command effective arg)
+      (let ((state (emacs-command-loop-gui-command-execution-state
+                    command effective arg)))
+        (setq files--bridge-command (plist-get state :command))
+        (setq files--bridge-effective-command
+              (plist-get state :effective-command))
+        (setq files--bridge-arg (plist-get state :arg))
+        (setq files--bridge-status (plist-get state :status))
+        (command-execute))))
+   (cons
+    'files--minibuffer-gui-backend-execute-replace-command
+    (lambda (command from to)
+      (let ((state (emacs-command-loop-gui-replace-execution-state
+                    command from to)))
+        (setq files--bridge-command (plist-get state :command))
+        (setq files--bridge-effective-command
+              (plist-get state :effective-command))
+        (setq files--bridge-arg (plist-get state :arg))
+        (setq files--bridge-minibuffer-arg
+              (plist-get state :minibuffer-arg))
+        (setq files--bridge-status (plist-get state :status))
+        (if (plist-get state :save-undo)
+            (files--command-loop-save-undo-if-needed-current-context)
+          nil)
+        (command-execute)))))
+  "Standalone GUI minibuffer backend operation implementations.
+The old callback symbol names remain available through `fset' for baked
+standalone images, but the concrete behavior is grouped as one adapter table.")
 
-(defun files--minibuffer-gui-backend-set-cursor (cursor)
-  (setq files--minibuffer-cursor cursor))
+(dolist (entry files--minibuffer-gui-backend-operation-table)
+  (fset (car entry) (cdr entry)))
 
-(defun files--minibuffer-gui-backend-set-effective-command (command)
-  (setq files--bridge-effective-command command))
+(if (not (fboundp 'emacs-minibuffer-gui-register-standard-backend))
+    (fset 'emacs-minibuffer-gui-register-standard-backend
+          (lambda (&rest callbacks)
+            (apply 'emacs-minibuffer-gui-register-backend callbacks)))
+  nil)
 
-(defun files--minibuffer-gui-backend-set-status (status)
-  (setq files--bridge-status status))
+(if (not (fboundp 'emacs-minibuffer-gui-backend-call))
+    (fset 'emacs-minibuffer-gui-backend-call
+          (lambda (key &rest args)
+            (let ((fn nil)
+                  (fallback
+                   (cdr
+                    (assq
+                     key
+                     '((:begin-read . files--minibuffer-gui-backend-begin-read)
+                       (:set-initial-input .
+                        files--minibuffer-gui-backend-set-initial-input)
+                       (:commit-read .
+                        files--minibuffer-gui-backend-commit-read)
+                       (:complete . files--minibuffer-gui-backend-complete)
+                       (:purpose . files--minibuffer-gui-backend-purpose)
+                       (:set-text . files--minibuffer-gui-backend-set-text)
+                       (:set-cursor . files--minibuffer-gui-backend-set-cursor)
+                       (:delete-backward-char .
+                        files--minibuffer-gui-backend-delete-backward-char)
+                       (:insert-text .
+                        files--minibuffer-gui-backend-insert-text)
+                       (:start-followup .
+                        files--minibuffer-gui-backend-start-followup)
+                       (:followup-prefill-text .
+                        files--minibuffer-gui-backend-followup-prefill-text)
+                       (:set-replace-from .
+                        files--minibuffer-gui-backend-set-replace-from)
+                       (:replace-from . files--minibuffer-gui-backend-replace-from)
+                       (:clear-replace-from .
+                        files--minibuffer-gui-backend-clear-replace-from)
+                       (:execute-command-spec .
+                        files--minibuffer-gui-backend-execute-command-spec)
+                       (:execute-replace-command .
+                        files--minibuffer-gui-backend-execute-replace-command))))))
+              (if (and (boundp 'emacs-minibuffer-gui-backend)
+                       emacs-minibuffer-gui-backend)
+                  (setq fn (plist-get emacs-minibuffer-gui-backend key))
+                nil)
+              (if fn
+                  (apply fn args)
+                (if (and fallback (fboundp fallback))
+                    (apply fallback args)
+                  nil)))))
+  nil)
 
-(defun files--minibuffer-gui-backend-delete-backward-char ()
-  (if (> files--minibuffer-cursor 0)
-      (progn
-        (setq files--minibuffer-text
-              (concat (substring files--minibuffer-text 0
-                                 (- files--minibuffer-cursor 1))
-                      (substring files--minibuffer-text
-                                 files--minibuffer-cursor)))
-        (setq files--minibuffer-cursor (- files--minibuffer-cursor 1)))
-    nil))
-
-(defun files--minibuffer-gui-backend-insert-text (text)
-  (setq files--minibuffer-text
-        (concat (substring files--minibuffer-text 0
-                           files--minibuffer-cursor)
-                text
-                (substring files--minibuffer-text
-                           files--minibuffer-cursor)))
-  (setq files--minibuffer-cursor
-        (+ files--minibuffer-cursor (length text))))
-
-(defun files--minibuffer-gui-backend-buffer-candidates ()
-  (if (fboundp 'emacs-fileio-gui-buffer-candidates)
-      (emacs-fileio-gui-buffer-candidates)
-    (rdf files--buffer-list-file)))
-
-(defun files--minibuffer-gui-backend-project-buffer-candidates ()
-  (if (fboundp 'emacs-fileio-gui-project-buffer-candidates)
-      (emacs-fileio-gui-project-buffer-candidates)
-    (files--project-buffer-list)))
-
-(defun files--minibuffer-gui-backend-emoji-candidates ()
-  (files--emoji-candidates))
-
-(defun files--minibuffer-gui-backend-extended-command-candidates ()
-  (if (fboundp 'emacs-command-loop-gui-extended-command-candidates)
-      (emacs-command-loop-gui-extended-command-candidates)
-    ""))
-
-(defun files--minibuffer-gui-backend-key-candidates ()
-  (let ((source ""))
-    (setq files--key-list-source files--keymap-source)
-    (setq source (files--key-list-from-source))
-    (setq files--key-list-source files--minibuffer-keymap-source)
-    (concat source (files--key-list-from-source))))
-
-(defun files--minibuffer-gui-backend-start-followup (purpose prompt)
-  (setq files--minibuffer-purpose purpose)
-  (setq files--minibuffer-prompt prompt)
-  (files--start-minibuffer))
-
-(defun files--minibuffer-gui-backend-followup-prefill-text ()
-  files--bridge-minibuffer-arg)
-
-(defun files--minibuffer-gui-backend-set-replace-from (text)
-  (setq files--replace-string-from text)
-  text)
-
-(defun files--minibuffer-gui-backend-replace-from ()
-  files--replace-string-from)
-
-(defun files--minibuffer-gui-backend-clear-replace-from ()
-  (setq files--replace-string-from ""))
-
-(defun files--minibuffer-gui-backend-execute-command-spec
-    (command effective arg)
-  (setq files--bridge-command (intern command))
-  (setq files--bridge-effective-command effective)
-  (setq files--bridge-arg arg)
-  (setq files--bridge-status "ok")
-  (command-execute))
-
-(defun files--minibuffer-gui-backend-execute-replace-command
-    (command from to)
-  (setq files--bridge-arg from)
-  (setq files--bridge-minibuffer-arg to)
-  (setq files--bridge-effective-command command)
-  (setq files--bridge-command (intern command))
-  (setq files--bridge-status "ok")
-  (files--command-loop-save-undo-if-needed-current-context)
-  (command-execute))
-
-(defun files--minibuffer-gui-install-backend ()
-  (emacs-minibuffer-gui-register-backend
-   :begin-read 'files--minibuffer-gui-backend-begin-read
-   :set-initial-input 'files--minibuffer-gui-backend-set-initial-input
-   :commit-read 'files--minibuffer-gui-backend-commit-read
-   :complete 'files--minibuffer-gui-backend-complete
-   :buffer-candidates 'files--minibuffer-gui-backend-buffer-candidates
-   :project-buffer-candidates
-   'files--minibuffer-gui-backend-project-buffer-candidates
-   :emoji-candidates 'files--minibuffer-gui-backend-emoji-candidates
-   :extended-command-candidates
-   'files--minibuffer-gui-backend-extended-command-candidates
-   :key-candidates 'files--minibuffer-gui-backend-key-candidates
-   :key 'files--minibuffer-gui-backend-key
-   :purpose 'files--minibuffer-gui-backend-purpose
-   :prompt 'files--minibuffer-gui-backend-prompt
-   :initial-input 'files--minibuffer-gui-backend-initial-input
-   :mode-keymap-source 'files--mode-minibuffer-keymap-source
-   :keymap-source 'files--command-loop-backend-minibuffer-keymap-source
-   :set-text 'files--minibuffer-gui-backend-set-text
-   :set-cursor 'files--minibuffer-gui-backend-set-cursor
-   :finish-read 'files--minibuffer-finish
-   :start-followup 'files--minibuffer-gui-backend-start-followup
-   :followup-prefill-text
-   'files--minibuffer-gui-backend-followup-prefill-text
-   :set-replace-from 'files--minibuffer-gui-backend-set-replace-from
-   :replace-from 'files--minibuffer-gui-backend-replace-from
-   :clear-replace-from
-   'files--minibuffer-gui-backend-clear-replace-from
-   :execute-command-spec
-   'files--minibuffer-gui-backend-execute-command-spec
-   :execute-replace-command
-   'files--minibuffer-gui-backend-execute-replace-command
-   :save-undo-if-needed 'files--bridge-save-undo-if-needed
-   :refresh-candidates 'files--refresh-minibuffer-candidates
-   :set-effective-command
-   'files--minibuffer-gui-backend-set-effective-command
-   :set-status 'files--minibuffer-gui-backend-set-status
-   :delete-backward-char
-   'files--minibuffer-gui-backend-delete-backward-char
-   :insert-text 'files--minibuffer-gui-backend-insert-text
-   :clear-quit-state 'files--clear-quit-state
-   :handle-query-replace-key 'files--query-replace-handle-key))
+(fset 'files--minibuffer-gui-install-backend
+      (lambda ()
+        (emacs-minibuffer-gui-register-standard-backend
+         :begin-read 'files--minibuffer-gui-backend-begin-read
+         :set-initial-input 'files--minibuffer-gui-backend-set-initial-input
+         :commit-read 'files--minibuffer-gui-backend-commit-read
+         :complete 'files--minibuffer-gui-backend-complete
+         :buffer-candidates
+         (lambda ()
+           (if (fboundp 'emacs-fileio-gui-buffer-candidates)
+               (emacs-fileio-gui-buffer-candidates)
+             (rdf files--buffer-list-file)))
+         :project-buffer-candidates
+         (lambda ()
+           (if (fboundp 'emacs-fileio-gui-project-buffer-candidates)
+               (emacs-fileio-gui-project-buffer-candidates)
+             (files--project-buffer-list)))
+         :emoji-candidates (lambda () (files--emoji-candidates))
+         :extended-command-candidates
+         (lambda ()
+           (if (fboundp 'emacs-command-loop-gui-extended-command-candidates)
+               (emacs-command-loop-gui-extended-command-candidates)
+             ""))
+         :key-candidates
+         (lambda ()
+           (let ((source ""))
+             (setq files--key-list-source files--keymap-source)
+             (setq source (files--key-list-from-source))
+             (setq files--key-list-source files--minibuffer-keymap-source)
+             (concat source (files--key-list-from-source))))
+         :key (lambda () files--bridge-keys)
+         :purpose 'files--minibuffer-gui-backend-purpose
+         :prompt (lambda () files--minibuffer-prompt)
+         :initial-input (lambda () files--bridge-arg)
+         :mode-keymap-source 'files--mode-minibuffer-keymap-source
+         :keymap-source 'files--command-loop-backend-minibuffer-keymap-source
+         :set-text 'files--minibuffer-gui-backend-set-text
+         :set-cursor 'files--minibuffer-gui-backend-set-cursor
+         :finish-read 'files--minibuffer-finish
+         :start-followup 'files--minibuffer-gui-backend-start-followup
+         :followup-prefill-text
+         'files--minibuffer-gui-backend-followup-prefill-text
+         :set-replace-from 'files--minibuffer-gui-backend-set-replace-from
+         :replace-from 'files--minibuffer-gui-backend-replace-from
+         :clear-replace-from
+         'files--minibuffer-gui-backend-clear-replace-from
+         :execute-command-spec
+         'files--minibuffer-gui-backend-execute-command-spec
+         :execute-replace-command
+         'files--minibuffer-gui-backend-execute-replace-command
+         :save-undo-if-needed 'files--bridge-save-undo-if-needed
+         :refresh-candidates 'files--refresh-minibuffer-candidates
+         :set-effective-command
+         (lambda (command)
+           (setq files--bridge-effective-command command))
+         :set-status (lambda (status) (setq files--bridge-status status))
+         :delete-backward-char
+         'files--minibuffer-gui-backend-delete-backward-char
+         :insert-text 'files--minibuffer-gui-backend-insert-text
+         :clear-quit-state 'files--clear-quit-state
+         :handle-query-replace-key 'files--query-replace-handle-key)))
 
 (if (fboundp 'emacs-minibuffer-gui-register-backend)
     (files--minibuffer-gui-install-backend)
   (progn
     (fset 'emacs-minibuffer-gui-begin-read
           (lambda ()
-            (files--minibuffer-gui-backend-begin-read)))
+            (emacs-minibuffer-gui-backend-call :begin-read)))
 
-    (fset 'emacs-minibuffer-gui--set-initial-input
+    (fset 'emacs-minibuffer-gui-set-initial-input
           (lambda ()
-            (files--minibuffer-gui-backend-set-initial-input)))
+            (emacs-minibuffer-gui-backend-call :set-initial-input)))
 
-    (fset 'emacs-minibuffer-gui--collection-lines
+    (fset 'emacs-minibuffer-gui-collection-lines
           (lambda ()
             ""))
 
@@ -19312,7 +19481,7 @@
               nil)
             (setq emacs-minibuffer-gui-require-match nil)
             (emacs-minibuffer-gui-begin-read)
-            (emacs-minibuffer-gui--set-initial-input)))
+            (emacs-minibuffer-gui-set-initial-input)))
 
     (fset 'read-from-minibuffer
           (lambda (&rest args)
@@ -19334,7 +19503,7 @@
                       (progn
                         (setq emacs-minibuffer-gui-collection (car args))
                         (setq emacs-minibuffer-gui-completion-table
-                              (emacs-minibuffer-gui--collection-lines))
+                              (emacs-minibuffer-gui-collection-lines))
                         (setq args (cdr args)))
                     nil)
                   (if args (setq args (cdr args)) nil)
@@ -19352,7 +19521,7 @@
                     nil))
               (setq emacs-minibuffer-gui-require-match t))
             (emacs-minibuffer-gui-begin-read)
-            (emacs-minibuffer-gui--set-initial-input)))
+            (emacs-minibuffer-gui-set-initial-input)))
 
     (fset 'completing-read
           (lambda (&rest args)
@@ -19360,11 +19529,11 @@
 
     (fset 'emacs-minibuffer-gui-commit-read
           (lambda ()
-            (files--minibuffer-gui-backend-commit-read)))
+            (emacs-minibuffer-gui-backend-call :commit-read)))
 
     (fset 'emacs-minibuffer-gui-complete
           (lambda ()
-            (files--minibuffer-gui-backend-complete)))))
+            (emacs-minibuffer-gui-backend-call :complete)))))
 
 	(fset 'files--write-minibuffer-state
 	      (lambda ()
@@ -20165,9 +20334,9 @@
                       (files--minibuffer-finish)
                     (if (equal key "DEL")
                         (progn
-                          (if (fboundp
-                               'files--minibuffer-gui-backend-delete-backward-char)
-                              (files--minibuffer-gui-backend-delete-backward-char)
+                          (if (emacs-minibuffer-gui-backend-call
+                               :delete-backward-char)
+                              nil
                             (if (> files--minibuffer-cursor 0)
                                 (progn
                                   (setq files--minibuffer-text
@@ -20185,9 +20354,9 @@
                           (setq files--bridge-status "minibuffer"))
                       (if (= (length key) 1)
                           (progn
-                            (if (fboundp
-                                 'files--minibuffer-gui-backend-insert-text)
-                                (files--minibuffer-gui-backend-insert-text key)
+                            (if (emacs-minibuffer-gui-backend-call
+                                 :insert-text key)
+                                nil
                               (progn
                                 (setq files--minibuffer-text
                                       (concat
@@ -21133,6 +21302,31 @@
                       nil)
                     t)
                 nil))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-apply-post-command-writeback))
+    (fset 'emacs-command-loop-gui-apply-post-command-writeback
+          (lambda (&optional command effective-command status)
+            (let* ((post-command-state
+                    (emacs-command-loop-gui-write-post-command-state
+                     command effective-command status))
+                   (command-name
+                    (or (plist-get post-command-state :command-name) ""))
+                   (lane (or (plist-get post-command-state :lane) 'normal))
+                   (lane-written-p
+                    (emacs-command-loop-gui-write-lane-state lane)))
+              (if lane-written-p
+                  (list :command-name ""
+                        :lane 'normal
+                        :lane-name "normal"
+                        :lane-written-p t)
+                (list :command-name command-name
+                      :lane lane
+                      :lane-name (cond
+                                  ((symbolp lane) (symbol-name lane))
+                                  ((stringp lane) lane)
+                                  (t "normal"))
+                      :lane-written-p nil)))))
   nil)
 
 (if (not (fboundp 'emacs-command-loop-gui-before-command))
@@ -22111,8 +22305,9 @@
 
 (fset 'files--bridge-prepare-writeback
       (lambda (cmd)
+        (files--command-loop-ensure-backend)
         (let ((post-command-state
-               (emacs-command-loop-gui-write-post-command-state
+               (emacs-command-loop-gui-apply-post-command-writeback
                 files--bridge-command
                 files--bridge-effective-command
                 files--bridge-status)))
@@ -22120,14 +22315,8 @@
                 (or (plist-get post-command-state :command-name)
                     ""))
           (setq files--bridge-writeback-lane
-                (symbol-name
-                 (or (plist-get post-command-state :lane)
-                     'normal))))
-        (if (files--command-loop-writeback-current-lane)
-            (progn
-              (setq cmd "")
-              (setq files--bridge-writeback-lane "normal"))
-          nil)
+                (or (plist-get post-command-state :lane-name)
+                    "normal")))
         cmd))
 
 (fset 'files--bridge-family-writeback-current-context
@@ -22497,6 +22686,48 @@
         (if (equal cmd "increment-register")
             (progn
               (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
+(fset 'files--bridge-bookmark-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "bookmark-set")
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "bookmark-set-no-overwrite")
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "bookmark-jump")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "bookmark-bmenu-list")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
               (files--write-transport-point)
               (files--write-transport-mark)
               (files--write-transport-window-start)
@@ -23361,212 +23592,11 @@
                   (setq cmd (files--bridge-prefix-writeback-current-context cmd))
                   (setq cmd (files--bridge-find-file-writeback-current-context cmd))
                   (setq cmd (files--bridge-project-writeback-current-context cmd))
-                  (setq cmd (files--bridge-read-only-writeback-current-context cmd))
-              (if (equal cmd "insert-file")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "insert-buffer")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "write-file")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "save-buffer")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "basic-save-buffer")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "save-some-buffers")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "revert-buffer")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "revert-buffer-quick")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-read-only-writeback-current-context cmd))
               (setq cmd (files--bridge-buffer-switch-writeback-current-context cmd))
               (setq cmd (files--bridge-display-buffer-writeback-current-context cmd))
               (setq cmd (files--bridge-register-writeback-current-context cmd))
-              (if (equal cmd "bookmark-set")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "bookmark-set-no-overwrite")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "bookmark-jump")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "bookmark-bmenu-list")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "rename-buffer")
-                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-	                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "rename-uniquely")
-                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-	                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-	              (if (equal cmd "clone-buffer")
-	                  (progn
-		                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-	                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-	                    (setq files--bridge-status "written"))
-	                nil)
-              (if (equal cmd "clone-indirect-buffer-other-window")
-                  (progn
-		                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-		                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-		                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-		                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-		              (if (equal cmd "kill-buffer")
-                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-	                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "kill-buffer-and-window")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "project-kill-buffers")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "list-buffers")
-                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                      (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-	                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "project-list-buffers")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-bookmark-writeback-current-context cmd))
 	              (if (equal cmd "list-directory")
 	                  (progn
 	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)

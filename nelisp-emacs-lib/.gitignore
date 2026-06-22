@@ -2,7 +2,7 @@
 *.bak
 build/
 target/
-tmp-diag/
+/tmp-diag/
 .worktrees/
 
 # Generated/local one-off artifacts.
@@ -21,9 +21,8 @@ docs/worklog/*~
 *.db-shm
 *.db-wal
 
-# AI assistant project-instruction files — kept local, not published.
-CLAUDE.md
-AGENTS.md
+# AI assistant local ephemera.  Root AGENTS.md / CLAUDE.md are now
+# project-owned library-first rules; keep tool-specific state local.
 .cursorrules
 .cursor/
 .aider*

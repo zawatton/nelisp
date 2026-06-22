@@ -1,0 +1,2841 @@
+#+TITLE: nelisp-emacs Doc 25 -- Library consumer contract
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-22
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 18 package ownership inventory, Doc 24 public API inventory
+
+* 0. Purpose
+
+This document defines what an external project may rely on when it uses
+=nelisp-emacs= as a reusable Elisp library.
+
+The contract is intentionally smaller than the current repository.  The
+goal is to let consumers reuse the pure-Elisp Emacs C-core replacement
+surface without depending on =nemacs= application bootstrap, concrete
+TUI/GUI frontends, or private helper names.
+
+* 1. Contract version
+
+The public facade exposes:
+
+#+begin_src emacs-lisp
+nelisp-emacs-library-contract-version
+#+end_src
+
+Current value: =1=.
+
+Version 1 means:
+
+- a consumer can add =src/= to =load-path= and =(require 'nelisp-emacs)=
+  from =emacs -Q=;
+- the facade provides the feature =nelisp-emacs=;
+- reusable package groups can be discovered through the public query APIs;
+- reusable package group loaders can be required directly from =emacs -Q
+  -L src= without first loading the top-level facade;
+- query results are copies, so consumers cannot mutate facade internals;
+- requiring the facade does not load app/bootstrap, concrete TUI/GUI, or
+  lazy editor files.
+
+Increasing this version is required when the external consumer contract
+changes incompatibly, for example when a package group is renamed, a query
+API is removed, or the facade starts requiring a new bootstrap precondition.
+
+* 2. Supported entry point
+
+External consumers should load:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/nelisp-emacs/src")
+(require 'nelisp-emacs)
+#+end_src
+
+Consumers should not require =emacs-init= unless they intentionally want
+application bootstrap policy, vendor path setup, and app-facing lazy
+loaders.
+
+* 3. Public discovery APIs
+
+After requiring =nelisp-emacs=, consumers may call:
+
+| API | Contract |
+|-----+----------|
+| =nelisp-emacs-library-package-names= | return reusable package group names |
+| =nelisp-emacs-library-package= | return a copied plist for one package group |
+| =nelisp-emacs-library-package-features= | return copied member features for one package group |
+| =nelisp-emacs-library-package-lazy-features= | return copied lazy companion features for one package group |
+| =nelisp-emacs-library-package-manifest= | return a copied package manifest |
+| =nelisp-emacs-library-stable-api-manifest= | return copied stable package API metadata |
+| =nelisp-emacs-library-stable-api-symbols= | return stable package API symbols, optionally scoped to one package |
+| =nelisp-emacs-library-stable-api-entry= | return stable package API metadata for one symbol |
+| =nelisp-emacs-library-stable-lazy-api-manifest= | return copied stable lazy package API metadata |
+| =nelisp-emacs-library-stable-lazy-api-symbols= | return stable lazy package API symbols, optionally scoped to one package |
+| =nelisp-emacs-library-stable-lazy-api-entry= | return stable lazy package API metadata for one symbol |
+
+The package plist contains:
+
+| Key | Meaning |
+|-----+---------|
+| =:owner= | Doc 18 ownership group, such as =FND= or =BUF= |
+| =:feature= | group loader feature required by the facade |
+| =:features= | member features loaded by that group |
+| =:lazy-features= | package-owned companion features kept out of facade eager loads |
+
+Stable lazy API entries additionally contain =:feature=.  Consumers must
+require that feature explicitly before relying on the listed symbols.
+The stable lazy manifest may contain multiple entries for the same package
+when a package owns more than one lazy companion feature; consumers should
+use =nelisp-emacs-library-stable-lazy-api-symbols= and
+=nelisp-emacs-library-stable-lazy-api-entry= instead of assuming package
+keys are unique in the raw manifest.
+
+The current public package names are =foundation=, =text-core=,
+=buffer-core=, =editing=, =io=, =special-buffers=, =core=, and
+=textmodes-stub=.  =text-core= exposes the reusable TXT regex substrate
+and coding substrate through =emacs-text-core-features=.  =buffer-core=
+intentionally names =nelisp-text-buffer=, =nelisp-emacs-compat=, and
+=emacs-buffer= as explicit members so other packages depend on BUF
+through the manifest instead of through hidden utility loads.  =editing=
+owns the BUF editing commands and undo bridges separately from =core=,
+which now depends on it as an explicit package dependency.
+Mandatory package dependencies must appear either as same-package members
+or explicit manifest package edges.  Lazy nested =require= forms should be
+declared as =:lazy-features= when they are package-owned companions; these
+appear as =lazy-manifest-package= in the generated dependency TSV.
+Undeclared lazy reusable edges stay visible as
+=lazy-unmanifested-reusable= for review.
+
+The raw variable =nelisp-emacs-library-packages= exists for diagnostics,
+but consumers should prefer the query APIs so the manifest shape can evolve
+behind the facade.
+
+The stable package API manifest is deliberately smaller than the generated
+package API inventory.  Version 1 currently exposes these stable package
+API symbols:
+
+| Package | Symbols |
+|---------+---------|
+| =foundation= | =emacs-callproc-populate-process-environment=, =emacs-callproc-getenv=, =emacs-char-table-p=, =emacs-char-table-ascii-vector=, =emacs-char-table-ref=, =emacs-char-table-set=, =emacs-char-table-set-range=, =emacs-char-table-range=, =emacs-char-table-parent=, =emacs-char-table-set-parent=, =emacs-char-table-subtype=, =emacs-char-table-extra-slot=, =emacs-char-table-set-extra-slot=, =emacs-char-table-map=, =emacs-char-table-copy=, =emacs-char-table-max-char=, =emacs-char-table-make=, =emacs-os-sysname->system-type=, =emacs-detect-system-type=, =emacs-os-detect-and-set!=, =emacs-os-apply-os-polyfills!=, =emacs-os-detect-and-set-dirs!=, =emacs-uname=, =emacs-display-window-system=, =emacs-display-graphic-p=, =emacs-display-color-p=, =emacs-display-multi-frame-p=, =emacs-os-uname-syscall-number= |
+| =text-core= | =nelisp-rx-compile=, =nelisp-rx-string-match=, =nelisp-rx-string-match-all=, =nelisp-rx-replace=, =nelisp-rx-replace-all=, =nelisp-coding-utf8-bom-emit-on-write=, =nelisp-coding-error-strategy=, =nelisp-coding-latin1-replacement-codepoint=, =nelisp-coding-utf8-bom=, =nelisp-coding-utf8-replacement-char=, =nelisp-coding-utf8-max-codepoint=, =nelisp-coding-utf8-surrogate-min=, =nelisp-coding-utf8-surrogate-max=, =nelisp-coding-latin1-max-codepoint=, =nelisp-coding-utf8-decode=, =nelisp-coding-utf8-encode=, =nelisp-coding-utf8-encode-string=, =nelisp-coding-latin1-decode=, =nelisp-coding-latin1-encode=, =nelisp-coding-latin1-encode-string=, =nelisp-coding-jis-tables-verify-hash=, =nelisp-coding-jis-tables-rebuild=, =nelisp-coding-shift-jis-decode=, =nelisp-coding-shift-jis-encode=, =nelisp-coding-shift-jis-encode-string=, =nelisp-coding-euc-jp-decode=, =nelisp-coding-euc-jp-encode=, =nelisp-coding-euc-jp-encode-string=, =nelisp-coding-stream-default-chunk-size=, =nelisp-coding-stream-state-create=, =nelisp-coding-stream-decode-chunk=, =nelisp-coding-stream-decode-finalize=, =nelisp-coding-stream-encode-chunk=, =nelisp-coding-stream-encode-finalize=, =nelisp-coding-read-file-with-encoding=, =nelisp-coding-write-file-with-encoding= |
+| =buffer-core= | =nelisp-ec-generate-new-buffer=, =nelisp-ec-current-buffer=, =nelisp-ec-set-buffer=, =nelisp-ec-with-current-buffer=, =nelisp-ec-kill-buffer=, =nelisp-ec-point=, =nelisp-ec-point-min=, =nelisp-ec-point-max=, =nelisp-ec-goto-char=, =nelisp-ec-buffer-size=, =nelisp-ec-forward-char=, =nelisp-ec-backward-char=, =nelisp-ec-insert=, =nelisp-ec-insert-char-code-fast=, =nelisp-ec-delete-region=, =nelisp-ec-delete-char=, =nelisp-ec-erase-buffer=, =nelisp-ec-buffer-substring=, =nelisp-ec-buffer-string=, =nelisp-ec-save-excursion=, =nelisp-ec-save-restriction=, =nelisp-ec-save-current-buffer=, =nelisp-ec-narrow-to-region=, =nelisp-ec-widen=, =nelisp-ec-make-marker=, =nelisp-ec-set-marker=, =nelisp-ec-marker-position=, =nelisp-ec-marker-buffer=, =nelisp-ec-marker-insertion-type=, =nelisp-ec-set-marker-insertion-type=, =nelisp-ec-point-marker=, =nelisp-ec-search-forward=, =nelisp-ec-search-backward=, =nelisp-ec-looking-at-p=, =nelisp-ec-re-search-forward=, =nelisp-ec-re-search-backward=, =nelisp-ec-looking-at=, =nelisp-ec-match-data=, =nelisp-ec-match-beginning=, =nelisp-ec-match-end=, =emacs-buffer-current=, =emacs-buffer-buffer-list=, =emacs-buffer-buffers-by-mode=, =emacs-buffer-generate-new-buffer-name=, =emacs-buffer-make-local-variable=, =emacs-buffer-make-variable-buffer-local=, =emacs-buffer-buffer-local-variables=, =emacs-buffer-buffer-local-value=, =emacs-buffer-set-buffer-local-value=, =emacs-buffer-local-variable-p=, =emacs-buffer-local-variable-if-set-p=, =emacs-buffer-default-value=, =emacs-buffer-default-boundp=, =emacs-buffer-set-default=, =emacs-buffer-setq-default=, =emacs-buffer-kill-local-variable=, =emacs-buffer-kill-all-local-variables=, =emacs-buffer-buffer-undo-list=, =emacs-buffer-buffer-disable-undo=, =emacs-buffer-buffer-enable-undo=, =emacs-buffer-undo-boundary=, =emacs-buffer-record-insertion=, =emacs-buffer-record-deletion=, =emacs-buffer-undo=, =emacs-buffer-modify-without-undo=, =emacs-buffer-buffer-modified-p=, =emacs-buffer-set-buffer-modified-p=, =emacs-buffer-restore-buffer-modified-p=, =emacs-buffer-toggle-read-only-direct=, =emacs-buffer-buffer-chars-modified-tick=, =emacs-buffer-buffer-text-tick=, =emacs-buffer-bump-modified-tick=, =emacs-buffer-clone-indirect-buffer=, =emacs-buffer-buffer-base-buffer=, =make-text-buffer=, =text-buffer-insert-char-code=, =text-buffer-insert=, =text-buffer-delete=, =text-buffer-cursor=, =text-buffer-set-cursor=, =text-buffer-substring=, =text-buffer-search=, =text-buffer-length=, =text-buffer-multibyte-p=, =text-buffer-byte-length=, =emacs-buffer-put-text-property=, =emacs-buffer-add-text-properties=, =emacs-buffer-remove-text-properties=, =emacs-buffer-set-text-properties=, =emacs-buffer-get-text-property=, =emacs-buffer-text-property-at=, =emacs-buffer-text-property-view=, =emacs-buffer-next-property-change=, =emacs-buffer-previous-property-change=, =emacs-buffer-next-single-property-change=, =emacs-buffer-previous-single-property-change=, =emacs-buffer-get-char-property=, =emacs-buffer-overlayp=, =emacs-buffer-make-overlay=, =emacs-buffer-overlay-start=, =emacs-buffer-overlay-end=, =emacs-buffer-overlay-buffer=, =emacs-buffer-overlay-properties=, =emacs-buffer-overlay-put=, =emacs-buffer-overlay-get=, =emacs-buffer-move-overlay=, =emacs-buffer-delete-overlay=, =emacs-buffer-delete-all-overlays=, =emacs-buffer-overlays-at=, =emacs-buffer-overlays-in=, =emacs-buffer-overlay-lists=, =emacs-buffer-copy-overlay= |
+| =editing= | =emacs-undo-buffer-undo-list=, =emacs-undo-set-buffer-undo-list=, =emacs-undo-disabled-p=, =emacs-undo-reset=, =emacs-undo-undo-boundary=, =emacs-undo-record-insert=, =emacs-undo-record-delete=, =emacs-undo-primitive-undo=, =emacs-undo-undo=, =emacs-undo-undo-direct=, =emacs-undo-run-command=, =emacs-edit-self-insert-direct=, =emacs-edit-delete-backward-direct=, =emacs-edit-run-quoted-insert-command=, =emacs-edit-copy-region-direct=, =emacs-edit-kill-region-direct=, =emacs-edit-kill-line-direct=, =emacs-edit-kill-whole-line-direct=, =emacs-edit-delete-region-direct=, =emacs-edit-transform-region-direct=, =emacs-edit-run-transform-region-command=, =emacs-edit-toggle-line-comment-direct=, =emacs-edit-comment-dwim-direct=, =emacs-edit-yank-direct=, =emacs-edit-yank-pop-direct=, =emacs-edit-yank-pop-result-direct=, =emacs-edit-run-yank-pop-command=, =emacs-edit-set-mark-direct=, =emacs-edit-region-bounds-direct=, =emacs-edit-shift-selection-plan=, =emacs-edit-mouse-drag-region-plan=, =emacs-edit-mark-whole-buffer-direct=, =emacs-edit-exchange-point-and-mark-direct=, =emacs-edit-goto-position-direct=, =emacs-edit-select-word-at-direct=, =emacs-edit-run-select-word-at-command=, =emacs-edit-select-line-at-direct=, =emacs-edit-run-select-line-at-command=, =emacs-edit-page-scroll-direct=, =emacs-edit-forward-paragraph-direct=, =emacs-edit-backward-paragraph-direct=, =emacs-edit-mark-paragraph-direct=, =emacs-edit-run-mark-paragraph-command=, =emacs-edit-goto-buffer-boundary-direct=, =emacs-edit-forward-word-position=, =emacs-edit-kill-word-direct=, =emacs-edit-matching-paren-position-direct=, =emacs-edit-forward-sexp-direct=, =emacs-edit-backward-sexp-direct=, =emacs-edit-kill-sexp-direct=, =emacs-edit-forward-sentence-direct=, =emacs-edit-backward-sentence-direct=, =emacs-edit-kill-sentence-direct=, =emacs-edit-backward-kill-sentence-direct=, =emacs-edit-transpose-chars-direct=, =emacs-edit-delete-horizontal-space-direct=, =emacs-edit-just-one-space-direct=, =emacs-edit-delete-indentation-direct=, =emacs-edit-zap-to-char-direct=, =emacs-edit-sort-lines-direct=, =emacs-edit-delete-blank-lines-direct=, =emacs-edit-delete-trailing-whitespace-direct=, =emacs-edit-fill-paragraph-direct=, =emacs-edit-run-fill-paragraph-command=, =emacs-edit-count-words-in-range=, =emacs-edit-count-lines-in-range=, =emacs-edit-count-range=, =emacs-edit-dabbrev-word-at-point-prefix=, =emacs-edit-dabbrev-find-completion=, =emacs-edit-dabbrev-expand-direct=, =emacs-edit-tab-to-tab-stop-direct=, =emacs-edit-register-value=, =emacs-edit-copy-to-register-direct=, =emacs-edit-insert-register-direct=, =emacs-edit-point-to-register-direct=, =emacs-edit-jump-to-register-target=, =emacs-edit-goto-register-position-direct= |
+| =io= | =emacs-process-delegate=, =emacs-process-call-process=, =emacs-process-call-process-region=, =emacs-process-start-process=, =emacs-process-make-process=, =emacs-process-processp=, =emacs-process-process-list=, =emacs-process-process-status=, =emacs-process-process-exit-status=, =emacs-process-process-buffer=, =emacs-process-process-name=, =emacs-process-process-command=, =emacs-process-process-live-p=, =emacs-process-process-id=, =emacs-process-process-mark=, =emacs-process-set-process-filter=, =emacs-process-set-process-sentinel=, =emacs-process-accept-process-output=, =emacs-process-signal-process=, =emacs-process-kill-process=, =emacs-process-process-send-string=, =emacs-process-process-send-eof=, =emacs-process-delete-process=, =emacs-process-shell-command=, =emacs-process-shell-command-to-string=, =emacs-process-shell-file-name=, =emacs-process-shell-command-switch=, =emacs-standalone-version=, =emacs-standalone-force-mode=, =emacs-standalone-mode-p=, =emacs-standalone-active-p=, =emacs-standalone-register-primitive=, =emacs-standalone-unregister-primitive=, =emacs-standalone-has-primitive-p=, =emacs-standalone-registered-primitives=, =emacs-standalone-clear-registry=, =emacs-standalone-call-primitive=, =emacs-standalone-dispatch=, =emacs-standalone-init=, =emacs-standalone-uninit=, =emacs-standalone-status=, =nelisp-ec-access=, =nelisp-ec-file-name-absolute-p=, =nelisp-ec-substitute-in-file-name=, =nelisp-ec-file-name-directory=, =nelisp-ec-file-name-nondirectory=, =nelisp-ec-file-name-sans-extension=, =nelisp-ec-file-name-as-directory=, =nelisp-ec-expand-file-name=, =nelisp-ec-file-exists-p=, =nelisp-ec-file-readable-p=, =nelisp-ec-file-directory-p=, =nelisp-ec-file-attributes=, =nelisp-ec-directory-files=, =nelisp-ec-make-directory=, =nelisp-ec-delete-file=, =nelisp-ec-rename-file=, =nelisp-ec-file-executable-p=, =nelisp-ec-executable-find=, =nelisp-ec-insert-file-contents=, =nelisp-ec-write-region= |
+| =special-buffers= | =emacs-special-buffers-scratch-name=, =emacs-special-buffers-messages-name=, =emacs-special-buffers-warnings-name=, =emacs-special-buffers-scratch-initial-message=, =emacs-special-buffers-backend=, =emacs-special-buffers-register-backend=, =emacs-special-buffers-special-buffer-p=, =emacs-special-buffers-default-text=, =emacs-special-buffers-read-only-p=, =emacs-special-buffers-ensure-buffer=, =emacs-special-buffers-ensure-standard-buffers=, =emacs-special-buffers-display-plan=, =emacs-special-buffers-append-to-buffer=, =emacs-special-buffers-switch-to-buffer=, =emacs-special-buffers-message=, =emacs-special-buffers-display-warning=, =emacs-special-buffers-lwarn=, =emacs-special-buffers-warn= |
+| =core= | See the =core/mode=, =core/faces=, =core/frame=, =core/window=, =core/keymap=, =core/minibuffer=, =core/command-loop=, =core/help=, and =core/info= stable symbol lists below. |
+| =textmodes-stub= | =emacs-textmodes-fill-region=, =emacs-textmodes-count-matches= |
+
+Version 1 also exposes stable lazy package API symbols.  These are part of
+the external consumer contract but are not bound by =(require
+'nelisp-emacs)= alone:
+
+| Package | Feature to require | Symbols |
+|---------+--------------------+---------|
+| =text-core= | =nelisp-coding-jis-tables= | =nelisp-coding-shift-jis-x0208-decode-table=, =nelisp-coding-cp932-extension-decode-table=, =nelisp-coding-euc-jp-x0208-decode-table=, =nelisp-coding-euc-jp-x0212-decode-table=, =nelisp-coding-jis-tables-sha256= |
+| =core= | =emacs-tui-backend= | See the =core/tui-backend= stable lazy symbol list below. |
+| =core= | =emacs-tui-terminfo= | See the =core/tui-terminfo= stable lazy symbol list below. |
+| =core= | =emacs-tui-event= | See the =core/tui-event= stable lazy symbol list below. |
+
+Package owners may add symbols only after they have test coverage,
+consumer-facing documentation, and promotion queue review.
+
+The =text-core= stable package API covers the eager, display-free text
+substrate used by buffer/search/file packages: the
+standalone regex API through =nelisp-rx-compile=,
+=nelisp-rx-string-match=, =nelisp-rx-string-match-all=,
+=nelisp-rx-replace=, and =nelisp-rx-replace-all=; UTF-8 policy and
+codec helpers through =nelisp-coding-utf8-bom-emit-on-write=,
+=nelisp-coding-error-strategy=, =nelisp-coding-utf8-bom=,
+=nelisp-coding-utf8-replacement-char=,
+=nelisp-coding-utf8-max-codepoint=,
+=nelisp-coding-utf8-surrogate-min=,
+=nelisp-coding-utf8-surrogate-max=,
+=nelisp-coding-utf8-decode=, =nelisp-coding-utf8-encode=, and
+=nelisp-coding-utf8-encode-string=; Latin-1 policy and codecs through
+=nelisp-coding-latin1-replacement-codepoint=,
+=nelisp-coding-latin1-max-codepoint=,
+=nelisp-coding-latin1-decode=, =nelisp-coding-latin1-encode=, and
+=nelisp-coding-latin1-encode-string=; Japanese codec entry points and
+table lifecycle helpers through =nelisp-coding-jis-tables-verify-hash=,
+=nelisp-coding-jis-tables-rebuild=,
+=nelisp-coding-shift-jis-decode=,
+=nelisp-coding-shift-jis-encode=,
+=nelisp-coding-shift-jis-encode-string=,
+=nelisp-coding-euc-jp-decode=, =nelisp-coding-euc-jp-encode=, and
+=nelisp-coding-euc-jp-encode-string=; streaming and file-wrapper APIs
+through =nelisp-coding-stream-default-chunk-size=,
+=nelisp-coding-stream-state-create=,
+=nelisp-coding-stream-decode-chunk=,
+=nelisp-coding-stream-decode-finalize=,
+=nelisp-coding-stream-encode-chunk=,
+=nelisp-coding-stream-encode-finalize=,
+=nelisp-coding-read-file-with-encoding=, and
+=nelisp-coding-write-file-with-encoding=.  The lazy JIS table data
+bindings =nelisp-coding-shift-jis-x0208-decode-table=,
+=nelisp-coding-cp932-extension-decode-table=,
+=nelisp-coding-euc-jp-x0208-decode-table=,
+=nelisp-coding-euc-jp-x0212-decode-table=, and
+=nelisp-coding-jis-tables-sha256= are stable lazy package API surface:
+they intentionally require the lazy =nelisp-coding-jis-tables= feature and
+are not bound by =require 'nelisp-emacs=.  Promotion queue
+=stable-contract= on both eager and stable lazy names means they are part
+of the versioned consumer contract; consumers must require the entry's
+lazy feature before using stable lazy variables.
+The exact text-core stable symbol names are
+nelisp-rx-compile,
+nelisp-rx-string-match,
+nelisp-rx-string-match-all,
+nelisp-rx-replace,
+nelisp-rx-replace-all,
+nelisp-coding-utf8-bom-emit-on-write,
+nelisp-coding-error-strategy,
+nelisp-coding-latin1-replacement-codepoint,
+nelisp-coding-utf8-bom,
+nelisp-coding-utf8-replacement-char,
+nelisp-coding-utf8-max-codepoint,
+nelisp-coding-utf8-surrogate-min,
+nelisp-coding-utf8-surrogate-max,
+nelisp-coding-latin1-max-codepoint,
+nelisp-coding-utf8-decode,
+nelisp-coding-utf8-encode,
+nelisp-coding-utf8-encode-string,
+nelisp-coding-latin1-decode,
+nelisp-coding-latin1-encode,
+nelisp-coding-latin1-encode-string,
+nelisp-coding-jis-tables-verify-hash,
+nelisp-coding-jis-tables-rebuild,
+nelisp-coding-shift-jis-decode,
+nelisp-coding-shift-jis-encode,
+nelisp-coding-shift-jis-encode-string,
+nelisp-coding-euc-jp-decode,
+nelisp-coding-euc-jp-encode,
+nelisp-coding-euc-jp-encode-string,
+nelisp-coding-stream-default-chunk-size,
+nelisp-coding-stream-state-create,
+nelisp-coding-stream-decode-chunk,
+nelisp-coding-stream-decode-finalize,
+nelisp-coding-stream-encode-chunk,
+nelisp-coding-stream-encode-finalize,
+nelisp-coding-read-file-with-encoding,
+and
+nelisp-coding-write-file-with-encoding
+The exact stable lazy text-core symbol names are
+nelisp-coding-shift-jis-x0208-decode-table,
+nelisp-coding-cp932-extension-decode-table,
+nelisp-coding-euc-jp-x0208-decode-table,
+nelisp-coding-euc-jp-x0212-decode-table, and
+nelisp-coding-jis-tables-sha256
+
+The =io= stable package API covers the runtime-bound substrate that
+external consumers need when they want file, process, shell, and
+standalone primitive-dispatch behavior without loading the app.  Process delegation,
+synchronous execution, async lifecycle helpers, accessors, mutation hooks,
+and shell helpers are represented by =emacs-process-delegate=,
+=emacs-process-call-process=, =emacs-process-call-process-region=,
+=emacs-process-start-process=, =emacs-process-make-process=,
+=emacs-process-processp=, =emacs-process-process-list=,
+=emacs-process-process-status=, =emacs-process-process-exit-status=,
+=emacs-process-process-buffer=, =emacs-process-process-name=,
+=emacs-process-process-command=, =emacs-process-process-live-p=,
+=emacs-process-process-id=, =emacs-process-process-mark=,
+=emacs-process-set-process-filter=,
+=emacs-process-set-process-sentinel=,
+=emacs-process-accept-process-output=, =emacs-process-signal-process=,
+=emacs-process-kill-process=, =emacs-process-process-send-string=,
+=emacs-process-process-send-eof=, =emacs-process-delete-process=,
+=emacs-process-shell-command=,
+=emacs-process-shell-command-to-string=,
+=emacs-process-shell-file-name=, and
+=emacs-process-shell-command-switch=.  Standalone runtime dispatch is
+represented by =emacs-standalone-version=,
+=emacs-standalone-force-mode=, =emacs-standalone-mode-p=,
+=emacs-standalone-active-p=,
+=emacs-standalone-register-primitive=,
+=emacs-standalone-unregister-primitive=,
+=emacs-standalone-has-primitive-p=,
+=emacs-standalone-registered-primitives=,
+=emacs-standalone-clear-registry=,
+=emacs-standalone-call-primitive=, =emacs-standalone-dispatch=,
+=emacs-standalone-init=, =emacs-standalone-uninit=, and
+=emacs-standalone-status=.  File and path substrate helpers are
+represented by =nelisp-ec-access=,
+=nelisp-ec-file-name-absolute-p=,
+=nelisp-ec-substitute-in-file-name=,
+=nelisp-ec-file-name-directory=,
+=nelisp-ec-file-name-nondirectory=,
+=nelisp-ec-file-name-sans-extension=,
+=nelisp-ec-file-name-as-directory=,
+=nelisp-ec-expand-file-name=, =nelisp-ec-file-exists-p=,
+=nelisp-ec-file-readable-p=, =nelisp-ec-file-directory-p=,
+=nelisp-ec-file-attributes=, =nelisp-ec-directory-files=,
+=nelisp-ec-make-directory=, =nelisp-ec-delete-file=,
+=nelisp-ec-rename-file=, =nelisp-ec-file-executable-p=,
+=nelisp-ec-executable-find=, =nelisp-ec-insert-file-contents=, and
+=nelisp-ec-write-region=.  Promotion queue =stable-contract= on these
+names means they are part of the versioned consumer contract.
+The exact io stable symbol names are
+emacs-process-delegate,
+emacs-process-call-process,
+emacs-process-call-process-region,
+emacs-process-start-process,
+emacs-process-make-process,
+emacs-process-processp,
+emacs-process-process-list,
+emacs-process-process-status,
+emacs-process-process-exit-status,
+emacs-process-process-buffer,
+emacs-process-process-name,
+emacs-process-process-command,
+emacs-process-process-live-p,
+emacs-process-process-id,
+emacs-process-process-mark,
+emacs-process-set-process-filter,
+emacs-process-set-process-sentinel,
+emacs-process-accept-process-output,
+emacs-process-signal-process,
+emacs-process-kill-process,
+emacs-process-process-send-string,
+emacs-process-process-send-eof,
+emacs-process-delete-process,
+emacs-process-shell-command,
+emacs-process-shell-command-to-string,
+emacs-process-shell-file-name,
+emacs-process-shell-command-switch,
+emacs-standalone-version,
+emacs-standalone-force-mode,
+emacs-standalone-mode-p,
+emacs-standalone-active-p,
+emacs-standalone-register-primitive,
+emacs-standalone-unregister-primitive,
+emacs-standalone-has-primitive-p,
+emacs-standalone-registered-primitives,
+emacs-standalone-clear-registry,
+emacs-standalone-call-primitive,
+emacs-standalone-dispatch,
+emacs-standalone-init,
+emacs-standalone-uninit,
+emacs-standalone-status,
+nelisp-ec-access,
+nelisp-ec-file-name-absolute-p,
+nelisp-ec-substitute-in-file-name,
+nelisp-ec-file-name-directory,
+nelisp-ec-file-name-nondirectory,
+nelisp-ec-file-name-sans-extension,
+nelisp-ec-file-name-as-directory,
+nelisp-ec-expand-file-name,
+nelisp-ec-file-exists-p,
+nelisp-ec-file-readable-p,
+nelisp-ec-file-directory-p,
+nelisp-ec-file-attributes,
+nelisp-ec-directory-files,
+nelisp-ec-make-directory,
+nelisp-ec-delete-file,
+nelisp-ec-rename-file,
+nelisp-ec-file-executable-p,
+nelisp-ec-executable-find,
+nelisp-ec-insert-file-contents,
+and
+nelisp-ec-write-region.
+emacs-process-delegate
+emacs-process-call-process
+emacs-process-call-process-region
+emacs-process-start-process
+emacs-process-make-process
+emacs-process-processp
+emacs-process-process-list
+emacs-process-process-status
+emacs-process-process-exit-status
+emacs-process-process-buffer
+emacs-process-process-name
+emacs-process-process-command
+emacs-process-process-live-p
+emacs-process-process-id
+emacs-process-process-mark
+emacs-process-set-process-filter
+emacs-process-set-process-sentinel
+emacs-process-accept-process-output
+emacs-process-signal-process
+emacs-process-kill-process
+emacs-process-process-send-string
+emacs-process-process-send-eof
+emacs-process-delete-process
+emacs-process-shell-command
+emacs-process-shell-command-to-string
+emacs-process-shell-file-name
+emacs-process-shell-command-switch
+emacs-standalone-version
+emacs-standalone-force-mode
+emacs-standalone-mode-p
+emacs-standalone-active-p
+emacs-standalone-register-primitive
+emacs-standalone-unregister-primitive
+emacs-standalone-has-primitive-p
+emacs-standalone-registered-primitives
+emacs-standalone-clear-registry
+emacs-standalone-call-primitive
+emacs-standalone-dispatch
+emacs-standalone-init
+emacs-standalone-uninit
+emacs-standalone-status
+nelisp-ec-access
+nelisp-ec-file-name-absolute-p
+nelisp-ec-substitute-in-file-name
+nelisp-ec-file-name-directory
+nelisp-ec-file-name-nondirectory
+nelisp-ec-file-name-sans-extension
+nelisp-ec-file-name-as-directory
+nelisp-ec-expand-file-name
+nelisp-ec-file-exists-p
+nelisp-ec-file-readable-p
+nelisp-ec-file-directory-p
+nelisp-ec-file-attributes
+nelisp-ec-directory-files
+nelisp-ec-make-directory
+nelisp-ec-delete-file
+nelisp-ec-rename-file
+nelisp-ec-file-executable-p
+nelisp-ec-executable-find
+nelisp-ec-insert-file-contents
+nelisp-ec-write-region
+
+The =textmodes-stub= stable package API contains the deliberately small
+textmodes compatibility substrate used by
+MELPA-style callers that need a lightweight =fill-region= or
+=count-matches= entry point without loading the full upstream
+=lisp/textmodes/fill.el= and =lisp/replace.el= stacks.  The stable
+functions are =emacs-textmodes-fill-region= and
+=emacs-textmodes-count-matches=.  =emacs-textmodes-fill-region= performs
+greedy word wrapping of the current buffer region against =fill-column=
+and accepts the Emacs-shaped optional arguments for call-shape
+compatibility, but it does not claim full paragraph detection,
+justification, adaptive prefix, or refill integration.  The
+=emacs-textmodes-count-matches= candidate counts non-overlapping regexp
+matches between optional region bounds and returns the count without
+interactive echo-area reporting.  Promotion queue =stable-contract= on
+these names means they are part of the versioned consumer contract.
+The exact textmodes-stub stable symbol names are
+emacs-textmodes-fill-region and
+emacs-textmodes-count-matches.
+emacs-textmodes-fill-region
+emacs-textmodes-count-matches
+
+The =core/faces= stable package API is the small display-adjacent face
+registry substrate used before the full redisplay model is required.  It
+covers face lifecycle and predicates through
+=emacs-faces-facep=, =emacs-faces-make-face=, and =emacs-faces-reset=;
+attribute reads and writes through =emacs-faces-attribute= and
+=emacs-faces-set-attribute=; foreground/background convenience helpers
+through =emacs-faces-foreground=, =emacs-faces-background=,
+=emacs-faces-set-foreground=, and =emacs-faces-set-background=;
+enumeration through =emacs-faces-list=; and catch-all =defface= shape
+registration through =emacs-faces-defface=.  This stable surface stores
+face attributes in the shared face registry and invalidates the shared
+realize cache on mutation.  Contract version 1 does not claim full Emacs
+face inheritance, frame/display-class precedence, X resource fallback, or
+frame-parameter integration.  =emacs-faces-reset= remains a
+test/reinitialization helper rather than a normal consumer workflow.
+Promotion queue =stable-contract= on these names means they are part of
+the versioned consumer contract.
+The exact core/faces stable symbol names are
+emacs-faces-facep,
+emacs-faces-make-face,
+emacs-faces-attribute,
+emacs-faces-set-attribute,
+emacs-faces-foreground,
+emacs-faces-background,
+emacs-faces-set-foreground,
+emacs-faces-set-background,
+emacs-faces-list,
+emacs-faces-defface, and
+emacs-faces-reset.
+emacs-faces-facep
+emacs-faces-make-face
+emacs-faces-attribute
+emacs-faces-set-attribute
+emacs-faces-foreground
+emacs-faces-background
+emacs-faces-set-foreground
+emacs-faces-set-background
+emacs-faces-list
+emacs-faces-defface
+emacs-faces-reset
+
+The =core/mode= stable package API is the lightweight major-mode substrate
+used by app, feature, and package consumers before the full upstream mode
+machinery is available.  It covers current mode state through
+=emacs-mode-major-mode=, =emacs-mode-mode-name=, and
+=emacs-mode-set-major-mode=; reset and local-variable placeholder behavior
+through =emacs-mode-reset= and
+=emacs-mode-kill-all-local-variables=; hook execution through
+=emacs-mode-run-mode-hooks= and the base hook variables
+=emacs-mode-fundamental-mode-hook=, =emacs-mode-text-mode-hook=, and
+=emacs-mode-emacs-lisp-mode-hook=; built-in base modes through
+=emacs-mode-fundamental-mode=, =emacs-mode-text-mode=, and
+=emacs-mode-emacs-lisp-mode=; derived-mode creation through
+=emacs-mode-define-derived-mode=; and auto-mode dispatch through
+=emacs-mode-auto-mode-alist=, =emacs-mode-set-auto-mode-alist=, and
+=emacs-mode-set-auto-mode=.  This surface tracks mode state in the
+substrate-level globals and mirrors to unprefixed bridge variables when
+they are present.  Contract version 1 does not claim real per-buffer
+major-mode storage, full buffer-local variable killing, font-lock/syntax
+table integration, or mode-line updates.  Promotion queue
+=stable-contract= on these names means they are part of the versioned
+consumer contract.
+The exact core/mode stable symbol names are
+emacs-mode-major-mode,
+emacs-mode-mode-name,
+emacs-mode-set-major-mode,
+emacs-mode-reset,
+emacs-mode-run-mode-hooks,
+emacs-mode-kill-all-local-variables,
+emacs-mode-fundamental-mode,
+emacs-mode-text-mode,
+emacs-mode-emacs-lisp-mode,
+emacs-mode-define-derived-mode,
+emacs-mode-auto-mode-alist,
+emacs-mode-set-auto-mode-alist,
+emacs-mode-set-auto-mode,
+emacs-mode-fundamental-mode-hook,
+emacs-mode-text-mode-hook, and
+emacs-mode-emacs-lisp-mode-hook.
+emacs-mode-major-mode
+emacs-mode-mode-name
+emacs-mode-set-major-mode
+emacs-mode-reset
+emacs-mode-run-mode-hooks
+emacs-mode-kill-all-local-variables
+emacs-mode-fundamental-mode
+emacs-mode-text-mode
+emacs-mode-emacs-lisp-mode
+emacs-mode-define-derived-mode
+emacs-mode-auto-mode-alist
+emacs-mode-set-auto-mode-alist
+emacs-mode-set-auto-mode
+emacs-mode-fundamental-mode-hook
+emacs-mode-text-mode-hook
+emacs-mode-emacs-lisp-mode-hook
+
+The =core/frame= stable package API is the eager =core= frame registry
+and backend swap-in layer consumed by window, redisplay, command-loop,
+and TUI integration without loading the application.  It covers
+reset/backend selection through
+=emacs-frame-reset=, =emacs-frame-set-backend-dispatch=,
+=emacs-frame-current-backend=, and =emacs-frame-capability-p=; frame
+identity and registry queries through =emacs-frame-framep=,
+=emacs-frame-frame-live-p=, =emacs-frame-selected-frame=,
+=emacs-frame-frame-list=, and =emacs-frame-window-frame=; frame lifecycle
+through =emacs-frame-make-frame=, =emacs-frame-delete-frame=, and
+=emacs-frame-delete-other-frames=; dimensions and position through
+=emacs-frame-frame-width=, =emacs-frame-frame-height=,
+=emacs-frame-frame-char-width=, =emacs-frame-frame-char-height=,
+=emacs-frame-frame-pixel-width=, =emacs-frame-frame-pixel-height=,
+=emacs-frame-set-frame-size=, and =emacs-frame-set-frame-position=;
+parameter mutation through =emacs-frame-frame-parameters=,
+=emacs-frame-frame-parameter=, =emacs-frame-set-frame-parameter=, and
+=emacs-frame-modify-frame-parameters=; visibility, z-order, selection,
+focus, window lookup, and display dimensions through
+=emacs-frame-frame-visible-p=, =emacs-frame-make-frame-visible=,
+=emacs-frame-make-frame-invisible=, =emacs-frame-raise-frame=,
+=emacs-frame-lower-frame=, =emacs-frame-select-frame=,
+=emacs-frame-frame-focus=, =emacs-frame-frame-windows=,
+=emacs-frame-display-pixel-width=, and
+=emacs-frame-display-pixel-height=; and the TUI swap facade through
+=emacs-frame-use-tui-backend=, =emacs-frame-use-stub-backend=,
+=emacs-frame-tui-handle=, =emacs-frame-tui-event-handle=,
+=emacs-frame-tui-info=, =emacs-frame-tui-resize-hook=,
+=emacs-frame-tui-read-event-timeout-ms=, and
+=emacs-frame-tui-key-hook=.  Contract version 1 keeps frame identity as
+opaque struct handles with monotonically allocated IDs, stub defaults at
+80x24, at least one live frame, registry-only deletion in stub mode,
+dispatch-table routing for real backends, and TUI key/resize hooks as
+observability seams.  It does not claim full Emacs display-server frame
+semantics, multi-display behavior, frame configurations, tool/tab/scroll
+bars, font/glyph metrics, GUI positioning, or complete event-loop
+ownership.  Promotion queue =stable-contract= on these names means they
+are part of the versioned consumer contract.
+The exact core/frame stable symbol names are
+emacs-frame-reset,
+emacs-frame-set-backend-dispatch,
+emacs-frame-current-backend,
+emacs-frame-capability-p,
+emacs-frame-framep,
+emacs-frame-frame-live-p,
+emacs-frame-selected-frame,
+emacs-frame-frame-list,
+emacs-frame-window-frame,
+emacs-frame-make-frame,
+emacs-frame-delete-frame,
+emacs-frame-delete-other-frames,
+emacs-frame-frame-width,
+emacs-frame-frame-height,
+emacs-frame-frame-char-width,
+emacs-frame-frame-char-height,
+emacs-frame-frame-pixel-width,
+emacs-frame-frame-pixel-height,
+emacs-frame-set-frame-size,
+emacs-frame-set-frame-position,
+emacs-frame-frame-parameters,
+emacs-frame-frame-parameter,
+emacs-frame-set-frame-parameter,
+emacs-frame-modify-frame-parameters,
+emacs-frame-frame-visible-p,
+emacs-frame-make-frame-visible,
+emacs-frame-make-frame-invisible,
+emacs-frame-raise-frame,
+emacs-frame-lower-frame,
+emacs-frame-select-frame,
+emacs-frame-frame-focus,
+emacs-frame-frame-windows,
+emacs-frame-display-pixel-width,
+emacs-frame-display-pixel-height,
+emacs-frame-use-tui-backend,
+emacs-frame-use-stub-backend,
+emacs-frame-tui-handle,
+emacs-frame-tui-event-handle,
+emacs-frame-tui-info,
+emacs-frame-tui-resize-hook,
+emacs-frame-tui-read-event-timeout-ms, and
+emacs-frame-tui-key-hook.
+emacs-frame-reset
+emacs-frame-set-backend-dispatch
+emacs-frame-current-backend
+emacs-frame-capability-p
+emacs-frame-framep
+emacs-frame-frame-live-p
+emacs-frame-selected-frame
+emacs-frame-frame-list
+emacs-frame-window-frame
+emacs-frame-make-frame
+emacs-frame-delete-frame
+emacs-frame-delete-other-frames
+emacs-frame-frame-width
+emacs-frame-frame-height
+emacs-frame-frame-char-width
+emacs-frame-frame-char-height
+emacs-frame-frame-pixel-width
+emacs-frame-frame-pixel-height
+emacs-frame-set-frame-size
+emacs-frame-set-frame-position
+emacs-frame-frame-parameters
+emacs-frame-frame-parameter
+emacs-frame-set-frame-parameter
+emacs-frame-modify-frame-parameters
+emacs-frame-frame-visible-p
+emacs-frame-make-frame-visible
+emacs-frame-make-frame-invisible
+emacs-frame-raise-frame
+emacs-frame-lower-frame
+emacs-frame-select-frame
+emacs-frame-frame-focus
+emacs-frame-frame-windows
+emacs-frame-display-pixel-width
+emacs-frame-display-pixel-height
+emacs-frame-use-tui-backend
+emacs-frame-use-stub-backend
+emacs-frame-tui-handle
+emacs-frame-tui-event-handle
+emacs-frame-tui-info
+emacs-frame-tui-resize-hook
+emacs-frame-tui-read-event-timeout-ms
+emacs-frame-tui-key-hook
+
+The =core/window= stable package API is the eager =core= window-tree
+model used by buffer UI, redisplay, command-loop, frame integration, and
+application frontends without loading the application.  It covers reset
+and window identity through
+=emacs-window-reset=, =emacs-window-windowp=,
+=emacs-window-selected-window=, and =emacs-window-get-window=; buffer and
+frame lookup through =emacs-window-window-buffer=,
+=emacs-window-window-frame=, =emacs-window-window-list=,
+=emacs-window-window-list-1=, =emacs-window-next-window=,
+=emacs-window-previous-window=, =emacs-window-get-buffer-window=, and
+=emacs-window-get-buffer-window-list=; splitting/deletion and balancing
+through =emacs-window-split-window=,
+=emacs-window-split-window-vertically=,
+=emacs-window-split-window-horizontally=,
+=emacs-window-one-window-p=, =emacs-window-delete-window=,
+=emacs-window-delete-other-windows=, =emacs-window-delete-windows-on=,
+and =emacs-window-balance-windows=; geometry and cached point/start
+through =emacs-window-window-width=, =emacs-window-window-height=,
+=emacs-window-window-pixel-width=, =emacs-window-window-pixel-height=,
+=emacs-window-window-start=, =emacs-window-window-end=,
+=emacs-window-window-point=, =emacs-window-window-edges=, and
+=emacs-window-window-resizable=; window-local mutation and configuration
+snapshots through =emacs-window-set-window-buffer=,
+=emacs-window-set-window-point=, =emacs-window-set-window-start=,
+=emacs-window-window-parameter=, =emacs-window-set-window-parameter=,
+=emacs-window-current-window-configuration=, and
+=emacs-window-set-window-configuration=; selection helpers through
+=emacs-window-other-window-impl=, =emacs-window-select-window=,
+=emacs-window-save-selected-window=, and
+=emacs-window-with-selected-window=; newer Emacs helper aliases through
+=emacs-window-split-window-below=, =emacs-window-split-window-right=,
+=emacs-window-window-live-p=, =emacs-window-window-valid-p=,
+=emacs-window-frame-selected-window=, =emacs-window-other-window=,
+=emacs-window-enlarge-window=, and =emacs-window-shrink-window=; and the
+minimal popup/display workflow through =emacs-window-display-buffer=,
+=emacs-window-pop-to-buffer=, and =emacs-window-quit-window=.  Contract
+version 1 models a single implicit frame, leaf/split window nodes,
+tree-order traversal, coarse column/line geometry, cached window point
+and start, deep-copy window configurations, and a small special-buffer
+popup policy.  It does not claim minibuffer windows, dedicated window
+semantics, full display-buffer action alists, multi-frame/all-frames
+behavior, scroll-bar/fringe/header-line decorations, pixel-accurate
+redisplay geometry, or complete Emacs window configuration equivalence.
+Promotion queue =stable-contract= on these names means they are part of
+the versioned consumer contract.
+The exact core/window stable symbol names are
+emacs-window-reset,
+emacs-window-windowp,
+emacs-window-selected-window,
+emacs-window-get-window,
+emacs-window-window-buffer,
+emacs-window-window-frame,
+emacs-window-window-list,
+emacs-window-window-list-1,
+emacs-window-next-window,
+emacs-window-previous-window,
+emacs-window-get-buffer-window,
+emacs-window-get-buffer-window-list,
+emacs-window-split-window,
+emacs-window-split-window-vertically,
+emacs-window-split-window-horizontally,
+emacs-window-one-window-p,
+emacs-window-delete-window,
+emacs-window-delete-other-windows,
+emacs-window-delete-windows-on,
+emacs-window-balance-windows,
+emacs-window-window-width,
+emacs-window-window-height,
+emacs-window-window-pixel-width,
+emacs-window-window-pixel-height,
+emacs-window-window-start,
+emacs-window-window-end,
+emacs-window-window-point,
+emacs-window-window-edges,
+emacs-window-window-resizable,
+emacs-window-set-window-buffer,
+emacs-window-set-window-point,
+emacs-window-set-window-start,
+emacs-window-window-parameter,
+emacs-window-set-window-parameter,
+emacs-window-current-window-configuration,
+emacs-window-set-window-configuration,
+emacs-window-other-window-impl,
+emacs-window-select-window,
+emacs-window-save-selected-window,
+emacs-window-with-selected-window,
+emacs-window-split-window-below,
+emacs-window-split-window-right,
+emacs-window-window-live-p,
+emacs-window-window-valid-p,
+emacs-window-frame-selected-window,
+emacs-window-other-window,
+emacs-window-enlarge-window,
+emacs-window-shrink-window,
+emacs-window-display-buffer,
+emacs-window-pop-to-buffer, and
+emacs-window-quit-window.
+emacs-window-reset
+emacs-window-windowp
+emacs-window-selected-window
+emacs-window-get-window
+emacs-window-window-buffer
+emacs-window-window-frame
+emacs-window-window-list
+emacs-window-window-list-1
+emacs-window-next-window
+emacs-window-previous-window
+emacs-window-get-buffer-window
+emacs-window-get-buffer-window-list
+emacs-window-split-window
+emacs-window-split-window-vertically
+emacs-window-split-window-horizontally
+emacs-window-one-window-p
+emacs-window-delete-window
+emacs-window-delete-other-windows
+emacs-window-delete-windows-on
+emacs-window-balance-windows
+emacs-window-window-width
+emacs-window-window-height
+emacs-window-window-pixel-width
+emacs-window-window-pixel-height
+emacs-window-window-start
+emacs-window-window-end
+emacs-window-window-point
+emacs-window-window-edges
+emacs-window-window-resizable
+emacs-window-set-window-buffer
+emacs-window-set-window-point
+emacs-window-set-window-start
+emacs-window-window-parameter
+emacs-window-set-window-parameter
+emacs-window-current-window-configuration
+emacs-window-set-window-configuration
+emacs-window-other-window-impl
+emacs-window-select-window
+emacs-window-save-selected-window
+emacs-window-with-selected-window
+emacs-window-split-window-below
+emacs-window-split-window-right
+emacs-window-window-live-p
+emacs-window-window-valid-p
+emacs-window-frame-selected-window
+emacs-window-other-window
+emacs-window-enlarge-window
+emacs-window-shrink-window
+emacs-window-display-buffer
+emacs-window-pop-to-buffer
+emacs-window-quit-window
+
+The =core/keymap= stable package API is the eager =core= keymap substrate
+used by command-loop, minibuffer, TUI input, and frontends without
+loading the application.  It covers key syntax parsing and the newer
+string-key helpers through
+=emacs-keymap-key-parse=, =emacs-keymap-key-valid-p=,
+=emacs-keymap-keymap-set=, =emacs-keymap-keymap-lookup=,
+=emacs-keymap-keymap-unset=,
+=emacs-keymap-keymap-global-set=,
+=emacs-keymap-keymap-local-set=,
+=emacs-keymap-keymap-global-unset=, and
+=emacs-keymap-keymap-local-unset=; map construction and mutation through
+=emacs-keymap-make-sparse-keymap=, =emacs-keymap-make-keymap=,
+=emacs-keymap-keymapp=, =emacs-keymap-copy-keymap=,
+=emacs-keymap-define-key=, =emacs-keymap-define-key-after=,
+=emacs-keymap-lookup-key=, =emacs-keymap-lookup-with-parent=,
+=emacs-keymap-keymap-parent=, =emacs-keymap-set-keymap-parent=, and
+=emacs-keymap-keymap-prompt=; full-keymap and TUI fast paths through
+=emacs-keymap-full-slot=, =emacs-keymap-direct-slot-vector=,
+=emacs-keymap-define-key-fast=,
+=emacs-keymap-make-compatible-full-keymap=,
+=emacs-keymap-build-single-key-cache=,
+=emacs-keymap-install-overriding-terminal-map=, and
+=emacs-keymap-clear-overriding-terminal-map=; active map state through
+=emacs-keymap-current-global-map=, =emacs-keymap-use-global-map=,
+=emacs-keymap-current-local-map=, =emacs-keymap-use-local-map=,
+=emacs-keymap-chain-at=, =emacs-keymap-key-binding=,
+=emacs-keymap-chain-overlay-provider=,
+=emacs-keymap-chain-textprop-provider=,
+=emacs-keymap-global-map=, =emacs-keymap-overriding-local-map=,
+=emacs-keymap-overriding-terminal-local-map=,
+=emacs-keymap-minor-mode-overriding-map-alist=,
+=emacs-keymap-minor-mode-map-alist=,
+=emacs-keymap-emulation-mode-map-alists=,
+=emacs-keymap-contract-version=,
+=emacs-keymap-chain-inject-contract-version=, and
+=emacs-keymap-chain-with-textprop=; lookup and introspection helpers
+through =emacs-keymap-map-keymap=,
+=emacs-keymap-where-is-internal=,
+=emacs-keymap-substitute-key-definition=, and
+=emacs-keymap-key-description=; and the minimal reader state through
+=emacs-keymap-this-command-keys=,
+=emacs-keymap-this-command-keys-vector=, and
+=emacs-keymap-read-key-sequence=.  Contract version 1 models sparse
+maps, compatible full-keymap char-table slots, parent traversal, global
+and local map selection, overriding maps, minor/emulation mode map
+precedence, opt-in overlay/text-property injection providers, common
+kbd-style key syntax, and a simple event-reader adapter.  It does not
+claim complete GNU Emacs event decoding, mouse event normalization,
+function-key remap completion, menu item semantics, complete =kbd=
+syntax beyond the delegated parser/fallback subset, default overlay or
+text-property provider ownership, command remapping, or terminal input
+ownership.  Promotion queue =stable-contract= on these names means they
+are part of the versioned consumer contract.
+The exact core/keymap stable symbol names are
+emacs-keymap-key-parse,
+emacs-keymap-key-valid-p,
+emacs-keymap-keymap-set,
+emacs-keymap-keymap-lookup,
+emacs-keymap-keymap-unset,
+emacs-keymap-keymap-global-set,
+emacs-keymap-keymap-local-set,
+emacs-keymap-keymap-global-unset,
+emacs-keymap-keymap-local-unset,
+emacs-keymap-make-sparse-keymap,
+emacs-keymap-make-keymap,
+emacs-keymap-keymapp,
+emacs-keymap-copy-keymap,
+emacs-keymap-define-key,
+emacs-keymap-full-slot,
+emacs-keymap-direct-slot-vector,
+emacs-keymap-define-key-fast,
+emacs-keymap-make-compatible-full-keymap,
+emacs-keymap-build-single-key-cache,
+emacs-keymap-install-overriding-terminal-map,
+emacs-keymap-clear-overriding-terminal-map,
+emacs-keymap-define-key-after,
+emacs-keymap-lookup-with-parent,
+emacs-keymap-lookup-key,
+emacs-keymap-keymap-parent,
+emacs-keymap-set-keymap-parent,
+emacs-keymap-keymap-prompt,
+emacs-keymap-current-global-map,
+emacs-keymap-use-global-map,
+emacs-keymap-current-local-map,
+emacs-keymap-use-local-map,
+emacs-keymap-chain-at,
+emacs-keymap-key-binding,
+emacs-keymap-map-keymap,
+emacs-keymap-where-is-internal,
+emacs-keymap-substitute-key-definition,
+emacs-keymap-key-description,
+emacs-keymap-this-command-keys,
+emacs-keymap-this-command-keys-vector,
+emacs-keymap-read-key-sequence,
+emacs-keymap-chain-overlay-provider,
+emacs-keymap-chain-textprop-provider,
+emacs-keymap-global-map,
+emacs-keymap-overriding-local-map,
+emacs-keymap-overriding-terminal-local-map,
+emacs-keymap-minor-mode-overriding-map-alist,
+emacs-keymap-minor-mode-map-alist,
+emacs-keymap-emulation-mode-map-alists,
+emacs-keymap-contract-version,
+emacs-keymap-chain-inject-contract-version, and
+emacs-keymap-chain-with-textprop.
+emacs-keymap-key-parse
+emacs-keymap-key-valid-p
+emacs-keymap-keymap-set
+emacs-keymap-keymap-lookup
+emacs-keymap-keymap-unset
+emacs-keymap-keymap-global-set
+emacs-keymap-keymap-local-set
+emacs-keymap-keymap-global-unset
+emacs-keymap-keymap-local-unset
+emacs-keymap-make-sparse-keymap
+emacs-keymap-make-keymap
+emacs-keymap-keymapp
+emacs-keymap-copy-keymap
+emacs-keymap-define-key
+emacs-keymap-full-slot
+emacs-keymap-direct-slot-vector
+emacs-keymap-define-key-fast
+emacs-keymap-make-compatible-full-keymap
+emacs-keymap-build-single-key-cache
+emacs-keymap-install-overriding-terminal-map
+emacs-keymap-clear-overriding-terminal-map
+emacs-keymap-define-key-after
+emacs-keymap-lookup-with-parent
+emacs-keymap-lookup-key
+emacs-keymap-keymap-parent
+emacs-keymap-set-keymap-parent
+emacs-keymap-keymap-prompt
+emacs-keymap-current-global-map
+emacs-keymap-use-global-map
+emacs-keymap-current-local-map
+emacs-keymap-use-local-map
+emacs-keymap-chain-at
+emacs-keymap-key-binding
+emacs-keymap-map-keymap
+emacs-keymap-where-is-internal
+emacs-keymap-substitute-key-definition
+emacs-keymap-key-description
+emacs-keymap-this-command-keys
+emacs-keymap-this-command-keys-vector
+emacs-keymap-read-key-sequence
+emacs-keymap-chain-overlay-provider
+emacs-keymap-chain-textprop-provider
+emacs-keymap-global-map
+emacs-keymap-overriding-local-map
+emacs-keymap-overriding-terminal-local-map
+emacs-keymap-minor-mode-overriding-map-alist
+emacs-keymap-minor-mode-map-alist
+emacs-keymap-emulation-mode-map-alists
+emacs-keymap-contract-version
+emacs-keymap-chain-inject-contract-version
+emacs-keymap-chain-with-textprop
+
+The =core/minibuffer= stable package API is the eager =core= minibuffer,
+completion, confirmation, and frontend-neutral
+GUI minibuffer policy substrate used by command-loop, buffer UI,
+completion UI, file bridge adapters, and application frontends without
+loading the application.  It covers deterministic reader state and basic
+minibuffer variables through =emacs-minibuffer-history=,
+=emacs-minibuffer-default=, =emacs-minibuffer-prompt-properties=,
+=emacs-minibuffer-default-history-symbol=,
+=emacs-minibuffer-message-timeout=,
+=emacs-minibuffer-completion-ignore-case=,
+=emacs-minibuffer-feed-input=, and =emacs-minibuffer-reset=; core and
+typed readers through =emacs-minibuffer-read-from-minibuffer=,
+=emacs-minibuffer-read-string=,
+=emacs-minibuffer-read-no-blanks-input=,
+=emacs-minibuffer-read-key=, =emacs-minibuffer-read-buffer=,
+=emacs-minibuffer-read-file-name=,
+=emacs-minibuffer-read-directory-name=,
+=emacs-minibuffer-read-passwd=, and
+=emacs-minibuffer-read-number=; confirmation and completion through
+=emacs-minibuffer-y-or-n-p=, =emacs-minibuffer-yes-or-no-p=,
+=emacs-minibuffer-completing-read=,
+=emacs-minibuffer-try-completion=,
+=emacs-minibuffer-all-completions=, and
+=emacs-minibuffer-test-completion=; minibuffer state/control through
+=emacs-minibuffer-minibufferp=,
+=emacs-minibuffer-active-minibuffer-window=,
+=emacs-minibuffer-minibuffer-window=,
+=emacs-minibuffer-minibuffer-prompt=,
+=emacs-minibuffer-minibuffer-contents=,
+=emacs-minibuffer-minibuffer-prompt-end=,
+=emacs-minibuffer-minibuffer-prompt-width=,
+=emacs-minibuffer-exit-minibuffer=,
+=emacs-minibuffer-abort-recursive-edit=, and
+=emacs-minibuffer-minibuffer-message=; GUI backend registration and
+context sharing through =emacs-minibuffer-gui-backend=,
+=emacs-minibuffer-gui-standard-backend-keys=,
+=emacs-minibuffer-gui-register-backend=,
+=emacs-minibuffer-gui-standard-backend=,
+=emacs-minibuffer-gui-register-standard-backend=,
+=emacs-minibuffer-gui-backend-call=,
+=emacs-minibuffer-gui-refresh-context-from-backend=,
+=emacs-minibuffer-gui-purpose=,
+=emacs-minibuffer-gui-prompt=,
+=emacs-minibuffer-gui-history-symbol=,
+=emacs-minibuffer-gui-completion-table=,
+=emacs-minibuffer-gui-collection=,
+=emacs-minibuffer-gui-initial-input=, and
+=emacs-minibuffer-gui-require-match=; GUI start/read/commit policy
+through =emacs-minibuffer-gui-history-symbol-for-purpose=,
+=emacs-minibuffer-gui-read-purpose-names=,
+=emacs-minibuffer-gui-purpose-uses-read-p=,
+=emacs-minibuffer-gui-keymap-entry=,
+=emacs-minibuffer-gui-start-from-keymap=,
+=emacs-minibuffer-gui-start-spec-from-keymaps=,
+=emacs-minibuffer-gui-start-spec=,
+=emacs-minibuffer-gui-begin-read=,
+=emacs-minibuffer-gui-set-initial-input=,
+=emacs-minibuffer-gui-commit-read=,
+=emacs-minibuffer-gui-complete=,
+=emacs-minibuffer-gui-read-from-minibuffer=,
+=emacs-minibuffer-gui-completing-read=,
+=emacs-minibuffer-gui-start-purpose-read=,
+=emacs-minibuffer-gui-maybe-start-from-keymap=,
+=emacs-minibuffer-gui-maybe-start-from-keymaps=,
+=emacs-minibuffer-gui-start-current-context=, and
+=emacs-minibuffer-gui-maybe-start-current-context=; GUI key/text state
+planning through =emacs-minibuffer-gui-abort-key-names=,
+=emacs-minibuffer-gui-abort-key-p=,
+=emacs-minibuffer-gui-key-plan=,
+=emacs-minibuffer-gui-handle-key=,
+=emacs-minibuffer-gui-handle-key-current-context=,
+=emacs-minibuffer-gui-text-delete-backward-state=,
+=emacs-minibuffer-gui-text-insert-state=,
+=emacs-minibuffer-gui-complete-first-line-state=,
+=emacs-minibuffer-gui-session-begin-state=,
+=emacs-minibuffer-gui-session-initial-input-state=,
+=emacs-minibuffer-gui-session-commit-state=,
+=emacs-minibuffer-gui-enter-state=, and
+=emacs-minibuffer-gui-exit-state=; GUI candidate policy through
+=emacs-minibuffer-gui-collection-lines=,
+=emacs-minibuffer-gui-candidate-source-kind=,
+=emacs-minibuffer-gui-filter-candidate-lines=,
+=emacs-minibuffer-gui-candidates-for-purpose=,
+=emacs-minibuffer-gui-filtered-candidates-for-purpose=,
+=emacs-minibuffer-gui-candidate-refresh-state=,
+=emacs-minibuffer-gui-completion-candidates=,
+=emacs-minibuffer-gui-longest-common-prefix=,
+=emacs-minibuffer-gui-candidate-suffix=, and
+=emacs-minibuffer-gui-tab-completion-plan=; and GUI command/follow-up
+sequencing through
+=emacs-minibuffer-gui-extended-command-followup-alist=,
+=emacs-minibuffer-gui-extended-command-followup=,
+=emacs-minibuffer-gui-extended-command-commit-spec=,
+=emacs-minibuffer-gui-replace-followup-alist=,
+=emacs-minibuffer-gui-replace-followup=,
+=emacs-minibuffer-gui-replace-commit-command-alist=,
+=emacs-minibuffer-gui-replace-commit-command=,
+=emacs-minibuffer-gui-replace-from-store-state=,
+=emacs-minibuffer-gui-replace-from-clear-state=,
+=emacs-minibuffer-gui-command-commit-spec=,
+=emacs-minibuffer-gui-finish-followup=,
+=emacs-minibuffer-gui-execute-command-spec=, and
+=emacs-minibuffer-gui-finish-read=.  Contract version 1 models a
+single in-process minibuffer stack, deterministic queued input for
+library tests, basic history push semantics, list/alist/obarray/function
+completion tables, require-match checks, case-folding via
+=emacs-minibuffer-completion-ignore-case=, a single lazily allocated
+minibuffer window, and frontend-neutral GUI state plans whose backend
+callbacks own transport-specific mutation.  It does not claim full GNU
+Emacs recursive-edit behavior, asynchronous user input ownership,
+interactive redisplay, resize-mini-windows, prompt rendering/pixel
+layout, complete completion styles/categories/metadata, full history
+navigation, password echo suppression beyond the shared reader policy,
+multi-frame minibuffer windows, or frontend transport side effects.
+Promotion queue =stable-contract= on these names means they are part of
+the versioned consumer contract after requiring the facade.
+The exact core/minibuffer stable symbol names are
+emacs-minibuffer-gui-filtered-candidates-for-purpose,
+emacs-minibuffer-gui-candidate-refresh-state,
+emacs-minibuffer-gui-completion-candidates,
+emacs-minibuffer-gui-longest-common-prefix,
+emacs-minibuffer-gui-candidate-suffix,
+emacs-minibuffer-gui-tab-completion-plan,
+emacs-minibuffer-gui-key-plan,
+emacs-minibuffer-gui-text-delete-backward-state,
+emacs-minibuffer-gui-text-insert-state,
+emacs-minibuffer-gui-complete-first-line-state,
+emacs-minibuffer-gui-session-begin-state,
+emacs-minibuffer-gui-session-initial-input-state,
+emacs-minibuffer-gui-session-commit-state,
+emacs-minibuffer-gui-enter-state,
+emacs-minibuffer-gui-exit-state,
+emacs-minibuffer-gui-begin-read,
+emacs-minibuffer-gui-set-initial-input,
+emacs-minibuffer-gui-commit-read,
+emacs-minibuffer-gui-complete,
+emacs-minibuffer-gui-abort-key-p,
+emacs-minibuffer-gui-maybe-start-from-keymap,
+emacs-minibuffer-gui-maybe-start-from-keymaps,
+emacs-minibuffer-gui-start-current-context,
+emacs-minibuffer-gui-maybe-start-current-context,
+emacs-minibuffer-gui-handle-key,
+emacs-minibuffer-gui-handle-key-current-context,
+emacs-minibuffer-gui-read-from-minibuffer,
+emacs-minibuffer-gui-completing-read,
+emacs-minibuffer-gui-start-purpose-read,
+emacs-minibuffer-read-from-minibuffer,
+emacs-minibuffer-read-string,
+emacs-minibuffer-read-no-blanks-input,
+emacs-minibuffer-read-key,
+emacs-minibuffer-read-buffer,
+emacs-minibuffer-read-file-name,
+emacs-minibuffer-read-directory-name,
+emacs-minibuffer-read-passwd,
+emacs-minibuffer-read-number,
+emacs-minibuffer-y-or-n-p,
+emacs-minibuffer-yes-or-no-p,
+emacs-minibuffer-completing-read,
+emacs-minibuffer-try-completion,
+emacs-minibuffer-all-completions,
+emacs-minibuffer-test-completion,
+emacs-minibuffer-minibufferp,
+emacs-minibuffer-active-minibuffer-window,
+emacs-minibuffer-minibuffer-window,
+emacs-minibuffer-minibuffer-prompt,
+emacs-minibuffer-minibuffer-contents,
+emacs-minibuffer-minibuffer-prompt-end,
+emacs-minibuffer-minibuffer-prompt-width,
+emacs-minibuffer-exit-minibuffer,
+emacs-minibuffer-abort-recursive-edit,
+emacs-minibuffer-minibuffer-message,
+emacs-minibuffer-feed-input,
+emacs-minibuffer-reset,
+emacs-minibuffer-gui-register-backend,
+emacs-minibuffer-gui-standard-backend,
+emacs-minibuffer-gui-register-standard-backend,
+emacs-minibuffer-gui-backend-call,
+emacs-minibuffer-gui-refresh-context-from-backend,
+emacs-minibuffer-gui-history-symbol-for-purpose,
+emacs-minibuffer-gui-purpose-uses-read-p,
+emacs-minibuffer-gui-keymap-entry,
+emacs-minibuffer-gui-start-from-keymap,
+emacs-minibuffer-gui-start-spec-from-keymaps,
+emacs-minibuffer-gui-start-spec,
+emacs-minibuffer-gui-extended-command-followup,
+emacs-minibuffer-gui-extended-command-commit-spec,
+emacs-minibuffer-gui-replace-followup,
+emacs-minibuffer-gui-replace-commit-command,
+emacs-minibuffer-gui-replace-from-store-state,
+emacs-minibuffer-gui-replace-from-clear-state,
+emacs-minibuffer-gui-command-commit-spec,
+emacs-minibuffer-gui-finish-followup,
+emacs-minibuffer-gui-execute-command-spec,
+emacs-minibuffer-gui-finish-read,
+emacs-minibuffer-gui-collection-lines,
+emacs-minibuffer-gui-candidate-source-kind,
+emacs-minibuffer-gui-filter-candidate-lines,
+emacs-minibuffer-gui-candidates-for-purpose,
+emacs-minibuffer-gui-abort-key-names,
+emacs-minibuffer-history,
+emacs-minibuffer-default,
+emacs-minibuffer-gui-backend,
+emacs-minibuffer-gui-standard-backend-keys,
+emacs-minibuffer-gui-purpose,
+emacs-minibuffer-gui-prompt,
+emacs-minibuffer-gui-history-symbol,
+emacs-minibuffer-gui-completion-table,
+emacs-minibuffer-gui-collection,
+emacs-minibuffer-gui-initial-input,
+emacs-minibuffer-gui-require-match,
+emacs-minibuffer-gui-read-purpose-names,
+emacs-minibuffer-gui-extended-command-followup-alist,
+emacs-minibuffer-gui-replace-followup-alist,
+emacs-minibuffer-gui-replace-commit-command-alist,
+emacs-minibuffer-prompt-properties,
+emacs-minibuffer-default-history-symbol,
+emacs-minibuffer-message-timeout, and
+emacs-minibuffer-completion-ignore-case.
+emacs-minibuffer-gui-filtered-candidates-for-purpose
+emacs-minibuffer-gui-candidate-refresh-state
+emacs-minibuffer-gui-completion-candidates
+emacs-minibuffer-gui-longest-common-prefix
+emacs-minibuffer-gui-candidate-suffix
+emacs-minibuffer-gui-tab-completion-plan
+emacs-minibuffer-gui-key-plan
+emacs-minibuffer-gui-text-delete-backward-state
+emacs-minibuffer-gui-text-insert-state
+emacs-minibuffer-gui-complete-first-line-state
+emacs-minibuffer-gui-session-begin-state
+emacs-minibuffer-gui-session-initial-input-state
+emacs-minibuffer-gui-session-commit-state
+emacs-minibuffer-gui-enter-state
+emacs-minibuffer-gui-exit-state
+emacs-minibuffer-gui-begin-read
+emacs-minibuffer-gui-set-initial-input
+emacs-minibuffer-gui-commit-read
+emacs-minibuffer-gui-complete
+emacs-minibuffer-gui-abort-key-p
+emacs-minibuffer-gui-maybe-start-from-keymap
+emacs-minibuffer-gui-maybe-start-from-keymaps
+emacs-minibuffer-gui-start-current-context
+emacs-minibuffer-gui-maybe-start-current-context
+emacs-minibuffer-gui-handle-key
+emacs-minibuffer-gui-handle-key-current-context
+emacs-minibuffer-gui-read-from-minibuffer
+emacs-minibuffer-gui-completing-read
+emacs-minibuffer-gui-start-purpose-read
+emacs-minibuffer-read-from-minibuffer
+emacs-minibuffer-read-string
+emacs-minibuffer-read-no-blanks-input
+emacs-minibuffer-read-key
+emacs-minibuffer-read-buffer
+emacs-minibuffer-read-file-name
+emacs-minibuffer-read-directory-name
+emacs-minibuffer-read-passwd
+emacs-minibuffer-read-number
+emacs-minibuffer-y-or-n-p
+emacs-minibuffer-yes-or-no-p
+emacs-minibuffer-completing-read
+emacs-minibuffer-try-completion
+emacs-minibuffer-all-completions
+emacs-minibuffer-test-completion
+emacs-minibuffer-minibufferp
+emacs-minibuffer-active-minibuffer-window
+emacs-minibuffer-minibuffer-window
+emacs-minibuffer-minibuffer-prompt
+emacs-minibuffer-minibuffer-contents
+emacs-minibuffer-minibuffer-prompt-end
+emacs-minibuffer-minibuffer-prompt-width
+emacs-minibuffer-exit-minibuffer
+emacs-minibuffer-abort-recursive-edit
+emacs-minibuffer-minibuffer-message
+emacs-minibuffer-feed-input
+emacs-minibuffer-reset
+emacs-minibuffer-gui-register-backend
+emacs-minibuffer-gui-standard-backend
+emacs-minibuffer-gui-register-standard-backend
+emacs-minibuffer-gui-backend-call
+emacs-minibuffer-gui-refresh-context-from-backend
+emacs-minibuffer-gui-history-symbol-for-purpose
+emacs-minibuffer-gui-purpose-uses-read-p
+emacs-minibuffer-gui-keymap-entry
+emacs-minibuffer-gui-start-from-keymap
+emacs-minibuffer-gui-start-spec-from-keymaps
+emacs-minibuffer-gui-start-spec
+emacs-minibuffer-gui-extended-command-followup
+emacs-minibuffer-gui-extended-command-commit-spec
+emacs-minibuffer-gui-replace-followup
+emacs-minibuffer-gui-replace-commit-command
+emacs-minibuffer-gui-replace-from-store-state
+emacs-minibuffer-gui-replace-from-clear-state
+emacs-minibuffer-gui-command-commit-spec
+emacs-minibuffer-gui-finish-followup
+emacs-minibuffer-gui-execute-command-spec
+emacs-minibuffer-gui-finish-read
+emacs-minibuffer-gui-collection-lines
+emacs-minibuffer-gui-candidate-source-kind
+emacs-minibuffer-gui-filter-candidate-lines
+emacs-minibuffer-gui-candidates-for-purpose
+emacs-minibuffer-gui-abort-key-names
+emacs-minibuffer-history
+emacs-minibuffer-default
+emacs-minibuffer-gui-backend
+emacs-minibuffer-gui-standard-backend-keys
+emacs-minibuffer-gui-purpose
+emacs-minibuffer-gui-prompt
+emacs-minibuffer-gui-history-symbol
+emacs-minibuffer-gui-completion-table
+emacs-minibuffer-gui-collection
+emacs-minibuffer-gui-initial-input
+emacs-minibuffer-gui-require-match
+emacs-minibuffer-gui-read-purpose-names
+emacs-minibuffer-gui-extended-command-followup-alist
+emacs-minibuffer-gui-replace-followup-alist
+emacs-minibuffer-gui-replace-commit-command-alist
+emacs-minibuffer-prompt-properties
+emacs-minibuffer-default-history-symbol
+emacs-minibuffer-message-timeout
+emacs-minibuffer-completion-ignore-case
+
+The =core/command-loop= stable package API is the eager =core= command
+dispatch, key event, prefix argument, recursive-edit, and frontend-neutral
+GUI bridge substrate used by keymap, minibuffer, TUI/GTK adapters, and
+application frontends without loading the application.  It covers
+command-loop lifecycle, queue-fed input, key recording, command
+bookkeeping, interactive command execution, =M-x= command selection,
+menu/repeat helpers, key dispatch planning, direct/inline command
+execution policy, standard keymap binding installation, prefix argument
+state, recursive-edit/quit control, GUI bridge backend registration,
+current-context refresh, key/direct request dispatch, post-command
+writeback, minibuffer/project command bridging, GUI read-only/prefix/undo
+registries, and frontend-neutral status lane planning.  Contract version 1
+models an in-process deterministic command loop with pluggable keymap and
+GUI backend callbacks.  It does not claim complete GNU Emacs event-loop
+ownership, terminal/stdin ownership, async timers or process filters,
+complete command remapping, complete interactive spec language, full
+obarray command discovery semantics, real GUI transport side effects,
+mouse/menu-bar behavior beyond action mapping, pixel redisplay,
+keyboard-macro/recent-keys parity, or full recursive-edit/top-level throw
+machinery.  Promotion queue =stable-contract= on these names means they
+are part of the versioned consumer contract after requiring the facade.
+The exact core/command-loop stable symbol names are
+emacs-command-loop-gui-dispatch-key-sequence,
+emacs-command-loop-gui-dispatch-context,
+emacs-command-loop-reset,
+emacs-command-loop-gui-dispatch-current-context,
+emacs-command-loop-gui-after-key-dispatch,
+emacs-command-loop-gui-dispatch-key-request,
+emacs-command-loop-gui-dispatch-key-request-context,
+emacs-command-loop-gui-dispatch-key-request-current-context,
+emacs-command-loop-gui-run-request,
+emacs-command-loop-gui-run-request-context,
+emacs-command-loop-gui-run-request-current-context,
+emacs-command-loop-keymap-binding-p,
+emacs-command-loop-normalize-key-event,
+emacs-command-loop-key-dispatch-lane,
+emacs-command-loop-keyboard-quit-state,
+emacs-command-loop-install-basic-edit-key-bindings,
+emacs-command-loop-build-standard-keymap,
+emacs-command-loop-gui-register-backend,
+emacs-command-loop-ensure-keymap-bindings,
+emacs-command-loop-install-c-x-prefix-key-bindings,
+emacs-command-loop-install-help-prefix-key-bindings,
+emacs-command-loop-key-dispatch-read-only-blocked-p,
+emacs-command-loop-key-dispatch-recording-p,
+emacs-command-loop-key-dispatch-execution-kind,
+emacs-command-loop-gui-refresh-context-from-backend,
+emacs-command-loop-key-dispatch-direct-command-p,
+emacs-command-loop-key-dispatch-error-message,
+emacs-command-loop-key-dispatch-direct-funcall,
+emacs-command-loop-key-dispatch-inline-command,
+emacs-command-loop-key-dispatch-record-inline-command,
+emacs-command-loop-key-dispatch-run-inline-edit,
+emacs-command-loop-key-dispatch-run-inline-kind,
+emacs-command-loop-key-dispatch-run-self-insert,
+emacs-command-loop-key-dispatch-run-plan,
+emacs-command-loop-menu-action-command,
+emacs-command-loop-run-menu-action-command,
+emacs-command-loop-command-name-symbol,
+emacs-command-loop-gui-keymap-command,
+emacs-command-loop-ensure-command,
+emacs-command-loop-dispatch-command-with-handlers,
+emacs-command-loop-run-extended-command,
+emacs-command-loop-repeat-last-command,
+emacs-command-loop-key-source-command-event,
+emacs-command-loop-key-dispatch-buffer-cache-invalidating-p,
+emacs-command-loop-key-dispatch-undo-boundary-p,
+emacs-command-loop-key-dispatch-cycle-reset-p,
+emacs-command-loop-key-dispatch-post-command-policy,
+emacs-command-loop-printable-self-insert-p,
+emacs-command-loop-key-dispatch-plan,
+emacs-command-loop-gui-lookup-key-sequence-from-sources,
+emacs-command-loop-gui-replay-key-lines,
+emacs-command-loop-feed-events,
+emacs-command-loop-pending-p,
+emacs-command-loop-read-event,
+emacs-command-loop-read-char,
+emacs-command-loop-read-command,
+emacs-command-loop-clear-this-command-keys,
+emacs-command-loop-record-key,
+emacs-command-loop-this-command-keys,
+emacs-command-loop-this-command-keys-vector,
+emacs-command-loop-set-this-command,
+emacs-command-loop-mark-command-finished,
+emacs-command-loop-read-key-sequence,
+emacs-command-loop-read-key-sequence-vector,
+emacs-command-loop-call-interactively,
+emacs-command-loop-funcall-interactively,
+emacs-command-loop-command-execute,
+emacs-command-loop-step,
+emacs-command-loop-drain,
+emacs-command-loop-gui-set-context,
+emacs-command-loop-1,
+emacs-command-loop-keyboard-quit,
+emacs-command-loop-recursive-edit,
+emacs-command-loop-exit-recursive-edit,
+emacs-command-loop-abort-recursive-edit,
+emacs-command-loop-top-level,
+emacs-command-loop-recursion-depth,
+emacs-command-loop-universal-argument,
+emacs-command-loop-digit-argument,
+emacs-command-loop-negative-argument,
+emacs-command-loop-gui-command-execution-state,
+emacs-command-loop-gui-replace-execution-state,
+emacs-command-loop-gui-ingest-request-context,
+emacs-command-loop-gui-extended-command-candidates,
+emacs-command-loop-gui-command-registered-p,
+emacs-command-loop-gui-command-accepted-p,
+emacs-command-loop-gui-finalize-status,
+emacs-command-loop-gui-read-only-command-p,
+emacs-command-loop-gui-prefix-command-p,
+emacs-command-loop-gui-prefix-repeat-command-p,
+emacs-command-loop-gui-prefix-inverted-command,
+emacs-command-loop-gui-prefix-arg-number,
+emacs-command-loop-gui-prefix-arg-absolute-number,
+emacs-command-loop-gui-prefix-number-string,
+emacs-command-loop-gui-prefix-digit-key,
+emacs-command-loop-gui-digit-argument,
+emacs-command-loop-gui-negative-argument,
+emacs-command-loop-gui-universal-argument,
+emacs-command-loop-gui-invert-prefix-command-if-needed,
+emacs-command-loop-gui-execute-with-prefix-arg,
+emacs-command-loop-gui-command-adapter-kind,
+emacs-command-loop-execute-extended-command,
+emacs-command-loop-gui-finalize-status-current-context,
+emacs-command-loop-gui-writeback-command-name,
+emacs-command-loop-gui-writeback-command-name-current-context,
+emacs-command-loop-gui-write-post-command-state,
+emacs-command-loop-gui-write-post-command-state-current-context,
+emacs-command-loop-gui-lane-writeback-spec,
+emacs-command-loop-gui-writeback-spec-flag,
+emacs-command-loop-gui-write-lane-state,
+emacs-command-loop-gui-apply-post-command-writeback,
+emacs-command-loop-gui-before-command,
+emacs-command-loop-gui-self-insert-key-text,
+emacs-command-loop-gui-minibuffer-active-p,
+emacs-command-loop-gui-minibuffer-key,
+emacs-command-loop-gui-minibuffer-initial-input,
+emacs-command-loop-gui-finish-command,
+emacs-command-loop-gui-minibuffer-handle-key,
+emacs-command-loop-gui-maybe-start-minibuffer,
+emacs-command-loop-gui-call-interactively,
+emacs-command-loop-gui-call-interactively-context,
+emacs-command-loop-gui-call-interactively-current-context,
+emacs-command-loop-gui-command-execute-call,
+emacs-command-loop-gui-command-execute,
+emacs-command-loop-gui-command-execute-context,
+emacs-command-loop-gui-command-execute-current-context,
+emacs-command-loop-gui-execute-extended-command,
+emacs-command-loop-gui-execute-extended-command-current-context,
+emacs-command-loop-gui-project-command,
+emacs-command-loop-gui-project-command-current-context,
+emacs-command-loop-gui-undo-save-command-p,
+emacs-command-loop-gui-save-undo-if-needed,
+emacs-command-loop-gui-key-dispatch-spec,
+emacs-command-loop-gui-prefix-arg,
+emacs-command-loop-basic-edit-key-bindings,
+emacs-command-loop-c-x-prefix-key-bindings,
+emacs-command-loop-help-prefix-key-bindings,
+emacs-command-loop-key-dispatch-inline-command-alist,
+emacs-command-loop-command-feature-hints,
+emacs-command-loop-key-dispatch-non-mutating-commands,
+emacs-command-loop-gui-extended-command-candidate-names,
+emacs-command-loop-gui-command-registry-names,
+emacs-command-loop-gui-benign-status-command-names,
+emacs-command-loop-gui-read-only-command-names,
+emacs-command-loop-gui-prefix-command-names,
+emacs-command-loop-gui-prefix-repeat-command-names,
+emacs-command-loop-gui-prefix-invert-command-alist,
+emacs-command-loop-gui-adapted-command-alist,
+emacs-command-loop-gui-backend,
+emacs-command-loop-gui-command,
+emacs-command-loop-gui-undo-save-command-names,
+emacs-command-loop-gui-effective-command,
+emacs-command-loop-gui-keys,
+emacs-command-loop-gui-arg, and
+emacs-command-loop-gui-status.
+emacs-command-loop-gui-dispatch-key-sequence
+emacs-command-loop-gui-dispatch-context
+emacs-command-loop-reset
+emacs-command-loop-gui-dispatch-current-context
+emacs-command-loop-gui-after-key-dispatch
+emacs-command-loop-gui-dispatch-key-request
+emacs-command-loop-gui-dispatch-key-request-context
+emacs-command-loop-gui-dispatch-key-request-current-context
+emacs-command-loop-gui-run-request
+emacs-command-loop-gui-run-request-context
+emacs-command-loop-gui-run-request-current-context
+emacs-command-loop-keymap-binding-p
+emacs-command-loop-normalize-key-event
+emacs-command-loop-key-dispatch-lane
+emacs-command-loop-keyboard-quit-state
+emacs-command-loop-install-basic-edit-key-bindings
+emacs-command-loop-build-standard-keymap
+emacs-command-loop-gui-register-backend
+emacs-command-loop-ensure-keymap-bindings
+emacs-command-loop-install-c-x-prefix-key-bindings
+emacs-command-loop-install-help-prefix-key-bindings
+emacs-command-loop-key-dispatch-read-only-blocked-p
+emacs-command-loop-key-dispatch-recording-p
+emacs-command-loop-key-dispatch-execution-kind
+emacs-command-loop-gui-refresh-context-from-backend
+emacs-command-loop-key-dispatch-direct-command-p
+emacs-command-loop-key-dispatch-error-message
+emacs-command-loop-key-dispatch-direct-funcall
+emacs-command-loop-key-dispatch-inline-command
+emacs-command-loop-key-dispatch-record-inline-command
+emacs-command-loop-key-dispatch-run-inline-edit
+emacs-command-loop-key-dispatch-run-inline-kind
+emacs-command-loop-key-dispatch-run-self-insert
+emacs-command-loop-key-dispatch-run-plan
+emacs-command-loop-menu-action-command
+emacs-command-loop-run-menu-action-command
+emacs-command-loop-command-name-symbol
+emacs-command-loop-gui-keymap-command
+emacs-command-loop-ensure-command
+emacs-command-loop-dispatch-command-with-handlers
+emacs-command-loop-run-extended-command
+emacs-command-loop-repeat-last-command
+emacs-command-loop-key-source-command-event
+emacs-command-loop-key-dispatch-buffer-cache-invalidating-p
+emacs-command-loop-key-dispatch-undo-boundary-p
+emacs-command-loop-key-dispatch-cycle-reset-p
+emacs-command-loop-key-dispatch-post-command-policy
+emacs-command-loop-printable-self-insert-p
+emacs-command-loop-key-dispatch-plan
+emacs-command-loop-gui-lookup-key-sequence-from-sources
+emacs-command-loop-gui-replay-key-lines
+emacs-command-loop-feed-events
+emacs-command-loop-pending-p
+emacs-command-loop-read-event
+emacs-command-loop-read-char
+emacs-command-loop-read-command
+emacs-command-loop-clear-this-command-keys
+emacs-command-loop-record-key
+emacs-command-loop-this-command-keys
+emacs-command-loop-this-command-keys-vector
+emacs-command-loop-set-this-command
+emacs-command-loop-mark-command-finished
+emacs-command-loop-read-key-sequence
+emacs-command-loop-read-key-sequence-vector
+emacs-command-loop-call-interactively
+emacs-command-loop-funcall-interactively
+emacs-command-loop-command-execute
+emacs-command-loop-step
+emacs-command-loop-drain
+emacs-command-loop-gui-set-context
+emacs-command-loop-1
+emacs-command-loop-keyboard-quit
+emacs-command-loop-recursive-edit
+emacs-command-loop-exit-recursive-edit
+emacs-command-loop-abort-recursive-edit
+emacs-command-loop-top-level
+emacs-command-loop-recursion-depth
+emacs-command-loop-universal-argument
+emacs-command-loop-digit-argument
+emacs-command-loop-negative-argument
+emacs-command-loop-gui-command-execution-state
+emacs-command-loop-gui-replace-execution-state
+emacs-command-loop-gui-ingest-request-context
+emacs-command-loop-gui-extended-command-candidates
+emacs-command-loop-gui-command-registered-p
+emacs-command-loop-gui-command-accepted-p
+emacs-command-loop-gui-finalize-status
+emacs-command-loop-gui-read-only-command-p
+emacs-command-loop-gui-prefix-command-p
+emacs-command-loop-gui-prefix-repeat-command-p
+emacs-command-loop-gui-prefix-inverted-command
+emacs-command-loop-gui-prefix-arg-number
+emacs-command-loop-gui-prefix-arg-absolute-number
+emacs-command-loop-gui-prefix-number-string
+emacs-command-loop-gui-prefix-digit-key
+emacs-command-loop-gui-digit-argument
+emacs-command-loop-gui-negative-argument
+emacs-command-loop-gui-universal-argument
+emacs-command-loop-gui-invert-prefix-command-if-needed
+emacs-command-loop-gui-execute-with-prefix-arg
+emacs-command-loop-gui-command-adapter-kind
+emacs-command-loop-execute-extended-command
+emacs-command-loop-gui-finalize-status-current-context
+emacs-command-loop-gui-writeback-command-name
+emacs-command-loop-gui-writeback-command-name-current-context
+emacs-command-loop-gui-write-post-command-state
+emacs-command-loop-gui-write-post-command-state-current-context
+emacs-command-loop-gui-lane-writeback-spec
+emacs-command-loop-gui-writeback-spec-flag
+emacs-command-loop-gui-write-lane-state
+emacs-command-loop-gui-apply-post-command-writeback
+emacs-command-loop-gui-before-command
+emacs-command-loop-gui-self-insert-key-text
+emacs-command-loop-gui-minibuffer-active-p
+emacs-command-loop-gui-minibuffer-key
+emacs-command-loop-gui-minibuffer-initial-input
+emacs-command-loop-gui-finish-command
+emacs-command-loop-gui-minibuffer-handle-key
+emacs-command-loop-gui-maybe-start-minibuffer
+emacs-command-loop-gui-call-interactively
+emacs-command-loop-gui-call-interactively-context
+emacs-command-loop-gui-call-interactively-current-context
+emacs-command-loop-gui-command-execute-call
+emacs-command-loop-gui-command-execute
+emacs-command-loop-gui-command-execute-context
+emacs-command-loop-gui-command-execute-current-context
+emacs-command-loop-gui-execute-extended-command
+emacs-command-loop-gui-execute-extended-command-current-context
+emacs-command-loop-gui-project-command
+emacs-command-loop-gui-project-command-current-context
+emacs-command-loop-gui-undo-save-command-p
+emacs-command-loop-gui-save-undo-if-needed
+emacs-command-loop-gui-key-dispatch-spec
+emacs-command-loop-gui-prefix-arg
+emacs-command-loop-basic-edit-key-bindings
+emacs-command-loop-c-x-prefix-key-bindings
+emacs-command-loop-help-prefix-key-bindings
+emacs-command-loop-key-dispatch-inline-command-alist
+emacs-command-loop-command-feature-hints
+emacs-command-loop-key-dispatch-non-mutating-commands
+emacs-command-loop-gui-extended-command-candidate-names
+emacs-command-loop-gui-command-registry-names
+emacs-command-loop-gui-benign-status-command-names
+emacs-command-loop-gui-read-only-command-names
+emacs-command-loop-gui-prefix-command-names
+emacs-command-loop-gui-prefix-repeat-command-names
+emacs-command-loop-gui-prefix-invert-command-alist
+emacs-command-loop-gui-adapted-command-alist
+emacs-command-loop-gui-backend
+emacs-command-loop-gui-command
+emacs-command-loop-gui-undo-save-command-names
+emacs-command-loop-gui-effective-command
+emacs-command-loop-gui-keys
+emacs-command-loop-gui-arg
+emacs-command-loop-gui-status
+
+The =core/help= stable package API is the eager =core= help rendering and
+frontend-neutral GUI Help bridge substrate used by
+command-loop help bindings, GTK/TUI help adapters, and application
+frontends without loading the application.  It covers the shared Help
+buffer commands, rerender/quit entry points, symbol/function/variable text
+summaries, prefix/apropos matching, key-vector and key-binding summaries,
+GUI backend registration and context refresh, GUI describe-function,
+describe-variable, describe-key, describe-key-briefly, describe-bindings,
+where-is, describe-command, describe-symbol, describe-package, static help,
+apropos-command, apropos-documentation, deferred key-help planning,
+current-context command dispatch, and Help writeback spec interpretation.
+Contract version 1 models a single in-process =*Help*= buffer and a
+callback-driven GUI Help transport.  It does not claim full upstream
+=help-fns= parity, Info/manual navigation, package archive metadata,
+finder keyword indexing, complete documentation database search,
+interactive help history UI beyond the local back/forward stack,
+mouse/widget/local help, xref source lookup, tutorial/distribution-file
+loading, or concrete GUI transport writes.  Promotion queue
+=stable-contract= on these names means they are part of the versioned
+consumer contract after requiring the facade.
+The exact core/help stable symbol names are
+emacs-help-gui-apropos-documentation,
+emacs-help-quit-window,
+emacs-help-revert-buffer,
+emacs-help-gui-register-backend,
+emacs-help-gui-describe-function-current-context-command,
+emacs-help-gui-describe-function-prompt-command,
+emacs-help-gui-describe-variable-current-context-command,
+emacs-help-gui-describe-variable-prompt-command,
+emacs-help-gui-describe-key-current-context-command,
+emacs-help-gui-begin-key-help-command,
+emacs-help-gui-consume-key-help-event,
+emacs-help-gui-set-context,
+emacs-help-gui-run-key-help-command,
+emacs-help-gui-describe-key-briefly-current-context-command,
+emacs-help-gui-describe-bindings-current-context-command,
+emacs-help-gui-where-is-current-context-command,
+emacs-help-gui-help-for-help-current-context-command,
+emacs-help-gui-describe-command-current-context-command,
+emacs-help-gui-describe-package-current-context-command,
+emacs-help-gui-static-current-context-command,
+emacs-help-gui-apropos-command-current-context-command,
+emacs-help-gui-apropos-command-prompt-command,
+emacs-help-gui-apropos-documentation-current-context-command,
+emacs-help-gui-apropos-documentation-prompt-command,
+emacs-help-gui-writeback-spec,
+emacs-help-gui-writeback-spec-flag,
+emacs-help-gui-writeback-state,
+emacs-help-gui-current-context-command,
+emacs-help-gui-refresh-context-from-backend,
+emacs-help-prefix-candidates,
+emacs-help-describe-function-text,
+emacs-help-describe-variable-text,
+emacs-help-apropos-matches,
+emacs-help-apropos-text,
+emacs-help-key-vector-description,
+emacs-help-key-binding-summary,
+emacs-help-key-lookup-summary,
+emacs-help-key-event-description,
+emacs-help-gui-show-help-buffer,
+emacs-help-gui-describe-function-core,
+emacs-help-gui-describe-function,
+emacs-help-gui-describe-variable-core,
+emacs-help-gui-describe-variable,
+emacs-help-gui-describe-key-core,
+emacs-help-gui-describe-key,
+emacs-help-gui-describe-key-briefly-core,
+emacs-help-gui-describe-key-briefly,
+emacs-help-gui-describe-bindings-core,
+emacs-help-gui-describe-bindings,
+emacs-help-gui-help-for-help,
+emacs-help-gui-where-is-core,
+emacs-help-gui-where-is,
+emacs-help-gui-describe-command,
+emacs-help-gui-describe-symbol,
+emacs-help-gui-describe-package,
+emacs-help-gui-static-command,
+emacs-help-gui-standard-keymap-source,
+emacs-help-gui-apropos-command,
+emacs-help-gui-backend,
+emacs-help-gui-arg,
+emacs-help-gui-current-file-name,
+emacs-help-gui-buffer-name,
+emacs-help-gui-buffer-read-only-p,
+emacs-help-gui-window-layout,
+emacs-help-gui-keymap-source,
+emacs-help-gui-user-keymap-source,
+emacs-help-gui-minibuffer-keymap-source,
+emacs-help-gui-status, and
+emacs-help-gui-standard-keymap-source-bindings.
+emacs-help-gui-apropos-documentation
+emacs-help-quit-window
+emacs-help-revert-buffer
+emacs-help-gui-register-backend
+emacs-help-gui-describe-function-current-context-command
+emacs-help-gui-describe-function-prompt-command
+emacs-help-gui-describe-variable-current-context-command
+emacs-help-gui-describe-variable-prompt-command
+emacs-help-gui-describe-key-current-context-command
+emacs-help-gui-begin-key-help-command
+emacs-help-gui-consume-key-help-event
+emacs-help-gui-set-context
+emacs-help-gui-run-key-help-command
+emacs-help-gui-describe-key-briefly-current-context-command
+emacs-help-gui-describe-bindings-current-context-command
+emacs-help-gui-where-is-current-context-command
+emacs-help-gui-help-for-help-current-context-command
+emacs-help-gui-describe-command-current-context-command
+emacs-help-gui-describe-package-current-context-command
+emacs-help-gui-static-current-context-command
+emacs-help-gui-apropos-command-current-context-command
+emacs-help-gui-apropos-command-prompt-command
+emacs-help-gui-apropos-documentation-current-context-command
+emacs-help-gui-apropos-documentation-prompt-command
+emacs-help-gui-writeback-spec
+emacs-help-gui-writeback-spec-flag
+emacs-help-gui-writeback-state
+emacs-help-gui-current-context-command
+emacs-help-gui-refresh-context-from-backend
+emacs-help-prefix-candidates
+emacs-help-describe-function-text
+emacs-help-describe-variable-text
+emacs-help-apropos-matches
+emacs-help-apropos-text
+emacs-help-key-vector-description
+emacs-help-key-binding-summary
+emacs-help-key-lookup-summary
+emacs-help-key-event-description
+emacs-help-gui-show-help-buffer
+emacs-help-gui-describe-function-core
+emacs-help-gui-describe-function
+emacs-help-gui-describe-variable-core
+emacs-help-gui-describe-variable
+emacs-help-gui-describe-key-core
+emacs-help-gui-describe-key
+emacs-help-gui-describe-key-briefly-core
+emacs-help-gui-describe-key-briefly
+emacs-help-gui-describe-bindings-core
+emacs-help-gui-describe-bindings
+emacs-help-gui-help-for-help
+emacs-help-gui-where-is-core
+emacs-help-gui-where-is
+emacs-help-gui-describe-command
+emacs-help-gui-describe-symbol
+emacs-help-gui-describe-package
+emacs-help-gui-static-command
+emacs-help-gui-standard-keymap-source
+emacs-help-gui-apropos-command
+emacs-help-gui-backend
+emacs-help-gui-arg
+emacs-help-gui-current-file-name
+emacs-help-gui-buffer-name
+emacs-help-gui-buffer-read-only-p
+emacs-help-gui-window-layout
+emacs-help-gui-keymap-source
+emacs-help-gui-user-keymap-source
+emacs-help-gui-minibuffer-keymap-source
+emacs-help-gui-status
+emacs-help-gui-standard-keymap-source-bindings
+
+The =core/info= stable package API is the eager =core= Info node parsing,
+navigation, command wrapper, and frontend-neutral GUI Info bridge
+substrate used by Help/Info commands, GTK/TUI adapters, and application
+frontends without loading the application.  It covers GUI backend
+registration and context refresh, current file/node/status state,
+Info header-field parsing, bounded node scanning, Info buffer rendering,
+Top/node opening, Next/Prev/Up navigation, compact Emacs manual/manual
+ordering placeholders, command/key/symbol lookup placeholders, command and
+current-context wrappers, frontend prompt dispatch through
+=emacs-info-run-current-context-command=, and Info writeback spec
+interpretation.  Contract version 1 models a single current Info file/node
+and callback-driven GUI Info transport.  It does not claim full GNU Info
+directory aggregation, compressed/manual file discovery, indirect file
+tables, tag tables, menu/cross-reference navigation, search/index
+commands, full manual content bundling, command/key/symbol node
+resolution, multiple Info buffers, history stacks, or concrete GUI
+transport writes.  Promotion queue =stable-contract= on these names means
+they are part of the versioned consumer contract.
+The exact core/info stable symbol names are
+emacs-info-gui-header-field,
+emacs-info-gui-render-node,
+emacs-info-gui-info-core,
+emacs-info-gui-info,
+emacs-info-gui-goto-pointer,
+emacs-info-gui-next,
+emacs-info-gui-prev,
+emacs-info-gui-up,
+emacs-info-gui-emacs-manual,
+emacs-info-gui-display-manual,
+emacs-info-gui-view-order-manuals,
+emacs-info-gui-goto-emacs-command-node,
+emacs-info-gui-goto-emacs-key-command-node,
+emacs-info-gui-lookup-symbol,
+emacs-info-gui-info-command,
+emacs-info-gui-info-current-context-command,
+emacs-info-gui-next-command,
+emacs-info-gui-register-backend,
+emacs-info-gui-prev-command,
+emacs-info-gui-up-command,
+emacs-info-gui-next-current-context-command,
+emacs-info-gui-prev-current-context-command,
+emacs-info-gui-up-current-context-command,
+emacs-info-gui-emacs-manual-command,
+emacs-info-gui-display-manual-command,
+emacs-info-gui-view-order-manuals-command,
+emacs-info-gui-goto-emacs-command-node-command,
+emacs-info-gui-goto-emacs-key-command-node-command,
+emacs-info-gui-lookup-symbol-command,
+emacs-info-gui-emacs-manual-current-context-command,
+emacs-info-gui-display-manual-current-context-command,
+emacs-info-gui-view-order-manuals-current-context-command,
+emacs-info-gui-goto-emacs-command-node-current-context-command,
+emacs-info-gui-goto-emacs-key-command-node-current-context-command,
+emacs-info-gui-lookup-symbol-current-context-command,
+emacs-info-gui-current-context-command,
+emacs-info-run-current-context-command,
+emacs-info-gui-writeback-spec,
+emacs-info-gui-writeback-spec-flag,
+emacs-info-gui-writeback-state,
+emacs-info-gui-set-context,
+emacs-info-gui-refresh-context-from-backend,
+emacs-info-gui-backend,
+emacs-info-gui-arg,
+emacs-info-gui-status,
+emacs-info-gui-buffer-name,
+emacs-info-gui-file,
+emacs-info-gui-node, and
+emacs-info-gui-scan-cap.
+emacs-info-gui-header-field
+emacs-info-gui-render-node
+emacs-info-gui-info-core
+emacs-info-gui-info
+emacs-info-gui-goto-pointer
+emacs-info-gui-next
+emacs-info-gui-prev
+emacs-info-gui-up
+emacs-info-gui-emacs-manual
+emacs-info-gui-display-manual
+emacs-info-gui-view-order-manuals
+emacs-info-gui-goto-emacs-command-node
+emacs-info-gui-goto-emacs-key-command-node
+emacs-info-gui-lookup-symbol
+emacs-info-gui-info-command
+emacs-info-gui-info-current-context-command
+emacs-info-gui-next-command
+emacs-info-gui-register-backend
+emacs-info-gui-prev-command
+emacs-info-gui-up-command
+emacs-info-gui-next-current-context-command
+emacs-info-gui-prev-current-context-command
+emacs-info-gui-up-current-context-command
+emacs-info-gui-emacs-manual-command
+emacs-info-gui-display-manual-command
+emacs-info-gui-view-order-manuals-command
+emacs-info-gui-goto-emacs-command-node-command
+emacs-info-gui-goto-emacs-key-command-node-command
+emacs-info-gui-lookup-symbol-command
+emacs-info-gui-emacs-manual-current-context-command
+emacs-info-gui-display-manual-current-context-command
+emacs-info-gui-view-order-manuals-current-context-command
+emacs-info-gui-goto-emacs-command-node-current-context-command
+emacs-info-gui-goto-emacs-key-command-node-current-context-command
+emacs-info-gui-lookup-symbol-current-context-command
+emacs-info-gui-current-context-command
+emacs-info-run-current-context-command
+emacs-info-gui-writeback-spec
+emacs-info-gui-writeback-spec-flag
+emacs-info-gui-writeback-state
+emacs-info-gui-set-context
+emacs-info-gui-refresh-context-from-backend
+emacs-info-gui-backend
+emacs-info-gui-arg
+emacs-info-gui-status
+emacs-info-gui-buffer-name
+emacs-info-gui-file
+emacs-info-gui-node
+emacs-info-gui-scan-cap
+
+The =core/tui-backend= stable lazy package API is part of the versioned
+consumer contract, but is not bound by =(require 'nelisp-emacs)= alone.
+Consumers must require =emacs-tui-backend= before relying on these
+symbols.  It is the lazy =core= ANSI TTY backend companion used by frame
+and redisplay wiring without loading the application.  It covers direct output and lifecycle
+through =emacs-tui-backend-emit=, =emacs-tui-backend-init=,
+=emacs-tui-backend-shutdown=, =emacs-tui-backend-enter-alt-screen=, and
+=emacs-tui-backend-leave-alt-screen=; capability query through
+=emacs-tui-backend-capabilities= and
+=emacs-tui-backend-get-capability=; frame state through
+=emacs-tui-backend-frame-create=, =emacs-tui-backend-frame-destroy=,
+=emacs-tui-backend-frame-resize=, and
+=emacs-tui-backend-frame-set-dirty-rows=; canvas painting through
+=emacs-tui-backend-canvas-clear=,
+=emacs-tui-backend-canvas-draw-text=, and
+=emacs-tui-backend-canvas-flush=; pull-style event queue integration
+through =emacs-tui-backend-event-poll= and
+=emacs-tui-backend-event-inject=; cursor and resize hooks through
+=emacs-tui-backend-cursor-show=,
+=emacs-tui-backend-cursor-show-if-changed=,
+=emacs-tui-backend-cursor-hide=, and
+=emacs-tui-backend-resize-listen=; and backend constants/options through
+=emacs-tui-backend-frame-stub-invariant-version=,
+=emacs-tui-backend-degrade-contract-version=,
+=emacs-tui-backend-event-source-contract-version=,
+=emacs-tui-backend-frame-default-width=,
+=emacs-tui-backend-frame-default-height=,
+=emacs-tui-backend-output-fn=, =emacs-tui-backend-color-mode=,
+=emacs-tui-backend-log-enabled=, and
+=emacs-tui-backend-base-capabilities=.  Frame records are owned by their
+backend handle, canvas writes are dirty-row based and flushed as ANSI
+escape output, events are pull-on-demand from the in-process queue, and
+unsupported capabilities signal =display-spec-unsupported= with
+=(:capability CAP :api API :backend tui)=.  Contract version 1 does not
+claim ncurses terminfo parsing, direct stdin/select ownership, mouse,
+images, IME, bidi, composition, or GUI frame semantics; those belong to
+the sibling TUI event/terminfo features or later GUI packages.  Promotion
+queue =stable-contract= on these names means they are part of the
+versioned consumer contract after requiring their lazy feature.
+The exact core/tui-backend stable lazy symbol names are
+emacs-tui-backend-emit,
+emacs-tui-backend-frame-set-dirty-rows,
+emacs-tui-backend-init,
+emacs-tui-backend-shutdown,
+emacs-tui-backend-enter-alt-screen,
+emacs-tui-backend-leave-alt-screen,
+emacs-tui-backend-capabilities,
+emacs-tui-backend-get-capability,
+emacs-tui-backend-frame-create,
+emacs-tui-backend-frame-destroy,
+emacs-tui-backend-frame-resize,
+emacs-tui-backend-canvas-clear,
+emacs-tui-backend-canvas-draw-text,
+emacs-tui-backend-canvas-flush,
+emacs-tui-backend-event-poll,
+emacs-tui-backend-event-inject,
+emacs-tui-backend-cursor-show,
+emacs-tui-backend-cursor-show-if-changed,
+emacs-tui-backend-cursor-hide,
+emacs-tui-backend-resize-listen,
+emacs-tui-backend-frame-stub-invariant-version,
+emacs-tui-backend-degrade-contract-version,
+emacs-tui-backend-event-source-contract-version,
+emacs-tui-backend-frame-default-width,
+emacs-tui-backend-frame-default-height,
+emacs-tui-backend-output-fn,
+emacs-tui-backend-color-mode,
+emacs-tui-backend-log-enabled, and
+emacs-tui-backend-base-capabilities.
+emacs-tui-backend-emit
+emacs-tui-backend-frame-set-dirty-rows
+emacs-tui-backend-init
+emacs-tui-backend-shutdown
+emacs-tui-backend-enter-alt-screen
+emacs-tui-backend-leave-alt-screen
+emacs-tui-backend-capabilities
+emacs-tui-backend-get-capability
+emacs-tui-backend-frame-create
+emacs-tui-backend-frame-destroy
+emacs-tui-backend-frame-resize
+emacs-tui-backend-canvas-clear
+emacs-tui-backend-canvas-draw-text
+emacs-tui-backend-canvas-flush
+emacs-tui-backend-event-poll
+emacs-tui-backend-event-inject
+emacs-tui-backend-cursor-show
+emacs-tui-backend-cursor-show-if-changed
+emacs-tui-backend-cursor-hide
+emacs-tui-backend-resize-listen
+emacs-tui-backend-frame-stub-invariant-version
+emacs-tui-backend-degrade-contract-version
+emacs-tui-backend-event-source-contract-version
+emacs-tui-backend-frame-default-width
+emacs-tui-backend-frame-default-height
+emacs-tui-backend-output-fn
+emacs-tui-backend-color-mode
+emacs-tui-backend-log-enabled
+emacs-tui-backend-base-capabilities
+
+The =core/tui-terminfo= stable lazy package API is part of the versioned
+consumer contract, but is not bound by =(require 'nelisp-emacs)= alone.
+Consumers must require =emacs-tui-terminfo= before relying on these
+symbols.  It is a lazy =core= companion feature that detects terminal
+capabilities for TUI backends without loading the application.  It covers detection lifecycle
+through =emacs-tui-terminfo-detect=, =emacs-tui-terminfo-from-env=, and
+=emacs-tui-terminfo-clear-cache=; capability queries through
+=emacs-tui-terminfo-supports-p=, =emacs-tui-terminfo-color-mode=, and
+=emacs-tui-terminfo-capabilities=; introspection and constants through
+=emacs-tui-terminfo-known-terminals=,
+=emacs-tui-terminfo-mvp-capabilities=,
+=emacs-tui-terminfo-mvp-capability-list=,
+=emacs-tui-terminfo-default-term=,
+=emacs-tui-terminfo-extra-color-terminals=,
+=emacs-tui-terminfo-cache-enabled=, and
+=emacs-tui-terminfo-detect-contract-version=; and backend wiring through
+=emacs-tui-terminfo-backend-init-args=.  The returned detection plist has
+the version 1 shape =(:term TERM :colors INT :color-mode SYMBOL
+:capabilities LIST)=.  ENV inputs may be nil, a flat plist-like list of
+string keys and values, or an alist.  This detector intentionally uses a
+curated TERM/COLORTERM table and in-memory cache only; contract version 1
+does not claim ncurses terminfo file parsing, runtime DA probing,
+persistent cache, or per-frame override behavior.  Promotion queue
+=stable-contract= on these names means they are part of the versioned
+consumer contract after requiring their lazy feature.
+The exact core/tui-terminfo stable lazy symbol names are
+emacs-tui-terminfo-detect,
+emacs-tui-terminfo-from-env,
+emacs-tui-terminfo-clear-cache,
+emacs-tui-terminfo-supports-p,
+emacs-tui-terminfo-color-mode,
+emacs-tui-terminfo-capabilities,
+emacs-tui-terminfo-known-terminals,
+emacs-tui-terminfo-mvp-capabilities,
+emacs-tui-terminfo-backend-init-args,
+emacs-tui-terminfo-default-term,
+emacs-tui-terminfo-extra-color-terminals,
+emacs-tui-terminfo-cache-enabled,
+emacs-tui-terminfo-detect-contract-version, and
+emacs-tui-terminfo-mvp-capability-list.
+emacs-tui-terminfo-detect
+emacs-tui-terminfo-from-env
+emacs-tui-terminfo-clear-cache
+emacs-tui-terminfo-supports-p
+emacs-tui-terminfo-color-mode
+emacs-tui-terminfo-capabilities
+emacs-tui-terminfo-known-terminals
+emacs-tui-terminfo-mvp-capabilities
+emacs-tui-terminfo-backend-init-args
+emacs-tui-terminfo-default-term
+emacs-tui-terminfo-extra-color-terminals
+emacs-tui-terminfo-cache-enabled
+emacs-tui-terminfo-detect-contract-version
+emacs-tui-terminfo-mvp-capability-list
+
+The =core/tui-event= stable lazy package API is part of the versioned
+consumer contract, but is not bound by =(require 'nelisp-emacs)= alone.
+Consumers must require =emacs-tui-event= before relying on these symbols.
+It is a lazy =core= companion feature that produces keyboard and resize
+events for the TUI backend without loading the application.  It covers event-source
+lifecycle through =emacs-tui-event-init= and
+=emacs-tui-event-shutdown=; key parser primitives through
+=emacs-tui-event-encode-key-event=,
+=emacs-tui-event-decode-csi=,
+=emacs-tui-event-control-char-name=, and
+=emacs-tui-event-parse-byte-stream=; handle queue inspection and raw-byte
+feeding through =emacs-tui-event-pending-event-p= and
+=emacs-tui-event-feed-bytes=; polling through
+=emacs-tui-event-poll-printable-byte= and =emacs-tui-event-poll=;
+resize producer wiring through =emacs-tui-event-install-sigwinch=,
+=emacs-tui-event-uninstall-sigwinch=,
+=emacs-tui-event-current-window-size=, and
+=emacs-tui-event-dispatch-resize=; and event-source constants/options
+through =emacs-tui-event-source-contract-version=,
+=emacs-tui-event-default-window-width=,
+=emacs-tui-event-default-window-height=,
+=emacs-tui-event-input-fn=, and =emacs-tui-event-log-enabled=.  Key
+events use plist shape =(:type key :name NAME :modifiers MODIFIERS)=,
+resize events use =(:type resize :width W :height H)=, and polling is
+pull-on-demand: no timeout means no blocking.  Contract version 1 keeps
+input pluggable through =emacs-tui-event-input-fn= and does not claim
+mouse events, bracketed paste, raw fd/select integration, or terminfo
+detection.  Promotion queue =stable-contract= on these names means they
+are part of the versioned consumer contract after requiring their lazy
+feature.
+The exact core/tui-event stable lazy symbol names are
+emacs-tui-event-init,
+emacs-tui-event-shutdown,
+emacs-tui-event-encode-key-event,
+emacs-tui-event-decode-csi,
+emacs-tui-event-control-char-name,
+emacs-tui-event-parse-byte-stream,
+emacs-tui-event-pending-event-p,
+emacs-tui-event-feed-bytes,
+emacs-tui-event-poll-printable-byte,
+emacs-tui-event-poll,
+emacs-tui-event-install-sigwinch,
+emacs-tui-event-uninstall-sigwinch,
+emacs-tui-event-current-window-size,
+emacs-tui-event-dispatch-resize,
+emacs-tui-event-source-contract-version,
+emacs-tui-event-default-window-width,
+emacs-tui-event-default-window-height,
+emacs-tui-event-input-fn, and
+emacs-tui-event-log-enabled.
+emacs-tui-event-init
+emacs-tui-event-shutdown
+emacs-tui-event-encode-key-event
+emacs-tui-event-decode-csi
+emacs-tui-event-control-char-name
+emacs-tui-event-parse-byte-stream
+emacs-tui-event-pending-event-p
+emacs-tui-event-feed-bytes
+emacs-tui-event-poll-printable-byte
+emacs-tui-event-poll
+emacs-tui-event-install-sigwinch
+emacs-tui-event-uninstall-sigwinch
+emacs-tui-event-current-window-size
+emacs-tui-event-dispatch-resize
+emacs-tui-event-source-contract-version
+emacs-tui-event-default-window-width
+emacs-tui-event-default-window-height
+emacs-tui-event-input-fn
+emacs-tui-event-log-enabled
+
+The =foundation= stable package API covers the display-free substrate
+needed before higher packages can be reused independently: process
+environment lookup and seeding through
+=emacs-callproc-getenv= and
+=emacs-callproc-populate-process-environment=; sparse char-table
+construction, mutation, range access, parent/subtype/extra-slot metadata,
+iteration, copy, and maximum character queries through
+=emacs-char-table-make=, =emacs-char-table-p=,
+=emacs-char-table-ascii-vector=, =emacs-char-table-ref=,
+=emacs-char-table-set=, =emacs-char-table-set-range=,
+=emacs-char-table-range=, =emacs-char-table-parent=,
+=emacs-char-table-set-parent=, =emacs-char-table-subtype=,
+=emacs-char-table-extra-slot=, =emacs-char-table-set-extra-slot=,
+=emacs-char-table-map=, =emacs-char-table-copy=, and
+=emacs-char-table-max-char=; runtime OS detection and OS-shaped default
+application through =emacs-os-uname-syscall-number=, =emacs-uname=,
+=emacs-os-sysname->system-type=, =emacs-detect-system-type=,
+=emacs-os-detect-and-set!=, =emacs-os-apply-os-polyfills!=, and
+=emacs-os-detect-and-set-dirs!=; and display capability predicates
+through =emacs-display-window-system=, =emacs-display-graphic-p=,
+=emacs-display-color-p=, and =emacs-display-multi-frame-p=.  These names
+are listed in the facade stable package API manifest and classify as
+=stable-contract= when the promotion queue is regenerated.
+The exact foundation stable symbol names are
+emacs-callproc-getenv,
+emacs-callproc-populate-process-environment,
+emacs-char-table-make,
+emacs-char-table-p,
+emacs-char-table-ascii-vector,
+emacs-char-table-ref,
+emacs-char-table-set,
+emacs-char-table-set-range,
+emacs-char-table-range,
+emacs-char-table-parent,
+emacs-char-table-set-parent,
+emacs-char-table-subtype,
+emacs-char-table-extra-slot,
+emacs-char-table-set-extra-slot,
+emacs-char-table-map,
+emacs-char-table-copy,
+emacs-char-table-max-char,
+emacs-os-uname-syscall-number,
+emacs-uname,
+emacs-os-sysname->system-type,
+emacs-detect-system-type,
+emacs-os-detect-and-set!,
+emacs-os-apply-os-polyfills!,
+emacs-os-detect-and-set-dirs!,
+emacs-display-window-system,
+emacs-display-graphic-p,
+emacs-display-color-p, and
+emacs-display-multi-frame-p.
+emacs-callproc-getenv
+emacs-callproc-populate-process-environment
+emacs-char-table-make
+emacs-char-table-p
+emacs-char-table-ascii-vector
+emacs-char-table-ref
+emacs-char-table-set
+emacs-char-table-set-range
+emacs-char-table-range
+emacs-char-table-parent
+emacs-char-table-set-parent
+emacs-char-table-subtype
+emacs-char-table-extra-slot
+emacs-char-table-set-extra-slot
+emacs-char-table-map
+emacs-char-table-copy
+emacs-char-table-max-char
+emacs-os-uname-syscall-number
+emacs-uname
+emacs-os-sysname->system-type
+emacs-detect-system-type
+emacs-os-detect-and-set!
+emacs-os-apply-os-polyfills!
+emacs-os-detect-and-set-dirs!
+emacs-display-window-system
+emacs-display-graphic-p
+emacs-display-color-p
+emacs-display-multi-frame-p
+
+The stable =special-buffers= surface is the frontend-neutral
+scratch/messages/warnings buffer contract for external consumers.  It
+covers standard buffer names through
+=emacs-special-buffers-scratch-name=,
+=emacs-special-buffers-messages-name=, and
+=emacs-special-buffers-warnings-name=; scratch default payload through
+=emacs-special-buffers-scratch-initial-message=; adapter backend hooks
+through =emacs-special-buffers-backend= and
+=emacs-special-buffers-register-backend=; classification and defaults through
+=emacs-special-buffers-special-buffer-p=,
+=emacs-special-buffers-default-text=, and
+=emacs-special-buffers-read-only-p=; lifecycle and mutation through
+=emacs-special-buffers-ensure-buffer=,
+=emacs-special-buffers-ensure-standard-buffers=,
+=emacs-special-buffers-switch-to-buffer=,
+=emacs-special-buffers-append-to-buffer=; user-visible reporting through
+=emacs-special-buffers-message=,
+=emacs-special-buffers-display-warning=,
+=emacs-special-buffers-lwarn=, and =emacs-special-buffers-warn=; and
+frontend-neutral display through =emacs-special-buffers-display-plan=.
+The backend variable and registration function are stable adapter hooks for
+callers that serialize buffer state outside the NeLisp core substrate.
+The prefixed =warn= / =lwarn= helpers are stable as reusable compatibility
+entry points for app-free warning recording; concrete unprefixed global
+shim installation remains outside this package API.
+The exact stable symbol names are
+emacs-special-buffers-scratch-name,
+emacs-special-buffers-messages-name,
+emacs-special-buffers-warnings-name,
+emacs-special-buffers-scratch-initial-message,
+emacs-special-buffers-backend,
+emacs-special-buffers-register-backend,
+emacs-special-buffers-special-buffer-p,
+emacs-special-buffers-default-text,
+emacs-special-buffers-read-only-p,
+emacs-special-buffers-ensure-buffer,
+emacs-special-buffers-ensure-standard-buffers,
+emacs-special-buffers-display-plan,
+emacs-special-buffers-append-to-buffer,
+emacs-special-buffers-switch-to-buffer,
+emacs-special-buffers-message,
+emacs-special-buffers-display-warning,
+emacs-special-buffers-lwarn, and
+emacs-special-buffers-warn
+
+The stable =buffer-core= surface is the portable in-memory buffer core for
+external consumers.  It covers buffer lifecycle and selection through
+=nelisp-ec-generate-new-buffer=, =nelisp-ec-current-buffer=,
+=nelisp-ec-set-buffer=, =nelisp-ec-with-current-buffer=, and
+=nelisp-ec-kill-buffer=; point and size operations through
+=nelisp-ec-point=, =nelisp-ec-point-min=, =nelisp-ec-point-max=,
+=nelisp-ec-goto-char=, =nelisp-ec-buffer-size=,
+=nelisp-ec-forward-char=, and =nelisp-ec-backward-char=; basic text
+mutation and readback through =nelisp-ec-insert=,
+=nelisp-ec-insert-char-code-fast=, =nelisp-ec-delete-region=,
+=nelisp-ec-delete-char=, =nelisp-ec-erase-buffer=,
+=nelisp-ec-buffer-substring=, and =nelisp-ec-buffer-string=; excursion and
+narrowing through =nelisp-ec-save-excursion=,
+=nelisp-ec-save-restriction=, =nelisp-ec-save-current-buffer=,
+=nelisp-ec-narrow-to-region=, and
+=nelisp-ec-widen=; marker operations through =nelisp-ec-make-marker=,
+=nelisp-ec-set-marker=, =nelisp-ec-marker-position=,
+=nelisp-ec-marker-buffer=, =nelisp-ec-marker-insertion-type=,
+=nelisp-ec-set-marker-insertion-type=, and =nelisp-ec-point-marker=;
+literal search through =nelisp-ec-search-forward=,
+=nelisp-ec-search-backward=, and =nelisp-ec-looking-at-p=; regex search
+and match data through =nelisp-ec-re-search-forward=,
+=nelisp-ec-re-search-backward=, =nelisp-ec-looking-at=,
+=nelisp-ec-match-data=, =nelisp-ec-match-beginning=, and
+=nelisp-ec-match-end=; registry and
+name helpers through =emacs-buffer-current=, =emacs-buffer-buffer-list=,
+=emacs-buffer-buffers-by-mode=, and
+=emacs-buffer-generate-new-buffer-name=;
+text-property mutation through =emacs-buffer-put-text-property=,
+=emacs-buffer-add-text-properties=, =emacs-buffer-remove-text-properties=,
+and =emacs-buffer-set-text-properties=; text-property inspection through
+=emacs-buffer-get-text-property=, =emacs-buffer-text-property-at=, and
+=emacs-buffer-text-property-view=; and text-property change scanning
+through =emacs-buffer-next-property-change=,
+=emacs-buffer-previous-property-change=,
+=emacs-buffer-next-single-property-change=, and
+=emacs-buffer-previous-single-property-change=; and overlay primitives
+through =emacs-buffer-overlayp=, =emacs-buffer-make-overlay=,
+=emacs-buffer-overlay-start=, =emacs-buffer-overlay-end=,
+=emacs-buffer-overlay-buffer=, =emacs-buffer-overlay-properties=,
+=emacs-buffer-overlay-put=, =emacs-buffer-overlay-get=,
+=emacs-buffer-move-overlay=, =emacs-buffer-delete-overlay=,
+=emacs-buffer-delete-all-overlays=, =emacs-buffer-overlays-at=,
+=emacs-buffer-overlays-in=, =emacs-buffer-overlay-lists=, and
+=emacs-buffer-copy-overlay=.  Overlay ranges are 1-based half-open
+intervals =[START, END)= attached to a =nelisp-ec-buffer=.  Deleted
+overlays return nil from start/end/buffer accessors and signal
+=emacs-buffer-error= from mutating/property accessors.  Overlay property
+lookup uses numeric =priority= first; ties are resolved by later overlay
+insertion.  =emacs-buffer-get-char-property= is stable as the combined
+query: it checks overlays with that precedence, then falls back to
+=emacs-buffer-get-text-property= including category inheritance.
+
+=emacs-buffer-buffer-list= and =emacs-buffer-buffers-by-mode= enumerate the
+NeLisp buffer registry, not host Emacs buffers.  =emacs-buffer-current=
+signals =nelisp-ec-no-current-buffer= when no current NeLisp buffer is
+selected.  =emacs-buffer-generate-new-buffer-name= is pure: it returns a
+unique name in the registry without creating a buffer.
+
+Marker APIs are NeLisp marker objects, not host Emacs markers.
+=nelisp-ec-set-marker= accepts nil POS to detach the marker; otherwise it
+stores a 1-based position and live NeLisp buffer reference.  Marker
+positions are validated against the underlying buffer length and are not
+clamped by narrowing.  =nelisp-ec-point-marker= returns a fresh marker at
+the current point.
+
+Search APIs operate on the current NeLisp buffer and update
+=nelisp-ec-match-data= on success.  =nelisp-ec-search-forward= and
+=nelisp-ec-search-backward= are literal substring searches.
+=nelisp-ec-looking-at-p= is the literal at-point predicate.
+=nelisp-ec-re-search-forward=, =nelisp-ec-re-search-backward=, and
+=nelisp-ec-looking-at= use =nelisp-regex=.  Match data is a copied list of
+1-based begin/end pairs; =nelisp-ec-match-beginning= and
+=nelisp-ec-match-end= index that list by subexpression.
+
+Buffer-local and default-value APIs are stable for NeLisp buffers through
+=emacs-buffer-make-local-variable=,
+=emacs-buffer-make-variable-buffer-local=,
+=emacs-buffer-buffer-local-variables=, =emacs-buffer-buffer-local-value=,
+=emacs-buffer-set-buffer-local-value=, =emacs-buffer-local-variable-p=,
+=emacs-buffer-local-variable-if-set-p=, =emacs-buffer-default-value=,
+=emacs-buffer-default-boundp=, =emacs-buffer-set-default=,
+=emacs-buffer-setq-default=, =emacs-buffer-kill-local-variable=, and
+=emacs-buffer-kill-all-local-variables=.  These functions use
+=emacs-buffer='s side-table state and do not read or mutate host Emacs
+symbol default bindings.  Callers that want NeLisp buffer-local writes
+must use =emacs-buffer-set-buffer-local-value=; host =setq= interception is
+outside contract version 1.  =emacs-buffer-make-variable-buffer-local=
+records metadata used by =emacs-buffer-local-variable-if-set-p=, but it
+does not make host =setq= automatically create a local binding.
+
+Undo APIs are stable as an explicit record/apply layer through
+=emacs-buffer-buffer-undo-list=, =emacs-buffer-buffer-disable-undo=,
+=emacs-buffer-buffer-enable-undo=, =emacs-buffer-undo-boundary=,
+=emacs-buffer-record-insertion=, =emacs-buffer-record-deletion=,
+=emacs-buffer-undo=, and =emacs-buffer-modify-without-undo=.  Contract
+version 1 does not auto-instrument =nelisp-ec-insert= or
+=nelisp-ec-delete-region=; callers that want undo must record insertions
+and deletions explicitly after mutating the buffer.  Undo-disabled buffers
+store =t= as the undo-list sentinel and =emacs-buffer-undo= signals
+=emacs-buffer-undo-disabled=.  Boundary markers are =nil= entries skipped
+by =emacs-buffer-undo=.  Insertion records are =(BEG . END)= and undo by
+deleting that range; deletion records are =(TEXT . POS)= and undo by
+reinserting =TEXT= at =POS=.  =emacs-buffer-modify-without-undo= is a
+dynamic helper that suppresses recording in its body and restores the prior
+undo-list state on exit, including non-local exits.
+
+The stable =editing= undo substrate exposes the same undo record model for
+command and frontend reuse through =emacs-undo-buffer-undo-list=,
+=emacs-undo-set-buffer-undo-list=, =emacs-undo-disabled-p=,
+=emacs-undo-reset=, =emacs-undo-undo-boundary=,
+=emacs-undo-record-insert=, =emacs-undo-record-delete=,
+=emacs-undo-primitive-undo=, and =emacs-undo-undo=.  This layer is useful
+when a consumer is implementing editing commands directly or needs the
+frontend-neutral command helpers.  =emacs-undo-undo-direct= returns a plist
+with =:status=, =:message=, and error metadata instead of signaling
+=emacs-undo-error= to callers.  =emacs-undo-run-command= wraps
+=emacs-undo-undo-direct= with =:current-buffer=, =:status-function=, and
+=:after-success= hooks so GTK, TUI, and app commands can share the same
+undo execution path.
+
+The stable =editing= direct edit-result API exposes reusable command bodies
+through =emacs-edit-self-insert-direct=,
+=emacs-edit-delete-backward-direct=,
+=emacs-edit-run-quoted-insert-command=, =emacs-edit-copy-region-direct=,
+=emacs-edit-kill-region-direct=, =emacs-edit-kill-line-direct=,
+=emacs-edit-kill-whole-line-direct=, and
+=emacs-edit-delete-region-direct=.  These functions operate on the current
+NeLisp buffer and return plists containing range/text metadata such as
+=:beg=, =:end=, =:text=, =:delete-len=, =:delete-text=, and
+=:deleted-newline= where applicable.  Copy/kill operations update
+=kill-ring=; delete-only operations do not.
+
+Region and yank command helpers are stable through
+=emacs-edit-transform-region-direct=,
+=emacs-edit-run-transform-region-command=,
+=emacs-edit-toggle-line-comment-direct=, =emacs-edit-comment-dwim-direct=,
+=emacs-edit-yank-direct=, =emacs-edit-yank-pop-direct=,
+=emacs-edit-yank-pop-result-direct=, and
+=emacs-edit-run-yank-pop-command=.  These are frontend-neutral helpers for
+GTK/TUI/app reuse.  Contract version 1 keeps comment toggling deliberately
+simple: it uses the current =;;= line-comment behavior and does not claim
+mode-specific comment syntax or indentation integration.
+
+Mark, region, and selection helpers are stable through
+=emacs-edit-set-mark-direct=, =emacs-edit-region-bounds-direct=,
+=emacs-edit-shift-selection-plan=, =emacs-edit-mouse-drag-region-plan=,
+=emacs-edit-mark-whole-buffer-direct=,
+=emacs-edit-exchange-point-and-mark-direct=,
+=emacs-edit-goto-position-direct=, =emacs-edit-select-word-at-direct=,
+=emacs-edit-run-select-word-at-command=,
+=emacs-edit-select-line-at-direct=, and
+=emacs-edit-run-select-line-at-command=.  These helpers intentionally
+return frontend-neutral mark states or action plans rather than storing
+frontend selection state themselves.  Consumers should persist their own
+mark buffer/name and active-region state using returned fields such as
+=:mark=, =:point=, =:buffer=, =:shift-region=, =:status=, and =:message=.
+
+Movement helpers are stable through =emacs-edit-page-scroll-direct=,
+=emacs-edit-forward-paragraph-direct=,
+=emacs-edit-backward-paragraph-direct=,
+=emacs-edit-mark-paragraph-direct=,
+=emacs-edit-run-mark-paragraph-command=,
+=emacs-edit-goto-buffer-boundary-direct=,
+=emacs-edit-forward-word-position=, =emacs-edit-kill-word-direct=,
+=emacs-edit-matching-paren-position-direct=,
+=emacs-edit-forward-sexp-direct=, =emacs-edit-backward-sexp-direct=,
+=emacs-edit-kill-sexp-direct=, =emacs-edit-forward-sentence-direct=,
+=emacs-edit-backward-sentence-direct=, =emacs-edit-kill-sentence-direct=,
+and =emacs-edit-backward-kill-sentence-direct=.  They operate on the
+current NeLisp buffer and return movement, mark, or edit plists.  Contract
+version 1 deliberately describes the current editing substrate scanners:
+word motion is ASCII word based, paragraph and sentence motion use the
+existing blank-line/punctuation rules, and sexp motion uses the simple
+Lisp-style balanced delimiter scanner.  Full syntax-table, major-mode, and
+comment-syntax integration remain outside this stable contract.
+
+Formatting, whitespace, counting, dabbrev, tab-stop, and register helpers
+are stable through =emacs-edit-transpose-chars-direct=,
+=emacs-edit-delete-horizontal-space-direct=,
+=emacs-edit-just-one-space-direct=,
+=emacs-edit-delete-indentation-direct=,
+=emacs-edit-zap-to-char-direct=, =emacs-edit-sort-lines-direct=,
+=emacs-edit-delete-blank-lines-direct=,
+=emacs-edit-delete-trailing-whitespace-direct=,
+=emacs-edit-fill-paragraph-direct=,
+=emacs-edit-run-fill-paragraph-command=,
+=emacs-edit-count-words-in-range=,
+=emacs-edit-count-lines-in-range=, =emacs-edit-count-range=,
+=emacs-edit-dabbrev-word-at-point-prefix=,
+=emacs-edit-dabbrev-find-completion=,
+=emacs-edit-dabbrev-expand-direct=,
+=emacs-edit-tab-to-tab-stop-direct=, =emacs-edit-register-value=,
+=emacs-edit-copy-to-register-direct=,
+=emacs-edit-insert-register-direct=,
+=emacs-edit-point-to-register-direct=,
+=emacs-edit-jump-to-register-target=, and
+=emacs-edit-goto-register-position-direct=.  Formatting and whitespace
+helpers are mode-independent text operations on the current NeLisp buffer.
+Fill uses the current greedy paragraph wrapper, dabbrev uses ASCII word
+matching, and register helpers treat the register store as a caller-owned
+alist returned through plist fields such as =:registers=, =:char=,
+=:value=, =:buffer=, and =:point=.  Low-level register mutation
+predicates such as =emacs-edit-register-put= and
+=emacs-edit-register-point-value-p= remain internal helper surface.
+
+Modification tracking APIs are stable through
+=emacs-buffer-buffer-modified-p=, =emacs-buffer-set-buffer-modified-p=,
+=emacs-buffer-restore-buffer-modified-p=,
+=emacs-buffer-toggle-read-only-direct=,
+=emacs-buffer-buffer-chars-modified-tick=,
+=emacs-buffer-buffer-text-tick=, and
+=emacs-buffer-bump-modified-tick=.  The modified flag is stored on the
+NeLisp buffer record.  The chars-modified tick is a consumer-controlled
+monotonic counter: callers bump it explicitly with
+=emacs-buffer-bump-modified-tick= when they need cache invalidation for
+non-text state.  The text tick is bumped automatically by the
+=emacs-buffer= module after =nelisp-ec-insert=,
+=nelisp-ec-delete-region=, and =nelisp-ec-erase-buffer=, and is not bumped
+by text-property or overlay mutation.  =emacs-buffer-toggle-read-only-direct=
+returns a plist containing =:read-only= and =:message= for frontend status
+display.
+
+Indirect buffer helpers are stable through
+=emacs-buffer-clone-indirect-buffer= and
+=emacs-buffer-buffer-base-buffer=.  An indirect clone shares the underlying
+text storage with its base buffer, while point, narrowing, locals, undo
+list, and extension state remain clone-local.
+
+The low-level =text-buffer= substrate is stable through
+=make-text-buffer=, =text-buffer-insert-char-code=,
+=text-buffer-insert=, =text-buffer-delete=, =text-buffer-cursor=,
+=text-buffer-set-cursor=, =text-buffer-substring=,
+=text-buffer-search=, =text-buffer-length=,
+=text-buffer-multibyte-p=, and =text-buffer-byte-length=.  This layer is a
+display-free mutable text container with a cursor, byte/character length
+queries, literal substring search, and insertion/deletion.  It deliberately
+does not expose point, markers, overlays, text properties, undo, major
+modes, or frontend state; consumers that need those semantics should use
+the =nelisp-ec-*= and =emacs-buffer-*= stable APIs instead.
+
+Redisplay-facing helpers remain outside the stable package API until their
+consumer semantics are reviewed separately.  The stable narrowing contract
+is limited to the NeLisp buffer substrate: =nelisp-ec-narrow-to-region=
+sets the accessible half-open range =[START, END)=, clamps point into that
+range, and leaves the underlying text storage intact; =nelisp-ec-widen=
+clears that range.
+
+The narrow external contract is verified and exported by:
+
+#+begin_src sh
+make nemacs-library-contract
+#+end_src
+
+It writes:
+
+- =build/nemacs-library-contract.tsv=
+- =build/nemacs-library-contract.org=
+
+This artifact lists only the stable facade feature, contract-version
+variable, package discovery APIs, stable package API query APIs, and
+stable lazy package API query APIs available after requiring
+=nelisp-emacs=.
+
+For review and extraction planning, the same facade view is exported by:
+
+#+begin_src sh
+make nemacs-library-package-manifest
+#+end_src
+
+It writes:
+
+- =build/nemacs-library-package-manifest.tsv=
+- =build/nemacs-library-package-manifest-summary.org=
+
+Package dependency artifacts are exported by:
+
+#+begin_src sh
+make nemacs-library-package-deps
+#+end_src
+
+They write:
+
+- =build/nemacs-library-package-deps.tsv=
+- =build/nemacs-library-package-deps-summary.org=
+- =build/nemacs-library-package-migration-queue.tsv=
+- =build/nemacs-library-package-migration-queue.org=
+
+The migration queue aggregates =unmanifested-reusable= edges by provider
+feature.  Treat it as the review input for deciding whether a hidden
+dependency becomes a package member, explicit package dependency, or new
+shared package.
+
+Draft package descriptors are exported by:
+
+#+begin_src sh
+make nemacs-library-package-descriptors
+#+end_src
+
+They write:
+
+- =build/nemacs-library-package-descriptors.tsv=
+- =build/nemacs-library-package-descriptors.org=
+
+The descriptor drafts combine facade membership with generated dependency
+edges.  They split host Emacs features, vendor package features, and
+unknown external features so package publication can distinguish known
+runtime assumptions from unresolved dependencies.  They are the review
+input for future package archive metadata, ELPA-style packaging, and
+repository extraction planning.
+
+Consumer package guide artifacts are exported by:
+
+#+begin_src sh
+make nemacs-library-package-guide
+#+end_src
+
+They write:
+
+- =build/nemacs-library-package-guide.tsv=
+- =build/nemacs-library-package-guide.org=
+
+The guide is generated from the descriptor drafts and is the
+consumer-facing view of package loader features, future package
+dependencies, lazy companion features, and host/vendor assumptions.  It
+does not define a broader stable API than the facade contract; it explains
+how the current package groups should be consumed and extracted.
+
+Package-scoped API inventory artifacts are exported by:
+
+#+begin_src sh
+make nemacs-library-package-api
+#+end_src
+
+They write:
+
+- =build/nemacs-library-package-api.tsv=
+- =build/nemacs-library-package-api.org=
+
+This artifact joins descriptor source files with the public API inventory
+so consumers can review candidate prefixed APIs and compatibility shim
+names by package.  Like the broader public API inventory, it is advisory:
+stable external reliance still starts at the facade contract and package
+owner documentation/tests.
+
+Consumer package API catalog artifacts are exported by:
+
+#+begin_src sh
+make nemacs-library-package-catalog
+#+end_src
+
+They write:
+
+- =build/nemacs-library-package-catalog.tsv=
+- =build/nemacs-library-package-catalog.org=
+
+The catalog joins the consumer package guide with the package-scoped API
+inventory.  It is the preferred generated artifact when an external
+consumer wants one package-oriented view of loader features, dependencies,
+host/vendor assumptions, public-prefixed API candidates, compatibility
+shim names, and private-helper counts.
+
+Package API promotion queue artifacts are exported by:
+
+#+begin_src sh
+make nemacs-library-api-promotion-queue
+#+end_src
+
+They write:
+
+- =build/nemacs-library-api-promotion-queue.tsv=
+- =build/nemacs-library-api-promotion-queue.org=
+
+The queue classifies =public-prefixed= and =compat-global= package API rows
+by test/doc evidence, the stable package API manifest, and the stable lazy
+package API manifest.  External
+consumers should treat =needs-review=, =needs-doc=, and =needs-test= rows
+as unstable draft surface.  A =promote-ready= row is a review signal, not a
+contract by itself.  A =stable-contract= row is listed in the facade stable
+package API manifest or stable lazy package API manifest and is part of
+the external consumer contract.
+=compat-shim-helper-*= rows are prefixed helpers defined inside
+=emacs-*-builtins.el= shim modules.  They support explicit compatibility
+installs and are not preferred reusable library APIs unless separately
+promoted through the facade stable manifest.  A
+=compat-shim-helper-internal= row was explicitly reviewed and remains
+internal implementation surface.
+=validation-helper-*= rows are public-prefixed guard helpers.  They are
+kept out of the stable consumer contract unless an external validation use
+case is reviewed and promoted explicitly.  A
+=validation-helper-internal= row was explicitly reviewed and remains
+internal implementation surface.  Doc 26 records the current residual API
+audit for these non-stable rows after the stable package API promotion
+pass.
+
+Draft physical package layout artifacts are exported by:
+
+#+begin_src sh
+make nemacs-library-package-layout
+#+end_src
+
+They write:
+
+- =build/nemacs-library-package-layout.tsv=
+- =build/nemacs-library-package-layout.org=
+
+The layout plan maps descriptor source files to future
+=packages/PACKAGE/lisp/= and =packages/PACKAGE/lazy/= paths.  It is a
+review artifact only and does not move files.
+
+Descriptor/guide/API/catalog/promotion/layout consistency is verified by:
+
+#+begin_src sh
+make nemacs-library-package-verify
+#+end_src
+
+It writes:
+
+- =build/nemacs-library-package-verify.tsv=
+- =build/nemacs-library-package-verify.org=
+
+It fails when descriptor source files are missing, package dependencies do
+not resolve, unknown external features remain, the consumer guide no
+longer matches descriptor package fields, package API rows miss descriptor
+packages or API-bearing descriptor files, package API rows drift outside
+descriptor package files, catalog rows drift from guide/API package
+fields, promotion queue rows stop covering public/compat package API
+candidates, stable API rows stop resolving, stable lazy API rows stop
+resolving after their lazy feature is required, stable rows stop
+classifying as =stable-contract=, or the layout plan no longer exactly
+covers descriptor eager/lazy source files.
+
+* 4. Stability tiers
+
+| Tier | Examples | Consumer rule |
+|------+----------+---------------|
+| Contract surface | =nelisp-emacs-library-contract-version=, facade query APIs, stable package API query APIs, stable lazy package API query APIs | external consumers may rely on this when the library gate is green |
+| Stable package API | symbols returned by =nelisp-emacs-library-stable-api-symbols= | reusable package API accepted into the facade contract and available after requiring =nelisp-emacs= |
+| Stable lazy package API | symbols returned by =nelisp-emacs-library-stable-lazy-api-symbols= | reusable package API accepted into the facade contract but available only after requiring the entry's lazy feature |
+| Reusable public API | prefixed rows in =make nemacs-public-api-inventory=, such as =emacs-buffer-*= | candidate public surface; stable only when the owning package documents, tests, and adds it to the stable API manifest |
+| Compatibility global | =current-buffer=, =find-file=, =dired= style shim names | use when Emacs-compatible behavior is the goal; prefer prefixed APIs for new integrations |
+| Adapter/app API | GUI/TUI/backend/app-owned symbols | not part of the reusable package contract |
+| Private helper | names containing =--= | never use from external consumers |
+
+Doc 28 records the stable API compatibility policy.  Current generated
+coverage is 948 stable API rows: 935 =public-prefixed= symbols and
+13 =compat-global= symbols, with 0 policy failures.  A =compat-global=
+symbol is stable only when it appears in the facade stable eager or stable
+lazy API query results.  Other Emacs-compatible global shim names remain
+advisory until promoted into the stable manifest.
+
+* 5. Non-goals
+
+Version 1 does not promise:
+
+- package installation metadata;
+- a final package directory layout;
+- semantic versioning for every prefixed symbol;
+- compatibility with requiring files outside =src/=;
+- availability of =nemacs-main=, =emacs-init=, =gui/=, or runtime image
+  bootstrap;
+- that every Emacs-compatible global shim is safe to install into an
+  arbitrary host Emacs session.
+
+* 6. Verification
+
+The focused consumer gate is:
+
+#+begin_src sh
+make nemacs-library-consumer-smoke
+#+end_src
+
+It runs a fresh =emacs -Q -L src= process, requires =nelisp-emacs=, checks
+the contract version and query APIs, and verifies that app/bootstrap,
+concrete TUI/GUI, and lazy editor files were not loaded.
+
+The contract symbol gate is:
+
+#+begin_src sh
+make nemacs-library-contract
+#+end_src
+
+It verifies that the stable consumer contract symbols exist after requiring
+=nelisp-emacs= and writes the narrow contract TSV/Org artifacts.
+
+The stable API compatibility policy gate is:
+
+#+begin_src sh
+make nemacs-library-compat-api-policy
+#+end_src
+
+It verifies that stable eager and stable lazy API symbols are either
+=public-prefixed= preferred library API or intentional =compat-global=
+Emacs-compatible shim API.  It fails if a stable manifest promotes a private
+helper, an app/frontend adapter, or a symbol missing from the generated public
+API inventory.
+
+The package group gate is:
+
+#+begin_src sh
+make nemacs-library-package-smoke
+#+end_src
+
+It runs each reusable package group loader in its own =emacs -Q -L src=
+process and verifies that app/bootstrap, frontends, lazy editor files, and
+the top-level facade were not loaded as hidden dependencies.
+
+The manifest export gate is:
+
+#+begin_src sh
+make nemacs-library-package-manifest
+#+end_src
+
+It generates the package manifest artifacts from the public facade API and
+fails if the facade package manifest is empty or unloadable.
+
+The dependency export gate is:
+
+#+begin_src sh
+make nemacs-library-package-deps
+#+end_src
+
+It generates facade package dependency artifacts from source =require=
+forms and the migration queue for =unmanifested-reusable= edges.  The full
+library gate fails when reusable facade packages depend on
+app/frontend-owned features.
+
+The descriptor export gate is:
+
+#+begin_src sh
+make nemacs-library-package-descriptors
+#+end_src
+
+It generates descriptor drafts from the same facade manifest and dependency
+shape used by the package gate.
+
+The consumer package guide export gate is:
+
+#+begin_src sh
+make nemacs-library-package-guide
+#+end_src
+
+It generates the consumer-facing package guide from the descriptor drafts.
+
+The package-scoped API export gate is:
+
+#+begin_src sh
+make nemacs-library-package-api
+#+end_src
+
+It generates package-scoped API inventory from descriptor source files and
+the broader public API inventory.
+
+The consumer package API catalog export gate is:
+
+#+begin_src sh
+make nemacs-library-package-catalog
+#+end_src
+
+It generates the consumer-facing package loader/dependency/API summary
+from the package guide and package-scoped API inventory.
+
+The package API promotion queue export gate is:
+
+#+begin_src sh
+make nemacs-library-api-promotion-queue
+#+end_src
+
+It generates the package-owner review queue for public-prefixed and
+compat-global API candidates from package API rows plus docs/tests
+evidence.
+
+The package layout export gate is:
+
+#+begin_src sh
+make nemacs-library-package-layout
+#+end_src
+
+It generates a physical =packages/= move plan from the descriptor drafts.
+
+The package extraction verification gate is:
+
+#+begin_src sh
+make nemacs-library-package-verify
+#+end_src
+
+It verifies descriptor/guide/API/catalog/promotion/layout consistency and
+fails on unresolved package extraction inputs.
+
+The full library gate is:
+
+#+begin_src sh
+make nemacs-library-gate
+#+end_src
+
+It includes the consumer smoke, package group smoke, manifest export,
+dependency export, byte-compile/load proof, Doc 18 ownership coverage,
+public API inventory, boundary report, dirty review classification, and
+facade ERTs.
+
+* 7. Change rules
+
+- Add new reusable files to Doc 18 ownership before exposing them through
+  the facade.
+- Add or update group loader =*-features= manifests when package
+  membership changes.
+- Keep package group loaders directly requireable from =emacs -Q -L src=.
+- Keep facade package dependency =app-or-frontend= rows at zero.
+- Keep the consumer smoke green for facade membership changes.
+- Update Doc 24 public API baseline when public symbols are added or
+  removed intentionally.
+- Bump =nelisp-emacs-library-contract-version= for incompatible external
+  consumer contract changes.
+- Do not promote GUI/TUI/app convenience behavior into the contract unless
+  it is first owned by a reusable package group.

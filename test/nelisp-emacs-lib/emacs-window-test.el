@@ -49,6 +49,15 @@
       (should (emacs-window-leaf-p w))
       (should (eq w (emacs-window-selected-window))))))
 
+(ert-deftest emacs-window-get-window-defaults-to-selected ()
+  "get-window returns its argument, or the selected window for nil."
+  (emacs-window-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window)))
+      (should (eq w1 (emacs-window-get-window)))
+      (let ((w2 (emacs-window-split-window)))
+        (should (eq w2 (emacs-window-get-window w2)))
+        (should (eq w1 (emacs-window-get-window nil)))))))
+
 (ert-deftest emacs-window-buffer-binding ()
   (emacs-window-test--with-fresh-world
     (emacs-window-test--with-3-buffers (b1)
@@ -82,6 +91,20 @@
                           (car (last order)))))
           (should (eq (car (last order))
                       (emacs-window-previous-window w1))))))))
+
+(ert-deftest emacs-window-window-list-1-starts-at-window ()
+  "window-list-1 returns live leaves rotated to WINDOW or selected."
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window))
+           (w3 (emacs-window-split-window))
+           (from-w2 (emacs-window-window-list-1 w2))
+           (from-selected (emacs-window-window-list-1)))
+      (should (eq w2 (car from-w2)))
+      (should (= 3 (length from-w2)))
+      (should (equal (sort (mapcar #'emacs-window-id from-w2) #'<)
+                     (sort (mapcar #'emacs-window-id (list w1 w2 w3)) #'<)))
+      (should (eq (emacs-window-selected-window) (car from-selected))))))
 
 (ert-deftest emacs-window-get-buffer-window-finds-it ()
   (emacs-window-test--with-fresh-world

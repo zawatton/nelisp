@@ -39,12 +39,16 @@ ENV-PLIST is fed to `detect' / `from-env' explicitly inside BODY."
   "MVP capability list = Doc 43 §2.5 TUI MVP minimum (text/basic-color/
 keyboard/resize/layout-box/layout-grid)."
   (let ((mvp (emacs-tui-terminfo-mvp-capabilities)))
+    (should (equal emacs-tui-terminfo-mvp-capability-list mvp))
     (should (memq 'text mvp))
     (should (memq 'basic-color mvp))
     (should (memq 'keyboard mvp))
     (should (memq 'resize mvp))
     (should (memq 'layout-box mvp))
     (should (memq 'layout-grid mvp))
+    (setcar mvp 'mutated)
+    (should (eq 'text (car emacs-tui-terminfo-mvp-capability-list)))
+    (should (eq 'text (car (emacs-tui-terminfo-mvp-capabilities))))
     (should (= 6 (length mvp)))))
 
 (ert-deftest emacs-tui-terminfo-known-terminals-includes-xterm-family ()

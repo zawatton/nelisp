@@ -1,0 +1,76 @@
+#+TITLE: nelisp-gui / nelisp-emacs Boundary
+#+DATE: 2026-06-08
+
+* Purpose
+
+This document fixes the boundary from the =nelisp-gui= side.
+
+Final rule: *nelisp-emacs owns Emacs semantics; nelisp-gui owns presentation
+and input transport.*
+
+* Ownership
+
+| Surface | Owner | Examples |
+|---------+-------+----------|
+| Command result semantics | =nelisp-emacs= | buffer text, point, mark, region, kill-ring, undo, modified flag, visited file, current buffer, buffer list |
+| Command loop | =nelisp-emacs= | keymap lookup, =command-execute=, =call-interactively=, =execute-extended-command=, minibuffer completion/history/require-match |
+| Window/tab semantics | =nelisp-emacs= | selected window, window layout, window-start/window-hscroll/window-split-delta, selected tab and tab name changes caused by =split-window-right=, =other-window=, scrolling/recentering, resizing, =tab-new=, =tab-next=, =tab-rename= |
+| Face/fontset decision | =nelisp-emacs= | which face a region gets, face → concrete color resolution, fontset/script pick; transported as =nemacs-face-spans= / =nemacs-font= (M12) |
+| Display backend | =nelisp-gui= | X11 socket/wire protocol, window id, pixmap, GC, font metrics, colors, glyph drawing, cursor drawing, modeline/minibuffer/tab-line painting; paints the face spans and font it receives without re-deciding them |
+| Input adapter | =nelisp-gui= | X11 event decode, raw key sequence construction, =/tmp/nemacs-*= transport setup, runtime image/session startup |
+
+* Hard Rules
+
+- Do not implement Emacs command semantics in =nelisp-gui=.
+- Do not add GUI-side command branches for new key bindings.  Send raw key
+  transport and let =nelisp-emacs= resolve keymap lookup and command dispatch.
+- Do not repair returned command results in =nelisp-gui=.  If point,
+  window-start, modeline, minibuffer candidates, or buffer contents are wrong,
+  fix the =nelisp-emacs= bridge/runtime command path.
+- =/tmp/nemacs-cmd=, =/tmp/nemacs-arg=, and direct minibuffer transport are
+  migration fallbacks.  The preferred path is =/tmp/nemacs-keys= plus the
+  persistent =nemacs-gui-file-bridge-session-run= runtime.
+- Host Emacs fallback is temporary coverage for not-yet-ported commands.  It
+  does not change ownership; final behavior belongs in =nelisp-emacs=.
+
+* Bridge Contract
+
+GUI sends:
+- raw key sequence via =/tmp/nemacs-keys=,
+- current buffer snapshot,
+- point and mark,
+- kill-ring mirror,
+- buffer name and visited filename,
+- window layout, selected window, window-start/window-hscroll/window-split-delta, and tab-state,
+- read-only state and display transport state.
+
+=nelisp-emacs= returns:
+- updated buffer snapshot,
+- point and mark,
+- kill-ring mirror,
+- buffer/window/tab state,
+- modeline and cursor,
+- minibuffer active/prompt/state/candidates/history/require-match,
+- status/error.
+
+=nelisp-gui= renders the returned state as-is.  For tabs, =nelisp-emacs=
+produces =/tmp/nemacs-tab-state= and =nelisp-gui= only paints the selected tab
+name from that returned transport.
+
+* Test Ownership
+
+- =nelisp-gui/scripts/verify-nemacs-gui.sh= verifies native GUI input decode,
+  raw-key transport, session startup, stale-state cleanup, and repaint of the
+  returned state.
+- =nelisp-emacs/test/nemacs-gui-file-bridge-runtime-test.el= verifies command
+  semantics and bridge state updates under the standalone reader.
+
+Never run default =/tmp/nemacs-*= transport tests in parallel.  The Layer 2
+runtime adapter may be pointed at an isolated directory for standalone probes,
+and =nemacs-mx.sh= can pass =NEMACS_TRANSPORT_DIR= to runtime/session and host
+fallback backends.  The native GUI binary can also be compiled for a non-default
+transport directory through
+=nemacs-editor-transport.el= build-time path rewriting.  It does not read the
+environment at runtime; launcher/build marker agreement keeps the compiled path
+and initialized transport directory aligned.  =/tmp/nemacs.cfg= and the X11
+socket path are not transport state and remain fixed.

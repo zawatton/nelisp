@@ -1,0 +1,96 @@
+#+TITLE: nelisp Development Workspace Layout
+#+DATE: 2026-06-08
+
+* Purpose
+
+This document fixes the local development layout for replacing Emacs with
+=nelisp-emacs= plus =nelisp-gui=.
+
+Final rule: keep repositories separate; develop them as sibling checkouts.
+
+* Standard Layout
+
+Use one parent directory that contains the three active repositories:
+
+#+begin_src text
+dev/
+  nelisp/        Layer 1 runtime, reader, AOT compiler
+  nelisp-emacs/  Layer 2 Emacs behavior and command substrate
+  nelisp-gui/    Layer 3 native GUI display/input adapter
+#+end_src
+
+=nelisp-gui= resolves this layout by default:
+- =NELISP_ROOT= defaults to a sibling =../nelisp= checkout.
+- =NEMACS_EMACS_ROOT= defaults to a sibling =../nelisp-emacs= checkout.
+- =NELISP_SNAP= defaults to =/tmp/nelisp-snap= so GUI builds can use a stable
+  copy of the latest =nelisp= binary without running from the mutable checkout.
+
+* Repository Ownership
+
+| Repository | Owns | Does not own |
+|------------+------+--------------|
+| =nelisp= | standalone runtime, reader, AOT/compiler output | Emacs command behavior, X11 GUI |
+| =nelisp-emacs= | Emacs command semantics, keymap/minibuffer/buffer/file/window state | X11 drawing and GUI event loop |
+| =nelisp-gui= | X11 wire protocol, rendering, input decode, bridge transport | Emacs command semantics |
+
+The repos are separate because their ownership boundaries are different.  A
+daily-driver change may touch multiple repos, but each change should land in
+the repo that owns that behavior.
+
+* Why Not vendor/nelisp-emacs or vendor/nelisp-gui
+
+=nelisp-emacs= does have a =vendor/= tree, but it has two different meanings:
+
+- =nelisp-emacs/vendor/nelisp= is a dependency checkout used to build a
+  self-contained Layer 1 binary.  It is optional, gitignored/untracked, and can
+  be recreated by =nelisp-emacs/bin/build-nelisp= or =make nelisp=.
+- =nelisp-emacs/vendor/emacs-lisp= is imported upstream Emacs Lisp.  It is the
+  compatibility target that =nelisp-emacs= must execute, not the active
+  =nelisp-emacs= repository itself.
+
+This means =vendor/= is not the model for active =nelisp-emacs= / =nelisp-gui=
+co-development.  The active =nelisp-emacs= repository remains the sibling
+checkout at =dev/nelisp-emacs=.
+
+That is not the right model for =nelisp-emacs= and =nelisp-gui= co-development:
+- both are active first-class repositories,
+- both need their own commits and review history,
+- both have tests that should run against the current sibling checkout,
+- vendoring one into the other would blur the Layer 2 / Layer 3 ownership.
+
+If a meta workspace is needed later, it should contain only scripts/docs such as
+=verify=, =sync-nelisp=, and status commands.  Source ownership should remain in
+the three repositories above.
+
+* Verification Discipline
+
+Run the cross-repo checks sequentially while the default smoke still uses shared
+=/tmp/nemacs-*= files:
+
+#+begin_src sh
+dev/nelisp-gui/scripts/sync-nelisp-snap.sh
+make -C dev/nelisp-emacs test-nemacs-gui-bridge NELISP_BIN=/tmp/nelisp-snap/nelisp
+dev/nelisp-gui/scripts/verify-nemacs-gui.sh
+#+end_src
+
+Do not run =test-nemacs-gui-bridge= and =verify-nemacs-gui.sh= in parallel when
+they use the default transport.  The =nelisp-emacs= runtime adapter has a
+=files--transport-dir= hook, =nelisp-gui/nemacs-mx.sh= passes
+=NEMACS_TRANSPORT_DIR= through to runtime/session backends, and
+the native GUI binary can be compiled with build-time =NEMACS_TRANSPORT_DIR= path
+rewriting.  =/tmp/nemacs.cfg= and the X11 socket path remain fixed because they
+are not transport state.
+
+* Local Overrides
+
+Use these only when the sibling layout is not available:
+
+| Variable | Meaning |
+|----------+---------|
+| =NELISP_ROOT= | explicit =nelisp= checkout |
+| =NEMACS_EMACS_ROOT= | explicit =nelisp-emacs= checkout |
+| =NELISP_SNAP= | stable runtime snapshot directory |
+| =NEMACS_RUNTIME_IMAGE= | explicit GUI bridge runtime image |
+
+The default sibling layout should remain the path optimized for day-to-day
+development.

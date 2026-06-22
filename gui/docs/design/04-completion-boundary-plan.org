@@ -1,0 +1,240 @@
+#+TITLE: Completion Boundary Plan
+#+DATE: 2026-06-09
+
+* Purpose
+
+This document fixes the completion boundary for the remaining large surfaces:
+
+- shell/process
+- major-mode/package
+- VC/project
+- frame/tab
+
+The rule is the same for every surface:
+
+*nelisp-emacs owns Emacs behavior and state.  nelisp-gui owns input transport
+and rendering of returned state.*
+
+This means a feature is not complete because a key reaches the GUI.  It is
+complete only when =nelisp-emacs= can execute the command semantics through the
+runtime/session path and =nelisp-gui= can render the returned state without
+repairing it.
+
+* Cross-Repo Ownership
+
+| Area | =nelisp-emacs= owns | =nelisp-gui= owns | Must not live in =nelisp-gui= |
+|------+---------------------+-------------------+-----------------------------|
+| shell/process | =call-process=, =call-process-region=, =make-process=, process objects, exit status, filters/sentinels, shell-command UI semantics, output buffer updates | raw =M-!= / =M-|= / =M-&= key transport, minibuffer display, output buffer rendering, async repaint/session liveness smoke | =/bin/sh= invocation policy, stdout/stderr capture semantics, process registry, exit status decoding |
+| major-mode/package | =major-mode=, mode hooks, local maps, syntax/font-lock data, package loading/facades, buffer-local variables, command semantics | display of mode line/mode name, font/color rendering once returned, key transport for local-map commands, visual smoke for displayed state | mode command implementations, package facades, local-map lookup, syntax or font-lock meaning |
+| VC/project | project root detection, project state, VC backend commands, Dired/VC/project buffers, subprocess use, next-error integration | key transport, rendering project/VC buffers and minibuffer prompts, repaint after buffer/window changes | git/hg/etc command execution, project root policy, VC state machine, log/diff/status buffer generation |
+| frame/tab | frame/tab/window command semantics, selected frame/tab, tab list, window tree, display-buffer target decisions | native X11 top-level window(s), drawing tab line/window separators/selection, transport of returned frame/tab state | deciding which buffer/window/tab a command selects, creating Emacs frame/tab semantics in GUI-only state |
+
+* Completion Gates
+
+Each area is complete only after all gates pass.
+
+| Gate | Owner | Required evidence |
+|------+-------+-------------------|
+| command/keymap coverage | =nelisp-emacs= | =nemacs-gui-keymap-coverage= has no missing bindings for the target family and no =command-missing= entries |
+| direct runtime semantics | =nelisp-emacs= | ERT or direct runtime smoke verifies buffer/point/window/process/package state without host fallback |
+| session bridge semantics | =nelisp-emacs= + =nelisp-gui= transport | persistent GUI bridge session handles the same command via raw keys |
+| visual/render smoke | =nelisp-gui= | =scripts/verify-nemacs-gui.sh visual= or a focused visual subtest shows the returned state without GUI-side semantic fixes |
+| fallback retirement | both | host fallback is not needed for the target family's normal path |
+
+* Shell / Process
+
+** Definition of Done
+
+Shell/process is complete when the following work without host fallback:
+
+| Key/API | Required behavior |
+|---------+-------------------|
+| =M-!= / =shell-command= | prompt command, run shell synchronously, capture stdout/stderr policy, update output buffer, return exit status |
+| =M-|= / =shell-command-on-region= | feed region to stdin, capture output, replace region when requested |
+| =M-&= / =async-shell-command= | spawn without blocking, append output, expose process status, repaint later output |
+| =call-process= | generic synchronous subprocess primitive usable by packages |
+| =call-process-region= | generic stdin-from-region primitive |
+| =make-process= / process accessors | async process object, status, filter/sentinel path |
+
+Current status on 2026-06-09:
+
+- =nelisp-emacs/src/emacs-process.el= first uses native NeLisp process objects
+  when =nelisp-process-start-process= / =nelisp-process-start= is available.
+  The runtime keeps Emacs-level metadata for process name, buffer, command,
+  filter, and sentinel, while =nelisp= owns pid/fd/status/output.
+- If the native process start builtin is absent, =nelisp-emacs= still has a
+  standalone fallback process object for =make-process= / =start-process=.  It
+  runs through =call-process= synchronously, records status/exit code, stores
+  buffer/name/command, and calls the sentinel once.  This is a process-shaped
+  compatibility step, not the final nonblocking substrate.
+- =scripts/nemacs-runtime-process-preload.el= and
+  =scripts/nemacs-runtime-image-preload.el= expose the same process accessors
+  in runtime images.
+- =nelisp-gui= only transports =M-!= / =M-|= / =M-&= input and renders returned
+  buffers.  It does not own process semantics.
+
+** Implementation Placement
+
+| Task | Repo |
+|------+------|
+| low-level syscall/fork/exec/wait/pipe probes | =nelisp= or isolated spike, then surfaced through =nelisp-emacs= |
+| =call-process= / =call-process-region= / =make-process= facades | =nelisp-emacs= |
+| =shell-command= UI and output buffer semantics | =nelisp-emacs= |
+| key bindings for =M-!=, =M-|=, =M-&= | =nelisp-emacs= runtime keymap |
+| GUI prompt rendering and raw key transport | =nelisp-gui= |
+| visual smoke for output buffer and async repaint | =nelisp-gui= |
+
+** Minimal Completion Order
+
+1. standalone =fork -> execve -> wait4= probe with stdout temp-file capture.
+2. =call-process= direct runtime smoke: =printf hi= and =false=.
+3. =shell-command= direct runtime smoke.
+4. region stdin via temp file, then pipe.
+5. =shell-command-on-region= direct and session smoke.
+6. native =nelisp-process-start-process= bridge with metadata, output drain,
+   status, filter, sentinel, and =accept-process-output= smoke.  Initial direct
+   NeLisp CLI proof passed on 2026-06-09.
+7. process-shaped =make-process= fallback object and accessor smoke.  Done on
+   2026-06-09 in =nelisp-emacs= as a compatibility bridge for missing native
+   async.
+8. async process registry with poll tick in the long-running GUI session.
+9. =async-shell-command= direct/session/visual smoke that proves nonblocking
+   behavior.
+
+* Major Mode / Package
+
+** Definition of Done
+
+Major-mode/package support is complete when =nelisp-emacs= can load and use
+target package surfaces as runtime semantics, not just vendor files:
+
+| Surface | Required behavior |
+|---------+-------------------|
+| major modes | set =major-mode=, mode name, buffer-local variables, local keymap, hooks |
+| local key lookup | raw GUI keys dispatch through active local/minor maps in =nelisp-emacs= |
+| package facades | missing native primitives are represented by documented =nelisp-emacs= facades or real implementations |
+| syntax/font-lock/display data | buffer state exposes enough text properties or display metadata for GUI rendering |
+| package commands | command semantics covered by direct runtime tests before GUI visual tests |
+
+** Implementation Placement
+
+| Task | Repo |
+|------+------|
+| =major-mode= state, =run-mode-hooks=, local-map semantics | =nelisp-emacs= |
+| package loading, autoloads, compatibility facades | =nelisp-emacs= |
+| text properties, syntax tables, font-lock data model | =nelisp-emacs= |
+| glyph/color rendering from returned metadata | =nelisp-gui= |
+| local-map raw-key session smoke | =nelisp-gui= verifies transport only; =nelisp-emacs= verifies dispatch |
+
+** Minimal Completion Order
+
+1. complete local-map dispatch for one small mode.
+2. add direct runtime smoke for =major-mode=, =mode-name=, and local keymap.
+3. make package facades explicit by tier: real, semantic no-op, load-only.
+4. verify one representative package per tier.
+5. add GUI visual smoke only after returned mode-line/text-property state is stable.
+
+* VC / Project
+
+** Definition of Done
+
+VC/project is complete when project navigation and VC commands operate through
+=nelisp-emacs= and can use the process substrate without GUI-specific behavior.
+
+| Surface | Required behavior |
+|---------+-------------------|
+| project root | detect root, cache/return project object, respect current buffer/file |
+| project files/buffers | list/find/switch/kill project buffers and files |
+| project shell/compile/grep | reuse shell/process substrate and next-error buffers |
+| VC status/log/diff | call backend commands, generate buffers, expose navigation state |
+| next-error | navigate compilation/grep/VC diagnostics |
+
+** Implementation Placement
+
+| Task | Repo |
+|------+------|
+| project root detection and command semantics | =nelisp-emacs= |
+| VC backend abstraction and git/hg process calls | =nelisp-emacs= |
+| diff/log/status buffer construction | =nelisp-emacs= |
+| display of generated buffers and window state | =nelisp-gui= |
+| visual smoke for project/VC buffers | =nelisp-gui= after semantic tests pass |
+
+** Minimal Completion Order
+
+1. finish shell/process synchronous substrate.
+2. implement =project-current= root detection and project file listing direct tests.
+3. wire =project-find-file=, =project-switch-to-buffer=, =project-kill-buffers=.
+4. implement =compile= / grep-style output and =next-error=.
+5. implement VC read-only commands first: status, diff, log.
+6. implement mutating VC commands after status/diff/log are reliable.
+
+* Frame / Tab
+
+** Definition of Done
+
+Frame/tab is complete when Emacs frame/tab/window semantics live in
+=nelisp-emacs= and =nelisp-gui= can render one or more returned frame/tab
+states.
+
+| Surface | Required behavior |
+|---------+-------------------|
+| tabs | tab list, selected tab, tab name/group/history, buffer/window state per tab |
+| frames | frame list, selected frame, frame parameters relevant to GUI |
+| window resizing | window tree dimensions and selected window updated by commands |
+| display-buffer targets | other-window/frame/tab prefixes choose the right returned target |
+| GUI rendering | tab line/frame/window separators reflect returned state |
+
+** Implementation Placement
+
+| Task | Repo |
+|------+------|
+| tab/frame/window command semantics | =nelisp-emacs= |
+| display-buffer target policy | =nelisp-emacs= |
+| serialized frame/tab/window transport state | boundary contract shared by both repos, produced by =nelisp-emacs= |
+| native X11 top-level windows and tab-line drawing | =nelisp-gui= |
+| visual smoke for tab/frame/window changes | =nelisp-gui= |
+
+** Minimal Completion Order
+
+1. finish single-frame window resizing: =enlarge-window=, =C-x {=, =C-x }=.
+2. extend transport state for window dimensions, not only layout kind.
+3. add tab state to transport: list, selected index, names.  Initial
+   =/tmp/nemacs-tab-state= bridge exists with selected index, count, and
+   selected name.
+4. implement tab commands in =nelisp-emacs= with direct runtime tests.  Initial
+   =tab-new=, =tab-close=, =tab-next=, =tab-previous=, and =tab-rename= bridge
+   smoke exists.
+5. render tab line in =nelisp-gui= from returned state.  Initial native
+   transform paints the selected tab name from =/tmp/nemacs-tab-state=.
+6. add frame state transport and native multi-window rendering.
+7. implement frame commands and visual smoke.
+
+* Non-Negotiable Boundaries
+
+- If a change answers "what should Emacs do?", it belongs in =nelisp-emacs=.
+- If a change answers "how should returned state look on X11?", it belongs in
+  =nelisp-gui=.
+- If a GUI smoke fails because the buffer/modeline/window/tab/process state is
+  wrong, fix =nelisp-emacs=.
+- If a GUI smoke fails because returned state is right but pixels/input are
+  wrong, fix =nelisp-gui=.
+- Do not add command-specific branches to native GUI redisplay or key handling
+  for the four areas above.
+
+* Current Practical Next Steps
+
+| Priority | Area | First completing slice |
+|----------+------+------------------------|
+| 1 | shell/process | =call-process= + =shell-command= synchronous smoke |
+| 2 | shell/process | =call-process-region= + =shell-command-on-region= |
+| 3 | frame/tab | single-frame window resizing transport and visual smoke |
+| 4 | VC/project | =project-current= + =project-find-file= after process basics |
+| 5 | major-mode/package | one small major-mode local-map dispatch proof |
+| 6 | shell/process | =make-process= + =async-shell-command= polling |
+| 7 | VC/project | =compile= / grep output + =next-error= |
+| 8 | frame/tab | tab state transport + tab line rendering |
+| 9 | VC/project | VC status/diff/log read-only path |
+| 10 | major-mode/package | package facade tier inventory enforced by tests |
+
+This ordering keeps =nelisp-gui= mostly out of semantics while still giving it
+clear visual verification points after each =nelisp-emacs= slice lands.

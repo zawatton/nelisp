@@ -381,6 +381,24 @@ results do not vary with the host TTY."
       (emacs-tui-event-feed-bytes (emacs-frame-tui-event-handle) "z")
       (should (eq ?z (funcall emacs-keymap--read-event-fn))))))
 
+(ert-deftest emacs-frame-tui-wire-keyboard-forwards-read-timeout ()
+  "`emacs-frame-tui-read-event-timeout-ms' is passed to the event poller."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil)
+          (emacs-frame-tui-read-event-timeout-ms 17)
+          (seen-handle nil)
+          (seen-timeout nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (cl-letf (((symbol-function 'emacs-tui-event-poll)
+                 (lambda (handle timeout-ms)
+                   (setq seen-handle handle
+                         seen-timeout timeout-ms)
+                   '(:type key :name ?k :modifiers nil))))
+        (should (eq ?k (funcall emacs-keymap--read-event-fn))))
+      (should (eq (emacs-frame-tui-event-handle) seen-handle))
+      (should (= 17 seen-timeout)))))
+
 (ert-deftest emacs-frame-tui-wire-keyboard-empty-queue-signals ()
   "An empty queue signals `emacs-keymap-error' (= default-reader contract)."
   (emacs-frame-tui-wire-test--with-fresh-world

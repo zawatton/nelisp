@@ -378,6 +378,11 @@ keeping this file as the Emacs-shaped compatibility boundary."
     (apply (emacs-process--nelisp-delegate sym) args))
    (t (signal 'emacs-process-not-implemented (list sym)))))
 
+;;;###autoload
+(defun emacs-process-delegate (sym args)
+  "Apply SYM to ARGS through the host binding or standalone primitive."
+  (emacs-process--delegate sym args))
+
 ;;;; --- synchronous: call-process / call-process-region --------------
 
 (defun emacs-process--standalone-capture-available-p ()

@@ -108,22 +108,30 @@ emits every bootstrap form directly.")
   (file-name-as-directory
    (expand-file-name "vendor" nelisp-bootstrap-repo-root)))
 
-(defun nelisp-bootstrap--src-file-p (file)
-  "Return non-nil when FILE is a local src/*.el file."
+(defun nelisp-bootstrap--source-file (file)
+  "Return local src source file for FILE, or nil.
+FILE may be either the source `.el' path or the byte-compiled `.elc'
+path recorded in `load-history'."
   (let ((src (nelisp-bootstrap--src-dir))
         (abs (and (stringp file) (expand-file-name file))))
     (and abs
          (string-prefix-p src abs)
-         (string-suffix-p ".el" abs)
-         (file-readable-p abs))))
+         (cond
+          ((and (string-suffix-p ".el" abs)
+                (file-readable-p abs))
+           abs)
+          ((string-suffix-p ".elc" abs)
+           (let ((source (substring abs 0 -1)))
+             (and (file-readable-p source) source)))))))
 
 (defun nelisp-bootstrap--collect-loaded-src-files ()
   "Return loaded local src files in dependency-first order."
   (let (files)
     (dolist (entry load-history)
       (let ((file (car-safe entry)))
-        (when (nelisp-bootstrap--src-file-p file)
-          (push (expand-file-name file) files))))
+        (let ((source (nelisp-bootstrap--source-file file)))
+          (when source
+            (push (expand-file-name source) files)))))
     (delete-dups files)))
 
 (defun nelisp-bootstrap--insert-after (file anchor files)

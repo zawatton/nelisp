@@ -3,45 +3,10 @@
 ;;; Code:
 
 (defvar bootstrap-step-walk-features
-  '(emacs-fns
-    emacs-eval
-    emacs-list
-    emacs-hash
-    emacs-symbol
-    emacs-callproc
-    emacs-vars
-    emacs-sqlite
-    emacs-backquote
-    emacs-error
-    emacs-string
-    emacs-stub
-    emacs-easy-mmode
-    emacs-pcase
-    emacs-cl-macros
-    emacs-time
-    emacs-numeric
-    emacs-buffer-builtins
-    emacs-search-builtins
-    emacs-line-builtins
-    emacs-fileio-builtins
-    emacs-special-buffers
-    emacs-undo-builtins
-    emacs-edit-builtins
-    emacs-minibuffer-builtins
-    emacs-command-loop-builtins
-    emacs-keymap-builtins
-    emacs-frame-builtins
-    emacs-window-builtins
-    emacs-faces-builtins
-    emacs-mode-builtins
-    emacs-standalone
-    emacs-process-builtins
+  '(nelisp-emacs
     emacs-font-lock-builtins
     emacs-syntax-table
-    emacs-elisp-mode
-    emacs-textmodes-stub
-    emacs-subr-extras
-    emacs-edebug-stubs))
+    emacs-elisp-mode))
 
 (defvar bootstrap-step-walk-limit nil)
 

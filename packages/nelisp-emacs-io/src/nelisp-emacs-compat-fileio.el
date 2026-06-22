@@ -148,6 +148,12 @@ Returns the integer backend result, or nil when no backend is wired."
               (throw 'done rc)))))
       nil))))
 
+;;;###autoload
+(defun nelisp-ec-access (file mode)
+  "Call the access(2)-style backend for FILE and MODE.
+Returns the integer backend result, or nil when no backend is wired."
+  (nelisp-ec--access file mode))
+
 (defun nelisp-ec--stat-kind (file)
   "Return a coarse standalone stat kind for FILE, or nil when unavailable."
   (and (fboundp 'nelisp--syscall-stat)

@@ -197,6 +197,93 @@ Return non-nil on success and update the temporary highlight."
           (emacs-isearch--highlight-match beg end))
         found))))
 
+(defun emacs-isearch-restore-start-direct (start-point)
+  "Restore point to START-POINT and return a movement plist."
+  (nelisp-ec-goto-char start-point)
+  (list :status 'restored
+        :point start-point
+        :failing nil))
+
+(defun emacs-isearch-search-from-start-direct (query direction start-point)
+  "Search QUERY in DIRECTION after resetting point to START-POINT.
+DIRECTION is `forward' or `backward'.  Empty QUERY only restores point.
+The returned plist contains `:status', `:found', `:failing', and
+`:point'.  Failed searches restore point to START-POINT."
+  (cond
+   ((or (null query) (= (length query) 0))
+    (emacs-isearch-restore-start-direct start-point)
+    (list :status 'empty
+          :query query
+          :direction direction
+          :start-point start-point
+          :found nil
+          :failing nil
+          :point (nelisp-ec-point)))
+   (t
+    (emacs-isearch-restore-start-direct start-point)
+    (let ((found
+           (condition-case nil
+               (pcase direction
+                 ('backward (emacs-isearch--search-backward query))
+                 (_ (emacs-isearch--search-forward query)))
+             (error nil))))
+      (cond
+       (found
+        (list :status 'found
+              :query query
+              :direction direction
+              :start-point start-point
+              :found found
+              :failing nil
+              :point (nelisp-ec-point)))
+       (t
+        (emacs-isearch-restore-start-direct start-point)
+        (list :status 'failing
+              :query query
+              :direction direction
+              :start-point start-point
+              :found nil
+              :failing t
+              :point (nelisp-ec-point))))))))
+
+(defun emacs-isearch-repeat-direct (query direction)
+  "Repeat QUERY search from current point in DIRECTION.
+Return a plist with `:status', `:found', `:failing', and `:point'.  When
+QUERY is empty or no match is found, point is left at the original
+position."
+  (let ((origin (nelisp-ec-point)))
+    (cond
+     ((or (null query) (= (length query) 0))
+      (list :status 'empty
+            :query query
+            :direction direction
+            :found nil
+            :failing nil
+            :point origin))
+     (t
+      (let ((found
+             (condition-case nil
+                 (pcase direction
+                   ('backward (emacs-isearch--search-backward query))
+                   (_ (emacs-isearch--search-forward query)))
+               (error nil))))
+        (cond
+         (found
+          (list :status 'found
+                :query query
+                :direction direction
+                :found found
+                :failing nil
+                :point (nelisp-ec-point)))
+         (t
+          (nelisp-ec-goto-char origin)
+          (list :status 'failing
+                :query query
+                :direction direction
+                :found nil
+                :failing t
+                :point origin))))))))
+
 (defun emacs-isearch--search-from-start ()
   "Restart the current query from `emacs-isearch--start-point'."
   (emacs-isearch--with-buffer
@@ -227,12 +314,11 @@ Return non-nil on success and update the temporary highlight."
     (emacs-isearch--with-buffer
      emacs-isearch--buffer
      (lambda ()
-       (let ((origin (nelisp-ec-point))
-             (found (emacs-isearch--search-current emacs-isearch--query
-                                                   emacs-isearch--direction)))
-         (setq emacs-isearch--failing (null found))
-         (unless found
-           (nelisp-ec-goto-char origin)))))))
+       (let ((result (emacs-isearch-repeat-direct
+                      emacs-isearch--query
+                      emacs-isearch--direction)))
+         (setq emacs-isearch--failing
+               (plist-get result :failing)))))))
 
 (defun emacs-isearch--append-char (event)
   "Append EVENT as a character to the query and restart the search."

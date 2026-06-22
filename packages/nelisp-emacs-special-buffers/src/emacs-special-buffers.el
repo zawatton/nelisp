@@ -110,6 +110,17 @@ Supported keys:
     (emacs-special-buffers-ensure-buffer name))
   t)
 
+(defun emacs-special-buffers-display-plan (name &optional message)
+  "Ensure special buffer NAME and return a frontend-neutral display plan.
+The result contains `:status', `:buffer', `:buffer-name',
+`:scroll-offset', and `:message'.  MESSAGE defaults to NAME."
+  (let ((buffer (emacs-special-buffers-ensure-buffer name)))
+    (list :status 'ok
+          :buffer buffer
+          :buffer-name name
+          :scroll-offset 0
+          :message (or message name))))
+
 (defun emacs-special-buffers-append-to-buffer (name text)
   "Append TEXT to special buffer NAME."
   (or (emacs-special-buffers--backend-call :append name text)

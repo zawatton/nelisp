@@ -77,6 +77,22 @@
         (emacs-mode-text-mode)
         (should (= 1 fired))))))
 
+(ert-deftest emacs-mode-builtins-test/base-mode-prefixed-hooks-fire ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let ((fundamental-fired 0)
+          (elisp-fired 0))
+      (let ((emacs-mode-fundamental-mode-hook
+             (list (lambda () (setq fundamental-fired
+                                    (1+ fundamental-fired)))))
+            (emacs-mode-emacs-lisp-mode-hook
+             (list (lambda () (setq elisp-fired (1+ elisp-fired))))))
+        (emacs-mode-fundamental-mode)
+        (should (= 1 fundamental-fired))
+        (emacs-mode-emacs-lisp-mode)
+        ;; `emacs-lisp-mode' derives through `fundamental-mode'.
+        (should (= 2 fundamental-fired))
+        (should (= 1 elisp-fired))))))
+
 ;;;; F. define-derived-mode (the macro)
 
 (emacs-mode-define-derived-mode my-test-derived-mode emacs-mode-text-mode
@@ -133,6 +149,15 @@
     (emacs-mode-kill-all-local-variables)
     (should (eq 'fundamental-mode (emacs-mode-major-mode)))))
 
+(ert-deftest emacs-mode-builtins-test/set-major-mode-direct-contract ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (should (eq 'custom-mode
+                (emacs-mode-set-major-mode 'custom-mode "Custom")))
+    (should (eq 'custom-mode (emacs-mode-major-mode)))
+    (should (equal "Custom" (emacs-mode-mode-name)))
+    (should-error (emacs-mode-set-major-mode "bad-mode")
+                  :type 'wrong-type-argument)))
+
 ;;;; I. auto-mode-alist + set-auto-mode
 
 (ert-deftest emacs-mode-builtins-test/set-auto-mode-matches-extension ()
@@ -140,6 +165,9 @@
     (emacs-mode-set-auto-mode-alist
      '(("\\.txt\\'" . emacs-mode-text-mode)
        ("\\.el\\'"  . emacs-mode-emacs-lisp-mode)))
+    (should (equal '(("\\.txt\\'" . emacs-mode-text-mode)
+                     ("\\.el\\'"  . emacs-mode-emacs-lisp-mode))
+                   (emacs-mode-auto-mode-alist)))
     (let ((m1 (emacs-mode-set-auto-mode "/tmp/x.txt")))
       (should (eq 'emacs-mode-text-mode m1))
       (should (eq 'text-mode (emacs-mode-major-mode))))

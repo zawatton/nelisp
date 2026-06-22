@@ -1,0 +1,129 @@
+#+TITLE: Transport Isolation Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+現状は default =/tmp/nemacs-*= transport を前提にした smoke が残り、
+=/tmp/nemacs.cfg= と =/tmp/nemacs-win.bin= も固定 path である。
+
+複数 nemacs セッション、複数 DISPLAY、並列テスト、実機 daily-driver を安全にするには、
+transport と native artifact を session 単位で完全分離する必要がある。
+
+* 現状
+
+| 対象 | 状態 |
+|------+------|
+| =NEMACS_TRANSPORT_DIR= | =nemacs-mx.sh= と runtime/session bridge は対応済み |
+| native GUI path | build-time rewrite で非 default transport に対応 |
+| =/tmp/nemacs.cfg= | 固定 path |
+| =/tmp/nemacs-win.bin= | 固定 path |
+| fixed =/tmp= smoke | 逐次実行が必要 |
+| session control files | transport dir 配下に分離可能 |
+
+* 目標
+
+| 項目 | 目標 |
+|------+------|
+| session root | =${XDG_RUNTIME_DIR:-/tmp}/nemacs/$USER/$SESSION_ID= |
+| transport files | session root 配下へ完全分離 |
+| config file | session root 配下へ分離 |
+| native binary | transport/config path を baked した artifact を session/build key ごとに分離 |
+| lock | default =/tmp= smoke 以外は不要 |
+| cleanup | launcher exit / crash recovery / doctor で orphan を検出 |
+
+* Session ID
+
+=bin/nemacs= は以下の順で session id を決める。
+
+1. =NEMACS_SESSION_ID= があれば使う。
+2. =NEMACS_TRANSPORT_DIR= が明示されていれば、その basename を使う。
+3. 未指定なら =nemacs-$DISPLAY-$PPID-$timestamp= を生成する。
+
+互換性のため、当面は default を =/tmp= のまま維持してよい。
+ただし parallel smoke と install 後 daily-driver は isolated mode を標準にする。
+
+* Artifact layout
+
+#+begin_src text
+${XDG_RUNTIME_DIR:-/tmp}/nemacs/$USER/$SESSION_ID/
+  transport/
+    nemacs-buf
+    nemacs-point
+    nemacs-session-*
+    nemacs-buffer-store/
+  config/
+    nemacs.cfg
+  build/
+    nemacs-win.bin
+    nemacs-win.transport-dir
+    nemacs-win.cfg-path
+#+end_src
+
+* Native path strategy
+
+native GUI binary は実行時に環境変数を読まないため、AOT 前に path を baked する。
+現在の transport rewrite を拡張し、以下を全て rewrite 対象にする。
+
+| path | rewrite 先 |
+|------+----------|
+| =/tmp/nemacs-buf= 等 transport | =$NEMACS_TRANSPORT_DIR/nemacs-buf= |
+| =/tmp/nemacs.cfg= | =$NEMACS_CONFIG_PATH= |
+| =/tmp/nemacs-win.bin= | =$NEMACS_NATIVE_BIN= |
+| =/tmp/nemacs-toolbar-menu= 等追加 state | =$NEMACS_TRANSPORT_DIR/...= |
+
+* Build cache key
+
+native binary の再利用条件は以下の key で判断する。
+
+| key | 理由 |
+|-----+------|
+| transport dir | baked path が異なる |
+| config path | baked path が異なる |
+| DISPLAY number | X11 socket path が異なる |
+| source mtime/hash | GUI IR が変わった |
+| nelisp snapshot mtime/hash | AOT compiler/runtime が変わった |
+
+* Test migration
+
+| 現状 | 移行後 |
+|------+--------|
+| =scripts/verify-nemacs-gui.sh= が固定 =/tmp= を多用 | isolated transport mode を default にし、fixed =/tmp= は compatibility mode にする |
+| =scripts/verify-gui-xvfb.sh= は =/tmp/nemacs-xvfb-verify= | session root layout に合わせる |
+| =stress-nemacs-session.sh= は固定 =/tmp= | isolated stress を追加し、fixed =/tmp= stress は regression 専用 |
+
+* 完了条件
+
+| gate | 条件 |
+|------+------|
+| isolated launch | 2 つの =bin/nemacs= が別 transport で同時起動し、buffer state が混ざらない |
+| isolated Xvfb | 2 つの =verify-gui-xvfb.sh= が別 display/transport で並列成功する |
+| cfg isolation | =nemacs.cfg= が session root 配下にあり、同時起動で上書きされない |
+| bin isolation | =nemacs-win.bin= が session/build key ごとに分離される |
+| cleanup | session root の orphan 診断と削除導線がある |
+| compatibility | default =/tmp= mode も明示指定時に動く |
+
+* 2026-06-14 実装メモ
+
+以下を実装済み。
+
+| 項目 | 状態 |
+|------+------|
+| native config path | =NEMACS_CONFIG_PATH= を導入し、AOT 前の IR rewrite で =nemacs.cfg= を分離 |
+| native binary path | =NEMACS_NATIVE_BIN= を導入し、非 default transport では =.nemacs-artifacts/nemacs-win.bin= へ出力 |
+| build markers | transport / DISPLAY / config path marker を artifact dir 配下へ分離 |
+| launcher rebuild key | transport dir、DISPLAY、config path、source mtime を確認 |
+| strict path check | =scripts/verify-transport-isolation.sh --strict-artifacts= が通る |
+| Xvfb parallel smoke | =:8= と =:9= の同時 =verify-gui-xvfb.sh= が通る |
+
+互換性のため、default =NEMACS_TRANSPORT_DIR=/tmp= では従来どおり
+=${TMPDIR:-/tmp}= 直下の artifact を使う。複数セッション・並列検証では
+non-default transport を使う。
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| path rewrite 漏れで一部 state だけ =/tmp= に残る | compiled IR の path scan check を追加する |
+| build artifact が増え続ける | cache TTL / doctor cleanup を追加する |
+| default =/tmp= ユーザーとの互換が壊れる | isolated mode を opt-in から始め、検証後 default 化する |
+| DISPLAY ごとの binary が混ざる | build marker に DISPLAY number と config path を含める |

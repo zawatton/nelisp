@@ -169,6 +169,25 @@ Recognized keys are `:begin-read', `:set-initial-input', `:commit-read',
 `:mode-keymap-source', and `:keymap-source'.  The backend reads the
 public `emacs-minibuffer-gui-*' state variables below.")
 
+(defconst emacs-minibuffer-gui-standard-backend-keys
+  '(:begin-read :set-initial-input :commit-read :complete
+    :buffer-candidates :project-buffer-candidates :emoji-candidates
+    :extended-command-candidates :key-candidates
+    :key :purpose :prompt :initial-input
+    :mode-keymap-source :keymap-source
+    :set-text :set-cursor :finish-read
+    :start-followup :followup-prefill-text
+    :set-replace-from :replace-from :clear-replace-from
+    :execute-command-spec :execute-replace-command
+    :save-undo-if-needed :refresh-candidates
+    :set-effective-command :set-status
+    :delete-backward-char :insert-text
+    :clear-quit-state :handle-query-replace-key)
+  "Canonical GUI minibuffer backend callback keys.
+Concrete GUI bridges can build backend plists through
+`emacs-minibuffer-gui-standard-backend' so callback names remain owned by the
+minibuffer layer while storage stays transport-specific.")
+
 (defvar emacs-minibuffer-gui-purpose ""
   "GUI minibuffer purpose string, usually the command name.")
 
@@ -328,12 +347,43 @@ abnormal exit.  Returns the BODY's value."
 BACKEND is a plist.  Passing nil clears the adapter."
   (setq emacs-minibuffer-gui-backend backend))
 
+;;;###autoload
+(defun emacs-minibuffer-gui-standard-backend (&rest callbacks)
+  "Return a normalized GUI minibuffer backend plist from CALLBACKS.
+CALLBACKS is a plist keyed by `emacs-minibuffer-gui-standard-backend-keys'.
+Unknown keys signal `wrong-type-argument'.  Nil callback values are omitted so
+bridges can share one call shape while leaving optional hooks absent."
+  (let ((result nil)
+        key value)
+    (while callbacks
+      (setq key (pop callbacks))
+      (setq value (pop callbacks))
+      (unless (memq key emacs-minibuffer-gui-standard-backend-keys)
+        (signal 'wrong-type-argument
+                (list 'emacs-minibuffer-gui-standard-backend-key key)))
+      (when value
+        (setq result (append result (list key value)))))
+    result))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-register-standard-backend (&rest callbacks)
+  "Register CALLBACKS as a normalized GUI minibuffer backend.
+This is the public installer for concrete GUI/minibuffer bridge adapters."
+  (apply #'emacs-minibuffer-gui-register-backend
+         (apply #'emacs-minibuffer-gui-standard-backend callbacks)))
+
 (defun emacs-minibuffer-gui--backend-call (key &rest args)
   "Call GUI backend function KEY with ARGS, if registered."
   (let ((fn (and emacs-minibuffer-gui-backend
                  (plist-get emacs-minibuffer-gui-backend key))))
     (when fn
       (apply fn args))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-backend-call (key &rest args)
+  "Call registered GUI minibuffer backend callback KEY with ARGS.
+Return nil when no callback is registered for KEY."
+  (apply #'emacs-minibuffer-gui--backend-call key args))
 
 ;;;###autoload
 (defun emacs-minibuffer-gui-refresh-context-from-backend ()
@@ -709,6 +759,20 @@ Return nil when PURPOSE is not a replacement commit purpose."
               emacs-minibuffer-gui-replace-commit-command-alist)))
 
 ;;;###autoload
+(defun emacs-minibuffer-gui-replace-from-store-state (text)
+  "Return state for storing first-stage replacement TEXT.
+The result plist uses `:replace-from' so frontend storage adapters can
+apply it without owning replacement prompt policy."
+  (list :replace-from (or text "")
+        :changed t))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-replace-from-clear-state ()
+  "Return state for clearing first-stage replacement text."
+  (list :replace-from ""
+        :changed t))
+
+;;;###autoload
 (defun emacs-minibuffer-gui-command-commit-spec (purpose text)
   "Return generic command commit spec for GUI minibuffer PURPOSE and TEXT.
 The result is (COMMAND . (EFFECTIVE-COMMAND . ARG)).  Bridge adapters
@@ -717,7 +781,8 @@ Emacs-facing mapping from a completed minibuffer purpose to command
 metadata."
   (cons purpose (cons purpose text)))
 
-(defun emacs-minibuffer-gui--finish-followup (purpose prompt)
+;;;###autoload
+(defun emacs-minibuffer-gui-finish-followup (purpose prompt)
   "Start a GUI minibuffer follow-up for PURPOSE and PROMPT.
 When the backend supplies a prefilled follow-up argument, finish it
 immediately.  Return non-nil when a follow-up was started."
@@ -731,7 +796,13 @@ immediately.  Return non-nil when a follow-up was started."
       (emacs-minibuffer-gui-finish-read)))
   t)
 
-(defun emacs-minibuffer-gui--execute-command-spec (spec &optional save-undo)
+;;;###autoload
+(defun emacs-minibuffer-gui--finish-followup (purpose prompt)
+  "Compatibility wrapper for `emacs-minibuffer-gui-finish-followup'."
+  (emacs-minibuffer-gui-finish-followup purpose prompt))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-execute-command-spec (spec &optional save-undo)
   "Execute command SPEC through the GUI backend.
 SPEC is (COMMAND . (EFFECTIVE-COMMAND . ARG)).  SAVE-UNDO non-nil asks
 the backend to save undo state before execution."
@@ -744,6 +815,11 @@ the backend to save undo state before execution."
      (car (cdr spec))
      (cdr (cdr spec)))
     t))
+
+;;;###autoload
+(defun emacs-minibuffer-gui--execute-command-spec (spec &optional save-undo)
+  "Compatibility wrapper for `emacs-minibuffer-gui-execute-command-spec'."
+  (emacs-minibuffer-gui-execute-command-spec spec save-undo))
 
 ;;;###autoload
 (defun emacs-minibuffer-gui-finish-read ()
@@ -762,12 +838,12 @@ transport mutation and actual command execution."
               (emacs-minibuffer-gui-extended-command-followup text)))
       (if followup
           (progn
-            (emacs-minibuffer-gui--finish-followup
+            (emacs-minibuffer-gui-finish-followup
              (car followup) (cdr followup))
             (setq purpose ""))
         nil))
     (when (equal purpose "execute-extended-command")
-      (when (emacs-minibuffer-gui--execute-command-spec
+      (when (emacs-minibuffer-gui-execute-command-spec
              (emacs-minibuffer-gui-extended-command-commit-spec text)
              nil)
         (setq purpose "")))
@@ -778,7 +854,7 @@ transport mutation and actual command execution."
       (if replace-followup
           (progn
             (emacs-minibuffer-gui--backend-call :set-replace-from text)
-            (emacs-minibuffer-gui--finish-followup
+            (emacs-minibuffer-gui-finish-followup
              (car replace-followup) (cdr replace-followup))
             (setq purpose ""))
         (progn
@@ -794,13 +870,13 @@ transport mutation and actual command execution."
             (setq purpose "")))))
     (when (and (not (equal purpose ""))
                (not (equal purpose "execute-extended-command")))
-      (emacs-minibuffer-gui--execute-command-spec
+      (emacs-minibuffer-gui-execute-command-spec
        (emacs-minibuffer-gui-command-commit-spec purpose text)
        t))
     nil))
 
 ;;;###autoload
-(defun emacs-minibuffer-gui--collection-lines (&optional collection)
+(defun emacs-minibuffer-gui-collection-lines (&optional collection)
   "Return COLLECTION as newline-separated candidate names.
 nil means use `emacs-minibuffer-gui-collection'.  String collections are
 already in transport format and are returned unchanged."
@@ -824,6 +900,11 @@ already in transport format and are returned unchanged."
         (dolist (name table)
           (setq out (concat out name "\n")))
         out)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui--collection-lines (&optional collection)
+  "Compatibility wrapper for `emacs-minibuffer-gui-collection-lines'."
+  (emacs-minibuffer-gui-collection-lines collection))
 
 ;;;###autoload
 (defun emacs-minibuffer-gui-candidate-source-kind (&optional purpose)
@@ -944,15 +1025,257 @@ callback to ask lives here."
    (or prefix "")))
 
 ;;;###autoload
+(defun emacs-minibuffer-gui-candidate-refresh-state (&optional purpose text)
+  "Return candidate refresh state for GUI minibuffer PURPOSE and TEXT.
+The result plist contains `:purpose' and `:candidates'.  Frontends own
+storage; this helper owns the shared purpose/text-to-candidates policy."
+  (let ((purpose (or purpose "")))
+    (list :purpose purpose
+          :candidates
+          (emacs-minibuffer-gui-filtered-candidates-for-purpose
+           purpose (or text "")))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-completion-candidates (completion-fn input)
+  "Return candidates from COMPLETION-FN for INPUT, or nil on errors.
+COMPLETION-FN is a frontend callback of one argument.  This helper keeps
+GUI frontends from duplicating the same defensive call pattern."
+  (when completion-fn
+    (condition-case _err
+        (funcall completion-fn (or input ""))
+      (error nil))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-longest-common-prefix (strings)
+  "Return the longest common prefix for STRINGS.
+An empty list returns an empty string; a single entry returns that entry."
+  (cond
+   ((null strings) "")
+   ((null (cdr strings)) (car strings))
+   (t (emacs-minibuffer--common-prefix strings))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-candidate-suffix
+    (completion-enabled-p candidates)
+  "Return echo-area suffix text for minibuffer CANDIDATES.
+COMPLETION-ENABLED-P controls whether a suffix should be shown at all."
+  (cond
+   ((not completion-enabled-p) "")
+   ((null candidates) "  {no match}")
+   ((null (cdr candidates)) (format "  {%s}" (car candidates)))
+   (t
+    (format "  {%s}" (mapconcat #'identity candidates " ")))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-tab-completion-plan
+    (input candidates completion-fn)
+  "Return a frontend-neutral Tab completion plan.
+INPUT is the current minibuffer text, CANDIDATES are the currently cached
+matches, and COMPLETION-FN recomputes candidates after input changes.
+The result plist contains `:input', `:candidates', and optionally
+`:message'."
+  (let ((input (or input "")))
+    (cond
+     ((null candidates)
+      (list :input input
+            :candidates nil
+            :message "No match"))
+     ((null (cdr candidates))
+      (let* ((next-input (car candidates))
+             (next-candidates
+              (emacs-minibuffer-gui-completion-candidates
+               completion-fn next-input)))
+        (list :input next-input
+              :candidates next-candidates)))
+     (t
+      (let ((lcp (emacs-minibuffer-gui-longest-common-prefix candidates)))
+        (cond
+         ((and (stringp lcp)
+               (> (length lcp) (length input)))
+          (list :input lcp
+                :candidates
+                (emacs-minibuffer-gui-completion-candidates
+                 completion-fn lcp)))
+         (t
+          (list :input input
+                :candidates candidates
+                :message (format "%d candidates"
+                                 (length candidates))))))))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-key-plan
+    (event input candidates completion-fn)
+  "Return a frontend-neutral GUI minibuffer key plan.
+EVENT is one normalized key event.  INPUT, CANDIDATES, and COMPLETION-FN
+describe the current frontend minibuffer state.  The result plist always
+contains `:action'."
+  (let ((input (or input "")))
+    (cond
+     ((eq event 'return)
+      (list :action 'confirm
+            :input input))
+     ((or (eq event 7) (eq event 27))
+      (list :action 'cancel
+            :message "Quit"))
+     ((eq event 'tab)
+      (if completion-fn
+          (let ((plan (emacs-minibuffer-gui-tab-completion-plan
+                       input candidates completion-fn)))
+            (append (list :action 'update) plan))
+        (list :action 'ignore
+              :input input
+              :candidates candidates)))
+     ((eq event 'backspace)
+      (let ((next-input (if (> (length input) 0)
+                            (substring input 0 (1- (length input)))
+                          input)))
+        (list :action 'update
+              :input next-input
+              :candidates
+              (emacs-minibuffer-gui-completion-candidates
+               completion-fn next-input))))
+     ((and (integerp event) (>= event 32) (< event 127))
+      (let ((next-input (concat input (char-to-string event))))
+        (list :action 'update
+              :input next-input
+              :candidates
+              (emacs-minibuffer-gui-completion-candidates
+               completion-fn next-input))))
+     (t
+      (list :action 'ignore
+            :input input
+            :candidates candidates)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-text-delete-backward-state (text cursor)
+  "Return TEXT/CURSOR state after deleting one character backward.
+The result plist contains `:text', `:cursor', and `:changed'."
+  (let ((text (or text ""))
+        (cursor (max 0 (or cursor 0))))
+    (if (> cursor 0)
+        (list :text (concat (substring text 0 (1- cursor))
+                            (substring text cursor))
+              :cursor (1- cursor)
+              :changed t)
+      (list :text text :cursor cursor :changed nil))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-text-insert-state (text cursor insert)
+  "Return TEXT/CURSOR state after inserting INSERT at CURSOR.
+The result plist contains `:text', `:cursor', and `:changed'."
+  (let* ((text (or text ""))
+         (cursor (max 0 (min (or cursor 0) (length text))))
+         (insert (or insert "")))
+    (list :text (concat (substring text 0 cursor)
+                        insert
+                        (substring text cursor))
+          :cursor (+ cursor (length insert))
+          :changed (> (length insert) 0))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-complete-first-line-state (candidates)
+  "Return minibuffer text/cursor state for the first CANDIDATES line.
+CANDIDATES is a newline-separated string.  Return nil when there is no
+non-empty first candidate."
+  (let ((candidates (or candidates ""))
+        (index 0))
+    (while (and (< index (length candidates))
+                (not (= (aref candidates index) 10)))
+      (setq index (1+ index)))
+    (when (> index 0)
+      (let ((text (substring candidates 0 index)))
+        (list :text text
+              :cursor (length text)
+              :changed t)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-session-begin-state (purpose prompt)
+  "Return initial state for a GUI minibuffer session.
+PURPOSE and PROMPT are frontend-neutral strings.  The result plist uses
+bridge-friendly field names so storage backends can apply it directly."
+  (list :purpose (or purpose "")
+        :prompt (or prompt "")
+        :active t
+        :text ""
+        :cursor 0
+        :candidates ""
+        :effective-command "minibuffer"
+        :status "minibuffer"))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-session-initial-input-state (initial-input)
+  "Return text/cursor state for non-empty INITIAL-INPUT, or nil."
+  (let ((input (or initial-input "")))
+    (when (not (equal input ""))
+      (list :text input
+            :cursor (length input)
+            :changed t))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-session-commit-state
+    (purpose text history history-symbol)
+  "Return commit/reset state for a GUI minibuffer session.
+PURPOSE, TEXT, HISTORY, and HISTORY-SYMBOL are strings.  Non-empty TEXT is
+appended to HISTORY under both PURPOSE and HISTORY-SYMBOL, matching the
+bridge history transport contract."
+  (let* ((purpose (or purpose ""))
+         (text (or text ""))
+         (history (or history ""))
+         (history-symbol (or history-symbol ""))
+         (next-history history))
+    (when (not (equal text ""))
+      (setq next-history
+            (concat next-history
+                    purpose "\t" text "\n"
+                    history-symbol "\t" text "\n")))
+    (list :committed-text text
+          :history next-history
+          :active nil
+          :prompt ""
+          :text ""
+          :cursor 0
+          :candidates ""
+          :require-match nil)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-enter-state
+    (prompt on-confirm &optional completion-fn)
+  "Return initial GUI minibuffer state for PROMPT and ON-CONFIRM.
+COMPLETION-FN, when non-nil, is called once with the empty input to seed
+the candidate cache."
+  (list :active t
+        :prompt prompt
+        :input ""
+        :on-confirm on-confirm
+        :completion-fn completion-fn
+        :candidates
+        (emacs-minibuffer-gui-completion-candidates completion-fn "")))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-exit-state ()
+  "Return cleared GUI minibuffer state."
+  (list :active nil
+        :prompt ""
+        :input ""
+        :on-confirm nil
+        :completion-fn nil
+        :candidates nil))
+
+;;;###autoload
 (defun emacs-minibuffer-gui-begin-read ()
   "Start a GUI minibuffer read using the registered backend."
   (emacs-minibuffer-gui-history-symbol-for-purpose)
   (emacs-minibuffer-gui--backend-call :begin-read))
 
 ;;;###autoload
-(defun emacs-minibuffer-gui--set-initial-input ()
+(defun emacs-minibuffer-gui-set-initial-input ()
   "Ask the GUI backend to install `emacs-minibuffer-gui-initial-input'."
   (emacs-minibuffer-gui--backend-call :set-initial-input))
+
+;;;###autoload
+(defun emacs-minibuffer-gui--set-initial-input ()
+  "Compatibility wrapper for `emacs-minibuffer-gui-set-initial-input'."
+  (emacs-minibuffer-gui-set-initial-input))
 
 ;;;###autoload
 (defun emacs-minibuffer-gui-commit-read ()
@@ -1076,7 +1399,7 @@ The runtime owns key policy; the backend owns mutable bridge state."
         emacs-minibuffer-gui-completion-table ""
         emacs-minibuffer-gui-require-match nil)
   (let ((result (emacs-minibuffer-gui-begin-read)))
-    (emacs-minibuffer-gui--set-initial-input)
+    (emacs-minibuffer-gui-set-initial-input)
     result))
 
 (defun emacs-minibuffer-gui-completing-read
@@ -1087,12 +1410,12 @@ The runtime owns key policy; the backend owns mutable bridge state."
         emacs-minibuffer-gui-prompt prompt
         emacs-minibuffer-gui-collection collection
         emacs-minibuffer-gui-completion-table
-        (emacs-minibuffer-gui--collection-lines collection)
+        (emacs-minibuffer-gui-collection-lines collection)
         emacs-minibuffer-gui-require-match (and require-match t)
         emacs-minibuffer-gui-initial-input
         (emacs-minibuffer-gui--initial-string initial-input))
   (let ((result (emacs-minibuffer-gui-begin-read)))
-    (emacs-minibuffer-gui--set-initial-input)
+    (emacs-minibuffer-gui-set-initial-input)
     result))
 
 ;;;###autoload

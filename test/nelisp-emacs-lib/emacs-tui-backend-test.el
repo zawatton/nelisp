@@ -38,6 +38,12 @@ Resets `emacs-tui-backend-test--captured' to \"\" before BODY."
          (emacs-tui-backend-test--captured ""))
      ,@body))
 
+(ert-deftest emacs-tui-backend-test-emit-public-wrapper ()
+  "Public emit writes through the configured sink."
+  (emacs-tui-backend-test--with-capture
+    (emacs-tui-backend-emit "abc")
+    (should (equal "abc" emacs-tui-backend-test--captured))))
+
 ;;; A. backend lifecycle
 
 (ert-deftest emacs-tui-backend-test-init-returns-handle-with-capabilities ()
@@ -206,6 +212,18 @@ with the Doc 43 §2.5a plist data."
                   :type 'wrong-type-argument)
     (should-error (emacs-tui-backend-frame-resize h f 100 -1)
                   :type 'wrong-type-argument)))
+
+(ert-deftest emacs-tui-backend-test-frame-set-dirty-rows-replaces-bitvector ()
+  "frame-set-dirty-rows installs the supplied dirty row bitvector."
+  (let* ((h (emacs-tui-backend-init))
+         (f (emacs-tui-backend-frame-create h "x"))
+         (dirty (make-bool-vector 24 nil)))
+    (aset dirty 3 t)
+    (should (eq dirty (emacs-tui-backend-frame-set-dirty-rows f dirty)))
+    (should (eq dirty (emacs-tui-backend-frame-dirty-rows f)))
+    (should (aref (emacs-tui-backend-frame-dirty-rows f) 3))
+    (should-error (emacs-tui-backend-frame-set-dirty-rows 'not-a-frame dirty)
+                  :type 'emacs-tui-backend-bad-frame)))
 
 ;;; D. canvas drawing
 
@@ -481,6 +499,28 @@ positioned at the run start (1-based)."
   (should (= 1 emacs-tui-backend-event-source-contract-version))
   (should (= 80 emacs-tui-backend-frame-default-width))
   (should (= 24 emacs-tui-backend-frame-default-height)))
+
+(ert-deftest emacs-tui-backend-test-log-enabled-records-backend-ops ()
+  "When enabled, backend operation logging writes to the lazy log buffer."
+  (let ((emacs-tui-backend-log-enabled t)
+        (emacs-tui-backend-output-fn #'ignore))
+    (when (get-buffer "*emacs-tui-backend-log*")
+      (kill-buffer "*emacs-tui-backend-log*"))
+    (unwind-protect
+        (let* ((h (emacs-tui-backend-init))
+               (f (emacs-tui-backend-frame-create h "x")))
+          (emacs-tui-backend-canvas-draw-text h f 0 0 "x")
+          (emacs-tui-backend-canvas-flush h f)
+          (emacs-tui-backend-shutdown h)
+          (with-current-buffer "*emacs-tui-backend-log*"
+            (let ((log (buffer-string)))
+              (should (string-match-p "init handle=" log))
+              (should (string-match-p "frame-create handle=" log))
+              (should (string-match-p "canvas-draw-text handle=" log))
+              (should (string-match-p "canvas-flush handle=" log))
+              (should (string-match-p "shutdown handle=" log)))))
+      (when (get-buffer "*emacs-tui-backend-log*")
+        (kill-buffer "*emacs-tui-backend-log*")))))
 
 ;;; F. Phase 3.B.3 — 256-color / truecolor SGR escape support
 ;;

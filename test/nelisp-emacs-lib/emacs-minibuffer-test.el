@@ -526,7 +526,12 @@
                    (emacs-minibuffer-gui-replace-commit-command
                     "query-replace-regexp-to")))
     (should-not (emacs-minibuffer-gui-replace-commit-command
-                 "replace-string"))))
+                 "replace-string"))
+    (should (equal '(:replace-from "old" :changed t)
+                   (emacs-minibuffer-gui-replace-from-store-state
+                    "old")))
+    (should (equal '(:replace-from "" :changed t)
+                   (emacs-minibuffer-gui-replace-from-clear-state)))))
 
 (ert-deftest emacs-minibuffer-gui-command-commit-spec ()
   (emacs-minibuffer-test--with-fresh-world
@@ -541,11 +546,14 @@
   (emacs-minibuffer-test--with-fresh-world
     (should (string-equal
              "alpha\nbeta\ngamma\n"
-             (emacs-minibuffer-gui--collection-lines
+             (emacs-minibuffer-gui-collection-lines
               '("alpha" ("beta" . 1) gamma 42))))
     (should (string-equal
              "raw\nlines\n"
-             (emacs-minibuffer-gui--collection-lines "raw\nlines\n")))))
+             (emacs-minibuffer-gui-collection-lines "raw\nlines\n")))
+    (should (string-equal
+             "compat\n"
+             (emacs-minibuffer-gui--collection-lines '("compat"))))))
 
 (ert-deftest emacs-minibuffer-gui-candidate-source-kind ()
   (emacs-minibuffer-test--with-fresh-world
@@ -616,7 +624,230 @@
     (should (string-equal
              "main\nmail\n"
              (emacs-minibuffer-gui-filtered-candidates-for-purpose
-              "switch-to-buffer" "ma")))))
+              "switch-to-buffer" "ma")))
+    (should (equal '(:purpose "switch-to-buffer"
+                     :candidates "main\nmail\n")
+                   (emacs-minibuffer-gui-candidate-refresh-state
+                    "switch-to-buffer" "ma")))))
+
+(ert-deftest emacs-minibuffer-gui-completion-candidates ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal '("alpha" "alpine")
+                   (emacs-minibuffer-gui-completion-candidates
+                    (lambda (input)
+                      (should (equal "al" input))
+                      '("alpha" "alpine"))
+                    "al")))
+    (should-not
+     (emacs-minibuffer-gui-completion-candidates nil "al"))
+    (should-not
+     (emacs-minibuffer-gui-completion-candidates
+      (lambda (_input) (error "boom"))
+      "al"))))
+
+(ert-deftest emacs-minibuffer-gui-longest-common-prefix ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal "" (emacs-minibuffer-gui-longest-common-prefix nil)))
+    (should (equal "alpha"
+                   (emacs-minibuffer-gui-longest-common-prefix
+                    '("alpha"))))
+    (should (equal "alp"
+                   (emacs-minibuffer-gui-longest-common-prefix
+                    '("alpha" "alpine" "alpaca"))))))
+
+(ert-deftest emacs-minibuffer-gui-candidate-suffix ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal ""
+                   (emacs-minibuffer-gui-candidate-suffix nil
+                                                          '("alpha"))))
+    (should (equal "  {no match}"
+                   (emacs-minibuffer-gui-candidate-suffix t nil)))
+    (should (equal "  {alpha}"
+                   (emacs-minibuffer-gui-candidate-suffix
+                    t '("alpha"))))
+    (should (equal "  {alpha beta}"
+                   (emacs-minibuffer-gui-candidate-suffix
+                    t '("alpha" "beta"))))))
+
+(ert-deftest emacs-minibuffer-gui-tab-completion-plan ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal (list :input "al"
+                         :candidates nil
+                         :message "No match")
+                   (emacs-minibuffer-gui-tab-completion-plan
+                    "al" nil #'ignore)))
+    (let ((plan (emacs-minibuffer-gui-tab-completion-plan
+                 "al"
+                 '("alpha")
+                 (lambda (input)
+                   (should (equal "alpha" input))
+                   '("alpha")))))
+      (should (equal "alpha" (plist-get plan :input)))
+      (should (equal '("alpha") (plist-get plan :candidates)))
+      (should-not (plist-member plan :message)))
+    (let ((plan (emacs-minibuffer-gui-tab-completion-plan
+                 "a"
+                 '("alpha" "alpine")
+                 (lambda (input)
+                   (should (equal "alp" input))
+                   '("alpha" "alpine")))))
+      (should (equal "alp" (plist-get plan :input)))
+      (should (equal '("alpha" "alpine")
+                     (plist-get plan :candidates))))
+    (should (equal (list :input "alp"
+                         :candidates '("alpha" "alpine")
+                         :message "2 candidates")
+                   (emacs-minibuffer-gui-tab-completion-plan
+                    "alp" '("alpha" "alpine") #'ignore)))))
+
+(ert-deftest emacs-minibuffer-gui-key-plan ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal '(:action confirm :input "done")
+                   (emacs-minibuffer-gui-key-plan
+                    'return "done" nil nil)))
+    (should (equal '(:action cancel :message "Quit")
+                   (emacs-minibuffer-gui-key-plan
+                    7 "abc" '("abc") #'ignore)))
+    (let ((plan (emacs-minibuffer-gui-key-plan
+                 'backspace "ab" nil
+                 (lambda (input)
+                   (should (equal "a" input))
+                   '("alpha")))))
+      (should (eq 'update (plist-get plan :action)))
+      (should (equal "a" (plist-get plan :input)))
+      (should (equal '("alpha") (plist-get plan :candidates))))
+    (let ((plan (emacs-minibuffer-gui-key-plan
+                 ?c "ab" nil
+                 (lambda (input)
+                   (should (equal "abc" input))
+                   '("abc")))))
+      (should (eq 'update (plist-get plan :action)))
+      (should (equal "abc" (plist-get plan :input)))
+      (should (equal '("abc") (plist-get plan :candidates))))
+    (should (equal '(:action ignore :input "ab" :candidates ("abc"))
+                   (emacs-minibuffer-gui-key-plan
+                    'left "ab" '("abc") #'ignore)))))
+
+(ert-deftest emacs-minibuffer-gui-text-state-helpers ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal '(:text "ac" :cursor 1 :changed t)
+                   (emacs-minibuffer-gui-text-delete-backward-state
+                    "abc" 2)))
+    (should (equal '(:text "abc" :cursor 0 :changed nil)
+                   (emacs-minibuffer-gui-text-delete-backward-state
+                    "abc" 0)))
+    (should (equal '(:text "abXYc" :cursor 4 :changed t)
+                   (emacs-minibuffer-gui-text-insert-state
+                    "abc" 2 "XY")))
+    (should (equal '(:text "alpha" :cursor 5 :changed t)
+                   (emacs-minibuffer-gui-complete-first-line-state
+                    "alpha\nalpine\n")))
+    (should-not
+     (emacs-minibuffer-gui-complete-first-line-state ""))))
+
+(ert-deftest emacs-minibuffer-gui-session-state-helpers ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (equal '(:purpose "execute-extended-command"
+                     :prompt "M-x "
+                     :active t
+                     :text ""
+                     :cursor 0
+                     :candidates ""
+                     :effective-command "minibuffer"
+                     :status "minibuffer")
+                   (emacs-minibuffer-gui-session-begin-state
+                    "execute-extended-command" "M-x ")))
+    (should (equal '(:text "forward-char" :cursor 12 :changed t)
+                   (emacs-minibuffer-gui-session-initial-input-state
+                    "forward-char")))
+    (should-not
+     (emacs-minibuffer-gui-session-initial-input-state ""))
+    (should (equal '(:committed-text "forward-char"
+                     :history
+                     "old\nexecute-extended-command\tforward-char\nextended-command-history\tforward-char\n"
+                     :active nil
+                     :prompt ""
+                     :text ""
+                     :cursor 0
+                     :candidates ""
+                     :require-match nil)
+                   (emacs-minibuffer-gui-session-commit-state
+                    "execute-extended-command"
+                    "forward-char"
+                    "old\n"
+                    "extended-command-history")))
+    (should (equal '(:committed-text ""
+                     :history "old\n"
+                     :active nil
+                     :prompt ""
+                     :text ""
+                     :cursor 0
+                     :candidates ""
+                     :require-match nil)
+                   (emacs-minibuffer-gui-session-commit-state
+                    "execute-extended-command"
+                    ""
+                    "old\n"
+                    "extended-command-history")))))
+
+(ert-deftest emacs-minibuffer-gui-enter-and-exit-state ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let ((callback #'ignore)
+          (completion-fn (lambda (input)
+                           (should (equal "" input))
+                           '("alpha"))))
+      (let ((state (emacs-minibuffer-gui-enter-state
+                    "Prompt: " callback completion-fn)))
+        (should (plist-get state :active))
+        (should (equal "Prompt: " (plist-get state :prompt)))
+        (should (equal "" (plist-get state :input)))
+        (should (eq callback (plist-get state :on-confirm)))
+        (should (eq completion-fn (plist-get state :completion-fn)))
+        (should (equal '("alpha") (plist-get state :candidates)))))
+    (should (equal '(:active nil
+                     :prompt ""
+                     :input ""
+                     :on-confirm nil
+                     :completion-fn nil
+                     :candidates nil)
+                   (emacs-minibuffer-gui-exit-state)))))
+
+(ert-deftest emacs-minibuffer-gui-standard-backend-normalizes-callbacks ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let ((backend
+           (emacs-minibuffer-gui-standard-backend
+            :begin-read #'ignore
+            :set-initial-input nil
+            :insert-text #'identity)))
+      (should (eq #'ignore (plist-get backend :begin-read)))
+      (should-not (memq :set-initial-input backend))
+      (should (eq #'identity (plist-get backend :insert-text))))
+    (should-error
+     (emacs-minibuffer-gui-standard-backend :unknown #'ignore)
+     :type 'wrong-type-argument)))
+
+(ert-deftest emacs-minibuffer-gui-register-standard-backend-installs-plist ()
+  (emacs-minibuffer-test--with-fresh-world
+    (emacs-minibuffer-gui-register-standard-backend
+     :begin-read #'ignore
+     :set-status #'identity)
+    (should (eq #'ignore
+                (plist-get emacs-minibuffer-gui-backend :begin-read)))
+    (should (eq #'identity
+                (plist-get emacs-minibuffer-gui-backend :set-status)))))
+
+(ert-deftest emacs-minibuffer-gui-backend-call-dispatches-registered-callback ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let (calls)
+      (emacs-minibuffer-gui-register-standard-backend
+       :set-status
+       (lambda (status)
+         (push status calls)
+         :ok))
+      (should (eq :ok
+                  (emacs-minibuffer-gui-backend-call :set-status "ready")))
+      (should (equal '("ready") calls))
+      (should-not (emacs-minibuffer-gui-backend-call :insert-text "x")))))
 
 (ert-deftest emacs-minibuffer-gui-read-from-minibuffer-backend ()
   (emacs-minibuffer-test--with-fresh-world
@@ -1071,6 +1302,149 @@
                                  "t")
                        :undo)
                      calls)))))
+
+(ert-deftest emacs-minibuffer-public-default-variables ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (null emacs-minibuffer-prompt-properties))
+    (should (eq 'emacs-minibuffer-history
+                emacs-minibuffer-default-history-symbol))
+    (should (= 2 emacs-minibuffer-message-timeout))
+    (should (string-equal "" emacs-minibuffer-gui-history-symbol))
+    (dolist (key '(:begin-read :set-initial-input :commit-read :complete
+                   :handle-query-replace-key))
+      (should (memq key emacs-minibuffer-gui-standard-backend-keys)))
+    (dolist (purpose '("find-file" "query-replace-regexp-to" "goto-char"))
+      (should (member purpose emacs-minibuffer-gui-read-purpose-names)))
+    (should (assoc "goto-line"
+                   emacs-minibuffer-gui-extended-command-followup-alist))
+    (should (assoc "replace-string"
+                   emacs-minibuffer-gui-replace-followup-alist))
+    (should (assoc "query-replace-regexp-to"
+                   emacs-minibuffer-gui-replace-commit-command-alist))
+    (should (member "C-g" emacs-minibuffer-gui-abort-key-names))))
+
+(ert-deftest emacs-minibuffer-gui-refresh-context-from-backend ()
+  (emacs-minibuffer-test--with-fresh-world
+    (emacs-minibuffer-gui-register-backend
+     :purpose (lambda () "find-file")
+     :prompt (lambda () "Find file: ")
+     :initial-input (lambda () "/tmp/a.txt"))
+    (should (emacs-minibuffer-gui-refresh-context-from-backend))
+    (should (string-equal "find-file" emacs-minibuffer-gui-purpose))
+    (should (string-equal "Find file: " emacs-minibuffer-gui-prompt))
+    (should (string-equal "/tmp/a.txt"
+                          emacs-minibuffer-gui-initial-input))))
+
+(ert-deftest emacs-minibuffer-gui-direct-read-forwarders ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let (calls)
+      (emacs-minibuffer-gui-register-backend
+       :begin-read
+       (lambda ()
+         (push (list :begin
+                     emacs-minibuffer-gui-prompt
+                     emacs-minibuffer-gui-initial-input
+                     emacs-minibuffer-gui-completion-table
+                     emacs-minibuffer-gui-require-match)
+               calls)
+         :started)
+       :set-initial-input
+       (lambda ()
+         (push (list :initial emacs-minibuffer-gui-initial-input) calls))
+       :commit-read
+       (lambda ()
+         (push :commit calls)
+         "committed")
+       :complete
+       (lambda ()
+         (push :complete calls)
+         :completed))
+      (should (eq :started
+                  (emacs-minibuffer-gui-read-from-minibuffer
+                   "Prompt: " "seed" nil nil nil "fallback")))
+      (should (equal '((:begin "Prompt: " "seed" "" nil)
+                       (:initial "seed"))
+                     (reverse calls)))
+      (setq calls nil)
+      (should (eq :started
+                  (emacs-minibuffer-gui-completing-read
+                   "Pick: " '("alpha" "beta") nil t "al")))
+      (should (equal '((:begin "Pick: " "al" "alpha\nbeta\n" t)
+                       (:initial "al"))
+                     (reverse calls)))
+      (should (string-equal "committed"
+                            (emacs-minibuffer-gui-commit-read)))
+      (should (eq :completed (emacs-minibuffer-gui-complete)))
+      (setq calls nil)
+      (should (emacs-minibuffer-gui-set-initial-input))
+      (should (equal '(("al" :initial)) (list (reverse (car calls))))))))
+
+(ert-deftest emacs-minibuffer-gui-abort-key-p ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should (emacs-minibuffer-gui-abort-key-p "C-g"))
+    (should (emacs-minibuffer-gui-abort-key-p "M-ESC ESC"))
+    (should-not (emacs-minibuffer-gui-abort-key-p "RET"))
+    (should-not (emacs-minibuffer-gui-abort-key-p nil))))
+
+(ert-deftest emacs-minibuffer-gui-finish-followup-direct ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let (calls)
+      (emacs-minibuffer-gui-register-backend
+       :purpose (lambda () "find-file")
+       :start-followup
+       (lambda (purpose prompt)
+         (push (list :followup purpose prompt) calls))
+       :followup-prefill-text (lambda () "seed")
+       :set-text (lambda (text) (push (list :text text) calls))
+       :set-cursor (lambda (cursor) (push (list :cursor cursor) calls))
+       :commit-read (lambda () "seed")
+       :execute-command-spec
+       (lambda (command effective arg)
+         (push (list :execute command effective arg) calls)))
+      (should (emacs-minibuffer-gui-finish-followup
+               "find-file" "Find file: "))
+      (should (equal '((:execute "find-file" "find-file" "seed")
+                       (:cursor 4)
+                       (:text "seed")
+                       (:followup "find-file" "Find file: "))
+                     calls)))))
+
+(ert-deftest emacs-minibuffer-gui-execute-command-spec-direct ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let (calls)
+      (emacs-minibuffer-gui-register-backend
+       :save-undo-if-needed (lambda () (push :undo calls))
+       :execute-command-spec
+       (lambda (command effective arg)
+         (push (list :execute command effective arg) calls)))
+      (should (emacs-minibuffer-gui-execute-command-spec
+               '("find-file" . ("find-file" . "/tmp/a.txt"))
+               t))
+      (should (equal '((:execute "find-file" "find-file" "/tmp/a.txt")
+                       :undo)
+                     calls))
+      (setq calls nil)
+      (should-not (emacs-minibuffer-gui-execute-command-spec nil))
+      (should-not calls))))
+
+(ert-deftest emacs-minibuffer-window-and-abort-recursive-edit ()
+  (emacs-minibuffer-test--with-fresh-world
+    (should-not (emacs-minibuffer-minibuffer-window))
+    (emacs-minibuffer-feed-input "value")
+    (emacs-minibuffer-read-string "P: ")
+    (should (emacs-minibuffer-minibuffer-window))
+    (should-not (emacs-minibuffer-abort-recursive-edit))
+    (let ((caught nil))
+      (condition-case _err
+          (emacs-minibuffer-read-string "P: ")
+        (quit (setq caught t)))
+      (should caught))
+    (setq emacs-minibuffer--read-fn (lambda (&rest _args) "unused"))
+    (let ((caught nil))
+      (condition-case _err
+          (emacs-minibuffer-abort-recursive-edit)
+        (quit (setq caught t)))
+      (should caught))))
 
 (provide 'emacs-minibuffer-test)
 ;;; emacs-minibuffer-test.el ends here

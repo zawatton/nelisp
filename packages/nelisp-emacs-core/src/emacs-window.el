@@ -671,7 +671,7 @@ WINDOW may be nil = selected window.  BUFFER-OR-NAME must be a
             (t (signal 'wrong-type-argument
                        (list 'nelisp-ec-buffer-p buffer-or-name))))))
     (emacs-window--check-leaf w)
-    (nelisp-ec--check-live b)
+    (nelisp-ec-check-live b)
     (setf (emacs-window-buffer w) b
           (emacs-window-point  w) (nelisp-ec-buffer-point b)
           (emacs-window-start  w) 1)

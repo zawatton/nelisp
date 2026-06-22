@@ -28,7 +28,7 @@
               #'emacs-buffer-buffer-list)
              ((symbol-function 'nemacs-gtk-view-menu--buffer-name)
               #'nelisp-ec-buffer-name)
-             ((symbol-function 'nemacs-gtk-view-menu--switch-to-buffer)
+             ((symbol-function 'nemacs-gtk-view-menu--apply-buffer-action)
               #'emacs-buffer-ui-switch-to-buffer))
      ,@body))
 

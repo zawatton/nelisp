@@ -23,6 +23,10 @@
 (add-to-list 'load-path (expand-file-name "src" emacs-os-detect-test--root))
 (require 'emacs-os-detect)
 
+(ert-deftest emacs-os-detect/uname-syscall-number-contract ()
+  (should (integerp emacs-os-uname-syscall-number))
+  (should (= 63 emacs-os-uname-syscall-number)))
+
 (defun emacs-os-detect-test--reader ()
   "Return an executable standalone reader path, or nil."
   (let ((candidates

@@ -1,0 +1,536 @@
+#!/bin/bash
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ND="$HOME/.nemacs.d"
+GUI_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+NELISP_SNAP=${NELISP_SNAP:-/tmp/nelisp-snap}
+NELISP="$NELISP_SNAP/nelisp"
+NEMACS_TRANSPORT_DIR=${NEMACS_TRANSPORT_DIR:-/tmp}
+# P4: the X display number is baked into the binary's X11 socket path
+# (sa[18]); extract it from DISPLAY (=:N / host:N.S) so the GUI reaches a
+# nested X (Xephyr :N) and not just :0.  Single digit (0-9) only for now.
+NEMACS_X_DISPLAY_NUM=$(printf '%s' "${NEMACS_X_DISPLAY_NUM:-${DISPLAY:-:0}}" | sed -n 's/^[0-9]$/&/p; s/.*:\([0-9]\).*/\1/p' | head -1)
+NEMACS_X_DISPLAY_NUM=${NEMACS_X_DISPLAY_NUM:-0}
+export NEMACS_X_DISPLAY_NUM
+
+usage() {
+  cat <<'EOF'
+Usage: nemacs [-Q|--no-init] [--goto LINE[:COL]] [FILE]
+       nemacs --doctor
+
+nelisp-gui native GUI launcher.
+
+Options:
+  -Q, --no-init      start a stock baseline without ~/.nemacs.d (emacs -Q)
+  --goto LINE[:COL]  set the initial point when opening FILE
+  --doctor           check workspace, dependencies, transport, and install state
+  --version          print version
+  --help             print this help
+
+Environment:
+  NELISP_ROOT             nelisp checkout, auto-detected by sync script
+  NELISP_SNAP             runtime snapshot, default /tmp/nelisp-snap
+  NEMACS_EMACS_ROOT       nelisp-emacs checkout, default sibling ../nelisp-emacs
+  NEMACS_TRANSPORT_DIR    nemacs-* transport directory, default /tmp
+  NEMACS_ARTIFACT_DIR     native GUI cfg/bin/marker directory for isolated runs
+  NEMACS_CONFIG_PATH      native GUI config path
+  NEMACS_NATIVE_BIN       native GUI executable path
+  NEMACS_BRIDGE_BACKEND   session, nelisp, or auto; default session
+  NEMACS_SYNC_NELISP      1 to rebuild/sync the nelisp snapshot before launch
+EOF
+}
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+case "${1:-}" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  --doctor)
+    exec "$GUI_ROOT/scripts/doctor-workspace.sh"
+    ;;
+  --version)
+    echo "nemacs (nelisp-gui) native GUI"
+    exit 0
+    ;;
+esac
+
+mkdir -p "$NEMACS_TRANSPORT_DIR"
+NEMACS_TRANSPORT_DIR=$(CDPATH= cd -- "$NEMACS_TRANSPORT_DIR" && pwd)
+
+NEMACS_DEFAULT_TMP=${TMPDIR:-/tmp}
+mkdir -p "$NEMACS_DEFAULT_TMP"
+NEMACS_DEFAULT_TMP=$(CDPATH= cd -- "$NEMACS_DEFAULT_TMP" && pwd)
+if [ -n "${NEMACS_ARTIFACT_DIR:-}" ]; then
+  mkdir -p "$NEMACS_ARTIFACT_DIR"
+  NEMACS_ARTIFACT_DIR=$(CDPATH= cd -- "$NEMACS_ARTIFACT_DIR" && pwd)
+elif [ "$NEMACS_TRANSPORT_DIR" = "$NEMACS_DEFAULT_TMP" ]; then
+  NEMACS_ARTIFACT_DIR="$NEMACS_DEFAULT_TMP"
+else
+  NEMACS_ARTIFACT_DIR="$NEMACS_TRANSPORT_DIR/.nemacs-artifacts"
+  mkdir -p "$NEMACS_ARTIFACT_DIR"
+fi
+
+WIN=${NEMACS_NATIVE_BIN:-$NEMACS_ARTIFACT_DIR/nemacs-win.bin}
+NEMACS_NATIVE_BIN="$WIN"
+NEMACS_CONFIG_PATH=${NEMACS_CONFIG_PATH:-$NEMACS_ARTIFACT_DIR/nemacs.cfg}
+WIN_TRANSPORT_FILE=${NEMACS_NATIVE_TRANSPORT_FILE:-$NEMACS_ARTIFACT_DIR/nemacs-win.transport-dir}
+WIN_XDISPLAY_FILE=${NEMACS_NATIVE_XDISPLAY_FILE:-$NEMACS_ARTIFACT_DIR/nemacs-win.x-display}
+WIN_CONFIG_FILE=${NEMACS_NATIVE_CONFIG_FILE:-$NEMACS_ARTIFACT_DIR/nemacs-win.config-path}
+export NEMACS_CONFIG_PATH NEMACS_NATIVE_BIN
+
+# Retire any bridge session left over from a previous launch on this transport
+# dir.  The GUI's bridge runs detached (setsid), so closing the window (or
+# `pkill nemacs-win.bin`) does not stop it; a survivor keeps its old buffer in
+# memory and bleeds stale text into the next session (e.g. yesterday's typing
+# prepended to the file you just opened).  Match the bridge image + this exact
+# transport dir so an unrelated nelisp (other transport, or a non-bridge tool)
+# is never touched.
+for _bpid in $(pgrep -f nemacs-gui-file-bridge 2>/dev/null); do
+  if tr '\0' ' ' <"/proc/$_bpid/cmdline" 2>/dev/null \
+       | grep -qF "files--transport-dir \"$NEMACS_TRANSPORT_DIR\""; then
+    kill "$_bpid" 2>/dev/null
+  fi
+done
+
+INITBUF="$NEMACS_TRANSPORT_DIR/nemacs-init-buf"
+TARGET_FILE="$NEMACS_TRANSPORT_DIR/nemacs-file"
+GOTO_FILE="$NEMACS_TRANSPORT_DIR/nemacs-goto"
+MX_SCRIPT="$NEMACS_TRANSPORT_DIR/nemacs-mx.sh"
+NEMACS_EMACS_ROOT=${NEMACS_EMACS_ROOT:-$GUI_ROOT/../nelisp-emacs}
+NEMACS_SNAPSHOT_SYNCED=0
+
+sync_nelisp_snapshot_if_needed() {
+  if [ "$NEMACS_SNAPSHOT_SYNCED" = 1 ]; then
+    return
+  fi
+  # Resync the runtime snapshot when forced, missing, OR the built nelisp runtime
+  # is newer than the snapshot -- so a rebuilt runtime actually reaches the GUI.
+  NELISP_SRC_BIN="${NELISP_ROOT:-$GUI_ROOT/../nelisp}/target/nelisp"
+  if [ "${NEMACS_SYNC_NELISP:-0}" = 1 ] || [ ! -x "$NELISP" ] \
+     || { [ -x "$NELISP_SRC_BIN" ] && [ "$NELISP_SRC_BIN" -nt "$NELISP" ]; }; then
+    "$GUI_ROOT/scripts/sync-nelisp-snap.sh"
+    NEMACS_SNAPSHOT_SYNCED=1
+  fi
+}
+
+# -Q / --no-init: start a clean baseline without ~/.nemacs.d (the
+# emacs -Q analogue) so missing features can be compared and added
+# against a stock configuration.
+NEMACS_NO_INIT=0
+if [ "$#" -gt 0 ] && { [ "$1" = "-Q" ] || [ "$1" = "--no-init" ]; }; then
+  NEMACS_NO_INIT=1
+  shift
+fi
+
+GOTO=""
+if [ "$#" -gt 0 ] && [ "$1" = "--goto" ]; then
+  if [ "$#" -gt 1 ]; then
+    GOTO="$2"
+    shift 2
+  else
+    shift
+  fi
+fi
+
+if [ "$NEMACS_NO_INIT" = 1 ]; then
+  NEMACS_INIT_SETQS=""
+else
+  NEMACS_INIT_SETQS=$(grep -hE '^\(setq nemacs-' "$ND/early-init.el" "$ND/init.el" 2>/dev/null)
+fi
+
+sync_nelisp_snapshot_if_needed
+
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    /*) TARGET="$1" ;;
+    *) TARGET="$PWD/$1" ;;
+  esac
+  printf '%s' "$TARGET" >"$TARGET_FILE"
+  if [ -f "$TARGET" ]; then
+    cp "$TARGET" "$INITBUF"
+  else
+    : >"$INITBUF"
+  fi
+else
+  rm -f "$TARGET_FILE"
+  if [ "$NEMACS_NO_INIT" = 1 ]; then
+    printf '%s' "* nemacs -Q -- stock baseline, no init loaded" >"$INITBUF"
+  else
+    initbuf_lisp=$(printf '%s' "$INITBUF" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    "$NELISP" --eval "(progn
+(setq nemacs-initial-buffer \"* nemacs\n\")
+$NEMACS_INIT_SETQS
+(write-region (if (boundp (quote nemacs-initial-buffer)) nemacs-initial-buffer \"* nemacs\n\") nil \"$initbuf_lisp\")
+)" >/dev/null 2>&1 || printf '%s' "* nemacs" >"$INITBUF"
+  fi
+fi
+
+# M15 user-init lane: wrap ~/.nemacs.d init forms for isolated loading
+# by the bridge runtime (Emacs semantics live in nelisp-emacs; this
+# launcher only transports).  The bridge writes nemacs-init-report.
+rm -f "$NEMACS_TRANSPORT_DIR/nemacs-init-wrapped" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-init-wrapped-packages" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-init-wrapped-pkgs-lowered"
+if [ "$NEMACS_NO_INIT" != 1 ] && [ -n "$NEMACS_INIT_SETQS" ]; then
+  {
+    printf ';;; nemacs-init-wrapped --- generated by bin/nemacs\n'
+    printf ';;; Runtime-safe nemacs-* settings only; general init loading belongs in nelisp-emacs.\n'
+    printf '(nemacs-init--begin 1 "launcher nemacs-* settings")\n'
+    printf '%s\n' "$NEMACS_INIT_SETQS"
+    printf '(nemacs-init--ok 1)\n'
+  } >"$NEMACS_TRANSPORT_DIR/nemacs-init-wrapped"
+  rm -f "$NEMACS_TRANSPORT_DIR/nemacs-init-report"
+fi
+
+# M19-3: romaji->kana table for the bridge IME (kana bytes cannot live
+# inside the source-v1 image, so the table travels as a transport copy)
+if [ -f "$NEMACS_EMACS_ROOT/src/nemacs-ime-romaji.tsv" ]; then
+  cp "$NEMACS_EMACS_ROOT/src/nemacs-ime-romaji.tsv" "$NEMACS_TRANSPORT_DIR/nemacs-ime-table"
+fi
+
+# org-agenda file set: the bridge's org-agenda scans the absolute paths listed
+# in the nemacs-org-agenda-files transport (one per line); with none configured
+# it falls back to the current buffer.  Source the list from
+# NEMACS_ORG_AGENDA_FILES (colon-separated, PATH-style) when set, else probe a
+# few conventional locations so a stock GTD todo.org is picked up automatically.
+NEMACS_AGENDA_TRANSPORT="$NEMACS_TRANSPORT_DIR/nemacs-org-agenda-files"
+: >"$NEMACS_AGENDA_TRANSPORT.tmp"
+if [ -n "${NEMACS_ORG_AGENDA_FILES:-}" ]; then
+  _nemacs_oldifs=$IFS
+  IFS=:
+  for _af in $NEMACS_ORG_AGENDA_FILES; do
+    [ -f "$_af" ] && printf '%s\n' "$_af" >>"$NEMACS_AGENDA_TRANSPORT.tmp"
+  done
+  IFS=$_nemacs_oldifs
+else
+  for _af in \
+    "$HOME/Notes/capture/todo.org" \
+    "$HOME/Cowork/Notes/capture/todo.org" \
+    "$HOME/org/todo.org"; do
+    if [ -f "$_af" ]; then
+      printf '%s\n' "$_af" >>"$NEMACS_AGENDA_TRANSPORT.tmp"
+      break
+    fi
+  done
+fi
+if [ -s "$NEMACS_AGENDA_TRANSPORT.tmp" ]; then
+  mv "$NEMACS_AGENDA_TRANSPORT.tmp" "$NEMACS_AGENDA_TRANSPORT"
+else
+  rm -f "$NEMACS_AGENDA_TRANSPORT.tmp" "$NEMACS_AGENDA_TRANSPORT"
+fi
+
+# org-roam node index: org-roam-id-open resolves an org-id against the
+# nemacs-org-roam-nodes transport (one ID<TAB>TITLE<TAB>FILE<TAB>LINE row per
+# node).  Build it host-side from NEMACS_ORG_ROAM_DIRS (colon-separated dirs or
+# files) -- the GUI runtime has no sqlite, so the index is plain text resolved
+# with the native str-kv-line primitive.  A full corpus scan is a few seconds,
+# so rebuild only when the transport is missing or a source .org is newer.
+# Off by default (unset -> no roam transport, org-roam-id-open just no-ops).
+NEMACS_ROAM_TRANSPORT="$NEMACS_TRANSPORT_DIR/nemacs-org-roam-nodes"
+NEMACS_ROAM_INDEXER="$GUI_ROOT/scripts/nemacs-org-roam-index.sh"
+# Effective roam dirs: NEMACS_ORG_ROAM_DIRS when set, else probe a conventional
+# Notes corpus (capture/ + node/) so org-roam link-following works out of the
+# box.  Set NEMACS_ORG_ROAM_DIRS=/dev/null to opt out.
+NEMACS_ROAM_DIRS_EFF="${NEMACS_ORG_ROAM_DIRS:-}"
+if [ -z "$NEMACS_ROAM_DIRS_EFF" ]; then
+  for _root in "$HOME/Notes" "$HOME/Cowork/Notes" "$HOME/org"; do
+    if [ -d "$_root/capture" ]; then
+      NEMACS_ROAM_DIRS_EFF="$_root/capture"
+      [ -d "$_root/node" ] && NEMACS_ROAM_DIRS_EFF="$_root/capture:$_root/node"
+      break
+    fi
+  done
+fi
+if [ -n "$NEMACS_ROAM_DIRS_EFF" ] && [ -x "$NEMACS_ROAM_INDEXER" ]; then
+  _need_roam=0
+  if [ ! -f "$NEMACS_ROAM_TRANSPORT" ]; then
+    _need_roam=1
+  else
+    _nemacs_roam_oldifs=$IFS
+    IFS=:
+    for _rd in $NEMACS_ROAM_DIRS_EFF; do
+      [ -e "$_rd" ] || continue
+      if [ -n "$(find "$_rd" -name '*.org' -newer "$NEMACS_ROAM_TRANSPORT" -print -quit 2>/dev/null)" ]; then
+        _need_roam=1
+        break
+      fi
+    done
+    IFS=$_nemacs_roam_oldifs
+  fi
+  if [ "$_need_roam" = 1 ]; then
+    _nemacs_roam_oldifs=$IFS
+    IFS=:
+    # shellcheck disable=SC2086
+    "$NEMACS_ROAM_INDEXER" --out "$NEMACS_ROAM_TRANSPORT" $NEMACS_ROAM_DIRS_EFF 2>/dev/null || true
+    IFS=$_nemacs_roam_oldifs
+  fi
+fi
+
+# Kana->kanji conversion needs the SKK CDB at skk-cdb-dict-path.  The runtime
+# default is the fixed /tmp/skk.cdb (it has no getenv to read a configured
+# path), but /tmp is wiped on reboot and the CDB is a ~10MB build -- so build it
+# ONCE into a persistent cache and point the fixed runtime path at it via a
+# symlink, re-linked each launch (cheap) since only /tmp is lost on reboot, not
+# the cache.  Best-effort: with no system dict / tools, kana composition still
+# works and the user can run scripts/build-skk-dict.sh manually.
+NEMACS_SKK_RUNTIME=${NEMACS_SKK_CDB:-${SKK_CDB_DICT_PATH:-/tmp/skk.cdb}}
+NEMACS_SKK_CACHE=${NEMACS_SKK_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/nemacs/skk.cdb}
+if [ ! -f "$NEMACS_SKK_CACHE" ] \
+   && [ -x "$NEMACS_EMACS_ROOT/scripts/build-skk-dict.sh" ]; then
+  SKK_CDB_DICT_PATH="$NEMACS_SKK_CACHE" \
+    "$NEMACS_EMACS_ROOT/scripts/build-skk-dict.sh" >/dev/null 2>&1 || true
+fi
+if [ -f "$NEMACS_SKK_CACHE" ] && [ "$NEMACS_SKK_RUNTIME" != "$NEMACS_SKK_CACHE" ] \
+   && [ ! "$NEMACS_SKK_RUNTIME" -ef "$NEMACS_SKK_CACHE" ]; then
+  ln -sf "$NEMACS_SKK_CACHE" "$NEMACS_SKK_RUNTIME" 2>/dev/null \
+    || cp "$NEMACS_SKK_CACHE" "$NEMACS_SKK_RUNTIME" 2>/dev/null || true
+fi
+
+if [ "$GOTO" ]; then
+  python3 - "$INITBUF" "$GOTO" >"$GOTO_FILE" <<'PY'
+import sys
+
+path, spec = sys.argv[1], sys.argv[2]
+try:
+    line_s, col_s = (spec.split(":", 1) + ["1"])[:2]
+    line = max(1, int(line_s or "1"))
+    col = max(1, int(col_s or "1"))
+except ValueError:
+    line, col = 1, 1
+
+try:
+    data = open(path, "rb").read()
+except OSError:
+    data = b""
+
+offset = 0
+current = 1
+for chunk in data.splitlines(True):
+    if current >= line:
+        break
+    offset += len(chunk)
+    current += 1
+offset = min(len(data), offset + col - 1)
+print(offset)
+PY
+else
+  rm -f "$GOTO_FILE"
+fi
+
+sync_nelisp_snapshot_if_needed
+# Rebuild the compiled GUI when it is missing, was built for a different
+# transport dir (e.g. a verify/visual smoke baked a temp dir into the mxp
+# path), or is older than its IR source.  This check previously skipped the
+# default /tmp case, which let a stale binary exec a non-existent
+# /tmp/<tempdir>/nemacs-mx.sh path on every keypress and silently drop all
+# input.
+compiled_transport_dir=$(cat "$WIN_TRANSPORT_FILE" 2>/dev/null || true)
+compiled_xdisplay=$(cat "$WIN_XDISPLAY_FILE" 2>/dev/null || true)
+compiled_config_path=$(cat "$WIN_CONFIG_FILE" 2>/dev/null || true)
+if [ ! -x "$WIN" ] \
+   || [ "$compiled_transport_dir" != "$NEMACS_TRANSPORT_DIR" ] \
+   || [ "$compiled_xdisplay" != "$NEMACS_X_DISPLAY_NUM" ] \
+   || [ "$compiled_config_path" != "$NEMACS_CONFIG_PATH" ] \
+   || [ "$GUI_ROOT/nemacs-editor.el" -nt "$WIN" ] \
+   || [ "$GUI_ROOT/nemacs-editor-transport.el" -nt "$WIN" ]; then
+  NEMACS_BUILD_SMOKE=0 \
+    NEMACS_SYNC_NELISP=0 \
+    NEMACS_TRANSPORT_DIR="$NEMACS_TRANSPORT_DIR" \
+    NEMACS_CONFIG_PATH="$NEMACS_CONFIG_PATH" \
+    NEMACS_NATIVE_BIN="$WIN" \
+    NEMACS_NATIVE_TRANSPORT_FILE="$WIN_TRANSPORT_FILE" \
+    NEMACS_NATIVE_XDISPLAY_FILE="$WIN_XDISPLAY_FILE" \
+    NEMACS_NATIVE_CONFIG_FILE="$WIN_CONFIG_FILE" \
+    NEMACS_X_DISPLAY_NUM="$NEMACS_X_DISPLAY_NUM" \
+    "$GUI_ROOT/nemacs-build.sh" nemacs-editor.el xfont-sexp
+  printf '%s\n' "$NEMACS_X_DISPLAY_NUM" >"$WIN_XDISPLAY_FILE"
+  printf '%s\n' "$NEMACS_CONFIG_PATH" >"$WIN_CONFIG_FILE"
+fi
+if [ "$NEMACS_TRANSPORT_DIR" = "/tmp" ]; then
+  cp "$SCRIPT_DIR/../nemacs-mx.sh" "$MX_SCRIPT"
+else
+  {
+    printf '#!/bin/sh\n'
+    printf 'NEMACS_TRANSPORT_DIR=%s\n' "$(shell_quote "$NEMACS_TRANSPORT_DIR")"
+    printf 'export NEMACS_TRANSPORT_DIR\n'
+    printf 'exec %s "$@"\n' "$(shell_quote "$GUI_ROOT/nemacs-mx.sh")"
+  } >"$MX_SCRIPT"
+fi
+chmod +x "$MX_SCRIPT"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-cmd"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-keys"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-arg"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-text"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-arg"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-active"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-prompt"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-state"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-purpose"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-cursor"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-candidates"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-history"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-minibuffer-require-match"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-modeline"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-cursor"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-prefix-arg"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-recording"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-keys"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-counter"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-ring"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-name"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-format"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-bound-key"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kmacro-register"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-dired-marks"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-magit-root"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-last-command"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kill"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-kill-ring"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-kill-ring-index"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-rectangle-kill"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-rectangle-mark-mode"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-text-scale"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-global-text-scale"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-highlight-patterns"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-selective-display"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-input-method"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-transient-input-method"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-language-environment"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-file-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-file-name-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-keyboard-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-terminal-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-selection-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-next-selection-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-process-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-universal-coding-system"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-cycle-spacing-action"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-cycle-spacing-point"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-cycle-spacing-whitespace"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-exit"
+printf 'single' >"$NEMACS_TRANSPORT_DIR/nemacs-window-layout"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-window-selected"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-window-start"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-window-hscroll"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-window-split-delta"
+printf '0\t1\t1' >"$NEMACS_TRANSPORT_DIR/nemacs-tab-state"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-tab-undo-state"
+printf '0\t1\t1' >"$NEMACS_TRANSPORT_DIR/nemacs-frame-state"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-frame-undo-state"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-frame-suspended"
+printf 'main' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-name"
+rm -rf "$NEMACS_TRANSPORT_DIR/nemacs-buffer-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-file-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-point-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-mark-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-window-start-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-read-only-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-modified-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-active-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-start-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-end-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-full-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-register-store" "$NEMACS_TRANSPORT_DIR/nemacs-bookmark-store"
+mkdir -p "$NEMACS_TRANSPORT_DIR/nemacs-buffer-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-file-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-point-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-mark-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-window-start-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-read-only-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-modified-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-active-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-start-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-end-store" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-narrow-full-store" \
+  "$NEMACS_TRANSPORT_DIR/nemacs-register-store" "$NEMACS_TRANSPORT_DIR/nemacs-bookmark-store"
+printf '' >"$NEMACS_TRANSPORT_DIR/nemacs-bookmark-list"
+printf 'main\n' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-list"
+cp "$INITBUF" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-store/main"
+if [ "${TARGET:-}" ]; then
+  printf '%s' "$TARGET" >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-file-store/main"
+  printf '%s\n' "--  main  $TARGET" >"$NEMACS_TRANSPORT_DIR/nemacs-modeline"
+else
+  : >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-file-store/main"
+  printf '%s\n' "--  main" >"$NEMACS_TRANSPORT_DIR/nemacs-modeline"
+fi
+if [ -f "$GOTO_FILE" ]; then
+  cp "$GOTO_FILE" "$NEMACS_TRANSPORT_DIR/nemacs-buffer-point-store/main"
+else
+  printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-point-store/main"
+fi
+# M20: seed the view-slice channel (the bridge re-slices on the first
+# round-trip; the GUI read-redirect is the follow-up surgery)
+head -c 49152 "$INITBUF" >"$NEMACS_TRANSPORT_DIR/nemacs-view"
+# nemacs-buf is the live buffer snapshot the bridge re-reads every cycle
+# (nemacs-gui-file-bridge-run).  It is NOT a *-store file, so the resets above
+# miss it: a previous session's text left here is restored on the next launch
+# (the "dsds..." ghost prepended to a freshly opened file).  Seed it (and the
+# undo scratch) with the initial buffer so each launch starts clean.
+cp "$INITBUF" "$NEMACS_TRANSPORT_DIR/nemacs-buf"
+: >"$NEMACS_TRANSPORT_DIR/nemacs-undo-buf"
+if [ -f "$GOTO_FILE" ]; then
+  cp "$GOTO_FILE" "$NEMACS_TRANSPORT_DIR/nemacs-view-point"
+else
+  printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-view-point"
+fi
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-view-start"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-mark-store/main"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-window-start-store/main"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-read-only-store/main"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-buffer-modified-store/main"
+printf '0' >"$NEMACS_TRANSPORT_DIR/nemacs-read-only"
+# nemacs-theme-bg/fg/mode (explicit) take precedence over the loaded
+# theme's base colors; the loaded theme still supplies the font-lock
+# palette.  Empty string means "fall back to the theme".
+# Default theme = stock Emacs -Q (no theme loaded): white bg, black
+# fg, grey75 mode-line, and the built-in font-lock palette (Firebrick
+# comments, Purple keywords, VioletRed4 strings).  A non-empty
+# nemacs-emacs-theme loads that theme instead.
+# Default to the unambiguous 9px "9x15" (xfonts-base), falling back to "fixed"
+# only when we can confirm 9x15 is unavailable.  The native GUI asks the X
+# server for the loaded font's real character width at startup and uses that
+# for caret placement, so a server-side fallback to a narrower font no longer
+# causes cursor drift.  A user nemacs-font in ~/.nemacs.d still overrides via
+# NEMACS_INIT_SETQS below.
+NEMACS_FONT_DEFAULT=9x15
+if command -v xlsfonts >/dev/null 2>&1 && ! xlsfonts -fn 9x15 >/dev/null 2>&1; then
+  NEMACS_FONT_DEFAULT=fixed
+fi
+CFG=$("$NELISP" --eval "(progn
+(setq nemacs-frame-width 820 nemacs-frame-height 540 nemacs-frame-left 200 nemacs-frame-top 160 nemacs-display-mode 0 nemacs-theme-bg \"\" nemacs-theme-fg \"\" nemacs-theme-mode \"\" nemacs-emacs-theme \"\" nemacs-font \"$NEMACS_FONT_DEFAULT\")
+$NEMACS_INIT_SETQS
+(format \"%d %d %d %d %d %s %s|%s|%s|%s\" nemacs-frame-width nemacs-frame-height nemacs-frame-left nemacs-frame-top nemacs-display-mode nemacs-font nemacs-emacs-theme nemacs-theme-bg nemacs-theme-fg nemacs-theme-mode)
+)" 2>/dev/null | tail -1 | tr -d '"')
+THEME=$(echo "$CFG" | awk '{print $7}' | cut -d'|' -f1)
+# Stock Emacs -Q face defaults.  Named theme introspection used to call host
+# Emacs here; keep runtime launch on nelisp only and let explicit
+# nemacs-theme-bg/fg/mode override the base colors until nelisp-emacs owns
+# full theme loading.
+COL="#ffffff #000000 #bfbfbf #b22222 #a020f0 #8b2252"
+echo "$CFG|$COL" | python3 -c "
+import sys,struct,re
+cfg_path=sys.argv[1]
+line=sys.stdin.read().strip(); cfg,col=line.rsplit('|',1)
+# cfg tail field is 'font theme|bg|fg|mode'; split the theme/explicit part
+head,_,explicit=cfg.partition('|')
+p=head.split(); n=[int(x) for x in p[:5]]; font=p[5]
+ex=([explicit.split('|')[i] if i<len(explicit.split('|')) else '' for i in range(3)])
+def h(c,fb): return int(c.lstrip('#'),16) if c.startswith('#') and len(c)>=7 else fb
+tc=[h(c,0xcccccc) for c in col.split()]   # theme: bg fg ml comment kw str
+# explicit base overrides
+bg=h(ex[0],tc[0]); fg=h(ex[1],tc[1]); ml=h(ex[2],tc[2])
+cols=[bg,fg,ml,tc[3],tc[4],tc[5]]
+open(cfg_path,'wb').write(struct.pack('<HHHHH',*n)+struct.pack('<IIIIII',*cols)+bytes([len(font)])+font.encode())
+# M20b: seed the bridge face-span palette from the theme font-lock colors
+open('$NEMACS_TRANSPORT_DIR/nemacs-face-theme','w').write(
+  'comment\t#%06x\nkeyword\t#%06x\nstring\t#%06x\nheading\t#%06x\n'%(tc[3],tc[4],tc[5],fg))
+" "$NEMACS_CONFIG_PATH"
+# Retire any other GUI for this display before exec'ing ours.  Old windows (a
+# previous launch, or a rebuild's smoke-launch from nemacs-build.sh) otherwise
+# pile up and fight over the shared /tmp transport files -- one even busy-spins
+# at high CPU -- which mixes buffers and makes the cursor/state look corrupt.
+# This kills only nemacs-win.bin; the user's real Emacs and other apps are
+# untouched.  We exec ours immediately after, so there is no window-less gap.
+if [ "${NEMACS_SKIP_GUI_PKILL:-0}" != "1" ]; then
+  if [ "$NEMACS_TRANSPORT_DIR" = "$NEMACS_DEFAULT_TMP" ]; then
+    pkill -x nemacs-win.bin 2>/dev/null
+  else
+    for _wpid in $(pgrep -f "$WIN" 2>/dev/null || true); do
+      kill "$_wpid" 2>/dev/null || true
+    done
+  fi
+fi
+exec "$WIN"

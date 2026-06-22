@@ -158,6 +158,478 @@ without a hand-written C core.
   reference/legacy path.  Cocoa / Win32 / =wgpu= backends are open to
   community contribution.
 
+* Library entry points
+
+Reusable consumers should start with:
+
+#+begin_src emacs-lisp
+(require 'nelisp-emacs)
+#+end_src
+
+That facade loads the reusable C-core replacement surface without taking
+ownership of application bootstrap policy.  The exact group list is
+published as =nelisp-emacs-library-features= and currently contains:
+
+- =emacs-foundation= for primitive/foundation shims,
+- =emacs-text-core= for reusable TXT regex and coding substrates,
+- =emacs-buffer-core= for buffer/search/line primitives,
+- =emacs-editing= for editing commands and undo bridges,
+- =emacs-io= for SQLite, file I/O, standalone dispatch, and process bridges,
+- =emacs-special-buffers= for scratch/messages/warnings semantics,
+- =emacs-core= for minibuffer, command-loop, keymap/frame/window, faces,
+  modes, Info, and Help,
+- =emacs-textmodes-stub= for the minimal fill/count textmodes polyfills.
+
+The major group loaders also publish their own membership manifests:
+=emacs-foundation-features=, =emacs-buffer-core-features=,
+=emacs-text-core-features=, =emacs-editing-features=,
+=emacs-io-features=, and =emacs-core-features=.  The library gate checks
+that these manifests are duplicate-free, resolvable on =load-path=, and
+do not include app/bootstrap, concrete TUI/GUI, or lazy editor features.
+The BUF manifest intentionally names =nelisp-text-buffer=,
+=nelisp-emacs-compat=, and =emacs-buffer= so downstream package
+dependencies see them as explicit package members instead of hidden
+utility loads.
+The package dependency migration queue is reserved for eager
+package-membership cleanup.  Lazy nested =require= forms, such as optional
+TUI realization hooks or coding-table data, are declared as package lazy
+companions and stay out of facade eager loads.  Undeclared lazy reusable
+edges remain visible in the dependency TSV as =lazy-unmanifested-reusable=
+for review.
+Consumers that need a programmatic package view can call
+=nelisp-emacs-library-package-manifest= after requiring =nelisp-emacs=.
+It returns package entries with Doc 18 owner, facade feature, eager member
+features, and lazy companion features.  For narrower queries use
+=nelisp-emacs-library-package-names=, =nelisp-emacs-library-package=,
+=nelisp-emacs-library-package-features=, or
+=nelisp-emacs-library-package-lazy-features=.
+Stable package APIs are intentionally narrower than the package API
+inventory.  Consumers can inspect them with
+=nelisp-emacs-library-stable-api-manifest=,
+=nelisp-emacs-library-stable-api-symbols=, and
+=nelisp-emacs-library-stable-api-entry=.  The stable package API
+surface contains the =foundation= environment, char-table, OS detection, and
+display capability APIs: =emacs-callproc-populate-process-environment=,
+=emacs-callproc-getenv=, =emacs-char-table-p=,
+=emacs-char-table-ascii-vector=, =emacs-char-table-ref=,
+=emacs-char-table-set=, =emacs-char-table-set-range=,
+=emacs-char-table-range=, =emacs-char-table-parent=,
+=emacs-char-table-set-parent=, =emacs-char-table-subtype=,
+=emacs-char-table-extra-slot=,
+=emacs-char-table-set-extra-slot=, =emacs-char-table-map=,
+=emacs-char-table-copy=, =emacs-char-table-max-char=,
+=emacs-char-table-make=, =emacs-os-sysname->system-type=,
+=emacs-detect-system-type=, =emacs-os-detect-and-set!=,
+=emacs-os-apply-os-polyfills!=, =emacs-os-detect-and-set-dirs!=,
+=emacs-uname=, =emacs-display-window-system=,
+=emacs-display-graphic-p=, =emacs-display-color-p=,
+=emacs-display-multi-frame-p=, and
+=emacs-os-uname-syscall-number=; the =text-core= regex and coding
+substrate APIs: =nelisp-rx-compile=,
+=nelisp-rx-string-match=, =nelisp-rx-string-match-all=,
+=nelisp-rx-replace=, =nelisp-rx-replace-all=, UTF-8/Latin-1/Japanese
+codec entry points, stream encode/decode helpers, and file encoding
+wrappers.  Lazy JIS table data remains behind
+=nelisp-coding-jis-tables= and is not loaded by =require 'nelisp-emacs=.
+The stable package API also contains the =buffer-core= lifecycle, point,
+movement, basic text, and text-property APIs:
+=nelisp-ec-generate-new-buffer=,
+=nelisp-ec-current-buffer=, =nelisp-ec-set-buffer=,
+=nelisp-ec-with-current-buffer=, =nelisp-ec-kill-buffer=,
+=nelisp-ec-point=, =nelisp-ec-point-min=, =nelisp-ec-point-max=,
+=nelisp-ec-goto-char=, =nelisp-ec-buffer-size=,
+=nelisp-ec-forward-char=, =nelisp-ec-backward-char=,
+=nelisp-ec-insert=, =nelisp-ec-insert-char-code-fast=,
+=nelisp-ec-delete-region=, =nelisp-ec-delete-char=,
+=nelisp-ec-erase-buffer=, =nelisp-ec-buffer-substring=,
+=nelisp-ec-buffer-string=, =nelisp-ec-save-excursion=,
+=nelisp-ec-save-restriction=, =nelisp-ec-save-current-buffer=,
+=nelisp-ec-narrow-to-region=,
+=nelisp-ec-widen=, =nelisp-ec-make-marker=, =nelisp-ec-set-marker=,
+=nelisp-ec-marker-position=, =nelisp-ec-marker-buffer=,
+=nelisp-ec-marker-insertion-type=,
+=nelisp-ec-set-marker-insertion-type=, =nelisp-ec-point-marker=,
+=nelisp-ec-search-forward=, =nelisp-ec-search-backward=,
+=nelisp-ec-looking-at-p=, =nelisp-ec-re-search-forward=,
+=nelisp-ec-re-search-backward=, =nelisp-ec-looking-at=,
+=nelisp-ec-match-data=, =nelisp-ec-match-beginning=,
+=nelisp-ec-match-end=, =emacs-buffer-current=,
+=emacs-buffer-buffer-list=, =emacs-buffer-buffers-by-mode=,
+=emacs-buffer-generate-new-buffer-name=,
+=emacs-buffer-make-local-variable=,
+=emacs-buffer-make-variable-buffer-local=,
+=emacs-buffer-buffer-local-variables=, =emacs-buffer-buffer-local-value=,
+=emacs-buffer-set-buffer-local-value=, =emacs-buffer-local-variable-p=,
+=emacs-buffer-local-variable-if-set-p=, =emacs-buffer-default-value=,
+=emacs-buffer-default-boundp=, =emacs-buffer-set-default=,
+=emacs-buffer-setq-default=, =emacs-buffer-kill-local-variable=,
+=emacs-buffer-kill-all-local-variables=,
+=emacs-buffer-buffer-undo-list=, =emacs-buffer-buffer-disable-undo=,
+=emacs-buffer-buffer-enable-undo=, =emacs-buffer-undo-boundary=,
+=emacs-buffer-record-insertion=, =emacs-buffer-record-deletion=,
+=emacs-buffer-undo=, =emacs-buffer-modify-without-undo=,
+=emacs-buffer-buffer-modified-p=, =emacs-buffer-set-buffer-modified-p=,
+=emacs-buffer-restore-buffer-modified-p=,
+=emacs-buffer-toggle-read-only-direct=,
+=emacs-buffer-buffer-chars-modified-tick=,
+=emacs-buffer-buffer-text-tick=, =emacs-buffer-bump-modified-tick=,
+=emacs-buffer-clone-indirect-buffer=,
+=emacs-buffer-buffer-base-buffer=,
+=make-text-buffer=, =text-buffer-insert-char-code=,
+=text-buffer-insert=, =text-buffer-delete=, =text-buffer-cursor=,
+=text-buffer-set-cursor=, =text-buffer-substring=,
+=text-buffer-search=, =text-buffer-length=,
+=text-buffer-multibyte-p=, =text-buffer-byte-length=,
+=emacs-buffer-put-text-property=,
+=emacs-buffer-add-text-properties=, =emacs-buffer-remove-text-properties=,
+=emacs-buffer-set-text-properties=, =emacs-buffer-get-text-property=,
+=emacs-buffer-text-property-at=, =emacs-buffer-text-property-view=,
+=emacs-buffer-next-property-change=,
+=emacs-buffer-previous-property-change=,
+=emacs-buffer-next-single-property-change=, and
+=emacs-buffer-previous-single-property-change=.  It also contains the
+=buffer-core= overlay primitives =emacs-buffer-get-char-property=,
+=emacs-buffer-overlayp=, =emacs-buffer-make-overlay=,
+=emacs-buffer-overlay-start=, =emacs-buffer-overlay-end=,
+=emacs-buffer-overlay-buffer=, =emacs-buffer-overlay-properties=,
+=emacs-buffer-overlay-put=, =emacs-buffer-overlay-get=,
+=emacs-buffer-move-overlay=, =emacs-buffer-delete-overlay=,
+=emacs-buffer-delete-all-overlays=, =emacs-buffer-overlays-at=,
+=emacs-buffer-overlays-in=, =emacs-buffer-overlay-lists=, and
+=emacs-buffer-copy-overlay=.  Overlay property lookup uses numeric
+=priority= first and later insertion as the tie-breaker before falling
+back to text properties.
+The stable =editing= surface exposes the shared undo substrate for
+command/front-end reuse: =emacs-undo-buffer-undo-list=,
+=emacs-undo-set-buffer-undo-list=, =emacs-undo-disabled-p=,
+=emacs-undo-reset=, =emacs-undo-undo-boundary=,
+=emacs-undo-record-insert=, =emacs-undo-record-delete=,
+=emacs-undo-primitive-undo=, =emacs-undo-undo=,
+=emacs-undo-undo-direct=, and =emacs-undo-run-command=.  It also exposes
+direct editing helpers that return frontend-neutral edit-result plists:
+=emacs-edit-self-insert-direct=, =emacs-edit-delete-backward-direct=,
+=emacs-edit-run-quoted-insert-command=, =emacs-edit-copy-region-direct=,
+=emacs-edit-kill-region-direct=, =emacs-edit-kill-line-direct=,
+=emacs-edit-kill-whole-line-direct=, =emacs-edit-delete-region-direct=,
+=emacs-edit-transform-region-direct=,
+=emacs-edit-run-transform-region-command=,
+=emacs-edit-toggle-line-comment-direct=, =emacs-edit-comment-dwim-direct=,
+=emacs-edit-yank-direct=, =emacs-edit-yank-pop-direct=,
+=emacs-edit-yank-pop-result-direct=, and
+=emacs-edit-run-yank-pop-command=.  Mark, region, and selection helpers
+are stable through =emacs-edit-set-mark-direct=,
+=emacs-edit-region-bounds-direct=, =emacs-edit-shift-selection-plan=,
+=emacs-edit-mouse-drag-region-plan=,
+=emacs-edit-mark-whole-buffer-direct=,
+=emacs-edit-exchange-point-and-mark-direct=,
+=emacs-edit-goto-position-direct=, =emacs-edit-select-word-at-direct=,
+=emacs-edit-run-select-word-at-command=,
+=emacs-edit-select-line-at-direct=, and
+=emacs-edit-run-select-line-at-command=.  Movement helpers are stable
+through =emacs-edit-page-scroll-direct=,
+=emacs-edit-forward-paragraph-direct=,
+=emacs-edit-backward-paragraph-direct=,
+=emacs-edit-mark-paragraph-direct=,
+=emacs-edit-run-mark-paragraph-command=,
+=emacs-edit-goto-buffer-boundary-direct=,
+=emacs-edit-forward-word-position=, =emacs-edit-kill-word-direct=,
+=emacs-edit-matching-paren-position-direct=,
+=emacs-edit-forward-sexp-direct=, =emacs-edit-backward-sexp-direct=,
+=emacs-edit-kill-sexp-direct=, =emacs-edit-forward-sentence-direct=,
+=emacs-edit-backward-sentence-direct=, =emacs-edit-kill-sentence-direct=,
+and =emacs-edit-backward-kill-sentence-direct=.  Formatting, whitespace,
+counting, dabbrev, tab-stop, and register helpers are stable through
+=emacs-edit-transpose-chars-direct=,
+=emacs-edit-delete-horizontal-space-direct=,
+=emacs-edit-just-one-space-direct=,
+=emacs-edit-delete-indentation-direct=,
+=emacs-edit-zap-to-char-direct=, =emacs-edit-sort-lines-direct=,
+=emacs-edit-delete-blank-lines-direct=,
+=emacs-edit-delete-trailing-whitespace-direct=,
+=emacs-edit-fill-paragraph-direct=,
+=emacs-edit-run-fill-paragraph-command=,
+=emacs-edit-count-words-in-range=,
+=emacs-edit-count-lines-in-range=, =emacs-edit-count-range=,
+=emacs-edit-dabbrev-word-at-point-prefix=,
+=emacs-edit-dabbrev-find-completion=,
+=emacs-edit-dabbrev-expand-direct=,
+=emacs-edit-tab-to-tab-stop-direct=, =emacs-edit-register-value=,
+=emacs-edit-copy-to-register-direct=,
+=emacs-edit-insert-register-direct=,
+=emacs-edit-point-to-register-direct=,
+=emacs-edit-jump-to-register-target=, and
+=emacs-edit-goto-register-position-direct=.
+Buffer-local/default APIs operate on NeLisp buffer side-table state and do
+not mutate host Emacs default bindings; explicit local writes go through
+=emacs-buffer-set-buffer-local-value=.
+Undo is an explicit record/apply layer: contract v1 does not
+auto-instrument insert/delete, so consumers call
+=emacs-buffer-record-insertion= or =emacs-buffer-record-deletion= after
+mutating when they want =emacs-buffer-undo= support.
+Consumers that need the lower-level editing package undo substrate can use
+=emacs-undo-record-insert=, =emacs-undo-record-delete=,
+=emacs-undo-undo-boundary=, and =emacs-undo-primitive-undo= directly.
+=emacs-undo-undo-direct= normalizes undo success/error into a plist, and
+=emacs-undo-run-command= wraps that result with frontend status and
+after-success hooks so GTK/TUI/app code can share one command path.
+The stable direct editing helpers all operate on the current NeLisp buffer
+and return edit-result plists with range/text metadata suitable for
+frontends.  Copy/kill/yank helpers update =kill-ring= and
+=kill-ring-yank-pointer= using the shared editing substrate.  Region
+transform/comment helpers are intentionally text-buffer operations; mode
+specific comment syntax and indentation remain outside contract version 1.
+Mark and selection helpers do not own frontend mark storage directly.
+They return plist plans or mark states containing fields such as =:mark=,
+=:point=, =:buffer=, =:shift-region=, =:status=, and =:message= so GTK,
+TUI, and other consumers can keep their own selection state while sharing
+the buffer-side movement and selection calculations.
+Movement helpers operate on the current NeLisp buffer and return movement,
+mark, or edit plists.  Contract version 1 uses the current editing
+substrate scanners: word motion is ASCII word based, paragraph and
+sentence motion use the existing blank-line/punctuation rules, and sexp
+motion uses the simple Lisp-style balanced delimiter scanner.  Full
+syntax-table, major-mode, and comment-syntax integration remain outside
+this stable contract.
+Formatting and whitespace helpers are mode-independent text operations on
+the current NeLisp buffer.  Fill uses the current greedy paragraph wrapper,
+dabbrev uses ASCII word matching, and register helpers treat the register
+store as a caller-owned alist returned through plist fields such as
+=:registers=, =:char=, =:value=, =:buffer=, and =:point=.
+Modification tracking exposes the NeLisp modified flag, an explicit
+chars-modified tick, and a text-content tick that is bumped after text
+insert/delete/erase but not after text-property or overlay changes.
+Indirect buffers share text storage with a base buffer while keeping point,
+locals, undo, and extension state local to the clone.
+The low-level =text-buffer= substrate is stable through
+=make-text-buffer=, =text-buffer-insert-char-code=,
+=text-buffer-insert=, =text-buffer-delete=, =text-buffer-cursor=,
+=text-buffer-set-cursor=, =text-buffer-substring=,
+=text-buffer-search=, =text-buffer-length=,
+=text-buffer-multibyte-p=, and =text-buffer-byte-length=.  This layer is a
+display-free mutable text container: it has a cursor, byte/character
+length queries, literal substring search, and insertion/deletion, but no
+point, markers, overlays, text properties, undo, major modes, or frontend
+state.
+Movement and narrowing APIs operate on the current NeLisp buffer.  Forward
+and backward movement signal =nelisp-ec-args-out-of-range= if the target
+would leave the accessible range.  =nelisp-ec-narrow-to-region= sets a
+1-based half-open accessible range and clamps point into it;
+=nelisp-ec-widen= clears that restriction.  =nelisp-ec-save-excursion=,
+=nelisp-ec-save-restriction=, and =nelisp-ec-save-current-buffer= restore
+point/current-buffer, narrowing, or current-buffer selection on exit,
+including non-local exits.
+Marker APIs expose NeLisp marker objects with 1-based positions; nil POS
+detaches a marker.  Search APIs operate on the current NeLisp buffer:
+=nelisp-ec-search-forward=, =nelisp-ec-search-backward=, and
+=nelisp-ec-looking-at-p= are literal searches, while
+=nelisp-ec-re-search-forward=, =nelisp-ec-re-search-backward=, and
+=nelisp-ec-looking-at= use =nelisp-regex= and populate
+=nelisp-ec-match-data=.
+The =foundation= stable surface is display-free and state-light:
+environment helpers read/populate =process-environment=, char-table helpers
+operate on the reusable sparse char-table representation, OS helpers map
+runtime sysnames into Emacs-style =system-type= defaults, and display
+capability helpers report the current lightweight display capability model.
+The =text-core= stable surface is also display-free: regex helpers,
+encoding policy values, eager codec functions, streaming helpers, and file
+encoding wrappers are eager stable API.  The lazy JIS table payload is a
+stable lazy API exposed through
+=nelisp-emacs-library-stable-lazy-api-manifest=,
+=nelisp-emacs-library-stable-lazy-api-symbols=, and
+=nelisp-emacs-library-stable-lazy-api-entry=; consumers must explicitly
+require =nelisp-coding-jis-tables= before using those variables.
+The same stable lazy query APIs expose the =core= TUI companions
+=emacs-tui-backend=, =emacs-tui-terminfo=, and =emacs-tui-event= as
+versioned reusable API after explicitly requiring the matching lazy
+feature; they are intentionally not loaded by =(require 'nelisp-emacs)=.
+The =io= stable surface is runtime-bound but app-free: it covers process
+delegation and lifecycle helpers, shell command helpers, standalone
+primitive-dispatch registry/introspection, POSIX-oriented file/path
+helpers, executable lookup, UTF-8 insert/write region helpers, and
+directory/file mutation wrappers.
+The =special-buffers= stable surface covers scratch/messages/warnings names
+and defaults, adapter backend registration, ensure/switch/append helpers,
+message/warning recording, prefixed =warn= / =lwarn= compatibility helpers,
+and frontend-neutral display plans.
+The =core/mode= stable surface covers lightweight major-mode state,
+base-mode entry points, derived-mode creation, hook dispatch,
+reset/local-variable placeholders, and auto-mode dispatch through the
+prefixed =emacs-mode-*= API.  It intentionally excludes real per-buffer
+mode storage, full buffer-local variable killing, font-lock/syntax-table
+integration, and mode-line updates.
+The =core/faces= stable surface covers the small face registry substrate:
+face lifecycle/predicates, attribute mutation/inspection,
+foreground/background convenience helpers, face enumeration, catch-all
+=defface= registration, and explicit test/reinitialization reset.  It
+intentionally excludes full face inheritance, frame/display-class
+precedence, X resource fallback, and frame-parameter integration.
+The =core/frame= stable surface covers the eager frame registry and
+backend swap-in substrate: frame identity/lifecycle, dimensions,
+parameters, visibility/z-order/selection/focus helpers, display
+dimension queries, stub/TUI backend switching, TUI handle introspection,
+and resize/key hook variables.  It intentionally excludes full
+display-server frame semantics, multi-display behavior, frame
+configurations, GUI positioning, and complete event-loop ownership.
+The =core/window= stable surface covers the eager single-frame
+window-tree substrate: window identity/query helpers, buffer/frame
+lookup, split/delete/balance operations, coarse geometry, cached
+point/start state, window-local parameters, configuration snapshots,
+selection helpers, newer helper aliases, resize helpers, and the minimal
+display-buffer/pop-to-buffer/quit-window popup workflow.  It
+intentionally excludes minibuffer windows, dedicated-window semantics,
+full display-buffer action alists, multi-frame/all-frames behavior,
+decorations, and pixel-accurate redisplay geometry.
+The =core/keymap= stable surface covers the eager keymap substrate:
+sparse/full keymap construction, binding mutation and lookup, parent
+traversal, global/local/overriding map state, minor/emulation map
+precedence, opt-in overlay/text-property injection provider slots,
+kbd-style string helpers, full-keymap fast paths, TUI overriding-terminal
+helpers, lookup/introspection helpers, and the minimal
+read-key-sequence adapter.  It intentionally excludes complete GNU Emacs
+event decoding, mouse normalization, menu semantics, command remapping,
+default overlay/text-property provider ownership, and terminal input
+ownership.
+The =core/minibuffer= stable surface covers the eager minibuffer substrate:
+deterministic queued input, core and typed readers, confirmation helpers,
+completion table helpers, minibuffer state/control, frontend-neutral GUI
+backend/context handling, start/read/commit forwarders, key/text/session
+plans, candidate source policy, and command/follow-up sequencing.  It
+intentionally excludes full recursive-edit behavior, asynchronous user
+input ownership, redisplay and pixel layout, full completion
+styles/categories/metadata, full history navigation, multi-frame
+minibuffer windows, and frontend transport side effects.
+The =core/command-loop= stable surface covers deterministic command-loop
+lifecycle, queue-fed events, key dispatch planning, command execution,
+prefix args, recursive-edit/quit control, GUI backend/context refresh,
+direct/key request dispatch, post-command writeback, minibuffer/project
+bridging, and GUI command policy registries.  It intentionally excludes
+complete event-loop ownership, terminal/stdin ownership, async timers and
+process filters, full command remapping and interactive spec language,
+obarray discovery parity, GUI transport side effects, mouse/menu-bar
+behavior beyond action mapping, pixel redisplay, keyboard-macro/recent-keys
+parity, and full recursive-edit/top-level throw machinery.
+The =core/help= stable surface covers the eager Help bridge substrate:
+Help buffer quit/rerender commands, function/variable/apropos/key
+summaries, frontend-neutral GUI Help backend/context handling, static Help
+commands, deferred key-help planning, current-context command wrappers, and
+writeback-state interpretation.  It intentionally excludes full upstream
+=help-fns= parity, Info/manual navigation, package archive metadata,
+finder keyword indexing, complete documentation search, widget/local help,
+xref source lookup, tutorial/distribution-file loading, and concrete GUI
+transport writes.
+The =core/info= stable surface covers the eager Info bridge substrate:
+frontend-neutral backend registration, current file/node/status context,
+Info header parsing, bounded node scanning/rendering, Top/Next/Prev/Up
+navigation, command/current-context wrappers, frontend prompt dispatch,
+and writeback-state planning.  It intentionally excludes full GNU Info
+directory aggregation, compressed/manual discovery, tag tables,
+menu/cross-reference navigation, search/index commands, history stacks,
+multiple Info buffers, and concrete GUI transport writes.
+The =textmodes-stub= stable surface covers the lightweight
+=emacs-textmodes-fill-region= and =emacs-textmodes-count-matches=
+polyfills for MELPA-style callers that need app-free textmodes helpers
+without loading the full upstream fill/replace stacks.
+The external consumer contract is versioned by
+=nelisp-emacs-library-contract-version= and documented in
+=docs/design/25-library-consumer-contract.org=.
+=make nemacs-library-contract= writes
+=build/nemacs-library-contract.tsv= and
+=build/nemacs-library-contract.org=, verifying the narrow external
+consumer contract symbols exposed after requiring =nelisp-emacs=.
+=make nemacs-library-package-manifest= writes the same facade package view
+to =build/nemacs-library-package-manifest.tsv= and
+=build/nemacs-library-package-manifest-summary.org= for review and package
+extraction planning.
+=make nemacs-library-package-deps= writes
+=build/nemacs-library-package-deps.tsv= and
+=build/nemacs-library-package-deps-summary.org=.  It also writes
+=build/nemacs-library-package-migration-queue.tsv= and
+=build/nemacs-library-package-migration-queue.org=, which aggregate
+unmanifested reusable dependencies into the next package-boundary review
+queue.  The library gate fails if facade packages depend on
+app/frontend-owned features, hidden reusable features, undeclared lazy
+reusable features, or unclassified external features.
+=make nemacs-library-package-descriptors= writes
+=build/nemacs-library-package-descriptors.tsv= and
+=build/nemacs-library-package-descriptors.org=.  These are draft package
+descriptors for future package archive or repository extraction work,
+including eager source files, facade package dependencies, lazy features,
+lazy source files, host Emacs features, vendor package features, and any
+unknown external requirements.
+=make nemacs-library-package-guide= writes
+=build/nemacs-library-package-guide.tsv= and
+=build/nemacs-library-package-guide.org=.  These are consumer-facing
+package guide artifacts derived from the descriptors, showing each
+package loader feature, future package dependencies, lazy companions, and
+host/vendor assumptions.
+=make nemacs-library-package-api= writes
+=build/nemacs-library-package-api.tsv= and
+=build/nemacs-library-package-api.org=.  These join the package
+descriptors with the public API inventory so extraction reviewers and
+external consumers can inspect candidate prefixed APIs and compatibility
+shim names by package.
+=make nemacs-library-package-catalog= writes
+=build/nemacs-library-package-catalog.tsv= and
+=build/nemacs-library-package-catalog.org=.  These join the consumer
+package guide with the package API inventory so external consumers can
+review package loader features, dependency assumptions, public-prefixed API
+candidates, compatibility shim names, and private-helper counts in one
+package-oriented catalog.
+=make nemacs-library-api-promotion-queue= writes
+=build/nemacs-library-api-promotion-queue.tsv= and
+=build/nemacs-library-api-promotion-queue.org=.  These classify
+package-scoped =public-prefixed= and =compat-global= rows by test/doc
+evidence so package owners can decide which symbols are ready for
+consumer-facing documentation, which need tests, and which still need
+surface review.
+Rows classified as =compat-shim-helper-*= are prefixed helpers inside
+=emacs-*-builtins.el= compatibility shim modules; they are not preferred
+stable library APIs unless the facade stable manifest explicitly promotes
+them.  =compat-shim-helper-internal= rows have been reviewed and kept as
+internal implementation surface.
+Rows classified as =validation-helper-*= are guard helpers kept out of the
+stable consumer contract unless a reviewed external validation use case
+promotes them.  =validation-helper-internal= rows have been reviewed and
+kept as internal implementation surface.
+=make nemacs-library-package-layout= writes
+=build/nemacs-library-package-layout.tsv= and
+=build/nemacs-library-package-layout.org=.  These map descriptor source
+files to a reviewable future =packages/PACKAGE/lisp/= or
+=packages/PACKAGE/lazy/= physical layout without moving files.
+=make nemacs-library-package-verify= writes
+=build/nemacs-library-package-verify.tsv= and
+=build/nemacs-library-package-verify.org=.  It verifies that descriptor
+source files exist, package dependencies resolve, unknown external
+features are empty, guide rows match descriptor consumer-facing fields,
+package API rows remain scoped to descriptor package files, catalog rows
+match guide/API package fields, promotion queue rows cover public/compat
+API candidates, stable API rows classify as =stable-contract=, stable lazy
+API rows resolve after their lazy feature is required, and layout rows
+exactly cover eager/lazy descriptor sources.
+
+=emacs-init= is the app/bootstrap wrapper.  Use it when you need vendor
+load-path setup and the app-facing lazy loaders such as
+=emacs-init-load-tui-core-features= or
+=emacs-init-load-editor-features=.
+
+Use =make nemacs-public-api-inventory= to inspect the current package-group
+API surface.  It writes =build/nemacs-public-api-inventory.tsv= and
+=build/nemacs-public-api-summary.org=, separating prefixed reusable API
+from Emacs-compatible global shim names and adapter/private helpers.
+=make nemacs-library-gate= fails if the inventory contains =UNOWNED=
+rows, so new reusable files need Doc 18 ownership before they enter the
+library surface.  It also runs =make nemacs-ownership-coverage= so every
+=src/= or =gui/= Elisp file must be covered by Doc 18, even when the file
+does not define public symbols yet.
+=make nemacs-library-consumer-smoke= is included in the library gate.  It
+loads =nelisp-emacs= from a fresh =emacs -Q -L src= process and verifies
+that the facade query APIs work without pulling in app/bootstrap, concrete
+TUI/GUI, or lazy editor files.
+=make nemacs-library-package-smoke= is also included in the library gate.
+It requires each package group loader in a separate =emacs -Q -L src=
+process, proving that future package extraction does not depend on the
+top-level facade or application bootstrap.
+
 * Boundary with nelisp-gui
 
 =nelisp-emacs= owns Emacs behavior.  =nelisp-gui= owns only the GUI
@@ -596,6 +1068,21 @@ plausible; interactive editing in =nelisp-emacs= is not.
 #+begin_src sh
 make nelisp          # optional: populate vendor/nelisp/ from upstream
 make compile         # byte-compile src/
+make nemacs-library-gate # reusable facade + boundary rows=0 + dirty review
+make nemacs-library-contract # external consumer contract symbols
+make nemacs-library-consumer-smoke # external-consumer facade smoke
+make nemacs-library-package-smoke # per-package group loader smoke
+make nemacs-library-package-manifest # facade package manifest artifacts
+make nemacs-library-package-deps # facade package dependency and migration queue artifacts
+make nemacs-library-package-descriptors # draft package descriptor artifacts
+make nemacs-library-package-guide # consumer package guide artifacts
+make nemacs-library-package-api # package-scoped API inventory artifacts
+make nemacs-library-package-catalog # consumer package API catalog artifacts
+make nemacs-library-api-promotion-queue # package API promotion queue artifacts
+make nemacs-library-package-layout # draft packages/ physical layout artifacts
+make nemacs-library-package-verify # descriptor/guide/API/catalog/promotion/layout consistency verification
+make nemacs-public-api-inventory # package-group public API inventory
+make nemacs-ownership-coverage # Doc 18 coverage for src/gui Elisp files
 make test            # run the host-Emacs ERT suite (1560 tests)
 make test-redisplay-core-smoke # isolated lightweight redisplay core smoke
 make doctor          # check host/NeLisp driver readiness

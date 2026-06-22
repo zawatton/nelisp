@@ -1,0 +1,144 @@
+#+TITLE: NeLisp Emacs 置き換え — 3層アーキテクチャと repo 境界 (master)
+#+DATE: 2026-06-17
+#+STATUS: authoritative / entry-point
+#+NOTE: 既存の 01 (L2↔L3 boundary) / 02 (workspace-layout) / 04 (completion-boundary)
+#+NOTE: を統合し、薄かった L1 (nelisp runtime) 境界を加えたマスター文書。
+#+NOTE: 詳細は各 sub-doc を参照。矛盾時は本文書を優先し、sub-doc を追従更新する。
+
+* Purpose
+
+「Emacs を置き換える」開発を、3 つの sibling repo の *責務境界を明確に保ったまま*
+進めるための単一の権威文書。各 repo はどの層を所有するか、層間の契約は何か、
+「完了」の条件は何か、現在の critical path は何かを 1 枚に固定する。
+
+Final rule (全層共通):
+- *nelisp が言語 runtime を所有する。*
+- *nelisp-emacs が Emacs の意味論と状態を所有する。*
+- *nelisp-gui が presentation (描画) と input transport を所有する。*
+
+* 1. 3 層と repo
+
+#+begin_src text
+dev/
+  nelisp/        Layer 1  言語 runtime / reader / AOT compiler   → target/nelisp (binary)
+  nelisp-emacs/  Layer 2  Emacs の意味論・command 基盤           → bin/nemacs (editor logic)
+  nelisp-gui/    Layer 3  native GUI 描画・入力 adapter           → bin/nemacs (launcher), X11
+#+end_src
+
+| Layer | repo | Owns | Does NOT own | 主要 artifact |
+|-------+------+------+--------------+---------------|
+| L1 | =nelisp= | self-host VM: reader, evaluator, GC, allocator, JIT, special forms, builtin dispatch, object writers (ELF/Mach-O/PE), native emitter, AOT compiler (=nelisp-aot-compiler.el=), standalone OS surface (syscall/fork/exec/wait/pipe/mmap), process の pid/fd/status | Emacs command 意味論, X11 GUI | =target/nelisp=, =lisp/nelisp-cc-*.el=, =scripts/nelisp-standalone-build.el= |
+| L2 | =nelisp-emacs= | Emacs 意味論: buffer/point/mark/region/kill-ring/undo/modified/visited-file, command loop (keymap lookup, =command-execute=, =call-interactively=, minibuffer completion/history), window/tab 意味論, major-mode/hooks/local-map, face *決定* (どの face / どの色), call-process/make-process *facade*, project/VC 状態機械, TUI backend, redisplay engine | X11 描画と GUI event loop, syscall fork/exec の実体 (= L1) | =src/emacs-*.el=, =src/nemacs-gui-file-bridge-runtime.el=, =bin/nemacs= (driver) |
+| L3 | =nelisp-gui= | X11 wire protocol (生バイト, Xlib 非依存), window/pixmap/GC/font metrics/color, glyph/cursor/modeline/minibuffer/tab-line *描画*, X11 event decode, raw key sequence 構築, =/tmp/nemacs-*= transport, runtime image/session 起動, launcher (=bin/nemacs=, =bin/emacs=) | Emacs command 意味論 (= L2), 言語 runtime (= L1) | =nemacs-editor.el= (aot→native ELF), =nemacs-mx.sh=, =scripts/verify-nemacs-gui.sh= |
+
+* 2. 依存とデータフロー
+
+#+begin_src text
+L1 nelisp (target/nelisp)          ← 言語 runtime。L2 の elisp を実行する
+   ▲ executes
+L2 nelisp-emacs (emacs-*.el)       ← Emacs 意味論。L1 上で動く。bridge runtime を提供
+   ▲ raw keys + snapshot  ▼ returned state
+L3 nelisp-gui (native GUI)         ← 描画と入力。L2 を GUI hosting する
+#+end_src
+
+- L1→L2: nelisp reader が nelisp-emacs の elisp を load/eval する。L1 は runtime primitive
+  (確保/GC/syscall/process の pid・fd・status) を所有、L2 は Emacs metadata (process name/
+  buffer/filter/sentinel 等) を所有。
+- L2→L3: L2 が bridge runtime (=nemacs-gui-file-bridge-session-run=) を提供し、L3 が raw key
+  を送って返ってきた state を *そのまま* 描画する (下記 contract)。
+
+* 3. 層間契約
+
+** L1 ↔ L2 (runtime / 意味論)
+- L2 は L1 の primitive 不在時に facade/fallback を持ってよいが、*最終的な所有権は移らない*。
+  例: native =nelisp-process-start-process= があれば使い、無ければ L2 の call-process 同期
+  fallback object で代替 (互換 step、最終 substrate ではない)。
+- 言語 rule (reader 構文 / special form / GC) は L1 内蔵。Emacs/OS API は L2 の別 package。
+- L1 の low-level syscall/fork/exec/wait/pipe probe は L1 (or 隔離 spike) で実装し、L2 が
+  facade で表面化する。
+
+** L2 ↔ L3 (bridge contract, =/tmp/nemacs-*=)
+- GUI (L3) が送る: raw key sequence (=/tmp/nemacs-keys=), buffer snapshot, point/mark,
+  kill-ring mirror, buffer name + visited filename, window layout/selected/window-start/
+  hscroll/split-delta + tab-state, read-only/display transport state。
+- nelisp-emacs (L2) が返す: 更新 buffer snapshot, point/mark, kill-ring, buffer/window/tab
+  state, modeline/cursor, minibuffer active/prompt/state/candidates/history/require-match,
+  status/error。
+- L3 は返却 state を *as-is* 描画する。tab は L2 が =/tmp/nemacs-tab-state= を produce し、
+  L3 は選択 tab 名を *その transport から* 描くだけ。
+- preferred path = =/tmp/nemacs-keys= + persistent =nemacs-gui-file-bridge-session-run=。
+  =/tmp/nemacs-cmd= / =/tmp/nemacs-arg= / 直 minibuffer transport は migration fallback。
+- Host Emacs fallback は未 port command の一時 coverage。所有権は変えない (最終挙動は L2)。
+
+* 4. Hard rules (非交渉)
+
+- 「Emacs は何をすべきか?」に答える変更は =nelisp-emacs= (L2) に置く。
+- 「返却 state を X11 でどう見せるか?」に答える変更は =nelisp-gui= (L3) に置く。
+- GUI smoke が buffer/modeline/window/tab/process state の誤りで落ちたら → L2 を直す。
+- GUI smoke が state は正しく pixel/input が誤りで落ちたら → L3 を直す。
+- L3 に command 意味論を実装しない。新 key binding 用の GUI 側 command 分岐を足さない
+  (raw key transport を送り、L2 に keymap lookup/dispatch させる)。
+- L3 で返却 command 結果を「修復」しない。point/window-start/modeline/候補/buffer が
+  誤りなら L2 の bridge/runtime command path を直す。
+- vendor の二義性に注意: =nelisp-emacs/vendor/nelisp= は L1 binary build 用の依存 checkout
+  (optional, untracked)。=nelisp-emacs/vendor/emacs-lisp= は実行対象の upstream Emacs Lisp
+  (= 互換ターゲット)。どちらも active repo ではない。active な L1/L2/L3 は dev/ 直下の
+  sibling checkout。
+
+* 5. 「完了」の条件 (surface 別、04 を要約)
+
+各 surface は「key が GUI に届いた」では完了でない。*L2 が runtime/session path で command
+意味論を実行でき、L3 が返却 state を修復なしで描ける* 時に完了。完了 gate (全 pass で完了):
+command/keymap coverage (L2) → direct runtime semantics (L2, host fallback 無し) →
+session bridge semantics (L2+L3 transport) → visual/render smoke (L3) → fallback retirement (両者)。
+
+| Surface | Definition of Done (要旨) | 現状 (2026-06) |
+|---------+---------------------------+----------------|
+| shell/process | M-! / M-\vert / M-& / call-process(-region) / make-process が host fallback 無しで動く | PARTIAL: call-process 同期 fallback 動作、native async は未。最小手順 1/9 通過 |
+| major-mode/package | major-mode/hooks/local-map/font-lock data/package facade が runtime semantics として動く | PARTIAL: mode state は SHIPPED、local-map dispatch の test coverage 狭い |
+| VC/project | project root/find/switch + VC status/log/diff + next-error が process 基盤上で動く | NOT-STARTED 寄り: project-current 基本のみ、VC は process 待ち |
+| frame/tab | frame/tab/window 意味論が L2、L3 が 1+ frame/tab を描ける | PARTIAL: single-frame layout transport は SHIPPED、multi-frame 描画は未 |
+
+完了の順序 (04 の practical next steps): shell/process (call-process+shell-command 同期) →
+call-process-region → single-frame window resizing transport → project-current+find-file →
+major-mode local-map proof → make-process+async → compile/grep+next-error →
+tab transport+tab-line → VC read-only → package facade tier。
+
+* 6. 現在の critical path と blocker
+
+#+begin_src text
+🔴 L1 blocker (最優先): vendor-load / full-bundle segfault
+     真因 = 7e6b0dcc (Doc147 list/materialized-view 化)。bind 境界で materialized 32B view を
+     owned slot に clone しないまま defun name/&rest body を fset まで持ち回し、mirror 到達時に
+     NULL-data Str に壊れる。fix 候補 = nelisp-cc-evalport-env-leaves-bind.el の nl_bf_bind_rest
+     で nl_sexp_clone_into。詳細: nelisp/docs/worklog/2026-06-17-0035-codex-2nd-upstream-pinpoint.org
+     影響: これが nelisp-emacs daily-driver image bake と save end-to-end を塞ぐ。
+   ↓ 解けると image bake が通る
+🟠 L2: Phase 5 (self-host binary / full bootstrap)、async process bridge、VC/project、frame/tab 意味論
+   ↓
+🟢 L3: multi-frame 描画、mouse events、scrollbar
+#+end_src
+
+- L2 の module 単位 ERT は reader 上で動く (full bundle 不要) ので、L1 blocker と独立に進められる。
+  full bundle を要する daily-driver image / save end-to-end のみが L1 blocker に gate される。
+
+* 7. 検証規律 (02 より)
+
+cross-repo smoke は default transport 共有中は *逐次* で:
+#+begin_src sh
+dev/nelisp-gui/scripts/sync-nelisp-snap.sh
+make -C dev/nelisp-emacs test-nemacs-gui-bridge NELISP_BIN=/tmp/nelisp-snap/nelisp
+dev/nelisp-gui/scripts/verify-nemacs-gui.sh
+#+end_src
+=test-nemacs-gui-bridge= と =verify-nemacs-gui.sh= を default transport で並列実行しない。
+
+* 8. Sub-doc index
+
+- nelisp-gui/docs/design/01-nelisp-emacs-boundary.org — L2↔L3 ownership + bridge contract 詳細
+- nelisp-gui/docs/design/02-workspace-layout.org — sibling checkout 運用 / NELISP_ROOT 等 override
+- nelisp-gui/docs/design/04-completion-boundary-plan.org — 4 surface の Done 定義 + 最小手順 (詳細)
+- nelisp-gui/docs/design/05-transport-state-contract.org — =/tmp/nemacs-*= の所有・寿命・契約
+- nelisp-gui/docs/design/08-command-coverage-plan.org — keymap/command coverage 計画
+- nelisp-emacs/README.org — L2 Phase 状況
+- nelisp/README.org / README-stage-d*.org — L1 runtime / standalone 状況
+- (L1 blocker 診断) nelisp/docs/worklog/2026-06-16-2130-* , 2026-06-17-0035-*

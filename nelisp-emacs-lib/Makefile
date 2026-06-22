@@ -29,6 +29,8 @@ NEMACS_VENDOR_CORE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-vendor-core-runtime.nlri
 NEMACS_RUNTIME_PRELOAD ?= scripts/nemacs-runtime-image-preload.el
 NEMACS_RUNTIME_PROCESS_PRELOAD ?= scripts/nemacs-runtime-process-preload.el
 NEMACS_RUNTIME_FRAME_TAB_PRELOAD ?= scripts/nemacs-runtime-frame-tab-preload.el
+NEMACS_RUNTIME_IMAGE_INPUT_INVENTORY ?= $(BUILD_DIR)/nemacs-runtime-image-input-inventory.tsv
+NEMACS_RUNTIME_IMAGE_INPUT_SUMMARY ?= $(BUILD_DIR)/nemacs-runtime-image-input-inventory.org
 NEMACS_GUI_KEYMAP_COVERAGE_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage.tsv
 NEMACS_GUI_KEYMAP_COVERAGE_SUMMARY ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-summary.org
 NEMACS_GUI_KEYMAP_COVERAGE_MISSING_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-missing.tsv
@@ -41,6 +43,99 @@ NEMACS_GUI_BRIDGE_RUNTIME_INVENTORY ?= $(BUILD_DIR)/gui-bridge-runtime-inventory
 NEMACS_STUB_FALLBACK_SKIP_INVENTORY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-inventory.tsv
 NEMACS_STUB_FALLBACK_SKIP_SUMMARY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-summary.org
 NEMACS_DIRTY_REVIEW_UNITS ?= $(BUILD_DIR)/nemacs-dirty-review-units.tsv
+NEMACS_LIBRARY_BOUNDARY_REPORT ?= $(BUILD_DIR)/nemacs-library-boundary-report.tsv
+NEMACS_LIBRARY_BOUNDARY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-boundary-summary.org
+NEMACS_LIBRARY_PACKAGE_DEPS ?= $(BUILD_DIR)/nemacs-library-package-deps.tsv
+NEMACS_LIBRARY_PACKAGE_DEPS_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-deps-summary.org
+NEMACS_LIBRARY_PACKAGE_MIGRATION_QUEUE ?= $(BUILD_DIR)/nemacs-library-package-migration-queue.tsv
+NEMACS_LIBRARY_PACKAGE_MIGRATION_QUEUE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-migration-queue.org
+NEMACS_LIBRARY_PACKAGE_DESCRIPTORS ?= $(BUILD_DIR)/nemacs-library-package-descriptors.tsv
+NEMACS_LIBRARY_PACKAGE_DESCRIPTORS_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-descriptors.org
+NEMACS_LIBRARY_PACKAGE_GUIDE ?= $(BUILD_DIR)/nemacs-library-package-guide.tsv
+NEMACS_LIBRARY_PACKAGE_GUIDE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-guide.org
+NEMACS_LIBRARY_PACKAGE_API ?= $(BUILD_DIR)/nemacs-library-package-api.tsv
+NEMACS_LIBRARY_PACKAGE_API_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-api.org
+NEMACS_LIBRARY_PACKAGE_CATALOG ?= $(BUILD_DIR)/nemacs-library-package-catalog.tsv
+NEMACS_LIBRARY_PACKAGE_CATALOG_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-catalog.org
+NEMACS_LIBRARY_COMPAT_API_POLICY ?= $(BUILD_DIR)/nemacs-library-compat-api-policy.tsv
+NEMACS_LIBRARY_COMPAT_API_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-compat-api-policy.org
+NEMACS_LIBRARY_API_PROMOTION_QUEUE ?= $(BUILD_DIR)/nemacs-library-api-promotion-queue.tsv
+NEMACS_LIBRARY_API_PROMOTION_QUEUE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-api-promotion-queue.org
+NEMACS_LIBRARY_PACKAGE_LAYOUT ?= $(BUILD_DIR)/nemacs-library-package-layout.tsv
+NEMACS_LIBRARY_PACKAGE_LAYOUT_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-layout.org
+NEMACS_LIBRARY_PACKAGE_SCAFFOLD ?= $(BUILD_DIR)/nemacs-library-package-scaffold.tsv
+NEMACS_LIBRARY_PACKAGE_SCAFFOLD_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-scaffold.org
+NEMACS_LIBRARY_APP_SCAFFOLD ?= $(BUILD_DIR)/nemacs-library-app-scaffold.tsv
+NEMACS_LIBRARY_APP_SCAFFOLD_SUMMARY ?= $(BUILD_DIR)/nemacs-library-app-scaffold.org
+NEMACS_LIBRARY_APP_BOUNDARY ?= $(BUILD_DIR)/nemacs-library-app-boundary.tsv
+NEMACS_LIBRARY_APP_BOUNDARY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-app-boundary.org
+NEMACS_LIBRARY_PACKAGE_APP_REQUIRE_GUARD ?= $(BUILD_DIR)/nemacs-library-package-app-require-guard.tsv
+NEMACS_LIBRARY_PACKAGE_APP_REQUIRE_GUARD_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-app-require-guard.org
+NEMACS_LIBRARY_PACKAGE_METADATA ?= $(BUILD_DIR)/nemacs-library-package-metadata.tsv
+NEMACS_LIBRARY_PACKAGE_METADATA_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-metadata.org
+NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE ?= $(BUILD_DIR)/nemacs-library-package-install-smoke.tsv
+NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-install-smoke.org
+NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-install-smoke/install
+NEMACS_LIBRARY_PACKAGE_ARCHIVE ?= $(BUILD_DIR)/nemacs-library-package-archive.tsv
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-archive.org
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-archives
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_STAGING_ROOT ?= $(BUILD_DIR)/nemacs-library-package-archive-staging
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE ?= $(BUILD_DIR)/nemacs-library-package-archive-smoke.tsv
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-archive-smoke.org
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-archive-smoke/install
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM ?= $(BUILD_DIR)/nemacs-library-package-archive-checksum.tsv
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-archive-checksum.org
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_ROOT ?= $(BUILD_DIR)/nemacs-library-package-archive-checksum
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX ?= $(BUILD_DIR)/nemacs-library-package-archive-index.tsv
+NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-archive-index.org
+NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE ?= $(BUILD_DIR)/nemacs-library-package-index-smoke.tsv
+NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-index-smoke.org
+NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-index-smoke/install
+NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY ?= $(BUILD_DIR)/nemacs-library-package-publication-policy.tsv
+NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-publication-policy.org
+NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY ?= $(BUILD_DIR)/nemacs-library-package-signature-policy.tsv
+NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-signature-policy.org
+NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN ?= $(BUILD_DIR)/nemacs-library-package-signature-release-sign.tsv
+NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-signature-release-sign.org
+NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE ?= $(BUILD_DIR)/nemacs-library-package-signature-release.tsv
+NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-signature-release.org
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-manifest.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-manifest.org
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-release-bundle
+NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT ?= 0
+NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT)),t,nil)
+NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT ?= 0
+NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT)),t,nil)
+NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT ?=
+NEMACS_LIBRARY_RELEASE_SIGNATURE_SUFFIX ?= .sig
+NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR ?= 0
+NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR)),t,nil)
+NEMACS_LIBRARY_RELEASE_GPG_PROGRAM ?= gpg
+NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY ?= $(BUILD_DIR)/nemacs-library-package-dependency-publication-policy.tsv
+NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-dependency-publication-policy.org
+NEMACS_LIBRARY_PACKAGE_LAZY_METADATA ?= $(BUILD_DIR)/nemacs-library-package-lazy-metadata.tsv
+NEMACS_LIBRARY_PACKAGE_LAZY_METADATA_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-lazy-metadata.org
+NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK ?= $(BUILD_DIR)/nemacs-library-package-vendor-lock.tsv
+NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-vendor-lock.org
+NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK ?= $(BUILD_DIR)/nemacs-library-package-vendor-release-lock.tsv
+NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-vendor-release-lock.org
+NEMACS_LIBRARY_VENDOR_RELEASE_STRICT ?= 0
+NEMACS_LIBRARY_VENDOR_RELEASE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_VENDOR_RELEASE_STRICT)),t,nil)
+NEMACS_LIBRARY_PACKAGE_VERIFY ?= $(BUILD_DIR)/nemacs-library-package-verify.tsv
+NEMACS_LIBRARY_PACKAGE_VERIFY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-verify.org
+NEMACS_PRODUCTION_RUNTIME_PATH_SUMMARY ?= $(BUILD_DIR)/nemacs-production-runtime-path.org
+NEMACS_LIBRARY_PACKAGE_LOAD_PATH ?= $(shell sh scripts/nemacs-library-package-load-path.sh 2>/dev/null)
+NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH ?= -L packages/nelisp-emacs-app-gui/lisp
+NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH ?= $(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) $(NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH)
+NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE ?= --eval '(require (quote ert))'
+NEMACS_LIBRARY_PACKAGE_MANIFEST ?= $(BUILD_DIR)/nemacs-library-package-manifest.tsv
+NEMACS_LIBRARY_PACKAGE_MANIFEST_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-manifest-summary.org
+NEMACS_LIBRARY_CONTRACT ?= $(BUILD_DIR)/nemacs-library-contract.tsv
+NEMACS_LIBRARY_CONTRACT_SUMMARY ?= $(BUILD_DIR)/nemacs-library-contract.org
+NEMACS_PUBLIC_API_INVENTORY ?= $(BUILD_DIR)/nemacs-public-api-inventory.tsv
+NEMACS_PUBLIC_API_SUMMARY ?= $(BUILD_DIR)/nemacs-public-api-summary.org
+NEMACS_OWNERSHIP_COVERAGE ?= $(BUILD_DIR)/nemacs-ownership-coverage.tsv
+NEMACS_OWNERSHIP_COVERAGE_SUMMARY ?= $(BUILD_DIR)/nemacs-ownership-coverage-summary.org
 VENDOR_CLASS_A_LIMIT ?= 18
 VENDOR_CLASS_A_STRICT ?= 0
 VENDOR_CLASS_A_STRICT_ELISP := $(if $(filter 1 t true yes,$(VENDOR_CLASS_A_STRICT)),t,nil)
@@ -491,6 +586,63 @@ VENDOR_FAST_DETAIL_FORM_ELISP = $(subst ",\",$(VENDOR_FAST_DETAIL_FORM))
 NELISP_LOAD_PATH = -L $(NELISP_ROOT)/src \
 	$(foreach d,$(wildcard $(NELISP_ROOT)/packages/*/src),-L $(d))
 SRC_FILES = $(wildcard src/*.el)
+# `generator.el' is vendored verbatim from GNU Emacs.  It loads correctly but
+# host byte-compilation trips over upstream macro shapes, so `make compile'
+# validates it through a load proof instead of compiling it.
+SRC_BYTE_COMPILE_EXCLUDE = src/generator.el
+SRC_BYTE_COMPILE_FILES = $(filter-out $(SRC_BYTE_COMPILE_EXCLUDE),$(SRC_FILES))
+NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURES = \
+	emacs-foundation \
+	emacs-text-core \
+	emacs-buffer-core \
+	emacs-editing \
+	emacs-io \
+	emacs-special-buffers \
+	emacs-core \
+	emacs-textmodes-stub
+NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
+	nelisp-coding-jis-tables \
+	emacs-bookmark-ui \
+	emacs-buffer-ui \
+	emacs-dump \
+	image-loader \
+	nemacs-loaddefs \
+	emacs-dired-min \
+	files-standalone-buffer \
+	emacs-isearch \
+	emacs-replace \
+	emacs-shell-command \
+	emacs-project \
+	emacs-elisp-eval \
+	emacs-elisp-mode \
+	emacs-font-lock \
+	emacs-ielm \
+	lisp-mode \
+	emacs-redisplay-core \
+	emacs-syntax-table \
+	emacs-tui-backend \
+	emacs-tui-event \
+	emacs-tui-terminfo
+NEMACS_LIBRARY_PACKAGE_FRONTEND_SMOKE_TESTS = \
+	test/nemacs-gtk-view-menu-test.el \
+	test/nemacs-gtk-frontend-menu-test.el
+NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_SMOKE_SELECTOR ?= (or \
+	nemacs-gui-file-bridge-runtime-test/source-shape \
+	nemacs-gui-file-bridge-runtime-test/package-scaffold-source-resolution \
+	nemacs-gui-file-bridge-runtime-test/app-scaffold-source-resolution \
+	nemacs-gui-file-bridge-runtime-test/scaffold-source-resolution-has-no-src-fallback \
+	nemacs-gui-file-bridge-runtime-test/generated-image-includes-family-runtimes \
+	nemacs-gui-file-bridge-runtime-test/source-shape-tier-1-ui-smoke-contract \
+	nemacs-gui-file-bridge-runtime-test/source-shape-fileio-writeback-delegation \
+	nemacs-gui-file-bridge-runtime-test/source-shape-bookmark-writeback-helper \
+	nemacs-gui-file-bridge-runtime-test/source-shape-face-spans-contract \
+	nemacs-gui-file-bridge-runtime-test/host-face-span-decision-path)
+NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_STANDALONE_SMOKE_SELECTOR ?= (or \
+	nemacs-gui-file-bridge-runtime-test/standalone-transport-dir-override \
+	nemacs-gui-file-bridge-runtime-test/standalone-fileio-writeback-spec \
+	nemacs-gui-file-bridge-runtime-test/standalone-bridge-find-file-writeback-helper \
+	nemacs-gui-file-bridge-runtime-test/standalone-bridge-buffer-switch-writeback-helper \
+	nemacs-gui-file-bridge-runtime-test/standalone-bridge-bookmark-writeback-helper)
 TEST_FILES = $(wildcard test/*.el)
 # Heavy integration ERTs spawn subprocesses and need NEMACS_NELISP_ROOT + a
 # built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
@@ -528,13 +680,56 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el
 
-.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
-	@echo "  make compile         byte-compile src/*.el"
+	@echo "  make compile         byte-compile src/*.el except vendored load-proof files"
 	@echo "  make test            run ERT under host emacs"
 	@echo "  make test-fast       run fast host ERT gate for core daily-driver runtime"
+	@echo "  make nemacs-library-gate  run reusable-library facade/boundary/dirty/compile checks"
+	@echo "  make nemacs-library-contract  verify external consumer contract symbols"
+	@echo "  make nemacs-library-consumer-smoke  prove facade loads from src without app/frontends"
+	@echo "  make nemacs-library-package-smoke  prove package group loaders require independently"
+	@echo "  make nemacs-library-package-manifest  write facade package manifest artifacts"
+	@echo "  make nemacs-library-package-deps  write facade package dependency and migration queue artifacts"
+	@echo "  make nemacs-library-package-descriptors  write draft package descriptor artifacts"
+	@echo "  make nemacs-library-package-guide  write consumer package guide artifacts"
+	@echo "  make nemacs-library-package-api  write package-scoped API inventory artifacts"
+	@echo "  make nemacs-library-package-catalog  write consumer package API catalog artifacts"
+	@echo "  make nemacs-library-compat-api-policy  verify stable API compat/prefixed policy"
+	@echo "  make nemacs-library-api-promotion-queue  write package API promotion queue artifacts"
+	@echo "  make nemacs-library-package-layout  write draft packages/ layout plan artifacts"
+	@echo "  make nemacs-library-package-scaffold  generate experimental packages/ scaffold"
+	@echo "  make nemacs-library-app-scaffold  generate experimental app/frontend scaffold"
+	@echo "  make nemacs-library-app-boundary  verify app bootstrap files stay out of packages/ scaffold"
+	@echo "  make nemacs-library-package-app-require-guard  verify packages do not require app/frontend features"
+	@echo "  make nemacs-library-package-metadata  generate draft package archive metadata"
+	@echo "  make nemacs-library-package-install-smoke  prove package-style install/load for each package"
+	@echo "  make nemacs-library-package-archive  build draft package tar archives"
+	@echo "  make nemacs-library-package-archive-smoke  prove install/load from generated package archives"
+	@echo "  make nemacs-library-package-archive-checksum  prove generated package archives rebuild reproducibly"
+	@echo "  make nemacs-library-package-archive-index  generate local package archive index"
+	@echo "  make nemacs-library-package-index-smoke  prove install/load through package archive index"
+	@echo "  make nemacs-library-package-publication-policy  verify package publication policy artifacts"
+	@echo "  make nemacs-library-package-signature-policy  verify release signature policy artifact targets"
+	@echo "  make nemacs-library-package-signature-release-sign  create release detached signatures"
+	@echo "  make nemacs-library-package-signature-release-verify  verify release detached signatures strictly"
+	@echo "  make nemacs-library-package-signature-release  create and verify release detached signatures"
+	@echo "  make nemacs-library-package-release-bundle-manifest  retain draft release bundle files and manifest"
+	@echo "  make nemacs-library-package-release-bundle  create strict signed release bundle manifest"
+	@echo "  make nemacs-library-package-dependency-publication-policy  verify lazy/host/vendor dependency publication policy"
+	@echo "  make nemacs-library-package-lazy-metadata  generate lazy companion dependency closure metadata"
+	@echo "  make nemacs-library-package-vendor-lock  record vendored dependency HEAD/content locks"
+	@echo "  make nemacs-library-package-vendor-release-verify  verify vendored dependency locks for release"
+	@echo "  make nemacs-library-package-load-path  print packages/ scaffold -L args"
+	@echo "  make nemacs-library-package-path-smoke  prove package loaders from packages/ scaffold"
+	@echo "  make nemacs-library-package-consumer-smoke  prove nelisp-emacs facade from packages/ scaffold"
+	@echo "  make nemacs-library-package-lazy-smoke  prove lazy package features from packages/ scaffold"
+	@echo "  make nemacs-library-package-frontend-smoke  prove selected frontend smoke with package-backed libraries"
+	@echo "  make nemacs-library-package-gui-bridge-smoke  prove selected GUI bridge host smoke with package-backed libraries"
+	@echo "  make nemacs-library-package-gui-bridge-standalone-smoke  prove selected GUI bridge standalone smoke with package paths"
+	@echo "  make nemacs-library-package-verify  verify descriptor/guide/API/catalog/promotion/layout extraction artifacts"
 	@echo "  make gate-nemacs-complete  run completion gate for daily runtime readiness"
 	@echo "  make gate5           prove vendor source replay == .nelc artifact load"
 	@echo "  make vendor-nelc-cache-set prove vendor cache set cold/warm/invalidation"
@@ -551,7 +746,51 @@ help:
 	@echo "  make gui-bridge-runtime-inventory  write GUI bridge runtime symbol inventory"
 	@echo "  make nemacs-stub-fallback-skip-inventory  write stub/fallback/skip inventory"
 	@echo "  make nemacs-dirty-review-units  classify dirty worktree paths into review units"
-	@echo "  make verify-production-runtime-path  fail if production bootstrap misses GUI runtime adapters"
+	@echo "  make nemacs-library-boundary-report  write advisory library boundary report"
+	@echo "  make nemacs-library-contract  verify external consumer contract symbols"
+	@echo "  make nemacs-library-package-manifest  write facade package manifest artifacts"
+	@echo "  make nemacs-library-package-deps  write facade package dependency and migration queue artifacts"
+	@echo "  make nemacs-library-package-descriptors  write draft package descriptor artifacts"
+	@echo "  make nemacs-library-package-guide  write consumer package guide artifacts"
+	@echo "  make nemacs-library-package-api  write package-scoped API inventory artifacts"
+	@echo "  make nemacs-library-package-catalog  write consumer package API catalog artifacts"
+	@echo "  make nemacs-library-compat-api-policy  verify stable API compat/prefixed policy"
+	@echo "  make nemacs-library-api-promotion-queue  write package API promotion queue artifacts"
+	@echo "  make nemacs-library-package-layout  write draft packages/ layout plan artifacts"
+	@echo "  make nemacs-library-package-scaffold  generate experimental packages/ scaffold"
+	@echo "  make nemacs-library-app-scaffold  generate experimental app/frontend scaffold"
+	@echo "  make nemacs-library-app-boundary  verify app bootstrap files stay out of packages/ scaffold"
+	@echo "  make nemacs-library-package-app-require-guard  verify packages do not require app/frontend features"
+	@echo "  make nemacs-library-package-metadata  generate draft package archive metadata"
+	@echo "  make nemacs-library-package-install-smoke  prove package-style install/load for each package"
+	@echo "  make nemacs-library-package-archive  build draft package tar archives"
+	@echo "  make nemacs-library-package-archive-smoke  prove install/load from generated package archives"
+	@echo "  make nemacs-library-package-archive-checksum  prove generated package archives rebuild reproducibly"
+	@echo "  make nemacs-library-package-archive-index  generate local package archive index"
+	@echo "  make nemacs-library-package-index-smoke  prove install/load through package archive index"
+	@echo "  make nemacs-library-package-publication-policy  verify package publication policy artifacts"
+	@echo "  make nemacs-library-package-signature-policy  verify release signature policy artifact targets"
+	@echo "  make nemacs-library-package-signature-release-sign  create release detached signatures"
+	@echo "  make nemacs-library-package-signature-release-verify  verify release detached signatures strictly"
+	@echo "  make nemacs-library-package-signature-release  create and verify release detached signatures"
+	@echo "  make nemacs-library-package-release-bundle-manifest  retain draft release bundle files and manifest"
+	@echo "  make nemacs-library-package-release-bundle  create strict signed release bundle manifest"
+	@echo "  make nemacs-library-package-dependency-publication-policy  verify lazy/host/vendor dependency publication policy"
+	@echo "  make nemacs-library-package-lazy-metadata  generate lazy companion dependency closure metadata"
+	@echo "  make nemacs-library-package-vendor-lock  record vendored dependency HEAD/content locks"
+	@echo "  make nemacs-library-package-vendor-release-verify  verify vendored dependency locks for release"
+	@echo "  make nemacs-library-package-load-path  print packages/ scaffold -L args"
+	@echo "  make nemacs-library-package-path-smoke  prove package loaders from packages/ scaffold"
+	@echo "  make nemacs-library-package-consumer-smoke  prove nelisp-emacs facade from packages/ scaffold"
+	@echo "  make nemacs-library-package-lazy-smoke  prove lazy package features from packages/ scaffold"
+	@echo "  make nemacs-library-package-frontend-smoke  prove selected frontend smoke with package-backed libraries"
+	@echo "  make nemacs-library-package-gui-bridge-smoke  prove selected GUI bridge host smoke with package-backed libraries"
+	@echo "  make nemacs-library-package-gui-bridge-standalone-smoke  prove selected GUI bridge standalone smoke with package paths"
+	@echo "  make nemacs-library-package-verify  verify descriptor/guide/API/catalog/promotion/layout extraction artifacts"
+	@echo "  make nemacs-runtime-image-input-inventory  write runtime-image input inventory"
+	@echo "  make nemacs-public-api-inventory  write package-group public API inventory"
+	@echo "  make nemacs-ownership-coverage  verify Doc 18 covers src/gui Elisp files"
+	@echo "  make verify-production-runtime-path  prove production runtime modules are bootstrapped and scaffold-mapped"
 	@echo "  make doctor          run host/NeLisp driver readiness checks"
 	@echo "  make build-nelisp-bootstrap  generate build/nemacs-bootstrap.el and .repl"
 	@echo "  make bake-image      legacy .nli state image via emacs-dump"
@@ -607,7 +846,454 @@ help:
 
 compile:
 	$(EMACS) -L src $(NELISP_LOAD_PATH) \
-		-f batch-byte-compile $(SRC_FILES)
+		-f batch-byte-compile $(SRC_BYTE_COMPILE_FILES)
+	$(EMACS) -Q -L src -l src/generator.el \
+		--eval '(unless (featurep (quote generator)) (kill-emacs 1))'
+
+nemacs-library-gate: compile nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-checksum nemacs-library-package-archive-smoke nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-runtime-image-input-inventory nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke verify-production-runtime-path
+	$(EMACS) -Q -L src -l test/nelisp-emacs-test.el \
+		-f ert-run-tests-batch-and-exit
+	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
+	@awk -F '\t' 'NR > 1 && $$1 == "UNOWNED" { count++ } END { if (count != 0) { printf "nemacs-library-gate: public API UNOWNED rows=%d\n", count; exit 1 } }' "$(NEMACS_PUBLIC_API_INVENTORY)"
+	@awk -F '\t' 'NR > 1 && $$8 == "app-or-frontend" { count++ } END { if (count != 0) { printf "nemacs-library-gate: package app/frontend dependency rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_PACKAGE_DEPS)"
+	@awk -F '\t' 'NR > 1 && $$8 == "unmanifested-reusable" { count++ } END { if (count != 0) { printf "nemacs-library-gate: unmanifested reusable dependency rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_PACKAGE_DEPS)"
+	@awk -F '\t' 'NR > 1 && $$8 == "lazy-unmanifested-reusable" { count++ } END { if (count != 0) { printf "nemacs-library-gate: lazy unmanifested reusable dependency rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_PACKAGE_DEPS)"
+	@awk -F '\t' 'NR > 1 && $$8 == "external-or-host" { count++ } END { if (count != 0) { printf "nemacs-library-gate: unknown external dependency rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_PACKAGE_DEPS)"
+	@awk 'NR > 1 { count++ } END { if (count != 0) { printf "nemacs-library-gate: boundary rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_BOUNDARY_REPORT)"
+	@echo "nemacs-library-gate: ok"
+
+nemacs-library-consumer-smoke:
+	$(EMACS) -Q -L src -l test/nelisp-emacs-consumer-smoke-test.el \
+		-f ert-run-tests-batch-and-exit
+
+nemacs-library-contract:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-contract-output "$(abspath $(NEMACS_LIBRARY_CONTRACT))")' \
+		--eval '(setq nemacs-library-contract-summary-output "$(abspath $(NEMACS_LIBRARY_CONTRACT_SUMMARY))")' \
+		-l scripts/nemacs-library-contract.el \
+		-f nemacs-library-contract-batch
+
+nemacs-library-package-smoke:
+	@set -e; \
+	for feature in $(NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURES); do \
+		echo "nemacs-library-package-smoke: $$feature"; \
+		NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURE="$$feature" \
+			$(EMACS) -Q -L src -L scripts \
+			-l scripts/nemacs-library-package-smoke.el \
+			-f nemacs-library-package-smoke-batch; \
+	done
+
+nemacs-library-package-path-smoke: nemacs-library-package-scaffold
+	@set -e; \
+	for feature in $(NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURES); do \
+		echo "nemacs-library-package-path-smoke: $$feature"; \
+		NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURE="$$feature" \
+			$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) -L scripts \
+			-l scripts/nemacs-library-package-smoke.el \
+			-f nemacs-library-package-smoke-batch; \
+	done
+
+nemacs-library-package-consumer-smoke: nemacs-library-package-scaffold
+	$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
+		$(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) \
+		-l test/nelisp-emacs-consumer-smoke-test.el \
+		-f ert-run-tests-batch-and-exit
+
+nemacs-library-package-lazy-smoke: nemacs-library-package-scaffold
+	@set -e; \
+	for feature in $(NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES); do \
+		echo "nemacs-library-package-lazy-smoke: $$feature"; \
+		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) \
+			--eval "(require '$$feature)" \
+			--eval "(unless (featurep '$$feature) (kill-emacs 1))"; \
+	done
+
+nemacs-library-package-load-path: nemacs-library-package-scaffold
+	@sh scripts/nemacs-library-package-load-path.sh
+
+nemacs-library-package-frontend-smoke: nemacs-library-package-scaffold nemacs-library-app-scaffold
+	@set -e; \
+	for test_file in $(NEMACS_LIBRARY_PACKAGE_FRONTEND_SMOKE_TESTS); do \
+		echo "nemacs-library-package-frontend-smoke: $$test_file"; \
+		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
+			$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) \
+			-l "$$test_file" \
+			-f ert-run-tests-batch-and-exit; \
+	done
+
+nemacs-library-package-gui-bridge-smoke: nemacs-library-package-scaffold nemacs-library-app-scaffold
+	NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT="$(abspath packages)" \
+		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/nelisp-emacs-app-gui)" \
+		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
+		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L test -L scripts \
+		-l test/nemacs-gui-file-bridge-runtime-test.el \
+		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_SMOKE_SELECTOR)))'
+
+nemacs-library-package-gui-bridge-standalone-smoke: nemacs-library-package-scaffold nemacs-library-app-scaffold
+	test -x "$(NELISP_BIN)"
+	NEMACS_RUN_GUI_BRIDGE=1 \
+		NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT="$(abspath packages)" \
+		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/nelisp-emacs-app-gui)" \
+		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
+		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L test -L scripts \
+		-l test/nemacs-gui-file-bridge-runtime-test.el \
+		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_STANDALONE_SMOKE_SELECTOR)))'
+
+nemacs-library-package-manifest:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-manifest-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MANIFEST))")' \
+		--eval '(setq nemacs-library-package-manifest-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MANIFEST_SUMMARY))")' \
+		-l scripts/nemacs-library-package-manifest.el \
+		-f nemacs-library-package-manifest-batch
+
+nemacs-library-package-deps:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-deps-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPS))")' \
+		--eval '(setq nemacs-library-package-deps-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPS_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-deps-migration-queue-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MIGRATION_QUEUE))")' \
+		--eval '(setq nemacs-library-package-deps-migration-queue-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MIGRATION_QUEUE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-deps.el \
+		-f nemacs-library-package-deps-batch
+
+nemacs-library-package-descriptors:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-descriptors-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DESCRIPTORS))")' \
+		--eval '(setq nemacs-library-package-descriptors-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DESCRIPTORS_SUMMARY))")' \
+		-l scripts/nemacs-library-package-descriptors.el \
+		-f nemacs-library-package-descriptors-batch
+
+nemacs-library-package-guide:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-guide-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_GUIDE))")' \
+		--eval '(setq nemacs-library-package-guide-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_GUIDE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-guide.el \
+		-f nemacs-library-package-guide-batch
+
+nemacs-library-package-api:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-api-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_API))")' \
+		--eval '(setq nemacs-library-package-api-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_API_SUMMARY))")' \
+		-l scripts/nemacs-library-package-api.el \
+		-f nemacs-library-package-api-batch
+
+nemacs-library-package-catalog:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-catalog-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_CATALOG))")' \
+		--eval '(setq nemacs-library-package-catalog-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_CATALOG_SUMMARY))")' \
+		-l scripts/nemacs-library-package-catalog.el \
+		-f nemacs-library-package-catalog-batch
+
+nemacs-library-compat-api-policy:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-compat-api-policy-output "$(abspath $(NEMACS_LIBRARY_COMPAT_API_POLICY))")' \
+		--eval '(setq nemacs-library-compat-api-policy-summary-output "$(abspath $(NEMACS_LIBRARY_COMPAT_API_POLICY_SUMMARY))")' \
+		-l scripts/nemacs-library-compat-api-policy.el \
+		-f nemacs-library-compat-api-policy-batch
+
+nemacs-library-api-promotion-queue:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-api-promotion-queue-output "$(abspath $(NEMACS_LIBRARY_API_PROMOTION_QUEUE))")' \
+		--eval '(setq nemacs-library-api-promotion-queue-summary-output "$(abspath $(NEMACS_LIBRARY_API_PROMOTION_QUEUE_SUMMARY))")' \
+		-l scripts/nemacs-library-api-promotion-queue.el \
+		-f nemacs-library-api-promotion-queue-batch
+
+nemacs-library-package-layout:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-layout-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAYOUT))")' \
+		--eval '(setq nemacs-library-package-layout-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAYOUT_SUMMARY))")' \
+		-l scripts/nemacs-library-package-layout.el \
+		-f nemacs-library-package-layout-batch
+
+nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-scaffold-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-scaffold-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD_SUMMARY))")' \
+		-l scripts/nemacs-library-package-scaffold.el \
+		-f nemacs-library-package-scaffold-batch
+
+nemacs-library-app-scaffold:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-app-scaffold-output "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-app-scaffold-summary-output "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD_SUMMARY))")' \
+		-l scripts/nemacs-library-app-scaffold.el \
+		-f nemacs-library-app-scaffold-batch
+
+nemacs-library-app-boundary: nemacs-library-package-scaffold nemacs-library-app-scaffold
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-app-boundary-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-app-boundary-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-app-boundary-output "$(abspath $(NEMACS_LIBRARY_APP_BOUNDARY))")' \
+		--eval '(setq nemacs-library-app-boundary-summary-output "$(abspath $(NEMACS_LIBRARY_APP_BOUNDARY_SUMMARY))")' \
+		-l scripts/nemacs-library-app-boundary.el \
+		-f nemacs-library-app-boundary-batch
+
+nemacs-library-package-app-require-guard: nemacs-library-package-scaffold nemacs-library-app-scaffold
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-app-require-guard-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-app-require-guard-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-app-require-guard-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_APP_REQUIRE_GUARD))")' \
+		--eval '(setq nemacs-library-package-app-require-guard-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_APP_REQUIRE_GUARD_SUMMARY))")' \
+		-l scripts/nemacs-library-package-app-require-guard.el \
+		-f nemacs-library-package-app-require-guard-batch
+
+nemacs-library-package-metadata: nemacs-library-package-scaffold
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-metadata-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-metadata-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA_SUMMARY))")' \
+		-l scripts/nemacs-library-package-metadata.el \
+		-f nemacs-library-package-metadata-batch
+
+nemacs-library-package-install-smoke: nemacs-library-package-metadata
+	mkdir -p "$(dir $(NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE))"
+	@printf 'package_id\tstatus\tloader_feature\tdependency_closure\tinstall_dirs\tmetadata_file\tmember_features\tsource_leaks\n' > "$(NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE)"
+	@set -e; \
+	for package in $$(awk -F '\t' 'NR > 1 { print $$1 }' "$(NEMACS_LIBRARY_PACKAGE_METADATA)"); do \
+		echo "nemacs-library-package-install-smoke: $$package"; \
+		output="$(abspath $(BUILD_DIR))/nemacs-library-package-install-smoke/$$package.tsv"; \
+		NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE_PACKAGE="$$package" \
+			$(EMACS) -Q -L scripts \
+			--eval '(setq nemacs-library-package-install-smoke-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+			--eval '(setq nemacs-library-package-install-smoke-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+			--eval '(setq nemacs-library-package-install-smoke-install-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE_ROOT))")' \
+			--eval "(setq nemacs-library-package-install-smoke-output \"$$output\")" \
+			-l scripts/nemacs-library-package-install-smoke.el \
+			-f nemacs-library-package-install-smoke-batch; \
+		awk 'NR > 1 { print }' "$$output" >> "$(NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE)"; \
+	done
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-install-smoke-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE))")' \
+		--eval '(setq nemacs-library-package-install-smoke-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_INSTALL_SMOKE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-install-smoke.el \
+		-f nemacs-library-package-install-smoke-summary-batch
+
+nemacs-library-package-archive: nemacs-library-package-metadata
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-archive-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-archive-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-archive-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT))")' \
+		--eval '(setq nemacs-library-package-archive-staging-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_STAGING_ROOT))")' \
+		--eval '(setq nemacs-library-package-archive-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE))")' \
+		--eval '(setq nemacs-library-package-archive-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-archive.el \
+		-f nemacs-library-package-archive-batch
+
+nemacs-library-package-archive-checksum: nemacs-library-package-archive
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-archive-checksum-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-archive-checksum-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-archive-checksum-archives "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE))")' \
+		--eval '(setq nemacs-library-package-archive-checksum-rebuild-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_ROOT))")' \
+		--eval '(setq nemacs-library-package-archive-checksum-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
+		--eval '(setq nemacs-library-package-archive-checksum-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_SUMMARY))")' \
+		-l scripts/nemacs-library-package-archive-checksum.el \
+		-f nemacs-library-package-archive-checksum-batch
+
+nemacs-library-package-archive-smoke: nemacs-library-package-archive
+	mkdir -p "$(dir $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE))"
+	@printf 'package_id\tstatus\tloader_feature\tdependency_closure\tarchives\tpackage_user_dir\tmember_features\tsource_leaks\n' > "$(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE)"
+	@set -e; \
+	for package in $$(awk -F '\t' 'NR > 1 { print $$1 }' "$(NEMACS_LIBRARY_PACKAGE_METADATA)"); do \
+		echo "nemacs-library-package-archive-smoke: $$package"; \
+		output="$(abspath $(BUILD_DIR))/nemacs-library-package-archive-smoke/$$package.tsv"; \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE_PACKAGE="$$package" \
+			$(EMACS) -Q -L scripts \
+			--eval '(setq nemacs-library-package-archive-smoke-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+			--eval '(setq nemacs-library-package-archive-smoke-archives "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE))")' \
+			--eval '(setq nemacs-library-package-archive-smoke-install-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE_ROOT))")' \
+			--eval "(setq nemacs-library-package-archive-smoke-output \"$$output\")" \
+			-l scripts/nemacs-library-package-archive-smoke.el \
+			-f nemacs-library-package-archive-smoke-batch; \
+		awk 'NR > 1 { print }' "$$output" >> "$(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE)"; \
+	done
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-archive-smoke-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE))")' \
+		--eval '(setq nemacs-library-package-archive-smoke-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_SMOKE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-archive-smoke.el \
+		-f nemacs-library-package-archive-smoke-summary-batch
+
+nemacs-library-package-archive-index: nemacs-library-package-archive
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-archive-index-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-archive-index-archives "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE))")' \
+		--eval '(setq nemacs-library-package-archive-index-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT))")' \
+		--eval '(setq nemacs-library-package-archive-index-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX))")' \
+		--eval '(setq nemacs-library-package-archive-index-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX_SUMMARY))")' \
+		-l scripts/nemacs-library-package-archive-index.el \
+		-f nemacs-library-package-archive-index-batch
+
+nemacs-library-package-index-smoke: nemacs-library-package-archive-index
+	mkdir -p "$(dir $(NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE))"
+	@printf 'package_id\tstatus\tloader_feature\tdeclared_dependencies\tinstalled_dependencies\tarchive_location\tpackage_user_dir\tmember_features\tsource_leaks\n' > "$(NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE)"
+	@set -e; \
+	for package in $$(awk -F '\t' 'NR > 1 { print $$1 }' "$(NEMACS_LIBRARY_PACKAGE_METADATA)"); do \
+		echo "nemacs-library-package-index-smoke: $$package"; \
+		output="$(abspath $(BUILD_DIR))/nemacs-library-package-index-smoke/$$package.tsv"; \
+		NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_PACKAGE="$$package" \
+			$(EMACS) -Q -L scripts \
+			--eval '(setq nemacs-library-package-index-smoke-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+			--eval '(setq nemacs-library-package-index-smoke-archive-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT))")' \
+			--eval '(setq nemacs-library-package-index-smoke-install-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_ROOT))")' \
+			--eval "(setq nemacs-library-package-index-smoke-output \"$$output\")" \
+			-l scripts/nemacs-library-package-index-smoke.el \
+			-f nemacs-library-package-index-smoke-batch; \
+		awk 'NR > 1 { print }' "$$output" >> "$(NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE)"; \
+	done
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-index-smoke-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE))")' \
+		--eval '(setq nemacs-library-package-index-smoke-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-index-smoke.el \
+		-f nemacs-library-package-index-smoke-summary-batch
+
+nemacs-library-package-publication-policy: nemacs-library-package-archive-checksum nemacs-library-package-archive-index
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-publication-policy-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-publication-policy-checksum "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
+		--eval '(setq nemacs-library-package-publication-policy-index "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX))")' \
+		--eval '(setq nemacs-library-package-publication-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY))")' \
+		--eval '(setq nemacs-library-package-publication-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY_SUMMARY))")' \
+		-l scripts/nemacs-library-package-publication-policy.el \
+		-f nemacs-library-package-publication-policy-batch
+
+nemacs-library-package-signature-policy: nemacs-library-package-publication-policy
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-signature-policy-checksum "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
+		--eval '(setq nemacs-library-package-signature-policy-index "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX))")' \
+		--eval '(setq nemacs-library-package-signature-policy-archive-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT))")' \
+		--eval '(setq nemacs-library-package-signature-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY))")' \
+		--eval '(setq nemacs-library-package-signature-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-signature-policy-release-strict $(NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT_ELISP))' \
+		--eval '(setq nemacs-library-package-signature-policy-key-fingerprint "$(NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT)")' \
+		--eval '(setq nemacs-library-package-signature-policy-signature-suffix "$(NEMACS_LIBRARY_RELEASE_SIGNATURE_SUFFIX)")' \
+		--eval '(setq nemacs-library-package-signature-policy-gpg-program "$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)")' \
+		-l scripts/nemacs-library-package-signature-policy.el \
+		-f nemacs-library-package-signature-policy-batch
+
+nemacs-library-package-signature-release-sign: nemacs-library-package-signature-policy
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-signature-release-sign-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY))")' \
+		--eval '(setq nemacs-library-package-signature-release-sign-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN))")' \
+		--eval '(setq nemacs-library-package-signature-release-sign-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-signature-release-sign-key-fingerprint "$(NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT)")' \
+		--eval '(setq nemacs-library-package-signature-release-sign-gpg-program "$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)")' \
+		--eval '(setq nemacs-library-package-signature-release-sign-armor $(NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR_ELISP))' \
+		-l scripts/nemacs-library-package-signature-release-sign.el \
+		-f nemacs-library-package-signature-release-sign-batch
+
+nemacs-library-package-signature-release-verify:
+	$(MAKE) nemacs-library-package-signature-policy \
+		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1 \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE)" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY)"
+
+nemacs-library-package-signature-release: nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify
+
+nemacs-library-package-release-bundle-manifest: nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-signature-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-signature-policy-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-archive-checksum "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-archive-checksum-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-archive-index "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-archive-index-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-publication-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-publication-policy-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-dependency-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-dependency-policy-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-sign "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-sign-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-verify "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-verify-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-bundle-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_ROOT))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-strict-release $(NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT_ELISP))' \
+		-l scripts/nemacs-library-package-release-bundle-manifest.el \
+		-f nemacs-library-package-release-bundle-manifest-batch
+
+nemacs-library-package-release-bundle: nemacs-library-package-signature-release
+	$(MAKE) nemacs-library-package-release-bundle-manifest \
+		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1 \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE)" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY)"
+
+nemacs-library-package-dependency-publication-policy: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-dependency-publication-policy-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-dependency-publication-policy-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-dependency-publication-policy-deps "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPS))")' \
+		--eval '(setq nemacs-library-package-dependency-publication-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY))")' \
+		--eval '(setq nemacs-library-package-dependency-publication-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY_SUMMARY))")' \
+		-l scripts/nemacs-library-package-dependency-publication-policy.el \
+		-f nemacs-library-package-dependency-publication-policy-batch
+
+nemacs-library-package-lazy-metadata: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-lazy-metadata-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+		--eval '(setq nemacs-library-package-lazy-metadata-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-library-package-lazy-metadata-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAZY_METADATA))")' \
+		--eval '(setq nemacs-library-package-lazy-metadata-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAZY_METADATA_SUMMARY))")' \
+		-l scripts/nemacs-library-package-lazy-metadata.el \
+		-f nemacs-library-package-lazy-metadata-batch
+
+nemacs-library-package-vendor-lock: nemacs-library-package-dependency-publication-policy
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-vendor-lock-dependency-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY))")' \
+		--eval '(setq nemacs-library-package-vendor-lock-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK))")' \
+		--eval '(setq nemacs-library-package-vendor-lock-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-vendor-lock-release-strict $(NEMACS_LIBRARY_VENDOR_RELEASE_STRICT_ELISP))' \
+		-l scripts/nemacs-library-package-vendor-lock.el \
+		-f nemacs-library-package-vendor-lock-batch
+
+nemacs-library-package-vendor-release-verify:
+	$(MAKE) nemacs-library-package-vendor-lock \
+		NEMACS_LIBRARY_VENDOR_RELEASE_STRICT=1 \
+		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK)" \
+		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK_SUMMARY)"
+
+nemacs-library-package-verify:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L src -L scripts \
+		--eval '(setq nemacs-library-package-verify-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VERIFY))")' \
+		--eval '(setq nemacs-library-package-verify-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VERIFY_SUMMARY))")' \
+		-l scripts/nemacs-library-package-verify.el \
+		-f nemacs-library-package-verify-batch
+
+nemacs-runtime-image-input-inventory: build-nelisp-bootstrap nemacs-library-package-scaffold nemacs-library-app-scaffold
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-runtime-image-input-inventory-output "$(abspath $(NEMACS_RUNTIME_IMAGE_INPUT_INVENTORY))")' \
+		--eval '(setq nemacs-runtime-image-input-inventory-summary-output "$(abspath $(NEMACS_RUNTIME_IMAGE_INPUT_SUMMARY))")' \
+		--eval '(setq nemacs-runtime-image-input-inventory-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq nemacs-runtime-image-input-inventory-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
+		-l scripts/nemacs-runtime-image-input-inventory.el \
+		-f nemacs-runtime-image-input-inventory-batch
 
 test:
 	$(EMACS) --eval '(setq load-prefer-newer t)' \
@@ -693,10 +1379,13 @@ test-nemacs-server-client:
 		-l test/emacs-server-client-test.el \
 		-f ert-run-tests-batch-and-exit
 
-verify-production-runtime-path: build-nelisp-bootstrap
+verify-production-runtime-path: build-nelisp-bootstrap nemacs-library-package-scaffold nemacs-library-app-scaffold
 	$(EMACS) -Q -L scripts \
 		--eval '(setq verify-production-runtime-path-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq verify-production-runtime-path-main "$(abspath src/nemacs-main.el)")' \
+		--eval '(setq verify-production-runtime-path-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
+		--eval '(setq verify-production-runtime-path-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
+		--eval '(setq verify-production-runtime-path-summary-output "$(abspath $(NEMACS_PRODUCTION_RUNTIME_PATH_SUMMARY))")' \
 		-l scripts/verify-production-runtime-path.el \
 		-f verify-production-runtime-path-batch
 
@@ -738,6 +1427,30 @@ nemacs-stub-fallback-skip-inventory:
 
 nemacs-dirty-review-units:
 	scripts/nemacs-dirty-review-units.sh "$(NEMACS_DIRTY_REVIEW_UNITS)"
+
+nemacs-library-boundary-report:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-boundary-report-output "$(abspath $(NEMACS_LIBRARY_BOUNDARY_REPORT))")' \
+		--eval '(setq nemacs-library-boundary-report-summary-output "$(abspath $(NEMACS_LIBRARY_BOUNDARY_SUMMARY))")' \
+		-l scripts/nemacs-library-boundary-report.el \
+		-f nemacs-library-boundary-report-batch
+
+nemacs-public-api-inventory:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-public-api-inventory-output "$(abspath $(NEMACS_PUBLIC_API_INVENTORY))")' \
+		--eval '(setq nemacs-public-api-inventory-summary-output "$(abspath $(NEMACS_PUBLIC_API_SUMMARY))")' \
+		-l scripts/nemacs-public-api-inventory.el \
+		-f nemacs-public-api-inventory-batch
+
+nemacs-ownership-coverage:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-ownership-coverage-output "$(abspath $(NEMACS_OWNERSHIP_COVERAGE))")' \
+		--eval '(setq nemacs-ownership-coverage-summary-output "$(abspath $(NEMACS_OWNERSHIP_COVERAGE_SUMMARY))")' \
+		-l scripts/nemacs-ownership-coverage.el \
+		-f nemacs-ownership-coverage-batch
 
 gate5:
 	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
@@ -815,15 +1528,15 @@ $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES)
 		-l scripts/build-nelisp-bootstrap.el \
 		-f nelisp-bootstrap-build-batch
 
-bake-image:
-	$(EMACS) -L src $(NELISP_LOAD_PATH) \
+bake-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
+	$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) $(NELISP_LOAD_PATH) \
 		--eval '(setq image-baker-output-file "$(abspath $(NEMACS_IMAGE))")' \
 		-l image-baker \
 		-f image-baker-bake-batch
 
 bake-runtime-image: $(NEMACS_RUNTIME_IMAGE)
 
-$(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD)
+$(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) nemacs-library-package-scaffold nemacs-library-app-scaffold
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -834,7 +1547,7 @@ $(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(
 
 bake-interactive-runtime-image: $(NEMACS_INTERACTIVE_RUNTIME_IMAGE)
 
-$(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD)
+$(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) nemacs-library-package-scaffold nemacs-library-app-scaffold
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_INTERACTIVE_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -843,7 +1556,7 @@ $(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME
 		'(progn (load "$(abspath $(NEMACS_RUNTIME_PROCESS_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-interactive "$(abspath .)" "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))"))'
 	mv "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE).tmp" "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE)"
 
-bake-vendor-core-runtime-image:
+bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
 	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_VENDOR_CORE_RUNTIME_IMAGE))"

@@ -24,6 +24,13 @@
   (let ((m (nelisp-rx-string-match pat str)))
     (and m (plist-get m :start))))
 
+(ert-deftest nelisp-regex-test/public-api-smoke ()
+  (let ((pattern (nelisp-rx-compile "\\<foo\\>")))
+    (should (nelisp-rx-string-match pattern "say foo"))
+    (should (= 2 (length (nelisp-rx-string-match-all "foo" "foo foo"))))
+    (should (equal "bar foo" (nelisp-rx-replace "foo" "foo foo" "bar")))
+    (should (equal "bar bar" (nelisp-rx-replace-all "foo" "foo foo" "bar")))))
+
 ;;;; --- \< (word start) -------------------------------------------------------
 
 (ert-deftest nelisp-regex-test/wbs-matches-at-start-of-line ()

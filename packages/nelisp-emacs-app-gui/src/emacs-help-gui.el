@@ -43,6 +43,27 @@
 (defvar emacs-help-gui-status "ok"
   "Last GUI help command status.")
 
+(defconst emacs-help-gui-standard-keymap-source-bindings
+  '(("C-f" . "forward-char")
+    ("C-b" . "backward-char")
+    ("C-n" . "next-line")
+    ("C-p" . "previous-line")
+    ("C-x C-f" . "find-file")
+    ("C-x C-s" . "save-buffer")
+    ("C-x C-c" . "save-buffers-kill-terminal")
+    ("M-x" . "nemacs-main-execute-extended-command"))
+  "Default key binding source used by lightweight Help frontends.")
+
+;;;###autoload
+(defun emacs-help-gui-standard-keymap-source (&optional bindings)
+  "Return tab-separated key binding source for Help views.
+BINDINGS defaults to `emacs-help-gui-standard-keymap-source-bindings'."
+  (mapconcat
+   (lambda (binding)
+     (concat (car binding) "\t" (cdr binding) "\n"))
+   (or bindings emacs-help-gui-standard-keymap-source-bindings)
+   ""))
+
 ;;;###autoload
 (defun emacs-help-gui-register-backend (&rest backend)
   "Register BACKEND plist for GUI help display."
@@ -153,6 +174,29 @@
   (emacs-help-gui-refresh-context-from-backend)
   (let ((entry (funcall core)))
     (emacs-help-gui--show-help-buffer (car entry) (cdr entry))))
+
+(defun emacs-help-gui--read-symbol-name (prompt)
+  "Read a Help symbol name with PROMPT through the registered backend."
+  (let ((reader (emacs-help-gui--backend-function :read-symbol-name)))
+    (if reader
+        (funcall reader prompt)
+      nil)))
+
+(defun emacs-help-gui--prompt-current-context-command (prompt command)
+  "Read a symbol name with PROMPT, then run Help COMMAND for it."
+  (let ((async-reader
+         (emacs-help-gui--backend-function :read-symbol-name-async)))
+    (if async-reader
+        (funcall
+         async-reader prompt
+         (lambda (name)
+           (when (and name (> (length name) 0))
+             (setq emacs-help-gui-arg name)
+             (emacs-help-gui-current-context-command command))))
+      (let ((name (emacs-help-gui--read-symbol-name prompt)))
+        (when (and name (> (length name) 0))
+          (setq emacs-help-gui-arg name)
+          (emacs-help-gui-current-context-command command))))))
 
 (defun emacs-help-gui--normalize-arg (&optional arg)
   "Return ARG or the current GUI help argument, defaulting to unknown."
@@ -615,16 +659,54 @@
    'emacs-help-gui-describe-function-core))
 
 ;;;###autoload
+(defun emacs-help-gui-describe-function-prompt-command ()
+  "Prompt for a function name and run `describe-function'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Describe function: " 'describe-function))
+
+;;;###autoload
 (defun emacs-help-gui-describe-variable-current-context-command ()
   "Refresh GUI help context, then run `describe-variable'."
   (emacs-help-gui--run-core-current-context
    'emacs-help-gui-describe-variable-core))
 
 ;;;###autoload
+(defun emacs-help-gui-describe-variable-prompt-command ()
+  "Prompt for a variable name and run `describe-variable'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Describe variable: " 'describe-variable))
+
+;;;###autoload
 (defun emacs-help-gui-describe-key-current-context-command ()
   "Refresh GUI help context, then run `describe-key'."
   (emacs-help-gui--run-core-current-context
    'emacs-help-gui-describe-key-core))
+
+;;;###autoload
+(defun emacs-help-gui-run-key-help-command (&rest plist)
+  "Run a frontend key-help command through the shared Help core.
+PLIST accepts `:install-function', `:read-key', `:key-description',
+`:timeout', and `:command'.  The frontend owns raw key input and event
+formatting; this helper owns setting Help context and dispatching the
+Help command."
+  (let* ((install-function (plist-get plist :install-function))
+         (read-key (plist-get plist :read-key))
+         (key-description (plist-get plist :key-description))
+         (timeout (or (plist-get plist :timeout) 1000))
+         (command (or (plist-get plist :command) 'describe-key))
+         (event nil)
+         (key nil))
+    (when install-function
+      (funcall install-function))
+    (setq event (and read-key (funcall read-key timeout)))
+    (setq key
+          (if key-description
+              (funcall key-description event)
+            (if (stringp event) event "unknown")))
+    (setq emacs-help-gui-arg key)
+    (emacs-help-gui-current-context-command command)))
 
 ;;;###autoload
 (defun emacs-help-gui-describe-key-briefly-current-context-command ()
@@ -675,10 +757,60 @@
   (emacs-help-gui-apropos-command))
 
 ;;;###autoload
+(defun emacs-help-gui-apropos-command-prompt-command ()
+  "Prompt for an apropos pattern and run `apropos-command'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Apropos command: " 'apropos-command))
+
+;;;###autoload
 (defun emacs-help-gui-apropos-documentation-current-context-command ()
   "Refresh GUI help context, then run `apropos-documentation'."
   (emacs-help-gui-refresh-context-from-backend)
   (emacs-help-gui-apropos-documentation))
+
+;;;###autoload
+(defun emacs-help-gui-apropos-documentation-prompt-command ()
+  "Prompt for an apropos pattern and run `apropos-documentation'."
+  (interactive)
+  (emacs-help-gui--prompt-current-context-command
+   "Apropos documentation: " 'apropos-documentation))
+
+;;;###autoload
+(defun emacs-help-gui-current-context-command
+    (command &optional static-command)
+  "Refresh GUI help context and run Help COMMAND.
+STATIC-COMMAND, when non-nil, is rendered through
+`emacs-help-gui-static-command'."
+  (cond
+   ((eq command 'describe-function)
+    (emacs-help-gui-describe-function-current-context-command))
+   ((eq command 'describe-variable)
+    (emacs-help-gui-describe-variable-current-context-command))
+   ((eq command 'describe-key)
+    (emacs-help-gui-describe-key-current-context-command))
+   ((eq command 'describe-key-briefly)
+    (emacs-help-gui-describe-key-briefly-current-context-command))
+   ((eq command 'describe-bindings)
+    (emacs-help-gui-describe-bindings-current-context-command))
+   ((eq command 'where-is)
+    (emacs-help-gui-where-is-current-context-command))
+   ((eq command 'help-for-help)
+    (emacs-help-gui-help-for-help-current-context-command))
+   ((eq command 'describe-command)
+    (emacs-help-gui-describe-command-current-context-command))
+   ((eq command 'describe-package)
+    (emacs-help-gui-describe-package-current-context-command))
+   ((eq command 'describe-symbol)
+    (emacs-help-gui-refresh-context-from-backend)
+    (emacs-help-gui-describe-symbol))
+   ((eq command 'apropos-command)
+    (emacs-help-gui-apropos-command-current-context-command))
+   ((eq command 'apropos-documentation)
+    (emacs-help-gui-apropos-documentation-current-context-command))
+   (static-command
+    (emacs-help-gui-static-current-context-command static-command))
+   (t nil)))
 
 ;;;###autoload
 (defun emacs-help-gui-writeback-spec (&optional command)

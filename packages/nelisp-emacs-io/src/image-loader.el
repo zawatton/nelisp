@@ -29,14 +29,18 @@
   "Summary plist for the most recently loaded `.nli' file.")
 
 ;;;###autoload
-(cl-defun image-loader-load
-    (path &optional (restore-buffers image-loader-restore-buffers))
+(defun image-loader-load (path &rest restore-buffers-arg)
   "Load the `.nli' lisp-image at PATH.
 When RESTORE-BUFFERS is non-nil, restore persisted buffer contents.
 When RESTORE-BUFFERS is omitted, use `image-loader-restore-buffers'.
 Returns the loaded image plist."
-  (let* ((file (expand-file-name path))
-         (image (emacs-dump-load file restore-buffers)))
+  (let* ((restore-buffers (if restore-buffers-arg
+                              (car restore-buffers-arg)
+                            image-loader-restore-buffers))
+         (file (expand-file-name path))
+         (image (emacs-dump-load
+                 file
+                 restore-buffers)))
     (setq image-loader-last-loaded-file file
           image-loader-last-image-info (emacs-dump-image-info file))
     image))

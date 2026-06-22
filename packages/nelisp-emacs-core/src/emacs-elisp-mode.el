@@ -91,8 +91,8 @@ pattern)."
                (and (boundp 'nelisp-ec--current-buffer)
                     nelisp-ec--current-buffer)
                (condition-case _
-                   (and (fboundp 'emacs-buffer--current)
-                        (emacs-buffer--current))
+                   (and (fboundp 'emacs-buffer-current)
+                        (emacs-buffer-current))
                  (error nil)))))
     (when b
       (emacs-font-lock-add-keywords nil
