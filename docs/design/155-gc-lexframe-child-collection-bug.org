@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: RESOLVED via Path B (sound GC, reclamation RE-ENABLED). Root cause (§8.12): the conservative native-stack scan marks an in-flight record/vector BOX interior pointer's block but mark_slot misreads its type_tag and does NOT recurse the record's slots; the now-marked block makes the PRECISE marker skip recursion (mark_block returns 0), so a lexframe ht's children (bucket-count/buckets) are never marked and get swept -> free-link clobbers the live box -> SIGSEGV. Fix B (b31179ce, pushed): decouple "alive" from "recursed" — conserv pins with mark 4 (not 1), mark_block treats 4 like 0 (upgrade+recurse), sweep keeps+resets 4 like 1; reclaimer gate base+160 re-enabled (0). VALIDATED: full Debian no-Nix RC container gate (474-test) GREEN; audit 10/10 + (garbage-collect) + heavy churn all clean on the 838605da/256MiB repro. (History: §8.8 Fix A d5724bb3 disabled collection as a sound stopgap; Path B supersedes it and restores reclamation.)
+#+STATUS: CLOSED (2026-06-22) — fixed via Path B (sound GC, reclamation RE-ENABLED), merged to main (b31179ce; main HEAD 39646470). Root cause (§8.12): the conservative native-stack scan marks an in-flight record/vector BOX interior pointer's block but mark_slot misreads its type_tag and does NOT recurse the record's slots; the now-marked block makes the PRECISE marker skip recursion (mark_block returns 0), so a lexframe ht's children (bucket-count/buckets) are never marked and get swept -> free-link clobbers the live box -> SIGSEGV. Fix B (b31179ce, pushed): decouple "alive" from "recursed" — conserv pins with mark 4 (not 1), mark_block treats 4 like 0 (upgrade+recurse), sweep keeps+resets 4 like 1; reclaimer gate base+160 re-enabled (0). VALIDATED: full Debian no-Nix RC container gate (474-test) GREEN; audit 10/10 + (garbage-collect) + heavy churn all clean on the 838605da/256MiB repro. (History: §8.8 Fix A d5724bb3 disabled collection as a sound stopgap; Path B supersedes it and restores reclamation.)
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -598,3 +598,23 @@ VALIDATION:
   the local commit (NELISP_REPO_URL=/work/nelisp).
 Pushed to feat.  Path B supersedes Path A: form-boundary reclamation is on
 again, soundly.
+
+* 9. Closeout (2026-06-22)
+
+CLOSED.  Resolution shipped to =main= (fast-forward merge; feat branch
+deleted local+remote):
+- =b31179ce= nelisp: sound form-boundary GC — decouple "alive" from "recursed".
+- =39646470= main HEAD after merge (Doc 155 §8.6-8.12 forensics + Fix A/B).
+Fix B re-enables form-boundary collection soundly via the mark-4 "pinned vs
+recursed" decouple (=nl_gc_conserv_owner= pins with 4; =nl_gc_mark_block=
+upgrades 4->1 and recurses; =nl_gc_sweep_one= keeps+resets 4 like 1).
+Validation: full Debian no-Nix RC container gate (474 tests) GREEN; the
+reliably-SIGSEGV'ing 256 MiB audit now runs 10/10 + (garbage-collect) +
+make-vector/hash churn all clean.
+
+Net journey: §8.1-8.5 mis-localised to arena chunk-growth corruption; §8.6-8.7
+exonerated allocator/read/clone and showed a post-write stray zero; §8.8
+root-caused it to the dynamic init enabling unsound boundary collection
+(Fix A: disable, stopgap); §8.9-8.11 localised the marking-reach gap with HW
+watchpoints; §8.12 pinned the conservative-scan-poisons-precise-recursion
+mechanism and fixed it (Fix B), restoring reclamation.  No further action.
