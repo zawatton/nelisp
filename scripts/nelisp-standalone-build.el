@@ -4671,6 +4671,47 @@ unresolved at link time."
         (ptr-read-u64 sx 24)))
     (defun bf_intern (sx out)
       (nl_alloc_symbol (bf_str_ptr sx) (bf_str_len sx) out))
+    ;; Doc 22 A11: `make-symbol' must yield a symbol with DISTINCT identity.
+    ;; This reader has no obarray -- variable lookup and `eq' compare symbols by
+    ;; NAME (name == identity, see bf_eq2 tag-4 arm), so routing make-symbol
+    ;; through bf_intern gave two (make-symbol "g") the same name "g" and they
+    ;; collided (hygiene break: parallel-assignment temps fused).  Mirror the
+    ;; out-of-band `nl_jit_make_symbol' kernel: build a unique name
+    ;; NAME__nelisp-uninterned-XXXXXXXXXXXXXXXX where X..X is 16 hex digits of a
+    ;; monotonic counter (the mutation-epoch slot at 268435544, bumped via
+    ;; atomic-fetch-add; its reset is disabled so it is a stable per-process
+    ;; counter).  nl_alloc_symbol copies the bytes, so the scratch buffer is
+    ;; reclaimed with the per-eval arena.  Uses sar/shl (AOT shift dialect).
+    (defun bf_mksym_copy (src buf i n)
+      (if (>= i n) 1
+        (seq (ptr-write-u8 buf i (str-byte-at src i))
+             (bf_mksym_copy src buf (+ i 1) n))))
+    (defun bf_mksym_suffix (buf s)
+      (and (ptr-write-u8 buf s 95)        (ptr-write-u8 buf (+ s 1) 95)
+           (ptr-write-u8 buf (+ s 2) 110) (ptr-write-u8 buf (+ s 3) 101)
+           (ptr-write-u8 buf (+ s 4) 108) (ptr-write-u8 buf (+ s 5) 105)
+           (ptr-write-u8 buf (+ s 6) 115) (ptr-write-u8 buf (+ s 7) 112)
+           (ptr-write-u8 buf (+ s 8) 45)  (ptr-write-u8 buf (+ s 9) 117)
+           (ptr-write-u8 buf (+ s 10) 110)(ptr-write-u8 buf (+ s 11) 105)
+           (ptr-write-u8 buf (+ s 12) 110)(ptr-write-u8 buf (+ s 13) 116)
+           (ptr-write-u8 buf (+ s 14) 101)(ptr-write-u8 buf (+ s 15) 114)
+           (ptr-write-u8 buf (+ s 16) 110)(ptr-write-u8 buf (+ s 17) 101)
+           (ptr-write-u8 buf (+ s 18) 100)(ptr-write-u8 buf (+ s 19) 45)))
+    (defun bf_mksym_hex (n buf start shift)
+      (if (< shift 0) 1
+        (seq (ptr-write-u8 buf (+ start (- 15 shift))
+                           (if (< (logand (sar n (shl shift 2)) 15) 10)
+                               (+ (logand (sar n (shl shift 2)) 15) 48)
+                             (+ (logand (sar n (shl shift 2)) 15) 87)))
+             (bf_mksym_hex n buf start (- shift 1)))))
+    (defun bf_make_symbol (sx out)
+      (let* ((n (bf_str_len sx))
+             (buf (alloc-bytes (+ n 36) 1)))
+        (seq (bf_mksym_copy sx buf 0 n)
+             (bf_mksym_suffix buf n)
+             (bf_mksym_hex (atomic-fetch-add 268435544 1) buf (+ n 20) 15)
+             (nl_alloc_symbol buf (+ n 36) out)
+             0)))
     ;; make-vector LEN INIT -> Vector(tag8) with every slot = INIT (cloned).
     ;; NB: use the `vector-slot-set' GRAMMAR OP (takes the Sexp ptr, derefs the
     ;; box internally), NOT the raw nl_vector_set_slot (which wants the box ptr).
@@ -5295,7 +5336,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                               (seq (nl_alloc_str (ptr-read-u64 s 16) (ptr-read-u64 s 24) out) 0)))
     ;; intern / make-symbol: take a Str (tag 5/6), build a Symbol (tag 4).
     ((:lit "intern")      . (seq (bf_intern (wf_arg_ptr args 0) out) 0))
-    ((:lit "make-symbol") . (seq (bf_intern (wf_arg_ptr args 0) out) 0))
+    ((:lit "make-symbol") . (seq (bf_make_symbol (wf_arg_ptr args 0) out) 0))
     ((:lit "unibyte-string") . (bf_unibyte_string args out))
     ;; --- vector ops ---
     ((:lit "make-vector") . (bf_make_vector args out))
