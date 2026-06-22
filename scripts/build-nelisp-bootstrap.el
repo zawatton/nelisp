@@ -49,7 +49,9 @@ final `.el' suffix with `.repl'.")
   "Local src files that host Emacs may not load but standalone NeLisp needs.")
 
 (defvar nelisp-bootstrap-late-extra-files
-  '("emacs-syntax-table.el"
+  '("lisp.el"
+    "emacs-fileio.el"
+    "emacs-syntax-table.el"
     "emacs-font-lock.el"
     "emacs-font-lock-builtins.el"
     ;; dev daily-driver surfaces: symbol index + jump-to-definition +
