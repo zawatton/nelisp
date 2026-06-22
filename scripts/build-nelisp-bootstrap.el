@@ -42,6 +42,7 @@ final `.el' suffix with `.repl'.")
     "let-alist.el"
     "thunk.el"
     "generator.el"
+    "rx.el"
     "emacs-tui-backend.el"
     "emacs-redisplay-core.el"
     "emacs-tui-event.el")
