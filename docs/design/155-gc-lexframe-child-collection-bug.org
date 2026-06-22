@@ -205,3 +205,37 @@ inside the 256 MiB first chunk → no growth → no corruption.
    conservative scan (=nl_gc_conserv_maybe=).
 4. Interim mitigation option: a larger first chunk reduces growth frequency but
    is not a fix (any unbounded no-reclaim workload eventually grows).
+
+** 8.5 Instruction-level localisation (2026-06-22, second session)
+
+- Faulting op =nl_vector_slot_ptr=, =rdi=0=: the NULL is the BUCKETS VECTOR's
+  DATA pointer (=vec_box+8=).  I.e. a lexframe's =hash-table.slot1= holds a
+  buckets vector whose data buffer pointer is 0.  cons has no separate data
+  buffer (single box) → it survives growth; a vector/record has a separate
+  data buffer allocated via =nl_alloc_bytes= → that is what goes NULL.
+- Synthetic repros that DO cross the boundary but do NOT crash (so "frames +
+  growth" is NOT sufficient): deep =let= recursion (500 × 50 KB), frame-heavy
+  churn (400k =(let ((y (cons i i))) ...)=), vector churn (300k
+  =(make-vector 8 i)= pairs).  All rc=0.  The trigger needs the audit /
+  manifest-load + packaged-registry allocation interleaving specifically — the
+  missing ingredient is still unidentified.
+- Allocation primitives: =nl_alloc_bytes= (freelist reuse → arena bump →
+  =nl_chunk_alloc_new= grow) is the bottom; =nl_chunk_alloc_new= returns 0 on
+  =nl_os_alloc_chunk= mmap failure (bumps counter @268436208).  =nl_alloc_vector=
+  / =nelisp_cons_construct= are grammar-op primitives (not elisp defuns) that
+  bottom out in =nl_alloc_bytes=.  Leading micro-suspect: a vector DATA-BUFFER
+  =nl_alloc_bytes= at/across the growth boundary returns 0 (or a base-relative
+  pointer that is wrong on a growth chunk), and the caller stores it without a
+  NULL check.
+- Core-forensics caveat: the control region literals in the source (e.g.
+  =268436160=, =268436208=) are NOT absolute addresses for gdb — the arena maps
+  at a runtime (ASLR) base (=arena-stats[0]= ≈ =0x7f..=), so those reads are
+  base-relative.  Literal-address gdb reads on the core fail
+  ("Cannot access memory at 0x100002c0"), and =info proc mappings= did not
+  surface the chunks.  To do core forensics, FIRST resolve the runtime arena
+  base, then read control slots as =base + (literal − 0x10000000)=.
+- Next sub-task: (a) build a repro that lands a live vector's DATA BUFFER on a
+  growth chunk (vs the box on the first chunk) — the synthetic repros above
+  keep box+buffer co-located; or (b) instrument =nl_alloc_bytes= to log a 0
+  return / a cross-chunk vector-data allocation during audit (write a marker
+  byte via =nl_os_write_stderr= so it survives the crash).
