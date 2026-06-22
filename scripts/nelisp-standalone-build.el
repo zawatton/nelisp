@@ -3320,6 +3320,14 @@ unresolved at link time."
          (ptr-write-u64 hdr 32 (nl_img_off gbox sstart slen ib ie))
          (ptr-write-u64 hdr 40 (nl_img_off fbox sstart slen ib ie))
          (ptr-write-u64 hdr 48 (nl_img_off ubox sstart slen ib ie))
+         ;; flat-arena cold-load: persist the dumping run's intern-region base so
+         ;; the split loader can relocate the open-addressing intern table's
+         ;; name-buffer pointers (slot+8).  Those slots live INSIDE the interned
+         ;; region, so `nl_fa_field' (chunk-0-only) never records them in the
+         ;; relocation table -- they retain absolute OLD pointers and must be
+         ;; fixed by base-delta on load, else the first intern probe derefs a
+         ;; stale address from the previous process and SIGSEGVs.
+         (ptr-write-u64 hdr 56 ib)
          (setq fd (nl_os_open_write_truncate cpath))
          (if (< fd 0)
              (wf_write_int out -1)
@@ -9351,6 +9359,26 @@ correctly."
                 (ptr-write-u64 (+ ds f) 0 (+ ib (- o slen))))
               (setq i (+ i 1)))))
          0)))
+    ;; Relocate the open-addressing intern table's name-buffer pointers.  The
+    ;; table is the first 16 MiB of the interned region (2^20 slots * 16 B):
+    ;; slot+0 = len+1 (0 = empty), slot+8 = absolute pointer into the name
+    ;; buffer at [base+16MiB, ...).  These pointer fields live INSIDE the
+    ;; interned region, so the chunk-0-only relocation table never touches
+    ;; them; they keep the DUMPING run's base.  Add the base delta
+    ;; (new_ib - old_ib) to every occupied slot so each name pointer lands in
+    ;; THIS process's name buffer.  Without this, the first symbol intern in
+    ;; boot (install-builtins) probes the table, derefs slot+8 = a stale
+    ;; previous-process address, and SIGSEGVs.  OLD_IB comes from header+56.
+    (defun nl_cold_reloc_intern (ib oldib)
+      (let ((idx 0))
+        (seq
+         (while (< idx 1048576)
+           (let ((slot (+ ib (* idx 16))))
+             (nl_seq2
+              (if (= (ptr-read-u64 slot 0) 0) 0
+                (ptr-write-u64 slot 8 (+ (ptr-read-u64 slot 8) (- ib oldib))))
+              (setq idx (+ idx 1)))))
+         0)))
     ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
     ;; globals/etc. (so they land after the image).  Reads {header|table|regions}
     ;; via the OS helpers directly into final/scratch arena locations (no
@@ -9371,6 +9399,9 @@ correctly."
              (let* ((slen (ptr-read-u64 ib 8))
                     (isz (ptr-read-u64 ib 16))
                     (tlen (ptr-read-u64 ib 24))
+                    ;; capture the dumping run's intern base BEFORE the interned
+                    ;; region read below overwrites the header sitting in `ib'.
+                    (oldib (ptr-read-u64 ib 56))
                     (tbl (+ ds slen)))
                (seq
                 (nl_fa_read_all fd tbl (* tlen 8) 0)
@@ -9378,6 +9409,7 @@ correctly."
                 (nl_fa_read_all fd ib isz 0)
                 (nl_os_close_handle fd)
                 (nl_cold_reloc tbl tlen ds slen ib)
+                (nl_cold_reloc_intern ib oldib)
                 (nl_cold_clear_marks ds (+ ds slen))
                 (ptr-write-u64 base 0 (+ 1024 slen))
                 (ptr-write-u64 (+ base 840) 0 (+ ib isz))
@@ -10090,6 +10122,16 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
+        ;; cold path only -- disable the reclaimer (base+160 = 1 => nl_gc_collect
+        ;; is a NO-OP).  The boot config block above re-arms the GC trigger
+        ;; (268435560 = 16 MiB) BELOW the loaded image's bump (~30 MiB), so a
+        ;; collection would fire on the first form boundary and run the mark walk
+        ;; over the loaded graph.  GC over a cold-loaded image is unproven (the
+        ;; mark/sweep + conservative stack scan would have to be sound on the
+        ;; relocated objects), so keep it OFF for the spike.  Confirmed via probe
+        ;; NOT to be the current SIGSEGV (the crash persists with GC off), but
+        ;; left as a cold-path precaution.  Normal boot (_cl < 0) is untouched.
+        (if (< _cl 0) 0 (ptr-write-u64 268435616 0 1))
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
@@ -10121,8 +10163,19 @@ correctly."
                ;; same library available in the REPL is available under `eval'
                ;; (read-from-string, prin1-to-string, the list/string library,
                ;; etc.).  Without this `eval' saw only the bare builtins.
-               ,@(nelisp-standalone--reader-repl-prelude-forms
-                  'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+               ;; cold path: the loaded image already ran this prelude in the
+               ;; dumping process, so its definitions are live in the loaded
+               ;; globals.  RE-evaluating it over the cold image is both
+               ;; redundant and unsafe (re-defining a stdlib function frees/
+               ;; reuses the previous definition's blocks, which sit inside the
+               ;; loaded image -> corruption -> SIGSEGV).  Skipping it is exactly
+               ;; the cold-load win: the expensive library setup is already baked
+               ;; into the image.  Normal boot (_cl < 0) runs the prelude.
+               (if (< _cl 0)
+                   (seq
+                    ,@(nelisp-standalone--reader-repl-prelude-forms
+                       'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+                 0)
                (nl_cli_eval_source arg2 fbuf src)
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                (if (= (ptr-read-u64 268435464 0) 0)
