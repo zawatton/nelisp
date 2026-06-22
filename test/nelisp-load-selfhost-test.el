@@ -43,8 +43,12 @@
 
 (require 'ert)
 (require 'nelisp-load)
-(require 'nelisp-emacs-compat)
-(require 'nelisp-emacs-compat-fileio)
+;; The Emacs-compat editor layer now lives in the `nelisp-emacs' library
+;; (nelisp/src no longer owns nelisp-emacs-compat*.el).  Require it softly
+;; so this loader test still loads on the core runtime alone; the §3
+;; compat roundtrip below `skip-unless' the layer is actually present.
+(require 'nelisp-emacs-compat nil t)
+(require 'nelisp-emacs-compat-fileio nil t)
 
 ;;; §1. Source-level audit ----------------------------------------------
 
@@ -166,6 +170,8 @@ standalone runtime where host `file-readable-p' is unavailable."
   "Write a tmp file via `nelisp-ec-write-region', read it back via
 `nelisp-load-file'.  Proves the read + write halves of the compat
 layer cooperate end-to-end (= the pure-NeLisp self-host I/O cycle)."
+  (skip-unless (and (featurep 'nelisp-emacs-compat)
+                    (featurep 'nelisp-emacs-compat-fileio)))
   (nelisp--reset)
   (let* ((tmp (make-temp-file "nelisp-load-selfhost-roundtrip" nil ".el"))
          (buf (nelisp-ec-generate-new-buffer "rt-write")))
