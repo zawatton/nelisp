@@ -4234,3 +4234,25 @@ return the accumulated output (Doc 22 A9)."
                       (concat nelisp--wos-acc (char-to-string nelisp--wos-ch))))))
          ,@body)
        nelisp--wos-acc)))
+
+;; ---- Doc 22 reader-core gap fix A8 partial: `dlet' ----
+;;
+;; Dynamic binding works on the bare reader (a function sees a `let' binding of
+;; a `defvar'-declared special, and `let' unwinds it correctly), so `dlet' is
+;; just a matter of declaring each variable special before the `let'.  The only
+;; residual limitation is that `symbol-value' of a dlet-bound variable still
+;; returns the GLOBAL value rather than the dynamic binding (bare reader core
+;; limitation); read such variables with a direct reference instead.
+(unless (fboundp 'dlet)
+  (defmacro dlet (binders &rest body)
+    "Like `let' but bind each variable dynamically (Doc 22 A8).
+Each variable is `defvar'-declared special first so the binding is visible
+across function calls.  NB: reading a dlet-bound variable via `symbol-value'
+returns the global value on the bare reader; use a direct reference."
+    (let ((decls nil) (b binders))
+      (while b
+        (let ((e (car b)))
+          (setq decls (cons (list 'defvar (if (consp e) (car e) e)) decls)))
+        (setq b (cdr b)))
+      (append (list 'progn) (nreverse decls)
+              (list (append (list 'let binders) body))))))
