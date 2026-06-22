@@ -9316,6 +9316,94 @@ Each builtin name installs through a fresh, full-length arena buffer so
 correctly."
   `(seq
     ,@(nelisp-standalone--reader-os-source-forms)
+    ;; flat-arena cold-loader gate (default OFF).  The marker path is also the
+    ;; image file: if it opens, cold-load is requested; if not, normal boot.
+    (defun nl_cold_marker_cpath ()
+      (let ((b (alloc-bytes 32 1)))
+        (seq (ptr-write-u64 b 0 7810770278772732975)
+             (ptr-write-u64 b 8 7236281173032334185)
+             (ptr-write-u64 b 16 7074703559336225069)
+             (ptr-write-u64 b 24 28265)
+             b)))
+    ;; Apply the relocation table to the freshly-loaded chunk-0 region (at DS):
+    ;; each field at DS+F holds an image offset O; relocate to DS+O (chunk-0
+    ;; target) or IB+(O-slen) (interned target).
+    ;; Clear GC mark bits in the loaded chunk-0 region: the dumped image keeps
+    ;; whatever mark state it had, but a fresh runtime expects mark=0 (post-sweep)
+    ;; -- stale marks make the first GC mis-handle live objects -> SIGSEGV.
+    (defun nl_cold_clear_marks (ds end)
+      (let ((hdr ds))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (let* ((h (ptr-read-u64 hdr 0)) (bt (- h (logand h 7))))
+             (if (< bt 8) (setq hdr end)
+               (nl_seq2 (ptr-write-u64 hdr 0 bt) (setq hdr (+ hdr bt))))))
+         0)))
+    (defun nl_cold_reloc (tbl tlen ds slen ib)
+      (let ((i 0))
+        (seq
+         (while (< i tlen)
+           (let* ((f (ptr-read-u64 (+ tbl (* i 8)) 0))
+                  (o (ptr-read-u64 (+ ds f) 0)))
+             (nl_seq2
+              (if (< o slen)
+                  (ptr-write-u64 (+ ds f) 0 (+ ds o))
+                (ptr-write-u64 (+ ds f) 0 (+ ib (- o slen))))
+              (setq i (+ i 1)))))
+         0)))
+    ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
+    ;; globals/etc. (so they land after the image).  Reads {header|table|regions}
+    ;; via the OS helpers directly into final/scratch arena locations (no
+    ;; alloc-bytes -- that would bump chunk-0 into the region we overwrite):
+    ;;   header -> intern base (temp; the interned region overwrites it later),
+    ;;   table  -> DS+slen (chunk-0 scratch above the live region),
+    ;;   chunk-0 region -> DS, interned region -> intern base.
+    ;; Then split-relocate, set the bump cursor (base+0 = 1024+slen) and the
+    ;; interned bump (+840 = ib+isz).  Returns 1 if loaded, -1 if no marker.
+    (defun nl_cold_load_arena ()
+      (let ((fd (nl_os_open_read (nl_cold_marker_cpath))))
+        (if (< fd 0) -1
+          (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
+                 (ds (+ base 1024))
+                 (ib (ptr-read-u64 (+ base 832) 0)))
+            (seq
+             (nl_fa_read_all fd ib 64 0)
+             (let* ((slen (ptr-read-u64 ib 8))
+                    (isz (ptr-read-u64 ib 16))
+                    (tlen (ptr-read-u64 ib 24))
+                    (tbl (+ ds slen)))
+               (seq
+                (nl_fa_read_all fd tbl (* tlen 8) 0)
+                (nl_fa_read_all fd ds slen 0)
+                (nl_fa_read_all fd ib isz 0)
+                (nl_os_close_handle fd)
+                (nl_cold_reloc tbl tlen ds slen ib)
+                (nl_cold_clear_marks ds (+ ds slen))
+                (ptr-write-u64 base 0 (+ 1024 slen))
+                (ptr-write-u64 (+ base 840) 0 (+ ib isz))
+                ;; push the GC next-trigger far out so a collection does not fire
+                ;; on the freshly-loaded (already-live) image during early eval.
+                (ptr-write-u64 (+ base 104) 0 (+ (+ 1024 slen) 1073741824))
+                1)))))))
+    ;; cold path globals install: re-read the header for globals_off and point
+    ;; the GLOBALS slot at the loaded globals Record (tag 12, box = DS + goff).
+    ;; Frames/unbound keep the fresh ones from `nl_bootstrap_make_mirror'.
+    (defun nl_cold_overwrite_globals (globals)
+      (let ((fd (nl_os_open_read (nl_cold_marker_cpath))))
+        (if (< fd 0) 0
+          (let ((hdr (alloc-bytes 64 8)))
+            (seq
+             (nl_fa_read_all fd hdr 64 0)
+             (nl_os_close_handle fd)
+             (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
+                    (ds (+ base 1024))
+                    (goff (ptr-read-u64 hdr 32)))
+               (seq
+                (ptr-write-u8 globals 0 12)
+                (ptr-write-u64 globals 8 (+ ds goff))
+                (ptr-write-u64 globals 16 0)
+                (ptr-write-u64 globals 24 0)
+                1)))))))
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -9870,7 +9958,10 @@ correctly."
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             (_sptop (ptr-write-u64 268436456 0 (aot-current-sp))) ; Doc 152 §11.21: capture mmap stack-top (driver-entry rsp, AFTER arena mmap) for the conservative GC stack scan
-
+            ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
+            ;; exists, load it into the arena + bump the cursor past it so every
+            ;; following alloc lands after the image (no clobber).  -1 = no marker.
+            (_cl (nl_cold_load_arena))
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
             (ctx (alloc-bytes 120 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
@@ -9909,6 +10000,9 @@ correctly."
             (linebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1)))
        (seq
         (nl_bootstrap_make_mirror globals frames unbound)
+        ;; cold path: replace the fresh empty globals with the loaded image's
+        ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
+        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals))
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ,@(nelisp-standalone--reader-install-builtins-forms)
