@@ -1050,7 +1050,7 @@ with the base literal)."
       (ptr-write-u64 (+ ,b 120) 0 0)        ; live bytes
       (ptr-write-u64 (+ ,b 128) 0 0)        ; sweep free dead blocks
       (ptr-write-u64 (+ ,b 136) 0 0)        ; mark phase enabled
-      (ptr-write-u64 (+ ,b 160) 0 1)        ; collect DISABLED (Doc155 §8.8: form-boundary mark-sweep frees live growth-chunk lexframe ht children — standalone root/mark gap unfixed; the prior "S0 sound-GC" enable was unsound, see Doc 155)
+      (ptr-write-u64 (+ ,b 160) 0 0)        ; collect ENABLED (Doc155 §8.12: form-boundary mark-sweep is now SOUND — the mark-4 "pinned vs recursed" decouple in nl_gc_mark_block/nl_gc_conserv_owner/nl_gc_sweep_one closes the lexframe-child root/mark gap; reclamation restored)
       (ptr-write-u64 (+ ,b 168) 0 0)        ; free-list reuse
       (ptr-write-u64 (+ ,b 192) 0 0)        ; probe off
       (ptr-write-u64 (+ ,b 200) 0 0)        ; min reuse block_total
@@ -1370,10 +1370,19 @@ arm64 Linux has no legacy x86 numbering)."
     ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     (defun nl_gc_mark_block (obj)
+      ;; Doc155 §8.12 sound-GC: recurse on mark 0 (unmarked) OR mark 4
+      ;; (conserv-PINNED-not-recursed).  A pinned block was kept alive by the
+      ;; conservative scan but never had its children recursed (the scan
+      ;; misreads a record/vector BOX interior pointer's type_tag as a Sexp
+      ;; tag); the precise marker must still recurse it, so treat 4 like 0 here
+      ;; (upgrade 4->1, return 1 = "recurse").  mark 1/2/3/5 -> already
+      ;; recursed/free -> skip (return 0).  This DECOUPLES "alive" (pinned) from
+      ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
       (if (= (nl_gc_in_arena obj) 0) 0
-        (if (= (nl_hdr_mark (- obj 8)) 0)
-            (nl_seq2 (nl_hdr_set_mark (- obj 8) 1) 1)
-          0)))
+        (let ((m (nl_hdr_mark (- obj 8))))
+          (if (if (= m 0) 1 (if (= m 4) 1 0))
+              (nl_seq2 (nl_hdr_set_mark (- obj 8) 1) 1)
+            0))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
     ;; Mark every slot of a `len'-element buffer starting at data_ptr.
@@ -1549,7 +1558,10 @@ arm64 Linux has no legacy x86 numbering)."
           (nl_seq2 (nl_hdr_set_mark hdr 0)                ; boot block: keep live, reset mark
                    (nl_hdr_bt hdr))
       (let ((m (nl_hdr_mark hdr)) (bt (nl_hdr_bt hdr)))
-        (if (= m 1)
+        ;; Doc155 §8.12: m==1 (recursed-live) OR m==4 (conserv-PINNED, a live
+        ;; in-flight root never precisely recursed) both SURVIVE and reset to 0
+        ;; for the next cycle.
+        (if (if (= m 1) 1 (if (= m 4) 1 0))
             (nl_seq2 (nl_hdr_set_mark hdr 0)              ; survive: clear mark
              (nl_seq2 (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) 1)) bt))
           (if (= m 0)
@@ -1643,11 +1655,11 @@ arm64 Linux has no legacy x86 numbering)."
                   (if (= (nl_gc_in_arena (+ hdr (- bt 1))) 0) 0
                     (let ((next (+ hdr bt)))
                       (if (= (nl_gc_in_arena next) 0)
-                          (nl_gc_mark_block w)   ; next past arena data = chunk end
+                          (if (= (nl_hdr_mark hdr) 0) (nl_seq2 (nl_hdr_set_mark hdr 4) 1) 0)   ; Doc155 §8.12: PIN (mark 4) — keep alive; precise marker recurses it
                         (let ((bt2 (nl_hdr_bt next)))
                           (if (< bt2 16) 0
                             (if (< 16777216 bt2) 0
-                              (nl_gc_mark_block w))))))))))))))
+                              (if (= (nl_hdr_mark hdr) 0) (nl_seq2 (nl_hdr_set_mark hdr 4) 1) 0))))))))))))))
     (defun nl_gc_conserv_word (w)
       (if (= (logand w 7) 0)              ; obj ptrs are 8-aligned
           (if (= (nl_gc_in_arena w) 1)    ; within live arena data (no deref of w)
