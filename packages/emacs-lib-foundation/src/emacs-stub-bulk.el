@@ -234,7 +234,7 @@ Forwarder to `forward-char' with negated count."
     macroexp--warn-and-return macroexp-warn-and-return mail make-char-table make-directory make-directory-autoloads make-frame-invisible make-frame-visible
     make-hash-table make-keymap make-list make-local-variable make-obsolete make-obsolete-variable make-overlay make-sparse-keymap
     make-string make-symbol make-text-button make-variable-buffer-local make-vector mapatoms mapbacktrace mapc
-    mapcan mapcar mapconcat maphash map-keymap mark markerp marker-position
+    mapcar mapconcat maphash map-keymap mark markerp marker-position
     mark-marker match-beginning match-data match-data--translate match-end max member memq
     memql message min minibuffer-message minibufferp minibuffer-prompt minibuffer-prompt-end minibuffer-recenter-top-bottom
     minibuffer-scroll-down-command minibuffer-scroll-other-window minibuffer-scroll-other-window-down minibuffer-scroll-up-command minibuffer-window mkdir mod modify-frame-parameters
