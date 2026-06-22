@@ -5114,7 +5114,16 @@ unresolved at link time."
               (if (= ta 4) (symbol-eq a b)
                 (if (= ta 0) 1
                   (if (= ta 1) 1
-                    (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))
+                    ;; Doc 22 A20: Str(5)/MutStr(6) have NO stable pointer
+                    ;; identity -- tag 5 is deep-copied on clone (new buffer)
+                    ;; and offset 8 is the String length/capacity field, so the
+                    ;; stock pointer-identity arm made every equal-length pair
+                    ;; eq.  In this value-semantics reader a string IS its value,
+                    ;; so compare by content (length + bytes), consistent with
+                    ;; the Symbol(4) arm comparing by name.
+                    (if (= ta 5) (m5_streq a b)
+                      (if (= ta 6) (m5_streq a b)
+                        (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))))
           0)))
     (defun bf_eq (args out)
       (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
