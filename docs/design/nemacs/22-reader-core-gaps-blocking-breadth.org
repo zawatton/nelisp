@@ -267,7 +267,15 @@ macroexpand は通る。core の =cl-defun= も raw arglist を lambda に渡す
 - 回避: optional default を使わず =&optional z= + body 先頭 =(unless z (setq z DEFAULT))= を
   手書きする (= desugar を caller 側で行う)。
 
-** A16. =concat= が nil 引数を "nil" 文字列化する (= rx を破壊)
+** A16. =concat= が nil 引数を "nil" 文字列化する (= rx を破壊) — *FIXED 2026-06-22*
+
+*FIXED* in vendor/nelisp (commit 4575471): standalone reader の =m5_concat_walk=
+(=scripts/nelisp-standalone-build.el=) が全引数を =m5_emit_value= に渡し、nil (tag 0) が
+=m5_prin1= → "nil" 出力していた。concat は nil を空 sequence 扱いすべきなので walker で
+nil 引数を skip。=m5_emit_value= は =format= (%s/%S で nil→"nil" は正) と共有のため emitter
+でなく walker 側で修正。検証: =(concat "a" nil "b")= → "ab"、=(format "%s" nil)= → "nil" 維持。
+rx の trailing-"nil" 汚染 (=(rx (+ digit))= / =(rx (? "z"))=) も解消。残課題は A17 と rx-or
+(下記)。
 
 #+begin_src elisp
 (concat "a" nil "b")              ;=> "anilb"  (期待 "ab")
@@ -286,6 +294,23 @@ Emacs は nil = 空 list 扱いで無視。=mapconcat= は正常。
   regexp* を生むため bundle 収録は見送り (stub のまま)。
 - polyfill 不可級: =concat= は core 関数で全所で使われ、elisp override は危険 (perf/再帰)。
   core が nil を空扱いすれば rx を含む多数が直る。round 26 で発見。
+
+** A17. regex engine が POSIX 文字クラス =[[:digit:]]= を match しない
+
+#+begin_src elisp
+(string-match "[[:digit:]]" "a1")  ;=> nil  (期待 1)
+(string-match "[0-9]" "a1")        ;=> 1    (plain range は正常)
+#+end_src
+
+standalone reader の =string-match= / regex engine が POSIX 文字クラス
+(=[[:digit:]]= / =[[:alpha:]]= / =[[:space:]]= 等) を解釈しない。plain range
+(=[0-9]=) は正常。round 1 で =[[:blank:]]= 不対応として既出の現象を確認。
+
+- *impact*: =rx= が =digit= / =alpha= 等を POSIX class に翻訳するため、A16 修正後も
+  =(rx (+ digit))= = ="[[:digit:]]+"= が実際には match しない。rx を実用化するには A17 の
+  regex engine 拡張が必要。round 27 で確認。
+- 別途: =(rx (or "a" "b"))= が *nil を返す* (error でなく silent nil)。rx--translate-or /
+  =regexp-opt= (fbound) 経路の runtime 差。A16/A17 とは別の rx-internal 課題。
 
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
