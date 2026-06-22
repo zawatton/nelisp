@@ -12,7 +12,7 @@
 #+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
 #+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。A15 (=&optional (VAR DEFAULT)=)
 #+PROGRESS:   は crash でなく誤値と判明し cl-defun desugar (commit 50cf2b2e) で FIXED。残:
-#+PROGRESS:   A14(aref struct segfault=bundle 専用、bare で record 生成不可) のみ。
+#+PROGRESS:   A14 も native (record/recordp 配線 + bf_aref tag-12) で FIXED — *Doc 22 全 gap 解消*。
 
 * 0. Purpose
 
@@ -335,14 +335,24 @@ cons / symbol 等は正常。
   壊れる。round 23 で generator 調査中に発見 (generator 自体は type-of 不使用なので
   この gap は generator block の主因ではない)。
 
-** A14. =aref= を struct インスタンスに適用すると SEGFAULT — *bare reader で再現不可 (2026-06-22)*
+** A14. =aref= を struct インスタンスに適用すると SEGFAULT — *FIXED 2026-06-22 (native)*
 
-*NOTE 2026-06-22*: bare reader 単体では本 gap を *再現できない* — =record= が nil を返し
-(=(record 'foo 1 2)=→nil)、=make-record= は VOID、=recordp=→nil で *tag-12 record/struct を生成する
-手段が無い*。元の repro は bundle の =cl-defstruct= 経由 (struct インスタンス) なので、これは
-*bundle 専用の crash*。修正方針は native =aref= emitter (=nelisp-cc-jit-aref.el= 系) に tag guard を
-入れて非 array (tag != 5/6/8) で segfault でなく catchable error を signal すること。ただし bare
-reader で record を作れず検証できないため本セッションでは未着手 (要 bundle 環境)。
+*FIXED* (vendor/nelisp commit 4d0cb27b): reader applyfn の =aref= arm (=bf_aref=) は Vector(8) のみ扱い、
+Record(12) は else で =str-byte-at= に流れ、record Sexp の offset-16 word を string data ptr として
+deref → SEGFAULT (doc が cl-defstruct インスタンスで観測したもの)。host Emacs の record は index 0 に
+type tag、1..N に data slots を露出するが、本 reader は type tag を box+0 に slots-Vec と別保持するため、
+=aref 0= → =record-type-tag= grammar op、=aref k>0= → =record-slot-ref= (data slot k-1) に振り分け。
+*bare reader での再現・検証のため* (=record=/=make-record= が VOID で tag-12 を作れなかった) native
+=record= / =recordp= builtin も配線: =(record TYPE SLOTS...)= が =record-make=/=record-slot-set= grammar
+op で genuine な tag-12 record を構築 (bf_make_vector の mirror)、=recordp= は tag-12 直接判定。prelude の
+permissive な vectorp ベース =recordp= は =(unless (fboundp 'recordp) ...)= で gate し native を優先。
+検証: =(recordp (record 'foo 1 2))=→t、cons/vector/int→nil、=(record 'p 100 200 300)= の aref 0..3 →
+=(p 100 200 300)= (type then slots) crash 無し、vector/string aref・aset 無改変、reader-test green。
+pure elisp (build-script codegen + prelude)、Rust 不変。
+
+*注*: bare reader 単体では str-byte-at が offset-16 を 0/safe として読み nil を返し crash しなかった
+(data 依存)。bundle の cl-defstruct record は offset-16 が実 ptr で str-byte-at が wild-deref → segfault。
+本修正は tag-12 を str-byte-at 経路から外すため bare/bundle 双方で安全。
 
 #+begin_src elisp
 (cl-defstruct r24s a b)
