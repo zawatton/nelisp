@@ -185,37 +185,6 @@ nelisp_package_src_dirs() {
   done
 }
 
-## nelisp_emacs_lisp_dirs [internal]
-##   Emit bundled nelisp-emacs reusable-library `lisp/' dirs (one per line)
-##   under nemacs-lib/<package>/lisp.  These hold the libraryized
-##   nelisp-emacs-compat / nelisp-emacs-compat-fileio backend that
-##   anvil-pkg-compat prefers over the in-tree nelisp/src copy (reuse-first,
-##   see nelisp docs/audits).  Empty when the tarball ships no nemacs-lib/.
-nelisp_emacs_lisp_dirs() {
-  local d
-  for d in "$ANVIL_HOME"/nemacs-lib/*/lisp; do
-    if [[ -d "$d" ]]; then
-      printf '%s\n' "$d"
-    fi
-  done
-}
-
-# Expose bundled nelisp-emacs library dirs to anvil-pkg-compat, which
-# prepends them to `load-path' so the reusable library compat resolves in
-# preference to the in-tree copy.  path-separator-joined; no-op (and the
-# in-tree fallback stays in effect) when no nemacs-lib/ was bundled.
-if [[ -z "${ANVIL_NELISP_EMACS_LISP:-}" ]]; then
-  _anvil_nemacs_dirs=""
-  while IFS= read -r _anvil_nemacs_d; do
-    [[ -n "$_anvil_nemacs_d" ]] || continue
-    _anvil_nemacs_dirs="${_anvil_nemacs_dirs:+$_anvil_nemacs_dirs:}$_anvil_nemacs_d"
-  done < <(nelisp_emacs_lisp_dirs)
-  if [[ -n "$_anvil_nemacs_dirs" ]]; then
-    export ANVIL_NELISP_EMACS_LISP="$_anvil_nemacs_dirs"
-  fi
-  unset _anvil_nemacs_dirs _anvil_nemacs_d 2>/dev/null || true
-fi
-
 nelisp_find_module_file() {
   local module="$1"
   local src_dir="$ANVIL_HOME/src"

@@ -444,15 +444,6 @@ STAGE_D_TAR   := dist/$(STAGE_D_NAME).tar.gz
 # fallback was removed once architecture α stabilised).
 ANVIL_EL_SOURCE ?= $(HOME)/Notes/dev/anvil.el
 
-# Reuse-first (2026-06-22 audit): also bundle the libraryized nelisp-emacs
-# compat backend (nelisp-emacs-compat / nelisp-emacs-compat-fileio + deps)
-# so bin/anvil can point anvil-pkg-compat at the reusable nelisp-emacs
-# library copy instead of the in-tree nelisp/src duplicate.
-# NELISP_EMACS_SOURCE points at a nelisp-emacs checkout; missing => tarball
-# ships without nemacs-lib/ and anvil-pkg-compat keeps the in-tree fallback.
-NELISP_EMACS_SOURCE ?= $(HOME)/Notes/dev/nelisp-emacs
-NELISP_EMACS_PKGS   := nelisp-emacs-buffer-core nelisp-emacs-io nelisp-emacs-text-core
-
 stage-d-tarball:
 	@rm -rf "$(STAGE_D_DIR)"
 	@mkdir -p "$(STAGE_D_DIR)/bin" "$(STAGE_D_DIR)/src"
@@ -473,19 +464,6 @@ stage-d-tarball:
 	        "$(ANVIL_EL_SOURCE)" "$$(ls $(STAGE_D_DIR)/anvil-lib/anvil*.el | wc -l)"; \
 	else \
 	    printf "  architecture α INACTIVE — set ANVIL_EL_SOURCE=<path> to bundle anvil.el\n"; \
-	fi
-	@if [ -d "$(NELISP_EMACS_SOURCE)/packages" ]; then \
-	    _n=0; \
-	    for p in $(NELISP_EMACS_PKGS); do \
-	      if [ -d "$(NELISP_EMACS_SOURCE)/packages/$$p/lisp" ]; then \
-	        mkdir -p "$(STAGE_D_DIR)/nemacs-lib/$$p/lisp"; \
-	        cp "$(NELISP_EMACS_SOURCE)/packages/$$p/lisp"/*.el "$(STAGE_D_DIR)/nemacs-lib/$$p/lisp/" 2>/dev/null || true; \
-	        _n=$$(( _n + 1 )); \
-	      fi; \
-	    done; \
-	    printf "  reuse-first — nelisp-emacs compat bundled from %s (%d pkgs)\n" "$(NELISP_EMACS_SOURCE)" "$$_n"; \
-	else \
-	    printf "  reuse-first INACTIVE — set NELISP_EMACS_SOURCE=<path> to bundle nelisp-emacs compat\n"; \
 	fi
 	tar -czf "$(STAGE_D_TAR)" -C dist "$(STAGE_D_NAME)"
 	@rm -rf "$(STAGE_D_DIR)"
