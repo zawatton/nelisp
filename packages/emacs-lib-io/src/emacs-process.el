@@ -736,6 +736,67 @@ unchanged.  Otherwise build a `call-process' invocation manually."
             (and std-buf (with-current-buffer std-buf (buffer-string))))
         (when std-buf (kill-buffer std-buf)))))))
 
+
+;;;; --- A19 follow-up: deferred filter/sentinel/plist/query/send-region ---
+;; getters + plist + buffer setter + query-on-exit + send-region, mirroring
+;; the existing fallback-slot / native-metadata / delegate dual pattern.
+
+(defun emacs-process-process-filter (process)
+  "Return PROCESS's stdout/stderr filter function."
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 6))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-metadata process :filter))
+   (t (emacs-process--delegate 'process-filter (list process)))))
+
+(defun emacs-process-process-sentinel (process)
+  "Return PROCESS's lifecycle sentinel function."
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 7))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-metadata process :sentinel))
+   (t (emacs-process--delegate 'process-sentinel (list process)))))
+
+(defun emacs-process-set-process-buffer (process buffer)
+  "Set PROCESS's associated BUFFER and return BUFFER."
+  (cond
+   ((emacs-process--fallback-process-p process) (aset process 2 buffer) buffer)
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-set-metadata process :buffer buffer) buffer)
+   (t (emacs-process--delegate 'set-process-buffer (list process buffer)))))
+
+(defun emacs-process-process-plist (process)
+  "Return PROCESS's property list."
+  (if (emacs-process--process-object-p process)
+      (emacs-process--native-metadata process :plist)
+    (emacs-process--delegate 'process-plist (list process))))
+
+(defun emacs-process-set-process-plist (process plist)
+  "Set PROCESS's property list to PLIST and return PLIST."
+  (if (emacs-process--process-object-p process)
+      (progn (emacs-process--native-set-metadata process :plist plist) plist)
+    (emacs-process--delegate 'set-process-plist (list process plist))))
+
+(defun emacs-process-process-query-on-exit-flag (process)
+  "Return PROCESS's query-on-exit flag (default t)."
+  (if (emacs-process--process-object-p process)
+      (if (eq (emacs-process--native-metadata process :query-on-exit) :off) nil t)
+    (emacs-process--delegate 'process-query-on-exit-flag (list process))))
+
+(defun emacs-process-set-process-query-on-exit-flag (process flag)
+  "Set PROCESS's query-on-exit FLAG and return FLAG."
+  (if (emacs-process--process-object-p process)
+      (progn (emacs-process--native-set-metadata
+              process :query-on-exit (if flag t :off))
+             flag)
+    (emacs-process--delegate 'set-process-query-on-exit-flag
+                             (list process flag))))
+
+(defun emacs-process-process-send-region (process start end)
+  "Send the current buffer's region START..END to PROCESS."
+  (emacs-process-process-send-string
+   process (buffer-substring-no-properties start end)))
+
 (provide 'emacs-process)
 
 ;;; emacs-process.el ends here
