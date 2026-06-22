@@ -2146,7 +2146,10 @@ reachable with (go LABEL).  Always returns nil."
 (unless (fboundp 'cl-defsubst)
   (defmacro cl-defsubst (name arglist &rest body)
     "Define NAME like `cl-defun' (this shim does not perform inlining).
-Accepts the same &optional / &rest / &key arglist as `cl-defun'."
+Accepts the same &optional / &rest / &key arglist as `cl-defun'.  NOTE:
+`&optional (VAR DEFAULT)' defaults are not supported on the runtime -- the
+active core `cl-defun' passes them straight into the lambda arglist, which
+crashes on call (Doc 22 A15); use a bare `&optional VAR' instead."
     (cons 'cl-defun (cons name (cons arglist body)))))
 
 (unless (fboundp 'cl-struct-slot-value)

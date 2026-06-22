@@ -943,13 +943,22 @@ when no real redisplay window is available."
         (setq i (1+ i)))
       out)))
 
-(unless (fboundp 'regexp-opt)
-  (defun regexp-opt (strings &optional paren)
-    "Minimal `regexp-opt' fallback for standalone keyword tables."
-    (let ((body (mapconcat #'regexp-quote strings "\\|")))
-      (if paren
-          (concat "\\(?:" body "\\)")
-        body))))
+;; Unconditional: an earlier no-op bulk stub may claim `regexp-opt' first
+;; (closure (&rest _) nil), so always install the real implementation.
+(defun regexp-opt (strings &optional paren)
+  "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
+PAREN nil -> shy group; t / string -> capture group; words / symbols add
+word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
+  (let* ((body (mapconcat #'regexp-quote strings "\\|"))
+         (open (cond ((stringp paren) paren)
+                     ((eq paren 'words) "\\<\\(")
+                     ((eq paren 'symbols) "\\_<\\(")
+                     (paren "\\(")
+                     (t "\\(?:")))
+         (close (cond ((eq paren 'words) "\\)\\>")
+                      ((eq paren 'symbols) "\\)\\_>")
+                      (t "\\)"))))
+    (concat open body close)))
 
 (unless (fboundp 'easy-menu-define)
   (defmacro easy-menu-define (&rest _args)

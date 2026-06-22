@@ -199,6 +199,18 @@
             (expanded (macroexpand form)))
        (should (equal (eval expanded t) :no))))))
 
+(ert-deftest emacs-pcase-test/doc16-round26-pcase-lambda ()
+  "Doc 16 round 26: pcase-lambda destructures pattern parameters on call.
+The batch host has the real pcase-lambda, pinning the contract."
+  (let ((f (pcase-lambda (`(,a ,b) c) (list a b c))))
+    (should (equal '(1 2 3) (funcall f '(1 2) 3))))
+  ;; plain-symbol parameters pass through unchanged
+  (let ((g (pcase-lambda (x y) (+ x y))))
+    (should (= 5 (funcall g 2 3))))
+  ;; mix of plain and pattern parameters
+  (let ((h (pcase-lambda (a `(,b . ,c)) (list a b c))))
+    (should (equal '(1 2 3) (funcall h 1 '(2 . 3))))))
+
 (provide 'emacs-pcase-test)
 
 ;;; emacs-pcase-test.el ends here
