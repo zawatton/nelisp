@@ -4043,5 +4043,111 @@ strings compare equal."
           (aset out i (aref seq (+ s i)))
           (setq i (1+ i)))
         out)
-    (nelisp--native-substring seq from to)))
+    ;; String path: native `substring' returns "" when TO is passed as an
+    ;; explicit nil, so only forward the 3rd argument when it was supplied.
+    (if to
+        (nelisp--native-substring seq from to)
+      (nelisp--native-substring seq from))))
 
+;; ---- Doc 22 reader-core gap fixes, iteration 2 (A7/A13) ----
+
+;; A7: native `format' ignores field width / flags / precision (e.g. "%-5s"
+;; / "%05d" pass through literally).  The underlying conversion (s S d x X o c
+;; e f g %) is correct, so we delegate each directive's value to native format
+;; and add the field-width/justify/zero-pad/precision layer in elisp.
+(fset 'nelisp--native-format (symbol-function 'format))
+
+(defun nelisp--digit-char-p (ch) (and (>= ch 48) (<= ch 57)))
+
+(defun format (template &rest args)
+  "Format TEMPLATE with ARGS honoring %[flags][width][.prec]conv (Doc 22 A7).
+Width, left-justify (-), zero-pad (0), sign (+/space) and string precision
+(.N) are applied in elisp; the conversion itself is delegated to native
+`format', which lacks only the field-width layer."
+  (let ((n (length template)) (i 0) (out "") (argp args))
+    (while (< i n)
+      (let ((ch (aref template i)))
+        (if (= ch 37)                   ; ?%
+            (let ((j (1+ i))
+                  (f- nil) (f0 nil) (fplus nil) (fspace nil)
+                  (width nil) (prec nil) (scan t))
+              (while (and scan (< j n))
+                (let ((c (aref template j)))
+                  (cond
+                   ((= c 45) (setq f- t j (1+ j)))        ; -
+                   ((= c 48) (setq f0 t j (1+ j)))        ; 0
+                   ((= c 43) (setq fplus t j (1+ j)))     ; +
+                   ((= c 32) (setq fspace t j (1+ j)))    ; space
+                   ((= c 35) (setq j (1+ j)))             ; # (accept, ignore)
+                   (t (setq scan nil)))))
+              (let ((w 0) (have nil))
+                (while (and (< j n) (nelisp--digit-char-p (aref template j)))
+                  (setq w (+ (* w 10) (- (aref template j) 48)) have t j (1+ j)))
+                (when have (setq width w)))
+              (when (and (< j n) (= (aref template j) 46))   ; ?.
+                (setq j (1+ j))
+                (let ((p 0))
+                  (while (and (< j n) (nelisp--digit-char-p (aref template j)))
+                    (setq p (+ (* p 10) (- (aref template j) 48)) j (1+ j)))
+                  (setq prec p)))
+              (if (>= j n)
+                  (setq out (concat out "%") i (1+ i))
+                (let ((conv (aref template j)))
+                  (setq i (1+ j))
+                  (if (= conv 37)        ; ?%
+                      (setq out (concat out "%"))
+                    (let* ((arg (car argp))
+                           (body (nelisp--native-format
+                                  (concat "%" (char-to-string conv)) arg)))
+                      (setq argp (cdr argp))
+                      (when (and prec (or (= conv 115) (= conv 83))   ; s S
+                                 (> (length body) prec))
+                        (setq body (substring body 0 prec)))
+                      (when (and (or (= conv 100) (= conv 102) (= conv 101) (= conv 103)) ; d f e g
+                                 (> (length body) 0) (not (= (aref body 0) 45)))
+                        (cond (fplus (setq body (concat "+" body)))
+                              (fspace (setq body (concat " " body)))))
+                      (when (and width (< (length body) width))
+                        (let ((pad (- width (length body))))
+                          (cond
+                           (f- (setq body (concat body (make-string pad 32))))
+                           ((and f0 (or (= conv 100) (= conv 120) (= conv 88)
+                                        (= conv 111) (= conv 102) (= conv 101) (= conv 103)))
+                            (if (and (> (length body) 0)
+                                     (or (= (aref body 0) 45) (= (aref body 0) 43)))
+                                (setq body (concat (substring body 0 1)
+                                                   (make-string pad 48)
+                                                   (substring body 1)))
+                              (setq body (concat (make-string pad 48) body))))
+                           (t (setq body (concat (make-string pad 32) body))))))
+                      (setq out (concat out body)))))))
+          (setq out (concat out (char-to-string ch)) i (1+ i)))))
+    out))
+
+;; A13: `type-of' is VOID on the bare reader (returns nil for everything), and
+;; native `functionp' fails to recognise a `(lambda ...)' / `(closure ...)' /
+;; `(builtin ...)' cons (returns nil).  Provide a predicate-composed `type-of'
+;; and a corrected `functionp' so function type-dispatch works.
+(fset 'nelisp--native-functionp (symbol-function 'functionp))
+(defun functionp (x)
+  "Return t if X is callable (lambda / closure / builtin cons, or native)."
+  (if (and (consp x) (memq (car x) '(lambda closure builtin)))
+      t
+    (if (nelisp--native-functionp x) t nil)))
+
+(unless (fboundp 'type-of)
+  (defun type-of (x)
+    "Return a symbol naming the primitive type of X (Doc 22 A13).
+Callable conses report `function'/`subr'; otherwise composed from the
+native predicates."
+    (cond
+     ((null x) 'symbol)
+     ((and (consp x) (memq (car x) '(lambda closure))) 'function)
+     ((and (consp x) (eq (car x) 'builtin)) 'subr)
+     ((consp x) 'cons)
+     ((symbolp x) 'symbol)
+     ((stringp x) 'string)
+     ((integerp x) 'integer)
+     ((floatp x) 'float)
+     ((vectorp x) 'vector)
+     (t 'cons))))
