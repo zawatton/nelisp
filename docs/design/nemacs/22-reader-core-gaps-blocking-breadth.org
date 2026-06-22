@@ -9,9 +9,10 @@
 #+PROGRESS:   function-cell 解決を実証)、かつ dynamic binding も機能する (A8 の crash 主張は誤り、
 #+PROGRESS:   実態は symbol-value 誤値のみ) — doc 当初の「core を直さねば消えない」前提は多くの gap に
 #+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
-#+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。残 (深い native core/crash):
-#+PROGRESS:   A4(aset string=immutable)、A11(make-symbol identity)、A14/A15(crash)、
-#+PROGRESS:   A8 の symbol-value 誤値、C1(hash-table-test)。
+#+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。A15 (=&optional (VAR DEFAULT)=)
+#+PROGRESS:   は crash でなく誤値と判明し cl-defun desugar (commit 50cf2b2e) で FIXED。残:
+#+PROGRESS:   A4(aset string=immutable)、A11(make-symbol identity)、A8 の symbol-value 誤値、
+#+PROGRESS:   C1(hash-table-test)、A14(aref struct segfault=bundle 専用、bare で record 生成不可)。
 
 * 0. Purpose
 
@@ -302,7 +303,14 @@ cons / symbol 等は正常。
   壊れる。round 23 で generator 調査中に発見 (generator 自体は type-of 不使用なので
   この gap は generator block の主因ではない)。
 
-** A14. =aref= を struct インスタンスに適用すると SEGFAULT
+** A14. =aref= を struct インスタンスに適用すると SEGFAULT — *bare reader で再現不可 (2026-06-22)*
+
+*NOTE 2026-06-22*: bare reader 単体では本 gap を *再現できない* — =record= が nil を返し
+(=(record 'foo 1 2)=→nil)、=make-record= は VOID、=recordp=→nil で *tag-12 record/struct を生成する
+手段が無い*。元の repro は bundle の =cl-defstruct= 経由 (struct インスタンス) なので、これは
+*bundle 専用の crash*。修正方針は native =aref= emitter (=nelisp-cc-jit-aref.el= 系) に tag guard を
+入れて非 array (tag != 5/6/8) で segfault でなく catchable error を signal すること。ただし bare
+reader で record を作れず検証できないため本セッションでは未着手 (要 bundle 環境)。
 
 #+begin_src elisp
 (cl-defstruct r24s a b)
@@ -325,7 +333,18 @@ accessor (=r24s-a=) 経由のアクセスは正常 (= 別経路)。=record= prim
   一方 =cl-defstruct= の constructor/accessor/predicate と =cl-defgeneric=/=cl-defmethod=
   の単一・特定 dispatch は *正常動作*。
 
-** A15. =&optional (VAR DEFAULT)= の lambda を呼ぶと SEGFAULT/crash
+** A15. =&optional (VAR DEFAULT)= の lambda を呼ぶと SEGFAULT/crash — *FIXED 2026-06-22 (cl-defun desugar)*
+
+*RE-CHARACTERIZED + FIXED* (prelude, commit 50cf2b2e): 現行 reader では *crash しない* —
+=(funcall (lambda (x &optional (z 9)) (+ x z)) 5)= は *nil を返す* (誤値)。真因は prelude の
+=cl-defun= が formals を *desugar せず* plain lambda に raw passthrough していたこと
+(=macroexpand= が =(lambda (x &optional (z 9)) ...)= をそのまま生成)。core lambda binder は plain
+=&optional= symbol しか扱えず z が未束縛 → nil。idiomatic な層 (=cl-defun=) で修正: 各
+=(VAR DEFAULT)= を plain =&optional VAR= + body 先頭 =(unless VAR (setq VAR DEFAULT))= に desugar
+(doc が回避策として挙げていた手法を自動化)。no-&key / &key 両経路に適用、default 無しの arglist は
+raw passthrough 維持。=cl-defsubst= (VOID) は =cl-defun= を alias して継承。検証:
+=(cl-defun f (x &optional (z 9)) (+ x z))= で =(f 5)=→14、=(f 5 100)=→105、二重 default、default が前の
+引数を参照するケース、plain/&key/&rest cl-defun 無改変。pure elisp、Rust 不変。
 
 #+begin_src elisp
 (funcall (lambda (x &optional (z 9)) (+ x z)) 5)
