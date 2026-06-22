@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: OPEN — root cause NARROWED (§8.6: a stray write zeroes a live cloned Sexp box between frame_push and find, ONLY after arena growth; allocator/read/clone all exonerated by exit-code probes); stray-writer pinpoint + fix pending
+#+STATUS: OPEN — root cause NARROWED (§8.7: a growth-only stray write puts 32 zeros over live 32B Sexp boxes — the lexframe ht's bucket-count Int box / buckets slot — so bucket_count reads 0 and the bucket index overflows; allocator/read/clone AND freelist reuse all exonerated); next = HW watchpoint on the box to catch the wrong-DST store
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -295,3 +295,52 @@ Next probe: an address-reuse / high-water-mark detector in =nl_alloc_bytes=
 chunk), or a per-chunk cursor-monotonicity assertion across the growth event.
 Diagnostic worktree was at =/tmp/nelisp-838-diag= (removed); production restored
 to clean feat/256 MiB.
+
+** 8.7 NOT freelist reuse; the stray write zeroes live 32B Sexp boxes (2026-06-22 c)
+
+Probe A — is it freelist reuse?  A detector in =nl_alloc_bytes= that =exit(76)=
+on ANY =nl_freelist_take= hit fired immediately, even on a benign 50k-cons
+churn (which runs rc=0 normally).  So reuse DOES happen in normal operation
+(something populates the bucketed free-lists at =268435696+= even with
+=nl_dealloc_bytes= a no-op and sweep OFF — populator not yet identified), and
+reuse alone is not the bug.  Decisive test: force reuse OFF (=(let ((reused
+0)))=, always bump).  Audit STILL crashes 5/5 (rc=139).  => freelist reuse is
+NOT the stray-write source.  EXONERATED.
+
+Probe B — gdb on the reuse-OFF crash (deterministic, same-run reads):
+- Fault is =nl_vector_slot_ptr+85= =mov (%rdi,%rsi,1)=, the THIRD-hop read
+  =data_ptr + idx*8=, with =idx = 281084166= (=0x10c10106=) and =rsi=0=.
+- The buckets vector is FULLY INTACT: Sexp slot tag=8, box valid, NlVector
+  =cap=16, data_ptr valid, len=16, rc=2=.  The crash is the HUGE bucket index,
+  not a bad vector.
+- =idx = fnv1a(name) & (bucket_count - 1)=.  idx == low 32 bits of fnv1a (the
+  FNV prime =0x01000193= is live in the find_in_frame stack) => the mask was
+  =0xFFFFFFFF= => =bucket_count = 0= (int32: =0 - 1 = 0xFFFFFFFF=).
+  i.e. =sexp-int-unwrap(ht.slot0)= read 0 instead of 16.
+- The ht record's 3-slot buffer was located: slot1 correctly points to the
+  intact buckets vector; the corruption is =slot0= (the bucket-count Int box
+  read as Nil/0).
+
+Synthesis with §8.6 (reuse-ON read slot1 as 0): the stray write ZEROES live
+32-byte Sexp boxes; WHICH box (the bucket-count Int(16) box, or the
+buckets-pointer slot) depends only on the allocation layout (reuse on/off
+shifts addresses).  A 32-byte all-zero block is exactly a Nil 32B Sexp (tag 0,
+payload 0) — precisely what =nl_sci_store_imm= writes on its Nil-immediate
+branch (=ptr-write-u64 dst {0,8,16,24} 0=).  So the leading suspect is a
+clone/store whose DST is wrongly computed (growth-sensitive) onto a live box,
+writing 32 zeros over it.
+
+Memory-model note (re-confirmed): the source control-region literals
+(=0x10000000..0x10000318=) are NOT runtime addresses — the per-unit
+chunk-arena-rewrite turns them into =nl_arena_base + (lit - 0x10000000)=
+loads.  All literal-address gdb reads fail ("Cannot access memory at
+0x10000310"); this is also why core forensics (§8.5) failed.  Read control via
+the runtime arena base (=nl_arena_base= bss symbol, resolvable in gdb) instead.
+
+Next probe (definitive): set a HARDWARE watchpoint on the bucket-count / buckets
+box address within ONE run — break right after the box is created in
+=frame_push=, =watch *box=, continue, and catch the instruction that writes the
+32 zeros.  ASLR varies addresses per run, so this must be a single-run
+break→watch→continue (not a fixed-address watchpoint).  Alternative: instrument
+=nl_sci_store_imm='s Nil branch to record when DST already holds a live boxed
+tag.  Either pinpoints the exact wrong-DST store.
