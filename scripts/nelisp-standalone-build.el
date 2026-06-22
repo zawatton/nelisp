@@ -2486,6 +2486,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
     ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
     ((:lit "nelisp--env-capture-roots") . (bf_env_capture_roots out))
+    ((:lit "nelisp--record-expand") . (bf_record_expand args out))
     ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
     ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
@@ -2682,6 +2683,60 @@ unresolved at link time."
            (nelisp_cons_construct f c2 c1)                     ; frames_record
            (nelisp_cons_construct g c1 out)                    ; globals_record
            0))))
+    ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
+    ;; codec-friendly cons graph so `nelisp-heap-image-encode-roots' can serialize
+    ;; it.  The standalone env-record (tag 12) is opaque to the codec: the active
+    ;; prelude `recordp' is aliased to `vectorp' (nelisp-stdlib-prelude.el:3113) so
+    ;; it returns nil for tag-12, and host `aref'/`length' do not traverse the
+    ;; 1024-bucket hash mirror.  These helpers read the verified runtime layout
+    ;; (Record: type_tag @box+0, data_ptr @box+40, len @box+48; Vector: data_ptr
+    ;; @box+8, len @box+16; Cons: car/cdr WORDS @box+0/+8) and rewrite the WHOLE
+    ;; subgraph into cons/atoms (records + vectors -> plain lists, conses -> conses),
+    ;; which the codec already handles.  Slot/element WORDS are value-words: low bit
+    ;; 1 = immediate (Nil=3, T=7, Int=(n<<2)|1), low bit 0 = 8-aligned pointer to a
+    ;; 32B Sexp.  Atoms are bit-copied (shared buffers are fine for read-only encode).
+    ;; CAVEAT: record/vector TYPE is dropped (both become lists), so this is a
+    ;; one-way serialize for the encode side; a faithful round-trip needs a tagged
+    ;; form + reverse rebuild.  And the full globals graph reaches native function
+    ;; cells (non-Sexp pointers) -- expanding those is unsound, which is exactly why
+    ;; raw-arena (byte memcpy + relocate, no graph walk) is the pragmatic path.
+    (defun bf_expand_word (w out)
+      (if (= (logand w 1) 1)
+          (if (= w 3) (wf_write_nil out)
+            (if (= w 7) (wf_write_t out)
+              (wf_write_int out (sar w 2))))
+        (bf_expand_slot w out)))
+    (defun bf_expand_words_list (dp i len out)
+      (if (if (< i len) 0 1)
+          (wf_write_nil out)
+        (let* ((cs (alloc-bytes 32 8)) (rest (alloc-bytes 32 8)))
+          (seq
+           (bf_expand_word (ptr-read-u64 (+ dp (* i 8)) 0) cs)
+           (bf_expand_words_list dp (+ i 1) len rest)
+           (nelisp_cons_construct cs rest out)
+           0))))
+    (defun bf_expand_slot (v out)
+      (let* ((tag (ptr-read-u8 v 0)))
+        (if (= tag 12)
+            (let* ((box (ptr-read-u64 v 8)) (typ (alloc-bytes 32 8)) (sl (alloc-bytes 32 8)))
+              (seq
+               (bf_expand_slot box typ)   ; type_tag @ box+0 (box viewed as a Sexp slot)
+               (bf_expand_words_list (ptr-read-u64 box 40) 0 (ptr-read-u64 box 48) sl)
+               (nelisp_cons_construct typ sl out)
+               0))
+          (if (= tag 8)
+              (let* ((box (ptr-read-u64 v 8)))
+                (bf_expand_words_list (ptr-read-u64 box 8) 0 (ptr-read-u64 box 16) out))
+            (if (= tag 7)
+                (let* ((box (ptr-read-u64 v 8)) (ca (alloc-bytes 32 8)) (cd (alloc-bytes 32 8)))
+                  (seq
+                   (bf_expand_word (ptr-read-u64 box 0) ca)
+                   (bf_expand_word (ptr-read-u64 box 8) cd)
+                   (nelisp_cons_construct ca cd out)
+                   0))
+              (wf_copy32 out v))))))
+    (defun bf_record_expand (args out)
+      (bf_expand_slot (wf_arg_ptr args 0) out))
     ;; Portable arena telemetry:
     ;;   (base size bump-offset used-bytes live-after-last-gc next-trigger
     ;;    free-list-head collect-disabled reuse-disabled
@@ -7133,7 +7188,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-dump-table-verify"
     "nelisp--arena-dump-image-to-file" "nelisp--arena-load-image-from-file"
     "nelisp--arena-boot-load-verify" "nelisp--arena-load-split-verify"
-    "nelisp--env-capture-roots"
+    "nelisp--env-capture-roots" "nelisp--record-expand"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
