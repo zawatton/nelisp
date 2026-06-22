@@ -295,7 +295,19 @@ Emacs は nil = 空 list 扱いで無視。=mapconcat= は正常。
 - polyfill 不可級: =concat= は core 関数で全所で使われ、elisp override は危険 (perf/再帰)。
   core が nil を空扱いすれば rx を含む多数が直る。round 26 で発見。
 
-** A17. regex engine が POSIX 文字クラス =[[:digit:]]= を match しない
+** A17. regex engine が POSIX 文字クラス =[[:digit:]]= を match しない — *FIXED 2026-06-22*
+
+*FIXED* in 両 engine: (1) bare reader の stdlib =nlre-*= (=vendor/nelisp/lisp/
+nelisp-stdlib-regexp.el= commit 913719ef)、(2) bundle が使う packages =nelisp-rx-*=
+(=vendor/nelisp/packages/.../nelisp-regex.el= commit b6b59ec2 + nelisp-emacs
+=src/nelisp-regex.el= commit 5a336b4)。両 bracket parser で =[:name:]= を検出し =(lo . hi)=
+range に展開 (=*--posix-ranges= table: digit/alpha/alnum/word/upper/lower/xdigit/space/
+blank/punct/cntrl/graph/print/ascii)、membership 判定は range 対応済で無改変。検証:
+full runtime で =(string-match "[[:digit:]]" "a1")= → 1、=(rx (+ digit))= が "123" に実 match、
+=(rx (+ word))= → "foo_9"。同 round で =regexp-opt= も修正 (=src/emacs-stub.el= 5a336b4):
+no-op bulk stub =(closure (&rest _) nil)= が先に claim し gated real が skip されていた →
+無条件定義に変更、shy/capture group を GNU 契約通り wrap。=(regexp-opt '("cat" "dog"))= →
+="\\(?:cat\\|dog\\)"=。
 
 #+begin_src elisp
 (string-match "[[:digit:]]" "a1")  ;=> nil  (期待 1)
@@ -311,6 +323,17 @@ standalone reader の =string-match= / regex engine が POSIX 文字クラス
   regex engine 拡張が必要。round 27 で確認。
 - 別途: =(rx (or "a" "b"))= が *nil を返す* (error でなく silent nil)。rx--translate-or /
   =regexp-opt= (fbound) 経路の runtime 差。A16/A17 とは別の rx-internal 課題。
+
+** A18. =(rx (or STRINGS...))= が空の alternation =\(?:\)= を生成 (rx-internal)
+
+A16(concat) / A17(POSIX) / regexp-opt を全て直した後も =(rx (or "cat" "dog"))= は
+="\\(?:\\)"= (中身空) を返す。=regexp-opt= 単体は正しく ="\\(?:cat\\|dog\\)"= を返すので、
+rx の =rx--translate-or= が文字列 alternative を *収集できていない* (= 空リストを regexp-opt
+へ渡している) rx-internal の問題。A16/A17/regexp-opt とは別軸。
+
+- *impact*: rx の =or= 形 (文字列複数) が matches-everything な空 group になり危険。rx は
+  digit/alpha/word/+/?/seq/group/any 等は実 match するが、=or= が未解決のため bundle 収録は
+  保留 (stub のまま)。round 28 で発見、未修正。
 
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
