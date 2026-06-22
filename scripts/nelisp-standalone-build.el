@@ -4884,7 +4884,23 @@ unresolved at link time."
         (if (= (ptr-read-u64 arr 0) 8)
             (seq (wf_dirty) (vector-slot-set arr idx val)
                  (wf_copy32 out val) 0)
-          (seq (wf_copy32 out val) 0))))
+          ;; Doc 22 A4: Str(5)/MutStr(6) in-place single-byte write.  The stock
+          ;; arm was a silent no-op (strings looked immutable).  Mirrors bf_aref's
+          ;; byte-indexed string model (char index == byte index; ASCII).  Safe
+          ;; only when the target owns its buffer -- callers must `copy-sequence'
+          ;; a literal first (now a real deep copy, Doc 22 A4 prelude half);
+          ;; direct aset on a literal is undefined, as in host Emacs.  Str(5)
+          ;; data ptr @16; MutStr(6) NlStr* @8 -> buffer @ +8.
+          (if (= (ptr-read-u64 arr 0) 5)
+              (seq (wf_dirty)
+                   (ptr-write-u8 (ptr-read-u64 arr 16) idx (ptr-read-u64 val 8))
+                   (wf_copy32 out val) 0)
+            (if (= (ptr-read-u64 arr 0) 6)
+                (seq (wf_dirty)
+                     (ptr-write-u8 (ptr-read-u64 (ptr-read-u64 arr 8) 8) idx
+                                   (ptr-read-u64 val 8))
+                     (wf_copy32 out val) 0)
+              (seq (wf_copy32 out val) 0))))))
     ;; signal/error: NON-CRASHING.  Stash (sym . data) into the catch/throw
     ;; region + set the throw flag, then return rc=1 so the rc!=0 propagation
     ;; unwinds the native stack like an error.

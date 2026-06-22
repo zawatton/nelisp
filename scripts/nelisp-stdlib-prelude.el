@@ -784,6 +784,10 @@ from `(defvar X nil)'."
 (defun cadddr (x) (car (cdr (cdr (cdr x)))))
 
 (defun copy-sequence (seq)
+  "Return a copy of SEQ.  Doc 22 A4: strings and vectors are copied into a
+FRESH buffer (the old `(t seq)' arm returned the same object, so a following
+`aset' mutated the original / a string literal).  `(concat seq)' allocates a
+new string buffer; vectors are rebuilt element by element."
   (cond ((null seq) nil)
 	((consp seq)
 	 (let ((acc nil) (cur seq))
@@ -791,6 +795,11 @@ from `(defvar X nil)'."
 	     (setq acc (cons (car cur) acc)) (setq cur (cdr cur)))
 	   (when cur (signal 'wrong-type-argument (list 'list seq)))
 	   (nreverse acc)))
+	((stringp seq) (concat seq))
+	((vectorp seq)
+	 (let* ((n (length seq)) (v (make-vector n nil)) (i 0))
+	   (while (< i n) (aset v i (aref seq i)) (setq i (1+ i)))
+	   v))
 	(t seq)))
 
 (defun memq (elt list)
