@@ -3,7 +3,7 @@
 #+DATE: 2026-06-21
 #+STATUS: FILED — github.com/zawatton/nelisp#7 (2026-06-21)
 #+PROGRESS: 2026-06-22 — A16/A17/A18/A19 (rx 系) + A1/A2/A3/A5/A6/A7/A9/A10/A12/A13 を全て
-#+PROGRESS:   *pure-elisp で FIXED*、A8 は dlet を partial FIXED、A11/A20 を native build-script で
+#+PROGRESS:   *pure-elisp で FIXED*、A4/A8/A11/A20 を native build-script (含 prelude) で
 #+PROGRESS:   FIXED (prelude commits 81eaf9e3 /
 #+PROGRESS:   a61c8efe / 8ca03316 / f3767c71)。重要な発見: bare reader の native primitive は
 #+PROGRESS:   prelude (=scripts/nelisp-stdlib-prelude.el=) の override で訂正可能 (=fset= の
@@ -12,7 +12,7 @@
 #+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
 #+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。A15 (=&optional (VAR DEFAULT)=)
 #+PROGRESS:   は crash でなく誤値と判明し cl-defun desugar (commit 50cf2b2e) で FIXED。残:
-#+PROGRESS:   A8 の symbol-value 誤値、A14(aref struct segfault=bundle 専用、bare で record 生成不可)。
+#+PROGRESS:   A14(aref struct segfault=bundle 専用、bare で record 生成不可) のみ。
 
 * 0. Purpose
 
@@ -172,7 +172,7 @@ override の latent bug (native substring に明示 nil =to= を渡すと "" に
 
 - *impact*: 整形出力全般。回避策は手動 pad。
 
-** A8. =let= が lexical のみ / 動的束縛が機能せず crash — *PARTIALLY FIXED 2026-06-22 (dlet)*
+** A8. =let= が lexical のみ / 動的束縛が機能せず crash — *FIXED 2026-06-22 (dlet + native symbol-value)*
 
 *RE-CHARACTERIZED + PARTIALLY FIXED* (prelude, commit f3767c71): 当初の「動的束縛が機能せず crash」は
 *誤り*。実測: =(defvar X)= 済 special の =let= 束縛は *別関数から見え* (=42=)、=let= は正しく unwind し
@@ -180,7 +180,16 @@ override の latent bug (native substring に明示 nil =to= を渡すと "" に
 適用すると *global 値を返す* (=(let ((svl 9)) (symbol-value 'svl))=→1、crash ではなく誤値) こと — これは
 native core の制約で prelude 不可。よって VOID だった =dlet= を =(progn (defvar V)... (let BINDERS BODY))=
 へ展開する macro として追加。直接参照ベースのコードは動く。検証: dlet 束縛の関数跨ぎ可視・restore・
-multi-binding・body 直接参照。*回避*: dlet-bound 変数は =symbol-value= でなく直接参照で読む。
+multi-binding・body 直接参照。
+
+*残課題も FIXED* (vendor/nelisp commit 79b15bfb): =symbol-value= が dynamic binding を見ない件を native で解消。
+=symbol-value= は reader builtin でなく prelude fallback (=nelisp--env-globals-get-value= = global mirror のみ)
+だったのが原因。direct 参照は =nelisp_env_lookup_value= (frame stack → mirror) で解決するので不一致だった。
+native =bf_symbol_value (args env out)= を =set= / =boundp= 同様 env 付き dispatch で追加し、eval 機構と同じ
+env layout (mirror @ env+0, frame stack @ env+32) で =nelisp_env_lookup_value= を呼ぶ → symbol-value が
+direct 参照と完全一致 (dynamic 優先 → global → void-variable)。builtin 登録で fbound 化し prelude fallback を
+skip。検証: =(let ((x 9)) (symbol-value 'x))=→9、nested inner 優先、let 後 restore、let 内 =set= が
+symbol-value に反映、dlet+symbol-value、global/set/boundp/direct/plain let 無改変、reader-test green。
 
 #+begin_src elisp
 (progn (defvar dv) (let ((dv 7)) (symbol-value 'dv)))  ;=> crash (catch 不能)
