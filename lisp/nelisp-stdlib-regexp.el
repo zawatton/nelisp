@@ -140,6 +140,25 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
          (t (cons (list :lit d) (+ i 2))))))
      (t (cons (list :lit c) (1+ i))))))
 
+(defun nlre--posix-ranges (name)
+  "Return a list of (lo . hi) ranges for POSIX class NAME, nil if unknown."
+  (cond
+   ((equal name "digit")  (list (cons ?0 ?9)))
+   ((equal name "alpha")  (list (cons ?a ?z) (cons ?A ?Z)))
+   ((equal name "alnum")  (list (cons ?0 ?9) (cons ?a ?z) (cons ?A ?Z)))
+   ((equal name "word")   (list (cons ?0 ?9) (cons ?a ?z) (cons ?A ?Z) (cons ?_ ?_)))
+   ((equal name "upper")  (list (cons ?A ?Z)))
+   ((equal name "lower")  (list (cons ?a ?z)))
+   ((equal name "xdigit") (list (cons ?0 ?9) (cons ?a ?f) (cons ?A ?F)))
+   ((equal name "space")  (list (cons 9 13) (cons 32 32)))
+   ((equal name "blank")  (list (cons 9 9) (cons 32 32)))
+   ((equal name "punct")  (list (cons 33 47) (cons 58 64) (cons 91 96) (cons 123 126)))
+   ((equal name "cntrl")  (list (cons 0 31) (cons 127 127)))
+   ((equal name "graph")  (list (cons 33 126)))
+   ((equal name "print")  (list (cons 32 126)))
+   ((equal name "ascii")  (list (cons 0 127)))
+   (t nil)))
+
 (defun nlre--parse-set (pat i n)
   "Parse a char class body (after the opening [) ; return (NODE . newpos)."
   (let ((neg nil) (ranges nil))
@@ -151,6 +170,14 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
         (let ((c (aref pat i)))
           (cond
            ((eq c ?\]) (setq i (1+ i) cont nil))
+           ;; POSIX class [:name:] -> expand to (lo . hi) ranges
+           ((and (eq c ?\[) (< (1+ i) n) (eq (aref pat (1+ i)) ?:))
+            (let ((j (+ i 2)))
+              (while (and (< (1+ j) n)
+                          (not (and (eq (aref pat j) ?:) (eq (aref pat (1+ j)) ?\]))))
+                (setq j (1+ j)))
+              (setq ranges (append (nlre--posix-ranges (substring pat (+ i 2) j)) ranges))
+              (setq i (+ j 2))))
            ((and (< (+ i 2) n) (eq (aref pat (1+ i)) ?-) (not (eq (aref pat (+ i 2)) ?\])))
             (setq ranges (cons (cons c (aref pat (+ i 2))) ranges) i (+ i 3)))
            (t (setq ranges (cons (cons c c) ranges) i (1+ i)))))))
