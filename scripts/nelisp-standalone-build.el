@@ -4591,8 +4591,11 @@ unresolved at link time."
                 0))))))
     (defun m5_concat_walk (ms cur)
       (if (= (ptr-read-u64 cur 0) 7)
-          (seq (m5_emit_value ms (nl_cons_car_ptr cur))
-               (m5_concat_walk ms (nl_cons_cdr_ptr cur)))
+          (let* ((carp (nl_cons_car_ptr cur)))
+            (seq (if (= (ptr-read-u64 carp 0) 0)
+                     1
+                   (m5_emit_value ms carp))
+                 (m5_concat_walk ms (nl_cons_cdr_ptr cur))))
         1))
     (defun m5_fmt_argptr (argp)
       (nl_cons_car_ptr argp))
