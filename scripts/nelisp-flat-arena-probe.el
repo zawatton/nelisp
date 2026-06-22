@@ -93,15 +93,27 @@
 ;; the published roots reach the whole persistent live set the dump must
 ;; capture.  See `nelisp-flat-arena-probe-mark-reach'.
 ;;
+;; STEP 3b-ii (DONE): the pointer SWIZZLE proper.  Baked
+;; `nelisp--arena-swizzle-verify' bulk-copies chunk-0, then mirrors the GC
+;; per-type walk (`nl_gc_mark_slot' / `-cons' / `-vec_slots') from the
+;; frame[0] globals root and, at every pointer FIELD, rewrites the matching
+;; word IN THE COPIED buffer from an absolute address to an arena-relative
+;; offset (in-place; no separate pointer list).  The SOURCE heap is never
+;; written.  Verified by a round trip: swizzle then unswizzle restores the
+;; copy byte-for-byte.  On target/nelisp: ~75.7 k in-region pointers
+;; swizzled, ~13.8 k out-of-region (interned / large-object / growth-chunk
+;; targets, for the multi-region dump), ROUNDTRIP-MISMATCH = 0 (perfectly
+;; reversible, with and without a prior GC); source uncorrupted (A12 +
+;; eval still work).  See `nelisp-flat-arena-probe-swizzle'.
+;;
 ;; NEXT STEPS (not in this file):
-;;   step 3b-ii  the swizzle proper: mirror the GC per-type walk
-;;               (`nl_gc_mark_slot') but RECORD each pointer field's
-;;               arena-offset + target, then rewrite each absolute pointer in
-;;               the copied buffer to (chunk, offset).  Extend the copy to
-;;               every chunk.
-;;   step 4      load: alloc fresh chunks, memcpy, unswizzle to the new base,
-;;               install the roots into a fresh EvalCtx; boot hook before the
-;;               source-replay fallback.
+;;   step 3c  extend the copy + swizzle to every chunk and all roots (frames,
+;;            transients, symentry), and carry the out-of-region targets
+;;            (interned region + large objects) into the image so their
+;;            pointers swizzle too.
+;;   step 4   load: alloc fresh chunks, memcpy, unswizzle to the new base,
+;;            install the roots into a fresh EvalCtx; boot hook before the
+;;            source-replay fallback.
 
 ;;; Code:
 
@@ -113,6 +125,7 @@
 (declare-function nelisp--arena-walk-verify "ext" ())
 (declare-function nelisp--arena-dump-copy-verify "ext" ())
 (declare-function nelisp--arena-mark-reach-verify "ext" ())
+(declare-function nelisp--arena-swizzle-verify "ext" ())
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -201,15 +214,29 @@ Return a labelled plist."
           :reach-le-live (<= reach live)
           :reach-pct-of-live (if (> live 0) (/ (* reach 100) live) 0))))
 
+(defun nelisp-flat-arena-probe-swizzle ()
+  "Pointer-swizzle round trip via the baked `nelisp--arena-swizzle-verify' op.
+Bulk-copies chunk-0, swizzles its pointers (absolute -> arena offset) by a
+per-type walk from the globals root, then unswizzles; the copy must return
+byte-identical.  The source heap is never written.  Return a labelled plist;
+:roundtrip-mismatch 0 means the swizzle is exactly reversible."
+  (let ((r (nelisp--arena-swizzle-verify)))
+    (list :in-region-ptrs (nth 0 r)
+          :out-region-ptrs (nth 1 r)
+          :roundtrip-mismatch (nth 2 r)
+          :reversible (= (nth 2 r) 0))))
+
 (defun nelisp-flat-arena-probe-report (&optional limit)
-  "Print the walk, full walk, bulk-copy, and root-coverage (post-GC) checks."
+  "Print the walk, full walk, bulk-copy, root-coverage, and swizzle checks."
   (princ (nelisp-flat-arena-probe-walk limit))
   (princ "\n")
   (princ (nelisp-flat-arena-probe-verify-full))
   (princ "\n")
   (princ (nelisp-flat-arena-probe-copy-verify))
   (princ "\n")
-  (princ (nelisp-flat-arena-probe-mark-reach t)))
+  (princ (nelisp-flat-arena-probe-mark-reach t))
+  (princ "\n")
+  (princ (nelisp-flat-arena-probe-swizzle)))
 
 (provide 'nelisp-flat-arena-probe)
 

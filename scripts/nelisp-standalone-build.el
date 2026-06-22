@@ -2479,6 +2479,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
     ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
     ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
+    ((:lit "nelisp--arena-swizzle-verify") . (bf_arena_swizzle_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2866,6 +2867,162 @@ unresolved at link time."
          (wf_write_nil nil-slot)
          (wf_cons_int (ptr-read-u64 total 0) nil-slot s1)
          (wf_cons_int (ptr-read-u64 reach 0) s1 out)
+         0)))
+    ;; flat-arena spike step 3b-ii: the pointer SWIZZLE proper.  Mirrors the
+    ;; GC per-type walk (`nl_gc_mark_slot' / `-cons' / `-vec_slots') from the
+    ;; frame[0] globals root, but at every pointer FIELD it rewrites the
+    ;; corresponding word IN THE COPIED chunk-0 buffer from an absolute
+    ;; address to an arena-relative OFFSET (in-place; no separate pointer-list
+    ;; storage).  The SOURCE heap is never written -- only the dest copy.
+    ;; Cycle dedup reuses the GC mark bit (`nl_gc_mark_block'); marks are
+    ;; cleared (no sweep) between passes.  Verified by a round trip: swizzle
+    ;; (dir 0) then unswizzle (dir 1) must restore the copy byte-for-byte to
+    ;; the source.  Returns (IN-REGION-PTRS OUT-REGION-PTRS ROUNDTRIP-MISMATCH);
+    ;; MISMATCH = 0 proves the per-type walk touched exactly the pointer fields,
+    ;; reversibly.  (Single-root + chunk-0 only; multi-root / multi-chunk and
+    ;; the load-side unswizzle into a fresh base are the remaining work.)
+    ;;
+    ;; nl_fa_field: swizzle/unswizzle ONE pointer word living at source addr
+    ;; WADDR whose value is TGT.  DS/SPAN = chunk-0 data-start / used span;
+    ;; DEST = copy base.  Only fields whose ADDRESS is inside chunk-0 are
+    ;; touched (root slots live in the EvalCtx, outside chunk-0 -> skipped:
+    ;; they are reinstalled on load).  A target outside chunk-0 (interned /
+    ;; large-object / growth chunk) is counted but left as-is for now.
+    (defun nl_fa_field (waddr tgt ds span dest cin cout dir)
+      (if (< waddr ds) 0
+        (if (< waddr (+ ds span))
+            (let ((loc (+ dest (- waddr ds))))
+              (if (= dir 0)
+                  ;; swizzle abs -> offset, only for an in-region target
+                  (if (< tgt ds)
+                      (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))
+                    (if (< tgt (+ ds span))
+                        (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
+                                 (ptr-write-u64 loc 0 (- tgt ds)))
+                      (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))))
+                ;; unswizzle: restore the copy word straight from the (never
+                ;; mutated) source field -- idempotent, so a field visited a
+                ;; different number of times across passes still restores
+                ;; exactly.
+                (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))))
+          0)))
+    (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
+      (if (= (nl_gc_in_arena data_ptr) 0) 0
+        (let ((k i))
+          (while (< k len)
+            (nl_seq2
+             (let ((vw (ptr-read-u64 (+ data_ptr (* k 8)) 0)))
+               (if (= (logand vw 1) 1) 0
+                 (nl_seq2 (nl_fa_field (+ data_ptr (* k 8)) vw ds span dest cin cout dir)
+                          (if (= (nl_gc_mark_block vw) 0) 0
+                            (nl_fa_slot vw ds span dest cin cout dir)))))
+             (setq k (+ k 1))))
+          0)))
+    (defun nl_fa_cons (sp ds span dest cin cout dir)
+      (let ((box (ptr-read-u64 sp 8)))
+        (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+          (if (= (nl_gc_mark_block box) 0) 0
+            (nl_seq2
+             (let ((cw (ptr-read-u64 box 0)))
+               (if (= (logand cw 1) 1) 0
+                 (nl_seq2 (nl_fa_field box cw ds span dest cin cout dir)
+                          (if (= (nl_gc_mark_block cw) 0) 0
+                            (nl_fa_slot cw ds span dest cin cout dir)))))
+             (let ((dw (ptr-read-u64 box 8)))
+               (if (= (logand dw 1) 1) 0
+                 (nl_seq2 (nl_fa_field (+ box 8) dw ds span dest cin cout dir)
+                          (if (= (nl_gc_mark_block dw) 0) 0
+                            (if (= (ptr-read-u8 dw 0) 7)
+                                (nl_fa_cons dw ds span dest cin cout dir)
+                              (nl_fa_slot dw ds span dest cin cout dir)))))))))))
+    (defun nl_fa_slot (sp ds span dest cin cout dir)
+      (let ((tag (ptr-read-u8 sp 0)))
+        (if (= tag 7)
+            (nl_fa_cons sp ds span dest cin cout dir)
+          (if (= tag 8)
+              (let ((box (ptr-read-u64 sp 8)))
+                (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                  (if (= (nl_gc_mark_block box) 0) 0
+                    (let ((data_ptr (ptr-read-u64 box 8)) (len (ptr-read-u64 box 16)))
+                      (nl_seq2 (nl_fa_field (+ box 8) data_ptr ds span dest cin cout dir)
+                               (nl_fa_vec_slots data_ptr 0 len ds span dest cin cout dir))))))
+            (if (= tag 12)
+                (let ((box (ptr-read-u64 sp 8)))
+                  (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                    (if (= (nl_gc_mark_block box) 0) 0
+                      (let ((data_ptr (ptr-read-u64 box 40)) (len (ptr-read-u64 box 48)))
+                        (nl_seq2 (nl_fa_slot box ds span dest cin cout dir)
+                          (nl_seq2 (nl_fa_field (+ box 40) data_ptr ds span dest cin cout dir)
+                                   (nl_fa_vec_slots data_ptr 0 len ds span dest cin cout dir)))))))
+              (if (= tag 11)
+                  (let ((box (ptr-read-u64 sp 8)))
+                    (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                      (if (= (nl_gc_mark_block box) 0) 0
+                        (let ((vw (ptr-read-u64 box 0)))
+                          (if (= (logand vw 1) 1) 0
+                            (nl_seq2 (nl_fa_field box vw ds span dest cin cout dir)
+                              (if (= (nl_gc_mark_block vw) 0) 0
+                                (nl_fa_slot vw ds span dest cin cout dir))))))))
+                (if (= tag 6)
+                    (let ((box (ptr-read-u64 sp 8)))
+                      (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                        (if (= (nl_gc_mark_block box) 0) 0
+                          (nl_fa_field (+ box 8) (ptr-read-u64 box 8) ds span dest cin cout dir))))
+                  (if (= tag 5)
+                      (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
+                    (if (= tag 4)
+                        (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
+                      (if (= tag 9)
+                          (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                        (if (= tag 10)
+                            (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                          0)))))))))))
+    (defun bf_arena_swizzle_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             ;; dest holds the copied region in [0,slen); the verification
+             ;; counters live in the tail [slen, slen+256) of the SAME buffer
+             ;; so they are never inside the compared region nor written by
+             ;; the field-swizzle (which only writes dest+[0,slen)).
+             (dest (alloc-bytes (+ slen 256) 8))
+             (cin (+ dest slen)) (cout (+ dest slen 8)) (cmis (+ dest slen 16))
+             (ctr (+ dest slen 24))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (i 0)
+             (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0) (ptr-write-u64 cmis 0 0)
+         (ptr-write-u64 ctr 0 0)
+         ;; 1. bulk-copy chunk-0 live region
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (if (= env 0) 0
+           (seq
+            ;; 2. swizzle pass (abs -> offset) from the globals root
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_slot (+ env 0) sstart slen dest cin cout 0)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)   ; clear marks
+            ;; 3. unswizzle pass (offset -> abs)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_slot (+ env 0) sstart slen dest cin cout 1)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)
+            ;; 4. round-trip identity: copy must equal source again
+            (setq i 0)
+            (while (< i slen)
+              (seq (if (= (ptr-read-u64 (+ dest i) 0) (ptr-read-u64 (+ sstart i) 0)) 0
+                     (ptr-write-u64 cmis 0 (+ (ptr-read-u64 cmis 0) 1)))
+                   (setq i (+ i 8))))))
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 cmis 0) nil-slot s2)
+         (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 cin 0) s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6459,7 +6616,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
-    "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify"
+    "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
