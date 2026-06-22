@@ -12,8 +12,7 @@
 #+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
 #+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。A15 (=&optional (VAR DEFAULT)=)
 #+PROGRESS:   は crash でなく誤値と判明し cl-defun desugar (commit 50cf2b2e) で FIXED。残:
-#+PROGRESS:   A8 の symbol-value 誤値、C1(hash-table-test)、
-#+PROGRESS:   A14(aref struct segfault=bundle 専用、bare で record 生成不可)。
+#+PROGRESS:   A8 の symbol-value 誤値、A14(aref struct segfault=bundle 専用、bare で record 生成不可)。
 
 * 0. Purpose
 
@@ -544,7 +543,18 @@ bare reader で void (bundle / stdlib-prelude が一部を埋める):
 
 * 4. C. introspection 不能 (polyfill 不能)
 
-** C1. =hash-table-test= が void
+** C1. =hash-table-test= が void — *FIXED 2026-06-22 (prelude)*
+
+*FIXED* (vendor/nelisp commit 6e4e98ff): doc の「core が test を露出しないと polyfill 不能」は前提が
+ずれていた。調査結果: reader は hash table を cons =(Int(0) . alist)= で表し、native =make-hash-table= は
+=:test= 引数を *完全に無視* する (dispatch =(wf_ht_make out)= は args を受けない)。全 table が単一の
+=wf_key_eq= (int=値, symbol=名前, str=バイト = *equal 意味論*) で比較されるため、test は「保持されない」の
+でなく「honor されない」。よって実効 test は常に =equal= で、それを返すのが honest。marker (car) は
+=hash-table-p= が判別に使う整数 0 なので requested =:test= を埋め込めないが、挙動が一律 equal なので無意味。
+prelude に core-owned shape 上で =hash-table-test= (→equal) / =copy-hash-table= (fresh table + entry
+copy、独立) / =hash-table-keys= / =hash-table-values= を追加。検証: 任意の =:test= で hash-table-test→equal、
+copy-hash-table の count/独立性/string lookup 保持、keys/values、hash-table-p/maphash 無改変、
+reader-test green。pure elisp prelude、Rust 不変。
 
 #+begin_src elisp
 (fboundp 'hash-table-test)  ;=> nil
