@@ -145,12 +145,21 @@
 ;; in the relocatable image or a trivial immediate.  See
 ;; `nelisp-flat-arena-probe-roots'.
 ;;
-;; REMAINING (the production cut-over -- runtime surgery, do as a focused task):
-;;   1. dump the image (regions + a header recording region sizes and the 3
-;;      root image offsets) to a file at build time;
-;;   2. at boot, mmap a fresh arena, memcpy the regions, relocate (offset ->
-;;      newbase) -- the mechanism above -- and set a fresh EvalCtx's roots from
-;;      the header offsets;
+;; BOOT-WIRING started: the boot loader relocates with a flat RELOCATION TABLE
+;; (no graph walk on load).  `nelisp--arena-dump-table-verify' demonstrates it
+;; end-to-end in-process: the dump's swizzle (dir 3) records every pointer
+;; field's offset into a table, and the LOAD does exactly what boot would --
+;; for each table entry F: image[F] += newbase (the image offset already
+;; encodes the region, so one `+ newbase' lands chunk-0 or interned).  On
+;; target/nelisp: ~90 k-entry table, OUT-OF-REGION = 0, and the table-driven
+;; load rebuilds a WELLFORMED arena.  See `nelisp-flat-arena-probe-dump-table'.
+;;
+;; REMAINING (production cut-over -- runtime surgery, do as a focused task):
+;;   1. write {header(region sizes + 3 root offsets) + table + regions} to a
+;;      file at build time;
+;;   2. at boot, mmap a fresh arena, memcpy regions, apply the table
+;;      (image[F] += newbase), set a fresh EvalCtx's roots from the header
+;;      offsets;
 ;;   3. hook this BEFORE the source replay so cold start loads the image
 ;;      instead of re-evaluating all boot source.
 ;;   (Large objects + multi-live-chunk are not exercised by this heap; add if a
@@ -169,6 +178,7 @@
 (declare-function nelisp--arena-swizzle-verify "ext" ())
 (declare-function nelisp--arena-load-relocate-verify "ext" ())
 (declare-function nelisp--arena-image-root-verify "ext" ())
+(declare-function nelisp--arena-dump-table-verify "ext" ())
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -279,6 +289,18 @@ block walk reaches the end exactly).  Return a labelled plist;
     (list :relocated-ptrs (nth 0 r)
           :blocks (nth 1 r)
           :wellformed (= (nth 2 r) 1))))
+
+(defun nelisp-flat-arena-probe-dump-table ()
+  "Table-driven boot-load round trip via `nelisp--arena-dump-table-verify'.
+Builds the offset image + its relocation table, then relocates exactly as the
+boot loader would (per table entry F: image[F] += newbase) and checks the
+loaded image is well-formed.  Return a labelled plist; :loaded-wellformed t
+with :out-of-region 0 means the table fully drives the load."
+  (let ((r (nelisp--arena-dump-table-verify)))
+    (list :table-len (nth 0 r)
+          :out-of-region (nth 1 r)
+          :blocks (nth 2 r)
+          :loaded-wellformed (= (nth 3 r) 1))))
 
 (defun nelisp-flat-arena-probe-roots ()
   "Image offsets of the 3 EvalCtx roots via `nelisp--arena-image-root-verify'.

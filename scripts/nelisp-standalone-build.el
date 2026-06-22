@@ -2482,6 +2482,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-swizzle-verify") . (bf_arena_swizzle_verify out))
     ((:lit "nelisp--arena-load-relocate-verify") . (bf_arena_load_relocate_verify out))
     ((:lit "nelisp--arena-image-root-verify") . (bf_arena_image_root_verify out))
+    ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2901,6 +2902,23 @@ unresolved at link time."
     ;;   dir 2 relocate:  chunk-0 -> dest + (tgt - ds);
     ;;                    interned -> dest + span + (tgt - ib)
     ;;   dir 1 unswizzle: restore every touched word from the source (idempotent)
+    ;; Emit one in-image pointer field.  LOC = its slot in DEST; IMGOFF = the
+    ;; target's offset within the image (chunk-0 or interned, already encoded);
+    ;; FLDOFF = the field's own chunk-0 offset (= waddr - ds).  CIN counts +
+    ;; doubles as the relocation-table write index.  dir 0 swizzle (write
+    ;; IMGOFF), dir 2 relocate (write DEST+IMGOFF), dir 3 = dir 0 PLUS append
+    ;; FLDOFF to the relocation table (boot step: the table that drives a
+    ;; per-field linear relocate on load, with no graph walk).  The table lives
+    ;; in DEST after the two regions + a 256-byte counter pad.
+    (defun nl_fa_emit (loc imgoff fldoff dest span ib ie cin dir)
+      (let ((tbl (+ dest (+ span (+ (nl_align_up (if (< ie ib) 0 (- ie ib)) 8) 256)))))
+        (nl_seq2
+         (if (= dir 3)
+             (ptr-write-u64 (+ tbl (* 8 (ptr-read-u64 cin 0))) 0 fldoff)
+           0)
+         (nl_seq2
+          (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
+          (ptr-write-u64 loc 0 (if (= dir 2) (+ dest imgoff) imgoff))))))
     (defun nl_fa_field (waddr tgt ds span dest cin cout dir)
       (if (< waddr ds) 0
         (if (< waddr (+ ds span))
@@ -2911,17 +2929,11 @@ unresolved at link time."
               (if (= dir 1)
                   (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))
                 (if (if (< tgt ds) 0 (if (< tgt (+ ds span)) 1 0))
-                    ;; chunk-0 target
-                    (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
-                             (ptr-write-u64 loc 0
-                                            (if (= dir 0) (- tgt ds)
-                                              (+ tgt (- dest ds)))))
+                    (nl_fa_emit loc (- tgt ds) (- waddr ds)
+                                dest span ib ie cin dir)
                   (if (if (< tgt ib) 0 (if (< tgt ie) 1 0))
-                      ;; interned-region target
-                      (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
-                               (ptr-write-u64 loc 0
-                                              (if (= dir 0) (+ span (- tgt ib))
-                                                (+ dest (+ span (- tgt ib))))))
+                      (nl_fa_emit loc (+ span (- tgt ib)) (- waddr ds)
+                                  dest span ib ie cin dir)
                     (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))))))
           0)))
     (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
@@ -3179,6 +3191,75 @@ unresolved at link time."
          (wf_cons_int (nl_img_off ubox sstart slen ib ie) nil-slot s2)
          (wf_cons_int (nl_img_off fbox sstart slen ib ie) s2 s1)
          (wf_cons_int (nl_img_off gbox sstart slen ib ie) s1 out)
+         0)))
+    ;; flat-arena spike step 4-boot (table-driven load): the boot loader copies
+    ;; the regions, then relocates with a flat RELOCATION TABLE -- no per-type
+    ;; graph walk on load.  `bf_arena_dump_table_verify' demonstrates the whole
+    ;; thing in-process: build the offset image AND its table (swizzle dir 3
+    ;; records every pointer field's chunk-0 offset), then do the LOAD exactly
+    ;; as the boot would -- for each table entry F: DEST[F] += DEST (the image
+    ;; offset already encodes which region the target is in, so a single
+    ;; `+ DEST' lands it in chunk-0 or interned within DEST).  Then verify the
+    ;; loaded image is well-formed.  Returns (TABLE-LEN OUT-OF-REGION BLOCKS
+    ;; WELLFORMED): OUT-OF-REGION 0 + WELLFORMED 1 means the table fully
+    ;; describes the relocation and the table-driven load rebuilds a sound arena.
+    (defun bf_arena_dump_table_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (tcap (* 8 200000))
+             (dest (alloc-bytes (+ slen (+ isz (+ 256 tcap))) 8))
+             (tbl (+ dest (+ slen (+ isz 256))))
+             (cin (+ dest slen isz)) (cout (+ dest slen isz 8))
+             (cwf (+ dest slen isz 16)) (cnblk (+ dest slen isz 24))
+             (i 0) (j 0) (hdr 0) (ti 0) (n 0)
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+         (ptr-write-u64 cwf 0 1) (ptr-write-u64 cnblk 0 0)
+         ;; 1. copy chunk-0 + interned into DEST
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (while (< j isz)
+           (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0))
+                (setq j (+ j 8))))
+         ;; 2. swizzle DEST + emit the relocation table (dir 3)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_fa_roots sstart slen dest cin cout 3)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+         (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cnblk cnblk)
+         (ptr-write-u64 cnblk 0 0)
+         ;; 3. LOAD as the boot would: per table entry F, DEST[F] += DEST
+         (setq n (ptr-read-u64 cin 0))
+         (setq ti 0)
+         (while (< ti n)
+           (let ((f (ptr-read-u64 (+ tbl (* ti 8)) 0)))
+             (ptr-write-u64 (+ dest f) 0 (+ dest (ptr-read-u64 (+ dest f) 0))))
+           (setq ti (+ ti 1)))
+         ;; 4. verify the loaded image is well-formed (chunk-0 block walk)
+         (setq hdr 0)
+         (while (and (= (ptr-read-u64 cwf 0) 1) (< hdr slen))
+           (let* ((h (ptr-read-u64 (+ dest hdr) 0))
+                  (bt (- h (logand h 7))))
+             (if (< bt 8)
+                 (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+               (if (> (+ hdr bt) slen)
+                   (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+                 (nl_seq2 (ptr-write-u64 cnblk 0 (+ (ptr-read-u64 cnblk 0) 1))
+                          (setq hdr (+ hdr bt)))))))
+         (if (= hdr slen) 0 (ptr-write-u64 cwf 0 0))
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 cwf 0) nil-slot s3)
+         (wf_cons_int (ptr-read-u64 cnblk 0) s3 s2)
+         (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 cin 0) s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6774,6 +6855,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
     "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
+    "nelisp--arena-dump-table-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
