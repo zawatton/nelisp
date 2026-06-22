@@ -267,6 +267,26 @@ macroexpand は通る。core の =cl-defun= も raw arglist を lambda に渡す
 - 回避: optional default を使わず =&optional z= + body 先頭 =(unless z (setq z DEFAULT))= を
   手書きする (= desugar を caller 側で行う)。
 
+** A16. =concat= が nil 引数を "nil" 文字列化する (= rx を破壊)
+
+#+begin_src elisp
+(concat "a" nil "b")              ;=> "anilb"  (期待 "ab")
+(concat "x" nil)                  ;=> "xnil"   (期待 "x")
+(apply #'concat (list "p" nil "q")) ;=> "pnilq" (期待 "pq")
+(mapconcat #'identity '("a" "b") "") ;=> "ab"   (mapconcat は正常)
+#+end_src
+
+=concat= が nil 引数を *空 sequence でなく symbol nil → "nil"* として結合する。real
+Emacs は nil = 空 list 扱いで無視。=mapconcat= は正常。
+
+- *impact*: =rx= (regex DSL) が壊れる。rx は regexp を =concat= で組み立てるため、translation
+  中の nil 部品が "nil" として混入する。実測 (vendored rx.el): =(rx (+ digit))= →
+  ="[[:digit:]]+nil"=、=(rx (? "z"))= → ="z?nil"=、*=(rx (or "a" "b"))= → ="nil"* (完全破壊)。
+  literal / group / seq は無害。round 26 で rx vendoring を試みたが A16 で *silently wrong
+  regexp* を生むため bundle 収録は見送り (stub のまま)。
+- polyfill 不可級: =concat= は core 関数で全所で使われ、elisp override は危険 (perf/再帰)。
+  core が nil を空扱いすれば rx を含む多数が直る。round 26 で発見。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
