@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: OPEN — root cause NARROWED (§8.7: a growth-only stray write puts 32 zeros over live 32B Sexp boxes — the lexframe ht's bucket-count Int box / buckets slot — so bucket_count reads 0 and the bucket index overflows; allocator/read/clone AND freelist reuse all exonerated); next = HW watchpoint on the box to catch the wrong-DST store
+#+STATUS: ROOT CAUSE FOUND (§8.8: the DYNAMIC arena init enables unsound form-boundary mark-sweep — base+160=0 at line 1053 — so nl_gc_collect frees live growth-chunk lexframe ht children that the precise marker misses; the "stray write" is the free-link write over a live box). Verified one-line fix (line 1053 → 1, collection disabled): audit 5/5 rc=0. Fix not yet applied to HEAD (gated on container RC gate + fix-path choice A=disable vs B=sound-GC).
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -344,3 +344,61 @@ box address within ONE run — break right after the box is created in
 break→watch→continue (not a fixed-address watchpoint).  Alternative: instrument
 =nl_sci_store_imm='s Nil branch to record when DST already holds a live boxed
 tag.  Either pinpoints the exact wrong-DST store.
+
+** 8.8 ROOT CAUSE FOUND: form-boundary collection runs (unsound) (2026-06-22 d)
+
+The "stray write" IS the GC freeing a live block.  Probe chain (838605da/256
+MiB worktree, gdb defaults to ASLR-off so addresses are stable across runs):
+
+1. Set =nl_gc_sweep= to a NO-OP → audit 5/5 rc=0.  So a SWEEP is freeing a
+   live block.  (The free-link write =nl_gc_free_block_link= writes the bucket
+   next-pointer at =hdr+8= = the OBJECT's first word, clobbering its tag —
+   exactly the "32 zeros / wild value" seen in §8.6/§8.7.  The bucket-count
+   Int(16) box read back as =[next-ptr, ...]=, so =sexp-int-unwrap= → garbage
+   → huge bucket index → wild read.)
+2. Distinct =exit()= at each sweep call-site → audit exits 71 = the BOUNDARY
+   =nl_gc_collect= (not the safepoint / not the =garbage-collect= builtin,
+   which audit never calls; =nl_sf_while= is a stub so the safepoint never
+   fires).
+3. =nl_gc_collect='s reclaimer gate =268435616= (= base+160) reads 0 at run
+   time (exit 91), and gdb confirms =*(nl_arena_base+160) = 0=.  So collection
+   is ENABLED, despite the comment claiming it is disabled.
+4. ROOT CAUSE: the gate is seeded by TWO functions and they DISAGREE.
+   =nelisp-standalone--arena-init-metadata-forms= (STATIC, line ~989) writes
+   =base+160 = 1= (disabled).  But linux/win/macOS use the DYNAMIC variant
+   =nelisp-standalone--arena-init-metadata-forms-dynamic= (line ~1031), whose
+   line 1053 writes =base+160 = 0= with comment "collect ENABLED (S0 sound-GC:
+   form-boundary mark-sweep)".  So on every real (dynamic-arena) target,
+   form-boundary collection RUNS.
+
+Why it only crashes after growth: =nl_gc_collect= marks via =nl_gc_mark_roots=
+(precise) then sweeps the WHOLE chunk list (=nl_gc_sweep_chunks=).  The precise
+marker does NOT fully cover the lexframe hash-table's child boxes (bucket-count
+Int, buckets vector) once they land on a GROWTH chunk — the documented
+"standalone root/mark gap".  (=nl_gc_in_arena= itself DOES walk all chunks, so
+the gap is in the mark ROOT-SET/recursion over the frame stack, not the bounds
+check.)  Without growth (512 MiB first chunk) every live object is on chunk 0
+and survives; with growth the unmarked growth-chunk frame children are swept →
+freed → corrupted.  This is precisely the bug this doc was opened for.
+
+FIX (verified): set the DYNAMIC init's =base+160= back to =1= (collection
+DISABLED), matching the STATIC variant and the standing comment ("Keep
+collection disabled until the standalone root/mark gap is fixed").  One line
+(1053): =(+ ,b 160) 0 0= → =1=.  With the fix, audit 5/5 rc=0.  TRADE-OFF:
+no-reclaim reintroduces memory pressure (a 1M-cons micro-bench that finished
+with collection on now times out at 40s; real nelix workloads are modest and
+unaffected).  HEAD (=096b81de=/feat) carries the SAME line 1053 = 0 — the
+crash is LATENT there only because =3f318889= alloc-free dispatch keeps audit
+under the growth boundary.
+
+Two fix paths:
+- (A) DISABLE collection (line 1053 → 1).  Minimal, matches documented intent,
+  verified.  Cost: memory pressure (the pre-S0 state).
+- (B) SOUND GC: make =nl_gc_mark_roots= fully mark the frame-stack hash-table
+  children (so growth-chunk frame children survive), keeping collection on.
+  The "real" fix; larger and riskier; needs the precise root traversal over
+  env→frames→backing→frame records→ht record→slots audited for growth-chunk
+  coverage.
+
+Production change is gated on the container RC gate (per policy); not yet
+applied to HEAD.
