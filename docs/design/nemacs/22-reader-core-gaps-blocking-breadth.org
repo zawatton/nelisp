@@ -324,7 +324,18 @@ standalone reader の =string-match= / regex engine が POSIX 文字クラス
 - 別途: =(rx (or "a" "b"))= が *nil を返す* (error でなく silent nil)。rx--translate-or /
   =regexp-opt= (fbound) 経路の runtime 差。A16/A17 とは別の rx-internal 課題。
 
-** A18. =(rx (or STRINGS...))= が空の alternation =\(?:\)= を生成 (rx-internal)
+** A18. =(rx (or STRINGS...))= が空の alternation =\(?:\)= を生成 — *FIXED 2026-06-22*
+
+*FIXED* (commit d35f1d1): 真因は =mapcan= の no-op stub。=emacs-stub-bulk.el= の
+=--stub-defuns--= リストが =mapcan= を =(closure (&rest _) nil)= で stub し、subr-x の real
+=mapcan= (gated) を shadow していた (=symbol-function= で確認、regexp-opt と同 systemic 問題)。
+rx の =rx--collect-or-strings= が =mapcan= を使うため =(rx (or ..))= が空リストを regexp-opt へ
+渡していた。=mapcan= を stub list から除去 → real mapcan が有効化。検証: =(mapcan #'list '(1 2 3))=
+→ (1 2 3)、=(rx (or "cat" "dog"))= → ="\\(?:cat\\|dog\\)"=。これにより rx は A16/A17/regexp-opt/A18
+全解決で *end-to-end 動作*し bundle 収録 (=src/rx.el= vendored)。
+*systemic note*: bulk stub list は real impl を持つ関数を誤って no-op stub する設計バグがあり、
+=mapcan= / =regexp-opt= で顕在化。他にも =record= / =recordp= 等 list 内に real-impl 候補が残る
+可能性 (要 audit)。
 
 A16(concat) / A17(POSIX) / regexp-opt を全て直した後も =(rx (or "cat" "dog"))= は
 ="\\(?:\\)"= (中身空) を返す。=regexp-opt= 単体は正しく ="\\(?:cat\\|dog\\)"= を返すので、
