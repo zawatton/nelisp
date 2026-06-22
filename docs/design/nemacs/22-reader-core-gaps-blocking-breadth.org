@@ -365,8 +365,13 @@ real impl の gate (=unless (fboundp)= や bulk 非対応 =--define-p=) で skip
   misc (documentation/set-match-data/local-variable-p/markerp 等)。多くは standalone reader で
   no-op が文脈的に妥当だが、一部 (documentation/set-match-data/local-variable-p 等) は要 review。
 
-*systemic 根治案*: =emacs-stub-bulk= を *最後に load* すれば、全 real impl 確定後に真に VOID な
-名前だけ stub され、shadowing が原理的に消える。current は load 順依存の per-function 修正。
+*systemic 根治 — DONE (commit 221f1df)*: =emacs-stub-bulk= を bundle の *最後に load* するよう
+=nelisp-bootstrap--complete-file-list= で末尾移動 (旧位置 = 108 中 12 番目)。全 real impl 確定後に
+真に VOID な名前だけ stub され shadowing が原理的に消える。効果: wrongly-stubbed が *84 → 27* に減少
+(残 27 は real impl が standalone で *条件 gate off* される buffer/window/process/motion 系で、no-op
+stub が妥当)。boot 無退行 (BOOT-OK、rx/cl-do/cl-typecase/seq 動作、=set-match-data= が real 化し
+=(string-match "b\\(c\\)" "abcd")= の group capture = (1 3 "c") も動作)。pure 10 の手動 un-stub
+(commit 296bb0c) は冗長になったが無害。
 
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
