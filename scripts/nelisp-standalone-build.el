@@ -4712,6 +4712,30 @@ unresolved at link time."
              (bf_mksym_hex (atomic-fetch-add 268435544 1) buf (+ n 20) 15)
              (nl_alloc_symbol buf (+ n 36) out)
              0)))
+    ;; Doc 22 A14 (test harness): `record' / `recordp'.  The reader left these
+    ;; VOID so no tag-12 Record could be built (and thus the aref-on-record
+    ;; SEGFAULT could not be reproduced on the bare reader).  `(record TYPE
+    ;; SLOTS...)' = type tag (car) + data slots (cdr); built with the
+    ;; `record-make' / `record-slot-set' grammar ops, mirroring bf_make_vector.
+    (defun bf_record_count (node acc)
+      (if (= (ptr-read-u64 node 0) 7)
+          (bf_record_count (nl_cons_cdr_ptr node) (+ acc 1))
+        acc))
+    (defun bf_record_fill (rec i node)
+      (if (= (ptr-read-u64 node 0) 7)
+          (seq (record-slot-set rec i (nl_cons_car_ptr node))
+               (bf_record_fill rec (+ i 1) (nl_cons_cdr_ptr node)))
+        0))
+    (defun bf_record (args out)
+      (let* ((tag (nl_cons_car_ptr args))
+             (slots (nl_cons_cdr_ptr args))
+             (n (bf_record_count slots 0)))
+        (seq (record-make tag n out)
+             (bf_record_fill out 0 slots)
+             0)))
+    (defun bf_recordp (args out)
+      (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 12)
+          (wf_write_t out) (wf_write_nil out)))
     ;; make-vector LEN INIT -> Vector(tag8) with every slot = INIT (cloned).
     ;; NB: use the `vector-slot-set' GRAMMAR OP (takes the Sexp ptr, derefs the
     ;; box internally), NOT the raw nl_vector_set_slot (which wants the box ptr).
@@ -4763,7 +4787,18 @@ unresolved at link time."
              (tg (ptr-read-u64 arr 0)))
         (if (= tg 8)
             (seq (wf_copy32 out (vector-ref-ptr arr idx)) 0)
-          (wf_write_int out (str-byte-at arr idx)))))
+          ;; Doc 22 A14: Record(12).  The stock else-arm fell through to
+          ;; `str-byte-at', dereferencing the record Sexp's offset-16 word as a
+          ;; string data pointer (= the SEGFAULT the doc observed on a struct).
+          ;; Host Emacs records expose the type tag at index 0 and data slots at
+          ;; index 1..N; this reader stores the type tag separately (box+0) from
+          ;; the slots vector, so aref 0 -> `record-type-tag', aref k>0 ->
+          ;; `record-slot-ref' of data slot k-1.
+          (if (= tg 12)
+              (if (= idx 0)
+                  (seq (record-type-tag arr out) 0)
+                (seq (record-slot-ref arr (- idx 1) out) 0))
+            (wf_write_int out (str-byte-at arr idx))))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -5366,6 +5401,8 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; --- vector ops ---
     ((:lit "make-vector") . (bf_make_vector args out))
     ((:lit "vector")      . (bf_vector args out))
+    ((:lit "record")      . (bf_record args out))
+    ((:lit "recordp")     . (bf_recordp args out))
     ((:lit "aref")        . (bf_aref args out))
     ((:lit "elt")         . (bf_elt args out))
     ((:lit "aset")        . (bf_aset args out))
@@ -5484,7 +5521,7 @@ ash/logand/logior/logxor/lognot + string<.")
   '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
-    "make-vector" "vector" "aref" "elt" "aset"
+    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp"
     "signal" "error" "equal" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
@@ -7463,7 +7500,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
-    "make-vector" "vector" "aref" "elt" "aset"
+    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"

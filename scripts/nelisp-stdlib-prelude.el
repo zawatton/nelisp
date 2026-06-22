@@ -3170,10 +3170,11 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
 (defun nelisp--record-ref (rec i) (aref rec (1+ i)))
 (unless (fboundp 'nelisp--record-set)
   (defun nelisp--record-set (rec i val) (aset rec (1+ i) val) val))
-;; A record is represented as a vector; the real discrimination is the
-;; type-tag check inside cl-defstruct predicates, so a permissive
-;; vectorp-based recordp is sufficient here (replaces the nil stub).
-(defun recordp (x) (vectorp x))
+;; Doc 22 A14: the bare reader now builds genuine tag-12 Records (via the
+;; native `record' builtin) and `recordp' is a native tag-12 check, so prefer
+;; it.  Fall back to the permissive vectorp-based form only if no native
+;; `recordp' is bound (the old workaround when records surfaced as vectors).
+(unless (fboundp 'recordp) (defun recordp (x) (vectorp x)))
 
 ;; Hash-table predicate + iteration for the reader's builtin hash table.
 ;; The builtin `make-hash-table' returns the cons pair (MARKER . ALIST) where
