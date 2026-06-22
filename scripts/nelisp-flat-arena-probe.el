@@ -121,19 +121,28 @@
 ;; arbitrary (kernel-chosen) base as a sound arena -- the load half of the
 ;; memcpy+relocate round trip.  See `nelisp-flat-arena-probe-load-relocate'.
 ;;
-;; STEP 3c all-roots (DONE): swizzle/relocate now walk from the COMPLETE root
-;; set (all published frames + transients + symentry, via `nl_fa_roots'), not
-;; just frame[0] globals -- in-region pointers grew ~75.7k -> ~76.1k, still
-;; reversible (mismatch 0) and load-valid.
+;; STEP 3c (DONE): the image is now COMPLETE.
+;;   - all roots: swizzle/relocate walk from every published frame + reader
+;;     transients + symentry (`nl_fa_roots'), not just frame[0] globals.
+;;   - all chunks: measured chunk-count = 1 (the live heap is entirely in
+;;     chunk-0; growth chunks were transient GC garbage), so the single-chunk
+;;     copy already covers every live chunk.
+;;   - external regions: the image carries TWO regions -- chunk-0 at offset
+;;     [0,span) and the interned symbol-name region at [span, span+isize) --
+;;     and a pointer target is swizzled into whichever region holds it.
+;;   Result on target/nelisp: ~90 k pointers swizzle into the image,
+;;   OUT-OF-REGION = 0 (the former ~13.8k out-of-region were all interned
+;;   symbol-name targets; no large objects in this heap's live graph),
+;;   ROUNDTRIP-MISMATCH = 0, and the load relocates all ~90 k into a fresh
+;;   base with both regions copied -> WELLFORMED = 1.  Every live inter-object
+;;   pointer is now relocatable: the dump<->load mechanism is complete.
 ;;
-;; NEXT STEPS (not in this file):
-;;   step 3c    all-chunks / external regions: extend the copy + the
-;;              swizzle/relocate to every chunk (chunk-descriptor chain) and
-;;              the interned-symbol-name region + large objects via a region
-;;              map, so the ~13.8k out-of-region pointers also swizzle.
+;; NEXT STEP (not in this file):
 ;;   step 4-boot install a loaded+relocated image as the live heap (fresh
-;;              EvalCtx + roots) and hook it into boot BEFORE the source replay
-;;              -- the actual cold-start speedup.  Needs step 3c completeness.
+;;              EvalCtx whose roots point at the loaded globals/frames) and
+;;              hook it into boot BEFORE the source replay -- the actual
+;;              cold-start speedup.  (Large objects + multi-live-chunk are not
+;;              exercised by this heap; add them if a future heap needs them.)
 
 ;;; Code:
 

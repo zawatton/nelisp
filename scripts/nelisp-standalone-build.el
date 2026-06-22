@@ -2885,37 +2885,43 @@ unresolved at link time."
     ;;
     ;; nl_fa_field: swizzle/unswizzle ONE pointer word living at source addr
     ;; WADDR whose value is TGT.  DS/SPAN = chunk-0 data-start / used span;
-    ;; DEST = copy base.  Only fields whose ADDRESS is inside chunk-0 are
-    ;; touched (root slots live in the EvalCtx, outside chunk-0 -> skipped:
-    ;; they are reinstalled on load).  A target outside chunk-0 (interned /
-    ;; large-object / growth chunk) is counted but left as-is for now.
+    ;; DEST = image base.  Only fields whose ADDRESS is inside chunk-0 are
+    ;; touched (every pointer field lives in a chunk-0 object; root slots live
+    ;; in the EvalCtx, outside chunk-0 -> skipped, reinstalled on load).
+    ;;
+    ;; step 3c multi-region: the IMAGE holds two regions -- chunk-0 at image
+    ;; offset [0,span), then the interned symbol-name region at [span, ...).
+    ;; A target is classified into chunk-0, interned, or out (large objects /
+    ;; other).  The interned region bounds are read from the chunk-0 metadata
+    ;; relative to DS (base = ds - 1024; intern base @ base+832, end @ base+840),
+    ;; so no extra params thread through the walk.  `cin' counts pointers that
+    ;; landed in the image (chunk-0 + interned); `cout' counts the rest.
+    ;;   dir 0 swizzle:   chunk-0 -> (tgt - ds);  interned -> (span + (tgt - ib))
+    ;;   dir 2 relocate:  chunk-0 -> dest + (tgt - ds);
+    ;;                    interned -> dest + span + (tgt - ib)
+    ;;   dir 1 unswizzle: restore every touched word from the source (idempotent)
     (defun nl_fa_field (waddr tgt ds span dest cin cout dir)
       (if (< waddr ds) 0
         (if (< waddr (+ ds span))
-            (let ((loc (+ dest (- waddr ds))))
-              (if (= dir 0)
-                  ;; swizzle abs -> offset, only for an in-region target
-                  (if (< tgt ds)
-                      (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))
-                    (if (< tgt (+ ds span))
-                        (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
-                                 (ptr-write-u64 loc 0 (- tgt ds)))
-                      (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))))
-                (if (= dir 2)
-                    ;; LOAD relocate: rebase an in-region pointer to DEST's
-                    ;; base.  DEST[loc] = tgt + (dest - ds), i.e. the copied
-                    ;; object's new home dest + (tgt - ds).  Equivalent to
-                    ;; adding the constant delta (dest - ds) to every in-region
-                    ;; pointer, which is exactly what a load into a fresh base
-                    ;; does.  cin counts the relocated pointers.
-                    (if (< tgt ds) 0
-                      (if (< tgt (+ ds span))
-                          (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
-                                   (ptr-write-u64 loc 0 (+ tgt (- dest ds))))
-                        0))
-                  ;; dir 1 unswizzle: restore the copy word straight from the
-                  ;; (never mutated) source field -- idempotent.
-                  (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0)))))
+            (let* ((loc (+ dest (- waddr ds)))
+                   (base (- ds 1024))
+                   (ib (ptr-read-u64 (+ base 832) 0))
+                   (ie (ptr-read-u64 (+ base 840) 0)))
+              (if (= dir 1)
+                  (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))
+                (if (if (< tgt ds) 0 (if (< tgt (+ ds span)) 1 0))
+                    ;; chunk-0 target
+                    (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
+                             (ptr-write-u64 loc 0
+                                            (if (= dir 0) (- tgt ds)
+                                              (+ tgt (- dest ds)))))
+                  (if (if (< tgt ib) 0 (if (< tgt ie) 1 0))
+                      ;; interned-region target
+                      (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
+                               (ptr-write-u64 loc 0
+                                              (if (= dir 0) (+ span (- tgt ib))
+                                                (+ dest (+ span (- tgt ib))))))
+                    (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))))))
           0)))
     (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
       (if (= (nl_gc_in_arena data_ptr) 0) 0
@@ -3082,13 +3088,20 @@ unresolved at link time."
              (sstart (ptr-read-u64 (+ head 24) 0))
              (cursor (bf_arena_chunk_cursor head))
              (slen (if (< cursor 1024) 0 (- cursor 1024)))
-             (dest (alloc-bytes (+ slen 256) 8))
-             (crel (+ dest slen)) (cwf (+ dest slen 8))
-             (cnblk (+ dest slen 16)) (ctr (+ dest slen 24))
+             ;; step 3c: the image is two regions -- chunk-0 [0,slen) then the
+             ;; interned symbol-name region [slen, slen+isz).  Copy BOTH so the
+             ;; relocated interned pointers (dest+slen+off) land on real data.
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (dest (alloc-bytes (+ (+ slen isz) 256) 8))
+             (crel (+ dest slen isz)) (cwf (+ dest slen isz 8))
+             (cnblk (+ dest slen isz 16)) (ctr (+ dest slen isz 24))
              (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
              (env (if (= depth 0) 0
                     (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
-             (i 0) (hdr 0)
+             (i 0) (j 0) (hdr 0)
              (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 crel 0 0) (ptr-write-u64 cwf 0 1) (ptr-write-u64 cnblk 0 0)
@@ -3096,6 +3109,10 @@ unresolved at link time."
          (while (< i slen)
            (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
                 (setq i (+ i 8))))
+         ;; 1b. copy the interned region into DEST[slen .. slen+isz)
+         (while (< j isz)
+           (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0))
+                (setq j (+ j 8))))
          (if (= env 0) 0
            (seq
             ;; 2. relocate DEST's in-region pointers to base = dest (dir 2),
