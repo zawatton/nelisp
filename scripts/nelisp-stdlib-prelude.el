@@ -3196,6 +3196,31 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
       (setq node (cdr node)))
     nil))
 
+;; Doc 22 C1: hash-table introspection over the core `(Int(0) . alist)' shape.
+;; The reader ignores `:test' -- every table uses the native key compare
+;; (wf_key_eq: ints by value, symbols by name, strings by bytes = `equal'
+;; semantics), so the effective and only honest test to report is `equal'.
+;; `copy-hash-table' therefore preserves behaviour with a plain entry copy and
+;; needs no test argument; the marker (car) MUST stay the integer 0 that
+;; `hash-table-p' keys off, so the requested `:test' cannot be stashed there.
+(unless (fboundp 'hash-table-test)
+  (defun hash-table-test (_table) 'equal))
+(unless (fboundp 'copy-hash-table)
+  (defun copy-hash-table (table)
+    (let ((new (make-hash-table)))
+      (maphash (lambda (k v) (puthash k v new)) table)
+      new)))
+(unless (fboundp 'hash-table-keys)
+  (defun hash-table-keys (table)
+    (let ((acc nil))
+      (maphash (lambda (k _v) (setq acc (cons k acc))) table)
+      (nreverse acc))))
+(unless (fboundp 'hash-table-values)
+  (defun hash-table-values (table)
+    (let ((acc nil))
+      (maphash (lambda (_k v) (setq acc (cons v acc))) table)
+      (nreverse acc))))
+
 (defun nelisp--prn-chunks-add (state chunk)
   (let ((cell (cons chunk nil)))
     (if (car state)
