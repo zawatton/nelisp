@@ -9379,6 +9379,21 @@ correctly."
                 (ptr-write-u64 slot 8 (+ (ptr-read-u64 slot 8) (- ib oldib))))
               (setq idx (+ idx 1)))))
          0)))
+    ;; Zero N bytes from START (8-byte stride; N is a multiple of 8).  Used to
+    ;; scrub the dead relocation table out of chunk-0 before the bump cursor is
+    ;; re-armed over it.  CRITICAL: the table was read into [ds+slen, ds+slen+
+    ;; tlen*8) and the cursor is set to 1024+slen, so the FIRST post-load allocs
+    ;; (globals/frames/unbound/ctx/pool/...) land on top of those bytes.  A fresh
+    ;; mmap arena hands out zeroed pages and the boot constructors rely on it
+    ;; (they write only the fields they care about, assuming the rest is 0 -- the
+    ;; same invariant `nl_alloc_zero_fill' restores for reused blocks).  Without
+    ;; this scrub, e.g. EvalCtx+112 (the use-elisp flags word) inherits a stale
+    ;; table byte -> garbage flags -> eval misbehaves (args evaluate to nil).
+    (defun nl_cold_zero (start n)
+      (let ((i 0))
+        (seq
+         (while (< i n) (nl_seq2 (ptr-write-u64 (+ start i) 0 0) (setq i (+ i 8))))
+         0)))
     ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
     ;; globals/etc. (so they land after the image).  Reads {header|table|regions}
     ;; via the OS helpers directly into final/scratch arena locations (no
@@ -9410,6 +9425,10 @@ correctly."
                 (nl_os_close_handle fd)
                 (nl_cold_reloc tbl tlen ds slen ib)
                 (nl_cold_reloc_intern ib oldib)
+                ;; scrub the now-dead relocation table so the bump cursor (set to
+                ;; 1024+slen below) re-arms over ZEROED memory -- matching the
+                ;; fresh-mmap invariant the boot constructors depend on.
+                (nl_cold_zero tbl (* tlen 8))
                 (nl_cold_clear_marks ds (+ ds slen))
                 (ptr-write-u64 base 0 (+ 1024 slen))
                 (ptr-write-u64 (+ base 840) 0 (+ ib isz))
