@@ -2,13 +2,15 @@
 #+AUTHOR: nelisp-emacs
 #+DATE: 2026-06-21
 #+STATUS: FILED — github.com/zawatton/nelisp#7 (2026-06-21)
-#+PROGRESS: 2026-06-22 — A16/A17/A18/A19 (rx 系) + A1/A2/A3/A5/A6/A10/A12 (本バッチ、prelude
-#+PROGRESS:   commit 81eaf9e3) を全て *pure-elisp で FIXED*。重要な発見: bare reader の native
-#+PROGRESS:   primitive は prelude (=scripts/nelisp-stdlib-prelude.el=) の override で訂正可能
-#+PROGRESS:   (=fset= の function-cell 解決を実証) — doc 当初の「core を直さねば消えない」前提は
-#+PROGRESS:   多くの誤値 bug に当てはまらなかった。残: A4(aset string=immutable)、A7(format 幅)、
-#+PROGRESS:   A8(let dynamic crash)、A9(princ redirect)、A11(make-symbol identity)、A13(type-of
-#+PROGRESS:   VOID)、A14/A15(crash)、A20(eq string=length、新規)。
+#+PROGRESS: 2026-06-22 — A16/A17/A18/A19 (rx 系) + A1/A2/A3/A5/A6/A7/A9/A10/A12/A13 を全て
+#+PROGRESS:   *pure-elisp で FIXED*、A8 は dlet を partial FIXED (prelude commits 81eaf9e3 /
+#+PROGRESS:   a61c8efe / 8ca03316 / f3767c71)。重要な発見: bare reader の native primitive は
+#+PROGRESS:   prelude (=scripts/nelisp-stdlib-prelude.el=) の override で訂正可能 (=fset= の
+#+PROGRESS:   function-cell 解決を実証)、かつ dynamic binding も機能する (A8 の crash 主張は誤り、
+#+PROGRESS:   実態は symbol-value 誤値のみ) — doc 当初の「core を直さねば消えない」前提は多くの gap に
+#+PROGRESS:   当てはまらなかった。残 (深い native core/crash、prelude 不可): A4(aset string=immutable)、
+#+PROGRESS:   A11(make-symbol identity)、A14/A15(crash)、A20(eq string=length, 新規)、
+#+PROGRESS:   A8 の symbol-value 誤値、C1(hash-table-test)。
 
 * 0. Purpose
 
@@ -157,7 +159,15 @@ override の latent bug (native substring に明示 nil =to= を渡すと "" に
 
 - *impact*: 整形出力全般。回避策は手動 pad。
 
-** A8. =let= が lexical のみ / 動的束縛が機能せず crash
+** A8. =let= が lexical のみ / 動的束縛が機能せず crash — *PARTIALLY FIXED 2026-06-22 (dlet)*
+
+*RE-CHARACTERIZED + PARTIALLY FIXED* (prelude, commit f3767c71): 当初の「動的束縛が機能せず crash」は
+*誤り*。実測: =(defvar X)= 済 special の =let= 束縛は *別関数から見え* (=42=)、=let= は正しく unwind し
+(=restore=)、=set= も動的束縛を mutate する (=8=)。残る唯一の不具合は =symbol-value= を let-bound special に
+適用すると *global 値を返す* (=(let ((svl 9)) (symbol-value 'svl))=→1、crash ではなく誤値) こと — これは
+native core の制約で prelude 不可。よって VOID だった =dlet= を =(progn (defvar V)... (let BINDERS BODY))=
+へ展開する macro として追加。直接参照ベースのコードは動く。検証: dlet 束縛の関数跨ぎ可視・restore・
+multi-binding・body 直接参照。*回避*: dlet-bound 変数は =symbol-value= でなく直接参照で読む。
 
 #+begin_src elisp
 (progn (defvar dv) (let ((dv 7)) (symbol-value 'dv)))  ;=> crash (catch 不能)
@@ -170,7 +180,18 @@ lexical only と思われる。
 - *impact*: =dlet= (動的 let macro、Doc 16 round 12) が機能せず延期。=let= 内で
   =symbol-value= を使うコード全般が危険。
 
-** A9. =princ= / =print= が buffer / function の =standard-output= を無視
+** A9. =princ= / =print= が buffer / function の =standard-output= を無視 — *FIXED 2026-06-22 (function stream)*
+
+*FIXED* (prelude, commit 8ca03316): 重要な前提修正 — *dynamic binding は bare reader で機能する*。
+=(defvar X)= で special 宣言した変数の =let= 束縛は *別関数からも見える* (実証: =(let ((standard-output
+99)) (rdso))=→99)。A8 の crash は =symbol-value= を let-bound special に適用した時 *のみ*。よって
+=standard-output= を =(defvar standard-output nil)= で special 化し、=princ= / =prin1= / =terpri= を
+override して *function stream* (1 char / funcall、host 契約) と =standard-output= を honor、stream が
+nil/t の時は native へ fast-path (通常の stdout 出力・REPL echo は無改変)。=print= / =write-char= は
+VOID だったので新規定義。=with-output-to-string= を string-accumulator function を =standard-output= に
+束ねる形で実装 (Doc 16 round 12 解禁)。検証: function-stream princ、let-bound redirect、
+with-output-to-string (basic/terpri/nested/empty)。*注*: buffer は insert しても =buffer-string= が ""
+を返す (bare reader の buffer 非機能) ため buffer stream 経路は best-effort のみ。
 
 #+begin_src elisp
 (let ((standard-output (generate-new-buffer " *t*")))
