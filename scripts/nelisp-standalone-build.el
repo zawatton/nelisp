@@ -4974,6 +4974,14 @@ unresolved at link time."
          (nl_env_set_value env sym val)
          (wf_copy32 out val)
          0)))
+    ;; Doc 22 A8: `symbol-value' must see a dynamic `let' binding, like a direct
+    ;; variable reference does.  The prelude fallback read only the global mirror
+    ;; (nelisp--env-globals-get-value), so (let ((x 9)) (symbol-value 'x)) saw
+    ;; the global, not 9.  Route through `nelisp_env_lookup_value' (frame stack
+    ;; first, then mirror) with the same env layout the eval machinery uses:
+    ;; mirror @ env+0, frame-stack @ env+32.  rc is the void-variable sentinel.
+    (defun bf_symbol_value (args env out)
+      (nelisp_env_lookup_value (+ env 0) (+ env 32) (wf_arg_ptr args 0) out))
     ;; load FILE &optional ... -> t.  Minimal standalone-reader command surface:
     ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
     ;; reader, and evaluate it in the caller's ENV.  This intentionally mirrors
@@ -5340,6 +5348,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                                (if (= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
                              (wf_write_nil out))))
     ((:lit "set")      . (bf_set args env out))
+    ((:lit "symbol-value") . (bf_symbol_value args env out))
     ((:lit "fboundp")  . (bf_fboundp args env out))
     ((:lit "boundp")   . (bf_boundp args env out))
     ((:lit "featurep") . (wf_write_nil out))
@@ -5473,7 +5482,7 @@ ash/logand/logior/logxor/lognot + string<.")
 
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
-    "vectorp" "listp" "zerop" "set" "fboundp" "boundp" "featurep" "provide" "require"
+    "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
     "make-vector" "vector" "aref" "elt" "aset"
     "signal" "error" "equal" "setcar" "setcdr" "load"
@@ -7452,7 +7461,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
-    "vectorp" "listp" "zerop" "set" "fboundp" "boundp" "featurep" "provide" "require"
+    "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
     "make-vector" "vector" "aref" "elt" "aset"
     "signal" "error" "equal" "setcar" "setcdr"
