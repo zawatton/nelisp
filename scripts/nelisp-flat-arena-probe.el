@@ -106,14 +106,26 @@
 ;; reversible, with and without a prior GC); source uncorrupted (A12 +
 ;; eval still work).  See `nelisp-flat-arena-probe-swizzle'.
 ;;
+;; STEP 4 (core LOAD mechanic DONE): baked
+;; `nelisp--arena-load-relocate-verify' copies chunk-0 into a fresh buffer
+;; (its address is the new base), rebases every in-region pointer to that
+;; base via the per-type walk (dir 2: field = target + (newbase - oldbase)),
+;; then verifies the loaded image is a STRUCTURALLY VALID arena -- a linear
+;; [header][object] walk of the relocated buffer reaches the end exactly
+;; (relocate touched only pointer fields, never the block headers).  Returns
+;; (RELOCATED-PTRS BLOCKS WELLFORMED).  On target/nelisp: ~75.7 k pointers
+;; relocated (== the swizzle's in-region count, a cross-check), ~464 k blocks,
+;; WELLFORMED = 1; source uncorrupted.  This proves an image relocates to an
+;; arbitrary (kernel-chosen) base as a sound arena -- the load half of the
+;; memcpy+relocate round trip.  See `nelisp-flat-arena-probe-load-relocate'.
+;;
 ;; NEXT STEPS (not in this file):
-;;   step 3c  extend the copy + swizzle to every chunk and all roots (frames,
-;;            transients, symentry), and carry the out-of-region targets
-;;            (interned region + large objects) into the image so their
-;;            pointers swizzle too.
-;;   step 4   load: alloc fresh chunks, memcpy, unswizzle to the new base,
-;;            install the roots into a fresh EvalCtx; boot hook before the
-;;            source-replay fallback.
+;;   step 3c    extend copy + swizzle + relocate to every chunk and all roots
+;;              (frames, transients, symentry), and carry the out-of-region
+;;              targets (interned region + large objects) into the image.
+;;   step 4-boot install a loaded+relocated image as the live heap (fresh
+;;              EvalCtx + roots) and hook it into boot BEFORE the source replay
+;;              -- the actual cold-start speedup.  Needs step 3c completeness.
 
 ;;; Code:
 
@@ -126,6 +138,7 @@
 (declare-function nelisp--arena-dump-copy-verify "ext" ())
 (declare-function nelisp--arena-mark-reach-verify "ext" ())
 (declare-function nelisp--arena-swizzle-verify "ext" ())
+(declare-function nelisp--arena-load-relocate-verify "ext" ())
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -226,8 +239,19 @@ byte-identical.  The source heap is never written.  Return a labelled plist;
           :roundtrip-mismatch (nth 2 r)
           :reversible (= (nth 2 r) 0))))
 
+(defun nelisp-flat-arena-probe-load-relocate ()
+  "Load round trip via the baked `nelisp--arena-load-relocate-verify' op.
+Copies chunk-0 into a fresh buffer, rebases its pointers to that buffer's
+base, and confirms the relocated image is a structurally valid arena (linear
+block walk reaches the end exactly).  Return a labelled plist;
+:wellformed t means the image loads to a fresh base as a sound arena."
+  (let ((r (nelisp--arena-load-relocate-verify)))
+    (list :relocated-ptrs (nth 0 r)
+          :blocks (nth 1 r)
+          :wellformed (= (nth 2 r) 1))))
+
 (defun nelisp-flat-arena-probe-report (&optional limit)
-  "Print the walk, full walk, bulk-copy, root-coverage, and swizzle checks."
+  "Print the walk, full walk, bulk-copy, root-coverage, swizzle, and load."
   (princ (nelisp-flat-arena-probe-walk limit))
   (princ "\n")
   (princ (nelisp-flat-arena-probe-verify-full))
@@ -236,7 +260,9 @@ byte-identical.  The source heap is never written.  Return a labelled plist;
   (princ "\n")
   (princ (nelisp-flat-arena-probe-mark-reach t))
   (princ "\n")
-  (princ (nelisp-flat-arena-probe-swizzle)))
+  (princ (nelisp-flat-arena-probe-swizzle))
+  (princ "\n")
+  (princ (nelisp-flat-arena-probe-load-relocate)))
 
 (provide 'nelisp-flat-arena-probe)
 

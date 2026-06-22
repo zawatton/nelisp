@@ -2480,6 +2480,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
     ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
     ((:lit "nelisp--arena-swizzle-verify") . (bf_arena_swizzle_verify out))
+    ((:lit "nelisp--arena-load-relocate-verify") . (bf_arena_load_relocate_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2900,11 +2901,21 @@ unresolved at link time."
                         (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
                                  (ptr-write-u64 loc 0 (- tgt ds)))
                       (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))))
-                ;; unswizzle: restore the copy word straight from the (never
-                ;; mutated) source field -- idempotent, so a field visited a
-                ;; different number of times across passes still restores
-                ;; exactly.
-                (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))))
+                (if (= dir 2)
+                    ;; LOAD relocate: rebase an in-region pointer to DEST's
+                    ;; base.  DEST[loc] = tgt + (dest - ds), i.e. the copied
+                    ;; object's new home dest + (tgt - ds).  Equivalent to
+                    ;; adding the constant delta (dest - ds) to every in-region
+                    ;; pointer, which is exactly what a load into a fresh base
+                    ;; does.  cin counts the relocated pointers.
+                    (if (< tgt ds) 0
+                      (if (< tgt (+ ds span))
+                          (nl_seq2 (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
+                                   (ptr-write-u64 loc 0 (+ tgt (- dest ds))))
+                        0))
+                  ;; dir 1 unswizzle: restore the copy word straight from the
+                  ;; (never mutated) source field -- idempotent.
+                  (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0)))))
           0)))
     (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
       (if (= (nl_gc_in_arena data_ptr) 0) 0
@@ -3023,6 +3034,65 @@ unresolved at link time."
          (wf_cons_int (ptr-read-u64 cmis 0) nil-slot s2)
          (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
          (wf_cons_int (ptr-read-u64 cin 0) s1 out)
+         0)))
+    ;; flat-arena spike step 4 (core LOAD mechanic): relocate the image into a
+    ;; FRESH base and prove the result is a structurally valid arena.  Copy
+    ;; chunk-0 into DEST (so DEST itself is the new base = where data-start now
+    ;; lives), then rebase every in-region pointer to DEST via the per-type
+    ;; walk (dir 2: DEST[field] = tgt + (dest - sstart)).  This is exactly what
+    ;; loading the relocatable image at a kernel-chosen base does.  Then verify
+    ;; the LOADED image is well-formed: a linear [header][object] walk of DEST
+    ;; must reach the end exactly (relocate only rewrote pointer fields, never
+    ;; the BLOCK_TOTAL headers).  Returns (RELOCATED-PTRS BLOCKS WELLFORMED);
+    ;; RELOCATED-PTRS should match the swizzle's in-region count and WELLFORMED
+    ;; = 1 means the load produced a sound arena at the new base.  (Single-root
+    ;; + chunk-0; the boot hook that installs a loaded image in place of the
+    ;; source replay is the remaining integration -- it needs the multi-region
+    ;; / multi-root completeness of step 3c first.)
+    (defun bf_arena_load_relocate_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (dest (alloc-bytes (+ slen 256) 8))
+             (crel (+ dest slen)) (cwf (+ dest slen 8))
+             (cnblk (+ dest slen 16)) (ctr (+ dest slen 24))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (i 0) (hdr 0)
+             (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 crel 0 0) (ptr-write-u64 cwf 0 1) (ptr-write-u64 cnblk 0 0)
+         ;; 1. copy chunk-0 live region into DEST (DEST is the new base)
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (if (= env 0) 0
+           (seq
+            ;; 2. relocate DEST's in-region pointers to base = dest (dir 2)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_slot (+ env 0) sstart slen dest crel ctr 2)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)
+            ;; 3. verify the LOADED image: linear [hdr][obj] walk of DEST must
+            ;; reach the end exactly (block headers untouched by relocate).
+            (setq hdr 0)
+            (while (and (= (ptr-read-u64 cwf 0) 1) (< hdr slen))
+              (let* ((h (ptr-read-u64 (+ dest hdr) 0))
+                     (bt (- h (logand h 7))))
+                (if (< bt 8)
+                    (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+                  (if (> (+ hdr bt) slen)
+                      (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+                    (nl_seq2 (ptr-write-u64 cnblk 0 (+ (ptr-read-u64 cnblk 0) 1))
+                             (setq hdr (+ hdr bt)))))))
+            ;; require reaching the end exactly
+            (if (= hdr slen) 0 (ptr-write-u64 cwf 0 0))))
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 cwf 0) nil-slot s2)
+         (wf_cons_int (ptr-read-u64 cnblk 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 crel 0) s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6617,6 +6687,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
+    "nelisp--arena-load-relocate-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
