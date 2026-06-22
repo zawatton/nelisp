@@ -1,0 +1,124 @@
+#+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
+#+DATE: 2026-06-22
+#+STATUS: OPEN — root-caused, fix deferred to a dedicated GC-mark debugging effort
+#+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
+
+* 1. Purpose
+
+Track the dedicated effort to fix a garbage-collector memory-corruption bug in
+the standalone reader (=target/nelisp=): under allocation churn during a deep
+eval, the GC reclaims objects that are still reachable from a live lexical
+=frame= (its =hash-table= / =buckets= vector), producing a NULL dereference on
+the next variable lookup.
+
+This was found while investigating the standalone =nelix audit= / =nelix
+lock-check= SIGSEGV.  The *symptom* is currently masked in production (see §5);
+this doc captures the *root cause* and an investigation plan so the GC fix can
+be picked up as a focused, instrumented task rather than blind surgery.
+
+* 2. Symptom
+
+- =nelix audit MANIFEST= and =nelix lock-check MANIFEST= under the nelisp
+  runtime (nelix-native backend, e.g. the 3-package =m3= manifest) crashed with
+  SIGSEGV (rc=139), deterministically without gdb (5/5).
+- =nelix lock= (standalone) returns rc=1 with empty output — this is a SEPARATE
+  env issue (registry recipe resolution needs network/cache), NOT this GC bug.
+  Do not conflate them.
+
+* 3. Root cause (gdb core analysis)
+
+Faulting instruction (core dump): =nl_vector_slot_ptr=, =mov (%rdi,%rsi,1),%rax=
+with =rdi=0x0= (NULL base), =rsi=0x8=.
+
+Call path:
+#+begin_example
+#0 nl_vector_slot_ptr            ; NULL deref
+#1 nelisp_frame_stack_find_in_frame
+#2..#6 nelisp_frame_stack_find_descend   ; innermost-first frame walk
+#7 nelisp_frame_stack_find
+#8 nelisp_env_lookup_value       ; variable lookup
+#10 nl_eval_inner / nl_eval_arg_list_walk
+#+end_example
+
+A live lexframe's CHILD object is reclaimed by the GC while the frame Record
+itself survives:
+- =find_in_frame= walks =frame.slot0 (hash-table) -> slot1 (buckets) -> cells=.
+- Guard experiments (lisp/nelisp-cc-frame-stack-find.el):
+  - Guarding "frame Record is Nil" did NOT stop the crash → the frame Record is
+    valid (tag != 0).
+  - Guarding "frame.slot0 (hash-table) is Nil" did NOT stop the crash → the
+    hash-table is valid; the *buckets* vector (=ht.slot1=) reads back NULL.
+  - The reclaimed object VARIES (hash-table in one repro, buckets in another).
+- ⇒ The whole =frame → hash-table → buckets → cells= chain is not kept alive
+  across a collection.  Single-point NULL guards are whack-a-mole and
+  insufficient.
+
+The GC mark code *structurally* recurses this chain
+(=nl_gc_mark_slot= for tag-12 Record → slots; tag-8 Vector → buf + slots; tag-7
+Cons), and the root marker =nl_gc_mark_published_frame= marks
+=(nl_gc_mark_slot (+ env 32))= (the frame stack).  Yet live objects are
+collected → the gap is in GC *root traversal* (the =env= published to the
+collection during a deep eval likely does not reach the live frame stack's full
+child chain) or in *sweep*.  Pinpointing it needs GC-mark instrumentation
+(see §6).
+
+* 4. Ruled out
+
+- Per-eval arena reset: disabled; =nelisp_eval_call= only does recursion-depth
+  bounding (rec_cur/rec_max), no arena reset.
+- Stack overflow: bigger stack (=ulimit -s 524288=) still crashes 5/5.
+- ASLR alone: =setarch -R= (ASLR off) still crashes 5/5 (gdb avoids it via fork
+  detach / timing, not ASLR — =disable-randomization off= under gdb does not
+  crash either).
+- =find_descend= depth off-by-one: a Nil-frame skip guard did not prevent it.
+- Hash-table-only corruption: buckets are also observed NULL.
+
+* 5. Why it is masked in production
+
+Two Doc-154 changes reduced per-eval allocation churn enough that the GC no
+longer fires at the vulnerable moment for these paths:
+- nelisp =3f318889= "alloc-free builtin dispatch" (removed per-comparison
+  =nl_alloc_symbol= churn).
+- nelix =c435946= "parse standalone lock with native reader" (removed lock-read
+  text-scan churn).
+
+On the current feat / =origin/main= binary, =nelix audit= and =nelix lock-check=
+are segfault-free (rc=0, verified m1+m3, multiple runs).  The underlying GC bug
+is therefore LATENT: any future high-churn workload that triggers a GC during a
+deep frame-stack eval can resurface it.
+
+* 6. Investigation plan (for the dedicated task)
+
+1. Reproduce reliably at nelisp =838605da= (pre-=3f318889=): =nelix audit m3.el=
+   crashes 5/5.  Minimal reproducers (deep =let= recursion + churn / explicit
+   =garbage-collect=) do NOT trigger it — it needs the audit/manifest-load frame
+   pattern.  Consider building a closer repro from the audit eval shape.
+2. Instrument the GC mark phase (=nl_gc_mark_published_frame= /
+   =nl_gc_mark_roots= / =nl_gc_mark_slot= / =nl_gc_mark_vec_slots=) to log:
+   - whether the frame-stack root (=env+32=) is reached at all in the crashing
+     collection,
+   - whether traversal descends frame → hash-table → buckets → cells,
+   - the =env= identity vs the env holding the live deep frame stack.
+3. Check the two mark skip conditions on the frame child chain:
+   - =nl_gc_in_arena (data_ptr)= in =nl_gc_mark_vec_slots= (a false negative
+     skips ALL slots of a record/vector),
+   - =nl_gc_mark_block= "already marked / foreign" early-out ordering.
+4. Confirm whether the published =env= during a nested eval is the one whose
+   frame stack holds the live frames (root-set completeness), or whether a
+   second/stale env is marked instead.
+5. Fix the mark/root gap so the frame child chain survives; verify the
+   838605da repro is gone AND run the full container rc-gate (474 tests) +
+   re-confirm production stays green.  A GC change is high-risk: validate
+   broadly.
+
+* 7. References
+
+- Worklog (anvil): "nelix segfault 根本: GC が live lexframe の子(hash-table/
+  buckets)を回収" (2026-06-22) and the prior segfault root-cause entries.
+- Memory (anvil): =reference_nelisp_gc_churn_segfault=,
+  =reference_nelisp_eval_dispatch_perf=.
+- Masking commits: nelisp =3f318889=, nelix =c435946=.
+- Code: =lisp/nelisp-cc-frame-stack-find.el= (walk),
+  =lisp/nelisp-cc-frame-push.el= / =lisp/nelisp-cc-frame-ensure-capacity.el=
+  (push/grow), =scripts/nelisp-standalone-build.el= GC arms
+  (=nl_gc_mark_*=, =nl_gc_sweep_*=, =nl_gc_in_arena=).
