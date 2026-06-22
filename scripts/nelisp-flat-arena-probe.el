@@ -162,11 +162,20 @@
 ;; WELLFORMED.  The cold-start image now persists across processes.  See
 ;; `nelisp-flat-arena-probe-file-roundtrip'.
 ;;
-;; REMAINING (the boot hook -- the one piece that modifies the live boot path):
-;;   at boot, instead of a fresh BUFFER, mmap a fresh ARENA, load the image into
-;;   it (the file load above), set a fresh EvalCtx's roots from the header
-;;   offsets, and take this path BEFORE the source replay so cold start loads
-;;   the image instead of re-evaluating all boot source.
+;; BOOT-LOAD INSTALL (DONE, in-process): `nelisp--arena-boot-load-verify' runs
+;; exactly what a boot hook runs -- read the image, relocate it, RECONSTRUCT
+;; the EvalCtx globals root (a tag-12 Record slot whose box = imgbase +
+;; globals_off), and confirm it resolves to a valid Record in the loaded image.
+;; On target/nelisp: (1 12 1 72) = magic OK, root tag 12 (Record), box inside
+;; chunk-0, sane 72-byte block header (8 + a 64-byte NlRecord).  So the whole
+;; cold-loader pipeline is proven end to end: dump -> file -> load -> relocate
+;; -> reconstruct a sound EvalCtx root.  See `nelisp-flat-arena-probe-boot-load'.
+;;
+;; REMAINING (wire it into the actual boot -- a focused integration, ideally on
+;; the L2 `nemacs' boot where the win is, since the L1 reader already boots
+;; fast): load into the mmap'd ARENA (chunk-0 + interned at their real, separate
+;; bases -- split the `+ newbase' by region) instead of a buffer, install the
+;; LIVE EvalCtx roots, and take this path BEFORE the 352-module source replay.
 ;;   (Large objects + multi-live-chunk are not exercised by this heap; add if a
 ;;   future heap needs them.)
 
@@ -186,6 +195,7 @@
 (declare-function nelisp--arena-dump-table-verify "ext" ())
 (declare-function nelisp--arena-dump-image-to-file "ext" (path))
 (declare-function nelisp--arena-load-image-from-file "ext" (path))
+(declare-function nelisp--arena-boot-load-verify "ext" (path))
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -296,6 +306,20 @@ block walk reaches the end exactly).  Return a labelled plist;
     (list :relocated-ptrs (nth 0 r)
           :blocks (nth 1 r)
           :wellformed (= (nth 2 r) 1))))
+
+(defun nelisp-flat-arena-probe-boot-load (path)
+  "Run the boot-load INSTALL mechanism on the image at PATH (dump it first).
+Reads the image, relocates it, reconstructs the EvalCtx globals root, and
+checks the root resolves to a valid Record in the loaded image -- exactly what
+a boot hook does, but on a fresh buffer so the live runtime is untouched.
+Return a labelled plist; :magic-ok t with :root-tag 12 and :root-in-chunk0 t
+means a boot would install a sound globals root from the persisted image."
+  (nelisp--arena-dump-image-to-file path)
+  (let ((r (nelisp--arena-boot-load-verify path)))
+    (list :magic-ok (= (nth 0 r) 1)
+          :root-tag (nth 1 r)
+          :root-in-chunk0 (= (nth 2 r) 1)
+          :gbox-block-total (nth 3 r))))
 
 (defun nelisp-flat-arena-probe-file-roundtrip (path)
   "Dump the cold-start image to PATH, load it back, and verify it.

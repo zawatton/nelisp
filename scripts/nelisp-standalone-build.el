@@ -2485,6 +2485,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
     ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
     ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
+    ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -3372,6 +3373,60 @@ unresolved at link time."
               (wf_cons_int tlen s2 s1)
               (wf_cons_int (if (= magic 1179407692) 1 0) s1 out)
               0))))))
+    ;; flat-arena boot-wiring (3): the boot-load INSTALL mechanism.  This is the
+    ;; exact code a boot hook runs: read the image, relocate it (table apply),
+    ;; then RECONSTRUCT the EvalCtx globals root -- a 32B Sexp slot whose tag is
+    ;; 12 (Record) and whose box pointer is `imgbase + globals_off' (from the
+    ;; header) -- and confirm that root resolves to a valid Record inside the
+    ;; loaded image.  (In a real boot the slot is the live `EvalCtx+0' and the
+    ;; image is loaded into the mmap'd arena; here it is a fresh buffer + a
+    ;; scratch slot so the live runtime is untouched.)  Returns
+    ;; (MAGIC-OK ROOT-TAG ROOT-IN-CHUNK0 GBOX-BLOCK-TOTAL): (1 12 1 ~72) means a
+    ;; boot would install a sound globals root from the persisted image.
+    (defun bf_arena_boot_load_verify (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath))
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (if (< fd 0)
+            (seq (wf_write_nil nil-slot)
+                 (wf_cons_int 0 nil-slot s3) (wf_cons_int 0 s3 s2)
+                 (wf_cons_int 0 s2 s1) (wf_cons_int -1 s1 out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (goff (ptr-read-u64 hdr 32))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (img (alloc-bytes (+ slen (+ isz 8)) 8))
+                  (rootslot (alloc-bytes 32 8))
+                  (ti 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd img (+ slen isz) 0)
+              (nl_os_close_handle fd)
+              (setq ti 0)
+              (while (< ti tlen)
+                (let ((f (ptr-read-u64 (+ tbl (* ti 8)) 0)))
+                  (ptr-write-u64 (+ img f) 0 (+ img (ptr-read-u64 (+ img f) 0))))
+                (setq ti (+ ti 1)))
+              ;; reconstruct the globals root slot
+              (ptr-write-u8 rootslot 0 12)
+              (ptr-write-u64 rootslot 8 (+ img goff))
+              ;; verify it resolves to a valid Record in the loaded image
+              (let* ((rtag (ptr-read-u8 rootslot 0))
+                     (gbox (ptr-read-u64 rootslot 8))
+                     (rin (if (< gbox img) 0 (if (< gbox (+ img slen)) 1 0)))
+                     (gh (ptr-read-u64 (- gbox 8) 0))
+                     (gbt (- gh (logand gh 7))))
+                (wf_write_nil nil-slot)
+                (wf_cons_int gbt nil-slot s3)
+                (wf_cons_int rin s3 s2)
+                (wf_cons_int rtag s2 s1)
+                (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
+                0)))))))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
     ;; `nl_gc_bt_ok' / `nl_gc_chunk_end', which only `reader-gc.o' defines, so
@@ -6968,6 +7023,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
     "nelisp--arena-dump-table-verify"
     "nelisp--arena-dump-image-to-file" "nelisp--arena-load-image-from-file"
+    "nelisp--arena-boot-load-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
