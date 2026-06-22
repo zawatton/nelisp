@@ -2477,6 +2477,7 @@ argument (reachability + in-arena bounds checks).")
                                           (wf_write_int out idx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
+    ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2777,6 +2778,40 @@ unresolved at link time."
          (wf_cons_int (ptr-read-u64 cf 0) s3 s2)
          (wf_cons_int (ptr-read-u64 cl 0) s2 s1)
          (wf_cons_int (ptr-read-u64 cb 0) s1 out)
+         0)))
+    ;; flat-arena spike step 3a (READ-ONLY source): the bulk-copy mechanic
+    ;; -- the "memcpy" half of memcpy+relocate.  Copy chunk-0's live region
+    ;; [data-start, base+cursor) into a fresh large-object buffer (8-byte
+    ;; words; > 4 KiB so it lands in its own mmap, NOT bumping the chunk
+    ;; under the source), then verify byte-identity by re-reading both.  The
+    ;; source heap is never mutated.  Returns (USED-BYTES MISMATCH-WORDS
+    ;; DEST-PTR): MISMATCH-WORDS = 0 means the copy is byte-faithful.
+    ;; cursor / used are snapshot BEFORE the dest + scratch allocs, so the
+    ;; copied range excludes them.  Multi-chunk copy + the pointer-swizzle
+    ;; pass (step 3b) and file emit are deferred.
+    (defun bf_arena_dump_copy_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (dest (alloc-bytes slen 8))
+             (i 0) (mism 0)
+             (nil-slot (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (setq i 0)
+         (while (< i slen)
+           (seq (if (= (ptr-read-u64 (+ dest i) 0) (ptr-read-u64 (+ sstart i) 0))
+                    0
+                  (setq mism (+ mism 1)))
+                (setq i (+ i 8))))
+         (wf_write_nil nil-slot)
+         (wf_cons_int dest nil-slot s2)
+         (wf_cons_int mism s2 s1)
+         (wf_cons_int slen s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6370,6 +6405,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
+    "nelisp--arena-dump-copy-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"

@@ -71,15 +71,24 @@
 ;; `nelisp-flat-arena-probe-verify-full'.  Implemented in
 ;; `scripts/nelisp-standalone-build.el' (`bf_arena_walk_verify').
 ;;
+;; STEP 3a (DONE): the bulk-copy "memcpy" half.  Baked
+;; `nelisp--arena-dump-copy-verify' copies chunk-0's live region into a
+;; fresh large-object buffer (own mmap; the source heap is never mutated)
+;; and verifies byte-identity, returning (USED-BYTES MISMATCH-WORDS
+;; DEST-PTR).  On target/nelisp: ~28.7 MB copied, MISMATCH-WORDS = 0 (the
+;; copy is byte-faithful) at native speed.  See
+;; `nelisp-flat-arena-probe-copy-verify'; implemented in
+;; `scripts/nelisp-standalone-build.el' (`bf_arena_dump_copy_verify').
+;;
 ;; NEXT STEPS (not in this file):
-;;   step 3  emit the dump: bulk-copy [data-start, cursor) per chunk + walk
-;;           the live object graph from the 3 EvalCtx roots (globals_record
-;;           @ +0, frames_record @ +32, unbound_marker @ +64) with
-;;           `nelisp_gc_walk_children' to enumerate pointer fields, and
-;;           swizzle each pointer to (chunk, offset).
-;;   step 4  load: alloc fresh chunks, memcpy, unswizzle to the new base,
-;;           install the roots into a fresh EvalCtx; boot hook before the
-;;           source-replay fallback.
+;;   step 3b  the relocation half: walk the live object graph from the 3
+;;            EvalCtx roots (globals_record @ +0, frames_record @ +32,
+;;            unbound_marker @ +64) with the GC's per-type child walk to
+;;            enumerate pointer fields, and swizzle each absolute pointer to
+;;            (chunk, offset).  Also extend the copy to every chunk.
+;;   step 4   load: alloc fresh chunks, memcpy, unswizzle to the new base,
+;;            install the roots into a fresh EvalCtx; boot hook before the
+;;            source-replay fallback.
 
 ;;; Code:
 
@@ -89,6 +98,7 @@
 (declare-function ptr-read-u64 "ext" (addr off))
 (declare-function nelisp--arena-stats "ext" ())
 (declare-function nelisp--arena-walk-verify "ext" ())
+(declare-function nelisp--arena-dump-copy-verify "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
 (defconst nelisp-flat-arena-probe--chunk-count-offset #x2d0)
@@ -151,11 +161,23 @@ bounded prefix).  Return a labelled plist; READ-ONLY, never mutates."
           :wellformed (= (nth 4 wv) 1)
           :blocks-eq-live+free (= (nth 0 wv) (+ (nth 1 wv) (nth 2 wv))))))
 
+(defun nelisp-flat-arena-probe-copy-verify ()
+  "Bulk-copy chunk-0's live region + byte-identity check via the baked
+`nelisp--arena-dump-copy-verify' op (the dump \"memcpy\" half).  The source
+heap is never mutated.  Return a labelled plist."
+  (let ((r (nelisp--arena-dump-copy-verify)))
+    (list :used-bytes (nth 0 r)
+          :mismatch-words (nth 1 r)
+          :byte-faithful (= (nth 1 r) 0)
+          :dest-ptr (nth 2 r))))
+
 (defun nelisp-flat-arena-probe-report (&optional limit)
-  "Print the bounded interpreted walk then the full baked walk for a CLI check."
+  "Print the bounded walk, the full baked walk, and the bulk-copy check."
   (princ (nelisp-flat-arena-probe-walk limit))
   (princ "\n")
-  (princ (nelisp-flat-arena-probe-verify-full)))
+  (princ (nelisp-flat-arena-probe-verify-full))
+  (princ "\n")
+  (princ (nelisp-flat-arena-probe-copy-verify)))
 
 (provide 'nelisp-flat-arena-probe)
 
