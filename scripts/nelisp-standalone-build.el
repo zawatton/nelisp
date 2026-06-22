@@ -2481,6 +2481,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
     ((:lit "nelisp--arena-swizzle-verify") . (bf_arena_swizzle_verify out))
     ((:lit "nelisp--arena-load-relocate-verify") . (bf_arena_load_relocate_verify out))
+    ((:lit "nelisp--arena-image-root-verify") . (bf_arena_image_root_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -3139,6 +3140,45 @@ unresolved at link time."
          (wf_cons_int (ptr-read-u64 cwf 0) nil-slot s2)
          (wf_cons_int (ptr-read-u64 cnblk 0) s2 s1)
          (wf_cons_int (ptr-read-u64 crel 0) s1 out)
+         0)))
+    ;; flat-arena spike step 4-boot precondition: capture the ROOT METADATA the
+    ;; boot loader needs.  An image is loaded by mmap'ing a fresh arena, copying
+    ;; the regions, relocating the pointers (steps done), then pointing a fresh
+    ;; EvalCtx's roots at the loaded root objects -- which requires each root's
+    ;; IMAGE OFFSET (where, within the image, its boxed object lives).
+    ;; `nl_img_off' maps an absolute address to its image offset (chunk-0 ->
+    ;; addr-ds; interned -> span + addr-ib; out -> -1).
+    ;; `bf_arena_image_root_verify' reports the image offsets of the 3 EvalCtx
+    ;; roots (globals_record @ env+0, frames_record @ env+32, unbound_marker @
+    ;; env+64; each a 32B Sexp slot whose boxed payload pointer is at slot+8).
+    ;; A non-negative offset means the root lives inside the dumped image and
+    ;; the boot can relocate + reinstall it as `newbase + offset'.  READ-ONLY.
+    (defun nl_img_off (addr ds span ib ie)
+      (if (if (< addr ds) 0 (if (< addr (+ ds span)) 1 0))
+          (- addr ds)
+        (if (if (< addr ib) 0 (if (< addr ie) 1 0))
+            (+ span (- addr ib))
+          -1)))
+    (defun bf_arena_image_root_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (base (- sstart 1024))
+             (ib (ptr-read-u64 (+ base 832) 0))
+             (ie (ptr-read-u64 (+ base 840) 0))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
+             (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
+             (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
+             (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (wf_write_nil nil-slot)
+         (wf_cons_int (nl_img_off ubox sstart slen ib ie) nil-slot s2)
+         (wf_cons_int (nl_img_off fbox sstart slen ib ie) s2 s1)
+         (wf_cons_int (nl_img_off gbox sstart slen ib ie) s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6733,7 +6773,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
-    "nelisp--arena-load-relocate-verify"
+    "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"

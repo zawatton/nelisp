@@ -137,12 +137,24 @@
 ;;   base with both regions copied -> WELLFORMED = 1.  Every live inter-object
 ;;   pointer is now relocatable: the dump<->load mechanism is complete.
 ;;
-;; NEXT STEP (not in this file):
-;;   step 4-boot install a loaded+relocated image as the live heap (fresh
-;;              EvalCtx whose roots point at the loaded globals/frames) and
-;;              hook it into boot BEFORE the source replay -- the actual
-;;              cold-start speedup.  (Large objects + multi-live-chunk are not
-;;              exercised by this heap; add them if a future heap needs them.)
+;; STEP 4-boot precondition (DONE): `nelisp--arena-image-root-verify' reports
+;; the IMAGE OFFSETS of the 3 EvalCtx roots so a boot loader can reinstall
+;; them at newbase+offset.  On target/nelisp: globals_record and frames_record
+;; are in-image (offsets >= 0); unbound_marker is -1 (an immediate, rebuilt
+;; inline, no relocation).  So every datum the boot must reconstruct is either
+;; in the relocatable image or a trivial immediate.  See
+;; `nelisp-flat-arena-probe-roots'.
+;;
+;; REMAINING (the production cut-over -- runtime surgery, do as a focused task):
+;;   1. dump the image (regions + a header recording region sizes and the 3
+;;      root image offsets) to a file at build time;
+;;   2. at boot, mmap a fresh arena, memcpy the regions, relocate (offset ->
+;;      newbase) -- the mechanism above -- and set a fresh EvalCtx's roots from
+;;      the header offsets;
+;;   3. hook this BEFORE the source replay so cold start loads the image
+;;      instead of re-evaluating all boot source.
+;;   (Large objects + multi-live-chunk are not exercised by this heap; add if a
+;;   future heap needs them.)
 
 ;;; Code:
 
@@ -156,6 +168,7 @@
 (declare-function nelisp--arena-mark-reach-verify "ext" ())
 (declare-function nelisp--arena-swizzle-verify "ext" ())
 (declare-function nelisp--arena-load-relocate-verify "ext" ())
+(declare-function nelisp--arena-image-root-verify "ext" ())
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -267,8 +280,19 @@ block walk reaches the end exactly).  Return a labelled plist;
           :blocks (nth 1 r)
           :wellformed (= (nth 2 r) 1))))
 
+(defun nelisp-flat-arena-probe-roots ()
+  "Image offsets of the 3 EvalCtx roots via `nelisp--arena-image-root-verify'.
+A non-negative offset means the boot can relocate + reinstall that root at
+newbase+offset; -1 means an immediate (rebuilt inline)."
+  (let ((r (nelisp--arena-image-root-verify)))
+    (list :globals-offset (nth 0 r)
+          :frames-offset (nth 1 r)
+          :unbound-offset (nth 2 r)
+          :globals-in-image (>= (nth 0 r) 0)
+          :frames-in-image (>= (nth 1 r) 0))))
+
 (defun nelisp-flat-arena-probe-report (&optional limit)
-  "Print the walk, full walk, bulk-copy, root-coverage, swizzle, and load."
+  "Print walk, full walk, bulk-copy, root-coverage, swizzle, load, and roots."
   (princ (nelisp-flat-arena-probe-walk limit))
   (princ "\n")
   (princ (nelisp-flat-arena-probe-verify-full))
@@ -279,7 +303,9 @@ block walk reaches the end exactly).  Return a labelled plist;
   (princ "\n")
   (princ (nelisp-flat-arena-probe-swizzle))
   (princ "\n")
-  (princ (nelisp-flat-arena-probe-load-relocate)))
+  (princ (nelisp-flat-arena-probe-load-relocate))
+  (princ "\n")
+  (princ (nelisp-flat-arena-probe-roots)))
 
 (provide 'nelisp-flat-arena-probe)
 
