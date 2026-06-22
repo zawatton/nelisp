@@ -1,0 +1,600 @@
+#+TITLE: nelisp-emacs Doc 27 -- Package extraction readiness
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-22
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 24 public API inventory, Doc 25 library consumer contract, Doc 26 residual API audit
+
+* 0. Purpose
+
+This document records whether the current library package descriptors and
+layout plan are ready for a physical =packages/= extraction pass.
+
+The current answer is: the generated package shape is coherent enough to
+start a staged extraction experiment, but the source tree should not be
+moved in one large change.  The first physical move should keep =src/= as
+the authoritative compatibility load path or provide compatibility
+forwarders, because much of the repository, tests, scripts, and external
+habits still expect =src/= paths.
+
+* 1. Evidence
+
+Generated evidence as of 2026-06-22:
+
+#+begin_src sh
+make nemacs-library-package-descriptors
+make nemacs-library-package-guide
+make nemacs-library-package-layout
+make nemacs-library-package-verify
+make nemacs-library-app-boundary
+make nemacs-library-package-app-require-guard
+make nemacs-library-package-metadata
+make nemacs-library-package-install-smoke
+make nemacs-library-package-archive
+make nemacs-library-package-archive-checksum
+make nemacs-library-package-archive-smoke
+make nemacs-library-package-archive-index
+make nemacs-library-package-index-smoke
+make nemacs-library-package-publication-policy
+make nemacs-library-package-signature-policy
+make nemacs-library-compat-api-policy
+make nemacs-library-package-dependency-publication-policy
+make nemacs-library-package-release-bundle-manifest
+make nemacs-library-package-lazy-metadata
+make nemacs-library-package-vendor-release-verify
+make nemacs-library-gate
+#+end_src
+
+Current generated results:
+
+| Artifact | Evidence |
+|----------+----------|
+| =build/nemacs-library-package-descriptors.org= | 8 packages, draft version 0.1.0, no unknown external features |
+| =build/nemacs-library-package-guide.org= | 8 consumer package entries, all loader features documented |
+| =build/nemacs-library-package-layout.org= | 87 file mappings, 65 eager and 22 lazy |
+| =build/nemacs-library-package-scaffold.org= | 87 package copied files, 1 umbrella facade file, 9 README files |
+| =build/nemacs-library-app-scaffold.org= | 10 app/bootstrap/frontend staged files outside reusable package count |
+| =build/nemacs-library-app-boundary.org= | 10 app boundary checks, failures 0 |
+| =build/nemacs-library-package-app-require-guard.org= | 87 package files checked, 130 require edges scanned, app/frontend require violations 0 |
+| =build/nemacs-library-package-metadata.org= | 8 package metadata drafts, generated =*-pkg.el= files, GPL-3.0-or-later, project URL |
+| =build/nemacs-library-package-install-smoke.org= | 8 package-style install/load smokes, ok 8, failures 0 |
+| =build/nemacs-library-package-archive.org= | 8 generated package tar archives from metadata/scaffold |
+| =build/nemacs-library-package-archive-checksum.org= | 8 package archives rebuild deterministically, failures 0 |
+| =build/nemacs-library-package-archive-smoke.org= | 8 install-from-archive smokes through =package-install-file=, ok 8, failures 0 |
+| =build/nemacs-library-package-archive-index.org= | 8 archive index entries, =archive-contents= generated, archive-version 1 |
+| =build/nemacs-library-package-index-smoke.org= | 8 install-from-index smokes through =package-refresh-contents= and =package-install=, ok 8, failures 0 |
+| =build/nemacs-library-package-publication-policy.org= | 35 publication policy checks, ok 35, failures 0 |
+| =build/nemacs-library-package-signature-policy.org= | 9 release signature artifact targets, strict release no, signature files present 0, failures 0 |
+| =build/nemacs-library-package-signature-release-sign.org= | release signing workflow target exists; without a configured release key it fails closed with 9 signing failures |
+| =build/nemacs-library-compat-api-policy.org= | 948 stable API rows, public-prefixed 935, compat-global 13, failures 0 |
+| =build/nemacs-library-package-dependency-publication-policy.org= | 29 dependency publication policy checks, lazy companions 22, host features 2, vendor packages 1, failures 0 |
+| =build/nemacs-library-package-release-bundle-manifest.org= | 32 release bundle retention rows, 19 retained draft files, 13 pending release-only files, failures 0 |
+| =build/nemacs-library-package-lazy-metadata.org= | 22 lazy companion metadata rows, failures 0, additional package requirement rows 4 |
+| =build/nemacs-library-package-vendor-release-lock.org= | 1 vendored dependency release lock, strict release ok, package dirty paths 0 |
+| =build/nemacs-production-runtime-path.org= | 9 production runtime modules mapped to package/app scaffold entries |
+| =build/nemacs-runtime-image-input-inventory.org= | 38 runtime-image input rows, unknown 0, missing files 0 |
+| =test/nemacs-gui-file-bridge-runtime-test.el= | package-backed bridge image source resolution has zero =src/= fallback for current image inputs |
+| =build/nemacs-library-package-deps-summary.org= | 78 dependency edges, no unmanifested reusable, lazy-unmanifested reusable, external-or-host, or app/frontend edges |
+| =build/nemacs-library-api-promotion-queue.org= | 1242 promotion rows classified for stability review |
+| =build/nemacs-library-package-verify.org= | 48 checks, failures 0 |
+| =build/nemacs-library-boundary-summary.org= | boundary rows 0 |
+
+* 2. Package Set
+
+The extraction set contains eight facade packages:
+
+| Package | Loader | Eager files | Lazy files | Requires |
+|---------+--------+-------------+------------+----------|
+| =nelisp-emacs-foundation= | =emacs-foundation= | 24 | 0 | none |
+| =nelisp-emacs-text-core= | =emacs-text-core= | 3 | 1 | foundation |
+| =nelisp-emacs-buffer-core= | =emacs-buffer-core= | 7 | 4 | foundation, text-core |
+| =nelisp-emacs-editing= | =emacs-editing= | 4 | 0 | buffer-core, foundation |
+| =nelisp-emacs-io= | =emacs-io= | 8 | 7 | buffer-core, foundation, text-core |
+| =nelisp-emacs-special-buffers= | =emacs-special-buffers= | 1 | 0 | buffer-core |
+| =nelisp-emacs-core= | =emacs-core= | 17 | 10 | buffer-core, editing, foundation |
+| =nelisp-emacs-textmodes-stub= | =emacs-textmodes-stub= | 1 | 0 | buffer-core |
+
+The twenty-two lazy files are:
+
+| Package | Lazy feature | File |
+|---------+--------------+------|
+| =nelisp-emacs-text-core= | =nelisp-coding-jis-tables= | =src/nelisp-coding-jis-tables.el= |
+| =nelisp-emacs-buffer-core= | =emacs-bookmark-ui= | =src/emacs-bookmark-ui.el= |
+| =nelisp-emacs-buffer-core= | =emacs-buffer-ui= | =src/emacs-buffer-ui.el= |
+| =nelisp-emacs-buffer-core= | =emacs-isearch= | =src/emacs-isearch.el= |
+| =nelisp-emacs-buffer-core= | =emacs-replace= | =src/emacs-replace.el= |
+| =nelisp-emacs-io= | =emacs-dired-min= | =src/emacs-dired-min.el= |
+| =nelisp-emacs-io= | =files-standalone-buffer= | =src/files-standalone-buffer.el= |
+| =nelisp-emacs-io= | =emacs-dump= | =src/emacs-dump.el= |
+| =nelisp-emacs-io= | =image-loader= | =src/image-loader.el= |
+| =nelisp-emacs-io= | =nemacs-loaddefs= | =src/nemacs-loaddefs.el= |
+| =nelisp-emacs-io= | =emacs-shell-command= | =src/emacs-shell-command.el= |
+| =nelisp-emacs-io= | =emacs-project= | =src/emacs-project.el= |
+| =nelisp-emacs-core= | =emacs-elisp-eval= | =src/emacs-elisp-eval.el= |
+| =nelisp-emacs-core= | =emacs-elisp-mode= | =src/emacs-elisp-mode.el= |
+| =nelisp-emacs-core= | =emacs-font-lock= | =src/emacs-font-lock.el= |
+| =nelisp-emacs-core= | =emacs-ielm= | =src/emacs-ielm.el= |
+| =nelisp-emacs-core= | =lisp-mode= | =src/lisp-mode.el= |
+| =nelisp-emacs-core= | =emacs-redisplay-core= | =src/emacs-redisplay-core.el= |
+| =nelisp-emacs-core= | =emacs-syntax-table= | =src/emacs-syntax-table.el= |
+| =nelisp-emacs-core= | =emacs-tui-backend= | =src/emacs-tui-backend.el= |
+| =nelisp-emacs-core= | =emacs-tui-event= | =src/emacs-tui-event.el= |
+| =nelisp-emacs-core= | =emacs-tui-terminfo= | =src/emacs-tui-terminfo.el= |
+
+* 3. Readiness Decision
+
+** 3.1 Ready
+
+These properties are ready enough for a staged physical extraction:
+
+- package membership is generated from the facade manifest, not manually
+  guessed;
+- package dependencies resolve to known facade packages, host features, or
+  vendored packages;
+- unknown external features are empty;
+- hidden reusable dependencies and migration candidates are empty;
+- lazy package companions are explicit;
+- stable package API and stable lazy API symbols resolve;
+- stable API compatibility policy classifies all stable symbols as preferred
+  =public-prefixed= library API or intentional =compat-global= shim API;
+- residual non-stable APIs are reviewed in Doc 26;
+- boundary report rows are zero;
+- reusable package scaffold files do not require app/frontend scaffold
+  features;
+- package archive style metadata drafts exist for every reusable package;
+- every reusable package has an isolated package-style install/load smoke
+  from generated install directories without =src/= fallback;
+- every reusable package has a generated package tar archive and
+  install-from-archive smoke through Emacs =package-install-file=;
+- generated package tar archives rebuild reproducibly with stable SHA-256
+  checksums;
+- every reusable package is discoverable through generated
+  =archive-contents= and installable through Emacs =package-refresh-contents=
+  plus =package-install=;
+- publication policy checks cover shared package versioning, checksum
+  retention, archive index retention, local unsigned development archives,
+  and external detached-signature requirements;
+- signature policy checks record every release artifact that needs a detached
+  signature and provide a strict release mode for configured OpenPGP key
+  fingerprint verification;
+- release signing workflow can create detached signatures for every release
+  artifact with an explicit configured OpenPGP key fingerprint;
+- release bundle retention manifest copies draft archive/evidence files and
+  records release-only signatures/evidence as pending without hiding the
+  public release gap;
+- dependency publication policy checks cover package-owned lazy companions,
+  host-provided features, vendored nelisp package dependencies, and empty
+  unpublished dependency relation buckets;
+- package lazy metadata records direct and additional package dependency
+  closure for every lazy companion without app/frontend or unknown edges;
+- vendored dependency release verification records the vendor Git HEAD and
+  package directory SHA-256 for =nelisp-process= and verifies the package path
+  is clean in strict release mode;
+- package smoke tests require every loader feature independently.
+
+** 3.2 Not Ready For One-Shot Move
+
+The repository is not ready for a one-shot move that removes =src/= as the
+primary load path.  Reasons:
+
+- tests and scripts still assume =emacs -Q -L src=;
+- many generated artifacts describe future paths but do not rewrite
+  =require= or =load-path= behavior;
+- application/front-end code outside the facade package set still consumes
+  current =src/= feature locations;
+- host users and parallel sessions may have local workflows tied to =src/=;
+- package archive metadata, per-package README files, deterministic
+checksum verification, archive index, publication policy, release signature
+target verification, release signing workflow targets, draft release bundle
+retention manifest, and install tests exist as generated drafts, but actual
+release signing keys, detached signature artifacts, strict signed release
+bundle execution, and public publication workflow execution do not exist yet.
+
+The correct next step is a compatibility-preserving extraction scaffold,
+not a destructive file move.
+
+* 4. Staged Extraction Plan
+
+** 4.1 Stage A: Generated Scaffold
+
+Create a generated or scripted =packages/= scaffold from
+=build/nemacs-library-package-layout.tsv= without deleting or moving
+=src/= files.  The current scaffold target is:
+
+#+begin_src sh
+make nemacs-library-package-scaffold
+make nemacs-library-app-scaffold
+make nemacs-library-app-boundary
+make nemacs-library-package-app-require-guard
+make nemacs-library-package-metadata
+make nemacs-library-package-install-smoke
+make nemacs-library-package-archive
+make nemacs-library-package-archive-checksum
+make nemacs-library-package-archive-smoke
+make nemacs-library-package-archive-index
+make nemacs-library-package-index-smoke
+make nemacs-library-package-publication-policy
+make nemacs-library-package-signature-policy
+make nemacs-library-compat-api-policy
+make nemacs-library-package-dependency-publication-policy
+make nemacs-library-package-release-bundle-manifest
+make nemacs-library-package-lazy-metadata
+make nemacs-library-package-vendor-release-verify
+make nemacs-library-package-load-path
+make nemacs-library-package-path-smoke
+make nemacs-library-package-consumer-smoke
+make nemacs-library-package-lazy-smoke
+make nemacs-library-package-frontend-smoke
+make nemacs-library-package-gui-bridge-smoke
+make nemacs-library-package-gui-bridge-standalone-smoke
+#+end_src
+
+The scaffold should include:
+
+- =packages/PACKAGE/lisp/= and =packages/PACKAGE/lazy/= directories;
+- copied source files for local experiment only;
+- an umbrella =packages/nelisp-emacs-facade/lisp/nelisp-emacs.el=
+  facade copy for package-path consumer smoke;
+- a per-package README generated from the package guide and Doc 26
+  residual decisions;
+- a per-package smoke command that uses only that package's lisp path plus
+  declared package dependencies.
+
+App/bootstrap/frontend glue that is not yet reusable package material is staged by
+=make nemacs-library-app-scaffold= under
+=packages/nelisp-emacs-app-gui/=.  This scaffold is explicitly outside the
+descriptor package count and exists to make package-path GUI bridge runtime
+images prefer mapped app/frontend copies instead of implicit =src/=
+fallbacks.  App-local utilities such as =image-baker= are staged here, not
+in a reusable package, because they invoke bootstrap policy through
+=nemacs-loadup=.
+
+=make nemacs-library-app-boundary= verifies the app/bootstrap contract:
+=emacs-init=, =nemacs-loadup=, =nemacs-main=, and =image-baker= must be
+present in the app scaffold and absent from reusable package scaffolds.
+It also verifies that reusable lisp-image helpers =emacs-dump= and
+=image-loader= are no longer staged as app-only files.
+
+=make nemacs-library-package-app-require-guard= verifies the inverse
+require contract on the generated scaffold: reusable package files may not
+=require= features provided by =packages/nelisp-emacs-app-gui/=.  Current
+coverage scans 87 package files, indexes 10 app/frontend features, scans
+130 package require edges, and reports 0 violations.
+
+=make nemacs-library-package-metadata= writes package archive style draft
+metadata for all eight reusable packages, including summary, keywords,
+project URL, =GPL-3.0-or-later= license, maintainer/author, package
+dependencies, loader feature, and generated =packages/PACKAGE/PACKAGE-pkg.el=
+files.  =make nemacs-library-package-install-smoke= then runs each reusable
+package in a separate =emacs -Q= process through a temporary package-style
+install root, flattening the eager/lazy scaffold files into
+=PACKAGE-VERSION/= directories and requiring the package loader with only
+its dependency closure available.  Current install smoke coverage is 8
+packages, 8 ok, 0 failures, and no =src/= or generated =packages/= source
+leaks.
+
+=make nemacs-library-package-archive= builds draft multi-file package tar
+archives under =build/nemacs-library-package-archives/= from the generated
+metadata and package scaffold.  =make nemacs-library-package-archive-smoke=
+then installs each package and its dependency closure through Emacs
+=package-install-file= in a fresh package user directory and requires the
+loader feature from the installed archive output.  Current archive smoke
+coverage is 8 packages, 8 ok, 0 failures, and no =src/= or generated
+=packages/= source leaks.  Package install still emits byte-compile warnings
+from the current source surface; these are not treated as archive load
+failures unless the loader/member feature proof fails.
+
+=make nemacs-library-package-archive-checksum= rebuilds every package archive
+twice in isolated roots and compares those rebuilds with the primary archive
+SHA-256 digest.  Current checksum coverage is 8 packages, 8 deterministic, and
+0 failures.  Archive generation fixes tar entry order, owner/group metadata,
+numeric ownership, and mtime so local rebuilds produce stable tar digests.
+
+=make nemacs-library-package-archive-index= writes a local package archive
+=archive-contents= file next to the generated tarballs.  =make
+nemacs-library-package-index-smoke= configures a fresh =package-user-dir=,
+runs =package-refresh-contents= against that local archive location, installs
+each reusable package through =package-install=, verifies Emacs resolved the
+declared package dependencies, requires the loader/member features, and checks
+that no repo =src/= or generated =packages/= scaffold file was loaded.  Current
+index smoke coverage is 8 packages, 8 ok, and 0 failures.  The local archive
+location is passed to =package-archives= as an absolute directory name, because
+Emacs =package.el= accepts either =http(s)= URLs or absolute local file names
+for this path.
+
+=make nemacs-library-package-publication-policy= records and verifies the
+current publication policy.  Current coverage is 35 checks, 35 ok, and 0
+failures.  The policy keeps local development archives unsigned, requires
+public release archives to retain SHA-256 checksums for every tarball, requires
+detached signatures for public =archive-contents= and tarballs, verifies every
+retained archive is still referenced by the archive index, and enforces one
+shared =X.Y.Z= package version while facade packages are versioned together.
+The target records signature requirements only; signature artifact targets and
+strict release verification are covered by the dedicated signature policy gate.
+
+=make nemacs-library-package-signature-policy= records the release signature
+artifact set for public package publication.  Current draft coverage is 9
+artifacts requiring detached signatures: one =archive-contents= file and
+8 package tarballs.  Draft mode records expected =.sig= paths, reports
+0 signature files present, and has 0 failures.  The release-only strict target
+=make nemacs-library-package-signature-release-verify= requires
+=NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT= to be a 40-hex OpenPGP
+fingerprint, requires detached signatures for every artifact, runs
+=gpg --verify=, and verifies the =VALIDSIG= fingerprint matches the configured
+key.  This repository does not yet create or retain release signatures; the
+strict target is the release gate for those future artifacts.
+
+=make nemacs-library-package-signature-release-sign= creates the detached
+signature artifacts listed by the signature policy TSV.  It is release-only
+and intentionally outside =make nemacs-library-gate= because it requires local
+private key access.  It requires
+=NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT=, signs =archive-contents= and
+all 8 package tarballs with =gpg --detach-sign=, and records signature byte
+sizes and SHA-256 digests.  Without a configured release key it fails closed;
+the current no-key check reports 9 signing failures and creates no publishable
+release signature set.
+
+=make nemacs-library-package-release-bundle-manifest= retains the draft
+publication bundle under
+=build/nemacs-library-package-release-bundle/= and writes a manifest for every
+package archive, expected detached signature, and publication evidence file.
+Draft mode is part of =make nemacs-library-gate=: it copies unsigned archives
+and policy evidence while recording missing release-only signatures/evidence as
+pending.  =make nemacs-library-package-release-bundle= is release-only; it runs
+release signing and strict signature verification first, then regenerates the
+bundle manifest in strict mode so missing signatures or release evidence fail.
+
+=make nemacs-library-compat-api-policy= records the consumer-facing stable API
+classification policy from the facade query functions.  Current coverage is
+948 stable API rows, 935 =public-prefixed= symbols, 13 =compat-global=
+symbols, and 0 failures.  =public-prefixed= stable symbols are the preferred
+reusable library surface; =compat-global= stable symbols are intentional
+Emacs-compatible shim names.  Private helpers, app/frontend adapters, and
+inventory-missing symbols fail the gate if they appear in a stable manifest.
+
+=make nemacs-library-package-dependency-publication-policy= records and
+verifies dependency publication policy that is outside normal
+=package-requires=.  Current coverage is 29 checks, 29 ok, and 0 failures:
+22 package-owned lazy companions are staged under the owning package's
+=lazy/= directory, host features =keymap= and =pp= are explicitly classified
+as host Emacs provided features, vendored =nelisp-process= is declared as a
+vendored nelisp package dependency, and unpublished dependency relation buckets
+remain empty.  The generated JIS table =nelisp-coding-jis-tables= is covered
+as a lazy package companion in =nelisp-emacs-text-core=.  The target records
+the current dependency publication policy only; release-time vendored version
+locking and lazy companion dependency closure are verified by dedicated gates.
+
+=make nemacs-library-package-lazy-metadata= records reusable dependency
+closure for every package-owned lazy companion.  Current coverage is 22 rows,
+22 ok, and 0 failures.  The metadata records direct package requirements,
+top-level package requirements, lazy-runtime package requirements, additional
+package requirements required by the lazy file's own =require= forms, and the
+combined package dependency closure.  Four lazy companions currently require
+additional reusable packages beyond their owning package's eager
+=package-requires= closure, with 22 direct package requirement edges and
+5 additional package requirement edges.  App/frontend, unknown, and
+unmanifested reusable relations remain empty.
+
+=make nemacs-library-package-vendor-lock= records vendored dependency locks
+from the dependency publication policy.  =make
+nemacs-library-package-vendor-release-verify= reruns that target with strict
+release verification.  Current coverage is 1 lock row for
+=nelisp-emacs-io= -> =nelisp-process=: vendor repo HEAD
+=b6b59ec25077388de63b7696855f775a805d3abd=, package directory SHA-256
+=1ef3917e43a2f3b7bcb3126e0b5b507820b93fbee04cdab7f228ec008386ccb9=,
+3 files, strict release status =release-ok=, and 0 dirty paths under
+=vendor/nelisp/packages/nelisp-process=.  The surrounding =vendor/nelisp=
+repo currently has unrelated dirty paths, and the lock summary records that
+state without treating the clean package path as a release failure.
+
+Stage A is successful only when the existing =src/= facade and the
+experimental =packages/= load paths both pass their smoke gates.
+
+** 4.2 Stage B: Compatibility Load Paths
+
+Teach tests and scripts to accept package load paths in addition to
+=src/=.  The current package-path gates cover the package group loaders,
+the top-level =nelisp-emacs= facade, and the package-owned lazy companion
+features.  Selected frontend smoke can also run with package-backed
+reusable libraries, package-owned lazy helpers, and app/frontend glue
+staged through the app scaffold.  The shared package load-path helper is:
+
+#+begin_src sh
+make nemacs-library-package-load-path
+scripts/nemacs-library-package-load-path.sh
+#+end_src
+
+New package-path smoke targets should use the helper output instead of
+open-coding =find packages ... -L= shell fragments.  The helper excludes
+=packages/nelisp-emacs-app-*= staging trees; tests that need app/frontend
+staging should pass the app scaffold root or index explicitly.
+
+#+begin_src sh
+make nemacs-library-package-path-smoke
+make nemacs-library-package-consumer-smoke
+make nemacs-library-package-lazy-smoke
+make nemacs-library-app-scaffold
+make nemacs-library-package-frontend-smoke
+make nemacs-library-package-gui-bridge-smoke
+make nemacs-library-package-gui-bridge-standalone-smoke
+#+end_src
+
+Package loader smoke intentionally uses
+=scripts/nemacs-library-package-smoke.el= instead of ERT so package-path
+checks exercise the scaffolded =cl-lib.el=.  ERT-backed package-path smoke
+targets load host ERT first through
+=NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE=, then add package paths.
+The standalone GUI bridge package smoke requires a built standalone reader
+and covers selected runtime checks with package-path host setup.  Its
+runtime image resolves mapped reusable sources through
+=build/nemacs-library-package-scaffold.tsv=, resolves mapped app/frontend
+bridge glue through =build/nemacs-library-app-scaffold.tsv=, and falls
+back to =src/= only for unmapped bridge image inputs.  The current bridge
+image input set has no =src/= fallback under package-backed GUI bridge
+smoke.
+
+The current package-backed GTK frontend smoke no longer loads app/frontend
+modules from =src/=: reusable helpers such as =emacs-buffer-ui=,
+=emacs-bookmark-ui=, =emacs-isearch=, =emacs-replace=, and
+=emacs-shell-command= come from package =lazy/= paths, while
+=nemacs-gtk-view-menu= and =nemacs-gtk-frontend= come from
+=packages/nelisp-emacs-app-gui/=.
+
+The production runtime path gate now also checks scaffold visibility.  The
+=verify-production-runtime-path= target regenerates the package/app scaffolds,
+checks that =nemacs-main= still requires the production runtime modules, checks
+that the bootstrap bundle contains their representative symbols, and writes
+=build/nemacs-production-runtime-path.org=.  Current coverage is 9 modules:
+3 app/frontend bridge-family modules and 6 reusable package modules.
+
+The package API inventory now contains 2184 package API rows, including
+the IO lazy lisp-image serializer/loader and loaddefs generator surfaces.
+
+The runtime-image bake path now uses package/app scaffold load paths and has
+an explicit input inventory.  The
+=nemacs-runtime-image-input-inventory= target regenerates the bootstrap and
+package/app scaffolds, then writes
+=build/nemacs-runtime-image-input-inventory.org=.  Current coverage is 38
+rows: 14 package-scaffold inputs, 3 app scaffold entries, 13 package scaffold
+load paths, 1 app scaffold load path, 3 runtime preload scripts, 1 generated
+bootstrap artifact, 3 vendor load paths, and no temporary =src/= source or
+load-path inputs.  Unknown and missing rows must stay zero.
+
+Do not remove =src/= until:
+
+- the top-level facade works from package paths;
+- package loaders work from package paths;
+- stable lazy features work from package lazy paths;
+- broader app/frontend tests can opt into either load-path mode.  The
+  current package-backed frontend smoke covers
+  =test/nemacs-gtk-view-menu-test.el= and
+  =test/nemacs-gtk-frontend-menu-test.el=.  The current package-backed
+  GUI bridge smoke covers selected host/source-shape checks from
+  =test/nemacs-gui-file-bridge-runtime-test.el= without requiring the
+  standalone reader.  The current package-path standalone GUI bridge smoke
+  covers selected reader-backed transport/writeback checks from the same
+  test file.
+
+** 4.3 Stage C: Source Of Truth Decision
+
+After Stage B, choose one of two source-of-truth models:
+
+| Model | Meaning | Tradeoff |
+|-------+---------+----------|
+| =src-primary= | keep editing in =src/= and generate/copy package trees | safest during library API churn |
+| =packages-primary= | move real sources under =packages/= and keep =src/= compatibility forwarders | closer to publication, higher churn |
+
+Do not choose =packages-primary= until the package-path gate is as strong
+as =make nemacs-library-gate=.
+
+* 5. Publication Gaps
+
+The generated descriptors now have package archive style draft metadata,
+package-style install/load smoke, deterministic package tar archives, archive
+index generation, direct install-from-archive smoke, install-from-index smoke,
+publication policy checks, and release signature artifact target verification.
+They are closer to a publishable package archive repository, but external
+package publication still needs:
+
+- an actual release key and retained detached signature artifacts for a public
+  release run;
+- a strict signed release bundle run with all release-only evidence retained;
+
+* 6. Gate Invariant
+
+Before any physical extraction or package publication claim, the following
+must hold:
+
+#+begin_src text
+descriptor packages: 8
+layout mappings: 87
+unknown external features: empty
+package dependency migration candidates: 0
+boundary report rows: 0
+package verify failures: 0
+package app/frontend require guard violations: 0
+package metadata rows: 8
+package-style install smoke packages: 8
+package-style install smoke failures: 0
+package archive tarballs: 8
+package archive checksum deterministic packages: 8
+package archive checksum failures: 0
+package archive install smoke packages: 8
+package archive install smoke failures: 0
+package archive index packages: 8
+package archive index version: 1
+package archive index smoke packages: 8
+package archive index smoke failures: 0
+package publication policy checks: 35
+package publication policy failures: 0
+package signature policy artifacts requiring signatures: 9
+package signature policy signature files present: 0
+package signature policy verified signatures: 0
+package signature policy strict release: no
+package signature policy failures: 0
+package signature release signing workflow target: available
+package signature release signing no-key failures: 9
+package release bundle manifest rows: 32
+package release bundle retained draft files: 19
+package release bundle pending release-only files: 13
+package release bundle failures: 0
+stable API compatibility policy rows: 948
+stable API compatibility public-prefixed rows: 935
+stable API compatibility compat-global rows: 13
+stable API compatibility failures: 0
+package dependency publication policy checks: 29
+package dependency publication policy failures: 0
+package dependency publication lazy companion rows: 22
+package dependency publication host feature rows: 2
+package dependency publication vendor package rows: 1
+package lazy metadata rows: 22
+package lazy metadata failures: 0
+package lazy metadata rows with additional package requirements: 4
+package lazy metadata direct package requirement edges: 22
+package lazy metadata additional package requirement edges: 5
+package vendor lock rows: 1
+package vendor lock failures: 0
+package vendor lock strict release status: release-ok
+package vendor lock dirty package paths: 0
+package-backed smoke optimization warnings: 0
+package-path GTK frontend smoke: src-free package/app scaffold path
+package-path GUI bridge standalone smoke: selected transport/writeback checks pass
+GUI bridge standalone image mapped reusable inputs: package scaffold
+GUI bridge standalone image mapped app/frontend inputs: app scaffold
+GUI bridge standalone image current src fallbacks: 0
+production runtime scaffold mappings: 9 modules
+app boundary checks: 10
+app boundary failures: 0
+package app/frontend require guard scanned files: 87
+package app/frontend require guard scanned edges: 130
+runtime-image input inventory rows: 38
+runtime-image input inventory unknown rows: 0
+runtime-image temporary src source inputs: 0
+runtime-image temporary src load paths: 0
+package API inventory rows: 2184
+promotion review rows: 1242
+stable API symbols: 879
+stable lazy API symbols: 69
+library gate: ok
+#+end_src
+
+If any count changes, update this document only after reviewing whether the
+new count reflects intended package membership or a boundary regression.
+
+* 7. Recommended Next Work
+
+The current scaffold now has package archive style metadata, isolated
+package-style install smoke, deterministic generated package tar archives,
+direct install-from-archive smoke, archive index generation, and
+install-from-index smoke, plus a publication policy gate for versioning,
+checksum retention, archive retention, and signature requirements.  It also
+has a release signature policy gate for the exact archive artifacts that must
+receive detached signatures, an explicit dependency publication policy gate for
+package-owned lazy companions, host-provided features, vendored nelisp
+packages, and empty unpublished dependency relation buckets, a lazy companion
+metadata gate for dependency closure, a stable API compatibility policy gate
+for prefixed versus compat-global symbols, plus a strict vendored dependency
+lock gate for the current =nelisp-process= dependency, an explicit release
+signing workflow target, and a draft release bundle retention manifest.  The
+next implementation step is a release bundle consumer smoke that installs from
+=build/nemacs-library-package-release-bundle/archives/= and verifies the
+manifest hashes before treating the bundle as a publishable archive.

@@ -960,6 +960,22 @@ keymap should run the command and clear the prefix."
     (should ran-cmd)
     (should (equal [] nemacs-main--prefix-keys))))
 
+(ert-deftest nemacs-main-test/dispatch-key-event-sets-last-command-event-from-name ()
+  "Dispatching a real tui-event shape should expose `:name' as the command event."
+  (let ((nemacs-main--global-keymap (make-sparse-keymap))
+        (nemacs-main--prefix-keys [])
+        (seen-event nil)
+        (last-command-event nil))
+    (defun nemacs-main-test--seen-last-command-event ()
+      (interactive)
+      (setq seen-event last-command-event))
+    (define-key nemacs-main--global-keymap (vector ?a)
+                'nemacs-main-test--seen-last-command-event)
+    (nemacs-main--dispatch-key-event
+     (list :type 'key :name ?a :modifiers nil))
+    (should (= ?a seen-event))
+    (should (equal [] nemacs-main--prefix-keys))))
+
 (ert-deftest nemacs-main-test/dispatch-key-event-prefix-chain ()
   "Dispatching a prefix key followed by its continuation runs the
 nested command and resets the prefix vector at the end."
@@ -1141,6 +1157,36 @@ must dispatch to the canonical motion commands after init-keymap."
               (lookup-key nemacs-main--global-keymap (kbd "C-x 1"))))
   (should (eq 'other-window
               (lookup-key nemacs-main--global-keymap (kbd "C-x o")))))
+
+(ert-deftest nemacs-main-test/help-prefix-bindings ()
+  "C-h prefix maps to the TUI help commands implemented in nemacs-main."
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'nemacs-main-describe-key-interactive
+              (lookup-key nemacs-main--global-keymap (kbd "C-h k"))))
+  (should (eq 'emacs-help-gui-describe-bindings-current-context-command
+              (lookup-key nemacs-main--global-keymap (kbd "C-h b"))))
+  (should (eq 'emacs-help-gui-describe-function-prompt-command
+              (lookup-key nemacs-main--global-keymap (kbd "C-h f"))))
+  (should (eq 'emacs-help-gui-describe-variable-prompt-command
+              (lookup-key nemacs-main--global-keymap (kbd "C-h v"))))
+  (should (eq 'emacs-help-gui-apropos-command-prompt-command
+              (lookup-key nemacs-main--global-keymap (kbd "C-h a"))))
+  (should (eq 'nemacs-main-describe-key-interactive
+              (lookup-key nemacs-main--global-keymap
+                          (vector 'backspace ?k))))
+  (should (eq 'emacs-help-gui-describe-bindings-current-context-command
+              (lookup-key nemacs-main--global-keymap
+                          (vector 'backspace ?b))))
+  (should (eq 'emacs-help-gui-describe-function-prompt-command
+              (lookup-key nemacs-main--global-keymap
+                          (vector 'backspace ?f))))
+  (should (eq 'emacs-help-gui-describe-variable-prompt-command
+              (lookup-key nemacs-main--global-keymap
+                          (vector 'backspace ?v))))
+  (should (eq 'emacs-help-gui-apropos-command-prompt-command
+              (lookup-key nemacs-main--global-keymap
+                          (vector 'backspace ?a)))))
 
 (ert-deftest nemacs-main-test/track-b-key-event-name-int ()
   "When :name is the integer key code (= the real-event shape from
@@ -1370,14 +1416,11 @@ last defined."
 
 (ert-deftest nemacs-main-test/track-c-mx-dired-uses-tui-prompt ()
   "M-x dired should read its directory through the TUI prompt path."
-  (let ((prompts nil)
+    (let ((prompts nil)
         (context nil)
         (command nil)
         (target nil))
-    (cl-letf (((symbol-function 'nemacs-main--ensure-mx-command)
-               (lambda (command)
-                 (eq command 'dired)))
-              ((symbol-function 'nemacs-main--read-line-blocking)
+    (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
                (lambda (prompt)
                  (push prompt prompts)
                  "/tmp"))
@@ -1390,12 +1433,104 @@ last defined."
                  (setq command cmd
                        target where)
                  "*Dired*")))
-      (should (equal "*Dired*" (nemacs-main--execute-mx-command 'dired)))
+      (should (equal "*Dired*" (nemacs-main--run-mx 'dired)))
       (should (equal (plist-get context :directory) "/tmp"))
       (should (equal (plist-get context :status) "ok"))
       (should (equal command 'dired))
       (should (equal target "same"))
       (should (member "Dired (directory): " prompts)))))
+
+(ert-deftest nemacs-main-test/track-c-describe-function-uses-shared-help ()
+  "TUI describe-function should route through the shared Help bridge."
+  (let ((prompts nil)
+        (command nil)
+        (arg nil))
+    (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+               (lambda (prompt)
+                 (push prompt prompts)
+                 "forward-char"))
+              ((symbol-function 'emacs-help-gui-current-context-command)
+               (lambda (cmd &optional _static-command)
+                 (setq command cmd
+                       arg emacs-help-gui-arg)
+                 "*Help*")))
+      (nemacs-main--install-tui-gui-adapters)
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-function-prompt-command)))
+      (should (eq 'describe-function command))
+      (should (equal "forward-char" arg))
+      (should (member "Describe function: " prompts)))))
+
+(ert-deftest nemacs-main-test/track-c-describe-variable-uses-shared-help ()
+  "TUI describe-variable should route through the shared Help bridge."
+  (let ((prompts nil)
+        (command nil)
+        (arg nil))
+    (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+               (lambda (prompt)
+                 (push prompt prompts)
+                 "buffer-file-name"))
+              ((symbol-function 'emacs-help-gui-current-context-command)
+               (lambda (cmd &optional _static-command)
+                 (setq command cmd
+                       arg emacs-help-gui-arg)
+                 "*Help*")))
+      (nemacs-main--install-tui-gui-adapters)
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-variable-prompt-command)))
+      (should (eq 'describe-variable command))
+      (should (equal "buffer-file-name" arg))
+      (should (member "Describe variable: " prompts)))))
+
+(ert-deftest nemacs-main-test/track-c-mx-describe-help-uses-direct-tui-wrapper ()
+  "M-x help commands should use the shared Help adapter."
+  (let ((inputs '("forward-char" "buffer-file-name" "find" "cmd" "doc"))
+        (calls nil))
+    (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+               (lambda (_prompt)
+                 (pop inputs)))
+              ((symbol-function 'emacs-help-gui-current-context-command)
+               (lambda (cmd &optional _static-command)
+                 (push (list cmd emacs-help-gui-arg) calls)
+                 "*Help*")))
+      (should (equal "*Help*"
+                     (nemacs-main--run-mx 'describe-function)))
+      (should (equal "*Help*"
+                     (nemacs-main--run-mx 'describe-variable)))
+      (should (equal "*Help*"
+                     (nemacs-main--run-mx 'describe-bindings)))
+      (should (equal "*Help*"
+                     (nemacs-main--run-mx 'apropos)))
+      (should (equal "*Help*"
+                     (nemacs-main--run-mx 'apropos-command)))
+      (should (equal "*Help*"
+                     (nemacs-main--run-mx 'apropos-documentation)))
+      (should (member '(describe-function "forward-char") calls))
+      (should (member '(describe-variable "buffer-file-name") calls))
+      (should (member '(describe-bindings "buffer-file-name") calls))
+      (should (member '(apropos-command "find") calls))
+      (should (member '(apropos-command "cmd") calls))
+      (should (member '(apropos-documentation "doc") calls)))))
+
+(ert-deftest nemacs-main-test/track-c-shell-command-uses-shared-lightweight-output ()
+  "M-x shell-command should render through the shared shell-command helper."
+  (let ((prompts nil)
+        (emitted nil)
+        (buffered nil))
+    (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+               (lambda (prompt)
+                 (push prompt prompts)
+                 "printf tui-ok"))
+              ((symbol-function 'nemacs-main--emit-screen-text)
+               (lambda (text) (setq emitted text)))
+              ((symbol-function 'nemacs-main--display-text-buffer)
+               (lambda (name text)
+                 (setq buffered (list name text))
+                 name)))
+      (should (equal "*Shell Output*" (nemacs-main-shell-command-interactive)))
+      (should (equal "tui-ok" emitted))
+      (should (equal '("*Shell Output*" "tui-ok") buffered))
+      (should (member "Shell command: " prompts)))))
 
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
   "When a key-bound command signals `quit', the dispatch handler
@@ -1524,6 +1659,8 @@ Emacs's keyboard-quit-aborts-the-command-loop semantics."
       (should (nemacs-main--insert-repaint-hint-p nemacs-main--repaint-hint))
       (should (equal (append nemacs-main--repaint-hint nil)
                      (list 'insert-char ?a 1 2)))
+      (should (eq 'self-insert-command
+                  emacs-command-loop--last-command))
       (should (= point-calls 0))
       (should (= fast-insert-calls 1)))))
 

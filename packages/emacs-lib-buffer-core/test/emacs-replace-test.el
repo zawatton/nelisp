@@ -127,6 +127,124 @@
       (should (= 2 n))
       (should (equal "g[1] g[2]" (buffer-string))))))
 
+(ert-deftest emacs-replace-test/query-replace-session-steps ()
+  (with-temp-buffer
+    (insert "x A x B x C")
+    (goto-char (point-min))
+    (let ((session (emacs-query-replace-session-start "x" "Z")))
+      (should (emacs-query-replace-session-active-p session))
+      (should (equal "Replace x with Z? (y/n/!/q)"
+                     (emacs-query-replace-session-message session)))
+      (setq session (emacs-query-replace-session-handle-key session ?y))
+      (setq session (emacs-query-replace-session-handle-key session ?n))
+      (setq session (emacs-query-replace-session-handle-key session ?y))
+      (should-not (emacs-query-replace-session-active-p session))
+      (should (= 2 (emacs-query-replace-session-count session)))
+      (should (equal "Z A x B Z C" (buffer-string))))))
+
+(ert-deftest emacs-replace-test/query-replace-session-act-all ()
+  (with-temp-buffer
+    (insert "a a a a")
+    (goto-char (point-min))
+    (let ((session (emacs-query-replace-session-start "a" "Z")))
+      (setq session (emacs-query-replace-session-handle-key session "n"))
+      (setq session (emacs-query-replace-session-handle-key session "!"))
+      (should-not (emacs-query-replace-session-active-p session))
+      (should (= 3 (emacs-query-replace-session-count session)))
+      (should (equal "Replaced 3 (! all)"
+                     (emacs-query-replace-session-message session)))
+      (should (equal "a Z Z Z" (buffer-string))))))
+
+(ert-deftest emacs-replace-test/query-replace-session-regexp-backref ()
+  (with-temp-buffer
+    (insert "f(1) f(2)")
+    (goto-char (point-min))
+    (let ((session
+           (emacs-query-replace-session-start
+            "f(\\([0-9]\\))" "g[\\1]" t)))
+      (setq session
+            (emacs-query-replace-session-handle-decision session 'act-all))
+      (should (= 2 (emacs-query-replace-session-count session)))
+      (should (equal "g[1] g[2]" (buffer-string))))))
+
+(ert-deftest emacs-replace-test/query-replace-run-command-uses-frontend-hooks ()
+  (with-temp-buffer
+    (insert "alpha beta alpha")
+    (goto-char (point-min))
+    (let ((answers '("alpha" "OMEGA"))
+          (prompts nil)
+          (confirmed nil)
+          (after-count nil)
+          (buffer (current-buffer)))
+      (should
+       (= 2
+          (emacs-query-replace-run-command
+           :read-string (lambda (prompt)
+                          (push prompt prompts)
+                          (pop answers))
+           :read-confirmation (lambda (timeout)
+                                (setq confirmed timeout))
+           :current-buffer (lambda () buffer)
+           :start-function #'point
+           :after-success
+           (lambda (session)
+             (setq after-count
+                   (emacs-query-replace-session-count session))))))
+      (should (= 2 after-count))
+      (should (= 1000 confirmed))
+      (should (equal "OMEGA beta OMEGA" (buffer-string)))
+      (should (equal '("Query replace alpha with: " "Query replace: ")
+                     prompts)))))
+
+(ert-deftest emacs-replace-test/query-replace-run-command-supports-callback-prompt ()
+  (with-temp-buffer
+    (insert "alpha beta alpha")
+    (goto-char (point-min))
+    (let ((buffer (current-buffer))
+          prompts
+          callbacks
+          state
+          pending
+          status)
+      (emacs-query-replace-run-command
+       :begin-prompt (lambda (prompt callback)
+                       (push prompt prompts)
+                       (push callback callbacks))
+       :current-buffer (lambda () buffer)
+       :start-function (lambda ()
+                         (with-current-buffer buffer
+                           (point)))
+       :state-function (lambda (session)
+                         (setq state session))
+       :pending-function (lambda (active)
+                           (setq pending active))
+       :status-function (lambda (message)
+                          (setq status message)))
+      (should (equal '("Query replace: ") prompts))
+      (funcall (pop callbacks) "alpha")
+      (should (equal '("Query replace alpha with: " "Query replace: ")
+                     prompts))
+      (funcall (pop callbacks) "OMEGA")
+      (should (emacs-query-replace-session-active-p state))
+      (should pending)
+      (should (equal "Replace alpha with OMEGA? (y/n/!/q)" status))
+      (setq state (emacs-query-replace-session-handle-key state "!"))
+      (should (= 2 (emacs-query-replace-session-count state)))
+      (should (equal "OMEGA beta OMEGA" (buffer-string))))))
+
+(ert-deftest emacs-replace-test/query-replace-run-command-callback-reports-empty-from ()
+  (let (prompts callbacks status)
+    (emacs-query-replace-run-command
+     :begin-prompt (lambda (prompt callback)
+                     (push prompt prompts)
+                     (push callback callbacks))
+     :status-function (lambda (message)
+                        (setq status message)))
+    (funcall (pop callbacks) "")
+    (should (equal '("Query replace: ") prompts))
+    (should (equal "query-replace: empty FROM" status))
+    (should-not callbacks)))
+
 (provide 'emacs-replace-test)
 
 ;;; emacs-replace-test.el ends here

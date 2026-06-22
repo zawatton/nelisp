@@ -12,14 +12,32 @@
   (file-name-directory (or load-file-name buffer-file-name ""))
   "Directory containing runtime-image preload helper scripts.")
 
+(defconst nemacs-runtime-image-package-load-paths
+  '("packages/nelisp-emacs-buffer-core/lazy"
+    "packages/nelisp-emacs-buffer-core/lisp"
+    "packages/nelisp-emacs-core/lazy"
+    "packages/nelisp-emacs-core/lisp"
+    "packages/nelisp-emacs-editing/lisp"
+    "packages/nelisp-emacs-facade/lisp"
+    "packages/nelisp-emacs-foundation/lisp"
+    "packages/nelisp-emacs-io/lazy"
+    "packages/nelisp-emacs-io/lisp"
+    "packages/nelisp-emacs-special-buffers/lisp"
+    "packages/nelisp-emacs-text-core/lazy"
+    "packages/nelisp-emacs-text-core/lisp"
+    "packages/nelisp-emacs-textmodes-stub/lisp"
+    "packages/nelisp-emacs-app-gui/lisp")
+  "Package/app scaffold load-paths used by runtime-image bakes.")
+
 (defun nemacs-runtime-image-setup-paths (repo-root)
-  "Install REPO-ROOT's src/vendor paths for a NeLisp image bake."
+  "Install REPO-ROOT's package/app scaffold and vendor paths for a bake."
   (unless (boundp 'load-path)
     (defvar load-path nil))
   (setq nelisp-emacs-vendor-root (concat repo-root "/vendor"))
   (setq load-path
-        (append (list (concat repo-root "/src")
-                      (concat repo-root "/vendor/emacs-lisp")
+        (append (mapcar (lambda (path) (concat repo-root "/" path))
+                        nemacs-runtime-image-package-load-paths)
+                (list (concat repo-root "/vendor/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/vc"))
                 load-path))

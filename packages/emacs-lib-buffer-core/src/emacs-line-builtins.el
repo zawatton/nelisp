@@ -77,6 +77,12 @@ point-max).  Does not move point."
           (setq i (+ i 1)))
         (if found (+ p found) em)))))
 
+;;;###autoload
+(defun emacs-line-eol-pos (&optional pos)
+  "Return position of end of line containing POS.
+This public wrapper does not move point."
+  (emacs-line--eol-pos pos))
+
 ;;;; --- bobp / eobp ------------------------------------------------------
 
 (when (emacs-line-builtins--install-function-p 'bobp)

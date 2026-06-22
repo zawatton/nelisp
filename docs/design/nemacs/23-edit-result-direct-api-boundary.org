@@ -1,0 +1,195 @@
+#+TITLE: nelisp-emacs Doc 23 -- edit-result direct API boundary
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-21
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 18 package ownership inventory, Doc 21 APP/GUI semantic inventory
+
+* 0. Purpose
+
+This document records the boundary contract introduced while draining
+editing command semantics out of =nemacs-main.el= and
+=nemacs-gtk-frontend.el=.
+
+The reusable edit package now exposes prefixed =emacs-edit-*-direct=
+helpers that perform buffer mutation and return an *edit-result plist*.
+Concrete frontends consume that plist to update repaint, cache,
+selection, echo, and platform integration state.
+
+This keeps command semantics reusable while still allowing GTK/TUI to keep
+their performance-sensitive paint/cache logic.
+
+* 1. Decision
+
+Editing command semantics belong to =emacs-edit-builtins.el= or another
+BUF/edit owner, not to concrete frontends.
+
+Frontend files may:
+
+- decode platform input,
+- choose the active buffer/window,
+- call a shared =emacs-edit-*-direct= helper,
+- apply returned edit-result metadata to concrete repaint/cache systems,
+- set frontend-local echo messages, mark state, and cursor visibility.
+
+Frontend files must not:
+
+- reimplement kill-ring selection,
+- reimplement overwrite-mode rules,
+- reimplement yank/yank-pop replacement rules,
+- directly mutate =nelisp-ec= buffers for reusable editing commands when a
+  shared direct API exists,
+- infer edit ranges by re-reading the buffer after calling a shared edit
+  command.
+
+* 2. Public direct APIs
+
+Current shared edit-result producers:
+
+| API | Semantics | Main consumers |
+|-----+-----------+----------------|
+| =emacs-edit-self-insert-direct= | insert/overwrite one character or string | TUI printable fast path, GTK self-insert |
+| =emacs-edit-delete-backward-direct= | delete up to N chars before point | GTK backspace fast path |
+| =emacs-edit-copy-region-direct= | copy range to kill-ring without mutation | GTK copy region/current line |
+| =emacs-edit-kill-region-direct= | kill range and report deleted text | GTK cut region/current line |
+| =emacs-edit-kill-line-direct= | kill to EOL or newline at EOL | GTK C-k fast path |
+| =emacs-edit-yank-direct= | insert selected kill-ring/clipboard entry | GTK C-y and mouse-2 yank |
+| =emacs-edit-yank-pop-direct= | replace last yank with another kill-ring entry | GTK M-y |
+| =emacs-edit-forward-sentence-direct= / =emacs-edit-backward-sentence-direct= | sentence motion with reusable status plist | GTK M-e/M-a, standalone commands |
+| =emacs-edit-forward-sexp-direct= / =emacs-edit-backward-sexp-direct= / =emacs-edit-kill-sexp-direct= | sexp scan/motion/kill using shared scanner | GTK C-M-f/C-M-b/C-M-k |
+| =emacs-edit-defun-bounds= / =emacs-edit-mark-defun-direct= / =emacs-edit-narrow-to-defun-direct= | top-level form boundary, mark-defun, and narrow-to-defun semantics | GTK C-M-h / C-x n d |
+| =emacs-edit-comment-dwim-direct= | toggle current line or region line comments and return edit-result list | GTK M-; |
+| =emacs-edit-run-transform-region-command= | validate frontend region state, transform region, and produce command message/edit result | GTK upcase/downcase/capitalize-region |
+| =emacs-edit-run-fill-paragraph-command= / =emacs-edit-run-mark-paragraph-command= | paragraph fill/mark command result and frontend-neutral mark state | GTK M-q / M-h |
+| =emacs-edit-run-electric-pair-command= | electric-pair insert/skip semantics and command message | GTK printable-pair lane |
+| =emacs-edit-run-quoted-insert-command= | literal character insertion and command message | GTK C-q quoted-insert lane |
+| =emacs-edit-goto-buffer-boundary-direct= / =emacs-edit-mark-whole-buffer-direct= / =emacs-edit-exchange-point-and-mark-direct= | buffer boundary movement, whole-buffer mark, and point/mark exchange | GTK M-</M->, C-x h, C-x C-x |
+| =emacs-edit-goto-position-direct= | clamp and move to an absolute point in the current buffer | bookmark/register jump adapters |
+
+These APIs are library APIs first.  The unprefixed commands
+=self-insert-command=, =delete-backward-char=, =kill-region=,
+=kill-line=, =yank=, and =yank-pop= should call the direct APIs and
+preserve command-facing return behavior separately.
+
+* 3. Edit-result plist contract
+
+All direct editing APIs return a plist.  Common keys:
+
+| Key | Meaning |
+|-----+---------|
+| =:beg= | 1-based buffer position where the edit begins, or nil for no-op |
+| =:end= | position after inserted text, or pre-edit deletion end when no insertion exists |
+| =:text= | inserted/copied/deleted text relevant to the command |
+| =:deleted-newline= | non-nil when deleted text contained a newline |
+
+Optional keys:
+
+| Key | Producer | Meaning |
+|-----+----------+---------|
+| =:overwrote= | =self-insert= | one existing character was replaced by =:text= |
+| =:delete-len= | replacement edits such as =yank-pop= | number of pre-edit chars replaced |
+| =:delete-text= | replacement edits such as =yank-pop= | exact text removed before insertion |
+
+No-op result:
+
+#+begin_src elisp
+(:beg nil :end nil :text nil :deleted-newline nil)
+#+end_src
+
+Rules:
+
+- =:beg nil= means consumers must not emit incremental buffer edits.
+- =:deleted-newline= tells consumers that line-count caches are stale.
+- Replacement edits should use =:delete-len= instead of deriving the
+  deleted length from =:text=.
+- Insert-only edits omit =:delete-len= and =:overwrote= or set
+  =:overwrote= to nil.
+- Delete-only edits carry =:deleted-newline= and use =:text= as deleted
+  text.
+- Future direct APIs should extend this plist with additive keys only.
+
+* 4. Frontend adapter rule
+
+GTK now centralizes edit-result consumption in:
+
+- =nemacs-gtk--apply-edit-result-cache=
+
+That helper is allowed to know about:
+
+- =nelisp-gtk-buffer-edit=,
+- =nemacs-gtk--cache-synced-buffer=,
+- =nemacs-gtk--line-count-cache=,
+- GTK incremental paint constraints.
+
+It is not allowed to decide editor semantics.  It should only translate an
+already-computed edit-result plist into concrete cache updates.
+
+When adding a new GTK fast path:
+
+1. Add or reuse an =emacs-edit-*-direct= helper.
+2. Add focused tests for the direct helper in =test/emacs-edit-builtins-test.el=.
+3. Route GTK through =nemacs-gtk--apply-edit-result-cache= when possible.
+4. Add adapter tests in =test/nemacs-gtk-frontend-menu-test.el= when the
+   plist shape requires new cache behavior.
+5. Keep frontend echo/cursor/mark handling in GTK.
+
+* 5. TUI rule
+
+=nemacs-main.el= may keep performance fast paths, but the mutation itself
+should be delegated to shared direct APIs.
+
+Current example:
+
+- printable self-insert calls =emacs-edit-self-insert-direct=, then uses
+  the returned range to set a TUI repaint hint.
+
+TUI code may own repaint hints and terminal event handling.  It should not
+own insertion, overwrite, kill-ring, or yank semantics.
+
+* 6. Ownership status
+
+Shipped API promotions:
+
+| Slice | Status |
+|-------+--------|
+| self-insert fast path | shared direct API, TUI/GTK consumers updated |
+| delete-backward fast path | shared direct API, GTK consumer updated |
+| copy/kill-region | shared direct API, GTK copy/cut consumers updated |
+| kill-line | shared direct API, GTK C-k consumer updated |
+| yank/yank-pop | shared direct API, GTK C-y/M-y/mouse-2 consumers updated |
+| sentence motion | shared direct API, GTK M-a/M-e consumers updated |
+| sexp scan adapters | GTK pass-through scanner helpers removed; GTK calls shared edit scanner/direct APIs |
+| defun boundary adapters | shared bounds/direct APIs, GTK C-M-h and C-x n d consumers updated |
+| comment-dwim line/region mutation | shared direct API, GTK M-; consumer updated |
+| region case transforms | shared command helper, GTK case-region consumers updated |
+| paragraph fill/mark adapters | shared command helpers, GTK M-q/M-h consumers updated |
+| electric-pair insertion/skipping | shared direct/command helper and shared pair tables, GTK printable-pair consumer updated |
+| quoted-insert literal insertion | shared command helper, GTK C-q consumer updated |
+| display text-buffer construction | shared BUF/UI helper, GTK bookmark/help/shell text-buffer consumers updated |
+| special buffer display | shared special-buffer display plan, GTK scratch/messages consumers updated |
+| ad hoc =nelisp-ec-insert= / =nelisp-ec-delete-region= in GTK | replaced by shared direct/display helpers; remaining mention is explanatory comment only |
+| GTK-local direct buffer movement/mark commands | shared edit helpers, GTK buffer boundary/mark consumers updated |
+| bookmark jump movement | shared bookmark jump plan plus generic goto-position helper, GTK C-x r b consumer updated |
+| display buffer start positioning | shared BUF/UI display-position helper, GTK cheat-sheet consumer updated |
+| isearch point restore/search/repeat | shared isearch direct helpers, GTK C-s/C-r/C-g isearch consumer updated |
+| paren highlight matching position | shared edit helper preserves point while scanning matching paren, GTK render consumer updated |
+| mouse point movement | shared generic goto-position helper, GTK mouse-1/drag consumers updated |
+| mouse selection state | shared drag-region plan and word/line selection command helpers, GTK mouse-drag/double/triple click consumers updated |
+| GTK edit-result cache adapter | centralized in =nemacs-gtk--apply-edit-result-cache= |
+
+Remaining GTK-local direct =nelisp-ec-goto-char= extraction candidates: none.
+
+* 7. Review checklist
+
+For future changes, reviewers should ask:
+
+- Does this add buffer mutation to a frontend?
+- Could another frontend or library consumer reuse the same command
+  semantics?
+- Does a direct API already exist?
+- If a direct API is added, does it return an edit-result plist?
+- Are command-facing return values kept separate from direct API metadata?
+- Are undo and font-lock dirty bookkeeping kept with the mutation owner?
+- Does GTK/TUI only translate metadata into repaint/cache effects?
+
+If the answer reveals reusable command behavior in APP/GUI code, move the
+behavior into a shared module before adding more frontend-local branches.

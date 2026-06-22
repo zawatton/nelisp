@@ -1,0 +1,121 @@
+;;; spike-x11-editor.el --- interactive pure-elisp X11 text editor -*- lexical-binding: t; -*-
+;;
+;; A REAL interactive GUI editor: type, Enter=newline, Backspace=delete,
+;; arrows=move, Esc=quit.  Renders text + a live cursor, decodes the keyboard
+;; via X11 GetKeyboardMapping.  Socket + wire protocol only -- no library, no
+;; dynamic linker, no FFI, no ptr-call.
+
+(defun x-mmap (len) (syscall-direct 9 0 len 3 34 -1 0))
+(defun x-rdu (ptr off size)
+  (let* ((base (- off (mod off 8))) (sh (* (mod off 8) 8)) (lo (ptr-read-u64 ptr base))
+         (need (+ (mod off 8) size)) (mask (if (>= size 8) -1 (1- (ash 1 (* size 8))))) (v (ash lo (- sh))))
+    (when (> need 8) (setq v (logior v (ash (ptr-read-u64 ptr (+ base 8)) (- 64 sh))))) (logand v mask)))
+(defun x-wbytes (page bytes)
+  (let ((i 0) (n (length bytes)))
+    (while (< i n) (let ((v 0) (k 0))
+      (while (and (< k 8) (< (+ i k) n)) (setq v (logior v (ash (logand (nth (+ i k) bytes) 255) (* k 8)))) (setq k (1+ k)))
+      (ptr-write-u64 page i v) (setq i (+ i 8))))))
+(defun x-le (n nb) (let ((r nil) (i 0)) (while (< i nb) (setq r (append r (list (logand (ash n (* -8 i)) 255)))) (setq i (1+ i))) r))
+(defun x-pad4 (n) (* 4 (/ (+ n 3) 4)))
+(defun x-send (fd buf bytes) (x-wbytes buf bytes) (syscall-direct 1 fd buf (length bytes) 0 0 0))
+(defun x-fill (fd buf gc win color x y w h)
+  (x-send fd buf (append (list 56 0) (x-le 4 2) (x-le gc 4) (x-le 4 4) (x-le color 4)))
+  (x-send fd buf (append (list 70 0) (x-le 5 2) (x-le win 4) (x-le gc 4) (x-le x 2) (x-le y 2) (x-le w 2) (x-le h 2))))
+(defun x-text (fd buf gc win fg bg x y str)
+  (x-send fd buf (append (list 56 0) (x-le 5 2) (x-le gc 4) (x-le 12 4) (x-le fg 4) (x-le bg 4)))
+  (let* ((sb (string-to-list str)) (n (length sb)) (pad (- (x-pad4 n) n)) (rl (+ 4 (/ (x-pad4 n) 4))))
+    (when (> n 0) (x-send fd buf (append (list 76 n) (x-le rl 2) (x-le win 4) (x-le gc 4) (x-le x 2) (x-le y 2) sb (x-le 0 pad))))))
+
+;; ---- buffer model: single string + point index ----
+(defun ed-init ()
+  (setq ed-text ";; pure-elisp X11 editor.  type freely.\n;; Enter=newline  Backspace=del  arrows=move  Esc=quit\n\n(defun hi ()\n  (message \"hello from a pure-elisp GUI editor\"))\n")
+  (setq ed-point (length ed-text)))
+(defun ed-lines (text)
+  (let ((lines nil) (cur "") (i 0) (n (length text)))
+    (while (< i n)
+      (let ((c (aref text i)))
+        (if (= c 10) (progn (setq lines (append lines (list cur))) (setq cur ""))
+          (setq cur (concat cur (char-to-string c)))))
+      (setq i (1+ i)))
+    (append lines (list cur))))
+(defun ed-cursor ()
+  (let ((line 0) (col 0) (i 0))
+    (while (< i ed-point)
+      (if (= (aref ed-text i) 10) (progn (setq line (1+ line)) (setq col 0)) (setq col (1+ col)))
+      (setq i (1+ i)))
+    (cons line col)))
+(defun ed-insert (ch)
+  (setq ed-text (concat (substring ed-text 0 ed-point) (char-to-string ch) (substring ed-text ed-point)))
+  (setq ed-point (1+ ed-point)))
+(defun ed-backspace ()
+  (when (> ed-point 0)
+    (setq ed-text (concat (substring ed-text 0 (1- ed-point)) (substring ed-text ed-point)))
+    (setq ed-point (1- ed-point))))
+(defun ed-left () (when (> ed-point 0) (setq ed-point (1- ed-point))))
+(defun ed-right () (when (< ed-point (length ed-text)) (setq ed-point (1+ ed-point))))
+
+;; ---- render ----
+(defun ed-render (fd buf gc win)
+  (let ((cur (ed-cursor)) (lines (ed-lines ed-text)) (y 0) (cw 6) (lh 15) (top 50) (left 10))
+    (x-fill fd buf gc win #x21252b 0 0 760 460)
+    (x-fill fd buf gc win #x2e3440 0 0 760 30)
+    (x-fill fd buf gc win #x4c566a 0 430 760 30)
+    (x-text fd buf gc win #x88c0d0 #x2e3440 12 20 "*scratch*  --  nemacs  (interactive pure-elisp X11 editor)")
+    (dolist (ln lines)
+      (x-text fd buf gc win #xd8dee9 #x21252b left (+ top (* y lh) 11) ln)
+      (setq y (1+ y)))
+    ;; cursor: filled caret at (col,line)
+    (x-fill fd buf gc win #xebcb8b (+ left (* (cdr cur) cw)) (+ top (* (car cur) lh)) 2 13)
+    (x-text fd buf gc win #xeceff4 #x4c566a 12 449
+            (concat "-:**-  *scratch*   L" (number-to-string (1+ (car cur)))
+                    " C" (number-to-string (cdr cur)) "   pure-elisp/X11   Esc to quit"))))
+
+(let* ((fd (syscall-direct 41 1 1 0 0 0 0))
+       (addr (x-mmap 4096)) (buf (x-mmap 65536)) (reply (x-mmap 131072)) (kmap (x-mmap 131072))
+       (sa (append (list 1 0) (string-to-list "/tmp/.X11-unix/X0") (list 0))))
+  (x-wbytes addr sa)
+  (syscall-direct 42 fd addr (length sa) 0 0 0)
+  (x-send fd buf (list 108 0 11 0 0 0 0 0 0 0 0 0))
+  (syscall-direct 0 fd reply 131072 0 0 0)
+  (let* ((vlen (x-rdu reply 24 2)) (nfmt (x-rdu reply 29 1)) (rid (x-rdu reply 12 4))
+         (minkc (x-rdu reply 34 1)) (maxkc (x-rdu reply 35 1)) (nkc (+ 1 (- maxkc minkc)))
+         (scr (+ 40 (x-pad4 vlen) (* nfmt 8)))
+         (root (x-rdu reply scr 4)) (visual (x-rdu reply (+ scr 32) 4)) (depth (x-rdu reply (+ scr 38) 1))
+         (win (+ rid 1)) (gc (+ rid 2)) (fid (+ rid 3))
+         (fname (string-to-list "fixed")) (fn (length fname)))
+    ;; GetKeyboardMapping -> kmap buffer; n = keysyms-per-keycode at kmap byte 1
+    (x-send fd buf (append (list 101 0) (x-le 2 2) (list minkc nkc 0 0)))
+    (syscall-direct 0 fd kmap 131072 0 0 0)
+    (let ((kspp (x-rdu kmap 1 1)))
+      (x-send fd buf (append (list 45 0) (x-le (+ 3 (/ (x-pad4 fn) 4)) 2) (x-le fid 4) (x-le fn 2) (x-le 0 2) fname (x-le 0 (- (x-pad4 fn) fn))))
+      (x-send fd buf (append (list 1 depth) (x-le 10 2) (x-le win 4) (x-le root 4)
+                             (x-le 60 2) (x-le 60 2) (x-le 760 2) (x-le 460 2) (x-le 0 2) (x-le 1 2)
+                             (x-le visual 4) (x-le #x802 4) (x-le #x21252b 4) (x-le #x8001 4)))
+      (x-send fd buf (append (list 55 0) (x-le 5 2) (x-le gc 4) (x-le win 4) (x-le #x4000 4) (x-le fid 4)))
+      (x-send fd buf (append (list 8 0) (x-le 2 2) (x-le win 4)))
+      (ed-init)
+      (ed-render fd buf gc win)
+      ;; keysym for keycode/shift, reading from kmap (keysyms start at byte 32)
+      (let ((go t))
+        (while go
+          (let ((rrc (syscall-direct 0 fd reply 4096 0 0 0)))
+            (if (< rrc 1) (setq go nil)
+              (let ((et (logand (x-rdu reply 0 1) 127)))
+                (cond
+                 ((= et 12) (ed-render fd buf gc win))
+                 ((= et 2)
+                  (let* ((kc (x-rdu reply 1 1)) (state (x-rdu reply 28 2)) (shift (logand state 1))
+                         (col (if (= shift 1) 1 0))
+                         (ks (x-rdu (+ kmap 32 (* (+ (* (- kc minkc) kspp) col) 4)) 0 4))
+                         (ks0 (x-rdu (+ kmap 32 (* (* (- kc minkc) kspp) 4)) 0 4)))
+                    (when (= ks 0) (setq ks ks0))
+                    (cond
+                     ((= ks 65307) (setq go nil))                         ; Escape
+                     ((= ks 65288) (ed-backspace) (ed-render fd buf gc win))   ; BackSpace
+                     ((= ks 65293) (ed-insert 10) (ed-render fd buf gc win))   ; Return
+                     ((= ks 65363) (ed-right) (ed-render fd buf gc win))       ; Right
+                     ((= ks 65361) (ed-left) (ed-render fd buf gc win))        ; Left
+                     ((and (>= ks 32) (< ks 127)) (ed-insert ks) (ed-render fd buf gc win))))))))))
+        (syscall-direct 3 fd 0 0 0 0 0)
+        (list :win (format "#x%x" win) :minkc minkc :nkc nkc :kspp kspp :final-len (length ed-text))))))
+;;; spike-x11-editor.el ends here

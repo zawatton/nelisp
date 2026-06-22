@@ -69,6 +69,7 @@
                  find-file-noselect find-file
                  save-buffer write-file revert-buffer))
     (should (fboundp sym)))
+  (should (fboundp 'emacs-fileio-save-buffer-direct))
   (should (boundp 'emacs-fileio--buffer-files)))
 
 (ert-deftest emacs-fileio-builtins-test/install-p-uses-function-cell ()
@@ -142,6 +143,24 @@
     (should (equal "/shadow"
                    (nelisp-ec-substitute-in-file-name
                     "/tmp//shadow")))))
+
+(ert-deftest emacs-fileio-builtins-test/pure-file-name-helper-contracts ()
+  (should (nelisp-ec-file-name-absolute-p "/tmp/a"))
+  (should (nelisp-ec-file-name-absolute-p "~/a"))
+  (should-not (nelisp-ec-file-name-absolute-p "relative"))
+  (should (equal "/tmp/"
+                 (nelisp-ec-file-name-directory "/tmp/file.txt")))
+  (should-not (nelisp-ec-file-name-directory "file.txt"))
+  (should (equal "file.txt"
+                 (nelisp-ec-file-name-nondirectory "/tmp/file.txt")))
+  (should (equal "/tmp/file"
+                 (nelisp-ec-file-name-sans-extension "/tmp/file.txt")))
+  (should (equal ".bashrc"
+                 (nelisp-ec-file-name-sans-extension ".bashrc")))
+  (should (equal "/tmp/file/"
+                 (nelisp-ec-file-name-as-directory "/tmp/file")))
+  (should (equal "/tmp/file/"
+                 (nelisp-ec-file-name-as-directory "/tmp/file/"))))
 
 (ert-deftest emacs-fileio-builtins-test/file-readable-p-missing-is-nil ()
   (let ((missing (emacs-fileio-builtins-test--tmp-path "missing.txt")))
@@ -236,6 +255,17 @@
       (should (member (list nelisp-ec--syscall-access-number "/bin/sh" 0) seen))
       (should (eq -1 (nelisp-ec--access "/bin/sh" 1))))))
 
+(ert-deftest emacs-fileio-builtins-test/access-public-wrapper-contract ()
+  "`nelisp-ec-access' exposes the integer access(2)-style result."
+  (cl-letf (((symbol-function 'nelisp--syscall-path-int)
+             (lambda (_nr file mode)
+               (cond
+                ((and (equal file "/ok") (eq mode 4)) 0)
+                ((and (equal file "/missing") (eq mode 0)) -1)
+                (t 8)))))
+    (should (= 0 (nelisp-ec-access "/ok" 4)))
+    (should (= -1 (nelisp-ec-access "/missing" 0)))))
+
 (ert-deftest emacs-fileio-builtins-test/file-exists-p-uses-access-f-ok ()
   "`nelisp-ec-file-exists-p' uses access(F_OK), not the misreporting stat."
   (cl-letf (((symbol-function 'nelisp--syscall-path-int)
@@ -267,6 +297,26 @@
       (should (equal "/tools/tool" (nelisp-ec-executable-find "tool")))
       (should (member '("/nope/tool" 1) seen))
       (should (member '("/tools/tool" 1) seen)))))
+
+(ert-deftest emacs-fileio-builtins-test/directory-and-mutation-substrate-contracts ()
+  (let* ((root (make-temp-file "nelisp-io-" t))
+         (sub (expand-file-name "sub" root))
+         (src (expand-file-name "a.txt" sub))
+         (dst (expand-file-name "b.txt" sub)))
+    (unwind-protect
+        (progn
+          (should (equal sub (nelisp-ec-make-directory sub t)))
+          (should (nelisp-ec-file-directory-p sub))
+          (with-temp-file src
+            (insert "alpha"))
+          (should (equal '("a.txt")
+                         (nelisp-ec-directory-files
+                          sub nil "\\.txt\\'" nil 1)))
+          (should (nelisp-ec-rename-file src dst))
+          (should (nelisp-ec-file-exists-p dst))
+          (should (nelisp-ec-delete-file dst)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
 
 (ert-deftest emacs-fileio-builtins-test/locate-library-finds-el-file ()
   (let* ((dir (emacs-fileio-builtins-test--tmp-path "load-path"))
@@ -490,6 +540,217 @@
         (when (nelisp-ec-file-exists-p path)
           (nelisp-ec-delete-file path))
         (nelisp-ec-kill-buffer b)))))
+
+(ert-deftest emacs-fileio-builtins-test/save-buffer-direct-uses-pluggable-accessors ()
+  (let (written modified)
+    (cl-letf (((symbol-function 'emacs-buffer-set-buffer-modified-p)
+               (lambda (flag buffer)
+                 (setq modified (list flag buffer)))))
+      (should (equal "/tmp/shared.txt"
+                     (emacs-fileio-save-buffer-direct
+                      :buffer :buffer
+                      :file-function (lambda (buffer)
+                                       (and (eq buffer :buffer)
+                                            "/tmp/shared.txt"))
+                      :string-function (lambda (buffer)
+                                         (and (eq buffer :buffer)
+                                              "body"))
+                      :write-function (lambda (path text)
+                                        (setq written (list path text))))))
+      (should (equal '("/tmp/shared.txt" "body") written))
+      (should (equal '(nil :buffer) modified)))))
+
+(ert-deftest emacs-fileio-builtins-test/save-buffer-direct-signals-when-no-file ()
+  (should-error
+   (emacs-fileio-save-buffer-direct
+    :buffer :buffer
+    :file-function (lambda (_buffer) nil)
+    :string-function (lambda (_buffer) "body")
+    :write-function (lambda (&rest _args) nil))))
+
+(ert-deftest emacs-fileio-builtins-test/run-find-file-command-uses-frontend-hooks ()
+  (let (prompts visited synced)
+    (should
+     (eq :buffer
+         (emacs-fileio-run-find-file-command
+          :read-string (lambda (prompt)
+                         (push prompt prompts)
+                         "note.el")
+          :visit-function (lambda (path)
+                            (setq visited path)
+                            :buffer)
+          :sync-window (lambda (buffer)
+                         (setq synced buffer)))))
+    (should (equal "note.el" visited))
+    (should (eq synced :buffer))
+    (should (equal '("Find file: ") prompts))))
+
+(ert-deftest emacs-fileio-builtins-test/run-find-file-command-reports-cancel ()
+  (let (cancelled)
+    (should-not
+     (emacs-fileio-run-find-file-command
+      :read-string (lambda (_prompt) nil)
+      :cancel-function (lambda ()
+                         (setq cancelled t))))
+    (should cancelled)))
+
+(ert-deftest emacs-fileio-builtins-test/run-find-file-command-reports-missing-buffer ()
+  (let (missing)
+    (should-not
+     (emacs-fileio-run-find-file-command
+      :read-string (lambda (_prompt) "/tmp/missing")
+      :visit-function (lambda (_path) nil)
+      :missing-function (lambda (path)
+                          (setq missing path))))
+    (should (equal "/tmp/missing" missing))))
+
+(ert-deftest emacs-fileio-builtins-test/run-find-file-command-runs-after-success ()
+  (let (after)
+    (should
+     (eq :buffer
+         (emacs-fileio-run-find-file-command
+          :read-string (lambda (_prompt) "/tmp/note.el")
+          :visit-function (lambda (_path) :buffer)
+          :after-success (lambda (buffer path)
+                           (setq after (list buffer path))))))
+    (should (equal '(:buffer "/tmp/note.el") after))))
+
+(ert-deftest emacs-fileio-builtins-test/run-save-buffer-command-saves-visited-file ()
+  (let (written)
+    (cl-letf (((symbol-function 'emacs-buffer-set-buffer-modified-p)
+               (lambda (&rest _args) nil)))
+      (should
+       (equal
+        "/tmp/note.el"
+        (emacs-fileio-run-save-buffer-command
+         :current-buffer (lambda () :buffer)
+         :file-function (lambda (buffer)
+                          (and (eq buffer :buffer) "/tmp/note.el"))
+         :direct-save-p (lambda () t)
+         :message-function (lambda (&rest _args) :unexpected)
+         :read-string (lambda (&rest _args) :unexpected)
+         :write-function (lambda (path text)
+                           (setq written (list path text)))
+         :string-function (lambda (buffer)
+                            (and (eq buffer :buffer) "body"))))))
+    (should (equal '("/tmp/note.el" "body") written))))
+
+(ert-deftest emacs-fileio-builtins-test/run-save-buffer-command-prompts-write-file ()
+  (let (prompts wrote)
+    (cl-letf (((symbol-function 'write-file)
+               (lambda (path)
+                 (setq wrote path)
+                 :wrote)))
+      (should
+       (eq :wrote
+           (emacs-fileio-run-save-buffer-command
+            :current-buffer (lambda () :buffer)
+            :file-function (lambda (_buffer) nil)
+            :read-string (lambda (prompt)
+                           (push prompt prompts)
+                           "/tmp/new.el"))))
+      (should (equal "/tmp/new.el" wrote))
+      (should (equal '("Write file: ") prompts)))))
+
+(ert-deftest emacs-fileio-builtins-test/run-write-file-command-uses-frontend-hooks ()
+  (let (prompts wrote after status)
+    (should
+     (equal "/tmp/written.el"
+            (emacs-fileio-run-write-file-command
+             :read-string (lambda (prompt)
+                            (push prompt prompts)
+                            "/tmp/new.el")
+             :write-file-function (lambda (path)
+                                    (setq wrote path)
+                                    "/tmp/written.el")
+             :after-success (lambda (written path)
+                              (setq after (list written path)))
+             :status-function (lambda (message)
+                                (setq status message)))))
+    (should (equal "/tmp/new.el" wrote))
+    (should (equal '("/tmp/written.el" "/tmp/new.el") after))
+    (should (equal "Wrote: /tmp/written.el" status))
+    (should (equal '("Write file: ") prompts))))
+
+(ert-deftest emacs-fileio-builtins-test/run-write-file-command-reports-empty ()
+  (let (status)
+    (should-not
+     (emacs-fileio-run-write-file-command
+      :read-string (lambda (_prompt) "")
+      :status-function (lambda (message)
+                         (setq status message))))
+    (should (equal "write-file: empty path" status))))
+
+(ert-deftest emacs-fileio-builtins-test/run-write-file-command-reports-error ()
+  (let (message)
+    (should-not
+     (emacs-fileio-run-write-file-command
+      :read-string (lambda (_prompt) "/tmp/new.el")
+      :write-file-function (lambda (_path)
+                             (error "denied"))
+      :message-function (lambda (format-string &rest args)
+                          (setq message
+                                (apply #'format format-string args)))))
+    (should (equal "write-file: denied" message))))
+
+(ert-deftest emacs-fileio-builtins-test/run-save-buffers-quit-command-no-dirty ()
+  (let (quit status)
+    (should
+     (equal
+      "C-x C-c → quit"
+      (emacs-fileio-run-save-buffers-quit-command
+       :dirty-buffers nil
+       :quit-function (lambda () (setq quit t))
+       :status-function (lambda (message)
+                          (setq status message)))))
+    (should quit)
+    (should (equal "C-x C-c → quit" status))))
+
+(ert-deftest emacs-fileio-builtins-test/run-save-buffers-quit-command-saves-dirty ()
+  (let (prompt callback saved quit status)
+    (emacs-fileio-run-save-buffers-quit-command
+     :dirty-buffers '(:a :b)
+     :begin-prompt (lambda (p cb)
+                     (setq prompt p
+                           callback cb))
+     :save-buffer-function (lambda (buffer)
+                             (push buffer saved))
+     :quit-function (lambda () (setq quit t))
+     :status-function (lambda (message)
+                        (setq status message)))
+    (should (equal "2 modified buffer(s).  Save? (y/n/c): " prompt))
+    (funcall callback "y")
+    (should quit)
+    (should (equal '(:b :a) saved))
+    (should (equal "Saved 2 buffer(s) — quit" status))))
+
+(ert-deftest emacs-fileio-builtins-test/run-save-buffers-quit-command-unsaved ()
+  (let (callback quit status saved)
+    (emacs-fileio-run-save-buffers-quit-command
+     :dirty-buffers '(:a)
+     :begin-prompt (lambda (_prompt cb) (setq callback cb))
+     :save-buffer-function (lambda (buffer) (push buffer saved))
+     :quit-function (lambda () (setq quit t))
+     :status-function (lambda (message)
+                        (setq status message)))
+    (funcall callback "n")
+    (should quit)
+    (should-not saved)
+    (should (equal "Quit (unsaved)" status))))
+
+(ert-deftest emacs-fileio-builtins-test/run-save-buffers-quit-command-cancel ()
+  (let (callback quit status saved)
+    (emacs-fileio-run-save-buffers-quit-command
+     :dirty-buffers '(:a)
+     :begin-prompt (lambda (_prompt cb) (setq callback cb))
+     :save-buffer-function (lambda (buffer) (push buffer saved))
+     :quit-function (lambda () (setq quit t))
+     :status-function (lambda (message)
+                        (setq status message)))
+    (funcall callback "c")
+    (should-not quit)
+    (should-not saved)
+    (should (equal "Quit cancelled" status))))
 
 ;;;; G. save-buffer signals when not visiting
 

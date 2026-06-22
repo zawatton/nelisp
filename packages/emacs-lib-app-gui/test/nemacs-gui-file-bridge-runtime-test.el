@@ -48,6 +48,36 @@
    "src/emacs-help-gui.el"
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
+(defconst nemacs-gui-file-bridge-runtime-test--image-sources
+  `(("fileio-gui" . ,nemacs-gui-file-bridge-runtime-test--fileio-gui)
+    ("dired-gui" . ,nemacs-gui-file-bridge-runtime-test--dired-gui)
+    ("info-gui" . ,nemacs-gui-file-bridge-runtime-test--info-gui)
+    ("help-gui" . ,nemacs-gui-file-bridge-runtime-test--help-gui)
+    ("bridge-runtime" . ,nemacs-gui-file-bridge-runtime-test--source))
+  "Source files included in generated GUI bridge runtime images.")
+
+(defvar nemacs-gui-file-bridge-runtime-test--package-scaffold-root
+  (getenv "NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT")
+  "Package scaffold root used for package-path GUI bridge image smoke.
+When nil, standalone bridge images are built from the `src/' source of truth.")
+
+(defvar nemacs-gui-file-bridge-runtime-test--app-scaffold-root
+  (getenv "NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT")
+  "App scaffold root used for package-path GUI bridge image smoke.
+When nil, bridge app/frontend glue falls back to the `src/' source of truth.")
+
+(defconst nemacs-gui-file-bridge-runtime-test--package-scaffold-index
+  (expand-file-name
+   "build/nemacs-library-package-scaffold.tsv"
+   nemacs-gui-file-bridge-runtime-test--repo-root)
+  "Generated package scaffold source-to-target index.")
+
+(defconst nemacs-gui-file-bridge-runtime-test--app-scaffold-index
+  (expand-file-name
+   "build/nemacs-library-app-scaffold.tsv"
+   nemacs-gui-file-bridge-runtime-test--repo-root)
+  "Generated app scaffold source-to-target index.")
+
 (defvar nemacs-gui-file-bridge-runtime-test--profile-enabled
   (getenv "NEMACS_GUI_BRIDGE_PROFILE")
   "Non-nil means emit timing lines for standalone GUI bridge tests.")
@@ -103,6 +133,71 @@
     (insert-file-contents file)
     (buffer-string)))
 
+(defun nemacs-gui-file-bridge-runtime-test--source-relative-name (source)
+  "Return SOURCE as a repository-relative path."
+  (file-relative-name source nemacs-gui-file-bridge-runtime-test--repo-root))
+
+(defun nemacs-gui-file-bridge-runtime-test--scaffold-target
+    (source scaffold-root scaffold-index)
+  "Return generated scaffold target for SOURCE under SCAFFOLD-ROOT, or nil."
+  (when (and scaffold-root
+             (file-readable-p scaffold-index))
+    (let ((source-relative
+           (nemacs-gui-file-bridge-runtime-test--source-relative-name source))
+          target)
+      (with-temp-buffer
+        (insert-file-contents scaffold-index)
+        (goto-char (point-min))
+        (while (and (not target) (not (eobp)))
+          (let ((cells (split-string
+                        (buffer-substring-no-properties
+                         (line-beginning-position)
+                         (line-end-position))
+                        "\t")))
+            (when (and (equal (nth 0 cells) "file")
+                       (equal (nth 3 cells) source-relative))
+              (let ((candidate
+                     (expand-file-name
+                      (nth 4 cells)
+                      nemacs-gui-file-bridge-runtime-test--repo-root)))
+                (when (and (file-readable-p candidate)
+                           (string-prefix-p
+                            (file-name-as-directory
+                             (file-truename scaffold-root))
+                            (file-truename candidate)))
+                  (setq target candidate)))))
+          (forward-line 1)))
+      target)))
+
+(defun nemacs-gui-file-bridge-runtime-test--package-scaffold-target (source)
+  "Return generated package scaffold target for SOURCE, or nil."
+  (nemacs-gui-file-bridge-runtime-test--scaffold-target
+   source
+   nemacs-gui-file-bridge-runtime-test--package-scaffold-root
+   nemacs-gui-file-bridge-runtime-test--package-scaffold-index))
+
+(defun nemacs-gui-file-bridge-runtime-test--app-scaffold-target (source)
+  "Return generated app scaffold target for SOURCE, or nil."
+  (nemacs-gui-file-bridge-runtime-test--scaffold-target
+   source
+   nemacs-gui-file-bridge-runtime-test--app-scaffold-root
+   nemacs-gui-file-bridge-runtime-test--app-scaffold-index))
+
+(defun nemacs-gui-file-bridge-runtime-test--resolve-image-source (source)
+  "Return the source file to include for bridge runtime image SOURCE.
+When scaffold mode is enabled, prefer package copies for reusable sources
+and app copies for staged app/frontend glue; otherwise return SOURCE."
+  (or (nemacs-gui-file-bridge-runtime-test--package-scaffold-target source)
+      (nemacs-gui-file-bridge-runtime-test--app-scaffold-target source)
+      source))
+
+(defun nemacs-gui-file-bridge-runtime-test--insert-image-source (source)
+  "Insert SOURCE or its scaffold copy into the current image buffer."
+  (let ((resolved
+         (nemacs-gui-file-bridge-runtime-test--resolve-image-source source)))
+    (insert-file-contents resolved)
+    (goto-char (point-max))))
+
 (defun nemacs-gui-file-bridge-runtime-test--point-value ()
   "Return the numeric bridge point transport value."
   (string-to-number
@@ -144,16 +239,16 @@
       (when (file-readable-p nemacs-gui-file-bridge-runtime-test--prelude)
         (insert-file-contents nemacs-gui-file-bridge-runtime-test--prelude)
         (goto-char (point-max)))
-      (insert-file-contents nemacs-gui-file-bridge-runtime-test--fileio-gui)
-      (goto-char (point-max))
-      (insert-file-contents nemacs-gui-file-bridge-runtime-test--dired-gui)
-      (goto-char (point-max))
-      (insert-file-contents nemacs-gui-file-bridge-runtime-test--info-gui)
-      (goto-char (point-max))
-      (insert-file-contents nemacs-gui-file-bridge-runtime-test--help-gui)
-      (goto-char (point-max))
-      (insert-file-contents nemacs-gui-file-bridge-runtime-test--source)
-      (goto-char (point-max))
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--fileio-gui)
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--dired-gui)
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--info-gui)
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--help-gui)
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--source)
       (insert "\n)\n"))
     (nemacs-gui-file-bridge-runtime-test--profile-log
      "image-write seconds=%.3f bytes=%s path=%s"
@@ -818,6 +913,7 @@ When INTERVAL is nil, poll every 0.1s."
                       "emacs-command-loop-gui-lane-writeback-spec"
                       "emacs-command-loop-gui-writeback-spec-flag"
                       "emacs-command-loop-gui-write-lane-state"
+                      "emacs-command-loop-gui-apply-post-command-writeback"
                       "files--command-loop-writeback-current-lane"
                       ":write-minibuffer-state"
                       "files--command-loop-backend-write-minibuffer-state"
@@ -850,8 +946,9 @@ When INTERVAL is nil, poll every 0.1s."
                       "(fset 'files--command-loop-backend-call-adapted-command"
                       ":call-adapted-command"
                       ":clear-cycle-spacing-state"
-                      "emacs-minibuffer-gui-register-backend"
-                      "emacs-minibuffer-gui-filtered-candidates-for-purpose"
+	                      "emacs-minibuffer-gui-register-backend"
+	                      "emacs-minibuffer-gui-register-standard-backend"
+	                      "emacs-minibuffer-gui-filtered-candidates-for-purpose"
                       "emacs-minibuffer-gui-start-purpose-read"
                       "emacs-minibuffer-gui-start-from-keymap"
                       "emacs-minibuffer-gui-start-spec-from-keymaps"
@@ -903,6 +1000,7 @@ When INTERVAL is nil, poll every 0.1s."
 		                      "emacs-fileio-gui-kill-buffer-command"
 		                      "emacs-fileio-gui-list-buffers-command"
 		                      "emacs-fileio-gui-writeback-spec"
+                          "(if (member command '(\"insert-file\" \"insert-buffer\"))"
 	                      "emacs-fileio-gui-writeback-spec-flag"
 	                      "emacs-fileio-gui-writeback-state"
 	                      ":write-buffer-state"
@@ -1515,6 +1613,70 @@ When INTERVAL is nil, poll every 0.1s."
       (should (string-match-p (regexp-quote needle) source)))
     (should (string-match-p "Runtime lambdas intentionally avoid" source))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/package-scaffold-source-resolution ()
+  "Package-path bridge image smoke should use scaffold copies when available."
+  (unless nemacs-gui-file-bridge-runtime-test--package-scaffold-root
+    (ert-skip "set NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT for package image smoke"))
+  (let ((info-source
+         (nemacs-gui-file-bridge-runtime-test--package-scaffold-target
+          nemacs-gui-file-bridge-runtime-test--info-gui))
+        (fileio-gui-source
+         (nemacs-gui-file-bridge-runtime-test--package-scaffold-target
+          nemacs-gui-file-bridge-runtime-test--fileio-gui)))
+    (should
+     (string-suffix-p
+      "packages/nelisp-emacs-core/lisp/emacs-info.el"
+      (file-relative-name
+       info-source
+       nemacs-gui-file-bridge-runtime-test--repo-root)))
+    (should-not fileio-gui-source)))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/app-scaffold-source-resolution ()
+  "Package-path bridge image smoke should use app scaffold glue when available."
+  (unless nemacs-gui-file-bridge-runtime-test--app-scaffold-root
+    (ert-skip "set NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT for app image smoke"))
+  (let ((fileio-gui-source
+         (nemacs-gui-file-bridge-runtime-test--resolve-image-source
+          nemacs-gui-file-bridge-runtime-test--fileio-gui))
+        (bridge-runtime-source
+         (nemacs-gui-file-bridge-runtime-test--resolve-image-source
+          nemacs-gui-file-bridge-runtime-test--source)))
+    (should
+     (string-suffix-p
+      "packages/nelisp-emacs-app-gui/lisp/emacs-fileio-gui.el"
+      (file-relative-name
+       fileio-gui-source
+       nemacs-gui-file-bridge-runtime-test--repo-root)))
+    (should
+     (string-suffix-p
+      "packages/nelisp-emacs-app-gui/lisp/nemacs-gui-file-bridge-runtime.el"
+      (file-relative-name
+       bridge-runtime-source
+       nemacs-gui-file-bridge-runtime-test--repo-root)))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/scaffold-source-resolution-has-no-src-fallback ()
+  "Package-path bridge image smoke should map every image source to a scaffold."
+  (unless (and nemacs-gui-file-bridge-runtime-test--package-scaffold-root
+               nemacs-gui-file-bridge-runtime-test--app-scaffold-root)
+    (ert-skip "set package and app scaffold roots for no-fallback image smoke"))
+  (dolist (entry nemacs-gui-file-bridge-runtime-test--image-sources)
+    (let* ((label (car entry))
+           (source (cdr entry))
+           (resolved
+            (nemacs-gui-file-bridge-runtime-test--resolve-image-source source))
+           (source-relative
+            (file-relative-name
+             source
+             nemacs-gui-file-bridge-runtime-test--repo-root))
+           (resolved-relative
+            (file-relative-name
+             resolved
+             nemacs-gui-file-bridge-runtime-test--repo-root)))
+      (ert-info ((format "%s resolved %s -> %s"
+                         label source-relative resolved-relative))
+        (should-not (equal resolved source))
+        (should (string-prefix-p "packages/" resolved-relative))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/generated-image-includes-family-runtimes ()
   "The generated source-v1 bridge image should load family runtimes first."
   (let ((image (nemacs-gui-file-bridge-runtime-test--write-image)))
@@ -1929,51 +2091,52 @@ When INTERVAL is nil, poll every 0.1s."
 		                      "(fset 'emacs-minibuffer-completing-read"
 		                      "(setq cmd \"\")"
 		                      "emacs-minibuffer-gui-initial-input"
-	                      "(fset 'emacs-minibuffer-gui--collection-lines"
-	                      "emacs-minibuffer-gui-candidates-for-purpose"
-	                      "(fset 'emacs-minibuffer-gui-begin-read"
+	                      "(fset 'emacs-minibuffer-gui-collection-lines"
+		                      "emacs-minibuffer-gui-candidates-for-purpose"
+		                      "(fset 'emacs-minibuffer-gui-begin-read"
 	                      "(fset 'emacs-minibuffer-gui-complete"
-                          "(defun files--minibuffer-gui-backend-buffer-candidates"
-                          "(defun files--minibuffer-gui-backend-project-buffer-candidates"
-                          "(defun files--minibuffer-gui-backend-extended-command-candidates"
-                          "(defun files--minibuffer-gui-backend-key-candidates"
-                          ":buffer-candidates"
-                          ":project-buffer-candidates"
-                          ":extended-command-candidates"
+	                          "emacs-minibuffer-gui-register-standard-backend"
+	                          "emacs-minibuffer-gui-backend-call"
+                              "files--minibuffer-gui-backend-operation-table"
+                              "(fset 'files--minibuffer-gui-install-backend"
+	                          ":buffer-candidates"
+	                          ":project-buffer-candidates"
+	                          ":extended-command-candidates"
                           ":key-candidates"
 		                      ":lookup-key-sequence"
                       "(if (equal files--bridge-keys \"TAB\")"))
-      (ert-info ((format "Tier 1 key/minibuffer dispatch %s" needle))
-        (should (string-match-p (regexp-quote needle) source))))
-    (dolist (needle '("(if (equal files--bridge-keys \"C-x C-s\")"
-                      "(if (equal files--bridge-keys \"C-x C-w\")"
-                      "(if (equal files--bridge-keys \"M-x\")"
-                      "(if (equal files--bridge-keys \"C-h f\")"
-                      "(if (equal files--bridge-keys \"M-g g\")"))
-      (ert-info ((format "Tier 1 dispatch should not hard-code %s" needle))
-        (should-not (string-match-p (regexp-quote needle) source))))
+	      (ert-info ((format "Tier 1 key/minibuffer dispatch %s" needle))
+	        (should (string-match-p (regexp-quote needle) source))))
+	    (dolist (needle '("(if (equal files--bridge-keys \"C-x C-s\")"
+	                      "(if (equal files--bridge-keys \"C-x C-w\")"
+	                      "(if (equal files--bridge-keys \"M-x\")"
+	                      "(if (equal files--bridge-keys \"C-h f\")"
+	                      "(if (equal files--bridge-keys \"M-g g\")"
+	                      "(defun files--minibuffer-gui-install-backend"
+	                      "(defun files--minibuffer-gui-backend-begin-read"
+	                      "(defun files--minibuffer-gui-backend-complete"
+	                      "(defun files--minibuffer-gui-backend-buffer-candidates"
+	                      "(defun files--minibuffer-gui-backend-project-buffer-candidates"
+	                      "(defun files--minibuffer-gui-backend-extended-command-candidates"
+	                      "(defun files--minibuffer-gui-backend-key-candidates"))
+	      (ert-info ((format "Tier 1 dispatch should not hard-code %s" needle))
+	        (should-not (string-match-p (regexp-quote needle) source))))
 			    (dolist (needle '("files--fileio-writeback-current-context"
                                   "(if (equal cmd \"find-file\")"
 				                  "(if (equal cmd \"find-file-other-window\")"
 				                  "(if (equal cmd \"find-file-read-only-other-window\")"
                                   "(if (equal cmd \"find-file-other-frame\")"
                                   "(if (equal cmd \"find-file-read-only-other-frame\")"
-			                      "(if (equal cmd \"find-file-other-tab\")"
+                                  "(if (equal cmd \"find-file-other-tab\")"
 		                          "(if (equal cmd \"find-file-read-only-other-tab\")"
                                   "(if (equal cmd \"project-find-file\")"
-                                  "(if (equal cmd \"save-buffer\")"
-		                          "(if (equal cmd \"write-file\")"
                                   "(if (equal cmd \"switch-to-buffer\")"
-					              "(if (equal cmd \"switch-to-buffer-other-window\")"
+                                  "(if (equal cmd \"switch-to-buffer-other-window\")"
                                   "(if (equal cmd \"switch-to-buffer-other-frame\")"
 			                      "(if (equal cmd \"switch-to-buffer-other-tab\")"
                                   "(if (equal cmd \"project-switch-to-buffer\")"
-                                  "(if (equal cmd \"project-list-buffers\")"
 			                      "(if (equal cmd \"display-buffer\")"
 	                              "(if (equal cmd \"display-buffer-other-frame\")"
-		                          "(if (equal cmd \"rename-buffer\")"
-			                      "(if (equal cmd \"kill-buffer\")"
-                                  "(if (equal cmd \"project-kill-buffers\")"
 	                                      "(if (equal cmd \"project-find-dir\")"
                                       "(if (equal cmd \"project-dired\")"
                                       "(if (equal cmd \"project-switch-project\")"
@@ -1987,8 +2150,8 @@ When INTERVAL is nil, poll every 0.1s."
                                       "(if (equal cmd \"inverse-add-mode-abbrev\")"
                                       "(if (equal cmd \"abbrev-prefix-mark\")"
                                       "(if (equal cmd \"expand-jump-to-next-slot\")"
-                                      "(if (equal cmd \"expand-jump-to-previous-slot\")"
-	                                          "(if (equal cmd \"imenu\")"
+                                      "(equal cmd \"expand-jump-to-previous-slot\")"
+		                                          "(if (equal cmd \"imenu\")"
 	                                      "(if (equal cmd \"dired-other-frame\")"
 		                                      "(if (equal cmd \"dired-other-tab\")"
                                       "(if (equal cmd \"compose-mail\")"
@@ -2011,12 +2174,12 @@ When INTERVAL is nil, poll every 0.1s."
                               "(if (equal cmd \"widen\")"
                               "(if (equal cmd \"kmacro-start-macro\")"
                               "(if (equal cmd \"kmacro-end-and-call-macro\")"
-			                      "(if (equal cmd \"balance-windows\")"
-			                      "(if (equal cmd \"shrink-window-if-larger-than-buffer\")"
+				                      "(if (equal cmd \"balance-windows\")"
+				                      "(equal cmd \"shrink-window-if-larger-than-buffer\")"
                                   "(if (equal cmd \"fit-window-to-buffer\")"
                                   "(if (equal cmd \"delete-windows-on\")"
                                   "(if (equal cmd \"split-root-window-below\")"
-                                  "(if (equal cmd \"split-root-window-right\")"
+                                  "(equal cmd \"split-root-window-right\")"
                                   "(if (equal cmd \"tear-off-window\")"
                                   "(if (equal cmd \"toggle-window-dedicated\")"
                                   "(if (equal cmd \"quit-window\")"
@@ -2033,6 +2196,66 @@ When INTERVAL is nil, poll every 0.1s."
              source))
     (should (string-match-p
              (regexp-quote "(nl-write-file (progn (setq files--transport-name \"nemacs-status\") (files--transport-path)) files--bridge-status)")
+             source))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/source-shape-fileio-writeback-delegation ()
+  "Simple fileio fallback writebacks should stay fileio-owned."
+  (let ((source
+         (nemacs-gui-file-bridge-runtime-test--slurp
+          nemacs-gui-file-bridge-runtime-test--source)))
+    (should (string-match-p
+             (regexp-quote
+              "(if (member command '(\"insert-file\" \"insert-buffer\"))")
+             source))
+    (dolist (needle '("(if (equal command \"write-file\")"
+                      "(if (if (member command"
+                      "(if (equal command \"save-some-buffers\")"
+                      "(if (member command\n                                        '(\"revert-buffer\""
+                      "(if (member command\n                                          '(\"switch-to-buffer\""
+                      "\"rename-buffer\""
+                      "\"rename-uniquely\""
+                      "\"clone-buffer\""
+                      "\"clone-indirect-buffer-other-window\""
+                      "\"kill-buffer\""
+                      "\"kill-buffer-and-window\""
+                      "\"project-kill-buffers\""
+                      "\"list-buffers\""
+                      "\"project-list-buffers\""))
+      (should (string-match-p (regexp-quote needle) source)))
+    (should (string-match-p
+             (regexp-quote "files--fileio-writeback-current-context")
+             source))
+    (dolist (needle '("(if (equal cmd \"insert-file\")"
+                      "(if (equal cmd \"insert-buffer\")"
+                      "(if (equal cmd \"write-file\")"
+                      "(if (equal cmd \"save-buffer\")"
+                      "(if (equal cmd \"basic-save-buffer\")"
+                      "(if (equal cmd \"save-some-buffers\")"
+                      "(if (equal cmd \"revert-buffer\")"
+                      "(if (equal cmd \"revert-buffer-quick\")"
+                      "(if (equal cmd \"rename-buffer\")"
+                      "(if (equal cmd \"rename-uniquely\")"
+                      "(if (equal cmd \"clone-buffer\")"
+                      "(if (equal cmd \"clone-indirect-buffer-other-window\")"
+                      "(if (equal cmd \"kill-buffer\")"
+                      "(if (equal cmd \"kill-buffer-and-window\")"
+                      "(if (equal cmd \"project-kill-buffers\")"
+                      "(if (equal cmd \"list-buffers\")"
+                      "(if (equal cmd \"project-list-buffers\")"))
+      (should-not (string-match-p (regexp-quote needle) source)))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/source-shape-bookmark-writeback-helper ()
+  "Bookmark writebacks should be isolated behind a bridge helper."
+  (let ((source
+         (nemacs-gui-file-bridge-runtime-test--slurp
+          nemacs-gui-file-bridge-runtime-test--source)))
+    (should (string-match-p
+             (regexp-quote
+              "(fset 'files--bridge-bookmark-writeback-current-context")
+             source))
+    (should (string-match-p
+             (regexp-quote
+              "(setq cmd (files--bridge-bookmark-writeback-current-context cmd))")
              source))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-transport-dir-override ()
@@ -15569,6 +15792,78 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
                              (nemacs-gui-file-bridge-runtime-test--slurp
                               "/tmp/nemacs-mark")))
               (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-bookmark-writeback-helper ()
+  "Bridge bookmark writeback helper should write bookmark-visible state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-bookmark-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"Bookmark body\\n\")
+                       (setq files--current-file-name
+                             \"/tmp/nemacs-bookmark-buffer.txt\")
+                       (setq files--buffer-name \"BookmarkBuffer\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--point 12)
+                       (setq files--mark 4)
+                       (setq files--window-start 2)
+                       (fset 'capture-bookmark-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-bookmark-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-bookmark-writeback-helper\"
+                        (concat
+                         (capture-bookmark-writeback \"bookmark-set\")
+                         \"\\t\"
+                         (capture-bookmark-writeback
+                          \"bookmark-set-no-overwrite\")
+                         \"\\t\"
+                         (capture-bookmark-writeback \"bookmark-jump\")
+                         \"\\t\"
+                         (capture-bookmark-writeback \"bookmark-bmenu-list\")
+                         \"\\t\"
+                         (capture-bookmark-writeback \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "bookmark-set:written\tbookmark-set-no-overwrite:written\tbookmark-jump:written\tbookmark-bmenu-list:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "Bookmark body\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/nemacs-bookmark-buffer.txt"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "BookmarkBuffer"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "00012"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00004"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00002"
                              (nemacs-gui-file-bridge-runtime-test--slurp
                               "/tmp/nemacs-window-start")))))
         (when (file-exists-p image)

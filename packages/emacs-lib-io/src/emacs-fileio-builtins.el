@@ -43,6 +43,7 @@
 (require 'nelisp-emacs-compat-fileio)
 (require 'emacs-buffer-builtins)
 (require 'emacs-string)
+(require 'files-runtime)
 
 (defconst emacs-fileio-builtins--standalone-overrides
   '(insert-file-contents
@@ -69,13 +70,10 @@ on those semantics during bootstrap.")
   "Return non-nil when running on the standalone NeLisp reader.
 A bound `emacs-version' is unreliable here: the reader binds it to the
 `nelisp--unbound-marker' sentinel, so `boundp' returns t even with no
-host Emacs.  Mirror `files--standalone-runtime-p' (NeLisp-only syscall
-primitives) so `--standalone-overrides' force-install fires on the
-reader instead of leaving stub function cells in place."
-  (or (not (boundp 'emacs-version))
-      (fboundp 'nl-write-file)
-      (fboundp 'nl-syscall-write-file)
-      (fboundp 'nelisp--eval-source-string)))
+host Emacs.  Use `files-standalone-runtime-p' so
+`--standalone-overrides' force-install fires on the reader instead of
+leaving stub function cells in place."
+  (files-standalone-runtime-p))
 
 (defun emacs-fileio-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
@@ -320,7 +318,7 @@ contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
 ;; All are gated on `fboundp', so host Emacs keeps its C/lisp builtins.
 ;; They are grouped here for expedience (cross-cutting, not all file I/O).
 
-(declare-function nelisp-ec--access "nelisp-emacs-compat-fileio" (file mode))
+(declare-function nelisp-ec-access "nelisp-emacs-compat-fileio" (file mode))
 
 (unless (fboundp 'booleanp)
   (defun booleanp (object)
@@ -337,14 +335,14 @@ contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
     "Return non-nil if FILENAME can be written or created.
 access(2) W_OK on the file, or on its directory when the file does not
 exist yet (approximating Emacs' creatable-path semantics)."
-    (let ((rc (and (fboundp 'nelisp-ec--access) (nelisp-ec--access filename 2))))
+    (let ((rc (and (fboundp 'nelisp-ec-access) (nelisp-ec-access filename 2))))
       (cond
        ((and (integerp rc) (zerop rc)) t)
        ((and (fboundp 'file-exists-p) (file-exists-p filename)) nil)
        (t (let* ((dir (or (file-name-directory (directory-file-name filename))
                           "./"))
-                 (drc (and (fboundp 'nelisp-ec--access)
-                           (nelisp-ec--access dir 2))))
+                 (drc (and (fboundp 'nelisp-ec-access)
+                           (nelisp-ec-access dir 2))))
             (and (integerp drc) (zerop drc))))))))
 
 (unless (fboundp 'insert-file-contents-literally)
@@ -419,6 +417,387 @@ the substrate has no rename-on-visit / lockfile interaction yet."
 
 ;;;; --- find-file / save-buffer / write-file / revert-buffer ----------
 
+(defun emacs-fileio--direct-buffer-file-name (buffer)
+  "Return BUFFER's visited file name, or nil."
+  (and buffer
+       (condition-case nil
+           (if (fboundp 'buffer-file-name)
+               (buffer-file-name buffer)
+             (and (boundp 'emacs-fileio--buffer-files)
+                  (cdr (assq buffer emacs-fileio--buffer-files))))
+         (error
+          (and (boundp 'emacs-fileio--buffer-files)
+               (cdr (assq buffer emacs-fileio--buffer-files)))))))
+
+(defun emacs-fileio--direct-buffer-string (buffer)
+  "Return BUFFER contents as a string."
+  (cond
+   ((and buffer
+         (fboundp 'nelisp-ec-with-current-buffer)
+         (fboundp 'nelisp-ec-buffer-string))
+    (nelisp-ec-with-current-buffer buffer
+      (nelisp-ec-buffer-string)))
+   ((and buffer (fboundp 'with-current-buffer) (fboundp 'buffer-string))
+    (with-current-buffer buffer
+      (buffer-string)))
+   ((fboundp 'nelisp-ec-buffer-string)
+    (nelisp-ec-buffer-string))
+   ((fboundp 'buffer-string)
+    (buffer-string))
+   (t
+    (signal 'error '("save-buffer: no buffer string reader available")))))
+
+(defun emacs-fileio--write-file-text-direct (path text)
+  "Write TEXT to PATH using the best available runtime primitive."
+  (cond
+   ((fboundp 'nl-write-file)
+    (nl-write-file path text))
+   ((fboundp 'write-region)
+    (write-region text nil path nil 'silent))
+   (t
+    (signal 'error '("save-buffer: no file writer available")))))
+
+(defun emacs-fileio-file-exists-direct-p (path)
+  "Return non-nil when PATH exists using the safest available primitive."
+  (cond
+   ((and (fboundp 'nelisp-ec-file-exists-p)
+         (nelisp-ec-file-exists-p path))
+    t)
+   ((and (fboundp 'file-exists-p)
+         (file-exists-p path))
+    t)
+   (t nil)))
+
+(defun emacs-fileio-read-file-text-direct (path)
+  "Return PATH contents as a string for direct frontend file visits."
+  (cond
+   ((and (fboundp 'nl-syscall-read-file)
+         (emacs-fileio-file-exists-direct-p path))
+    (nl-syscall-read-file path 0 nil))
+   ((and (fboundp 'insert-file-contents)
+         (fboundp 'buffer-string)
+         (emacs-fileio-file-exists-direct-p path))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (buffer-string)))
+   ;; `nelisp--syscall-read-file' is intentionally not used here: the
+   ;; current standalone implementation can stop evaluation after the call.
+   (t "")))
+
+(defun emacs-fileio-buffer-name-for-file (path)
+  "Return the buffer name to use for PATH."
+  (let ((name (if (fboundp 'file-name-nondirectory)
+                  (file-name-nondirectory path)
+                path)))
+    (if (and (stringp name) (> (length name) 0))
+        name
+      " *find-file*")))
+
+(defun emacs-fileio-record-buffer-file (buffer path)
+  "Record BUFFER as visiting PATH when the core file table is available."
+  (when (boundp 'emacs-fileio--buffer-files)
+    (setq emacs-fileio--buffer-files
+          (cons (cons buffer path)
+                (assq-delete-all buffer emacs-fileio--buffer-files))))
+  path)
+
+(defun emacs-fileio-buffer-file-direct (&optional buffer)
+  "Return BUFFER's visited file from available file tables."
+  (let ((buf (or buffer
+                 (and (fboundp 'nelisp-ec-current-buffer)
+                      (nelisp-ec-current-buffer))
+                 (and (fboundp 'current-buffer)
+                      (current-buffer)))))
+    (or (and buf
+             (boundp 'buffer-file-name)
+             (fboundp 'buffer-local-value)
+             (condition-case nil
+                 (buffer-local-value 'buffer-file-name buf)
+               (error nil)))
+        (and (fboundp 'buffer-file-name)
+             (condition-case nil
+                 (if buf
+                     (with-current-buffer buf
+                       (buffer-file-name))
+                   (buffer-file-name))
+               (error nil)))
+        (and (boundp 'emacs-fileio--buffer-files)
+             (cdr (assq buf emacs-fileio--buffer-files))))))
+
+(defun emacs-fileio-visit-file-direct (path)
+  "Visit PATH using direct NeLisp buffers and return the buffer.
+This path is intended for frontends that need a small file visit surface
+before the full interactive file I/O runtime is available."
+  (let* ((abs (if (fboundp 'expand-file-name)
+                  (expand-file-name path)
+                path))
+         (existing nil))
+    (when (boundp 'emacs-fileio--buffer-files)
+      (catch 'found
+        (dolist (cell emacs-fileio--buffer-files)
+          (when (equal abs (cdr cell))
+            (setq existing (car cell))
+            (throw 'found existing)))))
+    (let ((buffer (or existing
+                      (and (fboundp 'nelisp-ec-generate-new-buffer)
+                           (nelisp-ec-generate-new-buffer
+                            (emacs-fileio-buffer-name-for-file abs))))))
+      (unless buffer
+        (signal 'error (list "cannot create buffer for file" abs)))
+      (when (and (not existing)
+                 (fboundp 'nelisp-ec-with-current-buffer))
+        (nelisp-ec-with-current-buffer buffer
+          (when (fboundp 'nelisp-ec-erase-buffer)
+            (nelisp-ec-erase-buffer))
+          (let ((text (emacs-fileio-read-file-text-direct abs)))
+            (when (and (stringp text) (> (length text) 0)
+                       (fboundp 'nelisp-ec-insert))
+              (nelisp-ec-insert text)))
+          (when (fboundp 'set-buffer-modified-p)
+            (set-buffer-modified-p nil))))
+      (emacs-fileio-record-buffer-file buffer abs)
+      (when (fboundp 'nelisp-ec-set-buffer)
+        (nelisp-ec-set-buffer buffer))
+      buffer)))
+
+(defun emacs-fileio-save-buffer-direct (&rest plist)
+  "Save a buffer to its visited file and return the path.
+PLIST accepts:
+
+- `:buffer': buffer to save, defaulting to the current NeLisp buffer.
+- `:file-function': function called with the buffer to return its path.
+- `:string-function': function called with the buffer to return contents.
+- `:write-function': function called with path and contents."
+  (let* ((buffer (or (plist-get plist :buffer)
+                     (and (fboundp 'nelisp-ec-current-buffer)
+                          (nelisp-ec-current-buffer))
+                     (and (fboundp 'current-buffer)
+                          (current-buffer))))
+         (file-function (or (plist-get plist :file-function)
+                            #'emacs-fileio--direct-buffer-file-name))
+         (string-function (or (plist-get plist :string-function)
+                              #'emacs-fileio--direct-buffer-string))
+         (write-function (or (plist-get plist :write-function)
+                             #'emacs-fileio--write-file-text-direct))
+         (path (and buffer (funcall file-function buffer))))
+    (unless path
+      (signal 'error '("save-buffer: buffer is not visiting a file")))
+    (funcall write-function path (funcall string-function buffer))
+    (when (fboundp 'emacs-buffer-set-buffer-modified-p)
+      (emacs-buffer-set-buffer-modified-p nil buffer))
+    (when (and (not (fboundp 'emacs-buffer-set-buffer-modified-p))
+               (fboundp 'set-buffer-modified-p))
+      (if (and buffer (fboundp 'with-current-buffer))
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil))
+        (set-buffer-modified-p nil)))
+    path))
+
+(defun emacs-fileio-run-find-file-command (&rest plist)
+  "Run a frontend-provided find-file command.
+PLIST accepts `:read-string', `:visit-function', `:direct-visit-p',
+`:sync-window', `:after-success', `:cancel-function',
+`:missing-function', and `:message-function'."
+  (let* ((read-string (plist-get plist :read-string))
+         (visit-function (plist-get plist :visit-function))
+         (direct-visit-p (or (plist-get plist :direct-visit-p)
+                             (lambda ()
+                               (and (fboundp 'nl-write-file)
+                                    (fboundp 'nelisp-ec-generate-new-buffer)))))
+         (sync-window (plist-get plist :sync-window))
+         (after-success (plist-get plist :after-success))
+         (cancel-function (plist-get plist :cancel-function))
+         (missing-function (plist-get plist :missing-function))
+         (message-function (plist-get plist :message-function))
+         (path (and read-string (funcall read-string "Find file: "))))
+    (cond
+     ((or (null path) (= (length path) 0))
+      (when cancel-function
+        (funcall cancel-function))
+      nil)
+     (t
+      (condition-case err
+          (let ((buffer
+                 (cond
+                  (visit-function
+                   (funcall visit-function path))
+                  ((funcall direct-visit-p)
+                   (emacs-fileio-visit-file-direct path))
+                  (t
+                   (find-file path)))))
+            (cond
+             (buffer
+              (when sync-window
+                (funcall sync-window buffer))
+              (when after-success
+                (funcall after-success buffer path))
+              buffer)
+             (t
+              (when missing-function
+                (funcall missing-function path))
+              nil)))
+        (error
+         (when message-function
+           (funcall message-function "find-file failed: %S" err))
+         nil))))))
+
+(defun emacs-fileio-run-save-buffer-command (&rest plist)
+  "Run a frontend-provided save-buffer command.
+PLIST accepts `:read-string', `:current-buffer', `:file-function',
+`:string-function', `:write-function', `:direct-save-p', and
+`:message-function'.  Buffers with no visited file prompt for a path and
+delegate to `write-file'."
+  (let* ((read-string (plist-get plist :read-string))
+         (current-buffer (or (plist-get plist :current-buffer)
+                             (lambda ()
+                               (or (and (fboundp 'nelisp-ec-current-buffer)
+                                        (nelisp-ec-current-buffer))
+                                   (and (fboundp 'current-buffer)
+                                        (current-buffer))))))
+         (file-function (or (plist-get plist :file-function)
+                            #'emacs-fileio-buffer-file-direct))
+         (string-function (plist-get plist :string-function))
+         (write-function (plist-get plist :write-function))
+         (direct-save-p (or (plist-get plist :direct-save-p)
+                            (lambda ()
+                              (and (fboundp 'nl-write-file)
+                                   (fboundp 'nelisp-ec-buffer-string)))))
+         (message-function (plist-get plist :message-function))
+         (buffer (and current-buffer (funcall current-buffer)))
+         (file (and buffer (funcall file-function buffer))))
+    (cond
+     (file
+      (condition-case err
+          (if (funcall direct-save-p)
+              (emacs-fileio-save-buffer-direct
+               :buffer buffer
+               :file-function file-function
+               :string-function
+               (or string-function #'emacs-fileio--direct-buffer-string)
+               :write-function
+               (or write-function #'emacs-fileio--write-file-text-direct))
+            (when (fboundp 'save-buffer)
+              (save-buffer)))
+        (error
+         (when message-function
+           (funcall message-function "save-buffer failed: %S" err))
+         nil)))
+     (t
+      (let ((path (and read-string (funcall read-string "Write file: "))))
+        (when (and path (> (length path) 0)
+                   (fboundp 'write-file))
+          (condition-case err
+              (write-file path)
+            (error
+             (when message-function
+               (funcall message-function "write-file failed: %S" err))
+             nil))))))))
+
+(defun emacs-fileio-run-write-file-command (&rest plist)
+  "Run a frontend-provided write-file command.
+PLIST accepts `:read-string', `:prompt', `:write-file-function',
+`:after-success', `:status-function', and `:message-function'.  The
+frontend supplies concrete prompt and buffer-context callbacks while this
+helper owns empty input handling, write dispatch, success status, and
+error reporting."
+  (let* ((read-string (plist-get plist :read-string))
+         (prompt (or (plist-get plist :prompt) "Write file: "))
+         (write-file-function (or (plist-get plist :write-file-function)
+                                  #'write-file))
+         (after-success (plist-get plist :after-success))
+         (status-function (plist-get plist :status-function))
+         (message-function (plist-get plist :message-function))
+         (path (and read-string (funcall read-string prompt))))
+    (cond
+     ((or (null path) (= 0 (length path)))
+      (when status-function
+        (funcall status-function "write-file: empty path"))
+      nil)
+     (t
+      (condition-case err
+          (let ((written (funcall write-file-function path)))
+            (when after-success
+              (funcall after-success written path))
+            (when status-function
+              (funcall status-function
+                       (format "Wrote: %s" (or written path))))
+            written)
+        (error
+         (when message-function
+           (funcall message-function
+                    "write-file: %s"
+                    (cond
+                     ((stringp (cadr err)) (cadr err))
+                    (t (prin1-to-string err)))))
+         nil))))))
+
+(defun emacs-fileio-run-save-buffers-quit-command (&rest plist)
+  "Run a frontend save-buffers-then-quit command.
+PLIST accepts `:dirty-buffers', `:begin-prompt', `:save-buffer-function',
+`:quit-function', and `:status-function'.  DIRTY-BUFFERS may be a list or
+a zero-argument function.  BEGIN-PROMPT is called with prompt and confirm
+callback when modified file buffers exist."
+  (let* ((dirty-source (plist-get plist :dirty-buffers))
+         (dirty (cond
+                 ((functionp dirty-source) (funcall dirty-source))
+                 (t dirty-source)))
+         (begin-prompt (plist-get plist :begin-prompt))
+         (save-buffer-function (or (plist-get plist :save-buffer-function)
+                                   (lambda (buffer)
+                                     (with-current-buffer buffer
+                                       (save-buffer)))))
+         (quit-function (plist-get plist :quit-function))
+         (status-function (plist-get plist :status-function)))
+    (let* ((set-status
+            (lambda (message)
+              (when status-function
+                (funcall status-function message))
+              message))
+           (quit
+            (lambda ()
+              (when quit-function
+                (funcall quit-function))))
+           (save-all-and-quit
+            (lambda ()
+              (let ((saved 0)
+                    (failed 0))
+                (dolist (buffer dirty)
+                  (condition-case _err
+                      (progn
+                        (funcall save-buffer-function buffer)
+                        (setq saved (1+ saved)))
+                    (error
+                     (setq failed (1+ failed)))))
+                (funcall quit)
+                (funcall
+                 set-status
+                 (cond
+                  ((zerop failed)
+                   (format "Saved %d buffer(s) — quit" saved))
+                  (t
+                   (format "Saved %d, %d failed — quit anyway"
+                           saved failed))))))))
+      (cond
+       ((null dirty)
+        (funcall quit)
+        (funcall set-status "C-x C-c → quit"))
+       (begin-prompt
+        (funcall
+         begin-prompt
+         (format "%d modified buffer(s).  Save? (y/n/c): " (length dirty))
+         (lambda (input)
+	           (let ((choice (and (stringp input) (> (length input) 0)
+	                              (downcase (substring input 0 1)))))
+	             (cond
+	              ((equal choice "y") (funcall save-all-and-quit))
+	              ((equal choice "n")
+	               (funcall quit)
+	               (funcall set-status "Quit (unsaved)"))
+	              (t
+	               (funcall set-status "Quit cancelled")))))))
+       (t
+        (funcall set-status "Quit cancelled"))))))
+
 (when (emacs-fileio-builtins--install-function-p 'find-file-noselect)
   (defun find-file-noselect (filename &optional nowarn rawfile wildcards)
     "Phase D polyfill: return a buffer visiting FILENAME, loading it if needed.
@@ -475,16 +854,12 @@ Clears `(buffer-modified-p)' on success so the GUI mode-line `**'
 indicator drops back to `--' after a save."
     (interactive "P")
     (ignore arg)
-    (let* ((b (nelisp-ec-current-buffer))
-           (f (and b (buffer-file-name b))))
-      (cond
-       ((null f)
-        (signal 'error '("save-buffer: buffer is not visiting a file")))
-       (t
-        (write-region (nelisp-ec-point-min) (nelisp-ec-point-max) f)
-        (when (fboundp 'set-buffer-modified-p)
-          (set-buffer-modified-p nil))
-        f)))))
+    (emacs-fileio-save-buffer-direct
+     :string-function
+     (lambda (_buffer)
+       (nelisp-ec-buffer-substring
+        (nelisp-ec-point-min)
+        (nelisp-ec-point-max))))))
 
 (when (emacs-fileio-builtins--install-function-p 'write-file)
   (defun write-file (filename &optional confirm)

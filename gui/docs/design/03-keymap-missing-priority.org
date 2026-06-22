@@ -1,0 +1,278 @@
+#+TITLE: GUI Keymap Missing Classification
+#+DATE: 2026-06-10
+
+* Baseline
+
+Source of truth:
+
+#+begin_src sh
+make -C ../nelisp-emacs nemacs-gui-keymap-coverage
+#+end_src
+
+Latest local result:
+
+#+begin_src text
+implemented=492 different=0 command-missing=0 missing=0 runtime-only=0
+#+end_src
+
+This document is planning-only.  It should not change =nelisp-emacs= runtime
+semantics or =nelisp-gui= rendering.  Use it to split parallel work without
+touching the same files.
+
+* Classification Rules
+
+Each missing command gets one primary bucket:
+
+| Bucket | Meaning |
+|--------+---------|
+| Immediate | Can be implemented with existing buffer/window/minibuffer state and focused smoke tests. |
+| GUI/display dependent | Needs new rendered state, frame/tab/window UI, narrowing display behavior, text scaling, or highlight/font-lock display. |
+| Process/syscall dependent | Needs fork/exec/pipe/wait, subprocess lifetime, shell quoting, or external tools. |
+| Major-mode/package dependent | Needs a larger Emacs subsystem such as kmacro, abbrev, project, vc, input methods, coding systems, mail, ispell, imenu, or EWW. |
+
+Some commands overlap buckets.  For example =vc-diff= is both VC package work
+and process work; it is listed as process/syscall first because the command is
+not useful until external process execution is reliable.
+
+* Bucket Summary
+
+| Bucket | Count | Main families |
+|--------+--------------+---------------|
+| Immediate | 0 | none |
+| GUI/display dependent | 0 | none |
+| Process/syscall dependent | 0 | none |
+| Major-mode/package dependent | 0 | none |
+
+The counts are primary buckets for planning, not permanent architecture labels.
+
+* Next Priority Candidates
+
+These are the next practical missing bindings to split across runtime, GUI, and
+process work:
+
+| Priority | Keys | Command | Why next |
+|----------+------+---------+----------|
+| Done | =M-?= | =xref-find-references= | Added on 2026-06-09; coverage now reports it as implemented. |
+| Done | =C-x ESC ESC=, =C-x M-:= | =repeat-complex-command= | Added on 2026-06-09; coverage now reports both keys as implemented. |
+| Done | =C-x x f= | =font-lock-update= | Added on 2026-06-09 as a redisplay/font-lock refresh contract. |
+| Done | =C-x 4 C-o= | =display-buffer= | Added on 2026-06-09 using the existing other-window transport contract. |
+| Done | =C-x n d= | =narrow-to-defun= | Added on 2026-06-09 reusing bridge-level narrowing bounds. |
+| Done | =C-x n n= | =narrow-to-region= | Added on 2026-06-09 using bridge-level buffer restriction state. |
+| Done | =C-x n p= | =narrow-to-page= | Added on 2026-06-09 reusing bridge-level narrowing bounds. |
+| Done | =C-x n w= | =widen= | Added on 2026-06-09; merges narrowed edits back into the full buffer. |
+| Done | =C-x (= | =kmacro-start-macro= | Added on 2026-06-09 with raw key recording state. |
+| Done | =C-x )= | =kmacro-end-macro= | Added on 2026-06-09 with raw key recording state. |
+| Done | =C-x e= | =kmacro-end-and-call-macro= | Added on 2026-06-09 with session / single-runtime raw key replay. |
+| Done | =C-x q= | =kbd-macro-query= | Added on 2026-06-09 as a no-op query checkpoint for core kmacro compatibility. |
+| Done | =C-x 4 1= | =same-window-prefix= | Added on 2026-06-09 as display routing prefix state. |
+| Done | =C-x 4 4= | =other-window-prefix= | Added on 2026-06-09 as display routing prefix state. |
+| Done | =C-x ^= | =enlarge-window= | Added on 2026-06-09 using =nemacs-window-split-delta=. |
+| Done | =C-x {= | =shrink-window-horizontally= | Added on 2026-06-09 using =nemacs-window-split-delta=. |
+| Done | =C-x }= | =enlarge-window-horizontally= | Added on 2026-06-09 using =nemacs-window-split-delta=. |
+| Done | =C-x t 1= | =tab-close-other= | Added on 2026-06-09 using existing =nemacs-tab-state=. |
+| Done | =C-x t n= | =tab-duplicate= | Added on 2026-06-09 using existing =nemacs-tab-state=. |
+| Done | =C-x SPC= | =rectangle-mark-mode= | Added on 2026-06-09 using =nemacs-rectangle-mark-mode= state. |
+| Done | =C-x `=, =M-g n=, =M-g M-n= | =next-error= | Added on 2026-06-09 as a visible =*compilation*= facade. |
+| Done | =M-g p=, =M-g M-p= | =previous-error= | Added on 2026-06-09 as the matching =*compilation*= facade. |
+| Done | =C-x p != | =project-shell-command= | Added on 2026-06-09 using the existing shell-command substrate and current-file directory facade. |
+| Done | =C-x p &= | =project-async-shell-command= | Added on 2026-06-09 using the existing async shell substrate and current-file directory facade. |
+| Done | =C-x 4 c= | =clone-indirect-buffer-other-window= | Added on 2026-06-09 as an other-window indirect clone facade. |
+| Done | =C-x w -= | =fit-window-to-buffer= | Added on 2026-06-09 using buffer line count plus =nemacs-window-split-delta=. |
+| Done | =C-x t RET= | =tab-switch= | Added on 2026-06-09 using existing =nemacs-tab-state=; name-list resolution remains future tab-state work. |
+| Done | =C-x t C-f=, =C-x t f= | =find-file-other-tab= | Added on 2026-06-09 using file open plus =nemacs-tab-state=. |
+| Done | =C-x t C-r= | =find-file-read-only-other-tab= | Added on 2026-06-09 using read-only file open plus =nemacs-tab-state=. |
+| Done | =C-x t b= | =switch-to-buffer-other-tab= | Added on 2026-06-09 using buffer switching plus =nemacs-tab-state=. |
+| Done | =C-x t d= | =dired-other-tab= | Added on 2026-06-09 using directory display plus =nemacs-tab-state=. |
+| Done | =C-x 4 a= | =add-change-log-entry-other-window= | Added on 2026-06-09 as an other-window ChangeLog entry facade. |
+| Done | =M-g i= | =imenu= | Added on 2026-06-09 as a source-local =*Imenu*= index facade. |
+| Done | =C-x p c= | =project-compile= | Added on 2026-06-09 using the existing call-process substrate and visible =*compilation*= facade. |
+| Done | =C-x p g= | =project-find-regexp= | Added on 2026-06-09 using the existing call-process substrate and visible grep-style =*compilation*= facade. |
+| Done | =C-x p f= | =project-find-file= | Added on 2026-06-09 as a current-file-directory relative project file open facade. |
+| Done | =C-x p b= | =project-switch-to-buffer= | Added on 2026-06-09 using project-scoped buffer completion and existing buffer switching. |
+| Done | =C-x p d= | =project-find-dir= | Added on 2026-06-09 as a project-relative directory display facade. |
+| Done | =C-x t N= | =tab-new-to= | Added on 2026-06-09 using existing =nemacs-tab-state= with right-of-current and numeric-position facades. |
+| Done | =C-x t m= | =tab-move= | Added on 2026-06-09 using selected tab index movement in existing =nemacs-tab-state=. |
+| Done | =C-x t M= | =tab-move-to= | Added on 2026-06-09 using absolute selected tab index movement in existing =nemacs-tab-state=. |
+| Done | =C-x p C-b= | =project-list-buffers= | Added on 2026-06-09 using project-scoped buffer-list rendering and existing =*Buffer List*= writeback. |
+| Done | =C-x p D= | =project-dired= | Added on 2026-06-09 using the current project directory facade and existing dired rendering. |
+| Done | =C-x p k= | =project-kill-buffers= | Added on 2026-06-09 using project-scoped buffer membership and existing buffer store cleanup. |
+| Done | =C-x p p= | =project-switch-project= | Added on 2026-06-09 as a project directory switch facade using existing dired rendering; full dispatch menu remains future work. |
+| Done | =C-x p o= | =project-any-command= | Added on 2026-06-09 as a command-name dispatch facade using existing command execution and project command state. |
+| Done | =C-x p x= | =project-execute-extended-command= | Added on 2026-06-09 as the project-scoped M-x facade using existing command execution and project command state. |
+| Done | =C-x 4 p= | =project-other-window-command= | Added on 2026-06-09 using project command dispatch plus existing other-window display-prefix state. |
+| Done | =C-x t G= | =tab-group= | Added on 2026-06-09 using optional =nemacs-tab-state= group field plus tabline-safe parsing. |
+| Done | =C-x t u= | =tab-undo= | Added on 2026-06-09 using =nemacs-tab-undo-state= to restore the last closed selected tab. |
+| Done | =C-x t t= | =other-tab-prefix= | Added on 2026-06-09 as a display-routing prefix that sends the next buffer display to a tab. |
+| Done | =C-x t p= | =project-other-tab-command= | Added on 2026-06-09 using project command dispatch plus tab display-prefix state. |
+| Done | =C-x p e= | =project-eshell= | Added on 2026-06-09 as a project-directory =*eshell*= buffer facade; attaching a live process remains future work. |
+| Done | =C-x p s= | =project-shell= | Added on 2026-06-09 as a project-directory =*shell*= buffer facade; attaching a live process remains future work. |
+| Done | =C-x p F= | =project-or-external-find-file= | Added on 2026-06-09 as a project-relative file open with external-path fallback. |
+| Done | =C-x p G= | =project-or-external-find-regexp= | Added on 2026-06-09 using the existing grep facade with project/external-root-labelled output. |
+| Done | =C-x p r= | =project-query-replace-regexp= | Added on 2026-06-09 by opening the first matching project file and reusing the existing query-replace confirmation loop. |
+| Done | =C-x p v= | =project-vc-dir= | Added on 2026-06-09 using =git rev-parse= root detection plus =git status --short --branch= in a read-only =*vc-dir*= facade. |
+| Done | =M-$= | =ispell-word= | Added on 2026-06-10 as modeline feedback for the runtime-owned word-at-point spell request. |
+| Done | =M-s M-w= | =eww-search-words= | Added on 2026-06-10 as a read-only =*eww search*= request buffer; network browsing remains future process work. |
+| Done | =C-x v ...= | VC command family | Added on 2026-06-10 using runtime-owned git output buffers for read-only queries and explicit no-side-effect intent buffers for destructive/network VC commands. |
+| Done | =C-x t ^ f= | =tab-detach= | Added on 2026-06-09 as a single-frame detach facade that removes the selected tab from =nemacs-tab-state= and preserves it in =nemacs-tab-undo-state=. |
+| Done | =C-x C-k C-a= | =kmacro-add-counter= | Current runtime keymap coverage reports this kmacro counter facade as implemented. |
+| Done | =C-x C-k C-c= | =kmacro-set-counter= | Current runtime keymap coverage reports this kmacro counter facade as implemented. |
+| Done | =C-x C-k TAB= | =kmacro-insert-counter= | Current runtime keymap coverage reports this kmacro counter insertion facade as implemented. |
+| Done | =C-x w ^ t= | =tab-window-detach= | Added on 2026-06-09 as a single-frame facade that creates a new selected tab for the current window snapshot. |
+| Done | =C-x 5 p= | =project-other-frame-command= | Added on 2026-06-09 using project command dispatch plus =nemacs-frame-state=. |
+| Done | =C-x 5 5= | =other-frame-prefix= | Added on 2026-06-09 as a display-routing prefix that sends the next buffer display to =nemacs-frame-state=. |
+| Done | =C-x 5 C-f=, =C-x 5 f= | =find-file-other-frame= | Added on 2026-06-09 using file open plus =nemacs-frame-state=. |
+| Done | =C-x 5 r= | =find-file-read-only-other-frame= | Added on 2026-06-09 using read-only file open plus =nemacs-frame-state=. |
+| Done | =C-x 5 C-o= | =display-buffer-other-frame= | Added on 2026-06-09 using buffer display plus =nemacs-frame-state=. |
+| Done | =C-x 5 b= | =switch-to-buffer-other-frame= | Added on 2026-06-09 using buffer switching plus =nemacs-frame-state=. |
+| Done | =C-x 5 d= | =dired-other-frame= | Added on 2026-06-09 using directory display plus =nemacs-frame-state=. |
+| Done | =C-x 5 0= | =delete-frame= | Added on 2026-06-09 using =nemacs-frame-state= plus =nemacs-frame-undo-state=. |
+| Done | =C-x 5 1= | =delete-other-frames= | Added on 2026-06-09 using =nemacs-frame-state= normalization. |
+| Done | =C-x 5 2= | =make-frame-command= | Added on 2026-06-09 using the frame display facade. |
+| Done | =C-x 5 o= | =other-frame= | Added on 2026-06-09 using selected-frame cycling in =nemacs-frame-state=. |
+| Done | =C-x 5 c= | =clone-frame= | Added on 2026-06-09 using the frame display facade. |
+| Done | =C-x 5 u= | =undelete-frame= | Added on 2026-06-09 using =nemacs-frame-undo-state=. |
+| Done | =C-x v == | =vc-diff= | Current runtime keymap coverage reports this VC diff facade as implemented. |
+| Done | =C-x v l= | =vc-print-log= | Current runtime keymap coverage reports this VC log facade as implemented. |
+| Done | =C-x w 0= | =delete-windows-on= | Added on 2026-06-09 using the existing two-window transport facade. |
+| Done | =C-x w q= | =quit-window= | Added on 2026-06-09 using the existing two-window transport facade. |
+| Done | =C-x w d= | =toggle-window-dedicated= | Added on 2026-06-09 with =nemacs-window-dedicated= transport state. |
+| Done | =C-x w 2= | =split-root-window-below= | Added on 2026-06-09 using the existing horizontal window transport facade. |
+| Done | =C-x w 3= | =split-root-window-right= | Added on 2026-06-09 using the existing vertical window transport facade. |
+| Done | =C-x w s= | =window-toggle-side-windows= | Added on 2026-06-09 with =nemacs-side-windows-visible= transport state. |
+| Done | =C-x w ^ f= | =tear-off-window= | Added on 2026-06-09 using =nemacs-frame-state= plus the existing two-window facade. |
+| Done | =C-x m= | =compose-mail= | Added on 2026-06-09 as an editable =*mail*= buffer facade. |
+| Done | =C-x 4 m= | =compose-mail-other-window= | Added on 2026-06-09 using the =*mail*= facade plus existing other-window routing. |
+| Done | =C-x 5 m= | =compose-mail-other-frame= | Added on 2026-06-09 using the =*mail*= facade plus existing frame routing. |
+| Done | =C-x r f= | =frameset-to-register= | Added on 2026-06-09 using register-backed =nemacs-frame-state= snapshots. |
+| Done | =C-x r w= | =window-configuration-to-register= | Added on 2026-06-09 using register-backed window layout snapshots. |
+| Done | =C-x '=, =C-x a '=, =C-x a e= | =expand-abbrev= | Added on 2026-06-09 using a transport-backed abbrev table. |
+| Done | =C-x a +=, =C-x a C-a=, =C-x a l= | =add-mode-abbrev= | Added on 2026-06-09 as a mode/global abbrev facade. |
+| Done | =C-x a g= | =add-global-abbrev= | Added on 2026-06-09 using the word before point as expansion. |
+| Done | =C-x a -=, =C-x a i g= | =inverse-add-global-abbrev= | Added on 2026-06-09 using the word before point as abbrev. |
+| Done | =C-x a i l= | =inverse-add-mode-abbrev= | Added on 2026-06-09 as the mode-table variant of inverse add. |
+| Done | =M-'= | =abbrev-prefix-mark= | Added on 2026-06-09 by marking the start of the abbrev prefix word. |
+| Done | =C-x a n= | =expand-jump-to-next-slot= | Added on 2026-06-09 as next =<>= slot navigation. |
+| Done | =C-x a p= | =expand-jump-to-previous-slot= | Added on 2026-06-09 as previous =<>= slot navigation. |
+| Done | =C-x *= | =calc-dispatch= | Added on 2026-06-09 as a scratch =*Calculator*= facade. |
+| Done | =C-x 6= | =2C-command= | Added on 2026-06-09 using the two-column buffer facade. |
+| Done | =C-x 6 2= | =2C-two-columns= | Added on 2026-06-09 using the two-column buffer facade. |
+| Done | =C-x 6 b= | =2C-associate-buffer= | Added on 2026-06-09 with buffer-name completion and right-buffer rendering. |
+| Done | =C-x 6 s= | =2C-split= | Added on 2026-06-09 using the two-column split facade. |
+| Done | =C-x 8 e += | =emoji-zoom-increase= | Added on 2026-06-10 as an emoji zoom modeline facade. |
+| Done | =C-x 8 e -= | =emoji-zoom-decrease= | Added on 2026-06-10 as an emoji zoom modeline facade. |
+| Done | =C-x 8 e 0= | =emoji-zoom-reset= | Added on 2026-06-10 as an emoji zoom modeline facade. |
+| Done | =C-x 8 e d= | =emoji-describe= | Added on 2026-06-10 using a bridge-owned emoji help buffer facade. |
+| Done | =C-x 8 e e=, =C-x 8 e i= | =emoji-insert= | Added on 2026-06-10 using UTF-8 byte-sequence emoji insertion in the bridge runtime. |
+| Done | =C-x 8 e l= | =emoji-list= | Added on 2026-06-10 using a read-only =*Emoji List*= facade. |
+| Done | =C-x 8 e r= | =emoji-recent= | Added on 2026-06-10 using a transport-backed recent emoji list. |
+| Done | =C-x 8 e s= | =emoji-search= | Added on 2026-06-10 using minibuffer completion plus a read-only search-result facade. |
+| Done | =C-x C-+=, =C-x C--=, =C-x C-0=, =C-x C-== | =text-scale-adjust= | Added on 2026-06-10 using runtime-owned =nemacs-text-scale= state and modeline feedback. |
+| Done | =C-x C-M-+=, =C-x C-M--=, =C-x C-M-0=, =C-x C-M-== | =global-text-scale-adjust= | Added on 2026-06-10 using runtime-owned =nemacs-global-text-scale= state and modeline feedback. |
+| Done | =C-z=, =C-x C-z= | =suspend-frame= | Added on 2026-06-10 using runtime-owned =nemacs-frame-suspended= state and modeline feedback. |
+| Done | =M-`= | =tmm-menubar= | Added on 2026-06-10 using a read-only =*Menu Bar*= buffer facade. |
+| Done | =C-x $= | =set-selective-display= | Added on 2026-06-10 using runtime-owned =nemacs-selective-display= state and modeline feedback. |
+| Done | =M-s h .= | =highlight-symbol-at-point= | Added on 2026-06-10 using runtime-owned =nemacs-highlight-patterns= state. |
+| Done | =M-s h f= | =hi-lock-find-patterns= | Added on 2026-06-10 using a read-only =*Hi Lock Patterns*= facade. |
+| Done | =M-s h l= | =highlight-lines-matching-regexp= | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h p= | =highlight-phrase= | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h r= | =highlight-regexp= | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h u= | =unhighlight-regexp= | Added on 2026-06-10 using minibuffer input and runtime-owned highlight state. |
+| Done | =M-s h w= | =hi-lock-write-interactive-patterns= | Added on 2026-06-10 using runtime-owned =nemacs-highlight-patterns= writeback. |
+| Done | =C-\= | =toggle-input-method= | Added on 2026-06-10 using runtime-owned =nemacs-input-method= state and modeline feedback. |
+| Done | =C-x \= | =activate-transient-input-method= | Added on 2026-06-10 using runtime-owned =nemacs-transient-input-method= state. |
+| Done | =C-x RET C-\= | =set-input-method= | Added on 2026-06-10 using minibuffer input and =nemacs-input-method= state. |
+| Done | =C-x RET F= | =set-file-name-coding-system= | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET X= | =set-next-selection-coding-system= | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET c= | =universal-coding-system-argument= | Added on 2026-06-10 using runtime-owned =nemacs-universal-coding-system= state. |
+| Done | =C-x RET f= | =set-buffer-file-coding-system= | Added on 2026-06-10 using runtime-owned =nemacs-buffer-file-coding-system= state. |
+| Done | =C-x RET k= | =set-keyboard-coding-system= | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET l= | =set-language-environment= | Added on 2026-06-10 using runtime-owned =nemacs-language-environment= state. |
+| Done | =C-x RET p= | =set-buffer-process-coding-system= | Added on 2026-06-10 as runtime-owned process-coding state. |
+| Done | =C-x RET r= | =revert-buffer-with-coding-system= | Added on 2026-06-10 by recording coding state and reusing runtime =revert-buffer=. |
+| Done | =C-x RET t= | =set-terminal-coding-system= | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x RET x= | =set-selection-coding-system= | Added on 2026-06-10 using runtime-owned coding state. |
+| Done | =C-x C-k= | =kmacro-keymap= | Added on 2026-06-10 as a runtime-owned kmacro prefix facade. |
+| Done | =C-x C-k C-d= | =kmacro-delete-ring-head= | Added on 2026-06-10 using runtime-owned kmacro ring state. |
+| Done | =C-x C-k C-e=, =C-x C-k RET=, =C-x C-k SPC=, =C-x C-k e=, =C-x C-k l= | kmacro edit/view facades | Added on 2026-06-10 using bridge-owned kmacro buffers. |
+| Done | =C-x C-k C-f= | =kmacro-set-format= | Added on 2026-06-10 using runtime-owned kmacro format state. |
+| Done | =C-x C-k C-k= | =kmacro-end-or-call-macro-repeat= | Added on 2026-06-10 by reusing runtime macro end/replay. |
+| Done | =C-x C-k C-l= | =kmacro-call-ring-2nd-repeat= | Added on 2026-06-10 using runtime-owned kmacro ring state. |
+| Done | =C-x C-k C-n=, =C-x C-k C-p=, =C-x C-k C-t= | kmacro ring navigation | Added on 2026-06-10 using runtime-owned ring swap state. |
+| Done | =C-x C-k C-s=, =C-x C-k s= | =kmacro-start-macro= | Added on 2026-06-10 as aliases for existing runtime macro start. |
+| Done | =C-x C-k C-v= | =kmacro-view-macro-repeat= | Added on 2026-06-10 using a read-only =*Keyboard Macro*= facade. |
+| Done | =C-x C-k b= | =kmacro-bind-to-key= | Added on 2026-06-10 using runtime-owned bound-key state. |
+| Done | =C-x C-k d= | =kmacro-redisplay= | Added on 2026-06-10 as modeline feedback for current macro state. |
+| Done | =C-x C-k n= | =kmacro-name-last-macro= | Added on 2026-06-10 using runtime-owned macro name state. |
+| Done | =C-x C-k q= | =kbd-macro-query= | Added on 2026-06-10 as an alias for existing query checkpoint. |
+| Done | =C-x C-k r= | =apply-macro-to-region-lines= | Added on 2026-06-10 as a runtime macro replay facade. |
+| Done | =C-x C-k x= | =kmacro-to-register= | Added on 2026-06-10 using runtime-owned macro register state. |
+
+* Process/syscall Dependent
+
+Highest impact:
+
+| Priority | Keys | Command | Notes |
+|----------+------+---------+-------|
+| Done | =M-!= | =shell-command= | Added on 2026-06-09 by a parallel session; coverage now reports it as implemented. |
+| Done | =M-|= | =shell-command-on-region= | Added on 2026-06-09 by a parallel session; coverage now reports it as implemented. |
+| Done | =M-&= | =async-shell-command= | Added on 2026-06-09 by a parallel session; coverage now reports it as implemented. |
+| Done | =C-x `=, =M-g n=, =M-g M-n= | =next-error= | Added on 2026-06-09 as a visible =*compilation*= facade; full compile/grep location parsing remains process-backed work. |
+| Done | =M-g p=, =M-g M-p= | =previous-error= | Added on 2026-06-09 as the matching =*compilation*= facade. |
+| Done | =C-x p != | =project-shell-command= | Added on 2026-06-09; current facade runs from the current file directory and can later swap in full root detection. |
+| Done | =C-x p &= | =project-async-shell-command= | Added on 2026-06-09; current facade runs from the current file directory and can later swap in full root detection. |
+| Done | =C-x p c= | =project-compile= | Added on 2026-06-09; current facade runs from the current file directory and renders =*compilation*= output. |
+| Done | =C-x p g= | =project-find-regexp= | Added on 2026-06-09; current facade runs grep from the current file directory and renders =*compilation*= output. |
+| Done | =C-x p e= | =project-eshell= | Added on 2026-06-09 as a project-directory =*eshell*= buffer facade; live process attach remains process-surface work. |
+| Done | =C-x p s= | =project-shell= | Added on 2026-06-09 as a project-directory =*shell*= buffer facade; live process attach remains process-surface work. |
+| Done | =C-x p F= | =project-or-external-find-file= | Added on 2026-06-09 as a project-relative file open with external-path fallback. |
+| Done | =C-x p G= | =project-or-external-find-regexp= | Added on 2026-06-09 using the existing grep facade with project/external-root-labelled output. |
+| Done | =C-x p r= | =project-query-replace-regexp= | Added on 2026-06-09 by opening the first matching project file and reusing the existing query-replace confirmation loop. |
+| Done | =C-x p v= | =project-vc-dir= | Added on 2026-06-09 using =git rev-parse= root detection plus =git status --short --branch= in a read-only =*vc-dir*= facade. |
+
+The previous VC / spell / EWW remainder is now implemented as runtime-owned
+facades.  Read-only VC queries render git output buffers where useful;
+destructive, branch, tag, merge, and network VC operations record explicit
+no-side-effect intent buffers until the process layer is ready for those side
+effects.
+
+#+begin_src text
+M-$      ispell-word
+M-s M-w  eww-search-words
+C-x v !  vc-edit-next-command
+C-x v +  vc-update
+C-x v =  vc-diff
+C-x v D  vc-root-diff
+C-x v L  vc-print-root-log
+C-x v l  vc-print-log
+C-x v v  vc-next-action
+#+end_src
+
+* GUI/display Dependent
+
+No remaining bindings are currently classified as GUI/display dependent:
+
+#+begin_src text
+none
+#+end_src
+
+* Major-mode/package Dependent
+
+These need a larger subsystem before key coverage should drive implementation:
+
+#+begin_src text
+none
+#+end_src
+
+* Parallel Work Guidance
+
+- Runtime implementers should take =Immediate= items only when GUI rendering and
+  process spikes are active elsewhere.
+- Process implementers should build project/VC/full next-error integration on the existing
+  =M-!= / =M-|= / =M-&= bridge coverage and keep standalone syscall smoke
+  separate from GUI rendering tests.
+- GUI implementers should keep =nemacs-window-hscroll= and tabline verifier
+  checks green before starting frame/tab/text-scale work.
+- Documentation/planning work should update this file and avoid touching
+  =nemacs-gui-file-bridge-runtime.el=, =nemacs-mx.sh=, or
+  =scripts/verify-nemacs-gui.sh= unless it is also owning the matching
+  implementation.

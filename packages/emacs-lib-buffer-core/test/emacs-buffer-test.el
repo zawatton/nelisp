@@ -2,10 +2,10 @@
 
 ;; Phase 1 module 1/6 tests per nelisp-emacs Doc 01.
 ;; Covers all 6 categories of `emacs-buffer-*' API:
-;;   A. buffer-local variables  (10 tests)
-;;   B. text-property            (7 MVP + 14 advanced = 21 tests)
+;;   A. buffer registry/local variables (11 tests)
+;;   B. text-property/property query    (26 tests)
 ;;   C. undo system              (6 tests)
-;;   D. modification tracking    (4 tests)
+;;   D. modification tracking    (6 tests)
 ;;   E. additional buffer ops    (5 tests)
 ;;   F. overlay                  (18 tests)
 
@@ -25,7 +25,13 @@
          (emacs-buffer--overlay-counter 0))
      ,@body))
 
-;;;; A. buffer-local variables (10 tests)
+;;;; A. buffer registry/local variables (11 tests)
+
+(ert-deftest emacs-buffer-current-public-wrapper ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "x")))
+      (nelisp-ec-set-buffer b)
+      (should (eq b (emacs-buffer-current))))))
 
 (ert-deftest emacs-buffer-make-local-variable-creates-binding ()
   (emacs-buffer-test--with-fresh-world
@@ -119,7 +125,7 @@
       (emacs-buffer-kill-all-local-variables)
       (should (null (emacs-buffer-buffer-local-variables b))))))
 
-;;;; B. text-property MVP (7 tests)
+;;;; B. text-property/property query (26 tests)
 
 (ert-deftest emacs-buffer-put-and-get-text-property ()
   (emacs-buffer-test--with-fresh-world
@@ -187,6 +193,28 @@
       (let ((pl (emacs-buffer-text-property-at 1)))
         (should (equal 'bold (plist-get pl 'face)))
         (should (= 700 (plist-get pl 'weight)))))))
+
+(ert-deftest emacs-buffer-text-property-view-clips-and-filters ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "abcdef")
+      (emacs-buffer-add-text-properties 2 6 '(face bold weight 700))
+      (should (equal '((3 5 (face bold)))
+                     (emacs-buffer-text-property-view 3 5 '(face) b)))
+      (should (equal '((2 6 (face bold weight 700)))
+                     (emacs-buffer-text-property-view 1 7 nil b))))))
+
+(ert-deftest emacs-buffer-text-property-view-resolves-category ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp"))
+          (cat (make-symbol "category")))
+      (put cat 'face 'category-face)
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "abc")
+      (emacs-buffer-add-text-properties 1 3 (list 'category cat))
+      (should (equal '((1 3 (face category-face)))
+                     (emacs-buffer-text-property-view 1 3 '(face) b))))))
 
 (ert-deftest emacs-buffer-put-text-property-rejects-empty-range ()
   (emacs-buffer-test--with-fresh-world
@@ -350,6 +378,30 @@
         (emacs-buffer-overlay-put ov 'weight 700)
         (should (eq 700 (emacs-buffer-get-char-property 3 'weight b)))))))
 
+(ert-deftest emacs-buffer-get-char-property-overlay-priority-wins ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      (let ((low (emacs-buffer-make-overlay 1 6 b))
+            (high (emacs-buffer-make-overlay 1 6 b)))
+        (emacs-buffer-overlay-put low 'face 'low)
+        (emacs-buffer-overlay-put low 'priority 1)
+        (emacs-buffer-overlay-put high 'face 'high)
+        (emacs-buffer-overlay-put high 'priority 10)
+        (should (eq 'high (emacs-buffer-get-char-property 3 'face b)))))))
+
+(ert-deftest emacs-buffer-get-char-property-overlay-insertion-tie-wins ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      (let ((first (emacs-buffer-make-overlay 1 6 b))
+            (second (emacs-buffer-make-overlay 1 6 b)))
+        (emacs-buffer-overlay-put first 'face 'first)
+        (emacs-buffer-overlay-put second 'face 'second)
+        (should (eq 'second (emacs-buffer-get-char-property 3 'face b)))))))
+
 (ert-deftest emacs-buffer-get-char-property-text-prop-fallback ()
   (emacs-buffer-test--with-fresh-world
     (let ((b (nelisp-ec-generate-new-buffer "tp")))
@@ -413,7 +465,7 @@
       (should-error (emacs-buffer-undo b)
                     :type 'emacs-buffer-undo-disabled))))
 
-;;;; D. modification tracking (4 tests)
+;;;; D. modification tracking (6 tests)
 
 (ert-deftest emacs-buffer-modified-p-tracks-edits ()
   (emacs-buffer-test--with-fresh-world
@@ -434,6 +486,23 @@
       (emacs-buffer-restore-buffer-modified-p nil)
       (should-not (emacs-buffer-buffer-modified-p)))))
 
+(ert-deftest emacs-buffer-toggle-read-only-direct ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "m")))
+      (nelisp-ec-set-buffer b)
+      (let ((result (emacs-buffer-toggle-read-only-direct b)))
+        (should (plist-get result :read-only))
+        (should (equal "buffer-read-only: on"
+                       (plist-get result :message)))
+        (nelisp-ec-with-current-buffer b
+          (should buffer-read-only)))
+      (let ((result (emacs-buffer-toggle-read-only-direct b)))
+        (should-not (plist-get result :read-only))
+        (should (equal "buffer-read-only: off"
+                       (plist-get result :message)))
+        (nelisp-ec-with-current-buffer b
+          (should-not buffer-read-only))))))
+
 (ert-deftest emacs-buffer-chars-modified-tick-monotonic ()
   (emacs-buffer-test--with-fresh-world
     (let* ((b (nelisp-ec-generate-new-buffer "m"))
@@ -441,6 +510,19 @@
       (emacs-buffer-bump-modified-tick b)
       (emacs-buffer-bump-modified-tick b)
       (should (= (+ t0 2) (emacs-buffer-buffer-chars-modified-tick b))))))
+
+(ert-deftest emacs-buffer-text-tick-tracks-text-only ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "m")))
+      (nelisp-ec-set-buffer b)
+      (let ((t0 (emacs-buffer-buffer-text-tick b)))
+        (nelisp-ec-insert "abc")
+        (should (> (emacs-buffer-buffer-text-tick b) t0))
+        (let ((t1 (emacs-buffer-buffer-text-tick b)))
+          (emacs-buffer-put-text-property 1 2 'face 'bold b)
+          (should (= t1 (emacs-buffer-buffer-text-tick b)))
+          (nelisp-ec-delete-region 1 2)
+          (should (> (emacs-buffer-buffer-text-tick b) t1)))))))
 
 (ert-deftest emacs-buffer-modify-without-undo-restores-on-error ()
   (emacs-buffer-test--with-fresh-world

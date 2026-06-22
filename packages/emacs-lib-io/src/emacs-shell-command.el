@@ -127,6 +127,195 @@ transport files and bridge buffer state.")
             " && "
             (or command (emacs-shell-command-gui--arg)))))
 
+(defun emacs-shell-command-output-text (text &optional placeholder)
+  "Return shell output TEXT, or PLACEHOLDER when TEXT is empty."
+  (if (or (null text) (= 0 (length text)))
+      (or placeholder "[shell-command: no output]\n")
+    text))
+
+(defun emacs-shell-command-run-to-string (command &optional input-text)
+  "Run shell COMMAND and return stdout as a string.
+When INPUT-TEXT is non-nil, feed it to COMMAND through a temporary stdin
+file.  This is a display-backend neutral helper for small synchronous
+command surfaces."
+  (cond
+   ((null input-text)
+    (or (and (fboundp 'shell-command-to-string)
+             (shell-command-to-string command))
+        ""))
+   (t
+    (let* ((tmp (and (fboundp 'make-temp-file)
+                     (make-temp-file "emacs-shell-command-stdin-")))
+           (rendered nil))
+      (cond
+       ((null tmp)
+        (or (and (fboundp 'shell-command-to-string)
+                 (shell-command-to-string command))
+            ""))
+       (t
+        (unwind-protect
+            (progn
+              (with-temp-buffer
+                (insert input-text)
+                (write-region (point-min) (point-max) tmp))
+              (setq rendered
+                    (or (and
+                         (fboundp 'shell-command-to-string)
+                         (shell-command-to-string
+                          (format "%s < %s"
+                                  command
+                                  (if (fboundp 'shell-quote-argument)
+                                      (shell-quote-argument tmp)
+                                    (emacs-shell-command-gui-shell-quote-argument
+                                     tmp)))))
+                        "")))
+          (when (and tmp (file-exists-p tmp))
+            (delete-file tmp)))
+        rendered))))))
+
+(defun emacs-shell-command-lightweight-output (command-line)
+  "Return lightweight visible output for COMMAND-LINE.
+This preserves the TUI daily-driver fallback where `printf ARG' renders ARG
+directly and other commands echo the command line plus a newline."
+  (let ((prefix "printf "))
+    (if (and (stringp command-line)
+             (>= (length command-line) (length prefix))
+             (equal (substring command-line 0 (length prefix)) prefix))
+        (substring command-line (length prefix))
+      (concat (or command-line "") "\n"))))
+
+(defun emacs-shell-command-run-lightweight-command (&rest plist)
+  "Run a lightweight frontend shell command.
+PLIST accepts `:read-string', `:prompt', `:output-function',
+`:emit-function', `:display-function', and `:buffer-name'.  This helper
+owns the reusable read/render/display command shape while the frontend
+keeps concrete prompt and display callbacks."
+  (let* ((read-string (plist-get plist :read-string))
+         (prompt (or (plist-get plist :prompt) "Shell command: "))
+         (output-function (or (plist-get plist :output-function)
+                              #'emacs-shell-command-lightweight-output))
+         (emit-function (plist-get plist :emit-function))
+         (display-function (plist-get plist :display-function))
+         (buffer-name (or (plist-get plist :buffer-name)
+                          emacs-shell-command-output-buffer-name))
+         (command-line (and read-string (funcall read-string prompt))))
+    (when (and command-line (> (length command-line) 0))
+      (let ((text (funcall output-function command-line)))
+        (when emit-function
+          (funcall emit-function text))
+        (if display-function
+            (funcall display-function buffer-name text)
+          text)))))
+
+(defun emacs-shell-command-run-buffer-command (&rest plist)
+  "Read, run, and display a synchronous shell command.
+PLIST accepts `:read-string', `:prompt', `:run-function',
+`:output-text-function', `:display-function', `:status-function',
+`:message-function', and `:buffer-name'.  The frontend owns concrete
+prompt/display callbacks; this helper owns empty input handling, command
+execution, output normalization, status text, and error reporting."
+  (let* ((read-string (plist-get plist :read-string))
+         (prompt (or (plist-get plist :prompt) "Shell command: "))
+         (run-function (or (plist-get plist :run-function)
+                           #'emacs-shell-command-run-to-string))
+         (output-text-function (or (plist-get plist :output-text-function)
+                                   #'emacs-shell-command-output-text))
+         (display-function (plist-get plist :display-function))
+         (status-function (plist-get plist :status-function))
+         (message-function (plist-get plist :message-function))
+         (buffer-name (or (plist-get plist :buffer-name)
+                          "*Shell Command Output*"))
+         (command-line (and read-string (funcall read-string prompt))))
+    (cond
+     ((or (null command-line) (= 0 (length command-line)))
+      (when status-function
+        (funcall status-function "shell-command: empty"))
+      nil)
+     (t
+      (condition-case err
+          (let ((out (funcall run-function command-line)))
+            (when display-function
+              (funcall display-function
+                       buffer-name
+                       (funcall output-text-function out)))
+            (when status-function
+              (funcall status-function
+                       (format "shell-command: %s (%d bytes)"
+                               command-line
+                               (length (or out "")))))
+            out)
+        (error
+         (when message-function
+           (funcall message-function
+                    "shell-command: %s"
+                    (cond
+                     ((stringp (cadr err)) (cadr err))
+                     (t (prin1-to-string err)))))
+         nil))))))
+
+(defun emacs-shell-command-run-region-buffer-command (&rest plist)
+  "Read, run, and display a shell command fed by region text.
+PLIST accepts `:region-bounds', `:region-text', `:read-string',
+`:prompt', `:run-function', `:output-text-function', `:display-function',
+`:status-function', `:message-function', and `:buffer-name'."
+  (let* ((region-bounds (plist-get plist :region-bounds))
+         (bounds (cond
+                  ((functionp region-bounds) (funcall region-bounds))
+                  (t region-bounds)))
+         (status-function (plist-get plist :status-function)))
+    (cond
+     ((null bounds)
+      (when status-function
+        (funcall status-function "shell-command-on-region: no region"))
+      nil)
+     (t
+      (let* ((read-string (plist-get plist :read-string))
+             (prompt (or (plist-get plist :prompt)
+                         "Shell command on region: "))
+             (run-function (or (plist-get plist :run-function)
+                               #'emacs-shell-command-run-to-string))
+             (output-text-function
+              (or (plist-get plist :output-text-function)
+                  #'emacs-shell-command-output-text))
+             (display-function (plist-get plist :display-function))
+             (message-function (plist-get plist :message-function))
+             (buffer-name (or (plist-get plist :buffer-name)
+                              "*Shell Command Output*"))
+             (command-line (and read-string (funcall read-string prompt))))
+        (cond
+         ((or (null command-line) (= 0 (length command-line)))
+          (when status-function
+            (funcall status-function "shell-command-on-region: empty"))
+          nil)
+         (t
+          (condition-case err
+              (let* ((region-text-function (plist-get plist :region-text))
+                     (text (cond
+                            ((functionp region-text-function)
+                             (funcall region-text-function
+                                      (car bounds)
+                                      (cdr bounds)))
+                            (t "")))
+                     (out (funcall run-function command-line text)))
+                (when display-function
+                  (funcall display-function
+                           buffer-name
+                           (funcall output-text-function out)))
+                (when status-function
+                  (funcall status-function
+                           (format "shell-command-on-region: %d→%d bytes"
+                                   (length text)
+                                   (length (or out "")))))
+                out)
+            (error
+             (when message-function
+               (funcall message-function
+                        "shell-command-on-region: %s"
+                        (cond
+                         ((stringp (cadr err)) (cadr err))
+                         (t (prin1-to-string err)))))
+             nil)))))))))
+
 (defun emacs-shell-command-gui--call-process-available-p ()
   "Return non-nil when a GUI bridge process substrate is available."
   (or (fboundp 'call-process)

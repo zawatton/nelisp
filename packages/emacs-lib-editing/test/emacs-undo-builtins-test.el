@@ -176,11 +176,13 @@ with a clean undo-list alist and kill-ring."
   (emacs-undo-builtins-test--with-fresh-buffer ""
     ;; Use the prefixed setter to bypass any host-Emacs gate.
     (emacs-undo-set-buffer-undo-list t)
+    (should (emacs-undo-disabled-p))
     (should (eq t (emacs-undo-buffer-undo-list)))
     ;; Records become no-ops while disabled.
     (emacs-undo-record-insert 1 5)
     (should (eq t (emacs-undo-buffer-undo-list)))
     (emacs-undo-set-buffer-undo-list nil)
+    (should-not (emacs-undo-disabled-p))
     (should (null (emacs-undo-buffer-undo-list)))))
 
 (ert-deftest emacs-undo-builtins-test/undo-on-disabled-signals ()
@@ -213,6 +215,46 @@ with a clean undo-list alist and kill-ring."
     (should (equal "a" (nelisp-ec-buffer-string)))
     (emacs-undo-undo)                    ; undoes "a"
     (should (equal "" (nelisp-ec-buffer-string)))))
+
+(ert-deftest emacs-undo-builtins-test/undo-direct-reports-success ()
+  (emacs-undo-builtins-test--with-fresh-buffer ""
+    (let ((beg (nelisp-ec-point)))
+      (nelisp-ec-insert "a")
+      (emacs-undo-record-insert beg (nelisp-ec-point)))
+    (emacs-undo-undo-boundary)
+    (let ((result (emacs-undo-undo-direct)))
+      (should (eq 'ok (plist-get result :status)))
+      (should (equal "undo" (plist-get result :message)))
+      (should (equal "" (nelisp-ec-buffer-string))))))
+
+(ert-deftest emacs-undo-builtins-test/undo-direct-reports-error ()
+  (emacs-undo-builtins-test--with-fresh-buffer ""
+    (let ((result (emacs-undo-undo-direct)))
+      (should (eq 'error (plist-get result :status)))
+      (should (eq 'emacs-undo-error (plist-get result :condition)))
+      (should (equal "undo: no-further-undo-information"
+                     (plist-get result :message))))))
+
+(ert-deftest emacs-undo-builtins-test/run-command-uses-frontend-hooks ()
+  (emacs-undo-builtins-test--with-fresh-buffer ""
+    (let ((beg (nelisp-ec-point))
+          status
+          success)
+      (nelisp-ec-insert "a")
+      (emacs-undo-record-insert beg (nelisp-ec-point))
+      (emacs-undo-undo-boundary)
+      (let ((buffer (current-buffer)))
+        (let ((result
+               (emacs-undo-run-command
+                :current-buffer (lambda () buffer)
+                :status-function (lambda (message)
+                                   (setq status message))
+                :after-success (lambda (undo-result)
+                                 (setq success undo-result)))))
+          (should (eq 'ok (plist-get result :status)))
+          (should (eq result success))
+          (should (equal "undo" status))
+          (should (equal "" (nelisp-ec-buffer-string))))))))
 
 ;;;; N. Idempotence
 

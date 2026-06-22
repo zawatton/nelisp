@@ -78,8 +78,12 @@
         (should (nelisp-ec-looking-at "beta"))
         (should (= 1 (nelisp-ec-match-beginning 0)))
         (should (= 5 (nelisp-ec-match-end 0)))
+        (should (nelisp-ec-looking-at-p "beta"))
+        (should (= 1 (nelisp-ec-match-beginning 0)))
+        (should (= 5 (nelisp-ec-match-end 0)))
         (nelisp-ec-goto-char 6)
-        (should-not (nelisp-ec-looking-at "beta"))))))
+        (should-not (nelisp-ec-looking-at "beta"))
+        (should-not (nelisp-ec-looking-at-p "beta"))))))
 
 ;;;; E. match-data shape and buffer-path match-string polyfill body
 
@@ -135,6 +139,20 @@
         (should (= 9 (nelisp-ec-search-backward "abc")))
         (should (= 9 (nelisp-ec-point)))
         (should-not (nelisp-ec-search-backward "zzz" nil t))
+        (should (= 9 (nelisp-ec-point)))))))
+
+(ert-deftest emacs-search-builtins-test/re-search-backward-retreats-and-sets-match-data ()
+  (emacs-search-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "regex-backward")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abc def abc")
+        (nelisp-ec-goto-char (nelisp-ec-point-max))
+        (should (= 9 (nelisp-ec-re-search-backward "abc")))
+        (should (= 9 (nelisp-ec-point)))
+        (should (equal '(9 12) (nelisp-ec-match-data)))
+        (should (= 9 (nelisp-ec-match-beginning 0)))
+        (should (= 12 (nelisp-ec-match-end 0)))
+        (should-not (nelisp-ec-re-search-backward "zzz" nil t))
         (should (= 9 (nelisp-ec-point)))))))
 
 ;;;; I. Requiring the module again leaves the function cells unchanged

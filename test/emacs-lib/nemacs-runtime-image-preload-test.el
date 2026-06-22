@@ -507,16 +507,21 @@
                  nemacs-runtime-image-preload--install-utility-i18n-core))
     (should (fboundp sym))))
 
-(ert-deftest nemacs-runtime-image-preload-test/setup-paths-adds-src-and-vendor ()
+(ert-deftest nemacs-runtime-image-preload-test/setup-paths-adds-scaffold-and-vendor ()
   (let ((load-path nil))
     (should (nemacs-runtime-image-setup-paths
              nemacs-runtime-image-preload-test--repo-root))
     (should (equal (symbol-value 'nelisp-emacs-vendor-root)
                    (concat nemacs-runtime-image-preload-test--repo-root
                            "/vendor")))
-    (dolist (path (list (concat nemacs-runtime-image-preload-test--repo-root
+    (should-not (member (concat nemacs-runtime-image-preload-test--repo-root
                                 "/src")
-                        (concat nemacs-runtime-image-preload-test--repo-root
+                        load-path))
+    (dolist (relative nemacs-runtime-image-package-load-paths)
+      (should (member (concat nemacs-runtime-image-preload-test--repo-root
+                              "/" relative)
+                      load-path)))
+    (dolist (path (list (concat nemacs-runtime-image-preload-test--repo-root
                                 "/vendor/emacs-lisp")
                         (concat nemacs-runtime-image-preload-test--repo-root
                                 "/vendor/emacs-lisp/emacs-lisp")

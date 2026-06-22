@@ -1,0 +1,66 @@
+#+TITLE: 純elisp UI スパイク — 実行ガイド (まとめ確認用)
+#+DATE: 2026-06-05/06
+
+* これは何
+
+dev/nelisp-emacs の UI を **純elisp** で実装する実証 spike 群。NeLisp standalone
+interpreter (=dev/nelisp/target/nelisp=) 上で、**ライブラリ・動的リンカ・libffi・libc・
+Rust-FFI を一切使わず**、=syscall-direct= / =ptr-read-u64= / =ptr-write-u64= / =ptr-call=
+の 4 primitive だけで動く。設計の全体像は
+=dev/nelisp-emacs/docs/design/08-pure-elisp-ui-proven-tracks.org=。
+
+* 実行方法 (共通)
+
+interpreter の =--eval= に progn で流し込む (=--load= は標準ライブラリ未ロードで壊れるため不可)。
+=;;= コメント行は feed を壊すので除去する:
+
+#+begin_src sh
+cd dev/nelisp
+NB=./target/nelisp
+run() { $NB --eval "(progn $(grep -vE '^[[:space:]]*;;' "$1"))"; }
+#+end_src
+
+X11 のウィンドウを**閉じずに残す**には、シェル終了で SIGHUP されないよう =setsid= で起動:
+
+#+begin_src sh
+setsid $NB --eval "(progn $(grep -vE '^[[:space:]]*;;' ../nelisp-ffi/spike-x11-editor.el))" &
+#+end_src
+
+* スパイク一覧
+
+** FFI トラック
+- =nelisp-ffi-pure.el= — 純elisp dlopen/dlsym/call。=run nelisp-ffi-pure.el= →
+  =(:add2 42 :mul3 42 :meaning 42)= (実 .so =/tmp/libnlffitest.so= の leaf 関数を呼出)。
+  - テスト .so 作成: =gcc -shared -fPIC -O2 -o /tmp/libnlffitest.so /tmp/nlffitest.c=
+    (中身: =int add2(int a,int b){return a+b;}= 等)
+- =spike-loader.el= — dlsym 単体。=run spike-loader.el= → libm cos の =:st-value #x5d010=。
+
+** TTY トラック (端末に表示)
+- =spike-tty.el= — レンダラ。=run spike-tty.el | cat -v= で ANSI、実端末なら枠付きフレーム。
+- =spike-tty-edit.el= — 編集 loop のスクリプトデモ。=run spike-tty-edit.el=。
+
+** X11-GUI トラック (画面にウィンドウ)
+- =spike-x11.el= — 色パネル (Obsidian 風)。=setsid ... spike-x11.el &= で表示、キーで閉じる。
+- =spike-x11-text.el= — テキスト描画 (タイトル+コード+モードライン)。
+- =spike-x11-editor.el= — 対話エディタ。クリックしてタイプ、Enter/Backspace/←→/Esc。
+
+* 検証済の結果 (実機)
+
+- =ptr-call=: RWX page の機械語 =mov rax,rdi;add rax,rsi;ret= を (40,2)→42。
+- FFI: 実 .so add2/mul3/meaning → 全て 42。dlsym libm cos → 0x5d010 (readelf 一致)。
+- X11: handshake success、CreateWindow+MapWindow→GetGeometry 往復で寸法一致、keysym 解読
+  (keycode 38→'a'/'A'、36→Return)。色パネルは user 視認 OK。
+- TTY: フレーム描画 + スクリプト編集の buffer 変化を確認。
+
+* interpreter 改変メモ
+
+=dev/nelisp/scripts/nelisp-standalone-build.el= に =ptr-call= builtin を追加
+(既存 =call-ptr= grammar op を使うので **新規 Rust ゼロ**)、=make standalone-reader= で再ビルド済。
+backup = =dev/nelisp/target/nelisp.bak=。
+
+* 既知の課題 (次フェーズ)
+
+- X11 対話エディタ: foreground は event loop 維持を確認済だが、Bashツール background 起動は
+  SIGHUP で落ちる (=setsid= で回避)。user セッションでの実機対話確認が残。
+- FFI: 現状 leaf 関数のみ。実 libc/SDL は完全ローダ (relocation/IFUNC/DT_NEEDED) が必要。
+- multi-platform (Win/macOS)、rich/web 表示 (LaTeX/YouTube) は Doc 08 §3 roadmap。

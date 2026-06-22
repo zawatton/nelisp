@@ -369,13 +369,18 @@ through `emacs-tui-event--decode-control-byte'."
    ((= byte 0)     'nul)
    (t nil)))
 
+;;;###autoload
+(defun emacs-tui-event-control-char-name (byte)
+  "Return the canonical key-name for a control BYTE, or nil."
+  (emacs-tui-event--control-char-name byte))
+
 (defun emacs-tui-event--decode-control-byte (byte)
   "Decode a single control BYTE (0..31) into a key event.
 BYTE = ?\\C-x → (:type key :name ?x :modifiers (control)) when the
 byte does not have a more specific named alias (= tab / return /
 backspace etc).  Named aliases come back without a control modifier
 (= matches Emacs `event-modifiers' convention for `tab')."
-  (let ((named (emacs-tui-event--control-char-name byte)))
+  (let ((named (emacs-tui-event-control-char-name byte)))
     (cond
      (named
       (emacs-tui-event-encode-key-event named nil))

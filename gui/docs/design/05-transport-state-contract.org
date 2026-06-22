@@ -1,0 +1,322 @@
+#+title: GUI Transport State Contract
+#+date: 2026-06-09
+
+* Purpose
+
+This document fixes the ownership and lifecycle of the =nemacs-*= file
+transport shared by =nelisp-gui= and =nelisp-emacs=.  It is a contract for
+parallel development: command semantics stay in =nelisp-emacs=, while
+=nelisp-gui= initializes transport, sends raw input, starts the bridge, and
+renders the returned snapshot.
+
+The default transport directory is =/tmp=.  =NEMACS_TRANSPORT_DIR= may point
+=nemacs-mx.sh=, the runtime/session bridge, and build-time native
+path rewriting at another directory.  =/tmp/nemacs.cfg= and the X11 socket path
+are not transport state and remain fixed outside this contract.
+
+* Ownership Rules
+
+| area | owner | rule |
+|------+-------+------|
+| command result semantics | =nelisp-emacs= | Owns buffer text, point, mark, file state, command dispatch, keymap lookup, minibuffer behavior, kill-ring, registers, bookmarks, window/tab semantic state, and status/error results. |
+| input adapter | =nelisp-gui= | Owns X11 event decoding, raw key sequence generation, launcher initialization, session startup, and direct fallback invocation. |
+| rendering | =nelisp-gui= | Reads returned snapshot and paints it.  It must not repair point, window-start, hscroll, modeline, minibuffer, tab, or buffer state. |
+| migration fallback | shared but temporary | =nemacs-cmd= / =nemacs-arg= / direct minibuffer files remain for unmigrated command paths.  Daily-driver behavior should prefer =nemacs-keys= and session runtime. |
+| tests | both repos | Default =/tmp/nemacs-*= tests must hold =/tmp/nemacs-transport.lock= or run alone.  Isolated transport tests should use =NEMACS_TRANSPORT_DIR=. |
+
+* Lifecycle Classes
+
+| class | meaning | examples |
+|-------+---------+----------|
+| launch-initialized | Written by =bin/nemacs= before the native GUI starts.  It prevents stale state from an older session from being drawn. | =nemacs-cmd=, =nemacs-keys=, =nemacs-minibuffer-active=, =nemacs-window-layout=, stores |
+| per-command input | Written by GUI/native or smoke tests before =nemacs-mx.sh= / runtime runs. | =nemacs-keys=, =nemacs-cmd=, =nemacs-arg=, =nemacs-minibuffer-text= |
+| returned snapshot | Written by =nelisp-emacs= runtime after command execution, then rendered by =nelisp-gui=. | =nemacs-buf=, =nemacs-point=, =nemacs-modeline=, =nemacs-cursor= |
+| session control | Written by =nemacs-mx.sh= and the persistent runtime to synchronize requests. | =nemacs-session-request=, =nemacs-session-response=, =nemacs-session-ready= |
+| durable within launch | Preserved across commands in one GUI launch/session, but reset by launcher startup or test setup. | kill-ring, buffer stores, registers, bookmarks, undo, kmacro/session state |
+| derived/test-only | Temporary probe, smoke output, or verifier artifact.  Do not make runtime behavior depend on it. | =nemacs-visual-*.xwd=, =nemacs-*-test.txt=, =nemacs-bridge-nelisp-probe= |
+
+* Protocol State Table
+
+Paths below mean =$NEMACS_TRANSPORT_DIR/NAME=, defaulting to =/tmp/NAME=.
+Fixed =/tmp= files are called out explicitly.  "Both" means GUI/test code may
+seed the file before a command, but runtime/session bridge owns the semantic
+result written back after dispatch.
+
+| file | owner | read timing | write timing | lifetime | stale behavior |
+|------+-------+-------------+--------------+----------+----------------|
+| =nemacs-init-buf= | GUI launcher | Launcher copies it to =nemacs-buffer-store/main=. | =bin/nemacs= writes from target file or host Emacs initial buffer before GUI launch. | launch request | Recreated each launch; stale content must not survive launcher setup. |
+| =nemacs-file= | both | =nemacs-mx.sh= reads as current target; runtime reads/writes visited file state. | Launcher seeds target; runtime updates after visit/write/revert. | persistent snapshot | Missing/empty means no visited file; stale target is overwritten on file commands. |
+| =nemacs-goto= | GUI launcher | Launcher reads once to seed =nemacs-buffer-point-store/main=. | =bin/nemacs= writes for =--goto= only. | launch request | Removed when =--goto= is absent. |
+| =nemacs-mx.sh= | GUI launcher | Native GUI executes it for bridge dispatch. | =bin/nemacs= copies or writes wrapper when transport dir is prepared. | launch support | Rewritten each launch so stale wrappers do not point at an old transport dir. |
+| =/tmp/nemacs-win.transport-dir= | GUI build/launcher | Launcher compares it before reusing =/tmp/nemacs-win.bin=. | Build records compiled transport dir. | build marker | Mismatch triggers rebuild for non-default transport. |
+| =/tmp/nemacs.cfg= | GUI launcher/native | Native GUI reads during startup. | =bin/nemacs= writes frame/font/theme config before exec. | fixed GUI config | Rewritten each launch; not part of transport dir isolation. |
+| =nemacs-keys= | GUI | =nemacs-mx.sh= and runtime read at command entry. | Native GUI/tests write raw key sequence before dispatch; runtime clears after consuming. | temporary request | Non-empty wins over =nemacs-cmd=; stale command is cleared and stale keys are cleared after dispatch. |
+| =nemacs-cmd= | both | =nemacs-mx.sh= and runtime read only when =nemacs-keys= is empty. | Direct fallback/tests write; runtime/session clears when raw keys are used. | temporary request | Ignored and cleared when =nemacs-keys= is non-empty. |
+| =nemacs-arg= | both | Runtime/fallback reads as direct command argument. | GUI/tests write before direct or minibuffer fallback command. | temporary request | Empty means no argument; callers must overwrite before commands that require one. |
+| =nemacs-status= | session bridge | =nemacs-mx.sh= reads after runtime returns. | Runtime writes status/error/minibuffer/unsupported; wrapper removes before dispatch. | temporary response | Removed before each request; missing means normal =ok= unless command path says otherwise. |
+| =nemacs-exit= | runtime | GUI may read after command to close native loop. | Launcher initializes =0=; runtime writes =1= for exit commands. | persistent snapshot | Missing defaults to =0=; launcher resets on new session. |
+| =nemacs-buf= | both | Runtime reads current visible buffer at command entry; GUI reads after dispatch to paint. | GUI/tests seed current contents; runtime writes updated current buffer. | persistent snapshot | Missing defaults to empty buffer; runtime clamps point/mark to returned content. |
+| =nemacs-point= | both | Runtime reads before command; GUI reads after dispatch for cursor placement. | GUI/tests seed current point; runtime writes decimal/zero-padded point. | persistent snapshot | Missing/malformed defaults to =0=; runtime clamps to buffer bounds. |
+| =nemacs-mark= | both | Runtime reads before region commands; GUI may read for region display. | GUI/tests seed current mark; runtime writes updated mark. | persistent snapshot | Missing/malformed defaults to =0=; runtime clamps to buffer bounds. |
+| =nemacs-read-only= | both | Runtime reads at command entry. | Launcher seeds =0=; runtime writes current buffer read-only flag. | persistent snapshot | Missing defaults to writable =0=; launcher resets. |
+| =nemacs-buffer-name= | both | Runtime/fallback reads current buffer name before dispatch; GUI reads after buffer switch. | Launcher seeds =main=; runtime writes selected buffer name. | persistent snapshot | Missing defaults to =main=. |
+| =nemacs-buffer-list= | runtime | Runtime reads/writes to resolve buffers; GUI may render buffer list views. | Launcher seeds =main\n=; runtime writes newline-separated names. | durable state | Missing defaults to =main\n= in wrapper/runtime setup. |
+| =nemacs-buffer-store/= | runtime | Runtime reads buffer contents by buffer name. | Launcher recreates and seeds =main=; runtime writes per-buffer contents. | durable state | Recreated on launch; missing selected buffer is created empty by wrapper. |
+| =nemacs-buffer-file-store/= | runtime | Runtime reads per-buffer visited file. | Launcher recreates and seeds =main=; runtime updates on visit/write/revert. | durable state | Missing file means buffer has no visited file. |
+| =nemacs-buffer-point-store/= | runtime | Runtime reads saved per-buffer point on switch. | Launcher recreates and seeds =main=; runtime writes on switch/update. | durable state | Missing entry defaults to =0=. |
+| =nemacs-buffer-mark-store/= | runtime | Runtime reads saved per-buffer mark on switch. | Launcher recreates and seeds =main=; runtime writes on switch/update. | durable state | Missing entry defaults to =0=. |
+| =nemacs-buffer-window-start-store/= | runtime | Runtime reads per-buffer vertical window start. | Launcher recreates and seeds =main=; runtime writes when display state changes. | durable state | Missing entry defaults to =0=. |
+| =nemacs-buffer-read-only-store/= | runtime | Runtime reads per-buffer read-only flag. | Launcher recreates and seeds =main=; runtime writes on mode/file changes. | durable state | Missing entry defaults to =0=. |
+| =nemacs-buffer-narrow-active-store/= | runtime | Runtime reads narrowing active flag on buffer restore. | Launcher recreates; runtime writes narrowing state. | durable state | Missing entry means not narrowed. |
+| =nemacs-buffer-narrow-start-store/= | runtime | Runtime reads narrowing start. | Launcher recreates; runtime writes when narrowed. | durable state | Ignored when narrow-active is absent/0. |
+| =nemacs-buffer-narrow-end-store/= | runtime | Runtime reads narrowing end. | Launcher recreates; runtime writes when narrowed. | durable state | Ignored when narrow-active is absent/0. |
+| =nemacs-buffer-narrow-full-store/= | runtime | Runtime reads full text when widening. | Launcher recreates; runtime writes full text before narrowing. | durable state | Missing full text makes widen fall back to current visible text. |
+| =nemacs-window-layout= | runtime | Runtime reads before window commands; GUI reads after dispatch. | Launcher seeds =single=; runtime writes =single=, =vertical=, or =horizontal=. | persistent snapshot | Missing/unknown normalizes to =single=. |
+| =nemacs-window-selected= | runtime | Runtime reads selected window before command; GUI reads after dispatch. | Launcher seeds =0=; runtime writes selected index. | persistent snapshot | Missing/out-of-range normalizes to =0=. |
+| =nemacs-window-start= | runtime | Runtime reads/writes vertical scroll origin; GUI reads to paint. | Launcher seeds =0=; runtime writes after scroll/recenter/window commands. | persistent snapshot | Missing/malformed defaults to =0=; runtime clamps to buffer length. |
+| =nemacs-window-hscroll= | runtime | Runtime reads before horizontal scroll commands; GUI reads before painting each display line. | Launcher/wrapper seed =0=; runtime writes after =scroll-left= / =scroll-right=. | persistent snapshot | Missing/malformed defaults to =0=; runtime clamps negative values to =0=; GUI must not repair it. |
+| =nemacs-window-split-delta= | runtime | Runtime reads before window sizing commands; GUI reads before painting split separators. | Launcher/wrapper seed =0=; runtime writes after split/delete/balance/resize commands. | persistent snapshot | Missing/malformed defaults to =0=; runtime owns signed cell delta; GUI clamps only pixel geometry while painting. |
+| =nemacs-tab-state= | runtime | Runtime reads before tab commands; GUI reads for tab display. | Launcher seeds =0\t1\t1=; runtime writes selected index/count/name and optional group as =selected\tcount\tname[\tgroup]=. | persistent snapshot | Missing/malformed normalizes to one selected tab; missing group means no group. |
+| =nemacs-tab-undo-state= | runtime | Runtime reads before =tab-undo=. GUI does not read it. | Launcher/wrapper clear; runtime writes last closed selected tab as =index\tname[\tgroup]= after =tab-close= and clears after successful =tab-undo=. | durable state | Missing/empty means no tab undo is available; malformed state is treated as empty by runtime normalization. |
+| =nemacs-frame-state= | runtime | Runtime reads before frame-target commands; GUI may read once top-level frame drawing is wired. | Launcher/wrapper seed =0\t1\t1=; runtime writes selected index/count/name as =selected\tcount\tname=. | persistent snapshot | Missing/malformed normalizes to one selected frame; GUI must not repair it. |
+| =nemacs-frame-undo-state= | runtime | Runtime reads before =undelete-frame=. GUI does not read it. | Launcher/wrapper clear; runtime writes the last deleted selected frame as =index\tname= after =delete-frame= or =delete-other-frames= and clears after successful =undelete-frame=. | durable state | Missing/empty means no frame undo is available; malformed state is treated as empty by runtime normalization. |
+| =nemacs-frame-suspended= | runtime | Runtime writes =1= after =suspend-frame=. GUI may read it for native frame lifecycle handling. | Launcher seeds =0=; wrapper seeds =0= if absent. | persistent snapshot | GUI must not decide Emacs command semantics; it may only map returned suspended state to native lifecycle behavior. |
+| =nemacs-modeline= | runtime | GUI reads after command/paint. | Launcher seeds initial modeline; runtime writes command result/status modeline. | persistent snapshot | Empty is allowed; GUI renders empty modeline rather than inventing one. |
+| =nemacs-cursor= | runtime | GUI reads after command/paint. | Runtime writes point/line/column plus =cells= (display cells from line start to point; CJK = 2 cells) cursor metadata. | persistent snapshot | Empty/missing means GUI should use point-derived fallback only for drawing, not mutate state; the GUI must not re-decide cell layout semantics. |
+| =nemacs-truncate-lines= | runtime | Runtime reads at command entry; GUI reads for line wrapping/truncation choice. | Wrapper seeds =0= if absent; runtime writes after =toggle-truncate-lines=. | durable state | Missing defaults to =0=; stale value is replaced by runtime after toggle. |
+| =nemacs-text-scale= | runtime | Runtime reads before =text-scale-adjust= and writes the signed local scale amount. GUI may read for font-size rendering. | Launcher seeds =0=; wrapper seeds =0= if absent; runtime writes after =text-scale-adjust=. | durable state | Missing/malformed defaults to =0=; GUI must not infer or repair command semantics. |
+| =nemacs-global-text-scale= | runtime | Runtime reads before =global-text-scale-adjust= and writes the signed global scale amount. GUI may read for font-size rendering. | Launcher seeds =0=; wrapper seeds =0= if absent; runtime writes after =global-text-scale-adjust=. | durable state | Missing/malformed defaults to =0=; GUI must not infer or repair command semantics. |
+| =nemacs-highlight-patterns= | runtime | Runtime reads/writes =hi-lock= and highlight command patterns as =kind<TAB>pattern= lines. GUI may read for overlay/highlight painting. | Launcher/wrapper clear if absent; runtime writes after highlight/unhighlight/write commands. | durable state | GUI must not decide highlight command semantics; malformed or empty lines are ignored by runtime facades. |
+| =nemacs-face-spans= | runtime | GUI reads after dispatch to color drawn lines. | Runtime writes resolved face spans (=START<TAB>END<TAB>FACE<TAB>#rrggbb= lines, offsets in the =nemacs-point= coordinate space, bounded to the visible region) on every redisplay. | persistent snapshot | GUI must not decide face selection or color resolution; empty/missing means the GUI may use only its legacy first-char migration fallback. |
+| =nemacs-font= | runtime | GUI reads at session start to pick the X11 font; live re-open mid-session is a documented omission. | Runtime writes the fontset decision as =name<TAB>FONT= / =script<TAB>latin\vert{}cjk= / =cw<TAB>CELLPX= after every redisplay. | persistent snapshot | GUI must not decide fontset selection; it asks X11 =QueryTextExtents= for the loaded font's actual ImageText16 cell advance, with =QueryFont=, =cw=, and then the 9px grid as fallbacks. |
+| =nemacs-selective-display= | runtime | Runtime reads/writes =set-selective-display= state. GUI may read to fold/skip display lines. | Launcher/wrapper seed =0= if absent; runtime writes =0= or =1=. | durable state | Missing/malformed defaults to =0=; GUI must not infer command toggling semantics. |
+| =nemacs-input-method= | runtime | Runtime reads/writes =toggle-input-method= and =set-input-method= state. GUI may read for display only. | Launcher/wrapper clear if absent; runtime writes the selected method name or empty for none. | durable state | GUI input decoding remains GUI-owned, but Emacs input-method command semantics remain runtime-owned. |
+| =nemacs-transient-input-method= | runtime | Runtime reads/writes =activate-transient-input-method= state. | Launcher/wrapper clear if absent; runtime writes the transient method name. | durable state | Empty means no transient input method. |
+| =nemacs-language-environment= | runtime | Runtime reads/writes =set-language-environment= state. | Launcher/wrapper clear if absent; runtime writes the requested environment name. | durable state | The bridge records facade state; full Emacs language databases remain future runtime work. |
+| =nemacs-buffer-file-coding-system=, =nemacs-file-name-coding-system=, =nemacs-keyboard-coding-system=, =nemacs-terminal-coding-system=, =nemacs-selection-coding-system=, =nemacs-next-selection-coding-system=, =nemacs-buffer-process-coding-system=, =nemacs-universal-coding-system= | runtime | Runtime reads/writes coding-system command state from =C-x RET= commands. | Launcher/wrapper clear if absent; runtime writes requested coding names after commands. | durable state | GUI must not decide coding command semantics; process and terminal integration may consume these states later. |
+| =nemacs-minibuffer-active= | runtime | GUI reads to decide minibuffer display; runtime reads during multi-step flows. | Launcher seeds =0=; runtime writes =1= while active and =0= on exit/quit. | persistent snapshot | Missing defaults inactive; active without purpose/state is treated as inactive by runtime. |
+| =nemacs-minibuffer-prompt= | runtime | GUI reads when minibuffer is active. | Launcher clears; runtime writes prompt. | persistent snapshot | Empty means no prompt; launcher clears stale prompt. |
+| =nemacs-minibuffer-state= | runtime | GUI reads visible minibuffer text; runtime reads during continuation. | Launcher clears; runtime writes current minibuffer text. | persistent snapshot | Empty is valid; stale state is ignored when active flag is =0=. |
+| =nemacs-minibuffer-purpose= | runtime | Runtime reads to route continuation; GUI may use for display/debug. | Launcher clears; runtime writes logical owner such as =find-file= or =query-replace-confirm=. | persistent snapshot | Empty purpose disables continuation semantics. |
+| =nemacs-minibuffer-cursor= | runtime | GUI reads cursor offset in minibuffer. | Launcher seeds =0=; runtime writes offset. | persistent snapshot | Missing/malformed defaults to =0=. |
+| =nemacs-minibuffer-candidates= | runtime | GUI reads completion candidates; runtime reads for completion decisions. | Launcher clears; runtime writes newline-separated candidates. | persistent snapshot | Empty means no candidates. |
+| =nemacs-minibuffer-history= | runtime | Runtime reads/writes minibuffer history; GUI may inspect. | Launcher clears; runtime appends/updates history. | durable state | Empty means no history; launcher clears stale history on new GUI launch. |
+| =nemacs-minibuffer-require-match= | runtime | GUI reads completion behavior; runtime reads for RET validation. | Launcher seeds =0=; runtime writes =0= or =1=. | persistent snapshot | Missing defaults to =0=. |
+| =nemacs-minibuffer-text= | GUI | Runtime/fallback reads as user-entered minibuffer text. | GUI/tests write before minibuffer continuation or direct fallback. | temporary request | Empty means no submitted text; caller must overwrite before submit. |
+| =nemacs-minibuffer-arg= | GUI | Runtime reads as secondary minibuffer argument for multi-arg commands. | GUI/tests write before replacement/goto/M-x continuation. | temporary request | Empty means no secondary argument. |
+| =nemacs-replace-string-from= | runtime | Runtime reads while collecting replacement. | Runtime writes first-stage replace source. | durable request state | Cleared after command completion/quit; stale ignored when purpose is not replace. |
+| =nemacs-query-replace-from= | runtime | Runtime reads during query-replace confirmation. | Runtime writes query source. | durable request state | Ignored when =nemacs-query-replace-active= is not =1=. |
+| =nemacs-query-replace-to= | runtime | Runtime reads during query-replace confirmation. | Runtime writes query replacement. | durable request state | Ignored when query replace is inactive. |
+| =nemacs-query-replace-active= | runtime | Runtime reads to route =y/n/SPC/!= confirmation keys. | Runtime writes =1= during confirmation and clears on completion/quit. | durable request state | Missing/0 means confirmation keys are normal key input. |
+| =nemacs-query-replace-regexp= | runtime | Runtime reads to choose regexp/literal replacement. | Runtime writes =1= for regexp query replace. | durable request state | Missing/0 means literal query replace. |
+| =nemacs-kill= | runtime | Runtime reads for yank and appending kills. | Launcher clears; runtime writes current kill mirror. | durable state | Empty means no current kill. |
+| =nemacs-kill-ring= | runtime | Runtime reads/writes serialized kill ring. | Launcher clears; runtime writes after kill/yank-pop operations. | durable state | Empty means empty ring; malformed entries are ignored by narrow readers. |
+| =nemacs-kill-ring-index= | runtime | Runtime reads current yank-pop position. | Launcher seeds =0=; runtime writes index. | durable state | Missing/malformed defaults to =0=. |
+| =nemacs-rectangle-kill= | runtime | Runtime reads for rectangle yank. | Launcher clears; runtime writes rectangle kill/copy contents. | durable state | Empty means no rectangle kill. |
+| =nemacs-rectangle-mark-mode= | runtime | Runtime reads before dispatch; GUI may read for rectangle selection display. | Launcher/wrapper seed =0=; runtime writes =1= after =rectangle-mark-mode= enable and =0= after toggle/quit. | persistent snapshot | Missing/malformed defaults to =0=; stale =1= is cleared by =C-g= / quit commands or overwritten by the next toggle. |
+| =nemacs-prefix-arg= | runtime | Runtime reads before dispatch and numeric-argument commands. | Launcher clears; runtime writes prefix argument until a consuming command clears it. | temporary command state | Stale prefix must be consumed or cleared by next non-prefix command/quit. |
+| =nemacs-last-command= | runtime | Runtime reads for repeat, yank-pop, append-next-kill, cycle-spacing. | Launcher clears; runtime writes after command dispatch. | durable state | Empty means no repeatable previous command. |
+| =nemacs-cycle-spacing-action= | runtime | Runtime reads for cycle-spacing progression. | Launcher clears; runtime writes last cycle action. | durable state | Ignored when point/whitespace state does not match. |
+| =nemacs-cycle-spacing-point= | runtime | Runtime reads point associated with cycle-spacing. | Launcher seeds =0=; runtime writes point. | durable state | Missing/malformed defaults to =0=. |
+| =nemacs-cycle-spacing-whitespace= | runtime | Runtime reads whitespace snapshot for cycle-spacing. | Launcher clears; runtime writes removed whitespace. | durable state | Empty means no saved whitespace. |
+| =nemacs-undo-buf= | runtime | Runtime reads for one-level undo. | Wrapper seeds empty if absent; runtime writes previous buffer. | durable state | Ignored unless =nemacs-undo-ready= is =1=. |
+| =nemacs-undo-point= | runtime | Runtime reads undo point. | Wrapper seeds =0= if absent; runtime writes previous point. | durable state | Ignored unless undo-ready is =1=. |
+| =nemacs-undo-mark= | runtime | Runtime reads undo mark. | Wrapper seeds =0= if absent; runtime writes previous mark. | durable state | Ignored unless undo-ready is =1=. |
+| =nemacs-undo-ready= | runtime | Runtime reads to decide whether undo is available. | Wrapper seeds =0= if absent; runtime writes =1= after snapshot. | durable state | Missing/0 means undo unavailable. |
+| =nemacs-goal-column= | runtime | Runtime reads before vertical movement. | Wrapper seeds empty if absent; runtime writes number from =set-goal-column= or clears with prefix. | durable state | Empty means unset; malformed reads as =0= only after runtime decides it is non-empty. |
+| =nemacs-global-mark= | runtime | Runtime reads for =pop-global-mark=. | Wrapper seeds empty if absent; runtime writes mark position or clears inactive state. | durable state | Empty means inactive; stale mark is overwritten by mark-setting commands. |
+| =nemacs-kmacro-recording= | runtime | Runtime reads before key dispatch to record raw keys. | Launcher/wrapper seed =0=; runtime writes =1= during recording and =0= after end. | session state | Missing defaults to not recording; stale =1= records until =kmacro-end-macro= or quit. |
+| =nemacs-kmacro-keys= | runtime | Runtime reads for macro replay and appends while recording. | Launcher/wrapper clear if absent; runtime writes raw key sequence. | session state | Empty means no recorded macro; stale keys replay only when kmacro command asks. |
+| =nemacs-kmacro-counter= | runtime | Runtime reads/writes the keyboard macro counter used by =C-x C-k= counter commands. | Launcher/wrapper seed =0= if absent; runtime writes decimal counter text. | durable state | Missing/malformed defaults to =0=. |
+| =nemacs-kmacro-ring= | runtime | Runtime reads/writes the secondary macro ring facade used by extended kmacro ring commands. | Launcher/wrapper clear if absent; runtime swaps/cycles with =nemacs-kmacro-keys=. | durable state | Richer macro ring editing can build on this without moving semantics to GUI. |
+| =nemacs-kmacro-name=, =nemacs-kmacro-format=, =nemacs-kmacro-bound-key=, =nemacs-kmacro-register= | runtime | Runtime records extended kmacro metadata from naming, formatting, binding, and register commands. | Launcher/wrapper clear if absent; runtime writes command arguments or defaults. | durable state | GUI renders returned buffers/state only; command semantics stay in =nelisp-emacs=. |
+| =nemacs-register-store/= | runtime | Runtime reads register payload by register name. | Launcher recreates; runtime writes register commands. | durable state | Missing register means unset. |
+| =nemacs-bookmark-store/= | runtime | Runtime reads bookmark payload by encoded name. | Launcher recreates; runtime writes bookmark commands. | durable state | Missing bookmark means no such bookmark. |
+| =nemacs-bookmark-list= | runtime | Runtime reads/writes bookmark index/list buffer. | Launcher clears; runtime writes bookmark list. | durable state | Empty means no bookmarks. |
+| =nemacs-shell-command-output= | runtime | Runtime writes command output buffer and may read for display handoff. | Runtime writes after =shell-command=. | temporary response | Missing means no shell output; overwritten per command. |
+| =nemacs-dired-marks= | runtime | Runtime reads dired mark state at startup and writes after mark/unmark/flag/delete/rename commands. | Launcher/wrapper clear if absent; runtime writes =DIR\nNAME<TAB>CHAR= lines. | durable state | Marks reset when the listed directory changes. |
+| =nemacs-magit-root= | runtime | Runtime reads the magit working directory at startup and writes it on =magit-status=. | Launcher/wrapper clear if absent. | durable state | Empty means "current directory". |
+| =nemacs-magit-output= | runtime | Runtime captures =git= subprocess output per magit command. | Runtime writes before reading back. | temporary response | Overwritten per command; not read across runs. |
+| =nemacs-info-state= | runtime | Runtime reads the open Info file + node at startup and writes them on =info= / =Info-next= / =Info-prev= / =Info-up=. | Launcher/wrapper clear if absent; runtime writes =FILE<TAB>NODE=. | durable state | Empty means no Info session; the GUI does not read it. |
+| =nemacs-custom-store= | runtime | Runtime reads persisted customizations at startup (re-applying known symbols) and writes on =customize-save-variable=. | Launcher/wrapper clear if absent; runtime writes =NAME<TAB>VALUE= lines. | durable state | The GUI must not decide customize semantics; it does not read this file. |
+| =nemacs-custom-file= | runtime | Generated =custom-set-variables= artifact for the user; regenerated from the store on every save. | Runtime writes on =customize-save-variable=. | durable state | Informational output; never read back by the runtime. |
+| =nemacs-tramp-output=, =nemacs-tramp-stage= | runtime | Runtime captures =ssh= output / stages upload content for =/ssh:HOST:/path= round-trips. | Runtime writes before reading back. | temporary response | Overwritten per remote operation; not read across runs. |
+| =nemacs-shell-command-on-region-input= | runtime | Runtime writes selected region for external command input. | Runtime writes before =shell-command-on-region=. | temporary request payload | Overwritten per command; stale ignored unless region command runs. |
+| =nemacs-shell-command-on-region-output= | runtime | Runtime writes external command output. | Runtime writes after =shell-command-on-region=. | temporary response | Missing means no output; overwritten per command. |
+| =nemacs-async-shell-command-output= | runtime | Runtime writes async process output/status snapshot. | Runtime writes after async shell command progresses or completes. | temporary/process response | Missing means no async output yet; stale should be replaced by process update. |
+| =nemacs-session-pid= | session bridge | =nemacs-mx.sh= reads to check persistent runtime. | =nemacs-mx.sh= writes after spawning session. | session control | Dead PID is ignored; wrapper kills live stale PID before new session spawn. |
+| =nemacs-session-ready= | session bridge | =nemacs-mx.sh= polls before sending request; tests inspect. | Runtime writes =1= on ready and =0= on shutdown/max requests. | session control | Missing/0 means session unavailable; wrapper starts or falls back. |
+| =nemacs-session-request= | session bridge | Runtime blocks/reads request token from FIFO/file. | =nemacs-mx.sh= writes unique token per request. | temporary request | Recreated as FIFO on session start; stale token is superseded by next token. |
+| =nemacs-session-response= | session bridge | =nemacs-mx.sh= polls for matching token. | Runtime writes echoed token after command processing. | temporary response | Mismatched/stale response is ignored until matching token or timeout. |
+| =nemacs-session-shutdown= | session bridge | Runtime polls each loop. | =nemacs-mx.sh=/tests write =1= to stop; session start writes =0=. | session control | Missing means keep running; =1= stops loop and clears ready. |
+| =nemacs-session.out= | session bridge | Developers/tests read for diagnostics. | =nemacs-mx.sh= redirects session stdout. | diagnostic | Stale diagnostic is not protocol state. |
+| =nemacs-session.err= | session bridge | Developers/tests read for diagnostics. | =nemacs-mx.sh= redirects session stderr. | diagnostic | Stale diagnostic is not protocol state. |
+| =nemacs-transport.lock= | tests | ERT/verifier reads lock metadata. | Tests create/remove around fixed =/tmp= smokes. | test-only | Stale lock may be broken only by test stale-lock rules, not by runtime. |
+| =/tmp/nemacs-bridge-nelisp-probe= | wrapper diagnostic | =nemacs-mx.sh= reads backend readiness result. | =nemacs-mx.sh= removes then runtime probe writes =ready= or =missing=. | diagnostic | Removed before probe; stale result must not be trusted. |
+
+* Canonical Files
+
+** Launch And Wrapper
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-init-buf= | =bin/nemacs= | Written from =nemacs-initial-buffer= before launch; copied into =nemacs-buffer-store/main=. | launch-only |
+| =nemacs-file= | =bin/nemacs= initializes; runtime updates | Initial visited filename and later current buffer file. | returned snapshot |
+| =nemacs-goto= | wrapper input | Optional initial point target, copied into =nemacs-buffer-point-store/main=. | launch-only |
+| =nemacs-mx.sh= | =bin/nemacs= | Wrapper placed in transport dir when non-default transport is active. | launch-only |
+| =nemacs-win.transport-dir= | build/launcher | Records the transport dir compiled into =nemacs-win.bin=. | build marker |
+| =/tmp/nemacs.cfg= | launcher/native config | Frame size, position, display mode, font, theme.  This is not =NEMACS_TRANSPORT_DIR= state. | fixed config |
+
+** Command Input And Status
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-keys= | =nelisp-gui= writes; runtime consumes | Preferred raw key sequence.  When non-empty, =nemacs-mx.sh= and runtime clear stale =nemacs-cmd=. | per-command |
+| =nemacs-cmd= | migration fallback / tests | Direct command name for fallback paths.  Cleared when raw keys are present. | per-command |
+| =nemacs-arg= | migration fallback / tests | Direct command argument or minibuffer result for fallback paths. | per-command |
+| =nemacs-status= | runtime/fallback | Optional status such as unsupported, read-only, error, minibuffer.  Tests may delete it before assertions. | per-command |
+| =nemacs-exit= | runtime | Exit request from =save-buffers-kill-terminal= / related commands. | per-command / launch |
+
+** Buffer Snapshot
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-buf= | GUI/test input; runtime output | Current visible buffer text.  Runtime writes updated text for commands that change or switch buffers. | returned snapshot |
+| =nemacs-point= | GUI/test input; runtime output | Current point as decimal text; some writers use zero-padded five digits. | returned snapshot |
+| =nemacs-mark= | GUI/test input; runtime output | Current mark as decimal text. | returned snapshot |
+| =nemacs-read-only= | launcher/runtime | Current buffer read-only flag, =0= or =1=. | returned snapshot |
+| =nemacs-buffer-name= | launcher/runtime | Current buffer name. | returned snapshot |
+| =nemacs-buffer-list= | runtime | Newline-separated buffer names. | durable within launch |
+| =nemacs-buffer-store/= | launcher/runtime | One file per buffer containing buffer text. | durable within launch |
+| =nemacs-buffer-file-store/= | launcher/runtime | One file per buffer containing visited filename. | durable within launch |
+| =nemacs-buffer-point-store/= | launcher/runtime | One file per buffer containing point. | durable within launch |
+| =nemacs-buffer-mark-store/= | launcher/runtime | One file per buffer containing mark. | durable within launch |
+| =nemacs-buffer-window-start-store/= | launcher/runtime | One file per buffer containing vertical window-start. | durable within launch |
+| =nemacs-buffer-read-only-store/= | launcher/runtime | One file per buffer containing read-only flag. | durable within launch |
+| =nemacs-buffer-narrow-active-store/= | runtime | One file per buffer, =1= when narrowed. | durable within launch |
+| =nemacs-buffer-narrow-start-store/= | runtime | One file per buffer with narrowing start. | durable within launch |
+| =nemacs-buffer-narrow-end-store/= | runtime | One file per buffer with narrowing end. | durable within launch |
+| =nemacs-buffer-narrow-full-store/= | runtime | Full buffer text while a buffer is narrowed. | durable within launch |
+
+** Window, Tab, And Display Snapshot
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-window-layout= | launcher/runtime | Serialized window layout class such as =single=. | returned snapshot |
+| =nemacs-window-selected= | launcher/runtime | Selected window index. | returned snapshot |
+| =nemacs-window-start= | runtime | Vertical start offset for redisplay. | returned snapshot |
+| =nemacs-window-hscroll= | runtime writes; GUI renders | Horizontal scroll column.  GUI must skip that many columns when painting display lines. | returned snapshot |
+| =nemacs-window-split-delta= | runtime writes; GUI renders | Signed split-size delta from the equal split.  GUI converts cells/lines to pixels and clamps drawing geometry. | returned snapshot |
+| =nemacs-tab-state= | launcher/runtime | Tab state as selected index, count, selected name, and optional selected group fields.  GUI paints from this state; runtime owns tab semantics. | returned snapshot |
+| =nemacs-tab-undo-state= | launcher/runtime | Last closed selected tab snapshot for =tab-undo=. GUI does not render it. | durable runtime state |
+| =nemacs-frame-state= | launcher/runtime | Frame state as selected index, count, and selected name. GUI top-level frame painting is future work; runtime owns frame target semantics. | returned snapshot |
+| =nemacs-frame-undo-state= | launcher/runtime | Last deleted selected frame snapshot for =undelete-frame=. GUI does not render it. | durable runtime state |
+| =nemacs-frame-suspended= | runtime | =1= after =suspend-frame= until launcher/session reset. | returned snapshot |
+| =nemacs-modeline= | runtime | Modeline text to render. | returned snapshot |
+| =nemacs-cursor= | runtime | Cursor metadata for GUI drawing. | returned snapshot |
+| =nemacs-truncate-lines= | runtime | =toggle-truncate-lines= state, =0= or =1=. | durable within launch |
+| =nemacs-text-scale= | runtime | Signed local text scale amount from =text-scale-adjust=. | durable within launch |
+| =nemacs-global-text-scale= | runtime | Signed global text scale amount from =global-text-scale-adjust=. | durable within launch |
+| =nemacs-highlight-patterns= | runtime | Active highlight patterns as =kind<TAB>pattern= lines for GUI overlay painting. | durable within launch |
+| =nemacs-selective-display= | runtime | =set-selective-display= state, =0= or =1=. | durable within launch |
+| =nemacs-input-method= | runtime | Current input method name, or empty for none. | durable within launch |
+| =nemacs-transient-input-method= | runtime | Current transient input method facade state. | durable within launch |
+| =nemacs-language-environment= | runtime | Current language environment facade state. | durable within launch |
+| =nemacs-buffer-file-coding-system= and related coding state files | runtime | Coding-system facade state for =C-x RET= commands. | durable within launch |
+
+** Minibuffer And Completion
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-minibuffer-active= | launcher/runtime | =1= when minibuffer is active.  Runtime treats active without purpose as inactive. | returned snapshot |
+| =nemacs-minibuffer-prompt= | runtime | Prompt shown by GUI. | returned snapshot |
+| =nemacs-minibuffer-state= | runtime | Current minibuffer text. | returned snapshot |
+| =nemacs-minibuffer-purpose= | runtime | Logical owner such as =find-file=, =execute-extended-command=, or =query-replace-confirm=. | returned snapshot |
+| =nemacs-minibuffer-cursor= | runtime | Cursor offset within minibuffer text. | returned snapshot |
+| =nemacs-minibuffer-candidates= | runtime | Newline-separated completion candidates. | returned snapshot |
+| =nemacs-minibuffer-history= | runtime | History entries used by the bridge minibuffer. | durable within launch |
+| =nemacs-minibuffer-require-match= | runtime | =1= when completion requires a listed candidate. | returned snapshot |
+| =nemacs-minibuffer-text= | GUI/test input | Direct/minibuffer input text for fallback or test paths. | per-command |
+| =nemacs-minibuffer-arg= | GUI/test input | Secondary minibuffer argument, used by multi-step commands such as replace/goto through =M-x=. | per-command |
+| =nemacs-replace-string-from= | runtime | First-stage replace text while collecting replacement. | durable within launch |
+| =nemacs-query-replace-from= | runtime | Query replace source text. | durable within launch |
+| =nemacs-query-replace-to= | runtime | Query replace target text. | durable within launch |
+| =nemacs-query-replace-active= | runtime | =1= while query replace confirmation is active. | durable within launch |
+| =nemacs-query-replace-regexp= | runtime | =1= for regexp query replace. | durable within launch |
+
+** Editing State
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-kill= | runtime | Legacy/current kill text mirror. | durable within launch |
+| =nemacs-kill-ring= | runtime | Serialized kill-ring. | durable within launch |
+| =nemacs-kill-ring-index= | runtime | Current yank-pop index. | durable within launch |
+| =nemacs-rectangle-kill= | runtime | Last rectangle kill/copy contents. | durable within launch |
+| =nemacs-rectangle-mark-mode= | runtime | =1= while rectangular mark mode is active. | durable within launch |
+| =nemacs-prefix-arg= | runtime | Current prefix argument text. | durable until consumed |
+| =nemacs-last-command= | runtime | Last command name used by repeat/kill/cycle behavior. | durable within launch |
+| =nemacs-cycle-spacing-action= | runtime | Last cycle-spacing action. | durable within launch |
+| =nemacs-cycle-spacing-point= | runtime | Point associated with cycle-spacing state. | durable within launch |
+| =nemacs-cycle-spacing-whitespace= | runtime | Whitespace snapshot for cycle-spacing. | durable within launch |
+| =nemacs-undo-buf= | runtime | Undo buffer snapshot. | one-level durable |
+| =nemacs-undo-point= | runtime | Undo point snapshot. | one-level durable |
+| =nemacs-undo-mark= | runtime | Undo mark snapshot. | one-level durable |
+| =nemacs-undo-ready= | runtime | =1= when undo snapshot is usable. | one-level durable |
+| =nemacs-goal-column= | runtime | Goal column for vertical movement.  Empty means unset. | durable within launch |
+| =nemacs-global-mark= | runtime | Global mark position.  Empty means inactive. | durable within launch |
+| =nemacs-kmacro-recording= | runtime | =1= while recording minimal keyboard macro. | session / single-runtime |
+| =nemacs-kmacro-keys= | runtime | Recorded raw key sequence for current minimal keyboard macro. | session / single-runtime |
+| =nemacs-kmacro-counter= | runtime | Keyboard macro counter value. | durable within launch |
+| =nemacs-kmacro-ring= | runtime | Secondary macro ring facade state. | durable within launch |
+| =nemacs-kmacro-name=, =nemacs-kmacro-format=, =nemacs-kmacro-bound-key=, =nemacs-kmacro-register= | runtime | Extended keyboard macro metadata. | durable within launch |
+| =nemacs-dired-marks= | runtime | Dired mark state (directory + per-name mark chars). | durable within launch |
+| =nemacs-magit-root= | runtime | Magit working directory for git subcommands. | durable within launch |
+
+** Registers And Bookmarks
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-register-store/= | runtime | One file per register.  First line indicates kind or point data depending on command. | durable within launch |
+| =nemacs-bookmark-store/= | runtime | One file per encoded bookmark name. | durable within launch |
+| =nemacs-bookmark-list= | runtime | Bookmark list buffer/source index. | durable within launch |
+
+** Session Bridge
+
+| path | owner | read/write timing | persistence |
+|------+-------+-------------------+-------------|
+| =nemacs-session-pid= | =nemacs-mx.sh= | PID of persistent runtime process. | session |
+| =nemacs-session-ready= | runtime | =1= after session startup, =0= on shutdown/max request count. | session |
+| =nemacs-session-request= | =nemacs-mx.sh= | Request token written for each session command. | per-command |
+| =nemacs-session-response= | runtime | Echoes request token after command processing. | per-command |
+| =nemacs-session-shutdown= | =nemacs-mx.sh= / tests | =1= asks session loop to stop. | session |
+| =nemacs-session.out= / =nemacs-session.err= | =nemacs-mx.sh= | Captured session stdout/stderr for diagnostics. | session diagnostic |
+| =nemacs-transport.lock= | verifier / ERT | Directory lock protecting fixed =/tmp/nemacs-*= tests from concurrent mutation. | test-only |
+
+* Stale-State Rules
+
+- Launcher startup must reset input, minibuffer display, modeline/cursor, window
+  state, buffer stores, registers, bookmarks, kill-ring, rectangle, text-scale,
+  prefix, kmacro, and read-only state before native GUI paint.
+- Raw keys have priority over direct command fallback.  If =nemacs-keys= is
+  non-empty, =nemacs-cmd= is stale and must be cleared before dispatch.
+- =nelisp-gui= must not clamp or correct returned =nemacs-point=,
+  =nemacs-window-start=, =nemacs-window-hscroll=, =nemacs-modeline=, or
+  minibuffer state.  Bugs in those values belong to =nelisp-emacs=.
+- Session tests and GUI verifier runs must not share default =/tmp= transport
+  concurrently.  Use =NEMACS_TRANSPORT_DIR= for isolated smokes, or rely on the
+  shared =nemacs-transport.lock= for fixed-path tests.
+- Temporary files whose names merely start with =nemacs-= but include test names,
+  screenshots, probes, or stdout/stderr captures are diagnostics, not protocol.
+
+* Extension Checklist
+
+When adding a new =nemacs-*= state file:
+
+1. Record the owner in this document before depending on it in two repos.
+2. Initialize it in =bin/nemacs= if stale content can affect first paint or the
+   first command.
+3. Thread =NEMACS_TRANSPORT_DIR= through =nemacs-mx.sh= and runtime code; do not
+   hard-code =/tmp= unless the file is intentionally outside transport.
+4. Add runtime tests in =nelisp-emacs= for command semantics.
+5. Add GUI verifier coverage only for input transport or rendering behavior.
+6. Keep default =/tmp= tests serialized by =nemacs-transport.lock=.

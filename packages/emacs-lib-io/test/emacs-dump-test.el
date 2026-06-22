@@ -11,6 +11,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-dump)
+(require 'nelisp-emacs-compat)
 
 ;;;; --- fixtures ------------------------------------------------------
 

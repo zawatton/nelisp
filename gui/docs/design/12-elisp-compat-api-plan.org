@@ -1,0 +1,97 @@
+#+TITLE: Emacs Lisp Compatibility API Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+Emacs を置き換えるには、起動・編集 command だけでは足りない。
+ユーザー設定や package が期待する Emacs Lisp API を =nelisp= / =nelisp-emacs=
+で継続的に増やす必要がある。
+
+この設計書は process/network、URL、JSON、buffer-local、hooks、major-mode、
+autoload、package loading を中心に、API 互換の tier と検証方法を定義する。
+
+* 所有境界
+
+| 対象 | owner |
+|------+-------|
+| reader/evaluator/runtime primitive | =nelisp= |
+| Emacs Lisp API facade / command integration | =nelisp-emacs= |
+| GUI/TUI rendering | frontend 側 |
+| package behavior | 原則 =nelisp-emacs=。表示だけ frontend |
+
+* Compatibility tier
+
+全 API を同じ品質として扱わない。
+
+| tier | 意味 | daily-driver 可否 |
+|------+------|-------------------|
+| T0 real | Emacs と同等の意味論を持つ | 可 |
+| T1 practical | 主要 package/use case で動くが edge case は未完 | 条件付き可 |
+| T2 semantic-noop | 呼ばれても害がなく、無視が互換上許容される | 限定可 |
+| T3 load-only | package load を通すためだけの stub | 不可 |
+| T4 missing | 未実装 | 不可 |
+
+stub を追加する場合、必ず tier と理由を doc/test に残す。
+
+* API 領域
+
+| 領域 | 代表 API | 必要性 |
+|------+----------+--------|
+| process/network | =make-process=, =start-process=, =call-process=, =make-network-process= | shell, VC, package, LSP 系 |
+| URL | =url-retrieve=, =url-hexify-string=, URL parser | package install, docs, network package |
+| JSON | =json-read-from-string=, =json-parse-string= | package config, API client |
+| buffer-local | =make-local-variable=, =setq-local=, local hooks/maps | major-mode/package 基盤 |
+| hooks | =add-hook=, =run-hooks=, abnormal hooks | mode/config/package |
+| major-mode | =define-derived-mode=, syntax table, local map | editing quality |
+| autoload | =autoload=, =load-history=, =featurep= | package startup |
+| package loading | =require=, =provide=, =load-path=, package metadata | user config |
+| text properties | =put-text-property=, overlays/faces | Help/Info/font-lock |
+
+* 実装順
+
+1. package load を止める T4 を洗い出す。
+2. package startup に必要な API を T3/T2 で unblock する。
+3. daily-driver に必要な API を T1/T0 に上げる。
+4. command coverage の P0/P1 family で使われる API を優先して real 化する。
+5. facade tier を coverage report に出す。
+
+* Test matrix
+
+| test | repo | 内容 |
+|------+------|------|
+| primitive test | =nelisp= | reader/evaluator/syscall/network primitive |
+| API unit | =nelisp-emacs= | API 単体の Emacs 互換 |
+| package load smoke | =nelisp-emacs= | target package が load できる |
+| package behavior smoke | =nelisp-emacs= | 代表 command が buffer/state を変える |
+| frontend smoke | =nelisp-gui= / TUI | returned state が表示できる |
+
+* Target package set
+
+最初の target set は小さく固定する。
+
+| tier | package / surface | 理由 |
+|------+-------------------+------|
+| baseline | user =early-init.el= / =init.el= | 全ユーザー導線 |
+| built-in | dired, info, help, project, vc | Emacs 置き換えの基本 |
+| infra | json, url, auth/network subset | package/network の土台 |
+| editing | org subset, elisp-mode, text-mode | daily editing |
+
+* 完了条件
+
+| gate | 条件 |
+|------+------|
+| API inventory | missing/stub API が tier 付きで一覧化されている |
+| package load | target package set が host fallback なしで load できる |
+| package behavior | target package の代表 command が runtime test で通る |
+| user init | 実ユーザーの =~/.nemacs.d/init.el= subset が起動を壊さない |
+| no silent stub | T3/T2 API が daily-driver 完了条件に混ざっていない |
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| stub が増えすぎて互換が進んだように見える | tier を report に出し、T3 は完了扱いしない |
+| package ごとに特殊対応が増える | Emacs API 単位へ戻して実装する |
+| network/process が runtime primitive なしで詰まる | =nelisp= 側 primitive と =nelisp-emacs= facade を分けて進める |
+| user init が任意コードで壊れる | safe mode / =-Q= / init subset smoke を用意する |
+

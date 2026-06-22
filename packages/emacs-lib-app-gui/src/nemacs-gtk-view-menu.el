@@ -30,8 +30,8 @@
   "Return BUFFER's display name."
   (buffer-name buffer))
 
-(defun nemacs-gtk-view-menu--switch-to-buffer (name)
-  "Switch to the buffer named NAME."
+(defun nemacs-gtk-view-menu--apply-buffer-action (name)
+  "Apply the dynamic buffer action for NAME."
   (switch-to-buffer name))
 
 (defun nemacs-gtk-view-menu--buffer-submenu ()
@@ -63,7 +63,7 @@ continue handling them."
              (>= (length action) (length nemacs-gtk-view-menu--switch-prefix))
              (string= (substring action 0 (length nemacs-gtk-view-menu--switch-prefix))
                       nemacs-gtk-view-menu--switch-prefix))
-    (nemacs-gtk-view-menu--switch-to-buffer
+    (nemacs-gtk-view-menu--apply-buffer-action
      (substring action (length nemacs-gtk-view-menu--switch-prefix)))
     t))
 

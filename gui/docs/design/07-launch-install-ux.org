@@ -1,0 +1,93 @@
+#+TITLE: nemacs launch / install UX contract
+#+OPTIONS: toc:2
+
+* 目的
+実際に Emacs 代替として使い始める前に詰まりやすい点を、wrapper と
+install script の責務として明確にする。GUI runtime 本体はここでは変更しない。
+
+* 必須依存
+| 依存 | 用途 | doctor |
+|------+------|--------|
+| =nelisp= runtime | 初期設定の =nemacs-*= 評価、bridge runtime、通常起動 | fail |
+| bootstrap Emacs | =nelisp= snapshot / native GUI binary の build host（runtime fallback ではない） | fail for build only |
+| =make= | =nelisp= standalone reader build | fail |
+| =python3= | =+LINE[:COL]= / =--goto= の byte offset 解決、設定 binary 生成補助 | fail |
+| =awk= / =sed= / =grep= / =tr= | wrapper 内の設定・transport text 処理 | fail |
+| =cp= / =rm= / =mkdir= / =chmod= / =readlink= | snapshot 同期、transport 初期化、install 状態確認 | fail |
+| X11 =DISPLAY= | native GUI 表示先 | warn |
+| =timeout= / =setsid= | build smoke の補助 | warn |
+| =pgrep= | stale =nelisp= / session cleanup 補助 | warn |
+| =xwininfo= / =xdotool= | visual smoke / 手動診断 | warn |
+
+* 起動入口
+| 入口 | 対話 GUI | batch / script | doctor |
+|------+-----------+----------------+--------|
+| =bin/nemacs= | 常に native GUI を起動 | なし | =bin/nemacs --doctor= |
+| =bin/emacs= | =emacs FILE= を =nemacs= へ委譲 | =--batch= / =--eval= / =--load= / =-l= / =--script= / =-f= は =nelisp-emacs/bin/nemacs --driver=nelisp= へ委譲。=-nw= は =nelisp-emacs= TUI、daemon は =nemacs-server= へ委譲 | =emacs --doctor= |
+| =scripts/install-user-bin.sh= | =~/.local/bin/emacs= / =nemacs= symlink を管理 | なし | =scripts/install-user-bin.sh doctor= |
+
+=bin/emacs= は PATH 先頭に置く互換入口である。対話 GUI 起動は =nemacs= に向け、
+非 GUI の batch/eval/load/script/funcall と =-nw= は sibling =nelisp-emacs= の
+=bin/nemacs --driver=nelisp= に向ける。=--daemon= / =--fg-daemon= は
+=bin/nemacs-server= に向け、=/tmp/nemacs-server/NAME= の UNIX socket で
+real =emacsclient -s ... -e EXPR= round-trip を提供する。
+
+* 環境変数
+| 変数 | default | 読む層 | 用途 |
+|------+---------+--------+------|
+| =NELISP_ROOT= | sibling =../nelisp= など | sync / doctor | =nelisp= checkout を明示 |
+| =NELISP_SNAP= | =/tmp/nelisp-snap= | launcher / build / bridge | =nelisp= executable, =lisp/=, =src/= snapshot |
+| =NEMACS_EMACS_ROOT= | sibling =../nelisp-emacs= | bridge / doctor | =nelisp-emacs= checkout を明示 |
+| =NEMACS_TRANSPORT_DIR= | =/tmp= | launcher / bridge / build | =nemacs-*= transport directory |
+| =NEMACS_BRIDGE_BACKEND= | =session= | bridge | =session= / =nelisp= / =auto= |
+| =NEMACS_BRIDGE_SOURCE= | =nelisp-emacs/src/nemacs-gui-file-bridge-runtime.el= | bridge | runtime image の source |
+| =NEMACS_RUNTIME_IMAGE= | =nelisp-emacs/build/nemacs-gui-file-bridge.nlri= | bridge | compiled runtime image |
+| =NEMACS_SYNC_NELISP= | =0= | launcher / build | =1= なら起動前に snapshot 同期 |
+| =NEMACS_USER_BIN= | =~/.local/bin= | install | symlink install 先 |
+
+* transport dir
+=NEMACS_TRANSPORT_DIR= は =nemacs-mx.sh=、=nelisp-emacs= runtime/session bridge、
+native GUI binary が共有する =nemacs-*= state の置き場である。
+default は =/tmp=。
+
+非 default transport を使う場合、native GUI binary は実行時に環境変数を読まないため、
+=bin/nemacs= が =/tmp/nemacs-win.transport-dir= の marker を見て必要なら
+=nemacs-build.sh= を再実行する。=/tmp/nemacs.cfg= と =/tmp/nemacs-win.bin= は
+現時点では固定 path のままなので、完全な multi-session 分離ではない。
+
+固定 =/tmp/nemacs-*= を使う smoke / stress は、他セッションとの衝突を避けるため逐次実行する。
+transport state の詳細な所有者・stale 動作は
+=docs/design/05-transport-state-contract.org= を参照する。
+
+* bridge backend
+| backend | 動作 | 使いどころ |
+|---------+------|------------|
+| =session= | =nelisp-emacs= runtime image を常駐 session として使う | daily driver default / raw key path の検証 |
+| =nelisp= | command ごとに runtime image を使う。未準備なら失敗 | session と切り分けたい移植確認 |
+| =auto= | session backend を優先し、失敗時は runtime image に落とす。host fallback は使わない | 互換確認 |
+
+未移植 command は host fallback に逃がさず、=nelisp-emacs= 側の command/bridge
+未実装として扱う。
+
+* doctor check
+=scripts/doctor-workspace.sh= は GUI を起動せず、=/tmp/nemacs-*= request state も作らない。
+確認範囲は以下。
+
+| 区分 | 確認内容 | fail / warn |
+|------+----------+-------------|
+| repo | =nelisp= / =nelisp-emacs= sibling checkout または明示 env | fail |
+| command | 起動・build に必要な shell command | fail |
+| optional command | visual smoke / cleanup 補助 command | warn |
+| snapshot | =target/nelisp= と =NELISP_SNAP/nelisp= | warn |
+| runtime source | =nemacs-gui-file-bridge-runtime.el= | warn |
+| backend | =session= / =nelisp= / =auto= 以外を拒否 | fail |
+| transport | directory の作成可能性・書き込み権限・非 default build marker | fail / note |
+| user config | =~/.nemacs.d/early-init.el= / =init.el= | warn |
+| install | =emacs= / =nemacs= symlink と PATH | warn |
+
+日常導線:
+#+begin_src sh
+  dev/nelisp-gui/bin/nemacs --doctor
+  dev/nelisp-gui/scripts/install-user-bin.sh install
+  PATH=$HOME/.local/bin:$PATH emacs --doctor
+#+end_src

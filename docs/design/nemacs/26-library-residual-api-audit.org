@@ -1,0 +1,325 @@
+#+TITLE: nelisp-emacs Doc 26 -- Library residual API audit
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-22
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 24 public API inventory, Doc 25 library consumer contract
+
+* 0. Purpose
+
+This document audits the non-stable rows that remain after the package API
+promotion pass.
+
+The goal is to distinguish real unfinished reusable API work from
+intentional compatibility, loader, and internal implementation surface.
+After the =core/command-loop= promotion, the generated promotion queue has
+no =promote-ready=, =needs-doc=, =needs-test=, =needs-review=,
+=compat-shim-review=, =compat-shim-helper-review=, or
+=validation-helper-review= rows.
+
+This audit is not a new stability contract.  The authoritative stable
+package APIs remain the facade query APIs documented in Doc 25:
+
+#+begin_src emacs-lisp
+(nelisp-emacs-library-stable-api-symbols)
+(nelisp-emacs-library-stable-lazy-api-symbols)
+#+end_src
+
+* 1. Evidence
+
+Generated artifacts as of 2026-06-22:
+
+#+begin_src sh
+make nemacs-library-api-promotion-queue
+make nemacs-library-package-verify
+make nemacs-library-gate
+#+end_src
+
+The current generated evidence is:
+
+| Artifact | Evidence |
+|----------+----------|
+| =build/nemacs-library-api-promotion-queue.org= | rows 1078, =stable-contract= 948, no review queue rows |
+| =build/nemacs-library-package-verify.org= | checks 48, failures 0, stable API symbols 879, stable lazy symbols 67 |
+| =build/nemacs-library-boundary-summary.org= | boundary rows 0 |
+| =build/nemacs-library-package-deps-summary.org= | package dependency rows 78, migration candidates 0 |
+
+The non-stable generated statuses are:
+
+| Status | Count | Decision |
+|--------+-------+----------|
+| =compat-shim-covered= | 45 | covered compatibility globals; not preferred for new reusable integrations |
+| =compat-shim-helper-covered= | 56 | prefixed helpers backing compatibility shims; keep out of stable facade by default |
+| =compat-shim-helper-internal= | 22 | reviewed implementation helpers; not external API |
+| =loader-manifest= | 6 | package membership variables; stable through loader/package manifest behavior, not through the stable symbol list |
+| =validation-helper-internal= | 1 | reviewed guard helper; not external API |
+
+* 2. Decisions
+
+** 2.1 Compatibility globals
+
+=compat-shim-covered= rows are intentional Emacs-compatible names.  They
+may be useful when a consumer wants a compatibility layer, but they are not
+the preferred new integration surface.  New consumers should use prefixed
+stable APIs from the owning package whenever possible.
+
+These rows stay outside the stable package API unless the project decides
+that a specific global name is safe and valuable as a versioned
+compatibility promise.  That decision must include:
+
+- explicit host-Emacs override policy;
+- focused tests for the shim installation path;
+- consumer-facing documentation that says the name is a compatibility
+  global, not the primary prefixed API.
+
+** 2.2 Builtins shim helpers
+
+=compat-shim-helper-covered= rows are prefixed helpers defined inside
+=emacs-*-builtins.el= modules.  Their prefix makes them visible in the
+package API inventory, but their ownership is compatibility support.
+External reusable consumers should not depend on these names directly
+unless a later review promotes a non-shim equivalent or deliberately
+promotes that exact helper into the stable facade manifest.
+
+Preferred future treatment:
+
+- If a helper has broad non-shim reuse value, move or wrap the reusable
+  behavior in the owning library module and promote that non-shim API.
+- If a helper only exists to install or back an unprefixed Emacs builtin,
+  keep it as =compat-shim-helper-covered=.
+- If a helper is only an implementation detail, add it to the reviewed
+  internal list in the promotion queue generator and keep it out of
+  consumer docs.
+
+** 2.3 Reviewed internal helpers
+
+=compat-shim-helper-internal= and =validation-helper-internal= rows were
+reviewed and intentionally left as implementation surface.  They should
+not appear in external examples or consumer package docs.  If a future
+consumer needs one of these behaviors, add a new stable prefixed API at the
+owning package boundary instead of exposing the helper directly.
+
+** 2.4 Loader manifests
+
+=loader-manifest= rows are the =*-features= variables that define group
+loader membership.  They are important for package extraction and smoke
+tests, but they are not stable package API symbols.  Consumers should use
+the facade query APIs:
+
+#+begin_src emacs-lisp
+(nelisp-emacs-library-package-features 'core)
+(nelisp-emacs-library-package-lazy-features 'core)
+#+end_src
+
+The loader variables remain stable indirectly through the package loader
+contract and =make nemacs-library-package-smoke=.
+
+* 3. Package Notes
+
+** 3.1 =nelisp-emacs-foundation=
+
+Residual rows are pure compatibility globals plus the loader manifest:
+=cl-lib-version=, =file-name-sans-extension=, =hash-table-empty-p=,
+=hash-table-keys=, =hash-table-values=, =null=,
+=process-environment=, and =emacs-foundation-features=.
+
+These names emulate host/global Emacs behavior or publish loader
+membership.  The stable reusable surface is already represented by the
+prefixed foundation APIs in Doc 25.
+
+** 3.2 =nelisp-emacs-text-core=
+
+The only residual row is =emacs-text-core-features=.  Text-core has no
+compatibility globals or shim helper residuals after the current promotion
+pass.
+
+** 3.3 =nelisp-emacs-buffer-core=
+
+Buffer-core residuals are one compatibility variable, builtins shim
+helpers for host-like buffer primitives, two reviewed internal helpers,
+one loader manifest, and one validation helper.
+
+Do not promote the =emacs-buffer-builtins-*= helper names directly just
+because they have test evidence.  The stable consumer path is the
+=nelisp-ec-*=, =emacs-buffer-*=, and =text-buffer-*= API already listed in
+Doc 25.  =nelisp-ec-check-live= remains internal validation surface.
+
+** 3.4 =nelisp-emacs-editing=
+
+Editing residuals are all builtins shim helpers.  Some of them calculate
+useful positions or ranges, but the stable external API should stay at the
+direct command/result layer from Doc 23 and Doc 25 unless a consumer needs
+a smaller reusable primitive.
+
+For future promotion, prefer a new non-shim API or an existing
+=emacs-edit-*-direct= function over exposing helper calculators from
+=emacs-edit-builtins.el=.
+
+** 3.5 =nelisp-emacs-io=
+
+IO residuals are one compatibility runtime predicate, fileio builtins
+helpers, internal direct file helpers, and the loader manifest.
+
+The stable IO package contract remains the prefixed process, standalone,
+and =nelisp-ec-*= file/path APIs from Doc 25.  File command wrappers such
+as find/save/write-file remain shim support unless an external package
+needs a frontend-neutral command result API.
+
+** 3.6 =nelisp-emacs-core=
+
+Core residuals are mostly compatibility globals for window/help/info and
+two minibuffer variables.  The only prefixed helper residual is
+=emacs-command-loop-kill-emacs=, which backs the =kill-emacs= shim path and
+should not become a stable library API without a clear application
+shutdown contract.
+
+Use the stable =emacs-window-*=, =emacs-help-*=, =emacs-info-*=,
+=emacs-minibuffer-*=, and =emacs-command-loop-*= APIs for new reusable
+integrations.
+
+** 3.7 =nelisp-emacs-special-buffers=
+
+Residual rows are compatibility globals for scratch, messages, echo area,
+and warnings buffers.  The stable prefixed API already covers the reusable
+special-buffer behavior; the global names remain compatibility surface.
+
+* 4. Residual Symbol Inventory
+
+This section is copied from the generated promotion queue to make the
+review decision visible in versioned docs.  Regenerate with
+=make nemacs-library-api-promotion-queue= before changing these decisions.
+
+** 4.1 =compat-shim-covered=
+
+#+begin_src text
+nelisp-emacs-buffer-core: buffer-invisibility-spec
+nelisp-emacs-core: Info-directory, Info-find-node,
+  Info-goto-emacs-command-node, Info-goto-emacs-key-command-node,
+  Info-goto-node, Info-mode, Info-next, Info-prev, Info-up,
+  delete-other-windows, delete-window, describe-function, describe-key,
+  describe-symbol, describe-symbol-backends, describe-variable,
+  help-go-back, help-go-forward, help-mode, help-mode-map, info,
+  info-display-manual, info-emacs-manual, info-lookup-symbol,
+  info-other-window, minibuffer-completion-confirm,
+  minibuffer-completion-table, other-window, split-window-below,
+  split-window-right, view-order-manuals
+nelisp-emacs-foundation: cl-lib-version, file-name-sans-extension,
+  hash-table-empty-p, hash-table-keys, hash-table-values, null,
+  process-environment
+nelisp-emacs-io: files-standalone-runtime-p
+nelisp-emacs-special-buffers: get-scratch-buffer-create, messages-buffer,
+  scratch-buffer, view-echo-area-messages, warnings-buffer
+#+end_src
+
+** 4.2 =compat-shim-helper-covered=
+
+#+begin_src text
+nelisp-emacs-buffer-core: emacs-buffer-builtins-char-after,
+  emacs-buffer-builtins-char-before,
+  emacs-buffer-builtins-ensure-initial-buffer,
+  emacs-buffer-builtins-following-char, emacs-buffer-builtins-invisible-p,
+  emacs-buffer-builtins-next-property-change,
+  emacs-buffer-builtins-next-single-property-change,
+  emacs-buffer-builtins-preceding-char,
+  emacs-buffer-builtins-previous-property-change,
+  emacs-buffer-builtins-previous-single-property-change,
+  emacs-buffer-builtins-subst-char-in-region
+nelisp-emacs-core: emacs-command-loop-kill-emacs
+nelisp-emacs-editing: emacs-edit-backward-paragraph-position,
+  emacs-edit-backward-sentence-position,
+  emacs-edit-beginning-of-defun-position, emacs-edit-blank-line-at-p,
+  emacs-edit-buffer-line-count, emacs-edit-buffer-row-at-point,
+  emacs-edit-buffer-row-start-position, emacs-edit-char-at,
+  emacs-edit-current-column-in-line, emacs-edit-defun-bounds,
+  emacs-edit-electric-pair-default-close-set,
+  emacs-edit-electric-pair-default-open-pairs,
+  emacs-edit-electric-pair-direct, emacs-edit-fill-paragraph-bounds,
+  emacs-edit-forward-paragraph-position,
+  emacs-edit-forward-sentence-motion-position,
+  emacs-edit-forward-sentence-position, emacs-edit-goto-line-direct,
+  emacs-edit-horizontal-whitespace-bounds-around,
+  emacs-edit-line-bols-in-range, emacs-edit-mark-defun-direct,
+  emacs-edit-mouse-yank-primary-direct,
+  emacs-edit-move-to-buffer-row-direct,
+  emacs-edit-narrow-to-defun-direct, emacs-edit-recenter-scroll-offset,
+  emacs-edit-run-electric-pair-command,
+  emacs-edit-run-mouse-yank-primary-command,
+  emacs-edit-scan-forward-to-char, emacs-edit-scan-sexp-backward,
+  emacs-edit-scan-sexp-forward, emacs-edit-sentence-end-char-p,
+  emacs-edit-sexp-skip-forward-ws, emacs-edit-sexp-symbol-char-p,
+  emacs-edit-trailing-whitespace-ranges,
+  emacs-edit-window-line-target-row, emacs-edit-word-bounds-at,
+  emacs-edit-word-char-p
+nelisp-emacs-io: emacs-fileio-locate-library, emacs-fileio-make-temp-file,
+  emacs-fileio-run-find-file-command, emacs-fileio-run-save-buffer-command,
+  emacs-fileio-run-save-buffers-quit-command,
+  emacs-fileio-run-write-file-command, emacs-fileio-save-buffer-direct
+#+end_src
+
+** 4.3 =compat-shim-helper-internal=
+
+#+begin_src text
+nelisp-emacs-buffer-core: emacs-buffer-builtins-buffer-modified-tick,
+  emacs-line-eol-pos
+nelisp-emacs-editing: emacs-edit-canonicalize-fill-text,
+  emacs-edit-empty-line-at-p, emacs-edit-line-bounds-at,
+  emacs-edit-line-commented-p, emacs-edit-line-start-position-for-number,
+  emacs-edit-mark-paragraph-bounds, emacs-edit-next-line-bol,
+  emacs-edit-overwrite-mode-active-p, emacs-edit-previous-line-bol,
+  emacs-edit-register-point-value-p, emacs-edit-register-put,
+  emacs-edit-sexp-skip-backward-ws, emacs-edit-wrap-fill-text
+nelisp-emacs-io: emacs-fileio-buffer-file-direct,
+  emacs-fileio-buffer-name-for-file, emacs-fileio-file-exists-direct-p,
+  emacs-fileio-make-temp-name, emacs-fileio-read-file-text-direct,
+  emacs-fileio-record-buffer-file, emacs-fileio-visit-file-direct
+#+end_src
+
+** 4.4 =loader-manifest=
+
+#+begin_src text
+nelisp-emacs-buffer-core: emacs-buffer-core-features
+nelisp-emacs-core: emacs-core-features
+nelisp-emacs-editing: emacs-editing-features
+nelisp-emacs-foundation: emacs-foundation-features
+nelisp-emacs-io: emacs-io-features
+nelisp-emacs-text-core: emacs-text-core-features
+#+end_src
+
+** 4.5 =validation-helper-internal=
+
+#+begin_src text
+nelisp-emacs-buffer-core: nelisp-ec-check-live
+#+end_src
+
+* 5. Extraction Implications
+
+The current residual set does not block package extraction by itself.  It
+does define follow-up constraints:
+
+- Package archives should document prefixed stable APIs first and
+  compatibility globals second.
+- =emacs-*-builtins.el= files may remain in the package that owns their
+  underlying behavior, but their helper names should not be advertised as
+  consumer APIs.
+- If a physical package split exposes =emacs-*-builtins.el= files, package
+  README files must explain that they are compatibility layers.
+- Future promotion work should not chase helper counts.  It should start
+  from concrete consumer use cases and promote only the API shape that
+  should be stable.
+
+* 6. Gate Invariant
+
+Libraryization work should keep this invariant:
+
+#+begin_src text
+promotion review queue: empty
+stable API symbols: resolve after requiring nelisp-emacs
+stable lazy API symbols: resolve after requiring their lazy feature
+compat/helper/internal residuals: reviewed and documented
+package verify failures: 0
+library boundary report rows: 0
+package dependency migration candidates: 0
+#+end_src
+
+If any =needs-*=, =*-review=, or =promote-ready= rows reappear, package
+owners should handle those rows before claiming package extraction
+readiness.

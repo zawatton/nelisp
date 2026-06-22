@@ -1,0 +1,107 @@
+#+TITLE: Terminal -nw Practicality Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+=-nw --batch= は通っているが、interactive TUI として Emacs のように使える品質は別問題である。
+
+この設計書は =emacs -nw= 置き換えに必要な端末入力、描画、minibuffer、
+終了、ファイル操作、keymap daily-driver smoke の完了条件を定義する。
+
+* 所有境界
+
+| 対象 | owner |
+|------+-------|
+| command semantics | =nelisp-emacs= |
+| TTY raw mode / escape sequence decode | =nelisp-emacs= TUI frontend |
+| terminal rendering | =nelisp-emacs= TUI frontend |
+| =bin/emacs -nw= routing | =nelisp-gui= compatibility launcher |
+| GUI rendering | 対象外 |
+
+=-nw= は GUI adapter ではなく =nelisp-emacs= frontend として育てる。
+=nelisp-gui/bin/emacs= は入口互換だけを持つ。
+
+* 必須機能
+
+| 領域 | 必須動作 |
+|------+----------|
+| terminal mode | raw/cbreak mode, echo off, restore on exit/crash |
+| input decode | printable, Ctrl, Meta/Alt, arrows, function keys, DEL/TAB/RET/ESC |
+| redisplay | buffer text, point cursor, modeline, minibuffer, line wrapping/truncation |
+| command loop | raw key -> keymap lookup -> command execution -> redisplay |
+| minibuffer | M-x, find-file, completion, C-g, DEL, RET |
+| file | open/save/write/revert/insert/read-only toggle |
+| window | split/delete/other-window/basic scroll |
+| exit | C-x C-c, save-buffers-kill-terminal, terminal restore |
+
+* Input decode
+
+TUI は端末 escape sequence を Emacs key notation に変換する。
+
+| input | key notation |
+|-------+--------------|
+| =\r= / =\n= | =RET= |
+| =\177= | =DEL= |
+| =\t= | =TAB= |
+| =\e x= | =M-x= |
+| =\e[A= | =<up>= |
+| =\e[B= | =<down>= |
+| =\e[C= | =<right>= |
+| =\e[D= | =<left>= |
+| alt + arrow variants | =M-<up/down/left/right>= |
+
+変換後は GUI と同じ =files--dispatch-key-sequence= に渡す。
+
+* Rendering
+
+最初の実用化では termcap/curses に依存しない最低限でよい。
+
+| 表示 | 要件 |
+|------+------|
+| clear/redraw | ANSI CSI で全画面再描画 |
+| cursor | byte point ではなく display cell から row/col 算出 |
+| modeline | 最下部または echo area の上に 1 行 |
+| minibuffer | 最下部 1 行、候補は上部または一時 buffer |
+| CJK | width 2 の display cell として扱う |
+| resize | SIGWINCH または次 command で rows/cols 再読込 |
+
+* Daily-driver smoke
+
+新規 script:
+
+#+begin_src sh
+  dev/nelisp-emacs/scripts/verify-nemacs-tui.sh
+  PATH=dev/nelisp-gui/bin:$PATH dev/nelisp-emacs/scripts/verify-nemacs-tui.sh --via-emacs-wrapper
+#+end_src
+
+検証項目:
+
+| test | 内容 |
+|------+------|
+| launch | pty 上で =emacs -Q -nw FILE= が起動する |
+| edit | =a=, =DEL=, =RET=, CJK backspace が buffer を壊さない |
+| file | =C-x C-s= で保存される |
+| minibuffer | =C-x C-f=, =M-x goto-line=, =C-g= |
+| movement | arrows, C-n/C-p/C-f/C-b, M-<right>/<left> |
+| window | C-x 2, C-x 1, C-x o |
+| exit | C-x C-c 後に terminal mode が戻る |
+
+* 完了条件
+
+| gate | 条件 |
+|------+------|
+| batch | =PATH=... =emacs -Q -nw --batch --eval ...= が終了する |
+| pty smoke | interactive TUI smoke が pty で通る |
+| terminal restore | 異常終了でも echo/canonical mode が戻る |
+| shared semantics | GUI と TUI が同じ =nelisp-emacs= command 実装を使う |
+| no host fallback | =-nw= が host Emacs に委譲されない |
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| terminal restore 失敗で shell が壊れる | trap と pty smoke で stty 状態を検証 |
+| GUI bridge 専用 command と TUI command が分岐 | runtime bridge integration を先行/並行する |
+| 端末ごとの escape sequence 差 | xterm-compatible を baseline にし、TERM 別 table を追加する |
+| CJK width と point のズレ | GUI の CJK/cursor smoke と同じ fixture を TUI に入れる |
+

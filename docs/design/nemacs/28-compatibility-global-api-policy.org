@@ -1,0 +1,95 @@
+#+TITLE: nelisp-emacs Doc 28 -- Compatibility global API policy
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-22
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 24 public API inventory, Doc 25 library consumer contract, Doc 27 package extraction readiness
+
+* 0. Purpose
+
+This document defines how external consumers should interpret stable
+=nelisp-emacs= APIs that use project/library prefixes versus stable APIs
+that intentionally expose Emacs-compatible global names.
+
+The policy is generated and verified by:
+
+#+begin_src sh
+make nemacs-library-compat-api-policy
+#+end_src
+
+It writes:
+
+- =build/nemacs-library-compat-api-policy.tsv=
+- =build/nemacs-library-compat-api-policy.org=
+
+The target reads the facade stable eager and stable lazy API query
+functions, then joins those symbols with the generated public API inventory.
+It verifies the actual consumer-visible stable manifests, not the broader
+advisory API inventory.
+
+* 1. Consumer Rule
+
+Consumers should prefer stable =public-prefixed= symbols for new library
+integrations.  These names carry a project/library prefix such as
+=emacs-=, =nelisp-=, or a package-specific prefix and are the intended
+portable reusable surface.
+
+Stable =compat-global= symbols are also part of the consumer contract when
+they appear in =nelisp-emacs-library-stable-api-symbols= or
+=nelisp-emacs-library-stable-lazy-api-symbols=.  They exist to model or
+replace Emacs global names.  Consumers should use them when Emacs-compatible
+behavior or drop-in naming is the explicit goal, not as the default style for
+new integrations.
+
+Symbols in the generated public API inventory are not stable by themselves.
+A symbol is stable only when the facade stable API query functions return it.
+
+* 2. Stable Lazy Rule
+
+Stable lazy symbols are contract symbols, but they are not available after
+=require 'nelisp-emacs= alone.  Consumers must inspect the stable lazy API
+entry or use the documented package table and require the entry's lazy feature
+before using the symbol.
+
+* 3. Failure Policy
+
+The compatibility policy gate fails if a stable manifest contains:
+
+- a =private-helper= symbol, including names with =--=;
+- an =adapter-or-app= symbol owned by GUI/TUI/app glue;
+- a symbol missing from the generated public API inventory;
+- any unknown API class.
+
+This keeps the stable consumer contract reusable and prevents accidental
+promotion of internal or application-facing names.
+
+* 4. Current Counts
+
+Current generated coverage:
+
+| Class | Count |
+|-------+-------|
+| =public-prefixed= | 935 |
+| =compat-global= | 13 |
+
+Role split:
+
+| Role/Class | Count |
+|------------+-------|
+| =stable-eager/public-prefixed= | 868 |
+| =stable-eager/compat-global= | 11 |
+| =stable-lazy/public-prefixed= | 67 |
+| =stable-lazy/compat-global= | 2 |
+
+Total stable API rows: 948.  Failures: 0.
+
+* 5. Maintenance
+
+When promoting a new stable symbol:
+
+- add it to the facade stable API manifest only after package-owner review,
+  tests, and consumer-facing documentation exist;
+- prefer a prefixed name unless the purpose is compatibility with an Emacs
+  global name;
+- keep private helpers and app/frontend adapters out of stable manifests;
+- update this document only after =make nemacs-library-compat-api-policy=
+  confirms the new counts.

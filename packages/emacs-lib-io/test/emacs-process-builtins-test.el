@@ -66,6 +66,16 @@
       (when before
         (defalias 'emacs-process-builtins-test--probe before)))))
 
+(ert-deftest emacs-process-builtins-test/delegate-public-wrapper-uses-standalone-primitive ()
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq)))
+    (emacs-standalone-register-primitive
+     'emacs-process-builtins-test-delegate
+     (lambda (a b) (+ a b)))
+    (should (= 7 (emacs-process-delegate
+                  'emacs-process-builtins-test-delegate
+                  '(3 4))))))
+
 ;;;; C. call-process — basic stdout capture
 
 (ert-deftest emacs-process-builtins-test/call-process-echo-roundtrip ()

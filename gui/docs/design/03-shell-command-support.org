@@ -1,0 +1,323 @@
+#+TITLE: Shell Command Support Design
+#+DATE: 2026-06-09
+
+* Scope
+
+This memo designs support for the interactive shell command surface used by
+=nelisp-gui= through the sibling =nelisp-emacs= command substrate:
+
+- =M-!= / =shell-command=
+- =M-|= / =shell-command-on-region=
+- =M-&= / =async-shell-command=
+
+It is intentionally a design-only artifact.  Runtime implementation files,
+=nemacs-editor.el=, =nemacs-mx.sh=, and =scripts/verify-nemacs-gui.sh= are out
+of scope for this task.
+
+* Current State
+
+=nelisp-gui= owns input transport and rendering.  It should continue sending
+raw keys and snapshots to =nelisp-emacs=, then render the returned state.  Shell
+command semantics belong to =nelisp-emacs=.
+
+The sibling =nelisp-emacs= checkout already has a thin UI layer:
+
+- =src/emacs-shell-command.el= defines =shell-command=,
+  =shell-command-on-region=, and =async-shell-command=.
+- Synchronous commands call =call-process= / =call-process-region=.
+- Asynchronous commands call =make-process= and attach a sentinel.
+- =src/nemacs-main.el= knows how to load =emacs-shell-command= for =M-x
+  shell-command= and =M-x async-shell-command=.
+
+The same checkout has the bridge layer in =src/emacs-process.el=:
+
+- Host Emacs delegates to host C primitives when available.
+- Standalone NeLisp first checks registered standalone primitives, then tries a
+  loaded =nelisp-process= facade.
+- =call-process= currently degrades to exit code =1= when no standalone process
+  primitive exists.  That is useful for vendor loading, but it is not enough for
+  an interactive daily-driver =M-!=.
+
+The =nelisp= checkout has process pieces in two shapes:
+
+- =packages/nelisp-process/src/nelisp-process.el= exposes a package-level
+  process wrapper with =nelisp-call-process=, =nelisp-call-process-region=,
+  =nelisp-start-process=, =nelisp-accept-process-output=, and process accessors.
+  Its comments describe a host-bridge fallback plus a future/optional syscall
+  path.
+- =lisp/nelisp-stdlib-os.el= contains lower OS wrappers for =fork=, =execve=,
+  =wait=, =dup2=, =pipe=, =fcntl=, =kill=, =open=, =read=, =write=, and
+  =close=.
+- =lisp/nelisp-syscall-table.el= maps Linux syscall names such as =fork=,
+  =wait4=, =dup2=, =kill=, =read=, =write=, =openat=, and =close= to syscall
+  numbers.
+- =syscall-direct= is available in the AOT/runtime path as a raw integer-only
+  syscall primitive.  The GUI editor already uses it for X11, file transport,
+  =fork=, =execve=, and =wait4= style flows.
+
+Important caveat: older =nelisp= design docs mention a Rust
+=nelisp-syscall-process= crate.  A sibling historical checkout still contains
+that crate, but current roadmap docs describe it as optional/orphaned because
+the JIT/AOT =syscall-direct= path can bypass it.  New work should not depend on
+that crate unless the runtime owner explicitly revives it.
+
+* Required Semantics
+
+** =shell-command= / =M-!=
+
+Minimum acceptable behavior:
+
+- Prompt for a command string through the existing minibuffer path.
+- Run =shell-file-name= with =shell-command-switch= and the command, normally
+  =/bin/sh -c COMMAND=.
+- Capture stdout into =*Shell Output*= or the requested output buffer.
+- Return the integer exit status.
+- On non-zero exit, preserve output and surface a concise status message.
+- For the GUI session, returned buffer-list/current-buffer/modeline state must
+  make the output discoverable.
+
+Deferred for MVP:
+
+- Split stderr into a separate error buffer.
+- Full Emacs display-buffer/window selection fidelity.
+- Coding-system conversion beyond raw UTF-8-ish byte/string handling.
+
+** =shell-command-on-region= / =M-|=
+
+Minimum acceptable behavior:
+
+- Send the active region bytes to the command's stdin.
+- Capture stdout into =*Shell Output*=.
+- With replace flag, replace the original region with stdout.
+- Return the integer exit status.
+
+The important primitive difference from plain =shell-command= is stdin.  The
+lowest-risk first implementation can use a temporary file for stdin, then move
+to an actual pipe once pipe/read/write lifecycle is proven.  This matches the
+GTK-side MVP precedent in =nelisp-emacs= where region input was temporarily
+routed through a file to avoid threading a real pipe too early.
+
+** =async-shell-command= / =M-&=
+
+Minimum acceptable behavior:
+
+- Start =/bin/sh -c COMMAND= without blocking the command loop.
+- Return a process object or process-like wrapper.
+- Append output to =*Async Shell Command*=.
+- Allow status/accessors to report running/exited.
+- Eventually run sentinel/filter callbacks from the same event loop used by
+  the command/session bridge.
+
+The async surface should not be implemented first.  It depends on a stable
+process registry and output polling/tick point.  Synchronous =shell-command=
+can close useful user-visible behavior earlier and provides the syscall probes
+needed by async.
+
+As of 2026-06-09, =nelisp-emacs= can bridge =make-process= /
+=start-process= to native =nelisp= process objects when
+=nelisp-process-start-process= is available.  =nelisp= owns pid/fd/status/output;
+=nelisp-emacs= keeps Emacs metadata for name, buffer, command, filter, and
+sentinel and drains output through =accept-process-output=.  If the native
+builtin is absent, =nelisp-emacs= falls back to a vector-backed synchronous
+compatibility object.  The remaining milestone is proving this path in the
+long-running GUI session as genuinely nonblocking.
+
+* Minimal Architecture
+
+The recommended layering is:
+
+| Layer | Owner | Responsibility |
+|-------+-------+----------------|
+| GUI | =nelisp-gui= | Send raw =M-!=, =M-|=, =M-&= keys and render returned buffers/status |
+| Command/UI | =nelisp-emacs/src/emacs-shell-command.el= | Prompting, output buffer choice, replace-region behavior, messages |
+| Emacs process API | =nelisp-emacs/src/emacs-process.el= | =call-process=, =call-process-region=, =make-process= delegation |
+| Process facade | =nelisp/packages/nelisp-process= or standalone primitive registration | Spawn/wait/pipe/process object behavior |
+| Runtime OS | =nelisp= | Generic raw syscalls / pointer and C string marshaling, no Emacs semantics |
+
+Do not add shell command branches to =nelisp-gui=.  The only GUI work expected
+after Layer 2/Layer 1 support exists is key transport coverage and visual smoke.
+
+* Syscall Plan
+
+** Synchronous no-stdin probe
+
+First prove the raw syscall path outside the editor:
+
+1. Allocate C strings for =/bin/sh=, =sh=, =-c=, and a tiny command such as
+   =printf hi=.
+2. Allocate =argv[]= as pointers: =["sh", "-c", COMMAND, NULL]=.
+3. Allocate =envp[]= as =NULL= for the first probe.
+4. =fork=.
+5. Child:
+   - redirect stdout/stderr if needed using =openat= + =dup2=;
+   - =execve("/bin/sh", argv, envp)=;
+   - if =execve= returns, =exit(127)=.
+6. Parent:
+   - =wait4(pid, status-buffer, 0, NULL)=;
+   - decode =WEXITSTATUS= from the status word;
+   - read captured output from the temp file.
+
+This validates =fork=, =execve=, =wait4=, =openat=, =dup2=, =close=, and normal
+status decoding before any buffer integration.
+
+** Synchronous region probe
+
+There are two viable probe shapes.
+
+Temporary-file probe:
+
+- Write region bytes to a temp file.
+- Child opens that file read-only and =dup2='s it to fd 0.
+- Child redirects stdout to another temp file.
+- Parent waits and reads stdout temp file.
+
+This is the recommended first spike because it avoids pipe lifetime bugs while
+still proving =call-process-region= semantics.
+
+Pipe probe:
+
+- Parent creates stdin pipe and stdout pipe.
+- Child =dup2='s stdin read end to fd 0 and stdout write end to fd 1.
+- Parent closes child-side fds, writes all region bytes to stdin write end,
+  closes it, then drains stdout until EOF.
+- Parent waits and decodes status.
+
+This is the right second spike, needed before async output handling.
+
+** Async probe
+
+The minimal async shape is:
+
+1. Spawn =/bin/sh -c COMMAND= with stdout/stderr to a nonblocking pipe or temp
+   output file.
+2. Store a process wrapper with pid, output buffer name, command, status, and
+   fds or output path.
+3. Add a small polling function that:
+   - drains available output into the buffer;
+   - calls =wait4(pid, WNOHANG, ...)=;
+   - marks status and runs sentinel once the child exits.
+4. Call that polling function from the existing session command loop tick before
+   or after request handling.
+
+Do not start with filters/sentinels as arbitrary callback machinery.  First
+deliver buffer append plus status.  Once that is reliable, map it to
+=set-process-filter= and =set-process-sentinel=.
+
+* Integration Plan
+
+1. Add standalone probes in =nelisp= or an isolated =spikes/= area, not in
+   =nelisp-gui= implementation files.
+2. Prove =fork/exec/wait= with stdout redirected to a file.
+3. Prove =/bin/sh -c 'printf hi'= returns status =0= and output =hi=.
+4. Prove =/bin/sh -c false= returns status =1=.
+5. Prove region input through a temp file using =sort=.
+6. Register or expose a standalone primitive implementation for
+   =call-process= and =call-process-region= so =nelisp-emacs/src/emacs-process.el=
+   can use it without changing =emacs-shell-command.el=.
+7. Wire =nelisp-emacs= runtime image preload/session setup to include the
+   shell command/process feature once the primitive path is available.
+8. Add native =nelisp-process-start-process= bridge smoke in =nelisp-emacs=:
+   - =make-process= returns a native =nelisp= process object when the builtin is
+     present.
+   - =accept-process-output= drains =nelisp-process-read-output= into the Emacs
+     buffer/filter and fires the sentinel on exit.
+9. Add process-shaped =make-process= fallback smoke in =nelisp-emacs=:
+   - =make-process= returns a process object without host fallback.
+   - =process-status=, =process-exit-status=, =process-buffer=,
+     =process-name=, =process-command=, =process-list=, sentinel, and
+     =delete-process= are observable.
+10. Add direct command smoke in =nelisp-emacs= first:
+   - =(shell-command "printf hi")= fills =*Shell Output*=.
+   - =(shell-command "false")= returns =1=.
+   - =(shell-command-on-region ... "sort" ... replace)= sorts text.
+11. Add GUI smoke only after the Layer 2 direct smoke passes:
+   - =M-! printf hi= shows the output buffer/status.
+   - =M-| sort= with an active region replaces or captures output.
+   - =M-& sleep 1; printf done= does not block later key handling.
+
+* Implementation Notes
+
+- Prefer the existing =emacs-shell-command.el= UI layer.  Rewriting shell
+  command behavior in =nelisp-gui= would violate the repository boundary.
+- Prefer implementing =call-process= and =call-process-region= before
+  =shell-command= itself.  That also unlocks vendor/package code that already
+  calls process primitives directly.
+- Keep runtime primitives generic: raw syscalls, byte buffers, C string arrays,
+  pid/status/fd values.  Emacs-specific output buffer and region replacement
+  behavior belongs in =nelisp-emacs=.
+- Use =/bin/sh -c= for MVP.  Respecting user-customized =shell-file-name= and
+  =shell-command-switch= is already handled by =emacs-shell-command.el= once
+  the lower =call-process= accepts program/args.
+- Use temp files for the first direct smoke if pipe behavior is not yet stable.
+  Pipes are required for robust async and for better =call-process-region=, but
+  they add fd lifetime and nonblocking-read failure modes.
+- Decode wait status explicitly.  For ordinary exits on Linux, exit code is
+  =(status >> 8) & 0xff= when the low signal bits are zero.  Signal exits can
+  initially return the raw status or a negative/sentinel code, but document the
+  choice before exposing it through =process-exit-status=.
+- Environment can start as =envp = NULL=.  Follow-up should pass
+  =process-environment= plus inherited essentials such as =PATH=, because
+  shell commands without =PATH= are much less useful.
+
+* Risks
+
+- =packages/nelisp-process= currently describes both host bridge and syscall
+  substrate paths.  Before implementation, confirm which path the standalone
+  runtime image actually loads and whether =nelisp-sys--ensure-os= /
+  =nelisp-sys-*= aliases are present there.
+- Raw =execve= requires stable C string and pointer-array allocation through the
+  child syscall boundary.  A probe must validate this before touching
+  =emacs-process.el=.
+- Pipe-based =call-process-region= can deadlock if the parent writes stdin
+  before draining a large stdout.  MVP temp-file routing avoids that; pipe
+  routing should use nonblocking fds or a drain/write loop.
+- Async output needs a tick source in the runtime session.  Without that,
+  =async-shell-command= can spawn but output and sentinels will not be observed
+  until another command happens to poll.
+- GUI visual smoke may fail for display reasons even after command semantics
+  are correct.  Keep direct Layer 2 smokes as the primary correctness gate.
+
+* Recommended First Spike
+
+Create a standalone =fork_exec_wait_file= probe that runs:
+
+#+begin_src text
+/bin/sh -c 'printf hi'
+#+end_src
+
+Expected result:
+
+- parent receives a child pid from =fork=;
+- child exits via =execve= replacement;
+- =wait4= returns that pid;
+- decoded exit status is =0=;
+- captured stdout file contains =hi=.
+
+Second probe:
+
+#+begin_src text
+/bin/sh -c 'false'
+#+end_src
+
+Expected result: decoded exit status =1=.
+
+Third probe:
+
+#+begin_src text
+stdin: "b\na\n"
+command: /bin/sh -c 'sort'
+stdout: "a\nb\n"
+#+end_src
+
+Use temp files first.  Only after these pass should implementation move into
+the =call-process= / =call-process-region= delegate path.
+
+* Conclusion
+
+The shortest path to useful shell command support is not a GUI change.  The
+repo should keep =nelisp-gui= as transport/rendering, reuse
+=nelisp-emacs/src/emacs-shell-command.el= for interactive behavior, and fill
+the missing standalone =call-process= / =call-process-region= / =make-process=
+substrate below =src/emacs-process.el=.  Synchronous =M-!= should ship first,
+=M-|= second via temp-file stdin, and =M-&= third after process polling is
+integrated with the runtime session loop.

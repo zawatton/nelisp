@@ -181,6 +181,41 @@
       (should (member '(:state "/tmp/fixture.info" "First") calls))
       (should (member "Emacs Command: find-file" titles)))))
 
+(ert-deftest emacs-info-run-current-context-command-uses-frontend-hooks ()
+  (emacs-info-test--with-fresh-world
+    (let ((prompts nil)
+          (calls nil)
+          (installed nil))
+      (cl-letf (((symbol-function 'emacs-info-gui-current-context-command)
+                 (lambda (command &optional action)
+                   (push (list command action emacs-info-gui-arg) calls)
+                   "*info*")))
+        (should
+         (equal
+          "*info*"
+          (emacs-info-run-current-context-command
+           'info
+           :install-function (lambda () (setq installed t))
+           :read-string (lambda (prompt)
+                          (push prompt prompts)
+                          "/tmp/fixture.info")
+           :prompt "Info file: ")))
+        (should installed)
+        (should (equal '("Info file: ") prompts))
+        (should (member '(info "same" "/tmp/fixture.info") calls))
+        (setq emacs-info-gui-arg "kept")
+        (should
+         (equal
+          "*info*"
+          (emacs-info-run-current-context-command 'Info-next)))
+        (should (member '(Info-next "same" "kept") calls))
+        (should-not
+         (emacs-info-run-current-context-command
+          'info
+          :read-string (lambda (_prompt) "")
+          :prompt "Info file: "))
+        (should (= 2 (length calls)))))))
+
 (ert-deftest emacs-info-gui-navigation-uses-current-header ()
   (emacs-info-test--with-fresh-world
     (let ((header "File: fixture.info,  Node: Top,  Next: First,  Up: (dir)")
@@ -377,6 +412,108 @@
       (setq calls nil)
       (should-not (emacs-info-gui-writeback-state 'describe-function))
       (should-not calls))))
+
+(ert-deftest emacs-info-gui-needs-review-direct-commands ()
+  (emacs-info-test--with-fresh-world
+    (let ((titles nil)
+          (header "File: fixture.info,  Node: First,  Prev: Top,  Up: Top"))
+      (emacs-info-gui-register-backend
+       :read-file
+       (lambda (_path)
+         emacs-info-test--fixture)
+       :show-info-buffer
+       (lambda (title _body)
+         (push title titles)
+         "*info*")
+       :buffer-name
+       (lambda ()
+         "*info*")
+       :current-header
+       (lambda ()
+         header))
+      (emacs-info-gui-set-context :buffer-name "*info*"
+                                  :file "/tmp/fixture.info"
+                                  :node "First")
+      (should (equal "*info*" (emacs-info-gui-up)))
+      (should (equal "Top" emacs-info-gui-node))
+      (should (equal "*info*" (emacs-info-gui-emacs-manual)))
+      (should (equal "*info*" (emacs-info-gui-view-order-manuals)))
+      (should (member "Emacs Manual" titles))
+      (should (member "Ordering GNU Manuals" titles)))))
+
+(ert-deftest emacs-info-gui-needs-review-current-context-wrappers ()
+  (emacs-info-test--with-fresh-world
+    (let ((arg "/tmp/fixture.info")
+          (header "File: fixture.info,  Node: Top,  Next: First,  Up: (dir)")
+          (titles nil)
+          (calls nil))
+      (emacs-info-gui-register-backend
+       :current-arg (lambda () arg)
+       :current-status (lambda () "ok")
+       :buffer-name (lambda () "*info*")
+       :current-file (lambda () emacs-info-gui-file)
+       :current-node (lambda () emacs-info-gui-node)
+       :file-exists-p
+       (lambda (path)
+         (equal path "/tmp/fixture.info"))
+       :read-file
+       (lambda (_path)
+         emacs-info-test--fixture)
+       :show-info-buffer
+       (lambda (title _body)
+         (push title titles)
+         "*info*")
+       :current-header
+       (lambda ()
+         header)
+       :write-state
+       (lambda (file node)
+         (push (list :state file node) calls))
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (should (equal "*info*"
+                     (emacs-info-gui-info-current-context-command
+                      "other")))
+      (should (equal "Top" emacs-info-gui-node))
+      (should (equal "*info*"
+                     (emacs-info-gui-next-current-context-command)))
+      (should (equal "First" emacs-info-gui-node))
+      (setq header
+            "File: fixture.info,  Node: First,  Next: Second,  Prev: Top,  Up: Top")
+      (should (equal "*info*"
+                     (emacs-info-gui-prev-current-context-command)))
+      (should (equal "Top" emacs-info-gui-node))
+      (setq emacs-info-gui-node "First")
+      (should (equal "*info*"
+                     (emacs-info-gui-up-current-context-command)))
+      (should (equal "Top" emacs-info-gui-node))
+      (setq arg "elisp")
+      (should (equal "*info*"
+                     (emacs-info-gui-emacs-manual-current-context-command)))
+      (should (equal "*info*"
+                     (emacs-info-gui-display-manual-current-context-command)))
+      (should (equal "*info*"
+                     (emacs-info-gui-view-order-manuals-current-context-command)))
+      (setq arg "find-file")
+      (should (equal
+               "*info*"
+               (emacs-info-gui-goto-emacs-command-node-current-context-command)))
+      (setq arg "C-x C-f")
+      (should
+       (equal
+        "*info*"
+        (emacs-info-gui-goto-emacs-key-command-node-current-context-command)))
+      (setq arg "message")
+      (should (equal "*info*"
+                     (emacs-info-gui-lookup-symbol-current-context-command)))
+      (should (member '(:display "other") calls))
+      (should (member "Emacs Manual" titles))
+      (should (member "Info Manual: elisp" titles))
+      (should (member "Ordering GNU Manuals" titles))
+      (should (member "Emacs Command: find-file" titles))
+      (should (member "Emacs Key: C-x C-f" titles))
+      (should (member "Info Lookup Symbol: message" titles)))))
 
 (provide 'emacs-info-test)
 

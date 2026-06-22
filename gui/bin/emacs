@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+set -e
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+GUI_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+NEMACS_EMACS_ROOT=${NEMACS_EMACS_ROOT:-$GUI_ROOT/../nelisp-emacs}
+NEMACS_EMACS_BIN=${NEMACS_EMACS_BIN:-$NEMACS_EMACS_ROOT/bin/nemacs}
+NEMACS_SERVER_BIN=${NEMACS_SERVER_BIN:-$NEMACS_EMACS_ROOT/bin/nemacs-server}
+NEMACS_SERVER_DIR=${NEMACS_SERVER_DIR:-/tmp/nemacs-server}
+NELISP_ROOT=${NELISP_ROOT:-$GUI_ROOT/../nelisp}
+NELISP_SNAP=${NELISP_SNAP:-/tmp/nelisp-snap}
+NELISP=${NELISP:-$NELISP_SNAP/nelisp}
+
+check_nelisp() {
+  if [ ! -x "$NELISP" ]; then
+    echo "emacs: nelisp runtime not found at $NELISP; run scripts/sync-nelisp-snap.sh" >&2
+    exit 127
+  fi
+}
+
+check_nelisp_emacs() {
+  if [ ! -x "$NEMACS_EMACS_BIN" ]; then
+    echo "emacs: nelisp-emacs launcher not found at $NEMACS_EMACS_BIN" >&2
+    exit 127
+  fi
+  check_nelisp
+}
+
+run_nelisp_emacs() {
+  check_nelisp_emacs
+  NEMACS_DRIVER=nelisp \
+  NEMACS_NELISP="$NELISP" \
+  NELISP_HOME="$NELISP_ROOT" \
+  exec "$NEMACS_EMACS_BIN" --driver=nelisp "$@"
+}
+
+run_nelisp_batch_direct() {
+  check_nelisp
+  local tmp rc arg
+  tmp=$(mktemp "${TMPDIR:-/tmp}/nemacs-emacs-batch.XXXXXX.el")
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    case "$arg" in
+      --no-banner|--batch)
+        shift
+        ;;
+      --eval)
+        if [ "$#" -lt 2 ]; then
+          echo "emacs: --eval requires an expression" >&2
+          rm -f "$tmp"
+          exit 2
+        fi
+        printf '%s\n' "$2" >>"$tmp"
+        shift 2
+        ;;
+      --eval=*)
+        printf '%s\n' "${arg#--eval=}" >>"$tmp"
+        shift
+        ;;
+      -l|--load)
+        if [ "$#" -lt 2 ]; then
+          echo "emacs: $arg requires a file" >&2
+          rm -f "$tmp"
+          exit 2
+        fi
+        printf '(load "%s")\n' "$(lisp_string_body "$2")" >>"$tmp"
+        shift 2
+        ;;
+      --load=*)
+        printf '(load "%s")\n' "$(lisp_string_body "${arg#--load=}")" >>"$tmp"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  printf ',quit\n' >>"$tmp"
+  set +e
+  "$NELISP" --repl --no-prompt --no-print <"$tmp"
+  rc=$?
+  set -e
+  rm -f "$tmp"
+  exit "$rc"
+}
+
+check_nemacs_server() {
+  if [ ! -x "$NEMACS_SERVER_BIN" ]; then
+    echo "emacs: nemacs server launcher not found at $NEMACS_SERVER_BIN" >&2
+    exit 127
+  fi
+  check_nelisp
+}
+
+run_daemon_foreground() {
+  check_nemacs_server
+  local name="$1"
+  NELISP="$NELISP" exec "$NEMACS_SERVER_BIN" "$name" "$NEMACS_SERVER_DIR"
+}
+
+run_daemon_background() {
+  check_nemacs_server
+  local name="$1"
+  local log="${TMPDIR:-/tmp}/nemacs-server-${name}.log"
+  local sock="$NEMACS_SERVER_DIR/$name"
+  mkdir -p "$NEMACS_SERVER_DIR"
+  if [ -e "$sock" ]; then
+    echo "emacs: nemacs daemon '$name' already has a socket at $sock" >&2
+    exit 1
+  fi
+  if command -v setsid >/dev/null 2>&1; then
+    NELISP="$NELISP" setsid "$NEMACS_SERVER_BIN" "$name" "$NEMACS_SERVER_DIR" >"$log" 2>&1 < /dev/null &
+  else
+    NELISP="$NELISP" "$NEMACS_SERVER_BIN" "$name" "$NEMACS_SERVER_DIR" >"$log" 2>&1 < /dev/null &
+  fi
+  local pid=$!
+  local i=0
+  while [ "$i" -lt 300 ]; do
+    if [ -S "$sock" ] || [ -e "$sock" ]; then
+      echo "emacs: nemacs daemon '$name' listening on $sock"
+      exit 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "emacs: nemacs daemon '$name' failed; see $log" >&2
+      exit 1
+    fi
+    i=$((i + 1))
+    sleep 0.2
+  done
+  echo "emacs: nemacs daemon '$name' did not create $sock; see $log" >&2
+  exit 1
+}
+
+lisp_string_body() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\n'/\\n}
+  printf '%s' "$s"
+}
+
+funcall_form() {
+  printf '(funcall (intern "%s"))' "$(lisp_string_body "$1")"
+}
+
+find_file_form() {
+  printf '(find-file "%s")' "$(lisp_string_body "$1")"
+}
+
+find_file_goto_form() {
+  local file="$1"
+  local pos="$2"
+  local line="${pos%%:*}"
+  local col="1"
+  if [ "$pos" != "$line" ]; then
+    col="${pos#*:}"
+  fi
+  case "$line" in ''|*[!0-9]*) line=1 ;; esac
+  case "$col" in ''|*[!0-9]*) col=1 ;; esac
+  printf '(progn (find-file "%s") (goto-char (point-min)) (forward-line %s) (forward-char %s))' \
+    "$(lisp_string_body "$file")" "$((line - 1))" "$((col - 1))"
+}
+
+files=()
+batch_args=("--no-banner")
+pending_arg=0
+goto_arg=""
+batch=0
+tui=0
+command_forms=0
+daemon_mode=""
+daemon_name="nemacs"
+while [ "$#" -gt 0 ]; do
+  if [ "$pending_arg" = 1 ]; then
+    pending_arg=0
+    shift
+    continue
+  fi
+
+  case "$1" in
+    --version)
+      echo "nemacs (nelisp-gui) native GUI"
+      exit 0
+      ;;
+    --help)
+      cat <<'EOF'
+Usage: emacs [OPTION...] [FILE]
+
+nelisp-gui compatibility launcher.
+
+Supported options:
+  -Q, -q, --quick, --no-init-file   accepted for command-line compatibility
+  +LINE[:COL]                       open at line/column
+  --eval EXPR, --load FILE, -l FILE evaluated by nelisp-emacs/nelisp
+  --script FILE                     loaded by nelisp-emacs/nelisp
+  --batch                           run command-line forms and exit
+  -nw, --no-window-system           run the nelisp-emacs terminal UI
+  -f FUNCTION, --funcall FUNCTION   call FUNCTION in batch/TUI startup
+  --daemon[=NAME]                   start the nemacs emacsclient server
+  --fg-daemon[=NAME]                run the nemacs emacsclient server foreground
+  --doctor                          check nemacs launch/install prerequisites
+  --version                         print version
+  --help                            print this help
+
+Unsupported GUI options are ignored for now.
+EOF
+      exit 0
+      ;;
+    --doctor)
+      exec "$SCRIPT_DIR/../scripts/doctor-workspace.sh"
+      ;;
+    -Q|-q|--quick|--no-init-file|--no-banner)
+      shift
+      ;;
+    --batch)
+      batch=1
+      shift
+      ;;
+    --eval|--execute)
+      command_forms=1
+      if [ "$#" -lt 2 ]; then
+        echo "emacs: $1 requires an expression" >&2
+        exit 2
+      fi
+      batch_args+=("--eval" "$2")
+      shift 2
+      ;;
+    --eval=*|--execute=*)
+      command_forms=1
+      batch_args+=("--eval" "${1#*=}")
+      shift
+      ;;
+    -l|--load)
+      command_forms=1
+      if [ "$#" -lt 2 ]; then
+        echo "emacs: $1 requires a file" >&2
+        exit 2
+      fi
+      batch_args+=("-l" "$2")
+      shift 2
+      ;;
+    --load=*)
+      command_forms=1
+      batch_args+=("-l" "${1#*=}")
+      shift
+      ;;
+    --script=*)
+      batch=1
+      command_forms=1
+      batch_args+=("-l" "${1#*=}")
+      shift
+      ;;
+    --script)
+      batch=1
+      command_forms=1
+      if [ "$#" -lt 2 ]; then
+        echo "emacs: --script requires a file" >&2
+        exit 2
+      fi
+      batch_args+=("-l" "$2")
+      shift 2
+      ;;
+    -nw|--no-window-system)
+      tui=1
+      shift
+      ;;
+    -f|--funcall)
+      command_forms=1
+      if [ "$#" -lt 2 ]; then
+        echo "emacs: $1 requires a function name" >&2
+        exit 2
+      fi
+      batch_args+=("--eval" "$(funcall_form "$2")")
+      shift 2
+      ;;
+    --daemon)
+      daemon_mode="background"
+      shift
+      ;;
+    --daemon=*)
+      daemon_mode="background"
+      daemon_name="${1#--daemon=}"
+      if [ -z "$daemon_name" ]; then daemon_name="nemacs"; fi
+      shift
+      ;;
+    --fg-daemon)
+      daemon_mode="foreground"
+      shift
+      ;;
+    --fg-daemon=*)
+      daemon_mode="foreground"
+      daemon_name="${1#--fg-daemon=}"
+      if [ -z "$daemon_name" ]; then daemon_name="nemacs"; fi
+      shift
+      ;;
+    +[0-9]*)
+      goto_arg="${1#+}"
+      shift
+      ;;
+    --name|--title|--geometry|--font|--fg|--foreground-color|--bg|--background-color)
+      pending_arg=1
+      shift
+      ;;
+    --name=*|--title=*|--geometry=*|--font=*|--fg=*|--foreground-color=*|--bg=*|--background-color=*)
+      shift
+      ;;
+    --)
+      shift
+      while [ "$#" -gt 0 ]; do
+        files+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      files+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -n "$daemon_mode" ]; then
+  case "$daemon_name" in
+    */*|"")
+      echo "emacs: invalid daemon name '$daemon_name'" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$daemon_mode" = "foreground" ]; then
+    run_daemon_foreground "$daemon_name"
+  fi
+  run_daemon_background "$daemon_name"
+fi
+
+if [ "$tui" = 1 ] && [ "$batch" = 0 ]; then
+  if [ "${#files[@]}" -gt 0 ]; then
+    if [ "$goto_arg" ]; then
+      batch_args+=("--eval" "$(find_file_goto_form "${files[0]}" "$goto_arg")")
+      for f in "${files[@]:1}"; do
+        batch_args+=("--eval" "$(find_file_form "$f")")
+      done
+    else
+      for f in "${files[@]}"; do
+        batch_args+=("--eval" "$(find_file_form "$f")")
+      done
+    fi
+  fi
+  run_nelisp_emacs "${batch_args[@]}"
+fi
+
+if [ "$batch" = 1 ] || [ "$command_forms" = 1 ]; then
+  if [ "$command_forms" = 0 ]; then
+    exit 0
+  fi
+  run_nelisp_batch_direct --batch "${batch_args[@]}"
+fi
+
+if [ "${#files[@]}" -gt 0 ]; then
+  if [ "$goto_arg" ]; then
+    exec "$SCRIPT_DIR/nemacs" --goto "$goto_arg" "${files[0]}"
+  fi
+  exec "$SCRIPT_DIR/nemacs" "${files[0]}"
+fi
+
+exec "$SCRIPT_DIR/nemacs"

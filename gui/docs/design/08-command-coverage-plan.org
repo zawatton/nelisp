@@ -1,0 +1,129 @@
+#+TITLE: Command Coverage Completion Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+Emacs 置き換えで最初に潰すべき面は「キーが GUI に届くか」ではなく、
+=nelisp-emacs= が Emacs と同じ command を lookup / execute できるかである。
+
+この設計書は =make nemacs-gui-keymap-coverage= 系の結果を使い、
+=missing= / =command-missing= / =different= を継続的に減らすための作業単位、
+完了条件、検証方法を固定する。
+
+* 所有境界
+
+| 対象 | owner | 理由 |
+|------+-------+------|
+| global/local/minor keymap lookup | =nelisp-emacs= | Emacs command loop の意味論 |
+| command 実装と buffer/point/window/file 状態更新 | =nelisp-emacs= | command の結果そのもの |
+| raw key sequence 生成 | =nelisp-gui= | X11 event adapter |
+| GUI smoke | =nelisp-gui= | returned state が描けるかを見る |
+| coverage report | =nelisp-emacs= | host Emacs の keymap と runtime keymap の差分 |
+
+=nelisp-gui= に未実装 command の簡易実装を増やさない。
+GUI 側でやるのは raw key transport と再描画 smoke だけにする。
+
+* Coverage 分類
+
+| 分類 | 意味 | 対応 |
+|------+------|------|
+| =missing= | host Emacs には key binding があるが runtime keymap にない | runtime keymap に同じ key を追加する |
+| =command-missing= | keymap にはあるが command 関数が runtime にない | =nelisp-emacs= に command 実装または明示 facade を追加する |
+| =different= | 同じ key が別 command に解決される | host Emacs に寄せる。互換 alias の場合も test で同等性を証明する |
+| =unsupported= | bridge/runtime が command を拒否した | command dispatch または status handling を直す |
+
+* 優先順位
+
+置き換え品質に直結する順で進める。
+
+| 優先 | 領域 | 代表 command / key |
+|------+------|--------------------|
+| P0 | 基本編集 / minibuffer / file | =C-x C-f=, =C-x C-s=, =M-x=, =C-g=, =RET=, =DEL= |
+| P0 | Help | =C-h f=, =C-h v=, =C-h k=, =C-h b=, =C-h m= |
+| P1 | Dired | =dired=, =dired-jump=, mark/unmark/delete/rename |
+| P1 | Info | =info=, =info-emacs-manual=, next/prev/up/search |
+| P1 | shell/process | =M-!=, =M-|=, =M-&=, =compile=, =grep= |
+| P1 | Project / VC | =project-find-file=, =project-switch-project=, =vc-dir=, diff/log/status |
+| P2 | package/customize | package load/list/install facade, customize save/load |
+| P2 | macro/register/bookmark | kmacro ring, registers, bookmarks |
+
+* 作業手順
+
+1. =nelisp-emacs= で coverage を生成する。
+
+   #+begin_src sh
+     make -C dev/nelisp-emacs nemacs-gui-keymap-coverage
+   #+end_src
+
+2. report を family 単位に分ける。
+
+   - basic-edit
+   - file-buffer
+   - help-info
+   - dired
+   - shell-process
+   - project-vc
+   - package-custom
+   - window-tab-frame
+
+3. family ごとに =missing= を先に潰す。
+
+   keymap がない状態では GUI smoke の失敗理由が曖昧になる。
+   先に host Emacs と同名 command へ lookup される状態を作る。
+
+4. =command-missing= を command 実装または明示 facade で潰す。
+
+   facade は以下の tier を必ず明記する。
+
+   | tier | 意味 |
+   |------+------|
+   | real | Emacs と同等の状態更新を実装済み |
+   | semantic-noop | 状態更新しないこと自体が互換上許容される |
+   | buffer-output | 完全ではないが Help/Info/List buffer など観測可能な buffer を返す |
+   | placeholder | coverage を緑にするためだけの仮実装。daily-driver 対象にしない |
+
+5. =different= を host Emacs に寄せる。
+
+   互換 alias の場合は、keymap 名だけを合わせるか、
+   alias command の同等性 test を追加する。
+
+6. direct runtime test を先に追加する。
+
+   GUI test より先に =nelisp-emacs/test/nemacs-gui-file-bridge-runtime-test.el=
+   で buffer/point/window/file 状態を検証する。
+
+7. 最後に GUI session smoke を追加する。
+
+   =nelisp-gui= の smoke は「raw key -> bridge -> returned state -> render」を見る。
+
+* 完了条件
+
+| gate | command |
+|------+---------|
+| coverage | 対象 family の =missing= / =command-missing= / =different= が 0 |
+| direct runtime | =make -C dev/nelisp-emacs test-nemacs-gui-bridge NELISP_BIN=/tmp/nelisp-snap/nelisp= |
+| GUI smoke | =dev/nelisp-gui/scripts/verify-nemacs-gui.sh= |
+| Xvfb visual | 対象が GUI interaction を含む場合 =dev/nelisp-gui/scripts/verify-gui-xvfb.sh= |
+| fallback | host Emacs runtime fallback を使っていない |
+
+* Report 保存
+
+coverage report は単発ログとして流さず、family 別の差分を追える形にする。
+
+推奨 artifact:
+
+| path | 内容 |
+|------+------|
+| =dev/nelisp-emacs/build/nemacs-gui-keymap-coverage.tsv= | raw coverage |
+| =dev/nelisp-emacs/build/nemacs-gui-keymap-coverage-summary.org= | family 別 summary |
+| =dev/nelisp-emacs/docs/worklog/YYYY-MM-DD-command-coverage.org= | 作業日の判断と残件 |
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| keymap だけ埋めて command が placeholder のまま daily-driver に混ざる | tier を report に出し、placeholder は P0/P1 完了条件から除外する |
+| GUI smoke で command 意味論を修正し始める | 失敗時に owner を判定し、意味論は =nelisp-emacs= test へ戻す |
+| Help/Dired/Info の buffer 表示を GUI 側で作る | 表示 buffer は =nelisp-emacs= が生成し、GUI は描画だけにする |
+| local/minor map が global map coverage から漏れる | mode ごとの local-map coverage を別 gate に追加する |
+

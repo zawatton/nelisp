@@ -476,6 +476,31 @@ ACTION is nil/same or `other' for display variants."
    (t nil)))
 
 ;;;###autoload
+(defun emacs-info-run-current-context-command (command &rest plist)
+  "Run frontend Info COMMAND through the shared current-context core.
+PLIST accepts `:install-function', `:read-string', `:prompt', and
+`:action'.  When `:prompt' is present, the helper reads an argument and
+stores it in `emacs-info-gui-arg' before dispatching.  A nil or empty
+prompt result cancels the command."
+  (let ((install-function (plist-get plist :install-function))
+        (read-string (plist-get plist :read-string))
+        (prompt (plist-get plist :prompt))
+        (action (or (plist-get plist :action) "same"))
+        (run t))
+    (when install-function
+      (funcall install-function))
+    (cond
+     (prompt
+      (let ((value (and read-string (funcall read-string prompt))))
+        (if (and value (> (length value) 0))
+            (setq emacs-info-gui-arg value)
+          (setq run nil))))
+     ((eq command 'info)
+      (setq emacs-info-gui-arg "")))
+    (when run
+      (emacs-info-gui-current-context-command command action))))
+
+;;;###autoload
 (defun emacs-info-gui-writeback-spec (&optional command)
   "Return GUI transport writeback spec for Info COMMAND.
 This describes Emacs-compatible Info buffer results; the bridge remains

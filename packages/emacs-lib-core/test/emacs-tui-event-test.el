@@ -66,6 +66,13 @@
     (should (eq 'up (plist-get ev :name)))
     (should (null (plist-get ev :modifiers)))))
 
+(ert-deftest emacs-tui-event-test-control-char-name-public-wrapper ()
+  "Public control-byte naming exposes the TUI parser aliases."
+  (should (eq 'tab (emacs-tui-event-control-char-name ?\C-i)))
+  (should (eq 'return (emacs-tui-event-control-char-name ?\C-m)))
+  (should (eq 'backspace (emacs-tui-event-control-char-name 127)))
+  (should-not (emacs-tui-event-control-char-name ?a)))
+
 ;;; C. parse byte stream
 
 (ert-deftest emacs-tui-event-test-parse-printable-ascii ()
@@ -388,6 +395,23 @@
     (setq emacs-tui-event--terminal-sigcont-p t)
     (should (terminal-take-sigcont))
     (should-not (terminal-take-sigcont))))
+
+(ert-deftest emacs-tui-event-test-log-enabled-records-parser-ops ()
+  "When enabled, parser operation logging writes to the lazy log buffer."
+  (let ((emacs-tui-event-log-enabled t))
+    (when (get-buffer "*emacs-tui-event-log*")
+      (kill-buffer "*emacs-tui-event-log*"))
+    (unwind-protect
+        (let ((h (emacs-tui-event-init)))
+          (emacs-tui-event-feed-bytes h "x")
+          (emacs-tui-event-poll h)
+          (with-current-buffer "*emacs-tui-event-log*"
+            (let ((log (buffer-string)))
+              (should (string-match-p "init handle=" log))
+              (should (string-match-p "feed-bytes handle=" log))
+              (should (string-match-p "event-poll handle=" log)))))
+      (when (get-buffer "*emacs-tui-event-log*")
+        (kill-buffer "*emacs-tui-event-log*")))))
 
 ;;; H. cross-cutting
 

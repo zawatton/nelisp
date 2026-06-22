@@ -83,6 +83,87 @@
     (describe-symbol 'emacs-help-test--sample-variable)
     (should (string-match-p "is a variable" (emacs-help-test--help-string)))))
 
+(ert-deftest emacs-help-describe-function-text-renders-definition ()
+  (let ((text (emacs-help-describe-function-text
+               'emacs-help-test--sample-function)))
+    (should (stringp text))
+    (should (string-match-p
+             "emacs-help-test--sample-function is "
+             text))
+    (should (string-match-p "function\\|closure" text))
+    (should-not (emacs-help-describe-function-text
+                 'emacs-help-test--missing-function))))
+
+(ert-deftest emacs-help-describe-variable-text-renders-value ()
+  (let ((text (emacs-help-describe-variable-text
+               'emacs-help-test--sample-variable)))
+    (should (stringp text))
+    (should (string-match-p
+             "emacs-help-test--sample-variable is a variable\\."
+             text))
+    (should (string-match-p "Value: (alpha beta)" text)))
+  (makunbound 'emacs-help-test--temporary-unbound)
+  (should-not (emacs-help-describe-variable-text
+               'emacs-help-test--temporary-unbound)))
+
+(ert-deftest emacs-help-prefix-candidates-sorts-prefix-matches ()
+  (should (equal '("find-file" "find-function")
+                 (emacs-help-prefix-candidates
+                  "find" '("save-buffer" "find-function" "find-file")))))
+
+(ert-deftest emacs-help-apropos-text-renders-sorted-matches ()
+  (let* ((result (emacs-help-apropos-text
+                  "file" '("save-buffer" "find-function" "find-file")))
+         (matches (plist-get result :matches))
+         (text (plist-get result :text)))
+    (should (equal '("find-file") matches))
+    (should (string-match-p "Apropos: file" text))
+    (should (string-match-p "1 matches:" text))
+    (should (string-match-p "  find-file" text))))
+
+(ert-deftest emacs-help-key-vector-description-renders-events ()
+  (should (equal "C-x C-f"
+                 (emacs-help-key-vector-description [24 6])))
+  (should (equal "escape x"
+                 (emacs-help-key-vector-description [escape ?x]))))
+
+(ert-deftest emacs-help-key-binding-summary-renders-binding-kinds ()
+  (should (equal "C-x is unbound"
+                 (emacs-help-key-binding-summary [24] nil)))
+  (should (equal "C-x runs find-file"
+                 (emacs-help-key-binding-summary [24] 'find-file)))
+  (should (equal "C-x (prefix)"
+                 (emacs-help-key-binding-summary
+                  [24] :prefix (lambda (binding) (eq binding :prefix)))))
+  (should (equal "C-x runs (:custom binding)"
+                 (emacs-help-key-binding-summary
+                  [24] '(:custom binding)))))
+
+(ert-deftest emacs-help-key-lookup-summary-resolves-through-callback ()
+  (let ((calls nil))
+    (should (equal "C-x C-f runs find-file"
+                   (emacs-help-key-lookup-summary
+                    [24 6]
+                    (lambda (vector)
+                      (push vector calls)
+                      'find-file))))
+    (should (equal [[24 6]] (vconcat (nreverse calls)))))
+  (should (equal "C-x (prefix)"
+                 (emacs-help-key-lookup-summary
+                  [24]
+                  (lambda (_vector) :prefix)
+                  (lambda (binding) (eq binding :prefix)))))
+  (should (equal "C-x is unbound"
+                 (emacs-help-key-lookup-summary
+                  [24] (lambda (_vector) nil)))))
+
+(ert-deftest emacs-help-key-event-description-renders-keysym-and-modifiers ()
+  (should (equal "Left mods=4 'a'"
+                 (emacs-help-key-event-description
+                  #xff51 4 ?a '((#xff51 . "Left")))))
+  (should (equal "key#123 mods=0"
+                 (emacs-help-key-event-description 123 0 0))))
+
 (ert-deftest help-mode-history-commands-report-unavailable ()
   (emacs-help-test--with-fresh-world
     (should-error (help-go-back) :type 'user-error)
@@ -180,6 +261,14 @@
     (should emacs-help-gui-buffer-read-only-p)
     (should (equal "single" emacs-help-gui-window-layout))))
 
+(ert-deftest emacs-help-gui-standard-keymap-source ()
+  (should (string-match-p
+           "C-x C-f\tfind-file"
+           (emacs-help-gui-standard-keymap-source)))
+  (should (equal "C-c n\tnote-open\n"
+                 (emacs-help-gui-standard-keymap-source
+                  '(("C-c n" . "note-open"))))))
+
 (ert-deftest emacs-help-gui-key-lookup-uses-backend ()
   (emacs-help-test--with-fresh-world
     (let (lookup)
@@ -274,6 +363,83 @@
                          (equal "Package: files" (car entry)))
                        shown)))))
 
+(ert-deftest emacs-help-gui-prompt-commands-read-through-backend ()
+  (emacs-help-test--with-fresh-world
+    (let ((inputs '("forward-char" "buffer-file-name" "find" "doc"))
+          (prompts nil)
+          (shown nil))
+      (emacs-help-gui-register-backend
+       :read-symbol-name
+       (lambda (prompt)
+         (push prompt prompts)
+         (pop inputs))
+       :current-arg (lambda () emacs-help-gui-arg)
+       :current-file-name (lambda () "/tmp/current.txt")
+       :buffer-name (lambda () "notes")
+       :buffer-read-only-p (lambda () nil)
+       :window-layout (lambda () "single")
+       :keymap-source (lambda () "")
+       :user-keymap-source (lambda () "")
+       :minibuffer-keymap-source (lambda () "")
+       :current-status (lambda () "ok")
+       :show-help-buffer
+       (lambda (title body)
+         (push (list title body) shown)
+         "*Help*"))
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-function-prompt-command)))
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-variable-prompt-command)))
+      (should (equal "*Help*"
+                     (emacs-help-gui-apropos-command-prompt-command)))
+      (should (equal "*Help*"
+                     (emacs-help-gui-apropos-documentation-prompt-command)))
+      (should (member "Describe function: " prompts))
+      (should (member "Describe variable: " prompts))
+      (should (member "Apropos command: " prompts))
+      (should (member "Apropos documentation: " prompts))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "forward-char is a function"
+                                         (cadr entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "buffer-file-name is a variable"
+                                         (cadr entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "Pattern: find" (cadr entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "Pattern: doc" (cadr entry)))
+                       shown)))))
+
+(ert-deftest emacs-help-gui-prompt-command-supports-async-reader ()
+  (emacs-help-test--with-fresh-world
+    (let (prompt shown)
+      (emacs-help-gui-register-backend
+       :read-symbol-name-async
+       (lambda (given-prompt callback)
+         (setq prompt given-prompt)
+         (funcall callback "forward-char"))
+       :current-arg (lambda () emacs-help-gui-arg)
+       :current-file-name (lambda () "")
+       :buffer-name (lambda () "notes")
+       :buffer-read-only-p (lambda () nil)
+       :window-layout (lambda () "single")
+       :keymap-source (lambda () "")
+       :user-keymap-source (lambda () "")
+       :minibuffer-keymap-source (lambda () "")
+       :current-status (lambda () "ok")
+       :show-help-buffer
+       (lambda (title body)
+         (setq shown (list title body))
+         "*Help*"))
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-function-prompt-command)))
+      (should (equal "Describe function: " prompt))
+      (should (equal "forward-char" (car shown)))
+      (should (string-match-p "forward-char is a function" (cadr shown))))))
+
 (ert-deftest emacs-help-gui-show-help-buffer-wrapper ()
   (emacs-help-test--with-fresh-world
     (let (shown)
@@ -304,6 +470,53 @@
       (should (string-match-p "C-x C-f runs the command find-file" (cadr shown)))
       (should (equal "*Help*" (emacs-help-gui-describe-bindings)))
       (should (string-match-p "C-x C-s[ \t]+save-buffer" (cadr shown))))))
+
+(ert-deftest emacs-help-gui-run-key-help-command-uses-frontend-hooks ()
+  (emacs-help-test--with-fresh-world
+    (let ((installed nil)
+          (read-timeout nil)
+          (calls nil))
+      (cl-letf (((symbol-function 'emacs-help-gui-current-context-command)
+                 (lambda (command &optional _static-command)
+                   (push (list command emacs-help-gui-arg) calls)
+                   "*Help*")))
+        (should
+         (equal
+          "*Help*"
+          (emacs-help-gui-run-key-help-command
+           :install-function (lambda () (setq installed t))
+           :read-key (lambda (timeout)
+                       (setq read-timeout timeout)
+                       6)
+           :key-description (lambda (event)
+                              (if (= event 6) "C-f" "unknown")))))
+        (should installed)
+        (should (= 1000 read-timeout))
+        (should (member '(describe-key "C-f") calls))))))
+
+(ert-deftest emacs-help-gui-deferred-key-help-plans-pending-and-summary ()
+  (let (pending status calls)
+    (should (equal '(:pending t :message "Describe key (press a key)...")
+                   (emacs-help-gui-begin-key-help-command
+                    :pending-function (lambda (value)
+                                        (setq pending value))
+                    :status-function (lambda (message)
+                                       (setq status message)))))
+    (should pending)
+    (should (equal "Describe key (press a key)..." status))
+    (should (equal '(:pending nil :message "C-f runs forward-char")
+                   (emacs-help-gui-consume-key-help-event
+                    :vector [6]
+                    :lookup-function (lambda (vector)
+                                       (push vector calls)
+                                       'forward-char)
+                    :pending-function (lambda (value)
+                                        (setq pending value))
+                    :status-function (lambda (message)
+                                       (setq status message)))))
+    (should-not pending)
+    (should (equal "C-f runs forward-char" status))
+    (should (equal [[6]] (vconcat (nreverse calls))))))
 
 (ert-deftest emacs-help-gui-keymap-cores-return-title-body ()
   (emacs-help-test--with-fresh-world
@@ -417,6 +630,150 @@
       (should (eq #'describe-function (lookup-key map (kbd "C-h f"))))
       (should (eq #'describe-variable (lookup-key map (kbd "C-h v"))))
       (should (eq #'describe-key (lookup-key map (kbd "C-h k")))))))
+
+(ert-deftest emacs-help-needs-review-data-surfaces ()
+  (emacs-help-test--with-fresh-world
+    (setq emacs-help-gui-backend nil
+          emacs-help-gui-keymap-source ""
+          emacs-help-gui-user-keymap-source ""
+          emacs-help-gui-minibuffer-keymap-source ""
+          emacs-help-gui-status "ok")
+    (should-not emacs-help-gui-backend)
+    (should (assoc "C-x C-f"
+                   emacs-help-gui-standard-keymap-source-bindings))
+    (emacs-help-gui-register-backend
+     :current-status (lambda () "ready"))
+    (should (plist-get emacs-help-gui-backend :current-status))
+    (emacs-help-gui-set-context
+     :keymap-source "C-x C-f\tfind-file\n"
+     :user-keymap-source "C-c n\tnote-open\n"
+     :minibuffer-keymap-source "RET\texit-minibuffer\n"
+     :status "pending")
+    (should (equal "C-x C-f\tfind-file\n"
+                   emacs-help-gui-keymap-source))
+    (should (equal "C-c n\tnote-open\n"
+                   emacs-help-gui-user-keymap-source))
+    (should (equal "RET\texit-minibuffer\n"
+                   emacs-help-gui-minibuffer-keymap-source))
+    (should (equal "pending" emacs-help-gui-status))))
+
+(ert-deftest emacs-help-needs-review-small-helpers ()
+  (should (equal '("Find-File" "save-buffer")
+                 (emacs-help-apropos-matches
+                  "F" '("save-buffer" "Find-File" "kill-line"))))
+  (emacs-help-test--with-fresh-world
+    (let (shown)
+      (emacs-help-gui-register-backend
+       :show-help-buffer
+       (lambda (title body)
+         (setq shown (list title body))
+         "*Help*"))
+      (emacs-help-gui-set-context
+       :arg "C-x C-f"
+       :keymap-source "C-x C-f\tfind-file\n"
+       :minibuffer-keymap-source "RET\texit-minibuffer\n")
+      (should (equal "*Help*" (emacs-help-gui-describe-key-briefly)))
+      (should (equal "C-x C-f" (car shown)))
+      (should (string-match-p "runs the command find-file" (cadr shown)))
+      (emacs-help-gui-set-context :arg "sample-symbol")
+      (should (equal "*Help*" (emacs-help-gui-describe-symbol)))
+      (should (equal "Describe Symbol" (car shown)))
+      (should (string-match-p "sample-symbol is a symbol" (cadr shown))))))
+
+(ert-deftest emacs-help-needs-review-current-context-wrappers ()
+  (emacs-help-test--with-fresh-world
+    (let (shown
+          (arg "forward-char"))
+      (emacs-help-gui-register-backend
+       :current-arg (lambda () arg)
+       :current-file-name (lambda () "/tmp/current.txt")
+       :buffer-name (lambda () "notes")
+       :buffer-read-only-p (lambda () nil)
+       :window-layout (lambda () "single")
+       :keymap-source
+       (lambda () "C-x C-f\tfind-file\nC-x C-s\tsave-buffer\n")
+       :user-keymap-source (lambda () "C-c n\tnote-open\n")
+       :minibuffer-keymap-source (lambda () "RET\texit-minibuffer\n")
+       :current-status (lambda () "ok")
+       :apropos-command-names
+       (lambda () '("find-file" "save-buffer" "write-file"))
+       :show-help-buffer
+       (lambda (title body)
+         (push (list title body) shown)
+         "*Help*"))
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-function-current-context-command)))
+      (setq arg "buffer-file-name")
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-variable-current-context-command)))
+      (setq arg "C-x C-f")
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-key-current-context-command)))
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-key-briefly-current-context-command)))
+      (should (equal "*Help*"
+                     (emacs-help-gui-help-for-help-current-context-command)))
+      (setq arg "note-open")
+      (should (equal "*Help*"
+                     (emacs-help-gui-where-is-current-context-command)))
+      (setq arg "forward-char")
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-command-current-context-command)))
+      (setq arg "files")
+      (should (equal "*Help*"
+                     (emacs-help-gui-describe-package-current-context-command)))
+      (should (equal "*Help*"
+                     (emacs-help-gui-static-current-context-command
+                      'about-emacs)))
+      (setq arg "file")
+      (should (equal "*Help*"
+                     (emacs-help-gui-apropos-command-current-context-command)))
+      (setq arg "doc")
+      (should (equal
+               "*Help*"
+               (emacs-help-gui-apropos-documentation-current-context-command)))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "forward-char is a function"
+                                         (cadr entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "Value: /tmp/current.txt"
+                                         (cadr entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (string-match-p
+                          "C-x C-f runs the command find-file"
+                          (cadr entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (equal "About GNU Emacs" (car entry)))
+                       shown))
+      (should (cl-some (lambda (entry)
+                         (string-match-p "find-file" (cadr entry)))
+                       shown)))))
+
+(ert-deftest emacs-help-needs-review-window-commands ()
+  (emacs-help-test--with-fresh-world
+    (describe-function 'emacs-help-test--sample-function)
+    (let ((quit-called nil))
+      (cl-letf (((symbol-function 'quit-window)
+                 (lambda (&rest _args)
+                   (setq quit-called t)
+                   :quit)))
+        (should (eq :quit (emacs-help-quit-window)))
+        (should quit-called))))
+  (emacs-help-test--with-fresh-world
+    (let ((calls 0))
+      (cl-letf (((symbol-function 'documentation)
+                 (lambda (_symbol &optional _raw)
+                   (setq calls (1+ calls))
+                   (format "render %d" calls))))
+        (describe-function 'emacs-help-test--sample-function)
+        (with-current-buffer emacs-help--buffer-name
+          (emacs-help-revert-buffer))
+        (should (= 2 calls))
+        (should (string-match-p "render 2"
+                                (emacs-help-test--help-string)))))))
 
 (provide 'emacs-help-test)
 

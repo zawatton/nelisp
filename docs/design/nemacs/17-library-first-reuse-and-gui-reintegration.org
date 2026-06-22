@@ -1,0 +1,1030 @@
+#+TITLE: nelisp-emacs Doc 17 -- Library-first reuse strategy and nelisp-gui reintegration
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-21
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 01 architecture, Doc 09 layer boundary, Doc 12 development gates, Doc 15 staged execution, Doc 16 package breadth playbook
+
+* 0. Purpose
+
+This document changes the project framing from "a runnable Emacs
+replacement first" to *reusable pure-Elisp Emacs-core libraries first*.
+
+The original goal remains: run an Emacs-like editor on the NeLisp runtime
+by replacing large parts of Emacs's C core with Elisp.  The next value
+step is broader: make those C-core replacement libraries useful to other
+projects before the full editor is complete.
+
+Therefore, the project should temporarily optimize for:
+
+1. stable library boundaries,
+2. host-Emacs / NeLisp / standalone portability,
+3. adapter separation,
+4. package-level tests and documentation,
+5. reintegrating =nelisp-gui= under this tree while the shared library
+   contracts mature.
+
+Only after the library surface is stable should the GUI be split out
+again as an external consumer.
+
+* 1. Decision
+
+Adopt a *library-first monorepo phase*.
+
+During this phase, =nelisp-emacs= owns the reusable Emacs-core Elisp
+libraries, the =nemacs= application assembly, and the GUI adapter code
+that consumes those libraries.  =nelisp-gui= should be brought back under
+this repository as a workspace component, not because GUI belongs forever
+inside this repo, but because cross-repository boundaries are still too
+expensive while the library APIs are moving.
+
+The desired final shape is:
+
+#+begin_src text
+nelisp-emacs/
+  packages/
+    foundation/        reusable pure Elisp primitives
+    buffer/            buffer, point, text properties, editing substrate
+    editor-core/       window, frame, keymap, command-loop, minibuffer
+    io/                file, process, shell, network, sqlite adapters
+    display/           redisplay model, TUI backend, event parser
+    gui-adapter/       GUI transport adapters consuming editor-core
+  apps/
+    nemacs/            runnable editor assembly
+  src/                 current source location during migration
+  test/                current tests, gradually grouped by package
+#+end_src
+
+Physical movement into =packages/= is optional at first.  Logical package
+boundaries and dependency rules are mandatory before large file moves.
+
+* 2. Goals
+
+** 2.1 Reuse goals
+
+- Other Elisp projects can depend on a subset such as foundation,
+  buffer, or command-loop without pulling in TUI / GUI / =nemacs-main=.
+- Host Emacs can load the reusable libraries without replacing host C
+  primitives unless an explicit compatibility shim is requested.
+- NeLisp can load the same libraries in standalone mode, with runtime
+  adapters filling the missing primitive layer.
+- Libraries expose prefixed APIs first.  Unprefixed Emacs-compatible
+  names are installed by explicit shim modules.
+- Tests prove package behavior independently from the full editor app.
+
+** 2.2 Project goals
+
+- Make =nelisp-emacs= valuable even before it is a full Emacs
+  replacement.
+- Turn current C-core replacement work into reusable artifacts.
+- Reduce duplicate behavior in GUI/TUI bridges by forcing adapters to
+  consume the same shared runtime modules.
+- Make future repository split mechanical: the GUI split should become a
+  consumer extraction, not a behavioral rewrite.
+
+* 3. Non-goals
+
+- Do not immediately move every file into a package directory.
+- Do not publish unstable APIs as if they were final.
+- Do not let =nemacs-main.el= or GUI bridge code become the owner of
+  command semantics.
+- Do not make the host-Emacs compatibility shim the only API.  The
+  prefixed library API must remain usable without global namespace
+  takeover.
+- Do not add new NeLisp runtime primitives merely to make extraction
+  easier.  Missing substrate should be documented and adapter-gated.
+
+* 4. Library taxonomy
+
+** 4.1 Foundation
+
+Pure Elisp primitives and compatibility helpers with minimal global editor
+state.
+
+Current candidates:
+
+- =emacs-fns.el=
+- =emacs-list.el=
+- =emacs-string.el=
+- =emacs-symbol.el=
+- =emacs-hash.el=
+- =emacs-numeric.el=
+- =emacs-error.el=
+- =emacs-backquote.el=
+- =emacs-pcase.el=
+- =emacs-cl-macros.el=
+- =emacs-time.el=
+- =emacs-subr-extras.el=
+- =seq.el=, =map.el=, =subr-x.el=, =cl-lib.el= shims
+
+Extraction rule: these modules should not depend on buffer/window/frame,
+TUI, GUI, =nemacs-main=, or process state.
+
+** 4.2 Buffer and editing substrate
+
+Reusable editor data model: buffers, point, text properties, basic edit
+operations, line/search/edit builtins, and undo records.
+
+Current candidates:
+
+- =nelisp-emacs-compat.el=
+- =nelisp-text-buffer.el=
+- =emacs-buffer.el=
+- =emacs-buffer-builtins.el=
+- =emacs-line-builtins.el=
+- =emacs-search-builtins.el=
+- =emacs-edit-builtins.el=
+- =emacs-undo.el= / =emacs-undo-builtins.el=
+
+Extraction rule: buffer semantics belong here, not in GUI/TUI adapters.
+
+** 4.3 Editor core
+
+Emacs command semantics above the buffer model.
+
+Current candidates:
+
+- =emacs-window.el= / =emacs-window-builtins.el=
+- =emacs-frame.el= / =emacs-frame-builtins.el=
+- =emacs-keymap.el= / =emacs-keymap-builtins.el=
+- =emacs-command-loop.el= / =emacs-command-loop-builtins.el=
+- =emacs-minibuffer.el= / =emacs-minibuffer-builtins.el=
+- =emacs-mode.el= / =emacs-mode-builtins.el=
+- =emacs-faces.el= / =emacs-faces-builtins.el=
+- =emacs-help.el=, =emacs-info.el=
+
+Extraction rule: this layer may depend on foundation and buffer, but not
+on a concrete GUI/TUI transport.
+
+** 4.4 IO and runtime adapters
+
+Boundary modules that abstract host Emacs, NeLisp, standalone, file,
+process, network, sqlite, and shell behavior.
+
+Current candidates:
+
+- =emacs-fileio.el= / =emacs-fileio-builtins.el=
+- =emacs-callproc.el=
+- =emacs-process.el= / =emacs-process-builtins.el=
+- =emacs-shell-command.el=
+- =emacs-network-ffi.el=
+- =emacs-sqlite.el= / =emacs-sqlite-ffi.el=
+- =emacs-standalone.el=
+- =nemacs-runtime-*.el=
+
+Extraction rule: adapters may be runtime-specific, but reusable libraries
+must not silently require a specific adapter.
+
+** 4.5 Display libraries
+
+Display model and terminal backend.
+
+Current candidates:
+
+- =emacs-redisplay-core.el=
+- =emacs-redisplay.el=
+- =emacs-redisplay-builtins.el=
+- =emacs-tui-backend.el=
+- =emacs-tui-event.el=
+- =emacs-tui-terminfo.el=
+
+Extraction rule: redisplay should expose a reusable render model.  TUI is
+one backend.  GUI should consume the same render/editor state instead of
+forking command behavior.
+
+** 4.6 Application assembly
+
+The runnable editor application.
+
+Current candidates:
+
+- =nemacs-loadup.el=
+- =emacs-init.el=
+- =nemacs-main.el=
+- =bin/nemacs=
+- bootstrap / runtime image scripts
+
+Extraction rule: application files compose libraries and adapters.  They
+should not become the primary implementation location for reusable Emacs
+semantics.
+
+* 5. nelisp-gui reintegration
+
+** 5.1 Rationale
+
+Keeping =nelisp-gui= outside while core APIs are still shifting creates
+friction:
+
+- behavior fixes must be coordinated across repositories,
+- GUI may grow bridge-local copies of command semantics,
+- library contracts are harder to validate against a real consumer,
+- refactors are delayed because the downstream breakage is hidden.
+
+Temporarily reintegrating GUI code makes the GUI a first-class consumer
+test for the reusable libraries.  The goal is not to make GUI code a
+permanent dependency of the core; the goal is to harden the core by
+keeping a demanding consumer nearby.
+
+** 5.2 Placement
+
+Preferred temporary placement:
+
+#+begin_src text
+gui/
+  README.org
+  src/
+  test/
+  scripts/
+#+end_src
+
+The =gui/= tree must depend inward on library packages.  Library packages
+must not depend outward on =gui/=.
+
+** 5.3 Reintegration rules
+
+- GUI may own display protocol, window-system resources, raw input
+  decoding, transport setup, and painting.
+- GUI must not own buffer mutation semantics, command dispatch, keymap
+  lookup, minibuffer completion, undo, kill-ring, file command semantics,
+  or window layout decisions.
+- If GUI needs a behavior that is currently missing in shared runtime,
+  implement it in the shared library first, then call it from GUI.
+- GUI-local fallback code must be tracked as deletion candidates.
+
+** 5.4 Re-split criteria
+
+Split GUI out again only when all are true:
+
+1. GUI consumes published package APIs, not private file internals.
+2. The shared library package tests pass without GUI.
+3. GUI tests pass as a downstream consumer.
+4. Bridge-local semantic fallbacks are zero or explicitly documented.
+5. Package dependency graph is documented and enforced in CI.
+6. =AGENTS.md= and =CLAUDE.md= rules are satisfied for at least one full
+   release cycle.
+
+* 6. API policy
+
+** 6.1 Public API classes
+
+| Class | Naming | Stability | Consumer |
+|-------+--------+-----------+----------|
+| Library public | prefixed, e.g. =emacs-buffer-*= / =nelisp-ec-*= | target stable | external projects |
+| Compatibility shim | unprefixed, e.g. =current-buffer= | explicit opt-in | Emacs-compatible packages |
+| Shim helper | prefixed helper in =emacs-*-builtins.el= | compatibility implementation detail unless facade-promoted | shim modules |
+| Validation helper | prefixed guard helper, e.g. =*-check-live= | internal unless facade-promoted | package internals |
+| Adapter API | =*-backend= / =*-gui= / =*-tui= | backend-specific | app/adapters |
+| Internal | =--= names | unstable | same module only |
+
+** 6.2 Shim rule
+
+Host-Emacs global names must be installed only by explicit shim modules or
+by carefully gated compatibility files.  A reusable library should prefer
+prefixed functions and data structures so another project can load it
+without changing global Emacs behavior.
+
+Prefixed helpers defined inside =emacs-*-builtins.el= are shim helpers by
+default, even though their names look public.  They may appear in the
+generated package API inventory, but they should not be treated as stable
+consumer APIs unless they are explicitly added to the facade stable API
+manifest.  Prefer the owning substrate API, such as =nelisp-ec-*= or
+=emacs-buffer-*=, for new reusable integrations.
+
+Prefixed validation helpers such as =*-check-live= are internal guard
+surface by default.  Promote them only when an external consumer needs the
+guard behavior itself, not merely because package internals call it.
+
+** 6.3 Internal dependency rule
+
+External consumers must never rely on =--= functions.  During the
+library-first phase, any cross-module use of =--= functions should be
+treated as a design smell and either promoted to a public prefixed helper
+or localized.
+
+* 7. Dependency rules
+
+Allowed direction:
+
+#+begin_src text
+foundation
+  -> buffer/edit
+  -> editor-core
+  -> display model
+  -> adapters
+  -> apps/gui/tui
+#+end_src
+
+Forbidden direction:
+
+- foundation -> buffer/window/frame/process/display
+- buffer -> GUI/TUI application code
+- editor-core -> concrete GUI transport
+- display model -> =nemacs-main= shortcuts
+- reusable package -> =apps/nemacs= or =gui/=
+
+* 8. Test strategy
+
+Each package group needs a small, fast gate:
+
+| Group | Minimal gate |
+|-------+--------------|
+| foundation | pure host ERT + NeLisp reader smoke when substrate-sensitive |
+| buffer/edit | host ERT around buffer workflows + standalone smoke |
+| editor-core | focused keymap/minibuffer/command-loop/window tests |
+| IO adapters | host/standalone split tests; no silent no-op success |
+| display | redisplay core unit tests + backend smoke |
+| GUI | consumer tests proving no duplicate command semantics |
+| app | =make verify-nemacs-daily-driver= and completion gate |
+
+The existing =make test-fast= remains the default development gate.  The
+goal is to grow package-selective gates underneath it, not replace it.
+
+* 9. Migration plan
+
+** Phase L0 -- Document and enforce rules
+
+- Add this design doc.
+- Add root =AGENTS.md= and =CLAUDE.md= so Codex / Claude both follow the
+  library-first policy.
+- Treat new app-local semantics as review findings.
+
+** Phase L1 -- Logical package map
+
+- Add a package map document or table generated from =emacs-init.el=.
+- Mark each =src/*.el= file with one group: foundation, buffer,
+  editor-core, IO, display, adapter, app, vendor shim, or legacy.
+- Do not move files yet.
+
+** Phase L2 -- API audit
+
+- For each package group, list public prefixed functions and accidental
+  cross-module private calls.
+- Promote only the helpers needed by real consumers.
+- Keep unprefixed Emacs compatibility installs in shim modules.
+
+** Phase L3 -- Adapter cleanup
+
+- Move command semantics out of =nemacs-main.el=, GUI bridge, and TUI
+  shortcuts into shared runtime modules.
+- Keep adapter files thin: translate input/output, call shared behavior,
+  render returned state.
+
+** Phase L4 -- Reintegrate GUI
+
+- Import =nelisp-gui= under =gui/=.
+- Wire it as a consumer of shared runtime modules.
+- Add inventory gates for GUI-local semantic fallbacks.
+
+** Phase L5 -- Package layout
+
+- Once logical boundaries hold, optionally move files into =packages/=.
+- Add package descriptors / generated load files.
+- Keep compatibility aliases for old require names during transition.
+
+** Phase L6 -- Consumer validation
+
+- Build small example consumers:
+  - buffer library only,
+  - command-loop/minibuffer only,
+  - redisplay/TUI only,
+  - GUI consumer.
+- Validate that each does not pull in =nemacs-main=.
+
+** Phase L7 -- Re-split GUI and publish
+
+- Split GUI out only after §5.4 criteria are met.
+- Publish reusable package artifacts first; publish applications as
+  consumers.
+
+* 10. Review checklist
+
+Every non-trivial change should answer:
+
+1. Which package group owns this behavior?
+2. Is the API prefixed and reusable?
+3. Does it require host Emacs, NeLisp, or a specific adapter?
+4. Did this add command semantics to an app or GUI file?
+5. Is there a focused package-level test?
+6. Does =make test-fast= still represent the right first gate?
+7. If GUI/TUI was touched, is fallback behavior tracked for deletion?
+
+* 11. Success criteria
+
+The library-first phase is succeeding when:
+
+- a new project can load foundation + buffer without loading =nemacs-main=,
+- command-loop/minibuffer can be exercised independently,
+- GUI and TUI call the same shared command semantics,
+- unprefixed compatibility shims are opt-in,
+- public APIs are documented by package group,
+- package tests catch regressions before full app gates,
+- extracting GUI again would mostly change repository layout, not behavior.
+
+* 12. Immediate next actions
+
+1. Create root =AGENTS.md= and =CLAUDE.md= with this policy.
+2. Move the current =nelisp-gui= working tree under =gui/= as the first
+   monorepo consumer import.
+3. Add a package ownership table for all =src/*.el= files.
+4. Use anvil call-graph clustering before major refactors to identify
+   blast radius and accidental coupling.
+5. Start adapter cleanup with the current hotspots:
+   =nemacs-main.el= direct shortcuts, =nemacs-gtk-frontend.el= command
+   behavior, and =*-gui.el= backend-call clusters.
+6. Continue =nelisp-gui= reintegration as a workspace import under =gui/=,
+   with no inward dependency from reusable libraries.
+
+* 13. Decision log
+
+- 2026-06-21: Initial =nelisp-gui= workspace import completed.  The
+  sibling checkout from branch =feat/org-roam-lite-indexer= at HEAD
+  =8ff3450= was copied under =gui/= without its nested =.git= directory.
+  The original independent repository was moved to
+  =../nelisp-gui.pre-monorepo-backup= to preserve its local git history.
+- 2026-06-21: Doc 18 package ownership inventory added as the first
+  logical package map.  It assigns current =src/*.el= files to ownership
+  groups without moving files, so parallel sessions can use the same
+  placement rules without taking rename conflicts.
+- 2026-06-21: Added the advisory =make nemacs-library-boundary-report=
+  target.  It reads Doc 18 and reports cross-owner private helper use,
+  likely app/gui semantic definitions, and =emacs-init.el= package group
+  dependencies without failing the build.
+- 2026-06-22: Reduced the advisory boundary report to =rows=0= and added
+  =make nemacs-library-gate=.  The gate byte-compiles reusable sources
+  except vendored load-proof files, verifies the public =nelisp-emacs=
+  facade, requires boundary rows to stay at zero, and runs dirty review
+  classification.
+- 2026-06-22: Promoted the public facade membership to the
+  =nelisp-emacs-library-features= manifest.  The library gate now verifies
+  that requiring =nelisp-emacs= provides those reusable groups without
+  loading app/bootstrap, concrete TUI/GUI frontends, or editor-heavy lazy
+  features.
+- 2026-06-22: Added =make nemacs-public-api-inventory= and Doc 24.  The
+  generated inventory reads Doc 18 ownership groups and classifies
+  top-level definitions into =public-prefixed=, =compat-global=,
+  =private-helper=, and =adapter-or-app= so package extraction can review
+  a current API surface instead of relying on a stale hand-written list.
+- 2026-06-22: Added explicit package group loader manifests for FND, BUF,
+  IO, and CORE: =emacs-foundation-features=,
+  =emacs-buffer-core-features=, =emacs-io-features=, and
+  =emacs-core-features=.  The facade test verifies that each listed
+  feature is provided after requiring =nelisp-emacs=.
+- 2026-06-22: Added =emacs-text-core= to the facade package manifest as
+  =text-core= for TXT regex/coding substrates and made
+  =nelisp-text-buffer=, =nelisp-emacs-compat=, and =emacs-buffer=
+  explicit =emacs-buffer-core-features= members.  This converts the top
+  shared migration queue candidates into explicit package membership or
+  manifest package dependencies.
+- 2026-06-22: Split BUF editing/undo membership out of =core= into the
+  new =editing= facade package.  =emacs-core= now explicitly requires
+  =emacs-buffer-core= and =emacs-editing= as package dependencies, while
+  =emacs-core-features= lists CORE-owned members only.
+- 2026-06-22: Moved =nelisp-emacs-compat-fileio= into =emacs-io-features=
+  and =subr-x= into =emacs-foundation-features=.  The package dependency
+  migration queue now has zero =cross-owner-hidden-dependency= and zero
+  =shared-utility-candidate= rows; remaining rows are same-owner package
+  membership cleanup candidates.
+- 2026-06-22: Finished eager package membership cleanup for the remaining
+  same-owner rows by naming =emacs-stub-bulk=, =emacs-char-table=,
+  =files-runtime=, =emacs-process=, and CORE implementation features in
+  their package manifests.  =make nemacs-library-package-deps= now reports
+  zero migration queue candidates.  Nested optional/data dependencies are
+  declared as lazy package companions; undeclared lazy reusable edges remain
+  visible as =lazy-unmanifested-reusable=.
+- 2026-06-22: Strengthened the facade test so reusable manifests must be
+  non-empty, duplicate-free, resolvable through =locate-library=, and free
+  of app/bootstrap, concrete TUI/GUI, and lazy editor features.
+- 2026-06-22: Added =make nemacs-ownership-coverage= to verify that Doc 18
+  covers every =src/= and =gui/= Elisp file at file level, not only files
+  with public definitions.  =make nemacs-library-gate= now fails on
+  =unowned= or =stale= ownership rows.
+- 2026-06-22: Added the top-level reusable package manifest API:
+  =nelisp-emacs-library-packages= and
+  =nelisp-emacs-library-package-manifest=.  Consumers can now inspect
+  package group owner, facade feature, eager member features, and lazy
+  companion features after requiring =nelisp-emacs=.
+- 2026-06-22: Added package manifest query helpers:
+  =nelisp-emacs-library-package-names=,
+  =nelisp-emacs-library-package=,
+  =nelisp-emacs-library-package-features=, and
+  =nelisp-emacs-library-package-lazy-features=.  They return copied data
+  so external callers can inspect package membership without mutating the
+  facade's internal manifest.
+- 2026-06-22: Added =make nemacs-library-consumer-smoke= and included it
+  in =make nemacs-library-gate=.  It runs a fresh =emacs -Q -L src=
+  consumer process, requires =nelisp-emacs=, checks the facade query APIs,
+  and proves that app/bootstrap, concrete TUI/GUI, and lazy editor files
+  remain outside the reusable facade load.
+- 2026-06-22: Added Doc 25 and
+  =nelisp-emacs-library-contract-version= so external consumers can
+  distinguish the versioned facade contract from the broader draft API
+  inventory.
+- 2026-06-22: Added =make nemacs-library-package-smoke= and included it in
+  =make nemacs-library-gate=.  It runs each reusable package group loader
+  in a separate =emacs -Q -L src= process, proving group-level require
+  paths do not depend on the top-level facade, app/bootstrap, or frontends.
+- 2026-06-22: Added =make nemacs-library-package-manifest= and included it
+  in =make nemacs-library-gate=.  It exports the facade package manifest to
+  TSV and Org summary artifacts for external review and future package
+  extraction planning.
+- 2026-06-22: Added =make nemacs-library-package-deps= and included it in
+  =make nemacs-library-gate=.  It exports package group dependency edges
+  from facade manifest features and source =require= forms, and the gate
+  now fails if reusable facade packages depend on app/frontend-owned
+  features.
+- 2026-06-22: Extended =make nemacs-library-package-deps= to write
+  =build/nemacs-library-package-migration-queue.tsv= and
+  =build/nemacs-library-package-migration-queue.org=.  These aggregate
+  =unmanifested-reusable= edges by provider feature so package extraction
+  work has a stable review queue.
+- 2026-06-22: Added =make nemacs-library-package-descriptors= and included
+  it in =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-package-descriptors.tsv= and
+  =build/nemacs-library-package-descriptors.org= from the facade manifest
+  plus generated dependency edges, giving package archive/repository
+  extraction work a generated descriptor draft.
+- 2026-06-22: Added =make nemacs-library-package-layout= and included it
+  in =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-package-layout.tsv= and
+  =build/nemacs-library-package-layout.org= from the descriptor drafts,
+  giving physical =packages/= extraction work a generated move plan without
+  moving files.
+- 2026-06-22: Split package dependency =external-or-host= rows into
+  =host-feature=, =vendor-package=, and unknown =external-or-host=
+  classifications.  =make nemacs-library-gate= now fails on
+  =unmanifested-reusable=, =lazy-unmanifested-reusable=, and unknown
+  =external-or-host= rows, making hidden reusable and unresolved external
+  dependencies explicit before package extraction.
+- 2026-06-22: Added =make nemacs-library-package-verify= and included it
+  in =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-package-verify.tsv= and
+  =build/nemacs-library-package-verify.org=, checking descriptor source
+  files, package dependency resolution, unknown external dependencies,
+  lazy feature/source-file shape, and exact descriptor/layout coverage.
+- 2026-06-22: Added =make nemacs-library-contract= and included it in
+  =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-contract.tsv= and
+  =build/nemacs-library-contract.org=, verifying the narrow external
+  consumer contract symbols available after requiring =nelisp-emacs=.
+- 2026-06-22: Added =make nemacs-library-package-guide= and included it
+  in =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-package-guide.tsv= and
+  =build/nemacs-library-package-guide.org= from the descriptor drafts,
+  giving external consumers a generated package loader/dependency/lazy
+  feature guide before any physical package move.
+- 2026-06-22: Extended =make nemacs-library-package-verify= to check the
+  generated package guide against descriptor package ids, loader features,
+  dependencies, lazy features, host/vendor assumptions, and source counts.
+  The package verification artifact now covers
+  =descriptor/guide/API/catalog/promotion/layout= consistency.
+- 2026-06-22: Added =make nemacs-library-package-api= and included it in
+  =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-package-api.tsv= and
+  =build/nemacs-library-package-api.org= by joining descriptor source
+  files with the public API inventory, giving package owners and external
+  consumers a package-scoped candidate API view.  =make
+  nemacs-library-package-verify= now checks that this view covers
+  descriptor packages and API-bearing descriptor files, stays scoped to
+  descriptor package ids, and excludes adapter/app API rows.
+- 2026-06-22: Added =make nemacs-library-package-catalog= and included it
+  in =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-package-catalog.tsv= and
+  =build/nemacs-library-package-catalog.org= by joining the consumer
+  package guide with the package-scoped API inventory, giving external
+  consumers one package-oriented loader/dependency/API catalog.  =make
+  nemacs-library-package-verify= now checks catalog rows against both guide
+  package fields and package API symbol/count rows.
+- 2026-06-22: Added =make nemacs-library-api-promotion-queue= and included
+  it in =make nemacs-library-gate=.  It writes
+  =build/nemacs-library-api-promotion-queue.tsv= and
+  =build/nemacs-library-api-promotion-queue.org= from package API rows plus
+  docs/tests evidence, classifying =public-prefixed= and =compat-global=
+  symbols into promote-ready, needs-doc, needs-test, needs-review, and
+  compat-shim review buckets.  =make nemacs-library-package-verify= now
+  checks that the queue exactly covers public/compat package API candidates
+  and excludes private helpers.
+- 2026-06-22: Added the facade stable package API manifest and query APIs:
+  =nelisp-emacs-library-stable-api-manifest=,
+  =nelisp-emacs-library-stable-api-symbols=, and
+  =nelisp-emacs-library-stable-api-entry=.  The initial stable package API
+  set promotes the existing =promote-ready= rows for BUF text-property view
+  access and direct file insertion.  =make nemacs-library-contract= now
+  verifies these query APIs, the promotion queue classifies these symbols as
+  =stable-contract=, and =make nemacs-library-package-verify= checks that
+  stable API rows resolve and remain covered by both package API and
+  promotion artifacts.
+- 2026-06-22: Expanded the =buffer-core= stable package API from
+  text-property inspection to the minimal portable in-memory buffer surface:
+  buffer lifecycle, current-buffer binding, point/size, insert/delete, and
+  substring/string readback.  Overlay, undo, narrowing, and redisplay-facing
+  helpers remain outside the stable package API until their consumer
+  semantics are reviewed separately.
+- 2026-06-22: Promoted the pure text-property mutation and change-scan
+  functions to the =buffer-core= stable package API:
+  =emacs-buffer-put-text-property=, =emacs-buffer-add-text-properties=,
+  =emacs-buffer-remove-text-properties=, =emacs-buffer-set-text-properties=,
+  =emacs-buffer-next-property-change=,
+  =emacs-buffer-previous-property-change=,
+  =emacs-buffer-next-single-property-change=, and
+  =emacs-buffer-previous-single-property-change=.  Left
+  =emacs-buffer-get-char-property= outside the stable API because it
+  crosses into overlay precedence semantics.
+- 2026-06-22: Promoted the =buffer-core= overlay primitives to the stable
+  package API after documenting the overlay boundary.  =emacs-buffer-get-char-property=
+  is now stable as the combined overlay/text-property query: numeric
+  overlay =priority= wins, later insertion breaks ties, then lookup falls
+  back to text properties with category inheritance.  Undo, narrowing, and
+  redisplay-facing helpers remain outside the stable API.
+- 2026-06-22: Promoted the small =buffer-core= registry helpers to the
+  stable package API: =emacs-buffer-current=, =emacs-buffer-buffer-list=,
+  =emacs-buffer-buffers-by-mode=, and
+  =emacs-buffer-generate-new-buffer-name=.  These are scoped to the NeLisp
+  buffer registry and do not enumerate or mutate host Emacs buffers.
+- 2026-06-22: Promoted the =buffer-core= buffer-local/default-value APIs to
+  the stable package API.  The contract explicitly scopes them to NeLisp
+  buffer side-table state: =emacs-buffer-set-buffer-local-value= is the
+  stable write path, and host =setq= interception remains outside contract
+  version 1.
+- 2026-06-22: Promoted the =buffer-core= explicit undo layer to the stable
+  package API.  The contract documents insertion/deletion records,
+  boundary markers, disabled undo sentinel, and =emacs-buffer-modify-without-undo=.
+  Automatic mutation instrumentation remains outside contract version 1.
+- 2026-06-22: Promoted =buffer-core= modification tracking and indirect
+  buffer helpers to the stable package API.  The contract distinguishes the
+  modified flag, explicit chars-modified tick, automatic text-content tick,
+  and indirect clone text sharing semantics.
+- 2026-06-22: Promoted the next =buffer-core= NeLisp substrate helpers to
+  the stable package API: direct point movement, single-character
+  insert/delete, erase-buffer, save-excursion/save-restriction, and
+  narrow/widen.  The contract keeps these on prefixed =nelisp-ec-*=
+  symbols and leaves unprefixed builtin aliases and redisplay-facing helper
+  semantics for later review.
+- 2026-06-22: Promoted the =buffer-core= marker and search substrate to the
+  stable package API.  The stable surface now includes NeLisp marker
+  creation/accessors, point markers, literal search, regex search through
+  =nelisp-regex=, and copied match-data accessors.  Unprefixed builtin
+  aliases remain compatibility shims, not the preferred reusable contract.
+- 2026-06-22: Classified prefixed helpers in =emacs-*-builtins.el= as
+  shim helper surface in the promotion queue.  This prevents helper names
+  such as =emacs-buffer-builtins-*= from looking like ordinary stable API
+  candidates merely because they are prefixed; facade promotion remains
+  the stability boundary.
+- 2026-06-22: Promoted =nelisp-ec-save-current-buffer= to the stable
+  =buffer-core= API and classified public-prefixed =*-check-live= guard
+  helpers as validation-helper review surface.  This leaves
+  =nelisp-ec-check-live= out of the external contract while documenting
+  why it is not a normal promotion candidate.
+- 2026-06-22: Reclassified the reviewed =nelisp-ec-check-live= guard as
+  =validation-helper-internal=.  It remains a public-prefixed compatibility
+  guard for internal modules, not a stable consumer contract symbol; callers
+  should rely on the higher-level =nelisp-ec-*= buffer APIs to signal killed
+  buffers.
+- 2026-06-22: Promoted the =editing= undo substrate to the stable package
+  API: =emacs-undo-buffer-undo-list=, =emacs-undo-set-buffer-undo-list=,
+  =emacs-undo-disabled-p=, =emacs-undo-reset=,
+  =emacs-undo-undo-boundary=, =emacs-undo-record-insert=,
+  =emacs-undo-record-delete=, =emacs-undo-primitive-undo=,
+  =emacs-undo-undo=, =emacs-undo-undo-direct=, and
+  =emacs-undo-run-command=.  This makes the direct undo record/apply layer
+  and the frontend-neutral undo command wrapper reusable outside the app
+  and GUI entrypoints.
+- 2026-06-22: Promoted the first =editing= direct edit-result API set to
+  the stable package API: self-insert/delete-backward/quoted-insert,
+  copy/kill/delete region and line helpers, transform/comment helpers, and
+  yank/yank-pop helpers.  Although these symbols live in
+  =emacs-edit-builtins.el=, facade promotion makes them stable reusable
+  APIs rather than incidental compatibility-shim helpers.
+- 2026-06-22: Promoted the =editing= mark/region/selection helpers to the
+  stable package API: =emacs-edit-set-mark-direct=,
+  =emacs-edit-region-bounds-direct=, =emacs-edit-shift-selection-plan=,
+  =emacs-edit-mouse-drag-region-plan=,
+  =emacs-edit-mark-whole-buffer-direct=,
+  =emacs-edit-exchange-point-and-mark-direct=,
+  =emacs-edit-goto-position-direct=, =emacs-edit-select-word-at-direct=,
+  =emacs-edit-run-select-word-at-command=,
+  =emacs-edit-select-line-at-direct=, and
+  =emacs-edit-run-select-line-at-command=.  These functions give frontends
+  shared movement/selection calculations without moving frontend mark
+  storage into the library substrate.
+- 2026-06-22: Promoted the =editing= movement helpers to the stable package
+  API: page scroll, paragraph movement/marking, buffer-boundary movement,
+  ASCII word position/kill-word, matching-paren lookup, sexp movement/kill,
+  and sentence movement/kill.  The contract explicitly scopes these to the
+  current lightweight editing scanners rather than claiming full
+  syntax-table or major-mode integration.
+- 2026-06-22: Promoted the =editing= formatting, whitespace, counting,
+  dabbrev, tab-stop, and register direct helpers to the stable package API.
+  This gives GTK/TUI/app consumers shared edit-result/register plists for
+  common C-core replacement commands while keeping low-level register
+  mutation helpers such as =emacs-edit-register-put= and
+  =emacs-edit-register-point-value-p= internal.
+- 2026-06-22: Classified the reviewed =emacs-*-builtins.el= prefixed
+  helper leftovers as =compat-shim-helper-internal= instead of leaving them
+  in the open compatibility review queue.  This keeps adapter helpers such
+  as buffer modified-tick aliases, line/fill/register scanners, and the
+  minimal direct file visit primitives visible in the package API inventory
+  without implying that they are future stable consumer APIs.
+- 2026-06-22: Promoted the coherent low-level =text-buffer= substrate API
+  to the stable =buffer-core= package contract: construction,
+  cursor-addressed insert/delete, substring, literal search, char/byte
+  length, and multibyte queries.  This gives external libraries a reusable
+  display-free mutable text container while keeping slot accessors and gap
+  internals private.
+- 2026-06-22: Documented the tested =special-buffers= package candidate
+  surface for promotion review without promoting it to the stable facade
+  contract.  The documented set covers ensure/switch/append/message/warning
+  flows, display plans, read-only policy, and adapter backend hooks for
+  scratch/messages/warnings buffers.
+- 2026-06-22: Extended the =special-buffers= candidate surface review to
+  cover standard buffer-name constants, scratch initial text/default policy,
+  special-buffer predicates, and the prefixed =warn= / =lwarn=
+  compatibility helpers.  These names are now tested and documented as
+  promotion candidates, while the stable facade contract remains unchanged.
+- 2026-06-22: Promoted the reusable =special-buffers= subset to the stable
+  facade contract.  The stable subset covers standard buffer-name
+  constants, special-buffer classification/default/read-only policy,
+  ensure/switch/append lifecycle helpers, message/warning appenders, and
+  frontend-neutral display plans.  Adapter backend hooks, the literal
+  scratch initial message, and the prefixed =warn= / =lwarn= compatibility
+  helpers remain candidate APIs pending stricter external semantics review.
+- 2026-06-22: Promoted the remaining =special-buffers= candidate symbols to
+  the stable facade contract.  The complete stable surface now includes
+  adapter backend registration, =emacs-special-buffers-backend=, the literal
+  scratch initial message, and the prefixed =warn= / =lwarn= compatibility
+  helpers in addition to the previously promoted special-buffer lifecycle,
+  message/warning, and display-plan helpers.  This is a compatible contract
+  expansion, so =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =foundation= package candidate surface for
+  package-owner review.  The reviewed candidate set covers process
+  environment lookup/seeding, sparse char-table substrate operations,
+  runtime OS detection and OS-derived default application, and display
+  capability predicates.  =emacs-os-uname-syscall-number= now has an
+  explicit contract test so the entire =foundation= open review set can
+  move to promotion-ready evidence without changing the stable facade.
+- 2026-06-22: Documented the =text-core= package candidate surface for
+  package-owner review and added focused tests for the reusable coding
+  substrate.  The reviewed candidate set covers regex compilation/search
+  and literal replacement, UTF-8 and Latin-1 codec policy, Japanese codec
+  entry points, streaming codec state, file wrappers, and lazy JIS table
+  bindings.  The stable facade is unchanged; these names are promotion
+  candidates until TXT owner review decides the stable subset.
+- 2026-06-22: Documented the =io= package candidate surface for
+  package-owner review and added focused tests for public process
+  delegation, path helper, access wrapper, directory listing, mkdir,
+  rename, and delete contracts.  The reviewed candidate set covers
+  process execution/lifecycle/accessors/shell helpers, standalone
+  primitive registry dispatch, and the prefixed file/path substrate.  The
+  stable facade remains unchanged except for the previously stable
+  =nelisp-ec-insert-file-contents= entry; the rest of =io= now has
+  promotion-ready evidence for owner review.
+- 2026-06-22: Documented the =textmodes-stub= package candidate surface
+  for package-owner review.  The reviewed candidate set covers the
+  lightweight =emacs-textmodes-fill-region= and
+  =emacs-textmodes-count-matches= polyfills, explicitly scoped as
+  MELPA-oriented compatibility helpers rather than full replacements for
+  upstream =fill.el=, paragraph/justification machinery, or interactive
+  =replace.el= reporting.  The stable facade is unchanged; these names now
+  have promotion-ready evidence for owner review.
+- 2026-06-22: Started the =core= package review by documenting the
+  =core/faces= candidate surface and adding explicit reset coverage.  The
+  reviewed candidate set covers face registry lifecycle, attribute
+  mutation/inspection, foreground/background helpers, face enumeration, and
+  the catch-all =defface= registration macro.  It is explicitly scoped
+  below full Emacs face inheritance, frame/display-class precedence, and X
+  resource behavior, so these names are promotion candidates rather than
+  stable facade API.
+- 2026-06-22: Promoted the =core/faces= subset to the stable facade
+  contract.  The stable subset covers the small shared face registry
+  substrate, attribute access/mutation, foreground/background helpers,
+  enumeration, catch-all =defface= registration, and explicit reset.  The
+  contract preserves the exclusions above for full face inheritance,
+  frame/display-class precedence, X resource fallback, and
+  frame-parameter integration.  This is a compatible contract expansion,
+  so =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/mode= candidate surface and added
+  direct coverage for the public mode setter, auto-mode-alist accessor,
+  and prefixed base-mode hook variables.  The reviewed candidate set covers
+  lightweight major-mode state, base mode entry points, derived-mode
+  creation, hook dispatch, reset/local-variable placeholders, and
+  auto-mode dispatch.  The contract explicitly excludes real per-buffer
+  mode storage, full buffer-local variable killing, font-lock/syntax-table
+  integration, and mode-line updates.
+- 2026-06-22: Promoted the =core/mode= subset to the stable facade
+  contract.  The stable subset keeps the deliberately lightweight
+  major-mode substrate reusable for package consumers while preserving the
+  exclusions above for per-buffer mode storage, full buffer-local
+  variable killing, font-lock/syntax-table integration, and mode-line
+  updates.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/tui-terminfo= lazy companion candidate
+  surface and added direct coverage for the public MVP capability-list
+  constant.  The reviewed candidate set covers TERM/COLORTERM capability
+  detection, cache lifecycle, query helpers, known terminal
+  introspection, backend init argument preparation, and detection contract
+  constants.  The contract keeps this as a curated-table detector and
+  explicitly excludes ncurses terminfo parsing, live runtime probing,
+  persistent cache, and per-frame overrides.
+- 2026-06-22: Documented the =core/tui-event= lazy companion candidate
+  surface and added direct coverage for parser operation logging through
+  =emacs-tui-event-log-enabled=.  The reviewed candidate set covers TUI
+  event-source lifecycle, key encoding/CSI parsing/control-byte naming,
+  byte-stream parsing, queue/feed helpers, nonblocking and timeout polling,
+  resize callback dispatch, and event-source constants/options.  The
+  contract keeps input pluggable via =emacs-tui-event-input-fn= and
+  explicitly excludes mouse events, bracketed paste, raw fd/select
+  integration, and terminfo detection.
+- 2026-06-22: Documented the =core/tui-backend= lazy companion candidate
+  surface and added direct coverage for dirty-row replacement through
+  =emacs-tui-backend-frame-set-dirty-rows= and backend operation logging
+  through =emacs-tui-backend-log-enabled=.  The reviewed candidate set
+  covers ANSI output, backend lifecycle, capability query, frame/canvas
+  mutation, event-queue bridging, cursor control, resize callback storage,
+  and contract constants/options.  The contract keeps terminfo detection
+  and stdin/SIGWINCH ownership in sibling TUI modules and explicitly
+  excludes mouse, images, IME, bidi, composition, and GUI frame semantics.
+- 2026-06-22: Promoted the =core/tui-backend=,
+  =core/tui-terminfo=, and =core/tui-event= lazy companion subsets to the
+  stable lazy facade contract.  These APIs remain out of
+  =(require 'nelisp-emacs)= eager loads and require their matching lazy
+  feature, but are now versioned reusable package API through
+  =nelisp-emacs-library-stable-lazy-api-*= query functions.  This is a
+  compatible contract expansion, so =nelisp-emacs-library-contract-version=
+  remains unchanged.
+- 2026-06-22: Documented the =core/frame= candidate surface and added
+  direct coverage that =emacs-frame-tui-read-event-timeout-ms= is
+  forwarded to the TUI event poller.  The reviewed candidate set covers
+  frame registry identity/lifecycle, size/position/parameter mutation,
+  visibility/z-order/selection/focus helpers, backend dispatch
+  installation, TUI backend/stub switching, TUI handle introspection, and
+  resize/key hooks.  The contract keeps full display-server semantics,
+  multi-display behavior, frame configurations, GUI positioning, and
+  complete event-loop ownership out of scope for this candidate surface.
+- 2026-06-22: Promoted the =core/frame= subset to the stable facade
+  contract.  The stable subset keeps frame registry identity/lifecycle,
+  dimensions, parameters, visibility/z-order/selection/focus helpers,
+  display dimension queries, backend dispatch installation, stub/TUI
+  backend switching, TUI handle introspection, and resize/key hook
+  variables reusable without loading application frontends.  This is a
+  compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/window= candidate surface and added
+  direct coverage for =emacs-window-get-window= and
+  =emacs-window-window-list-1=.  The reviewed candidate set covers the
+  single-frame window tree, selection/query helpers, buffer binding,
+  split/delete/balance operations, coarse geometry, cached point/start,
+  window-local parameters, configuration snapshots, newer helper aliases,
+  and the minimal display-buffer/pop-to-buffer/quit-window popup policy.
+  The contract explicitly excludes minibuffer windows, dedicated-window
+  semantics, full display-buffer action handling, multi-frame/all-frames
+  behavior, decorations, and pixel-accurate redisplay geometry.
+- 2026-06-22: Promoted the =core/window= subset to the stable facade
+  contract.  The stable subset keeps the eager single-frame window-tree
+  substrate reusable for package consumers: identity/query helpers,
+  buffer/frame lookup, split/delete/balance operations, coarse geometry,
+  cached point/start state, window-local parameters, configuration
+  snapshots, selection helpers, newer helper aliases, resize helpers, and
+  the minimal popup workflow.  This is a compatible contract expansion,
+  so =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/keymap= candidate surface.  The
+  reviewed candidate set covers sparse/full keymap construction, binding
+  mutation and lookup, parent traversal, global/local/overriding map
+  state, minor/emulation map precedence, opt-in overlay/text-property
+  chain injection, kbd-style string helpers, full-keymap fast paths, TUI
+  overriding-terminal helpers, lookup/introspection helpers, and the
+  minimal read-key-sequence adapter.  The contract explicitly excludes
+  complete GNU Emacs event decoding, mouse normalization, function-key
+  remap completion, menu semantics, default overlay/text-property
+  provider ownership, command remapping, and terminal input ownership.
+  No new behavioral test was needed because every public-prefixed
+  candidate already had direct test evidence; this pass supplies the
+  missing consumer-facing documentation evidence.
+- 2026-06-22: Promoted the =core/keymap= subset to the stable facade
+  contract.  The stable subset keeps sparse/full keymap construction,
+  binding mutation and lookup, parent traversal, global/local/overriding
+  map state, minor/emulation map precedence, opt-in overlay/text-property
+  provider slots, kbd-style string helpers, full-keymap fast paths, TUI
+  overriding-terminal helpers, lookup/introspection helpers, and the
+  minimal read-key-sequence adapter reusable without loading application
+  frontends.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/minibuffer= candidate surface and
+  added direct coverage for the remaining review-only symbols.  The
+  reviewed candidate set covers deterministic queued input, core/typed
+  readers, confirmation helpers, completion tables, minibuffer state and
+  control, GUI backend registration, context refresh, start/read/commit
+  forwarders, GUI key/text/session plans, candidate source policy, and
+  command/follow-up sequencing.  The contract keeps full recursive-edit
+  behavior, asynchronous input ownership, redisplay/pixel layout, full
+  completion styles and metadata, history navigation, multi-frame
+  minibuffer windows, and frontend transport side effects out of this
+  candidate surface.
+- 2026-06-22: Promoted the =core/minibuffer= subset to the stable facade
+  contract.  The stable subset keeps deterministic queued input,
+  core/typed readers, confirmation/completion helpers, minibuffer
+  state/control, GUI backend/context handling, start/read/commit
+  forwarders, GUI key/text/session plans, candidate source policy, and
+  command/follow-up sequencing reusable while preserving the exclusions
+  above.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/command-loop= candidate surface and
+  added direct coverage for the remaining review-only helper/data/wrapper
+  symbols.  The reviewed candidate set covers deterministic command-loop
+  lifecycle, queue-fed events, key dispatch planning, command execution,
+  prefix args, recursive-edit/quit control, GUI backend context refresh,
+  direct/key request dispatch, post-command writeback, minibuffer/project
+  bridging, and GUI command policy registries.  The contract keeps
+  complete event-loop ownership, terminal/stdin ownership, async timers,
+  process filters, full command remapping, real GUI transport mutation,
+  mouse/menu-bar semantics, pixel redisplay, and full recursive-edit
+  top-level throw machinery out of this candidate surface.
+- 2026-06-22: Promoted the =core/command-loop= subset to the stable
+  facade contract.  The stable subset keeps deterministic command-loop
+  lifecycle, queue-fed events, key dispatch planning, command execution,
+  prefix args, recursive-edit/quit control, GUI backend context refresh,
+  direct/key request dispatch, post-command writeback, minibuffer/project
+  bridging, and GUI command policy registries reusable while preserving
+  the exclusions above.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Documented the =core/help= candidate surface and added
+  direct coverage for the remaining review-only helper/data/current-context
+  wrapper symbols.  The reviewed candidate set covers Help buffer
+  quit/rerender commands, function/variable/apropos/key summaries, GUI
+  Help backend context, describe-function/variable/key/bindings/where-is
+  rendering, static Help commands, apropos commands, deferred key-help
+  planning, current-context dispatch, and writeback spec interpretation.
+  The contract keeps full =help-fns= parity, Info/manual navigation,
+  package archive metadata, finder keyword indexing, complete
+  documentation search, tutorial/distribution-file loading, widget/local
+  help, xref source lookup, and concrete GUI transport writes out of this
+  candidate surface.
+- 2026-06-22: Promoted the =core/help= subset to the stable facade
+  contract.  The stable subset keeps Help rendering, apropos/key summaries,
+  frontend-neutral GUI Help backend/context handling, current-context
+  commands, deferred key-help planning, and writeback spec interpretation
+  reusable while preserving the exclusions above.  This is a compatible
+  contract expansion, so =nelisp-emacs-library-contract-version= remains
+  unchanged.
+- 2026-06-22: Documented the =core/info= candidate surface and added
+  direct coverage for the remaining review-only navigation/static/current-
+  context wrapper symbols.  The reviewed candidate set covers GUI Info
+  backend context, Info header parsing, bounded node scanning, node
+  rendering, Next/Prev/Up navigation, compact manual/manual-ordering
+  placeholders, command/key/symbol lookup placeholders, command wrappers,
+  current-context dispatch, frontend prompt dispatch, and writeback spec
+  interpretation.  The contract keeps full GNU Info directory aggregation,
+  compressed/manual discovery, indirect files, tag tables, menu/xref
+  navigation, search/index commands, manual content bundling,
+  command/key/symbol node resolution, multi-buffer Info history, and
+  concrete GUI transport writes out of this candidate surface.
+- 2026-06-22: Promoted the =core/info= subset to the stable facade
+  contract.  The stable subset keeps frontend-neutral backend
+  registration, current file/node/status context, Info header parsing,
+  bounded node scanning/rendering, Top/Next/Prev/Up navigation,
+  command/current-context wrappers, frontend prompt dispatch, and
+  writeback-state planning reusable without loading application
+  frontends.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Promoted the reusable =foundation= subset to the stable
+  facade contract.  The stable subset covers process-environment
+  lookup/seeding, sparse char-table construction/mutation/range/metadata
+  helpers, runtime OS detection and OS-shaped default setup, and lightweight
+  display capability predicates.  This is a compatible contract expansion,
+  so =nelisp-emacs-library-contract-version= remains unchanged; the
+  promotion queue now classifies these names as =stable-contract=.
+- 2026-06-22: Promoted the eager =text-core= subset to the stable facade
+  contract.  The stable subset covers the reusable regex API, UTF-8 and
+  Latin-1 policy/codecs, Japanese codec entry points, stream encode/decode
+  helpers, and file encoding wrappers.  The generated lazy JIS table payload
+  variables stay out of the eager stable facade symbol set because they are
+  intentionally unbound until =nelisp-coding-jis-tables= is required
+  explicitly.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Added the stable lazy package API manifest and promoted the
+  =text-core= generated JIS table payload variables through it.  The eager
+  stable API query semantics remain unchanged: symbols returned by
+  =nelisp-emacs-library-stable-api-symbols= resolve after requiring the
+  facade.  Stable lazy symbols are discovered through
+  =nelisp-emacs-library-stable-lazy-api-symbols= and resolve only after
+  requiring their entry's =:feature=.  =make nemacs-library-package-verify=
+  now checks stable lazy coverage and explicit lazy resolution.
+- 2026-06-22: Promoted the =io= reusable runtime surface to the stable
+  facade contract.  The stable subset covers process delegation,
+  synchronous and async process entry points, process lifecycle/accessor
+  helpers, shell command helpers, standalone primitive-dispatch registry and
+  introspection, POSIX-oriented file/path helpers, directory/file mutation,
+  executable lookup, =nelisp-ec-insert-file-contents=, and
+  =nelisp-ec-write-region=.  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Promoted the =textmodes-stub= package to the stable facade
+  contract.  The stable subset covers the deliberately small
+  =emacs-textmodes-fill-region= and =emacs-textmodes-count-matches=
+  polyfills for app-free MELPA-style consumers that need lightweight
+  textmodes behavior without loading upstream =fill.el= or =replace.el=.
+  This is a compatible contract expansion, so
+  =nelisp-emacs-library-contract-version= remains unchanged.
+- 2026-06-22: Added Doc 27 package extraction readiness.  The generated
+  descriptor/guide/layout artifacts are coherent enough for a staged
+  =packages/= scaffold experiment, with 8 packages, 69 layout mappings,
+  no unknown external features, no package dependency migration
+  candidates, no boundary rows, and package verification failures at zero.
+  The document deliberately rejects a one-shot move away from =src/= until
+  package-path smoke gates and compatibility-forwarder policy exist.

@@ -1,0 +1,132 @@
+#+TITLE: Install And Rollback Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+=~/.local/bin/emacs= を nemacs に向ける導線はある。
+しかし実際に Emacs を置き換えるには、既存 =/usr/bin/emacs= との切替、
+rollback、daemon/socket、=emacsclient= 互換、障害時の復旧手順を明文化する必要がある。
+
+* 対象
+
+| 入口 | 役割 |
+|------+------|
+| =~/.local/bin/emacs= | 互換 launcher。PATH 先頭で既存 =emacs= を置き換える |
+| =~/.local/bin/nemacs= | 明示 nemacs launcher |
+| =~/.local/bin/emacsclient= | 将来の nemacs server client 互換入口 |
+| =/usr/bin/emacs= | rollback 先。書き換えない |
+
+system package の =/usr/bin/emacs= は変更しない。
+置き換えは PATH と symlink 管理だけで行う。
+
+* Install mode
+
+| mode | 内容 |
+|------+------|
+| preview | 現在の PATH / symlink / target を表示 |
+| install | =~/.local/bin/emacs= と =nemacs= symlink を作る。既存通常 file は上書きしない |
+| uninstall | nemacs が作った symlink のみ削除 |
+| rollback | install 前の状態へ戻す |
+| doctor | dependency / PATH / symlink / daemon socket を確認 |
+
+* Symlink policy
+
+| 条件 | 動作 |
+|------+------|
+| target が存在しない | symlink 作成 |
+| target が nemacs 管理 symlink | 更新可 |
+| target が通常 file | fail。上書きしない |
+| target が別 symlink | fail し、manual instruction を出す |
+| =/usr/bin/emacs= | 絶対に変更しない |
+
+管理印は symlink target と manifest で判断する。
+
+manifest:
+
+#+begin_src text
+~/.local/share/nemacs/install-manifest
+  emacs=/home/.../dev/nelisp-gui/bin/emacs
+  nemacs=/home/.../dev/nelisp-gui/bin/nemacs
+  installed-at=...
+#+end_src
+
+* Rollback
+
+rollback は以下を行う。
+
+1. manifest を読む。
+2. manifest と一致する symlink だけを削除する。
+3. =hash -r= / shell restart の案内を出す。
+4. =command -v emacs= が =/usr/bin/emacs= またはユーザーの元の target に戻ったことを表示する。
+
+通常 file や unknown symlink は削除しない。
+
+* Daemon / emacsclient
+
+| command | 対応 |
+|---------+------|
+| =emacs --daemon[=NAME]= | =nelisp-emacs/bin/nemacs-server= を起動 |
+| =emacs --fg-daemon[=NAME]= | foreground server |
+| =emacsclient -s NAME -e EXPR= | nemacs server client へ routing |
+| =emacsclient FILE= | server file open request として実装予定 |
+
+socket directory:
+
+#+begin_src text
+${NEMACS_SERVER_DIR:-/tmp/nemacs-server}/NAME
+#+end_src
+
+置き換え時は既存 Emacs daemon と socket 名が衝突しないよう、
+default name を =nemacs= にする。
+
+* User-facing commands
+
+#+begin_src sh
+  dev/nelisp-gui/scripts/install-user-bin.sh status
+  dev/nelisp-gui/scripts/install-user-bin.sh doctor
+  dev/nelisp-gui/scripts/install-user-bin.sh install
+  dev/nelisp-gui/scripts/install-user-bin.sh uninstall
+  dev/nelisp-gui/scripts/install-user-bin.sh rollback
+#+end_src
+
+* Replacement checklist
+
+| check | command |
+|-------+---------|
+| doctor | =emacs --doctor= |
+| GUI launch | =emacs -Q /tmp/test.txt= |
+| batch | =emacs -Q --batch --eval '(princ "ok\n")'= |
+| TUI batch | =emacs -Q -nw --batch --eval '(princ "ok\n")'= |
+| daemon | =emacs --daemon= + =emacsclient -s nemacs -e '(+ 1 2)'= |
+| rollback | =install-user-bin.sh rollback= then =command -v emacs= |
+
+* 完了条件
+
+| gate | 条件 |
+|------+------|
+| safe install | existing normal file を上書きしない |
+| safe uninstall | nemacs 管理 symlink だけ削除する |
+| rollback | user が 1 command で元の Emacs path に戻せる |
+| daemon | named socket で start/eval/stop ができる |
+| emacsclient | 最低 =-s NAME -e EXPR= が動く |
+| docs | install / rollback / emergency bypass が README にある |
+
+* Emergency bypass
+
+置き換え後に問題が起きた場合の即時回避:
+
+#+begin_src sh
+  /usr/bin/emacs FILE
+  PATH=/usr/bin:/bin:$PATH emacs FILE
+  dev/nelisp-gui/scripts/install-user-bin.sh rollback
+#+end_src
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| PATH 順序で意図せず置き換わらない | doctor が =command -v emacs= と PATH 順を表示 |
+| 既存 emacsclient workflow が壊れる | =emacsclient= は opt-in symlink にし、socket name を分ける |
+| rollback がユーザーファイルを消す | manifest と symlink target 一致時のみ削除 |
+| daemon socket が stale | doctor cleanup / stale socket detection を追加 |
+

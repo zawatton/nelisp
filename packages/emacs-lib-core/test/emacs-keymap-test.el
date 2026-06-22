@@ -58,8 +58,50 @@
     ;; pass.  Its ASCII fast-path covers the 256 low character codes.
     (should (emacs-char-table-p (nth 1 m)))
     (should (= 256 (length (emacs-char-table-ascii-vector (nth 1 m)))))
-    ;; `emacs-keymap--full-slot' resolves it for the binding helpers.
+    ;; Public low-level adapter resolves it for runner/front-end fast paths.
+    (should (emacs-char-table-p (emacs-keymap-full-slot m)))
     (should (emacs-char-table-p (emacs-keymap--full-slot m)))))
+
+(ert-deftest emacs-keymap-direct-slot-vector-and-fast-define-key ()
+  (let* ((m (emacs-keymap-make-keymap))
+         (vec (emacs-keymap-direct-slot-vector m)))
+    (should (vectorp vec))
+    (should (= 256 (length vec)))
+    (should (eq 'cmd-a
+                (emacs-keymap-define-key-fast m (vector ?a) 'cmd-a vec)))
+    (should (eq 'cmd-a (aref vec ?a)))
+    (should (eq 'cmd-a (emacs-keymap-lookup-key m (vector ?a))))))
+
+(ert-deftest emacs-keymap-make-compatible-full-keymap-has-direct-slot ()
+  (let ((m (emacs-keymap-make-compatible-full-keymap)))
+    (should (keymapp m))
+    (emacs-keymap-define-key-fast
+     m (vector ?a) 'cmd-a (emacs-keymap-direct-slot-vector m))
+    (should (eq 'cmd-a (lookup-key m (vector ?a))))))
+
+(ert-deftest emacs-keymap-build-single-key-cache-uses-slot-and-lookup ()
+  (let ((m (emacs-keymap-make-keymap)))
+    (emacs-keymap-define-key-fast
+     m (vector ?a) 'cmd-a (emacs-keymap-direct-slot-vector m))
+    (should (eq 'cmd-a
+                (aref (emacs-keymap-build-single-key-cache m) ?a))))
+  (let* ((sparse (emacs-keymap-make-sparse-keymap))
+         (cache
+          (emacs-keymap-build-single-key-cache
+           sparse
+           (lambda (_map key)
+             (when (equal key (vector ?z))
+               'fallback-z)))))
+    (should (eq 'fallback-z (aref cache ?z)))))
+
+(ert-deftest emacs-keymap-overriding-terminal-map-helpers ()
+  (let ((noninteractive nil)
+        (overriding-terminal-local-map nil))
+    (let ((m (emacs-keymap-make-sparse-keymap)))
+      (should (eq m (emacs-keymap-install-overriding-terminal-map m)))
+      (should (eq m overriding-terminal-local-map))
+      (emacs-keymap-clear-overriding-terminal-map)
+      (should-not overriding-terminal-local-map))))
 
 (ert-deftest emacs-keymap-keymapp-rejects-non-keymaps ()
   (should-not (emacs-keymap-keymapp nil))
@@ -147,9 +189,11 @@
     (should (eq parent (emacs-keymap-keymap-parent child)))
     ;; inherit lookup
     (should (eq 'parent-z (emacs-keymap-lookup-key child "z")))
+    (should (eq 'parent-z (emacs-keymap-lookup-with-parent child ?z)))
     ;; child shadows parent
     (emacs-keymap-define-key child "z" 'child-z)
-    (should (eq 'child-z (emacs-keymap-lookup-key child "z")))))
+    (should (eq 'child-z (emacs-keymap-lookup-key child "z")))
+    (should (eq 'child-z (emacs-keymap-lookup-with-parent child ?z)))))
 
 (ert-deftest emacs-keymap-set-keymap-parent-rejects-cycle ()
   (let ((m (emacs-keymap-make-sparse-keymap)))

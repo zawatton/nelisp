@@ -1,0 +1,117 @@
+#+TITLE: Real Machine Daily-Driver Verification Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+=verify-gui-xvfb.sh= と =verify-nemacs-gui.sh= は headless / scripted smoke として有効だが、
+実機 GNOME/HiDPI では Xft.dpi、font fallback、window manager、keyboard layout、
+長時間 session、crash recovery の問題が別に出る。
+
+この設計書は実機 daily-driver 検証の手順、観測項目、合格条件を固定する。
+
+* 対象環境
+
+baseline:
+
+| 項目 | 値 |
+|------+----|
+| desktop | GNOME |
+| display | real =:0= |
+| scaling | 100%, 150%, 200% のうち最低 150% |
+| font | default =9x15= and user font |
+| input | US/JIS 差がある場合は両方 |
+| IME | SKK runtime path |
+
+* 実行前チェック
+
+#+begin_src sh
+  dev/nelisp-gui/bin/nemacs --doctor
+  dev/nelisp-gui/scripts/sync-nelisp-snap.sh
+  dev/nelisp-gui/scripts/verify-nemacs-gui.sh
+  dev/nelisp-gui/scripts/verify-gui-xvfb.sh
+#+end_src
+
+実機検証前に headless smoke が通っていることを前提にする。
+
+* Manual daily-driver scenario
+
+| step | 操作 | 期待 |
+|------+------|------|
+| launch | =bin/nemacs file.org= | target file が表示される |
+| typing | 30-100 文字入力、CJK 混在 | caret が glyph に追従する |
+| edit | DEL/BackSpace/RET/C-k/C-y/undo | multibyte を壊さない |
+| file | C-x C-s, C-x C-w, C-x C-v, C-x i | visited file/store が正しい |
+| minibuffer | M-x, C-x C-f, C-s, query-replace | prompt/candidates/history が壊れない |
+| toolbar | top-level click, dropdown selection | menu が開き、選択 command が走る |
+| window | C-x 2, C-x 3, C-x o, C-x 1 | window state と描画が一致 |
+| SKK | romaji -> kana/kanji path | kana 入力が live |
+| long run | 30 分以上編集 | session が詰まらない |
+| crash | GUI kill -> relaunch | stale state が混ざらない |
+
+* Screenshot / artifact
+
+保存先:
+
+#+begin_src text
+dev/nelisp-gui/tmp-diag/YYYY-MM-DD-real-machine/
+  env.txt
+  clean.png
+  typed-30chars.png
+  toolbar-dropdown.png
+  after-relaunch.png
+  transport-snapshot.txt
+#+end_src
+
+取得コマンド例:
+
+#+begin_src sh
+  import -window root tmp-diag/YYYY-MM-DD-real-machine/typed-30chars.png
+  xprop -root RESOURCE_MANAGER >tmp-diag/YYYY-MM-DD-real-machine/env.txt
+  xdpyinfo >>tmp-diag/YYYY-MM-DD-real-machine/env.txt
+#+end_src
+
+* HiDPI / font checks
+
+| check | 方法 | 合格 |
+|-------+------|------|
+| glyph width | スクショ上の実 glyph advance を測る | cursor cell width と一致 |
+| Xft.dpi | =xprop -root RESOURCE_MANAGER= | 96/144/192 などを記録 |
+| loaded font width | =nemacs-cell-width= transport | GUI 描画と一致 |
+| cursor drift | 1 行削除後 30 回 =a= 入力 | caret と text が離れない |
+
+* Automated real-machine smoke
+
+Xvfb とは別に、実 =DISPLAY= を使う opt-in script を追加する。
+
+#+begin_src sh
+  NEMACS_REAL_DISPLAY=:0 dev/nelisp-gui/scripts/verify-gui-real.sh
+#+end_src
+
+要件:
+
+- live desktop を勝手に破壊しない。
+- window を小さく固定位置に出す。
+- test file と isolated transport を使う。
+- screenshots を =tmp-diag= に保存する。
+- default では実行しない。明示 opt-in のみ。
+
+* 完了条件
+
+| gate | 条件 |
+|------+------|
+| headless | =verify-nemacs-gui.sh= と =verify-gui-xvfb.sh= が成功 |
+| real 150% | GNOME 150% scaling で cursor drift なし |
+| toolbar | dropdown open/select が実機 screenshot で確認済み |
+| long run | 30 分以上の編集で session wedge なし |
+| crash recovery | kill/relaunch 後 stale buffer/session が混ざらない |
+| artifact | env/screenshot/transport snapshot が保存される |
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| 実機 DISPLAY を操作してユーザー作業を邪魔する | opt-in script、固定小窓、事前確認、isolated transport |
+| スクショ解釈が scaling でずれる | xprop/xdpyinfo と transport state を同時保存 |
+| 再現不能な drift | 入力手順と画像保存を fixture 化する |
+| stale session が実機に残る | doctor cleanup と session pid/transport dir 表示を追加する |
+

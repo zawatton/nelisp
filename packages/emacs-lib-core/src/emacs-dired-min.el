@@ -18,7 +18,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'emacs-dired-min-gui)
 (require 'emacs-buffer-builtins)
 (require 'emacs-error)
 (require 'emacs-keymap)

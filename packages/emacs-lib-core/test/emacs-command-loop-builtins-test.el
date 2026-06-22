@@ -503,6 +503,29 @@
       (should (string-equal "M-x" emacs-command-loop-gui-keys))
       (should (eq 'bridge-command emacs-command-loop--last-command)))))
 
+(ert-deftest emacs-command-loop-builtins-test/gui-command-execution-state ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should (equal '(:command forward-char
+                     :effective-command "forward-char"
+                     :arg "3"
+                     :status "ok")
+                   (emacs-command-loop-gui-command-execution-state
+                    "forward-char" "forward-char" "3")))
+    (should (equal '(:command backward-char
+                     :effective-command "backward-char"
+                     :arg ""
+                     :status "pending")
+                   (emacs-command-loop-gui-command-execution-state
+                    'backward-char nil nil "pending")))
+    (should (equal '(:command replace-string
+                     :effective-command "replace-string"
+                     :arg "from"
+                     :status "ok"
+                     :minibuffer-arg "to"
+                     :save-undo t)
+                   (emacs-command-loop-gui-replace-execution-state
+                    "replace-string" "from" "to")))))
+
 (ert-deftest emacs-command-loop-builtins-test/gui-current-context-refresh ()
   (emacs-command-loop-builtins-test--with-fresh-state
     (let (set-values)
@@ -907,8 +930,758 @@
     (should (equal '(:command nil
                      :effective-command "C-x C-z"
                      :arg ""
-                     :status "unsupported")
-                   (emacs-command-loop-gui-key-dispatch-spec)))))
+	                     :status "unsupported")
+	                   (emacs-command-loop-gui-key-dispatch-spec)))))
+
+(ert-deftest emacs-command-loop-builtins-test/normalize-key-event ()
+  (should (eq 'backspace
+              (emacs-command-loop-normalize-key-event
+               #xff08 0 0 :named-events '((#xff08 . backspace)))))
+  (should (= ?\C-x
+             (emacs-command-loop-normalize-key-event
+              ?x 4 0 :control-mask 4)))
+  (should (= 0
+             (emacs-command-loop-normalize-key-event
+              ?\s 4 ?\s :control-mask 4)))
+  (should (= ?a
+             (emacs-command-loop-normalize-key-event
+              ?a 0 ?a)))
+  (should-not
+   (emacs-command-loop-normalize-key-event #xffff 0 0)))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-lane-priority ()
+  (should (eq 'minibuffer
+              (emacs-command-loop-key-dispatch-lane
+               :minibuffer-active t
+               :query-replace-pending t
+               :event ?a)))
+  (should (eq 'query-replace
+              (emacs-command-loop-key-dispatch-lane
+               :query-replace-pending t
+               :describe-key-pending t
+               :event ?a)))
+  (should (eq 'describe-key
+              (emacs-command-loop-key-dispatch-lane
+               :describe-key-pending t
+               :quoted-insert-pending t
+               :event ?a)))
+  (should (eq 'keymap
+              (emacs-command-loop-key-dispatch-lane :event ?a))))
+
+(ert-deftest emacs-command-loop-builtins-test/keyboard-quit-state-plan ()
+  (let ((plan
+         (emacs-command-loop-keyboard-quit-state
+          :minibuffer-active t
+          :query-replace-pending t
+          :describe-key-pending nil
+          :register-pending-op 'copy
+          :quoted-insert-pending t
+          :mark-active t
+          :pending-prefix [24])))
+    (should (equal '(minibuffer query-replace register quoted-insert
+                                mark prefix)
+                   (plist-get plan :clear)))
+    (should (equal "Quit" (plist-get plan :message)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-lane-electric-pair ()
+  (should (eq 'electric-pair
+              (emacs-command-loop-key-dispatch-lane
+               :event ?\(
+               :electric-pair-p t
+               :electric-open-pairs '((?\( . ?\)))
+               :electric-close-set '(?\)))))
+  (should (eq 'keymap
+              (emacs-command-loop-key-dispatch-lane
+               :event ?\(
+               :pending-prefix [?x]
+               :electric-pair-p t
+               :electric-open-pairs '((?\( . ?\)))
+               :electric-close-set '(?\)))))
+  (should (eq 'keymap
+              (emacs-command-loop-key-dispatch-lane
+               :event ?\(
+               :electric-pair-p t
+               :electric-open-pairs '((?\( . ?\)))
+               :electric-close-set '(?\))
+               :read-only-p t))))
+
+(ert-deftest emacs-command-loop-builtins-test/install-basic-edit-key-bindings ()
+  (let ((m (make-sparse-keymap)))
+    (emacs-command-loop-install-basic-edit-key-bindings m)
+    (should (eq 'self-insert-command (lookup-key m (vector ?a))))
+    (should (eq 'newline (lookup-key m (vector 13))))
+    (should (eq 'delete-backward-char (lookup-key m (vector 127))))
+    (should (eq 'delete-backward-char (lookup-key m (vector 'backspace))))
+    (should (eq 'forward-char (lookup-key m (vector ?\C-f))))
+    (should (eq 'backward-char (lookup-key m (vector 'left))))))
+
+(ert-deftest emacs-command-loop-builtins-test/install-c-x-prefix-key-bindings ()
+  (let ((m (make-sparse-keymap)))
+    (emacs-command-loop-install-c-x-prefix-key-bindings
+     m
+     '((find-file . find-file)
+       (save-buffer . save-buffer)
+       (switch-to-buffer . switch-to-buffer)
+       (list-buffers . list-buffers)
+       (kill-buffer . kill-buffer)
+       (quit . save-buffers-kill-emacs)
+       (split-window-below . split-window-below)
+       (split-window-right . split-window-right)
+       (delete-window . delete-window)
+       (delete-other-windows . delete-other-windows)
+       (other-window . other-window))
+     :command-bound-p (lambda (_command) t))
+    (should (eq 'find-file (lookup-key m (vector ?\C-f))))
+    (should (eq 'save-buffer (lookup-key m (vector ?\C-s))))
+    (should (eq 'switch-to-buffer (lookup-key m (vector ?b))))
+    (should (eq 'list-buffers (lookup-key m (vector ?\C-b))))
+    (should (eq 'kill-buffer (lookup-key m (vector ?k))))
+    (should (eq 'save-buffers-kill-emacs (lookup-key m (vector ?\C-c))))
+    (should (eq 'split-window-below (lookup-key m (vector ?2))))
+    (should (eq 'other-window (lookup-key m (vector ?o))))))
+
+(ert-deftest emacs-command-loop-builtins-test/install-help-prefix-key-bindings ()
+  (let ((m (make-sparse-keymap)))
+    (emacs-command-loop-install-help-prefix-key-bindings
+     m
+     '((describe-key . describe-key)
+       (describe-bindings . describe-bindings)
+       (describe-function . describe-function)
+       (describe-variable . describe-variable)
+       (apropos . apropos))
+     :command-bound-p (lambda (_command) t))
+    (should (eq 'describe-key (lookup-key m (vector ?k))))
+    (should (eq 'describe-bindings (lookup-key m (vector ?b))))
+    (should (eq 'describe-function (lookup-key m (vector ?f))))
+    (should (eq 'describe-variable (lookup-key m (vector ?v))))
+    (should (eq 'apropos (lookup-key m (vector ?a))))))
+
+(ert-deftest emacs-command-loop-builtins-test/build-standard-keymap ()
+  (let ((m
+         (emacs-command-loop-build-standard-keymap
+          :quit-command 'test-quit
+          :c-x-command-alist '((find-file . test-find-file)
+                               (save-buffer . test-save-buffer))
+          :c-x-extra-bindings (list (cons (vector ?u) 'test-undo))
+          :extra-bindings (list (cons (vector ?x) 'test-extra))
+          :help-command-alist '((describe-key . test-describe-key))
+          :help-command-bound-p (lambda (_command) t))))
+    (should (keymapp m))
+    (should (eq 'test-quit (lookup-key m (kbd "C-x C-c"))))
+    (should (eq 'test-quit (lookup-key m (kbd "C-c C-q"))))
+    (should (eq 'test-undo (lookup-key m (kbd "C-x u"))))
+    (should (eq 'test-extra (lookup-key m (vector ?x))))
+    (should (eq 'test-describe-key (lookup-key m (kbd "C-h k"))))))
+
+(ert-deftest emacs-command-loop-builtins-test/ensure-keymap-bindings ()
+  (let ((rebuilt nil)
+        (cleared nil)
+        (m (make-sparse-keymap)))
+    (define-key m (vector ?a) 'old-command)
+    (should
+     (eq 'new-map
+         (emacs-command-loop-ensure-keymap-bindings
+          :keymap m
+          :required-bindings `((,(vector ?a) . self-insert-command))
+          :lookup-key #'lookup-key
+          :clear-keymap (lambda ()
+                          (setq cleared t))
+          :init-keymap (lambda ()
+                         (setq rebuilt t)
+                         'new-map))))
+    (should cleared)
+    (should rebuilt))
+  (let ((m (make-sparse-keymap)))
+    (define-key m (vector ?a) 'self-insert-command)
+    (should
+     (eq m
+         (emacs-command-loop-ensure-keymap-bindings
+          :keymap m
+          :required-bindings `((,(vector ?a) . self-insert-command))
+          :lookup-key #'lookup-key
+          :clear-keymap (lambda ()
+                          (error "should not clear"))
+          :init-keymap (lambda ()
+                         (error "should not rebuild")))))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-read-only-policy ()
+  (should (emacs-command-loop-key-dispatch-read-only-blocked-p
+           'self-insert-command t '(self-insert-command yank)))
+  (should-not
+   (emacs-command-loop-key-dispatch-read-only-blocked-p
+    'forward-char t '(self-insert-command yank)))
+  (should-not
+   (emacs-command-loop-key-dispatch-read-only-blocked-p
+    'self-insert-command nil '(self-insert-command yank)))
+  (should (emacs-command-loop-key-dispatch-read-only-blocked-p
+           'custom-write t nil (lambda (binding)
+                                 (eq binding 'custom-write)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-recording-policy ()
+  (should (emacs-command-loop-key-dispatch-recording-p
+           t 'self-insert-command '(start-kbd-macro end-kbd-macro)))
+  (should-not
+   (emacs-command-loop-key-dispatch-recording-p
+    nil 'self-insert-command '(start-kbd-macro end-kbd-macro)))
+  (should-not
+   (emacs-command-loop-key-dispatch-recording-p
+    t 'start-kbd-macro '(start-kbd-macro end-kbd-macro))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-execution-kind ()
+  (let ((inline '((self-insert-command . self-insert)
+                  (delete-backward-char . delete-backward-char)
+                  (kill-line . kill-line)
+                  (yank . yank)))
+        (direct (lambda (binding) (memq binding '(forward-char custom-command)))))
+    (should (eq 'self-insert
+                (emacs-command-loop-key-dispatch-execution-kind
+                 'self-insert-command ?a
+                 :inline-edit-commands inline
+                 :direct-command-p direct)))
+    (should (eq 'fallback
+                (emacs-command-loop-key-dispatch-execution-kind
+                 'self-insert-command 'left
+                 :inline-edit-commands inline
+                 :direct-command-p direct)))
+    (should (eq 'delete-backward-char
+                (emacs-command-loop-key-dispatch-execution-kind
+                 'delete-backward-char 127
+                 :inline-edit-commands inline
+                 :direct-command-p direct)))
+    (should (eq 'direct-funcall
+                (emacs-command-loop-key-dispatch-execution-kind
+                 'forward-char ?f
+                 :inline-edit-commands inline
+                 :direct-command-p direct)))
+    (should (eq 'fallback
+                (emacs-command-loop-key-dispatch-execution-kind
+                 'missing-command ?x
+                 :inline-edit-commands inline
+                 :direct-command-p direct)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-direct-command-p ()
+  (should (emacs-command-loop-key-dispatch-direct-command-p
+           'find-file '(find-file save-buffer)))
+  (should-not (emacs-command-loop-key-dispatch-direct-command-p
+               'other-command '(find-file save-buffer))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-direct-funcall ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((ran nil))
+      (defun emacs-command-loop-builtins-test--direct-command ()
+        (setq ran t)
+        'direct-value)
+      (let ((result
+             (emacs-command-loop-key-dispatch-direct-funcall
+              'emacs-command-loop-builtins-test--direct-command)))
+        (should (plist-get result :ok))
+        (should (eq 'direct-value (plist-get result :value)))
+        (should ran)
+        (should (eq 'emacs-command-loop-builtins-test--direct-command
+                    emacs-command-loop--last-command))))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-direct-funcall-error ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (defun emacs-command-loop-builtins-test--direct-error ()
+      (error "direct boom"))
+    (let ((result
+           (emacs-command-loop-key-dispatch-direct-funcall
+            'emacs-command-loop-builtins-test--direct-error)))
+      (should-not (plist-get result :ok))
+      (should (string-match-p "direct boom" (plist-get result :message)))
+      (should (plist-get result :error))
+      (should (eq 'emacs-command-loop-builtins-test--direct-error
+                  emacs-command-loop--last-command)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-inline-command-recording ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should (eq 'self-insert-command
+                (emacs-command-loop-key-dispatch-inline-command
+                 'self-insert)))
+    (should (eq 'delete-backward-char
+                (emacs-command-loop-key-dispatch-record-inline-command
+                 'delete-backward-char)))
+    (should (eq 'delete-backward-char emacs-command-loop--last-command))
+    (setq emacs-command-loop--last-command 'kept)
+    (should-not
+     (emacs-command-loop-key-dispatch-record-inline-command 'unknown-kind))
+    (should (eq 'kept emacs-command-loop--last-command))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-inline-edit ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (applied)
+      (let ((result
+             (emacs-command-loop-key-dispatch-run-inline-edit
+              'yank
+              (lambda () '(:kind insert :text "abc"))
+              (lambda (edit)
+                (setq applied edit)
+                'applied))))
+        (should (eq 'yank (plist-get result :command)))
+        (should (equal '(:kind insert :text "abc")
+                       (plist-get result :edit)))
+        (should (equal applied (plist-get result :edit)))
+        (should (eq 'applied (plist-get result :apply-result)))
+        (should (eq 'yank emacs-command-loop--last-command))))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-inline-kind ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (applied)
+      (let ((result
+             (emacs-command-loop-key-dispatch-run-inline-kind
+              'kill-line
+              '((delete-backward-char . ignore)
+                (kill-line . emacs-command-loop-builtins-test--inline-edit))
+              (lambda (edit)
+                (setq applied edit)
+                :applied))))
+        (should (eq 'kill-line (plist-get result :kind)))
+        (should (eq 'kill-line (plist-get result :command)))
+        (should (equal '(:kind inline-test)
+                       (plist-get result :edit)))
+        (should (equal applied (plist-get result :edit)))
+        (should (eq :applied (plist-get result :apply-result)))
+        (should (eq 'kill-line emacs-command-loop--last-command)))
+      (setq emacs-command-loop--last-command 'kept)
+      (should-not
+       (emacs-command-loop-key-dispatch-run-inline-kind
+        'unknown
+        '((kill-line . emacs-command-loop-builtins-test--inline-edit))
+        #'ignore))
+      (should (eq 'kept emacs-command-loop--last-command)))))
+
+(defun emacs-command-loop-builtins-test--inline-edit ()
+  "Return a minimal edit plist for inline dispatch tests."
+  '(:kind inline-test))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-self-insert ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((key ?a)
+          (edit '(:beg 1 :end 2))
+          applied)
+      (should (eq :point-after
+                  (emacs-command-loop-key-dispatch-run-self-insert
+                   key
+                   (lambda () edit)
+                   (lambda (result)
+                     (setq applied (list key result))
+                     :point-after))))
+      (should (equal (list ?a edit) applied))
+      (should (eq 'self-insert-command emacs-command-loop--last-command)))))
+
+(ert-deftest emacs-command-loop-builtins-test/menu-action-command ()
+  (let ((commands '(("find-file" . find-file)
+                    ("save-buffer" . save-buffer)
+                    ("separator" . nil))))
+    (should (eq 'find-file
+                (emacs-command-loop-menu-action-command
+                 "find-file" commands)))
+    (should-not
+     (emacs-command-loop-menu-action-command "missing" commands))
+    (should-not
+     (emacs-command-loop-menu-action-command "separator" commands))
+    (should-not
+     (emacs-command-loop-menu-action-command 'find-file commands))))
+
+(ert-deftest emacs-command-loop-builtins-test/run-menu-action-command ()
+  (let ((commands '(("find-file" . find-file)
+                    ("save-buffer" . save-buffer)))
+        called)
+    (let ((result
+           (emacs-command-loop-run-menu-action-command
+            "save-buffer" commands
+            :call-interactively
+            (lambda (command)
+              (setq called command)
+              :called))))
+      (should (eq 'save-buffer called))
+      (should (equal "save-buffer" (plist-get result :action)))
+      (should (eq 'save-buffer (plist-get result :command)))
+      (should (eq :called (plist-get result :value))))
+    (should-not
+     (emacs-command-loop-run-menu-action-command
+      "missing" commands
+      :call-interactively (lambda (_command) :unexpected)))))
+
+(ert-deftest emacs-command-loop-builtins-test/command-name-symbol ()
+  (let ((callable (lambda (symbol)
+                    (memq symbol
+                          '(find-file nemacs-gtk-find-file
+                            save-buffer)))))
+    (should (eq 'find-file
+                (emacs-command-loop-command-name-symbol
+                 "find-file" :callable-p callable)))
+    (should (eq 'nemacs-gtk-find-file
+                (emacs-command-loop-command-name-symbol
+                 "find-file"
+                 :prefer-prefix "nemacs-gtk-"
+                 :callable-p callable)))
+    (should (eq 'missing-command
+                (emacs-command-loop-command-name-symbol
+                 "missing-command"
+                 :callable-p callable
+                 :allow-unbound t)))
+    (should-not
+     (emacs-command-loop-command-name-symbol
+      "missing-command" :callable-p callable))
+    (should-not
+     (emacs-command-loop-command-name-symbol "" :callable-p callable))
+    (should-not
+     (emacs-command-loop-command-name-symbol 42 :callable-p callable))))
+
+(defun emacs-command-loop-builtins-test--mx-dispatch-command ()
+  "Test command for generic M-x dispatch helpers."
+  (interactive)
+  :direct)
+
+(ert-deftest emacs-command-loop-builtins-test/ensure-command ()
+  (let (messages)
+    (should
+     (emacs-command-loop-ensure-command
+      'emacs-command-loop-builtins-test--mx-dispatch-command))
+    (should-not
+     (emacs-command-loop-ensure-command
+      'emacs-command-loop-builtins-test--missing-command
+      :feature-alist '((emacs-command-loop-builtins-test--missing-command
+                        . missing-feature))
+      :message-function
+      (lambda (format-string &rest args)
+        (push (apply #'format format-string args) messages))))
+    (should (equal 1 (length messages)))
+    (should (string-match-p "load failed" (car messages)))))
+
+(ert-deftest emacs-command-loop-builtins-test/dispatch-command-with-handlers ()
+  (let (called after messages)
+    (should (eq :handler
+                (emacs-command-loop-dispatch-command-with-handlers
+                 'find-file
+                 '((find-file . (lambda () :handler)))
+                 :call-command (lambda (_command) :unexpected))))
+    (should (equal '(:generic save-buffer)
+                   (emacs-command-loop-dispatch-command-with-handlers
+                    'save-buffer nil
+                    :ensure-command (lambda (command)
+                                      (setq called command)
+                                      t)
+                    :call-command (lambda (command)
+                                    (list :generic command))
+                    :after-command (lambda (command result)
+                                     (setq after (list command result))))))
+    (should (eq called 'save-buffer))
+    (should (equal after '(save-buffer (:generic save-buffer))))
+    (should-not
+     (emacs-command-loop-dispatch-command-with-handlers
+      'missing nil
+      :ensure-command (lambda (_command) nil)
+      :message-function
+      (lambda (format-string &rest args)
+        (push (apply #'format format-string args) messages))))
+    (should (equal '("M-x missing is not a command") messages))))
+
+(ert-deftest emacs-command-loop-builtins-test/run-extended-command-direct ()
+  (let (prompts commands)
+    (should
+     (eq :ran
+         (emacs-command-loop-run-extended-command
+          :read-string (lambda (prompt)
+                         (push prompt prompts)
+                         "save-buffer")
+          :dispatch-command (lambda (command)
+                              (push command commands)
+                              :ran))))
+    (should (equal '("M-x ") prompts))
+    (should (equal '(save-buffer) commands))))
+
+(ert-deftest emacs-command-loop-builtins-test/run-extended-command-handlers ()
+  (should
+   (eq :handled
+       (emacs-command-loop-run-extended-command
+        :command-name "find-file"
+        :handlers '((find-file . (lambda () :handled)))))))
+
+(ert-deftest emacs-command-loop-builtins-test/run-extended-command-reports-error ()
+  (let (messages)
+    (should-not
+     (emacs-command-loop-run-extended-command
+      :command-name "broken-command"
+      :dispatch-command (lambda (_command)
+                          (error "boom"))
+      :message-function
+      (lambda (format-string &rest args)
+        (push (apply #'format format-string args) messages))))
+    (should (equal '("M-x broken-command failed: (error \"boom\")")
+                   messages))))
+
+(ert-deftest emacs-command-loop-builtins-test/run-extended-command-unbound-hook ()
+  (let (missing)
+    (should-not
+     (emacs-command-loop-run-extended-command
+      :command-name "missing-command"
+      :callable-p (lambda (_symbol) nil)
+      :allow-unbound nil
+      :unbound-function (lambda (name)
+                          (setq missing name))))
+    (should (equal "missing-command" missing))))
+
+(ert-deftest emacs-command-loop-builtins-test/repeat-last-command ()
+  (let (called)
+    (should (eq 'empty
+                (plist-get
+                 (emacs-command-loop-repeat-last-command
+                  :last-command nil
+                  :repeat-command 'repeat
+                  :callable-p (lambda (_command) t))
+                 :status)))
+    (should (eq 'empty
+                (plist-get
+                 (emacs-command-loop-repeat-last-command
+                  :last-command 'repeat
+                  :repeat-command 'repeat
+                  :callable-p (lambda (_command) t))
+                 :status)))
+    (let ((unbound
+           (emacs-command-loop-repeat-last-command
+            :last-command 'missing-command
+            :callable-p (lambda (_command) nil))))
+      (should (eq 'unbound (plist-get unbound :status)))
+      (should (eq 'missing-command (plist-get unbound :command))))
+    (let ((ok
+           (emacs-command-loop-repeat-last-command
+            :last-command 'forward-char
+            :repeat-command 'repeat
+            :callable-p (lambda (_command) t)
+            :call-interactively
+            (lambda (command)
+              (setq called command)
+              :called))))
+      (should (eq 'ok (plist-get ok :status)))
+      (should (eq 'forward-char (plist-get ok :command)))
+      (should (eq :called (plist-get ok :value)))
+      (should (eq 'forward-char called)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-source-command-event ()
+  (should (= ?a (emacs-command-loop-key-source-command-event ?a)))
+  (should (= ?a (emacs-command-loop-key-source-command-event
+                 (list :char ?a :name ?b))))
+  (should (= ?x (emacs-command-loop-key-source-command-event
+                 (list :name ?x))))
+  (should-not
+   (emacs-command-loop-key-source-command-event (list :name 'backspace)))
+  (should-not
+   (emacs-command-loop-key-source-command-event (list :char 'left
+                                                      :name 'right))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-post-command-policy ()
+  (should-not
+   (emacs-command-loop-key-dispatch-undo-boundary-p
+    'self-insert-command))
+  (should
+   (emacs-command-loop-key-dispatch-undo-boundary-p 'kill-line))
+  (should-not
+   (emacs-command-loop-key-dispatch-buffer-cache-invalidating-p
+    'forward-char))
+  (should-not
+   (emacs-command-loop-key-dispatch-buffer-cache-invalidating-p
+    'custom-motion
+    :extra-non-mutating-commands '(custom-motion)))
+  (should
+   (emacs-command-loop-key-dispatch-buffer-cache-invalidating-p 'yank))
+  (should-not
+   (emacs-command-loop-key-dispatch-cycle-reset-p
+    'move-to-window-line-top-bottom 'move-to-window-line-top-bottom))
+  (should
+   (emacs-command-loop-key-dispatch-cycle-reset-p
+    'forward-char 'move-to-window-line-top-bottom))
+  (let ((policy
+         (emacs-command-loop-key-dispatch-post-command-policy
+          'self-insert-command
+          :cycle-command 'move-to-window-line-top-bottom)))
+    (should-not (plist-get policy :undo-boundary-p))
+    (should (plist-get policy :cycle-reset-p))
+    (should (plist-get policy :buffer-cache-invalidating-p)))
+  (let ((policy
+         (emacs-command-loop-key-dispatch-post-command-policy
+          'forward-char
+          :cycle-command 'move-to-window-line-top-bottom)))
+    (should (plist-get policy :undo-boundary-p))
+    (should (plist-get policy :cycle-reset-p))
+    (should-not (plist-get policy :buffer-cache-invalidating-p))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-plan-prefix-command ()
+  (let ((prefix-map (list 'keymap)))
+    (let ((plan
+           (emacs-command-loop-key-dispatch-plan
+            :events [?a]
+            :prefix []
+            :lookup-single (lambda (_key) prefix-map)
+            :lookup-sequence (lambda (_seq) nil)
+            :keymap-p (lambda (binding) (eq binding prefix-map)))))
+      (should (eq 'prefix (plist-get plan :kind)))
+      (should (eq prefix-map (plist-get plan :binding)))
+      (should (equal [?a] (plist-get plan :next-prefix))))
+    (let ((plan
+           (emacs-command-loop-key-dispatch-plan
+            :events [?b]
+            :prefix [?a]
+            :lookup-sequence
+            (lambda (seq)
+              (and (equal seq [?a ?b]) 'probe-command)))))
+      (should (eq 'command (plist-get plan :kind)))
+      (should (eq 'probe-command (plist-get plan :binding)))
+      (should (equal [] (plist-get plan :next-prefix))))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-plan-self-insert-fast ()
+  (let ((lookup-called nil))
+    (cl-letf (((symbol-function 'self-insert-command) (lambda (&rest _) nil)))
+      (let ((plan
+             (emacs-command-loop-key-dispatch-plan
+              :events [?a]
+              :prefix []
+              :lookup-sequence (lambda (_seq) (setq lookup-called t))
+              :fast-self-insert-p t)))
+        (should (eq 'self-insert (plist-get plan :kind)))
+        (should (eq 'self-insert-command (plist-get plan :binding)))
+        (should-not lookup-called)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-plan-prefix ()
+  (let (prefix)
+    (let ((result
+           (emacs-command-loop-key-dispatch-run-plan
+            (list :kind 'prefix
+                  :binding '(keymap)
+                  :next-prefix [?x])
+            :set-prefix (lambda (value)
+                          (setq prefix value)))))
+      (should (eq 'prefix (plist-get result :status)))
+      (should (equal [?x] prefix)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-plan-self-insert ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (prefix last-event after-point command-point)
+      (let ((result
+             (emacs-command-loop-key-dispatch-run-plan
+              (list :kind 'self-insert
+                    :binding 'self-insert-command
+                    :event ?a
+                    :next-prefix [])
+              :set-prefix (lambda (value)
+                            (setq prefix value))
+              :set-last-command-event (lambda (event)
+                                        (setq last-event event))
+              :run-self-insert (lambda (event _plan)
+                                  (should (= ?a event))
+                                  :point-after)
+              :after-self-insert (lambda (point _plan)
+                                   (setq after-point point))
+              :after-command (lambda (point _plan)
+                               (setq command-point point)))))
+        (should (eq 'self-insert (plist-get result :status)))
+        (should (equal [] prefix))
+        (should (= ?a last-event))
+        (should (eq :point-after after-point))
+        (should (eq :point-after command-point))))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-plan-command ()
+  (let (prefix last-event inserted after-point fallback-command)
+    (let ((result
+           (emacs-command-loop-key-dispatch-run-plan
+            (list :kind 'command
+                  :binding 'self-insert-command
+                  :event ?a
+                  :next-prefix [])
+            :source-event (list :name ?x)
+            :set-prefix (lambda (value)
+                          (setq prefix value))
+            :set-last-command-event (lambda (event)
+                                      (setq last-event event))
+            :inline-edit-commands '((self-insert-command . self-insert))
+            :direct-command-p (lambda (_command) nil)
+            :run-self-insert (lambda (event _plan)
+                                (setq inserted event)
+                                :point-after)
+            :after-self-insert (lambda (point _plan)
+                                 (setq after-point point))
+            :command-execute (lambda (command)
+                               (setq fallback-command command)))))
+      (should (eq 'command (plist-get result :status)))
+      (should (eq 'self-insert (plist-get result :execution-kind)))
+      (should (equal [] prefix))
+      (should (= ?x last-event))
+      (should (= ?a inserted))
+      (should (eq :point-after after-point))
+      (should-not fallback-command))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-plan-inline-kind ()
+  (let (prefix inline after-inline after-command)
+    (let ((result
+           (emacs-command-loop-key-dispatch-run-plan
+            (list :kind 'command
+                  :binding 'kill-line
+                  :event ?k
+                  :next-prefix [])
+            :set-prefix (lambda (value)
+                          (setq prefix value))
+            :inline-edit-commands '((kill-line . kill-line))
+            :direct-command-p (lambda (_command) nil)
+            :run-inline-kind
+            (lambda (kind event plan)
+              (setq inline (list kind event (plist-get plan :binding)))
+              :point-after-inline)
+            :after-inline-kind
+            (lambda (kind point plan)
+              (setq after-inline
+                    (list kind point (plist-get plan :binding))))
+            :after-command
+            (lambda (point plan)
+              (setq after-command
+                    (list point (plist-get plan :binding)))))))
+      (should (eq 'command (plist-get result :status)))
+      (should (eq 'kill-line (plist-get result :execution-kind)))
+      (should (equal [] prefix))
+      (should (equal '(kill-line ?k kill-line) inline))
+      (should (equal '(kill-line :point-after-inline kill-line)
+                     after-inline))
+      (should (equal '(:point-after-inline kill-line) after-command)))))
+
+(ert-deftest emacs-command-loop-builtins-test/key-dispatch-run-plan-direct-callback ()
+  (let (direct after-direct error)
+    (let ((result
+           (emacs-command-loop-key-dispatch-run-plan
+            (list :kind 'command
+                  :binding 'custom-command
+                  :event ?c
+                  :next-prefix [])
+            :direct-command-p (lambda (_command) t)
+            :run-direct-command
+            (lambda (command plan)
+              (setq direct (list command (plist-get plan :event)))
+              (list :command command :ok t :value :direct-value))
+            :after-direct-command
+            (lambda (command dispatch plan)
+              (setq after-direct
+                    (list command
+                          (plist-get dispatch :value)
+                          (plist-get plan :binding)))))))
+      (should (eq 'command (plist-get result :status)))
+      (should (eq 'direct-funcall (plist-get result :execution-kind)))
+      (should (equal '(custom-command ?c) direct))
+      (should (equal '(custom-command :direct-value custom-command)
+                     after-direct)))
+    (let ((result
+           (emacs-command-loop-key-dispatch-run-plan
+            (list :kind 'command
+                  :binding 'broken-command
+                  :event ?b
+                  :next-prefix [])
+            :direct-command-p (lambda (_command) t)
+            :run-direct-command
+            (lambda (command _plan)
+              (list :command command :ok nil :message "broken"))
+            :on-direct-error
+            (lambda (command dispatch)
+              (setq error (list command (plist-get dispatch :message)))))))
+      (should (eq 'direct-error (plist-get result :status)))
+      (should (equal '(broken-command "broken") error)))))
 
 (ert-deftest emacs-command-loop-builtins-test/gui-dispatch-key-self-insert ()
   (emacs-command-loop-builtins-test--with-fresh-state
@@ -1128,6 +1901,36 @@
       (should (equal '(status point mark window-start prefix written)
                      (nreverse calls)))
       (should-not (emacs-command-loop-gui-write-lane-state 'normal)))))
+
+(ert-deftest emacs-command-loop-builtins-test/gui-apply-post-command-writeback ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (calls)
+      (emacs-command-loop-gui-register-backend
+       :write-minibuffer-state (lambda () (push 'post-minibuffer calls))
+       :write-redisplay-state (lambda () (push 'redisplay calls))
+       :write-prefix-arg-state (lambda () (push 'prefix calls))
+       :write-status-state (lambda () (push 'status calls))
+       :write-point-state (lambda () (push 'point calls))
+       :write-mark-state (lambda () (push 'mark calls))
+       :write-window-start-state (lambda () (push 'window-start calls))
+       :mark-written-state (lambda () (push 'written calls)))
+      (let ((state
+             (emacs-command-loop-gui-apply-post-command-writeback
+              'project-query-replace-regexp "minibuffer" "prefix-arg")))
+        (should (equal "" (plist-get state :command-name)))
+        (should (eq 'normal (plist-get state :lane)))
+        (should (equal "normal" (plist-get state :lane-name)))
+        (should (plist-get state :lane-written-p))
+        (should (equal '(post-minibuffer redisplay prefix status point
+                         mark window-start prefix written)
+                       (nreverse calls)))))
+    (let ((state
+           (emacs-command-loop-gui-apply-post-command-writeback
+            'forward-char "forward-char" "ok")))
+      (should (equal "forward-char" (plist-get state :command-name)))
+      (should (eq 'normal (plist-get state :lane)))
+      (should (equal "normal" (plist-get state :lane-name)))
+      (should-not (plist-get state :lane-written-p)))))
 
 (ert-deftest emacs-command-loop-builtins-test/gui-minibuffer-active-runtime-handle ()
   (emacs-command-loop-builtins-test--with-fresh-state
@@ -1791,6 +2594,183 @@
     (emacs-command-loop-feed-events ?x)
     (let ((r (emacs-command-loop-recursive-edit)))
       (should (eq 'aborted r)))))
+
+(ert-deftest emacs-command-loop-builtins-test/needs-review-data-surfaces ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-not emacs-command-loop-gui-backend)
+    (should (assq 13 emacs-command-loop-basic-edit-key-bindings))
+    (should (assq ?\C-f emacs-command-loop-c-x-prefix-key-bindings))
+    (should (assq ?k emacs-command-loop-help-prefix-key-bindings))
+    (should (assq 'self-insert
+                  emacs-command-loop-key-dispatch-inline-command-alist))
+    (let ((emacs-command-loop-command-feature-hints
+           '((sample-command . sample-feature))))
+      (should (assq 'sample-command
+                    emacs-command-loop-command-feature-hints)))
+    (should (memq 'forward-char
+                  emacs-command-loop-key-dispatch-non-mutating-commands))
+    (should (member "ignore"
+                    emacs-command-loop-gui-benign-status-command-names))
+    (should (member "digit-argument"
+                    emacs-command-loop-gui-prefix-command-names))
+    (should (member "forward-char"
+                    emacs-command-loop-gui-prefix-repeat-command-names))
+    (should (assq 'forward-char
+                  emacs-command-loop-gui-prefix-invert-command-alist))
+    (should (assq 'goto-char
+                  emacs-command-loop-gui-adapted-command-alist))))
+
+(ert-deftest emacs-command-loop-builtins-test/needs-review-small-helpers ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should (emacs-command-loop-keymap-binding-p (list 'keymap)))
+    (should-not (emacs-command-loop-keymap-binding-p 'forward-char))
+    (should (string-match-p
+             "boom"
+             (emacs-command-loop-key-dispatch-error-message
+              '(error "boom"))))
+    (cl-letf (((symbol-function 'self-insert-command)
+               (lambda (&rest _args) nil)))
+      (should (emacs-command-loop-printable-self-insert-p
+               'self-insert-command ?a))
+      (should-not (emacs-command-loop-printable-self-insert-p
+                   'self-insert-command 9))
+      (should-not (emacs-command-loop-printable-self-insert-p
+                   'forward-char ?a)))
+    (should (string-equal "42"
+                          (emacs-command-loop-gui-prefix-number-string
+                           42)))
+    (emacs-command-loop-gui-set-context
+     :command 'forward-char
+     :effective-command "forward-char"
+     :prefix-arg "-2")
+    (should (emacs-command-loop-gui-invert-prefix-command-if-needed))
+    (should (eq 'backward-char emacs-command-loop-gui-command))
+    (should (string-equal "backward-char"
+                          emacs-command-loop-gui-effective-command))
+    (emacs-command-loop-gui-set-context
+     :command 'find-file
+     :effective-command "find-file"
+     :prefix-arg "-2")
+    (should-not (emacs-command-loop-gui-invert-prefix-command-if-needed))
+    (should (eq 'find-file emacs-command-loop-gui-command))))
+
+(ert-deftest emacs-command-loop-builtins-test/needs-review-current-context-wrappers ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (called after-key)
+      (emacs-command-loop-gui-register-backend
+       :lookup-key-sequence (lambda () "probe-command")
+       :commandp (lambda (_command) t)
+       :read-only-p (lambda () nil)
+       :prefix-arg-empty-p (lambda () t)
+       :call-command (lambda (command) (setq called command)
+                       :called)
+       :after-key-dispatch (lambda () (setq after-key t)))
+      (should (eq :called
+                  (emacs-command-loop-gui-dispatch-key-request-context
+                   :keys "C-c p")))
+      (should (eq 'probe-command called))
+      (should after-key)))
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (called)
+      (emacs-command-loop-gui-register-backend
+       :commandp (lambda (_command) t)
+       :read-only-p (lambda () nil)
+       :prefix-arg-empty-p (lambda () t)
+       :call-command (lambda (command) (setq called command)
+                       :direct-called))
+      (should (eq 'direct
+                  (emacs-command-loop-gui-run-request-context
+                   :command 'direct-command)))
+      (should (eq 'direct-command called))))
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (emacs-command-loop-gui-register-backend
+     :current-command (lambda () 'project-query-replace-regexp)
+     :current-effective-command (lambda () "minibuffer"))
+    (should (string-equal
+             "project-query-replace-regexp"
+             (emacs-command-loop-gui-writeback-command-name-current-context))))
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (callbacks)
+      (emacs-command-loop-gui-register-backend
+       :current-command (lambda () 'project-query-replace-regexp)
+       :current-effective-command (lambda () "minibuffer")
+       :current-status (lambda () "prefix-arg")
+       :clear-display-prefix-after-command
+       (lambda () (push :clear callbacks))
+       :write-minibuffer-state
+       (lambda () (push :minibuffer callbacks)))
+      (let ((result
+             (emacs-command-loop-gui-write-post-command-state-current-context)))
+        (should (equal "project-query-replace-regexp"
+                       (plist-get result :command-name)))
+        (should (eq 'prefix-arg (plist-get result :lane)))
+        (should (memq :clear callbacks))
+        (should (memq :minibuffer callbacks)))))
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (emacs-command-loop-gui-set-context :keys "C-x" :arg "seed")
+    (should (string-equal "C-x"
+                          (emacs-command-loop-gui-minibuffer-key)))
+    (should (string-equal "seed"
+                          (emacs-command-loop-gui-minibuffer-initial-input)))
+    (emacs-command-loop-gui-register-backend
+     :minibuffer-key (lambda () "RET")
+     :minibuffer-initial-input (lambda () "typed"))
+    (should (string-equal "RET"
+                          (emacs-command-loop-gui-minibuffer-key)))
+    (should (string-equal "typed"
+                          (emacs-command-loop-gui-minibuffer-initial-input))))
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let (called args commands)
+      (emacs-command-loop-gui-register-backend
+       :current-command (lambda () 'project-any-command)
+       :current-effective-command (lambda () "project-any-command")
+       :current-arg (lambda () "")
+       :current-minibuffer-arg (lambda () "nested")
+       :commandp (lambda (_command) t)
+       :read-only-p (lambda () nil)
+       :prefix-arg-empty-p (lambda () t)
+       :set-command (lambda (command) (push command commands))
+       :set-arg (lambda (arg) (push arg args))
+       :call-command (lambda (command) (setq called command)
+                       :project-called))
+      (should (eq :project-called
+                  (emacs-command-loop-gui-project-command-current-context
+                   'project-any-command)))
+      (should (eq 'project-dired called))
+      (should (member "nested" args))
+      (should (eq 'project-any-command (car commands))))))
+
+(ert-deftest emacs-command-loop-builtins-test/needs-review-read-command-and-drain ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let ((had-reader (fboundp 'emacs-minibuffer-completing-read))
+          (old-reader (and (fboundp 'emacs-minibuffer-completing-read)
+                           (symbol-function
+                            'emacs-minibuffer-completing-read))))
+      (unwind-protect
+          (progn
+            (fset 'emacs-minibuffer-completing-read
+                  (lambda (&rest _args) "forward-char"))
+            (should (eq 'forward-char
+                        (emacs-command-loop-read-command "M-x ")))
+            (fset 'emacs-minibuffer-completing-read
+                  (lambda (&rest _args) ""))
+            (should (eq 'save-buffer
+                        (emacs-command-loop-read-command
+                         "M-x " 'save-buffer))))
+        (if had-reader
+            (fset 'emacs-minibuffer-completing-read old-reader)
+          (fmakunbound 'emacs-minibuffer-completing-read))))
+    (setq emacs-command-loop-builtins-test--counter 0)
+    (emacs-keymap-define-key emacs-keymap-global-map "a"
+                             'emacs-command-loop-builtins-test--bump)
+    (emacs-command-loop-feed-events ?a ?a)
+    (should (= 2 (emacs-command-loop-drain)))
+    (should (= 2 emacs-command-loop-builtins-test--counter))
+    (emacs-command-loop-feed-events ?a)
+    (setq emacs-command-loop--this-command 'dirty)
+    (should (= 0 (emacs-command-loop-top-level)))
+    (should-not emacs-command-loop--this-command)
+    (should-not (emacs-command-loop-pending-p))))
 
 (provide 'emacs-command-loop-builtins-test)
 

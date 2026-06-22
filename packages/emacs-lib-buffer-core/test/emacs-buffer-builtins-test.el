@@ -149,6 +149,33 @@
     (should (equal "_abc!" (text-buffer-substring
                             tb 0 (text-buffer-length tb))))))
 
+(ert-deftest emacs-buffer-builtins-test/text-buffer-stable-mutation-api ()
+  "Layer 0 text-buffer insert/delete/search APIs should be reusable directly."
+  (let ((tb (make-text-buffer "abef")))
+    (text-buffer-set-cursor tb 2)
+    (should (eq tb (text-buffer-insert tb "cd")))
+    (should (equal "abcdef" (text-buffer-substring
+                             tb 0 (text-buffer-length tb))))
+    (should (= 4 (text-buffer-cursor tb)))
+    (should (= 2 (text-buffer-search tb "cd")))
+    (should (= 5 (text-buffer-search tb "f" 4)))
+    (should-not (text-buffer-search tb "zz"))
+    (should (eq tb (text-buffer-delete tb 1 5)))
+    (should (equal "af" (text-buffer-substring
+                         tb 0 (text-buffer-length tb))))
+    (should (= 1 (text-buffer-cursor tb)))))
+
+(ert-deftest emacs-buffer-builtins-test/text-buffer-stable-byte-queries ()
+  "Layer 0 text-buffer byte/multibyte query APIs should reflect storage mode."
+  (let ((multi (make-text-buffer "aあ"))
+        (uni (make-text-buffer (string-as-unibyte "abc"))))
+    (should (text-buffer-multibyte-p multi))
+    (should (= 2 (text-buffer-length multi)))
+    (should (= 4 (text-buffer-byte-length multi)))
+    (should-not (text-buffer-multibyte-p uni))
+    (should (= 3 (text-buffer-length uni)))
+    (should (= 3 (text-buffer-byte-length uni)))))
+
 (ert-deftest emacs-buffer-builtins-test/text-tick-tracks-text-edits ()
   (emacs-buffer-builtins-test--with-fresh-world
     (let ((buf (nelisp-ec-generate-new-buffer "tick")))
@@ -197,6 +224,44 @@
         (should (equal "abc" (nelisp-ec-buffer-string)))
         (should (= 4 (nelisp-ec-point)))
         (should (= 3 (nelisp-ec-buffer-text-tick buf)))))))
+
+(ert-deftest emacs-buffer-builtins-test/forward-backward-char-respects-narrowing ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "move")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcd")
+        (nelisp-ec-goto-char 2)
+        (should (eq t (nelisp-ec-forward-char 2)))
+        (should (= 4 (nelisp-ec-point)))
+        (should (eq t (nelisp-ec-backward-char 1)))
+        (should (= 3 (nelisp-ec-point)))
+        (nelisp-ec-narrow-to-region 2 4)
+        (should (eq t (nelisp-ec-forward-char 1)))
+        (should (= 4 (nelisp-ec-point)))
+        (should-error (nelisp-ec-forward-char 1)
+                      :type 'nelisp-ec-args-out-of-range)
+        (should (= 4 (nelisp-ec-point)))
+        (should-error (nelisp-ec-backward-char 3)
+                      :type 'nelisp-ec-args-out-of-range)
+        (should (= 4 (nelisp-ec-point)))))))
+
+(ert-deftest emacs-buffer-builtins-test/delete-char-and-erase-buffer-mutate-text ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "delete")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (nelisp-ec-goto-char 3)
+        (should-not (nelisp-ec-delete-char 2))
+        (should (equal "abef" (nelisp-ec-buffer-string)))
+        (should (= 3 (nelisp-ec-point)))
+        (should-not (nelisp-ec-delete-char -1))
+        (should (equal "aef" (nelisp-ec-buffer-string)))
+        (should (= 2 (nelisp-ec-point)))
+        (should (= 3 (nelisp-ec-buffer-text-tick buf)))
+        (should-not (nelisp-ec-erase-buffer))
+        (should (equal "" (nelisp-ec-buffer-string)))
+        (should (= 1 (nelisp-ec-point)))
+        (should (= 4 (nelisp-ec-buffer-text-tick buf)))))))
 
 (ert-deftest emacs-buffer-builtins-test/char-accessors-and-subst-use-ec-buffer ()
   (emacs-buffer-builtins-test--with-fresh-world
@@ -303,6 +368,24 @@
         (should (= 2 (nelisp-ec-point-min)))
         (should (= 5 (nelisp-ec-point-max)))))))
 
+;;;; H2. save-current-buffer
+
+(ert-deftest emacs-buffer-builtins-test/save-current-buffer-restores-selection ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((a (nelisp-ec-generate-new-buffer "save-a"))
+          (b (nelisp-ec-generate-new-buffer "save-b")))
+      (nelisp-ec-set-buffer a)
+      (should (eq a (nelisp-ec-current-buffer)))
+      (nelisp-ec-save-current-buffer
+        (nelisp-ec-set-buffer b)
+        (should (eq b (nelisp-ec-current-buffer))))
+      (should (eq a (nelisp-ec-current-buffer)))
+      (ignore-errors
+        (nelisp-ec-save-current-buffer
+          (nelisp-ec-set-buffer b)
+          (error "boom")))
+      (should (eq a (nelisp-ec-current-buffer))))))
+
 ;;;; I. narrow-to-region
 
 (ert-deftest emacs-buffer-builtins-test/narrow-to-region-clips-point-min-max ()
@@ -338,6 +421,10 @@
           (should (eq m (nelisp-ec-set-marker m 2 buf)))
           (should (= 2 (nelisp-ec-marker-position m)))
           (should (eq buf (nelisp-ec-marker-buffer m)))
+          (nelisp-ec-goto-char 3)
+          (let ((point-marker (nelisp-ec-point-marker)))
+            (should (= 3 (nelisp-ec-marker-position point-marker)))
+            (should (eq buf (nelisp-ec-marker-buffer point-marker))))
           (should (eq m (nelisp-ec-set-marker m nil)))
           (should (null (nelisp-ec-marker-position m)))
           (should (null (nelisp-ec-marker-buffer m))))))))

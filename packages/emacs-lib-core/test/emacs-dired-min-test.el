@@ -5,6 +5,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-dired-min)
+(require 'emacs-dired-min-gui)
 
 (defmacro emacs-dired-min-test--with-fresh-world (&rest body)
   "Run BODY with clean nelisp + dired substrate state."
@@ -71,6 +72,61 @@
                  entries)))
     (should index)
     (nelisp-ec-goto-char (nth index line-starts))))
+
+(ert-deftest dired-gui-directory-listing-renders-simple-text ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (let* ((root (plist-get tree :root))
+                 (listing (emacs-dired-min-gui-directory-listing root))
+                 (entries (plist-get listing :entries))
+                 (text (plist-get listing :text)))
+            (should (equal (expand-file-name root)
+                           (plist-get listing :directory)))
+            (should (= 5 (plist-get listing :count)))
+            (should (equal '("." ".." "alpha.txt" "beta.txt" "subdir")
+                           (mapcar (lambda (entry) (plist-get entry :name))
+                                   entries)))
+            (should (string-match-p
+                     (concat "Directory: " (regexp-quote (expand-file-name root)))
+                     text))
+            (should (string-match-p "  -  alpha\\.txt" text))
+            (should (string-match-p "  d  subdir" text)))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-gui-simple-listing-renders-bridge-text ()
+  (should (equal '(:directory "/tmp/demo"
+                   :entries ("alpha.txt" "sub")
+                   :count 2
+                   :text "Directory /tmp/demo\n  alpha.txt\n  sub\n")
+                 (emacs-dired-min-gui-simple-listing
+                  "/tmp/demo/"
+                  '("." ".." "alpha.txt" "sub")))))
+
+(ert-deftest dired-gui-render-directory-buffer-uses-callbacks ()
+  (let (directory buffer-name emitted displayed)
+    (should
+     (equal
+      "*Dired*"
+      (emacs-dired-min-gui-render-directory-buffer
+       ""
+       :default-directory (lambda () "/tmp/demo")
+       :directory-files (lambda (dir)
+                          (setq directory dir)
+                          '("." ".." "alpha.txt"))
+       :emit-text (lambda (text)
+                    (setq emitted text))
+       :display-buffer (lambda (name text)
+                         (setq displayed (list name text)))
+       :set-directory (lambda (dir)
+                        (setq directory dir))
+       :set-buffer-name (lambda (name)
+                          (setq buffer-name name))
+       :buffer-name "*Dired*")))
+    (should (equal "/tmp/demo" directory))
+    (should (equal "*Dired*" buffer-name))
+    (should (string-match-p "alpha.txt" emitted))
+    (should (equal (list "*Dired*" emitted) displayed))))
 
 (ert-deftest dired-lists-files-and-dirs ()
   (emacs-dired-min-test--with-fresh-world
@@ -699,6 +755,40 @@
                        (:display "frame")
                        (:list "/tmp/demo"))
                      calls)))))
+
+(ert-deftest dired-gui-run-directory-command-uses-frontend-hooks ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((installed nil)
+          (prompts nil)
+          (context nil)
+          (command nil)
+          (action nil))
+      (cl-letf (((symbol-function 'emacs-dired-min-gui-set-context)
+                 (lambda (&rest plist)
+                   (setq context plist)
+                   plist))
+                ((symbol-function 'emacs-dired-min-gui-current-context-command)
+                 (lambda (cmd where)
+                   (setq command cmd
+                         action where)
+                   "*Dired*")))
+        (should
+         (equal
+          "*Dired*"
+          (emacs-dired-min-gui-run-directory-command
+           :install-function (lambda () (setq installed t))
+           :read-string (lambda (prompt)
+                          (push prompt prompts)
+                          "")
+           :default-directory (lambda () "/tmp/default")
+           :buffer-name "*Dired*")))
+        (should installed)
+        (should (equal '("Dired (directory): ") prompts))
+        (should (equal "/tmp/default" (plist-get context :directory)))
+        (should (equal "ok" (plist-get context :status)))
+        (should (equal "*Dired*" (plist-get context :buffer-name)))
+        (should (eq 'dired command))
+        (should (equal "same" action))))))
 
 (ert-deftest emacs-dired-min-gui-writeback-spec ()
   (emacs-dired-min-test--with-fresh-world

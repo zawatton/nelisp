@@ -192,6 +192,49 @@ the next `undo' starts a clean group."
       (emacs-undo-set-buffer-undo-list (cons nil remaining))))
   nil)
 
+(defun emacs-undo-undo-direct (&optional arg)
+  "Undo ARG groups and return a frontend-neutral result plist.
+The result contains `:status' and `:message'.  `:status' is `ok' or
+`error'.  Frontends can display `:message' directly while keeping undo
+error normalization in this shared substrate layer."
+  (condition-case err
+      (progn
+        (emacs-undo-undo arg)
+        (list :status 'ok
+              :message "undo"))
+    (emacs-undo-error
+     (let ((reason (or (cadr err) (car err))))
+       (list :status 'error
+             :condition (car err)
+             :data (cdr err)
+             :message (format "undo: %s" reason))))
+    (error
+     (let ((reason (or (cadr err) (car err))))
+       (list :status 'error
+	     :condition (car err)
+	     :data (cdr err)
+	     :message (format "undo: %s" reason))))))
+
+(defun emacs-undo-run-command (&rest plist)
+  "Run a frontend undo command through the shared undo API.
+PLIST accepts `:current-buffer', `:arg', `:status-function', and
+`:after-success'.  The result plist from `emacs-undo-undo-direct' is
+returned."
+  (let* ((current-buffer-function (plist-get plist :current-buffer))
+         (arg (plist-get plist :arg))
+         (status-function (plist-get plist :status-function))
+         (after-success (plist-get plist :after-success))
+         (buffer (if current-buffer-function
+                     (funcall current-buffer-function)
+                   (current-buffer)))
+         (result (with-current-buffer buffer
+                   (emacs-undo-undo-direct arg))))
+    (when (and after-success (eq 'ok (plist-get result :status)))
+      (funcall after-success result))
+    (when status-function
+      (funcall status-function (plist-get result :message)))
+    result))
+
 (provide 'emacs-undo)
 
 ;;; emacs-undo.el ends here

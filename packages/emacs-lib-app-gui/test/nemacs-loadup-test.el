@@ -114,9 +114,11 @@
     (nemacs-init t)
     ;; A representative slice of every Track's bridge module.
     (dolist (feat '(emacs-init
+                    nelisp-emacs
                     emacs-buffer-builtins
                     emacs-search-builtins
                     emacs-line-builtins
+                    emacs-io
                     emacs-fileio-builtins
                     emacs-edit-builtins
                     emacs-minibuffer-builtins

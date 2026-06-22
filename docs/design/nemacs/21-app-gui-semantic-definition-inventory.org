@@ -1,0 +1,668 @@
+#+TITLE: nelisp-emacs Doc 21 -- APP/GUI semantic definition inventory
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-21
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 18 package ownership inventory, Doc 20 files runtime boundary
+
+* 0. Purpose
+
+This inventories the 223 =app-gui-semantic-definition= rows reported by
+=make nemacs-library-boundary-report= after private cross-owner edges were
+reduced to zero.
+
+These rows are advisory.  They do not all mean the implementation is in
+the wrong place.  The report intentionally over-matches names that look
+like reusable editor semantics inside APP/GUI-owned files.  This document
+separates:
+
+1. reusable runtime adapters that are currently classified as GUI,
+2. app/TUI command semantics that should move into shared packages,
+3. concrete GTK/transport behavior that should remain frontend-owned, and
+4. report noise that needs better ownership metadata before enforcement.
+
+* 1. Baseline count
+
+Source of truth:
+
+- =build/nemacs-library-boundary-report.tsv=
+- =build/nemacs-library-boundary-summary.org=
+
+Baseline summary before Doc 18 runtime-adapter reclassification:
+
+| Type | Count |
+|------+-------|
+| =app-gui-semantic-definition= | 223 |
+| =private-cross-owner= | 0 |
+
+Breakdown by primary owner:
+
+| Owner | Count | Meaning |
+|-------+-------+---------|
+| GUI | 188 | bridge/frontend files matched semantic command names |
+| APP | 35 | =nemacs-main.el= owns TUI/app command paths |
+
+Breakdown by file:
+
+| File | Count | Initial classification |
+|------+-------+------------------------|
+| =src/emacs-fileio-gui.el= | 54 | reusable file/buffer GUI command runtime adapter |
+| =src/emacs-dired-min-gui.el= | 45 | reusable Dired GUI command runtime adapter |
+| =src/nemacs-main.el= | 35 | app/TUI command and dispatch semantics |
+| =src/nemacs-gtk-frontend.el= | 34 | concrete GTK frontend with reusable editor semantics mixed in |
+| =src/nemacs-gui-file-bridge-runtime.el= | 17 | baked bridge runtime adapter/fallback glue |
+| =src/emacs-help-gui.el= | 23 | reusable Help GUI command runtime adapter |
+| =gui/nemacs-editor-transport.el= | 4 | transport source rewriting, mostly GUI-owned |
+| =src/nemacs-gtk-view-menu.el= | 1 | GTK view/menu wrapper |
+
+* 2. Inventory classes
+
+** 2.1 Shared GUI command runtime adapters
+
+Files:
+
+- =src/emacs-fileio-gui.el= (54)
+- =src/emacs-dired-min-gui.el= (45)
+- =src/emacs-help-gui.el= (23)
+
+Total: 122 rows.
+
+These files are not ordinary frontend code.  They define bridge-friendly
+command runtimes that can be consumed by GTK, TUI, and baked standalone
+images through registered backend callbacks.
+
+Examples:
+
+- =emacs-fileio-gui-command-spec=
+- =emacs-fileio-gui-writeback-spec=
+- =emacs-dired-min-gui-writeback-spec=
+- =emacs-help-gui-describe-key-core=
+
+Decision:
+
+- Keep these as reusable runtime adapters, but do not treat them as
+  concrete GUI owners.
+- In Doc 18, their primary owner is their semantic package first, with
+  GUI as a secondary adapter facet:
+  - =emacs-fileio-gui.el=: =IO/GUI=
+  - =emacs-dired-min-gui.el=: =FEAT/GUI=
+  - =emacs-help-gui.el=: =CORE/GUI=
+- The boundary report uses this primary group, which removes these 122
+  rows from the APP/GUI semantic backlog without moving code.
+
+Extraction rule:
+
+- Command-to-spec policy and writeback ordering may stay here while the
+  backend callback boundary remains explicit.
+- Any buffer mutation, keymap lookup, minibuffer completion, Dired
+  listing semantics, or help text generation that becomes useful outside
+  the bridge should move down into =emacs-fileio.el=,
+  =emacs-dired-min.el=, =emacs-help.el=, =emacs-buffer-ui.el=, or
+  =emacs-minibuffer.el=.
+
+** 2.2 Baked bridge runtime adapter glue
+
+File:
+
+- =src/nemacs-gui-file-bridge-runtime.el= (initially 17, currently 0)
+
+The original matched rows were the =files--minibuffer-gui-backend-*= functions
+near the baked runtime image's minibuffer bridge installation.  These callback
+symbol names still exist for old standalone images, but the implementations
+are installed from =files--minibuffer-gui-backend-operation-table= and the
+backend installer is an =fset= adapter, so they no longer appear as individual
+baked runtime semantic definitions.
+
+Decision:
+
+- Treat this as compatibility glue for the generated/baked GUI runtime,
+  not as the desired long-term owner of minibuffer semantics.
+- Keep the public direction established by Doc 20: move reusable runtime
+  predicates and minibuffer behavior into shared modules, then leave only
+  storage and command-execute wiring here.
+
+Next extraction candidates:
+
+| Candidate | Target owner | Reason |
+|-----------+--------------+--------|
+| minibuffer text/cursor mutation | CORE via =emacs-minibuffer.el= | reusable prompt editing behavior |
+| candidate source selection | CORE/IO adapter boundary | shared command completion surface |
+| replace followup state | BUF/FEAT via replace runtime | query-replace should not be bridge-local |
+| command-spec execution wrapper | CORE command-loop adapter | command dispatch policy should be shared |
+
+** 2.3 APP/TUI command semantics
+
+File:
+
+- =src/nemacs-main.el= (35)
+
+This group includes:
+
+- keymap construction and installation,
+- TUI key dispatch,
+- direct printable self-insert fast path,
+- interactive file/buffer commands,
+- lightweight Dired/Help/Info/Shell/Query-replace commands,
+- =M-x= command dispatch.
+
+Decision:
+
+- =nemacs-main.el= should remain the runnable app assembly and event-loop
+  owner.
+- Reusable semantics inside it should be drained into shared packages in
+  small vertical slices.
+
+Priority slices:
+
+| Slice | Current examples | Target owner |
+|-------+------------------+--------------|
+| TUI key dispatch | =nemacs-main--dispatch-key-code=, =nemacs-main--dispatch-key-event= | CORE command-loop plus DSP/TUI event adapter |
+| printable self-insert fast path | =nemacs-main--execute-printable-self-insert= | BUF/edit command runtime |
+| file/buffer prompts | =nemacs-main-find-file-interactive=, =nemacs-main-switch-to-buffer-interactive= | IO/BUF command facades with app prompt adapter |
+| TUI Dired/Help/Info adapters | =nemacs-main--install-tui-gui-adapters= | FEAT/CORE runtime adapters |
+| shell output stub | =nemacs-main-shell-command-interactive= | IO/FEAT shell runtime |
+| query replace | =nemacs-main-query-replace-interactive= | BUF/FEAT replace runtime |
+| M-x dispatch table | =nemacs-main--run-mx= plus shared command-loop dispatch helpers | CORE command-loop/minibuffer command executor |
+
+Do not move all of this at once.  Each slice should introduce a public
+API and a focused test before =nemacs-main.el= is thinned.
+
+** 2.4 Concrete GTK frontend semantics
+
+File:
+
+- =src/nemacs-gtk-frontend.el= (34 reported rows)
+
+The report only sees names matching its semantic regex.  The file contains
+more editor behavior than these 34 rows, so the reported count is a lower
+bound for extraction work.
+
+Reported clusters:
+
+| Cluster | Examples | Decision |
+|---------+----------+----------|
+| key event mapping and dispatch | =nemacs-gtk--handle-gdk-input= plus compatibility alias =nemacs-gtk--dispatch-key= | split raw GDK decoding from shared command dispatch |
+| minibuffer UI state | =nemacs-gtk--enter-minibuffer=, =nemacs-gtk--minibuffer-handle-key= | move prompt semantics to CORE; keep painting/state bridge in GTK |
+| query-replace state machine | =nemacs-gtk-query-replace= and helpers | move replace semantics to BUF/FEAT |
+| shell command behavior | =nemacs-gtk-shell-command= and helpers | move shell execution/presentation spec to IO/FEAT |
+| help/key description | =nemacs-gtk-describe-key= and helpers | call shared help/keymap APIs |
+| file/buffer commands | =nemacs-gtk-keyboard-find-file=, =nemacs-gtk-write-file= | call IO/BUF fileio APIs |
+| edit affordances | =nemacs-gtk-undo=, =nemacs-gtk-yank-pop= | call BUF edit/undo/kill-ring APIs |
+
+Decision:
+
+- GTK may own GDK event decoding, painting, cache invalidation,
+  clipboard/system integration, and window-system state.
+- GTK should not be the long-term owner of command semantics.
+- New GTK behavior should first check for a shared =emacs-*= or
+  =nelisp-ec-*= API.  If the API does not exist, add it outside GTK.
+
+** 2.5 GUI transport-owned rows
+
+Files:
+
+- =gui/nemacs-editor-transport.el= (4)
+- =src/nemacs-gtk-view-menu.el= (1)
+
+The transport rows match words like =command= or =minibuffer=, but most of
+this code rewrites transport forms, patches rendering, or wires view/menu
+actions.
+
+Decision:
+
+- Keep transport rewriting and concrete menu/view actions GUI-owned.
+- Only extract behavior if the code begins deciding editor state or
+  command semantics independent of transport.
+- Transport patchers should use shape-oriented names, not editor-semantic
+  names, so they stay out of semantic backlog counts.  For example,
+  =gui/nemacs-editor-transport.el= uses =cmd= and =mb echo area= helper
+  names for AOT rewrite shapes instead of =command= / =minibuffer= API names.
+
+* 3. Backlog after inventory and reclassification
+
+With ownership metadata corrected first, the actionable backlog is not
+223 equally sized tasks.
+
+| Bucket | Count | Action |
+|--------+-------+--------|
+| shared runtime adapters misclassified as GUI | 122 | reclassify Doc 18/report primary owner; keep adapter boundary |
+| baked bridge runtime glue | 17 | drain public minibuffer/replace/command-loop APIs |
+| APP/TUI reusable semantics | 35 | extract by vertical slice |
+| GTK frontend reusable semantics | 34 | extract command semantics from frontend |
+| transport/menu rows | 5 | mostly keep GUI-owned; tune report |
+
+Initial actionable backlog after reclassification/noise removal:
+
+- 35 APP/TUI rows,
+- 34 GTK frontend rows,
+- 17 baked bridge runtime rows,
+- selected semantic pieces from the 122 shared adapter rows only when a
+  second consumer needs them.
+
+Current advisory report shape after Doc 18 reclassification and
+GTK/TUI query-replace extraction:
+
+| Type | Count |
+|------+-------|
+| =app-gui-semantic-definition= | 96 |
+| =emacs-init-require= | 39 |
+| =private-cross-owner= | 0 |
+
+Remaining =app-gui-semantic-definition= rows:
+
+| File | Count |
+|------+-------|
+| =src/nemacs-main.el= | 35 |
+| =src/nemacs-gtk-frontend.el= | 29 |
+| =src/nemacs-gui-file-bridge-runtime.el= | 17 |
+| =gui/nemacs-editor-transport.el= | 4 |
+| =src/nemacs-gtk-view-menu.el= | 1 |
+
+Progress note after edit-command extraction:
+
+- Doc 23 defines the edit-result direct API contract.
+- =emacs-edit-builtins.el= now owns direct helpers for self-insert,
+  delete-backward, copy/kill-region, kill-line, yank, and yank-pop.
+- =nemacs-gtk-frontend.el= consumes these helpers through
+  =nemacs-gtk--apply-edit-result-cache= for incremental GTK cache updates.
+- =nemacs-main.el= uses the shared self-insert direct API for its
+  printable fast path.
+- The advisory row count remains 96 because the report counts semantic
+  names in frontend files, not just duplicated behavior.  The ownership
+  risk is lower even when the count does not move.
+
+Current advisory report shape after adapter/transport/frontend classification
+(2026-06-22, after GTK dispatch extraction and transport false-positive
+cleanup):
+
+| Type | Count |
+|------+-------|
+| =app-gui-file-bridge-runtime-definition= | 0 |
+| =app-tui-frontend-definition= | 0 |
+| =app-tui-command-adapter-definition= | 0 |
+| =app-gui-transport-definition= | 0 |
+| =app-gui-frontend-definition= | 0 |
+| =app-gui-runtime-adapter-definition= | 0 |
+| =emacs-init-require= | 0 |
+| =private-cross-owner= | 0 |
+
+Remaining =app-gui-semantic-definition= rows after classification:
+
+| File | Count |
+|------+-------|
+| none | 0 |
+
+Classification rule:
+
+- =*-adapter= and =*-backend-*= names are tracked as runtime adapter glue.
+- =src/nemacs-gui-file-bridge-runtime.el= minibuffer GUI backend/install
+  functions are tracked separately as baked file-bridge runtime glue.
+- =gui/*= transport files and transport/render/draw/patch names are tracked
+  as transport glue.
+- concrete GTK input-map/input-loop definitions use frontend-shape names
+  and compatibility aliases, so they do not appear as semantic backlog rows.
+- =nemacs-main.el= TUI keymap/dispatch loop definitions and concrete
+  backend callbacks are tracked as TUI frontend glue.
+- =nemacs-main.el= TUI prompt command wrappers are tracked as TUI command
+  adapter glue.
+- Remaining rows are the review target for true APP/GUI semantic ownership.
+
+Extraction note:
+
+- =nemacs-main--save-buffer-direct= moved to
+  =emacs-fileio-save-buffer-direct= in the IO layer.
+- =nemacs-main--confirm-kill-buffer= moved to
+  =emacs-buffer-ui-confirm-kill-buffer= in the BUF UI layer.
+- FND bootstrap requires moved behind the reusable =emacs-foundation=
+  package-group loader, reducing direct =emacs-init-require= rows from 39
+  to 21.
+- BUF bootstrap requires moved behind reusable =emacs-buffer-core= and
+  =emacs-editing= package-group loaders, reducing direct
+  =emacs-init-require= rows from 21 to 18.
+- CORE bootstrap requires moved behind reusable =emacs-core=, reducing
+  direct =emacs-init-require= rows from 18 to 9.
+- IO bootstrap requires moved behind reusable =emacs-io=, reducing direct
+  =emacs-init-require= rows from 9 to 6.
+- Reusable runtime requires moved behind the top-level =nelisp-emacs=
+  library facade, reducing direct =emacs-init-require= rows from 6 to 1.
+- TUI M-x command resolution, feature hint loading, unsupported-command
+  reporting, and handler/generic dispatch moved into
+  =emacs-command-loop-ensure-command= and
+  =emacs-command-loop-dispatch-command-with-handlers=, reducing
+  =app-tui-command-adapter-definition= rows from 20 to 17.
+- TUI switch/list/kill buffer prompt wrappers moved behind reusable
+  =emacs-buffer-ui-run-*= command helpers.  =nemacs-main= now keeps
+  only defaliases for the public keymap command names, reducing
+  =app-tui-command-adapter-definition= rows from 17 to 14.
+- TUI find/save file command wrappers moved behind reusable
+  =emacs-fileio-run-find-file-command= and
+  =emacs-fileio-run-save-buffer-command= helpers.  Direct file visit,
+  buffer-file lookup, file-exists, and read-file helpers now live in
+  =emacs-fileio-builtins.el=, reducing
+  =app-tui-command-adapter-definition= rows from 14 to 12.
+- TUI shell command prompt/render/display flow moved behind reusable
+  =emacs-shell-command-run-lightweight-command=.  =nemacs-main= now keeps
+  only a thin private adapter and a public defalias for the keymap/M-x
+  command name, reducing =app-tui-command-adapter-definition= rows from
+  12 to 11.
+- TUI Info directory/file/next/prev/up wrappers moved behind reusable
+  =emacs-info-run-current-context-command=.  =nemacs-main= now keeps thin
+  private adapters and public defaliases for the keymap/M-x command names,
+  reducing =app-tui-command-adapter-definition= rows from 11 to 6.
+- TUI query-replace prompt/confirmation/session flow moved behind reusable
+  =emacs-query-replace-run-command=.  =nemacs-main= now keeps only a thin
+  private adapter and public defalias for the keymap/M-x command name,
+  reducing =app-tui-command-adapter-definition= rows from 6 to 5.
+- TUI describe-key raw-key read and key-description dispatch moved behind
+  reusable =emacs-help-gui-run-key-help-command=.  =nemacs-main= keeps only
+  raw byte-to-key-description formatting and a thin private adapter,
+  reducing =app-tui-command-adapter-definition= rows from 5 to 4.
+- TUI Dired prompt/default-directory/context setup moved behind reusable
+  =emacs-dired-min-gui-run-directory-command=.  =nemacs-main= now keeps only
+  a thin private adapter and public defalias for the keymap/M-x command name,
+  reducing =app-tui-command-adapter-definition= rows from 4 to 3.
+- TUI Dired listing renderer and Help keymap source provider are concrete
+  frontend/backend callbacks, not prompt command wrappers.  They are now
+  classified as =app-tui-frontend-definition= rows, reducing
+  =app-tui-command-adapter-definition= rows from 3 to 1 while keeping the
+  total advisory row count stable.
+- TUI M-x read/resolve/dispatch/error handling moved behind reusable
+  =emacs-command-loop-run-extended-command=.  =nemacs-main= keeps the
+  public =nemacs-main-execute-extended-command= name as a defalias to a
+  private TUI entry point, reducing =app-tui-command-adapter-definition=
+  rows from 1 to 0.
+- TUI keymap construction helpers moved behind reusable =emacs-keymap=
+  adapters: =emacs-keymap-direct-slot-vector=,
+  =emacs-keymap-define-key-fast=,
+  =emacs-keymap-make-compatible-full-keymap=,
+  =emacs-keymap-build-single-key-cache=, and
+  =emacs-keymap-install-overriding-terminal-map=.  =nemacs-main= keeps
+  compatibility function names with =defalias= where needed, reducing
+  =app-tui-frontend-definition= rows from 13 to 9.
+- TUI direct-command membership and direct self-insert execution now use
+  reusable command-loop helpers:
+  =emacs-command-loop-key-dispatch-direct-command-p= and
+  =emacs-command-loop-key-dispatch-run-self-insert=.  =nemacs-main= keeps
+  the TUI-specific command set as data plus compatibility aliases, reducing
+  =app-tui-frontend-definition= rows from 9 to 7.
+- TUI key dispatch execution now runs through
+  =emacs-command-loop-key-dispatch-run-plan=.  The command-loop layer owns
+  plan execution order, prefix reset, last-command-event projection, inline
+  self-insert, direct funcall, fallback command-execute, and error/quit
+  handling hooks.  =nemacs-main= keeps only TUI callbacks for repaint hints,
+  selected-window synchronization, and compatibility entry names, reducing
+  =app-tui-frontend-definition= rows from 7 to 4.
+- TUI keymap initialization and post-feature-load repair now run through
+  reusable command-loop lifecycle APIs:
+  =emacs-command-loop-build-standard-keymap= and
+  =emacs-command-loop-ensure-keymap-bindings=.  =nemacs-main= supplies the
+  TUI command symbols, Meta key bindings, help binding policy, and cache
+  writeback as callbacks/data, reducing =app-tui-frontend-definition= rows
+  from 4 to 2.
+- TUI Dired listing and Help keymap source callbacks now use reusable GUI
+  helper APIs: =emacs-dired-min-gui-render-directory-buffer= and
+  =emacs-help-gui-standard-keymap-source=.  =nemacs-main= keeps only
+  compatibility defaliases that supply TUI display and directory callbacks,
+  reducing =app-tui-frontend-definition= rows from 2 to 0.
+- GTK keymap initialization now reuses
+  =emacs-command-loop-build-standard-keymap= for shared editing, C-x,
+  help-prefix, quit, and keyboard-quit bindings.  GTK still owns
+  frontend-specific Esc/meta/mouse bindings through
+  =nemacs-gtk--install-input-bindings=, with
+  =nemacs-gtk--init-keymap= kept as a compatibility alias.  The standard
+  keymap construction policy is no longer duplicated between GTK and TUI.
+- GTK key dispatch inline edit execution now uses
+  =emacs-command-loop-key-dispatch-run-inline-kind=.  GTK still supplies
+  concrete edit functions, active-buffer selection, and cache application,
+  but the execution-kind-to-inline-edit runner is shared with command-loop
+  policy instead of duplicated as four frontend branches.
+- GTK key dispatch prefix, inline, direct, and fallback execution now runs
+  through =emacs-command-loop-key-dispatch-run-plan=.  The command-loop
+  layer owns the dispatch execution shape, direct-dispatch error callback,
+  and inline-kind callback hooks; GTK supplies frontend callbacks for
+  active-buffer execution, cache invalidation, prefix display text, and
+  substrate fallback feeding.
+- GTK raw key handling now lives in the frontend-shape entry point
+  =nemacs-gtk--handle-gdk-input=, with =nemacs-gtk--dispatch-key= kept as
+  a compatibility alias.  Together with =nemacs-gtk--install-input-bindings=,
+  this removes the remaining =app-gui-frontend-definition= rows from the
+  advisory report while preserving existing tests and private callers.
+- GUI transport helper names in =gui/nemacs-editor-transport.el= were
+  clarified as AOT rewrite shapes:
+  =nemacs--legacy-cmd-write-form-p=,
+  =nemacs--strip-legacy-cmd-channel=,
+  =nemacs--mb-echo-area-form=, and
+  =nemacs--apply-mb-echo-area=.  The helper bodies remain GUI-owned
+  transport patching, but no longer look like reusable command/minibuffer
+  semantic definitions to the advisory report, reducing
+  =app-gui-transport-definition= rows from 4 to 0.
+- The remaining =emacs-init= require is intentionally the
+  =nelisp-emacs= public library facade.  It is covered by
+  =nelisp-emacs-test/emacs-init-uses-library-facade= and is excluded from
+  advisory =emacs-init-require= rows, reducing that count from 1 to 0.
+- The public facade membership is now explicit in
+  =nelisp-emacs-library-features=.  The facade test also verifies that
+  requiring =nelisp-emacs= does not load app/bootstrap, concrete TUI/GUI
+  frontends, redisplay/font-lock lazy editor features, or GTK transport
+  adapters.
+- GTK M-x command name resolution, prefixed-command preference, unbound
+  reporting, dispatch, and error reporting now reuse
+  =emacs-command-loop-run-extended-command=.  The public
+  =execute-extended-command= binding remains a defalias to a private GTK
+  entry point, reducing =app-gui-runtime-adapter-definition= rows from
+  40 to 39.
+- GTK shell-command and shell-command-on-region prompt/run/display/status
+  flow moved behind reusable =emacs-shell-command-run-buffer-command= and
+  =emacs-shell-command-run-region-buffer-command=.  The public
+  =nemacs-gtk-shell-command= and =nemacs-gtk-shell-command-on-region=
+  names remain defaliases to private GTK entry points, reducing
+  =app-gui-runtime-adapter-definition= rows from 39 to 37.
+- GTK write-file prompt/write/status/error flow moved behind reusable
+  =emacs-fileio-run-write-file-command=.  The public
+  =nemacs-gtk-write-file= name remains a defalias to a private GTK entry
+  point, reducing =app-gui-runtime-adapter-definition= rows from 37 to 36.
+- GTK switch-to-buffer and kill-buffer plan/status/application flow moved
+  behind reusable =emacs-buffer-ui-run-switch-existing-command= and
+  =emacs-buffer-ui-run-kill-buffer-plan-command=.  The public
+  =nemacs-gtk-switch-to-buffer= and =nemacs-gtk-kill-buffer= names remain
+  defaliases to private GTK entry points, reducing
+  =app-gui-runtime-adapter-definition= rows from 36 to 34.
+- GTK save-buffers-kill-emacs dirty-buffer prompt/save/quit/cancel flow
+  moved behind reusable =emacs-fileio-run-save-buffers-quit-command=.
+  The public =nemacs-gtk-save-buffers-kill-emacs= name remains a defalias
+  to a private GTK entry point, reducing
+  =app-gui-runtime-adapter-definition= rows from 34 to 33.
+- GTK keyboard/File Open native-dialog visit/apply/status flow now reuses
+  =emacs-fileio-run-find-file-command= with cancel/missing/success hooks.
+  The public =nemacs-gtk-keyboard-find-file= name remains a defalias to a
+  private GTK entry point, reducing =app-gui-runtime-adapter-definition=
+  rows from 33 to 32.
+- GTK query-replace two-step callback prompt/session/status setup now reuses
+  =emacs-query-replace-run-command= with callback prompt hooks.  The public
+  =nemacs-gtk-query-replace= name remains a defalias to a private GTK entry
+  point, reducing =app-gui-runtime-adapter-definition= rows from 32 to 31.
+- GTK describe-key pending-state entry and next-event summary consumption now
+  reuse =emacs-help-gui-begin-key-help-command= and
+  =emacs-help-gui-consume-key-help-event=.  The public
+  =nemacs-gtk-describe-key= name remains a defalias to a private GTK entry
+  point, reducing =app-gui-runtime-adapter-definition= rows from 31 to 30.
+- GTK undo/yank-pop/mouse-primary-paste status/cache application now reuses
+  =emacs-undo-run-command=, =emacs-edit-run-yank-pop-command=, and
+  =emacs-edit-run-mouse-yank-primary-command=.  The public
+  =nemacs-gtk-undo=, =nemacs-gtk-yank-pop=, and
+  =nemacs-gtk-mouse-yank-primary= names remain defaliases to private GTK entry
+  points, reducing =app-gui-runtime-adapter-definition= rows from 30 to 27.
+- The remaining =files--minibuffer-gui-backend-*= and
+  =files--minibuffer-gui-install-backend= definitions in
+  =nemacs-gui-file-bridge-runtime.el= are now classified as
+  =app-gui-file-bridge-runtime-definition=.  This separates baked runtime
+  bridge glue from frontend command adapter debt and reduces
+  =app-gui-runtime-adapter-definition= rows from 27 to 0.
+- Baked file-bridge minibuffer text/cursor mutation and first-candidate
+  completion state moved into reusable
+  =emacs-minibuffer-gui-text-delete-backward-state=,
+  =emacs-minibuffer-gui-text-insert-state=, and
+  =emacs-minibuffer-gui-complete-first-line-state=.  The
+  =files--minibuffer-gui-backend-*= functions now only apply those shared
+  state plans to bridge-local storage, so the row count is stable while the
+  semantic ownership risk is lower.
+- Baked file-bridge minibuffer session begin, initial-input, commit/reset,
+  and history-append policy moved into reusable
+  =emacs-minibuffer-gui-session-begin-state=,
+  =emacs-minibuffer-gui-session-initial-input-state=, and
+  =emacs-minibuffer-gui-session-commit-state=.  Bridge-local code now owns
+  only global storage, candidate refresh, and transport status writes for
+  those paths.
+- Baked file-bridge minibuffer command execution setup moved behind reusable
+  =emacs-command-loop-gui-command-execution-state= and
+  =emacs-command-loop-gui-replace-execution-state=.  The bridge still owns
+  the actual =command-execute= call and transport globals, but command/effective
+  command/argument/status plan construction is now command-loop owned.
+- Baked file-bridge replacement first-stage storage now uses reusable
+  =emacs-minibuffer-gui-replace-from-store-state= and
+  =emacs-minibuffer-gui-replace-from-clear-state=.  Bridge-local code keeps
+  only the concrete =files--replace-string-from= storage slot.
+- Baked file-bridge candidate refresh now uses reusable
+  =emacs-minibuffer-gui-candidate-refresh-state=.  Candidate source callbacks
+  remain backend-owned, while purpose/text-to-candidates refresh state is
+  owned by =emacs-minibuffer.el=.
+- Baked file-bridge minibuffer backend registration now uses reusable
+  =emacs-minibuffer-gui-register-standard-backend=, with canonical callback
+  keys owned by =emacs-minibuffer-gui-standard-backend-keys=.  The bridge
+  still supplies transport-specific storage callbacks, but registration policy
+  no longer lives directly in the baked runtime install body.
+- Baked file-bridge registration-only callbacks for key/prompt/initial-input,
+  transport status setters, and candidate sources are now inline callbacks in
+  the standard backend registration instead of separate
+  =files--minibuffer-gui-backend-*= definitions.  This reduces
+  =app-gui-file-bridge-runtime-definition= rows from 27 to 17 while preserving
+  the direct-call fallback functions needed by the standalone bridge image.
+- =emacs-minibuffer.el= now exposes =emacs-minibuffer-gui-backend-call= as the
+  public operation dispatch API.  The baked file bridge provides a fallback
+  implementation with a local dispatch table, so old standalone images and the
+  library-backed runtime use the same call surface.
+- Baked file-bridge concrete minibuffer backend operations are now grouped in
+  =files--minibuffer-gui-backend-operation-table= and installed with =fset=.
+  This preserves the old callback symbols for standalone compatibility while
+  reducing =app-gui-file-bridge-runtime-definition= rows from 17 to 0.
+- Baked file-bridge post-command writeback preparation now uses reusable
+  =emacs-command-loop-gui-apply-post-command-writeback=.  The bridge still
+  owns concrete transport files and family-specific fallback writebacks, but
+  command-loop now owns the common post-command flush + status-lane
+  application sequence.
+- Baked file-bridge =insert-file= / =insert-buffer= and simple
+  write/save/revert fallback writebacks now rely on
+  =files--fileio-writeback-current-context= and the reusable
+  =emacs-fileio-gui-writeback-state= spec.  The old direct fileio command
+  branches were removed from the top-level bridge writeback tail.
+- Baked buffer/list fallback writebacks for =rename-buffer=,
+  =rename-uniquely=, =clone-buffer=, =clone-indirect-buffer-other-window=,
+  =kill-buffer=, =kill-buffer-and-window=, =project-kill-buffers=,
+  =list-buffers=, and =project-list-buffers= now also flow through
+  =files--fileio-writeback-current-context= and
+  =emacs-fileio-gui-writeback-state=.  Their top-level direct command
+  branches were removed so the transport field contract stays owned by
+  =emacs-fileio-gui.el= instead of the baked bridge tail.
+- Baked bookmark writebacks are now isolated in
+  =files--bridge-bookmark-writeback-current-context=.  This is still
+  bridge-local transport glue, but the top-level bridge writeback tail no
+  longer owns bookmark command-specific transport details directly.
+- GTK sentence motion now uses reusable
+  =emacs-edit-forward-sentence-direct= and
+  =emacs-edit-backward-sentence-direct=.  GTK pass-through sexp/sentence
+  scanner helpers were removed, and remaining GTK sexp scan callers invoke
+  the shared =emacs-edit-scan-sexp-*= APIs directly.
+- GTK defun boundary handling now uses reusable
+  =emacs-edit-defun-bounds=, =emacs-edit-mark-defun-direct=, and
+  =emacs-edit-narrow-to-defun-direct=.  The former GTK-local
+  =nemacs-gtk--beginning-of-defun= helper was removed; GTK now owns only
+  frontend mark storage, narrowing command echo, and cursor visibility.
+- GTK =comment-dwim= line and region mutation now uses reusable
+  =emacs-edit-comment-dwim-direct=.  The former GTK-local line bounds,
+  commented-line predicate, and toggle helper were removed; GTK now only
+  maps frontend region state into the shared helper and applies returned
+  edit-result metadata to its cache.
+- GTK region case transforms now use reusable
+  =emacs-edit-run-transform-region-command=.  The former GTK-local
+  no-mark/empty-region command decision and transform echo formatting were
+  moved into the edit layer; GTK now supplies mark state and applies the
+  returned edit-result metadata.
+- GTK =fill-paragraph= and =mark-paragraph= now use reusable
+  =emacs-edit-run-fill-paragraph-command= and
+  =emacs-edit-run-mark-paragraph-command=.  GTK now owns only frontend
+  mark storage, echo assignment, and edit-result cache application for
+  those paragraph commands.
+- GTK electric-pair insertion/skipping now uses reusable
+  =emacs-edit-run-electric-pair-command= plus the shared default pair
+  tables.  GTK now owns only the printable-pair dispatch lane, cache
+  application, and echo assignment.
+- GTK =quoted-insert= literal insertion now uses reusable
+  =emacs-edit-run-quoted-insert-command=.  GTK still owns raw event to
+  character normalization and non-character event rejection, but no longer
+  performs the literal buffer insertion inline.
+- GTK bookmark/help/shell text-buffer rendering now uses reusable
+  =emacs-buffer-ui-replace-text-buffer=.  GTK now owns only active buffer
+  selection, scroll reset, and window-title synchronization for those
+  generated display buffers.
+- GTK =scratch-buffer= and =messages-buffer= now use reusable
+  =emacs-special-buffers-display-plan=.  The scratch initial message and
+  standard special-buffer creation semantics live in =emacs-special-buffers=;
+  GTK only applies the returned active-buffer/scroll/message plan.
+- GTK-local direct =nelisp-ec-insert= / =nelisp-ec-delete-region= command
+  semantics have been drained into shared edit/display helpers.  The
+  remaining GTK-side =nelisp-ec-insert= mention is explanatory dispatch
+  commentary, not executable mutation.
+- GTK buffer boundary movement, whole-buffer mark, and point/mark exchange
+  now use reusable =emacs-edit-goto-buffer-boundary-direct=,
+  =emacs-edit-mark-whole-buffer-direct=, and
+  =emacs-edit-exchange-point-and-mark-direct=.  GTK owns only frontend mark
+  storage and echo assignment for those commands.
+- GTK =bookmark-jump= now uses reusable =emacs-bookmark-ui-jump-plan= and
+  =emacs-edit-goto-position-direct=.  Bookmark lookup/status/message policy
+  lives in the bookmark UI layer, absolute point clamping lives in the edit
+  layer, and GTK owns only prompt wiring, active-buffer selection, and cursor
+  visibility.
+- GTK =cheat-sheet= display reset now uses reusable
+  =emacs-buffer-ui-move-to-buffer-start=.  Display-buffer point reset and
+  scroll-offset intent live in BUF/UI, while GTK keeps cheat-sheet command
+  wiring, active-buffer selection, title synchronization, and echo state.
+- GTK incremental search point restore, search-from-start, and repeat search
+  now use reusable =emacs-isearch-restore-start-direct=,
+  =emacs-isearch-search-from-start-direct=, and
+  =emacs-isearch-repeat-direct=.  GTK retains its frontend-local isearch
+  prompt/status fields and viewport highlight collection, while point/search
+  mutation is owned by =emacs-isearch.el=.
+- GTK paren-match highlight position lookup now uses reusable
+  =emacs-edit-matching-paren-position-direct=.  Matching-paren scan and
+  point restoration live in the edit layer; GTK owns only converting the
+  returned buffer position into highlight grid coordinates.
+- GTK mouse-1 point movement and mouse-drag point extension now reuse
+  =emacs-edit-goto-position-direct=.  GTK owns cell-to-point conversion,
+  active-window switching, press-point/mark state, and echo text; point
+  mutation is shared edit-layer behavior.
+- GTK mouse-drag anchoring and double/triple click word/line selection state
+  now use reusable =emacs-edit-mouse-drag-region-plan=,
+  =emacs-edit-run-select-word-at-command=, and
+  =emacs-edit-run-select-line-at-command=.  GTK owns only event/cell
+  conversion, active-buffer dispatch, and applying returned mark/echo state.
+- Executable GTK-local =nelisp-ec-goto-char= usage has been drained into
+  shared edit, search, display, and bookmark helpers.
+
+* 4. Recommended next steps
+
+1. Continue extracting one narrow, high-leverage slice at a time:
+   - baked bridge minibuffer/command-loop glue into shared runtime APIs.
+2. Keep =private-cross-owner= at zero while reducing semantic ownership
+   risk, even when advisory row counts remain stable.
+
+* 5. Enforcement status
+
+This document does not make =app-gui-semantic-definition= a failing gate.
+The current report remains advisory because the 223 rows include useful
+runtime adapters and transport false positives.
+
+Graduation condition:
+
+- Doc 18 primary ownership is corrected,
+- the report distinguishes adapter classes,
+- at least one APP/TUI or GTK slice has been extracted with tests,
+- the remaining rows are small enough to review as real ownership issues.

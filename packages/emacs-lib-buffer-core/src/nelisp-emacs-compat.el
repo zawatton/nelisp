@@ -365,6 +365,11 @@ by successful literal/regex search APIs and by `nelisp-ec-looking-at'.")
   (when (nelisp-ec-buffer-killed-p buf)
     (signal 'nelisp-ec-buffer-killed (list (nelisp-ec-buffer-name buf)))))
 
+;;;###autoload
+(defun nelisp-ec-check-live (buf)
+  "Signal `nelisp-ec-buffer-killed' if BUF is killed."
+  (nelisp-ec--check-live buf))
+
 (defun nelisp-ec--unique-name (base)
   "Return a buffer name based on BASE that is not in `nelisp-ec--buffers'.
 If BASE is free, return it as-is; otherwise append =<2>=, =<3>=, ..."

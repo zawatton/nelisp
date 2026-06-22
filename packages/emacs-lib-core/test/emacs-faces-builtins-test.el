@@ -161,6 +161,18 @@
     (emacs-faces-set-attribute 'c-face nil :background "white")
     (should (= 0 (hash-table-count emacs-redisplay--face-cache)))))
 
+(ert-deftest emacs-faces-builtins-test/reset-clears-registry-and-cache ()
+  (emacs-faces-builtins-test--with-fresh-registry
+    (emacs-faces-set-attribute 'reset-face nil :foreground "red")
+    (puthash 'reset-face '((:foreground . "red"))
+             emacs-redisplay--face-cache)
+    (should (emacs-faces-facep 'reset-face))
+    (should (= 1 (hash-table-count emacs-redisplay--face-cache)))
+    (emacs-faces-reset)
+    (should-not (emacs-faces-facep 'reset-face))
+    (should (= 0 (hash-table-count emacs-redisplay--face-registry)))
+    (should (= 0 (hash-table-count emacs-redisplay--face-cache)))))
+
 ;;;; J. Idempotent require
 
 (ert-deftest emacs-faces-builtins-test/require-is-idempotent ()

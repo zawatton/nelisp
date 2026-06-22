@@ -143,6 +143,97 @@ resolved under `emacs-dired-min-gui--project-directory'."
             (concat "/" name)
           (concat directory "/" name))))))
 
+(defun emacs-dired-min-gui-directory-entry-kind (path)
+  "Return the one-character listing kind for PATH."
+  (cond
+   ((file-directory-p path) "d")
+   ((file-exists-p path) "-")
+   (t "?")))
+
+(defun emacs-dired-min-gui-directory-listing (directory)
+  "Return a plist describing DIRECTORY as simple GUI listing text.
+The return value contains `:directory', `:entries', `:count', and
+`:text'.  Each entry is a plist with `:name', `:path', and `:kind'."
+  (let* ((dir (if (or (null directory) (equal directory ""))
+                  "."
+                directory))
+         (abs (expand-file-name dir))
+         (names (sort (directory-files abs) #'string<))
+         (entries nil)
+         (text (format "Directory: %s\n\n" abs)))
+    (dolist (name names)
+      (let* ((path (expand-file-name name abs))
+             (kind (emacs-dired-min-gui-directory-entry-kind path))
+             (entry (list :name name :path path :kind kind)))
+        (push entry entries)
+        (setq text (concat text (format "  %s  %s\n" kind name)))))
+    (setq entries (nreverse entries))
+    (list :directory abs
+          :entries entries
+          :count (length entries)
+          :text text)))
+
+(defun emacs-dired-min-gui-simple-directory-name (directory)
+  "Return DIRECTORY as displayed by the simple Dired bridge listing."
+  (let ((dir (if (or (null directory) (equal directory ""))
+                 "."
+               directory)))
+    (if (and (> (length dir) 1)
+             (= (aref dir (1- (length dir))) ?/))
+        (substring dir 0 (1- (length dir)))
+      dir)))
+
+(defun emacs-dired-min-gui-simple-listing (directory names)
+  "Return a plist for a simple Dired bridge listing.
+NAMES is a directory entry list in display order.  The return value
+contains `:directory', `:entries', `:count', and `:text'.  Dot entries
+`.` and `..' are omitted from `:entries' and `:text'."
+  (let* ((display-dir (emacs-dired-min-gui-simple-directory-name directory))
+         (entries nil)
+         (text (concat "Directory " display-dir "\n")))
+    (dolist (name names)
+      (unless (member name '("." ".."))
+        (push name entries)
+        (setq text (concat text "  " name "\n"))))
+    (setq entries (nreverse entries))
+    (list :directory display-dir
+          :entries entries
+          :count (length entries)
+          :text text)))
+
+;;;###autoload
+(defun emacs-dired-min-gui-render-directory-buffer (directory &rest plist)
+  "Render DIRECTORY as a Dired buffer through frontend callbacks.
+PLIST accepts `:default-directory', `:directory-files', `:emit-text',
+`:display-buffer', `:set-directory', `:set-buffer-name', and
+`:buffer-name'.  Return the displayed buffer name."
+  (let* ((default-directory-fn (plist-get plist :default-directory))
+         (directory-files-fn (plist-get plist :directory-files))
+         (emit-text (plist-get plist :emit-text))
+         (display-buffer (plist-get plist :display-buffer))
+         (set-directory (plist-get plist :set-directory))
+         (set-buffer-name (plist-get plist :set-buffer-name))
+         (buffer-name (or (plist-get plist :buffer-name) "*Dired*"))
+         (dir (if (or (not directory) (equal directory ""))
+                  (if default-directory-fn
+                      (funcall default-directory-fn)
+                    ".")
+                directory))
+         (listing (emacs-dired-min-gui-simple-listing
+                   dir
+                   (and directory-files-fn
+                        (funcall directory-files-fn dir))))
+         (text (plist-get listing :text)))
+    (when set-directory
+      (funcall set-directory dir))
+    (when set-buffer-name
+      (funcall set-buffer-name buffer-name))
+    (when emit-text
+      (funcall emit-text text))
+    (when display-buffer
+      (funcall display-buffer buffer-name text))
+    buffer-name))
+
 (defun emacs-dired-min-gui-list-directory-core ()
   "Open `emacs-dired-min-gui-directory' through the GUI backend.
 This is the core directory listing operation.  Command variants layer
@@ -385,6 +476,34 @@ sequencing."
   "Refresh GUI Dired context from backend, then run `project-dired'."
   (emacs-dired-min-gui-refresh-context-from-backend)
   (emacs-dired-min-gui-project-dired-command action))
+
+;;;###autoload
+(defun emacs-dired-min-gui-run-directory-command (&rest plist)
+  "Run a frontend Dired directory command through the shared Dired core.
+PLIST accepts `:install-function', `:read-string', `:default-directory',
+`:prompt', `:buffer-name', `:command', and `:action'.  The frontend owns
+how a directory is read; this helper owns the reusable context setup and
+current-context dispatch."
+  (let* ((install-function (plist-get plist :install-function))
+         (read-string (plist-get plist :read-string))
+         (default-directory-function (plist-get plist :default-directory))
+         (prompt (or (plist-get plist :prompt) "Dired (directory): "))
+         (buffer-name (or (plist-get plist :buffer-name) "*Dired*"))
+         (command (or (plist-get plist :command) 'dired))
+         (action (or (plist-get plist :action) "same"))
+         (directory (and read-string (funcall read-string prompt))))
+    (when install-function
+      (funcall install-function))
+    (when (or (not directory) (equal directory ""))
+      (setq directory
+            (if default-directory-function
+                (funcall default-directory-function)
+              ".")))
+    (emacs-dired-min-gui-set-context
+     :directory directory
+     :status "ok"
+     :buffer-name buffer-name)
+    (emacs-dired-min-gui-current-context-command command action)))
 
 (defun emacs-dired-min-gui-mark-command ()
   "Run the GUI bridge `dired-mark' command."

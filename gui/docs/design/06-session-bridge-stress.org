@@ -1,0 +1,88 @@
+#+TITLE: Session Bridge Stress Test
+#+DATE: 2026-06-09
+
+* Purpose
+
+The normal verifier proves expected behavior on representative paths.  The
+session stress script proves durability: a persistent
+=nemacs-gui-file-bridge-session-run= process should survive many sequential GUI
+requests, invalid input, minibuffer cancellation, shutdown, and restart without
+leaving a NeLisp session process behind.
+
+Script:
+
+#+begin_src sh
+  dev/nelisp-gui/scripts/stress-nemacs-session.sh 120
+  dev/nelisp-gui/scripts/stress-nemacs-session.sh 500
+#+end_src
+
+* Why separate from the normal verifier
+
+- It intentionally mutates fixed =/tmp/nemacs-*= transport state many times.
+- It holds =/tmp/nemacs-transport.lock= for longer than normal smoke tests.
+- It launches, shuts down, and restarts a persistent NeLisp process.
+- It can take minutes at the 500-command setting on slower runtime builds.
+- Its failure mode is durability-oriented: timeout, non-response, stale FIFO,
+  dead session, or orphan process.  Those are useful before release or handoff,
+  but too noisy for every edit/test loop.
+
+Keep =scripts/verify-nemacs-gui.sh= as the daily correctness verifier.  Run
+this script manually when session bridge code, runtime image loading,
+=nemacs-mx.sh= request/response handling, or long-running command state changes.
+
+* Test design
+
+| Requirement | Stress behavior |
+|-------------+-----------------|
+| Separate from normal verifier | Implemented as =scripts/stress-nemacs-session.sh=, not a verifier mode. |
+| Fixed =/tmp/nemacs-*= transport | Uses =transport_dir=/tmp= by design. |
+| Transport lock | Acquires =/tmp/nemacs-transport.lock= before touching transport state. |
+| 100-500 command continuous run | Accepts =count= 100..500, default 120. |
+| Invalid key in the middle | Injects =C-x 9= around one-third of the run and expects unsupported status without killing the session. |
+| Minibuffer start + =C-g= | Injects =M-x=, types =not=, then =C-g= around two-thirds of the run and asserts minibuffer inactive. |
+| Shutdown/restart | Explicitly shuts down the first session, verifies readiness becomes =0=, runs another key, and asserts a different PID. |
+| Orphan check | Records spawned session PIDs and verifies they are gone after final shutdown. |
+
+The repeated key set is intentionally boring: movement, scroll, recenter, and
+quit keys.  The goal is bridge survivability, not broad command semantics.
+Command semantics are covered in =nelisp-emacs= ERT and the normal GUI verifier.
+
+* Runtime estimates
+
+The script shells out to =nemacs-mx.sh= for every request, so runtime scales with
+the NeLisp executable and runtime image state.
+
+| Count | Expected use | Rough runtime |
+|-------+--------------+---------------|
+| 120 | default handoff smoke | 10-60 seconds on a warm image |
+| 250 | local durability pass | 30-120 seconds |
+| 500 | pre-handoff / before risky session changes | 1-4 minutes |
+
+If the runtime image is missing, the script first runs:
+
+#+begin_src sh
+  make -C "$NEMACS_EMACS_ROOT" build/nemacs-gui-file-bridge.nlri
+#+end_src
+
+That build time is not included in the estimates.
+
+* Failure interpretation
+
+| Failure | Likely owner | Notes |
+|---------+--------------+-------|
+| lock timeout | test environment | Another fixed =/tmp/nemacs-*= smoke is running or left a live lock owner. |
+| =nemacs-mx.sh= timeout | =nelisp-gui= / session bridge boundary | Request/response FIFO or session readiness may be stale. |
+| invalid key kills session | =nelisp-emacs= runtime | Unsupported command status should not terminate the session loop. |
+| minibuffer remains active after =C-g= | =nelisp-emacs= runtime | Command-loop cancellation state is not being cleared. |
+| restart reuses dead PID state or does not start | =nelisp-gui/nemacs-mx.sh= | Session liveness detection or stale pid/ready handling is wrong. |
+| spawned PID survives final shutdown | =nelisp-gui/nemacs-mx.sh= or =nelisp-emacs= session loop | Shutdown flag/FIFO wakeup did not terminate the runtime process cleanly. |
+
+* Current boundaries
+
+- =nelisp-gui= owns this stress script, fixed transport setup, lock handling,
+  wrapper invocation, shutdown/restart, and orphan detection.
+- =nelisp-emacs= owns whether =nemacs-gui-file-bridge-session-run= handles
+  invalid keys, minibuffer cancellation, command-loop state, and max request
+  accounting correctly.
+- The script should not grow assertions about detailed editing semantics.
+  Add those to =nelisp-emacs/test/nemacs-gui-file-bridge-runtime-test.el=.

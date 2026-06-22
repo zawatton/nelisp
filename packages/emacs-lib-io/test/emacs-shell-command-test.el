@@ -101,6 +101,116 @@
     (should (eq (lookup-key map (kbd "M-|")) #'shell-command-on-region))
     (should (eq (lookup-key map (kbd "M-&")) #'async-shell-command))))
 
+(ert-deftest emacs-shell-command-output-text-fills-empty-output ()
+  (should (equal "[shell-command: no output]\n"
+                 (emacs-shell-command-output-text "")))
+  (should (equal "custom\n"
+                 (emacs-shell-command-output-text nil "custom\n")))
+  (should (equal "hello\n"
+                 (emacs-shell-command-output-text "hello\n"))))
+
+(ert-deftest emacs-shell-command-run-to-string-feeds-stdin-through-temp-file ()
+  (let (seen-command)
+    (cl-letf (((symbol-function 'shell-command-to-string)
+               (lambda (command)
+                 (setq seen-command command)
+                 "rendered\n")))
+      (should (equal "rendered\n"
+                     (emacs-shell-command-run-to-string "cat" "input\n")))
+      (should (string-match-p "\\`cat < " seen-command)))))
+
+(ert-deftest emacs-shell-command-lightweight-output-renders-daily-driver-text ()
+  (should (equal "hello" (emacs-shell-command-lightweight-output "printf hello")))
+  (should (equal "echo hello\n"
+                 (emacs-shell-command-lightweight-output "echo hello"))))
+
+(ert-deftest emacs-shell-command-run-lightweight-command-uses-frontend-hooks ()
+  (let (prompts emitted displayed rendered)
+    (should
+     (equal
+      :shown
+      (emacs-shell-command-run-lightweight-command
+       :read-string (lambda (prompt)
+                      (push prompt prompts)
+                      "printf tui-ok")
+       :output-function (lambda (command)
+                          (setq rendered command)
+                          "tui-ok")
+       :emit-function (lambda (text)
+                        (setq emitted text))
+       :display-function (lambda (name text)
+                           (setq displayed (list name text))
+                           :shown))))
+    (should (equal "printf tui-ok" rendered))
+    (should (equal "tui-ok" emitted))
+    (should (equal '("*Shell Output*" "tui-ok") displayed))
+    (should (equal '("Shell command: ") prompts))))
+
+(ert-deftest emacs-shell-command-run-buffer-command-uses-frontend-hooks ()
+  (let (prompts displayed status seen-command)
+    (should
+     (equal
+      "rendered\n"
+      (emacs-shell-command-run-buffer-command
+       :read-string (lambda (prompt)
+                      (push prompt prompts)
+                      "printf rendered")
+       :run-function (lambda (command)
+                       (setq seen-command command)
+                       "rendered\n")
+       :display-function (lambda (name text)
+                           (setq displayed (list name text)))
+       :status-function (lambda (message)
+                          (setq status message)))))
+    (should (equal "printf rendered" seen-command))
+    (should (equal '("*Shell Command Output*" "rendered\n") displayed))
+    (should (equal "shell-command: printf rendered (9 bytes)" status))
+    (should (equal '("Shell command: ") prompts))))
+
+(ert-deftest emacs-shell-command-run-buffer-command-reports-empty ()
+  (let (status)
+    (should-not
+     (emacs-shell-command-run-buffer-command
+      :read-string (lambda (_prompt) "")
+      :status-function (lambda (message)
+                         (setq status message))))
+    (should (equal "shell-command: empty" status))))
+
+(ert-deftest emacs-shell-command-run-region-buffer-command-uses-region-text ()
+  (let (prompts displayed status seen-command seen-input)
+    (should
+     (equal
+      "ALPHA\n"
+      (emacs-shell-command-run-region-buffer-command
+       :region-bounds '(2 . 7)
+       :region-text (lambda (beg end)
+                      (format "region:%d:%d" beg end))
+       :read-string (lambda (prompt)
+                      (push prompt prompts)
+                      "tr a-z A-Z")
+       :run-function (lambda (command input)
+                       (setq seen-command command
+                             seen-input input)
+                       "ALPHA\n")
+       :display-function (lambda (name text)
+                           (setq displayed (list name text)))
+       :status-function (lambda (message)
+                          (setq status message)))))
+    (should (equal "tr a-z A-Z" seen-command))
+    (should (equal "region:2:7" seen-input))
+    (should (equal '("*Shell Command Output*" "ALPHA\n") displayed))
+    (should (equal "shell-command-on-region: 10→6 bytes" status))
+    (should (equal '("Shell command on region: ") prompts))))
+
+(ert-deftest emacs-shell-command-run-region-buffer-command-reports-no-region ()
+  (let (status)
+    (should-not
+     (emacs-shell-command-run-region-buffer-command
+      :region-bounds nil
+      :status-function (lambda (message)
+                         (setq status message))))
+    (should (equal "shell-command-on-region: no region" status))))
+
 (defmacro emacs-shell-command-test--with-gui-backend (&rest body)
   "Run BODY with a mock GUI shell backend."
   (declare (indent 0) (debug t))

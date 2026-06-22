@@ -96,8 +96,8 @@ Value is a plist with keys
   (or (and (fboundp 'nelisp-ec--current-buffer)
            (boundp 'nelisp-ec--current-buffer)
            nelisp-ec--current-buffer)
-      (and (fboundp 'emacs-buffer--current)
-           (emacs-buffer--current))))
+      (and (fboundp 'emacs-buffer-current)
+           (emacs-buffer-current))))
 
 ;;;; --- keyword compilation -------------------------------------------
 

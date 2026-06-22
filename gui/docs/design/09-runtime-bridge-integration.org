@@ -1,0 +1,128 @@
+#+TITLE: Runtime Bridge Adapter Integration Plan
+#+DATE: 2026-06-14
+
+* 目的
+
+現在の =nelisp-emacs/src/nemacs-gui-file-bridge-runtime.el= は、
+GUI bridge 専用 adapter として command loop、file/buffer state、minibuffer、
+window/tab/frame facade、Help/Dired/Info などを大きく抱えている。
+
+この状態は daily GUI には有効だが、=nelisp-emacs= 全体の Emacs 互換とは分離している。
+最終的には bridge adapter から本体 runtime module へ意味論を移し、
+GUI 以外の =nelisp-emacs/bin/nemacs --driver=nelisp= や TUI でも同じ command 実装を使う。
+
+* 現状の問題
+
+| 問題 | 影響 |
+|------+------|
+| bridge 専用 runtime に command 実装が集中 | GUI では動くが TUI/batch/runtime image と一貫しない |
+| transport file 読み書きと command 意味論が同じファイルに混在 | owner 判定が難しく、回帰時に修正箇所が曖昧 |
+| facade の tier が module 境界に反映されていない | placeholder と real 実装が混ざる |
+| session bridge 初期化と Emacs state 初期化が密結合 | 複数 frontend を増やしにくい |
+
+* 目標構成
+
+| 層 | module 候補 | 責務 |
+|----+-------------+------|
+| command loop | =src/emacs-command-loop.el= | key sequence dispatch, =command-execute=, =call-interactively= |
+| minibuffer | =src/emacs-minibuffer.el= | prompt, completion, history, continuation state |
+| file/buffer | =src/emacs-fileio.el=, =src/files-standalone-buffer.el= | find/save/write/revert/insert/buffer store |
+| editing | =src/simple.el=, =src/emacs-edit-builtins.el= | movement/edit/delete/kill/yank/undo |
+| help/info/dired | dedicated modules | buffer generation and navigation |
+| process/project/vc | dedicated modules | subprocess, project root, VC buffers |
+| GUI adapter | =src/nemacs-gui-file-bridge-runtime.el= | transport decode/encode, session loop, snapshot import/export |
+
+bridge adapter は「transport と本体 runtime の変換層」だけに縮小する。
+
+* 移行ルール
+
+| ルール | 内容 |
+|--------+------|
+| state semantics first | buffer/point/window/minibuffer の意味論は本体 module に移してから GUI adapter を薄くする |
+| no behavior fork | bridge adapter と本体 runtime で同じ command 名が別実装を持たない |
+| tests before extraction | 抽出前に direct runtime test を固定し、抽出後も同じ test を通す |
+| transport remains adapter-only | =/tmp/nemacs-*= の path や serialization は GUI adapter に残す |
+| facade tier documented | 抽出する facade は real / semantic-noop / buffer-output / placeholder を明示する |
+
+* 段階計画
+
+** Phase 1: Inventory
+
+1. =nemacs-gui-file-bridge-runtime.el= の =fset= / =setq= を分類する。
+2. command 実装、transport helper、session helper、serialization helper を分ける。
+3. command family ごとの移動先 module を決める。
+
+成果物:
+
+| path | 内容 |
+|------+------|
+| =dev/nelisp-emacs/build/gui-bridge-runtime-inventory.tsv= | symbol / kind / target module |
+| =dev/nelisp-emacs/docs/worklog/YYYY-MM-DD-runtime-integration.org= | 判断メモ |
+
+** Phase 2: Core extraction
+
+最初に P0 command loop を抜き出す。
+
+| 移動対象 | 移動先 |
+|----------+--------|
+| key sequence parser / dispatcher | =emacs-command-loop.el= |
+| =command-execute= / =call-interactively= facade | =emacs-command-loop.el= |
+| minibuffer active/prompt/candidates/history | =emacs-minibuffer.el= |
+| buffer snapshot import/export 以外の buffer 操作 | =emacs-fileio.el= / buffer modules |
+
+** Phase 3: Family extraction
+
+| family | 移動先 |
+|--------+--------|
+| Help | =emacs-help.el= |
+| Info | =emacs-info.el= |
+| Dired | =emacs-dired.el= |
+| Project | =emacs-project.el= |
+| VC | =emacs-vc.el= |
+| Process/shell | =emacs-process.el= / =emacs-shell.el= |
+| Package/custom | =emacs-package.el= / =emacs-custom.el= |
+
+** Phase 4: Adapter thinning
+
+bridge adapter に残すものを以下に限定する。
+
+- =files--transport-path=
+- transport-derived path refresh
+- snapshot import/export
+- session request/response loop
+- toolbar click decode
+- GUI-specific status serialization
+- runtime image preload glue
+
+* 完了条件
+
+| gate | 条件 |
+|------+------|
+| symbol inventory | bridge runtime の symbol が target module 付きで分類済み |
+| P0 extraction | basic edit/file/minibuffer command が本体 module 経由で動く |
+| no duplicate command | 同じ command 名の bridge-only 実装が残っていない |
+| direct runtime | =make -C dev/nelisp-emacs test-nemacs-gui-bridge NELISP_BIN=/tmp/nelisp-snap/nelisp= |
+| GUI verifier | =dev/nelisp-gui/scripts/verify-nemacs-gui.sh= |
+| Xvfb verifier | =dev/nelisp-gui/scripts/verify-gui-xvfb.sh= |
+
+* 互換性維持
+
+抽出中は adapter から本体 module を呼ぶ thin wrapper を許可する。
+ただし wrapper は transport 引数の変換だけにし、command 意味論を持たない。
+
+例:
+
+| 許可 | 禁止 |
+|------+------|
+| transport file を読み =emacs-fileio-find-file= に渡す | bridge adapter 内で別の =find-file= を維持する |
+| returned minibuffer state を transport に書く | GUI 用 minibuffer と TUI 用 minibuffer を別々に実装する |
+| status/error を transport 用文字列に変換する | command 成功/失敗の意味を adapter 側で補正する |
+
+* リスク
+
+| リスク | 対策 |
+|--------+------|
+| 一度に抽出しすぎて GUI daily-driver が壊れる | family 単位で抽出し、各 family ごとに direct + GUI smoke を通す |
+| runtime image の preload 順序が壊れる | build image の symbol probe を追加する |
+| adapter が薄くなる前に transport contract が変わる | =05-transport-state-contract.org= を更新してから実装する |
+

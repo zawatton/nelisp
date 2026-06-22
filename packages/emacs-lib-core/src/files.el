@@ -2,14 +2,9 @@
 
 ;;; Code:
 
-(defun files--standalone-runtime-p ()
-  "Return non-nil when the lightweight file facade should install wrappers."
-  (or (not (boundp 'emacs-version))
-      (fboundp 'nl-write-file)
-      (fboundp 'nl-syscall-write-file)
-      (fboundp 'nelisp--eval-source-string)))
+(require 'files-runtime)
 
-(defvar files--standalone-p (files--standalone-runtime-p))
+(defvar files--standalone-p (files-standalone-runtime-p))
 (defvar files--current-file-name nil)
 
 (defun files--ensure-buffer-substrate ()
