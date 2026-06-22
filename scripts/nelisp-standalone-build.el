@@ -3479,6 +3479,16 @@ unresolved at link time."
              (uoff (nl_img_off ubox sstart slen ib ie))
              (hdr (alloc-bytes 64 8))   ; allocate the header BEFORE the swizzle
              (tlen 0) (fd 0))
+        ;; MULTI-CHUNK GUARD: this dump captures chunk-0 only (nl_fa_field records
+        ;; just chunk-0 fields; cross-chunk pointers classify as "out" and are
+        ;; dropped).  If the heap has grown past chunk-0 (head->next != 0), dumping
+        ;; would silently produce a BROKEN image (dangling pointers into chunks not
+        ;; in the image).  Refuse with -2 instead -- the caller should raise
+        ;; NELISP_LINUX_ARENA_SIZE so the whole heap fits in one chunk (verified:
+        ;; the full ~882MB nemacs env is single-chunk under a 1 GiB arena), or use
+        ;; a future multi-chunk coalescing dump.  Single-chunk -> proceed.
+        (if (not (= (ptr-read-u64 (+ head 48) 0) 0))
+            (wf_write_int out -2)
         (seq
          ;; header is fully built from pre-swizzle reads (tlen patched after swizzle)
          (ptr-write-u64 hdr 0 1179407692)
@@ -3502,7 +3512,7 @@ unresolved at link time."
             (nl_fa_write_all fd ib isz 0)         ; live intern (un-swizzled, fixed on load)
             (nl_os_close_handle fd)
             (bf_arena_inplace_restore tbl tlen sstart slen ib)   ; restore the live arena
-            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz))))))))))
     (defun bf_arena_load_image_from_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
