@@ -4151,3 +4151,86 @@ native predicates."
      ((floatp x) 'float)
      ((vectorp x) 'vector)
      (t 'cons))))
+
+;; ---- Doc 22 reader-core gap fix A9 + with-output-to-string ----
+;;
+;; native princ/prin1/terpri ignore a buffer/function STREAM and the
+;; `standard-output' variable (which was VOID).  `standard-output' is now
+;; declared special so a dynamic `let' binding is visible to these functions
+;; (dynamic binding DOES work on the bare reader -- only `symbol-value' of a
+;; let-bound special crashes, A8, which we avoid).  We honor a FUNCTION stream
+;; (called once per character, host contract); buffers do not retain inserted
+;; text on the bare reader so the buffer branch is best-effort only.  This
+;; unblocks `with-output-to-string' (Doc 16 round 12).
+
+(defvar standard-output nil
+  "Output stream for `princ'/`prin1'/`print'/`terpri' (Doc 22 A9).")
+
+(fset 'nelisp--native-princ (symbol-function 'princ))
+(fset 'nelisp--native-prin1 (symbol-function 'prin1))
+(fset 'nelisp--native-terpri (symbol-function 'terpri))
+
+(defun nelisp--emit-to-stream (str stream)
+  "Send string STR to STREAM: function = one funcall per character;
+buffer = best-effort insert; nil/t/other = native stdout."
+  (cond
+   ((functionp stream)
+    (let ((i 0) (n (length str)))
+      (while (< i n) (funcall stream (aref str i)) (setq i (1+ i)))))
+   ((bufferp stream)
+    (with-current-buffer stream (insert str)))
+   (t (nelisp--native-princ str))))
+
+(defun princ (object &optional stream)
+  "Print OBJECT with no quoting to STREAM or `standard-output' (Doc 22 A9)."
+  (let ((s (or stream standard-output)))
+    (if (or (null s) (eq s t))
+        (nelisp--native-princ object)
+      (nelisp--emit-to-stream
+       (if (stringp object) object (nelisp--native-format "%s" object)) s)))
+  object)
+
+(defun prin1 (object &optional stream)
+  "Print OBJECT in read syntax to STREAM or `standard-output' (Doc 22 A9)."
+  (let ((s (or stream standard-output)))
+    (if (or (null s) (eq s t))
+        (nelisp--native-prin1 object)
+      (nelisp--emit-to-stream (prin1-to-string object) s)))
+  object)
+
+(defun terpri (&optional stream)
+  "Output a newline to STREAM or `standard-output' (Doc 22 A9)."
+  (let ((s (or stream standard-output)))
+    (if (or (null s) (eq s t))
+        (nelisp--native-terpri)
+      (nelisp--emit-to-stream "\n" s)))
+  t)
+
+(unless (fboundp 'print)
+  (defun print (object &optional stream)
+    "Output OBJECT in read syntax, surrounded by newlines (Doc 22 A9)."
+    (terpri stream)
+    (prin1 object stream)
+    (terpri stream)
+    object))
+
+(unless (fboundp 'write-char)
+  (defun write-char (character &optional stream)
+    "Output CHARACTER to STREAM or `standard-output' (Doc 22 A9)."
+    (let ((s (or stream standard-output)))
+      (if (or (null s) (eq s t))
+          (nelisp--native-princ (char-to-string character))
+        (nelisp--emit-to-stream (char-to-string character) s)))
+    character))
+
+(unless (fboundp 'with-output-to-string)
+  (defmacro with-output-to-string (&rest body)
+    "Execute BODY with `standard-output' bound to a string accumulator and
+return the accumulated output (Doc 22 A9)."
+    `(let ((nelisp--wos-acc ""))
+       (let ((standard-output
+              (lambda (nelisp--wos-ch)
+                (setq nelisp--wos-acc
+                      (concat nelisp--wos-acc (char-to-string nelisp--wos-ch))))))
+         ,@body)
+       nelisp--wos-acc)))
