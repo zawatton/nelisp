@@ -8,8 +8,9 @@
 #+PROGRESS:   prelude (=scripts/nelisp-stdlib-prelude.el=) の override で訂正可能 (=fset= の
 #+PROGRESS:   function-cell 解決を実証)、かつ dynamic binding も機能する (A8 の crash 主張は誤り、
 #+PROGRESS:   実態は symbol-value 誤値のみ) — doc 当初の「core を直さねば消えない」前提は多くの gap に
-#+PROGRESS:   当てはまらなかった。残 (深い native core/crash、prelude 不可): A4(aset string=immutable)、
-#+PROGRESS:   A11(make-symbol identity)、A14/A15(crash)、A20(eq string=length, 新規)、
+#+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
+#+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。残 (深い native core/crash):
+#+PROGRESS:   A4(aset string=immutable)、A11(make-symbol identity)、A14/A15(crash)、
 #+PROGRESS:   A8 の symbol-value 誤値、C1(hash-table-test)。
 
 * 0. Purpose
@@ -453,7 +454,19 @@ stub が妥当)。boot 無退行 (BOOT-OK、rx/cl-do/cl-typecase/seq 動作、=s
 =(string-match "b\\(c\\)" "abcd")= の group capture = (1 3 "c") も動作)。pure 10 の手動 un-stub
 (commit 296bb0c) は冗長になったが無害。
 
-** A20. =eq= が *同一長の別文字列* で t を返す (length 比較) — 新規発見 2026-06-22
+** A20. =eq= が *同一長の別文字列* で t を返す (length 比較) — 新規発見 + *FIXED 2026-06-22 (native)*
+
+*FIXED* in =scripts/nelisp-standalone-build.el= (vendor/nelisp commit fc5963bf): reader applyfn の
+=eq= arm (=bf_eq2=) が Str/MutStr を offset 8 で比較していたが、offset 8 は inline String の
+length/capacity フィールド (data ptr は offset 16) なので同一長ペアが全て eq になっていた。Sexp::Str
+(tag 5) は clone 時に deep copy される (=nl_sexp_clone_into= が bytes-ptr@16 + len@24 を読んで新バッファ
+=nl_alloc_str=) ため *安定した pointer identity が存在しない*。この value-semantics reader では文字列は
+*値* なので、=Symbol(4)= arm が name 比較で identity を決めるのと同じく、文字列も *content 比較* (length +
+bytes) が首尾一貫。tag 5/6 を =m5_streq= 経由に変更。検証: =(eq "abc" "xyz")=→nil、=(eq "abc" "abd")=→nil、
+=(eq "abc" "abc")=→t、=(eq s s)=→t、=(eq "" "")=→t。int/symbol/cons/vector/nil の eq 無改変、equal/assoc/
+member/memq 正常、neln selftest + repl smoke + standalone-reader-test green。pure elisp build-script
+変更で Rust 不変。なお A3 の prelude =equal= が eq fast-path を避けていた制約は本修正で解消した
+(equal は atom delegation 構造のまま据置で正しい)。
 
 #+begin_src elisp
 (eq "abc" "xyz")  ;=> t    (期待 nil、別オブジェクト・同 length 3)
