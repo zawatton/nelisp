@@ -630,6 +630,16 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   *systemic*: bulk stub list が real-impl 関数を誤 stub する設計バグ (regexp-opt/mapcan で顕在)。
   =record=/=recordp= 等も要 audit。
 
+- *Doc 16 breadth round 30 — bulk-stub no-op shadowing の audit (2026-06-22)*:
+  =emacs-stub-bulk.el= の =--stub-defuns--= が real impl を持つ関数を no-op stub で shadow する
+  systemic バグ (regexp-opt/mapcan の一般化) を audit。判定 = closure arglist =(&rest _)= +
+  =emacs-stub-bulk= property + src に real defun。*84 関数* 該当。
+  pure 10 (=memql=/=proper-list-p=/=characterp=/=byte-code-function-p=/=subrp=/=file-name-absolute-p=/
+  =file-relative-name=/=file-truename=/=format-prompt=/=substitute-command-keys=) を stub list から
+  除去し修正 (commit 296bb0c、検証済)。残 ~74 は buffer/window/process/motion/syntax/hooks 系で
+  standalone では no-op 妥当が多いが documentation/set-match-data/local-variable-p 等は要 review。
+  根治案 = =emacs-stub-bulk= を最後に load。Doc 22 A19。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |

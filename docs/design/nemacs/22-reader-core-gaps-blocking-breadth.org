@@ -346,6 +346,28 @@ rx の =rx--translate-or= が文字列 alternative を *収集できていない
   digit/alpha/word/+/?/seq/group/any 等は実 match するが、=or= が未解決のため bundle 収録は
   保留 (stub のまま)。round 28 で発見、未修正。
 
+** A19. bulk-stub no-op shadowing — real impl を持つ関数が no-op stub のまま (audit)
+
+=src/emacs-stub-bulk.el= の =--stub-defuns--= は load 時に VOID 関数を =(lambda (&rest _) nil)=
+で一括 stub し =emacs-stub-bulk= property を付す。だが real impl を別ファイルに持つ関数が、
+real impl の gate (=unless (fboundp)= や bulk 非対応 =--define-p=) で skip され *no-op stub の
+まま残る* (regexp-opt / mapcan で顕在化したのと同根)。
+
+*audit 結果* (closure arglist =(&rest _)= + =emacs-stub-bulk= property + src に real defun で判定):
+*84 関数* が該当。内訳:
+- *FIXED 10 (pure)*: =memql= / =proper-list-p= / =characterp= / =byte-code-function-p= / =subrp= /
+  =file-name-absolute-p= / =file-relative-name= / =file-truename= / =format-prompt= /
+  =substitute-command-keys=。stub list から除去 → real impl 有効化 (commit 296bb0c)。検証:
+  =(memql 2 '(1 2 3))= → (2 3)、=(characterp ?a)= → t、=(file-name-absolute-p "/x")= → t。
+- *残 ~74 (context-dependent、要個別判断)*: buffer/point/line (bobp/forward-line/newline 等)、
+  window/frame (selected-window/switch-to-buffer 等)、process (process-filter 等)、motion
+  (forward-word/forward-sexp/mark)、syntax/case-table、hooks/timer (run-hooks/sleep-for)、
+  misc (documentation/set-match-data/local-variable-p/markerp 等)。多くは standalone reader で
+  no-op が文脈的に妥当だが、一部 (documentation/set-match-data/local-variable-p 等) は要 review。
+
+*systemic 根治案*: =emacs-stub-bulk= を *最後に load* すれば、全 real impl 確定後に真に VOID な
+名前だけ stub され、shadowing が原理的に消える。current は load 順依存の per-function 修正。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
