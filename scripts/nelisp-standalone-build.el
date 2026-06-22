@@ -415,7 +415,12 @@ storage — not an arena reservation."
    ;; enable@+8, precise_only@+16, in_progress@+24, alloc_debt@+32,
    ;; alloc_limit@+40) + 64 frames x 56B @ +64 (env/result/out/pool/src/cursor/
    ;; bsym).  Dormant in 4a (no caller); driver publish + collect land in 4b.
-   (list (cons 'bss (+ 3728 1048576)))
+   ;; multi-chunk dump: +3728 = nl_fa_tbl_base (8B) -- relocation-table base override
+   ;; for `nl_fa_emit'.  0 = use the default dest+span+isz+256 slot (single-chunk);
+   ;; non-zero = a caller-chosen valid address (the multi-chunk dump puts the table
+   ;; in the intern region's free area, since chunk-0 is full and dest+total+isz is
+   ;; past chunk-0's mmap).
+   (list (cons 'bss (+ 3736 1048576)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
@@ -425,6 +430,8 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_gc_diag" (+ 16 1048576)
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_safepoint_ctx" (+ 80 1048576)
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_fa_tbl_base" (+ 3728 1048576)
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -3001,8 +3008,74 @@ unresolved at link time."
     ;; FLDOFF to the relocation table (boot step: the table that drives a
     ;; per-field linear relocate on load, with no graph walk).  The table lives
     ;; in DEST after the two regions + a 256-byte counter pad.
+    ;; ---- multi-chunk coalescing helpers (boot-wiring 14) ----
+    ;; The arena is a chain of chunks (head @268436160, desc.next @+48).  A
+    ;; multi-chunk heap is coalesced into ONE logical address space at dump time:
+    ;; logical_base(chunk_0)=0, logical_base(chunk_K)=sum(used of chunks < K).  A
+    ;; physical address -> logical offset (nl_mc_logoff) and back (nl_mc_phys); the
+    ;; load then treats the coalesced image as a single chunk (slen=total), reusing
+    ;; the existing single-chunk cold-load unchanged.  For a SINGLE chunk these
+    ;; reduce to (addr - chunk0-data-start), so nl_fa_field/nl_fa_emit stay
+    ;; byte-identical for the verified single-chunk path.
+    (defun nl_mc_logoff_walk (chunk addr acc)
+      (if (= chunk 0) -1
+        (let* ((cbase (ptr-read-u64 chunk 0))
+               (cds (+ cbase 1024))
+               (cused (bf_arena_chunk_used chunk)))
+          (if (if (< addr cds) 0 (if (< addr (+ cds cused)) 1 0))
+              (+ acc (- addr cds))
+            (nl_mc_logoff_walk (ptr-read-u64 (+ chunk 48) 0) addr (+ acc cused))))))
+    (defun nl_mc_logoff (addr)
+      (nl_mc_logoff_walk (ptr-read-u64 268436160 0) addr 0))
+    (defun nl_mc_phys_walk (chunk logoff acc)
+      (if (= chunk 0) 0
+        (let* ((cbase (ptr-read-u64 chunk 0))
+               (cused (bf_arena_chunk_used chunk)))
+          (if (if (< logoff acc) 0 (if (< logoff (+ acc cused)) 1 0))
+              (+ (+ cbase 1024) (- logoff acc))
+            (nl_mc_phys_walk (ptr-read-u64 (+ chunk 48) 0) logoff (+ acc cused))))))
+    (defun nl_mc_phys (logoff)
+      (nl_mc_phys_walk (ptr-read-u64 268436160 0) logoff 0))
+    (defun nl_mc_total_walk (chunk acc)
+      (if (= chunk 0) acc
+        (nl_mc_total_walk (ptr-read-u64 (+ chunk 48) 0)
+                          (+ acc (bf_arena_chunk_used chunk)))))
+    (defun nl_mc_total ()
+      (nl_mc_total_walk (ptr-read-u64 268436160 0) 0))
+    ;; image offset of ADDR for the coalesced image: chunk -> logical offset;
+    ;; intern -> total + (addr-ib); else 0.
+    (defun nl_mc_imgoff (addr total ib ie)
+      (let ((lo (nl_mc_logoff addr)))
+        (if (< lo 0)
+            (if (if (< addr ib) 0 (if (< addr ie) 1 0)) (+ total (- addr ib)) 0)
+          lo)))
+    ;; stream each chunk's live region [cds,cds+used) to FD in chain (=logical) order.
+    (defun nl_mc_write_chunks (fd chunk)
+      (if (= chunk 0) 0
+        (nl_seq2
+         (nl_fa_write_all fd (+ (ptr-read-u64 chunk 0) 1024)
+                          (bf_arena_chunk_used chunk) 0)
+         (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0)))))
+    ;; in-place un-swizzle (offset -> pointer) over the LIVE multi-chunk arena via
+    ;; the table of logical field offsets.  For 1 chunk this equals the single-chunk
+    ;; restore (nl_mc_phys = sstart + off).
+    (defun bf_arena_inplace_restore_mc (tbl tlen ib total)
+      (let ((i 0))
+        (seq
+         (while (< i tlen)
+           (let* ((f (ptr-read-u64 (+ tbl (* i 8)) 0))
+                  (faddr (nl_mc_phys f))
+                  (o (ptr-read-u64 faddr 0)))
+             (nl_seq2
+              (if (< o total)
+                  (ptr-write-u64 faddr 0 (nl_mc_phys o))
+                (ptr-write-u64 faddr 0 (+ ib (- o total))))
+              (setq i (+ i 1)))))
+         0)))
     (defun nl_fa_emit (loc imgoff fldoff dest span ib ie cin dir)
-      (let ((tbl (+ dest (+ span (+ (nl_align_up (if (< ie ib) 0 (- ie ib)) 8) 256)))))
+      (let ((tbl (if (= (ptr-read-u64 (data-addr nl_fa_tbl_base) 0) 0)
+                     (+ dest (+ span (+ (nl_align_up (if (< ie ib) 0 (- ie ib)) 8) 256)))
+                   (ptr-read-u64 (data-addr nl_fa_tbl_base) 0))))
         (nl_seq2
          (if (= dir 3)
              (ptr-write-u64 (+ tbl (* 8 (ptr-read-u64 cin 0))) 0 fldoff)
@@ -3010,23 +3083,24 @@ unresolved at link time."
          (nl_seq2
           (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
           (ptr-write-u64 loc 0 (if (= dir 2) (+ dest imgoff) imgoff))))))
+    ;; chunk-map-aware: a field at WADDR (in ANY chunk) recording its LOGICAL offset,
+    ;; targets resolved to logical (chunk) or total+(tgt-ib) (intern).  For 1 chunk
+    ;; nl_mc_logoff(addr) = addr-ds, so this is byte-identical to the prior version.
     (defun nl_fa_field (waddr tgt ds span dest cin cout dir)
-      (if (< waddr ds) 0
-        (if (< waddr (+ ds span))
-            (let* ((loc (+ dest (- waddr ds)))
-                   (base (- ds 1024))
-                   (ib (ptr-read-u64 (+ base 832) 0))
-                   (ie (ptr-read-u64 (+ base 840) 0)))
-              (if (= dir 1)
-                  (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))
-                (if (if (< tgt ds) 0 (if (< tgt (+ ds span)) 1 0))
-                    (nl_fa_emit loc (- tgt ds) (- waddr ds)
-                                dest span ib ie cin dir)
+      (let ((wlog (nl_mc_logoff waddr)))
+        (if (< wlog 0) 0
+          (let* ((loc (+ dest (- waddr ds)))
+                 (base (- ds 1024))
+                 (ib (ptr-read-u64 (+ base 832) 0))
+                 (ie (ptr-read-u64 (+ base 840) 0))
+                 (tlog (nl_mc_logoff tgt)))
+            (if (= dir 1)
+                (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))
+              (if (< tlog 0)
                   (if (if (< tgt ib) 0 (if (< tgt ie) 1 0))
-                      (nl_fa_emit loc (+ span (- tgt ib)) (- waddr ds)
-                                  dest span ib ie cin dir)
-                    (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1))))))
-          0)))
+                      (nl_fa_emit loc (+ span (- tgt ib)) wlog dest span ib ie cin dir)
+                    (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1)))
+                (nl_fa_emit loc tlog wlog dest span ib ie cin dir)))))))
     (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
       (if (= (nl_gc_in_arena data_ptr) 0) 0
         (let ((k i))
@@ -3455,42 +3529,39 @@ unresolved at link time."
          0)))
     (defun bf_arena_dump_image_stream (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))   ; alloc the header FIRST so all used/total
+                                        ; computations below see a stable cursor (no
+                                        ; alloc between computing `total' and writing
+                                        ; the regions -- otherwise the 64B header bump
+                                        ; would desync hdr+8=total from the written size)
              (head (ptr-read-u64 268436160 0))
-             (sstart (ptr-read-u64 (+ head 24) 0))
-             (cursor (bf_arena_chunk_cursor head))
-             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (sstart (ptr-read-u64 (+ head 24) 0))   ; chunk-0 data-start (= ds for in-place)
+             (slen (bf_arena_chunk_used head))        ; chunk-0 used
              (abase (- sstart 1024))
              (ib (ptr-read-u64 (+ abase 832) 0))
              (ie (ptr-read-u64 (+ abase 840) 0))
              (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (total (nl_mc_total))                    ; coalesced size = sum of chunk used (= slen for 1 chunk)
+             (multi (if (= (ptr-read-u64 (+ head 48) 0) 0) 0 1))
              (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
              (env (if (= depth 0) 0
                     (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
              (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
              (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
              (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
-             ;; in-place: counters + table in the chunk-0 free area past the bump,
-             ;; exactly the dest-relative slots nl_fa_emit computes for dest=sstart.
-             (cin (+ sstart (+ slen isz)))
+             ;; scratch (counters + relocation table): single-chunk keeps the
+             ;; verified chunk-0 free-area layout (default nl_fa_emit tbl); multi-chunk
+             ;; puts it in the intern region free area (chunk-0 is full, and
+             ;; dest+total+isz would be past chunk-0's mmap) via the tbl override.
+             (cin (if (= multi 0) (+ sstart (+ slen isz)) (+ ib isz)))
              (cout (+ cin 8))
-             (tbl (+ sstart (+ slen (+ isz 256))))
-             (goff (nl_img_off gbox sstart slen ib ie))
-             (foff (nl_img_off fbox sstart slen ib ie))
-             (uoff (nl_img_off ubox sstart slen ib ie))
-             (hdr (alloc-bytes 64 8))   ; allocate the header BEFORE the swizzle
+             (tbl (if (= multi 0) (+ sstart (+ slen (+ isz 256))) (+ ib (+ isz 256))))
+             (goff (nl_mc_imgoff gbox total ib ie))
+             (foff (nl_mc_imgoff fbox total ib ie))
+             (uoff (nl_mc_imgoff ubox total ib ie))
              (tlen 0) (fd 0))
-        ;; MULTI-CHUNK GUARD: this dump captures chunk-0 only (nl_fa_field records
-        ;; just chunk-0 fields; cross-chunk pointers classify as "out" and are
-        ;; dropped).  If the heap has grown past chunk-0 (head->next != 0), dumping
-        ;; would silently produce a BROKEN image (dangling pointers into chunks not
-        ;; in the image).  Refuse with -2 instead -- the caller should raise
-        ;; NELISP_LINUX_ARENA_SIZE so the whole heap fits in one chunk (verified:
-        ;; the full ~882MB nemacs env is single-chunk under a 1 GiB arena), or use
-        ;; a future multi-chunk coalescing dump.  Single-chunk -> proceed.
-        (if (not (= (ptr-read-u64 (+ head 48) 0) 0))
-            (wf_write_int out -2)
         (seq
-         ;; header is fully built from pre-swizzle reads (tlen patched after swizzle)
+         ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
          (ptr-write-u64 hdr 0 1179407692)
          (ptr-write-u64 hdr 16 isz)
          (ptr-write-u64 hdr 32 goff) (ptr-write-u64 hdr 40 foff) (ptr-write-u64 hdr 48 uoff)
@@ -3499,20 +3570,25 @@ unresolved at link time."
          (if (< fd 0)
              (wf_write_int out -1)
            (seq
+            ;; multi-chunk: route nl_fa_emit's table to the intern free area
+            (if (= multi 0) 0 (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl))
             ;; ---- from here to the restore: NO alloc / GC / eval (arena is swizzled) ----
             (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
-            (nl_fa_roots sstart slen sstart cin cout 3)   ; dest=sstart => in-place swizzle
+            ;; span=total: cross-chunk pointers swizzle to coalesced logical offsets;
+            ;; dest=ds=sstart: loc=dest+(waddr-ds)=waddr => in-place over ANY chunk.
+            (nl_fa_roots sstart total sstart cin cout 3)
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 0)   ; reset override
             (setq tlen (ptr-read-u64 cin 0))
-            (ptr-write-u64 hdr 8 slen) (ptr-write-u64 hdr 24 tlen)
+            (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
             (nl_fa_write_all fd hdr 64 0)
             (nl_fa_write_all fd tbl (* tlen 8) 0)
-            (nl_fa_write_all fd sstart slen 0)   ; live chunk-0 (now swizzled)
-            (nl_fa_write_all fd ib isz 0)         ; live intern (un-swizzled, fixed on load)
+            (nl_mc_write_chunks fd head)   ; coalesced chunk regions, logical order (single: chunk-0)
+            (nl_fa_write_all fd ib isz 0)   ; live intern (un-swizzled, fixed on load)
             (nl_os_close_handle fd)
-            (bf_arena_inplace_restore tbl tlen sstart slen ib)   ; restore the live arena
-            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz))))))))))
+            (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ total isz)))))))))
     (defun bf_arena_load_image_from_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
