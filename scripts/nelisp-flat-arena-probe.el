@@ -154,14 +154,19 @@
 ;; target/nelisp: ~90 k-entry table, OUT-OF-REGION = 0, and the table-driven
 ;; load rebuilds a WELLFORMED arena.  See `nelisp-flat-arena-probe-dump-table'.
 ;;
-;; REMAINING (production cut-over -- runtime surgery, do as a focused task):
-;;   1. write {header(region sizes + 3 root offsets) + table + regions} to a
-;;      file at build time;
-;;   2. at boot, mmap a fresh arena, memcpy regions, apply the table
-;;      (image[F] += newbase), set a fresh EvalCtx's roots from the header
-;;      offsets;
-;;   3. hook this BEFORE the source replay so cold start loads the image
-;;      instead of re-evaluating all boot source.
+;; FILE persistence (DONE): `nelisp--arena-dump-image-to-file' writes the image
+;; ({64B header | table | regions}) to a path, and
+;; `nelisp--arena-load-image-from-file' reads it back, applies the relocation
+;; table (image[F] += newbase), and verifies the result.  On target/nelisp a
+;; ~46 MB image round-trips: magic OK, ~90 k-entry table, loaded image
+;; WELLFORMED.  The cold-start image now persists across processes.  See
+;; `nelisp-flat-arena-probe-file-roundtrip'.
+;;
+;; REMAINING (the boot hook -- the one piece that modifies the live boot path):
+;;   at boot, instead of a fresh BUFFER, mmap a fresh ARENA, load the image into
+;;   it (the file load above), set a fresh EvalCtx's roots from the header
+;;   offsets, and take this path BEFORE the source replay so cold start loads
+;;   the image instead of re-evaluating all boot source.
 ;;   (Large objects + multi-live-chunk are not exercised by this heap; add if a
 ;;   future heap needs them.)
 
@@ -179,6 +184,8 @@
 (declare-function nelisp--arena-load-relocate-verify "ext" ())
 (declare-function nelisp--arena-image-root-verify "ext" ())
 (declare-function nelisp--arena-dump-table-verify "ext" ())
+(declare-function nelisp--arena-dump-image-to-file "ext" (path))
+(declare-function nelisp--arena-load-image-from-file "ext" (path))
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -289,6 +296,20 @@ block walk reaches the end exactly).  Return a labelled plist;
     (list :relocated-ptrs (nth 0 r)
           :blocks (nth 1 r)
           :wellformed (= (nth 2 r) 1))))
+
+(defun nelisp-flat-arena-probe-file-roundtrip (path)
+  "Dump the cold-start image to PATH, load it back, and verify it.
+Writes {header | relocation table | regions} to PATH, then reads it,
+applies the table (image[F] += newbase), and walks the result.  Return a
+labelled plist; :magic-ok and :loaded-wellformed t means the persisted image
+round-trips into a sound arena."
+  (let* ((written (nelisp--arena-dump-image-to-file path))
+         (r (nelisp--arena-load-image-from-file path)))
+    (list :bytes-written written
+          :magic-ok (= (nth 0 r) 1)
+          :table-len (nth 1 r)
+          :blocks (nth 2 r)
+          :loaded-wellformed (= (nth 3 r) 1))))
 
 (defun nelisp-flat-arena-probe-dump-table ()
   "Table-driven boot-load round trip via `nelisp--arena-dump-table-verify'.

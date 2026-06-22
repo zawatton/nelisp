@@ -2483,6 +2483,8 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-load-relocate-verify") . (bf_arena_load_relocate_verify out))
     ((:lit "nelisp--arena-image-root-verify") . (bf_arena_image_root_verify out))
     ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
+    ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
+    ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -3261,6 +3263,115 @@ unresolved at link time."
          (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
          (wf_cons_int (ptr-read-u64 cin 0) s1 out)
          0)))
+    ;; flat-arena boot-wiring (2): FILE persistence.  The cold-start image is
+    ;; written to / read from a file as {64B header | table | regions}:
+    ;;   header: magic@0, slen@8, isz@16, tlen@24, globals_off@32, frames_off@40,
+    ;;           unbound_off@48.
+    ;;   table:  tlen u64 field offsets (the relocation table).
+    ;;   regions: chunk-0 [0,slen) then interned [slen, slen+isz).
+    ;; Low-level `nl_os_*' handles are used directly (the high-level `rdf' caps
+    ;; at 8 MiB; the image is tens of MiB).  Partial reads/writes are looped.
+    (defun nl_fa_write_all (fd ptr len off)
+      (if (if (< off len) 0 1) off
+        (let ((w (nl_os_write_file_handle fd (+ ptr off) (- len off))))
+          (if (< w 1) off (nl_fa_write_all fd ptr len (+ off w))))))
+    (defun nl_fa_read_all (fd buf len off)
+      (if (if (< off len) 0 1) off
+        (let ((r (nl_os_read_file_handle fd (+ buf off) (- len off))))
+          (if (< r 1) off (nl_fa_read_all fd buf len (+ off r))))))
+    (defun bf_arena_dump_image_to_file (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
+             (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
+             (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
+             (tcap (* 8 200000))
+             (dest (alloc-bytes (+ slen (+ isz (+ 256 tcap))) 8))
+             (tbl (+ dest (+ slen (+ isz 256))))
+             (cin (+ dest slen isz)) (cout (+ dest slen isz 8))
+             (hdr (alloc-bytes 64 8))
+             (i 0) (j 0) (tlen 0) (fd 0))
+        (seq
+         (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0)) (setq i (+ i 8))))
+         (while (< j isz)
+           (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0)) (setq j (+ j 8))))
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_fa_roots sstart slen dest cin cout 3)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+         (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cout cout)
+         (ptr-write-u64 cout 0 0)
+         (setq tlen (ptr-read-u64 cin 0))
+         (ptr-write-u64 hdr 0 1179407692)        ; magic "FLAT"
+         (ptr-write-u64 hdr 8 slen) (ptr-write-u64 hdr 16 isz) (ptr-write-u64 hdr 24 tlen)
+         (ptr-write-u64 hdr 32 (nl_img_off gbox sstart slen ib ie))
+         (ptr-write-u64 hdr 40 (nl_img_off fbox sstart slen ib ie))
+         (ptr-write-u64 hdr 48 (nl_img_off ubox sstart slen ib ie))
+         (setq fd (nl_os_open_write_truncate cpath))
+         (if (< fd 0)
+             (wf_write_int out -1)
+           (seq
+            (nl_fa_write_all fd hdr 64 0)
+            (nl_fa_write_all fd tbl (* tlen 8) 0)
+            (nl_fa_write_all fd dest (+ slen isz) 0)
+            (nl_os_close_handle fd)
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
+    (defun bf_arena_load_image_from_file (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath))
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (if (< fd 0)
+            (seq (wf_write_nil nil-slot)
+                 (wf_cons_int 0 nil-slot s2) (wf_cons_int 0 s2 s1)
+                 (wf_cons_int -1 s1 out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((magic (ptr-read-u64 hdr 0))
+                  (slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (img (alloc-bytes (+ slen (+ isz 8)) 8))
+                  (ti 0) (hdrp 0) (wf 1) (nblk 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd img (+ slen isz) 0)
+              (nl_os_close_handle fd)
+              ;; apply the relocation table: img[F] += img (newbase)
+              (setq ti 0)
+              (while (< ti tlen)
+                (let ((f (ptr-read-u64 (+ tbl (* ti 8)) 0)))
+                  (ptr-write-u64 (+ img f) 0 (+ img (ptr-read-u64 (+ img f) 0))))
+                (setq ti (+ ti 1)))
+              ;; verify the loaded image is well-formed
+              (setq hdrp 0)
+              (while (and (= wf 1) (< hdrp slen))
+                (let* ((h (ptr-read-u64 (+ img hdrp) 0))
+                       (bt (- h (logand h 7))))
+                  (if (< bt 8) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                    (if (> (+ hdrp bt) slen) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                      (nl_seq2 (setq nblk (+ nblk 1)) (setq hdrp (+ hdrp bt)))))))
+              (if (= hdrp slen) 0 (setq wf 0))
+              ;; result: (magic-ok tlen blocks wellformed)
+              (wf_write_nil nil-slot)
+              (wf_cons_int wf nil-slot s3)
+              (wf_cons_int nblk s3 s2)
+              (wf_cons_int tlen s2 s1)
+              (wf_cons_int (if (= magic 1179407692) 1 0) s1 out)
+              0))))))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
     ;; `nl_gc_bt_ok' / `nl_gc_chunk_end', which only `reader-gc.o' defines, so
@@ -6856,6 +6967,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
     "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
     "nelisp--arena-dump-table-verify"
+    "nelisp--arena-dump-image-to-file" "nelisp--arena-load-image-from-file"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
