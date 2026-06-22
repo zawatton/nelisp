@@ -402,3 +402,51 @@ Two fix paths:
 
 Production change is gated on the container RC gate (per policy); not yet
 applied to HEAD.
+
+** 8.9 Path B (sound GC) investigation — gap is marking-REACH, not missing-push (2026-06-22 e)
+
+Path A (line 1053 → 1) shipped (=d5724bb3=, gate GREEN).  Path B = re-enable
+collection (line 1053 = 0) + close the marking gap.  Investigated on the
+838605da worktree (collection ON, crashes).  Findings:
+
+- First obvious fix — make the BOUNDARY =nl_gc_collect= also call
+  =nl_gc_mark_published_contexts= (mark every nested eval/load context, the arm
+  the MIDFORM safepoint already uses): does NOT help (audit still 5/5 SIGSEGV).
+- Why: a depth probe (=exit(100+depth)= on the first collect with published
+  depth>0) shows depth reaches 2, so outer contexts ARE pushed — but the
+  BOUNDARY collect fires in =bf_load_eval_loop= AFTER =nl_driver_eval_published=
+  has POPPED its context, so at the top-level boundary published depth = 0
+  (nothing to mark there) and the conservative C-stack scan range is tiny
+  (=rsp..STACK_TOP= ≈ 368 B — the loop frame).  So neither published-context
+  marking nor the conservative scan covers the live frame at the boundary.
+  (Side note: =syscall-direct 4 2= stderr writes from the GC/arena units never
+  surface — only =syscall-direct 60= exits do — so all probes use exit codes.
+  nelix also redirects the runtime's stderr.)
+- gdb retention walk-up from the faulting buckets slot (gdb disables ASLR →
+  addresses stable): buckets-slot → ht slots buffer (slot0 bucket-count,
+  slot1 buckets) → ht record box on a GROWTH chunk.  Two record boxes share
+  the SAME slots data_ptr (refcount-clone / shared record).  Crucially, NO
+  pointer in the growth-chunk region points at the ht box — its referrer (the
+  lexframe record / backing vector) lives in a DIFFERENT region (first chunk).
+  So the live object graph is cross-chunk: frame records on chunk 0, their
+  ht/buckets children (allocated by =frame_push= DURING the audit) on growth
+  chunks.
+
+Conclusion: the gap is marking-REACH, not a missing push.  The precise marker
+should reach the growth-chunk ht via env→frames→backing→frame→ht (and
+=nl_gc_in_arena= DOES cover growth chunks), yet the crashing ht is not marked —
+so the real retention path is NOT the boundary collect's =ctx=+32 frame stack
+at the moment it fires.  Likely the live frame is retained via a path outside
+{the single =ctx=, the popped published stack, the 368 B conservative window}
+— e.g. a shared/cloned record or a closure-captured environment the traversal
+does not follow.  Closing this soundly is a substantial GC project (identify
+the exact retention edge, extend the marker, re-validate the full gate AND
+nested-load/closure edge cases — the same gap resisted the conservative-scan
+and published-context fixes already in tree).  Re-enabling collection without
+that complete fix would reintroduce the latent crash.
+
+RECOMMENDATION: keep Path A (sound, shipped, gate-green).  Path B remains a
+scoped follow-up; the concrete next step is to instrument the FREEING site
+(=nl_gc_free_block=) to dump, for the first frame-/ht-shaped block it frees,
+the chain of referrers (memory-search up to a root) — that names the exact
+unmarked retention edge to teach the marker.
