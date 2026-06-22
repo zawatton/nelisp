@@ -866,16 +866,31 @@ from `(defvar X nil)'."
             (setq alist (cdr alist)))))))
     found))
 
-(defun mapcar (fn list)
-  (let ((acc nil))
-    (while list
-      (setq acc (cons (funcall fn (car list)) acc))
-      (setq list (cdr list)))
-    (nreverse acc)))
+(defun mapcar (fn seq)
+  "Apply FN to each element of SEQ (list, vector, or string); collect results.
+Doc 22 A6: arrays are iterated by index via `aref'/`length' (cons-cell
+walking only works for lists)."
+  (if (or (vectorp seq) (stringp seq))
+      (let ((n (length seq)) (i 0) (acc nil))
+        (while (< i n)
+          (setq acc (cons (funcall fn (aref seq i)) acc))
+          (setq i (1+ i)))
+        (nreverse acc))
+    (let ((acc nil))
+      (while seq
+        (setq acc (cons (funcall fn (car seq)) acc))
+        (setq seq (cdr seq)))
+      (nreverse acc))))
 
-(defun mapc (fn list)
-  (let ((orig list))
-    (while list (funcall fn (car list)) (setq list (cdr list))) orig))
+(defun mapc (fn seq)
+  "Apply FN to each element of SEQ for side effect; return SEQ.
+Doc 22 A6: arrays are iterated by index."
+  (if (or (vectorp seq) (stringp seq))
+      (let ((n (length seq)) (i 0))
+        (while (< i n) (funcall fn (aref seq i)) (setq i (1+ i)))
+        seq)
+    (let ((orig seq))
+      (while seq (funcall fn (car seq)) (setq seq (cdr seq))) orig)))
 
 (defun plist-member (plist key &optional predicate)
   (let ((cur plist) (found nil))
@@ -3924,3 +3939,109 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
         (concat "[" parts "]")))
      ((symbolp obj) (concat "\"" (nelisp--json-escape (symbol-name obj)) "\""))
      (t (concat "\"" (nelisp--json-escape (format "%s" obj)) "\"")))))
+
+;; ---- Doc 22 reader-core gap fixes (A1/A2/A3/A5/A10/A12) ----
+;;
+;; The bare standalone reader ships native primitives whose contract diverges
+;; from host Emacs for several core functions.  Because the prelude loads AFTER
+;; the native builtins and the runtime resolves these through the global
+;; function cell, we capture the native implementation and install a corrected
+;; pure-elisp wrapper here (verified: user-level redefinition shadows the native
+;; primitive).  No Rust change is involved.
+
+;; A10: `arrayp' is VOID on the bare reader (silently returns nil).
+(unless (fboundp 'arrayp)
+  (defun arrayp (x)
+    "Return t if X is an array (= a string or a vector)."
+    (if (or (vectorp x) (stringp x)) t nil)))
+
+;; A1: 2-arg `floor'/`ceiling'/`truncate' ignored the divisor.  Capture the
+;; native 1-arg implementation, fix the 2-arg integer path with a toward-zero
+;; quotient (`/') plus a floor/ceil sign adjustment (the reader has no `%').
+(fset 'nelisp--native-floor (symbol-function 'floor))
+(fset 'nelisp--native-ceiling (symbol-function 'ceiling))
+(fset 'nelisp--native-truncate (symbol-function 'truncate))
+
+(defun nelisp--int-floor-div (x div)
+  "Integer floor division X/DIV toward negative infinity (DIV /= 0)."
+  (let* ((q (/ x div))
+         (r (- x (* q div))))
+    (if (and (not (= r 0)) (if (< div 0) (> r 0) (< r 0)))
+        (- q 1)
+      q)))
+
+(defun floor (x &optional div)
+  "Return the largest integer <= X (1-arg) or <= X/DIV (2-arg)."
+  (cond
+   ((null div) (nelisp--native-floor x))
+   ((and (integerp x) (integerp div)) (nelisp--int-floor-div x div))
+   (t (nelisp--native-floor (/ x div)))))
+
+(defun ceiling (x &optional div)
+  "Return the smallest integer >= X (1-arg) or >= X/DIV (2-arg)."
+  (cond
+   ((null div) (nelisp--native-ceiling x))
+   ((and (integerp x) (integerp div))
+    (- (nelisp--int-floor-div (- x) div)))
+   (t (nelisp--native-ceiling (/ x div)))))
+
+(defun truncate (x &optional div)
+  "Truncate X (1-arg) or X/DIV (2-arg) toward zero."
+  (cond
+   ((null div) (nelisp--native-truncate x))
+   ((and (integerp x) (integerp div)) (/ x div))
+   (t (nelisp--native-truncate (/ x div)))))
+
+;; A2: `mod' used truncate-remainder semantics (sign followed the dividend).
+;; Reinstall host floor-mod: the result carries the sign of the divisor.
+(defun mod (a b)
+  "Return A modulo B with the sign of B (host floor-mod, Doc 22 A2)."
+  (if (= b 0)
+      (error "Arithmetic error")
+    (let ((r (- a (* (/ a b) b))))
+      (if (and (not (= r 0)) (if (< b 0) (> r 0) (< r 0)))
+          (+ r b)
+        r))))
+
+;; A3: native `equal' never compared vectors element-wise.  Capture native
+;; `equal' for the atom/string/number leaves and recurse over cons + vector.
+(fset 'nelisp--native-equal (symbol-function 'equal))
+(defun equal (a b)
+  "Structural equality with vector support (Doc 22 A3).
+Only `cons' and `vector' are walked in elisp; every atom (number, string,
+symbol, nil, t) is delegated to the native `equal', which compares them
+correctly.  We deliberately avoid an `(eq a b)' fast path: on the bare
+reader `eq' returns t for distinct strings, which would make any two
+strings compare equal."
+  (cond
+   ((and (consp a) (consp b))
+    (and (equal (car a) (car b)) (equal (cdr a) (cdr b))))
+   ((and (vectorp a) (vectorp b))
+    (let ((n (length a)))
+      (if (= n (length b))
+          (let ((i 0) (ok t))
+            (while (and ok (< i n))
+              (if (equal (aref a i) (aref b i))
+                  (setq i (1+ i))
+                (setq ok nil)))
+            ok)
+        nil)))
+   (t (nelisp--native-equal a b))))
+
+;; A5: native `substring' returned garbage for vectors.  Slice vectors in
+;; elisp via `aref'/`aset'; defer strings to the (correct) native path.
+(fset 'nelisp--native-substring (symbol-function 'substring))
+(defun substring (seq from &optional to)
+  "Return the SEQ slice [FROM, TO); vector support added (Doc 22 A5)."
+  (if (vectorp seq)
+      (let* ((n (length seq))
+             (s (if (< from 0) (+ n from) from))
+             (e (if to (if (< to 0) (+ n to) to) n))
+             (out (make-vector (- e s) nil))
+             (i 0))
+        (while (< (+ s i) e)
+          (aset out i (aref seq (+ s i)))
+          (setq i (1+ i)))
+        out)
+    (nelisp--native-substring seq from to)))
+
