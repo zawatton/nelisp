@@ -53,6 +53,8 @@ final `.el' suffix with `.repl'.")
     "emacs-fileio.el"
     "case-table.el"
     "emacs-process-events.el"
+    "regi.el"
+    "files-standalone-buffer.el"
     "emacs-syntax-table.el"
     "emacs-font-lock.el"
     "emacs-font-lock-builtins.el"
