@@ -80,15 +80,28 @@
 ;; `nelisp-flat-arena-probe-copy-verify'; implemented in
 ;; `scripts/nelisp-standalone-build.el' (`bf_arena_dump_copy_verify').
 ;;
+;; STEP 3b-i (DONE): root-coverage precondition for the pointer swizzle.
+;; Baked `nelisp--arena-mark-reach-verify' reuses the GC mark-from-roots
+;; (`nl_gc_mark_published_contexts' / `-rootstack' / `-symentry') to mark the
+;; reachable graph, linearly counts the marked blocks, then CLEARS the marks
+;; (no sweep -> nothing freed; the heap is left exactly as before).  Returns
+;; (REACHABLE TOTAL).  On target/nelisp the reachable set is ~76 k objects;
+;; the linear "live" count is much larger only because the bump allocator
+;; retains unreachable-not-yet-swept garbage -- after `(garbage-collect)' the
+;; live count drops to ~83 k and REACHABLE ~= LIVE (~92%; the remainder are
+;; transient C-stack roots, which a dump intentionally omits).  This proves
+;; the published roots reach the whole persistent live set the dump must
+;; capture.  See `nelisp-flat-arena-probe-mark-reach'.
+;;
 ;; NEXT STEPS (not in this file):
-;;   step 3b  the relocation half: walk the live object graph from the 3
-;;            EvalCtx roots (globals_record @ +0, frames_record @ +32,
-;;            unbound_marker @ +64) with the GC's per-type child walk to
-;;            enumerate pointer fields, and swizzle each absolute pointer to
-;;            (chunk, offset).  Also extend the copy to every chunk.
-;;   step 4   load: alloc fresh chunks, memcpy, unswizzle to the new base,
-;;            install the roots into a fresh EvalCtx; boot hook before the
-;;            source-replay fallback.
+;;   step 3b-ii  the swizzle proper: mirror the GC per-type walk
+;;               (`nl_gc_mark_slot') but RECORD each pointer field's
+;;               arena-offset + target, then rewrite each absolute pointer in
+;;               the copied buffer to (chunk, offset).  Extend the copy to
+;;               every chunk.
+;;   step 4      load: alloc fresh chunks, memcpy, unswizzle to the new base,
+;;               install the roots into a fresh EvalCtx; boot hook before the
+;;               source-replay fallback.
 
 ;;; Code:
 
@@ -99,6 +112,8 @@
 (declare-function nelisp--arena-stats "ext" ())
 (declare-function nelisp--arena-walk-verify "ext" ())
 (declare-function nelisp--arena-dump-copy-verify "ext" ())
+(declare-function nelisp--arena-mark-reach-verify "ext" ())
+(declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
 (defconst nelisp-flat-arena-probe--chunk-count-offset #x2d0)
@@ -171,13 +186,30 @@ heap is never mutated.  Return a labelled plist."
           :byte-faithful (= (nth 1 r) 0)
           :dest-ptr (nth 2 r))))
 
+(defun nelisp-flat-arena-probe-mark-reach (&optional gc-first)
+  "Root-coverage check via the baked `nelisp--arena-mark-reach-verify' op.
+Marks the reachable graph from the published roots, counts it, then clears
+the marks (no sweep).  With GC-FIRST non-nil, run `(garbage-collect)' first
+so the linear live count drops to the reachable set for a tight comparison.
+Return a labelled plist."
+  (when gc-first (garbage-collect))
+  (let* ((mr (nelisp--arena-mark-reach-verify))
+         (reach (nth 0 mr))
+         (live (nth 1 (nelisp--arena-walk-verify))))
+    (list :reachable reach
+          :linear-live live
+          :reach-le-live (<= reach live)
+          :reach-pct-of-live (if (> live 0) (/ (* reach 100) live) 0))))
+
 (defun nelisp-flat-arena-probe-report (&optional limit)
-  "Print the bounded walk, the full baked walk, and the bulk-copy check."
+  "Print the walk, full walk, bulk-copy, and root-coverage (post-GC) checks."
   (princ (nelisp-flat-arena-probe-walk limit))
   (princ "\n")
   (princ (nelisp-flat-arena-probe-verify-full))
   (princ "\n")
-  (princ (nelisp-flat-arena-probe-copy-verify)))
+  (princ (nelisp-flat-arena-probe-copy-verify))
+  (princ "\n")
+  (princ (nelisp-flat-arena-probe-mark-reach t)))
 
 (provide 'nelisp-flat-arena-probe)
 

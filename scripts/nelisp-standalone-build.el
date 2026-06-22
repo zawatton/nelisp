@@ -2478,6 +2478,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
     ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
+    ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2812,6 +2813,59 @@ unresolved at link time."
          (wf_cons_int dest nil-slot s2)
          (wf_cons_int mism s2 s1)
          (wf_cons_int slen s1 out)
+         0)))
+    ;; flat-arena spike step 3b-i (root-reachability precondition for the
+    ;; pointer swizzle): prove the published root set reaches the whole live
+    ;; object set, so a from-roots per-type walk that records pointer fields
+    ;; (the actual swizzle, step 3b-ii) will cover every object the dump
+    ;; bulk-copies.  REUSES the battle-tested GC mark-from-roots
+    ;; (`nl_gc_mark_published_contexts' / `-rootstack' / `-symentry', the same
+    ;; calls `nl_gc_collect_published' makes) so no per-type walker is
+    ;; re-implemented; then linearly counts the marked (reachable) blocks and
+    ;; CLEARS the marks back to 0, leaving the heap exactly as before (NO
+    ;; sweep -> nothing freed).  The GC-in-progress flag (ctx+24) is held so a
+    ;; mid-walk safepoint cannot re-enter.  Returns (REACHABLE TOTAL):
+    ;; REACHABLE ~= LIVE from `bf_arena_walk_verify' confirms root coverage.
+    (defun bf_arena_mr_chunk (chunk reach total)
+      (let* ((cbase (ptr-read-u64 chunk 0))
+             (end (+ cbase (bf_arena_chunk_cursor chunk)))
+             (hdr (ptr-read-u64 (+ chunk 24) 0)))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (let ((bt (nl_hdr_bt hdr)))
+             (if (< bt 8)
+                 (setq hdr end)
+               (if (> (+ hdr bt) end)
+                   (setq hdr end)
+                 (seq
+                  (ptr-write-u64 total 0 (+ (ptr-read-u64 total 0) 1))
+                  (if (= (nl_hdr_mark hdr) 1)
+                      (seq (ptr-write-u64 reach 0 (+ (ptr-read-u64 reach 0) 1))
+                           (nl_hdr_set_mark hdr 0))
+                    0)
+                  (setq hdr (+ hdr bt)))))))
+         0)))
+    (defun bf_arena_mr_chunks (chunk reach total)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (bf_arena_mr_chunk chunk reach total)
+                 (bf_arena_mr_chunks (ptr-read-u64 (+ chunk 48) 0)
+                                     reach total))))
+    (defun bf_arena_mark_reach_verify (out)
+      (let* ((reach (alloc-bytes 8 8)) (total (alloc-bytes 8 8))
+             (nil-slot (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 reach 0 0)
+         (ptr-write-u64 total 0 0)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_gc_mark_published_contexts)
+         (nl_gc_mark_rootstack)
+         (nl_gc_mark_symentry)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+         (bf_arena_mr_chunks (ptr-read-u64 268436160 0) reach total)
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 total 0) nil-slot s1)
+         (wf_cons_int (ptr-read-u64 reach 0) s1 out)
          0)))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -6405,7 +6459,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
-    "nelisp--arena-dump-copy-verify"
+    "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
