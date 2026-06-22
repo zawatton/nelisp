@@ -2485,6 +2485,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
     ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
     ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
+    ((:lit "nelisp--env-capture-roots") . (bf_env_capture_roots out))
     ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
     ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
@@ -2651,6 +2652,36 @@ unresolved at link time."
         (seq (wf_write_int slot v)
              (nelisp_cons_construct slot rest out)
              0)))
+    ;; Env-bridge CAPTURE (Doc 17 §11.2 Bridge 1) for the heap-v0 cold-loader.
+    ;; Reads the codec's env-root-manifest 5 roots from the LIVE published EvalCtx
+    ;; (env = nl_safepoint_ctx+64, the GC-published frame-0 context) and returns the
+    ;; list (globals_record frames_record unbound_marker max_recursion use_elisp_apply),
+    ;; directly consumable by `nelisp-heap-image-encode-roots'.  This is the "symmetric
+    ;; getter to read the current globals_record" that Doc 17 §11.2 says standalone
+    ;; lacks; offsets are gdb-verified against the EvalCtx (120B): globals SLOT @env+0
+    ;; (tag 12 Record), frames SLOT @env+32 (tag 12), unbound SLOT @env+64 (tag 4
+    ;; Symbol -- the whole 32B slot, NOT +8), max_recursion scalar @env+104, use_elisp
+    ;; scalar @env+112.  Records/Symbol roots are returned as their Sexp value (slot
+    ;; copy); the two scalars as Int Sexps.  Returns nil if no frame is published.
+    (defun bf_env_capture_roots (out)
+      (let* ((env (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0))
+             (g (alloc-bytes 32 8)) (f (alloc-bytes 32 8)) (u (alloc-bytes 32 8))
+             (nilp (alloc-bytes 32 8))
+             (c4 (alloc-bytes 32 8)) (c3 (alloc-bytes 32 8))
+             (c2 (alloc-bytes 32 8)) (c1 (alloc-bytes 32 8)))
+        (if (= env 0)
+            (wf_write_nil out)
+          (seq
+           (wf_copy32 g (+ env 0))    ; globals_record slot
+           (wf_copy32 f (+ env 32))   ; frames_record slot
+           (wf_copy32 u (+ env 64))   ; unbound_marker slot (tag-4 Symbol)
+           (wf_write_nil nilp)
+           (wf_cons_int (ptr-read-u64 (+ env 112) 0) nilp c4)  ; use_elisp_apply
+           (wf_cons_int (ptr-read-u64 (+ env 104) 0) c4 c3)    ; max_recursion
+           (nelisp_cons_construct u c3 c2)                     ; unbound_marker
+           (nelisp_cons_construct f c2 c1)                     ; frames_record
+           (nelisp_cons_construct g c1 out)                    ; globals_record
+           0))))
     ;; Portable arena telemetry:
     ;;   (base size bump-offset used-bytes live-after-last-gc next-trigger
     ;;    free-list-head collect-disabled reuse-disabled
@@ -7102,6 +7133,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-dump-table-verify"
     "nelisp--arena-dump-image-to-file" "nelisp--arena-load-image-from-file"
     "nelisp--arena-boot-load-verify" "nelisp--arena-load-split-verify"
+    "nelisp--env-capture-roots"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
