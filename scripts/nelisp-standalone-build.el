@@ -4736,6 +4736,20 @@ unresolved at link time."
     (defun bf_recordp (args out)
       (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 12)
           (wf_write_t out) (wf_write_nil out)))
+    ;; make-record TYPE SLOT-COUNT INIT -> tag-12 Record with SLOT-COUNT data
+    ;; slots each = INIT.  Mirrors bf_make_vector (constant fill), the sibling
+    ;; of bf_record (list fill).  Doc 22 A14.
+    (defun bf_mkrec_fill (rec i n init)
+      (if (>= i n) 0
+        (seq (record-slot-set rec i init)
+             (bf_mkrec_fill rec (+ i 1) n init))))
+    (defun bf_make_record (args out)
+      (let* ((tag (wf_arg_ptr args 0))
+             (n (ptr-read-u64 (wf_arg_ptr args 1) 8))
+             (init (wf_arg_ptr args 2)))
+        (seq (record-make tag n out)
+             (bf_mkrec_fill out 0 n init)
+             0)))
     ;; make-vector LEN INIT -> Vector(tag8) with every slot = INIT (cloned).
     ;; NB: use the `vector-slot-set' GRAMMAR OP (takes the Sexp ptr, derefs the
     ;; box internally), NOT the raw nl_vector_set_slot (which wants the box ptr).
@@ -5402,6 +5416,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "make-vector") . (bf_make_vector args out))
     ((:lit "vector")      . (bf_vector args out))
     ((:lit "record")      . (bf_record args out))
+    ((:lit "make-record") . (bf_make_record args out))
     ((:lit "recordp")     . (bf_recordp args out))
     ((:lit "aref")        . (bf_aref args out))
     ((:lit "elt")         . (bf_elt args out))
@@ -5521,7 +5536,7 @@ ash/logand/logior/logxor/lognot + string<.")
   '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
-    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp"
+    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp" "make-record"
     "signal" "error" "equal" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
@@ -7500,7 +7515,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
-    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp"
+    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp" "make-record"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
