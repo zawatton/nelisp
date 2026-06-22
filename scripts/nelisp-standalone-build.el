@@ -10141,16 +10141,22 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
-        ;; cold path only -- disable the reclaimer (base+160 = 1 => nl_gc_collect
-        ;; is a NO-OP).  The boot config block above re-arms the GC trigger
-        ;; (268435560 = 16 MiB) BELOW the loaded image's bump (~30 MiB), so a
-        ;; collection would fire on the first form boundary and run the mark walk
-        ;; over the loaded graph.  GC over a cold-loaded image is unproven (the
-        ;; mark/sweep + conservative stack scan would have to be sound on the
-        ;; relocated objects), so keep it OFF for the spike.  Confirmed via probe
-        ;; NOT to be the current SIGSEGV (the crash persists with GC off), but
-        ;; left as a cold-path precaution.  Normal boot (_cl < 0) is untouched.
-        (if (< _cl 0) 0 (ptr-write-u64 268435616 0 1))
+        ;; cold path: GC is now ENABLED over the cold-loaded image (no override
+        ;; here, so base+160 = 0 from `nl_arena_init').  This is sound because
+        ;; relocation is COMPLETE (nl_fa_slot mirrors nl_gc_mark_slot exactly, so
+        ;; every reachable pointer the mark walk follows was relocated) and the
+        ;; BOOT WATERMARK set just above (268435664 = base+bump, AFTER the load +
+        ;; all boot allocs) puts the whole loaded image + boot generation BELOW
+        ;; the watermark, where `nl_gc_sweep_one' keeps it live and never frees
+        ;; it.  So a form-boundary collection (the trigger at 268435560=16 MiB is
+        ;; below the loaded ~30 MiB bump, so it fires on the first form) marks the
+        ;; relocated graph (safe) and only reclaims per-form garbage ABOVE the
+        ;; watermark -- exactly as in a normal boot.  Validated at PARITY with
+        ;; gate-OFF: cold fib(20)=6765, fib(23)=28657, sumto(50000)=1250025000
+        ;; all run GC-active to correct results with no SIGSEGV; fib(25) OOMs
+        ;; (SIGKILL) in BOTH cold and normal -- a pre-existing single-form limit
+        ;; (no mid-form collection for one deeply-recursive top-level form), not
+        ;; a cold-load regression.
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
