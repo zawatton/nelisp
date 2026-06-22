@@ -2988,6 +2988,34 @@ unresolved at link time."
                         (if (= tag 10)
                             (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
                           0)))))))))))
+    ;; step 3c (all roots): walk every published frame's roots + the shared
+    ;; symentry, mirroring `nl_gc_mark_published_frame' / `-contexts_from' /
+    ;; `nl_gc_mark_symentry' so the swizzle/relocate reaches the COMPLETE live
+    ;; graph (globals + frame stack + unbound marker + the per-frame reader
+    ;; transients result/out/src/cursor/bsym), not just frame[0] globals.
+    (defun nl_fa_frame_at (base ds span dest cin cout dir)
+      (let ((env (ptr-read-u64 base 0)))
+        (nl_seq2 (nl_fa_slot (+ env 0) ds span dest cin cout dir)
+         (nl_seq2 (nl_fa_slot (+ env 32) ds span dest cin cout dir)
+          (nl_seq2 (nl_fa_slot (+ env 64) ds span dest cin cout dir)
+           (nl_seq2 (nl_fa_slot (ptr-read-u64 base 8) ds span dest cin cout dir)
+            (nl_seq2 (nl_fa_slot (ptr-read-u64 base 16) ds span dest cin cout dir)
+             (nl_seq2 (nl_fa_slot (ptr-read-u64 base 32) ds span dest cin cout dir)
+              (nl_seq2 (nl_fa_slot (ptr-read-u64 base 40) ds span dest cin cout dir)
+                       (nl_fa_slot (ptr-read-u64 base 48) ds span dest cin cout dir))))))))))
+    (defun nl_fa_frames_from (i depth ds span dest cin cout dir)
+      (if (< i depth)
+          (nl_seq2
+           (nl_fa_frame_at (+ (data-addr nl_safepoint_ctx) (+ 64 (* i 56)))
+                           ds span dest cin cout dir)
+           (nl_fa_frames_from (+ i 1) depth ds span dest cin cout dir))
+        0))
+    (defun nl_fa_roots (ds span dest cin cout dir)
+      (nl_seq2
+       (nl_fa_frames_from 0 (ptr-read-u64 (data-addr nl_safepoint_ctx) 0)
+                          ds span dest cin cout dir)
+       (if (= (ptr-read-u64 268436328 0) 0) 0
+         (nl_fa_slot (ptr-read-u64 268436328 0) ds span dest cin cout dir))))
     (defun bf_arena_swizzle_verify (out)
       (let* ((head (ptr-read-u64 268436160 0))
              (sstart (ptr-read-u64 (+ head 24) 0))
@@ -3014,14 +3042,14 @@ unresolved at link time."
                 (setq i (+ i 8))))
          (if (= env 0) 0
            (seq
-            ;; 2. swizzle pass (abs -> offset) from the globals root
+            ;; 2. swizzle pass (abs -> offset) from ALL roots
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
-            (nl_fa_slot (+ env 0) sstart slen dest cin cout 0)
+            (nl_fa_roots sstart slen dest cin cout 0)
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
             (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)   ; clear marks
             ;; 3. unswizzle pass (offset -> abs)
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
-            (nl_fa_slot (+ env 0) sstart slen dest cin cout 1)
+            (nl_fa_roots sstart slen dest cin cout 1)
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
             (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)
             ;; 4. round-trip identity: copy must equal source again
@@ -3070,9 +3098,10 @@ unresolved at link time."
                 (setq i (+ i 8))))
          (if (= env 0) 0
            (seq
-            ;; 2. relocate DEST's in-region pointers to base = dest (dir 2)
+            ;; 2. relocate DEST's in-region pointers to base = dest (dir 2),
+            ;; from ALL roots
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
-            (nl_fa_slot (+ env 0) sstart slen dest crel ctr 2)
+            (nl_fa_roots sstart slen dest crel ctr 2)
             (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
             (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)
             ;; 3. verify the LOADED image: linear [hdr][obj] walk of DEST must

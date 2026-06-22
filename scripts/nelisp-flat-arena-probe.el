@@ -93,10 +93,12 @@
 ;; the published roots reach the whole persistent live set the dump must
 ;; capture.  See `nelisp-flat-arena-probe-mark-reach'.
 ;;
-;; STEP 3b-ii (DONE): the pointer SWIZZLE proper.  Baked
+;; STEP 3b-ii (DONE) + 3c all-roots: the pointer SWIZZLE proper.  Baked
 ;; `nelisp--arena-swizzle-verify' bulk-copies chunk-0, then mirrors the GC
-;; per-type walk (`nl_gc_mark_slot' / `-cons' / `-vec_slots') from the
-;; frame[0] globals root and, at every pointer FIELD, rewrites the matching
+;; per-type walk (`nl_gc_mark_slot' / `-cons' / `-vec_slots') from ALL roots
+;; (`nl_fa_roots' = every published frame's globals/frames/unbound + the
+;; reader transients result/out/src/cursor/bsym + the shared symentry,
+;; mirroring `nl_gc_mark_published_frame') and, at every pointer FIELD, rewrites the matching
 ;; word IN THE COPIED buffer from an absolute address to an arena-relative
 ;; offset (in-place; no separate pointer list).  The SOURCE heap is never
 ;; written.  Verified by a round trip: swizzle then unswizzle restores the
@@ -119,10 +121,16 @@
 ;; arbitrary (kernel-chosen) base as a sound arena -- the load half of the
 ;; memcpy+relocate round trip.  See `nelisp-flat-arena-probe-load-relocate'.
 ;;
+;; STEP 3c all-roots (DONE): swizzle/relocate now walk from the COMPLETE root
+;; set (all published frames + transients + symentry, via `nl_fa_roots'), not
+;; just frame[0] globals -- in-region pointers grew ~75.7k -> ~76.1k, still
+;; reversible (mismatch 0) and load-valid.
+;;
 ;; NEXT STEPS (not in this file):
-;;   step 3c    extend copy + swizzle + relocate to every chunk and all roots
-;;              (frames, transients, symentry), and carry the out-of-region
-;;              targets (interned region + large objects) into the image.
+;;   step 3c    all-chunks / external regions: extend the copy + the
+;;              swizzle/relocate to every chunk (chunk-descriptor chain) and
+;;              the interned-symbol-name region + large objects via a region
+;;              map, so the ~13.8k out-of-region pointers also swizzle.
 ;;   step 4-boot install a loaded+relocated image as the live heap (fresh
 ;;              EvalCtx + roots) and hook it into boot BEFORE the source replay
 ;;              -- the actual cold-start speedup.  Needs step 3c completeness.
