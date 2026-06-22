@@ -51,6 +51,8 @@ final `.el' suffix with `.repl'.")
 (defvar nelisp-bootstrap-late-extra-files
   '("lisp.el"
     "emacs-fileio.el"
+    "case-table.el"
+    "emacs-process-events.el"
     "emacs-syntax-table.el"
     "emacs-font-lock.el"
     "emacs-font-lock-builtins.el"
