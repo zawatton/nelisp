@@ -1,6 +1,6 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
-#+STATUS: FIXED (§8.8: the DYNAMIC arena init enabled unsound form-boundary mark-sweep — base+160=0 at line 1053 — so nl_gc_collect freed live growth-chunk lexframe ht children the precise marker misses; the "stray write" was the free-link write over a live box). Fix A (line 1053 → 1, collection disabled, matching the documented intent) committed as d5724bb3 and pushed to feat. VALIDATED: full Debian no-Nix RC container gate (474-test nelix RC gate) GREEN against the fixed nelisp; the previously-SIGSEGV'ing audit runs clean. Path B (sound-GC: mark growth-chunk frame children) remains a future option to re-enable reclamation.
+#+STATUS: RESOLVED via Path B (sound GC, reclamation RE-ENABLED). Root cause (§8.12): the conservative native-stack scan marks an in-flight record/vector BOX interior pointer's block but mark_slot misreads its type_tag and does NOT recurse the record's slots; the now-marked block makes the PRECISE marker skip recursion (mark_block returns 0), so a lexframe ht's children (bucket-count/buckets) are never marked and get swept -> free-link clobbers the live box -> SIGSEGV. Fix B (b31179ce, pushed): decouple "alive" from "recursed" — conserv pins with mark 4 (not 1), mark_block treats 4 like 0 (upgrade+recurse), sweep keeps+resets 4 like 1; reclaimer gate base+160 re-enabled (0). VALIDATED: full Debian no-Nix RC container gate (474-test) GREEN; audit 10/10 + (garbage-collect) + heavy churn all clean on the 838605da/256MiB repro. (History: §8.8 Fix A d5724bb3 disabled collection as a sound stopgap; Path B supersedes it and restores reclamation.)
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -549,3 +549,52 @@ both).  This is a real GC-marking change requiring full-gate revalidation, so
 Path A (collection disabled) remains the shipped fix; Path B continues to be a
 scoped effort with the recursion break now localized to the
 frames-record→…→ht precise traversal.
+
+** 8.12 Path B SHIPPED: sound GC via "alive vs recursed" decouple (2026-06-22 h)
+
+Pinned the exact mechanism and fixed it; reclamation is re-enabled.
+
+Mechanism (HW-watchpoint, 838605da/256MiB):
+- The freeing collect is the boundary =nl_gc_collect= during a nested
+  =bf_load=; its =ctx= == the env =find= walks.  The crashing frame is
+  backing[20] of a depth-25 stack (backing len 64, no mismatch); the frame box
+  is on chunk 0, its ht/children on a growth chunk, all =in_arena=1=.
+- A =watch ... if mark==1= on the ht box NEVER fires => the ht is NEVER marked;
+  the precise recursion never reaches it.  Post-mark chain marks show
+  frames-record / backing / frame box all mark 1, but the ht unmarked.
+- =watch frame_box if mark==1= backtrace: the FIRST mark of the frame box is
+  =nl_gc_mark_block <- nl_gc_mark_slot <- nl_gc_conserv_word <- nl_gc_conserv_scan
+  <- nl_gc_conserv_maybe <- nl_gc_mark_roots=.  So the CONSERVATIVE SCAN marks
+  the frame's box.  When the scan's candidate pointer is a record/vector BOX
+  interior (not the Sexp slot), =nl_gc_mark_slot= reads box+0 (the type_tag, a
+  Symbol-tag byte) as a Sexp tag and takes the Symbol arm — marking the block
+  but NOT recursing the record's slots.  The block is now mark 1, so when the
+  PRECISE marker later reaches the object via its real Sexp slot,
+  =nl_gc_mark_block= returns 0 (already marked) and recursion is SKIPPED — the
+  ht's bucket-count/buckets are never marked -> swept -> the =nl_gc_free_block_link=
+  next-link write clobbers the live box's tag -> SIGSEGV.
+  (Note §8.10/8.11 had tentatively "refuted" conserv because SCAN_FLAG=0 still
+  crashed — but that just trades this bug for the OTHER in-flight crash conserv
+  was added to fix; conserv is both necessary AND was poisoning precise
+  recursion.)
+
+FIX (b31179ce): decouple "alive" (pinned) from "recursed".
+- =nl_gc_conserv_owner= pins a kept block with mark 4 (alive, not-recursed)
+  instead of calling =nl_gc_mark_block= (which set mark 1).
+- =nl_gc_mark_block= treats mark 4 like mark 0: upgrade 4->1 and return 1
+  ("recurse"), so the precise marker recurses a conservatively-pinned block.
+- =nl_gc_sweep_one= keeps + resets mark 4 exactly like mark 1.
+- Reclaimer gate base+160 re-enabled (dynamic init line: 1 -> 0).
+Soundness: terminates (each block goes 0/4 -> 1 at most once, then mark_block
+returns 0), never frees a pinned/live block, and only ever marks MORE
+(strictly safer than the old conserv, which already could not recurse box
+interiors).
+
+VALIDATION:
+- 838605da/256 MiB (reliable repro): audit 10/10 rc=0 (was 0/5 SIGSEGV);
+  =(garbage-collect)= builtin + 300k make-vector/hash churn rc=0.
+- HEAD (=b31179ce=): audit 5/5 rc=0; sanity + gc-builtin clean.
+- Full Debian no-Nix RC container gate (474-test nelix RC gate) GREEN against
+  the local commit (NELISP_REPO_URL=/work/nelisp).
+Pushed to feat.  Path B supersedes Path A: form-boundary reclamation is on
+again, soundly.
