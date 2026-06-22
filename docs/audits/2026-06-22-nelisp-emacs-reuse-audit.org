@@ -1,0 +1,166 @@
+#+TITLE: nelisp / nelisp-emacs Reuse Audit
+#+DATE: 2026-06-22
+#+AUTHOR: Codex
+#+STATUS: DRAFT
+
+* Scope
+
+This audit covers the overlap between `nelisp` and `nelisp-emacs`, with
+the focus on what becomes unnecessary in `nelisp` once the libraryized
+`nelisp-emacs` package is used as the reusable implementation.
+
+Main finding:
+
+- Emacs editor semantics are already implemented in `nelisp-emacs`.
+- `nelisp` still carries older or bootstrap-oriented copies of the same
+  semantics.
+- The core runtime should keep only the parser / evaluator / loader /
+  bootstrap glue that is not editor-specific.
+
+* Summary
+
+The following `nelisp` files are the clearest duplication candidates:
+
+| nelisp file | verdict | replacement in nelisp-emacs | note |
+|-------------+---------+------------------------------+------|
+| `src/nelisp-buffer.el` | remove from core | `emacs-buffer.el`, `emacs-buffer-builtins.el`, `emacs-buffer-ui.el` | full editor buffer model duplication |
+| `src/nelisp-emacs-compat.el` | remove from core | `nelisp-emacs-compat.el` in the library repo, plus bridge modules | full `current-buffer` / `point` / search / marker surface duplication |
+| `src/nelisp-emacs-compat-fileio.el` | remove from core | `emacs-fileio.el`, `emacs-fileio-builtins.el`, `files.el`, `files-runtime.el` | file predicates, directory ops, file-name surgery, file read/write |
+| `src/nelisp-emacs-compat-face.el` | remove from core | `emacs-faces.el`, `emacs-redisplay.el`, `emacs-faces-builtins.el` | face registry / resolve / face property data layer |
+| `src/nelisp-ec-bridge.el` | keep only as shim | unneeded when consumers require `nelisp-emacs` directly | compatibility alias layer, not a core dependency |
+| `src/nelisp-text-buffer.el` | move to shared library | `nelisp-text-buffer.el` in `nelisp-emacs` | low-level text primitive, not editor policy |
+| `src/nelisp-coding.el` | move to shared library | `nelisp-coding.el` / `nelisp-coding-jis-tables.el` in `nelisp-emacs` | shared utility, but not editor-specific |
+| `src/nelisp-core-fileio.el` | keep as bootstrap shim | can delegate to shared coding/fileio | loader still needs a minimal file surface |
+
+* What Can Be Deleted From nelisp
+
+These are the parts that are effectively unnecessary in `nelisp` once
+`nelisp-emacs` is the reusable package:
+
+** `src/nelisp-buffer.el`
+
+This file duplicates a large editor-facing buffer implementation:
+
+- buffer registry
+- current-buffer selection
+- point movement
+- insert/delete/erase
+- narrowing
+- marker management
+- overlays
+- text properties
+
+In `nelisp-emacs`, the same responsibilities are already split across
+`emacs-buffer.el` and its builtins/UI helpers. The `nelisp-buffer.el`
+file does not need to survive as a second implementation.
+
+** `src/nelisp-emacs-compat.el`
+
+This is the older Emacs-API facade in `nelisp`. It overlaps with the
+library package's `nelisp-emacs-compat` / `emacs-buffer-builtins`
+surface.
+
+The whole file is a deletion candidate from `nelisp` once consumers are
+pointed at the library package.
+
+** `src/nelisp-emacs-compat-fileio.el`
+
+This file duplicates:
+
+- file existence / readability checks
+- directory listing and creation
+- rename / unlink
+- file-name parsing and surgery
+- `insert-file-contents`
+- `write-region`
+
+The same surface already exists in `nelisp-emacs` as `emacs-fileio`
+and related builtins. The `nelisp` copy should not stay as a second
+implementation.
+
+** `src/nelisp-emacs-compat-face.el`
+
+This is a separate face registry / resolver layer in `nelisp`.
+`nelisp-emacs` already has the face registry and the redisplay-facing
+integration path.
+
+This file should be removed from core once the library package is the
+single source of truth for faces.
+
+** `src/nelisp-ec-bridge.el`
+
+This is useful only as a compatibility shim for old callers that still
+expect host-style builtin names to resolve to `nelisp-ec-*`.
+
+If new consumers require `nelisp-emacs` directly, this should become an
+optional bridge rather than a required core dependency.
+
+* What Should Be Shared, Not Duplicated
+
+These are not Emacs-specific, but `nelisp` should still stop owning a
+private copy once the library package is adopted.
+
+** `src/nelisp-text-buffer.el`
+
+This is the low-level mutable text primitive. It is a shared foundation
+for `nelisp-emacs`, but it is not the place to keep editor policy.
+
+Recommendation:
+
+- keep one copy in the shared library layer
+- make `nelisp` consume it
+- do not maintain a second forked implementation
+
+** `src/nelisp-coding.el` and `src/nelisp-coding-jis-tables.el`
+
+These are shared encoding utilities. They are used by loader/file I/O
+paths, so `nelisp` still needs the API, but it does not need a private
+independent copy once the reusable package is authoritative.
+
+Recommendation:
+
+- treat coding as shared infrastructure
+- keep `nelisp-core-fileio.el` as a thin bootstrap consumer
+- move the real implementation ownership to the library side
+
+* What Must Stay in nelisp
+
+These are core runtime pieces, not editor facades:
+
+- `src/nelisp-read.el`
+- `src/nelisp-eval.el`
+- `src/nelisp-load.el`
+- `src/nelisp-integration.el`
+- `src/nelisp.el`
+- `src/nelisp-core-fileio.el` as a minimal bootstrap helper
+
+These modules are needed for the self-hosted runtime, loader, and
+bootstrap path. They should not be replaced by the library package.
+
+* Recommended Migration Order
+
+1. Make `nelisp-emacs` the explicit dependency for editor semantics.
+2. Switch `nelisp` consumers away from `nelisp-buffer.el` and
+   `nelisp-emacs-compat*.el`.
+3. Move `nelisp-text-buffer.el` and `nelisp-coding.el` ownership to the
+   shared layer, keeping only the bootstrap adapters in `nelisp`.
+4. Keep `nelisp-ec-bridge.el` as an optional compatibility shim only.
+5. Delete the obsolete `nelisp` copies after the shared path is green.
+
+* Bottom Line
+
+If the goal is reuse first, then the largest removal set is:
+
+- `src/nelisp-buffer.el`
+- `src/nelisp-emacs-compat.el`
+- `src/nelisp-emacs-compat-fileio.el`
+- `src/nelisp-emacs-compat-face.el`
+
+The shared foundation pieces are:
+
+- `src/nelisp-text-buffer.el`
+- `src/nelisp-coding.el`
+
+The runtime core that should remain in `nelisp` is the reader / eval /
+loader / bootstrap layer, not the Emacs API surface.
+
