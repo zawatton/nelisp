@@ -493,3 +493,59 @@ breakpoints on =nl_gc_free_block= are far too slow to reach the relevant sweep
 (millions of frees) — use a HW watchpoint (debug register, no per-free cost);
 stderr writes (=syscall-direct 4 2=) from the GC/arena units never surface and
 nelix redirects the runtime stderr, so use exit codes or gdb only.
+
+** 8.11 Path B deep dive: the ht is NEVER marked; recursion breaks below the frames-record (2026-06-22 g)
+
+Continued Path B per user request.  All on the 838605da worktree, gdb (ASLR
+off → stable addresses), HW watchpoints.  Chased the EXACT live object graph
+of the freed ht:
+
+- The freeing collect is the BOUNDARY =nl_gc_collect= fired during a NESTED
+  =bf_load= (=nl_gc_collect <- bf_load_eval_loop <- bf_load=).  Its =ctx= (env)
+  = 0x7fffa7e00480 — IDENTICAL to the env =nelisp_frame_stack_find= walks at
+  the crash (frames-ptr = ctx+32 = 0x7fffa7e004a0, a boot/global env).
+- The crashing frame is backing[20] of a depth-25 stack; backing len = 64 ≥ 25
+  (no len/depth mismatch).  backing[20] -> frame Sexp slot (tag 12) -> frame
+  box 0x7fffa982a7c0 (FIRST chunk) whose data_ptr/slots live on a GROWTH chunk
+  (the ht + bucket-count + buckets).  =in_arena= = 1 for ALL of them; the frame
+  box is NOT boot.  So leaf-level marking WOULD work if the recursion reached
+  it.
+- HW watchpoint =if mark==1= on the ht box: it NEVER fires — the ht is NEVER
+  marked live.  So the precise recursion simply never reaches the ht.
+- NOT the conservative scan: forcing SCAN_FLAG=0 (conserv OFF) still crashes
+  5/5.  So the earlier "conserv marks a record BOX interior pointer and poisons
+  precise recursion" idea is REFUTED for this case.
+- NOT the rootstack: =nl_gc_mark_rootstack= walks 32-byte Sexp SLOTS (tag@+0)
+  and recurses via =nl_gc_mark_slot=, so it does not block-mark box interiors.
+- The frames-record box DOES get marked live (=nl_hdr_set_mark <- nl_gc_mark_block
+  <- nl_gc_mark_slot <- nl_gc_mark_roots=) — but observed at the TOP-LEVEL
+  collect (=nl_gc_collect <- nl_eval_source_all <- driver=).  Marks are reset
+  between collects; the freeing NESTED collect re-marks from the same ctx+32.
+
+Net: at the NESTED bf_load collect, =mark_slot(ctx+32)= marks the frames record
+(its ctx == the live env), yet the ht is never reached.  So the recursion
+breaks SOMEWHERE BELOW the frames record — in frames-record -> slot0 backing
+vector -> backing[i] -> frame record -> slot0 ht — even though every node is
+in_arena and the frames record itself is marked.  The leading mechanism is a
+"marked-but-NOT-recursed" double-mark skip: =nl_gc_mark_slot= recurses a
+Record/Vector ONLY when =nl_gc_mark_block(box)= returns 1 (the FIRST mark); if
+some path block-marks an intermediate node (backing vector or a frame) WITHOUT
+recursing it, the precise marker then sees it already-marked and SKIPS the
+child recursion, orphaning everything below.  (Source of that premature
+block-mark not yet pinned — conserv and rootstack are ruled out; remaining
+candidates: =nl_gc_mark_root_blocks= block-marking a scratch slot that aliases
+a chain node, the type_tag =mark_slot(box)= arm, or a shared/cloned node marked
+via a second edge.)
+
+CONCRETE NEXT STEP: watch the BACKING box and a mid-chain frame box for
+=mark==1= but FILTER to the NESTED collect (ignore the top-level
+=nl_eval_source_all= collect) — that pinpoints which link is block-marked
+without recursion.  THE FIX (once pinned) is to DECOUPLE "alive" from
+"recursed": give the marker a distinct "needs-recursion" state so any node
+that was block-marked by a pinning path is still child-recursed by the precise
+marker (e.g. mark 1 = recursed, a new value = pinned-not-recursed; mark_block
+upgrades pinned->recursed and returns 1 so recursion proceeds; sweep keeps
+both).  This is a real GC-marking change requiring full-gate revalidation, so
+Path A (collection disabled) remains the shipped fix; Path B continues to be a
+scoped effort with the recursion break now localized to the
+frames-record→…→ht precise traversal.
