@@ -603,6 +603,21 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *git 衛生*: vendor/nelisp に他者の未 commit WIP (ptr-read/write dispatch 追加) があり、
   最初の commit に巻き込んだため reset して concat-only に分離、WIP を未 commit に復元。
 
+- *Doc 16 breadth round 28 — A17 (POSIX class) を両 regex engine + regexp-opt 修正 (2026-06-22)*:
+  *A17 修正*: bare reader stdlib =nlre-*= (=nelisp-stdlib-regexp.el= commit 913719ef) と
+  bundle が使う packages =nelisp-rx-*= (=vendor/.../nelisp-regex.el= b6b59ec2 + nelisp-emacs
+  =src/nelisp-regex.el= 5a336b4) の両 bracket parser で =[:name:]= を range 展開
+  (=*--posix-ranges= table)。bundle の string-match が packages engine 経由 (=emacs-search-
+  builtins= → =nelisp-rx-string-match=) と判明し、stdlib だけでなく src コピーも要修正だった
+  (src/ が load-path 優先)。
+  *regexp-opt 修正* (=src/emacs-stub.el= 5a336b4): no-op bulk stub が先に claim し gated real が
+  skip → 無条件定義 + shy/capture group wrap。
+  検証: full runtime で =[[:digit:]]= match、=(rx (+ digit))= → "123"、=(rx (+ word))= → "foo_9"、
+  =regexp-opt= → "\\(?:cat\\|dog\\)"。Doc 22 A17=FIXED。
+  *残: A18* = =(rx (or STRINGS))= が空 alternation =\(?:\)= (rx--translate-or が alternative 未収集、
+  regexp-opt とは別)。rx は or 以外は実 match するが or の matches-everything 危険を避け bundle 未収録。
+  git 衛生: vendor の他者 WIP (tty/ptr-read) を避け regex ファイルのみ commit。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
