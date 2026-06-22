@@ -171,11 +171,24 @@
 ;; cold-loader pipeline is proven end to end: dump -> file -> load -> relocate
 ;; -> reconstruct a sound EvalCtx root.  See `nelisp-flat-arena-probe-boot-load'.
 ;;
-;; REMAINING (wire it into the actual boot -- a focused integration, ideally on
-;; the L2 `nemacs' boot where the win is, since the L1 reader already boots
-;; fast): load into the mmap'd ARENA (chunk-0 + interned at their real, separate
-;; bases -- split the `+ newbase' by region) instead of a buffer, install the
-;; LIVE EvalCtx roots, and take this path BEFORE the 352-module source replay.
+;; SPLIT relocate (DONE): the real arena keeps chunk-0 and the interned region
+;; in SEPARATE mmaps, so the load splits the relocate by region --
+;; `nelisp--arena-load-split-verify' loads the two regions into two separate
+;; buffers and relocates a field holding offset O to chunk0_base+O when O<slen
+;; else intern_base+(O-slen).  On target/nelisp: (1 1 ~464k 0) = magic OK,
+;; chunk-0 well-formed, and BAD-POINTERS 0 (every relocated pointer lands inside
+;; one of the two regions).  The load mechanism is now real-arena-ready.  See
+;; `nelisp-flat-arena-probe-split-load'.
+;;
+;; The entire cold-loader is mechanism-complete: dump -> file -> load (table,
+;; split across the real separate region bases) -> reconstruct the EvalCtx
+;; roots, all verified.  REMAINING is only the boot-sequence wiring: in
+;; `nl_arena_init' (or the nemacs L2 bootstrap, where the win is -- the L1
+;; reader already boots fast), load the image into the freshly-mmap'd arena +
+;; interned region, install the LIVE EvalCtx roots, and take this path BEFORE
+;; the 352-module source replay.  That edit lives in nelisp-emacs / the arena
+;; init and modifies the live boot path, so it is a focused, separately-tested
+;; integration (and nelisp-emacs may have a concurrent session -- coordinate).
 ;;   (Large objects + multi-live-chunk are not exercised by this heap; add if a
 ;;   future heap needs them.)
 
@@ -196,6 +209,7 @@
 (declare-function nelisp--arena-dump-image-to-file "ext" (path))
 (declare-function nelisp--arena-load-image-from-file "ext" (path))
 (declare-function nelisp--arena-boot-load-verify "ext" (path))
+(declare-function nelisp--arena-load-split-verify "ext" (path))
 (declare-function garbage-collect "ext" ())
 
 (defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
@@ -306,6 +320,19 @@ block walk reaches the end exactly).  Return a labelled plist;
     (list :relocated-ptrs (nth 0 r)
           :blocks (nth 1 r)
           :wellformed (= (nth 2 r) 1))))
+
+(defun nelisp-flat-arena-probe-split-load (path)
+  "Real-arena (split) load of the image at PATH (dump it first).
+Loads chunk-0 and the interned region into SEPARATE buffers (as the live
+arena keeps them in separate mmaps) and relocates each pointer into its
+region's base.  Return a labelled plist; :wellformed t and :bad-pointers 0
+means the split relocate rebuilds a sound heap across separate region bases."
+  (nelisp--arena-dump-image-to-file path)
+  (let ((r (nelisp--arena-load-split-verify path)))
+    (list :magic-ok (= (nth 0 r) 1)
+          :wellformed (= (nth 1 r) 1)
+          :blocks (nth 2 r)
+          :bad-pointers (nth 3 r))))
 
 (defun nelisp-flat-arena-probe-boot-load (path)
   "Run the boot-load INSTALL mechanism on the image at PATH (dump it first).

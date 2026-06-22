@@ -2486,6 +2486,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
     ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
     ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
+    ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -3427,6 +3428,75 @@ unresolved at link time."
                 (wf_cons_int rtag s2 s1)
                 (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
                 0)))))))
+    ;; flat-arena boot-wiring (4): SPLIT relocate -- the real-arena load.  In a
+    ;; live runtime chunk-0 and the interned region are SEPARATE mmaps at
+    ;; unrelated bases, so the load cannot use one contiguous `+ newbase'; it
+    ;; must split by region: a field holding image offset O relocates to
+    ;; chunk0_base + O when O < slen, else intern_base + (O - slen).
+    ;; `bf_arena_load_split_verify' loads the image into TWO separate buffers
+    ;; (simulating the two mmaps), applies the table with that split, and
+    ;; verifies (a) the chunk-0 region is well-formed and (b) EVERY relocated
+    ;; pointer lands inside one of the two regions.  Returns
+    ;; (MAGIC-OK WELLFORMED BLOCKS BAD-POINTERS): (1 1 ~464k 0) means the
+    ;; split relocate rebuilds a sound heap across separate region bases --
+    ;; exactly what loading into the mmap'd arena needs.
+    (defun bf_arena_load_split_verify (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath))
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (if (< fd 0)
+            (seq (wf_write_nil nil-slot)
+                 (wf_cons_int 0 nil-slot s3) (wf_cons_int 0 s3 s2)
+                 (wf_cons_int 0 s2 s1) (wf_cons_int -1 s1 out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (c0 (alloc-bytes (+ slen 8) 8))
+                  (ir (alloc-bytes (+ isz 8) 8))
+                  (ti 0) (hdrp 0) (wf 1) (nblk 0) (badp 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd c0 slen 0)
+              (nl_fa_read_all fd ir isz 0)
+              (nl_os_close_handle fd)
+              ;; split relocate
+              (setq ti 0)
+              (while (< ti tlen)
+                (let* ((f (ptr-read-u64 (+ tbl (* ti 8)) 0))
+                       (o (ptr-read-u64 (+ c0 f) 0)))
+                  (if (< o slen)
+                      (ptr-write-u64 (+ c0 f) 0 (+ c0 o))
+                    (ptr-write-u64 (+ c0 f) 0 (+ ir (- o slen)))))
+                (setq ti (+ ti 1)))
+              ;; (a) chunk-0 well-formed
+              (setq hdrp 0)
+              (while (and (= wf 1) (< hdrp slen))
+                (let* ((h (ptr-read-u64 (+ c0 hdrp) 0))
+                       (bt (- h (logand h 7))))
+                  (if (< bt 8) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                    (if (> (+ hdrp bt) slen) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                      (nl_seq2 (setq nblk (+ nblk 1)) (setq hdrp (+ hdrp bt)))))))
+              (if (= hdrp slen) 0 (setq wf 0))
+              ;; (b) every relocated pointer lands in c0 or ir
+              (setq ti 0)
+              (while (< ti tlen)
+                (let* ((f (ptr-read-u64 (+ tbl (* ti 8)) 0))
+                       (v (ptr-read-u64 (+ c0 f) 0))
+                       (inc0 (if (< v c0) 0 (if (< v (+ c0 slen)) 1 0)))
+                       (inir (if (< v ir) 0 (if (< v (+ ir isz)) 1 0))))
+                  (if (= (+ inc0 inir) 0) (setq badp (+ badp 1)) 0))
+                (setq ti (+ ti 1)))
+              (wf_write_nil nil-slot)
+              (wf_cons_int badp nil-slot s3)
+              (wf_cons_int nblk s3 s2)
+              (wf_cons_int wf s2 s1)
+              (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
+              0))))))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
     ;; `nl_gc_bt_ok' / `nl_gc_chunk_end', which only `reader-gc.o' defines, so
@@ -7023,7 +7093,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
     "nelisp--arena-dump-table-verify"
     "nelisp--arena-dump-image-to-file" "nelisp--arena-load-image-from-file"
-    "nelisp--arena-boot-load-verify"
+    "nelisp--arena-boot-load-verify" "nelisp--arena-load-split-verify"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
