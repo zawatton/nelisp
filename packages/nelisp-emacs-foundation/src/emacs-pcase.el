@@ -319,6 +319,24 @@ See `emacs-pcase--test' for supported pattern shapes."
                       (cons 'let (cons pattern-bindings body)))
               (cons 'when (cons test body)))))))
 
+;; Doc 16 breadth round 26: pcase-lambda (was void).
+(when (emacs-pcase--install-function-p 'pcase-lambda)
+  (defmacro pcase-lambda (lambda-list &rest body)
+    "A `lambda' whose parameters may be `pcase' patterns, destructured on call.
+Plain-symbol parameters (including &optional / &rest markers) pass through
+unchanged; a cons pattern (e.g. a backquote pattern) is bound via a hidden
+indexed temporary and `pcase-let*'."
+    (let ((params nil) (bindings nil) (i 0))
+      (dolist (pat lambda-list)
+        (if (symbolp pat)
+            (setq params (cons pat params))
+          (let ((sym (make-symbol (format "--pcl-%d--" i))))
+            (setq i (1+ i))
+            (setq params (cons sym params))
+            (setq bindings (cons (list pat sym) bindings)))))
+      (list 'lambda (nreverse params)
+            (cons 'pcase-let* (cons (nreverse bindings) body))))))
+
 (unless (featurep 'pcase) (provide 'pcase))
 
 (provide 'emacs-pcase)
