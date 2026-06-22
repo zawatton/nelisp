@@ -244,6 +244,135 @@ accessor (=r24s-a=) 経由のアクセスは正常 (= 別経路)。=record= prim
   一方 =cl-defstruct= の constructor/accessor/predicate と =cl-defgeneric=/=cl-defmethod=
   の単一・特定 dispatch は *正常動作*。
 
+** A15. =&optional (VAR DEFAULT)= の lambda を呼ぶと SEGFAULT/crash
+
+#+begin_src elisp
+(funcall (lambda (x &optional (z 9)) (+ x z)) 5)
+;;=> *** crash *** ("before-call" の後 無音で process 死、catch 不能)
+;; 定義・macroexpand は通る:
+(macroexpand '(cl-defun f (x &optional (z 9)) (+ x z)))
+;;=> (progn (fset 'f (lambda (x &optional (z 9)) ...)) 'f)  ← raw のまま
+#+end_src
+
+CL 形式の optional default =(VAR DEFAULT)= を arglist に持つ lambda を *呼び出す* と
+runtime が crash する (誤値でなく process 死、=condition-case= で捕捉不能)。定義と
+macroexpand は通る。core の =cl-defun= も raw arglist を lambda に渡すため同症状。
+
+- *impact*: =cl-defun= / =cl-defsubst= (Doc 16 round 24) で =&optional (VAR DEFAULT)= を
+  使う関数が呼出時 crash。basic な optional (default 無) は正常。
+- *src 修正不可*: =cl-defun= の active 実装は core (vendor/nelisp) 側で、=src/emacs-stub.el=
+  / =src/emacs-cl-macros.el= の shim は =unless (fboundp 'cl-defun)= / =--define-p= で
+  gate-out される (両 shim に desugar を入れても効かないことを round 25 で実証)。core が
+  lambda 呼出で optional-default を desugar するか error にすれば解決。round 25 で発見。
+- 回避: optional default を使わず =&optional z= + body 先頭 =(unless z (setq z DEFAULT))= を
+  手書きする (= desugar を caller 側で行う)。
+
+** A16. =concat= が nil 引数を "nil" 文字列化する (= rx を破壊) — *FIXED 2026-06-22*
+
+*FIXED* in vendor/nelisp (commit 4575471): standalone reader の =m5_concat_walk=
+(=scripts/nelisp-standalone-build.el=) が全引数を =m5_emit_value= に渡し、nil (tag 0) が
+=m5_prin1= → "nil" 出力していた。concat は nil を空 sequence 扱いすべきなので walker で
+nil 引数を skip。=m5_emit_value= は =format= (%s/%S で nil→"nil" は正) と共有のため emitter
+でなく walker 側で修正。検証: =(concat "a" nil "b")= → "ab"、=(format "%s" nil)= → "nil" 維持。
+rx の trailing-"nil" 汚染 (=(rx (+ digit))= / =(rx (? "z"))=) も解消。残課題は A17 と rx-or
+(下記)。
+
+#+begin_src elisp
+(concat "a" nil "b")              ;=> "anilb"  (期待 "ab")
+(concat "x" nil)                  ;=> "xnil"   (期待 "x")
+(apply #'concat (list "p" nil "q")) ;=> "pnilq" (期待 "pq")
+(mapconcat #'identity '("a" "b") "") ;=> "ab"   (mapconcat は正常)
+#+end_src
+
+=concat= が nil 引数を *空 sequence でなく symbol nil → "nil"* として結合する。real
+Emacs は nil = 空 list 扱いで無視。=mapconcat= は正常。
+
+- *impact*: =rx= (regex DSL) が壊れる。rx は regexp を =concat= で組み立てるため、translation
+  中の nil 部品が "nil" として混入する。実測 (vendored rx.el): =(rx (+ digit))= →
+  ="[[:digit:]]+nil"=、=(rx (? "z"))= → ="z?nil"=、*=(rx (or "a" "b"))= → ="nil"* (完全破壊)。
+  literal / group / seq は無害。round 26 で rx vendoring を試みたが A16 で *silently wrong
+  regexp* を生むため bundle 収録は見送り (stub のまま)。
+- polyfill 不可級: =concat= は core 関数で全所で使われ、elisp override は危険 (perf/再帰)。
+  core が nil を空扱いすれば rx を含む多数が直る。round 26 で発見。
+
+** A17. regex engine が POSIX 文字クラス =[[:digit:]]= を match しない — *FIXED 2026-06-22*
+
+*FIXED* in 両 engine: (1) bare reader の stdlib =nlre-*= (=vendor/nelisp/lisp/
+nelisp-stdlib-regexp.el= commit 913719ef)、(2) bundle が使う packages =nelisp-rx-*=
+(=vendor/nelisp/packages/.../nelisp-regex.el= commit b6b59ec2 + nelisp-emacs
+=src/nelisp-regex.el= commit 5a336b4)。両 bracket parser で =[:name:]= を検出し =(lo . hi)=
+range に展開 (=*--posix-ranges= table: digit/alpha/alnum/word/upper/lower/xdigit/space/
+blank/punct/cntrl/graph/print/ascii)、membership 判定は range 対応済で無改変。検証:
+full runtime で =(string-match "[[:digit:]]" "a1")= → 1、=(rx (+ digit))= が "123" に実 match、
+=(rx (+ word))= → "foo_9"。同 round で =regexp-opt= も修正 (=src/emacs-stub.el= 5a336b4):
+no-op bulk stub =(closure (&rest _) nil)= が先に claim し gated real が skip されていた →
+無条件定義に変更、shy/capture group を GNU 契約通り wrap。=(regexp-opt '("cat" "dog"))= →
+="\\(?:cat\\|dog\\)"=。
+
+#+begin_src elisp
+(string-match "[[:digit:]]" "a1")  ;=> nil  (期待 1)
+(string-match "[0-9]" "a1")        ;=> 1    (plain range は正常)
+#+end_src
+
+standalone reader の =string-match= / regex engine が POSIX 文字クラス
+(=[[:digit:]]= / =[[:alpha:]]= / =[[:space:]]= 等) を解釈しない。plain range
+(=[0-9]=) は正常。round 1 で =[[:blank:]]= 不対応として既出の現象を確認。
+
+- *impact*: =rx= が =digit= / =alpha= 等を POSIX class に翻訳するため、A16 修正後も
+  =(rx (+ digit))= = ="[[:digit:]]+"= が実際には match しない。rx を実用化するには A17 の
+  regex engine 拡張が必要。round 27 で確認。
+- 別途: =(rx (or "a" "b"))= が *nil を返す* (error でなく silent nil)。rx--translate-or /
+  =regexp-opt= (fbound) 経路の runtime 差。A16/A17 とは別の rx-internal 課題。
+
+** A18. =(rx (or STRINGS...))= が空の alternation =\(?:\)= を生成 — *FIXED 2026-06-22*
+
+*FIXED* (commit d35f1d1): 真因は =mapcan= の no-op stub。=emacs-stub-bulk.el= の
+=--stub-defuns--= リストが =mapcan= を =(closure (&rest _) nil)= で stub し、subr-x の real
+=mapcan= (gated) を shadow していた (=symbol-function= で確認、regexp-opt と同 systemic 問題)。
+rx の =rx--collect-or-strings= が =mapcan= を使うため =(rx (or ..))= が空リストを regexp-opt へ
+渡していた。=mapcan= を stub list から除去 → real mapcan が有効化。検証: =(mapcan #'list '(1 2 3))=
+→ (1 2 3)、=(rx (or "cat" "dog"))= → ="\\(?:cat\\|dog\\)"=。これにより rx は A16/A17/regexp-opt/A18
+全解決で *end-to-end 動作*し bundle 収録 (=src/rx.el= vendored)。
+*systemic note*: bulk stub list は real impl を持つ関数を誤って no-op stub する設計バグがあり、
+=mapcan= / =regexp-opt= で顕在化。他にも =record= / =recordp= 等 list 内に real-impl 候補が残る
+可能性 (要 audit)。
+
+A16(concat) / A17(POSIX) / regexp-opt を全て直した後も =(rx (or "cat" "dog"))= は
+="\\(?:\\)"= (中身空) を返す。=regexp-opt= 単体は正しく ="\\(?:cat\\|dog\\)"= を返すので、
+rx の =rx--translate-or= が文字列 alternative を *収集できていない* (= 空リストを regexp-opt
+へ渡している) rx-internal の問題。A16/A17/regexp-opt とは別軸。
+
+- *impact*: rx の =or= 形 (文字列複数) が matches-everything な空 group になり危険。rx は
+  digit/alpha/word/+/?/seq/group/any 等は実 match するが、=or= が未解決のため bundle 収録は
+  保留 (stub のまま)。round 28 で発見、未修正。
+
+** A19. bulk-stub no-op shadowing — real impl を持つ関数が no-op stub のまま (audit)
+
+=src/emacs-stub-bulk.el= の =--stub-defuns--= は load 時に VOID 関数を =(lambda (&rest _) nil)=
+で一括 stub し =emacs-stub-bulk= property を付す。だが real impl を別ファイルに持つ関数が、
+real impl の gate (=unless (fboundp)= や bulk 非対応 =--define-p=) で skip され *no-op stub の
+まま残る* (regexp-opt / mapcan で顕在化したのと同根)。
+
+*audit 結果* (closure arglist =(&rest _)= + =emacs-stub-bulk= property + src に real defun で判定):
+*84 関数* が該当。内訳:
+- *FIXED 10 (pure)*: =memql= / =proper-list-p= / =characterp= / =byte-code-function-p= / =subrp= /
+  =file-name-absolute-p= / =file-relative-name= / =file-truename= / =format-prompt= /
+  =substitute-command-keys=。stub list から除去 → real impl 有効化 (commit 296bb0c)。検証:
+  =(memql 2 '(1 2 3))= → (2 3)、=(characterp ?a)= → t、=(file-name-absolute-p "/x")= → t。
+- *残 ~74 (context-dependent、要個別判断)*: buffer/point/line (bobp/forward-line/newline 等)、
+  window/frame (selected-window/switch-to-buffer 等)、process (process-filter 等)、motion
+  (forward-word/forward-sexp/mark)、syntax/case-table、hooks/timer (run-hooks/sleep-for)、
+  misc (documentation/set-match-data/local-variable-p/markerp 等)。多くは standalone reader で
+  no-op が文脈的に妥当だが、一部 (documentation/set-match-data/local-variable-p 等) は要 review。
+
+*systemic 根治 — DONE (commit 221f1df)*: =emacs-stub-bulk= を bundle の *最後に load* するよう
+=nelisp-bootstrap--complete-file-list= で末尾移動 (旧位置 = 108 中 12 番目)。全 real impl 確定後に
+真に VOID な名前だけ stub され shadowing が原理的に消える。効果: wrongly-stubbed が *84 → 27* に減少
+(残 27 は real impl が standalone で *条件 gate off* される buffer/window/process/motion 系で、no-op
+stub が妥当)。boot 無退行 (BOOT-OK、rx/cl-do/cl-typecase/seq 動作、=set-match-data= が real 化し
+=(string-match "b\\(c\\)" "abcd")= の group capture = (1 3 "c") も動作)。pure 10 の手動 un-stub
+(commit 296bb0c) は冗長になったが無害。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):

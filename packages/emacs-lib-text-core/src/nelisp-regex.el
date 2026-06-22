@@ -215,6 +215,25 @@ cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
       (nelisp-rx--advance) (nelisp-rx--advance) ; consume \)
       (list :group idx inner))))
 
+(defun nelisp-rx--posix-ranges (name)
+  "Return a list of (lo . hi) ranges for POSIX class NAME, nil if unknown."
+  (cond
+   ((equal name "digit")  (list (cons ?0 ?9)))
+   ((equal name "alpha")  (list (cons ?a ?z) (cons ?A ?Z)))
+   ((equal name "alnum")  (list (cons ?0 ?9) (cons ?a ?z) (cons ?A ?Z)))
+   ((equal name "word")   (list (cons ?0 ?9) (cons ?a ?z) (cons ?A ?Z) (cons ?_ ?_)))
+   ((equal name "upper")  (list (cons ?A ?Z)))
+   ((equal name "lower")  (list (cons ?a ?z)))
+   ((equal name "xdigit") (list (cons ?0 ?9) (cons ?a ?f) (cons ?A ?F)))
+   ((equal name "space")  (list (cons 9 13) (cons 32 32)))
+   ((equal name "blank")  (list (cons 9 9) (cons 32 32)))
+   ((equal name "punct")  (list (cons 33 47) (cons 58 64) (cons 91 96) (cons 123 126)))
+   ((equal name "cntrl")  (list (cons 0 31) (cons 127 127)))
+   ((equal name "graph")  (list (cons 33 126)))
+   ((equal name "print")  (list (cons 32 126)))
+   ((equal name "ascii")  (list (cons 0 127)))
+   (t nil)))
+
 (defun nelisp-rx--parse-class ()
   "Parse a `[...]' character class; leading `[' is the lookahead char."
   (nelisp-rx--advance)                     ; consume [
@@ -234,6 +253,23 @@ cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
            ((null c)
             (signal 'nelisp-rx-syntax-error '("unterminated character class")))
            ((eq c ?\]) (nelisp-rx--advance) (setq done t))
+           ;; POSIX class [:name:] -> expand to (lo . hi) ranges.
+           ((and (eq c ?\[) (eq (nelisp-rx--peek2) ?:))
+            (nelisp-rx--advance)            ; consume [
+            (nelisp-rx--advance)            ; consume :
+            (let ((chars nil) (cdone nil))
+              (while (not cdone)
+                (let ((nc (nelisp-rx--peek)))
+                  (if (or (null nc)
+                          (and (eq nc ?:) (eq (nelisp-rx--peek2) ?\])))
+                      (setq cdone t)
+                    (push nc chars)
+                    (nelisp-rx--advance))))
+              (when (eq (nelisp-rx--peek) ?:) (nelisp-rx--advance))
+              (when (eq (nelisp-rx--peek) ?\]) (nelisp-rx--advance))
+              (dolist (r (nelisp-rx--posix-ranges
+                          (apply #'string (nreverse chars))))
+                (push r ranges))))
            (t
             (let ((lo (nelisp-rx--class-char)))
               (if (and (eq (nelisp-rx--peek) ?-)

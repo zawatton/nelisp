@@ -563,6 +563,83 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   並行 C1 session の未 commit WIP が共有ツリーで =make build-nelisp-bootstrap= を劣化
   (114→43 files、repl 出力無)。tree 安定後に再検証。commit 9fb7385。
 
+- *Doc 16 breadth round 25 — cl-defun optional-default 調査 → reader-core gap A15 (2026-06-22)*:
+  round 24 の =cl-defsubst= が =&optional (z DEFAULT)= で crash する件を追跡。=cl-defun= が
+  optional default を desugar せず raw arglist を lambda に渡しており、その lambda を *呼ぶ*
+  と runtime が crash (=funcall (lambda (x &optional (z 9)) ...) 5)= = 無音 process 死、
+  catch 不能) = *reader-core gap A15*。
+  - src 修正を試行 (=emacs-stub.el= / =emacs-cl-macros.el= 両 cl-defun に optional-default
+    desugar helper を追加) したが *両 shim とも =unless (fboundp 'cl-defun)= / =--define-p= で
+    gate-out* され効かないことを実証 (active な cl-defun は core 側)。→ src 編集を revert、
+    A15 を Doc 22 + issue #7 に記録。code 成果なしの gap-discovery round。
+  - 回避: optional default は使わず =&optional z= + body =(unless z (setq z DEFAULT))= を手書き。
+  - 環境: 並行 C1 session の共有ツリー汚染を避けるため =git worktree= (=.wt-breadth=、branch
+    feat/breadth-cl-residuals、vendor/nelisp symlink) で作業。clean build = 107 files。
+
+- *Doc 16 breadth round 26 — pcase-lambda + rx 調査 → reader-core gap A16 (2026-06-22)*:
+  *pcase 系*: probe で =pcase= / =pcase-let= / =pcase-let*= / =pcase-dolist= /
+  =pcase-exhaustive= は既に動作と確認。void だった =pcase-lambda= を =src/emacs-pcase.el= に
+  追加 (plain lambda + 非 trivial param を hidden indexed temp 経由 =pcase-let*= で destructure、
+  =emacs-pcase--install-function-p= gate)。検証: host ERT 12/12、full-runtime 3/3。
+  =pcase-setq= は pattern-var 抽出が必要で *延期*。
+  *rx 系*: =rx= は =emacs-stub.el= の placeholder stub (="" を返す) と判明。実 rx.el を vendor
+  したところ *reader-core gap A16 で破壊*: =concat= が nil 引数を "nil" 文字列化
+  (=(concat "a" nil "b")= → "anilb")。rx は regexp を concat で組むため =(rx (or "a" "b"))= →
+  ="nil"=、=(rx (+ digit))= → ="[[:digit:]]+nil"= と silently wrong。core 関数 concat の
+  override は危険なため rx vendoring は revert (stub のまま)、A16 を Doc 22 + issue #7 記録。
+  commit d7d279b。
+
+- *Doc 16 breadth round 27 — reader-core gap A16 を vendor/nelisp で修正 (2026-06-22)*:
+  user 指示で reader-core 修正に pivot。発見: nelisp standalone reader は *pure-elisp*
+  (953 .rs は =.claude/worktrees/= の stale コピー)、=scripts/nelisp-standalone-build.el= が
+  ELF を生成。*A16 修正* (vendor/nelisp commit 4575471): =m5_concat_walk= が nil 引数を
+  skip するよう変更 (=m5_emit_value= は format と共有なので walker 側で fix)。=make
+  standalone-reader= で =target/nelisp= 再ビルド → =(concat "a" nil "b")= → "ab"、format は
+  "nil" 維持を検証。rx 再 vendor で end-to-end 確認 → trailing-"nil" 汚染解消 (=(rx (+ digit))=
+  = "[[:digit:]]+")。
+- *残課題で rx は依然未収録*: (a) *A17* = regex engine が POSIX class =[[:digit:]]= を match
+  しない (=[0-9]= は OK) → =(rx (+ digit))= が実 match せず。(b) =(rx (or "a" "b"))= が silent
+  nil。両者 A16 と別軸。Doc 22 A16=FIXED / A17 追記、issue #7 更新。
+- *git 衛生*: vendor/nelisp に他者の未 commit WIP (ptr-read/write dispatch 追加) があり、
+  最初の commit に巻き込んだため reset して concat-only に分離、WIP を未 commit に復元。
+
+- *Doc 16 breadth round 28 — A17 (POSIX class) を両 regex engine + regexp-opt 修正 (2026-06-22)*:
+  *A17 修正*: bare reader stdlib =nlre-*= (=nelisp-stdlib-regexp.el= commit 913719ef) と
+  bundle が使う packages =nelisp-rx-*= (=vendor/.../nelisp-regex.el= b6b59ec2 + nelisp-emacs
+  =src/nelisp-regex.el= 5a336b4) の両 bracket parser で =[:name:]= を range 展開
+  (=*--posix-ranges= table)。bundle の string-match が packages engine 経由 (=emacs-search-
+  builtins= → =nelisp-rx-string-match=) と判明し、stdlib だけでなく src コピーも要修正だった
+  (src/ が load-path 優先)。
+  *regexp-opt 修正* (=src/emacs-stub.el= 5a336b4): no-op bulk stub が先に claim し gated real が
+  skip → 無条件定義 + shy/capture group wrap。
+  検証: full runtime で =[[:digit:]]= match、=(rx (+ digit))= → "123"、=(rx (+ word))= → "foo_9"、
+  =regexp-opt= → "\\(?:cat\\|dog\\)"。Doc 22 A17=FIXED。
+  *残: A18* = =(rx (or STRINGS))= が空 alternation =\(?:\)= (rx--translate-or が alternative 未収集、
+  regexp-opt とは別)。rx は or 以外は実 match するが or の matches-everything 危険を避け bundle 未収録。
+  git 衛生: vendor の他者 WIP (tty/ptr-read) を避け regex ファイルのみ commit。
+
+- *Doc 16 breadth round 29 — A18 (mapcan stub) 修正 → rx 完全動作 + bundle 収録 (2026-06-22)*:
+  A18 真因 = =mapcan= が =emacs-stub-bulk.el= の =--stub-defuns--= で no-op stub され (=(closure
+  (&rest _) nil)=)、subr-x の real mapcan を shadow。rx の =rx--collect-or-strings= が mapcan 依存
+  のため =(rx (or ..))= が空 alternation 化。=mapcan= を stub list から除去 → real mapcan 有効化
+  (commit d35f1d1)。
+  これで *A16(concat) + A17(POSIX 両 engine) + regexp-opt + A18(mapcan)* 全解決 → rx が
+  digit/alpha/word/+/?/seq/group/any/or すべて end-to-end 動作。=src/rx.el= を verbatim vendor し
+  bundle 収録 (108 files)。検証: =(rx (or "cat" "dog"))= → "\\(?:cat\\|dog\\)"、=(rx (+ digit))=
+  match "123"。残: rx-let/rx-define は A12 (macroexpand-all env) 制限。
+  *systemic*: bulk stub list が real-impl 関数を誤 stub する設計バグ (regexp-opt/mapcan で顕在)。
+  =record=/=recordp= 等も要 audit。
+
+- *Doc 16 breadth round 30 — bulk-stub no-op shadowing の audit (2026-06-22)*:
+  =emacs-stub-bulk.el= の =--stub-defuns--= が real impl を持つ関数を no-op stub で shadow する
+  systemic バグ (regexp-opt/mapcan の一般化) を audit。判定 = closure arglist =(&rest _)= +
+  =emacs-stub-bulk= property + src に real defun。*84 関数* 該当。
+  pure 10 (=memql=/=proper-list-p=/=characterp=/=byte-code-function-p=/=subrp=/=file-name-absolute-p=/
+  =file-relative-name=/=file-truename=/=format-prompt=/=substitute-command-keys=) を stub list から
+  除去し修正 (commit 296bb0c、検証済)。残 ~74 は buffer/window/process/motion/syntax/hooks 系で
+  standalone では no-op 妥当が多いが documentation/set-match-data/local-variable-p 等は要 review。
+  根治案 = =emacs-stub-bulk= を最後に load。Doc 22 A19。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
