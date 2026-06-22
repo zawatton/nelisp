@@ -1122,19 +1122,52 @@ following `(declare ...)' forms are treated as declarations."
           rest-sym
           (nreverse keys))))
 
+(defun nelisp--cl-optional-vars (optionals)
+  "Return the plain variable symbols of OPTIONALS (each VAR or (VAR DEFAULT))."
+  (mapcar (lambda (o) (if (consp o) (car o) o)) optionals))
+
+(defun nelisp--cl-optional-default-forms (optionals)
+  "Return body-prelude forms binding each defaulted optional (Doc 22 A15).
+For every (VAR DEFAULT) entry in OPTIONALS, emit (unless VAR (setq VAR
+DEFAULT)) so the core lambda only ever sees a plain &optional symbol."
+  (let ((acc nil) (cur optionals))
+    (while cur
+      (let ((o (car cur)))
+        (when (consp o)
+          (setq acc (cons (list 'unless (car o)
+                                (list 'setq (car o) (car (cdr o))))
+                          acc))))
+      (setq cur (cdr cur)))
+    (nreverse acc)))
+
 (defmacro cl-defun (name formals &rest body)
-  "Standalone `cl-defun' subset with positional, optional, rest and key args."
+  "Standalone `cl-defun' subset with positional, optional, rest and key args.
+Optional parameters may carry a default as (VAR DEFAULT) (Doc 22 A15): the
+core lambda binder accepts only plain &optional symbols, so the default is
+desugared into a body prelude (unless VAR (setq VAR DEFAULT))."
   (let* ((parsed (nelisp--parse-cl-formals formals))
          (positional (car parsed))
          (optionals (car (cdr parsed)))
          (rest-sym (car (cdr (cdr parsed))))
-         (keys (car (cdr (cdr (cdr parsed))))))
+         (keys (car (cdr (cdr (cdr parsed)))))
+         (opt-vars (nelisp--cl-optional-vars optionals))
+         (opt-defaults (nelisp--cl-optional-default-forms optionals))
+         (body2 (append opt-defaults body)))
     (if (null keys)
-        (cons 'defun (cons name (cons formals body)))
+        (if (null opt-defaults)
+            ;; No optional defaults: keep the exact raw passthrough (safe for
+            ;; any arglist shape the core lambda already accepts).
+            (cons 'defun (cons name (cons formals body)))
+          ;; Desugar optional defaults: plain &optional symbols + setup prelude.
+          (let ((new-formals
+                 (append positional
+                         (if opt-vars (cons '&optional opt-vars) nil)
+                         (if rest-sym (cons '&rest (cons rest-sym nil)) nil))))
+            (cons 'defun (cons name (cons new-formals body2)))))
       (let* ((rest-name (or rest-sym '--cl-keys))
              (new-formals
               (append positional
-                      (if optionals (cons '&optional optionals) nil)
+                      (if opt-vars (cons '&optional opt-vars) nil)
                       (cons '&rest (cons rest-name nil))))
              (bindings
               (mapcar
@@ -1152,10 +1185,16 @@ following `(declare ...)' forms are treated as declarations."
                                default))))
                keys))
              (let-form (cons 'let* (cons bindings body))))
+        ;; Optional-default setup runs before the &key let* (Doc 22 A15).
         (cons 'defun
               (cons name
                     (cons new-formals
-                          (cons let-form nil))))))))
+                          (append opt-defaults (cons let-form nil)))))))))
+
+;; `cl-defsubst' shares `cl-defun's arglist handling (we do not inline), so it
+;; inherits the optional-default desugar (Doc 22 A15).  VOID on the bare reader.
+(unless (fboundp 'cl-defsubst)
+  (fset 'cl-defsubst (symbol-function 'cl-defun)))
 
 (unless (fboundp 'nelisp-cc-runtime-aot-module-init-plan)
   (defun nelisp-cc-runtime-aot-module-init-plan
