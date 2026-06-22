@@ -1,0 +1,139 @@
+;;; nelisp-flat-arena-probe.el --- read-only flat-arena snapshot probe  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;;; Commentary:
+
+;; Spike step 1 (READ-ONLY) for the flat-arena cold-start snapshot.
+;;
+;; GOAL of the larger spike: replace the per-object heap-image codec
+;; (`nelisp-heap-image.el', ~45 obj/sec, OOM > 1000 objects) and the
+;; source-replay runtime-image (`nelisp-runtime-image.el', re-evals the
+;; whole boot) with a flat-arena image: bulk-copy the live heap bytes +
+;; relocate pointers on load (O(n) memcpy + a single swizzle pass).
+;;
+;; This step makes NO mutation: it verifies the load-bearing INVARIANT
+;; that the runtime heap is a contiguous, linearly-walkable, self-describing
+;; `[header][object]' block sequence -- which is exactly what a flat-arena
+;; dump bulk-copies.  Running it never loads or writes a snapshot, so it
+;; cannot corrupt the heap.
+;;
+;; VERIFIED RUNTIME MODEL (probed on target/nelisp, Doc 140 Stage 8
+;; chunk-arena; corrects an earlier reconnaissance that mis-read the
+;; aspirational `nelisp-allocator.el' single-nursery module):
+;;
+;;   * The heap is a bump arena over `mmap(NULL)' chunks.  The chunk-0
+;;     base is KERNEL-CHOSEN at run time (NO fixed address, NO MAP_FIXED)
+;;     and stored in the `nl_arena_base' bss slot.  Every former
+;;     fixed-base (0x10000000-relative) metadata access is rewritten to
+;;     `nl_arena_base + offset' at build time.  => absolute inter-object
+;;     pointers differ every run, so a flat-arena image MUST swizzle
+;;     pointers to arena-relative offsets (a fixed-base relocation-free
+;;     image is NOT possible here).
+;;
+;;   * `(nelisp--arena-stats)' is eval-callable and returns a list whose
+;;     field 0 is the REAL runtime arena base (the mmap address).  From
+;;     it, base-relative metadata reads work via `ptr-read-u64':
+;;
+;;       base+0x000  bump cursor (offset; live data ends at base+cursor)
+;;       base+0x2c0  chunk-head descriptor pointer
+;;       base+0x2c8  chunk-current descriptor pointer
+;;       base+0x2d0  chunk count
+;;       base+0x300  chunk-0 descriptor:
+;;                     +0x00 base   +0x08 size   +0x10 cursor
+;;                     +0x18 data-start (absolute = base+0x400)
+;;                     +0x20 limit   +0x28 flags  +0x30 next
+;;       base+0x400  first object block (data-start)
+;;
+;;   * Each allocation carries an 8-byte block header at `obj-8'
+;;     (Doc 08 sec.8.18): a u64 whose high bits are BLOCK_TOTAL (bytes
+;;     from this header to the next, 8-aligned) and whose low 3 bits are
+;;     the GC mark (0 live / 1 marked / 2 free).  The object pointer is
+;;     `header + 8'; the next header is `header + BLOCK_TOTAL'.  This is
+;;     the same walk the GC sweep uses.
+;;
+;; NEXT STEPS (not in this file):
+;;   step 2  bake a fast full-arena `bf_arena_walk_verify' op (this probe
+;;           is interpreted, so the full ~28 MB eval-interpreter arena is
+;;           slow; a baked op walks it at native speed) modelled on
+;;           `bf_arena_stats'; reach the bump cursor EXACTLY.
+;;   step 3  emit the dump: bulk-copy [data-start, bump) + walk the live
+;;           object graph from the 3 EvalCtx roots (globals_record @ +0,
+;;           frames_record @ +32, unbound_marker @ +64) with
+;;           `nelisp_gc_walk_children' to enumerate pointer fields, and
+;;           swizzle each pointer to (chunk, offset).
+;;   step 4  load: alloc fresh chunks, memcpy, unswizzle to the new base,
+;;           install the roots into a fresh EvalCtx; boot hook before the
+;;           source-replay fallback.
+
+;;; Code:
+
+;; Runtime primitives, supplied by the baked standalone reader; absent at
+;; host byte-compile time.  Declared so `make compile' (error-on-warn)
+;; stays clean.
+(declare-function ptr-read-u64 "ext" (addr off))
+(declare-function nelisp--arena-stats "ext" ())
+
+(defconst nelisp-flat-arena-probe--chunk-head-offset  #x2c0)
+(defconst nelisp-flat-arena-probe--chunk-count-offset #x2d0)
+(defconst nelisp-flat-arena-probe--desc-base-offset       #x00)
+(defconst nelisp-flat-arena-probe--desc-cursor-offset     #x10)
+(defconst nelisp-flat-arena-probe--desc-data-start-offset #x18)
+(defconst nelisp-flat-arena-probe--desc-next-offset       #x30)
+
+(defun nelisp-flat-arena-probe-base ()
+  "Return the real runtime arena base (mmap address) via `nelisp--arena-stats'."
+  (nth 0 (nelisp--arena-stats)))
+
+(defun nelisp-flat-arena-probe-walk (&optional limit)
+  "Walk the chunk-0 `[header][object]' block sequence (READ-ONLY).
+Start at chunk-0's descriptor data-start (absolute) and follow BLOCK_TOTAL
+toward chunk-0's live end (descriptor base + cursor).  Stop after LIMIT
+blocks (default 8000): this walker is INTERPRETED and the eval-interpreter
+arena is large, so a full ~28 MB walk times out -- the full, multi-chunk,
+reach-end-exactly walk is step 2 (a baked op, native speed).  Following the
+chunk-descriptor chain (`:desc-next') to later chunks is also step 2; the
+chunks are SEPARATE mmaps, so a single linear walk past chunk-0's end would
+read unmapped/foreign memory.  This proves the block FORMAT is sound; it
+never mutates the heap.
+Return a plist of the verification result."
+  (let* ((base (nelisp-flat-arena-probe-base))
+         (desc (ptr-read-u64 base nelisp-flat-arena-probe--chunk-head-offset))
+         (cbase (ptr-read-u64 desc nelisp-flat-arena-probe--desc-base-offset))
+         (cursor (ptr-read-u64 desc nelisp-flat-arena-probe--desc-cursor-offset))
+         (cend (+ cbase cursor))
+         (hdr (ptr-read-u64 desc nelisp-flat-arena-probe--desc-data-start-offset))
+         (cap (or limit 8000))
+         (n 0) (live 0) (free 0) (bytes 0) (wellformed 1))
+    (while (and (= wellformed 1) (< hdr cend) (< n cap))
+      (let* ((h (ptr-read-u64 hdr 0))
+             (bt (- h (logand h 7)))
+             (mark (logand h 7)))
+        (if (or (< bt 8) (> (+ hdr bt) cend))
+            (setq wellformed 0)
+          (setq n (+ n 1)
+                bytes (+ bytes bt)
+                live (if (= mark 2) live (+ live 1))
+                free (if (= mark 2) (+ free 1) free)
+                hdr (+ hdr bt)))))
+    (list :base base
+          :chunk-count (ptr-read-u64 base nelisp-flat-arena-probe--chunk-count-offset)
+          :chunk0-base cbase :chunk0-live-end cend
+          :blocks n :live live :free free :walked-bytes bytes
+          :wellformed (= wellformed 1)
+          :hit-cap (= n cap))))
+
+(defun nelisp-flat-arena-probe-report (&optional limit)
+  "Print `nelisp-flat-arena-probe-walk' result for a quick CLI check."
+  (princ (nelisp-flat-arena-probe-walk limit)))
+
+(provide 'nelisp-flat-arena-probe)
+
+;;; nelisp-flat-arena-probe.el ends here
