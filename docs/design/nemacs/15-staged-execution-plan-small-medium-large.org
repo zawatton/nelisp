@@ -576,6 +576,19 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   - 環境: 並行 C1 session の共有ツリー汚染を避けるため =git worktree= (=.wt-breadth=、branch
     feat/breadth-cl-residuals、vendor/nelisp symlink) で作業。clean build = 107 files。
 
+- *Doc 16 breadth round 26 — pcase-lambda + rx 調査 → reader-core gap A16 (2026-06-22)*:
+  *pcase 系*: probe で =pcase= / =pcase-let= / =pcase-let*= / =pcase-dolist= /
+  =pcase-exhaustive= は既に動作と確認。void だった =pcase-lambda= を =src/emacs-pcase.el= に
+  追加 (plain lambda + 非 trivial param を hidden indexed temp 経由 =pcase-let*= で destructure、
+  =emacs-pcase--install-function-p= gate)。検証: host ERT 12/12、full-runtime 3/3。
+  =pcase-setq= は pattern-var 抽出が必要で *延期*。
+  *rx 系*: =rx= は =emacs-stub.el= の placeholder stub (="" を返す) と判明。実 rx.el を vendor
+  したところ *reader-core gap A16 で破壊*: =concat= が nil 引数を "nil" 文字列化
+  (=(concat "a" nil "b")= → "anilb")。rx は regexp を concat で組むため =(rx (or "a" "b"))= →
+  ="nil"=、=(rx (+ digit))= → ="[[:digit:]]+nil"= と silently wrong。core 関数 concat の
+  override は危険なため rx vendoring は revert (stub のまま)、A16 を Doc 22 + issue #7 記録。
+  commit d7d279b。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
