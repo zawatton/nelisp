@@ -415,7 +415,12 @@ storage — not an arena reservation."
    ;; enable@+8, precise_only@+16, in_progress@+24, alloc_debt@+32,
    ;; alloc_limit@+40) + 64 frames x 56B @ +64 (env/result/out/pool/src/cursor/
    ;; bsym).  Dormant in 4a (no caller); driver publish + collect land in 4b.
-   (list (cons 'bss (+ 3728 1048576)))
+   ;; multi-chunk dump: +3728 = nl_fa_tbl_base (8B) -- relocation-table base override
+   ;; for `nl_fa_emit'.  0 = use the default dest+span+isz+256 slot (single-chunk);
+   ;; non-zero = a caller-chosen valid address (the multi-chunk dump puts the table
+   ;; in the intern region's free area, since chunk-0 is full and dest+total+isz is
+   ;; past chunk-0's mmap).
+   (list (cons 'bss (+ 3736 1048576)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
@@ -425,6 +430,8 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_gc_diag" (+ 16 1048576)
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_safepoint_ctx" (+ 80 1048576)
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_fa_tbl_base" (+ 3728 1048576)
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -2488,6 +2495,20 @@ argument (reachability + in-arena bounds checks).")
                                             (wf_write_nil out)
                                           (wf_write_int out idx))))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "nelisp--arena-walk-verify") . (bf_arena_walk_verify out))
+    ((:lit "nelisp--arena-dump-copy-verify") . (bf_arena_dump_copy_verify out))
+    ((:lit "nelisp--arena-mark-reach-verify") . (bf_arena_mark_reach_verify out))
+    ((:lit "nelisp--arena-swizzle-verify") . (bf_arena_swizzle_verify out))
+    ((:lit "nelisp--arena-load-relocate-verify") . (bf_arena_load_relocate_verify out))
+    ((:lit "nelisp--arena-image-root-verify") . (bf_arena_image_root_verify out))
+    ((:lit "nelisp--arena-dump-table-verify") . (bf_arena_dump_table_verify out))
+    ((:lit "nelisp--arena-dump-image-to-file") . (bf_arena_dump_image_to_file args out))
+    ((:lit "nelisp--arena-dump-image-stream") . (bf_arena_dump_image_stream args out))
+    ((:lit "nelisp--arena-load-image-from-file") . (bf_arena_load_image_from_file args out))
+    ((:lit "nelisp--env-capture-roots") . (bf_env_capture_roots out))
+    ((:lit "nelisp--record-expand") . (bf_record_expand args out))
+    ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
+    ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -2652,6 +2673,90 @@ unresolved at link time."
         (seq (wf_write_int slot v)
              (nelisp_cons_construct slot rest out)
              0)))
+    ;; Env-bridge CAPTURE (Doc 17 §11.2 Bridge 1) for the heap-v0 cold-loader.
+    ;; Reads the codec's env-root-manifest 5 roots from the LIVE published EvalCtx
+    ;; (env = nl_safepoint_ctx+64, the GC-published frame-0 context) and returns the
+    ;; list (globals_record frames_record unbound_marker max_recursion use_elisp_apply),
+    ;; directly consumable by `nelisp-heap-image-encode-roots'.  This is the "symmetric
+    ;; getter to read the current globals_record" that Doc 17 §11.2 says standalone
+    ;; lacks; offsets are gdb-verified against the EvalCtx (120B): globals SLOT @env+0
+    ;; (tag 12 Record), frames SLOT @env+32 (tag 12), unbound SLOT @env+64 (tag 4
+    ;; Symbol -- the whole 32B slot, NOT +8), max_recursion scalar @env+104, use_elisp
+    ;; scalar @env+112.  Records/Symbol roots are returned as their Sexp value (slot
+    ;; copy); the two scalars as Int Sexps.  Returns nil if no frame is published.
+    (defun bf_env_capture_roots (out)
+      (let* ((env (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0))
+             (g (alloc-bytes 32 8)) (f (alloc-bytes 32 8)) (u (alloc-bytes 32 8))
+             (nilp (alloc-bytes 32 8))
+             (c4 (alloc-bytes 32 8)) (c3 (alloc-bytes 32 8))
+             (c2 (alloc-bytes 32 8)) (c1 (alloc-bytes 32 8)))
+        (if (= env 0)
+            (wf_write_nil out)
+          (seq
+           (wf_copy32 g (+ env 0))    ; globals_record slot
+           (wf_copy32 f (+ env 32))   ; frames_record slot
+           (wf_copy32 u (+ env 64))   ; unbound_marker slot (tag-4 Symbol)
+           (wf_write_nil nilp)
+           (wf_cons_int (ptr-read-u64 (+ env 112) 0) nilp c4)  ; use_elisp_apply
+           (wf_cons_int (ptr-read-u64 (+ env 104) 0) c4 c3)    ; max_recursion
+           (nelisp_cons_construct u c3 c2)                     ; unbound_marker
+           (nelisp_cons_construct f c2 c1)                     ; frames_record
+           (nelisp_cons_construct g c1 out)                    ; globals_record
+           0))))
+    ;; Env-bridge option (C) (Doc 17 §11.2): expand a runtime NlRecord into a
+    ;; codec-friendly cons graph so `nelisp-heap-image-encode-roots' can serialize
+    ;; it.  The standalone env-record (tag 12) is opaque to the codec: the active
+    ;; prelude `recordp' is aliased to `vectorp' (nelisp-stdlib-prelude.el:3113) so
+    ;; it returns nil for tag-12, and host `aref'/`length' do not traverse the
+    ;; 1024-bucket hash mirror.  These helpers read the verified runtime layout
+    ;; (Record: type_tag @box+0, data_ptr @box+40, len @box+48; Vector: data_ptr
+    ;; @box+8, len @box+16; Cons: car/cdr WORDS @box+0/+8) and rewrite the WHOLE
+    ;; subgraph into cons/atoms (records + vectors -> plain lists, conses -> conses),
+    ;; which the codec already handles.  Slot/element WORDS are value-words: low bit
+    ;; 1 = immediate (Nil=3, T=7, Int=(n<<2)|1), low bit 0 = 8-aligned pointer to a
+    ;; 32B Sexp.  Atoms are bit-copied (shared buffers are fine for read-only encode).
+    ;; CAVEAT: record/vector TYPE is dropped (both become lists), so this is a
+    ;; one-way serialize for the encode side; a faithful round-trip needs a tagged
+    ;; form + reverse rebuild.  And the full globals graph reaches native function
+    ;; cells (non-Sexp pointers) -- expanding those is unsound, which is exactly why
+    ;; raw-arena (byte memcpy + relocate, no graph walk) is the pragmatic path.
+    (defun bf_expand_word (w out)
+      (if (= (logand w 1) 1)
+          (if (= w 3) (wf_write_nil out)
+            (if (= w 7) (wf_write_t out)
+              (wf_write_int out (sar w 2))))
+        (bf_expand_slot w out)))
+    (defun bf_expand_words_list (dp i len out)
+      (if (if (< i len) 0 1)
+          (wf_write_nil out)
+        (let* ((cs (alloc-bytes 32 8)) (rest (alloc-bytes 32 8)))
+          (seq
+           (bf_expand_word (ptr-read-u64 (+ dp (* i 8)) 0) cs)
+           (bf_expand_words_list dp (+ i 1) len rest)
+           (nelisp_cons_construct cs rest out)
+           0))))
+    (defun bf_expand_slot (v out)
+      (let* ((tag (ptr-read-u8 v 0)))
+        (if (= tag 12)
+            (let* ((box (ptr-read-u64 v 8)) (typ (alloc-bytes 32 8)) (sl (alloc-bytes 32 8)))
+              (seq
+               (bf_expand_slot box typ)   ; type_tag @ box+0 (box viewed as a Sexp slot)
+               (bf_expand_words_list (ptr-read-u64 box 40) 0 (ptr-read-u64 box 48) sl)
+               (nelisp_cons_construct typ sl out)
+               0))
+          (if (= tag 8)
+              (let* ((box (ptr-read-u64 v 8)))
+                (bf_expand_words_list (ptr-read-u64 box 8) 0 (ptr-read-u64 box 16) out))
+            (if (= tag 7)
+                (let* ((box (ptr-read-u64 v 8)) (ca (alloc-bytes 32 8)) (cd (alloc-bytes 32 8)))
+                  (seq
+                   (bf_expand_word (ptr-read-u64 box 0) ca)
+                   (bf_expand_word (ptr-read-u64 box 8) cd)
+                   (nelisp_cons_construct ca cd out)
+                   0))
+              (wf_copy32 out v))))))
+    (defun bf_record_expand (args out)
+      (bf_expand_slot (wf_arg_ptr args 0) out))
     ;; Portable arena telemetry:
     ;;   (base size bump-offset used-bytes live-after-last-gc next-trigger
     ;;    free-list-head collect-disabled reuse-disabled
@@ -2735,6 +2840,935 @@ unresolved at link time."
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
          0)))
+    ;; flat-arena spike step 2 (READ-ONLY): full multi-chunk heap walk at
+    ;; native speed.  Walks every chunk in the descriptor chain, and within
+    ;; each chunk follows the [header][object] BLOCK_TOTAL sequence from the
+    ;; chunk's data-start to its live end (`bf_arena_chunk_cursor', the same
+    ;; cursor the GC mark/sweep uses), reaching the end EXACTLY.  Accumulates
+    ;; into caller-supplied scratch slots; never mutates a heap object.  A
+    ;; malformed block (BT < 8 or overrunning the chunk end) clears the OK
+    ;; flag and ends that chunk's walk.  This verifies the invariant a
+    ;; flat-arena dump relies on: the heap is a contiguous, self-describing
+    ;; block sequence safe to bulk-copy.
+    (defun bf_arena_wv_chunk (chunk cb cl cf cby cok)
+      (let* ((cbase (ptr-read-u64 chunk 0))
+             (end (+ cbase (bf_arena_chunk_cursor chunk)))
+             (hdr (ptr-read-u64 (+ chunk 24) 0)))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (let* ((bt (nl_hdr_bt hdr))
+                  (mark (nl_hdr_mark hdr)))
+             (if (< bt 8)
+                 (seq (ptr-write-u64 cok 0 0) (setq hdr end))
+               (if (> (+ hdr bt) end)
+                   (seq (ptr-write-u64 cok 0 0) (setq hdr end))
+                 (seq
+                  (ptr-write-u64 cb 0 (+ (ptr-read-u64 cb 0) 1))
+                  (ptr-write-u64 cby 0 (+ (ptr-read-u64 cby 0) bt))
+                  (if (= mark 2)
+                      (ptr-write-u64 cf 0 (+ (ptr-read-u64 cf 0) 1))
+                    (ptr-write-u64 cl 0 (+ (ptr-read-u64 cl 0) 1)))
+                  (setq hdr (+ hdr bt)))))))
+         0)))
+    (defun bf_arena_wv_chunks (chunk cb cl cf cby cok)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (bf_arena_wv_chunk chunk cb cl cf cby cok)
+                 (bf_arena_wv_chunks (ptr-read-u64 (+ chunk 48) 0)
+                                     cb cl cf cby cok))))
+    (defun bf_arena_walk_verify (out)
+      (let* ((cb (alloc-bytes 8 8)) (cl (alloc-bytes 8 8)) (cf (alloc-bytes 8 8))
+             (cby (alloc-bytes 8 8)) (cok (alloc-bytes 8 8))
+             (nil-slot (alloc-bytes 32 8))
+             (s4 (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cb 0 0) (ptr-write-u64 cl 0 0) (ptr-write-u64 cf 0 0)
+         (ptr-write-u64 cby 0 0) (ptr-write-u64 cok 0 1)
+         (bf_arena_wv_chunks (ptr-read-u64 268436160 0) cb cl cf cby cok)
+         (wf_write_nil nil-slot)
+         ;; result list: (blocks live free bytes wellformed)
+         (wf_cons_int (ptr-read-u64 cok 0) nil-slot s4)
+         (wf_cons_int (ptr-read-u64 cby 0) s4 s3)
+         (wf_cons_int (ptr-read-u64 cf 0) s3 s2)
+         (wf_cons_int (ptr-read-u64 cl 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 cb 0) s1 out)
+         0)))
+    ;; flat-arena spike step 3a (READ-ONLY source): the bulk-copy mechanic
+    ;; -- the "memcpy" half of memcpy+relocate.  Copy chunk-0's live region
+    ;; [data-start, base+cursor) into a fresh large-object buffer (8-byte
+    ;; words; > 4 KiB so it lands in its own mmap, NOT bumping the chunk
+    ;; under the source), then verify byte-identity by re-reading both.  The
+    ;; source heap is never mutated.  Returns (USED-BYTES MISMATCH-WORDS
+    ;; DEST-PTR): MISMATCH-WORDS = 0 means the copy is byte-faithful.
+    ;; cursor / used are snapshot BEFORE the dest + scratch allocs, so the
+    ;; copied range excludes them.  Multi-chunk copy + the pointer-swizzle
+    ;; pass (step 3b) and file emit are deferred.
+    (defun bf_arena_dump_copy_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (dest (alloc-bytes slen 8))
+             (i 0) (mism 0)
+             (nil-slot (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (setq i 0)
+         (while (< i slen)
+           (seq (if (= (ptr-read-u64 (+ dest i) 0) (ptr-read-u64 (+ sstart i) 0))
+                    0
+                  (setq mism (+ mism 1)))
+                (setq i (+ i 8))))
+         (wf_write_nil nil-slot)
+         (wf_cons_int dest nil-slot s2)
+         (wf_cons_int mism s2 s1)
+         (wf_cons_int slen s1 out)
+         0)))
+    ;; flat-arena spike step 3b-i (root-reachability precondition for the
+    ;; pointer swizzle): prove the published root set reaches the whole live
+    ;; object set, so a from-roots per-type walk that records pointer fields
+    ;; (the actual swizzle, step 3b-ii) will cover every object the dump
+    ;; bulk-copies.  REUSES the battle-tested GC mark-from-roots
+    ;; (`nl_gc_mark_published_contexts' / `-rootstack' / `-symentry', the same
+    ;; calls `nl_gc_collect_published' makes) so no per-type walker is
+    ;; re-implemented; then linearly counts the marked (reachable) blocks and
+    ;; CLEARS the marks back to 0, leaving the heap exactly as before (NO
+    ;; sweep -> nothing freed).  The GC-in-progress flag (ctx+24) is held so a
+    ;; mid-walk safepoint cannot re-enter.  Returns (REACHABLE TOTAL):
+    ;; REACHABLE ~= LIVE from `bf_arena_walk_verify' confirms root coverage.
+    (defun bf_arena_mr_chunk (chunk reach total)
+      (let* ((cbase (ptr-read-u64 chunk 0))
+             (end (+ cbase (bf_arena_chunk_cursor chunk)))
+             (hdr (ptr-read-u64 (+ chunk 24) 0)))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (let ((bt (nl_hdr_bt hdr)))
+             (if (< bt 8)
+                 (setq hdr end)
+               (if (> (+ hdr bt) end)
+                   (setq hdr end)
+                 (seq
+                  (ptr-write-u64 total 0 (+ (ptr-read-u64 total 0) 1))
+                  (if (= (nl_hdr_mark hdr) 1)
+                      (seq (ptr-write-u64 reach 0 (+ (ptr-read-u64 reach 0) 1))
+                           (nl_hdr_set_mark hdr 0))
+                    0)
+                  (setq hdr (+ hdr bt)))))))
+         0)))
+    (defun bf_arena_mr_chunks (chunk reach total)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (bf_arena_mr_chunk chunk reach total)
+                 (bf_arena_mr_chunks (ptr-read-u64 (+ chunk 48) 0)
+                                     reach total))))
+    (defun bf_arena_mark_reach_verify (out)
+      (let* ((reach (alloc-bytes 8 8)) (total (alloc-bytes 8 8))
+             (nil-slot (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 reach 0 0)
+         (ptr-write-u64 total 0 0)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_gc_mark_published_contexts)
+         (nl_gc_mark_rootstack)
+         (nl_gc_mark_symentry)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+         (bf_arena_mr_chunks (ptr-read-u64 268436160 0) reach total)
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 total 0) nil-slot s1)
+         (wf_cons_int (ptr-read-u64 reach 0) s1 out)
+         0)))
+    ;; flat-arena spike step 3b-ii: the pointer SWIZZLE proper.  Mirrors the
+    ;; GC per-type walk (`nl_gc_mark_slot' / `-cons' / `-vec_slots') from the
+    ;; frame[0] globals root, but at every pointer FIELD it rewrites the
+    ;; corresponding word IN THE COPIED chunk-0 buffer from an absolute
+    ;; address to an arena-relative OFFSET (in-place; no separate pointer-list
+    ;; storage).  The SOURCE heap is never written -- only the dest copy.
+    ;; Cycle dedup reuses the GC mark bit (`nl_gc_mark_block'); marks are
+    ;; cleared (no sweep) between passes.  Verified by a round trip: swizzle
+    ;; (dir 0) then unswizzle (dir 1) must restore the copy byte-for-byte to
+    ;; the source.  Returns (IN-REGION-PTRS OUT-REGION-PTRS ROUNDTRIP-MISMATCH);
+    ;; MISMATCH = 0 proves the per-type walk touched exactly the pointer fields,
+    ;; reversibly.  (Single-root + chunk-0 only; multi-root / multi-chunk and
+    ;; the load-side unswizzle into a fresh base are the remaining work.)
+    ;;
+    ;; nl_fa_field: swizzle/unswizzle ONE pointer word living at source addr
+    ;; WADDR whose value is TGT.  DS/SPAN = chunk-0 data-start / used span;
+    ;; DEST = image base.  Only fields whose ADDRESS is inside chunk-0 are
+    ;; touched (every pointer field lives in a chunk-0 object; root slots live
+    ;; in the EvalCtx, outside chunk-0 -> skipped, reinstalled on load).
+    ;;
+    ;; step 3c multi-region: the IMAGE holds two regions -- chunk-0 at image
+    ;; offset [0,span), then the interned symbol-name region at [span, ...).
+    ;; A target is classified into chunk-0, interned, or out (large objects /
+    ;; other).  The interned region bounds are read from the chunk-0 metadata
+    ;; relative to DS (base = ds - 1024; intern base @ base+832, end @ base+840),
+    ;; so no extra params thread through the walk.  `cin' counts pointers that
+    ;; landed in the image (chunk-0 + interned); `cout' counts the rest.
+    ;;   dir 0 swizzle:   chunk-0 -> (tgt - ds);  interned -> (span + (tgt - ib))
+    ;;   dir 2 relocate:  chunk-0 -> dest + (tgt - ds);
+    ;;                    interned -> dest + span + (tgt - ib)
+    ;;   dir 1 unswizzle: restore every touched word from the source (idempotent)
+    ;; Emit one in-image pointer field.  LOC = its slot in DEST; IMGOFF = the
+    ;; target's offset within the image (chunk-0 or interned, already encoded);
+    ;; FLDOFF = the field's own chunk-0 offset (= waddr - ds).  CIN counts +
+    ;; doubles as the relocation-table write index.  dir 0 swizzle (write
+    ;; IMGOFF), dir 2 relocate (write DEST+IMGOFF), dir 3 = dir 0 PLUS append
+    ;; FLDOFF to the relocation table (boot step: the table that drives a
+    ;; per-field linear relocate on load, with no graph walk).  The table lives
+    ;; in DEST after the two regions + a 256-byte counter pad.
+    ;; ---- multi-chunk coalescing helpers (boot-wiring 14) ----
+    ;; The arena is a chain of chunks (head @268436160, desc.next @+48).  A
+    ;; multi-chunk heap is coalesced into ONE logical address space at dump time:
+    ;; logical_base(chunk_0)=0, logical_base(chunk_K)=sum(used of chunks < K).  A
+    ;; physical address -> logical offset (nl_mc_logoff) and back (nl_mc_phys); the
+    ;; load then treats the coalesced image as a single chunk (slen=total), reusing
+    ;; the existing single-chunk cold-load unchanged.  For a SINGLE chunk these
+    ;; reduce to (addr - chunk0-data-start), so nl_fa_field/nl_fa_emit stay
+    ;; byte-identical for the verified single-chunk path.
+    (defun nl_mc_logoff_walk (chunk addr acc)
+      (if (= chunk 0) -1
+        (let* ((cbase (ptr-read-u64 chunk 0))
+               (cds (+ cbase 1024))
+               (cused (bf_arena_chunk_used chunk)))
+          (if (if (< addr cds) 0 (if (< addr (+ cds cused)) 1 0))
+              (+ acc (- addr cds))
+            (nl_mc_logoff_walk (ptr-read-u64 (+ chunk 48) 0) addr (+ acc cused))))))
+    (defun nl_mc_logoff (addr)
+      (nl_mc_logoff_walk (ptr-read-u64 268436160 0) addr 0))
+    (defun nl_mc_phys_walk (chunk logoff acc)
+      (if (= chunk 0) 0
+        (let* ((cbase (ptr-read-u64 chunk 0))
+               (cused (bf_arena_chunk_used chunk)))
+          (if (if (< logoff acc) 0 (if (< logoff (+ acc cused)) 1 0))
+              (+ (+ cbase 1024) (- logoff acc))
+            (nl_mc_phys_walk (ptr-read-u64 (+ chunk 48) 0) logoff (+ acc cused))))))
+    (defun nl_mc_phys (logoff)
+      (nl_mc_phys_walk (ptr-read-u64 268436160 0) logoff 0))
+    (defun nl_mc_total_walk (chunk acc)
+      (if (= chunk 0) acc
+        (nl_mc_total_walk (ptr-read-u64 (+ chunk 48) 0)
+                          (+ acc (bf_arena_chunk_used chunk)))))
+    (defun nl_mc_total ()
+      (nl_mc_total_walk (ptr-read-u64 268436160 0) 0))
+    ;; image offset of ADDR for the coalesced image: chunk -> logical offset;
+    ;; intern -> total + (addr-ib); else 0.
+    (defun nl_mc_imgoff (addr total ib ie)
+      (let ((lo (nl_mc_logoff addr)))
+        (if (< lo 0)
+            (if (if (< addr ib) 0 (if (< addr ie) 1 0)) (+ total (- addr ib)) 0)
+          lo)))
+    ;; stream each chunk's live region [cds,cds+used) to FD in chain (=logical) order.
+    (defun nl_mc_write_chunks (fd chunk)
+      (if (= chunk 0) 0
+        (nl_seq2
+         (nl_fa_write_all fd (+ (ptr-read-u64 chunk 0) 1024)
+                          (bf_arena_chunk_used chunk) 0)
+         (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0)))))
+    ;; in-place un-swizzle (offset -> pointer) over the LIVE multi-chunk arena via
+    ;; the table of logical field offsets.  For 1 chunk this equals the single-chunk
+    ;; restore (nl_mc_phys = sstart + off).
+    (defun bf_arena_inplace_restore_mc (tbl tlen ib total)
+      (let ((i 0))
+        (seq
+         (while (< i tlen)
+           (let* ((f (ptr-read-u64 (+ tbl (* i 8)) 0))
+                  (faddr (nl_mc_phys f))
+                  (o (ptr-read-u64 faddr 0)))
+             (nl_seq2
+              (if (< o total)
+                  (ptr-write-u64 faddr 0 (nl_mc_phys o))
+                (ptr-write-u64 faddr 0 (+ ib (- o total))))
+              (setq i (+ i 1)))))
+         0)))
+    (defun nl_fa_emit (loc imgoff fldoff dest span ib ie cin dir)
+      (let ((tbl (if (= (ptr-read-u64 (data-addr nl_fa_tbl_base) 0) 0)
+                     (+ dest (+ span (+ (nl_align_up (if (< ie ib) 0 (- ie ib)) 8) 256)))
+                   (ptr-read-u64 (data-addr nl_fa_tbl_base) 0))))
+        (nl_seq2
+         (if (= dir 3)
+             (ptr-write-u64 (+ tbl (* 8 (ptr-read-u64 cin 0))) 0 fldoff)
+           0)
+         (nl_seq2
+          (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
+          (ptr-write-u64 loc 0 (if (= dir 2) (+ dest imgoff) imgoff))))))
+    ;; chunk-map-aware: a field at WADDR (in ANY chunk) recording its LOGICAL offset,
+    ;; targets resolved to logical (chunk) or total+(tgt-ib) (intern).  For 1 chunk
+    ;; nl_mc_logoff(addr) = addr-ds, so this is byte-identical to the prior version.
+    (defun nl_fa_field (waddr tgt ds span dest cin cout dir)
+      (let ((wlog (nl_mc_logoff waddr)))
+        (if (< wlog 0) 0
+          (let* ((loc (+ dest (- waddr ds)))
+                 (base (- ds 1024))
+                 (ib (ptr-read-u64 (+ base 832) 0))
+                 (ie (ptr-read-u64 (+ base 840) 0))
+                 (tlog (nl_mc_logoff tgt)))
+            (if (= dir 1)
+                (ptr-write-u64 loc 0 (ptr-read-u64 waddr 0))
+              (if (< tlog 0)
+                  (if (if (< tgt ib) 0 (if (< tgt ie) 1 0))
+                      (nl_fa_emit loc (+ span (- tgt ib)) wlog dest span ib ie cin dir)
+                    (ptr-write-u64 cout 0 (+ (ptr-read-u64 cout 0) 1)))
+                (nl_fa_emit loc tlog wlog dest span ib ie cin dir)))))))
+    (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
+      (if (= (nl_gc_in_arena data_ptr) 0) 0
+        (let ((k i))
+          (while (< k len)
+            (nl_seq2
+             (let ((vw (ptr-read-u64 (+ data_ptr (* k 8)) 0)))
+               (if (= (logand vw 1) 1) 0
+                 (nl_seq2 (nl_fa_field (+ data_ptr (* k 8)) vw ds span dest cin cout dir)
+                          (if (= (nl_gc_mark_block vw) 0) 0
+                            (nl_fa_slot vw ds span dest cin cout dir)))))
+             (setq k (+ k 1))))
+          0)))
+    (defun nl_fa_cons (sp ds span dest cin cout dir)
+      (let ((box (ptr-read-u64 sp 8)))
+        (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+          (if (= (nl_gc_mark_block box) 0) 0
+            (nl_seq2
+             (let ((cw (ptr-read-u64 box 0)))
+               (if (= (logand cw 1) 1) 0
+                 (nl_seq2 (nl_fa_field box cw ds span dest cin cout dir)
+                          (if (= (nl_gc_mark_block cw) 0) 0
+                            (nl_fa_slot cw ds span dest cin cout dir)))))
+             (let ((dw (ptr-read-u64 box 8)))
+               (if (= (logand dw 1) 1) 0
+                 (nl_seq2 (nl_fa_field (+ box 8) dw ds span dest cin cout dir)
+                          (if (= (nl_gc_mark_block dw) 0) 0
+                            (if (= (ptr-read-u8 dw 0) 7)
+                                (nl_fa_cons dw ds span dest cin cout dir)
+                              (nl_fa_slot dw ds span dest cin cout dir)))))))))))
+    (defun nl_fa_slot (sp ds span dest cin cout dir)
+      (let ((tag (ptr-read-u8 sp 0)))
+        (if (= tag 7)
+            (nl_fa_cons sp ds span dest cin cout dir)
+          (if (= tag 8)
+              (let ((box (ptr-read-u64 sp 8)))
+                (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                  (if (= (nl_gc_mark_block box) 0) 0
+                    (let ((data_ptr (ptr-read-u64 box 8)) (len (ptr-read-u64 box 16)))
+                      (nl_seq2 (nl_fa_field (+ box 8) data_ptr ds span dest cin cout dir)
+                               (nl_fa_vec_slots data_ptr 0 len ds span dest cin cout dir))))))
+            (if (= tag 12)
+                (let ((box (ptr-read-u64 sp 8)))
+                  (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                    (if (= (nl_gc_mark_block box) 0) 0
+                      (let ((data_ptr (ptr-read-u64 box 40)) (len (ptr-read-u64 box 48)))
+                        (nl_seq2 (nl_fa_slot box ds span dest cin cout dir)
+                          (nl_seq2 (nl_fa_field (+ box 40) data_ptr ds span dest cin cout dir)
+                                   (nl_fa_vec_slots data_ptr 0 len ds span dest cin cout dir)))))))
+              (if (= tag 11)
+                  (let ((box (ptr-read-u64 sp 8)))
+                    (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                      (if (= (nl_gc_mark_block box) 0) 0
+                        (let ((vw (ptr-read-u64 box 0)))
+                          (if (= (logand vw 1) 1) 0
+                            (nl_seq2 (nl_fa_field box vw ds span dest cin cout dir)
+                              (if (= (nl_gc_mark_block vw) 0) 0
+                                (nl_fa_slot vw ds span dest cin cout dir))))))))
+                (if (= tag 6)
+                    (let ((box (ptr-read-u64 sp 8)))
+                      (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
+                        (if (= (nl_gc_mark_block box) 0) 0
+                          (nl_fa_field (+ box 8) (ptr-read-u64 box 8) ds span dest cin cout dir))))
+                  (if (= tag 5)
+                      (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
+                    (if (= tag 4)
+                        (nl_fa_field (+ sp 16) (ptr-read-u64 sp 16) ds span dest cin cout dir)
+                      (if (= tag 9)
+                          (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                        (if (= tag 10)
+                            (nl_fa_field (+ sp 8) (ptr-read-u64 sp 8) ds span dest cin cout dir)
+                          0)))))))))))
+    ;; step 3c (all roots): walk every published frame's roots + the shared
+    ;; symentry, mirroring `nl_gc_mark_published_frame' / `-contexts_from' /
+    ;; `nl_gc_mark_symentry' so the swizzle/relocate reaches the COMPLETE live
+    ;; graph (globals + frame stack + unbound marker + the per-frame reader
+    ;; transients result/out/src/cursor/bsym), not just frame[0] globals.
+    (defun nl_fa_frame_at (base ds span dest cin cout dir)
+      (let ((env (ptr-read-u64 base 0)))
+        (nl_seq2 (nl_fa_slot (+ env 0) ds span dest cin cout dir)
+         (nl_seq2 (nl_fa_slot (+ env 32) ds span dest cin cout dir)
+          (nl_seq2 (nl_fa_slot (+ env 64) ds span dest cin cout dir)
+           (nl_seq2 (nl_fa_slot (ptr-read-u64 base 8) ds span dest cin cout dir)
+            (nl_seq2 (nl_fa_slot (ptr-read-u64 base 16) ds span dest cin cout dir)
+             (nl_seq2 (nl_fa_slot (ptr-read-u64 base 32) ds span dest cin cout dir)
+              (nl_seq2 (nl_fa_slot (ptr-read-u64 base 40) ds span dest cin cout dir)
+                       (nl_fa_slot (ptr-read-u64 base 48) ds span dest cin cout dir))))))))))
+    (defun nl_fa_frames_from (i depth ds span dest cin cout dir)
+      (if (< i depth)
+          (nl_seq2
+           (nl_fa_frame_at (+ (data-addr nl_safepoint_ctx) (+ 64 (* i 56)))
+                           ds span dest cin cout dir)
+           (nl_fa_frames_from (+ i 1) depth ds span dest cin cout dir))
+        0))
+    (defun nl_fa_roots (ds span dest cin cout dir)
+      (nl_seq2
+       (nl_fa_frames_from 0 (ptr-read-u64 (data-addr nl_safepoint_ctx) 0)
+                          ds span dest cin cout dir)
+       (if (= (ptr-read-u64 268436328 0) 0) 0
+         (nl_fa_slot (ptr-read-u64 268436328 0) ds span dest cin cout dir))))
+    (defun bf_arena_swizzle_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             ;; dest holds the copied region in [0,slen); the verification
+             ;; counters live in the tail [slen, slen+256) of the SAME buffer
+             ;; so they are never inside the compared region nor written by
+             ;; the field-swizzle (which only writes dest+[0,slen)).
+             (dest (alloc-bytes (+ slen 256) 8))
+             (cin (+ dest slen)) (cout (+ dest slen 8)) (cmis (+ dest slen 16))
+             (ctr (+ dest slen 24))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (i 0)
+             (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0) (ptr-write-u64 cmis 0 0)
+         (ptr-write-u64 ctr 0 0)
+         ;; 1. bulk-copy chunk-0 live region
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (if (= env 0) 0
+           (seq
+            ;; 2. swizzle pass (abs -> offset) from ALL roots
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_roots sstart slen dest cin cout 0)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)   ; clear marks
+            ;; 3. unswizzle pass (offset -> abs)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_roots sstart slen dest cin cout 1)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)
+            ;; 4. round-trip identity: copy must equal source again
+            (setq i 0)
+            (while (< i slen)
+              (seq (if (= (ptr-read-u64 (+ dest i) 0) (ptr-read-u64 (+ sstart i) 0)) 0
+                     (ptr-write-u64 cmis 0 (+ (ptr-read-u64 cmis 0) 1)))
+                   (setq i (+ i 8))))))
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 cmis 0) nil-slot s2)
+         (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 cin 0) s1 out)
+         0)))
+    ;; flat-arena spike step 4 (core LOAD mechanic): relocate the image into a
+    ;; FRESH base and prove the result is a structurally valid arena.  Copy
+    ;; chunk-0 into DEST (so DEST itself is the new base = where data-start now
+    ;; lives), then rebase every in-region pointer to DEST via the per-type
+    ;; walk (dir 2: DEST[field] = tgt + (dest - sstart)).  This is exactly what
+    ;; loading the relocatable image at a kernel-chosen base does.  Then verify
+    ;; the LOADED image is well-formed: a linear [header][object] walk of DEST
+    ;; must reach the end exactly (relocate only rewrote pointer fields, never
+    ;; the BLOCK_TOTAL headers).  Returns (RELOCATED-PTRS BLOCKS WELLFORMED);
+    ;; RELOCATED-PTRS should match the swizzle's in-region count and WELLFORMED
+    ;; = 1 means the load produced a sound arena at the new base.  (Single-root
+    ;; + chunk-0; the boot hook that installs a loaded image in place of the
+    ;; source replay is the remaining integration -- it needs the multi-region
+    ;; / multi-root completeness of step 3c first.)
+    (defun bf_arena_load_relocate_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             ;; step 3c: the image is two regions -- chunk-0 [0,slen) then the
+             ;; interned symbol-name region [slen, slen+isz).  Copy BOTH so the
+             ;; relocated interned pointers (dest+slen+off) land on real data.
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (dest (alloc-bytes (+ (+ slen isz) 256) 8))
+             (crel (+ dest slen isz)) (cwf (+ dest slen isz 8))
+             (cnblk (+ dest slen isz 16)) (ctr (+ dest slen isz 24))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (i 0) (j 0) (hdr 0)
+             (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 crel 0 0) (ptr-write-u64 cwf 0 1) (ptr-write-u64 cnblk 0 0)
+         ;; 1. copy chunk-0 live region into DEST (DEST is the new base)
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         ;; 1b. copy the interned region into DEST[slen .. slen+isz)
+         (while (< j isz)
+           (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0))
+                (setq j (+ j 8))))
+         (if (= env 0) 0
+           (seq
+            ;; 2. relocate DEST's in-region pointers to base = dest (dir 2),
+            ;; from ALL roots
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            (nl_fa_roots sstart slen dest crel ctr 2)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (bf_arena_mr_chunks (ptr-read-u64 268436160 0) ctr ctr)
+            ;; 3. verify the LOADED image: linear [hdr][obj] walk of DEST must
+            ;; reach the end exactly (block headers untouched by relocate).
+            (setq hdr 0)
+            (while (and (= (ptr-read-u64 cwf 0) 1) (< hdr slen))
+              (let* ((h (ptr-read-u64 (+ dest hdr) 0))
+                     (bt (- h (logand h 7))))
+                (if (< bt 8)
+                    (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+                  (if (> (+ hdr bt) slen)
+                      (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+                    (nl_seq2 (ptr-write-u64 cnblk 0 (+ (ptr-read-u64 cnblk 0) 1))
+                             (setq hdr (+ hdr bt)))))))
+            ;; require reaching the end exactly
+            (if (= hdr slen) 0 (ptr-write-u64 cwf 0 0))))
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 cwf 0) nil-slot s2)
+         (wf_cons_int (ptr-read-u64 cnblk 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 crel 0) s1 out)
+         0)))
+    ;; flat-arena spike step 4-boot precondition: capture the ROOT METADATA the
+    ;; boot loader needs.  An image is loaded by mmap'ing a fresh arena, copying
+    ;; the regions, relocating the pointers (steps done), then pointing a fresh
+    ;; EvalCtx's roots at the loaded root objects -- which requires each root's
+    ;; IMAGE OFFSET (where, within the image, its boxed object lives).
+    ;; `nl_img_off' maps an absolute address to its image offset (chunk-0 ->
+    ;; addr-ds; interned -> span + addr-ib; out -> -1).
+    ;; `bf_arena_image_root_verify' reports the image offsets of the 3 EvalCtx
+    ;; roots (globals_record @ env+0, frames_record @ env+32, unbound_marker @
+    ;; env+64; each a 32B Sexp slot whose boxed payload pointer is at slot+8).
+    ;; A non-negative offset means the root lives inside the dumped image and
+    ;; the boot can relocate + reinstall it as `newbase + offset'.  READ-ONLY.
+    (defun nl_img_off (addr ds span ib ie)
+      (if (if (< addr ds) 0 (if (< addr (+ ds span)) 1 0))
+          (- addr ds)
+        (if (if (< addr ib) 0 (if (< addr ie) 1 0))
+            (+ span (- addr ib))
+          -1)))
+    (defun bf_arena_image_root_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (base (- sstart 1024))
+             (ib (ptr-read-u64 (+ base 832) 0))
+             (ie (ptr-read-u64 (+ base 840) 0))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
+             (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
+             (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
+             (nil-slot (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (wf_write_nil nil-slot)
+         (wf_cons_int (nl_img_off ubox sstart slen ib ie) nil-slot s2)
+         (wf_cons_int (nl_img_off fbox sstart slen ib ie) s2 s1)
+         (wf_cons_int (nl_img_off gbox sstart slen ib ie) s1 out)
+         0)))
+    ;; flat-arena spike step 4-boot (table-driven load): the boot loader copies
+    ;; the regions, then relocates with a flat RELOCATION TABLE -- no per-type
+    ;; graph walk on load.  `bf_arena_dump_table_verify' demonstrates the whole
+    ;; thing in-process: build the offset image AND its table (swizzle dir 3
+    ;; records every pointer field's chunk-0 offset), then do the LOAD exactly
+    ;; as the boot would -- for each table entry F: DEST[F] += DEST (the image
+    ;; offset already encodes which region the target is in, so a single
+    ;; `+ DEST' lands it in chunk-0 or interned within DEST).  Then verify the
+    ;; loaded image is well-formed.  Returns (TABLE-LEN OUT-OF-REGION BLOCKS
+    ;; WELLFORMED): OUT-OF-REGION 0 + WELLFORMED 1 means the table fully
+    ;; describes the relocation and the table-driven load rebuilds a sound arena.
+    (defun bf_arena_dump_table_verify (out)
+      (let* ((head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (tcap (* 8 200000))
+             (dest (alloc-bytes (+ slen (+ isz (+ 256 tcap))) 8))
+             (tbl (+ dest (+ slen (+ isz 256))))
+             (cin (+ dest slen isz)) (cout (+ dest slen isz 8))
+             (cwf (+ dest slen isz 16)) (cnblk (+ dest slen isz 24))
+             (i 0) (j 0) (hdr 0) (ti 0) (n 0)
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+         (ptr-write-u64 cwf 0 1) (ptr-write-u64 cnblk 0 0)
+         ;; 1. copy chunk-0 + interned into DEST
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0))
+                (setq i (+ i 8))))
+         (while (< j isz)
+           (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0))
+                (setq j (+ j 8))))
+         ;; 2. swizzle DEST + emit the relocation table (dir 3)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_fa_roots sstart slen dest cin cout 3)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+         (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cnblk cnblk)
+         (ptr-write-u64 cnblk 0 0)
+         ;; 3. LOAD as the boot would: per table entry F, DEST[F] += DEST
+         (setq n (ptr-read-u64 cin 0))
+         (setq ti 0)
+         (while (< ti n)
+           (let ((f (ptr-read-u64 (+ tbl (* ti 8)) 0)))
+             (ptr-write-u64 (+ dest f) 0 (+ dest (ptr-read-u64 (+ dest f) 0))))
+           (setq ti (+ ti 1)))
+         ;; 4. verify the loaded image is well-formed (chunk-0 block walk)
+         (setq hdr 0)
+         (while (and (= (ptr-read-u64 cwf 0) 1) (< hdr slen))
+           (let* ((h (ptr-read-u64 (+ dest hdr) 0))
+                  (bt (- h (logand h 7))))
+             (if (< bt 8)
+                 (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+               (if (> (+ hdr bt) slen)
+                   (nl_seq2 (ptr-write-u64 cwf 0 0) (setq hdr slen))
+                 (nl_seq2 (ptr-write-u64 cnblk 0 (+ (ptr-read-u64 cnblk 0) 1))
+                          (setq hdr (+ hdr bt)))))))
+         (if (= hdr slen) 0 (ptr-write-u64 cwf 0 0))
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 cwf 0) nil-slot s3)
+         (wf_cons_int (ptr-read-u64 cnblk 0) s3 s2)
+         (wf_cons_int (ptr-read-u64 cout 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 cin 0) s1 out)
+         0)))
+    ;; flat-arena boot-wiring (2): FILE persistence.  The cold-start image is
+    ;; written to / read from a file as {64B header | table | regions}:
+    ;;   header: magic@0, slen@8, isz@16, tlen@24, globals_off@32, frames_off@40,
+    ;;           unbound_off@48.
+    ;;   table:  tlen u64 field offsets (the relocation table).
+    ;;   regions: chunk-0 [0,slen) then interned [slen, slen+isz).
+    ;; Low-level `nl_os_*' handles are used directly (the high-level `rdf' caps
+    ;; at 8 MiB; the image is tens of MiB).  Partial reads/writes are looped.
+    (defun nl_fa_write_all (fd ptr len off)
+      (if (if (< off len) 0 1) off
+        (let ((w (nl_os_write_file_handle fd (+ ptr off) (- len off))))
+          (if (< w 1) off (nl_fa_write_all fd ptr len (+ off w))))))
+    (defun nl_fa_read_all (fd buf len off)
+      (if (if (< off len) 0 1) off
+        (let ((r (nl_os_read_file_handle fd (+ buf off) (- len off))))
+          (if (< r 1) off (nl_fa_read_all fd buf len (+ off r))))))
+    (defun bf_arena_dump_image_to_file (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))
+             (cursor (bf_arena_chunk_cursor head))
+             (slen (if (< cursor 1024) 0 (- cursor 1024)))
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
+             (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
+             (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
+             (tcap (* 8 200000))
+             (dest (alloc-bytes (+ slen (+ isz (+ 256 tcap))) 8))
+             (tbl (+ dest (+ slen (+ isz 256))))
+             (cin (+ dest slen isz)) (cout (+ dest slen isz 8))
+             (hdr (alloc-bytes 64 8))
+             (i 0) (j 0) (tlen 0) (fd 0))
+        (seq
+         (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+         (while (< i slen)
+           (seq (ptr-write-u64 (+ dest i) 0 (ptr-read-u64 (+ sstart i) 0)) (setq i (+ i 8))))
+         (while (< j isz)
+           (seq (ptr-write-u64 (+ dest (+ slen j)) 0 (ptr-read-u64 (+ ib j) 0)) (setq j (+ j 8))))
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_fa_roots sstart slen dest cin cout 3)
+         (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+         (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cout cout)
+         (ptr-write-u64 cout 0 0)
+         (setq tlen (ptr-read-u64 cin 0))
+         (ptr-write-u64 hdr 0 1179407692)        ; magic "FLAT"
+         (ptr-write-u64 hdr 8 slen) (ptr-write-u64 hdr 16 isz) (ptr-write-u64 hdr 24 tlen)
+         (ptr-write-u64 hdr 32 (nl_img_off gbox sstart slen ib ie))
+         (ptr-write-u64 hdr 40 (nl_img_off fbox sstart slen ib ie))
+         (ptr-write-u64 hdr 48 (nl_img_off ubox sstart slen ib ie))
+         ;; flat-arena cold-load: persist the dumping run's intern-region base so
+         ;; the split loader can relocate the open-addressing intern table's
+         ;; name-buffer pointers (slot+8).  Those slots live INSIDE the interned
+         ;; region, so `nl_fa_field' (chunk-0-only) never records them in the
+         ;; relocation table -- they retain absolute OLD pointers and must be
+         ;; fixed by base-delta on load, else the first intern probe derefs a
+         ;; stale address from the previous process and SIGSEGVs.
+         (ptr-write-u64 hdr 56 ib)
+         (setq fd (nl_os_open_write_truncate cpath))
+         (if (< fd 0)
+             (wf_write_int out -1)
+           (seq
+            (nl_fa_write_all fd hdr 64 0)
+            (nl_fa_write_all fd tbl (* tlen 8) 0)
+            (nl_fa_write_all fd dest (+ slen isz) 0)
+            (nl_os_close_handle fd)
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ slen isz)))))))))
+    ;; STREAMING dump (flat-arena boot-wiring 12): dump WITHOUT the full-heap
+    ;; `dest' scratch copy that `bf_arena_dump_image_to_file' uses.  That copy
+    ;; doubles the in-arena footprint (~2*heap), which -- with the <2GB arena cap
+    ;; (Phase47 signed-imm32 materialization) -- makes the ~882MB full-nemacs env
+    ;; undumpable.  Here we swizzle the LIVE arena IN-PLACE: passing dest = sstart
+    ;; (= ds) makes `nl_fa_field's loc = dest+(waddr-ds) = waddr, so the swizzle
+    ;; rewrites the live fields directly (pointer -> image offset).  The relocation
+    ;; table + counters land in the chunk-0 free area past the live bump (cin/cout
+    ;; @ sstart+slen+isz, tbl @ +256 -- the same dest-relative slots nl_fa_emit
+    ;; computes).  We then stream header + table + live chunk-0 + live intern to
+    ;; the file (reading the live regions directly, no copy), and RESTORE the live
+    ;; arena in place via a table-driven offset->pointer relocate.  CRITICAL: from
+    ;; the swizzle to the restore the arena holds offsets (corrupt), so the body
+    ;; does NO allocation / GC / eval -- only file writes (which just read bytes).
+    ;; This keeps the footprint at ~heap (+ a few-MB table) instead of 2*heap, so
+    ;; an ~882MB env dumps inside a 1GB chunk.  `nl_cold_reloc' lives in the
+    ;; driver unit, so the inverse relocate is reimplemented here in applyfn-unit.
+    (defun bf_arena_inplace_restore (tbl tlen ds slen ib)
+      (let ((i 0))
+        (seq
+         (while (< i tlen)
+           (let* ((f (ptr-read-u64 (+ tbl (* i 8)) 0))
+                  (o (ptr-read-u64 (+ ds f) 0)))
+             (nl_seq2
+              (if (< o slen)
+                  (ptr-write-u64 (+ ds f) 0 (+ ds o))
+                (ptr-write-u64 (+ ds f) 0 (+ ib (- o slen))))
+              (setq i (+ i 1)))))
+         0)))
+    (defun bf_arena_dump_image_stream (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))   ; alloc the header FIRST so all used/total
+                                        ; computations below see a stable cursor (no
+                                        ; alloc between computing `total' and writing
+                                        ; the regions -- otherwise the 64B header bump
+                                        ; would desync hdr+8=total from the written size)
+             (head (ptr-read-u64 268436160 0))
+             (sstart (ptr-read-u64 (+ head 24) 0))   ; chunk-0 data-start (= ds for in-place)
+             (slen (bf_arena_chunk_used head))        ; chunk-0 used
+             (abase (- sstart 1024))
+             (ib (ptr-read-u64 (+ abase 832) 0))
+             (ie (ptr-read-u64 (+ abase 840) 0))
+             (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
+             (total (nl_mc_total))                    ; coalesced size = sum of chunk used (= slen for 1 chunk)
+             (multi (if (= (ptr-read-u64 (+ head 48) 0) 0) 0 1))
+             (depth (ptr-read-u64 (data-addr nl_safepoint_ctx) 0))
+             (env (if (= depth 0) 0
+                    (ptr-read-u64 (+ (data-addr nl_safepoint_ctx) 64) 0)))
+             (gbox (if (= env 0) 0 (ptr-read-u64 (+ env 8) 0)))
+             (fbox (if (= env 0) 0 (ptr-read-u64 (+ env 40) 0)))
+             (ubox (if (= env 0) 0 (ptr-read-u64 (+ env 72) 0)))
+             ;; scratch (counters + relocation table): single-chunk keeps the
+             ;; verified chunk-0 free-area layout (default nl_fa_emit tbl); multi-chunk
+             ;; puts it in the intern region free area (chunk-0 is full, and
+             ;; dest+total+isz would be past chunk-0's mmap) via the tbl override.
+             (cin (if (= multi 0) (+ sstart (+ slen isz)) (+ ib isz)))
+             (cout (+ cin 8))
+             (tbl (if (= multi 0) (+ sstart (+ slen (+ isz 256))) (+ ib (+ isz 256))))
+             (goff (nl_mc_imgoff gbox total ib ie))
+             (foff (nl_mc_imgoff fbox total ib ie))
+             (uoff (nl_mc_imgoff ubox total ib ie))
+             (tlen 0) (fd 0))
+        (seq
+         ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
+         (ptr-write-u64 hdr 0 1179407692)
+         (ptr-write-u64 hdr 16 isz)
+         (ptr-write-u64 hdr 32 goff) (ptr-write-u64 hdr 40 foff) (ptr-write-u64 hdr 48 uoff)
+         (ptr-write-u64 hdr 56 ib)
+         (setq fd (nl_os_open_write_truncate cpath))
+         (if (< fd 0)
+             (wf_write_int out -1)
+           (seq
+            ;; multi-chunk: route nl_fa_emit's table to the intern free area
+            (if (= multi 0) 0 (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl))
+            ;; ---- from here to the restore: NO alloc / GC / eval (arena is swizzled) ----
+            (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+            ;; span=total: cross-chunk pointers swizzle to coalesced logical offsets;
+            ;; dest=ds=sstart: loc=dest+(waddr-ds)=waddr => in-place over ANY chunk.
+            (nl_fa_roots sstart total sstart cin cout 3)
+            (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)
+            (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 0)   ; reset override
+            (setq tlen (ptr-read-u64 cin 0))
+            (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
+            (nl_fa_write_all fd hdr 64 0)
+            (nl_fa_write_all fd tbl (* tlen 8) 0)
+            (nl_mc_write_chunks fd head)   ; coalesced chunk regions, logical order (single: chunk-0)
+            (nl_fa_write_all fd ib isz 0)   ; live intern (un-swizzled, fixed on load)
+            (nl_os_close_handle fd)
+            (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
+            (wf_write_int out (+ 64 (+ (* tlen 8) (+ total isz)))))))))
+    (defun bf_arena_load_image_from_file (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath))
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (if (< fd 0)
+            (seq (wf_write_nil nil-slot)
+                 (wf_cons_int 0 nil-slot s2) (wf_cons_int 0 s2 s1)
+                 (wf_cons_int -1 s1 out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((magic (ptr-read-u64 hdr 0))
+                  (slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (img (alloc-bytes (+ slen (+ isz 8)) 8))
+                  (ti 0) (hdrp 0) (wf 1) (nblk 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd img (+ slen isz) 0)
+              (nl_os_close_handle fd)
+              ;; apply the relocation table: img[F] += img (newbase)
+              (setq ti 0)
+              (while (< ti tlen)
+                (let ((f (ptr-read-u64 (+ tbl (* ti 8)) 0)))
+                  (ptr-write-u64 (+ img f) 0 (+ img (ptr-read-u64 (+ img f) 0))))
+                (setq ti (+ ti 1)))
+              ;; verify the loaded image is well-formed
+              (setq hdrp 0)
+              (while (and (= wf 1) (< hdrp slen))
+                (let* ((h (ptr-read-u64 (+ img hdrp) 0))
+                       (bt (- h (logand h 7))))
+                  (if (< bt 8) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                    (if (> (+ hdrp bt) slen) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                      (nl_seq2 (setq nblk (+ nblk 1)) (setq hdrp (+ hdrp bt)))))))
+              (if (= hdrp slen) 0 (setq wf 0))
+              ;; result: (magic-ok tlen blocks wellformed)
+              (wf_write_nil nil-slot)
+              (wf_cons_int wf nil-slot s3)
+              (wf_cons_int nblk s3 s2)
+              (wf_cons_int tlen s2 s1)
+              (wf_cons_int (if (= magic 1179407692) 1 0) s1 out)
+              0))))))
+    ;; flat-arena boot-wiring (3): the boot-load INSTALL mechanism.  This is the
+    ;; exact code a boot hook runs: read the image, relocate it (table apply),
+    ;; then RECONSTRUCT the EvalCtx globals root -- a 32B Sexp slot whose tag is
+    ;; 12 (Record) and whose box pointer is `imgbase + globals_off' (from the
+    ;; header) -- and confirm that root resolves to a valid Record inside the
+    ;; loaded image.  (In a real boot the slot is the live `EvalCtx+0' and the
+    ;; image is loaded into the mmap'd arena; here it is a fresh buffer + a
+    ;; scratch slot so the live runtime is untouched.)  Returns
+    ;; (MAGIC-OK ROOT-TAG ROOT-IN-CHUNK0 GBOX-BLOCK-TOTAL): (1 12 1 ~72) means a
+    ;; boot would install a sound globals root from the persisted image.
+    (defun bf_arena_boot_load_verify (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath))
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (if (< fd 0)
+            (seq (wf_write_nil nil-slot)
+                 (wf_cons_int 0 nil-slot s3) (wf_cons_int 0 s3 s2)
+                 (wf_cons_int 0 s2 s1) (wf_cons_int -1 s1 out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (goff (ptr-read-u64 hdr 32))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (img (alloc-bytes (+ slen (+ isz 8)) 8))
+                  (rootslot (alloc-bytes 32 8))
+                  (ti 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd img (+ slen isz) 0)
+              (nl_os_close_handle fd)
+              (setq ti 0)
+              (while (< ti tlen)
+                (let ((f (ptr-read-u64 (+ tbl (* ti 8)) 0)))
+                  (ptr-write-u64 (+ img f) 0 (+ img (ptr-read-u64 (+ img f) 0))))
+                (setq ti (+ ti 1)))
+              ;; reconstruct the globals root slot
+              (ptr-write-u8 rootslot 0 12)
+              (ptr-write-u64 rootslot 8 (+ img goff))
+              ;; verify it resolves to a valid Record in the loaded image
+              (let* ((rtag (ptr-read-u8 rootslot 0))
+                     (gbox (ptr-read-u64 rootslot 8))
+                     (rin (if (< gbox img) 0 (if (< gbox (+ img slen)) 1 0)))
+                     (gh (ptr-read-u64 (- gbox 8) 0))
+                     (gbt (- gh (logand gh 7))))
+                (wf_write_nil nil-slot)
+                (wf_cons_int gbt nil-slot s3)
+                (wf_cons_int rin s3 s2)
+                (wf_cons_int rtag s2 s1)
+                (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
+                0)))))))
+    ;; flat-arena boot-wiring (4): SPLIT relocate -- the real-arena load.  In a
+    ;; live runtime chunk-0 and the interned region are SEPARATE mmaps at
+    ;; unrelated bases, so the load cannot use one contiguous `+ newbase'; it
+    ;; must split by region: a field holding image offset O relocates to
+    ;; chunk0_base + O when O < slen, else intern_base + (O - slen).
+    ;; `bf_arena_load_split_verify' loads the image into TWO separate buffers
+    ;; (simulating the two mmaps), applies the table with that split, and
+    ;; verifies (a) the chunk-0 region is well-formed and (b) EVERY relocated
+    ;; pointer lands inside one of the two regions.  Returns
+    ;; (MAGIC-OK WELLFORMED BLOCKS BAD-POINTERS): (1 1 ~464k 0) means the
+    ;; split relocate rebuilds a sound heap across separate region bases --
+    ;; exactly what loading into the mmap'd arena needs.
+    (defun bf_arena_load_split_verify (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath))
+             (nil-slot (alloc-bytes 32 8)) (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+        (if (< fd 0)
+            (seq (wf_write_nil nil-slot)
+                 (wf_cons_int 0 nil-slot s3) (wf_cons_int 0 s3 s2)
+                 (wf_cons_int 0 s2 s1) (wf_cons_int -1 s1 out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (c0 (alloc-bytes (+ slen 8) 8))
+                  (ir (alloc-bytes (+ isz 8) 8))
+                  (ti 0) (hdrp 0) (wf 1) (nblk 0) (badp 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd c0 slen 0)
+              (nl_fa_read_all fd ir isz 0)
+              (nl_os_close_handle fd)
+              ;; split relocate
+              (setq ti 0)
+              (while (< ti tlen)
+                (let* ((f (ptr-read-u64 (+ tbl (* ti 8)) 0))
+                       (o (ptr-read-u64 (+ c0 f) 0)))
+                  (if (< o slen)
+                      (ptr-write-u64 (+ c0 f) 0 (+ c0 o))
+                    (ptr-write-u64 (+ c0 f) 0 (+ ir (- o slen)))))
+                (setq ti (+ ti 1)))
+              ;; (a) chunk-0 well-formed
+              (setq hdrp 0)
+              (while (and (= wf 1) (< hdrp slen))
+                (let* ((h (ptr-read-u64 (+ c0 hdrp) 0))
+                       (bt (- h (logand h 7))))
+                  (if (< bt 8) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                    (if (> (+ hdrp bt) slen) (nl_seq2 (setq wf 0) (setq hdrp slen))
+                      (nl_seq2 (setq nblk (+ nblk 1)) (setq hdrp (+ hdrp bt)))))))
+              (if (= hdrp slen) 0 (setq wf 0))
+              ;; (b) every relocated pointer lands in c0 or ir
+              (setq ti 0)
+              (while (< ti tlen)
+                (let* ((f (ptr-read-u64 (+ tbl (* ti 8)) 0))
+                       (v (ptr-read-u64 (+ c0 f) 0))
+                       (inc0 (if (< v c0) 0 (if (< v (+ c0 slen)) 1 0)))
+                       (inir (if (< v ir) 0 (if (< v (+ ir isz)) 1 0))))
+                  (if (= (+ inc0 inir) 0) (setq badp (+ badp 1)) 0))
+                (setq ti (+ ti 1)))
+              (wf_write_nil nil-slot)
+              (wf_cons_int badp nil-slot s3)
+              (wf_cons_int nblk s3 s2)
+              (wf_cons_int wf s2 s1)
+              (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
+              0))))))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
     ;; `nl_gc_bt_ok' / `nl_gc_chunk_end', which only `reader-gc.o' defines, so
@@ -6326,7 +7360,13 @@ value (matches the binary's M8 read+eval-loop driver)."
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
-    "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
+    "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
+    "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
+    "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"
+    "nelisp--arena-dump-table-verify"
+    "nelisp--arena-dump-image-to-file" "nelisp--arena-dump-image-stream" "nelisp--arena-load-image-from-file"
+    "nelisp--arena-boot-load-verify" "nelisp--arena-load-split-verify"
+    "nelisp--env-capture-roots" "nelisp--record-expand"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
@@ -8549,6 +9589,137 @@ Each builtin name installs through a fresh, full-length arena buffer so
 correctly."
   `(seq
     ,@(nelisp-standalone--reader-os-source-forms)
+    ;; flat-arena cold-loader gate (default OFF).  The marker path is also the
+    ;; image file: if it opens, cold-load is requested; if not, normal boot.
+    (defun nl_cold_marker_cpath ()
+      (let ((b (alloc-bytes 32 1)))
+        (seq (ptr-write-u64 b 0 7810770278772732975)
+             (ptr-write-u64 b 8 7236281173032334185)
+             (ptr-write-u64 b 16 7074703559336225069)
+             (ptr-write-u64 b 24 28265)
+             b)))
+    ;; Apply the relocation table to the freshly-loaded chunk-0 region (at DS):
+    ;; each field at DS+F holds an image offset O; relocate to DS+O (chunk-0
+    ;; target) or IB+(O-slen) (interned target).
+    ;; Clear GC mark bits in the loaded chunk-0 region: the dumped image keeps
+    ;; whatever mark state it had, but a fresh runtime expects mark=0 (post-sweep)
+    ;; -- stale marks make the first GC mis-handle live objects -> SIGSEGV.
+    (defun nl_cold_clear_marks (ds end)
+      (let ((hdr ds))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (let* ((h (ptr-read-u64 hdr 0)) (bt (- h (logand h 7))))
+             (if (< bt 8) (setq hdr end)
+               (nl_seq2 (ptr-write-u64 hdr 0 bt) (setq hdr (+ hdr bt))))))
+         0)))
+    (defun nl_cold_reloc (tbl tlen ds slen ib)
+      (let ((i 0))
+        (seq
+         (while (< i tlen)
+           (let* ((f (ptr-read-u64 (+ tbl (* i 8)) 0))
+                  (o (ptr-read-u64 (+ ds f) 0)))
+             (nl_seq2
+              (if (< o slen)
+                  (ptr-write-u64 (+ ds f) 0 (+ ds o))
+                (ptr-write-u64 (+ ds f) 0 (+ ib (- o slen))))
+              (setq i (+ i 1)))))
+         0)))
+    ;; Relocate the open-addressing intern table's name-buffer pointers.  The
+    ;; table is the first 16 MiB of the interned region (2^20 slots * 16 B):
+    ;; slot+0 = len+1 (0 = empty), slot+8 = absolute pointer into the name
+    ;; buffer at [base+16MiB, ...).  These pointer fields live INSIDE the
+    ;; interned region, so the chunk-0-only relocation table never touches
+    ;; them; they keep the DUMPING run's base.  Add the base delta
+    ;; (new_ib - old_ib) to every occupied slot so each name pointer lands in
+    ;; THIS process's name buffer.  Without this, the first symbol intern in
+    ;; boot (install-builtins) probes the table, derefs slot+8 = a stale
+    ;; previous-process address, and SIGSEGVs.  OLD_IB comes from header+56.
+    (defun nl_cold_reloc_intern (ib oldib)
+      (let ((idx 0))
+        (seq
+         (while (< idx 1048576)
+           (let ((slot (+ ib (* idx 16))))
+             (nl_seq2
+              (if (= (ptr-read-u64 slot 0) 0) 0
+                (ptr-write-u64 slot 8 (+ (ptr-read-u64 slot 8) (- ib oldib))))
+              (setq idx (+ idx 1)))))
+         0)))
+    ;; Zero N bytes from START (8-byte stride; N is a multiple of 8).  Used to
+    ;; scrub the dead relocation table out of chunk-0 before the bump cursor is
+    ;; re-armed over it.  CRITICAL: the table was read into [ds+slen, ds+slen+
+    ;; tlen*8) and the cursor is set to 1024+slen, so the FIRST post-load allocs
+    ;; (globals/frames/unbound/ctx/pool/...) land on top of those bytes.  A fresh
+    ;; mmap arena hands out zeroed pages and the boot constructors rely on it
+    ;; (they write only the fields they care about, assuming the rest is 0 -- the
+    ;; same invariant `nl_alloc_zero_fill' restores for reused blocks).  Without
+    ;; this scrub, e.g. EvalCtx+112 (the use-elisp flags word) inherits a stale
+    ;; table byte -> garbage flags -> eval misbehaves (args evaluate to nil).
+    (defun nl_cold_zero (start n)
+      (let ((i 0))
+        (seq
+         (while (< i n) (nl_seq2 (ptr-write-u64 (+ start i) 0 0) (setq i (+ i 8))))
+         0)))
+    ;; Load the cold image into the LIVE arena.  Run BEFORE the driver allocates
+    ;; globals/etc. (so they land after the image).  Reads {header|table|regions}
+    ;; via the OS helpers directly into final/scratch arena locations (no
+    ;; alloc-bytes -- that would bump chunk-0 into the region we overwrite):
+    ;;   header -> intern base (temp; the interned region overwrites it later),
+    ;;   table  -> DS+slen (chunk-0 scratch above the live region),
+    ;;   chunk-0 region -> DS, interned region -> intern base.
+    ;; Then split-relocate, set the bump cursor (base+0 = 1024+slen) and the
+    ;; interned bump (+840 = ib+isz).  Returns 1 if loaded, -1 if no marker.
+    (defun nl_cold_load_arena ()
+      (let ((fd (nl_os_open_read (nl_cold_marker_cpath))))
+        (if (< fd 0) -1
+          (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
+                 (ds (+ base 1024))
+                 (ib (ptr-read-u64 (+ base 832) 0)))
+            (seq
+             (nl_fa_read_all fd ib 64 0)
+             (let* ((slen (ptr-read-u64 ib 8))
+                    (isz (ptr-read-u64 ib 16))
+                    (tlen (ptr-read-u64 ib 24))
+                    ;; capture the dumping run's intern base BEFORE the interned
+                    ;; region read below overwrites the header sitting in `ib'.
+                    (oldib (ptr-read-u64 ib 56))
+                    (tbl (+ ds slen)))
+               (seq
+                (nl_fa_read_all fd tbl (* tlen 8) 0)
+                (nl_fa_read_all fd ds slen 0)
+                (nl_fa_read_all fd ib isz 0)
+                (nl_os_close_handle fd)
+                (nl_cold_reloc tbl tlen ds slen ib)
+                (nl_cold_reloc_intern ib oldib)
+                ;; scrub the now-dead relocation table so the bump cursor (set to
+                ;; 1024+slen below) re-arms over ZEROED memory -- matching the
+                ;; fresh-mmap invariant the boot constructors depend on.
+                (nl_cold_zero tbl (* tlen 8))
+                (nl_cold_clear_marks ds (+ ds slen))
+                (ptr-write-u64 base 0 (+ 1024 slen))
+                (ptr-write-u64 (+ base 840) 0 (+ ib isz))
+                ;; push the GC next-trigger far out so a collection does not fire
+                ;; on the freshly-loaded (already-live) image during early eval.
+                (ptr-write-u64 (+ base 104) 0 (+ (+ 1024 slen) 1073741824))
+                1)))))))
+    ;; cold path globals install: re-read the header for globals_off and point
+    ;; the GLOBALS slot at the loaded globals Record (tag 12, box = DS + goff).
+    ;; Frames/unbound keep the fresh ones from `nl_bootstrap_make_mirror'.
+    (defun nl_cold_overwrite_globals (globals)
+      (let ((fd (nl_os_open_read (nl_cold_marker_cpath))))
+        (if (< fd 0) 0
+          (let ((hdr (alloc-bytes 64 8)))
+            (seq
+             (nl_fa_read_all fd hdr 64 0)
+             (nl_os_close_handle fd)
+             (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
+                    (ds (+ base 1024))
+                    (goff (ptr-read-u64 hdr 32)))
+               (seq
+                (ptr-write-u8 globals 0 12)
+                (ptr-write-u64 globals 8 (+ ds goff))
+                (ptr-write-u64 globals 16 0)
+                (ptr-write-u64 globals 24 0)
+                1)))))))
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -9103,7 +10274,10 @@ correctly."
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             (_sptop (ptr-write-u64 268436456 0 (aot-current-sp))) ; Doc 152 §11.21: capture mmap stack-top (driver-entry rsp, AFTER arena mmap) for the conservative GC stack scan
-
+            ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
+            ;; exists, load it into the arena + bump the cursor past it so every
+            ;; following alloc lands after the image (no clobber).  -1 = no marker.
+            (_cl (nl_cold_load_arena))
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
             (ctx (alloc-bytes 120 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
@@ -9142,6 +10316,9 @@ correctly."
             (linebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1)))
        (seq
         (nl_bootstrap_make_mirror globals frames unbound)
+        ;; cold path: replace the fresh empty globals with the loaded image's
+        ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
+        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals))
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ,@(nelisp-standalone--reader-install-builtins-forms)
@@ -9229,6 +10406,22 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
+        ;; cold path: GC is now ENABLED over the cold-loaded image (no override
+        ;; here, so base+160 = 0 from `nl_arena_init').  This is sound because
+        ;; relocation is COMPLETE (nl_fa_slot mirrors nl_gc_mark_slot exactly, so
+        ;; every reachable pointer the mark walk follows was relocated) and the
+        ;; BOOT WATERMARK set just above (268435664 = base+bump, AFTER the load +
+        ;; all boot allocs) puts the whole loaded image + boot generation BELOW
+        ;; the watermark, where `nl_gc_sweep_one' keeps it live and never frees
+        ;; it.  So a form-boundary collection (the trigger at 268435560=16 MiB is
+        ;; below the loaded ~30 MiB bump, so it fires on the first form) marks the
+        ;; relocated graph (safe) and only reclaims per-form garbage ABOVE the
+        ;; watermark -- exactly as in a normal boot.  Validated at PARITY with
+        ;; gate-OFF: cold fib(20)=6765, fib(23)=28657, sumto(50000)=1250025000
+        ;; all run GC-active to correct results with no SIGSEGV; fib(25) OOMs
+        ;; (SIGKILL) in BOTH cold and normal -- a pre-existing single-form limit
+        ;; (no mid-form collection for one deeply-recursive top-level form), not
+        ;; a cold-load regression.
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
@@ -9241,8 +10434,13 @@ correctly."
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
               (seq (nl_cli_write_help fbuf) 2)
             (seq
-             ,@(nelisp-standalone--reader-repl-prelude-forms
-                'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             ;; cold path: the loaded image already carries the prelude; skip the
+             ;; redundant (and free/reuse-risky) re-eval.  Normal boot runs it.
+             (if (< _cl 0)
+                 (seq
+                  ,@(nelisp-standalone--reader-repl-prelude-forms
+                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+               0)
              (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (ptr-write-u64 268436216 0 1)
@@ -9260,8 +10458,19 @@ correctly."
                ;; same library available in the REPL is available under `eval'
                ;; (read-from-string, prin1-to-string, the list/string library,
                ;; etc.).  Without this `eval' saw only the bare builtins.
-               ,@(nelisp-standalone--reader-repl-prelude-forms
-                  'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+               ;; cold path: the loaded image already ran this prelude in the
+               ;; dumping process, so its definitions are live in the loaded
+               ;; globals.  RE-evaluating it over the cold image is both
+               ;; redundant and unsafe (re-defining a stdlib function frees/
+               ;; reuses the previous definition's blocks, which sit inside the
+               ;; loaded image -> corruption -> SIGSEGV).  Skipping it is exactly
+               ;; the cold-load win: the expensive library setup is already baked
+               ;; into the image.  Normal boot (_cl < 0) runs the prelude.
+               (if (< _cl 0)
+                   (seq
+                    ,@(nelisp-standalone--reader-repl-prelude-forms
+                       'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+                 0)
                (nl_cli_eval_source arg2 fbuf src)
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                (if (= (ptr-read-u64 268435464 0) 0)
@@ -9277,8 +10486,13 @@ correctly."
                ;; native builtins.  Without this, a loaded file that does
                ;; `(defun ...)' / `(when ...)' aborts (void-function), which blocks
                ;; runtime loading of any real elisp package.
-               ,@(nelisp-standalone--reader-repl-prelude-forms
-                  'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+               ;; cold path: the loaded image already carries the prelude; skip the
+               ;; redundant (and free/reuse-risky) re-eval.  Normal boot runs it.
+               (if (< _cl 0)
+                   (seq
+                    ,@(nelisp-standalone--reader-repl-prelude-forms
+                       'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+                 0)
                (let* ((n (nl_os_read_file_cpath
                           arg2 fbuf
                           ,nelisp-standalone--reader-read-cap)))
@@ -9302,8 +10516,13 @@ correctly."
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
               (seq (nl_cli_write_help fbuf) 2)
             (seq
-             ,@(nelisp-standalone--reader-repl-prelude-forms
-                'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             ;; cold path: the loaded image already carries the prelude; skip the
+             ;; redundant (and free/reuse-risky) re-eval.  Normal boot runs it.
+             (if (< _cl 0)
+                 (seq
+                  ,@(nelisp-standalone--reader-repl-prelude-forms
+                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+               0)
              (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (ptr-write-u64 268436216 0 1)
