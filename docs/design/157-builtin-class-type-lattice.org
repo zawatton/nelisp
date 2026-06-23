@@ -1,9 +1,11 @@
 #+TITLE: Doc 157 — built-in-class type lattice for the bare reader (cl-generic / oclosure substrate)
 #+DATE: 2026-06-23
-#+STATUS: LATTICE WORKING — cl--find-class / cl-type-of / cl--class-allparents +
-#+STATUS:   the built-in type hierarchy are live standalone; oclosure-define now
-#+STATUS:   registers its types.  cl-generic FULL dispatch still blocked on a
-#+STATUS:   separate reader-core issue (closure representation, §4).
+#+STATUS: LATTICE WORKING + OCLOSURE RE-IMPLEMENTED — cl--find-class / cl-type-of /
+#+STATUS:   cl--class-allparents + the built-in type hierarchy are live standalone;
+#+STATUS:   oclosure-define registers its types; OClosures work on list-closures
+#+STATUS:   (cl--generic-isnot-nnm-p verified, §4).  cl-generic FULL dispatch now
+#+STATUS:   bottoms out in the dispatch-COMPILATION tail (cl--generic-make-function
+#+STATUS:   with a registered method, §5) — a further subsystem.
 #+BRANCH: spike/flat-arena-boot-install
 
 * 0. Why
@@ -81,26 +83,46 @@ reusable substrate: cl-typep-style type checks, oclosure-define/oclosure-lambda
 type resolution, and the cl-generic typeof-generalizer's precedence computation
 all work.  This is the foundation; only §4 remains for full method dispatch.
 
-* 4. The remaining wall — reader closure representation (separate, reader-core)
+* 4. OClosure on list-closures — RE-IMPLEMENTED (=src/oclosure-shim.el=)
 
-cl-generic builds =cl--generic-nnm= as an OClosure and tests it with
-=(oclosure-type cnm)= (=cl--generic-isnot-nnm-p=).  oclosure.el reads an
-oclosure's type/slots from the closure's internals with =aref=
-(=(aref oclosure 1/3/4)=, =(cl-assert (closurep oclosure))=).  But the reader
-represents a closure as a =(closure ENV ARGS BODY)= LIST, and =(aref CLOSURE N)=
-on a list aborts uncatchably (verified: =(aref (lambda (x) x) 0)= → abort).
+oclosure.el implements OClosures on Emacs' *aref-able* closure objects: the type
+goes in the docstring slot (=aref 4=), slot values in the constants slot
+(=aref 2=), read back with =aref=.  The reader's closure is a =(closure ENV ARGS .
+BODY)= LIST and =(aref CLOSURE n)= on it aborts (verified =(aref (lambda (x) x) 0)=
+→ abort), so oclosure.el's constructor + accessors don't work standalone.
 
-So oclosure's =aref=-based internals access is fundamentally incompatible with the
-reader's list-closures.  This is a *reader-core closure-representation* item,
-orthogonal to the type lattice: either the reader grows aref-able closure objects
-(the Emacs internal representation), or oclosure is re-implemented for
-list-closures (store the oclosure type in the =(closure …)= env and make
-=oclosure-type= / =oclosure--get= read it from there instead of via =aref=).  Once
-that lands, the lattice already in place should carry cl-generic to full dispatch.
+*Re-implemented* the surface cl-generic needs, on list-closures.  The reader's
+lexical env stores captured values as opaque mutable cells (unreadable from
+outside), so the TYPE is embedded as a literal marker =(quote (--oclosure-type-- .
+TYPE))= = the first BODY form, read back positionally via =(nth 3 closure)=:
+- =oclosure-lambda= → =(let* (SLOTBINDS) (lambda ARGS '(--oclosure-type-- . TYPE)
+  (ignore SLOTS) BODY))=.
+- =oclosure-type= reads the =nth 3= marker; =oclosure--fix-type=/=--copy= are
+  identity/no-ops; =oclosure--get=/=--set= are best-effort (slot cells aren't
+  externally readable — cl-generic never reads slots off an OClosure: its
+  generalizers are cl-defstructs, and =cl--generic-nnm= has no slots).
+*Verified*: a =cl--generic-nnm= OClosure funcalls correctly and
+=(cl--generic-isnot-nnm-p NNM)= → nil while =(cl--generic-isnot-nnm-p (lambda …))=
+→ t — exactly cl-generic's use.  Also baked =always= + =current-load-list= (an
+unbound special-var read in =cl-generic-define-method= is an uncatchable abort).
 
-* 5. Files
+* 5. The remaining wall — cl-generic dispatch-COMPILATION tail
+
+With the lattice (§1–3) + the OClosure re-impl (§4), cl-generic gets through
+method *expansion*, =cl-generic-ensure-function=, =cl-generic-define-method='s
+generalizer bookkeeping, and =cl--generic-isnot-nnm-p=.  =cl-defmethod= still
+aborts inside =cl-generic-define-method= at =(cl--generic-make-function generic)=
+*once a method is registered* (it builds an empty generic fine).  That is the
+dispatch-COMPILATION subsystem — =cl--generic-make-function= →
+=cl--generic-build-combined-method= → the =cl--generic-dispatchers= /
+=cl--generic-compiler= machinery — a further multi-gap layer (its own special
+vars / =cl-flet= in method bodies / etc.), distinct from both the type lattice and
+OClosure.  That is the next dedicated area for full method dispatch.
+
+* 6. Files
 
 - =scripts/nelisp-stdlib-prelude.el= (vendor/nelisp): cl-defstruct
-  =:conc-name=/=:predicate= (§1a) + baked =ignore=/=closurep=/=byte-code-function-p=/
-  =interpreted-function-p=.
-- =src/cl-preloaded-shim.el= (nelisp-emacs): the lattice (§1b).
+  =:conc-name=/=:predicate= (§1a) + baked =ignore=/=always=/=closurep=/
+  =byte-code-function-p=/=interpreted-function-p= + =current-load-list= defvar.
+- =src/cl-preloaded-shim.el= (nelisp-emacs): the type lattice (§1b).
+- =src/oclosure-shim.el= (nelisp-emacs): the reader-native OClosure (§4).

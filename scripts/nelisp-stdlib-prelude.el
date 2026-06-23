@@ -2066,6 +2066,12 @@ Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
 ;; from the bare reader and needed by oclosure / cl-generic and many packages).
 (unless (fboundp 'ignore)
   (defun ignore (&rest _arguments) "Do nothing and return nil." nil))
+(unless (fboundp 'always)
+  (defun always (&rest _arguments) "Do nothing and return t." t))
+;; `current-load-list' is an Emacs global tracking the current file's load
+;; history; cl-generic and other libs `push' onto it.  Reading it unbound is an
+;; uncatchable abort in the reader — declare it special with a nil default.
+(defvar current-load-list nil)
 (unless (fboundp 'closurep)
   ;; The reader represents a closure as a `(closure ENV ARGS BODY)' list.
   (defun closurep (object) (eq (car-safe object) 'closure)))
