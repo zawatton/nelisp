@@ -1,0 +1,106 @@
+#+TITLE: Doc 157 — built-in-class type lattice for the bare reader (cl-generic / oclosure substrate)
+#+DATE: 2026-06-23
+#+STATUS: LATTICE WORKING — cl--find-class / cl-type-of / cl--class-allparents +
+#+STATUS:   the built-in type hierarchy are live standalone; oclosure-define now
+#+STATUS:   registers its types.  cl-generic FULL dispatch still blocked on a
+#+STATUS:   separate reader-core issue (closure representation, §4).
+#+BRANCH: spike/flat-arena-boot-install
+
+* 0. Why
+
+Doc 156 §4.3 traced the cl-generic =cl--generic-nnm= oclosure gap to "the
+built-in-class type lattice", a C-core-coupled subsystem the reader lacked.  Two
+consumers need it:
+- cl-generic's =cl--generic-typeof-generalizer= computes a value's dispatch
+  precedence via =(cl--class-allparents (cl--find-class (cl-type-of VALUE)))=;
+- =oclosure-define= needs =(cl--find-class 'closure)= as the base parent of every
+  oclosure type (and cl-generic builds =cl--generic-nnm= as an oclosure).
+
+The real =cl-preloaded.el= cannot load standalone: its =cl--class= /
+=built-in-class= / =cl-structure-class= structs + =cl--define-built-in-type= +
+=cl--struct-register-child= assume the Emacs C-core type infrastructure, so it
+loads but registers nothing (=cl--define-built-in-type= ends up unbound).
+
+* 1. Approach — "Path B": a minimal lattice on the reader's own cl-defstruct
+
+Rather than port cl-preloaded's circular bootstrap, re-implement the minimal
+lattice on the reader's record-based cl-defstruct.  Two parts:
+
+** 1a. cl-defstruct option support (prelude) — PREREQUISITE, DONE
+
+The lattice's class structs use options the prelude cl-defstruct lacked:
+- =:conc-name PREFIX= — cl-structure-class uses =(:conc-name cl--struct-class-)=.
+- =:predicate NAME= / =:predicate nil= — custom / suppressed predicate.
+Added both (general): the accessor prefix + predicate name are now resolved from
+the options (default "NAME-" / =NAME-p=), threaded through
+=nelisp-cl-macros--struct-record= so the =setf= accessor-info registry stays in
+sync, and predicate emission is gated on a non-nil predicate.  Verified:
+=(:conc-name foo--)= → =foo--a=; =(:predicate foo-good-p)= works + no default
+=foo-p=; =(:predicate nil)= suppresses; =setf= on conc-name accessors works;
+default structs + the 6-package subset unchanged.
+
+** 1b. The lattice itself — =src/cl-preloaded-shim.el= (LOADED, not baked)
+
+A self-contained, standalone-gated file:
+- =cl--class= (=:include= target for oclosure--class) + =built-in-class=
+  (=:include cl--class=, BOA =built-in-class--make=) via the reader cl-defstruct.
+- =cl--class-allparents= — depth-first first-seen merge (SET exact; order ≈
+  =merge-ordered-lists=).
+- =cl--define-built-in-type NAME PARENTS …= → =(put NAME 'cl--class
+  (built-in-class--make NAME nil (mapcar #'cl--find-class PARENTS)))=.
+- =cl-type-of= — predicate-based value→type (the reader =type-of= is unreliable).
+- the type hierarchy: t / atom / sequence / list / array / number(-or-marker) /
+  integer(-or-marker) / fixnum / bignum / float / marker / symbol / boolean /
+  null / record / vector / string / cons / function / closure /
+  byte-code-function / hash-table / buffer / …
+
+*Must be LOADED, not baked*: the registrations are top-level =(put …)= forms, and
+a top-level =put= in the AOT-baked prelude does NOT persist into the boot image
+(only definitions do — the same constraint that put cl--find-class's
+=cl-simple-setter= registration in cl-lib.el, Doc 156).  Load after cl-lib.el.
+General builtins it also needs (=ignore=, =closurep=, =byte-code-function-p=,
+=interpreted-function-p=) ARE baked in the prelude (defuns persist).
+
+* 2. Status — WORKING
+
+Verified on =target/nelisp= (load cl-lib + cl-preloaded-shim):
+- =(cl-type-of 5)= → =fixnum=, =(cl-type-of "x")= → =string=.
+- =(cl--find-class 'integer)= live; =(cl--class-allparents (cl--find-class 'fixnum))=
+  → =(fixnum integer number number-or-marker atom t integer-or-marker)= (set exact).
+- =(cl--find-class 'closure)= live; after =(load oclosure.el)=,
+  =(cl--find-class 'oclosure)= is registered — *oclosure-define now works*.
+- No regression: subset / cl-defstruct predicate+setter / setf places all pass.
+
+With the lattice, cl-generic dispatch advances past the type/oclosure wall
+through =ignore= → =closurep= to the issue in §4.
+
+* 3. What this unblocks now
+
+cl--find-class / cl-type-of / cl--class-allparents + the type hierarchy are a
+reusable substrate: cl-typep-style type checks, oclosure-define/oclosure-lambda
+type resolution, and the cl-generic typeof-generalizer's precedence computation
+all work.  This is the foundation; only §4 remains for full method dispatch.
+
+* 4. The remaining wall — reader closure representation (separate, reader-core)
+
+cl-generic builds =cl--generic-nnm= as an OClosure and tests it with
+=(oclosure-type cnm)= (=cl--generic-isnot-nnm-p=).  oclosure.el reads an
+oclosure's type/slots from the closure's internals with =aref=
+(=(aref oclosure 1/3/4)=, =(cl-assert (closurep oclosure))=).  But the reader
+represents a closure as a =(closure ENV ARGS BODY)= LIST, and =(aref CLOSURE N)=
+on a list aborts uncatchably (verified: =(aref (lambda (x) x) 0)= → abort).
+
+So oclosure's =aref=-based internals access is fundamentally incompatible with the
+reader's list-closures.  This is a *reader-core closure-representation* item,
+orthogonal to the type lattice: either the reader grows aref-able closure objects
+(the Emacs internal representation), or oclosure is re-implemented for
+list-closures (store the oclosure type in the =(closure …)= env and make
+=oclosure-type= / =oclosure--get= read it from there instead of via =aref=).  Once
+that lands, the lattice already in place should carry cl-generic to full dispatch.
+
+* 5. Files
+
+- =scripts/nelisp-stdlib-prelude.el= (vendor/nelisp): cl-defstruct
+  =:conc-name=/=:predicate= (§1a) + baked =ignore=/=closurep=/=byte-code-function-p=/
+  =interpreted-function-p=.
+- =src/cl-preloaded-shim.el= (nelisp-emacs): the lattice (§1b).

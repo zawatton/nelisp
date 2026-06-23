@@ -1733,17 +1733,20 @@ push, which keeps re-loading idempotent.")
 `setf' consults this at expansion time to rewrite
 `(setf (ACCESSOR REC) VAL)' into `(nelisp--record-set REC INDEX VAL)'.")
 
-(defun nelisp-cl-macros--struct-record (name parent slot-names)
+(defun nelisp-cl-macros--struct-record (name parent slot-names &optional conc-name)
   "Push (NAME . (:slot-names SLOT-NAMES :parent PARENT)) into the
 runtime struct registry.  Re-pushes shadow earlier entries — the
 front-of-list wins on lookup.  Also (re-)registers every accessor's
-slot index in `nelisp-cl-macros--accessor-info' so `setf' can find it."
+slot index in `nelisp-cl-macros--accessor-info' so `setf' can find it.
+CONC-NAME is the accessor-name prefix (default \"NAME-\"); pass \"\" for
+`:conc-name nil'.  Must match the prefix the accessors are generated with."
   (setq nelisp-cl-macros--struct-info
         (cons (cons name (list :slot-names slot-names :parent parent))
               nelisp-cl-macros--struct-info))
-  (let ((i 0))
+  (let ((i 0)
+        (prefix (or conc-name (concat (symbol-name name) "-"))))
     (dolist (s slot-names)
-      (let ((acc (intern (format "%s-%s" name s))))
+      (let ((acc (intern (concat prefix (symbol-name s)))))
         (setq nelisp-cl-macros--accessor-info
               (cons (cons acc i) nelisp-cl-macros--accessor-info)))
       (setq i (1+ i)))))
@@ -1824,7 +1827,18 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
               (setq names (cdr names)
                     defaults (cdr defaults)))
             (nreverse out)))
-         (predicate (intern (format "%s-p" name)))
+         ;; `:conc-name' overrides the accessor prefix (default "NAME-");
+         ;; `:conc-name nil' (or "") means no prefix — the slot symbol verbatim.
+         ;; cl-preloaded's class structs use e.g. `(:conc-name cl--struct-class-)'.
+         (conc-name-form (nelisp-cl-macros--struct-opt :conc-name options))
+         (conc-name (cond ((eq conc-name-form nelisp-cl-macros--struct-absent)
+                           (concat (symbol-name name) "-"))
+                          ((null conc-name-form) "")
+                          (t (format "%s" conc-name-form))))
+         ;; `:predicate NAME' renames the predicate; `:predicate nil' suppresses it.
+         (predicate (nelisp-cl-macros--struct-resolve-name
+                     (nelisp-cl-macros--struct-opt :predicate options)
+                     (intern (format "%s-p" name))))
          ;; cl-lib allows MULTIPLE `:constructor' options: a `(:constructor
          ;; nil)' suppresses the default make-NAME while additional
          ;; `(:constructor NAME ARGLIST)' cells still define BOA constructors.
@@ -1864,7 +1878,7 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
     ;; Expansion-time registry update so subsequent (cl-defstruct
     ;; (CHILD (:include NAME)) ...)  macros expanded in this same
     ;; pass can resolve our slot list.
-    (nelisp-cl-macros--struct-record name parent slot-names)
+    (nelisp-cl-macros--struct-record name parent slot-names conc-name)
     (let ((forms nil)
           (args-sym (make-symbol "cl-defstruct--args"))
           (rec-sym (make-symbol "cl-defstruct--rec"))
@@ -1893,18 +1907,21 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
       (push (list 'nelisp-cl-macros--struct-record
                   (list 'quote name)
                   (list 'quote parent)
-                  (list 'quote slot-names))
+                  (list 'quote slot-names)
+                  conc-name)
             forms)
       ;; Predicate form — uses --struct-isa for chain matching so
       ;; descendant records still satisfy the parent predicate when
       ;; this struct is later used as someone else's `:include'.
-      (push (list 'defun predicate (list 'obj)
-                  (list 'and
-                        (list 'recordp 'obj)
-                        (list 'nelisp-cl-macros--struct-isa
-                              (list 'nelisp--record-type 'obj)
-                              (list 'quote name))))
-            forms)
+      ;; `:predicate nil' suppresses it (predicate = nil here).
+      (when predicate
+        (push (list 'defun predicate (list 'obj)
+                    (list 'and
+                          (list 'recordp 'obj)
+                          (list 'nelisp-cl-macros--struct-isa
+                                (list 'nelisp--record-type 'obj)
+                                (list 'quote name))))
+              forms))
       ;; Constructor forms (keyword args by default; positional
       ;; `(:constructor NAME ARGLIST)' when an arglist is given).  cl-lib
       ;; permits several `:constructor' options, so emit one defun per cell.
@@ -1950,10 +1967,11 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                                 (cons (list 'quote name)
                                       (list (cons 'list copy-arg-forms))))))
               forms))
-      ;; Accessor forms — one per slot, indexed positionally.
+      ;; Accessor forms — one per slot, indexed positionally.  Names use
+      ;; CONC-NAME (default "NAME-"); `:conc-name' / `:conc-name nil' change it.
       (setq i 0)
       (dolist (s slot-names)
-        (let ((acc (intern (format "%s-%s" name s))))
+        (let ((acc (intern (concat conc-name (symbol-name s)))))
           (push (list 'defun acc (list rec-sym)
                       (list 'nelisp--record-ref rec-sym i))
                 forms))
@@ -2044,6 +2062,18 @@ cl-generic method-arg liveness heuristic."
     "Return PLACE if non-nil, else evaluate CODE, cache it in PLACE, return it.
 Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
     (list 'or place (list 'setf place (cons 'progn code)))))
+;; General builtins (defuns persist into the AOT boot image; these are missing
+;; from the bare reader and needed by oclosure / cl-generic and many packages).
+(unless (fboundp 'ignore)
+  (defun ignore (&rest _arguments) "Do nothing and return nil." nil))
+(unless (fboundp 'closurep)
+  ;; The reader represents a closure as a `(closure ENV ARGS BODY)' list.
+  (defun closurep (object) (eq (car-safe object) 'closure)))
+(unless (fboundp 'byte-code-function-p)
+  ;; The reader has no byte-code objects (everything is interpreted).
+  (defun byte-code-function-p (_object) nil))
+(unless (fboundp 'interpreted-function-p)
+  (defun interpreted-function-p (object) (eq (car-safe object) 'closure)))
 (unless (fboundp 'cl--find-class)
   (defun cl--find-class (type) (get type 'cl--class)))
 ;; `(setf (cl--find-class NAME) CLASS)' is how cl-preloaded / oclosure /
