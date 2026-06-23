@@ -149,9 +149,26 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
      =(cf 9)=81=, =(+ 40 2)=42=, =(* 6 7)=42=, mapcar/eq/mod/truncate identical to
      normal boot.  No full-prelude re-run needed — that path is unsafe (free/reuse of
      image blocks → SIGSEGV, per the spike owner's prelude-skip comments).
-3. *vendor-core subset*: dump cl-lib+cl-generic+pcase+macroexp+subr-x+seq (lighter
-   than the full bundle, avoids OOM), boot with the marker + drive seq-filter etc.
-   Fold in the native-override re-apply fix above so the subset is faithful.
+3. *Real package over cold-load* — *PROVEN 2026-06-23 with =src/seq.el=*.  The
+   standalone reader can =(load "…/src/seq.el")= directly (=load=/=require=/=provide=
+   are present; =cl-defmethod=/=cl-defgeneric= are NOT, but this seq.el loads without
+   them).  Flow: proc1 =(progn (load SEQ) (set 'pkg 'seq)
+   (nelisp--arena-dump-image-to-file MARKER))= → 60 MB image; proc2 cold-loads (marker
+   present) and evaluates =(list pkg (fboundp 'seq-filter)
+   (seq-filter (lambda (x) (= 0 (mod x 2))) '(1 2 3 4 5 6)) (seq-map #'1+ '(10 20 30))
+   (seq-reduce #'+ '(1 2 3 4) 0) (floor 7 2))= → =(seq t (2 4 6) (11 21 31) 10 3)=.
+   *The loaded package survives the cold-load and is callable WITHOUT re-loading
+   seq.el*; native-overrides survive too (=(floor 7 2)=3=).
+   - *Timing (this lightweight reader)*: cold-load = *84 ms* vs reload (boot +
+     =(load SEQ)=) = *219 ms* = *2.6× faster*, and even faster than a *bare* boot
+     (183 ms) because the 4a install-builtins gate + the cold prelude-skip mean the
+     image carries all builtins/prelude, so the cold path skips the entire boot
+     install.  The win scales: a heavy library that costs minutes to load amortizes
+     into a one-time dump + fast cold-loads.
+   - *Caveat*: =%= is void (use =mod=); predicates must use available builtins.
+   - *Extending to the full vendor-core subset* (cl-lib+cl-generic+pcase+macroexp+
+     subr-x) is straightforward breadth continuation: each package = =load= +
+     =dump= + drive; any =load=-time void-function is a normal Doc-16 breadth fix.
 4. *Full bundle*: one-time slow dump (still 30–66 min, OOM risk — run off-peak /
    high-RAM), then fast marker cold-load for breadth.
 
@@ -188,5 +205,11 @@ baked prelude — fix by re-applying the native-override subset after install.
 now skips install-builtins, so prelude overrides of native builtins survive
 identically to a normal boot.  Cold-load is fully faithful.
 
-Pending: increment 4 — (b) vendor-core subset dump + marker cold-load + breadth
-driving, (c) full bundle one-time dump.
+*Increment 4b (real package over cold-load)* PROVEN with =src/seq.el= (2026-06-23):
+the package loads into the reader, dumps to a 60 MB image, and on cold-load
+seq-filter/seq-map/seq-reduce are callable WITHOUT re-loading, alongside surviving
+native-overrides.  Cold-load 84 ms vs reload 219 ms (2.6×), faster than a bare boot.
+
+Pending: extend 4b to the full vendor-core subset (cl-lib/cl-generic/pcase/macroexp/
+subr-x — straightforward breadth continuation), then increment 4c full bundle
+one-time dump (heavy, off-peak / high-RAM).
