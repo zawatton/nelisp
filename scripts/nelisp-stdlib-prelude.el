@@ -2009,6 +2009,43 @@ PAREN nil → shy group `\\(?:...\\)'; t → `\\(...\\)'; a string → that open
   (defun help-add-fundoc-usage (docstring _arglist)
     "Minimal stub: return DOCSTRING unchanged (no usage line appended)."
     (if (stringp docstring) docstring "")))
+(unless (fboundp 'help-split-fundoc)
+  (defun help-split-fundoc (docstring _def &optional _section)
+    "Minimal stub: no embedded usage line, so return (nil . DOCSTRING)."
+    (if (stringp docstring) (cons nil docstring) nil)))
+
+;; cl-macs / macroexp helpers that cl-generic.el (and other gv/cl users) need at
+;; macro-expansion time.  All fboundp-gated.  Together with the `setf' get/gethash/
+;; alist-get/macro places above they let cl-generic.el build its dispatch closure
+;; (`cl-generic-define') and register methods; full type-dispatch additionally
+;; needs the cl-preloaded built-in-class hierarchy, which is C-core-coupled and a
+;; separate reader item (Doc 156).
+(unless (fboundp 'cl-function)
+  ;; Minimal: a plain `(function FUNC)'.  The real `cl-function' also rewrites
+  ;; Common-Lisp lambda-lists (&key/&aux/destructuring); cl-generic methods reach
+  ;; it with the specializer already stripped, so a simple arglist suffices here.
+  (defmacro cl-function (func) (list 'function func)))
+(unless (fboundp 'macroexp--fgrep)
+  (defun macroexp--fgrep (bindings sexp)
+    "Conservative: return the BINDINGS whose variable appears anywhere in SEXP.
+A safe over-approximation of \"which bindings might be used\" — enough for the
+cl-generic method-arg liveness heuristic."
+    (let ((res nil))
+      (dolist (b bindings (nreverse res))
+        (let ((sym (if (consp b) (car b) b))
+              (stack (list sexp)) (found nil))
+          (while (and stack (not found))
+            (let ((x (pop stack)))
+              (cond ((eq x sym) (setq found t))
+                    ((consp x) (push (car x) stack) (push (cdr x) stack)))))
+          (when found (push b res)))))))
+(unless (fboundp 'with-memoization)
+  (defmacro with-memoization (place &rest code)
+    "Return PLACE if non-nil, else evaluate CODE, cache it in PLACE, return it.
+Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
+    (list 'or place (list 'setf place (cons 'progn code)))))
+(unless (fboundp 'cl--find-class)
+  (defun cl--find-class (type) (get type 'cl--class)))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 49 Wave 7 follow-up (2026-05-22): minimal cl-lib subset wired into
@@ -2505,56 +2542,80 @@ ENV is an alist (NAME . (FORMALS BODY...))."
         (cons (nelisp-cl-macros--macrolet-walk head env)
               (nelisp-cl-macros--macrolet-walk-list (cdr form) env))))))))
 
+(defun nelisp--setf-place-macro-p (head)
+  "Non-nil if HEAD is a macro whose `(HEAD ...)' place form `setf' can expand.
+The reader represents a macro function as `(macro . FUNCTION)'."
+  (and (symbolp head) (fboundp head)
+       (eq (car-safe (symbol-function head)) 'macro)))
+
+(defun nelisp--setf-1 (place val)
+  "Return the assignment form realising `(setf PLACE VAL)'.  See `setf'.
+Doc 156: adds `(get S P)' → `put', `(gethash K H)' → `puthash',
+`(alist-get K A)' → assq update/prepend, and macro-place expansion (so a
+generalized place defined as a macro, e.g. cl-generic's `(cl--generic NAME)'
+= `(get NAME ...)', is recursively re-dispatched).  These let cl-generic and
+other gv-using libraries load/run on the bare reader."
+  (cond
+   ((symbolp place) (list 'setq place val))
+   ((and (consp place) (eq (car place) 'car))
+    (list 'setcar (cadr place) val))
+   ((and (consp place) (eq (car place) 'cdr))
+    (list 'setcdr (cadr place) val))
+   ((and (consp place) (eq (car place) 'aref))
+    (list 'aset (cadr place) (caddr place) val))
+   ((and (consp place) (eq (car place) 'nth))
+    (list 'setcar (list 'nthcdr (cadr place) (caddr place)) val))
+   ((and (consp place) (eq (car place) 'get))
+    (cons 'put (append (cdr place) (list val))))
+   ((and (consp place) (eq (car place) 'gethash))
+    (list 'puthash (cadr place) val (caddr place)))
+   ((and (consp place) (eq (car place) 'alist-get))
+    (let ((k (cadr place)) (a (caddr place)) (cell (make-symbol "setf-cell")))
+      (list 'let (list (list cell (list 'assq k a)))
+            (list 'if cell (list 'setcdr cell val)
+                  (nelisp--setf-1 a (list 'cons (list 'cons k val) a))))))
+   ((and (consp place) (symbolp (car place))
+         (get (car place) 'cl-simple-setter))
+    (cons 'funcall
+          (cons (list 'quote (get (car place) 'cl-simple-setter))
+                (append (cdr place) (list val)))))
+   ((and (consp place) (symbolp (car place))
+         (get (car place) 'cl-struct-setter))
+    (list 'funcall
+          (list 'quote (get (car place) 'cl-struct-setter))
+          (cadr place)
+          val))
+   ((and (consp place) (symbolp (car place))
+         (assq (car place) nelisp-cl-macros--accessor-info))
+    (list 'nelisp--record-set (cadr place)
+          (cdr (assq (car place) nelisp-cl-macros--accessor-info))
+          val))
+   ((and (consp place) (nelisp--setf-place-macro-p (car place)))
+    (nelisp--setf-1 (macroexpand-1 place) val))
+   (t
+    (signal 'error
+            (list "setf: unsupported place"
+                  (and (consp place) (car place)))))))
+
 (defmacro setf (&rest pairs)
   "Generalised assignment macro (NeLisp minimal).
 Each pair PLACE VAL assigns VAL to PLACE.  Supported PLACE shapes:
   - SYMBOL                 → `(setq SYMBOL VAL)'
-  - (ACCESSOR REC)         where ACCESSOR is a registered cl-defstruct
-                            slot accessor → `(nelisp--record-set REC I VAL)'
   - (car X)  / (cdr X)     → `(setcar X VAL)' / `(setcdr X VAL)'
   - (aref V I) / (nth I L) → `(aset V I VAL)' / `(setcar (nthcdr I L) VAL)'
-  - registered simple setter → calls setter with PLACE args + VAL
-  - registered struct setter → calls setter with REC + VAL
-Other shapes signal a host `error' at expand time."
+  - (get S P)              → `(put S P VAL)'
+  - (gethash K H)          → `(puthash K VAL H)'
+  - (alist-get K A)        → assq-update or prepend `(K . VAL)'
+  - (ACCESSOR REC)         where ACCESSOR is a registered cl-defstruct
+                            slot accessor → `(nelisp--record-set REC I VAL)'
+  - registered simple / struct setter → calls the setter
+  - a MACRO place          → macroexpand and re-dispatch
+Other shapes signal a host `error' at expand time (see `nelisp--setf-1')."
   (when (null pairs) (signal 'error (list "setf: empty body")))
   (let ((forms nil))
     (while pairs
-      (let ((place (car pairs))
-            (val (cadr pairs)))
-        (setq pairs (cdr (cdr pairs)))
-        (push
-         (cond
-          ((symbolp place)
-           (list 'setq place val))
-          ((and (consp place) (eq (car place) 'car))
-           (list 'setcar (cadr place) val))
-          ((and (consp place) (eq (car place) 'cdr))
-           (list 'setcdr (cadr place) val))
-          ((and (consp place) (eq (car place) 'aref))
-           (list 'aset (cadr place) (caddr place) val))
-          ((and (consp place) (eq (car place) 'nth))
-           (list 'setcar (list 'nthcdr (cadr place) (caddr place)) val))
-          ((and (consp place) (symbolp (car place))
-                (get (car place) 'cl-simple-setter))
-           (cons 'funcall
-                 (cons (list 'quote (get (car place) 'cl-simple-setter))
-                       (append (cdr place) (list val)))))
-          ((and (consp place) (symbolp (car place))
-                (get (car place) 'cl-struct-setter))
-           (list 'funcall
-                 (list 'quote (get (car place) 'cl-struct-setter))
-                 (cadr place)
-                 val))
-          ((and (consp place) (symbolp (car place))
-                (assq (car place) nelisp-cl-macros--accessor-info))
-           (let ((idx (cdr (assq (car place)
-                                 nelisp-cl-macros--accessor-info))))
-             (list 'nelisp--record-set (cadr place) idx val)))
-          (t
-           (signal 'error
-                   (list "setf: unsupported place"
-                         (and (consp place) (car place))))))
-         forms)))
+      (push (nelisp--setf-1 (car pairs) (cadr pairs)) forms)
+      (setq pairs (cdr (cdr pairs))))
     (if (cdr forms)
         (cons 'progn (nreverse forms))
       (car forms))))
