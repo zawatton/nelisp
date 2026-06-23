@@ -1,10 +1,11 @@
 #+TITLE: Doc 156 — flat-arena cold-loader: production boot-INSTALL design
 #+DATE: 2026-06-23
-#+STATUS: INSTALL PROVEN (2026-06-23) — production cold-load install verified end-to-end via
-#+STATUS:   the boot-wiring marker path (=/tmp/nelisp-cold-image.bin=).  value cells + user
-#+STATUS:   defuns survive into the LIVE runtime and are callable.  ONE caveat: prelude
-#+STATUS:   native-overrides (A1 floor etc.) do NOT survive (cold path skips the baked prelude);
-#+STATUS:   fix = re-apply the prelude native-override subset after install (increment 4 refinement).
+#+STATUS: INSTALL PROVEN + FAITHFUL (2026-06-23) — production cold-load install verified
+#+STATUS:   end-to-end via the boot-wiring marker path (=/tmp/nelisp-cold-image.bin=).  value
+#+STATUS:   cells + user defuns survive into the LIVE runtime and are callable.  Increment 4a
+#+STATUS:   FIXED the native-override caveat (commit f781ce31): the cold path now skips
+#+STATUS:   install-builtins, so prelude overrides of native builtins (A1 floor=3, A20 eq,
+#+STATUS:   mod/truncate) survive identically to a normal boot.  Cold-load is now fully faithful.
 #+BRANCH: spike/flat-arena-boot-install
 
 * 0. Purpose
@@ -130,17 +131,24 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
    =(t 81 5 (10 20 30))=.  *A user-defined defun survives the cold-load AND is
    callable in the LIVE runtime; value + cons-list state survives.*  Removing the
    marker restores normal boot (=(+ 40 2)= → 42).
-   - ⚠️ *Caveat (native-override non-survival)*: a prelude OVERRIDE of a NATIVE
-     builtin does NOT survive.  =(floor 7 2)= → 7 on cold-load (native 2-arg-ignoring
-     floor) vs 3 on normal boot (A1 prelude override).  =funcall= also returns 7, so
-     it is the function cell, not inline.  Root cause: =floor= is resolved through the
-     reader's native dispatch (=(:lit "floor")=), which on normal boot the prelude's
-     =(defun floor ...)= shadows; the cold path skips the prelude, so native dispatch
-     wins.  User symbols (=cf=) have no native dispatch entry, so their image function
-     cell is authoritative → they survive.  *Fix (increment 4)*: after
-     =nl_cold_overwrite_globals=, re-apply ONLY the prelude's native-override subset
-     (the A1–A20/C1 fixes), which is cheap and preserves the cold-load speed win;
-     do NOT re-run the full prelude/bundle.
+   - ✅ *Caveat FIXED in increment 4a (commit f781ce31)*: originally =(floor 7 2)= → 7
+     on cold-load (native) vs 3 on normal boot (A1 prelude override); =funcall= also
+     returned 7, and =(symbol-function 'floor)= had reverted to the native subr.  Root
+     cause was NOT native dispatch but the boot order: the driver ran
+     =nelisp-standalone--reader-install-builtins-forms= UNCONDITIONALLY at ~line 10505,
+     AFTER =nl_cold_overwrite_globals= (10502) had installed the cold image's mirror.
+     install-builtins re-registers every native builtin into the mirror, overwriting
+     the image's entries — including the prelude overrides of those ~60 builtins — back
+     to the bare native subr.  User symbols (=cf=) have no builtin entry, so they were
+     never touched (which is why defuns survived but floor reverted).  *Fix*: gate the
+     install-builtins splice on =(< _cl 0)= (normal boot only), mirroring the prelude
+     gates.  The cold image already carries all native builtins + their overrides; the
+     builtins' native code pointers are stable across processes (same static binary,
+     same load base) and the override closures are relocated inside the image, so all
+     remain callable.  *Verified*: cold =(floor 7 2)=3=, =(funcall #'floor 7 2)=3=,
+     =(cf 9)=81=, =(+ 40 2)=42=, =(* 6 7)=42=, mapcar/eq/mod/truncate identical to
+     normal boot.  No full-prelude re-run needed — that path is unsafe (free/reuse of
+     image blocks → SIGSEGV, per the spike owner's prelude-skip comments).
 3. *vendor-core subset*: dump cl-lib+cl-generic+pcase+macroexp+subr-x+seq (lighter
    than the full bundle, avoids OOM), boot with the marker + drive seq-filter etc.
    Fold in the native-override re-apply fix above so the subset is faithful.
@@ -176,5 +184,9 @@ value + cons state survives.  KNOWN GAP (carry into increment 4): prelude
 native-overrides (A1 floor etc.) revert to native because the cold path skips the
 baked prelude — fix by re-applying the native-override subset after install.
 
-Pending: increment 4 — (a) native-override re-apply fix, (b) vendor-core subset
-dump + marker cold-load + breadth driving, (c) full bundle one-time dump.
+*Increment 4a (native-override survival)* DONE (commit f781ce31) — the cold path
+now skips install-builtins, so prelude overrides of native builtins survive
+identically to a normal boot.  Cold-load is fully faithful.
+
+Pending: increment 4 — (b) vendor-core subset dump + marker cold-load + breadth
+driving, (c) full bundle one-time dump.
