@@ -467,6 +467,48 @@ Return the first element of SEQUENCE matching ITEM (= via
 For patterns this stub does not recognise, returns nil."
     (emacs-cl-macros--loop-build clauses)))
 
+(unless (fboundp 'emacs-cl-macros--loop-acc-kind)
+  (defun emacs-cl-macros--loop-acc-kind (kw)
+    "Normalise a cl-loop accumulator keyword KW to a KIND symbol, or nil."
+    (cond ((memq kw '(collect collecting)) 'collect)
+          ((memq kw '(append appending)) 'append)
+          ((memq kw '(nconc nconcing)) 'nconc)
+          ((memq kw '(sum summing)) 'sum)
+          ((memq kw '(count counting)) 'count)
+          ((memq kw '(maximize maximizing)) 'max)
+          ((memq kw '(minimize minimizing)) 'min))))
+
+(unless (fboundp 'emacs-cl-macros--loop-iterate)
+  (defun emacs-cl-macros--loop-iterate (iters body)
+    "Generate iteration over ITERS running BODY (a list of forms).
+ITERS is a list of (VAR LIST-FORM); multiple entries iterate in PARALLEL
+(lockstep, stopping at the shortest list).  VAR may be a destructuring
+pattern.  With no iterators the body does not run."
+    (cond
+     ((null iters) (list 'progn))
+     ((null (cdr iters))
+      (let* ((it (car iters)) (var (car it)) (lf (car (cdr it)))
+             (lv (if (symbolp var) var (make-symbol "--loop-item--"))))
+        (list 'dolist (list lv lf)
+              (emacs-cl-macros--loop-wrap-body var lv body))))
+     (t
+      (let ((listvars nil) (steps nil) (varbinds nil))
+        (dolist (it iters)
+          (let* ((var (car it)) (lf (car (cdr it)))
+                 (lvar (make-symbol "--loop-l--")))
+            (setq listvars (append listvars (list (list lvar lf))))
+            (setq steps (append steps (list (list 'setq lvar (list 'cdr lvar)))))
+            (if (symbolp var)
+                (setq varbinds (append varbinds (list (list var (list 'car lvar)))))
+              (setq varbinds
+                    (append varbinds
+                            (emacs-cl-macros--loop-destructure-bindings
+                             var (list 'car lvar)))))))
+        (list 'let listvars
+              (list 'while (cons 'and (mapcar #'car listvars))
+                    (cons 'let (cons varbinds body))
+                    (cons 'progn steps))))))))
+
 (unless (fboundp 'emacs-cl-macros--loop-build)
   (defun emacs-cl-macros--loop-build (clauses)
     "Build expansion for cl-loop CLAUSES.
@@ -490,273 +532,194 @@ recognised — Phase 4 B added it so nelisp-regex.el's parse-concat
 loops work.
 
 Unrecognised shapes return nil (= caller gets a no-op expansion)."
-    (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
-          (append-form nil) (nconc-form nil) (max-form nil) (min-form nil)
-          (sum-form nil) (count-form nil) (with-bindings nil)
+    (let ((iters nil)            ; list of (VAR LIST-FORM) — parallel iterators
+          (with-bindings nil)    ; list of (VAR VAL)
+          (actions nil)          ; ordered list of (do FORM COND) / (acc KIND INTO FORM COND)
+          (finally-forms nil) (finally-ret nil) (has-finally-ret nil)
           (when-return-cond nil) (when-return-form nil)
-          (when-do-cond nil) (when-do-forms nil)
-          (when-collect-cond nil) (when-collect-form nil)
-          (numeric-from nil) (numeric-to nil) (numeric-below nil)
           (bodyless-forms nil)
           (cur clauses) (recognised t))
-      ;; Phase 4 B (2026-05-06): detect the *bodyless* form first.
-      ;; If the very first clause is not a known keyword, treat the
-      ;; whole CLAUSES as a body that repeats forever.  The expansion
-      ;; wraps it in a `cl-block nil' so `cl-return' exits cleanly.
       (when (and clauses
                  (not (memq (car clauses)
-                            '(for with do collect sum count when
-                                  while until repeat finally return
+                            '(for with do doing collect collecting append appending
+                                  nconc nconcing sum summing count counting
+                                  maximize maximizing minimize minimizing
+                                  when unless if while until repeat finally return
                                   named))))
-        (setq bodyless-forms clauses
-              cur nil
-              recognised t))
+        (setq bodyless-forms clauses cur nil))
       (while (and cur recognised)
         (let ((kw (car cur)))
           (cond
            ((eq kw 'for)
-            (setq var (car (cdr cur)))
-            (cond
-             ((eq (car (cdr (cdr cur))) 'in)
-              (setq list-form (car (cdr (cdr (cdr cur)))))
-              (setq cur (cdr (cdr (cdr (cdr cur))))))
-             ;; `for VAR being [the|each] {hash-keys|hash-values} of H' —
-             ;; rewrite into iteration over the corresponding list so the
-             ;; existing `in LIST' machinery handles it.  (Was unrecognised,
-             ;; so the whole loop expanded to nil — an empty result.)
-             ((eq (car (cdr (cdr cur))) 'being)
-              (let* ((r (cdr (cdr (cdr cur))))                ; after `being'
-                     (r (if (memq (car r) '(the each)) (cdr r) r)) ; skip the/each
-                     (what (car r))                           ; hash-keys/...
-                     (r (cdr r))
-                     (of-kw (car r))                          ; `of'
-                     (h-form (car (cdr r))))
-                (if (and (eq of-kw 'of)
-                         (memq what '(hash-keys hash-key hash-values hash-value)))
-                    (progn
-                      (setq list-form
-                            (list (if (memq what '(hash-keys hash-key))
-                                      'hash-table-keys 'hash-table-values)
-                                  h-form))
-                      (setq cur (cdr (cdr r))))               ; after H
-                  (setq recognised nil))))
-             ;; `for VAR from N {to,below} M' numeric form.  Rewrite into a
-             ;; `(number-sequence N M)' list so the unified collect/sum/count/do
-             ;; machinery applies — the old dedicated numeric branch ran BEFORE
-             ;; the collect/sum branches and only honoured `do', so `for i from 1
-             ;; to 4 collect i' silently dropped the collect (returned the final
-             ;; index, not the list).
-             ((eq (car (cdr (cdr cur))) 'from)
-              (let ((from-val (car (cdr (cdr (cdr cur)))))
-                    (kw2 (car (cdr (cdr (cdr (cdr cur))))))
-                    (val2 (car (cdr (cdr (cdr (cdr (cdr cur))))))))
-                (cond
-                 ((eq kw2 'to)
-                  (setq list-form (list 'number-sequence from-val val2))
-                  (setq cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
-                 ((eq kw2 'below)
-                  (setq list-form (list 'number-sequence from-val (list '1- val2)))
-                  (setq cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
-                 (t (setq recognised nil)))))
-             (t
-              ;; Unsupported `for' form (= `on LIST' etc.).  Mark
-              ;; unrecognised so the outer while bails — without this
-              ;; guard `cur' never advances and we hang.  Callers
-              ;; needing the unsupported shapes must pre-rewrite into
-              ;; a plain `while' / `dolist' loop.
-              (setq recognised nil))))
-           ((eq kw 'do)
-            (setq do-forms (cons (car (cdr cur)) do-forms))
-            (setq cur (cdr (cdr cur))))
-           ((eq kw 'collect)
-            (setq collect-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((eq kw 'sum)
-            (setq sum-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((eq kw 'count)
-            (setq count-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((or (eq kw 'append) (eq kw 'appending))
-            (setq append-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((or (eq kw 'nconc) (eq kw 'nconcing))
-            (setq nconc-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((or (eq kw 'maximize) (eq kw 'maximizing))
-            (setq max-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((or (eq kw 'minimize) (eq kw 'minimizing))
-            (setq min-form (car (cdr cur)))
-            (setq cur (cdr (cdr cur))))
-           ((eq kw 'with)
-            (let ((wname (car (cdr cur))))
-              (when (eq (car (cdr (cdr cur))) '=)
-                (setq with-bindings
-                      (append with-bindings
-                              (list (list wname (car (cdr (cdr (cdr cur))))))))
-                (setq cur (cdr (cdr (cdr (cdr cur))))))))
-           ;; `when COND return FORM' — early exit with FORM.
-           ;; `when COND do FORM' — conditional side-effect.
-           ((eq kw 'when)
-            (let ((cond-form (car (cdr cur)))
-                  (next-kw (car (cdr (cdr cur))))
-                  (next-form (car (cdr (cdr (cdr cur))))))
+            (let ((v (car (cdr cur))) (k2 (car (cdr (cdr cur)))))
               (cond
-               ((eq next-kw 'return)
-                (setq when-return-cond cond-form
-                      when-return-form next-form
+               ((eq k2 'in)
+                (setq iters (append iters (list (list v (car (cdr (cdr (cdr cur)))))))
                       cur (cdr (cdr (cdr (cdr cur))))))
-               ((eq next-kw 'do)
-                (setq when-do-cond cond-form
-                      when-do-forms (cons next-form when-do-forms)
-                      cur (cdr (cdr (cdr (cdr cur)))))
-                (while (and cur (eq (car cur) 'and))
-                  (let ((and-kw (car (cdr cur)))
-                        (and-form (car (cdr (cdr cur)))))
-                    (cond
-                     ((eq and-kw 'do)
-                      (setq when-do-forms (cons and-form when-do-forms)
-                            cur (cdr (cdr (cdr cur)))))
-                     ((eq and-kw 'collect)
-                      (setq when-collect-cond cond-form
-                            when-collect-form and-form
-                            cur (cdr (cdr (cdr cur)))))
-                     (t (setq recognised nil
-                              cur nil))))))
-               ((eq next-kw 'collect)
-                (setq when-collect-cond cond-form
-                      when-collect-form next-form
-                      cur (cdr (cdr (cdr (cdr cur))))))
+               ;; `for VAR being [the|each] {hash-keys|hash-values} of H'.
+               ((eq k2 'being)
+                (let* ((r (cdr (cdr (cdr cur))))
+                       (r (if (memq (car r) '(the each)) (cdr r) r))
+                       (what (car r)) (of-kw (car (cdr r))) (h-form (car (cdr (cdr r)))))
+                  (if (and (eq of-kw 'of)
+                           (memq what '(hash-keys hash-key hash-values hash-value)))
+                      (setq iters
+                            (append iters
+                                    (list (list v (list (if (memq what '(hash-keys hash-key))
+                                                            'hash-table-keys 'hash-table-values)
+                                                        h-form))))
+                            cur (cdr (cdr (cdr r))))
+                    (setq recognised nil))))
+               ;; `for VAR from N {to,below} M' -> (number-sequence ...).
+               ((eq k2 'from)
+                (let ((fv (car (cdr (cdr (cdr cur)))))
+                      (k3 (car (cdr (cdr (cdr (cdr cur))))))
+                      (m (car (cdr (cdr (cdr (cdr (cdr cur))))))))
+                  (cond
+                   ((eq k3 'to)
+                    (setq iters (append iters (list (list v (list 'number-sequence fv m))))
+                          cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
+                   ((eq k3 'below)
+                    (setq iters (append iters (list (list v (list 'number-sequence fv (list '1- m)))))
+                          cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
+                   (t (setq recognised nil)))))
                (t (setq recognised nil)))))
+           ((eq kw 'with)
+            (if (eq (car (cdr (cdr cur))) '=)
+                (setq with-bindings
+                      (append with-bindings (list (list (car (cdr cur)) (car (cdr (cdr (cdr cur)))))))
+                      cur (cdr (cdr (cdr (cdr cur)))))
+              (setq recognised nil)))
+           ((memq kw '(do doing))
+            (setq actions (append actions (list (list 'do (car (cdr cur)) nil)))
+                  cur (cdr (cdr cur))))
+           ((emacs-cl-macros--loop-acc-kind kw)
+            (let* ((kind (emacs-cl-macros--loop-acc-kind kw))
+                   (form (car (cdr cur))) (r (cdr (cdr cur))) (into nil))
+              (when (eq (car r) 'into) (setq into (car (cdr r)) r (cdr (cdr r))))
+              (setq actions (append actions (list (list 'acc kind into form nil))) cur r)))
+           ;; `when/if/unless COND ACTION [and ACTION ...]' — each ACTION (do /
+           ;; accumulator / return) runs under COND (unless = negated).
+           ((memq kw '(when if unless))
+            (let* ((cr (car (cdr cur)))
+                   (cnd (if (eq kw 'unless) (list 'not cr) cr))
+                   (r (cdr (cdr cur))) (again t))
+              (while (and again r recognised)
+                (let ((akw (car r)))
+                  (cond
+                   ((eq akw 'return)
+                    (setq when-return-cond cnd when-return-form (car (cdr r)) r (cdr (cdr r))))
+                   ((memq akw '(do doing))
+                    (setq actions (append actions (list (list 'do (car (cdr r)) cnd)))
+                          r (cdr (cdr r))))
+                   ((emacs-cl-macros--loop-acc-kind akw)
+                    (let* ((kind (emacs-cl-macros--loop-acc-kind akw))
+                           (form (car (cdr r))) (rr (cdr (cdr r))) (into nil))
+                      (when (eq (car rr) 'into) (setq into (car (cdr rr)) rr (cdr (cdr rr))))
+                      (setq actions (append actions (list (list 'acc kind into form cnd))) r rr)))
+                   (t (setq again nil))))
+                (if (and again r (eq (car r) 'and)
+                         (let ((nx (car (cdr r))))
+                           (or (memq nx '(do doing return))
+                               (emacs-cl-macros--loop-acc-kind nx))))
+                    (setq r (cdr r))
+                  (setq again nil)))
+              ;; `else ACTION [and ACTION ...]' — the same actions under (not COND).
+              (when (and recognised r (eq (car r) 'else))
+                (setq r (cdr r))
+                (let ((ecnd (list 'not cnd)) (eagain t))
+                  (while (and eagain r recognised)
+                    (let ((akw (car r)))
+                      (cond
+                       ((eq akw 'return)
+                        (setq when-return-cond ecnd when-return-form (car (cdr r)) r (cdr (cdr r))))
+                       ((memq akw '(do doing))
+                        (setq actions (append actions (list (list 'do (car (cdr r)) ecnd)))
+                              r (cdr (cdr r))))
+                       ((emacs-cl-macros--loop-acc-kind akw)
+                        (let* ((kind (emacs-cl-macros--loop-acc-kind akw))
+                               (form (car (cdr r))) (rr (cdr (cdr r))) (into nil))
+                          (when (eq (car rr) 'into) (setq into (car (cdr rr)) rr (cdr (cdr rr))))
+                          (setq actions (append actions (list (list 'acc kind into form ecnd))) r rr)))
+                       (t (setq eagain nil))))
+                    (if (and eagain r (eq (car r) 'and)
+                             (let ((nx (car (cdr r))))
+                               (or (memq nx '(do doing return))
+                                   (emacs-cl-macros--loop-acc-kind nx))))
+                        (setq r (cdr r))
+                      (setq eagain nil)))))
+              (setq cur r)))
+           ((eq kw 'finally)
+            (let ((r (cdr cur)))
+              (cond
+               ((eq (car r) 'return)
+                (setq has-finally-ret t finally-ret (car (cdr r)) r (cdr (cdr r))))
+               (t
+                (when (memq (car r) '(do doing)) (setq r (cdr r)))
+                (setq finally-forms (append finally-forms (list (car r))) r (cdr r))))
+              (setq cur r)))
            (t (setq recognised nil)))))
+      ;; ---- generation ----
       (cond
        ((not recognised) nil)
-       ;; Phase 4 B: bodyless infinite loop wrapped in `cl-block nil'
-       ;; so a `cl-return' inside BODY exits cleanly.  Used by
-       ;; nelisp-regex.el's parse-concat / parse-alt scan loops.
        (bodyless-forms
-        (list 'cl-block nil
-              (cons 'while
-                    (cons t bodyless-forms))))
-       ;; Phase 4 B: numeric `for VAR from N to M' / `from N below M'.
-       ((and numeric-from (or numeric-to numeric-below))
-        (let ((cmp (if numeric-to '<= '<))
-              (limit (or numeric-to numeric-below))
-              (rev nil))
-          (while do-forms (setq rev (cons (car do-forms) rev))
-                 (setq do-forms (cdr do-forms)))
-          (list 'let (cons (list var numeric-from) with-bindings)
-                (list 'while (list cmp var limit)
-                      (cons 'progn rev)
-                      (list 'setq var (list '1+ var))))))
-       ;; `when COND return FORM' — wrap iteration in a catch and
-       ;; throw on first hit.  Result of cl-loop = FORM (or nil).
-       (when-return-cond
-        (let ((tag-sym (make-symbol "--loop-tag--"))
-              (result-sym (make-symbol "--loop-r--"))
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
-          (list 'let (cons (list result-sym nil) with-bindings)
-                (list 'catch (list 'quote tag-sym)
-                      (list 'dolist (list loop-var list-form)
-                            (emacs-cl-macros--loop-wrap-body
-                             var loop-var
-                             (list (list 'when when-return-cond
-                                         (list 'setq result-sym when-return-form)
-                                         (list 'throw (list 'quote tag-sym) nil))))))
-                result-sym)))
-       ((or collect-form when-collect-cond)
-        (let ((acc-sym (make-symbol "--loop-acc--"))
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
+        (list 'cl-block nil (cons 'while (cons t bodyless-forms))))
+       (t
+        (let ((default-acc (make-symbol "--loop-acc--"))
+              (acc-reg nil)          ; alist accvar -> (init . reverse-p)
+              (uses-default nil)
               (body nil)
-              (rev nil))
-          (when collect-form
-            (setq body
-                  (append body
-                          (list (list 'setq acc-sym
-                                      (list 'cons collect-form acc-sym))))))
-          (when when-do-cond
-            (while when-do-forms
-              (setq rev (cons (car when-do-forms) rev))
-              (setq when-do-forms (cdr when-do-forms)))
-            (setq body
-                  (append body
-                          (list (cons 'when
-                                      (cons when-do-cond rev))))))
-          (when when-collect-cond
-            (setq body
-                  (append body
-                          (list (list 'when when-collect-cond
-                                      (list 'setq acc-sym
-                                            (list 'cons when-collect-form acc-sym)))))))
-          (list 'let (cons (list acc-sym nil) with-bindings)
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body var loop-var body))
-                (list 'nreverse acc-sym))))
-       (sum-form
-        (let ((acc-sym (make-symbol "--loop-sum--"))
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
-          (list 'let (cons (list acc-sym 0) with-bindings)
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body
-                       var loop-var
-                       (list (list 'setq acc-sym (list '+ acc-sym sum-form)))))
-                acc-sym)))
-       (count-form
-        (let ((acc-sym (make-symbol "--loop-count--"))
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
-          (list 'let (cons (list acc-sym 0) with-bindings)
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body
-                       var loop-var
-                       (list (list 'when count-form
-                                   (list 'setq acc-sym (list '+ acc-sym 1))))))
-                acc-sym)))
-       ;; `append FORM' / `nconc FORM' — splice each FORM (a list) onto the tail.
-       ((or append-form nconc-form)
-        (let ((acc-sym (make-symbol "--loop-acc--"))
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
-              (joiner (if append-form 'append 'nconc))
-              (item (or append-form nconc-form)))
-          (list 'let (cons (list acc-sym nil) with-bindings)
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body
-                       var loop-var
-                       (list (list 'setq acc-sym (list joiner acc-sym item)))))
-                acc-sym)))
-       ;; `maximize FORM' / `minimize FORM' — running max/min (nil until first).
-       ((or max-form min-form)
-        (let ((acc-sym (make-symbol "--loop-mm--"))
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
-              (op (if max-form 'max 'min))
-              (item (or max-form min-form)))
-          (list 'let (cons (list acc-sym nil) with-bindings)
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body
-                       var loop-var
-                       (list (list 'setq acc-sym
-                                   (list 'if acc-sym (list op acc-sym item) item)))))
-                acc-sym)))
-       (when-do-cond
-        ;; `when COND do FORMS …'
-        (let ((rev nil)
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
-          (while when-do-forms
-            (setq rev (cons (car when-do-forms) rev))
-            (setq when-do-forms (cdr when-do-forms)))
-          (list 'let with-bindings
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body
-                       var loop-var
-                       (list (cons 'when (cons when-do-cond rev))))))))
-       (do-forms
-        (let ((rev nil)
-              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
-          (while do-forms (setq rev (cons (car do-forms) rev)) (setq do-forms (cdr do-forms)))
-          (list 'let with-bindings
-                (list 'dolist (list loop-var list-form)
-                      (emacs-cl-macros--loop-wrap-body var loop-var rev)))))
-       (t (list 'let with-bindings nil))))))
+              (result-sym (and when-return-cond (make-symbol "--loop-r--")))
+              (tag-sym (and when-return-cond (make-symbol "--loop-tag--"))))
+          (dolist (act actions)
+            (if (eq (car act) 'do)
+                (let ((form (nth 1 act)) (cnd (nth 2 act)))
+                  (setq body (append body (list (if cnd (list 'when cnd form) form)))))
+              ;; accumulator
+              (let* ((kind (nth 1 act)) (into (nth 2 act)) (form (nth 3 act)) (cnd (nth 4 act))
+                     (av (or into default-acc))
+                     (init (if (memq kind '(sum count)) 0 nil))
+                     (revp (eq kind 'collect))
+                     (acc-form
+                      (cond
+                       ((eq kind 'collect) (list 'setq av (list 'cons form av)))
+                       ((eq kind 'append)  (list 'setq av (list 'append av form)))
+                       ((eq kind 'nconc)   (list 'setq av (list 'nconc av form)))
+                       ((eq kind 'sum)     (list 'setq av (list '+ av form)))
+                       ((eq kind 'count)   (list 'when form (list 'setq av (list '+ av 1))))
+                       ((eq kind 'max)     (list 'setq av (list 'if av (list 'max av form) form)))
+                       (t                  (list 'setq av (list 'if av (list 'min av form) form))))))
+                (unless into (setq uses-default t))
+                (unless (assq av acc-reg)
+                  (setq acc-reg (append acc-reg (list (cons av (cons init revp))))))
+                (setq body (append body (list (if cnd (list 'when cnd acc-form) acc-form)))))))
+          (when when-return-cond
+            (setq body (append body
+                               (list (list 'when when-return-cond
+                                           (list 'setq result-sym when-return-form)
+                                           (list 'throw (list 'quote tag-sym) nil))))))
+          (let ((skel (emacs-cl-macros--loop-iterate iters body))
+                (post nil))
+            (dolist (e acc-reg)
+              (when (cdr (cdr e))        ; reverse-p: collect accs built backwards
+                (setq post (append post (list (list 'setq (car e) (list 'nreverse (car e))))))))
+            (let ((result
+                   (cond
+                    (when-return-cond result-sym)
+                    (has-finally-ret finally-ret)
+                    (finally-forms
+                     (cons 'progn (append finally-forms (list (if uses-default default-acc nil)))))
+                    (uses-default default-acc)
+                    (t nil)))
+                  (let-binds
+                   (append
+                    (mapcar (lambda (e) (list (car e) (car (cdr e)))) acc-reg)
+                    (when when-return-cond (list (list result-sym nil)))
+                    with-bindings))
+                  (core (if when-return-cond
+                            (list 'catch (list 'quote tag-sym) skel)
+                          skel)))
+              (cons 'let (cons let-binds (append (list core) post (list result))))))))))))
 
 ;;;; --- cl-defgeneric / cl-defmethod / cl-defstruct -------------------
 
