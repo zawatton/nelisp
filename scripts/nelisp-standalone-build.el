@@ -10502,7 +10502,18 @@ correctly."
         (if (< _cl 0) 0 (nl_cold_overwrite_globals globals))
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
-        ,@(nelisp-standalone--reader-install-builtins-forms)
+        ;; cold path: the loaded image's mirror already carries every native
+        ;; builtin (registered by the dumping process) AND the prelude OVERRIDES
+        ;; of them (A1 floor, A20 eq string-identity, ...).  Re-running
+        ;; install-builtins over the image would overwrite each of those mirror
+        ;; entries back to the bare native builtin, silently reverting every
+        ;; prelude native-override -- verified: cold (floor 7 2) => 7 (native)
+        ;; vs 3 (A1 override) before this gate, and (symbol-function 'floor)
+        ;; reverted to the native subr.  User defuns (no builtin entry) already
+        ;; survive.  Skip on cold path; normal boot (_cl < 0) installs them.
+        (if (< _cl 0)
+            (seq ,@(nelisp-standalone--reader-install-builtins-forms))
+          0)
         ,@(let ((i 0)
                 (forms nil))
             (dolist (word (nelisp-standalone--name-words "nelisp-standalone-argv"))
