@@ -175,13 +175,33 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
      =(pcase 5 ((pred integerp) 'int) …)=int=, =(let-alist '((x.10)(y.20)) (+ .x .y))=30=,
      =(floor 7 2)=3=.  *Timing*: cold-load *168 ms* vs reload (boot + 6× =load=)
      *333 ms* = ~2× (grows with library weight).
-     - =rx.el= (1740 lines) *loads* (fboundp =rx=) but its macro does NOT execute —
-       =(rx "abc")= yields no value/error on a NORMAL boot too, so this is a
-       pre-existing reader/rx macro-machinery gap (a Doc-16 breadth item), NOT a
-       cold-load regression; rx can sit in the image inert until that gap is fixed.
-     - =cl-generic= (=cl-defmethod=) and a standalone =macroexp= have no src file and
-       are absent from the prelude (=macroexpand-all= IS present); they remain breadth
-       gaps to fill before they can join the subset.
+     - =rx.el= (1740 lines): *partially un-gapped 2026-06-23*.  Root cause of the
+       earlier "loads but macro is inert" was =rx--to-expr= reading the special var
+       =macroexpand-all-environment= while it was UNBOUND — an uncatchable abort in
+       the reader (not even =condition-case= caught it).  Fix = =defvar= it nil +
+       bake 7 general stdlib fns (characterp, max-char, mapcan, remq, memql,
+       decode-char, regexp-opt) into the prelude (commit 6cd9ef6c).  rx now
+       translates *literals / or / repetition (+,*,=N) / groups / anchors / named
+       char-classes*: =(rx bol (group (+ word)) eol)= → ="^\\([[:word:]]+\\)$"=.
+       *Still deep*: =(any RANGE)= char-set translation mis-negates — =(rx (any
+       "a-z"))= → a garbled =[^ -…]= complement (engine emits the complement +
+       high-byte mojibake = the Doc-22 UTF-8 raw-byte interaction); =(any "abc")=
+       also aborts.  A reader char-interval / char-alt engine item, separate from
+       the cold-loader.
+     - =cl-generic.el= IS vendored (=vendor/emacs-lisp/emacs-lisp/cl-generic.el=) and
+       *now loads fully* (2026-06-23): the chain was help-add-fundoc-usage (stubbed,
+       6cd9ef6c) → pcase-let* (provided by emacs-pcase.el) → cl--generic-make.  That
+       last one was the real find: cl-defstruct ignored MULTIPLE =:constructor=
+       options, so =(:constructor nil)= masked =(:constructor cl--generic-make
+       (name))= — fixed to process every cell (6cd9ef6c), which also exposed that
+       native =recordp= rejected the vector-based =nelisp--make-record= (every
+       struct predicate had regressed to nil since Doc-22 A14); fixed by building
+       native records + a tag-12 =bf_aset= arm (56f0ae2b).  *Still deep*: cl-generic
+       DISPATCH aborts — =cl-defmethod= expansion needs =cl-function= (a cl-macs
+       macro the reader lacks) and =cl-defgeneric= itself aborts uncatchably; the
+       generalizer/dispatch-compilation protocol is a multi-layer cl-macs effort.
+     - =macroexp= (standalone) has no src file (=macroexpand-all= IS present); a
+       remaining breadth gap.
      - Net: the cold-loader faithfully carries every package the reader can already
        load; growing the subset is now purely Doc-16 breadth work (fix the load/run
        gap, then it joins the dump for free).
@@ -201,6 +221,16 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
 - The one-time dump still needs ONE full load; the flat-arena win is on RELOAD,
   not the first dump-creation.  The host OOM on the first load is orthogonal and
   unsolved (vendor-core subset mitigates by being lighter).
+- *Cold-load + setf-on-struct-accessor edge* (2026-06-23): over a cold-loaded
+  image, =(setf (STRUCT-SLOT r) v)= aborts in the setf-place macro expander
+  (=(setf x …)=, =(setf (car l) …)=, =push= all work; the struct-accessor place is
+  the only failure, fresh OR pre-dump record).  =(aset r i v)= and
+  =nelisp--record-set= work directly over cold-load, so it is the gv/plist
+  setf-expander survival, not record mutation.  READING cold-loaded structs
+  (predicate + accessor) works, and normal-boot struct setf works fully — so
+  breadth driving (read + call) is unaffected.  Likely a pre-existing cold-load
+  limitation for plist-based macro expanders, surfaced only now that struct
+  predicates work (Doc-22 A14 had silently broken them).
 
 * 6. Status
 
