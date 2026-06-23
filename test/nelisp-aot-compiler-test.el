@@ -3382,6 +3382,37 @@ SysV would emit `push rdi' = 57 instead."
                                  #x48 #x81 #xec #x20 #x00 #x00 #x00
                                  #xe8)))))
 
+;; --- `f64-bits' soft-float keystone (nelisp-cfront) ---------------------
+;; `(f64-bits F64-EXPR)' reinterprets an f64-class result's raw IEEE-754
+;; bits as a gp-class i64 in rax (MOVQ rax, xmm0) — the inverse of
+;; `bits-to-f64'.  This lets a C `double' be carried as its i64 bit
+;; pattern so float ops lower to flat `(f64-bits (f64-OP (bits-to-f64 a)
+;; (bits-to-f64 b)))' helpers entirely within the gp register class
+;; (= no xmm spill / Doc 112 needed).
+
+(ert-deftest nelisp-aot-compiler/f64-bits-soft-float-add-helper ()
+  "A soft-float add helper emits one ADDSD then MOVQ rax, xmm0."
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
+               '(defun dadd (a b)
+                  (f64-bits (f64-add (bits-to-f64 a) (bits-to-f64 b)))))))
+    ;; addsd xmm0, xmm1
+    (should (nelisp-aot-compiler-test--bytes-contain-p
+             text (unibyte-string #xf2 #x0f #x58 #xc1)))
+    ;; movq rax, xmm0  (= 66 REX.W 0F 7E C0) — the f64-bits transfer
+    (should (nelisp-aot-compiler-test--bytes-contain-p
+             text (unibyte-string #x66 #x48 #x0f #x7e #xc0)))))
+
+(ert-deftest nelisp-aot-compiler/f64-bits-int-to-double-helper ()
+  "An int->double-bits helper emits CVTSI2SD then MOVQ rax, xmm0."
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
+               '(defun i2d (x) (f64-bits (i64-to-f64 x))))))
+    ;; cvtsi2sd xmm0, rax  (= F2 REX.W 0F 2A C0)
+    (should (nelisp-aot-compiler-test--bytes-contain-p
+             text (unibyte-string #xf2 #x48 #x0f #x2a #xc0)))
+    ;; movq rax, xmm0
+    (should (nelisp-aot-compiler-test--bytes-contain-p
+             text (unibyte-string #x66 #x48 #x0f #x7e #xc0)))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here

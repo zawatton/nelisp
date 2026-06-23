@@ -703,6 +703,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (f64-cmp . 26)
     (f64-to-i64-trunc . 27)
     (i64-to-f64 . 28)
+    (f64-bits . 100)
     (if . 29)
     (imm . 30)
     (let . 31)
@@ -8261,6 +8262,25 @@ functions `((NAME . ARITY) ...)'."
     (nelisp-aot-compiler--make-ir 'f64-to-i64-trunc
           :f64-expr (nelisp-aot-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
+   ;; (f64-bits F64-EXPR) — reinterpret an f64-class value's raw 64-bit
+   ;; IEEE-754 pattern as a gp-class i64 in rax via `MOVQ rax, xmm0'
+   ;; (no value conversion, unlike `f64-to-i64-trunc' which truncates).
+   ;; This is the keystone of the "soft-float in the i64 world" lowering
+   ;; (nelisp-cfront): a C `double' is carried as its i64 bit pattern, so
+   ;; each float op is a flat `(f64-bits (f64-OP (bits-to-f64 a)
+   ;; (bits-to-f64 b)))' helper returning i64 — giving nested float
+   ;; expressions, float locals, and mixed gp/f64 params entirely within
+   ;; the gp register class (no xmm spill / Doc 112 needed).  F64-EXPR may
+   ;; be an f64-binop (result already in xmm0) or any f64-leaf
+   ;; (`ref :class f64' / `bits-to-f64' / `i64-to-f64' / `f64-call').
+   ;; Result class: gp.
+   ((and (consp sexp) (eq (car sexp) 'f64-bits))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :f64-bits-arity sexp)))
+    (nelisp-aot-compiler--make-ir 'f64-bits
+          :f64-expr (nelisp-aot-compiler--parse-value
+                     (nth 1 sexp) env fenv defuns)))
    ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
    ;; `Sexp::Float(f)' as raw bits, returned as i64 in rax (= xmm0
    ;; bit-pattern reinterpreted via MOVQ).  No tag check — caller
@@ -11027,6 +11047,8 @@ the node's class to consume the result correctly."
          (nelisp-aot-compiler--emit-sexp-float-unwrap node buf))
         ((= tag 27)             ; f64-to-i64-trunc — FCVTZS
          (nelisp-aot-compiler--emit-f64-to-i64-trunc node buf))
+        ((= tag 100)            ; f64-bits — raw d0 -> x0 (FMOV)
+         (nelisp-aot-compiler--emit-f64-bits node buf))
         ((= tag 62)             ; sexp-write-float — BL nl_sexp_write_float
          (nelisp-aot-compiler--emit-sexp-write-float node buf))
         (t
@@ -11113,6 +11135,8 @@ the node's class to consume the result correctly."
        (nelisp-aot-compiler--emit-sexp-float-unwrap node buf))
       ((= tag 27)               ; f64-to-i64-trunc
        (nelisp-aot-compiler--emit-f64-to-i64-trunc node buf))
+      ((= tag 100)              ; f64-bits — raw xmm0 -> rax (MOVQ)
+       (nelisp-aot-compiler--emit-f64-bits node buf))
       ((= tag 56)               ; sexp-int-make
        (nelisp-aot-compiler--emit-sexp-int-make node buf))
       ((= tag 17)               ; cons-null-p
@@ -12141,6 +12165,28 @@ F64-EXPR is emitted via `--emit-f64-leaf-into' which now accepts
           (nelisp-asm-arm64-fcvtzs-x-from-d buf 'x0 'd0))
       (nelisp-aot-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
       (nelisp-asm-x86_64-cvttsd2si-r64-xmm buf 'rax 'xmm0))))
+
+(defun nelisp-aot-compiler--emit-f64-bits (node buf)
+  "Emit a raw f64 → i64-bits reinterpretation (`f64-bits' grammar op).
+Computes NODE's :f64-expr into xmm0 / d0, then transfers the raw
+64-bit pattern to rax / x0 via `MOVQ' / `FMOV' (no value conversion).
+
+Unlike `--emit-f64-to-i64-trunc' (which only accepts an f64-leaf and
+truncates), this also accepts an `f64-binop' whose result is already
+in xmm0 — so the soft-float helper shape
+`(f64-bits (f64-add (bits-to-f64 a) (bits-to-f64 b)))' lowers to a
+single flat binop plus one MOVQ, yielding the result bits in rax
+(= gp class, the function's return register)."
+  (let* ((f64-expr (nelisp-aot-compiler--ir-get node :f64-expr))
+         (kind (nelisp-aot-compiler--ir-kind f64-expr))
+         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64))
+         (xmm0 (if aarch64-p 'd0 'xmm0)))
+    (if (eq kind 'f64-binop)
+        (nelisp-aot-compiler--emit-f64-binop f64-expr buf)   ; result in xmm0
+      (nelisp-aot-compiler--emit-f64-leaf-into f64-expr buf xmm0))
+    (if aarch64-p
+        (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
+      (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))))
 
 (defun nelisp-aot-compiler--emit-sexp-float-unwrap (node buf)
   "Emit f64-payload read for a `Sexp::Float(f)' value, returning the
