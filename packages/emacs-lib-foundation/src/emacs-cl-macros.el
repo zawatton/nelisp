@@ -491,6 +491,7 @@ loops work.
 
 Unrecognised shapes return nil (= caller gets a no-op expansion)."
     (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
+          (append-form nil) (nconc-form nil) (max-form nil) (min-form nil)
           (sum-form nil) (count-form nil) (with-bindings nil)
           (when-return-cond nil) (when-return-form nil)
           (when-do-cond nil) (when-do-forms nil)
@@ -575,6 +576,18 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
             (setq cur (cdr (cdr cur))))
            ((eq kw 'count)
             (setq count-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((or (eq kw 'append) (eq kw 'appending))
+            (setq append-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((or (eq kw 'nconc) (eq kw 'nconcing))
+            (setq nconc-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((or (eq kw 'maximize) (eq kw 'maximizing))
+            (setq max-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((or (eq kw 'minimize) (eq kw 'minimizing))
+            (setq min-form (car (cdr cur)))
             (setq cur (cdr (cdr cur))))
            ((eq kw 'with)
             (let ((wname (car (cdr cur))))
@@ -698,6 +711,31 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                        var loop-var
                        (list (list 'when count-form
                                    (list 'setq acc-sym (list '+ acc-sym 1))))))
+                acc-sym)))
+       ;; `append FORM' / `nconc FORM' — splice each FORM (a list) onto the tail.
+       ((or append-form nconc-form)
+        (let ((acc-sym (make-symbol "--loop-acc--"))
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
+              (joiner (if append-form 'append 'nconc))
+              (item (or append-form nconc-form)))
+          (list 'let (cons (list acc-sym nil) with-bindings)
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body
+                       var loop-var
+                       (list (list 'setq acc-sym (list joiner acc-sym item)))))
+                acc-sym)))
+       ;; `maximize FORM' / `minimize FORM' — running max/min (nil until first).
+       ((or max-form min-form)
+        (let ((acc-sym (make-symbol "--loop-mm--"))
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
+              (op (if max-form 'max 'min))
+              (item (or max-form min-form)))
+          (list 'let (cons (list acc-sym nil) with-bindings)
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body
+                       var loop-var
+                       (list (list 'setq acc-sym
+                                   (list 'if acc-sym (list op acc-sym item) item)))))
                 acc-sym)))
        (when-do-cond
         ;; `when COND do FORMS …'
