@@ -89,13 +89,19 @@ criterion 15: the release cadence differs from NeLisp core).")
      (poll . 7) (mmap . 9) (munmap . 11) (mprotect . 10)
      (dup2 . 33) (fork . 57) (execve . 59) (exit . 60)
      (wait4 . 61) (kill . 62) (fcntl . 72) (pipe . 22)
-     (stat . 4) (fstat . 5) (getpid . 39))
+     (stat . 4) (fstat . 5) (getpid . 39)
+     (getcwd . 79) (chdir . 80) (rmdir . 84) (symlink . 88))
     (darwin
      (read . 3) (write . 4) (open . 5) (close . 6)
      (fork . 2) (execve . 59) (exit . 1) (wait4 . 7)
      (kill . 37) (dup2 . 90) (fcntl . 92) (poll . 230)
      (mmap . 197) (munmap . 73) (mprotect . 74)
-     (stat . 188) (fstat . 189) (getpid . 20)))
+     (stat . 188) (fstat . 189) (getpid . 20)
+     ;; chdir(2) = 12, symlink(2) = 57, rmdir(2) = 137 on macOS.
+     ;; getcwd is NOT a simple syscall on macOS (it is implemented in
+     ;; libc via __getcwd / getdirentries64); omit from this table and
+     ;; use the host fallback path on Darwin.
+     (chdir . 12) (symlink . 57) (rmdir . 137)))
   "Portable syscall-name to target-number table.
 
 This is deliberately small: it covers the file/process/event-loop surface used
@@ -353,6 +359,160 @@ checked directly; bare commands are searched through PATH using
                when (zerop (nelisp-sys-access
                             path nelisp-sys-access-x-ok))
                return path))))
+
+;;; Filesystem primitives (M0 increment 1 — §10.2) -------------------
+
+;; Host fallbacks: when `nelisp--syscall' is not bound (i.e. running on
+;; a regular Emacs, not the standalone NeLisp binary) each wrapper
+;; delegates to the equivalent host Emacs primitive.  This lets ERT
+;; validate the wrappers on the development host without a standalone
+;; binary present.
+
+(defun nelisp-sys-chdir (path)
+  "Change the process working directory to PATH.
+Returns 0 on success or signals `nelisp-sys-error' on failure.
+
+On the standalone NeLisp runtime this resolves NR via
+`nelisp-sys-syscall-number' and invokes chdir(2) directly using
+`nelisp--syscall-path-int' (which marshals PATH to a cstring
+internally).  On a host Emacs the working directory is emulated via
+`default-directory'; the host variant signals if PATH does not
+exist or is not a directory."
+  (unless (stringp path)
+    (signal 'wrong-type-argument (list 'stringp path)))
+  (if (fboundp 'nelisp--syscall-path-int)
+      ;; Standalone NeLisp binary: use nelisp--syscall-path-int which
+      ;; marshals PATH to a cstring internally — no alloc/free needed.
+      (let* ((nr (nelisp-sys-syscall-number 'chdir))
+             (ret (nelisp--syscall-path-int nr path 0)))
+        (when (< ret 0)
+          (signal 'nelisp-sys-error
+                  (list (format "chdir %S failed: %d" path ret))))
+        0)
+    ;; Host fallback: validate and set default-directory.
+    (let ((expanded (expand-file-name path)))
+      (unless (file-directory-p expanded)
+        (signal 'nelisp-sys-error
+                (list (format "chdir %S: not a directory" path))))
+      (setq default-directory (file-name-as-directory expanded))
+      0)))
+
+(defun nelisp-sys-symlink (target linkpath)
+  "Create a symbolic link at LINKPATH pointing to TARGET.
+Returns 0 on success or signals `nelisp-sys-error' on failure.
+
+On a host Emacs this delegates to `make-symbolic-link'.
+On the standalone NeLisp runtime this is DEFERRED: symlink(2) requires
+a two-path syscall builtin (`nelisp--syscall-path-path' or similar) that
+is not yet wired in the standalone substrate.
+See design doc §10 (M0 increment 2) for the planned wiring.
+The syscall table entries for symlink are intentionally kept
+as documentation of the intended interface."
+  (unless (stringp target)
+    (signal 'wrong-type-argument (list 'stringp target)))
+  (unless (stringp linkpath)
+    (signal 'wrong-type-argument (list 'stringp linkpath)))
+  (if (fboundp 'nelisp--syscall-path-int)
+      ;; Standalone: deferred — no two-path syscall builtin available yet.
+      ;; M0 increment 2 will wire this once nelisp--syscall-path-path
+      ;; (or equivalent) is added to the runtime.
+      (signal 'nelisp-sys-error
+              (list (concat "nelisp-sys-symlink not yet wired on standalone "
+                            "(M0 increment 2): needs a 2-path syscall builtin")))
+    ;; Host fallback.
+    (make-symbolic-link target linkpath)
+    0))
+
+(defun nelisp-sys-rmdir (path)
+  "Remove the empty directory at PATH.
+Returns 0 on success or signals `nelisp-sys-error' on failure.
+
+On the standalone NeLisp runtime this resolves NR via
+`nelisp-sys-syscall-number' and invokes rmdir(2) directly using
+`nelisp--syscall-path-int' (which marshals PATH to a cstring
+internally).  On a host Emacs this delegates to `delete-directory'
+(non-recursive)."
+  (unless (stringp path)
+    (signal 'wrong-type-argument (list 'stringp path)))
+  (if (fboundp 'nelisp--syscall-path-int)
+      ;; Standalone NeLisp binary: use nelisp--syscall-path-int which
+      ;; marshals PATH to a cstring internally — no alloc/free needed.
+      (let* ((nr (nelisp-sys-syscall-number 'rmdir))
+             (ret (nelisp--syscall-path-int nr path 0)))
+        (when (< ret 0)
+          (signal 'nelisp-sys-error
+                  (list (format "rmdir %S failed: %d" path ret))))
+        0)
+    ;; Host fallback.
+    (delete-directory path)
+    0))
+
+(defconst nelisp-sys--getcwd-buf-size 4096
+  "Buffer size used by `nelisp-sys-getcwd' for the standalone syscall path.")
+
+(defun nelisp-sys-getcwd ()
+  "Return the current working directory as a string.
+
+On a host Emacs it returns `default-directory' via `expand-file-name',
+with any trailing slash stripped to match POSIX getcwd(2) semantics.
+On the standalone NeLisp runtime this is DEFERRED: getcwd(2) requires
+passing a writeable buffer pointer to the kernel, which needs a buffer
+syscall builtin (`nelisp--syscall-buf' or similar) that is not yet wired
+in the standalone substrate.  On Linux getcwd(2) = NR 79 is in the
+syscall table but cannot be called without a buffer pointer.  On macOS
+getcwd is not a raw syscall at all (libc-mediated), so the Darwin table
+intentionally has no getcwd entry.
+See design doc §10 (M0 increment 2) for the planned wiring."
+  (if (fboundp 'nelisp--syscall-path-int)
+      ;; Standalone: deferred — no buffer-returning syscall builtin yet.
+      ;; M0 increment 2 will wire this once nelisp--syscall-buf
+      ;; (or equivalent) is added to the runtime.
+      (signal 'nelisp-sys-error
+              (list (concat "nelisp-sys-getcwd not yet wired on standalone "
+                            "(M0 increment 2): needs a buffer syscall builtin")))
+    ;; Host fallback: expand and strip trailing slash.
+    (let ((d (expand-file-name default-directory)))
+      (if (and (> (length d) 1) (string-suffix-p "/" d))
+          (substring d 0 (1- (length d)))
+        d))))
+
+(defvar nelisp-sys--mkdtemp-counter 0
+  "Monotonic counter used by `nelisp-sys-mkdtemp' for suffix uniqueness.")
+
+(defun nelisp-sys-mkdtemp (template)
+  "Create a unique temporary directory based on TEMPLATE prefix.
+Returns the path of the created directory as a string.
+
+This is a pure-Elisp composition; it does NOT call the mkdtemp(3)
+libc function (which would require a Rust wrapper violating the zero-
+Rust-delta rule).  The suffix is derived solely from the monotonic
+counter `nelisp-sys--mkdtemp-counter' (incremented on each attempt),
+which avoids any dependency on `emacs-pid', `current-time', or
+`random' — none of which are available on the standalone NeLisp binary.
+The real collision guard is `make-directory''s atomic failure on a
+pre-existing path; up to 100 attempts are made before signalling.
+This function works identically on both host Emacs and standalone.
+
+TEMPLATE is a directory prefix string such as \"/tmp/nelisp-build-\"."
+  (unless (stringp template)
+    (signal 'wrong-type-argument (list 'stringp template)))
+  (let ((max-tries 100)
+        result)
+    (while (and (null result) (> max-tries 0))
+      (setq nelisp-sys--mkdtemp-counter
+            (1+ nelisp-sys--mkdtemp-counter))
+      (let ((candidate (format "%s%x" template nelisp-sys--mkdtemp-counter)))
+        (condition-case nil
+            (progn
+              (make-directory candidate)
+              (setq result candidate))
+          (error nil)))
+      (setq max-tries (1- max-tries)))
+    (unless result
+      (signal 'nelisp-sys-error
+              (list (format "mkdtemp: could not create dir with template %S"
+                            template))))
+    result))
 
 ;; Front-end modules are required lazily as they are implemented.  During
 ;; the scaffold stage (130.1) only this aggregator and the adapter stub

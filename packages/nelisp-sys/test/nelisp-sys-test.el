@@ -163,4 +163,139 @@ value.  Skipped on platforms without a syscall table (windows)."
       (should (= (nelisp-sys-waitpid 1234 0) #x2a00))
       (should (equal (nelisp-sys-pipe) '(9 . 10))))))
 
+;;; M0 increment 1 — filesystem primitive tests ----------------------
+
+;; These tests exercise the host-fallback paths (no `nelisp--syscall'
+;; binding).  They validate correctness on a regular Emacs and also
+;; confirm that the standalone NeLisp binary path is reached when
+;; `nelisp--syscall' IS bound (tested by the standalone test runner).
+
+(ert-deftest nelisp-sys-chdir-changes-default-directory ()
+  "chdir host fallback sets `default-directory' and returns 0."
+  (skip-unless (not (fboundp 'nelisp--syscall)))
+  (let* ((tmp (make-temp-file "nelisp-sys-chdir-" t))
+         (orig default-directory))
+    (unwind-protect
+        (progn
+          (should (= (nelisp-sys-chdir tmp) 0))
+          (should (equal (file-name-as-directory tmp) default-directory)))
+      (setq default-directory orig)
+      (delete-directory tmp))))
+
+(ert-deftest nelisp-sys-chdir-signals-on-nonexistent ()
+  "chdir signals `nelisp-sys-error' for a nonexistent path."
+  (skip-unless (not (fboundp 'nelisp--syscall)))
+  (should-error (nelisp-sys-chdir "/this/path/does/not/exist/nelisp-test")
+                :type 'nelisp-sys-error))
+
+(ert-deftest nelisp-sys-chdir-type-check ()
+  "chdir signals `wrong-type-argument' for non-string input."
+  (should-error (nelisp-sys-chdir 42) :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sys-getcwd-returns-string ()
+  "getcwd returns the current working directory as a string (host only).
+Skipped on standalone: getcwd is deferred (M0 increment 2)."
+  ;; getcwd signals on standalone until a buffer syscall builtin is wired.
+  (skip-unless (not (fboundp 'nelisp--syscall-path-int)))
+  (let ((cwd (nelisp-sys-getcwd)))
+    (should (stringp cwd))
+    (should (> (length cwd) 0))))
+
+(ert-deftest nelisp-sys-chdir-then-getcwd ()
+  "chdir followed by getcwd returns the new directory (host fallback path)."
+  ;; getcwd is deferred on standalone; skip when standalone builtins present.
+  (skip-unless (not (fboundp 'nelisp--syscall-path-int)))
+  (let* ((tmp (make-temp-file "nelisp-sys-cg-" t))
+         (orig default-directory))
+    (unwind-protect
+        (progn
+          (nelisp-sys-chdir tmp)
+          (let ((cwd (nelisp-sys-getcwd)))
+            ;; Both paths should resolve to the same real path; use
+            ;; file-truename to handle any symlinks in /tmp.
+            (should (equal (file-truename cwd)
+                           (file-truename tmp)))))
+      (setq default-directory orig)
+      (delete-directory tmp))))
+
+(ert-deftest nelisp-sys-symlink-creates-link ()
+  "symlink creates a symbolic link that file-symlink-p can confirm (host only).
+Skipped on standalone: symlink is deferred (M0 increment 2)."
+  ;; symlink signals on standalone until a 2-path syscall builtin is wired.
+  (skip-unless (not (fboundp 'nelisp--syscall-path-int)))
+  (let* ((tmp (make-temp-file "nelisp-sys-sl-" t))
+         (target (expand-file-name "target.txt" tmp))
+         (link   (expand-file-name "link.txt" tmp)))
+    (unwind-protect
+        (progn
+          (write-region "hello" nil target nil 'silent)
+          (should (= (nelisp-sys-symlink target link) 0))
+          (should (file-symlink-p link))
+          (should (equal (file-truename link) (file-truename target))))
+      (delete-directory tmp t))))
+
+(ert-deftest nelisp-sys-symlink-type-checks ()
+  "symlink signals `wrong-type-argument' for non-string arguments."
+  (should-error (nelisp-sys-symlink 1 "link") :type 'wrong-type-argument)
+  (should-error (nelisp-sys-symlink "target" 2) :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sys-rmdir-removes-empty-dir ()
+  "rmdir removes an empty directory and it no longer exists afterwards."
+  (let* ((parent (make-temp-file "nelisp-sys-rd-" t))
+         (subdir (expand-file-name "empty" parent)))
+    (unwind-protect
+        (progn
+          (make-directory subdir)
+          (should (file-directory-p subdir))
+          (should (= (nelisp-sys-rmdir subdir) 0))
+          (should (not (file-exists-p subdir))))
+      (when (file-directory-p parent)
+        (delete-directory parent t)))))
+
+(ert-deftest nelisp-sys-rmdir-type-check ()
+  "rmdir signals `wrong-type-argument' for non-string input."
+  (should-error (nelisp-sys-rmdir 99) :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sys-mkdtemp-creates-unique-dirs ()
+  "mkdtemp creates a new directory that exists and is unique across calls."
+  (let ((dir1 (nelisp-sys-mkdtemp temporary-file-directory))
+        (dir2 (nelisp-sys-mkdtemp temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (should (stringp dir1))
+          (should (file-directory-p dir1))
+          (should (stringp dir2))
+          (should (file-directory-p dir2))
+          (should (not (equal dir1 dir2))))
+      (when (file-directory-p dir1) (delete-directory dir1))
+      (when (file-directory-p dir2) (delete-directory dir2)))))
+
+(ert-deftest nelisp-sys-mkdtemp-type-check ()
+  "mkdtemp signals `wrong-type-argument' for non-string template."
+  (should-error (nelisp-sys-mkdtemp nil) :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sys-getcwd-no-trailing-slash ()
+  "getcwd result has no trailing slash (POSIX getcwd(2) convention, host only).
+Skipped on standalone: getcwd is deferred (M0 increment 2)."
+  ;; getcwd signals on standalone until a buffer syscall builtin is wired.
+  (skip-unless (not (fboundp 'nelisp--syscall-path-int)))
+  (let ((cwd (nelisp-sys-getcwd)))
+    (should (stringp cwd))
+    ;; Root \"/\" is the only legitimate trailing-slash case; skip it.
+    (unless (equal cwd "/")
+      (should (not (string-suffix-p "/" cwd))))))
+
+(ert-deftest nelisp-sys-portable-syscall-table-has-new-entries ()
+  "Syscall table contains the M0 increment-1 entries for gnu/linux."
+  (should (= (nelisp-sys-syscall-number 'chdir 'gnu/linux) 80))
+  (should (= (nelisp-sys-syscall-number 'symlink 'gnu/linux) 88))
+  (should (= (nelisp-sys-syscall-number 'rmdir 'gnu/linux) 84))
+  (should (= (nelisp-sys-syscall-number 'getcwd 'gnu/linux) 79))
+  (should (= (nelisp-sys-syscall-number 'chdir 'darwin) 12))
+  (should (= (nelisp-sys-syscall-number 'symlink 'darwin) 57))
+  (should (= (nelisp-sys-syscall-number 'rmdir 'darwin) 137))
+  ;; getcwd is intentionally absent on Darwin.
+  (should-error (nelisp-sys-syscall-number 'getcwd 'darwin)
+                :type 'nelisp-sys-error))
+
 ;;; nelisp-sys-test.el ends here
