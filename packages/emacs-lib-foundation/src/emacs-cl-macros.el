@@ -786,6 +786,24 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
                   (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist)
                         body))))))
 
+(defvar emacs-cl-macros--struct-defs nil
+  "Alist mapping a `cl-defstruct' name to (SLOT-NAMES . SLOT-DEFAULTS).
+Populated at macroexpand time so that `:include' children can inherit the
+parent's slots.  Standalone-reader bookkeeping only; harmless in host Emacs.")
+
+(defun emacs-cl-macros--struct-isa (tag target)
+  "Non-nil if struct tag TAG equals TARGET or descends from it via `:include'.
+Walks the `emacs-cl-struct-parent' symbol-property chain, guarded against
+cycles."
+  (and tag (symbolp tag)
+       (let ((cur tag) (guard 0) (hit nil))
+         (while (and cur (not hit) (< guard 64))
+           (if (eq cur target)
+               (setq hit t)
+             (setq cur (get cur 'emacs-cl-struct-parent))
+             (setq guard (1+ guard))))
+         hit)))
+
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-defstruct))
   (defmacro cl-defstruct (name &rest slots)
@@ -835,7 +853,10 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                                           (consp (cdr s))
                                           (cadr s))))
                         (cons slot default)))
-                    slot-list)))
+                    slot-list))
+           (include-from-opts nil)
+           (copier-saw nil)
+           (copier-from-opts nil))
       (let ((cur opts))
         (while cur
           (let ((o (car cur)))
@@ -849,8 +870,24 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
               (setq pred-saw t)
               (setq pred-from-opts (cadr o)))
              ((and (consp o) (eq (car o) :type))
-              (setq type-from-opts (cadr o)))))
+              (setq type-from-opts (cadr o)))
+             ((and (consp o) (eq (car o) :include))
+              (setq include-from-opts (cadr o)))
+             ((and (consp o) (eq (car o) :copier))
+              (setq copier-saw t)
+              (setq copier-from-opts (cadr o)))))
           (setq cur (cdr cur))))
+      ;; `:include' — inherit the parent struct's slots (prepended) so the
+      ;; child's constructor/accessors cover the parent fields, and record
+      ;; the parent link so the predicate matches descendant instances.
+      (when include-from-opts
+        (let ((pdef (assq include-from-opts emacs-cl-macros--struct-defs)))
+          (when pdef
+            (setq slot-names (append (car (cdr pdef)) slot-names))
+            (setq slot-defaults (append (cdr (cdr pdef)) slot-defaults)))))
+      (setq emacs-cl-macros--struct-defs
+            (cons (cons sname (cons slot-names slot-defaults))
+                  emacs-cl-macros--struct-defs))
       (unless ctor-saw
         (setq ctor-opts
               (list (list (intern (concat "make-" (symbol-name sname))) nil))))
@@ -955,8 +992,16 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                             (list 'and '(vectorp obj)
                                   (list '= '(length obj) (length slot-names)))
                           (list 'and '(consp obj)
-                                (list 'eq '(car obj) (list 'quote sname)))))
+                                (list 'emacs-cl-macros--struct-isa
+                                      '(car obj) (list 'quote sname)))))
                   forms)))
+        ;; Record the `:include' parent link at runtime so the predicate's
+        ;; `emacs-cl-macros--struct-isa' chain walk can reach it.
+        (when include-from-opts
+          (push (list 'put (list 'quote sname)
+                      (list 'quote 'emacs-cl-struct-parent)
+                      (list 'quote include-from-opts))
+                forms))
         ;; NAME-SLOT accessor + setter for each slot.
         ;;
         ;; The alist accessor returns (cdr (assoc :slot (cdr obj))).
@@ -1000,6 +1045,21 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                                     (list setter 'obj 'val))))
                   forms)
             (setq index (1+ index)))))
+        ;; copy-NAME default copier (unless `(:copier nil)' disabled it).
+        ;; Copies the alist spine *and* each slot cell so `setf' on the copy
+        ;; never mutates the original; vectors copy element-wise already.
+        (let ((copier-name (if copier-saw
+                               copier-from-opts
+                             (intern (concat "copy-" (symbol-name sname))))))
+          (when copier-name
+            (push (list 'defun copier-name '(obj)
+                        (if (eq type-from-opts 'vector)
+                            '(copy-sequence obj)
+                          '(cons (car obj)
+                                 (mapcar (lambda (--c--)
+                                           (cons (car --c--) (cdr --c--)))
+                                         (cdr obj)))))
+                  forms)))
         (cons 'progn (nreverse forms))))))
 
 ;;;; --- cl-case / cl-pushnew --------------------------------------------
