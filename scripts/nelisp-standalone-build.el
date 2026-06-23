@@ -4999,7 +4999,19 @@ unresolved at link time."
                      (ptr-write-u8 (ptr-read-u64 (ptr-read-u64 arr 8) 8) idx
                                    (ptr-read-u64 val 8))
                      (wf_copy32 out val) 0)
-              (seq (wf_copy32 out val) 0))))))
+              ;; Doc 156: Record(12) in-place slot write, mirroring bf_aref's
+              ;; tag-12 read (aref 0 = type tag, aref k>0 = data slot k-1).  The
+              ;; stock else-arm was a silent no-op, so `(setf (struct-slot r) v)'
+              ;; (= nelisp--record-set -> aset) never mutated a genuine tag-12
+              ;; record -- breaking cl-defstruct setters once nelisp--make-record
+              ;; builds native records (Doc 22 A14 follow-up).  Uses the
+              ;; `record-slot-set' grammar op (as bf_record / bf_make_record).
+              (if (= (ptr-read-u64 arr 0) 12)
+                  (if (= idx 0)
+                      (seq (wf_copy32 out val) 0)
+                    (seq (wf_dirty) (record-slot-set arr (- idx 1) val)
+                         (wf_copy32 out val) 0))
+                (seq (wf_copy32 out val) 0)))))))
     ;; signal/error: NON-CRASHING.  Stash (sym . data) into the catch/throw
     ;; region + set the throw flag, then return rc=1 so the rc!=0 propagation
     ;; unwinds the native stack like an error.
