@@ -1,0 +1,128 @@
+#+TITLE: Doc 156 — flat-arena cold-loader: production boot-INSTALL design
+#+DATE: 2026-06-23
+#+STATUS: DESIGN (impl pending) — mechanism proven (probe), install + driver mode is the remaining native work
+#+BRANCH: spike/flat-arena-boot-install
+
+* 0. Purpose
+
+The flat-arena cold-loader (scripts/nelisp-flat-arena-probe.el, boot-wiring 5–14,
+merged 439ac529) proves the dump→file→load→relocate→root-recovery MECHANISM, but
+only as a READ-ONLY VERIFY (loads into a scratch =alloc-bytes= buffer; "live
+runtime untouched").  The remaining work to make it usable (fast cold-load of a
+loaded heap, ~9.2x vs .repl replay) is the production INSTALL: a fresh process
+that loads an image into its REAL arena, relocates against the real base, installs
+the EvalCtx roots, and skips the normal bootstrap.  This doc fully scopes that.
+
+Motivation: the full nemacs bundle (=./bin/nemacs --driver=nelisp=, .repl replay)
+cold-loads in 30–66 min and is OOM-prone (~11–15 GB RSS); package-breadth driving
+needs the bundle (cl-lib/seq/pcase/macroexp/...).  A flat-arena image of the
+loaded heap would load fast and unblock breadth — IF a one-time dump can be
+created (the dump still needs ONE slow load; vendor-core subset is lighter).
+
+* 1. What is proven (do not re-derive)
+
+- Reader builtins wired (dispatch ~2499–2511, names list ~7495–7498):
+  =nelisp--arena-dump-image-to-file= / =-dump-image-stream= / =-load-image-from-file=
+  / =-boot-load-verify= / =-image-root-verify= / =-load-relocate-verify= /
+  =-dump-table-verify= / =-dump-copy-verify= / =-load-split-verify=.
+- Roundtrip works on the bare reader (verified 2026-06-23):
+  =(nelisp--arena-dump-image-to-file "/tmp/arena.img")= then
+  =(nelisp--arena-boot-load-verify "/tmp/arena.img")= → =(1 12 1 72)= =
+  magic-ok / root-tag 12 (globals Record) / root-in-chunk0 / 72 block-total.
+
+* 2. Image format (=bf_arena_dump_image_to_file=, header 64 B)
+
+| off | field | source |
+|-----+-------+--------|
+| 0  | magic 1179407692 ("FLAT") | literal |
+| 8  | slen (chunk-0 region bytes) | cursor − 1024 |
+| 16 | isz (interned region bytes, 8-aligned) | abase+832 .. abase+840 |
+| 24 | tlen (relocation-table entries) | nl_fa_roots + bf_arena_mr_chunks |
+| 32 | gbox image-offset (globals root) | nl_img_off of env+8 |
+| 40 | fbox image-offset (frames root)  | nl_img_off of env+40 |
+| 48 | ubox image-offset (unbound root) | nl_img_off of env+72 |
+| 56 | intern-region base (split-loader name-ptr fix) | abase-relative |
+
+File body = [header][reloc table: tlen × u64][chunk-0 region: slen][interned
+region: isz].  Reloc entry F: =image[F] += newbase= (chunk-0-relative pointers).
+The interned region's open-addressing name-buffer ptrs (slot+8) live INSIDE the
+interned region, so =nl_fa_field= (chunk-0-only) does NOT table them; they retain
+absolute OLD pointers and must be fixed by base-delta on load (see the dump
+comment + =bf_arena_load_split_verify=).
+
+EvalCtx (env) layout (gdb-verified, from the dump + line ~2682):
+- env reached via published safepoint ctx: =env = ptr-read-u64 (ctx+64)= when
+  =ptr-read-u64 ctx 0 != 0=.
+- globals box @ env+8, frames box @ env+40, unbound box @ env+72.
+
+* 3. The remaining work: production INSTALL
+
+** 3.1 New builtin =bf_arena_boot_install (args out)= (adapt =bf_arena_boot_load_verify=)
+
+=bf_arena_boot_load_verify= already: opens file, reads header, reads table+image
+into a SCRATCH =alloc-bytes img=, applies the reloc table (=image[f] += img=),
+reconstructs a rootslot (tag 12, ptr = img+goff), verifies it is a valid Record.
+
+INSTALL差分:
+1. Load the chunk-0 region into the REAL arena chunk-0 data area (=sstart=, i.e.
+   =arena_base + 0x400=) instead of a scratch buffer; load the interned region
+   into the real interned region (=ib=).
+2. Relocate against the REAL base delta (=newbase = sstart_new − slen_origin_base=),
+   not the scratch base.  Apply the table AND the interned-region base-delta fix
+   (mirror =bf_arena_load_split_verify=).
+3. Seed arena chunk metadata (cursor/used/chunk-count at offsets 0x2c0.., see the
+   =nelisp-standalone--arena-chunk-*-offset= consts) so the arena is well-formed
+   for subsequent allocation (the image cursor = slen+1024).
+4. INSTALL the EvalCtx roots: set env+8 = sstart+goff (globals Record),
+   env+40 = sstart+foff, env+72 = sstart+uoff.  (Where -1 = immediate, rebuild
+   inline per =bf_arena_image_root_verify=.)
+
+** 3.2 New driver mode =exec-arena-image IMAGE FORM...=
+
+In =nelisp-standalone--reader-driver-source= (line ~9708):
+- Add matcher =nl_cstr_eq_exec_arena_image= for ="exec-arena-image"= (alongside
+  the existing =nl_cstr_eq_exec_runtime_image= etc., ~lines 155–162 / 9866–9868).
+- Add it to the mode-dispatch chains (3 sites: ~310–316, ~10021–10055,
+  ~10689–10693).
+- Handler: =nl_arena_init= (reserve real arena) → =bf_arena_boot_install(IMAGE)=
+  (loads heap + installs env roots) → SKIP the normal bootstrap/prelude load (the
+  image already contains the prelude + everything) → eval FORM through the normal
+  eval path with the installed env → print.
+
+Key invariant: the baked prelude must NOT be re-installed on top of the image
+(the image already has it).  The handler replaces the boot, it does not augment.
+
+* 4. Concept-proof plan (incremental, branch spike/flat-arena-boot-install)
+
+1. *Scratch value-survival* (SAFE, single process, no real-arena write): extend
+   the verify to resolve the globals Record in the relocated SCRATCH image and
+   read a known symbol's value cell (e.g. dump a heap with =(defvar ct 42)=, then
+   prove the relocated scratch image's globals → =ct= → 42).  Proves the heap +
+   relocation preserve actual STATE, not just root structure.
+2. *Real-arena install* (=bf_arena_boot_install=): §3.1.  Test in a fresh process
+   via the new mode: dump =(defvar ct 42)(defun cf () 99)=, then
+   =target/nelisp exec-arena-image IMG '(list ct (cf))'= → expect =(42 99)=.
+3. *vendor-core subset*: dump cl-lib+cl-generic+pcase+macroexp+subr-x+seq (lighter
+   than the full bundle, avoids OOM), exec-arena-image + drive seq-filter etc.
+4. *Full bundle*: one-time slow dump (still 30–66 min, OOM risk — run off-peak /
+   high-RAM), then fast exec-arena-image for breadth.
+
+* 5. Risks / caveats
+
+- The install writes the REAL arena before the eval loop runs — a relocation or
+  metadata-seed error → SIGSEGV on the first variable lookup.  Debug with the
+  scratch value-survival (step 1) FIRST to isolate relocation correctness from
+  install correctness.
+- Interned-region name-ptr base-delta (slot+8) is the most error-prone part
+  (=bf_arena_load_split_verify= is the reference).
+- This is the spike owner's active area (boot-wiring 5–14); coordinate to avoid
+  duplicating the install they may already be drafting.
+- The one-time dump still needs ONE full load; the flat-arena win is on RELOAD,
+  not the first dump-creation.  The host OOM on the first load is orthogonal and
+  unsolved (vendor-core subset mitigates by being lighter).
+
+* 6. Status
+
+Branch =spike/flat-arena-boot-install= created 2026-06-23.  Mechanism proven +
+fully scoped here; production INSTALL (=bf_arena_boot_install= + =exec-arena-image=
+mode) is the pending native increment per §3–4.
