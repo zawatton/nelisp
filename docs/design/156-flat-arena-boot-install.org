@@ -94,11 +94,17 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
 
 * 4. Concept-proof plan (incremental, branch spike/flat-arena-boot-install)
 
-1. *Scratch value-survival* (SAFE, single process, no real-arena write): extend
-   the verify to resolve the globals Record in the relocated SCRATCH image and
-   read a known symbol's value cell (e.g. dump a heap with =(defvar ct 42)=, then
-   prove the relocated scratch image's globals → =ct= → 42).  Proves the heap +
-   relocation preserve actual STATE, not just root structure.
+1. *Scratch value-survival* — *DONE 2026-06-23*.  New builtin
+   =nelisp--arena-value-survival PATH SYM= (=bf_arena_value_survival=): loads the
+   image into scratch (c0 + ir), applies the split relocation (per
+   =bf_arena_load_split_verify=), rebuilds the globals Record root (tag 12,
+   box = c0+goff), and looks up SYM via =nelisp_mirror_lookup_entry= +
+   =record-slot-ref= slot 0 (= the value cell; only mirror-lookup.o/entry is
+   linked, so composed here, not =nelisp_mirror_lookup_value= which is not
+   linked).  VERIFIED on target/nelisp: =(set 'ct 42)= → dump → survival → 42;
+   strings ("hello"), conses ((1 . 2)), symbol lists ((a b c)) all survive; an
+   unbound symbol misses → nil.  *Relocation correctness for arbitrary reachable
+   state is now proven*; only the real-arena INSTALL (§3) remains.
 2. *Real-arena install* (=bf_arena_boot_install=): §3.1.  Test in a fresh process
    via the new mode: dump =(defvar ct 42)(defun cf () 99)=, then
    =target/nelisp exec-arena-image IMG '(list ct (cf))'= → expect =(42 99)=.
@@ -124,5 +130,8 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
 * 6. Status
 
 Branch =spike/flat-arena-boot-install= created 2026-06-23.  Mechanism proven +
-fully scoped here; production INSTALL (=bf_arena_boot_install= + =exec-arena-image=
-mode) is the pending native increment per §3–4.
+fully scoped here.  *Increment 1 (design)* + *increment 2 (scratch
+value-survival, §4.1)* DONE — relocation correctness for arbitrary reachable
+state is proven (=nelisp--arena-value-survival= builtin).  Pending: increment 3
+production INSTALL (=bf_arena_boot_install= real-arena load + EvalCtx root
+install + =exec-arena-image= driver mode, §3) → vendor-core subset → full bundle.

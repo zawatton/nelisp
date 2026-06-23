@@ -2509,6 +2509,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--record-expand") . (bf_record_expand args out))
     ((:lit "nelisp--arena-boot-load-verify") . (bf_arena_boot_load_verify args out))
     ((:lit "nelisp--arena-load-split-verify") . (bf_arena_load_split_verify args out))
+    ((:lit "nelisp--arena-value-survival") . (bf_arena_value_survival args out))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
                                      (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
@@ -3768,6 +3769,55 @@ unresolved at link time."
               (wf_cons_int nblk s3 s2)
               (wf_cons_int wf s2 s1)
               (wf_cons_int (if (= (ptr-read-u64 hdr 0) 1179407692) 1 0) s1 out)
+              0))))))
+    ;; Doc 156 increment 2 (concept-proof): value-survival.  Loads IMAGE into
+    ;; scratch (chunk-0 c0 + interned ir), applies the split relocation (same as
+    ;; bf_arena_load_split_verify), rebuilds the globals Record root (tag 12,
+    ;; box = c0+goff), and looks up SYM in that RELOCATED SCRATCH image via
+    ;; nelisp_mirror_lookup_value.  Proves a global's VALUE survives
+    ;; dump->file->load->relocate WITHOUT writing the live arena (the real-arena
+    ;; INSTALL, Doc 156 sec 3, is the separate next increment).
+    (defun bf_arena_value_survival (args out)
+      (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (qsym (wf_arg_ptr args 1))
+             (hdr (alloc-bytes 64 8))
+             (fd (nl_os_open_read cpath)))
+        (if (< fd 0)
+            (seq (wf_write_nil out) 0)
+          (seq
+           (nl_fa_read_all fd hdr 64 0)
+           (let* ((slen (ptr-read-u64 hdr 8))
+                  (isz (ptr-read-u64 hdr 16))
+                  (tlen (ptr-read-u64 hdr 24))
+                  (goff (ptr-read-u64 hdr 32))
+                  (tbl (alloc-bytes (+ (* tlen 8) 8) 8))
+                  (c0 (alloc-bytes (+ slen 8) 8))
+                  (ir (alloc-bytes (+ isz 8) 8))
+                  (rootslot (alloc-bytes 32 8))
+                  (ti 0))
+             (seq
+              (nl_fa_read_all fd tbl (* tlen 8) 0)
+              (nl_fa_read_all fd c0 slen 0)
+              (nl_fa_read_all fd ir isz 0)
+              (nl_os_close_handle fd)
+              (setq ti 0)
+              (while (< ti tlen)
+                (let* ((f (ptr-read-u64 (+ tbl (* ti 8)) 0))
+                       (o (ptr-read-u64 (+ c0 f) 0)))
+                  (if (< o slen)
+                      (ptr-write-u64 (+ c0 f) 0 (+ c0 o))
+                    (ptr-write-u64 (+ c0 f) 0 (+ ir (- o slen)))))
+                (setq ti (+ ti 1)))
+              (ptr-write-u8 rootslot 0 12)
+              (ptr-write-u64 rootslot 8
+                             (if (< goff slen) (+ c0 goff) (+ ir (- goff slen))))
+              ;; mirror_lookup_value = lookup_entry + record-slot-ref slot 0
+              ;; (the symbol-entry's value cell).  Only mirror-lookup.o (entry)
+              ;; is linked into the reader, so compose here.
+              (let* ((entry (nelisp_mirror_lookup_entry rootslot qsym)))
+                (if (= entry 0)
+                    (wf_write_nil out)
+                  (record-slot-ref entry 0 out)))
               0))))))
     ;; NB: the `bf_size_census*' arena-diagnostic family moved to
     ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
@@ -7496,6 +7546,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--arena-dump-table-verify"
     "nelisp--arena-dump-image-to-file" "nelisp--arena-dump-image-stream" "nelisp--arena-load-image-from-file"
     "nelisp--arena-boot-load-verify" "nelisp--arena-load-split-verify"
+    "nelisp--arena-value-survival"
     "nelisp--env-capture-roots" "nelisp--record-expand"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
