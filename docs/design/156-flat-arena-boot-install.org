@@ -166,9 +166,25 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
      install.  The win scales: a heavy library that costs minutes to load amortizes
      into a one-time dump + fast cold-loads.
    - *Caveat*: =%= is void (use =mod=); predicates must use available builtins.
-   - *Extending to the full vendor-core subset* (cl-lib+cl-generic+pcase+macroexp+
-     subr-x) is straightforward breadth continuation: each package = =load= +
-     =dump= + drive; any =load=-time void-function is a normal Doc-16 breadth fix.
+   - *Vendor-core SUBSET extended + PROVEN 2026-06-23*: a 6-package subset
+     (=subr-x= + =let-alist= + =cl-lib= + =emacs-pcase= + =map= + =seq=, all from
+     =nelisp-emacs/src/=) loads cleanly into the reader in one process, dumps to a
+     106 MB image, and on cold-load every driven function is *bit-identical* to the
+     reload path: =(string-trim "  hi  ")="hi"=, =(cl-remove-if #'evenp '(1..6))=(1 3 5)=,
+     =(seq-filter (> _ 2) '(1 2 3 4))=(3 4)=, =(map-elt '((a.1)(b.2)) 'b)=2=,
+     =(pcase 5 ((pred integerp) 'int) …)=int=, =(let-alist '((x.10)(y.20)) (+ .x .y))=30=,
+     =(floor 7 2)=3=.  *Timing*: cold-load *168 ms* vs reload (boot + 6× =load=)
+     *333 ms* = ~2× (grows with library weight).
+     - =rx.el= (1740 lines) *loads* (fboundp =rx=) but its macro does NOT execute —
+       =(rx "abc")= yields no value/error on a NORMAL boot too, so this is a
+       pre-existing reader/rx macro-machinery gap (a Doc-16 breadth item), NOT a
+       cold-load regression; rx can sit in the image inert until that gap is fixed.
+     - =cl-generic= (=cl-defmethod=) and a standalone =macroexp= have no src file and
+       are absent from the prelude (=macroexpand-all= IS present); they remain breadth
+       gaps to fill before they can join the subset.
+     - Net: the cold-loader faithfully carries every package the reader can already
+       load; growing the subset is now purely Doc-16 breadth work (fix the load/run
+       gap, then it joins the dump for free).
 4. *Full bundle*: one-time slow dump (still 30–66 min, OOM risk — run off-peak /
    high-RAM), then fast marker cold-load for breadth.
 
@@ -210,6 +226,12 @@ the package loads into the reader, dumps to a 60 MB image, and on cold-load
 seq-filter/seq-map/seq-reduce are callable WITHOUT re-loading, alongside surviving
 native-overrides.  Cold-load 84 ms vs reload 219 ms (2.6×), faster than a bare boot.
 
-Pending: extend 4b to the full vendor-core subset (cl-lib/cl-generic/pcase/macroexp/
-subr-x — straightforward breadth continuation), then increment 4c full bundle
-one-time dump (heavy, off-peak / high-RAM).
+*Increment 4b extended to a 6-package vendor-core SUBSET* (subr-x/let-alist/cl-lib/
+pcase/map/seq) — DONE 2026-06-23: loads in one process → 106 MB image → cold-load
+drives every package bit-identical to reload, 168 ms vs 333 ms (~2×).  =rx= loads but
+its macro is a pre-existing reader gap (fails on normal boot too); =cl-generic=/
+=macroexp= have no src and remain breadth gaps.  Growing the subset is now pure
+Doc-16 breadth work — once a package loads/runs, it joins the dump for free.
+
+Pending: increment 4c full bundle one-time dump (heavy, off-peak / high-RAM); fill
+the rx / cl-generic breadth gaps to widen the subset.
