@@ -305,7 +305,14 @@ For unrecognised places, signals an error at expansion time."
   (put 'get 'cl-simple-setter 'put)
   (put 'symbol-value 'cl-simple-setter 'set)
   (put 'symbol-function 'cl-simple-setter 'fset)
-  (put 'symbol-plist 'cl-simple-setter 'setplist))
+  (put 'symbol-plist 'cl-simple-setter 'setplist)
+  ;; `(setf (cl--find-class NAME) CLASS)' -> `(cl--set-find-class NAME CLASS)'
+  ;; (= `(put NAME 'cl--class CLASS)').  cl-preloaded / oclosure / cl-defstruct
+  ;; register class objects this way.  `cl--set-find-class' is baked in the
+  ;; stdlib prelude; this `put' runs here (a loaded file) because the same `put'
+  ;; in the AOT-baked prelude does not persist into the boot image.
+  (when (fboundp 'cl--set-find-class)
+    (put 'cl--find-class 'cl-simple-setter 'cl--set-find-class)))
 
 ;;;; --- list / alist polyfills ------------------------------------------
 
