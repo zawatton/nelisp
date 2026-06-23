@@ -196,10 +196,27 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
        (name))= — fixed to process every cell (6cd9ef6c), which also exposed that
        native =recordp= rejected the vector-based =nelisp--make-record= (every
        struct predicate had regressed to nil since Doc-22 A14); fixed by building
-       native records + a tag-12 =bf_aset= arm (56f0ae2b).  *Still deep*: cl-generic
-       DISPATCH aborts — =cl-defmethod= expansion needs =cl-function= (a cl-macs
-       macro the reader lacks) and =cl-defgeneric= itself aborts uncatchably; the
-       generalizer/dispatch-compilation protocol is a multi-layer cl-macs effort.
+       native records + a tag-12 =bf_aset= arm (56f0ae2b).
+     - *cl-generic DISPATCH — the cl-function gap and far beyond (2026-06-23)*.  The
+       chain past =cl-defmethod= expansion: =cl-function= (minimal `(function FUNC)`,
+       baked 786a7a2d) → =macroexp--fgrep= → =help-split-fundoc= → =with-memoization=
+       → =cl--find-class= (all baked, fboundp-gated, 786a7a2d) → the *setf/gv place*
+       wall.  cl-generic does =(setf (cl--generic NAME) …)= (a MACRO place =`(get …)`),
+       =(setf (alist-get …) …)=, and =(setf (cl--generic-dispatches g) …)= (a
+       cl-defstruct accessor place).  The reader's two =setf= shims (prelude +
+       cl-lib.el's standalone override, the latter winning once cl-lib loads) handled
+       none of these.  Fixed both: prelude (786a7a2d) refactors place dispatch into
+       =nelisp--setf-1= with get/gethash/alist-get/macro-place arms; cl-lib.el
+       (nelisp-emacs 489ba45) adds alist-get + macro-place + the
+       =nelisp-cl-macros--accessor-info= struct-accessor arm.  *Result*: loading
+       =oclosure.el= + cl-lib + pcase + cl-generic, =cl-generic-define= now BUILDS the
+       dispatch closure and =cl-defmethod= registers methods.  *Remaining deep walls*:
+       (a) the =oclosure= =cl--generic-nnm= typed-closure construction (dispatch a
+       method and it reaches =(error cl--generic-nnm)=); (b) the =cl-preloaded=
+       built-in-class type hierarchy (=cl--find-class 'integer= etc.) which is
+       C-core-coupled and aborts uncatchably when loaded standalone — needed for the
+       actual type dispatch.  These two subsystems (oclosure typed closures + the
+       built-in type-class lattice) are the next dedicated reader items.
      - =macroexp= (standalone) has no src file (=macroexpand-all= IS present); a
        remaining breadth gap.
      - Net: the cold-loader faithfully carries every package the reader can already
