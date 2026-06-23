@@ -431,6 +431,40 @@ Return the first element of SEQUENCE matching ITEM (= via
   (defun cl-sort (sequence predicate &rest _keys)
     (sort sequence predicate)))
 
+(unless (fboundp 'cl-merge)
+  (defun cl-merge (type seq1 seq2 predicate &rest cl-keys)
+    "Merge sorted SEQ1 and SEQ2 into one sorted sequence of TYPE.
+PREDICATE is the order test; the optional :key keyword selects the compared
+sub-element.  Stable: when neither element is less, SEQ1's comes first.
+TYPE is `list', `vector' or `string' (anything `cl-coerce' accepts)."
+    (let ((key (plist-get cl-keys :key))
+          (l1 (append seq1 nil))
+          (l2 (append seq2 nil))
+          (res nil))
+      (while (and l1 l2)
+        (let ((k1 (if key (funcall key (car l1)) (car l1)))
+              (k2 (if key (funcall key (car l2)) (car l2))))
+          (if (funcall predicate k2 k1)
+              (setq res (cons (car l2) res) l2 (cdr l2))
+            (setq res (cons (car l1) res) l1 (cdr l1)))))
+      (cl-coerce (nconc (nreverse res) l1 l2) type))))
+
+(unless (fboundp 'cl-fill)
+  (defun cl-fill (seq item &rest cl-keys)
+    "Destructively set elements of SEQ to ITEM, returning SEQ.
+The :start (default 0) and :end (default the end) keywords bound the filled
+range.  Works on both lists and arrays."
+    (let ((start (or (plist-get cl-keys :start) 0))
+          (end (plist-get cl-keys :end)))
+      (if (listp seq)
+          (let ((p (nthcdr start seq)) (i start))
+            (while (and p (or (null end) (< i end)))
+              (setcar p item)
+              (setq p (cdr p) i (1+ i))))
+        (let ((i start) (n (or end (length seq))))
+          (while (< i n) (aset seq i item) (setq i (1+ i)))))
+      seq)))
+
 ;;;; --- cl-loop ----------------------------------------------------------
 
 (unless (fboundp 'emacs-cl-macros--loop-destructure-bindings)
