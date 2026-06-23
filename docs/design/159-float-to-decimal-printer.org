@@ -98,7 +98,39 @@ mixed battery, incl. all money-style values):
   f64 parse oracle callable from the printer (deferred).
 - *No scientific notation.*  Very large / small magnitudes stay fixed:
   =1e-10 -> "0.0000000001"=, =1e20 -> "100000000000000000000.0"=.
-- *=format= precision is unrelated and still open.*  =(format "%.2f" 3.14159)=
-  returns ="3.14159"= (full value, not ="3.14"=): the =%f= width/precision
-  spec is ignored by =m5_fmt_loop=, a separate code path from this printer.
-  Before this fix it returned ="3.5"=; it is now correct-digits-but-unrounded.
+
+* 4. =format= =%f= precision (Doc 159 §3)
+
+A separate gap surfaced here: =(format "%.2f" 3.14159)= returned ="3.14159"=
+(and =(format "%.3e" x)= returned ="%e"=).  The *active* =format= on the bare
+reader is the elisp one in =scripts/nelisp-stdlib-prelude.el= (NOT the
+=m5_fmt_loop= native arm, and NOT =lisp/nelisp-stdlib-format.el= /
+=nl_jit_format_float=, which belong to a different runtime and are not baked
+into the standalone reader).  It parses flags / width / precision in elisp but
+*delegated the conversion* to native =%f=, which drops the precision.
+
+*Fix*: render =%f= / =%F= in elisp via =nelisp--ffmt-f= (the same
+significant-digit generator family, but FIXED precision with round-half-to-
+even).  Matches Emacs =format= on 252/252 of a flag/width/precision battery
+(=%.2f=, =%05.2f=, =%-8.2f=, =%+.2f=, =%08.3f= …).  Same lone deviation class
+as §2 — the exact-half tie on non-binary-exact values, e.g.
+=(format "%.1f" 0.05)= => ="0.0"= vs Emacs ="0.1"= (the f64→decimal
+extraction can't see the sub-ULP excess that tips 0.05 upward).
+
+** Baked-image size threshold (gotcha)
+
+A first cut implemented the full =%f/%e/%g= family (~85 lines, 9 helper
+defuns) in the prelude.  It built and ran, but *silently corrupted unrelated
+baked strings*: =(format "price")= => ="p#<object>ice"= (deterministic, the
+literal char-copy path my change never touched; =char-to-string= / =concat=
+were fine standalone, and the bundle smoke still passed — only =format='s
+baked constants were damaged).  Reverting to a single ~22-line =%f= defun
+removed the corruption entirely.  So *there is a size threshold on prelude
+additions baked into the standalone image* (between ~22 and ~85 lines of new
+code here) past which the bake silently corrupts adjacent interned values.
+Comments are stripped before baking and do not count.
+
+Consequence: =%e/%E/%g/%G= precision is deferred — they still delegate to
+native (precision unhonored; =%e= even returns ="%e"=).  Doing them safely
+needs a *native AOT-dialect primitive* (like §2's =m5_push_float=, which has
+no such size limit) rather than more baked prelude elisp.
