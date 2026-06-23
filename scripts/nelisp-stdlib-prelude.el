@@ -1825,16 +1825,32 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                     defaults (cdr defaults)))
             (nreverse out)))
          (predicate (intern (format "%s-p" name)))
-         (constructor-cell (assq :constructor options))
-         (constructor-arglist
-          (and constructor-cell (consp (cdr (cdr constructor-cell)))
-               (car (cdr (cdr constructor-cell)))))
-         (constructor
-          (nelisp-cl-macros--struct-resolve-name
-           (if constructor-cell
-               (car (cdr constructor-cell))
-             nelisp-cl-macros--struct-absent)
-           (intern (format "make-%s" name))))
+         ;; cl-lib allows MULTIPLE `:constructor' options: a `(:constructor
+         ;; nil)' suppresses the default make-NAME while additional
+         ;; `(:constructor NAME ARGLIST)' cells still define BOA constructors.
+         ;; cl-generic relies on this — `(assq :constructor ...)' would grab
+         ;; only the leading `nil' and drop `cl--generic-make' etc.  Collect
+         ;; every cell, then build a (CTOR-NAME . CTOR-ARGLIST) work-list
+         ;; (ARGLIST nil = keyword form; a `nil' NAME suppresses).
+         (constructor-cells
+          (let ((cs nil))
+            (dolist (o options)
+              (when (and (consp o) (eq (car o) :constructor))
+                (setq cs (cons o cs))))
+            (nreverse cs)))
+         (constructors
+          (if constructor-cells
+              (let ((out nil))
+                (dolist (c constructor-cells)
+                  (let ((cn (car (cdr c))))
+                    (when cn
+                      (setq out
+                            (cons (cons cn
+                                        (and (consp (cdr (cdr c)))
+                                             (car (cdr (cdr c)))))
+                                  out)))))
+                (nreverse out))
+            (list (cons (intern (format "make-%s" name)) nil))))
          (copier
           (nelisp-cl-macros--struct-resolve-name
            (nelisp-cl-macros--struct-opt :copier options)
@@ -1889,40 +1905,43 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                               (list 'nelisp--record-type 'obj)
                               (list 'quote name))))
             forms)
-      ;; Constructor form (keyword args by default; positional
-      ;; `(:constructor NAME ARGLIST)' when requested).
-      (when constructor
-        (if constructor-arglist
-            (let* ((ctor-parts
-                    (nelisp-cl-macros--defstruct-ctor-parts
-                     constructor-arglist))
-                   (ctor-formals (car ctor-parts))
-                   (ctor-aux-bindings (cadr ctor-parts))
-                   (ctor-value-syms (caddr ctor-parts))
-                   (body
-                    (cons 'apply
-                          (cons (list 'quote 'nelisp--make-record)
-                                (cons (list 'quote name)
-                                      (list
-                                       (cons
-                                        'list
-                                        (mapcar
-                                         (lambda (slot)
-                                           (if (memq slot ctor-value-syms)
-                                               slot
-                                             (cdr (assq slot slot-default-alist))))
-                                         slot-names))))))))
-              (push (list 'defun constructor ctor-formals
-                          (if ctor-aux-bindings
-                              (list 'let ctor-aux-bindings body)
-                            body))
-                    forms))
-          (push (list 'defun constructor (list '&rest args-sym)
+      ;; Constructor forms (keyword args by default; positional
+      ;; `(:constructor NAME ARGLIST)' when an arglist is given).  cl-lib
+      ;; permits several `:constructor' options, so emit one defun per cell.
+      (dolist (ctor constructors)
+        (let ((constructor (car ctor))
+              (constructor-arglist (cdr ctor)))
+          (if constructor-arglist
+              (let* ((ctor-parts
+                      (nelisp-cl-macros--defstruct-ctor-parts
+                       constructor-arglist))
+                     (ctor-formals (car ctor-parts))
+                     (ctor-aux-bindings (cadr ctor-parts))
+                     (ctor-value-syms (caddr ctor-parts))
+                     (body
                       (cons 'apply
                             (cons (list 'quote 'nelisp--make-record)
                                   (cons (list 'quote name)
-                                        (list (cons 'list slot-arg-forms))))))
-                forms)))
+                                        (list
+                                         (cons
+                                          'list
+                                          (mapcar
+                                           (lambda (slot)
+                                             (if (memq slot ctor-value-syms)
+                                                 slot
+                                               (cdr (assq slot slot-default-alist))))
+                                           slot-names))))))))
+                (push (list 'defun constructor ctor-formals
+                            (if ctor-aux-bindings
+                                (list 'let ctor-aux-bindings body)
+                              body))
+                      forms))
+            (push (list 'defun constructor (list '&rest args-sym)
+                        (cons 'apply
+                              (cons (list 'quote 'nelisp--make-record)
+                                    (cons (list 'quote name)
+                                          (list (cons 'list slot-arg-forms))))))
+                  forms))))
       ;; Copier form (shallow copy via record-ref / make-record).
       (when copier
         (push (list 'defun copier (list src-sym)
@@ -1943,6 +1962,53 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
       (cons 'progn
             (append (nreverse forms)
                     (list (list 'quote name)))))))
+
+;; ---------------------------------------------------------------------------
+;; Doc 156 breadth (2026-06-23): general stdlib functions needed to load/run
+;; real library packages (rx.el, cl-generic.el) over the bare reader.  Each is
+;; fboundp-gated so a future native builtin still wins.  rx's `rx--to-expr'
+;; reads the special var `macroexpand-all-environment'; leaving it unbound is
+;; an UNCATCHABLE abort in the reader, so declare it special with a nil default.
+;; ---------------------------------------------------------------------------
+(defvar macroexpand-all-environment nil
+  "Environment of macros currently being expanded by `macroexpand-all'.")
+(unless (fboundp 'characterp)
+  (defun characterp (object &optional _ignore)
+    "Return non-nil if OBJECT is a valid character (an integer 0..#x3FFFFF)."
+    (and (integerp object) (>= object 0) (<= object #x3fffff))))
+(unless (fboundp 'max-char)
+  (defun max-char (&optional _unicode)
+    "Return the maximum character code (#x3FFFFF)."
+    #x3fffff))
+(unless (fboundp 'mapcan)
+  (defun mapcan (func sequence)
+    "Apply FUNC to each element of SEQUENCE, `nconc' the results."
+    (apply (function nconc) (mapcar func sequence))))
+(unless (fboundp 'remq)
+  (defun remq (elt list)
+    "Return a copy of LIST with all `eq' occurrences of ELT removed."
+    (let ((acc nil))
+      (dolist (x list (nreverse acc))
+        (unless (eq x elt) (setq acc (cons x acc)))))))
+(unless (fboundp 'memql)
+  (defun memql (elt list)
+    "Return the tail of LIST whose car is `eql' to ELT, or nil."
+    (while (and list (not (eql elt (car list)))) (setq list (cdr list)))
+    list))
+(unless (fboundp 'decode-char)
+  (defun decode-char (_charset code-point)
+    "Minimal `decode-char': return CODE-POINT unchanged (ucs identity)."
+    code-point))
+(unless (fboundp 'regexp-opt)
+  (defun regexp-opt (strings &optional paren)
+    "Return a regexp matching any of STRINGS (un-optimised alternation).
+PAREN nil → shy group `\\(?:...\\)'; t → `\\(...\\)'; a string → that open paren."
+    (let ((open (cond ((stringp paren) paren) (paren "\\(") (t "\\(?:"))))
+      (concat open (mapconcat (function regexp-quote) strings "\\|") "\\)"))))
+(unless (fboundp 'help-add-fundoc-usage)
+  (defun help-add-fundoc-usage (docstring _arglist)
+    "Minimal stub: return DOCSTRING unchanged (no usage line appended)."
+    (if (stringp docstring) docstring "")))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 49 Wave 7 follow-up (2026-05-22): minimal cl-lib subset wired into
@@ -3157,8 +3223,13 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
 ;; per the macro docstring "0-based and excludes the tag").
 (unless (fboundp 'nelisp--make-record)
   (defun nelisp--make-record (type-tag &rest slots)
-    "Build a record vector [TYPE-TAG . SLOTS] for cl-defstruct."
-    (apply 'vector type-tag slots)))
+    "Build a genuine tag-12 record (TYPE-TAG, SLOTS...) for cl-defstruct.
+Doc 156: was `(apply #\\='vector ...)', but the reader now exposes a native
+`recordp' tag-12 check (Doc 22 A14) that rejected those vectors, so every
+`NAME-p' struct predicate returned nil.  Native records keep `aref'/`aset'
+(record slot read/write, A14 + the bf_aset tag-12 follow-up) working and make
+`recordp' agree, so predicates and setters are consistent."
+    (apply 'record type-tag slots)))
 (unless (fboundp 'nelisp--record-type)
   (defun nelisp--record-type (rec) (aref rec 0)))
 (unless (fboundp 'nelisp--record-length)
