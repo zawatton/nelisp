@@ -1,0 +1,58 @@
+#+TITLE: Doc 158 — chained (variadic) numeric comparison + rx (any) char engine
+#+DATE: 2026-06-23
+#+STATUS: FIXED — rx (any …) now produces correct char classes; chained comparison
+#+STATUS:   (< a b c) etc. is correct for any arity.
+#+BRANCH: spike/flat-arena-boot-install
+
+* 0. Symptom
+
+=(rx (any "a-z"))= produced a garbled NEGATED class =[^ -`{-…]= with high-byte
+mojibake (Doc 156/157 called it the "rx (any) char engine" open item), and
+=(rx (any "abc"))= aborted uncatchably.
+
+* 1. Root cause #1 — comparison ops were 2-ary only
+
+The reader's native =<= / =<== / =>= / =>== / === dispatch arms compared only args
+0 and 1, ignoring the rest:
+  ((:u8 "<") . (if (= (wf_num_lt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) …))
+So a CHAINED comparison silently dropped its tail:
+  (< 1 5 3)            => t   (should be nil)
+  (<= 97 #x3fff7f 122) => t   (should be nil — 4194175 ≰ 122)
+
+rx's =rx--generate-alt= decides whether a char-set is better written complemented
+with exactly =(rx--every (lambda (iv) (not (<= (car iv) #x3fff7f (cdr iv)))) …)=.
+With the broken 3-ary =<==, =(<= 97 #x3fff7f 122)= → t → =(not t)= → nil → the
+"every interval avoids the raw-byte boundary" test failed → rx NEGATED [a-z] and
+complemented it against =(max-char)= (#x3fffff) → the garbled =[^…]=.
+
+*Fix* (=scripts/nelisp-standalone-build.el=): make the five comparison dispatch
+arms CHAINED.  Added =wf_chain_lt/gt/le/ge/eq=, each walking the ARGS cons-list and
+requiring every adjacent pair to satisfy the existing 2-arg =wf_num_*= test (empty
+/ single arg → true), mirroring =wf_sum='s cons walk.  Now =(< 1 2 3)=t=,
+=(< 1 5 3)=nil=, =(<= 97 #x3fff7f 122)=nil=; 2-arg comparisons + =sort #'<= +
+=fib= unchanged.  This is a general correctness fix, not rx-specific.
+
+* 2. Root cause #2 — car-less-than-car was void
+
+=(rx (any "abc"))= sorts its char intervals with =(sort … #'car-less-than-car)=.
+That builtin was absent; a *void sort predicate* is an uncatchable abort (so only
+the multi-interval case — "abc", not the single-interval "a-z" — hit it).
+
+*Fix* (=scripts/nelisp-stdlib-prelude.el=): bake
+=(defun car-less-than-car (a b) (< (car a) (car b)))= (fboundp-gated).
+
+* 3. Result
+
+#+begin_example
+(rx (any "a-z"))            => "[a-z]"
+(rx (any "abc"))            => "[a-c]"
+(rx (any "a-z0-9_"))        => "[0-9_a-z]"
+(rx (any ?x ?y ?z))         => "[x-z]"
+(rx (any (?a . ?f)))        => "[a-f]"
+(rx (not (any "a-z")))      => "[^a-z]"
+(rx bol (any "a-z") (one-or-more (any "0-9")) eol) => "^[a-z][0-9]+$"
+#+end_example
+
+rx is now broadly functional on the bare reader (literals / or / repetition /
+groups / anchors / named classes — Doc 156 §4.3 — plus the full =(any …)=
+char-set engine).  No regression (fib / sort / subset / cl-defstruct all pass).

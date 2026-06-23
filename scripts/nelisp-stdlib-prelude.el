@@ -2017,6 +2017,10 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
   (defun decode-char (_charset code-point)
     "Minimal `decode-char': return CODE-POINT unchanged (ucs identity)."
     code-point))
+(unless (fboundp 'car-less-than-car)
+  ;; Sort predicate over (KEY . _) cells; rx's `(any "abc")' sorts char
+  ;; intervals with it (a void sort predicate is an uncatchable abort).
+  (defun car-less-than-car (a b) (< (car a) (car b))))
 (unless (fboundp 'regexp-opt)
   (defun regexp-opt (strings &optional paren)
     "Return a regexp matching any of STRINGS (un-optimised alternation).

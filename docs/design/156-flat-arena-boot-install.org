@@ -183,11 +183,12 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
        decode-char, regexp-opt) into the prelude (commit 6cd9ef6c).  rx now
        translates *literals / or / repetition (+,*,=N) / groups / anchors / named
        char-classes*: =(rx bol (group (+ word)) eol)= → ="^\\([[:word:]]+\\)$"=.
-       *Still deep*: =(any RANGE)= char-set translation mis-negates — =(rx (any
-       "a-z"))= → a garbled =[^ -…]= complement (engine emits the complement +
-       high-byte mojibake = the Doc-22 UTF-8 raw-byte interaction); =(any "abc")=
-       also aborts.  A reader char-interval / char-alt engine item, separate from
-       the cold-loader.
+       =(any RANGE)= char-set translation *FIXED 2026-06-23 (Doc 158)*: the garbled
+       =[^…]= complement was the reader's =<==/=<=/… comparison ops being 2-ary only
+       (so =(<= 97 #x3fff7f 122)=t= flipped rx's complement test); =(any "abc")=
+       aborted on a void =car-less-than-car= sort predicate.  Fixed natively (chained
+       variadic comparison) + a baked =car-less-than-car=.  Now =(rx (any "a-z"))=
+       ="[a-z]"=, =(any "abc")="[a-c]"=, =(not (any "a-z"))="[^a-z]"=.
      - =cl-generic.el= IS vendored (=vendor/emacs-lisp/emacs-lisp/cl-generic.el=) and
        *now loads fully* (2026-06-23): the chain was help-add-fundoc-usage (stubbed,
        6cd9ef6c) → pcase-let* (provided by emacs-pcase.el) → cl--generic-make.  That
