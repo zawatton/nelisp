@@ -2078,6 +2078,16 @@ Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
 (unless (fboundp 'byte-code-function-p)
   ;; The reader has no byte-code objects (everything is interpreted).
   (defun byte-code-function-p (_object) nil))
+;; NOTE (Doc 157 §5): `compiled-function-p' is intentionally NOT defined here.
+;; Defining it (correctly returning nil) lets cl-generic's `cl--generic-compiler'
+;; defvar init succeed and bind the EVAL-based dispatcher compiler — at which
+;; point cl-generic.el's load eagerly builds ~15-20 dispatchers (per internal
+;; method + `cl--generic-prefill-dispatchers'), each an `(eval BIG-LAMBDA t)' on
+;; the slow reader interpreter, and the load does not finish within 280s.
+;; Withholding it keeps cl-generic *loadable* (the compiler stays unbound, so
+;; cl-defmethod aborts gracefully on first use instead of hanging the load).
+;; Full cl-generic dispatch needs the reader to gain compiled functions
+;; (byte-compilation) so the dispatchers compile fast — a reader-core perf item.
 (unless (fboundp 'interpreted-function-p)
   (defun interpreted-function-p (object) (eq (car-safe object) 'closure)))
 (unless (fboundp 'cl--find-class)

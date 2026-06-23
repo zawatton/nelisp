@@ -3,9 +3,10 @@
 #+STATUS: LATTICE WORKING + OCLOSURE RE-IMPLEMENTED — cl--find-class / cl-type-of /
 #+STATUS:   cl--class-allparents + the built-in type hierarchy are live standalone;
 #+STATUS:   oclosure-define registers its types; OClosures work on list-closures
-#+STATUS:   (cl--generic-isnot-nnm-p verified, §4).  cl-generic FULL dispatch now
-#+STATUS:   bottoms out in the dispatch-COMPILATION tail (cl--generic-make-function
-#+STATUS:   with a registered method, §5) — a further subsystem.
+#+STATUS:   (cl--generic-isnot-nnm-p verified, §4).  cl-generic FULL dispatch is
+#+STATUS:   gated on a reader PERFORMANCE wall: binding the eval-based dispatcher
+#+STATUS:   compiler (needs compiled-function-p) makes cl-generic load build ~15-20
+#+STATUS:   dispatchers that don't finish in 280s on the interpreter (§5).
 #+BRANCH: spike/flat-arena-boot-install
 
 * 0. Why
@@ -106,18 +107,38 @@ TYPE))= = the first BODY form, read back positionally via =(nth 3 closure)=:
 → t — exactly cl-generic's use.  Also baked =always= + =current-load-list= (an
 unbound special-var read in =cl-generic-define-method= is an uncatchable abort).
 
-* 5. The remaining wall — cl-generic dispatch-COMPILATION tail
+* 5. The final wall — dispatch-COMPILATION is a reader PERFORMANCE limit
 
-With the lattice (§1–3) + the OClosure re-impl (§4), cl-generic gets through
-method *expansion*, =cl-generic-ensure-function=, =cl-generic-define-method='s
-generalizer bookkeeping, and =cl--generic-isnot-nnm-p=.  =cl-defmethod= still
-aborts inside =cl-generic-define-method= at =(cl--generic-make-function generic)=
-*once a method is registered* (it builds an empty generic fine).  That is the
-dispatch-COMPILATION subsystem — =cl--generic-make-function= →
-=cl--generic-build-combined-method= → the =cl--generic-dispatchers= /
-=cl--generic-compiler= machinery — a further multi-gap layer (its own special
-vars / =cl-flet= in method bodies / etc.), distinct from both the type lattice and
-OClosure.  That is the next dedicated area for full method dispatch.
+With the lattice (§1–3) + the OClosure re-impl (§4), cl-generic gets through method
+*expansion*, =cl-generic-ensure-function=, =cl-generic-define-method='s generalizer
+bookkeeping, and =cl--generic-isnot-nnm-p=.  =cl-defmethod= then reaches
+=(cl--generic-make-function generic)= once a method is registered, which builds the
+dispatch function via =cl--generic-get-dispatcher= → =(funcall cl--generic-compiler
+BIG-LAMBDA)=.
+
+*Traced the abort (2026-06-23)*: =cl--generic-compiler= was UNBOUND, because its
+defvar init =(if (not (compiled-function-p (lambda (x) (+ x 1)))) (lambda (exp)
+(eval exp t)) #'byte-compile)= errors when =compiled-function-p= is void — reading
+the unbound var is an uncatchable abort.  Defining =compiled-function-p= (→ nil,
+correct: the reader has no compiled functions) binds =cl--generic-compiler= to the
+EVAL fallback =(lambda (exp) (eval exp t))=.
+
+*But that is a wall, not a fix*: with the compiler bound, =cl-generic.el='s own load
+eagerly builds ~15–20 dispatchers (one per internal method =cl-no-applicable-method=
+/… plus every =cl--generic-prefill-dispatchers= call), each a =(eval BIG-NESTED-
+LAMBDA t)= (make-hash-table + with-memoization + apply) on the slow reader
+interpreter.  cl-generic load did NOT complete within *280 s* (=EXIT 124=).  cl-generic
+itself notes the eval path is a bootstrap fallback and byte-compilation gives ~5×;
+on the reader there is no byte-compiler, so the dispatchers stay interpreted and the
+build is impractical.
+
+*Decision*: =compiled-function-p= is intentionally WITHHELD from the prelude (Doc
+157 §6 note) so cl-generic stays *loadable* — the compiler stays unbound and
+=cl-defmethod= aborts gracefully on first use rather than hanging the whole load.
+Full cl-generic method dispatch is therefore gated on a *reader-core performance*
+item: the reader gaining compiled functions (byte-compilation), or a much cheaper
+dispatcher representation than the prefill-heavy eval build.  Both the type lattice
+(§1–3) and the OClosure re-impl (§4) are done and remain useful regardless.
 
 * 6. Files
 
