@@ -244,8 +244,24 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
      - Net: the cold-loader faithfully carries every package the reader can already
        load; growing the subset is now purely Doc-16 breadth work (fix the load/run
        gap, then it joins the dump for free).
-4. *Full bundle*: one-time slow dump (still 30–66 min, OOM risk — run off-peak /
-   high-RAM), then fast marker cold-load for breadth.
+4. *Full bundle* — *reframed 2026-06-23: the bundle is already fast via the .el
+   load; the cold-loader is not needed for it.*  The "30–66 min / 11–15 GB" figure
+   was the =.repl= path (=build/nemacs-bootstrap.repl=, form-by-form REPL replay).
+   Loading =build/nemacs-bootstrap.el= (2.4 MB) instead with =(load …)= on
+   =target/nelisp= takes *~12 s* and the full library is live + drivable:
+   =(seq-filter …)=(2 3)=, =(cl-remove-if …)=(1 3)=, =(string-trim "  hi  ")="hi"=,
+   =(mapcan …)=(1 1 2 2)=; cl-loop / pcase / gv-define-setter / rx / cl-defstruct /
+   dolist / map-elt all fboundp.  So *full-bundle breadth needs no flat-arena image*
+   — just =(load "build/nemacs-bootstrap.el")=.
+   - The flat-arena DUMP of the full bundle *aborts* — and NOT for chunk-0 size:
+     rebuilding with =NELISP_LINUX_ARENA_SIZE= = 1.5 GB and 4 GB still aborts the
+     dump (the 95 MB 6-package subset dumps fine, §4.3).  It is a STRUCTURAL limit of
+     the single-chunk cold-loader (fixed interned-region / relocation-table capacity
+     sized for subset images), which would need a multi-chunk dump + larger interned
+     region to capture the full library.  But that is *moot*: the ~12 s .el load
+     already makes the bundle breadth-usable, so the cold-loader's role stays what
+     §4.3 proved — fast reload of standalone-reader package SUBSETS (≤ ~95 MB,
+     single chunk), not the whole bundle.
 
 * 5. Risks / caveats
 
