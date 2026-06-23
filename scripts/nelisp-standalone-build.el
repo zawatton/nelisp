@@ -4188,15 +4188,95 @@ unresolved at link time."
           (f64-ge (bits-to-f64 (sexp-float-unwrap vptr))
                   (i64-to-f64 n))
         0))
-    (defun m5_push_float (ms vptr)
-      (let* ((whole (f64-to-i64-trunc
-                     (bits-to-f64 (sexp-float-unwrap vptr)))))
+    ;; --- real float -> decimal printer (Doc 159) ---------------------
+    ;; The integer part is printed exactly; the fractional part is rendered
+    ;; to P=15 SIGNIFICANT digits (= DBL_DIG), then rounded and trimmed.
+    ;; This is %.15g-style, not shortest-round-trip.  P=15 is the precision
+    ;; below which every decimal round-trips, so human-written values
+    ;; (0.1, 3.14159, 123.456, 99.99) print cleanly and match Emacs
+    ;; `number-to-string'; division/irrational results (1/3, 22/7) print one
+    ;; significant digit shorter than Emacs's shortest form but stay clean
+    ;; (no f64-noise tail), and very large / small magnitudes stay in fixed
+    ;; (non-scientific) notation.  Choosing P=16 instead would match the
+    ;; 1/3 family but expose noise tails like 99.99 -> "99.98999999999999".
+    (defun m5_idigits (n)            ; decimal digit count of i64 n >= 1
+      (if (< n 10) 1 (+ 1 (m5_idigits (/ n 10)))))
+    ;; count leading zero fractional digits before the first non-zero one
+    ;; (FB = fraction bits, in [0,1)); CAP bounds the recursion for tiny values
+    (defun m5_leadzeros (fb cap scratch)
+      (if (<= cap 0) 0
         (seq
-         (m5_push_dec ms whole)
-         (mut-str-push-byte ms 46)
-         (if (= (m5_float_eq_i64_p vptr whole) 1)
-             (mut-str-push-byte ms 48)
-           (mut-str-push-byte ms 53)))))
+         (nl_sexp_write_float scratch (f64-mul (bits-to-f64 fb) (i64-to-f64 10)))
+         (let* ((frbits (ptr-read-u64 scratch 8))
+                (d (f64-to-i64-trunc (bits-to-f64 frbits))))
+           (if (> d 0) 0
+             (seq (nl_sexp_write_float scratch
+                    (f64-sub (bits-to-f64 frbits) (i64-to-f64 d)))
+                  (+ 1 (m5_leadzeros (ptr-read-u64 scratch 8) (- cap 1) scratch))))))))
+    ;; write COUNT fractional digits of FB (bits) into BUF[OFF..], one byte each
+    (defun m5_gendigits (buf off count fb scratch)
+      (if (>= off count) 0
+        (seq
+         (nl_sexp_write_float scratch (f64-mul (bits-to-f64 fb) (i64-to-f64 10)))
+         (let* ((frbits (ptr-read-u64 scratch 8))
+                (d (f64-to-i64-trunc (bits-to-f64 frbits))))
+           (seq (ptr-write-u8 buf off d)
+                (nl_sexp_write_float scratch
+                  (f64-sub (bits-to-f64 frbits) (i64-to-f64 d)))
+                (m5_gendigits buf (+ off 1) count (ptr-read-u64 scratch 8) scratch))))))
+    ;; propagate CARRY down BUF[J..0]; returns the final carry out of digit 0
+    (defun m5_carry (buf j carry)
+      (if (< j 0) carry
+        (if (= carry 0) 0
+          (let* ((nd (+ (ptr-read-u8 buf j) carry)))
+            (if (>= nd 10)
+                (seq (ptr-write-u8 buf j (- nd 10)) (m5_carry buf (- j 1) 1))
+              (seq (ptr-write-u8 buf j nd) 0))))))
+    ;; index of the last non-zero byte in BUF[0..K] (>= 0; keeps >=1 digit)
+    (defun m5_lastnz (buf k)
+      (if (<= k 0) 0
+        (if (= (ptr-read-u8 buf k) 0) (m5_lastnz buf (- k 1)) k)))
+    (defun m5_pushdigits (ms buf i k)
+      (if (> i k) 0
+        (seq (mut-str-push-byte ms (+ 48 (ptr-read-u8 buf i)))
+             (m5_pushdigits ms buf (+ i 1) k))))
+    ;; emit "WHOLE.frac": generate GEN+1 frac digits, round at digit GEN via a
+    ;; backward carry (which may bump WHOLE), then push the trimmed fraction.
+    (defun m5_push_float_frac (ms fb whole gen buf scratch)
+      (seq
+       (m5_gendigits buf 0 (+ gen 1) fb scratch)
+       (let* ((rc (m5_carry buf (- gen 1)
+                            (if (>= (ptr-read-u8 buf gen) 5) 1 0)))
+              (k (m5_lastnz buf (- gen 1))))
+         (seq (m5_push_dec ms (+ whole rc))
+              (mut-str-push-byte ms 46)
+              (m5_pushdigits ms buf 0 k)))))
+    (defun m5_push_float_mag (ms fb buf scratch)  ; FB = magnitude bits (>= 0)
+      (let* ((whole (f64-to-i64-trunc (bits-to-f64 fb)))
+             (fb2 (seq (nl_sexp_write_float scratch
+                         (f64-sub (bits-to-f64 fb) (i64-to-f64 whole)))
+                       (ptr-read-u64 scratch 8))))
+        (if (= (f64-le (bits-to-f64 fb2) (i64-to-f64 0)) 1)
+            ;; integer-valued float -> "WHOLE.0"
+            (seq (m5_push_dec ms whole)
+                 (mut-str-push-byte ms 46)
+                 (mut-str-push-byte ms 48))
+          (let* ((gen (if (> whole 0)
+                          (let* ((g (- 15 (m5_idigits whole))))
+                            (if (< g 1) 1 g))
+                        (+ (m5_leadzeros fb2 25 scratch) 15))))
+            (m5_push_float_frac ms fb2 whole gen buf scratch)))))
+    (defun m5_push_float (ms vptr)
+      (let* ((scratch (alloc-bytes 32 8))
+             (buf (alloc-bytes 48 1))
+             (fb (sexp-float-unwrap vptr)))
+        (if (= (f64-lt (bits-to-f64 fb) (i64-to-f64 0)) 1)
+            (seq (mut-str-push-byte ms 45)
+                 (let* ((mb (seq (nl_sexp_write_float scratch
+                                   (f64-sub (i64-to-f64 0) (bits-to-f64 fb)))
+                                 (ptr-read-u64 scratch 8))))
+                   (m5_push_float_mag ms mb buf scratch)))
+          (m5_push_float_mag ms fb buf scratch))))
     (defun m5_hex_digit (d)
       (if (< d 10) (+ 48 d) (+ 87 d)))
     (defun m5_push_uhex (ms v)

@@ -1,0 +1,104 @@
+#+TITLE: Doc 159 — real float → decimal printer (replacing the ".5" stub)
+#+DATE: 2026-06-24
+#+STATUS: FIXED — floats now render their actual decimal digits (P=15, %.15g-style).
+#+BRANCH: spike/flat-arena-boot-install
+
+* 0. Symptom
+
+On the bare reader every non-integer float printed as =N.5=:
+
+#+begin_example
+3.14159            => 3.5
+0.25               => 0.5
+123.456            => 123.5
+(/ 10.0 3.0)       => 3.5
+(number-to-string 3.14159) => "3.5"
+#+end_example
+
+The breadth loop first read this as "float arithmetic is broken", but it is
+*print-only*: the stored value is a correct f64.  Proof —
+
+#+begin_example
+(= 3.14159 3.5)                      => nil          ; not equal to 3.5
+(* 3.14159 100000)                   => 314159.0     ; multiplies correctly
+(truncate (* (- 3.14159 3) 100000))  => 14158        ; frac part is 0.14159…
+(= 0.25 (* 0.5 0.5))                 => t            ; full precision retained
+#+end_example
+
+So reading, arithmetic and comparison are all correct; only =float → string=
+was wrong.
+
+* 1. Root cause — =m5_push_float= was a stub
+
+=number-to-string= / =prin1= route floats through =m5_push_float=
+(=scripts/nelisp-standalone-build.el=).  It printed the (correct) integer part,
+a =.=, then a single hard-coded digit:
+
+#+begin_src elisp
+(defun m5_push_float (ms vptr)
+  (let* ((whole (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap vptr)))))
+    (seq (m5_push_dec ms whole)
+         (mut-str-push-byte ms 46)
+         (if (= (m5_float_eq_i64_p vptr whole) 1)
+             (mut-str-push-byte ms 48)     ; whole number  -> "N.0"
+           (mut-str-push-byte ms 53)))))   ; anything else -> "N.5"   <-- bug
+#+end_src
+
+It never generated fractional digits at all.
+
+* 2. Fix — significant-digit decimal generation (P = 15)
+
+Replaced the stub with a real printer, written in the restricted AOT dialect
+(no new Rust; the dialect is elisp that lowers to native code).  Algorithm:
+
+1. sign: emit =-= and negate the magnitude bits.
+2. integer-valued float (=frac == 0=): emit =WHOLE.0=.
+3. otherwise choose the number of fractional digits by SIGNIFICANT-digit budget
+   =P = 15= (= =DBL_DIG=):
+   - =whole > 0=: =gen = max(1, 15 - digits(whole))=
+   - =whole == 0=: =gen = leadingZeros + 15= (leading zeros before the first
+     non-zero fractional digit do not consume the budget).
+4. generate =gen+1= fractional digits by repeated =frac *= 10; d = trunc(frac);
+   frac -= d=, storing one byte per digit in a scratch buffer.
+5. round: if digit =gen= ≥ 5, propagate a carry backwards through digits
+   =gen-1 … 0=; a carry out of digit 0 bumps =whole=.
+6. trim trailing zeros (keep ≥ 1) and push the digits.
+
+** Dialect constraints learned
+
+- *f64 values cannot live in a =let*= variable* — the AOT compiler rejects an
+  f64-class leaf bound to a general-purpose slot
+  (=:f64-leaf-shape-unsupported=).  f64 results must be consumed inline or
+  round-tripped to bits via =nl_sexp_write_float= + =(ptr-read-u64 scratch 8)=
+  and carried as a u64, exactly like =wf_fsum= / =wf_fprod=.
+- The new helpers (=m5_idigits=, =m5_leadzeros=, =m5_gendigits=, =m5_carry=,
+  =m5_lastnz=, =m5_pushdigits=, =m5_push_float_frac=, =m5_push_float_mag=) are
+  plain recursive defuns in the M5 helper list; =alloc-bytes= provides the
+  digit buffer and the f64 scratch slot.
+
+* 3. Result
+
+=number-to-string= now matches Emacs for human-written decimals (36/40 of a
+mixed battery, incl. all money-style values):
+
+#+begin_example
+0.25 0.1 0.2 0.3 3.14159 123.456 0.0001234567 9.999999999 1234567.89
+99.99 19.95 0.99 49.99 0.05 1234.56   => all exact
+(/ 1.0 3.0)   => 0.333333333333333    ; 15 sig digits (Emacs shortest: 16)
+(/ 22.0 7.0)  => 3.14285714285714     ; clean, one digit shorter than Emacs
+#+end_example
+
+** Deliberate non-goals / known deviations
+
+- *Not shortest-round-trip.*  P=15 prints division/irrational results one
+  significant digit shorter than Emacs's shortest form, but always cleanly
+  (no f64-noise tail).  P=16 would match the 1/3 family yet expose noise like
+  =99.99 -> "99.98999999999999"=; P=15 keeps money/human values clean, which is
+  the better trade for breadth.  True shortest-round-trip would need a decimal→
+  f64 parse oracle callable from the printer (deferred).
+- *No scientific notation.*  Very large / small magnitudes stay fixed:
+  =1e-10 -> "0.0000000001"=, =1e20 -> "100000000000000000000.0"=.
+- *=format= precision is unrelated and still open.*  =(format "%.2f" 3.14159)=
+  returns ="3.14159"= (full value, not ="3.14"=): the =%f= width/precision
+  spec is ignored by =m5_fmt_loop=, a separate code path from this printer.
+  Before this fix it returned ="3.5"=; it is now correct-digits-but-unrounded.
