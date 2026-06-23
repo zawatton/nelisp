@@ -233,6 +233,37 @@ For unrecognised places, signals an error at expansion time."
                        value))
                 ((eq fn 'plist-get)
                  (list 'plist-put (car args) (cadr args) value))
+                ((eq fn 'alist-get)
+                 ;; (setf (alist-get K A) V): assq-update the existing cell or
+                 ;; prepend (K . V), recursing on the alist place A via `setf'.
+                 ;; cl-generic's dispatch tables rely on this.
+                 (let ((cell (make-symbol "cell")))
+                   (list 'let (list (list cell (list 'assq (car args) (cadr args))))
+                         (list 'if cell (list 'setcdr cell value)
+                               (list 'setf (cadr args)
+                                     (list 'cons (list 'cons (car args) value)
+                                           (cadr args)))))))
+                ((and (symbolp fn)
+                      (boundp 'nelisp-cl-macros--accessor-info)
+                      (assq fn nelisp-cl-macros--accessor-info))
+                 ;; cl-defstruct slot accessor place.  The standalone
+                 ;; cl-defstruct (stdlib prelude) records accessors in
+                 ;; `nelisp-cl-macros--accessor-info' (it does NOT set the
+                 ;; `cl-struct-setter' property the generic fallback below
+                 ;; looks for), so consult it directly -> `nelisp--record-set'.
+                 ;; cl-generic's `(setf (cl--generic-dispatches g) ...)' needs this.
+                 (list 'nelisp--record-set (car args)
+                       (cdr (assq fn nelisp-cl-macros--accessor-info))
+                       value))
+                ((and (symbolp fn) (fboundp fn)
+                      (eq (car-safe (symbol-function fn)) 'macro))
+                 ;; A generalized place defined as a MACRO (e.g. cl-generic's
+                 ;; `(cl--generic NAME)' = `(get NAME ...)').  Expand the place
+                 ;; and re-dispatch through `setf'.  Without this, cl-generic's
+                 ;; `(setf (cl--generic name) ...)' fell through to the symbol
+                 ;; fallback and built a `(funcall 'cl--generic--setter ...)'
+                 ;; call to a non-existent setter.
+                 (list 'setf (macroexpand-1 place) value))
                 ((symbolp fn)
                  (let ((simple-setter (get fn 'cl-simple-setter)))
                    (if simple-setter
