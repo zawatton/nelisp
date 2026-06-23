@@ -96,8 +96,13 @@ mixed battery, incl. all money-style values):
   =99.99 -> "99.98999999999999"=; P=15 keeps money/human values clean, which is
   the better trade for breadth.  True shortest-round-trip would need a decimal→
   f64 parse oracle callable from the printer (deferred).
-- *No scientific notation.*  Very large / small magnitudes stay fixed:
-  =1e-10 -> "0.0000000001"=, =1e20 -> "100000000000000000000.0"=.
+- *Scientific notation* (added Doc 159 §5): =m5_push_float_mag= now switches
+  to exponential via the §4 =m5_fmt_sci= when the decimal exponent is < -4 or
+  >= 15 (= the P=15 significant digits), the %g rule.  =1e-5 -> "1e-05"=,
+  =1e15 -> "1e+15"=, =6.022e23 -> "6.022e+23"=, =-1e20 -> "-1e+20"=, while
+  =1e14 -> "100000000000000.0"= stays fixed — matching Emacs `number-to-string'
+  for clean magnitudes.  Deviation: 16-17 digit integers in =[1e15,1e16)= that
+  Emacs keeps fixed (shortest-length) print in scientific here.
 
 * 4. =format= =%f/%e/%g= precision (Doc 159 §3/§4)
 
@@ -143,6 +148,22 @@ reduction too (the conversion no longer needs the native default formatter).
 
 ** Deferred
 
-- Scientific notation in =number-to-string= / =prin1= (§2) is still fixed
-  decimal; only =format='s =%e/%g= produce exponents.
 - =%a= (hex float) is not implemented.
+
+* 5. =number-to-string= scientific notation + a lexer bug it exposed
+
+=m5_push_float_mag= gained the %g-style exponent switch (§2 deviations,
+updated above): exponent < -4 or >= 15 routes to =m5_fmt_sci= (15 sig,
+stripped).  Verified on arithmetically-constructed magnitudes — =1e20 -> "1e+20"=,
+=1/1e20 -> "1e-20"=, =6.022e23 -> "6.022e+23"=, =1e40 -> "1e+40"=,
+=-1e20 -> "-1e+20"=, =1e14 -> "100000000000000.0"= (fixed), =1e15 -> "1e+15"=.
+=format= %f/%e/%g unregressed (400/401), no baked-string corruption.
+
+*Separately surfaced — large-exponent float LITERALS misread by the lexer.*
+The values had to be *constructed* (=(* 1e10 1e10)=) because the source reader
+mis-parses large-exponent literals: =1e20= reads as ≈7.77e18
+(=(= 1e20 (* 1e10 1e10))= => nil), and =1e100=/=1e-100= read as 0 / overflow.
+Small exponents are fine (=1e3 -> 1000.0=, =1.5e2 -> 150.0=, =2e-3 -> 0.002=,
+=6.022e10= and =1.5e-8= round-trip).  This is a *reader/lexer* bug, independent
+of the printer (the printer renders constructed large magnitudes correctly);
+it is the next float follow-up.

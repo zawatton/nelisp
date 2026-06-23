@@ -4264,20 +4264,29 @@ unresolved at link time."
               (mut-str-push-byte ms 46)
               (m5_pushdigits ms buf 0 k)))))
     (defun m5_push_float_mag (ms fb buf scratch)  ; FB = magnitude bits (>= 0)
-      (let* ((whole (f64-to-i64-trunc (bits-to-f64 fb)))
-             (fb2 (seq (nl_sexp_write_float scratch
-                         (f64-sub (bits-to-f64 fb) (i64-to-f64 whole)))
-                       (ptr-read-u64 scratch 8))))
-        (if (= (f64-le (bits-to-f64 fb2) (i64-to-f64 0)) 1)
-            ;; integer-valued float -> "WHOLE.0"
-            (seq (m5_push_dec ms whole)
-                 (mut-str-push-byte ms 46)
-                 (mut-str-push-byte ms 48))
-          (let* ((gen (if (> whole 0)
-                          (let* ((g (- 15 (m5_idigits whole))))
-                            (if (< g 1) 1 g))
-                        (+ (m5_leadzeros fb2 25 scratch) 15))))
-            (m5_push_float_frac ms fb2 whole gen buf scratch)))))
+      (if (= (f64-le (bits-to-f64 fb) (i64-to-f64 0)) 1)
+          (seq (mut-str-push-byte ms 48) (mut-str-push-byte ms 46)
+               (mut-str-push-byte ms 48))            ; mag == 0 -> "0.0"
+        ;; %g-style switch: exponent < -4 or >= 15 (= the P=15 significant
+        ;; digits) prints in scientific notation (15 sig, stripped mantissa),
+        ;; like Emacs `number-to-string' (1e15 -> "1e+15", 1e-5 -> "1e-05").
+        (let* ((e (m5_fmt_exp_of fb 0 400 scratch)))
+          (if (= (if (< e -4) 1 (if (>= e 15) 1 0)) 1)
+              (m5_fmt_sci ms fb 14 0 1 buf scratch)
+            (let* ((whole (f64-to-i64-trunc (bits-to-f64 fb)))
+                   (fb2 (seq (nl_sexp_write_float scratch
+                               (f64-sub (bits-to-f64 fb) (i64-to-f64 whole)))
+                             (ptr-read-u64 scratch 8))))
+              (if (= (f64-le (bits-to-f64 fb2) (i64-to-f64 0)) 1)
+                  ;; integer-valued float -> "WHOLE.0"
+                  (seq (m5_push_dec ms whole)
+                       (mut-str-push-byte ms 46)
+                       (mut-str-push-byte ms 48))
+                (let* ((gen (if (> whole 0)
+                                (let* ((g (- 15 (m5_idigits whole))))
+                                  (if (< g 1) 1 g))
+                              (+ (m5_leadzeros fb2 25 scratch) 15))))
+                  (m5_push_float_frac ms fb2 whole gen buf scratch))))))))
     (defun m5_push_float (ms vptr)
       (let* ((scratch (alloc-bytes 32 8))
              (buf (alloc-bytes 48 1))
