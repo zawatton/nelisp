@@ -519,17 +519,42 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
              ((eq (car (cdr (cdr cur))) 'in)
               (setq list-form (car (cdr (cdr (cdr cur)))))
               (setq cur (cdr (cdr (cdr (cdr cur))))))
-             ;; Phase 4 B: `for VAR from N {to,below} M' numeric form.
+             ;; `for VAR being [the|each] {hash-keys|hash-values} of H' —
+             ;; rewrite into iteration over the corresponding list so the
+             ;; existing `in LIST' machinery handles it.  (Was unrecognised,
+             ;; so the whole loop expanded to nil — an empty result.)
+             ((eq (car (cdr (cdr cur))) 'being)
+              (let* ((r (cdr (cdr (cdr cur))))                ; after `being'
+                     (r (if (memq (car r) '(the each)) (cdr r) r)) ; skip the/each
+                     (what (car r))                           ; hash-keys/...
+                     (r (cdr r))
+                     (of-kw (car r))                          ; `of'
+                     (h-form (car (cdr r))))
+                (if (and (eq of-kw 'of)
+                         (memq what '(hash-keys hash-key hash-values hash-value)))
+                    (progn
+                      (setq list-form
+                            (list (if (memq what '(hash-keys hash-key))
+                                      'hash-table-keys 'hash-table-values)
+                                  h-form))
+                      (setq cur (cdr (cdr r))))               ; after H
+                  (setq recognised nil))))
+             ;; `for VAR from N {to,below} M' numeric form.  Rewrite into a
+             ;; `(number-sequence N M)' list so the unified collect/sum/count/do
+             ;; machinery applies — the old dedicated numeric branch ran BEFORE
+             ;; the collect/sum branches and only honoured `do', so `for i from 1
+             ;; to 4 collect i' silently dropped the collect (returned the final
+             ;; index, not the list).
              ((eq (car (cdr (cdr cur))) 'from)
-              (setq numeric-from (car (cdr (cdr (cdr cur)))))
-              (let ((kw2 (car (cdr (cdr (cdr (cdr cur))))))
+              (let ((from-val (car (cdr (cdr (cdr cur)))))
+                    (kw2 (car (cdr (cdr (cdr (cdr cur))))))
                     (val2 (car (cdr (cdr (cdr (cdr (cdr cur))))))))
                 (cond
                  ((eq kw2 'to)
-                  (setq numeric-to val2)
+                  (setq list-form (list 'number-sequence from-val val2))
                   (setq cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
                  ((eq kw2 'below)
-                  (setq numeric-below val2)
+                  (setq list-form (list 'number-sequence from-val (list '1- val2)))
                   (setq cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
                  (t (setq recognised nil)))))
              (t
