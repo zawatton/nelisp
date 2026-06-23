@@ -3413,6 +3413,21 @@ SysV would emit `push rdi' = 57 instead."
     (should (nelisp-aot-compiler-test--bytes-contain-p
              text (unibyte-string #x66 #x48 #x0f #x7e #xc0)))))
 
+;; --- `frame-alloc' fixed stack block (nelisp-cfront aggregate locals) ---
+;; `(frame-alloc NBYTES)' reserves NBYTES (rounded to whole 8-byte slots)
+;; from the defun's frame slot pool and returns the block's lowest
+;; address as a gp i64 — `mov rax, rbp; sub rax, K' (K via imm32 so large
+;; blocks stay out of the disp8 slot range).  Models a C local array /
+;; struct-by-value / address-taken scalar.
+
+(ert-deftest nelisp-aot-compiler/frame-alloc-emits-rbp-minus-k ()
+  "frame-alloc materialises its block address as `mov rax,rbp; sub rax,K'."
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
+               '(defun probe () (let ((p (frame-alloc 32))) (ptr-read-u64 p 0))))))
+    ;; mov rax, rbp (48 89 E8) immediately followed by sub rax, imm32 (48 81 E8 ..)
+    (should (nelisp-aot-compiler-test--bytes-contain-p
+             text (unibyte-string #x48 #x89 #xe8 #x48 #x81 #xe8)))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here

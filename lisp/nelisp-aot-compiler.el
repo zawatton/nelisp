@@ -704,6 +704,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (f64-to-i64-trunc . 27)
     (i64-to-f64 . 28)
     (f64-bits . 100)
+    (frame-alloc . 101)
     (if . 29)
     (imm . 30)
     (let . 31)
@@ -8281,6 +8282,29 @@ functions `((NAME . ARITY) ...)'."
     (nelisp-aot-compiler--make-ir 'f64-bits
           :f64-expr (nelisp-aot-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
+   ;; (frame-alloc NBYTES) — reserve a fixed NBYTES block in the current
+   ;; defun's frame (rounded up to whole 8-byte slots, taken from the same
+   ;; `--next-rt-let-slot' pool as `let-rt', so the prologue's `sub rsp'
+   ;; covers it) and return its (lowest) address as a gp i64 in rax.  The
+   ;; block is stable across re-evaluations (slots fixed at parse time),
+   ;; so it models a C local array / struct-by-value / address-taken
+   ;; scalar — NOT a dynamic C99 `alloca'.  Result class: gp.
+   ((and (consp sexp) (eq (car sexp) 'frame-alloc))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :frame-alloc-arity sexp)))
+    (let ((nbytes (nth 1 sexp)))
+      (unless (and (integerp nbytes) (> nbytes 0))
+        (signal 'nelisp-aot-compiler-error
+                (list :frame-alloc-bad-size nbytes)))
+      (unless nelisp-aot-compiler--next-rt-let-slot
+        (signal 'nelisp-aot-compiler-error
+                (list :frame-alloc-requires-defun-context sexp)))
+      (let* ((nslots (/ (+ nbytes 7) 8))
+             (base (car nelisp-aot-compiler--next-rt-let-slot)))
+        (setcar nelisp-aot-compiler--next-rt-let-slot (+ base nslots))
+        (nelisp-aot-compiler--make-ir 'frame-alloc
+              :base base :nslots nslots))))
    ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
    ;; `Sexp::Float(f)' as raw bits, returned as i64 in rax (= xmm0
    ;; bit-pattern reinterpreted via MOVQ).  No tag check — caller
@@ -11049,6 +11073,8 @@ the node's class to consume the result correctly."
          (nelisp-aot-compiler--emit-f64-to-i64-trunc node buf))
         ((= tag 100)            ; f64-bits — raw d0 -> x0 (FMOV)
          (nelisp-aot-compiler--emit-f64-bits node buf))
+        ((= tag 101)            ; frame-alloc (aarch64: signals unsupported)
+         (nelisp-aot-compiler--emit-frame-alloc node buf))
         ((= tag 62)             ; sexp-write-float — BL nl_sexp_write_float
          (nelisp-aot-compiler--emit-sexp-write-float node buf))
         (t
@@ -11137,6 +11163,8 @@ the node's class to consume the result correctly."
        (nelisp-aot-compiler--emit-f64-to-i64-trunc node buf))
       ((= tag 100)              ; f64-bits — raw xmm0 -> rax (MOVQ)
        (nelisp-aot-compiler--emit-f64-bits node buf))
+      ((= tag 101)              ; frame-alloc — block address into rax
+       (nelisp-aot-compiler--emit-frame-alloc node buf))
       ((= tag 56)               ; sexp-int-make
        (nelisp-aot-compiler--emit-sexp-int-make node buf))
       ((= tag 17)               ; cons-null-p
@@ -12187,6 +12215,23 @@ single flat binop plus one MOVQ, yielding the result bits in rax
     (if aarch64-p
         (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
       (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))))
+
+(defun nelisp-aot-compiler--emit-frame-alloc (node buf)
+  "Emit the (lowest) address of a `frame-alloc' block into rax.
+The block occupies frame slots [BASE, BASE+NSLOTS); on x86_64 each slot
+is 8 bytes at `[rbp - 8*(slot+1)]', so the lowest address is
+`rbp - 8*(base+nslots)', computed as `mov rax, rbp; sub rax, K' (the
+imm32 sub keeps large blocks out of the disp8 slot range)."
+  (let* ((base (nelisp-aot-compiler--ir-get node :base))
+         (nslots (nelisp-aot-compiler--ir-get node :nslots)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        ;; aarch64 frame stride differs by context (8 vs 16); keep the
+        ;; x86_64 SysV path authoritative until an aarch64 cfront target
+        ;; needs it.
+        (signal 'nelisp-aot-compiler-error
+                (list :frame-alloc-aarch64-unsupported node))
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rbp)
+      (nelisp-asm-x86_64-sub-imm32 buf 'rax (* 8 (+ base nslots))))))
 
 (defun nelisp-aot-compiler--emit-sexp-float-unwrap (node buf)
   "Emit f64-payload read for a `Sexp::Float(f)' value, returning the
