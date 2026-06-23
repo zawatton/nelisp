@@ -1,6 +1,10 @@
 #+TITLE: Doc 156 — flat-arena cold-loader: production boot-INSTALL design
 #+DATE: 2026-06-23
-#+STATUS: DESIGN (impl pending) — mechanism proven (probe), install + driver mode is the remaining native work
+#+STATUS: INSTALL PROVEN (2026-06-23) — production cold-load install verified end-to-end via
+#+STATUS:   the boot-wiring marker path (=/tmp/nelisp-cold-image.bin=).  value cells + user
+#+STATUS:   defuns survive into the LIVE runtime and are callable.  ONE caveat: prelude
+#+STATUS:   native-overrides (A1 floor etc.) do NOT survive (cold path skips the baked prelude);
+#+STATUS:   fix = re-apply the prelude native-override subset after install (increment 4 refinement).
 #+BRANCH: spike/flat-arena-boot-install
 
 * 0. Purpose
@@ -105,13 +109,43 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
    strings ("hello"), conses ((1 . 2)), symbol lists ((a b c)) all survive; an
    unbound symbol misses → nil.  *Relocation correctness for arbitrary reachable
    state is now proven*; only the real-arena INSTALL (§3) remains.
-2. *Real-arena install* (=bf_arena_boot_install=): §3.1.  Test in a fresh process
-   via the new mode: dump =(defvar ct 42)(defun cf () 99)=, then
-   =target/nelisp exec-arena-image IMG '(list ct (cf))'= → expect =(42 99)=.
+2. *Real-arena install* — *DONE 2026-06-23, via the boot-wiring MARKER path (not the
+   planned =exec-arena-image= driver mode)*.  The spike owner's boot-wiring already
+   ships the real-arena install as a BOOT step gated by marker-file existence:
+   - =nl_cold_load_arena= (build script ~10461): if =(nl_cold_marker_cpath)=
+     (=/tmp/nelisp-cold-image.bin=) opens, loads the chunk-0 region into the REAL
+     arena data area (=base+1024=) + interned region (=base+832=), applies
+     =nl_cold_reloc= (table) + =nl_cold_reloc_intern= (interned base-delta), zeroes
+     tail, clears marks, seeds the cursor (=base+0 = 1024+slen=, =base+840 = ib+isz=),
+     pushes the next GC far, returns 1.  Runs BEFORE the boot alloc.
+   - =nl_cold_overwrite_globals= (~10502): installs the globals Record into the
+     EvalCtx (env+8 = tag-12 box at =ds+goff=).
+   - Driver boot (~10456): =(_cl (nl_cold_load_arena))= then
+     =(if (< _cl 0) <normal-boot> (nl_cold_overwrite_globals globals))=; the cold
+     path SKIPS the baked prelude (the image already carries user state).
+   *VERIFIED end-to-end* on =target/nelisp= (2026-06-23): process-1
+   =(defun cf (x) (* x x)) (set 'k 5) (set 'lst '(10 20 30))
+   (nelisp--arena-dump-image-to-file MARKER)= (image 47.9 MB) → process-2 boots
+   with the marker present and evaluates =(list (fboundp 'cf) (cf 9) k lst)= →
+   =(t 81 5 (10 20 30))=.  *A user-defined defun survives the cold-load AND is
+   callable in the LIVE runtime; value + cons-list state survives.*  Removing the
+   marker restores normal boot (=(+ 40 2)= → 42).
+   - ⚠️ *Caveat (native-override non-survival)*: a prelude OVERRIDE of a NATIVE
+     builtin does NOT survive.  =(floor 7 2)= → 7 on cold-load (native 2-arg-ignoring
+     floor) vs 3 on normal boot (A1 prelude override).  =funcall= also returns 7, so
+     it is the function cell, not inline.  Root cause: =floor= is resolved through the
+     reader's native dispatch (=(:lit "floor")=), which on normal boot the prelude's
+     =(defun floor ...)= shadows; the cold path skips the prelude, so native dispatch
+     wins.  User symbols (=cf=) have no native dispatch entry, so their image function
+     cell is authoritative → they survive.  *Fix (increment 4)*: after
+     =nl_cold_overwrite_globals=, re-apply ONLY the prelude's native-override subset
+     (the A1–A20/C1 fixes), which is cheap and preserves the cold-load speed win;
+     do NOT re-run the full prelude/bundle.
 3. *vendor-core subset*: dump cl-lib+cl-generic+pcase+macroexp+subr-x+seq (lighter
-   than the full bundle, avoids OOM), exec-arena-image + drive seq-filter etc.
+   than the full bundle, avoids OOM), boot with the marker + drive seq-filter etc.
+   Fold in the native-override re-apply fix above so the subset is faithful.
 4. *Full bundle*: one-time slow dump (still 30–66 min, OOM risk — run off-peak /
-   high-RAM), then fast exec-arena-image for breadth.
+   high-RAM), then fast marker cold-load for breadth.
 
 * 5. Risks / caveats
 
@@ -131,7 +165,16 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
 
 Branch =spike/flat-arena-boot-install= created 2026-06-23.  Mechanism proven +
 fully scoped here.  *Increment 1 (design)* + *increment 2 (scratch
-value-survival, §4.1)* DONE — relocation correctness for arbitrary reachable
-state is proven (=nelisp--arena-value-survival= builtin).  Pending: increment 3
-production INSTALL (=bf_arena_boot_install= real-arena load + EvalCtx root
-install + =exec-arena-image= driver mode, §3) → vendor-core subset → full bundle.
+value-survival, §4.1)* + *increment 3 (production INSTALL, §4.2)* DONE.
+
+Increment 3 was satisfied by the spike owner's boot-wiring MARKER path (not the
+planned =exec-arena-image= driver mode): =nl_cold_load_arena= +
+=nl_cold_overwrite_globals= load + relocate + install the image into the REAL
+arena/EvalCtx at boot, gated by =/tmp/nelisp-cold-image.bin= existence.  Verified
+end-to-end: a user =defun= survives the cold-load and is callable (=（cf 9）→ 81=),
+value + cons state survives.  KNOWN GAP (carry into increment 4): prelude
+native-overrides (A1 floor etc.) revert to native because the cold path skips the
+baked prelude — fix by re-applying the native-override subset after install.
+
+Pending: increment 4 — (a) native-override re-apply fix, (b) vendor-core subset
+dump + marker cold-load + breadth driving, (c) full bundle one-time dump.
