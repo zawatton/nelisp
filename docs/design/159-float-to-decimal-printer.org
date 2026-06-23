@@ -159,11 +159,29 @@ stripped).  Verified on arithmetically-constructed magnitudes — =1e20 -> "1e+2
 =-1e20 -> "-1e+20"=, =1e14 -> "100000000000000.0"= (fixed), =1e15 -> "1e+15"=.
 =format= %f/%e/%g unregressed (400/401), no baked-string corruption.
 
-*Separately surfaced — large-exponent float LITERALS misread by the lexer.*
-The values had to be *constructed* (=(* 1e10 1e10)=) because the source reader
-mis-parses large-exponent literals: =1e20= reads as ≈7.77e18
-(=(= 1e20 (* 1e10 1e10))= => nil), and =1e100=/=1e-100= read as 0 / overflow.
-Small exponents are fine (=1e3 -> 1000.0=, =1.5e2 -> 150.0=, =2e-3 -> 0.002=,
-=6.022e10= and =1.5e-8= round-trip).  This is a *reader/lexer* bug, independent
-of the printer (the printer renders constructed large magnitudes correctly);
-it is the next float follow-up.
+* 6. Lexer large-exponent float literals (Doc 159 §6)
+
+Verifying §5 surfaced a *reader/lexer* bug: large-exponent float LITERALS were
+misread.  =1e20= read as ≈7.77e18 (=(= 1e20 (* 1e10 1e10))= => nil), and
+=1e100=/=1e-100= read as 0 / overflow; small exponents round-tripped fine.
+
+*Root cause*: =nl_str_to_float= (=lisp/nelisp-cc-evalport-str-to-float.el=, the
+AOT-elisp reimplementation of Rust =str::parse::<f64>()=) scaled the integer
+mantissa by =10^exp= using =nl_stf_ipow10= — an *i64* power — and an i64
+multiply.  =10^20= overflows i64 (max ≈9.2e18), wrapping to garbage; hence
+=1e20= → ≈7.77e18 and =1e100= → 0.
+
+*Fix*: scale in f64.  New =nl_stf_fpow10_bits= computes =10^n= as f64 (bits,
+by squaring, threading through the result slot as scratch — same bits-not-vars
+discipline as §2/§4); =nl_stf_finish= now does =(f64)mant * 10^netexp= /
+=(f64)mant / 10^|netexp|= in f64.  No new Rust.
+
+=1e20 -> "1e+20"=, =6.022e23 -> "6.022e+23"=, =1e-5 -> "1e-05"=, =1.5e-8 ->
+"1.5e-08"= all correct; common floats and =format= %f/%e/%g unregressed
+(400/401), bundle smoke green.  Limitation: for |exponent| > 22 the f64 =10^n=
+is no longer exactly representable and the squaring accumulates a sub-ULP
+error, so e.g. =1e100 -> "9.99999999999999e+99"= (right magnitude, last display
+digit off) instead of ="1e+100"= — vastly better than the old i64-overflow
+garbage, but not correctly-rounded.  Powers up to =10^22= (exactly
+representable) are exact, so the common range is correct; a pre-rounded
+power-of-ten table would close the >1e22 gap.
