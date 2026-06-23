@@ -210,13 +210,27 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
        (nelisp-emacs 489ba45) adds alist-get + macro-place + the
        =nelisp-cl-macros--accessor-info= struct-accessor arm.  *Result*: loading
        =oclosure.el= + cl-lib + pcase + cl-generic, =cl-generic-define= now BUILDS the
-       dispatch closure and =cl-defmethod= registers methods.  *Remaining deep walls*:
-       (a) the =oclosure= =cl--generic-nnm= typed-closure construction (dispatch a
-       method and it reaches =(error cl--generic-nnm)=); (b) the =cl-preloaded=
-       built-in-class type hierarchy (=cl--find-class 'integer= etc.) which is
-       C-core-coupled and aborts uncatchably when loaded standalone — needed for the
-       actual type dispatch.  These two subsystems (oclosure typed closures + the
-       built-in type-class lattice) are the next dedicated reader items.
+       dispatch closure and =cl-defmethod= registers methods.
+     - *cl--generic-nnm / oclosure gap — traced to the type lattice (2026-06-23)*.
+       Dispatching a method reaches =(error cl--generic-nnm)=: =cl-generic-call-method=
+       builds =(oclosure-lambda (cl--generic-nnm) …)=, and =oclosure-lambda= needs
+       =(cl--find-class 'cl--generic-nnm)= (registered by the =(oclosure-define
+       (cl--generic-nnm) …)= at cl-generic.el load).  First concrete gap *fixed*: class
+       registration is =(setf (cl--find-class NAME) CLASS)=, an unsupported setf place
+       — added =cl--set-find-class= (baked defun) + a =cl-simple-setter= registration
+       in cl-lib.el (=put= must run from a *loaded file*: a top-level =put= in the
+       AOT-baked prelude does NOT persist into the boot image — only definitions do).
+       =(setf (cl--find-class X) c)= now works.  *Still the deep wall*: =oclosure.el=
+       registers =(setf (cl--find-class 'oclosure) (oclosure--class-make … (list
+       (cl--find-class 'closure)) …))= — and =(cl--find-class 'closure)= is nil because
+       the base built-in class =closure= (and the whole =integer=/=t=/… lattice) is
+       defined by =cl-preloaded.el= via =cl--define-built-in-type= / the
+       =built-in-class= + =cl-structure-class= structs + =cl--struct-register-child=,
+       all of which assume the Emacs C-core type infrastructure and do NOT come up
+       standalone (cl-preloaded loads but registers nothing; =cl--define-built-in-type=
+       ends up unbound).  So cl--generic-nnm is not a discrete gap — it bottoms out in
+       *porting the Emacs built-in-class type lattice* to the reader, the next
+       dedicated subsystem.  rx =(any RANGE)= char-engine is the other open item.
      - =macroexp= (standalone) has no src file (=macroexpand-all= IS present); a
        remaining breadth gap.
      - Net: the cold-loader faithfully carries every package the reader can already

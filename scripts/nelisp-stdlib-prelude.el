@@ -2046,6 +2046,17 @@ Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
     (list 'or place (list 'setf place (cons 'progn code)))))
 (unless (fboundp 'cl--find-class)
   (defun cl--find-class (type) (get type 'cl--class)))
+;; `(setf (cl--find-class NAME) CLASS)' is how cl-preloaded / oclosure /
+;; cl-defstruct register a class object.  In host Emacs this is a gv-setter;
+;; here it routes through the `cl-simple-setter' property -> `cl--set-find-class'.
+;; The DEFUN is baked (defuns persist); the property `(put ...)' is registered in
+;; cl-lib.el's standalone setter block instead, because a top-level `(put ...)' in
+;; this AOT-baked prelude does NOT survive into the boot image (only definitions
+;; do).  Class registration is a prerequisite for the built-in-class type lattice
+;; oclosure/cl-generic dispatch needs, which is itself a separate C-core-coupled
+;; reader item — see Doc 156.
+(unless (fboundp 'cl--set-find-class)
+  (defun cl--set-find-class (type class) (put type 'cl--class class) class))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 49 Wave 7 follow-up (2026-05-22): minimal cl-lib subset wired into
