@@ -44,6 +44,11 @@ IGNORE-CASE non-nil compares case-insensitively (= naive ASCII downcase)."
       (and (>= xlen slen)
            (equal (substring string (- xlen slen)) suffix)))))
 
+(unless (fboundp 'string-reverse)
+  (defun string-reverse (string)
+    "Return STRING with its characters in reverse order."
+    (apply #'string (nreverse (append string nil)))))
+
 (unless (fboundp 'string-trim-left)
   (defun string-trim-left (string &optional regexp)
     "Trim leading whitespace from STRING.
