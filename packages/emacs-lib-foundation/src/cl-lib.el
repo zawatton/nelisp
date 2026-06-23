@@ -226,6 +226,16 @@ For unrecognised places, signals an error at expansion time."
                 ((eq fn 'car)     (list 'setcar (car args) value))
                 ((eq fn 'cdr)     (list 'setcdr (car args) value))
                 ((eq fn 'aref)    (list 'aset (car args) (cadr args) value))
+                ((eq fn 'elt)
+                 ;; (setf (elt SEQ N) V): `elt' works on lists and arrays, so
+                 ;; dispatch at runtime — setcar of nthcdr for a list, aset for
+                 ;; an array.  (A void `elt--setter' fallback was an uncatchable
+                 ;; abort on the bare reader.)
+                 (let ((seqsym (make-symbol "seq")))
+                   (list 'let (list (list seqsym (car args)))
+                         (list 'if (list 'listp seqsym)
+                               (list 'setcar (list 'nthcdr (cadr args) seqsym) value)
+                               (list 'aset seqsym (cadr args) value)))))
                 ((eq fn 'gethash) (list 'puthash (car args) value (cadr args)))
                 ((eq fn 'nth)
                  (list 'setcar
