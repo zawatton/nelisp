@@ -2443,6 +2443,18 @@ argument (reachability + in-arena bounds checks).")
                                             (m5_push_float ms arg)
                                           (m5_push_dec ms (ptr-read-u64 arg 8)))
                                         (mut-str-finalize ms out) 0)))
+    ;; (nelisp--fmt-float FLOAT CONV-CODE PREC) -> string (Doc 159 §4):
+    ;; precision-aware %f/%e/%g body for `format'.  FLOAT is a Float Sexp.
+    ((:lit "nelisp--fmt-float") . (let* ((ms (alloc-bytes 32 8))
+                                         (buf (alloc-bytes 512 1))
+                                         (sc (alloc-bytes 32 8)))
+                                    (seq (mut-str-make-empty ms 32)
+                                         (m5_fmt_float_body ms
+                                            (sexp-float-unwrap (wf_arg_ptr args 0))
+                                            (ptr-read-u64 (wf_arg_ptr args 1) 8)
+                                            (ptr-read-u64 (wf_arg_ptr args 2) 8)
+                                            buf sc)
+                                         (mut-str-finalize ms out) 0)))
     ((:lit "char-to-string")   . (let* ((ms (alloc-bytes 32 8)))
                                    (seq (mut-str-make-empty ms 4)
                                         (mut-str-push-byte ms (ptr-read-u64 (wf_arg_ptr args 0) 8))
@@ -4277,6 +4289,141 @@ unresolved at link time."
                                  (ptr-read-u64 scratch 8))))
                    (m5_push_float_mag ms mb buf scratch)))
           (m5_push_float_mag ms fb buf scratch))))
+    ;; --- format %f/%e/%g with precision (Doc 159 §4, native dialect) ---
+    ;; round-half-to-even, matching C/Emacs `format'.  Shares the digit
+    ;; machinery with the printer (m5_gendigits / m5_carry / m5_lastnz /
+    ;; m5_pushdigits).  Avoids the prelude baked-image size threshold by
+    ;; living in the AOT dialect.  Exposed as `nelisp--fmt-float'.
+    (defun m5_any_nonzero (buf i n)
+      (if (>= i n) 0
+        (if (= (ptr-read-u8 buf i) 0) (m5_any_nonzero buf (+ i 1) n) 1)))
+    ;; exponent E with mag (FB bits, >0) in [10^E, 10^(E+1)); CAP bounds it
+    (defun m5_fmt_exp_of (fb e cap scratch)
+      (if (<= cap 0) e
+        (if (= (f64-ge (bits-to-f64 fb) (i64-to-f64 10)) 1)
+            (seq (nl_sexp_write_float scratch (f64-div (bits-to-f64 fb) (i64-to-f64 10)))
+                 (m5_fmt_exp_of (ptr-read-u64 scratch 8) (+ e 1) (- cap 1) scratch))
+          (if (= (f64-lt (bits-to-f64 fb) (i64-to-f64 1)) 1)
+              (seq (nl_sexp_write_float scratch (f64-mul (bits-to-f64 fb) (i64-to-f64 10)))
+                   (m5_fmt_exp_of (ptr-read-u64 scratch 8) (- e 1) (- cap 1) scratch))
+            e))))
+    (defun m5_fmt_pow10 (e scratch)        ; 10^E as bits
+      (if (= e 0)
+          (seq (nl_sexp_write_float scratch (i64-to-f64 1)) (ptr-read-u64 scratch 8))
+        (if (> e 0)
+            (let* ((sub (m5_fmt_pow10 (- e 1) scratch)))
+              (seq (nl_sexp_write_float scratch (f64-mul (i64-to-f64 10) (bits-to-f64 sub)))
+                   (ptr-read-u64 scratch 8)))
+          (let* ((sub (m5_fmt_pow10 (+ e 1) scratch)))
+            (seq (nl_sexp_write_float scratch (f64-div (bits-to-f64 sub) (i64-to-f64 10)))
+                 (ptr-read-u64 scratch 8))))))
+    ;; round-half-to-even at digit PREC: >5 up, <5 down, ==5 -> up iff a
+    ;; non-zero tail remains (REMBITS>0) else to the even neighbour PREVDIG
+    (defun m5_fmt_roundup (buf prec prevdig rembits)
+      (let* ((rd (ptr-read-u8 buf prec)))
+        (if (> rd 5) 1
+          (if (< rd 5) 0
+            (if (= (f64-lt (i64-to-f64 0) (bits-to-f64 rembits)) 1) 1
+              (mod prevdig 2))))))
+    (defun m5_push_exp (ms e upcase)       ; "e±NN" / "E±NN"
+      (seq (mut-str-push-byte ms (if (= upcase 1) 69 101))
+           (if (< e 0) (mut-str-push-byte ms 45) (mut-str-push-byte ms 43))
+           (let* ((ea (if (< e 0) (- 0 e) e)))
+             (if (< ea 10)
+                 (seq (mut-str-push-byte ms 48) (m5_push_udec ms ea))
+               (m5_push_udec ms ea)))))
+    (defun m5_emit_dot_zeros (ms prec)
+      (if (<= prec 0) 1
+        (seq (mut-str-push-byte ms 46) (m5_push_repeat ms 48 prec))))
+    ;; %f: FB = magnitude bits (>=0).  PREC fractional digits; STRIP=1 drops
+    ;; trailing zeros (+ dangling dot) for %g.
+    (defun m5_fmt_ffixed (ms fb prec strip buf scratch)
+      (let* ((whole0 (f64-to-i64-trunc (bits-to-f64 fb)))
+             (fracbits (seq (nl_sexp_write_float scratch
+                              (f64-sub (bits-to-f64 fb) (i64-to-f64 whole0)))
+                            (ptr-read-u64 scratch 8))))
+        (seq
+         (m5_gendigits buf 0 (+ prec 1) fracbits scratch)
+         (let* ((rembits (ptr-read-u64 scratch 8))
+                (prev (if (= prec 0) (mod whole0 10) (ptr-read-u8 buf (- prec 1))))
+                (rc (m5_carry buf (- prec 1) (m5_fmt_roundup buf prec prev rembits)))
+                (whole (+ whole0 rc)))
+           (if (= prec 0)
+               (m5_push_dec ms whole)
+             (if (= strip 1)
+                 (if (= (m5_any_nonzero buf 0 prec) 0)
+                     (m5_push_dec ms whole)
+                   (seq (m5_push_dec ms whole) (mut-str-push-byte ms 46)
+                        (m5_pushdigits ms buf 0 (m5_lastnz buf (- prec 1)))))
+               (seq (m5_push_dec ms whole) (mut-str-push-byte ms 46)
+                    (m5_pushdigits ms buf 0 (- prec 1)))))))))
+    ;; %e: FB = magnitude bits (>=0).  Mantissa to PREC fractional digits.
+    (defun m5_fmt_sci (ms fb prec upcase strip buf scratch)
+      (if (= (f64-le (bits-to-f64 fb) (i64-to-f64 0)) 1)
+          (seq (mut-str-push-byte ms 48)
+               (if (= strip 1) 1 (m5_emit_dot_zeros ms prec))
+               (m5_push_exp ms 0 upcase))
+        (let* ((e0 (m5_fmt_exp_of fb 0 400 scratch))
+               (powbits (m5_fmt_pow10 e0 scratch))
+               (mantbits (seq (nl_sexp_write_float scratch
+                                (f64-div (bits-to-f64 fb) (bits-to-f64 powbits)))
+                              (ptr-read-u64 scratch 8)))
+               (whole0 (f64-to-i64-trunc (bits-to-f64 mantbits)))
+               (fracbits (seq (nl_sexp_write_float scratch
+                                (f64-sub (bits-to-f64 mantbits) (i64-to-f64 whole0)))
+                              (ptr-read-u64 scratch 8))))
+          (seq
+           (m5_gendigits buf 0 (+ prec 1) fracbits scratch)
+           (let* ((rembits (ptr-read-u64 scratch 8))
+                  (prev (if (= prec 0) (mod whole0 10) (ptr-read-u8 buf (- prec 1))))
+                  (rc (m5_carry buf (- prec 1) (m5_fmt_roundup buf prec prev rembits)))
+                  (whole (+ whole0 rc))
+                  (e (if (>= whole 10) (+ e0 1) e0))
+                  (wd (if (>= whole 10) 1 whole)))
+             (seq (mut-str-push-byte ms (+ 48 wd))
+                  (if (= prec 0) 1
+                    (if (= strip 1)
+                        (if (= (m5_any_nonzero buf 0 prec) 0) 1
+                          (seq (mut-str-push-byte ms 46)
+                               (m5_pushdigits ms buf 0 (m5_lastnz buf (- prec 1)))))
+                      (seq (mut-str-push-byte ms 46)
+                           (m5_pushdigits ms buf 0 (- prec 1)))))
+                  (m5_push_exp ms e upcase)))))))
+    ;; %g: P sig digits, pick %f or %e, strip trailing zeros.
+    (defun m5_fmt_gen (ms fb prec upcase buf scratch)
+      (let* ((p (if (= prec 0) 1 prec)))
+        (if (= (f64-le (bits-to-f64 fb) (i64-to-f64 0)) 1)
+            (mut-str-push-byte ms 48)
+          ;; Choose %f vs %e by the exponent the value has AFTER rounding to P
+          ;; sig figs: bias mag by half a ULP at that scale (5*10^(e0-p)) so a
+          ;; value rounding up across a power of ten (9.999 -> 10 at %.1g) is
+          ;; classified by the bumped exponent.  %f/%e then format the original.
+          (let* ((e0 (m5_fmt_exp_of fb 0 400 scratch))
+                 (powbits (m5_fmt_pow10 (- e0 p) scratch))
+                 (biasbits (seq (nl_sexp_write_float scratch
+                                  (f64-mul (i64-to-f64 5) (bits-to-f64 powbits)))
+                                (ptr-read-u64 scratch 8)))
+                 (magb (seq (nl_sexp_write_float scratch
+                              (f64-add (bits-to-f64 fb) (bits-to-f64 biasbits)))
+                            (ptr-read-u64 scratch 8)))
+                 (e (m5_fmt_exp_of magb 0 400 scratch)))
+            (if (= (if (>= e -4) (if (< e p) 1 0) 0) 1)
+                (m5_fmt_ffixed ms fb (- (- p 1) e) 1 buf scratch)
+              (m5_fmt_sci ms fb (- p 1) upcase 1 buf scratch))))))
+    (defun m5_fmt_dispatch (ms fb conv prec buf scratch)
+      (if (= conv 101) (m5_fmt_sci ms fb prec 0 0 buf scratch)       ; e
+        (if (= conv 69) (m5_fmt_sci ms fb prec 1 0 buf scratch)      ; E
+          (if (= conv 103) (m5_fmt_gen ms fb prec 0 buf scratch)     ; g
+            (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)    ; G
+              (m5_fmt_ffixed ms fb prec 0 buf scratch))))))          ; f / F
+    (defun m5_fmt_float_body (ms fb conv prec buf scratch)
+      (if (= (f64-lt (bits-to-f64 fb) (i64-to-f64 0)) 1)
+          (seq (mut-str-push-byte ms 45)
+               (let* ((mb (seq (nl_sexp_write_float scratch
+                                 (f64-sub (i64-to-f64 0) (bits-to-f64 fb)))
+                               (ptr-read-u64 scratch 8))))
+                 (m5_fmt_dispatch ms mb conv prec buf scratch)))
+        (m5_fmt_dispatch ms fb conv prec buf scratch)))
     (defun m5_hex_digit (d)
       (if (< d 10) (+ 48 d) (+ 87 d)))
     (defun m5_push_uhex (ms v)
@@ -7668,6 +7815,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--fmt-float"
     "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--arena-dump-copy-verify" "nelisp--arena-mark-reach-verify" "nelisp--arena-swizzle-verify"
     "nelisp--arena-load-relocate-verify" "nelisp--arena-image-root-verify"

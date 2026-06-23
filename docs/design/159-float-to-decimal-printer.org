@@ -99,38 +99,50 @@ mixed battery, incl. all money-style values):
 - *No scientific notation.*  Very large / small magnitudes stay fixed:
   =1e-10 -> "0.0000000001"=, =1e20 -> "100000000000000000000.0"=.
 
-* 4. =format= =%f= precision (Doc 159 §3)
+* 4. =format= =%f/%e/%g= precision (Doc 159 §3/§4)
 
 A separate gap surfaced here: =(format "%.2f" 3.14159)= returned ="3.14159"=
-(and =(format "%.3e" x)= returned ="%e"=).  The *active* =format= on the bare
+and =(format "%.3e" x)= returned ="%e"=.  The *active* =format= on the bare
 reader is the elisp one in =scripts/nelisp-stdlib-prelude.el= (NOT the
 =m5_fmt_loop= native arm, and NOT =lisp/nelisp-stdlib-format.el= /
 =nl_jit_format_float=, which belong to a different runtime and are not baked
 into the standalone reader).  It parses flags / width / precision in elisp but
-*delegated the conversion* to native =%f=, which drops the precision.
+*delegated the conversion* to native, which drops the precision.
 
-*Fix*: render =%f= / =%F= in elisp via =nelisp--ffmt-f= (the same
-significant-digit generator family, but FIXED precision with round-half-to-
-even).  Matches Emacs =format= on 252/252 of a flag/width/precision battery
-(=%.2f=, =%05.2f=, =%-8.2f=, =%+.2f=, =%08.3f= …).  Same lone deviation class
-as §2 — the exact-half tie on non-binary-exact values, e.g.
-=(format "%.1f" 0.05)= => ="0.0"= vs Emacs ="0.1"= (the f64→decimal
-extraction can't see the sub-ULP excess that tips 0.05 upward).
+*Fix*: a native AOT-dialect primitive =nelisp--fmt-float= (=m5_fmt_float_body=
++ helpers) renders =%f/%F/%e/%E/%g/%G= with round-half-to-even, reusing the §2
+printer machinery (=m5_gendigits= / =m5_carry= / =m5_lastnz= / =m5_pushdigits=)
+plus =m5_fmt_exp_of= / =m5_fmt_pow10= / =m5_push_exp=.  The prelude routes all
+six float conversions to it (registered in the builtin-name list at the
+=nelisp--repr= entry).  =%g= chooses %f vs %e by the exponent the value has
+*after* rounding to P sig figs — biasing the magnitude by half a ULP
+(=5*10^(e0-p)=) so a value rounding up across a power of ten (=9.999= at
+=%.1g=) classifies as the bumped exponent.  Matches Emacs =format= on 400/400
+of a 20-spec × 20-value =%f/%e/%g/%E/%G= battery (flags / width / precision /
+scientific / general).  Same lone deviation class as §2 — the exact-half tie
+on non-binary-exact values, e.g. =(format "%.1f" 0.05)= => ="0.0"= vs Emacs
+="0.1"= (the f64→decimal extraction can't see the sub-ULP excess).
 
-** Baked-image size threshold (gotcha)
+** Why a native primitive and not baked prelude elisp — size threshold (gotcha)
 
 A first cut implemented the full =%f/%e/%g= family (~85 lines, 9 helper
-defuns) in the prelude.  It built and ran, but *silently corrupted unrelated
+defuns) in the *prelude*.  It built and ran, but *silently corrupted unrelated
 baked strings*: =(format "price")= => ="p#<object>ice"= (deterministic, the
-literal char-copy path my change never touched; =char-to-string= / =concat=
+literal char-copy path the change never touched; =char-to-string= / =concat=
 were fine standalone, and the bundle smoke still passed — only =format='s
-baked constants were damaged).  Reverting to a single ~22-line =%f= defun
-removed the corruption entirely.  So *there is a size threshold on prelude
-additions baked into the standalone image* (between ~22 and ~85 lines of new
-code here) past which the bake silently corrupts adjacent interned values.
-Comments are stripped before baking and do not count.
+baked constants were damaged).  Shrinking to a single ~22-line =%f= defun
+removed the corruption.  So *there is a size threshold on prelude additions
+baked into the standalone image* (between ~22 and ~85 lines of new code here)
+past which the bake silently corrupts adjacent interned values; comments are
+stripped before baking and do not count.
 
-Consequence: =%e/%E/%g/%G= precision is deferred — they still delegate to
-native (precision unhonored; =%e= even returns ="%e"=).  Doing them safely
-needs a *native AOT-dialect primitive* (like §2's =m5_push_float=, which has
-no such size limit) rather than more baked prelude elisp.
+The AOT dialect has no such limit (§2's =m5_push_float= is ~85 dialect lines,
+no corruption), so the full =%f/%e/%g= formatter was moved there and the
+prelude elisp shrank to a one-line dispatch — net prelude reduction, and Rust
+reduction too (the conversion no longer needs the native default formatter).
+
+** Deferred
+
+- Scientific notation in =number-to-string= / =prin1= (§2) is still fixed
+  decimal; only =format='s =%e/%g= produce exponents.
+- =%a= (hex float) is not implemented.

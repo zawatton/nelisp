@@ -4326,39 +4326,16 @@ strings compare equal."
 
 (defun nelisp--digit-char-p (ch) (and (>= ch 48) (<= ch 57)))
 
-;; ---- Doc 159 §3: precision-aware %f for `format' ----
-;; The native `%f' conversion ignores the precision field, so the prelude
-;; `format' below (which delegates the conversion) printed the full default
-;; form: `(format "%.2f" 3.14159)' => "3.14159".  Render %f/%F in elisp
-;; instead, matching C/Emacs round-half-to-even.  Known deviation: the
-;; exact-half tie on non-binary-exact values, e.g. `(format "%.1f" 0.05)'
+;; ---- Doc 159 §3/§4: precision-aware float conversions for `format' ----
+;; The native `%f/%e/%g' conversion ignores the precision field, so the
+;; prelude `format' below (which delegates the conversion) printed the full
+;; default form: `(format "%.2f" 3.14159)' => "3.14159", `%.3e' => "%e".
+;; The precision-aware bodies live in the AOT dialect as `nelisp--fmt-float'
+;; (= `m5_fmt_float_body', round-half-to-even) rather than as baked prelude
+;; elisp, which has a silent size threshold (Doc 159 §4).  Known deviation:
+;; the exact-half tie on non-binary-exact values, e.g. `(format "%.1f" 0.05)'
 ;; => "0.0" vs Emacs "0.1" (the f64->decimal extraction cannot see the
-;; sub-ULP excess).  %e/%g still delegate to native (precision unhonored):
-;; a fuller elisp formatter overran the baked-image size threshold and
-;; corrupted unrelated baked strings, so they are deferred to a native
-;; AOT-dialect primitive (Doc 159 §4, follow-up).
-(defun nelisp--ffmt-f (mag prec)
-  "Fixed notation: non-negative MAG to PREC fractional digits, round half even."
-  (let* ((whole (truncate mag)) (frac (- mag whole))
-         (buf (make-vector (1+ prec) 0)) (i 0) (fr frac))
-    (while (<= i prec)
-      (setq fr (* fr 10))
-      (let ((d (truncate fr))) (aset buf i d) (setq fr (- fr d)))
-      (setq i (1+ i)))
-    (let* ((rd (aref buf prec))
-           (prev (if (= prec 0) (mod whole 10) (aref buf (1- prec))))
-           (up (cond ((> rd 5) t) ((< rd 5) nil) ((> fr 0.0) t) (t (= (mod prev 2) 1)))))
-      (let ((carry (if up 1 0)) (j (1- prec)))
-        (while (and (> carry 0) (>= j 0))
-          (let ((nd (+ (aref buf j) carry)))
-            (if (>= nd 10) (progn (aset buf j (- nd 10)) (setq carry 1))
-              (aset buf j nd) (setq carry 0)))
-          (setq j (1- j)))
-        (when (> carry 0) (setq whole (1+ whole)))))
-    (if (= prec 0) (number-to-string whole)
-      (let ((fs "") (m 0))
-        (while (< m prec) (setq fs (concat fs (char-to-string (+ 48 (aref buf m))))) (setq m (1+ m)))
-        (concat (number-to-string whole) "." fs)))))
+;; sub-ULP excess).
 
 (defun format (template &rest args)
   "Format TEMPLATE with ARGS honoring %[flags][width][.prec]conv (Doc 22 A7).
@@ -4400,12 +4377,12 @@ native `format', which lacks only the field-width layer."
                       (setq out (concat out "%"))
                     (let* ((arg (car argp))
                            (body (if (and (numberp arg)
-                                          (or (= conv 102) (= conv 70))) ; f F
-                                     (let* ((x (if (integerp arg) (+ arg 0.0) arg))
-                                            (neg (< x 0))
-                                            (b (nelisp--ffmt-f (if neg (- x) x)
-                                                               (or prec 6))))
-                                       (if neg (concat "-" b) b))
+                                          (or (= conv 102) (= conv 70)   ; f F
+                                              (= conv 101) (= conv 69)   ; e E
+                                              (= conv 103) (= conv 71))) ; g G
+                                     (nelisp--fmt-float
+                                      (if (integerp arg) (+ arg 0.0) arg)
+                                      conv (or prec 6))
                                    (nelisp--native-format
                                     (concat "%" (char-to-string conv)) arg))))
                       (setq argp (cdr argp))
