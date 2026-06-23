@@ -238,7 +238,7 @@ The standalone interpreter still mis-handles `(apply #'unibyte-string
     if while cond and or let let*
     catch condition-case unwind-protect
     throw signal error setq setq-default
-    defun write static-imm32-table-define exit)
+    defun write static-imm32-table-define exit data-blob)
   "Form heads that must not be treated as object-mode external calls.")
 
 ;; ---- Doc 49 Wave 11.2 hash-table primitive desugar ----
@@ -674,6 +674,7 @@ at its kind-fixed offset since per-kind layout is constant."
   '((alloc-bytes . 0)
     (addr-of . 97)
     (data-addr . 99)
+    (data-blob . 102)
     (arith . 1)
     (aot-root-scope . 92)
     (atomic-compare-exchange . 2)
@@ -2159,10 +2160,13 @@ the same generated helper names."
                       (setq var-index (1+ var-index))
                       (when lowered
                         (push lowered kept)))))
+                 ;; Doc 06 Step A: `data-blob' is a structural data
+                 ;; declaration (defines a same-unit rodata symbol), not a
+                 ;; side-effecting module call — keep it in object mode.
                  ((and nelisp-aot-compiler--allow-external-user-calls
                        (consp child)
                        (symbolp (car child))
-                       (not (memq (car child) '(defun prog1))))
+                       (not (memq (car child) '(defun prog1 data-blob))))
                   nil)
                  (t
                   (push child kept)))))))
@@ -9600,6 +9604,19 @@ Returns one of:
                   (list :static-imm32-table-define-element-out-of-range
                         e))))
       (nelisp-aot-compiler--make-ir 'table-define :name name :elements elements)))
+   ;; (data-blob NAME BYTES SECTION) — Doc 06 Step A.  Define a same-unit
+   ;; static data symbol: BYTES (a unibyte string or list of 0-255 ints)
+   ;; goes into SECTION (`rodata' for now) with a LOCAL symbol NAME at its
+   ;; offset.  Emits no `.text'; a `(data-addr NAME)' takes its address via
+   ;; a PC32 reloc against this local symbol.  Statement-only declaration.
+   ((and (consp sexp) (eq (car sexp) 'data-blob))
+    (unless (and (= (length sexp) 4) (symbolp (nth 1 sexp)))
+      (signal 'nelisp-aot-compiler-error
+              (list :data-blob-malformed sexp)))
+    (nelisp-aot-compiler--make-ir 'data-blob
+          :name (nth 1 sexp)
+          :bytes (nth 2 sexp)
+          :section (nth 3 sexp)))
    ;; (exit VALUE-EXPR)
    ((and (consp sexp) (eq (car sexp) 'exit))
     (unless (= (length sexp) 2)
@@ -10126,6 +10143,31 @@ walk; the emitter substitutes a no-op for the original site."
                ((= tag 94)            ; aot-machine-landing-jump
                 (walk (nelisp-aot-compiler--ir-get node :saved-sp)))
                (t nil))))))
+      (walk ir))
+    (nreverse acc)))
+
+(defun nelisp-aot-compiler--collect-data-blobs (ir)
+  "Return a list of `(:name STR :bytes UNIBYTE :section SYM)' for every
+top-level `data-blob' node in IR (Doc 06 Step A).  BYTES is normalised to
+a unibyte string (a list of 0-255 ints is packed)."
+  (let ((acc nil))
+    (cl-labels
+        ((walk (node)
+           (when (and node (vectorp node) (> (length node) 0))
+             (cond
+              ((eq (nelisp-aot-compiler--ir-kind node) 'data-blob)
+               (let* ((nm (nelisp-aot-compiler--ir-get node :name))
+                      (raw (nelisp-aot-compiler--ir-get node :bytes))
+                      (bytes (if (stringp raw) (string-as-unibyte raw)
+                               (apply #'unibyte-string
+                                      (mapcar (lambda (b) (logand b 255)) raw)))))
+                 (push (list :name (if (stringp nm) nm (symbol-name nm))
+                             :bytes bytes
+                             :section (or (nelisp-aot-compiler--ir-get node :section)
+                                          'rodata))
+                       acc)))
+              ((eq (nelisp-aot-compiler--ir-kind node) 'seq)
+               (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))))))
       (walk ir))
     (nreverse acc)))
 
@@ -16249,7 +16291,8 @@ register budgeting while ELF/Mach-O keep SysV."
           (and (not empty-source-p)
                (eq format 'elf)
                (nelisp-aot-compiler--object-module-init-metadata source)))
-         (defuns (and ir (nelisp-aot-compiler--collect-defuns ir))))
+         (defuns (and ir (nelisp-aot-compiler--collect-defuns ir)))
+         (data-blobs (and ir (nelisp-aot-compiler--collect-data-blobs ir))))
     (when empty-source-p
       (dolist (form (plist-get extracted :module-forms))
         (nelisp-aot-compiler--eval-top-level-module-form form))
@@ -16278,7 +16321,7 @@ register budgeting while ELF/Mach-O keep SysV."
        ((= tag 21) nil)          ; defun
        ((= tag 54)               ; seq
         (dolist (f (nelisp-aot-compiler--ir-get ir :forms))
-          (unless (eq (nelisp-aot-compiler--ir-kind f) 'defun)
+          (unless (memq (nelisp-aot-compiler--ir-kind f) '(defun data-blob))
             (signal 'nelisp-aot-compiler-error
                     (list :object-mode-non-defun-form f)))))
        (t
@@ -16323,16 +16366,43 @@ register budgeting while ELF/Mach-O keep SysV."
                                  (if (stringp nm) nm (symbol-name nm)))
                        :addend (or (plist-get r :addend) 0)))
                raw-relocs))
+             ;; Doc 06 Step A: same-unit static data blobs.  Lay each blob's
+             ;; bytes out in `.rodata' *after* any module-init metadata,
+             ;; record a LOCAL data symbol at its offset, and remember the
+             ;; names so they are NOT also emitted as SHN_UNDEF externs
+             ;; (a `(data-addr NAME)' against a blob resolves to this local).
+             (meta-bytes (or (plist-get object-metadata :bytes) (unibyte-string)))
+             (blob-layout
+              (let ((cur (length meta-bytes)) (acc nil))
+                (dolist (b data-blobs)
+                  (let ((len (length (plist-get b :bytes))))
+                    (push (list :name (plist-get b :name) :offset cur :len len) acc)
+                    (setq cur (+ cur len))))
+                (nreverse acc)))
+             (blob-rodata
+              (apply #'concat (mapcar (lambda (b) (plist-get b :bytes)) data-blobs)))
+             (blob-names (mapcar (lambda (b) (plist-get b :name)) data-blobs))
+             (blob-symbols
+              (mapcar (lambda (bl)
+                        (list :name (plist-get bl :name)
+                              :value (plist-get bl :offset)
+                              :size (plist-get bl :len)
+                              :section 'rodata
+                              :bind 'local
+                              :type 'object))
+                      blob-layout))
              (extern-names
               (sort
                (delete-dups
-                (mapcar (lambda (r) (plist-get r :symbol))
-                        (cl-remove-if-not
-                         (lambda (r)
-                           (memq (plist-get r :type)
-                                 '(pc32 plt32 abs64 b26-pc
-                                   adr-prel-pg-hi21 add-abs-lo12-nc)))
-                         relocs)))
+                (cl-remove-if
+                 (lambda (nm) (member nm blob-names))
+                 (mapcar (lambda (r) (plist-get r :symbol))
+                         (cl-remove-if-not
+                          (lambda (r)
+                            (memq (plist-get r :type)
+                                  '(pc32 plt32 abs64 b26-pc
+                                    adr-prel-pg-hi21 add-abs-lo12-nc)))
+                          relocs))))
                #'string<))
              ;; Only the user-defined defun names should appear as
              ;; GLOBAL FUNC symbols.  The control-flow helper labels
@@ -16430,10 +16500,11 @@ register budgeting while ELF/Mach-O keep SysV."
                        :bind 'local
                        :type 'object))))
              (all-symbols (append metadata-symbols
+                                  blob-symbols
                                   symbols
                                   extern-symbol-plists)))
         (list :text text-bytes
-              :rodata (or (plist-get object-metadata :bytes) (unibyte-string))
+              :rodata (concat meta-bytes blob-rodata)
               :symbols all-symbols
               :relocs relocs
               :machine arch

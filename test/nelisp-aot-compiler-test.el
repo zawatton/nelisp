@@ -3428,6 +3428,73 @@ SysV would emit `push rdi' = 57 instead."
     (should (nelisp-aot-compiler-test--bytes-contain-p
              text (unibyte-string #x48 #x89 #xe8 #x48 #x81 #xe8)))))
 
+;; --- `data-blob' same-unit static data + local-symbol address (Doc 06 A) ---
+;; `(data-blob NAME BYTES SECTION)' places BYTES into `.rodata' under a
+;; LOCAL OBJECT symbol NAME, and `(data-addr NAME)' takes its address via a
+;; PC32 relocation against that local symbol.  This is the object-mode
+;; keystone for cfront global/static data (no absolute vaddr baking).
+
+(ert-deftest nelisp-aot-compiler/data-blob-local-rodata-symbol ()
+  "`data-blob' defines a LOCAL OBJECT `.rodata' symbol with 2 PC32 relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc06-blob-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(seq
+             (data-blob myblob (10 20 30 40 250 99 7 200) rodata)
+             (defun getb (i) (ptr-read-u8 (data-addr myblob) i))
+             (defun getword (i) (ptr-read-u32 (data-addr myblob) i)))
+           path)
+          (let ((syms (with-output-to-string
+                        (with-current-buffer standard-output
+                          (call-process "readelf" nil t nil "-s" path))))
+                (rels (with-output-to-string
+                        (with-current-buffer standard-output
+                          (call-process "readelf" nil t nil "-r" path)))))
+            ;; myblob is a LOCAL OBJECT (not UND / not GLOBAL extern).
+            (should (string-match-p
+                     "OBJECT  LOCAL  DEFAULT[ \t]+[0-9]+ myblob" syms))
+            ;; two PC32 references against the local blob symbol.
+            (should (= 2 (length (seq-filter
+                                  (lambda (l) (string-match-p "R_X86_64_PC32" l))
+                                  (split-string rels "\n")))))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-readback-e2e ()
+  "Linked C driver reads back exact `data-blob' bytes via `data-addr'."
+  (skip-unless (nelisp-aot-compiler-test--linux-p))
+  (let ((cc (or (executable-find "cc") (executable-find "gcc"))))
+    (skip-unless cc)
+    (let* ((dir (make-temp-file "nelisp-doc06-blob-e2e" t))
+           (obj (expand-file-name "blob.o" dir))
+           (drv (expand-file-name "drv.c" dir))
+           (bin (expand-file-name "prog" dir)))
+      (unwind-protect
+          (progn
+            (nelisp-aot-compile-to-object
+             '(seq
+               (data-blob myblob (10 20 30 40 250 99 7 200) rodata)
+               (defun getb (i) (ptr-read-u8 (data-addr myblob) i))
+               (defun getword (i) (ptr-read-u32 (data-addr myblob) i)))
+             obj)
+            (with-temp-file drv
+              (insert "#include <stdio.h>\n"
+                      "extern long getb(long);\n"
+                      "extern long getword(long);\n"
+                      "int main(void){\n"
+                      "  printf(\"%ld %ld %ld 0x%lx\\n\","
+                      " getb(0), getb(4), getb(7), getword(0));\n"
+                      "  return (getb(0)==10 && getb(4)==250 && getb(7)==200"
+                      " && getword(0)==0x281e140aUL)?0:1;\n"
+                      "}\n"))
+            (should (zerop (call-process cc nil nil nil drv obj "-o" bin)))
+            (let ((res (nelisp-aot-compiler-test--run-binary bin)))
+              (should (zerop (plist-get res :exit)))
+              (should (equal "10 250 200 0x281e140a"
+                             (string-trim (plist-get res :stdout))))))
+        (ignore-errors (delete-directory dir t))))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here
