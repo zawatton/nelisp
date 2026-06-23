@@ -229,8 +229,15 @@ Key invariant: the baked prelude must NOT be re-installed on top of the image
        all of which assume the Emacs C-core type infrastructure and do NOT come up
        standalone (cl-preloaded loads but registers nothing; =cl--define-built-in-type=
        ends up unbound).  So cl--generic-nnm is not a discrete gap — it bottoms out in
-       *porting the Emacs built-in-class type lattice* to the reader, the next
-       dedicated subsystem.  rx =(any RANGE)= char-engine is the other open item.
+       *porting the Emacs built-in-class type lattice* to the reader.  *Done in
+       Doc 157*: the lattice (cl--class/built-in-class + cl--class-allparents +
+       cl--define-built-in-type + cl-type-of + the type hierarchy) is now live
+       (=src/cl-preloaded-shim.el= + cl-defstruct =:conc-name=/=:predicate=), and
+       =oclosure-define= works.  cl-generic dispatch then advances to a *further*,
+       separate wall: the reader's =(closure …)= LIST representation is incompatible
+       with oclosure's =aref=-based closure-internals access (=(aref (lambda …) 0)=
+       aborts) — a reader-core closure-representation item (Doc 157 §4).  rx
+       =(any RANGE)= char-engine is the other open item.
      - =macroexp= (standalone) has no src file (=macroexpand-all= IS present); a
        remaining breadth gap.
      - Net: the cold-loader faithfully carries every package the reader can already
