@@ -228,6 +228,20 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
           (list 'setq place value)
         (list 'setf place value)))))
 
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-dotimes))
+  (defmacro cl-dotimes (spec &rest body)
+    "Stub: like `dotimes'.  SPEC is (VAR COUNT [RESULT]).
+Does not establish a `cl-block' nil, so `cl-return' is unsupported."
+    (cons 'dotimes (cons spec body))))
+
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-dolist))
+  (defmacro cl-dolist (spec &rest body)
+    "Stub: like `dolist'.  SPEC is (VAR LIST [RESULT]).
+Does not establish a `cl-block' nil, so `cl-return' is unsupported."
+    (cons 'dolist (cons spec body))))
+
 ;;;; --- cl numeric predicates (Doc 15 B4 breadth) ---------------------
 ;; cl-evenp / cl-oddp / cl-plusp / cl-minusp were void; many packages and
 ;; `cl-loop' clauses rely on them.  Plain defuns (the cl-lib `cl-defsubst'
