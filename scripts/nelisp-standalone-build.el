@@ -5869,6 +5869,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-readdir-names") . (nl_bi_syscall_readdir_names args out))
     ((:lit "nelisp--syscall-utimes") . (nl_bi_syscall_utimes args out))
     ((:lit "nelisp--syscall-statx-buf") . (nl_bi_syscall_statx_buf args out))
+    ((:lit "nelisp--syscall-unshare") . (nl_bi_syscall_unshare args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "nelisp--read-all-from-string-native") . (bf_read_all_from_string_native args out))
@@ -6835,6 +6836,18 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out buf))))
+    ;; nelisp--syscall-unshare FLAGS: unshare(2) (syscall 272) -- detach the
+    ;; calling thread's namespaces named in FLAGS (CLONE_NEWUSER 0x10000000,
+    ;; CLONE_NEWNS 0x20000, CLONE_NEWNET 0x40000000, CLONE_NEWPID 0x20000000,
+    ;; CLONE_NEWUTS 0x4000000, CLONE_NEWIPC 0x8000000, CLONE_NEWCGROUP
+    ;; 0x2000000).  Returns 0 on success or the negative kernel errno.  Pure
+    ;; elisp via the `syscall-direct' AOT op (raw `syscall' instruction, NR=272,
+    ;; NO libc -- the standalone binary does not link libc; same mechanism the
+    ;; nl_os_* file-I/O bodies use).  raw-ns sandbox substrate (nelix design 32).
+    (defun nl_bi_syscall_unshare (args out)
+      (let* ((flags (wf_argval args 0))
+             (rc (syscall-direct 272 flags 0 0 0 0 0)))
+        (wf_write_int out rc)))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -7922,7 +7935,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
     "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
     "nelisp--syscall-readdir-names"
-    "nelisp--syscall-utimes" "nelisp--syscall-statx-buf"
+    "nelisp--syscall-utimes" "nelisp--syscall-statx-buf" "nelisp--syscall-unshare"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nelisp--read-all-from-string-native"
     "nl-current-unix-time" "nl-unix-time-usec" "float-time"
