@@ -39,11 +39,17 @@ Grouped A–E by impact on C-equivalence.  Each item cites a primary source.
 
 ## C. Floating point (f64 / double) gaps
 
-- **`double` arguments/returns through `extern-call` are unsupported.**  cfront
-  carries a `double` as i64 bits, which does not fit the AOT f64-call leaf
-  shapes (`:f64-leaf-shape-unsupported`); this is a front-end/AOT-bridge gap.
-  **`va_arg` of a `double` (the fp_offset path) is likewise unsupported**
-  (loud error).
+- **`double` arguments/returns through `extern-call` — SUPPORTED (2026-06-24).**
+  cfront carries a `double` as i64 bits in a gp slot; an extern `double`
+  argument is now bridged into its xmm register via `bits-to-f64` (MOVQ) and a
+  `double` return is bridged back via `f64-bits` (`--emit-f64-bits` accepts an
+  `extern-call` IR node with `:ret-class f64`).  This lets cfront call the
+  standard-ABI libm (`sqrt`/`sin`/`pow`/`ldexp`, incl. mixed f64+int args).
+  Regression test: `nelisp-cfront-float-extern-libm-e2e`.  (Note: cfront's own
+  defined `double` functions still use the gp-bits ABI for their *own* params /
+  return, so a C caller bit-casts across them — see that test's `B`/`U`.)
+  **Still unsupported:** `va_arg` of a `double` (the fp_offset walk) — loud
+  error.
 - **`extern-call-f64` caps at 8 f64 args**; mixing f64 and integer args makes
   register scheduling complex and is staged.
   → `lisp/nelisp-aot-compiler.el:136-140, 549-557`.

@@ -12339,9 +12339,21 @@ single flat binop plus one MOVQ, yielding the result bits in rax
          (kind (nelisp-aot-compiler--ir-kind f64-expr))
          (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64))
          (xmm0 (if aarch64-p 'd0 'xmm0)))
-    (if (eq kind 'f64-binop)
-        (nelisp-aot-compiler--emit-f64-binop f64-expr buf)   ; result in xmm0
-      (nelisp-aot-compiler--emit-f64-leaf-into f64-expr buf xmm0))
+    (cond
+     ((eq kind 'f64-binop)
+      (nelisp-aot-compiler--emit-f64-binop f64-expr buf))    ; result in xmm0
+     ((and (eq kind 'extern-call)
+           (eq (nelisp-aot-compiler--ir-get f64-expr :ret-class) 'f64))
+      ;; An f64-returning extern call (libm `sin'/`sqrt'/...) — the grammar
+      ;; head `extern-call-f64' parses to a `extern-call' IR node with
+      ;; `:ret-class f64' — leaves its result in xmm0 / d0 per the SysV /
+      ;; AAPCS f64 return ABI.  Emit it directly so
+      ;; `(f64-bits (extern-call-f64 ...))' bridges a `double' return back
+      ;; to cfront's i64-bits gp representation (one MOVQ / FMOV below) —
+      ;; the f64-extern-return half of Doc 122 §122.C.
+      (nelisp-aot-compiler--emit-extern-call f64-expr buf))
+     (t
+      (nelisp-aot-compiler--emit-f64-leaf-into f64-expr buf xmm0)))
     (if aarch64-p
         (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
       (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))))
