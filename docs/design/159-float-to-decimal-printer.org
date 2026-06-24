@@ -418,22 +418,47 @@ was diffed against Emacs 30.1.  Two common divergences were fixed:
 Remaining known divergences (all at the value range's extremes; the common
 range matches Emacs exactly):
 
-- *=%f= of very large magnitudes* (≥ ~1e17: 1e100, 1e308, 6.022e23) needs the
-  full integer expansion (up to ~309 digits).  The f64-scaling fixed-point
-  path overflows i64 and emits a wrong (often "-0.00") result.  A correct
-  rendering needs big-integer decimal expansion — and =%d= of these is
-  unrepresentable anyway since NeLisp integers are i64 fixnums (no bignums).
-- *=%e/%g= of the smallest subnormals* (=5e-324=, =1e-308=) print a zero
-  mantissa (=0.000000e-324=) because f64 cannot scale by 10^323 to reach
-  [1,10).  number-to-string already renders these correctly via the §10 exact
-  128-bit extraction; routing the fixed-precision =%e/%g= digit machinery
-  through that same extractor would close this gap.
-- *17 significant digits* (=%.17f=, =%.17g=) can be off by one ULP in the last
-  digit (=%.17f 0.1= -> "...000" vs Emacs "...001"), and the exact-half tie on
-  non-binary-exact values rounds the §4 way (=%.1f 0.05= -> "0.0" vs "0.1").
-  Both are the §4 limitation: the f64→decimal scaling cannot see sub-ULP
-  excess past ~16 digits.  The exact-extraction route above would fix these.
+- (CLOSED in §14) =%f= of very large magnitudes, =%e/%g= of the smallest
+  subnormals, and 17-significant-digit / half-tie precision are now exact via
+  the big-integer formatter below.
 - *=%E/%F/%G=* are a NeLisp superset: host Emacs rejects uppercase float
   conversions ("Invalid format operation %E"); NeLisp formats them as the
-  upper-cased =%e/%f/%g=.
-- *=%d= of inf/nan* truncates to 0; Emacs passes "inf"/"-inf"/"-nan" through.
+  upper-cased =%e/%f/%g= (kept by design).
+- *=%d= of huge / inf / nan*: =%d= of a float ≥ ~1e17 needs a bignum NeLisp
+  integers cannot hold (i64 fixnums), so it cannot match Emacs's exact integer;
+  =%d= of inf/nan truncates to 0 where Emacs passes "inf"/"-inf"/"-nan".
+
+* 14. Exact big-integer %e/%f/%g formatter (Doc 159 §14)
+
+The f64-scaling =%e/%f/%g= paths (§3/§4) could not reach values outside the
+range where multiplying by a power of ten stays representable: huge =%f=
+overflowed i64, the smallest subnormals underflowed to a zero mantissa, and
+precision past ~16 digits lost the sub-ULP tail.  §14 replaces them with an
+*exact* formatter that prints the double's true decimal value and then rounds.
+
+A double is =M·2^be= exactly.  Its exact decimal integer is =N= where =N =
+M·2^be, pe=0= for =be≥0=, or =N = M·5^(-be), pe=be= for =be<0= (value =
+N·10^pe).  =N= is built as a *base-10^9 little-endian big-integer* (limb array,
+each limb < 10^9): seed with =M= (≤2 limbs), then multiply by =2^be= (chunks of
+2^29) or =5^(-be)= (chunks of 5^13).  =m5_bn_digits= emits =N='s decimal string
+(top limb un-padded, lower limbs 9-padded) — up to ~767 digits for the deepest
+subnormal, ~309 for the largest normal.  From the digit string =D= (length L)
+and =pe=, the leading digit sits at =10^E= with =E = L−1+pe=.
+
+Formatting is then pure digit-string work (=m5_round_digits=, round-half-even
+with carry into the leading digit; =m5_xf_place_buf= for the decimal point):
+
+- =%f .P= rounds =D= to =E+P+1= leading digits and places the point P from the
+  right (P fraction digits, exact even for 1e308's 309-digit integer part).
+- =%e .P= rounds to P+1 digits, emits =d.ddde±XX= with the carry adjusting E.
+- =%g .P= rounds to P (1 if 0) digits, picks fixed vs scientific by =E<−4 ∨
+  E≥P=, then strips trailing zeros.
+
+All integer arithmetic, so no f64-leaf restriction.  =m5_fmt_dispatch= routes
+=e/E/g/G/f= to =m5_xf_e/m5_xf_g/m5_xf_f= (=%a/%A= still hexfloat; inf/nan still
+the §13 word path).  Validated against Emacs on the full battery (≈45 specs ×
+38 values incl. 1e100/1e308/6.022e23 huge =%f=, 5e-324/1e-308 subnormals,
+=.17/.20/.30= precision, =0.05/2.675= half-ties): exact match.  Regression
+green: format 400, number-to-string 39, =%a=, =-0.0=, broad, bundle.  The old
+f64 =m5_fmt_ffixed/sci/gen= are retained (=m5_fmt_sci= still has one live
+non-format caller); their format-path use is superseded.

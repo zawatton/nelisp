@@ -4522,6 +4522,141 @@ unresolved at link time."
                (seq (mut-str-push-byte ms 48)
                     (mut-str-push-byte ms (if (= upc 1) 88 120))
                     (m5_hexf_body ms ef frac prec upc))))))
+    ;; ===== Doc 159 §14: exact big-integer %e/%f/%g formatter ==============
+    ;; Print the EXACT decimal value of the double (M*2^be) via base-10^9
+    ;; big-integer expansion, then round to the requested precision — matching
+    ;; C/Emacs printf across the whole range (subnormals, huge %f, 17+ digit
+    ;; precision, half-ties).  All integer arithmetic (no f64 leaves).
+    ;; bignum = little-endian array of u64 limbs, each < 10^9.
+    (defun m5_bn_init (bn m)
+      (if (< m 1000000000) (seq (ptr-write-u64 bn 0 m) 1)
+        (seq (ptr-write-u64 bn 0 (mod m 1000000000))
+             (ptr-write-u64 bn 8 (/ m 1000000000)) 2)))
+    (defun m5_bn_mul (bn len k)            ; bn *= k (k < 2^31), return new len
+      (let* ((i 0) (carry 0) (nl len))
+        (seq (while (< i len)
+               (let* ((tv (+ (* (ptr-read-u64 bn (shl i 3)) k) carry)))
+                 (seq (ptr-write-u64 bn (shl i 3) (mod tv 1000000000))
+                      (setq carry (/ tv 1000000000)) (setq i (+ i 1)))))
+             (while (> carry 0)
+               (seq (ptr-write-u64 bn (shl i 3) (mod carry 1000000000))
+                    (setq carry (/ carry 1000000000)) (setq i (+ i 1)) (setq nl (+ nl 1))))
+             nl)))
+    (defun m5_ipow5 (e) (if (= e 0) 1 (* 5 (m5_ipow5 (- e 1)))))
+    (defun m5_bn_mul2pow (bn len e)        ; bn *= 2^e
+      (let* ((L len))
+        (seq (while (>= e 29) (seq (setq L (m5_bn_mul bn L 536870912)) (setq e (- e 29))))
+             (if (> e 0) (m5_bn_mul bn L (shl 1 e)) L))))
+    (defun m5_bn_mul5pow (bn len e)        ; bn *= 5^e
+      (let* ((L len))
+        (seq (while (>= e 13) (seq (setq L (m5_bn_mul bn L 1220703125)) (setq e (- e 13))))
+             (if (> e 0) (m5_bn_mul bn L (m5_ipow5 e)) L))))
+    (defun m5_declead (v out off)          ; v>=1 decimal, no leading zeros
+      (if (< v 10) (seq (ptr-write-u8 out off (+ 48 v)) (+ off 1))
+        (let* ((noff (m5_declead (/ v 10) out off)))
+          (seq (ptr-write-u8 out noff (+ 48 (mod v 10))) (+ noff 1)))))
+    (defun m5_dec9 (v out off)             ; v as exactly 9 digits at out+off
+      (let* ((i 8))
+        (seq (while (>= i 0)
+               (seq (ptr-write-u8 out (+ off i) (+ 48 (mod v 10)))
+                    (setq v (/ v 10)) (setq i (- i 1))))
+             (+ off 9))))
+    (defun m5_bn_digits (bn len out)       ; MSB-first decimal of bn, return count
+      (let* ((n (m5_declead (ptr-read-u64 bn (shl (- len 1) 3)) out 0)) (i (- len 2)))
+        (seq (while (>= i 0)
+               (seq (setq n (m5_dec9 (ptr-read-u64 bn (shl i 3)) out n)) (setq i (- i 1))))
+             n)))
+    (defun m5_bn_mant (fb)                 ; M for value = M*2^be
+      (let* ((ef (logand (sar fb 52) 2047)) (frac (logand fb (- (shl 1 52) 1))))
+        (if (= ef 0) frac (logior frac (shl 1 52)))))
+    (defun m5_bn_be (fb)
+      (let* ((ef (logand (sar fb 52) 2047))) (if (= ef 0) -1074 (- ef 1075))))
+    (defun m5_bn_pe (fb) (let* ((be (m5_bn_be fb))) (if (< be 0) be 0)))
+    (defun m5_exact_digits (fb bn dbuf)    ; digits of N (value = N*10^pe) -> L
+      (let* ((m (m5_bn_mant fb)) (be (m5_bn_be fb)) (len (m5_bn_init bn m)))
+        (if (>= be 0) (m5_bn_digits bn (m5_bn_mul2pow bn len be) dbuf)
+          (m5_bn_digits bn (m5_bn_mul5pow bn len (- 0 be)) dbuf))))
+    (defun m5_copy_digits (src so n dst dof)
+      (let* ((i 0)) (seq (while (< i n)
+                           (seq (ptr-write-u8 dst (+ dof i) (ptr-read-u8 src (+ so i))) (setq i (+ i 1)))) 0)))
+    (defun m5_fill_zeros (dst off n)
+      (let* ((i 0)) (seq (while (< i n) (seq (ptr-write-u8 dst (+ off i) 48) (setq i (+ i 1)))) 0)))
+    (defun m5_digits_nonzero (buf i n)     ; any ASCII digit != '0' in [i,n)?
+      (if (>= i n) 0 (if (= (ptr-read-u8 buf i) 48) (m5_digits_nonzero buf (+ i 1) n) 1)))
+    (defun m5_inc_digits (dbuf keep rbuf)  ; rbuf = dbuf[0..keep)+1, return keep or keep+1
+      (seq (m5_copy_digits dbuf 0 keep rbuf 0)
+           (let* ((i (- keep 1)) (carry 1))
+             (seq (while (= carry 1)
+                    (if (< i 0) (setq carry 2)
+                      (let* ((d (+ (- (ptr-read-u8 rbuf i) 48) 1)))
+                        (if (>= d 10) (seq (ptr-write-u8 rbuf i 48) (setq i (- i 1)))
+                          (seq (ptr-write-u8 rbuf i (+ 48 d)) (setq carry 0))))))
+                  (if (= carry 2)
+                      (seq (ptr-write-u8 rbuf 0 49) (m5_fill_zeros rbuf 1 keep) (+ keep 1))
+                    keep)))))
+    (defun m5_round_digits (dbuf L keep rbuf)  ; round dbuf to keep digits (half-even)
+      (if (>= keep L) (seq (m5_copy_digits dbuf 0 L rbuf 0) (m5_fill_zeros rbuf L (- keep L)) keep)
+        (let* ((rd (ptr-read-u8 dbuf keep))
+               (tnz (m5_digits_nonzero dbuf (+ keep 1) L))
+               (up (if (> rd 53) 1 (if (< rd 53) 0 (if (= tnz 1) 1 (mod (- (ptr-read-u8 dbuf (- keep 1)) 48) 2))))))
+          (if (= up 0) (seq (m5_copy_digits dbuf 0 keep rbuf 0) keep)
+            (m5_inc_digits dbuf keep rbuf)))))
+    (defun m5_xf_lastnz (buf n)            ; index of last non-'0' digit in [0,n)
+      (if (<= n 1) 0 (if (= (ptr-read-u8 buf (- n 1)) 48) (m5_xf_lastnz buf (- n 1)) (- n 1))))
+    (defun m5_emit_range (ms buf i j)
+      (if (>= i j) 1 (seq (mut-str-push-byte ms (ptr-read-u8 buf i)) (m5_emit_range ms buf (+ i 1) j))))
+    (defun m5_xf_place_buf (ms r rlen prec) ; r (rlen digits) with point prec from right
+      (if (= prec 0) (m5_emit_range ms r 0 rlen)
+        (if (> rlen prec)
+            (seq (m5_emit_range ms r 0 (- rlen prec)) (mut-str-push-byte ms 46) (m5_emit_range ms r (- rlen prec) rlen))
+          (seq (mut-str-push-byte ms 48) (mut-str-push-byte ms 46)
+               (m5_push_repeat ms 48 (- prec rlen)) (m5_emit_range ms r 0 rlen)))))
+    (defun m5_xf_zero_f (ms prec)
+      (seq (mut-str-push-byte ms 48)
+           (if (> prec 0) (seq (mut-str-push-byte ms 46) (m5_push_repeat ms 48 prec)) 1)))
+    (defun m5_xf_f (ms fb prec)
+      (if (= (logand fb (- (shl 1 63) 1)) 0) (m5_xf_zero_f ms prec)
+        (let* ((bn (alloc-bytes 1024 8)) (dbuf (alloc-bytes 1024 1)) (rbuf (alloc-bytes 1024 1))
+               (L (m5_exact_digits fb bn dbuf)) (pe (m5_bn_pe fb))
+               (E (+ (- L 1) pe)) (keep (+ (+ E prec) 1)))
+          (if (< keep 0) (m5_xf_zero_f ms prec)
+            (if (= keep 0)
+                (let* ((d0 (ptr-read-u8 dbuf 0))
+                       (up (if (> d0 53) 1 (if (= d0 53) (m5_digits_nonzero dbuf 1 L) 0))))
+                  (if (= up 1) (seq (ptr-write-u8 rbuf 0 49) (m5_xf_place_buf ms rbuf 1 prec)) (m5_xf_zero_f ms prec)))
+              (m5_xf_place_buf ms rbuf (m5_round_digits dbuf L keep rbuf) prec))))))
+    (defun m5_xf_e (ms fb prec upcase)
+      (if (= (logand fb (- (shl 1 63) 1)) 0)
+          (seq (mut-str-push-byte ms 48)
+               (if (> prec 0) (seq (mut-str-push-byte ms 46) (m5_push_repeat ms 48 prec)) 1)
+               (m5_push_exp ms 0 upcase))
+        (let* ((bn (alloc-bytes 1024 8)) (dbuf (alloc-bytes 1024 1)) (rbuf (alloc-bytes 1024 1))
+               (L (m5_exact_digits fb bn dbuf)) (pe (m5_bn_pe fb)) (E (+ (- L 1) pe))
+               (rlen (m5_round_digits dbuf L (+ prec 1) rbuf)) (carry (- rlen (+ prec 1))) (e2 (+ E carry)))
+          (seq (mut-str-push-byte ms (ptr-read-u8 rbuf 0))
+               (if (> prec 0) (seq (mut-str-push-byte ms 46) (m5_emit_range ms rbuf 1 (+ prec 1))) 1)
+               (m5_push_exp ms e2 upcase)))))
+    (defun m5_xf_emit_e (ms r slen e2 upcase)  ; %g sci form, slen sig digits
+      (seq (mut-str-push-byte ms (ptr-read-u8 r 0))
+           (if (> slen 1) (seq (mut-str-push-byte ms 46) (m5_emit_range ms r 1 slen)) 1)
+           (m5_push_exp ms e2 upcase)))
+    (defun m5_xf_emit_f (ms r slen e2)         ; %g fixed form, slen sig, lead at 10^e2
+      (if (>= e2 0)
+          (let* ((nint (+ e2 1)))
+            (if (>= nint slen) (seq (m5_emit_range ms r 0 slen) (m5_push_repeat ms 48 (- nint slen)))
+              (seq (m5_emit_range ms r 0 nint) (mut-str-push-byte ms 46) (m5_emit_range ms r nint slen))))
+        (seq (mut-str-push-byte ms 48) (mut-str-push-byte ms 46)
+             (m5_push_repeat ms 48 (- (- 0 e2) 1)) (m5_emit_range ms r 0 slen))))
+    (defun m5_xf_g (ms fb prec upcase)
+      (let* ((p (if (= prec 0) 1 prec)))
+        (if (= (logand fb (- (shl 1 63) 1)) 0) (mut-str-push-byte ms 48)
+          (let* ((bn (alloc-bytes 1024 8)) (dbuf (alloc-bytes 1024 1)) (rbuf (alloc-bytes 1024 1))
+                 (L (m5_exact_digits fb bn dbuf)) (pe (m5_bn_pe fb)) (E (+ (- L 1) pe))
+                 (rlen (m5_round_digits dbuf L p rbuf)) (carry (- rlen p)) (e2 (+ E carry))
+                 (slen (+ (m5_xf_lastnz rbuf rlen) 1)))
+            (if (= (if (< e2 -4) 1 (if (>= e2 p) 1 0)) 1)
+                (m5_xf_emit_e ms rbuf slen e2 upcase)
+              (m5_xf_emit_f ms rbuf slen e2))))))
     (defun m5_fmt_dispatch (ms fb conv prec buf scratch)
       (if (= conv 97) (m5_fmt_hexfloat ms fb conv prec buf scratch)  ; a
        (if (= conv 65) (m5_fmt_hexfloat ms fb conv prec buf scratch) ; A
@@ -4529,11 +4664,11 @@ unresolved at link time."
         ;; m5_fmt_float_body); Doc 159 §13.
         (if (= (logand (sar fb 52) 2047) 2047)
             (m5_hexf_word ms 0 (if (= (logand fb (- (shl 1 52) 1)) 0) 0 1))
-         (if (= conv 101) (m5_fmt_sci ms fb prec 0 0 buf scratch)     ; e
-           (if (= conv 69) (m5_fmt_sci ms fb prec 1 0 buf scratch)    ; E
-             (if (= conv 103) (m5_fmt_gen ms fb prec 0 buf scratch)   ; g
-               (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)  ; G
-                 (m5_fmt_ffixed ms fb prec 0 buf scratch)))))))))     ; f / F
+         (if (= conv 101) (m5_xf_e ms fb prec 0)     ; e
+           (if (= conv 69) (m5_xf_e ms fb prec 1)    ; E
+             (if (= conv 103) (m5_xf_g ms fb prec 0)   ; g
+               (if (= conv 71) (m5_xf_g ms fb prec 1)  ; G
+                 (m5_xf_f ms fb prec)))))))))        ; f / F
     (defun m5_fmt_float_body (ms fb conv prec buf scratch)
       ;; Sign from the raw bit, not f64-lt, so -0.0 / -nan emit `-' (Doc 159 §12).
       (if (= (logand (sar fb 63) 1) 1)
