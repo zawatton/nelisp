@@ -319,8 +319,20 @@ that reuses the §8 correctly-rounded PARSER as a round-trip oracle:
 Matches Emacs =number-to-string= on 39/39 of a battery spanning 1/3, 2/3, 22/7,
 e, √2, 0.1+0.2, 1234567890123456.0, 5e-300, 9.99e99, 1e100, 1e15, subnormals
 (1e-308, min subnormal 5e-324) — including the 16- and 17-digit forms §2 could
-not produce.  format %f/%e/%g unregressed (400/401), bundle green.  Lone
-remaining gap is the PARSE (not printer) of literals in the min-subnormal
-rounding band (=4.9e-324= reads as 0): a Lemire edge at the very bottom of the
-double range.  Float work (§2–§10) now: parse correctly rounded, print
-shortest-round-trip — Emacs-identical across the practical range.
+not produce.  format %f/%e/%g unregressed (400/401), bundle green.
+
+The former min-subnormal-band PARSE edge (=4.9e-324= read as 0) is now closed
+(§8 fix below): the full min-subnormal battery (=4.9e-324=, =5e-324=, =4e-324=,
+=9e-324=, =1e-323=, … min-normal) matches Emacs 10/10.  Float work (§2–§10) now:
+parse correctly rounded, print shortest-round-trip — Emacs-identical across the
+full double range incl. the bottom subnormal band.
+
+** 8a. Subnormal rounding-order fix (Doc 159 §8)
+
+=nl_lem_compute= originally rounded the 53-bit mantissa to *normal* precision
+first, then right-shifted into subnormal position — truncating the bits that
+decide the subnormal round and collapsing =4.9e-324= to 0.  The fix follows
+fast_float's order: when =power2 <= 0= (subnormal/zero), shift the *pre-round*
+mantissa by =1 - power2= first, *then* round-half-even at the resulting
+subnormal precision (carry into the exponent field handled by =msr >= 2^52=).
+The normal path (=power2 > 0=) is unchanged.
