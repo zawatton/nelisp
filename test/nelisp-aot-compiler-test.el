@@ -3589,6 +3589,40 @@ the linker to point at a `.rodata' string blob and read back correctly."
               (should (equal "hi!" (string-trim (plist-get res :stdout))))))
         (ignore-errors (delete-directory dir t))))))
 
+(ert-deftest nelisp-aot-compiler/data-blob-reloc-extern-symbol-e2e ()
+  "A `.data' blob reloc to a symbol defined in NO blob/defun becomes an UND
+extern (Doc 06 C-3 function-pointer tables), resolved by the linker."
+  (skip-unless (nelisp-aot-compiler-test--linux-p))
+  (let ((cc (or (executable-find "cc") (executable-find "gcc"))))
+    (skip-unless cc)
+    (let* ((dir (make-temp-file "nelisp-doc06-extreloc-e2e" t))
+           (obj (expand-file-name "e.o" dir))
+           (drv (expand-file-name "drv.c" dir))
+           (bin (expand-file-name "prog" dir)))
+      (unwind-protect
+          (progn
+            (nelisp-aot-compile-to-object
+             '(seq
+               (data-blob ptbl (0 0 0 0 0 0 0 0) data ((0 ext_fn 0)))
+               (defun getfn () (ptr-read-u64 (data-addr ptbl) 0)))
+             obj)
+            ;; ext_fn must be emitted as an UND GLOBAL extern.
+            (let ((syms (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process "readelf" nil t nil "-s" obj)))))
+              (should (string-match-p "GLOBAL[ \t]+DEFAULT[ \t]+UND ext_fn" syms)))
+            (with-temp-file drv
+              (insert "#include <stdio.h>\n"
+                      "int ext_fn(int x){ return x+100; }\n"
+                      "extern long getfn(void);\n"
+                      "int main(void){ int(*f)(int)=(int(*)(int))getfn();\n"
+                      "  printf(\"%d\\n\", f(5)); return f(5)==105?0:1; }\n"))
+            (should (zerop (call-process cc nil nil nil drv obj "-o" bin)))
+            (let ((res (nelisp-aot-compiler-test--run-binary bin)))
+              (should (zerop (plist-get res :exit)))
+              (should (equal "105" (string-trim (plist-get res :stdout))))))
+        (ignore-errors (delete-directory dir t))))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here

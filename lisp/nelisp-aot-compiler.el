@@ -16470,18 +16470,31 @@ register budgeting while ELF/Mach-O keep SysV."
                       (append blob-rodata-layout blob-data-layout
                               blob-bss-layout)))
              (extern-names
-              (sort
-               (delete-dups
-                (cl-remove-if
-                 (lambda (nm) (member nm blob-names))
-                 (mapcar (lambda (r) (plist-get r :symbol))
-                         (cl-remove-if-not
-                          (lambda (r)
-                            (memq (plist-get r :type)
-                                  '(pc32 plt32 abs64 b26-pc
-                                    adr-prel-pg-hi21 add-abs-lo12-nc)))
-                          relocs))))
-               #'string<))
+              ;; UND symbols for every reloc target that is neither a
+              ;; same-unit data blob nor a same-unit defun.  Step C-2/C-3:
+              ;; `.rela.data' relocs are included too, so a function pointer
+              ;; baked into a `.data' blob (e.g. `aSyscall[].pCurrent =
+              ;; (ptr)close') gets an extern UND symbol the linker resolves
+              ;; against libc; a pointer to a same-unit defun (`posixOpen')
+              ;; is filtered here and resolves to its GLOBAL FUNC symbol.
+              (let ((defun-names
+                     (mapcar (lambda (d)
+                               (let ((nm (nelisp-aot-compiler--ir-get d :name)))
+                                 (if (stringp nm) nm (symbol-name nm))))
+                             defuns)))
+                (sort
+                 (delete-dups
+                  (cl-remove-if
+                   (lambda (nm) (or (member nm blob-names)
+                                    (member nm defun-names)))
+                   (mapcar (lambda (r) (plist-get r :symbol))
+                           (cl-remove-if-not
+                            (lambda (r)
+                              (memq (plist-get r :type)
+                                    '(pc32 plt32 abs64 b26-pc
+                                      adr-prel-pg-hi21 add-abs-lo12-nc)))
+                            (append relocs blob-data-relocs)))))
+                 #'string<)))
              ;; Only the user-defined defun names should appear as
              ;; GLOBAL FUNC symbols.  The control-flow helper labels
              ;; emitted by `--emit-if' / `--emit-while' / `--emit-cond'
