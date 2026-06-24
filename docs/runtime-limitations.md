@@ -15,14 +15,21 @@ Grouped A–E by impact on C-equivalence.  Each item cites a primary source.
 
 ---
 
-## A. Host-environment dependence (C using these is not reproducible)
+## A. Host-environment dependence — two layers, don't conflate them
 
-- **Time / random are unimplemented.**  No AOT grammar for `current-time`,
-  `get-internal-run-time`, `random`, etc.; C depending on wall-clock or RNG
-  does not match native.  → `src/nelisp-eval.el:765`.
-- **`getenv` is Linux x86_64 only.**  Environment access is gated to that
-  target; other platforms cannot read the environment.
-  → `lisp/nelisp-cc-bi-getenv.el:44, 151-153`.
+- **Compiled C reaches the host environment through ordinary extern libc
+  calls, and gets REAL values.**  `time(0)`, `clock_gettime`, `getenv`,
+  `rand`/`srand`, etc. are just `extern-call`s the linker resolves against
+  libc, so a cfront-compiled function returns the real wall clock (NOT a 1970
+  stub), reads the real environment, and runs the real RNG.  Verified:
+  `nelisp-cfront-host-env-via-extern-libc-e2e` (in nelisp-cfront).  The only
+  caveat is the universal one (§B): the symbols must be linked.
+- **The nelisp ELISP interpreter's own host builtins are a separate,
+  AOT-unimplemented layer** — this is what "no clock / 1970" refers to, and it
+  does NOT constrain compiled C.  When the AOT'd *interpreter* evaluates elisp,
+  there is no AOT grammar for `current-time` / `get-internal-run-time` /
+  `random` (→ `src/nelisp-eval.el:765`), and the `getenv` *builtin* wiring is
+  gated to Linux x86_64 (→ `lisp/nelisp-cc-bi-getenv.el:44, 151-153`).
 - **No nested `extern-call` as a call argument.**  A nested external call must
   be hoisted to its own defun (to keep eval order well-defined).
   → `lisp/nelisp-cc-bi-getenv.el:104-105`.
