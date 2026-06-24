@@ -336,3 +336,41 @@ fast_float's order: when =power2 <= 0= (subnormal/zero), shift the *pre-round*
 mantissa by =1 - power2= first, *then* round-half-even at the resulting
 subnormal precision (carry into the exponent field handled by =msr >= 2^52=).
 The normal path (=power2 > 0=) is unchanged.
+
+* 11. C99 %a / %A hex-float conversion (Doc 159 §11)
+
+=format= now supports the C99 hexadecimal-float conversions =%a= / =%A=.  This
+is a *NeLisp superset*: host Emacs 30.1 `format' rejects =%a= with "Invalid
+format operation %a", so there is no Emacs oracle — the reference is glibc
+=printf("%a")= and the output matches it exactly on the validation battery.
+
+Routing: the prelude `format' adds conv 97/65 to the set delegated to
+=nelisp--fmt-float=, passing precision =-1= (sentinel for "unspecified") instead
+of the e/f/g default of 6.  All formatting lives in the AOT dialect
+(=m5_fmt_hexfloat= + =m5_hexf_*= helpers, dispatched from =m5_fmt_dispatch= on
+conv =a=/=A=).  It operates entirely on the IEEE-754 bits, so the f64-leaf
+dialect restriction does not apply.
+
+Layout =[-]0xh.hhhhp±d=:
+
+- *sign* — the leading =-= is emitted by =m5_fmt_float_body= for finite
+  negatives (it negates and re-dispatches the magnitude); =m5_fmt_hexfloat=
+  additionally emits =-= when the raw bits have the sign set (the residual
+  =-0.0= / =-nan= cases).
+- *leading digit* — =1= for normals (=ef != 0=), =0= for subnormals/zero.
+- *fraction* — the 52-bit mantissa as up to 13 hex nibbles, MSB first.
+  Unspecified precision strips trailing-zero nibbles (and drops the =.= when
+  none remain: =1.0 -> "0x1p+0"=); an explicit =.N= emits exactly N nibbles
+  with round-half-even, the carry propagating into the leading digit
+  (=%.0a 1.5 -> "0x2p+0"=).
+- *exponent* — the unbiased binary exponent in decimal with an explicit sign
+  (=p+0=, =p-4=, =p+1023=); subnormals are fixed at =p-1022=; zero is =0x0p+0=.
+- =inf= / =nan= (=ef == 2047=) render as =inf= / =nan= (=INF= / =NAN= for =%A=).
+
+Matches glibc =%a= exactly across normals, subnormals (=5e-324 ->
+"0x0.0000000000001p-1022"=, min-normal =-> "0x1p-1022"=), the max double
+(=0x1.fffffffffffffp+1023=), =%A= upper-casing, and =.3= precision rounding.
+The one value-level divergence is =-0.0=: this reader collapses =-0.0= to
+=+0.0= at read/negate time (=number-to-string -0.0= is "0.0" vs Emacs "-0.0"),
+so the sign is already gone before =%a= sees it — a pre-existing float
+representation gap independent of this conversion, not a =%a= bug.

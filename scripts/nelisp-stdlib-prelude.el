@@ -4379,10 +4379,12 @@ native `format', which lacks only the field-width layer."
                            (body (if (and (numberp arg)
                                           (or (= conv 102) (= conv 70)   ; f F
                                               (= conv 101) (= conv 69)   ; e E
-                                              (= conv 103) (= conv 71))) ; g G
+                                              (= conv 103) (= conv 71)   ; g G
+                                              (= conv 97) (= conv 65)))  ; a A (Doc 159 §11)
                                      (nelisp--fmt-float
                                       (if (integerp arg) (+ arg 0.0) arg)
-                                      conv (or prec 6))
+                                      conv (if (or (= conv 97) (= conv 65))
+                                               (or prec -1) (or prec 6)))
                                    (nelisp--native-format
                                     (concat "%" (char-to-string conv)) arg))))
                       (setq argp (cdr argp))

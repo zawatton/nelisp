@@ -4434,12 +4434,101 @@ unresolved at link time."
             (if (= (if (>= e -4) (if (< e p) 1 0) 0) 1)
                 (m5_fmt_ffixed ms fb (- (- p 1) e) 1 buf scratch)
               (m5_fmt_sci ms fb (- p 1) upcase 1 buf scratch))))))
+    ;; ---- Doc 159 §11: C99 `%a'/`%A' hex-float conversion ------------------
+    ;; format hex-float (a NeLisp superset: host Emacs `format' rejects %a).
+    ;; Operates entirely on the IEEE-754 bits (no f64 leaves), so no f64-leaf
+    ;; dialect restriction applies.  prec<0 = unspecified (strip trailing zero
+    ;; nibbles); prec>=0 = exactly PREC fraction nibbles, round-half-even with
+    ;; carry into the leading hex digit.  Matches glibc printf("%a").
+    (defun m5_hexf_dig (nib upc)
+      (if (< nib 10) (+ 48 nib)
+        (if (= upc 1) (+ 55 nib) (+ 87 nib))))
+    (defun m5_hexf_nib (frac k)
+      (logand (sar frac (- 48 (shl k 2))) 15))
+    (defun m5_hexf_last (frac k)
+      (if (< k 0) -1
+        (if (= (m5_hexf_nib frac k) 0)
+            (m5_hexf_last frac (- k 1))
+          k)))
+    (defun m5_hexf_emit (ms frac k last upc)
+      (if (> k last) 1
+        (seq (mut-str-push-byte ms (m5_hexf_dig (m5_hexf_nib frac k) upc))
+             (m5_hexf_emit ms frac (+ k 1) last upc))))
+    (defun m5_hexf_emitp (ms fr j prec upc)
+      (if (>= j prec) 1
+        (seq (mut-str-push-byte ms
+               (m5_hexf_dig (logand (sar fr (shl (- (- prec 1) j) 2)) 15) upc))
+             (m5_hexf_emitp ms fr (+ j 1) prec upc))))
+    (defun m5_hexf_zeros (ms count)
+      (if (<= count 0) 1
+        (seq (mut-str-push-byte ms 48) (m5_hexf_zeros ms (- count 1)))))
+    (defun m5_hexf_exp (ms e upc)
+      (seq (mut-str-push-byte ms (if (= upc 1) 80 112))
+           (if (< e 0)
+               (seq (mut-str-push-byte ms 45) (m5_push_dec ms (- 0 e)))
+             (seq (mut-str-push-byte ms 43) (m5_push_dec ms e)))))
+    (defun m5_hexf_word (ms upc which)
+      (if (= which 0)
+          (if (= upc 1)
+              (seq (mut-str-push-byte ms 73) (mut-str-push-byte ms 78) (mut-str-push-byte ms 70))
+            (seq (mut-str-push-byte ms 105) (mut-str-push-byte ms 110) (mut-str-push-byte ms 102)))
+        (if (= upc 1)
+            (seq (mut-str-push-byte ms 78) (mut-str-push-byte ms 65) (mut-str-push-byte ms 78))
+          (seq (mut-str-push-byte ms 110) (mut-str-push-byte ms 97) (mut-str-push-byte ms 110)))))
+    (defun m5_hexf_body (ms ef frac prec upc)
+      (let* ((sub (if (= ef 0) 1 0))
+             (lead0 (if (= sub 1) 0 1))
+             (exp (if (= sub 1) (if (= frac 0) 0 -1022) (- ef 1023))))
+        (if (and (= sub 1) (= frac 0))
+            (seq (mut-str-push-byte ms 48)
+                 (if (> prec 0)
+                     (seq (mut-str-push-byte ms 46) (m5_hexf_zeros ms prec)) 1)
+                 (m5_hexf_exp ms 0 upc))
+          (if (< prec 0)
+              (let* ((last (m5_hexf_last frac 12)))
+                (seq (mut-str-push-byte ms (m5_hexf_dig lead0 upc))
+                     (if (< last 0) 1
+                       (seq (mut-str-push-byte ms 46)
+                            (m5_hexf_emit ms frac 0 last upc)))
+                     (m5_hexf_exp ms exp upc)))
+            (if (>= prec 13)
+                (seq (mut-str-push-byte ms (m5_hexf_dig lead0 upc))
+                     (mut-str-push-byte ms 46)
+                     (m5_hexf_emit ms frac 0 12 upc)
+                     (m5_hexf_zeros ms (- prec 13))
+                     (m5_hexf_exp ms exp upc))
+              (let* ((shift (- 52 (shl prec 2)))
+                     (kept (sar frac shift))
+                     (dropped (logand frac (- (shl 1 shift) 1)))
+                     (half (shl 1 (- shift 1)))
+                     (parity (if (> prec 0) (logand kept 1) (logand lead0 1)))
+                     (rup (if (> dropped half) 1 (if (< dropped half) 0 parity)))
+                     (val (+ (+ (shl lead0 (shl prec 2)) kept) rup))
+                     (newlead (sar val (shl prec 2)))
+                     (newfrac (logand val (- (shl 1 (shl prec 2)) 1))))
+                (seq (mut-str-push-byte ms (m5_hexf_dig newlead upc))
+                     (if (> prec 0)
+                         (seq (mut-str-push-byte ms 46) (m5_hexf_emitp ms newfrac 0 prec upc)) 1)
+                     (m5_hexf_exp ms exp upc))))))))
+    (defun m5_fmt_hexfloat (ms fb conv prec buf scratch)
+      (let* ((upc (if (= conv 65) 1 0))
+             (magbits (logand fb (- (shl 1 63) 1)))
+             (ef (logand (sar magbits 52) 2047))
+             (frac (logand magbits (- (shl 1 52) 1))))
+        (seq (if (< fb 0) (mut-str-push-byte ms 45) 1)
+             (if (= ef 2047)
+                 (m5_hexf_word ms upc (if (= frac 0) 0 1))
+               (seq (mut-str-push-byte ms 48)
+                    (mut-str-push-byte ms (if (= upc 1) 88 120))
+                    (m5_hexf_body ms ef frac prec upc))))))
     (defun m5_fmt_dispatch (ms fb conv prec buf scratch)
-      (if (= conv 101) (m5_fmt_sci ms fb prec 0 0 buf scratch)       ; e
-        (if (= conv 69) (m5_fmt_sci ms fb prec 1 0 buf scratch)      ; E
-          (if (= conv 103) (m5_fmt_gen ms fb prec 0 buf scratch)     ; g
-            (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)    ; G
-              (m5_fmt_ffixed ms fb prec 0 buf scratch))))))          ; f / F
+      (if (= conv 97) (m5_fmt_hexfloat ms fb conv prec buf scratch)  ; a
+       (if (= conv 65) (m5_fmt_hexfloat ms fb conv prec buf scratch) ; A
+        (if (= conv 101) (m5_fmt_sci ms fb prec 0 0 buf scratch)     ; e
+          (if (= conv 69) (m5_fmt_sci ms fb prec 1 0 buf scratch)    ; E
+            (if (= conv 103) (m5_fmt_gen ms fb prec 0 buf scratch)   ; g
+              (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)  ; G
+                (m5_fmt_ffixed ms fb prec 0 buf scratch))))))))      ; f / F
     (defun m5_fmt_float_body (ms fb conv prec buf scratch)
       (if (= (f64-lt (bits-to-f64 fb) (i64-to-f64 0)) 1)
           (seq (mut-str-push-byte ms 45)
