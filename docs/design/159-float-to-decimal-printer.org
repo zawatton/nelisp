@@ -459,6 +459,14 @@ All integer arithmetic, so no f64-leaf restriction.  =m5_fmt_dispatch= routes
 the §13 word path).  Validated against Emacs on the full battery (≈45 specs ×
 38 values incl. 1e100/1e308/6.022e23 huge =%f=, 5e-324/1e-308 subnormals,
 =.17/.20/.30= precision, =0.05/2.675= half-ties): exact match.  Regression
-green: format 400, number-to-string 39, =%a=, =-0.0=, broad, bundle.  The old
-f64 =m5_fmt_ffixed/sci/gen= are retained (=m5_fmt_sci= still has one live
-non-format caller); their format-path use is superseded.
+green: format 400, number-to-string 39, =%a=, =-0.0=, broad, bundle.
+
+Dead-code removal: with the format path on the exact formatter, the old
+f64 =%e/%f/%g= cluster became unreachable — a reachability fixpoint (refs
+excluding dead bodies) found 16 dead =m5_*= defuns, removed after confirming
+no external references: =m5_fmt_gen/ffixed/sci=, their helpers
+=m5_fmt_exp_of/pow10/roundup=, the §9 tables =m5_p10hi/p10lo=, and the now-orphaned
+§10-predecessor printer helpers =m5_push_float_mag/frac=, =m5_leadzeros=,
+=m5_any_nonzero=, =m5_emit_dot_zeros=, =m5_float_eq_i64_p=, =m5_fixlen/scilen=
+(=m5_push_float='s magnitude path was supplanted by the §10 shortest printer).
+All batteries unchanged after removal.
