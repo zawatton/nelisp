@@ -3637,7 +3637,10 @@ the whole program."
                 (nelisp-aot-compiler--preprocess-short-circuit-forms
                  (cdr pruned)))
         (nelisp-aot-compiler--preprocess-source pruned))))
-   ((memq (car sexp) '(write static-imm32-table-define))
+   ;; `data-blob' carries structural data (BYTES / SECTION / RELOCS), not
+   ;; runtime expressions — pass it through untouched so a `nil' RELOCS
+   ;; arg is not rewritten to `0' by the host-nil rule above (Doc 06 C-2).
+   ((memq (car sexp) '(write static-imm32-table-define data-blob))
     sexp)
    (t
     (let ((expanded (macroexpand sexp)))
@@ -9604,19 +9607,23 @@ Returns one of:
                   (list :static-imm32-table-define-element-out-of-range
                         e))))
       (nelisp-aot-compiler--make-ir 'table-define :name name :elements elements)))
-   ;; (data-blob NAME BYTES SECTION) — Doc 06 Step A.  Define a same-unit
-   ;; static data symbol: BYTES (a unibyte string or list of 0-255 ints)
-   ;; goes into SECTION (`rodata' for now) with a LOCAL symbol NAME at its
-   ;; offset.  Emits no `.text'; a `(data-addr NAME)' takes its address via
-   ;; a PC32 reloc against this local symbol.  Statement-only declaration.
+   ;; (data-blob NAME BYTES SECTION [RELOCS]) — Doc 06 Step A/C.  Define a
+   ;; same-unit static data symbol: BYTES (a unibyte string or list of
+   ;; 0-255 ints) goes into SECTION (`rodata'/`data'/`bss') with a LOCAL
+   ;; symbol NAME at its offset.  Emits no `.text'; `(data-addr NAME)' takes
+   ;; its address via a PC32 reloc against this local symbol.  Optional
+   ;; RELOCS (Step C-2) = a list of `(OFFSET TARGET-SYM ADDEND)' baking a
+   ;; pointer to TARGET-SYM into the blob at byte OFFSET (an abs64 reloc in
+   ;; `.rela.data').  Statement-only declaration.
    ((and (consp sexp) (eq (car sexp) 'data-blob))
-    (unless (and (= (length sexp) 4) (symbolp (nth 1 sexp)))
+    (unless (and (memq (length sexp) '(4 5)) (symbolp (nth 1 sexp)))
       (signal 'nelisp-aot-compiler-error
               (list :data-blob-malformed sexp)))
     (nelisp-aot-compiler--make-ir 'data-blob
           :name (nth 1 sexp)
           :bytes (nth 2 sexp)
-          :section (nth 3 sexp)))
+          :section (nth 3 sexp)
+          :relocs (nth 4 sexp)))
    ;; (exit VALUE-EXPR)
    ((and (consp sexp) (eq (car sexp) 'exit))
     (unless (= (length sexp) 2)
@@ -10160,11 +10167,22 @@ a unibyte string (a list of 0-255 ints is packed)."
                       (raw (nelisp-aot-compiler--ir-get node :bytes))
                       (bytes (if (stringp raw) (string-as-unibyte raw)
                                (apply #'unibyte-string
-                                      (mapcar (lambda (b) (logand b 255)) raw)))))
+                                      (mapcar (lambda (b) (logand b 255)) raw))))
+                      ;; Step C-2: normalise `(OFFSET TARGET ADDEND)' triples
+                      ;; into `(:offset :symbol :addend)' plists (TARGET name
+                      ;; coerced to a string).
+                      (relocs (mapcar
+                               (lambda (rl)
+                                 (list :offset (nth 0 rl)
+                                       :symbol (let ((s (nth 1 rl)))
+                                                 (if (stringp s) s (symbol-name s)))
+                                       :addend (or (nth 2 rl) 0)))
+                               (nelisp-aot-compiler--ir-get node :relocs))))
                  (push (list :name (if (stringp nm) nm (symbol-name nm))
                              :bytes bytes
                              :section (or (nelisp-aot-compiler--ir-get node :section)
-                                          'rodata))
+                                          'rodata)
+                             :relocs relocs)
                        acc)))
               ((eq (nelisp-aot-compiler--ir-kind node) 'seq)
                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))))))
@@ -16423,6 +16441,23 @@ register budgeting while ELF/Mach-O keep SysV."
              (blob-bss-size
               (apply #'+ (mapcar (lambda (b) (length (plist-get b :bytes)))
                                  blob-bss-blobs)))
+             ;; Step C-2: pointers baked into `.data' blobs become abs64
+             ;; relocs in `.rela.data', their byte offset shifted by the
+             ;; blob's offset within the data section.
+             (blob-data-relocs
+              (let ((acc nil))
+                (cl-loop
+                 for b in blob-data-blobs
+                 for bl in blob-data-layout
+                 do (dolist (rl (plist-get b :relocs))
+                      (push (list :section 'data
+                                  :offset (+ (plist-get bl :offset)
+                                             (plist-get rl :offset))
+                                  :type 'abs64
+                                  :symbol (plist-get rl :symbol)
+                                  :addend (plist-get rl :addend))
+                            acc)))
+                (nreverse acc)))
              (blob-names (mapcar (lambda (b) (plist-get b :name)) data-blobs))
              (blob-symbols
               (mapcar (lambda (bl)
@@ -16551,7 +16586,7 @@ register budgeting while ELF/Mach-O keep SysV."
               :data blob-data
               :bss-size blob-bss-size
               :symbols all-symbols
-              :relocs relocs
+              :relocs (append relocs blob-data-relocs)
               :machine arch
               :defuns defun-layout
               :extern-symbols extern-names)))))

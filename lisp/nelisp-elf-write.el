@@ -1885,7 +1885,19 @@ treated as section-relative offsets (= no vaddr-base addition)."
          (have-rodata (and rodata (> (length rodata) 0)))
          (have-data   (and data (> (length data) 0)))
          (have-bss    (> bss-size 0))
-         (have-rela   (and relocs (> (length relocs) 0)))
+         ;; Relocs are split by the section they patch: `.rela.text'
+         ;; (default) vs `.rela.data' (a pointer baked into a `.data' blob,
+         ;; Doc 06 Step C-2).  Selected by each reloc's `:section'.
+         (text-relocs
+          (let (a) (dolist (r relocs)
+                     (unless (eq (plist-get r :section) 'data) (push r a)))
+               (nreverse a)))
+         (data-relocs
+          (let (a) (dolist (r relocs)
+                     (when (eq (plist-get r :section) 'data) (push r a)))
+               (nreverse a)))
+         (have-rela   (and text-relocs (> (length text-relocs) 0)))
+         (have-rela-data (and data-relocs (> (length data-relocs) 0)))
          (text-size   (length text))
          (rodata-size (if have-rodata (length rodata) 0))
          (data-size   (if have-data (length data) 0))
@@ -1963,6 +1975,14 @@ treated as section-relative offsets (= no vaddr-base addition)."
                     shstrtab-chunks)
               (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
               off)))
+         (sh-name-rela-data
+          (when have-rela-data
+            (let ((off shstrtab-pos) (s ".rela.data"))
+              (push (concat (encode-coding-string s 'utf-8 t)
+                            (unibyte-string 0))
+                    shstrtab-chunks)
+              (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+              off)))
          (shstrtab-bytes (apply #'concat (nreverse shstrtab-chunks)))
          (shstrtab-size  shstrtab-pos)
          (strtab-off (+ shstrtab-off shstrtab-size))
@@ -2012,15 +2032,28 @@ treated as section-relative offsets (= no vaddr-base addition)."
                   (push sym locals)
                 (push sym globals)))
             (append (nreverse locals) (nreverse globals))))
+         (sym-idx-table
+          (let ((h (make-hash-table :test 'equal)) (sidx 1))
+            (dolist (s ordered-symbols)
+              (puthash (plist-get s :name) sidx h)
+              (setq sidx (1+ sidx)))
+            h))
          (rela-off (when have-rela
                      (nelisp-elf--align-up
                       (+ symtab-off symtab-size) 8)))
          (rela-size (when have-rela
-                      (* nelisp-elf--rela-size (length relocs))))
+                      (* nelisp-elf--rela-size (length text-relocs))))
          (after-rela (if have-rela
                          (+ rela-off rela-size)
                        (+ symtab-off symtab-size)))
-         (shoff (nelisp-elf--align-up after-rela 8))
+         (rela-data-off (when have-rela-data
+                          (nelisp-elf--align-up after-rela 8)))
+         (rela-data-size (when have-rela-data
+                           (* nelisp-elf--rela-size (length data-relocs))))
+         (after-rela-data (if have-rela-data
+                              (+ rela-data-off rela-data-size)
+                            after-rela))
+         (shoff (nelisp-elf--align-up after-rela-data 8))
          ;; Section indices: 0 = NULL, then in emit order.
          (idx 1)
          (text-shndx idx)
@@ -2031,6 +2064,7 @@ treated as section-relative offsets (= no vaddr-base addition)."
          (strtab-shndx (progn (setq idx (1+ idx)) idx))
          (symtab-shndx (progn (setq idx (1+ idx)) idx))
          (_rela-shndx (and have-rela (setq idx (1+ idx)) idx))
+         (_rela-data-shndx (and have-rela-data (setq idx (1+ idx)) idx))
          (shnum (1+ idx))
          (cbuf (nelisp-elf-make-buffer)))
     ;; ---- Ehdr (= ET_REL: no phdrs, no entry).
@@ -2135,32 +2169,42 @@ treated as section-relative offsets (= no vaddr-base addition)."
                      (nelisp-elf--sym-bind-code bind)
                      (nelisp-elf--sym-type-code type))))
         (nelisp-elf--build-rel-sym cbuf name-off info 0 shndx value size)))
-    ;; ---- .rela.text (optional)
+    ;; ---- .rela.text (relocs patching .text) — `sym-idx-table' (built in
+    ;; the let*) maps a symbol name to its 1-based .symtab index.
     (when have-rela
       (let ((pad (- rela-off (nelisp-elf-buffer-length cbuf))))
         (when (> pad 0)
           (nelisp-elf--cbuf-push cbuf (make-string pad 0))))
-      ;; Pre-build a symbol-name -> 1-based index table so the per-rel
-      ;; lookup is O(1) instead of O(N) (= matters for spike-noop's
-      ;; large extern list).
-      (let ((sym-idx-table (make-hash-table :test 'equal))
-            (sidx 1))
-        (dolist (s ordered-symbols)
-          (puthash (plist-get s :name) sidx sym-idx-table)
-          (setq sidx (1+ sidx)))
-        (dolist (rel relocs)
-          (let* ((rsym (plist-get rel :symbol))
-                 (rtype (plist-get rel :type))
-                 (sym-idx
-                  (or (gethash rsym sym-idx-table)
-                      (error "nelisp-elf: relocation references unknown symbol %S"
-                             rsym)))
-                 (offset (or (plist-get rel :offset) 0))
-                 (addend (or (plist-get rel :addend) 0))
-                 (info (nelisp-elf-rela-info
-                        sym-idx
-                        (nelisp-elf--reloc-type-code rtype))))
-            (nelisp-elf--build-rel-rela cbuf offset info addend)))))
+      (dolist (rel text-relocs)
+        (let* ((rsym (plist-get rel :symbol))
+               (sym-idx
+                (or (gethash rsym sym-idx-table)
+                    (error "nelisp-elf: relocation references unknown symbol %S"
+                           rsym)))
+               (offset (or (plist-get rel :offset) 0))
+               (addend (or (plist-get rel :addend) 0))
+               (info (nelisp-elf-rela-info
+                      sym-idx
+                      (nelisp-elf--reloc-type-code (plist-get rel :type)))))
+          (nelisp-elf--build-rel-rela cbuf offset info addend))))
+    ;; ---- .rela.data (relocs patching .data, Doc 06 Step C-2: a pointer
+    ;; baked into a `.data' blob, e.g. a string-literal field or `&global').
+    (when have-rela-data
+      (let ((pad (- rela-data-off (nelisp-elf-buffer-length cbuf))))
+        (when (> pad 0)
+          (nelisp-elf--cbuf-push cbuf (make-string pad 0))))
+      (dolist (rel data-relocs)
+        (let* ((rsym (plist-get rel :symbol))
+               (sym-idx
+                (or (gethash rsym sym-idx-table)
+                    (error "nelisp-elf: relocation references unknown symbol %S"
+                           rsym)))
+               (offset (or (plist-get rel :offset) 0))
+               (addend (or (plist-get rel :addend) 0))
+               (info (nelisp-elf-rela-info
+                      sym-idx
+                      (nelisp-elf--reloc-type-code (plist-get rel :type)))))
+          (nelisp-elf--build-rel-rela cbuf offset info addend))))
     ;; ---- Shdr table.
     (let ((pad (- shoff (nelisp-elf-buffer-length cbuf))))
       (when (> pad 0)
@@ -2205,6 +2249,11 @@ treated as section-relative offsets (= no vaddr-base addition)."
        cbuf sh-name-rela nelisp-elf--sht-rela
        0 0 rela-off rela-size
        symtab-shndx text-shndx 8 nelisp-elf--rela-size))
+    (when have-rela-data
+      (nelisp-elf--build-rel-shdr
+       cbuf sh-name-rela-data nelisp-elf--sht-rela
+       0 0 rela-data-off rela-data-size
+       symtab-shndx data-shndx 8 nelisp-elf--rela-size))
     (nelisp-elf-buffer-bytes cbuf)))
 
 ;;;###autoload

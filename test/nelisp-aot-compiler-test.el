@@ -3557,6 +3557,38 @@ SysV would emit `push rdi' = 57 instead."
               (should (equal "1 0 99 7" (string-trim (plist-get res :stdout))))))
         (ignore-errors (delete-directory dir t))))))
 
+(ert-deftest nelisp-aot-compiler/data-blob-pointer-reloc-e2e ()
+  "A pointer baked into a `.data' blob (Doc 06 C-2 RELOCS) is relocated by
+the linker to point at a `.rodata' string blob and read back correctly."
+  (skip-unless (nelisp-aot-compiler-test--linux-p))
+  (let ((cc (or (executable-find "cc") (executable-find "gcc"))))
+    (skip-unless cc)
+    (let* ((dir (make-temp-file "nelisp-doc06-reloc-e2e" t))
+           (obj (expand-file-name "r.o" dir))
+           (drv (expand-file-name "drv.c" dir))
+           (bin (expand-file-name "prog" dir)))
+      (unwind-protect
+          (progn
+            ;; pmsg is an 8-byte .data pointer whose bytes are patched by an
+            ;; abs64 reloc to the address of `msg' ("hi!\\0") in .rodata.
+            (nelisp-aot-compile-to-object
+             '(seq
+               (data-blob msg (104 105 33 0) rodata)
+               (data-blob pmsg (0 0 0 0 0 0 0 0) data ((0 msg 0)))
+               (defun getmsg () (ptr-read-u64 (data-addr pmsg) 0)))
+             obj)
+            (with-temp-file drv
+              (insert "#include <stdio.h>\n#include <string.h>\n"
+                      "extern long getmsg(void);\n"
+                      "int main(void){ char *p=(char*)getmsg();\n"
+                      "  printf(\"%s\\n\", p);\n"
+                      "  return strcmp(p,\"hi!\")==0?0:1; }\n"))
+            (should (zerop (call-process cc nil nil nil drv obj "-o" bin)))
+            (let ((res (nelisp-aot-compiler-test--run-binary bin)))
+              (should (zerop (plist-get res :exit)))
+              (should (equal "hi!" (string-trim (plist-get res :stdout))))))
+        (ignore-errors (delete-directory dir t))))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here
