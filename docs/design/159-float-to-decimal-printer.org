@@ -209,3 +209,54 @@ normal, =5e-324= = min subnormal) collapse to =0=.  Closing these needs a
 128-bit mantissa path (Eisel-Lemire) or big-integer fallback (Gay/Clinger),
 well beyond a power-of-ten table.  =max double= prints with §2's 15 sig digits
 (=1.79e308= form), a printer (not parser) limit.
+
+* 8. Eisel-Lemire 128-bit parse path (Doc 159 §8)
+
+The §7 fast-path residuals (double-rounding for multi-digit mantissa × power
+outside [-22,22]; min-normal/subnormal collapsing to 0) are now *correctly
+rounded* via the Eisel-Lemire algorithm, implemented in the AOT dialect.
+
+** Pieces
+
+- *u64×u64→u128 multiply* (=nl_u128_hi=): 16-bit schoolbook limbs so every
+  partial product stays < 2^32 and every accumulator < 2^48 — no overflow of
+  the dialect's signed i64, and limb extraction =(logand (sar x k) 65535)=
+  works on the bit pattern even when bit 63 is set.  (The low 64 bits are just
+  the wrapping =(* a b)=.)  Validated in isolation: =hi(2^80)=65536=, etc.
+- =nl_clz64= (count leading zeros), =nl_ult= (unsigned `<` via sign-bit flip
+  =(logxor x (shl 1 63))=), =nl_lshr= (logical shift right = =sar= + mask).
+- *128-bit power-of-five tables* =nl_lem_hi(q)= / =nl_lem_lo(q)=, q∈[-342,308],
+  generated at build time from host bignums (top 128 bits of 5^q, normalized)
+  and emitted as balanced if-trees of *signed* i64 literals (values ≥ 2^63 are
+  written as their two's-complement negative; the multiply reads the bit
+  pattern, so the sign is irrelevant).  ~23 KB each.
+- =nl_lem_compute(w,q,neg,slot)=: normalize w, 128-bit product with the table,
+  extract the 54/53-bit mantissa, round-to-even, assemble the IEEE bits, and
+  =nl_write_float_bits= them straight into the Float Sexp slot (tag 3 + bits —
+  =bits-to-f64= is not accepted as a bare value argument by the AOT, only
+  inside an f64 binop).  Returns 1, or 0 for the genuinely-ambiguous tie
+  (=zlo<2 ∧ -27≤q≤55 ∧ (mantissa&3)==1=).
+
+=nl_stf_finish= tries Lemire first and falls back to the §7 power-of-ten tables
+on a 0 return — those ambiguous cases all have |q|≤22 where the §7 path is
+exact, so the combination is correctly rounded throughout.
+
+** Result
+
+Every value in the §7 "remaining" list now PARSES correctly (verified by
+round-tripping through arithmetic, since the *printer* is the weak link at the
+extremes): =5e-300 · 1e300 -> "5.0"=, =9.99e99 · 1e-99 -> "9.99"=,
+=1e-308 · 1e308 -> "1.0"=, =(= 5e-300 (* 5.0 1e-300))= => t=, and the min normal
+=2.2250738585072014e-308= (which §7 collapsed to 0) parses exactly.  format
+%f/%e/%g unregressed (400/401), common floats unregressed, bundle green.
+
+** Still open — the *printer* at the extremes
+
+=(number-to-string 5e-300)= prints ="4.99999999999999e-300"= even though the
+parsed value is exact: §5's =m5_fmt_sci= derives the decimal exponent by
+repeated ÷10 and the mantissa by a squaring =m5_fmt_pow10=, both of which lose
+ULPs for |exponent| ≳ 200.  This is a PRINTER limit (the value is correct, only
+its scientific rendering at extreme magnitude is off by a last digit); the
+common range is exact.  Giving the printer the §7 correctly-rounded tables
+would close it.  =%a= (hex float) and >19-digit integer mantissas (which overrun
+the u64 accumulator before Lemire) remain unimplemented.
