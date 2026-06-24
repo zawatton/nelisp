@@ -1712,6 +1712,52 @@ form through emit-extern-call → asm reloc → ELF writer so that
             (should (string-match-p "UND[ \t]+ext_helper" ss-out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/e2e-variadic-defun-forwards-va-list ()
+  "Defined-varargs: a `defun' whose param list ends with `&c-varargs'
+emits the SysV AMD64 variadic prologue (= a 176-byte register-save-area
+below the param/let slots saving rdi..r9 + xmm0-7), and `va-list-init'
+fills the 24-byte `__va_list_tag' (gp_offset / fp_offset /
+overflow_arg_area / reg_save_area) so a forwarded `va_list' is consumed
+correctly by a real `vsnprintf'.  Compiles to a `.o', links it with a C
+driver via cc, runs, and compares output byte-for-byte against glibc.
+Exercises the register path (3 varargs) and the overflow path (5
+varargs, 2 spilled to the stack); the latter also guards the odd-arity
+extern-call stack-alignment fix (= no double `sub rsp, 8')."
+  (skip-unless (nelisp-aot-compiler-test--linux-p))
+  (skip-unless (or (executable-find "cc") (executable-find "gcc")))
+  (let* ((dir (make-temp-file "nl-va-e2e" t))
+         (obj (expand-file-name "prog.o" dir))
+         (cdrv (expand-file-name "drv.c" dir))
+         (bin (expand-file-name "prog" dir)))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(seq
+             (defun myfmt (nlcf_buf nlcf_n nlcf_fmt &c-varargs)
+               (let ((nlcf_ap (frame-alloc 24)))
+                 (seq
+                  (va-list-init nlcf_ap 3 0)
+                  (extern-call vsnprintf nlcf_buf nlcf_n nlcf_fmt nlcf_ap)))))
+           obj :arch 'x86_64 :format 'elf)
+          (with-temp-file cdrv
+            (insert "#include <stdio.h>\n#include <string.h>\n"
+                    "extern int myfmt(char*, unsigned long, const char*, ...);\n"
+                    "int main(void){\n"
+                    "  char b[64], b2[64];\n"
+                    "  int r  = myfmt(b,  sizeof b,  \"%d-%s-%d\", 7, \"ok\", 99);\n"
+                    "  int r2 = myfmt(b2, sizeof b2, \"%d,%d,%d,%d,%d\", 1,2,3,4,5);\n"
+                    "  int ok = (strcmp(b,\"7-ok-99\")==0)&&(r==7)\n"
+                    "        && (strcmp(b2,\"1,2,3,4,5\")==0)&&(r2==9);\n"
+                    "  printf(\"%s|%d|%s|%d|%s\\n\", b,r,b2,r2, ok?\"OK\":\"FAIL\");\n"
+                    "  return ok?0:1;\n}\n"))
+          (let ((cc (or (executable-find "cc") (executable-find "gcc"))))
+            (should (zerop (call-process cc nil nil nil cdrv obj "-o" bin)))
+            (let ((r (nelisp-aot-compiler-test--run-binary bin)))
+              (should (= 0 (plist-get r :exit)))
+              (should (equal "7-ok-99|7|1,2,3,4,5|9|OK"
+                             (string-trim (plist-get r :stdout)))))))
+      (ignore-errors (delete-directory dir t)))))
+
 (ert-deftest nelisp-aot-compiler/object-mode-data-addr-emits-pc32 ()
   "Doc 140 Stage 8: `(data-addr SYM)' emits a LEA + R_X86_64_PC32 reloc against
 the EXTERNAL data symbol SYM (an UND symbol the static linker resolves to the

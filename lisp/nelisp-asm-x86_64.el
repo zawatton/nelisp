@@ -1032,6 +1032,45 @@ RSP-base store companion to `nelisp-asm-x86_64-mov-reg-mem-rsp-disp'."
                                    sib)
                    (nelisp-asm-x86_64--imm32-bytes disp)))))))
 
+(defun nelisp-asm-x86_64-movsd-mem-rsp-disp-xmm (buf disp src)
+  "Emit `MOVSD QWORD PTR [RSP + DISP], SRC' = F2 [REX?] 0F 11 SIB form.
+SRC is an xmm register; DISP is an unsigned i32 byte offset from RSP.
+DISP=0 uses no displacement, disp in [1,127] uses the compact disp8
+form, larger displacements use disp32.  The RSP-base companion to
+`movsd-mem-disp8-xmm' (= which rejects an RSP base because it needs a
+SIB byte).  Used by the SysV variadic-defun register-save-area to spill
+xmm0-7 below the param/let slots."
+  (unless (and (integerp disp) (<= 0 disp (1- (ash 1 32))))
+    (signal 'nelisp-asm-x86_64-error
+            (list :rsp-disp-out-of-range disp)))
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext src))
+         (rex (if (= ext-r 1)
+                  (unibyte-string (nelisp-asm-x86_64--rex 0 ext-r 0 0))
+                ""))
+         (reg (nelisp-asm-x86_64--xmm-reg-low3 src))
+         (sib #x24))
+    (cond
+     ((zerop disp)
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string #xF2) rex
+                   (unibyte-string #x0F #x11
+                                   (nelisp-asm-x86_64--modrm 0 reg 4)
+                                   sib))))
+     ((<= disp 127)
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string #xF2) rex
+                   (unibyte-string #x0F #x11
+                                   (nelisp-asm-x86_64--modrm 1 reg 4)
+                                   sib
+                                   (logand disp #xFF)))))
+     (t
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string #xF2) rex
+                   (unibyte-string #x0F #x11
+                                   (nelisp-asm-x86_64--modrm 2 reg 4)
+                                   sib)
+                   (nelisp-asm-x86_64--imm32-bytes disp)))))))
+
 (defun nelisp-asm-x86_64-mov-mem-imm8 (buf base imm)
   "Emit `MOV BYTE PTR [BASE], IMM8' = [REX.B] + C6 /0 ModR/M + imm8.
 2 bytes (no REX) for base in rax-rdi, 3 bytes with REX.B for r8-r15.

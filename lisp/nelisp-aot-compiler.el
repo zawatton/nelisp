@@ -207,7 +207,10 @@ populating the hidden boundary slots in a synthetic frame."
      ((not (and (eq nelisp-aot-compiler--arch 'x86_64)
                 (eq nelisp-aot-compiler--abi 'sysv)
                 (eq param-class 'gp)
-                (not (cl-some #'consp param-regs))))
+                (not (cl-some #'consp param-regs))
+                ;; A C-variadic defun's prologue carries an extra
+                ;; 176-byte register-save-area not modelled here.
+                (not (nelisp-aot-compiler--ir-get defun-ir :variadic))))
       nil)
      (t
       (+ 1                              ; push rbp
@@ -433,6 +436,15 @@ shim's SSE-aligned stack accesses; the pre-existing fix is the
 manual `push %rsi' inside `--emit-record-slot-ref' (= 3-arg defun,
 also odd) which the design notes call out as a stack-alignment
 band-aid.  This dynvar generalises the pattern.")
+
+(defvar nelisp-aot-compiler--current-defun-va-save-disp nil
+  "Byte displacement from rbp to the SysV variadic register-save-area.
+Bound by `--emit-defun' (to a positive integer) only while emitting a
+C-variadic defun (= `:variadic' IR flag); nil otherwise.  The save area
+is the 176-byte block the variadic prologue reserves below the param /
+let-rt slots holding the six incoming GP arg regs (offsets 0..40) and
+xmm0-7 (offsets 48..160).  `--emit-va-list-init' reads this to fill the
+va_list `reg_save_area' field as `rbp - SAVE-DISP'.")
 
 (defsubst nelisp-aot-compiler--current-arg-regs ()
   "Return the GP argument register list for the current ABI.
@@ -706,6 +718,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (i64-to-f64 . 28)
     (f64-bits . 100)
     (frame-alloc . 101)
+    (va-list-init . 103)
     (if . 29)
     (imm . 30)
     (let . 31)
@@ -7477,12 +7490,16 @@ for direct calls."
   (unless (listp param-forms)
     (signal 'nelisp-aot-compiler-error
             (list :defun-params-not-list param-forms)))
-  (let ((required nil)
-        (optional nil)
-        (tail param-forms)
-        (optional-p nil)
-        (rest-p nil)
-        (rest-form nil))
+  (let* ((c-variadic (and (memq '&c-varargs param-forms) t))
+         (param-forms (if c-variadic
+                          (delq '&c-varargs (copy-sequence param-forms))
+                        param-forms))
+         (required nil)
+         (optional nil)
+         (tail param-forms)
+         (optional-p nil)
+         (rest-p nil)
+         (rest-form nil))
     (while (and tail (not (eq (car tail) '&rest)))
       (let ((param (car tail)))
         (cond
@@ -7516,7 +7533,8 @@ for direct calls."
             :required-count (length req)
             :optional-count (length opt)
             :fixed-count (length fixed)
-            :rest-p rest-p))))
+            :rest-p rest-p
+            :c-variadic c-variadic))))
 
 (defun nelisp-aot-compiler--defun-signature (param-forms sexp)
   "Return call-site signature metadata for DEFUN PARAM-FORMS."
@@ -8312,6 +8330,34 @@ functions `((NAME . ARITY) ...)'."
         (setcar nelisp-aot-compiler--next-rt-let-slot (+ base nslots))
         (nelisp-aot-compiler--make-ir 'frame-alloc
               :base base :nslots nslots))))
+   ;; (va-list-init AP NAMED-GP NAMED-FP) — SysV AMD64 `va_start'.
+   ;; Initialise the 24-byte `__va_list_tag' at address AP (an i64
+   ;; value expr, typically a `frame-alloc 24' block) so a forwarded
+   ;; `va_list' can be consumed by a `v*printf'-style callee.  NAMED-GP
+   ;; / NAMED-FP are the enclosing function's fixed GP / FP parameter
+   ;; counts (compile-time small ints): they seed `gp_offset = 8*GP'
+   ;; and `fp_offset = 48 + 16*FP'.  The `overflow_arg_area' and
+   ;; `reg_save_area' addresses are computed at emit time from rbp and
+   ;; the variadic prologue's save-area displacement.  Valid only
+   ;; inside a defun marked `:variadic'.  Result class: gp (= AP, but
+   ;; callers use it in statement position).
+   ((and (consp sexp) (eq (car sexp) 'va-list-init))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-aot-compiler-error
+              (list :va-list-init-arity sexp)))
+    (let ((ap (nth 1 sexp))
+          (ngp (nth 2 sexp))
+          (nfp (nth 3 sexp)))
+      (unless (and (integerp ngp) (<= 0 ngp 6))
+        (signal 'nelisp-aot-compiler-error
+                (list :va-list-init-bad-named-gp ngp)))
+      (unless (and (integerp nfp) (<= 0 nfp 8))
+        (signal 'nelisp-aot-compiler-error
+                (list :va-list-init-bad-named-fp nfp)))
+      (nelisp-aot-compiler--make-ir 'va-list-init
+            :ap (nelisp-aot-compiler--parse-value ap env fenv defuns)
+            :gp-offset (* 8 ngp)
+            :fp-offset (+ 48 (* 16 nfp)))))
    ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
    ;; `Sexp::Float(f)' as raw bits, returned as i64 in rax (= xmm0
    ;; bit-pattern reinterpreted via MOVQ).  No tag check — caller
@@ -9888,6 +9934,7 @@ Returns one of:
               :param-class param-class
               :param-classes classes
               :rest-p (plist-get param-info :rest-p)
+              :variadic (plist-get param-info :c-variadic)
               :fixed-param-count (plist-get param-info :fixed-count)
               :rt-slot-count rt-slot-count
               :gc-root-slots gc-root-slots
@@ -9904,7 +9951,7 @@ Returns one of:
          (memq (car sexp)
                '(if while cond and or
                     aot-landing-label aot-machine-landing-jump
-                    aot-current-sp)))
+                    aot-current-sp va-list-init)))
     (nelisp-aot-compiler--parse-value sexp env fenv defuns))
    ;; Doc 49 Wave 11.2 hash-table primitives in statement position.
    ;; Each desugars to a value-producing form whose result the stmt
@@ -11230,6 +11277,8 @@ the node's class to consume the result correctly."
        (nelisp-aot-compiler--emit-f64-bits node buf))
       ((= tag 101)              ; frame-alloc — block address into rax
        (nelisp-aot-compiler--emit-frame-alloc node buf))
+      ((= tag 103)              ; va-list-init — SysV va_start field writes
+       (nelisp-aot-compiler--emit-va-list-init node buf))
       ((= tag 56)               ; sexp-int-make
        (nelisp-aot-compiler--emit-sexp-int-make node buf))
       ((= tag 17)               ; cons-null-p
@@ -11969,19 +12018,29 @@ same branch and emit the same byte count."
          (complex-targets (cl-subseq register-targets 0 complex-count))
          (trivial-targets (cl-subseq register-targets complex-count))
          ;; Stack alignment correction (Doc 111 §111.E fix).
-         ;; Post-prologue body-entry rsp:
-         ;;   - even arity (= 0, 2, 4, 6): rsp ≡ 0 mod 16 (good for call)
-         ;;   - odd arity (= 1, 3, 5):     rsp ≡ 8 mod 16 (needs +8 sub)
-         ;; f64-class defuns round to even arity in the prologue so
-         ;; rsp is already aligned post-spill (= see `--emit-defun');
-         ;; only gp-class defuns need the runtime correction below.
+         ;; The `--emit-defun' prologue ALWAYS lands post-prologue rsp at
+         ;; ≡ 0 mod 16, on every path: the gp compact-push path adds an
+         ;; odd-arity `sub rsp, 8' pad, the gp 7+ explicit-frame path and
+         ;; the f64 path round the spill frame to an even slot count, and
+         ;; the let-rt reservation rounds to even too.  So the call-site
+         ;; alignment depends ONLY on how many 8-byte words the call
+         ;; itself pushes (= outgoing stack args), NOT on the enclosing
+         ;; defun's arity.  (The old formula added `arity', which then
+         ;; double-corrected odd-arity gp defuns: rsp ≡ 8 at the call —
+         ;; latent because most libc callees tolerate it, but a SIGSEGV
+         ;; in SSE-heavy callees such as `vsnprintf' forwarded from a
+         ;; C-variadic defun.)  This now matches the win64 branch, which
+         ;; already excluded arity for the same prologue-rounding reason.
+         ;; (`arity' is still bound below for the general-stack-spill
+         ;; parity formula, an untouched 7+-arg path not on the variadic
+         ;; forwarding route.)
          (arity (or nelisp-aot-compiler--current-defun-arity 0))
          (needs-align
           (if win64-p
               ;; Win64 defun prologues round the local frame so body calls start
               ;; 16-byte aligned.  Only outgoing stack arguments disturb that.
               (= (logand (length stack-args) 1) 1)
-            (= (logand (+ arity (length stack-args)) 1) 1)))
+            (= (logand (length stack-args) 1) 1)))
          (general-stack-spill-p
           (cl-some
            (lambda (a)
@@ -12302,6 +12361,46 @@ imm32 sub keeps large blocks out of the disp8 slot range)."
                 (list :frame-alloc-aarch64-unsupported node))
       (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rbp)
       (nelisp-asm-x86_64-sub-imm32 buf 'rax (* 8 (+ base nslots))))))
+
+(defun nelisp-aot-compiler--emit-va-list-init (node buf)
+  "Emit SysV AMD64 `va_start' initialisation of a 24-byte `__va_list_tag'.
+NODE has :ap (= the va_list block address expr), :gp-offset and
+:fp-offset (= the named-argument byte cursors).  Writes the four fields:
+  [ap+0]  u32 gp_offset         = :gp-offset            (8 * named-gp)
+  [ap+4]  u32 fp_offset         = :fp-offset            (48 + 16*named-fp)
+  [ap+8]  u64 overflow_arg_area = rbp + 16    (first stack-passed vararg)
+  [ap+16] u64 reg_save_area     = rbp - SAVE-DISP       (= prologue area)
+gp_offset and fp_offset are adjacent u32s, so one 64-bit store writes
+both.  SAVE-DISP is the variadic prologue's save-area displacement, read
+from `--current-defun-va-save-disp' (bound by `--emit-defun').  rdi is
+used as a transient pointer to the block (caller-saved, no live value
+across this leaf op)."
+  (when (eq nelisp-aot-compiler--arch 'aarch64)
+    (signal 'nelisp-aot-compiler-error
+            (list :va-list-init-aarch64-unsupported node)))
+  (let ((save-disp nelisp-aot-compiler--current-defun-va-save-disp)
+        (gp-off (nelisp-aot-compiler--ir-get node :gp-offset))
+        (fp-off (nelisp-aot-compiler--ir-get node :fp-offset))
+        (ap (nelisp-aot-compiler--ir-get node :ap)))
+    (unless save-disp
+      (signal 'nelisp-aot-compiler-error
+              (list :va-list-init-outside-variadic-defun node)))
+    ;; rax = AP (block address); preserve it in rdi for the field stores.
+    (nelisp-aot-compiler--emit-value ap buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    ;; [ap+0]=gp_offset (low 32) | [ap+4]=fp_offset (high 32), one qword.
+    (nelisp-asm-x86_64-mov-imm64
+     buf 'rax (logior (logand gp-off #xFFFFFFFF)
+                      (ash (logand fp-off #xFFFFFFFF) 32)))
+    (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi 0 'rax)
+    ;; [ap+8]=overflow_arg_area = rbp + 16.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rbp)
+    (nelisp-asm-x86_64-add-imm32 buf 'rax 16)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi 8 'rax)
+    ;; [ap+16]=reg_save_area = rbp - SAVE-DISP.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rbp)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rax save-disp)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rdi 16 'rax)))
 
 (defun nelisp-aot-compiler--emit-sexp-float-unwrap (node buf)
   "Emit f64-payload read for a `Sexp::Float(f)' value, returning the
@@ -15810,7 +15909,43 @@ return reg, untouched by epilogue)."
          ;; For rt-let: by the time the body runs rsp is already aligned
          ;; (= param pad + rt-let pad both applied below), so arity here
          ;; still reflects the param count for the extern-call pad calc.
-         (nelisp-aot-compiler--current-defun-arity (length param-regs)))
+         (nelisp-aot-compiler--current-defun-arity (length param-regs))
+         ;; Defined-varargs (C `...'): mark the defun so the SysV prologue
+         ;; lays down a 176-byte register-save-area below the param/let
+         ;; slots, and bind the save-area displacement so `va-list-init'
+         ;; can reference it.  SAVE-DISP mirrors the compact-push GP path:
+         ;;   param-bytes (= 8 * arity rounded up to even)
+         ;; + rt-bytes    (= 8 * rt-slot-count rounded up to even, or 0)
+         ;; + 176         (the save area itself)
+         ;; All three terms are multiples of 16, so post-prologue rsp stays
+         ;; 16-byte aligned (= the existing extern-call pad math is intact).
+         (variadic (nelisp-aot-compiler--ir-get defun-ir :variadic))
+         (va-save-disp
+          (and variadic
+               (let* ((k (length param-regs))
+                      (kpad (if (zerop (logand k 1)) k (1+ k)))
+                      (rt-rounded (if (zerop (logand rt-slot-count 1))
+                                      rt-slot-count
+                                    (1+ rt-slot-count))))
+                 (+ (* 8 kpad)
+                    (if (> rt-slot-count 0) (* 8 rt-rounded) 0)
+                    176))))
+         (nelisp-aot-compiler--current-defun-va-save-disp va-save-disp))
+    (when variadic
+      ;; Only the SysV AMD64 GP register surface is supported for defined
+      ;; varargs (= the save-area layout above).  Win64 / aarch64 / f64
+      ;; params / 7+ params (stack-passed) raise a loud error rather than
+      ;; emit a subtly wrong va_list.
+      (unless (and (eq nelisp-aot-compiler--arch 'x86_64)
+                   (eq nelisp-aot-compiler--abi 'sysv)
+                   (eq param-class 'gp)
+                   (not (cl-some #'consp param-regs))
+                   (<= (length param-regs) 6))
+        (signal 'nelisp-aot-compiler-error
+                (list :variadic-defun-unsupported-shape
+                      name param-class
+                      nelisp-aot-compiler--abi
+                      nelisp-aot-compiler--arch))))
     (if (eq nelisp-aot-compiler--arch 'aarch64)
         (let ((gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
@@ -16093,6 +16228,26 @@ return reg, untouched by epilogue)."
          (t
           (signal 'nelisp-aot-compiler-error
                   (list :unknown-defun-param-class param-class)))))
+      ;; SysV AMD64 variadic register-save-area (C defined-`...').  After
+      ;; the param + let-rt spills (above), reserve 176 bytes below them
+      ;; and save the six incoming GP arg regs (offsets 0..40) plus
+      ;; xmm0-7 (offsets 48..160) so a `va_start'-ed list forwarded to a
+      ;; `v*printf'-style callee resolves the right registers.  The save
+      ;; is unconditional (= ignores AL): saving xmm when the caller set
+      ;; AL=0 is harmless.  rsp now points at the area base, so the stores
+      ;; use small rsp-relative SIB displacements.  Guarded above to the
+      ;; SysV GP compact-push shape, so this runs only there.
+      (when variadic
+        (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 176)
+        (let ((i -1))
+          (dolist (reg '(rdi rsi rdx rcx r8 r9))
+            (setq i (1+ i))
+            (nelisp-asm-x86_64-mov-mem-rsp-disp-reg buf (* 8 i) reg)))
+        (let ((i -1))
+          (dolist (xreg '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7))
+            (setq i (1+ i))
+            (nelisp-asm-x86_64-movsd-mem-rsp-disp-xmm
+             buf (+ 48 (* 16 i)) xreg))))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
       (nelisp-aot-compiler--emit-value body buf)
       ;; Epilogue: restore Win64 GP callee-saves, then deallocate param
