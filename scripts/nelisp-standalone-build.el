@@ -5870,6 +5870,8 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-utimes") . (nl_bi_syscall_utimes args out))
     ((:lit "nelisp--syscall-statx-buf") . (nl_bi_syscall_statx_buf args out))
     ((:lit "nelisp--syscall-unshare") . (nl_bi_syscall_unshare args out))
+    ((:lit "nelisp--syscall-mount") . (nl_bi_syscall_mount args out))
+    ((:lit "nelisp--syscall-pivot-root") . (nl_bi_syscall_pivot_root args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "nelisp--read-all-from-string-native") . (bf_read_all_from_string_native args out))
@@ -6847,6 +6849,29 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
     (defun nl_bi_syscall_unshare (args out)
       (let* ((flags (wf_argval args 0))
              (rc (syscall-direct 272 flags 0 0 0 0 0)))
+        (wf_write_int out rc)))
+    ;; nelisp--syscall-mount SOURCE TARGET FSTYPE FLAGS DATA: mount(2) (syscall
+    ;; 165).  String args become plain NUL-terminated cstrings via
+    ;; nl_bi_make_cpath (which does NOT path-normalise -- copies bytes + NUL, so
+    ;; "tmpfs"/""/"/path" pass through verbatim).  FLAGS = mountflags int
+    ;; (MS_BIND 4096, MS_REC 16384, MS_RDONLY 1, MS_PRIVATE 262144, MS_REMOUNT
+    ;; 32, ...).  Returns 0 or negative kernel errno.  Raw syscall, NO libc.
+    ;; raw-ns FS-closure substrate (nelix design 32 v2).
+    (defun nl_bi_syscall_mount (args out)
+      (let* ((src (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (tgt (nl_bi_make_cpath (wf_arg_ptr args 1)))
+             (fst (nl_bi_make_cpath (wf_arg_ptr args 2)))
+             (flags (wf_argval args 3))
+             (data (nl_bi_make_cpath (wf_arg_ptr args 4)))
+             (rc (syscall-direct 165 src tgt fst flags data 0)))
+        (wf_write_int out rc)))
+    ;; nelisp--syscall-pivot-root NEW_ROOT PUT_OLD: pivot_root(2) (syscall 155).
+    ;; Moves the process root to NEW_ROOT, stacking the old root at PUT_OLD
+    ;; (must be under NEW_ROOT).  Returns 0 or negative kernel errno.
+    (defun nl_bi_syscall_pivot_root (args out)
+      (let* ((new (nl_bi_make_cpath (wf_arg_ptr args 0)))
+             (old (nl_bi_make_cpath (wf_arg_ptr args 1)))
+             (rc (syscall-direct 155 new old 0 0 0 0)))
         (wf_write_int out rc)))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
@@ -7936,6 +7961,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
     "nelisp--syscall-readdir-names"
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf" "nelisp--syscall-unshare"
+    "nelisp--syscall-mount" "nelisp--syscall-pivot-root"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nelisp--read-all-from-string-native"
     "nl-current-unix-time" "nl-unix-time-usec" "float-time"
