@@ -2385,6 +2385,14 @@ argument (reachability + in-arena bounds checks).")
                           (seq (wf_fdiv2 args sc) (wf_copy32 out sc)))
                       (wf_write_int out (/ (wf_argval args 0) (wf_argval args 1)))))
     ((:u8 "mod")  . (wf_write_int out (mod (wf_argval args 0) (wf_argval args 1))))
+    ;; `%' = C-style integer remainder (sign of dividend): x - y*trunc(x/y).
+    ;; Dialect `/' is truncating i64 division, so this matches Emacs `%'.
+    ((:u8 "%")    . (let* ((a (wf_argval args 0)) (b (wf_argval args 1)))
+                      (wf_write_int out (- a (* b (/ a b))))))
+    ;; `/=' = 2-arg numeric not-equal (int/float via wf_num_eq).
+    ((:u8 "/=")   . (let* ((rest (nl_cons_cdr_ptr args)))
+                      (if (= (wf_num_eq (nl_cons_car_ptr args) (nl_cons_car_ptr rest)) 1)
+                          (wf_write_nil out) (wf_write_t out))))
     ((:u8 "1+")   . (let* ((p (wf_arg_ptr args 0)))
                       (if (= (ptr-read-u64 p 0) 3)
                           (let* ((sc (alloc-bytes 32 8)))
@@ -7933,7 +7941,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     (dolist (f forms r) (setq r (eval f t)))))
 
 (defconst nelisp-standalone--reader-builtins
-  '("+" "-" "*" "/" "mod" "1+" "1-" "floor" "truncate" "ceiling" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
+  '("+" "-" "*" "/" "mod" "%" "/=" "1+" "1-" "floor" "truncate" "ceiling" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
     ;; Globals shim bridge for user-loaded .el files (`defvar' / `defconst'
     ;; in the standalone prelude lower through this entry).
     "nelisp--env-globals-op"

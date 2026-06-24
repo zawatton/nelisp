@@ -45,8 +45,13 @@ against the format/baked-string corruption symptom (=format "price=%d"= etc.).
 
 * Notes / known limitations
 
-- The reader lacks =%= and =/== (use =mod= and =(not (= ...))=); predicates were
-  written accordingly.
+- =%= (C-style integer remainder) and =/== (2-arg numeric not-equal) are now
+  native dispatch arms (siblings of =mod= / =/= / ===), registered in the
+  builtin name list (=reader-surface-audit= passes).  =%= is lowered to =x −
+  y·trunc(x/y)= via the truncating dialect =/=, so its sign follows the
+  dividend exactly like Emacs (=(% -7 2)= → =-1=); =/== negates =wf_num_eq= so
+  it handles int/float/mixed.  The round-2 prelude predicates still use =mod= /
+  =(not (= ...))= and are left unchanged.
 - =expt= supports only integer exponents (no =pow=); float exponents error.
 - =string-version-lessp= approximates with =string-lessp= (no numeric-run
   comparison).  =fround= uses round-half-up, not Emacs's round-half-even.
