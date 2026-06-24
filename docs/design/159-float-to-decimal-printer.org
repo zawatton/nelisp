@@ -260,3 +260,32 @@ its scientific rendering at extreme magnitude is off by a last digit); the
 common range is exact.  Giving the printer the §7 correctly-rounded tables
 would close it.  =%a= (hex float) and >19-digit integer mantissas (which overrun
 the u64 accumulator before Lemire) remain unimplemented.
+
+* 9. Printer: correctly-rounded power tables for the extremes (Doc 159 §9)
+
+§8 made the PARSE correctly rounded, but =(number-to-string 5e-300)= still
+printed ="4.99999999999999e-300"= because §5's =m5_fmt_sci= normalized the
+mantissa with =m5_fmt_pow10=, a *squaring* 10^E that loses ULPs past |E|≈200.
+
+*Fix*: replace =m5_fmt_pow10='s squaring body with correctly-rounded tables
+=m5_p10hi(n)= = round(10^n), n∈[0,308] and =m5_p10lo(n)= = round(10^-n),
+n∈[0,340] (same host-=strtod= generation + balanced-if-tree shape as §7, but in
+the m5 unit; bit patterns are < 2^63 so they stay positive i64).  The exponent
+count from =m5_fmt_exp_of= is robust; only the 10^E it divides by needed to be
+exact.  This flows through every =m5_fmt_sci= caller, so =format= %e/%g at the
+extremes improves too.
+
+Now correct across the normal range incl. the extremes:
+=5e-300 -> "5e-300"=, =9.99e99 -> "9.99e+99"=, =1e308 -> "1e+308"=,
+=7e-50=, =1.234e250=, =3.3e-7=, =8.8e88= …  format %f/%e/%g unregressed
+(400/401), common floats unregressed, bundle green.
+
+** Remaining (rare)
+
+- *max double / min normal* print with §2's P=15 significant digits
+  (=1.79769313486232e+308=, =2.2250738585072e-308=) — the value is exact, just
+  not the 17-digit shortest form; a printer limit (§2), not a magnitude error.
+- *deep subnormals* (=1e-308 -> "9.99…e-309"=, min subnormal =5e-324 -> "0.0"=)
+  carry too few mantissa bits for the =mag · 10^|E|= normalization to land in
+  [1,10); correct rendering there needs a subnormal-aware scale-up.  Both are at
+  the very edge of the double range and are left as documented limits.
