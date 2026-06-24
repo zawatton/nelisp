@@ -3495,6 +3495,68 @@ SysV would emit `push rdi' = 57 instead."
                              (string-trim (plist-get res :stdout))))))
         (ignore-errors (delete-directory dir t))))))
 
+(ert-deftest nelisp-aot-compiler/data-blob-data-and-bss-sections ()
+  "`data-blob' honours its SECTION: `data' -> writable .data (PROGBITS),
+`bss' -> .bss (NOBITS); both addressable via `data-addr' (Doc 06 C)."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc06-databss-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(seq
+             (data-blob dvar (1 0 0 0 0 0 0 0) data)
+             (data-blob bvar (0 0 0 0 0 0 0 0) bss)
+             (defun getd () (ptr-read-u64 (data-addr dvar) 0))
+             (defun getbss () (ptr-read-u64 (data-addr bvar) 0)))
+           path)
+          (let ((secs (with-output-to-string
+                        (with-current-buffer standard-output
+                          (call-process "readelf" nil t nil "-S" path))))
+                (syms (with-output-to-string
+                        (with-current-buffer standard-output
+                          (call-process "readelf" nil t nil "-s" path)))))
+            (should (string-match-p "\\.data[ \t]+PROGBITS" secs))
+            (should (string-match-p "\\.bss[ \t]+NOBITS" secs))
+            (should (string-match-p "OBJECT  LOCAL  DEFAULT[ \t]+[0-9]+ dvar" syms))
+            (should (string-match-p "OBJECT  LOCAL  DEFAULT[ \t]+[0-9]+ bvar" syms))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/data-blob-data-bss-readwrite-e2e ()
+  "A C driver reads/writes `data'- and `bss'-section blobs via `data-addr'."
+  (skip-unless (nelisp-aot-compiler-test--linux-p))
+  (let ((cc (or (executable-find "cc") (executable-find "gcc"))))
+    (skip-unless cc)
+    (let* ((dir (make-temp-file "nelisp-doc06-databss-e2e" t))
+           (obj (expand-file-name "db.o" dir))
+           (drv (expand-file-name "drv.c" dir))
+           (bin (expand-file-name "prog" dir)))
+      (unwind-protect
+          (progn
+            (nelisp-aot-compile-to-object
+             '(seq
+               (data-blob dvar (1 0 0 0 0 0 0 0) data)
+               (data-blob bvar (0 0 0 0 0 0 0 0) bss)
+               (defun getd () (ptr-read-u64 (data-addr dvar) 0))
+               (defun setd (x) (ptr-write-u64 (data-addr dvar) 0 x))
+               (defun getbss () (ptr-read-u64 (data-addr bvar) 0))
+               (defun setbss (x) (ptr-write-u64 (data-addr bvar) 0 x)))
+             obj)
+            (with-temp-file drv
+              (insert "#include <stdio.h>\n"
+                      "extern long getd(void), getbss(void);\n"
+                      "extern void setd(long), setbss(long);\n"
+                      "int main(void){\n"
+                      "  long d0=getd(), b0=getbss();\n"
+                      "  setd(99); setbss(7);\n"
+                      "  printf(\"%ld %ld %ld %ld\\n\", d0, b0, getd(), getbss());\n"
+                      "  return (d0==1 && b0==0 && getd()==99 && getbss()==7)?0:1;\n"
+                      "}\n"))
+            (should (zerop (call-process cc nil nil nil drv obj "-o" bin)))
+            (let ((res (nelisp-aot-compiler-test--run-binary bin)))
+              (should (zerop (plist-get res :exit)))
+              (should (equal "1 0 99 7" (string-trim (plist-get res :stdout))))))
+        (ignore-errors (delete-directory dir t))))))
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here

@@ -16372,25 +16372,68 @@ register budgeting while ELF/Mach-O keep SysV."
              ;; names so they are NOT also emitted as SHN_UNDEF externs
              ;; (a `(data-addr NAME)' against a blob resolves to this local).
              (meta-bytes (or (plist-get object-metadata :bytes) (unibyte-string)))
-             (blob-layout
+             ;; Doc 06 Step C: blobs are partitioned by their declared
+             ;; SECTION.  `rodata' blobs lay out after the module-init
+             ;; metadata; `data' (writable, initialized) and `bss'
+             ;; (writable, zero/NOBITS) blobs each lay out from offset 0 in
+             ;; their own section.  A `bss' blob contributes only its length
+             ;; (no file bytes).
+             (blob-rodata-blobs
+              (cl-remove-if-not
+               (lambda (b) (eq (or (plist-get b :section) 'rodata) 'rodata))
+               data-blobs))
+             (blob-data-blobs
+              (cl-remove-if-not
+               (lambda (b) (eq (plist-get b :section) 'data))
+               data-blobs))
+             (blob-bss-blobs
+              (cl-remove-if-not
+               (lambda (b) (eq (plist-get b :section) 'bss))
+               data-blobs))
+             (blob-rodata-layout
               (let ((cur (length meta-bytes)) (acc nil))
-                (dolist (b data-blobs)
+                (dolist (b blob-rodata-blobs)
                   (let ((len (length (plist-get b :bytes))))
-                    (push (list :name (plist-get b :name) :offset cur :len len) acc)
+                    (push (list :name (plist-get b :name) :offset cur :len len
+                                :section 'rodata) acc)
+                    (setq cur (+ cur len))))
+                (nreverse acc)))
+             (blob-data-layout
+              (let ((cur 0) (acc nil))
+                (dolist (b blob-data-blobs)
+                  (let ((len (length (plist-get b :bytes))))
+                    (push (list :name (plist-get b :name) :offset cur :len len
+                                :section 'data) acc)
+                    (setq cur (+ cur len))))
+                (nreverse acc)))
+             (blob-bss-layout
+              (let ((cur 0) (acc nil))
+                (dolist (b blob-bss-blobs)
+                  (let ((len (length (plist-get b :bytes))))
+                    (push (list :name (plist-get b :name) :offset cur :len len
+                                :section 'bss) acc)
                     (setq cur (+ cur len))))
                 (nreverse acc)))
              (blob-rodata
-              (apply #'concat (mapcar (lambda (b) (plist-get b :bytes)) data-blobs)))
+              (apply #'concat (mapcar (lambda (b) (plist-get b :bytes))
+                                      blob-rodata-blobs)))
+             (blob-data
+              (apply #'concat (mapcar (lambda (b) (plist-get b :bytes))
+                                      blob-data-blobs)))
+             (blob-bss-size
+              (apply #'+ (mapcar (lambda (b) (length (plist-get b :bytes)))
+                                 blob-bss-blobs)))
              (blob-names (mapcar (lambda (b) (plist-get b :name)) data-blobs))
              (blob-symbols
               (mapcar (lambda (bl)
                         (list :name (plist-get bl :name)
                               :value (plist-get bl :offset)
                               :size (plist-get bl :len)
-                              :section 'rodata
+                              :section (plist-get bl :section)
                               :bind 'local
                               :type 'object))
-                      blob-layout))
+                      (append blob-rodata-layout blob-data-layout
+                              blob-bss-layout)))
              (extern-names
               (sort
                (delete-dups
@@ -16505,6 +16548,8 @@ register budgeting while ELF/Mach-O keep SysV."
                                   extern-symbol-plists)))
         (list :text text-bytes
               :rodata (concat meta-bytes blob-rodata)
+              :data blob-data
+              :bss-size blob-bss-size
               :symbols all-symbols
               :relocs relocs
               :machine arch
@@ -16542,6 +16587,8 @@ drift (= a Doc 92 emitter invariant violation)."
                 :auto-frame-roots auto-frame-roots))
          (text-bytes (plist-get unit :text))
          (rodata-bytes (plist-get unit :rodata))
+         (data-bytes (plist-get unit :data))
+         (bss-size (plist-get unit :bss-size))
          (symbols (plist-get unit :symbols))
          (relocs (plist-get unit :relocs)))
     (pcase format
@@ -16551,6 +16598,8 @@ drift (= a Doc 92 emitter invariant violation)."
         (list :e-type 'rel
               :text text-bytes
               :rodata rodata-bytes
+              :data data-bytes
+              :bss-size bss-size
               :symbols symbols
               :relocs relocs
               :machine arch)))
