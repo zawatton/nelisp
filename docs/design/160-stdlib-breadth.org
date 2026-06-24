@@ -1,0 +1,63 @@
+#+TITLE: Doc 160 — standalone reader stdlib breadth
+#+STATUS: SHIPPED
+
+* Goal
+
+Close common-elisp library gaps on the bare standalone reader (=target/nelisp=)
+so real packages drive further before hitting a =void-function=.  Driven by
+discovery probes (≈55 + 70 + 50 common forms wrapped in =condition-case=) run
+against the reader, then filling each gap as a guarded prelude definition
+(=scripts/nelisp-stdlib-prelude.el=, =(unless (fboundp 'X) (defun/defmacro X ...))=).
+
+All additions are pure-elisp library/compat definitions (no Rust, no dialect
+primitive).  They live in the prelude, which is baked into the runtime image;
+additions were kept low in string-literal density and verified after each batch
+against the format/baked-string corruption symptom (=format "price=%d"= etc.).
+
+* What was added (3 rounds, ~92 symbols)
+
+- *cl-lib seq/accessors*: =cl-find= =cl-reduce= =cl-remove= =cl-delete=
+  =cl-remove-if-not= =cl-count= =cl-assoc= =cl-sort= =cl-remove-duplicates=
+  =cl-mapcan= =cl-position-if= =cl-list*= =cl-first/second/third= =cl-rest=
+  =cl-getf= =cl-union= =cl-intersection= =cl-subsetp=.
+- *cl-lib predicates / number*: =cl-evenp= =cl-oddp= =cl-plusp= =cl-minusp=
+  =cl-signum= =cl-typep= =cl-floor= =cl-ceiling= =cl-round= =cl-truncate=
+  =cl-mod= =cl-rem=.
+- *cl-lib macros*: =cl-destructuring-bind= =cl-pushnew= =cl-decf= =cl-flet=
+  =cl-values= =cl-multiple-value-bind= =cl-dolist= =cl-dotimes= =cl-assert=
+  =cl-check-type= =cl-letf= (limited: =symbol-value= / =symbol-function= /
+  plain-var places).
+- *seq.el*: =seq-sort= =seq-min= =seq-max= =seq-reverse= =seq-concatenate=
+  =seq-mapcat= =seq-mapn= =seq-partition= =seq-group-by=.
+- *binding/control macros*: =when-let= =when-let*= =if-let= =if-let*=
+  =and-let*= =while-let= =pcase-let= =pcase-let*= =letrec= =named-let= =dlet=
+  =seq-let= =thread-first= =thread-last= =ignore-error= =with-demoted-errors=.
+- *string*: =string-pad= =string-chop-newline= =string-remove-prefix=
+  =string-remove-suffix= =string-blank-p= =string-split= =string-trim-left=
+  =string-trim-right= =string-to-vector= =string-equal-ignore-case=
+  =string-greaterp= =string-version-lessp= (approx) =capitalize=.
+- *missing primitives* (were =void-function= on the reader): =message=
+  (formats + returns the string; no echo area in standalone), =string-lessp=
+  / =string<= (char-wise, symbol-accepting), =vconcat=, =float= (int→float),
+  =expt= (integer exponent; reciprocal for negative), =sqrt= (Newton),
+  =isqrt=, =remove=, =ffloor= =fceiling= =ftruncate= =fround=, =gensym=
+  (= =cl-gensym=), =assq-delete-all=, =cl-digit-char-p=, =char-uppercase-p=.
+
+* Notes / known limitations
+
+- The reader lacks =%= and =/== (use =mod= and =(not (= ...))=); predicates were
+  written accordingly.
+- =expt= supports only integer exponents (no =pow=); float exponents error.
+- =string-version-lessp= approximates with =string-lessp= (no numeric-run
+  comparison).  =fround= uses round-half-up, not Emacs's round-half-even.
+- =cl-letf= covers the three common place forms only (not full generalized-var
+  =setf= places).
+- =cl-letf= was intentionally the last gap closed; it restores correctly
+  (=(cl-letf (((symbol-value 'zz) 9)) zz)= → 9, =zz= back to its prior value).
+
+* Verification
+
+Discovery probes round 1/2/3 all reach *0 FAIL*.  Regression unchanged:
+=format= %f/%e/%g 400, =number-to-string= 39, =%a= battery exact, the float
+bundle (struct+b2) green, and the baked-string corruption check intact after
+every batch.
