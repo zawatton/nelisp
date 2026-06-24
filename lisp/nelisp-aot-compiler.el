@@ -422,20 +422,23 @@ uses."
              nil-slot)))))))
 
 (defvar nelisp-aot-compiler--current-defun-arity nil
-  "Arity of the defun currently being emitted, or nil during main `_start'.
-Bound dynamically by `--emit-defun' so inner emit helpers (= those
-that issue `call' / `extern-call') can compute the correct stack
-alignment correction.  The body-entry rsp alignment depends on the
-parity of the param-spill count: even arity → rsp ≡ 0 mod 16 (= call
-ready), odd arity → rsp ≡ 8 mod 16 (= one extra `sub rsp, 8' before
-each call to restore alignment).
+  "DEPRECATED / no longer read.  Bound by `--emit-defun' but unused since
+2026-06-24.
 
-Doc 111 §111.E surfaced this bug when 1-arg helpers
-(`nelisp_frame_push' / `nelisp_frame_pop') crashed inside the Rust
-shim's SSE-aligned stack accesses; the pre-existing fix is the
-manual `push %rsi' inside `--emit-record-slot-ref' (= 3-arg defun,
-also odd) which the design notes call out as a stack-alignment
-band-aid.  This dynvar generalises the pattern.")
+It used to feed the call-site `needs-align' formulas on the (incorrect)
+assumption that an odd-arity gp defun left post-prologue rsp ≡ 8 mod 16.
+In fact every `--emit-defun' path rounds post-prologue rsp to 0 mod 16
+(odd-arity pad / even-slot rounding), so call-site alignment depends only
+on what the call itself pushes, never on the enclosing arity — adding it
+double-corrected odd-arity callers (rsp ≡ 8 at the call → SIGSEGV in
+SSE-heavy callees).  All `needs-align' sites now exclude arity (matching
+the win64 branch); see `docs/runtime-limitations.md' §E.  The binding is
+retained as a harmless no-op; the defvar may be removed once nothing
+references the dynamic name.
+
+Historical note (Doc 111 §111.E): this dynvar was introduced when 1-arg
+helpers crashed inside SSE-aligned stack accesses; the real fix is the
+prologue rounding, not a per-call arity correction.")
 
 (defvar nelisp-aot-compiler--current-defun-va-save-disp nil
   "Byte displacement from rbp to the SysV variadic register-save-area.
@@ -11724,15 +11727,15 @@ count."
             (signal 'nelisp-aot-compiler-error
                     (list :call-stack-args-unsupported name n)))
           (let* ((stack-count (- n reg-budget))
-                 (arity (or nelisp-aot-compiler--current-defun-arity 0))
                  (win64-p (eq nelisp-aot-compiler--abi 'win64))
                  ;; Indirect calls occupy one extra stack slot for the stashed
                  ;; fn-ptr; fold it into alignment parity and the final cleanup.
                  (fn-slots (if fn-value 1 0))
                  (needs-align
-                  (if win64-p
-                      (= (logand (+ n stack-count fn-slots) 1) 1)
-                    (= (logand (+ arity n stack-count fn-slots) 1) 1)))
+                  ;; Post-prologue rsp is 0 mod 16 on every defun path, so
+                  ;; alignment depends only on the words this call pushes
+                  ;; (NOT the enclosing arity) — same as the win64 branch.
+                  (= (logand (+ n stack-count fn-slots) 1) 1))
                  (win64-outgoing
                   (if win64-p
                       (+ 32 (* 8 stack-count) (if needs-align 8 0))
@@ -11802,10 +11805,12 @@ count."
                 (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
             (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (+ n fn-slots)))))
       (let* ((regs (cl-subseq cur-arg-regs 0 n))
-         ;; Stack alignment correction (Doc 111 §111.E fix).
-         (arity (or nelisp-aot-compiler--current-defun-arity 0))
-         (needs-align (and (not (eq nelisp-aot-compiler--abi 'win64))
-                           (= (logand arity 1) 1)))
+         ;; Stack alignment: post-prologue rsp is 0 mod 16 and the
+         ;; complex-prefix push/pop (and the fn-ptr stash) are balanced,
+         ;; so no pad is needed here — same as the win64 branch, which
+         ;; never padded.  (Adding the enclosing arity here was the old
+         ;; double-correction bug; see docs/runtime-limitations.md §E.)
+         (needs-align nil)
          ;; Win64 shadow space: 32 bytes reserved by caller before CALL.
          (shadow (if (eq nelisp-aot-compiler--abi 'win64) 32 0))
          ;; W7.6a: split args into [complex-prefix | trivial-suffix].
@@ -12031,10 +12036,6 @@ same branch and emit the same byte count."
          ;; in SSE-heavy callees such as `vsnprintf' forwarded from a
          ;; C-variadic defun.)  This now matches the win64 branch, which
          ;; already excluded arity for the same prologue-rounding reason.
-         ;; (`arity' is still bound below for the general-stack-spill
-         ;; parity formula, an untouched 7+-arg path not on the variadic
-         ;; forwarding route.)
-         (arity (or nelisp-aot-compiler--current-defun-arity 0))
          (needs-align
           (if win64-p
               ;; Win64 defun prologues round the local frame so body calls start
@@ -12047,9 +12048,9 @@ same branch and emit the same byte count."
              (not (nelisp-aot-compiler--call-arg-trivial-p a)))
            stack-args))
          (spill-needs-align
-          (if win64-p
-              (= (logand (+ (length stack-args) arg-count) 1) 1)
-            (= (logand (+ arity (length stack-args) arg-count) 1) 1)))
+          ;; Same invariant: count only the pushed temps + outgoing stack
+          ;; args, not the enclosing arity (matches the win64 branch).
+          (= (logand (+ (length stack-args) arg-count) 1) 1))
          (call-temp-save-count 0)
          (call-needs-align needs-align))
     (when (and (not win64-p)
@@ -14154,9 +14155,9 @@ The helper is linked as a normal Phase47 defun, so argument registers,
 shadow space, and call-site alignment must follow the current x86_64 ABI."
   (let* ((n (length args))
          (regs (cl-subseq (nelisp-aot-compiler--current-arg-regs) 0 n))
-         (arity (or nelisp-aot-compiler--current-defun-arity 0))
-         (needs-align (and (not (eq nelisp-aot-compiler--abi 'win64))
-                           (= (logand arity 1) 1)))
+         ;; Post-prologue rsp is 0 mod 16 and the arg push/pop is balanced,
+         ;; so no alignment pad is needed (matches the win64 branch).
+         (needs-align nil)
          (shadow (if (eq nelisp-aot-compiler--abi 'win64) 32 0)))
     (dolist (arg args)
       (nelisp-aot-compiler--emit-value arg buf)
