@@ -4525,11 +4525,15 @@ unresolved at link time."
     (defun m5_fmt_dispatch (ms fb conv prec buf scratch)
       (if (= conv 97) (m5_fmt_hexfloat ms fb conv prec buf scratch)  ; a
        (if (= conv 65) (m5_fmt_hexfloat ms fb conv prec buf scratch) ; A
-        (if (= conv 101) (m5_fmt_sci ms fb prec 0 0 buf scratch)     ; e
-          (if (= conv 69) (m5_fmt_sci ms fb prec 1 0 buf scratch)    ; E
-            (if (= conv 103) (m5_fmt_gen ms fb prec 0 buf scratch)   ; g
-              (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)  ; G
-                (m5_fmt_ffixed ms fb prec 0 buf scratch))))))))      ; f / F
+        ;; inf/nan for e/f/g print "inf"/"nan" (sign already emitted by
+        ;; m5_fmt_float_body); Doc 159 §13.
+        (if (= (logand (sar fb 52) 2047) 2047)
+            (m5_hexf_word ms 0 (if (= (logand fb (- (shl 1 52) 1)) 0) 0 1))
+         (if (= conv 101) (m5_fmt_sci ms fb prec 0 0 buf scratch)     ; e
+           (if (= conv 69) (m5_fmt_sci ms fb prec 1 0 buf scratch)    ; E
+             (if (= conv 103) (m5_fmt_gen ms fb prec 0 buf scratch)   ; g
+               (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)  ; G
+                 (m5_fmt_ffixed ms fb prec 0 buf scratch)))))))))     ; f / F
     (defun m5_fmt_float_body (ms fb conv prec buf scratch)
       ;; Sign from the raw bit, not f64-lt, so -0.0 / -nan emit `-' (Doc 159 §12).
       (if (= (logand (sar fb 63) 1) 1)

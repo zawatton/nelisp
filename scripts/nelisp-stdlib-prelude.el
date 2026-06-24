@@ -4385,8 +4385,15 @@ native `format', which lacks only the field-width layer."
                                       (if (integerp arg) (+ arg 0.0) arg)
                                       conv (if (or (= conv 97) (= conv 65))
                                                (or prec -1) (or prec 6)))
+                                   ;; %d/%i/%o/%x/%X of a float: truncate toward
+                                   ;; zero like Emacs (native reads the raw bits
+                                   ;; otherwise).  Doc 159 §13.
                                    (nelisp--native-format
-                                    (concat "%" (char-to-string conv)) arg))))
+                                    (concat "%" (char-to-string conv))
+                                    (if (and (floatp arg)
+                                             (or (= conv 100) (= conv 105) (= conv 111)
+                                                 (= conv 120) (= conv 88)))
+                                        (truncate arg) arg)))))
                       (setq argp (cdr argp))
                       (when (and prec (or (= conv 115) (= conv 83))   ; s S
                                  (> (length body) prec))
@@ -4400,7 +4407,14 @@ native `format', which lacks only the field-width layer."
                           (cond
                            (f- (setq body (concat body (make-string pad 32))))
                            ((and f0 (or (= conv 100) (= conv 120) (= conv 88)
-                                        (= conv 111) (= conv 102) (= conv 101) (= conv 103)))
+                                        (= conv 111) (= conv 102) (= conv 101) (= conv 103))
+                                 ;; only zero-pad numeric output; inf/nan get
+                                 ;; space-pad like Emacs (Doc 159 §13)
+                                 (let ((k (if (and (> (length body) 0)
+                                                   (or (= (aref body 0) 45) (= (aref body 0) 43)))
+                                              1 0)))
+                                   (and (< k (length body))
+                                        (>= (aref body k) 48) (<= (aref body k) 57))))
                             (if (and (> (length body) 0)
                                      (or (= (aref body 0) 45) (= (aref body 0) 43)))
                                 (setq body (concat (substring body 0 1)
