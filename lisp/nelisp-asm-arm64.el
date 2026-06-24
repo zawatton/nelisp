@@ -747,6 +747,16 @@ into the high bits; shift count uses Xm[5:0] (= mod 64)."
     (nelisp-asm-arm64--emit-word
      buf (logior #x9AC02800 (ash m 16) (ash n 5) d))))
 
+(defun nelisp-asm-arm64-lsrv (buf dst lhs rhs)
+  "Emit `LSRV Xd, Xn, Xm' (= logical-right shift by register).
+Base 0x9AC02400 | (Xm << 16) | (Xn << 5) | Xd.  Zeros fill the high
+bits (= C `>>' on an unsigned operand); shift count uses Xm[5:0]."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9AC02400 (ash m 16) (ash n 5) d))))
+
 (defun nelisp-asm-arm64-b-cond (buf cond-sym label)
   "Emit `B.cond LABEL' with a fixup against LABEL.
 Writes a 4-byte placeholder = base 0x54000000 | cond (imm19 field

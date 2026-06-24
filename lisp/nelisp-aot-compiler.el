@@ -7794,7 +7794,7 @@ functions `((NAME . ARITY) ...)'."
    ;; swap; `ash' is composed in elisp as
    ;;   (if (< c 0) (sar n (- 0 c)) (shl n c))
    ;; so unsigned-right (`shr') is not required.
-   ((and (consp sexp) (memq (car sexp) '(shl sar)))
+   ((and (consp sexp) (memq (car sexp) '(shl sar shr)))
     (unless (= (length sexp) 3)
       (signal 'nelisp-aot-compiler-error
               (list :shift-arity (car sexp) sexp)))
@@ -11501,6 +11501,7 @@ live parameter register in the surrounding defun."
           (cond
            ((eq op 'shl) (nelisp-asm-arm64-lslv buf 'x0 'x0 'x9))
            ((eq op 'sar) (nelisp-asm-arm64-asrv buf 'x0 'x0 'x9))
+           ((eq op 'shr) (nelisp-asm-arm64-lsrv buf 'x0 'x0 'x9))
            (t
             (signal 'nelisp-aot-compiler-error
                     (list :unknown-shift-op op)))))
@@ -11517,6 +11518,7 @@ live parameter register in the surrounding defun."
       (cond
        ((eq op 'shl) (nelisp-asm-x86_64-shl-rax-cl buf))
        ((eq op 'sar) (nelisp-asm-x86_64-sar-rax-cl buf))
+       ((eq op 'shr) (nelisp-asm-x86_64-shr-rax-cl buf))
        (t
         (signal 'nelisp-aot-compiler-error
                 (list :unknown-shift-op op)))))))

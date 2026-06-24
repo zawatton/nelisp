@@ -1559,6 +1559,13 @@ bit replicates into the high bits."
   (nelisp-asm-x86_64--append-bytes
    buf (unibyte-string #x48 #xD3 #xF8)))
 
+(defun nelisp-asm-x86_64-shr-rax-cl (buf)
+  "Emit `SHR RAX, CL' = REX.W + D3 /5 + ModR/M=0xE8 (3 bytes).
+Logical-right shift; the count is implicit in CL and zeros fill the
+high bits (= C `>>' on an unsigned operand)."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #xD3 #xE8)))
+
 (defun nelisp-asm-x86_64--emit-imm32-binop (buf reg imm subop)
   "Internal: emit 64-bit `OP REG, IMM32' (opcode 0x81 with /SUBOP).
 SUBOP selects the operation: 0=ADD, 5=SUB, 7=CMP, 1=OR, 4=AND."

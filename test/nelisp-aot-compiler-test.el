@@ -986,8 +986,8 @@ the quotient in rax — the companion of the `mod' remainder path)."
       (should (eq (nelisp-aot-compiler--ir-get body :op) op)))))
 
 (ert-deftest nelisp-aot-compiler/parse-shift-ops ()
-  "`(shl N C)' / `(sar N C)' parse to a `:kind shift' node."
-  (dolist (op '(shl sar))
+  "`(shl N C)' / `(sar N C)' / `(shr N C)' parse to a `:kind shift' node."
+  (dolist (op '(shl sar shr))
     (let* ((ir (nelisp-aot-compiler--parse
                 (list 'defun 'f '(n c) (list op 'n 'c))))
            (body (nelisp-aot-compiler--ir-get ir :body)))
@@ -1049,6 +1049,17 @@ the quotient in rax — the companion of the `mod' remainder path)."
      '(seq (defun shright (n c) (sar n c)) (exit (shright 256 4))) path)
     (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 16)))))
+
+(ert-deftest nelisp-aot-compiler/e2e-defun-shr ()
+  "Logical-right shift `(shr (1<<63) 60)' = 8 (zero-fill), whereas the same
+operands under `sar' would sign-extend to -8.  `shr' via shr rax, cl."
+  (unless (nelisp-aot-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-aot-compiler-test--with-tmp-binary path "lshr"
+    (nelisp-aot-compile-sexp
+     '(seq (defun lshr (n c) (shr n c)) (exit (lshr (shl 1 63) 60))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 8)))))
 
 
 (ert-deftest nelisp-aot-compiler/e2e-defun-write-and-exit ()
