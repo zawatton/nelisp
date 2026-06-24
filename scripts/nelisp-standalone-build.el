@@ -3962,10 +3962,11 @@ unresolved at link time."
     (defun wf_fdiff (list_ptr scratch)
       (let* ((first_b (wf_elem_fbits (nl_cons_car_ptr list_ptr) scratch))
              (rest (nl_cons_cdr_ptr list_ptr)))
-        ;; elisp `-': 1-arg = negation (0.0 - x); n-arg = first - rest.
+        ;; elisp `-': 1-arg = negation; n-arg = first - rest.  Negate via x*-1.0
+        ;; (sign XOR), NOT 0.0-x, so -(+0.0) yields -0.0 (Doc 159 §12).
         (if (= (ptr-read-u64 rest 0) 7)
             (wf_fsubtail rest first_b scratch)
-          (seq (nl_sexp_write_float scratch (f64-sub (i64-to-f64 0) (bits-to-f64 first_b)))
+          (seq (nl_sexp_write_float scratch (f64-mul (bits-to-f64 first_b) (i64-to-f64 -1)))
                (ptr-read-u64 scratch 8)))))
     ;; float `/' (2-arg, mirroring the integer `/' arity): a/b in f64.
     (defun wf_fdiv2 (args scratch)
@@ -4530,7 +4531,8 @@ unresolved at link time."
               (if (= conv 71) (m5_fmt_gen ms fb prec 1 buf scratch)  ; G
                 (m5_fmt_ffixed ms fb prec 0 buf scratch))))))))      ; f / F
     (defun m5_fmt_float_body (ms fb conv prec buf scratch)
-      (if (= (f64-lt (bits-to-f64 fb) (i64-to-f64 0)) 1)
+      ;; Sign from the raw bit, not f64-lt, so -0.0 / -nan emit `-' (Doc 159 §12).
+      (if (= (logand (sar fb 63) 1) 1)
           (seq (mut-str-push-byte ms 45)
                (let* ((mb (seq (nl_sexp_write_float scratch
                                  (f64-sub (i64-to-f64 0) (bits-to-f64 fb)))

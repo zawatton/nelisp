@@ -370,7 +370,30 @@ Layout =[-]0xh.hhhhp±d=:
 Matches glibc =%a= exactly across normals, subnormals (=5e-324 ->
 "0x0.0000000000001p-1022"=, min-normal =-> "0x1p-1022"=), the max double
 (=0x1.fffffffffffffp+1023=), =%A= upper-casing, and =.3= precision rounding.
-The one value-level divergence is =-0.0=: this reader collapses =-0.0= to
-=+0.0= at read/negate time (=number-to-string -0.0= is "0.0" vs Emacs "-0.0"),
-so the sign is already gone before =%a= sees it — a pre-existing float
-representation gap independent of this conversion, not a =%a= bug.
+With the =-0.0= fix in §12 the full =%a= battery (incl =-0.0 -> "-0x0p+0"=)
+matches glibc exactly.
+
+* 12. Negative-zero sign preservation (Doc 159 §12)
+
+=-0.0= was collapsing to =+0.0= at read and at unary minus, so =number-to-string
+-0.0= printed "0.0" (Emacs: "-0.0") and =%a= lost the sign.  Two value-level
+sites computed the negation as =0.0 - x=, which IEEE-754 rounds to =+0.0= for
+=x = +0.0=; multiplication and division already preserved the sign correctly.
+
+- *unary minus* (=wf_fdiff=, build script): the 1-arg case used
+  =f64-sub(0.0, x)=.  Replaced with =f64-mul(x, -1.0)= — the product's sign is
+  the XOR of the operand signs, so =-(+0.0) = -0.0=.
+- *literal reader* (=nl_stf_finish=, str-to-float.o): for a zero mantissa the
+  §7 fallback formed =signed_mant = sign * 0 = 0= (an integer with no sign) and
+  =i64->f64= produced =+0.0=.  Added a =mant_i64 == 0= guard that writes the
+  signed-zero bits directly (=neg -> 1<<63=) via =nl_write_float_bits=.
+
+The printer needed no change — =m5_push_float= already emits =-= from the raw
+sign bit before the =mag == 0= branch.  =m5_fmt_float_body= (=%f/%e/%g=) now
+takes its sign from the raw bit (=(sar fb 63)=) instead of =f64-lt=, so =-0.0=
+formats as "-0.000000" / "-0.000000e+00" / "-0" matching Emacs/glibc.
+
+number-to-string, =%f/%e/%g=, and the comparison/value predicates (=(= -0.0
+0.0)= = t, =(< -0.0 0.0)= = nil, =(- -0.0)= = +0.0) all match Emacs; the =%a=
+battery matches glibc.  Positive zero and all non-zero values are unchanged
+(n-t-s 39, format 400, broad 32, bundle regression green).
