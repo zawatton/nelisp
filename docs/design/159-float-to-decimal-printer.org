@@ -171,17 +171,41 @@ mantissa by =10^exp= using =nl_stf_ipow10= — an *i64* power — and an i64
 multiply.  =10^20= overflows i64 (max ≈9.2e18), wrapping to garbage; hence
 =1e20= → ≈7.77e18 and =1e100= → 0.
 
-*Fix*: scale in f64.  New =nl_stf_fpow10_bits= computes =10^n= as f64 (bits,
-by squaring, threading through the result slot as scratch — same bits-not-vars
-discipline as §2/§4); =nl_stf_finish= now does =(f64)mant * 10^netexp= /
-=(f64)mant / 10^|netexp|= in f64.  No new Rust.
+*Fix*: scale in f64.  =nl_stf_finish= now multiplies/divides the integer
+mantissa by a power of ten in f64.  No new Rust.
 
-=1e20 -> "1e+20"=, =6.022e23 -> "6.022e+23"=, =1e-5 -> "1e-05"=, =1.5e-8 ->
-"1.5e-08"= all correct; common floats and =format= %f/%e/%g unregressed
-(400/401), bundle smoke green.  Limitation: for |exponent| > 22 the f64 =10^n=
-is no longer exactly representable and the squaring accumulates a sub-ULP
-error, so e.g. =1e100 -> "9.99999999999999e+99"= (right magnitude, last display
-digit off) instead of ="1e+100"= — vastly better than the old i64-overflow
-garbage, but not correctly-rounded.  Powers up to =10^22= (exactly
-representable) are exact, so the common range is correct; a pre-rounded
-power-of-ten table would close the >1e22 gap.
+* 7. Correctly-rounded power-of-ten tables (Doc 159 §7)
+
+A first f64 fix computed =10^n= by squaring, which accumulated sub-ULP error
+for |n| > 22 (=1e100 -> "9.99999999999999e+99"=).  Replaced with two baked
+*correctly-rounded* tables generated at build time from host =strtod=
+(=(float (expt 10 n))= / =(read "1e-n")=, IEEE bits extracted via =frexp=,
+subnormal-aware): =nl_stf_pow10hi(n)= = round(10^n), n∈[0,308] (=inf= above);
+=nl_stf_pow10lo(n)= = round(10^-n), n∈[0,340] (=0= below).  Each is a balanced
+binary-search =if=-tree over =n= returning the i64 bit pattern (all finite
+double bit patterns are < 2^63, so they fit a signed i64); ~10–11 KB of
+generated dialect each, depth ~9.
+
+=nl_stf_finish= picks the correctly-rounded path:
+- =netexp >= 0=: =mant * pow10hi(netexp)=.
+- =netexp < 0, |netexp| <= 22=: =mant / pow10hi(|netexp|)= — the divisor is
+  EXACT (10^k for k<=22 is representable), so this is correctly rounded; a
+  multiply by the inexact =pow10lo= would double-round (=1.5e-8= regressed
+  until this split was added).
+- =netexp < 0, |netexp| > 22=: =mant * pow10lo(|netexp|)=.
+
+Result: clean powers and the whole common range are correct —
+=1e20=, =1e100 -> "1e+100"=, =1e308 -> "1e+308"=, =1e-100 -> "1e-100"=,
+=6.022e23=, =1.5e-8= …; =format= %f/%e/%g unregressed (400/401), bundle green.
+
+** Remaining (fast-path limits — not the table's fault)
+
+The table makes each =10^n= correctly rounded, but =mant * 10^n= still does ONE
+f64 multiply, so a *multi-digit* mantissa times a power outside [-22,22] can
+double-round in the last digit: =5e-300 -> "4.99999999999999e-300"=,
+=9.99e99 -> "9.98999999999999e+99"=.  And values whose intermediate power
+underflows although the product would not (=2.2250738585072014e-308= = min
+normal, =5e-324= = min subnormal) collapse to =0=.  Closing these needs a
+128-bit mantissa path (Eisel-Lemire) or big-integer fallback (Gay/Clinger),
+well beyond a power-of-ten table.  =max double= prints with §2's 15 sig digits
+(=1.79e308= form), a printer (not parser) limit.
