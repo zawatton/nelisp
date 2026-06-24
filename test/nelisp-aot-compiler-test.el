@@ -1061,6 +1061,21 @@ operands under `sar' would sign-extend to -8.  `shr' via shr rax, cl."
     (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 8)))))
 
+(ert-deftest nelisp-aot-compiler/e2e-imm32-mask-bit31 ()
+  "A 32-bit immediate with bit 31 set (mask 0xFFFFFFFF = 4294967295) must
+load zero-extended, not via the sign-extending `mov rax, imm32': otherwise
+`(logand X 0xFFFFFFFF)' becomes `(logand X -1)' and fails to clear the high
+32 bits.  Here `(logand (5<<32) 0xFFFFFFFF)' must be 0 (so result 100), not
+the high word 5 (result 105).  Regression for the imm32 sign-extension bug."
+  (unless (nelisp-aot-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-aot-compiler-test--with-tmp-binary path "imm32mask"
+    (nelisp-aot-compile-sexp
+     '(seq (defun f (x) (+ 100 (shr (logand x 4294967295) 32)))
+           (exit (f (shl 5 32)))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 100)))))
+
 
 (ert-deftest nelisp-aot-compiler/e2e-defun-write-and-exit ()
   "Function with side-effect `write' + computed exit code."

@@ -11155,14 +11155,19 @@ the node's class to consume the result correctly."
        ;; A33.N — `nelisp_emit_value_imm' kernel covers only the small
        ;; (7-byte) arm; the large arm skips the native kernel entirely.
        (let ((v (nelisp-aot-compiler--ir-get node :value)))
-         (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 32)))
+         ;; `mov rax, imm32' SIGN-extends, so it is only correct for the
+         ;; signed imm32 range [-2^31, 2^31).  A positive value with bit 31
+         ;; set (2^31 .. 2^32-1, e.g. the mask 0xFFFFFFFF / 0xFF000000) would
+         ;; sign-extend to a 64-bit all-ones-high value and silently break
+         ;; `logand' masks — those go through the exact 10-byte movabs imm64.
+         (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 31)))
              ;; Small: 7-byte mov rax, imm32 — native kernel or legacy.
              (let ((native (nelisp-aot-compiler--emit-value-native-bytes
                             "nelisp_emit_value_imm" node 7)))
                (if native
                    (nelisp-asm-x86_64-emit-bytes buf native)
                  (nelisp-asm-x86_64-mov-imm32 buf 'rax v)))
-           ;; Large: 10-byte movabs rax, imm64 — no native kernel.
+           ;; Large or bit-31-set: 10-byte movabs rax, imm64 (exact).
            (nelisp-asm-x86_64-mov-imm64 buf 'rax v))))
       ((= tag 53)               ; ref
        ;; gp class → `mov rax, [rbp - 8*(slot+1)]'; f64 class →
@@ -11548,12 +11553,13 @@ across both passes for the same NODE."
     (cond
      ((eq kind 'imm)
       (let ((v (nelisp-aot-compiler--ir-get node :value)))
-        ;; mov-imm32 accepts signed [-2^31, 2^31-1] or unsigned [0, 2^32-1];
-        ;; reject out-of-range integers conservatively (fall back to the
-        ;; existing emit-value path which may use a wider form).
+        ;; sign-extending `mov target, imm32' is exact only for signed
+        ;; [-2^31, 2^31); a bit-31-set positive value (2^31 .. 2^32-1) must
+        ;; NOT take this trivial 7-byte path (it would sign-extend) — let it
+        ;; fall through to the main emit, which uses the exact movabs imm64.
         (and (integerp v)
              (>= v (- (ash 1 31)))
-             (< v (ash 1 32)))))
+             (< v (ash 1 31)))))
      ((eq kind 'ref)
       (and (memq (or (nelisp-aot-compiler--ir-get node :class) 'gp) '(gp nil))
            (let ((s (nelisp-aot-compiler--ir-get node :slot)))
@@ -11571,7 +11577,9 @@ NODE must satisfy `nelisp-aot-compiler--call-arg-trivial-p'."
       ;; large arm is a safety net only — byte-length invariant holds
       ;; because both passes see the same :value for the same node.
       (let ((v (nelisp-aot-compiler--ir-get node :value)))
-        (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 32)))
+        ;; sign-extending `mov target, imm32' is only correct for [-2^31,2^31);
+        ;; a bit-31-set positive value uses the exact 10-byte movabs imm64.
+        (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 31)))
             (nelisp-asm-x86_64-mov-imm32 buf target v)
           (nelisp-asm-x86_64-mov-imm64 buf target v))))
      ((eq kind 'ref)
