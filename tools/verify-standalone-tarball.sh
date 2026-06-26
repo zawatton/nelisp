@@ -11,7 +11,7 @@ default_platform() {
   esac
 }
 
-VERSION="${1:-stage-d-v3.0}"
+VERSION="${1:-v0.6.0}"
 PLATFORM="${2:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
 LAYOUT_ONLY=0
 

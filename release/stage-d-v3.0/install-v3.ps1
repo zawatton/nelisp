@@ -1,10 +1,10 @@
-# release/stage-d-v3.0/install-v3.ps1 - stage-d-v3.0 Windows standalone installer
+# release/stage-d-v3.0/install-v3.ps1 - v0.6.0 Windows standalone installer
 
 [CmdletBinding()]
 param(
     [string]$From,
     [string]$Prefix = $env:ANVIL_PREFIX,
-    [string]$Version = "stage-d-v3.0",
+    [string]$Version = "v0.6.0",
     [string]$ReleaseBaseUrl = $env:RELEASE_BASE_URL,
     [string]$Target = "windows-x86_64"
 )

@@ -22,13 +22,11 @@
 ;; Rust commit.
 ;;
 ;; Storage layout (record):
-;;   (record 'hash-table TEST ENTRIES)
+;;   (record 'hash-table TEST BUCKETS ENTRY-COUNT)
 ;;     slot 0 = TEST    : symbol — `eq' / `eql' / `equal' / `string-equal'
-;;     slot 1 = ENTRIES : list of (KEY . VALUE) cons cells.  Newest
-;;                        entries are at the head of the list (= cheap
-;;                        cons-prepend on insert).  `nelisp--hash-pairs'
-;;                        reverses to return insertion order, matching
-;;                        the prior Rust behaviour.
+;;     slot 1 = BUCKETS : vector of bucket alists.  Each bucket stores
+;;                        (KEY . VALUE) cons cells.
+;;     slot 2 = COUNT   : number of live entries.
 ;;
 ;; The record's `type_tag' is the symbol `hash-table', so `(type-of x)'
 ;; on a hash-table returns `'hash-table' just like host Emacs (Doc 52
@@ -38,6 +36,60 @@
 ;;; Code:
 
 ;;;; --- equality test dispatch -------------------------------------------
+
+(defconst nelisp--hash-default-size 64
+  "Default bucket count for generic NeLisp hash tables.")
+
+(defconst nelisp--hash-mask #xFFFFFFFF
+  "Mask used by the small pure-Elisp structural hash.")
+
+(defun nelisp--hash-power-of-two-at-least (n)
+  "Return a power-of-two bucket count at least N."
+  (let ((size 1)
+        (target (if (and (numberp n) (> n 0)) n nelisp--hash-default-size)))
+    (while (< size target)
+      (setq size (* size 2)))
+    (if (< size 8) 8 size)))
+
+(defun nelisp--hash-string (s)
+  "Return a bounded hash for string S."
+  (let ((h #x811C9DC5)
+        (i 0)
+        (len (length s)))
+    (while (< i len)
+      (setq h (logxor h (aref s i)))
+      (setq h (logand (* h #x01000193) nelisp--hash-mask))
+      (setq i (1+ i)))
+    h))
+
+(defun nelisp--hash-atom (key)
+  "Return a stable bounded hash for an atom-like KEY."
+  (cond
+   ((null key) 0)
+   ((symbolp key) (nelisp--hash-string (symbol-name key)))
+   ((stringp key) (nelisp--hash-string key))
+   ((numberp key) (logand key nelisp--hash-mask))
+   (t (logand key nelisp--hash-mask))))
+
+(defun nelisp--hash-key (key depth)
+  "Return a bounded structural hash for KEY.
+DEPTH is currently used as a compatibility guard; cons keys hash their first
+pair with atom-level hashing because SMIE hot keys are usually (TOKEN . TOKEN)."
+  (cond
+   ((consp key)
+    (logand (+ #x9E3779B9
+               (* 33 (nelisp--hash-atom (car key)))
+               (* 65599 (nelisp--hash-atom (cdr key))))
+            nelisp--hash-mask))
+   (t (nelisp--hash-atom key))))
+
+(defun nelisp--hash-index (key buckets)
+  "Return KEY's bucket index in BUCKETS."
+  (let* ((count (length buckets))
+         (hash (nelisp--hash-key key 6)))
+    (if (= (logand count (1- count)) 0)
+        (logand hash (1- count))
+      (mod hash count))))
 
 (defun nelisp--hash-test-equal (test a b)
   "Return non-nil if A and B compare equal under hash-table TEST.
@@ -63,12 +115,19 @@ Accepted keyword arguments (in any order):
   :rehash-size, :rehash-threshold, :weakness, :data
                   accepted but ignored (parity with host Emacs)."
   (let ((test 'eql)
+        (size nelisp--hash-default-size)
         (rest args))
     (while rest
       (when (eq (car rest) :test)
         (setq test (car (cdr rest))))
+      (when (eq (car rest) :size)
+        (setq size (car (cdr rest))))
       (setq rest (cdr (cdr rest))))
-    (nelisp--make-record 'hash-table test nil)))
+    (nelisp--make-record
+     'hash-table
+     test
+     (make-vector (nelisp--hash-power-of-two-at-least size) nil)
+     0)))
 
 (defun hash-table-p (obj)
   "Return t if OBJ is a hash-table record, else nil."
@@ -81,30 +140,53 @@ TABLE's equality test are overwritten in-place via `setcdr' — the
 internal cons cell identity is preserved.  New entries are prepended
 to the storage list.  Returns VALUE."
   (let* ((test (nelisp--record-ref table 0))
-         (entries (nelisp--record-ref table 1))
-         (cur entries)
-         (found nil))
+         (buckets (nelisp--record-ref table 1))
+         (index (nelisp--hash-index key buckets))
+         (bucket (aref buckets index))
+         (cur bucket)
+         (found nil)
+         (i 0))
     (while (and cur (not found))
       (when (nelisp--hash-test-equal test (car (car cur)) key)
         (setcdr (car cur) value)
         (setq found t))
       (setq cur (cdr cur)))
+    ;; Correctness fallback for key classes whose pure-Elisp hash is not stable
+    ;; across equal values in the standalone runtime.
+    (while (and (not found) (< i (length buckets)))
+      (setq cur (aref buckets i))
+      (while (and cur (not found))
+        (when (nelisp--hash-test-equal test (car (car cur)) key)
+          (setcdr (car cur) value)
+          (setq found t))
+        (setq cur (cdr cur)))
+      (setq i (1+ i)))
     (unless found
-      (nelisp--record-set table 1 (cons (cons key value) entries)))
+      (aset buckets index (cons (cons key value) bucket))
+      (nelisp--record-set table 2 (1+ (nelisp--record-ref table 2))))
     value))
 
 (defun gethash (key table &optional default)
   "Return TABLE[KEY] or DEFAULT (default nil) when missing."
   (let* ((test (nelisp--record-ref table 0))
-         (entries (nelisp--record-ref table 1))
-         (cur entries)
+         (buckets (nelisp--record-ref table 1))
+         (cur (aref buckets (nelisp--hash-index key buckets)))
          (result default)
-         (found nil))
+         (found nil)
+         (i 0))
     (while (and cur (not found))
       (when (nelisp--hash-test-equal test (car (car cur)) key)
         (setq result (cdr (car cur))
               found t))
       (setq cur (cdr cur)))
+    (while (and (not found) (< i (length buckets)))
+      (setq cur (aref buckets i))
+      (while (and cur (not found))
+        (when (nelisp--hash-test-equal test (car (car cur)) key)
+          (setq result (cdr (car cur))
+                found t))
+        (setq cur (cdr cur)))
+      (setq i (1+ i)))
     result))
 
 (defun remhash (key table)
@@ -114,35 +196,48 @@ stores back a filtered copy on hit so unrelated entries keep their
 identity (= consumers holding a (cons key value) cell from before the
 remove see no aliasing)."
   (let* ((test (nelisp--record-ref table 0))
-         (entries (nelisp--record-ref table 1))
-         (out nil)
+         (buckets (nelisp--record-ref table 1))
          (changed nil)
-         (cur entries))
-    (while cur
-      (if (nelisp--hash-test-equal test (car (car cur)) key)
-          (setq changed t)
-        (setq out (cons (car cur) out)))
-      (setq cur (cdr cur)))
+         (removed 0)
+         (i 0))
+    (while (< i (length buckets))
+      (let ((entries (aref buckets i))
+            (out nil)
+            (cur nil))
+        (setq cur entries)
+        (while cur
+          (if (nelisp--hash-test-equal test (car (car cur)) key)
+              (setq changed t
+                    removed (1+ removed))
+            (setq out (cons (car cur) out)))
+          (setq cur (cdr cur)))
+        (when changed
+          (aset buckets i (nreverse out))))
+      (setq i (1+ i)))
     (when changed
-      (nelisp--record-set table 1 (nreverse out)))
+      (nelisp--record-set table 2 (- (nelisp--record-ref table 2) removed)))
     (if changed t nil)))
 
 (defun clrhash (table)
   "Remove every entry from TABLE.  Returns TABLE."
-  (nelisp--record-set table 1 nil)
+  (let ((buckets (nelisp--record-ref table 1)))
+    (nelisp--record-set table 1 (make-vector (length buckets) nil)))
+  (nelisp--record-set table 2 0)
   table)
 
 (defun nelisp--hash-pairs (table)
-  "Return a fresh ((KEY . VALUE) ...) list of TABLE's entries in
-insertion order.  Each cons pair is freshly allocated so callers may
-mutate the spine without affecting TABLE.  Matches the prior
-`bi_hash_pairs' contract used by `hash-table-count' / `maphash' /
-`hash-table-keys' / `hash-table-values' (lisp/nelisp-stdlib-misc.el)."
-  (let ((entries (nelisp--record-ref table 1))
+  "Return a fresh ((KEY . VALUE) ...) list of TABLE's entries.
+Each cons pair is freshly allocated so callers may mutate the spine without
+affecting TABLE.  Order is bucket order and intentionally unspecified."
+  (let ((buckets (nelisp--record-ref table 1))
+        (i 0)
         (out nil))
-    (while entries
-      (setq out (cons (cons (car (car entries)) (cdr (car entries))) out))
-      (setq entries (cdr entries)))
+    (while (< i (length buckets))
+      (let ((entries (aref buckets i)))
+        (while entries
+          (setq out (cons (cons (car (car entries)) (cdr (car entries))) out))
+          (setq entries (cdr entries))))
+      (setq i (1+ i)))
     out))
 
 ;;;; --- Doc 87 §86.1.f Tier 2 wrapper: nl-secure-hash ---------------

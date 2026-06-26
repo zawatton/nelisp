@@ -1,10 +1,10 @@
-#+TITLE: NeLisp standalone CLI — stage-d-v3.0
+#+TITLE: NeLisp standalone CLI — v0.6.0 / stage-d-v3.0 compatibility runbook
 #+AUTHOR: zawatton
 #+DATE: 2026-06-04
 
-* What changed in stage-d-v3.0?
+* What changed in v0.6.0?
 
-stage-d-v3.0 ships a zero-Rust standalone NeLisp reader/evaluator
+v0.6.0 ships a zero-Rust standalone NeLisp reader/evaluator
 tarball.  The executable is short and platform-native:
 
 | Platform        | Command          |
@@ -15,6 +15,11 @@ tarball.  The executable is short and platform-native:
 
 The archive does not contain an Emacs binary, =anvil-runtime=,
 =libnelisp_runtime=, cargo output, or a Rust runtime dependency.
+
+This runbook keeps the =stage-d-v3.0= file name for compatibility with
+existing installer URLs and scripts.  The current release version is
+=v0.6.0=, and newly built tarballs use names such as
+=anvil-v0.6.0-linux-x86_64.tar.gz=.
 
 * Install to runbook
 
@@ -34,9 +39,9 @@ Default install roots:
 
 | Platform       | Default prefix                                  |
 |----------------+-------------------------------------------------|
-| Linux x86_64   | =$HOME/.local/share/anvil-stage-d-v3.0=        |
-| macOS arm64    | =$HOME/.local/share/anvil-stage-d-v3.0=        |
-| Windows x86_64 | =$env:LOCALAPPDATA\anvil-stage-d-v3.0=         |
+| Linux x86_64   | =$HOME/.local/share/anvil-v0.6.0=        |
+| macOS arm64    | =$HOME/.local/share/anvil-v0.6.0=        |
+| Windows x86_64 | =$env:LOCALAPPDATA\anvil-v0.6.0=         |
 
 The =anvil-= prefix is historical packaging.  The installed runtime is the
 standalone NeLisp CLI in =bin/nelisp= or =bin/nelisp.exe=.
@@ -48,7 +53,7 @@ Linux x86_64 and macOS arm64:
 #+begin_src shell
 curl -fsSL https://github.com/zawatton/nelisp/releases/latest/download/install-v3.sh -o install-v3.sh
 sh install-v3.sh
-export PATH="$HOME/.local/share/anvil-stage-d-v3.0/bin:$PATH"
+export PATH="$HOME/.local/share/anvil-v0.6.0/bin:$PATH"
 nelisp --eval "(+ 40 2)"
 #+end_src
 
@@ -57,7 +62,7 @@ Windows x86_64 PowerShell:
 #+begin_src powershell
 iwr https://github.com/zawatton/nelisp/releases/latest/download/install-v3.ps1 -OutFile install-v3.ps1
 .\install-v3.ps1
-$Prefix = Join-Path $env:LOCALAPPDATA "anvil-stage-d-v3.0"
+$Prefix = Join-Path $env:LOCALAPPDATA "anvil-v0.6.0"
 $env:Path = (Join-Path $Prefix "bin") + ";" + $env:Path
 nelisp.exe --eval "(+ 40 2)"
 #+end_src
@@ -89,7 +94,7 @@ git pull --ff-only
 make standalone-tarball PLATFORM=linux-x86_64
 make standalone-tarball-verify PLATFORM=linux-x86_64
 ./release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist"
-export PATH="$HOME/.local/share/anvil-stage-d-v3.0/bin:$PATH"
+export PATH="$HOME/.local/share/anvil-v0.6.0/bin:$PATH"
 nelisp --eval "(+ 40 2)"
 #+end_src
 
@@ -100,7 +105,7 @@ git pull --ff-only
 make standalone-tarball PLATFORM=macos-aarch64
 make standalone-tarball-verify PLATFORM=macos-aarch64
 ./release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist"
-export PATH="$HOME/.local/share/anvil-stage-d-v3.0/bin:$PATH"
+export PATH="$HOME/.local/share/anvil-v0.6.0/bin:$PATH"
 nelisp --eval "(+ 40 2)"
 #+end_src
 
@@ -108,10 +113,10 @@ Windows x86_64 PowerShell:
 
 #+begin_src powershell
 git pull --ff-only
-.\tools\build-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
-.\tools\verify-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
+.\tools\build-standalone-tarball.ps1 -Version v0.6.0 -Target windows-x86_64
+.\tools\verify-standalone-tarball.ps1 -Version v0.6.0 -Target windows-x86_64
 .\release\stage-d-v3.0\install-v3.ps1 -From .\dist
-$Prefix = Join-Path $env:LOCALAPPDATA "anvil-stage-d-v3.0"
+$Prefix = Join-Path $env:LOCALAPPDATA "anvil-v0.6.0"
 $env:Path = (Join-Path $Prefix "bin") + ";" + $env:Path
 nelisp.exe --eval "(+ 40 2)"
 #+end_src
@@ -227,11 +232,11 @@ alias, because Emacs Lisp already uses =quit= for the quit signal path.
 Remove the install prefix:
 
 #+begin_src shell
-rm -rf "$HOME/.local/share/anvil-stage-d-v3.0"
+rm -rf "$HOME/.local/share/anvil-v0.6.0"
 #+end_src
 
 #+begin_src powershell
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\anvil-stage-d-v3.0"
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\anvil-v0.6.0"
 #+end_src
 
 * Full native verification

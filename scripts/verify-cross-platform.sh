@@ -123,11 +123,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
   if [ "$INCLUDE_TARBALL" -eq 1 ]; then
     echo ""
     echo "--- macOS standalone tarball smoke ---"
-    tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --emacs "$EMACS"
+    tools/build-standalone-tarball.sh v0.6.0 macos-aarch64 --emacs "$EMACS"
     if [ "$BUILD_ONLY_STANDALONE_SMOKES" -eq 1 ]; then
-      tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --layout-only
+      tools/verify-standalone-tarball.sh v0.6.0 macos-aarch64 --layout-only
     else
-      tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64
+      tools/verify-standalone-tarball.sh v0.6.0 macos-aarch64
     fi
 
     if [ "$BUILD_ONLY_STANDALONE_SMOKES" -eq 0 ]; then
@@ -175,8 +175,8 @@ tools/linux-standalone-reader-test.sh --emacs "$EMACS"
 if [ "$INCLUDE_TARBALL" -eq 1 ]; then
   echo ""
   echo "--- Linux standalone tarball smoke ---"
-  tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64 --emacs "$EMACS"
-  tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64
+  tools/build-standalone-tarball.sh v0.6.0 linux-x86_64 --emacs "$EMACS"
+  tools/verify-standalone-tarball.sh v0.6.0 linux-x86_64
 
   echo ""
   echo "--- Linux standalone installer smoke ---"

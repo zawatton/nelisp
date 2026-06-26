@@ -79,6 +79,12 @@
         fallback-call-count)
     (unwind-protect
         (progn
+          ;; `nelisp-stdlib-search.el' is now guarded by `unless
+          ;; (fboundp ...)' so standalone native definitions are not
+          ;; overwritten during bootstrap.  This test explicitly wants
+          ;; the shim implementation to measure its scalar fast paths.
+          (fmakunbound 'member)
+          (fmakunbound 'assoc)
           (load (expand-file-name "lisp/nelisp-stdlib-search.el"
                                   default-directory)
                 nil t)

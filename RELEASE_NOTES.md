@@ -1,4 +1,60 @@
-# NeLisp v3.0 Release Notes — Pure-Elisp (0 Rust)
+# NeLisp v0.6.0 Release Notes — Pure-Elisp Standalone Runtime
+
+v0.6.0 (2026-06-26) is the current stable SemVer tag.  It collects the
+large post-v0.5.1 development line into one user-facing release and
+switches the default standalone tarball names from the historical
+`stage-d-v3.0` label to `v0.6.0`.
+
+## Highlights
+
+- **SemVer release line** — stable users should pin `v0.6.0`; `main`
+  remains active development.  Historical `stage-d-v3.0` installer and
+  runbook paths remain for compatibility, but generated standalone
+  artifacts now default to names like
+  `anvil-v0.6.0-linux-x86_64.tar.gz`.
+- **Zero-Rust standalone runtime** — `target/nelisp` remains the
+  no-Emacs runtime for REPL, `--eval`, `--load`, file execution,
+  runtime-image replay, artifact loading, and self-hosting AOT compile.
+- **AOT / OS surface expansion** — adds data blobs, `.rela.data`
+  handling, `frame-alloc`, `shr`, `f64-bits`, defined SysV varargs,
+  libm/f64 return bridging, and extra raw syscall helpers such as
+  `unshare`, `mount`, `pivot-root`, `chdir`, `rmdir`, and `mkdtemp`.
+- **Float and printer correctness** — includes Eisel-Lemire float
+  parsing, correctly-rounded power tables, shortest-round-trip
+  printing, C99 hex-float, negative-zero preservation, inf/nan handling,
+  and `%f` / `%e` / `%g` precision support.
+- **Stdlib and package-load breadth** — closes many bare-reader gaps:
+  `%` and `/=`, broader CL/Elisp helpers, rx / cl-generic support,
+  setf places, `cl-defstruct` breadth, hash-table introspection,
+  bucketed hash-table storage, list-search hot paths, and incremental
+  `load` to avoid retaining an entire source AST.
+- **Low-memory load path** — flat-arena cold-load plus compacting GC and
+  8-byte container slots keep the full vendor-load path around 118MB
+  peak RSS instead of the older 1.80GB path.
+
+## Verification
+
+Recommended local release gates:
+
+```bash
+make test-parallel
+make standalone-reader-test
+make standalone-reader-prelude-test
+make standalone-selfhost-test
+make standalone-selfhost-mt-test
+make standalone-parallel-compile-test
+make standalone-tarball PLATFORM=linux-x86_64
+make standalone-tarball-verify PLATFORM=linux-x86_64
+```
+
+The first-class release blocker remains `linux-x86_64`.  macOS arm64
+and Windows x86_64 are CI-gated where runners are available; Linux
+aarch64 and macOS x86_64 remain supported by the pure-Elisp object
+writers but are not hard blockers without dedicated runners.
+
+---
+
+# NeLisp v3.0 Release Notes — Pure-Elisp (0 Rust, archived stage name)
 
 v3.0 (2026-06-02) completes the pure-elisp migration: all `.rs` files
 and Cargo.toml have been removed.  The standalone interpreter/compiler

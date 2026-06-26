@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# release/stage-d-v3.0/install-v3.sh — stage-d-v3.0 standalone installer
+# release/stage-d-v3.0/install-v3.sh — v0.6.0 standalone installer
 
 set -euo pipefail
 
-RELEASE_VERSION="${RELEASE_VERSION:-stage-d-v3.0}"
+RELEASE_VERSION="${RELEASE_VERSION:-v0.6.0}"
 ANVIL_PREFIX="${ANVIL_PREFIX:-$HOME/.local/share/anvil-${RELEASE_VERSION}}"
 # Default to GitHub's `releases/latest' redirect so the install URL keeps
-# resolving through future patch releases (v0.5.1, v0.5.2, ...) without
+# resolving through future patch releases (v0.6.1, v0.6.2, ...) without
 # the script needing to bump a hard-coded tag.  Override RELEASE_BASE_URL
 # for installs pinned to an older release.
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/zawatton/nelisp/releases/latest/download}"
@@ -14,7 +14,7 @@ FROM_DIR=""
 
 usage() {
   cat <<USAGE
-stage-d-v3.0 installer (true standalone, no Emacs runtime dependency)
+NeLisp standalone installer (v0.6.0 default; true standalone, no Emacs runtime dependency)
 
 Usage:
   install-v3.sh [--from DIR] [--prefix DIR] [--version VERSION] [--help]

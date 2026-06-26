@@ -757,16 +757,34 @@ or the toolchain is newer than the cached object."
     ;; the `nelisp--arena-stats' + `(list (ptr-read ...))' diagnostic probe
     ;; (r-prog) hit; the real vendor load does not.  It is a pre-existing GC
     ;; root-coverage gap that the single list's near-zero reuse merely masked.
+    (defun nl_freelist_scan_drop_tail (prev cur bt want)
+      (nl_seq2
+       (nl_fl_record_trip cur bt want)
+       (if (= prev 0)
+           (ptr-write-u64 268435552 0 0)
+         (ptr-write-u64 prev 0 0))))
     (defun nl_freelist_scan (prev cur want)
       (if (= cur 0)
           0
-        (if (= (nl_hdr_bt (- cur 8)) want)
-            (nl_seq2
-             (if (= prev 0)
-                 (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))
-               (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))
-             (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
-          (nl_freelist_scan cur (ptr-read-u64 cur 0) want))))
+        ;; Fallback-list integrity guard.  Bucketed reuse already validates the
+        ;; head before dereferencing it; the large-block fallback used to read
+        ;; the header unconditionally and crashed when a stale next-link had
+        ;; been overwritten by live string bytes.  Drop the corrupt tail and
+        ;; continue by bump allocation.
+        (if (= (nl_gc_in_arena cur) 0)
+            (nl_seq2 (nl_freelist_scan_drop_tail prev cur 0 want) 0)
+          (if (= (logand cur 7) 0)
+              (if (= (nl_hdr_mark (- cur 8)) 2)
+                  (let ((bt (nl_hdr_bt (- cur 8))))
+                    (if (= bt want)
+                        (nl_seq2
+                         (if (= prev 0)
+                             (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))
+                           (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))
+                         (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
+                      (nl_freelist_scan cur (ptr-read-u64 cur 0) want)))
+                (nl_seq2 (nl_freelist_scan_drop_tail prev cur (nl_hdr_bt (- cur 8)) want) 0))
+            (nl_seq2 (nl_freelist_scan_drop_tail prev cur 0 want) 0)))))
     ;; Doc 152 §11.39 Stage 3a: permanent guard-trip counter.  Records into the
     ;; nl_gc_diag bss block whenever the integrity guard drops a corrupt chain
     ;; (= a double-link event).  +0 count, +8/16/24 first-bad cur/bt/want.  Only
@@ -2270,7 +2288,22 @@ arm64 Linux has no legacy x86 numbering)."
          (nl_gc_mark_roots ctx result out pool src cursor bsym))
        (if (= (ptr-read-u64 268435608 0) 1)    ; Doc146 §5: compact (incl. reclaim, no sweep)
            (nl_gc_compact ctx result out pool src cursor bsym)
-         (nl_gc_sweep))))))
+         (nl_gc_sweep)))))
+    ;; Form-boundary collections run after a top-level form has finished
+    ;; evaluating.  The RAW reader parse pool allocation itself must remain
+    ;; pinned for the next parse, but stale/unused slots from prior forms are
+    ;; no longer a sound root set.  Temporarily setting the pool cap to 0 keeps
+    ;; the pool block pinned via `nl_gc_mark_root_blocks' while avoiding a walk
+    ;; through stale slots.  Mid-parse safepoints still call `nl_gc_collect'
+    ;; directly and keep full pool slot marking.
+    (defun nl_gc_collect_form_boundary (ctx result out pool src cursor bsym)
+      (let* ((cap (nl_gc_pool_cap))
+             (live 0))
+        (seq
+         (ptr-write-u64 268436448 0 0)
+         (setq live (nl_gc_collect ctx result out pool src cursor bsym))
+         (ptr-write-u64 268436448 0 cap)
+         live))))
   "Tracing mark-sweep GC for the headered standalone arena.  See the
 preceding commentary for box layouts, root set, and the soundness
 argument (reachability + in-arena bounds checks).")
@@ -2429,12 +2462,18 @@ argument (reachability + in-arena bounds checks).")
     ((:u8 "cdr")  . (wf_copy32 out (nl_cons_cdr_ptr (wf_arg_ptr args 0))))
     ((:u8 "cons") . (seq (nelisp_cons_construct (wf_arg_ptr args 0) (wf_arg_ptr args 1) out) 0))
     ((:u8 "list") . (seq (wf_copy32 out args) 0))
+    ;; --- list search hot paths ---
+    ((:lit "memq")   . (wf_memq args out))
+    ((:lit "member") . (wf_member args out))
+    ((:lit "assq")   . (wf_assq args out))
+    ((:lit "assoc")  . (wf_assoc args out))
+    ((:lit "rassoc") . (wf_rassoc args out))
     ;; --- M4 hash tables (cons-alist v1) ---
     ((:lit "make-hash-table")  . (wf_ht_make out))
     ((:lit "puthash")          . (seq (wf_dirty) (wf_ht_put args out)))
     ((:lit "gethash")          . (wf_ht_get args out))
     ((:lit "remhash")          . (seq (wf_dirty) (wf_ht_rem args out)))
-    ((:lit "hash-table-count") . (wf_write_int out (wf_ht_count (wf_ht_alist_slot (wf_arg_ptr args 0)) 0)))
+    ((:lit "hash-table-count") . (wf_write_int out (wf_ht_count_table (wf_ht_data_slot (wf_arg_ptr args 0)))))
     ((:lit "maphash")          . (wf_ht_maphash args out))
     ;; --- M5 strings + format ---
     ((:lit "length")           . (wf_write_int out (m5_length (wf_arg_ptr args 0))))
@@ -2831,9 +2870,14 @@ unresolved at link time."
         (bf_arena_chunks_used
          (ptr-read-u64 (+ chunk 48) 0)
          (+ acc (bf_arena_chunk_used chunk)))))
-    ;; Doc 152 §11.39 Stage 3a: GC-diag read/toggle builtin.  ARG0: 0=read-only,
-    ;; 1=enable poison-on-free, 2=disable.  Returns the list
-    ;; (trip-count bad-cur bad-bt bad-want poison-count poison-enable).
+    ;; Doc 152 §11.39 Stage 3a: GC-diag read/toggle builtin.  ARG0:
+    ;; 0=read-only, 1=enable poison-on-free, 2=disable poison,
+    ;; 3/4=push/pop empty safepoint context, 5/6=arm/disarm mid-form
+    ;; safepoint, 7/8=disable/enable collections, 9/10=disable/enable
+    ;; free-list reuse, 11/12=enable/disable compaction.
+    ;; Returns the list
+    ;; (trip-count bad-cur bad-bt bad-want poison-count poison-enable
+    ;;  context-depth mid-form-fired-count).
     (defun bf_gc_diag (args out)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -2850,7 +2894,19 @@ unresolved at link time."
                          (ptr-write-u64 (data-addr nl_safepoint_ctx) 32 0))
                   (if (= (wf_argval args 0) 6)
                       (ptr-write-u64 (data-addr nl_safepoint_ctx) 8 0)
-                    0))))))
+                    (if (= (wf_argval args 0) 7)
+                        (ptr-write-u64 268435616 0 1)
+                      (if (= (wf_argval args 0) 8)
+                          (ptr-write-u64 268435616 0 0)
+                        (if (= (wf_argval args 0) 9)
+                            (ptr-write-u64 268435624 0 1)
+                          (if (= (wf_argval args 0) 10)
+                              (ptr-write-u64 268435624 0 0)
+                            (if (= (wf_argval args 0) 11)
+                                (ptr-write-u64 268435608 0 1)
+                              (if (= (wf_argval args 0) 12)
+                                  (ptr-write-u64 268435608 0 0)
+                                0))))))))))))
         (let* ((nils (alloc-bytes 32 8)) (s7 (alloc-bytes 32 8)) (s6 (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
                (s3 (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
           (seq
@@ -4093,7 +4149,7 @@ unresolved at link time."
   '((defun wf_ht_copy32 (dst src)
       (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
            (ptr-write-u64 dst 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
-    (defun wf_key_eq (ka kb)
+    (defun wf_key_eq_depth (ka kb depth)
       (let* ((ta (ptr-read-u64 ka 0)) (tb (ptr-read-u64 kb 0)))
         (if (= ta tb)
             (if (= ta 2)
@@ -4102,9 +4158,73 @@ unresolved at link time."
                   (symbol-eq ka kb)
                 (if (= ta 5)
                     (str-eq ka kb)
-                  (if (= ta 0) 1 (if (= ta 1) 1 0)))))
+                  (if (= ta 7)
+                      (if (<= depth 0)
+                          0
+                        (if (= (wf_key_eq_depth (nl_cons_car_ptr ka) (nl_cons_car_ptr kb) (- depth 1)) 1)
+                            (wf_key_eq_depth (nl_cons_cdr_ptr ka) (nl_cons_cdr_ptr kb) (- depth 1))
+                          0))
+                    (if (= ta 0) 1 (if (= ta 1) 1 0))))))
           0)))
-    (defun wf_ht_alist_slot (table_ptr) (nl_cons_cdr_ptr table_ptr))
+    (defun wf_key_eq (ka kb)
+      (wf_key_eq_depth ka kb 16))
+    (defun wf_ht_data_slot (table_ptr) (nl_cons_cdr_ptr table_ptr))
+    (defun wf_ht_alist_slot (table_ptr) (wf_ht_data_slot table_ptr))
+    (defun wf_ht_str_hash_loop (str_ptr i n h)
+      (if (>= i n)
+          h
+        (wf_ht_str_hash_loop
+         str_ptr
+         (+ i 1)
+         n
+         (logand (* (logxor h (str-byte-at str_ptr i)) 16777619) 2147483647))))
+    (defun wf_ht_str_hash (str_ptr)
+      (wf_ht_str_hash_loop str_ptr 0 (str-len str_ptr) 2166136261))
+    (defun wf_ht_key_hash (key_ptr depth)
+      (let* ((tag (ptr-read-u64 key_ptr 0)))
+        (if (= tag 2)
+            (logand (ptr-read-u64 key_ptr 8) 2147483647)
+          (if (= tag 4)
+              (logand (ptr-read-u64 key_ptr 8) 2147483647)
+            (if (= tag 5)
+                (wf_ht_str_hash key_ptr)
+              (if (= tag 6)
+                  (wf_ht_str_hash key_ptr)
+                (if (= tag 7)
+                    (if (<= depth 0)
+                        7
+                      (logand (+ 2654435769
+                                 (* 33 (wf_ht_key_hash (nl_cons_car_ptr key_ptr) (- depth 1)))
+                                 (* 65599 (wf_ht_key_hash (nl_cons_cdr_ptr key_ptr) (- depth 1))))
+                              2147483647))
+                  tag)))))))
+    (defun wf_ht_key_hash_stable_p (key_ptr depth)
+      (let* ((tag (ptr-read-u64 key_ptr 0)))
+        (if (= tag 0)
+            1
+          (if (= tag 1)
+              1
+            (if (= tag 2)
+                1
+              (if (= tag 4)
+                  1
+                (if (= tag 5)
+                    1
+                  (if (= tag 6)
+                      1
+                    (if (= tag 7)
+                        (if (<= depth 0)
+                            0
+                          (if (= (wf_ht_key_hash_stable_p (nl_cons_car_ptr key_ptr) (- depth 1)) 1)
+                              (wf_ht_key_hash_stable_p (nl_cons_cdr_ptr key_ptr) (- depth 1))
+                            0))
+                      0)))))))))
+    (defun wf_ht_bucket_index (vec key_ptr)
+      (let* ((n (vector-len vec))
+             (h (wf_ht_key_hash key_ptr 8)))
+        (if (= (logand n (- n 1)) 0)
+            (logand h (- n 1))
+          (mod h n))))
     (defun wf_ht_find (node_ptr key_ptr)
       (if (= (ptr-read-u64 node_ptr 0) 7)
           (let* ((entry_ptr (nl_cons_car_ptr node_ptr))
@@ -4117,28 +4237,64 @@ unresolved at link time."
       (if (= (ptr-read-u64 node_ptr 0) 7)
           (wf_ht_count (nl_cons_cdr_ptr node_ptr) (+ acc 1))
         acc))
+    (defun wf_ht_find_vec_from (vec key_ptr i n)
+      (if (>= i n)
+          0
+        (let* ((entry_ptr (wf_ht_find (vector-ref-ptr vec i) key_ptr)))
+          (if (= entry_ptr 0)
+              (wf_ht_find_vec_from vec key_ptr (+ i 1) n)
+            entry_ptr))))
+    (defun wf_ht_find_table (data_ptr key_ptr)
+      (if (= (ptr-read-u64 data_ptr 0) 8)
+          (let* ((idx (wf_ht_bucket_index data_ptr key_ptr))
+                 (entry_ptr (wf_ht_find (vector-ref-ptr data_ptr idx) key_ptr)))
+            (if (= entry_ptr 0)
+                (if (= (wf_ht_key_hash_stable_p key_ptr 8) 1)
+                    0
+                  (wf_ht_find_vec_from data_ptr key_ptr 0 (vector-len data_ptr)))
+              entry_ptr))
+        (wf_ht_find data_ptr key_ptr)))
+    (defun wf_ht_count_vec (vec i n acc)
+      (if (>= i n)
+          acc
+        (wf_ht_count_vec vec (+ i 1) n
+                         (wf_ht_count (vector-ref-ptr vec i) acc))))
+    (defun wf_ht_count_table (data_ptr)
+      (if (= (ptr-read-u64 data_ptr 0) 8)
+          (wf_ht_count_vec data_ptr 0 (vector-len data_ptr) 0)
+        (wf_ht_count data_ptr 0)))
     (defun wf_ht_make (out)
-      (let* ((marker (alloc-bytes 32 8)) (nil_s (alloc-bytes 32 8)))
+      (let* ((marker (alloc-bytes 32 8)) (buckets (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 marker 0 2) (ptr-write-u64 marker 8 0)
          (ptr-write-u64 marker 16 0) (ptr-write-u64 marker 24 0)
-         (ptr-write-u64 nil_s 0 0) (ptr-write-u64 nil_s 8 0)
-         (ptr-write-u64 nil_s 16 0) (ptr-write-u64 nil_s 24 0)
-         (nelisp_cons_construct marker nil_s out)
+         (vector-make 2048 buckets)
+         (nelisp_cons_construct marker buckets out)
          0)))
     (defun wf_ht_put (args out)
       (let* ((key_ptr (wf_arg_ptr args 0)) (val_ptr (wf_arg_ptr args 1))
              (table_ptr (wf_arg_ptr args 2))
-             (alist_slot (wf_ht_alist_slot table_ptr))
-             (entry_ptr (wf_ht_find alist_slot key_ptr)))
+             (data_slot (wf_ht_data_slot table_ptr))
+             (entry_ptr (wf_ht_find_table data_slot key_ptr)))
         (if (= entry_ptr 0)
-            (let* ((pair_s (alloc-bytes 32 8)) (newhead_s (alloc-bytes 32 8)))
-              (seq
-               (nelisp_cons_construct key_ptr val_ptr pair_s)
-               (nelisp_cons_construct pair_s alist_slot newhead_s)
-               (wf_ht_copy32 alist_slot newhead_s)
-               (wf_ht_copy32 out val_ptr)
-               0))
+            (if (= (ptr-read-u64 data_slot 0) 8)
+                (let* ((idx (wf_ht_bucket_index data_slot key_ptr))
+                       (bucket_slot (vector-ref-ptr data_slot idx))
+                       (pair_s (alloc-bytes 32 8))
+                       (newhead_s (alloc-bytes 32 8)))
+                  (seq
+                   (nelisp_cons_construct key_ptr val_ptr pair_s)
+                   (nelisp_cons_construct pair_s bucket_slot newhead_s)
+                   (vector-slot-set data_slot idx newhead_s)
+                   (wf_ht_copy32 out val_ptr)
+                   0))
+              (let* ((pair_s (alloc-bytes 32 8)) (newhead_s (alloc-bytes 32 8)))
+                (seq
+                 (nelisp_cons_construct key_ptr val_ptr pair_s)
+                 (nelisp_cons_construct pair_s data_slot newhead_s)
+                 (wf_ht_copy32 data_slot newhead_s)
+                 (wf_ht_copy32 out val_ptr)
+                 0)))
           (let* ((val_slot (nl_cons_cdr_ptr entry_ptr)))
             (seq
              (wf_ht_copy32 val_slot val_ptr)
@@ -4146,8 +4302,8 @@ unresolved at link time."
              0)))))
     (defun wf_ht_get (args out)
       (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1))
-             (alist_slot (wf_ht_alist_slot table_ptr))
-             (entry_ptr (wf_ht_find alist_slot key_ptr)))
+             (data_slot (wf_ht_data_slot table_ptr))
+             (entry_ptr (wf_ht_find_table data_slot key_ptr)))
         (if (= entry_ptr 0)
             (let* ((rest1 (nl_cons_cdr_ptr args))
                    (rest2 (nl_cons_cdr_ptr rest1)))
@@ -4157,13 +4313,24 @@ unresolved at link time."
           (wf_ht_copy32 out (nl_cons_cdr_ptr entry_ptr)))))
     (defun wf_ht_rem (args out)
       (let* ((key_ptr (wf_arg_ptr args 0)) (table_ptr (wf_arg_ptr args 1))
-             (alist_slot (wf_ht_alist_slot table_ptr))
+             (data_slot (wf_ht_data_slot table_ptr))
              (rebuilt (alloc-bytes 32 8)))
         (seq
-         (wf_ht_rem_walk alist_slot key_ptr rebuilt)
-         (wf_ht_copy32 alist_slot rebuilt)
+         (if (= (ptr-read-u64 data_slot 0) 8)
+             (wf_ht_rem_vec data_slot key_ptr 0 (vector-len data_slot))
+           (seq
+            (wf_ht_rem_walk data_slot key_ptr rebuilt)
+            (wf_ht_copy32 data_slot rebuilt)))
          (wf_write_nil out)
          0)))
+    (defun wf_ht_rem_vec (vec key_ptr i n)
+      (if (>= i n)
+          0
+        (let* ((rebuilt (alloc-bytes 32 8)))
+          (seq
+           (wf_ht_rem_walk (vector-ref-ptr vec i) key_ptr rebuilt)
+           (vector-slot-set vec i rebuilt)
+           (wf_ht_rem_vec vec key_ptr (+ i 1) n)))))
     (defun wf_ht_rem_walk (node_ptr key_ptr out_slot)
       (if (= (ptr-read-u64 node_ptr 0) 7)
           (let* ((entry_ptr (nl_cons_car_ptr node_ptr))
@@ -4179,6 +4346,61 @@ unresolved at link time."
         (wf_write_nil out_slot)))
     (defun wf_ht_maphash (args out) (seq (wf_write_nil out) 0)))
   "M4 hash-table helpers (reader-only).")
+
+(defconst nelisp-standalone--applyfn-search-helpers
+  '((defun wf_memq_walk (elt_ptr list_ptr out)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (if (= (bf_eq2 elt_ptr (nl_cons_car_ptr list_ptr)) 1)
+              (wf_copy32 out list_ptr)
+            (wf_memq_walk elt_ptr (nl_cons_cdr_ptr list_ptr) out))
+        (wf_write_nil out)))
+    (defun wf_memq (args out)
+      (wf_memq_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out))
+    (defun wf_member_walk (elt_ptr list_ptr out)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (if (= (wf_key_eq elt_ptr (nl_cons_car_ptr list_ptr)) 1)
+              (wf_copy32 out list_ptr)
+            (wf_member_walk elt_ptr (nl_cons_cdr_ptr list_ptr) out))
+        (wf_write_nil out)))
+    (defun wf_member (args out)
+      (wf_member_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out))
+    (defun wf_assq_walk (key_ptr alist_ptr out)
+      (if (= (ptr-read-u64 alist_ptr 0) 7)
+          (let* ((pair_ptr (nl_cons_car_ptr alist_ptr)))
+            (if (= (if (= (ptr-read-u64 pair_ptr 0) 7)
+                       (bf_eq2 key_ptr (nl_cons_car_ptr pair_ptr))
+                     0)
+                   1)
+                (wf_copy32 out pair_ptr)
+              (wf_assq_walk key_ptr (nl_cons_cdr_ptr alist_ptr) out)))
+        (wf_write_nil out)))
+    (defun wf_assq (args out)
+      (wf_assq_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out))
+    (defun wf_assoc_walk (key_ptr alist_ptr out)
+      (if (= (ptr-read-u64 alist_ptr 0) 7)
+          (let* ((pair_ptr (nl_cons_car_ptr alist_ptr)))
+            (if (= (if (= (ptr-read-u64 pair_ptr 0) 7)
+                       (wf_key_eq key_ptr (nl_cons_car_ptr pair_ptr))
+                     0)
+                   1)
+                (wf_copy32 out pair_ptr)
+              (wf_assoc_walk key_ptr (nl_cons_cdr_ptr alist_ptr) out)))
+        (wf_write_nil out)))
+    (defun wf_assoc (args out)
+      (wf_assoc_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out))
+    (defun wf_rassoc_walk (value_ptr alist_ptr out)
+      (if (= (ptr-read-u64 alist_ptr 0) 7)
+          (let* ((pair_ptr (nl_cons_car_ptr alist_ptr)))
+            (if (= (if (= (ptr-read-u64 pair_ptr 0) 7)
+                       (wf_key_eq value_ptr (nl_cons_cdr_ptr pair_ptr))
+                     0)
+                   1)
+                (wf_copy32 out pair_ptr)
+              (wf_rassoc_walk value_ptr (nl_cons_cdr_ptr alist_ptr) out)))
+        (wf_write_nil out)))
+    (defun wf_rassoc (args out)
+      (wf_rassoc_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out)))
+  "Reader-only list search helpers for SMIE and Org hot paths.")
 
 ;; M5 string + format helpers.  Reader-only: mut-str / str-len / str-byte-at ops
 ;; lower to extern calls present only in the reader manifest.
@@ -5211,7 +5433,9 @@ unresolved at link time."
              (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (tg (ptr-read-u64 arr 0)))
         (if (= tg 8)
-            (seq (wf_copy32 out (vector-ref-ptr arr idx)) 0)
+            (if (if (< idx 0) 1 (if (< idx (vector-len arr)) 0 1))
+                (seq (wf_write_nil out) 0)
+              (seq (wf_copy32 out (vector-ref-ptr arr idx)) 0))
           ;; Doc 22 A14: Record(12).  The stock else-arm fell through to
           ;; `str-byte-at', dereferencing the record Sexp's offset-16 word as a
           ;; string data pointer (= the SEGFAULT the doc observed on a struct).
@@ -5220,10 +5444,16 @@ unresolved at link time."
           ;; the slots vector, so aref 0 -> `record-type-tag', aref k>0 ->
           ;; `record-slot-ref' of data slot k-1.
           (if (= tg 12)
-              (if (= idx 0)
-                  (seq (record-type-tag arr out) 0)
-                (seq (record-slot-ref arr (- idx 1) out) 0))
-            (wf_write_int out (str-byte-at arr idx))))))
+              (if (< idx 0)
+                  (seq (wf_write_nil out) 0)
+                (if (= idx 0)
+                    (seq (record-type-tag arr out) 0)
+                  (seq (record-slot-ref arr (- idx 1) out) 0)))
+            (if (= tg 5)
+                (if (if (< idx 0) 1 (if (< idx (str-len arr)) 0 1))
+                    (seq (wf_write_nil out) 0)
+                  (wf_write_int out (str-byte-at arr idx)))
+              (seq (wf_write_nil out) 0))))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -5485,7 +5715,7 @@ unresolved at link time."
                   (if (< (ptr-read-u64 268436184 0)
                          (ptr-read-u64 268435560 0))
                       0
-                    (let* ((live (nl_gc_collect env result out pool src cursor bsym))
+                    (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
                            (bump (ptr-read-u64 268436184 0))
                            (lo (+ (* live 3) 1048576))
                            (hi (+ bump 16777216)))
@@ -5509,7 +5739,7 @@ unresolved at link time."
                       (if (< (ptr-read-u64 268436184 0)
                              (ptr-read-u64 268435560 0))
                           0
-                        (let* ((live (nl_gc_collect env result out pool src cursor bsym))
+                        (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
                                (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
                                (hi (+ bump 16777216)))
@@ -6034,8 +6264,9 @@ set, which lacks the reader-only `nl_os_write_stderr')."
   (nelisp-standalone--applyfn-assemble
    (list nelisp-standalone--applyfn-core-helpers
          nelisp-standalone--applyfn-census-helpers
-         nelisp-standalone--applyfn-ht-helpers
-         nelisp-standalone--applyfn-m5-helpers
+        nelisp-standalone--applyfn-ht-helpers
+        nelisp-standalone--applyfn-search-helpers
+        nelisp-standalone--applyfn-m5-helpers
          nelisp-standalone--applyfn-bf-helpers)
    (nelisp-standalone--applyfn-reader-table))
   "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O
@@ -7947,6 +8178,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--env-globals-op"
     ;; M4 hash tables
     "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
+    ;; List search hot paths
+    "memq" "member" "assq" "assoc" "rassoc"
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
@@ -8147,7 +8380,7 @@ suffix, which is why only `--repl' crashed)."
                       ;; not the chunk-0 bump offset.  See `bf_load_eval_loop'.
                       (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0))
                           0
-                        (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
+                        (let* ((live (nl_gc_collect_form_boundary ctx result out pool src cursor builtin_sym))
                                (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
                                (hi (+ bump 16777216)))

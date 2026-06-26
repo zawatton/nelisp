@@ -405,7 +405,8 @@ override + interactive message machinery aren't wired."
 ;;      NOERROR is nil, signal `file-error' "Cannot open load file".
 ;;   2. Slurp file via `nelisp--syscall-read-file'; if it returns nil
 ;;      and NOERROR is nil, signal `file-error' "read error".
-;;   3. Parse all top-level forms via `nelisp--read-all-from-string'.
+;;   3. Read/eval top-level forms incrementally via `read-from-string'.
+;;      This avoids retaining the entire source AST for large files.
 ;;   4. Dynamically rebind `load-file-name' / `default-directory' to
 ;;      the resolved file + its parent directory; eval each form in
 ;;      order.
@@ -422,6 +423,53 @@ override + interactive message machinery aren't wired."
 ;; through the function cell, so a user-level `(defalias 'load ...)'
 ;; redefinition is honoured for `require' as well.
 
+(defvar load-garbage-collect-interval 64
+  "Number of forms between opportunistic `garbage-collect' calls in `load'.
+Nil or 0 disables the periodic collection.  The standalone reader uses a
+flat arena, so large source files must not keep every already-read
+top-level form reachable until the end of the load.")
+
+(defun nelisp--load-skip-space-and-comments (source pos)
+  "Return first non-whitespace/comment position in SOURCE at or after POS."
+  (let ((len (length source))
+        (done nil))
+    (while (and (< pos len) (not done))
+      (let ((c (aref source pos)))
+        (cond
+         ((or (= c ?\s) (= c ?\t) (= c ?\n) (= c ?\r) (= c ?\f))
+          (setq pos (+ pos 1)))
+         ((= c ?\;)
+          (while (and (< pos len) (not (= (aref source pos) ?\n)))
+            (setq pos (+ pos 1))))
+         (t
+          (setq done t)))))
+    pos))
+
+(defun nelisp--load-eval-source-incremental (source)
+  "Read and eval SOURCE top-level forms one at a time.
+Return the value of the last form.  This deliberately avoids
+`nelisp--read-all-from-string', which materializes the whole AST and can
+overflow the standalone arena on upstream-sized package files."
+  (let ((pos 0)
+        (len (length source))
+        (last nil)
+        (count 0))
+    (while (progn
+             (setq pos (nelisp--load-skip-space-and-comments source pos))
+             (< pos len))
+      (let ((res (read-from-string source pos)))
+        (when (or (not (consp res)) (<= (cdr res) pos))
+          (signal 'end-of-file (list "load reader made no progress" pos)))
+        (setq last (eval (car res)))
+        (setq pos (cdr res))
+        (setq count (+ count 1))
+        (when (and load-garbage-collect-interval
+                   (> load-garbage-collect-interval 0)
+                   (= (% count load-garbage-collect-interval) 0)
+                   (fboundp 'garbage-collect))
+          (garbage-collect))))
+    last))
+
 (defun load (file &optional noerror _nomessage _nosuffix _must-suffix)
   "Execute the elisp file FILE.  See `nelisp-stdlib-misc.el' top-of-
 section comment for the full contract."
@@ -437,8 +485,7 @@ section comment for the full contract."
           (if noerror nil
             (signal 'file-error (list "read error" resolved))))
          (t
-          (let* ((forms (nelisp--read-all-from-string source))
-                 (parent (or (file-name-directory resolved) "./"))
+          (let* ((parent (or (file-name-directory resolved) "./"))
                  (prior-lfn (and (boundp 'load-file-name)
                                  load-file-name))
                  (prior-dd (and (boundp 'default-directory)
@@ -447,10 +494,7 @@ section comment for the full contract."
             (setq load-file-name resolved)
             (setq default-directory parent)
             (condition-case e
-                (let ((cur forms))
-                  (while cur
-                    (eval (car cur))
-                    (setq cur (cdr cur))))
+                (nelisp--load-eval-source-incremental source)
               (error (setq err-obj e)))
             (setq load-file-name prior-lfn)
             (setq default-directory prior-dd)

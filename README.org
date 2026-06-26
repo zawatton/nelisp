@@ -1,6 +1,6 @@
-#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v2.0)
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v0.6.0)
 #+AUTHOR: zawatton
-#+DATE: 2026-05-22 (standalone self-host & parallel build: 2026-06-02)
+#+DATE: 2026-06-26
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -44,7 +44,12 @@ way: standalone file I/O, stdout/stderr, process exit, raw memory,
 syscall surface used by the standalone reader are expressed from Elisp
 via AOT codegen and =syscall-direct=.
 
-v2.0 (2026-05-22) ships:
+Current stable release: *v0.6.0* (2026-06-26).  This release keeps the
+project versioned by SemVer git tags, in the same style as =anvil.el=:
+pin users to =v0.6.0=, let =main= carry active development, and use
+release notes for the exact gate status.
+
+v0.6.0 ships:
 - *Pure-Elisp runtime implementation* — evaluator, reader, special
   forms, builtins, compiler, allocator, GC, object writers, codegen,
   and standalone OS interaction all live in Elisp source.
@@ -53,8 +58,6 @@ v2.0 (2026-05-22) ships:
   pure-elisp object-file writers (ELF, Mach-O, PE/COFF) and pure-elisp
   asm encoders (x86_64 with both SysV and Microsoft x64 ABIs, plus
   AArch64 AAPCS).
-
-2026-06 adds a *standalone self-hosting binary*:
 - *Self-host + parallel build* — a pure-elisp AOT-AOT binary
   (=target/nelisp=, pure Elisp) loads its own
   compiler and compiles Elisp source → native ELF *with no Emacs in
@@ -79,9 +82,30 @@ v2.0 (2026-05-22) ships:
   (=Nil=/=t=/fixnum) or an 8-byte pointer to a 32-byte child box; the GC
   marks, forwards, and moves them word-aware.  Validated by a 50× load
   soak under compaction and the 4438-assertion suite.
+- *Reader/core breadth since v0.5.1* — correctly-rounded float parse /
+  print paths, broader Common Lisp / Emacs Lisp prelude coverage,
+  additional raw syscall surface, AOT data/blob relocations, defined
+  varargs, =f64= extern returns, bucketed hash tables, incremental
+  =load=, and native list-search hot paths for SMIE / Org-style loads.
 
 Use cases: running Elisp on machines without Emacs, and as a
 substrate for Lisp Machine / new-dialect experiments.
+
+* Current Release Highlights
+
+v0.6.0 is the current stable tag.  It collects the large post-v0.5.1
+develop line into one release and makes SemVer tags the user-facing
+versioning scheme.
+
+| Area | What changed |
+|------+--------------|
+| Versioning | Stable users should pin =v0.6.0=.  =main= remains the active development branch; historical stage-d names are retained only for installer/runbook compatibility. |
+| Standalone runtime | =target/nelisp= is the primary no-Emacs runtime: REPL, =--eval=, =--load=, file execution, runtime-image replay, artifact loading, and self-hosting AOT compile. |
+| Pure-Elisp OS/compiler surface | AOT grammar and runtime gained data blobs, =frame-alloc=, =shr=, =f64-bits=, defined SysV varargs, libm/f64 return bridging, and additional raw syscall helpers. |
+| Float / printer correctness | Float parse/print work now covers Eisel-Lemire parsing, correctly-rounded power tables, shortest-round-trip printing, C99 hex-float, negative zero, inf/nan, and =%f/%e/%g= precision. |
+| Stdlib breadth | The bare reader prelude gained broader CL/Elisp coverage for package loading: rx/cl-generic helpers, setf places, =cl-defstruct= breadth, arithmetic gaps, hash-table introspection, list search, and incremental =load=. |
+| Memory footprint | Flat-arena cold-load + compacting GC + 8-byte container slots keep full vendor-load around 118MB peak RSS instead of the older 1.80GB path. |
+| Release artifacts | Standalone tarball defaults now use =v0.6.0= names: =anvil-v0.6.0-<platform>.tar.gz=. |
 
 * What NeLisp is
 
@@ -349,10 +373,11 @@ RBP/RBX/RDI/RSI/R12-R15 callee-save) are pure elisp.
 
 Deferred: aarch64 Windows (=arm64ec=) — currently x86_64 Windows only.
 
-* Status — v2.0 (2026-05-22)
+* Status — v0.6.0 (2026-06-26)
 
-NeLisp v2.0 centers the runtime in Elisp and adds cross-platform native
-emit across 5 OS×arch targets.
+NeLisp v0.6.0 centers the runtime in Elisp, keeps the standalone path
+as the primary user surface, and adds cross-platform native emit across
+5 OS×arch targets.
 
 1. *Standalone reader* — =target/nelisp= loads and
    evaluates =.el= files with no host Emacs process.
@@ -368,6 +393,29 @@ emit across 5 OS×arch targets.
 ** Install
 
 Two paths.
+
+*** Stable tag — =v0.6.0= (recommended)
+
+For source users, pin the current stable tag:
+
+#+begin_src shell
+git clone https://github.com/zawatton/nelisp ~/nelisp
+cd ~/nelisp
+git checkout v0.6.0
+make standalone-reader
+make standalone-reader-test
+#+end_src
+
+For release artifacts, v0.6.0 tarballs use:
+
+#+begin_src text
+anvil-v0.6.0-linux-x86_64.tar.gz
+anvil-v0.6.0-macos-aarch64.tar.gz
+anvil-v0.6.0-windows-x86_64.tar.gz
+#+end_src
+
+=main= is the development branch.  Use it when hacking on NeLisp
+itself; pin =v0.6.0= when you want reproducible runtime behavior.
 
 *** Prerequisites by platform
 
@@ -441,8 +489,8 @@ iwr https://github.com/zawatton/nelisp/releases/latest/download/install-v3.ps1 -
 .\install-v3.ps1
 #+end_src
 
-Default install root: =$HOME/.local/share/anvil-stage-d-v3.0/=.
-On Windows the default root is under =$env:LOCALAPPDATA\anvil-stage-d-v3.0=.
+Default install root: =$HOME/.local/share/anvil-v0.6.0/=.
+On Windows the default root is under =$env:LOCALAPPDATA\anvil-v0.6.0=.
 (The =anvil-= prefix is historical packaging — the tarball *is* the
 NeLisp runtime; use =bin/nelisp= or =bin/nelisp.exe= directly.)
 Full install-to-run runbook for Linux x86_64, macOS arm64, and Windows x86_64
@@ -520,7 +568,7 @@ checkouts use the pure-Elisp standalone reader above for REPL
 development and file execution.
 
 #+begin_src shell
-nelisp --version                       # nelisp 0.5.0
+nelisp --version                       # nelisp v0.6.0
 nelisp --eval "(+ 1 2 3)"              # => 6
 nelisp --load ~/nelisp/examples/hello/hello.el
 #+end_src

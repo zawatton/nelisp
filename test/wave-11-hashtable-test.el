@@ -52,6 +52,14 @@
 
 ;; ---- helpers (= mirror wave-11-static-imm32-table-test helpers) ----
 
+(defun wave-11-hashtable-test--ir-kind (ir)
+  "Return IR node kind across plist and compact-vector IR shapes."
+  (nelisp-aot-compiler--ir-kind ir))
+
+(defun wave-11-hashtable-test--ir-get (ir key)
+  "Return KEY from IR across plist and compact-vector IR shapes."
+  (nelisp-aot-compiler--ir-get ir key))
+
 (defun wave-11-hashtable-test--linux-p ()
   "Return non-nil when the host kernel can exec x86_64 ELF64 binaries."
   (and (eq system-type 'gnu/linux)
@@ -165,10 +173,10 @@
   (let ((ir (nelisp-aot-compiler--parse
              '(defun mk (tag-ptr cap slot)
                 (hash-table-make tag-ptr cap slot)))))
-    (should (eq (plist-get ir :kind) 'defun))
+    (should (eq (wave-11-hashtable-test--ir-kind ir) 'defun))
     ;; Body should be the desugared record-make IR.
-    (let ((body (plist-get ir :body)))
-      (should (eq (plist-get body :kind) 'record-make)))))
+    (let ((body (wave-11-hashtable-test--ir-get ir :body)))
+      (should (eq (wave-11-hashtable-test--ir-kind body) 'record-make)))))
 
 (ert-deftest wave-11-hashtable/parse-get-inside-defun ()
   "`hash-table-get' parses inside a defun and resolves the walk helper."
@@ -179,8 +187,8 @@
                (defun nelisp_ht_walk (b k s) 0)
                (defun do-get (ht key slot) (hash-table-get ht key slot))
                (exit 0)))))
-    (should (eq (plist-get ir :kind) 'seq))
-    (should (= (length (plist-get ir :forms)) 3))))
+    (should (eq (wave-11-hashtable-test--ir-kind ir) 'seq))
+    (should (= (length (wave-11-hashtable-test--ir-get ir :forms)) 3))))
 
 (ert-deftest wave-11-hashtable/parse-put-inside-defun ()
   "`hash-table-put' parses inside a defun."
@@ -189,9 +197,9 @@
   (let ((ir (nelisp-aot-compiler--parse
              '(defun do-put (ht key val cs ps)
                 (hash-table-put ht key val cs ps)))))
-    (should (eq (plist-get ir :kind) 'defun))
-    (let ((body (plist-get ir :body)))
-      (should (eq (plist-get body :kind) 'record-slot-set)))))
+    (should (eq (wave-11-hashtable-test--ir-kind ir) 'defun))
+    (let ((body (wave-11-hashtable-test--ir-get ir :body)))
+      (should (eq (wave-11-hashtable-test--ir-kind body) 'record-slot-set)))))
 
 (ert-deftest wave-11-hashtable/parse-contains-p-inside-defun ()
   "`hash-table-contains-p' parses inside a defun."
@@ -201,7 +209,7 @@
                (defun do-has (ht key slot)
                  (hash-table-contains-p ht key slot))
                (exit 0)))))
-    (should (eq (plist-get ir :kind) 'seq))))
+    (should (eq (wave-11-hashtable-test--ir-kind ir) 'seq))))
 
 (ert-deftest wave-11-hashtable/parse-make-rejects-wrong-arity ()
   "`hash-table-make' with wrong arg count signals."
@@ -229,7 +237,7 @@
                (defun runme (ht key val cs ps)
                  (hash-table-put ht key val cs ps))
                (exit 0)))))
-    (should (eq (plist-get ir :kind) 'seq))))
+    (should (eq (wave-11-hashtable-test--ir-kind ir) 'seq))))
 
 ;; ---- §T.3 full compile pipeline ----
 
@@ -306,12 +314,14 @@ the same program twice and checks the output file sizes match."
   "The `--ht-helpers-source' defun source parses cleanly."
   (let ((ir (nelisp-aot-compiler--parse
              nelisp-aot-compiler--ht-helpers-source)))
-    (should (eq (plist-get ir :kind) 'seq))
+    (should (eq (wave-11-hashtable-test--ir-kind ir) 'seq))
     ;; Single defun: nelisp_ht_walk.
-    (let ((walk (car (plist-get ir :forms))))
-      (should (eq (plist-get walk :kind) 'defun))
-      (should (eq (plist-get walk :name) 'nelisp_ht_walk))
-      (should (= (length (plist-get walk :params)) 3)))))
+    (let ((walk (car (wave-11-hashtable-test--ir-get ir :forms))))
+      (should (eq (wave-11-hashtable-test--ir-kind walk) 'defun))
+      (should (eq (wave-11-hashtable-test--ir-get walk :name)
+                  'nelisp_ht_walk))
+      (should (= (length (wave-11-hashtable-test--ir-get walk :params))
+                 3)))))
 
 (provide 'wave-11-hashtable-test)
 

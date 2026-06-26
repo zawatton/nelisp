@@ -1,6 +1,6 @@
 # Windows PowerShell builder for the zero-Rust standalone NeLisp CLI tarball.
 #
-# Produces dist\anvil-stage-d-v3.0-windows-x86_64.tar.gz containing:
+# Produces dist\anvil-v0.6.0-windows-x86_64.tar.gz containing:
 #   bin\nelisp.exe
 #   src\*.el
 #   scripts\*.el
@@ -10,7 +10,7 @@
 [CmdletBinding()]
 param(
     [string]$Emacs = $env:EMACS,
-    [string]$Version = "stage-d-v3.0",
+    [string]$Version = "v0.6.0",
     [string]$Target = "windows-x86_64"
 )
 
