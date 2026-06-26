@@ -142,7 +142,8 @@
         (with-current-buffer buf
           (erase-buffer)
           (insert payload)
-          (save-buffer))
+          (let ((coding-system-for-write 'utf-8-unix))
+            (save-buffer)))
         (should (equal payload
                        (with-temp-buffer
                          (insert-file-contents path)

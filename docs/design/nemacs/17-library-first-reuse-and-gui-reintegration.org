@@ -1,4 +1,4 @@
-#+TITLE: nelisp-emacs Doc 17 -- Library-first reuse strategy and nelisp-gui reintegration
+#+TITLE: nelisp-emacs Doc 17 -- Library-first reuse strategy
 #+AUTHOR: nelisp-emacs
 #+DATE: 2026-06-21
 #+STATUS: DRAFT
@@ -8,54 +8,65 @@
 
 This document changes the project framing from "a runnable Emacs
 replacement first" to *reusable pure-Elisp Emacs-core libraries first*.
+Doc 28 refines the naming and split: the library product is now called
+=nelisp-emacs-libs=, while the runnable editor successor is =nemacs-next=.
 
 The original goal remains: run an Emacs-like editor on the NeLisp runtime
 by replacing large parts of Emacs's C core with Elisp.  The next value
 step is broader: make those C-core replacement libraries useful to other
 projects before the full editor is complete.
 
-Therefore, the project should temporarily optimize for:
+Therefore, the project should optimize for:
 
 1. stable library boundaries,
 2. host-Emacs / NeLisp / standalone portability,
 3. adapter separation,
 4. package-level tests and documentation,
-5. reintegrating =nelisp-gui= under this tree while the shared library
-   contracts mature.
+5. clean extraction of application/frontend code into =nemacs-next=,
+6. distribution together with =nelisp=.
 
-Only after the library surface is stable should the GUI be split out
-again as an external consumer.
+Application and GUI code currently in this repository is transitional
+consumer material.  It should validate the libraries, not define their
+ownership.
 
 * 1. Decision
 
-Adopt a *library-first monorepo phase*.
+Adopt a *library distribution phase*.
 
-During this phase, =nelisp-emacs= owns the reusable Emacs-core Elisp
-libraries, the =nemacs= application assembly, and the GUI adapter code
-that consumes those libraries.  =nelisp-gui= should be brought back under
-this repository as a workspace component, not because GUI belongs forever
-inside this repo, but because cross-repository boundaries are still too
-expensive while the library APIs are moving.
+=nelisp-emacs-libs= owns the reusable Emacs-core Elisp libraries.
+=nemacs-next= owns the runnable editor application and concrete frontends.
+=nelisp= owns the runtime and should be able to ship these libraries as
+part of its standard distribution.
 
 The desired final shape is:
 
 #+begin_src text
-nelisp-emacs/
+nelisp/
+  target/nelisp
+  share/nelisp/nelisp-emacs-libs/...
+
+nelisp-emacs-libs/        # current repository still named nelisp-emacs
   packages/
-    foundation/        reusable pure Elisp primitives
-    buffer/            buffer, point, text properties, editing substrate
-    editor-core/       window, frame, keymap, command-loop, minibuffer
-    io/                file, process, shell, network, sqlite adapters
-    display/           redisplay model, TUI backend, event parser
-    gui-adapter/       GUI transport adapters consuming editor-core
-  apps/
-    nemacs/            runnable editor assembly
+    nelisp-emacs-foundation/
+    nelisp-emacs-text-core/
+    nelisp-emacs-buffer-core/
+    nelisp-emacs-editing/
+    nelisp-emacs-io/
+    nelisp-emacs-core/
+    nelisp-emacs-special-buffers/
   src/                 current source location during migration
   test/                current tests, gradually grouped by package
+
+nemacs-next/
+  apps/nemacs/
+  frontends/
+  runtime-image/
+  packaging/
 #+end_src
 
 Physical movement into =packages/= is optional at first.  Logical package
-boundaries and dependency rules are mandatory before large file moves.
+boundaries and dependency rules are mandatory before large file moves.  See
+Doc 28 for split and distribution rules.
 
 * 2. Goals
 
@@ -73,12 +84,12 @@ boundaries and dependency rules are mandatory before large file moves.
 
 ** 2.2 Project goals
 
-- Make =nelisp-emacs= valuable even before it is a full Emacs
-  replacement.
+- Make =nelisp-emacs-libs= valuable as a library set independent of a full
+  Emacs replacement.
 - Turn current C-core replacement work into reusable artifacts.
 - Reduce duplicate behavior in GUI/TUI bridges by forcing adapters to
   consume the same shared runtime modules.
-- Make future repository split mechanical: the GUI split should become a
+- Make future repository split mechanical: =nemacs-next= should become a
   consumer extraction, not a behavioral rewrite.
 
 * 3. Non-goals
@@ -207,56 +218,58 @@ Extraction rule: application files compose libraries and adapters.  They
 should not become the primary implementation location for reusable Emacs
 semantics.
 
-* 5. nelisp-gui reintegration
+* 5. nemacs-next frontend extraction
 
 ** 5.1 Rationale
 
-Keeping =nelisp-gui= outside while core APIs are still shifting creates
-friction:
+The historical =gui/= and =nemacs-gtk-*= code are useful consumers while
+the library boundary is being stabilized, but their long-term home is
+=nemacs-next=:
 
-- behavior fixes must be coordinated across repositories,
-- GUI may grow bridge-local copies of command semantics,
-- library contracts are harder to validate against a real consumer,
-- refactors are delayed because the downstream breakage is hidden.
+- frontend code may grow bridge-local copies of command semantics,
+- library contracts are harder to validate without a real consumer,
+- application launch/runtime-image policy should not become a library
+  dependency,
+- extraction should be mechanical once package APIs hold.
 
-Temporarily reintegrating GUI code makes the GUI a first-class consumer
-test for the reusable libraries.  The goal is not to make GUI code a
-permanent dependency of the core; the goal is to harden the core by
-keeping a demanding consumer nearby.
+Keeping frontend code nearby during migration is acceptable only as a
+consumer test.  It must not become an inward dependency of
+=nelisp-emacs-libs=.
 
 ** 5.2 Placement
 
-Preferred temporary placement:
+Preferred final placement:
 
 #+begin_src text
-gui/
-  README.org
-  src/
-  test/
-  scripts/
+nemacs-next/
+  frontends/
+    gui/
+    tui/
+  apps/nemacs/
 #+end_src
 
-The =gui/= tree must depend inward on library packages.  Library packages
-must not depend outward on =gui/=.
+Until =nemacs-next= exists physically, =gui/= and =nemacs-*= files in this
+repository are extraction inputs.  They must depend inward on library
+packages.  Library packages must not depend outward on =gui/= or app files.
 
-** 5.3 Reintegration rules
+** 5.3 Extraction rules
 
-- GUI may own display protocol, window-system resources, raw input
+- frontends may own display protocol, window-system resources, raw input
   decoding, transport setup, and painting.
-- GUI must not own buffer mutation semantics, command dispatch, keymap
+- frontends must not own buffer mutation semantics, command dispatch, keymap
   lookup, minibuffer completion, undo, kill-ring, file command semantics,
   or window layout decisions.
-- If GUI needs a behavior that is currently missing in shared runtime,
+- If a frontend needs a behavior that is currently missing in shared runtime,
   implement it in the shared library first, then call it from GUI.
-- GUI-local fallback code must be tracked as deletion candidates.
+- frontend-local fallback code must be tracked as deletion candidates.
 
-** 5.4 Re-split criteria
+** 5.4 Extraction criteria
 
-Split GUI out again only when all are true:
+Move app/frontend code to =nemacs-next= when all are true:
 
-1. GUI consumes published package APIs, not private file internals.
-2. The shared library package tests pass without GUI.
-3. GUI tests pass as a downstream consumer.
+1. frontends consume published package APIs, not private file internals.
+2. The shared library package tests pass without frontend/app files.
+3. frontend tests pass as a downstream consumer.
 4. Bridge-local semantic fallbacks are zero or explicitly documented.
 5. Package dependency graph is documented and enforced in CI.
 6. =AGENTS.md= and =CLAUDE.md= rules are satisfied for at least one full

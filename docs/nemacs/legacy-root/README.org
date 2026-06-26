@@ -1,20 +1,42 @@
-#+TITLE: nelisp-emacs — Emacs C → elisp port
+#+TITLE: nelisp-emacs-libs — NeLisp Emacs-core libraries
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-05-16
-#+STATUS: early / exploratory
+#+STATUS: library distribution / migration
 
 * Status — read this first
 
-This is an *early, exploratory research project*.  It is *not* a
-usable Emacs replacement and is unlikely to become one for several
-years.  Most user-visible Emacs features are absent, the API is
-unstable, and breaking changes are expected on most commits.
+This repository is being reframed as *nelisp-emacs-libs*: a reusable
+library set that implements Emacs-compatible core behavior in Elisp for
+the NeLisp runtime.
 
-This repo is *Layer 2* (Emacs 意味論 = buffer/point/command-loop/keymap/
-minibuffer/window/face 決定) of a 3-layer Emacs replacement:
-*L1 =nelisp=* (runtime/reader/AOT) → *L2 this repo* → *L3 =nelisp-gui=*
-(X11 描画/入力).  責務境界・層間契約・完成条件・critical path のマスターは
-=../nelisp-gui/docs/design/00-three-layer-architecture.org= を参照.
+The historical repository name is still =nelisp-emacs= and the main
+compatibility facade remains =(require 'nelisp-emacs)= during migration.
+The product direction is no longer "this repo becomes the runnable Emacs
+application".  The runnable editor successor is =nemacs-next=.  This
+repository should provide the library substrate that =nemacs-next=,
+=nelisp= tools, and other consumers can load.
+
+The original research goal remains important: replace Emacs C-core
+semantics with Elisp so NeLisp can execute Emacs Lisp code without a
+hand-written Emacs C core.  The immediate goal is narrower and more
+practical: stabilize and package those libraries so they can ship with
+=nelisp=.
+
+Current split target:
+
+- =nelisp= owns runtime / reader / evaluator / AOT / FFI and should ship
+  these libraries in its distribution.
+- =nelisp-emacs-libs= owns reusable Emacs-core libraries: foundation,
+  text/coding, buffer/editing, command-loop/keymap/minibuffer/window/frame,
+  IO/runtime adapters, and backend-independent display model pieces.
+- =nemacs-next= owns runnable editor assembly, launch policy, runtime-image
+  baking, concrete TUI/GUI frontends, and user-facing packaging.
+
+Application and GUI files currently in this repository are migration
+inputs for =nemacs-next=.  They may remain temporarily, but new reusable
+behavior should land in the library owner and new app/frontend behavior
+should be treated as extraction work.  See
+=docs/design/28-nemacs-next-split-and-library-distribution.org=.
 
 Concretely, as of 2026-05-27:
 
@@ -97,37 +119,33 @@ Doc 02 v0.1 modules contribute several hundred more across
 =emacs-shell-command-test.el= / =emacs-completion-ui-test.el= /
 =emacs-project-test.el= plus the =nemacs-gtk-*= frontend tests.
 
-If you are looking for a working pure-elisp Emacs binary today, this
-is not it.  See [[#long-term-roadmap][Long-term roadmap]] below for an
-honest timescale.
+If you are looking for a working pure-Elisp Emacs binary today, this
+repository is not that product.  Track =nemacs-next= for the runnable
+editor direction once extraction begins.
 
 * What is this?
 
-=nelisp-emacs= is the Layer 2 (extension package) + Layer 3 (TUI
-reference display backend) of the
-[[https://github.com/zawatton/nelisp][NeLisp]] stack.  The long-term
-goal is to re-implement Emacs's core C code in elisp, running on the
-NeLisp runtime, so that a pure-elisp Emacs binary can be produced
-without a hand-written C core.
+=nelisp-emacs-libs= is the NeLisp Emacs-core library stack.  It contains
+Elisp implementations of Emacs C-core semantics and runtime adapters:
+buffer and point behavior, editing/search/undo substrates, keymap and
+command-loop pieces, minibuffer/window/frame semantics, coding/regex/text
+helpers, file/process/sqlite/ffi adapters, and package facades.
+
+The repository is still named =nelisp-emacs= during migration.  Treat that
+as a compatibility name, not the long-term product name.
 
 #+begin_src
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 3 display backends                                    │
-│  ├── TUI backend (THIS REPO):                                │
-│  │     emacs-tui-backend.el · emacs-tui-terminfo.el · ...    │
-│  └── GUI backend (separate repo: nelisp-gui)                 │
+│  nemacs-next application layer                               │
+│  Runnable editor assembly, TUI/GUI frontends, packaging      │
 └─────────────▲────────────────────────────────────────────────┘
               │
 ┌─────────────┴────────────────────────────────────────────────┐
-│  Layer 2  (THIS REPO)                                        │
-│  Emacs C → elisp ports + substrate elisp:                    │
+│  nelisp-emacs-libs                                           │
+│  Reusable Emacs C-core semantics in Elisp:                   │
 │    emacs-buffer.el · emacs-window.el · emacs-frame.el ·      │
 │    emacs-keymap.el · emacs-minibuffer.el · emacs-eval.el ·   │
 │    emacs-fns.el · emacs-list.el · emacs-string.el · ...      │
-│  (a slice of these has already shipped upstream as           │
-│  nelisp-emacs-compat / -process / -regex / -coding / -json   │
-│  / -sqlite / -base64 / -secure-hash / -filenotify — those    │
-│  belong to the NeLisp Layer 2 substrate, not this repo)      │
 └─────────────▲────────────────────────────────────────────────┘
               │
 ┌─────────────┴────────────────────────────────────────────────┐
@@ -138,37 +156,33 @@ without a hand-written C core.
 
 * Relationship to NeLisp
 
-- =Layer 1 (NeLisp core runtime)= = upstream
+- =NeLisp core runtime= = upstream
   [[https://github.com/zawatton/nelisp][~nelisp~]] (vendored under
   =vendor/nelisp/= via =bin/build-nelisp=, or supplied by a sibling
   checkout via =NELISP_HOME=).  NeLisp provides the pure-Elisp
   standalone reader at =target/nelisp=, including
   =repl [--no-prompt]= for persistent evaluator development.
-- =Layer 2 (extension package)= = partly upstream (the
-  =nelisp-emacs-compat=, =nelisp-process=, =nelisp-regex=,
-  =nelisp-coding=, =nelisp-sqlite=, =nelisp-base64=,
-  =nelisp-secure-hash=, =nelisp-json=, =nelisp-filenotify=, …
-  modules are part of the NeLisp distribution).  *This repo is the
-  remaining Layer 2 work* — the Emacs interactive editor substrate
-  (buffer / window / frame / keymap / minibuffer / etc.) ported
-  from Emacs C.
-- =Layer 3 (display backend)= = TUI primary (in this repo).  The
-  pure native GUI sibling is developed in the separate
-  =nelisp-gui= repo; the older GTK frontend in this tree remains a
-  reference/legacy path.  Cocoa / Win32 / =wgpu= backends are open to
-  community contribution.
+- =nelisp-emacs-libs= should be distributed with NeLisp as the standard
+  Emacs-core library set.  Development checkouts can still use explicit
+  =-L= paths or =NELISP_EMACS_SRC_DIR=, but release users should not need
+  a sibling source tree just to load foundation, IO, sqlite/ffi, buffer, or
+  editor-core libraries.
+- =nemacs-next= should depend on =nelisp= plus =nelisp-emacs-libs= rather
+  than owning reusable command semantics itself.
 
 * Library entry points
 
 Reusable consumers should start with:
 
 #+begin_src emacs-lisp
-(require 'nelisp-emacs)
+(require 'nelisp-emacs-libs)
 #+end_src
 
 That facade loads the reusable C-core replacement surface without taking
-ownership of application bootstrap policy.  The exact group list is
-published as =nelisp-emacs-library-features= and currently contains:
+ownership of application bootstrap policy.  The historical
+=(require 'nelisp-emacs)= facade remains as a compatibility entry during the
+rename migration.  The exact group list is published as
+=nelisp-emacs-library-features= and currently contains:
 
 - =emacs-foundation= for primitive/foundation shims,
 - =emacs-text-core= for reusable TXT regex and coding substrates,
@@ -630,27 +644,30 @@ It requires each package group loader in a separate =emacs -Q -L src=
 process, proving that future package extraction does not depend on the
 top-level facade or application bootstrap.
 
-* Boundary with nelisp-gui
+* Boundary with nemacs-next frontends
 
-=nelisp-emacs= owns Emacs behavior.  =nelisp-gui= owns only the GUI
-display/input adapter.
+=nelisp-emacs-libs= owns reusable Emacs behavior.  =nemacs-next=
+frontends own display/input adapters.  Existing references to
+=nelisp-gui= and =/tmp/nemacs-*= in this section describe the current
+migration bridge; they are extraction inputs for =nemacs-next=, not the
+long-term application ownership model.
 
 Final ownership rule:
 
 | Decision surface | Owner | Reason |
 |------------------+-------+--------|
-| Buffer text, point, mark, region, kill-ring, undo, modified flag, visited file, buffer list, window layout/selection/window-start changes | =nelisp-emacs= | This is the result of an Emacs command |
-| Keymap lookup, =command-execute=, =call-interactively=, =execute-extended-command=, minibuffer completion/history/require-match | =nelisp-emacs= | This is Emacs command-loop behavior |
-| =find-file=, =save-buffer=, =write-file=, =self-insert-command=, movement/editing/kill/yank/window/help/search/undo commands | =nelisp-emacs= | The same key/command must have one semantic owner |
-| X11 socket/wire protocol, window id, pixmap, GC, font metrics, colors, glyph/cursor/modeline/minibuffer painting | =nelisp-gui= | This is display-backend-specific |
-| X11 event decode, raw key sequence generation, =/tmp/nemacs-*= transport setup, runtime image/session launch | =nelisp-gui= | This is the adapter between Layer 3 and Layer 2 |
-| Smoke test focus | =nelisp-gui= tests input→transport→paint; =nelisp-emacs= tests command semantics | This keeps failures actionable |
+| Buffer text, point, mark, region, kill-ring, undo, modified flag, visited file, buffer list, window layout/selection/window-start changes | =nelisp-emacs-libs= | This is the result of an Emacs command |
+| Keymap lookup, =command-execute=, =call-interactively=, =execute-extended-command=, minibuffer completion/history/require-match | =nelisp-emacs-libs= | This is Emacs command-loop behavior |
+| =find-file=, =save-buffer=, =write-file=, =self-insert-command=, movement/editing/kill/yank/window/help/search/undo commands | =nelisp-emacs-libs= | The same key/command must have one semantic owner |
+| X11 socket/wire protocol, window id, pixmap, GC, font metrics, colors, glyph/cursor/modeline/minibuffer painting | =nemacs-next frontend= | This is display-backend-specific |
+| X11 event decode, raw key sequence generation, =/tmp/nemacs-*= transport setup, runtime image/session launch | =nemacs-next frontend= | This is the adapter between frontend and library runtime |
+| Smoke test focus | frontend tests input→transport→paint; =nelisp-emacs-libs= tests command semantics | This keeps failures actionable |
 
-Do not add a second implementation of Emacs behavior in =nelisp-gui=.  If a
+Do not add a second implementation of Emacs behavior in frontend code.  If a
 GUI interaction changes buffer text, point, mark, visited file, modified state,
 kill-ring, undo, buffer selection, window layout, or minibuffer command result,
-the implementation belongs in this repository and =nelisp-gui= should call it
-through the raw-key/session bridge.
+the implementation belongs in =nelisp-emacs-libs= and the frontend should
+call it through a bridge/API.
 
 Bridge contract:
 - GUI sends =/tmp/nemacs-keys= raw key sequence plus the current snapshot:
@@ -667,13 +684,14 @@ Bridge contract:
 Short rule:
 - If a change decides what an Emacs command does to buffer contents,
   point, mark, visited files, modified state, kill-ring, undo, window
-  state, or command dispatch, it belongs in =nelisp-emacs=.
+  state, or command dispatch, it belongs in =nelisp-emacs-libs=.
 - If a change decodes X11 input, transports a raw key sequence/snapshot,
-  or paints the returned state, it belongs in =nelisp-gui=.
-  Keymap lookup and command dispatch belong in =nelisp-emacs=.
-- =nelisp-gui= may contain temporary spike behavior only while wiring the
+  or paints the returned state, it belongs in a =nemacs-next= frontend.
+  Keymap lookup and command dispatch belong in =nelisp-emacs-libs=.
+- frontend code may contain temporary spike behavior only while wiring the
   display path.  Once the behavior is part of the Emacs replacement surface,
-  the command semantics must live here and be invoked through the bridge.
+  the command semantics must live in the library and be invoked through the
+  bridge/API.
 
 In practical terms, this repository is the owner of commands such as
 =find-file=, =save-buffer=, =self-insert-command=, =backward-delete-char=,
@@ -687,8 +705,8 @@ fallback/migration path.
 
 | owner | responsibilities | examples |
 |-------+------------------+----------|
-| =nelisp-emacs= | buffer state, point, visited file, modified state, window state, command dispatch, Emacs Lisp API compatibility | =find-file=, =save-buffer=, =write-file=, =delete-window=, =other-window=, movement/editing commands, =undo=, =command-execute=, =call-interactively= |
-| =nelisp-gui= | frame painting, X11 event decode, cursor/glyph rendering, minibuffer display/input collection, key/minibuffer transport | X11 wire protocol, font/color drawing, =/tmp/nemacs-*= snapshot/point/key/minibuffer files |
+| =nelisp-emacs-libs= | buffer state, point, visited file, modified state, window state, command dispatch, Emacs Lisp API compatibility | =find-file=, =save-buffer=, =write-file=, =delete-window=, =other-window=, movement/editing commands, =undo=, =command-execute=, =call-interactively= |
+| =nemacs-next frontend= | frame painting, X11 event decode, cursor/glyph rendering, minibuffer display/input collection, key/minibuffer transport | X11 wire protocol, font/color drawing, =/tmp/nemacs-*= snapshot/point/key/minibuffer files |
 
 New editor behavior should land here first as a command/state update,
 then =nelisp-gui= should call it through the GUI bridge.  The bridge
@@ -698,14 +716,14 @@ path is being stabilized; its tests live in
 =test/nemacs-gui-file-bridge-runtime-test.el=.
 
 Hard boundary:
-- =nelisp-emacs= owns the result of an Emacs command.  This includes
+- =nelisp-emacs-libs= owns the result of an Emacs command.  This includes
   =find-file=, =save-buffer=, =write-file=, =revert-buffer=, movement,
   insertion/deletion, region commands, kill/yank, undo, command dispatch,
   and buffer/file metadata.
 - =nelisp-gui= owns only presentation and input transport: X11 events,
   frame painting, glyph/cursor rendering, font/color handling, minibuffer
   display/input collection, and the =/tmp/nemacs-*= transport files.
-- =nelisp-emacs= owns keymap lookup, minibuffer command interpretation,
+- =nelisp-emacs-libs= owns keymap lookup, minibuffer command interpretation,
   =execute-extended-command=, help dispatch, and =command-execute=.
 - GUI code must not grow a second implementation of Emacs editing
   semantics.  If a key binding changes buffer contents, point, mark,

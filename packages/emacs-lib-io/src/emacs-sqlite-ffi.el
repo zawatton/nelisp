@@ -6,14 +6,13 @@
 
 ;;; Commentary:
 
-;; Doc 51 Phase 5 — Layer 2 SQLite implementation via the in-process
-;; libffi primitive `nl-ffi-call' (= NeLisp build-tool/eval/ffi.rs).
+;; Doc 51 Phase 5 — Layer 2 SQLite implementation via the reusable
+;; `emacs-ffi' facade.
 ;;
 ;; Bypasses the Emacs Dynamic Module API (= which NeLisp standalone
 ;; does not yet expose) by calling `nelisp-sqlite-rs' extern "C"
-;; symbols directly through `nl-ffi-call' against
-;; `libnelisp_runtime.so'.  No subprocess (= old nelisp-ffi-glue) is
-;; spawned: the libffi call happens in the running NeLisp process.
+;; symbols through `emacs-ffi-call' against the NeLisp runtime shared
+;; library.
 ;;
 ;; This makes the host-Emacs-style `sqlite-open' / `sqlite-execute' /
 ;; `sqlite-select' / `sqlitep' / `sqlite-available-p' usable under
@@ -27,58 +26,36 @@
 ;;   - Phase 3 routed through `nelisp-ffi-call' (= subprocess + libffi-glue),
 ;;     which required nelisp-process / nelisp-eval / url-parse / cl-lib /
 ;;     ... a deep load chain that NeLisp standalone could not satisfy.
-;;   - Phase 5 routes through `nl-ffi-call' (= in-process libffi via
-;;     build-tool/eval/ffi.rs), zero subprocess, zero deep load chain.
-;;     `sqlite-select' implemented properly via nl-ffi-malloc /
-;;     nl-ffi-read-bytes / nl-ffi-free buffer dance.
+;;   - Phase 5 routes through `emacs-ffi' (= in-process libffi via
+;;     build-tool/eval/ffi.rs when available), zero deep load chain.
+;;     `sqlite-select' implemented properly via emacs-ffi-malloc /
+;;     emacs-ffi-read-bytes / emacs-ffi-free buffer dance.
 
 ;;; Code:
 
+(unless (featurep 'emacs-ffi)
+  (let ((sibling (expand-file-name "emacs-ffi.el"
+                                   (file-name-directory
+                                    (or load-file-name buffer-file-name)))))
+    (if (file-readable-p sibling)
+        (load sibling)
+      (require 'emacs-ffi))))
+
 (defun emacs-sqlite-ffi--default-libpath ()
-  "Resolve the default location of `libnelisp_runtime.so'.
-
-Resolution order (Doc 51 Track I, 2026-05-04):
-  1. `NELISP_RUNTIME_SO' env var (= absolute path, takes precedence)
-  2. `NELISP_HOME' env var + `target/release/libnelisp_runtime.so'
-     (= same NELISP_HOME used by `bin/nemacs')
-  3. `~/Notes/dev/nelisp/target/release/libnelisp_runtime.so'
-     (= developer's standard checkout location)
-
-Step 3 is a sensible fallback for the project author; deployments
-should set NELISP_RUNTIME_SO or NELISP_HOME explicitly."
-  (let ((override (and (fboundp 'getenv) (getenv "NELISP_RUNTIME_SO"))))
-    (cond
-     ((and override (not (string-empty-p override))) override)
-     ((and (fboundp 'getenv)
-           (let ((home (getenv "NELISP_HOME")))
-             (and home (not (string-empty-p home))
-                  (concat (file-name-as-directory home)
-                          "target/release/libnelisp_runtime.so")))))
-     (t (expand-file-name "Notes/dev/nelisp/target/release/libnelisp_runtime.so"
-                          (or (and (fboundp 'getenv) (getenv "HOME")) "~"))))))
+  "Resolve the default location of the NeLisp runtime SQLite library."
+  (emacs-ffi-default-nelisp-runtime-library))
 
 (defvar emacs-sqlite-ffi-libpath
   (emacs-sqlite-ffi--default-libpath)
-  "Absolute path to `libnelisp_runtime.so' (= nelisp-sqlite-rs cdylib).
-Override via `NELISP_RUNTIME_SO' env var or `setq' before this file
-loads.  See `emacs-sqlite-ffi--default-libpath' for the resolution
-order.")
+  "Absolute path to the NeLisp runtime shared library.
+Override via `NELISP_RUNTIME_SO', `NELISP_RUNTIME_LIBRARY', or `setq'
+before this file loads.  See `emacs-sqlite-ffi--default-libpath' for
+the resolution order.")
 
-
-;;;; --- routing: in-process nl-ffi-call vs subprocess nelisp-ffi-call ----
-
-(defconst emacs-sqlite-ffi--inproc-p
-  (fboundp 'nl-ffi-call)
-  "Non-nil when build-tool/eval exposes `nl-ffi-call' (= in-process FFI).
-Captured at load time so per-call dispatch is one boundp lookup.
-Fallback path = subprocess `nelisp-ffi-call' (legacy zawatton/nelisp-ffi).")
 
 (defun emacs-sqlite-ffi--call (func sig &rest args)
   "Dispatch FUNC with SIG (= return-type + arg-types vector) + ARGS."
-  (if emacs-sqlite-ffi--inproc-p
-      (apply #'nl-ffi-call emacs-sqlite-ffi-libpath func sig args)
-    (require 'nelisp-ffi)
-    (apply #'nelisp-ffi-call emacs-sqlite-ffi-libpath func sig args)))
+  (apply #'emacs-ffi-call emacs-sqlite-ffi-libpath func sig args))
 
 
 ;;;; --- low-level FFI helpers ---------------------------------------------
@@ -130,15 +107,15 @@ Returns the raw JSON string `[[col1, col2, ...], ...]'."
       (error "sqlite-select: probe returned error %d" probe))
      (t
       (let* ((need (- emacs-sqlite-ffi--need-more probe))
-             (buf (nl-ffi-malloc need))
+             (buf (emacs-ffi-malloc need))
              (got (emacs-sqlite-ffi--call
                    "nl_sqlite_query"
                    [:sint64 :sint64 :string :string :pointer :sint64]
                    handle sql args-json buf need))
              (json (if (and (integerp got) (> got 0))
-                       (nl-ffi-read-bytes buf got)
+                       (emacs-ffi-read-bytes buf got)
                      "[]")))
-        (nl-ffi-free buf)
+        (emacs-ffi-free buf)
         json)))))
 
 
