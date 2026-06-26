@@ -19,6 +19,8 @@
   (or (not (boundp 'emacs-version))
       (fboundp 'nl-write-file)
       (fboundp 'nl-syscall-write-file)
+      (fboundp 'rdf)
+      (fboundp 'wrf)
       (fboundp 'nelisp--eval-source-string)))
 
 (provide 'files-runtime)

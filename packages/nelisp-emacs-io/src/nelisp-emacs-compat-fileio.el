@@ -406,7 +406,19 @@ invoked beyond reading `default-directory' for the seed CWD."
    ;; Emacs (no `nelisp--syscall-path-int') keeps the stat path below.
    ((fboundp 'nelisp--syscall-path-int)
     (let ((rc (nelisp-ec--access file 0))) ;; F_OK = 0
-      (and (integerp rc) (zerop rc))))
+      (if (and (integerp rc) (zerop rc))
+          t
+        (and (fboundp 'rdf)
+             (stringp (condition-case nil
+                          (rdf file)
+                        (error nil)))))))
+   ;; Standalone fallback: when the stat/access surface is not available
+   ;; yet, `rdf' is the verified file-open path.  Treat a successful read
+   ;; as existence for regular files; directories remain out of scope.
+   ((fboundp 'rdf)
+    (stringp (condition-case nil
+                 (rdf file)
+               (error nil))))
    ((fboundp 'nelisp--syscall-stat)
     (and (memq (nelisp-ec--safe-stat-kind file) '(file directory symlink)) t))
    (t (file-exists-p file))))

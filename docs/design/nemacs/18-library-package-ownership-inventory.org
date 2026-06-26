@@ -1,4 +1,4 @@
-#+TITLE: nelisp-emacs Doc 18 -- Library package ownership inventory
+#+TITLE: nelisp-emacs-libs Doc 18 -- Library package ownership inventory
 #+AUTHOR: nelisp-emacs
 #+DATE: 2026-06-21
 #+STATUS: DRAFT
@@ -6,9 +6,14 @@
 
 * 0. Purpose
 
-This is the package ownership inventory for the library-first monorepo
-phase.  It assigns every current =src/*.el= file to a logical package
-group without moving files.
+This is the package ownership inventory for the =nelisp-emacs-libs=
+library distribution phase.  It assigns every current =src/*.el= file to
+a logical package group without moving files.
+
+The current repository may still contain application and GUI files from
+the historical =nelisp-emacs= / =nemacs= work.  Those files are extraction
+inputs for =nemacs-next= unless they are explicitly classified as reusable
+library packages.
 
 The goal is coordination, not churn.  Multiple sessions may be editing
 the tree at the same time, so this inventory should guide new work while
@@ -26,8 +31,8 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | DSP | =packages/display= | redisplay model, TUI backend, terminal event/terminfo | GUI app code, command semantics |
 | FEAT | =packages/features= | reusable user-facing Elisp feature subsets such as dired/org/project/shell/vc | private app glue |
 | PKG | =packages/package-compat= | package/vendor/MELPA compatibility and facade shims | app entrypoints |
-| APP | =apps/nemacs= | runnable editor assembly and bootstrap | reusable semantics not already in packages |
-| GUI | =gui/= | GUI consumer, transport, rendering, launch/install scripts | shared command semantics |
+| APP | =nemacs-next/apps/nemacs= | runnable editor assembly and bootstrap extraction input | reusable semantics not already in packages |
+| GUI | =nemacs-next/frontends= | GUI/TUI consumer, transport, rendering, launch/install extraction input | shared command semantics |
 | LEGACY | =legacy-or-spike= | temporary compatibility, residual stubs, spike code | permanent public API |
 
 * 2. Rules for using this inventory
@@ -38,6 +43,9 @@ avoiding broad renames, mass moves, or formatting-only changes.
   are active.
 - If a GUI/TUI/app file needs new command behavior, add that behavior to
   BUF/CORE/FEAT first and call it from the adapter.
+- APP/GUI owners are transitional.  New reusable behavior must not be added
+  there merely because the current caller is =bin/nemacs= or GUI bridge
+  code.  Treat those changes as =nemacs-next= extraction work.
 - Public reusable APIs should be prefixed.  Unprefixed Emacs-compatible
   names belong in explicit builtins/shim files.
 - Cross-module calls to =--= helpers are not stable APIs.  Promote only
@@ -82,6 +90,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =map-ynp.el= | FND | map-y-or-n-p helper | keep reusable |
 | =map.el= | FND | map library shim | keep reusable |
 | =nelisp-emacs.el= | FND | reusable top-level library facade | public package entry |
+| =nelisp-emacs-libs.el= | FND | product-name facade alias over =nelisp-emacs= | public package entry during rename migration |
 | =range.el= | FND | range helpers | keep reusable |
 | =regi.el= | FND | register-like helper lib | keep reusable |
 | =seq.el= | FND | seq library shim | keep reusable |
