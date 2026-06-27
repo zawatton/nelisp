@@ -963,17 +963,16 @@ a writable segment."
 
 ;; ---- Phase 47.D P3: dynamically linked output ----
 
-(defun nelisp-link-units-dynamic (file-path units imports &optional interp)
+(defun nelisp-link-units-dynamic (file-path units imports &optional entry-sym interp)
   "Link UNITS into a *dynamically linked* ELF importing IMPORTS, to FILE-PATH.
 IMPORTS is a list of (SONAME . SYMBOL): each is resolved by ld.so into a .got
 slot, exposed to UNITS as a `__got_<SYMBOL>' symbol (an `abs64' reloc target)
 whose value is the GOT slot VA.  A unit thus calls an imported function with
-e.g. `movabs rax, __got_foo; mov rax,[rax]; call rax'.  The entry point is the
-start of the combined .text.  Reuses `nelisp-elf-build-dynamic-binary' so the
-GOT VAs pinned here match the emitted bytes.  Returns FILE-PATH (Phase 47.D P3).
-
-Currently links the .text section (the import-call proof path); .rodata/.data/
-.bss carry-through is a follow-up."
+e.g. `movabs rax, __got_foo; mov rax,[rax]; call rax'.  ENTRY-SYM (default
+\"_start\") names the entry point; its resolved VA becomes e_entry.  Links
+.text/.rodata/.data/.bss and reuses `nelisp-elf-build-dynamic-binary' so the
+GOT + section VAs pinned here match the emitted bytes.  Returns FILE-PATH
+\(Phase 47.D P3)."
   (require 'nelisp-elf-write)
   (declare-function nelisp-elf--dynamic-layout "nelisp-elf-write"
                     (text-size imports &optional interp rodata-size data-size
@@ -997,12 +996,18 @@ Currently links the .text section (the import-call proof path); .rodata/.data/
     (dolist (g got-alist)
       (nelisp-link-symtab-add
        symtab (nelisp-link-symbol (concat "__got_" (car g)) (cdr g))))
-    (let* ((bytes (nelisp-link--resolve-relocs units combined layout symtab))
+    (let* ((entry (or entry-sym "_start"))
+           (entry-rec (nelisp-link-symtab-lookup symtab entry))
+           (entry-vaddr (if entry-rec (plist-get entry-rec :value)
+                          (signal 'nelisp-link--unresolved-symbol
+                                  (list entry :entry))))
+           (bytes (nelisp-link--resolve-relocs units combined layout symtab))
            (text (nelisp-link--bytes-or-empty bytes 'text))
            (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
            (data (nelisp-link--bytes-or-empty bytes 'data))
            (elf (nelisp-elf-build-dynamic-binary
                  (list :text text :rodata rodata :data data :bss-size bss-size
+                       :entry-vaddr entry-vaddr
                        :imports imports :interp interp)))
            (coding-system-for-write 'binary))
       (with-temp-file file-path

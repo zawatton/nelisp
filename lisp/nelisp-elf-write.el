@@ -1010,6 +1010,7 @@ RW segment: .got / .dynamic."
          (got-sz (plist-get l :got-sz)) (dyn-off (plist-get l :dyn-off))
          (dyn-vaddr (plist-get l :dyn-vaddr))
          (data-off (plist-get l :data-off)) (data-size (plist-get l :data-size))
+         (entry-vaddr (or (plist-get plist :entry-vaddr) text-vaddr))
          (got-bytes (make-string got-sz 0))
          (rela-bytes
           (let ((acc "") (i 0))
@@ -1052,7 +1053,7 @@ RW segment: .got / .dynamic."
                 (nelisp-elf--u16le nelisp-elf--et-exec)
                 (nelisp-elf--u16le machine-em)
                 (nelisp-elf--u32le nelisp-elf--ev-current)
-                (nelisp-elf--u64le text-vaddr)
+                (nelisp-elf--u64le entry-vaddr)
                 (nelisp-elf--u64le phoff)
                 (nelisp-elf--u64le 0)
                 (nelisp-elf--u32le 0)
