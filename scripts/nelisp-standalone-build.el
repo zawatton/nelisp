@@ -12344,7 +12344,12 @@ loader when it is absent."
        (nelisp-link-units out units "_start" nil 'aarch64)
        (set-file-modes out #o755))
       (_
-       (nelisp-link-units out units)
+       ;; Phase 47.D Step B: opt into a dynamically linked reader (PT_INTERP +
+       ;; DYNAMIC) via NELISP_READER_DYNAMIC, so it can import shared libs
+       ;; (GnuTLS/FreeType) later.  Default stays the freestanding static ELF.
+       (if (getenv "NELISP_READER_DYNAMIC")
+           (nelisp-link-units-dynamic out units nil "_start")
+         (nelisp-link-units out units))
        (set-file-modes out #o755)))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"
              (length units) out
