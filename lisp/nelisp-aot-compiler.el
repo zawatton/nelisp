@@ -602,8 +602,15 @@ already distinguishes `extern-call' (i64 return) from
                        (t (cons 'gp form))))
                      (cls (car cls-expr))
                      (expr (cdr cls-expr))
-                     (parsed (nelisp-aot-compiler--parse-value
-                              expr env fenv defuns)))
+                     (parsed
+                      (if (and (eq cls 'f64) (floatp expr))
+                          ;; Preserve the f64 literal: the generic value
+                          ;; parser truncates float literals to the gp-imm
+                          ;; integer surface, which would drop the fraction.
+                          ;; The f64 leaf emitter materialises its bits.
+                          (nelisp-aot-compiler--make-ir 'imm :value expr)
+                        (nelisp-aot-compiler--parse-value
+                         expr env fenv defuns))))
                 ;; A33.4 — PARSED is now the flat key-value vector built by
                 ;; `--make-ir', so extend it with `vconcat' (not `append',
                 ;; which would coerce the vector back to a list and move the
@@ -9423,6 +9430,32 @@ functions `((NAME . ARITY) ...)'."
             :args (plist-get parsed :args)
             :varargs-p (plist-get parsed :varargs-p)
             :f64-count (plist-get parsed :f64-count))))
+   ;; (extern-call-ptr FN-EXPR ARG...) / (extern-call-ptr-f64 FN-EXPR ARG...)
+   ;; — Doc 122 §122.D: like `extern-call' but the call target is a runtime
+   ;; function pointer FN-EXPR (e.g. a `dlsym' result held in a local) rather
+   ;; than a link-time symbol.  Reuses the full mixed i64/f64 SysV/Win64
+   ;; arg-placement + AL-count machinery via `--parse-extern-call-args'; the
+   ;; emitter branches on `:fn-value' to an indirect `call r11'.  The `-f64'
+   ;; head marks an f64 return (= read from xmm0).  FN-EXPR must be a trivial
+   ;; value (a gp ref / small imm) at the MVP so it can be loaded into r11
+   ;; without disturbing already-placed arg registers.
+   ((and (consp sexp) (memq (car sexp) '(extern-call-ptr extern-call-ptr-f64)))
+    (when (< (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :extern-call-ptr-needs-fn sexp)))
+    (let* ((op (car sexp))
+           (fn-value (nelisp-aot-compiler--parse-value
+                      (nth 1 sexp) env fenv defuns))
+           (raw-args (nthcdr 2 sexp))
+           (parsed (nelisp-aot-compiler--parse-extern-call-args
+                    op 'call-ptr raw-args env fenv defuns)))
+      (nelisp-aot-compiler--make-ir 'extern-call
+            :name nil
+            :fn-value fn-value
+            :ret-class (if (eq op 'extern-call-ptr-f64) 'f64 'gp)
+            :args (plist-get parsed :args)
+            :varargs-p (plist-get parsed :varargs-p)
+            :f64-count (plist-get parsed :f64-count))))
    ;; (syscall-direct NR A0 A1 A2 A3 A4 A5) — Linux x86_64 raw SYSCALL.
    ;;
    ;; Evaluates 7 i64 value expressions and emits the Linux SYSCALL
@@ -10551,12 +10584,39 @@ the call instruction)."
       (nelisp-asm-x86_64-reloc-plt32-here
        buf (symbol-name name) -4 'text))))
 
+(defun nelisp-aot-compiler--f64-imm-bits (x)
+  "Return the IEEE 754 double-precision bit pattern of number X.
+The result is an unsigned 64-bit integer suitable for a `MOVQ xmm, r64'
+materialisation of the f64 literal X.  Normal and zero values are
+supported; subnormals, infinities and NaN are out of scope for the
+f64-immediate argument path and raise a compiler error.  The encoder is
+exact: for any finite double the mantissa term is an integer < 2^53, so
+the float arithmetic below introduces no rounding (cross-checked against
+`struct.pack(\"<d\", X)')."
+  (let* ((x (float x))
+         (sign (if (< x 0.0) 1 0))
+         (ax (abs x)))
+    (if (= ax 0.0)
+        (ash sign 63)
+      (let* ((fe (frexp ax))
+             (m (car fe))
+             (e (cdr fe))
+             ;; frexp: ax = m * 2^e with 0.5 <= m < 1, so the IEEE
+             ;; unbiased exponent is e-1 and the biased field is e+1022.
+             (biased (+ e 1022)))
+        (unless (and (> biased 0) (< biased 2047))
+          (signal 'nelisp-aot-compiler-error (list :f64-imm-out-of-range x)))
+        (logior (ash sign 63)
+                (ash biased 52)
+                (truncate (* (- (* m 2.0) 1.0) (expt 2.0 52))))))))
+
 (defun nelisp-aot-compiler--emit-f64-leaf-into (node buf xmm-dst)
   "Emit code that places f64-class NODE into XMM-DST.
 MVP flat-only constraint: NODE must be `:kind ref' with `:class
 f64' (= a direct f64 parameter reference).  Nested f64-binops /
 f64-cmps are rejected so the xmm0/xmm1 register schedule stays
-trivial until xmm spill machinery lands."
+trivial until xmm spill machinery lands.  An `:kind imm' node (an f64
+literal arg) is materialised from its IEEE-754 bits."
   (let ((kind (nelisp-aot-compiler--ir-kind node)))
     (cond
      ((and (eq kind 'ref) (eq (nelisp-aot-compiler--ir-get node :class) 'f64))
@@ -10586,6 +10646,19 @@ trivial until xmm spill machinery lands."
         (signal 'nelisp-aot-compiler-error
                 (list :f64-call-leaf-into-nonzero-dst xmm-dst)))
       (nelisp-aot-compiler--emit-f64-call node buf))
+     ((eq kind 'imm)
+      ;; f64 immediate (a float literal arg): load its IEEE-754 64-bit
+      ;; pattern into a GP reg, then MOVQ into the destination xmm.  Mirrors
+      ;; the `bits-to-f64' path, except the bits are computed at compile time
+      ;; from the literal's `:value' rather than evaluated from an int expr.
+      (nelisp-aot-compiler--emit-value
+       (nelisp-aot-compiler--make-ir
+        'imm :value (nelisp-aot-compiler--f64-imm-bits
+                     (nelisp-aot-compiler--ir-get node :value)))
+       buf)
+      (if (eq nelisp-aot-compiler--arch 'aarch64)
+          (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0)
+        (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax)))
      ((memq kind '(f64-binop f64-cmp))
       (signal 'nelisp-aot-compiler-error
               (list :nested-f64-binop-needs-doc-112 node)))
@@ -11956,6 +12029,15 @@ deterministic from parse-time-fixed fields (`:cls', `:kind',
 same branch and emit the same byte count."
   (let* ((name (nelisp-aot-compiler--ir-get node :name))
          (args (nelisp-aot-compiler--ir-get node :args))
+         ;; Doc 122 §122.D `extern-call-ptr': when :fn-value is set the call
+         ;; target is a runtime function pointer (e.g. a dlsym result held in
+         ;; a local) rather than a link-time symbol NAME.  The whole gp/f64
+         ;; SysV/Win64 arg-placement strategy is identical; only the final
+         ;; instruction differs (indirect `call r11' vs `call rel32' + PLT32).
+         ;; MVP constraint: the fn-value must be trivial (a gp ref / small imm)
+         ;; so it can be loaded into r11 right before the call without
+         ;; perturbing the spill pipeline or the already-placed arg registers.
+         (fn-value (nelisp-aot-compiler--ir-get node :fn-value))
          (ret-class (or (nelisp-aot-compiler--ir-get node :ret-class) 'gp))
          (varargs-p (nelisp-aot-compiler--ir-get node :varargs-p))
          (f64-count (or (nelisp-aot-compiler--ir-get node :f64-count) 0))
@@ -12231,12 +12313,22 @@ same branch and emit the same byte count."
               (nelisp-aot-compiler--emit-trivial-into-reg a 'rax buf)
               (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
                buf dest-disp 'rax)))))
-      ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
-      ;; + record a PLT32 reloc at the placeholder offset.  Section is
+      ;; Emit the call.  For a link-time symbol NAME: `call rel32' (0xE8)
+      ;; + 4-byte zero placeholder + a PLT32 reloc the linker resolves.
+      ;; For an `extern-call-ptr' runtime fn-value: load the (trivial)
+      ;; pointer into r11 and `call r11' (indirect dispatch).  Section is
       ;; `text' (default) since we are inside an `.text' defun body.
-      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-      (nelisp-asm-x86_64-reloc-plt32-here
-       buf (symbol-name name) -4 'text)
+      (if fn-value
+          (progn
+            (when varargs-p
+              (signal 'nelisp-aot-compiler-error
+                      (list :extern-call-ptr-varargs-unsupported fn-value)))
+            (nelisp-aot-compiler--emit-value fn-value buf)
+            (nelisp-asm-x86_64-mov-reg-reg buf 'r11 'rax)
+            (nelisp-asm-x86_64-call-reg buf 'r11))
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+        (nelisp-asm-x86_64-reloc-plt32-here
+         buf (symbol-name name) -4 'text))
       ;; Reclaim the Win64 outgoing area.
       (when (and (> win64-outgoing 0) (not win64-dynamic-align-p))
         (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)))

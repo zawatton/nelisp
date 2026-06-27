@@ -3585,6 +3585,62 @@ SysV would emit `push rdi' = 57 instead."
                              (string-trim (plist-get res :stdout))))))
         (ignore-errors (delete-directory dir t))))))
 
+;; --- Doc 122 §122.C/D: f64 immediate args + `extern-call-ptr' dynamic FFI ---
+
+(ert-deftest nelisp-aot-compiler/extern-call-f64-immediate-arg-compiles ()
+  "A float-literal arg `(:f64 0.07)' materialises into XMM rather than
+signalling `:f64-leaf-shape-unsupported'.  Also pins the IEEE-754 encoder
+against known `struct.pack(\"<d\", X)' bit patterns."
+  (should (= (nelisp-aot-compiler--f64-imm-bits 0.07) 4589708452245819884))
+  (should (= (nelisp-aot-compiler--f64-imm-bits 240.0) 4642648265865560064))
+  (should (= (nelisp-aot-compiler--f64-imm-bits 0.0) 0))
+  (let ((path (make-temp-file "nelisp-f64imm-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(seq (defun probe (cr)
+                   (extern-call cairo_set_source_rgb cr
+                                (:f64 0.07) (:f64 0.86) (:f64 0.24))))
+           path)
+          (should (file-exists-p path)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/e2e-extern-call-ptr-f64-dynamic-sqrt ()
+  "Doc 122 §122.D dynamic f64 FFI: `dlopen' libm, `dlsym' sqrt, then call it
+through `extern-call-ptr-f64' with an f64 immediate arg (4.0) and read the f64
+return (2.0).  Exercises indirect `call r11' + xmm0 arg/return + the
+f64-immediate arg path end to end through a C driver linked with -ldl -lm."
+  (skip-unless (nelisp-aot-compiler-test--linux-p))
+  (let ((cc (or (executable-find "cc") (executable-find "gcc"))))
+    (skip-unless cc)
+    (let* ((dir (make-temp-file "nelisp-ecp-f64-e2e" t))
+           (obj (expand-file-name "ecp.o" dir))
+           (drv (expand-file-name "drv.c" dir))
+           (bin (expand-file-name "prog" dir)))
+      (unwind-protect
+          (progn
+            (nelisp-aot-compile-to-object
+             '(seq
+               (data-blob libm_name "libm.so.6\0" rodata)
+               (data-blob sym_sqrt "sqrt\0" rodata)
+               (defun probe ()
+                 (let ((h (extern-call dlopen (data-addr libm_name) 2)))
+                   (if (= h 0) 200
+                     (let ((f (extern-call dlsym h (data-addr sym_sqrt))))
+                       (if (= f 0) 201
+                         (if (= (f64-bits (extern-call-ptr-f64 f (:f64 4.0)))
+                                4611686018427387904)
+                             0 1)))))))
+             obj)
+            (with-temp-file drv
+              (insert "extern long probe(void);\n"
+                      "int main(void){ return (int)probe(); }\n"))
+            (should (zerop (call-process cc nil nil nil drv obj "-o" bin
+                                         "-ldl" "-lm")))
+            (let ((res (nelisp-aot-compiler-test--run-binary bin)))
+              (should (= 0 (plist-get res :exit)))))
+        (ignore-errors (delete-directory dir t))))))
+
 (ert-deftest nelisp-aot-compiler/data-blob-data-and-bss-sections ()
   "`data-blob' honours its SECTION: `data' -> writable .data (PROGBITS),
 `bss' -> .bss (NOBITS); both addressable via `data-addr' (Doc 06 C)."
