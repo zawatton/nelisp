@@ -961,6 +961,45 @@ a writable segment."
            :entry-sym entry))
     file-path))
 
+;; ---- Phase 47.D P3: dynamically linked output ----
+
+(defun nelisp-link-units-dynamic (file-path units imports &optional interp)
+  "Link UNITS into a *dynamically linked* ELF importing IMPORTS, to FILE-PATH.
+IMPORTS is a list of (SONAME . SYMBOL): each is resolved by ld.so into a .got
+slot, exposed to UNITS as a `__got_<SYMBOL>' symbol (an `abs64' reloc target)
+whose value is the GOT slot VA.  A unit thus calls an imported function with
+e.g. `movabs rax, __got_foo; mov rax,[rax]; call rax'.  The entry point is the
+start of the combined .text.  Reuses `nelisp-elf-build-dynamic-binary' so the
+GOT VAs pinned here match the emitted bytes.  Returns FILE-PATH (Phase 47.D P3).
+
+Currently links the .text section (the import-call proof path); .rodata/.data/
+.bss carry-through is a follow-up."
+  (require 'nelisp-elf-write)
+  (declare-function nelisp-elf-dynamic-got-vas "nelisp-elf-write"
+                    (text-size imports &optional interp))
+  (declare-function nelisp-elf-build-dynamic-binary "nelisp-elf-write" (plist))
+  (let* ((combined (nelisp-link-combine-sections units))
+         (text-size (nelisp-link--section-len combined 'text))
+         (gv (nelisp-elf-dynamic-got-vas text-size imports interp))
+         (text-vaddr (car gv))
+         (got-alist (cdr gv))
+         (layout (list (cons 'text text-vaddr)))
+         (symtab (nelisp-link--collect-defined-symbols units combined layout)))
+    ;; Pin each GOT slot as an absolute `__got_<sym>' symbol so the units'
+    ;; abs64 relocs resolve to the slot the emitter will place + ld.so fills.
+    (dolist (g got-alist)
+      (nelisp-link-symtab-add
+       symtab (nelisp-link-symbol (concat "__got_" (car g)) (cdr g))))
+    (let* ((bytes (nelisp-link--resolve-relocs units combined layout symtab))
+           (text (nelisp-link--bytes-or-empty bytes 'text))
+           (elf (nelisp-elf-build-dynamic-binary
+                 (list :text text :imports imports :interp interp)))
+           (coding-system-for-write 'binary))
+      (with-temp-file file-path
+        (set-buffer-multibyte nil)
+        (insert elf))
+      file-path)))
+
 (provide 'nelisp-static-linker)
 
 ;;; nelisp-static-linker.el ends here

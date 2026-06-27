@@ -151,5 +151,38 @@ segfault instead)."
           (should (string-match-p "RELA" out)))
       (ignore-errors (delete-file path)))))
 
+;;;; ---- P3: link a compile unit into a dynamic ELF (linker integration) ----
+
+(ert-deftest nelisp-elf-dynamic-link-units-import ()
+  "`nelisp-link-units-dynamic' links a compile unit whose .text calls libc
+`toupper' via a `__got_toupper' abs64 reloc (resolved by the 2-pass linker to
+the GOT slot VA, filled by ld.so).  toupper(97)=>65, so it exits 65."
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (bound-and-true-p system-configuration) "")))
+  (skip-unless (file-readable-p "/lib/x86_64-linux-gnu/libc.so.6"))
+  (require 'nelisp-static-linker)
+  (let* ((text (unibyte-string
+                #xbf #x61 0 0 0                  ; mov edi,97
+                #x48 #xb8 0 0 0 0 0 0 0 0        ; movabs rax,__got_toupper (imm@7)
+                #x48 #x8b #x00                   ; mov rax,[rax]
+                #xff #xd0                        ; call rax
+                #x89 #xc7                        ; mov edi,eax
+                #xb8 #x3c 0 0 0                  ; mov eax,60
+                #x0f #x05))                      ; syscall
+         (unit (nelisp-link-unit-make
+                "main.o" (list (cons 'text text))
+                (list (nelisp-link-symbol "_start" 0))
+                (list (append (nelisp-link-reloc 7 'abs64 "__got_toupper" 0)
+                              '(:section text)))))
+         (path (make-temp-file "nelisp-p3-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-dynamic path (list unit)
+                                     '(("libc.so.6" . "toupper")))
+          (set-file-modes path #o755)
+          (should (eq 65 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-dynamic-test)
 ;;; nelisp-elf-dynamic-test.el ends here

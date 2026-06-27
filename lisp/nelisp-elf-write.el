@@ -876,26 +876,15 @@ table starts with a NUL byte (offset 0 = the empty string), as ELF requires."
           (nelisp-elf--u64le 0)                           ; st_value
           (nelisp-elf--u64le 0)))                         ; st_size
 
-(defun nelisp-elf-build-dynamic-binary (plist)
-  "Build a dynamically-linked ET_EXEC ELF64 (Phase 47.D, P1 + P2).
-PLIST:
-  :text     entry machine code bytes (P1, no imports), OR
-  :text-fn  a function (GOT-ALIST) -> entry bytes of *fixed length*, where
-            GOT-ALIST maps each imported symbol name to its resolved GOT-slot
-            virtual address (P2).  Called twice (measure, then real).
-  :imports  list of (SONAME . SYMBOL): each imported via an R_X86_64_GLOB_DAT
-            reloc into a .got slot, with DT_NEEDED + .dynsym/.dynstr/.hash/
-            .rela.dyn.  ld.so resolves the GOT slots at load.
-  :interp   interpreter path (default /lib64/ld-linux-x86-64.so.2).
-Returns a unibyte string (the whole file).
-RX segment: Ehdr+Phdrs / .interp / .hash / .dynsym / .dynstr / .rela.dyn / .text.
-RW segment: .got / .dynamic."
-  (let* ((interp (or (plist-get plist :interp) "/lib64/ld-linux-x86-64.so.2"))
-         (machine-em nelisp-elf--em-x86-64)
+(defun nelisp-elf--dynamic-layout (text-size imports &optional interp)
+  "Deterministic dynamic-ELF section layout for TEXT-SIZE bytes + IMPORTS.
+Shared by `nelisp-elf-build-dynamic-binary' and `nelisp-link-units-dynamic' so
+the GOT slot VAs used for symbol resolution match the bytes that are emitted.
+Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
+:got-va-map (alist SYMBOL -> resolved GOT slot VA) (Phase 47.D)."
+  (let* ((interp (or interp "/lib64/ld-linux-x86-64.so.2"))
          (base nelisp-elf--minimal-vaddr-base)
          (page #x1000)
-         (imports (plist-get plist :imports))
-         (text-fn (plist-get plist :text-fn))
          (nimp (length imports))
          (sonames (let ((seen nil))
                     (dolist (im imports)
@@ -906,7 +895,6 @@ RW segment: .got / .dynamic."
          (dynstr-bytes (car dynstr-r))
          (dynstr-off-map (cdr dynstr-r))
          (dynstr-sz (length dynstr-bytes))
-         (dynsym-names (cons "" symbols))
          (dynsym-bytes (apply #'concat
                               (cons (make-string nelisp-elf--sym-size 0)
                                     (mapcar (lambda (s)
@@ -914,7 +902,7 @@ RW segment: .got / .dynamic."
                                                (cdr (assoc s dynstr-off-map))))
                                             symbols))))
          (dynsym-sz (length dynsym-bytes))
-         (hash-bytes (nelisp-elf-build-sysv-hash dynsym-names))
+         (hash-bytes (nelisp-elf-build-sysv-hash (cons "" symbols)))
          (hash-sz (length hash-bytes))
          (rela-sz (* nimp nelisp-elf--rela-size))
          (got-sz (* nimp 8))
@@ -929,23 +917,72 @@ RW segment: .got / .dynamic."
          (dynstr-off (+ dynsym-off dynsym-sz))
          (rela-off (nelisp-elf--align-up (+ dynstr-off dynstr-sz) 8))
          (text-off (nelisp-elf--align-up (+ rela-off rela-sz) 16))
-         (text-measure (if text-fn
-                           (funcall text-fn (mapcar (lambda (s) (cons s 0)) symbols))
-                         (or (plist-get plist :text)
-                             (error "nelisp-elf: :text or :text-fn required"))))
-         (text-sz (length text-measure))
          (text-vaddr (+ base text-off))
-         (rx-end (+ text-off text-sz))
+         (rx-end (+ text-off text-size))
          (got-off (nelisp-elf--align-up rx-end page))
          (got-va-map (let ((m nil) (i 0))
                        (dolist (s symbols)
                          (push (cons s (+ base got-off (* i 8))) m)
                          (setq i (1+ i)))
                        (nreverse m)))
-         (text (if text-fn (funcall text-fn got-va-map) text-measure))
-         (got-bytes (make-string got-sz 0))
          (dyn-off (+ got-off got-sz))            ; .dynamic after .got (8-aligned)
-         (dyn-vaddr (+ base dyn-off))
+         (dyn-vaddr (+ base dyn-off)))
+    (list :base base :page page :nimp nimp :phnum phnum :phoff phoff
+          :sonames sonames :symbols symbols
+          :interp-bytes interp-bytes :interp-off interp-off :interp-sz interp-sz
+          :hash-bytes hash-bytes :hash-off hash-off :hash-sz hash-sz
+          :dynsym-bytes dynsym-bytes :dynsym-off dynsym-off :dynsym-sz dynsym-sz
+          :dynstr-bytes dynstr-bytes :dynstr-off dynstr-off :dynstr-sz dynstr-sz
+          :dynstr-off-map dynstr-off-map
+          :rela-off rela-off :rela-sz rela-sz :got-sz got-sz
+          :text-off text-off :text-vaddr text-vaddr :rx-end rx-end
+          :got-off got-off :got-va-map got-va-map
+          :dyn-off dyn-off :dyn-vaddr dyn-vaddr)))
+
+(defun nelisp-elf-dynamic-got-vas (text-size imports &optional interp)
+  "Return (TEXT-VADDR . GOT-ALIST) for TEXT-SIZE bytes + IMPORTS.
+GOT-ALIST maps each imported symbol to its resolved GOT slot VA — the values a
+linker pins as `__got_<sym>' symbols before reloc resolution (Phase 47.D P3)."
+  (let ((l (nelisp-elf--dynamic-layout text-size imports interp)))
+    (cons (plist-get l :text-vaddr) (plist-get l :got-va-map))))
+
+(defun nelisp-elf-build-dynamic-binary (plist)
+  "Build a dynamically-linked ET_EXEC ELF64 (Phase 47.D, P1 + P2).
+PLIST:
+  :text     entry machine code bytes (P1, no imports), OR
+  :text-fn  a function (GOT-ALIST) -> entry bytes of *fixed length*, where
+            GOT-ALIST maps each imported symbol name to its resolved GOT-slot
+            virtual address (P2).  Called twice (measure, then real).
+  :imports  list of (SONAME . SYMBOL): each imported via an R_X86_64_GLOB_DAT
+            reloc into a .got slot, with DT_NEEDED + .dynsym/.dynstr/.hash/
+            .rela.dyn.  ld.so resolves the GOT slots at load.
+  :interp   interpreter path (default /lib64/ld-linux-x86-64.so.2).
+Returns a unibyte string (the whole file).
+RX segment: Ehdr+Phdrs / .interp / .hash / .dynsym / .dynstr / .rela.dyn / .text.
+RW segment: .got / .dynamic."
+  (let* ((imports (plist-get plist :imports))
+         (text-fn (plist-get plist :text-fn))
+         (interp (plist-get plist :interp))
+         (symbols (mapcar #'cdr imports))
+         (text-measure (if text-fn
+                           (funcall text-fn (mapcar (lambda (s) (cons s 0)) symbols))
+                         (or (plist-get plist :text)
+                             (error "nelisp-elf: :text or :text-fn required"))))
+         (l (nelisp-elf--dynamic-layout (length text-measure) imports interp))
+         (got-va-map (plist-get l :got-va-map))
+         (text (if text-fn (funcall text-fn got-va-map) text-measure))
+         (base (plist-get l :base)) (page (plist-get l :page))
+         (nimp (plist-get l :nimp)) (phnum (plist-get l :phnum))
+         (phoff (plist-get l :phoff))
+         (machine-em nelisp-elf--em-x86-64)
+         (interp-off (plist-get l :interp-off)) (interp-sz (plist-get l :interp-sz))
+         (hash-off (plist-get l :hash-off)) (dynsym-off (plist-get l :dynsym-off))
+         (dynstr-off (plist-get l :dynstr-off)) (rela-off (plist-get l :rela-off))
+         (text-off (plist-get l :text-off)) (text-vaddr (plist-get l :text-vaddr))
+         (rx-end (plist-get l :rx-end)) (got-off (plist-get l :got-off))
+         (got-sz (plist-get l :got-sz)) (dyn-off (plist-get l :dyn-off))
+         (dyn-vaddr (plist-get l :dyn-vaddr))
+         (got-bytes (make-string got-sz 0))
          (rela-bytes
           (let ((acc "") (i 0))
             (dolist (s symbols)
@@ -961,16 +998,16 @@ RW segment: .got / .dynamic."
           (append
            (mapcar (lambda (sn)
                      (cons nelisp-elf--dt-needed
-                           (cdr (assoc sn dynstr-off-map))))
-                   sonames)
+                           (cdr (assoc sn (plist-get l :dynstr-off-map)))))
+                   (plist-get l :sonames))
            (list (cons nelisp-elf--dt-hash   (+ base hash-off))
                  (cons nelisp-elf--dt-strtab (+ base dynstr-off))
                  (cons nelisp-elf--dt-symtab (+ base dynsym-off))
-                 (cons nelisp-elf--dt-strsz  dynstr-sz)
+                 (cons nelisp-elf--dt-strsz  (plist-get l :dynstr-sz))
                  (cons nelisp-elf--dt-syment nelisp-elf--sym-size))
            (when (> nimp 0)
              (list (cons nelisp-elf--dt-rela    (+ base rela-off))
-                   (cons nelisp-elf--dt-relasz  rela-sz)
+                   (cons nelisp-elf--dt-relasz  (plist-get l :rela-sz))
                    (cons nelisp-elf--dt-relaent nelisp-elf--rela-size)))
            (list (cons nelisp-elf--dt-null 0))))
          (dyn-bytes (apply #'concat
@@ -1016,12 +1053,17 @@ RW segment: .got / .dynamic."
                                        dyn-off dyn-vaddr dyn-sz dyn-sz 8)))
          (file ehdr))
     (setq file (concat file phdrs))
-    (setq file (nelisp-elf--pad-to file interp-off)) (setq file (concat file interp-bytes))
-    (setq file (nelisp-elf--pad-to file hash-off))   (setq file (concat file hash-bytes))
-    (setq file (nelisp-elf--pad-to file dynsym-off)) (setq file (concat file dynsym-bytes))
-    (setq file (nelisp-elf--pad-to file dynstr-off)) (setq file (concat file dynstr-bytes))
+    (setq file (nelisp-elf--pad-to file interp-off))
+    (setq file (concat file (plist-get l :interp-bytes)))
+    (setq file (nelisp-elf--pad-to file hash-off))
+    (setq file (concat file (plist-get l :hash-bytes)))
+    (setq file (nelisp-elf--pad-to file dynsym-off))
+    (setq file (concat file (plist-get l :dynsym-bytes)))
+    (setq file (nelisp-elf--pad-to file dynstr-off))
+    (setq file (concat file (plist-get l :dynstr-bytes)))
     (when (> nimp 0)
-      (setq file (nelisp-elf--pad-to file rela-off)) (setq file (concat file rela-bytes)))
+      (setq file (nelisp-elf--pad-to file rela-off))
+      (setq file (concat file rela-bytes)))
     (setq file (nelisp-elf--pad-to file text-off))   (setq file (concat file text))
     (setq file (nelisp-elf--pad-to file got-off))    (setq file (concat file got-bytes))
     (setq file (nelisp-elf--pad-to file dyn-off))    (setq file (concat file dyn-bytes))

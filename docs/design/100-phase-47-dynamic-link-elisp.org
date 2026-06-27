@@ -106,8 +106,21 @@ Codegen wiring (nelisp-standalone-build.el):
   calling it through the ld.so-resolved GOT slot exits 65 (= toupper(?a));
   ~readelf -d~ shows NEEDED libc.so.6 + RELA.  Tests:
   ~test/nelisp-elf-dynamic-test.el~ 7/7; ~nelisp-elf-write-test.el~ 71/71.
-- NEXT: *P3* — wire into ~nelisp-static-linker~ so the real reader binary
-  imports libgnutls/libfreetype (and any non-syscall libc), exposed to elisp as
-  a GOT-backed ~nl-ffi-call~ (a build-time symbol→GOT-slot table; emit
-  ~call-ptr (deref GOT-slot)~ at each external call).  Then the consumer
-  ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~ verify on the binary (D1/F1).
+- 2026-06-27: *P3 linker integration DONE*.  ~nelisp-link-units-dynamic~
+  (nelisp-static-linker) links compile units into a dynamic ELF: it shares the
+  layout via ~nelisp-elf--dynamic-layout~ / ~nelisp-elf-dynamic-got-vas~, pins
+  each import's GOT slot as an absolute ~__got_<sym>~ symbol, and lets the
+  existing 2-pass reloc machinery resolve unit references (an ~abs64~ reloc on
+  ~movabs rax, __got_foo~).  Verified: a unit whose .text calls libc ~toupper~
+  via its ~__got_toupper~ slot links + runs (exit 65).  Tests:
+  ~test/nelisp-elf-dynamic-test.el~ 8/8; ~nelisp-static-linker-test.el~ 64/64.
+  (The emitter was refactored to source its layout from
+  ~nelisp-elf--dynamic-layout~ so emit-time and link-time GOT VAs cannot drift;
+  P1/P2 stay green.)
+- NEXT (P3 remainder): (a) .rodata/.data/.bss carry-through in the dynamic
+  emitter; (b) flip the real reader build (~make standalone-reader~) to
+  ~nelisp-link-units-dynamic~ importing ~gnutls_*~/~FT_*~ (+ any non-syscall
+  libc); (c) a build-time symbol→GOT-slot table + codegen emitting
+  ~call-ptr (deref GOT-slot)~ at each external call, exposed to elisp as a
+  GOT-backed ~nl-ffi-call~.  Then ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~
+  verify on the binary (D1/F1).
