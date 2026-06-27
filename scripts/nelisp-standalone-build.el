@@ -6289,6 +6289,12 @@ ash/logand/logior/logxor/lognot + string<.")
     ;; slot->bitmap.rows/width (FT_GlyphSlotRec offset 152/156) via `ptr-read-*'.
     ("FT_Load_Glyph"        "libfreetype.so.6" 3)
     ("FT_Render_Glyph"      "libfreetype.so.6" 2)
+    ;; F4: affine transform.  FT_Set_Transform(face, FT_Matrix*, FT_Vector*) —
+    ;; the matrix is 4 FT_Fixed (16.16) at offsets 0/8/16/24, the delta is an
+    ;; FT_Vector (2 FT_Pos in 26.6) at 0/8, both built in arena buffers and
+    ;; passed by pointer.  Applied before Load_Glyph/Render_Glyph it scales/rotates
+    ;; the rasterised glyph (this is how Emacs' font backend transforms glyphs).
+    ("FT_Set_Transform"     "libfreetype.so.6" 3)
     ("FT_Done_Face"         "libfreetype.so.6" 1)
     ("FT_Done_FreeType"     "libfreetype.so.6" 1))
   "Declarative FFI surface for the dynamic reader's `nl-ffi-call': rows of

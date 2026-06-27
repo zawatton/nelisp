@@ -223,3 +223,12 @@ Codegen wiring (nelisp-standalone-build.el):
   retrying ~record_recv~ on ~E_AGAIN~ exhausts the bump arena (→ segfault); the
   smoke uses unrolled sequential recvs instead — an FFI-orthogonal interpreter
   limit.  Host ERT green; static reader unaffected.
+- 2026-06-27: *F4 (affine glyph transform via FT_Vector / FT_Matrix).*  Added
+  ~FT_Set_Transform~.  The reader builds an FT_Matrix (4 FT_Fixed at +0/+8/+16/
+  +24) and an FT_Vector delta (2 FT_Pos at +0/+8) in arena buffers and passes both
+  by pointer.  With a 2× scale matrix (xx=yy=0x20000) applied before
+  Load_Glyph/Render_Glyph, the rasterised ?A grows from 33×35 to 65×70 — exactly
+  the transform multistruct path Emacs' font backend uses.  ~make
+  standalone-reader-ffi-smoke~ asserts the transformed glyph is strictly larger
+  than the untransformed one (self-validating, font-version independent).  Host
+  ERT green; static reader unaffected.
