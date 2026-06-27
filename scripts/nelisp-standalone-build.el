@@ -212,14 +212,22 @@ link-unit names, and build logs."
     name))
 
 (defun nelisp-standalone--target-cache-dir (&optional target)
-  "Return the per-target standalone unit cache directory."
-  (let ((target (or target nelisp-standalone--target)))
-    (expand-file-name
-     (if (eq target 'windows-x86_64)
-         (format "windows-x86_64-arena-%x"
-                 nelisp-standalone--windows-arena-base)
-       (symbol-name target))
-     nelisp-standalone--cache-dir)))
+  "Return the per-target standalone unit cache directory.
+The dynamically-linked reader (NELISP_READER_DYNAMIC) uses a SEPARATE `-dyn'
+cache so its env-dependent units — the applyfn carrying `nl-ffi-call'
+`extern-call's and the builtin-install driver — never collide with the static
+reader's same-named units.  The unit cache is keyed on name + dependency file
+mtimes (see `nelisp-standalone--cached-unit'), NOT on source content, so without
+this split a prior dynamic build's `applyfn-reader.o' (with unresolved extern
+symbols) would be reused by the static link and fail with
+`nelisp-link--unresolved-symbol'."
+  (let* ((target (or target nelisp-standalone--target))
+         (base (if (eq target 'windows-x86_64)
+                   (format "windows-x86_64-arena-%x"
+                           nelisp-standalone--windows-arena-base)
+                 (symbol-name target)))
+         (base (if (getenv "NELISP_READER_DYNAMIC") (concat base "-dyn") base)))
+    (expand-file-name base nelisp-standalone--cache-dir)))
 
 (defconst nelisp-standalone--out
   (expand-file-name "target/nelisp-standalone-eval" nelisp-standalone--repo-root)
@@ -6220,26 +6228,70 @@ ash/logand/logior/logxor/lognot + string<.")
 ;; static/freestanding reader has no PLT/GOT and the imports would be unresolved
 ;; symbols at link time.  The SONAME/symbol set here MUST match the import list
 ;; passed to `nelisp-link-units-dynamic' in `nelisp-standalone-build-reader'.
+;; The FFI surface is a declarative table: (SYMBOL SONAME ARITY).  Both the
+;; import list (-> ld.so DT_NEEDED + PLT/GOT) and the `nl-ffi-call' dispatch
+;; chain are derived from it, so adding a GnuTLS/FreeType call is one row.
+;; ARITY counts the C arguments (NOT the leading NAME arg); each is passed by
+;; `wf_argval' as an i64 — which covers both integers and pointers, since a
+;; pointer is just an address.  Pointer arguments are produced caller-side with
+;; `alloc-bytes' (returns the address as an integer) and read back with
+;; `ptr-read-*'; pointer RETURNS come back as the raw address (an integer) via
+;; `wf_write_int', so elisp can `ptr-read-*' the result.  This is exactly the
+;; marshalling emacs-tls-ffi.el / emacs-font-ffi.el need (D1/F1).
+(defconst nelisp-standalone--reader-extern-table
+  '(;; libc — kept as the always-available FFI smoke / regression anchor.
+    ("toupper"              "libc.so.6"        1)
+    ("tolower"              "libc.so.6"        1)
+    ;; D1 TLS (libgnutls): version probe returns a const char* (read back as a
+    ;; C string); global init returns int 0 on success.  Unversioned undefined
+    ;; refs bind to each symbol's default version (@@GNUTLS_3_4) via ld.so.
+    ("gnutls_check_version" "libgnutls.so.30"  1)
+    ("gnutls_global_init"   "libgnutls.so.30"  0)
+    ;; F1 font (libfreetype): init writes an FT_Library handle to a caller out-
+    ;; slot (int rc); version writes major/minor/patch to three int out-slots;
+    ;; done releases the library.  Exercises pointer-out-param marshalling.
+    ("FT_Init_FreeType"     "libfreetype.so.6" 1)
+    ("FT_Library_Version"   "libfreetype.so.6" 4)
+    ("FT_Done_FreeType"     "libfreetype.so.6" 1))
+  "Declarative FFI surface for the dynamic reader's `nl-ffi-call': rows of
+(SYMBOL SONAME ARITY).  Drives both `nelisp-standalone--reader-extern-imports'
+and `nelisp-standalone--applyfn-extern-arms'.")
+
+(defun nelisp-standalone--build-ffi-dispatch (table)
+  "Build the `nl-ffi-call' dispatch IR (a nested-if over the NAME arg) from
+TABLE rows (SYMBOL SONAME ARITY).  Each matched name lowers to an
+`(extern-call SYMBOL (wf_argval args 1) ... (wf_argval args ARITY))' whose i64
+result is boxed with `wf_write_int'; an unknown name returns nil."
+  (let ((chain '(seq (wf_write_nil out) 0)))
+    (dolist (row (reverse table))
+      (let* ((sym (nth 0 row))
+             (arity (nth 2 row))
+             (argforms (let (acc)
+                         (dotimes (i arity)
+                           (push `(wf_argval args ,(1+ i)) acc))
+                         (nreverse acc))))
+        (setq chain
+              `(if (= (sexp-name-eq nm ,sym) 1)
+                   (wf_write_int out (extern-call ,(intern sym) ,@argforms))
+                 ,chain))))
+    ;; NAME may be a string or symbol sexp; both keep name bytes at ptr@16/len@24
+    ;; so `sexp-name-eq' matches either.
+    `(let* ((nm (wf_arg_ptr args 0))) ,chain)))
+
 (defconst nelisp-standalone--reader-extern-imports
-  '(("libc.so.6" . "toupper")
-    ("libc.so.6" . "tolower"))
-  "(SONAME . SYMBOL) imports for the dynamic reader's `nl-ffi-call' demo arms.
-Kept in lockstep with `nelisp-standalone--applyfn-extern-arms'.  This is the
-seam where GnuTLS/FreeType symbols will be added for D1/F1.")
+  (mapcar (lambda (row) (cons (nth 1 row) (nth 0 row)))
+          nelisp-standalone--reader-extern-table)
+  "(SONAME . SYMBOL) imports for the dynamic reader, derived from
+`nelisp-standalone--reader-extern-table'.  Passed to `nelisp-link-units-dynamic'
+in `nelisp-standalone-build-reader'.")
 
 (defconst nelisp-standalone--applyfn-extern-arms
-  '(((:lit "nl-ffi-call")
-     . (let* ((nm (wf_arg_ptr args 0)))
-         ;; (nl-ffi-call NAME INT-ARG) -> int.  NAME may be a string or symbol
-         ;; sexp; both keep name bytes at ptr@16/len@24, so `sexp-name-eq' works.
-         (if (= (sexp-name-eq nm "toupper") 1)
-             (wf_write_int out (extern-call toupper (wf_argval args 1)))
-           (if (= (sexp-name-eq nm "tolower") 1)
-               (wf_write_int out (extern-call tolower (wf_argval args 1)))
-             (seq (wf_write_nil out) 0))))))
-  "Dynamic-only `nl-ffi-call' dispatch arms (Step C).  Appended to the reader
-table iff NELISP_READER_DYNAMIC is set; each branch is an `extern-call' to an
-imported libc symbol routed through its PLT stub.")
+  (list (cons '(:lit "nl-ffi-call")
+              (nelisp-standalone--build-ffi-dispatch
+               nelisp-standalone--reader-extern-table)))
+  "Dynamic-only `nl-ffi-call' dispatch arm (Step C / D1 / F1).  Appended to the
+reader table iff NELISP_READER_DYNAMIC is set; it dispatches by name to an
+`extern-call' on each imported symbol, routed through its PLT stub -> GOT.")
 
 (defun nelisp-standalone--reader-dynamic-p ()
   "Non-nil when building the dynamically-linked reader (NELISP_READER_DYNAMIC).

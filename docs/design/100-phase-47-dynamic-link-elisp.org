@@ -157,9 +157,27 @@ Codegen wiring (nelisp-standalone-build.el):
   Static-reader regression intact: statically linked, ~(+ 40 3)~ => 43, maphash
   => 30, ~nl-ffi-call~ absent (nil).  New permanent smoke: ~make
   standalone-reader-ffi-smoke~.
-- NEXT (D1/F1 close-out): grow ~nelisp-standalone--reader-extern-imports~ +
-  ~--applyfn-extern-arms~ to the ~gnutls_*~ / ~FT_*~ symbols
-  ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~ need, adding pointer/struct argument
-  marshalling to ~nl-ffi-call~ (today's arms pass a single integer arg).  The
-  call path (elisp → apply → ~extern-call~ → PLT → GOT → shared lib) is proven;
-  what remains is breadth (symbol set) + richer arg/return marshalling.
+- 2026-06-27: *D1 (TLS) + F1 (font) — real GnuTLS/FreeType verified on the
+  binary.*  The FFI surface is now a declarative table
+  ~nelisp-standalone--reader-extern-table~ of (SYMBOL SONAME ARITY) rows; both
+  the import list and the ~nl-ffi-call~ dispatch chain are generated from it, so
+  a new call is one row.  Marshalling: each C arg is passed by ~wf_argval~ as an
+  i64 (covers ints *and* pointers, since a pointer is an address); pointer
+  arguments are produced caller-side with ~alloc-bytes~ (address as integer) and
+  read back with ~ptr-read-*~; pointer returns come back as the raw address via
+  ~wf_write_int~.  Multi-soname linking emits one DT_NEEDED per distinct SONAME.
+  Verified on the actual dynamic binary (~ldd~ resolves all three libs):
+  - *D1*: ~(nl-ffi-call "gnutls_check_version" 0)~ returns the GnuTLS ~const
+    char*~; reading it back yields ~"3.8.9"~ (pointer-return marshalling).
+  - *F1*: ~(nl-ffi-call "FT_Init_FreeType" &lib)~ => rc 0 and writes the
+    FT_Library handle; ~(nl-ffi-call "FT_Library_Version" lib &maj &min &patch)~
+    writes ~2 / 13 / 3~ (FreeType 2.13.3) — pointer-out-param + 4-arg
+    marshalling.  ~FT_Done_FreeType~ releases it.
+  DT_NEEDED on the binary: libc.so.6 + libgnutls.so.30 + libfreetype.so.6.
+  ~make standalone-reader-ffi-smoke~ now asserts all three (libc + D1 + F1) with
+  version-prefix checks.  Static reader unaffected (statically linked, no
+  GnuTLS/FreeType NEEDED, ~nl-ffi-call~ absent → nil).
+  This closes the D1/F1 *FFI substrate*: ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~
+  are not present in this checkout, but their handshake / glyph-advance paths are
+  now just additional rows in ~--reader-extern-table~ over the proven
+  elisp → apply → ~extern-call~ → PLT → GOT → shared-lib path.

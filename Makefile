@@ -205,11 +205,15 @@ standalone-reader-fmt-smoke: standalone-reader
 	  exit 1; \
 	fi
 
-# Phase 47.D Step C: runtime FFI smoke.  Builds a DYNAMICALLY linked reader
-# (NELISP_READER_DYNAMIC=1) that imports libc toupper/tolower and exposes them
-# via the `nl-ffi-call' dispatcher, then asserts the call routes through the
-# linker-generated PLT stub + ld.so-resolved GOT slot into real libc.
-# Self-contained (does NOT depend on the default static `standalone-reader').
+# Phase 47.D Step C / D1 / F1: runtime FFI smoke.  Builds a DYNAMICALLY linked
+# reader (NELISP_READER_DYNAMIC=1) that imports libc + GnuTLS + FreeType and
+# exposes them via the `nl-ffi-call' dispatcher, then asserts the calls route
+# through the linker-generated PLT stubs + ld.so-resolved GOT slots into the real
+# shared libraries.  Covers: libc int->int (toupper), GnuTLS const char* return
+# (D1: gnutls_check_version), FreeType pointer-out-params (F1: FT_Init_FreeType +
+# FT_Library_Version).  Self-contained (does NOT depend on the default static
+# `standalone-reader').  GnuTLS/FreeType assertions are version-prefix checks so
+# they survive minor library bumps.
 standalone-reader-ffi-smoke:
 	@mkdir -p target
 	@NELISP_READER_DYNAMIC=1 $(EMACS) --batch -Q -L lisp -L src -L scripts \
@@ -219,11 +223,23 @@ standalone-reader-ffi-smoke:
 	@printf '%s\n' '(nl-ffi-call "toupper" 97)' > target/standalone-reader-ffi-smoke.el
 	@out="$$(./target/nelisp --load target/standalone-reader-ffi-smoke.el)"; \
 	if [ "$$out" = "65" ]; then \
-	  echo "[standalone-reader-ffi-smoke] PASS: (nl-ffi-call \"toupper\" 97) -> $$out"; \
+	  echo "[ffi-smoke libc] PASS: (nl-ffi-call \"toupper\" 97) -> $$out"; \
 	else \
-	  echo "[standalone-reader-ffi-smoke] FAIL: -> $$out (expected 65)"; \
-	  exit 1; \
+	  echo "[ffi-smoke libc] FAIL: -> $$out (expected 65)"; exit 1; \
 	fi
+	@printf '%s\n' '(let ((p (nl-ffi-call "gnutls_check_version" 0))) (if (= p 0) "NULL" (unibyte-string (ptr-read-u8 p 0) (ptr-read-u8 p 1))))' > target/standalone-reader-ffi-d1.el
+	@out="$$(./target/nelisp --load target/standalone-reader-ffi-d1.el)"; \
+	case "$$out" in \
+	  '"'[0-9].'"') echo "[ffi-smoke D1 gnutls] PASS: gnutls_check_version -> $$out (X.)";; \
+	  *) echo "[ffi-smoke D1 gnutls] FAIL: -> $$out (expected \"<digit>.\")"; exit 1;; \
+	esac
+	@printf '%s\n' '(let* ((s (alloc-bytes 8 8)) (rc (nl-ffi-call "FT_Init_FreeType" s)) (lib (ptr-read-u64 s 0)) (mj (alloc-bytes 4 4)) (mn (alloc-bytes 4 4)) (pt (alloc-bytes 4 4))) (nl-ffi-call "FT_Library_Version" lib mj mn pt) (let ((r (list rc (ptr-read-u32 mj 0)))) (nl-ffi-call "FT_Done_FreeType" lib) r))' > target/standalone-reader-ffi-f1.el
+	@out="$$(./target/nelisp --load target/standalone-reader-ffi-f1.el)"; \
+	case "$$out" in \
+	  '(0 '[0-9]*')') echo "[ffi-smoke F1 freetype] PASS: FT_Init+Version -> $$out (rc=0, major)";; \
+	  *) echo "[ffi-smoke F1 freetype] FAIL: -> $$out (expected (0 <major>))"; exit 1;; \
+	esac
+	@echo "[standalone-reader-ffi-smoke] PASS: libc + GnuTLS(D1) + FreeType(F1) via nl-ffi-call"
 
 # Runtime smoke for the reader's process substrate (call-process /
 # start-process / pipe read, scripts/nelisp-standalone-build.el).  The host ERT
