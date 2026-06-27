@@ -105,5 +105,51 @@
           (should (string-match-p "HASH" out)))
       (ignore-errors (delete-file path)))))
 
+;;;; ---- P2: import a libc symbol via GLOB_DAT, call through the GOT ----
+
+(ert-deftest nelisp-elf-dynamic-import-toupper ()
+  "Import libc `toupper' via R_X86_64_GLOB_DAT into a .got slot; the entry
+loads the ld.so-resolved address and calls it.  toupper(?a=97) => ?A=65, so a
+correct dynamic resolve + GOT call exits 65 (a crash/unresolved GOT would
+segfault instead)."
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (bound-and-true-p system-configuration) "")))
+  (skip-unless (file-readable-p "/lib/x86_64-linux-gnu/libc.so.6"))
+  (let* ((text-fn
+          (lambda (got-map)
+            (let ((va (cdr (assoc "toupper" got-map))))
+              (concat (unibyte-string #xbf #x61 0 0 0)               ; mov edi,97
+                      (unibyte-string #x48 #xb8) (nelisp-elf--u64le va) ; movabs rax,va
+                      (unibyte-string #x48 #x8b #x00)                ; mov rax,[rax]
+                      (unibyte-string #xff #xd0)                     ; call rax
+                      (unibyte-string #x89 #xc7)                     ; mov edi,eax
+                      (unibyte-string #xb8 #x3c 0 0 0)               ; mov eax,60
+                      (unibyte-string #x0f #x05)))))                 ; syscall
+         (path (nelisp-elf-dynamic-test--write
+                (nelisp-elf-build-dynamic-binary
+                 (list :imports '(("libc.so.6" . "toupper")) :text-fn text-fn)))))
+    (unwind-protect
+        (should (eq 65 (call-process path nil nil nil)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-dynamic-import-readelf ()
+  "The imported binary declares DT_NEEDED libc.so.6 + a DT_RELA table."
+  (skip-unless (executable-find "readelf"))
+  (let* ((text-fn (lambda (got-map)
+                    (ignore (cdr (assoc "toupper" got-map)))
+                    (unibyte-string #xbf #x2a 0 0 0 #xb8 #x3c 0 0 0 #x0f #x05)))
+         (path (nelisp-elf-dynamic-test--write
+                (nelisp-elf-build-dynamic-binary
+                 (list :imports '(("libc.so.6" . "toupper")) :text-fn text-fn)))))
+    (unwind-protect
+        (let ((out (with-output-to-string
+                     (with-current-buffer standard-output
+                       (call-process "readelf" nil t nil "-d" path)))))
+          (should (string-match-p "NEEDED" out))
+          (should (string-match-p "libc\\.so\\.6" out))
+          (should (string-match-p "RELA" out)))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-dynamic-test)
 ;;; nelisp-elf-dynamic-test.el ends here

@@ -98,8 +98,16 @@ Codegen wiring (nelisp-standalone-build.el):
   smoke covered by ~test/nelisp-elf-dynamic-test.el~ (5/5); existing
   ~nelisp-elf-write-test.el~ stays green (71/71).  The static
   ~nelisp-elf--build-rich~ path is untouched.
-- NEXT: *P2* — import one libc symbol (e.g. ~getpid~) via an
-  ~R_X86_64_GLOB_DAT~ reloc into a .got slot + DT_RELA/DT_NEEDED, and have the
-  entry read the slot and ~call-ptr~ it.  Then *P3* — wire into
-  ~nelisp-static-linker~ so the real reader binary imports
-  libgnutls/libfreetype, exposed to elisp as a GOT-backed ~nl-ffi-call~.
+- 2026-06-27: *P2 DONE*.  ~nelisp-elf-build-dynamic-binary~ now takes
+  ~:imports~ (list of (SONAME . SYMBOL)) + ~:text-fn~ (GOT-alist -> fixed-length
+  entry bytes).  Each import gets a .dynsym/.dynstr/.hash entry, a .got slot, an
+  ~R_X86_64_GLOB_DAT~ reloc in .rela.dyn, and DT_NEEDED/DT_RELA/DT_RELASZ/
+  DT_RELAENT in .dynamic.  Verified: a binary importing libc ~toupper~ and
+  calling it through the ld.so-resolved GOT slot exits 65 (= toupper(?a));
+  ~readelf -d~ shows NEEDED libc.so.6 + RELA.  Tests:
+  ~test/nelisp-elf-dynamic-test.el~ 7/7; ~nelisp-elf-write-test.el~ 71/71.
+- NEXT: *P3* — wire into ~nelisp-static-linker~ so the real reader binary
+  imports libgnutls/libfreetype (and any non-syscall libc), exposed to elisp as
+  a GOT-backed ~nl-ffi-call~ (a build-time symbol→GOT-slot table; emit
+  ~call-ptr (deref GOT-slot)~ at each external call).  Then the consumer
+  ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~ verify on the binary (D1/F1).
