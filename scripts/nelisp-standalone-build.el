@@ -6263,6 +6263,10 @@ ash/logand/logior/logxor/lognot + string<.")
     ("gnutls_server_name_set"                "libgnutls.so.30"  4)
     ("gnutls_transport_set_int2"             "libgnutls.so.30"  3)
     ("gnutls_handshake"                      "libgnutls.so.30"  1)
+    ;; D3: application-data record I/O over the established session.  send/recv
+    ;; take (session, buf, len) and return a ssize_t byte count (i64).
+    ("gnutls_record_send"                    "libgnutls.so.30"  3)
+    ("gnutls_record_recv"                    "libgnutls.so.30"  3)
     ("gnutls_protocol_get_version"           "libgnutls.so.30"  1)
     ("gnutls_protocol_get_name"              "libgnutls.so.30"  1)
     ("gnutls_bye"                            "libgnutls.so.30"  2)
@@ -6279,6 +6283,12 @@ ash/logand/logior/logxor/lognot + string<.")
     ("FT_Get_Char_Index"    "libfreetype.so.6" 2)
     ("FT_Get_Advance"       "libfreetype.so.6" 4)
     ("FT_Load_Char"         "libfreetype.so.6" 3)
+    ;; F3: rasterise a glyph.  FT_Load_Glyph(face, gindex, flags) loads the
+    ;; outline into face->glyph; FT_Render_Glyph(slot, mode) renders it to a
+    ;; bitmap.  The caller reads face->glyph (FT_FaceRec offset 152 on LP64) and
+    ;; slot->bitmap.rows/width (FT_GlyphSlotRec offset 152/156) via `ptr-read-*'.
+    ("FT_Load_Glyph"        "libfreetype.so.6" 3)
+    ("FT_Render_Glyph"      "libfreetype.so.6" 2)
     ("FT_Done_Face"         "libfreetype.so.6" 1)
     ("FT_Done_FreeType"     "libfreetype.so.6" 1))
   "Declarative FFI surface for the dynamic reader's `nl-ffi-call': rows of

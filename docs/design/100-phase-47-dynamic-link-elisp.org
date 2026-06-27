@@ -205,3 +205,21 @@ Codegen wiring (nelisp-standalone-build.el):
   outer ~let*~ (as the smoke does) is robust — every FFI call verifies
   individually.  Host ERT still green: dynamic-ELF 11/11, static-linker 64/64,
   target-test 46/46; static reader unaffected.
+- 2026-06-27: *D3 (TLS application data) + F3 (glyph bitmap) — on the binary.*
+  Added ~gnutls_record_send~/~gnutls_record_recv~ and ~FT_Load_Glyph~/
+  ~FT_Render_Glyph~ to the extern table.
+  - *D3*: after the D2 handshake, the reader ~gnutls_record_send~s an HTTP/1.1 GET
+    (60 bytes encrypted) and ~gnutls_record_recv~s the reply — the first recv
+    returns ~GNUTLS_E_AGAIN~ (-28) and a second blocking call delivers 511 bytes
+    of decrypted body, whose status line reads ~"HTTP/1.1 200"~.  A pure-elisp
+    binary completing a full HTTPS round trip (handshake + encrypted send +
+    decrypted recv) over a raw socket via FFI.
+  - *F3*: ~FT_Load_Glyph~ + ~FT_Render_Glyph~ rasterise ?A at 48 px; reading the
+    glyph slot (~face->glyph~ at FT_FaceRec offset 152, ~slot->bitmap.rows/width~
+    at FT_GlyphSlotRec 152/156) yields a 33×35 bitmap — a real rendered glyph,
+    demonstrating struct-field marshalling via fixed ABI offsets.
+  ~make standalone-reader-ffi-smoke~ now covers F1/F2/F3; ~make
+  standalone-reader-tls-smoke~ covers D2+D3.  Reader-runtime note: a ~while~ loop
+  retrying ~record_recv~ on ~E_AGAIN~ exhausts the bump arena (→ segfault); the
+  smoke uses unrolled sequential recvs instead — an FFI-orthogonal interpreter
+  limit.  Host ERT green; static reader unaffected.
