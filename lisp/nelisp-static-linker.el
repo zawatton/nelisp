@@ -996,6 +996,13 @@ GOT + section VAs pinned here match the emitted bytes.  Returns FILE-PATH
     (dolist (g got-alist)
       (nelisp-link-symtab-add
        symtab (nelisp-link-symbol (concat "__got_" (car g)) (cdr g))))
+    ;; Step C: define the bare import name at its PLT stub VA, so an
+    ;; `extern-call SYM' (a direct `call SYM') reaches the stub, which jumps
+    ;; through the GOT slot ld.so fills.  Existing extern-call codegen thus
+    ;; calls shared-library functions with no change.
+    (dolist (p (plist-get lay :plt-va-map))
+      (nelisp-link-symtab-add
+       symtab (nelisp-link-symbol (car p) (cdr p))))
     (let* ((entry (or entry-sym "_start"))
            (entry-rec (nelisp-link-symtab-lookup symtab entry))
            (entry-vaddr (if entry-rec (plist-get entry-rec :value)

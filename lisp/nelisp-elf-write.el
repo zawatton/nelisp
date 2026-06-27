@@ -928,7 +928,20 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
          (dynsym-off (nelisp-elf--align-up (+ hash-off hash-sz) 8))
          (dynstr-off (+ dynsym-off dynsym-sz))
          (rela-off (nelisp-elf--align-up (+ dynstr-off dynstr-sz) 8))
-         (text-off (nelisp-elf--align-up (+ rela-off rela-sz) 16))
+         ;; .plt: one 16-byte stub per import (`jmp [rip+GOT]'), placed in the RX
+         ;; segment.  The existing `extern-call SYM' (a direct `call') reaches
+         ;; this in-binary stub, which jumps through the ld.so-resolved GOT slot
+         ;; — so external libc/GnuTLS/FreeType calls work with no codegen change
+         ;; (Phase 47.D Step C).
+         (plt-stub-size 16)
+         (plt-off (nelisp-elf--align-up (+ rela-off rela-sz) 16))
+         (plt-sz (* nimp plt-stub-size))
+         (plt-va-map (let ((m nil) (i 0))
+                       (dolist (s symbols)
+                         (push (cons s (+ base plt-off (* i plt-stub-size))) m)
+                         (setq i (1+ i)))
+                       (nreverse m)))
+         (text-off (nelisp-elf--align-up (+ plt-off plt-sz) 16))
          (text-vaddr (+ base text-off))
          (rodata-off (nelisp-elf--align-up (+ text-off text-size) 16))
          (rodata-vaddr (+ base rodata-off))
@@ -953,6 +966,8 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
           :dynstr-bytes dynstr-bytes :dynstr-off dynstr-off :dynstr-sz dynstr-sz
           :dynstr-off-map dynstr-off-map
           :rela-off rela-off :rela-sz rela-sz :got-sz got-sz :dyn-sz dyn-sz
+          :plt-off plt-off :plt-sz plt-sz :plt-va-map plt-va-map
+          :plt-stub-size plt-stub-size
           :text-off text-off :text-vaddr text-vaddr
           :rodata-off rodata-off :rodata-vaddr rodata-vaddr
           :rodata-size rodata-size :rx-end rx-end
@@ -1011,7 +1026,21 @@ RW segment: .got / .dynamic."
          (dyn-vaddr (plist-get l :dyn-vaddr))
          (data-off (plist-get l :data-off)) (data-size (plist-get l :data-size))
          (entry-vaddr (or (plist-get plist :entry-vaddr) text-vaddr))
+         (plt-off (plist-get l :plt-off)) (plt-sz (plist-get l :plt-sz))
+         (plt-stub-size (plist-get l :plt-stub-size))
          (got-bytes (make-string got-sz 0))
+         (plt-bytes
+          ;; Per import: `jmp qword [rip+disp]' (FF 25 disp32) where disp targets
+          ;; the GOT slot, padded to the stub size.
+          (let ((acc "") (plt-va-map (plist-get l :plt-va-map)))
+            (dolist (s symbols)
+              (let* ((stub-va (cdr (assoc s plt-va-map)))
+                     (got-va (cdr (assoc s got-va-map)))
+                     (disp (logand (- got-va (+ stub-va 6)) #xffffffff))
+                     (stub (concat (unibyte-string #xff #x25)
+                                   (nelisp-elf--u32le disp))))
+                (setq acc (concat acc (nelisp-elf--pad-to stub plt-stub-size)))))
+            acc))
          (rela-bytes
           (let ((acc "") (i 0))
             (dolist (s symbols)
@@ -1094,6 +1123,9 @@ RW segment: .got / .dynamic."
     (when (> nimp 0)
       (setq file (nelisp-elf--pad-to file rela-off))
       (setq file (concat file rela-bytes)))
+    (when (> plt-sz 0)
+      (setq file (nelisp-elf--pad-to file plt-off))
+      (setq file (concat file plt-bytes)))
     (setq file (nelisp-elf--pad-to file text-off))   (setq file (concat file text))
     (when (> rodata-size 0)
       (setq file (nelisp-elf--pad-to file rodata-off))

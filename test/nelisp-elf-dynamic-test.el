@@ -247,5 +247,38 @@ unit loads a byte from a `d' data symbol and exits with it (=> 99)."
           (should (eq 65 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+;;;; ---- P3 Step C: extern-call an import via a PLT stub (no codegen change) ----
+
+(ert-deftest nelisp-elf-dynamic-plt-extern-call ()
+  "Step C: an ordinary `call SYM' (pc32) to an imported symbol resolves to the
+linker-generated PLT stub, which jumps through the ld.so-filled GOT slot.  This
+is exactly what `extern-call' emits, so external libc/GnuTLS/FreeType calls work
+with no codegen change.  call toupper(?a=97) => 65."
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (bound-and-true-p system-configuration) "")))
+  (skip-unless (file-readable-p "/lib/x86_64-linux-gnu/libc.so.6"))
+  (require 'nelisp-static-linker)
+  (let* ((text (unibyte-string
+                #xbf #x61 0 0 0     ; mov edi, 97
+                #xe8 0 0 0 0        ; call toupper (E8 + rel32@6, pc32 reloc)
+                #x89 #xc7           ; mov edi, eax
+                #xb8 #x3c 0 0 0     ; mov eax, 60
+                #x0f #x05))         ; syscall
+         (unit (nelisp-link-unit-make
+                "c.o" (list (cons 'text text))
+                (list (nelisp-link-symbol "_start" 0))
+                ;; pc32 addend 0: the linker resolves S - (P+4) = stub - call_next.
+                (list (append (nelisp-link-reloc 6 'pc32 "toupper" 0)
+                              '(:section text)))))
+         (path (make-temp-file "nelisp-p3c-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-dynamic path (list unit)
+                                     '(("libc.so.6" . "toupper")))
+          (set-file-modes path #o755)
+          (should (eq 65 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-dynamic-test)
 ;;; nelisp-elf-dynamic-test.el ends here
