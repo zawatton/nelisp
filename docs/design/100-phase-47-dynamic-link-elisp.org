@@ -128,9 +128,24 @@ Codegen wiring (nelisp-standalone-build.el):
   (The arena is a fixed mmap at 0x10000000, independent of the ELF layout;
   section refs go through relocs resolved against the dynamic layout, so the
   flip is behaviour-preserving.)
-- NEXT (P3 Step C, the last step for D1/F1): import ~gnutls_*~ / ~FT_*~ into the
-  reader (pass the import list to ~nelisp-link-units-dynamic~) + a build-time
-  symbol→GOT-slot table so the reader's codegen emits
-  ~call-ptr (deref GOT-slot)~ for each external call, exposed to elisp as a
-  GOT-backed ~nl-ffi-call~.  Then ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~
-  verify on the binary (D1/F1).
+- 2026-06-27: *P3 Step C — PLT mechanism DONE* (commit 0e27f1d4).  The linker now
+  generates a ~.plt~ stub per import (~nelisp-elf--dynamic-layout~ adds a
+  ~:plt-off~/~:plt-sz~/~:plt-va-map~ region in the RX segment;
+  ~nelisp-elf-build-dynamic-binary~ emits each stub as ~FF 25 disp32~ =
+  ~jmp qword [rip+GOT]~), and ~nelisp-link-units-dynamic~ *defines the bare import
+  name at its PLT stub VA*.  Consequence: an ordinary direct ~call SYM~ — exactly
+  what ~extern-call~ emits — to a shared-library symbol now resolves (pc32 =
+  S-(P+4), addend 0) to the in-binary stub and jumps through the ld.so-filled GOT.
+  This is the keystone: external libc/GnuTLS/FreeType calls work with *no codegen
+  change*.  Verified: a unit doing ~call toupper~ (the extern-call shape) linked
+  with import libc:toupper exits 65 (= toupper(?a)).  Tests:
+  ~test/nelisp-elf-dynamic-test.el~ 11/11; ~nelisp-static-linker-test.el~ 64/64;
+  the older ~__got_<sym>~ direct-GOT path stays green.
+- NEXT (Step C wiring → D1/F1): (1) pass the reader's external import list
+  (~gnutls_*~ / ~FT_*~) to ~nelisp-link-units-dynamic~ in the dynamic reader
+  build; (2) add the external-call builtins *only in dynamic builds* (a plain
+  ~extern-call SYM~ to a non-syscall symbol would fail to link in the static
+  reader, since there is no PLT there — so the dispatch table must be
+  conditional on ~NELISP_READER_DYNAMIC~); (3) expose a runtime ~nl-ffi-call~
+  that dispatches by name/signature onto these PLT-backed externs.  Then
+  ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~ verify on the binary (D1/F1).
