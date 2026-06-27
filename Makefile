@@ -271,8 +271,11 @@ standalone-reader-ffi-smoke:
 # init(CLIENT) -> server_name_set(SNI) -> set_default_priority -> credentials_set
 # -> transport_set_int2(fd) -> handshake -> protocol_get_version/name, then D3:
 # gnutls_record_send an HTTP/1.1 GET and gnutls_record_recv the reply, asserting
-# a "HTTP" status line comes back (the first record_recv may return E_AGAIN(-28);
-# a second blocking call delivers the decrypted response).  Then bye -> deinit.
+# a "HTTP" status line comes back.  The first record_recv returns
+# GNUTLS_E_AGAIN(-28); a second sequential (unrolled) call delivers the decrypted
+# response.  NOTE: driving record_recv from a `while' retry loop instead crashes
+# *inside* libgnutls (NULL deref) — see Doc 100 6 "misdiagnosis" entry; the
+# unrolled form is the robust shape and is what we ship.  Then bye -> deinit.
 # Asserts TLS1.x negotiated AND a real HTTPS response.  NETWORK-GATED: skips if
 # 1.1.1.1:443 is not reachable (not part of the hermetic gate).
 standalone-reader-tls-smoke:

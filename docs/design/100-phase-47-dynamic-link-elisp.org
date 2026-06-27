@@ -219,10 +219,8 @@ Codegen wiring (nelisp-standalone-build.el):
     at FT_GlyphSlotRec 152/156) yields a 33×35 bitmap — a real rendered glyph,
     demonstrating struct-field marshalling via fixed ABI offsets.
   ~make standalone-reader-ffi-smoke~ now covers F1/F2/F3; ~make
-  standalone-reader-tls-smoke~ covers D2+D3.  Reader-runtime note: a ~while~ loop
-  retrying ~record_recv~ on ~E_AGAIN~ exhausts the bump arena (→ segfault); the
-  smoke uses unrolled sequential recvs instead — an FFI-orthogonal interpreter
-  limit.  Host ERT green; static reader unaffected.
+  standalone-reader-tls-smoke~ covers D2+D3.  Host ERT green; static reader
+  unaffected.
 - 2026-06-27: *F4 (affine glyph transform via FT_Vector / FT_Matrix).*  Added
   ~FT_Set_Transform~.  The reader builds an FT_Matrix (4 FT_Fixed at +0/+8/+16/
   +24) and an FT_Vector delta (2 FT_Pos at +0/+8) in arena buffers and passes both
@@ -232,3 +230,30 @@ Codegen wiring (nelisp-standalone-build.el):
   standalone-reader-ffi-smoke~ asserts the transformed glyph is strictly larger
   than the untransformed one (self-validating, font-version independent).  Host
   ERT green; static reader unaffected.
+- 2026-06-28: *"while+FFI arena exhaustion" was a MISDIAGNOSIS — corrected, real
+  cause localized.*  The crash that the D3 note attributed to the bump arena
+  filling up under a ~while~ ~record_recv~ retry is NOT arena exhaustion:
+  + a pure ~while~ of 2 M iterations only times out (slow, no crash); a ~while~
+    doing 200 K ~alloc-bytes~ or 200 K ~nl-ffi-call~s completes; arena use stays
+    far under the 256 MiB chunk-0 reservation.
+  + ~nl_alloc_bytes~ never invokes the collector and the collector is gated to a
+    NO-OP during eval (no GC-frees-live path); the arena grows by *appending*
+    disjoint mmap chunks (never relocates), so held pointers stay valid; the
+    native stack is 1 GiB and a 120-deep nested ~let*~+FFI form is fine.
+  + the SNI-in-inner-~let*~ and tight-FFI-loop shapes earlier blamed now pass
+    20/20 and 10/10 on the clean-cache binary.
+  Direct fault analysis (strace + gdb) of the shape that *does* still crash — a
+  ~while~ bounded retry driving ~gnutls_record_recv~ — shows the SIGSEGV is
+  ~si_addr=NULL~ with ~rip~ *inside ~libgnutls.so.30~'s ~.text~* (not reader
+  code), after the app-data record arrives.  The byte-identical *unrolled*
+  sequential ~record_recv~ completes the same HTTPS round trip (status
+  ~"HTTP/1.1 200"~) every time.  So the trigger is reader eval (the loop's
+  ~=~/~1+~/~setq~ + arena bumps) executing *between* two ~gnutls_record_recv~
+  calls, which leaves GnuTLS dereferencing NULL inside its own record layer —
+  consistent with state/memory corruption across the interleaved calls rather
+  than any arena/stack limit.  *Shipped form*: ~tls-smoke~ uses the robust
+  unrolled recv.  *Open item* (not fixed here — needs a GnuTLS-debug-level repro):
+  pin down what reader-side activity between record-layer calls corrupts the
+  GnuTLS session; until then, avoid interleaving reader work inside a
+  ~record_recv~ retry loop (batch the recvs, or hop out to elisp between whole
+  records).  No arena/GC change is warranted.
