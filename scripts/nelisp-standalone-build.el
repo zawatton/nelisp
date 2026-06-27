@@ -531,7 +531,13 @@ standalone units can call each other."
 
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
-  (let* ((name (nelisp-standalone--target-object-name name))
+  (let* (;; The AOT parse/emit walk the IR recursively; a large dispatch unit
+         ;; (the reader applyfn's deep right-nested if-chain, plus the
+         ;; `nl-ffi-call' extern sub-chain) nests far enough to blow the default
+         ;; `max-lisp-eval-depth' (signals `excessive-lisp-nesting').  Raise it
+         ;; for the whole compile so adding FFI symbols stays a one-row change.
+         (max-lisp-eval-depth (max max-lisp-eval-depth 40000))
+         (name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
          (source (nelisp-standalone--chunk-arena-rewrite source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
@@ -6242,20 +6248,43 @@ ash/logand/logior/logxor/lognot + string<.")
   '(;; libc — kept as the always-available FFI smoke / regression anchor.
     ("toupper"              "libc.so.6"        1)
     ("tolower"              "libc.so.6"        1)
-    ;; D1 TLS (libgnutls): version probe returns a const char* (read back as a
-    ;; C string); global init returns int 0 on success.  Unversioned undefined
-    ;; refs bind to each symbol's default version (@@GNUTLS_3_4) via ld.so.
-    ("gnutls_check_version" "libgnutls.so.30"  1)
-    ("gnutls_global_init"   "libgnutls.so.30"  0)
-    ;; F1 font (libfreetype): init writes an FT_Library handle to a caller out-
-    ;; slot (int rc); version writes major/minor/patch to three int out-slots;
-    ;; done releases the library.  Exercises pointer-out-param marshalling.
+    ;; --- D1 TLS (libgnutls): full client handshake surface. ---------------
+    ;; Unversioned undefined refs bind to each symbol's default version
+    ;; (@@GNUTLS_3_4) via ld.so.  Pointer-out-params (credentials/session
+    ;; handles) use a caller `alloc-bytes' slot read back with `ptr-read-u64';
+    ;; const char* returns (check_version / protocol_get_name) come back as the
+    ;; raw address, read byte-wise with `ptr-read-u8'.
+    ("gnutls_check_version"                  "libgnutls.so.30"  1)
+    ("gnutls_global_init"                    "libgnutls.so.30"  0)
+    ("gnutls_certificate_allocate_credentials" "libgnutls.so.30" 1)
+    ("gnutls_init"                           "libgnutls.so.30"  2)
+    ("gnutls_set_default_priority"           "libgnutls.so.30"  1)
+    ("gnutls_credentials_set"                "libgnutls.so.30"  3)
+    ("gnutls_server_name_set"                "libgnutls.so.30"  4)
+    ("gnutls_transport_set_int2"             "libgnutls.so.30"  3)
+    ("gnutls_handshake"                      "libgnutls.so.30"  1)
+    ("gnutls_protocol_get_version"           "libgnutls.so.30"  1)
+    ("gnutls_protocol_get_name"              "libgnutls.so.30"  1)
+    ("gnutls_bye"                            "libgnutls.so.30"  2)
+    ("gnutls_deinit"                         "libgnutls.so.30"  1)
+    ("gnutls_certificate_free_credentials"   "libgnutls.so.30"  1)
+    ("gnutls_global_deinit"                  "libgnutls.so.30"  0)
+    ;; --- F1 font (libfreetype): real glyph-advance pipeline. -------------
+    ;; FT_New_Face takes a C string path (caller builds a NUL-terminated arena
+    ;; buffer); FT_Get_Advance writes the 16.16 fixed advance to an out-slot.
     ("FT_Init_FreeType"     "libfreetype.so.6" 1)
     ("FT_Library_Version"   "libfreetype.so.6" 4)
+    ("FT_New_Face"          "libfreetype.so.6" 4)
+    ("FT_Set_Pixel_Sizes"   "libfreetype.so.6" 3)
+    ("FT_Get_Char_Index"    "libfreetype.so.6" 2)
+    ("FT_Get_Advance"       "libfreetype.so.6" 4)
+    ("FT_Load_Char"         "libfreetype.so.6" 3)
+    ("FT_Done_Face"         "libfreetype.so.6" 1)
     ("FT_Done_FreeType"     "libfreetype.so.6" 1))
   "Declarative FFI surface for the dynamic reader's `nl-ffi-call': rows of
 (SYMBOL SONAME ARITY).  Drives both `nelisp-standalone--reader-extern-imports'
-and `nelisp-standalone--applyfn-extern-arms'.")
+and `nelisp-standalone--applyfn-extern-arms'.  ARITY counts C arguments (max 4
+here); all are passed/returned as i64 (ints + pointers).")
 
 (defun nelisp-standalone--build-ffi-dispatch (table)
   "Build the `nl-ffi-call' dispatch IR (a nested-if over the NAME arg) from

@@ -181,3 +181,27 @@ Codegen wiring (nelisp-standalone-build.el):
   are not present in this checkout, but their handshake / glyph-advance paths are
   now just additional rows in ~--reader-extern-table~ over the proven
   elisp → apply → ~extern-call~ → PLT → GOT → shared-lib path.
+- 2026-06-27: *D2 (real TLS handshake) + F2 (real glyph advance) — end-to-end on
+  the binary.*  The extern table now carries the full client-handshake +
+  glyph-advance symbol sets (~gnutls_init~/~_credentials_set~/~_server_name_set~/
+  ~_handshake~/~_protocol_get_*~/~_bye~/~_deinit~; ~FT_New_Face~/
+  ~FT_Set_Pixel_Sizes~/~FT_Get_Char_Index~/~FT_Get_Advance~/~FT_Done_Face~).
+  - *F2*: ~make standalone-reader-ffi-smoke~ loads DejaVuSans.ttf via
+    ~FT_New_Face~ (C path built in an arena buffer), ~FT_Get_Char_Index ?A~ → 36,
+    ~FT_Get_Advance~ → 2162688 (= 33.0 px in 16.16) — a real glyph advance from a
+    real font file.
+  - *D2*: ~make standalone-reader-tls-smoke~ opens a raw TCP socket
+    (~syscall-direct~ socket/connect to 1.1.1.1:443) and drives a *complete
+    GnuTLS client handshake* — SNI set to "one.one.one.one", ~gnutls_handshake~
+    returns 0, ~gnutls_protocol_get_name~ reports *TLS1.3*, then bye/deinit.  A
+    pure-elisp standalone binary completing a real TLS 1.3 handshake over a real
+    socket via FFI.  (Network-gated: skips with no egress.)
+  Build fix this needed: the AOT parse/emit recurse over the dispatch IR, and the
+  ~nl-ffi-call~ chain at the *bottom* of the ~171~-arm reader dispatch nests deep
+  enough to blow the default ~max-lisp-eval-depth~ (~excessive-lisp-nesting~) once
+  the FFI table grew — ~nelisp-standalone--compile-to-unit~ now raises it to
+  40000.  Known reader-runtime quirk (not an FFI defect): building the SNI C
+  string deep inside the handshake's nested ~let*~ can fault; allocating it in the
+  outer ~let*~ (as the smoke does) is robust — every FFI call verifies
+  individually.  Host ERT still green: dynamic-ELF 11/11, static-linker 64/64,
+  target-test 46/46; static reader unaffected.
