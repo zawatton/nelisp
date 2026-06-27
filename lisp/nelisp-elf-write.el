@@ -756,6 +756,213 @@ Returns the number of bytes written (= 24)."
       (nelisp-elf--buf-emit buf record)
       nelisp-elf--rela-size)))
 
+;; ====================================================================
+;; Phase 47.D — dynamic-linking ELF foundations (docs/design/100).
+;; Pure byte/int builders for .dynamic / .dynsym / .dynstr / .hash and
+;; GLOB_DAT relocations, so the AOT can emit a dynamically linked
+;; executable that resolves external (GnuTLS / FreeType / libc) symbols.
+;; These are pure functions (return unibyte strings / ints) so they are
+;; unit-testable in host Emacs before the linker wires them in.
+;; ====================================================================
+
+(defconst nelisp-elf--pt-interp 3 "PT_INTERP (= program interpreter path).")
+(defconst nelisp-elf--pt-dynamic 2 "PT_DYNAMIC (= the .dynamic array).")
+(defconst nelisp-elf--sht-hash 5 "SHT_HASH (= SysV symbol hash table).")
+(defconst nelisp-elf--sht-dynamic 6 "SHT_DYNAMIC.")
+(defconst nelisp-elf--sht-dynsym 11 "SHT_DYNSYM.")
+(defconst nelisp-elf--r-x86-64-glob-dat 6 "R_X86_64_GLOB_DAT (= set GOT entry).")
+(defconst nelisp-elf--r-x86-64-jump-slot 7 "R_X86_64_JUMP_SLOT (= PLT entry).")
+
+;; Elf64_Dyn d_tag values (subset used by the eager-GLOB_DAT scheme).
+(defconst nelisp-elf--dt-null 0 "DT_NULL (= terminator).")
+(defconst nelisp-elf--dt-needed 1 "DT_NEEDED (= soname strtab offset).")
+(defconst nelisp-elf--dt-pltgot 3 "DT_PLTGOT.")
+(defconst nelisp-elf--dt-hash 4 "DT_HASH (= .hash VA).")
+(defconst nelisp-elf--dt-strtab 5 "DT_STRTAB (= .dynstr VA).")
+(defconst nelisp-elf--dt-symtab 6 "DT_SYMTAB (= .dynsym VA).")
+(defconst nelisp-elf--dt-rela 7 "DT_RELA (= .rela.dyn VA).")
+(defconst nelisp-elf--dt-relasz 8 "DT_RELASZ (= .rela.dyn byte size).")
+(defconst nelisp-elf--dt-relaent 9 "DT_RELAENT (= 24).")
+(defconst nelisp-elf--dt-strsz 10 "DT_STRSZ (= .dynstr byte size).")
+(defconst nelisp-elf--dt-syment 11 "DT_SYMENT (= 24).")
+
+(defun nelisp-elf--u32le (n)
+  "Return N as a 4-byte little-endian unibyte string."
+  (let ((n (logand n #xffffffff)))
+    (unibyte-string (logand n #xff)
+                    (logand (ash n -8) #xff)
+                    (logand (ash n -16) #xff)
+                    (logand (ash n -24) #xff))))
+
+(defun nelisp-elf--u64le (n)
+  "Return N as an 8-byte little-endian unibyte string."
+  (concat (nelisp-elf--u32le (logand n #xffffffff))
+          (nelisp-elf--u32le (logand (ash n -32) #xffffffff))))
+
+(defun nelisp-elf--elf-hash (name)
+  "SysV ELF symbol hash of NAME (a string), as a 32-bit unsigned int.
+Mirrors the classic `elf_hash' used by ld.so's DT_HASH lookup."
+  (let ((h 0) (i 0) (n (length name)))
+    (while (< i n)
+      (setq h (logand (+ (ash h 4) (aref name i)) #xffffffff))
+      (let ((g (logand h #xf0000000)))
+        (unless (zerop g)
+          (setq h (logand (logxor h (ash g -24)) #xffffffff)))
+        (setq h (logand h (logand (lognot g) #xffffffff))))
+      (setq i (1+ i)))
+    h))
+
+(defun nelisp-elf-build-sysv-hash (names)
+  "Build the SysV .hash section bytes for dynsym NAMES.
+NAMES is the dynsym name list in symbol-index order; NAMES[0] must be the
+empty string (the reserved null symbol).  Layout: nbucket u32, nchain u32,
+bucket[nbucket] u32, chain[nchain] u32.  Returns a unibyte string."
+  (let* ((nsym (length names))
+         (nbucket (max 1 nsym))
+         (buckets (make-vector nbucket 0))
+         (chain (make-vector nsym 0))
+         (i 1))
+    (while (< i nsym)
+      (let* ((h (nelisp-elf--elf-hash (nth i names)))
+             (b (mod h nbucket)))
+        (aset chain i (aref buckets b))
+        (aset buckets b i))
+      (setq i (1+ i)))
+    (let ((out (concat (nelisp-elf--u32le nbucket)
+                       (nelisp-elf--u32le nsym))))
+      (dotimes (k nbucket) (setq out (concat out (nelisp-elf--u32le (aref buckets k)))))
+      (dotimes (k nsym)    (setq out (concat out (nelisp-elf--u32le (aref chain k)))))
+      out)))
+
+(defun nelisp-elf-dyn-bytes (tag val)
+  "Return one 16-byte Elf64_Dyn entry (d_tag, d_un) as a unibyte string."
+  (concat (nelisp-elf--u64le tag) (nelisp-elf--u64le val)))
+
+(defun nelisp-elf-build-dynstr (strings)
+  "Build a .dynstr/.strtab blob from STRINGS (a list).
+Returns (BYTES . OFFSETS) where OFFSETS is an alist STRING→byte-offset.  The
+table starts with a NUL byte (offset 0 = the empty string), as ELF requires."
+  (let ((bytes (unibyte-string 0)) (offsets (list (cons "" 0))))
+    (dolist (s strings)
+      (unless (assoc s offsets)
+        (push (cons s (length bytes)) offsets)
+        (setq bytes (concat bytes (string-to-unibyte s) (unibyte-string 0)))))
+    (cons bytes (nreverse offsets))))
+
+(defun nelisp-elf--u16le (n)
+  "Return N as a 2-byte little-endian unibyte string."
+  (unibyte-string (logand n #xff) (logand (ash n -8) #xff)))
+
+(defun nelisp-elf--dyn-phdr (type flags off vaddr filesz memsz align)
+  "Emit a 56-byte Elf64_Phdr as a unibyte string."
+  (concat (nelisp-elf--u32le type) (nelisp-elf--u32le flags)
+          (nelisp-elf--u64le off) (nelisp-elf--u64le vaddr)
+          (nelisp-elf--u64le vaddr)              ; p_paddr = p_vaddr
+          (nelisp-elf--u64le filesz) (nelisp-elf--u64le memsz)
+          (nelisp-elf--u64le align)))
+
+(defun nelisp-elf--pad-to (bytes target)
+  "Right-pad unibyte BYTES with NULs up to TARGET length."
+  (if (>= (length bytes) target) bytes
+    (concat bytes (make-string (- target (length bytes)) 0))))
+
+(defun nelisp-elf-build-dynamic-binary (plist)
+  "Build a minimal dynamically-linked ET_EXEC ELF64 (Phase 47.D P1).
+PLIST: :text (entry machine code, required), :interp (default ld-linux),
+:machine (default x86_64).  Imports (GOT/GLOB_DAT) land in P2/P3; P1 emits a
+loadable dynamic skeleton with a 1-entry (null) dynsym so ld.so accepts it.
+Returns a unibyte string (the whole file)."
+  (let* ((text (or (plist-get plist :text) (error "nelisp-elf: :text required")))
+         (interp (or (plist-get plist :interp) "/lib64/ld-linux-x86-64.so.2"))
+         (machine-em nelisp-elf--em-x86-64)
+         (base nelisp-elf--minimal-vaddr-base)
+         (page #x1000)
+         (phnum 5)
+         (phoff nelisp-elf--ehdr-size)
+         (phdrs-end (+ phoff (* phnum nelisp-elf--phdr-size)))
+         (interp-bytes (concat (string-to-unibyte interp) (unibyte-string 0)))
+         (interp-off phdrs-end)
+         (interp-sz (length interp-bytes))
+         (hash-off (nelisp-elf--align-up (+ interp-off interp-sz) 8))
+         (hash-bytes (nelisp-elf-build-sysv-hash '("")))
+         (hash-sz (length hash-bytes))
+         (dynsym-off (nelisp-elf--align-up (+ hash-off hash-sz) 8))
+         (dynsym-bytes (make-string nelisp-elf--sym-size 0))
+         (dynsym-sz nelisp-elf--sym-size)
+         (dynstr-off (+ dynsym-off dynsym-sz))
+         (dynstr-bytes (unibyte-string 0))
+         (dynstr-sz 1)
+         (text-off (nelisp-elf--align-up (+ dynstr-off dynstr-sz) 16))
+         (text-sz (length text))
+         (text-vaddr (+ base text-off))
+         (rx-end (+ text-off text-sz))
+         (dyn-off (nelisp-elf--align-up rx-end page))
+         (dyn-vaddr (+ base dyn-off))
+         (dyn-entries
+          (list (cons nelisp-elf--dt-hash   (+ base hash-off))
+                (cons nelisp-elf--dt-strtab (+ base dynstr-off))
+                (cons nelisp-elf--dt-symtab (+ base dynsym-off))
+                (cons nelisp-elf--dt-strsz  dynstr-sz)
+                (cons nelisp-elf--dt-syment nelisp-elf--sym-size)
+                (cons nelisp-elf--dt-null   0)))
+         (dyn-bytes (apply #'concat
+                           (mapcar (lambda (e)
+                                     (nelisp-elf-dyn-bytes (car e) (cdr e)))
+                                   dyn-entries)))
+         (dyn-sz (length dyn-bytes))
+         ;; ---- Ehdr (64 bytes) ----
+         (ehdr (concat
+                (unibyte-string #x7f ?E ?L ?F nelisp-elf--ei-class-64
+                                nelisp-elf--ei-data-lsb nelisp-elf--ev-current
+                                nelisp-elf--ei-osabi-sysv 0 0 0 0 0 0 0 0)
+                (nelisp-elf--u16le nelisp-elf--et-exec)   ; e_type
+                (nelisp-elf--u16le machine-em)            ; e_machine
+                (nelisp-elf--u32le nelisp-elf--ev-current) ; e_version
+                (nelisp-elf--u64le text-vaddr)            ; e_entry
+                (nelisp-elf--u64le phoff)                 ; e_phoff
+                (nelisp-elf--u64le 0)                     ; e_shoff (none)
+                (nelisp-elf--u32le 0)                     ; e_flags
+                (nelisp-elf--u16le nelisp-elf--ehdr-size) ; e_ehsize
+                (nelisp-elf--u16le nelisp-elf--phdr-size) ; e_phentsize
+                (nelisp-elf--u16le phnum)                 ; e_phnum
+                (nelisp-elf--u16le 0)                     ; e_shentsize
+                (nelisp-elf--u16le 0)                     ; e_shnum
+                (nelisp-elf--u16le 0)))                   ; e_shstrndx
+         ;; ---- Phdrs ----
+         (phdrs (concat
+                 (nelisp-elf--dyn-phdr nelisp-elf--pt-phdr nelisp-elf--pf-r
+                                       phoff (+ base phoff)
+                                       (* phnum nelisp-elf--phdr-size)
+                                       (* phnum nelisp-elf--phdr-size) 8)
+                 (nelisp-elf--dyn-phdr nelisp-elf--pt-interp nelisp-elf--pf-r
+                                       interp-off (+ base interp-off)
+                                       interp-sz interp-sz 1)
+                 (nelisp-elf--dyn-phdr nelisp-elf--pt-load
+                                       (logior nelisp-elf--pf-r nelisp-elf--pf-x)
+                                       0 base rx-end rx-end page)
+                 (nelisp-elf--dyn-phdr nelisp-elf--pt-load
+                                       (logior nelisp-elf--pf-r nelisp-elf--pf-w)
+                                       dyn-off dyn-vaddr dyn-sz dyn-sz page)
+                 (nelisp-elf--dyn-phdr nelisp-elf--pt-dynamic
+                                       (logior nelisp-elf--pf-r nelisp-elf--pf-w)
+                                       dyn-off dyn-vaddr dyn-sz dyn-sz 8)))
+         ;; ---- assemble file by offset ----
+         (file ehdr))
+    (setq file (concat file phdrs))                       ; @64..phdrs-end
+    (setq file (nelisp-elf--pad-to file interp-off))
+    (setq file (concat file interp-bytes))
+    (setq file (nelisp-elf--pad-to file hash-off))
+    (setq file (concat file hash-bytes))
+    (setq file (nelisp-elf--pad-to file dynsym-off))
+    (setq file (concat file dynsym-bytes))
+    (setq file (nelisp-elf--pad-to file dynstr-off))
+    (setq file (concat file dynstr-bytes))
+    (setq file (nelisp-elf--pad-to file text-off))
+    (setq file (concat file text))
+    (setq file (nelisp-elf--pad-to file dyn-off))
+    (setq file (concat file dyn-bytes))
+    file))
+
 ;; ---- §91.b reloc-type symbol → ELF constant mapping ----
 
 (defun nelisp-elf--reloc-type-code (sym)

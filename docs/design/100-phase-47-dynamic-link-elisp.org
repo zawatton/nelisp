@@ -1,0 +1,94 @@
+#+title: Phase 47.D — Dynamic-linked ELF emission (pure-elisp AOT)
+#+startup: overview
+
+* 1. Goal
+
+Teach the pure-elisp AOT toolchain (~nelisp-elf-write.el~ + ~nelisp-static-linker.el~)
+to emit a *dynamically linked* ELF executable so the standalone reader can call
+arbitrary shared-library functions (GnuTLS, FreeType, HarfBuzz, libc beyond the
+syscall set).  This is the keystone that unblocks, in the consumer
+~nelisp-emacs~ bridge: D1 TLS (~emacs-tls-ffi.el~), F1 font metrics
+(~emacs-font-ffi.el~), and E4 complex-script shaping — all currently
+"author-only" because the emitted ELF is freestanding/static (no PT_INTERP, no
+DYNAMIC, no way to resolve ~gnutls_*~ / ~FT_*~).
+
+The runtime already has the *call* side: ~call-ptr ADDR a0..a6~ (forward FFI
+indirect call, nelisp-standalone-build.el).  The only missing piece is *symbol
+resolution* — making ld.so fill a GOT slot with the resolved address that
+~call-ptr~ then jumps to.
+
+* 2. Current state (static, freestanding)
+
+- ~nelisp-elf-write.el~: ehdr/phdr/shdr/sym/rela byte writers; ET_EXEC/ET_DYN,
+  PT_LOAD/PT_PHDR, R_X86_64_64/PC32/PLT32.  *No* PT_INTERP, PT_DYNAMIC, DT_*,
+  .dynsym/.dynstr/.hash, GOT, GLOB_DAT.
+- ~nelisp-static-linker.el~: 2-pass linker.  ~nelisp-link--compute-layout~ lays
+  sections at VA base 0x400000; ~nelisp-link-units~ drives emission through
+  ~nelisp-elf-write-binary~.  Entry at vaddr+~0x78~ after Ehdr+Phdr.
+- Result: ~statically linked, no DYNAMIC section~ (readelf), so dlopen/dlsym and
+  external symbols are unreachable (confirmed: the syscall shim emulates libc).
+
+* 3. Design — eager GLOB_DAT imports (no lazy PLT)
+
+Use the *simplest* dynamic-linking shape that ld.so accepts: import each needed
+function as a GLOB_DAT relocation into a dedicated GOT slot, resolved eagerly at
+load.  Avoid lazy PLT/.plt stubs entirely — the code reads the GOT slot directly
+and uses ~call-ptr~.  This drops a whole layer of complexity (no PLT0, no
+.rela.plt lazy path, no _dl_runtime_resolve).
+
+New ELF artifacts to emit:
+1. *.interp* (PROGBITS, SHF_ALLOC) = "/lib64/ld-linux-x86-64.so.2\0", covered by
+   a *PT_INTERP* phdr.
+2. *.dynstr* (STRTAB) — lib soname strings (libc.so.6, libgnutls.so.30,
+   libfreetype.so.6) + imported symbol names.
+3. *.dynsym* (DYNSYM) — index 0 = null; one STT_FUNC/STB_GLOBAL/SHN_UNDEF entry
+   per import (st_name → .dynstr).
+4. *.hash* (HASH) — the SysV ELF hash table over .dynsym (ld.so requires DT_HASH
+   or DT_GNU_HASH; SysV .hash is the simplest to generate: nbucket/nchain +
+   buckets + chain, with `elf_hash`).
+5. *.got* (PROGBITS, SHF_ALLOC|SHF_WRITE) — one 8-byte slot per import,
+   initially 0.
+6. *.rela.dyn* (RELA) — one ~R_X86_64_GLOB_DAT~ per import: r_offset = GOT slot
+   VA, r_info = (dynsym-index << 32) | GLOB_DAT, r_addend = 0.
+7. *.dynamic* (DYNAMIC, SHF_ALLOC|SHF_WRITE) — DT_NEEDED (one per soname),
+   DT_STRTAB/DT_STRSZ, DT_SYMTAB/DT_SYMENT, DT_HASH, DT_RELA/DT_RELASZ/DT_RELAENT,
+   DT_NULL.  Covered by a *PT_DYNAMIC* phdr.
+8. Program headers, in order: PT_PHDR, PT_INTERP, PT_LOAD(R+X text/rodata),
+   PT_LOAD(R+W data/.got/.dynamic), PT_DYNAMIC.
+
+Codegen wiring (nelisp-standalone-build.el):
+- A build-time table maps (soname, symbol) → GOT-slot index.
+- Emit ~(call-ptr (ptr-read-u64 <GOT_SLOT_VA>) a0..a6)~ for each external call.
+- ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~ ultimately route ~nl-ffi-call~ to this
+  path (a new ~nl-ffi-call~ over GOT instead of the syscall shim) when the symbol
+  is non-syscall.
+
+* 4. Phases (each ends at a verifiable gate)
+
+- *P1 — loadable dynamic ELF, zero imports.* Add constants + writers; emit
+  .interp + minimal .dynamic (DT_HASH/STRTAB/SYMTAB with a 1-entry null dynsym) +
+  PT_INTERP/PT_DYNAMIC.  Gate: the standalone reader still runs (`output 42`) as
+  a *dynamically linked* ELF (readelf -d shows a DYNAMIC section; `ldd` lists the
+  interpreter).  This proves the dynamic skeleton loads.
+- *P2 — one libc import, called via GOT.* Import e.g. ~getpid~; GLOB_DAT into a
+  GOT slot; a smoke form does ~(call-ptr (ptr-read-u64 GOTVA))~ and prints it.
+  Gate: matches the real getpid.
+- *P3 — multi-lib imports.* DT_NEEDED libgnutls/libfreetype; import the symbols
+  ~emacs-tls-ffi.el~/~emacs-font-ffi.el~ use; expose them to elisp via a
+  GOT-backed ~nl-ffi-call~.  Gate: ~emacs-tls-ffi~ handshake + ~emacs-font-ffi~
+  glyph advance verified on the binary (consumer-side D1/F1).
+
+* 5. Risks
+
+- ld.so is unforgiving: a malformed .dynamic/.hash → silent segfault at load,
+  no diagnostics.  Mitigation: build P1 against a hand-verified reference layout
+  (compare bytes to a gcc-produced minimal dynamic ELF with the same imports);
+  keep a known-good backup binary and restore on any load failure.
+- .hash correctness (elf_hash + bucket/chain) is the classic foot-gun — unit
+  test the hash-table builder in host emacs against known ELF hashes first.
+- VA/offset alignment for the second (R+W) PT_LOAD and p_align=0x1000.
+
+* 6. Status
+
+- 2026-06-27: design recorded.  Implementing P1 foundations (constants +
+  .dynamic/.dynsym/.dynstr/.hash/GLOB_DAT byte writers) with host ERTs first.
