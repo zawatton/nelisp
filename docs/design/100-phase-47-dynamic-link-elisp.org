@@ -117,10 +117,20 @@ Codegen wiring (nelisp-standalone-build.el):
   (The emitter was refactored to source its layout from
   ~nelisp-elf--dynamic-layout~ so emit-time and link-time GOT VAs cannot drift;
   P1/P2 stay green.)
-- NEXT (P3 remainder): (a) .rodata/.data/.bss carry-through in the dynamic
-  emitter; (b) flip the real reader build (~make standalone-reader~) to
-  ~nelisp-link-units-dynamic~ importing ~gnutls_*~/~FT_*~ (+ any non-syscall
-  libc); (c) a build-time symbol→GOT-slot table + codegen emitting
-  ~call-ptr (deref GOT-slot)~ at each external call, exposed to elisp as a
+- 2026-06-27: *P3a DONE* — .rodata/.data/.bss carry-through (data exits 99;
+  rodata+import exits 65).  *Explicit entry symbol* — ~nelisp-link-units-dynamic~
+  honors ENTRY-SYM (e_entry = resolved _start VA), prerequisite for the reader.
+- 2026-06-27: *P3 Step B DONE* — the real reader links dynamic via
+  ~NELISP_READER_DYNAMIC=1 make nelisp~ (default stays static).  The 4 MiB
+  reader becomes `dynamically linked, interp /lib64/ld-linux-x86-64.so.2' and
+  ld.so loads it with ALL functionality intact: the binary FFI smokes
+  (PTY/IPv6+datagram/pipe-async/SIGCHLD), maphash, and syscall-direct all pass.
+  (The arena is a fixed mmap at 0x10000000, independent of the ELF layout;
+  section refs go through relocs resolved against the dynamic layout, so the
+  flip is behaviour-preserving.)
+- NEXT (P3 Step C, the last step for D1/F1): import ~gnutls_*~ / ~FT_*~ into the
+  reader (pass the import list to ~nelisp-link-units-dynamic~) + a build-time
+  symbol→GOT-slot table so the reader's codegen emits
+  ~call-ptr (deref GOT-slot)~ for each external call, exposed to elisp as a
   GOT-backed ~nl-ffi-call~.  Then ~emacs-tls-ffi.el~ / ~emacs-font-ffi.el~
   verify on the binary (D1/F1).
