@@ -184,5 +184,68 @@ the GOT slot VA, filled by ld.so).  toupper(97)=>65, so it exits 65."
           (should (eq 65 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+;;;; ---- P3 remainder: .rodata / .data carry-through ----
+
+(ert-deftest nelisp-elf-dynamic-link-data-section ()
+  "`nelisp-link-units-dynamic' carries a .data section into the RW segment: the
+unit loads a byte from a `d' data symbol and exits with it (=> 99)."
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (bound-and-true-p system-configuration) "")))
+  (require 'nelisp-static-linker)
+  (let* ((text (unibyte-string
+                #x48 #xb8 0 0 0 0 0 0 0 0     ; movabs rax, d (imm@2)
+                #x0f #xb6 #x38                ; movzx edi, byte [rax]
+                #xb8 #x3c 0 0 0               ; mov eax, 60
+                #x0f #x05))                   ; syscall
+         (unit (nelisp-link-unit-make
+                "d.o"
+                (list (cons 'text text) (cons 'data (unibyte-string 99)))
+                (list (nelisp-link-symbol "_start" 0)
+                      (nelisp-link-symbol "d" 0 :section 'data))
+                (list (append (nelisp-link-reloc 2 'abs64 "d" 0)
+                              '(:section text)))))
+         (path (make-temp-file "nelisp-p3d-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-dynamic path (list unit) nil)
+          (set-file-modes path #o755)
+          (should (eq 99 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-dynamic-link-rodata-and-import ()
+  "Compose .rodata + an import: load `?a' from .rodata, pass it to libc
+`toupper' through the GOT, exit with the result (=> 65)."
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (bound-and-true-p system-configuration) "")))
+  (skip-unless (file-readable-p "/lib/x86_64-linux-gnu/libc.so.6"))
+  (require 'nelisp-static-linker)
+  (let* ((text (unibyte-string
+                #x48 #xb8 0 0 0 0 0 0 0 0     ; movabs rax, r (imm@2)
+                #x0f #xb6 #x38                ; movzx edi, byte [rax]  (edi=97)
+                #x48 #xb8 0 0 0 0 0 0 0 0     ; movabs rax, __got_toupper (imm@15)
+                #x48 #x8b #x00                ; mov rax, [rax]
+                #xff #xd0                     ; call rax
+                #x89 #xc7                     ; mov edi, eax
+                #xb8 #x3c 0 0 0               ; mov eax, 60
+                #x0f #x05))                   ; syscall
+         (unit (nelisp-link-unit-make
+                "ri.o"
+                (list (cons 'text text) (cons 'rodata (unibyte-string 97)))
+                (list (nelisp-link-symbol "_start" 0)
+                      (nelisp-link-symbol "r" 0 :section 'rodata))
+                (list (append (nelisp-link-reloc 2 'abs64 "r" 0) '(:section text))
+                      (append (nelisp-link-reloc 15 'abs64 "__got_toupper" 0)
+                              '(:section text)))))
+         (path (make-temp-file "nelisp-p3ri-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-dynamic path (list unit)
+                                     '(("libc.so.6" . "toupper")))
+          (set-file-modes path #o755)
+          (should (eq 65 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-dynamic-test)
 ;;; nelisp-elf-dynamic-test.el ends here

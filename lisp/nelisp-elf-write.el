@@ -876,13 +876,20 @@ table starts with a NUL byte (offset 0 = the empty string), as ELF requires."
           (nelisp-elf--u64le 0)                           ; st_value
           (nelisp-elf--u64le 0)))                         ; st_size
 
-(defun nelisp-elf--dynamic-layout (text-size imports &optional interp)
+(defun nelisp-elf--dynamic-layout (text-size imports
+                                             &optional interp rodata-size
+                                             data-size bss-size)
   "Deterministic dynamic-ELF section layout for TEXT-SIZE bytes + IMPORTS.
-Shared by `nelisp-elf-build-dynamic-binary' and `nelisp-link-units-dynamic' so
-the GOT slot VAs used for symbol resolution match the bytes that are emitted.
+Optional RODATA-SIZE (placed in the RX segment after .text), DATA-SIZE and
+BSS-SIZE (placed in the RW segment after .got/.dynamic).  Shared by
+`nelisp-elf-build-dynamic-binary' and `nelisp-link-units-dynamic' so the GOT and
+section VAs used for symbol resolution match the bytes that are emitted.
 Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
 :got-va-map (alist SYMBOL -> resolved GOT slot VA) (Phase 47.D)."
   (let* ((interp (or interp "/lib64/ld-linux-x86-64.so.2"))
+         (rodata-size (or rodata-size 0))
+         (data-size (or data-size 0))
+         (bss-size (or bss-size 0))
          (base nelisp-elf--minimal-vaddr-base)
          (page #x1000)
          (nimp (length imports))
@@ -906,6 +913,11 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
          (hash-sz (length hash-bytes))
          (rela-sz (* nimp nelisp-elf--rela-size))
          (got-sz (* nimp 8))
+         ;; .dynamic entry count (must match the emitter's dyn-entries):
+         ;; NEEDED*nsonames + {HASH,STRTAB,SYMTAB,STRSZ,SYMENT}
+         ;; + {RELA,RELASZ,RELAENT if imports} + NULL.
+         (dyn-count (+ (length sonames) 5 (if (> nimp 0) 3 0) 1))
+         (dyn-sz (* dyn-count 16))
          (phnum 5)
          (phoff nelisp-elf--ehdr-size)
          (phdrs-end (+ phoff (* phnum nelisp-elf--phdr-size)))
@@ -918,7 +930,9 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
          (rela-off (nelisp-elf--align-up (+ dynstr-off dynstr-sz) 8))
          (text-off (nelisp-elf--align-up (+ rela-off rela-sz) 16))
          (text-vaddr (+ base text-off))
-         (rx-end (+ text-off text-size))
+         (rodata-off (nelisp-elf--align-up (+ text-off text-size) 16))
+         (rodata-vaddr (+ base rodata-off))
+         (rx-end (+ rodata-off rodata-size))
          (got-off (nelisp-elf--align-up rx-end page))
          (got-va-map (let ((m nil) (i 0))
                        (dolist (s symbols)
@@ -926,7 +940,11 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
                          (setq i (1+ i)))
                        (nreverse m)))
          (dyn-off (+ got-off got-sz))            ; .dynamic after .got (8-aligned)
-         (dyn-vaddr (+ base dyn-off)))
+         (dyn-vaddr (+ base dyn-off))
+         (data-off (nelisp-elf--align-up (+ dyn-off dyn-sz) 16))
+         (data-vaddr (+ base data-off))
+         (bss-off (+ data-off data-size))        ; NOBITS: no file bytes
+         (bss-vaddr (+ base bss-off)))
     (list :base base :page page :nimp nimp :phnum phnum :phoff phoff
           :sonames sonames :symbols symbols
           :interp-bytes interp-bytes :interp-off interp-off :interp-sz interp-sz
@@ -934,10 +952,14 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
           :dynsym-bytes dynsym-bytes :dynsym-off dynsym-off :dynsym-sz dynsym-sz
           :dynstr-bytes dynstr-bytes :dynstr-off dynstr-off :dynstr-sz dynstr-sz
           :dynstr-off-map dynstr-off-map
-          :rela-off rela-off :rela-sz rela-sz :got-sz got-sz
-          :text-off text-off :text-vaddr text-vaddr :rx-end rx-end
+          :rela-off rela-off :rela-sz rela-sz :got-sz got-sz :dyn-sz dyn-sz
+          :text-off text-off :text-vaddr text-vaddr
+          :rodata-off rodata-off :rodata-vaddr rodata-vaddr
+          :rodata-size rodata-size :rx-end rx-end
           :got-off got-off :got-va-map got-va-map
-          :dyn-off dyn-off :dyn-vaddr dyn-vaddr)))
+          :dyn-off dyn-off :dyn-vaddr dyn-vaddr
+          :data-off data-off :data-vaddr data-vaddr :data-size data-size
+          :bss-off bss-off :bss-vaddr bss-vaddr :bss-size bss-size)))
 
 (defun nelisp-elf-dynamic-got-vas (text-size imports &optional interp)
   "Return (TEXT-VADDR . GOT-ALIST) for TEXT-SIZE bytes + IMPORTS.
@@ -963,12 +985,16 @@ RW segment: .got / .dynamic."
   (let* ((imports (plist-get plist :imports))
          (text-fn (plist-get plist :text-fn))
          (interp (plist-get plist :interp))
+         (rodata (or (plist-get plist :rodata) ""))
+         (data (or (plist-get plist :data) ""))
+         (bss-size (or (plist-get plist :bss-size) 0))
          (symbols (mapcar #'cdr imports))
          (text-measure (if text-fn
                            (funcall text-fn (mapcar (lambda (s) (cons s 0)) symbols))
                          (or (plist-get plist :text)
                              (error "nelisp-elf: :text or :text-fn required"))))
-         (l (nelisp-elf--dynamic-layout (length text-measure) imports interp))
+         (l (nelisp-elf--dynamic-layout (length text-measure) imports interp
+                                        (length rodata) (length data) bss-size))
          (got-va-map (plist-get l :got-va-map))
          (text (if text-fn (funcall text-fn got-va-map) text-measure))
          (base (plist-get l :base)) (page (plist-get l :page))
@@ -979,9 +1005,11 @@ RW segment: .got / .dynamic."
          (hash-off (plist-get l :hash-off)) (dynsym-off (plist-get l :dynsym-off))
          (dynstr-off (plist-get l :dynstr-off)) (rela-off (plist-get l :rela-off))
          (text-off (plist-get l :text-off)) (text-vaddr (plist-get l :text-vaddr))
+         (rodata-off (plist-get l :rodata-off)) (rodata-size (plist-get l :rodata-size))
          (rx-end (plist-get l :rx-end)) (got-off (plist-get l :got-off))
          (got-sz (plist-get l :got-sz)) (dyn-off (plist-get l :dyn-off))
          (dyn-vaddr (plist-get l :dyn-vaddr))
+         (data-off (plist-get l :data-off)) (data-size (plist-get l :data-size))
          (got-bytes (make-string got-sz 0))
          (rela-bytes
           (let ((acc "") (i 0))
@@ -1015,7 +1043,8 @@ RW segment: .got / .dynamic."
                                      (nelisp-elf-dyn-bytes (car e) (cdr e)))
                                    dyn-entries)))
          (dyn-sz (length dyn-bytes))
-         (rw-filesz (+ got-sz dyn-sz))
+         (rw-filesz (+ got-sz dyn-sz data-size))
+         (rw-memsz (+ rw-filesz bss-size))
          (ehdr (concat
                 (unibyte-string #x7f ?E ?L ?F nelisp-elf--ei-class-64
                                 nelisp-elf--ei-data-lsb nelisp-elf--ev-current
@@ -1047,7 +1076,7 @@ RW segment: .got / .dynamic."
                  (nelisp-elf--dyn-phdr nelisp-elf--pt-load
                                        (logior nelisp-elf--pf-r nelisp-elf--pf-w)
                                        got-off (+ base got-off)
-                                       rw-filesz rw-filesz page)
+                                       rw-filesz rw-memsz page)
                  (nelisp-elf--dyn-phdr nelisp-elf--pt-dynamic
                                        (logior nelisp-elf--pf-r nelisp-elf--pf-w)
                                        dyn-off dyn-vaddr dyn-sz dyn-sz 8)))
@@ -1065,8 +1094,14 @@ RW segment: .got / .dynamic."
       (setq file (nelisp-elf--pad-to file rela-off))
       (setq file (concat file rela-bytes)))
     (setq file (nelisp-elf--pad-to file text-off))   (setq file (concat file text))
+    (when (> rodata-size 0)
+      (setq file (nelisp-elf--pad-to file rodata-off))
+      (setq file (concat file rodata)))
     (setq file (nelisp-elf--pad-to file got-off))    (setq file (concat file got-bytes))
     (setq file (nelisp-elf--pad-to file dyn-off))    (setq file (concat file dyn-bytes))
+    (when (> data-size 0)
+      (setq file (nelisp-elf--pad-to file data-off))
+      (setq file (concat file data)))
     file))
 
 ;; ---- §91.b reloc-type symbol → ELF constant mapping ----

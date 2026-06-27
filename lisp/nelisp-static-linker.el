@@ -975,25 +975,35 @@ GOT VAs pinned here match the emitted bytes.  Returns FILE-PATH (Phase 47.D P3).
 Currently links the .text section (the import-call proof path); .rodata/.data/
 .bss carry-through is a follow-up."
   (require 'nelisp-elf-write)
-  (declare-function nelisp-elf-dynamic-got-vas "nelisp-elf-write"
-                    (text-size imports &optional interp))
+  (declare-function nelisp-elf--dynamic-layout "nelisp-elf-write"
+                    (text-size imports &optional interp rodata-size data-size
+                               bss-size))
   (declare-function nelisp-elf-build-dynamic-binary "nelisp-elf-write" (plist))
   (let* ((combined (nelisp-link-combine-sections units))
          (text-size (nelisp-link--section-len combined 'text))
-         (gv (nelisp-elf-dynamic-got-vas text-size imports interp))
-         (text-vaddr (car gv))
-         (got-alist (cdr gv))
-         (layout (list (cons 'text text-vaddr)))
+         (rodata-size (nelisp-link--section-len combined 'rodata))
+         (data-size (nelisp-link--section-len combined 'data))
+         (bss-size (nelisp-link--section-len combined 'bss))
+         (lay (nelisp-elf--dynamic-layout text-size imports interp
+                                          rodata-size data-size bss-size))
+         (got-alist (plist-get lay :got-va-map))
+         ;; Pin every section + GOT slot at the SAME VAs the emitter will use,
+         ;; so the 2-pass reloc resolution patches against the emitted layout.
+         (layout (list (cons 'text   (plist-get lay :text-vaddr))
+                       (cons 'rodata (plist-get lay :rodata-vaddr))
+                       (cons 'data   (plist-get lay :data-vaddr))
+                       (cons 'bss    (plist-get lay :bss-vaddr))))
          (symtab (nelisp-link--collect-defined-symbols units combined layout)))
-    ;; Pin each GOT slot as an absolute `__got_<sym>' symbol so the units'
-    ;; abs64 relocs resolve to the slot the emitter will place + ld.so fills.
     (dolist (g got-alist)
       (nelisp-link-symtab-add
        symtab (nelisp-link-symbol (concat "__got_" (car g)) (cdr g))))
     (let* ((bytes (nelisp-link--resolve-relocs units combined layout symtab))
            (text (nelisp-link--bytes-or-empty bytes 'text))
+           (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
+           (data (nelisp-link--bytes-or-empty bytes 'data))
            (elf (nelisp-elf-build-dynamic-binary
-                 (list :text text :imports imports :interp interp)))
+                 (list :text text :rodata rodata :data data :bss-size bss-size
+                       :imports imports :interp interp)))
            (coding-system-for-write 'binary))
       (with-temp-file file-path
         (set-buffer-multibyte nil)
