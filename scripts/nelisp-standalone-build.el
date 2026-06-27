@@ -6212,10 +6212,58 @@ ash/logand/logior/logxor/lognot + string<.")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
+;; --- Phase 47.D Step C: dynamic-only external FFI (nl-ffi-call over PLT) ---
+;; These arms call shared-library symbols through the linker's PLT stubs (Step C):
+;; an `extern-call SYM' to a bare import name resolves (pc32) to its in-binary PLT
+;; stub, which jumps through the ld.so-filled GOT.  They are appended to the
+;; reader dispatch table ONLY when NELISP_READER_DYNAMIC is set, because a
+;; static/freestanding reader has no PLT/GOT and the imports would be unresolved
+;; symbols at link time.  The SONAME/symbol set here MUST match the import list
+;; passed to `nelisp-link-units-dynamic' in `nelisp-standalone-build-reader'.
+(defconst nelisp-standalone--reader-extern-imports
+  '(("libc.so.6" . "toupper")
+    ("libc.so.6" . "tolower"))
+  "(SONAME . SYMBOL) imports for the dynamic reader's `nl-ffi-call' demo arms.
+Kept in lockstep with `nelisp-standalone--applyfn-extern-arms'.  This is the
+seam where GnuTLS/FreeType symbols will be added for D1/F1.")
+
+(defconst nelisp-standalone--applyfn-extern-arms
+  '(((:lit "nl-ffi-call")
+     . (let* ((nm (wf_arg_ptr args 0)))
+         ;; (nl-ffi-call NAME INT-ARG) -> int.  NAME may be a string or symbol
+         ;; sexp; both keep name bytes at ptr@16/len@24, so `sexp-name-eq' works.
+         (if (= (sexp-name-eq nm "toupper") 1)
+             (wf_write_int out (extern-call toupper (wf_argval args 1)))
+           (if (= (sexp-name-eq nm "tolower") 1)
+               (wf_write_int out (extern-call tolower (wf_argval args 1)))
+             (seq (wf_write_nil out) 0))))))
+  "Dynamic-only `nl-ffi-call' dispatch arms (Step C).  Appended to the reader
+table iff NELISP_READER_DYNAMIC is set; each branch is an `extern-call' to an
+imported libc symbol routed through its PLT stub.")
+
+(defun nelisp-standalone--reader-dynamic-p ()
+  "Non-nil when building the dynamically-linked reader (NELISP_READER_DYNAMIC).
+A FUNCTION, not a defconst: the env must be read at BUILD time, because a
+defconst reading `getenv' is evaluated at byte-COMPILE time and would bake the
+static answer into the .elc (breaking the dynamic build that loads it)."
+  (and (getenv "NELISP_READER_DYNAMIC") t))
+
+(defun nelisp-standalone--reader-extern-builtin-names ()
+  "Builtin name(s) for the Step C external FFI dispatcher (`nl-ffi-call'),
+present only in dynamic builds.  Derived from `nelisp-standalone--applyfn-extern-arms'
+so registration and dispatch stay in lockstep.  Build-time (see
+`nelisp-standalone--reader-dynamic-p')."
+  (if (nelisp-standalone--reader-dynamic-p)
+      (mapcar (lambda (e) (cadr (car e)))
+              nelisp-standalone--applyfn-extern-arms)
+    nil))
+
 (defun nelisp-standalone--applyfn-reader-table ()
   "Build the reader dispatch table: the base table with the buggy stock
 `car'/`cdr'/`eq' arms REPLACED (nil-safe car/cdr + tag-aware eq) and `length'
-made vector-aware, then the B-foundation breadth arms APPENDED."
+made vector-aware, then the B-foundation breadth arms APPENDED.  When
+NELISP_READER_DYNAMIC is set, the Step C `nl-ffi-call' extern arms are appended
+too (they need the dynamic build's PLT/GOT)."
   (append
    (mapcar
     (lambda (entry)
@@ -6230,7 +6278,11 @@ made vector-aware, then the B-foundation breadth arms APPENDED."
         '((:u8 "cdr") . (bf_cdr args out)))
        (t entry)))
     nelisp-standalone--applyfn-dispatch-table)
-   nelisp-standalone--applyfn-bf-arms))
+   nelisp-standalone--applyfn-bf-arms
+   ;; Step C: dynamic builds gain the PLT-backed `nl-ffi-call' arms.
+   (if (nelisp-standalone--reader-dynamic-p)
+       nelisp-standalone--applyfn-extern-arms
+     nil)))
 
 (defun nelisp-standalone--applyfn-assemble (helper-groups table &optional default-form)
   "Assemble an applyfn `(seq ...)' unit from HELPER-GROUPS (lists of defun forms,
@@ -6263,7 +6315,16 @@ set, which lacks the reader-only `nl_os_write_stderr')."
 ;; helpers + the reader dispatch table (= the FULL table with nil-safe car/cdr +
 ;; tag-aware eq + vector-aware length REPLACEMENTS and the breadth arms appended;
 ;; incl. file-I/O wrf/rdf/slen impls in `nelisp-standalone--fileio-source').
-(defconst nelisp-standalone--applyfn-source
+;; A FUNCTION, not a defconst: the dispatch table (via
+;; `nelisp-standalone--applyfn-reader-table') depends on NELISP_READER_DYNAMIC,
+;; which must be read at BUILD time.  A defconst would be evaluated at
+;; byte-COMPILE time and bake the static table into the .elc, so a later dynamic
+;; build that loads the .elc would silently omit the `nl-ffi-call' arms.
+(defun nelisp-standalone--applyfn-source ()
+  "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O
++ B-foundation breadth (predicates / vectors / symbols / equal / setcar-setcdr,
+plus the nil-safe car/cdr and tag-aware eq fixes), plus the Step C `nl-ffi-call'
+extern arms in dynamic builds."
   (nelisp-standalone--applyfn-assemble
    (list nelisp-standalone--applyfn-core-helpers
          nelisp-standalone--applyfn-census-helpers
@@ -6271,10 +6332,7 @@ set, which lacks the reader-only `nl_os_write_stderr')."
         nelisp-standalone--applyfn-search-helpers
         nelisp-standalone--applyfn-m5-helpers
          nelisp-standalone--applyfn-bf-helpers)
-   (nelisp-standalone--applyfn-reader-table))
-  "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O
-+ B-foundation breadth (predicates / vectors / symbols / equal / setcar-setcdr,
-plus the nil-safe car/cdr and tag-aware eq fixes).")
+   (nelisp-standalone--applyfn-reader-table)))
 
 ;; ===================================================================
 ;; M7 file-I/O glue unit — the impls for the wrf/rdf/slen builtins
@@ -10011,7 +10069,9 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                  (setq w (1+ w)))
                (nreverse forms))
            (nl_install_one globals unbound b ,len builtin_sym)))))
-   nelisp-standalone--reader-builtins))
+   ;; Base builtins + (dynamic builds only) the Step C external FFI name(s).
+   (append nelisp-standalone--reader-builtins
+           (nelisp-standalone--reader-extern-builtin-names))))
 
 (defun nelisp-standalone--os-syscall-xlat-forms ()
   "Per-target raw-syscall wrappers for the path/stat/dirent fileio builtins.
@@ -11979,7 +12039,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                 nelisp-standalone--manifest)))
          ;; Full reader applyfn (arithmetic + HT + strings/format + file I/O).
          (applyfn (nelisp-standalone--cached-unit
-                   "applyfn-reader.o" nelisp-standalone--applyfn-source
+                   "applyfn-reader.o" (nelisp-standalone--applyfn-source)
                    nelisp-standalone--this-file))
          ;; M4: keyword self-eval patched eval-inner.
          (eval-inner (progn
@@ -12348,7 +12408,12 @@ loader when it is absent."
        ;; DYNAMIC) via NELISP_READER_DYNAMIC, so it can import shared libs
        ;; (GnuTLS/FreeType) later.  Default stays the freestanding static ELF.
        (if (getenv "NELISP_READER_DYNAMIC")
-           (nelisp-link-units-dynamic out units nil "_start")
+           ;; Step C: import the libc symbols the `nl-ffi-call' arms call so the
+           ;; PLT stubs/GOT slots exist (must match
+           ;; `nelisp-standalone--reader-extern-imports').
+           (nelisp-link-units-dynamic out units
+                                      nelisp-standalone--reader-extern-imports
+                                      "_start")
          (nelisp-link-units out units))
        (set-file-modes out #o755)))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"

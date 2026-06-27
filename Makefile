@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-ffi-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
         nelisp-nelix-operational-gate \
         nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate
@@ -202,6 +202,26 @@ standalone-reader-fmt-smoke: standalone-reader
 	  echo "[standalone-reader-fmt-smoke] PASS: --load -> $$out"; \
 	else \
 	  echo "[standalone-reader-fmt-smoke] FAIL: --load -> $$out"; \
+	  exit 1; \
+	fi
+
+# Phase 47.D Step C: runtime FFI smoke.  Builds a DYNAMICALLY linked reader
+# (NELISP_READER_DYNAMIC=1) that imports libc toupper/tolower and exposes them
+# via the `nl-ffi-call' dispatcher, then asserts the call routes through the
+# linker-generated PLT stub + ld.so-resolved GOT slot into real libc.
+# Self-contained (does NOT depend on the default static `standalone-reader').
+standalone-reader-ffi-smoke:
+	@mkdir -p target
+	@NELISP_READER_DYNAMIC=1 $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@chmod +x target/nelisp
+	@printf '%s\n' '(nl-ffi-call "toupper" 97)' > target/standalone-reader-ffi-smoke.el
+	@out="$$(./target/nelisp --load target/standalone-reader-ffi-smoke.el)"; \
+	if [ "$$out" = "65" ]; then \
+	  echo "[standalone-reader-ffi-smoke] PASS: (nl-ffi-call \"toupper\" 97) -> $$out"; \
+	else \
+	  echo "[standalone-reader-ffi-smoke] FAIL: -> $$out (expected 65)"; \
 	  exit 1; \
 	fi
 
