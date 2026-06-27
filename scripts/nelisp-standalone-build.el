@@ -4344,6 +4344,9 @@ unresolved at link time."
                  (nelisp_cons_construct entry_s rest_s out_slot)
                  0))))
         (wf_write_nil out_slot)))
+    ;; maphash ships as a no-op here; the real iteration is the pure-elisp
+    ;; `maphash' in nelisp-stdlib-prelude.el (walks the bucket-vector repr +
+    ;; funcall), which overrides this stub.
     (defun wf_ht_maphash (args out) (seq (wf_write_nil out) 0)))
   "M4 hash-table helpers (reader-only).")
 

@@ -3722,14 +3722,30 @@ Doc 156: was `(apply #\\='vector ...)', but the reader now exposes a native
 ;; clean for the shapes Elisp passes to `hash-table-p').
 (defun hash-table-p (x)
   (and (consp x) (integerp (car x)) (eq (car x) 0)
-       (let ((c (cdr x))) (or (null c) (and (consp c) (consp (car c)))))))
+       (let ((c (cdr x)))
+         ;; Current core repr: cdr is the bucket VECTOR.  Tolerate the legacy
+         ;; flat-alist shape (cdr a cons / nil) too.
+         (or (null c) (vectorp c) (and (consp c) (consp (car c)))))))
 (defun maphash (fn table)
-  (let ((node (cdr table)))
-    (while (consp node)
-      (let ((entry (car node)))
-        (when (consp entry) (funcall fn (car entry) (cdr entry))))
-      (setq node (cdr node)))
-    nil))
+  ;; The core `make-hash-table' returns (Int(0) . BUCKETS) where BUCKETS is a
+  ;; vector whose slots are node lists of (KEY . VALUE) pairs.  (A legacy shape
+  ;; stored a flat ((KEY . VALUE) ...) alist directly in the cdr.)  Walk both.
+  (let ((data (cdr table)))
+    (if (vectorp data)
+        (let ((i 0) (n (length data)))
+          (while (< i n)
+            (let ((node (aref data i)))
+              (while (consp node)
+                (let ((entry (car node)))
+                  (when (consp entry) (funcall fn (car entry) (cdr entry))))
+                (setq node (cdr node))))
+            (setq i (1+ i))))
+      (let ((node data))
+        (while (consp node)
+          (let ((entry (car node)))
+            (when (consp entry) (funcall fn (car entry) (cdr entry))))
+          (setq node (cdr node))))))
+  nil)
 
 ;; Doc 22 C1: hash-table introspection over the core `(Int(0) . alist)' shape.
 ;; The reader ignores `:test' -- every table uses the native key compare
