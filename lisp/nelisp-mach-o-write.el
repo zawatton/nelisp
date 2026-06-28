@@ -249,7 +249,7 @@
         (insert (unibyte-string 0)))
       (buffer-substring-no-properties (point-min) (point-max)))))
 
-;;; ---- Doc 100 §100.E MH_EXECUTE — native macOS arm64 executable ----
+;;; ---- Doc 100 §100.E MH_EXECUTE — native macOS executable ----
 ;;
 ;; A hand-built no-dyld LC_UNIXTHREAD image is REJECTED by the macOS 26
 ;; kernel ("permission denied"); a runnable executable MUST load
@@ -275,8 +275,10 @@
 (defconst nelisp-mach-o--lc-function-starts #x26 "LC_FUNCTION_STARTS.")
 (defconst nelisp-mach-o--lc-data-in-code   #x29 "LC_DATA_IN_CODE.")
 (defconst nelisp-mach-o--vm-prot-rx 5 "VM_PROT_READ | VM_PROT_EXECUTE.")
+(defconst nelisp-mach-o--vm-prot-rw 3 "VM_PROT_READ | VM_PROT_WRITE.")
 (defconst nelisp-mach-o--vm-prot-r  1 "VM_PROT_READ.")
-(defconst nelisp-mach-o--exe-page-size  #x4000 "arm64 macOS page = 16 KiB.")
+(defconst nelisp-mach-o--exe-page-size-arm64  #x4000 "arm64 macOS page = 16 KiB.")
+(defconst nelisp-mach-o--exe-page-size-x86-64 #x1000 "x86_64 macOS page = 4 KiB.")
 (defconst nelisp-mach-o--exe-text-vmaddr #x100000000 "__TEXT vmaddr (top of __PAGEZERO).")
 (defconst nelisp-mach-o--exe-code-off 728
   "File offset of __text in the MH_EXECUTE image.
@@ -286,22 +288,35 @@ symtab addresses identical to the e1 blueprint for milestone 1.")
 (defconst nelisp-mach-o--exe-minos #x1A0000 "minos 26.0.0.")
 (defconst nelisp-mach-o--exe-sdk   #x1A0200 "sdk 26.2.0.")
 
-;; 56-byte "no fixups" LC_DYLD_CHAINED_FIXUPS payload for a 3-segment
-;; image: header (version 0, starts@32, imports@48, symbols@48, 0
-;; imports, imports_format 1) + starts_in_image (seg_count 3, all
-;; seg_info_offset 0) + empty symbol pool.  Constant for any 3-segment
-;; binary that performs no dynamic binding.
-(defconst nelisp-mach-o--exe-chained-fixups
-  (apply #'unibyte-string
-         ;; header[0,28): ver=0, starts_off=32, imports_off=48,
-         ;; symbols_off=48, imports_count=0, imports_format=1,
-         ;; symbols_format=0 ; pad[28,32) ; starts_in_image[32,48):
-         ;; seg_count=3, seg_info_offset[3]=0 ; symbol pool[48,56).
-         '(#x00 #x00 #x00 #x00  #x20 #x00 #x00 #x00  #x30 #x00 #x00 #x00
-           #x30 #x00 #x00 #x00  #x00 #x00 #x00 #x00  #x01 #x00 #x00 #x00
-           #x00 #x00 #x00 #x00  #x00 #x00 #x00 #x00  #x03 #x00 #x00 #x00
-           #x00 #x00 #x00 #x00  #x00 #x00 #x00 #x00  #x00 #x00 #x00 #x00
-           #x00 #x00 #x00 #x00  #x00 #x00 #x00 #x00)))
+(defun nelisp-mach-o--exe-page-size (machine)
+  "Return executable page size for MACHINE."
+  (if (eq machine 'x86_64)
+      nelisp-mach-o--exe-page-size-x86-64
+    nelisp-mach-o--exe-page-size-arm64))
+
+;; LC_DYLD_CHAINED_FIXUPS payload for an image with no dynamic binding.
+;; It is header + starts_in_image with zero seg_info_offset entries.
+(defun nelisp-mach-o--exe-chained-fixups (segment-count)
+  "Return a no-fixups LC_DYLD_CHAINED_FIXUPS payload for SEGMENT-COUNT."
+  (let* ((starts-off 32)
+         (starts-size (+ 4 (* segment-count 4)))
+         (imports-off (+ starts-off starts-size))
+         (symbols-off imports-off))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (let ((b (current-buffer)))
+        (nelisp-mach-o--write-le32 b 0)           ; version
+        (nelisp-mach-o--write-le32 b starts-off)
+        (nelisp-mach-o--write-le32 b imports-off)
+        (nelisp-mach-o--write-le32 b symbols-off)
+        (nelisp-mach-o--write-le32 b 0)           ; imports_count
+        (nelisp-mach-o--write-le32 b 1)           ; imports_format
+        (nelisp-mach-o--write-le32 b 0)           ; symbols_format
+        (nelisp-mach-o--write-le32 b 0)           ; pad
+        (nelisp-mach-o--write-le32 b segment-count)
+        (dotimes (_ segment-count)
+          (nelisp-mach-o--write-le32 b 0))
+        (buffer-substring-no-properties (point-min) (point-max))))))
 
 ;; 48-byte LC_DYLD_EXPORTS_TRIE exporting `__mh_execute_header' (addr 0)
 ;; and `_main' (addr 0x2d8 = file offset 728).  Pinned to the e1
@@ -313,6 +328,18 @@ symtab addresses identical to the e1 blueprint for milestone 1.")
            #x00 #x03 #x00 #xd8 #x05 #x00 #x00 #x02 #x5f #x6d #x68 #x5f
            #x65 #x78 #x65 #x63 #x75 #x74 #x65 #x5f #x68 #x65 #x61 #x64
            #x65 #x72 #x00 #x09 #x6d #x61 #x69 #x6e #x00 #x0d #x00 #x00)))
+
+(defun nelisp-mach-o--exe-exports-trie (main-off)
+  "Return exports trie bytes for `_main' at MAIN-OFF.
+This keeps the proven clang-derived two-symbol trie shape and only patches the
+ULEB128 terminal address for `_main'.  The layout currently requires a two-byte
+ULEB, which covers every executable code offset used by this writer."
+  (let ((addr (nelisp-mach-o--uleb128 main-off)))
+    (unless (= (length addr) 2)
+      (signal 'error (list :mach-o-exe-main-offset-uleb-size main-off)))
+    (concat (substring nelisp-mach-o--exe-exports-trie 0 15)
+            addr
+            (substring nelisp-mach-o--exe-exports-trie 17))))
 
 (defun nelisp-mach-o--uleb128 (n)
   "Return the ULEB128 unibyte encoding of non-negative integer N."
@@ -342,25 +369,53 @@ symtab addresses identical to the e1 blueprint for milestone 1.")
     (apply #'unibyte-string (append b nil))))
 
 (defun nelisp-mach-o--build-executable (sections)
-  "Build an UNSIGNED native macOS arm64 MH_EXECUTE image from SECTIONS.
-Recognised keys: :text (required unibyte code), :machine (must be
-`aarch64'), :entry-sym (optional, verified).  The returned image still
-needs an ad-hoc code signature (`codesign -s -') before it will run on
-Apple Silicon."
+  "Build an UNSIGNED native macOS MH_EXECUTE image from SECTIONS.
+Recognised keys: :text (required unibyte code), :data (optional writable
+bytes), :bss-size (optional zero-fill bytes), :machine (`aarch64' or
+`x86_64'), :entry-sym (optional, verified).  Apple Silicon output still
+needs an ad-hoc code signature (`codesign -s -') before it will run."
   (let* ((text (or (plist-get sections :text)
                    (error "nelisp-mach-o: :text is required")))
+         (data (nelisp-mach-o--coerce-unibyte (or (plist-get sections :data) "")))
+         (bss-size (or (plist-get sections :bss-size) 0))
          (machine (or (plist-get sections :machine) 'aarch64))
+         (cpu-pair (nelisp-mach-o--validate-machine machine))
+         (cpu-type    (car cpu-pair))
+         (cpu-subtype (cdr cpu-pair))
          (text (nelisp-mach-o--coerce-unibyte text))
          (text-size (length text))
-         (code-off nelisp-mach-o--exe-code-off)
+         (data-size (length data))
+         (have-data (> data-size 0))
+         (have-bss (> bss-size 0))
+         (have-rw (or have-data have-bss))
+         (rw-nsects (+ (if have-data 1 0) (if have-bss 1 0)))
+         (rw-cmd-size (if have-rw
+                          (+ nelisp-mach-o--segment-command-size
+                             (* rw-nsects nelisp-mach-o--section-size))
+                        0))
+         (ncmds (+ 15 (if have-rw 1 0)))
+         (sizeofcmds (+ 648 rw-cmd-size))
+         (code-off (if have-rw
+                       (nelisp-mach-o--align-up
+                        (+ nelisp-mach-o--header-size sizeofcmds 16)
+                        16)
+                     nelisp-mach-o--exe-code-off))
          (vmbase nelisp-mach-o--exe-text-vmaddr)
-         (page nelisp-mach-o--exe-page-size)
+         (page (nelisp-mach-o--exe-page-size machine))
          (text-end (+ code-off text-size))
          (text-filesize (nelisp-mach-o--align-up text-end page))
-         (linkedit-off text-filesize)
+         (data-off text-filesize)
+         (data-vmaddr (+ vmbase text-filesize))
+         (data-filesize (if have-data (nelisp-mach-o--align-up data-size page) 0))
+         (data-vmsize (if have-rw
+                          (nelisp-mach-o--align-up (+ data-size bss-size) page)
+                        0))
+         (linkedit-off (+ data-off data-filesize))
+         (linkedit-vmaddr (+ (if have-rw data-vmaddr vmbase)
+                             (if have-rw data-vmsize text-filesize)))
          ;; __LINKEDIT pieces, in e1 order.
-         (fixups nelisp-mach-o--exe-chained-fixups)
-         (trie nelisp-mach-o--exe-exports-trie)
+         (fixups (nelisp-mach-o--exe-chained-fixups (if have-rw 4 3)))
+         (trie (nelisp-mach-o--exe-exports-trie code-off))
          (func-starts (let ((u (nelisp-mach-o--uleb128 code-off)))
                         (concat u (make-string (- 8 (length u)) 0))))
          (fixups-off linkedit-off)
@@ -374,20 +429,18 @@ Apple Silicon."
                                              (length s)) 0))))
          (strsize (length strtab))
          (linkedit-size (- (+ stroff strsize) linkedit-off)))
-    (unless (eq machine 'aarch64)
-      (signal 'error (list :mach-o-exe-unsupported-machine machine)))
-    (when (> (+ nelisp-mach-o--header-size 648 16) code-off)
+    (when (> (+ nelisp-mach-o--header-size sizeofcmds 16) code-off)
       (error "nelisp-mach-o: load commands overrun code offset"))
     (with-temp-buffer
       (set-buffer-multibyte nil)
       (let ((b (current-buffer)))
         ;; mach_header_64
         (nelisp-mach-o--write-le32 b nelisp-mach-o--mh-magic-64)
-        (nelisp-mach-o--write-le32 b nelisp-mach-o--cpu-type-arm64)
-        (nelisp-mach-o--write-le32 b nelisp-mach-o--cpu-subtype-arm64-all)
+        (nelisp-mach-o--write-le32 b cpu-type)
+        (nelisp-mach-o--write-le32 b cpu-subtype)
         (nelisp-mach-o--write-le32 b nelisp-mach-o--mh-execute)
-        (nelisp-mach-o--write-le32 b 15)               ; ncmds (codesign adds the 16th)
-        (nelisp-mach-o--write-le32 b 648)              ; sizeofcmds
+        (nelisp-mach-o--write-le32 b ncmds)            ; codesign may add one more
+        (nelisp-mach-o--write-le32 b sizeofcmds)
         (nelisp-mach-o--write-le32 b nelisp-mach-o--exe-flags)
         (nelisp-mach-o--write-le32 b 0)
         ;; LC_SEGMENT_64 __PAGEZERO
@@ -427,11 +480,50 @@ Apple Silicon."
         (nelisp-mach-o--write-le32 b 0)                    ; reserved1
         (nelisp-mach-o--write-le32 b 0)                    ; reserved2
         (nelisp-mach-o--write-le32 b 0)                    ; reserved3
+        (when have-rw
+          ;; LC_SEGMENT_64 __DATA (+ optional __data / __bss sections)
+          (nelisp-mach-o--write-le32 b nelisp-mach-o--lc-segment-64)
+          (nelisp-mach-o--write-le32 b rw-cmd-size)
+          (nelisp-mach-o--write-fixed-string b "__DATA" 16)
+          (nelisp-mach-o--write-le64 b data-vmaddr)
+          (nelisp-mach-o--write-le64 b data-vmsize)
+          (nelisp-mach-o--write-le64 b data-off)
+          (nelisp-mach-o--write-le64 b data-filesize)
+          (nelisp-mach-o--write-le32 b nelisp-mach-o--vm-prot-rw)
+          (nelisp-mach-o--write-le32 b nelisp-mach-o--vm-prot-rw)
+          (nelisp-mach-o--write-le32 b rw-nsects)
+          (nelisp-mach-o--write-le32 b 0)
+          (when have-data
+            (nelisp-mach-o--write-fixed-string b "__data" 16)
+            (nelisp-mach-o--write-fixed-string b "__DATA" 16)
+            (nelisp-mach-o--write-le64 b data-vmaddr)
+            (nelisp-mach-o--write-le64 b data-size)
+            (nelisp-mach-o--write-le32 b data-off)
+            (nelisp-mach-o--write-le32 b 3)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0))
+          (when have-bss
+            (nelisp-mach-o--write-fixed-string b "__bss" 16)
+            (nelisp-mach-o--write-fixed-string b "__DATA" 16)
+            (nelisp-mach-o--write-le64 b (+ data-vmaddr data-size))
+            (nelisp-mach-o--write-le64 b bss-size)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 3)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 1) ; S_ZEROFILL
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)
+            (nelisp-mach-o--write-le32 b 0)))
         ;; LC_SEGMENT_64 __LINKEDIT
         (nelisp-mach-o--write-le32 b nelisp-mach-o--lc-segment-64)
         (nelisp-mach-o--write-le32 b 72)
         (nelisp-mach-o--write-fixed-string b "__LINKEDIT" 16)
-        (nelisp-mach-o--write-le64 b (+ vmbase text-filesize)) ; vmaddr
+        (nelisp-mach-o--write-le64 b linkedit-vmaddr)       ; vmaddr
         (nelisp-mach-o--write-le64 b (nelisp-mach-o--align-up linkedit-size page)) ; vmsize
         (nelisp-mach-o--write-le64 b linkedit-off)         ; fileoff
         (nelisp-mach-o--write-le64 b linkedit-size)        ; filesize
@@ -505,6 +597,11 @@ Apple Silicon."
         ;; __text + page padding
         (nelisp-mach-o--write-bytes b text)
         (nelisp-mach-o--write-pad b (- text-filesize (buffer-size)))
+        ;; __DATA file-backed payload, if present.  __bss is zero-fill only.
+        (when have-data
+          (nelisp-mach-o--write-bytes b data)
+          (nelisp-mach-o--write-pad b (- (+ data-off data-filesize)
+                                         (buffer-size))))
         ;; __LINKEDIT
         (nelisp-mach-o--write-bytes b fixups)
         (nelisp-mach-o--write-bytes b trie)
@@ -521,10 +618,10 @@ Apple Silicon."
 
 ;;;###autoload
 (defun nelisp-mach-o-write-executable (file-path sections)
-  "Emit an UNSIGNED native macOS arm64 MH_EXECUTE to FILE-PATH.
-SECTIONS keys: :text (unibyte code, required), :machine (`aarch64'),
-:entry-sym (optional).  Sign with `codesign -s -' on macOS before
-running.  See `nelisp-mach-o--build-executable'."
+  "Emit an UNSIGNED native macOS MH_EXECUTE to FILE-PATH.
+SECTIONS keys: :text (unibyte code, required), :machine (`aarch64' or
+`x86_64'), :entry-sym (optional).  Sign arm64 output with `codesign -s -'
+on macOS before running.  See `nelisp-mach-o--build-executable'."
   (let ((bytes (nelisp-mach-o--build-executable sections))
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil file-path nil 'silent)

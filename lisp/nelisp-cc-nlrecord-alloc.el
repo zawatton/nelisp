@@ -18,8 +18,8 @@
 ;;
 ;;   type_tag: Sexp    @ 0   (32 bytes — STAYS INLINE 32B)
 ;;   slots: Vec<Sexp>  @ 32  (24 bytes)
-;;     Vec.capacity    @ 32  (8 bytes — element count)
-;;     Vec.data_ptr    @ 40  (8 bytes — *mut Sexp-word buffer)
+;;     Vec.data_ptr    @ 32  (8 bytes — *mut Sexp-word buffer)
+;;     Vec.capacity    @ 40  (8 bytes — element count)
 ;;     Vec.len         @ 48  (8 bytes — element count)
 ;;   refcount          @ 56  (8 bytes — AtomicUsize)
 ;;   total = 64 bytes, align = 8
@@ -32,11 +32,8 @@
 ;; Int = (n<<2)|1); low bit 0 = 8-aligned pointer to a 32B child Sexp
 ;; box (children stay 32B; only the slot CELLS shrink).
 ;;
-;; Vec field order is `(capacity, data_ptr, len)' — same convention
-;; as NlVector.  `nelisp-nlrecord--offset-slots-capacity = 40' is the
-;; data pointer field (named from a pre-merge `(ptr, cap, len)'
-;; assumption; the AOT compiler comment in
-;; `--emit-record-slot-ptr-core' documents the corrected layout).
+;; Vec field order is `(data_ptr, capacity, len)' for the pinned
+;; toolchain; this matches `nelisp-nlrecord--offset-slots-ptr = 32'.
 ;;
 ;; Three-helper + public entry structure mirrors `nelisp-cc-nlvector-alloc.el':
 ;;
@@ -46,8 +43,8 @@
 ;;   nl_alloc_record_build (box-ptr data-ptr tag-ptr n) — writes all
 ;;     five words of the NlRecord struct:
 ;;       [box-ptr +  0..32] = clone of *tag-ptr  (type_tag Sexp)
-;;       [box-ptr + 32] = n     (Vec.capacity count)
-;;       [box-ptr + 40] = data-ptr (Vec.data_ptr)
+;;       [box-ptr + 32] = data-ptr (Vec.data_ptr)
+;;       [box-ptr + 40] = n     (Vec.capacity count)
 ;;       [box-ptr + 48] = n     (Vec.len)
 ;;       [box-ptr + 56] = 1     (refcount)
 ;;
@@ -88,8 +85,8 @@
     ;; Write all NlRecord fields and return box-ptr.
     ;;
     ;;   [box-ptr +  0..32] = clone of *tag-ptr  (type_tag Sexp, 32 bytes)
-    ;;   [box-ptr + 32] = n        — Vec<Sexp>.capacity (element count)
-    ;;   [box-ptr + 40] = data-ptr — Vec<Sexp>.data_ptr
+    ;;   [box-ptr + 32] = data-ptr — Vec<Sexp>.data_ptr
+    ;;   [box-ptr + 40] = n        — Vec<Sexp>.capacity (element count)
     ;;   [box-ptr + 48] = n        — Vec<Sexp>.len
     ;;   [box-ptr + 56] = 1        — NlRecord.refcount
     ;;
@@ -98,8 +95,8 @@
     ;; from the Rust-unit `nl_sexp_clone_into' return.
     (defun nl_alloc_record_build (box-ptr data-ptr tag-ptr n)
       (and (or (extern-call nl_sexp_clone_into tag-ptr box-ptr) 1)
-           (ptr-write-u64 box-ptr 32 n)
-           (ptr-write-u64 box-ptr 40 data-ptr)
+           (ptr-write-u64 box-ptr 32 data-ptr)
+           (ptr-write-u64 box-ptr 40 n)
            (ptr-write-u64 box-ptr 48 n)
            (ptr-write-u64 box-ptr 56 1)
            box-ptr))

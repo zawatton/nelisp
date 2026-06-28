@@ -195,8 +195,8 @@ run_fact_smoke() {
   "$RB" "$driver" >"$log" 2>&1
   compile_rc=$?
   set -e
-  if [ "$compile_rc" != "88" ]; then
-    echo "[selfhost] FAIL: $name driver returned $compile_rc (expected 88 = compile completed)"
+  if [ "$compile_rc" != "0" ]; then
+    echo "[selfhost] FAIL: $name driver returned $compile_rc (expected 0 = file load completed)"
     tail -8 "$log" | sed 's/^/    /'
     exit 1
   fi

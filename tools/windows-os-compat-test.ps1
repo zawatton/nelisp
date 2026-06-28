@@ -153,14 +153,20 @@ function Run-ErtSuite {
     )
 
     $LogPath = Join-Path $OutDir ("nelisp-windows-os-" + $Name + ".log")
+    $EvalPath = Join-Path $OutDir ("nelisp-windows-os-" + $Name + "-run.el")
     Remove-Item -Force -ErrorAction SilentlyContinue $LogPath
+    Set-Content -LiteralPath $EvalPath -Encoding ascii `
+        -Value '(ert-run-tests-batch-and-exit (getenv "NELISP_WINDOWS_OS_SELECTOR"))'
 
     $oldSelector = $env:NELISP_WINDOWS_OS_SELECTOR
+    $oldErrorActionPreference = $ErrorActionPreference
     try {
         $env:NELISP_WINDOWS_OS_SELECTOR = $Selector
+        $ErrorActionPreference = "Continue"
         & $Emacs --batch -Q -L lisp -L src `
             -l test/nelisp-stdlib-os-test.el `
-            --eval '(ert-run-tests-batch-and-exit (getenv "NELISP_WINDOWS_OS_SELECTOR"))' *> $LogPath
+            -l $EvalPath *> $LogPath
+        $ErrorActionPreference = $oldErrorActionPreference
 
         if ($LASTEXITCODE -ne 0) {
             Write-Host ("[windows-os] FAIL: " + $Name + " selector '" + $Selector + "'")
@@ -193,6 +199,7 @@ function Run-ErtSuite {
         }
         return $true
     } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
         $env:NELISP_WINDOWS_OS_SELECTOR = $oldSelector
     }
 }

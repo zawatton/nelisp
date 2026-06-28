@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# macOS arm64 standalone reader smoke.
+# macOS standalone reader smoke.
 #
-# Builds target/nelisp as a pure-elisp Mach-O executable.  On macOS arm64 it
+# Builds a pure-elisp Mach-O executable.  On native macOS it
 # exercises embedded source, file-argument source, --eval/--load commands, and REPL
 # stdin/stdout.  No Rust toolchain is used.
 set -euo pipefail
@@ -11,26 +11,36 @@ SOURCE="(+ 40 2)"
 EXPECTED=42
 BUILD_ONLY=0
 EMBEDDED_ONLY=0
+TARGET=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --emacs) EMACS="$2"; shift 2 ;;
     --source) SOURCE="$2"; shift 2 ;;
     --expected) EXPECTED="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
     --build-only|--emit-only) BUILD_ONLY=1; shift ;;
     --embedded-only) EMBEDDED_ONLY=1; shift ;;
-    *) echo "usage: $0 [--source FORM] [--expected N] [--build-only] [--embedded-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--source FORM] [--expected N] [--target macos-aarch64|macos-x86_64] [--build-only] [--embedded-only]" >&2; exit 2 ;;
   esac
 done
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+if [ -z "$TARGET" ]; then
+  case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+    Darwin-arm64) TARGET="macos-aarch64" ;;
+    Darwin-x86_64) TARGET="macos-x86_64" ;;
+    *) TARGET="macos-aarch64" ;;
+  esac
+fi
+
 echo "--- macOS standalone reader smoke ---"
 uname -a
 "$EMACS" --version | head -1
 
-export NELISP_STANDALONE_TARGET=macos-aarch64
+export NELISP_STANDALONE_TARGET="$TARGET"
 export NELISP_SRC="$SOURCE"
 
 "$EMACS" --batch -Q -L lisp -L src -L scripts \
@@ -38,19 +48,30 @@ export NELISP_SRC="$SOURCE"
   -l nelisp-standalone-build \
   -f nelisp-standalone-build-reader
 
-EXE="$REPO_ROOT/target/nelisp"
+case "$TARGET" in
+  macos-aarch64) EXE="$REPO_ROOT/target/nelisp-macos-aarch64" ;;
+  macos-x86_64) EXE="$REPO_ROOT/target/nelisp-macos-x86_64" ;;
+  *) echo "[macos-standalone-reader] FAIL: unsupported target $TARGET" >&2; exit 2 ;;
+esac
 if [ ! -f "$EXE" ]; then
   echo "[macos-standalone-reader] FAIL: missing $EXE"
   exit 1
 fi
 
-if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ] || [ "$BUILD_ONLY" -eq 1 ]; then
+HOST_TARGET=""
+case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+  Darwin-arm64) HOST_TARGET="macos-aarch64" ;;
+  Darwin-x86_64) HOST_TARGET="macos-x86_64" ;;
+esac
+if [ "$HOST_TARGET" != "$TARGET" ] || [ "$BUILD_ONLY" -eq 1 ]; then
   file "$EXE"
   echo "[macos-standalone-reader] build-only PASS: $EXE"
   exit 0
 fi
 
-codesign -f -s - "$EXE" >/dev/null
+if command -v codesign >/dev/null 2>&1; then
+  codesign -f -s - "$EXE" >/dev/null
+fi
 
 run_expect_code() {
   local label="$1" want="$2"; shift 2

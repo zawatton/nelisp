@@ -923,8 +923,8 @@
      :output "nl_vector_set_slot.o"
      :requires-arch x86_64)
     ;; Doc 133 batch — nl_record_set_slot: peeks Vec.data_ptr from
-    ;; record+40 (= NlRecord.slots.ptr), writes 32 bytes to
-    ;; data_ptr + n*32 (= n << 5).
+    ;; record+32 (= NlRecord.slots.ptr), writes a tagged 8-byte WORD to
+    ;; data_ptr + n*8.
     (nelisp-cc-nlrecord-set-slot
      :source-var nelisp-cc-nlrecord-set-slot--source
      :output "nl_record_set_slot.o"

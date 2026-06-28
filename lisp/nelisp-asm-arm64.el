@@ -758,18 +758,21 @@ bits (= C `>>' on an unsigned operand); shift count uses Xm[5:0]."
      buf (logior #x9AC02400 (ash m 16) (ash n 5) d))))
 
 (defun nelisp-asm-arm64-b-cond (buf cond-sym label)
-  "Emit `B.cond LABEL' with a fixup against LABEL.
-Writes a 4-byte placeholder = base 0x54000000 | cond (imm19 field
-= 0), then records a `b19' fixup at the placeholder offset.
-`resolve-fixups' patches imm19 = `(label-pos - slot) >> 2' into
-bits [23:5] of the placeholder word.  The branch displacement
-must fit in a signed 19-bit byte offset (= ±1 MiB) and be 4-byte
-aligned."
+  "Emit a long-safe conditional branch to LABEL.
+AArch64 `B.cond' has only a signed imm19 range (±1 MiB), which is too short
+for large standalone driver defuns.  Emit the standard two-instruction form:
+
+  B.!cond .+8
+  B       LABEL
+
+The first branch is always local, while the real target uses the existing
+`b26' fixup range (±128 MiB).  This keeps byte length deterministic across
+passes and preserves the public API."
   (let* ((cond-bits (nelisp-asm-arm64--cond-num cond-sym))
-         (slot (nelisp-asm-arm64-buffer-pos buf)))
+         (inv-bits (logxor cond-bits 1)))
     (nelisp-asm-arm64--emit-word
-     buf (logior #x54000000 (logand cond-bits #xF)))
-    (nelisp-asm-arm64-emit-fixup buf slot label 'b19)))
+     buf (logior #x54000000 (ash 2 5) (logand inv-bits #xF)))
+    (nelisp-asm-arm64-b buf label)))
 
 (defun nelisp-asm-arm64-str-pre-sp-16 (buf src)
   "Emit `STR Xn, [SP, #-16]!' (= push Xn, pre-index SP -= 16).

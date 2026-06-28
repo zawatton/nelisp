@@ -111,6 +111,20 @@ against that image."
           (nelisp-runtime-image--ensure-final-newline source)
           ")\n"))
 
+(defun nelisp-runtime-image--strip-utf8-bom (source)
+  "Return SOURCE without a leading UTF-8 BOM byte sequence."
+  (if (stringp source)
+      (if (>= (length source) 3)
+          (if (= (aref source 0) 239)
+              (if (= (aref source 1) 187)
+                  (if (= (aref source 2) 191)
+                      (substring source 3)
+                    source)
+                source)
+            source)
+        source)
+    source))
+
 (defun nelisp-runtime-image--read-file (path)
   "Read PATH as a string or signal an error."
   (let ((source (if (fboundp 'nelisp--eval-source-string)
@@ -118,7 +132,7 @@ against that image."
                   (nelisp--syscall-read-file path))))
     (unless (stringp source)
       (error "cannot read runtime image: %s" path))
-    source))
+    (nelisp-runtime-image--strip-utf8-bom source)))
 
 (defun nelisp-runtime-image--write-file (path source)
   "Write SOURCE to PATH or signal an error."

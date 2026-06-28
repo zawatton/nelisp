@@ -26,6 +26,16 @@ TARGET="${NELISP_STANDALONE_TARGET:-}"
 CLEAN=0
 COMPILE_ONLY=0
 
+normalize_target() {
+  case "$1" in
+    macos-arm64|darwin-arm64|darwin-aarch64) echo "macos-aarch64" ;;
+    macos-x64|macos-amd64|darwin-x86_64|darwin-amd64) echo "macos-x86_64" ;;
+    linux-arm64) echo "linux-aarch64" ;;
+    windows-arm64|win-arm64) echo "windows-aarch64" ;;
+    *) echo "$1" ;;
+  esac
+}
+
 default_jobs() {
   if command -v nproc >/dev/null 2>&1; then
     nproc
@@ -38,7 +48,11 @@ default_jobs() {
 
 if [ -z "$TARGET" ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
-    TARGET="macos-aarch64"
+    case "$(uname -m)" in
+      arm64) TARGET="macos-aarch64" ;;
+      x86_64) TARGET="macos-x86_64" ;;
+      *) TARGET="macos-aarch64" ;;
+    esac
   else
     TARGET="linux-x86_64"
   fi
@@ -54,13 +68,14 @@ while [ "$#" -gt 0 ]; do
     --clean) CLEAN=1; shift ;;
     --compile-only) COMPILE_ONLY=1; shift ;;
     -h|--help)
-      echo "usage: $0 [NJOBS] [--jobs N] [--target linux-x86_64|macos-aarch64] [--clean] [--compile-only]"
+      echo "usage: $0 [NJOBS] [--jobs N] [--target linux-x86_64|linux-aarch64|macos-aarch64|macos-x86_64] [--clean] [--compile-only]"
       exit 0
       ;;
     [0-9]*) JOBS="$1"; shift ;;
-    *) echo "usage: $0 [NJOBS] [--jobs N] [--target linux-x86_64|macos-aarch64] [--clean] [--compile-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [NJOBS] [--jobs N] [--target linux-x86_64|linux-aarch64|macos-aarch64|macos-x86_64] [--clean] [--compile-only]" >&2; exit 2 ;;
   esac
 done
+TARGET="$(normalize_target "$TARGET")"
 
 case "$JOBS" in
   ''|*[!0-9]*)

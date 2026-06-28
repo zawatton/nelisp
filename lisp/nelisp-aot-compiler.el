@@ -1544,62 +1544,60 @@ MVP table does not yet store."
 SCRATCH is the standard AOT init scratch vector; DEPTH selects a
 temporary scratch slot for nested aggregate construction.  Nil means
 the literal shape is outside the current module-init materializer."
-  (when (>= depth 10)
-    (cl-return-from nelisp-aot-compiler--top-level-literal-write-forms
-      nil))
-  (cond
-   ((integerp literal)
-    `((sexp-int-make ,slot ,literal)))
-   ((stringp literal)
-    `((sexp-write-str-lit ,slot ,literal)))
-   ((null literal)
-    `((sexp-write-nil ,slot)))
-   ((eq literal t)
-    `((sexp-write-t ,slot)))
-   ((symbolp literal)
-    `((sexp-write-symbol-lit ,slot ,(symbol-name literal))))
-   ((consp literal)
-    (let ((items nil)
-          (tail literal))
-      (while (consp tail)
-        (push (car tail) items)
-        (setq tail (cdr tail)))
-      (let ((forms
-             (nelisp-aot-compiler--top-level-literal-write-forms
-              slot tail scratch depth))
-            (temp (nelisp-aot-compiler--scratch-slot scratch depth)))
-        (when forms
-          (dolist (item items)
-            (let ((item-forms
-                   (nelisp-aot-compiler--top-level-literal-write-forms
-                    temp item scratch (1+ depth))))
-              (unless item-forms
-                (setq forms nil))
-              (when forms
+  (when (< depth 10)
+    (cond
+     ((integerp literal)
+      `((sexp-int-make ,slot ,literal)))
+     ((stringp literal)
+      `((sexp-write-str-lit ,slot ,literal)))
+     ((null literal)
+      `((sexp-write-nil ,slot)))
+     ((eq literal t)
+      `((sexp-write-t ,slot)))
+     ((symbolp literal)
+      `((sexp-write-symbol-lit ,slot ,(symbol-name literal))))
+     ((consp literal)
+      (let ((items nil)
+            (tail literal))
+        (while (consp tail)
+          (push (car tail) items)
+          (setq tail (cdr tail)))
+        (let ((forms
+               (nelisp-aot-compiler--top-level-literal-write-forms
+                slot tail scratch depth))
+              (temp (nelisp-aot-compiler--scratch-slot scratch depth)))
+          (when forms
+            (dolist (item items)
+              (let ((item-forms
+                     (nelisp-aot-compiler--top-level-literal-write-forms
+                      temp item scratch (1+ depth))))
+                (unless item-forms
+                  (setq forms nil))
+                (when forms
+                  (setq forms
+                        (append forms
+                                item-forms
+                                `((cons-make-with-clone ,temp ,slot
+                                                        ,slot)))))))
+            forms))))
+     ((vectorp literal)
+      (let ((forms `((vector-make ,(length literal) ,slot)))
+            (temp (nelisp-aot-compiler--scratch-slot scratch depth))
+            (idx 0)
+            (ok t))
+        (while (and ok (< idx (length literal)))
+          (let ((item-forms
+                 (nelisp-aot-compiler--top-level-literal-write-forms
+                  temp (aref literal idx) scratch (1+ depth))))
+            (if item-forms
                 (setq forms
                       (append forms
                               item-forms
-                              `((cons-make-with-clone ,temp ,slot
-                                                      ,slot)))))))
-          forms))))
-   ((vectorp literal)
-    (let ((forms `((vector-make ,(length literal) ,slot)))
-          (temp (nelisp-aot-compiler--scratch-slot scratch depth))
-          (idx 0)
-          (ok t))
-      (while (and ok (< idx (length literal)))
-        (let ((item-forms
-               (nelisp-aot-compiler--top-level-literal-write-forms
-                temp (aref literal idx) scratch (1+ depth))))
-          (if item-forms
-              (setq forms
-                    (append forms
-                            item-forms
-                            `((vector-slot-set ,slot ,idx ,temp))))
-            (setq ok nil)))
-        (setq idx (1+ idx)))
-      (when ok forms)))
-   (t nil)))
+                              `((vector-slot-set ,slot ,idx ,temp))))
+              (setq ok nil)))
+          (setq idx (1+ idx)))
+        (when ok forms)))
+     (t nil))))
 
 (defun nelisp-aot-compiler--top-level-sexp-init-write-forms
     (slot form scratch)
@@ -7758,6 +7756,35 @@ functions `((NAME . ARITY) ...)'."
           (dolist (arg (cddr args))
             (setq tree (list op tree arg)))
           (nelisp-aot-compiler--parse-value tree env fenv defuns))))))
+   ;; Deterministic integer math helpers.  These are parsed as core
+   ;; value expressions so frontends can keep pure numeric logic out of
+   ;; adapter/event bridges while reusing the existing integer IR.
+   ((and (consp sexp) (memq (car sexp) '(floor truncate round)))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :integer-math-arity (car sexp) sexp)))
+    (nelisp-aot-compiler--parse-value (nth 1 sexp) env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'abs))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :integer-math-arity 'abs sexp)))
+    (let ((value (nth 1 sexp)))
+      (nelisp-aot-compiler--parse-value
+       `(if (< ,value 0) (- 0 ,value) ,value)
+       env fenv defuns)))
+   ((and (consp sexp) (memq (car sexp) '(min max)))
+    (let ((op (car sexp))
+          (args (cdr sexp)))
+      (when (null args)
+        (signal 'nelisp-aot-compiler-error
+                (list :integer-math-arity op sexp)))
+      (let ((tree (car args)))
+        (dolist (arg (cdr args))
+          (setq tree
+                (if (eq op 'min)
+                    `(if (< ,tree ,arg) ,tree ,arg)
+                  `(if (> ,tree ,arg) ,tree ,arg))))
+        (nelisp-aot-compiler--parse-value tree env fenv defuns))))
    ;; Arithmetic with at least one non-constant operand.  Doc 100
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
@@ -12038,8 +12065,9 @@ same branch and emit the same byte count."
          ;; already excluded arity for the same prologue-rounding reason.
          (needs-align
           (if win64-p
-              ;; Win64 defun prologues round the local frame so body calls start
-              ;; 16-byte aligned.  Only outgoing stack arguments disturb that.
+              ;; Win64 extern calls dynamically align rsp immediately before
+              ;; reserving the outgoing area below, so only the outgoing stack
+              ;; arguments disturb the aligned base.
               (= (logand (length stack-args) 1) 1)
             (= (logand (length stack-args) 1) 1)))
          (general-stack-spill-p
@@ -12051,6 +12079,8 @@ same branch and emit the same byte count."
           ;; Same invariant: count only the pushed temps + outgoing stack
           ;; args, not the enclosing arity (matches the win64 branch).
           (= (logand (+ (length stack-args) arg-count) 1) 1))
+         (win64-dynamic-align-p
+          (and win64-p (memq name '(CreateFileW ReadFile WriteFile CloseHandle))))
          (call-temp-save-count 0)
          (call-needs-align needs-align))
     (when (and (not win64-p)
@@ -12167,6 +12197,13 @@ same branch and emit the same byte count."
     ;; 32-byte shadow space, any GP stack args at [rsp+32...],
     ;; plus an optional high-address alignment pad.  SysV has already
     ;; pushed outgoing stack args above and uses no shadow space.
+    (when win64-dynamic-align-p
+      ;; File I/O WinAPI calls can be reached from expression contexts whose
+      ;; transient stack depth is not statically visible here.  Align the
+      ;; outgoing area from the runtime rsp, then restore the exact pre-call rsp.
+      ;; RBX is preserved by generated Win64 defun prologues and by WinAPI.
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xE3))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0)))
     (let* ((shadow (if win64-p 32 0))
            (win64-stack-bytes (if win64-p (* 8 (length stack-args)) 0))
            (win64-pad (if (and win64-p call-needs-align) 8 0))
@@ -12201,8 +12238,10 @@ same branch and emit the same byte count."
       (nelisp-asm-x86_64-reloc-plt32-here
        buf (symbol-name name) -4 'text)
       ;; Reclaim the Win64 outgoing area.
-      (when (> win64-outgoing 0)
+      (when (and (> win64-outgoing 0) (not win64-dynamic-align-p))
         (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)))
+    (when win64-dynamic-align-p
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC)))
     ;; Reclaim outgoing SysV stack arguments, preserving rax/xmm0.
     (when (and sysv-p stack-args)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (length stack-args))))
@@ -12219,7 +12258,7 @@ same branch and emit the same byte count."
     (ignore ret-class)))
 
 (defun nelisp-aot-compiler--emit-syscall-direct (node buf)
-  "Emit a Linux x86_64 raw SYSCALL instruction for NODE into BUF.
+  "Emit an x86_64 raw SYSCALL instruction for NODE into BUF.
 NODE is a `:kind syscall-direct' IR node with keys :nr, :a0, :a1,
 :a2, :a3, :a4, :a5 (all value-producing sub-nodes returning i64).
 
@@ -12227,11 +12266,12 @@ Evaluation strategy (push/pop avoids clobbering param spill slots):
   1. Evaluate each argument in left-to-right (NR, A0..A5) order,
      pushing rax after each evaluation (7 pushes total; TOS = A5
      after the final push, NR is deepest).
-  2. Pop in reverse into the Linux SYSCALL ABI registers:
+  2. Pop in reverse into the x86_64 SYSCALL ABI registers:
        pop r9   ← A5   pop r8   ← A4   pop r10  ← A3
        pop rdx  ← A2   pop rsi  ← A1   pop rdi  ← A0
        pop rax  ← NR
-  3. Emit SYSCALL (0F 05).
+  3. On Darwin, add the UNIX syscall class offset (#x02000000) to NR.
+  4. Emit SYSCALL (0F 05).
   Returns the kernel's raw i64 in rax (negative = -errno on error).
 
 Byte-count is fixed per pass so the pass-1/pass-2 invariant holds:
@@ -12260,6 +12300,8 @@ the compile-elisp-objects manifest."
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
     (nelisp-asm-x86_64-pop buf 'rax)
+    (when (eq nelisp-aot-compiler--os 'darwin)
+      (nelisp-asm-x86_64-add-imm32 buf 'rax #x02000000))
     ;; 3. Execute SYSCALL.
     (nelisp-asm-x86_64-syscall buf)))
 
@@ -12693,7 +12735,7 @@ tagged WORD per slot (was a 32B inline `Sexp'); the inline `type_tag'
 not 8; the slot is an 8B word, not a 32B Sexp the consumer can read
 tag/payload from).  Delegate to the ABI-stable `nl_record_slot_ptr
 (rec_ptr, idx) -> *const Sexp' .o helper, which:
-  - reads slots Vec.data_ptr from rec_ptr+40,
+  - reads slots Vec.data_ptr from rec_ptr+32,
   - loads the 8B tagged WORD at data_ptr + idx*8,
   - returns a 32B-slot VIEW: a pointer WORD (low bit 0) passes
     through (already a 32B child box); an immediate WORD (low bit 1)
@@ -14214,6 +14256,8 @@ extern is `void')."
 ABI: rax=NR rdi=A0 rsi=A1 rdx=A2 r10=A3 r8=A4 r9=A5 → rax.
 Strategy: evaluate each arg into rax and push; then pop in reverse
 order (A5→r9, A4→r8, A3→r10, A2→rdx, A1→rsi, A0→rdi, NR→rax).
+On Darwin/x86_64, NR is the UNIX syscall number and is adjusted to
+the kernel ABI's #x02000000 syscall class before `syscall'.
 SYSCALL clobbers rcx and r11; the result is left in rax.
 Stack alignment: 7 pushes (= 56 bytes offset); SYSCALL itself does
 not require 16-byte alignment, so no extra pad is needed."
@@ -14240,6 +14284,8 @@ not require 16-byte alignment, so no extra pad is needed."
   (nelisp-asm-x86_64-pop buf 'rsi)
   (nelisp-asm-x86_64-pop buf 'rdi)
   (nelisp-asm-x86_64-pop buf 'rax)
+  (when (eq nelisp-aot-compiler--os 'darwin)
+    (nelisp-asm-x86_64-add-imm32 buf 'rax #x02000000))
   (nelisp-asm-x86_64-syscall buf))
 
 (defun nelisp-aot-compiler--emit-syscall-direct-arm64 (node buf)
@@ -15771,7 +15817,8 @@ the absolute virtual address of byte 0 of .rodata."
           (nelisp-asm-arm64-mov-imm64 buf (if darwin 'x16 'x8)
                                           (if darwin 4 64))
           (nelisp-asm-arm64-svc buf (if darwin #x80 0)))
-      (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+      (nelisp-asm-x86_64-mov-imm32
+       buf 'rax (if (eq nelisp-aot-compiler--os 'darwin) #x02000004 1))
       (nelisp-asm-x86_64-mov-imm32 buf 'rdi 1)
       (nelisp-asm-x86_64-mov-imm64 buf 'rsi addr)
       (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
@@ -15795,7 +15842,8 @@ value into rax then `mov rdi, rax' + syscall."
      (cond
       ((= tag 30)                 ; imm
        (let ((status (nelisp-aot-compiler--ir-get value-node :value)))
-         (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
+         (nelisp-asm-x86_64-mov-imm32
+          buf 'rax (if (eq nelisp-aot-compiler--os 'darwin) #x02000001 60))
          (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
          (nelisp-asm-x86_64-syscall buf)))
       (t
@@ -15803,8 +15851,9 @@ value into rax then `mov rdi, rax' + syscall."
        (nelisp-aot-compiler--emit-value value-node buf)
        ;; mov rdi, rax (= exit status from computed value).
        (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-       ;; mov rax, 60 (SYS_exit).
-       (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
+       ;; mov rax, SYS_exit (Linux) or Darwin UNIX-class exit.
+       (nelisp-asm-x86_64-mov-imm32
+        buf 'rax (if (eq nelisp-aot-compiler--os 'darwin) #x02000001 60))
        (nelisp-asm-x86_64-syscall buf))))))
 
 (defun nelisp-aot-compiler--emit-stmt (ir buf str-offsets rodata-vaddr)
@@ -15913,7 +15962,7 @@ return reg, untouched by epilogue)."
          (win64-xmm-callee-save-regs
           nelisp-asm-x86_64--abi-win64-xmm-callee-saved)
          (win64-xmm-callee-save-slot-base
-          (+ win64-callee-save-slot-base 2))
+          (+ win64-callee-save-slot-base 4))
          ;; Track this defun's arity for `--emit-extern-call' (Doc 111
          ;; §111.E #19-#26 stack alignment fix).  Inner emit helpers
          ;; bound under this `let*' see the param count via the dynvar
@@ -16134,15 +16183,18 @@ return reg, untouched by epilogue)."
              (t
               (signal 'nelisp-aot-compiler-error
                       (list :unknown-defun-param-class param-class))))
-            ;; Reserve runtime let-rt slots, then two private Win64
-            ;; callee-save slots for RDI/RSI below every public frame slot.
+            ;; Reserve runtime let-rt slots, then four private Win64
+            ;; callee-save slots for RBX/RDI/RSI plus one alignment pad
+            ;; below every public frame slot.
             (when (> rt-slot-rounded 0)
               (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-slot-rounded)))
-            (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 16)
+            (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 32)
             (nelisp-asm-x86_64-mov-mem-reg-disp8
-             buf 'rbp (- (* 8 (1+ win64-callee-save-slot-base))) 'rdi)
+             buf 'rbp (- (* 8 (1+ win64-callee-save-slot-base))) 'rbx)
             (nelisp-asm-x86_64-mov-mem-reg-disp8
-             buf 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))) 'rsi)
+             buf 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))) 'rdi)
+            (nelisp-asm-x86_64-mov-mem-reg-disp8
+             buf 'rbp (- (* 8 (+ 3 win64-callee-save-slot-base))) 'rsi)
             (nelisp-asm-x86_64--sub-imm32-inline
              buf 'rsp (* 16 (length win64-xmm-callee-save-regs)))
             (cl-loop for xreg in win64-xmm-callee-save-regs
@@ -16276,9 +16328,11 @@ return reg, untouched by epilogue)."
                               2
                               (* 2 idx))))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8
-         buf 'rdi 'rbp (- (* 8 (1+ win64-callee-save-slot-base))))
+         buf 'rbx 'rbp (- (* 8 (1+ win64-callee-save-slot-base))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8
-         buf 'rsi 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base)))))
+         buf 'rdi 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))))
+        (nelisp-asm-x86_64-mov-reg-mem-disp8
+         buf 'rsi 'rbp (- (* 8 (+ 3 win64-callee-save-slot-base)))))
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rsp 'rbp)
       (nelisp-asm-x86_64--pop-inline buf 'rbp)
       (nelisp-asm-x86_64--ret-inline buf))))

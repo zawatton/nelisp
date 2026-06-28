@@ -1,35 +1,49 @@
 #!/usr/bin/env bash
-# macOS arm64 standalone eval cache identity smoke.
+# macOS standalone eval cache identity smoke.
 #
-# Builds target/nelisp-standalone-eval once from a clean macOS target cache,
+# Builds target/nelisp-standalone-eval-macos-* once from a clean macOS target cache,
 # builds it again from cached units, and verifies both Mach-O images are
 # byte-stable.  No Rust toolchain is used.
 set -euo pipefail
 
 EMACS="${EMACS:-emacs}"
+TARGET=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --emacs) EMACS="$2"; shift 2 ;;
-    -h|--help) echo "usage: $0 [--emacs EMACS]"; exit 0 ;;
-    *) echo "usage: $0 [--emacs EMACS]" >&2; exit 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
+    -h|--help) echo "usage: $0 [--emacs EMACS] [--target macos-aarch64|macos-x86_64]"; exit 0 ;;
+    *) echo "usage: $0 [--emacs EMACS] [--target macos-aarch64|macos-x86_64]" >&2; exit 2 ;;
   esac
 done
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+if [ -z "$TARGET" ]; then
+  case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+    Darwin-arm64) TARGET="macos-aarch64" ;;
+    Darwin-x86_64) TARGET="macos-x86_64" ;;
+    *) TARGET="macos-aarch64" ;;
+  esac
+fi
+
 echo "--- macOS standalone cache identity smoke ---"
 uname -a
 "$EMACS" --version | head -1
 
-export NELISP_STANDALONE_TARGET=macos-aarch64
+export NELISP_STANDALONE_TARGET="$TARGET"
 export NELISP_FORM_OP="+"
 export NELISP_FORM_A="1"
 export NELISP_FORM_B="2"
 
-EXE="$REPO_ROOT/target/nelisp-standalone-eval"
-CACHE_DIR="$REPO_ROOT/target/standalone-units/macos-aarch64"
+case "$TARGET" in
+  macos-aarch64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-aarch64" ;;
+  macos-x86_64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-x86_64" ;;
+  *) echo "[macos-standalone-cache] FAIL: unsupported target $TARGET" >&2; exit 2 ;;
+esac
+CACHE_DIR="$REPO_ROOT/target/standalone-units/$TARGET"
 
 rm -rf "$CACHE_DIR"
 rm -f "$EXE"

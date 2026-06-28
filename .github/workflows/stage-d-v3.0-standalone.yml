@@ -3,19 +3,35 @@ name: stage-d-v3.0 standalone parity
 # Zero-Rust native standalone gate for the short `nelisp' CLI.
 # Each platform runs the same verifier users run locally, including native
 # eval, reader, REPL, cache identity, parallel build, tarball verify, install,
-# and installed binary execution.
+# installed binary execution, and installed bin/anvil CAD/SVG smoke.
 
 on:
   workflow_dispatch:
+    inputs:
+      related_ref:
+        description: 'Branch name to use for sibling nelisp-emacs/anvil.el checkouts; defaults to this workflow ref'
+        required: false
+        type: string
+      nelisp_emacs_ref:
+        description: 'Optional branch override for nelisp-emacs; defaults to related_ref'
+        required: false
+        type: string
+      anvil_ref:
+        description: 'Optional branch override for anvil.el; defaults to related_ref'
+        required: false
+        type: string
   push:
     branches: ['main']
     paths:
       - '.github/workflows/stage-d-v3.0-standalone.yml'
       - 'lisp/**'
+      - 'packages/**'
       - 'src/**'
       - 'scripts/**'
       - 'tools/**'
+      - 'bin/**'
       - 'release/stage-d-v3.0/**'
+      - 'README.org'
       - 'README-stage-d-v3.0.org'
       - 'Makefile'
   pull_request:
@@ -23,10 +39,13 @@ on:
     paths:
       - '.github/workflows/stage-d-v3.0-standalone.yml'
       - 'lisp/**'
+      - 'packages/**'
       - 'src/**'
       - 'scripts/**'
       - 'tools/**'
+      - 'bin/**'
       - 'release/stage-d-v3.0/**'
+      - 'README.org'
       - 'README-stage-d-v3.0.org'
       - 'Makefile'
 
@@ -37,6 +56,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout related standalone vendor repos
+        shell: bash
+        env:
+          RELATED_REF: ${{ inputs.related_ref || github.head_ref || github.ref_name }}
+          NELISP_EMACS_REF: ${{ inputs.nelisp_emacs_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+          ANVIL_REF: ${{ inputs.anvil_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          clone_related() {
+            local repo="$1" dest="$2" ref="$3"
+            if git ls-remote --exit-code --heads "https://github.com/zawatton/${repo}.git" "$ref" >/dev/null 2>&1; then
+              git clone --depth 1 --branch "$ref" "https://github.com/zawatton/${repo}.git" "../${dest}"
+            else
+              echo "::error::required related repo ${repo} has no branch ${ref}; push matching branches for standalone vendor CI"
+              exit 1
+            fi
+          }
+          clone_related nelisp-emacs nelisp-emacs "${NELISP_EMACS_REF:-${RELATED_REF:-main}}"
+          clone_related anvil.el anvil.el "${ANVIL_REF:-${RELATED_REF:-main}}"
+
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
@@ -44,7 +83,17 @@ jobs:
 
       - name: Verify Linux standalone parity
         shell: bash
-        run: ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
+        run: |
+          set -o pipefail
+          mkdir -p verification-logs
+          ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball 2>&1 | tee verification-logs/linux-x86_64.log
+
+      - name: Upload Linux verification log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v3.0-linux-x86_64-log
+          path: verification-logs/linux-x86_64.log
 
       - name: Upload Linux standalone tarball
         uses: actions/upload-artifact@v4
@@ -60,6 +109,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout related standalone vendor repos
+        shell: bash
+        env:
+          RELATED_REF: ${{ inputs.related_ref || github.head_ref || github.ref_name }}
+          NELISP_EMACS_REF: ${{ inputs.nelisp_emacs_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+          ANVIL_REF: ${{ inputs.anvil_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          clone_related() {
+            local repo="$1" dest="$2" ref="$3"
+            if git ls-remote --exit-code --heads "https://github.com/zawatton/${repo}.git" "$ref" >/dev/null 2>&1; then
+              git clone --depth 1 --branch "$ref" "https://github.com/zawatton/${repo}.git" "../${dest}"
+            else
+              echo "::error::required related repo ${repo} has no branch ${ref}; push matching branches for standalone vendor CI"
+              exit 1
+            fi
+          }
+          clone_related nelisp-emacs nelisp-emacs "${NELISP_EMACS_REF:-${RELATED_REF:-main}}"
+          clone_related anvil.el anvil.el "${ANVIL_REF:-${RELATED_REF:-main}}"
+
       - name: Set up Emacs
         uses: purcell/setup-emacs@v8.0
         with:
@@ -67,7 +136,17 @@ jobs:
 
       - name: Verify macOS standalone parity
         shell: bash
-        run: ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
+        run: |
+          set -o pipefail
+          mkdir -p verification-logs
+          ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball 2>&1 | tee verification-logs/macos-aarch64.log
+
+      - name: Upload macOS verification log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v3.0-macos-aarch64-log
+          path: verification-logs/macos-aarch64.log
 
       - name: Upload macOS standalone tarball
         uses: actions/upload-artifact@v4
@@ -77,11 +156,88 @@ jobs:
             dist/anvil-stage-d-v3.0-macos-aarch64.tar.gz
             dist/anvil-stage-d-v3.0-macos-aarch64.tar.gz.sha256
 
+  macos-x86_64:
+    name: macos-x86_64 standalone
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout related standalone vendor repos
+        shell: bash
+        env:
+          RELATED_REF: ${{ inputs.related_ref || github.head_ref || github.ref_name }}
+          NELISP_EMACS_REF: ${{ inputs.nelisp_emacs_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+          ANVIL_REF: ${{ inputs.anvil_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          clone_related() {
+            local repo="$1" dest="$2" ref="$3"
+            if git ls-remote --exit-code --heads "https://github.com/zawatton/${repo}.git" "$ref" >/dev/null 2>&1; then
+              git clone --depth 1 --branch "$ref" "https://github.com/zawatton/${repo}.git" "../${dest}"
+            else
+              echo "::error::required related repo ${repo} has no branch ${ref}; push matching branches for standalone vendor CI"
+              exit 1
+            fi
+          }
+          clone_related nelisp-emacs nelisp-emacs "${NELISP_EMACS_REF:-${RELATED_REF:-main}}"
+          clone_related anvil.el anvil.el "${ANVIL_REF:-${RELATED_REF:-main}}"
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.2'
+
+      - name: Verify macOS Intel standalone parity
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p verification-logs
+          ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball 2>&1 | tee verification-logs/macos-x86_64.log
+
+      - name: Upload macOS Intel verification log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v3.0-macos-x86_64-log
+          path: verification-logs/macos-x86_64.log
+
+      - name: Upload macOS Intel standalone tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v3.0-macos-x86_64
+          path: |
+            dist/anvil-stage-d-v3.0-macos-x86_64.tar.gz
+            dist/anvil-stage-d-v3.0-macos-x86_64.tar.gz.sha256
+
   windows-x86_64:
     name: windows-x86_64 standalone
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout related standalone vendor repos
+        shell: pwsh
+        env:
+          RELATED_REF: ${{ inputs.related_ref || github.head_ref || github.ref_name }}
+          NELISP_EMACS_REF: ${{ inputs.nelisp_emacs_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+          ANVIL_REF: ${{ inputs.anvil_ref || inputs.related_ref || github.head_ref || github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Clone-Related($Repo, $Dest, $Ref) {
+              if ([string]::IsNullOrWhiteSpace($Ref)) {
+                  $Ref = "main"
+              }
+              $url = "https://github.com/zawatton/$Repo.git"
+              git ls-remote --exit-code --heads $url $Ref *> $null
+              if ($LASTEXITCODE -eq 0) {
+                  git clone --depth 1 --branch $Ref $url "..\$Dest"
+              } else {
+                  Write-Error "required related repo $Repo has no branch $Ref; push matching branches for standalone vendor CI"
+                  exit 1
+              }
+          }
+          Clone-Related "nelisp-emacs" "nelisp-emacs" $env:NELISP_EMACS_REF
+          Clone-Related "anvil.el" "anvil.el" $env:ANVIL_REF
 
       - name: Set up Emacs
         uses: jcs090218/setup-emacs-windows@master
@@ -90,7 +246,26 @@ jobs:
 
       - name: Verify Windows standalone parity
         shell: pwsh
-        run: .\scripts\verify-cross-platform.ps1 -ParallelJobs 2 -IncludeTarball
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path verification-logs | Out-Null
+          try {
+              .\scripts\verify-cross-platform.ps1 -ParallelJobs 2 -IncludeTarball *>&1 |
+                  Tee-Object -FilePath verification-logs\windows-x86_64.log
+              if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+              }
+          } catch {
+              $_ | Out-String | Tee-Object -FilePath verification-logs\windows-x86_64.log -Append
+              exit 1
+          }
+
+      - name: Upload Windows verification log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v3.0-windows-x86_64-log
+          path: verification-logs/windows-x86_64.log
 
       - name: Upload Windows standalone tarball
         uses: actions/upload-artifact@v4

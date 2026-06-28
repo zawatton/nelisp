@@ -67,16 +67,58 @@ $WorkerScript = {
     $env:NELISP_CHUNK_N = [string]$WorkerCount
     $env:NELISP_STANDALONE_TARGET = $WorkerTarget
 
-    try {
-        & $WorkerEmacs --batch -Q -L lisp -L src -L scripts `
-            --eval "(setq load-prefer-newer t)" `
-            -l nelisp-standalone-build `
-            -f nelisp-standalone-compile-chunk 2>&1 |
-            Tee-Object -FilePath $WorkerLogPath
-        $Code = $LASTEXITCODE
-        if ($null -eq $Code) {
-            $Code = 0
+    function Join-NativeArguments {
+        param([string[]]$Arguments)
+        $Quoted = @()
+        foreach ($Argument in $Arguments) {
+            if ($Argument -match '[\s"]') {
+                $Quoted += ('"' + ($Argument -replace '"', '\"') + '"')
+            } else {
+                $Quoted += $Argument
+            }
         }
+        return ($Quoted -join " ")
+    }
+
+    function Invoke-LoggedNative {
+        param(
+            [string]$FileName,
+            [string[]]$Arguments,
+            [string]$LogPath
+        )
+        $StdoutPath = $LogPath + ".stdout"
+        $StderrPath = $LogPath + ".stderr"
+        Remove-Item -Force -ErrorAction SilentlyContinue $StdoutPath, $StderrPath, $LogPath
+        $Process = Start-Process `
+            -FilePath $FileName `
+            -ArgumentList (Join-NativeArguments $Arguments) `
+            -WorkingDirectory (Get-Location).Path `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $StdoutPath `
+            -RedirectStandardError $StderrPath
+        foreach ($Path in @($StdoutPath, $StderrPath)) {
+            if (Test-Path $Path) {
+                Get-Content -Path $Path | ForEach-Object {
+                    Add-Content -Path $LogPath -Value $_
+                    Write-Host $_
+                }
+            }
+        }
+        return [int]$Process.ExitCode
+    }
+
+    try {
+        $Code = Invoke-LoggedNative `
+            -FileName $WorkerEmacs `
+            -Arguments @(
+                "--batch", "-Q", "-L", "lisp", "-L", "src", "-L", "scripts",
+                "--eval", "(setq load-prefer-newer t)",
+                "-l", "nelisp-standalone-build",
+                "-f", "nelisp-standalone-compile-chunk"
+            ) `
+            -LogPath $WorkerLogPath
     } catch {
         $_ | Out-File -FilePath $WorkerLogPath -Append
         $Code = 1
@@ -145,15 +187,57 @@ if ($CompileOnly) {
 Write-Host "[parallel] linking (serial)..."
 $LinkLogPath = Join-Path $LogDir "link.log"
 $env:NELISP_STANDALONE_TARGET = $Target
-& $Emacs --batch -Q -L lisp -L src -L scripts `
-    --eval "(setq load-prefer-newer t)" `
-    -l nelisp-standalone-build `
-    -f nelisp-standalone-build 2>&1 |
-    Tee-Object -FilePath $LinkLogPath
-$LinkCode = $LASTEXITCODE
-if ($null -eq $LinkCode) {
-    $LinkCode = 0
+
+function Join-NativeArguments {
+    param([string[]]$Arguments)
+    $Quoted = @()
+    foreach ($Argument in $Arguments) {
+        if ($Argument -match '[\s"]') {
+            $Quoted += ('"' + ($Argument -replace '"', '\"') + '"')
+        } else {
+            $Quoted += $Argument
+        }
+    }
+    return ($Quoted -join " ")
 }
+
+function Invoke-LoggedNative {
+    param(
+        [string]$FileName,
+        [string[]]$Arguments,
+        [string]$LogPath
+    )
+    $StdoutPath = $LogPath + ".stdout"
+    $StderrPath = $LogPath + ".stderr"
+    Remove-Item -Force -ErrorAction SilentlyContinue $StdoutPath, $StderrPath, $LogPath
+    $Process = Start-Process `
+        -FilePath $FileName `
+        -ArgumentList (Join-NativeArguments $Arguments) `
+        -WorkingDirectory (Get-Location).Path `
+        -NoNewWindow `
+        -Wait `
+        -PassThru `
+        -RedirectStandardOutput $StdoutPath `
+        -RedirectStandardError $StderrPath
+    foreach ($Path in @($StdoutPath, $StderrPath)) {
+        if (Test-Path $Path) {
+            Get-Content -Path $Path | ForEach-Object {
+                Add-Content -Path $LogPath -Value $_
+                Write-Host $_
+            }
+        }
+    }
+    return [int]$Process.ExitCode
+}
+$LinkCode = Invoke-LoggedNative `
+    -FileName $Emacs `
+    -Arguments @(
+        "--batch", "-Q", "-L", "lisp", "-L", "src", "-L", "scripts",
+        "--eval", "(setq load-prefer-newer t)",
+        "-l", "nelisp-standalone-build",
+        "-f", "nelisp-standalone-build"
+    ) `
+    -LogPath $LinkLogPath
 if ($LinkCode -ne 0) {
     Write-Host ("[parallel] FAIL: link exited " + $LinkCode +
                 " log " + $LinkLogPath)

@@ -54,7 +54,7 @@
 ;;   NlConsBox: car=0, cdr=32
 ;;   NlVector: value.ptr=0, value.len=16
 ;;   NlBoolVector: value.ptr=0, value.len=16  (same layout as NlVector)
-;;   NlRecord: type_tag=0, slots.ptr=40, slots.len=48
+;;   NlRecord: type_tag=0, slots.ptr=32, slots.len=48
 ;;   NlCharTable/CharTableInner: subtype=0, default_val=32, entries.len=80
 ;;
 ;; Net Rust impact: deletes write_quoted_string+write_sexp+write_reader_macro+

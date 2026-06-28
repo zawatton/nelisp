@@ -250,12 +250,15 @@ function Build-SmokeExe {
 
     $oldSpec = $env:NELISP_WINDOWS_SPEC
     $oldOut = $env:NELISP_WINDOWS_OUT
+    $oldErrorActionPreference = $ErrorActionPreference
     try {
         $env:NELISP_WINDOWS_SPEC = $Spec
         $env:NELISP_WINDOWS_OUT = $OutPath
 
+        $ErrorActionPreference = "Continue"
         & $Emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build `
             -f nelisp-windows-build-from-env *> $LogPath
+        $ErrorActionPreference = $oldErrorActionPreference
 
         if ($LASTEXITCODE -ne 0) {
             Write-Host ("[windows] FAIL: " + $Name + " - build exit " + $LASTEXITCODE)
@@ -269,6 +272,7 @@ function Build-SmokeExe {
         }
         return $true
     } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
         $env:NELISP_WINDOWS_SPEC = $oldSpec
         $env:NELISP_WINDOWS_OUT = $oldOut
     }

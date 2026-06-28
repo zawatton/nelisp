@@ -25,20 +25,20 @@
 ;;
 ;;   type_tag: Sexp    @ 0   (32 bytes — STAYS INLINE 32B)
 ;;   slots: Vec<Sexp>  @ 32  (24 bytes)
-;;     Vec.capacity    @ 32  (8 bytes — element capacity count)
-;;     Vec.data_ptr    @ 40  (8 bytes — *mut Sexp-word, heap data buffer)
+;;     Vec.data_ptr    @ 32  (8 bytes — *mut Sexp-word, heap data buffer)
+;;     Vec.capacity    @ 40  (8 bytes — element capacity count)
 ;;     Vec.len         @ 48  (8 bytes — element count)
 ;;   refcount          @ 56  (8 bytes — AtomicUsize)
 ;;   total = 64 bytes, align = 8 (HEADER UNCHANGED by Doc 147 Phase 2)
 ;;
-;; Confirmed by `nelisp-nlrecord--offset-slots-ptr = 40' (= absolute
+;; Confirmed by `nelisp-nlrecord--offset-slots-ptr = 32' (= absolute
 ;; offset of Vec.data_ptr within NlRecord) in `lisp/nelisp-sexp-layout.el'.
-;; Vec.data_ptr is at slots + 8 = NlRecord + 40.
+;; Vec.data_ptr is at slots + 0 = NlRecord + 32.
 ;;
 ;; Doc 147 Phase 2: the slots buffer now holds one 8-byte tagged WORD
 ;; per slot (was a 32B inline Sexp).  The body delegates to the Doc 147
 ;; Phase 0 keystone `nl_val_clone_into(src_slot, dst_word_ptr)':
-;;   data_ptr = *(u64*)(record + 40)    // Vec.data_ptr inside slots
+;;   data_ptr = *(u64*)(record + 32)    // Vec.data_ptr inside slots
 ;;   dst      = data_ptr + n * 8        // slot n (stride 8, was 32)
 ;;   nl_val_clone_into(val, dst):
 ;;     - immediate VAL (low bit 1): writes the 8B word straight to dst.
@@ -64,7 +64,7 @@
 
 (defconst nelisp-cc-nlrecord-set-slot--source
   '(seq
-    ;; Doc 147 Phase 2: peek Vec.data_ptr from slots header at record+40,
+    ;; Doc 147 Phase 2: peek Vec.data_ptr from slots header at record+32,
     ;; compute element WORD address (data_ptr + n*8, stride 8 — was 32),
     ;; then install VAL as a single 8B tagged WORD via the keystone
     ;; `nl_val_clone_into'.
@@ -79,20 +79,20 @@
       ;; an 8B WORD, so `nl_val_clone_into' (immediate direct; boxed child
       ;; deep-cloned into a fresh 32B box, its 8-aligned ptr stored) replaces
       ;; the 32B-into-32B-slot `nl_sexp_clone_into'.
-      (let ((dst (+ (ptr-read-u64 record 40) (* n 8))))
+      (let ((dst (+ (ptr-read-u64 record 32) (* n 8))))
         (extern-call nl_val_clone_into val dst))))
   "AOT source for the `nl_record_set_slot' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
 - `nl_record_set_slot (record n val) -> i64' — reads Vec.data_ptr
-  from RECORD+40 (= slots Vec header offset 32 + Vec.data_ptr offset 8),
+  from RECORD+32 (= slots Vec header offset 32 + Vec.data_ptr offset 0),
   computes DST = data_ptr + N*8 (Doc 147 Phase 2 stride shrink 32 -> 8),
   stores VAL as an 8-byte tagged WORD at DST via the `nl_val_clone_into'
   keystone (immediate direct; boxed child deep-cloned into a fresh 32B
   box, its 8-aligned ptr stored).
 
 AOT ops consumed:
-  `ptr-read-u64'   — load Vec.data_ptr from NlRecord+40.
+  `ptr-read-u64'   — load Vec.data_ptr from NlRecord+32.
   `*'              — N * 8 (slot WORD byte offset).
   `+'              — data_ptr + slot offset.
   `extern-call nl_val_clone_into' — store VAL as a value WORD at DST.

@@ -78,6 +78,12 @@ Caller is responsible for `delete-file' on cleanup."
       (should (eq (nelisp-aot-compiler--ir-kind v) 'imm))
       (should (= (nelisp-aot-compiler--ir-get v :value) 0)))))
 
+(ert-deftest nelisp-aot-compiler/top-level-literal-depth-limit ()
+  "Deep literal materialization should decline by returning nil."
+  (should-not
+   (nelisp-aot-compiler--top-level-literal-write-forms
+    'out '(a (b (c (d (e (f (g (h (i (j k)))))))))) 'scratch 10)))
+
 (ert-deftest nelisp-aot-compiler/parse-write-literal ()
   "Parse `(write \"hi\")' to a write IR node."
   (let ((ir (nelisp-aot-compiler--parse '(write "hi"))))
@@ -426,6 +432,16 @@ Caller is responsible for `delete-file' on cleanup."
          (body (nelisp-aot-compiler--ir-get ir :body)))
     (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
     (should (eq (nelisp-aot-compiler--ir-get body :op) 'mod))))
+
+(ert-deftest nelisp-aot-compiler/parse-integer-math-core-forms ()
+  "Parse deterministic integer math helpers as core value expressions."
+  (let* ((ir (nelisp-aot-compiler--parse
+              '(defun math1 (a b)
+                 (+ (floor (/ a b))
+                    (max (abs a) (min b 9))))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
+    (should (eq (nelisp-aot-compiler--ir-get body :op) '+))))
 
 (ert-deftest nelisp-aot-compiler/parse-call-in-exit ()
   "Parse `(exit (id 7))' yields an exit IR wrapping a call value."
@@ -3021,14 +3037,15 @@ SysV would emit `push rdi' = 57 instead."
                         bytes ".text")))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; mov [rbp-152],rdi; mov [rbp-160],rsi
-                     (unibyte-string #x48 #x89 #xbd #x68 #xff #xff #xff
-                                     #x48 #x89 #xb5 #x60 #xff #xff #xff)))
+                     ;; mov [rbp-160],rdi; mov [rbp-168],rsi
+                     ;; (shifted down 8 by the RBX callee-save slot at [rbp-152])
+                     (unibyte-string #x48 #x89 #xbd #x60 #xff #xff #xff
+                                     #x48 #x89 #xb5 #x58 #xff #xff #xff)))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; mov rdi,[rbp-152]; mov rsi,[rbp-160]; mov rsp,rbp; pop rbp; ret
-                     (unibyte-string #x48 #x8b #xbd #x68 #xff #xff #xff
-                                     #x48 #x8b #xb5 #x60 #xff #xff #xff
+                     ;; mov rdi,[rbp-160]; mov rsi,[rbp-168]; mov rsp,rbp; pop rbp; ret
+                     (unibyte-string #x48 #x8b #xbd #x60 #xff #xff #xff
+                                     #x48 #x8b #xb5 #x58 #xff #xff #xff
                                      #x48 #x89 #xec #x5d #xc3)))))
       (ignore-errors (delete-file path)))))
 
@@ -3049,22 +3066,22 @@ SysV would emit `push rdi' = 57 instead."
                      (unibyte-string #x48 #x81 #xec #xa0 #x00 #x00 #x00)))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; movdqu [rbp-176],xmm6
-                     (unibyte-string #xf3 #x0f #x7f #xb5 #x50 #xff #xff #xff)))
+                     ;; movdqu [rbp-192],xmm6 (xmm block shifted 16 by the RBX slot)
+                     (unibyte-string #xf3 #x0f #x7f #xb5 #x40 #xff #xff #xff)))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; movdqu [rbp-320],xmm15
+                     ;; movdqu [rbp-336],xmm15
                      (unibyte-string #xf3 #x44 #x0f #x7f #xbd
-                                     #xc0 #xfe #xff #xff)))
+                                     #xb0 #xfe #xff #xff)))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; movdqu xmm6,[rbp-176]
-                     (unibyte-string #xf3 #x0f #x6f #xb5 #x50 #xff #xff #xff)))
+                     ;; movdqu xmm6,[rbp-192]
+                     (unibyte-string #xf3 #x0f #x6f #xb5 #x40 #xff #xff #xff)))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; movdqu xmm15,[rbp-320]
+                     ;; movdqu xmm15,[rbp-336]
                      (unibyte-string #xf3 #x44 #x0f #x6f #xbd
-                                     #xc0 #xfe #xff #xff)))))
+                                     #xb0 #xfe #xff #xff)))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-aot-compiler/win64-defun-callee-saves-after-frame-slots ()
@@ -3080,14 +3097,15 @@ SysV would emit `push rdi' = 57 instead."
                         bytes ".text")))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; mov [rbp-168],rdi; mov [rbp-176],rsi
-                     (unibyte-string #x48 #x89 #xbd #x58 #xff #xff #xff
-                                     #x48 #x89 #xb5 #x50 #xff #xff #xff)))
+                     ;; mov [rbp-176],rdi; mov [rbp-184],rsi
+                     ;; (shifted down 8 by the RBX callee-save slot)
+                     (unibyte-string #x48 #x89 #xbd #x50 #xff #xff #xff
+                                     #x48 #x89 #xb5 #x48 #xff #xff #xff)))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; Restore from the same private slots before frame teardown.
-                     (unibyte-string #x48 #x8b #xbd #x58 #xff #xff #xff
-                                     #x48 #x8b #xb5 #x50 #xff #xff #xff
+                     (unibyte-string #x48 #x8b #xbd #x50 #xff #xff #xff
+                                     #x48 #x8b #xb5 #x48 #xff #xff #xff
                                      #x48 #x89 #xec #x5d #xc3)))))
       (ignore-errors (delete-file path)))))
 

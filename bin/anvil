@@ -38,9 +38,35 @@ USAGE:
   anvil version                Detailed version (os / install root / tools count / emacs).
   anvil doctor                 Diagnose environment (emacs / nelisp / dirs).
   anvil tools-list             List registered MCP tool names (offline, no emacs spawn).
-  anvil mcp serve [--no-emacs|--strict-no-emacs] [--profile=NAME]
+  anvil emacs-package-install PACKAGE...
+                               Install Emacs packages for anvil mcp serve.
+                               Options: --archive gnu|nongnu|melpa|URL
+                                        --package-dir DIR
+  anvil emacs-package-install-wanderlust
+                               Install Wanderlust into anvil's Emacs package dir.
+  anvil standalone-os-identity [--out FILE]
+                               Print standalone nelisp-emacs OS identity.
+  anvil standalone-db COMMAND [OPTIONS]
+                               Run standalone SQLite / memory / worklog DB tools.
+                               Commands: sqlite-select, sqlite-execute,
+                                         memory-add, memory-get, memory-list,
+                                         memory-search, worklog-add,
+                                         worklog-get, worklog-list,
+                                         worklog-search.
+  anvil cad-annotate-svg --in FILE --out FILE --text TEXT [--x N --y N]
+                               Edit an SVG through standalone nelisp + anvil-cad.
+  anvil cad-read-outline-svg --in FILE [--out FILE]
+                               Read a lightweight SVG outline through standalone nelisp.
+  anvil cad-extract-svg --in FILE [--type text] [--layer NAME] [--out FILE]
+                               Extract SVG entities/snippet through standalone nelisp.
+  anvil cad-batch-update-svg --in FILE --out FILE --find TEXT --replace TEXT
+                               Replace a text marker in SVG through standalone nelisp.
+  anvil cad-generate-svg --out FILE (--entities-json JSON|--entities-file FILE) [--base FILE]
+                               Generate SVG entities through standalone nelisp.
+  anvil mcp serve [--no-emacs|--strict-no-emacs] [--profile=NAME] [--module=NAME]
                                Start MCP stdio server (Claude Code 接続用).
                                --profile selects manifest profile (default: headless).
+                               --module adds an optional anvil module (e.g. wl).
                                Available: headless / core / nav / edit / agent / ultra.
                                agent / ultra additionally load orchestrator /
                                session / browser optional modules.
@@ -49,9 +75,15 @@ ENV:
   ANVIL_HOME       Install root (default: auto-detect, $ANVIL_HOME).
   ANVIL_CONFIG_DIR User config dir (default: \$XDG_CONFIG_HOME/anvil).
   ANVIL_CACHE_DIR  State cache dir (default: \$XDG_CACHE_HOME/nelisp).
+  ANVIL_EMACS_PACKAGE_DIR
+                   Emacs package-user-dir for anvil mcp serve
+                   (default: \$ANVIL_CONFIG_DIR/emacs-packages/elpa).
   EMACS            Emacs binary path (default: auto-detect via PATH).
   ANVIL_PROFILE    Manifest profile selector (default: headless).
                    Equivalent to --profile=NAME on the \`mcp serve' line.
+  ANVIL_OPTIONAL_MODULES
+                   Comma/space separated optional modules for mcp serve.
+                   Example: wl,semantic
 
 Stage D Phase 6.0 scaffold — Phase 6.1 で mcp serve 実装完成予定。
 詳細: docs/design/18-stage-d-standalone.org
@@ -201,6 +233,267 @@ nelisp_find_module_file() {
   return 1
 }
 
+standalone_nelisp_bin() {
+  local cand
+  local arch
+  arch="$(uname -m 2>/dev/null || echo unknown)"
+  local candidates=(
+      "$ANVIL_HOME/bin/nelisp"
+      "$ANVIL_HOME/bin/nelisp.exe"
+  )
+  case "$ANVIL_OS:$arch" in
+    macos:arm64|macos:aarch64)
+      candidates+=("$ANVIL_HOME/target/nelisp-macos-aarch64") ;;
+    macos:x86_64|macos:amd64)
+      candidates+=("$ANVIL_HOME/target/nelisp-macos-x86_64") ;;
+    linux:aarch64|linux:arm64)
+      candidates+=("$ANVIL_HOME/target/nelisp-aarch64") ;;
+    windows-msys:aarch64|windows-msys:arm64)
+      candidates+=("$ANVIL_HOME/target/nelisp-aarch64.exe") ;;
+  esac
+  candidates+=(
+      "$ANVIL_HOME/target/nelisp"
+      "$ANVIL_HOME/target/nelisp.exe"
+      "$ANVIL_HOME/target/nelisp-macos-aarch64"
+      "$ANVIL_HOME/target/nelisp-macos-x86_64"
+      "$ANVIL_HOME/target/nelisp-aarch64"
+      "$ANVIL_HOME/target/nelisp-aarch64.exe"
+  )
+  for cand in "${candidates[@]}"; do
+    if [[ -x "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+nelisp_emacs_src_dir() {
+  local override src_dir
+  for override in "${ANVIL_NELISP_EMACS_SRC_DIR:-}" "${NELISP_EMACS_SRC_DIR:-}"; do
+    if [[ -n "$override" ]]; then
+      src_dir="${override//\\//}"
+      if [[ -f "$src_dir/files-runtime.el" && -f "$src_dir/emacs-fileio-builtins.el" ]]; then
+        printf '%s\n' "$(cd "$src_dir" && pwd)"
+        return 0
+      fi
+    fi
+  done
+
+  local cand
+  for cand in \
+      "$ANVIL_HOME/vendor/nelisp-emacs/src" \
+      "$ANVIL_HOME/../nelisp-emacs/src" \
+      "$HOME/Cowork/Notes/dev/nelisp-emacs/src" \
+      "$HOME/Notes/dev/nelisp-emacs/src" \
+  ; do
+    if [[ -f "$cand/files-runtime.el" && -f "$cand/emacs-fileio-builtins.el" ]]; then
+      printf '%s\n' "$(cd "$cand" && pwd)"
+      return 0
+    fi
+  done
+  if [[ -n "${USERPROFILE:-}" ]]; then
+    local up="${USERPROFILE//\\//}"
+    for cand in \
+      "$up/Cowork/Notes/dev/nelisp-emacs/src" \
+      "$up/Notes/dev/nelisp-emacs/src" \
+    ; do
+      if [[ -f "$cand/files-runtime.el" && -f "$cand/emacs-fileio-builtins.el" ]]; then
+        printf '%s\n' "$(cd "$cand" && pwd)"
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+anvil_lisp_string() {
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '"%s"' "$s"
+}
+
+anvil_lisp_string_list() {
+  local item
+  printf '('
+  for item in "$@"; do
+    printf '%s ' "$(anvil_lisp_string "$item")"
+  done
+  printf ')'
+}
+
+nelisp_native_path() {
+  local p="${1//\\//}"
+  case "$p" in
+    /[a-zA-Z]/*)
+      printf '%s:%s' "$(printf '%s' "${p:1:1}" | tr '[:lower:]' '[:upper:]')" "${p:2}"
+      ;;
+    *)
+      printf '%s' "$p"
+      ;;
+  esac
+}
+
+anvil_standalone_system_type() {
+  case "$ANVIL_OS" in
+    windows-msys) printf 'windows-nt' ;;
+    macos)        printf 'darwin' ;;
+    linux)        printf 'gnu/linux' ;;
+    *)            printf 'gnu/linux' ;;
+  esac
+}
+
+anvil_standalone_system_configuration() {
+  case "$ANVIL_OS" in
+    windows-msys) printf 'x86_64-w64-mingw32' ;;
+    macos)
+      case "$(uname -m 2>/dev/null || echo)" in
+        arm64|aarch64) printf 'aarch64-apple-darwin' ;;
+        x86_64|amd64)  printf 'x86_64-apple-darwin' ;;
+        *)             printf 'unknown-apple-darwin' ;;
+      esac
+      ;;
+    linux)
+      case "$(uname -m 2>/dev/null || echo)" in
+        x86_64|amd64)  printf 'x86_64-pc-linux-gnu' ;;
+        arm64|aarch64) printf 'aarch64-unknown-linux-gnu' ;;
+        *)             printf 'unknown-unknown-linux-gnu' ;;
+      esac
+      ;;
+    *) printf 'unknown-unknown-unknown' ;;
+  esac
+}
+
+anvil_cad_prepare_standalone() {
+  local __nelisp_var="$1" __anvil_var="$2" __ne_var="$3"
+  local found_nelisp found_anvil found_ne
+  if ! found_nelisp="$(standalone_nelisp_bin)"; then
+    echo "error: standalone nelisp binary not found under $ANVIL_HOME/bin or target" >&2
+    return 1
+  fi
+  if ! found_anvil="$(anvil_lisp_dir)"; then
+    echo "error: anvil.el not found (set ANVIL_LISP_DIR or install vendor/anvil.el)" >&2
+    return 1
+  fi
+  if ! found_ne="$(nelisp_emacs_src_dir)"; then
+    echo "error: nelisp-emacs src not found under vendor/nelisp-emacs/src or ../nelisp-emacs/src" >&2
+    return 1
+  fi
+  printf -v "$__nelisp_var" '%s' "$found_nelisp"
+  printf -v "$__anvil_var" '%s' "$found_anvil"
+  printf -v "$__ne_var" '%s' "$found_ne"
+}
+
+anvil_cad_emit_standalone_loads() {
+  local anvil_dir="$1" ne_src="$2"
+  printf '(setq emacs-os-explicit-system-type (quote %s))\n' "$(anvil_standalone_system_type)"
+  printf '(setq emacs-os-explicit-system-configuration %s)\n' "$(anvil_lisp_string "$(anvil_standalone_system_configuration)")"
+  printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$anvil_dir/anvil-nelisp-shims.el")")"
+  local f
+  for f in \
+    files-runtime.el \
+    nelisp-coding.el \
+    nelisp-emacs-compat.el \
+    nelisp-emacs-compat-fileio.el \
+    emacs-string.el \
+    emacs-callproc.el \
+    emacs-vars.el \
+    emacs-os-detect.el \
+    emacs-buffer-builtins.el \
+    emacs-fileio-builtins.el
+  do
+    printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$ne_src/$f")")"
+  done
+  printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$anvil_dir/anvil-cad.el")")"
+}
+
+anvil_cad_run_form() {
+  local script_name="$1" form="$2"
+  local nelisp_bin anvil_dir ne_src
+  anvil_cad_prepare_standalone nelisp_bin anvil_dir ne_src || return 1
+  mkdir -p "$ANVIL_CACHE_DIR"
+  local stem="${script_name%.el}" script
+  if command -v mktemp >/dev/null 2>&1; then
+    script="$(mktemp "$ANVIL_CACHE_DIR/$stem.XXXXXX.el")"
+  else
+    script="$ANVIL_CACHE_DIR/$stem.$$.$RANDOM.el"
+  fi
+  {
+    anvil_cad_emit_standalone_loads "$anvil_dir" "$ne_src"
+    printf '%s\n' "$form"
+  } > "$script"
+  "$nelisp_bin" --load "$(nelisp_native_path "$script")"
+  local code=$?
+  rm -f "$script" 2>/dev/null || true
+  return "$code"
+}
+
+anvil_standalone_db_run() {
+  local nelisp_bin anvil_dir ne_src
+  anvil_cad_prepare_standalone nelisp_bin anvil_dir ne_src || return 1
+  local db_lib="$ANVIL_HOME/lisp/anvil-standalone-db.el"
+  local hash_lib="$ANVIL_HOME/packages/nelisp-secure-hash/src/nelisp-secure-hash.el"
+  if [[ ! -f "$db_lib" ]]; then
+    echo "error: standalone DB library not found: $db_lib" >&2
+    return 1
+  fi
+  if [[ ! -f "$hash_lib" ]]; then
+    echo "error: nelisp-secure-hash library not found: $hash_lib" >&2
+    return 1
+  fi
+
+  mkdir -p "$ANVIL_CACHE_DIR"
+  local script out
+  if command -v mktemp >/dev/null 2>&1; then
+    script="$(mktemp "$ANVIL_CACHE_DIR/anvil-standalone-db.XXXXXX.el")"
+    out="$(mktemp "$ANVIL_CACHE_DIR/anvil-standalone-db.XXXXXX.json")"
+    rm -f "$out" 2>/dev/null || true
+  else
+    script="$ANVIL_CACHE_DIR/anvil-standalone-db.$$.$RANDOM.el"
+    out="$ANVIL_CACHE_DIR/anvil-standalone-db.$$.$RANDOM.json"
+  fi
+  {
+    printf '(setq emacs-os-explicit-system-type (quote %s))\n' "$(anvil_standalone_system_type)"
+    printf '(setq emacs-os-explicit-system-configuration %s)\n' "$(anvil_lisp_string "$(anvil_standalone_system_configuration)")"
+    printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$anvil_dir/anvil-nelisp-shims.el")")"
+    local f
+    for f in \
+      files-runtime.el \
+      nelisp-coding.el \
+      nelisp-emacs-compat.el \
+      nelisp-emacs-compat-fileio.el \
+      emacs-string.el \
+      emacs-callproc.el \
+      emacs-vars.el \
+      emacs-os-detect.el \
+      emacs-buffer-builtins.el \
+      emacs-fileio-builtins.el \
+      emacs-ffi.el \
+      emacs-sqlite-ffi.el
+    do
+      printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$ne_src/$f")")"
+    done
+    printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$hash_lib")")"
+    printf '(load %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$db_lib")")"
+    printf '(anvil-standalone-db-main (quote %s) %s)\n' \
+      "$(anvil_lisp_string_list "$@")" \
+      "$(anvil_lisp_string "$(nelisp_native_path "$out")")"
+  } > "$script"
+  "$nelisp_bin" --load "$(nelisp_native_path "$script")" >/dev/null
+  local code=$?
+  if [[ $code -eq 0 && -s "$out" ]]; then
+    cat "$out"
+    if grep -q '"status":"error"' "$out" 2>/dev/null; then
+      code=1
+    fi
+  elif [[ $code -eq 0 ]]; then
+    echo "error: standalone-db produced no output" >&2
+    code=1
+  fi
+  rm -f "$script" "$out" 2>/dev/null || true
+  return "$code"
+}
+
 runtime_cdylib_path() {
   local cand
   for cand in \
@@ -339,6 +632,179 @@ cmd_tools_list() {
     | sed -E 's/^\s*:id\s+"([^"]+)".*/\1/' | sort -u
 }
 
+anvil_emacs_package_dir() {
+  local dir="${ANVIL_EMACS_PACKAGE_DIR:-$ANVIL_CONFIG_DIR/emacs-packages/elpa}"
+  dir="${dir//\\//}"
+  printf '%s\n' "$dir"
+}
+
+anvil_package_archive_cons() {
+  case "$1" in
+    gnu)
+      printf '(cons "gnu" "https://elpa.gnu.org/packages/")'
+      ;;
+    nongnu|non-gnu)
+      printf '(cons "nongnu" "https://elpa.nongnu.org/nongnu/")'
+      ;;
+    melpa)
+      printf '(cons "melpa" "https://melpa.org/packages/")'
+      ;;
+    http://*|https://*)
+      local name
+      name="$(printf '%s' "$1" | sed -E 's#^https?://##; s#[^A-Za-z0-9]+#-#g; s#^-+|-+$##g')"
+      printf '(cons %s %s)' "$(anvil_lisp_string "$name")" "$(anvil_lisp_string "$1")"
+      ;;
+    *)
+      echo "error: unknown package archive: $1" >&2
+      echo "  use gnu, nongnu, melpa, or an http(s) archive URL" >&2
+      return 2
+      ;;
+  esac
+}
+
+cmd_emacs_package_install() {
+  local package_dir="" archives=("gnu" "nongnu" "melpa")
+  local packages=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --package-dir)
+        package_dir="${2:-}"
+        shift 2
+        ;;
+      --archive)
+        archives+=("${2:-}")
+        shift 2
+        ;;
+      --archives)
+        IFS=',' read -r -a archives <<< "${2:-}"
+        shift 2
+        ;;
+      -h|--help)
+        echo "usage: anvil emacs-package-install PACKAGE... [--package-dir DIR] [--archive gnu|nongnu|melpa|URL] [--archives CSV]"
+        return 0
+        ;;
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do
+          packages+=("$1")
+          shift
+        done
+        ;;
+      --*)
+        echo "error: unknown emacs-package-install argument: $1" >&2
+        return 2
+        ;;
+      *)
+        packages+=("$1")
+        shift
+        ;;
+    esac
+  done
+  if [[ ${#packages[@]} -eq 0 ]]; then
+    echo "usage: anvil emacs-package-install PACKAGE... [--package-dir DIR] [--archive gnu|nongnu|melpa|URL] [--archives CSV]" >&2
+    return 2
+  fi
+
+  if [[ -z "$package_dir" ]]; then
+    package_dir="$(anvil_emacs_package_dir)"
+  else
+    package_dir="${package_dir//\\//}"
+  fi
+  mkdir -p "$package_dir"
+
+  local archive_exprs=() archive
+  for archive in "${archives[@]}"; do
+    [[ -z "$archive" ]] && continue
+    archive_exprs+=("$(anvil_package_archive_cons "$archive")")
+  done
+  if [[ ${#archive_exprs[@]} -eq 0 ]]; then
+    echo "error: no package archives configured" >&2
+    return 2
+  fi
+
+  local package_exprs=() package
+  for package in "${packages[@]}"; do
+    package_exprs+=("$(anvil_lisp_string "$package")")
+  done
+
+  local emacs_bin
+  if ! emacs_bin="$(detect_emacs)"; then
+    print_emacs_install_hint
+    return 1
+  fi
+
+  local script
+  if command -v mktemp >/dev/null 2>&1; then
+    mkdir -p "$ANVIL_CACHE_DIR"
+    script="$(mktemp "$ANVIL_CACHE_DIR/anvil-package-install.XXXXXX.el")"
+  else
+    mkdir -p "$ANVIL_CACHE_DIR"
+    script="$ANVIL_CACHE_DIR/anvil-package-install.$$.$RANDOM.el"
+  fi
+  {
+    printf '(require (quote package))\n'
+    printf '(setq package-user-dir %s)\n' "$(anvil_lisp_string "$(nelisp_native_path "$package_dir")")"
+    printf '(setq package-archives (list %s))\n' "${archive_exprs[*]}"
+    printf '(package-initialize)\n'
+    printf '(package-refresh-contents)\n'
+    printf '(defun anvil-package-install--direct-gnu-tar (pkg version)\n'
+    printf '  (let* ((name (format "%%s-%%s.tar" pkg version))\n'
+    printf '         (url (concat "https://elpa.gnu.org/packages/" name))\n'
+    printf '         (file (expand-file-name name temporary-file-directory)))\n'
+    printf '    (unless (package-installed-p (intern pkg))\n'
+    printf '      (message "Installing %%s directly from %%s" pkg url)\n'
+    printf '      (url-copy-file url file t)\n'
+    printf '      (package-install-file file))))\n'
+    printf '(when (or (member "wanderlust" (list %s)) (member "oauth2" (list %s)))\n' "${package_exprs[*]}" "${package_exprs[*]}"
+    printf '  (unless (or (package-installed-p (quote oauth2)) (assq (quote oauth2) package-archive-contents))\n'
+    printf '    (anvil-package-install--direct-gnu-tar "oauth2" "0.19")\n'
+    printf '    (package-initialize)))\n'
+    printf '(dolist (pkg (list %s))\n' "${package_exprs[*]}"
+    printf '  (let ((sym (intern pkg)))\n'
+    printf '    (unless (package-installed-p sym)\n'
+    printf '      (message "Installing %%s into %%s" pkg package-user-dir)\n'
+    printf '      (package-install sym))))\n'
+    printf '(message "anvil package install complete: %%S" (list %s))\n' "${package_exprs[*]}"
+  } > "$script"
+
+  echo "anvil: installing Emacs package(s) into $package_dir" >&2
+  "$emacs_bin" --batch -Q -l "$script"
+  local code=$?
+  rm -f "$script" 2>/dev/null || true
+  return "$code"
+}
+
+cmd_emacs_package_install_wanderlust() {
+  local args=("wanderlust")
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --package-dir)
+        args+=("--package-dir" "${2:-}")
+        shift 2
+        ;;
+      -h|--help)
+        cat <<'EOF'
+usage: anvil emacs-package-install-wanderlust [--package-dir DIR]
+
+Installs the MELPA `wanderlust' package into the Emacs package directory used
+by `anvil mcp serve'. Dependencies such as FLIM/SEMI/APEL are installed by
+package.el when required by the archive metadata.
+EOF
+        return 0
+        ;;
+      --*)
+        echo "error: unknown emacs-package-install-wanderlust argument: $1" >&2
+        return 2
+        ;;
+      *)
+        echo "error: emacs-package-install-wanderlust takes no package arguments: $1" >&2
+        return 2
+        ;;
+    esac
+  done
+  cmd_emacs_package_install "${args[@]}" --archives gnu,nongnu,melpa
+}
+
 cmd_version() {
   # Phase 6.1 — rich version subcommand (vs `--version' bare line).
   # Reports launcher version + tools count + install root + emacs ver.
@@ -386,7 +852,7 @@ cmd_version() {
 ##   set it via `set ANVIL_LISP_DIR=C:\path` / `$env:ANVIL_LISP_DIR`,
 ##   forwarded through bin/anvil.cmd's `set "ANVIL_LISP_DIR=..."`);
 ##   otherwise probe the conventional locations beside the launcher
-##   (anvil-lib/) and the user's dev tree (Notes/dev/anvil.el).
+##   (vendor/anvil.el or anvil-lib/) and the user's dev tree.
 ##   Windows (msys2 / Git Bash) candidates use $USERPROFILE when set.
 anvil_lisp_dir() {
   # Honour ANVIL_LISP_DIR override.  On Windows the env var may arrive
@@ -404,8 +870,10 @@ anvil_lisp_dir() {
   # ($ANVIL_HOME/anvil-lib) covers the ordinary distribution path on
   # every OS — works identically on Linux, macOS, and Windows (msys2).
   local candidates=(
+    "$ANVIL_HOME/vendor/anvil.el"
     "$ANVIL_HOME/anvil-lib"
     "$ANVIL_HOME/../anvil.el"
+    "$HOME/Cowork/Notes/dev/anvil.el"
     "$HOME/Notes/dev/anvil.el"
     "$HOME/.emacs.d/external-packages/anvil.el"
   )
@@ -416,9 +884,11 @@ anvil_lisp_dir() {
   if [[ -n "${USERPROFILE:-}" ]]; then
     local up="${USERPROFILE//\\//}"
     candidates+=(
+      "$up/Cowork/Notes/dev/anvil.el"
       "$up/Notes/dev/anvil.el"
       "$up/.emacs.d/external-packages/anvil.el"
       "$up/AppData/Local/anvil/anvil-lib"
+      "$up/AppData/Local/anvil/vendor/anvil.el"
     )
   fi
 
@@ -436,6 +906,7 @@ cmd_mcp_serve() {
   local no_emacs=0
   local strict_no_emacs=0
   local profile=""
+  local modules=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --no-emacs)
@@ -459,9 +930,33 @@ cmd_mcp_serve() {
         profile="$2"
         shift 2
         ;;
+      --module=*)
+        modules+=("${1#--module=}")
+        shift
+        ;;
+      --module)
+        if [[ $# -lt 2 ]]; then
+          echo "error: --module requires an argument" >&2
+          exit 2
+        fi
+        modules+=("$2")
+        shift 2
+        ;;
+      --modules=*)
+        IFS=',' read -r -a modules <<< "${1#--modules=}"
+        shift
+        ;;
+      --modules)
+        if [[ $# -lt 2 ]]; then
+          echo "error: --modules requires an argument" >&2
+          exit 2
+        fi
+        IFS=',' read -r -a modules <<< "$2"
+        shift 2
+        ;;
       *)
         echo "error: unknown argument for 'anvil mcp serve': $1" >&2
-        echo "  supported flags: --no-emacs, --strict-no-emacs, --profile=NAME" >&2
+        echo "  supported flags: --no-emacs, --strict-no-emacs, --profile=NAME, --module=NAME" >&2
         exit 2
         ;;
     esac
@@ -472,6 +967,22 @@ cmd_mcp_serve() {
   # introduced this knob (Doc 34 Phase B); valid names are headless
   # / core / nav / edit / agent / ultra.
   local effective_profile="${profile:-${ANVIL_PROFILE:-headless}}"
+  local module_csv=""
+  if [[ ${#modules[@]} -gt 0 ]]; then
+    local m
+    for m in "${modules[@]}"; do
+      [[ -z "$m" ]] && continue
+      if [[ -n "$module_csv" ]]; then
+        module_csv="$module_csv,$m"
+      else
+        module_csv="$m"
+      fi
+    done
+  fi
+  local optional_module_eval=()
+  if [[ -n "$module_csv" ]]; then
+    optional_module_eval=(--eval "(setenv \"ANVIL_OPTIONAL_MODULES\" \"$module_csv\")")
+  fi
 
   mkdir -p "$ANVIL_CACHE_DIR"
   local runtime_bin
@@ -497,9 +1008,11 @@ cmd_mcp_serve() {
   emacs_bin="$(detect_emacs)"
   local src_dir="$ANVIL_HOME/src"
   local package_dir
+  package_dir="$(anvil_emacs_package_dir)"
   local emacs_load_args=()
-  for package_dir in $(nelisp_package_src_dirs); do
-    emacs_load_args+=(-L "$package_dir")
+  local nelisp_package_dir
+  for nelisp_package_dir in $(nelisp_package_src_dirs); do
+    emacs_load_args+=(-L "$nelisp_package_dir")
   done
 
   # Stage D Phase 6.1 architecture α: anvil.el headless profile is the
@@ -519,12 +1032,241 @@ cmd_mcp_serve() {
     -L "$src_dir" \
     "${emacs_load_args[@]}" \
     --eval "(setq load-prefer-newer t)" \
+    --eval "(require 'package)" \
+    --eval "(setq package-user-dir \"$(nelisp_native_path "$package_dir")\")" \
+    --eval "(package-initialize)" \
     --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
     --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
+    --eval "(setenv \"ANVIL_EMACS_PACKAGE_DIR\" \"$(nelisp_native_path "$package_dir")\")" \
     --eval "(setenv \"ANVIL_PROFILE\" \"$effective_profile\")" \
+    "${optional_module_eval[@]}" \
     -l anvil-server \
     -l anvil-server-commands \
     -f anvil-server-stage-d-headless-run
+}
+
+cmd_cad_annotate_svg() {
+  local in_path="" out_path="" text="" x="12" y="12" layer="codex" height="8"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --in) in_path="${2:-}"; shift 2 ;;
+      --out) out_path="${2:-}"; shift 2 ;;
+      --text) text="${2:-}"; shift 2 ;;
+      --x) x="${2:-}"; shift 2 ;;
+      --y) y="${2:-}"; shift 2 ;;
+      --layer) layer="${2:-}"; shift 2 ;;
+      --height) height="${2:-}"; shift 2 ;;
+      -h|--help)
+        echo "usage: anvil cad-annotate-svg --in FILE --out FILE --text TEXT [--x N --y N --layer NAME --height N]"
+        return 0
+        ;;
+      *)
+        echo "error: unknown cad-annotate-svg argument: $1" >&2
+        return 2
+        ;;
+    esac
+  done
+  if [[ -z "$in_path" || -z "$out_path" || -z "$text" ]]; then
+    echo "usage: anvil cad-annotate-svg --in FILE --out FILE --text TEXT [--x N --y N --layer NAME --height N]" >&2
+    return 2
+  fi
+
+  local form
+  form="$(printf '(anvil-cad-annotate %s %s %s %s %s %s %s)' \
+    "$(anvil_lisp_string "$(nelisp_native_path "$in_path")")" \
+    "$(anvil_lisp_string "$text")" \
+    "$(anvil_lisp_string "$x")" \
+    "$(anvil_lisp_string "$y")" \
+    "$(anvil_lisp_string "$layer")" \
+    "$(anvil_lisp_string "$height")" \
+    "$(anvil_lisp_string "$(nelisp_native_path "$out_path")")")"
+  anvil_cad_run_form "anvil-cad-annotate-svg.el" "$form"
+}
+
+cmd_cad_read_outline_svg() {
+  local in_path="" out_path=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --in) in_path="${2:-}"; shift 2 ;;
+      --out) out_path="${2:-}"; shift 2 ;;
+      -h|--help)
+        echo "usage: anvil cad-read-outline-svg --in FILE [--out FILE]"
+        return 0
+        ;;
+      *) echo "error: unknown cad-read-outline-svg argument: $1" >&2; return 2 ;;
+    esac
+  done
+  if [[ -z "$in_path" ]]; then
+    echo "usage: anvil cad-read-outline-svg --in FILE [--out FILE]" >&2
+    return 2
+  fi
+  local call
+  call="$(printf '(anvil-cad-read-outline %s)' \
+    "$(anvil_lisp_string "$(nelisp_native_path "$in_path")")")"
+  if [[ -n "$out_path" ]]; then
+    call="$(printf '(wrf %s %s)' \
+      "$(anvil_lisp_string "$(nelisp_native_path "$out_path")")" "$call")"
+  fi
+  anvil_cad_run_form "anvil-cad-read-outline-svg.el" "$call"
+}
+
+cmd_cad_extract_svg() {
+  local in_path="" out_path="" layer="" type="text"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --in) in_path="${2:-}"; shift 2 ;;
+      --out) out_path="${2:-}"; shift 2 ;;
+      --layer) layer="${2:-}"; shift 2 ;;
+      --type) type="${2:-}"; shift 2 ;;
+      -h|--help)
+        echo "usage: anvil cad-extract-svg --in FILE [--type text] [--layer NAME] [--out FILE]"
+        return 0
+        ;;
+      *) echo "error: unknown cad-extract-svg argument: $1" >&2; return 2 ;;
+    esac
+  done
+  if [[ -z "$in_path" ]]; then
+    echo "usage: anvil cad-extract-svg --in FILE [--type text] [--layer NAME] [--out FILE]" >&2
+    return 2
+  fi
+  local call
+  call="$(printf '(anvil-cad-extract %s %s %s)' \
+    "$(anvil_lisp_string "$(nelisp_native_path "$in_path")")" \
+    "$(anvil_lisp_string "$layer")" \
+    "$(anvil_lisp_string "$type")")"
+  if [[ -n "$out_path" ]]; then
+    call="$(printf '(wrf %s %s)' \
+      "$(anvil_lisp_string "$(nelisp_native_path "$out_path")")" "$call")"
+  fi
+  anvil_cad_run_form "anvil-cad-extract-svg.el" "$call"
+}
+
+cmd_cad_batch_update_svg() {
+  local in_path="" out_path="" layer="" type="text" match_text="" find="" replace="" set_layer=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --in) in_path="${2:-}"; shift 2 ;;
+      --out) out_path="${2:-}"; shift 2 ;;
+      --layer) layer="${2:-}"; shift 2 ;;
+      --type) type="${2:-}"; shift 2 ;;
+      --match-text) match_text="${2:-}"; shift 2 ;;
+      --find) find="${2:-}"; shift 2 ;;
+      --replace) replace="${2:-}"; shift 2 ;;
+      --set-layer) set_layer="${2:-}"; shift 2 ;;
+      -h|--help)
+        echo "usage: anvil cad-batch-update-svg --in FILE --out FILE --find TEXT --replace TEXT [--match-text TEXT --layer NAME --set-layer NAME]"
+        return 0
+        ;;
+      *) echo "error: unknown cad-batch-update-svg argument: $1" >&2; return 2 ;;
+    esac
+  done
+  if [[ -z "$in_path" || -z "$out_path" || -z "$find" ]]; then
+    echo "usage: anvil cad-batch-update-svg --in FILE --out FILE --find TEXT --replace TEXT [--match-text TEXT --layer NAME --set-layer NAME]" >&2
+    return 2
+  fi
+  local form
+  form="$(printf '(anvil-cad-batch-update %s %s %s %s %s %s %s %s)' \
+    "$(anvil_lisp_string "$(nelisp_native_path "$in_path")")" \
+    "$(anvil_lisp_string "$layer")" \
+    "$(anvil_lisp_string "$type")" \
+    "$(anvil_lisp_string "$match_text")" \
+    "$(anvil_lisp_string "$find")" \
+    "$(anvil_lisp_string "$replace")" \
+    "$(anvil_lisp_string "$set_layer")" \
+    "$(anvil_lisp_string "$(nelisp_native_path "$out_path")")")"
+  anvil_cad_run_form "anvil-cad-batch-update-svg.el" "$form"
+}
+
+cmd_cad_generate_svg() {
+  local out_path="" entities_json="" entities_file="" base_path="" overwrite="overwrite"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out) out_path="${2:-}"; shift 2 ;;
+      --entities-json) entities_json="${2:-}"; shift 2 ;;
+      --entities-file) entities_file="${2:-}"; shift 2 ;;
+      --base) base_path="${2:-}"; shift 2 ;;
+      --overwrite) overwrite="overwrite"; shift ;;
+      --no-overwrite) overwrite=""; shift ;;
+      -h|--help)
+        echo "usage: anvil cad-generate-svg --out FILE (--entities-json JSON|--entities-file FILE) [--base FILE] [--overwrite|--no-overwrite]"
+        return 0
+        ;;
+      *) echo "error: unknown cad-generate-svg argument: $1" >&2; return 2 ;;
+    esac
+  done
+  if [[ -z "$out_path" ]]; then
+    echo "usage: anvil cad-generate-svg --out FILE (--entities-json JSON|--entities-file FILE) [--base FILE] [--overwrite|--no-overwrite]" >&2
+    return 2
+  fi
+  if [[ -n "$entities_file" ]]; then
+    if [[ ! -f "$entities_file" ]]; then
+      echo "error: entities file not found: $entities_file" >&2
+      return 1
+    fi
+    entities_json="$(<"$entities_file")"
+  fi
+  if [[ -z "$entities_json" ]]; then
+    echo "usage: anvil cad-generate-svg --out FILE (--entities-json JSON|--entities-file FILE) [--base FILE] [--overwrite|--no-overwrite]" >&2
+    return 2
+  fi
+  local form
+  form="$(printf '(anvil-cad-generate %s %s %s %s)' \
+    "$(anvil_lisp_string "$(nelisp_native_path "$out_path")")" \
+    "$(anvil_lisp_string "$entities_json")" \
+    "$(anvil_lisp_string "$(nelisp_native_path "$base_path")")" \
+    "$(anvil_lisp_string "$overwrite")")"
+  anvil_cad_run_form "anvil-cad-generate-svg.el" "$form"
+}
+
+cmd_standalone_os_identity() {
+  local out_path=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out) out_path="${2:-}"; shift 2 ;;
+      -h|--help)
+        echo "usage: anvil standalone-os-identity [--out FILE]"
+        return 0
+        ;;
+      *) echo "error: unknown standalone-os-identity argument: $1" >&2; return 2 ;;
+    esac
+  done
+  local form
+  form='(format "%S" (list :system-type system-type :path-separator path-separator :exec-suffixes exec-suffixes :system-configuration system-configuration))'
+  if [[ -n "$out_path" ]]; then
+    form="$(printf '(wrf %s %s)' \
+      "$(anvil_lisp_string "$(nelisp_native_path "$out_path")")" "$form")"
+  fi
+  anvil_cad_run_form "anvil-standalone-os-identity.el" "$form"
+}
+
+cmd_standalone_db() {
+  if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<EOF
+usage: anvil standalone-db COMMAND [OPTIONS]
+
+Commands:
+  sqlite-select   --db FILE --sql SQL [--param VALUE ...]
+  sqlite-execute  --db FILE --sql SQL [--param VALUE ...]
+  memory-add      --name NAME --type TYPE (--body TEXT|--body-file FILE)
+  memory-get      (--name NAME|--file FILE)
+  memory-list     [--type TYPE] [--limit N]
+  memory-search   --query QUERY [--type TYPE] [--limit N]
+  worklog-add     --title TITLE (--body TEXT|--body-file FILE)
+                  [--date YYYY-MM-DD] [--machine NAME] [--year YYYY]
+  worklog-get     (--digest SHA1|--file FILE --start-line N)
+  worklog-list    [--limit N]
+  worklog-search  --query QUERY [--limit N]
+
+Common:
+  --db FILE       Override the target SQLite DB.
+
+Default DBs are resolved under the current Notes directory:
+  .anvil-memory/anvil-memory-index.db
+  .anvil-worklog/anvil-worklog-index.db
+EOF
+    return 0
+  fi
+  anvil_standalone_db_run "$@"
 }
 
 main() {
@@ -538,6 +1280,42 @@ main() {
     version) cmd_version ;;
     doctor) cmd_doctor ;;
     tools-list) cmd_tools_list ;;
+    emacs-package-install)
+      shift
+      cmd_emacs_package_install "$@"
+      ;;
+    emacs-package-install-wanderlust)
+      shift
+      cmd_emacs_package_install_wanderlust "$@"
+      ;;
+    standalone-os-identity)
+      shift
+      cmd_standalone_os_identity "$@"
+      ;;
+    standalone-db)
+      shift
+      cmd_standalone_db "$@"
+      ;;
+    cad-annotate-svg)
+      shift
+      cmd_cad_annotate_svg "$@"
+      ;;
+    cad-read-outline-svg)
+      shift
+      cmd_cad_read_outline_svg "$@"
+      ;;
+    cad-extract-svg)
+      shift
+      cmd_cad_extract_svg "$@"
+      ;;
+    cad-batch-update-svg)
+      shift
+      cmd_cad_batch_update_svg "$@"
+      ;;
+    cad-generate-svg)
+      shift
+      cmd_cad_generate_svg "$@"
+      ;;
     mcp)
       shift
       case "${1:-}" in

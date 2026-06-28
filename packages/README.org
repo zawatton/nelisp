@@ -31,6 +31,27 @@ Rules:
 - Package-specific dependency and usage notes live in the package
   =README.org=.
 
+* Promotion criteria
+
+Keep new standalone functionality package-ready even while it still
+lives in =lisp/=, =src/=, =scripts/=, or a launcher.  A feature should
+move toward =packages/<name>/=, and later a separate repository if that
+becomes useful, when it has:
+
+- A stable public =(require 'feature)= entry point.
+- Focused ERT or standalone smoke coverage that does not depend on a
+  full CLI/tarball run.
+- No direct dependency on Anvil command parsing, release packaging, or
+  one host OS.
+- A small host boundary: file/OS/process access should enter through
+  =nelisp-emacs= or another explicit shim.
+
+Reusable runtime substrate belongs below application launchers.  Good
+package candidates include array/vector computation, text/XML/JSON
+helpers, portable file and OS shims, batch-edit primitives, and other
+data-processing libraries.  Anvil/CAD/SVG workflow policy should stay
+above that line and call these libraries through narrow APIs.
+
 * Build Integration
 
 The root =Makefile= adds =packages/*/src= and =packages/*/test= to the

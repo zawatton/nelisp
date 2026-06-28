@@ -191,11 +191,27 @@ function Invoke-ReaderWithInput {
     $Psi.RedirectStandardInput = $true
     $Psi.RedirectStandardOutput = $true
     $Psi.RedirectStandardError = $true
-    $Psi.StandardInputEncoding = [System.Text.Encoding]::ASCII
-    $Psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-    $Psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-    foreach ($Arg in $Arguments) {
-        [void]$Psi.ArgumentList.Add($Arg)
+    if ($Psi.GetType().GetProperty("StandardInputEncoding")) {
+        $Psi.StandardInputEncoding = [System.Text.Encoding]::ASCII
+    }
+    if ($Psi.GetType().GetProperty("StandardOutputEncoding")) {
+        $Psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    }
+    if ($Psi.GetType().GetProperty("StandardErrorEncoding")) {
+        $Psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    }
+    if ($Psi.GetType().GetProperty("ArgumentList")) {
+        foreach ($Arg in $Arguments) {
+            [void]$Psi.ArgumentList.Add($Arg)
+        }
+    } else {
+        $Psi.Arguments = (($Arguments | ForEach-Object {
+            if ($_ -match '[\s"]') {
+                '"' + ($_ -replace '"', '\"') + '"'
+            } else {
+                $_
+            }
+        }) -join " ")
     }
 
     $Proc = [System.Diagnostics.Process]::Start($Psi)
@@ -277,6 +293,43 @@ if ($null -eq $LoadMissingCode) {
 }
 Assert-CodeOutputContains -Label "--load missing file rejected" `
     -Output $LoadMissingOutput -Code $LoadMissingCode -Needle "Arguments:"
+
+$RdfSource = Join-Path $SmokeDir "rdf-source.txt"
+Set-Content -Path $RdfSource -Encoding ascii -NoNewline -Value "hello"
+$RdfProbe = Join-Path $SmokeDir "rdf-probe.el"
+$RdfPath = $RdfSource.Replace("\", "/")
+Set-Content -Path $RdfProbe -Encoding UTF8 -Value @(
+    ("(length (rdf " + (ConvertTo-Json $RdfPath -Compress) + "))")
+)
+$RdfOutput = & $Exe --load $RdfProbe
+$RdfCode = $LASTEXITCODE
+if ($null -eq $RdfCode) {
+    $RdfCode = 0
+}
+Assert-Output -Label "rdf file read" -Output $RdfOutput `
+    -Code $RdfCode -Expected "5"
+
+$WrfTarget = Join-Path $SmokeDir "wrf-target.txt"
+$WrfProbe = Join-Path $SmokeDir "wrf-probe.el"
+$WrfPath = $WrfTarget.Replace("\", "/")
+$WrfContentLiteral = ConvertTo-Json "written" -Compress
+Set-Content -Path $WrfProbe -Encoding UTF8 -Value @(
+    ("(wrf " + (ConvertTo-Json $WrfPath -Compress) + " " + $WrfContentLiteral + ")")
+)
+$WrfOutput = & $Exe --load $WrfProbe
+$WrfCode = $LASTEXITCODE
+if ($null -eq $WrfCode) {
+    $WrfCode = 0
+}
+Assert-Output -Label "wrf file write" -Output $WrfOutput `
+    -Code $WrfCode -Expected "t"
+if (-not (Test-Path $WrfTarget)) {
+    throw "wrf file write did not create target"
+}
+$WrfContent = Get-Content -LiteralPath $WrfTarget -Raw
+if ($WrfContent -ne "written") {
+    throw ("wrf file write content mismatch: " + $WrfContent)
+}
 
 $RuntimeImage = Join-Path $SmokeDir "runtime-smoke.nlri"
 
@@ -362,63 +415,77 @@ if ($env:GITHUB_ACTIONS -eq "true") {
     Write-Host ("[windows-standalone-reader] SKIP: repl stdin/stdout on " +
                 "GitHub-hosted Windows runner")
 } else {
-$ReplInput = ((@(
+$ReplLines = @(
     "(+ 40 2)"
     "nil"
     "t"
     "(quote (1 2 3))"
     "(vector 1 `"a`" nil t)"
     "(exit)"
-) -join "`n") + "`n")
-$ReplRun = Invoke-ReaderWithInput -Arguments @("--repl", "--no-prompt") `
-    -InputText $ReplInput
-if ($ReplRun.ExitCode -ne 0) {
-    Write-Host ("[windows-standalone-reader] FAIL: repl exited " + $ReplRun.ExitCode)
-    if ($ReplRun.Stdout -ne "") {
-        Write-Host ("stdout: " + $ReplRun.Stdout)
-    }
-    if ($ReplRun.Stderr -ne "") {
-        Write-Host ("stderr: " + $ReplRun.Stderr)
-    }
+)
+$ReplInputFile = Join-Path $SmokeDir "repl-input.el"
+Set-Content -LiteralPath $ReplInputFile -Encoding ascii -Value $ReplLines
+$ReplStdout = cmd /c ('type "' + $ReplInputFile + '" | "' + $Exe + '" --repl --no-prompt')
+$ReplCode = $LASTEXITCODE
+if ($null -eq $ReplCode) {
+    $ReplCode = 0
+}
+if ($ReplCode -ne 0) {
+    Write-Host ("[windows-standalone-reader] FAIL: repl exited " + $ReplCode)
     exit 1
 }
-Assert-Output -Label "repl stdin/stdout" -Output @($ReplRun.Stdout) -Code 0 `
-    -Expected "42`nnil`nt`n(1 2 3)`n[1 `"a`" nil t]"
+$ReplText = $ReplStdout -join "`n"
+$ExpectedReplText = "42`nnil`nt`n(1 2 3)`n[1 `"a`" nil t]"
+if ($ReplText -ne $ExpectedReplText) {
+    $ReplStdout = cmd /c ('type "' + $ReplInputFile + '" | "' + $Exe + '" --repl --no-prompt')
+    $ReplCode = $LASTEXITCODE
+    if ($null -eq $ReplCode) {
+        $ReplCode = 0
+    }
+    $ReplText = $ReplStdout -join "`n"
+}
+Assert-Output -Label "repl stdin/stdout" -Output @($ReplText) -Code 0 `
+    -Expected $ExpectedReplText
 Write-Host "[windows-standalone-reader] PASS: repl stdin/stdout -> 42"
 
-$NoArgsReplRun = Invoke-ReaderWithInput -Arguments @() `
-    -InputText "(exit)`n"
-if ($NoArgsReplRun.ExitCode -ne 0) {
+$NoArgsReplInputFile = Join-Path $SmokeDir "noargs-repl-input.el"
+Set-Content -LiteralPath $NoArgsReplInputFile -Encoding ascii -Value "(exit)"
+$NoArgsReplStdout = cmd /c ('type "' + $NoArgsReplInputFile + '" | "' + $Exe + '"')
+$NoArgsReplCode = $LASTEXITCODE
+if ($null -eq $NoArgsReplCode) {
+    $NoArgsReplCode = 0
+}
+if ($NoArgsReplCode -ne 0) {
     Write-Host ("[windows-standalone-reader] FAIL: no-args repl exited " +
-                $NoArgsReplRun.ExitCode)
+                $NoArgsReplCode)
     exit 1
 }
-Assert-Output -Label "no-args repl" -Output @($NoArgsReplRun.Stdout) `
+$NoArgsReplText = $NoArgsReplStdout -join "`n"
+Assert-Output -Label "no-args repl" -Output @($NoArgsReplText) `
     -Code 0 -Expected "nelisp> "
 
-$QuietReplInput = ((@(
+$QuietReplLines = @(
     "(defun hot () 1)"
     "(hot)"
     "(condition-case e (signal 'quit nil) (quit 42))"
     '(nelisp--write-stdout-bytes "explicit\n")'
     "(hot)"
     "(exit)"
-) -join "`n") + "`n")
-$QuietReplRun = Invoke-ReaderWithInput `
-    -Arguments @("--repl", "--no-prompt", "--no-print") `
-    -InputText $QuietReplInput
-if ($QuietReplRun.ExitCode -ne 0) {
+)
+$QuietInputFile = Join-Path $SmokeDir "quiet-repl-input.el"
+Set-Content -LiteralPath $QuietInputFile -Encoding ascii -Value $QuietReplLines
+$QuietReplStdout = cmd /c ('type "' + $QuietInputFile + '" | "' + $Exe + '" --repl --no-prompt --no-print')
+$QuietReplCode = $LASTEXITCODE
+if ($null -eq $QuietReplCode) {
+    $QuietReplCode = 0
+}
+if ($QuietReplCode -ne 0) {
     Write-Host ("[windows-standalone-reader] FAIL: repl --no-print exited " +
-                $QuietReplRun.ExitCode)
-    if ($QuietReplRun.Stdout -ne "") {
-        Write-Host ("stdout: " + $QuietReplRun.Stdout)
-    }
-    if ($QuietReplRun.Stderr -ne "") {
-        Write-Host ("stderr: " + $QuietReplRun.Stderr)
-    }
+                $QuietReplCode)
     exit 1
 }
-Assert-Output -Label "repl --no-print" -Output @($QuietReplRun.Stdout) `
+$QuietReplText = $QuietReplStdout -join "`n"
+Assert-Output -Label "repl --no-print" -Output @($QuietReplText) `
     -Code 0 -Expected "explicit"
 }
 

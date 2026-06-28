@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# macOS arm64 standalone eval smoke.
+# macOS standalone eval smoke.
 #
-# Builds target/nelisp-standalone-eval as a pure-elisp Mach-O executable.
-# On macOS arm64 it also executes the binary and checks the exit code.
+# Builds target/nelisp-standalone-eval-macos-* as a pure-elisp Mach-O executable.
+# On native macOS it also executes the binary and checks the exit code.
 set -euo pipefail
 
 EMACS="${EMACS:-emacs}"
@@ -10,6 +10,7 @@ OP="+"
 A=1
 B=2
 BUILD_ONLY=0
+TARGET=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -17,8 +18,9 @@ while [ "$#" -gt 0 ]; do
     --op) OP="$2"; shift 2 ;;
     --a) A="$2"; shift 2 ;;
     --b) B="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
     --build-only|--emit-only) BUILD_ONLY=1; shift ;;
-    *) echo "usage: $0 [--op +|-|*] [--a N] [--b N] [--build-only]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--op +|-|*] [--a N] [--b N] [--target macos-aarch64|macos-x86_64] [--build-only]" >&2; exit 2 ;;
   esac
 done
 
@@ -32,11 +34,19 @@ esac
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+if [ -z "$TARGET" ]; then
+  case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+    Darwin-arm64) TARGET="macos-aarch64" ;;
+    Darwin-x86_64) TARGET="macos-x86_64" ;;
+    *) TARGET="macos-aarch64" ;;
+  esac
+fi
+
 echo "--- macOS standalone eval smoke ---"
 uname -a
 "$EMACS" --version | head -1
 
-export NELISP_STANDALONE_TARGET=macos-aarch64
+export NELISP_STANDALONE_TARGET="$TARGET"
 export NELISP_FORM_OP="$OP"
 export NELISP_FORM_A="$A"
 export NELISP_FORM_B="$B"
@@ -46,19 +56,30 @@ export NELISP_FORM_B="$B"
   -l nelisp-standalone-build \
   -f nelisp-standalone-build
 
-EXE="$REPO_ROOT/target/nelisp-standalone-eval"
+case "$TARGET" in
+  macos-aarch64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-aarch64" ;;
+  macos-x86_64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-x86_64" ;;
+  *) echo "[macos-standalone-eval] FAIL: unsupported target $TARGET" >&2; exit 2 ;;
+esac
 if [ ! -f "$EXE" ]; then
   echo "[macos-standalone-eval] FAIL: missing $EXE"
   exit 1
 fi
 
-if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ] || [ "$BUILD_ONLY" -eq 1 ]; then
+HOST_TARGET=""
+case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+  Darwin-arm64) HOST_TARGET="macos-aarch64" ;;
+  Darwin-x86_64) HOST_TARGET="macos-x86_64" ;;
+esac
+if [ "$HOST_TARGET" != "$TARGET" ] || [ "$BUILD_ONLY" -eq 1 ]; then
   file "$EXE"
   echo "[macos-standalone-eval] build-only PASS: $EXE"
   exit 0
 fi
 
-codesign -f -s - "$EXE" >/dev/null
+if command -v codesign >/dev/null 2>&1; then
+  codesign -f -s - "$EXE" >/dev/null
+fi
 set +e
 "$EXE"
 CODE=$?
