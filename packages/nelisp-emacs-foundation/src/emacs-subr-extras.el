@@ -85,6 +85,42 @@ return nil."
       (setq list (cdr list)))
     list))
 
+;; ---- length comparison primitives (Emacs 29+ C builtins) ----
+;; Vendor packages (and modern subr-x users) call `length<' / `length=' /
+;; `length>' pervasively.  For lists these walk at most LENGTH cells instead
+;; of computing the full length, so they stay correct on long lists; arrays
+;; fall back to `length'.
+
+(unless (fboundp 'length=)
+  (defun length= (sequence length)
+    "Return non-nil if SEQUENCE has exactly LENGTH elements."
+    (if (listp sequence)
+        (let ((n length))
+          (while (and (consp sequence) (> n 0))
+            (setq sequence (cdr sequence) n (1- n)))
+          (and (= n 0) (null sequence)))
+      (= (length sequence) length))))
+
+(unless (fboundp 'length<)
+  (defun length< (sequence length)
+    "Return non-nil if SEQUENCE is shorter than LENGTH."
+    (if (listp sequence)
+        (let ((n length))
+          (while (and (consp sequence) (> n 0))
+            (setq sequence (cdr sequence) n (1- n)))
+          (and (null sequence) (> n 0)))
+      (< (length sequence) length))))
+
+(unless (fboundp 'length>)
+  (defun length> (sequence length)
+    "Return non-nil if SEQUENCE is longer than LENGTH."
+    (if (listp sequence)
+        (let ((n length))
+          (while (and (consp sequence) (> n 0))
+            (setq sequence (cdr sequence) n (1- n)))
+          (consp sequence))
+      (> (length sequence) length))))
+
 ;; ---- four-level caaaar..cddddr (cadddr is NeLisp builtin) ----
 
 (unless (fboundp 'caaaar) (defun caaaar (x) (car (car (car (car x))))))
@@ -163,9 +199,13 @@ not supported in this minimal port)."))
 
 (unless (fboundp 'called-interactively-p)
   (defun called-interactively-p (&optional _kind)
-    "Return non-nil when the calling fn is invoked interactively.
-Standalone NeLisp has no interactive frontend; always nil."
-    nil))
+    "Return non-nil when the calling command was invoked interactively.
+Reads the interactive-call flag set by `call-interactively' /
+`funcall-interactively' (Doc 06 A5); see
+`emacs-command-loop--called-interactively' for the approximation's limits.
+KIND is accepted for API parity but not distinguished."
+    (and (boundp 'emacs-command-loop--called-interactively)
+         emacs-command-loop--called-interactively)))
 
 (unless (fboundp 'apply-partially)
   (defun apply-partially (fun &rest args)
@@ -236,6 +276,125 @@ skips the `current-load-list' bookkeeping (= unused on standalone)."
           (setq x (list (if (eq (aref n i) ?a) 'car 'cdr) x))
           (setq i (1- i)))
         x))))
+
+;; Doc 06 B3: event-modifiers / event-basic-type / event-convert-list.
+;; Modifier bit values (low to high); control on a letter and an uppercase
+;; letter are encoded specially as in Emacs.  Modifier-list *order* may differ
+;; from the host (callers use `memq'); values and basic types match.
+(defconst emacs-subr-extras--event-modifier-bits
+  '((alt . 4194304) (super . 8388608) (hyper . 16777216)
+    (shift . 33554432) (control . 67108864) (meta . 134217728)))
+
+(defconst emacs-subr-extras--event-modifier-prefixes
+  '((?A . alt) (?C . control) (?H . hyper) (?M . meta) (?S . shift) (?s . super)))
+
+(defun emacs-subr-extras--split-symbol-modifiers (sym)
+  "Return (MODS . BASE-STRING) by stripping leading X- prefixes from SYM."
+  (let ((name (symbol-name sym)) (mods nil) (done nil))
+    (while (not done)
+      (if (and (>= (length name) 2)
+               (eq (aref name 1) ?-)
+               (assq (aref name 0) emacs-subr-extras--event-modifier-prefixes))
+          (progn
+            (push (cdr (assq (aref name 0)
+                             emacs-subr-extras--event-modifier-prefixes))
+                  mods)
+            (setq name (substring name 2)))
+        (setq done t)))
+    (cons (nreverse mods) name)))
+
+(defun emacs-subr-extras-event-modifiers (event)
+  "Return the list of modifier symbols of EVENT (a char or key symbol)."
+  (cond
+   ((symbolp event) (car (emacs-subr-extras--split-symbol-modifiers event)))
+   ((integerp event)
+    (let ((mods nil) (base event))
+      (dolist (cell emacs-subr-extras--event-modifier-bits)
+        (when (/= 0 (logand event (cdr cell)))
+          (push (car cell) mods)
+          (setq base (- base (cdr cell)))))
+      (cond
+       ((and (>= base 1) (<= base 31)) (push 'control mods))
+       ((and (>= base ?A) (<= base ?Z)) (push 'shift mods)))
+      mods))
+   (t nil)))
+
+(defun emacs-subr-extras-event-basic-type (event)
+  "Return the base type of EVENT (modifiers stripped)."
+  (cond
+   ((symbolp event)
+    (intern (cdr (emacs-subr-extras--split-symbol-modifiers event))))
+   ((integerp event)
+    (let ((base event))
+      (dolist (cell emacs-subr-extras--event-modifier-bits)
+        (when (/= 0 (logand event (cdr cell)))
+          (setq base (- base (cdr cell)))))
+      (cond
+       ((and (>= base 1) (<= base 26)) (+ base 96))
+       ((and (>= base 27) (<= base 31)) (+ base 64))
+       ((and (>= base ?A) (<= base ?Z)) (+ base 32))
+       (t base))))
+   (t event)))
+
+(defun emacs-subr-extras-event-convert-list (list)
+  "Convert LIST (MODIFIERS... BASE) into an event (char or key symbol)."
+  (let ((base (car (last list)))
+        (mods (butlast list)))
+    (if (integerp base)
+        (let ((c base) (m (copy-sequence mods)))
+          (when (and (memq 'control m) (>= c ?a) (<= c ?z))
+            (setq c (- c 96) m (delq 'control m)))
+          (when (and (memq 'control m) (>= c ?A) (<= c ?Z))
+            (setq c (- c 64) m (delq 'control m)))
+          (dolist (mod m)
+            (let ((bit (cdr (assq mod emacs-subr-extras--event-modifier-bits))))
+              (when bit (setq c (logior c bit)))))
+          c)
+      (let ((prefix ""))
+        (dolist (cell '((alt . "A-") (control . "C-") (hyper . "H-")
+                        (meta . "M-") (shift . "S-") (super . "s-")))
+          (when (memq (car cell) mods)
+            (setq prefix (concat prefix (cdr cell)))))
+        (intern (concat prefix (symbol-name base)))))))
+
+(unless (fboundp 'event-modifiers)
+  (defun event-modifiers (event) (emacs-subr-extras-event-modifiers event)))
+(unless (fboundp 'event-basic-type)
+  (defun event-basic-type (event) (emacs-subr-extras-event-basic-type event)))
+(unless (and (fboundp 'event-convert-list)
+             (not (get 'event-convert-list 'emacs-stub-bulk)))
+  (defun event-convert-list (list) (emacs-subr-extras-event-convert-list list))
+  (put 'event-convert-list 'emacs-stub-bulk nil))
+
+;; Doc 06 A2: GC statistics API.  The standalone runtime collects automatically
+;; at form boundaries and exposes no manual-collect-with-stats primitive, so
+;; these provide the host-shaped return structure (counts are placeholders) to
+;; unblock callers that depend on the API shape.  Under host Emacs the C
+;; builtins win.  `garbage-collect' is stub-aware (it ships as a nil stub).
+(unless (and (fboundp 'garbage-collect)
+             (not (get 'garbage-collect 'emacs-stub-bulk)))
+  (defun garbage-collect ()
+    "Return a host-shaped garbage-collection statistics list.
+The standalone nelisp runtime collects automatically; counts here are
+placeholders, but the list structure matches Emacs so callers that index it
+work."
+    (list '(conses 16 0 0)
+          '(symbols 48 0 0)
+          '(strings 32 0 0)
+          '(string-bytes 1 0)
+          '(vectors 16 0)
+          '(vector-slots 8 0 0)
+          '(floats 8 0 0)
+          '(intervals 56 0 0)
+          '(buffers 1000 0)))
+  (put 'garbage-collect 'emacs-stub-bulk nil))
+
+(unless (fboundp 'memory-use-counts)
+  (defun memory-use-counts ()
+    "Return a host-shaped list of seven consing counters (placeholders).
+Per-type totals are not exposed by the standalone runtime:
+\(CONSES FLOATS VECTOR-CELLS SYMBOLS STRING-CHARS INTERVALS STRINGS)."
+    (list 0 0 0 0 0 0 0)))
 
 (provide 'emacs-subr-extras)
 ;;; emacs-subr-extras.el ends here
