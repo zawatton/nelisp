@@ -185,3 +185,19 @@ while a counter tracks the presses.  Click anywhere in the window to move it.
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-mouse-native.el \
      /tmp/sumi-mouse $(pkg-config --libs gtk4)
 ```
+
+### Motion and drag
+
+`gtk-motion-native.el` puts two more controllers on the drawing area: a
+`GtkEventControllerMotion` (the cyan marker follows the cursor) and a
+`GtkGestureDrag` (a yellow rubber-band rectangle is stroked from the press
+point to the current point).  Its handlers — `motion`, `drag-begin`,
+`drag-update` — are 4-arg mixed gp/f64 callbacks (`void(self, gdouble, gdouble,
+gpointer)`); under Win64 that is `rcx`, `xmm1`, `xmm2`, `r9`, all in registers.
+`drag-update` reports an offset from the press, so the current point is
+`start + offset`, and the box is drawn with `cairo_rectangle` + `cairo_stroke`.
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-motion-native.el \
+     /tmp/sumi-motion $(pkg-config --libs gtk4)
+```
