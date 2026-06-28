@@ -247,3 +247,19 @@ compiler change.
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-paint-app-native.el \
      /tmp/sumi-paint-app $(pkg-config --libs gtk4)
 ```
+
+### Animation — a per-frame tick callback
+
+`gtk-anim-native.el` bounces a ball around the canvas.
+`gtk_widget_add_tick_callback` registers `on_tick`
+(`gboolean(GtkWidget*, GdkFrameClock*, gpointer)`), called once per frame in
+sync with the display (~60 fps) and returning `G_SOURCE_CONTINUE`.  Each frame
+it advances the ball's integer position by its velocity, bounces off the edges
+by negating the velocity, and queues a redraw; `on_draw` paints the ball with
+`cairo_arc` (its colour cycles) and shows the frame counter.  Pure integer
+physics — no `sin`/`cos` or libm.
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-anim-native.el \
+     /tmp/sumi-anim $(pkg-config --libs gtk4)
+```
