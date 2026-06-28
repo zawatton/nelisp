@@ -16,6 +16,8 @@
 
 ;;; Code:
 
+(require 'emacs-char-table)
+
 (unless (fboundp 'string-empty-p)
   (defun string-empty-p (string)
     "Return non-nil iff STRING is the empty string."
@@ -123,9 +125,8 @@ is non-nil, each returned line keeps its trailing newline when present."
 (unless (and (fboundp 'string-width)
              (not (get 'string-width 'emacs-stub-bulk)))
   (defun string-width (string)
-    "Return display width of STRING.
-Standalone MVP treats every character as width 1."
-    (length string))
+    "Return the display width of STRING (sum of per-character widths)."
+    (emacs-string--string-width string))
   (put 'string-width 'emacs-stub-bulk nil))
 
 (unless (and (fboundp 'int-to-string)
@@ -188,6 +189,101 @@ CASE-FOLD non-nil compares via `downcase'."
             (setq i (1+ i)))
           res)
       s)))
+
+;; ASCII case conversion (src/casefiddle.c:ascii_casify_character).  These
+;; were void/stub in the standalone runtime, yet `string-equal-ignore-case'
+;; and the compare helpers below already depend on `downcase'.  ASCII-only;
+;; Unicode and case-table casing are not modeled.  OBJECT may be a character
+;; (integer) or a string, matching the host `upcase' / `downcase' surface.
+(unless (and (fboundp 'upcase) (not (get 'upcase 'emacs-stub-bulk)))
+  (defun upcase (object)
+    "Naive ASCII upcase polyfill for a character or string OBJECT.
+a..z map to A..Z; every other codepoint is returned unchanged."
+    (cond
+     ((integerp object)
+      (if (and (>= object ?a) (<= object ?z)) (- object 32) object))
+     ((stringp object)
+      (let ((res (copy-sequence object)) (i 0) (n (length object)))
+        (while (< i n)
+          (let ((c (aref object i)))
+            (when (and (>= c ?a) (<= c ?z)) (aset res i (- c 32))))
+          (setq i (1+ i)))
+        res))
+     (t object)))
+  (put 'upcase 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'downcase) (not (get 'downcase 'emacs-stub-bulk)))
+  (defun downcase (object)
+    "Naive ASCII downcase polyfill for a character or string OBJECT.
+A..Z map to a..z; every other codepoint is returned unchanged."
+    (cond
+     ((integerp object)
+      (if (and (>= object ?A) (<= object ?Z)) (+ object 32) object))
+     ((stringp object)
+      (let ((res (copy-sequence object)) (i 0) (n (length object)))
+        (while (< i n)
+          (let ((c (aref object i)))
+            (when (and (>= c ?A) (<= c ?Z)) (aset res i (+ c 32))))
+          (setq i (1+ i)))
+        res))
+     (t object)))
+  (put 'downcase 'emacs-stub-bulk nil))
+
+;; char-width (src/character.c:char_width) was undefined in the standalone
+;; runtime.  Default-policy column width: newline 0, tab `tab-width', other
+;; control/DEL 2 (^X notation), combining diacriticals 0, East Asian wide /
+;; fullwidth / CJK / emoji 2, everything else 1.  A full char-width-table from
+;; Unicode East Asian Width data is out of scope; the wide ranges are a rough
+;; approximation pinned to host `char-width' on tested codepoints.
+(defvar emacs-string--char-width-table nil
+  "Lazily built char-table mapping codepoint -> column width.
+Default width is 1; control chars and East Asian wide / fullwidth / CJK /
+emoji codepoints are 2, newline and combining diacriticals 0.  This is the
+overridable width-table substrate (consumers may `emacs-char-table-set' it);
+a full Unicode East Asian Width data set remains future work, so the wide
+ranges are a documented approximation pinned to host `char-width'.")
+
+(defun emacs-string--build-char-width-table ()
+  "Build and return the default char-width char-table."
+  (let ((ct (emacs-char-table-make 'char-width 1)))
+    (emacs-char-table-set-range ct (cons 0 31) 2)        ; control -> ^X
+    (emacs-char-table-set ct 10 0)                        ; newline
+    (emacs-char-table-set ct 127 2)                       ; DEL -> ^?
+    (emacs-char-table-set-range ct (cons #x300 #x36F) 0)  ; combining marks
+    (dolist (r '((#x1100 . #x115F) (#x2E80 . #x303E) (#x3041 . #x33FF)
+                 (#x3400 . #x4DBF) (#x4E00 . #x9FFF) (#xA000 . #xA4CF)
+                 (#xAC00 . #xD7A3) (#xF900 . #xFAFF) (#xFE10 . #xFE19)
+                 (#xFE30 . #xFE6F) (#xFF00 . #xFF60) (#xFFE0 . #xFFE6)
+                 (#x1B000 . #x1B16F) (#x1F300 . #x1FAFF) (#x20000 . #x3FFFD)))
+      (emacs-char-table-set-range ct r 2))
+    ct))
+
+(defun emacs-string-char-width-table ()
+  "Return the char-width char-table, building it on first use."
+  (or emacs-string--char-width-table
+      (setq emacs-string--char-width-table
+            (emacs-string--build-char-width-table))))
+
+(defun emacs-string--char-width (char)
+  "Return the column width for character CHAR via the char-width table.
+TAB resolves to `tab-width' (matching host `char-width')."
+  (if (eq char ?\t)
+      (if (and (boundp 'tab-width) (integerp tab-width)) tab-width 8)
+    (emacs-char-table-ref (emacs-string-char-width-table) char)))
+
+(defun emacs-string--string-width (string)
+  "Return the summed display width of STRING using `emacs-string--char-width'."
+  (let ((w 0) (i 0) (n (length string)))
+    (while (< i n)
+      (setq w (+ w (emacs-string--char-width (aref string i)))
+            i (1+ i)))
+    w))
+
+(unless (and (fboundp 'char-width) (not (get 'char-width 'emacs-stub-bulk)))
+  (defun char-width (char)
+    "Return the column width of CHAR (default policy, ASCII + rough EAW)."
+    (emacs-string--char-width char))
+  (put 'char-width 'emacs-stub-bulk nil))
 
 ;;;; --- Doc 16 breadth: subr-x / subr string builtins (were void) -------
 ;; `string-equal-ignore-case' / `string-clean-whitespace' (subr-x.el) and
@@ -334,6 +430,26 @@ Inverse of `combine-and-quote-strings'."
                   (cons (car rfs)
                         (split-string-and-unquote (substring string (cdr rfs))
                                                   sep))))))))
+
+(unless (and (fboundp 'propertize) (not (get 'propertize 'emacs-stub-bulk)))
+  (defun propertize (string &rest _properties)
+    "Return a copy of STRING.
+Standalone MVP: text PROPERTIES are accepted for call compatibility but are
+not retained, matching the no-op string text-property substrate.  Callers that
+only need the string content are unaffected."
+    (copy-sequence string))
+  (put 'propertize 'emacs-stub-bulk nil))
+
+(unless (fboundp 'string-glyph-split)
+  (defun string-glyph-split (string)
+    "Split STRING into a list of one-glyph strings.
+Standalone substrate: splits per character (no grapheme-cluster composition),
+which matches `string-glyph-split' for non-composed text."
+    (let ((out nil) (i 0) (n (length string)))
+      (while (< i n)
+        (push (substring string i (1+ i)) out)
+        (setq i (1+ i)))
+      (nreverse out))))
 
 (provide 'emacs-string)
 
