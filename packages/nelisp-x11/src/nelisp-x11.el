@@ -212,6 +212,73 @@ A 32-byte server packet is an error (byte0=0), reply (1) or event (>=2)."
       (let ((ev (alloc-bytes 32 8)))
         (if (< (nelisp-x11--read-n fd ev 32) 0) nil ev)))))
 
+(defun nelisp-x11-clear-area (dpy wid x y w h)
+  "ClearArea on window WID (W=H=0 clears to the window's extent)."
+  (let ((r (alloc-bytes 16 8)))
+    (ptr-write-u8 r 0 61) (nelisp-x11--put16 r 2 4)
+    (nelisp-x11--put32 r 4 wid)
+    (nelisp-x11--put16 r 8 x) (nelisp-x11--put16 r 10 y)
+    (nelisp-x11--put16 r 12 w) (nelisp-x11--put16 r 14 h)
+    (nelisp-x11--write (aref dpy nelisp-x11--d-fd) r 16)))
+
+(defun nelisp-x11-fill-rect (dpy drawable gc x y w h)
+  "PolyFillRectangle: one rectangle on DRAWABLE with GC.
+Request is 20 bytes (12 fixed + one 8-byte rectangle), length 5 units."
+  (let ((r (alloc-bytes 24 8)))
+    (ptr-write-u8 r 0 70) (nelisp-x11--put16 r 2 5)
+    (nelisp-x11--put32 r 4 drawable) (nelisp-x11--put32 r 8 gc)
+    (nelisp-x11--put16 r 12 x) (nelisp-x11--put16 r 14 y)
+    (nelisp-x11--put16 r 16 w) (nelisp-x11--put16 r 18 h)
+    (nelisp-x11--write (aref dpy nelisp-x11--d-fd) r 20)))
+
+;;; Keyboard ----------------------------------------------------------
+
+(defun nelisp-x11-get-keyboard-mapping (dpy)
+  "GetKeyboardMapping for DPY's full keycode range.
+Return a vector [PER FIRST BUF] where BUF holds COUNT*PER CARD32 keysyms.
+Call this right after connect, before any window events arrive."
+  (let* ((fd (aref dpy nelisp-x11--d-fd))
+         (first (aref dpy nelisp-x11--d-minkc))
+         (count (1+ (- (aref dpy nelisp-x11--d-maxkc) first)))
+         (req (alloc-bytes 8 8)))
+    (ptr-write-u8 req 0 101) (nelisp-x11--put16 req 2 2)
+    (ptr-write-u8 req 4 first) (ptr-write-u8 req 5 count)
+    (nelisp-x11--write fd req 8)
+    (let ((hdr (alloc-bytes 32 8)))
+      (nelisp-x11--read-n fd hdr 32)
+      (let* ((per (ptr-read-u8 hdr 1))
+             (nbytes (* (nelisp-x11--u32 hdr 4) 4))
+             (buf (alloc-bytes (+ nbytes 8) 8)))
+        (nelisp-x11--read-n fd buf nbytes)
+        (vector per first buf)))))
+
+(defun nelisp-x11-keysym (kbd keycode col)
+  "Keysym for KEYCODE column COL (0 unshifted, 1 shifted) from KBD mapping."
+  (let ((per (aref kbd 0)) (first (aref kbd 1)) (buf (aref kbd 2)))
+    (if (or (< keycode first) (>= col per)) 0
+      (nelisp-x11--u32 buf (* (+ (* (- keycode first) per) col) 4)))))
+
+(defun nelisp-x11-decode-key (kbd keycode state)
+  "Decode a KeyPress (KEYCODE + modifier STATE) to a byte, a motion symbol,
+or nil.  STATE bit0 = Shift, bit2 = Control."
+  (let* ((shift (= (logand state 1) 1))
+         (ctrl (= (logand state 4) 4))
+         (ks (nelisp-x11-keysym kbd keycode (if shift 1 0))))
+    ;; Fall back to the unshifted keysym for non-letter shifted slots that the
+    ;; server leaves 0 (rare); keeps Control+<letter> working regardless.
+    (when (= ks 0) (setq ks (nelisp-x11-keysym kbd keycode 0)))
+    (cond
+     ((= ks 0) nil)
+     ((= ks 65293) 13)            ; Return
+     ((= ks 65288) 127)           ; BackSpace
+     ((= ks 65289) 9)             ; Tab
+     ((= ks 65361) 'left) ((= ks 65363) 'right)
+     ((= ks 65362) 'up)   ((= ks 65364) 'down)
+     ((= ks 65360) 'home) ((= ks 65367) 'end)
+     ((and (>= ks 32) (<= ks 126))
+      (if ctrl (logand ks 31) ks))   ; Control+key -> control code
+     (t nil))))
+
 ;;; Demo --------------------------------------------------------------
 
 (defun nelisp-x11-hello (&optional max-events)
