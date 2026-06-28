@@ -1,8 +1,8 @@
 #!/bin/bash
-# gtkwin.sh IN.el OUT
+# gtkwin.sh IN.el OUT [LIBS...]
 #   Windows-native sibling of cro.sh.  Compile IN.el (a `(seq ...)' of defuns
 #   including a global `main') to a Win64 COFF .o via the mingw Emacs AOT
-#   compiler, link it natively with mingw gcc + gtk4 (pkg-config), and run the
+#   compiler, link it natively with mingw gcc + any extra LIBS, and run the
 #   resulting PE .exe.  Unlike cro.sh (Linux ELF run under WSL), the binary
 #   here is a real Windows executable that opens a native GTK4 window — GTK
 #   calls back into AOT-compiled elisp (`on_draw' etc.) to paint it.
@@ -10,10 +10,14 @@
 #   Requires an MSYS2 mingw64 toolchain with gtk4 installed:
 #     pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-gtk4 mingw-w64-x86_64-pkgconf
 #
-# Example (from the dev/nelisp repo root):
-#   bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-native.el /tmp/sumi-gtk
+# Examples (from the dev/nelisp repo root):
+#   # static link (program uses static extern-call against gtk/cairo symbols):
+#   bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-native.el  /tmp/sumi-gtk $(pkg-config --libs gtk4)
+#   # dynamic (program LoadLibraryA/GetProcAddress's everything; only kernel32):
+#   bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-dynamic.el /tmp/sumi-dyn
 set -uo pipefail
-IN="$1"; OUT="$2"
+IN="$1"; OUT="$2"; shift 2 || true
+LIBS="$*"
 # Repo root = two levels up from this script (examples/ffi-cairo/..).
 NLROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Prepend the mingw64 bin so emacs/gcc/pkg-config and the gtk4 runtime DLLs
@@ -35,8 +39,8 @@ emacs -Q --batch -L lisp -L src -l nelisp-aot-compiler \
   --eval "(condition-case e (progn (nelisp-aot-compile-to-object (with-temp-buffer (insert-file-contents \"${IN_WIN}\") (goto-char (point-min)) (read (current-buffer))) \"${OBJ_WIN}\" :format 'coff) (princ \"OBJ-OK\\n\")) (error (princ (format \"OBJ-ERR %S\\n\" e)) (kill-emacs 1)))" 2>&1 | tail -8
 rc=${PIPESTATUS[0]}; if [ "$rc" -ne 0 ]; then echo "ABORT: compile failed (rc=$rc)"; exit "$rc"; fi
 
-echo "=== link (mingw gcc + gtk4) -> ${EXE_WIN} ==="
-gcc "${OBJ_WIN}" $(pkg-config --libs gtk4) -o "${EXE_WIN}" || { echo "ABORT: link failed"; exit 1; }
+echo "=== link (mingw gcc, libs=[${LIBS}]) -> ${EXE_WIN} ==="
+gcc "${OBJ_WIN}" ${LIBS} -o "${EXE_WIN}" || { echo "ABORT: link failed"; exit 1; }
 
 echo "=== run native window (GSK_RENDERER=cairo; close it or wait for auto-quit) ==="
 GSK_RENDERER=cairo "${EXE_WIN}"; echo "exit=$?"

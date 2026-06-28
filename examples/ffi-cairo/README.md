@@ -73,7 +73,7 @@ into AOT-compiled elisp to paint it.
 
 ```sh
 # from the dev/nelisp repo root, in an MSYS2 shell with mingw64 gtk4 installed
-bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-native.el /tmp/sumi-gtk
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-native.el /tmp/sumi-gtk $(pkg-config --libs gtk4)
 ```
 
 This compiles elisp → **Win64 COFF** (`nelisp-aot-compile-to-object :format
@@ -98,6 +98,19 @@ What makes it work:
   `:rodata`/`:data` to the PE writer; regression-guarded by
   `coff-data-blob-emits-rdata-section`).
 
-A `dlopen`-style dynamic variant (Windows `LoadLibraryA`/`GetProcAddress` via
-`extern-call` + `extern-call-ptr`, mirroring `cairo-dynamic.el`) is the natural
-follow-up; the static-link path here is the minimal proof.
+### Dynamic variant — zero gtk link dependency
+
+`gtk-window-dynamic.el` is the Windows sibling of `cairo-dynamic.el`: instead of
+link-time `extern-call`s against gtk/cairo symbols, it resolves every entry
+point at runtime with kernel32's `LoadLibraryA` + `GetProcAddress` and calls it
+through `extern-call-ptr`.  The binary therefore links against **only
+kernel32** — no gtk/cairo/glib import libraries:
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-dynamic.el /tmp/sumi-dyn
+objdump -p /tmp/sumi-dyn.exe | grep 'DLL Name'   # => KERNEL32.dll, msvcrt.dll only
+```
+
+All of GTK is pulled in by name at runtime, exactly like the Linux `dlopen`
+example.  The cairo library handle is threaded to the draw callback through
+GTK's draw-func `user_data`, so `on_draw` resolves cairo entries on demand.
