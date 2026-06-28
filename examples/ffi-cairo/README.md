@@ -217,3 +217,27 @@ from the GTK callbacks (defun-calling-defun across the C boundary).
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-paint-native.el \
      /tmp/sumi-paint $(pkg-config --libs gtk4)
 ```
+
+### Paint app — palette, undo, and a text entry
+
+`gtk-paint-app-native.el` rounds the paint demo into a small app: a toolbar with
+a `GtkEntry`, an *undo* button, and four colour buttons above the canvas.
+
+- **Palette** — each colour button's `clicked` handler sets the current colour
+  index; every point stores its stroke's colour, so `on_draw` flushes a
+  `cairo_stroke` and re-sets the source at each stroke boundary (per-stroke
+  colour).
+- **Undo** — the handler scans the point array backward (a `while` loop) to the
+  last stroke-start and truncates the count there (array truncate).
+- **Caption** — the entry's `changed` signal redraws; `on_draw` reads the live
+  text with `gtk_editable_get_text` and renders it.  The cairo toy font is set
+  to `Meiryo` so a CJK caption shows (the `GtkEntry` accepts IME input as UTF-8;
+  cairo's default `sans` resolves to a glyph-less font on Windows → tofu boxes).
+
+Helper defuns `add_button` (from `main`) and `add_point` / `set_color` (from the
+callbacks) show defun-calling-defun composition.  No compiler change.
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-paint-app-native.el \
+     /tmp/sumi-paint-app $(pkg-config --libs gtk4)
+```
