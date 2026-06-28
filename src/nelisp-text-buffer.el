@@ -74,7 +74,7 @@ When the gap shrinks below this threshold we reallocate to grow it.")
 
 (defun nelisp-text-buffer--total-bytes (tb)
   "Return total allocated byte length of TB's underlying buffer."
-  (length (nelisp-text-buffer-bytes tb)))
+  (string-bytes (nelisp-text-buffer-bytes tb)))
 
 (defun nelisp-text-buffer--byte-at (tb byte-pos)
   "Return the logical byte at BYTE-POS in TB (skipping the gap).
@@ -84,8 +84,8 @@ post-gap."
         (gap-start (nelisp-text-buffer-gap-start tb))
         (gap-size (nelisp-text-buffer--gap-size tb)))
     (if (< byte-pos gap-start)
-        (aref bytes byte-pos)
-      (aref bytes (+ byte-pos gap-size)))))
+        (string-byte bytes byte-pos)
+      (string-byte bytes (+ byte-pos gap-size)))))
 
 (defun nelisp-text-buffer--utf8-char-bytes (first-byte)
   "Given FIRST-BYTE of a UTF-8 sequence, return its byte length (1-4)."
@@ -133,7 +133,7 @@ after the gap this adds the gap size."
       (let* ((old-bytes  (nelisp-text-buffer-bytes tb))
              (gap-start  (nelisp-text-buffer-gap-start tb))
              (gap-end    (nelisp-text-buffer-gap-end tb))
-             (old-total  (length old-bytes))
+             (old-total  (string-bytes old-bytes))
              (post-len   (- old-total gap-end))
              (new-gap    (max needed
                               nelisp-text-buffer--initial-gap
@@ -144,14 +144,14 @@ after the gap this adds the gap size."
         (when (> gap-start 0)
           (let ((i 0))
             (while (< i gap-start)
-              (aset new-bytes i (aref old-bytes i))
+              (aset new-bytes i (string-byte old-bytes i))
               (setq i (1+ i)))))
         ;; copy post-gap region (shifted to new gap-end)
         (when (> post-len 0)
           (let ((src gap-end)
                 (dst (+ gap-start new-gap)))
             (while (< src old-total)
-              (aset new-bytes dst (aref old-bytes src))
+              (aset new-bytes dst (string-byte old-bytes src))
               (setq src (1+ src)
                     dst (1+ dst)))))
         (setf (nelisp-text-buffer-bytes tb) new-bytes)
@@ -176,7 +176,7 @@ BYTE-POS must be in [0, byte-count]."
         ;; copy backward (high to low) to avoid clobbering when ranges overlap
         (let ((i (1- shift-len)))
           (while (>= i 0)
-            (aset bytes (+ dst-start i) (aref bytes (+ src-start i)))
+            (aset bytes (+ dst-start i) (string-byte bytes (+ src-start i)))
             (setq i (1- i))))
         (setf (nelisp-text-buffer-gap-start tb) byte-pos)
         (setf (nelisp-text-buffer-gap-end tb) (- gap-end shift-len))))
@@ -188,7 +188,7 @@ BYTE-POS must be in [0, byte-count]."
              (dst-start gap-start))
         (let ((i 0))
           (while (< i shift-len)
-            (aset bytes (+ dst-start i) (aref bytes (+ src-start i)))
+            (aset bytes (+ dst-start i) (string-byte bytes (+ src-start i)))
             (setq i (1+ i))))
         (setf (nelisp-text-buffer-gap-start tb) byte-pos)
         (setf (nelisp-text-buffer-gap-end tb) (+ gap-end shift-len)))))))
@@ -212,14 +212,14 @@ STR to already be a unibyte string of bytes."
   "Return the char count corresponding to BYTE-STRING for TB."
   (cond
    ((not (nelisp-text-buffer-multibyte-p tb))
-    (length byte-string))
+    (string-bytes byte-string))
    (t
     ;; UTF-8: count bytes whose top 2 bits are not 10 (= continuation)
     (let ((i 0)
-          (n (length byte-string))
+          (n (string-bytes byte-string))
           (chars 0))
       (while (< i n)
-        (let ((b (aref byte-string i)))
+        (let ((b (string-byte byte-string i)))
           (setq i (+ i (nelisp-text-buffer--utf8-char-bytes b))
                 chars (1+ chars))))
       chars))))
@@ -242,7 +242,7 @@ no initial content the buffer defaults to multibyte (UTF-8)."
                    ((null initial-content) "")
                    (multibyte (encode-coding-string initial-content 'utf-8 t))
                    (t initial-content)))
-         (init-byte-count (length encoded))
+         (init-byte-count (string-bytes encoded))
          (init-char-count (cond
                            ((null initial-content) 0)
                            (multibyte (length initial-content))
@@ -263,7 +263,7 @@ no initial content the buffer defaults to multibyte (UTF-8)."
     (when (> init-byte-count 0)
       (let ((i 0))
         (while (< i init-byte-count)
-          (aset bytes i (aref encoded i))
+          (aset bytes i (string-byte encoded i))
           (setq i (1+ i)))))
     tb))
 
@@ -276,7 +276,7 @@ The cursor advances to the end of the inserted text. Returns TB."
   (unless (stringp str)
     (signal 'wrong-type-argument (list 'stringp str)))
   (let* ((encoded (nelisp-text-buffer--encode tb str))
-         (n-bytes (length encoded))
+         (n-bytes (string-bytes encoded))
          (n-chars (nelisp-text-buffer--count-chars-in-bytes tb encoded)))
     (when (> n-bytes 0)
       ;; ensure cursor-byte cache in sync with cursor-char
@@ -288,7 +288,7 @@ The cursor advances to the end of the inserted text. Returns TB."
               (gap-start (nelisp-text-buffer-gap-start tb)))
           (let ((i 0))
             (while (< i n-bytes)
-              (aset bytes (+ gap-start i) (aref encoded i))
+              (aset bytes (+ gap-start i) (string-byte encoded i))
               (setq i (1+ i)))))
         (setf (nelisp-text-buffer-gap-start tb)
               (+ (nelisp-text-buffer-gap-start tb) n-bytes))
@@ -417,7 +417,7 @@ is intentionally deferred to extension packages
      ((string-empty-p pattern) from)
      (t
       (let* ((pat-encoded (nelisp-text-buffer--encode tb pattern))
-             (pat-len     (length pat-encoded))
+             (pat-len     (string-bytes pat-encoded))
              (pat-chars   (nelisp-text-buffer--count-chars-in-bytes
                            tb pat-encoded))
              (byte-count  (nelisp-text-buffer-byte-count tb))
@@ -434,7 +434,7 @@ is intentionally deferred to extension packages
                   (i 0))
               (while (and match (< i pat-len))
                 (when (/= (nelisp-text-buffer--byte-at tb (+ cur-byte i))
-                          (aref pat-encoded i))
+                          (string-byte pat-encoded i))
                   (setq match nil))
                 (setq i (1+ i)))
               (cond
