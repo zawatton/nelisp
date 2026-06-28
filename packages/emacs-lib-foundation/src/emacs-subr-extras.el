@@ -121,6 +121,34 @@ return nil."
           (consp sequence))
       (> (length sequence) length))))
 
+;; ---- value< : standard value order (Emacs 30 C builtin) ----
+;; A total-ish order over like-typed values; `sort' and friends rely on it.
+;; Covers numbers, strings, symbols, and conses/arrays lexicographically.
+
+(unless (fboundp 'value<)
+  (defun value< (a b)
+    "Return non-nil if A precedes B in standard value order.
+A and B should be of the same kind: numbers, strings, symbols, lists, or
+arrays (compared lexicographically)."
+    (cond
+     ((and (numberp a) (numberp b)) (< a b))
+     ((and (stringp a) (stringp b)) (string< a b))
+     ((and (symbolp a) (symbolp b)) (string< (symbol-name a) (symbol-name b)))
+     ((and (consp a) (consp b))
+      (cond ((value< (car a) (car b)) t)
+            ((value< (car b) (car a)) nil)
+            (t (value< (cdr a) (cdr b)))))
+     ((and (null a) (consp b)) t)
+     ((and (consp a) (null b)) nil)
+     ((and (arrayp a) (arrayp b))
+      (let ((la (length a)) (lb (length b)) (i 0) (res 'equal))
+        (while (and (eq res 'equal) (< i la) (< i lb))
+          (cond ((value< (aref a i) (aref b i)) (setq res t))
+                ((value< (aref b i) (aref a i)) (setq res nil))
+                (t (setq i (1+ i)))))
+        (if (eq res 'equal) (< la lb) res)))
+     (t (error "value<: unsupported or mismatched types: %S %S" a b)))))
+
 ;; ---- four-level caaaar..cddddr (cadddr is NeLisp builtin) ----
 
 (unless (fboundp 'caaaar) (defun caaaar (x) (car (car (car (car x))))))
