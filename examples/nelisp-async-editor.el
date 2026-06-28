@@ -25,6 +25,8 @@
 (defvar nae--tick 0   "Timer-driven tick counter (status-line liveness).")
 (defvar nae--draw t   "When non-nil, render to the terminal on each change.")
 (defvar nae--kill nil "Kill-ring head: the last killed string.")
+(defvar nae--file nil "Path backing the buffer (for C-x C-s save), or nil.")
+(defvar nae--msg "" "Transient status-line message (e.g. save result).")
 
 ;;; Position helpers (point is 1-based into the buffer string) ---------
 
@@ -95,6 +97,47 @@
   (when (and nae--kill (> (length nae--kill) 0))
     (nelisp-insert nae--kill nae--buf)))
 
+;;; File I/O (open/read/write/close via syscall) ----------------------
+
+(defun nae--cpath (path)
+  "Return a NUL-terminated C-string buffer holding PATH."
+  (let* ((n (length path)) (pb (alloc-bytes (+ n 1) 1)) (i 0))
+    (while (< i n) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i)))
+    (ptr-write-u8 pb n 0)
+    pb))
+
+(defun nae--read-file (path)
+  "Return the contents of PATH as a string, or nil if it cannot be opened."
+  (let ((fd (syscall-direct 2 (nae--cpath path) 0 0 0 0 0)))   ; open O_RDONLY
+    (if (< fd 0) nil
+      (let ((chunk (alloc-bytes 65536 1)) (acc "") (go t))
+        (while go
+          (let ((n (syscall-direct 0 fd chunk 65536 0 0 0)))   ; read
+            (if (<= n 0) (setq go nil)
+              (let ((s (make-string n 0)) (i 0))
+                (while (< i n) (aset s i (ptr-read-u8 chunk i)) (setq i (1+ i)))
+                (setq acc (concat acc s))))))
+        (syscall-direct 3 fd 0 0 0 0 0)                          ; close
+        acc))))
+
+(defun nae--write-file (path text)
+  "Write TEXT to PATH (O_WRONLY|O_CREAT|O_TRUNC, 0644).  Return bytes written, or nil."
+  (let ((fd (syscall-direct 2 (nae--cpath path) 577 420 0 0 0)))  ; 577=WRONLY|CREAT|TRUNC
+    (if (< fd 0) nil
+      (let* ((n (length text)) (buf (alloc-bytes (+ n 1) 1)) (i 0))
+        (while (< i n) (ptr-write-u8 buf i (aref text i)) (setq i (1+ i)))
+        (let ((w (syscall-direct 1 fd buf n 0 0 0)))             ; write
+          (syscall-direct 3 fd 0 0 0 0 0)                         ; close
+          w)))))
+
+(defun nae--save ()
+  "Save the buffer to `nae--file' (C-x C-s)."
+  (if (null nae--file)
+      (setq nae--msg "(no file)")
+    (let ((w (nae--write-file nae--file (nae--text))))
+      (setq nae--msg (if w (concat "wrote " (number-to-string w) "B -> " nae--file)
+                       (concat "save FAILED: " nae--file))))))
+
 (defun nae--key (b)
   "Dispatch a single decoded byte B (not part of an escape sequence)."
   (cond
@@ -148,7 +191,8 @@
                           "L" (number-to-string (1+ (car rc)))
                           " C" (number-to-string (1+ (cdr rc)))
                           "  ticks=" (number-to-string nae--tick)
-                          "  (C-q quit) \e[0m"))
+                          "  " nae--msg
+                          "  (C-x C-s save, C-q quit) \e[0m"))
         ;; Place the cursor at its row/col (1-based ANSI).
         (setq out (concat out "\e[" (number-to-string (1+ (car rc)))
                           ";" (number-to-string (1+ (cdr rc))) "H")))
@@ -160,7 +204,7 @@
   "Spawn the editor actor with an ESC-sequence decoder."
   (nelisp-spawn
    (nelisp-actor-lambda
-     (let ((run t) (esc 0))                ; esc: 0 normal, 1 saw ESC, 2 saw ESC[
+     (let ((run t) (esc 0) (cx 0))   ; esc: ESC[ decoder; cx: 1 after C-x prefix
        (while run
          (let ((ev (nelisp-receive)))
            (when (and (nelisp-event-p ev) (eq (nelisp-event-kind ev) 'key))
@@ -168,25 +212,32 @@
                (cond
                 ((= esc 2) (setq esc 0) (nae--arrow b))
                 ((= esc 1) (if (= b 91) (setq esc 2) (setq esc 0)))  ; expect '['
+                ((= cx 1) (setq cx 0) (when (= b 19) (nae--save)))   ; C-x C-s
                 ((= b 27) (setq esc 1))                              ; ESC
+                ((= b 24) (setq cx 1))                               ; C-x prefix
                 ((= b 17) (setq run nil))                            ; C-q
                 (t (nae--key b)))
                (nae--render)))
            (nelisp-yield)))))))
 
-(defun nae--setup (&optional initial)
+(defun nae--setup (&optional file)
   (setq nae--buf (nelisp-buffer--make :name "*async-editor*"))
-  (when (and initial (> (length initial) 0))
-    (nelisp-insert initial nae--buf)
-    (nelisp-goto-char (nae--pmin) nae--buf))
+  (setq nae--file file)
+  (when file
+    (let ((contents (nae--read-file file)))
+      (when (and contents (> (length contents) 0))
+        (nelisp-insert contents nae--buf)
+        (nelisp-goto-char (nae--pmin) nae--buf))))
   (setq nae--tick 0)
   (setq nae--kill nil)
+  (setq nae--msg (if file (concat "[" file "]") ""))
   (nelisp-actor--reset)
   (nelisp-async-reset-timers))
 
-(defun nae-run-interactive (&optional initial)
-  "Run the editor on a real terminal (raw mode + async loop)."
-  (nae--setup initial)
+(defun nae-run-interactive (&optional file)
+  "Run the editor on a real terminal (raw mode + async loop).
+With FILE, load it on start; C-x C-s saves back to it."
+  (nae--setup file)
   (setq nae--draw t)
   (let ((main (nae--make-actor)))
     (run-at-time 0.5 0.5 (lambda () (setq nae--tick (1+ nae--tick)) (nae--render)))
@@ -194,14 +245,15 @@
     (prog1 (nelisp-async-run-tty-raw main)
       (nae--write "\e[2J\e[H"))))
 
-(defun nae-run-batch (&optional initial)
-  "Run headless on piped stdin; print the final buffer + point on quit."
-  (nae--setup initial)
+(defun nae-run-batch (&optional file)
+  "Run headless on piped stdin; print the final buffer + point on quit.
+With FILE, load it on start; C-x C-s saves back to it."
+  (nae--setup file)
   (setq nae--draw nil)
   (let ((main (nae--make-actor)))
     (run-at-time 0.5 0.5 (lambda () (setq nae--tick (1+ nae--tick))))
     (let ((res (nelisp-async-run-tty main)))
-      (format "RESULT[%s text=%S point=%d ticks=%d]"
-              res (nae--text) (nae--pt) nae--tick))))
+      (format "RESULT[%s text=%S point=%d ticks=%d msg=%S]"
+              res (nae--text) (nae--pt) nae--tick nae--msg))))
 
 ;;; nelisp-async-editor.el ends here

@@ -53,4 +53,16 @@ run_case 'abcde\001\006\006\013\001\031\021' 'text=cdeab point=4'
 # C-a (line 2), C-b (onto the newline), C-k -> join lines "abcd"
 run_case 'ab\rcd\001\002\013\021' 'text=abcd point=3'
 
+# --- File load + edit + C-x C-s save roundtrip ---
+# Load "hello\nworld", insert '!' at start (point is at buffer start after load),
+# C-x C-s to save, C-q to quit; then verify the bytes on disk.
+TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+printf 'hello\nworld' > "$TMP"
+out="$(printf '!\030\023\021' | "$NELISP" --eval "(progn $LOADS (princ (nae-run-batch \"$TMP\")))" 2>&1)"
+echo "[async-editor-smoke] file-roundtrip msg: $(printf '%s' "$out" | grep -o 'msg=wrote [0-9]*B' || true)"
+disk="$(cat "$TMP")"
+echo "[async-editor-smoke] on disk: $(printf '%q' "$disk")"
+case "$out" in *"msg=wrote 12B"*) ;; *) echo "FAIL: save did not report writing 12 bytes"; exit 1 ;; esac
+if [ "$disk" != "$(printf '!hello\nworld')" ]; then echo "FAIL: file content on disk is wrong"; exit 1; fi
+
 echo "PASS"
