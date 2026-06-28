@@ -890,6 +890,18 @@ reseeds from its characters; nil -> a full LCG value."
     (if (and (integerp limit) (> limit 0))
         (mod nelisp--random-state limit)
       nelisp--random-state)))
+;; Headless timers: the standalone has no asynchronous event loop, so
+;; `run-at-time' fires its FUNCTION synchronously (a single shot, REPEAT
+;; ignored).  This suits code that drives its own scheduler from the timer
+;; callback -- e.g. nelisp-eventloop's `schedule-timer' only *enqueues* an event
+;; from the callback, which is later processed when the actor loop is run.
+;; `sit-for' has nothing to redisplay or block on, so it is a no-op returning t.
+(unless (fboundp 'run-at-time)
+  (defun run-at-time (_time _repeat function &rest args)
+    (apply function args)
+    (list 'nelisp--sync-timer function)))
+(unless (fboundp 'cancel-timer) (defun cancel-timer (&rest _) nil))
+(unless (fboundp 'sit-for) (defun sit-for (&rest _) t))
 (unless (fboundp 'cl-dolist) (defmacro cl-dolist (spec &rest body) `(dolist ,spec ,@body)))
 (unless (fboundp 'cl-dotimes) (defmacro cl-dotimes (spec &rest body) `(dotimes ,spec ,@body)))
 (unless (fboundp 'cl-assert)
