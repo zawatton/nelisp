@@ -169,3 +169,19 @@ quits.
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-widgets-native.el \
      /tmp/sumi-widgets $(pkg-config --libs gtk4)
 ```
+
+### Mouse input
+
+`gtk-mouse-native.el` adds a `GtkGestureClick` on the drawing area.  Its
+`pressed` handler is a **mixed gp/f64 callback** —
+`void(GtkGestureClick*, gint n_press, gdouble x, gdouble y, gpointer)` — so
+under Win64 the two coordinate doubles arrive in `xmm2`/`xmm3` and the 5th gp
+arg lands on the stack.  The handler truncates the coords with
+`f64-to-i64-trunc` and stores them; `on_draw` converts them back with
+`i64-to-f64` and moves a marker square (`cairo_rectangle`) to the last click,
+while a counter tracks the presses.  Click anywhere in the window to move it.
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-mouse-native.el \
+     /tmp/sumi-mouse $(pkg-config --libs gtk4)
+```
