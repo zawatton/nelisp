@@ -7704,12 +7704,17 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 8)))
               (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
 
-;; cl-defun ~= defun for the standalone (the lambda special form handles the
-;; arglist; full CL &optional-default/&key are not modelled — basic required /
-;; &optional / &rest map through).
+;; cl-defun: defer to the cl-lib `cl-defun' MACRO supplied by the prelude.
+;; The earlier native shortcut treated `cl-defun' as `defun' and built a plain
+;; lambda, but the native lambda binder cannot honour CL arglists
+;; (&key/&aux/&optional-with-default) -- e.g. `(cl-defun f (a &key b c) ...)'
+;; mis-bound C.  Returning 2 ("unknown") makes nl_apply_special fall through to
+;; the function/macro lookup, where the prelude's `cl-defun' macro (correct
+;; memq-based &key parsing) takes over.  All callers that use `cl-defun' load
+;; the prelude, so the macro is always present.
 (defconst nelisp-standalone--sf-cl-defun
-  '(defun nl_sf_cl_defun (args env out _pad)
-     (nl_sf_defun args env out 0)))
+  '(defun nl_sf_cl_defun (_args _env _out _pad)
+     2))
 
 (defconst nelisp-standalone--sf-defalias
   '(defun nl_sf_defalias (args env out _pad)

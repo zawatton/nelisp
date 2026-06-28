@@ -853,6 +853,14 @@ from `(defvar X nil)'."
 ;; leading `(interactive ...)' as a call, so define it as a no-op MACRO -- a
 ;; macro (not a defun) so the spec argument is never evaluated for effect.
 (unless (fboundp 'interactive) (defmacro interactive (&rest _) nil))
+;; `special-variable-p' is consulted by generator.el's CPS transform to decide
+;; whether a `let*' binding inside an `iter-lambda' needs dynamic save/restore
+;; (t) or can be alpha-renamed lexically (nil).  The bare reader cannot query a
+;; symbol's special flag, but standalone code is lexical-binding, so the loop /
+;; local bindings a generator introduces are lexical: answer nil so the lexical
+;; rewrite path is taken.  (Free references to genuinely-special vars are NOT
+;; let-bindings, so they are untouched by this and still resolve dynamically.)
+(unless (fboundp 'special-variable-p) (defun special-variable-p (_symbol) nil))
 ;; Headless host frame: the standalone has no Emacs frame, so report the
 ;; controlling terminal's size from $COLUMNS/$LINES, falling back to the
 ;; conventional 80x24.  (Export the vars, or refine with a TIOCGWINSZ ioctl,
