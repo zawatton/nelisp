@@ -361,3 +361,17 @@ Codegen wiring (nelisp-standalone-build.el):
   The native evaluator now covers the common special forms, definers, the core
   control macros, and user-defined macros — bare ~--eval~ runs ordinary Elisp
   without the prelude.  (prog1/prog2/dolist/dotimes still come from the prelude.)
+- 2026-06-28: *prog1/prog2/dolist/dotimes as native special forms.*  prog1/prog2
+  evaluate directly (eval the saved form into OUT, the rest for effect via
+  ~nl_sf_progn~).  dolist/dotimes SYNTHESISE a mapc/let form and evaluate it:
+  + ~(dolist (V L R) B...)~ -> ~(progn (mapc (lambda (V) B...) L) (let ((V nil)) R))~
+  + ~(dotimes (V N R) B...)~ -> ~(progn (mapc (lambda (V) B...) (number-sequence
+    0 (1- N))) (let ((V N)) R))~  (N is evaluated twice — negligible).
+  Reuses the working mapc / number-sequence / let / lambda (the literal 0 is made
+  with the ~sexp-int-make~ grammar op).  Verified on the binary: ~(prog1 1 2 3)~
+  => 1, ~(prog2 1 2 3)~ => 2, ~(dolist (x '(1 2 3) r) (setq r (cons x r)))~ =>
+  (3 2 1), ~(dotimes (i 5) ...)~ sums 0..4 => 10, ~(dotimes (i 3 c) ...)~ => 3;
+  nested dotimes/dolist and defun+dotimes+when+cond both correct.  No regression:
+  prior forms, ~eval-runtime-image "(image-hot)"~ => 99, full ffi-smoke.  The
+  native evaluator now runs ordinary Elisp (special forms + definers + the core
+  + iteration macros + user macros) with NO prelude required.
