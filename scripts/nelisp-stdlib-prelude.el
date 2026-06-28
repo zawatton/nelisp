@@ -4579,12 +4579,23 @@ Doc 156: was `(apply #\\='vector ...)', but the reader now exposes a native
     "Return t if X is an array (= a string or a vector)."
     (if (or (vectorp x) (stringp x)) t nil)))
 
+;; Idempotent capture rule (applies to every `nelisp--native-X' save below):
+;; this prelude is baked into the standalone image AND re-loaded at runtime.
+;; On the first (bake) pass `nelisp--native-X' is unbound, so the capture saves
+;; the genuine native builtin.  A bare `(fset 'nelisp--native-X (symbol-function
+;; 'X))' on the second (runtime re-load) pass would re-capture the elisp wrapper
+;; that this file installs over X, turning the wrapper's `nelisp--native-X'
+;; delegate into a self-call -> infinite recursion / silent empty result (this
+;; is what broke `format'/`substring'/`equal'/`floor' and every macro built on
+;; them, e.g. `cl-defstruct').  Guard each capture with `unless fboundp' so the
+;; saved native implementation survives re-loads untouched.
+;;
 ;; A1: 2-arg `floor'/`ceiling'/`truncate' ignored the divisor.  Capture the
 ;; native 1-arg implementation, fix the 2-arg integer path with a toward-zero
 ;; quotient (`/') plus a floor/ceil sign adjustment (the reader has no `%').
-(fset 'nelisp--native-floor (symbol-function 'floor))
-(fset 'nelisp--native-ceiling (symbol-function 'ceiling))
-(fset 'nelisp--native-truncate (symbol-function 'truncate))
+(unless (fboundp 'nelisp--native-floor) (fset 'nelisp--native-floor (symbol-function 'floor)))
+(unless (fboundp 'nelisp--native-ceiling) (fset 'nelisp--native-ceiling (symbol-function 'ceiling)))
+(unless (fboundp 'nelisp--native-truncate) (fset 'nelisp--native-truncate (symbol-function 'truncate)))
 
 (defun nelisp--int-floor-div (x div)
   "Integer floor division X/DIV toward negative infinity (DIV /= 0)."
@@ -4629,7 +4640,7 @@ Doc 156: was `(apply #\\='vector ...)', but the reader now exposes a native
 
 ;; A3: native `equal' never compared vectors element-wise.  Capture native
 ;; `equal' for the atom/string/number leaves and recurse over cons + vector.
-(fset 'nelisp--native-equal (symbol-function 'equal))
+(unless (fboundp 'nelisp--native-equal) (fset 'nelisp--native-equal (symbol-function 'equal)))
 (defun equal (a b)
   "Structural equality with vector support (Doc 22 A3).
 Only `cons' and `vector' are walked in elisp; every atom (number, string,
@@ -4654,7 +4665,7 @@ strings compare equal."
 
 ;; A5: native `substring' returned garbage for vectors.  Slice vectors in
 ;; elisp via `aref'/`aset'; defer strings to the (correct) native path.
-(fset 'nelisp--native-substring (symbol-function 'substring))
+(unless (fboundp 'nelisp--native-substring) (fset 'nelisp--native-substring (symbol-function 'substring)))
 (defun substring (seq from &optional to)
   "Return the SEQ slice [FROM, TO); vector support added (Doc 22 A5)."
   (if (vectorp seq)
@@ -4679,7 +4690,7 @@ strings compare equal."
 ;; / "%05d" pass through literally).  The underlying conversion (s S d x X o c
 ;; e f g %) is correct, so we delegate each directive's value to native format
 ;; and add the field-width/justify/zero-pad/precision layer in elisp.
-(fset 'nelisp--native-format (symbol-function 'format))
+(unless (fboundp 'nelisp--native-format) (fset 'nelisp--native-format (symbol-function 'format)))
 
 (defun nelisp--digit-char-p (ch) (and (>= ch 48) (<= ch 57)))
 
@@ -4787,7 +4798,7 @@ native `format', which lacks only the field-width layer."
 ;; native `functionp' fails to recognise a `(lambda ...)' / `(closure ...)' /
 ;; `(builtin ...)' cons (returns nil).  Provide a predicate-composed `type-of'
 ;; and a corrected `functionp' so function type-dispatch works.
-(fset 'nelisp--native-functionp (symbol-function 'functionp))
+(unless (fboundp 'nelisp--native-functionp) (fset 'nelisp--native-functionp (symbol-function 'functionp)))
 (defun functionp (x)
   "Return t if X is callable (lambda / closure / builtin cons, or native)."
   (if (and (consp x) (memq (car x) '(lambda closure builtin)))
@@ -4825,9 +4836,9 @@ native predicates."
 (defvar standard-output nil
   "Output stream for `princ'/`prin1'/`print'/`terpri' (Doc 22 A9).")
 
-(fset 'nelisp--native-princ (symbol-function 'princ))
-(fset 'nelisp--native-prin1 (symbol-function 'prin1))
-(fset 'nelisp--native-terpri (symbol-function 'terpri))
+(unless (fboundp 'nelisp--native-princ) (fset 'nelisp--native-princ (symbol-function 'princ)))
+(unless (fboundp 'nelisp--native-prin1) (fset 'nelisp--native-prin1 (symbol-function 'prin1)))
+(unless (fboundp 'nelisp--native-terpri) (fset 'nelisp--native-terpri (symbol-function 'terpri)))
 
 (defun nelisp--emit-to-stream (str stream)
   "Send string STR to STREAM: function = one funcall per character;
