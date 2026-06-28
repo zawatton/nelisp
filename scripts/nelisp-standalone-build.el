@@ -7809,6 +7809,124 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
              1))
        1)))
 
+;; Core control macros when/unless/cond/and/or as native special forms.  Unlike
+;; the definers these DIRECTLY evaluate (no synthesis): they walk their argument
+;; list, evaluate sub-forms with `nelisp_eval_call', test truthiness (a form via
+;; `nl_eval_is_truthy', an already-evaluated slot via offset-0 == 0 <=> nil), and
+;; delegate bodies to `nl_sf_progn'.  Without these the prelude (which defines
+;; them via `defmacro') must be loaded; as native forms they work in bare
+;; --eval too, and nl_apply_special dispatches them before any macro lookup.
+;; u64 packings: "when"=1852139639, "unless"=126939460038261, "cond"=1684959075,
+;; "and"=6581857, "or"=29295.
+(defconst nelisp-standalone--sp-eq-when
+  '(defun nl_sp_eq_when (name_ptr)
+     (let* ((buf (alloc-bytes 8 1)))
+       (seq (ptr-write-u64 buf 0 1852139639)
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 4)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+
+(defconst nelisp-standalone--sp-eq-unless
+  '(defun nl_sp_eq_unless (name_ptr)
+     (let* ((buf (alloc-bytes 8 1)))
+       (seq (ptr-write-u64 buf 0 126939460038261)
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 6)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+
+(defconst nelisp-standalone--sp-eq-cond
+  '(defun nl_sp_eq_cond (name_ptr)
+     (let* ((buf (alloc-bytes 8 1)))
+       (seq (ptr-write-u64 buf 0 1684959075)
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 4)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+
+(defconst nelisp-standalone--sp-eq-and
+  '(defun nl_sp_eq_and (name_ptr)
+     (let* ((buf (alloc-bytes 8 1)))
+       (seq (ptr-write-u64 buf 0 6581857)
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 3)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+
+(defconst nelisp-standalone--sp-eq-or
+  '(defun nl_sp_eq_or (name_ptr)
+     (let* ((buf (alloc-bytes 8 1)))
+       (seq (ptr-write-u64 buf 0 29295)
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 2)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+
+(defconst nelisp-standalone--sf-when
+  '(defun nl_sf_when (args env out _pad)
+     (if (= (sexp-tag args) 7)
+         (if (= (nl_eval_is_truthy (nl_cons_car_ptr args) env) 1)
+             (nl_sf_progn (nl_cons_cdr_ptr args) env out 0)
+           (seq (nl_cons_write_nil out) 0))
+       (seq (nl_cons_write_nil out) 0))))
+
+(defconst nelisp-standalone--sf-unless
+  '(defun nl_sf_unless (args env out _pad)
+     (if (= (sexp-tag args) 7)
+         (if (= (nl_eval_is_truthy (nl_cons_car_ptr args) env) 1)
+             (seq (nl_cons_write_nil out) 0)
+           (nl_sf_progn (nl_cons_cdr_ptr args) env out 0))
+       (seq (nl_cons_write_nil out) 0))))
+
+;; (and A B ...) -> evaluate each in order into OUT; short-circuit on nil
+;; (OUT keeps that nil); otherwise OUT holds the last value.  (and) -> t.
+(defconst nelisp-standalone--sf-and-walk
+  '(defun nl_sf_and_walk (rest env out _pad)
+     (let* ((more (nl_cons_cdr_ptr rest)))
+       (seq
+        (nelisp_eval_call (nl_cons_car_ptr rest) env out)
+        (if (= (sexp-tag more) 7)
+            (if (= (ptr-read-u64 out 0) 0) 0 (nl_sf_and_walk more env out 0))
+          0)))))
+
+(defconst nelisp-standalone--sf-and
+  '(defun nl_sf_and (args env out _pad)
+     (if (= (sexp-tag args) 7)
+         (nl_sf_and_walk args env out 0)
+       (seq (nl_cons_write_t out) 0))))
+
+;; (or A B ...) -> first truthy value into OUT; else nil.  (or) -> nil.
+(defconst nelisp-standalone--sf-or-walk
+  '(defun nl_sf_or_walk (rest env out _pad)
+     (let* ((more (nl_cons_cdr_ptr rest)))
+       (seq
+        (nelisp_eval_call (nl_cons_car_ptr rest) env out)
+        (if (= (ptr-read-u64 out 0) 0)
+            (if (= (sexp-tag more) 7) (nl_sf_or_walk more env out 0) 0)
+          0)))))
+
+(defconst nelisp-standalone--sf-or
+  '(defun nl_sf_or (args env out _pad)
+     (if (= (sexp-tag args) 7)
+         (nl_sf_or_walk args env out 0)
+       (seq (nl_cons_write_nil out) 0))))
+
+;; (cond (TEST BODY...) ...) -> first clause whose TEST is truthy; its BODY
+;; (progn) value, or TEST's value when BODY is empty.  No match -> nil.
+(defconst nelisp-standalone--sf-cond-walk
+  '(defun nl_sf_cond_walk (clauses env out _pad)
+     (let* ((clause (nl_cons_car_ptr clauses))
+            (more (nl_cons_cdr_ptr clauses)))
+       (if (= (sexp-tag clause) 7)
+           (let* ((body (nl_cons_cdr_ptr clause)))
+             (seq
+              (nelisp_eval_call (nl_cons_car_ptr clause) env out)
+              (if (= (ptr-read-u64 out 0) 0)
+                  (if (= (sexp-tag more) 7)
+                      (nl_sf_cond_walk more env out 0)
+                    (seq (nl_cons_write_nil out) 0))
+                (if (= (sexp-tag body) 7) (nl_sf_progn body env out 0) 0))))
+         (if (= (sexp-tag more) 7)
+             (nl_sf_cond_walk more env out 0)
+           (seq (nl_cons_write_nil out) 0))))))
+
+(defconst nelisp-standalone--sf-cond
+  '(defun nl_sf_cond (args env out _pad)
+     (if (= (sexp-tag args) 7)
+         (nl_sf_cond_walk args env out 0)
+       (seq (nl_cons_write_nil out) 0))))
+
 (defun nelisp-standalone--patch-apply-special (form)
   "Rewrite the nl_apply_special defun FORM: replace its terminal else `2'
 (unknown-special-form) with catch/throw dispatch arms, keeping the existing
@@ -7832,11 +7950,21 @@ if-chain intact."
                           (nl_sf_defalias args_ptr env_ptr out 0)
                         (if (= (nl_sp_eq_cl_defun name_ptr) 1)
                             (nl_sf_cl_defun args_ptr env_ptr out 0)
-                          (if (= (nl_sp_eq_catch name_ptr) 1)
-                              (nl_sf_catch args_ptr env_ptr out 0)
-                            (if (= (nl_sp_eq_throw name_ptr) 1)
-                                (nl_sf_throw args_ptr env_ptr out 0)
-                              2)))))))))
+                          (if (= (nl_sp_eq_when name_ptr) 1)
+                              (nl_sf_when args_ptr env_ptr out 0)
+                            (if (= (nl_sp_eq_unless name_ptr) 1)
+                                (nl_sf_unless args_ptr env_ptr out 0)
+                              (if (= (nl_sp_eq_cond name_ptr) 1)
+                                  (nl_sf_cond args_ptr env_ptr out 0)
+                                (if (= (nl_sp_eq_and name_ptr) 1)
+                                    (nl_sf_and args_ptr env_ptr out 0)
+                                  (if (= (nl_sp_eq_or name_ptr) 1)
+                                      (nl_sf_or args_ptr env_ptr out 0)
+                                    (if (= (nl_sp_eq_catch name_ptr) 1)
+                                        (nl_sf_catch args_ptr env_ptr out 0)
+                                      (if (= (nl_sp_eq_throw name_ptr) 1)
+                                          (nl_sf_throw args_ptr env_ptr out 0)
+                                        2))))))))))))))
             ((consp node) (cons (rewrite (car node)) (rewrite (cdr node))))
             (t node))))
       (append (list 'defun name arglist) (mapcar #'rewrite body)))))
@@ -7867,6 +7995,19 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
                 (push nelisp-standalone--sf-cl-defun out)
                 (push nelisp-standalone--sf-defalias out)
                 (push nelisp-standalone--sf-defmacro out)
+                (push nelisp-standalone--sp-eq-when out)
+                (push nelisp-standalone--sp-eq-unless out)
+                (push nelisp-standalone--sp-eq-cond out)
+                (push nelisp-standalone--sp-eq-and out)
+                (push nelisp-standalone--sp-eq-or out)
+                (push nelisp-standalone--sf-when out)
+                (push nelisp-standalone--sf-unless out)
+                (push nelisp-standalone--sf-and-walk out)
+                (push nelisp-standalone--sf-and out)
+                (push nelisp-standalone--sf-or-walk out)
+                (push nelisp-standalone--sf-or out)
+                (push nelisp-standalone--sf-cond-walk out)
+                (push nelisp-standalone--sf-cond out)
                 (setq inserted t))
               (push (nelisp-standalone--patch-apply-special form) out))
              (t (push form out))))

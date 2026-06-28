@@ -345,3 +345,19 @@ Codegen wiring (nelisp-standalone-build.el):
   definers + user-defined macros; the standard control macros (when/unless/cond/
   and/or/prog1/prog2/dolist) are still resolved only when the prelude is loaded
   (it defines them via ~defmacro~, which now works natively too).
+- 2026-06-28: *when/unless/cond/and/or as native special forms.*  Unlike the
+  definers these DIRECTLY evaluate (no synthesis): the handlers walk the argument
+  list, evaluate sub-forms with ~nelisp_eval_call~, test truthiness (a form via
+  ~nl_eval_is_truthy~, an already-evaluated slot via offset-0 == 0 <=> nil), and
+  delegate bodies to ~nl_sf_progn~.  Short-circuit/return-value semantics match
+  Elisp.  Injected via the combiner-cons patch; nl_apply_special dispatches them
+  before any macro lookup, so they work in bare ~--eval~ (no prelude needed).
+  Verified on the binary: ~(when t 1 2 3)~ => 3, ~(unless nil 5)~ => 5,
+  ~(cond (nil 1) (t 7 8))~ => 8, ~(cond ((+ 1 2)))~ => 3 (test-as-value),
+  ~(and 1 2 3)~ => 3, ~(and 1 nil 3)~ => nil, ~(and)~ => t, ~(or nil nil 7)~ => 7,
+  ~(or)~ => nil; nested ~(when (and 1 2) (cond ((or nil 3) 42)))~ => 42; a
+  ~defun~ body using cond => (neg zero pos).  No regression: the definers,
+  ~eval-runtime-image "(image-hot)"~ => 99, full ffi-smoke (libc + f64 + D1/F1-F4).
+  The native evaluator now covers the common special forms, definers, the core
+  control macros, and user-defined macros — bare ~--eval~ runs ordinary Elisp
+  without the prelude.  (prog1/prog2/dolist/dotimes still come from the prelude.)
