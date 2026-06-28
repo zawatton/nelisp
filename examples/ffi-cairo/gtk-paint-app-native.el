@@ -1,25 +1,32 @@
-;; Windows-native GTK4 paint app (palette + undo + caption entry) — NeLisp AOT.
+;; Windows-native GTK4 paint app (palette + undo + caption entry + PNG save) —
+;; NeLisp AOT (no added Rust).
 ;;
-;; Extends the freehand demo (gtk-paint-native.el) with three new pieces:
-;;   * Colour palette  — 4 GtkButtons; each sets the current colour index, and
-;;                        every stroke stores its colour so on_draw strokes the
-;;                        path one stroke at a time with the right source.
-;;   * Undo            — a GtkButton whose handler scans the point array backward
-;;                        (a `while' loop) to the last stroke-start and truncates
-;;                        the count there (array truncate).
-;;   * Caption entry   — a GtkEntry; its "changed" signal redraws, and on_draw
-;;                        reads the live text via gtk_editable_get_text and draws
-;;                        it as a caption.
+;; A toolbar (GtkEntry + undo button + save button + four colour buttons) sits
+;; above the canvas.  Features:
+;;   * Colour palette  — each colour button sets the current colour index; every
+;;                        stroke stores its colour, so on_draw strokes the path
+;;                        one stroke at a time with the right source.
+;;   * Undo            — scans the point array backward (a `while' loop) to the
+;;                        last stroke-start and truncates the count (array trunc).
+;;   * Caption entry   — the GtkEntry's "changed" signal redraws; on_draw reads
+;;                        the live text via gtk_editable_get_text and draws it.
+;;   * PNG save        — the canvas drawing is factored into `paint_canvas',
+;;                        which renders the identical scene to the live widget
+;;                        AND to an off-screen image surface that is written out
+;;                        with cairo_surface_write_to_png.
 ;;
-;; The cairo "toy" font is set to "Meiryo" so a CJK caption renders: the
-;; GtkEntry already accepts IME input as UTF-8, but cairo's default "sans"
-;; resolves to a font without Japanese glyphs on Windows (showing tofu boxes).
-;; Change the family to any installed font.
+;; The cairo "toy" font is "Meiryo" so a CJK caption renders (the GtkEntry
+;; accepts IME UTF-8, but cairo's default "sans" resolves to a glyph-less font
+;; on Windows → tofu).  Change `png_path' / `font_jp' to taste.
 ;;
 ;; ctx: 0=colour 8=area 16=loop 24=points 32=count 40=pressed 48=hover_x
 ;;      56=hover_y 64=i 72=entry.  point = 32 bytes: [0]x [8]y [16]flag [24]colour.
+;;
+;; Static link:
+;;   bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-paint-app-native.el \
+;;        /tmp/sumi-paint-app $(pkg-config --libs gtk4)
 (seq
- (data-blob title       "sumi - GTK4 paint (NeLisp AOT)\0" rodata)
+ (data-blob title       "sumi - GTK4 paint + PNG save (NeLisp AOT)\0" rodata)
  (data-blob sig_motion  "motion\0" rodata)
  (data-blob sig_dbegin  "drag-begin\0" rodata)
  (data-blob sig_dend    "drag-end\0" rodata)
@@ -28,12 +35,13 @@
  (data-blob sig_destroy "destroy\0" rodata)
  (data-blob font_jp     "Meiryo\0" rodata)
  (data-blob lbl_undo    "undo\0" rodata)
+ (data-blob lbl_save    "save\0" rodata)
  (data-blob lbl_y       "Y\0" rodata)
  (data-blob lbl_r       "R\0" rodata)
  (data-blob lbl_c       "C\0" rodata)
  (data-blob lbl_g       "G\0" rodata)
+ (data-blob png_path    "C:/Users/kuroz/AppData/Local/Temp/sumi-canvas.png\0" rodata)
 
- ;; Set cairo source by colour index.
  (defun set_color (cr idx)
    (if (= idx 0)
        (extern-call cairo_set_source_rgb cr (:f64 0.94) (:f64 0.86) (:f64 0.24))
@@ -43,7 +51,6 @@
            (extern-call cairo_set_source_rgb cr (:f64 0.30) (:f64 0.85) (:f64 0.85))
          (extern-call cairo_set_source_rgb cr (:f64 0.40) (:f64 0.85) (:f64 0.45))))))
 
- ;; Append (x, y, flag, colour) — 5 gp args (5th on the stack under Win64).
  (defun add_point (ctx x y flag color)
    (let ((cnt (ptr-read-u64 ctx 32)))
      (if (< cnt 4000)
@@ -56,6 +63,36 @@
             (ptr-write-u64 ctx 32 (+ cnt 1))
             0))
        0)))
+
+ ;; Render the persistent scene (background + coloured strokes + caption) onto
+ ;; CR.  Shared by the live widget draw and the PNG save.
+ (defun paint_canvas (cr ctx)
+   (seq
+    (extern-call cairo_set_source_rgb cr (:f64 0.07) (:f64 0.07) (:f64 0.17))
+    (extern-call cairo_paint cr)
+    (extern-call cairo_set_line_width cr (:f64 2.5))
+    (ptr-write-u64 ctx 64 0)
+    (while (< (ptr-read-u64 ctx 64) (ptr-read-u64 ctx 32))
+      (seq
+       (let ((p (+ (ptr-read-u64 ctx 24) (* (ptr-read-u64 ctx 64) 32))))
+         (if (= (ptr-read-u64 p 16) 1)
+             (seq
+              (if (> (ptr-read-u64 ctx 64) 0) (extern-call cairo_stroke cr) 0)
+              (set_color cr (ptr-read-u64 p 24))
+              (extern-call cairo_move_to cr
+                           (:f64 (i64-to-f64 (ptr-read-u64 p 0)))
+                           (:f64 (i64-to-f64 (ptr-read-u64 p 8)))))
+           (extern-call cairo_line_to cr
+                        (:f64 (i64-to-f64 (ptr-read-u64 p 0)))
+                        (:f64 (i64-to-f64 (ptr-read-u64 p 8))))))
+       (ptr-write-u64 ctx 64 (+ (ptr-read-u64 ctx 64) 1))))
+    (extern-call cairo_stroke cr)
+    (extern-call cairo_set_source_rgb cr (:f64 0.80) (:f64 0.80) (:f64 0.80))
+    (extern-call cairo_select_font_face cr (data-addr font_jp) 0 0)
+    (extern-call cairo_set_font_size cr (:f64 16.0))
+    (extern-call cairo_move_to cr (:f64 8.0) (:f64 18.0))
+    (extern-call cairo_show_text cr (extern-call gtk_editable_get_text (ptr-read-u64 ctx 72)))
+    0))
 
  (defun on_motion (self (x :type f64) (y :type f64) ctx)
    (seq
@@ -96,44 +133,30 @@
     (extern-call gtk_widget_queue_draw (ptr-read-u64 ctx 8))
     0))
 
+ ;; Save: render the canvas to an ARGB32 image surface and write a PNG.
+ (defun on_save (button ctx)
+   (let ((surface (extern-call cairo_image_surface_create 0 360 200)))
+     (let ((scr (extern-call cairo_create surface)))
+       (seq
+        (paint_canvas scr ctx)
+        (extern-call cairo_surface_write_to_png surface (data-addr png_path))
+        (extern-call cairo_destroy scr)
+        (extern-call cairo_surface_destroy surface)
+        0))))
+
  (defun on_changed (editable ctx)
    (seq (extern-call gtk_widget_queue_draw (ptr-read-u64 ctx 8)) 0))
 
  (defun on_draw (area cr width height ctx)
    (seq
-    (extern-call cairo_set_source_rgb cr (:f64 0.07) (:f64 0.07) (:f64 0.17))
-    (extern-call cairo_paint cr)
-    (extern-call cairo_set_line_width cr (:f64 2.5))
-    ;; per-stroke coloured path
-    (ptr-write-u64 ctx 64 0)
-    (while (< (ptr-read-u64 ctx 64) (ptr-read-u64 ctx 32))
-      (seq
-       (let ((p (+ (ptr-read-u64 ctx 24) (* (ptr-read-u64 ctx 64) 32))))
-         (if (= (ptr-read-u64 p 16) 1)
-             (seq
-              (if (> (ptr-read-u64 ctx 64) 0) (extern-call cairo_stroke cr) 0)
-              (set_color cr (ptr-read-u64 p 24))
-              (extern-call cairo_move_to cr
-                           (:f64 (i64-to-f64 (ptr-read-u64 p 0)))
-                           (:f64 (i64-to-f64 (ptr-read-u64 p 8)))))
-           (extern-call cairo_line_to cr
-                        (:f64 (i64-to-f64 (ptr-read-u64 p 0)))
-                        (:f64 (i64-to-f64 (ptr-read-u64 p 8))))))
-       (ptr-write-u64 ctx 64 (+ (ptr-read-u64 ctx 64) 1))))
-    (extern-call cairo_stroke cr)
-    ;; hover marker in the current colour
+    (paint_canvas cr ctx)
+    ;; hover marker in the current colour (live only, not saved)
     (set_color cr (ptr-read-u64 ctx 0))
     (extern-call cairo_rectangle cr
                  (:f64 (i64-to-f64 (- (ptr-read-u64 ctx 48) 3)))
                  (:f64 (i64-to-f64 (- (ptr-read-u64 ctx 56) 3)))
                  (:f64 6.0) (:f64 6.0))
     (extern-call cairo_fill cr)
-    ;; caption from the entry (live, CJK-capable font)
-    (extern-call cairo_set_source_rgb cr (:f64 0.80) (:f64 0.80) (:f64 0.80))
-    (extern-call cairo_select_font_face cr (data-addr font_jp) 0 0)
-    (extern-call cairo_set_font_size cr (:f64 16.0))
-    (extern-call cairo_move_to cr (:f64 8.0) (:f64 18.0))
-    (extern-call cairo_show_text cr (extern-call gtk_editable_get_text (ptr-read-u64 ctx 72)))
     0))
 
  (defun on_quit (ctx)
@@ -176,16 +199,15 @@
              (ptr-write-u64 ctx 8 area)
              (ptr-write-u64 ctx 16 loop)
              (ptr-write-u64 ctx 72 entry)
-             ;; toolbar: entry + undo + colour buttons
              (extern-call gtk_box_append bar entry)
              (add_button bar (data-addr lbl_undo) (addr-of on_undo) ctx)
+             (add_button bar (data-addr lbl_save) (addr-of on_save) ctx)
              (add_button bar (data-addr lbl_y) (addr-of on_pick0) ctx)
              (add_button bar (data-addr lbl_r) (addr-of on_pick1) ctx)
              (add_button bar (data-addr lbl_c) (addr-of on_pick2) ctx)
              (add_button bar (data-addr lbl_g) (addr-of on_pick3) ctx)
              (extern-call g_signal_connect_data
                           entry (data-addr sig_changed) (addr-of on_changed) ctx 0 0)
-             ;; canvas
              (extern-call gtk_widget_set_size_request area 360 200)
              (extern-call gtk_drawing_area_set_draw_func area (addr-of on_draw) ctx 0)
              (extern-call g_signal_connect_data
@@ -196,7 +218,6 @@
              (extern-call g_signal_connect_data
                           drag (data-addr sig_dend) (addr-of on_drag_end) ctx 0 0)
              (extern-call gtk_widget_add_controller area drag)
-             ;; assemble
              (extern-call gtk_box_append vbox bar)
              (extern-call gtk_box_append vbox area)
              (extern-call gtk_window_set_child window vbox)
