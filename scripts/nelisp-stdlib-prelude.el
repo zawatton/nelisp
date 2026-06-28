@@ -1766,6 +1766,57 @@ targets the nearest *unnamed* block (= NAME = nil), matching CL."
           (cons (nelisp-cl-macros--loop-destructure-bindings pattern item)
                 forms))))
 
+(defun nelisp-cl-macros--loop-build-parallel
+    (for-clauses with-bindings collect-form sum-form count-form do-forms)
+  "Build a lockstep loop over parallel `for PAT in LIST' FOR-CLAUSES.
+FOR-CLAUSES is a list of (PATTERN . LIST-FORM) in source order; the loop
+stops as soon as any list is exhausted (CL parallel-stepping semantics).
+Supports a single collect / sum / count accumulator or `do' forms.  This
+is the multi-`for' path the single-cursor `dolist' branches cannot model
+\(e.g. generator.el's `let'->`let*' rewrite emits `for ... for ...')."
+  (let ((cursors (mapcar (lambda (_c) (make-symbol "--loop-cur--")) for-clauses))
+        (acc-sym (cond (collect-form (make-symbol "--loop-acc--"))
+                       (sum-form (make-symbol "--loop-sum--"))
+                       (count-form (make-symbol "--loop-count--"))))
+        (cursor-binds nil) (and-conds nil) (var-binds nil) (advance nil)
+        (fc nil) (cs nil))
+    (setq fc for-clauses cs cursors)
+    (while fc
+      (let* ((pat (car (car fc)))
+             (lst (cdr (car fc)))
+             (cur (car cs))
+             (src (list 'car cur)))
+        (setq cursor-binds (append cursor-binds (list (list cur lst))))
+        (setq and-conds (append and-conds (list cur)))
+        (if (symbolp pat)
+            (setq var-binds (append var-binds (list (list pat src))))
+          (setq var-binds
+                (append var-binds
+                        (nelisp-cl-macros--loop-destructure-bindings pat src))))
+        (setq advance (append advance (list cur (list 'cdr cur)))))
+      (setq fc (cdr fc) cs (cdr cs)))
+    (let* ((acc-init (if (or sum-form count-form) 0 nil))
+           (body (cond
+                  (collect-form
+                   (list (list 'setq acc-sym (list 'cons collect-form acc-sym))))
+                  (sum-form
+                   (list (list 'setq acc-sym (list '+ acc-sym sum-form))))
+                  (count-form
+                   (list (list 'when count-form
+                               (list 'setq acc-sym (list '+ acc-sym 1)))))
+                  (t (reverse do-forms))))
+           (iter-let (cons 'let (cons var-binds body)))
+           (loop (cons 'while
+                       (cons (cons 'and and-conds)
+                             (list iter-let (cons 'setq advance)))))
+           (all-binds (append (if acc-sym (list (list acc-sym acc-init)) nil)
+                              cursor-binds with-bindings))
+           (result (cond (collect-form (list 'nreverse acc-sym))
+                         ((or sum-form count-form) acc-sym)
+                         (t nil))))
+      (cons 'let (cons all-binds
+                       (cons loop (if result (list result) nil)))))))
+
 (defun nelisp-cl-macros--loop-build (clauses)
   "Build expansion for `cl-loop' CLAUSES.
 
@@ -1780,6 +1831,7 @@ expansion rather than a runtime error)."
         (numeric-from nil) (numeric-to nil) (numeric-below nil)
         (while-cond nil) (until-cond nil)
         (bodyless-forms nil)
+        (for-in-clauses nil)
         (cur clauses) (recognised t))
     ;; Detect bodyless form: first clause is NOT a known keyword.
     (when (and clauses
@@ -1798,6 +1850,7 @@ expansion rather than a runtime error)."
           (cond
            ((eq (car (cdr (cdr cur))) 'in)
             (setq list-form (car (cdr (cdr (cdr cur)))))
+            (setq for-in-clauses (cons (cons var list-form) for-in-clauses))
             (setq cur (cdr (cdr (cdr (cdr cur))))))
            ((eq (car (cdr (cdr cur))) 'from)
             (setq numeric-from (car (cdr (cdr (cdr cur)))))
@@ -1876,6 +1929,14 @@ expansion rather than a runtime error)."
       (list 'cl-block nil
             (cons 'while
                   (cons t bodyless-forms))))
+     ;; Two or more parallel `for PAT in LIST' clauses -> lockstep loop.  The
+     ;; single-cursor `dolist' branches below keep only the last `for', leaving
+     ;; the earlier loop variables unbound (a void-variable crash on the bare
+     ;; reader).  generator.el's `let'->`let*' rewrite emits this shape.
+     ((cdr for-in-clauses)
+      (nelisp-cl-macros--loop-build-parallel
+       (reverse for-in-clauses) with-bindings
+       collect-form sum-form count-form do-forms))
      ;; Numeric `for VAR from N {to,below} M' [sum FORM | do FORM ...]
      ;; (Task 2: thread the sum accumulator the numeric branch used to drop).
      ((and numeric-from (or numeric-to numeric-below))
