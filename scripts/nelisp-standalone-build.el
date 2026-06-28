@@ -6296,28 +6296,91 @@ ash/logand/logior/logxor/lognot + string<.")
     ;; the rasterised glyph (this is how Emacs' font backend transforms glyphs).
     ("FT_Set_Transform"     "libfreetype.so.6" 3)
     ("FT_Done_Face"         "libfreetype.so.6" 1)
-    ("FT_Done_FreeType"     "libfreetype.so.6" 1))
+    ("FT_Done_FreeType"     "libfreetype.so.6" 1)
+    ;; --- f64 FFI (libm): real double-precision math through nl-ffi-call. -----
+    ;; These rows carry an explicit signature plist so the dispatcher marshals
+    ;; `double' args/returns via XMM (see `nelisp-standalone--build-ffi-dispatch').
+    ;; Callers pass Lisp floats for f64 positions and get a Lisp float back, e.g.
+    ;; (nl-ffi-call "sqrt" 4.0) => 2.0, (nl-ffi-call "ldexp" 1.5 3) => 12.0.
+    ("sqrt"  "libm.so.6" 1 (:args (f64)     :ret f64))
+    ("pow"   "libm.so.6" 2 (:args (f64 f64) :ret f64))
+    ("sin"   "libm.so.6" 1 (:args (f64)     :ret f64))
+    ("cos"   "libm.so.6" 1 (:args (f64)     :ret f64))
+    ("hypot" "libm.so.6" 2 (:args (f64 f64) :ret f64))
+    ;; ldexp(x, exp) = x * 2^exp : a mixed f64 + i64 arg signature.
+    ("ldexp" "libm.so.6" 2 (:args (f64 i64) :ret f64)))
   "Declarative FFI surface for the dynamic reader's `nl-ffi-call': rows of
-(SYMBOL SONAME ARITY).  Drives both `nelisp-standalone--reader-extern-imports'
-and `nelisp-standalone--applyfn-extern-arms'.  ARITY counts C arguments (max 4
-here); all are passed/returned as i64 (ints + pointers).")
+(SYMBOL SONAME ARITY &optional SIG).  Drives both
+`nelisp-standalone--reader-extern-imports' and
+`nelisp-standalone--applyfn-extern-arms'.  ARITY counts C arguments (max 4
+here).  Without SIG every argument and the return are i64 (ints + pointers);
+SIG = (:args (CLASS ...) :ret CLASS) with CLASS in {i64,f64} opts a call into
+double-precision XMM marshalling (see `nelisp-standalone--build-ffi-dispatch').")
 
 (defun nelisp-standalone--build-ffi-dispatch (table)
   "Build the `nl-ffi-call' dispatch IR (a nested-if over the NAME arg) from
-TABLE rows (SYMBOL SONAME ARITY).  Each matched name lowers to an
-`(extern-call SYMBOL (wf_argval args 1) ... (wf_argval args ARITY))' whose i64
-result is boxed with `wf_write_int'; an unknown name returns nil."
+TABLE rows (SYMBOL SONAME ARITY &optional SIG).
+
+Each matched name lowers to an `(extern-call SYMBOL ARG1 ... ARGN)' whose
+result is boxed and returned; an unknown name returns nil.
+
+By default every C argument is passed by `wf_argval' as an i64 (covers ints
+AND pointers, since a pointer is an address) and the i64 result is boxed with
+`wf_write_int'.  A row's optional 4th element SIG is a plist that opts a call
+into double-precision (f64) marshalling:
+
+  (:args (CLASS ...) :ret CLASS)   CLASS ::= i64 | f64
+
+  * :args lists the class of each C argument (length = ARITY).  Omitted -> all
+    i64.  An `f64' position reads its boxed-float argument's IEEE-754 bits with
+    `sexp-float-unwrap', binds them to a local, and passes the local through
+    `(:f64 (bits-to-f64 LOCAL))' so the SysV/Win64 ABI places it in an XMM
+    register.  (The extern-call f64-arg classifier only accepts `bits-to-f64'
+    wrapping a REF, never a call — hence the let-binding.)  Callers MUST pass a
+    Lisp float for an f64 position; an integer there reads wrong bits.
+  * :ret f64 reads the call's f64 return from xmm0 (via the `extern-call-f64'
+    grammar head), reinterprets it to i64 bits with `f64-bits', then boxes it
+    back into a fresh Lisp float with `nl_sexp_write_float'.  Omitted -> i64.
+
+This is what lets the dynamic reader call libm (sqrt/pow/...) and any other
+`double'-ABI shared-library entry point directly from elisp."
   (let ((chain '(seq (wf_write_nil out) 0)))
     (dolist (row (reverse table))
       (let* ((sym (nth 0 row))
              (arity (nth 2 row))
-             (argforms (let (acc)
-                         (dotimes (i arity)
-                           (push `(wf_argval args ,(1+ i)) acc))
-                         (nreverse acc))))
+             (sig (nth 3 row))
+             (arg-classes (or (plist-get sig :args) (make-list arity 'i64)))
+             (ret-class (or (plist-get sig :ret) 'i64))
+             (f64-binds nil)
+             (argforms
+              (let (acc)
+                (dotimes (i arity)
+                  (let ((pos (1+ i))
+                        (cls (nth i arg-classes)))
+                    (if (eq cls 'f64)
+                        (let ((var (intern (format "fa%d" pos))))
+                          (push `(,var (sexp-float-unwrap (wf_arg_ptr args ,pos)))
+                                f64-binds)
+                          (push `(:f64 (bits-to-f64 ,var)) acc))
+                      (push `(wf_argval args ,pos) acc))))
+                (nreverse acc)))
+             (body
+              (if (eq ret-class 'f64)
+                  ;; f64 return: capture xmm0 as i64 bits (`f64-bits' of the
+                  ;; `extern-call-f64'), then box it back into a fresh Lisp float
+                  ;; via the `sexp-write-float' grammar op (tag 62), whose VALUE
+                  ;; arg is emitted as an f64-leaf -> `(bits-to-f64 REF)'.  (The
+                  ;; bare extern name `nl_sexp_write_float' is a generic call that
+                  ;; cannot emit a `bits-to-f64' value arg; the grammar op can.)
+                  `(let* ((frb (f64-bits (extern-call-f64 ,(intern sym) ,@argforms))))
+                     (seq (sexp-write-float out (bits-to-f64 frb)) 0))
+                `(wf_write_int out (extern-call ,(intern sym) ,@argforms))))
+             (arm (if f64-binds
+                      `(let* ,(nreverse f64-binds) ,body)
+                    body)))
         (setq chain
               `(if (= (sexp-name-eq nm ,sym) 1)
-                   (wf_write_int out (extern-call ,(intern sym) ,@argforms))
+                   ,arm
                  ,chain))))
     ;; NAME may be a string or symbol sexp; both keep name bytes at ptr@16/len@24
     ;; so `sexp-name-eq' matches either.

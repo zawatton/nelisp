@@ -257,3 +257,29 @@ Codegen wiring (nelisp-standalone-build.el):
   GnuTLS session; until then, avoid interleaving reader work inside a
   ~record_recv~ retry loop (batch the recvs, or hop out to elisp between whole
   records).  No arena/GC change is warranted.
+- 2026-06-28: *f64 (double) FFI through ~nl-ffi-call~ — libm verified on the
+  binary.*  The reader FFI surface so far passed every C argument and return as
+  an i64 (ints + pointers).  Extended ~nelisp-standalone--build-ffi-dispatch~ so a
+  table row can carry a signature plist ~(:args (CLASS ...) :ret CLASS)~ with
+  CLASS in {i64,f64}; a row without one keeps the i64-only behaviour (backward
+  compatible).
+  + *f64 arg*: reads the boxed-float arg's IEEE-754 bits with ~sexp-float-unwrap~,
+    binds them to a local, and passes ~(:f64 (bits-to-f64 LOCAL))~ so the SysV
+    ABI places it in an XMM register.  (The extern-call f64-arg classifier only
+    accepts ~bits-to-f64~ wrapping a *ref*, never a call — hence the let-binding.)
+  + *f64 return*: ~(f64-bits (extern-call-f64 SYM ...))~ captures xmm0 as i64
+    bits; the result is re-boxed into a Lisp float with the ~sexp-write-float~
+    grammar op (tag 62).  NOTE: the bare extern name ~nl_sexp_write_float~ is a
+    *generic* call that cannot emit a ~bits-to-f64~ value arg (~:unknown-value-kind~
+    at emit); the ~sexp-write-float~ grammar op emits its VALUE as an f64-leaf and
+    is the correct form.
+  Added a libm row set (~sqrt~/~pow~/~sin~/~cos~/~hypot~, and ~ldexp~ for a mixed
+  f64+i64 signature) to the declarative table, which also pulls ~libm.so.6~ into
+  DT_NEEDED.  Verified on the 4 MiB dynamic binary (NOT host): ~(= (nl-ffi-call
+  "sqrt" 4.0) 2.0)~ => t, and ~pow(2,10)=1024~ / ~ldexp(1.5,3)=12~ (f64+i64) /
+  ~hypot(3,4)=5~ all => t; ~(floatp (nl-ffi-call "sqrt" 4.0))~ => t.  (The reader
+  top-level printer renders any float — even a literal — as ~#<object>~, so the
+  smoke asserts on numeric equality, not the printed form.)  ~make
+  standalone-reader-ffi-smoke~ now also covers libm(f64); libc/D1/F1/F2/F3/F4 still
+  PASS (no regression).  Static reader unaffected (the extern arms are appended
+  only when ~NELISP_READER_DYNAMIC~ is set).

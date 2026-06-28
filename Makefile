@@ -209,9 +209,10 @@ standalone-reader-fmt-smoke: standalone-reader
 # reader (NELISP_READER_DYNAMIC=1) that imports libc + GnuTLS + FreeType and
 # exposes them via the `nl-ffi-call' dispatcher, then asserts the calls route
 # through the linker-generated PLT stubs + ld.so-resolved GOT slots into the real
-# shared libraries.  Covers: libc int->int (toupper), GnuTLS const char* return
-# (D1: gnutls_check_version), FreeType pointer-out-params (F1: FT_Init_FreeType +
-# FT_Library_Version).  Self-contained (does NOT depend on the default static
+# shared libraries.  Covers: libc int->int (toupper), libm double->double f64
+# marshalling (sqrt/pow/ldexp(f64+i64)/hypot via XMM args + xmm0 return), GnuTLS
+# const char* return (D1: gnutls_check_version), FreeType pointer-out-params (F1:
+# FT_Init_FreeType + FT_Library_Version).  Self-contained (does NOT depend on the default static
 # `standalone-reader').  GnuTLS/FreeType assertions are version-prefix checks so
 # they survive minor library bumps.
 standalone-reader-ffi-smoke:
@@ -226,6 +227,23 @@ standalone-reader-ffi-smoke:
 	  echo "[ffi-smoke libc] PASS: (nl-ffi-call \"toupper\" 97) -> $$out"; \
 	else \
 	  echo "[ffi-smoke libc] FAIL: -> $$out (expected 65)"; exit 1; \
+	fi
+	@: 'f64 FFI: double args/return through XMM.  The reader top-level printer'
+	@: 'renders any float (even a literal) as #<object>, so assert on numeric'
+	@: 'equality (= -> t) rather than the printed form.'
+	@printf '%s\n' '(= (nl-ffi-call "sqrt" 4.0) 2.0)' > target/standalone-reader-ffi-f64.el
+	@out="$$(./target/nelisp --load target/standalone-reader-ffi-f64.el)"; \
+	if [ "$$out" = "t" ]; then \
+	  echo "[ffi-smoke f64 libm] PASS: (= (nl-ffi-call \"sqrt\" 4.0) 2.0) -> $$out"; \
+	else \
+	  echo "[ffi-smoke f64 libm] FAIL: -> $$out (expected t)"; exit 1; \
+	fi
+	@printf '%s\n' '(list (= (nl-ffi-call "pow" 2.0 10.0) 1024.0) (= (nl-ffi-call "ldexp" 1.5 3) 12.0) (= (nl-ffi-call "hypot" 3.0 4.0) 5.0))' > target/standalone-reader-ffi-f64b.el
+	@out="$$(./target/nelisp --load target/standalone-reader-ffi-f64b.el)"; \
+	if [ "$$out" = "(t t t)" ]; then \
+	  echo "[ffi-smoke f64 mixed] PASS: pow(2,10)=1024 / ldexp(1.5,3 :: f64+i64)=12 / hypot(3,4)=5 -> $$out"; \
+	else \
+	  echo "[ffi-smoke f64 mixed] FAIL: -> $$out (expected (t t t))"; exit 1; \
 	fi
 	@printf '%s\n' '(let ((p (nl-ffi-call "gnutls_check_version" 0))) (if (= p 0) "NULL" (unibyte-string (ptr-read-u8 p 0) (ptr-read-u8 p 1))))' > target/standalone-reader-ffi-d1.el
 	@out="$$(./target/nelisp --load target/standalone-reader-ffi-d1.el)"; \
@@ -263,7 +281,7 @@ standalone-reader-ffi-smoke:
 	    echo "[ffi-smoke F4 transform] FAIL: -> $$out (expected 2x width >= 55)"; exit 1; \
 	  fi; \
 	fi
-	@echo "[standalone-reader-ffi-smoke] PASS: libc + GnuTLS(D1) + FreeType(F1/F2/F3/F4) via nl-ffi-call"
+	@echo "[standalone-reader-ffi-smoke] PASS: libc + libm(f64) + GnuTLS(D1) + FreeType(F1/F2/F3/F4) via nl-ffi-call"
 
 # Phase 47.D D2: REAL TLS 1.3 handshake from the pure-elisp reader.  Opens a raw
 # TCP socket (syscall-direct socket/connect to 1.1.1.1:443), then drives a full
