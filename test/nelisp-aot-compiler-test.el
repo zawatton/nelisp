@@ -2896,6 +2896,40 @@ DLL/symbol/text C-strings a Windows-native FFI program needs)."
                      rdata (string-to-unibyte "hello")))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/sysv-defun-saves-rbx-for-callback-safety ()
+  "SysV defun prologue saves/restores rbx so a defun used as a C callback
+survives the body's `extern-call' rbx clobbering.
+
+`extern-call' / record-slot dynamic alignment uses `mov rbx, rsp', and rbx is
+callee-saved in SysV — so a defun invoked as a C callback (e.g. a GTK draw
+func) must save/restore it or it corrupts the caller's register state on
+return.  This mirrors the win64 prologue, which already saves rbx.  The fix
+allocates a dedicated rbx slot (`sub rsp, 0x10', 48 81 ec 10 00 00 00) below
+all public param/let-rt slots, then saves rbx into it (`mov [rbp-disp], rbx',
+opcode 48 89 9d) and restores it before frame teardown (`mov rbx, [rbp-disp]',
+opcode 48 8b 9d)."
+  (let ((path (make-temp-file "nelisp-sysv-rbx-" nil ".o")))
+    (unwind-protect
+        (progn
+          ;; ELF object => SysV ABI.  Even a trivial defun gets the rbx
+          ;; callee-save (the prologue cannot know whether a caller will treat
+          ;; it as a callback that relies on rbx being preserved).
+          (nelisp-aot-compile-to-object
+           '(defun probe (a) a)
+           path :arch 'x86_64 :format 'elf)
+          (let ((bytes (nelisp-aot-compiler-test--read-bytes path)))
+            ;; sub rsp, 0x10  (allocate the rbx slot — unique signature of the
+            ;; save; no other prologue step subtracts exactly 16)
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     bytes (unibyte-string #x48 #x81 #xec #x10 #x00 #x00 #x00)))
+            ;; mov [rbp-disp32], rbx  (save caller's rbx in the prologue)
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     bytes (unibyte-string #x48 #x89 #x9d)))
+            ;; mov rbx, [rbp-disp32]  (restore in the epilogue)
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     bytes (unibyte-string #x48 #x8b #x9d)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-aot-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()
   "Win64 extern-call places a fifth f64 arg in the outgoing stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-extern5-" nil ".obj")))

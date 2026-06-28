@@ -114,3 +114,27 @@ objdump -p /tmp/sumi-dyn.exe | grep 'DLL Name'   # => KERNEL32.dll, msvcrt.dll o
 All of GTK is pulled in by name at runtime, exactly like the Linux `dlopen`
 example.  The cairo library handle is threaded to the draw callback through
 GTK's draw-func `user_data`, so `on_draw` resolves cairo entries on demand.
+
+### Linux / WSL window
+
+`gtk-window-linux.el` is the Linux counterpart: `dlopen`/`dlsym` instead of
+`LoadLibraryA`/`GetProcAddress`, `.so` names, SysV ABI.  Compile to an ELF
+object and link with only `-ldl` (gtk/cairo/glib are `dlopen`'d):
+
+```sh
+emacs -Q --batch -L lisp -L src -l nelisp-aot-compiler \
+  --eval "(nelisp-aot-compile-to-object (with-temp-buffer \
+    (insert-file-contents \"examples/ffi-cairo/gtk-window-linux.el\") \
+    (goto-char (point-min)) (read (current-buffer))) \"/tmp/gtk.o\" :format 'elf)"
+# native Linux, or under WSL with WSLg:
+cc /tmp/gtk.o -ldl -o /tmp/gtk && GSK_RENDERER=cairo /tmp/gtk
+```
+
+The windowed Linux path needs the SysV defun-prologue **rbx callee-save** fix:
+GTK invokes `on_draw` (a SysV defun) from inside its closure dispatch, and the
+cairo `extern-call`s in the body clobber `rbx` via the dynamic-alignment idiom.
+`rbx` is callee-saved in SysV, so the prologue now saves/restores it (mirroring
+the win64 path) — without it the callback corrupts GTK's register state.
+Disassembling `on_draw` shows the `mov %rbx,-N(%rbp)` save + restore pair that
+the fix emits (and that the static PNG examples never needed, since `main`
+isn't a callback).

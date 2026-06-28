@@ -16405,6 +16405,23 @@ return reg, untouched by epilogue)."
             (setq i (1+ i))
             (nelisp-asm-x86_64-movsd-mem-rsp-disp-xmm
              buf (+ 48 (* 16 i)) xreg))))
+      ;; SysV AMD64: preserve the one callee-saved GPR our codegen clobbers.
+      ;; `extern-call' / record-slot dynamic alignment uses `mov rbx, rsp'
+      ;; (rbx is callee-saved in SysV), so a defun used as a C callback — e.g.
+      ;; a GTK `draw' func that paints via cairo `extern-call's — would
+      ;; otherwise return to its caller with rbx destroyed.  rdi/rsi/xmm are
+      ;; caller-saved in SysV, so rbx is the only register that needs saving
+      ;; (Win64 additionally saves rdi/rsi/xmm6-15 because those are callee-
+      ;; saved there, handled in the Win64 prologue branch above).  One rbx
+      ;; slot + one pad = 16 bytes, placed below all public param/let-rt slots
+      ;; (= the same slot base as Win64), keeps rsp 16-aligned for the body's
+      ;; calls.  Skipped for variadic defuns, whose va-save-area displacement
+      ;; is computed without this slot (and which are never C callbacks).
+      (when (and (not variadic)
+                 (not (eq nelisp-aot-compiler--abi 'win64)))
+        (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 16)
+        (nelisp-asm-x86_64-mov-mem-reg-disp8
+         buf 'rbp (- (* 8 (1+ (+ param-slot-rounded rt-slot-rounded)))) 'rbx))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
       (nelisp-aot-compiler--emit-value body buf)
       ;; Epilogue: restore Win64 GP callee-saves, then deallocate param
@@ -16425,6 +16442,12 @@ return reg, untouched by epilogue)."
          buf 'rdi 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8
          buf 'rsi 'rbp (- (* 8 (+ 3 win64-callee-save-slot-base)))))
+      ;; SysV: restore the callee-saved rbx saved in the prologue (symmetric
+      ;; to the save above; the `mov rsp, rbp' below tears the slot down).
+      (when (and (not variadic)
+                 (not (eq nelisp-aot-compiler--abi 'win64)))
+        (nelisp-asm-x86_64-mov-reg-mem-disp8
+         buf 'rbx 'rbp (- (* 8 (1+ (+ param-slot-rounded rt-slot-rounded))))))
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rsp 'rbp)
       (nelisp-asm-x86_64--pop-inline buf 'rbp)
       (nelisp-asm-x86_64--ret-inline buf))))
