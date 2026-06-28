@@ -2295,6 +2295,59 @@ this runtime (Doc 22 A14); structs declared with a custom `:conc-name'
 are therefore not supported by this shim."
     (funcall (intern (format "%s-%s" struct-type slot-name)) inst)))
 
+;;;; --- macro-writing helpers: cl-with-gensyms / cl-once-only ----------
+;; Vendor `cl-macs.el' defines these with `cl-loop'; reimplement with
+;; `mapcar' so they do not depend on the minimal cl-loop shim's clause
+;; coverage.  Gated `unless (fboundp ...)'.  Many real packages call them
+;; at macroexpansion time.
+
+;; NOTE: built with `list'/`append'/`cons' rather than backquote.  This
+;; standalone reader mis-expands a backquoted list that mixes `,FORM' with a
+;; trailing `,@body' (the splice is dropped), and it does not support the
+;; nested double-backquote `cl-once-only' normally uses.  Manual construction
+;; sidesteps both.
+
+(unless (fboundp 'cl-with-gensyms)
+  (defmacro cl-with-gensyms (names &rest body)
+    "Bind each of NAMES to an uninterned symbol and evaluate BODY."
+    (declare (debug (sexp body)) (indent 1))
+    (append
+     (list 'let
+           (mapcar (lambda (name)
+                     (list name (list 'gensym (list 'symbol-name (list 'quote name)))))
+                   names))
+     body)))
+
+(unless (fboundp 'cl-once-only)
+  (defmacro cl-once-only (names &rest body)
+    "Generate code to evaluate each of NAMES just once in BODY.
+Each of NAMES is either (NAME FORM) or NAME (the latter means (NAME NAME)).
+During macroexpansion each NAME is bound to an uninterned symbol; the
+expansion evaluates each FORM once and binds it to that symbol.  See the
+vendor `cl-once-only' for the full contract."
+    (declare (debug (sexp body)) (indent 1))
+    (let* ((specs (mapcar #'ensure-list names))
+           (pairs (mapcar (lambda (spec) (cons spec (gensym))) specs)))
+      ;; (let ((G1 (gensym)) ...)             ; fresh gensyms at expansion time
+      ;;   (list 'let (list (list G1 'FORM1) ...)   ; the produced once-only let
+      ;;         (let ((NAME1 G1) ...) . body)))     ; body with NAMEs -> gensyms
+      (list 'let
+            (mapcar (lambda (p) (list (cdr p) (list 'gensym))) pairs)
+            (list 'list (list 'quote 'let)
+                  (cons 'list
+                        (mapcar (lambda (p)
+                                  (let ((spec (car p)) (g (cdr p)))
+                                    ;; (list G TO-EVAL): TO-EVAL (the bare NAME
+                                    ;; or the explicit FORM) is evaluated at
+                                    ;; expansion to yield the once-only form,
+                                    ;; matching vendor `,,to-eval'.
+                                    (list 'list g (or (cadr spec) (car spec)))))
+                                pairs))
+                  (append
+                   (list 'let
+                         (mapcar (lambda (p) (list (car (car p)) (cdr p))) pairs))
+                   body))))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
