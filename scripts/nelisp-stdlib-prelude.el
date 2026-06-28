@@ -3047,9 +3047,24 @@ ENV is an alist (NAME . (FORMALS BODY...))."
            (nelisp-cl-macros--macrolet-expand-one entry walked-args)
            env)))
        ((symbolp head)
-        ;; Ordinary function-like call: leave head, walk args.
-        (cons head
-              (nelisp-cl-macros--macrolet-walk-list (cdr form) env)))
+        ;; A *global* macro may expand into forms that contain a LOCAL macro:
+        ;; generator.el wraps the body in `cl-macrolet ((iter-yield ...))' while
+        ;; user code reaches the yield through another macro (`nelisp-yield' ->
+        ;; `iter-yield').  If we only walked the args here, the global macro
+        ;; would be left for the surrounding `macroexpand-all', which no longer
+        ;; sees the local env, so `iter-yield' would survive as a plain call and
+        ;; signal at runtime.  Expand one step and re-walk so global and local
+        ;; macros compose; a form that does not expand is an ordinary
+        ;; call/special form whose args we walk.
+        (if (and (fboundp head)
+                 (eq (car-safe (symbol-function head)) 'macro))
+            (let ((exp (macroexpand-1 form)))
+              (if (eq exp form)
+                  (cons head
+                        (nelisp-cl-macros--macrolet-walk-list (cdr form) env))
+                (nelisp-cl-macros--macrolet-walk exp env)))
+          (cons head
+                (nelisp-cl-macros--macrolet-walk-list (cdr form) env))))
        (t
         ;; Head is itself a list (= sub-form, e.g. a binding pair).
         ;; Recurse into both head and cdr so nested macro calls expand.
