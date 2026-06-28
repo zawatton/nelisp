@@ -53,6 +53,14 @@ run_case 'hi\002\004\021'    'text=h point=2'
 run_case 'abcde\001\006\006\013\001\031\021' 'text=cdeab point=4'
 # C-a (line 2), C-b (onto the newline), C-k -> join lines "abcd"
 run_case 'ab\rcd\001\002\013\021' 'text=abcd point=3'
+# Undo a self-insert run (C-/ = \037): "abc" then undo -> ""
+run_case 'abc\037\021'         'text= point=1'
+# Undo a delete: "abc" DEL undo-DEL -> "abc"
+run_case 'abc\177\037\021'     'text=abc point=4'
+# Undo then redo (C-x C-r): "abc" undo("") redo -> "abc"
+run_case 'abc\037\030\022\021' 'text=abc point=4'
+# Two coalesced runs: "ab" C-b "X" undo(X run) -> "ab"
+run_case 'ab\002X\037\021'     'text=ab point=2'
 
 # --- File load + edit + C-x C-s save roundtrip ---
 # Load "hello\nworld", insert '!' at start (point is at buffer start after load),

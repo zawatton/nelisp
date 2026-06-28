@@ -28,6 +28,10 @@
 (defvar nae--kill nil "Kill-ring head: the last killed string.")
 (defvar nae--file nil "Path backing the buffer (for C-x C-s save), or nil.")
 (defvar nae--msg "" "Transient status-line message (e.g. save result).")
+(defvar nae--undo nil "Undo stack: list of (TEXT . POINT) snapshots, newest first.")
+(defvar nae--redo nil "Redo stack: list of (TEXT . POINT) snapshots, newest first.")
+(defvar nae--typing nil "Non-nil while a run of self-inserts is being coalesced.")
+(defconst nae--undo-limit 1000 "Maximum retained undo snapshots.")
 
 ;;; Position helpers (point is 1-based into the buffer string) ---------
 
@@ -139,26 +143,76 @@
       (setq nae--msg (if w (concat "wrote " (number-to-string w) "B -> " nae--file)
                        (concat "save FAILED: " nae--file))))))
 
+;;; Undo / redo (snapshot based) --------------------------------------
+
+(defun nae--snapshot ()
+  "Push the current (TEXT . POINT) onto the undo stack; invalidate redo."
+  (setq nae--undo (cons (cons (nae--text) (nae--pt)) nae--undo))
+  (when (> (length nae--undo) nae--undo-limit)
+    (setq nae--undo (nae--take nae--undo nae--undo-limit)))
+  (setq nae--redo nil))
+
+(defun nae--take (lst n)
+  (let (out (i 0))
+    (while (and lst (< i n)) (setq out (cons (car lst) out) lst (cdr lst) i (1+ i)))
+    (nreverse out)))
+
+(defun nae--restore (snap)
+  "Replace the buffer contents/point from SNAP = (TEXT . POINT)."
+  (nelisp-delete-region (nae--pmin) (nae--pmax) nae--buf)
+  (when (> (length (car snap)) 0) (nelisp-insert (car snap) nae--buf))
+  (nelisp-goto-char (min (cdr snap) (nae--pmax)) nae--buf))
+
+(defun nae--do-undo ()
+  (setq nae--typing nil)
+  (if (null nae--undo) (setq nae--msg "(nothing to undo)")
+    (setq nae--redo (cons (cons (nae--text) (nae--pt)) nae--redo))
+    (let ((snap (car nae--undo)))
+      (setq nae--undo (cdr nae--undo))
+      (nae--restore snap)
+      (setq nae--msg "undo"))))
+
+(defun nae--do-redo ()
+  (setq nae--typing nil)
+  (if (null nae--redo) (setq nae--msg "(nothing to redo)")
+    (setq nae--undo (cons (cons (nae--text) (nae--pt)) nae--undo))
+    (let ((snap (car nae--redo)))
+      (setq nae--redo (cdr nae--redo))
+      (nae--restore snap)
+      (setq nae--msg "redo"))))
+
+(defun nae--edit (modifies fn)
+  "Run FN; if MODIFIES, take an undo snapshot first (coalescing self-insert)."
+  (cond
+   ((eq modifies 'insert)
+    (unless nae--typing (nae--snapshot))
+    (setq nae--typing t)
+    (funcall fn))
+   (modifies (nae--snapshot) (setq nae--typing nil) (funcall fn))
+   (t (setq nae--typing nil) (funcall fn))))
+
 (defun nae--key (b)
   "Dispatch a single decoded byte B (not part of an escape sequence)."
   (cond
-   ((or (= b 13) (= b 10)) (nae--newline))         ; Enter
-   ((or (= b 127) (= b 8)) (nae--del-back))        ; DEL / BS
-   ((= b 4)  (nae--del-forward))                   ; C-d
-   ((= b 6)  (nae--forward))                       ; C-f
-   ((= b 2)  (nae--back))                          ; C-b
-   ((= b 1)  (nae--line-start))                    ; C-a
-   ((= b 5)  (nae--line-end))                      ; C-e
-   ((= b 16) (nae--up))                            ; C-p
-   ((= b 14) (nae--down))                          ; C-n
-   ((= b 11) (nae--kill-line))                     ; C-k
-   ((= b 25) (nae--yank))                          ; C-y
-   ((= b 12) nil)                                  ; C-l (redraw happens after)
-   ((>= b 32) (nae--self-insert b))                ; printable
+   ((or (= b 13) (= b 10)) (nae--edit t #'nae--newline))       ; Enter
+   ((or (= b 127) (= b 8)) (nae--edit t #'nae--del-back))      ; DEL / BS
+   ((= b 4)  (nae--edit t #'nae--del-forward))                 ; C-d
+   ((= b 11) (nae--edit t #'nae--kill-line))                   ; C-k
+   ((= b 25) (nae--edit t #'nae--yank))                        ; C-y
+   ((= b 31) (nae--do-undo))                                   ; C-/ (= C-_) undo
+   ((= b 6)  (nae--edit nil #'nae--forward))                   ; C-f
+   ((= b 2)  (nae--edit nil #'nae--back))                      ; C-b
+   ((= b 1)  (nae--edit nil #'nae--line-start))                ; C-a
+   ((= b 5)  (nae--edit nil #'nae--line-end))                  ; C-e
+   ((= b 16) (nae--edit nil #'nae--up))                        ; C-p
+   ((= b 14) (nae--edit nil #'nae--down))                      ; C-n
+   ((= b 12) (setq nae--typing nil))                           ; C-l (redraw after)
+   ((>= b 32) (nae--edit 'insert (lambda () (nae--self-insert b)))) ; printable
    (t nil)))
 
 (defun nae--arrow (final)
   "Dispatch the FINAL byte of an `ESC [' sequence."
+  (setq nae--typing nil)                ; motion ends a self-insert run
   (cond
    ((= final 65) (nae--up))      ; A
    ((= final 66) (nae--down))    ; B
@@ -212,7 +266,10 @@ output flows through `nelisp-redisplay--output-fn' so it is capturable."
                (cond
                 ((= esc 2) (setq esc 0) (nae--arrow b))
                 ((= esc 1) (if (= b 91) (setq esc 2) (setq esc 0)))  ; expect '['
-                ((= cx 1) (setq cx 0) (when (= b 19) (nae--save)))   ; C-x C-s
+                ((= cx 1) (setq cx 0)                                ; C-x <key>
+                 (cond ((= b 19) (nae--save))                        ; C-x C-s save
+                       ((= b 117) (nae--do-undo))                    ; C-x u  undo
+                       ((= b 18) (nae--do-redo))))                   ; C-x C-r redo
                 ((= b 27) (setq esc 1))                              ; ESC
                 ((= b 24) (setq cx 1))                               ; C-x prefix
                 ((= b 17) (setq run nil))                            ; C-q
@@ -236,6 +293,7 @@ output flows through `nelisp-redisplay--output-fn' so it is capturable."
         (nelisp-goto-char (nae--pmin) nae--buf))))
   (setq nae--tick 0)
   (setq nae--kill nil)
+  (setq nae--undo nil nae--redo nil nae--typing nil)
   (setq nae--msg (if file (concat "[" file "]") ""))
   (nelisp-actor--reset)
   (nelisp-async-reset-timers))
