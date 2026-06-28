@@ -552,6 +552,14 @@ from `(defvar X nil)'."
 (unless (fboundp 'cl-find-if-not)
   (defun cl-find-if-not (pred seq)
     (cl-find-if (lambda (x) (not (funcall pred x))) seq)))
+(unless (fboundp 'cl-count-if)
+  (defun cl-count-if (pred seq)
+    "Return the number of elements of SEQ that satisfy PRED."
+    (let ((cur (nelisp-seq--to-list seq)) (n 0))
+      (while cur
+        (when (funcall pred (car cur)) (setq n (1+ n)))
+        (setq cur (cdr cur)))
+      n)))
 ;; Doc 160 breadth: cl-lib / seq / string library gaps.
 (unless (fboundp 'cl-find)
   (defun cl-find (item seq &rest kw)
@@ -839,6 +847,41 @@ from `(defvar X nil)'."
 (unless (fboundp 'string-greaterp) (defun string-greaterp (a b) (string-lessp b a)))
 (unless (fboundp 'string-version-lessp) (defun string-version-lessp (a b) (string-lessp a b)))
 ;; Doc 160 breadth round 3: control / binding macros.
+;; `interactive' is a command-declaration marker.  When a command is called
+;; non-interactively (the only mode on the headless standalone), Emacs skips
+;; its interactive form entirely; the native evaluator instead evaluates the
+;; leading `(interactive ...)' as a call, so define it as a no-op MACRO -- a
+;; macro (not a defun) so the spec argument is never evaluated for effect.
+(unless (fboundp 'interactive) (defmacro interactive (&rest _) nil))
+;; Headless host frame: the standalone has no Emacs frame, so report the
+;; controlling terminal's size from $COLUMNS/$LINES, falling back to the
+;; conventional 80x24.  (Export the vars, or refine with a TIOCGWINSZ ioctl,
+;; to track live resizes.)
+(unless (fboundp 'frame-width)
+  (defun frame-width (&rest _)
+    (let ((c (getenv "COLUMNS")))
+      (if (and c (> (length c) 0)) (string-to-number c) 80))))
+(unless (fboundp 'frame-height)
+  (defun frame-height (&rest _)
+    (let ((l (getenv "LINES")))
+      (if (and l (> (length l) 0)) (string-to-number l) 24))))
+;; `random' via a 31-bit LCG (glibc constants).  Deterministic -- adequate for
+;; tests / sampling, NOT for cryptography (use a getrandom syscall for that).
+(unless (boundp 'nelisp--random-state) (defvar nelisp--random-state 305419896))
+(unless (fboundp 'random)
+  (defun random (&optional limit)
+    "Pseudo-random integer.  Integer LIMIT>0 -> 0..LIMIT-1; string LIMIT
+reseeds from its characters; nil -> a full LCG value."
+    (when (stringp limit)
+      (let ((i 0) (n (length limit)) (s 305419896))
+        (while (< i n)
+          (setq s (logand (+ (* s 31) (aref limit i)) 2147483647) i (1+ i)))
+        (setq nelisp--random-state (logand (+ s 1) 2147483647) limit nil)))
+    (setq nelisp--random-state
+          (logand (+ (* nelisp--random-state 1103515245) 12345) 2147483647))
+    (if (and (integerp limit) (> limit 0))
+        (mod nelisp--random-state limit)
+      nelisp--random-state)))
 (unless (fboundp 'cl-dolist) (defmacro cl-dolist (spec &rest body) `(dolist ,spec ,@body)))
 (unless (fboundp 'cl-dotimes) (defmacro cl-dotimes (spec &rest body) `(dotimes ,spec ,@body)))
 (unless (fboundp 'cl-assert)
