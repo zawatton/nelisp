@@ -40,5 +40,13 @@ run_case 'abc\002\002Z\021' 'text=aZbc point=3'
 run_case 'hi\006\177X\021'   'text=hX point=3'
 # plain typing + quit
 run_case 'hello\021'         'text=hello point=6'
+# Enter -> newline, C-a -> line start, insert -> "ab\nXcd"
+run_case 'ab\rcd\001X\021'   'text=ab\nXcd point=5'
+# Left-arrow (ESC [ D) x2 then 'Z' -> "aZbc"
+run_case 'abc\033[D\033[DZ\021' 'text=aZbc point=3'
+# Up-arrow (ESC [ A) from line 2 start to line 1, insert 'Q' -> "Qabc\ndef"
+run_case 'abc\rdef\001\033[AQ\021' 'text=Qabc\ndef point=2'
+# C-b then C-d (delete forward) on "hi" -> "h"
+run_case 'hi\002\004\021'    'text=h point=2'
 
 echo "PASS"
