@@ -7856,29 +7856,37 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 (defconst nelisp-standalone--sf-when
   '(defun nl_sf_when (args env out _pad)
      (if (= (sexp-tag args) 7)
-         (if (= (nl_eval_is_truthy (nl_cons_car_ptr args) env) 1)
-             (nl_sf_progn (nl_cons_cdr_ptr args) env out 0)
-           (seq (nl_cons_write_nil out) 0))
+         ;; nl_eval_is_truthy returns 1 (truthy) / 0 (nil) / -1 (error).  The
+         ;; error case must propagate (return 1 to nl_apply_special) instead of
+         ;; being mistaken for nil.
+         (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
+           (if (= tv 1)
+               (nl_sf_progn (nl_cons_cdr_ptr args) env out 0)
+             (if (= tv 0) (seq (nl_cons_write_nil out) 0) 1)))
        (seq (nl_cons_write_nil out) 0))))
 
 (defconst nelisp-standalone--sf-unless
   '(defun nl_sf_unless (args env out _pad)
      (if (= (sexp-tag args) 7)
-         (if (= (nl_eval_is_truthy (nl_cons_car_ptr args) env) 1)
-             (seq (nl_cons_write_nil out) 0)
-           (nl_sf_progn (nl_cons_cdr_ptr args) env out 0))
+         (let* ((tv (nl_eval_is_truthy (nl_cons_car_ptr args) env)))
+           (if (= tv 1)
+               (seq (nl_cons_write_nil out) 0)
+             (if (= tv 0) (nl_sf_progn (nl_cons_cdr_ptr args) env out 0) 1)))
        (seq (nl_cons_write_nil out) 0))))
 
 ;; (and A B ...) -> evaluate each in order into OUT; short-circuit on nil
 ;; (OUT keeps that nil); otherwise OUT holds the last value.  (and) -> t.
 (defconst nelisp-standalone--sf-and-walk
   '(defun nl_sf_and_walk (rest env out _pad)
-     (let* ((more (nl_cons_cdr_ptr rest)))
-       (seq
-        (nelisp_eval_call (nl_cons_car_ptr rest) env out)
-        (if (= (sexp-tag more) 7)
-            (if (= (ptr-read-u64 out 0) 0) 0 (nl_sf_and_walk more env out 0))
-          0)))))
+     ;; Propagate an error raised while evaluating a conjunct (rc /= 0) instead
+     ;; of swallowing it and reporting the form as nil.
+     (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
+       (if (= rc 0)
+           (let* ((more (nl_cons_cdr_ptr rest)))
+             (if (= (sexp-tag more) 7)
+                 (if (= (ptr-read-u64 out 0) 0) 0 (nl_sf_and_walk more env out 0))
+               0))
+         rc))))
 
 (defconst nelisp-standalone--sf-and
   '(defun nl_sf_and (args env out _pad)
@@ -7889,12 +7897,15 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 ;; (or A B ...) -> first truthy value into OUT; else nil.  (or) -> nil.
 (defconst nelisp-standalone--sf-or-walk
   '(defun nl_sf_or_walk (rest env out _pad)
-     (let* ((more (nl_cons_cdr_ptr rest)))
-       (seq
-        (nelisp_eval_call (nl_cons_car_ptr rest) env out)
-        (if (= (ptr-read-u64 out 0) 0)
-            (if (= (sexp-tag more) 7) (nl_sf_or_walk more env out 0) 0)
-          0)))))
+     ;; Propagate an error raised while evaluating a disjunct (rc /= 0) instead
+     ;; of swallowing it and reporting the form as nil.
+     (let* ((rc (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
+       (if (= rc 0)
+           (if (= (ptr-read-u64 out 0) 0)
+               (let* ((more (nl_cons_cdr_ptr rest)))
+                 (if (= (sexp-tag more) 7) (nl_sf_or_walk more env out 0) 0))
+             0)
+         rc))))
 
 (defconst nelisp-standalone--sf-or
   '(defun nl_sf_or (args env out _pad)
@@ -7909,14 +7920,17 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      (let* ((clause (nl_cons_car_ptr clauses))
             (more (nl_cons_cdr_ptr clauses)))
        (if (= (sexp-tag clause) 7)
-           (let* ((body (nl_cons_cdr_ptr clause)))
-             (seq
-              (nelisp_eval_call (nl_cons_car_ptr clause) env out)
-              (if (= (ptr-read-u64 out 0) 0)
-                  (if (= (sexp-tag more) 7)
-                      (nl_sf_cond_walk more env out 0)
-                    (seq (nl_cons_write_nil out) 0))
-                (if (= (sexp-tag body) 7) (nl_sf_progn body env out 0) 0))))
+           ;; Propagate an error raised while evaluating a clause TEST (rc /= 0)
+           ;; rather than treating the errored test as a non-match.
+           (let* ((rc (nelisp_eval_call (nl_cons_car_ptr clause) env out)))
+             (if (= rc 0)
+                 (if (= (ptr-read-u64 out 0) 0)
+                     (if (= (sexp-tag more) 7)
+                         (nl_sf_cond_walk more env out 0)
+                       (seq (nl_cons_write_nil out) 0))
+                   (let* ((body (nl_cons_cdr_ptr clause)))
+                     (if (= (sexp-tag body) 7) (nl_sf_progn body env out 0) 0)))
+               rc))
          (if (= (sexp-tag more) 7)
              (nl_sf_cond_walk more env out 0)
            (seq (nl_cons_write_nil out) 0))))))
@@ -7964,26 +7978,30 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 (defconst nelisp-standalone--sf-prog1
   '(defun nl_sf_prog1 (args env out _pad)
      ;; (prog1 FIRST BODY...) -> value of FIRST; BODY evaluated for effect.
+     ;; Propagate an error from FIRST or BODY (rc /= 0) rather than masking it.
      (if (= (sexp-tag args) 7)
          (let* ((scratch (alloc-bytes 32 8)))
-           (seq
-            (nelisp_eval_call (nl_cons_car_ptr args) env out)
-            (nl_sf_progn (nl_cons_cdr_ptr args) env scratch 0)
-            0))
+           (let* ((rc (nelisp_eval_call (nl_cons_car_ptr args) env out)))
+             (if (= rc 0)
+                 (nl_sf_progn (nl_cons_cdr_ptr args) env scratch 0)
+               rc)))
        (seq (nl_cons_write_nil out) 0))))
 
 (defconst nelisp-standalone--sf-prog2
   '(defun nl_sf_prog2 (args env out _pad)
      ;; (prog2 FORM1 FORM2 BODY...) -> value of FORM2.
+     ;; Propagate an error from FORM1, FORM2 or BODY (rc /= 0).
      (if (= (sexp-tag args) 7)
          (let* ((rest (nl_cons_cdr_ptr args)))
            (if (= (sexp-tag rest) 7)
                (let* ((scratch (alloc-bytes 32 8)) (scratch2 (alloc-bytes 32 8)))
-                 (seq
-                  (nelisp_eval_call (nl_cons_car_ptr args) env scratch)
-                  (nelisp_eval_call (nl_cons_car_ptr rest) env out)
-                  (nl_sf_progn (nl_cons_cdr_ptr rest) env scratch2 0)
-                  0))
+                 (let* ((rc1 (nelisp_eval_call (nl_cons_car_ptr args) env scratch)))
+                   (if (= rc1 0)
+                       (let* ((rc2 (nelisp_eval_call (nl_cons_car_ptr rest) env out)))
+                         (if (= rc2 0)
+                             (nl_sf_progn (nl_cons_cdr_ptr rest) env scratch2 0)
+                           rc2))
+                     rc1)))
              (seq (nl_cons_write_nil out) 0)))
        (seq (nl_cons_write_nil out) 0))))
 
