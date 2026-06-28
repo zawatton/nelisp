@@ -2491,11 +2491,16 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "maphash")          . (wf_ht_maphash args out))
     ;; --- M5 strings + format ---
     ((:lit "length")           . (wf_write_int out (m5_length (wf_arg_ptr args 0))))
+    ;; Doc 161: byte-level access + count for byte-IO (length is now chars).
+    ((:lit "string-byte")      . (wf_write_int out
+                                  (str-byte-at (wf_arg_ptr args 0)
+                                               (ptr-read-u64 (wf_arg_ptr args 1) 8))))
+    ((:lit "string-bytes")     . (wf_write_int out (str-len (wf_arg_ptr args 0))))
     ((:lit "string=")          . (if (= (m5_streq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
                                       (wf_write_t out) (wf_write_nil out)))
     ((:lit "string-to-char")   . (wf_write_int out
                                   (if (= (str-len (wf_arg_ptr args 0)) 0) 0
-                                    (str-byte-at (wf_arg_ptr args 0) 0))))
+                                    (nl_u8_decode (wf_arg_ptr args 0) 0))))
     ((:lit "string-to-number") . (wf_write_int out (m5_s2n (wf_arg_ptr args 0))))
     ((:lit "number-to-string") . (let* ((ms (alloc-bytes 32 8))
                                         (arg (wf_arg_ptr args 0)))
@@ -2531,16 +2536,20 @@ argument (reachability + in-arena bounds checks).")
                                         (mut-str-finalize ms out) 0)))
     ((:lit "substring")        . (let* ((ms (alloc-bytes 32 8))
                                         (s (wf_arg_ptr args 0))
-                                        (slen (str-len s))
+                                        (nb (str-len s))
+                                        (clen (nl_str_charlen s))
                                         (from (ptr-read-u64 (wf_arg_ptr args 1) 8))
                                         (rest (nl_cons_cdr_ptr (nl_cons_cdr_ptr args)))
                                         (to (if (= (ptr-read-u64 rest 0) 7)
                                                 (ptr-read-u64 (wf_arg_ptr args 2) 8)
-                                              slen)))
+                                              clen))
+                                        (cf (if (< from 0) (+ clen from) from))
+                                        (ct (if (< to 0) (+ clen to) to)))
                                    (seq (mut-str-make-empty ms 16)
+                                        ;; CF/CT are CHAR indices -> byte offsets
                                         (m5_push_str_bytes ms s
-                                          (if (< from 0) (+ slen from) from)
-                                          (if (< to 0) (+ slen to) to))
+                                          (nl_u8_cidx_byte s 0 nb 0 cf)
+                                          (nl_u8_cidx_byte s 0 nb 0 ct))
                                         (mut-str-finalize ms out) 0)))
     ((:lit "format")           . (let* ((ms (alloc-bytes 32 8))
                                         (fmt (wf_arg_ptr args 0)))
@@ -5232,10 +5241,40 @@ unresolved at link time."
       (if (= (ptr-read-u64 p 0) 7)
           (m5_list_len (nl_cons_cdr_ptr p) (+ acc 1))
         acc))
+    ;; --- Doc 161 UTF-8 char-aware helpers (storage stays UTF-8 bytes) ---
+    (defun nl_u8_clen_at (b)
+      (if (< b 128) 1 (if (< b 224) 2 (if (< b 240) 3 4))))
+    (defun nl_str_charlen_loop (p i n acc)
+      (if (>= i n) acc
+        (nl_str_charlen_loop p (+ i 1) n
+          (if (= (logand (str-byte-at p i) 192) 128) acc (+ acc 1)))))
+    (defun nl_str_charlen (p) (nl_str_charlen_loop p 0 (str-len p) 0))
+    ;; char index TARGET -> byte offset (walks whole codepoints)
+    (defun nl_u8_cidx_byte (p bi n c target)
+      (if (>= c target) bi
+        (if (>= bi n) bi
+          (nl_u8_cidx_byte p (+ bi (nl_u8_clen_at (str-byte-at p bi)))
+                           n (+ c 1) target))))
+    ;; decode the codepoint at byte offset BI
+    ;; Left shifts are expressed as multiplications: `ash' is not linked into
+    ;; the applyfn-reader unit, but `*' is.  <<6 = *64, <<12 = *4096, <<18 = *262144.
+    (defun nl_u8_decode (p bi)
+      (let* ((b (str-byte-at p bi)))
+        (if (< b 128) b
+          (if (< b 224)
+              (logior (* (logand b 31) 64) (logand (str-byte-at p (+ bi 1)) 63))
+            (if (< b 240)
+                (logior (* (logand b 15) 4096)
+                        (logior (* (logand (str-byte-at p (+ bi 1)) 63) 64)
+                                (logand (str-byte-at p (+ bi 2)) 63)))
+              (logior (* (logand b 7) 262144)
+                      (logior (* (logand (str-byte-at p (+ bi 1)) 63) 4096)
+                              (logior (* (logand (str-byte-at p (+ bi 2)) 63) 64)
+                                      (logand (str-byte-at p (+ bi 3)) 63)))))))))
     (defun m5_length (p)
       (let* ((tag (ptr-read-u64 p 0)))
-        (if (= tag 5) (str-len p)
-          (if (= tag 6) (str-len p)
+        (if (= tag 5) (nl_str_charlen p)
+          (if (= tag 6) (nl_str_charlen p)
             (if (= tag 4) (str-len p)
               (if (= tag 7) (m5_list_len p 0)
                 0))))))
@@ -5466,10 +5505,13 @@ unresolved at link time."
                 (if (= idx 0)
                     (seq (record-type-tag arr out) 0)
                   (seq (record-slot-ref arr (- idx 1) out) 0)))
-            (if (= tg 5)
-                (if (if (< idx 0) 1 (if (< idx (str-len arr)) 0 1))
+            ;; Doc 161: aref on a string returns the CHARACTER (codepoint) at
+            ;; the char index, decoding UTF-8 (tags 5 Str and 6 MutStr).
+            (if (if (= tg 5) 1 (if (= tg 6) 1 0))
+                (if (if (< idx 0) 1 (if (< idx (nl_str_charlen arr)) 0 1))
                     (seq (wf_write_nil out) 0)
-                  (wf_write_int out (str-byte-at arr idx)))
+                  (wf_write_int out
+                    (nl_u8_decode arr (nl_u8_cidx_byte arr 0 (str-len arr) 0 idx))))
               (seq (wf_write_nil out) 0))))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
@@ -9136,7 +9178,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; List search hot paths
     "memq" "member" "assq" "assoc" "rassoc"
     ;; M5 strings + format
-    "length" "concat" "substring" "make-string" "string="
+    "length" "string-byte" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--string-search" "nelisp--arena-stats" "garbage-collect"
     "nelisp--fmt-float"

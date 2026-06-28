@@ -1,0 +1,63 @@
+#+TITLE: Doc 161 — Core multibyte (UTF-8 char-aware strings)
+#+OPTIONS: toc:nil
+
+* Problem
+
+Standalone strings are raw UTF-8 byte arrays with no multibyte flag.  The
+native primitives index by *byte*, so non-ASCII text is mishandled:
+
+| form                  | now        | want (Emacs)  |
+|-----------------------+------------+---------------|
+| =(length "あい")=     | 6 (bytes)  | 2 (chars)     |
+| =(aref "あ" 0)=       | 227 (byte) | 12354 (cp)    |
+| =(string-to-char "あ")= | 227      | 12354         |
+| =(char-to-string 12354)= | "B"     | "あ" (3 B)    |
+| =(substring s a b)=   | byte slice | char slice    |
+
+=m5_length= (build script ~5235) returns =str-len= (byte count) for string
+tags 5/6; =bf_aref= falls through to =str-byte-at=; =char-to-string= /
+=make-string= push a single byte; =substring= slices on byte offsets.
+
+* Key discovery — the buffer comes along for free
+
+=nelisp-buffer= expresses *all* position arithmetic via =length= / =substring=:
+=nelisp-point= = ~(1+ (length before-gap))~, =goto-char= splits with
+=substring=, =buffer-size= sums =length=.  So making =length= and =substring=
+char-aware makes =nelisp-buffer= (hence the editor, text-buffer, redisplay)
+char-aware with **no buffer change**.
+
+* Contract
+
+- =length= / =aref= / =substring= / =string-to-char= / =char-to-string= /
+  =make-string= operate on **characters** (Emacs semantics).
+- =string-bytes= returns the **byte** count; a new =string-byte= (byte access)
+  + the raw byte length serve byte-IO (terminal writes, syscall buffers).
+- Storage is unchanged: UTF-8 bytes inline (tag 5) / boxed (tag 6).  The
+  internal byte ops =str-len= / =str-byte-at= stay byte-level for the reader,
+  GC and AOT machinery (47 internal call sites) — only the *builtins* change.
+
+* UTF-8 helpers (AOT, near m5_length)
+
+- =nl_str_charlen p= — count lead bytes ((b & 0xC0) != 0x80).
+- =nl_u8_clen_at b= — byte length of the codepoint led by b (1..4).
+- =nl_u8_cidx_byte p target= — char index -> byte offset.
+- =nl_u8_decode p bi= — decode the codepoint at byte offset bi.
+- =nl_u8_encode ms cp= — append cp's UTF-8 to a mut-str.
+
+* Staging
+
+1. *Read side* (this stage): =length=, =aref=, =string-to-char=, =substring=
+   char-aware; add =string-bytes= (byte) + =string-byte= (byte access).
+   -> nelisp-buffer / text-buffer become char-aware automatically.
+   Verify: =(length "あい")=2=, buffer point over Japanese, text-buffer
+   multibyte test, no regression in ASCII suites.
+2. *Write side*: =char-to-string= / =make-string= UTF-8-encode codepoints.
+3. *Editor*: a UTF-8 *input decoder* (assemble multibyte keystrokes into one
+   codepoint key event) and *byte-faithful output* (=string-byte= + byte
+   length for the terminal write); fix byte-IO callers to =string-bytes=.
+
+* Byte-IO callers to migrate to string-bytes/string-byte (stage 3)
+
+examples/nelisp-async-editor.el: =nae--write=, =nae--cpath=, =nae--read-file=,
+=nae--write-file= currently size byte buffers with =(length s)= — correct only
+while strings are ASCII; switch to =string-bytes= + =string-byte=.
