@@ -156,9 +156,14 @@ isn't a callback).
 The 5-arg `key-pressed` handler is the interesting one — under Win64 the 5th
 arg (`user_data`) arrives on the stack and the handler returns a `gboolean` in
 `rax`.  Shared mutable state lives in a `malloc`'d context struct read/written
-with `ptr-read/write-u64` (`ctx[0]`=counter, `ctx[8]`=area, `ctx[16]`=loop);
-the background colour toggles with the counter's parity, so a click, a key
-press, or the 800 ms auto-tick visibly flips navy ↔ maroon.  Esc / `q` quits.
+with `ptr-read/write-u64` (`ctx[0]`=counter, `ctx[8]`=area, `ctx[16]`=loop,
+`ctx[24]`=text scratch).  `on_draw` renders the counter **as text** — an
+`int`→decimal-string done by unrolled digit extraction (`(mod (/ n 10^k) 10)`
+written as ASCII bytes with `ptr-write-u8`, NUL-terminated, then drawn with
+`cairo_show_text`; no loop or mutable locals needed) — and toggles the
+background with the counter's parity.  So a click, a key press, or the 800 ms
+auto-tick bumps the "count NNNNN" readout and flips navy ↔ maroon.  Esc / `q`
+quits.
 
 ```sh
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-widgets-native.el \

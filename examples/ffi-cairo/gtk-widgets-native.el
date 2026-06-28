@@ -33,8 +33,13 @@
  (data-blob sig_destroy "destroy\0" rodata)
  (data-blob font_sans   "sans\0" rodata)
  (data-blob text_sumi   "sumi\0" rodata)
+ (data-blob lbl_count   "count \0" rodata)
 
- ;; Draw: parity of ctx[0] picks the background colour.
+ ;; Draw: parity of ctx[0] picks the background colour, and the counter is
+ ;; rendered as text.  int -> decimal string is an unrolled digit extraction
+ ;; (no loop / no mutable locals needed): each digit is `(mod (/ n 10^k) 10)',
+ ;; written as an ASCII byte into the scratch buffer at ctx[24] with
+ ;; ptr-write-u8, NUL-terminated, then drawn with cairo_show_text.
  (defun on_draw (area cr width height ctx)
    (let ((n (ptr-read-u64 ctx 0)))
      (seq
@@ -42,11 +47,25 @@
           (extern-call cairo_set_source_rgb cr (:f64 0.07) (:f64 0.07) (:f64 0.17))
         (extern-call cairo_set_source_rgb cr (:f64 0.20) (:f64 0.05) (:f64 0.09)))
       (extern-call cairo_paint cr)
+      ;; counter -> 5-digit zero-padded decimal at ctx[24..28], NUL at ctx[29]
+      (ptr-write-u8 ctx 24 (+ 48 (mod (/ n 10000) 10)))
+      (ptr-write-u8 ctx 25 (+ 48 (mod (/ n 1000) 10)))
+      (ptr-write-u8 ctx 26 (+ 48 (mod (/ n 100) 10)))
+      (ptr-write-u8 ctx 27 (+ 48 (mod (/ n 10) 10)))
+      (ptr-write-u8 ctx 28 (+ 48 (mod n 10)))
+      (ptr-write-u8 ctx 29 0)
+      ;; "sumi" title
       (extern-call cairo_set_source_rgb cr (:f64 0.94) (:f64 0.86) (:f64 0.24))
       (extern-call cairo_select_font_face cr (data-addr font_sans) 0 0)
-      (extern-call cairo_set_font_size cr (:f64 48.0))
-      (extern-call cairo_move_to cr (:f64 24.0) (:f64 78.0))
+      (extern-call cairo_set_font_size cr (:f64 44.0))
+      (extern-call cairo_move_to cr (:f64 20.0) (:f64 58.0))
       (extern-call cairo_show_text cr (data-addr text_sumi))
+      ;; "count NNNNN" below (cairo advances the point, so the number follows
+      ;; the label).  The number pointer is ctx + 24.
+      (extern-call cairo_set_font_size cr (:f64 26.0))
+      (extern-call cairo_move_to cr (:f64 20.0) (:f64 102.0))
+      (extern-call cairo_show_text cr (data-addr lbl_count))
+      (extern-call cairo_show_text cr (+ ctx 24))
       0)))
 
  ;; Button "clicked": advance the counter and request a redraw.
@@ -83,7 +102,7 @@
  (defun main ()
    (seq
     (extern-call gtk_init)
-    (let ((ctx (extern-call malloc 24)))
+    (let ((ctx (extern-call malloc 48)))
       (seq
        (ptr-write-u64 ctx 0 0)
        (let ((window (extern-call gtk_window_new)))
