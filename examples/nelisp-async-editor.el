@@ -24,6 +24,7 @@
 (defvar nae--buf nil  "The editing `nelisp-buffer'.")
 (defvar nae--tick 0   "Timer-driven tick counter (status-line liveness).")
 (defvar nae--draw t   "When non-nil, render to the terminal on each change.")
+(defvar nae--kill nil "Kill-ring head: the last killed string.")
 
 ;;; Position helpers (point is 1-based into the buffer string) ---------
 
@@ -78,6 +79,22 @@
 (defun nae--down ()
   (let ((rc (nae--point->rc))) (nae--goto (nae--rc->point (1+ (car rc)) (cdr rc)))))
 
+(defun nae--kill-line ()
+  "Kill from point to end of line into the kill ring; at line end, kill the \\n."
+  (let* ((pt (nae--pt)) (rc (nae--point->rc)) (le (nae--rc->point (car rc) 1000000)))
+    (cond
+     ((< pt le)
+      (setq nae--kill (substring (nae--text) (1- pt) (1- le)))
+      (nelisp-delete-region pt le nae--buf))
+     ((< pt (nae--pmax))
+      (setq nae--kill "\n")
+      (nelisp-delete-region pt (1+ pt) nae--buf)))))
+
+(defun nae--yank ()
+  "Insert the kill-ring head at point."
+  (when (and nae--kill (> (length nae--kill) 0))
+    (nelisp-insert nae--kill nae--buf)))
+
 (defun nae--key (b)
   "Dispatch a single decoded byte B (not part of an escape sequence)."
   (cond
@@ -90,6 +107,8 @@
    ((= b 5)  (nae--line-end))                      ; C-e
    ((= b 16) (nae--up))                            ; C-p
    ((= b 14) (nae--down))                          ; C-n
+   ((= b 11) (nae--kill-line))                     ; C-k
+   ((= b 25) (nae--yank))                          ; C-y
    ((= b 12) nil)                                  ; C-l (redraw happens after)
    ((>= b 32) (nae--self-insert b))                ; printable
    (t nil)))
@@ -161,6 +180,7 @@
     (nelisp-insert initial nae--buf)
     (nelisp-goto-char (nae--pmin) nae--buf))
   (setq nae--tick 0)
+  (setq nae--kill nil)
   (nelisp-actor--reset)
   (nelisp-async-reset-timers))
 

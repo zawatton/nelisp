@@ -48,5 +48,9 @@ run_case 'abc\033[D\033[DZ\021' 'text=aZbc point=3'
 run_case 'abc\rdef\001\033[AQ\021' 'text=Qabc\ndef point=2'
 # C-b then C-d (delete forward) on "hi" -> "h"
 run_case 'hi\002\004\021'    'text=h point=2'
+# C-a, C-f x2, C-k (kill "cde"), C-a, C-y (yank) -> "cdeab"
+run_case 'abcde\001\006\006\013\001\031\021' 'text=cdeab point=4'
+# C-a (line 2), C-b (onto the newline), C-k -> join lines "abcd"
+run_case 'ab\rcd\001\002\013\021' 'text=abcd point=3'
 
 echo "PASS"
