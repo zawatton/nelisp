@@ -666,6 +666,34 @@ falling back to `write-region' under host Emacs."
                                           (list 'write-region s nil p)))))
                   (list 'nelisp-ec-kill-buffer buf))))))
 
+;; ---- buffer-hash (C builtin) ----
+;; A non-cryptographic content hash used to detect buffer changes.  Callers
+;; only compare two hashes for equality.  The runtime's sxhash / md5 /
+;; secure-hash are stubbed (return nil) here, so use a deterministic djb2
+;; digest over the buffer text -- content-sensitive and dependency-free.
+
+(unless (fboundp 'buffer-hash)
+  (defun buffer-hash (&optional buffer-or-name)
+    "Return a hash string of the entire contents of BUFFER-OR-NAME.
+Ignores narrowing (hashes the whole buffer)."
+    (let ((buf (if (stringp buffer-or-name)
+                   (get-buffer buffer-or-name)
+                 (or buffer-or-name (current-buffer))))
+          (s nil))
+      ;; Capture the text via `setq' rather than relying on the return value
+      ;; of `with-current-buffer'/`save-restriction', which this runtime does
+      ;; not propagate (they return the buffer, not the body value).
+      (save-current-buffer
+        (set-buffer buf)
+        (save-restriction
+          (widen)
+          (setq s (buffer-substring-no-properties (point-min) (point-max)))))
+      (let ((h 5381) (i 0) (n (length s)))
+        (while (< i n)
+          (setq h (logand (+ (* h 33) (aref s i)) 1099511627775)) ; mod 2^40
+          (setq i (1+ i)))
+        (number-to-string h)))))
+
 (provide 'emacs-buffer-builtins)
 
 ;;; emacs-buffer-builtins.el ends here
