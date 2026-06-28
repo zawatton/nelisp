@@ -311,3 +311,18 @@ Codegen wiring (nelisp-standalone-build.el):
   (~(+ 1 2)~), unrelated to this change.  Other definers/macros (defvar/defconst/
   defalias/when/unless/cond/and/or/prog1/prog2/dolist) remain unimplemented in the
   native evaluator (would each need a handler or a macroexpand fallback).
+- 2026-06-28: *~defvar~ / ~defconst~ in the reader's native evaluator.*  Same
+  synthesis-and-eval shape as ~defun~ (build a primitive form in the per-eval
+  arena, run it through ~nelisp_eval_call~; injected via ~--patch-combiner-cons~
+  / ~--patch-apply-special~, lisp/ stays pristine):
+  + ~defconst~ -> ~(set (quote NAME) VALUE)~, returns NAME.
+  + ~defvar~ with VALUE -> ~(if (boundp (quote NAME)) nil (set (quote NAME)
+    VALUE))~ (override-protection: only sets when unbound); without VALUE a pure
+    declaration; both return NAME.
+  Reuses the working ~set~/~boundp~/~quote~ builtins (no mirror set-value
+  scratch-vec ABI).  Verified on the binary: ~(defconst kk (+ 40 2)) kk~ => 42,
+  ~(defvar vv 7) vv~ => 7, ~(setq vv 99)(defvar vv 7) vv~ => 99 (no override),
+  ~(defvar dd)(boundp 'dd)~ => nil.  No regression: defun, ~eval-runtime-image
+  "(image-hot)"~ => 99, and the full ffi-smoke (libc + f64 + D1/F1-F4) still PASS.
+  Still missing from the native evaluator: defalias/defmacro/cl-defun and the
+  macros when/unless/cond/and/or/prog1/prog2/dolist.
