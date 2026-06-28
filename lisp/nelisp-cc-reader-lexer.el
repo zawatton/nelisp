@@ -531,6 +531,34 @@
        ;; `\\<LF>' -> line continuation (drop both bytes).
        ((= (str-byte-at str-ptr cursor) 10)
         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
+       ;; `\\C-X' -> control modifier: (target & 0x1f).  Mirrors the
+       ;; char-literal path `nelisp_reader_p_decode_char_ctrl' so a key
+       ;; sequence such as "\\C-f" reads as the single byte 6 instead of the
+       ;; three literal characters `C', `-', `f'.
+       ((= (str-byte-at str-ptr cursor) 67)
+        (if (< (+ cursor 2) n)
+            (if (= (str-byte-at str-ptr (+ cursor 1)) 45)
+                (nelisp_reader_prog2
+                 (mut-str-push-byte
+                  scratch (logand (str-byte-at str-ptr (+ cursor 2)) 31))
+                 (nelisp_reader_string_body str-ptr (+ cursor 3) n scratch))
+              ;; `\\C' not followed by `-': literal `C'.
+              (nelisp_reader_prog2
+               (mut-str-push-byte scratch 67)
+               (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 67)
+           (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))))
+       ;; `\\^X' -> control modifier (caret synonym for `\\C-').
+       ((= (str-byte-at str-ptr cursor) 94)
+        (if (< (+ cursor 1) n)
+            (nelisp_reader_prog2
+             (mut-str-push-byte
+              scratch (logand (str-byte-at str-ptr (+ cursor 1)) 31))
+             (nelisp_reader_string_body str-ptr (+ cursor 2) n scratch))
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 94)
+           (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))))
        ;; Unknown escape: drop backslash, push the byte literal.
        (t
         (nelisp_reader_prog2
