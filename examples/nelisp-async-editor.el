@@ -105,9 +105,9 @@
 ;;; File I/O (open/read/write/close via syscall) ----------------------
 
 (defun nae--cpath (path)
-  "Return a NUL-terminated C-string buffer holding PATH."
-  (let* ((n (length path)) (pb (alloc-bytes (+ n 1) 1)) (i 0))
-    (while (< i n) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i)))
+  "Return a NUL-terminated C-string buffer holding PATH (raw bytes)."
+  (let* ((n (string-bytes path)) (pb (alloc-bytes (+ n 1) 1)) (i 0))
+    (while (< i n) (ptr-write-u8 pb i (string-byte path i)) (setq i (1+ i)))
     (ptr-write-u8 pb n 0)
     pb))
 
@@ -129,8 +129,8 @@
   "Write TEXT to PATH (O_WRONLY|O_CREAT|O_TRUNC, 0644).  Return bytes written, or nil."
   (let ((fd (syscall-direct 2 (nae--cpath path) 577 420 0 0 0)))  ; 577=WRONLY|CREAT|TRUNC
     (if (< fd 0) nil
-      (let* ((n (length text)) (buf (alloc-bytes (+ n 1) 1)) (i 0))
-        (while (< i n) (ptr-write-u8 buf i (aref text i)) (setq i (1+ i)))
+      (let* ((n (string-bytes text)) (buf (alloc-bytes (+ n 1) 1)) (i 0))
+        (while (< i n) (ptr-write-u8 buf i (string-byte text i)) (setq i (1+ i)))
         (let ((w (syscall-direct 1 fd buf n 0 0 0)))             ; write
           (syscall-direct 3 fd 0 0 0 0 0)                         ; close
           w)))))
@@ -225,8 +225,10 @@
 ;;; Terminal output ---------------------------------------------------
 
 (defun nae--write (s)
-  (let* ((n (length s)) (buf (alloc-bytes (+ n 1) 1)) (i 0))
-    (while (< i n) (ptr-write-u8 buf i (aref s i)) (setq i (1+ i)))
+  ;; Byte-faithful terminal output: emit the raw UTF-8 bytes (string-byte),
+  ;; not codepoints, so non-ASCII renders correctly.  `length' is chars now.
+  (let* ((n (string-bytes s)) (buf (alloc-bytes (+ n 1) 1)) (i 0))
+    (while (< i n) (ptr-write-u8 buf i (string-byte s i)) (setq i (1+ i)))
     (syscall-direct 1 1 buf n 0 0 0)))
 
 (defun nae--render ()
@@ -258,7 +260,7 @@ output flows through `nelisp-redisplay--output-fn' so it is capturable."
   "Spawn the editor actor with an ESC-sequence decoder."
   (nelisp-spawn
    (nelisp-actor-lambda
-     (let ((run t) (esc 0) (cx 0))   ; esc: ESC[ decoder; cx: 1 after C-x prefix
+     (let ((run t) (esc 0) (cx 0) (mb 0) (macc nil))  ; mb/macc: UTF-8 input assembler
        (while run
          (let ((ev (nelisp-receive)))
            (when (and (nelisp-event-p ev) (eq (nelisp-event-kind ev) 'key))
@@ -270,6 +272,19 @@ output flows through `nelisp-redisplay--output-fn' so it is capturable."
                  (cond ((= b 19) (nae--save))                        ; C-x C-s save
                        ((= b 117) (nae--do-undo))                    ; C-x u  undo
                        ((= b 18) (nae--do-redo))))                   ; C-x C-r redo
+                ;; --- UTF-8 input: assemble a multibyte keystroke, then insert
+                ;; the raw bytes (terminals deliver CJK as 2-4 UTF-8 bytes).
+                ((> mb 0)
+                 (setq macc (cons b macc) mb (1- mb))
+                 (when (= mb 0)
+                   (nae--edit 'insert
+                     (lambda () (nelisp-insert (apply #'unibyte-string (reverse macc)) nae--buf)))
+                   (setq macc nil)))
+                ((>= b 240) (setq mb 3 macc (list b)))               ; 4-byte lead
+                ((>= b 224) (setq mb 2 macc (list b)))               ; 3-byte lead
+                ((>= b 192) (setq mb 1 macc (list b)))               ; 2-byte lead
+                ((>= b 128)                                          ; stray byte
+                 (nae--edit 'insert (lambda () (nelisp-insert (unibyte-string b) nae--buf))))
                 ((= b 27) (setq esc 1))                              ; ESC
                 ((= b 24) (setq cx 1))                               ; C-x prefix
                 ((= b 17) (setq run nil))                            ; C-q

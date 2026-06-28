@@ -61,6 +61,12 @@ run_case 'abc\177\037\021'     'text=abc point=4'
 run_case 'abc\037\030\022\021' 'text=abc point=4'
 # Two coalesced runs: "ab" C-b "X" undo(X run) -> "ab"
 run_case 'ab\002X\037\021'     'text=ab point=2'
+# UTF-8 input: "あい" (6 bytes) assembled into 2 chars
+run_case '\343\201\202\343\201\204\021' 'text=あい point=3'
+# Mixed ASCII + CJK: a あ b -> 3 chars
+run_case 'a\343\201\202b\021'  'text=aあb point=4'
+# CJK + char motion: あい C-a 'X' -> "Xあい" (X at char 0)
+run_case '\343\201\202\343\201\204\001X\021' 'text=Xあい point=2'
 
 # --- File load + edit + C-x C-s save roundtrip ---
 # Load "hello\nworld", insert '!' at start (point is at buffer start after load),
