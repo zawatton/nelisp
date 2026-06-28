@@ -326,3 +326,22 @@ Codegen wiring (nelisp-standalone-build.el):
   "(image-hot)"~ => 99, and the full ffi-smoke (libc + f64 + D1/F1-F4) still PASS.
   Still missing from the native evaluator: defalias/defmacro/cl-defun and the
   macros when/unless/cond/and/or/prog1/prog2/dolist.
+- 2026-06-28: *~defalias~ / ~defmacro~ / ~cl-defun~ in the native evaluator.*
+  Same synthesis-and-eval shape, injected via the combiner-cons patch:
+  + ~cl-defun~ delegates to ~nl_sf_defun~ (the lambda special form handles the
+    arglist; basic required/&optional/&rest map through, full CL &optional-default
+    / &key are not modelled).
+  + ~defalias~ -> ~(progn (fset NAME-FORM DEF-FORM) NAME-FORM)~ (both arg forms
+    evaluated, like the real subr; returns the aliased symbol).
+  + ~defmacro~ -> ~(fset (quote NAME) (list (quote macro) (lambda ARGLIST
+    BODY...)))~, installing the ~(macro CLOSURE)~ list cell the dispatcher's
+    ~nl_cons_is_macro~ / ~nl_cons_macro_apply_eval~ already recognise; returns
+    NAME.  So user macros now expand in the native evaluator.
+  Verified on the binary: ~(defalias 'g 'car)(g '(1 2))~ => 1, ~defalias~ to a
+  defun / lambda; ~(defmacro m1 (a) (list '+ a 1))(m1 41)~ => 42; ~(cl-defun cd2
+  (a &optional b) (+ a (if b b 0)))(cd2 40 2)~ => 42.  No regression: defun /
+  defvar / defconst, ~eval-runtime-image "(image-hot)"~ => 99, full ffi-smoke
+  (libc + f64 + D1/F1-F4).  The native evaluator now covers the common
+  definers + user-defined macros; the standard control macros (when/unless/cond/
+  and/or/prog1/prog2/dolist) are still resolved only when the prelude is loaded
+  (it defines them via ~defmacro~, which now works natively too).
