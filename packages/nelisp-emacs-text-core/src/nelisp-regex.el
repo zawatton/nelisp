@@ -205,15 +205,40 @@ cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
      (t (nelisp-rx--advance) (list :lit c)))))
 
 (defun nelisp-rx--parse-group ()
-  "Parse a `\\(...\\)' group; the leading `\\(' is already consumed."
-  (let ((idx nelisp-rx--parse-group-counter))
-    (setq nelisp-rx--parse-group-counter (1+ nelisp-rx--parse-group-counter))
+  "Parse a `\\(...\\)' group; the leading `\\(' is already consumed.
+Supports `\\(?:...\\)' shy (non-capturing) groups and `\\(?N:...\\)'
+explicitly numbered groups in addition to plain capturing groups.
+\(63 = ?, 58 = :; numeric literals avoid char-literal reader edge cases.)"
+  (let ((shy nil) (idx nil))
+    (cond
+     ;; `\(?:...\)' -- shy / non-capturing group.
+     ((and (eq (nelisp-rx--peek) 63) (eq (nelisp-rx--peek2) 58))
+      (nelisp-rx--advance) (nelisp-rx--advance) ; consume ?:
+      (setq shy t))
+     ;; `\(?N:...\)' -- explicitly numbered group.
+     ((and (eq (nelisp-rx--peek) 63)
+           (let ((c2 (nelisp-rx--peek2))) (and c2 (>= c2 ?0) (<= c2 ?9))))
+      (nelisp-rx--advance)                      ; consume ?
+      (let ((n 0) (c (nelisp-rx--peek)))
+        (while (and c (>= c ?0) (<= c ?9))
+          (setq n (+ (* n 10) (- c ?0)))
+          (nelisp-rx--advance)
+          (setq c (nelisp-rx--peek)))
+        (unless (eq c 58)                       ; expect :
+          (signal 'nelisp-rx-syntax-error '("malformed \\(?N:...\\) group")))
+        (nelisp-rx--advance)                    ; consume :
+        (setq idx n)
+        (when (>= n nelisp-rx--parse-group-counter)
+          (setq nelisp-rx--parse-group-counter (1+ n)))))
+     (t
+      (setq idx nelisp-rx--parse-group-counter)
+      (setq nelisp-rx--parse-group-counter (1+ nelisp-rx--parse-group-counter))))
     (let ((inner (nelisp-rx--parse-alt)))
       (unless (and (eq (nelisp-rx--peek) ?\\)
                    (eq (nelisp-rx--peek2) ?\)))
         (signal 'nelisp-rx-syntax-error '("missing \\) for group")))
       (nelisp-rx--advance) (nelisp-rx--advance) ; consume \)
-      (list :group idx inner))))
+      (if shy inner (list :group idx inner)))))
 
 (defun nelisp-rx--posix-ranges (name)
   "Return a list of (lo . hi) ranges for POSIX class NAME, nil if unknown."
