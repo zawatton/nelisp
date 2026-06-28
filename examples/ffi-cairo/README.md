@@ -64,10 +64,40 @@ The cairo programs write their PNG to an absolute path inside this directory
 (`/mnt/c/.../examples/ffi-cairo/sumi-*.png`); edit the `png_path` `data-blob` to
 relocate output.
 
-## Native window / GTK4
+## Native window / GTK4 (Windows-native, working)
 
-This first cut renders to an in-memory image surface → PNG (no window, no event
-loop), which is the minimal end-to-end proof.  A windowed GTK4 target is the
-same FFI shape: `dlopen` libgtk-4, resolve the entry points, and drive the
-cairo draw from a `draw` callback — adding a `call-ptr`-based C→elisp callback
-trampoline on top of the call path proven here.
+The PNG examples above render to an in-memory image surface (no window, no
+event loop).  `gtk-window-native.el` takes the next step: a **real Windows-
+native GTK4 window**, driven by the same pure-elisp FFI, where GTK calls back
+into AOT-compiled elisp to paint it.
+
+```sh
+# from the dev/nelisp repo root, in an MSYS2 shell with mingw64 gtk4 installed
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-window-native.el /tmp/sumi-gtk
+```
+
+This compiles elisp → **Win64 COFF** (`nelisp-aot-compile-to-object :format
+'coff`) → native PE `.exe` via `mingw gcc` + `pkg-config --libs gtk4`.  No WSL,
+no WSLg — it opens an actual Win32 window showing the "sumi" panel.
+
+What makes it work:
+
+- **C→elisp callbacks land in AOT defuns.** `gtk_drawing_area_set_draw_func` /
+  `g_signal_connect_data` / `g_timeout_add` receive `(addr-of NAME)` function
+  pointers; GTK invokes them with the SysV-vs-Win64 ABI and our defun prologues
+  read the args from the right registers (incl. a 5th stack arg for the draw
+  func).
+- **Callbacks are callee-save-safe under Win64.** The draw callback issues
+  `extern-call`s into cairo, whose dynamic-alignment idiom clobbers `rbx` — but
+  the Win64 defun prologue already saves/restores `rbx` (and `rdi`/`rsi`/
+  `xmm6-15`), so it does not corrupt GTK's register state on return.  (The
+  SysV/ELF defun prologue does *not* yet save `rbx`, so the Linux/WSL windowed
+  path would need a compiler fix first; the Windows-native path works as-is.)
+- **String constants reach `.rdata`.** DLL/symbol/text C-strings are emitted as
+  `data-blob`s in a PE `.rdata` section (the COFF object path forwards
+  `:rodata`/`:data` to the PE writer; regression-guarded by
+  `coff-data-blob-emits-rdata-section`).
+
+A `dlopen`-style dynamic variant (Windows `LoadLibraryA`/`GetProcAddress` via
+`extern-call` + `extern-call-ptr`, mirroring `cairo-dynamic.el`) is the natural
+follow-up; the static-link path here is the minimal proof.

@@ -16998,9 +16998,18 @@ drift (= a Doc 92 emitter invariant violation)."
          (signal 'nelisp-aot-compiler-error
                  (list :coff-only-supports-x86_64 arch)))
        (require 'nelisp-pe-write)
+       ;; Wire the link-unit's read-only / read-write data through to the PE
+       ;; writer.  Without `:rodata'/`:data' a defun that references a
+       ;; `data-blob' C-string (= a symbol in section `rodata') fails section-
+       ;; number mapping with "symbol in rodata but no .rdata section".  The PE
+       ;; writer already emits `.rdata'/`.data' sections + section symbols +
+       ;; relocs; only this call site dropped the bytes.  (PE writer v1 has no
+       ;; bss section, so `:bss-size' is intentionally not forwarded.)
        (nelisp-pe-write-binary
         file-path
         (list :text text-bytes
+              :rodata rodata-bytes
+              :data data-bytes
               :symbols symbols
               :relocs relocs
               :machine arch)))

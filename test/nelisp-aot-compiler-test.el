@@ -2869,6 +2869,33 @@ with a slot index beyond the param count."
                      (unibyte-string #x48 #x8b #x45 #xd8)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/coff-data-blob-emits-rdata-section ()
+  "COFF object mode wires `data-blob' C-strings into a `.rdata' section.
+
+Regression: the `compile-to-object' COFF branch forwarded only
+:text/:symbols/:relocs to the PE writer, dropping the link-unit's
+:rodata/:data bytes.  A defun referencing a `data-blob' then carried a
+symbol in section `rodata' with no `.rdata' section, so PE section-number
+mapping aborted with \"symbol in rodata but no .rdata section\".  Assert the
+object now builds and its `.rdata' actually carries the blob bytes (= the
+DLL/symbol/text C-strings a Windows-native FFI program needs)."
+  (let ((path (make-temp-file "nelisp-coff-rdata-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(seq
+             (data-blob msg "hello\0" rodata)
+             (defun probe () (extern-call strlen (data-addr msg))))
+           path :arch 'x86_64 :format 'coff)
+          (should (file-exists-p path))
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (rdata (nelisp-aot-compiler-test--coff-section-bytes
+                         bytes ".rdata")))
+            (should rdata)
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     rdata (string-to-unibyte "hello")))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-aot-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()
   "Win64 extern-call places a fifth f64 arg in the outgoing stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-extern5-" nil ".obj")))
