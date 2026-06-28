@@ -269,3 +269,19 @@ physics — no `sin`/`cos` or libm.
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-anim-native.el \
      /tmp/sumi-anim $(pkg-config --libs gtk4)
 ```
+
+### Particles — many objects, time-based motion
+
+`gtk-particles-native.el` bounces 16 coloured particles around the canvas with
+**frame-rate-independent** motion: the tick callback reads
+`gdk_frame_clock_get_frame_time` (microseconds, an `i64` return), computes
+`dt = now - last`, and integrates each particle by `velocity * dt / 1e6`.
+Positions are kept in *millipixels* (`pixel * 1000`) so the integer integrator
+keeps sub-pixel precision; the `on_tick`/`on_draw` loops walk the particle array
+(`while` loops with an in-memory index), and `main` seeds the particles with an
+index-derived spread (no RNG needed).
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-particles-native.el \
+     /tmp/sumi-particles $(pkg-config --libs gtk4)
+```
