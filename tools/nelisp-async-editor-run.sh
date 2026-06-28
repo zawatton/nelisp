@@ -39,6 +39,7 @@ echo "[async-editor] starting (C-q to quit) ; generator=$GEN"
   (load \"packages/nelisp-actor/src/nelisp-actor.el\")
   (load \"packages/nelisp-eventloop/src/nelisp-eventloop.el\")
   (load \"packages/nelisp-eventloop/src/nelisp-async.el\")
+  (load \"packages/nelisp-redisplay/src/nelisp-redisplay.el\")
   (load \"examples/nelisp-async-editor.el\")
   (nae-run-interactive))"
 

@@ -21,6 +21,7 @@ LOADS="(load \"scripts/nelisp-stdlib-prelude.el\") \
 (load \"packages/nelisp-actor/src/nelisp-actor.el\") \
 (load \"packages/nelisp-eventloop/src/nelisp-eventloop.el\") \
 (load \"packages/nelisp-eventloop/src/nelisp-async.el\") \
+(load \"packages/nelisp-redisplay/src/nelisp-redisplay.el\") \
 (load \"examples/nelisp-async-editor.el\")"
 
 run_case () { # $1 = key bytes (printf escapes), $2 = expected RESULT substring
@@ -64,5 +65,23 @@ disk="$(cat "$TMP")"
 echo "[async-editor-smoke] on disk: $(printf '%q' "$disk")"
 case "$out" in *"msg=wrote 12B"*) ;; *) echo "FAIL: save did not report writing 12 bytes"; exit 1 ;; esac
 if [ "$disk" != "$(printf '!hello\nworld')" ]; then echo "FAIL: file content on disk is wrong"; exit 1; fi
+
+# --- Redisplay render check: capture the frame for a 2-line buffer ---
+rout="$("$NELISP" --eval "(progn $LOADS
+  (nae--setup nil) (setq nae--draw t)
+  (nelisp-insert \"abc\ndef\" nae--buf) (nelisp-goto-char 6 nae--buf)
+  (let ((cap \"\"))
+    (setq nelisp-redisplay--output-fn (lambda (s) (setq cap (concat cap s))))
+    (nae--render)
+    (princ (format \"RENDER[abc=%s def=%s status=%s cur=%s]\"
+                   (and (string-match-p \"abc\" cap) t)
+                   (and (string-match-p \"def\" cap) t)
+                   (and (string-match-p \"async-editor\" cap) t)
+                   (and (string-match-p \"\e\\\[2;2H\" cap) t)))))" 2>&1 | tail -1)"
+echo "[async-editor-smoke] $rout"
+case "$rout" in
+  *"RENDER[abc=t def=t status=t cur=t]"*) ;;
+  *) echo "FAIL: redisplay frame missing content/cursor"; exit 1 ;;
+esac
 
 echo "PASS"

@@ -22,6 +22,7 @@
 ;;; State -------------------------------------------------------------
 
 (defvar nae--buf nil  "The editing `nelisp-buffer'.")
+(defvar nae--win nil  "The `nelisp-window' used for diff redisplay.")
 (defvar nae--tick 0   "Timer-driven tick counter (status-line liveness).")
 (defvar nae--draw t   "When non-nil, render to the terminal on each change.")
 (defvar nae--kill nil "Kill-ring head: the last killed string.")
@@ -175,28 +176,27 @@
     (syscall-direct 1 1 buf n 0 0 0)))
 
 (defun nae--render ()
-  "Redraw the buffer (one terminal row per line) + a status line."
-  (when nae--draw
-    (let* ((s (nae--text)) (n (length s)) (out "\e[H\e[2J") (i 0) (line ""))
-      ;; Body: split on \n, each line on its own terminal row.
-      (while (< i n)
-        (let ((ch (aref s i)))
-          (if (= ch 10) (setq out (concat out line "\r\n") line "")
-            (setq line (concat line (char-to-string ch)))))
-        (setq i (1+ i)))
-      (setq out (concat out line "\r\n"))
-      ;; Status line (reverse video).
-      (let ((rc (nae--point->rc)))
-        (setq out (concat out "\e[7m -- nelisp-async-editor  "
-                          "L" (number-to-string (1+ (car rc)))
-                          " C" (number-to-string (1+ (cdr rc)))
-                          "  ticks=" (number-to-string nae--tick)
-                          "  " nae--msg
-                          "  (C-x C-s save, C-q quit) \e[0m"))
-        ;; Place the cursor at its row/col (1-based ANSI).
-        (setq out (concat out "\e[" (number-to-string (1+ (car rc)))
-                          ";" (number-to-string (1+ (cdr rc))) "H")))
-      (nae--write out))))
+  "Repaint via `nelisp-redisplay' (per-line diff) + a status line.
+The window's dirty rows are painted by `nelisp-redisplay-window', which also
+positions the hardware cursor; the status line is drawn just below it.  All
+output flows through `nelisp-redisplay--output-fn' so it is capturable."
+  (when (and nae--draw nae--win)
+    (let* ((rc (nae--point->rc))
+           (h (nelisp-window-height nae--win)))
+      (setf (nelisp-window-cursor-row nae--win) (min (car rc) (1- h)))
+      (setf (nelisp-window-cursor-col nae--win) (cdr rc))
+      (nelisp-window-mark-all-dirty nae--win)
+      ;; Status line on the row just below the text window (reverse video).
+      (nelisp-redisplay--emit
+       (concat "\e[" (number-to-string (1+ h)) ";1H\e[2K"
+               "\e[7m -- nelisp-async-editor  "
+               "L" (number-to-string (1+ (car rc)))
+               " C" (number-to-string (1+ (cdr rc)))
+               "  ticks=" (number-to-string nae--tick)
+               "  " nae--msg
+               "  (C-x C-s save, C-q quit) \e[0m"))
+      ;; Paint dirty buffer rows last so the cursor ends in the text area.
+      (nelisp-redisplay-window nae--win))))
 
 ;;; Actor + loop ------------------------------------------------------
 
@@ -222,6 +222,12 @@
 
 (defun nae--setup (&optional file)
   (setq nae--buf (nelisp-buffer--make :name "*async-editor*"))
+  ;; Diff-redisplay window: reserve the bottom row for the status line.
+  (let* ((sz (nelisp-redisplay-terminal-size))
+         (w (if (consp sz) (car sz) 80))
+         (ht (if (consp sz) (cdr sz) 24)))
+    (setq nae--win (nelisp-make-window nae--buf (max 1 (1- ht)) w)))
+  (setq nelisp-redisplay--output-fn #'nae--write)
   (setq nae--file file)
   (when file
     (let ((contents (nae--read-file file)))
