@@ -285,3 +285,19 @@ index-derived spread (no RNG needed).
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-particles-native.el \
      /tmp/sumi-particles $(pkg-config --libs gtk4)
 ```
+
+### Trails — alpha compositing on a persistent surface
+
+`gtk-trails-native.el` gives the particles fading trails.  A `GtkDrawingArea`
+starts each frame on a blank surface, so the trails accumulate on a **persistent
+off-screen `cairo_image_surface`**: each frame `on_tick` paints a translucent
+dark rect over it (`cairo_set_source_rgba` with alpha ~0.12 — fading the old
+content) and stamps the particles, and `on_draw` blits the surface to the widget
+with `cairo_set_source_surface` + `cairo_paint`.  `cairo_set_source_rgba` takes
+4 f64 args (the alpha lands on the Win64 stack); `cairo_set_source_surface` is a
+mixed `gp, gp, f64, f64` call.
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-trails-native.el \
+     /tmp/sumi-trails $(pkg-config --libs gtk4)
+```
