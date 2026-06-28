@@ -283,3 +283,31 @@ Codegen wiring (nelisp-standalone-build.el):
   standalone-reader-ffi-smoke~ now also covers libm(f64); libc/D1/F1/F2/F3/F4 still
   PASS (no regression).  Static reader unaffected (the extern arms are appended
   only when ~NELISP_READER_DYNAMIC~ is set).
+- 2026-06-28: *~defun~ in the reader's native evaluator — fixes the
+  ~eval-runtime-image defun~ smoke.*  Root cause (investigated): the native
+  evaluator's special-form set (~nelisp-standalone--reader-real-sf-manifest~ +
+  the M6 catch/throw patch) implemented only ~if/let/let*/setq/while/progn/quote/
+  lambda/function/condition-case/unwind-protect/catch/throw~.  ~defun~ (and other
+  definers/macros) were absent and there is no macroexpand fallback, so a runtime
+  ~(defun NAME ARGS BODY...)~ fell through to a function call and silently
+  signalled ~(void-function defun)~ (rc 0, empty output) — which is why a dumped
+  ~(defun image-hot () 99)~ could not define the function and ~eval-runtime-image
+  IMG "(image-hot)"~ returned nothing.  Fix: ~nl_sf_defun~ + ~nl_sp_eq_defun~,
+  injected into the combiner-cons unit by the same build-time patch that adds
+  catch/throw (~--patch-combiner-cons~ / ~--patch-apply-special~; lisp/ stays
+  pristine).  Rather than reimplement the mirror function-cell + scratch-vec
+  install ABI, ~nl_sf_defun~ SYNTHESISES ~(fset (quote NAME) (lambda . (cdr
+  args)))~ in the per-eval arena and evaluates it via ~nelisp_eval_call~, reusing
+  the working ~fset~ builtin + ~lambda~ special form; borrowed leaves are cloned
+  (~nl_sexp_clone_into~, mirroring ~nl_cons_stash_void_function~), and ~defun~
+  returns the NAME symbol (Elisp semantics), not the closure.  Verified on the
+  binary: ~(progn (defun add1 (a) (+ a 1)) (add1 41))~ => 42, recursive ~(fib
+  12)~ => 144, ~(defun ff () 7)~ => ~ff~, and the ~eval-runtime-image defun~
+  command smoke now PASSES.  No regression: if/let/setq/fset and the full
+  ffi-smoke (libc + f64 + D1/F1-F4) still PASS.  *Still open* (separate,
+  defun-independent): ~make standalone-reader-test~ now advances past the
+  defun smoke and exposes a pre-existing ~compile-elisp-artifact~ breakage — that
+  subcommand returns rc 0 but writes no output file even for non-defun input
+  (~(+ 1 2)~), unrelated to this change.  Other definers/macros (defvar/defconst/
+  defalias/when/unless/cond/and/or/prog1/prog2/dolist) remain unimplemented in the
+  native evaluator (would each need a handler or a macroexpand fallback).

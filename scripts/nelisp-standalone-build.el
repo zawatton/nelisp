@@ -7481,6 +7481,77 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
             (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
               (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
 
+;; `defun' special form for the reader's native evaluator.  The baked
+;; special-form set (sf-if/let/setq/...) had no `defun', so a runtime
+;; `(defun NAME ARGS BODY...)' fell through to a function call and signalled
+;; `(void-function defun)' (silently aborting --eval / eval-runtime-image / any
+;; nl-ffi FORM).  Rather than reimplement the mirror function-cell + scratch-vec
+;; install ABI, `nl_sf_defun' SYNTHESISES the equivalent
+;;   (fset (quote NAME) (lambda . (cdr args)))
+;; in the per-eval arena and evaluates it through `nelisp_eval_call', reusing the
+;; already-working `fset' builtin + `lambda' special form (closure construction +
+;; mirror install).  Refcounts mirror `nl_cons_stash_void_function': borrowed
+;; leaves (NAME, the (ARGS BODY...) tail) are cloned with `nl_sexp_clone_into'
+;; before going into the fresh cons structure; the `lambda' special form
+;; deep-clones the formals/body again into the persisted closure, so the installed
+;; function survives the transient form's arena.  u64 packings: "fset"=1952805734,
+;; "quote"=435745158513, "lambda"=107083775959404, "defun"=474416047460.
+(defconst nelisp-standalone--sp-eq-defun
+  '(defun nl_sp_eq_defun (name_ptr)
+     (let* ((buf (alloc-bytes 8 1)))
+       (seq (ptr-write-u64 buf 0 474416047460)
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
+
+(defconst nelisp-standalone--sf-defun
+  '(defun nl_sf_defun (args env out _pad)
+     (if (= (sexp-tag args) 7)
+         (let* ((name_ptr (nl_cons_car_ptr args))
+                (tail_ptr (nl_cons_cdr_ptr args))
+                (fbuf (alloc-bytes 8 1))
+                (fset_sym (alloc-bytes 32 8))
+                (qbuf (alloc-bytes 8 1))
+                (quote_sym (alloc-bytes 32 8))
+                (lbuf (alloc-bytes 8 1))
+                (lambda_sym (alloc-bytes 32 8))
+                (name_clone (alloc-bytes 32 8))
+                (tail_clone (alloc-bytes 32 8))
+                (nil1 (alloc-bytes 32 8))
+                (nil2 (alloc-bytes 32 8))
+                (lam_form (alloc-bytes 32 8))
+                (name_list (alloc-bytes 32 8))
+                (quote_form (alloc-bytes 32 8))
+                (arg2 (alloc-bytes 32 8))
+                (arglist (alloc-bytes 32 8))
+                (form (alloc-bytes 32 8))
+                (scratch (alloc-bytes 32 8)))
+           (seq
+            ;; materialise the head symbols fset / quote / lambda
+            (ptr-write-u64 fbuf 0 1952805734)      (nl_alloc_symbol fbuf 4 fset_sym)
+            (ptr-write-u64 qbuf 0 435745158513)    (nl_alloc_symbol qbuf 5 quote_sym)
+            (ptr-write-u64 lbuf 0 107083775959404) (nl_alloc_symbol lbuf 6 lambda_sym)
+            ;; clone the borrowed NAME and (ARGS BODY...) tail
+            (nl_sexp_clone_into name_ptr name_clone)
+            (nl_sexp_clone_into tail_ptr tail_clone)
+            (nl_cons_write_nil nil1)
+            (nl_cons_write_nil nil2)
+            ;; (lambda . (ARGS BODY...))
+            (nelisp_cons_construct lambda_sym tail_clone lam_form)
+            ;; (quote NAME) = (quote . (NAME . nil))
+            (nelisp_cons_construct name_clone nil1 name_list)
+            (nelisp_cons_construct quote_sym name_list quote_form)
+            ;; (fset (quote NAME) (lambda ...))
+            (nelisp_cons_construct lam_form nil2 arg2)
+            (nelisp_cons_construct quote_form arg2 arglist)
+            (nelisp_cons_construct fset_sym arglist form)
+            ;; Evaluate the install into a scratch slot; on success return the
+            ;; defined NAME (Elisp `defun' yields the symbol, not the function).
+            (let* ((rc (nelisp_eval_call form env scratch)))
+              (if (= rc 0)
+                  (seq (nl_sexp_clone_into name_ptr out) 0)
+                rc))))
+       1)))
+
 (defun nelisp-standalone--patch-apply-special (form)
   "Rewrite the nl_apply_special defun FORM: replace its terminal else `2'
 (unknown-special-form) with catch/throw dispatch arms, keeping the existing
@@ -7492,11 +7563,13 @@ if-chain intact."
         ((rewrite (node)
            (cond
             ((eq node 2)
-             '(if (= (nl_sp_eq_catch name_ptr) 1)
-                  (nl_sf_catch args_ptr env_ptr out 0)
-                (if (= (nl_sp_eq_throw name_ptr) 1)
-                    (nl_sf_throw args_ptr env_ptr out 0)
-                  2)))
+             '(if (= (nl_sp_eq_defun name_ptr) 1)
+                  (nl_sf_defun args_ptr env_ptr out 0)
+                (if (= (nl_sp_eq_catch name_ptr) 1)
+                    (nl_sf_catch args_ptr env_ptr out 0)
+                  (if (= (nl_sp_eq_throw name_ptr) 1)
+                      (nl_sf_throw args_ptr env_ptr out 0)
+                    2))))
             ((consp node) (cons (rewrite (car node)) (rewrite (cdr node))))
             (t node))))
       (append (list 'defun name arglist) (mapcar #'rewrite body)))))
@@ -7515,6 +7588,8 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
               (unless inserted
                 (push nelisp-standalone--sp-eq-catch out)
                 (push nelisp-standalone--sp-eq-throw out)
+                (push nelisp-standalone--sp-eq-defun out)
+                (push nelisp-standalone--sf-defun out)
                 (setq inserted t))
               (push (nelisp-standalone--patch-apply-special form) out))
              (t (push form out))))
