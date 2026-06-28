@@ -138,3 +138,29 @@ the win64 path) — without it the callback corrupts GTK's register state.
 Disassembling `on_draw` shows the `mov %rbx,-N(%rbp)` save + restore pair that
 the fix emits (and that the static PNG examples never needed, since `main`
 isn't a callback).
+
+## Widgets and events
+
+`gtk-widgets-native.el` goes past a single drawing area: a window with a
+`GtkBox` holding the drawing area **and a `GtkButton`**, plus a
+`GtkEventControllerKey` for keyboard input.  It exercises several distinct
+`g_signal` callback shapes, all landing in AOT defuns:
+
+| Callback | Signal | Signature |
+|----------|--------|-----------|
+| `on_clicked` | `GtkButton::clicked`            | `void(GtkButton*, gpointer)` |
+| `on_key`     | `GtkEventControllerKey::key-pressed` | `gboolean(self, guint, guint, GdkModifierType, gpointer)` — 5 args, bool return |
+| `on_tick` / `on_quit` | `GSourceFunc` | `gboolean(gpointer)` |
+| `on_draw` / `on_destroy` | draw / `destroy` | as above |
+
+The 5-arg `key-pressed` handler is the interesting one — under Win64 the 5th
+arg (`user_data`) arrives on the stack and the handler returns a `gboolean` in
+`rax`.  Shared mutable state lives in a `malloc`'d context struct read/written
+with `ptr-read/write-u64` (`ctx[0]`=counter, `ctx[8]`=area, `ctx[16]`=loop);
+the background colour toggles with the counter's parity, so a click, a key
+press, or the 800 ms auto-tick visibly flips navy ↔ maroon.  Esc / `q` quits.
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-widgets-native.el \
+     /tmp/sumi-widgets $(pkg-config --libs gtk4)
+```
