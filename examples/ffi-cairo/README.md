@@ -201,3 +201,19 @@ gpointer)`); under Win64 that is `rcx`, `xmm1`, `xmm2`, `r9`, all in registers.
 bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-motion-native.el \
      /tmp/sumi-motion $(pkg-config --libs gtk4)
 ```
+
+### Freehand drawing — variable-length data + a loop
+
+`gtk-paint-native.el` is a small paint program: drag to draw, and the strokes
+persist.  The pointer trajectory is accumulated into a `malloc`'d point array
+(each point is `x`, `y`, and a "stroke start" flag), appended from the motion
+callback while the drag gesture holds the button.  `on_draw` walks the array
+with a **`while` loop whose counter lives in memory** (no mutable locals),
+building a cairo path — `cairo_move_to` at stroke starts, `cairo_line_to`
+within — then a single `cairo_stroke`.  A helper defun `add_point` is called
+from the GTK callbacks (defun-calling-defun across the C boundary).
+
+```sh
+bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-paint-native.el \
+     /tmp/sumi-paint $(pkg-config --libs gtk4)
+```
