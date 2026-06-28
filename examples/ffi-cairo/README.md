@@ -221,12 +221,18 @@ bash examples/ffi-cairo/gtkwin.sh examples/ffi-cairo/gtk-paint-native.el \
 ### Paint app — palette, undo, and a text entry
 
 `gtk-paint-app-native.el` rounds the paint demo into a small app: a toolbar with
-a `GtkEntry`, *undo* and *save* buttons, and four colour buttons above the canvas.
+a `GtkEntry`, *undo* and *save* buttons, a line-width `GtkScale`, and four colour
+buttons above the canvas.
 
 - **Palette** — each colour button's `clicked` handler sets the current colour
   index; every point stores its stroke's colour, so `on_draw` flushes a
   `cairo_stroke` and re-sets the source at each stroke boundary (per-stroke
   colour).
+- **Line width** — a `GtkScale`; its `value-changed` handler calls
+  `gtk_range_get_value`, which **returns a `gdouble`** — captured with
+  `(f64-bits (extern-call-f64 ...))` as i64 bits and stored, then read back with
+  `bits-to-f64` for `cairo_set_line_width`.  (This is the one f64 *return* in
+  these demos; same shape the reader uses for `nl-ffi-call` floats.)
 - **Undo** — the handler scans the point array backward (a `while` loop) to the
   last stroke-start and truncates the count there (array truncate).
 - **Caption** — the entry's `changed` signal redraws; `on_draw` reads the live
