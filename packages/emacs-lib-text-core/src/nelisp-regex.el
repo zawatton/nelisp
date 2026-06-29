@@ -47,9 +47,9 @@
 ;;                              and `:word' / `:nword' tags (\w / \W shorthand)
 ;;   (:concat NODES...)        concatenation
 ;;   (:alt   N1 N2)            N1 \| N2
-;;   (:star  N)                N*
-;;   (:plus  N)                N+
-;;   (:opt   N)                N?
+;;   (:star  N)                N*       (:star-lazy N)  N*?  (non-greedy)
+;;   (:plus  N)                N+       (:plus-lazy N)  N+?  (non-greedy)
+;;   (:opt   N)                N?       (:opt-lazy  N)  N??  (non-greedy)
 ;;   (:group IDX N)            \(..\); IDX is 1-based capture index
 
 (defun nelisp-rx--make-class (positive ranges)
@@ -133,12 +133,27 @@ cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
             (t (cons :concat rev))))))
 
 (defun nelisp-rx--parse-quant (atom)
-  "Wrap ATOM in a quantifier if next char is one."
+  "Wrap ATOM in a (possibly lazy) quantifier if next char(s) are one.
+A `?' immediately following `*' / `+' / `?' makes the quantifier
+non-greedy (lazy): the backtracking matcher then prefers the SHORTEST
+match (cf. Emacs `*?' / `+?' / `??').  org-element relies on lazy
+quantifiers (e.g. `\\(.*?\\)' in `org-complex-heading-regexp'); without
+this they parsed as a quantifier followed by a bogus standalone `?',
+yielding `quantifier without operand'."
   (let ((c (nelisp-rx--peek)))
     (cond
-     ((eq c ?*) (nelisp-rx--advance) (list :star atom))
-     ((eq c ?+) (nelisp-rx--advance) (list :plus atom))
-     ((eq c ??) (nelisp-rx--advance) (list :opt  atom))
+     ((eq c ?*) (nelisp-rx--advance)
+      (if (eq (nelisp-rx--peek) ??)
+          (progn (nelisp-rx--advance) (list :star-lazy atom))
+        (list :star atom)))
+     ((eq c ?+) (nelisp-rx--advance)
+      (if (eq (nelisp-rx--peek) ??)
+          (progn (nelisp-rx--advance) (list :plus-lazy atom))
+        (list :plus atom)))
+     ((eq c ??) (nelisp-rx--advance)
+      (if (eq (nelisp-rx--peek) ??)
+          (progn (nelisp-rx--advance) (list :opt-lazy atom))
+        (list :opt atom)))
      (t atom))))
 
 (defun nelisp-rx--parse-atom ()
@@ -471,6 +486,39 @@ where SLOT is 1 or 2 indicating which transition slot is dangling."
        (nelisp-rx--mkfrag :start s
                           :outs (cons (cons s 2)
                                       (nelisp-rx--frag-outs inner)))))
+    ;; Lazy (non-greedy) variants: identical NFA topology to their greedy
+    ;; counterparts, but the `:split' branches are swapped so the matcher
+    ;; (depth-first, slot 1 before slot 2) tries the EXIT / fewer-repeats
+    ;; path first.  See `nelisp-rx--parse-quant'.
+    (:star-lazy
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; lazy: try exit (slot 1) first, else inner (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     nil
+                                     (nelisp-rx--frag-start inner)
+                                     nil)))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:plus-lazy
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; one inner, then prefer exit (slot 1) over repeat (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     nil
+                                     (nelisp-rx--frag-start inner)
+                                     nil)))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+       (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                          :outs (list (cons s 1)))))
+    (:opt-lazy
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; lazy: prefer skip (slot 1) over matching inner (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     nil
+                                     (nelisp-rx--frag-start inner)
+                                     nil)))
+       (nelisp-rx--mkfrag :start s
+                          :outs (cons (cons s 1)
+                                      (nelisp-rx--frag-outs inner)))))
     (:group
      (let* ((idx (nth 1 ast))
             (inner (nelisp-rx--build (nth 2 ast)))
@@ -583,6 +631,11 @@ backtracking semantics."
          (ngrp   (nelisp-rx-pattern-ngroups pat))
          (groups (make-vector (1+ ngrp) nil))
          (slen   (length str))
+         ;; Epsilon-loop guard: per-`:split' record of the position at
+         ;; which that split is currently ON the DFS stack (nil = not).
+         ;; Re-entering the same split at the same position can only be a
+         ;; zero-width cycle (e.g. `\(?:x*\)*'); we cut it (see `:split').
+         (split-mark (make-vector (length states) nil))
          (best   nil))
     (cl-labels
         ((char-at (pos) (and (< pos slen) (aref str pos)))
@@ -653,8 +706,17 @@ backtracking semantics."
                  (and before (not after)
                       (walk (aref s 1) pos))))
               (:split
-               (or (walk (aref s 1) pos)
-                   (and (aref s 2) (walk (aref s 2) pos))))
+               ;; If this split is already on the current path at POS,
+               ;; re-entering is a zero-width epsilon cycle that yields no
+               ;; new match -- cut it.  Otherwise mark, recurse, restore
+               ;; (so sibling DFS branches may legitimately revisit later).
+               (let ((mark (aref split-mark sidx)))
+                 (if (and mark (= mark pos))
+                     nil
+                   (aset split-mark sidx pos)
+                   (prog1 (or (walk (aref s 1) pos)
+                              (and (aref s 2) (walk (aref s 2) pos)))
+                     (aset split-mark sidx mark)))))
               (:gstart
                (let* ((idx (aref s 3))
                       (saved (aref groups idx)))
