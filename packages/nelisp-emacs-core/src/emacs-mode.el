@@ -194,6 +194,10 @@ and a `CHILD-hook' defvar is created."
                          :doc ,real-doc
                          :hook ',hook-var))
              emacs-mode--registered)
+       ;; Record the parent so `derived-mode-p' can walk the major-mode
+       ;; hierarchy (e.g. org-mode -> outline-mode -> text-mode).  Faithful
+       ;; to real `define-derived-mode', which sets this symbol property.
+       ,@(when parent `((put ',child 'derived-mode-parent ',parent)))
        (defun ,child ()
          ,(or real-doc (format "Major mode %s." child))
          (interactive)

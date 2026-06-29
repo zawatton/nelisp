@@ -1088,9 +1088,27 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
             ": ")))
 
 (unless (fboundp 'derived-mode-p)
-  (defun derived-mode-p (&rest modes)
-    "Stub: standalone has no major-mode hierarchy; always nil."
-    (ignore modes) nil))
+  (defun derived-mode-p (&optional modes &rest old-modes)
+    "Return non-nil if the current `major-mode' is derived from one of MODES.
+MODES is a mode symbol or a list of mode symbols.  Walk the
+`derived-mode-parent' chain (as recorded by `define-derived-mode') starting
+from `major-mode'; return the first member of MODES that matches.
+
+Also supports the deprecated (derived-mode-p &rest MODES) calling
+convention.  This faithful (pre-Emacs-30) parent-chain walk replaces the
+old always-nil stub, which silently disabled every `(derived-mode-p
+\\='org-mode)' guard -- notably the one wrapping the whole body of
+`org-set-regexps-and-options', leaving `org-complex-heading-regexp' and
+friends nil so that `org-element-parse-buffer' returned nil."
+    (let ((modes (cond (old-modes (cons modes old-modes))
+                       ((listp modes) modes)
+                       (t (list modes))))
+          (mode (and (boundp 'major-mode) major-mode))
+          (found nil))
+      (while (and mode (not found))
+        (when (memq mode modes) (setq found mode))
+        (setq mode (get mode 'derived-mode-parent)))
+      found)))
 
 (unless (fboundp 'widget-get)
   (defun widget-get (widget property)
