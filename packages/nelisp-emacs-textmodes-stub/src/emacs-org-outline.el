@@ -46,13 +46,61 @@ Group 1 is the raw star prefix, whose length is the heading level.")
     (define-key map (kbd "S-TAB") #'org-shifttab)
     (define-key map (kbd "M-RET") #'org-insert-heading)
     (define-key map (kbd "M-<return>") #'org-insert-heading)
+    (define-key map (kbd "M-<up>") #'org-move-subtree-up)
+    (define-key map (kbd "M-<down>") #'org-move-subtree-down)
     (define-key map (kbd "M-<left>") #'org-promote)
     (define-key map (kbd "M-<right>") #'org-demote)
+    (define-key map (kbd "C-c <") #'org-promote-subtree)
+    (define-key map (kbd "C-c >") #'org-demote-subtree)
+    (define-key map (kbd "C-c C-n") #'org-next-visible-heading)
+    (define-key map (kbd "C-c C-p") #'org-previous-visible-heading)
+    (define-key map (kbd "C-c C-f") #'org-forward-heading-same-level)
+    (define-key map (kbd "C-c C-b") #'org-backward-heading-same-level)
+    (define-key map (kbd "C-c C-u") #'outline-up-heading)
+    (define-key map (kbd "C-c C-o") #'org-open-at-point)
+    (define-key map (kbd "C-c C-l") #'org-insert-link)
+    (define-key map (kbd "C-c C-q") #'org-set-tags-command)
+    (define-key map (kbd "C-c C-w") #'org-refile)
+    (define-key map (kbd "C-c ^") #'org-sort)
+    (define-key map (kbd "C-c C-x p") #'org-set-property)
+    (define-key map (kbd "C-x n s") #'org-narrow-to-subtree)
     map)
   "Keymap for `org-mode'.")
 
 (defvar-local org-outline--global-cycle-state 'overview
   "Current buffer-wide visibility state for `org-global-cycle'.")
+
+(defvar org-map-continue-from nil
+  "Position from which `org-map-entries' should continue scanning.")
+
+(defvar org-stored-links nil
+  "Lightweight list of links stored by `org-store-link'.
+Entries have the shape (LINK DESCRIPTION).")
+
+(defcustom org-archive-heading "Archive"
+  "Heading title used by lightweight `org-archive-subtree'."
+  :type 'string
+  :group 'org)
+
+(defcustom org-refile-targets nil
+  "Lightweight compatibility variable for Org refile targets."
+  :type 'sexp
+  :group 'org)
+
+(defvar org-clock-marker nil
+  "Marker for the currently clocked lightweight Org heading.")
+
+(defvar org-clock-start-time nil
+  "Start time for the currently running lightweight Org clock.")
+
+(defvar org-clock-start-line-marker nil
+  "Marker pointing at the active lightweight CLOCK line.")
+
+(defvar org-columns-buffer-name "*Org Columns*"
+  "Buffer name used by lightweight `org-columns'.")
+
+(defvar org-export-buffer-name "*Org Export*"
+  "Buffer name used by lightweight `org-export-dispatch'.")
 
 ;;;; Low-level text-property helpers
 
@@ -130,6 +178,11 @@ non-nil."
   "Return non-nil when point is on a heading line."
   (not (null (org-outline--heading-level-at-point))))
 
+(defun org-outline--visible-heading-at-point-p ()
+  "Return non-nil when point is on a visible Org heading line."
+  (and (org-outline--heading-at-point-p)
+       (not (org-outline--line-hidden-p (line-beginning-position)))))
+
 (defun org-outline--require-heading ()
   "Signal `user-error' unless point is on a heading line.
 Returns the current heading level."
@@ -163,6 +216,116 @@ Return point when found, else nil and restore point."
         (setq found (point)))
       (unless found
         (forward-line 1)))
+    (unless found
+      (goto-char origin))
+    found))
+
+(defun org-outline--previous-heading ()
+  "Move to the previous heading line at any level.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil)
+        (done nil))
+    (beginning-of-line)
+    (unless (bobp)
+      (forward-line -1)
+      (while (and (not found) (not done))
+        (when (org-outline--heading-at-point-p)
+          (setq found (point)))
+        (unless found
+          (if (bobp)
+              (setq done t)
+            (forward-line -1)))))
+    (if found
+        (goto-char found)
+      (goto-char origin))
+    found))
+
+(defun org-outline--next-visible-heading ()
+  "Move to the next visible heading line at any level.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil))
+    (forward-line 1)
+    (while (and (not found) (< (point) (point-max)))
+      (when (org-outline--visible-heading-at-point-p)
+        (setq found (point)))
+      (unless found
+        (forward-line 1)))
+    (unless found
+      (goto-char origin))
+    found))
+
+(defun org-outline--previous-visible-heading ()
+  "Move to the previous visible heading line at any level.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil)
+        (done nil))
+    (beginning-of-line)
+    (unless (bobp)
+      (forward-line -1)
+      (while (and (not found) (not done))
+        (when (org-outline--visible-heading-at-point-p)
+          (setq found (point)))
+        (unless found
+          (if (bobp)
+              (setq done t)
+            (forward-line -1)))))
+    (if found
+        (goto-char found)
+      (goto-char origin))
+    found))
+
+(defun org-outline--move-visible-heading (count)
+  "Move COUNT visible headings and return point.
+Negative COUNT moves backward.  Return nil and leave point unchanged when
+there are fewer than ABS(COUNT) visible headings in that direction."
+  (let ((origin (point))
+        (remaining (abs count))
+        (mover (if (< count 0)
+                   #'org-outline--previous-visible-heading
+                 #'org-outline--next-visible-heading))
+        (ok t))
+    (while (and ok (> remaining 0))
+      (setq ok (funcall mover))
+      (setq remaining (1- remaining)))
+    (unless ok
+      (goto-char origin))
+    ok))
+
+(defun org-outline--goto-heading-same-level (count)
+  "Move COUNT visible headings at the current heading's level.
+Negative COUNT moves backward."
+  (let ((origin (point))
+        (level (org-outline--require-heading))
+        (remaining (abs count))
+        (mover (if (< count 0)
+                   #'org-outline--previous-visible-heading
+                 #'org-outline--next-visible-heading))
+        (found nil))
+    (while (and (> remaining 0) (setq found (funcall mover)))
+      (when (= (org-outline--require-heading) level)
+        (setq remaining (1- remaining))))
+    (if (= remaining 0)
+        (point)
+      (goto-char origin)
+      nil)))
+
+(defun org-outline--goto-parent-heading ()
+  "Move to the visible parent heading of the current heading.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil))
+    (unless (org-outline--heading-at-point-p)
+      (org-outline--previous-visible-heading))
+    (let ((level (org-outline--heading-level-at-point)))
+      (when level
+        (while (and (not found)
+                    (org-outline--previous-visible-heading))
+          (let ((other-level (org-outline--heading-level-at-point)))
+            (when (and other-level (< other-level level))
+              (setq found (point)))))))
     (unless found
       (goto-char origin))
     found))
@@ -226,6 +389,53 @@ The result contains:
            (t
             (forward-line 1))))))
     (nreverse children)))
+
+(defun org-outline--sort-entry-key (child with-case sorting-type getkey-func)
+  "Return sort key for CHILD.
+WITH-CASE controls string case folding.  SORTING-TYPE accepts the lightweight
+subset `?a', `?A', `?n', and `?N'.  GETKEY-FUNC, when non-nil, is called with
+point at CHILD's heading."
+  (save-excursion
+    (goto-char (plist-get child :heading-start))
+    (let ((key (if getkey-func
+                   (funcall getkey-func)
+                 (org-get-heading t t t t))))
+      (cond
+       ((memq sorting-type '(?n ?N))
+        (string-to-number (format "%s" key)))
+       ((or with-case (not (stringp key)))
+        (format "%s" key))
+       (t
+        (downcase key))))))
+
+(defun org-outline--sort-child-plist (child with-case sorting-type getkey-func)
+  "Return CHILD extended with text and sort key."
+  (append child
+          (list :sort-key
+                (org-outline--sort-entry-key
+                 child with-case sorting-type getkey-func)
+                :text
+                (buffer-substring-no-properties
+                 (plist-get child :heading-start)
+                 (plist-get child :subtree-end)))))
+
+(defun org-outline--sort-child-less-p (left right sorting-type compare-func)
+  "Return non-nil when LEFT should sort before RIGHT."
+  (let ((left-key (plist-get left :sort-key))
+        (right-key (plist-get right :sort-key))
+        (descending (memq sorting-type '(?A ?N))))
+    (if compare-func
+        (if descending
+            (funcall compare-func right-key left-key)
+          (funcall compare-func left-key right-key))
+      (let ((result
+             (if (numberp left-key)
+                 (< left-key right-key)
+               (string< (format "%s" left-key)
+                        (format "%s" right-key)))))
+        (if descending
+            (not (or result (equal left-key right-key)))
+          result)))))
 
 (defun org-outline--line-hidden-p (pos)
   "Return non-nil when POS lies on a hidden line."
@@ -392,6 +602,576 @@ Body text remains folded."
   (when (looking-at org-outline--heading-regexp)
     (goto-char (match-end 0))))
 
+(defun org-outline--tag-string-p (text)
+  "Return non-nil when TEXT is an Org heading tag suffix."
+  (and (stringp text)
+       (string-match-p "\\`:[[:alnum:]_@#%:]+:\\'" text)))
+
+(defun org-outline--split-heading-tags ()
+  "Return plist describing current heading body and trailing tags.
+The plist contains `:body', `:tags', `:body-start', `:tag-start', and
+`:line-end'."
+  (org-outline--require-heading)
+  (let* ((line-end (line-end-position))
+         (body-start (save-excursion
+                       (beginning-of-line)
+                       (looking-at org-outline--heading-regexp)
+                       (match-end 0)))
+         (text (buffer-substring-no-properties body-start line-end))
+         (trimmed-end (string-match "[ \t]*\\'" text))
+         (content (substring text 0 trimmed-end))
+         (tokens (split-string content "[ \t]+" t))
+         (last-token (car (last tokens)))
+         (tags nil)
+         (tag-start nil)
+         (body text))
+    (when (org-outline--tag-string-p last-token)
+      (setq tags (split-string (substring last-token 1 -1) ":" t))
+      (let ((relative (string-match
+                       (concat "[ \t]*" (regexp-quote last-token)
+                               "[ \t]*\\'")
+                       text)))
+        (setq tag-start (+ body-start relative))
+        (setq body (substring text 0 relative))))
+    (list :body (replace-regexp-in-string "[ \t]*\\'" "" body)
+          :tags tags
+          :body-start body-start
+          :tag-start tag-start
+          :line-end line-end)))
+
+(defun org-outline--normalize-tags (tags)
+  "Return normalized list of Org TAGS."
+  (cond
+   ((null tags) nil)
+   ((stringp tags)
+    (split-string (replace-regexp-in-string
+                   "\\`[ \t:]+\\|[ \t:]+\\'" "" tags)
+                  "[: \t,]+" t))
+   ((listp tags)
+    (delq nil
+          (mapcar (lambda (tag)
+                    (let ((text (replace-regexp-in-string
+                                 "\\`[ \t:]+\\|[ \t:]+\\'"
+                                 "" (format "%s" tag))))
+                      (and (> (length text) 0) text)))
+                  tags)))
+   (t
+    (list (format "%s" tags)))))
+
+(defun org-outline--set-heading-tags (tags)
+  "Replace current heading's trailing tags with TAGS."
+  (let* ((info (org-outline--split-heading-tags))
+         (normalized (org-outline--normalize-tags tags))
+         (body (plist-get info :body))
+         (line-end (plist-get info :line-end))
+         (tag-start (plist-get info :tag-start))
+         (insert-at (or tag-start line-end))
+         (suffix (if normalized
+                     (concat " :" (mapconcat #'identity normalized ":") ":")
+                   "")))
+    (delete-region insert-at line-end)
+    (goto-char insert-at)
+    (insert suffix)
+    (goto-char (plist-get info :body-start))
+    (when (> (length body) 0)
+      (search-forward body (line-end-position) t))
+    normalized))
+
+(defun org-outline--map-match-p (match)
+  "Return non-nil when current heading satisfies lightweight MATCH.
+This supports nil/t, simple tag names, +tag conjunctions, -tag exclusions,
+and TODO=\"KEYWORD\" clauses."
+  (cond
+   ((or (null match) (eq match t))
+    t)
+   ((not (stringp match))
+    t)
+   (t
+    (let* ((text (replace-regexp-in-string
+                  "\\`[ \t\n\r]+\\|[ \t\n\r]+\\'" "" match))
+           (tags (org-get-tags))
+           (heading (org-get-heading t nil t))
+           (ok t)
+           (saw-token nil)
+           (pos 0))
+      (if (= (length text) 0)
+          t
+        (while (and ok
+                    (string-match
+                     "\\([+-]?\\)\\(?:TODO=\"\\([^\"]+\\)\"\\|\\([[:alnum:]_@#%:]+\\)\\)"
+                     text pos))
+          (let* ((sign (match-string 1 text))
+                 (todo (match-string 2 text))
+                 (tag (match-string 3 text))
+                 (negative (equal sign "-")))
+            (setq pos (match-end 0))
+            (setq saw-token t)
+            (cond
+             (todo
+              (if negative
+                  (when (string-match-p
+                         (concat "\\`" (regexp-quote todo) "\\(?:\\'\\| \\)")
+                         heading)
+                    (setq ok nil))
+                (unless (string-match-p
+                         (concat "\\`" (regexp-quote todo) "\\(?:\\'\\| \\)")
+                         heading)
+                  (setq ok nil))))
+             (tag
+              (if negative
+                  (when (member tag tags)
+                    (setq ok nil))
+                (unless (member tag tags)
+                  (setq ok nil)))))))
+        (and ok
+             (or saw-token
+                 (not (string-match-p "[[:alnum:]_@#%:]" text)))))))))
+
+(defun org-outline--map-scope-bounds (scope)
+  "Return (START . END) bounds for lightweight `org-map-entries' SCOPE."
+  (cond
+   ((eq scope 'tree)
+    (let ((bounds (org-outline--subtree-bounds)))
+      (cons (plist-get bounds :heading-start)
+            (plist-get bounds :subtree-end))))
+   ((and (eq scope 'region)
+         (use-region-p))
+    (cons (region-beginning) (region-end)))
+   (t
+    (cons (point-min) (point-max)))))
+
+(defun org-outline--archive-heading-position ()
+  "Return the position of the archive heading, creating it when needed."
+  (let ((found nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not found)
+                  (re-search-forward org-outline--heading-regexp nil t))
+        (beginning-of-line)
+        (when (and (= (org-outline--heading-level-at-point) 1)
+                   (equal (org-get-heading t t t) org-archive-heading))
+          (setq found (point)))
+        (unless found
+          (forward-line 1)))
+      (unless found
+        (goto-char (point-max))
+        (unless (or (bobp)
+                    (eq (char-before) ?\n))
+          (insert "\n"))
+        (setq found (point))
+        (insert "* " org-archive-heading "\n")))
+    found))
+
+(defun org-outline--archive-insertion-point ()
+  "Return the insertion point at the end of the archive heading subtree."
+  (save-excursion
+    (goto-char (org-outline--archive-heading-position))
+    (plist-get (org-outline--subtree-bounds) :subtree-end)))
+
+(defun org-outline--clock-time (time)
+  "Return TIME or the current time when TIME is nil."
+  (or time (current-time)))
+
+(defun org-outline--clock-timestamp (time)
+  "Return an inactive Org CLOCK timestamp for TIME."
+  (format-time-string "[%Y-%m-%d %a %H:%M]" time))
+
+(defun org-outline--clock-duration-minutes (start end)
+  "Return whole clock minutes between START and END."
+  (max 0 (floor (/ (float-time (time-subtract end start)) 60))))
+
+(defun org-outline--clock-duration-string (start end)
+  "Return HH:MM duration between START and END."
+  (let* ((minutes (org-outline--clock-duration-minutes start end))
+         (hours (/ minutes 60))
+         (mins (% minutes 60)))
+    (format "%d:%02d" hours mins)))
+
+(defun org-outline--clock-insert-line (start)
+  "Insert an open CLOCK line for START under the current heading."
+  (let ((insert-at (org-outline--line-end-with-newline)))
+    (goto-char insert-at)
+    (insert "CLOCK: " (org-outline--clock-timestamp start) "\n")
+    (forward-line -1)
+    (line-beginning-position)))
+
+(defun org-outline--find-heading-by-title (title)
+  "Return position of the first heading whose normalized title is TITLE."
+  (let ((found nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not found)
+                  (re-search-forward org-outline--heading-regexp nil t))
+        (beginning-of-line)
+        (when (equal (org-get-heading t t t) title)
+          (setq found (point)))
+        (unless found
+          (forward-line 1))))
+    found))
+
+(defun org-outline--refile-target-position (rfloc)
+  "Return target heading position described by RFLOC."
+  (cond
+   ((and (consp rfloc)
+         (integer-or-marker-p (nth 3 rfloc)))
+    (nth 3 rfloc))
+   ((stringp rfloc)
+    (or (org-outline--find-heading-by-title rfloc)
+        (user-error "No refile target: %s" rfloc)))
+   ((null rfloc)
+    (let* ((title (read-string "Refile to heading: "))
+           (pos (org-outline--find-heading-by-title title)))
+      (or pos
+          (user-error "No refile target: %s" title))))
+   (t
+    (user-error "Unsupported refile location"))))
+
+(defun org-outline--refile-insertion-point (target-marker)
+  "Return insertion point at the end of TARGET-MARKER's subtree."
+  (save-excursion
+    (goto-char target-marker)
+    (plist-get (org-outline--subtree-bounds) :subtree-end)))
+
+(defun org-outline--goto-current-heading ()
+  "Move to the heading that owns point.
+Return point at the heading, or signal `user-error' before the first
+heading."
+  (unless (org-outline--heading-at-point-p)
+    (unless (org-outline--previous-heading)
+      (user-error "Before first Org heading")))
+  (point))
+
+;;;###autoload
+(defun org-at-heading-p (&optional _ignored)
+  "Return non-nil when point is on an Org heading line.
+The optional argument is accepted for compatibility and ignored by this
+lightweight subset."
+  (org-outline--heading-at-point-p))
+
+;;;###autoload
+(defun org-back-to-heading (&optional _invisible-ok)
+  "Move to the heading that owns point and return point.
+`_INVISIBLE-OK' is accepted for compatibility and currently ignored."
+  (interactive)
+  (org-outline--goto-current-heading))
+
+(defun org-outline--remove-leading-todo-keyword (text)
+  "Return TEXT without a leading configured TODO keyword when available."
+  (if (and (fboundp 'org-todo--all-keywords)
+           (string-match "\\`\\([^ \t]+\\)\\(?:[ \t]+\\|\\'\\)" text)
+           (member (match-string 1 text) (org-todo--all-keywords)))
+      (replace-regexp-in-string
+       "\\`[ \t]+" ""
+       (substring text (match-end 0)))
+    text))
+
+(defun org-outline--remove-leading-priority (text)
+  "Return TEXT without a leading Org priority cookie."
+  (if (string-match "\\`[ \t]*\\[#.\\][ \t]*" text)
+      (substring text (match-end 0))
+    text))
+
+;;;###autoload
+(defun org-get-heading (&optional no-tags no-todo no-priority no-comment)
+  "Return the current Org heading text.
+NO-TAGS removes trailing tags.  NO-TODO removes a configured leading TODO
+keyword when the TODO module is loaded.  NO-PRIORITY removes a leading
+priority cookie.  NO-COMMENT removes a leading COMMENT marker."
+  (let* ((info (org-outline--split-heading-tags))
+         (text (if no-tags
+                   (plist-get info :body)
+                 (buffer-substring-no-properties
+                  (plist-get info :body-start)
+                  (plist-get info :line-end)))))
+    (when no-todo
+      (setq text (org-outline--remove-leading-todo-keyword text)))
+    (when no-priority
+      (setq text (org-outline--remove-leading-priority text)))
+    (when (and no-comment
+               (string-match "\\`COMMENT\\(?:[ \t]+\\|\\'\\)" text))
+      (setq text (replace-regexp-in-string
+                  "\\`[ \t]+" ""
+                  (substring text (match-end 0)))))
+    (replace-regexp-in-string "[ \t]*\\'" "" text)))
+
+(defun org-outline--normalize-property-name (property)
+  "Return canonical Org PROPERTY name without surrounding colons."
+  (let* ((name (format "%s" property))
+         (start 0)
+         (end (length name)))
+    (while (and (< start end) (= (aref name start) ?:))
+      (setq start (1+ start)))
+    (while (and (< start end) (= (aref name (1- end)) ?:))
+      (setq end (1- end)))
+    (upcase (substring name start end))))
+
+(defun org-outline--property-drawer-range (&optional create)
+  "Return plist for the current heading's property drawer.
+When CREATE is non-nil, insert a drawer immediately after the heading if
+none exists.  The plist contains `:start', `:content-start',
+`:end-line-start', and `:end'."
+  (let* ((bounds (org-outline--subtree-bounds))
+         (heading-start (plist-get bounds :heading-start))
+         (heading-end (plist-get bounds :heading-end))
+         (subtree-end (copy-marker (plist-get bounds :subtree-end)))
+         (found nil)
+         (stopped nil))
+    (save-excursion
+      (goto-char heading-end)
+      (while (and (not found) (not stopped) (< (point) subtree-end))
+        (cond
+         ((org-outline--heading-at-point-p)
+          (setq stopped t))
+         ((string-match-p "\\`[ \t]*\\'" (org-outline--line-string))
+          (forward-line 1))
+         ((string-match-p "\\`[ \t]*:PROPERTIES:[ \t]*\\'"
+                          (org-outline--line-string))
+          (let ((drawer-start (line-beginning-position)))
+            (forward-line 1)
+            (let ((content-start (point))
+                  (end-line-start nil)
+                  (drawer-end nil))
+              (while (and (not drawer-end) (< (point) subtree-end))
+                (cond
+                 ((string-match-p "\\`[ \t]*:END:[ \t]*\\'"
+                                  (org-outline--line-string))
+                  (setq end-line-start (line-beginning-position))
+                  (setq drawer-end (org-outline--line-end-with-newline)))
+                 ((org-outline--heading-at-point-p)
+                  (user-error "Malformed Org property drawer"))
+                 (t
+                  (forward-line 1))))
+              (unless drawer-end
+                (user-error "Malformed Org property drawer"))
+              (setq found (list :start drawer-start
+                                :content-start content-start
+                                :end-line-start end-line-start
+                                :end drawer-end)))))
+         (t
+          (setq stopped t)))))
+    (when (and (not found) create)
+      (goto-char heading-end)
+      (insert ":PROPERTIES:\n:END:\n")
+      (goto-char heading-start)
+      (setq found (org-outline--property-drawer-range nil)))
+    (set-marker subtree-end nil)
+    found))
+
+(defun org-outline--property-entry-range (drawer property)
+  "Return plist for PROPERTY inside DRAWER, or nil."
+  (let ((name (org-outline--normalize-property-name property))
+        (found nil))
+    (save-excursion
+      (goto-char (plist-get drawer :content-start))
+      (while (and (not found)
+                  (< (point) (plist-get drawer :end-line-start)))
+        (let ((line (org-outline--line-string)))
+          (when (string-match "\\`[ \t]*:\\([^:\n]+\\):[ \t]*\\(.*\\)\\'" line)
+            (when (string= (org-outline--normalize-property-name
+                            (match-string 1 line))
+                           name)
+              (setq found (list :start (line-beginning-position)
+                                :end (org-outline--line-end-with-newline)
+                                :value (match-string 2 line))))))
+        (unless found
+          (forward-line 1))))
+    found))
+
+(defun org-outline--property-drawer-empty-p (drawer)
+  "Return non-nil when DRAWER contains no property lines."
+  (let ((empty t))
+    (save-excursion
+      (goto-char (plist-get drawer :content-start))
+      (while (and empty (< (point) (plist-get drawer :end-line-start)))
+        (unless (string-match-p "\\`[ \t]*\\'" (org-outline--line-string))
+          (setq empty nil))
+        (forward-line 1)))
+    empty))
+
+(defun org-outline--with-property-heading (pom fn)
+  "Call FN at POM's owning heading.
+POM may be nil, a marker, or a buffer position."
+  (save-excursion
+    (when pom
+      (cond
+       ((markerp pom) (goto-char pom))
+       ((integerp pom) (goto-char pom))
+       (t (user-error "Unsupported Org property location"))))
+    (org-outline--goto-current-heading)
+    (funcall fn)))
+
+(defun org-outline--link-at-point ()
+  "Return Org bracket link plist at point, or nil.
+The plist contains `:start', `:end', `:target', and `:description'."
+  (let ((pos (point))
+        (limit (line-beginning-position))
+        (found nil))
+    (save-excursion
+      (while (and (not found)
+                  (search-backward "[[" limit t))
+        (let ((start (point)))
+          (when (search-forward "]]" (line-end-position) t)
+            (let ((end (point)))
+              (when (and (<= start pos) (<= pos end))
+                (let* ((inner (buffer-substring-no-properties (+ start 2)
+                                                              (- end 2)))
+                       (split (string-match "\\]\\[" inner))
+                       (target (if split
+                                   (substring inner 0 split)
+                                 inner))
+                       (description (and split
+                                         (substring inner (+ split 2)))))
+                  (setq found (list :start start
+                                    :end end
+                                    :target target
+                                    :description description)))))))))
+    found))
+
+(defun org-outline--link-open-plan (target)
+  "Return a lightweight open plan plist for link TARGET."
+  (cond
+   ((string-match "\\`\\([[:alpha:]][[:alnum:]+.-]*\\):\\(.*\\)\\'" target)
+    (let ((scheme (downcase (match-string 1 target)))
+          (body (match-string 2 target)))
+      (cond
+       ((member scheme '("http" "https" "mailto"))
+        (list :type 'url :target target))
+       ((string= scheme "file")
+        (list :type 'file :target body))
+       ((string= scheme "id")
+        (list :type 'id :target body))
+       (t
+        (list :type 'unknown :scheme scheme :target target)))))
+   (t
+    (list :type 'file :target target))))
+
+(defun org-outline--open-link-target (target)
+  "Open TARGET when an appropriate host function exists, else return a plan."
+  (let ((plan (org-outline--link-open-plan target)))
+    (pcase (plist-get plan :type)
+      ('url
+       (if (fboundp 'browse-url)
+           (browse-url target)
+         plan))
+      ('file
+       (if (fboundp 'find-file)
+           (find-file (plist-get plan :target))
+         plan))
+      ('id
+       (cond
+        ((fboundp 'org-id-open)
+         (org-id-open (plist-get plan :target) nil))
+        ((fboundp 'org-roam-id-open)
+         (org-roam-id-open (plist-get plan :target)))
+        (t
+         plan)))
+      (_ plan))))
+
+(defun org-outline--line-number-at-pos (&optional pos)
+  "Return the 1-based line number for POS, or point when POS is nil."
+  (save-excursion
+    (when pos
+      (goto-char pos))
+    (1+ (count-lines (point-min) (line-beginning-position)))))
+
+(defun org-outline--store-link-description ()
+  "Return a best-effort description for `org-store-link'."
+  (or (ignore-errors
+        (save-excursion
+          (org-outline--goto-current-heading)
+          (org-get-heading t t t)))
+      (buffer-name)))
+
+(defun org-outline--store-link-target ()
+  "Return a best-effort link target for `org-store-link'."
+  (let ((existing (org-outline--link-at-point)))
+    (if existing
+        (plist-get existing :target)
+      (let ((file (buffer-file-name)))
+        (if (and (stringp file) (> (length file) 0))
+            (format "file:%s::%d"
+                    (expand-file-name file)
+                    (org-outline--line-number-at-pos))
+          (format "buffer:%s::%d"
+                  (buffer-name)
+                  (org-outline--line-number-at-pos)))))))
+
+(defun org-outline--next-sibling-bounds (bounds)
+  "Return the next same-level sibling subtree after BOUNDS, or nil."
+  (let ((level (plist-get bounds :level))
+        (next-start (plist-get bounds :subtree-end)))
+    (save-excursion
+      (goto-char next-start)
+      (when (and (< (point) (point-max))
+                 (org-outline--heading-at-point-p)
+                 (= (org-outline--heading-level-at-point) level))
+        (org-outline--subtree-bounds)))))
+
+(defun org-outline--previous-sibling-bounds (bounds)
+  "Return the previous same-level sibling subtree before BOUNDS, or nil."
+  (let ((level (plist-get bounds :level))
+        (start (plist-get bounds :heading-start))
+        (found nil)
+        (blocked nil))
+    (save-excursion
+      (goto-char start)
+      (while (and (not found)
+                  (not blocked)
+                  (org-outline--previous-heading))
+        (let ((other-level (org-outline--heading-level-at-point)))
+          (cond
+           ((= other-level level)
+            (let ((candidate (org-outline--subtree-bounds)))
+              (when (= (plist-get candidate :subtree-end) start)
+                (setq found candidate))))
+           ((< other-level level)
+            (setq blocked t))))))
+    found))
+
+(defun org-outline--swap-adjacent-subtrees (first second follow-second)
+  "Swap adjacent FIRST and SECOND subtrees.
+When FOLLOW-SECOND is non-nil, leave point at the moved SECOND subtree.
+Otherwise leave point at the moved FIRST subtree."
+  (let* ((first-start (plist-get first :heading-start))
+         (first-end (plist-get first :subtree-end))
+         (second-start (plist-get second :heading-start))
+         (second-end (plist-get second :subtree-end))
+         (first-text (buffer-substring first-start first-end))
+         (second-text (buffer-substring second-start second-end)))
+    (unless (= first-end second-start)
+      (user-error "Org subtrees are not adjacent"))
+    (delete-region first-start second-end)
+    (goto-char first-start)
+    (insert second-text first-text)
+    (goto-char (if follow-second
+                   first-start
+                 (+ first-start (length second-text))))
+    (org-outline--move-to-heading-text)
+    (point)))
+
+(defun org-outline--relevel-current-subtree (delta)
+  "Change every heading in the current subtree by DELTA levels.
+Positive DELTA demotes; negative DELTA promotes.  The caller is
+responsible for checking that promotion does not move the root above
+level 1."
+  (let* ((bounds (org-outline--subtree-bounds))
+         (start (plist-get bounds :heading-start))
+         (end (copy-marker (plist-get bounds :subtree-end)))
+         (step (abs delta)))
+    (save-excursion
+      (goto-char start)
+      (while (< (point) end)
+        (when (org-outline--heading-at-point-p)
+          (beginning-of-line)
+          (if (> delta 0)
+              (insert (make-string step ?*))
+            (delete-char step)))
+        (forward-line 1)))
+    (set-marker end nil)
+    (goto-char start)
+    (org-outline--move-to-heading-text)
+    (point)))
+
 ;;;; Public commands
 
 ;;;###autoload
@@ -449,6 +1229,471 @@ The cycle is:
      (setq org-outline--global-cycle-state 'contents))))
 
 ;;;###autoload
+(defun org-narrow-to-subtree ()
+  "Narrow the current buffer to the Org subtree at point."
+  (interactive)
+  (let (start end)
+    (save-excursion
+      (org-outline--goto-current-heading)
+      (let ((bounds (org-outline--subtree-bounds)))
+        (setq start (plist-get bounds :heading-start))
+        (setq end (plist-get bounds :subtree-end))))
+    (if (and (fboundp 'nelisp-ec-narrow-to-region)
+             (fboundp 'nelisp-ec-buffer-p)
+             (ignore-errors (nelisp-ec-buffer-p (current-buffer))))
+        (nelisp-ec-narrow-to-region start end)
+      (narrow-to-region start end))
+    (point)))
+
+;;;###autoload
+(defun org-next-visible-heading (&optional arg)
+  "Move to the next visible heading.
+With numeric ARG, move forward ARG visible headings.  Negative ARG moves
+backward.  Folded-away headings are skipped."
+  (interactive "p")
+  (let ((count (or arg 1)))
+    (unless (or (= count 0)
+                (org-outline--move-visible-heading count))
+      (user-error "No next visible heading")))
+  (point))
+
+;;;###autoload
+(defun outline-next-visible-heading (&optional arg)
+  "Move to the next visible heading.
+This compatibility alias delegates to `org-next-visible-heading'."
+  (interactive "p")
+  (org-next-visible-heading arg))
+
+;;;###autoload
+(defun org-previous-visible-heading (&optional arg)
+  "Move to the previous visible heading.
+With numeric ARG, move backward ARG visible headings.  Negative ARG moves
+forward.  Folded-away headings are skipped."
+  (interactive "p")
+  (let ((count (- (or arg 1))))
+    (unless (or (= count 0)
+                (org-outline--move-visible-heading count))
+      (user-error "No previous visible heading")))
+  (point))
+
+;;;###autoload
+(defun org-forward-heading-same-level (&optional arg)
+  "Move to the next visible heading at the same level.
+With numeric ARG, move ARG same-level headings.  Negative ARG moves
+backward."
+  (interactive "p")
+  (let ((count (or arg 1)))
+    (unless (or (= count 0)
+                (org-outline--goto-heading-same-level count))
+      (user-error "No same-level heading")))
+  (point))
+
+;;;###autoload
+(defun org-backward-heading-same-level (&optional arg)
+  "Move to the previous visible heading at the same level.
+With numeric ARG, move ARG same-level headings backward.  Negative ARG
+moves forward."
+  (interactive "p")
+  (let ((count (- (or arg 1))))
+    (unless (or (= count 0)
+                (org-outline--goto-heading-same-level count))
+      (user-error "No same-level heading")))
+  (point))
+
+;;;###autoload
+(defun outline-up-heading (&optional arg _invisible-ok)
+  "Move to the visible parent heading.
+With numeric ARG, move up ARG parent headings.  `_INVISIBLE-OK' is accepted
+for compatibility and currently ignored because folded headings stay
+hidden in this subset."
+  (interactive "p")
+  (let ((remaining (or arg 1)))
+    (when (< remaining 0)
+      (user-error "Negative parent heading movement is not supported"))
+    (while (> remaining 0)
+      (unless (org-outline--goto-parent-heading)
+        (user-error "No parent heading"))
+      (setq remaining (1- remaining))))
+  (point))
+
+;;;###autoload
+(defun org-entry-get (pom property &optional _inherit literal-nil)
+  "Return PROPERTY value for the Org entry at POM.
+POM may be nil, a marker, or a buffer position.  Inheritance is not
+implemented in this lightweight subset.  When LITERAL-NIL is nil, a stored
+value of \"nil\" is returned as nil for compatibility."
+  (org-outline--with-property-heading
+   pom
+   (lambda ()
+     (let* ((drawer (org-outline--property-drawer-range nil))
+            (entry (and drawer
+                        (org-outline--property-entry-range drawer property)))
+            (value (plist-get entry :value)))
+       (if (and value (not literal-nil) (string= value "nil"))
+           nil
+         value)))))
+
+;;;###autoload
+(defun org-entry-put (pom property value)
+  "Set PROPERTY to VALUE for the Org entry at POM.
+POM may be nil, a marker, or a buffer position.  Return VALUE as a string."
+  (let ((text (format "%s" (or value "")))
+        (name (org-outline--normalize-property-name property)))
+    (org-outline--with-property-heading
+     pom
+     (lambda ()
+       (let* ((drawer (org-outline--property-drawer-range t))
+              (entry (org-outline--property-entry-range drawer name))
+              (line (format ":%s: %s\n" name text)))
+         (if entry
+             (progn
+               (delete-region (plist-get entry :start)
+                              (plist-get entry :end))
+               (goto-char (plist-get entry :start))
+               (insert line))
+           (goto-char (plist-get drawer :end-line-start))
+           (insert line)))))
+    text))
+
+;;;###autoload
+(defun org-entry-delete (pom property)
+  "Delete PROPERTY from the Org entry at POM.
+POM may be nil, a marker, or a buffer position.  Return nil."
+  (org-outline--with-property-heading
+   pom
+   (lambda ()
+     (let* ((drawer (org-outline--property-drawer-range nil))
+            (entry (and drawer
+                        (org-outline--property-entry-range drawer property))))
+       (when entry
+         (delete-region (plist-get entry :start)
+                        (plist-get entry :end))
+         (let ((updated-drawer (org-outline--property-drawer-range nil)))
+           (when (and updated-drawer
+                      (org-outline--property-drawer-empty-p updated-drawer))
+             (delete-region (plist-get updated-drawer :start)
+                            (plist-get updated-drawer :end))))))))
+  nil)
+
+;;;###autoload
+(defun org-set-property (property value)
+  "Interactively set Org PROPERTY to VALUE on the current entry."
+  (interactive
+   (list (read-string "Property: ")
+         (read-string "Value: ")))
+  (org-entry-put nil property value))
+
+;;;###autoload
+(defun org-set-effort (&optional value)
+  "Set the current Org entry's EFFORT property to VALUE.
+When called interactively, prompt for VALUE.  Return the stored effort string."
+  (interactive (list (read-string "Effort: ")))
+  (org-entry-put nil "EFFORT" value))
+
+;;;###autoload
+(defun org-get-tags (&optional _pos _local)
+  "Return tags on the current Org heading.
+POS and LOCAL are accepted for compatibility and currently ignored."
+  (plist-get (org-outline--split-heading-tags) :tags))
+
+;;;###autoload
+(defun org-set-tags-command (&optional tags)
+  "Set trailing Org TAGS on the current heading.
+TAGS may be a list or a string.  A nil interactive value prompts for a
+colon, comma, or whitespace separated tag list."
+  (interactive
+   (list (read-string "Tags: ")))
+  (org-outline--set-heading-tags tags))
+
+;;;###autoload
+(defun org-toggle-archive-tag (&optional _find-done)
+  "Toggle the ARCHIVE tag on the current Org heading.
+FIND-DONE is accepted for compatibility and currently ignored by this
+lightweight subset."
+  (interactive "P")
+  (org-outline--goto-current-heading)
+  (let* ((origin (point-marker))
+         (tags (org-get-tags))
+         (updated (if (member "ARCHIVE" tags)
+                      (remove "ARCHIVE" tags)
+                    (append tags '("ARCHIVE")))))
+    (org-outline--set-heading-tags updated)
+    (goto-char origin)
+    (set-marker origin nil)
+    updated))
+
+(defun org-outline--columns-row ()
+  "Return a lightweight columns row for the current Org heading."
+  (let ((level (or (org-outline--heading-level-at-point) 0))
+        (item (org-get-heading t t t t))
+        (tags (mapconcat #'identity (or (org-get-tags) nil) ":"))
+        (effort (or (org-entry-get nil "EFFORT") "")))
+    (list level item tags effort)))
+
+(defun org-outline--columns-insert-row (row)
+  "Insert ROW into the current columns buffer."
+  (insert (number-to-string (nth 0 row)) "\t"
+          (nth 1 row) "\t"
+          (nth 2 row) "\t"
+          (nth 3 row) "\n"))
+
+(defun org-outline--export-plain-text ()
+  "Return a lightweight plain text export of the current Org buffer."
+  (let ((source (buffer-string)))
+    (with-temp-buffer
+      (insert source)
+      (goto-char (point-min))
+      (while (re-search-forward "^\\(\\*+\\) \\(.*\\)$" nil t)
+        (replace-match "\\2" nil nil))
+      (let ((case-fold-search t))
+        (replace-regexp-in-string
+         "\\(^\\|\n\\)[ \t]*\\(?:#[+]\\)?RESULTS:[ \t]*"
+         "\\1Results:"
+         (buffer-string)
+         t)))))
+
+;;;###autoload
+(defun org-export-dispatch (&optional _arg)
+  "Create a lightweight plain text export buffer for the current Org buffer.
+This subset returns the export buffer.  Interactive calls also display it."
+  (interactive "P")
+  (let ((text (org-outline--export-plain-text))
+        (buffer (get-buffer-create org-export-buffer-name)))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert text)
+      (goto-char (point-min)))
+    (when (called-interactively-p 'interactive)
+      (display-buffer buffer))
+    buffer))
+
+;;;###autoload
+(defun org-columns (&optional _arg)
+  "Create a lightweight Org columns buffer for the current file.
+The generated buffer contains tab-separated Level, Item, Tags, and Effort
+columns and is returned to the caller."
+  (interactive "P")
+  (let ((rows (org-map-entries #'org-outline--columns-row nil 'file))
+        (buffer (get-buffer-create org-columns-buffer-name)))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert "Level\tItem\tTags\tEffort\n")
+      (dolist (row rows)
+        (org-outline--columns-insert-row row))
+      (goto-char (point-min)))
+    (when (called-interactively-p 'interactive)
+      (display-buffer buffer))
+    buffer))
+
+;;;###autoload
+(defun org-map-entries (func &optional match scope &rest _skip)
+  "Call FUNC at each headline selected by MATCH in SCOPE.
+This lightweight subset supports nil, `file', `tree', and active `region'
+scopes.  MATCH may be nil/t, a simple tag expression such as \"+work-next\",
+or a TODO=\"KEYWORD\" clause.  Return the collected values from FUNC."
+  (let ((bounds (org-outline--map-scope-bounds scope))
+        (results nil)
+        org-map-continue-from)
+    (save-excursion
+      (goto-char (car bounds))
+      (beginning-of-line)
+      (while (and (< (point) (cdr bounds))
+                  (re-search-forward org-outline--heading-regexp
+                                     (cdr bounds) t))
+        (beginning-of-line)
+        (when (org-outline--map-match-p match)
+          (push (save-excursion
+                  (cond
+                   ((functionp func)
+                    (funcall func))
+                   (t
+                    (eval func t))))
+                results))
+        (if (and org-map-continue-from
+                 (integer-or-marker-p org-map-continue-from))
+            (goto-char org-map-continue-from)
+          (end-of-line)
+          (forward-char 1))
+        (setq org-map-continue-from nil)))
+    (nreverse results)))
+
+;;;###autoload
+(defun org-clock-in (&optional _select start-time)
+  "Start a lightweight Org clock on the current heading.
+SELECT is accepted for compatibility and ignored.  START-TIME may be an
+Emacs time value; nil uses `current-time'."
+  (interactive "P")
+  (org-outline--require-heading)
+  (when org-clock-marker
+    (org-clock-out nil t start-time))
+  (let* ((start (org-outline--clock-time start-time))
+         (heading (org-get-heading t t t))
+         (heading-start (line-beginning-position))
+         (line-start (org-outline--clock-insert-line start)))
+    (setq org-clock-marker (copy-marker heading-start))
+    (setq org-clock-start-line-marker (copy-marker line-start))
+    (setq org-clock-start-time start)
+    (message "Clock starts at %s - %s"
+             (format-time-string "%H:%M" start)
+             heading)))
+
+;;;###autoload
+(defun org-clock-out (&optional _switch-to-state fail-quietly at-time)
+  "Stop the currently running lightweight Org clock.
+FAIL-QUIETLY suppresses the user error when no clock is active.  AT-TIME
+may be an Emacs time value; nil uses `current-time'."
+  (interactive "P")
+  (if (not org-clock-marker)
+      (unless fail-quietly
+        (user-error "No active Org clock"))
+    (let* ((end (org-outline--clock-time at-time))
+           (duration (org-outline--clock-duration-string
+                      org-clock-start-time end))
+           (heading (save-excursion
+                      (goto-char org-clock-marker)
+                      (org-get-heading t t t))))
+      (save-excursion
+        (goto-char org-clock-start-line-marker)
+        (end-of-line)
+        (insert "--" (org-outline--clock-timestamp end)
+                " => " duration))
+      (setq org-clock-marker nil)
+      (setq org-clock-start-line-marker nil)
+      (setq org-clock-start-time nil)
+      (message "Clock stopped after %s - %s" duration heading))))
+
+;;;###autoload
+(defun org-clock-get-clock-string ()
+  "Return the lightweight mode-line string for the active Org clock."
+  (if (not org-clock-marker)
+      ""
+    (let* ((now (current-time))
+           (duration (org-outline--clock-duration-string
+                      org-clock-start-time now))
+           (heading (save-excursion
+                      (goto-char org-clock-marker)
+                      (org-get-heading t t t))))
+      (format "Clocking: %s (%s)" heading duration))))
+
+;;;###autoload
+(defun org-refile (&optional _arg _default-buffer rfloc msg)
+  "Move the current subtree under a target heading.
+This lightweight subset supports RFLOC as an Org-style
+(NAME FILE NIL POSITION) list or as a heading name string in the current
+buffer.  ARG, DEFAULT-BUFFER, and cross-file targets are accepted for API
+compatibility but ignored."
+  (interactive "P")
+  (let* ((source-bounds (org-outline--subtree-bounds))
+         (source-start (plist-get source-bounds :heading-start))
+         (source-end (plist-get source-bounds :subtree-end))
+         (source-level (plist-get source-bounds :level))
+         (source-heading (org-get-heading t t t))
+         (target-position (org-outline--refile-target-position rfloc))
+         (target-marker (copy-marker target-position))
+         (text (buffer-substring-no-properties source-start source-end))
+         target-level
+         insert-start
+         delta
+         verb)
+    (when (and (>= (marker-position target-marker) source-start)
+               (< (marker-position target-marker) source-end))
+      (user-error "Cannot refile a subtree under itself"))
+    (save-excursion
+      (goto-char target-marker)
+      (setq target-level (org-outline--require-heading)))
+    (setq delta (- (1+ target-level) source-level))
+    (delete-region source-start source-end)
+    (goto-char (org-outline--refile-insertion-point target-marker))
+    (unless (or (bobp)
+                (eq (char-before) ?\n))
+      (insert "\n"))
+    (setq insert-start (point))
+    (insert text)
+    (unless (or (= (length text) 0)
+                (eq (aref text (1- (length text))) ?\n))
+      (insert "\n"))
+    (goto-char insert-start)
+    (when (/= delta 0)
+      (org-outline--relevel-current-subtree delta))
+    (goto-char insert-start)
+    (setq verb (or msg "Refiled"))
+    (message "%s subtree: %s" verb source-heading)))
+
+;;;###autoload
+(defun org-archive-subtree (&optional _find-done)
+  "Move the current subtree under the lightweight archive heading.
+The archive destination is the top-level heading named by
+`org-archive-heading' in the current buffer.  FIND-DONE is accepted for
+compatibility and currently ignored."
+  (interactive "P")
+  (let* ((bounds (org-outline--subtree-bounds))
+         (level (plist-get bounds :level))
+         (heading (org-get-heading t t t))
+         (start (plist-get bounds :heading-start))
+         (end (plist-get bounds :subtree-end))
+         (text (buffer-substring-no-properties start end))
+         insert-start)
+    (when (and (= level 1)
+               (equal heading org-archive-heading))
+      (user-error "Cannot archive the archive heading"))
+    (delete-region start end)
+    (goto-char (org-outline--archive-insertion-point))
+    (unless (or (bobp)
+                (eq (char-before) ?\n))
+      (insert "\n"))
+    (setq insert-start (point))
+    (insert text)
+    (unless (or (= (length text) 0)
+                (eq (aref text (1- (length text))) ?\n))
+      (insert "\n"))
+    (goto-char insert-start)
+    (message "Archived subtree: %s" heading)))
+
+;;;###autoload
+(defun org-insert-link (target &optional description)
+  "Insert an Org bracket link to TARGET.
+When DESCRIPTION is non-empty, insert `[[TARGET][DESCRIPTION]]';
+otherwise insert `[[TARGET]]'."
+  (interactive
+   (list (read-string "Link: ")
+         (let ((value (read-string "Description: ")))
+           (and (> (length value) 0) value))))
+  (let ((text (if (and description (> (length description) 0))
+                  (format "[[%s][%s]]" target description)
+                (format "[[%s]]" target))))
+    (insert text)
+    text))
+
+;;;###autoload
+(defun org-store-link (&optional _arg interactive?)
+  "Store a lightweight link to the current location.
+When INTERACTIVE? is non-nil, add (LINK DESCRIPTION) to
+`org-stored-links'.  When INTERACTIVE? is nil, return the link string
+without storing it."
+  (interactive (list current-prefix-arg t))
+  (let* ((existing (org-outline--link-at-point))
+         (link (org-outline--store-link-target))
+         (description (or (plist-get existing :description)
+                          (org-outline--store-link-description))))
+    (when interactive?
+      (push (list link description) org-stored-links)
+      (message "Stored: %s" link))
+    link))
+
+;;;###autoload
+(defun org-open-at-point (&optional _arg)
+  "Open the Org bracket link at point.
+This lightweight subset recognizes `[[target]]' and
+`[[target][description]]'.  It delegates to `browse-url', `find-file',
+`org-id-open', or `org-roam-id-open' when available.  When no opener is
+available, return a plist describing the open plan."
+  (interactive "P")
+  (let ((link (org-outline--link-at-point)))
+    (unless link
+      (user-error "No Org link at point"))
+    (org-outline--open-link-target (plist-get link :target))))
+
+;;;###autoload
 (defun org-insert-heading ()
   "Insert a new heading at the current heading's level.
 The new heading is inserted immediately after the current heading line."
@@ -480,6 +1725,223 @@ Signals `user-error' when called on a top-level heading."
     (save-excursion
       (org-outline--replace-heading-stars (1+ level)))
     (org-outline--move-to-heading-text)))
+
+;;;###autoload
+(defun org-promote-subtree (&optional arg)
+  "Promote every heading in the current subtree by ARG levels.
+ARG defaults to 1.  Signals `user-error' if the subtree root would move
+above level 1."
+  (interactive "p")
+  (let* ((count (or arg 1))
+         (level (org-outline--require-heading)))
+    (cond
+     ((< count 0)
+      (org-demote-subtree (- count)))
+     ((= count 0)
+      (point))
+     ((<= level count)
+      (user-error "Cannot promote subtree above level 1"))
+     (t
+      (org-outline--relevel-current-subtree (- count))))))
+
+;;;###autoload
+(defun org-demote-subtree (&optional arg)
+  "Demote every heading in the current subtree by ARG levels.
+ARG defaults to 1.  Negative ARG promotes the subtree."
+  (interactive "p")
+  (let ((count (or arg 1)))
+    (cond
+     ((< count 0)
+      (org-promote-subtree (- count)))
+     ((= count 0)
+      (point))
+     (t
+      (org-outline--relevel-current-subtree count)))))
+
+;;;###autoload
+(defun org-sort (&optional with-case sorting-type getkey-func compare-func
+                           _property _interactive?)
+  "Sort direct child subtrees below the current Org heading.
+This lightweight subset supports alphabetical `?a' and `?A' plus numeric
+`?n' and `?N' sorting.  GETKEY-FUNC and COMPARE-FUNC are accepted for
+compatibility; GETKEY-FUNC is called at each child heading, and COMPARE-FUNC
+compares the computed keys."
+  (interactive (list nil ?a nil nil nil t))
+  (let* ((type (or sorting-type ?a))
+         (parent (progn
+                   (org-outline--goto-current-heading)
+                   (point-marker)))
+         (children
+          (mapcar
+           (lambda (child)
+             (org-outline--sort-child-plist
+              child with-case type getkey-func))
+           (org-outline--collect-direct-children
+            (org-outline--subtree-bounds)))))
+    (when (> (length children) 1)
+      (let ((start (plist-get (car children) :heading-start))
+            (end (plist-get (car (last children)) :subtree-end))
+            (sorted
+             (sort (copy-sequence children)
+                   (lambda (left right)
+                     (org-outline--sort-child-less-p
+                      left right type compare-func)))))
+        (delete-region start end)
+        (goto-char start)
+        (dolist (child sorted)
+          (insert (plist-get child :text)))))
+    (goto-char parent)
+    (set-marker parent nil)
+    (point)))
+
+;;;###autoload
+(defun org-move-subtree-down (&optional arg)
+  "Move the current subtree down past ARG same-level sibling subtrees.
+ARG defaults to 1.  Children and body text move with the subtree."
+  (interactive "p")
+  (let ((remaining (or arg 1)))
+    (if (< remaining 0)
+        (org-move-subtree-up (- remaining))
+      (while (> remaining 0)
+        (let* ((bounds (org-outline--subtree-bounds))
+               (next (org-outline--next-sibling-bounds bounds)))
+          (unless next
+            (user-error "Cannot move subtree down"))
+          (org-outline--swap-adjacent-subtrees bounds next nil))
+        (setq remaining (1- remaining)))))
+  (point))
+
+;;;###autoload
+(defun org-move-subtree-up (&optional arg)
+  "Move the current subtree up past ARG same-level sibling subtrees.
+ARG defaults to 1.  Children and body text move with the subtree."
+  (interactive "p")
+  (let ((remaining (or arg 1)))
+    (if (< remaining 0)
+        (org-move-subtree-down (- remaining))
+      (while (> remaining 0)
+        (let* ((bounds (org-outline--subtree-bounds))
+               (previous (org-outline--previous-sibling-bounds bounds)))
+          (unless previous
+            (user-error "Cannot move subtree up"))
+          (org-outline--swap-adjacent-subtrees previous bounds t))
+        (setq remaining (1- remaining)))))
+  (point))
+
+;;;###autoload
+(defun org-metaup (&optional arg)
+  "Move the current Org subtree up.
+This lightweight compatibility command delegates to
+`org-move-subtree-up'."
+  (interactive "p")
+  (org-move-subtree-up arg))
+
+;;;###autoload
+(defun org-metadown (&optional arg)
+  "Move the current Org subtree down.
+This lightweight compatibility command delegates to
+`org-move-subtree-down'."
+  (interactive "p")
+  (org-move-subtree-down arg))
+
+(defun org-outline--babel-src-bounds ()
+  "Return plist describing the Org source block at point."
+  (save-excursion
+    (let ((origin (point))
+          begin-start begin-end language body-start body-end end-start end-end)
+      (beginning-of-line)
+      (unless (looking-at "^[ \t]*#\\+begin_src[ \t]+\\([^ \t\n]+\\)")
+        (while (and (not begin-start)
+                    (re-search-backward
+                     "^[ \t]*#\\+begin_src[ \t]+\\([^ \t\n]+\\)"
+                     nil t))
+          (let ((candidate-start (line-beginning-position))
+                (candidate-end (line-end-position))
+                (candidate-language (match-string 1)))
+            (when (and (>= origin candidate-start)
+                       (save-excursion
+                         (forward-line 1)
+                         (re-search-forward "^[ \t]*#\\+end_src[ \t]*$"
+                                            nil t)
+                         (>= (line-end-position) origin)))
+              (setq begin-start candidate-start
+                    begin-end candidate-end
+                    language candidate-language)))))
+      (when (and (not begin-start)
+                 (looking-at "^[ \t]*#\\+begin_src[ \t]+\\([^ \t\n]+\\)"))
+        (setq begin-start (line-beginning-position)
+              begin-end (line-end-position)
+              language (match-string 1)))
+      (unless begin-start
+        (user-error "No source block at point"))
+      (goto-char begin-start)
+      (forward-line 1)
+      (setq body-start (point))
+      (unless (re-search-forward "^[ \t]*#\\+end_src[ \t]*$" nil t)
+        (user-error "Source block has no #+end_src"))
+      (setq end-start (line-beginning-position)
+            end-end (line-end-position)
+            body-end end-start)
+      (list :begin-start begin-start
+            :begin-end begin-end
+            :language (downcase language)
+            :body-start body-start
+            :body-end body-end
+            :end-start end-start
+            :end-end end-end))))
+
+(defun org-outline--babel-elisp-result (body)
+  "Evaluate BODY as Emacs Lisp and return the last form's value."
+  (let ((pos 0)
+        form result)
+    (while (and (< pos (length body))
+                (string-match-p "[^[:space:]]" (substring body pos)))
+      (setq form (read-from-string body pos)
+            pos (cdr form)
+            result (eval (car form) t)))
+    result))
+
+(defun org-outline--babel-result-string (result)
+  "Return a stable Org Babel result string for RESULT."
+  (cond
+   ((stringp result) result)
+   ((null result) "")
+   (t (format "%S" result))))
+
+(defun org-outline--babel-insert-result (bounds result)
+  "Insert RESULT after source block BOUNDS."
+  (let ((text (org-outline--babel-result-string result)))
+    (save-excursion
+      (goto-char (plist-get bounds :end-end))
+      (unless (eolp)
+        (end-of-line))
+      (forward-line 1)
+      (insert "#+RESULTS:\n")
+      (insert ": " text "\n"))))
+
+;;;###autoload
+(defun org-babel-execute-src-block (&optional _arg info _params)
+  "Execute the Org source block at point.
+This lightweight subset supports `emacs-lisp', `elisp', `shell', and `sh'.
+INFO and PARAMS are accepted for compatibility and currently ignored."
+  (interactive "P")
+  (let* ((bounds (org-outline--babel-src-bounds))
+         (language (or (car-safe info)
+                       (plist-get bounds :language)))
+         (body (buffer-substring-no-properties
+                (plist-get bounds :body-start)
+                (plist-get bounds :body-end)))
+         (result
+          (cond
+           ((member language '("emacs-lisp" "elisp"))
+            (org-outline--babel-elisp-result body))
+           ((member language '("shell" "sh"))
+            (replace-regexp-in-string
+             "[\n\r]+\\'" "" (org-babel-eval body "")))
+           (t
+            (user-error "Unsupported source block language: %s" language)))))
+    (org-outline--babel-insert-result bounds result)
+    result))
 
 ;;;; Auto-mode registration
 
@@ -1211,6 +2673,80 @@ CONTENTS, matching the non-mutating fallback shape."
 
 (unless (featurep 'ob-eval)
   (provide 'ob-eval))
+
+;;;; --- void-function polyfills surfaced by the org runtime probes ------
+;; These were void on the standalone image; real org navigation/parse
+;; callers reach for them.  Built on the existing `org-outline--' helpers.
+
+(unless (fboundp 'outline-next-heading)
+  (defun outline-next-heading ()
+    "Move to the next heading line; return point, or nil if none."
+    (org-outline--next-heading)))
+
+(unless (fboundp 'org-get-todo-state)
+  (defun org-get-todo-state ()
+    "Return the TODO keyword of the heading at point, or nil."
+    (save-excursion
+      (when (ignore-errors (org-back-to-heading t) t)
+        (let ((text (org-outline--line-string)))
+          (when (string-match org-outline--heading-regexp text)
+            (let ((rest (substring text (match-end 0))))
+              (when (string-match "\\`\\([A-Z][0-9A-Z_-]*\\)\\(?:[ \t]\\|\\'\\)" rest)
+                (let ((kw (match-string 1 rest)))
+                  (if (fboundp 'org-todo--all-keywords)
+                      (and (member kw (org-todo--all-keywords)) kw)
+                    (and (member kw '("TODO" "DONE" "NEXT" "WAIT" "HOLD"
+                                      "DOING" "CANCELLED"))
+                         kw)))))))))))
+
+(unless (fboundp 'org-end-of-subtree)
+  (defun org-end-of-subtree (&optional _invisible-ok _to-heading)
+    "Move to the end of the subtree at point; return point."
+    (org-back-to-heading t)
+    (let ((end (plist-get (org-outline--subtree-bounds) :subtree-end)))
+      (goto-char end)
+      ;; `:subtree-end' is exclusive (next heading bol or point-max); step back
+      ;; over the boundary newline so point sits on the subtree's own text.
+      (when (and (not (eobp)) (bolp) (> (point) (point-min)))
+        (backward-char 1))
+      (point))))
+
+(unless (fboundp 'org-metaright)
+  (defun org-metaright (&optional _arg)
+    "Demote the heading at point by one level (lightweight subset)."
+    (interactive)
+    (if (org-at-heading-p)
+        (org-outline--replace-heading-stars
+         (1+ (org-outline--heading-level-at-point)))
+      (insert "  "))))
+
+(unless (fboundp 'org-element-type)
+  (defun org-element-type (node &optional _anonymous)
+    "Return the type symbol of org element NODE (`plain-text' for strings)."
+    (cond
+     ((stringp node) 'plain-text)
+     ((null node) nil)
+     ((and (consp node) (symbolp (car node))) (car node))
+     (t nil))))
+
+(unless (fboundp 'org-element-at-point)
+  (defun org-element-at-point (&optional _pom _cached-only)
+    "Return a lightweight org element node for the line at point.
+A heading line yields a `headline' node, any other line a `paragraph'."
+    (save-excursion
+      (beginning-of-line)
+      (if (org-at-heading-p)
+          (org-element-create
+           'headline
+           (list :level (org-outline--heading-level-at-point)
+                 :begin (line-beginning-position)
+                 :end (nth 1 (org-outline--heading-line-range))
+                 :raw-value (org-get-heading t t t)
+                 :todo-keyword (org-get-todo-state)))
+        (org-element-create
+         'paragraph
+         (list :begin (line-beginning-position)
+               :end (org-outline--line-end-with-newline)))))))
 
 (provide 'emacs-org-outline)
 
