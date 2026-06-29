@@ -626,16 +626,28 @@ Signal `nelisp-rx-syntax-error' on malformed input."
            (eq c ?_))))
 
 (defun nelisp-rx--syntax-match-p (designator char)
-  "Return non-nil if CHAR has the syntax class named by DESIGNATOR.
+  "Return non-nil if CHAR has the syntax class named by DESIGNATOR (\\sC).
 DESIGNATOR is the char following `\\s' / `\\S' (e.g. ?- whitespace, ?w
-word, ?_ symbol, ?. punctuation).  Uses the current buffer's syntax
-table via `char-syntax'.  The whitespace class accepts both the `-' and
-space designators, matching Emacs."
+word, ?_ symbol, ?. punctuation).
+
+This is an ASCII approximation of the standard syntax table.  We do NOT
+call `char-syntax' here: invoking it inside the matcher loop corrupts the
+standalone runtime so a *subsequent* `nelisp-rx-string-match' on an
+unrelated regex hard-aborts (exit 88).  The whitespace class is the one
+org-element actually depends on (`\\S-' = non-whitespace, e.g. in
+`org-property-drawer-re'); the others are best-effort."
   (and char
-       (let ((s (char-syntax char)))
-         (if (memq designator '(?- 32))
-             (memq s '(?- 32))
-           (eq s designator)))))
+       (cond
+        ((memq designator '(?- 32))       ; whitespace
+         (memq char '(?\s ?\t ?\n ?\r ?\f ?\v)))
+        ((eq designator ?w)               ; word constituent
+         (nelisp-rx--word-char-p char))
+        ((eq designator ?_)               ; symbol constituent (ASCII-ish)
+         (or (nelisp-rx--word-char-p char)
+             (memq char '(?- ?+ ?* ?/ ?% ?$ ?& ?< ?> ?= ?~ ?^ ?! ?\?))))
+        ((eq designator ?.)               ; punctuation
+         (memq char '(?. ?, ?\; ?: ?! ?\? ?# ?@ ?| ?\\)))
+        (t nil))))
 
 (defun nelisp-rx--class-match-p (positive ranges char)
   "Return non-nil if CHAR matches a [..]/[^..] class."
