@@ -29,6 +29,16 @@
 
 ;;; Code:
 
+(defconst emacs-stub--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the stub facade and its sibling features.")
+
+(defun emacs-stub--load-feature (feature)
+  "Load FEATURE from the stub facade directory."
+  (load (expand-file-name (concat (symbol-name feature) ".el")
+                          emacs-stub--load-directory)
+        nil t))
+
 ;;;; --- keymap.c -----------------------------------------------------------
 
 (unless (fboundp 'make-keymap)
@@ -1020,7 +1030,7 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
 ;; require the bulk file is an orphan and `macroexp-warn-and-return' /
 ;; other vendored-Emacs prerequisites stay void at standalone load
 ;; time, breaking `(require 'json)' / cl-lib / friends.
-(require 'emacs-stub-bulk)
+(emacs-stub--load-feature 'emacs-stub-bulk)
 
 ;;;; --- load-time machinery + misc (vendor-coverage 2026-06-06 batch) -------
 ;; Surfaced by bin/vendor-coverage as truly-missing top-level / load-time
@@ -1348,6 +1358,15 @@ degrades to 1 (no pow primitive in the standalone reader)."
     "Runtime `define-inline': define NAME as a plain function (no inlining).
 The inline DSL in BODY is lowered against the runtime backquote."
     (emacs-stub--define-inline name args body)))
+
+;; Pre-provide `inline' so a later `(require 'inline)' is inert.  On the
+;; standalone, `inline.el' is not on the load-path, so `require' silent-succeeds
+;; (sets featurep) AND leaves the runtime `define-inline' above a no-op -- every
+;; subsequent `define-inline' form then fails (observed: org-element-ast.el,
+;; which does `(require 'inline)' before defining many inline accessors, crashed
+;; the whole load).  Providing the feature here keeps the working macro.
+(when (fboundp 'rdf)
+  (provide 'inline))
 
 ;;;; --- Doc 16 breadth: foundational subr builtins (were void) ---------
 ;; `xor' (subr.el), `ntake' (Emacs 30 fns.c) and `char-uppercase-p'
