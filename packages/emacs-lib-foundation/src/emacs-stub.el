@@ -1333,16 +1333,32 @@ degrades to 1 (no pow primitive in the standalone reader)."
    (t (mapcar #'emacs-stub--inline-uncomma form))))
 
 (defun emacs-stub--inline-lower (form)
-  "Lower one inline DSL FORM (`inline-quote' / `inline-letevals') to code."
+  "Lower one inline DSL FORM to runtime code (function / funcall path).
+Handles `inline-quote', `inline-letevals', `inline-const-p',
+`inline-const-val' and `inline-error', and recurses through ordinary
+sub-forms so DSL operators nested inside `if' / `cond' / `let' (as used
+by org-element's accessors) are lowered too -- the previous default
+left them intact, yielding `void-function inline-const-val' at runtime."
   (cond
    ((not (consp form)) form)
    ((eq (car form) 'inline-quote) (emacs-stub--inline-uncomma (cadr form)))
    ((eq (car form) 'inline-letevals)
+    ;; vars are already-evaluated args -> drop the binding spec, keep body
+    ;; (cf. inline--dont-leteval for the symbol case = macroexp-progn body).
     (let ((body (cddr form)))
       (if (cdr body)
           (cons 'progn (mapcar #'emacs-stub--inline-lower body))
         (emacs-stub--inline-lower (car body)))))
-   (t form)))
+   ;; funcall path: `inline-const-p' is always true and `inline-const-val'
+   ;; is the value itself (cf. inline--alwaysconst-p / inline--alwaysconst-val
+   ;; in inline.el): in the function version the args already hold values.
+   ((eq (car form) 'inline-const-p) t)
+   ((eq (car form) 'inline-const-val) (emacs-stub--inline-lower (cadr form)))
+   ((eq (car form) 'inline-error)
+    (cons 'error (mapcar #'emacs-stub--inline-lower (cdr form))))
+   ;; never descend into quoted data
+   ((eq (car form) 'quote) form)
+   (t (mapcar #'emacs-stub--inline-lower form))))
 
 (defun emacs-stub--define-inline (name args body)
   "Build the `defun' form for a runtime `define-inline' (function version)."
@@ -1367,6 +1383,17 @@ The inline DSL in BODY is lowered against the runtime backquote."
 ;; the whole load).  Providing the feature here keeps the working macro.
 (when (fboundp 'rdf)
   (provide 'inline))
+
+;; `buffer-base-buffer' (C primitive, buffer.c) returns the base buffer of an
+;; indirect buffer, or nil for a normal buffer.  It is only registered under
+;; the `emacs-buffer-buffer-base-buffer' name (nelisp-emacs.el) and never
+;; aliased to the standard name, so it is void at runtime -- org-element-at-point
+;; and other callers then fail with `void-function buffer-base-buffer'.  The
+;; standalone has no indirect buffers, so nil is always the correct answer.
+(unless (fboundp 'buffer-base-buffer)
+  (defun buffer-base-buffer (&optional _buffer)
+    "Return the base buffer of an indirect buffer (always nil here)."
+    nil))
 
 ;;;; --- Doc 16 breadth: foundational subr builtins (were void) ---------
 ;; `xor' (subr.el), `ntake' (Emacs 30 fns.c) and `char-uppercase-p'

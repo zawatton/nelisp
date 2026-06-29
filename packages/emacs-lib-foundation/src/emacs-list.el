@@ -78,6 +78,18 @@ N defaults to 1.  Linear walk."
           (setq keep (- keep 1)))
         (nreverse acc)))))
 
+(unless (fboundp 'nbutlast)
+  (defun nbutlast (list &optional n)
+    "Modify LIST to remove the last N elements (default 1); return it.
+Destructive counterpart of `butlast' (cf. subr.el).  Used by
+org-element-ast's node-property handling (`nbutlast props 2')."
+    (let ((m (length list)))
+      (or n (setq n 1))
+      (and (< n m)
+           (progn
+             (when (> n 0) (setcdr (nthcdr (- (1- m) n) list) nil))
+             list)))))
+
 
 ;;;; --- positional access --------------------------------------------------
 
