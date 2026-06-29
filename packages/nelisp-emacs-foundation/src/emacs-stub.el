@@ -577,23 +577,36 @@ nadvice, etc.; the runtime previously left it void."
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n) (ignore n) nil))
 
+;; These are degenerate placeholders (no-op / fixed position).  The REAL
+;; line-navigation primitives live in `emacs-line-builtins', which only
+;; overrides a binding it finds carrying the `emacs-stub-bulk' marker (see
+;; `emacs-line-builtins--install-function-p').  Mark each stub so the real
+;; implementation wins; without the marker the no-op stub shadowed it, e.g.
+;; `forward-line' never advanced and `line-end-position' returned point-min,
+;; corrupting `org-element-headline-parser' bounds into an infinite recursion.
 (unless (fboundp 'forward-line)
-  (defun forward-line (&optional n) (ignore n) 0))
+  (defun forward-line (&optional n) (ignore n) 0)
+  (put 'forward-line 'emacs-stub-bulk t))
 
 (unless (fboundp 'beginning-of-line)
-  (defun beginning-of-line (&optional n) (ignore n) nil))
+  (defun beginning-of-line (&optional n) (ignore n) nil)
+  (put 'beginning-of-line 'emacs-stub-bulk t))
 
 (unless (fboundp 'end-of-line)
-  (defun end-of-line (&optional n) (ignore n) nil))
+  (defun end-of-line (&optional n) (ignore n) nil)
+  (put 'end-of-line 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-beginning-position)
-  (defun line-beginning-position (&optional n) (ignore n) 1))
+  (defun line-beginning-position (&optional n) (ignore n) 1)
+  (put 'line-beginning-position 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-end-position)
-  (defun line-end-position (&optional n) (ignore n) 1))
+  (defun line-end-position (&optional n) (ignore n) 1)
+  (put 'line-end-position 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-number-at-pos)
-  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1))
+  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1)
+  (put 'line-number-at-pos 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-number-display-width)
   (defun line-number-display-width (&optional pixelwise)
@@ -616,17 +629,23 @@ when no real redisplay window is available."
 (unless (boundp 'display-line-numbers-current-absolute)
   (defvar display-line-numbers-current-absolute t))
 
+;; Degenerate placeholders (always-at-boundary); real versions in
+;; `emacs-line-builtins' override these via the `emacs-stub-bulk' marker.
 (unless (fboundp 'eobp)
-  (defun eobp () t))
+  (defun eobp () t)
+  (put 'eobp 'emacs-stub-bulk t))
 
 (unless (fboundp 'bobp)
-  (defun bobp () t))
+  (defun bobp () t)
+  (put 'bobp 'emacs-stub-bulk t))
 
 (unless (fboundp 'eolp)
-  (defun eolp () t))
+  (defun eolp () t)
+  (put 'eolp 'emacs-stub-bulk t))
 
 (unless (fboundp 'bolp)
-  (defun bolp () t))
+  (defun bolp () t)
+  (put 'bolp 'emacs-stub-bulk t))
 
 ;; Buffer text manipulation
 (unless (fboundp 'insert)
