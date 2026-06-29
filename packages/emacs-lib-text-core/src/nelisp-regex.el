@@ -43,8 +43,10 @@
 ;;   (:wb)                     \b word boundary
 ;;   (:nwb)                    \B not a word boundary
 ;;   (:class POS-P RANGES)     [..] / [^..]; POS-P=t for positive class
-;;                              RANGES = list of (lo . hi) inclusive ranges
-;;                              and `:word' / `:nword' tags (\w / \W shorthand)
+;;                              RANGES = list of (lo . hi) inclusive ranges,
+;;                              `:word' / `:nword' tags (\w / \W shorthand),
+;;                              and `(:syntax . C)' tags (\sC / \SC syntax
+;;                              classes; C is the class designator char)
 ;;   (:concat NODES...)        concatenation
 ;;   (:alt   N1 N2)            N1 \| N2
 ;;   (:star  N)                N*       (:star-lazy N)  N*?  (non-greedy)
@@ -209,6 +211,22 @@ yielding `quantifier without operand'."
       (nelisp-rx--make-class t (list :word)))
      ((eq c ?W) (nelisp-rx--advance)
       (nelisp-rx--make-class t (list :nword)))
+     ;; `\sC' / `\SC' -- syntax classes.  C is the class designator char
+     ;; (e.g. `-' or space = whitespace, `w' = word, `_' = symbol, `.' =
+     ;; punctuation); matched against the current buffer's syntax table via
+     ;; `char-syntax'.  org-element regexps use these pervasively, e.g.
+     ;; `:\\S-+:' in `org-property-drawer-re'.  Without this, `\\S' fell
+     ;; through to the literal branch (matched the letter "S").
+     ((eq c ?s) (nelisp-rx--advance)
+      (let ((cls (nelisp-rx--peek)))
+        (unless cls (signal 'nelisp-rx-syntax-error '("trailing \\s")))
+        (nelisp-rx--advance)
+        (nelisp-rx--make-class t (list (cons :syntax cls)))))
+     ((eq c ?S) (nelisp-rx--advance)
+      (let ((cls (nelisp-rx--peek)))
+        (unless cls (signal 'nelisp-rx-syntax-error '("trailing \\S")))
+        (nelisp-rx--advance)
+        (nelisp-rx--make-class nil (list (cons :syntax cls)))))
      ;; `\\1' .. `\\9' -- backref deferred (Phase 9c).  Reject early so users
      ;; do not silently fall through.
      ((and (>= c ?1) (<= c ?9))
@@ -607,6 +625,18 @@ Signal `nelisp-rx-syntax-error' on malformed input."
            (and (>= c ?0) (<= c ?9))
            (eq c ?_))))
 
+(defun nelisp-rx--syntax-match-p (designator char)
+  "Return non-nil if CHAR has the syntax class named by DESIGNATOR.
+DESIGNATOR is the char following `\\s' / `\\S' (e.g. ?- whitespace, ?w
+word, ?_ symbol, ?. punctuation).  Uses the current buffer's syntax
+table via `char-syntax'.  The whitespace class accepts both the `-' and
+space designators, matching Emacs."
+  (and char
+       (let ((s (char-syntax char)))
+         (if (memq designator '(?- 32))
+             (memq s '(?- 32))
+           (eq s designator)))))
+
 (defun nelisp-rx--class-match-p (positive ranges char)
   "Return non-nil if CHAR matches a [..]/[^..] class."
   (let ((hit nil))
@@ -615,6 +645,10 @@ Signal `nelisp-rx-syntax-error' on malformed input."
        ((eq r :word)  (when (nelisp-rx--word-char-p char) (setq hit t)))
        ((eq r :nword) (when (and char (not (nelisp-rx--word-char-p char)))
                         (setq hit t)))
+       ;; (:syntax . C) -- checked before the generic (lo . hi) range so the
+       ;; `(>= char (car r))' comparison never sees the `:syntax' symbol.
+       ((and (consp r) (eq (car r) :syntax))
+        (when (nelisp-rx--syntax-match-p (cdr r) char) (setq hit t)))
        ((and (consp r)
              char
              (>= char (car r))
