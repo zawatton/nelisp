@@ -247,21 +247,32 @@ been globally marked via `make-variable-buffer-local'."
 ;;;###autoload
 (defun emacs-buffer-default-value (sym)
   "Return the default value of SYM.
-Signals `void-variable' if SYM has no default value."
+Signals `void-variable' if SYM has no default value.
+
+When no explicit default has been recorded via `set-default' /
+`setq-default', fall back to the ordinary global binding: for a variable
+that was never made buffer-local, `default-value' is just its global
+value (faithful Emacs semantics).  Without this, a plain `defvar' /
+`defcustom' variable (e.g. `org-todo-keywords') signalled `void-variable'
+from `default-value', breaking `org-set-regexps-and-options'."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
   (let ((cell (gethash sym emacs-buffer--default-values)))
     (cond
      ((and cell (car cell)) (cdr cell))
+     ((boundp sym) (symbol-value sym))
      (t (signal 'void-variable (list sym))))))
 
 ;;;###autoload
 (defun emacs-buffer-default-boundp (sym)
-  "Return t if SYM has a default value bound."
+  "Return t if SYM has a default value bound.
+A variable that was never made buffer-local but has an ordinary global
+binding counts as having a default (faithful Emacs semantics)."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
   (let ((cell (gethash sym emacs-buffer--default-values)))
-    (and cell (car cell) t)))
+    (or (and cell (car cell) t)
+        (boundp sym))))
 
 ;;;###autoload
 (defun emacs-buffer-set-default (sym value)
