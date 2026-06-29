@@ -421,14 +421,21 @@ where SLOT is 1 or 2 indicating which transition slot is dangling."
            (nelisp-rx--mkfrag :start s
                               :outs (list (cons s 1) (cons s 2)))))
         (t
-         (let ((first (nelisp-rx--build (car children))))
+         ;; Track the dangling OUTS in a local rather than mutating the frag
+         ;; struct with `setf': the baked runtime image does not carry the
+         ;; `setf' expander for `nelisp-rx--frag-outs', so the old
+         ;; `(setf (nelisp-rx--frag-outs first) ...)' was a silent no-op --
+         ;; leaving FIRST's outs pointing at the first child, which the final
+         ;; `nelisp-rx--build-nfa' patch then redirected straight to :match,
+         ;; so every concatenation matched only its first element.
+         (let* ((first (nelisp-rx--build (car children)))
+                (start (nelisp-rx--frag-start first))
+                (outs  (nelisp-rx--frag-outs first)))
            (dolist (rest (cdr children))
              (let ((next (nelisp-rx--build rest)))
-               (nelisp-rx--patch (nelisp-rx--frag-outs first)
-                                 (nelisp-rx--frag-start next))
-               (setf (nelisp-rx--frag-outs first)
-                     (nelisp-rx--frag-outs next))))
-           first)))))
+               (nelisp-rx--patch outs (nelisp-rx--frag-start next))
+               (setq outs (nelisp-rx--frag-outs next))))
+           (nelisp-rx--mkfrag :start start :outs outs))))))
     (:alt
      (let* ((a (nelisp-rx--build (nth 1 ast)))
             (b (nelisp-rx--build (nth 2 ast)))
