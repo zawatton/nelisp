@@ -946,25 +946,24 @@ non-nil, is the lower position bound (1-based)."
                 (list "Search failed" string))))))
 
 ;;;###autoload
-(defun nelisp-ec-looking-at-p (string)
-  "Return non-nil if text at POINT begins with literal STRING.
-STRING is interpreted *literally* (= as a fixed substring), not as a
-regular expression."
-  (unless (stringp string)
-    (signal 'wrong-type-argument (list 'stringp string)))
+(defun nelisp-ec-looking-at-p (regexp)
+  "Return t if REGEXP matches text starting exactly at POINT.
+Like `looking-at' (REGEXP is a regular expression, not a literal
+string) but, per Emacs `looking-at-p' semantics, do NOT modify the
+match data.
+
+The previous implementation compared a fixed substring with
+`string-equal', so any real regexp (e.g. \"^\\\\*+ \") never matched --
+that made `org-element--current-element' fail to recognize headlines
+and emit a zero-width section, recursing forever (exit 88)."
+  (unless (stringp regexp)
+    (signal 'wrong-type-argument (list 'stringp regexp)))
   (let* ((buf (nelisp-ec--ensure-current))
-         (point (nelisp-ec-buffer-point buf))
-         (slen (length string))
-         (hi (nelisp-ec-point-max)))
-    (cond
-     ((zerop slen) t)
-     ((> (+ point slen) hi) nil)
-     (t
-      (let ((substr (text-buffer-substring (nelisp-ec--text buf)
-                                           (1- point)
-                                           (+ (1- point) slen))))
-        (when (string-equal substr string)
-          (nelisp-ec--set-simple-match-data point (+ point slen))))))))
+         (region (nelisp-ec--search-region buf))
+         (text (nth 1 region))
+         (point-index (nth 2 region))
+         (match (nelisp-rx-string-match regexp text point-index)))
+    (and match (= (plist-get match :start) point-index) t)))
 
 ;;;###autoload
 (defun nelisp-ec-re-search-forward (regexp &optional bound noerror)
