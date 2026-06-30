@@ -819,15 +819,34 @@ from N below M' isn't a NeLisp built-in)."
           (setq i (1+ i)))))
     (list :start anchor :end end :groups (nreverse lst))))
 
+(defvar nelisp-rx--compile-cache (make-hash-table :test 'equal)
+  "Cache mapping a regex STRING to its compiled `nelisp-rx-pattern'.
+Compiling re-parses the regex and allocates a fresh NFA every time.
+org-element matches the same handful of regexps thousands of times, and
+`org-element-parse-buffer' runs with GC effectively disabled
+(`gc-cons-threshold' raised to ~1GB), so per-call NFA allocation would
+otherwise accumulate without bound and exhaust the runtime (exit 88).
+Caching keeps total allocation proportional to the number of DISTINCT
+regexps, not the number of matches.")
+
+(defun nelisp-rx--compile-cached (pattern)
+  "Return a compiled pattern for PATTERN.
+If PATTERN is already a `nelisp-rx-pattern' object, return it as-is.
+If it is a string, return the cached compile (compiling + caching on
+first use).  See `nelisp-rx--compile-cache'."
+  (if (nelisp-rx-pattern-p pattern)
+      pattern
+    (or (gethash pattern nelisp-rx--compile-cache)
+        (puthash pattern (nelisp-rx-compile pattern)
+                 nelisp-rx--compile-cache))))
+
 ;;;###autoload
 (defun nelisp-rx-string-match (pattern string &optional start)
   "Search STRING for PATTERN starting at START (default 0).
 Return a match-data plist with keys :start :end :groups, or nil if
-no match.  PATTERN can be a string (compiled on the fly) or a
+no match.  PATTERN can be a string (compiled + cached on the fly) or a
 pre-compiled `nelisp-rx-pattern' object."
-  (let* ((pat (if (nelisp-rx-pattern-p pattern)
-                  pattern
-                (nelisp-rx-compile pattern)))
+  (let* ((pat (nelisp-rx--compile-cached pattern))
          (s   (or start 0))
          (hit (nelisp-rx--scan pat string s)))
     (and hit
@@ -837,9 +856,7 @@ pre-compiled `nelisp-rx-pattern' object."
 (defun nelisp-rx-string-match-all (pattern string &optional start)
   "Find every non-overlapping match of PATTERN in STRING from START.
 Return a list of match-data plists in left-to-right order."
-  (let* ((pat (if (nelisp-rx-pattern-p pattern)
-                  pattern
-                (nelisp-rx-compile pattern)))
+  (let* ((pat (nelisp-rx--compile-cached pattern))
          (s   (or start 0))
          (acc nil))
     (while
