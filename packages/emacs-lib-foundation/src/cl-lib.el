@@ -225,6 +225,23 @@ For unrecognised places, signals an error at expansion time."
                (cond
                 ((eq fn 'car)     (list 'setcar (car args) value))
                 ((eq fn 'cdr)     (list 'setcdr (car args) value))
+                ;; Two-level c[ad][ad]r accessors.  Without these, a place
+                ;; like `(cddr X)' fell through to the symbol fallback, which
+                ;; emitted a call to a VOID `cddr--setter' and aborted.
+                ;; `org-element-set-contents' uses `(setf (cddr node) ...)',
+                ;; so this was the structural blocker that made
+                ;; `org-element-parse-buffer' return nil.
+                ((eq fn 'caar) (list 'setcar (list 'car (car args)) value))
+                ((eq fn 'cadr) (list 'setcar (list 'cdr (car args)) value))
+                ((eq fn 'cdar) (list 'setcdr (list 'car (car args)) value))
+                ((eq fn 'cddr) (list 'setcdr (list 'cdr (car args)) value))
+                ;; (setf (nthcdr N L) V) -> setcdr of the (N-1)th cdr.
+                ;; Assumes N >= 1 (the common case; N = 0 would replace the
+                ;; whole list, which is not an in-place mutation).
+                ((eq fn 'nthcdr)
+                 (list 'setcdr
+                       (list 'nthcdr (list '1- (car args)) (cadr args))
+                       value))
                 ((eq fn 'aref)    (list 'aset (car args) (cadr args) value))
                 ((eq fn 'elt)
                  ;; (setf (elt SEQ N) V): `elt' works on lists and arrays, so
