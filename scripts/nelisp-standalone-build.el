@@ -7315,7 +7315,11 @@ extern arms in dynamic builds."
           (seq
            (nl_ct_copy32 268435480 tag_slot 0 0)
            (nl_ct_copy32 268435512 val_slot 0 0)
-           (ptr-write-u64 268435472 0 1)
+           ;; Flag value 2 = `throw' (vs 1 = signal/error).  Lets
+           ;; `condition-case' trap ONLY signals (flag==1) and `catch' ONLY
+           ;; throws (flag==2), so a `throw' no longer matches an `error'/`t'
+           ;; condition-case handler.  (Mirror of dev/nelisp 779a3255.)
+           (ptr-write-u64 268435472 0 2)
            (atomic-fetch-add 268435544 1)
            1)
         1))
@@ -7358,7 +7362,9 @@ extern arms in dynamic builds."
             (ptr-read-u64 eqres_slot 0))
        tag_slot env out 0 0))
     (defun nl_ct_catch_caught (_rc tag_slot env out eqres_slot _p5)
-      (if (= (ptr-read-u64 268435472 0) 1)
+      ;; Flag value 2 = `throw' (1 = signal/error).  `catch' only intercepts
+      ;; throws; a signal (flag==1) re-propagates to its `condition-case'.
+      (if (= (ptr-read-u64 268435472 0) 2)
           (nl_ct_catch_check_tag tag_slot env out eqres_slot 0 0)
         1))
     (defun nl_ct_catch_body_step (rc body_rest tag_slot env out eqres_slot)
