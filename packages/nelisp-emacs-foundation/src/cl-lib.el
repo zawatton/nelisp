@@ -242,6 +242,22 @@ For unrecognised places, signals an error at expansion time."
                  (list 'setcdr
                        (list 'nthcdr (list '1- (car args)) (cadr args))
                        value))
+                ;; Three-level c[ad][ad][ad]r: first letter picks setcar/setcdr,
+                ;; the remaining two letters name the inner accessor (cXXr).
+                ((eq fn 'caaar) (list 'setcar (list 'caar (car args)) value))
+                ((eq fn 'caadr) (list 'setcar (list 'cadr (car args)) value))
+                ((eq fn 'cadar) (list 'setcar (list 'cdar (car args)) value))
+                ((eq fn 'caddr) (list 'setcar (list 'cddr (car args)) value))
+                ((eq fn 'cdaar) (list 'setcdr (list 'caar (car args)) value))
+                ((eq fn 'cdadr) (list 'setcdr (list 'cadr (car args)) value))
+                ((eq fn 'cddar) (list 'setcdr (list 'cdar (car args)) value))
+                ((eq fn 'cdddr) (list 'setcdr (list 'cddr (car args)) value))
+                ;; (setf (cl-getf PLACE KEY [DEFAULT]) V) -> reassign PLACE to
+                ;; the plist with KEY set (recurses through `setf' so PLACE may
+                ;; itself be a generalized place).  org-element uses this ~10x.
+                ((eq fn 'cl-getf)
+                 (list 'setf (car args)
+                       (list 'plist-put (car args) (cadr args) value)))
                 ((eq fn 'aref)    (list 'aset (car args) (cadr args) value))
                 ((eq fn 'elt)
                  ;; (setf (elt SEQ N) V): `elt' works on lists and arrays, so
