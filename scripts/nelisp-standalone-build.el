@@ -13212,6 +13212,61 @@ the original return value is preserved (the bump's own value is discarded by
              form))
          (cdr src))))
 
+;; LEXFRAME DEPTH CAP — `max-lisp-eval-depth' analogue (2026-07-04).
+;;
+;; REGRESSION FIX (git bisect -> be928ab8 "defalias/defmacro/cl-defun in the
+;; native evaluator"): making `defmacro' (and later, native `when'/`unless')
+;; work means the nemacs bootstrap replay executes its guarded
+;; emacs-keymap-builtins block, which installs a genuinely CYCLIC alias
+;; (`key-parse' -> `emacs-keymap-key-parse' whose body is `(key-parse keys)'
+;; -- an input-side latent bug in nelisp-emacs-lib).  The first keymap call
+;; then recurses without bound: ~150k lexframes deep, a multi-hundred-MB
+;; allocation spike, repeated backing-vector doubling, a form-boundary GC in
+;; the middle of that spike, and finally a corrupted frames-record depth Int
+;; whose next frame push computed a ~2^50-byte `vector-make' ->
+;; `nl_os_alloc_fail' -> exit 88 (the runtime panic the bisect caught).
+;;
+;; Emacs handles pathological recursion with `max-lisp-eval-depth' (default
+;; 10000 in Emacs 29): exceeding it signals an error instead of consuming
+;; unbounded memory.  This injector retrofits the same idea at the ONE clean
+;; failure point: `nl_push_and_bind' (the lambda-apply frame push).  Its
+;; non-zero rc contract is "error, nothing pushed" and `nl_ali_bind_done'
+;; unwinds it as an ordinary form error, which the REPL (report_errors=0)
+;; tolerates exactly like any other form error.  `let'/`while' pushes are not
+;; capped -- runaway recursion always goes through function application,
+;; while let-nesting depth is bounded by the (already length-capped) source.
+;;
+;; The cap value 1000 matches the classic Emacs default (`max-lisp-eval-depth'
+;; was 800 for decades).  It is deliberately tight: the form-boundary GC has
+;; known root gaps (FINDINGS.md), and empirically the bootstrap replay
+;; survives its collections when the runaway spike is bounded at 1000 frames
+;; (backing vector <= 1024 slots) but still corrupts the frames-record depth
+;; Int at caps >= 2000 (2026-07-04 measurements: cap 1000 -> exit 0 with one
+;; GC; caps 2000/4000/8000/20000 -> exit 88 after the post-spike GC).  Raise
+;; this only after the GC root gaps are closed.
+(defun nelisp-standalone--inject-frame-depth-cap (src defun-name cap)
+  "Return SRC (a `(seq (defun ...) ...)') with DEFUN-NAME's body wrapped in a
+lexframe DEPTH guard: if the current frames-record depth (slot 1 of the
+frames record at env+32) exceeds CAP, return rc 1 (= error, nothing pushed)
+without evaluating the original body.  DEFUN-NAME's arglist must contain
+`env' (the raw environment base pointer)."
+  (cons (car src)
+        (mapcar
+         (lambda (form)
+           (if (and (consp form) (eq (car form) 'defun)
+                    (eq (cadr form) defun-name))
+               (let ((name (cadr form))
+                     (arglist (caddr form))
+                     (body (cdddr form)))
+                 `(defun ,name ,arglist
+                    (if (> (sexp-int-unwrap
+                            (record-slot-ref-ptr (+ env 32) 1))
+                           ,cap)
+                        1
+                      ,@(if (cdr body) `((seq ,@body)) body))))
+             form))
+         (cdr src))))
+
 (defun nelisp-standalone--reader-extra-unit-epoch (entry defun-names)
   "Like `nelisp-standalone--reader-extra-unit' but inject an epoch bump into each
 of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
@@ -13341,6 +13396,22 @@ genuine general interpreter for the 11 special forms + installed builtins."
                              ("sf-env-set-value2.o"
                               (nelisp-standalone--reader-extra-unit-epoch
                                entry '(nelisp_env_set_value)))
+                             ;; REGRESSION FIX (2026-07-04, bisect -> be928ab8):
+                             ;; lexframe depth cap on the lambda-apply push (=
+                             ;; `max-lisp-eval-depth' analogue).  See the
+                             ;; `nelisp-standalone--inject-frame-depth-cap'
+                             ;; commentary for the full nemacs-bootstrap
+                             ;; runaway-recursion root cause.
+                             ("env-leaves-frame.o"
+                              (progn
+                                (require 'nelisp-cc-evalport-env-leaves-frame)
+                                (nelisp-standalone--cached-unit
+                                 "env-leaves-frame-depthcap.o"
+                                 (nelisp-standalone--inject-frame-depth-cap
+                                  (symbol-value 'nelisp-cc-evalport-env-leaves-frame--source)
+                                  'nl_push_and_bind 1000)
+                                 (list nelisp-standalone--this-file
+                                       (locate-library "nelisp-cc-evalport-env-leaves-frame")))))
                              (_ (nelisp-standalone--reader-extra-unit entry))))
                          nelisp-standalone--reader-real-sf-manifest)))
          ;; WAVE-2 PATCH 4: sf-condition-case with nl_sf_cc_after_match rewritten
