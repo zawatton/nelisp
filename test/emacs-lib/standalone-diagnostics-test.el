@@ -725,21 +725,35 @@
                          "(nelisp--eval-source-string \"[^\"]*\n"
                          input))
             (should (string-match-p
-                     (regexp-quote
-                      "(setq vendor-repl-proof-error nil)")
+                     "^(setq vendor-repl-proof-value nil)$"
                      input))
             (should (string-match-p
-                     (regexp-quote
-                      "(setq vendor-repl-proof-value")
+                     "^(setq vendor-repl-proof-evaluated nil)$"
+                     input))
+            ;; The proof assignment and its ok/fail marker write must each be
+            ;; exactly one physical line: this reader's --repl loop evaluates
+            ;; one physical line at a time with no continuation, so a
+            ;; multi-line form (as `pp-to-string' would produce) is silently
+            ;; shredded into unrelated fragments (NeLisp Doc 156 section 7).
+            (should (string-match-p
+                     (concat "^(setq vendor-repl-proof-value "
+                             "(prog1 (boundp 'replay-proof) "
+                             "(setq vendor-repl-proof-evaluated t)))$")
                      input))
             (should (string-match-p
-                     (regexp-quote
-                      "(condition-case err")
+                     (concat "^(if vendor-repl-proof-value "
+                             "(nl-write-file \"/tmp/vendor-repl-sentinel\" "
+                             "\"VENDOR-REPL-STANDALONE=ok\") "
+                             "(nl-write-file \"/tmp/vendor-repl-sentinel\" "
+                             "(format \"VENDOR-REPL-STANDALONE=fail "
+                             "detail=%s evaluated=%s\" \"replay-proof=nil\" "
+                             "vendor-repl-proof-evaluated)))$")
                      input))
-            (should (string-match-p
-                     (regexp-quote
-                      "(boundp 'replay-proof)")
-                     input))
+            ;; This reader's `condition-case'/`ignore-errors' discards the
+            ;; protected body's return value unconditionally, even on
+            ;; success, so it must not be used to capture the proof value.
+            (should-not (string-match-p "condition-case" input))
+            (should-not (string-match-p "vendor-repl-proof-error" input))
             (should (string-match-p ",quit\n\\'" input))))
       (dolist (file (list bootstrap-repl prelude output))
         (when (file-exists-p file)
@@ -789,6 +803,55 @@
             (should-not (string-match-p
                          (regexp-quote "inline proof used")
                          input))))
+      (dolist (file (list bootstrap-repl proof-file output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-proof-form-file-multi-form-captures-last ()
+  (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
+        (proof-file (make-temp-file "vendor-repl-proof-" nil ".el"))
+        (output (make-temp-file "vendor-repl-input-" nil ".repl"))
+        (root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-repo-root
+        vendor-repl-standalone-bootstrap-repl
+        (vendor-repl-standalone-prelude nil)
+        vendor-repl-standalone-proof-form-file)
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-repo-root root)
+          (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
+          (setq vendor-repl-standalone-proof-form-file proof-file)
+          (make-directory (expand-file-name "vendor" root) t)
+          (with-temp-file bootstrap-repl
+            (insert "(setq bootstrap-repl-loaded t)\n"))
+          (with-temp-file proof-file
+            (insert ";;; helper setup form, then the actual proof form\n")
+            (insert "(defvar vendor-repl-proof-helper 1)\n")
+            (insert "(= (setq vendor-repl-proof-helper\n")
+            (insert "         (1+ vendor-repl-proof-helper))\n")
+            (insert "   2)\n"))
+          (with-temp-file (expand-file-name "vendor/a.el" root)
+            (insert "(defvar vendor-repl-a-loaded t)\n"))
+          (vendor-repl-standalone--write-input
+           (list (expand-file-name "vendor/a.el" root))
+           "/tmp/vendor-repl-sentinel"
+           output)
+          (let ((input (with-temp-buffer
+                         (insert-file-contents output)
+                         (buffer-string))))
+            ;; The setup form runs as its own plain single-line statement...
+            (should (string-match-p
+                     "^(defvar vendor-repl-proof-helper 1)$"
+                     input))
+            ;; ...and only the FINAL form's value is captured as the proof.
+            (should (string-match-p
+                     (concat "^(setq vendor-repl-proof-value "
+                             "(prog1 (= (setq vendor-repl-proof-helper "
+                             "(1\\+ vendor-repl-proof-helper)) 2) "
+                             "(setq vendor-repl-proof-evaluated t)))$")
+                     input))))
       (dolist (file (list bootstrap-repl proof-file output))
         (when (file-exists-p file)
           (delete-file file)))
