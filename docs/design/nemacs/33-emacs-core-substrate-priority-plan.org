@@ -700,7 +700,13 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    - Git process invocation is routed through shared process substrate;
    - transient command maps can be constructed.
 9. Strengthen text property, overlay, marker, and window display behavior
-   against the Magit UI path.
+   against the Magit UI path.  Text-property/section-navigation behavior
+   proved 2026-07-03 against the full Magit UI path (§8 item 210).
+   Overlay-based highlight behavior, markers, and window display proved
+   2026-07-04 through real vendor =magit-section.el=/=magit-base.el= code on
+   a self-contained 7-file chain (no full =magit.el= load or git fixture
+   needed); see §8 item 216.  Remaining depth (window scrolling/recentering
+   under the full Magit status buffer) stays open as a follow-up.
 10. Re-run Dired, text-mode, outline-mode, VC, and Magit focused replays.
 11. Start upstream Org load only after the above remains stable.  DONE
    2026-07-04: the FULL 60-file upstream Org dependency chain now loads in
@@ -708,7 +714,7 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    status=done, exit=0, elapsed 239.4s, proof
    =(and (featurep 'org) (featurep 'org-element) (fboundp 'org-mode)
    (fboundp 'org-element-parse-buffer) (commandp 'org-mode))=); see §8
-   item 215.
+   item 215.  Cold-load: see §8 item 217.
 
 * 5. Verification gates
 
@@ -10969,3 +10975,56 @@ path:
    twice; and the Org gate itself passed 60/60 files.  Do not reopen the
    Org load chain unless a future upstream Org version changes the
    require closure.
+216. Doc 33 §4 item 9 (overlay/marker/window-display depth against the
+   Magit UI path) progressed 2026-07-04: the slice left open at the end of
+   item 210 above (overlay-based highlight behavior, markers, and window
+   display approximations) is now proved through real vendor
+   =magit-section.el=/=magit-base.el= code, without needing the full
+   85-file =magit.el= chain or a synthetic git fixture.  Chain: =compat.el=,
+   =cond-let.el=, =llama.el=, =transient.el=, =with-editor.el=,
+   =magit-section.el=, =magit-base.el= (7 files, the same chain proved at
+   item 208).  Proof: in a fresh buffer under =magit-section-mode=,
+   =(magit-insert-section (test-root) (magit-insert-section (test-child)
+   ...))= builds a real section tree whose leaf section's =start=/=end=
+   slots are genuine markers (=markerp= true, =marker-buffer= is the
+   section buffer); =(magit-section-update-highlight t)= with point inside
+   the leaf section pushes a real overlay onto
+   =magit-section-highlight-overlays= (=overlayp= true, =overlay-buffer= is
+   the section buffer, =font-lock-face= is =magit-section-highlight=,
+   =evaporate= is set); and =(display-buffer (current-buffer))= returns a
+   live window showing that buffer with the section's (marker) start
+   position =pos-visible-in-window-p= true, proving the window-display leg
+   without any display stubbing, consistent with the substrate
+   =display-buffer= path already proved live at item 210.
+   =make diagnose-vendor-repl-replay-fast= (=VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=) finished status=done, exit=0,
+   elapsed 96.79s, against NeLisp reader commit f1ef06e1 — noticeably
+   faster than this same chain's earlier 283.08s (item 208), most likely
+   normalized-form cache reuse rather than a regression risk.  This closes
+   the overlay/marker/window sub-items left open at item 210; the
+   remaining §4 item 9 scope (deeper window-display approximations such as
+   scrolling/recentering under the full Magit status buffer) and item 10's
+   re-run of the Dired/text-mode/outline/VC/Magit focused replay battery
+   stay open as the next ladder steps.
+217. NeLisp standalone reader multi-chunk cold-load is PROVEN at Org
+   scale, 2026-07-04, closing the item 211 handoff above (integrate the
+   multi-chunk streaming-dump into the production
+   =nl_cold_load_arena=/=nl_cold_overwrite_globals= install path and
+   re-attempt a bootstrap-level dump).  Per NeLisp Doc 156, branch
+   =feat/multi-chunk-cold-load= merged to NeLisp =main= as commit c1093278
+   (commits 5eb0fd81 MC-1 dump, 1f486838 MC-2 boot-install, b7fa504a e2e
+   harness).  The 60-file Org vendor chain heap (7 chunks, ~602.5 MiB
+   used) dumps to a ~662-728 MB flat-arena image and cold-boots in a fresh
+   reader process via the new =--cold-load-from PATH= flag (or the
+   =/tmp/nelisp-cold-image.bin= marker).  Median timings over 3 runs
+   (=scripts/cold-image-org-e2e.sh= in dev/nelisp): replay load 9.84s,
+   dump 0.72s, cold boot to first eval 0.85s (11.5x faster than replay;
+   the ~239s vendor-gate wall time from item 215 is host-side
+   normalization and stays unaffected).  Faithfulness: replay-loaded vs
+   cold-booted feature/fboundp columns are IDENTICAL, i.e. cold-load
+   faithfully reproduces whatever the replay produces.  Caveat to record:
+   the e2e script's driver-generated =.repl= does not fully bring up Org
+   features (=(featurep 'org)= is nil in both columns), unlike the
+   make-level gate run at item 215; this is a =.repl=-generation settings
+   difference to reconcile, orthogonal to the cold-load mechanism itself
+   (the make gate was re-verified separately).
