@@ -147,6 +147,28 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
       (while c (setq rev (cons (car c) rev)) (setq c (cdr c)))
       rev)))
 
+(defun emacs-cl-macros--optional-symbol (spec)
+  "Return the argument symbol represented by optional SPEC."
+  (if (consp spec) (car spec) spec))
+
+(defun emacs-cl-macros--optional-default-bindings (optionals)
+  "Return default-value bindings for CL optional argument SPECS.
+This shim keeps the runtime arglist Emacs-compatible by replacing
+`(ARG DEFAULT)' with plain `ARG' and applying DEFAULT in the body when ARG is
+nil.  It is intentionally conservative but enough for vendored Org load-time
+forms such as `(cl-defun org-knuth-hash (number &optional (base 32)) ...)'."
+  (let (bindings)
+    (dolist (spec optionals)
+      (when (and (consp spec)
+                 (symbolp (car spec))
+                 (consp (cdr spec)))
+        (push (list (car spec)
+                    (list 'if (car spec)
+                          (car spec)
+                          (cadr spec)))
+              bindings)))
+    (nreverse bindings)))
+
 ;;;; --- cl-defun ---------------------------------------------------------
 
 (when (or (not (boundp 'emacs-version))
@@ -180,32 +202,42 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
            (positional (car parts))
            (optionals (car (cdr parts)))
            (restsym (car (cdr (cdr parts))))
-           (keys (car (cdr (cdr (cdr parts))))))
+           (keys (car (cdr (cdr (cdr parts)))))
+           (optional-bindings
+            (emacs-cl-macros--optional-default-bindings optionals))
+           (optional-symbols
+            (mapcar #'emacs-cl-macros--optional-symbol optionals)))
       (cond
        ;; No &key — emit plain defun with original layout (preserve &rest).
        ((null keys)
         (let ((out positional))
           (when optionals
             (let ((tail (cons '&optional nil))
-                  (o optionals))
+                  (o optional-symbols))
               (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
               (let ((all out) (t2 tail))
                 (while t2 (setq all (append all (list (car t2)))) (setq t2 (cdr t2)))
                 (setq out all))))
           (when restsym
             (setq out (append out (list '&rest restsym))))
-          (cons 'defun (cons name (cons out body)))))
+          (let ((real-body (if optional-bindings
+                               (list (cons 'let*
+                                           (cons optional-bindings body)))
+                             body)))
+            (cons 'defun (cons name (cons out real-body))))))
        (t
         ;; &key present — synthesize &rest --cl-keys, scan it for kw values.
         (let* ((rest-name (or restsym '--cl-keys))
                (real-arglist positional))
           (when optionals
             (let ((tail (cons '&optional nil))
-                  (o optionals))
+                  (o optional-symbols))
               (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
               (setq real-arglist (append real-arglist tail))))
           (setq real-arglist (append real-arglist (list '&rest rest-name)))
-          (let* ((bindings (emacs-cl-macros--key-bindings keys rest-name))
+          (let* ((bindings (append optional-bindings
+                                   (emacs-cl-macros--key-bindings
+                                    keys rest-name)))
                  (real-body (list (cons 'let* (cons bindings body)))))
             (cons 'defun (cons name (cons real-arglist real-body))))))))))
 

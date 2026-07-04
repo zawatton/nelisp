@@ -5,6 +5,16 @@
 #+DEPENDS_ON: nelisp-emacs Doc 01 (architecture LOCKED-2026-04-25-v2), nelisp-emacs Doc 02 (v0.1 daily-driver SHIPPED-2026-05-16), nelisp Doc 83 (100% pure-elisp self-host roadmap consolidated DRAFT-2026-05-09)
 #+SIBLINGS: nelisp Doc 73 (rust reader/eval purge), nelisp Doc 75 (frozen heap), nelisp Doc 77c (sexp ABI elisp self-host), nelisp Doc 102 (env-rs-elisp-migration), nelisp Doc 104 (frame-stack-migration)
 
+#+STATUS_NOTE: 2026-06-30 — The NeLisp runtime is now PURE ELISP end-to-end,
+#+STATUS_NOTE: including the OS-connection layer (syscall / fork / pipe / write via
+#+STATUS_NOTE: the reader's syscall-direct / extern-call).  There is no Rust in the
+#+STATUS_NOTE: runtime this repo consumes (0 .rs under vendor/nelisp; the binary is a
+#+STATUS_NOTE: fixed seed/loader).  Mentions of a "NeLisp Rust runtime" below describe
+#+STATUS_NOTE: the pre-migration core that *motivated* this migration and are historical
+#+STATUS_NOTE: — do not read them as the current substrate.  A runtime hard-abort (e.g.
+#+STATUS_NOTE: process exit 88) is the pure-elisp runtime's deep-recursion limit, NOT a
+#+STATUS_NOTE: Rust stack overflow.
+
 * §0 motivation
 
 ** 0.1 user directive (2026-05-17)

@@ -901,6 +901,22 @@ mode rerun yet)."
         (nelisp-ec-insert-file-contents f)
         f))))
 
+(when (emacs-fileio-builtins--install-function-p 'copy-file)
+  (defun copy-file (file newname &optional ok-if-already-exists
+                         _keep-time _preserve-uid-gid _preserve-permissions)
+    "Copy FILE to NEWNAME (standalone MVP: byte-content copy).
+Signal an error when NEWNAME already exists unless OK-IF-ALREADY-EXISTS is
+non-nil.  Modification time, uid/gid, and permission preservation are not
+modeled."
+    (when (and (not ok-if-already-exists)
+               (fboundp 'file-exists-p)
+               (file-exists-p newname))
+      (error "File already exists: %s" newname))
+    (with-temp-buffer
+      (insert-file-contents-literally file)
+      (write-region (point-min) (point-max) newname))
+    nil))
+
 (provide 'emacs-fileio-builtins)
 
 ;;; emacs-fileio-builtins.el ends here

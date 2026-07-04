@@ -16,6 +16,45 @@ the authoritative compatibility load path or provide compatibility
 forwarders, because much of the repository, tests, scripts, and external
 habits still expect =src/= paths.
 
+* 0.1 Progress Snapshot for AI Handoff
+
+As of 2026-06-22, library extraction and reuse readiness is approximately
+82% complete by engineering scope and by the latest full
+=make nemacs-library-gate= verification after the release-publication-policy
+changes and generated =*.elc= cleanup.
+
+This percentage is not a release claim.  It is a handoff estimate for Codex,
+Claude Code, and other AI agents continuing the library-first work:
+
+| Area | Progress | Current state |
+|------+----------+---------------|
+| Package split design | 85-90% | 8 reusable packages, 88 file mappings, package metadata, descriptors, guides, API/catalog artifacts, archive/index/install smokes |
+| Boundary cleanup | 80-85% | app/frontend require guard is clean, package/app scaffolds are separated, boundary report is zero rows |
+| Publication and release mechanics | 75-80% | draft archive, checksum, index, release bundle, release bundle smoke, release publication policy, signature policy, strict throwaway-key rehearsal |
+| Public API stabilization | 80-84% | stable API inventory exists; =build/nemacs-library-api-promotion-queue.org= has 1273 classified rows, 0 open review rows, and 125 =promote-ready= replace/query-replace, shell-command, syntax, font-lock, redisplay, and elisp rows |
+| Physical package extraction | 65-70% | generated =packages/= scaffold works as a staged artifact, but =src/= is still the compatibility source of truth |
+
+The main remaining work is:
+
+- reduce the stable API promotion queue by deciding which public-prefixed and
+  compat-global open rows are consumer-facing contracts;
+- keep =make nemacs-library-gate= green after package/release/API promotion
+  changes and remove generated =*.elc= files from =src/=, =scripts/=, and
+  =gui/= after gate runs;
+- move toward a physical =packages/= source-of-truth layout while keeping
+  =src/= compatibility forwarders or an equivalent migration bridge;
+- run the real release path through =docs/release/nemacs-library-release.local.mk=
+  or =NEMACS_LIBRARY_RELEASE_CONFIG= in a controlled environment, replacing
+  the throwaway rehearsal key with real release key material;
+- keep =nelisp-gui= and app/frontends as consumers of reusable packages, not
+  owners of core command, buffer, window, keymap, minibuffer, undo, file, or
+  text semantics.
+
+For AI agents: prefer continuing from the evidence targets listed below
+instead of inventing new readiness criteria.  When a count changes, update
+this document only after checking whether the change is an intended package
+membership/API shift or a boundary regression.
+
 * 1. Evidence
 
 Generated evidence as of 2026-06-22:
@@ -35,10 +74,14 @@ make nemacs-library-package-archive-smoke
 make nemacs-library-package-archive-index
 make nemacs-library-package-index-smoke
 make nemacs-library-package-publication-policy
+make nemacs-library-package-release-key-policy
 make nemacs-library-package-signature-policy
 make nemacs-library-compat-api-policy
 make nemacs-library-package-dependency-publication-policy
 make nemacs-library-package-release-bundle-manifest
+make nemacs-library-package-release-bundle-smoke
+make nemacs-library-package-release-publication-policy
+make nemacs-library-package-release-rehearsal
 make nemacs-library-package-lazy-metadata
 make nemacs-library-package-vendor-release-verify
 make nemacs-library-gate
@@ -50,11 +93,11 @@ Current generated results:
 |----------+----------|
 | =build/nemacs-library-package-descriptors.org= | 8 packages, draft version 0.1.0, no unknown external features |
 | =build/nemacs-library-package-guide.org= | 8 consumer package entries, all loader features documented |
-| =build/nemacs-library-package-layout.org= | 87 file mappings, 65 eager and 22 lazy |
-| =build/nemacs-library-package-scaffold.org= | 87 package copied files, 1 umbrella facade file, 9 README files |
+| =build/nemacs-library-package-layout.org= | 88 file mappings, 66 eager and 22 lazy |
+| =build/nemacs-library-package-scaffold.org= | 88 package copied files, 1 umbrella facade file, 9 README files |
 | =build/nemacs-library-app-scaffold.org= | 10 app/bootstrap/frontend staged files outside reusable package count |
 | =build/nemacs-library-app-boundary.org= | 10 app boundary checks, failures 0 |
-| =build/nemacs-library-package-app-require-guard.org= | 87 package files checked, 130 require edges scanned, app/frontend require violations 0 |
+| =build/nemacs-library-package-app-require-guard.org= | 88 package files checked, 130 require edges scanned, app/frontend require violations 0 |
 | =build/nemacs-library-package-metadata.org= | 8 package metadata drafts, generated =*-pkg.el= files, GPL-3.0-or-later, project URL |
 | =build/nemacs-library-package-install-smoke.org= | 8 package-style install/load smokes, ok 8, failures 0 |
 | =build/nemacs-library-package-archive.org= | 8 generated package tar archives from metadata/scaffold |
@@ -63,18 +106,22 @@ Current generated results:
 | =build/nemacs-library-package-archive-index.org= | 8 archive index entries, =archive-contents= generated, archive-version 1 |
 | =build/nemacs-library-package-index-smoke.org= | 8 install-from-index smokes through =package-refresh-contents= and =package-install=, ok 8, failures 0 |
 | =build/nemacs-library-package-publication-policy.org= | 35 publication policy checks, ok 35, failures 0 |
+| =build/nemacs-library-package-release-key-policy.org= | 4 release public key checks, draft pending 4, failures 0; strict mode fails closed without public key material/fingerprint |
 | =build/nemacs-library-package-signature-policy.org= | 9 release signature artifact targets, strict release no, signature files present 0, failures 0 |
 | =build/nemacs-library-package-signature-release-sign.org= | release signing workflow target exists; without a configured release key it fails closed with 9 signing failures |
 | =build/nemacs-library-compat-api-policy.org= | 948 stable API rows, public-prefixed 935, compat-global 13, failures 0 |
 | =build/nemacs-library-package-dependency-publication-policy.org= | 29 dependency publication policy checks, lazy companions 22, host features 2, vendor packages 1, failures 0 |
-| =build/nemacs-library-package-release-bundle-manifest.org= | 32 release bundle retention rows, 19 retained draft files, 13 pending release-only files, failures 0 |
+| =build/nemacs-library-package-release-bundle-manifest.org= | 35 release bundle retention rows, 21 retained draft files, 14 pending release-only files, failures 0 |
+| =build/nemacs-library-package-release-bundle-smoke.org= | 8 install-from-retained-bundle smokes, manifest retained hashes verified, retained files 21, pending files 14, ok 8, failures 0 |
+| =build/nemacs-library-package-release-publication-policy.org= | 32 release publication checks, ok 29, pending 3, failures 0; duplicate bundle paths 0; manifest-external bundle files 0 |
+| =build/nemacs-library-package-release-rehearsal/release-rehearsal.org= | throwaway-key strict release rehearsal: key policy ok 4, signatures verified 9, bundle retained files 35, pending 0, publication failures 0, smoke ok 8, failures 0 |
 | =build/nemacs-library-package-lazy-metadata.org= | 22 lazy companion metadata rows, failures 0, additional package requirement rows 4 |
 | =build/nemacs-library-package-vendor-release-lock.org= | 1 vendored dependency release lock, strict release ok, package dirty paths 0 |
 | =build/nemacs-production-runtime-path.org= | 9 production runtime modules mapped to package/app scaffold entries |
 | =build/nemacs-runtime-image-input-inventory.org= | 38 runtime-image input rows, unknown 0, missing files 0 |
 | =test/nemacs-gui-file-bridge-runtime-test.el= | package-backed bridge image source resolution has zero =src/= fallback for current image inputs |
 | =build/nemacs-library-package-deps-summary.org= | 78 dependency edges, no unmanifested reusable, lazy-unmanifested reusable, external-or-host, or app/frontend edges |
-| =build/nemacs-library-api-promotion-queue.org= | 1242 promotion rows classified for stability review |
+| =build/nemacs-library-api-promotion-queue.org= | 1273 promotion rows classified; open review rows 60; =promote-ready= rows 85 |
 | =build/nemacs-library-package-verify.org= | 48 checks, failures 0 |
 | =build/nemacs-library-boundary-summary.org= | boundary rows 0 |
 
@@ -85,12 +132,12 @@ The extraction set contains eight facade packages:
 | Package | Loader | Eager files | Lazy files | Requires |
 |---------+--------+-------------+------------+----------|
 | =nelisp-emacs-foundation= | =emacs-foundation= | 24 | 0 | none |
-| =nelisp-emacs-text-core= | =emacs-text-core= | 3 | 1 | foundation |
-| =nelisp-emacs-buffer-core= | =emacs-buffer-core= | 7 | 4 | foundation, text-core |
+| =nelisp-emacs-text-core= | =emacs-text-core= | 4 | 1 | foundation |
+| =nelisp-emacs-buffer-core= | =emacs-buffer-core= | 7 | 2 | foundation, text-core |
 | =nelisp-emacs-editing= | =emacs-editing= | 4 | 0 | buffer-core, foundation |
-| =nelisp-emacs-io= | =emacs-io= | 8 | 7 | buffer-core, foundation, text-core |
+| =nelisp-emacs-io= | =emacs-io= | 8 | 5 | buffer-core, foundation, text-core |
 | =nelisp-emacs-special-buffers= | =emacs-special-buffers= | 1 | 0 | buffer-core |
-| =nelisp-emacs-core= | =emacs-core= | 17 | 10 | buffer-core, editing, foundation |
+| =nelisp-emacs-core= | =emacs-core= | 17 | 14 | buffer-core, editing, foundation |
 | =nelisp-emacs-textmodes-stub= | =emacs-textmodes-stub= | 1 | 0 | buffer-core |
 
 The twenty-two lazy files are:
@@ -99,16 +146,16 @@ The twenty-two lazy files are:
 |---------+--------------+------|
 | =nelisp-emacs-text-core= | =nelisp-coding-jis-tables= | =src/nelisp-coding-jis-tables.el= |
 | =nelisp-emacs-buffer-core= | =emacs-bookmark-ui= | =src/emacs-bookmark-ui.el= |
-| =nelisp-emacs-buffer-core= | =emacs-buffer-ui= | =src/emacs-buffer-ui.el= |
-| =nelisp-emacs-buffer-core= | =emacs-isearch= | =src/emacs-isearch.el= |
+| =nelisp-emacs-core= | =emacs-buffer-ui= | =src/emacs-buffer-ui.el= |
+| =nelisp-emacs-core= | =emacs-isearch= | =src/emacs-isearch.el= |
 | =nelisp-emacs-buffer-core= | =emacs-replace= | =src/emacs-replace.el= |
-| =nelisp-emacs-io= | =emacs-dired-min= | =src/emacs-dired-min.el= |
+| =nelisp-emacs-core= | =emacs-dired-min= | =src/emacs-dired-min.el= |
 | =nelisp-emacs-io= | =files-standalone-buffer= | =src/files-standalone-buffer.el= |
 | =nelisp-emacs-io= | =emacs-dump= | =src/emacs-dump.el= |
 | =nelisp-emacs-io= | =image-loader= | =src/image-loader.el= |
 | =nelisp-emacs-io= | =nemacs-loaddefs= | =src/nemacs-loaddefs.el= |
 | =nelisp-emacs-io= | =emacs-shell-command= | =src/emacs-shell-command.el= |
-| =nelisp-emacs-io= | =emacs-project= | =src/emacs-project.el= |
+| =nelisp-emacs-core= | =emacs-project= | =src/emacs-project.el= |
 | =nelisp-emacs-core= | =emacs-elisp-eval= | =src/emacs-elisp-eval.el= |
 | =nelisp-emacs-core= | =emacs-elisp-mode= | =src/emacs-elisp-mode.el= |
 | =nelisp-emacs-core= | =emacs-font-lock= | =src/emacs-font-lock.el= |
@@ -153,14 +200,25 @@ These properties are ready enough for a staged physical extraction:
 - publication policy checks cover shared package versioning, checksum
   retention, archive index retention, local unsigned development archives,
   and external detached-signature requirements;
+- release public key policy records the expected public key file and
+  fingerprint checks in draft mode and fails closed in strict mode when key
+  material or the expected fingerprint is missing;
 - signature policy checks record every release artifact that needs a detached
-  signature and provide a strict release mode for configured OpenPGP key
-  fingerprint verification;
+  signature and provide a strict release mode that imports the explicit
+  release public key into a temporary GnuPG keyring before verifying signer
+  fingerprint matches;
 - release signing workflow can create detached signatures for every release
   artifact with an explicit configured OpenPGP key fingerprint;
 - release bundle retention manifest copies draft archive/evidence files and
   records release-only signatures/evidence as pending without hiding the
   public release gap;
+- release bundle consumer smoke verifies retained manifest byte/hash values
+  and installs every reusable package from the retained bundle archive
+  directory;
+- release rehearsal generates a throwaway OpenPGP key under =build/=, signs
+  rehearsal-local archives, verifies 9 detached signatures against the
+  exported public key, retains a strict bundle with no pending files, and
+  installs every reusable package from that signed bundle;
 - dependency publication policy checks cover package-owned lazy companions,
   host-provided features, vendored nelisp package dependencies, and empty
   unpublished dependency relation buckets;
@@ -183,11 +241,13 @@ primary load path.  Reasons:
   current =src/= feature locations;
 - host users and parallel sessions may have local workflows tied to =src/=;
 - package archive metadata, per-package README files, deterministic
-checksum verification, archive index, publication policy, release signature
-target verification, release signing workflow targets, draft release bundle
-retention manifest, and install tests exist as generated drafts, but actual
-release signing keys, detached signature artifacts, strict signed release
-bundle execution, and public publication workflow execution do not exist yet.
+checksum verification, archive index, publication policy, release public key
+policy, release signature target verification, release signing workflow
+targets, draft release bundle retention manifest, and install tests exist as
+generated drafts, and a throwaway-key strict release rehearsal proves the
+mechanics of signing, verification, bundle retention, and bundle smoke.  Actual
+release public key material, release signing keys, retained real detached
+signature artifacts, and public publication workflow execution do not exist yet.
 
 The correct next step is a compatibility-preserving extraction scaffold,
 not a destructive file move.
@@ -213,10 +273,14 @@ make nemacs-library-package-archive-smoke
 make nemacs-library-package-archive-index
 make nemacs-library-package-index-smoke
 make nemacs-library-package-publication-policy
+make nemacs-library-package-release-key-policy
 make nemacs-library-package-signature-policy
 make nemacs-library-compat-api-policy
 make nemacs-library-package-dependency-publication-policy
 make nemacs-library-package-release-bundle-manifest
+make nemacs-library-package-release-bundle-smoke
+make nemacs-library-package-release-publication-policy
+make nemacs-library-package-release-rehearsal
 make nemacs-library-package-lazy-metadata
 make nemacs-library-package-vendor-release-verify
 make nemacs-library-package-load-path
@@ -257,7 +321,7 @@ It also verifies that reusable lisp-image helpers =emacs-dump= and
 =make nemacs-library-package-app-require-guard= verifies the inverse
 require contract on the generated scaffold: reusable package files may not
 =require= features provided by =packages/nelisp-emacs-app-gui/=.  Current
-coverage scans 87 package files, indexes 10 app/frontend features, scans
+coverage scans 88 package files, indexes 10 app/frontend features, scans
 130 package require edges, and reports 0 violations.
 
 =make nemacs-library-package-metadata= writes package archive style draft
@@ -311,6 +375,15 @@ shared =X.Y.Z= package version while facade packages are versioned together.
 The target records signature requirements only; signature artifact targets and
 strict release verification are covered by the dedicated signature policy gate.
 
+=make nemacs-library-package-release-key-policy= records the public key policy
+for release verification.  Current draft coverage is 4 checks: expected
+fingerprint, public key file, public key import, and fingerprint match.  Without
+=NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT= and
+=docs/release/nemacs-library-release-public-key.asc=, draft mode records 4
+pending rows and 0 failures.  Strict mode is release-only and fails closed
+unless the public key file is readable, importable by GnuPG, and contains the
+configured 40-hex OpenPGP fingerprint.
+
 =make nemacs-library-package-signature-policy= records the release signature
 artifact set for public package publication.  Current draft coverage is 9
 artifacts requiring detached signatures: one =archive-contents= file and
@@ -318,10 +391,11 @@ artifacts requiring detached signatures: one =archive-contents= file and
 0 signature files present, and has 0 failures.  The release-only strict target
 =make nemacs-library-package-signature-release-verify= requires
 =NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT= to be a 40-hex OpenPGP
-fingerprint, requires detached signatures for every artifact, runs
-=gpg --verify=, and verifies the =VALIDSIG= fingerprint matches the configured
-key.  This repository does not yet create or retain release signatures; the
-strict target is the release gate for those future artifacts.
+fingerprint, requires the explicit release public key file, imports that key
+into a temporary GnuPG keyring, requires detached signatures for every
+artifact, runs =gpg --verify=, and verifies the =VALIDSIG= fingerprint matches
+the configured key.  This repository does not yet create or retain release
+signatures; the strict target is the release gate for those future artifacts.
 
 =make nemacs-library-package-signature-release-sign= creates the detached
 signature artifacts listed by the signature policy TSV.  It is release-only
@@ -338,10 +412,45 @@ publication bundle under
 =build/nemacs-library-package-release-bundle/= and writes a manifest for every
 package archive, expected detached signature, and publication evidence file.
 Draft mode is part of =make nemacs-library-gate=: it copies unsigned archives
-and policy evidence while recording missing release-only signatures/evidence as
-pending.  =make nemacs-library-package-release-bundle= is release-only; it runs
-release signing and strict signature verification first, then regenerates the
-bundle manifest in strict mode so missing signatures or release evidence fail.
+and policy evidence, including release public key policy evidence, while
+recording missing release-only public key material, signatures, and release
+verification evidence as pending.  Current draft coverage is 35 rows, 21
+retained files, 14 pending release-only files, and 0 failures.  =make
+nemacs-library-package-release-bundle= is release-only; it runs release signing
+and strict signature verification first, then regenerates the bundle manifest in
+strict mode so missing public key material, signatures, or release evidence
+fail.
+
+=make nemacs-library-package-release-rehearsal= generates a throwaway GnuPG
+key under =build/nemacs-library-package-release-rehearsal/gnupg=, exports the
+public key, rebuilds package archives under the rehearsal root, signs the
+rehearsal-local =archive-contents= and 8 tarballs, verifies every detached
+signature through the strict public-key verifier, retains a strict signed
+bundle, and runs the retained-bundle package install smoke.  Current rehearsal
+coverage is release key policy ok 4, signing failures 0, signature
+verification failures 0, bundle retained files 35, bundle pending files 0,
+bundle failures 0, bundle smoke ok 8, and bundle smoke failures 0.  The
+rehearsal key is intentionally not a public trust anchor.
+
+=make nemacs-library-package-release-ready= verifies the real-release local
+config path before a public signing run.  The local config is intentionally
+ignored by git and must provide the release public key file, the full 40-hex
+OpenPGP fingerprint, and an external =NEMACS_LIBRARY_RELEASE_GNUPGHOME= that
+contains the configured signing secret key.  The public release entrypoint is
+=make nemacs-library-package-release-from-config=, which runs the readiness
+check before strict signing, strict verification, strict bundle retention, and
+bundle smoke.
+
+=make nemacs-library-package-release-publication-policy= verifies the retained
+release bundle before publication.  Draft mode permits only the expected
+release-only pending rows, rechecks every retained manifest file by byte count
+and SHA-256, requires 8 bundle install smokes to pass, and fails if the bundle
+root contains any manifest-external file.  It also fails if retained manifest
+rows map multiple evidence subjects to the same bundle path.  Current draft
+coverage is 32 checks, 29 ok, 3 pending, and 0 failures.  Strict release mode
+requires zero pending rows, all 9 detached signatures, all 5 release-evidence
+files, no duplicate bundle paths, no manifest-external files, and successful
+bundle smoke.
 
 =make nemacs-library-compat-api-policy= records the consumer-facing stable API
 classification policy from the facade query functions.  Current coverage is
@@ -434,9 +543,9 @@ smoke.
 
 The current package-backed GTK frontend smoke no longer loads app/frontend
 modules from =src/=: reusable helpers such as =emacs-buffer-ui=,
-=emacs-bookmark-ui=, =emacs-isearch=, =emacs-replace=, and
-=emacs-shell-command= come from package =lazy/= paths, while
-=nemacs-gtk-view-menu= and =nemacs-gtk-frontend= come from
+=emacs-bookmark-ui=, =emacs-isearch=, =emacs-dired-min=, =emacs-project=,
+=emacs-replace=, and =emacs-shell-command= come from package =lazy/= paths,
+while =nemacs-gtk-view-menu= and =nemacs-gtk-frontend= come from
 =packages/nelisp-emacs-app-gui/=.
 
 The production runtime path gate now also checks scaffold visibility.  The
@@ -497,7 +606,8 @@ package publication still needs:
 
 - an actual release key and retained detached signature artifacts for a public
   release run;
-- a strict signed release bundle run with all release-only evidence retained;
+- a strict signed release bundle run with the real release key and all
+  release-only evidence retained;
 
 * 6. Gate Invariant
 
@@ -506,7 +616,7 @@ must hold:
 
 #+begin_src text
 descriptor packages: 8
-layout mappings: 87
+layout mappings: 88
 unknown external features: empty
 package dependency migration candidates: 0
 boundary report rows: 0
@@ -526,6 +636,9 @@ package archive index smoke packages: 8
 package archive index smoke failures: 0
 package publication policy checks: 35
 package publication policy failures: 0
+package release key policy checks: 4
+package release key policy pending draft checks: 4
+package release key policy strict no-key failures: 4
 package signature policy artifacts requiring signatures: 9
 package signature policy signature files present: 0
 package signature policy verified signatures: 0
@@ -533,10 +646,21 @@ package signature policy strict release: no
 package signature policy failures: 0
 package signature release signing workflow target: available
 package signature release signing no-key failures: 9
-package release bundle manifest rows: 32
-package release bundle retained draft files: 19
-package release bundle pending release-only files: 13
+package release bundle manifest rows: 35
+package release bundle retained draft files: 21
+package release bundle pending release-only files: 14
 package release bundle failures: 0
+package release bundle smoke packages: 8
+package release bundle smoke failures: 0
+package release bundle smoke manifest retained files: 21
+package release bundle smoke manifest archive artifacts: 9
+package release rehearsal key policy ok: 4
+package release rehearsal signature verified signatures: 9
+package release rehearsal signature failures: 0
+package release rehearsal bundle retained files: 35
+package release rehearsal bundle pending files: 0
+package release rehearsal bundle smoke packages: 8
+package release rehearsal bundle smoke failures: 0
 stable API compatibility policy rows: 948
 stable API compatibility public-prefixed rows: 935
 stable API compatibility compat-global rows: 13
@@ -564,14 +688,16 @@ GUI bridge standalone image current src fallbacks: 0
 production runtime scaffold mappings: 9 modules
 app boundary checks: 10
 app boundary failures: 0
-package app/frontend require guard scanned files: 87
+package app/frontend require guard scanned files: 88
 package app/frontend require guard scanned edges: 130
 runtime-image input inventory rows: 38
 runtime-image input inventory unknown rows: 0
 runtime-image temporary src source inputs: 0
 runtime-image temporary src load paths: 0
 package API inventory rows: 2184
-promotion review rows: 1242
+promotion queue rows: 1273
+promotion open review rows: 60
+promotion promote-ready rows: 85
 stable API symbols: 879
 stable lazy API symbols: 69
 library gate: ok
@@ -587,14 +713,23 @@ package-style install smoke, deterministic generated package tar archives,
 direct install-from-archive smoke, archive index generation, and
 install-from-index smoke, plus a publication policy gate for versioning,
 checksum retention, archive retention, and signature requirements.  It also
-has a release signature policy gate for the exact archive artifacts that must
-receive detached signatures, an explicit dependency publication policy gate for
-package-owned lazy companions, host-provided features, vendored nelisp
-packages, and empty unpublished dependency relation buckets, a lazy companion
-metadata gate for dependency closure, a stable API compatibility policy gate
-for prefixed versus compat-global symbols, plus a strict vendored dependency
-lock gate for the current =nelisp-process= dependency, an explicit release
-signing workflow target, and a draft release bundle retention manifest.  The
-next implementation step is a release bundle consumer smoke that installs from
-=build/nemacs-library-package-release-bundle/archives/= and verifies the
-manifest hashes before treating the bundle as a publishable archive.
+has a release public key policy gate, a release signature policy gate for the
+exact archive artifacts that must receive detached signatures, an explicit
+dependency publication policy gate for package-owned lazy companions,
+host-provided features, vendored nelisp packages, and empty unpublished
+dependency relation buckets, a lazy companion metadata gate for dependency
+closure, a stable API compatibility policy gate for prefixed versus
+compat-global symbols, plus a strict vendored dependency lock gate for the
+current =nelisp-process= dependency, an explicit release signing workflow
+target, a draft release bundle retention manifest, and a release bundle
+consumer smoke that verifies retained manifest hashes before installing from
+=build/nemacs-library-package-release-bundle/archives/=, plus a throwaway-key
+strict release rehearsal that proves signing, verification, strict bundle
+retention, publication-policy verification, and signed-bundle install smoke
+without touching a real release key.
+The next implementation step is to replace the rehearsal key through
+=docs/release/nemacs-library-release.local.mk= or
+=NEMACS_LIBRARY_RELEASE_CONFIG=/absolute/path/to/release.local.mk= in a
+controlled release environment, run
+=make nemacs-library-package-release-from-config=, and retain the strict release
+evidence as the publication artifact set.

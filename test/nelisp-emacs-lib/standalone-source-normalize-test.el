@@ -2204,6 +2204,33 @@
      '(gv-define-setter org-element-property (value property node)
         `(org-element-put-property ,node ,property ,value))))))
 
+(ert-deftest standalone-source-normalize-test/drops-files-top-level-key-wiring ()
+  (let ((standalone-source-normalize-current-file "files.el"))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key ctl-x-map "i" 'insert-file)))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key esc-map "~" 'not-modified)))
+    (should
+     (standalone-source-normalize-top-level-forms
+      '(define-key unrelated-map "i" 'insert-file)))))
+
+(ert-deftest standalone-source-normalize-test/drops-window-top-level-key-wiring ()
+  (let ((standalone-source-normalize-current-file "window.el"))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key global-map [?\C-l] 'recenter-top-bottom)))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key ctl-x-map "2" 'split-window-below)))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key ctl-x-4-map "0" 'kill-buffer-and-window)))
+    (should
+     (standalone-source-normalize-top-level-forms
+      '(define-key unrelated-map "2" 'split-window-below)))))
+
 (ert-deftest standalone-source-normalize-test/drops-uninitialized-top-level-defvar ()
   (should
    (null
@@ -2326,6 +2353,21 @@
         (put 'org-modules 'standard-value (list ''(ol-doi ol-w3m)))
         (put 'org-modules 'custom-args t)
         'org-modules)))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-text-mode-defcustoms-to-bindings ()
+  (dolist (form '((defcustom text-mode-hook '(text-mode-hook-identify)
+                    "Documentation."
+                    :type 'hook
+                    :options '(turn-on-auto-fill turn-on-flyspell)
+                    :group 'text)
+                  (defcustom text-mode-ispell-word-completion 'completion-at-point
+                    "Documentation."
+                    :type '(choice symbol function)
+                    :group 'text)))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms form)
+      (list (list 'defvar (cadr form) (caddr form)))))))
 
 (ert-deftest standalone-source-normalize-test/drops-ol-doi-defcustom-after-synthetic-binding ()
   (let ((standalone-source-normalize-current-file "ol-doi.el"))

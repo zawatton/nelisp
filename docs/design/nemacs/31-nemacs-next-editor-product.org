@@ -1,0 +1,227 @@
+#+TITLE: nelisp-emacs Doc 31 -- nemacs-next editor product plan
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-25
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 21 APP/GUI semantic definition inventory, Doc 25 library consumer contract, Doc 30 source-of-truth decision
+
+* 0. Purpose
+
+This document starts the =nemacs-next= product line: a new Emacs-like text
+editor that reuses the current =nelisp-emacs= library成果 but does not
+inherit the current GUI file bridge as its long-term architecture.
+
+The goal is not to fork Emacs C behavior again inside frontend code.  The
+goal is to build a daily editor whose GUI is modern and replaceable while
+Emacs package compatibility remains owned by the NeLisp / =nelisp-emacs=
+runtime session.
+
+* 1. Decision
+
+Build =nemacs-next= as a separate app consumer under:
+
+#+begin_src text
+apps/nemacs-next/
+  lisp/       product/session contract and app-local assembly
+  protocol/   frontend <-> editor protocol notes
+  scripts/    focused app smoke checks
+#+end_src
+
+=nelisp-emacs= remains the reusable library substrate.  The existing
+=gui/= bridge and GTK frontend remain reference and validation assets, but
+they are not the desired product frontend.
+
+* 2. Architecture
+
+#+begin_src text
+Emacs packages / user init
+        |
+        v
+persistent NeLisp editor session
+        |
+        v
+nelisp-emacs libraries
+  foundation / buffer-core / editing / io / special-buffers / core
+        |
+        v
+nemacs-next app protocol
+        |
+        v
+new GUI frontend
+  renderer / input / IME / clipboard / menu / tabs / native shell
+#+end_src
+
+The persistent session is mandatory.  Per-key process startup and
+per-key file polling are explicitly rejected for the product path.
+
+* 3. Ownership
+
+| Area | Owner |
+|------+-------|
+| Buffer mutation, point, mark, undo | =buffer-core= / =editing= |
+| Keymap lookup and command dispatch | =core= command-loop/keymap |
+| Minibuffer and completion semantics | =core= minibuffer |
+| File and process semantics | =io= |
+| Special buffers | =special-buffers= |
+| Package loading and user init policy | =nemacs-next= app session |
+| Raw keyboard/mouse/IME decoding | GUI frontend |
+| Text shaping, font fallback, compositor integration | GUI frontend |
+| Menus, toolbar, tabs, native dialogs | GUI frontend calling app protocol |
+
+Rule: if a feature changes editor state in a way an Emacs package can
+observe, it does not belong in GUI code.
+
+* 4. Package Compatibility Strategy
+
+The first compatibility target is pure Elisp package code that expects a
+normal Emacs global API surface.  GUI compatibility alone is insufficient;
+packages observe buffers, variables, hooks, keymaps, minibuffer, process
+objects, faces, and timers.
+
+Initial support classes:
+
+| Class | Target |
+|-------+--------|
+| Pure major/minor modes | early |
+| Theme and face packages | early after face protocol |
+| Font-lock packages | early after syntax/font-lock lazy surface |
+| Completion UI packages | medium, after minibuffer protocol |
+| Project/search/xref packages | medium |
+| Dired-like file packages | medium |
+| Process-heavy packages | later |
+| Magit, eglot, LSP clients | later, after process/timer/file-notify maturity |
+
+Package compatibility must be measured by package smoke suites, not by GUI
+appearance.
+
+* 5. Frontend Strategy
+
+The new frontend should be built from scratch around a stable protocol.
+The current file bridge taught useful lessons, but it should not be the
+product transport because it couples latency to filesystem round trips and
+per-event runtime startup costs.
+
+Frontend responsibilities:
+
+- retain a local visual model for fast painting;
+- send input events and command requests to the persistent session;
+- render session-provided buffer snapshots, face spans, cursor state,
+  minibuffer state, diagnostics, menus, and echo messages;
+- own native OS integrations such as clipboard, IME, window chrome,
+  font discovery, and drag/drop;
+- never decide editor semantics that packages can observe.
+
+* 6. Protocol V0 Shape
+
+The V0 protocol is message oriented and persistent.
+
+Client to session:
+
+| Message | Meaning |
+|---------+---------|
+| =hello= | negotiate protocol and capabilities |
+| =input= | raw key/mouse/IME event after frontend decoding |
+| =command= | named command request, e.g. menu or toolbar |
+| =resize= | viewport dimensions changed |
+| =open= | OS-level file-open request |
+| =clipboard= | clipboard payload/result |
+| =shutdown= | graceful app exit |
+
+Session to client:
+
+| Message | Meaning |
+|---------+---------|
+| =snapshot= | buffer text viewport, point, mark, faces, mode-line |
+| =delta= | incremental changes after a command |
+| =minibuffer= | prompt, contents, candidates, active command |
+| =echo= | message/echo area update |
+| =menu= | menu/toolbar/tab model |
+| =request= | OS integration request such as clipboard read |
+| =error= | structured runtime or command error |
+
+The protocol may start as newline-delimited JSON for debuggability.  It
+can move to a binary transport later without changing semantic ownership.
+
+* 7. Milestones
+
+** M0 Product boundary
+
+- Add =apps/nemacs-next/= scaffold.
+- Add contract module that declares required =nelisp-emacs= packages and
+  frontend-owned surfaces.
+- Add smoke that proves host Emacs can load the consumer contract without
+  app/bootstrap or legacy GUI.
+
+** M1 Persistent session proof
+
+- Start one NeLisp process and keep it alive.
+- Load =nelisp-emacs= facade in that session.
+- Execute basic commands without restarting the runtime.
+- Return a text snapshot after each command.
+
+** M2 Editing loop
+
+- Self-insert, movement, newline, delete, undo, yank.
+- Single buffer plus scratch/messages.
+- Latency target: common edit commands under 16ms session-side on warm
+  state, excluding frontend painting.
+
+** M3 Minibuffer/file loop
+
+- =find-file=, =save-buffer=, =switch-to-buffer=, =kill-buffer=.
+- Completion protocol for minibuffer candidates.
+- No GUI-local file command semantics.
+
+** M4 Modern GUI shell
+
+- Native window, renderer, keyboard input, IME, clipboard.
+- Buffer viewport and modeline rendering.
+- Menus/toolbar call protocol commands, not GUI command copies.
+
+** M5 Package smoke
+
+- Load selected pure Elisp package fixtures.
+- Verify mode activation, keymaps, hooks, faces, and buffer edits.
+- Track unsupported APIs as package-compat debt.
+
+* 8. Gates
+
+Focused gates for =nemacs-next= should start smaller than the existing full
+library gate:
+
+- host load smoke for =apps/nemacs-next/lisp/nemacs-next.el=;
+- protocol schema sanity smoke;
+- persistent session command smoke once the session exists;
+- package compatibility smoke for selected package fixtures;
+- frontend latency smoke after the renderer exists.
+
+Library-surface changes still use the normal repository gates from Doc 12
+and AGENTS.md.  App-only protocol or documentation changes should not
+force a full package extraction gate unless they touch library manifests
+or reusable APIs.
+
+* 9. Current Non-goals
+
+- Do not rewrite existing =src/nemacs-gui-file-bridge-runtime.el= as the
+  product session.
+- Do not put command behavior into the new GUI.
+- Do not claim full Emacs package compatibility before package smokes
+  exist.
+- Do not move =src/= to =packages/= as part of this product start; Doc 30
+  keeps =src-primary= for now.
+
+* 10. First Implementation Step
+
+The first committed implementation should be intentionally small:
+
+- =apps/nemacs-next/lisp/nemacs-next.el= declares product contract data;
+- =apps/nemacs-next/scripts/smoke.sh= checks that the contract can be
+  loaded as a consumer of =nelisp-emacs=;
+- =apps/nemacs-next/scripts/session-smoke.sh= checks that a persistent
+  NeLisp REPL can load the app contract and evaluate more than one form in
+  the same session;
+- =apps/nemacs-next/scripts/process-smoke.sh= checks that one persistent
+  NeLisp REPL process can emit newline-delimited JSON responses for several
+  sequential protocol messages;
+- no editor command semantics are implemented in app/frontend glue.
+
+This creates a reviewable boundary before any new GUI code is added.

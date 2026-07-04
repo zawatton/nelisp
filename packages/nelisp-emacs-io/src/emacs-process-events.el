@@ -104,6 +104,51 @@ that we are running under standalone NeLisp and the stub-bulk
 process-* placeholders should be overridden with real
 implementations.")
 
+;;;; --- process-coding-system conversion (Doc 06 C4) --------------------
+;;
+;; Slot 9 holds a (DECODING . ENCODING) cons (or, for back-compat, a bare
+;; symbol meaning both directions).  Incoming bytes are decoded before the
+;; filter sees them; outgoing strings are encoded before `send'.  These
+;; helpers are defined ungated (no `nl-ffi-call' dependency) so they run and
+;; are testable under host Emacs too; only the recv/send call sites that use
+;; them are standalone-gated.
+
+(defun emacs-process-events--coding-decoder (coding)
+  "Decoding coding-system from CODING (a (DECODE . ENCODE) cons / symbol / nil)."
+  (if (consp coding) (car coding) coding))
+
+(defun emacs-process-events--coding-encoder (coding)
+  "Encoding coding-system from CODING (a (DECODE . ENCODE) cons / symbol / nil)."
+  (if (consp coding) (cdr coding) coding))
+
+(defun emacs-process-events--no-conversion-p (cs)
+  "Non-nil when coding-system CS means \"pass raw bytes through unchanged\"."
+  (memq cs '(nil binary no-conversion raw-text raw-text-unix)))
+
+(defun emacs-process-events--decode-output (chunk coding)
+  "Decode raw output CHUNK per CODING's decoder via the coding machinery.
+Identity when the decoder is a no-conversion system, when CHUNK is not a
+string, or when `decode-coding-string' is unavailable (Doc 06 C4)."
+  (let ((dec (emacs-process-events--coding-decoder coding)))
+    (if (or (not (stringp chunk))
+            (emacs-process-events--no-conversion-p dec)
+            (not (fboundp 'decode-coding-string)))
+        chunk
+      (condition-case _err (decode-coding-string chunk dec t)
+        (error chunk)))))
+
+(defun emacs-process-events--encode-input (string coding)
+  "Encode input STRING per CODING's encoder via the coding machinery.
+Identity when the encoder is a no-conversion system, when STRING is not a
+string, or when `encode-coding-string' is unavailable (Doc 06 C4)."
+  (let ((enc (emacs-process-events--coding-encoder coding)))
+    (if (or (not (stringp string))
+            (emacs-process-events--no-conversion-p enc)
+            (not (fboundp 'encode-coding-string)))
+        string
+      (condition-case _err (encode-coding-string string enc t)
+        (error string)))))
+
 (when emacs-process-events--standalone-p
 
   (defun processp (object)
@@ -145,9 +190,17 @@ implementations.")
     (emacs-process-events--set process 8 plist)
     plist)
 
-  (defun set-process-coding-system (process &optional decoding _encoding)
-    (emacs-process-events--set process 9 decoding)
-    decoding)
+  (defun set-process-coding-system (process &optional decoding encoding)
+    "Set PROCESS's (DECODING . ENCODING) coding systems (Doc 06 C4).
+ENCODING is now honored (previously only DECODING was stored)."
+    (emacs-process-events--set process 9 (cons decoding encoding))
+    (cons decoding encoding))
+
+  (defun process-coding-system (process)
+    "Return PROCESS's coding systems as a (DECODING . ENCODING) cons.
+A bare-symbol slot value (legacy) is widened to (SYM . SYM)."
+    (let ((c (emacs-process-events--get process 9)))
+      (if (consp c) c (cons c c))))
 
   (defun set-process-query-on-exit-flag (process flag)
     (emacs-process-events--set process 13 flag)
@@ -180,6 +233,10 @@ Fast-path: when no bytes have been sent yet, pass STRING in as-is;
 only fall through to `substring' on the rare partial-write retry."
     (unless (emacs-process-events--processp process)
       (signal 'wrong-type-argument (list 'processp process)))
+    ;; C4: encode the string per the process's encoding coding-system before
+    ;; the bytes go on the wire (identity for utf-8 / no-conversion).
+    (setq string (emacs-process-events--encode-input
+                  string (emacs-process-events--get process 9)))
     (let ((fd (process-id-fd process))
           (i 0)
           (n (length string)))
@@ -236,11 +293,83 @@ only fall through to `substring' on the rare partial-write retry."
   (gethash fd emacs-process-events--by-fd))
 
 (defun emacs-process-events--all-fds ()
-  "Return the list of fds currently registered."
+  "Return the list of fds for live registered processes.
+Derived from the all-process list rather than `maphash' over the by-fd table:
+the pure-elisp standalone reader's `maphash' does not iterate (it returns with
+the callback never run), which silently emptied the eventloop poll set and made
+async filters never fire (Doc 06 C1)."
   (let ((fds nil))
-    (maphash (lambda (fd _proc) (push fd fds))
-             emacs-process-events--by-fd)
+    (dolist (proc emacs-process-events--all)
+      (let ((fd (process-id-fd proc)))
+        (when (and (integerp fd) (>= fd 0)
+                   (not (eq (emacs-process-events--get proc 4) 'closed)))
+          (push fd fds))))
     fds))
+
+;;;; --- SIGCHLD-fallback child reaping (Doc 06 C2) ----------------------
+;;
+;; The pure-elisp standalone reader cannot run Lisp from a C signal handler, so
+;; a true async SIGCHLD reaper is out of reach; instead we poll `wait4(-1,
+;; WNOHANG)' from the event loop (the fallback the design calls for).  Sub-
+;; process procs carry their OS pid in the plist (`:pid'); a reaped pid is
+;; matched back to its proc to update status + fire the sentinel.
+
+(defun emacs-process-events--wait-exited-p (status)
+  "Non-nil if wait(2) STATUS indicates a normal exit (WIFEXITED)."
+  (= 0 (logand status #x7f)))
+
+(defun emacs-process-events--wait-exit-code (status)
+  "WEXITSTATUS(STATUS): the child's exit code (low 8 bits of status >> 8)."
+  (logand (ash status -8) #xff))
+
+(defun emacs-process-events--wait-signal (status)
+  "WTERMSIG(STATUS): the signal that killed the child, or 0 on normal exit."
+  (logand status #x7f))
+
+(defun emacs-process-events--lookup-by-pid (pid)
+  "Find a registered process whose plist `:pid' equals PID, or nil.
+Scans the all-process list (the standalone reader's `maphash' does not
+iterate; see `emacs-process-events--all-fds')."
+  (let ((found nil) (rest emacs-process-events--all))
+    (while (and rest (not found))
+      (let ((p (car rest)))
+        (when (eql pid (plist-get (emacs-process-events--get p 8) :pid))
+          (setq found p)))
+      (setq rest (cdr rest)))
+    found))
+
+(defun emacs-process-events--reap-children ()
+  "Reap exited children via non-blocking `wait4(-1, WNOHANG)' in a loop.
+For each reaped pid matched to a process (by plist `:pid') set its status to
+`exit' / `signal' and fire its sentinel.  Untracked children are still reaped
+\(no zombies).  Returns the list of reaped (PID . EXIT-CODE) pairs (Doc 06 C2)."
+  (let ((reaped nil) (loop t))
+    (while loop
+      (let* ((stbuf (nl-ffi-malloc 8))
+             (pid (emacs-network-ffi--call
+                   "wait4" [:sint32 :sint32 :pointer :sint32 :sint32]
+                   -1 stbuf 1 0)))           ; WNOHANG = 1, rusage = NULL
+        (cond
+         ((and (integerp pid) (> pid 0))
+          (let* ((status (nl-ffi-read-i32 stbuf 0))
+                 (exited (emacs-process-events--wait-exited-p status))
+                 (code (emacs-process-events--wait-exit-code status))
+                 (sig (emacs-process-events--wait-signal status))
+                 (proc (emacs-process-events--lookup-by-pid pid)))
+            (push (cons pid code) reaped)
+            (when proc
+              (emacs-process-events--set proc 4 (if exited 'exit 'signal))
+              (let ((sent (process-sentinel proc)))
+                (when (functionp sent)
+                  (condition-case _err
+                      (funcall sent proc
+                               (if exited
+                                   (format "finished with code %d\n" code)
+                                 (format "terminated by signal %d\n" sig)))
+                    (error nil)))))))
+         (t (setq loop nil)))
+        (nl-ffi-free stbuf)))
+    (nreverse reaped)))
 
 (defun emacs-process-events--accept-child (server)
   "Server fd is poll-ready: accept the next pending connection.
@@ -282,11 +411,40 @@ returns the new process or nil on EAGAIN / error."
                           err)))))))
         proc)))))
 
+(defun emacs-process-events--read-fd (fd max-bytes)
+  "FFI: ssize_t read(FD, buf, MAX-BYTES) for a pipe-subprocess fd (Doc 06 C1).
+Pipe fds are not sockets, so `recv(2)' (ENOTSOCK) cannot be used; plain
+`read(2)' is.  Returns a string (\"\" at EOF), :would-block on EAGAIN,
+:interrupted on EINTR, or nil on any other error."
+  (let* ((buf (nl-ffi-malloc max-bytes))
+         (got (emacs-network-ffi--call
+               "read" [:sint64 :sint32 :pointer :sint64] fd buf max-bytes))
+         (result nil))
+    (cond
+     ((and (integerp got) (>= got 0))
+      (setq result (if (zerop got) "" (nl-ffi-read-bytes buf got))))
+     ((integerp got)
+      (let ((errno (emacs-network-ffi--errno)))
+        (cond
+         ((= errno emacs-network-ffi-EAGAIN) (setq result :would-block))
+         ((= errno emacs-network-ffi-EINTR)  (setq result :interrupted))
+         (t (setq result nil))))))
+    (nl-ffi-free buf)
+    result))
+
+(defun emacs-process-events--read-chunk (proc fd)
+  "Read up to 4096 bytes from PROC's FD, picking read(2) vs recv(2) by type.
+Pipe-subprocess fds (kind `pipe-process') use `read(2)'; socket fds use
+`recv(2)' (Doc 06 C1)."
+  (if (eq (emacs-process-events--get proc 3) 'pipe-process)
+      (emacs-process-events--read-fd fd 4096)
+    (emacs-network-ffi--recv fd 4096 0)))
+
 (defun emacs-process-events--read-and-dispatch (proc)
-  "Connection PROC has data ready: recv + fire filter.
+  "Connection PROC has data ready: read + fire filter.
 Returns t if dispatch happened, nil if peer closed."
   (let* ((fd (process-id-fd proc))
-         (chunk (emacs-network-ffi--recv fd 4096 0)))
+         (chunk (emacs-process-events--read-chunk proc fd)))
     (cond
      ((eq chunk :would-block) nil)
      ((eq chunk :interrupted) nil)
@@ -306,10 +464,14 @@ Returns t if dispatch happened, nil if peer closed."
       (emacs-process-events--set proc 2 -1)
       nil)
      ((stringp chunk)
-      (let ((filt (process-filter proc)))
+      (let ((filt (process-filter proc))
+            ;; C4: decode the raw bytes per the process's decoding
+            ;; coding-system before the filter sees them.
+            (text (emacs-process-events--decode-output
+                   chunk (emacs-process-events--get proc 9))))
         (when (functionp filt)
           (condition-case err
-              (funcall filt proc chunk)
+              (funcall filt proc text)
             (error
              (when (fboundp 'nelisp--write-stderr-line)
                (nelisp--write-stderr-line

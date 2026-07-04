@@ -284,6 +284,21 @@
         (when (fboundp 'nl-write-file)
           (fmakunbound 'nl-write-file))))))
 
+(ert-deftest files-test/files-access-ok-p-delegates-to-syscall-path-int ()
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'nelisp--syscall-path-int)
+               (lambda (nr file mode)
+                 (push (list nr file mode) seen)
+                 (if (and (equal file "/tmp/ok") (eq mode 0)) 0 -1)))
+              ((symbol-function 'rdf)
+               (lambda (&rest _)
+                 (error "rdf fallback must not run"))))
+      (should (files-access-ok-p "/tmp/ok" 0))
+      (should-not (files-access-ok-p "/tmp/missing" 0))
+      (should (equal (reverse seen)
+                     (list (list files--syscall-access "/tmp/ok" 0)
+                           (list files--syscall-access "/tmp/missing" 0)))))))
+
 (ert-deftest files-test/wrappers-avoid-lexical-closure-capture ()
   (files-test--with-shim-functions
     (should (equal (symbol-function 'find-file)

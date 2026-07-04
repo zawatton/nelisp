@@ -292,8 +292,14 @@ single-frame backends (= some bare-minimum TUIs) ship."
 
 (unless (fboundp 'set-advertised-calling-convention)
   (defun set-advertised-calling-convention (function arglist when)
-    "Stub: drop the metadata."
-    (ignore function arglist when) nil))
+    "Record advertised calling convention metadata for FUNCTION."
+    (put function 'advertised-calling-convention (list arglist when))
+    arglist))
+
+(unless (fboundp 'get-advertised-calling-convention)
+  (defun get-advertised-calling-convention (function)
+    "Return advertised calling convention metadata for FUNCTION."
+    (get function 'advertised-calling-convention)))
 
 (unless (fboundp 'byte-code-function-p)
   (defun byte-code-function-p (object) (ignore object) nil))
@@ -469,6 +475,118 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
   (defmacro combine-change-calls (_beg _end &rest body)
     "Standalone fallback: evaluate BODY without buffer-change coalescing."
     (cons 'progn body)))
+
+(defun emacs-stub--advice-records (symbol)
+  "Return SYMBOL's advice records."
+  (get symbol 'emacs-stub--advice-records))
+
+(defun emacs-stub--advice-original (symbol)
+  "Return SYMBOL's original function."
+  (get symbol 'emacs-stub--advice-original))
+
+(defun emacs-stub--advice-call (original records args)
+  "Call ORIGINAL through advice RECORDS with ARGS."
+  (let ((override nil)
+        (befores nil)
+        (afters nil)
+        (arounds nil)
+        (tail records))
+    (while tail
+      (let ((record (car tail)))
+        (cond
+         ((eq (car record) :override) (setq override (cdr record)))
+         ((eq (car record) :before) (setq befores (cons (cdr record) befores)))
+         ((eq (car record) :after) (setq afters (cons (cdr record) afters)))
+         ((eq (car record) :around) (setq arounds (cons (cdr record) arounds)))))
+      (setq tail (cdr tail)))
+    (if override
+        (apply override args)
+      (let ((b (nreverse befores)))
+        (while b
+          (apply (car b) args)
+          (setq b (cdr b))))
+      (let ((call (or original (lambda (&rest _args) nil)))
+            (a (nreverse arounds)))
+        (while a
+          (let ((advice (car a))
+                (next call))
+            (setq call (lambda (&rest call-args)
+                         (apply advice next call-args))))
+          (setq a (cdr a)))
+        (let ((result (apply call args))
+              (after-list (nreverse afters)))
+          (while after-list
+            (apply (car after-list) args)
+            (setq after-list (cdr after-list)))
+          result)))))
+
+(defun emacs-stub--advice-rebuild (symbol)
+  "Rebuild SYMBOL's function cell from stored advice records."
+  (let ((original (emacs-stub--advice-original symbol))
+        (records (emacs-stub--advice-records symbol)))
+    (if records
+        (fset symbol
+              (lambda (&rest args)
+                (emacs-stub--advice-call original
+                                         (emacs-stub--advice-records symbol)
+                                         args)))
+      (when original
+        (fset symbol original)))
+    symbol))
+
+(defun emacs-stub--advice-drop-function (function records)
+  "Return RECORDS without entries whose function is FUNCTION."
+  (let ((out nil))
+    (while records
+      (unless (equal function (cdr (car records)))
+        (setq out (cons (car records) out)))
+      (setq records (cdr records)))
+    (nreverse out)))
+
+(defun emacs-stub--advice-add (symbol where function &optional _props)
+  "Add FUNCTION as advice to SYMBOL at WHERE."
+  (unless (emacs-stub--advice-original symbol)
+    (put symbol 'emacs-stub--advice-original
+         (and (fboundp symbol) (symbol-function symbol))))
+  (let ((records (emacs-stub--advice-records symbol))
+        (record (cons where function)))
+    (setq records (emacs-stub--advice-drop-function function records))
+    (put symbol 'emacs-stub--advice-records (append records (list record))))
+  (emacs-stub--advice-rebuild symbol)
+  function)
+
+(defun emacs-stub--advice-remove (symbol function)
+  "Remove FUNCTION advice from SYMBOL."
+  (let ((records (emacs-stub--advice-drop-function
+                  function (emacs-stub--advice-records symbol))))
+    (put symbol 'emacs-stub--advice-records records)
+    (emacs-stub--advice-rebuild symbol))
+  nil)
+
+(defun emacs-stub--advice-member-p (function symbol)
+  "Return non-nil when FUNCTION advises SYMBOL."
+  (let ((records (emacs-stub--advice-records symbol))
+        (found nil))
+    (while (and records (not found))
+      (when (equal function (cdr (car records)))
+        (setq found t))
+      (setq records (cdr records)))
+    found))
+
+(unless (fboundp 'advice-add)
+  (defun advice-add (symbol where function &optional props)
+    "Add FUNCTION as advice to SYMBOL at WHERE."
+    (emacs-stub--advice-add symbol where function props)))
+
+(unless (fboundp 'advice-remove)
+  (defun advice-remove (symbol function)
+    "Remove FUNCTION advice from SYMBOL."
+    (emacs-stub--advice-remove symbol function)))
+
+(unless (fboundp 'advice-member-p)
+  (defun advice-member-p (function symbol)
+    "Return non-nil when FUNCTION advises SYMBOL."
+    (emacs-stub--advice-member-p function symbol)))
 
 (unless (fboundp 'define-advice)
   (defmacro define-advice (symbol args &rest body)
@@ -922,21 +1040,113 @@ when no real redisplay window is available."
 
 ;;;; --- minor-mode helpers -------------------------------------------------
 
+(defun emacs-stub--hook-entry-function (entry)
+  "Return ENTRY's hook function."
+  (if (and (consp entry) (numberp (car entry)))
+      (cdr entry)
+    entry))
+
+(defun emacs-stub--hook-entry-depth (entry)
+  "Return ENTRY's ordering depth."
+  (if (and (consp entry) (numberp (car entry)))
+      (car entry)
+    0))
+
+(defun emacs-stub--hook-normalize (value)
+  "Normalize hook VALUE to a list of hook entries."
+  (cond
+   ((null value) nil)
+   ((listp value) value)
+   (t (list value))))
+
+(defun emacs-stub--hook-entry (function depth)
+  "Return hook entry for FUNCTION at DEPTH."
+  (if (and (numberp depth) (not (= depth 0)))
+      (cons depth function)
+    function))
+
+(defun emacs-stub--add-hook (hook function &optional depth _local)
+  "Add FUNCTION to HOOK and return HOOK's new value.
+This is a minimal standalone implementation of Emacs hook variables.  DEPTH
+nil prepends, t appends, and numeric depths sort low-to-high."
+  (let* ((current (emacs-stub--hook-normalize
+                   (and (boundp hook) (symbol-value hook))))
+         (entry (emacs-stub--hook-entry function depth))
+         (filtered nil)
+         (tail current))
+    (while tail
+      (unless (equal function (emacs-stub--hook-entry-function (car tail)))
+        (setq filtered (cons (car tail) filtered)))
+      (setq tail (cdr tail)))
+    (setq filtered (nreverse filtered))
+    (let ((new (cond
+                ((eq depth t) (append filtered (list entry)))
+                ((numberp depth)
+                 (let ((out nil)
+                       (rest filtered)
+                       (inserted nil)
+                       (entry-depth (emacs-stub--hook-entry-depth entry)))
+                   (while rest
+                     (when (and (not inserted)
+                                (< entry-depth
+                                   (emacs-stub--hook-entry-depth (car rest))))
+                       (setq out (cons entry out))
+                       (setq inserted t))
+                     (setq out (cons (car rest) out))
+                     (setq rest (cdr rest)))
+                   (unless inserted
+                     (setq out (cons entry out)))
+                   (nreverse out)))
+                (t (cons entry filtered)))))
+      (set hook new)
+      new)))
+
+(defun emacs-stub--remove-hook (hook function &optional _local)
+  "Remove FUNCTION from HOOK and return HOOK's new value."
+  (let ((current (emacs-stub--hook-normalize
+                  (and (boundp hook) (symbol-value hook))))
+        (new nil))
+    (while current
+      (unless (equal function (emacs-stub--hook-entry-function (car current)))
+        (setq new (cons (car current) new)))
+      (setq current (cdr current)))
+    (setq new (nreverse new))
+    (set hook new)
+    new))
+
+(defun emacs-stub--run-hook (hook args)
+  "Run HOOK with ARGS and return nil."
+  (let ((entries (emacs-stub--hook-normalize
+                  (and (boundp hook) (symbol-value hook)))))
+    (while entries
+      (let ((fn (emacs-stub--hook-entry-function (car entries))))
+        (unless (eq fn t)
+          (apply fn args)))
+      (setq entries (cdr entries))))
+  nil)
+
 (unless (fboundp 'add-hook)
   (defun add-hook (hook function &optional depth local)
-    "Stub: no-op (NeLisp standalone has no hook dispatch)."
-    (ignore hook function depth local)
-    nil))
+    "Add FUNCTION to HOOK."
+    (emacs-stub--add-hook hook function depth local)))
 
 (unless (fboundp 'remove-hook)
   (defun remove-hook (hook function &optional local)
-    (ignore hook function local) nil))
+    "Remove FUNCTION from HOOK."
+    (emacs-stub--remove-hook hook function local)))
 
 (unless (fboundp 'run-hooks)
-  (defun run-hooks (&rest hooks) (ignore hooks) nil))
+  (defun run-hooks (&rest hooks)
+    "Run each normal hook in HOOKS."
+    (while hooks
+      (emacs-stub--run-hook (car hooks) nil)
+      (setq hooks (cdr hooks)))
+    nil))
 
 (unless (fboundp 'run-hook-with-args)
-  (defun run-hook-with-args (hook &rest args) (ignore hook args) nil))
+  (defun run-hook-with-args (hook &rest args)
+    "Run HOOK as an abnormal hook with ARGS."
+    (emacs-stub--run-hook hook args)))
 
 
 ;;;; --- list helpers ------------------------------------------------------
@@ -2474,28 +2684,117 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
 (unless (fboundp 'open-termscript) (defun open-termscript (&rest _) nil))
 (unless (fboundp 'set-input-method) (defun set-input-method (&rest _) nil))
 
-;;;; --- timers no-op stubs (= no scheduler in NeLisp standalone yet) ---
+;;;; --- timers ------------------------------------------------------------
+
+(unless (boundp 'timer-list)
+  (defvar timer-list nil))
+
+(unless (boundp 'timer-idle-list)
+  (defvar timer-idle-list nil))
+
+(defun emacs-stub--timer-now ()
+  "Return current time as a float, or 0 when unavailable."
+  (if (fboundp 'float-time) (float-time) 0))
+
+(defun emacs-stub--timer-make (trigger repeat function args idle-delay)
+  "Return a lightweight timer object."
+  (vector 'emacs-timer trigger repeat function args idle-delay nil))
+
+(defun emacs-stub--timer-p (object)
+  "Return non-nil when OBJECT is a lightweight timer."
+  (and (vectorp object)
+       (> (length object) 0)
+       (eq (aref object 0) 'emacs-timer)))
+
+(defun emacs-stub--run-with-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds."
+  (let ((timer (emacs-stub--timer-make
+                (+ (emacs-stub--timer-now) (or secs 0))
+                repeat function args nil)))
+    (setq timer-list (cons timer timer-list))
+    timer))
+
+(defun emacs-stub--run-with-idle-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds of idle time."
+  (let ((timer (emacs-stub--timer-make nil repeat function args (or secs 0))))
+    (setq timer-idle-list (cons timer timer-idle-list))
+    timer))
+
+(defun emacs-stub--cancel-timer (timer)
+  "Cancel TIMER."
+  (setq timer-list (delq timer timer-list)
+        timer-idle-list (delq timer timer-idle-list))
+  nil)
 
 (unless (fboundp 'run-at-time)
-  (defun run-at-time (&rest _) nil))
+  (defun run-at-time (time repeat function &rest args)
+    "Schedule FUNCTION at TIME with REPEAT."
+    (apply #'emacs-stub--run-with-timer
+           (if (numberp time) time 0) repeat function args))
+  (put 'run-at-time 'emacs-stub-bulk t))
+
 (unless (fboundp 'run-with-timer)
-  (defun run-with-timer (&rest _) nil))
+  (defun run-with-timer (secs repeat function &rest args)
+    "Schedule FUNCTION after SECS seconds."
+    (apply #'emacs-stub--run-with-timer secs repeat function args))
+  (put 'run-with-timer 'emacs-stub-bulk t))
+
 (unless (fboundp 'run-with-idle-timer)
-  (defun run-with-idle-timer (&rest _) nil))
+  (defun run-with-idle-timer (secs repeat function &rest args)
+    "Schedule FUNCTION after SECS seconds of idle time."
+    (apply #'emacs-stub--run-with-idle-timer secs repeat function args))
+  (put 'run-with-idle-timer 'emacs-stub-bulk t))
+
 (unless (fboundp 'cancel-timer)
-  (defun cancel-timer (&rest _) nil))
+  (defun cancel-timer (timer)
+    "Cancel TIMER."
+    (emacs-stub--cancel-timer timer))
+  (put 'cancel-timer 'emacs-stub-bulk t))
+
 (unless (fboundp 'cancel-function-timers)
-  (defun cancel-function-timers (&rest _) nil))
+  (defun cancel-function-timers (function)
+    "Cancel timers whose callback is FUNCTION."
+    (let ((timers (append timer-list timer-idle-list)))
+      (while timers
+        (when (and (emacs-stub--timer-p (car timers))
+                   (equal (aref (car timers) 3) function))
+          (emacs-stub--cancel-timer (car timers)))
+        (setq timers (cdr timers))))
+    nil))
+
 (unless (fboundp 'timerp)
-  (defun timerp (_) nil))
+  (defun timerp (object)
+    "Return non-nil when OBJECT is a timer."
+    (emacs-stub--timer-p object))
+  (put 'timerp 'emacs-stub-bulk t))
+
 (unless (fboundp 'timer-create)
-  (defun timer-create (&rest _) nil))
+  (defun timer-create ()
+    "Create an inactive lightweight timer."
+    (emacs-stub--timer-make nil nil nil nil nil)))
+
 (unless (fboundp 'timer-set-time)
-  (defun timer-set-time (&rest _) nil))
+  (defun timer-set-time (timer time &optional repeat)
+    "Set TIMER's TIME and REPEAT."
+    (when (emacs-stub--timer-p timer)
+      (aset timer 1 (if (numberp time) (+ (emacs-stub--timer-now) time) 0))
+      (aset timer 2 repeat))
+    timer))
+
 (unless (fboundp 'timer-set-function)
-  (defun timer-set-function (&rest _) nil))
+  (defun timer-set-function (timer function &optional args)
+    "Set TIMER's FUNCTION and ARGS."
+    (when (emacs-stub--timer-p timer)
+      (aset timer 3 function)
+      (aset timer 4 args))
+    timer))
+
 (unless (fboundp 'timer-activate)
-  (defun timer-activate (&rest _) nil))
+  (defun timer-activate (timer &optional _triggered)
+    "Activate TIMER."
+    (when (emacs-stub--timer-p timer)
+      (setq timer-list (cons timer timer-list)))
+    timer))
 (unless (fboundp 'sit-for)
   (defun sit-for (&rest _) nil))
 (unless (fboundp 'sleep-for)
@@ -2539,6 +2838,24 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
        (put ',symbol 'standard-value (list ',standard))
        (put ',symbol 'custom-args ',args)
        ',symbol)))
+
+(unless (fboundp 'custom-declare-variable)
+  (defun custom-declare-variable (symbol default doc &rest args)
+    "Standalone load-time fallback for evaluated Custom variables."
+    (unless (boundp symbol)
+      (set symbol default))
+    (put symbol 'standard-value (list default))
+    (put symbol 'variable-documentation doc)
+    (put symbol 'custom-args args)
+    symbol))
+
+(unless (fboundp 'custom-declare-face)
+  (defun custom-declare-face (face spec doc &rest args)
+    "Standalone load-time fallback for evaluated Custom faces."
+    (put face 'face-defface-spec spec)
+    (put face 'face-documentation doc)
+    (put face 'custom-args args)
+    face))
 
 (unless (fboundp 'convert-standard-filename)
   (defun convert-standard-filename (filename)

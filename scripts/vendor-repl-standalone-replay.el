@@ -2,6 +2,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'standalone-source-normalize)
 
 (defvar vendor-repl-standalone-reader nil
@@ -19,6 +20,14 @@
 (defvar vendor-repl-standalone-proof-form
   "(fboundp (quote emacs-keymap-define-key-after))"
   "Raw Lisp form that must be true after REPL load replay.")
+
+(defvar vendor-repl-standalone-proof-form-file nil
+  "Optional file containing the raw Lisp proof form.
+
+When non-nil, this file takes precedence over
+`vendor-repl-standalone-proof-form'.  It is intended for exact extracted
+vendor forms whose docstrings or backquote syntax are awkward to pass through
+shell and Make quoting.")
 
 (defvar vendor-repl-standalone-detail-form "nil"
   "Raw Lisp form returning a diagnostic string when the proof form is false.")
@@ -41,6 +50,25 @@ By default every normalized vendor form is emitted directly.  The persistent
 REPL replay is an accumulated load/evaluator diagnostic, and current standalone
 runtime builds remain sensitive to repeated nested `nelisp--eval-source-string'
 reads.  Raise this value when intentionally probing that source-reader path.")
+
+(defvar vendor-repl-standalone-coalesce-file-forms nil
+  "When non-nil, replay each vendor file as one `progn' of normalized forms.
+
+This keeps the vendor source intact after host-side normalization while avoiding
+per-form persistent REPL overhead for files whose individual top-level forms
+have already been reduced.  Form tracing remains per-form and takes precedence
+over coalescing.")
+
+(defvar vendor-repl-standalone-internal-timeout-seconds nil
+  "Optional timeout, in seconds, enforced inside this Emacs process.
+
+GNU timeout kills this batch process before it can report the last sentinel or
+clean up the child REPL.  This internal timeout is intended for diagnostic
+runs: when set to a positive number, the child reader is polled from Emacs,
+killed on timeout, and the marker/input/output paths are reported.")
+
+(defvar vendor-repl-standalone-keep-temp-on-timeout t
+  "When non-nil, preserve generated files after an internal timeout.")
 
 (defconst vendor-repl-standalone--success
   "VENDOR-REPL-STANDALONE=ok"
@@ -71,24 +99,80 @@ to be safe in every standalone-reader evaluator path."
 (defun vendor-repl-standalone--record-load-form (file marker)
   "Return REPL forms that load FILE and record the outcome."
   (let ((name (file-name-nondirectory file))
-        (index 0))
+        (index 0)
+        (sources (standalone-source-normalize-file-to-form-strings file)))
     (concat
      (vendor-repl-standalone--status-form
       (concat "start:" name ":count="))
      (format "(nl-write-file %S vendor-repl-load-status)\n" marker)
      (format "(setq load-file-name %S)\n" file)
      (format "(setq buffer-file-name %S)\n" file)
-     (mapconcat (lambda (source)
-                  (setq index (1+ index))
-                  (vendor-repl-standalone--eval-source-form
-                   source marker name index))
-                (standalone-source-normalize-file-to-form-strings file)
-                "")
+     (if (and vendor-repl-standalone-coalesce-file-forms
+              (not vendor-repl-standalone-trace-forms))
+         (vendor-repl-standalone--eval-source-form
+          (vendor-repl-standalone--coalesced-source sources))
+       (mapconcat (lambda (source)
+                    (setq index (1+ index))
+                    (vendor-repl-standalone--eval-source-form
+                     source marker name index))
+                  sources
+                  ""))
+     (vendor-repl-standalone--sync-provided-features-form sources)
      "(setq vendor-standalone-load-ok-count (1+ vendor-standalone-load-ok-count))\n"
      (vendor-repl-standalone--status-form
       (concat "ok:" name ":count="))
      (format "(nl-write-file %S vendor-repl-load-status)\n" marker)
      "")))
+
+(defun vendor-repl-standalone--form-provided-features (form)
+  "Return feature symbols provided by FORM."
+  (let ((features nil))
+    (cond
+     ((and (consp form)
+           (eq (car form) 'provide)
+           (consp (cdr form))
+           (consp (cadr form))
+           (eq (caadr form) 'quote)
+           (symbolp (cadadr form)))
+      (push (cadadr form) features))
+     ((consp form)
+      (setq features
+            (append (vendor-repl-standalone--form-provided-features (car form))
+                    features))
+      (when (consp (cdr form))
+        (setq features
+              (append (vendor-repl-standalone--form-provided-features (cdr form))
+                      features)))))
+    features))
+
+(defun vendor-repl-standalone--source-provided-features (source)
+  "Return feature symbols provided by normalized SOURCE."
+  (condition-case _err
+      (vendor-repl-standalone--form-provided-features (read source))
+    (error nil)))
+
+(defun vendor-repl-standalone--sync-provided-features-form (sources)
+  "Return standalone forms re-providing features found in SOURCES."
+  (mapconcat
+   (lambda (feature)
+     (format "(provide '%S)\n" feature))
+   (delete-dups
+    (apply #'append
+           (mapcar #'vendor-repl-standalone--source-provided-features
+                   sources)))
+   ""))
+
+(defun vendor-repl-standalone--coalesced-source (sources)
+  "Return one pretty-printed `progn' source containing SOURCES."
+  (vendor-repl-standalone--pretty-form
+   (concat "(progn\n"
+           (mapconcat (lambda (source)
+                        (concat source
+                                (unless (string-suffix-p "\n" source)
+                                  "\n")))
+                      sources
+                      "")
+           ")\n")))
 
 (defun vendor-repl-standalone--eval-source-form (source &optional marker file-name index)
   "Return a standalone form that evaluates SOURCE through NeLisp's reader."
@@ -126,13 +210,22 @@ to be safe in every standalone-reader evaluator path."
 (defun vendor-repl-standalone--load-paths ()
   "Return the load paths needed for standalone REPL vendor replay."
   (let ((root (vendor-repl-standalone--repo-root)))
-    (list (expand-file-name "src" root)
-          (expand-file-name "scripts" root)
-          (expand-file-name "vendor/emacs-lisp" root)
-          (expand-file-name "vendor/emacs-lisp/emacs-lisp"
-                            root)
-          (expand-file-name "vendor/emacs-lisp/vc"
-                            root))))
+    (cl-remove-if-not
+     #'file-directory-p
+     (list (expand-file-name "src" root)
+           (expand-file-name "scripts" root)
+           (expand-file-name "vendor/compat" root)
+           (expand-file-name "vendor/cond-let" root)
+           (expand-file-name "vendor/llama" root)
+           (expand-file-name "vendor/transient/lisp" root)
+           (expand-file-name "vendor/dash.el" root)
+           (expand-file-name "vendor/with-editor/lisp" root)
+           (expand-file-name "vendor/magit/lisp" root)
+           (expand-file-name "vendor/emacs-lisp" root)
+           (expand-file-name "vendor/emacs-lisp/emacs-lisp"
+                             root)
+           (expand-file-name "vendor/emacs-lisp/vc"
+                             root)))))
 
 (defun vendor-repl-standalone--read-file (file)
   "Return FILE contents as a string."
@@ -145,6 +238,14 @@ to be safe in every standalone-reader evaluator path."
   (condition-case _err
       (pp-to-string (read source))
     (error source)))
+
+(defun vendor-repl-standalone--proof-form-source ()
+  "Return the configured proof form source."
+  (if (and vendor-repl-standalone-proof-form-file
+           (not (string= vendor-repl-standalone-proof-form-file "")))
+      (vendor-repl-standalone--read-file
+       vendor-repl-standalone-proof-form-file)
+    vendor-repl-standalone-proof-form))
 
 (defun vendor-repl-standalone--write-input (files marker output)
   "Write standalone-reader REPL input for FILES to OUTPUT."
@@ -178,7 +279,7 @@ to be safe in every standalone-reader evaluator path."
       (insert "      (condition-case err\n")
       (insert "          ")
       (insert (vendor-repl-standalone--pretty-form
-               vendor-repl-standalone-proof-form))
+               (vendor-repl-standalone--proof-form-source)))
       (insert "        (error (setq vendor-repl-proof-error err) nil)))\n")
       (insert
        (format "(if vendor-repl-proof-value\n    (nl-write-file %S %S)\n"
@@ -196,30 +297,83 @@ to be safe in every standalone-reader evaluator path."
                        " detail=%s error=%s")))
       (insert ",quit\n"))))
 
+(defun vendor-repl-standalone--call-reader-sync (tmp out)
+  "Run the standalone reader on TMP, writing combined output to OUT."
+  (list
+   (call-process
+    "/bin/sh" nil (list out t) nil
+    "-c" "exec \"$1\" --repl --no-prompt --no-print < \"$2\""
+    "vendor-repl-standalone"
+    vendor-repl-standalone-reader
+    tmp)
+   nil))
+
+(defun vendor-repl-standalone--call-reader-with-timeout (tmp out timeout)
+  "Run the standalone reader on TMP, preserving progress if TIMEOUT expires."
+  (let* ((buffer (generate-new-buffer " *vendor-repl-standalone*"))
+         (process (make-process
+                   :name "vendor-repl-standalone"
+                   :buffer buffer
+                   :command
+                   (list "/bin/sh" "-c"
+                         "exec \"$1\" --repl --no-prompt --no-print < \"$2\" 2>&1"
+                         "vendor-repl-standalone"
+                         vendor-repl-standalone-reader
+                         tmp)
+                   :connection-type 'pipe
+                   :noquery t))
+         (deadline (+ (float-time) timeout))
+         exit timed-out)
+    (unwind-protect
+        (progn
+          (while (and (process-live-p process)
+                      (< (float-time) deadline))
+            (accept-process-output process 0.1))
+          (when (process-live-p process)
+            (setq timed-out t)
+            (kill-process process)
+            (accept-process-output process 1.0))
+          (setq exit (if timed-out 124 (process-exit-status process)))
+          (with-current-buffer buffer
+            (write-region (point-min) (point-max) out nil 'silent))
+          (list exit timed-out))
+      (when (process-live-p process)
+        (kill-process process))
+      (kill-buffer buffer))))
+
+(defun vendor-repl-standalone--call-reader (tmp out)
+  "Run the configured standalone reader on TMP, writing output to OUT."
+  (if (and (numberp vendor-repl-standalone-internal-timeout-seconds)
+           (> vendor-repl-standalone-internal-timeout-seconds 0))
+      (vendor-repl-standalone--call-reader-with-timeout
+       tmp out vendor-repl-standalone-internal-timeout-seconds)
+    (vendor-repl-standalone--call-reader-sync tmp out)))
+
 (defun vendor-repl-standalone--run (files)
   "Run standalone reader REPL on generated input for FILES."
   (let ((tmp (make-temp-file "nemacs-vendor-repl-standalone-" nil ".repl"))
         (out (make-temp-file "nemacs-vendor-repl-standalone-" nil ".out"))
         (marker (make-temp-file "nemacs-vendor-repl-standalone-" nil ".sentinel"))
         (start (float-time))
-        exit elapsed output sentinel)
+        exit elapsed output sentinel timed-out)
     (delete-file marker)
     (unwind-protect
         (progn
           (vendor-repl-standalone--write-input files marker tmp)
-          (setq exit
-                (call-process
-                 "/bin/sh" nil (list out t) nil
-                 "-c" "exec \"$1\" --repl --no-prompt --no-print < \"$2\""
-                 "vendor-repl-standalone"
-                 vendor-repl-standalone-reader
-                 tmp))
+          (with-temp-file marker
+            (insert "reader:start"))
+          (pcase-let ((`(,reader-exit ,reader-timed-out)
+                       (vendor-repl-standalone--call-reader tmp out)))
+            (setq exit reader-exit)
+            (setq timed-out reader-timed-out))
           (setq elapsed (- (float-time) start))
           (setq output (vendor-repl-standalone--read-file out))
           (setq sentinel (and (file-exists-p marker)
                               (vendor-repl-standalone--read-file marker)))
-          (list exit elapsed output sentinel tmp out marker))
-      (unless vendor-repl-standalone-keep-temp
+          (list exit elapsed output sentinel tmp out marker timed-out))
+      (unless (or vendor-repl-standalone-keep-temp
+                  (and timed-out
+                       vendor-repl-standalone-keep-temp-on-timeout))
         (dolist (file (list tmp out marker))
           (when (file-exists-p file)
             (delete-file file)))))))
@@ -247,7 +401,7 @@ to be safe in every standalone-reader evaluator path."
     (princ (format "vendor-repl-standalone files=%S proof=%s detail=%s status=start\n"
                    files vendor-repl-standalone-proof-form
                    vendor-repl-standalone-detail-form))
-    (pcase-let ((`(,exit ,elapsed ,output ,sentinel ,tmp ,out ,marker)
+    (pcase-let ((`(,exit ,elapsed ,output ,sentinel ,tmp ,out ,marker ,timed-out)
                  (vendor-repl-standalone--run files)))
       (if (and (numberp exit)
                (= exit 0)
@@ -255,9 +409,10 @@ to be safe in every standalone-reader evaluator path."
           (princ (format "vendor-repl-standalone files=%S proof=%s detail=%s status=done elapsed=%S exit=%S\n"
                          files vendor-repl-standalone-proof-form
                          vendor-repl-standalone-detail-form elapsed exit))
-        (princ (format "vendor-repl-standalone files=%S proof=%s detail=%s status=fail elapsed=%S exit=%S sentinel=%S expected-sentinel=%S input=%S output=%S marker=%S\n"
+        (princ (format "vendor-repl-standalone files=%S proof=%s detail=%s status=fail elapsed=%S exit=%S timed-out=%S sentinel=%S expected-sentinel=%S input=%S output=%S marker=%S\n"
                        files vendor-repl-standalone-proof-form
                        vendor-repl-standalone-detail-form elapsed exit
+                       timed-out
                        sentinel
                        vendor-repl-standalone--success
                        tmp out marker))

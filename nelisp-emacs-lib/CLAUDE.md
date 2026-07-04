@@ -16,7 +16,28 @@ Read first:
 - `docs/design/25-library-consumer-contract.org`
 - `docs/design/26-library-residual-api-audit.org`
 - `docs/design/27-package-extraction-readiness.org`
+- `docs/design/29-release-signing-workflow.org`
 - `docs/design/12-development-gates.org`
+
+## Current Progress Snapshot
+
+As of 2026-06-22, reusable-library completion is approximately 82% by
+engineering scope and by the latest post-release-publication-policy
+`make nemacs-library-gate` verification.  Use Doc 27 section
+`0.1 Progress Snapshot for AI Handoff` as the current handoff source.
+
+Claude Code should continue this as hardening and migration work, not as a
+fresh architecture search.  The immediate direction is:
+
+- keep `make nemacs-library-gate` green after package/release/API promotion
+  changes;
+- shrink the open rows in `build/nemacs-library-api-promotion-queue.org`
+  through deliberate stable API promotion decisions;
+- move toward physical `packages/` ownership while preserving `src/`
+  compatibility;
+- keep GUI/app/frontends as package consumers;
+- follow Doc 29 for release signing, release rehearsal, and publication
+  bundle verification.
 
 ## Operating Principle
 

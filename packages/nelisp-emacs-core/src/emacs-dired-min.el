@@ -17,15 +17,29 @@
 
 ;;; Code:
 
+(defconst emacs-dired-min--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the dired-min shim and its sibling features.")
+
+(defun emacs-dired-min--load-feature (feature)
+  "Load FEATURE from the dired-min shim directory."
+  (or (require feature nil t)
+      (let ((file (expand-file-name (concat (symbol-name feature) ".el")
+                                    emacs-dired-min--load-directory)))
+        (and (file-readable-p file)
+             (load file nil t)))
+      (require feature)))
+
 (require 'cl-lib)
-(require 'emacs-buffer-builtins)
-(require 'emacs-error)
-(require 'emacs-keymap)
-(require 'emacs-line-builtins)
-(require 'emacs-minibuffer-builtins)
-(require 'emacs-mode)
-(require 'nelisp-emacs-compat)
-(require 'nelisp-emacs-compat-fileio)
+(emacs-dired-min--load-feature 'emacs-buffer)
+(emacs-dired-min--load-feature 'emacs-buffer-builtins)
+(emacs-dired-min--load-feature 'emacs-error)
+(emacs-dired-min--load-feature 'emacs-keymap)
+(emacs-dired-min--load-feature 'emacs-line-builtins)
+(emacs-dired-min--load-feature 'emacs-minibuffer-builtins)
+(emacs-dired-min--load-feature 'emacs-mode)
+(emacs-dired-min--load-feature 'nelisp-emacs-compat)
+(emacs-dired-min--load-feature 'nelisp-emacs-compat-fileio)
 
 (defvar dired-mode-map nil
   "Keymap for `dired-mode'.")
@@ -148,6 +162,16 @@ independent of which mark is shown."
       (setq pos (+ pos (length (emacs-dired-min--format-entry entry ?\s)))))
     (nreverse starts)))
 
+(defun emacs-dired-min--apply-entry-properties (entries line-starts buffer)
+  "Attach per-line Dired ENTRY metadata to BUFFER.
+Each listing line receives a `dired-file' text property whose value is
+the corresponding entry plist."
+  (cl-mapc
+   (lambda (entry start)
+     (let ((end (+ start (length (emacs-dired-min--format-entry entry ?\s)))))
+       (emacs-buffer-put-text-property start end 'dired-file entry buffer)))
+   entries line-starts))
+
 (defun emacs-dired-min--line-index-at-point (line-starts point)
   "Return the line index in LINE-STARTS containing POINT."
   (let ((index 0)
@@ -191,6 +215,7 @@ independent of which mark is shown."
     (nelisp-ec-erase-buffer)
     (let ((text (emacs-dired-min--render-text entries marks)))
       (nelisp-ec-insert text)
+      (emacs-dired-min--apply-entry-properties entries line-starts buffer)
       (emacs-dired-min--mirror-host-buffer
        (emacs-dired-min--dired-buffer-name dir) text))
     (puthash buffer
@@ -336,7 +361,12 @@ PREVIOUS-BUFFER is remembered for quit behaviour."
   (let* ((buffer (nelisp-ec-current-buffer))
          (state (emacs-dired-min--current-state))
          (previous (plist-get state :previous-buffer)))
-    (when (and previous (buffer-live-p previous))
+    (when (and previous
+               (or (and (fboundp 'nelisp-ec-buffer-p)
+                        (nelisp-ec-buffer-p previous)
+                        (not (nelisp-ec-buffer-killed-p previous)))
+                   (and (fboundp 'buffer-live-p)
+                        (buffer-live-p previous))))
       (nelisp-ec-set-buffer previous))
     (when buffer
       (remhash buffer emacs-dired-min--state))

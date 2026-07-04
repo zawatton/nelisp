@@ -201,10 +201,16 @@ and a `CHILD-hook' defvar is created."
        (defun ,child ()
          ,(or real-doc (format "Major mode %s." child))
          (interactive)
-         ,parent-call
-         (emacs-mode-set-major-mode ',child ,name)
-         ,@real-body
-         (emacs-mode-run-mode-hooks ',e-hook-var ',hook-var)
+         ;; Standalone NeLisp currently loses forms that follow some
+         ;; macro-generated parent major-mode calls, notably nested
+         ;; `outline-mode' derived modes.  Running the child transition in
+         ;; `unwind-protect' cleanup preserves the observable
+         ;; define-derived-mode order: parent first, then child body/hooks.
+         (unwind-protect
+             ,parent-call
+           (emacs-mode-set-major-mode ',child ,name)
+           ,@real-body
+           (emacs-mode-run-mode-hooks ',e-hook-var ',hook-var))
          nil)
        ',child)))
 

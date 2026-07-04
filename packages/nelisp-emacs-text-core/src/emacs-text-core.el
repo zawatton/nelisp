@@ -15,6 +15,7 @@
 
 (defconst emacs-text-core-features
   '(nelisp-regex
+    rx
     nelisp-coding)
   "Reusable TXT package features loaded by `emacs-text-core'.")
 

@@ -92,6 +92,7 @@
 (setq files--bridge-session-stop nil)
 (setq files--bridge-session-request-count 0)
 (setq files--bridge-session-max-requests 512)
+(setq files--fast-basic-edit-handled nil)
 ;; Idle-poll pacing + recycle (2026-06-10): every poll iteration leaks a
 ;; little interpreter garbage that cannot be GC'd while the session form is
 ;; live (GC only runs at top-level form boundaries), so an unbounded
@@ -115,6 +116,89 @@
 (fset 'files--transport-read-current
       (lambda ()
         (rdf (files--transport-path))))
+
+(fset 'files--string-equal
+      (lambda (a b)
+        (if (if (stringp a) (stringp b) nil)
+            (let ((n (length a))
+                  (i 0)
+                  (ok t))
+              (if (= n (length b))
+                  (progn
+                    (while (if ok (< i n) nil)
+                      (if (= (aref a i) (aref b i))
+                          (setq i (+ i 1))
+                        (setq ok nil)))
+                    ok)
+                nil))
+          nil)))
+
+(fset 'equal
+      (lambda (a b)
+        (if (if (stringp a) (stringp b) nil)
+            (files--string-equal a b)
+          (if (if (integerp a) (integerp b) nil)
+              (= a b)
+            (if (if (consp a) (consp b) nil)
+                (if (equal (car a) (car b))
+                    (equal (cdr a) (cdr b))
+                  nil)
+              (if (if (vectorp a) (vectorp b) nil)
+                  (let ((n (length a))
+                        (i 0)
+                        (ok t))
+                    (if (= n (length b))
+                        (progn
+                          (while (if ok (< i n) nil)
+                            (if (equal (aref a i) (aref b i))
+                                (setq i (+ i 1))
+                              (setq ok nil)))
+                          ok)
+                      nil))
+                (eq a b)))))))
+
+(fset 'string-equal 'files--string-equal)
+(fset 'string= 'files--string-equal)
+
+(fset 'files--substring
+      (lambda (text start &optional end)
+        (let ((n (length text))
+              (from start)
+              (to end)
+              (out "")
+              (i 0))
+          (if (< from 0)
+              (setq from (+ n from))
+            nil)
+          (if to
+              nil
+            (setq to n))
+          (if (< to 0)
+              (setq to (+ n to))
+            nil)
+          (if (< from 0)
+              (setq from 0)
+            nil)
+          (if (> from n)
+              (setq from n)
+            nil)
+          (if (< to 0)
+              (setq to 0)
+            nil)
+          (if (> to n)
+              (setq to n)
+            nil)
+          (if (< to from)
+              (setq to from)
+            nil)
+          (setq out (make-string (- to from) 0))
+          (while (< from to)
+            (aset out i (aref text from))
+            (setq i (+ i 1))
+            (setq from (+ from 1)))
+          out)))
+
+(fset 'substring 'files--substring)
 
 (setq files--minibuffer-active nil)
 (setq files--minibuffer-prompt "")
@@ -548,6 +632,7 @@
               "C-M-u\tbackward-up-list\n"
               "M-d\tkill-word\n"
               "M-DEL\tbackward-kill-word\n"
+              "M-Backspace\tbackward-kill-word\n"
               "M-/\tdabbrev-expand\n"
               "C-M-/\tdabbrev-completion\n"
               "M-t\ttranspose-words\n"
@@ -565,6 +650,7 @@
               "M-e\tforward-sentence\n"
               "M-k\tkill-sentence\n"
               "C-x DEL\tbackward-kill-sentence\n"
+              "C-x Backspace\tbackward-kill-sentence\n"
               "C-t\ttranspose-chars\n"
               "M-\\\tdelete-horizontal-space\n"
               "M-SPC\tcycle-spacing\n"
@@ -582,6 +668,7 @@
               "C-x >\tscroll-right\n"
               "C-d\tdelete-char\n"
               "DEL\tdelete-backward-char\n"
+              "Backspace\tdelete-backward-char\n"
               "TAB\tindent-for-tab-command\n"
               "M-i\ttab-to-tab-stop\n"
               "RET\tnewline\n"
@@ -1968,7 +2055,7 @@
               value
             70))))
 
-(fset 'files--buffer-list-add
+(fset 'files--buffer-list-contains-current-p
       (lambda ()
         (if (equal files--buffer-list-name "")
             (setq files--buffer-list-name "main")
@@ -1991,8 +2078,16 @@
                   (setq start (+ index 1)))
               nil)
             (setq index (+ index 1)))
-          (if found
-              nil
+          found)))
+
+(fset 'files--buffer-list-add
+      (lambda ()
+        (if (files--buffer-list-contains-current-p)
+            nil
+          (let ((text (rdf files--buffer-list-file)))
+            (if (equal text "")
+                (setq text "main\n")
+              nil)
             (nl-write-file files--buffer-list-file
                            (concat text files--buffer-list-name "\n"))))))
 
@@ -2082,31 +2177,25 @@
                   (window-start-path (concat files--buffer-window-start-store-dir "/" files--special-buffer-name))
                   (read-only-path (concat files--buffer-read-only-store-dir "/" files--special-buffer-name))
                   (modified-path (concat files--buffer-modified-store-dir "/" files--special-buffer-name)))
-              (if (files--file-exists-p store-path)
-                  nil
-                (nl-write-file store-path (files--special-buffer-default-text)))
-              (if (files--file-exists-p file-path)
-                  nil
-                (nl-write-file file-path ""))
-              (if (files--file-exists-p point-path)
-                  nil
-                (nl-write-file point-path
-                               (if (equal files--special-buffer-name "*scratch*")
-                                   (number-to-string (length files--scratch-initial-message))
-                                 "0")))
-              (if (files--file-exists-p mark-path)
-                  nil
-                (nl-write-file mark-path "0"))
-              (if (files--file-exists-p window-start-path)
-                  nil
-                (nl-write-file window-start-path "0"))
-              (nl-write-file read-only-path
-                             (if (files--special-buffer-read-only-p) "1" "0"))
-              (if (files--file-exists-p modified-path)
-                  nil
-                (nl-write-file modified-path "0"))
               (setq files--buffer-list-name files--special-buffer-name)
-              (files--buffer-list-add))
+              ;; `access(2)' currently aborts the standalone continuation for
+              ;; absent paths in this image.  Use the transport buffer list as
+              ;; the safe existence signal for standard special buffers.
+              (if (files--buffer-list-contains-current-p)
+                  nil
+                (progn
+                  (nl-write-file store-path (files--special-buffer-default-text))
+                  (nl-write-file file-path "")
+                  (nl-write-file point-path
+                                 (if (equal files--special-buffer-name "*scratch*")
+                                     (number-to-string (length files--scratch-initial-message))
+                                   "0"))
+                  (nl-write-file mark-path "0")
+                  (nl-write-file window-start-path "0")
+                  (nl-write-file modified-path "0")
+                  (files--buffer-list-add)))
+              (nl-write-file read-only-path
+                             (if (files--special-buffer-read-only-p) "1" "0")))
           nil)))
 
 (fset 'files--ensure-standard-special-buffers
@@ -20270,6 +20359,239 @@ standalone images, but the concrete behavior is grouped as one adapter table.")
           (files--write-toolbar-state)
           (files--write-face-spans-state))))
 
+(fset 'files--fast-number-from-text
+      (lambda (text)
+        (let ((index 0)
+              (value 0))
+          (while (< index (length text))
+            (let ((ch (aref text index)))
+              (if (if (>= ch 48) (< ch 58) nil)
+                  (setq value (+ (* value 10) (- ch 48)))
+                nil))
+            (setq index (+ index 1)))
+          value)))
+
+(fset 'files--fast-basic-edit-command-for-key
+      (lambda (keys)
+        (let ((command nil))
+          (if (= (length keys) 1)
+              (let ((ch (aref keys 0)))
+                (if (if (>= ch 32) (not (= ch 127)) nil)
+                    (setq command 'self-insert-command)
+                  nil))
+            nil)
+          (if (equal keys "RET") (setq command 'newline) nil)
+          (if (equal keys "C-f") (setq command 'forward-char) nil)
+          (if (equal keys "Right") (setq command 'forward-char) nil)
+          (if (equal keys "C-b") (setq command 'backward-char) nil)
+          (if (equal keys "Left") (setq command 'backward-char) nil)
+          (if (equal keys "C-n") (setq command 'next-line) nil)
+          (if (equal keys "Down") (setq command 'next-line) nil)
+          (if (equal keys "C-p") (setq command 'previous-line) nil)
+          (if (equal keys "Up") (setq command 'previous-line) nil)
+          (if (equal keys "C-a") (setq command 'beginning-of-line) nil)
+          (if (equal keys "Home") (setq command 'beginning-of-line) nil)
+          (if (equal keys "C-e") (setq command 'end-of-line) nil)
+          (if (equal keys "End") (setq command 'end-of-line) nil)
+          (if (equal keys "Backspace") (setq command 'delete-backward-char) nil)
+          (if (equal keys "DEL") (setq command 'delete-backward-char) nil)
+          command)))
+
+(fset 'files--fast-basic-edit-write-redisplay-state
+      (lambda ()
+        (files--clamp-point)
+        (let ((index 0)
+              (line 1)
+              (column 0)
+              (point-string "")
+              (line-string "")
+              (column-string "")
+              (cells 0)
+              (cell-index 0)
+              (cell-byte 0)
+              (state "--"))
+          (if (fboundp 'str-count-nl)
+              (progn
+                (setq line (+ 1 (str-count-nl files--buffer-string files--point)))
+                (setq column (- files--point
+                                (str-line-start files--buffer-string files--point))))
+            (while (< index files--point)
+              (if (= (aref files--buffer-string index) 10)
+                  (progn
+                    (setq line (+ line 1))
+                    (setq column 0))
+                (setq column (+ column 1)))
+              (setq index (+ index 1))))
+          (setq files--number-file-value files--point)
+          (setq point-string (files--number-string))
+          (setq files--number-file-value line)
+          (setq line-string (files--number-string))
+          (setq files--number-file-value column)
+          (setq column-string (files--number-string))
+          (setq cell-index (- files--point column))
+          (while (< cell-index files--point)
+            (setq cell-byte (aref files--buffer-string cell-index))
+            (if (< cell-byte 128)
+                (progn
+                  (setq cells (+ cells 1))
+                  (setq cell-index (+ cell-index 1)))
+              (if (< cell-byte 192)
+                  (setq cell-index (+ cell-index 1))
+                (if (< cell-byte 224)
+                    (progn
+                      (setq cells (+ cells 1))
+                      (setq cell-index (+ cell-index 2)))
+                  (if (< cell-byte 240)
+                      (progn
+                        (setq cells (+ cells 2))
+                        (setq cell-index (+ cell-index 3)))
+                    (progn
+                      (setq cells (+ cells 2))
+                      (setq cell-index (+ cell-index 4))))))))
+          (nl-write-file (progn (setq files--transport-name "nemacs-cursor") (files--transport-path))
+                         (concat "point\t" point-string
+                                 "\nline\t" line-string
+                                 "\ncolumn\t" column-string
+                                 "\ncells\t" (number-to-string cells)
+                                 "\n"))
+          (if files--buffer-read-only-p
+              (if files--buffer-modified-p
+                  (setq state "%*")
+                (setq state "%%"))
+            (if files--buffer-modified-p
+                (setq state "**")
+              nil))
+          (setq files--modeline-string
+                (concat state
+                        "  "
+                        files--buffer-name
+                        "  "
+                        (if files--current-file-name files--current-file-name "")
+                        "  L"
+                        line-string
+                        " C"
+                        column-string))
+          (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path))
+                         files--modeline-string)
+          (files--write-view-transport))))
+
+(fset 'files--fast-basic-edit-save-store
+      (lambda ()
+        (nl-write-file (concat files--buffer-store-dir "/" files--buffer-name)
+                       files--buffer-string)
+        (nl-write-file (concat files--buffer-file-store-dir "/" files--buffer-name)
+                       (if files--current-file-name files--current-file-name ""))
+        (setq files--number-file-name
+              (concat files--buffer-point-store-dir "/" files--buffer-name))
+        (setq files--number-file-value files--point)
+        (files--write-number-file)
+        (setq files--number-file-name
+              (concat files--buffer-mark-store-dir "/" files--buffer-name))
+        (setq files--number-file-value files--mark)
+        (files--write-number-file)
+        (setq files--number-file-name
+              (concat files--buffer-window-start-store-dir "/" files--buffer-name))
+        (setq files--number-file-value files--window-start)
+        (files--write-number-file)
+        (nl-write-file (concat files--buffer-read-only-store-dir "/" files--buffer-name)
+                       (if files--buffer-read-only-p "1" "0"))
+        (nl-write-file (concat files--buffer-modified-store-dir "/" files--buffer-name)
+                       (if files--buffer-modified-p "1" "0"))))
+
+(fset 'files--fast-basic-edit-run
+      (lambda ()
+        (let* ((cmd (progn (setq files--transport-name "nemacs-cmd") (files--transport-read-current)))
+               (keys (progn (setq files--transport-name "nemacs-keys") (files--transport-read-current)))
+               (command (files--fast-basic-edit-command-for-key keys))
+               (minibuffer-active (progn (setq files--transport-name "nemacs-minibuffer-active")
+                                         (files--transport-read-current)))
+               (input-method (progn (setq files--transport-name "nemacs-input-method")
+                                    (files--transport-read-current)))
+               (prefix-arg (progn (setq files--transport-name "nemacs-prefix-arg")
+                                  (files--transport-read-current)))
+               (toolbar-click (progn (setq files--transport-name "nemacs-toolbar-click")
+                                     (files--transport-read-current)))
+               (read-only-text "")
+               (point-text "")
+               (mark-text "")
+               (window-start-text ""))
+          (setq files--fast-basic-edit-handled nil)
+          (if cmd nil (setq cmd ""))
+          (if keys nil (setq keys ""))
+          (if minibuffer-active nil (setq minibuffer-active ""))
+          (if input-method nil (setq input-method ""))
+          (if prefix-arg nil (setq prefix-arg ""))
+          (if toolbar-click nil (setq toolbar-click ""))
+          (if (if (equal cmd "")
+                  (if command
+                      (if (not (equal minibuffer-active "1"))
+                          (if (equal input-method "")
+                              (if (equal prefix-arg "")
+                                  (equal toolbar-click "")
+                                nil)
+                            nil)
+                        nil)
+                    nil)
+                nil)
+              (progn
+                (setq read-only-text (progn (setq files--transport-name "nemacs-read-only")
+                                            (files--transport-read-current)))
+                (if (equal read-only-text "1")
+                    nil
+                  (progn
+                    (setq files--current-file-name
+                          (progn (setq files--transport-name "nemacs-file")
+                                 (files--transport-read-current)))
+                    (setq files--buffer-name
+                          (progn (setq files--transport-name "nemacs-buffer-name")
+                                 (files--transport-read-current)))
+                    (if (equal files--buffer-name "")
+                        (setq files--buffer-name "main")
+                      nil)
+                    (setq files--buffer-string
+                          (progn (setq files--transport-name "nemacs-buf")
+                                 (files--transport-read-current)))
+                    (if (> (length files--buffer-string) files--view-cap)
+                        nil
+                      (progn
+                        (setq point-text (progn (setq files--transport-name "nemacs-point")
+                                                (files--transport-read-current)))
+                        (setq mark-text (progn (setq files--transport-name "nemacs-mark")
+                                               (files--transport-read-current)))
+                        (setq window-start-text
+                              (progn (setq files--transport-name "nemacs-window-start")
+                                     (files--transport-read-current)))
+                        (setq files--point (files--fast-number-from-text point-text))
+                        (setq files--mark (files--fast-number-from-text mark-text))
+                        (setq files--window-start
+                              (files--fast-number-from-text window-start-text))
+                        (setq files--buffer-read-only-p nil)
+                        (setq files--buffer-modified-p t)
+                        (setq files--bridge-keys keys)
+                        (setq files--bridge-arg
+                              (if (eq command 'self-insert-command) keys ""))
+                        (funcall command)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-buf")
+                                              (files--transport-path))
+                                       files--buffer-string)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-read-only")
+                                              (files--transport-path))
+                                       "0")
+                        (files--write-transport-point)
+                        (files--write-transport-mark)
+                        (files--write-transport-window-start)
+                        (files--fast-basic-edit-save-store)
+                        (files--fast-basic-edit-write-redisplay-state)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-status")
+                                              (files--transport-path))
+                                       "")
+                        (nl-write-file (progn (setq files--transport-name "nemacs-keys")
+                                              (files--transport-path))
+                                       "")
+                        (setq files--fast-basic-edit-handled t)))))
+            nil)
+          files--fast-basic-edit-handled)))
+
 (fset 'files--start-minibuffer
       (lambda ()
         (if (fboundp 'emacs-minibuffer-gui-start-current-context)
@@ -23434,8 +23756,12 @@ standalone images, but the concrete behavior is grouped as one adapter table.")
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
-        (files--ensure-standard-special-buffers)
-        (let ((cmd (progn (setq files--transport-name "nemacs-cmd") (files--transport-read-current)))
+        (files--fast-basic-edit-run)
+        (if files--fast-basic-edit-handled
+            nil
+          (progn
+            (files--ensure-standard-special-buffers)
+            (let ((cmd (progn (setq files--transport-name "nemacs-cmd") (files--transport-read-current)))
               (keys (progn (setq files--transport-name "nemacs-keys") (files--transport-read-current)))
               (target (progn (setq files--transport-name "nemacs-file") (files--transport-read-current)))
 	              (arg (progn (setq files--transport-name "nemacs-arg") (files--transport-read-current)))
@@ -24763,7 +25089,7 @@ standalone images, but the concrete behavior is grouped as one adapter table.")
                     (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status))
                 (if (equal files--bridge-status "written")
                     nil
-                  (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status))))))))))))
+                  (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)))))))))))))))
 
 (fset 'files--session-idle-sleep
       (lambda ()

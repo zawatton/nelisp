@@ -94,9 +94,38 @@
     nelisp-coding-jis-tables-sha256)
   "Stable lazy text-core API expected from the public facade query API.")
 
-(defconst nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-api
+(defconst nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-loaddefs-api
   '(nemacs-loaddefs-generate-for-file
     nemacs-loaddefs-generate)
+  "Stable lazy IO loaddefs API expected from the public facade query API.")
+
+(defconst nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-dump-api
+  '(emacs-dump-build-image
+    emacs-dump-save
+    emacs-dump-read
+    emacs-dump-load
+    emacs-dump-image-info
+    emacs-dump-format-version
+    emacs-dump-default-load-history-tail
+    emacs-dump-extra-buffer-names
+    emacs-dump-defvar-allowlist)
+  "Stable lazy IO dump API expected from the public facade query API.")
+
+(defconst nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-image-loader-api
+  '(image-loader-load
+    image-loader-load-if-readable
+    image-loader-load-batch
+    image-loader-info
+    image-loader-file
+    image-loader-restore-buffers
+    image-loader-last-loaded-file
+    image-loader-last-image-info)
+  "Stable lazy IO image-loader API expected from the public facade query API.")
+
+(defconst nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-api
+  (append nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-loaddefs-api
+          nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-dump-api
+          nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-image-loader-api)
   "Stable lazy IO API expected from the public facade query API.")
 
 (defconst nelisp-emacs-consumer-smoke-test--expected-stable-lazy-core-api
@@ -1081,10 +1110,15 @@
     (setcar features 'changed-feature)
     (should (eq (car (nelisp-emacs-library-package-features 'core))
                 (car emacs-core-features))))
+  (should (equal (nelisp-emacs-library-package-lazy-features 'textmodes-stub)
+                 '(org
+                   emacs-org-outline
+                   emacs-org-todo
+                   emacs-org-table)))
   (let ((features (nelisp-emacs-library-package-lazy-features 'core)))
     (setcar features 'changed-feature)
     (should (eq (car (nelisp-emacs-library-package-lazy-features 'core))
-                'emacs-elisp-eval))))
+                'emacs-buffer-ui))))
 
 (ert-deftest nelisp-emacs-consumer-smoke-test/stable-api-query-results ()
   (should (equal (nelisp-emacs-library-stable-api-symbols 'foundation)
@@ -1140,12 +1174,26 @@
       (should (eq (plist-get entry :feature) 'nelisp-coding-jis-tables))
       (should (eq (plist-get entry :kind) 'variable))))
   (dolist (symbol
-           nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-api)
+           nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-loaddefs-api)
     (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
       (should entry)
       (should (eq (plist-get entry :package) 'io))
       (should (eq (plist-get entry :feature) 'nemacs-loaddefs))
       (should (eq (plist-get entry :kind) 'function))))
+  (dolist (symbol
+           nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-dump-api)
+    (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
+      (should entry)
+      (should (eq (plist-get entry :package) 'io))
+      (should (eq (plist-get entry :feature) 'emacs-dump))
+      (should (memq (plist-get entry :kind) '(function variable)))))
+  (dolist (symbol
+           nelisp-emacs-consumer-smoke-test--expected-stable-lazy-io-image-loader-api)
+    (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
+      (should entry)
+      (should (eq (plist-get entry :package) 'io))
+      (should (eq (plist-get entry :feature) 'image-loader))
+      (should (memq (plist-get entry :kind) '(function variable)))))
   (dolist (symbol
            nelisp-emacs-consumer-smoke-test--expected-stable-lazy-core-api)
     (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))

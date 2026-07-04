@@ -61,6 +61,15 @@
   "Return the current nelisp buffer as a list of lines."
   (split-string (emacs-dired-min-test--buffer-string) "\n" t))
 
+(ert-deftest dired-mode-map-is-built-lazily-and-stable ()
+  (let ((dired-mode-map nil))
+    (should-not dired-mode-map)
+    (let ((map (emacs-dired-min--ensure-mode-map)))
+      (should (eq map dired-mode-map))
+      (should (keymapp map))
+      (should (eq #'dired-find-file (lookup-key map (kbd "RET"))))
+      (should (eq #'emacs-dired-min-quit-window (lookup-key map (kbd "q")))))))
+
 (defun emacs-dired-min-test--goto-entry (name)
   "Move point to the dired entry named NAME in the current buffer."
   (let* ((state (gethash (nelisp-ec-current-buffer) emacs-dired-min--state))
@@ -146,6 +155,38 @@
               (should (cl-find-if (lambda (line)
                                     (string-prefix-p "  subdir\t" line))
                                   lines))))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-lines-carry-file-metadata-properties ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (progn
+            (dired (plist-get tree :root))
+            (emacs-dired-min-test--goto-entry "alpha.txt")
+            (let ((entry (emacs-buffer-get-text-property
+                          (nelisp-ec-point) 'dired-file
+                          (nelisp-ec-current-buffer))))
+              (should (equal "alpha.txt" (plist-get entry :name)))
+              (should (equal (plist-get tree :file-a)
+                             (plist-get entry :path)))
+              (should (plist-get entry :attributes)))
+            (emacs-dired-min-test--goto-entry "subdir")
+            (let ((entry (emacs-buffer-get-text-property
+                          (nelisp-ec-point) 'dired-file
+                          (nelisp-ec-current-buffer))))
+              (should (equal "subdir" (plist-get entry :name)))
+              (should (nelisp-ec-file-directory-p
+                       (plist-get entry :path))))
+            (let ((spans (emacs-buffer-text-property-view
+                          1 (nelisp-ec-point-max) '(dired-file)
+                          (nelisp-ec-current-buffer))))
+              (should (= 5 (length spans)))
+              (should (cl-every
+                       (lambda (span)
+                         (plist-get (plist-get (nth 2 span) 'dired-file)
+                                    :path))
+                       spans))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
 (ert-deftest dired-host-interactive-mirror-renders-listing ()
@@ -242,6 +283,24 @@
                             (emacs-dired-min-test--buffer-lines))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
+(ert-deftest dired-quit-window-restores-previous-buffer ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree))
+          (previous (nelisp-ec-generate-new-buffer " *previous*")))
+      (unwind-protect
+          (progn
+            (should (fboundp 'emacs-dired-min-quit-window))
+            (nelisp-ec-set-buffer previous)
+            (dired (plist-get tree :root))
+            (let ((dired-buffer (nelisp-ec-current-buffer)))
+              (should (gethash dired-buffer emacs-dired-min--state))
+              (emacs-dired-min-quit-window)
+              (should (eq previous (nelisp-ec-current-buffer)))
+              (should-not (gethash dired-buffer emacs-dired-min--state))))
+        (when (buffer-live-p previous)
+          (kill-buffer previous))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
 (ert-deftest dired-next-and-previous-line-move-point ()
   (emacs-dired-min-test--with-fresh-world
     (let ((tree (emacs-dired-min-test--make-tree)))
@@ -279,7 +338,14 @@
               (dired-mark)
               (should (member "* alpha.txt\t5\t-rw-rw-r--"
                               (emacs-dired-min-test--buffer-lines)))
-              (should (> (nelisp-ec-point) start))))
+              (should (> (nelisp-ec-point) start))
+              (emacs-dired-min-test--goto-entry "alpha.txt")
+              (should (equal "alpha.txt"
+                             (plist-get
+                              (emacs-buffer-get-text-property
+                               (nelisp-ec-point) 'dired-file
+                               (nelisp-ec-current-buffer))
+                              :name)))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
 (ert-deftest dired-unmark-clears-the-mark ()

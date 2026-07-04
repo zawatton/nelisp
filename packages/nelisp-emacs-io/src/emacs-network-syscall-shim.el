@@ -159,12 +159,84 @@ Writes the 4 network-order bytes; returns 1 on success, 0 on bad input."
             (setq j (1+ j)))
           1))))
 
+  (defun nl-ffi-shim--inet-pton6 (host out)
+    "Pure-elisp inet_pton(AF_INET6): parse HOST into 16 network-order bytes at OUT.
+Returns 1 on success, 0 on bad input.  Handles `::' zero-run compression
+\(e.g. \"::1\", \"::\", \"fe80::1\", full 8-group form).  IPv4-mapped tails
+\(\"::ffff:1.2.3.4\") are not handled (not needed by the K1 stack)."
+    (let ((ok t) (groups nil))
+      (condition-case nil
+          (let ((dbl (and (>= (length host) 2)
+                          (let ((i 0) (n (length host)) (hit nil))
+                            (while (and (not hit) (< i (1- n)))
+                              (when (and (= (aref host i) ?:)
+                                         (= (aref host (1+ i)) ?:))
+                                (setq hit i))
+                              (setq i (1+ i)))
+                            hit))))
+            (if dbl
+                (let* ((head (substring host 0 dbl))
+                       (tail (substring host (+ dbl 2)))
+                       (hg (if (string= head "") nil (nl-ffi-shim--split head ?:)))
+                       (tg (if (string= tail "") nil (nl-ffi-shim--split tail ?:)))
+                       (nz (- 8 (length hg) (length tg))))
+                  (if (< nz 0)
+                      (setq ok nil)
+                    (setq groups (append hg (make-list nz "0") tg))))
+              (setq groups (nl-ffi-shim--split host ?:))))
+        (error (setq ok nil)))
+      (if (or (not ok) (/= (length groups) 8))
+          0
+        (let ((j 0) (rc 1))
+          (dolist (g groups)
+            (if (or (string= g "") (> (length g) 4))
+                (setq rc 0)
+              (let ((v (nl-ffi-shim--parse-hex16 g)))
+                (if (null v)
+                    (setq rc 0)
+                  (nl-ffi-shim--poke-u8 out j (logand 255 (ash v -8)))
+                  (nl-ffi-shim--poke-u8 out (1+ j) (logand 255 v)))))
+            (setq j (+ j 2)))
+          rc))))
+
+  (defun nl-ffi-shim--split (s sep-char)
+    "Split string S on the single character SEP-CHAR; return a list of parts."
+    (let ((parts nil) (cur "") (i 0) (n (length s)))
+      (while (< i n)
+        (let ((c (aref s i)))
+          (if (= c sep-char)
+              (progn (push cur parts) (setq cur ""))
+            (setq cur (concat cur (char-to-string c)))))
+        (setq i (1+ i)))
+      (push cur parts)
+      (nreverse parts)))
+
+  (defun nl-ffi-shim--parse-hex16 (g)
+    "Parse a 1..4 char hex group G into 0..65535, or nil if non-hex."
+    (let ((v 0) (i 0) (n (length g)) (ok t))
+      (while (and ok (< i n))
+        (let* ((c (aref g i))
+               (d (cond ((and (>= c ?0) (<= c ?9)) (- c ?0))
+                        ((and (>= c ?a) (<= c ?f)) (+ 10 (- c ?a)))
+                        ((and (>= c ?A) (<= c ?F)) (+ 10 (- c ?A)))
+                        (t nil))))
+          (if d (setq v (+ (* v 16) d)) (setq ok nil)))
+        (setq i (1+ i)))
+      (and ok v)))
+
   (defconst nl-ffi-shim--syscalls
-    '(("read" . 0) ("write" . 1) ("close" . 3) ("poll" . 7)
+    '(("read" . 0) ("write" . 1) ("open" . 2) ("close" . 3)
+      ("poll" . 7) ("ioctl" . 16) ("pipe" . 22) ("dup2" . 33) ("getpid" . 39)
       ("socket" . 41) ("connect" . 42) ("accept" . 43)
-      ("bind" . 49) ("listen" . 50) ("setsockopt" . 54)
-      ("fcntl" . 72) ("getuid" . 102))
-    "libc function name -> Linux x86_64 syscall number (direct args).")
+      ("sendto" . 44) ("recvfrom" . 45)
+      ("bind" . 49) ("listen" . 50) ("getsockname" . 51) ("setsockopt" . 54)
+      ("wait4" . 61) ("fcntl" . 72) ("getuid" . 102) ("setsid" . 112)
+      ("pipe2" . 293))
+    "libc function name -> Linux x86_64 syscall number (direct args).
+Doc 06 C3 added open/ioctl/dup2/setsid/getpid for PTY support.
+Doc 06 D2 added sendto/recvfrom/getsockname for datagram + IPv6.
+Doc 06 C1 added pipe/pipe2 for async pipe-subprocess fds.
+Doc 06 C2 added wait4 for SIGCHLD-fallback child reaping.")
 
   (defun nl-ffi-call (_lib func _sig &rest args)
     "Shim: dispatch libc FUNC to `syscall-direct' (x86_64).
@@ -199,8 +271,16 @@ String arguments are marshalled to NUL-terminated C buffers."
          (syscall-direct 21 (nl-ffi-shim--cstr (nth 0 args))
                          (or (nth 1 args) 0) 0 0 0 0))))
      ((equal func "inet_pton")
-      ;; args: family host-string out-ptr
-      (nl-ffi-shim--inet-pton (nth 1 args) (nth 2 args)))
+      ;; args: family host-string out-ptr.  family 10 = AF_INET6.
+      (if (eql (nth 0 args) 10)
+          (nl-ffi-shim--inet-pton6 (nth 1 args) (nth 2 args))
+        (nl-ffi-shim--inet-pton (nth 1 args) (nth 2 args))))
+     ((equal func "usleep")
+      ;; usleep(usec) is not a syscall; emulate via poll(NULL, 0, usec/1000ms),
+      ;; which sleeps for the timeout and returns 0 (Doc 06 C1 — fixes the
+      ;; no-fds sleep path used by sit-for / accept-process-output).
+      (nl-ffi-shim--ret
+       (syscall-direct 7 0 0 (/ (or (nth 0 args) 0) 1000) 0 0 0)))
      ((equal func "__errno_location")
       (unless nl-ffi-shim--errno-buf
         (setq nl-ffi-shim--errno-buf (nl-ffi-malloc 4)))

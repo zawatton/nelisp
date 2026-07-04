@@ -67,6 +67,8 @@
   "Variable is not buffer-local in this buffer" 'emacs-buffer-error)
 (define-error 'emacs-buffer-undo-disabled
   "Undo is disabled for this buffer" 'emacs-buffer-error)
+(define-error 'text-read-only
+  "Attempt to modify read-only text" 'emacs-buffer-error)
 
 ;;; Side-table: per-buffer extended state
 
@@ -130,6 +132,9 @@ predicate returns the correct answer.")
   "Hash SYM -> default-value cell (a cons (BOUNDP . VALUE)).
 We cannot touch the host Emacs `default-value' machinery, so we shadow
 it for symbols that pass through this module's API.")
+
+(defvar inhibit-read-only nil
+  "Non-nil means buffer and text read-only checks are ignored.")
 
 (defun emacs-buffer--ensure-ext (buf)
   "Return the `emacs-buffer--ext' record for BUF, creating it lazily."
@@ -496,9 +501,77 @@ when neither carries PROP."
         (when (and (<= s pos) (< pos e))
           (throw 'found cell))))))
 
+(defun emacs-buffer--tp-after-insert (intervals pos length)
+  "Return INTERVALS adjusted after inserting LENGTH chars at POS."
+  (let (out)
+    (dolist (cell intervals)
+      (let ((s (emacs-buffer--tp-start cell))
+            (e (emacs-buffer--tp-end cell))
+            (p (emacs-buffer--tp-plist cell)))
+        (cond
+         ((< pos s)
+          (push (emacs-buffer--tp-cell (+ s length) (+ e length) p) out))
+         ((and (<= s pos) (< pos e))
+          (push (emacs-buffer--tp-cell s (+ e length) p) out))
+         (t
+          (push cell out)))))
+    (sort (nreverse out) (lambda (a b)
+                           (< (emacs-buffer--tp-start a)
+                              (emacs-buffer--tp-start b))))))
+
+(defun emacs-buffer--tp-after-delete (intervals start end)
+  "Return INTERVALS adjusted after deleting [START, END)."
+  (let ((length (- end start))
+        out)
+    (dolist (cell intervals)
+      (let ((s (emacs-buffer--tp-start cell))
+            (e (emacs-buffer--tp-end cell))
+            (p (emacs-buffer--tp-plist cell)))
+        (cond
+         ((<= e start)
+          (push cell out))
+         ((>= s end)
+          (push (emacs-buffer--tp-cell (- s length) (- e length) p) out))
+         ((and (< s start) (> e end))
+          (push (emacs-buffer--tp-cell s (- e length) p) out))
+         ((< s start)
+          (push (emacs-buffer--tp-cell s start p) out))
+         ((> e end)
+          (push (emacs-buffer--tp-cell start (- e length) p) out)))))
+    (sort (nreverse out) (lambda (a b)
+                           (< (emacs-buffer--tp-start a)
+                              (emacs-buffer--tp-start b))))))
+
 (defun emacs-buffer--tp-clamp-limit (pos limit)
   "If LIMIT is non-nil and POS > LIMIT, return LIMIT; else POS."
   (if (and limit (> pos limit)) limit pos))
+
+(defun emacs-buffer--read-only-ignored-p ()
+  "Return non-nil when read-only checks should be bypassed."
+  (and (boundp 'inhibit-read-only) inhibit-read-only))
+
+(defun emacs-buffer--buffer-read-only-p ()
+  "Return non-nil when the current buffer is read-only."
+  (and (boundp 'buffer-read-only) buffer-read-only))
+
+(defun emacs-buffer--text-read-only-at-p (pos &optional buf)
+  "Return non-nil when POS has a non-nil `read-only' text property."
+  (and (integerp pos)
+       (emacs-buffer-get-text-property pos 'read-only buf)))
+
+(defun emacs-buffer--text-read-only-in-range-p (start end &optional buf)
+  "Return non-nil when [START, END) intersects read-only text."
+  (and (< start end)
+       (emacs-buffer-text-property-view start end '(read-only) buf)))
+
+(defun emacs-buffer--barf-if-read-only (start end &optional buf)
+  "Signal when mutating [START, END) would touch read-only text."
+  (unless (emacs-buffer--read-only-ignored-p)
+    (when (or (emacs-buffer--buffer-read-only-p)
+              (if (= start end)
+                  (emacs-buffer--text-read-only-at-p start buf)
+                (emacs-buffer--text-read-only-in-range-p start end buf)))
+      (signal 'text-read-only nil))))
 
 ;;;###autoload
 (defun emacs-buffer-put-text-property (start end prop value &optional buf)
@@ -965,9 +1038,58 @@ reflects every text-content mutation)."
     (when ext
       (cl-incf (emacs-buffer--ext-text-tick ext)))))
 
+(defun emacs-buffer--insert-text-length (strings)
+  "Return total text length that `nelisp-ec-insert' will insert."
+  (let ((n 0))
+    (dolist (s strings)
+      (cond
+       ((stringp s) (setq n (+ n (length s))))
+       ((characterp s) (setq n (1+ n)))
+       (t (signal 'wrong-type-argument (list 'string-or-char-p s)))))
+    n))
+
+(defun emacs-buffer--insert-read-only-end (pos length)
+  "Return the exclusive read-only check end for insertion at POS."
+  (if (> length 0)
+      (min (1+ pos) (nelisp-ec-point-max))
+    pos))
+
+(defun emacs-buffer--insert-around-advice (orig &rest strings)
+  "Around-advice for `nelisp-ec-insert'.
+Checks read-only text and shifts/expands text-property intervals."
+  (let* ((b (emacs-buffer--current))
+         (pos (nelisp-ec-point))
+         (length (emacs-buffer--insert-text-length strings))
+         (check-end (emacs-buffer--insert-read-only-end pos length))
+         (ext (emacs-buffer--ensure-ext b)))
+    (emacs-buffer--barf-if-read-only pos check-end b)
+    (prog1 (apply orig strings)
+      (when (> length 0)
+        (setf (emacs-buffer--ext-text-props ext)
+              (emacs-buffer--tp-after-insert
+               (emacs-buffer--ext-text-props ext) pos length))
+        (cl-incf (emacs-buffer--ext-modified-tick ext))))))
+
+(defun emacs-buffer--delete-region-around-advice (orig start end)
+  "Around-advice for `nelisp-ec-delete-region'.
+Checks read-only text and shifts/shrinks text-property intervals."
+  (let* ((b (emacs-buffer--current))
+         (s (min start end))
+         (e (max start end))
+         (ext (emacs-buffer--ensure-ext b)))
+    (emacs-buffer--barf-if-read-only s e b)
+    (prog1 (funcall orig start end)
+      (when (< s e)
+        (setf (emacs-buffer--ext-text-props ext)
+              (emacs-buffer--tp-after-delete
+               (emacs-buffer--ext-text-props ext) s e))
+        (cl-incf (emacs-buffer--ext-modified-tick ext))))))
+
 (advice-add 'nelisp-ec-insert        :after #'emacs-buffer--bump-text-tick-advice)
 (advice-add 'nelisp-ec-delete-region :after #'emacs-buffer--bump-text-tick-advice)
 (advice-add 'nelisp-ec-erase-buffer  :after #'emacs-buffer--bump-text-tick-advice)
+(advice-add 'nelisp-ec-insert        :around #'emacs-buffer--insert-around-advice)
+(advice-add 'nelisp-ec-delete-region :around #'emacs-buffer--delete-region-around-advice)
 
 ;;;###autoload
 (defun emacs-buffer-bump-modified-tick (&optional buf)
@@ -1245,6 +1367,20 @@ Returns OV.  Signals `emacs-buffer-error' if OV has been deleted."
   nil)
 
 ;;;###autoload
+(defun emacs-buffer-remove-overlays (&optional beg end name value buf)
+  "Remove overlays between BEG and END in BUF matching NAME and VALUE.
+When NAME is nil, remove every overlay overlapping the region."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (start (or beg (nelisp-ec-point-min)))
+         (limit (or end (nelisp-ec-point-max))))
+    (when (< start limit)
+      (dolist (ov (copy-sequence (emacs-buffer-overlays-in start limit buffer)))
+        (when (or (null name)
+                  (equal (emacs-buffer-overlay-get ov name) value))
+          (emacs-buffer-delete-overlay ov)))))
+  nil)
+
+;;;###autoload
 (defun emacs-buffer-overlays-at (pos &optional buf)
   "Return overlays at POS in BUF (default = current).
 Order: by ascending START, ties broken by insertion order."
@@ -1268,6 +1404,39 @@ Order: by ascending START, ties broken by insertion order."
          (and (< (emacs-buffer--overlay-rec-start ov) end)
               (> (emacs-buffer--overlay-rec-end ov) beg)))
        (emacs-buffer--ext-overlays ext)))))
+
+;;;###autoload
+(defun emacs-buffer-next-overlay-change (pos &optional buf)
+  "Return the next overlay boundary after POS in BUF."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (ext (gethash buffer emacs-buffer--state))
+         (limit (1+ (nelisp-ec-buffer-size buffer)))
+         (next limit))
+    (when ext
+      (dolist (ov (emacs-buffer--ext-overlays ext))
+        (let ((start (emacs-buffer--overlay-rec-start ov))
+              (end (emacs-buffer--overlay-rec-end ov)))
+          (when (and (> start pos) (< start next))
+            (setq next start))
+          (when (and (> end pos) (< end next))
+            (setq next end)))))
+    next))
+
+;;;###autoload
+(defun emacs-buffer-previous-overlay-change (pos &optional buf)
+  "Return the previous overlay boundary before POS in BUF."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (ext (gethash buffer emacs-buffer--state))
+         (previous 1))
+    (when ext
+      (dolist (ov (emacs-buffer--ext-overlays ext))
+        (let ((start (emacs-buffer--overlay-rec-start ov))
+              (end (emacs-buffer--overlay-rec-end ov)))
+          (when (and (< start pos) (> start previous))
+            (setq previous start))
+          (when (and (< end pos) (> end previous))
+            (setq previous end)))))
+    previous))
 
 ;;;###autoload
 (defun emacs-buffer-overlay-lists (&optional buf)

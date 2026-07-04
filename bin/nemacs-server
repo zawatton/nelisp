@@ -65,6 +65,34 @@ cat >"$PRE" <<EOF
           (progn (setq hit t) (setq xs nil))
         (setq xs (cdr xs))))
     hit))
+;; L5: bring up the full nemacs runtime (buffer/editor core, real
+;; find-file / save-buffer) on top of the M14 server/emacsclient
+;; polyfills already loaded above.  Same load-path / vendor-root
+;; shape as bin/nemacs's nelisp-driver boot (bin/nemacs:443-462,579).
+;; Flat top-level forms only (M18 nesting-depth-2 discipline, see the
+;; header note above).  Loading nemacs-main.el pulls in
+;; emacs-fileio-builtins, whose standalone-overrides force-reinstall
+;; the real find-file/save-buffer over the M14 stubs.
+(unless (boundp 'load-path) (defvar load-path nil))
+(setq nelisp-emacs-vendor-root "$ROOT/vendor")
+(setq load-path
+      (append (list "$ROOT/src"
+                    "$ROOT/vendor/emacs-lisp"
+                    "$ROOT/vendor/emacs-lisp/emacs-lisp")
+              (and (boundp 'load-path) load-path)))
+(load "$ROOT/src/emacs-fns.el" nil t)
+;; save-buffer / write-file (installed below by nemacs-main.el's
+;; emacs-fileio-builtins chain) declare themselves with `(interactive
+;; ...)'.  That form is only a no-op polyfill under src/emacs-eval.el
+;; (real Emacs has a native Finteractive primitive; the standalone
+;; reader does not), and emacs-eval.el is not on nemacs-loadup's
+;; require graph.  Load it here, flat top-level, so `interactive' is
+;; bound before any client calls a command that declares it -- doing
+;; this load lazily from inside a request handler instead hits the
+;; same nested-load risk class as the M18 finding above.
+(load "$ROOT/src/emacs-eval.el" nil t)
+(load "$ROOT/src/nemacs-main.el" nil t)
+(nemacs-init t)
 EOF
 # M18: the user's resolved packages, still at depth 2; the wrapped
 # init's registry guards skip the re-loads (the reader's provide

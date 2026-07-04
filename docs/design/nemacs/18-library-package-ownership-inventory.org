@@ -62,6 +62,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-foundation.el= | FND | foundation package-group loader | reusable library entry |
 | =emacs-fns.el= | FND | general primitive helpers | keep lowest layer |
 | =emacs-hash.el= | FND | hash helpers | keep reusable |
+| =emacs-weak-table.el= | FND | explicit-prune weak-table approximation (Doc 06 B5) | replace with native weak GC when available |
 | =emacs-list.el= | FND | list primitives | keep reusable |
 | =emacs-numeric.el= | FND | numeric/bitwise primitives | keep reusable |
 | =emacs-os-detect.el= | FND/IO | runtime OS detection | keep adapter-gated |
@@ -107,6 +108,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =nelisp-coding-jis-tables.el= | TXT | JIS coding tables | keep reusable |
 | =nelisp-coding.el= | TXT | coding implementation | keep reusable |
 | =nelisp-regex.el= | TXT/BUF | regex substrate | keep reusable; avoid buffer hard-coupling where possible |
+| =rx.el= | TXT | Emacs rx regexp DSL compatibility | keep reusable text-core dependency |
 
 ** 3.3 Buffer and editing substrate (BUF)
 
@@ -114,12 +116,12 @@ avoiding broad renames, mass moves, or formatting-only changes.
 |------+----------------+-----------------+-------------------|
 | =emacs-buffer-builtins.el= | BUF | unprefixed buffer shim | keep explicit shim |
 | =emacs-buffer-core.el= | BUF | buffer/search/line package-group loader | reusable library entry |
-| =emacs-buffer-ui.el= | BUF/CORE | buffer UI/list helpers | audit UI vs model |
+| =emacs-buffer-ui.el= | CORE/FEAT | buffer UI/list helpers | keep in editor-core feature package |
 | =emacs-buffer.el= | BUF | buffer state/model | public prefixed API |
 | =emacs-bookmark-ui.el= | BUF/FEAT | bookmark completion/list presentation | keep shared |
 | =emacs-edit-builtins.el= | BUF | edit command shims | keep command semantics shared |
 | =emacs-editing.el= | BUF | undo/edit package-group loader | reusable library entry |
-| =emacs-isearch.el= | BUF/FEAT | isearch implementation | keep buffer-backed |
+| =emacs-isearch.el= | CORE/FEAT | isearch implementation | keep buffer-backed and core-adjacent |
 | =emacs-line-builtins.el= | BUF | line/point primitives | keep reusable |
 | =emacs-replace.el= | BUF/FEAT | replace/query-replace helpers | keep shared, not app-local |
 | =emacs-search-builtins.el= | BUF | search/match shims | keep explicit shim |
@@ -176,9 +178,14 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-io.el= | IO | reusable IO/runtime package-group loader | public loader entry |
 | =files-runtime.el= | IO/FND | lightweight files runtime predicates | shared below facade and fallback substrate |
 | =emacs-network-ffi.el= | IO | network FFI adapter | keep adapter-gated |
+| =emacs-network-ffi-inet6.el= | IO | IPv6 + datagram FFI adapter (Doc 06 D2) | keep adapter-gated |
+| =emacs-tls-ffi.el= | IO | GnuTLS handshake FFI adapter (Doc 06 D1; needs libffi build) | keep adapter-gated |
+| =emacs-font-ffi.el= | IO | FreeType font-metrics FFI adapter (Doc 06 F1; needs libffi build) | keep adapter-gated |
 | =emacs-network-syscall-shim.el= | IO | syscall network shim | keep adapter-gated |
 | =emacs-process-builtins.el= | IO | unprefixed process shim | keep explicit shim |
 | =emacs-process-events.el= | IO | process event helpers | keep adapter-gated |
+| =emacs-pipe-process.el= | IO | pipe-subprocess async filter adapter (Doc 06 C1) | keep adapter-gated |
+| =emacs-pty-ffi.el= | IO | PTY FFI adapter (Doc 06 C3) | keep adapter-gated |
 | =emacs-process.el= | IO | process model/adapters | split model vs runtime backend |
 | =emacs-server-client-polyfills.el= | IO | server/client polyfills | keep IO package |
 | =emacs-server-polyfills.el= | IO | server polyfills | keep IO package |
@@ -215,7 +222,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-calc.el= | FEAT | calc subset | keep feature package |
 | =emacs-comint.el= | FEAT/IO | comint runtime | keep shared |
 | =emacs-compile.el= | FEAT/IO | compile runtime | keep shared |
-| =emacs-dired-min.el= | FEAT/IO | dired semantics | shared owner for GUI/TUI |
+| =emacs-dired-min.el= | CORE/FEAT | dired semantics | shared owner for GUI/TUI, core-adjacent |
 | =emacs-eshell.el= | FEAT/IO | eshell facade/runtime | keep shared |
 | =emacs-font-lock-builtins.el= | FEAT/CORE | font-lock shim | keep explicit shim |
 | =emacs-font-lock.el= | FEAT/CORE | font-lock runtime | keep shared |
@@ -225,7 +232,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-org-outline.el= | FEAT | org outline subset | keep feature package |
 | =emacs-org-table.el= | FEAT | org table subset | keep feature package |
 | =emacs-org-todo.el= | FEAT | org todo subset | keep feature package |
-| =emacs-project.el= | FEAT/IO | project subset | keep shared |
+| =emacs-project.el= | CORE/FEAT | project subset | keep shared and core-adjacent |
 | =emacs-shell.el= | FEAT/IO | shell runtime | keep shared |
 | =emacs-textmodes-stub.el= | FEAT/LEGACY | textmodes polyfills | replace with focused features over time |
 | =emacs-vc.el= | FEAT/IO | VC subset | keep shared |
@@ -242,6 +249,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =man.el= | FEAT | man compatibility entry | keep facade |
 | =nxml-mode.el= | FEAT | nxml mode entry | keep feature package |
 | =nxml.el= | FEAT | nxml subset | keep feature package |
+| =org.el= | FEAT | org compatibility entry | keep feature package |
 | =package.el= | PKG | package.el compatibility | keep package compat |
 | =project.el= | FEAT | project compatibility entry | keep facade |
 | =replace.el= | FEAT/BUF | replace compatibility entry | keep facade |
