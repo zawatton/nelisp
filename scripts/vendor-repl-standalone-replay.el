@@ -240,12 +240,102 @@ to be safe in every standalone-reader evaluator path."
     (error source)))
 
 (defun vendor-repl-standalone--proof-form-source ()
-  "Return the configured proof form source."
+  "Return the configured raw proof form source text."
   (if (and vendor-repl-standalone-proof-form-file
            (not (string= vendor-repl-standalone-proof-form-file "")))
       (vendor-repl-standalone--read-file
        vendor-repl-standalone-proof-form-file)
     vendor-repl-standalone-proof-form))
+
+(defun vendor-repl-standalone--read-all-forms (source)
+  "Return every top-level Lisp form read from SOURCE, in file order.
+Unlike a single `read', this walks the whole string so a
+`vendor-repl-standalone-proof-form-file' with more than one top-level form
+(for example a helper `defvar' followed by the actual proof expression) is
+not silently truncated to its first form."
+  (with-temp-buffer
+    (insert source)
+    (goto-char (point-min))
+    (let (forms)
+      (while (not (eobp))
+        (condition-case _err
+            (push (read (current-buffer)) forms)
+          (end-of-file (goto-char (point-max)))))
+      (nreverse forms))))
+
+(defun vendor-repl-standalone--proof-forms ()
+  "Return the configured proof source as a list of top-level forms."
+  (vendor-repl-standalone--read-all-forms
+   (vendor-repl-standalone--proof-form-source)))
+
+(defun vendor-repl-standalone--detail-form ()
+  "Return the configured detail form as a single Lisp expression."
+  (car (vendor-repl-standalone--read-all-forms
+        vendor-repl-standalone-detail-form)))
+
+(defun vendor-repl-standalone--form-line (form)
+  "Return FORM printed as one physical line of standalone-readable source.
+
+The standalone reader's --repl loop reads and evaluates one physical line at
+a time with no continuation support, so any embedded newline shreds FORM into
+unrelated fragments (see NeLisp Doc 156 section 7).  `prin1-to-string' (unlike
+`pp-to-string') never inserts formatting newlines on its own; binding
+`print-escape-newlines' also forces any newline that appears *inside* a
+printed string literal to come out as the two-character escape \"\\n\" rather
+than a literal line break.  The final `replace-regexp-in-string' is a
+defensive backstop only: with the bindings above there should be no raw
+newline left to strip."
+  (let* ((print-escape-newlines t)
+         (printed (prin1-to-string form)))
+    (replace-regexp-in-string "[\n\r]" " " printed)))
+
+(defun vendor-repl-standalone--proof-scaffold (marker)
+  "Return standalone REPL forms that evaluate the proof and update MARKER.
+
+Every emitted form is single-line (see `vendor-repl-standalone--form-line').
+This reader's `condition-case'/`ignore-errors' discards the protected body's
+return value unconditionally, even when no error is signaled, so the proof
+value cannot be captured through it.  Instead: `vendor-repl-proof-value' is
+initialized to nil on its own line, then assigned on a separate single-line
+`setq' that wraps the proof form in `prog1' together with a companion
+`vendor-repl-proof-evaluated' flag.  If the proof form itself signals, that
+whole physical line errors out (tolerated by the REPL's per-line error
+handling) before either side effect runs, so the value/evaluated pair simply
+stays at its nil initializer instead of going stale --- an errored proof and
+a cleanly-false proof both leave `vendor-repl-proof-value' nil, but only a
+clean evaluation sets `vendor-repl-proof-evaluated' to t, which is reported in
+the failure detail text for diagnosis.
+
+When the configured proof source has more than one top-level form (only
+reachable through `vendor-repl-standalone-proof-form-file'), every form but
+the last is emitted as its own single-line statement for side effects only,
+and just the FINAL form's value is captured as the proof value."
+  (let* ((forms (vendor-repl-standalone--proof-forms))
+         (setup-forms (butlast forms))
+         (final-form (car (last forms))))
+    (concat
+     (format "(nl-write-file %S %S)\n" marker "proof:start")
+     "(setq vendor-repl-proof-value nil)\n"
+     "(setq vendor-repl-proof-evaluated nil)\n"
+     (mapconcat (lambda (form)
+                  (concat (vendor-repl-standalone--form-line form) "\n"))
+                setup-forms
+                "")
+     (vendor-repl-standalone--form-line
+      (list 'setq 'vendor-repl-proof-value
+            (list 'prog1 final-form
+                  (list 'setq 'vendor-repl-proof-evaluated t))))
+     "\n"
+     (vendor-repl-standalone--form-line
+      (list 'if 'vendor-repl-proof-value
+            (list 'nl-write-file marker vendor-repl-standalone--success)
+            (list 'nl-write-file marker
+                  (list 'format
+                        (concat vendor-repl-standalone--failure
+                                " detail=%s evaluated=%s")
+                        (vendor-repl-standalone--detail-form)
+                        'vendor-repl-proof-evaluated))))
+     "\n")))
 
 (defun vendor-repl-standalone--write-input (files marker output)
   "Write standalone-reader REPL input for FILES to OUTPUT."
@@ -273,28 +363,7 @@ to be safe in every standalone-reader evaluator path."
         (insert (vendor-repl-standalone--record-load-form file marker)))
       (insert (format "(setq vendor-repl-standalone-marker-file %S)\n"
                       marker))
-      (insert (format "(nl-write-file %S %S)\n" marker "proof:start"))
-      (insert "(setq vendor-repl-proof-error nil)\n")
-      (insert "(setq vendor-repl-proof-value\n")
-      (insert "      (condition-case err\n")
-      (insert "          ")
-      (insert (vendor-repl-standalone--pretty-form
-               (vendor-repl-standalone--proof-form-source)))
-      (insert "        (error (setq vendor-repl-proof-error err) nil)))\n")
-      (insert
-       (format "(if vendor-repl-proof-value\n    (nl-write-file %S %S)\n"
-               marker vendor-repl-standalone--success))
-      (insert "  (progn\n")
-      (insert "    (setq vendor-repl-proof-detail\n")
-      (insert "          ")
-      (insert (vendor-repl-standalone--pretty-form
-               vendor-repl-standalone-detail-form))
-      (insert "    )\n")
-      (insert
-       (format "    (nl-write-file %S (format %S vendor-repl-proof-detail vendor-repl-proof-error))))\n"
-               marker
-               (concat vendor-repl-standalone--failure
-                       " detail=%s error=%s")))
+      (insert (vendor-repl-standalone--proof-scaffold marker))
       (insert ",quit\n"))))
 
 (defun vendor-repl-standalone--call-reader-sync (tmp out)
