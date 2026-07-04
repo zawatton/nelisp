@@ -43,6 +43,17 @@ cat >> "$tmp" <<EOF
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name backward-char :count 1))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name delete-char :count 1))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name forward-char :count 999))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name yank))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name newline))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name undo))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-region :start 1 :end 2))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name yank))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-line))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name yank))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-region))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name create-buffer :buffer-name "nemacs-next-process-smoke-undo-empty"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name undo))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name snapshot))))
 ,quit
 EOF
 
@@ -58,9 +69,9 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 lines=$(wc -l < "$out" | tr -d ' ')
-if [ "$lines" != "8" ]; then
+if [ "$lines" != "19" ]; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail lines=$lines expected=8" >&2
+  echo "nemacs-next-process-smoke: fail lines=$lines expected=19" >&2
   exit 1
 fi
 
@@ -100,15 +111,51 @@ if ! grep -q '"text":"ac"' "$out"; then
   exit 1
 fi
 
-if [ "$(grep -c '"type":"error"' "$out")" != "1" ]; then
+if [ "$(grep -c '"type":"error"' "$out")" != "4" ]; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail expected exactly one out-of-range error response" >&2
+  echo "nemacs-next-process-smoke: fail expected exactly four error responses (out-of-range, empty-kill-ring, bad-command, no-further-undo-information)" >&2
   exit 1
 fi
 
 if ! grep -q '"code":"out-of-range"' "$out"; then
   cat "$out" >&2
   echo "nemacs-next-process-smoke: fail missing out-of-range error code" >&2
+  exit 1
+fi
+
+if ! grep -q '"code":"empty-kill-ring"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing empty-kill-ring error code for yank on an empty kill ring" >&2
+  exit 1
+fi
+
+if ! grep -qF '"text":"a\nc"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing newline-inserted text=a\\nc snapshot" >&2
+  exit 1
+fi
+
+if ! grep -q '"code":"bad-command"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing bad-command error code for kill-region without :start/:end" >&2
+  exit 1
+fi
+
+if ! grep -qF '"text":"c"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing post-kill-region text=c snapshot" >&2
+  exit 1
+fi
+
+if ! grep -qF '"text":"a"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing post-kill-line text=a snapshot" >&2
+  exit 1
+fi
+
+if ! grep -q '"code":"no-further-undo-information"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing no-further-undo-information error code for undo on a fresh buffer" >&2
   exit 1
 fi
 
