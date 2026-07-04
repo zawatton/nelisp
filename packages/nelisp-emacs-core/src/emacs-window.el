@@ -689,6 +689,159 @@ WINDOW may be nil = selected window.  BUFFER-OR-NAME must be a
     (emacs-window--check-leaf w)
     (setf (emacs-window-start w) pos)))
 
+;;; C'. line-based scroll / recenter / visibility (Doc 33 §4 item 9)
+;;
+;; `window-start'/`window-point' above are dumb caches — this module's
+;; header non-goals explicitly deferred "redisplay / window-text-pixel-
+;; size accuracy" to Phase 11.  The functions below give `recenter',
+;; `scroll-up'/`scroll-down', and `pos-visible-in-window-p' *real*
+;; buffer-line-based semantics (one buffer line = one screen row; no
+;; line-wrap/hscroll accounting, consistent with the module's documented
+;; scope) instead of leaving them as nil no-ops.  This is enough to prove
+;; genuine window-follows-point behavior against real vendor buffers
+;; (e.g. a Magit status buffer) without pixel-accurate redisplay.
+
+;; These helpers use `nelisp-ec-*' primitives directly (never the
+;; ambient unprefixed `with-current-buffer'/`goto-char'/`forward-line'/
+;; `point') so this module keeps working the same way whether BUF is
+;; addressed from a host-Emacs ERT run (where the unprefixed names are
+;; real host primitives that do not understand a `nelisp-ec-buffer'
+;; struct) or from the NeLisp standalone reader (where those names are
+;; bridged onto the same `nelisp-ec-*' primitives) — matching this
+;; module's existing foundation contract.
+
+(defun emacs-window--last-newline-index (text)
+  "Return the index of the last newline in TEXT, or nil.
+Manual `aref' scan — `cl-position' with `:from-end' is not reliable
+on the NeLisp standalone reader, so this avoids it (same char-by-char
+scan idiom already used by `line-number-at-pos' in
+emacs-line-builtins.el)."
+  (let ((i (1- (length text))) (found nil))
+    (while (and (>= i 0) (not found))
+      (when (eq (aref text i) ?\n)
+        (setq found i))
+      (setq i (1- i)))
+    found))
+
+(defun emacs-window--first-newline-index (text)
+  "Return the index of the first newline in TEXT, or nil."
+  (let ((n (length text)) (i 0) (found nil))
+    (while (and (< i n) (not found))
+      (when (eq (aref text i) ?\n)
+        (setq found i))
+      (setq i (1+ i)))
+    found))
+
+(defun emacs-window--bol (buf pos)
+  "Return the position of the beginning of the line containing POS in BUF."
+  (nelisp-ec-with-current-buffer buf
+    (let* ((lo   (nelisp-ec-point-min))
+           (text (nelisp-ec-buffer-substring lo pos))
+           (nl   (emacs-window--last-newline-index text)))
+      (if nl (+ lo nl 1) lo))))
+
+(defun emacs-window--line-offset (buf pos n)
+  "Return the position N whole lines from the start of the line
+containing POS in BUF (clamped to BUF's accessible range).  N may be
+negative (toward `point-min') or positive (toward `point-max')."
+  (nelisp-ec-with-current-buffer buf
+    (let ((p (emacs-window--bol buf pos))
+          (lo (nelisp-ec-point-min))
+          (hi (nelisp-ec-point-max)))
+      (cond
+       ((> n 0)
+        (dotimes (_ n)
+          (when (< p hi)
+            (let* ((text (nelisp-ec-buffer-substring p hi))
+                   (nl   (emacs-window--first-newline-index text)))
+              (setq p (if nl (+ p nl 1) hi)))))
+        p)
+       ((< n 0)
+        (dotimes (_ (- n))
+          (when (> p lo)
+            (setq p (emacs-window--bol buf (1- p)))))
+        p)
+       (t p)))))
+
+(defun emacs-window-recenter (window arg)
+  "Real line-based `recenter' over WINDOW (selected window if nil).
+
+ARG follows Emacs semantics: nil recenters point in the middle of the
+window; a non-negative N puts point on screen row N (0 = top row); a
+negative N counts rows up from the bottom."
+  (let ((w (emacs-window-get-window window)))
+    (emacs-window--check-leaf w)
+    (let* ((buf (emacs-window-buffer w))
+           (pt  (nelisp-ec-with-current-buffer buf (nelisp-ec-point)))
+           (h   (max 1 (emacs-window-window-height w)))
+           (row (cond ((null arg) (/ h 2))
+                      ((>= arg 0) (min arg (1- h)))
+                      (t (max 0 (+ h arg))))))
+      (setf (emacs-window-point w) pt)
+      (setf (emacs-window-start w) (emacs-window--line-offset buf pt (- row)))
+      nil)))
+
+(defun emacs-window--scroll (window n sign)
+  "Shared engine for `emacs-window-scroll-up'/`emacs-window-scroll-down'.
+SIGN is 1 to move window-start forward (scroll-up) or -1 to move it
+backward (scroll-down).  N nil means \"almost a full window\"; N `-'
+means \"almost a full window\" in the opposite direction."
+  (let ((w (emacs-window-get-window window)))
+    (emacs-window--check-leaf w)
+    (let* ((buf    (emacs-window-buffer w))
+           (h      (max 1 (emacs-window-window-height w)))
+           (page   (max 1 (1- h)))
+           (amount (* sign (cond ((null n) page)
+                                 ((eq n '-) (- page))
+                                 (t n))))
+           (start     (emacs-window-start w))
+           (new-start (emacs-window--line-offset buf start amount))
+           (pt        (nelisp-ec-with-current-buffer buf (nelisp-ec-point)))
+           (last-row  (emacs-window--line-offset buf new-start (1- h))))
+      (setf (emacs-window-start w) new-start)
+      (cond
+       ((< pt new-start)
+        (nelisp-ec-with-current-buffer buf (nelisp-ec-goto-char new-start))
+        (setf (emacs-window-point w) new-start))
+       ((> pt last-row)
+        (nelisp-ec-with-current-buffer buf (nelisp-ec-goto-char last-row))
+        (setf (emacs-window-point w) last-row))
+       (t (setf (emacs-window-point w) pt)))
+      nil)))
+
+(defun emacs-window-scroll-up (window n)
+  "Real line-based `scroll-up' over WINDOW (selected window if nil)."
+  (emacs-window--scroll window n 1))
+
+(defun emacs-window-scroll-down (window n)
+  "Real line-based `scroll-down' over WINDOW (selected window if nil)."
+  (emacs-window--scroll window n -1))
+
+(defun emacs-window-pos-visible-in-window-p (&optional pos window _partially)
+  "Real line-range `pos-visible-in-window-p' over WINDOW (selected
+window if nil).  Returns non-nil when POS (default: WINDOW's live
+buffer point) falls within the buffer-line range currently shown,
+computed from `window-start' and `window-height'.  PARTIALLY is
+accepted for signature compatibility; partial-row pixel visibility is
+out of scope for this line-based substrate (see module header
+non-goals)."
+  (let ((w (emacs-window-get-window window)))
+    (emacs-window--check-leaf w)
+    (let* ((buf   (emacs-window-buffer w))
+           (start (emacs-window-start w))
+           (p     (or pos (nelisp-ec-with-current-buffer buf (nelisp-ec-point))))
+           (h     (max 1 (emacs-window-window-height w)))
+           (end   (emacs-window--line-offset buf start h))
+           ;; When the buffer ends within the window (END clamped to
+           ;; `point-max'), the end-of-buffer position is itself a
+           ;; valid, visible cursor position (real Emacs shows point
+           ;; resting after the last character) — use an inclusive
+           ;; bound only in that edge case; otherwise END is the
+           ;; (exclusive) start of the first non-visible line.
+           (bufmax (nelisp-ec-with-current-buffer buf (nelisp-ec-point-max))))
+      (and (>= p start)
+           (if (= end bufmax) (<= p end) (< p end))))))
+
 (defun emacs-window-window-parameter (window parameter)
   "Return the value of PARAMETER for WINDOW, or nil."
   (let ((w (emacs-window-get-window window)))

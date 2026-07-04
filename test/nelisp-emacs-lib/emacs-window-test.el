@@ -33,6 +33,22 @@
                                  ,(format "t-%d" i))))
      ,@body))
 
+(defmacro emacs-window-test--with-numbered-lines (var n &rest body)
+  "Bind VAR to a fresh `nelisp-ec-buffer' containing N numbered lines
+(\"0\\n1\\n...\\n\"), point left at `point-min', then run BODY.
+Uses `nelisp-ec-*' primitives directly (not the ambient unprefixed
+`insert'/`goto-char', which are real host-Emacs functions under ERT
+and do not understand a `nelisp-ec-buffer' struct — see the Doc 33 §4
+item 9 helpers in `emacs-window.el')."
+  (declare (indent 2) (debug (symbolp form body)))
+  `(let ((,var (nelisp-ec-generate-new-buffer "win-lines")))
+     (nelisp-ec-with-current-buffer ,var
+       (dotimes (i ,n)
+         (nelisp-ec-insert (number-to-string i))
+         (nelisp-ec-insert "\n"))
+       (nelisp-ec-goto-char (nelisp-ec-point-min)))
+     ,@body))
+
 ;;;; A. window query (8 tests)
 
 (ert-deftest emacs-window-windowp-true-and-false ()
@@ -735,6 +751,94 @@
           (should (= 1 (length (emacs-window-window-list))))
           ;; b2 killed (removed from the buffer list)
           (should (not (memq b2 (mapcar #'cdr nelisp-ec--buffers)))))))))
+
+;;;; I. line-based scroll / recenter / visibility (Doc 33 §4 item 9)
+
+(ert-deftest emacs-window-recenter-moves-window-start-off-point-min ()
+  "`emacs-window-recenter' with a nil ARG moves window-start away from
+`point-min' when point is deep in the buffer, and leaves point
+visible under the resulting window-start."
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buf 100
+      (let ((w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w buf)
+        (setf (emacs-window-total-lines w) 12)
+        (let ((pmax (nelisp-ec-with-current-buffer buf (nelisp-ec-point-max))))
+          (nelisp-ec-with-current-buffer buf (nelisp-ec-goto-char pmax))
+          (emacs-window-set-window-point w pmax)
+          (emacs-window-recenter w nil)
+          (should (> (emacs-window-window-start w) 1))
+          (should (emacs-window-pos-visible-in-window-p pmax w)))))))
+
+(ert-deftest emacs-window-recenter-arg-zero-puts-point-on-top-row ()
+  "A non-negative ARG puts point on that screen row — 0 means window-start
+becomes the start of point's own line."
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buf 100
+      (let ((w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w buf)
+        (setf (emacs-window-total-lines w) 12)
+        ;; line 50 begins at position 1 + 2*50 = 101 (single/double-digit
+        ;; lines 0-9 are 2 chars, 10-49 are 3 chars; use a position deep
+        ;; enough in the multi-digit range and confirm it round-trips)
+        (let* ((buf-mid (emacs-window--line-offset buf 1 60)))
+          (nelisp-ec-with-current-buffer buf (nelisp-ec-goto-char buf-mid))
+          (emacs-window-set-window-point w buf-mid)
+          (emacs-window-recenter w 0)
+          (should (= (emacs-window-window-start w) buf-mid)))))))
+
+(ert-deftest emacs-window-scroll-up-advances-window-start-by-n-lines ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buf 100
+      (let ((w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w buf)
+        (setf (emacs-window-total-lines w) 12)
+        (emacs-window-set-window-start w 1)
+        (emacs-window-scroll-up w 5)
+        (should (= (emacs-window-window-start w)
+                   (emacs-window--line-offset buf 1 5)))))))
+
+(ert-deftest emacs-window-scroll-down-inverts-scroll-up ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buf 100
+      (let ((w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w buf)
+        (setf (emacs-window-total-lines w) 12)
+        (emacs-window-set-window-start w 1)
+        (emacs-window-scroll-up w 5)
+        (emacs-window-scroll-down w 3)
+        (should (= (emacs-window-window-start w)
+                   (emacs-window--line-offset buf 1 2)))))))
+
+(ert-deftest emacs-window-pos-visible-in-window-p-in-and-out-of-range ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buf 100
+      (let ((w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w buf)
+        (setf (emacs-window-total-lines w) 12)
+        (let ((mid (emacs-window--line-offset buf 1 60)))
+          (emacs-window-set-window-start w mid)
+          ;; a position on the very first visible line is visible
+          (should (emacs-window-pos-visible-in-window-p mid w))
+          ;; a position several lines before window-start is not
+          (should-not (emacs-window-pos-visible-in-window-p 1 w))
+          ;; a position past the visible range (well beyond height lines) is not
+          (should-not (emacs-window-pos-visible-in-window-p
+                       (emacs-window--line-offset buf mid 40) w)))))))
+
+(ert-deftest emacs-window-pos-visible-in-window-p-end-of-buffer-edge-case ()
+  "When the buffer ends within the window, `point-max' itself (an
+exclusive line-offset upper bound in the general case) must still
+count as visible — real Emacs shows point resting after the last
+character."
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buf 10
+      (let* ((w (emacs-window-selected-window))
+             (pmax (nelisp-ec-with-current-buffer buf (nelisp-ec-point-max))))
+        (emacs-window-set-window-buffer w buf)
+        (setf (emacs-window-total-lines w) 12)
+        (emacs-window-set-window-start w 1)
+        (should (emacs-window-pos-visible-in-window-p pmax w))))))
 
 (provide 'emacs-window-test)
 
