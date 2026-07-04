@@ -9,9 +9,10 @@
 ;;
 ;; MVP scope (syntax A only, see header table):
 ;;   literal, ., ^, $, [..], [^..], ranges, *, +, ?, \\(...\\), \\|,
+;;   bounded \\{n\\} / \\{n,m\\} / \\{n,\\} / \\{,m\\} (+ lazy `...?'),
 ;;   escapes (\\\\ \\. \\( \\) \\| \\+ \\* \\? \\^ \\$ \\[ \\]).
 ;; Best-effort B (\\b \\B \\w \\W) — covered by ASCII rule only.
-;; Deferred to Phase 9c: backreferences \\1..\\9, bounded \\{n,m\\},
+;; Deferred to Phase 9c: backreferences \\1..\\9,
 ;;   unicode property classes [:alpha:] etc, multibyte-coding aware match.
 ;;
 ;; Public API (5 entries):
@@ -134,6 +135,60 @@ cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
             ((null (cdr rev)) (car rev))
             (t (cons :concat rev))))))
 
+(defun nelisp-rx--expand-bound (atom lo hi lazy)
+  "Expand a bounded repeat of ATOM into LO..HI copies as an AST.
+HI nil means unbounded (`\\{n,\\}').  LAZY selects the lazy quantifier
+variants for the optional / star tail.  The ATOM AST is shared across
+the copies; the NFA builder reads it without mutation, so sharing is
+safe.  A capturing group inside ATOM keeps a single group index across
+copies, so the last iteration wins -- matching Emacs semantics."
+  (let ((parts nil)
+        (opt  (if lazy :opt-lazy :opt))
+        (star (if lazy :star-lazy :star))
+        (i 0))
+    (while (< i lo) (push atom parts) (setq i (1+ i)))
+    (if (null hi)
+        (push (list star atom) parts)       ; `\{n,\}' -> n copies then ATOM*
+      (let ((j lo))
+        (while (< j hi) (push (list opt atom) parts) (setq j (1+ j)))))
+    (let ((rev (nreverse parts)))
+      (cond ((null rev) (list :concat))     ; `\{0\}' -> match empty
+            ((null (cdr rev)) (car rev))
+            (t (cons :concat rev))))))
+
+(defun nelisp-rx--parse-bound (atom)
+  "Parse the body of a bounded repeat applied to ATOM.
+The leading `\\{' is already consumed; read the bounds, the closing
+`\\}', and an optional trailing `?' (lazy), then return the expanded
+AST.  Handles `\\{n\\}', `\\{n,m\\}', `\\{n,\\}' and `\\{,m\\}'."
+  (let ((lo 0) (hi nil) (comma nil))
+    (let ((d (nelisp-rx--peek)))           ; lower bound digits
+      (while (and d (>= d ?0) (<= d ?9))
+        (setq lo (+ (* lo 10) (- d ?0)))
+        (nelisp-rx--advance)
+        (setq d (nelisp-rx--peek))))
+    (when (eq (nelisp-rx--peek) ?,)        ; optional `,' + upper bound
+      (setq comma t)
+      (nelisp-rx--advance)
+      (let ((d (nelisp-rx--peek)) (hv nil))
+        (while (and d (>= d ?0) (<= d ?9))
+          (setq hv (+ (* (or hv 0) 10) (- d ?0)))
+          (nelisp-rx--advance)
+          (setq d (nelisp-rx--peek)))
+        (setq hi hv)))                      ; nil if no digits after `,'
+    (unless comma (setq hi lo))             ; `\{n\}' -> exactly n
+    (unless (and (eq (nelisp-rx--peek) ?\\) (eq (nelisp-rx--peek2) ?}))
+      (signal 'nelisp-rx-syntax-error
+              (list (format "unterminated \\{...\\} at pos %d"
+                            nelisp-rx--parse-pos))))
+    (nelisp-rx--advance) (nelisp-rx--advance) ; consume `\}'
+    (when (and hi (< hi lo))
+      (signal 'nelisp-rx-syntax-error
+              (list (format "invalid \\{%d,%d\\} (upper < lower)" lo hi))))
+    (let ((lazy (eq (nelisp-rx--peek) ??)))
+      (when lazy (nelisp-rx--advance))
+      (nelisp-rx--expand-bound atom lo hi lazy))))
+
 (defun nelisp-rx--parse-quant (atom)
   "Wrap ATOM in a (possibly lazy) quantifier if next char(s) are one.
 A `?' immediately following `*' / `+' / `?' makes the quantifier
@@ -156,6 +211,12 @@ yielding `quantifier without operand'."
       (if (eq (nelisp-rx--peek) ??)
           (progn (nelisp-rx--advance) (list :opt-lazy atom))
         (list :opt atom)))
+     ;; Bounded repeat `\{n\}' / `\{n,m\}' / `\{n,\}' / `\{,m\}' (and the
+     ;; lazy `...?' variants).  Emacs writes these with a backslash before
+     ;; the braces, so the postfix token is `\{'.
+     ((and (eq c ?\\) (eq (nelisp-rx--peek2) ?{))
+      (nelisp-rx--advance) (nelisp-rx--advance) ; consume `\{'
+      (nelisp-rx--parse-bound atom))
      (t atom))))
 
 (defun nelisp-rx--parse-atom ()
@@ -575,7 +636,7 @@ NeLisp's restricted built-in pcase grammar."
      ((eq tag :alt)
       (max (nelisp-rx--collect-max-group (nth 1 ast))
            (nelisp-rx--collect-max-group (nth 2 ast))))
-     ((memq tag '(:star :plus :opt))
+     ((memq tag '(:star :plus :opt :star-lazy :plus-lazy :opt-lazy))
       (nelisp-rx--collect-max-group (nth 1 ast)))
      (t 1))))
 
@@ -682,103 +743,116 @@ backtracking semantics."
          ;; Re-entering the same split at the same position can only be a
          ;; zero-width cycle (e.g. `\(?:x*\)*'); we cut it (see `:split').
          (split-mark (make-vector (length states) nil))
+         ;; Failure memo: without backreferences, matchability from a given
+         ;; NFA state and input position is independent of capture contents.
+         ;; Memoizing only failures preserves capture side effects on success
+         ;; while avoiding exponential retry storms in large org regexps.
+         (failed (make-hash-table :test 'equal))
          (best   nil))
-    (cl-labels
-        ((char-at (pos) (and (< pos slen) (aref str pos)))
-         (prev-char (pos) (and (> pos 0) (aref str (1- pos))))
-         (walk
-          (sidx pos)
-          (let* ((s (aref states sidx))
-                 (label (aref s 0)))
-            (pcase label
-              (:match
-               (setq best (cons pos (vconcat groups))) ; freeze copy
-               t)
-              (:char
-               (let ((c (char-at pos)))
-                 (and c (eq c (aref s 3))
-                      (walk (aref s 1) (1+ pos)))))
-              (:any
-               (let ((c (char-at pos)))
-                 (and c (walk (aref s 1) (1+ pos)))))
-              (:class
-               (let* ((c (char-at pos))
-                      (data (aref s 3)))
-                 (and c
-                      (nelisp-rx--class-match-p (car data) (cdr data) c)
-                      (walk (aref s 1) (1+ pos)))))
-              (:bol
-               (and (or (= pos 0)
-                        (eq (prev-char pos) ?\n))
-                    (walk (aref s 1) pos)))
-              (:eol
-               (and (or (= pos slen)
-                        (eq (char-at pos) ?\n))
-                    (walk (aref s 1) pos)))
-              (:bos
-               (and (= pos 0)
-                    (walk (aref s 1) pos)))
-              (:eos
-               (and (= pos slen)
-                    (walk (aref s 1) pos)))
-              (:wb
-               (let* ((before (and (> pos 0)
-                                   (nelisp-rx--word-char-p (prev-char pos))))
-                      (after  (and (< pos slen)
-                                   (nelisp-rx--word-char-p (char-at pos)))))
-                 (and (not (eq before after))
-                      (walk (aref s 1) pos))))
-              (:nwb
-               (let* ((before (and (> pos 0)
-                                   (nelisp-rx--word-char-p (prev-char pos))))
-                      (after  (and (< pos slen)
-                                   (nelisp-rx--word-char-p (char-at pos)))))
-                 (and (eq before after)
-                      (walk (aref s 1) pos))))
-              ;; Doc 51 Track J — `\<' matches at word start.
-              (:wbs
-               (let* ((before (and (> pos 0)
-                                   (nelisp-rx--word-char-p (prev-char pos))))
-                      (after  (and (< pos slen)
-                                   (nelisp-rx--word-char-p (char-at pos)))))
-                 (and (not before) after
-                      (walk (aref s 1) pos))))
-              ;; Doc 51 Track J — `\>' matches at word end.
-              (:wbe
-               (let* ((before (and (> pos 0)
-                                   (nelisp-rx--word-char-p (prev-char pos))))
-                      (after  (and (< pos slen)
-                                   (nelisp-rx--word-char-p (char-at pos)))))
-                 (and before (not after)
-                      (walk (aref s 1) pos))))
-              (:split
-               ;; If this split is already on the current path at POS,
-               ;; re-entering is a zero-width epsilon cycle that yields no
-               ;; new match -- cut it.  Otherwise mark, recurse, restore
-               ;; (so sibling DFS branches may legitimately revisit later).
-               (let ((mark (aref split-mark sidx)))
-                 (if (and mark (= mark pos))
-                     nil
-                   (aset split-mark sidx pos)
-                   (prog1 (or (walk (aref s 1) pos)
-                              (and (aref s 2) (walk (aref s 2) pos)))
-                     (aset split-mark sidx mark)))))
-              (:gstart
-               (let* ((idx (aref s 3))
-                      (saved (aref groups idx)))
-                 (aset groups idx (cons pos nil))
-                 (or (walk (aref s 1) pos)
-                     (progn (aset groups idx saved) nil))))
-              (:gend
-               (let* ((idx   (aref s 3))
-                      (saved (aref groups idx))
-                      (open  (and saved (car saved))))
-                 (aset groups idx (cons open pos))
-                 (or (walk (aref s 1) pos)
-                     (progn (aset groups idx saved) nil))))
-              (_ (error "nelisp-rx: unknown state label %S" label))))))
-      (walk (nelisp-rx-pattern-start pat) start)
-      best)))
+    (with-no-warnings
+      (cl-labels
+          ((char-at (pos) (and (< pos slen) (aref str pos)))
+           (prev-char (pos) (and (> pos 0) (aref str (1- pos))))
+           (fail-key (sidx pos) (+ (* sidx (1+ slen)) pos))
+           (walk
+            (sidx pos)
+            (if (gethash (fail-key sidx pos) failed)
+                nil
+              (let* ((s (aref states sidx))
+                     (label (aref s 0))
+                     (ok
+                      (pcase label
+                      (:match
+                       (setq best (cons pos (vconcat groups))) ; freeze copy
+                       t)
+                      (:char
+                       (let ((c (char-at pos)))
+                         (and c (eq c (aref s 3))
+                              (walk (aref s 1) (1+ pos)))))
+                      (:any
+                       (let ((c (char-at pos)))
+                         (and c (walk (aref s 1) (1+ pos)))))
+                      (:class
+                       (let* ((c (char-at pos))
+                              (data (aref s 3)))
+                         (and c
+                              (nelisp-rx--class-match-p (car data) (cdr data) c)
+                              (walk (aref s 1) (1+ pos)))))
+                      (:bol
+                       (and (or (= pos 0)
+                                (eq (prev-char pos) ?\n))
+                            (walk (aref s 1) pos)))
+                      (:eol
+                       (and (or (= pos slen)
+                                (eq (char-at pos) ?\n))
+                            (walk (aref s 1) pos)))
+                      (:bos
+                       (and (= pos 0)
+                            (walk (aref s 1) pos)))
+                      (:eos
+                       (and (= pos slen)
+                            (walk (aref s 1) pos)))
+                      (:wb
+                       (let* ((before (and (> pos 0)
+                                           (nelisp-rx--word-char-p (prev-char pos))))
+                              (after  (and (< pos slen)
+                                           (nelisp-rx--word-char-p (char-at pos)))))
+                         (and (not (eq before after))
+                              (walk (aref s 1) pos))))
+                      (:nwb
+                       (let* ((before (and (> pos 0)
+                                           (nelisp-rx--word-char-p (prev-char pos))))
+                              (after  (and (< pos slen)
+                                           (nelisp-rx--word-char-p (char-at pos)))))
+                         (and (eq before after)
+                              (walk (aref s 1) pos))))
+                      ;; Doc 51 Track J — `\<' matches at word start.
+                      (:wbs
+                       (let* ((before (and (> pos 0)
+                                           (nelisp-rx--word-char-p (prev-char pos))))
+                              (after  (and (< pos slen)
+                                           (nelisp-rx--word-char-p (char-at pos)))))
+                         (and (not before) after
+                              (walk (aref s 1) pos))))
+                      ;; Doc 51 Track J — `\>' matches at word end.
+                      (:wbe
+                       (let* ((before (and (> pos 0)
+                                           (nelisp-rx--word-char-p (prev-char pos))))
+                              (after  (and (< pos slen)
+                                           (nelisp-rx--word-char-p (char-at pos)))))
+                         (and before (not after)
+                              (walk (aref s 1) pos))))
+                      (:split
+                       ;; If this split is already on the current path at POS,
+                       ;; re-entering is a zero-width epsilon cycle that yields no
+                       ;; new match -- cut it.  Otherwise mark, recurse, restore
+                       ;; (so sibling DFS branches may legitimately revisit later).
+                       (let ((mark (aref split-mark sidx)))
+                         (if (and mark (= mark pos))
+                             nil
+                           (aset split-mark sidx pos)
+                           (prog1 (or (walk (aref s 1) pos)
+                                      (and (aref s 2) (walk (aref s 2) pos)))
+                             (aset split-mark sidx mark)))))
+                      (:gstart
+                       (let* ((idx (aref s 3))
+                              (saved (aref groups idx)))
+                         (aset groups idx (cons pos nil))
+                         (or (walk (aref s 1) pos)
+                             (progn (aset groups idx saved) nil))))
+                      (:gend
+                       (let* ((idx   (aref s 3))
+                              (saved (aref groups idx))
+                              (open  (and saved (car saved))))
+                         (aset groups idx (cons open pos))
+                         (or (walk (aref s 1) pos)
+                             (progn (aset groups idx saved) nil))))
+                      (_ (error "nelisp-rx: unknown state label %S" label)))))
+                (unless ok
+                  (puthash (fail-key sidx pos) t failed))
+                ok))))
+        (walk (nelisp-rx-pattern-start pat) start)
+        best))))
 
 (defun nelisp-rx--scan (pat str start)
   "Scan STR from START forward; return (ANCHOR END GROUPS) on first match, or nil.

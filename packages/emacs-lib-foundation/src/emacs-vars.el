@@ -68,6 +68,16 @@ Standalone NeLisp starts with Emacs' C bootstrap sentinel so
 vendor simple.el can replace it with its Elisp dispatcher."))
 
 
+(unless (boundp 'gc-cons-threshold)
+  (defvar gc-cons-threshold 800000
+    "Bytes of consing between garbage collections (Doc 06 A2 compat default).
+Settable by callers that tune GC; the standalone runtime collects at form
+boundaries."))
+
+(unless (boundp 'gc-cons-percentage)
+  (defvar gc-cons-percentage 0.1
+    "Portion of heap growth that triggers a GC (Doc 06 A2 compat default)."))
+
 (provide 'emacs-vars)
 
 ;;; emacs-vars.el ends here

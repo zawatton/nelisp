@@ -191,6 +191,20 @@ Supported percent escapes are intentionally small in Phase 3 MVP:
   :type 'string
   :group 'emacs-redisplay)
 
+(defcustom emacs-redisplay-default-header-line-format nil
+  "Fallback `header-line-format' when BUFFER has no local value.
+nil means no header line (Emacs default).  Uses the same %-spec vocabulary as
+the mode line (Doc 06 E6)."
+  :type '(choice (const nil) string sexp)
+  :group 'emacs-redisplay)
+
+(defcustom emacs-redisplay-default-cursor-type 'box
+  "Fallback cursor shape when BUFFER has no local `cursor-type' (Doc 06 E6).
+One of `box', `hollow', `bar', `(bar . WIDTH)', `hbar', `(hbar . HEIGHT)',
+t (frame default) or nil (no cursor) — matching Emacs `cursor-type'."
+  :type 'sexp
+  :group 'emacs-redisplay)
+
 ;;; Glyph / glyph-row / glyph-matrix struct (Doc 43 §2.3)
 
 (cl-defstruct (emacs-redisplay-glyph
@@ -673,6 +687,59 @@ backend glyph support)."
       (dolist (s spec)
         (when (and (null result) (consp s) (eq (car s) 'space))
           (setq result (emacs-redisplay--space-display-width s col))))
+      result))))
+
+(defun emacs-redisplay--display-replacement-string (spec)
+  "Return the string SPEC tells redisplay to render in place of the buffer
+text, or nil when SPEC layers onto the text rather than replacing it.
+
+- a bare string                      -> itself (`'display \"x\"')
+- `(image ... :string S ...)'        -> S (the TTY text fallback), else nil
+                                        (a real image is a backend placeholder)
+- a list of specs `(SPEC...)'        -> the first replacement found in it
+- `(space/raise/height/slice ...)'   -> nil (width/attribute specs, not text)
+
+Mirrors how Emacs treats a `display' property whose value is a string or
+image (Doc 06 E3)."
+  (cond
+   ((stringp spec) spec)
+   ((not (consp spec)) nil)
+   ((eq (car spec) 'image)
+    (let ((s (plist-get (cdr spec) :string)))
+      (and (stringp s) s)))
+   ((memq (car spec)
+          '(space raise height slice when margin left-fringe right-fringe
+                  left-margin right-margin))
+    nil)
+   (t
+    ;; A list of display specs: first string element, or a nested image's
+    ;; :string fallback.
+    (let ((result nil) (rest spec))
+      (while (and (consp rest) (null result))
+        (let ((el (car rest)))
+          (cond
+           ((stringp el) (setq result el))
+           ((and (consp el) (eq (car el) 'image))
+            (setq result (emacs-redisplay--display-replacement-string el)))))
+        (setq rest (cdr rest)))
+      result))))
+
+(defun emacs-redisplay--display-attribute (spec key)
+  "Extract the KEY (`raise' or `height') factor from display SPEC, or nil.
+SPEC may be `(raise N)' / `(height N)' directly or a list containing one.
+These attributes layer onto the covered text (no TTY column change); a GUI
+backend reads them off the glyph's `display-spec' (Doc 06 E3)."
+  (cond
+   ((not (consp spec)) nil)
+   ((eq (car spec) key) (cadr spec))
+   ((memq (car spec) '(image space slice when margin)) nil)
+   (t
+    (let ((result nil) (rest spec))
+      (while (and (consp rest) (null result))
+        (let ((el (car rest)))
+          (when (and (consp el) (eq (car el) key))
+            (setq result (cadr el))))
+        (setq rest (cdr rest)))
       result))))
 
 (defun emacs-redisplay--overlays-in (beg end &optional buffer)
@@ -1372,6 +1439,87 @@ exceeds) WIDTH it is returned unchanged."
       (void-variable emacs-redisplay-default-mode-line-format)))
    (t emacs-redisplay-default-mode-line-format)))
 
+(defun emacs-redisplay--header-line-format (buffer)
+  "Return BUFFER's `header-line-format', or the default (nil = no header line).
+Doc 06 E6 — header lines reuse the mode-line %-spec machinery."
+  (cond
+   ((and buffer (nelisp-ec-buffer-p buffer))
+    (condition-case nil
+        (emacs-buffer-buffer-local-value 'header-line-format buffer)
+      (void-variable emacs-redisplay-default-header-line-format)))
+   (t emacs-redisplay-default-header-line-format)))
+
+(defun emacs-redisplay--header-line-format-to-string (format buffer)
+  "Render header-line FORMAT for BUFFER (same %-spec vocabulary as the mode
+line, Doc 06 E6)."
+  (emacs-redisplay--mode-line-format-to-string format buffer))
+
+(defun emacs-redisplay--header-line-enabled-p (buffer)
+  "Non-nil when BUFFER has a non-nil `header-line-format' (Doc 06 E6)."
+  (let ((fmt (emacs-redisplay--header-line-format buffer)))
+    (and fmt (not (equal fmt "")))))
+
+(defun emacs-redisplay--cursor-type (buffer)
+  "Return BUFFER's `cursor-type', or the default shape (Doc 06 E6)."
+  (cond
+   ((and buffer (nelisp-ec-buffer-p buffer))
+    (condition-case nil
+        (emacs-buffer-buffer-local-value 'cursor-type buffer)
+      (void-variable emacs-redisplay-default-cursor-type)))
+   (t emacs-redisplay-default-cursor-type)))
+
+(defun emacs-redisplay--ml-text-before-point (buffer)
+  "Return BUFFER's text from point-min up to point, or nil."
+  (let ((nelisp-ec--current-buffer buffer))
+    (and (fboundp 'nelisp-ec-point) (fboundp 'nelisp-ec-buffer-substring)
+         (ignore-errors
+           (nelisp-ec-buffer-substring (if (fboundp 'nelisp-ec-point-min)
+                                           (nelisp-ec-point-min) 1)
+                                       (nelisp-ec-point))))))
+
+(defun emacs-redisplay--ml-line (buffer)
+  "Line number at point in BUFFER (Doc 06 E2, %l)."
+  (let ((s (emacs-redisplay--ml-text-before-point buffer)) (n 1) (i 0))
+    (when s
+      (while (< i (length s))
+        (when (eq (aref s i) ?\n) (setq n (1+ n)))
+        (setq i (1+ i))))
+    n))
+
+(defun emacs-redisplay--ml-column (buffer)
+  "Zero-based column at point in BUFFER (Doc 06 E2, %c)."
+  (let* ((s (emacs-redisplay--ml-text-before-point buffer))
+         (nl (and s (string-match "\n[^\n]*\\'" s))))
+    (cond ((null s) 0)
+          (nl (- (length s) (1+ nl)))
+          (t (length s)))))
+
+(defun emacs-redisplay--ml-narrowed-p (buffer)
+  "Return non-nil when BUFFER is narrowed (Doc 06 E2, %n)."
+  (let ((nelisp-ec--current-buffer buffer))
+    (and (fboundp 'nelisp-ec-point-min) (fboundp 'nelisp-ec-buffer-size)
+         (or (> (nelisp-ec-point-min) 1)
+             (and (fboundp 'nelisp-ec-point-max)
+                  (<= (nelisp-ec-point-max) (nelisp-ec-buffer-size)))))))
+
+(defun emacs-redisplay--ml-local (sym buffer default)
+  "Return BUFFER's buffer-local value of SYM, or DEFAULT."
+  (if (and (fboundp 'emacs-buffer-local-variable-p)
+           (emacs-buffer-local-variable-p sym buffer))
+      (emacs-buffer-buffer-local-value sym buffer)
+    default))
+
+(defun emacs-redisplay--ml-percent (buffer)
+  "A point-relative buffer percentage string (Doc 06 E2, %p; MVP)."
+  (let ((nelisp-ec--current-buffer buffer))
+    (if (not (and (fboundp 'nelisp-ec-point) (fboundp 'nelisp-ec-buffer-size)))
+        "All"
+      (let ((pt (nelisp-ec-point)) (sz (nelisp-ec-buffer-size)))
+        (cond ((<= sz 0) "All")
+              ((<= pt 1) "Top")
+              ((>= pt sz) "Bot")
+              (t (format "%d%%" (/ (* 100 (1- pt)) sz))))))))
+
 (defun emacs-redisplay--mode-line-format-to-string (format buffer)
   "Render MVP mode-line FORMAT for BUFFER."
   (cond
@@ -1392,6 +1540,35 @@ exceeds) WIDTH it is returned unchanged."
                                 (emacs-redisplay--mode-line-modified-indicator
                                  buffer))
                                ((eq esc ?%) "%")
+                               ;; Doc 06 E2: position / status specs.
+                               ((eq esc ?l)
+                                (number-to-string
+                                 (emacs-redisplay--ml-line buffer)))
+                               ((eq esc ?c)
+                                (number-to-string
+                                 (emacs-redisplay--ml-column buffer)))
+                               ((eq esc ?p) (emacs-redisplay--ml-percent buffer))
+                               ((eq esc ?n)
+                                (if (emacs-redisplay--ml-narrowed-p buffer)
+                                    " Narrow" ""))
+                               ((eq esc ?m)
+                                (format "%s"
+                                        (emacs-redisplay--ml-local
+                                         'mode-name buffer "Fundamental")))
+                               ((eq esc ?f)
+                                (format "%s"
+                                        (emacs-redisplay--ml-local
+                                         'buffer-file-name buffer "")))
+                               ((eq esc ?\[)
+                                (make-string
+                                 (if (fboundp 'emacs-command-loop-recursion-depth)
+                                     (emacs-command-loop-recursion-depth) 0)
+                                 ?\[))
+                               ((eq esc ?\])
+                                (make-string
+                                 (if (fboundp 'emacs-command-loop-recursion-depth)
+                                     (emacs-command-loop-recursion-depth) 0)
+                                 ?\]))
                                (t (string ?% esc)))))
                 (setq i (+ i 2)))
             (setq out (concat out (string ch)))
@@ -1412,6 +1589,27 @@ past the format text are inverse-video spaces."
   (let* ((format (emacs-redisplay--mode-line-format buffer))
          (text (emacs-redisplay--mode-line-format-to-string format buffer))
          (face '(:inverse-video t))
+         (realized (emacs-redisplay-realize-face face))
+         (w (max 0 width))
+         (tn (length text))
+         (vec (make-vector w nil)))
+    (dotimes (i w)
+      (aset vec i
+            (emacs-redisplay--make-glyph
+             :char (if (< i tn) (aref text i) ?\s)
+             :face face
+             :realized-face realized
+             :width 1
+             :buf-pos nil)))
+    vec))
+
+(defun emacs-redisplay--header-line-glyphs (buffer width)
+  "Return a FULL-WIDTH glyph vector for BUFFER's header line (Doc 06 E6).
+Like `emacs-redisplay--mode-line-glyphs' but driven by `header-line-format'
+and carrying the `header-line' face."
+  (let* ((format (emacs-redisplay--header-line-format buffer))
+         (text (emacs-redisplay--header-line-format-to-string format buffer))
+         (face 'header-line)
          (realized (emacs-redisplay-realize-face face))
          (w (max 0 width))
          (tn (length text))
@@ -1663,32 +1861,67 @@ the overlay anchor position."
                  ;; cell width and renders blank; other specs keep the char.
                  (space-w (emacs-redisplay--space-display-width
                            display-spec col))
-                 (ew (or space-w (max 1 cw)))
-                 (g (emacs-redisplay--make-glyph
-                     :char (if space-w ?\s ch)
-                     :face (emacs-redisplay--resolve-face face)
-                     :realized-face (emacs-redisplay-realize-face face)
-                     :face-id 0
-                     :width ew
-                     :composition nil
-                     :display-spec display-spec
-                     :mouse-face mouse-face
-                     :buf-pos pos)))
-            (when overlays
-              (emacs-redisplay--apply-overlay-face g overlays pos))
+                 ;; E3: a string / image-:string `display' spec replaces the
+                 ;; buffer char with its own glyphs.
+                 (repl (and (not space-w)
+                            (emacs-redisplay--display-replacement-string
+                             display-spec)))
+                 (rface (emacs-redisplay--resolve-face face))
+                 (realized (emacs-redisplay-realize-face face)))
             (cond
-             ((>= (+ col ew) (1+ width))
-              (setq overflow t))
+             ;; E3: emit each char of the replacement string, all anchored at
+             ;; POS so cursor/navigation maps back to the single buffer char.
+             ((and (stringp repl) (> (length repl) 0))
+              (let ((j 0) (m (length repl)))
+                (while (and (< j m) (not overflow))
+                  (let* ((rc (aref repl j))
+                         (rw (max 1 (emacs-redisplay--char-width rc)))
+                         (rg (emacs-redisplay--make-glyph
+                              :char rc :face rface :realized-face realized
+                              :face-id 0 :width rw :composition nil
+                              :display-spec display-spec :mouse-face mouse-face
+                              :buf-pos pos)))
+                    (when overlays
+                      (emacs-redisplay--apply-overlay-face rg overlays pos))
+                    (if (>= (+ col rw) (1+ width))
+                        (setq overflow t)
+                      (aset used col rg)
+                      (setq last-glyph rg col (+ col rw))))
+                  (setq j (1+ j)))
+                (unless overflow
+                  (setq pos (1+ pos))
+                  (setq col (emacs-redisplay--emit-after-strings
+                             overlays pos used col width))
+                  (when (< i (1- n))
+                    (setq col (emacs-redisplay--emit-before-strings
+                               overlays pos used col width))))))
              (t
-              (aset used col g)
-              (setq last-glyph g)
-              (setq col (+ col ew)
-                    pos (1+ pos))
-              (setq col (emacs-redisplay--emit-after-strings
-                         overlays pos used col width))
-              (when (< i (1- n))
-                (setq col (emacs-redisplay--emit-before-strings
-                           overlays pos used col width))))))))
+              (let* ((ew (or space-w (max 1 cw)))
+                     (g (emacs-redisplay--make-glyph
+                         :char (if space-w ?\s ch)
+                         :face rface
+                         :realized-face realized
+                         :face-id 0
+                         :width ew
+                         :composition nil
+                         :display-spec display-spec
+                         :mouse-face mouse-face
+                         :buf-pos pos)))
+                (when overlays
+                  (emacs-redisplay--apply-overlay-face g overlays pos))
+                (cond
+                 ((>= (+ col ew) (1+ width))
+                  (setq overflow t))
+                 (t
+                  (aset used col g)
+                  (setq last-glyph g)
+                  (setq col (+ col ew)
+                        pos (1+ pos))
+                  (setq col (emacs-redisplay--emit-after-strings
+                             overlays pos used col width))
+                  (when (< i (1- n))
+                    (setq col (emacs-redisplay--emit-before-strings
+                               overlays pos used col width)))))))))))
         (setq i (1+ i))))
     (cons (let ((trimmed (make-vector col nil)))
             (dotimes (k col) (aset trimmed k (aref used k)))
@@ -1712,6 +1945,21 @@ Updates ROW's used / hash / start-pos / end-pos and resets pos-delta."
           (emacs-redisplay-glyph-row-pos-delta row) 0
           (emacs-redisplay-glyph-row-hash row)
           (emacs-redisplay--row-hash vec))))
+
+(defun emacs-redisplay--set-truncation-glyph (row width)
+  "Place a `$' truncation indicator in ROW's last column (Doc 06 E6).
+Mirrors the TTY marker Emacs shows at the right edge of a clipped line when
+`truncate-lines' is non-nil and no fringe is available.  Re-hashes ROW so the
+change propagates through the diff."
+  (when (> width 0)
+    (let ((vec (emacs-redisplay-glyph-row-glyphs row)))
+      (aset vec (1- width)
+            (emacs-redisplay--make-glyph
+             :char ?$ :face 'escape-glyph
+             :realized-face (emacs-redisplay-realize-face 'escape-glyph)
+             :face-id 0 :width 1 :buf-pos nil))
+      (setf (emacs-redisplay-glyph-row-hash row)
+            (emacs-redisplay--row-hash vec)))))
 
 (defun emacs-redisplay--clear-row (row)
   "Reset ROW to empty (all spaces, used = 0)."
@@ -1749,6 +1997,76 @@ the segment, 0 if at end-of-text."
     (when (zerop n)
       (push (cons "" 0) result))
     (nreverse result)))
+
+(defvar emacs-redisplay-word-wrap nil
+  "If non-nil, wrapped lines break at word boundaries (whitespace) rather
+than at exact column boundaries, mirroring Emacs `word-wrap' /
+`visual-line-mode'.  Only consulted when `emacs-redisplay-truncate-lines' is
+nil (Doc 06 E1).")
+
+(defun emacs-redisplay--wrap-line-segments (line width &optional word-wrap)
+  "Split LINE into a list of substrings, each occupying at most WIDTH display
+columns (TAB- and CJK-width aware).  Char-wrap by default; with WORD-WRAP
+non-nil, break at the last whitespace that fits rather than mid-word (falling
+back to char-wrap for a word longer than WIDTH).  A LINE that already fits
+within WIDTH returns a one-element list (Doc 06 E1)."
+  (let ((n (length line))
+        (tab-width (max 1 emacs-redisplay-default-tab-width)))
+    (if (or (<= width 0) (= n 0))
+        (list line)
+      (let ((segs nil) (seg-start 0) (i 0) (col 0))
+        (while (< i n)
+          (let* ((ch (aref line i))
+                 (cw (emacs-redisplay--char-width ch))
+                 (adv (if (eq cw -1)
+                          (- (* (1+ (/ col tab-width)) tab-width) col)
+                        (max 1 cw))))
+            (if (<= (+ col adv) width)
+                ;; Fits on the current visual row.
+                (setq col (+ col adv) i (1+ i))
+              ;; Overflow: cut a segment ending before char I.
+              (let ((cut i))
+                ;; Word-wrap: only back up to the last fitting whitespace when
+                ;; the char-wrap boundary would split a word — i.e. both sides
+                ;; of the boundary are non-whitespace.  If either side is
+                ;; whitespace the char-wrap cut is already a clean break.
+                (when (and word-wrap (> i seg-start)
+                           (not (memq (aref line i) '(?\s ?\t)))
+                           (not (memq (aref line (1- i)) '(?\s ?\t))))
+                  (let ((j (1- i)) (space nil))
+                    (while (and (>= j seg-start) (not space))
+                      (when (memq (aref line j) '(?\s ?\t))
+                        (setq space j))
+                      (setq j (1- j)))
+                    (when space (setq cut (1+ space)))))
+                ;; Never emit an empty segment (word/char wider than WIDTH).
+                (when (<= cut seg-start) (setq cut (1+ seg-start)))
+                (push (substring line seg-start cut) segs)
+                (setq seg-start cut i cut col 0)))))
+        (push (substring line seg-start) segs)
+        (nreverse segs)))))
+
+(defun emacs-redisplay--split-into-visual-lines (text width)
+  "Like `emacs-redisplay--split-into-lines', but when
+`emacs-redisplay-truncate-lines' is nil expand each over-WIDTH logical line
+into several visual rows.  Returns a list of (LINE NL-CONSUMED CONTINUATION-P)
+3-element lists; CONTINUATION-P is non-nil for visual rows that continue the
+previous row of the same logical line (Doc 06 E1)."
+  (let ((logical (emacs-redisplay--split-into-lines text))
+        (out nil))
+    (dolist (entry logical)
+      (let ((line (car entry)) (nl (cdr entry)))
+        (if emacs-redisplay-truncate-lines
+            (push (list line nl nil) out)
+          (let ((segs (emacs-redisplay--wrap-line-segments
+                       line width emacs-redisplay-word-wrap)))
+            (if (= (length segs) 1)
+                (push (list line nl nil) out)
+              (let ((k 0) (m (length segs)))
+                (dolist (seg segs)
+                  (push (list seg (if (= k (1- m)) nl 0) (> k 0)) out)
+                  (setq k (1+ k)))))))))
+    (nreverse out)))
 
 ;;; B. redisplay drivers
 
@@ -1920,7 +2238,7 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
            ((stringp text)
             (substring text (min (max 0 (1- start)) (length text))))
            (t "")))
-         (lines (emacs-redisplay--split-into-lines visible))
+         (lines (emacs-redisplay--split-into-visual-lines visible width))
          (visible-end (+ start (length visible)))
          (overlays (and (not (stringp buffer))
                         (emacs-redisplay--overlays-in
@@ -1928,7 +2246,14 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
          (pos start)
          (row-idx 0)
          (rows (emacs-redisplay-glyph-matrix-rows matrix))
-         (content-height (if (> height 1) (1- height) height))
+         ;; E6: reserve row 0 for a header line when the buffer requests one and
+         ;; there is room for it plus at least one content row (and mode line).
+         (header-p (and buffer (not (stringp buffer))
+                        (emacs-redisplay--header-line-enabled-p buffer)
+                        (> height (if (> height 1) 2 1))))
+         (header-rows (if header-p 1 0))
+         (content-height (if (> height 1) (- height 1 header-rows)
+                           (- height header-rows)))
          (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix))
          (cache (or (emacs-redisplay-glyph-matrix-line-cache matrix)
                     (let ((v (make-vector height nil)))
@@ -1940,7 +2265,8 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
     (while (and (< row-idx content-height) lines)
       (let* ((entry (pop lines))
              (line  (car entry))
-             (nl-consumed (cdr entry))
+             (nl-consumed (nth 1 entry))
+             (cont-p (nth 2 entry))
              (line-len (length line))
              (line-end-pos (+ pos line-len))
              (next-pos-est (+ line-end-pos nl-consumed))
@@ -1948,8 +2274,8 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
                        overlays pos line-end-pos))
              (tp-fp (emacs-redisplay--textprop-row-fingerprint
                      buffer pos line-end-pos))
-             (cached (aref cache row-idx))
-             (row (aref rows row-idx)))
+             (cached (aref cache (+ header-rows row-idx)))
+             (row (aref rows (+ header-rows row-idx))))
         (cond
          ((and (not fresh-matrix-p)
                cached
@@ -1978,16 +2304,25 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
             (setf (emacs-redisplay-glyph-row-direction row) dir)
-            (aset cache row-idx (cons line (cons ovly-fp tp-fp))))))
+            ;; E6: when truncate-lines clipped this logical line (lay-out
+            ;; consumed fewer chars than the line holds), show the `$' marker.
+            (when (and emacs-redisplay-truncate-lines
+                       (< (cdr laid) line-end-pos))
+              (emacs-redisplay--set-truncation-glyph row width))
+            (aset cache (+ header-rows row-idx)
+                  (cons line (cons ovly-fp tp-fp))))))
+        ;; E1: mark visual rows that continue the previous logical line so the
+        ;; backend can render a continuation indicator / suppress a fringe.
+        (setf (emacs-redisplay-glyph-row-continuation-p row) cont-p)
         (setq pos next-pos-est
               row-idx (1+ row-idx))))
     ;; Pad remaining content rows (= buffer shorter than window).
     (while (< row-idx content-height)
-      (let ((row (aref rows row-idx)))
+      (let ((row (aref rows (+ header-rows row-idx))))
         (unless (and (zerop (emacs-redisplay-glyph-row-used row))
-                     (null (aref cache row-idx)))
+                     (null (aref cache (+ header-rows row-idx))))
           (emacs-redisplay--clear-row row)
-          (aset cache row-idx nil)))
+          (aset cache (+ header-rows row-idx) nil)))
       (setq row-idx (1+ row-idx)))
     ;; Mode-line row (Phase 3.B.6 cache: cons (TEXT . nil)).
     (when (> height 1)
@@ -2010,6 +2345,23 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
            row (emacs-redisplay--mode-line-glyphs buffer width)
            width nil nil)
           (aset cache (1- height) (cons text nil))))))
+    ;; E6: Header-line row (row 0), cached as (TEXT . :header).
+    (when header-p
+      (let* ((row (aref rows 0))
+             (text (emacs-redisplay--header-line-format-to-string
+                    (emacs-redisplay--header-line-format buffer) buffer))
+             (cached (aref cache 0)))
+        (cond
+         ((and (not fresh-matrix-p) cached
+               (equal (car cached) text)
+               (eq (cdr cached) :header))
+          nil)
+         (t
+          (emacs-redisplay--clear-row row)
+          (emacs-redisplay--fill-row
+           row (emacs-redisplay--header-line-glyphs buffer width)
+           width nil nil)
+          (aset cache 0 (cons text :header))))))
     ;; Diff dirty bits against captured old hashes.
     (dotimes (r height)
       (aset dirty r

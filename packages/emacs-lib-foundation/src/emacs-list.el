@@ -229,6 +229,22 @@ TESTFN, when supplied, is called as (TESTFN KEY CAR)."
 (unless (fboundp 'remove)
   (defalias 'remove 'delete))
 
+;; `nconc' was a nil stub in the standalone runtime; install the real
+;; destructive concatenation (stub-aware so it overrides the stub).
+(unless (and (fboundp 'nconc) (not (get 'nconc 'emacs-stub-bulk)))
+  (defun nconc (&rest lists)
+    "Concatenate LISTS by destructively modifying all but the last.
+Nil arguments are ignored; the last argument may be any object."
+    (let ((result nil) (tail nil))
+      (dolist (l lists)
+        (when l
+          (if tail (setcdr tail l) (setq result l))
+          (setq tail l)
+          (while (and (consp tail) (consp (cdr tail)))
+            (setq tail (cdr tail)))))
+      result))
+  (put 'nconc 'emacs-stub-bulk nil))
+
 
 ;;;; --- length helpers -----------------------------------------------------
 

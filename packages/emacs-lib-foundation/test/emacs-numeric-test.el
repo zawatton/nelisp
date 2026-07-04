@@ -176,3 +176,22 @@
 (provide 'emacs-numeric-test)
 
 ;;; emacs-numeric-test.el ends here
+
+(ert-deftest emacs-numeric-test/random-lcg-range-and-determinism ()
+  "The standalone random LCG body yields in-range, seed-deterministic values.
+Host shadows `random' with its C builtin, so the LCG body is exercised via a
+pinned lambda (parity pattern)."
+  (let* ((state 42)
+         (rng (lambda (&optional limit)
+                (setq state (logand (+ (* state 1103515245) 12345) #x3FFFFFFF))
+                (if (and (integerp limit) (> limit 0)) (mod state limit) state))))
+    (let ((ok t))
+      (dotimes (_ 200)
+        (let ((v (funcall rng 100)))
+          (unless (and (integerp v) (>= v 0) (< v 100)) (setq ok nil))))
+      (should ok))
+    (should (= 0 (funcall rng 1)))
+    (setq state 7)
+    (let ((a (list (funcall rng) (funcall rng))))
+      (setq state 7)
+      (should (equal a (list (funcall rng) (funcall rng)))))))

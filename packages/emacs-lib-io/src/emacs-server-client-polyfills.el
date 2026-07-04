@@ -66,7 +66,10 @@
   ;; --- tiny pure functions ---------------------------------------------
   (defun length> (sequence n)
     (> (length sequence) n))
-  (defun called-interactively-p (&optional _kind) nil)
+  (defun called-interactively-p (&optional _kind)
+    ;; Doc 06 A5: read the interactive-call flag (was always nil).
+    (and (boundp 'emacs-command-loop--called-interactively)
+         emacs-command-loop--called-interactively))
   (defun minibuffer-depth () 0)
   (defun pp (object &optional _stream)
     (prin1-to-string object))

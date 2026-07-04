@@ -471,6 +471,22 @@ value cells become the keymap) is exercised by the standalone boot."
                       "(set prefix m)"))
       (should (string-match-p (regexp-quote needle) source)))))
 
+(ert-deftest emacs-keymap-defvar-keymap-source-materializes-keymaps ()
+  "Pin the standalone `defvar-keymap' fallback used by vendored mode maps."
+  (let* ((lib (locate-library "emacs-keymap"))
+         (src (and lib (concat (file-name-sans-extension lib) ".el")))
+         (source (and src (file-readable-p src)
+                      (with-temp-buffer (insert-file-contents src)
+                                        (buffer-string)))))
+    (should source)
+    (dolist (needle '("(defmacro defvar-keymap"
+                      "((eq keyword :doc) (setq doc (pop defs)))"
+                      "((eq keyword :parent) (setq parent (pop defs)))"
+                      "((eq keyword :suppress) (setq suppress (pop defs)))"
+                      "(or keymap"
+                      "(list 'list (list 'quote 'keymap))"))
+      (should (string-match-p (regexp-quote needle) source)))))
+
 (ert-deftest emacs-keymap-keymap-set-invalid-syntax-signals ()
   (let ((m (emacs-keymap-make-sparse-keymap)))
     (should-error (emacs-keymap-keymap-set m "not a kbd" 'foo)

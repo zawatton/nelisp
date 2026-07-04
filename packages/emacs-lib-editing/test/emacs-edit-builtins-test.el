@@ -41,7 +41,8 @@ Also resets kill-ring + kill-ring-yank-pointer."
                  kill-new copy-region-as-kill kill-region kill-line
                  kill-word backward-kill-word kill-sentence
                  backward-kill-sentence kill-sexp yank forward-word
-                 backward-word forward-paragraph backward-paragraph
+                 backward-word skip-chars-forward skip-chars-backward
+                 forward-paragraph backward-paragraph
                  forward-sentence backward-sentence
                  forward-sexp backward-sexp
                  delete-indentation zap-to-char sort-lines
@@ -1674,6 +1675,88 @@ checked by its dedicated shape test above)."
     (should (= 13 (nelisp-ec-point))) ; just after "world"
     (funcall emacs-edit-builtins-test--forward-word 1)
     (should (= 18 (nelisp-ec-point))))) ; just after "foo" (= EOB)
+
+;;;; I2. skip-chars polyfill body (set scanning on substrate)
+;; Under host Emacs the public `skip-chars-forward' / `skip-chars-backward'
+;; are host's C builtins walking the host buffer, so the polyfill bodies are
+;; exercised via lambdas over the nelisp-ec substrate.  The parse/membership
+;; helpers are shared real code and tested directly.
+
+(defvar emacs-edit-builtins-test--skip-chars-forward
+  (lambda (string &optional lim)
+    (let* ((parsed (emacs-edit--skip-chars-parse string))
+           (start (nelisp-ec-point))
+           (end (or lim (nelisp-ec-point-max)))
+           (p start))
+      (while (and (< p end)
+                  (let ((ch (emacs-edit--char-at p)))
+                    (and ch (emacs-edit--skip-chars-member-p ch parsed))))
+        (setq p (+ p 1)))
+      (nelisp-ec-goto-char p)
+      (- p start))))
+
+(defvar emacs-edit-builtins-test--skip-chars-backward
+  (lambda (string &optional lim)
+    (let* ((parsed (emacs-edit--skip-chars-parse string))
+           (start (nelisp-ec-point))
+           (begin (or lim (nelisp-ec-point-min)))
+           (p start))
+      (while (and (> p begin)
+                  (let ((ch (emacs-edit--char-at (- p 1))))
+                    (and ch (emacs-edit--skip-chars-member-p ch parsed))))
+        (setq p (- p 1)))
+      (nelisp-ec-goto-char p)
+      (- p start))))
+
+(ert-deftest emacs-edit-builtins-test/skip-chars-parse-basic ()
+  (should (equal '(nil . ((?a . ?z))) (emacs-edit--skip-chars-parse "a-z")))
+  (should (equal '(t . ((?0 . ?9))) (emacs-edit--skip-chars-parse "^0-9")))
+  (should (equal '(nil . ((?a . ?z) (?0 . ?9)))
+                 (emacs-edit--skip-chars-parse "a-z0-9")))
+  (should (equal '(nil . ((?- . ?-) (?a . ?a)))
+                 (emacs-edit--skip-chars-parse "-a")))
+  (should (emacs-edit--skip-chars-member-p
+           ?c (emacs-edit--skip-chars-parse "a-z")))
+  (should-not (emacs-edit--skip-chars-member-p
+               ?C (emacs-edit--skip-chars-parse "a-z")))
+  (should (emacs-edit--skip-chars-member-p
+           ?C (emacs-edit--skip-chars-parse "^a-z"))))
+
+(ert-deftest emacs-edit-builtins-test/skip-chars-forward-polyfill-body ()
+  (emacs-edit-builtins-test--with-fresh-buffer "aaabbb"
+    (nelisp-ec-goto-char 1)
+    (should (= 3 (funcall emacs-edit-builtins-test--skip-chars-forward "a")))
+    (should (= 4 (nelisp-ec-point))))
+  (emacs-edit-builtins-test--with-fresh-buffer "abc123"
+    (nelisp-ec-goto-char 1)
+    (should (= 3 (funcall emacs-edit-builtins-test--skip-chars-forward "^0-9")))
+    (should (= 4 (nelisp-ec-point))))
+  (emacs-edit-builtins-test--with-fresh-buffer "ab12cd"
+    (nelisp-ec-goto-char 1)
+    (should (= 6 (funcall emacs-edit-builtins-test--skip-chars-forward "a-z0-9")))
+    (should (= 7 (nelisp-ec-point))))
+  (emacs-edit-builtins-test--with-fresh-buffer "aaaa"
+    (nelisp-ec-goto-char 1)
+    (should (= 2 (funcall emacs-edit-builtins-test--skip-chars-forward "a" 3)))
+    (should (= 3 (nelisp-ec-point))))
+  (emacs-edit-builtins-test--with-fresh-buffer "xyz"
+    (nelisp-ec-goto-char 1)
+    (should (= 0 (funcall emacs-edit-builtins-test--skip-chars-forward "0-9")))
+    (should (= 1 (nelisp-ec-point)))))
+
+(ert-deftest emacs-edit-builtins-test/skip-chars-backward-polyfill-body ()
+  (emacs-edit-builtins-test--with-fresh-buffer "abcdef"
+    (nelisp-ec-goto-char 7)
+    (should (= -6 (funcall emacs-edit-builtins-test--skip-chars-backward "a-z")))
+    (should (= 1 (nelisp-ec-point))))
+  (emacs-edit-builtins-test--with-fresh-buffer "abcdef"
+    (nelisp-ec-goto-char 7)
+    (should (= -4 (funcall emacs-edit-builtins-test--skip-chars-backward "a-z" 3)))
+    (should (= 3 (nelisp-ec-point))))
+  (emacs-edit-builtins-test--with-fresh-buffer "abc123"
+    (nelisp-ec-goto-char 7)
+    (should (= -3 (funcall emacs-edit-builtins-test--skip-chars-backward "0-9")))
+    (should (= 4 (nelisp-ec-point)))))
 
 ;;;; J. backward-word polyfill body
 

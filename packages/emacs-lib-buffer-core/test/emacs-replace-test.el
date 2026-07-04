@@ -127,6 +127,22 @@
       (should (= 2 n))
       (should (equal "g[1] g[2]" (buffer-string))))))
 
+(ert-deftest emacs-replace-test/query-replace-region-is-direct-engine ()
+  (with-temp-buffer
+    (insert "x1 x2 x3")
+    (goto-char (point-min))
+    (let ((seen nil)
+          (decisions (list 'act 'skip 'act-all)))
+      (should
+       (= 2
+          (emacs-query-replace-region
+           "x[0-9]" "Z"
+           (lambda (matched beg end)
+             (push (list matched beg end) seen)
+             (pop decisions)))))
+      (should (equal '(("x3" 6 8) ("x2" 3 5) ("x1" 1 3)) seen))
+      (should (equal "Z x2 Z" (buffer-string))))))
+
 (ert-deftest emacs-replace-test/query-replace-session-steps ()
   (with-temp-buffer
     (insert "x A x B x C")
@@ -141,6 +157,20 @@
       (should-not (emacs-query-replace-session-active-p session))
       (should (= 2 (emacs-query-replace-session-count session)))
       (should (equal "Z A x B Z C" (buffer-string))))))
+
+(ert-deftest emacs-replace-test/query-replace-session-prompt-and-decision ()
+  (with-temp-buffer
+    (insert "x")
+    (goto-char (point-min))
+    (let ((session (emacs-query-replace-session-start "x" "Z")))
+      (should (equal "Replace x with Z? (y/n/!/q)"
+                     (emacs-query-replace-session-prompt session)))
+      (should (eq 'act (emacs-query-replace-session-decision ?y)))
+      (should (eq 'act (emacs-query-replace-session-decision "SPC")))
+      (should (eq 'skip (emacs-query-replace-session-decision "DEL")))
+      (should (eq 'act-all (emacs-query-replace-session-decision ?!)))
+      (should (eq 'quit (emacs-query-replace-session-decision "C-g")))
+      (should (eq 'reask (emacs-query-replace-session-decision "other"))))))
 
 (ert-deftest emacs-replace-test/query-replace-session-act-all ()
   (with-temp-buffer
@@ -244,6 +274,51 @@
     (should (equal '("Query replace: ") prompts))
     (should (equal "query-replace: empty FROM" status))
     (should-not callbacks)))
+
+(ert-deftest emacs-replace-test/replace-install-binds-standard-names ()
+  (let ((old-occur (and (fboundp 'occur) (symbol-function 'occur)))
+        (old-how-many (and (fboundp 'how-many) (symbol-function 'how-many)))
+        (old-replace-regexp
+         (and (fboundp 'replace-regexp) (symbol-function 'replace-regexp)))
+        (old-replace-string
+         (and (fboundp 'replace-string) (symbol-function 'replace-string)))
+        (old-flush-lines
+         (and (fboundp 'flush-lines) (symbol-function 'flush-lines)))
+        (old-keep-lines
+         (and (fboundp 'keep-lines) (symbol-function 'keep-lines)))
+        (old-query-replace
+         (and (fboundp 'query-replace) (symbol-function 'query-replace)))
+        (old-query-replace-regexp
+         (and (fboundp 'query-replace-regexp)
+              (symbol-function 'query-replace-regexp))))
+    (unwind-protect
+        (progn
+          (emacs-replace-install)
+          (should (eq (symbol-function 'occur) #'emacs-occur))
+          (should (eq (symbol-function 'how-many) #'emacs-replace-how-many))
+          (should (eq (symbol-function 'replace-regexp)
+                      #'emacs-replace-regexp))
+          (should (eq (symbol-function 'replace-string)
+                      #'emacs-replace-string))
+          (should (eq (symbol-function 'flush-lines)
+                      #'emacs-replace-flush-lines))
+          (should (eq (symbol-function 'keep-lines)
+                      #'emacs-replace-keep-lines))
+          (should (eq (symbol-function 'query-replace)
+                      #'emacs-query-replace))
+          (should (eq (symbol-function 'query-replace-regexp)
+                      #'emacs-query-replace-regexp)))
+      (dolist (entry `((occur . ,old-occur)
+                       (how-many . ,old-how-many)
+                       (replace-regexp . ,old-replace-regexp)
+                       (replace-string . ,old-replace-string)
+                       (flush-lines . ,old-flush-lines)
+                       (keep-lines . ,old-keep-lines)
+                       (query-replace . ,old-query-replace)
+                       (query-replace-regexp . ,old-query-replace-regexp)))
+        (if (cdr entry)
+            (fset (car entry) (cdr entry))
+          (fmakunbound (car entry)))))))
 
 (provide 'emacs-replace-test)
 

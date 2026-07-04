@@ -1,0 +1,363 @@
+#+TITLE: nelisp-emacs Doc 34 -- Emacs replacement development rules
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-07-02
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 03 vendor migration, Doc 11 remaining work roadmap, Doc 12 development gates, Doc 17 library-first reuse strategy, Doc 28 compatibility global API policy, Doc 31 nemacs-next editor product plan, Doc 32 upstream Org bridge policy, Doc 33 Emacs C-core substrate priority plan
+
+* 0. Purpose
+
+This document defines the standing development rules for reaching a
+practical Emacs replacement.
+
+The project is not trying to write new local applications that merely look
+like Emacs applications.  The project is trying to run real Emacs Lisp
+source, especially the upstream source under =vendor/emacs-lisp/= and the
+external package source under =vendor/=, by implementing the missing Emacs
+C-core behavior as reusable Elisp substrate.
+
+Doc 33 is the current execution plan.  This document is the policy that
+keeps future execution aligned with the replacement goal.
+
+* 1. Final Target
+
+The practical replacement target is:
+
+1. A NeLisp runtime and =nelisp-emacs= library substrate can load and run
+   real upstream Emacs Lisp source.
+2. Package-visible Emacs behavior is owned by reusable substrate modules,
+   not by GUI, TUI, or application-specific glue.
+3. Daily editor products such as =nemacs-next= use the substrate through a
+   persistent editor session.
+4. Major Emacs applications such as Dired, Org, VC, Magit, Help, and
+   byte-compiler support run from their real source whenever that source is
+   available.
+
+"Replacement" does not mean line-for-line C reimplementation.  It means the
+observable Elisp behavior expected by upstream Emacs Lisp and user packages
+is present enough to run them.
+
+* 2. Non-negotiable Rules
+
+** 2.1 Vendor source is authoritative
+
+- Do not edit =vendor/emacs-lisp/= as a normal implementation technique.
+- Do not edit external package source under =vendor/= as a normal
+  implementation technique.
+- Treat vendor load or execution failures as missing substrate until proven
+  otherwise.
+- If an exception is ever required for temporary crash isolation, it must be
+  explicit, manifest-backed, tagged, documented with a deletion condition,
+  and reviewed as technical debt.  It must not silently become the
+  implementation.
+
+Normal work must happen in:
+
+- reusable =src/= or package substrate modules;
+- standalone replay, normalization, or bridge tools;
+- bootstrap/prelude compatibility layers;
+- tests, proof scripts, and documentation.
+
+** 2.2 No local replacement for upstream applications
+
+Do not implement independent local versions of large upstream applications
+when real source exists.
+
+This applies especially to:
+
+- Dired;
+- Org;
+- Help;
+- VC;
+- Magit;
+- Transient;
+- byte compiler and optimizer support;
+- completion, minibuffer, process, timer, and window-facing libraries.
+
+Repository-owned shims are allowed only when they are:
+
+- narrow;
+- explicitly temporary or compatibility-scoped;
+- subordinate to the real vendor source;
+- documented with a migration/deletion condition.
+
+** 2.3 Rust reduction is not a goal for this track
+
+Do not evaluate this track by Rust dependency reduction.
+
+The relevant question is whether upstream Emacs Lisp can run against the
+current NeLisp / =nelisp-emacs= substrate.  Adding or removing Rust is not a
+success criterion here unless a separate task explicitly asks for it.
+
+** 2.4 Product frontends must not own Emacs semantics
+
+GUI, TUI, or app code may:
+
+- collect input;
+- render snapshots;
+- request commands;
+- provide native OS integration such as clipboard, IME, window chrome, and
+  menus.
+
+Frontend code must not:
+
+- mutate buffers with private editor semantics;
+- implement package-observable keymap, command-loop, minibuffer, file,
+  process, timer, face, hook, or mode behavior;
+- parse and edit Org, Dired, Magit, or other application state as a
+  substitute for running the package code.
+
+If an Emacs package can observe the behavior, the behavior belongs in the
+runtime/library substrate.
+
+* 3. Required Development Loop
+
+Every compatibility task follows this loop.
+
+** 3.1 Select the smallest real vendor target
+
+Pick a real upstream or vendored file and a narrow proof surface.
+
+Prefer lightweight Emacs-distributed targets before large external
+packages.  For example, improve =help-fns.el=, =ind-util.el=, byte-compiler
+support, process/timer/keymap/faces, or other smaller substrate families
+before returning to broad Magit gates.
+
+Magit remains important, but it is a large integration target.  It should
+be used to expose substrate gaps after the smaller families are better
+covered, not as the default next step when a smaller upstream file can
+advance the same missing substrate.
+
+** 3.2 Load the real source first
+
+Use the real vendor file path in the replay or proof command.
+
+Allowed harness transformations are only those that preserve the meaning of
+the vendor source for the purpose being tested:
+
+- reader normalization for syntax the current runtime cannot yet read;
+- splitting very large forms when replay granularity is the boundary;
+- compile-time-only form handling when runtime behavior is unaffected;
+- explicit bridge forms that model Emacs load/bootstrap behavior.
+
+The proof must state whether it is:
+
+- direct real vendor replay;
+- normalized real vendor replay;
+- coalesced replay;
+- prefix reduction;
+- extracted minimal form reduction;
+- or a bridge/prelude proof.
+
+** 3.3 Classify the failure as substrate, replay, or proof boundary
+
+Do not jump from a failed load to an application rewrite.
+
+Classify the failure:
+
+| Class | Meaning | Normal owner |
+|-------+---------+--------------|
+| Reader/runtime | source cannot be read or evaluated safely | NeLisp runtime or normalizer |
+| Bootstrap/load | =require=, =provide=, autoload, dump, load-path, or prelude state is missing | replay harness or bootstrap bridge |
+| C-core substrate | package expects primitive Emacs behavior | reusable =nelisp-emacs= substrate |
+| Replay granularity | source works in another granularity but not the current persistent replay path | replay harness / normalization |
+| Proof overload | proof is too broad or timeout-bound after load succeeds | split proof, not app rewrite |
+| Product integration | source runs but frontend cannot expose it yet | app protocol/frontend, without moving semantics |
+
+Only after this classification should code be changed.
+
+** 3.4 Implement at the lowest reusable owner
+
+Place the fix where future vendor files will also benefit.
+
+Typical owners:
+
+| Behavior | Owner |
+|----------+-------|
+| symbols, variables, function cells, properties | foundation/core substrate |
+| buffers, point, markers, narrowing, text properties | buffer-core |
+| editing commands and undo | editing |
+| files, directories, file names, processes | io |
+| keymaps, commands, hooks, modes, Custom, faces | core |
+| completion and minibuffer semantics | core / completion substrate |
+| timers and events | core/runtime substrate |
+| standalone source reading and replay shape | scripts / replay harness |
+| product transport and rendering | app/frontend protocol only |
+
+Do not hide a reusable missing primitive inside an application-specific
+shim.
+
+** 3.5 Prove behavior through vendor source
+
+The preferred proof is not "a local helper works".  The preferred proof is:
+
+1. load the real vendor source;
+2. assert feature registration and key public surfaces;
+3. execute a representative behavior through vendor-defined functions or
+   macros;
+4. document remaining weaker areas as follow-up boundaries.
+
+Small proof surfaces are valid.  Broad proof surfaces are required only
+when the target milestone claims broad compatibility.
+
+** 3.6 Record evidence and keep the next boundary visible
+
+Each completed gate must record:
+
+- exact files loaded;
+- timeout settings;
+- replay mode;
+- proof surface;
+- elapsed time when relevant;
+- whether the result proves load-only, surface, or execution behavior;
+- remaining boundary;
+- confirmation that vendor source was not patched.
+
+Evidence belongs in the relevant design document and the DB-primary
+worklog, not in ad hoc repo worklog files.
+
+* 4. Milestone Ladder
+
+Use these levels to avoid claiming more than the evidence proves.
+
+| Level | Name | Evidence |
+|-------+------+----------|
+| L0 | readable | source can be read or normalized without changing vendor files |
+| L1 | loadable | real vendor file loads and provides the expected feature |
+| L2 | surface | public functions/macros/variables/keymaps are present after vendor load |
+| L3 | representative execution | selected vendor-defined behavior executes correctly |
+| L4 | dependency chain | dependent vendor files load through the real chain |
+| L5 | workflow | an editor workflow works through command dispatch/session state |
+| L6 | product path | workflow is available through the persistent editor product frontend |
+
+A target is not complete at the replacement level just because it reached
+L1 or L2.  The document or issue must state the level being claimed.
+
+* 5. Recommended Order Toward Replacement
+
+** 5.1 Stabilize the core substrate lanes
+
+Prioritize smaller upstream files and substrate families that many later
+applications share:
+
+1. reader/runtime safety and standalone replay correctness;
+2. =require= / =provide= / autoload / load-path / dump-equivalent behavior;
+3. symbols, properties, macros, and byte-compiler support;
+4. keymaps, command loop, hooks, modes, Custom, faces;
+5. buffers, markers, text properties, overlays, narrowing, redisplay-facing
+   metadata;
+6. files, directories, processes, timers, and filters;
+7. minibuffer, completion, xref/project/search;
+8. window/frame abstractions needed by vendor code.
+
+** 5.2 Expand Emacs-distributed applications before external giants
+
+Move from lightweight to heavier targets:
+
+1. small =emacs-lisp/=, =international/=, =term/=, =textmodes/=, =url/=,
+   =mail/=, =net/= helpers;
+2. Help, Dired, VC, comint, shell, project, xref, compile;
+3. Org bridge tracks after buffer/text-property/folding/keymap/faces are
+   ready enough;
+4. external packages such as Transient and Magit after the shared
+   substrate they need has evidence from smaller gates.
+
+This order does not de-prioritize Magit as a final capability.  It prevents
+Magit from becoming a place where missing general Emacs behavior is hidden
+inside a local rewrite.
+
+** 5.3 Integrate products only after session semantics exist
+
+=nemacs-next= and later products should consume the persistent editor
+session once the relevant substrate has a proof.
+
+Product milestones should test:
+
+- persistent process/session reuse;
+- command dispatch through real keymaps and commands;
+- buffer snapshots returned from substrate-owned state;
+- minibuffer/completion protocol;
+- file/process workflows through substrate APIs;
+- package smoke through the same runtime session.
+
+* 6. Acceptance Rules
+
+** 6.1 A change is aligned when it makes real vendor source more runnable
+
+An aligned change does at least one of:
+
+- makes a real vendor file load further;
+- turns a load-only gate into a surface or execution gate;
+- moves behavior from app glue into reusable substrate;
+- improves replay fidelity for vendor source;
+- reduces a known blocker with a reproducible proof;
+- documents a current boundary accurately enough for the next worker to
+  continue.
+
+** 6.2 A change is misaligned when it creates a parallel Emacs
+
+Misaligned changes include:
+
+- implementing local Dired, Org, Magit, VC, Help, or byte-compiler behavior
+  instead of running the real source;
+- adding GUI-only semantics that packages cannot observe;
+- treating fallback shims as the long-term source of truth;
+- patching vendor source without a manifest and deletion condition;
+- claiming replacement progress from a helper proof that never loads the
+  vendor file.
+
+** 6.3 Completion requires evidence, not intent
+
+Before marking a plan complete, audit every named target and gate against
+current evidence.
+
+For each target, the audit must answer:
+
+- Which real vendor files were used?
+- What level L0-L6 is proven?
+- Which command proves it?
+- What timeout and replay mode were used?
+- What remains unproven?
+- Was vendor source left unmodified?
+
+If the evidence is indirect, stale, or narrower than the claim, the target
+is not complete.
+
+* 7. Required Checks Before Finishing Work
+
+Every implementation or design update in this track should run the
+smallest applicable checks plus the invariant checks below.
+
+Invariant checks:
+
+#+begin_src sh
+git diff --stat -- vendor vendor/emacs-lisp
+git diff --name-only -- vendor vendor/emacs-lisp
+#+end_src
+
+Both commands must show no tracked vendor edits.
+
+For source-normalizer or replay changes, also check:
+
+#+begin_src sh
+git diff --check -- scripts/standalone-source-normalize.el
+emacs --batch -Q -L scripts -l standalone-source-normalize \
+  --eval '(progn (princ standalone-source-normalize-cache-version) (princ "\n"))'
+#+end_src
+
+For org design documents, use an org/text whitespace check appropriate to
+the edited file.  Do not create repo-local worklog files; record completed
+work through the DB-primary worklog path.
+
+* 8. How To Use This Document
+
+Use this document as the first decision filter when planning new work:
+
+1. Identify the real vendor source that should eventually run.
+2. Pick the smallest proof that moves that source one level up the ladder.
+3. Fix substrate, bridge, replay, or product protocol at the correct owner.
+4. Prove the result through the real source.
+5. Update the current execution plan with exact evidence.
+
+If a proposed task does not help real upstream Emacs Lisp run, it belongs
+outside the Emacs replacement track unless the user explicitly asks for a
+separate product experiment.

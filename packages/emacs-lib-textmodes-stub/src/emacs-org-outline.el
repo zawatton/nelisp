@@ -29,6 +29,11 @@
 (require 'emacs-keymap-builtins)
 (require 'emacs-mode-builtins)
 
+(declare-function org-get-todo-state "emacs-org-outline")
+(declare-function org-element-create "emacs-org-outline")
+(declare-function outline-back-to-heading "emacs-org-outline")
+(declare-function outline-level "emacs-org-outline")
+
 ;;;; Constants and state
 
 (defconst org-outline--heading-regexp "^\\(\\*+\\) "
@@ -101,6 +106,125 @@ Entries have the shape (LINK DESCRIPTION).")
 
 (defvar org-export-buffer-name "*Org Export*"
   "Buffer name used by lightweight `org-export-dispatch'.")
+
+;;;; Generic outline substrate
+
+(defvar-local outline-regexp "\\*+ "
+  "Regexp matching the start of an outline heading line.")
+
+(defvar outline-level #'outline-level
+  "Function returning the level of the current outline heading.")
+
+(defun emacs-outline--line-string ()
+  "Return the current line as a string without text properties."
+  (buffer-substring-no-properties
+   (line-beginning-position)
+   (line-end-position)))
+
+(defun emacs-outline--match-heading-on-line ()
+  "Return non-nil if the current line matches `outline-regexp'."
+  (let ((line (emacs-outline--line-string)))
+    (and (stringp outline-regexp)
+         (string-match outline-regexp line)
+         (= (match-beginning 0) 0))))
+
+(defun emacs-outline--heading-level-at-point ()
+  "Return current generic outline level, or nil when not on a heading."
+  (when (emacs-outline--match-heading-on-line)
+    (let ((line (emacs-outline--line-string)))
+      (cond
+       ((match-beginning 1)
+        (length (match-string 1 line)))
+       ((match-string 0 line)
+        (length (replace-regexp-in-string "[ \t]+\\'" "" (match-string 0 line))))
+       (t nil)))))
+
+(defun emacs-outline--heading-at-point-p ()
+  "Return non-nil when point is on a generic outline heading line."
+  (not (null (emacs-outline--heading-level-at-point))))
+
+(defun emacs-outline--next-heading ()
+  "Move to the next generic outline heading line.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil))
+    (forward-line 1)
+    (while (and (not found) (< (point) (point-max)))
+      (when (emacs-outline--heading-at-point-p)
+        (setq found (point)))
+      (unless found
+        (forward-line 1)))
+    (unless found
+      (goto-char origin))
+    found))
+
+(defun emacs-outline--previous-heading ()
+  "Move to the previous generic outline heading line.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil)
+        (done nil))
+    (beginning-of-line)
+    (unless (bobp)
+      (forward-line -1)
+      (while (and (not found) (not done))
+        (when (emacs-outline--heading-at-point-p)
+          (setq found (point)))
+        (unless found
+          (if (bobp)
+              (setq done t)
+            (forward-line -1)))))
+    (if found
+        (goto-char found)
+      (goto-char origin))
+    found))
+
+(defun emacs-outline--back-to-heading ()
+  "Move to current or preceding generic outline heading.
+Return point when found, else nil and restore point."
+  (let ((origin (point)))
+    (beginning-of-line)
+    (cond
+     ((emacs-outline--heading-at-point-p)
+      (point))
+     ((emacs-outline--previous-heading)
+      (point))
+     (t
+      (goto-char origin)
+      nil))))
+
+(defun emacs-outline--find-next-heading-at-or-above (level)
+  "Return point of the next generic heading whose level is <= LEVEL."
+  (let ((origin (point))
+        (found nil))
+    (forward-line 1)
+    (while (and (not found) (< (point) (point-max)))
+      (let ((other-level (emacs-outline--heading-level-at-point)))
+        (when (and other-level (<= other-level level))
+          (setq found (point))))
+      (unless found
+        (forward-line 1)))
+    (unless found
+      (goto-char origin))
+    found))
+
+(defun emacs-outline--goto-parent-heading ()
+  "Move to the parent generic outline heading.
+Return point when found, else nil and restore point."
+  (let ((origin (point))
+        (found nil))
+    (unless (emacs-outline--heading-at-point-p)
+      (emacs-outline--previous-heading))
+    (let ((level (emacs-outline--heading-level-at-point)))
+      (when level
+        (while (and (not found)
+                    (emacs-outline--previous-heading))
+          (let ((other-level (emacs-outline--heading-level-at-point)))
+            (when (and other-level (< other-level level))
+              (setq found (point)))))))
+    (unless found
+      (goto-char origin))
+    found))
 
 ;;;; Low-level text-property helpers
 
@@ -302,9 +426,8 @@ Negative COUNT moves backward."
         (remaining (abs count))
         (mover (if (< count 0)
                    #'org-outline--previous-visible-heading
-                 #'org-outline--next-visible-heading))
-        (found nil))
-    (while (and (> remaining 0) (setq found (funcall mover)))
+                 #'org-outline--next-visible-heading)))
+    (while (and (> remaining 0) (funcall mover))
       (when (= (org-outline--require-heading) level)
         (setq remaining (1- remaining))))
     (if (= remaining 0)
@@ -1260,9 +1383,19 @@ backward.  Folded-away headings are skipped."
 ;;;###autoload
 (defun outline-next-visible-heading (&optional arg)
   "Move to the next visible heading.
-This compatibility alias delegates to `org-next-visible-heading'."
+In Org buffers this delegates to `org-next-visible-heading'.  In plain
+outline buffers it uses `outline-regexp' and treats all headings as visible."
   (interactive "p")
-  (org-next-visible-heading arg))
+  (if (derived-mode-p 'org-mode)
+      (org-next-visible-heading arg)
+    (let ((count (or arg 1))
+          (ok t))
+      (while (and ok (> count 0))
+        (setq ok (emacs-outline--next-heading))
+        (setq count (1- count)))
+      (unless ok
+        (user-error "No next visible heading"))
+      (point))))
 
 ;;;###autoload
 (defun org-previous-visible-heading (&optional arg)
@@ -1311,7 +1444,9 @@ hidden in this subset."
     (when (< remaining 0)
       (user-error "Negative parent heading movement is not supported"))
     (while (> remaining 0)
-      (unless (org-outline--goto-parent-heading)
+      (unless (if (derived-mode-p 'org-mode)
+                  (org-outline--goto-parent-heading)
+                (emacs-outline--goto-parent-heading))
         (user-error "No parent heading"))
       (setq remaining (1- remaining))))
   (point))
@@ -2556,21 +2691,22 @@ CONTENTS, matching the non-mutating fallback shape."
                             (t (list types))))
           (call (if (functionp fun) fun (lambda (_node) (eval fun t))))
           results)
-      (cl-labels
-          ((walk (node)
-             (when (consp node)
-               (let ((type (and (symbolp (car node)) (car node))))
-                 (when (and type
-                            (or (eq types-list t)
-                                (memq type types-list)))
-                   (let ((value (funcall call node)))
-                     (when first-match
-                       (cl-return-from org-element-ast-map value))
-                     (push value results)))
-                 (dolist (child (if type (cddr node) node))
-                   (walk child))))))
-        (walk data))
-      (nreverse results))))
+      (catch 'org-element-ast-map-first
+        (cl-labels
+            ((walk (node)
+               (when (consp node)
+                 (let ((type (and (symbolp (car node)) (car node))))
+                   (when (and type
+                              (or (eq types-list t)
+                                  (memq type types-list)))
+                     (let ((value (funcall call node)))
+                       (when (and first-match value)
+                         (throw 'org-element-ast-map-first value))
+                       (push value results)))
+                   (dolist (child (if type (cddr node) node))
+                     (walk child))))))
+          (walk data))
+        (nreverse results)))))
 
 (unless (fboundp 'org-element-lineage)
   (defun org-element-lineage (datum &optional types with-self)
@@ -2594,13 +2730,14 @@ CONTENTS, matching the non-mutating fallback shape."
     "Compatibility shim: map FUN across `org-element-lineage'."
     (let ((call (if (functionp fun) fun (lambda (_node) (eval fun t))))
           results)
-      (dolist (node (org-element-lineage datum types with-self))
-        (let ((value (funcall call node)))
-          (when first-match
-            (cl-return-from org-element-lineage-map value))
-          (when value
-            (push value results))))
-      (nreverse results))))
+      (catch 'org-element-lineage-map-first
+        (dolist (node (org-element-lineage datum types with-self))
+          (let ((value (funcall call node)))
+            (when first-match
+              (throw 'org-element-lineage-map-first value))
+            (when value
+              (push value results))))
+        (nreverse results)))))
 
 (unless (fboundp 'org-element-property-inherited)
   (defun org-element-property-inherited
@@ -2681,7 +2818,41 @@ CONTENTS, matching the non-mutating fallback shape."
 (unless (fboundp 'outline-next-heading)
   (defun outline-next-heading ()
     "Move to the next heading line; return point, or nil if none."
-    (org-outline--next-heading)))
+    (emacs-outline--next-heading)))
+
+(unless (fboundp 'outline-previous-heading)
+  (defun outline-previous-heading ()
+    "Move to the previous heading line; return point, or nil if none."
+    (emacs-outline--previous-heading)))
+
+(unless (fboundp 'outline-on-heading-p)
+  (defun outline-on-heading-p (&optional _invisible-ok)
+    "Return non-nil when point is on a generic outline heading line."
+    (emacs-outline--heading-at-point-p)))
+
+(unless (fboundp 'outline-level)
+  (defun outline-level ()
+    "Return the current generic outline heading level."
+    (or (emacs-outline--heading-level-at-point)
+        (user-error "Not on an outline heading"))))
+
+(unless (fboundp 'outline-back-to-heading)
+  (defun outline-back-to-heading (&optional _invisible-ok)
+    "Move to current or preceding generic outline heading."
+    (or (emacs-outline--back-to-heading)
+        (user-error "Before first outline heading"))))
+
+(unless (fboundp 'outline-end-of-subtree)
+  (defun outline-end-of-subtree ()
+    "Move to the end of the generic outline subtree at point."
+    (outline-back-to-heading)
+    (let* ((level (funcall outline-level))
+           (end (save-excursion
+                  (or (and (emacs-outline--find-next-heading-at-or-above level)
+                           (line-beginning-position))
+                      (point-max)))))
+      (goto-char end)
+      (point))))
 
 (unless (fboundp 'org-get-todo-state)
   (defun org-get-todo-state ()
@@ -2720,6 +2891,40 @@ CONTENTS, matching the non-mutating fallback shape."
          (1+ (org-outline--heading-level-at-point)))
       (insert "  "))))
 
+(defvar emacs-org-outline--vendor-org-element-load-error nil
+  "Last error raised while trying to load vendored `org-element'.")
+
+(defun emacs-org-outline--repo-root ()
+  "Return the repository root inferred from this source file."
+  (file-name-directory
+   (directory-file-name
+    (file-name-directory (or load-file-name buffer-file-name)))))
+
+(defun emacs-org-outline--vendor-org-load-paths ()
+  "Return load-path entries needed by vendored Org."
+  (let ((root (emacs-org-outline--repo-root)))
+    (list (expand-file-name "vendor/emacs-lisp" root)
+          (expand-file-name "vendor/emacs-lisp/emacs-lisp" root)
+          (expand-file-name "vendor/emacs-lisp/org" root)
+          (expand-file-name "vendor/emacs-lisp/gnus" root)
+          (expand-file-name "vendor/emacs-lisp/mail" root))))
+
+(defun emacs-org-outline--try-vendor-org-element ()
+  "Try loading the vendored GNU Org element parser.
+This module must not replace `org-element-parse-buffer' with an independent
+parser.  A failure here identifies missing Emacs C-core-compatible substrate
+that should be fixed in `src/' or the runtime."
+  (unless (featurep 'org-element)
+    (let ((load-path (append (emacs-org-outline--vendor-org-load-paths)
+                             load-path)))
+      (condition-case err
+          (require 'org-element)
+        (error
+         (setq emacs-org-outline--vendor-org-element-load-error err)
+         nil)))))
+
+(emacs-org-outline--try-vendor-org-element)
+
 (unless (fboundp 'org-element-type)
   (defun org-element-type (node &optional _anonymous)
     "Return the type symbol of org element NODE (`plain-text' for strings)."
@@ -2747,6 +2952,22 @@ A heading line yields a `headline' node, any other line a `paragraph'."
          'paragraph
          (list :begin (line-beginning-position)
                :end (org-outline--line-end-with-newline)))))))
+
+(unless (fboundp 'org-element-parse-buffer)
+  (defun org-element-parse-buffer
+      (&optional _granularity _visible-only _keep-deferred)
+    "Signal that vendored `org-element' is not yet loadable."
+    (user-error "vendored org-element unavailable: %S"
+                emacs-org-outline--vendor-org-element-load-error)))
+
+(unless (fboundp 'org-element-map)
+  (defun org-element-map
+      (data types fun &optional info first-match no-recursion
+            with-affiliated _no-recursion-types)
+    "Map FUN over DATA nodes whose type is in TYPES.
+This lightweight fallback delegates to `org-element-ast-map'."
+    (org-element-ast-map data types fun info first-match no-recursion
+                         with-affiliated)))
 
 (provide 'emacs-org-outline)
 

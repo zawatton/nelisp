@@ -1,0 +1,13 @@
+# Copy this file to docs/release/nemacs-library-release.local.mk, or set
+# NEMACS_LIBRARY_RELEASE_CONFIG=/absolute/path/to/release.local.mk when running
+# make.  The local file is ignored by git because it contains machine-specific
+# keyring paths and the active release fingerprint.
+
+NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE := /absolute/path/to/nemacs-library-release-public-key.asc
+NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT := 0123456789ABCDEF0123456789ABCDEF01234567
+NEMACS_LIBRARY_RELEASE_GNUPGHOME := /absolute/path/to/private/release-gnupg
+
+# Optional knobs:
+# NEMACS_LIBRARY_RELEASE_GPG_PROGRAM := gpg
+# NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR := 0
+# NEMACS_LIBRARY_RELEASE_SIGNATURE_SUFFIX := .sig

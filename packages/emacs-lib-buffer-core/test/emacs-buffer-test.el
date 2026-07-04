@@ -724,6 +724,36 @@
       (should-not (emacs-buffer-overlays-in 1 20 b))
       (should-not (emacs-buffer-overlays-at 2 b)))))
 
+(ert-deftest emacs-buffer-remove-overlays-filters-by-property ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (red (emacs-buffer-make-overlay 2 4 b))
+           (blue (emacs-buffer-make-overlay 4 6 b))
+           (other (emacs-buffer-make-overlay 1 2 b)))
+      (emacs-buffer-overlay-put red 'face 'red)
+      (emacs-buffer-overlay-put blue 'face 'blue)
+      (emacs-buffer-overlay-put other 'other t)
+      (should-not (emacs-buffer-remove-overlays 1 5 'face 'red b))
+      (should-not (emacs-buffer-overlay-buffer red))
+      (should (eq b (emacs-buffer-overlay-buffer blue)))
+      (should (eq b (emacs-buffer-overlay-buffer other)))
+      (should-not (emacs-buffer-remove-overlays 1 7 nil nil b))
+      (should-not (emacs-buffer-overlays-in 1 7 b)))))
+
+(ert-deftest emacs-buffer-overlay-change-boundaries ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "x")))
+      (nelisp-ec-with-current-buffer b
+        (nelisp-ec-insert "abc")
+        (emacs-buffer-make-overlay 1 2 b)
+        (emacs-buffer-make-overlay 3 4 b)
+        (should (= 2 (emacs-buffer-next-overlay-change 1 b)))
+        (should (= 3 (emacs-buffer-next-overlay-change 2 b)))
+        (should (= 4 (emacs-buffer-next-overlay-change 4 b)))
+        (should (= 3 (emacs-buffer-previous-overlay-change 4 b)))
+        (should (= 2 (emacs-buffer-previous-overlay-change 3 b)))
+        (should (= 1 (emacs-buffer-previous-overlay-change 1 b)))))))
+
 (ert-deftest emacs-buffer-copy-overlay-is-independent ()
   (emacs-buffer-test--with-fresh-world
     (let* ((b (nelisp-ec-generate-new-buffer "x"))

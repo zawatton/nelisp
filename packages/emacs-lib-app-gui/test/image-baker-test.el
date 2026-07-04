@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'image-baker)
 (require 'image-loader)
 (require 'nemacs-loadup)
@@ -76,6 +77,37 @@
     (when (file-exists-p missing)
       (delete-file missing))
     (should-not (image-loader-load-if-readable missing))))
+
+(ert-deftest image-baker-test/loader-load-batch-prefers-image-loader-file ()
+  (let ((image-loader-file "from-variable.nli")
+        (seen nil))
+    (cl-letf (((symbol-function 'image-loader-load)
+               (lambda (path &rest _restore-buffers)
+                 (setq seen path)
+                 '(:features (one two)
+                   :defvars (alpha)
+                   :buffers (beta gamma))))
+              ((symbol-function 'expand-file-name)
+               (lambda (path) (concat "/abs/" path))))
+      (with-temp-buffer
+        (let ((standard-output (current-buffer)))
+          (should (equal (image-loader-load-batch) '(:features (one two)
+                                                     :defvars (alpha)
+                                                     :buffers (beta gamma))))
+          (should (equal seen "from-variable.nli"))
+          (should (string-match-p
+                   "image-loader image=/abs/from-variable\\.nli features=2 defvars=1 buffers=2"
+                   (buffer-string))))))))
+
+(ert-deftest image-baker-test/loader-info-delegates-to-emacs-dump-image-info ()
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'emacs-dump-image-info)
+               (lambda (path)
+                 (setq seen path)
+                 '(:feature-count 2 :defvar-count 1 :buffer-count 0))))
+      (should (equal (image-loader-info "sample.nli")
+                     '(:feature-count 2 :defvar-count 1 :buffer-count 0)))
+      (should (equal seen "sample.nli")))))
 
 (provide 'image-baker-test)
 

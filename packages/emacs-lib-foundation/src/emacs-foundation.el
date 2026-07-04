@@ -13,6 +13,20 @@
 
 ;;; Code:
 
+;; When this file is loaded from an installed package archive, the sibling
+;; feature files are not guaranteed to be on `load-path' yet.  Load them from
+;; the same directory as this loader so package activation stays robust.
+(defconst emacs-foundation--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the foundation feature files.")
+
+(defun emacs-foundation--load-feature (feature)
+  "Load FEATURE from the foundation package directory."
+  (let ((file (expand-file-name (concat (symbol-name feature) ".el")
+                                emacs-foundation--load-directory)))
+    (unless (load file nil t)
+      (require feature))))
+
 ;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
 ;; emacs-fns (plist-get) before emacs-symbol (uses plist-get + plist-put);
 ;; emacs-list (nreverse, copy-sequence) before emacs-hash (uses both).
@@ -43,7 +57,7 @@
   "Reusable FND package features loaded by `emacs-foundation'.")
 
 (dolist (feature emacs-foundation-features)
-  (require feature))
+  (emacs-foundation--load-feature feature))
 
 (provide 'emacs-foundation)
 

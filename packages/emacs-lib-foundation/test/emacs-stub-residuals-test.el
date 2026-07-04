@@ -75,12 +75,21 @@
                   window-live-p frame-selected-window
                   custom-add-option custom-add-frequent-value
                   custom-variable-p defgroup defcustom
+                  set-advertised-calling-convention
+                  get-advertised-calling-convention
                   convert-standard-filename string-to-list
                   regexp-quote regexp-opt easy-menu-define
                   easy-menu-add-item
                   current-idle-time shell-command-to-string
                   call-process-shell-command
                   bound-and-true-p
+                  emacs-stub--add-hook emacs-stub--remove-hook
+                  emacs-stub--run-hook
+                  emacs-stub--advice-add emacs-stub--advice-remove
+                  emacs-stub--advice-member-p
+                  emacs-stub--run-with-timer
+                  emacs-stub--run-with-idle-timer
+                  emacs-stub--cancel-timer
                   line-number-display-width
                   syntax-propertize-rules cc-require cc-provide
                   version< version<= combine-change-calls define-advice
@@ -113,6 +122,12 @@
   (should (boundp 'three-step-help))
   (should (boundp 'help-for-help-use-variable-pitch)))
 
+(ert-deftest emacs-stub-residuals-test/advertised-calling-convention-metadata ()
+  (let ((sym (make-symbol "emacs-stub-test--advertised")))
+    (should (equal '(arg)
+                   (set-advertised-calling-convention sym '(arg) "30.1")))
+    (should (get-advertised-calling-convention sym))))
+
 (ert-deftest emacs-stub-residuals-test/function-get-reads-symbol-property ()
   "Doc 15 B4 breadth: `function-get' returns a function symbol's property.
 It was void on the reader, blocking `define-inline' / cl-generic users."
@@ -120,6 +135,103 @@ It was void on the reader, blocking `define-inline' / cl-generic users."
     (should (null (function-get sym 'no-such-prop)))
     (put sym 'my-prop 123)
     (should (equal 123 (function-get sym 'my-prop)))))
+
+(ert-deftest emacs-stub-residuals-test/hook-helpers-store-run-and-remove ()
+  (let ((hook (make-symbol "emacs-stub-test--hook"))
+        (seen nil))
+    (fset 'emacs-stub-test--hook-a (lambda () (push 'a seen)))
+    (fset 'emacs-stub-test--hook-b (lambda () (push 'b seen)))
+    (unwind-protect
+        (progn
+          (emacs-stub--add-hook hook 'emacs-stub-test--hook-a)
+          (emacs-stub--add-hook hook 'emacs-stub-test--hook-b t)
+          (should (equal '(emacs-stub-test--hook-a emacs-stub-test--hook-b)
+                         (symbol-value hook)))
+          ;; Re-adding moves the function rather than duplicating it.
+          (emacs-stub--add-hook hook 'emacs-stub-test--hook-a t)
+          (should (equal '(emacs-stub-test--hook-b emacs-stub-test--hook-a)
+                         (symbol-value hook)))
+          (emacs-stub--run-hook hook nil)
+          (should (equal '(a b) seen))
+          (emacs-stub--remove-hook hook 'emacs-stub-test--hook-b)
+          (should (equal '(emacs-stub-test--hook-a) (symbol-value hook))))
+      (fmakunbound 'emacs-stub-test--hook-a)
+      (fmakunbound 'emacs-stub-test--hook-b))))
+
+(ert-deftest emacs-stub-residuals-test/hook-helpers-support-args-and-depth ()
+  (let ((hook (make-symbol "emacs-stub-test--abnormal-hook"))
+        (seen nil))
+    (fset 'emacs-stub-test--hook-low (lambda (x) (push (list 'low x) seen)))
+    (fset 'emacs-stub-test--hook-high (lambda (x) (push (list 'high x) seen)))
+    (unwind-protect
+        (progn
+          (emacs-stub--add-hook hook 'emacs-stub-test--hook-high 90)
+          (emacs-stub--add-hook hook 'emacs-stub-test--hook-low -10)
+          (should (equal '((-10 . emacs-stub-test--hook-low)
+                           (90 . emacs-stub-test--hook-high))
+                         (symbol-value hook)))
+          (emacs-stub--run-hook hook '(value))
+          (should (equal '((high value) (low value)) seen)))
+      (fmakunbound 'emacs-stub-test--hook-low)
+      (fmakunbound 'emacs-stub-test--hook-high))))
+
+(ert-deftest emacs-stub-residuals-test/advice-helpers-support-override-and-remove ()
+  (let ((target (make-symbol "emacs-stub-test--advised-target"))
+        (advice (make-symbol "emacs-stub-test--override-advice")))
+    (fset target (lambda (x) (list 'orig x)))
+    (fset advice (lambda (x) (list 'override x)))
+    (should (eq advice
+                (emacs-stub--advice-add target :override advice)))
+    (should (emacs-stub--advice-member-p advice target))
+    (should (equal '(override value) (funcall target 'value)))
+    (should-not (emacs-stub--advice-remove target advice))
+    (should-not (emacs-stub--advice-member-p advice target))
+    (should (equal '(orig value) (funcall target 'value)))))
+
+(ert-deftest emacs-stub-residuals-test/advice-helpers-support-around-before-after ()
+  (let ((target (make-symbol "emacs-stub-test--advised-target"))
+        (before (make-symbol "emacs-stub-test--before-advice"))
+        (after (make-symbol "emacs-stub-test--after-advice"))
+        (around (make-symbol "emacs-stub-test--around-advice"))
+        (seen nil))
+    (fset target (lambda (x) (list 'orig x)))
+    (fset before (lambda (x) (push (list 'before x) seen)))
+    (fset after (lambda (x) (push (list 'after x) seen)))
+    (fset around
+          (lambda (fn x) (cons 'around (funcall fn x))))
+    (emacs-stub--advice-add target :before before)
+    (emacs-stub--advice-add target :around around)
+    (emacs-stub--advice-add target :after after)
+    (should (equal '(around orig value) (funcall target 'value)))
+    (should (equal '((after value) (before value)) seen))))
+
+(ert-deftest emacs-stub-residuals-test/timer-helpers-create-and-cancel ()
+  (let ((timer-list nil)
+        (timer-idle-list nil))
+    (let ((timer (emacs-stub--run-with-timer 10 nil #'ignore 'arg)))
+      (should (emacs-stub--timer-p timer))
+      (should (memq timer timer-list))
+      (should (equal #'ignore (aref timer 3)))
+      (should (equal '(arg) (aref timer 4)))
+      (should-not (emacs-stub--cancel-timer timer))
+      (should-not (memq timer timer-list)))
+    (let ((timer (emacs-stub--run-with-idle-timer 3 t #'ignore)))
+      (should (emacs-stub--timer-p timer))
+      (should (memq timer timer-idle-list))
+      (should (= 3 (aref timer 5)))
+      (should (aref timer 2)))))
+
+(ert-deftest emacs-stub-residuals-test/timer-fallbacks-have-real-bodies ()
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((source (buffer-string)))
+        (should (string-match-p "defun emacs-stub--run-with-timer" source))
+        (should (string-match-p "defun run-with-timer" source))
+        (should (string-match-p "defun run-at-time" source))
+        (should (string-match-p "defun timerp" source))
+        (should (string-match-p "defun cancel-function-timers" source))))))
 
 (ert-deftest emacs-stub-residuals-test/define-inline-lowers-inline-dsl ()
   "Doc 15 B4: runtime define-inline lowers the inline DSL against the
@@ -332,6 +444,38 @@ must be able to overwrite early bootstrap stubs with real substrates."
     (should-not (custom-variable-p plain))
     (should-not (custom-variable-p "not-a-symbol"))))
 
+(ert-deftest emacs-stub-residuals-test/custom-declare-variable-metadata-shape ()
+  (let ((symbol (make-symbol "nelisp-emacs-custom-declare-variable")))
+    (cl-letf (((symbol-function 'custom-declare-variable)
+               (lambda (sym default doc &rest args)
+                 (unless (boundp sym)
+                   (set sym default))
+                 (put sym 'standard-value (list default))
+                 (put sym 'variable-documentation doc)
+                 (put sym 'custom-args args)
+                 sym)))
+      (should (eq symbol
+                  (custom-declare-variable symbol 42 "doc" :type 'integer)))
+      (should (= 42 (symbol-value symbol)))
+      (should (equal '(42) (get symbol 'standard-value)))
+      (should (equal "doc" (get symbol 'variable-documentation)))
+      (should (equal '(:type integer) (get symbol 'custom-args))))))
+
+(ert-deftest emacs-stub-residuals-test/custom-declare-face-metadata-shape ()
+  (let ((face (make-symbol "nelisp-emacs-custom-declare-face"))
+        (spec '((t :inherit bold))))
+    (cl-letf (((symbol-function 'custom-declare-face)
+               (lambda (name value doc &rest args)
+                 (put name 'face-defface-spec value)
+                 (put name 'face-documentation doc)
+                 (put name 'custom-args args)
+                 name)))
+      (should (eq face
+                  (custom-declare-face face spec "face doc" :group 'faces)))
+      (should (equal spec (get face 'face-defface-spec)))
+      (should (equal "face doc" (get face 'face-documentation)))
+      (should (equal '(:group faces) (get face 'custom-args))))))
+
 (ert-deftest emacs-stub-residuals-test/custom-declarations-have-standalone-fallbacks ()
   (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
     (should (and file (file-exists-p file)))
@@ -340,6 +484,8 @@ must be able to overwrite early bootstrap stubs with real substrates."
       (let ((source (buffer-string)))
         (should (string-match-p "defmacro defgroup" source))
         (should (string-match-p "defmacro defcustom" source))
+        (should (string-match-p "defun custom-declare-variable" source))
+        (should (string-match-p "defun custom-declare-face" source))
         (should (string-match-p "standard-value" source))
         (should (string-match-p "custom-args" source))))))
 
@@ -362,6 +508,10 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (should (string-match-p "defun shell-command-to-string" source))
         (should (string-match-p "defun call-process-shell-command" source))
         (should (string-match-p "defmacro bound-and-true-p" source))
+        (should (string-match-p "defun emacs-stub--add-hook" source))
+        (should (string-match-p "defun emacs-stub--run-hook" source))
+        (should (string-match-p "defun emacs-stub--advice-add" source))
+        (should (string-match-p "defun advice-add" source))
         (should (string-match-p "defmacro syntax-propertize-rules" source))
         (should (string-match-p "defun make-syntax-table" source))
         (should (string-match-p "defmacro cc-require" source))

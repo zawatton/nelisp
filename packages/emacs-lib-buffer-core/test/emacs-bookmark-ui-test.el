@@ -7,6 +7,8 @@
   (let ((bookmarks '(("zeta" . (:buffer "b" :pos 3))
                      ("alpha" . (:buffer "a" :pos 1))
                      ("alpine" . (:buffer "c" :pos 2)))))
+    (should (equal '("alpha" "alpine" "zeta")
+                   (mapcar #'car (emacs-bookmark-ui-sorted bookmarks))))
     (should (equal '("alpha" "alpine")
                    (emacs-bookmark-ui-completion-candidates
                     bookmarks "al")))

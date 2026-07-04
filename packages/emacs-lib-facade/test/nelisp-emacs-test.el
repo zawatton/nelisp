@@ -118,9 +118,38 @@
     nelisp-coding-jis-tables-sha256)
   "Stable lazy text-core API expected from the public facade query API.")
 
-(defconst nelisp-emacs-test--expected-stable-lazy-io-api
+(defconst nelisp-emacs-test--expected-stable-lazy-io-loaddefs-api
   '(nemacs-loaddefs-generate-for-file
     nemacs-loaddefs-generate)
+  "Stable lazy IO loaddefs API expected from the public facade query API.")
+
+(defconst nelisp-emacs-test--expected-stable-lazy-io-dump-api
+  '(emacs-dump-build-image
+    emacs-dump-save
+    emacs-dump-read
+    emacs-dump-load
+    emacs-dump-image-info
+    emacs-dump-format-version
+    emacs-dump-default-load-history-tail
+    emacs-dump-extra-buffer-names
+    emacs-dump-defvar-allowlist)
+  "Stable lazy IO dump API expected from the public facade query API.")
+
+(defconst nelisp-emacs-test--expected-stable-lazy-io-image-loader-api
+  '(image-loader-load
+    image-loader-load-if-readable
+    image-loader-load-batch
+    image-loader-info
+    image-loader-file
+    image-loader-restore-buffers
+    image-loader-last-loaded-file
+    image-loader-last-image-info)
+  "Stable lazy IO image-loader API expected from the public facade query API.")
+
+(defconst nelisp-emacs-test--expected-stable-lazy-io-api
+  (append nelisp-emacs-test--expected-stable-lazy-io-loaddefs-api
+          nelisp-emacs-test--expected-stable-lazy-io-dump-api
+          nelisp-emacs-test--expected-stable-lazy-io-image-loader-api)
   "Stable lazy IO API expected from the public facade query API.")
 
 (defconst nelisp-emacs-test--expected-stable-lazy-core-api
@@ -1087,7 +1116,7 @@
     (should (eq (car (plist-get (cdr (assq 'core
                                            nelisp-emacs-library-packages))
                                 :lazy-features))
-                'emacs-elisp-eval))))
+                'emacs-buffer-ui))))
 
 (ert-deftest nelisp-emacs-test/library-package-query-api ()
   (should (equal (nelisp-emacs-library-package-names)
@@ -1109,12 +1138,15 @@
                  '(emacs-dump
                    image-loader
                    nemacs-loaddefs
-                   emacs-dired-min
                    files-standalone-buffer
                    emacs-shell-command
-                   emacs-project)))
+                   emacs-vc)))
   (should (equal (nelisp-emacs-library-package-lazy-features 'core)
-                 '(emacs-elisp-eval
+                 '(emacs-buffer-ui
+                   emacs-isearch
+                   emacs-dired-min
+                   emacs-project
+                   emacs-elisp-eval
                    emacs-elisp-mode
                    emacs-font-lock
                    emacs-ielm
@@ -1124,6 +1156,11 @@
                    emacs-tui-backend
                    emacs-tui-event
                    emacs-tui-terminfo)))
+  (should (equal (nelisp-emacs-library-package-lazy-features 'textmodes-stub)
+                 '(org
+                   emacs-org-outline
+                   emacs-org-todo
+                   emacs-org-table)))
   (should-not (nelisp-emacs-library-package 'missing-package))
   (should-not (nelisp-emacs-library-package-features 'missing-package))
   (should-not (nelisp-emacs-library-package-lazy-features
@@ -1134,7 +1171,7 @@
   (let ((features (nelisp-emacs-library-package-lazy-features 'core)))
     (setcar features 'changed-feature)
     (should (eq (car (nelisp-emacs-library-package-lazy-features 'core))
-                'emacs-elisp-eval))))
+                'emacs-buffer-ui))))
 
 (ert-deftest nelisp-emacs-test/library-stable-api-query-api ()
   (should (equal (nelisp-emacs-library-stable-api-symbols)
@@ -1220,7 +1257,7 @@
       (should (eq (plist-get entry :package-id) 'nelisp-emacs-text-core))
       (should (eq (plist-get entry :feature) 'nelisp-coding-jis-tables))
       (should (eq (plist-get entry :kind) 'variable))))
-  (dolist (symbol nelisp-emacs-test--expected-stable-lazy-io-api)
+  (dolist (symbol nelisp-emacs-test--expected-stable-lazy-io-loaddefs-api)
     (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
       (should entry)
       (should (eq (plist-get entry :package) 'io))
@@ -1228,6 +1265,22 @@
       (should (eq (plist-get entry :package-id) 'nelisp-emacs-io))
       (should (eq (plist-get entry :feature) 'nemacs-loaddefs))
       (should (eq (plist-get entry :kind) 'function))))
+  (dolist (symbol nelisp-emacs-test--expected-stable-lazy-io-dump-api)
+    (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
+      (should entry)
+      (should (eq (plist-get entry :package) 'io))
+      (should (eq (plist-get entry :owner) 'IO))
+      (should (eq (plist-get entry :package-id) 'nelisp-emacs-io))
+      (should (eq (plist-get entry :feature) 'emacs-dump))
+      (should (memq (plist-get entry :kind) '(function variable)))))
+  (dolist (symbol nelisp-emacs-test--expected-stable-lazy-io-image-loader-api)
+    (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
+      (should entry)
+      (should (eq (plist-get entry :package) 'io))
+      (should (eq (plist-get entry :owner) 'IO))
+      (should (eq (plist-get entry :package-id) 'nelisp-emacs-io))
+      (should (eq (plist-get entry :feature) 'image-loader))
+      (should (memq (plist-get entry :kind) '(function variable)))))
   (dolist (symbol nelisp-emacs-test--expected-stable-lazy-core-api)
     (let ((entry (nelisp-emacs-library-stable-lazy-api-entry symbol)))
       (should entry)
@@ -1300,6 +1353,7 @@
                    emacs-edebug-stubs)))
   (should (equal emacs-text-core-features
                  '(nelisp-regex
+                   rx
                    nelisp-coding)))
   (should (equal emacs-buffer-core-features
                  '(nelisp-text-buffer

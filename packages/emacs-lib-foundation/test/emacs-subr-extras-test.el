@@ -130,3 +130,29 @@
 
 (provide 'emacs-subr-extras-test)
 ;;; emacs-subr-extras-test.el ends here
+
+(ert-deftest emacs-subr-extras-test/gc-stats-api-shape ()
+  "garbage-collect / memory-use-counts return host-shaped structures (Doc 06 A2)."
+  (let ((stats (garbage-collect)))
+    (should (consp stats))
+    (should (listp (assq 'conses stats))))
+  (should (= 7 (length (memory-use-counts))))
+  (should (integerp (nth 6 (memory-use-counts)))))
+
+(ert-deftest emacs-subr-extras-test/event-functions-match-host ()
+  "event-modifiers / event-basic-type / event-convert-list match host (B3).
+Modifier lists are compared as sets (order is allowed to differ)."
+  (let ((symsort (lambda (l) (sort (copy-sequence l)
+                                   (lambda (x y) (string< (symbol-name x)
+                                                          (symbol-name y)))))))
+    (dolist (e (list ?a ?A ?\C-a ?\M-a ?\M-\C-a ?5
+                     'left (intern "C-left") (intern "C-M-right") (intern "S-f5")))
+      (should (equal (funcall symsort (emacs-subr-extras-event-modifiers e))
+                     (funcall symsort (event-modifiers e))))
+      (should (equal (emacs-subr-extras-event-basic-type e)
+                     (event-basic-type e))))
+    (dolist (l (list (list 'control ?a) (list 'meta ?a) (list 'control 'left)
+                     (list 'meta 'shift 'f1) (list 'control 'meta 'right)
+                     (list 'control 'meta ?a) (list ?a) (list ?A)))
+      (should (equal (emacs-subr-extras-event-convert-list l)
+                     (event-convert-list l))))))

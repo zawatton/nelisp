@@ -1,0 +1,63 @@
+#+TITLE: nemacs-next
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-25
+#+STATUS: DRAFT
+
+* Purpose
+
+=nemacs-next= is the new product editor path for using the current
+=nelisp-emacs= library成果 to build an Emacs-compatible text editor with a
+fresh GUI.
+
+This directory is an app consumer.  It must not become the owner of buffer
+mutation, command dispatch, minibuffer semantics, undo, file command
+behavior, or package compatibility shims.  Those belong in reusable
+=nelisp-emacs= library packages.
+
+* Shape
+
+#+begin_src text
+apps/nemacs-next/
+  lisp/nemacs-next.el
+  lisp/nemacs-next-protocol.el
+  lisp/nemacs-next-session.el
+  protocol/protocol-v0.org
+  scripts/process-smoke.sh
+  scripts/session-smoke.sh
+  scripts/smoke.sh
+#+end_src
+
+* Boundary
+
+The product boundary is:
+
+- persistent editor session owns Emacs-observable state;
+- =nelisp-emacs= libraries own editor semantics;
+- GUI owns rendering, raw input, IME, clipboard, menus, tabs, and native
+  OS integration;
+- protocol messages connect the GUI to the session.
+
+The legacy file bridge in =gui/= remains useful for regression evidence,
+but it is not the target product transport.
+
+* Smoke
+
+#+begin_src sh
+apps/nemacs-next/scripts/smoke.sh
+apps/nemacs-next/scripts/session-smoke.sh
+apps/nemacs-next/scripts/process-smoke.sh
+#+end_src
+
+The host smoke uses Emacs to prove that the app contract loads
+=nelisp-emacs= as a library consumer without requiring =nemacs-main= or
+legacy GUI features.
+
+The session smoke uses =target/nelisp --repl --no-prompt --no-print= to
+prove that the same app contract can load in a bootstrap-initialized
+persistent NeLisp evaluator and run more than one form without restarting
+the runtime.
+
+The process smoke sends several request forms through one persistent
+NeLisp REPL process and verifies newline-delimited JSON responses for
+=hello=, buffer creation, and insertion.  The insertion response is a
+buffer snapshot.

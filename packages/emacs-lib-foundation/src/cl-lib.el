@@ -28,6 +28,16 @@
 
 ;;; Code:
 
+(defconst cl-lib--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the cl-lib shim and its sibling features.")
+
+(defun cl-lib--load-feature (feature)
+  "Load FEATURE from the cl-lib shim directory."
+  (load (expand-file-name (concat (symbol-name feature) ".el")
+                          cl-lib--load-directory)
+        nil t))
+
 (defun cl-lib--define-p (symbol)
   "Return non-nil when SYMBOL should be supplied by this shim."
   (or (not (fboundp symbol))
@@ -38,7 +48,7 @@
 ;; cl-defstruct / cl-letf / cl-flet / cl-block / cl-some / cl-every /
 ;; cl-position / cl-find / cl-remove-if{,-not} / cl-delete-* /
 ;; cl-union / cl-intersection / cl-sort / cl-case / cl-pushnew / etc.)
-(require 'emacs-cl-macros)
+(cl-lib--load-feature 'emacs-cl-macros)
 
 ;;;; --- helpers not in emacs-cl-macros --------------------------------
 

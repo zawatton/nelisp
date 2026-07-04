@@ -91,6 +91,24 @@
       (makunbound a)
       (makunbound b))))
 
+(ert-deftest emacs-elisp-eval-eval-region-direct-evaluates-multiple-forms ()
+  (let ((a (emacs-elisp-eval-test--symbol "region-a"))
+        (b (emacs-elisp-eval-test--symbol "region-b")))
+    (unwind-protect
+        (with-temp-buffer
+          (emacs-lisp-mode)
+          (insert (format "(setq %s 2)\n(setq %s (+ %s 4))\n"
+                          a b a))
+          (pcase-let ((`(,result . ,messages)
+                       (emacs-elisp-eval-test--capture-message
+                         (emacs-elisp-eval-eval-region (point-min) (point-max)))))
+            (should (= 6 result))
+            (should (equal '("6") messages))
+            (should (= 2 (symbol-value a)))
+            (should (= 6 (symbol-value b)))))
+      (makunbound a)
+      (makunbound b))))
+
 (ert-deftest eval-buffer-evaluates-all-toplevel-forms ()
   (let ((a (emacs-elisp-eval-test--symbol "buf-a"))
         (b (emacs-elisp-eval-test--symbol "buf-b")))
@@ -105,6 +123,24 @@
             (should (= 15 result))
             (should (equal '("15") messages))
             (should (= 10 (symbol-value a)))
+            (should (= 15 (symbol-value b)))))
+      (makunbound a)
+      (makunbound b))))
+
+(ert-deftest emacs-elisp-eval-eval-buffer-direct-evaluates-all-toplevel-forms ()
+  (let ((a (emacs-elisp-eval-test--symbol "direct-buf-a"))
+        (b (emacs-elisp-eval-test--symbol "direct-buf-b")))
+    (unwind-protect
+        (with-temp-buffer
+          (emacs-lisp-mode)
+          (insert (format "(setq %s 7)\n(setq %s (+ %s 8))\n"
+                          a b a))
+          (pcase-let ((`(,result . ,messages)
+                       (emacs-elisp-eval-test--capture-message
+                         (emacs-elisp-eval-eval-buffer))))
+            (should (= 15 result))
+            (should (equal '("15") messages))
+            (should (= 7 (symbol-value a)))
             (should (= 15 (symbol-value b)))))
       (makunbound a)
       (makunbound b))))

@@ -56,6 +56,35 @@
   (should (null (internal-make-var-non-special
                  'emacs-eval-test--non-special))))
 
+(ert-deftest emacs-eval-test/obsolete-function-alias-records-byte-metadata ()
+  (defun emacs-eval-test--obsolete-new (x) (+ x 1))
+  (let ((old (make-symbol "emacs-eval-test--obsolete-old")))
+    (should (eq old (define-obsolete-function-alias
+                      old #'emacs-eval-test--obsolete-new "30.1" "old doc")))
+    (should (= 8 (funcall old 7)))
+    (should (equal '(emacs-eval-test--obsolete-new nil "30.1")
+                   (get old 'byte-obsolete-info)))))
+
+(ert-deftest emacs-eval-test/obsolete-variable-alias-records-byte-metadata ()
+  (defvar emacs-eval-test--obsolete-current 42)
+  (let ((old (make-symbol "emacs-eval-test--obsolete-var-old")))
+    (should (eq old (define-obsolete-variable-alias
+                      old 'emacs-eval-test--obsolete-current "30.1" "old var")))
+    (should (boundp old))
+    (should (= 42 (symbol-value old)))
+    (should (equal '(emacs-eval-test--obsolete-current nil "30.1")
+                   (get old 'byte-obsolete-variable)))))
+
+(ert-deftest emacs-eval-test/make-obsolete-records-byte-metadata ()
+  (let ((old-f (make-symbol "emacs-eval-test--old-f"))
+        (old-v (make-symbol "emacs-eval-test--old-v")))
+    (should (eq old-f (make-obsolete old-f 'new-f "30.1")))
+    (should (equal '(new-f nil "30.1")
+                   (get old-f 'byte-obsolete-info)))
+    (should (eq old-v (make-obsolete-variable old-v 'new-v "30.1" 'set)))
+    (should (equal '(new-v set "30.1")
+                   (get old-v 'byte-obsolete-variable)))))
+
 (ert-deftest emacs-eval-test/runtime-callable-fallbacks-are-callable ()
   (should (eq 'x (purecopy 'x)))
   (should (string-equal "value 42" (format-message "value %d" 42)))
@@ -89,6 +118,30 @@
         (autoload 'emacs-eval-test--al-already "nonexistent-file")
         (should (eq 'original (emacs-eval-test--al-already))))
     (fmakunbound 'emacs-eval-test--al-already)))
+
+(ert-deftest emacs-eval-test/autoload-introspection-surface-is-present ()
+  (should (fboundp 'autoloadp))
+  (should (fboundp 'autoload-do-load))
+  (should (fboundp 'emacs-eval--autoload-thunk-p))
+  (should (fboundp 'emacs-eval--autoload-load)))
+
+(ert-deftest emacs-eval-test/autoload-do-load-loads-definition ()
+  (let* ((dir (make-temp-file "nemacs-al-load-" t))
+         (file (expand-file-name "alfeat.el" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "(defun emacs-eval-test--al-load-fn () 'loaded)\n"
+                    "(provide 'alfeat-load)\n"))
+          (fmakunbound 'emacs-eval-test--al-load-fn)
+          (autoload 'emacs-eval-test--al-load-fn file)
+          (should (autoloadp (symbol-function 'emacs-eval-test--al-load-fn)))
+          (autoload-do-load
+           (symbol-function 'emacs-eval-test--al-load-fn)
+           'emacs-eval-test--al-load-fn)
+          (should (eq 'loaded (emacs-eval-test--al-load-fn))))
+      (fmakunbound 'emacs-eval-test--al-load-fn)
+      (when (file-directory-p dir) (delete-directory dir t)))))
 
 (provide 'emacs-eval-test)
 
