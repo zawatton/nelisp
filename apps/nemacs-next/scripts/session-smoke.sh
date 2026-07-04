@@ -66,6 +66,40 @@ cat >> "$tmp" <<EOF
 (setq nemacs-next-session-smoke-oor
       (nemacs-next-session-handle-message
        (quote (:type command :name forward-char :count 999))))
+(setq nemacs-next-session-smoke-yank-empty
+      (nemacs-next-session-handle-message
+       (quote (:type command :name yank))))
+(setq nemacs-next-session-smoke-nl
+      (nemacs-next-session-handle-message
+       (quote (:type command :name newline))))
+(setq nemacs-next-session-smoke-undo-nl
+      (nemacs-next-session-handle-message
+       (quote (:type command :name undo))))
+(setq nemacs-next-session-smoke-kill-region
+      (nemacs-next-session-handle-message
+       (quote (:type command :name kill-region :start 1 :end 2))))
+(setq nemacs-next-session-smoke-yank-1
+      (nemacs-next-session-handle-message
+       (quote (:type command :name yank))))
+(setq nemacs-next-session-smoke-kill-line
+      (nemacs-next-session-handle-message
+       (quote (:type command :name kill-line))))
+(setq nemacs-next-session-smoke-yank-2
+      (nemacs-next-session-handle-message
+       (quote (:type command :name yank))))
+(setq nemacs-next-session-smoke-bad-kill
+      (nemacs-next-session-handle-message
+       (quote (:type command :name kill-region))))
+(setq nemacs-next-session-smoke-fresh
+      (nemacs-next-session-handle-message
+       (quote (:type command :name create-buffer
+               :buffer-name "nemacs-next-session-smoke-undo-empty"))))
+(setq nemacs-next-session-smoke-undo-empty
+      (nemacs-next-session-handle-message
+       (quote (:type command :name undo))))
+(setq nemacs-next-session-smoke-alive
+      (nemacs-next-session-handle-message
+       (quote (:type command :name snapshot))))
 (if (and (= nemacs-next-session-smoke-count 3)
          (not nemacs-next-session-smoke-missing)
          (fboundp (quote nemacs-next-session-plan))
@@ -91,6 +125,28 @@ cat >> "$tmp" <<EOF
          (= (plist-get nemacs-next-session-smoke-del :point) 2)
          (eq (plist-get nemacs-next-session-smoke-oor :type) (quote error))
          (eq (plist-get nemacs-next-session-smoke-oor :code) (quote out-of-range))
+         (eq (plist-get nemacs-next-session-smoke-yank-empty :type) (quote error))
+         (eq (plist-get nemacs-next-session-smoke-yank-empty :code)
+             (quote empty-kill-ring))
+         (equal (plist-get nemacs-next-session-smoke-nl :text) "a\nc")
+         (= (plist-get nemacs-next-session-smoke-nl :point) 3)
+         (equal (plist-get nemacs-next-session-smoke-undo-nl :text) "ac")
+         (= (plist-get nemacs-next-session-smoke-undo-nl :point) 2)
+         (equal (plist-get nemacs-next-session-smoke-kill-region :text) "c")
+         (= (plist-get nemacs-next-session-smoke-kill-region :point) 1)
+         (equal (plist-get nemacs-next-session-smoke-yank-1 :text) "ac")
+         (= (plist-get nemacs-next-session-smoke-yank-1 :point) 2)
+         (equal (plist-get nemacs-next-session-smoke-kill-line :text) "a")
+         (= (plist-get nemacs-next-session-smoke-kill-line :point) 2)
+         (equal (plist-get nemacs-next-session-smoke-yank-2 :text) "ac")
+         (= (plist-get nemacs-next-session-smoke-yank-2 :point) 3)
+         (eq (plist-get nemacs-next-session-smoke-bad-kill :type) (quote error))
+         (eq (plist-get nemacs-next-session-smoke-bad-kill :code)
+             (quote bad-command))
+         (eq (plist-get nemacs-next-session-smoke-undo-empty :type) (quote error))
+         (eq (plist-get nemacs-next-session-smoke-undo-empty :code)
+             (quote no-further-undo-information))
+         (eq (plist-get nemacs-next-session-smoke-alive :type) (quote snapshot))
          (not (featurep (quote emacs-init)))
          (not (featurep (quote nemacs-main)))
          (not (featurep (quote nemacs-gtk-frontend)))
@@ -98,7 +154,7 @@ cat >> "$tmp" <<EOF
     (nl-write-file "$marker" "ok")
   (nl-write-file
    "$marker"
-   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S"
+   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S"
            nemacs-next-session-smoke-count
            nemacs-next-session-smoke-missing
            (fboundp (quote nemacs-next-session-plan))
@@ -111,7 +167,17 @@ cat >> "$tmp" <<EOF
            nemacs-next-session-smoke-fwd
            nemacs-next-session-smoke-back
            nemacs-next-session-smoke-del
-           nemacs-next-session-smoke-oor)))
+           nemacs-next-session-smoke-oor
+           nemacs-next-session-smoke-yank-empty
+           nemacs-next-session-smoke-nl
+           nemacs-next-session-smoke-undo-nl
+           nemacs-next-session-smoke-kill-region
+           nemacs-next-session-smoke-yank-1
+           nemacs-next-session-smoke-kill-line
+           nemacs-next-session-smoke-yank-2
+           nemacs-next-session-smoke-bad-kill
+           nemacs-next-session-smoke-undo-empty
+           nemacs-next-session-smoke-alive)))
 ,quit
 EOF
 

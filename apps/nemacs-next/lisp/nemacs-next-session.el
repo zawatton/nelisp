@@ -160,18 +160,124 @@ missing or out of range."
     (nemacs-next-session-error
      'bad-command "goto-char requires an integer :position")))
 
+(defun nemacs-next-session--record-undo-boundary ()
+  "Push an undo boundary after a completed edit command, when available.
+Each protocol command that mutates the buffer closes its own undo group
+this way, so a single `undo' command reverts exactly one prior command."
+  (when (fboundp 'emacs-undo-undo-boundary)
+    (emacs-undo-undo-boundary)))
+
 (defun nemacs-next-session--delete-char (count)
   "Delete COUNT characters (negative = backward) through the reusable
 editing API.  Return a buffer snapshot, or a structured `out-of-range'
-protocol error when COUNT would delete past the buffer bounds."
+protocol error when COUNT would delete past the buffer bounds.
+The deleted text is captured before deletion and recorded on the
+current buffer's undo list (Track E.2 `emacs-undo') so a later `undo'
+command can restore it."
   (nemacs-next-session-current-buffer-or-create)
   (condition-case _err
-      (progn
+      (let* ((point (nelisp-ec-point))
+             (start (if (>= count 0) point (+ point count)))
+             (end (if (>= count 0) (+ point count) point))
+             ;; Reading the pre-delete text through the same bounds-checked
+             ;; API used by `nelisp-ec-delete-char' means an out-of-range
+             ;; COUNT is rejected here, before any mutation happens.
+             (text (nelisp-ec-buffer-substring start end)))
         (nelisp-ec-delete-char count)
+        (when (and (fboundp 'emacs-undo-record-delete)
+                   (> (length text) 0))
+          (emacs-undo-record-delete text start))
+        (nemacs-next-session--record-undo-boundary)
         (nemacs-next-session-buffer-snapshot))
     (nelisp-ec-args-out-of-range
      (nemacs-next-session-error
       'out-of-range "delete-char count out of range"))))
+
+(defun nemacs-next-session--newline (count)
+  "Insert COUNT newline characters (default 1; non-positive is a no-op)
+at point and return a buffer snapshot.
+
+This inserts through `nelisp-ec-insert', the same reusable primitive
+`insert-text' uses, rather than through the unprefixed Emacs-compatible
+`newline' command.  Host Emacs already owns the unprefixed `newline'
+name for its own native buffers (`emacs-edit-builtins' only installs
+its polyfill when a name is not already `fboundp'), so calling it here
+would silently operate on the host's current buffer instead of the
+`nelisp-ec' session buffer under the host-Emacs smoke path.  A literal
+\\n in `insert-text' :text takes this same `nelisp-ec-insert' path;
+`newline' exists only as a named convenience for frontend Enter-key
+handling."
+  (nemacs-next-session-current-buffer-or-create)
+  (let ((n (max 0 count))
+        (beg (nelisp-ec-point)))
+    (while (> n 0)
+      (nelisp-ec-insert "\n")
+      (setq n (1- n)))
+    (when (and (fboundp 'emacs-undo-record-insert)
+               (> (nelisp-ec-point) beg))
+      (emacs-undo-record-insert beg (nelisp-ec-point))))
+  (nemacs-next-session--record-undo-boundary)
+  (nemacs-next-session-buffer-snapshot))
+
+(defun nemacs-next-session--undo ()
+  "Undo one edit group on the current buffer through `emacs-undo' and
+return a buffer snapshot.  Returns a structured protocol error --
+`no-further-undo-information' or `buffer-undo-list-disabled' -- instead
+of an uncaught signal when there is nothing left to undo."
+  (nemacs-next-session-current-buffer-or-create)
+  (if (fboundp 'emacs-undo-undo-direct)
+      (let ((result (emacs-undo-undo-direct)))
+        (if (eq (plist-get result :status) 'ok)
+            (nemacs-next-session-buffer-snapshot)
+          (let ((reason (car (plist-get result :data))))
+            (nemacs-next-session-error
+             (or reason 'undo-error)
+             (or (plist-get result :message) "undo failed")))))
+    (nemacs-next-session-error 'unavailable "undo command is not available")))
+
+(defun nemacs-next-session--kill-region (start end)
+  "Kill START..END through the reusable kill-ring API and return a
+buffer snapshot.  Returns a structured protocol error when START/END
+are missing or not integers (`bad-command'), or out of buffer bounds
+(`out-of-range')."
+  (nemacs-next-session-current-buffer-or-create)
+  (if (and (integerp start) (integerp end))
+      (condition-case _err
+          (progn
+            (emacs-edit-kill-region-direct start end)
+            (nemacs-next-session--record-undo-boundary)
+            (nemacs-next-session-buffer-snapshot))
+        (nelisp-ec-args-out-of-range
+         (nemacs-next-session-error
+          'out-of-range "kill-region start/end out of range")))
+    (nemacs-next-session-error
+     'bad-command "kill-region requires integer :start and :end")))
+
+(defun nemacs-next-session--kill-line ()
+  "Kill from point to end of line (including the trailing newline when
+point is already at end of line) through the reusable kill-ring API and
+return a buffer snapshot.  A no-op at end of buffer leaves the buffer
+unchanged, matching `kill-line' in Emacs -- it is not a protocol error."
+  (nemacs-next-session-current-buffer-or-create)
+  (emacs-edit-kill-line-direct)
+  (nemacs-next-session--record-undo-boundary)
+  (nemacs-next-session-buffer-snapshot))
+
+(defun nemacs-next-session--yank ()
+  "Insert the current kill-ring head at point through the reusable
+editing API and return a buffer snapshot.  Returns a structured
+`empty-kill-ring' protocol error, instead of silently inserting nothing,
+when the kill ring has no entries."
+  (nemacs-next-session-current-buffer-or-create)
+  (if (fboundp 'emacs-edit-yank-direct)
+      (let ((edit (emacs-edit-yank-direct)))
+        (if (plist-get edit :text)
+            (progn
+              (nemacs-next-session--record-undo-boundary)
+              (nemacs-next-session-buffer-snapshot))
+          (nemacs-next-session-error
+           'empty-kill-ring "yank: kill ring is empty")))
+    (nemacs-next-session-error 'unavailable "yank command is not available")))
 
 (defun nemacs-next-session-handle-command (message)
   "Handle a command protocol MESSAGE and return a response payload.
@@ -199,7 +305,11 @@ mutation to reusable buffer/editing APIs."
         (if (stringp text)
             (progn
               (nemacs-next-session-current-buffer-or-create)
-              (nelisp-ec-insert text)
+              (let ((beg (nelisp-ec-point)))
+                (nelisp-ec-insert text)
+                (when (fboundp 'emacs-undo-record-insert)
+                  (emacs-undo-record-insert beg (nelisp-ec-point))))
+              (nemacs-next-session--record-undo-boundary)
               (nemacs-next-session-buffer-snapshot))
           (nemacs-next-session-error
            'bad-command "insert-text requires a string :text" message))))
@@ -219,6 +329,24 @@ mutation to reusable buffer/editing APIs."
           (nemacs-next-session--string-equal name "delete-char"))
       (nemacs-next-session--delete-char
        (nemacs-next-session--command-count message 1)))
+     ((or (nemacs-next-session--string-equal name 'newline)
+          (nemacs-next-session--string-equal name "newline"))
+      (nemacs-next-session--newline
+       (nemacs-next-session--command-count message 1)))
+     ((or (nemacs-next-session--string-equal name 'undo)
+          (nemacs-next-session--string-equal name "undo"))
+      (nemacs-next-session--undo))
+     ((or (nemacs-next-session--string-equal name 'kill-region)
+          (nemacs-next-session--string-equal name "kill-region"))
+      (nemacs-next-session--kill-region
+       (nemacs-next-session--command-arg message :start)
+       (nemacs-next-session--command-arg message :end)))
+     ((or (nemacs-next-session--string-equal name 'kill-line)
+          (nemacs-next-session--string-equal name "kill-line"))
+      (nemacs-next-session--kill-line))
+     ((or (nemacs-next-session--string-equal name 'yank)
+          (nemacs-next-session--string-equal name "yank"))
+      (nemacs-next-session--yank))
      (t
       (nemacs-next-session-error
        'unknown-command

@@ -73,7 +73,65 @@ narrowed region) bounds returns a structured =out-of-range= protocol
 session -- an editing loop must be able to reject an out-of-bounds request
 and keep running.
 
-Self-insert (=insert-text=), newline, undo, and yank remain open M2 work.
+* M2 Newline, Undo, Kill, and Yank Subset
+
+The remaining M2 editing-loop slice adds newline handling, single-step
+undo, and a kill-ring round trip, closing the milestone:
+
+| Name | Meaning |
+|------+---------|
+| =newline= | insert optional :count newline characters (default 1) at point |
+| =undo= | undo one edit group on the current buffer |
+| =kill-region= | kill the text between required :start and :end through the kill ring |
+| =kill-line= | kill from point to end of line (or the trailing newline at EOL) through the kill ring |
+| =yank= | insert the current kill-ring head at point |
+
+Implementation notes:
+
+- =newline= inserts through =nelisp-ec-insert=, the same reusable
+  primitive =insert-text= uses -- not through the unprefixed
+  Emacs-compatible =newline= command.  A literal =\n= in =insert-text='s
+  =:text= already takes this same path and was already valid before this
+  slice; =newline= exists as a named convenience for frontend Enter-key
+  handling.  This distinction matters because =emacs-edit-builtins= only
+  installs its unprefixed polyfills (=newline=, =kill-region=,
+  =kill-line=, =yank=, =kill-new=) when host Emacs does not already
+  provide that name; under the host-Emacs smoke path
+  (=scripts/smoke.sh=) those unprefixed names resolve to the *host's*
+  own buffer, not the =nelisp-ec= session buffer, so the session layer
+  only calls the =nelisp-ec-*= primitives and the prefixed
+  =emacs-edit-*-direct= / =emacs-undo-*= APIs, never the bare
+  Emacs-compatible command names.
+- =undo= is a real substrate feature, not a session-layer fake: it
+  delegates to =emacs-undo-undo-direct= (Doc 51 Track E.2, already
+  shipped in =packages/nelisp-emacs-editing/lisp/emacs-undo.el= /
+  =src/emacs-undo.el=), which tracks a per-buffer undo list independent
+  of host Emacs's native =buffer-undo-list=.  Because =insert-text= and
+  =delete-char= mutate the buffer through the raw =nelisp-ec-insert= /
+  =nelisp-ec-delete-char= primitives (bypassing the automatic recording
+  built into unprefixed commands like =self-insert-command=), the
+  session layer explicitly calls =emacs-undo-record-insert= /
+  =emacs-undo-record-delete= around those two commands so their edits
+  are not silently invisible to undo.  Every buffer-mutating command
+  (=insert-text=, =delete-char=, =newline=, =kill-region=, =kill-line=,
+  =yank=) closes its own undo group with =emacs-undo-undo-boundary=
+  after it completes, so one =undo= command reverts exactly the edit
+  made by the single most recent mutating command.
+- =kill-region=, =kill-line=, and =yank= delegate to
+  =emacs-edit-kill-region-direct=, =emacs-edit-kill-line-direct=, and
+  =emacs-edit-yank-direct= (Track E, already shipped in
+  =emacs-edit-builtins.el=), which read/write the shared =kill-ring=
+  list.  =yank= with an empty kill ring does not silently no-op insert
+  nothing; it returns a structured =empty-kill-ring= protocol error.
+  =kill-region= without integer =:start=/=:end= returns a structured
+  =bad-command= error; out-of-buffer-bounds =:start=/=:end= returns
+  =out-of-range=, matching the existing =goto-char=/=delete-char= error
+  shape.
+- =undo= with no further undo information (a fresh buffer, or a buffer
+  whose undo history has already been fully consumed) returns a
+  structured =no-further-undo-information= protocol error instead of an
+  uncaught signal; the session stays alive and can keep handling
+  commands afterward, same as the =out-of-range= movement/delete errors.
 
 * Rule
 
