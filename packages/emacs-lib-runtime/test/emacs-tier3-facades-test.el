@@ -95,7 +95,8 @@ several temp parents and keep only one that the facade reports as no VC."
     (while (and parents (not result))
       (let ((parent (file-name-as-directory (car parents))))
         (setq parents (cdr parents))
-        (when (file-directory-p parent)
+        (when (and (file-directory-p parent)
+                   (file-writable-p parent))
           (setq candidate (make-temp-file
                            (expand-file-name "emacs-tier3-novc-" parent) t))
           (if (vc-responsible-backend candidate)
