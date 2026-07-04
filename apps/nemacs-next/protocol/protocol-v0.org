@@ -54,6 +54,27 @@ The current proof supports a deliberately tiny command subset:
 This subset exists to prove the persistent process boundary.  Full keymap
 lookup and command-loop dispatch still belong in =nelisp-emacs= core.
 
+* M2 Movement and Delete Subset
+
+The next slice of the M2 editing loop adds point movement and character
+deletion through the same reusable buffer APIs used by =insert-text=:
+
+| Name | Meaning |
+|------+---------|
+| =forward-char= | move point forward by optional :count (default 1) through =nelisp-ec-forward-char= |
+| =backward-char= | move point backward by optional :count (default 1) through a negated =nelisp-ec-forward-char= delta |
+| =goto-char= | move point to an absolute :position through =nelisp-ec-goto-char= |
+| =delete-char= | delete :count characters (default 1; negative = backward) through =nelisp-ec-delete-char= |
+
+Each of these commands returns a buffer snapshot on success, same as
+=insert-text=.  Movement or deletion that would leave the buffer (or
+narrowed region) bounds returns a structured =out-of-range= protocol
+=error= payload instead of raising an uncaught signal in the persistent
+session -- an editing loop must be able to reject an out-of-bounds request
+and keep running.
+
+Self-insert (=insert-text=), newline, undo, and yank remain open M2 work.
+
 * Rule
 
 Protocol messages may carry editor state, but they must not move editor

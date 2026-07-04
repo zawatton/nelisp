@@ -225,3 +225,32 @@ The first committed implementation should be intentionally small:
 - no editor command semantics are implemented in app/frontend glue.
 
 This creates a reviewable boundary before any new GUI code is added.
+
+* 11. Progress Log
+
+This section tracks the milestone ladder in Section 7 against what has
+actually landed in =apps/nemacs-next/=, since this document does not carry
+a separate numbered increment ladder of its own.
+
+| Date | Milestone | Status | Evidence |
+|------+-----------+--------+----------|
+| 2026-06-25 | M0 Product boundary | done | =lisp/nemacs-next.el= contract + =scripts/smoke.sh= |
+| 2026-06-25 | M1 Persistent session proof | done | =lisp/nemacs-next-session.el= + =lisp/nemacs-next-protocol.el= + =scripts/session-smoke.sh= + =scripts/process-smoke.sh= (=hello=, =create-buffer=, =insert-text=) |
+| 2026-07-04 | M2 Editing loop (movement/delete slice) | done | =forward-char=, =backward-char=, =goto-char=, =delete-char= session commands; out-of-range requests return a structured protocol =error= instead of an uncaught signal |
+| -- | M2 Editing loop (newline, undo, yank) | open | not yet implemented |
+| -- | M3 Minibuffer/file loop | open | not yet implemented |
+| -- | M4 Modern GUI shell | open | not yet implemented |
+| -- | M5 Package smoke | open | not yet implemented |
+
+The 2026-07-04 increment was picked because M0 and M1 were already
+complete and M2 (Section 7) was the first milestone with open work; it
+also exercises the buffer-core/editing library surface that the
+substrate hardening tracked in Doc 33 brought to a stable state.  All
+three existing app smokes (=smoke.sh=, =session-smoke.sh=,
+=process-smoke.sh=) were extended in place to cover the new commands
+plus an out-of-range error path, and all three passed before and after
+the change.  The next open M2 slice is newline handling (already
+reachable through =insert-text= with a =\n= payload, but not yet proven
+by a dedicated smoke assertion), then undo and yank, which need a
+kill-ring/undo-list contract decision before they are added to the
+protocol.
