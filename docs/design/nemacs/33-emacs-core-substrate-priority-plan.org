@@ -728,6 +728,25 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    (fboundp 'org-element-parse-buffer) (commandp 'org-mode))=); see §8
    item 215.  Cold-load: see §8 item 217.
 
+   2026-07-04 proof-mechanism correction: the =status=done= above was a
+   false positive from a broken proof-scaffold harness bug (§8 item 220).
+   Re-run with the fixed harness, the same 5-conjunct proof actually
+   FAILS (=featurep org=/=org-element= and =fboundp
+   org-element-parse-buffer= hold, but =fboundp=/=commandp org-mode= do
+   not), while a reduced 3-conjunct proof (dropping the two =org-mode=
+   checks) passes.  So: the Org vendor chain's features/parser genuinely
+   load, but installing =org-mode= as a real command is an OPEN gap, not
+   DONE.  The normalizer's 3500-char defun truncation/elision lists do
+   NOT touch =org-mode= or =define-derived-mode= (checked directly in
+   =standalone-source-normalize.el= -- that mechanism only ever matches
+   plain =defun= forms); org.el's =(define-derived-mode org-mode
+   outline-mode ...)= passes through unmodified as one ~6.2KB single-line
+   form.  The likely gap is instead a reader/macro-expansion issue
+   specific to =define-derived-mode= calls with a non-nil parent mode
+   (also reproduced against =magit-section-mode= and
+   =paragraph-indent-text-mode= in §8 items 216/219) -- not attempted
+   here.  See §8 item 220 for the full re-run matrix.
+
 * 5. Verification gates
 
 Use narrow gates first.
@@ -10987,6 +11006,30 @@ path:
    twice; and the Org gate itself passed 60/60 files.  Do not reopen the
    Org load chain unless a future upstream Org version changes the
    require closure.
+
+   2026-07-04 proof-mechanism correction: the =status=done= above was
+   produced by a broken proof scaffold in
+   =scripts/vendor-repl-standalone-replay.el= (fixed the same day; see
+   item 220) that wrote its ok-marker unconditionally regardless of the
+   proof form's actual value, because the scaffold's `condition-case`/
+   `setq` forms spanned multiple physical lines while this reader's
+   =--repl= loop reads and evaluates one physical line at a time.  Re-run
+   with the fixed harness, same proof, on a reconstructed 61-file chain
+   (the original 60-file list was not preserved; =gv.el=, =cl-macs.el=,
+   =cl-seq.el=, =cl-generic.el=, =seq.el=, =subr-x.el=, =pcase.el=,
+   =generator.el=, =comint.el=, and =rx.el= were already satisfied by the
+   persistent bootstrap and excluded, landing one file above the
+   documented 60): =status=fail=, elapsed 251.03s, sentinel
+   =detail=org-full-and-proof evaluated=t= (a clean false, not an
+   error) -- =featurep= of =org=/=org-element= and =fboundp= of
+   =org-element-parse-buffer= hold, but =fboundp=/=commandp= of
+   =org-mode= do not.  A reduced 3-conjunct proof dropping the two
+   =org-mode= checks, =(and (featurep 'org) (featurep 'org-element)
+   (fboundp 'org-element-parse-buffer))=, re-passed cleanly:
+   =status=done=, elapsed 249.66s.  So the Org vendor chain genuinely
+   loads (features register, =org-element-parse-buffer= is callable),
+   but =org-mode= the command was never proven and is an open gap -- see
+   the §4 item 11 update and item 220.
 216. Doc 33 §4 item 9 (overlay/marker/window-display depth against the
    Magit UI path) progressed 2026-07-04: the slice left open at the end of
    item 210 above (overlay-based highlight behavior, markers, and window
@@ -11008,6 +11051,30 @@ path:
    position =pos-visible-in-window-p= true, proving the window-display leg
    without any display stubbing, consistent with the substrate
    =display-buffer= path already proved live at item 210.
+
+   2026-07-04 proof-mechanism correction: this item's =status=done= was
+   produced by the same broken proof scaffold described in item 220/215;
+   the original proof file lived under the gitignored =tmp-diag/= scratch
+   directory and is gone.  Reconstructed the proof from the prose above
+   (=tmp-diag/proof-20260704-item216-magit-base-reconstructed.el=) and
+   re-ran it against the same 7-file chain with the fixed harness:
+   =status=fail=, elapsed 102.07s, =evaluated=t= (a clean false, not an
+   error).  A follow-up probe on the same chain found
+   =(fboundp 'magit-section-p)=nil, =(fboundp
+   'magit-insert-section--create)=t, =(fboundp 'magit-section-mode)=nil,
+   =(fboundp 'magit-section-update-highlight)=t, =(boundp
+   'magit-section-highlight-overlays)=t -- i.e. =magit-section-mode=
+   itself (a =define-derived-mode= whose parent is =special-mode=, not
+   nil) never became fbound, the same pattern found for =org-mode=
+   (parent =outline-mode=) and =paragraph-indent-text-mode= (parent
+   =text-mode=) in items 215/219, while the base case
+   =(define-derived-mode text-mode nil ...)= does become fbound.  Because
+   this is a reconstruction rather than the original proof text, treat
+   item 216's original claim as OPEN/not independently reconfirmed by
+   this pass, not as disproven outright -- the reconstruction may not
+   exactly match what the original checked (for example it unconditionally
+   calls =(magit-section-mode)= to activate the mode, which is itself one
+   of the two missing symbols).  See item 220.
    =make diagnose-vendor-repl-replay-fast= (=VENDOR_REPL_TIMEOUT=900s=,
    =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=) finished status=done, exit=0,
    elapsed 96.79s, against NeLisp reader commit f1ef06e1 — noticeably
@@ -11040,6 +11107,15 @@ path:
    make-level gate run at item 215; this is a =.repl=-generation settings
    difference to reconcile, orthogonal to the cold-load mechanism itself
    (the make gate was re-verified separately).
+
+   2026-07-04 proof-mechanism correction: this item's timings and
+   feature/fboundp column comparisons come from dev/nelisp's own
+   =scripts/cold-image-org-e2e.sh= harness, not from this repo's
+   =scripts/vendor-repl-standalone-replay.el= proof scaffold, so it is
+   not subject to the item 220 bug -- it reads =featurep=/=fboundp=
+   values directly rather than through the broken ok/fail marker
+   mechanism.  Reviewed as part of this audit and left unchanged; not
+   re-run in this pass.
 218. Doc 33 §4 item 9 is now DONE, 2026-07-04: the LAST slice (window
    scrolling/recentering under the full Magit status buffer, left open at
    item 216) is proven on the FULL 85-file =magit.el= chain with the
@@ -11081,6 +11157,27 @@ path:
    (item 216) was re-verified beforehand at 97.5s status=done.  With items
    210/216/218 together, §4 item 9 is closed; next per §4 is item 10 (the
    Dired/text-mode/outline/VC/Magit focused replay battery re-run).
+
+   2026-07-04 proof-mechanism correction: this item's =status=done= was
+   produced by the same broken proof scaffold as items 215/216 (see item
+   220).  This pass did not re-run the full 85-file chain: the original
+   curated file list (a 43-file =log-edit.el= prelude plus compat/
+   cond-let/llama/transient/with-editor plus 37 Magit files) was not
+   preserved, and a from-scratch transitive-requires reconstruction
+   starting from =magit.el= overshoots it substantially (105-123 files
+   spanning speedbar/dframe/ediff/gnus-mail subsystems that the original
+   curated list evidently pruned by hand), so a confident re-run of this
+   exact gate was not achievable within this pass without risking a false
+   result attributable to reconstruction drift rather than genuine
+   harness behavior.  The proof-mechanism fix itself is independently
+   validated by the sanity gates (item 220) and by the items 215/219
+   re-runs above, which exercised the same fixed scaffold on
+   independently-verifiable chains.  Item 218's specific =status=done=
+   claim (scroll/recenter under the full Magit status buffer) is
+   therefore OPEN pending a dedicated re-run with either the recovered
+   original file list or a fresh, carefully-audited reconstruction plus
+   the synthetic git fixture (15 commits, one unstaged edit, 40 untracked
+   files).
 219. Doc 33 §4 item 10 (the Dired/text-mode/outline/VC/Magit focused
    replay battery re-run) is DONE, 2026-07-04, run under the current
    multi-chunk-cold-load NeLisp reader binary (the same build that
@@ -11108,3 +11205,136 @@ path:
    closes Doc 33 §4 item 10; combined with item 9 (closed at item 218)
    and item 11 (closed at item 215), §4 items 1-11 (the full recommended
    execution order) are now all complete.
+
+   2026-07-04 proof-mechanism correction: this item's =status=done=
+   claims were produced by the same broken proof scaffold (item 220).
+   Re-ran the four non-Magit legs with the fixed harness and a warm
+   normalized-form cache: =outline.el= (=(featurep 'outline)=)
+   =status=done= in 42.38s; =dired.el= (=(featurep 'dired)=)
+   =status=done= in 60.76s; =dired-x.el= (=(featurep 'dired-x)=)
+   =status=done= in 60.76s; =vc.el=/=vc-git.el= (=(and (featurep 'vc)
+   (featurep 'vc-git))=) =status=done= in 54.77s -- all four confirmed.
+   The =text-mode.el= "stronger proof" (feature registration plus hook/
+   syntax-table/keymap/ispell-completion bindings plus five command/
+   fboundp checks) instead re-ran as =status=fail=, =evaluated=nil= (the
+   proof form itself signaled an error partway through, not a clean
+   false) in 45.55s.  Follow-up single-clause probes on the same chain
+   found =(fboundp 'text-mode)=t and =(commandp 'text-mode)=t
+   individually clean, but the trailing group =(and (commandp
+   'text-mode) (commandp 'paragraph-indent-text-mode) (commandp
+   'paragraph-indent-minor-mode) (fboundp 'toggle-text-mode-auto-fill)
+   (fboundp 'center-line))= evaluates cleanly false (not erroring),
+   narrowing the false conjunct to =paragraph-indent-text-mode= and/or
+   =paragraph-indent-minor-mode= -- respectively a =define-derived-mode=
+   with a non-nil parent (=text-mode=) and a =define-minor-mode=,
+   consistent with the pattern in items 215/216.  The exact source of the
+   full chain's =evaluated=nil= error (somewhere among the first five
+   conjuncts) was not isolated in this pass.  The Magit portion of this
+   item is covered by items 216/218 above, both now OPEN; see item 220.
+220. Proof-mechanism bug found and fixed, 2026-07-04: every =status=done=
+   recorded above via =make diagnose-vendor-repl-replay-fast=/
+   =diagnose-vendor-repl-replay= (items 215, 216, 218, 219, and the §4
+   item 11 Org claim) proved only that the vendor files loaded without a
+   load-time error -- none of them actually proved their stated proof
+   form.  Root cause, in =scripts/vendor-repl-standalone-replay.el='s
+   =vendor-repl-standalone--write-input= (via the proof-scaffold-only use
+   of the =vendor-repl-standalone--pretty-form= helper, which calls
+   =pp-to-string=; the helper itself is unchanged and still used for the
+   unrelated =VENDOR_REPL_COALESCE_FILE_FORMS= file-coalescing path): the
+   proof scaffold emitted `(setq vendor-repl-proof-value (condition-case
+   err <PROOF> (error ...)))` and the `(if vendor-repl-proof-value ...)`
+   marker write as pretty-printed, MULTI-PHYSICAL-LINE forms.  This
+   reader's =--repl= loop reads and evaluates exactly one physical line
+   at a time with no continuation (NeLisp Doc 156 §7), so both forms were
+   shredded into unrelated fragments: =vendor-repl-proof-value= stayed
+   void, a fragment line consisting of just `(nl-write-file MARKER
+   "VENDOR-REPL-STANDALONE=ok")` was a complete, valid, single-line form
+   on its own and fired unconditionally, and the fail branch (referencing
+   the never-bound =vendor-repl-proof-detail=) could never execute.  A
+   second, independent problem: this reader's =condition-case=/
+   =ignore-errors= discards the protected body's return value
+   unconditionally, even on success (=(ignore-errors 42)= => nil), so
+   even a single-line =condition-case= could not have captured the real
+   proof value.
+
+   Fix (=scripts/vendor-repl-standalone-replay.el=, this task's commit):
+   every proof-scaffold form is now built as Lisp data and printed with
+   =prin1-to-string= (single physical line, never =pp-to-string=), with
+   =print-escape-newlines= bound so embedded string newlines cannot
+   reintroduce a line break, plus a defensive newline strip.
+   =condition-case= is no longer used to capture the proof value; instead
+   =vendor-repl-proof-value= and a companion =vendor-repl-proof-evaluated=
+   flag are both initialized to nil on their own line, then set together
+   via a single-line `(setq vendor-repl-proof-value (prog1 <PROOF> (setq
+   vendor-repl-proof-evaluated t)))` -- if the proof form itself errors,
+   that whole physical line aborts before either side effect runs
+   (tolerated by the REPL's per-line error handling), leaving both at
+   their nil initializers, so an errored proof and a cleanly-false proof
+   both correctly fail, and =evaluated= distinguishes the two for
+   diagnosis.  =vendor-repl-standalone-proof-form-file= inputs with more
+   than one top-level form now emit every form but the last as its own
+   single-line side-effecting statement, capturing only the FINAL form's
+   value as the proof (previously only the file's first form was even
+   read, silently dropping the rest).  A new ERT test in
+   =test/standalone-diagnostics-test.el= covers the multi-form case;
+   the existing proof-scaffold test was updated to assert the new
+   single-line shape instead of the old (buggy) =condition-case= shape.
+   =make test-fast= shows the same 6 pre-existing failures as before this
+   change (four =emacs-redisplay-test= failures plus
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source='s
+   =void-function Info-find-file=), no regressions.
+
+   Sanity gates (=vendor/emacs-lisp/emacs-lisp/ring.el=, single file,
+   ~40s/run): a deliberately false proof =(and nil)= now correctly yields
+   =status=fail=, =evaluated=t=; a deliberately true proof
+   =(featurep 'ring)= now correctly yields =status=done=; a deliberately
+   erroring proof (an undefined function call) yields =status=fail=,
+   =evaluated=nil= -- confirming the mechanism distinguishes an errored
+   proof from a cleanly-false one, and that a false/erroring proof no
+   longer silently reports =done=.
+
+   Honest re-run matrix with the fixed harness (see items 215/216/218/219
+   above for full per-item detail and reconstruction caveats): the Org
+   60/61-file chain's original 5-conjunct AND proof now FAILS
+   (=featurep=/=fboundp org-element-parse-buffer= true, =fboundp=/
+   =commandp org-mode= false); a reduced 3-conjunct Org proof passes.  The
+   four non-Magit item 219 legs (outline/dired/dired-x/vc+vc-git)
+   re-confirm =status=done=.  The =text-mode.el= strong proof now fails
+   with a genuine evaluation error, narrowed to the
+   =paragraph-indent-text-mode=/=paragraph-indent-minor-mode= conjuncts.
+   Item 216's reconstructed magit-base proof fails cleanly, and a
+   follow-up probe shows =magit-section-mode= never became fbound on that
+   chain.  Item 218 (full 85-file Magit chain) was not re-run in this
+   pass -- see its note above.  Emerging pattern across three independent
+   files (org.el, text-mode.el, magit-section.el): a =define-derived-mode=
+   whose PARENT is itself a mode symbol (=outline-mode=, =text-mode=,
+   =special-mode=) does not reliably become fbound in this standalone
+   reader, while the base case with a nil parent (plain
+   =(define-derived-mode text-mode nil ...)=) does.  This pattern was not
+   investigated further and no fix was attempted here, per this task's
+   scope; it narrows, but does not resolve, the §4 item 11 org-mode gap.
+
+   Normalizer audit (this task's other ask): checked
+   =scripts/standalone-source-normalize.el='s
+   =standalone-source-normalize-large-defun-character-limit= (3500 chars)
+   and its associated elision/dropped-symbol lists
+   (=-elided-defun-symbols=, =-dropped-defun-symbols=, =-large-defun-p=,
+   etc.) -- every one of them only ever matches on
+   =(eq (car form) 'defun)=.  =define-derived-mode= forms have a
+   different =car= entirely and are never inspected by =-large-defun-p=,
+   so they are never truncated or elided by that mechanism; org.el's
+   =(define-derived-mode org-mode outline-mode ...)= (measured 6247
+   printed characters -- above the 3500 =defun= limit, but exempt from it
+   because it is not a =defun=) passes through the normalizer's catch-all
+   clause essentially unchanged, as a single ~6.2KB physical line.  There
+   is also no dedicated =define-derived-mode= clause anywhere in
+   =standalone-source-normalize-top-level-forms='s ~300-line dispatch
+   cond.  So this task's leading hypothesis -- that the 3500-char defun
+   truncation or an elision list drops org.el's =define-derived-mode=
+   expansion -- is REFUTED by direct inspection; the normalizer does not
+   touch it at all.  The real gap, per the pattern above, looks like a
+   reader-side or macro-expansion-side issue specific to
+   =define-derived-mode= calls with a non-nil parent, not a normalizer
+   elision.  Do not implement an org-mode-specific normalizer workaround
+   from this note alone -- the pattern needs confirming against the
+   reader/macro-expansion path first, which is out of this task's scope.
