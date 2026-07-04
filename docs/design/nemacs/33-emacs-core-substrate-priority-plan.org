@@ -11668,3 +11668,147 @@ path:
 
    Files touched: =src/nelisp-emacs-compat.el= (fix, four macros),
    =test/nelisp-emacs-compat-test.el= (new host ERT suite).
+
+223. Item 222(b') follow-up: actually INVOKING =(org-mode)='s real body is
+   ROOT-CAUSED as a dev/nelisp reader/runtime defect (GC root-coverage
+   gap), 2026-07-04.  STOPPED per task scope -- this is a reader
+   primitive defect, not a nelisp-emacs-lib substrate gap; no fix
+   applied here, no substrate files touched.
+
+   Environment: dev/nelisp =main= @ =a679a31a= (canonical checkout,
+   read/run-only for this task; a local comment-only working-tree diff
+   to =scripts/nelisp-standalone-build.el= was present at investigation
+   time from unrelated concurrent work sharing that checkout -- verified
+   by inspection to touch only prose comments, not code, in the
+   =nl_gc_in_arena=/=nl_gc_mark_published_contexts_from= region; dev/nelisp
+   =main= has since advanced further, to =0e599c29=, via that same
+   concurrent activity -- this item's reproduction is pinned to the
+   =a679a31a=-era binary, sha1 =6581d44a8f95caf7f080c0e05f75cf2aa144d5ff=,
+   built before HEAD moved further).  =nelisp-emacs-lib='s own
+   =build/nemacs-bootstrap.{el,repl}= (gitignored artifacts) were
+   regenerated via =make build-nelisp-bootstrap= from this branch's
+   =28f728d= (item 222's fix) before use, per task instructions; this
+   is a generated-artifact refresh only, no tracked file changed.
+   Reproduction used dev/nelisp's =scripts/cold-image-org-e2e.sh 1= (its
+   own default, faster prelude -- =NELISP_E2E_KEEP=1=) against the
+   checked-in 60-file Org chain (=scripts/cold-image-org-e2e-files.txt=)
+   with the refreshed bootstrap-repl: host .repl generation 908ms,
+   replay-load 9.98s, dump 0.76s, cold boot 0.87s; faithfulness probe
+   =(featurep 'org) (featurep 'org-element) (fboundp 'org-mode) (fboundp
+   'org-element-parse-buffer) (commandp 'org-mode) (fboundp 'commandp)=
+   = =(t t t t (interactive) t)=, identical replay vs. cold-boot -- so
+   this reproduction independently reconfirms item 221/222's org-mode
+   fboundp/commandp result before hitting the new gap below.
+
+   Reproduction, two distinct manifestations of (evidently) the same
+   defect depending on process state:
+   - Cold-booted process (=--cold-load-from IMG=, image already
+     ~693 MB): =(with-temp-buffer (org-mode) t)=, and the bare top-level
+     =(progn (org-mode) (eq major-mode 'org-mode))= with no
+     =with-temp-buffer= at all, both SIGSEGV deterministically (3/3
+     repeats; =ulimit -s unlimited= makes no difference, ruling out a
+     stack-depth/guard-page explanation) in ~1.5s wall (barely past
+     cold-boot-to-first-eval time) -- this is a CRASH, not a hang.
+   - The SAME probe against a freshly replay-loaded (non-cold) process
+     (append the probe to the e2e script's own =load-only.repl= tail and
+     run through =./target/nelisp --repl=) does NOT crash within 60s --
+     it HANGS (=timeout 60= => exit 124, no output) -- consistent with
+     (and reproducing) item 222(b')'s originally reported 560s-timeout
+     hang with the sentinel stuck at =proof:start=.  The two process
+     shapes (cold-booted vs. replay-loaded) manifest differently
+     (immediate null-deref crash vs. non-terminating loop) from what
+     bisection below shows is the same underlying corruption; plausibly
+     the freed/blanked bytes a collection leaves behind happen to be
+     all-zero in the cold-boot arena layout (an immediate null deref)
+     but form an unintended self-referential (non-terminating) chain in
+     the replay-process's arena layout instead of a null.
+
+   Bisection (single-line probes, one session, same cold image):
+   - Parents run clean and fast: =(with-temp-buffer (fundamental-mode)
+     t)=, =(with-temp-buffer (text-mode) t)=, =(with-temp-buffer
+     (outline-mode) t)= all => =t=, exit 0, sub-second.  So the defect is
+     specific to =org-mode='s OWN =define-derived-mode= body (the
+     customization/keymap/abbrev/regexp/font-lock setup done by
+     =org-set-regexps-and-options= and friends per item 222's note), not
+     to the derived-mode parent-call chain, and not to =with-temp-buffer=
+     (the bare top-level call crashes identically).
+   - GDB (=gdb --batch -ex run -ex bt=) on the crashing cold-boot probe:
+     SIGSEGV at =nl_kw_is_keyword+136=, instruction =movzbq
+     (%rdi),%rax= with =%rdi=0=.  Backtrace (top): =nl_kw_is_keyword= <-
+     =nl_eval_inner= <- =nelisp_eval_call= <- =nl_sf_progn_body_step= <-
+     =nl_sf_progn_get_cdr= <- =nl_sf_progn_step= <- =nl_sf_progn_eval_step=
+     <- =nl_sf_progn_body_step= <- ... (repeats) <- =nl_sf_progn= <-
+     =nl_apply_special= <- ... <- =nl_sf_let_*= <- ... <- =nl_driver_eval_published=.
+     =nl_kw_is_keyword= (the M4 keyword-self-eval fast path wired into
+     =nl_eval_inner=, scripts/nelisp-standalone-build.el lines
+     13467-13480) checks, in order, =(sexp-tag form) = 4= (Symbol) then
+     =(str-len form) > 0= then =(str-byte-at form 0)= -- both of the
+     first two checks must have PASSED to reach the crashing
+     instruction (disassembly confirms =%rip= is past both branches, at
+     the =str-byte-at= read), meaning =form= itself is a live,
+     correctly-tagged Symbol with a recorded non-zero name length, but
+     the SEPARATELY-ALLOCATED name-buffer this length refers to has a
+     null data pointer.  I.e. the Symbol's container survived, but its
+     name buffer did not -- freed/blanked while still referenced, mid
+     nested-=progn=-body evaluation.
+   - This crash signature (=nl_kw_is_keyword(NULL)=) is IDENTICAL to a
+     pre-existing, already-documented, not-fully-resolved defect
+     recorded directly in dev/nelisp's own build script
+     (scripts/nelisp-standalone-build.el lines 12949-12961): "the
+     anvil-pkg suite trips a root-coverage gap ... a collection frees a
+     still-referenced cons, blanking a progn body form ->
+     nl_kw_is_keyword(NULL)".  That comment records the fix attempted
+     for THAT workload (mark+sweep GC + conservative native-stack scan,
+     both currently active per lines 12926/12962) and explicitly notes
+     the alternative GC mode (compaction) has an analogous unresolved
+     gap, just a different manifestation ("move+munmap dangling vs
+     free+reuse blanking").  =(org-mode)='s real body -- deep nested
+     =progn=/=let=, heavy consing for regexp/keyword-table/face-alist
+     construction inside =org-set-regexps-and-options= and friends --
+     re-triggers the SAME root-coverage class, in a shape the existing
+     mitigation does not cover.  (Doc 149's string/symbol name-buffer
+     clone-ALIASING optimization, flag =268435648=1=, sharing a name
+     buffer across clones instead of deep-copying, is also a plausible
+     contributing/compounding factor for why a Symbol's name buffer
+     specifically goes missing, but this was not isolated further.)
+   - Attempted a minimal repro independent of Org: a FLAT 80-form
+     top-level =(let ((x 1)) (progn (setq big0 (make-vector 200000 0))
+     ... (eq x x)))= (~128 MB of allocation, comfortably past the 16 MiB
+     GC trigger) on the plain bootstrap REPL (no vendor files) ran clean,
+     =t=, no crash.  So raw allocation volume through a SHALLOW =progn=
+     is NOT sufficient; the defect needs the deep nested
+     =progn=/=let=/function-call shape actually produced by
+     =define-derived-mode='s expansion of =org-mode='s body (matching the
+     multi-frame =nl_sf_progn_*= recursion seen in the backtrace). A
+     smaller synthetic repro reproducing the nesting shape was not found
+     within this task's time budget; the checked-in 60-file Org chain
+     (=scripts/cold-image-org-e2e-files.txt=) plus either probe above
+     remains the smallest known repro.
+   - Not chased further per task instructions (this is a dev/nelisp
+     reader/GC defect, out of scope to fix from nelisp-emacs-lib, and
+     dev/nelisp is read/run-only for this task): the exact mark-phase
+     root-coverage hole (which live root the conservative native-stack
+     scan or GC mark walk fails to find for this call shape) was not
+     isolated inside dev/nelisp's C-shaped Elisp-DSL GC implementation.
+
+   Verification (honest, not achieved): item 222(b')'s requested
+   =(with-temp-buffer (org-mode) (eq major-mode 'org-mode))= still does
+   NOT complete -- SIGSEGV on cold boot, hangs (timeout) on replay-load,
+   both reproduced above.  =org-element-parse-buffer= smoke was not
+   attempted (unchanged from item 222, still gated on this).  No
+   nelisp-emacs-lib substrate files were touched, so =make test-fast= was
+   not re-run for this item; the item 221/222 fixes on this branch
+   (=28f728d=) are unaffected.
+
+   Disposition: STOP, per task instructions -- this is a reader-side
+   (dev/nelisp) primitive/GC defect, not a substrate gap.  The fix
+   belongs in dev/nelisp's garbage collector (root-coverage for a
+   Symbol's name-buffer pointer, and/or the progn-body "remaining
+   forms" cons, when reachable only through deep native call frames
+   during heavy nested-progn/let evaluation) -- out of scope for this
+   repository and not attempted here.
+
+   Files touched: none (nelisp-emacs-lib substrate unchanged; only this
+   design-doc entry and the gitignored =build/nemacs-bootstrap.{el,repl}=
+   artifacts, regenerated from already-committed =28f728d= sources, no
+   tracked change).
