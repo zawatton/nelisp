@@ -11812,3 +11812,178 @@ path:
    design-doc entry and the gitignored =build/nemacs-bootstrap.{el,repl}=
    artifacts, regenerated from already-committed =28f728d= sources, no
    tracked change).
+
+224. Item 223 practical workaround VERIFIED and SHIPPED as this
+   substrate's default =org-modules=, 2026-07-04.  Between item 223 and
+   this item, dev/nelisp =main= landed the STACK_TOP-after-cold-load-grow
+   GC fix (=1cfb42f4=/=cf5a8067=) and root-caused the remaining
+   =(org-mode)= hang to genuinely loading the real vendored Gnus package
+   via =(require 'ol-gnus)= (dev/nelisp =FINDINGS.md=, "root-cause
+   (org-mode) practical hang to require'ing real Gnus", 2026-07-04) --
+   this item verifies the practical, non-reader-touching workaround that
+   FINDINGS.md's remediation proposal item 3 flagged but did not apply,
+   and ships it as this repository's shipped default.
+
+   Environment note: dev/nelisp's =./target/nelisp= on disk at task start
+   (mtime 18:07) predated the STACK_TOP fix commit (=cf5a8067=, committed
+   19:20) by about an hour -- rebuilt via =make standalone-reader= before
+   any probing (dev/nelisp =main= @ =e25b244f=, read/run-only, no commits
+   made there).  =nelisp-emacs-lib='s own =build/nemacs-bootstrap.{el,repl}=
+   (gitignored artifacts) were regenerated via =make build-nelisp-bootstrap=
+   both before and after this item's fix, to prove the fix is actually
+   embedded in the generated bundle (see below).  All probes used
+   dev/nelisp's =scripts/cold-image-org-e2e.sh 1= (=NELISP_E2E_KEEP=1=)
+   against the checked-in 60-file Org chain
+   (=scripts/cold-image-org-e2e-files.txt=); faithfulness conjuncts
+   =(featurep 'org) (featurep 'org-element) (fboundp 'org-mode) (fboundp
+   'org-element-parse-buffer) (commandp 'org-mode) (fboundp 'commandp)= =
+   =(t t t t (interactive) t)=, identical replay-loaded vs. cold-booted,
+   both before and after the fix -- so this item's fix does not disturb
+   item 221/222/223's already-verified faithfulness/fboundp results.
+
+   Probe 1, per task step 1: =(setq org-modules nil)= then
+   =(with-temp-buffer (org-mode) (eq major-mode 'org-mode))=, single
+   process, cold-booted image, no =timeout= wrapper needed (=timeout 120=
+   budget given, actual): =status=0=, elapsed *0.825s*, results =nil= then
+   =t=.  The workaround resolves the hang completely once the STACK_TOP
+   fix is in place -- no further bisection needed.
+
+   Probe 2, per task step 2: incremental =org-modules= growth, one fresh
+   cold-booted process per length (=timeout 60= per addition), each
+   running the real =(with-temp-buffer (org-mode) (eq major-mode
+   'org-mode))=, over upstream =org.el='s literal 11-member default
+   (=vendor/emacs-lisp/org/org.el:746=) with =ol-gnus= excluded and the
+   other 10 added in their original list order:
+
+   | list length | module added | wall time | result |
+   |-------------+--------------+-----------+--------|
+   |           1 | =ol-doi=     |    0.828s |    =t= |
+   |           2 | =ol-w3m=     |    0.830s |    =t= |
+   |           3 | =ol-bbdb=    |    1.235s |    =t= |
+   |           4 | =ol-bibtex=  |    1.901s |    =t= |
+   |           5 | =ol-docview= |    2.623s |    =t= |
+   |           6 | =ol-info=    |    2.641s |    =t= |
+   |           7 | =ol-irc=     |    2.639s |    =t= (*) |
+   |           8 | =ol-mhe=     |    2.647s |    =t= |
+   |           9 | =ol-rmail=   |    3.133s |    =t= |
+   |          10 | =ol-eww=     |    4.840s |    =t= |
+
+   (*) At list length 7 the bare 2-line probe (=setq= then the
+   =with-temp-buffer= form as the last and only other line) printed a
+   *blank* line instead of =t=, reproducible 5/5 identical reruns.
+   Wrapping the identical expression in =(format "RESULT=<%S>" ...)=, or
+   simply following it with any further top-level form (e.g. =(+ 1 1)=),
+   both print =t=/=<t>= correctly every time; =(condition-case e ... (error
+   ...))= around it never triggers the =error= handler either.  This is a
+   REPL/print-vs-process-exit race specific to being the last thing
+   evaluated before stdin =EOF= (not reproduced at any other list length in
+   this same sweep), not a real semantic defect in =org-mode= at this
+   =org-modules= length -- noted honestly per task instructions but not
+   chased (out of scope; a dev/nelisp REPL-harness quirk, not this
+   repository's substrate).  All 10 non-=ol-gnus= default members load and
+   let =(org-mode)= complete within single-digit seconds; none needed
+   further exclusion.  The full standard default *minus only =ol-gnus=* is
+   therefore the "largest practical default" the task asked for -- no
+   narrower list is needed.
+
+   Fix (=src/emacs-init.el=; vendor =org.el= untouched): added, directly
+   after the existing vendor =org/gnus= =load-path= wiring block (the
+   thematically matching spot -- this is where =org=/=gnus= vendor
+   subdirectories already get added to =load-path=),
+
+   #+begin_src elisp
+   (unless (boundp 'org-modules)
+     (setq org-modules '(ol-doi ol-w3m ol-bbdb ol-bibtex ol-docview
+                          ol-info ol-irc ol-mhe ol-rmail ol-eww)))
+   #+end_src
+
+   This relies on standard Elisp =defcustom=/=custom-declare-variable=
+   semantics: a =defcustom= only installs its own default when the
+   variable is not yet =default-boundp=, so pre-binding =org-modules= here,
+   before any (present or future) load of real vendor =org.el=, makes
+   upstream's own =(defcustom org-modules '(ol-doi ... ol-gnus ...) ...)=
+   a no-op for the value (its docstring/=:type=/etc. metadata still
+   installs normally) -- vendor =org.el= is never edited.  Verified this
+   interpreter implements that same "don't clobber if already bound"
+   semantics (not a given for a from-scratch DSL) with an isolated probe
+   independent of Org: =(setq my-test-var '(foo)) (defcustom my-test-var
+   '(bar baz) "doc string") my-test-var= on the plain persistent bootstrap
+   (no vendor files) prints =(foo)=, =my-test-var=, =(foo)= -- i.e. the
+   =defcustom= form itself evaluates (returning the symbol, like
+   =defvar=), but the pre-existing value survives untouched, exactly
+   matching real Emacs behavior and confirming the override mechanism is
+   sound on this reader. This changes only this substrate's *default*; it
+   does not disable =ol-gnus= for a real end user with Gnus actually
+   configured, and it matches what a real user without Gnus would already
+   experience (a fast =file-missing= skip via
+   =org-load-modules-maybe='s own =condition-case-unless-debug=).
+   =ol-gnus= (or any other module later found impractical) can be restored
+   once the interpreter gains a macroexpansion cache or a bind-path
+   allocation fast path (dev/nelisp =FINDINGS.md='s remediation proposal
+   items 1-2).
+
+   Verification matrix (honest, per task step 4):
+   - Regenerated =build/nemacs-bootstrap.{el,repl}= via =make
+     build-nelisp-bootstrap= (=files=124=); confirmed by =grep= that the
+     override form is present verbatim in both the generated =.el=
+     (line 52977-52978) and the generated =.repl= (single =progn= form,
+     line 4525) -- so it is genuinely part of what dev/nelisp's harness
+     replays, not just a source-tree change.
+   - Rebuilt the org cold image (=scripts/cold-image-org-e2e.sh 1=,
+     =NELISP_E2E_KEEP=1=) against this regenerated bootstrap and the
+     rebuilt =./target/nelisp=: host =.repl= generation 799ms/11547
+     lines, replay-load 9.98s, dump 0.69s, cold boot 0.97s / 677,792 KB
+     peak RSS, faithfulness =IDENTICAL= (unchanged from before the fix,
+     see above).
+   - Cold-booted this new image and, with *no manual =setq= in the probe
+     at all* (relying purely on the shipped default): =org-modules= =>
+     =(ol-doi ol-w3m ol-bbdb ol-bibtex ol-docview ol-info ol-irc ol-mhe
+     ol-rmail ol-eww)= (=ol-gnus= genuinely absent); =(with-temp-buffer
+     (org-mode) (eq major-mode 'org-mode))= => =t=; =status=0=, total
+     wall *5.01s* for the whole process (cold boot + require + the real
+     =org-mode= body over the shipped 10-module default) -- the literal
+     task step-1 probe from a fresh, unmodified cold boot of the shipped
+     product default, per task step 4.
+   - Also per task step 4, =(with-temp-buffer (insert "* h") (org-mode)
+     (org-element-parse-buffer) t)=: does NOT return =t=. Unwrapped, the
+     process exits cleanly (=status=0=, ~4.6-4.85s, no hang, no crash) but
+     prints nothing for this form at all. Wrapped in =condition-case=, the
+     real value surfaces: =(void-function \`)= -- a void-function error on
+     the backquote/backtick symbol itself, raised (not hung, not a
+     crash) when =org-element-parse-buffer='s real body actually runs
+     over a live buffer. This is a NEW gap, honestly recorded and NOT
+     chased per task instructions: it is unrelated to =org-modules=/Gnus
+     (reproduces identically with the shipped 10-module default, no
+     =ol-gnus= involved) and unrelated to item 223's GC crash (this is an
+     immediately-raised, catchable error, not a hang or SIGSEGV) --
+     apparently a distinct backquote-macroexpansion defect reachable
+     from real vendor =org-element.el='s own parsing code on this reader.
+     Root cause unexplored; this is a dev/nelisp reader defect and
+     dev/nelisp is read/run-only for this task.
+   - =make test-fast= (nelisp-emacs-lib): =1073= tests, =1067= as
+     expected, the same =6= unexpected results as the established
+     baseline (=emacs-redisplay-test-mode-line-full-width-inverse=,
+     =emacs-redisplay-test-redisplay-truncates-long-line=,
+     =emacs-redisplay-test-redisplay-window-narrow-region=,
+     =emacs-redisplay-test/core-initial-paint-produces-output=,
+     =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=,
+     =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+     -- the latter is the =Info-find-file= void-function failure item
+     222 also saw), no new failures.
+
+   What remains for full-module =org-modules= support (not this item):
+   a macroexpansion cache and/or a =nl_val_clone_into= bind-path fast
+   path (dev/nelisp =FINDINGS.md='s remediation proposal) would be needed
+   before =ol-gnus= (or any workload of comparable scale) becomes
+   practical to load on this reader; the new
+   =org-element-parse-buffer= void-function gap above is a second,
+   independent blocker on the path to full real-Org parsing support and
+   is not yet diagnosed.
+
+   Disposition: SHIPPED. =org-modules= defaults to the 10-module list
+   above (upstream's default minus =ol-gnus=) via =src/emacs-init.el=;
+   vendor =org.el= remains unmodified.
+
+   Files touched: =src/emacs-init.el= (fix, =org-modules= default
+   override); =build/nemacs-bootstrap.{el,repl}= regenerated (gitignored
+   artifacts, not tracked); this design-doc entry.
