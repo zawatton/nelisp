@@ -51,6 +51,21 @@ cat >> "$tmp" <<EOF
       (nemacs-next-session-buffer-snapshot))
 (setq nemacs-next-session-smoke-line
       (nemacs-next-protocol-encode-line nemacs-next-session-smoke-snapshot))
+(setq nemacs-next-session-smoke-goto
+      (nemacs-next-session-handle-message
+       (quote (:type command :name goto-char :position 1))))
+(setq nemacs-next-session-smoke-fwd
+      (nemacs-next-session-handle-message
+       (quote (:type command :name forward-char :count 2))))
+(setq nemacs-next-session-smoke-back
+      (nemacs-next-session-handle-message
+       (quote (:type command :name backward-char :count 1))))
+(setq nemacs-next-session-smoke-del
+      (nemacs-next-session-handle-message
+       (quote (:type command :name delete-char :count 1))))
+(setq nemacs-next-session-smoke-oor
+      (nemacs-next-session-handle-message
+       (quote (:type command :name forward-char :count 999))))
 (if (and (= nemacs-next-session-smoke-count 3)
          (not nemacs-next-session-smoke-missing)
          (fboundp (quote nemacs-next-session-plan))
@@ -69,6 +84,13 @@ cat >> "$tmp" <<EOF
                          nemacs-next-session-smoke-line)
          (string-match-p "\"text\":\"abc\""
                          nemacs-next-session-smoke-line)
+         (= (plist-get nemacs-next-session-smoke-goto :point) 1)
+         (= (plist-get nemacs-next-session-smoke-fwd :point) 3)
+         (= (plist-get nemacs-next-session-smoke-back :point) 2)
+         (equal (plist-get nemacs-next-session-smoke-del :text) "ac")
+         (= (plist-get nemacs-next-session-smoke-del :point) 2)
+         (eq (plist-get nemacs-next-session-smoke-oor :type) (quote error))
+         (eq (plist-get nemacs-next-session-smoke-oor :code) (quote out-of-range))
          (not (featurep (quote emacs-init)))
          (not (featurep (quote nemacs-main)))
          (not (featurep (quote nemacs-gtk-frontend)))
@@ -76,7 +98,7 @@ cat >> "$tmp" <<EOF
     (nl-write-file "$marker" "ok")
   (nl-write-file
    "$marker"
-   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s"
+   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S"
            nemacs-next-session-smoke-count
            nemacs-next-session-smoke-missing
            (fboundp (quote nemacs-next-session-plan))
@@ -84,7 +106,12 @@ cat >> "$tmp" <<EOF
            (featurep (quote emacs-init))
            (featurep (quote nemacs-main))
            (featurep (quote nemacs-gtk-frontend))
-           (featurep (quote nemacs-gui-file-bridge-runtime)))))
+           (featurep (quote nemacs-gui-file-bridge-runtime))
+           nemacs-next-session-smoke-goto
+           nemacs-next-session-smoke-fwd
+           nemacs-next-session-smoke-back
+           nemacs-next-session-smoke-del
+           nemacs-next-session-smoke-oor)))
 ,quit
 EOF
 
