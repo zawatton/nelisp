@@ -86,6 +86,14 @@
         (should (eq rc 0))
         (should (string-match "hello-process" (buffer-string)))))))
 
+(ert-deftest emacs-process-builtins-test/call-process-captures-git-output ()
+  (if (not (executable-find "git"))
+      (ert-skip "git not available")
+    (with-temp-buffer
+      (let ((rc (emacs-process-call-process "git" nil t nil "--version")))
+        (should (eq rc 0))
+        (should (string-match-p "\\`git version " (buffer-string)))))))
+
 ;;;; D. call-process — exit-status non-zero on failure
 
 (ert-deftest emacs-process-builtins-test/call-process-failure-non-zero ()
@@ -354,6 +362,62 @@
               (should deleted)
               (should-not (memq proc (emacs-process-process-list))))
           (kill-buffer buffer))))))
+
+(ert-deftest emacs-process-builtins-test/process-accessors-and-mutators-roundtrip ()
+  "Process accessor and mutator helpers should operate on fallback objects."
+  (let ((emacs-process--fallback-processes nil)
+        (emacs-process--fallback-next-pid 10000)
+        (buffer (generate-new-buffer " *process-accessors*")))
+    (unwind-protect
+        (let* ((proc (emacs-process-make-process
+                      :name "accessors"
+                      :buffer buffer
+                      :command '("/bin/sh" "-c" "printf accessors")
+                      :filter #'ignore
+                      :sentinel #'ignore))
+               (replacement-buffer (generate-new-buffer " *replacement*")))
+          (unwind-protect
+              (progn
+                (should (functionp (emacs-process-process-filter proc)))
+                (should (functionp (emacs-process-process-sentinel proc)))
+                (should (bufferp (emacs-process-process-buffer proc)))
+                (should (equal (emacs-process-process-plist proc) nil))
+                (should (eq (emacs-process-process-query-on-exit-flag proc) t))
+                (should (eq (emacs-process-set-process-buffer
+                             proc replacement-buffer)
+                            replacement-buffer))
+                (should (eq (emacs-process-process-buffer proc)
+                            replacement-buffer))
+                (should (equal (emacs-process-set-process-plist
+                                proc '(:alpha 1 :beta 2))
+                               '(:alpha 1 :beta 2)))
+                (should (equal (emacs-process-process-plist proc)
+                               '(:alpha 1 :beta 2)))
+                (should (eq (emacs-process-set-process-query-on-exit-flag
+                             proc nil)
+                            nil))
+                (should-not (emacs-process-process-query-on-exit-flag proc))
+                (should (eq (emacs-process-set-process-query-on-exit-flag
+                             proc t)
+                            t))
+                (should (emacs-process-process-query-on-exit-flag proc)))
+            (ignore-errors (emacs-process-delete-process proc))
+            (kill-buffer replacement-buffer)))
+      (kill-buffer buffer))))
+
+(ert-deftest emacs-process-builtins-test/process-send-region-uses-region-bytes ()
+  "process-send-region should forward the current buffer region as bytes."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'emacs-process-process-send-string)
+               (lambda (_process string)
+                 (setq captured string)
+                 string)))
+      (with-temp-buffer
+        (insert "alpha beta")
+        (should (equal (emacs-process-process-send-region
+                        'dummy 1 6)
+                       "alpha"))
+        (should (equal captured "alpha"))))))
 
 ;;;; I. shell-file-name + shell-command-switch defaults
 

@@ -1,0 +1,61 @@
+#+TITLE: nemacs-next protocol V0
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-25
+#+STATUS: DRAFT
+
+* Goal
+
+Protocol V0 is a persistent message protocol between a modern GUI frontend
+and an editor session that owns Emacs-observable state.
+
+The first transport can be newline-delimited JSON for inspection.  The
+semantic contract should not depend on JSON specifically.
+
+The current app scaffold provides a minimal encoder in
+=apps/nemacs-next/lisp/nemacs-next-protocol.el=.  It exists only to prove
+the persistent session can return =hello= and =snapshot= messages; a richer
+transport can replace it without moving editor semantics into the GUI.
+
+* Client Messages
+
+| Type | Required fields | Meaning |
+|------+-----------------+---------|
+| =hello= | =protocol=, =capabilities= | negotiate version and frontend capabilities |
+| =input= | =event= | keyboard, mouse, or IME event after raw frontend decoding |
+| =command= | =name=, =args= | command request from menu, toolbar, palette, or native action |
+| =resize= | =frame=, =width=, =height= | viewport or frame dimensions changed |
+| =open= | =path= | OS file-open request |
+| =clipboard= | =request-id=, =payload= | clipboard response or pushed clipboard data |
+| =shutdown= | =reason= | graceful shutdown request |
+
+* Session Messages
+
+| Type | Required fields | Meaning |
+|------+-----------------+---------|
+| =hello= | =protocol=, =capabilities= | accepted session capabilities |
+| =snapshot= | =frame=, =buffers= | complete state needed to paint a frame |
+| =delta= | =frame=, =changes= | incremental state update |
+| =minibuffer= | =active=, =prompt=, =contents= | minibuffer state and optional candidates |
+| =echo= | =message= | echo-area update |
+| =menu= | =items= | menu, toolbar, or tab model |
+| =request= | =request-id=, =op= | frontend OS integration request |
+| =error= | =code=, =message= | structured command/session error |
+
+* M1 Command Subset
+
+The current proof supports a deliberately tiny command subset:
+
+| Name | Meaning |
+|------+---------|
+| =create-buffer= | allocate and select a buffer through =nelisp-ec-generate-new-buffer= |
+| =insert-text= | insert a string through reusable buffer APIs |
+| =snapshot= | return the current buffer snapshot; kept out of process smoke until repeated post-edit snapshot is stable in NeLisp REPL |
+
+This subset exists to prove the persistent process boundary.  Full keymap
+lookup and command-loop dispatch still belong in =nelisp-emacs= core.
+
+* Rule
+
+Protocol messages may carry editor state, but they must not move editor
+semantics into the GUI.  If an Emacs package can observe a state change,
+the persistent session and reusable libraries own it.

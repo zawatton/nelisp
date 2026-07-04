@@ -35,6 +35,10 @@
 ;;   - `current-global-map' / `current-local-map'
 ;;   - `use-global-map' / `use-local-map'
 ;;   - `where-is-internal'
+;;   - `keymap-set' / `keymap-lookup' / `keymap-unset'
+;;   - `keymap-global-set' / `keymap-local-set'
+;;   - `keymap-global-unset' / `keymap-local-unset'
+;;   - `key-parse' / `key-valid-p'
 ;;
 ;; Phase 11.C'' also deletes the duplicate stubs that this file
 ;; supersedes from `emacs-stub.el' (= same load-order shadowing risk
@@ -51,6 +55,7 @@ by the NeLisp-only `nl-write-file' primitive; otherwise the unprefixed
 keymap builtins (`make-keymap', `define-key', ...) silently stay as the
 `emacs-stub-bulk.el' nil-stubs in standalone."
   (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
       (get symbol 'emacs-stub-bulk)
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
@@ -117,6 +122,36 @@ the conventional shape expected by `defvar-keymap :suppress'."
 
 (when (emacs-keymap-builtins--install-function-p 'key-description)
   (defalias 'key-description #'emacs-keymap-key-description))
+
+(when (emacs-keymap-builtins--install-function-p 'kbd)
+  (defalias 'kbd #'emacs-keymap-key-parse))
+
+(when (emacs-keymap-builtins--install-function-p 'key-parse)
+  (defalias 'key-parse #'emacs-keymap-key-parse))
+
+(when (emacs-keymap-builtins--install-function-p 'key-valid-p)
+  (defalias 'key-valid-p #'emacs-keymap-key-valid-p))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-set)
+  (defalias 'keymap-set #'emacs-keymap-keymap-set))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-lookup)
+  (defalias 'keymap-lookup #'emacs-keymap-keymap-lookup))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-unset)
+  (defalias 'keymap-unset #'emacs-keymap-keymap-unset))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-global-set)
+  (defalias 'keymap-global-set #'emacs-keymap-keymap-global-set))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-local-set)
+  (defalias 'keymap-local-set #'emacs-keymap-keymap-local-set))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-global-unset)
+  (defalias 'keymap-global-unset #'emacs-keymap-keymap-global-unset))
+
+(when (emacs-keymap-builtins--install-function-p 'keymap-local-unset)
+  (defalias 'keymap-local-unset #'emacs-keymap-keymap-local-unset))
 
 ;;;; --- global / local map ----------------------------------------------
 

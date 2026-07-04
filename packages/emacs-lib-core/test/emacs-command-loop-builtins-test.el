@@ -405,6 +405,13 @@
     (should-error (emacs-command-loop-call-interactively 42)
                   :type 'wrong-type-argument)))
 
+(ert-deftest emacs-command-loop-builtins-test/call-interactively-rejects-non-command ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error
+     (emacs-command-loop-call-interactively
+      'emacs-command-loop-builtins-test--noop)
+     :type 'wrong-type-argument)))
+
 (ert-deftest emacs-command-loop-builtins-test/funcall-interactively-passes-args ()
   (let ((r (emacs-command-loop-funcall-interactively #'+ 2 3)))
     (should (= 5 r))))
@@ -426,6 +433,13 @@
   (emacs-command-loop-builtins-test--with-fresh-state
     (should-error (emacs-command-loop-command-execute 42)
                   :type 'wrong-type-argument)))
+
+(ert-deftest emacs-command-loop-builtins-test/command-execute-rejects-non-command ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error
+     (emacs-command-loop-command-execute
+      'emacs-command-loop-builtins-test--noop)
+     :type 'wrong-type-argument)))
 
 (defvar emacs-command-loop-builtins-test--gui-calls nil)
 
@@ -2246,6 +2260,13 @@
               '(4) 'emacs-command-loop-builtins-test--echo-prefix)))
       (should (equal '(4) r)))))
 
+(ert-deftest emacs-command-loop-builtins-test/execute-extended-command-rejects-non-command ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error
+     (emacs-command-loop-execute-extended-command
+      nil 'emacs-command-loop-builtins-test--noop)
+     :type 'wrong-type-argument)))
+
 (ert-deftest emacs-command-loop-builtins-test/gui-extended-command-candidates ()
   (emacs-command-loop-builtins-test--with-fresh-state
     (let ((candidates (emacs-command-loop-gui-extended-command-candidates)))
@@ -2775,3 +2796,116 @@
 (provide 'emacs-command-loop-builtins-test)
 
 ;;; emacs-command-loop-builtins-test.el ends here
+
+(ert-deftest emacs-command-loop-builtins-test/prefix-numeric-value-cases ()
+  "prefix-numeric-value maps raw prefix args to numbers like host."
+  (should (= 1 (prefix-numeric-value nil)))
+  (should (= -1 (prefix-numeric-value '-)))
+  (should (= 5 (prefix-numeric-value 5)))
+  (should (= -3 (prefix-numeric-value -3)))
+  (should (= 4 (prefix-numeric-value '(4))))
+  (should (= 16 (prefix-numeric-value '(16)))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-event-input-poll-fallback ()
+  "read-event falls back to the input poll function when the queue is empty,
+and a queued event still takes precedence (Doc 06 A1)."
+  (let ((emacs-command-loop--unread-events nil)
+        (unread-command-events nil)
+        (emacs-command-loop--quit-flag nil)
+        (emacs-command-loop--inhibit-quit nil)
+        (emacs-command-loop-input-poll-function (lambda (_ms) ?x)))
+    (should (= ?x (emacs-command-loop-read-event)))
+    (emacs-command-loop-feed-events ?q)
+    (should (= ?q (emacs-command-loop-read-event)))
+    (let ((emacs-command-loop-input-poll-function (lambda (_ms) nil)))
+      (should-error (emacs-command-loop-read-event)
+                    :type 'emacs-command-loop-no-input))))
+
+(ert-deftest emacs-command-loop-builtins-test/called-interactively-flag ()
+  "call-interactively binds the interactive-call flag for the duration of the
+command; a plain programmatic call does not (Doc 06 A5)."
+  (let ((captured 'unset))
+    (defun emacs-command-loop-builtins-test--cmd ()
+      (interactive)
+      (setq captured (and (boundp 'emacs-command-loop--called-interactively)
+                          emacs-command-loop--called-interactively)))
+    (unwind-protect
+        (progn
+          (emacs-command-loop-call-interactively
+           'emacs-command-loop-builtins-test--cmd)
+          (should (eq captured t))
+          (setq captured 'unset)
+          (emacs-command-loop-builtins-test--cmd)
+          (should (null captured)))
+      (fmakunbound 'emacs-command-loop-builtins-test--cmd))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-key-sequence-translation ()
+  "read-key-sequence applies function-key-map (when unbound) and
+key-translation-map (unconditionally) (Doc 06 A3)."
+  (skip-unless (and (require 'emacs-keymap nil t)
+                    (fboundp 'emacs-keymap-make-sparse-keymap)))
+  (let ((function-key-map (emacs-keymap-make-sparse-keymap))
+        (key-translation-map (emacs-keymap-make-sparse-keymap))
+        (input-decode-map (emacs-keymap-make-sparse-keymap))
+        (emacs-command-loop--unread-events nil)
+        (unread-command-events nil)
+        (emacs-command-loop--quit-flag nil))
+    (emacs-keymap-define-key function-key-map (vector 'f20) (vector ?x))
+    (emacs-command-loop-feed-events 'f20)
+    (should (equal "x" (emacs-command-loop-read-key-sequence)))
+    (emacs-keymap-define-key key-translation-map (vector ?A) (vector ?z))
+    (emacs-command-loop-feed-events ?A)
+    (should (equal "z" (emacs-command-loop-read-key-sequence)))))
+
+(ert-deftest emacs-command-loop-builtins-test/interactive-spec-codes ()
+  "build-args handles an expanded set of interactive codes + modifiers (A4)."
+  (let ((emacs-command-loop--current-prefix-arg 4))
+    (should (equal '(4) (emacs-command-loop--build-args "p")))
+    (should (equal '(4) (emacs-command-loop--build-args "P")))
+    (should (equal '(nil) (emacs-command-loop--build-args "i")))
+    ;; leading command modifiers are stripped
+    (should (equal '(4) (emacs-command-loop--build-args "*p")))
+    (should (equal '(4) (emacs-command-loop--build-args "@^p"))))
+  (let ((emacs-command-loop--last-input-event 'ev))
+    (should (equal '(ev) (emacs-command-loop--build-args "e"))))
+  (with-temp-buffer
+    (insert "abcd")
+    (goto-char 3)
+    (should (equal '(3) (emacs-command-loop--build-args "d"))))
+  ;; reader codes via a mocked `read-string'
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "foo")))
+    (should (equal '("foo") (emacs-command-loop--build-args "s")))
+    (should (equal '(foo) (emacs-command-loop--build-args "S")))
+    (should (equal '(foo) (emacs-command-loop--build-args "x"))))
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "(+ 1 2)")))
+    (should (equal '(3) (emacs-command-loop--build-args "X"))))
+  ;; region code yields two position args (mark + point), sorted
+  (with-temp-buffer
+    (insert "abcdef")
+    (goto-char 2)
+    (set-mark 5)
+    (should (equal '(2 5) (emacs-command-loop--build-args "r")))))
+
+(ert-deftest emacs-command-loop-builtins-test/special-event-map ()
+  "A `special-event-map' binding runs immediately for the next event; a
+non-special event is left for normal dispatch (Doc 06 B4)."
+  (skip-unless (and (require 'emacs-keymap nil t)
+                    (fboundp 'emacs-keymap-make-sparse-keymap)))
+  (let ((special-event-map (emacs-keymap-make-sparse-keymap))
+        (ran nil)
+        (emacs-command-loop--unread-events nil)
+        (unread-command-events nil)
+        (emacs-command-loop--quit-flag nil))
+    (defun emacs-command-loop-builtins-test--special () (setq ran t))
+    (unwind-protect
+        (progn
+          (emacs-keymap-define-key special-event-map (vector 'sigwinch)
+                                   'emacs-command-loop-builtins-test--special)
+          (emacs-command-loop-feed-events 'sigwinch)
+          (should (eq 'special-event (emacs-command-loop-step)))
+          (should ran)
+          (setq ran nil)
+          (emacs-command-loop-feed-events ?a)
+          (emacs-command-loop-step)
+          (should-not ran))
+      (fmakunbound 'emacs-command-loop-builtins-test--special))))

@@ -101,6 +101,16 @@
   ;; body: nothing.
   )
 
+(emacs-mode-define-derived-mode my-test-parent-derived-mode emacs-mode-text-mode
+  "MyParentDerived"
+  "Test-only parent derived mode for nested mode checks.")
+
+(emacs-mode-define-derived-mode my-test-nested-derived-mode
+  my-test-parent-derived-mode
+  "MyNestedDerived"
+  "Test-only nested derived mode for ERT."
+  (setq my-test-nested-derived-body-mode major-mode))
+
 (ert-deftest emacs-mode-builtins-test/define-derived-mode-registers ()
   (emacs-mode-builtins-test--with-fresh-mode
     ;; Activate the test-defined derived mode.
@@ -121,6 +131,15 @@
         (my-test-derived-mode)
         ;; Parent's hook fired (= because parent ran before body).
         (should (= 1 parent-fired))))))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-nested-finalizes-child ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (setq my-test-nested-derived-body-mode nil)
+    (my-test-nested-derived-mode)
+    (should (eq 'my-test-nested-derived-mode (emacs-mode-major-mode)))
+    (should (eq 'my-test-nested-derived-mode major-mode))
+    (should (eq 'my-test-nested-derived-mode
+                my-test-nested-derived-body-mode))))
 
 ;;;; G. run-mode-hooks
 

@@ -39,6 +39,10 @@
   (should (fboundp 'buffer-string))
   (should (fboundp 'with-current-buffer))
   (dolist (sym '(default-value default-boundp set-default get-char-property
+                 text-properties-at
+                 buffer-narrowed-p markerp copy-marker move-marker
+                 remove-overlays next-overlay-change previous-overlay-change
+                 copy-overlay overlay-recenter
                  invisible-p next-property-change previous-property-change
                  next-single-property-change previous-single-property-change
                  next-single-char-property-change
@@ -61,6 +65,18 @@
                         "(defalias 'default-boundp #'emacs-buffer-default-boundp"
                         "(defalias 'set-default #'emacs-buffer-set-default"
                         "(defun get-char-property"
+                        "(defalias 'text-properties-at"
+                        "emacs-buffer-text-property-at"
+                        "(defalias 'buffer-narrowed-p"
+                        "(defalias 'copy-marker"
+                        "(markerp                    . nelisp-ec-marker-p)"
+                        "(move-marker                . nelisp-ec-set-marker)"
+                        "(insert-before-markers      . nelisp-ec-insert)"
+                        "(remove-overlays    . emacs-buffer-remove-overlays)"
+                        "(next-overlay-change . emacs-buffer-next-overlay-change)"
+                        "(previous-overlay-change . emacs-buffer-previous-overlay-change)"
+                        "(copy-overlay       . emacs-buffer-copy-overlay)"
+                        "(defun overlay-recenter"
                         "(defalias 'invisible-p #'emacs-buffer-builtins-invisible-p"
                         "(defalias 'next-single-char-property-change"
                         "(defalias 'previous-single-char-property-change"
@@ -70,6 +86,47 @@
                         "(defalias 'buffer-chars-modified-tick"))
         (goto-char (point-min))
         (should (search-forward needle nil t))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-properties-at-bridge-uses-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "props-at")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (emacs-buffer-add-text-properties
+         2 5 '(face bold mouse-face highlight) buf)
+        (should (equal '(face bold mouse-face highlight)
+                       (emacs-buffer-builtins-text-properties-at 3 buf)))
+        (should-not (emacs-buffer-builtins-text-properties-at
+                     3 "string-object"))))))
+
+(ert-deftest emacs-buffer-builtins-test/overlay-bridge-source-uses-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "overlay-bridge")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (let ((ov (emacs-buffer-builtins--call-emacs-buffer
+                   'emacs-buffer-make-overlay
+                   (list 2 5 buf))))
+          (emacs-buffer-builtins--call-emacs-buffer
+           'emacs-buffer-overlay-put
+           (list ov 'face 'highlight))
+          (let ((copy (emacs-buffer-builtins--call-emacs-buffer
+                       'emacs-buffer-copy-overlay
+                       (list ov))))
+            (should (emacs-buffer-overlayp copy))
+            (should (eq 'highlight
+                        (emacs-buffer-overlay-get copy 'face))))
+          (should (= 5 (emacs-buffer-builtins--call-emacs-buffer
+                        'emacs-buffer-next-overlay-change
+                        (list 2 buf))))
+          (should (= 2 (emacs-buffer-builtins--call-emacs-buffer
+                        'emacs-buffer-previous-overlay-change
+                        (list 5 buf))))
+          (should-not (emacs-buffer-builtins--call-emacs-buffer
+                       'emacs-buffer-remove-overlays
+                       (list 1 6 'face 'highlight buf)))
+          (should-not (emacs-buffer-overlays-in 1 6 buf))
+          (should-not (overlay-recenter 3)))))))
 
 (ert-deftest emacs-buffer-builtins-test/invisible-p-helper-matches-core-shapes ()
   (let ((buffer-invisibility-spec t))
@@ -393,13 +450,16 @@
     (let ((buf (nelisp-ec-generate-new-buffer "narrow")))
       (nelisp-ec-with-current-buffer buf
         (nelisp-ec-insert "abcdef")
+        (should-not (emacs-buffer-builtins-buffer-narrowed-p))
         (nelisp-ec-goto-char 6)
         (should (= 6 (nelisp-ec-point)))
         (nelisp-ec-narrow-to-region 2 5)
+        (should (emacs-buffer-builtins-buffer-narrowed-p))
         (should (= 2 (nelisp-ec-point-min)))
         (should (= 5 (nelisp-ec-point-max)))
         (should (= 5 (nelisp-ec-point)))
         (nelisp-ec-widen)
+        (should-not (emacs-buffer-builtins-buffer-narrowed-p))
         (should (= 1 (nelisp-ec-point-min)))
         (should (= 7 (nelisp-ec-point-max)))))))
 
@@ -428,6 +488,28 @@
           (should (eq m (nelisp-ec-set-marker m nil)))
           (should (null (nelisp-ec-marker-position m)))
           (should (null (nelisp-ec-marker-buffer m))))))))
+
+(ert-deftest emacs-buffer-builtins-test/copy-marker-uses-ec-marker-shape ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "copy-marker")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abc")
+        (let ((detached (emacs-buffer-builtins-copy-marker nil)))
+          (should (nelisp-ec-marker-p detached))
+          (should-not (nelisp-ec-marker-position detached))
+          (should-not (nelisp-ec-marker-buffer detached)))
+        (let ((from-int (emacs-buffer-builtins-copy-marker 2 t)))
+          (should (nelisp-ec-marker-p from-int))
+          (should (= 2 (nelisp-ec-marker-position from-int)))
+          (should (eq buf (nelisp-ec-marker-buffer from-int)))
+          (should (eq t (nelisp-ec-marker-insertion-type from-int))))
+        (let* ((source (nelisp-ec-set-marker (nelisp-ec-make-marker) 3 buf))
+               (copy (emacs-buffer-builtins-copy-marker source)))
+          (should (nelisp-ec-marker-p copy))
+          (should-not (eq source copy))
+          (should (= 3 (nelisp-ec-marker-position copy)))
+          (should (eq buf (nelisp-ec-marker-buffer copy)))
+          (should-not (nelisp-ec-marker-insertion-type copy)))))))
 
 ;;;; K. macroexpand shape of with-temp-buffer rewrite
 

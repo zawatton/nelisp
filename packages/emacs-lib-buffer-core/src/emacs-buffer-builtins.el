@@ -111,12 +111,15 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
          (narrow-to-region           . nelisp-ec-narrow-to-region)
          (widen                      . nelisp-ec-widen)
          (make-marker                . nelisp-ec-make-marker)
+         (markerp                    . nelisp-ec-marker-p)
          (set-marker                 . nelisp-ec-set-marker)
+         (move-marker                . nelisp-ec-set-marker)
          (marker-position            . nelisp-ec-marker-position)
          (marker-buffer              . nelisp-ec-marker-buffer)
          (marker-insertion-type      . nelisp-ec-marker-insertion-type)
          (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
-         (point-marker               . nelisp-ec-point-marker))))
+         (point-marker               . nelisp-ec-point-marker)
+         (insert-before-markers      . nelisp-ec-insert))))
   (if (emacs-buffer-builtins--standalone-p)
       (dolist (--cell-- --aliases--)
         (fset (car --cell--) (cdr --cell--)))
@@ -124,6 +127,40 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
       (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
         (unless (fboundp --name--)
           (defalias --name-- --target--))))))
+
+(defun emacs-buffer-builtins-buffer-narrowed-p ()
+  "Return non-nil if the current `nelisp-ec' buffer is narrowed."
+  (let ((buf (nelisp-ec-current-buffer)))
+    (and buf
+         (or (nelisp-ec-buffer-narrow-start buf)
+             (nelisp-ec-buffer-narrow-end buf))
+         t)))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-narrowed-p)
+  (defalias 'buffer-narrowed-p
+    #'emacs-buffer-builtins-buffer-narrowed-p))
+
+(defun emacs-buffer-builtins-copy-marker (&optional marker-or-integer type)
+  "Return a fresh marker copied from MARKER-OR-INTEGER.
+nil MARKER-OR-INTEGER returns a detached marker, matching Emacs."
+  (let ((marker (nelisp-ec-make-marker)))
+    (cond
+     ((null marker-or-integer) nil)
+     ((nelisp-ec-marker-p marker-or-integer)
+      (nelisp-ec-set-marker marker
+                            (nelisp-ec-marker-position marker-or-integer)
+                            (nelisp-ec-marker-buffer marker-or-integer)))
+     ((integerp marker-or-integer)
+      (nelisp-ec-set-marker marker marker-or-integer))
+     (t
+      (signal 'wrong-type-argument
+              (list '(or marker integer null) marker-or-integer))))
+    (when type
+      (nelisp-ec-set-marker-insertion-type marker type))
+    marker))
+
+(when (emacs-buffer-builtins--install-function-p 'copy-marker)
+  (defalias 'copy-marker #'emacs-buffer-builtins-copy-marker))
 
 (defun emacs-buffer-builtins--text-property-object (object)
   "Return OBJECT when it is a buffer, or nil for current buffer/string MVP."
@@ -176,6 +213,18 @@ String text properties are accepted as a no-op in the standalone MVP."
         (emacs-buffer-builtins--call-emacs-buffer
          'emacs-buffer-get-text-property
          (list pos prop target))))))
+
+(defun emacs-buffer-builtins-text-properties-at (pos &optional object)
+  "Return all text properties at POS in buffer OBJECT."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (unless (eq target :string-or-unsupported)
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-text-property-at
+       (list pos target)))))
+
+(when (emacs-buffer-builtins--install-function-p 'text-properties-at)
+  (defalias 'text-properties-at
+    #'emacs-buffer-builtins-text-properties-at))
 
 (when (emacs-buffer-builtins--install-function-p 'get-char-property)
   (defun get-char-property (pos prop &optional object)
@@ -329,9 +378,13 @@ select it, and return it."
            (overlay-get        . emacs-buffer-overlay-get)
            (move-overlay       . emacs-buffer-move-overlay)
            (delete-overlay     . emacs-buffer-delete-overlay)
+           (remove-overlays    . emacs-buffer-remove-overlays)
            (overlays-at        . emacs-buffer-overlays-at)
            (overlays-in        . emacs-buffer-overlays-in)
-           (overlay-lists      . emacs-buffer-overlay-lists)))
+           (next-overlay-change . emacs-buffer-next-overlay-change)
+           (previous-overlay-change . emacs-buffer-previous-overlay-change)
+           (overlay-lists      . emacs-buffer-overlay-lists)
+           (copy-overlay       . emacs-buffer-copy-overlay)))
   (let ((--name-- (car --cell--))
         (--target-- (cdr --cell--)))
     (when (emacs-buffer-builtins--install-function-p --name--)
@@ -340,6 +393,12 @@ select it, and return it."
                   (list 'emacs-buffer-builtins--call-emacs-buffer
                         (list 'quote --target--)
                         'args))))))
+
+(when (emacs-buffer-builtins--install-function-p 'overlay-recenter)
+  (defun overlay-recenter (&optional pos)
+    "No-op standalone overlay recenter bridge."
+    (ignore pos)
+    nil))
 
 ;;;; --- creation / liveness -----------------------------------------------
 
@@ -665,6 +724,34 @@ falling back to `write-region' under host Emacs."
                                                                'write-region))
                                           (list 'write-region s nil p)))))
                   (list 'nelisp-ec-kill-buffer buf))))))
+
+;; ---- buffer-hash (C builtin) ----
+;; A non-cryptographic content hash used to detect buffer changes.  Callers
+;; only compare two hashes for equality.  The runtime's sxhash / md5 /
+;; secure-hash are stubbed (return nil) here, so use a deterministic djb2
+;; digest over the buffer text -- content-sensitive and dependency-free.
+
+(unless (fboundp 'buffer-hash)
+  (defun buffer-hash (&optional buffer-or-name)
+    "Return a hash string of the entire contents of BUFFER-OR-NAME.
+Ignores narrowing (hashes the whole buffer)."
+    (let ((buf (if (stringp buffer-or-name)
+                   (get-buffer buffer-or-name)
+                 (or buffer-or-name (current-buffer))))
+          (s nil))
+      ;; Capture the text via `setq' rather than relying on the return value
+      ;; of `with-current-buffer'/`save-restriction', which this runtime does
+      ;; not propagate (they return the buffer, not the body value).
+      (save-current-buffer
+        (set-buffer buf)
+        (save-restriction
+          (widen)
+          (setq s (buffer-substring-no-properties (point-min) (point-max)))))
+      (let ((h 5381) (i 0) (n (length s)))
+        (while (< i n)
+          (setq h (logand (+ (* h 33) (aref s i)) 1099511627775)) ; mod 2^40
+          (setq i (1+ i)))
+        (number-to-string h)))))
 
 (provide 'emacs-buffer-builtins)
 

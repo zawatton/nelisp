@@ -161,6 +161,13 @@ statuses are review inputs, not stability promises:
 | =validation-helper-internal= | public-prefixed guard helper was reviewed and remains internal implementation API |
 | =validation-helper-review= | public-prefixed guard helper needs explicit internal API review |
 
+The current generated queue has 1273 rows, of which 60 are open review
+rows and 1213 are already classified as stable, internal, covered,
+loader-manifest, or =promote-ready=.  The =buffer-core= replace and
+query-replace candidates, the =io= =emacs-shell-command= candidates, and
+the new =core= syntax/font-lock/redisplay/elisp candidates now account for 85
+=promote-ready= rows.
+
 Rows classified as =compat-shim-helper-*= are intentionally not promoted
 just because they are prefixed.  They exist to install or back
 Emacs-compatible unprefixed names from explicit =*-builtins.el= shim
@@ -322,6 +329,10 @@ coverage =unowned= or =stale= rows.
   =make nemacs-library-consumer-smoke=.  The target loads =nelisp-emacs=
   from =emacs -Q -L src= and must not load app/bootstrap, concrete
   TUI/GUI, or lazy editor files.
+- Buffer UI adapters may call emacs-buffer-ui-current-buffer-name,
+  emacs-buffer-ui-get-or-create-text-buffer, and
+  emacs-buffer-ui-kill-buffer-interactive as frontend-neutral helpers
+  before invoking the higher-level switch/list/kill commands.
 - Package group extraction compatibility is checked by
   =make nemacs-library-package-smoke=.  The target requires each reusable
   package group loader in its own =emacs -Q -L src= process.

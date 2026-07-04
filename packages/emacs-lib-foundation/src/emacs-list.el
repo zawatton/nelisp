@@ -78,6 +78,18 @@ N defaults to 1.  Linear walk."
           (setq keep (- keep 1)))
         (nreverse acc)))))
 
+(unless (fboundp 'nbutlast)
+  (defun nbutlast (list &optional n)
+    "Modify LIST to remove the last N elements (default 1); return it.
+Destructive counterpart of `butlast' (cf. subr.el).  Used by
+org-element-ast's node-property handling (`nbutlast props 2')."
+    (let ((m (length list)))
+      (or n (setq n 1))
+      (and (< n m)
+           (progn
+             (when (> n 0) (setcdr (nthcdr (- (1- m) n) list) nil))
+             list)))))
+
 
 ;;;; --- positional access --------------------------------------------------
 
@@ -216,6 +228,22 @@ TESTFN, when supplied, is called as (TESTFN KEY CAR)."
 
 (unless (fboundp 'remove)
   (defalias 'remove 'delete))
+
+;; `nconc' was a nil stub in the standalone runtime; install the real
+;; destructive concatenation (stub-aware so it overrides the stub).
+(unless (and (fboundp 'nconc) (not (get 'nconc 'emacs-stub-bulk)))
+  (defun nconc (&rest lists)
+    "Concatenate LISTS by destructively modifying all but the last.
+Nil arguments are ignored; the last argument may be any object."
+    (let ((result nil) (tail nil))
+      (dolist (l lists)
+        (when l
+          (if tail (setcdr tail l) (setq result l))
+          (setq tail l)
+          (while (and (consp tail) (consp (cdr tail)))
+            (setq tail (cdr tail)))))
+      result))
+  (put 'nconc 'emacs-stub-bulk nil))
 
 
 ;;;; --- length helpers -----------------------------------------------------

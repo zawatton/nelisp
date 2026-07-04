@@ -59,6 +59,9 @@
   "[ \t]+\\(:[[:alnum:]_@#%:]+:\\)[ \t]*$"
   "Regexp matching an Org headline tag suffix.")
 
+(defconst org-agenda--default-todo-keywords '("TODO" "NEXT" "DONE")
+  "Fallback active TODO keywords used before `emacs-org-todo' is loaded.")
+
 ;; The variable is owned by `emacs-org-todo' (M3.2) — declare without
 ;; initialisation so a later-loading `emacs-org-todo' defcustom value
 ;; still applies (a defvar with a nil initial value would silently
@@ -156,9 +159,10 @@ Each value is a plist with keys:
 
 (defun org-agenda--todo-keywords ()
   "Return the configured TODO keywords, or nil when unavailable."
-  (when (boundp 'org-todo-keywords)
-    (delete-dups
-     (org-agenda--flatten-todo-keywords org-todo-keywords))))
+  (if (boundp 'org-todo-keywords)
+      (delete-dups
+       (org-agenda--flatten-todo-keywords org-todo-keywords))
+    org-agenda--default-todo-keywords))
 
 (defun org-agenda--extract-todo-state (headline)
   "Return HEADLINE's TODO keyword, or nil."
@@ -245,6 +249,33 @@ Each value is a plist with keys:
           :todo todo
           :tags (org-agenda--parse-tags headline))))
 
+(defun org-agenda--heading-plist-from-element (file headline)
+  "Return normalized agenda metadata for FILE and HEADLINE element."
+  (let* ((line (or (org-element-property :line headline)
+                   (org-agenda--line-number-at-pos
+                    (org-element-property :begin headline))))
+         (raw-headline (or (org-element-property :headline headline)
+                           ""))
+         (todo (org-element-property :todo-keyword headline))
+         (title (or (org-element-property :raw-value headline)
+                    (org-element-property :title headline)
+                    (org-agenda--strip-todo-prefix
+                     (org-agenda--heading-text raw-headline)
+                     todo))))
+    (list :file file
+          :line line
+          :headline raw-headline
+          :title title
+          :todo todo
+          :tags (org-element-property :tags headline))))
+
+(defun org-agenda--add-planning-value (entries heading kind value)
+  "Push agenda entries into ENTRIES from HEADING KIND and timestamp VALUE."
+  (dolist (timestamp (org-agenda--collect-timestamps value))
+    (setq entries
+          (org-agenda--add-agenda-entry entries heading kind timestamp)))
+  entries)
+
 (defun org-agenda--add-agenda-entry (entries heading kind timestamp)
   "Push agenda entry into ENTRIES from HEADING KIND and TIMESTAMP."
   (push (list :file (plist-get heading :file)
@@ -267,44 +298,24 @@ Each value is a plist with keys:
   "Scan FILE and return a plist of `:agenda', `:todos', and `:headings'."
   (with-temp-buffer
     (insert-file-contents file)
-    (goto-char (point-min))
-    (let ((agenda nil)
+    (let ((tree (org-element-parse-buffer))
+          (agenda nil)
           (todos nil)
-          (headings nil)
-          (current-heading nil))
-      (while (< (point) (point-max))
-        (let* ((line-start (line-beginning-position))
-               (line-end (line-end-position))
-               (line (buffer-substring-no-properties line-start line-end))
-               (line-number (org-agenda--line-number-at-pos line-start)))
-          (cond
-           ((string-match org-outline--heading-regexp line)
-            (setq current-heading
-                  (org-agenda--heading-plist file line-number line))
-            (push current-heading headings)
-            (when (plist-get current-heading :todo)
-              (push current-heading todos))
-            (when (string-match "SCHEDULED:[ \t]*" line)
-              (dolist (timestamp (org-agenda--collect-timestamps line))
-                (setq agenda
-                      (org-agenda--add-agenda-entry
-                       agenda current-heading 'scheduled timestamp))))
-            (when (string-match "DEADLINE:[ \t]*" line)
-              (dolist (timestamp (org-agenda--collect-timestamps line))
-                (setq agenda
-                      (org-agenda--add-agenda-entry
-                       agenda current-heading 'deadline timestamp)))))
-           ((and current-heading (string-match "SCHEDULED:[ \t]*" line))
-            (dolist (timestamp (org-agenda--collect-timestamps line))
-              (setq agenda
-                    (org-agenda--add-agenda-entry
-                     agenda current-heading 'scheduled timestamp))))
-           ((and current-heading (string-match "DEADLINE:[ \t]*" line))
-            (dolist (timestamp (org-agenda--collect-timestamps line))
-              (setq agenda
-                    (org-agenda--add-agenda-entry
-                     agenda current-heading 'deadline timestamp))))))
-        (forward-line 1))
+          (headings nil))
+      (dolist (headline (org-element-map tree 'headline #'identity))
+        (let ((heading (org-agenda--heading-plist-from-element
+                        file headline)))
+          (push heading headings)
+          (when (plist-get heading :todo)
+            (push heading todos))
+          (setq agenda
+                (org-agenda--add-planning-value
+                 agenda heading 'scheduled
+                 (org-element-property :scheduled headline)))
+          (setq agenda
+                (org-agenda--add-planning-value
+                 agenda heading 'deadline
+                 (org-element-property :deadline headline)))))
       (list :agenda (nreverse agenda)
             :todos (nreverse todos)
             :headings (nreverse headings)))))
@@ -536,17 +547,44 @@ START-DAY is only used for `agenda'.  TAG is only used for `match'."
       (user-error "Day navigation is only available in agenda view"))
     state))
 
+(defun org-agenda--select-source (source)
+  "Select agenda SOURCE and return the resulting buffer.
+SOURCE is normally a file name string.  Hosted delegation can also surface a
+host buffer or a `nelisp-ec-buffer' mirror as an agenda source operand."
+  (cond
+   ((stringp source)
+    (org-agenda--select-source (find-file-noselect source)))
+   ((bufferp source)
+    (if (fboundp 'switch-to-buffer)
+        (switch-to-buffer source)
+      (set-buffer source))
+    source)
+   ((and (fboundp 'nelisp-ec-buffer-p)
+         (nelisp-ec-buffer-p source))
+    (nelisp-ec-set-buffer source)
+    source)
+   (t
+    (signal 'wrong-type-argument
+            (list '(or stringp bufferp nelisp-ec-buffer-p) source)))))
+
 (defun org-agenda--goto-entry (entry)
   "Visit source ENTRY and move point to its originating line."
   (let ((file (plist-get entry :file))
         (line (plist-get entry :line)))
     (unless (and file line)
       (user-error "Agenda entry has no source location"))
-    (find-file file)
-    (goto-char (point-min))
-    (forward-line (1- line))
-    (back-to-indentation)
-    (current-buffer)))
+    (let ((buffer (org-agenda--select-source file)))
+      (if (and (fboundp 'nelisp-ec-buffer-p)
+               (nelisp-ec-buffer-p buffer))
+          (nelisp-ec-with-current-buffer buffer
+            (goto-char (point-min))
+            (forward-line (1- line))
+            (back-to-indentation)
+            buffer)
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (back-to-indentation)
+        (current-buffer)))))
 
 (defun org-agenda--entry-at-point ()
   "Return agenda entry plist at point."

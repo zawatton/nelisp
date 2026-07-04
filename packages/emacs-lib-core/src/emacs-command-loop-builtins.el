@@ -264,6 +264,18 @@ secondary source after `emacs-command-loop--unread-events' is empty."))
   (defvar post-command-hook nil
     "Phase B.4 bridge: hook run after each command-loop dispatch."))
 
+(when (emacs-command-loop-builtins--install-function-p 'prefix-numeric-value)
+  (defun prefix-numeric-value (arg)
+    "Return the numeric value of raw prefix argument ARG.
+nil -> 1; the symbol `-' -> -1; an integer -> itself; a list (as produced
+by `C-u') -> its car; anything else -> 1."
+    (cond
+     ((null arg) 1)
+     ((eq arg '-) -1)
+     ((integerp arg) arg)
+     ((consp arg) (car arg))
+     (t 1))))
+
 (provide 'emacs-command-loop-builtins)
 
 ;;; emacs-command-loop-builtins.el ends here

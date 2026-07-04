@@ -158,10 +158,20 @@ to let-bind in the case body when matched."
           (setq tests (cons t1 tests))
           (setq bindings (append bindings b1)))
         (setq cur (cdr cur)))
-      (cons (cons 'and (let ((rev nil))
-                         (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
-                         rev))
-            bindings)))
+      ;; A sibling `(guard EXPR)' (or `(let PAT EXPR)') in the same `and' may
+      ;; reference variables bound by the other sub-patterns, but those bindings
+      ;; were only applied to the case BODY, not to the test — so e.g.
+      ;; `(and n (guard (> n 3)))' tested `(> n 3)' with `n' UNBOUND (an
+      ;; uncatchable void-variable abort on the bare reader).  Evaluate the whole
+      ;; `and' test with the accumulated bindings in scope.  All sub-patterns test
+      ;; the same (side-effect-free) value-form, so re-binding for the test as
+      ;; well as the body is safe; `let*' covers bindings that depend on earlier
+      ;; ones, and order-independence handles a guard written before its binder.
+      (let ((and-test (cons 'and (let ((rev nil))
+                                   (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
+                                   rev))))
+        (cons (if bindings (list 'let* bindings and-test) and-test)
+              bindings))))
 
   (defun emacs-pcase--or (patterns value-form)
     "Build (TEST . BINDINGS) for an `or' pattern.  No bindings (= ambiguous)."

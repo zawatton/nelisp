@@ -101,6 +101,22 @@ If you are looking for a working pure-elisp Emacs binary today, this
 is not it.  See [[#long-term-roadmap][Long-term roadmap]] below for an
 honest timescale.
 
+* Library contract
+
+The reusable IO process surface includes the following accessor and
+mutator helpers for adapter and frontend code:
+
+#+begin_src text
+emacs-process-process-filter
+emacs-process-process-sentinel
+emacs-process-set-process-buffer
+emacs-process-process-plist
+emacs-process-set-process-plist
+emacs-process-process-query-on-exit-flag
+emacs-process-set-process-query-on-exit-flag
+emacs-process-process-send-region
+#+end_src
+
 * What is this?
 
 =nelisp-emacs= is the Layer 2 (extension package) + Layer 3 (TUI
@@ -203,6 +219,13 @@ features, and lazy companion features.  For narrower queries use
 =nelisp-emacs-library-package-names=, =nelisp-emacs-library-package=,
 =nelisp-emacs-library-package-features=, or
 =nelisp-emacs-library-package-lazy-features=.
+The lightweight Org subset is available through the lazy compatibility entry
+=(require 'org)=; it wires the repository-owned outline, TODO, and table
+editing subset for =org-mode= and does not claim full upstream Org / Babel /
+export parity.  Lightweight agenda and capture remain separately requireable
+from the source tree as =emacs-org-agenda= and =emacs-org-capture=, but
+they are not part of the package-lazy =org= entry until their IO
+dependencies are library-owned.
 Stable package APIs are intentionally narrower than the package API
 inventory.  Consumers can inspect them with
 =nelisp-emacs-library-stable-api-manifest=,
@@ -1007,14 +1030,21 @@ Module breakdown:
   =emacs-ielm.el= — isearch forward/back, =C-h f= / =C-h v= /
   =C-h k= help, undo + redo on fresh edits, =C-x C-e= /
   =eval-defun= / =eval-region= / =eval-buffer=, =M-x ielm= REPL.
-- *M3 org-mode subset* (~4450 LOC, 41 ERT):
+- *M3 org-mode subset* (~4450 LOC, 77 ERT):
   =emacs-org-outline.el= / =emacs-org-todo.el= /
   =emacs-org-table.el= / =emacs-org-agenda.el= /
   =emacs-org-capture.el= — outline folding, TODO state cycle
   (=INBOX / NEXT / WAIT / PROJECTS / SCHEDULED / SOMEDAY /
-  DONE / CANCEL=) with optional CLOSED timestamp, table edit
-  subset, lightweight agenda, capture light.  =org-mode=
-  =major-mode= is wired in.
+  DONE / CANCEL=) with optional CLOSED timestamp, visible heading
+  navigation (=C-c C-n/p/f/b/u=), subtree reordering
+  (=M-<up>/M-<down>=), subtree promote/demote (=C-c <= / =C-c >=),
+  subtree narrowing (=C-x n s=, =widen=),
+  priority cookies (=C-c ,=),
+  property drawer get/set/delete (=org-entry-get= / =org-entry-put= /
+  =org-entry-delete=, =C-c C-x p=), bracket link insert/open
+  (=C-c C-l= / =C-c C-o=), heading tag get/set (=C-c C-q=), table edit
+  subset, lightweight agenda, capture light.  =org-mode= =major-mode= is
+  wired in.
 - *M4 process surface* (~1010 LOC, 19 ERT):
   =emacs-shell-command.el= / =emacs-completion-ui.el= /
   =emacs-project.el= — synchronous + asynchronous

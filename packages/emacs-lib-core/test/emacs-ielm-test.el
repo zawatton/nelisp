@@ -28,6 +28,13 @@
   "Return the current editable input in the active ielm buffer."
   (buffer-substring-no-properties (emacs-ielm--input-start) (point-max)))
 
+(ert-deftest inferior-emacs-lisp-mode-map-is-canonical ()
+  (should (keymapp inferior-emacs-lisp-mode-map))
+  (should (eq #'ielm-input-handler
+              (lookup-key inferior-emacs-lisp-mode-map (kbd "RET"))))
+  (should (eq #'ielm-clear-buffer
+              (lookup-key inferior-emacs-lisp-mode-map (kbd "C-c C-l")))))
+
 (ert-deftest ielm-creates-buffer-with-prompt ()
   (emacs-ielm-test--with-clean-ielm
     (let ((buffer (ielm)))

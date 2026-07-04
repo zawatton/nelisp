@@ -93,6 +93,8 @@ NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-packag
 NEMACS_LIBRARY_PACKAGE_INDEX_SMOKE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-index-smoke/install
 NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY ?= $(BUILD_DIR)/nemacs-library-package-publication-policy.tsv
 NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-publication-policy.org
+NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY ?= $(BUILD_DIR)/nemacs-library-package-release-key-policy.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-release-key-policy.org
 NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY ?= $(BUILD_DIR)/nemacs-library-package-signature-policy.tsv
 NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-signature-policy.org
 NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN ?= $(BUILD_DIR)/nemacs-library-package-signature-release-sign.tsv
@@ -102,15 +104,43 @@ NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-
 NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-manifest.tsv
 NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-manifest.org
 NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-release-bundle
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-smoke.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-smoke.org
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_ROOT ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-smoke/install
+NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_WORK_ROOT ?= $(BUILD_DIR)/nemacs-library-package-release-bundle-smoke
+NEMACS_LIBRARY_PACKAGE_RELEASE_PUBLICATION_POLICY ?= $(BUILD_DIR)/nemacs-library-package-release-publication-policy.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_PUBLICATION_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-release-publication-policy.org
+NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT ?= 0
+NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT)),t,nil)
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT ?= $(BUILD_DIR)/nemacs-library-package-release-rehearsal
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY ?= $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-rehearsal-key.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY_SUMMARY ?= $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-rehearsal-key.org
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_GNUPGHOME ?= $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/gnupg
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_PUBLIC_KEY ?= $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/nemacs-library-release-public-key.asc
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL ?= $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-rehearsal.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_SUMMARY ?= $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-rehearsal.org
+NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY_UID ?= nelisp-emacs release rehearsal <nelisp-emacs-release-rehearsal@example.invalid>
+NEMACS_LIBRARY_RELEASE_CONFIG ?= docs/release/nemacs-library-release.local.mk
+-include $(NEMACS_LIBRARY_RELEASE_CONFIG)
+NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK ?= $(BUILD_DIR)/nemacs-library-package-release-config-check.tsv
+NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-release-config-check.org
 NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT ?= 0
 NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT)),t,nil)
 NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT ?= 0
 NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT)),t,nil)
+NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT ?= 0
+NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT)),t,nil)
 NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT ?=
+NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE ?= docs/release/nemacs-library-release-public-key.asc
 NEMACS_LIBRARY_RELEASE_SIGNATURE_SUFFIX ?= .sig
 NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR ?= 0
 NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR)),t,nil)
 NEMACS_LIBRARY_RELEASE_GPG_PROGRAM ?= gpg
+NEMACS_LIBRARY_RELEASE_GNUPGHOME ?=
+
+ifneq ($(strip $(NEMACS_LIBRARY_RELEASE_GNUPGHOME)),)
+export GNUPGHOME := $(NEMACS_LIBRARY_RELEASE_GNUPGHOME)
+endif
 NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY ?= $(BUILD_DIR)/nemacs-library-package-dependency-publication-policy.tsv
 NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-dependency-publication-policy.org
 NEMACS_LIBRARY_PACKAGE_LAZY_METADATA ?= $(BUILD_DIR)/nemacs-library-package-lazy-metadata.tsv
@@ -574,12 +604,16 @@ VENDOR_REPL_DETAIL_FORM := (concat $(VENDOR_REPL_DETAIL_FORM) " subword=repl")
 VENDOR_REPL_DETAIL_FORM := (concat $(VENDOR_REPL_DETAIL_FORM) " font-core=global-font-lock-mode")
 VENDOR_REPL_PROOF_FORM_ELISP = $(subst ",\",$(VENDOR_REPL_PROOF_FORM))
 VENDOR_REPL_DETAIL_FORM_ELISP = $(subst ",\",$(VENDOR_REPL_DETAIL_FORM))
+VENDOR_REPL_PROOF_FORM_FILE ?=
 VENDOR_REPL_TIMEOUT ?= 900s
 VENDOR_REPL_KEEP_TEMP ?= nil
 VENDOR_REPL_TRACE_FORMS ?= nil
 VENDOR_REPL_DIRECT_CHARACTER_LIMIT ?= 0
+VENDOR_REPL_COALESCE_FILE_FORMS ?= nil
+VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS ?= nil
 VENDOR_FAST_FILES ?= $(abspath $(VENDOR_FORM_WALK_FILE))
 VENDOR_FAST_PROOF_FORM ?= (= vendor-standalone-load-ok-count vendor-standalone-load-file-count)
+VENDOR_FAST_PROOF_FORM_FILE ?=
 VENDOR_FAST_DETAIL_FORM ?= (concat "load-ok-count=" (number-to-string vendor-standalone-load-ok-count) "/" (number-to-string vendor-standalone-load-file-count))
 VENDOR_FAST_PROOF_FORM_ELISP = $(subst ",\",$(VENDOR_FAST_PROOF_FORM))
 VENDOR_FAST_DETAIL_FORM_ELISP = $(subst ",\",$(VENDOR_FAST_DETAIL_FORM))
@@ -612,6 +646,7 @@ NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
 	emacs-isearch \
 	emacs-replace \
 	emacs-shell-command \
+	emacs-vc \
 	emacs-project \
 	emacs-elisp-eval \
 	emacs-elisp-mode \
@@ -622,7 +657,11 @@ NEMACS_LIBRARY_PACKAGE_LAZY_SMOKE_FEATURES = \
 	emacs-syntax-table \
 	emacs-tui-backend \
 	emacs-tui-event \
-	emacs-tui-terminfo
+	emacs-tui-terminfo \
+	org \
+	emacs-org-outline \
+	emacs-org-todo \
+	emacs-org-table
 NEMACS_LIBRARY_PACKAGE_FRONTEND_SMOKE_TESTS = \
 	test/nemacs-gtk-view-menu-test.el \
 	test/nemacs-gtk-frontend-menu-test.el
@@ -668,6 +707,7 @@ TEST_FAST_FILES = \
 	test/emacs-minibuffer-test.el \
 	test/emacs-command-loop-builtins-test.el \
 	test/emacs-dired-min-test.el \
+	test/vendor-first-core-modes-test.el \
 	test/emacs-help-test.el \
 	test/emacs-info-test.el \
 	test/emacs-shell-command-test.el \
@@ -680,7 +720,7 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el
 
-.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
@@ -712,12 +752,18 @@ help:
 	@echo "  make nemacs-library-package-archive-index  generate local package archive index"
 	@echo "  make nemacs-library-package-index-smoke  prove install/load through package archive index"
 	@echo "  make nemacs-library-package-publication-policy  verify package publication policy artifacts"
+	@echo "  make nemacs-library-package-release-key-policy  verify release public key policy"
 	@echo "  make nemacs-library-package-signature-policy  verify release signature policy artifact targets"
 	@echo "  make nemacs-library-package-signature-release-sign  create release detached signatures"
 	@echo "  make nemacs-library-package-signature-release-verify  verify release detached signatures strictly"
 	@echo "  make nemacs-library-package-signature-release  create and verify release detached signatures"
 	@echo "  make nemacs-library-package-release-bundle-manifest  retain draft release bundle files and manifest"
-	@echo "  make nemacs-library-package-release-bundle  create strict signed release bundle manifest"
+	@echo "  make nemacs-library-package-release-bundle-smoke  prove install/load from retained release bundle"
+	@echo "  make nemacs-library-package-release-publication-policy  verify retained release bundle publishability"
+	@echo "  make nemacs-library-package-release-bundle  create and smoke strict signed release bundle"
+	@echo "  make nemacs-library-package-release-rehearsal  run strict signed bundle with a throwaway key"
+	@echo "  make nemacs-library-package-release-ready  verify real release signing config and public key"
+	@echo "  make nemacs-library-package-release-from-config  create strict signed bundle from local release config"
 	@echo "  make nemacs-library-package-dependency-publication-policy  verify lazy/host/vendor dependency publication policy"
 	@echo "  make nemacs-library-package-lazy-metadata  generate lazy companion dependency closure metadata"
 	@echo "  make nemacs-library-package-vendor-lock  record vendored dependency HEAD/content locks"
@@ -769,12 +815,18 @@ help:
 	@echo "  make nemacs-library-package-archive-index  generate local package archive index"
 	@echo "  make nemacs-library-package-index-smoke  prove install/load through package archive index"
 	@echo "  make nemacs-library-package-publication-policy  verify package publication policy artifacts"
+	@echo "  make nemacs-library-package-release-key-policy  verify release public key policy"
 	@echo "  make nemacs-library-package-signature-policy  verify release signature policy artifact targets"
 	@echo "  make nemacs-library-package-signature-release-sign  create release detached signatures"
 	@echo "  make nemacs-library-package-signature-release-verify  verify release detached signatures strictly"
 	@echo "  make nemacs-library-package-signature-release  create and verify release detached signatures"
 	@echo "  make nemacs-library-package-release-bundle-manifest  retain draft release bundle files and manifest"
-	@echo "  make nemacs-library-package-release-bundle  create strict signed release bundle manifest"
+	@echo "  make nemacs-library-package-release-bundle-smoke  prove install/load from retained release bundle"
+	@echo "  make nemacs-library-package-release-publication-policy  verify retained release bundle publishability"
+	@echo "  make nemacs-library-package-release-bundle  create and smoke strict signed release bundle"
+	@echo "  make nemacs-library-package-release-rehearsal  run strict signed bundle with a throwaway key"
+	@echo "  make nemacs-library-package-release-ready  verify real release signing config and public key"
+	@echo "  make nemacs-library-package-release-from-config  create strict signed bundle from local release config"
 	@echo "  make nemacs-library-package-dependency-publication-policy  verify lazy/host/vendor dependency publication policy"
 	@echo "  make nemacs-library-package-lazy-metadata  generate lazy companion dependency closure metadata"
 	@echo "  make nemacs-library-package-vendor-lock  record vendored dependency HEAD/content locks"
@@ -836,12 +888,16 @@ help:
 	@echo "  VENDOR_REPL_PRELUDE=$(VENDOR_REPL_PRELUDE)  standalone prelude for diagnose-vendor-repl-replay"
 	@echo "  VENDOR_REPL_FILES=$(VENDOR_REPL_FILES)  files for diagnose-vendor-repl-replay"
 	@echo "  VENDOR_REPL_PROOF_FORM=$(VENDOR_REPL_PROOF_FORM)  post-load proof for diagnose-vendor-repl-replay"
+	@echo "  VENDOR_REPL_PROOF_FORM_FILE=$(VENDOR_REPL_PROOF_FORM_FILE)  file containing post-load REPL proof form"
 	@echo "  VENDOR_REPL_DETAIL_FORM=$(VENDOR_REPL_DETAIL_FORM)  diagnostic string form shown when REPL proof fails"
 	@echo "  VENDOR_REPL_KEEP_TEMP=$(VENDOR_REPL_KEEP_TEMP)  keep generated REPL diagnostics when non-nil"
 	@echo "  VENDOR_REPL_TRACE_FORMS=$(VENDOR_REPL_TRACE_FORMS)  record per-form REPL progress when non-nil"
 	@echo "  VENDOR_REPL_DIRECT_CHARACTER_LIMIT=$(VENDOR_REPL_DIRECT_CHARACTER_LIMIT)  direct-emits normalized forms above this size"
+	@echo "  VENDOR_REPL_COALESCE_FILE_FORMS=$(VENDOR_REPL_COALESCE_FILE_FORMS)  replay each file as one normalized progn when non-nil"
+	@echo "  VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=$(VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS)  optional in-Emacs timeout that preserves sentinel progress"
 	@echo "  VENDOR_FAST_FILES=$(VENDOR_FAST_FILES)  small file set for diagnose-vendor-*-fast"
 	@echo "  VENDOR_FAST_PROOF_FORM=$(VENDOR_FAST_PROOF_FORM)  fast load/REPL proof"
+	@echo "  VENDOR_FAST_PROOF_FORM_FILE=$(VENDOR_FAST_PROOF_FORM_FILE)  file containing fast REPL proof form"
 	@echo "  VENDOR_FAST_DETAIL_FORM=$(VENDOR_FAST_DETAIL_FORM)  fast REPL failure detail"
 
 compile:
@@ -850,7 +906,7 @@ compile:
 	$(EMACS) -Q -L src -l src/generator.el \
 		--eval '(unless (featurep (quote generator)) (kill-emacs 1))'
 
-nemacs-library-gate: compile nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-checksum nemacs-library-package-archive-smoke nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-runtime-image-input-inventory nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke verify-production-runtime-path
+nemacs-library-gate: compile nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-checksum nemacs-library-package-archive-smoke nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-runtime-image-input-inventory nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke verify-production-runtime-path
 	$(EMACS) -Q -L src -l test/nelisp-emacs-test.el \
 		-f ert-run-tests-batch-and-exit
 	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
@@ -1174,7 +1230,19 @@ nemacs-library-package-publication-policy: nemacs-library-package-archive-checks
 		-l scripts/nemacs-library-package-publication-policy.el \
 		-f nemacs-library-package-publication-policy-batch
 
-nemacs-library-package-signature-policy: nemacs-library-package-publication-policy
+nemacs-library-package-release-key-policy:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-release-key-policy-public-key-file "$(abspath $(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE))")' \
+		--eval '(setq nemacs-library-package-release-key-policy-key-fingerprint "$(NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT)")' \
+		--eval '(setq nemacs-library-package-release-key-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY))")' \
+		--eval '(setq nemacs-library-package-release-key-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-key-policy-strict $(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT_ELISP))' \
+		--eval '(setq nemacs-library-package-release-key-policy-gpg-program "$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)")' \
+		-l scripts/nemacs-library-package-release-key-policy.el \
+		-f nemacs-library-package-release-key-policy-batch
+
+nemacs-library-package-signature-policy: nemacs-library-package-publication-policy nemacs-library-package-release-key-policy
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q -L scripts \
 		--eval '(setq nemacs-library-package-signature-policy-checksum "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
@@ -1184,6 +1252,7 @@ nemacs-library-package-signature-policy: nemacs-library-package-publication-poli
 		--eval '(setq nemacs-library-package-signature-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY))")' \
 		--eval '(setq nemacs-library-package-signature-policy-release-strict $(NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT_ELISP))' \
 		--eval '(setq nemacs-library-package-signature-policy-key-fingerprint "$(NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT)")' \
+		--eval '(setq nemacs-library-package-signature-policy-public-key-file "$(abspath $(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE))")' \
 		--eval '(setq nemacs-library-package-signature-policy-signature-suffix "$(NEMACS_LIBRARY_RELEASE_SIGNATURE_SUFFIX)")' \
 		--eval '(setq nemacs-library-package-signature-policy-gpg-program "$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)")' \
 		-l scripts/nemacs-library-package-signature-policy.el \
@@ -1202,16 +1271,31 @@ nemacs-library-package-signature-release-sign: nemacs-library-package-signature-
 		-f nemacs-library-package-signature-release-sign-batch
 
 nemacs-library-package-signature-release-verify:
-	$(MAKE) nemacs-library-package-signature-policy \
-		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1 \
-		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE)" \
-		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY)"
+	$(MAKE) nemacs-library-package-release-key-policy \
+		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-signature-policy-checksum "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
+		--eval '(setq nemacs-library-package-signature-policy-index "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX))")' \
+		--eval '(setq nemacs-library-package-signature-policy-archive-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT))")' \
+		--eval '(setq nemacs-library-package-signature-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE))")' \
+		--eval '(setq nemacs-library-package-signature-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-signature-policy-release-strict t)' \
+		--eval '(setq nemacs-library-package-signature-policy-key-fingerprint "$(NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT)")' \
+		--eval '(setq nemacs-library-package-signature-policy-public-key-file "$(abspath $(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE))")' \
+		--eval '(setq nemacs-library-package-signature-policy-signature-suffix "$(NEMACS_LIBRARY_RELEASE_SIGNATURE_SUFFIX)")' \
+		--eval '(setq nemacs-library-package-signature-policy-gpg-program "$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)")' \
+		-l scripts/nemacs-library-package-signature-policy.el \
+		-f nemacs-library-package-signature-policy-batch
 
 nemacs-library-package-signature-release: nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify
 
-nemacs-library-package-release-bundle-manifest: nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy
+nemacs-library-package-release-bundle-manifest:
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-key-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-key-policy-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-bundle-manifest-release-public-key-file "$(abspath $(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE))")' \
 		--eval '(setq nemacs-library-package-release-bundle-manifest-signature-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY))")' \
 		--eval '(setq nemacs-library-package-release-bundle-manifest-signature-policy-summary "$(abspath $(NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY))")' \
 		--eval '(setq nemacs-library-package-release-bundle-manifest-archive-checksum "$(abspath $(NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM))")' \
@@ -1233,12 +1317,169 @@ nemacs-library-package-release-bundle-manifest: nemacs-library-package-signature
 		-l scripts/nemacs-library-package-release-bundle-manifest.el \
 		-f nemacs-library-package-release-bundle-manifest-batch
 
-nemacs-library-package-release-bundle: nemacs-library-package-signature-release
+nemacs-library-package-release-bundle-smoke: nemacs-library-package-release-bundle-manifest
+	mkdir -p "$(dir $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE))"
+	@printf 'package_id\tstatus\tloader_feature\tdeclared_dependencies\tinstalled_dependencies\tbundle_archive_location\tpackage_user_dir\tmember_features\tmanifest_retained\tmanifest_pending\tmanifest_archive_artifacts\tsource_leaks\n' > "$(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE)"
+	@set -e; \
+	for package in $$(awk -F '\t' 'NR > 1 { print $$1 }' "$(NEMACS_LIBRARY_PACKAGE_METADATA)"); do \
+		echo "nemacs-library-package-release-bundle-smoke: $$package"; \
+		output="$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_WORK_ROOT))/$$package.tsv"; \
+		mkdir -p "$$(dirname "$$output")"; \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_PACKAGE="$$package" \
+			$(EMACS) -Q -L scripts \
+			--eval '(setq nemacs-library-package-release-bundle-smoke-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
+			--eval '(setq nemacs-library-package-release-bundle-smoke-manifest "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST))")' \
+			--eval '(setq nemacs-library-package-release-bundle-smoke-bundle-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_ROOT))")' \
+			--eval '(setq nemacs-library-package-release-bundle-smoke-install-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_ROOT))")' \
+			--eval "(setq nemacs-library-package-release-bundle-smoke-output \"$$output\")" \
+			-l scripts/nemacs-library-package-release-bundle-smoke.el \
+			-f nemacs-library-package-release-bundle-smoke-batch; \
+		awk 'NR > 1 { print }' "$$output" >> "$(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE)"; \
+	done
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-release-bundle-smoke-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE))")' \
+		--eval '(setq nemacs-library-package-release-bundle-smoke-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_SUMMARY))")' \
+		-l scripts/nemacs-library-package-release-bundle-smoke.el \
+		-f nemacs-library-package-release-bundle-smoke-summary-batch
+
+nemacs-library-package-release-publication-policy: nemacs-library-package-release-bundle-smoke
+	$(MAKE) nemacs-library-package-release-publication-policy-run
+
+nemacs-library-package-release-publication-policy-run:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-library-package-release-publication-policy-manifest "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST))")' \
+		--eval '(setq nemacs-library-package-release-publication-policy-smoke "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE))")' \
+		--eval '(setq nemacs-library-package-release-publication-policy-bundle-root "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_ROOT))")' \
+		--eval '(setq nemacs-library-package-release-publication-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_PUBLICATION_POLICY))")' \
+		--eval '(setq nemacs-library-package-release-publication-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_PUBLICATION_POLICY_SUMMARY))")' \
+		--eval '(setq nemacs-library-package-release-publication-policy-strict-release $(NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT_ELISP))' \
+		-l scripts/nemacs-library-package-release-publication-policy.el \
+		-f nemacs-library-package-release-publication-policy-batch
+
+nemacs-library-package-release-bundle: nemacs-library-package-dependency-publication-policy nemacs-library-package-signature-release
 	$(MAKE) nemacs-library-package-release-bundle-manifest \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
-		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1 \
-		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE)" \
-		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY)"
+		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
+	$(MAKE) nemacs-library-package-release-bundle-smoke \
+		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
+	$(MAKE) nemacs-library-package-release-publication-policy-run \
+		NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
+		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
+
+nemacs-library-package-release-rehearsal-key:
+	scripts/nemacs-library-package-release-rehearsal-key.sh \
+		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_GNUPGHOME))" \
+		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_PUBLIC_KEY))" \
+		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY))" \
+		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY_SUMMARY))" \
+		"$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)" \
+		"$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY_UID)"
+
+nemacs-library-package-release-rehearsal: nemacs-library-package-release-rehearsal-key
+	@set -e; \
+	fingerprint="$$(awk -F '\t' 'NR > 1 && $$1 == "fingerprint" && $$2 == "ok" { print $$3; exit }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_KEY)")"; \
+	if [ -z "$$fingerprint" ]; then \
+		echo "nemacs-library-package-release-rehearsal: missing rehearsal key fingerprint" >&2; \
+		exit 1; \
+	fi; \
+	GNUPGHOME="$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_GNUPGHOME))" \
+		$(MAKE) nemacs-library-package-release-bundle \
+		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_PUBLIC_KEY)" \
+		NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT="$$fingerprint" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive.tsv" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive.org" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_ROOT="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archives" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_STAGING_ROOT="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive-staging" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive-checksum.tsv" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive-checksum.org" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_CHECKSUM_ROOT="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive-checksum" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive-index.tsv" \
+		NEMACS_LIBRARY_PACKAGE_ARCHIVE_INDEX_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive-index.org" \
+		NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/publication-policy.tsv" \
+		NEMACS_LIBRARY_PACKAGE_PUBLICATION_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/publication-policy.org" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-key-policy.tsv" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-key-policy.org" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-policy.tsv" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-policy.org" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-release-sign.tsv" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SIGN_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-release-sign.org" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-release.tsv" \
+		NEMACS_LIBRARY_PACKAGE_SIGNATURE_RELEASE_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-release.org" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-manifest.tsv" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_MANIFEST_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-manifest.org" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_ROOT="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/bundle" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-smoke.tsv" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-smoke.org" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_ROOT="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/smoke-install" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE_WORK_ROOT="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-smoke-work" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_PUBLICATION_POLICY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-publication-policy.tsv" \
+		NEMACS_LIBRARY_PACKAGE_RELEASE_PUBLICATION_POLICY_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-publication-policy.org"; \
+	key_ok="$$(awk -F '\t' 'NR > 1 && $$8 == "ok" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-key-policy.tsv")"; \
+	sign_fail="$$(awk -F '\t' 'NR > 1 && $$9 != "ok" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-release-sign.tsv")"; \
+	verify_fail="$$(awk -F '\t' 'NR > 1 && $$8 != "ok" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/signature-release.tsv")"; \
+	retained="$$(awk -F '\t' 'NR > 1 && $$8 == "yes" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-manifest.tsv")"; \
+	pending="$$(awk -F '\t' 'NR > 1 && $$10 == "pending" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-manifest.tsv")"; \
+	bundle_fail="$$(awk -F '\t' 'NR > 1 && $$10 == "fail" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-manifest.tsv")"; \
+	publication_fail="$$(awk -F '\t' 'NR > 1 && $$4 == "fail" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-publication-policy.tsv")"; \
+	smoke_ok="$$(awk -F '\t' 'NR > 1 && $$2 == "ok" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-smoke.tsv")"; \
+	smoke_fail="$$(awk -F '\t' 'NR > 1 && $$2 != "ok" { count++ } END { print count + 0 }' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/release-bundle-smoke.tsv")"; \
+	mkdir -p "$(dir $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL))"; \
+	{ \
+		printf 'check\tvalue\n'; \
+		printf 'fingerprint\t%s\n' "$$fingerprint"; \
+		printf 'release-key-policy-ok\t%s\n' "$$key_ok"; \
+		printf 'signature-release-sign-failures\t%s\n' "$$sign_fail"; \
+		printf 'signature-release-verify-failures\t%s\n' "$$verify_fail"; \
+		printf 'bundle-retained-files\t%s\n' "$$retained"; \
+		printf 'bundle-pending-files\t%s\n' "$$pending"; \
+		printf 'bundle-failures\t%s\n' "$$bundle_fail"; \
+		printf 'publication-policy-failures\t%s\n' "$$publication_fail"; \
+		printf 'bundle-smoke-ok\t%s\n' "$$smoke_ok"; \
+		printf 'bundle-smoke-failures\t%s\n' "$$smoke_fail"; \
+	} > "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL)"; \
+	{ \
+		printf '#+TITLE: nemacs library package release rehearsal\n\n'; \
+		printf '* Summary\n\n'; \
+		printf -- '- fingerprint: =%s=\n' "$$fingerprint"; \
+		printf -- '- release key policy ok: %s\n' "$$key_ok"; \
+		printf -- '- signing failures: %s\n' "$$sign_fail"; \
+		printf -- '- signature verification failures: %s\n' "$$verify_fail"; \
+		printf -- '- bundle retained files: %s\n' "$$retained"; \
+		printf -- '- bundle pending files: %s\n' "$$pending"; \
+		printf -- '- bundle failures: %s\n' "$$bundle_fail"; \
+		printf -- '- publication policy failures: %s\n' "$$publication_fail"; \
+		printf -- '- bundle smoke ok: %s\n' "$$smoke_ok"; \
+		printf -- '- bundle smoke failures: %s\n\n' "$$smoke_fail"; \
+		printf '* Notes\n\n'; \
+		printf -- '- This rehearsal uses a throwaway key generated under =%s=.\n' "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)"; \
+		printf -- '- It proves the strict signed release workflow, not public trust in the key.\n'; \
+	} > "$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_SUMMARY)"; \
+	echo "nemacs-library-package-release-rehearsal: fingerprint=$$fingerprint key-ok=$$key_ok sign-failures=$$sign_fail verify-failures=$$verify_fail bundle-failures=$$bundle_fail publication-failures=$$publication_fail smoke-failures=$$smoke_fail summary=$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_SUMMARY)"
+
+nemacs-library-package-release-config-check:
+	mkdir -p "$(BUILD_DIR)"
+	scripts/nemacs-library-package-release-config-check.sh \
+		"$(abspath $(NEMACS_LIBRARY_RELEASE_CONFIG))" \
+		"$(abspath $(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE))" \
+		"$(NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT)" \
+		"$(NEMACS_LIBRARY_RELEASE_GNUPGHOME)" \
+		"$(NEMACS_LIBRARY_RELEASE_GPG_PROGRAM)" \
+		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK))" \
+		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK_SUMMARY))"
+
+nemacs-library-package-release-ready: nemacs-library-package-release-config-check
+	$(MAKE) nemacs-library-package-release-key-policy \
+		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1
+
+nemacs-library-package-release-from-config:
+	$(MAKE) nemacs-library-package-release-ready
+	$(MAKE) nemacs-library-package-release-bundle
 
 nemacs-library-package-dependency-publication-policy: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
 	mkdir -p "$(BUILD_DIR)"
@@ -1710,11 +1951,14 @@ diagnose-vendor-repl-replay: build-nelisp-bootstrap
 		--eval '(setq vendor-repl-standalone-prelude "$(VENDOR_REPL_PRELUDE)")' \
 		--eval '(setq vendor-repl-standalone-files "$(VENDOR_REPL_FILES)")' \
 		--eval '(setq vendor-repl-standalone-proof-form "$(VENDOR_REPL_PROOF_FORM_ELISP)")' \
+		--eval '(setq vendor-repl-standalone-proof-form-file "$(if $(VENDOR_REPL_PROOF_FORM_FILE),$(abspath $(VENDOR_REPL_PROOF_FORM_FILE)),)")' \
 		--eval '(setq vendor-repl-standalone-detail-form "$(VENDOR_REPL_DETAIL_FORM_ELISP)")' \
 		--eval '(setq vendor-repl-standalone-repo-root "$(abspath .)")' \
 		--eval '(setq vendor-repl-standalone-keep-temp $(VENDOR_REPL_KEEP_TEMP))' \
 		--eval '(setq vendor-repl-standalone-trace-forms $(VENDOR_REPL_TRACE_FORMS))' \
 		--eval '(setq vendor-repl-standalone-direct-character-limit $(VENDOR_REPL_DIRECT_CHARACTER_LIMIT))' \
+		--eval '(setq vendor-repl-standalone-coalesce-file-forms $(VENDOR_REPL_COALESCE_FILE_FORMS))' \
+		--eval '(setq vendor-repl-standalone-internal-timeout-seconds $(VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS))' \
 		--eval '(setq standalone-source-normalize-cache-directory "$(VENDOR_SOURCE_CACHE_DIR)")' \
 		-l vendor-repl-standalone-replay \
 		-f vendor-repl-standalone-batch
@@ -1728,11 +1972,14 @@ diagnose-vendor-repl-replay-fast:
 		--eval '(setq vendor-repl-standalone-prelude "$(VENDOR_REPL_PRELUDE)")' \
 		--eval '(setq vendor-repl-standalone-files "$(VENDOR_FAST_FILES)")' \
 		--eval '(setq vendor-repl-standalone-proof-form "$(VENDOR_FAST_PROOF_FORM_ELISP)")' \
+		--eval '(setq vendor-repl-standalone-proof-form-file "$(if $(VENDOR_FAST_PROOF_FORM_FILE),$(abspath $(VENDOR_FAST_PROOF_FORM_FILE)),)")' \
 		--eval '(setq vendor-repl-standalone-detail-form "$(VENDOR_FAST_DETAIL_FORM_ELISP)")' \
 		--eval '(setq vendor-repl-standalone-repo-root "$(abspath .)")' \
 		--eval '(setq vendor-repl-standalone-keep-temp $(VENDOR_REPL_KEEP_TEMP))' \
 		--eval '(setq vendor-repl-standalone-trace-forms $(VENDOR_REPL_TRACE_FORMS))' \
 		--eval '(setq vendor-repl-standalone-direct-character-limit $(VENDOR_REPL_DIRECT_CHARACTER_LIMIT))' \
+		--eval '(setq vendor-repl-standalone-coalesce-file-forms $(VENDOR_REPL_COALESCE_FILE_FORMS))' \
+		--eval '(setq vendor-repl-standalone-internal-timeout-seconds $(VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS))' \
 		--eval '(setq standalone-source-normalize-cache-directory "$(VENDOR_SOURCE_CACHE_DIR)")' \
 		-l vendor-repl-standalone-replay \
 		-f vendor-repl-standalone-batch

@@ -78,6 +78,16 @@
     (should (assq 'emacs-major-version defvars))
     (should (numberp (cdr (assq 'emacs-major-version defvars))))))
 
+(ert-deftest emacs-dump-test/load-history-tail-uses-default-window ()
+  "emacs-dump-default-load-history-tail bounds the saved load-history tail."
+  (let* ((load-history '((a) (b) (c) (d) (e)))
+         (emacs-dump-default-load-history-tail 3)
+         (img (emacs-dump-build-image))
+         (tail (plist-get img :load-history-tail)))
+    (should (integerp emacs-dump-default-load-history-tail))
+    (should (= 3 emacs-dump-default-load-history-tail))
+    (should (equal '((c) (d) (e)) tail))))
+
 ;;;; D. save → read round-trip
 
 (ert-deftest emacs-dump-test/save-then-read ()

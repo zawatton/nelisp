@@ -13,11 +13,21 @@
 
 ;;; Code:
 
-(require 'emacs-eval)
-(require 'emacs-subr-extras)
-(require 'emacs-string)
-(require 'emacs-hash)
-(require 'cl-lib)
+(defconst subr-x--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the subr-x facade and its sibling features.")
+
+(defun subr-x--load-feature (feature)
+  "Load FEATURE from the subr-x facade directory."
+  (load (expand-file-name (concat (symbol-name feature) ".el")
+                          subr-x--load-directory)
+        nil t))
+
+(subr-x--load-feature 'emacs-eval)
+(subr-x--load-feature 'emacs-subr-extras)
+(subr-x--load-feature 'emacs-string)
+(subr-x--load-feature 'emacs-hash)
+(subr-x--load-feature 'cl-lib)
 
 (defun subr-x--define-p (symbol)
   "Return non-nil when SYMBOL should be supplied by this facade."

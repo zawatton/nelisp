@@ -614,9 +614,15 @@ EOF
             printf '%s\n' "(when (and nemacs-main--repl-tui-ok (fboundp 'message)) (message \"%s\" (nemacs-main-status-banner)))" >> "$tmp"
           fi
           if [[ "$NEMACS_DRIVER" == "host" ]]; then
-            printf '%s\n' "(if (and nemacs-main--repl-tui-ok (boundp 'noninteractive) (not noninteractive)) (nemacs-main--install-keymap-host) (when nemacs-main--repl-tui-ok (unwind-protect (progn (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input))))" >> "$tmp"
+            printf '%s\n' "(if (and nemacs-main--repl-tui-ok (boundp 'noninteractive) (not noninteractive)) (nemacs-main--install-keymap-host) (when nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input))))" >> "$tmp"
           else
-            printf '%s\n' "(if nemacs-main--repl-tui-ok (unwind-protect (progn (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input)) (progn (when (fboundp 'message) (message \"nemacs: TUI not available, running batch-style\")) (nemacs-main--apply-options)))" >> "$tmp"
+            # Cheap unconditional diagnosability marker: emitted just before the
+            # raw-input handoff so pty smoke probes can tell "boot form reached
+            # the interactive tail" apart from "boot form never got this far"
+            # even when the rest of the TUI never becomes observable. Batch mode
+            # never reaches this branch, so the marker cannot leak into scripted
+            # --batch output.
+            printf '%s\n' "(if nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input)) (progn (when (fboundp 'message) (message \"nemacs: TUI not available, running batch-style\")) (nemacs-main--apply-options)))" >> "$tmp"
           fi
         fi
         printf '%s\n' ",quit" >> "$tmp"

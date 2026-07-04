@@ -111,6 +111,17 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
     (let ((font-lock-keywords '(("x"))))
       (should (font-lock-specified-p nil)))))
 
+(ert-deftest emacs-font-lock-builtins-test/default-fontify-region-applies-syntax-faces ()
+  (emacs-font-lock-builtins-test--with-buffer "fld-default" "(progn \"hello\" ; note)\n"
+    (let ((font-lock-keywords '(("progn" (0 font-lock-keyword-face)))))
+      (should (emacs-font-lock-default-fontify-region 1 23 nil b))
+      (should (eq 'font-lock-keyword-face
+                  (emacs-buffer-get-text-property 2 'face b)))
+      (should (eq 'font-lock-string-face
+                  (emacs-buffer-get-text-property 9 'face b)))
+      (should (eq 'font-lock-comment-face
+                  (emacs-buffer-get-text-property 17 'face b))))))
+
 ;;;; B. keyword compilation
 
 (ert-deftest emacs-font-lock-builtins-test/compile-string-keyword ()

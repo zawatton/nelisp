@@ -2769,6 +2769,86 @@ Returns t when at least one boundary was crossed, nil otherwise."
     "Phase E polyfill: equivalent to `(forward-word (- ARG))'."
     (forward-word (- (or arg 1)))))
 
+;;;; --- skip-chars set scanning --------------------------------------
+
+;; Reusable core for `skip-chars-forward' / `skip-chars-backward'
+;; (src/syntax.c:skip_chars).  The set spec is parsed into inclusive
+;; codepoint ranges plus a negate flag, then membership is tested while
+;; stepping over the nelisp-ec substrate.  This is the editor-core owner
+;; for the Doc 06 MISSING skip-chars primitives; the emacs-core-delegation
+;; cfront MCF0-W2 probe modeled the same charset semantics as evidence.
+
+(defun emacs-edit--skip-chars-parse (string)
+  "Parse a skip-chars STRING spec into (NEGATE . RANGES).
+RANGES is a list of (LO . HI) inclusive codepoint ranges.  Supports a
+leading `^' negation, `A-Z' style ranges, backslash quoting of the next
+character, and literal characters.  POSIX `[:class:]' forms are not yet
+modeled."
+  (let ((chars (append string nil))
+        (negate nil)
+        (ranges nil))
+    (when (and (cdr chars) (eq (car chars) ?^))
+      (setq negate t
+            chars (cdr chars)))
+    (while chars
+      (let ((c (car chars)))
+        (cond
+         ((and (eq c ?\\) (cdr chars))
+          (push (cons (cadr chars) (cadr chars)) ranges)
+          (setq chars (cddr chars)))
+         ((and (cddr chars) (eq (cadr chars) ?-) (not (eq c ?-)))
+          (push (cons c (nth 2 chars)) ranges)
+          (setq chars (nthcdr 3 chars)))
+         (t
+          (push (cons c c) ranges)
+          (setq chars (cdr chars))))))
+    (cons negate (nreverse ranges))))
+
+(defun emacs-edit--skip-chars-member-p (ch parsed)
+  "Return non-nil when CH is in the PARSED skip-chars set.
+PARSED is the (NEGATE . RANGES) value from `emacs-edit--skip-chars-parse'."
+  (let ((in nil))
+    (dolist (r (cdr parsed))
+      (when (and (>= ch (car r)) (<= ch (cdr r)))
+        (setq in t)))
+    (if (car parsed) (not in) in)))
+
+(when (emacs-edit-builtins--install-function-p 'skip-chars-forward)
+  (defun skip-chars-forward (string &optional lim)
+    "Phase E polyfill: move point forward across characters matching STRING.
+STRING uses the `skip-chars' set-spec subset modeled by
+`emacs-edit--skip-chars-parse' (leading `^' negation, `A-Z' ranges,
+backslash quoting, and literals; POSIX `[:class:]' is not yet modeled).
+Point stops before the first non-matching character, but never moves past
+LIM.  Return the (non-negative) distance traveled."
+    (let* ((parsed (emacs-edit--skip-chars-parse string))
+           (start (nelisp-ec-point))
+           (end (or lim (nelisp-ec-point-max)))
+           (p start))
+      (while (and (< p end)
+                  (let ((ch (emacs-edit--char-at p)))
+                    (and ch (emacs-edit--skip-chars-member-p ch parsed))))
+        (setq p (+ p 1)))
+      (nelisp-ec-goto-char p)
+      (- p start))))
+
+(when (emacs-edit-builtins--install-function-p 'skip-chars-backward)
+  (defun skip-chars-backward (string &optional lim)
+    "Phase E polyfill: move point backward across characters matching STRING.
+See `skip-chars-forward' for the supported STRING set-spec.  Point stops
+just after the first non-matching character scanning back, but never moves
+past LIM.  Return the (non-positive) distance traveled."
+    (let* ((parsed (emacs-edit--skip-chars-parse string))
+           (start (nelisp-ec-point))
+           (begin (or lim (nelisp-ec-point-min)))
+           (p start))
+      (while (and (> p begin)
+                  (let ((ch (emacs-edit--char-at (- p 1))))
+                    (and ch (emacs-edit--skip-chars-member-p ch parsed))))
+        (setq p (- p 1)))
+      (nelisp-ec-goto-char p)
+      (- p start))))
+
 (when (emacs-edit-builtins--install-function-p 'kill-word)
   (defun kill-word (&optional arg)
     "MVP polyfill: kill ARG ASCII words forward from point."

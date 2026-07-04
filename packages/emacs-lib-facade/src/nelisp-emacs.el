@@ -50,8 +50,6 @@ features remain behind `emacs-init' and its explicit loader functions.")
      :feature emacs-buffer-core
      :features ,emacs-buffer-core-features
      :lazy-features (emacs-bookmark-ui
-                     emacs-buffer-ui
-                     emacs-isearch
                      emacs-replace))
     (editing
      :owner BUF
@@ -65,10 +63,9 @@ features remain behind `emacs-init' and its explicit loader functions.")
      :lazy-features (emacs-dump
                      image-loader
                      nemacs-loaddefs
-                     emacs-dired-min
                      files-standalone-buffer
                      emacs-shell-command
-                     emacs-project))
+                     emacs-vc))
     (special-buffers
      :owner BUF
      :feature emacs-special-buffers
@@ -78,7 +75,11 @@ features remain behind `emacs-init' and its explicit loader functions.")
      :owner CORE
      :feature emacs-core
      :features ,emacs-core-features
-     :lazy-features (emacs-elisp-eval
+     :lazy-features (emacs-buffer-ui
+                     emacs-isearch
+                     emacs-dired-min
+                     emacs-project
+                     emacs-elisp-eval
                      emacs-elisp-mode
                      emacs-font-lock
                      emacs-ielm
@@ -92,7 +93,10 @@ features remain behind `emacs-init' and its explicit loader functions.")
      :owner FEAT
      :feature emacs-textmodes-stub
      :features (emacs-textmodes-stub)
-     :lazy-features nil))
+     :lazy-features (org
+                     emacs-org-outline
+                     emacs-org-todo
+                     emacs-org-table)))
   "Reusable package groups exposed by the `nelisp-emacs' facade.
 Each entry is `(NAME :owner OWNER :feature FEATURE :features FEATURES
 :lazy-features LAZY-FEATURES)'.  OWNER matches the primary Doc 18
@@ -1025,6 +1029,31 @@ consumer-facing documentation evidence.")
      :feature nemacs-loaddefs
      :symbols ((function nemacs-loaddefs-generate-for-file)
                (function nemacs-loaddefs-generate)))
+    (io
+     :owner IO
+     :package-id nelisp-emacs-io
+     :feature emacs-dump
+     :symbols ((function emacs-dump-build-image)
+               (function emacs-dump-save)
+               (function emacs-dump-read)
+               (function emacs-dump-load)
+               (function emacs-dump-image-info)
+               (variable emacs-dump-format-version)
+               (variable emacs-dump-default-load-history-tail)
+               (variable emacs-dump-extra-buffer-names)
+               (variable emacs-dump-defvar-allowlist)))
+    (io
+     :owner IO
+     :package-id nelisp-emacs-io
+     :feature image-loader
+     :symbols ((function image-loader-load)
+               (function image-loader-load-if-readable)
+               (function image-loader-load-batch)
+               (function image-loader-info)
+               (variable image-loader-file)
+               (variable image-loader-restore-buffers)
+               (variable image-loader-last-loaded-file)
+               (variable image-loader-last-image-info)))
     (core
      :owner CORE
      :package-id nelisp-emacs-core

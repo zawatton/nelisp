@@ -109,6 +109,11 @@
   (should (equal "hello\n"
                  (emacs-shell-command-output-text "hello\n"))))
 
+(ert-deftest emacs-shell-command-public-buffer-names-are-stable ()
+  (should (equal "*Shell Output*" emacs-shell-command-output-buffer-name))
+  (should (equal "*Async Shell Command*"
+                 emacs-shell-command-async-buffer-name)))
+
 (ert-deftest emacs-shell-command-run-to-string-feeds-stdin-through-temp-file ()
   (let (seen-command)
     (cl-letf (((symbol-function 'shell-command-to-string)
@@ -118,6 +123,78 @@
       (should (equal "rendered\n"
                      (emacs-shell-command-run-to-string "cat" "input\n")))
       (should (string-match-p "\\`cat < " seen-command)))))
+
+(ert-deftest emacs-shell-command-gui-shell-quote-argument-quotes-apos ()
+  (should (equal "'a'\\''b'"
+                 (emacs-shell-command-gui-shell-quote-argument "a'b"))))
+
+(ert-deftest emacs-shell-command-gui-project-shell-command-text-wraps-directory ()
+  (emacs-shell-command-test--with-gui-backend
+    (setq gui-project-directory "/tmp/project dir")
+    (setq gui-arg "printf ok")
+    (should (string-match-p
+             "^cd '/tmp/project dir' && printf ok$"
+             (emacs-shell-command-gui-project-shell-command-text)))))
+
+(ert-deftest emacs-shell-command-gui-project-async-shell-command-wraps-command ()
+  (emacs-shell-command-test--with-gui-backend
+    (setq gui-arg "printf async-ok")
+    (let ((seen nil))
+      (cl-letf (((symbol-function 'emacs-shell-command-gui-async-shell-command)
+                 (lambda ()
+                   (setq seen gui-arg)
+                   0)))
+        (should (= 0 (emacs-shell-command-gui-project-async-shell-command)))
+        (should (string-match-p
+                 (concat "^cd "
+                         (regexp-quote "'/tmp/project/sub'")
+                         " && printf async-ok$")
+                 seen))
+        (should (equal "printf async-ok" gui-arg))))))
+
+(ert-deftest emacs-shell-command-gui-project-interactive-shell-buffer-renders-buffer ()
+  (emacs-shell-command-test--with-gui-backend
+    (setq gui-project-directory "/tmp/project/sub")
+    (let ((selected nil)
+          (point nil))
+      (emacs-shell-command-gui-register-backend
+       :arg (lambda () gui-arg)
+       :set-arg (lambda (arg) (setq gui-arg arg))
+       :set-status (lambda (status) (setq gui-status status))
+       :transport-path (lambda (name) name)
+       :write-file (lambda (_path _text) nil)
+       :read-file (lambda (_path) "")
+       :save-current-buffer-state (lambda () (setq gui-saved (1+ gui-saved)))
+       :select-buffer (lambda (name read-only)
+                        (setq selected (list name read-only))
+                        (setq gui-buffer-name name))
+       :buffer-string (lambda () gui-buffer-string)
+       :set-buffer-string (lambda (text) (setq gui-buffer-string text))
+       :set-compilation-buffer-string
+       (lambda (_text) nil)
+       :show-compilation-buffer (lambda () nil)
+       :project-command-directory (lambda () gui-project-directory)
+       :set-point (lambda (p) (setq point p))
+       :apply-display-prefix-same-window (lambda () t))
+      (setq gui-arg "printf prompt")
+      (should (equal "*proj*" (emacs-shell-command-gui-project-interactive-shell-buffer
+                               "*proj*" "shell" "PROMPT")))
+      (should (equal '("*proj*" nil) selected))
+      (should (string-match-p "Project directory: /tmp/project/sub"
+                              gui-buffer-string))
+      (should (string-match-p "shell process is not attached yet"
+                              gui-buffer-string))
+      (should (string-match-p "PROMPT" gui-buffer-string))
+      (should (integerp point))
+      (should (= (length gui-buffer-string) point))
+      (should (equal "ok" gui-status)))))
+
+(ert-deftest emacs-shell-command-async-shell-command-records-last-process ()
+  (let ((emacs-shell-command-last-async-process nil))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args) 'mock-process)))
+      (should (eq 'mock-process (async-shell-command "printf ok")))
+      (should (eq 'mock-process emacs-shell-command-last-async-process)))))
 
 (ert-deftest emacs-shell-command-lightweight-output-renders-daily-driver-text ()
   (should (equal "hello" (emacs-shell-command-lightweight-output "printf hello")))
