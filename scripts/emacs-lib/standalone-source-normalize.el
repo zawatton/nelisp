@@ -13,8 +13,13 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 128
-  "Cache format version for normalized standalone source forms.")
+(defconst standalone-source-normalize-cache-version 129
+  "Cache format version for normalized standalone source forms.
+Bump this whenever normalization semantics change so stale cache entries
+self-invalidate; the cache key otherwise only covers the source file's
+truename/mtime/size, not the normalizer's own behavior (Doc 33 item 225:
+version 129 fixes reader-quote head collisions hollowing definitions
+literally named `backquote').")
 
 (defvar standalone-source-normalize-read-max-lisp-eval-depth 10000
   "Maximum Lisp nesting depth while reading vendor source for normalization.")
@@ -875,6 +880,26 @@ error surface is preserved."
    ((standalone-source-normalize--self-evaluating-p datum) datum)
    (t (list 'quote datum))))
 
+(defun standalone-source-normalize--reader-quote-form-p (form heads)
+  "Return non-nil when FORM is a genuine two-element reader quote form.
+
+The Lisp reader always emits backquote/comma/comma-at syntax as an exact
+`(HEAD DATUM)' pair -- `\\=`X' reads as `(backquote X)', `,X' reads as
+`(comma X)', and `,@X' reads as `(comma-at X)', each with exactly one
+trailing element.  A longer list whose CAR merely happens to `eq' one of
+HEADS is ordinary code, not reader-quoted data -- for example
+`(defmacro backquote (form) DOC BODY)' has `(backquote (form) DOC BODY)'
+as its cdr, which shares a head symbol with real backquote syntax but is
+not one.  Treating that shape as `(HEAD DATUM)' truncates DOC and BODY,
+silently hollowing the definition (Doc 33 item 225).  Requiring the exact
+two-element shape keeps the quote-form fast path from misfiring on code
+that merely defines or references something literally named `backquote',
+`comma', or `comma-at'."
+  (and (consp form)
+       (memq (car form) heads)
+       (consp (cdr form))
+       (null (cddr form))))
+
 (defun standalone-source-normalize--backquote-datum (datum)
   "Return DATUM rewritten for standalone evaluation inside backquote."
   (cond
@@ -884,11 +909,11 @@ error surface is preserved."
    ((consp datum)
     (let ((head (car datum)))
       (cond
-       ((or (eq head 'comma) (eq head '\,))
+       ((standalone-source-normalize--reader-quote-form-p datum '(comma \,))
         (list head (standalone-source-normalize-form (cadr datum))))
-       ((or (eq head 'comma-at) (eq head '\,@))
+       ((standalone-source-normalize--reader-quote-form-p datum '(comma-at \,@))
         (list head (standalone-source-normalize-form (cadr datum))))
-       ((or (eq head 'backquote) (eq head '\`))
+       ((standalone-source-normalize--reader-quote-form-p datum '(backquote \`))
         (list head
               (standalone-source-normalize--backquote-datum (cadr datum))))
        (t
@@ -903,7 +928,7 @@ Quoted data is preserved.  Code positions are walked recursively."
    ((consp form)
     (cond
      ((eq (car form) 'quote) form)
-     ((or (eq (car form) 'backquote) (eq (car form) '\`))
+     ((standalone-source-normalize--reader-quote-form-p form '(backquote \`))
       (list (car form)
             (standalone-source-normalize--backquote-datum (cadr form))))
      ((eq (car form) 'setq-local)

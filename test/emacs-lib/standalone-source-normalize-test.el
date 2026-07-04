@@ -22,6 +22,48 @@
      '(quote (setq-local foo 1)))
     '(quote (setq-local foo 1)))))
 
+(ert-deftest standalone-source-normalize-test/normalizes-genuine-backquote-data ()
+  "A real reader-emitted `(backquote DATUM)' still normalizes its datum."
+  (should
+   (equal
+    (standalone-source-normalize-form
+     (read "`(a ,b ,@c)"))
+    (read "`(a ,b ,@c)"))))
+
+(ert-deftest standalone-source-normalize-test/preserves-defmacro-named-backquote ()
+  "Doc 33 item 225 regression: a definition literally named `backquote'
+must not be mistaken for reader-emitted backquote syntax and truncated
+to its name + arglist.  `(defmacro backquote (form) DOC BODY)' has
+`(backquote (form) DOC BODY)' as its cdr -- same head symbol as genuine
+`(backquote DATUM)' syntax, but a 4-element list, not 2.  The full
+docstring and body must survive normalization."
+  (should
+   (equal
+    (standalone-source-normalize-form
+     '(defmacro backquote (form)
+        "Polyfill: expand FORM under backquote semantics."
+        (emacs-backquote--expand form)))
+    '(defmacro backquote (form)
+       "Polyfill: expand FORM under backquote semantics."
+       (emacs-backquote--expand form)))))
+
+(ert-deftest standalone-source-normalize-test/preserves-defun-named-backquote-in-guard ()
+  "Same collision, wrapped in the `unless (fboundp ...)' polyfill-guard
+shape used across src/*.el; the guard form's cdr also is not itself a
+top-level defmacro, so this exercises the generic-cons recursion path
+that walks down into the guarded definition."
+  (should
+   (equal
+    (standalone-source-normalize-form
+     '(unless (fboundp 'backquote)
+        (defmacro backquote (form)
+          "doc"
+          (emacs-backquote--expand form))))
+    '(unless (fboundp 'backquote)
+       (defmacro backquote (form)
+         "doc"
+         (emacs-backquote--expand form))))))
+
 (ert-deftest standalone-source-normalize-test/rewrites-inside-defun-body ()
   (should
    (equal
