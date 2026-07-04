@@ -173,7 +173,20 @@ DOC = docstring (= optional).
 BODY = forms run AFTER the parent + before the hook fires.
 
 The derived mode function is registered under CHILD's function-cell
-and a `CHILD-hook' defvar is created."
+and a `CHILD-hook' defvar is created.
+
+Built with explicit `list'/`append' calls instead of a backquote
+template on purpose (Doc 33 §8 item 221): the standalone NeLisp
+reader's macro system does not correctly invoke a user-defined macro
+whose expansion-producing body is a backquote template — the call
+silently installs nothing, with no visible error — while the
+identical expansion built from plain `list'/`append'/`quote' calls
+works.  This macro loads on the standalone bootstrap path (it is the
+Track H bridge for `define-derived-mode'), so it must stay
+backquote-free even though host Emacs's own macro system has no such
+limitation.  See the minimal repro under tmp-diag/ (gitignored) for
+the isolation that pinned this down to backquote specifically, not
+`declare' clauses, docstring size, or nesting depth."
   (let* ((parent-call (cond
                        ((null parent) '(emacs-mode-fundamental-mode))
                        (t (list parent))))
@@ -181,38 +194,52 @@ and a `CHILD-hook' defvar is created."
          (e-hook-var (intern (format "emacs-mode-%s-hook" child)))
          ;; When DOC was omitted, BODY shifts left by one slot.
          (real-doc (if (stringp doc) doc nil))
-         (real-body (if (stringp doc) body (cons doc body))))
-    `(progn
-       (defvar ,hook-var nil
-         ,(format "Hook run when entering `%s'." child))
-       (defvar ,e-hook-var nil
-         ,(format "Substrate-internal hook run when entering `%s'."
-                  child))
-       (push (cons ',child
-                   (list :parent ',parent
-                         :name ,name
-                         :doc ,real-doc
-                         :hook ',hook-var))
-             emacs-mode--registered)
-       ;; Record the parent so `derived-mode-p' can walk the major-mode
-       ;; hierarchy (e.g. org-mode -> outline-mode -> text-mode).  Faithful
-       ;; to real `define-derived-mode', which sets this symbol property.
-       ,@(when parent `((put ',child 'derived-mode-parent ',parent)))
-       (defun ,child ()
-         ,(or real-doc (format "Major mode %s." child))
-         (interactive)
+         (real-body (if (stringp doc) body (cons doc body)))
+         (hook-doc (format "Hook run when entering `%s'." child))
+         (e-hook-doc (format "Substrate-internal hook run when entering `%s'."
+                              child))
+         (fn-doc (or real-doc (format "Major mode %s." child)))
+         (register-form
+          (list 'push
+                (list 'cons (list 'quote child)
+                      (list 'list :parent (list 'quote parent)
+                            :name name
+                            :doc real-doc
+                            :hook (list 'quote hook-var)))
+                'emacs-mode--registered))
+         ;; Record the parent so `derived-mode-p' can walk the major-mode
+         ;; hierarchy (e.g. org-mode -> outline-mode -> text-mode).  Faithful
+         ;; to real `define-derived-mode', which sets this symbol property.
+         (parent-property-forms
+          (when parent
+            (list (list 'put (list 'quote child)
+                        ''derived-mode-parent (list 'quote parent)))))
          ;; Standalone NeLisp currently loses forms that follow some
          ;; macro-generated parent major-mode calls, notably nested
          ;; `outline-mode' derived modes.  Running the child transition in
          ;; `unwind-protect' cleanup preserves the observable
          ;; define-derived-mode order: parent first, then child body/hooks.
-         (unwind-protect
-             ,parent-call
-           (emacs-mode-set-major-mode ',child ,name)
-           ,@real-body
-           (emacs-mode-run-mode-hooks ',e-hook-var ',hook-var))
-         nil)
-       ',child)))
+         (unwind-protect-form
+          (append (list 'unwind-protect parent-call
+                        (list 'emacs-mode-set-major-mode
+                              (list 'quote child) name))
+                  real-body
+                  (list (list 'emacs-mode-run-mode-hooks
+                              (list 'quote e-hook-var)
+                              (list 'quote hook-var)))))
+         (defun-form
+          (list 'defun child '()
+                fn-doc
+                '(interactive)
+                unwind-protect-form
+                nil)))
+    (append
+     (list 'progn
+           (list 'defvar hook-var nil hook-doc)
+           (list 'defvar e-hook-var nil e-hook-doc)
+           register-form)
+     parent-property-forms
+     (list defun-form (list 'quote child)))))
 
 ;;;; --- auto-mode-alist + set-auto-mode -------------------------------
 
