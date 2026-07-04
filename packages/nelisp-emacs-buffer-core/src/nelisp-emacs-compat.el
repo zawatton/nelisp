@@ -485,17 +485,30 @@ The new buffer is empty, has POINT = 1, and is registered in
   "Execute BODY with BUF as the current buffer, restoring afterwards.
 Equivalent shape to Emacs `with-current-buffer'.  BUF is evaluated
 once.  The previous current buffer is restored on normal exit, error,
-or non-local exit (e.g. `throw')."
+or non-local exit (e.g. `throw').
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222, same defect isolated at item 221 for
+`define-derived-mode'): the standalone NeLisp reader's macro system does
+not correctly invoke a user-defined macro whose expansion-producing
+body is a backquote template.  Unlike the item 221 top-level-form case
+(where the invocation line is silently dropped), a nested invocation of
+a backquote-bodied macro like this one silently evaluates to nil
+instead of BODY's value, which is why `with-temp-buffer' (built
+backquote-free, calling this macro) lost its return value — and with it
+every buffer-local read that route through a fresh temp buffer,
+including `major-mode'.  This macro is on the standalone bootstrap
+path, so it must stay backquote-free even though host Emacs's own macro
+system has no such limitation."
   (declare (indent 1) (debug (form body)))
   (let ((saved (make-symbol "saved"))
         (newbuf (make-symbol "newbuf")))
-    `(let ((,saved nelisp-ec--current-buffer)
-           (,newbuf ,buf))
-       (unwind-protect
-           (progn
-             (nelisp-ec-set-buffer ,newbuf)
-             ,@body)
-         (setq nelisp-ec--current-buffer ,saved)))))
+    (list 'let (list (list saved 'nelisp-ec--current-buffer)
+                     (list newbuf buf))
+          (list 'unwind-protect
+                (append (list 'progn (list 'nelisp-ec-set-buffer newbuf))
+                        body)
+                (list 'setq 'nelisp-ec--current-buffer saved)))))
 
 ;;;###autoload
 (defun nelisp-ec-kill-buffer (buf)
@@ -725,51 +738,68 @@ The saved POINT is restored even on non-local exit.  POINT-restoration
 is byvalue, not by marker — so insertions before the saved position
 will leave the restored POINT pointing at a *different* character than
 when it was saved.  This matches the simple-marker-deferred policy of
-Phase 9a MVP; switch to a marker-backed restore in Phase 9b."
+Phase 9a MVP; switch to a marker-backed restore in Phase 9b.
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
+for the fuller note on why every macro in this save-* family must stay
+backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
   (let ((saved-buf (make-symbol "saved-buf"))
         (saved-pt (make-symbol "saved-pt")))
-    `(let* ((,saved-buf nelisp-ec--current-buffer)
-            (,saved-pt (and ,saved-buf
-                            (nelisp-ec-buffer-point ,saved-buf))))
-       (unwind-protect
-           (progn ,@body)
-         (when (and ,saved-buf
-                    (not (nelisp-ec-buffer-killed-p ,saved-buf)))
-           (nelisp-ec--set-buffer-point ,saved-buf ,saved-pt))
-         (setq nelisp-ec--current-buffer ,saved-buf)))))
+    (list 'let*
+          (list (list saved-buf 'nelisp-ec--current-buffer)
+                (list saved-pt (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-point saved-buf))))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'when (list 'and saved-buf
+                                  (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
+                      (list 'nelisp-ec--set-buffer-point saved-buf saved-pt))
+                (list 'setq 'nelisp-ec--current-buffer saved-buf)))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-restriction (&rest body)
   "Save the narrowing state of the current buffer, run BODY, restore.
 Restoration occurs even on non-local exit.  Like Emacs the restored
 narrowing follows the *buffer* that was current at save time, even if
-BODY changes the current buffer."
+BODY changes the current buffer.
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
+for the fuller note on why every macro in this save-* family must stay
+backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
   (let ((saved-buf (make-symbol "saved-buf"))
         (saved-lo (make-symbol "saved-lo"))
         (saved-hi (make-symbol "saved-hi")))
-    `(let* ((,saved-buf nelisp-ec--current-buffer)
-            (,saved-lo (and ,saved-buf
-                            (nelisp-ec-buffer-narrow-start ,saved-buf)))
-            (,saved-hi (and ,saved-buf
-                            (nelisp-ec-buffer-narrow-end ,saved-buf))))
-       (unwind-protect
-           (progn ,@body)
-         (when (and ,saved-buf
-                    (not (nelisp-ec-buffer-killed-p ,saved-buf)))
-           (nelisp-ec--set-buffer-narrow-start ,saved-buf ,saved-lo)
-           (nelisp-ec--set-buffer-narrow-end ,saved-buf ,saved-hi))))))
+    (list 'let*
+          (list (list saved-buf 'nelisp-ec--current-buffer)
+                (list saved-lo (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-narrow-start saved-buf)))
+                (list saved-hi (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-narrow-end saved-buf))))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'when (list 'and saved-buf
+                                  (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
+                      (list 'nelisp-ec--set-buffer-narrow-start saved-buf saved-lo)
+                      (list 'nelisp-ec--set-buffer-narrow-end saved-buf saved-hi))))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-current-buffer (&rest body)
-  "Save the current buffer selection, run BODY, restore on exit."
+  "Save the current buffer selection, run BODY, restore on exit.
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
+for the fuller note on why every macro in this save-* family must stay
+backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
   (let ((saved (make-symbol "saved")))
-    `(let ((,saved nelisp-ec--current-buffer))
-       (unwind-protect
-           (progn ,@body)
-         (setq nelisp-ec--current-buffer ,saved)))))
+    (list 'let (list (list saved 'nelisp-ec--current-buffer))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'setq 'nelisp-ec--current-buffer saved)))))
 
 ;;; E. narrowing  (2 APIs)
 

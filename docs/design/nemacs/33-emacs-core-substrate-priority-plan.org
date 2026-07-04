@@ -11507,3 +11507,164 @@ path:
    swap-thrash and had to be killed; use the item-215 61-file chain
    (recorded in that run's harness invocation), not a fresh full host
    closure.
+
+222. Buffer/major-mode substrate gap: inside =with-temp-buffer=,
+   =major-mode= evaluated to nil (even with no mode call, and even
+   after an explicit =(fundamental-mode)= call inside the temp
+   buffer), and =(with-temp-buffer (org-mode) t)= silently returned
+   nil instead of t -- no crash, no visible error.  ROOT-CAUSED and
+   FIXED, 2026-07-04.
+
+   Root cause: NOT specific to =major-mode= at all.  Minimal probes
+   against the persistent bootstrap REPL (single-line forms per the
+   item 220/221 fixed proof-scaffold harness) showed that EVERY
+   =with-temp-buffer= body -- =major-mode=, =(boundp 'major-mode)=,
+   =(buffer-name)=, a plain literal =t= -- came back nil:
+   =(with-temp-buffer major-mode)= nil,
+   =(with-temp-buffer (boundp 'major-mode))= => nil,
+   =(with-temp-buffer (buffer-name))= => nil,
+   while top-level =major-mode= was the expected =fundamental-mode=
+   and =(boundp 'major-mode)= was t.  That pattern (every
+   =with-temp-buffer= body value replaced by nil, regardless of what
+   the body actually computes) means =with-temp-buffer= itself never
+   propagates its body's value on this reader -- =major-mode= being
+   nil was just the specific symptom that exposed a generic bug.
+   =src/emacs-buffer-builtins.el='s =with-temp-buffer= macro is
+   already backquote-free (list/cons construction) and expands to
+   =(let ((buf (nelisp-ec-generate-new-buffer " *temp*")))
+   (unwind-protect (nelisp-ec-with-current-buffer buf BODY...)
+   (nelisp-ec-kill-buffer buf)))=; the actual defect is one layer
+   down, in =nelisp-ec-with-current-buffer= itself
+   (=src/nelisp-emacs-compat.el=), which was written as a BACKQUOTE
+   TEMPLATE.  This is the exact same standalone-reader defect item
+   221 root-caused for =define-derived-mode= (invoking a
+   user-defined macro whose expansion-producing body is a backquote
+   template misbehaves on this reader) -- but item 221 only observed
+   the "top-level invocation line is silently dropped" symptom
+   (macro called for side effect at file-replay top level).  Here the
+   backquote-bodied macro is invoked from *inside* another
+   expression's runtime evaluation (nested inside =unwind-protect=,
+   inside =let=), and the failure mode is different: instead of the
+   whole line being dropped, the nested call silently evaluates to
+   nil instead of BODY's value.  =src/emacs-buffer-builtins.el='s own
+   =buffer-hash= function already carried a comment noting this
+   symptom ("the return value of =with-current-buffer=/
+   =save-restriction=... this runtime does not propagate") but had
+   worked around it with an explicit =setq= capture instead of
+   diagnosing the backquote-invocation root cause.  Three sibling
+   macros in the same file share the identical defect:
+   =nelisp-ec-save-excursion=, =nelisp-ec-save-restriction=,
+   =nelisp-ec-save-current-buffer= -- all backquote templates, all
+   silently discarding their body's value on this reader, which
+   backs the unprefixed =save-excursion=/=save-restriction=/
+   =save-current-buffer= bridges in =emacs-buffer-builtins.el= used
+   throughout the substrate and by nearly every vendor Elisp file.
+
+   Fix (=src/nelisp-emacs-compat.el=; vendor sources untouched):
+   =nelisp-ec-with-current-buffer=, =nelisp-ec-save-excursion=,
+   =nelisp-ec-save-restriction=, and =nelisp-ec-save-current-buffer=
+   rewritten with explicit =list=/=cons=/=append= construction
+   (same style as item 221's =define-derived-mode= fix) --
+   expansion unchanged, body-value propagation now correct.  New
+   host ERT suite =test/nelisp-emacs-compat-test.el= (this module had
+   no dedicated test file before this fix despite backing T39's ~37
+   =nelisp-ec-*= APIs): 13/13 passing, covering body-value
+   propagation and restore-on-normal-exit/restore-on-error for all
+   four macros.  Under host Emacs these tests cannot reproduce the
+   standalone-only failure (host backquote works fine), so they pin
+   the functional contract rather than the reader defect; the
+   standalone reproduction lives in the verification matrix below.
+
+   Verification matrix:
+   - (a) minimal probes, persistent bootstrap only (no vendor files),
+     single-line forms, before vs. after the fix:
+     =(with-temp-buffer major-mode)= nil -> =fundamental-mode=;
+     =(with-temp-buffer (boundp 'major-mode))= nil -> t;
+     =(with-temp-buffer (buffer-name))= nil -> =" *temp*<3>"=;
+     =(with-temp-buffer (fundamental-mode) major-mode)= nil ->
+     =fundamental-mode=; =(with-temp-buffer t)= nil -> t.  Also
+     confirmed (pre-existing, documented, NOT part of this fix):
+     =major-mode= has no real per-buffer isolation in this substrate
+     yet (Track H's own commentary: "simulating buffer-local via the
+     convention that they're re-set every time" -- =emacs-mode.el=
+     keeps =major-mode= as a plain global defvar with no buffer-local
+     store), so a =setq= of =major-mode= inside =with-temp-buffer=
+     is still visible after the temp buffer is killed; this is an
+     orthogonal, already-known gap, not touched here.
+   - (b) the real upstream Org chain: the item 215/221 61-file file
+     list was not preserved (same caveat as item 215/216), so this
+     verification reconstructed an equivalent chain by computing
+     host Emacs's =(require 'org)(require 'org-element)= closure
+     restricted to =vendor/emacs-lisp/= (and subdirectories) on
+     =load-path=, filtered to drop any file whose feature is already
+     satisfied by the persistent bootstrap (137 features queried
+     live from the bootstrap REPL).  Two corrections were needed
+     beyond that filter, both recorded here for future re-runs: (i)
+     =org.el='s top-level =(eval-when-compile (require 'gnus-sum))=
+     behaves as =progn= under a plain host =load= of an uncompiled
+     file and pulls in the entire gnus/message/mail/epa web (~90
+     extra files) -- =scripts/standalone-source-normalize.el= already
+     drops top-level =eval-when-compile= entirely for exactly this
+     reason, so a fake =(provide 'gnus-sum)= before requiring org
+     correctly matches the normalized replay; (ii) the naive host
+     closure also autoload-pulls real =vendor/emacs-lisp/emacs-lisp/
+     derived.el= the moment any file's top-level
+     =(define-derived-mode ...)= call is reached (because a bare
+     host Emacs session, unlike the persistent bootstrap, has no
+     =define-derived-mode= defined yet and falls back to Emacs's own
+     =derived= autoload) -- this file must NOT be part of the replay
+     chain: item 221 already documented that replaying real
+     =derived.el= re-shadows the substrate's fixed
+     =define-derived-mode= with the broken backquote-template vendor
+     version and re-breaks every mode defined afterward, and none of
+     item 221's verified chains included it.  After both corrections
+     the reconstructed chain is 68 files (recorded at
+     =tmp-diag/org-chain-68-files-item222.txt=, gitignored scratch,
+     for reuse -- preserving it this time since the 60/61-file list
+     from item 215 was lost).  Loads clean, =status=done=,
+     =load-ok-count=68/68=.  A proof restricted to conjuncts safe to
+     evaluate (see next paragraph for why) --
+     =(and (featurep 'org) (featurep 'org-element) (fboundp
+     'org-mode) (fboundp 'org-element-parse-buffer) (commandp
+     'org-mode) (with-temp-buffer (fundamental-mode) (eq major-mode
+     'fundamental-mode)) (with-temp-buffer t))= -- =status=done=,
+     exit=0, elapsed 459.76s.  This confirms item 221's org-mode
+     fboundp/commandp result still holds on the corrected chain, and
+     confirms this item's with-temp-buffer body-value fix holds with
+     the full real Org dependency graph loaded, not just against the
+     bare persistent bootstrap.
+   - (b'), NOT part of this fix, new gap found and NOT chased per
+     task scope: the literal verification-(b) proof requested,
+     =(with-temp-buffer (org-mode) (eq major-mode 'org-mode))=,
+     could not be completed -- actually INVOKING =(org-mode)= (its
+     real function body, not just =fboundp=/=commandp= introspection)
+     hangs on this reader.  Isolated with a plain top-level
+     =(progn (org-mode) (eq major-mode 'org-mode))= (no
+     =with-temp-buffer= involved at all) on the corrected 68-file
+     chain: =status=fail=, =timed-out=t=, =exit=124= at the 560s
+     internal timeout, sentinel stuck at =proof:start= (the call
+     never returns).  This is a DIFFERENT gap from item 221's (which
+     was about =org-mode= never becoming fbound at all): here
+     =org-mode= is genuinely fboundp/commandp per (b) above, but
+     running its real body -- customization/keymap/abbrev/regexp
+     setup done by the =define-derived-mode= body plus
+     =org-set-regexps-and-options= and friends -- does not complete
+     in reasonable time.  (A first attempt at this same check
+     appeared to fail fast via an apparent crash, but that run was
+     contaminated by a leftover concurrent =vendor/nelisp/target/
+     nelisp= reader process from an unrelated, unfinished
+     session sharing this checkout -- consistent with the
+     shared-checkout hazard noted at the top of this task; that
+     process was killed and the check re-run cleanly, which is what
+     produced the 560s hang result above.)  Root cause unexplored;
+     out of scope for this item (buffer/major-mode substrate, not
+     org-mode body semantics) and not chased per instructions.  (c)
+     (=org-element-parse-buffer= smoke) was not attempted given (b')
+     since it also starts by calling =(org-mode)=.
+   - =make test-fast=: the same 6 known failures (four
+     =emacs-redisplay-test= + =Info-find-file=), no new failures.
+     Host ERT =nelisp-emacs-compat-test= (new suite for this
+     item): 13/13.
+
+   Files touched: =src/nelisp-emacs-compat.el= (fix, four macros),
+   =test/nelisp-emacs-compat-test.el= (new host ERT suite).
