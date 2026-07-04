@@ -38,6 +38,11 @@ cat >> "$tmp" <<EOF
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type hello))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name create-buffer :buffer-name "nemacs-next-process-smoke"))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name insert-text :text "abc"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name goto-char :position 1))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name forward-char :count 2))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name backward-char :count 1))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name delete-char :count 1))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name forward-char :count 999))))
 ,quit
 EOF
 
@@ -53,9 +58,9 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 lines=$(wc -l < "$out" | tr -d ' ')
-if [ "$lines" != "3" ]; then
+if [ "$lines" != "8" ]; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail lines=$lines expected=3" >&2
+  echo "nemacs-next-process-smoke: fail lines=$lines expected=8" >&2
   exit 1
 fi
 
@@ -77,9 +82,33 @@ if ! grep -q '"text":"abc"' "$out"; then
   exit 1
 fi
 
-if grep -q '"type":"error"' "$out"; then
+if ! grep -q '"point":1,"point-min"' "$out"; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail protocol error response" >&2
+  echo "nemacs-next-process-smoke: fail missing goto-char point=1 snapshot" >&2
+  exit 1
+fi
+
+if ! grep -q '"point":3,"point-min"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing forward-char point=3 snapshot" >&2
+  exit 1
+fi
+
+if ! grep -q '"text":"ac"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing post-delete-char text=ac snapshot" >&2
+  exit 1
+fi
+
+if [ "$(grep -c '"type":"error"' "$out")" != "1" ]; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail expected exactly one out-of-range error response" >&2
+  exit 1
+fi
+
+if ! grep -q '"code":"out-of-range"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing out-of-range error code" >&2
   exit 1
 fi
 

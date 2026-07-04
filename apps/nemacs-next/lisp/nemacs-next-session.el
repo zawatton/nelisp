@@ -120,9 +120,62 @@ REQUEST is included for diagnostics when supplied."
              (or (plist-get args :text)
                  (plist-get args :char))))))
 
+(defun nemacs-next-session--command-arg (message key)
+  "Return KEY from MESSAGE, falling back to MESSAGE's nested :args plist."
+  (or (plist-get message key)
+      (let ((args (plist-get message :args)))
+        (and (listp args) (plist-get args key)))))
+
+(defun nemacs-next-session--command-count (message &optional default)
+  "Return an integer :count argument from MESSAGE, or DEFAULT (default 1)."
+  (let ((count (nemacs-next-session--command-arg message :count)))
+    (if (integerp count) count (or default 1))))
+
+(defun nemacs-next-session--move-point (delta)
+  "Move point by DELTA characters through the reusable movement API.
+Return a buffer snapshot, or a structured `out-of-range' protocol error
+when DELTA would move point outside the buffer/narrowing bounds."
+  (nemacs-next-session-current-buffer-or-create)
+  (condition-case _err
+      (progn
+        (nelisp-ec-forward-char delta)
+        (nemacs-next-session-buffer-snapshot))
+    (nelisp-ec-args-out-of-range
+     (nemacs-next-session-error
+      'out-of-range "move would leave buffer bounds"))))
+
+(defun nemacs-next-session--goto-char (position)
+  "Move point to POSITION through the reusable movement API.
+Return a buffer snapshot, or a structured protocol error when POSITION is
+missing or out of range."
+  (nemacs-next-session-current-buffer-or-create)
+  (if (integerp position)
+      (condition-case _err
+          (progn
+            (nelisp-ec-goto-char position)
+            (nemacs-next-session-buffer-snapshot))
+        (nelisp-ec-args-out-of-range
+         (nemacs-next-session-error
+          'out-of-range "goto-char position out of range")))
+    (nemacs-next-session-error
+     'bad-command "goto-char requires an integer :position")))
+
+(defun nemacs-next-session--delete-char (count)
+  "Delete COUNT characters (negative = backward) through the reusable
+editing API.  Return a buffer snapshot, or a structured `out-of-range'
+protocol error when COUNT would delete past the buffer bounds."
+  (nemacs-next-session-current-buffer-or-create)
+  (condition-case _err
+      (progn
+        (nelisp-ec-delete-char count)
+        (nemacs-next-session-buffer-snapshot))
+    (nelisp-ec-args-out-of-range
+     (nemacs-next-session-error
+      'out-of-range "delete-char count out of range"))))
+
 (defun nemacs-next-session-handle-command (message)
   "Handle a command protocol MESSAGE and return a response payload.
-The supported M1 commands are deliberately small and delegate editor
+The supported M1/M2 commands are deliberately small and delegate editor
 mutation to reusable buffer/editing APIs."
   (let ((name (nemacs-next-session--command-name message)))
     (cond
@@ -150,6 +203,22 @@ mutation to reusable buffer/editing APIs."
               (nemacs-next-session-buffer-snapshot))
           (nemacs-next-session-error
            'bad-command "insert-text requires a string :text" message))))
+     ((or (nemacs-next-session--string-equal name 'forward-char)
+          (nemacs-next-session--string-equal name "forward-char"))
+      (nemacs-next-session--move-point
+       (nemacs-next-session--command-count message 1)))
+     ((or (nemacs-next-session--string-equal name 'backward-char)
+          (nemacs-next-session--string-equal name "backward-char"))
+      (nemacs-next-session--move-point
+       (- (nemacs-next-session--command-count message 1))))
+     ((or (nemacs-next-session--string-equal name 'goto-char)
+          (nemacs-next-session--string-equal name "goto-char"))
+      (nemacs-next-session--goto-char
+       (nemacs-next-session--command-arg message :position)))
+     ((or (nemacs-next-session--string-equal name 'delete-char)
+          (nemacs-next-session--string-equal name "delete-char"))
+      (nemacs-next-session--delete-char
+       (nemacs-next-session--command-count message 1)))
      (t
       (nemacs-next-session-error
        'unknown-command
