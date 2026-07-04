@@ -17,7 +17,8 @@
 ;; opt-in (= caller adds it to ANVIL_MODULE_FILES).  Keep this loader on
 ;; the host-safe facade.
 (defconst emacs-io-features
-  '(emacs-sqlite
+  '(emacs-ffi
+    emacs-sqlite
     nelisp-emacs-compat-fileio
     files-runtime
     emacs-fileio-builtins

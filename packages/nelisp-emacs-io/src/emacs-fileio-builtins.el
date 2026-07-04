@@ -60,7 +60,11 @@
     find-file
     save-buffer
     write-file
-    revert-buffer)
+    revert-buffer
+    file-exists-p
+    file-readable-p
+    file-directory-p
+    file-attributes)
   "Functions this bridge may overwrite under standalone NeLisp.
 Path parsing, predicates, and directory/syscall primitives are left to
 the runtime when they already exist because `load' / `require' depend
@@ -146,6 +150,21 @@ leaving stub function cells in place."
   ;; predicates above, that clause does not fire on nemacs; an earlier
   ;; `emacs-stub' stub otherwise shadows the working `nelisp-ec' PATH walk.
   (defalias 'executable-find #'nelisp-ec-executable-find))
+
+(defun emacs-fileio-rdf-file-exists-p (filename)
+  "Return non-nil when standalone `rdf' can open FILENAME.
+This is a standalone fallback for runtimes where the stat/access
+compatibility paths can report ENOSYS while `rdf' is the verified
+read-open route."
+  (and (stringp filename)
+       (fboundp 'rdf)
+       (stringp (condition-case nil
+                    (rdf filename)
+                  (error nil)))))
+
+(when (and (fboundp 'rdf) (not (fboundp 'nl-syscall-opendir)))
+  (defalias 'file-exists-p #'emacs-fileio-rdf-file-exists-p)
+  (defalias 'file-readable-p #'emacs-fileio-rdf-file-exists-p))
 
 ;;;; --- file-name parsing ----------------------------------------------
 

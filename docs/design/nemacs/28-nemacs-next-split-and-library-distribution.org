@@ -1,0 +1,228 @@
+#+TITLE: nelisp-emacs-libs Doc 28 -- nemacs-next split and library distribution
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-26
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 18 library package ownership inventory, Doc 25 library consumer contract
+
+* 0. Purpose
+
+This document supersedes the remaining "nelisp-emacs as runnable editor"
+framing.  The original project started as a port of Emacs C-core behavior
+into Elisp so that NeLisp could run Emacs Lisp code without depending on
+Emacs's C implementation.  That work has grown into a reusable library
+stack.
+
+From this point forward:
+
+- =nelisp-emacs= is the current repository name and compatibility facade.
+- =nelisp-emacs-libs= is the interim product name for the reusable
+  Emacs-core library set being extracted.
+- =nemacs-next= is the successor runnable editor/application project.
+- =nelisp= should be able to ship with the library set so standalone
+  consumers can depend on one runtime distribution.
+
+The split should be staged.  Do not move large trees first.  Establish the
+contract, package boundary, and loader/distribution shape first, then move
+application files once consumers can prove the boundary.
+
+* 1. Decision
+
+Adopt a *library distribution phase*.
+
+=nelisp-emacs-libs= owns reusable libraries:
+
+- foundation primitives,
+- text/coding/regex helpers,
+- buffer/editing substrate,
+- command-loop/keymap/minibuffer/window/frame semantics,
+- IO/runtime adapters such as file/process/network/sqlite/ffi,
+- display model libraries where they are backend-independent.
+
+=nelisp-emacs-libs= does not own the final runnable editor product.  Existing
+=nemacs-*= application files, launchers, GUI bridge code, runtime-image
+assembly, and daily-driver workflow are migration inputs for =nemacs-next=.
+They may remain in this repository temporarily only as compatibility and
+extraction staging.
+
+=nemacs-next= owns:
+
+- application bootstrap and user-facing launcher policy,
+- runtime image bake policy for the editor application,
+- concrete TUI/GUI app assembly,
+- frontend transport/rendering,
+- packaging of a runnable editor.
+
+=nelisp= owns:
+
+- reader/evaluator/runtime/AOT/FFI primitives,
+- the standalone executable,
+- the distribution bundle that makes the runtime and =nelisp-emacs-libs=
+  libraries available together.
+
+* 2. Target repository shape
+
+The preferred final split is:
+
+#+begin_src text
+nelisp/
+  target/nelisp
+  lib/nelisp-runtime...
+  share/nelisp/lisp/...
+  share/nelisp/nelisp-emacs-libs/...
+
+nelisp-emacs-libs/        # current repository still named nelisp-emacs
+  packages/
+    nelisp-emacs-foundation/
+    nelisp-emacs-text-core/
+    nelisp-emacs-buffer-core/
+    nelisp-emacs-editing/
+    nelisp-emacs-io/
+    nelisp-emacs-core/
+    nelisp-emacs-special-buffers/
+    nelisp-emacs-textmodes-stub/
+  src/                 compatibility source layout during migration
+  test/
+  docs/design/
+
+nemacs-next/
+  apps/nemacs/
+  frontends/
+    tui/
+    gui/
+  runtime-image/
+  packaging/
+  vendor or dependency reference to nelisp-emacs-libs
+#+end_src
+
+Until the split is physical, the current repository may keep =src/=,
+=bin/nemacs=, =gui/=, and application tests.  New reusable work should
+still land in the library owner.  New app/frontend work should be marked as
+=nemacs-next= migration work and should not become a library dependency.
+
+* 3. Distribution contract with nelisp
+
+NeLisp should be able to provide a standard library search path containing
+the =nelisp-emacs-libs= package set.
+
+Minimum distribution contract:
+
+1. A NeLisp installation exposes its runtime root through =NELISP_HOME= or
+   a built-in equivalent.
+2. The runtime adds bundled library roots to =load-path= before evaluating
+   user code.
+3. Bundled =nelisp-emacs-libs= packages are loadable by compatibility
+   package feature:
+   =(require 'nelisp-emacs)= and per-package loaders such as
+   =(require 'emacs-io)=.
+4. Runtime adapters such as =emacs-ffi=, =emacs-sqlite-ffi=, and network
+   FFI remain adapter-gated.  Loading the facade must not require that a
+   specific FFI backend is present.
+5. The bundle can be upgraded independently enough that =nemacs-next= can
+   pin or vendor a compatible library version.
+
+The distribution shape should prefer copied/generated package artifacts
+over reaching into a development checkout.  A development checkout can still
+use =NELISP_EMACS_SRC_DIR= or explicit =-L= paths.
+
+* 4. Package extraction policy
+
+Logical package boundaries already exist.  Physical extraction should
+follow this sequence:
+
+1. Keep =src/= as the canonical source while package descriptors and
+   package scaffold generation are still changing.
+2. Generate or mirror package directories from the canonical sources.
+3. Make =make nemacs-library-package-verify= prove that package metadata,
+   dependencies, lazy features, and public APIs are consistent.
+4. Make a NeLisp-side smoke load packages from the distribution layout, not
+   from =src/=.
+5. Only then choose whether =packages/= becomes canonical or remains a
+   generated distribution artifact.
+
+Do not hand-move files into package directories while other application
+extraction work is active unless the package gate already covers the move.
+
+* 5. nemacs-next extraction policy
+
+=nemacs-next= should consume =nelisp-emacs-libs= as a library dependency.  During
+the transition, application files in this tree are classified as extraction
+inputs:
+
+- =bin/nemacs=
+- =src/nemacs-main.el=
+- =src/nemacs-loadup.el=
+- =src/nemacs-gtk-*.el=
+- =src/nemacs-gui-file-bridge-runtime.el=
+- =gui/=
+- runtime image bake scripts and app launch helpers
+
+Extraction rule:
+
+- reusable command semantics move inward to =nelisp-emacs-libs= packages,
+- app bootstrap and launcher decisions move outward to =nemacs-next=,
+- GUI/TUI rendering and transport move outward to =nemacs-next= frontends,
+- compatibility shims may remain temporarily but must not become stable
+  public library API unless explicitly promoted.
+
+* 6. Immediate migration tasks
+
+1. Update README/project docs so =nelisp-emacs-libs= is described as a library
+   set, not a future editor binary.
+2. Update Doc 17 and Doc 18 terminology from "library-first monorepo" to
+   "library distribution phase".
+3. Add a distribution smoke that loads =nelisp-emacs-libs= packages from a
+   NeLisp-style bundle path.
+4. Add a boundary report bucket for =nemacs-next extraction inputs= so app
+   files are tracked separately from reusable packages.
+5. Decide whether the first =nemacs-next= repository is a new sibling
+   checkout or a generated =apps/nemacs-next/= staging tree.
+6. Teach the NeLisp launcher/distribution to include the =nelisp-emacs-libs=
+   package load paths.
+
+* 7. Naming
+
+=nelisp-emacs= is a weak long-term name for the library set.  It preserves
+history, but it also implies that the repository is itself an Emacs
+application.  That implication conflicts with the new split where
+=nemacs-next= owns the runnable editor.
+
+The library name should communicate:
+
+- reusable library set, not application,
+- NeLisp runtime compatibility,
+- Emacs-compatible semantics,
+- package/substrate ownership.
+
+Candidate names:
+
+| Name | Reading | Notes |
+|------+---------+-------|
+| =nelisp-emacs-libs= | conservative | Clear continuation name; least disruptive, but verbose. |
+| =nelisp-emacs-core= | conservative | Says C-core replacement, but may still sound app-like. |
+| =nemacs-libs= | app-adjacent | Ties to =nemacs-next=, but risks app/library confusion. |
+| =nelisp-editor-core= | descriptive | Good for editor semantics, weaker for foundation/IO packages. |
+| =nelisp-ecore= | short | "Emacs core" hint, but acronym is less obvious. |
+| =elisp-core-libs= | broad | Describes reusable libraries, but hides NeLisp. |
+
+Recommended interim name: =nelisp-emacs-libs=.
+
+Rationale:
+
+- it keeps current package names and require features understandable,
+- it makes the library/application boundary explicit,
+- it can be bundled by =nelisp= without implying a runnable editor,
+- it leaves =nemacs-next= free as the application name.
+
+The physical repository can stay named =nelisp-emacs= during migration, but
+new docs should refer to the product as =nelisp-emacs-libs= or "the
+NeLisp Emacs-core libraries" until a final rename is chosen.
+
+=nemacs-next= is the new application successor name.  It should not imply
+ownership of the reusable library surface.  It is a consumer and assembler
+of =nelisp= plus the library set.
+
+* 8. Change log
+
+- 2026-06-26: Established the split target: =nelisp-emacs= as libraries,
+  =nemacs-next= as runnable editor successor, and =nelisp= as runtime plus
+  bundled library distribution.

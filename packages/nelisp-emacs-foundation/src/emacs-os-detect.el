@@ -66,6 +66,15 @@ it (so we do not re-issue the syscall on every call).")
   "Host node name detected via `uname(2)', or nil when undetected.
 Backs the standalone `system-name' function defined below.")
 
+(defvar emacs-os-explicit-system-type nil
+  "Explicit standalone `system-type' supplied by an embedding launcher.
+When non-nil, this must be an Emacs `system-type' symbol such as
+`gnu/linux', `darwin', or `windows-nt'.  It is used on substrates where
+runtime `uname' is unavailable.")
+
+(defvar emacs-os-explicit-system-configuration nil
+  "Explicit standalone `system-configuration' supplied by a launcher.")
+
 (defun emacs-os--substrate-available-p ()
   "Return non-nil when the reader exposes the raw syscall substrate."
   (and (fboundp 'syscall-direct)
@@ -206,6 +215,23 @@ intact."
             (setq emacs-os--system-name nodename))
           u)))))
 
+(defun emacs-os-apply-explicit-system-type! ()
+  "Apply launcher-provided OS identity to standalone globals.
+Returns a plist when `emacs-os-explicit-system-type' names a supported
+system type, otherwise nil.  This is the non-syscall fallback for
+standalone launchers on Windows and macOS."
+  (let ((stype (and (boundp 'emacs-os-explicit-system-type)
+                    emacs-os-explicit-system-type)))
+    (when (memq stype '(gnu/linux darwin windows-nt cygwin))
+      (setq system-type stype)
+      (let ((config (and (boundp 'emacs-os-explicit-system-configuration)
+                         emacs-os-explicit-system-configuration)))
+        (when (and (stringp config) (> (length config) 0))
+          (setq system-configuration config)))
+      (list :system-type system-type
+            :system-configuration (and (boundp 'system-configuration)
+                                       system-configuration)))))
+
 ;;;; --- environment-derived emacs-vars defaults (Doc 51 Phase 2b) -------
 ;;
 ;; emacs-vars.el / emacs-stub.el hard-code temporary-file-directory,
@@ -263,17 +289,16 @@ existing default.  Returns a summary plist."
     "Return this host's node name (detected via `uname' when available)."
     (or emacs-os--system-name "standalone")))
 
-;; Apply at load time, but only when the syscall substrate is present.
-;; Under the host-Emacs driver this is a no-op (real Emacs values win);
-;; under the NeLisp reader it replaces the hard-coded `gnu/linux'
-;; default with the live OS.
-(when (emacs-os--substrate-available-p)
-  ;; Order matters: set system-type first, then the OS-shaped vars
-  ;; (path-separator) it drives, then the env-derived dirs (PATH split
-  ;; uses path-separator).
-  (ignore-errors (emacs-os-detect-and-set!))
-  (ignore-errors (emacs-os-apply-os-polyfills!))
-  (ignore-errors (emacs-os-detect-and-set-dirs!)))
+;; Apply at load time.  Launcher-provided identity wins when present;
+;; otherwise use the syscall substrate when available.  Order matters:
+;; set `system-type' first, then the OS-shaped vars (path-separator) it
+;; drives, then env-derived dirs (PATH split uses path-separator).
+(let ((explicit (ignore-errors (emacs-os-apply-explicit-system-type!))))
+  (when (or explicit
+            (and (emacs-os--substrate-available-p)
+                 (ignore-errors (emacs-os-detect-and-set!))))
+    (ignore-errors (emacs-os-apply-os-polyfills!))
+    (ignore-errors (emacs-os-detect-and-set-dirs!))))
 
 (provide 'emacs-os-detect)
 
