@@ -11675,6 +11675,26 @@ path:
    primitive defect, not a nelisp-emacs-lib substrate gap; no fix
    applied here, no substrate files touched.
 
+   [2026-07-04 correction (item 225): the behavior probed in this item
+   was measured against replay chains that contained the hollow
+   =(defmacro backquote (form))= emission later diagnosed in dev/nelisp
+   merge =69301d56= and root-caused/fixed as item 225 -- every
+   backquote-built macro loaded after that point in the chain
+   (=org-with-wide-buffer=, =org-no-read-only=, ...) silently expanded
+   to nil, so large parts of =org-mode='s real initialization were
+   silently SKIPPED, not executed.  This item's GC observations
+   (=nl_kw_is_keyword= SIGSEGV signature, cold-boot vs. replay-load
+   manifestations) were made on that partially-skipped workload and
+   remain factual for it, but the workload itself was not the honest
+   full =org-mode= init.  Per dev/nelisp =FINDINGS.md= (2026-07-04,
+   post-workaround): with backquote genuinely working, real full
+   =(org-mode)= init is a superlinear-cost computation on the current
+   interpreter (no macroexpansion cache + per-bind deep clone;
+   >20 s / ~900 MB RSS within 5 s for =(with-temp-buffer (org-mode) t)=)
+   -- interpreter performance work (macroexpansion cache, bind-path
+   allocation fast path) is the true remaining blocker, and it is
+   pending in dev/nelisp.]
+
    Environment: dev/nelisp =main= @ =a679a31a= (canonical checkout,
    read/run-only for this task; a local comment-only working-tree diff
    to =scripts/nelisp-standalone-build.el= was present at investigation
@@ -11823,6 +11843,28 @@ path:
    this item verifies the practical, non-reader-touching workaround that
    FINDINGS.md's remediation proposal item 3 flagged but did not apply,
    and ships it as this repository's shipped default.
+
+   [2026-07-04 correction (item 225): this item's headline timings --
+   =(with-temp-buffer (org-mode) (eq major-mode 'org-mode))= completing
+   in 0.8-5 s over the shipped 10-module default -- were measured
+   against cold images whose replay chains contained the hollow
+   =(defmacro backquote (form))= emission diagnosed in dev/nelisp merge
+   =69301d56= and fixed as item 225.  With backquote hollowed, every
+   backquote-built macro body after that point silently expanded to nil,
+   so those runs paid for only PART of =org-mode='s real initialization;
+   the "fast activation" partially reflected silently-skipped init, not
+   honest full init.  The =org-modules= default shipped by this item
+   remains valid and shipped (it removes a real, independently
+   root-caused Gnus-loading cost), and the =(void-function \`)= gap this
+   item recorded for =org-element-parse-buffer= was a downstream symptom
+   of the same hollow-backquote clobber.  The honest revised picture per
+   dev/nelisp =FINDINGS.md= (2026-07-04, post-workaround): with backquote
+   genuinely working, real full =(org-mode)= init does NOT complete in
+   practical time on the current interpreter (superlinear cost from
+   re-expanding macros at every call plus per-bind deep cloning) --
+   interpreter performance work in dev/nelisp (macroexpansion cache,
+   bind-path fast path) is pending and is the true gate for honest
+   =org-mode= activation timings.]
 
    Environment note: dev/nelisp's =./target/nelisp= on disk at task start
    (mtime 18:07) predated the STACK_TOP fix commit (=cf5a8067=, committed
@@ -11987,3 +12029,121 @@ path:
    Files touched: =src/emacs-init.el= (fix, =org-modules= default
    override); =build/nemacs-bootstrap.{el,repl}= regenerated (gitignored
    artifacts, not tracked); this design-doc entry.
+
+225. Hollow-emission generator defect: the vendor replay generator
+   emitted a BODY-LESS =(defmacro backquote (form))= that clobbered the
+   standalone reader's own natively-baked =backquote= for the rest of
+   the chain.  ROOT-CAUSED and FIXED in the generator, 2026-07-04.
+   This is the proper, generator-side fix for the defect dev/nelisp
+   merge =69301d56= diagnosed and worked around downstream (its
+   =cold-image-org-e2e.sh= re-asserts a correct =backquote= after the
+   chain; that workaround is now redundant but harmless).
+
+   Symptom (as diagnosed in dev/nelisp =FINDINGS.md=): near the start of
+   generated =.repl= chains, a body-less =(defmacro backquote (form))=
+   redefines =backquote= as an always-nil macro; every backquote-built
+   macro loaded afterwards (=org-with-wide-buffer=, =org-no-read-only=,
+   ...) silently expands to nil, silently skipping large parts of Org
+   initialization and driving =org-element-parse-buffer= into
+   =(error nil)= (see items 223/224 correction notes).
+
+   TRUE mechanism (corrects the hypothesis recorded in dev/nelisp
+   =FINDINGS.md=): NOT byte-code body recovery.  FINDINGS.md guessed the
+   generator "cannot recover a Lisp-readable body from host Emacs 30.1's
+   compiled =backquote= byte-code object and silently emits an empty
+   body"; in fact the generator never consults =symbol-function= at all
+   -- it reads vendor/src source text form-by-form.  The real defect was
+   a reader-quote HEAD COLLISION in the normalizer
+   (=scripts/standalone-source-normalize.el=,
+   =standalone-source-normalize-form=, pre-fix line 906, and the same
+   pattern inside =standalone-source-normalize--backquote-datum=,
+   pre-fix lines 887-893): any cons whose =car= was =backquote= / =\`=
+   (or, inside backquote data, =comma= / =comma-at=) was treated as
+   reader-emitted quote syntax =(HEAD DATUM)= and rebuilt as a
+   TWO-ELEMENT list =(list HEAD (normalize DATUM))=.  The Lisp reader
+   only ever emits that shape with exactly one trailing element, but the
+   normalizer never checked the length.  So when the recursive walk over
+   =(defmacro backquote (form) DOC BODY)= reached its cdr --
+   =(backquote (form) DOC BODY)=, a 4-element list that merely SHARES a
+   head symbol with backquote syntax -- it truncated it to
+   =(backquote (form))=, reassembling as =(defmacro backquote (form))=:
+   docstring and body silently dropped.  Any definition or code form
+   literally named =backquote=/=comma=/=comma-at= in that cdr position
+   would be hollowed the same way; the emission is deterministic for
+   every source file that defines =backquote=.
+
+   Enumeration (step-1 audit): regenerated the 68-file Org-chain =.repl=
+   (item 222's =tmp-diag/org-chain-68-files-item222.txt=, host-side
+   =vendor-repl-standalone--write-input=) and scanned every
+   =defmacro=/=defun= emission for body-less shapes.  Result: exactly
+   THREE hollow =(defmacro backquote (form))= emissions, all three from
+   this one mechanism -- (1) the =src/emacs-backquote.el= polyfill chunk
+   inside =build/nemacs-bootstrap.repl= (its guarded
+   =(unless (fboundp 'backquote) (defmacro backquote (form) ...))=
+   polyfill), and (2)+(3) the two =backquote= macro definitions in
+   dev/nelisp's =scripts/nelisp-stdlib-prelude.el= (prelude replay,
+   lines 1629 and 2703 upstream) -- plus ONE body-less
+   =(defmacro sh-debug (&rest _args))= from vendor
+   =progmodes/sh-script.el:1196=, which is NOT a defect: upstream
+   Emacs's source is literally that body-less macro (a debug no-op), so
+   the emission is faithful.  No other body-less defmacro/defun
+   emissions exist in the chain.  =backquote= was therefore the only
+   SYMPTOM, but the mechanism was general (any =backquote=-named
+   definition through any chain), so a general fix was chosen over a
+   name blacklist.
+
+   Fix (general, shape-based; no skip-emission needed because the body
+   was never actually unrecoverable): new predicate
+   =standalone-source-normalize--reader-quote-form-p=
+   (=scripts/standalone-source-normalize.el:883=) requires the exact
+   two-element =(HEAD DATUM)= shape before the reader-quote fast path
+   fires; =standalone-source-normalize-form= (now line 924) and
+   =standalone-source-normalize--backquote-datum= (now line 903) use it
+   for =backquote=/=\`= and =comma=/=comma-at=/=\,=/=\,@= heads.  Longer
+   lists that merely share a head symbol now take the ordinary
+   recursive-walk path and survive intact:
+   =(defmacro backquote (form) "doc" (emacs-backquote--expand form))=
+   round-trips unchanged.  Also bumped
+   =standalone-source-normalize-cache-version= 128 -> 129: the
+   normalized-form cache keys only on source truename/mtime/size, so
+   without the bump, stale pre-fix cache entries kept re-serving the
+   hollow forms (observed live: the first post-fix gate run's kept
+   =.repl= still had the two prelude hollows from a Jul 1 cache).
+
+   Regression tests: three new ERTs in
+   =test/standalone-source-normalize-test.el=
+   (=normalizes-genuine-backquote-data=,
+   =preserves-defmacro-named-backquote=,
+   =preserves-defun-named-backquote-in-guard=); suite 135/135 PASS
+   (was 132), =standalone-diagnostics-test.el= 32/32 PASS,
+   =make test-fast= 1073 tests with the same 6 known failures (four
+   =emacs-redisplay-test= + =Info-find-file=), no new failures.
+
+   Verification: regenerated =build/nemacs-bootstrap.{el,repl}= (the
+   =src/emacs-backquote.el= chunk now carries the full guarded polyfill
+   body) and the 68-file Org-chain =.repl= -- zero body-less emissions
+   remain (only the faithful upstream =sh-debug= no-op).  Trustworthy
+   gate (=make diagnose-vendor-repl-replay-fast=,
+   =VENDOR_REPL_TIMEOUT=900s= =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=
+   =VENDOR_REPL_KEEP_TEMP=t=, 68-file chain, current
+   =vendor/nelisp/target/nelisp=) over the item 221/222 5-conjunct proof
+   EXTENDED with a sixth conjunct probing the live =backquote= itself --
+   =(and (featurep 'org) (featurep 'org-element) (fboundp 'org-mode)
+   (fboundp 'org-element-parse-buffer) (commandp 'org-mode)
+   (eq (backquote 42) 42))=
+   (=tmp-diag/proof-item225-org-chain-plus-backquote.el=): status=done,
+   exit=0, sentinel =VENDOR-REPL-STANDALONE=ok=, twice -- first run
+   439.2 s (whose kept =.repl= still carried the two stale-cache prelude
+   hollows, honestly noted; the persistent-REPL path evidently tolerated
+   them, consistent with FINDINGS.md's observation that the clobber
+   manifests on the cold-image path), second run after the cache-version
+   bump against a fully clean =.repl= 455.5 s (kept =.repl= verified:
+   zero body-less emissions, prelude/bootstrap =backquote= definitions
+   full-bodied).  The =(backquote 42)= -> =42= probe holds at
+   end-of-chain.
+
+   Files touched: =scripts/standalone-source-normalize.el= (fix +
+   cache-version bump), =test/standalone-source-normalize-test.el=
+   (3 regression ERTs),
+   =tmp-diag/proof-item225-org-chain-plus-backquote.el= (gate proof
+   form), this design-doc entry + correction notes on items 223/224.
