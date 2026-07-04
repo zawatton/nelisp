@@ -12,10 +12,16 @@
 ;; Scope for this module:
 ;; - template selection from `org-capture-templates'
 ;; - `entry' templates only
-;; - targets: `(file+headline FILE HEADLINE)' and
+;; - targets: `(file FILE)', `(file+headline FILE HEADLINE)',
+;;   `(file+olp FILE OLP...)', `(file+regexp FILE REGEXP)', and
 ;;   `(file+olp+datetree FILE)'
-;; - a small placeholder expander for `%?' / `%t' / `%T' / `%U' / `%a'
+;; - a small placeholder expander for `%?' / `%%' / `%<...>' / `%t' /
+;;   `%T' / `%u' / `%U' / `%a' / `%A' / `%l' / `%L' / `%f' /
+;;   `%F' / `%i' / `%n' / `%c' / `%x' / `%k' / `%K'
 ;; - finalize / abort workflow via a dedicated `*Capture*' buffer
+;; - minimal template properties: `:immediate-finish',
+;;   `:prepend', `:empty-lines-before', `:empty-lines-after',
+;;   and `:empty-lines'
 ;;
 ;; The implementation stays deliberately conservative:
 ;; - file visiting and persistence go through `find-file-noselect' and
@@ -25,8 +31,8 @@
 ;;
 ;; Non-goals for v0.1:
 ;; - non-`entry' capture types
-;; - template property handling beyond preserving the tail of the entry
-;; - region / clipboard / annotation integration beyond best-effort `%a'
+;; - template property handling beyond the documented minimal subset
+;; - clipboard integration beyond the supported source placeholders
 ;; - the full Org target DSL
 
 ;;; Code:
@@ -131,6 +137,10 @@ Each value is a plist with keys:
   "Return TEMPLATE's trailing property list."
   (nthcdr 5 template))
 
+(defun org-capture--template-property (template property)
+  "Return TEMPLATE's PROPERTY value from its trailing property list."
+  (plist-get (org-capture--template-properties template) property))
+
 (defun org-capture--entry-type-p (template)
   "Return non-nil when TEMPLATE is an `entry' template."
   (eq (org-capture--template-type template) 'entry))
@@ -154,13 +164,202 @@ Each value is a plist with keys:
     (goto-char pos)
     (1+ (count-lines (point-min) (line-beginning-position)))))
 
+(defun org-capture--nelisp-buffer-p (buffer)
+  "Return non-nil when BUFFER is a live `nelisp-ec-buffer'."
+  (and (fboundp 'nelisp-ec-buffer-p)
+       (ignore-errors (nelisp-ec-buffer-p buffer))
+       (not (and (fboundp 'nelisp-ec-buffer-killed-p)
+                 (ignore-errors
+                   (nelisp-ec-buffer-killed-p buffer))))))
+
+(defun org-capture--source-buffer ()
+  "Return the best source buffer for capture annotation."
+  (or (and (fboundp 'nelisp-ec-current-buffer)
+           (let ((buffer (nelisp-ec-current-buffer)))
+             (and (org-capture--nelisp-buffer-p buffer)
+                  buffer)))
+      (current-buffer)))
+
+(defun org-capture--buffer-file-name (buffer)
+  "Return BUFFER's visited file name, or nil."
+  (cond
+   ((org-capture--nelisp-buffer-p buffer)
+    (or (and (fboundp 'emacs-fileio--direct-buffer-file-name)
+             (emacs-fileio--direct-buffer-file-name buffer))
+        (and (boundp 'emacs-fileio--buffer-files)
+             (cdr (assq buffer emacs-fileio--buffer-files)))
+        (ignore-errors (buffer-file-name buffer))))
+   ((bufferp buffer)
+    (with-current-buffer buffer
+      (buffer-file-name buffer)))
+   (t nil)))
+
+(defun org-capture--nelisp-line-number (buffer)
+  "Return the current line number in nelisp BUFFER."
+  (nelisp-ec-with-current-buffer buffer
+    (let* ((point (nelisp-ec-buffer-point buffer))
+           (prefix (nelisp-ec-buffer-substring (nelisp-ec-point-min) point))
+           (line 1)
+           (index 0))
+      (while (< index (length prefix))
+        (when (= (aref prefix index) ?\n)
+          (setq line (1+ line)))
+        (setq index (1+ index)))
+      line)))
+
+(defun org-capture--buffer-raw-link (buffer)
+  "Return a best-effort raw file or buffer link for BUFFER."
+  (if (org-capture--nelisp-buffer-p buffer)
+      (let ((file (org-capture--buffer-file-name buffer)))
+        (if (and (stringp file) (> (length file) 0))
+            (format "file:%s::%d"
+                    (expand-file-name file)
+                    (org-capture--nelisp-line-number buffer))
+          (format "buffer:%s::%d"
+                  (nelisp-ec-buffer-name buffer)
+                  (org-capture--nelisp-line-number buffer))))
+    (with-current-buffer buffer
+      (let ((file (org-capture--buffer-file-name (current-buffer))))
+        (if (and (stringp file) (> (length file) 0))
+            (format "file:%s::%d"
+                    (expand-file-name file)
+                    (org-capture--line-number-at-pos (point)))
+          (format "buffer:%s::%d"
+                  (buffer-name)
+                  (org-capture--line-number-at-pos (point))))))))
+
+(defun org-capture--format-link (raw-link &optional description)
+  "Return an Org link for RAW-LINK, optionally with DESCRIPTION."
+  (cond
+   ((not (and (stringp raw-link) (> (length raw-link) 0))) "")
+   ((and (stringp description) (> (length description) 0))
+    (format "[[%s][%s]]" raw-link description))
+   (t
+    (format "[[%s]]" raw-link))))
+
+(defun org-capture--buffer-backlink (buffer)
+  "Return a best-effort file or buffer Org link for BUFFER."
+  (org-capture--format-link (org-capture--buffer-raw-link buffer)))
+
+(defun org-capture--raw-link ()
+  "Return a best-effort raw source link for capture placeholders."
+  (let ((source (org-capture--source-buffer)))
+    (if (org-capture--nelisp-buffer-p source)
+        (org-capture--buffer-raw-link source)
+      (let ((link (and (fboundp 'org-store-link)
+                       (org-store-link nil nil))))
+        (if (and (stringp link) (> (length link) 0))
+            link
+          (org-capture--buffer-raw-link source))))))
+
 (defun org-capture--backlink ()
   "Return a best-effort source backlink for `%a'."
-  (let ((file (buffer-file-name (current-buffer))))
+  (org-capture--format-link (org-capture--raw-link)))
+
+(defun org-capture--prompted-backlink ()
+  "Return a best-effort source backlink with prompted description for `%A'."
+  (let ((raw-link (org-capture--raw-link)))
+    (org-capture--format-link
+     raw-link
+     (if (and (stringp raw-link) (> (length raw-link) 0))
+         (read-string "Link description: ")
+       ""))))
+
+(defun org-capture--source-file-basename ()
+  "Return the source buffer file basename for `%f', or an empty string."
+  (let ((file (org-capture--buffer-file-name (org-capture--source-buffer))))
     (if (and (stringp file) (> (length file) 0))
-        (format "[[file:%s::%d]]"
-                (expand-file-name file)
-                (org-capture--line-number-at-pos (point)))
+        (file-name-nondirectory file)
+      "")))
+
+(defun org-capture--source-file-path ()
+  "Return the source buffer absolute file path for `%F', or an empty string."
+  (let ((file (org-capture--buffer-file-name (org-capture--source-buffer))))
+    (if (and (stringp file) (> (length file) 0))
+        (expand-file-name file)
+      "")))
+
+(defun org-capture--source-region-text ()
+  "Return active source region text for `%i', or an empty string."
+  (let ((source (org-capture--source-buffer)))
+    (cond
+     ((org-capture--nelisp-buffer-p source)
+      "")
+     ((bufferp source)
+      (with-current-buffer source
+        (let ((mark-position (and (boundp 'mark-active)
+                                  mark-active
+                                  (mark t))))
+          (if (and (integerp mark-position)
+                   (/= mark-position (point)))
+              (buffer-substring-no-properties
+               (min mark-position (point))
+               (max mark-position (point)))
+            ""))))
+     (t ""))))
+
+(defun org-capture--user-full-name ()
+  "Return `user-full-name' for `%n', or an empty string."
+  (if (and (boundp 'user-full-name)
+           (stringp user-full-name))
+      user-full-name
+    ""))
+
+(defun org-capture--current-kill ()
+  "Return the current kill text for `%c', or an empty string."
+  (let ((text (cond
+               ((fboundp 'current-kill)
+                (condition-case nil
+                    (current-kill 0 t)
+                  (error nil)))
+               ((and (boundp 'kill-ring)
+                     (consp kill-ring))
+                (car kill-ring)))))
+    (if (stringp text) text "")))
+
+(defun org-capture--clipboard-text ()
+  "Return external clipboard text for `%x', or an empty string."
+  (let ((text (cond
+               ((and (boundp 'interprogram-paste-function)
+                     (functionp interprogram-paste-function))
+                (condition-case nil
+                    (funcall interprogram-paste-function)
+                  (error nil)))
+               ((fboundp 'gui-get-selection)
+                (condition-case nil
+                    (gui-get-selection 'CLIPBOARD 'STRING)
+                  (error nil))))))
+    (if (stringp text) text "")))
+
+(defun org-capture--clock-buffer ()
+  "Return the buffer for the active lightweight Org clock, or nil."
+  (and (boundp 'org-clock-marker)
+       (markerp org-clock-marker)
+       (marker-buffer org-clock-marker)))
+
+(defun org-capture--clock-heading ()
+  "Return the currently clocked heading for `%k', or an empty string."
+  (let ((buffer (org-capture--clock-buffer)))
+    (if (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char org-clock-marker)
+            (if (org-at-heading-p)
+                (org-get-heading t t t)
+              "")))
+      "")))
+
+(defun org-capture--clock-link ()
+  "Return the currently clocked heading link for `%K', or an empty string."
+  (let ((buffer (org-capture--clock-buffer)))
+    (if (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char org-clock-marker)
+            (if (org-at-heading-p)
+                (org-capture--format-link
+                 (org-capture--buffer-raw-link buffer))
+              "")))
       "")))
 
 (defun org-capture--time-string (format-string)
@@ -170,11 +369,24 @@ Each value is a plist with keys:
 (defun org-capture--replacement-for-code (code)
   "Return replacement text for placeholder CODE."
   (pcase code
+    (?% "%")
     (?t (concat "<" (org-capture--time-string "%Y-%m-%d %a") ">"))
     (?T (concat "<" (org-capture--time-string "%Y-%m-%d %a %H:%M") ">"))
-    (?U (concat "[" (org-capture--time-string "%Y-%m-%d %a") "]"))
+    (?u (concat "[" (org-capture--time-string "%Y-%m-%d %a") "]"))
+    (?U (concat "[" (org-capture--time-string "%Y-%m-%d %a %H:%M") "]"))
     (?a (org-capture--backlink))
-    ((or ?? ?i ?f ?n ?c) "")
+    (?A (org-capture--prompted-backlink))
+    (?l (org-capture--format-link (org-capture--raw-link)))
+    (?L (org-capture--raw-link))
+    (?f (org-capture--source-file-basename))
+    (?F (org-capture--source-file-path))
+    (?i (org-capture--source-region-text))
+    (?n (org-capture--user-full-name))
+    (?c (org-capture--current-kill))
+    (?x (org-capture--clipboard-text))
+    (?k (org-capture--clock-heading))
+    (?K (org-capture--clock-link))
+    (?? "")
     (_ "")))
 
 (defun org-capture--expand-placeholders (template-string)
@@ -192,15 +404,37 @@ Return a plist with keys:
         (if (and (= char ?%)
                  (< (1+ index) length))
             (let ((code (aref template-string (1+ index))))
-              (if (= code ??)
-                  (unless point-pos
-                    (setq point-pos (1+ output-length)))
+              (cond
+               ((= code ??)
+                (unless point-pos
+                  (setq point-pos (1+ output-length)))
+                (setq index (+ index 2)))
+               ((= code ?<)
+                (let ((end (cl-position ?> template-string
+                                        :start (+ index 2))))
+                  (if end
+                      (let ((replacement
+                             (org-capture--time-string
+                              (substring template-string
+                                         (+ index 2)
+                                         end))))
+                        (push replacement chunks)
+                        (setq output-length (+ output-length
+                                               (length replacement)))
+                        (setq index (1+ end)))
+                    (let ((replacement
+                           (org-capture--replacement-for-code code)))
+                      (push replacement chunks)
+                      (setq output-length (+ output-length
+                                             (length replacement)))
+                      (setq index (+ index 2))))))
+               (t
                 (let ((replacement
                        (org-capture--replacement-for-code code)))
                   (push replacement chunks)
                   (setq output-length (+ output-length
-                                         (length replacement)))))
-              (setq index (+ index 2)))
+                                         (length replacement))))
+                (setq index (+ index 2)))))
           (push (char-to-string char) chunks)
           (setq output-length (1+ output-length))
           (setq index (1+ index)))))
@@ -253,10 +487,34 @@ The result is a plist with keys `:text' and `:point'."
 
 (defun org-capture--resolve-headline-parent-level (file headline)
   "Return the level of HEADLINE inside FILE."
-  (with-current-buffer (find-file-noselect file)
+  (with-temp-buffer
+    (when (file-exists-p file)
+      (insert-file-contents file))
     (save-excursion
       (or (org-capture--find-headline headline)
           (user-error "Headline not found in %s: %s" file headline)))))
+
+(defun org-capture--parent-heading-level-at-point ()
+  "Return the current or preceding heading level, or 0 before any heading."
+  (save-excursion
+    (beginning-of-line)
+    (cond
+     ((org-outline--heading-level-at-point))
+     ((re-search-backward "^\\*+ " nil t)
+      (org-outline--heading-level-at-point))
+     (t 0))))
+
+(defun org-capture--regexp-context (file regexp)
+  "Return insertion context for REGEXP in FILE.
+The result is a plist with keys `:point' and `:parent-level'."
+  (with-temp-buffer
+    (when (file-exists-p file)
+      (insert-file-contents file))
+    (goto-char (point-min))
+    (unless (re-search-forward regexp nil t)
+      (user-error "Regexp not found in %s: %s" file regexp))
+    (list :point (match-beginning 0)
+          :parent-level (org-capture--parent-heading-level-at-point))))
 
 (defun org-capture--resolve-target-context (template)
   "Return a plist describing TEMPLATE's target context."
@@ -270,12 +528,33 @@ The result is a plist with keys `:text' and `:point'."
              :target-file file
              :parent-level
              (org-capture--resolve-headline-parent-level file (nth 2 target))))
+      ('file+olp
+       (unless (>= (length target) 3)
+         (user-error "Invalid file+olp target: %S" target))
+       (list :target target
+             :target-file file
+             :parent-level (length (cddr target))))
+      ('file+regexp
+       (unless (= (length target) 3)
+         (user-error "Invalid file+regexp target: %S" target))
+       (list :target target
+             :target-file file
+             :parent-level
+             (plist-get
+              (org-capture--regexp-context file (nth 2 target))
+              :parent-level)))
       ('file+olp+datetree
        (unless (= (length target) 2)
          (user-error "Invalid file+olp+datetree target: %S" target))
        (list :target target
              :target-file file
              :parent-level 3))
+      ('file
+       (unless (= (length target) 2)
+         (user-error "Invalid file target: %S" target))
+       (list :target target
+             :target-file file
+             :parent-level 0))
       (_
        (user-error "Unsupported capture target: %S" target)))))
 
@@ -304,7 +583,7 @@ The result is a plist with keys `:text' and `:point'."
   (when (buffer-live-p buffer)
     (kill-buffer buffer)))
 
-(defun org-capture--target-headline-insertion-point (headline)
+(defun org-capture--target-headline-insertion-point (headline &optional properties)
   "Return insertion metadata for HEADLINE in the current buffer.
 The result is a plist with keys `:point' and `:parent-level'."
   (save-excursion
@@ -312,7 +591,9 @@ The result is a plist with keys `:point' and `:parent-level'."
       (unless level
         (user-error "Headline not found: %s" headline))
       (let ((bounds (org-outline--subtree-bounds)))
-        (list :point (plist-get bounds :subtree-end)
+        (list :point (if (plist-get properties :prepend)
+                         (plist-get bounds :content-start)
+                       (plist-get bounds :subtree-end))
               :parent-level level)))))
 
 (defun org-capture--find-child-heading (title level limit)
@@ -361,13 +642,29 @@ When absent, create it at the end of the parent subtree."
       (or found
           (org-capture--insert-heading-at (point-max) 1 title)))))
 
+(defun org-capture--ensure-olp (path &optional properties)
+  "Return insertion metadata for outline PATH, creating missing headings."
+  (let ((level 1)
+        (parent-point (org-capture--ensure-top-level-heading (car path))))
+    (dolist (title (cdr path))
+      (setq level (1+ level))
+      (setq parent-point
+            (org-capture--ensure-child-heading title level parent-point)))
+    (save-excursion
+      (goto-char parent-point)
+      (let ((bounds (org-outline--subtree-bounds)))
+        (list :point (if (plist-get properties :prepend)
+                         (plist-get bounds :content-start)
+                       (plist-get bounds :subtree-end))
+              :parent-level level)))))
+
 (defun org-capture--datetree-components ()
   "Return today's datetree components as a plist."
   (list :year (org-capture--time-string "%Y")
         :month (org-capture--time-string "%Y-%m")
         :day (org-capture--time-string "%Y-%m-%d")))
 
-(defun org-capture--ensure-datetree-day ()
+(defun org-capture--ensure-datetree-day (&optional properties)
   "Return insertion metadata for today's datetree day node."
   (let* ((parts (org-capture--datetree-components))
          (year-point (org-capture--ensure-top-level-heading
@@ -383,27 +680,64 @@ When absent, create it at the end of the parent subtree."
     (save-excursion
       (goto-char day-point)
       (let ((bounds (org-outline--subtree-bounds)))
-        (list :point (plist-get bounds :subtree-end)
+        (list :point (if (plist-get properties :prepend)
+                         (plist-get bounds :content-start)
+                       (plist-get bounds :subtree-end))
               :parent-level 3)))))
 
-(defun org-capture--target-insertion-metadata (target)
+(defun org-capture--target-insertion-metadata (target &optional properties)
   "Return insertion metadata for TARGET in the current buffer."
   (pcase (car-safe target)
+    ('file
+     (list :point (if (plist-get properties :prepend)
+                      (point-min)
+                    (point-max))
+           :parent-level 0))
     ('file+headline
-     (org-capture--target-headline-insertion-point (nth 2 target)))
+     (org-capture--target-headline-insertion-point (nth 2 target) properties))
+    ('file+olp
+     (org-capture--ensure-olp (cddr target) properties))
+    ('file+regexp
+     (org-capture--regexp-context (org-capture--target-file target)
+                                  (nth 2 target)))
     ('file+olp+datetree
-     (org-capture--ensure-datetree-day))
+     (org-capture--ensure-datetree-day properties))
     (_
      (user-error "Unsupported capture target: %S" target))))
 
-(defun org-capture--insert-entry-at (position text cursor-offset)
-  "Insert TEXT at POSITION and leave point at CURSOR-OFFSET within it."
+(defun org-capture--nonnegative-integer (value)
+  "Return VALUE as a non-negative integer, or 0 when unsupported."
+  (if (and (integerp value)
+           (>= value 0))
+      value
+    0))
+
+(defun org-capture--empty-lines-before (properties)
+  "Return blank line count to insert before a captured entry."
+  (org-capture--nonnegative-integer
+   (plist-get properties :empty-lines-before)))
+
+(defun org-capture--empty-lines-after (properties)
+  "Return blank line count to insert after a captured entry."
+  (org-capture--nonnegative-integer
+   (or (plist-get properties :empty-lines-after)
+       (plist-get properties :empty-lines))))
+
+(defun org-capture--insert-entry-at (position text cursor-offset &optional properties)
+  "Insert TEXT at POSITION and leave point at CURSOR-OFFSET within it.
+PROPERTIES may request lightweight blank-line padding."
   (goto-char position)
   (unless (or (= (point) (point-min))
               (eq (char-before) ?\n))
     (insert "\n"))
+  (let ((before (org-capture--empty-lines-before properties)))
+    (when (> before 0)
+      (insert (make-string before ?\n))))
   (let ((start (point)))
     (insert text)
+    (let ((after (org-capture--empty-lines-after properties)))
+      (when (> after 0)
+        (insert (make-string after ?\n))))
     (goto-char (+ start (max 0 (1- cursor-offset))))
     start))
 
@@ -419,6 +753,7 @@ When absent, create it at the end of the parent subtree."
                        (if (string-suffix-p "\n" text)
                            text
                          (concat text "\n"))))
+         (source-buffer (org-capture--source-buffer))
          (buffer (org-capture--buffer)))
     (with-current-buffer buffer
       (erase-buffer)
@@ -433,8 +768,8 @@ When absent, create it at the end of the parent subtree."
            :target (plist-get context :target)
            :target-file (plist-get context :target-file)
            :parent-level (plist-get context :parent-level)
-           :origin-buffer (current-buffer)
-           :origin-file (buffer-file-name (current-buffer))
+           :origin-buffer source-buffer
+           :origin-file (org-capture--buffer-file-name source-buffer)
            :properties (org-capture--template-properties template)))
     buffer))
 
@@ -468,8 +803,11 @@ When KEYS is non-nil, use it as the template key instead of prompting."
                (org-capture--read-template))))
          (context (org-capture--resolve-target-context template))
          (buffer (org-capture--prepare-capture-buffer template context)))
-    (org-capture--insert-buffer buffer)
-    buffer))
+    (if (org-capture--template-property template :immediate-finish)
+        (with-current-buffer buffer
+          (org-capture-finalize))
+      (org-capture--insert-buffer buffer)
+      buffer)))
 
 ;;;###autoload
 (defun org-capture-finalize ()
@@ -479,18 +817,21 @@ When KEYS is non-nil, use it as the template key instead of prompting."
          (state (org-capture--current-state))
          (target-file (plist-get state :target-file))
          (target (plist-get state :target))
+         (properties (plist-get state :properties))
          (text (buffer-substring-no-properties (point-min) (point-max)))
          (cursor-offset (point)))
-    (with-current-buffer (find-file-noselect target-file)
-      (let* ((metadata (org-capture--target-insertion-metadata target)))
+    (with-temp-buffer
+      (when (file-exists-p target-file)
+        (insert-file-contents target-file))
+      (let ((metadata (org-capture--target-insertion-metadata target properties)))
         (org-capture--insert-entry-at
          (plist-get metadata :point)
          text
-         cursor-offset)
-        (save-buffer)
-        (org-capture--kill-capture-buffer capture-buffer)
-        (org-capture--insert-buffer (current-buffer))
-        (current-buffer)))))
+         cursor-offset
+         properties)
+        (write-region (point-min) (point-max) target-file nil 'silent)))
+    (org-capture--kill-capture-buffer capture-buffer)
+    target-file))
 
 ;;;###autoload
 (defun org-capture-kill ()

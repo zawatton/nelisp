@@ -125,3 +125,45 @@
 (provide 'emacs-time-test)
 
 ;;; emacs-time-test.el ends here
+
+(ert-deftest emacs-time-test/to-number-converts-time-forms ()
+  "emacs-time--to-number converts all Emacs time-value shapes to seconds."
+  (should (= 100 (emacs-time--to-number 100)))
+  (should (= 1.5 (emacs-time--to-number 1.5)))
+  (should (= 65536.0 (emacs-time--to-number '(1 0))))
+  (should (= 5.0 (emacs-time--to-number '(5000 . 1000))))
+  (should (= 65536.5 (emacs-time--to-number '(1 0 500000)))))
+
+(ert-deftest emacs-time-test/time-less-p-orders-time-values ()
+  "time-less-p orders integers, floats, (HIGH LOW) and (TICKS . HZ) values."
+  (should (time-less-p 100 200))
+  (should-not (time-less-p 200 100))
+  (should-not (time-less-p 1.5 1.4))
+  (should (time-less-p '(1 0) '(2 0)))
+  (should (time-less-p '(5000 . 1000) '(6000 . 1000)))
+  (should (time-less-p 100 '(1 0))))
+
+(ert-deftest emacs-time-test/timers ()
+  "run-with-timer / run-with-idle-timer / cancel-timer fire and cancel (B2)."
+  (let ((timer-list nil) (timer-idle-list nil) (fired nil))
+    ;; a due (past) timer fires once
+    (emacs-timer-run-with-timer -1 nil (lambda () (setq fired 'a)))
+    (should (= 1 (emacs-timer-run-pending)))
+    (should (eq fired 'a))
+    ;; a future timer does not fire
+    (setq fired nil)
+    (emacs-timer-run-with-timer 1000 nil (lambda () (setq fired 'b)))
+    (should (= 0 (emacs-timer-run-pending)))
+    (should-not fired)
+    ;; idle timer fires once idle time reaches its delay
+    (emacs-timer-run-with-idle-timer 5 nil (lambda () (setq fired 'idle)))
+    (should (= 0 (emacs-timer-run-idle 2)))
+    (should-not fired)
+    (should (= 1 (emacs-timer-run-idle 6)))
+    (should (eq fired 'idle))
+    ;; cancel removes a timer from the list
+    (let ((tm (emacs-timer-run-with-timer 1000 nil #'ignore)))
+      (should (memq tm timer-list))
+      (emacs-timer-cancel tm)
+      (should-not (memq tm timer-list)))
+    (should (emacs-timer-p (emacs-timer-run-with-timer 1 nil #'ignore)))))

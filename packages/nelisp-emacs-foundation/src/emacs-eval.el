@@ -173,11 +173,27 @@ inspecting a literal lambda / closure body."
      (t
       (and (interactive-form function) t)))))
 
-;; `autoload' — Emacs's lazy-loading hint.  NeLisp standalone has no
-;; autoload mechanism (= every module is loaded eagerly via the
-;; AnvilModuleRegistry chain), so the polyfill is a no-op.  Callers
-;; that walk `autoload-file-name' / `commandp' may need follow-up
-;; polyfills.
+(defun emacs-eval--autoload-thunk-p (object)
+  "Return non-nil when OBJECT is this file's autoload thunk."
+  (and (consp object)
+       (eq (car object) 'closure)
+       (consp (cdr object))
+       (assq 'emacs-eval--autoload-thunk (cadr object))))
+
+(defun emacs-eval--autoload-thunk-prop (object prop)
+  "Return autoload thunk OBJECT's PROP from its closure environment."
+  (let ((cell (and (emacs-eval--autoload-thunk-p object)
+                   (assq prop (cadr object)))))
+    (cdr cell)))
+
+(defun emacs-eval--autoload-load (function file)
+  "Load FILE for autoloaded FUNCTION and return its function cell."
+  (load file)
+  (let ((definition (and (symbolp function) (symbol-function function))))
+    (when (and definition (emacs-eval--autoload-thunk-p definition))
+      (error "Autoloading `%s' from %s did not define it" function file))
+    definition))
+
 (unless (fboundp 'autoload)
   (defun autoload (function file &optional docstring interactive type)
     "Lazy-load FUNCTION from FILE on first call (standalone autoload).
@@ -191,52 +207,86 @@ call-compatibility and otherwise ignored.
 
 This keeps startup bounded: vendor libraries can be declared with `autoload'
 and only paid for when a workflow actually calls them."
-    (ignore docstring interactive type)
+    (when (symbolp function)
+      (put function 'autoload-file-name file)
+      (put function 'autoload-documentation docstring)
+      (put function 'autoload-interactive interactive)
+      (put function 'autoload-type type))
     (when (and (symbolp function) (not (fboundp function)))
-      (let (thunk)
+      (let ((emacs-eval--autoload-thunk t)
+            (emacs-eval--autoload-function function)
+            (emacs-eval--autoload-file file)
+            thunk)
         (setq thunk
               (lambda (&rest args)
-                (load file)
-                (when (eq (symbol-function function) thunk)
-                  (error "Autoloading `%s' from %s did not define it"
-                         function file))
+                (emacs-eval--autoload-load function file)
                 (apply function args)))
         (fset function thunk)))
     function))
 
-;; Obsoletion-tracking aliases.  In Emacs these record metadata for
-;; deprecation warnings; under NeLisp standalone we just install the
-;; alias and skip the bookkeeping.
+(unless (fboundp 'autoloadp)
+  (defun autoloadp (object)
+    "Return non-nil when OBJECT is an autoload object."
+    (or (and (consp object) (eq (car object) 'autoload))
+        (emacs-eval--autoload-thunk-p object))))
+
+(unless (fboundp 'autoload-do-load)
+  (defun autoload-do-load (autoload &optional name _macro-only)
+    "Load AUTOLOAD and return the loaded function definition."
+    (cond
+     ((and name (symbolp name) (get name 'autoload-file-name))
+      (emacs-eval--autoload-load name (get name 'autoload-file-name)))
+     ((and (consp autoload) (eq (car autoload) 'autoload))
+      (load (cadr autoload))
+      (and name (symbolp name) (symbol-function name)))
+     ((emacs-eval--autoload-thunk-p autoload)
+      (let ((fn (emacs-eval--autoload-thunk-prop
+                 autoload 'emacs-eval--autoload-function))
+            (file (emacs-eval--autoload-thunk-prop
+                   autoload 'emacs-eval--autoload-file)))
+        (when (and fn file)
+          (emacs-eval--autoload-load fn file))))
+     (t autoload))))
+
+;; Obsoletion-tracking aliases.  Vendor Emacs Lisp consults the same symbol
+;; properties the byte-compiler uses, so keep the metadata even when warning
+;; emission itself is not implemented.
 (unless (fboundp 'define-obsolete-function-alias)
   (defun define-obsolete-function-alias
       (obsolete-name current-name &optional when docstring)
-    "Polyfill: route through `defalias', drop deprecation metadata."
-    (ignore when docstring)
-    (defalias obsolete-name current-name)))
+    "Polyfill: route through `defalias' and record obsoletion metadata."
+    (defalias obsolete-name current-name docstring)
+    (put obsolete-name 'byte-obsolete-info
+         (list (if (and (consp current-name) (eq (car current-name) 'function))
+                   (cadr current-name)
+                 current-name)
+               nil
+               when))
+    obsolete-name))
 
 (unless (fboundp 'define-obsolete-variable-alias)
   (defun define-obsolete-variable-alias
       (obsolete-name current-name &optional when docstring)
-    "Polyfill: route through `defvaralias' (= defalias for vars).
-NeLisp may not have `defvaralias' yet either; in that case we just
-set OBSOLETE-NAME's value cell to track CURRENT-NAME's value at this
-moment.  Live aliasing of subsequent assignments is Phase 4."
-    (ignore when docstring)
-    (when (boundp current-name)
-      (set obsolete-name (symbol-value current-name)))
+    "Polyfill: route through `defvaralias' and record obsoletion metadata."
+    (if (fboundp 'defvaralias)
+        (defvaralias obsolete-name current-name docstring)
+      (when (boundp current-name)
+        (set obsolete-name (symbol-value current-name))))
+    (put obsolete-name 'byte-obsolete-variable (list current-name nil when))
     obsolete-name))
 
 (unless (fboundp 'make-obsolete)
   (defun make-obsolete (obsolete-name current-name &optional when)
-    "Polyfill: no-op deprecation hint."
-    (ignore obsolete-name current-name when)
-    nil))
+    "Polyfill: record function obsoletion metadata."
+    (put obsolete-name 'byte-obsolete-info (list current-name nil when))
+    obsolete-name))
 
 (unless (fboundp 'make-obsolete-variable)
   (defun make-obsolete-variable (obsolete-name current-name &optional when access-type)
-    "Polyfill: no-op deprecation hint."
-    (ignore obsolete-name current-name when access-type)
-    nil))
+    "Polyfill: record variable obsoletion metadata."
+    (put obsolete-name 'byte-obsolete-variable
+         (list current-name access-type when))
+    obsolete-name))
 
 ;; `internal-make-var-non-special' is an Emacs C-core helper used by a
 ;; few dump/bootstrap files to mark variables as lexically bindable.
@@ -261,9 +311,34 @@ moment.  Live aliasing of subsequent assignments is Phase 4."
 ;; `macroexpand-all' forcing nested `eval-when-compile' forms while
 ;; compile-time variables are temporarily bound, so the standalone path
 ;; returns a quoted constant like host Emacs's macroexpansion does.
+(defun emacs-eval--skip-standalone-compile-time-require-p (body)
+  "Return non-nil when BODY is a compile-time-only require to skip.
+Org source loads `gnus-sum' only through `eval-when-compile'.  Pulling the
+full Gnus summary stack into standalone NeLisp during interpreted source load
+is not required for Org runtime behavior and currently exceeds the raw loader
+budget, so keep the macroexpansion result while avoiding the require."
+  (and (consp body)
+       (null (cdr body))
+       (consp (car body))
+       (eq (car (car body)) 'require)
+       (consp (cdr (car body)))
+       (consp (car (cdr (car body))))
+       (eq (car (car (cdr (car body)))) 'quote)
+       (eq (car (cdr (car (cdr (car body))))) 'gnus-sum)))
+
+(when (or (fboundp 'nl-write-file)
+          (not (boundp 'emacs-version))
+          (not (stringp emacs-version)))
+  (defmacro eval-when-compile (&rest body)
+    (if (emacs-eval--skip-standalone-compile-time-require-p body)
+        (list 'quote 'gnus-sum)
+      (list 'quote (eval (cons 'progn body) t)))))
+
 (unless (fboundp 'eval-when-compile)
   (defmacro eval-when-compile (&rest body)
-    (list 'quote (eval (cons 'progn body) t))))
+    (if (emacs-eval--skip-standalone-compile-time-require-p body)
+        (list 'quote 'gnus-sum)
+      (list 'quote (eval (cons 'progn body) t)))))
 
 (unless (fboundp 'eval-and-compile)
   (defmacro eval-and-compile (&rest body) (cons 'progn body)))

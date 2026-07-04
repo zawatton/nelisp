@@ -4792,8 +4792,8 @@ link leaves the buffer untouched."
 
 
 
-(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-magit-min ()
-  "Magit-min status/stage/commit/diff/log workflow (M10)."
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-vendor-vc-magit ()
+  "Vendor VC/Magit substrate status/stage/commit/diff/log workflow (M10)."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
     (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
           (image (nemacs-gui-file-bridge-runtime-test--write-image))

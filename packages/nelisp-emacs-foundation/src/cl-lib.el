@@ -28,6 +28,16 @@
 
 ;;; Code:
 
+(defconst cl-lib--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the cl-lib shim and its sibling features.")
+
+(defun cl-lib--load-feature (feature)
+  "Load FEATURE from the cl-lib shim directory."
+  (load (expand-file-name (concat (symbol-name feature) ".el")
+                          cl-lib--load-directory)
+        nil t))
+
 (defun cl-lib--define-p (symbol)
   "Return non-nil when SYMBOL should be supplied by this shim."
   (or (not (fboundp symbol))
@@ -38,7 +48,7 @@
 ;; cl-defstruct / cl-letf / cl-flet / cl-block / cl-some / cl-every /
 ;; cl-position / cl-find / cl-remove-if{,-not} / cl-delete-* /
 ;; cl-union / cl-intersection / cl-sort / cl-case / cl-pushnew / etc.)
-(require 'emacs-cl-macros)
+(cl-lib--load-feature 'emacs-cl-macros)
 
 ;;;; --- helpers not in emacs-cl-macros --------------------------------
 
@@ -225,7 +235,50 @@ For unrecognised places, signals an error at expansion time."
                (cond
                 ((eq fn 'car)     (list 'setcar (car args) value))
                 ((eq fn 'cdr)     (list 'setcdr (car args) value))
+                ;; Two-level c[ad][ad]r accessors.  Without these, a place
+                ;; like `(cddr X)' fell through to the symbol fallback, which
+                ;; emitted a call to a VOID `cddr--setter' and aborted.
+                ;; `org-element-set-contents' uses `(setf (cddr node) ...)',
+                ;; so this was the structural blocker that made
+                ;; `org-element-parse-buffer' return nil.
+                ((eq fn 'caar) (list 'setcar (list 'car (car args)) value))
+                ((eq fn 'cadr) (list 'setcar (list 'cdr (car args)) value))
+                ((eq fn 'cdar) (list 'setcdr (list 'car (car args)) value))
+                ((eq fn 'cddr) (list 'setcdr (list 'cdr (car args)) value))
+                ;; (setf (nthcdr N L) V) -> setcdr of the (N-1)th cdr.
+                ;; Assumes N >= 1 (the common case; N = 0 would replace the
+                ;; whole list, which is not an in-place mutation).
+                ((eq fn 'nthcdr)
+                 (list 'setcdr
+                       (list 'nthcdr (list '1- (car args)) (cadr args))
+                       value))
+                ;; Three-level c[ad][ad][ad]r: first letter picks setcar/setcdr,
+                ;; the remaining two letters name the inner accessor (cXXr).
+                ((eq fn 'caaar) (list 'setcar (list 'caar (car args)) value))
+                ((eq fn 'caadr) (list 'setcar (list 'cadr (car args)) value))
+                ((eq fn 'cadar) (list 'setcar (list 'cdar (car args)) value))
+                ((eq fn 'caddr) (list 'setcar (list 'cddr (car args)) value))
+                ((eq fn 'cdaar) (list 'setcdr (list 'caar (car args)) value))
+                ((eq fn 'cdadr) (list 'setcdr (list 'cadr (car args)) value))
+                ((eq fn 'cddar) (list 'setcdr (list 'cdar (car args)) value))
+                ((eq fn 'cdddr) (list 'setcdr (list 'cddr (car args)) value))
+                ;; (setf (cl-getf PLACE KEY [DEFAULT]) V) -> reassign PLACE to
+                ;; the plist with KEY set (recurses through `setf' so PLACE may
+                ;; itself be a generalized place).  org-element uses this ~10x.
+                ((eq fn 'cl-getf)
+                 (list 'setf (car args)
+                       (list 'plist-put (car args) (cadr args) value)))
                 ((eq fn 'aref)    (list 'aset (car args) (cadr args) value))
+                ((eq fn 'elt)
+                 ;; (setf (elt SEQ N) V): `elt' works on lists and arrays, so
+                 ;; dispatch at runtime — setcar of nthcdr for a list, aset for
+                 ;; an array.  (A void `elt--setter' fallback was an uncatchable
+                 ;; abort on the bare reader.)
+                 (let ((seqsym (make-symbol "seq")))
+                   (list 'let (list (list seqsym (car args)))
+                         (list 'if (list 'listp seqsym)
+                               (list 'setcar (list 'nthcdr (cadr args) seqsym) value)
+                               (list 'aset seqsym (cadr args) value)))))
                 ((eq fn 'gethash) (list 'puthash (car args) value (cadr args)))
                 ((eq fn 'nth)
                  (list 'setcar
@@ -233,6 +286,37 @@ For unrecognised places, signals an error at expansion time."
                        value))
                 ((eq fn 'plist-get)
                  (list 'plist-put (car args) (cadr args) value))
+                ((eq fn 'alist-get)
+                 ;; (setf (alist-get K A) V): assq-update the existing cell or
+                 ;; prepend (K . V), recursing on the alist place A via `setf'.
+                 ;; cl-generic's dispatch tables rely on this.
+                 (let ((cell (make-symbol "cell")))
+                   (list 'let (list (list cell (list 'assq (car args) (cadr args))))
+                         (list 'if cell (list 'setcdr cell value)
+                               (list 'setf (cadr args)
+                                     (list 'cons (list 'cons (car args) value)
+                                           (cadr args)))))))
+                ((and (symbolp fn)
+                      (boundp 'nelisp-cl-macros--accessor-info)
+                      (assq fn nelisp-cl-macros--accessor-info))
+                 ;; cl-defstruct slot accessor place.  The standalone
+                 ;; cl-defstruct (stdlib prelude) records accessors in
+                 ;; `nelisp-cl-macros--accessor-info' (it does NOT set the
+                 ;; `cl-struct-setter' property the generic fallback below
+                 ;; looks for), so consult it directly -> `nelisp--record-set'.
+                 ;; cl-generic's `(setf (cl--generic-dispatches g) ...)' needs this.
+                 (list 'nelisp--record-set (car args)
+                       (cdr (assq fn nelisp-cl-macros--accessor-info))
+                       value))
+                ((and (symbolp fn) (fboundp fn)
+                      (eq (car-safe (symbol-function fn)) 'macro))
+                 ;; A generalized place defined as a MACRO (e.g. cl-generic's
+                 ;; `(cl--generic NAME)' = `(get NAME ...)').  Expand the place
+                 ;; and re-dispatch through `setf'.  Without this, cl-generic's
+                 ;; `(setf (cl--generic name) ...)' fell through to the symbol
+                 ;; fallback and built a `(funcall 'cl--generic--setter ...)'
+                 ;; call to a non-existent setter.
+                 (list 'setf (macroexpand-1 place) value))
                 ((symbolp fn)
                  (let ((simple-setter (get fn 'cl-simple-setter)))
                    (if simple-setter
@@ -274,7 +358,14 @@ For unrecognised places, signals an error at expansion time."
   (put 'get 'cl-simple-setter 'put)
   (put 'symbol-value 'cl-simple-setter 'set)
   (put 'symbol-function 'cl-simple-setter 'fset)
-  (put 'symbol-plist 'cl-simple-setter 'setplist))
+  (put 'symbol-plist 'cl-simple-setter 'setplist)
+  ;; `(setf (cl--find-class NAME) CLASS)' -> `(cl--set-find-class NAME CLASS)'
+  ;; (= `(put NAME 'cl--class CLASS)').  cl-preloaded / oclosure / cl-defstruct
+  ;; register class objects this way.  `cl--set-find-class' is baked in the
+  ;; stdlib prelude; this `put' runs here (a loaded file) because the same `put'
+  ;; in the AOT-baked prelude does not persist into the boot image.
+  (when (fboundp 'cl--set-find-class)
+    (put 'cl--find-class 'cl-simple-setter 'cl--set-find-class)))
 
 ;;;; --- list / alist polyfills ------------------------------------------
 

@@ -161,6 +161,103 @@
     (should (eq 'org-todo-keyword-done
                 (get-text-property (1- (point)) 'face)))))
 
+(ert-deftest org-priority-cycles-through-default-cookies ()
+  (emacs-org-todo-test--with-org-buffer
+      "* Task\n"
+    (should (eq (org-priority) ?A))
+    (should (equal "* [#A] Task"
+                   (emacs-org-todo-test--heading-line)))
+    (should (eq (org-priority) ?B))
+    (should (equal "* [#B] Task"
+                   (emacs-org-todo-test--heading-line)))
+    (should (eq (org-priority) ?C))
+    (should (equal "* [#C] Task"
+                   (emacs-org-todo-test--heading-line)))
+    (should-not (org-priority))
+    (should (equal "* Task"
+                   (emacs-org-todo-test--heading-line)))))
+
+(ert-deftest org-priority-keeps-cookie-after-todo-keyword ()
+  (emacs-org-todo-test--with-org-buffer
+      "* NEXT Task\n"
+    (org-priority)
+    (should (equal "* NEXT [#A] Task"
+                   (emacs-org-todo-test--heading-line)))
+    (org-priority)
+    (should (equal "* NEXT [#B] Task"
+                   (emacs-org-todo-test--heading-line)))))
+
+(ert-deftest org-priority-sets-and-clears-explicit-priority ()
+  (emacs-org-todo-test--with-org-buffer
+      "* Task\n"
+    (should (eq (org-priority ?C) ?C))
+    (should (equal "* [#C] Task"
+                   (emacs-org-todo-test--heading-line)))
+    (should-not (org-priority 'remove))
+    (should (equal "* Task"
+                   (emacs-org-todo-test--heading-line)))))
+
+(ert-deftest org-priority-honors-custom-todo-keywords ()
+  (let ((org-todo-keywords '((sequence "INBOX" "NEXT" "WAIT" "|" "DONE"))))
+    (emacs-org-todo-test--with-org-buffer
+        "* WAIT 漏電調査\n"
+      (org-priority)
+      (should (equal "* WAIT [#A] 漏電調査"
+                     (emacs-org-todo-test--heading-line))))))
+
+(ert-deftest org-priority-keymap-and-error-path-work ()
+  (should (eq (lookup-key org-mode-map (kbd "C-c ,"))
+              #'org-priority))
+  (emacs-org-todo-test--with-org-buffer
+      "* Task\nbody\n"
+    (forward-line 1)
+    (let ((before (buffer-string)))
+      (should-error (org-priority) :type 'user-error)
+      (should (equal before (buffer-string))))))
+
+(ert-deftest org-planning-schedule-and-deadline-share-line ()
+  (emacs-org-todo-test--with-org-buffer
+      "* TODO Planned\nbody\n"
+    (should (equal "Scheduled to <2026-06-27 Sat>"
+                   (org-schedule nil "2026-06-27")))
+    (should (consp (org-get-scheduled-time)))
+    (should-not (org-get-deadline-time))
+    (should (equal "SCHEDULED: <2026-06-27 Sat>"
+                   (emacs-org-todo-test--line-containing "SCHEDULED:")))
+    (should (equal "Deadline on <2026-06-28 Sun>"
+                   (org-deadline nil "2026-06-28")))
+    (should (consp (org-get-scheduled-time)))
+    (should (consp (org-get-deadline-time)))
+    (should (equal
+             "DEADLINE: <2026-06-28 Sun> SCHEDULED: <2026-06-27 Sat>"
+             (emacs-org-todo-test--line-containing "DEADLINE:")))
+    (should (string-match-p "^body$" (buffer-string)))))
+
+(ert-deftest org-planning-schedule-replaces-existing-value ()
+  (emacs-org-todo-test--with-org-buffer
+      "* TODO Planned\nSCHEDULED: <2026-06-27 Sat>\nbody\n"
+    (org-schedule nil "2026-06-29")
+    (should (equal "SCHEDULED: <2026-06-29 Mon>"
+                   (emacs-org-todo-test--line-containing "SCHEDULED:")))
+    (should (= 1
+               (cl-count-if
+                (lambda (line)
+                  (string-match-p "SCHEDULED:" line))
+                (split-string (buffer-string) "\n"))))))
+
+(ert-deftest org-planning-keymap-and-error-path-work ()
+  (should (eq (lookup-key org-mode-map (kbd "C-c C-s"))
+              #'org-schedule))
+  (should (eq (lookup-key org-mode-map (kbd "C-c C-d"))
+              #'org-deadline))
+  (emacs-org-todo-test--with-org-buffer
+      "* Task\nbody\n"
+    (forward-line 1)
+    (let ((before (buffer-string)))
+      (should-error (org-schedule nil "2026-06-27") :type 'user-error)
+      (should-error (org-deadline nil "2026-06-28") :type 'user-error)
+      (should (equal before (buffer-string))))))
+
 (provide 'emacs-org-todo-test)
 
 ;;; emacs-org-todo-test.el ends here

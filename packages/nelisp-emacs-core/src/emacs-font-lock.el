@@ -479,7 +479,12 @@ after the keyword loop means syntactic faces always win over a
 keyword that happened to fire inside a string / comment — which
 is the upstream Emacs convention."
   (let* ((b (or buf (emacs-font-lock--current-buffer)))
-         (kws (and b (emacs-font-lock--state-get b :keywords))))
+         (state-kws (and b (emacs-font-lock--state-get b :keywords)))
+         (kws (or state-kws
+                  (and (boundp 'font-lock-keywords)
+                       font-lock-keywords
+                       (emacs-font-lock--compile-keywords
+                        font-lock-keywords)))))
     (when (and b (< start end))
       (let ((saved-point (let ((nelisp-ec--current-buffer b)) (nelisp-ec-point))))
         (unwind-protect
@@ -611,6 +616,9 @@ nothing was pending.  Skipped when font-lock-mode is off for BUF
       (when (emacs-font-lock-mode-enabled-p b)
         (emacs-font-lock-default-fontify-region (car dirty) (cdr dirty)
                                                 nil b))
+      ;; E5: drive any registered jit-lock fontifiers over the same dirty
+      ;; region (independent of font-lock-mode, like upstream jit-lock).
+      (emacs-font-lock--run-jit-functions (car dirty) (cdr dirty) b)
       dirty)))
 
 (defun emacs-font-lock-after-change-handler (beg end _len &optional buf)
@@ -658,6 +666,28 @@ helpers; the current fallback stores jit-lock registrations in the
 buffer-local-compatible `jit-lock-functions' variable."
   (ignore buf)
   (and (boundp 'jit-lock-functions) jit-lock-functions))
+
+(defun emacs-font-lock--run-jit-functions (start end &optional buf)
+  "Call each registered jit-lock function with (START END) for BUF.
+This is what makes `emacs-font-lock-jit-lock-register' functional under the
+incremental path: registered fontifiers (visual-wrap, hl-line, ...) actually
+run over the refontified [START, END) region instead of only being remembered.
+Each call is error-guarded so one faulty fontifier cannot abort the flush, and
+runs with BUF current.  Returns the number of functions that ran (Doc 06 E5)."
+  (let ((fns (and (boundp 'jit-lock-functions) jit-lock-functions))
+        (b (or buf (condition-case nil (emacs-font-lock--current-buffer)
+                     (error nil))))
+        (n 0))
+    (dolist (fn fns)
+      (when (functionp fn)
+        (condition-case _err
+            (progn
+              (if b
+                  (let ((nelisp-ec--current-buffer b)) (funcall fn start end))
+                (funcall fn start end))
+              (setq n (1+ n)))
+          (error nil))))
+    n))
 
 (provide 'emacs-font-lock)
 

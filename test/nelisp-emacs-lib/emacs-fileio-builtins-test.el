@@ -845,3 +845,31 @@
 (provide 'emacs-fileio-builtins-test)
 
 ;;; emacs-fileio-builtins-test.el ends here
+
+(ert-deftest emacs-fileio-builtins-test/copy-file-content-and-overwrite ()
+  "copy-file MVP copies byte content and refuses to overwrite by default.
+Host shadows `copy-file', so the body's control flow is exercised via a pinned
+lambda over the same fileio substrate (parity pattern)."
+  (let* ((src (make-temp-file "ecf-src"))
+         (dst (concat src "-dst"))
+         (cp (lambda (file newname &optional ok)
+               (when (and (not ok) (file-exists-p newname)) (error "exists"))
+               (with-temp-buffer
+                 (insert-file-contents-literally file)
+                 (write-region (point-min) (point-max) newname))
+               nil)))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert "hello copy")
+            (write-region (point-min) (point-max) src))
+          (when (file-exists-p dst) (delete-file dst))
+          (funcall cp src dst)
+          (should (string= (with-temp-buffer
+                             (insert-file-contents-literally src) (buffer-string))
+                           (with-temp-buffer
+                             (insert-file-contents-literally dst) (buffer-string))))
+          (should-error (funcall cp src dst))
+          (should (progn (funcall cp src dst t) t)))
+      (ignore-errors (delete-file src))
+      (ignore-errors (delete-file dst)))))

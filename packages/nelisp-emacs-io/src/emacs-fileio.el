@@ -30,6 +30,16 @@
 (require 'emacs-minibuffer-builtins)
 (require 'emacs-mode-builtins)
 
+(eval-and-compile
+  ;; Host Emacs 30 native-comp can try to build subr trampolines when this
+  ;; module wraps C primitives such as `rename-buffer'.  That path currently
+  ;; fails before org-agenda tests can even load, while standalone NeLisp does
+  ;; not need host trampolines.
+  (when (boundp 'native-comp-enable-subr-trampolines)
+    (setq native-comp-enable-subr-trampolines nil))
+  (when (boundp 'comp-enable-subr-trampolines)
+    (setq comp-enable-subr-trampolines nil)))
+
 (defvar default-directory "/"
   "Current buffer's working directory.
 

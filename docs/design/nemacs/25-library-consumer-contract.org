@@ -88,6 +88,12 @@ use =nelisp-emacs-library-stable-lazy-api-symbols= and
 =nelisp-emacs-library-stable-lazy-api-entry= instead of assuming package
 keys are unique in the raw manifest.
 
+For buffer UI consumers, the current reusable helper surface includes
+emacs-buffer-ui-current-buffer-name, emacs-buffer-ui-get-or-create-text-buffer,
+and emacs-buffer-ui-kill-buffer-interactive.  They are intended for
+frontend adapters that need a stable command helper layer before calling
+the higher-level switch/list/kill command entry points.
+
 The current public package names are =foundation=, =text-core=,
 =buffer-core=, =editing=, =io=, =special-buffers=, =core=, and
 =textmodes-stub=.  =text-core= exposes the reusable TXT regex substrate
@@ -107,6 +113,17 @@ Undeclared lazy reusable edges stay visible as
 The raw variable =nelisp-emacs-library-packages= exists for diagnostics,
 but consumers should prefer the query APIs so the manifest shape can evolve
 behind the facade.
+
+The =textmodes-stub= package declares =org= and its repository-owned
+=emacs-org-outline=, =emacs-org-todo=, and =emacs-org-table= modules as
+lazy compatibility
+entries.  Consumers that need the current lightweight Org subset should
+require =org= explicitly after placing =src/= on =load-path=.  The =org=
+entry loads the outline, TODO, and table editing subset needed for
+=org-mode=.  Agenda and capture are intentionally outside the package-lazy
+=org= entry until their file/IO dependencies can be extracted without
+pulling app or frontend glue into =textmodes-stub=.  This is not a contract
+for the full upstream Org parser, Babel, export, or =org-element= surface.
 
 The stable package API manifest is deliberately smaller than the generated
 package API inventory.  Version 1 currently exposes these stable package
@@ -130,12 +147,315 @@ the external consumer contract but are not bound by =(require
 | Package | Feature to require | Symbols |
 |---------+--------------------+---------|
 | =text-core= | =nelisp-coding-jis-tables= | =nelisp-coding-shift-jis-x0208-decode-table=, =nelisp-coding-cp932-extension-decode-table=, =nelisp-coding-euc-jp-x0208-decode-table=, =nelisp-coding-euc-jp-x0212-decode-table=, =nelisp-coding-jis-tables-sha256= |
+| =io= | =emacs-dump= | =emacs-dump-build-image=, =emacs-dump-save=, =emacs-dump-read=, =emacs-dump-load=, =emacs-dump-image-info=, =emacs-dump-format-version=, =emacs-dump-default-load-history-tail=, =emacs-dump-extra-buffer-names=, =emacs-dump-defvar-allowlist= |
+| =io= | =image-loader= | =image-loader-load=, =image-loader-load-if-readable=, =image-loader-load-batch=, =image-loader-info=, =image-loader-file=, =image-loader-restore-buffers=, =image-loader-last-loaded-file=, =image-loader-last-image-info= |
 | =core= | =emacs-tui-backend= | See the =core/tui-backend= stable lazy symbol list below. |
 | =core= | =emacs-tui-terminfo= | See the =core/tui-terminfo= stable lazy symbol list below. |
 | =core= | =emacs-tui-event= | See the =core/tui-event= stable lazy symbol list below. |
 
 Package owners may add symbols only after they have test coverage,
 consumer-facing documentation, and promotion queue review.
+
+The =buffer-core= lazy =emacs-bookmark-ui= surface is a documented
+promotion candidate, not yet a versioned stable contract.  It exposes
+bookmark presentation helpers that GUI and TUI bookmark pickers can reuse
+instead of reconstructing their own sorting or jump-plan logic.  The helper
+candidates are =emacs-bookmark-ui-sorted=,
+=emacs-bookmark-ui-completion-candidates=, =emacs-bookmark-ui-listing=,
+and =emacs-bookmark-ui-jump-plan=.  These names should move from
+=needs-review= or =needs-doc= to =promote-ready= in the promotion queue when
+the matching test coverage exists, but package owners still decide whether
+to add them to the facade stable API manifest.
+emacs-bookmark-ui-sorted
+emacs-bookmark-ui-completion-candidates
+emacs-bookmark-ui-listing
+emacs-bookmark-ui-jump-plan
+
+The =core= lazy =emacs-buffer-ui= surface is a documented promotion
+candidate, not yet a versioned stable contract.  It exposes frontend-neutral
+buffer UI helpers that GUI and TUI adapters can call before entering the
+higher-level switch/list/kill commands.  The helper candidates are
+=emacs-buffer-ui-current-buffer-name=,
+=emacs-buffer-ui-get-or-create-text-buffer=, and
+=emacs-buffer-ui-kill-buffer-interactive=.  These names should move from
+=needs-doc= to =promote-ready= in the promotion queue when the matching test
+coverage exists, but package owners still decide whether to add them to the
+facade stable API manifest.
+emacs-buffer-ui-current-buffer-name
+emacs-buffer-ui-get-or-create-text-buffer
+emacs-buffer-ui-kill-buffer-interactive
+emacs-buffer-ui-buffer-menu-spec
+emacs-buffer-ui-find-buffer
+emacs-buffer-ui-switch-to-buffer-plan
+emacs-buffer-ui-move-to-buffer-start
+emacs-buffer-ui-replace-text-buffer
+emacs-buffer-ui-switch-to-buffer
+emacs-buffer-ui-list-buffers
+emacs-buffer-ui-run-switch-buffer-command
+emacs-buffer-ui-run-switch-existing-command
+emacs-buffer-ui-run-list-buffers-command
+emacs-buffer-ui-run-kill-buffer-command
+emacs-buffer-ui-run-kill-buffer-plan-command
+
+The =core= lazy =emacs-dired-min= surface is a documented promotion
+candidate, not yet a versioned stable contract.  It exposes the minimal
+directory browser entry points that both GUI and host-visible flows can
+reuse.  The helper candidates are =dired=, =dired-find-file=,
+=dired-up-directory=, =dired-next-line=, =dired-previous-line=,
+=dired-mark=, =dired-unmark=, =dired-flag-file-deletion=,
+=dired-do-flagged-delete=, =dired-do-rename=, =dired-do-copy=,
+=emacs-dired-min-revert-buffer=, and =emacs-dired-min-quit-window=.  These
+names should move from =needs-doc= or =needs-review= to =promote-ready= in
+the promotion queue when the matching test coverage exists, but package
+owners still decide whether to add them to the facade stable API manifest.
+dired
+dired-find-file
+dired-up-directory
+dired-next-line
+dired-previous-line
+dired-mark
+dired-unmark
+dired-flag-file-deletion
+dired-do-flagged-delete
+dired-do-rename
+dired-do-copy
+emacs-dired-min-revert-buffer
+emacs-dired-min-quit-window
+
+The =core= lazy =emacs-isearch= surface is a documented promotion
+candidate, not yet a versioned stable contract.  It exposes the reusable
+incremental-search session helpers that GUI and frontend drivers share.
+The helper candidates are =emacs-isearch-highlight-face=,
+=emacs-isearch-restore-start-direct=,
+=emacs-isearch-search-from-start-direct=,
+=emacs-isearch-repeat-direct=, and =emacs-isearch-reset=.  These names
+should move from =needs-doc= or =needs-review= to =promote-ready= in the
+promotion queue when the matching test coverage exists, but package owners
+still decide whether to add them to the facade stable API manifest.
+emacs-isearch-highlight-face
+emacs-isearch-restore-start-direct
+emacs-isearch-search-from-start-direct
+emacs-isearch-repeat-direct
+emacs-isearch-reset
+
+The =buffer-core= lazy =emacs-replace= surface is a documented promotion
+candidate, not yet a versioned stable contract.  It owns reusable replace,
+occur, and query-replace semantics that GUI and TUI callers should share
+instead of reimplementing in frontend code.  The bulk replace candidates are
+=emacs-replace-regexp=, =emacs-replace-string=,
+=emacs-replace-how-many=, =emacs-replace-flush-lines=, and
+=emacs-replace-keep-lines=.  The query-replace candidates are
+=emacs-query-replace-region=, =emacs-query-replace=,
+=emacs-query-replace-regexp=, =emacs-query-replace-session-count=,
+=emacs-query-replace-session-active-p=,
+=emacs-query-replace-session-prompt=,
+=emacs-query-replace-session-message=,
+=emacs-query-replace-session-decision=,
+=emacs-query-replace-session-start=,
+=emacs-query-replace-session-handle-decision=,
+=emacs-query-replace-session-handle-key=, and
+=emacs-query-replace-run-command=.  =emacs-replace-install= is the explicit
+compatibility installer that binds standard names such as =query-replace= and
+=replace-string=; consumers should require the prefixed API directly unless
+they are intentionally installing compatibility globals.  These names should
+move from =needs-doc= or =needs-test= to =promote-ready= in the promotion queue
+when the matching test coverage exists, but package owners still decide
+whether to add them to the facade stable API manifest.
+emacs-replace-regexp
+emacs-replace-string
+emacs-replace-how-many
+emacs-replace-flush-lines
+emacs-replace-keep-lines
+emacs-query-replace-region
+emacs-query-replace
+emacs-query-replace-regexp
+emacs-query-replace-session-count
+emacs-query-replace-session-active-p
+emacs-query-replace-session-prompt
+emacs-query-replace-session-message
+emacs-query-replace-session-decision
+emacs-query-replace-session-start
+emacs-query-replace-session-handle-decision
+emacs-query-replace-session-handle-key
+emacs-query-replace-run-command
+emacs-replace-install
+
+The =buffer-core= lazy =emacs-occur= surface is a documented promotion
+candidate, not yet a versioned stable contract.  It owns the reusable
+occur listing and navigation helpers that frontend adapters share instead
+of rebuilding their own search result buffers.  The helper candidates are
+=emacs-occur-matches=, =emacs-occur=, =emacs-occur-goto=, and
+=emacs-occur-buffer-name=.  These names should move from =needs-doc= to
+=promote-ready= in the promotion queue when the matching test coverage
+exists, but package owners still decide whether to add them to the facade
+stable API manifest.
+emacs-occur-matches
+emacs-occur
+emacs-occur-goto
+emacs-occur-buffer-name
+
+The =io= =emacs-shell-command= surface is the reusable shell-command family
+shared by TUI, GUI, and project-aware command entry points.  The direct
+helpers are =emacs-shell-command-output-text=,
+=emacs-shell-command-run-to-string=,
+=emacs-shell-command-lightweight-output=,
+=emacs-shell-command-run-lightweight-command=,
+=emacs-shell-command-run-buffer-command=, and
+=emacs-shell-command-run-region-buffer-command=.  The GUI bridge helpers are
+=emacs-shell-command-gui-register-backend=,
+=emacs-shell-command-gui-shell-quote-argument=,
+=emacs-shell-command-gui-project-shell-command-text=,
+=emacs-shell-command-gui-shell-command-core=,
+=emacs-shell-command-gui-shell-command=,
+=emacs-shell-command-gui-project-shell-command=,
+=emacs-shell-command-gui-async-shell-command=,
+=emacs-shell-command-gui-project-async-shell-command=,
+=emacs-shell-command-gui-project-compile=, and
+=emacs-shell-command-gui-backend=.  The explicit compatibility installer is
+=emacs-shell-command--install-bindings=, which binds standard names such as
+=shell-command= and =async-shell-command=; consumers should require the
+prefixed API directly unless they are intentionally installing compatibility
+globals.  These names should move from =needs-doc= to =promote-ready= in the
+promotion queue when the matching test coverage exists, but package owners
+still decide whether to add them to the facade stable API manifest.
+emacs-shell-command-output-text
+emacs-shell-command-run-to-string
+emacs-shell-command-lightweight-output
+emacs-shell-command-run-lightweight-command
+emacs-shell-command-run-buffer-command
+emacs-shell-command-run-region-buffer-command
+emacs-shell-command-gui-register-backend
+emacs-shell-command-gui-shell-quote-argument
+emacs-shell-command-gui-project-shell-command-text
+emacs-shell-command-gui-shell-command-core
+emacs-shell-command-gui-shell-command
+emacs-shell-command-gui-project-shell-command
+emacs-shell-command-gui-async-shell-command
+emacs-shell-command-gui-project-async-shell-command
+emacs-shell-command-gui-project-compile
+emacs-shell-command-gui-backend
+
+The =io= =emacs-shell-command= surface also exposes the visible buffer
+names and async process state used by the higher-level commands.  The
+shared constants are =emacs-shell-command-output-buffer-name= and
+=emacs-shell-command-async-buffer-name=.  The last async process handle is
+=emacs-shell-command-last-async-process=.  These names should move from
+=needs-review= or =needs-test= to =promote-ready= in the promotion queue
+when the matching test coverage exists, but package owners still decide
+whether to add them to the facade stable API manifest.
+emacs-shell-command-output-buffer-name
+emacs-shell-command-async-buffer-name
+emacs-shell-command-last-async-process
+
+The =io= =emacs-shell-command= project bridge surface is also a documented
+promotion candidate.  The helper candidates are
+=emacs-shell-command-gui-project-shell-command-text=,
+=emacs-shell-command-gui-project-async-shell-command=, and
+=emacs-shell-command-gui-project-interactive-shell-buffer=.  These names
+should move from =needs-test= or =needs-review= to =promote-ready= in the
+promotion queue when the matching test coverage exists, but package owners
+still decide whether to add them to the facade stable API manifest.
+emacs-shell-command-gui-project-shell-command-text
+emacs-shell-command-gui-project-async-shell-command
+emacs-shell-command-gui-project-interactive-shell-buffer
+
+The =io= lazy =emacs-vc= surface is a documented promotion candidate, not
+yet a versioned stable contract.  It exposes minimal process-backed Git VC
+inspection for validating process/file substrate needed by vendor VC and
+Magit-like packages.  The helper candidates are =emacs-vc-status=, =emacs-vc-diff=,
+=emacs-vc-print-log=, =emacs-vc-dir=, =emacs-vc-annotate=,
+=emacs-vc-revision-diff=, and the explicit compatibility installer
+=emacs-vc-install=.  These names should move from =needs-doc= or
+=needs-review= to =promote-ready= before they are added to the facade stable
+API manifest.
+emacs-vc-status
+emacs-vc-diff
+emacs-vc-print-log
+emacs-vc-dir
+emacs-vc-annotate
+emacs-vc-revision-diff
+emacs-vc-install
+
+The =core= lazy =emacs-buffer-ui= surface is a documented promotion
+candidate, not yet a versioned stable contract.  It exposes frontend-neutral
+buffer UI helpers that GUI and TUI adapters can call before entering the
+higher-level switch/list/kill commands.  The helper candidates are
+=emacs-buffer-ui-current-buffer-name=,
+=emacs-buffer-ui-get-or-create-text-buffer=,
+=emacs-buffer-ui-kill-buffer-interactive=,
+=emacs-buffer-ui-buffer-menu-spec=,
+=emacs-buffer-ui-find-buffer=,
+=emacs-buffer-ui-switch-to-buffer-plan=,
+=emacs-buffer-ui-kill-buffer-plan=,
+=emacs-buffer-ui-confirm-kill-buffer=,
+=emacs-buffer-ui-buffer-menu-entry=,
+=emacs-buffer-ui-move-to-buffer-start=,
+=emacs-buffer-ui-replace-text-buffer=,
+=emacs-buffer-ui-switch-to-buffer=,
+=emacs-buffer-ui-list-buffers=,
+=emacs-buffer-ui-run-switch-buffer-command=,
+=emacs-buffer-ui-run-switch-existing-command=,
+=emacs-buffer-ui-run-list-buffers-command=,
+=emacs-buffer-ui-run-kill-buffer-command=, and
+=emacs-buffer-ui-run-kill-buffer-plan-command=.  These names should move
+from =needs-doc= to =promote-ready= in the promotion queue when the
+matching test coverage exists, but package owners still decide whether to
+add them to the facade stable API manifest.
+emacs-buffer-ui-current-buffer-name
+emacs-buffer-ui-get-or-create-text-buffer
+emacs-buffer-ui-kill-buffer-interactive
+emacs-buffer-ui-buffer-menu-spec
+emacs-buffer-ui-find-buffer
+emacs-buffer-ui-switch-to-buffer-plan
+emacs-buffer-ui-kill-buffer-plan
+emacs-buffer-ui-confirm-kill-buffer
+emacs-buffer-ui-buffer-menu-entry
+emacs-buffer-ui-move-to-buffer-start
+emacs-buffer-ui-replace-text-buffer
+emacs-buffer-ui-switch-to-buffer
+emacs-buffer-ui-list-buffers
+emacs-buffer-ui-run-switch-buffer-command
+emacs-buffer-ui-run-switch-existing-command
+emacs-buffer-ui-run-list-buffers-command
+emacs-buffer-ui-run-kill-buffer-command
+emacs-buffer-ui-run-kill-buffer-plan-command
+
+The =io= =emacs-dump= surface is the reusable lisp-image dump family
+shared by loadup, image inspection, and external tooling.  The stable
+lazy package API includes =emacs-dump-build-image=, =emacs-dump-save=,
+=emacs-dump-read=, =emacs-dump-load=, and =emacs-dump-image-info=.  The
+documented tuning knobs are =emacs-dump-format-version=,
+=emacs-dump-default-load-history-tail=,
+=emacs-dump-extra-buffer-names=, and
+=emacs-dump-defvar-allowlist=.  Consumers must require =emacs-dump=
+before relying on these names, but the symbols are part of the versioned
+IO contract and appear in the stable lazy API manifest.
+emacs-dump-build-image
+emacs-dump-save
+emacs-dump-read
+emacs-dump-load
+emacs-dump-image-info
+emacs-dump-format-version
+emacs-dump-default-load-history-tail
+emacs-dump-extra-buffer-names
+emacs-dump-defvar-allowlist
+
+The =io= =image-loader= surface is the reusable lisp-image restore
+adapter.  The stable lazy package API includes =image-loader-load=,
+=image-loader-load-if-readable=, =image-loader-load-batch=, and
+=image-loader-info=.  The contract variables are =image-loader-file=,
+=image-loader-restore-buffers=, =image-loader-last-loaded-file=, and
+=image-loader-last-image-info=.  Consumers must require =image-loader=
+before relying on these names, but they are part of the versioned IO
+contract and stay usable for batch loaders and external tooling.
+image-loader-load
+image-loader-load-if-readable
+image-loader-load-batch
+image-loader-info
+image-loader-file
+image-loader-restore-buffers
+image-loader-last-loaded-file
+image-loader-last-image-info
 
 The =text-core= stable package API covers the eager, display-free text
 substrate used by buffer/search/file packages: the
@@ -785,6 +1105,194 @@ emacs-window-shrink-window
 emacs-window-display-buffer
 emacs-window-pop-to-buffer
 emacs-window-quit-window
+
+The =core/syntax= surface is the shared syntax-state substrate used by
+font-lock and syntax-aware editor helpers.  It is a documented promotion
+candidate, not yet a versioned stable contract.  It covers syntax class
+lookup through =emacs-syntax-class-of= and =emacs-syntax-state-at=;
+syntax entry mutation through =emacs-syntax-modify-entry=; and face
+application over a region through =emacs-syntax-apply-faces-region=.
+Contract version 1 does not claim the full upstream syntax-table engine,
+mode-specific comment parsing, or parser state beyond the current
+syntax-state substrate.  These names should move from =needs-doc= or
+=needs-review= to =promote-ready= when the matching test and consumer
+documentation evidence exists.
+The exact core/syntax candidate names are
+emacs-syntax-apply-faces-region,
+emacs-syntax-class-of,
+emacs-syntax-modify-entry, and
+emacs-syntax-state-at.
+emacs-syntax-apply-faces-region
+emacs-syntax-class-of
+emacs-syntax-modify-entry
+emacs-syntax-state-at
+
+The =core/font-lock= surface is the shared font-lock substrate used by
+elisp mode, syntax-aware text editing, and buffer repaint consumers.  It
+is a documented promotion candidate, not yet a versioned stable
+contract.  It covers keyword installation and removal through
+=emacs-font-lock-add-keywords= and =emacs-font-lock-remove-keywords=;
+default setup and mode enablement through =emacs-font-lock-set-defaults=,
+=emacs-font-lock-mode=, and =emacs-font-lock-mode-enabled-p=; dirty-region
+tracking and flush helpers through =emacs-font-lock-mark-dirty-region=,
+=emacs-font-lock-pending-dirty-region=, and
+=emacs-font-lock-flush-pending=; fontification through
+=emacs-font-lock-fontify-region= and =emacs-font-lock-fontify-buffer=;
+unstyled cleanup through =emacs-font-lock-unfontify-region= and
+=emacs-font-lock-unfontify-buffer=; incremental change handling through
+=emacs-font-lock-after-change-handler=; key metadata through
+=emacs-font-lock-keywords= and =emacs-font-lock-jit-lock-functions=; and
+JIT registration through =emacs-font-lock-jit-lock-register= and
+=emacs-font-lock-jit-lock-unregister=.  The review-only helper
+=emacs-font-lock-default-fontify-region= remains under explicit review and
+is not a consumer contract yet.  Contract version 1 does not claim full
+upstream font-lock heuristics, per-mode face machinery, or other display
+engine integrations.  These names should move from =needs-doc= to
+=promote-ready= when the matching test and consumer documentation evidence
+exists.
+The exact core/font-lock candidate names are
+emacs-font-lock-add-keywords,
+emacs-font-lock-after-change-handler,
+emacs-font-lock-flush-pending,
+emacs-font-lock-fontify-buffer,
+emacs-font-lock-fontify-region,
+emacs-font-lock-jit-lock-functions,
+emacs-font-lock-jit-lock-register,
+emacs-font-lock-jit-lock-unregister,
+emacs-font-lock-keywords,
+emacs-font-lock-mark-dirty-region,
+emacs-font-lock-mode,
+emacs-font-lock-mode-enabled-p,
+emacs-font-lock-pending-dirty-region,
+emacs-font-lock-remove-keywords,
+emacs-font-lock-set-defaults,
+emacs-font-lock-unfontify-buffer,
+emacs-font-lock-unfontify-region, and
+emacs-font-lock-default-fontify-region.
+emacs-font-lock-add-keywords
+emacs-font-lock-after-change-handler
+emacs-font-lock-flush-pending
+emacs-font-lock-fontify-buffer
+emacs-font-lock-fontify-region
+emacs-font-lock-jit-lock-functions
+emacs-font-lock-jit-lock-register
+emacs-font-lock-jit-lock-unregister
+emacs-font-lock-keywords
+emacs-font-lock-mark-dirty-region
+emacs-font-lock-mode
+emacs-font-lock-mode-enabled-p
+emacs-font-lock-pending-dirty-region
+emacs-font-lock-remove-keywords
+emacs-font-lock-set-defaults
+emacs-font-lock-unfontify-buffer
+emacs-font-lock-unfontify-region
+emacs-font-lock-default-fontify-region
+
+The =core/elisp= surface is the shared Elisp evaluation and mode setup
+substrate used by elisp-mode consumers and interactive evaluation entry
+points.  It is a documented promotion candidate, not yet a versioned
+stable contract.  It covers interactive evaluation through
+=emacs-elisp-eval-eval-region= and =emacs-elisp-eval-eval-buffer=; and
+mode font-lock setup through =emacs-elisp-mode-setup-font-lock= and
+=emacs-elisp-mode-font-lock-keywords=.  Contract version 1 does not claim
+full upstream elisp-mode execution, buffer-local command rebinding, or
+frontend-specific editor bootstrap.  These names should move from
+=needs-doc= or =needs-review= to =promote-ready= when the matching test
+and consumer documentation evidence exists.
+The exact core/elisp candidate names are
+emacs-elisp-eval-eval-buffer,
+emacs-elisp-eval-eval-region,
+emacs-elisp-mode-font-lock-keywords, and
+emacs-elisp-mode-setup-font-lock.
+emacs-elisp-eval-eval-buffer
+emacs-elisp-eval-eval-region
+emacs-elisp-mode-font-lock-keywords
+emacs-elisp-mode-setup-font-lock
+
+The =core/redisplay= surface is the shared redisplay substrate used by
+frame, window, and UI consumers that need an in-process glyph-matrix view
+before a real backend exists.  It is a documented promotion candidate,
+not yet a versioned stable contract.  It covers backend-handle lifecycle
+through =emacs-redisplay-init=, =emacs-redisplay-shutdown=,
+=emacs-redisplay-set-current-handle=, =emacs-redisplay-current-handle=,
+=emacs-redisplay-handlep=, =emacs-redisplay-handle-alive-p=,
+=emacs-redisplay-handle-id=, and =emacs-redisplay-handle-backend=;
+glyph-matrix shape and access through =emacs-redisplay-glyph-matrix=,
+=emacs-redisplay-glyph-matrix-width=,
+=emacs-redisplay-glyph-matrix-height=,
+=emacs-redisplay-glyph-matrix-cursor=, and
+=emacs-redisplay-glyph-matrix-dirty-rows=; window/row association through
+=emacs-redisplay-glyph-matrix-window= and
+=emacs-redisplay-handle-window-cache=; dirty-state mutation through
+=emacs-redisplay-mark-window-dirty= and
+=emacs-redisplay-mark-frame-dirty=; drawing and flush helpers through
+=emacs-redisplay-redisplay-window=, =emacs-redisplay-redisplay=,
+=emacs-redisplay-redraw-display=, =emacs-redisplay-flush-frame=, and
+=emacs-redisplay-force-mode-line-update=; cursor placement through
+=emacs-redisplay-set-cursor=; and initial painting through
+=emacs-redisplay-core-initial-paint=, =emacs-redisplay-core-repaint=, and
+=emacs-redisplay-core-repaint-current-line=.  Contract version 1 does not
+claim full GUI repaint ownership, pixel-accurate layout, or event-loop
+integration beyond the current handle and glyph-matrix substrate.  These
+names should move from =needs-doc= or =needs-review= to =promote-ready=
+when the matching test and consumer documentation evidence exists.
+The exact core/redisplay candidate names are
+emacs-redisplay-core-initial-paint,
+emacs-redisplay-core-repaint,
+emacs-redisplay-core-repaint-current-line,
+emacs-redisplay-current-handle,
+emacs-redisplay-flush-frame,
+emacs-redisplay-force-mode-line-update,
+emacs-redisplay-glyph-matrix,
+emacs-redisplay-glyph-matrix-cursor,
+emacs-redisplay-glyph-matrix-dirty-rows,
+emacs-redisplay-glyph-matrix-height,
+emacs-redisplay-glyph-matrix-rows,
+emacs-redisplay-glyph-matrix-width,
+emacs-redisplay-glyph-matrix-window,
+emacs-redisplay-handle-alive-p,
+emacs-redisplay-handle-backend,
+emacs-redisplay-handle-id,
+emacs-redisplay-handle-window-cache,
+emacs-redisplay-handlep,
+emacs-redisplay-init,
+emacs-redisplay-mark-frame-dirty,
+emacs-redisplay-mark-window-dirty,
+emacs-redisplay-paint-mode-line-p,
+emacs-redisplay-redisplay,
+emacs-redisplay-redisplay-window,
+emacs-redisplay-redraw-display,
+emacs-redisplay-set-current-handle,
+emacs-redisplay-set-cursor, and
+emacs-redisplay-shutdown.
+emacs-redisplay-core-initial-paint
+emacs-redisplay-core-repaint
+emacs-redisplay-core-repaint-current-line
+emacs-redisplay-current-handle
+emacs-redisplay-flush-frame
+emacs-redisplay-force-mode-line-update
+emacs-redisplay-glyph-matrix
+emacs-redisplay-glyph-matrix-cursor
+emacs-redisplay-glyph-matrix-dirty-rows
+emacs-redisplay-glyph-matrix-height
+emacs-redisplay-glyph-matrix-rows
+emacs-redisplay-glyph-matrix-width
+emacs-redisplay-glyph-matrix-window
+emacs-redisplay-handle-alive-p
+emacs-redisplay-handle-backend
+emacs-redisplay-handle-id
+emacs-redisplay-handle-window-cache
+emacs-redisplay-handlep
+emacs-redisplay-init
+emacs-redisplay-mark-frame-dirty
+emacs-redisplay-mark-window-dirty
+emacs-redisplay-paint-mode-line-p
+emacs-redisplay-redisplay
+emacs-redisplay-redisplay-window
+emacs-redisplay-redraw-display
+emacs-redisplay-set-current-handle
+emacs-redisplay-set-cursor
+emacs-redisplay-shutdown
 
 The =core/keymap= stable package API is the eager =core= keymap substrate
 used by command-loop, minibuffer, TUI input, and frontends without

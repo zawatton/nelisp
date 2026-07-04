@@ -77,6 +77,12 @@ Cleared on every fresh read-key-sequence iteration.")
 (defvar emacs-command-loop--throw-on-input nil
   "Tag to `throw' to when the next event is read; used for nested loops.")
 
+(defvar emacs-command-loop--called-interactively nil
+  "Non-nil within the dynamic extent of an interactive call (Doc 06 A5).
+Read by `called-interactively-p'.  This approximates the host's call-stack
+inspection: nested *programmatic* calls inside an interactive command are not
+distinguished without frame-level introspection.")
+
 ;;;; --- GUI bridge command context ------------------------------------
 
 (defvar emacs-command-loop-gui-backend nil
@@ -2232,20 +2238,34 @@ bound `unread-command-events' if any.  Returns the event, or signals
       ev))
    (t (signal 'emacs-command-loop-no-input nil))))
 
+(defvar emacs-command-loop-input-poll-function nil
+  "Function consulted by `emacs-command-loop-read-event' when the event queue
+is empty, to obtain a live input event (Doc 06 A1: bridges TUI stdin into the
+standard command loop).  Called with one argument TIMEOUT-MS (nil = non-blocking
+poll) and must return an Emacs event (a character or a key symbol) or nil.  The
+TUI runtime (`nemacs-main') sets this to poll the `emacs-tui-event' handle.")
+
 (defun emacs-command-loop-read-event (&optional prompt _suppress seconds)
-  "Read one event from the queue.
-PROMPT and SECONDS are accepted for API parity but ignored — the
-substrate has no terminal access; the future TUI bridge will wire
-`emacs-tui-event-poll' here.
+  "Read one event: from the queue, else via
+`emacs-command-loop-input-poll-function' (e.g. live TUI stdin) when the queue is
+empty.  PROMPT is ignored; SECONDS, when non-nil, is the maximum wait passed to
+the poll function (converted to milliseconds).
 
 Side effect: updates `emacs-command-loop--last-input-event' (and the
 non-menu mirror)."
-  (ignore prompt seconds)
+  (ignore prompt)
   (when (and emacs-command-loop--quit-flag
              (not emacs-command-loop--inhibit-quit))
     (setq emacs-command-loop--quit-flag nil)
     (signal 'emacs-command-loop-quit nil))
-  (let ((ev (emacs-command-loop--pop-event)))
+  (let ((ev (cond
+             ((emacs-command-loop-pending-p)
+              (emacs-command-loop--pop-event))
+             (emacs-command-loop-input-poll-function
+              (or (funcall emacs-command-loop-input-poll-function
+                           (and seconds (truncate (* seconds 1000))))
+                  (signal 'emacs-command-loop-no-input nil)))
+             (t (signal 'emacs-command-loop-no-input nil)))))
     (setq emacs-command-loop--last-input-event   ev
           emacs-command-loop--last-nonmenu-event ev)
     ;; Track X follow-up (2026-05-05): also publish the event to the
@@ -2388,6 +2408,43 @@ chars folds to a string."
       (setq i (1+ i)))
     s))
 
+(defun emacs-command-loop--ensure-translation-maps ()
+  "Ensure the three key-translation keymaps exist as sparse keymaps (Doc 06 A3).
+No-op for entries that already hold a keymap (= host C builtins)."
+  (when (fboundp 'make-sparse-keymap)
+    (dolist (sym '(input-decode-map function-key-map key-translation-map))
+      (unless (and (boundp sym)
+                   (fboundp 'keymapp)
+                   (keymapp (symbol-value sym)))
+        (set sym (make-sparse-keymap))))))
+
+(defun emacs-command-loop--translate-keys (vec)
+  "Apply input-decode / function-key / key-translation maps to VEC (Doc 06 A3).
+`key-translation-map' translates unconditionally; `input-decode-map' /
+`function-key-map' translate only a sequence that is not already command-bound.
+nil/unset maps are skipped.  Returns the (possibly translated) key vector."
+  (if (not (fboundp 'emacs-keymap-lookup-key))
+      vec
+    (let* ((v vec)
+           (lk (lambda (sym)
+                 (and (boundp sym)
+                      (fboundp 'keymapp)
+                      (keymapp (symbol-value sym))
+                      (let ((r (ignore-errors
+                                 (emacs-keymap-lookup-key (symbol-value sym) v))))
+                        (and (vectorp r) r))))))
+      (let ((tr (funcall lk 'key-translation-map)))
+        (when tr (setq v tr)))
+      (let ((bound (and (fboundp 'emacs-keymap-key-binding)
+                        (let ((b (emacs-keymap-key-binding v)))
+                          (and b (not (and (fboundp 'emacs-keymap-keymapp)
+                                           (emacs-keymap-keymapp b))))))))
+        (unless bound
+          (let ((tr (or (funcall lk 'input-decode-map)
+                        (funcall lk 'function-key-map))))
+            (when tr (setq v tr)))))
+      v)))
+
 (defun emacs-command-loop--read-keys-vec (prompt)
   "Read one complete key sequence as a vector of events.
 Walks the active keymap chain (= via `emacs-keymap-key-binding')
@@ -2426,7 +2483,8 @@ vector."
 Returns a string when every event in the sequence is an unmodified
 ASCII char, else a vector.  PROMPT and the four optional arguments
 are accepted for API parity but ignored in the MVP."
-  (let ((vec (emacs-command-loop--read-keys-vec prompt)))
+  (let ((vec (emacs-command-loop--translate-keys
+              (emacs-command-loop--read-keys-vec prompt))))
     (if (emacs-command-loop--keys-stringable-p vec)
         (emacs-command-loop--vec->string vec)
       vec)))
@@ -2437,7 +2495,7 @@ are accepted for API parity but ignored in the MVP."
                                                               _can-return-switch
                                                               _cmd-loop)
   "Like `emacs-command-loop-read-key-sequence' but always vector."
-  (emacs-command-loop--read-keys-vec prompt))
+  (emacs-command-loop--translate-keys (emacs-command-loop--read-keys-vec prompt)))
 
 ;;;; --- prefix-arg state (Phase B.3 placeholder, B.5 driver) ----------
 
@@ -2483,8 +2541,15 @@ SPEC is the body of `(interactive ...)':
   (cond
    ((null spec) nil)
    ((stringp spec)
+    ;; Doc 06 A4: strip leading command modifiers (`*' read-only check,
+    ;; `@' select-window, `^' shift-select); the MVP treats them as no-ops.
+    (let ((mi 0))
+      (while (and (< mi (length spec)) (memq (aref spec mi) '(?* ?@ ?^)))
+        (setq mi (1+ mi)))
+      (setq spec (substring spec mi)))
     (let ((args nil)
-          (lines (split-string spec "\n")))
+          (lines (split-string spec "\n"))
+          (rs (lambda (p) (if (fboundp 'read-string) (read-string p) ""))))
       (dolist (line lines)
         (when (> (length line) 0)
           (let ((code (aref line 0))
@@ -2498,26 +2563,81 @@ SPEC is the body of `(interactive ...)':
                     args))
              ((eq code ?N)
               (push (or emacs-command-loop--current-prefix-arg
-                        (if (fboundp 'read-number)
-                            (read-number prompt 0)
-                          0))
+                        (if (fboundp 'read-number) (read-number prompt 0) 0))
                     args))
              ((eq code ?n)
-              (push (if (fboundp 'read-number)
-                        (read-number prompt 0)
-                      0)
+              (push (if (fboundp 'read-number) (read-number prompt 0) 0) args))
+             ((memq code '(?s ?M)) (push (funcall rs prompt) args))
+             ((eq code ?S) (push (intern (funcall rs prompt)) args))
+             ((memq code '(?C ?v)) (push (intern (funcall rs prompt)) args))
+             ((memq code '(?b ?B ?f ?F ?D)) (push (funcall rs prompt) args))
+             ((eq code ?x) (push (car (read-from-string (funcall rs prompt))) args))
+             ((eq code ?X)
+              (push (eval (car (read-from-string (funcall rs prompt))) t) args))
+             ((eq code ?d)
+              (push (cond ((fboundp 'point) (point))
+                          ((fboundp 'nelisp-ec-point) (nelisp-ec-point))
+                          (t 1))
                     args))
-             ((eq code ?s)
-              (push (if (fboundp 'read-string)
-                        (read-string prompt)
-                      "")
+             ((eq code ?m)
+              (push (cond ((fboundp 'mark) (mark))
+                          ((fboundp 'nelisp-ec-mark) (nelisp-ec-mark))
+                          (t nil))
                     args))
+             ((eq code ?r)
+              (let ((rb (cond ((fboundp 'region-beginning) (region-beginning))
+                              ((fboundp 'point) (point)) (t 1)))
+                    (re (cond ((fboundp 'region-end) (region-end))
+                              ((fboundp 'point) (point)) (t 1))))
+                (push rb args)
+                (push re args)))
+             ((eq code ?c)
+              (push (if (fboundp 'read-char)
+                        (read-char prompt)
+                      (emacs-command-loop-read-char prompt))
+                    args))
+             ((eq code ?k)
+              (push (emacs-command-loop-read-key-sequence prompt) args))
+             ((eq code ?K)
+              (push (emacs-command-loop-read-key-sequence-vector prompt) args))
+             ((eq code ?e) (push emacs-command-loop--last-input-event args))
+             ((eq code ?i) (push nil args))
              (t (signal 'emacs-command-loop-error
                         (list 'unsupported-interactive-code code)))))))
       (nreverse args)))
    ((or (consp spec) (functionp spec))
     (eval spec t))
    (t nil)))
+
+(defun emacs-command-loop--interactive-form (function)
+  "Return FUNCTION's interactive form, or nil.
+This mirrors the subset of Emacs `interactive-form' needed by the
+command-loop substrate without requiring the full evaluator bridge to be
+loaded first."
+  (cond
+   ((and (fboundp 'interactive-form)
+         (interactive-form function)))
+   ((symbolp function)
+    (or (get function 'interactive-form)
+        (let ((def (and (fboundp function)
+                        (symbol-function function))))
+          (and def (emacs-command-loop--interactive-form def)))))
+   ((consp function)
+    (let ((body (cond
+                 ((eq (car function) 'lambda) (cddr function))
+                 ((eq (car function) 'closure) (cdddr function))
+                 (t nil))))
+      (and body (consp (car body))
+           (eq (caar body) 'interactive)
+           (car body))))
+   (t nil)))
+
+(defun emacs-command-loop--commandp (function)
+  "Return non-nil when FUNCTION is an interactive command."
+  (and (or (and (symbolp function) (fboundp function))
+           (functionp function))
+       (emacs-command-loop--interactive-form function)
+       t))
 
 (defun emacs-command-loop-call-interactively (function &optional record-flag keys)
   "Phase B.3 MVP: invoke FUNCTION as if interactively from the keyboard.
@@ -2527,42 +2647,25 @@ Reads FUNCTION's interactive form, builds an arg list from the spec,
 binds `current-prefix-arg' from the pending `prefix-arg', dispatches
 the call, then promotes `this-command' to `last-command'."
   (ignore record-flag keys)
-  (unless (or (and (symbolp function) (fboundp function))
-              (functionp function))
+  (unless (emacs-command-loop--commandp function)
     (signal 'wrong-type-argument (list 'commandp function)))
-  (let* ((form (cond
-                ((symbolp function)
-                 (or (and (fboundp 'interactive-form)
-                          (interactive-form function))
-                     ;; Fallback: peek at the lambda's body.
-                     (let ((def (and (fboundp function)
-                                     (symbol-function function))))
-                       (and (consp def)
-                            (let ((b (cond
-                                      ((eq (car def) 'lambda) (cddr def))
-                                      ((eq (car def) 'closure) (cdddr def))
-                                      (t nil))))
-                              (and b (consp (car b))
-                                   (eq (caar b) 'interactive)
-                                   (car b)))))))
-                ((and (fboundp 'interactive-form)
-                      (interactive-form function)))
-                (t nil)))
+  (let* ((form (emacs-command-loop--interactive-form function))
          (spec (and (consp form) (cadr form)))
          (emacs-command-loop--current-prefix-arg
           emacs-command-loop--prefix-arg)
          (args (emacs-command-loop--build-args spec)))
     (setq emacs-command-loop--prefix-arg nil)
     (emacs-command-loop-set-this-command function)
-    (let ((result (apply function args)))
+    (let ((result (let ((emacs-command-loop--called-interactively t))
+                    (apply function args))))
       (emacs-command-loop-mark-command-finished)
       result)))
 
 (defun emacs-command-loop-funcall-interactively (function &rest args)
-  "Like `funcall' but signal that the call is interactive.
-MVP: this is plain `apply' — `called-interactively-p' tracking is
-deferred until we have a richer call-stack inspection layer."
-  (apply function args))
+  "Like `funcall' but mark the call interactive for `called-interactively-p'
+(Doc 06 A5).  Approximates via dynamic extent (no call-stack frame inspection)."
+  (let ((emacs-command-loop--called-interactively t))
+    (apply function args)))
 
 (defun emacs-command-loop-command-execute (cmd &optional record-flag keys special)
   "Phase B.3 MVP: dispatch CMD as a command.
@@ -2584,8 +2687,7 @@ RECORD-FLAG / KEYS / SPECIAL are accepted for API parity."
                       (list (aref cmd i))))
         (setq i (1+ i)))
       nil))
-   ((or (and (symbolp cmd) (fboundp cmd))
-        (functionp cmd))
+   ((emacs-command-loop--commandp cmd)
     (emacs-command-loop-call-interactively cmd record-flag keys))
    (t (signal 'wrong-type-argument (list 'commandp cmd)))))
 
@@ -2613,6 +2715,29 @@ nil = silently skip and continue.")
    ((fboundp 'key-binding) (key-binding key-seq))
    (t nil)))
 
+(defvar special-event-map nil
+  "Keymap for events handled immediately, outside normal command dispatch
+(Doc 06 B4).  When the next pending event is bound here, its binding runs at
+once and does not become `this-command'.  nil = no special events.")
+
+(defun emacs-command-loop--maybe-run-special-event ()
+  "Run a special event when the next pending event is bound in
+`special-event-map'; return non-nil when one was handled.  A no-op (does not
+consume input) when `special-event-map' is nil / not a keymap."
+  (when (and (boundp 'special-event-map)
+             (fboundp 'keymapp) (keymapp special-event-map)
+             (fboundp 'emacs-keymap-lookup-key)
+             (emacs-command-loop-pending-p))
+    (let* ((ev (emacs-command-loop--pop-event))
+           (binding (ignore-errors
+                      (emacs-keymap-lookup-key special-event-map (vector ev)))))
+      (if (and binding
+               (or (functionp binding)
+                   (and (symbolp binding) (fboundp binding))))
+          (progn (funcall binding) t)
+        (push ev emacs-command-loop--unread-events)
+        nil))))
+
 (defun emacs-command-loop-step ()
   "Run one command-loop iteration:
 1. read-key-sequence to consume events from the queue,
@@ -2620,7 +2745,10 @@ nil = silently skip and continue.")
 3. run `pre-command-hook',
 4. dispatch via `command-execute' (= which calls `call-interactively'),
 5. run `post-command-hook'.
-Returns the binding (= function or nil)."
+Returns the binding (= function or nil), or `special-event' when a
+`special-event-map' binding was handled (Doc 06 B4)."
+  (if (emacs-command-loop--maybe-run-special-event)
+      'special-event
   (let* ((vec (emacs-command-loop--read-keys-vec nil))
          (binding (emacs-command-loop--lookup-command vec)))
     (cond
@@ -2638,7 +2766,7 @@ Returns the binding (= function or nil)."
         (run-hooks 'pre-command-hook))
       (prog1 (emacs-command-loop-command-execute binding)
         (when (boundp 'post-command-hook)
-          (run-hooks 'post-command-hook)))))))
+          (run-hooks 'post-command-hook))))))))
 
 (defun emacs-command-loop-drain ()
   "Run `emacs-command-loop-step' until the unread queue is empty.

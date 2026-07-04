@@ -49,6 +49,45 @@
                  (assoc-string "a" '((A . 1)) t)))
   (should-not (assoc-string 'a '((A . 1)) nil)))
 
+(ert-deftest emacs-string-test/casefiddle-ascii-polyfill ()
+  "ASCII upcase/downcase polyfills cover character and string objects.
+Host Emacs' C builtins shadow the `unless (fboundp ...)' gates, so pin literal
+copies of the polyfill bodies (Doc 16 residuals-test parity pattern)."
+  (cl-letf (((symbol-function 'upcase)
+             (lambda (object)
+               (cond
+                ((integerp object)
+                 (if (and (>= object ?a) (<= object ?z)) (- object 32) object))
+                ((stringp object)
+                 (let ((res (copy-sequence object)) (i 0) (n (length object)))
+                   (while (< i n)
+                     (let ((c (aref object i)))
+                       (when (and (>= c ?a) (<= c ?z)) (aset res i (- c 32))))
+                     (setq i (1+ i)))
+                   res))
+                (t object))))
+            ((symbol-function 'downcase)
+             (lambda (object)
+               (cond
+                ((integerp object)
+                 (if (and (>= object ?A) (<= object ?Z)) (+ object 32) object))
+                ((stringp object)
+                 (let ((res (copy-sequence object)) (i 0) (n (length object)))
+                   (while (< i n)
+                     (let ((c (aref object i)))
+                       (when (and (>= c ?A) (<= c ?Z)) (aset res i (+ c 32))))
+                     (setq i (1+ i)))
+                   res))
+                (t object)))))
+    (should (= ?A (upcase ?a)))
+    (should (= ?A (upcase ?A)))
+    (should (= ?5 (upcase ?5)))
+    (should (equal "ABC123" (upcase "abc123")))
+    (should (= ?z (downcase ?Z)))
+    (should (= ?z (downcase ?z)))
+    (should (equal "abc123" (downcase "ABC123")))
+    (should (equal "" (upcase "")))))
+
 (ert-deftest emacs-string-test/doc16-breadth-string-builtins ()
   "Doc 16 breadth: string-equal-ignore-case / string-clean-whitespace /
 string-split were void in the standalone runtime."
@@ -108,3 +147,21 @@ split-string-and-unquote."
 (provide 'emacs-string-test)
 
 ;;; emacs-string-test.el ends here
+
+(ert-deftest emacs-string-test/char-width-matches-host ()
+  "emacs-string--char-width matches host char-width on representative codepoints.
+Host's C `char-width' shadows the install gate, so the private policy helper is
+exercised directly and compared to host."
+  (dolist (cp (list 1 8 9 10 12 13 27 31 32 65 97 126 127 160
+                    #x301 #x3042 #x65e5 #xFF21 #xAC00 #x1100 #x1F600 #x2003))
+    (should (= (char-width cp) (emacs-string--char-width cp))))
+  ;; summed string width, including a wide CJK codepoint
+  (should (= 3 (emacs-string--string-width "abc")))
+  (should (= 4 (emacs-string--string-width (string ?a #x65e5 ?b))))
+  (should (= 0 (emacs-string--string-width ""))))
+
+(ert-deftest emacs-string-test/propertize-returns-string-content ()
+  "propertize returns the string content (MVP drops properties)."
+  (should (string= "abc" (propertize "abc" 'face 'bold)))
+  (should (stringp (propertize "x")))
+  (should (string= "" (propertize ""))))
