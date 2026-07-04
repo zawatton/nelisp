@@ -12147,3 +12147,71 @@ path:
    (3 regression ERTs),
    =tmp-diag/proof-item225-org-chain-plus-backquote.el= (gate proof
    form), this design-doc entry + correction notes on items 223/224.
+
+226. =define-derived-mode= cleanup-arm workaround retired for child
+   bodies, 2026-07-05.  ROOT CAUSE of the workaround: commit
+   =7b0d034= put the generated child mode transition, body, and hook
+   call in the cleanup arm of an =unwind-protect= because standalone
+   NeLisp was losing forms that followed macro-generated parent
+   major-mode calls, especially nested =outline-mode= derived modes.
+   The later item 221 fix repaired the backquote-template macro
+   invocation / command-install symptom that had made generated derived
+   modes fail the =fboundp= + =commandp= gates, and the item 225
+   reader-quote fix repaired hollowed =backquote= definitions.  However,
+   cold-image activation still shows a remaining parent-continuation
+   line-drop when =outline-mode= or =org-mode= is called from a temp
+   buffer, so the original parent-call continuation defect is not fully
+   fixed on that path.
+
+   Fix shape: =src/emacs-mode.el= now matches upstream
+   =derived.el='s observable ordering for the child body: call the
+   parent first, then identify the child major mode, run the BODY as
+   ordinary sequential forms, and run mode hooks at the end.  The child
+   BODY and hook call are no longer in an =unwind-protect= cleanup arm.
+   To avoid reintroducing the cold-image parent-continuation drop, only
+   the parent call remains wrapped in a small =unwind-protect= protected
+   form with an empty cleanup and a completion flag; if the parent does
+   not return, the generated mode signals =emacs-mode-error= instead of
+   running the child body from cleanup.  This keeps the workaround away
+   from command semantics and buffer mutation performed by child bodies.
+
+   Regression coverage: =test/emacs-mode-builtins-test.el= adds a
+   nested derived-mode sequencing test proving parent body, child body,
+   and child hook order.  Focused host ERT for the touched module:
+   19/19 PASS.  =make test-fast=: 1073 tests, 1067 expected, the same
+   6 known failures only (=emacs-redisplay-test= x5 including the two
+   core matrix/paint tests, plus the vendor-first =Info-find-file=
+   failure); no new failures.  The generated package scaffold was
+   refreshed so =packages/nelisp-emacs-core/lisp/emacs-mode.el= carries
+   the same bridge implementation as =src/emacs-mode.el=.
+
+   Trustworthy replay gate, one standalone reader at a time, warm
+   =build/standalone-source-cache=, =VENDOR_REPL_TIMEOUT=900s= and
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=: magit-base 7-file chain
+   with =(and (fboundp 'magit-section-mode)
+   (commandp 'magit-section-mode))=, status=done, exit=0, 118.39 s;
+   text-mode strong proof, status=done, exit=0, 44.08 s; Org chain used
+   the preserved 68-file reconstruction from item 222 because the exact
+   item 215/221 61-file list was previously lost, with the 5-conjunct
+   Org proof plus live =backquote= check
+   =(and (featurep 'org) (featurep 'org-element) (fboundp 'org-mode)
+   (fboundp 'org-element-parse-buffer) (commandp 'org-mode)
+   (eq (backquote 42) 42))=, status=done, exit=0, 350.70 s.
+
+   Cold-image result after regenerating =build/nemacs-bootstrap.repl=:
+   the clone's gate-prelude image build still segfaults during
+   replay-load (exit 139) before dump.  The default-prelude cold image
+   builds from this repo's regenerated bootstrap and boots faithfully:
+   replay-load 6.775 s, dump 0.558 s, cold boot 0.651 s, cold-boot peak
+   RSS 532740 KB, faithfulness =(t t t t (interactive) t)=.  The
+   requested temp-buffer probes no longer show the cleanup-arm blowup
+   (both complete in 0.718 s with about 1.5 MB probe-side peak RSS), but
+   they do not yet produce the target values: =(with-temp-buffer
+   (org-mode) major-mode)= exits 0 with blank stdout, and
+   =(with-temp-buffer (insert "* h") (org-mode)
+   (if (org-element-parse-buffer) 'OK 'NIL))= exits 0 with blank
+   stdout.  Marker probes show the activation line itself is still
+   silently dropped before the after-marker for both =outline-mode= and
+   =org-mode=.  Conclusion: the structural cleanup-arm body blowup has
+   been removed, but a separate cold-image parent activation/line-drop
+   defect remains.

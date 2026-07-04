@@ -214,25 +214,33 @@ the isolation that pinned this down to backquote specifically, not
           (when parent
             (list (list 'put (list 'quote child)
                         ''derived-mode-parent (list 'quote parent)))))
-         ;; Standalone NeLisp currently loses forms that follow some
-         ;; macro-generated parent major-mode calls, notably nested
-         ;; `outline-mode' derived modes.  Running the child transition in
-         ;; `unwind-protect' cleanup preserves the observable
-         ;; define-derived-mode order: parent first, then child body/hooks.
-         (unwind-protect-form
-          (append (list 'unwind-protect parent-call
+         (parent-complete (make-symbol "parent-complete"))
+         ;; Keep the body/hooks outside cleanup.  The parent call still needs
+         ;; this small wrapper on the standalone cold-image path, where nested
+         ;; derived-mode parent calls can otherwise drop following forms.
+         (parent-form
+          (list 'let (list (list parent-complete nil))
+                (list 'unwind-protect
+                      (list 'progn parent-call
+                            (list 'setq parent-complete t))
+                      nil)
+                (list 'unless parent-complete
+                      (list 'signal ''emacs-mode-error
+                            (list 'list
+                                  "Parent mode did not complete"
+                                  (list 'quote parent))))))
+         (defun-form
+          (append (list 'defun child '()
+                        fn-doc
+                        '(interactive)
+                        parent-form
                         (list 'emacs-mode-set-major-mode
                               (list 'quote child) name))
                   real-body
                   (list (list 'emacs-mode-run-mode-hooks
                               (list 'quote e-hook-var)
-                              (list 'quote hook-var)))))
-         (defun-form
-          (list 'defun child '()
-                fn-doc
-                '(interactive)
-                unwind-protect-form
-                nil)))
+                              (list 'quote hook-var))
+                        nil))))
     (append
      (list 'progn
            (list 'defvar hook-var nil hook-doc)
