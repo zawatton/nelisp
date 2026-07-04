@@ -38,6 +38,42 @@
                 (append (and (boundp 'load-path) load-path)
                         (list path))))))))
 
+;; Doc 33 item 224 -- lean `org-modules' default (drop `ol-gnus').
+;;
+;; If real vendored `org/org.el' is ever loaded on top of this bootstrap
+;; (e.g. a full-Org-compat proof harness that appends the vendor Org file
+;; chain after this file), invoking its real `(org-mode)' body calls
+;; `org-load-modules-maybe', which `require's every member of the
+;; `org-modules' defcustom.  Item 223 root-caused this to a dev/nelisp GC
+;; root-coverage crash (fixed upstream by the STACK_TOP-after-cold-load-
+;; grow fix); after that fix `(org-mode)' no longer crashes, but
+;; `(require 'ol-gnus)' alone still does not terminate in practical time:
+;; `ol-gnus.el' transitively requires the real vendored Gnus package
+;; (106 files, 120,283 lines) and this interpreter has no macroexpansion
+;; cache, so it walks that source at a sustained ~240 MB/s with no
+;; inflection point observed in a multi-GB probe window (see
+;; dev/nelisp's FINDINGS.md, "root-cause (org-mode) practical hang to
+;; require'ing real Gnus", 2026-07-04).  The other 10 default
+;; `org-modules' members either have no real dependency in this vendor
+;; tree or a single small file, and load in well under a second each.
+;;
+;; `org.el' declares `org-modules' via `defcustom', and `defcustom' (like
+;; `defvar') only sets the *default* value when the variable is not yet
+;; bound -- pre-binding it here, before any vendor `org.el' loads, makes
+;; that defcustom's own full 11-module default (including `ol-gnus') a
+;; no-op, without editing the vendor file.  This purely changes the
+;; DEFAULT this substrate ships; it does not disable `ol-gnus' for a real
+;; end-user Gnus setup outside this vendor tree, and it matches the
+;; experience a real user without Gnus configured would already have (a
+;; fast `file-missing' skip via `org-load-modules-maybe''s own
+;; `condition-case-unless-debug').  `ol-gnus' (and any other module that
+;; turns out to be impractically heavy) can be added back once the
+;; interpreter gains a macroexpansion cache or a bind-path allocation
+;; fast path (see FINDINGS.md's remediation proposal).
+(unless (boundp 'org-modules)
+  (setq org-modules '(ol-doi ol-w3m ol-bbdb ol-bibtex ol-docview
+                       ol-info ol-irc ol-mhe ol-rmail ol-eww)))
+
 ;; Phase B5 (= 2026-05-09): also surface this file's own directory on
 ;; load-path so that the `(require 'emacs-...)' lines below resolve
 ;; against the bundled `src/' modules under standalone NeLisp where
