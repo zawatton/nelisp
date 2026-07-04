@@ -713,6 +713,13 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    =pos-visible-in-window-p= real line-based semantics in
    =src/emacs-window.el= + =src/emacs-window-builtins.el=; see §8 item 218.
 10. Re-run Dired, text-mode, outline-mode, VC, and Magit focused replays.
+   DONE 2026-07-04: =text-mode.el= (strong proof), =outline.el=,
+   =dired.el=, =dired-x.el=, and the =vc.el=/=vc-git.el= chain all
+   re-passed under the current multi-chunk-cold-load NeLisp reader with
+   the normalized-form cache warm, in 45.59s/42.38s/60.64s/40.19s/54.72s
+   respectively; the Magit chains were already re-verified the same day
+   at §8 items 216 and 218, so no separate Magit re-run was needed here.
+   See §8 item 219.
 11. Start upstream Org load only after the above remains stable.  DONE
    2026-07-04: the FULL 60-file upstream Org dependency chain now loads in
    the NeLisp standalone reader (=make diagnose-vendor-repl-replay-fast=,
@@ -11074,3 +11081,30 @@ path:
    (item 216) was re-verified beforehand at 97.5s status=done.  With items
    210/216/218 together, §4 item 9 is closed; next per §4 is item 10 (the
    Dired/text-mode/outline/VC/Magit focused replay battery re-run).
+219. Doc 33 §4 item 10 (the Dired/text-mode/outline/VC/Magit focused
+   replay battery re-run) is DONE, 2026-07-04, run under the current
+   multi-chunk-cold-load NeLisp reader binary (the same build that
+   passed the Org 60-file gate at item 215 and the full 85-file Magit
+   gate at item 218) with the normalized-form cache warm
+   (=build/standalone-source-cache=, 911 entries).  All five re-run
+   families passed, each far faster than their original first-pass
+   timings thanks to cache reuse: =text-mode.el= (the stronger proof
+   confirming feature registration, =text-mode-hook=/=text-mode-syntax-table=/
+   =text-mode-map=/=text-mode-ispell-word-completion= bindings, and
+   =text-mode=/=paragraph-indent-text-mode=/=paragraph-indent-minor-mode=
+   command surfaces) passed in 45.59s (vs the original ~196.77s);
+   =outline.el= (=(featurep 'outline)=) passed in 42.38s; =dired.el=
+   (=(featurep 'dired)=) passed in 60.64s; =dired-x.el=
+   (=(featurep 'dired-x)=) passed in 40.19s; and the =vc.el=/=vc-git.el=
+   chain, replayed together with proof
+   =(and (featurep 'vc) (featurep 'vc-git))=, passed in 54.72s.  All
+   five ran at =VENDOR_REPL_TIMEOUT=900s=/
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860= with no timeout, GC
+   failure, or reader crash, so no substrate or reader fix was required
+   for this item.  The Magit portion of item 10 was already re-verified
+   the same day at items 216 (7-file =magit-base.el= chain, 97.5s) and
+   218 (full 85-file =magit.el= chain against the synthetic git
+   fixture, 318.79s), so no further Magit re-run was needed here.  This
+   closes Doc 33 §4 item 10; combined with item 9 (closed at item 218)
+   and item 11 (closed at item 215), §4 items 1-11 (the full recommended
+   execution order) are now all complete.
