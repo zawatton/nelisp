@@ -237,20 +237,67 @@ a separate numbered increment ladder of its own.
 | 2026-06-25 | M0 Product boundary | done | =lisp/nemacs-next.el= contract + =scripts/smoke.sh= |
 | 2026-06-25 | M1 Persistent session proof | done | =lisp/nemacs-next-session.el= + =lisp/nemacs-next-protocol.el= + =scripts/session-smoke.sh= + =scripts/process-smoke.sh= (=hello=, =create-buffer=, =insert-text=) |
 | 2026-07-04 | M2 Editing loop (movement/delete slice) | done | =forward-char=, =backward-char=, =goto-char=, =delete-char= session commands; out-of-range requests return a structured protocol =error= instead of an uncaught signal |
-| -- | M2 Editing loop (newline, undo, yank) | open | not yet implemented |
+| 2026-07-04 | M2 Editing loop (newline, undo, kill/yank slice) | done | =newline=, =undo=, =kill-region=, =kill-line=, =yank= session commands wired to already-shipped Track E/E.2 substrate (=emacs-undo-*=, =emacs-edit-*-direct=); structured =empty-kill-ring=, =bad-command=, =no-further-undo-information= errors instead of uncaught signals or silent no-ops |
 | -- | M3 Minibuffer/file loop | open | not yet implemented |
 | -- | M4 Modern GUI shell | open | not yet implemented |
 | -- | M5 Package smoke | open | not yet implemented |
 
-The 2026-07-04 increment was picked because M0 and M1 were already
-complete and M2 (Section 7) was the first milestone with open work; it
-also exercises the buffer-core/editing library surface that the
-substrate hardening tracked in Doc 33 brought to a stable state.  All
-three existing app smokes (=smoke.sh=, =session-smoke.sh=,
+The 2026-07-04 movement/delete increment was picked because M0 and M1
+were already complete and M2 (Section 7) was the first milestone with
+open work; it also exercises the buffer-core/editing library surface
+that the substrate hardening tracked in Doc 33 brought to a stable
+state.  All three existing app smokes (=smoke.sh=, =session-smoke.sh=,
 =process-smoke.sh=) were extended in place to cover the new commands
 plus an out-of-range error path, and all three passed before and after
-the change.  The next open M2 slice is newline handling (already
-reachable through =insert-text= with a =\n= payload, but not yet proven
-by a dedicated smoke assertion), then undo and yank, which need a
-kill-ring/undo-list contract decision before they are added to the
-protocol.
+the change.
+
+A second same-day increment closed the rest of M2 (newline, undo,
+kill/yank).  This turned out to be mostly a wiring exercise rather than
+new substrate work: =packages/nelisp-emacs-editing/lisp/emacs-undo.el=
+(Doc 51 Track E.2) already implements a real per-buffer undo list
+(=emacs-undo-undo-direct=, independent of host Emacs's native
+=buffer-undo-list=), and
+=packages/nelisp-emacs-editing/lisp/emacs-edit-builtins.el= (Track E)
+already implements a shared kill-ring with =emacs-edit-kill-region-direct=,
+=emacs-edit-kill-line-direct=, and =emacs-edit-yank-direct=.  Both are
+loaded transitively through the =emacs-editing= facade group that
+=nemacs-next.el= already required, so no substrate/=packages/= changes
+were needed -- only =apps/nemacs-next/lisp/nemacs-next-session.el=
+wiring:
+
+- =insert-text= and =delete-char= (the M1/M2 commands that mutate the
+  buffer through the raw =nelisp-ec-insert= / =nelisp-ec-delete-char=
+  primitives) were extended to call =emacs-undo-record-insert= /
+  =emacs-undo-record-delete= themselves, since those primitives bypass
+  the automatic recording built into unprefixed commands like
+  =self-insert-command=.  Skipping this would have made =undo= silently
+  not cover the two commands the milestone explicitly asks it to cover.
+- Every buffer-mutating command closes its own undo group with
+  =emacs-undo-undo-boundary= after completing, so one =undo= command
+  reverts exactly the most recent command's edit (verified by a
+  newline-then-undo round trip in all three smokes).
+- =newline= deliberately does not call the unprefixed =newline= command:
+  =emacs-edit-builtins= only installs that polyfill when host Emacs does
+  not already provide the name, so under the host-Emacs smoke path
+  (=scripts/smoke.sh=) it would silently operate on the host's own
+  buffer instead of the =nelisp-ec= session buffer.  =newline= inserts
+  through =nelisp-ec-insert= instead -- the same primitive =insert-text=
+  already used for a literal =\n= payload -- and is provided as a named
+  convenience for frontend Enter-key handling.  See
+  =apps/nemacs-next/protocol/protocol-v0.org= for the full rationale.
+- =kill-region=/=kill-line=/=yank= call the =-direct= prefixed
+  entry points (never the unprefixed =kill-region=/=kill-line=/=yank=
+  commands) for the same host-independence reason.
+
+All three app smokes were extended with assertions for every new
+command, including the error paths the milestone asked for: =yank= on
+an empty kill ring, =kill-region= with missing =:start=/=:end=, and
+=undo= on a fresh buffer with no history -- each returns a structured
+protocol =error= and the session keeps handling further commands
+afterward rather than crashing.  =make test-fast= was not run because
+no =packages/= substrate file changed; the three app smokes are the
+relevant gate per Section 8.
+
+M2 (Section 7) is now complete.  The next milestone is M3
+(minibuffer/file loop: =find-file=, =save-buffer=, =switch-to-buffer=,
+=kill-buffer=, completion protocol).
