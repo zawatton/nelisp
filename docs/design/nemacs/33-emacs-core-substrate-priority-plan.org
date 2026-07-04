@@ -301,7 +301,7 @@ This is an approximate engineering snapshot, not a completion claim.
 | =magit-section.el= | standalone vendor replay now succeeds through =with-editor.el= in about 241s (2026-07-03 repeat under the post-perf-fix NeLisp reader d0321078: 128.86s) |
 | =magit-base.el= | resolved 2026-07-03: the =magit-base.el= chain (=compat.el=/=cond-let.el=/=llama.el=/=transient.el=/=with-editor.el=/=magit-section.el=/=magit-base.el=) completes with proof =(featurep 'magit-base)= in 283.08s under =VENDOR_REPL_TIMEOUT=900s=/=VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860= on the post-perf-fix NeLisp reader d0321078; the former blocker (timing out even at 720s around normalized form 26) was the NeLisp allocator/GC scaling boundary fixed by nelisp commits =0be0e1d6=/=79550f98=/=a2842b03=/=5a337c8f=, not an EIEIO substrate defect |
 | =magit.el= chain | 2026-07-03 (NeLisp reader d0321078) full-chain summary beyond =magit-base.el=: =magit-core.el= (14 files: the =magit-base.el= chain plus =magit-git.el=, =magit-mode.el=, =magit-process.el=, =magit-transient.el=, =magit-margin.el=, =magit-autorevert.el=, =magit-core.el=) completes with proof =(featurep 'magit-core)= in 520.59s at 900/860, resolving Emacs-distributed requires such as =format-spec.el=/=server.el=/=ansi-color.el=/=autorevert.el= from the bootstrap/runtime without extra replay; the =git-commit.el= =(require 'log-edit)= wedge was resolved by computing and replaying its 43-file require closure (=log-edit.el=, =message.el=, =mml.el=, =epg.el=, =epa.el=, =sendmail.el=, a =dired.el= re-proof, and 37 more) standalone in 228.9s with proof =(and (featurep 'log-edit) (featurep 'message) (fboundp 'log-edit) (fboundp 'message-mode))=; and the FULL 85-file =magit.el= load replay (that 43-file prelude plus compat/cond-let/llama/transient/with-editor plus 37 Magit files) completes in 783.77s at 3000/2940 with proof =(and (featurep 'magit) (fboundp 'magit-status) (commandp 'magit-status) (fboundp 'magit-run-git) (keymapp magit-mode-map))= — real unpatched vendor Magit/transient/with-editor source through the standalone replay harness; load + command-surface proof only; a 2026-07-03 follow-on proof against a synthetic git fixture (=git init -b main= plus one commit) replayed the full 85-file chain and executed real git through the vendor Magit code paths, with =(magit-toplevel)= returning the fixture directory (equal after =file-name-as-directory=) and =(magit-git-string "rev-parse" "HEAD")= returning a 40-character hash, status=done in 787.00s at 3000/2940 — this passes the Doc 33 §4 item 8 P4 process-substrate git-query execution proof; a 2026-07-03 follow-on against the same fixture ran =(magit-status-setup-buffer default-directory)= without any display stubbing (the substrate =display-buffer= path held) and =(magit-get-mode-buffer 'magit-status-mode)= returned a live buffer with major-mode =magit-status-mode= and buffer-size > 0, status=done in 788.55s at 3000/2940; and a companion proof showed =(get 'magit-dispatch 'transient--prefix)= is an EIEIO object satisfying =(object-of-class-p ... 'transient-prefix)=, with =(transient-get-suffix 'magit-dispatch "b")= and ="c"= both returning suffix specs through vendor transient layout traversal, status=done in 788.27s at 3000/2940 — all three Doc 33 §4 item 8 execution proofs (git-query, magit-status buffer creation, transient command-map construction) now pass through real unpatched vendor source; a 2026-07-03 follow-on under NeLisp reader ed7a9789 (frame-push scratch-symbol sharing merged) re-ran this same 85-file chain against the synthetic git fixture and passed the item 9 P3 text-property/section behavior proof — the status buffer text contains the branch name, =magit-root-section= is an EIEIO section object with non-empty children, =(magit-current-section)= resolves through the =magit-section= text property, =(get-text-property (point-min) 'magit-section)= is non-nil, and =(magit-section-forward)= navigation lands on a section object — status=done in 620.94s at exit=0, and this same chain that took about 788s earlier the same day now completes in about 621s (about 21% faster), the new chain baseline under reader ed7a9789 |
-| Org | 2026-07-04 DONE: the FULL 60-file upstream Org dependency chain (=macroexp.el= through =treesit.el=/=smie.el=/=sh-script.el=/=org-src.el=/the =ob-*.el= Babel family/=org.el=/=org-element.el=) now loads in the NeLisp standalone reader; =make diagnose-vendor-repl-replay-fast= over that chain finished status=done, exit=0, elapsed 239.4s, with proof =(and (featurep 'org) (featurep 'org-element) (fboundp 'org-mode) (fboundp 'org-element-parse-buffer) (commandp 'org-mode))= evaluating true.  Getting here required fixing three layered NeLisp standalone-reader bugs (commits 23ce0436, 56352428, and 708481d0/b93c1efa on dev/nelisp =main=); see §8 item 215 |
+| Org | 2026-07-04 DONE (re-proven honestly after two corrections): the FULL upstream Org dependency chain (=macroexp.el= through =treesit.el=/=smie.el=/=sh-script.el=/=org-src.el=/the =ob-*.el= Babel family/=org.el=/=org-element.el=; 61 files on the reconstructed chain) loads in the NeLisp standalone reader AND installs =org-mode= as a real command.  History: the original 2026-07-04 status=done at 239.4s was a proof-scaffold false positive (§8 item 220); the honest re-run with the fixed harness showed the 5-conjunct proof FAILING on =fboundp=/=commandp org-mode= (only features + =org-element-parse-buffer= held); §8 item 221 then root-caused the missing =org-mode= to the substrate bridge =define-derived-mode= macro being written as a backquote template (whose invocation the standalone reader silently drops) and fixed it backquote-free, after which the SAME 61-file chain with the ORIGINAL 5-conjunct proof =(and (featurep 'org) (featurep 'org-element) (fboundp 'org-mode) (fboundp 'org-element-parse-buffer) (commandp 'org-mode))= finished status=done, exit=0, elapsed 249.76s.  The earlier reader-side prerequisites remain items 23ce0436/56352428/708481d0-b93c1efa on dev/nelisp =main= (§8 item 215) |
 
 Approximate overall replacement progress: 35-45%.
 
@@ -720,6 +720,17 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    respectively; the Magit chains were already re-verified the same day
    at §8 items 216 and 218, so no separate Magit re-run was needed here.
    See §8 item 219.
+
+   2026-07-04 corrections: item 220's honest re-run confirmed the four
+   non-Magit legs (outline/dired/dired-x/vc+vc-git) but found the
+   =text-mode.el= strong proof genuinely failing.  Item 221 then fixed
+   the underlying substrate gaps (=define-derived-mode= backquote bridge,
+   =define-minor-mode= fallback gate ordering, =syntax-table-p=,
+   =text-mode-hook= pre-binding), after which an equal-free equivalent of
+   the strong proof passes (=status=done=, 40.27s).  The ORIGINAL proof
+   file's single =(equal ...)= conjunct remains blocked by a reader-side
+   stdlib-prelude defect that makes every =equal= call error (minimal
+   repro in item 221) -- reader-side fix pending in dev/nelisp.
 11. Start upstream Org load only after the above remains stable.  DONE
    2026-07-04: the FULL 60-file upstream Org dependency chain now loads in
    the NeLisp standalone reader (=make diagnose-vendor-repl-replay-fast=,
@@ -746,6 +757,15 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    (also reproduced against =magit-section-mode= and
    =paragraph-indent-text-mode= in §8 items 216/219) -- not attempted
    here.  See §8 item 220 for the full re-run matrix.
+
+   2026-07-04 CLOSED (same day, follow-up pass): §8 item 221 root-caused
+   the missing =org-mode= command to the substrate bridge
+   =define-derived-mode= macro (=src/emacs-mode.el= /
+   =src/emacs-mode-builtins.el=) being written as a backquote template,
+   whose invocation the standalone reader silently drops, and rewrote
+   both macros backquote-free.  The exact 61-file chain from the honest
+   re-run above, with the ORIGINAL 5-conjunct proof, now finishes
+   =status=done=, exit=0, elapsed 249.76s.  This item is genuinely DONE.
 
 * 5. Verification gates
 
@@ -11075,6 +11095,16 @@ path:
    exactly match what the original checked (for example it unconditionally
    calls =(magit-section-mode)= to activate the mode, which is itself one
    of the two missing symbols).  See item 220.
+
+   2026-07-04 partial resolution (item 221): the mode-install blocker is
+   gone -- with the backquote-free =define-derived-mode= bridge, the same
+   7-file chain now proves =(and (fboundp 'magit-section-mode) (commandp
+   'magit-section-mode))= =status=done= in 94.86s.  The reconstructed
+   behavior proof re-run after that fix still fails cleanly
+   (=status=fail=, =evaluated=t=, 102.16s), so the remaining gap is in
+   the reconstruction's section/overlay/marker/display legs (or in the
+   reconstruction's fidelity), no longer in mode installation.  Item 216
+   stays OPEN on those legs.
    =make diagnose-vendor-repl-replay-fast= (=VENDOR_REPL_TIMEOUT=900s=,
    =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=) finished status=done, exit=0,
    elapsed 96.79s, against NeLisp reader commit f1ef06e1 — noticeably
@@ -11231,6 +11261,18 @@ path:
    full chain's =evaluated=nil= error (somewhere among the first five
    conjuncts) was not isolated in this pass.  The Magit portion of this
    item is covered by items 216/218 above, both now OPEN; see item 220.
+
+   2026-07-04 resolution: item 221 isolated everything left open here.
+   Both narrowed conjuncts were real and are fixed
+   (=paragraph-indent-text-mode= via the backquote-free
+   =define-derived-mode= bridge; =paragraph-indent-minor-mode= via the
+   =emacs-easy-mmode--standalone-p= gate ordering fix); the
+   =evaluated=nil= error among the first five conjuncts was the
+   =(equal text-mode-hook ...)= conjunct -- the reader stdlib prelude's
+   =equal= redefinition (Doc 22 A3) errors on EVERY call in the replay
+   environment (reader-side, minimal repro in item 221).  An equal-free
+   equivalent of the full strong proof now passes (=status=done=,
+   40.27s).
 220. Proof-mechanism bug found and fixed, 2026-07-04: every =status=done=
    recorded above via =make diagnose-vendor-repl-replay-fast=/
    =diagnose-vendor-repl-replay= (items 215, 216, 218, 219, and the §4
@@ -11313,6 +11355,9 @@ path:
    =(define-derived-mode text-mode nil ...)=) does.  This pattern was not
    investigated further and no fix was attempted here, per this task's
    scope; it narrows, but does not resolve, the §4 item 11 org-mode gap.
+   [Resolved same day at item 221: the true trigger is backquote-template
+   macro bodies, not the parent argument; the parent-nil "success" cases
+   were substrate defaliases, not surviving macro expansions.]
 
    Normalizer audit (this task's other ask): checked
    =scripts/standalone-source-normalize.el='s
@@ -11338,3 +11383,127 @@ path:
    elision.  Do not implement an org-mode-specific normalizer workaround
    from this note alone -- the pattern needs confirming against the
    reader/macro-expansion path first, which is out of this task's scope.
+221. The item 220 =define-derived-mode= pattern is ROOT-CAUSED and FIXED
+   on the nelisp-emacs-lib side, 2026-07-04; §4 item 11's org-mode
+   command gap is closed and §4 item 10's text-mode strong proof is
+   resolved up to one reader-side residual.
+
+   Root cause: NOT the parent argument, and NOT the normalizer (item 220
+   had already ruled the latter out).  On the standalone bootstrap path,
+   =define-derived-mode= is the Track H substrate bridge --
+   =src/emacs-mode-builtins.el='s =defmacro= delegating to
+   =src/emacs-mode.el='s =emacs-mode-define-derived-mode= -- and BOTH
+   macro bodies were backquote templates.  In the standalone reader's
+   replay environment, invoking a user-defined macro whose
+   expansion-producing body is a backquote template signals an error on
+   the invocation line, and the REPL's per-line error tolerance silently
+   drops that one physical line: the entire single-line
+   =(define-derived-mode CHILD PARENT ...)= normalized form vanishes with
+   no visible failure.  Isolation (minimal repro files under the
+   gitignored =tmp-diag/=): a plain list-built =defmacro= invoked from a
+   replayed file works end-to-end (its expansion evaluated, result
+   captured), while the semantically identical macro with a backquote
+   body leaves its result =defvar= UNBOUND (the invocation line
+   errored); =declare= clauses (=debug=/=doc-string=/=indent=, alone or
+   combined exactly as vendor derived.el orders them), docstring size,
+   and nesting depth are NOT factors.  Item 220's parent-nil vs
+   non-nil asymmetry was an artifact: the "working" nil-parent cases
+   (=text-mode= etc.) got their function cells from the substrate
+   =defalias= bridges (=emacs-mode-text-mode= ...), not from a surviving
+   macro expansion, while every child actually created through the macro
+   (=org-mode=, =magit-section-mode=, =paragraph-indent-text-mode=) was
+   lost.  The half-installed keymap-bound-but-function-void state matches
+   exactly: =org-mode-map= etc. come from separate top-level =defvar= /
+   =defvar-keymap= forms that replay fine; only the
+   =define-derived-mode= call line was dropped.  (Cosmetic reader note
+   for future probes: =macrop= reports nil for user-defined macros in
+   this environment even when =fboundp= is t and invocation works.)
+
+   Fix (this commit; vendor sources untouched; least-invasive substrate
+   rewrite): =emacs-mode-define-derived-mode= (=src/emacs-mode.el=) and
+   the =define-derived-mode= bridge (=src/emacs-mode-builtins.el=)
+   rewritten with explicit =list=/=append=/=quote= construction --
+   expansion unchanged, host ERT =emacs-mode-builtins-test= 18/18.
+   Three companion substrate fixes found while closing the §4 item 10
+   text-mode strong-proof residue, same commit: (i)
+   =emacs-easy-mmode--standalone-p= (=src/emacs-easy-mmode.el=) gains a
+   =(not (fboundp 'define-minor-mode))= arm -- the bootstrap loads
+   =emacs-stub-bulk= LAST (Doc 22 A19), so the old
+   =(get 'define-minor-mode 'emacs-stub-bulk)= test could never be true
+   at easy-mmode load time, the fallback never installed, and stub-bulk's
+   no-op =define-minor-mode= macro silently defined nothing (now
+   =paragraph-indent-minor-mode= is a real command); (ii)
+   =src/emacs-stub-bulk.el= gains a =syntax-table-p= stub recognizing all
+   three substrate syntax-table shapes (the =emacs-syntax-table.el=
+   char-table subtype, =emacs-stub.el='s =(syntax-table . PARENT)= cons
+   -- the shape actually live in the replay bootstrap -- and the
+   256-slot vector fallback); (iii) =src/emacs-mode-builtins.el= no
+   longer pre-defvars =text-mode-hook= to nil, so vendor text-mode.el's
+   replayed default =\'(text-mode-hook-identify)= takes effect.
+
+   Reader-side residuals recorded, NOT fixed here (out of scope; fixes
+   belong in dev/nelisp):
+   - The reader stdlib prelude
+     (=vendor/nelisp/scripts/nelisp-stdlib-prelude.el=, its Doc 22 A3
+     =equal= redefinition) makes EVERY subsequent =(equal ...)= call
+     error.  Minimal repro: bare reader, =(load
+     ".../nelisp-stdlib-prelude.el")=, then =(equal 1 1)= errors (the
+     line is dropped); without the prelude the same call returns t.
+     This blocks the ORIGINAL item 10 strong-proof file's single
+     =(equal text-mode-hook ...)= conjunct; the equal-free equivalent
+     passes (matrix below).
+   - The backquote-macro-invocation failure itself is reader-side.  The
+     substrate fix removes backquote from the bootstrap-path macros, but
+     any vendor chain that replays =emacs-lisp/derived.el= will
+     re-shadow =define-derived-mode= with the vendor backquote-template
+     macro and re-break (observed directly: after derived.el replays,
+     =define-derived-mode= is fbound but broken, and even a nil-parent
+     child never becomes fbound).  None of the verified chains below
+     include derived.el.  The durable resolution is fixing backquote
+     macro invocation in the reader.
+   - =make-syntax-table= in the replay bootstrap resolves to
+     =emacs-stub.el='s cons fallback even though
+     =emacs-syntax-table.el='s char-table version appears later with an
+     install gate that should fire; un-investigated residual.
+
+   Verification matrix (fixed, sanity-gated harness; normalized cache
+   warm; one reader at a time; final bootstrap with all four substrate
+   fixes):
+   - (a) minimal repro chain (repro file only), proof =(and (fboundp
+     'repro-mode-a) (fboundp 'repro-mode-b) (commandp 'repro-mode-a)
+     (commandp 'repro-mode-b))= (nil-parent + non-nil-parent children):
+     =status=done= 40.27s (pre-fix: all four conjuncts nil).
+   - (b) magit-base 7-file chain (compat/cond-let/llama/transient/
+     with-editor/magit-section/magit-base), proof =(and (fboundp
+     'magit-section-mode) (commandp 'magit-section-mode))=:
+     =status=done= 94.86s (pre-fix probe: =magit-section-mode= never
+     fbound on this chain).
+   - (c) text-mode.el strong proof: the equal-free equivalent (12
+     conjuncts, including the =text-mode-hook= value shape,
+     =syntax-table-p=, and BOTH =commandp paragraph-indent-text-mode=
+     and =commandp paragraph-indent-minor-mode=): =status=done= 40.27s.
+     The original file remains blocked ONLY by the reader-side =equal=
+     defect above.
+   - (d) THE Org gate: the exact 61-file chain from item 215's honest
+     re-run (recovered verbatim from that run's session log) with the
+     ORIGINAL 5-conjunct proof =(and (featurep 'org) (featurep
+     'org-element) (fboundp 'org-mode) (fboundp
+     'org-element-parse-buffer) (commandp 'org-mode))=: =status=done=,
+     exit=0, 249.76s (pre-fix honest run: =status=fail= 251.03s with
+     =fboundp=/=commandp org-mode= false).  §4 item 11 is now genuinely
+     DONE.
+   - Item 216's reconstructed magit-base behavior proof re-run:
+     still =status=fail=, =evaluated=t= (cleanly false), 102.16s -- the
+     mode-install blocker is gone per (b), so item 216's remaining gap
+     is in its section/overlay/marker/display legs, not in mode
+     installation; it stays OPEN there.
+   - =make test-fast=: the same 6 known failures (four
+     =emacs-redisplay-test= + =Info-find-file=), no new failures.  Host
+     ERT =emacs-mode-builtins-test=: 18/18.
+
+   Method caution for future Org-gate re-runs: a host-Emacs-computed
+   full require closure of org.el/org-element.el (144 files, or 138
+   after dropping comp/bytecomp) drove the reader past 50 GiB RSS into
+   swap-thrash and had to be killed; use the item-215 61-file chain
+   (recorded in that run's harness invocation), not a fresh full host
+   closure.

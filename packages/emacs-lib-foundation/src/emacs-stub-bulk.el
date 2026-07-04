@@ -319,6 +319,21 @@ Forwarder to `forward-char' with negated count."
     "Standalone load-time stub for syntax tables."
     (make-vector 256 nil)))
 
+(unless (fboundp 'syntax-table-p)
+  (defun syntax-table-p (object)
+    "Standalone load-time stub for syntax table predicate.
+Recognizes every syntax-table representation the substrate can
+produce: the `emacs-syntax-table.el' char-table (subtype
+`syntax-table') when `emacs-char-table-p' is available, the
+`emacs-stub.el' cons fallback `(syntax-table . PARENT)', and the
+plain 256-slot vectors produced by the `make-syntax-table' stub
+above."
+    (or (and (fboundp 'emacs-char-table-p)
+             (emacs-char-table-p object)
+             (eq (emacs-char-table-subtype object) 'syntax-table))
+        (eq (car-safe object) 'syntax-table)
+        (and (vectorp object) (= (length object) 256)))))
+
 (unless (fboundp 'modify-syntax-entry)
   (defun modify-syntax-entry (_char _syntax &optional _table)
     "Standalone load-time stub for syntax table mutation."
