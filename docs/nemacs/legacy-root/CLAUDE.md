@@ -1,8 +1,9 @@
 # CLAUDE.md
 
-This project is shifting to a library-first architecture.  Claude Code work
-in this repository must optimize for reusable pure-Elisp Emacs-core
-libraries before application-specific shortcuts.
+This project is shifting to `nelisp-emacs-libs`: a library-first
+architecture for reusable pure-Elisp Emacs-core libraries.  Claude Code
+work in this repository must optimize for reusable libraries before
+application-specific shortcuts.
 
 Read first:
 
@@ -16,6 +17,7 @@ Read first:
 - `docs/design/25-library-consumer-contract.org`
 - `docs/design/26-library-residual-api-audit.org`
 - `docs/design/27-package-extraction-readiness.org`
+- `docs/design/28-nemacs-next-split-and-library-distribution.org`
 - `docs/design/29-release-signing-workflow.org`
 - `docs/design/12-development-gates.org`
 
@@ -41,8 +43,10 @@ fresh architecture search.  The immediate direction is:
 
 ## Operating Principle
 
-`nelisp-emacs` should become a reusable library stack.  `nemacs`, TUI, and
-GUI code are consumers of that stack.
+`nelisp-emacs-libs` is the reusable library stack.  The historical
+repository and compatibility facade may still use `nelisp-emacs`, but new
+framing should treat that as a migration name.  `nemacs-next`, TUI, and GUI
+code are consumers of the library stack.
 
 When implementing behavior, put it in the lowest reusable owner:
 

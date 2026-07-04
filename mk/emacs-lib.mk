@@ -902,6 +902,7 @@ help:
 
 compile:
 	$(EMACS) -L src $(NELISP_LOAD_PATH) \
+		--eval '(setq native-comp-enable-subr-trampolines nil)' \
 		-f batch-byte-compile $(SRC_BYTE_COMPILE_FILES)
 	$(EMACS) -Q -L src -l src/generator.el \
 		--eval '(unless (featurep (quote generator)) (kill-emacs 1))'

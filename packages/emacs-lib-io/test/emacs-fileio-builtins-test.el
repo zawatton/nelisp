@@ -276,6 +276,56 @@
     (should (nelisp-ec-file-exists-p "/exists"))
     (should-not (nelisp-ec-file-exists-p "/missing"))))
 
+(ert-deftest emacs-fileio-builtins-test/file-exists-p-falls-back-to-rdf ()
+  "`nelisp-ec-file-exists-p' falls back to `rdf' when access cannot prove existence."
+  (let ((had-path-int (fboundp 'nelisp--syscall-path-int))
+        (old-path-int (and (fboundp 'nelisp--syscall-path-int)
+                           (symbol-function 'nelisp--syscall-path-int)))
+        (had-rdf (fboundp 'rdf))
+        (old-rdf (and (fboundp 'rdf) (symbol-function 'rdf))))
+    (unwind-protect
+        (progn
+          (fset 'nelisp--syscall-path-int
+                (lambda (_nr _file _mode) -1))
+          (fset 'rdf
+                (lambda (file)
+                  (cond
+                   ((equal file "/readable.svg") "<svg/>")
+                   ((equal file "/empty.svg") "")
+                   (t (signal 'file-missing (list "missing" file))))))
+          (should (nelisp-ec-file-exists-p "/readable.svg"))
+          (should (nelisp-ec-file-exists-p "/empty.svg"))
+          (should-not (nelisp-ec-file-exists-p "/missing.svg")))
+      (if had-path-int
+          (fset 'nelisp--syscall-path-int old-path-int)
+        (when (fboundp 'nelisp--syscall-path-int)
+          (fmakunbound 'nelisp--syscall-path-int)))
+      (if had-rdf
+          (fset 'rdf old-rdf)
+        (when (fboundp 'rdf)
+          (fmakunbound 'rdf))))))
+
+(ert-deftest emacs-fileio-builtins-test/rdf-file-exists-helper-contract ()
+  "`emacs-fileio-rdf-file-exists-p' is nil without `rdf' and truthy for readable files."
+  (let ((had-rdf (fboundp 'rdf))
+        (old-rdf (and (fboundp 'rdf) (symbol-function 'rdf))))
+    (unwind-protect
+        (progn
+          (when (fboundp 'rdf)
+            (fmakunbound 'rdf))
+          (should-not (emacs-fileio-rdf-file-exists-p "/any"))
+          (fset 'rdf
+                (lambda (file)
+                  (if (equal file "/ok.svg")
+                      "<svg/>"
+                    (error "missing"))))
+          (should (emacs-fileio-rdf-file-exists-p "/ok.svg"))
+          (should-not (emacs-fileio-rdf-file-exists-p "/missing.svg")))
+      (if had-rdf
+          (fset 'rdf old-rdf)
+        (when (fboundp 'rdf)
+          (fmakunbound 'rdf))))))
+
 (ert-deftest emacs-fileio-builtins-test/file-executable-p-uses-access-x-ok ()
   "`nelisp-ec-file-executable-p' wraps access(X_OK) through the primitive."
   (cl-letf (((symbol-function 'nelisp--syscall-path-int)

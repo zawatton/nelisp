@@ -22,34 +22,49 @@
                    (emacs-sqlite-ffi--default-libpath)))))
 
 (ert-deftest emacs-sqlite-ffi-test/libpath-falls-back-to-nelisp-home ()
-  "When NELISP_RUNTIME_SO is empty and NELISP_HOME is set, the result
-should be NELISP_HOME/target/release/libnelisp_runtime.so."
+  "When NELISP_RUNTIME_SO is empty and NELISP_HOME is set, use runtime lib."
   (let ((process-environment
          (cons "NELISP_RUNTIME_SO="
-               (cons "NELISP_HOME=/opt/nelisp"
+               (cons "NELISP_RUNTIME_LIBRARY="
+                     (cons "NELISP_HOME=/opt/nelisp"
                      process-environment))))
     (should (equal "/opt/nelisp/target/release/libnelisp_runtime.so"
-                   (emacs-sqlite-ffi--default-libpath)))))
+                   (emacs-sqlite-ffi--default-libpath))))))
 
 (ert-deftest emacs-sqlite-ffi-test/libpath-falls-back-to-home ()
   "With neither env var set, the result includes a sensible HOME-based path."
   (let ((process-environment
          (cons "NELISP_RUNTIME_SO="
-               (cons "NELISP_HOME="
+               (cons "NELISP_RUNTIME_LIBRARY="
+                     (cons "NELISP_HOME="
                      (cons "HOME=/tmp/u"
-                           process-environment)))))
+                           process-environment))))))
     (let ((p (emacs-sqlite-ffi--default-libpath)))
-      (should (string-match-p "Notes/dev/nelisp/target/release/libnelisp_runtime\\.so" p))
-      (should (string-prefix-p "/tmp/u/" p)))))
+      (should (string-match-p "Notes/dev/nelisp/target/release/\\(lib\\)?nelisp_runtime\\."
+                              p))
+      (should (string-match-p "\\`\\([A-Za-z]:\\)?/tmp/u/" p)))))
 
 (ert-deftest emacs-sqlite-ffi-test/libpath-honours-trailing-slash ()
   "NELISP_HOME with or without trailing slash should produce the same path."
   (let ((process-environment
          (cons "NELISP_RUNTIME_SO="
-               (cons "NELISP_HOME=/opt/nelisp/"
+               (cons "NELISP_RUNTIME_LIBRARY="
+                     (cons "NELISP_HOME=/opt/nelisp/"
                      process-environment))))
     (should (equal "/opt/nelisp/target/release/libnelisp_runtime.so"
-                   (emacs-sqlite-ffi--default-libpath)))))
+                   (emacs-sqlite-ffi--default-libpath))))))
+
+(ert-deftest emacs-sqlite-ffi-test/libpath-supports-windows-runtime ()
+  "Windows targets resolve to nelisp_runtime.dll by default."
+  (let ((system-type 'windows-nt)
+        (system-configuration "x86_64-w64-mingw32")
+        (process-environment
+         (cons "NELISP_RUNTIME_SO="
+               (cons "NELISP_RUNTIME_LIBRARY="
+                     (cons "NELISP_HOME=C:/nelisp"
+                           process-environment)))))
+    (should (equal "c:/nelisp/target/release/nelisp_runtime.dll"
+                   (downcase (emacs-sqlite-ffi--default-libpath))))))
 
 (provide 'emacs-sqlite-ffi-test)
 
