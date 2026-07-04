@@ -700,13 +700,18 @@ then return to Magit when the underlying Emacs C-core surfaces have advanced.
    - Git process invocation is routed through shared process substrate;
    - transient command maps can be constructed.
 9. Strengthen text property, overlay, marker, and window display behavior
-   against the Magit UI path.  Text-property/section-navigation behavior
-   proved 2026-07-03 against the full Magit UI path (§8 item 210).
+   against the Magit UI path.  DONE 2026-07-04, all slices proven.
+   Text-property/section-navigation behavior proved 2026-07-03 against the
+   full Magit UI path (§8 item 210).
    Overlay-based highlight behavior, markers, and window display proved
    2026-07-04 through real vendor =magit-section.el=/=magit-base.el= code on
    a self-contained 7-file chain (no full =magit.el= load or git fixture
-   needed); see §8 item 216.  Remaining depth (window scrolling/recentering
-   under the full Magit status buffer) stays open as a follow-up.
+   needed); see §8 item 216.  The last slice — window scrolling/recentering
+   under the full Magit status buffer — proved 2026-07-04 on the full
+   85-file =magit.el= chain with the synthetic git fixture (status=done,
+   318.79s), after giving =recenter=/=scroll-up=/=scroll-down=/
+   =pos-visible-in-window-p= real line-based semantics in
+   =src/emacs-window.el= + =src/emacs-window-builtins.el=; see §8 item 218.
 10. Re-run Dired, text-mode, outline-mode, VC, and Magit focused replays.
 11. Start upstream Org load only after the above remains stable.  DONE
    2026-07-04: the FULL 60-file upstream Org dependency chain now loads in
@@ -11028,3 +11033,44 @@ path:
    make-level gate run at item 215; this is a =.repl=-generation settings
    difference to reconcile, orthogonal to the cold-load mechanism itself
    (the make gate was re-verified separately).
+218. Doc 33 §4 item 9 is now DONE, 2026-07-04: the LAST slice (window
+   scrolling/recentering under the full Magit status buffer, left open at
+   item 216) is proven on the FULL 85-file =magit.el= chain with the
+   synthetic git fixture, =make diagnose-vendor-repl-replay-fast= at
+   3000/2940 status=done, exit=0, elapsed 318.79s (notably faster than the
+   earlier ~620-790s full-chain runs — normalized-form cache reuse plus the
+   multi-chunk cold-load reader build).  The fixture was extended so the
+   status buffer exceeds one screen (15 commits, one unstaged edit, 40
+   untracked files); proof form preserved at
+   =tmp-diag/proof-20260704-item9-scroll-recenter.el=.  Behaviors proven
+   inside the real =magit-status-mode= buffer with NO display stubbing:
+   (a) with =window-start= at =point-min= and point moved to =point-max=,
+   =(pos-visible-in-window-p (point-max))= is nil, and after =(recenter)=
+   =window-start= moved forward and =point-max= became visible
+   (window-follows-point); (b) =(scroll-up 6)= advanced =window-start= by
+   real buffer lines and =(scroll-down 4)= moved it back to strictly
+   between the two prior starts; (c) 35 =magit-section-forward= steps
+   across real commit/untracked sections landed point off-screen
+   (=pos-visible-in-window-p= nil) and a final =(recenter)= made it
+   visible again.  Substrate work this required (all in this repo, reader
+   untouched): =src/emacs-window.el= gained a line-based
+   scroll/recenter/visibility layer (=emacs-window-recenter=,
+   =emacs-window-scroll-up/-down=, =emacs-window-pos-visible-in-window-p=,
+   plus manual =aref= newline scanning — =cl-position :from-end= silently
+   misbehaves on the standalone reader — and =nelisp-ec-*= primitives
+   throughout so host ERT and standalone behave identically);
+   =src/emacs-window-builtins.el= bridges the unprefixed names
+   (=recenter=, =scroll-up/-down(-command)=, =pos-visible-in-window-p=,
+   =window-start/-end/-point=, =set-window-start/-point=,
+   =window-height/-width/-body-height=) and its install gate now also
+   checks =(stringp emacs-version)= because the reader binds
+   =emacs-version= to a non-string sentinel, which made the old
+   =(boundp 'emacs-version)= host test misfire and let the =emacs-stub.el=
+   nil-stubs win — that gate bug was why =windowp=/=window-list= returned
+   nil-stub results on the reader despite the bridge loading.  Six new
+   host-ERT regression tests in =test/emacs-window-test.el= (87/87 window
+   tests pass; =make test-fast= shows the same 6 pre-existing failures as
+   the clean tree, i.e. no regressions).  The 7-file =magit-base.el= chain
+   (item 216) was re-verified beforehand at 97.5s status=done.  With items
+   210/216/218 together, §4 item 9 is closed; next per §4 is item 10 (the
+   Dired/text-mode/outline/VC/Magit focused replay battery re-run).
