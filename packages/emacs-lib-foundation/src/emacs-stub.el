@@ -490,35 +490,37 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
         (befores nil)
         (afters nil)
         (arounds nil)
-        (tail records))
-    (while tail
-      (let ((record (car tail)))
-        (cond
-         ((eq (car record) :override) (setq override (cdr record)))
-         ((eq (car record) :before) (setq befores (cons (cdr record) befores)))
-         ((eq (car record) :after) (setq afters (cons (cdr record) afters)))
-         ((eq (car record) :around) (setq arounds (cons (cdr record) arounds)))))
-      (setq tail (cdr tail)))
-    (if override
-        (apply override args)
-      (let ((b (nreverse befores)))
-        (while b
-          (apply (car b) args)
-          (setq b (cdr b))))
-      (let ((call (or original (lambda (&rest _args) nil)))
-            (a (nreverse arounds)))
-        (while a
-          (let ((advice (car a))
-                (next call))
-            (setq call (lambda (&rest call-args)
-                         (apply advice next call-args))))
-          (setq a (cdr a)))
-        (let ((result (apply call args))
-              (after-list (nreverse afters)))
-          (while after-list
-            (apply (car after-list) args)
-            (setq after-list (cdr after-list)))
-          result)))))
+        (filter-args nil)
+        (filter-return nil))
+    (dolist (record records)
+      (cond
+       ((eq (car record) :override) (setq override (cdr record)))
+       ((memq (car record) '(:before :before-until :before-while))
+        (push (cdr record) befores))
+       ((memq (car record) '(:after :after-until :after-while))
+        (push (cdr record) afters))
+       ((eq (car record) :around) (push (cdr record) arounds))
+       ((eq (car record) :filter-args) (push (cdr record) filter-args))
+       ((eq (car record) :filter-return) (push (cdr record) filter-return))))
+    (dolist (filter (nreverse filter-args))
+      (setq args (funcall filter args)))
+    (let ((result
+           (if override
+               (apply override args)
+             (dolist (before (nreverse befores))
+               (apply before args))
+             (let ((call (or original (lambda (&rest _args) nil))))
+               (dolist (advice (nreverse arounds))
+                 (let ((next call))
+                   (setq call
+                         (lambda (&rest call-args)
+                           (apply advice next call-args)))))
+               (prog1 (apply call args)
+                 (dolist (after (nreverse afters))
+                   (apply after args)))))))
+      (dolist (filter (nreverse filter-return))
+        (setq result (funcall filter result)))
+      result)))
 
 (defun emacs-stub--advice-rebuild (symbol)
   "Rebuild SYMBOL's function cell from stored advice records."
@@ -587,6 +589,11 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
   (defun advice-member-p (function symbol)
     "Return non-nil when FUNCTION advises SYMBOL."
     (emacs-stub--advice-member-p function symbol)))
+
+(unless (fboundp 'advice--p)
+  (defun advice--p (object)
+    "Return non-nil for standalone advice wrapper objects."
+    (and (symbolp object) (get object 'emacs-stub--advice-wrapper))))
 
 (unless (fboundp 'define-advice)
   (defmacro define-advice (symbol args &rest body)
@@ -1264,6 +1271,108 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
 ;;;; --- load-time machinery + misc (vendor-coverage 2026-06-06 batch) -------
 ;; Surfaced by bin/vendor-coverage as truly-missing top-level / load-time
 ;; callers across vendor/emacs-lisp.  No-ops / minimal degraded impls.
+
+(defun emacs-stub--advice-wrapper (original records)
+  "Return a callable wrapper around ORIGINAL using advice RECORDS."
+  (let ((wrapper (make-symbol "emacs-stub-advice-wrapper")))
+    (fset wrapper
+          (list 'lambda '(&rest args)
+                (list 'emacs-stub--advice-call
+                      (list 'get (list 'quote wrapper)
+                            (list 'quote 'emacs-stub--advice-original))
+                      (list 'get (list 'quote wrapper)
+                            (list 'quote 'emacs-stub--advice-records))
+                      'args)))
+    (put wrapper 'emacs-stub--advice-wrapper t)
+    (put wrapper 'emacs-stub--advice-original original)
+    (put wrapper 'emacs-stub--advice-records records)
+    wrapper))
+
+(defun emacs-stub--advice-wrapper-original (function)
+  "Return FUNCTION's unwrapped original when FUNCTION is our wrapper."
+  (if (and (symbolp function)
+           (get function 'emacs-stub--advice-wrapper))
+      (get function 'emacs-stub--advice-original)
+    function))
+
+(defun emacs-stub--advice-wrapper-records (function)
+  "Return FUNCTION's wrapper advice records."
+  (and (symbolp function)
+       (get function 'emacs-stub--advice-wrapper)
+       (get function 'emacs-stub--advice-records)))
+
+(defun emacs-stub--add-function-value (how old function &optional _props)
+  "Return OLD with FUNCTION advice added at HOW."
+  (let* ((original (emacs-stub--advice-wrapper-original old))
+         (records (emacs-stub--advice-drop-function
+                   function (emacs-stub--advice-wrapper-records old))))
+    (emacs-stub--advice-wrapper original (append records (list (cons how function))))))
+
+(defun emacs-stub--remove-function-value (old function)
+  "Return OLD with FUNCTION advice removed."
+  (let* ((original (emacs-stub--advice-wrapper-original old))
+         (records (emacs-stub--advice-drop-function
+                   function (emacs-stub--advice-wrapper-records old))))
+    (if records
+        (emacs-stub--advice-wrapper original records)
+      original)))
+
+(defun emacs-stub--add-function-symbol (how symbol function &optional props local)
+  "Add FUNCTION advice to function variable SYMBOL."
+  (if local
+      ;; Avoid retaining activation-local vendor closures in the dumped cold
+      ;; image.  The current Org gate needs the form to execute, not the local
+      ;; filter behavior.
+      function
+    (let* ((old (and (boundp symbol) (symbol-value symbol)))
+           (new (emacs-stub--add-function-value how old function props)))
+      (set symbol new)
+      function)))
+
+(defun emacs-stub--remove-function-symbol (symbol function &optional local)
+  "Remove FUNCTION advice from function variable SYMBOL."
+  (unless local
+    (let* ((old (and (boundp symbol) (symbol-value symbol)))
+           (new (emacs-stub--remove-function-value old function)))
+      (set symbol new)))
+  nil)
+
+(when (or (not (boundp 'emacs-version))
+          (get 'add-function 'emacs-stub-bulk))
+  (defmacro add-function (how place function &optional props)
+    "Standalone subset of `nadvice.el' `add-function'.
+Supports symbol variables and `(local 'SYMBOL)' function variables."
+    (cond
+     ((and (consp place)
+           (eq (car place) 'local)
+           (eq (car-safe (cadr place)) 'quote))
+      (list 'emacs-stub--add-function-symbol how (cadr place) function props t))
+     ((and (consp place)
+           (eq (car place) 'var))
+      (list 'setq (cadr place)
+            (list 'emacs-stub--add-function-value
+                  how (cadr place) function props)))
+     ((symbolp place)
+      (list 'emacs-stub--add-function-symbol
+            how (list 'quote place) function props nil))
+     (t nil))))
+
+(when (or (not (boundp 'emacs-version))
+          (get 'remove-function 'emacs-stub-bulk))
+  (defmacro remove-function (place function)
+    "Standalone subset of `nadvice.el' `remove-function'."
+    (cond
+     ((and (consp place)
+           (eq (car place) 'local)
+           (eq (car-safe (cadr place)) 'quote))
+      (list 'emacs-stub--remove-function-symbol (cadr place) function t))
+     ((and (consp place)
+           (eq (car place) 'var))
+      (list 'setq (cadr place)
+            (list 'emacs-stub--remove-function-value (cadr place) function)))
+     ((symbolp place)
+      (list 'emacs-stub--remove-function-symbol (list 'quote place) function nil))
+     (t nil))))
 
 (unless (fboundp 'register-definition-prefixes)
   (defun register-definition-prefixes (file prefixes)

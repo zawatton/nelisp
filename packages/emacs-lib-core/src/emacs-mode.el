@@ -237,6 +237,18 @@ the isolation that pinned this down to backquote specifically, not
                         (list 'emacs-mode-set-major-mode
                               (list 'quote child) name))
                   real-body
+                  ;; Some vendor mode bodies still exercise incomplete
+                  ;; buffer-local substrate paths.  Reassert the child mode
+                  ;; before hooks so hook observers see the derived mode that
+                  ;; `define-derived-mode' promised.  Keep this to direct
+                  ;; assignments: after a large vendor body the standalone
+                  ;; cold-image path has exposed crashes through an additional
+                  ;; full setter call.
+                  (list (list 'setq 'emacs-mode--current-major-mode
+                              (list 'quote child))
+                        (list 'when (list 'boundp ''major-mode)
+                              (list 'setq 'major-mode
+                                    (list 'quote child))))
                   (list (list 'emacs-mode-run-mode-hooks
                               (list 'quote e-hook-var)
                               (list 'quote hook-var))
