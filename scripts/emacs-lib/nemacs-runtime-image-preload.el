@@ -8,26 +8,26 @@
 
 ;;; Code:
 
-(defconst nemacs-runtime-image-preload--script-directory
-  (file-name-directory (or load-file-name buffer-file-name ""))
-  "Directory containing runtime-image preload helper scripts.")
+;; Source-v1 runtime image replay preserves top-level `setq' more reliably
+;; than `defconst', while functions below need these variables after boot.
+(setq nemacs-runtime-image-preload--script-directory
+      (file-name-directory (or load-file-name buffer-file-name "")))
 
-(defconst nemacs-runtime-image-package-load-paths
-  '("packages/nelisp-emacs-buffer-core/lazy"
-    "packages/nelisp-emacs-buffer-core/lisp"
-    "packages/nelisp-emacs-core/lazy"
-    "packages/nelisp-emacs-core/lisp"
-    "packages/nelisp-emacs-editing/lisp"
-    "packages/nelisp-emacs-facade/lisp"
-    "packages/nelisp-emacs-foundation/lisp"
-    "packages/nelisp-emacs-io/lazy"
-    "packages/nelisp-emacs-io/lisp"
-    "packages/nelisp-emacs-special-buffers/lisp"
-    "packages/nelisp-emacs-text-core/lazy"
-    "packages/nelisp-emacs-text-core/lisp"
-    "packages/nelisp-emacs-textmodes-stub/lisp"
-    "packages/nelisp-emacs-app-gui/lisp")
-  "Package/app scaffold load-paths used by runtime-image bakes.")
+(setq nemacs-runtime-image-package-load-paths
+      '("packages/nelisp-emacs-buffer-core/lazy"
+        "packages/nelisp-emacs-buffer-core/lisp"
+        "packages/nelisp-emacs-core/lazy"
+        "packages/nelisp-emacs-core/lisp"
+        "packages/nelisp-emacs-editing/lisp"
+        "packages/nelisp-emacs-facade/lisp"
+        "packages/nelisp-emacs-foundation/lisp"
+        "packages/nelisp-emacs-io/lazy"
+        "packages/nelisp-emacs-io/lisp"
+        "packages/nelisp-emacs-special-buffers/lisp"
+        "packages/nelisp-emacs-text-core/lazy"
+        "packages/nelisp-emacs-text-core/lisp"
+        "packages/nelisp-emacs-textmodes-stub/lisp"
+        "packages/nelisp-emacs-app-gui/lisp"))
 
 (defun nemacs-runtime-image-setup-paths (repo-root)
   "Install REPO-ROOT's package/app scaffold and vendor paths for a bake."
@@ -307,7 +307,12 @@ Keep this surface as data lambdas so runtime images expose the
 bound.  When `nelisp-process-*' or legacy `nelisp-*' delegates exist they are
 used; otherwise synchronous calls return a failure status instead of aborting
 image startup."
-  (let* ((base nemacs-runtime-image-preload--script-directory)
+  (let* ((base (cond
+                ((boundp 'nemacs-runtime-image-preload--script-directory)
+                 nemacs-runtime-image-preload--script-directory)
+                ((or load-file-name buffer-file-name)
+                 (file-name-directory (or load-file-name buffer-file-name)))
+                (t nil)))
          (preload (and base
                        (expand-file-name
                         "nemacs-runtime-process-preload.el" base))))
