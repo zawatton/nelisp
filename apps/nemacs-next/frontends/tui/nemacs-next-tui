@@ -205,6 +205,38 @@ read_render() {
 ansi_for_face() {
   local face=$1 fg=${2-} bg=${3-} weight=${4-}
   local sgr=
+  color_sgr() {
+    local color=$1 channel=$2
+    local prefix256=38 prefix24=38
+    if [ "$channel" = "bg" ]; then
+      prefix256=48
+      prefix24=48
+    fi
+    case "$color" in
+      \#??????)
+        local hex=${color#\#}
+        local r=$((16#${hex:0:2}))
+        local g=$((16#${hex:2:2}))
+        local b=$((16#${hex:4:2}))
+        if [ "${COLORTERM:-}" = "truecolor" ] || [ "${COLORTERM:-}" = "24bit" ]; then
+          printf '%s;2;%s;%s;%s' "$prefix24" "$r" "$g" "$b"
+        else
+          local ri=$(((r * 5 + 127) / 255))
+          local gi=$(((g * 5 + 127) / 255))
+          local bi=$(((b * 5 + 127) / 255))
+          printf '%s;5;%s' "$prefix256" "$((16 + 36 * ri + 6 * gi + bi))"
+        fi
+        ;;
+      green) [ "$channel" = "bg" ] && printf '%s' '48;5;34' || printf '%s' '38;5;34' ;;
+      blue) [ "$channel" = "bg" ] && printf '%s' '48;5;33' || printf '%s' '38;5;33' ;;
+      cyan) [ "$channel" = "bg" ] && printf '%s' '48;5;37' || printf '%s' '38;5;37' ;;
+      yellow) [ "$channel" = "bg" ] && printf '%s' '48;5;220' || printf '%s' '38;5;220' ;;
+      red) [ "$channel" = "bg" ] && printf '%s' '48;5;196' || printf '%s' '38;5;196' ;;
+      magenta|purple) [ "$channel" = "bg" ] && printf '%s' '48;5;127' || printf '%s' '38;5;127' ;;
+      white) [ "$channel" = "bg" ] && printf '%s' '47' || printf '%s' '37' ;;
+      black) [ "$channel" = "bg" ] && printf '%s' '40' || printf '%s' '30' ;;
+    esac
+  }
   case "$face" in
     org-level-1) sgr='1;38;5;33' ;;
     org-level-2) sgr='1;38;5;39' ;;
@@ -215,20 +247,11 @@ ansi_for_face() {
     font-lock-string-face) sgr='38;5;35' ;;
     default|'') sgr='0' ;;
   esac
-  case "$fg" in
-    green) sgr='38;5;34' ;;
-    blue) sgr='38;5;33' ;;
-    cyan) sgr='38;5;37' ;;
-    yellow) sgr='38;5;220' ;;
-    red) sgr='38;5;196' ;;
-    magenta|purple) sgr='38;5;127' ;;
-    white) sgr='37' ;;
-    black) sgr='30' ;;
-  esac
-  case "$bg" in
-    black) sgr="${sgr:+$sgr;}40" ;;
-    white) sgr="${sgr:+$sgr;}47" ;;
-  esac
+  local fg_sgr bg_sgr
+  fg_sgr=$(color_sgr "$fg" fg)
+  bg_sgr=$(color_sgr "$bg" bg)
+  [ -n "$fg_sgr" ] && sgr=$fg_sgr
+  [ -n "$bg_sgr" ] && sgr="${sgr:+$sgr;}$bg_sgr"
   if [ "$weight" = "bold" ] && [ "${sgr#*1}" = "$sgr" ]; then
     sgr="${sgr:+$sgr;}1"
   fi

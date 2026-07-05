@@ -706,6 +706,7 @@ TEST_FAST_FILES = \
 	test/emacs-minibuffer-builtins-test.el \
 	test/emacs-minibuffer-test.el \
 	test/emacs-command-loop-builtins-test.el \
+	test/emacs-faces-builtins-test.el \
 	test/emacs-dired-min-test.el \
 	test/vendor-first-core-modes-test.el \
 	test/emacs-help-test.el \
