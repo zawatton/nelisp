@@ -12462,3 +12462,68 @@ path:
    =NELISP_BIN=vendor/nelisp/target/nelisp= after killing only
    =[v]endor/nelisp/target/nelisp=; it completed =status=done=, exit 0,
    elapsed 348.06 s.
+
+231. Substrate gap-fill round 4 for in-buffer Org activation, 2026-07-05.
+   Reader provenance was verified before image work:
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= was at
+   =7aa3ed8b= and the existing =target/nelisp= binary was used without
+   rebuilding.  Fresh cold images were built from this checkout only, with
+   workdirs kept under =/tmp/cold-image-org-e2e.*= and pruned to one at a
+   time.
+
+   The original =(with-temp-buffer (org-mode) (prin1 major-mode))=
+   failure was reproduced as stderr =nelisp: uncaught error: error: nil=.
+   A =condition-case= wrapper captured =(error)=, proving a Lisp-side bare
+   error object rather than reader signal-data loss.  Bisection showed
+   =org-load-modules-maybe= was clean and the failure entered
+   =org-install-agenda-files-menu= / =easy-menu-change=.  The true origin
+   was two substrate bugs: =member-ignore-case= signalled on non-string
+   menu path elements, and =easy-menu-convert-item= classified keymap menu
+   values as generic submenu specs before checking =keymapp=.
+
+   Round-4 iteration log after clearing the bare error:
+   1. =void-function md5=: added a standalone fallback =md5= in
+      =emacs-subr-extras.el=; focused =emacs-subr-extras= ERT passed.
+   2. =void-function user-uid=: added user/group identity fallbacks in
+      =emacs-subr-extras.el= and handled the standalone
+      =user-full-name= unbound-marker shape; focused ERT passed.
+   3. =void-function recent-keys=: added command-loop
+      =recent-keys= bridge; focused command-loop ERT passed.
+   4. =void-variable text-property-default-nonsticky=: added the text
+      property default variable in the buffer builtins bridge; focused
+      buffer ERT passed.
+   5. Escaped =:exit: org-fold-outline=: traced to Org fold-core expecting
+      =buffer-local-value= to see values written by the standalone
+      =setq-local= fallback.  Installed explicit unprefixed buffer-local
+      aliases after requiring =emacs-buffer= so the later bulk-stub pass no
+      longer overwrites them; focused buffer ERT passed and the cold-image
+      local-value probe returned the set values.
+   6. =void-variable line-move-ignore-invisible=: added the edit/motion
+      variable in =emacs-edit-builtins.el=; focused edit ERT passed.
+   7. =void-variable auto-fill-inhibit-regexp=: added the fill variable in
+      =emacs-edit-builtins.el=; focused edit ERT passed.
+   8. =void-variable imenu-generic-expression=: added the standard imenu
+      variable in =emacs-imenu.el=; focused imenu ERT passed.
+
+   Final capped cold-image activation state after iteration 8:
+   exact probe stdout was empty and stderr was
+   =nelisp: uncaught error: void-variable: (tab-width)=.  The side-effect
+   probe =(with-temp-buffer (org-mode) (nl-write-file "/tmp/om.txt"
+   (symbol-name major-mode)) (prin1 major-mode))= also had empty stdout,
+   stderr =nelisp: uncaught error: void-variable: (tab-width)=, and
+   =/tmp/om.txt= was not written.  =org-mode= therefore did not activate
+   in this capped round, and the =org-element-parse-buffer= parse probe was
+   not run.
+
+   Final verification: =make test-fast= ran 1078 tests with 1072 expected
+   results and the same 6 known unexpected failures only
+   (=emacs-redisplay-test= x5 plus
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=).  The preserved 68-file Org-chain
+   gate was run once with =make diagnose-vendor-repl-replay-fast=,
+   =VENDOR_FAST_FILES= from =tmp-diag/org-chain-68-files-item222.txt=,
+   =VENDOR_FAST_PROOF_FORM_FILE=tmp-diag/proof-item225-org-chain-plus-backquote.el=,
+   =VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+   =NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture/target/nelisp=;
+   it completed =status=done=, exit 0, elapsed 603.19 s.
