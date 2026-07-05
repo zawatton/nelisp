@@ -86,9 +86,10 @@ reader/load sanity check for the same fixture path.
 
 The TUI smoke is the terminal frontend proof.  It pipes deterministic input
 through =frontends/tui/nemacs-next-tui=, drives the =find-file= prompt,
-edits temporary files, saves them, quits, and asserts final file content,
-rendered frame output, UTF-8 multibyte insertion, ANSI face/color output,
-and differential redraw stats for a cursor-only move.
+edits temporary files, invokes toolbar Save, invokes toolbar Open to prove
+the prompt path, quits, and asserts final file content, rendered frame
+output, the full default toolbar label set, UTF-8 multibyte insertion, ANSI
+face/color output, and differential redraw stats for a cursor-only move.
 
 The TUI v2 renderer consumes session viewport =:face-runs= and maps the
 initial face set (=org-level-1=..=org-level-4=, =bold=,
@@ -98,3 +99,9 @@ draws compare rendered rows with the previous frame, so unchanged rows are
 not rewritten; cursor-only movement emits only cursor positioning.  Terminal
 IME composition is handled by the terminal itself, while the frontend reads
 complete UTF-8 byte sequences before sending text input to the session.
+
+The TUI renders the session toolbar on row 0.  The default toolbar is the
+vendor =tool-bar-setup= sequence: New File, Open, Dired, Close, Save,
+Undo, Cut, Copy, Paste, Search, with the vendor separators preserved.
+Use =F10= or =M-`= to focus it, Left/Right to move, RET to invoke, and
+ESC to leave toolbar focus.

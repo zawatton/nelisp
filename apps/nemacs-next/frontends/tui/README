@@ -22,7 +22,15 @@ Key map
   C-/                    undo
   C-x C-f                find-file prompt
   C-x C-s                save-buffer
+  F10 / M-`              focus toolbar
+  Toolbar Left / Right   move current toolbar item
+  Toolbar RET            invoke current toolbar item
+  Toolbar ESC            leave toolbar focus
   C-x C-c                quit
+
+The toolbar is rendered on the top row from session protocol data.  The
+default item order follows vendor `tool-bar-setup`: New File, Open, Dired,
+Close, Save, Undo, Cut, Copy, Paste, Search, with separators preserved.
 
 The v2 renderer consumes the session frame snapshot directly. Viewport rows may
 include face runs sourced from buffer text properties, and the frontend maps the
@@ -51,6 +59,7 @@ Smoke
   apps/nemacs-next/frontends/tui/smoke.sh
 
 The smoke pipes deterministic byte sequences through the frontend. It keeps the
-original find-file/edit/delete/save/quit path, adds Japanese UTF-8 insertion,
-asserts ANSI color output for an Org heading face run, and checks that a
-cursor-only move is much smaller than a full-frame redraw.
+find-file/edit/delete/quit path, invokes toolbar Save, invokes toolbar Open and
+asserts the prompt, checks that every default toolbar label rendered, adds
+Japanese UTF-8 insertion, asserts ANSI color output for an Org heading face run,
+and checks that a cursor-only move is much smaller than a full-frame redraw.
