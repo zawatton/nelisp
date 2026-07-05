@@ -2570,6 +2570,21 @@ that walks down into the guarded definition."
           (put 'demo-large 'standalone-source-elided-body t)
           'demo-large))))))
 
+(ert-deftest standalone-source-normalize-test/retains-listed-large-core-defun-body ()
+  (let ((standalone-source-normalize-large-defun-character-limit 20)
+        (standalone-source-normalize-retained-large-defun-symbols '(demo-large)))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun demo-large (&optional arg)
+          (let ((value arg))
+            (setq value (cons value value))
+            value)))
+      '((defun demo-large (&optional arg)
+          (let ((value arg))
+            (setq value (cons value value))
+            value)))))))
+
 (ert-deftest standalone-source-normalize-test/elides-listed-top-level-defun-body ()
   (let ((standalone-source-normalize-large-defun-character-limit 10000)
         (standalone-source-normalize-elided-defun-symbols '(demo-listed)))

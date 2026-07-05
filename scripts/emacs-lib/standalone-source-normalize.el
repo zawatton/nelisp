@@ -13,13 +13,13 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 129
+(defconst standalone-source-normalize-cache-version 130
   "Cache format version for normalized standalone source forms.
 Bump this whenever normalization semantics change so stale cache entries
 self-invalidate; the cache key otherwise only covers the source file's
-truename/mtime/size, not the normalizer's own behavior (Doc 33 item 225:
-version 129 fixes reader-quote head collisions hollowing definitions
-literally named `backquote').")
+truename/mtime/size, not the normalizer's own behavior (Doc 33 item 234:
+version 130 retains core regex builder bodies even when they exceed the
+generic large-defun replay threshold).")
 
 (defvar standalone-source-normalize-read-max-lisp-eval-depth 10000
   "Maximum Lisp nesting depth while reading vendor source for normalization.")
@@ -115,6 +115,12 @@ This is narrower than `standalone-source-normalize-elided-defun-symbols' for
 callability-only UI functions that appear after enough cumulative property
 traffic for even a stub function definition to exceed the standalone replay
 envelope.")
+
+(defvar standalone-source-normalize-retained-large-defun-symbols
+  '(nelisp-rx--build)
+  "Top-level defuns exempt from generic large-body replay elision.
+These symbols are core runtime substrate where replacing the body with a
+callable nil stub silently corrupts downstream semantics.")
 
 (defvar standalone-source-normalize-elided-defconst-symbols
   '(emoji--labels emoji--derived emoji--names)
@@ -785,6 +791,18 @@ forms can still observe them without spending the final vendor form.")
 	              (concat "<a href=\"irc:" link "\">" desc "</a>")
 	            nil)))
 	      (provide 'ol-irc)))
+   ((equal standalone-source-normalize-current-file "org-fold-core.el")
+    '((defun org-fold-core-get-folding-spec-from-folding-prop (folding-prop)
+        "Return folding spec symbol used for folding property with name FOLDING-PROP."
+        (let ((prop-name (symbol-name folding-prop))
+              (specs (org-fold-core-folding-spec-list))
+              result)
+          (while (and specs (null result))
+            (let ((spec (car specs)))
+              (when (string-match-p (symbol-name spec) prop-name)
+                (setq result spec)))
+            (setq specs (cdr specs)))
+          result))))
 	   ((equal standalone-source-normalize-current-file "tempo.el")
 	    '((progn
         (defvar tempo-tags nil)
@@ -1167,6 +1185,8 @@ and the inline-only helper forms in BODY are not valid ordinary runtime code."
        (eq (car form) 'defun)
        (symbolp (cadr form))
        (listp (caddr form))
+       (not (memq (cadr form)
+                  standalone-source-normalize-retained-large-defun-symbols))
        (or (memq (cadr form)
                  standalone-source-normalize-unmarked-elided-defun-symbols)
            (memq (cadr form)

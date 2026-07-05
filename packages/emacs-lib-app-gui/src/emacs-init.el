@@ -39,6 +39,8 @@
                         (list path))))))))
 
 ;; Doc 33 item 224 -- lean `org-modules' default (drop `ol-gnus').
+;; Doc 33 item 234 -- also drop `ol-bibtex' while its optional module
+;; loader path still segfaults under cold image activation.
 ;;
 ;; If real vendored `org/org.el' is ever loaded on top of this bootstrap
 ;; (e.g. a full-Org-compat proof harness that appends the vendor Org file
@@ -71,7 +73,7 @@
 ;; interpreter gains a macroexpansion cache or a bind-path allocation
 ;; fast path (see FINDINGS.md's remediation proposal).
 (unless (boundp 'org-modules)
-  (setq org-modules '(ol-doi ol-w3m ol-bbdb ol-bibtex ol-docview
+  (setq org-modules '(ol-doi ol-w3m ol-bbdb ol-docview
                        ol-info ol-irc ol-mhe ol-rmail ol-eww)))
 
 ;; Phase B5 (= 2026-05-09): also surface this file's own directory on

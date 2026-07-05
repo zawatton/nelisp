@@ -12601,6 +12601,68 @@ path:
    =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
    with =void-function Info-find-file=.
 
+234. Org cold-image substrate gap-fill round 6, 2026-07-05.  Reader
+   provenance was verified without rebuilding the capture clone:
+   =git -C /home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture log
+   --oneline -1= reported =c75c742c=.
+
+   Collection result: the first cold activation blocker was the standard
+   simple.el variable =filter-buffer-substring-function=.  Adding a
+   probe-level defvar advanced to non-missing Org fold escapes, so the
+   cheap probe-stub enumeration could not produce a twenty-symbol list.
+   The observed ordered blocker/error sequence for this round was:
+   =filter-buffer-substring-function=, =:exit org-fold-outline=,
+   systemic regex empty-NFA nonmatch corruption, =:exit org-fold-drawer=,
+   optional =ol-bibtex= load segfault, =done nil=, and, only under a
+   reduced/stubbed path, =try-completion=.
+
+   Fixes landed in this worktree: =filter-buffer-substring-functions=,
+   =filter-buffer-substring-function=, =delete-and-extract-region=,
+   =buffer-substring--filter=, and =filter-buffer-substring= were added
+   to the reusable/simple and textmodes bootstrap surfaces.  The
+   standalone normalizer now retains the core =nelisp-rx--build= body
+   despite the generic large-defun threshold; this fixed the systemic
+   finding where =nelisp-rx--build= was normalized to nil, producing an
+   empty NFA and making regex nonmatches succeed at zero width.  The
+   normalizer also installs a post-vendor non-throwing
+   =org-fold-core-get-folding-spec-from-folding-prop= replay override,
+   and the default =org-modules= list now excludes both =ol-gnus= and
+   =ol-bibtex= until the optional module loader crash is fixed.
+
+   Fresh cold-image e2e after the safe fixes:
+   =/tmp/cold-image-org-e2e.NnhROJ/org-run1.img=, exit 0,
+   =RESULT: IDENTICAL=, replay/cold probe =(t t t t (interactive) t)=,
+   cold boot 791519 us, peak RSS 1261444 KB, image size 1290648256 B.
+   Regex sanity in the preceding retained-builder image produced real
+   character states for ="org-fold-visible"= and both
+   =(string-match-p "org-fold-visible" "org-fold-outline")= and
+   =(string-match "org-fold-visible" "org-fold-outline")= returned nil.
+
+   Final exact activation probe against
+   =/tmp/cold-image-org-e2e.NnhROJ/org-run1.img=:
+   =(with-temp-buffer (org-mode) (nl-write-file "/tmp/om.txt"
+   (symbol-name major-mode)))=, =timeout 180=, rc 0, stdout empty,
+   stderr verbatim =nelisp: uncaught error: done: nil=, and =/tmp/om.txt=
+   was not written.  Since in-buffer =org-mode= did not activate, the
+   requested =org-element-parse-buffer= parse probe was not run.
+
+   Unsafe finding not landed: installing unprefixed =try-completion= /
+   =all-completions= / =test-completion= in
+   =emacs-minibuffer-builtins.el= makes vendor replay call real
+   completion during load, which changed =regexp-opt= behavior and caused
+   a replay-load segfault.  That bridge was backed out; it needs a
+   late-install strategy rather than a bootstrap-time alias.
+
+   Focused ERTs run: =test/simple-test.el= 6/6,
+   =test/emacs-textmodes-stub-test.el= 15/15,
+   =test/nelisp-regex-test.el= 14/14,
+   =test/emacs-search-builtins-test.el= 13/13,
+   =standalone-source-normalize-test/retains-listed-large-core-defun-body=
+   1/1, and =test/emacs-minibuffer-builtins-test.el= 13/13 before the
+   unsafe completion bridge was backed out.  Full =make test-fast= and
+   the Org 68-file gate were not run in this incomplete round because
+   exact activation remained blocked.
+
 233. Easymenu conversion memo aliasing fixed after cold-image bisect,
    2026-07-05.  The bisect note
    =tmp-diag/e2e-regression-bisect.md= identified =a6868f72=, the

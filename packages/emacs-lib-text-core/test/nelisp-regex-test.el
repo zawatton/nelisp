@@ -32,6 +32,13 @@
     (should (equal "bar foo" (nelisp-rx-replace "foo" "foo foo" "bar")))
     (should (equal "bar bar" (nelisp-rx-replace-all "foo" "foo foo" "bar")))))
 
+(ert-deftest nelisp-regex-test/literal-nonmatch-does-not-return-empty-match ()
+  "A failed literal match must return nil, not a zero-width match at 0."
+  (should-not (nelisp-rx-string-match "org-fold-visible"
+                                      "org-fold-outline"))
+  (should-not (string-match-p "org-fold-visible"
+                              "org-fold-outline")))
+
 (ert-deftest nelisp-regex-test/rx-compatibility-surface-stays-working ()
   (let ((rx-constituents
          '((legacy (lambda (_form) "abc") 0 0 nil)))
