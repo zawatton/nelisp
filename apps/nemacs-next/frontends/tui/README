@@ -24,16 +24,33 @@ Key map
   C-x C-s                save-buffer
   C-x C-c                quit
 
-The v1 renderer uses ANSI clear-and-redraw from the session's plain-text frame
-render. It shows the viewport, modeline, echo/status messages, and positions
-the terminal cursor at the session point.
+The v2 renderer consumes the session frame snapshot directly. Viewport rows may
+include face runs sourced from buffer text properties, and the frontend maps the
+initial face set to ANSI colors:
+
+  org-level-1              bright blue, bold
+  org-level-2              bright cyan, bold
+  org-level-3              green, bold
+  org-level-4              yellow, bold
+  bold                     bold
+  font-lock-comment-face   gray
+  font-lock-string-face    green
+  default                  reset
+
+Resolved foreground names from the face registry override that table for the
+small named-color set currently supported by the TUI.
+
+Interactive draws compare rendered rows with the previous frame and rewrite
+only changed rows. Cursor-only movement emits only cursor positioning. In a
+terminal, IME composition remains owned by the terminal; the frontend reads a
+complete UTF-8 byte sequence before sending text input to the session.
 
 Smoke
 -----
 
   apps/nemacs-next/frontends/tui/smoke.sh
 
-The smoke pipes a deterministic byte sequence through the frontend: find-file
-on a temporary file, insert text, move left, delete backward, save, and quit.
-It asserts the saved file content and that rendered output included the edited
-frame.
+The smoke pipes deterministic byte sequences through the frontend. It keeps the
+original find-file/edit/delete/save/quit path, adds Japanese UTF-8 insertion,
+asserts ANSI color output for an Org heading face run, and checks that a
+cursor-only move is much smaller than a full-frame redraw.
