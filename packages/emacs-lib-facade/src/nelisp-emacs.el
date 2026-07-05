@@ -374,9 +374,10 @@ package-owned companion features that stay out of facade eager loads.")
      :owner IO
      :package-id nelisp-emacs-io
      :symbols ((function emacs-process-delegate)
-               (function emacs-process-call-process)
-               (function emacs-process-call-process-region)
-               (function emacs-process-start-process)
+	               (function emacs-process-call-process)
+	               (function emacs-process-call-process-region)
+	               (function emacs-process-process-file)
+	               (function emacs-process-start-process)
                (function emacs-process-make-process)
                (function emacs-process-processp)
                (function emacs-process-process-list)
