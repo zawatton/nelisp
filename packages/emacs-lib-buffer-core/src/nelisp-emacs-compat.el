@@ -732,6 +732,23 @@ modes; our MVP simply erases the visible region."
 ;;; D. save-* family  (3 macros)
 
 ;;;###autoload
+(defun nelisp-ec--save-excursion-form (body)
+  "Return expansion for `nelisp-ec-save-excursion' around BODY."
+  (let ((saved-buf (make-symbol "saved-buf"))
+        (saved-pt (make-symbol "saved-pt")))
+    (list 'let*
+          (list (list saved-buf 'nelisp-ec--current-buffer)
+                (list saved-pt (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-point saved-buf))))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'progn
+                      (list 'when (list 'and saved-buf
+                                        (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
+                            (list 'nelisp-ec--set-buffer-point saved-buf saved-pt))
+                      (list 'setq 'nelisp-ec--current-buffer saved-buf))))))
+
+;;;###autoload
 (defmacro nelisp-ec-save-excursion (&rest body)
   "Save POINT (and current buffer), evaluate BODY, restore both.
 The saved POINT is restored even on non-local exit.  POINT-restoration
@@ -745,18 +762,28 @@ on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
 for the fuller note on why every macro in this save-* family must stay
 backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
+  (nelisp-ec--save-excursion-form body))
+
+;;;###autoload
+(defun nelisp-ec--save-restriction-form (body)
+  "Return expansion for `nelisp-ec-save-restriction' around BODY."
   (let ((saved-buf (make-symbol "saved-buf"))
-        (saved-pt (make-symbol "saved-pt")))
+        (saved-lo (make-symbol "saved-lo"))
+        (saved-hi (make-symbol "saved-hi")))
     (list 'let*
           (list (list saved-buf 'nelisp-ec--current-buffer)
-                (list saved-pt (list 'and saved-buf
-                                     (list 'nelisp-ec-buffer-point saved-buf))))
+                (list saved-lo (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-narrow-start saved-buf)))
+                (list saved-hi (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-narrow-end saved-buf))))
           (list 'unwind-protect
                 (cons 'progn body)
-                (list 'when (list 'and saved-buf
-                                  (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
-                      (list 'nelisp-ec--set-buffer-point saved-buf saved-pt))
-                (list 'setq 'nelisp-ec--current-buffer saved-buf)))))
+                (list 'progn
+                      (list 'when (list 'and saved-buf
+                                        (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
+                            (list 'nelisp-ec--set-buffer-narrow-start saved-buf saved-lo)
+                            (list 'nelisp-ec--set-buffer-narrow-end saved-buf saved-hi))
+                      (list 'setq 'nelisp-ec--current-buffer saved-buf))))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-restriction (&rest body)
@@ -770,21 +797,16 @@ on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
 for the fuller note on why every macro in this save-* family must stay
 backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
-  (let ((saved-buf (make-symbol "saved-buf"))
-        (saved-lo (make-symbol "saved-lo"))
-        (saved-hi (make-symbol "saved-hi")))
-    (list 'let*
-          (list (list saved-buf 'nelisp-ec--current-buffer)
-                (list saved-lo (list 'and saved-buf
-                                     (list 'nelisp-ec-buffer-narrow-start saved-buf)))
-                (list saved-hi (list 'and saved-buf
-                                     (list 'nelisp-ec-buffer-narrow-end saved-buf))))
+  (nelisp-ec--save-restriction-form body))
+
+;;;###autoload
+(defun nelisp-ec--save-current-buffer-form (body)
+  "Return expansion for `nelisp-ec-save-current-buffer' around BODY."
+  (let ((saved (make-symbol "saved")))
+    (list 'let (list (list saved 'nelisp-ec--current-buffer))
           (list 'unwind-protect
                 (cons 'progn body)
-                (list 'when (list 'and saved-buf
-                                  (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
-                      (list 'nelisp-ec--set-buffer-narrow-start saved-buf saved-lo)
-                      (list 'nelisp-ec--set-buffer-narrow-end saved-buf saved-hi))))))
+                (list 'setq 'nelisp-ec--current-buffer saved)))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-current-buffer (&rest body)
@@ -795,11 +817,7 @@ on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
 for the fuller note on why every macro in this save-* family must stay
 backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
-  (let ((saved (make-symbol "saved")))
-    (list 'let (list (list saved 'nelisp-ec--current-buffer))
-          (list 'unwind-protect
-                (cons 'progn body)
-                (list 'setq 'nelisp-ec--current-buffer saved)))))
+  (nelisp-ec--save-current-buffer-form body))
 
 ;;; E. narrowing  (2 APIs)
 
