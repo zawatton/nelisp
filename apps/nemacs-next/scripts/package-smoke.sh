@@ -38,19 +38,18 @@ fi
 
 tmp=${TMPDIR:-/tmp}/nemacs-next-package-smoke.$$.repl
 out=${TMPDIR:-/tmp}/nemacs-next-package-smoke.$$.out
-rm -f "$tmp" "$out"
-trap 'rm -f "$tmp" "$out"' EXIT
+err=${TMPDIR:-/tmp}/nemacs-next-package-smoke.$$.err
+rm -f "$tmp" "$out" "$err"
+trap 'rm -f "$tmp" "$out" "$err"' EXIT
 
 cat "$BOOTSTRAP_REPL" > "$tmp"
 cat >> "$tmp" <<EOF
 (setq load-path (list "$ROOT/src" "$ROOT/apps/nemacs-next/lisp" "$FIXTURE_DIR"))
 (load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
 (require (quote nemacs-next-m5-fixture-extra))
-(setq nemacs-next-m5-package-buffer
-      (nelisp-ec-generate-new-buffer "nemacs-next-m5-standalone"))
+(setq nemacs-next-m5-package-buffer (nelisp-ec-generate-new-buffer "nemacs-next-m5-standalone"))
 (nelisp-ec-set-buffer nemacs-next-m5-package-buffer)
-(setq nemacs-next-m5-fixture-mode-hook
-      (list (quote nemacs-next-m5-fixture--hook-marker)))
+(setq nemacs-next-m5-fixture-mode-hook (list (quote nemacs-next-m5-fixture--hook-marker)))
 (setq nemacs-next-m5-fixture-hook-count 0)
 (nemacs-next-m5-fixture-mode)
 (nelisp--write-stdout-bytes "package-smoke-start\n")
@@ -59,10 +58,7 @@ cat >> "$tmp" <<EOF
 (nelisp--write-stdout-bytes (concat "mode=" (symbol-name (emacs-mode-major-mode)) "\n"))
 (nelisp--write-stdout-bytes (concat "mode-name=" (emacs-mode-mode-name) "\n"))
 (nelisp--write-stdout-bytes (concat "hook-count=" (number-to-string nemacs-next-m5-fixture-hook-count) "\n"))
-(setq nemacs-next-m5-package-binding
-      (emacs-keymap-lookup-key
-       nemacs-next-m5-fixture-mode-map
-       "n"))
+(setq nemacs-next-m5-package-binding (emacs-keymap-lookup-key nemacs-next-m5-fixture-mode-map "n"))
 (nelisp--write-stdout-bytes (concat "key-binding=" (symbol-name nemacs-next-m5-package-binding) "\n"))
 (funcall nemacs-next-m5-package-binding)
 (nelisp--write-stdout-bytes (concat "face-foreground=" (emacs-faces-attribute (quote nemacs-next-m5-fixture-face) :foreground) "\n"))
@@ -73,18 +69,20 @@ cat >> "$tmp" <<EOF
 EOF
 
 set +e
-timeout 60s "$NELISP_BIN" --repl --no-prompt --no-print < "$tmp" > "$out" 2>&1
+timeout 60s "$NELISP_BIN" --repl --no-prompt --no-print < "$tmp" > "$out" 2> "$err"
 rc=$?
 set -e
 
 if [ "$rc" -ne 0 ]; then
   cat "$out" >&2
+  cat "$err" >&2
   echo "nemacs-next-package-smoke: standalone fail rc=$rc" >&2
   exit 1
 fi
 
-if [ "$(wc -l < "$out" | tr -d ' ')" != "8" ]; then
+if [ "$(wc -l < "$out" | tr -d ' ')" != "11" ]; then
   cat "$out" >&2
+  cat "$err" >&2
   echo "nemacs-next-package-smoke: standalone fail expected marker plus load fields" >&2
   exit 1
 fi

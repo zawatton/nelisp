@@ -84,7 +84,17 @@ face registration/text properties, buffer edits, companion feature load,
 and explicit package-compat debt rows.  The standalone half is a lighter
 reader/load sanity check for the same fixture path.
 
-The TUI smoke is the first frontend-loop proof.  It pipes a deterministic
-byte sequence through =frontends/tui/nemacs-next-tui=, drives the
-=find-file= prompt, edits a temporary file, saves it, quits, and asserts
-both the final file content and rendered frame output.
+The TUI smoke is the terminal frontend proof.  It pipes deterministic input
+through =frontends/tui/nemacs-next-tui=, drives the =find-file= prompt,
+edits temporary files, saves them, quits, and asserts final file content,
+rendered frame output, UTF-8 multibyte insertion, ANSI face/color output,
+and differential redraw stats for a cursor-only move.
+
+The TUI v2 renderer consumes session viewport =:face-runs= and maps the
+initial face set (=org-level-1=..=org-level-4=, =bold=,
+=font-lock-comment-face=, =font-lock-string-face=, =default= plus a small
+resolved named-color override table) to ANSI SGR.  Interactive terminal
+draws compare rendered rows with the previous frame, so unchanged rows are
+not rewritten; cursor-only movement emits only cursor positioning.  Terminal
+IME composition is handled by the terminal itself, while the frontend reads
+complete UTF-8 byte sequences before sending text input to the session.
