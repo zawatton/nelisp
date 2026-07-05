@@ -67,6 +67,14 @@ the char at point instead of inserting (= mirrors `overwrite-mode'
 minor-mode in real Emacs).  Set to t / nil; richer values like
 `overwrite-mode-binary' are deferred."))
 
+(unless (boundp 'line-move-ignore-invisible)
+  (defvar line-move-ignore-invisible nil
+    "Non-nil means line motion ignores invisible text."))
+
+(unless (boundp 'auto-fill-inhibit-regexp)
+  (defvar auto-fill-inhibit-regexp nil
+    "Regexp matching lines where Auto Fill should be inhibited."))
+
 (defun emacs-edit-overwrite-mode-active-p ()
   "Return non-nil when overwrite-mode should affect insertion."
   (and (boundp 'overwrite-mode)
