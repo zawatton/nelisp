@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=${NEMACS_NEXT_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd -P)}
+NELISP_BIN=${NELISP_BIN:-${NELISP:-}}
+BOOTSTRAP_REPL=${NEMACS_BOOTSTRAP_REPL:-$ROOT/build/nemacs-bootstrap.repl}
+WIDTH=${NEMACS_NEXT_TUI_WIDTH:-80}
+HEIGHT=${NEMACS_NEXT_TUI_HEIGHT:-24}
+DRAW=${NEMACS_NEXT_TUI_DRAW:-auto}
+
+if [ -z "$NELISP_BIN" ]; then
+  if [ -x "$ROOT/../nelisp/target/nelisp" ]; then
+    NELISP_BIN=$ROOT/../nelisp/target/nelisp
+  elif [ -x "$ROOT/vendor/nelisp/target/nelisp" ]; then
+    NELISP_BIN=$ROOT/vendor/nelisp/target/nelisp
+  else
+    NELISP_BIN=$ROOT/../nelisp/target/nelisp
+  fi
+fi
+
+if [ ! -x "$NELISP_BIN" ]; then
+  echo "nemacs-next-tui: nelisp binary is not executable: $NELISP_BIN" >&2
+  exit 1
+fi
+
+if [ ! -r "$BOOTSTRAP_REPL" ]; then
+  echo "nemacs-next-tui: bootstrap REPL is not readable: $BOOTSTRAP_REPL" >&2
+  echo "nemacs-next-tui: run make build-nelisp-bootstrap first" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "--no-draw" ]; then
+  DRAW=never
+  shift
+fi
+
+session_pid=
+old_stty=
+raw_enabled=0
+current_render=
+cursor_row=1
+cursor_col=1
+status_message=
+prompt_mode=0
+prompt_text=
+quit_requested=0
+
+cleanup() {
+  if [ "$raw_enabled" = 1 ]; then
+    stty "$old_stty" 2>/dev/null || true
+    printf '\033[?25h' || true
+  fi
+  if [ -n "$session_pid" ]; then
+    kill "$session_pid" 2>/dev/null || true
+    wait "$session_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+elisp_string() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/}
+  printf '"%s"' "$s"
+}
+
+message_expr() {
+  local kind=$1
+  local arg=${2-}
+  case "$kind" in
+    hello)
+      printf "'(:type hello)"
+      ;;
+    frame)
+      printf "'(:type command :name frame-snapshot :width %s :height %s)" "$WIDTH" "$HEIGHT"
+      ;;
+    text)
+      printf "(list :type 'input :event (list :text %s))" "$(elisp_string "$arg")"
+      ;;
+    key)
+      printf "(list :type 'input :event (list :key %s))" "$(elisp_string "$arg")"
+      ;;
+    command)
+      printf "'(:type command :name %s)" "$arg"
+      ;;
+    count-command)
+      printf "'(:type command :name %s :count 1)" "$arg"
+      ;;
+    find-file)
+      printf "(list :type 'command :name 'find-file :path %s)" "$(elisp_string "$arg")"
+      ;;
+    *)
+      echo "nemacs-next-tui: unknown message kind: $kind" >&2
+      exit 2
+      ;;
+  esac
+}
+
+start_session() {
+  coproc NEMACS_NEXT_TUI_SESSION { "$NELISP_BIN" --repl --no-prompt --no-print; }
+  session_pid=$NEMACS_NEXT_TUI_SESSION_PID
+  cat "$BOOTSTRAP_REPL" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(setq load-path (list $(elisp_string "$ROOT/src") $(elisp_string "$ROOT/apps/nemacs-next/lisp")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(load $(elisp_string "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_READY\n\")" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  local line
+  while IFS= read -r line <&"${NEMACS_NEXT_TUI_SESSION[0]}"; do
+    [ "$line" = "NEMACS_NEXT_TUI_READY" ] && return 0
+  done
+  echo "nemacs-next-tui: session exited during bootstrap" >&2
+  exit 1
+}
+
+read_render() {
+  current_render=
+  cursor_row=1
+  cursor_col=1
+  status_message=
+  local line in_render=0
+  while IFS= read -r line <&"${NEMACS_NEXT_TUI_SESSION[0]}"; do
+    case "$line" in
+      NEMACS_NEXT_TUI_BEGIN)
+        ;;
+      NEMACS_NEXT_TUI_RENDER)
+        in_render=1
+        ;;
+      NEMACS_NEXT_TUI_END)
+        return 0
+        ;;
+      NEMACS_NEXT_TUI_CURSOR$'\t'*)
+        local rest=${line#*$'\t'}
+        cursor_row=${rest%%$'\t'*}
+        cursor_col=${rest##*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_STATUS$'\t'*)
+        status_message=${line#*$'\t'}
+        ;;
+      *)
+        if [ "$in_render" = 1 ]; then
+          current_render+="$line"$'\n'
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+send_message() {
+  local expr
+  expr=$(message_expr "$@")
+  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-rendered (nemacs-next-session-render-frame-text nemacs-next-tui-frame-state))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes nemacs-next-tui-rendered) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  read_render
+}
+
+draw() {
+  if [ "$DRAW" = "never" ] || { [ "$DRAW" = "auto" ] && [ ! -t 1 ]; }; then
+    printf '%s' "$current_render"
+    if [ "$prompt_mode" = 1 ]; then
+      printf 'Find file: %s\n' "$prompt_text"
+    fi
+    return
+  fi
+  printf '\033[?25l\033[H\033[2J'
+  printf '%s' "$current_render"
+  if [ "$prompt_mode" = 1 ]; then
+    printf 'Find file: %s\033[K' "$prompt_text"
+    cursor_row=$HEIGHT
+    cursor_col=$((12 + ${#prompt_text}))
+  elif [ -n "$status_message" ]; then
+    printf '%s\033[K' "$status_message"
+  fi
+  printf '\033[%s;%sH\033[?25h' "$cursor_row" "$cursor_col"
+}
+
+handle_byte() {
+  local ch=$1
+  if [ "$prompt_mode" = 1 ]; then
+    case "$ch" in
+      $'\r'|$'\n')
+        prompt_mode=0
+        send_message find-file "$prompt_text"
+        prompt_text=
+        ;;
+      $'\177'|$'\b')
+        prompt_text=${prompt_text%?}
+        ;;
+      $'\003'|$'\007')
+        prompt_mode=0
+        prompt_text=
+        status_message="Quit"
+        ;;
+      *)
+        prompt_text+="$ch"
+        ;;
+    esac
+    draw
+    return
+  fi
+
+  case "$ch" in
+    $'\003')
+      quit_requested=1
+      ;;
+    $'\030')
+      local next=
+      if IFS= read -rsn1 next; then
+        case "$next" in
+          $'\003') quit_requested=1 ;;
+          $'\006') prompt_mode=1; prompt_text= ;;
+          $'\023') send_message command save-buffer ;;
+          *) status_message="Undefined C-x key" ;;
+        esac
+      else
+        quit_requested=1
+      fi
+      draw
+      ;;
+    $'\006')
+      send_message count-command forward-char
+      draw
+      ;;
+    $'\002')
+      send_message count-command backward-char
+      draw
+      ;;
+    $'\016')
+      send_message count-command next-line
+      draw
+      ;;
+    $'\020')
+      send_message count-command previous-line
+      draw
+      ;;
+    $'\037')
+      send_message command undo
+      draw
+      ;;
+    $'\r'|$'\n')
+      send_message key return
+      draw
+      ;;
+    $'\177'|$'\b')
+      send_message key backspace
+      draw
+      ;;
+    $'\033')
+      local seq1= seq2=
+      if IFS= read -rsn1 -t 0.05 seq1 && [ "$seq1" = "[" ]; then
+        if IFS= read -rsn1 -t 0.05 seq2; then
+          case "$seq2" in
+            C) send_message count-command forward-char ;;
+            D) send_message count-command backward-char ;;
+            B) send_message count-command next-line ;;
+            A) send_message count-command previous-line ;;
+          esac
+          draw
+        fi
+      fi
+      ;;
+    *)
+      send_message text "$ch"
+      draw
+      ;;
+  esac
+}
+
+start_session
+send_message hello >/dev/null
+send_message frame
+
+if [ -t 0 ]; then
+  old_stty=$(stty -g)
+  stty raw -echo
+  raw_enabled=1
+fi
+
+draw
+
+while [ "$quit_requested" = 0 ]; do
+  ch=
+  if ! IFS= read -rsn1 ch; then
+    break
+  fi
+  handle_byte "$ch"
+done
+
+exit 0

@@ -1,0 +1,39 @@
+nemacs-next TUI frontend
+========================
+
+Launch from the repository root:
+
+  apps/nemacs-next/frontends/tui/nemacs-next-tui
+
+The launcher starts one persistent NeLisp session with the existing bootstrap
+REPL, switches an interactive terminal to raw mode, restores the terminal on
+exit, and exits cleanly on stdin EOF for scripted smokes.
+
+Key map
+-------
+
+  Printable characters   insert text
+  RET                    insert newline
+  DEL / Backspace        delete backward
+  Left / C-b             backward-char
+  Right / C-f            forward-char
+  Down / C-n             next-line
+  Up / C-p               previous-line
+  C-/                    undo
+  C-x C-f                find-file prompt
+  C-x C-s                save-buffer
+  C-x C-c                quit
+
+The v1 renderer uses ANSI clear-and-redraw from the session's plain-text frame
+render. It shows the viewport, modeline, echo/status messages, and positions
+the terminal cursor at the session point.
+
+Smoke
+-----
+
+  apps/nemacs-next/frontends/tui/smoke.sh
+
+The smoke pipes a deterministic byte sequence through the frontend: find-file
+on a temporary file, insert text, move left, delete backward, save, and quit.
+It asserts the saved file content and that rendered output included the edited
+frame.
