@@ -43,7 +43,9 @@
                  buffer-narrowed-p markerp copy-marker move-marker
                  remove-overlays next-overlay-change previous-overlay-change
                  copy-overlay overlay-recenter
-                 invisible-p next-property-change previous-property-change
+                 invisible-p add-to-invisibility-spec
+                 remove-from-invisibility-spec
+                 next-property-change previous-property-change
                  next-single-property-change previous-single-property-change
                  next-single-char-property-change
                  previous-single-char-property-change
@@ -78,6 +80,8 @@
                         "(copy-overlay       . emacs-buffer-copy-overlay)"
                         "(defun overlay-recenter"
                         "(defalias 'invisible-p #'emacs-buffer-builtins-invisible-p"
+                        "(defalias 'add-to-invisibility-spec"
+                        "(defalias 'remove-from-invisibility-spec"
                         "(defalias 'next-single-char-property-change"
                         "(defalias 'previous-single-char-property-change"
                         "(insert-and-inherit         . nelisp-ec-insert)"
@@ -140,6 +144,41 @@
     (should (eq t (emacs-buffer-builtins-invisible-p 'baz)))
     (should (null (emacs-buffer-builtins-invisible-p 'qux)))
     (should (eq t (emacs-buffer-builtins-invisible-p '(foo qux))))))
+
+(ert-deftest emacs-buffer-builtins-test/invisibility-spec-add-remove-shapes ()
+  (with-temp-buffer
+    (setq buffer-invisibility-spec nil)
+    (emacs-buffer-builtins-add-to-invisibility-spec 'foo)
+    (should (equal '(foo) buffer-invisibility-spec))
+    (emacs-buffer-builtins-add-to-invisibility-spec '(bar . t))
+    (should (equal '((bar . t) foo) buffer-invisibility-spec))
+    (emacs-buffer-builtins-remove-from-invisibility-spec 'foo)
+    (should (equal '((bar . t)) buffer-invisibility-spec))
+    (emacs-buffer-builtins-remove-from-invisibility-spec '(bar . t))
+    (should (equal nil buffer-invisibility-spec)))
+  (with-temp-buffer
+    (setq buffer-invisibility-spec t)
+    (emacs-buffer-builtins-add-to-invisibility-spec 'foo)
+    (should (equal '(foo t) buffer-invisibility-spec)))
+  (with-temp-buffer
+    (setq buffer-invisibility-spec nil)
+    (emacs-buffer-builtins-remove-from-invisibility-spec 'foo)
+    (should (equal '(t) buffer-invisibility-spec))))
+
+(ert-deftest emacs-buffer-builtins-test/invisibility-spec-buffer-locality ()
+  (let (first-buffer second-buffer)
+    (with-temp-buffer
+      (setq first-buffer (current-buffer))
+      (setq buffer-invisibility-spec nil)
+      (emacs-buffer-builtins-add-to-invisibility-spec 'foo)
+      (should (equal '(foo) buffer-invisibility-spec)))
+    (with-temp-buffer
+      (setq second-buffer (current-buffer))
+      (setq buffer-invisibility-spec nil)
+      (should (equal nil buffer-invisibility-spec))
+      (emacs-buffer-builtins-add-to-invisibility-spec '(bar . t))
+      (should (equal '((bar . t)) buffer-invisibility-spec)))
+    (should-not (eq first-buffer second-buffer))))
 
 (ert-deftest emacs-buffer-builtins-test/property-change-bridges-use-substrate ()
   (emacs-buffer-builtins-test--with-fresh-world
