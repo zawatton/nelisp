@@ -12601,6 +12601,101 @@ path:
    =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
    with =void-function Info-find-file=.
 
+236. Org parse-buffer gap-fill round 8, 2026-07-05.  The exact cold-image
+   activation probe remained green, but parse-buffer work stopped under the
+   crash rule after a parallel cold-load probe mistake.
+
+   Reader/repo provenance: this worktree started at =7e88f6ac= on
+   =integ/org-agenda-daily=.  The capture reader clone was verified at
+   =e9b42390= on =main= (prompt expected =41a7b17e= / =88ed7848=; no reader
+   rebuild was performed).  The existing image
+   =/tmp/cold-image-org-e2e.EAQ5p0/org-run1.img= activated org-mode with
+   =/tmp/om.txt= = =org-mode=.
+
+   Root-cause work landed in the buffer-core bridge:
+   =nelisp-ec-save-restriction= saved narrowing but did not restore the
+   saved current buffer.  A minimal cold probe,
+   =(with-temp-buffer (let ((outer (current-buffer))) (save-restriction
+   (set-buffer (generate-new-buffer " *other*"))) ...))=, left
+   =current-buffer= on the generated =*other*= buffer and then surfaced the
+   misleading tail =void-variable: (outer)= / =void-variable: (v)= class
+   because later dynamic lookups happened in the wrong buffer context.  The
+   bridge now restores =nelisp-ec--current-buffer= from the saved buffer and
+   emits save-* macro expansions through shared helper builders so the public
+   unprefixed macros do not depend on recursive macro expansion in the
+   standalone reader.  The save-excursion/save-restriction cleanup bodies now
+   wrap their restore steps in a single =progn= cleanup form, making the
+   current-buffer restore part of the cleanup form the reader is guaranteed
+   to run.
+
+   Focused host ERT:
+   =test/emacs-buffer-builtins-test.el= passed 43/43, including new
+   =emacs-buffer-builtins-test/save-restriction-restores-current-buffer=.
+   Generated artifacts were refreshed with =make
+   nemacs-library-package-scaffold build-nelisp-bootstrap=.
+
+   Cold-image iterations (cap 8):
+   1. Existing image activation: rc 0, stdout =t=, stderr empty,
+      =/tmp/om.txt= = =org-mode=.
+   2. Existing image requested user-order parse
+      =(with-temp-buffer (insert "* h") (org-mode) ...)=: rc 0, stderr
+      =nelisp: uncaught error: text-read-only: nil=, no =pb.txt=.
+   3. Existing image mode-first control parse
+      =(with-temp-buffer (org-mode) (insert "* h") ...)=: rc 0, stderr
+      empty, =PARSE-OK=.
+   4. Existing image save-restriction probe: rc 0, current buffer remained
+      the generated =*other*= buffer, stderr included =void-variable:
+      (outer)=.
+   5. Fresh image =/tmp/cold-image-org-e2e.Yoi9Tr/org-run1.img= after the
+      first bridge patch: e2e exit 0, =RESULT: IDENTICAL=, cold boot
+      778555 us, peak RSS 1204824 KB, image size 1232700200 B.
+   6. That fresh image still showed the unprefixed save-restriction bridge
+      expanding to the prefixed macro rather than final code, so the same
+      save-restriction probe still left =current-buffer= on =*other*=.
+   7. Fresh image =/tmp/cold-image-org-e2e.1w1nTr/org-run1.img= after
+      direct save-* expansion: e2e exit 0, =RESULT: IDENTICAL=, cold boot
+      779243 us, peak RSS 1204788 KB, image size 1232686000 B.
+   8. Four cold probes were accidentally run in parallel against the 1.2 GB
+      image.  The save-restriction probe again reported current-buffer on
+      =*other*= with =void-variable: (outer)=; the requested user-order parse
+      still reported =text-read-only: nil=; the mode-first simple parse and
+      the richer buffer parse both exited 139 with empty stderr/stdout and
+      no output files.  Per the round instruction, cold-image iteration
+      stopped here and the crash is recorded as a reader/cold-load finding,
+      likely exacerbated by concurrent cold processes.
+
+   Final parse outcomes before stop:
+   - user-order simple buffer =* h=: rc 0, stdout empty, stderr
+     =nelisp: uncaught error: text-read-only: nil=, =pb.txt= missing.
+   - mode-first simple buffer =* h=: earlier control rc 0, stdout =t=,
+     stderr empty, output =PARSE-OK=.
+   - mode-first rich buffer =* h\nsome text\n** h2=: before the parallel
+     crash, the first fresh image returned rc 0 with stderr
+     =nelisp: uncaught error: void-variable: (org-element-planning-line-re)=
+     and no output; after direct save-* expansion it was one of the rc 139
+     parallel crash probes.
+
+   Final gates:
+   - Preserved 68-file Org replay:
+     =make diagnose-vendor-repl-replay-fast= with
+     =VENDOR_FAST_FILES= from =tmp-diag/org-chain-68-files-item222.txt=,
+     =VENDOR_FAST_PROOF_FORM_FILE=tmp-diag/proof-item225-org-chain-plus-backquote.el=,
+     =VENDOR_REPL_TIMEOUT=900s=,
+     =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+     =NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture/target/nelisp=
+     completed =status=done=, exit 0, elapsed 504.80085158348083 s.
+   - =make test-fast= ran 1080 tests with 1074 expected results and the
+     same 6 known unexpected failures only:
+     =emacs-redisplay-test-mode-line-full-width-inverse=,
+     =emacs-redisplay-test-redisplay-truncates-long-line=,
+     =emacs-redisplay-test-redisplay-window-narrow-region=,
+     =emacs-redisplay-test/core-initial-paint-produces-output=,
+     =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
+     =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+     with =void-function Info-find-file=.
+   - Worklog recorded in Anvil DB as digest
+     =320e40455031b9e161aba959f5f8c7fbbe987c73=.
+
 235. Org activation nadvice dependency gap-fill round 7, 2026-07-05.
    Repository provenance was verified at =4e1a9b42= on
    =integ/org-agenda-daily=.  The reader clone
