@@ -112,6 +112,13 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
   (defvar initial-frame-alist nil
     "Initial frame parameter alist."))
 
+(when (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (not (boundp 'emacs-version)))
+  (defmacro push (item place)
+    "Standalone compatibility macro: cons ITEM onto PLACE."
+    (list 'setq place (list 'cons item place))))
+
 (define-error 'nemacs-error "nemacs bootstrap error")
 (define-error 'nemacs-already-initialized
   "nemacs already initialized" 'nemacs-error)
@@ -131,6 +138,8 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
                  (or (not (fboundp 'nelisp-ec-current-buffer))
                      (not (eq (nelisp-ec-current-buffer) buf))))
         (nelisp-ec-set-buffer buf))
+      (when (boundp 'buffer-read-only)
+        (setq buffer-read-only nil))
       (when (and (fboundp 'nelisp-ec-buffer-string)
                  (fboundp 'nelisp-ec-insert)
                  (equal (nelisp-ec-buffer-string) "")

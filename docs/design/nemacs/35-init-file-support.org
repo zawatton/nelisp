@@ -1,7 +1,7 @@
 #+TITLE: nelisp-emacs Doc 35 -- init-file loading, startup-screen control, and message/package substrate scoping
 #+AUTHOR: nelisp-emacs
 #+DATE: 2026-07-05
-#+STATUS: DRAFT
+#+STATUS: IMPLEMENTATION-IN-PROGRESS
 #+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 28 compatibility global API policy, Doc 31 nemacs-next editor product plan, Doc 33 Emacs C-core substrate priority plan, Doc 34 Emacs replacement development rules
 
 * 0. Purpose
@@ -529,3 +529,29 @@ cache redirection, =-u USER=/=su= home-directory switching,
 scanner (see (f)). All are real vendor mechanisms (cited in sections
 1/3/6) but none are exercised by the section-7 compatibility target
 and none are prerequisites for (a)-(e).
+
+* 10. Implementation status -- 2026-07-05
+
+The first implementation pass moved init discovery/loading into
+=src/nemacs-loadup.el= and left the GTK frontend with a compatibility wrapper
+that delegates to the session-owned loader.  The loader resolves
+=NEMACS_USER_EMACS_DIRECTORY= first for hermetic tests, otherwise follows the
+real =~/.emacs.d= / legacy dotfile / XDG precedence, loads =early-init.el=,
+runs the deferred package activation hook point, loads =init.el=, runs
+=after-init-hook=, creates =*scratch*= using =initial-scratch-message= and
+=initial-major-mode= fallback behavior, then runs =nemacs-startup-hook=.
+
+The message substrate in =emacs-special-buffers.el= now echoes to known session
+echo state, appends to =messages-buffer-name=, honors =message-log-max=, and
+treats =(message nil)= as echo clear with no log append.  GTK paint diagnostics
+now call =message= instead of inserting into =*Messages*= directly.
+
+Protocol V0 now documents a =frame-config= session message carrying
+=tool-bar-lines=, =width=, =height=, and =font=.  The session computes the
+payload after init files have applied =default-frame-alist= /
+=initial-frame-alist=.  The TUI smoke remains green with an empty fixture init
+directory, but the new fixture =init-smoke.sh= still exposes a standalone REPL
+failure (=void-variable v=) when asserting the configured frame alist.  The host
+session path loads and computes =frame-config= correctly; the standalone
+fixture smoke remains the open implementation gap before declaring this doc
+complete.

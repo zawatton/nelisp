@@ -77,6 +77,12 @@
 (defvar nemacs-next-session-echo-message ""
   "Last echo-area message exported to the frontend shell.")
 
+(defvar nemacs-next-session-frame-config-notes
+  '((:field width :note "TUI treats width as terminal-constrained")
+    (:field height :note "TUI treats height as terminal-constrained")
+    (:field font :note "TUI ignores font; GUI frontends may consume it"))
+  "Frame-config notes for frontends whose surface is terminal-constrained.")
+
 (defun nemacs-next-session--string-equal (a b)
   "Return non-nil when A and B name the same protocol atom."
   (let ((as (if (symbolp a) (symbol-name a) a))
@@ -84,6 +90,47 @@
     (and (stringp as)
          (stringp bs)
          (string= as bs))))
+
+(defun nemacs-next-session--alist-get (key alist)
+  "Return KEY's value from ALIST using `eq' comparison."
+  (let (found)
+    (while (and alist (not found))
+      (let ((cell (car alist)))
+        (when (and (consp cell) (eq (car cell) key))
+          (setq found cell)))
+      (setq alist (cdr alist)))
+    (and found (cdr found))))
+
+(defun nemacs-next-session--frame-param (key)
+  "Return frame parameter KEY from initial/default frame alists."
+  (let ((initial (and (boundp 'initial-frame-alist)
+                      (nemacs-next-session--alist-get
+                       key initial-frame-alist)))
+        (default (and (boundp 'default-frame-alist)
+                      (nemacs-next-session--alist-get
+                       key default-frame-alist))))
+    (if initial initial default)))
+
+(defun nemacs-next-session-frame-config ()
+  "Return the protocol V0 frame-config message.
+The payload is computed after `nemacs-init' has had a chance to load
+early-init.el and init.el, so user frame alist changes are visible before the
+first frame snapshot."
+  (let* ((tool-bar-lines
+          (or (nemacs-next-session--frame-param 'tool-bar-lines)
+              (and (boundp 'tool-bar-mode)
+                   (not tool-bar-mode)
+                   0)
+              1))
+         (width (nemacs-next-session--frame-param 'width))
+         (height (nemacs-next-session--frame-param 'height))
+         (font (nemacs-next-session--frame-param 'font)))
+    (list :type 'frame-config
+          :tool-bar-lines tool-bar-lines
+          :width width
+          :height height
+          :font font
+          :notes nemacs-next-session-frame-config-notes)))
 
 (defun nemacs-next-session--buffer-name (buffer)
   "Return BUFFER's name using the reusable buffer API."
@@ -406,6 +453,11 @@ The text, point, and size are read through reusable buffer APIs."
           (setq index (1+ index)))))
     (nemacs-next-session--truncate-line line (or width nemacs-next-session-frame-width))))
 
+(defun nemacs-next-session-tool-bar-lines ()
+  "Return the configured number of toolbar rows for protocol snapshots."
+  (let ((value (plist-get (nemacs-next-session-frame-config) :tool-bar-lines)))
+    (if (and (integerp value) (> value 0)) value 0)))
+
 (defun nemacs-next-session-frame-snapshot (&optional width height)
   "Return a complete M4 frame snapshot for the current buffer.
 WIDTH and HEIGHT, when supplied, update the session frame geometry."
@@ -419,21 +471,25 @@ WIDTH and HEIGHT, when supplied, update the session frame geometry."
           (nemacs-next-session-buffer-snapshot buffer))
          (frame-width nemacs-next-session-frame-width)
          (frame-height nemacs-next-session-frame-height)
+         (tool-bar-lines (nemacs-next-session-tool-bar-lines))
          (text (or (plist-get snapshot :text) ""))
-         (body-height (max 1 (- frame-height 2)))
+         (body-height (max 1 (- frame-height 1 tool-bar-lines)))
          (toolbar (nemacs-next-session-toolbar-items))
          (frame
-          (list :id "main"
-                :width frame-width
-                :height frame-height
-                :toolbar toolbar
-                :cursor (nemacs-next-session--cursor-position
-                         text (plist-get snapshot :point))
-                :viewport (nemacs-next-session--viewport-lines
-                           text frame-width body-height buffer)
-                :mode-line (nemacs-next-session--mode-line
-                            snapshot frame-width)
-                :echo nemacs-next-session-echo-message)))
+          (append
+           (list :id "main"
+                 :width frame-width
+                 :height frame-height
+                 :tool-bar-lines tool-bar-lines)
+           (when (> tool-bar-lines 0)
+             (list :toolbar toolbar))
+           (list :cursor (nemacs-next-session--cursor-position
+                          text (plist-get snapshot :point))
+                 :viewport (nemacs-next-session--viewport-lines
+                            text frame-width body-height buffer)
+                 :mode-line (nemacs-next-session--mode-line
+                             snapshot frame-width)
+                 :echo nemacs-next-session-echo-message))))
     (list :type 'snapshot
           :version nemacs-next-session-snapshot-version
           :protocol-version nemacs-next-protocol-version
@@ -1194,6 +1250,9 @@ mutation, file I/O, and completion to reusable library APIs."
       (nemacs-next-session-frame-snapshot
        (nemacs-next-session--command-arg message :width)
        (nemacs-next-session--command-arg message :height)))
+     ((or (nemacs-next-session--string-equal name 'frame-config)
+          (nemacs-next-session--string-equal name "frame-config"))
+      (nemacs-next-session-frame-config))
      ((or (nemacs-next-session--string-equal name 'render-frame-text)
           (nemacs-next-session--string-equal name "render-frame-text"))
       (let ((frame (nemacs-next-session-frame-snapshot
@@ -1234,6 +1293,9 @@ mutation, file I/O, and completion to reusable library APIs."
           (nemacs-next-session--string-equal type "snapshot"))
       (nemacs-next-session-buffer-snapshot
        (nemacs-next-session-current-buffer-or-create)))
+     ((or (nemacs-next-session--string-equal type 'frame-config)
+          (nemacs-next-session--string-equal type "frame-config"))
+      (nemacs-next-session-frame-config))
      ((or (nemacs-next-session--string-equal type 'command)
           (nemacs-next-session--string-equal type "command"))
       (nemacs-next-session-handle-command message))

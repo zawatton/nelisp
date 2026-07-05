@@ -4508,15 +4508,9 @@ the rest of the redraw can proceed."
         (setq nemacs-gtk--last-key-text msg)
         (when new
           (push key nemacs-gtk--guard-seen)
-          (when (and (fboundp 'get-buffer-create)
-                     (fboundp 'with-current-buffer))
+          (when (fboundp 'message)
             (condition-case _
-                (with-current-buffer (get-buffer-create "*Messages*")
-                  (when (fboundp 'goto-char)
-                    (goto-char
-                     (or (and (fboundp 'point-max) (point-max)) 1)))
-                  (when (fboundp 'insert)
-                    (insert msg "\n")))
+                (message "%s" msg)
               (error nil))))
         nil))))
 

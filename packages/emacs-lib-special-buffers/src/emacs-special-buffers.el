@@ -15,6 +15,14 @@
 (defconst emacs-special-buffers-messages-name "*Messages*")
 (defconst emacs-special-buffers-warnings-name "*Warnings*")
 
+(defvar messages-buffer-name emacs-special-buffers-messages-name
+  "Name of the buffer used for `message' history in this substrate.")
+
+(defvar message-log-max t
+  "Maximum number of lines kept in `messages-buffer-name'.
+Nil disables logging; t keeps all lines; an integer keeps that many newest
+lines.")
+
 (defconst emacs-special-buffers-scratch-initial-message
   ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n")
 
@@ -32,6 +40,7 @@ Supported keys:
 (defun emacs-special-buffers-special-buffer-p (name)
   "Return non-nil when NAME is one of the standard special buffers."
   (member name (list emacs-special-buffers-scratch-name
+                     messages-buffer-name
                      emacs-special-buffers-messages-name
                      emacs-special-buffers-warnings-name)))
 
@@ -128,10 +137,16 @@ The result contains `:status', `:buffer', `:buffer-name',
         (if (and (fboundp 'nelisp-ec-buffer-p)
                  (nelisp-ec-buffer-p buf))
             (nelisp-ec-with-current-buffer buf
-              (nelisp-ec-goto-char (nelisp-ec-point-max))
-              (nelisp-ec-insert text)
-              (when (fboundp 'emacs-buffer-set-buffer-modified-p)
-                (emacs-buffer-set-buffer-modified-p nil buf)))
+              (let ((was-read-only (and (boundp 'buffer-read-only)
+                                        buffer-read-only)))
+                (when (boundp 'buffer-read-only)
+                  (setq buffer-read-only nil))
+                (nelisp-ec-goto-char (nelisp-ec-point-max))
+                (nelisp-ec-insert text)
+                (when (boundp 'buffer-read-only)
+                  (setq buffer-read-only was-read-only))
+                (when (fboundp 'emacs-buffer-set-buffer-modified-p)
+                  (emacs-buffer-set-buffer-modified-p nil buf))))
           (with-current-buffer buf
             (let ((was-read-only (and (boundp 'buffer-read-only)
                                       buffer-read-only)))
@@ -144,6 +159,76 @@ The result contains `:status', `:buffer', `:buffer-name',
               (when (fboundp 'set-buffer-modified-p)
                 (set-buffer-modified-p nil)))))
         buf)))
+
+(defun emacs-special-buffers--split-lines-preserve (text)
+  "Split TEXT into lines, keeping non-empty trailing content semantics."
+  (let ((start 0)
+        lines)
+    (while (string-match "\n" text start)
+      (setq lines (cons (substring text start (match-end 0)) lines))
+      (setq start (match-end 0)))
+    (when (< start (length text))
+      (setq lines (cons (substring text start) lines)))
+    (nreverse lines)))
+
+(defun emacs-special-buffers--last-n-lines (text max-lines)
+  "Return TEXT trimmed to its newest MAX-LINES lines."
+  (if (or (not (integerp max-lines)) (< max-lines 0))
+      text
+    (let* ((lines (emacs-special-buffers--split-lines-preserve text))
+           (drop (- (length lines) max-lines)))
+      (while (> drop 0)
+        (setq lines (cdr lines))
+        (setq drop (1- drop)))
+      (apply #'concat lines))))
+
+(defun emacs-special-buffers--replace-buffer-text (buffer text)
+  "Replace BUFFER contents with TEXT."
+  (if (and (fboundp 'nelisp-ec-buffer-p)
+           (nelisp-ec-buffer-p buffer))
+      (nelisp-ec-with-current-buffer buffer
+        (when (fboundp 'nelisp-ec-erase-buffer)
+          (nelisp-ec-erase-buffer))
+        (when (and (fboundp 'nelisp-ec-insert)
+                   (> (length text) 0))
+          (nelisp-ec-insert text))
+        (when (fboundp 'emacs-buffer-set-buffer-modified-p)
+          (emacs-buffer-set-buffer-modified-p nil buffer)))
+    (with-current-buffer buffer
+      (let ((was-read-only (and (boundp 'buffer-read-only)
+                                buffer-read-only)))
+        (when (boundp 'buffer-read-only)
+          (setq buffer-read-only nil))
+        (erase-buffer)
+        (insert text)
+        (when (boundp 'buffer-read-only)
+          (setq buffer-read-only was-read-only))
+        (when (fboundp 'set-buffer-modified-p)
+          (set-buffer-modified-p nil))))))
+
+(defun emacs-special-buffers--buffer-string (buffer)
+  "Return BUFFER contents through the active buffer substrate."
+  (if (and (fboundp 'nelisp-ec-buffer-p)
+           (nelisp-ec-buffer-p buffer))
+      (nelisp-ec-with-current-buffer buffer
+        (nelisp-ec-buffer-string))
+    (with-current-buffer buffer
+      (buffer-string))))
+
+(defun emacs-special-buffers--trim-message-log ()
+  "Trim `messages-buffer-name' according to `message-log-max'."
+  (when (integerp message-log-max)
+    (let* ((buffer (emacs-special-buffers-ensure-buffer messages-buffer-name))
+           (text (emacs-special-buffers--buffer-string buffer))
+           (trimmed (emacs-special-buffers--last-n-lines
+                     text message-log-max)))
+      (unless (equal text trimmed)
+        (emacs-special-buffers--replace-buffer-text buffer trimmed)))))
+
+(defun emacs-special-buffers--set-echo-message (text)
+  "Publish TEXT to known echo-area state holders."
+  (when (boundp 'nemacs-next-session-echo-message)
+    (setq nemacs-next-session-echo-message (or text ""))))
 
 (defun emacs-special-buffers-switch-to-buffer (name)
   "Switch to special buffer NAME."
@@ -161,12 +246,19 @@ The result contains `:status', `:buffer', `:buffer-name',
         buf)))
 
 (defun emacs-special-buffers-message (format-string &rest args)
-  "Record formatted message in `*Messages*' and return it."
-  (when format-string
+  "Echo and record formatted message in `messages-buffer-name'.
+Nil FORMAT-STRING clears the echo area and does not log."
+  (if (null format-string)
+      (progn
+        (emacs-special-buffers--set-echo-message "")
+        nil)
     (let ((text (apply #'format format-string args)))
-      (emacs-special-buffers-append-to-buffer
-       emacs-special-buffers-messages-name
-       (concat text "\n"))
+      (emacs-special-buffers--set-echo-message text)
+      (unless (null message-log-max)
+        (emacs-special-buffers-append-to-buffer
+         messages-buffer-name
+         (concat text "\n"))
+        (emacs-special-buffers--trim-message-log))
       text)))
 
 (defun emacs-special-buffers-display-warning
@@ -206,8 +298,7 @@ The result contains `:status', `:buffer', `:buffer-name',
 (defun messages-buffer ()
   "Switch to `*Messages*', creating it if needed."
   (interactive)
-  (emacs-special-buffers-switch-to-buffer
-   emacs-special-buffers-messages-name))
+  (emacs-special-buffers-switch-to-buffer messages-buffer-name))
 
 (defun warnings-buffer ()
   "Switch to `*Warnings*', creating it if needed."
