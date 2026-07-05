@@ -243,6 +243,7 @@ a separate numbered increment ladder of its own.
 | 2026-07-05 | M5 Package smoke | done | =fixtures/m5-package/nemacs-next-m5-fixture.el= + =nemacs-next-m5-fixture-extra.el= load as pure-Elisp package fixtures; =scripts/package-smoke.sh= verifies mode activation, keymap lookup, hook execution, face/text-property state, buffer edit, companion feature load, and tracked package-compat debt |
 | 2026-07-05 | Frontend v1 terminal loop | done | =frontends/tui/nemacs-next-tui= starts one persistent bootstrap REPL, switches an interactive terminal to raw mode, maps printable keys/arrows/control chords to protocol messages, redraws the session plain-text frame render, shows modeline/echo, and positions the ANSI cursor; =frontends/tui/smoke.sh= drives a scripted find-file/edit/delete/save/quit sequence and asserts saved file content plus rendered frame content |
 | 2026-07-05 | Frontend v2 terminal loop | done | =frame-snapshot= viewport rows now carry optional =:face-runs= sourced from =face= / =font-lock-face= text properties plus an Org-heading fallback; the TUI maps =org-level-1=..=org-level-4=, =bold=, =font-lock-comment-face=, =font-lock-string-face=, =default=, and small resolved named colors to ANSI SGR; terminal draws compare rendered rows and skip unchanged rows, with the smoke measuring a cursor-only move at 12B versus a 94B full-frame equivalent in the latest run; input reads complete UTF-8 byte sequences before dispatch, and the smoke saves Japanese text through the terminal path |
+| 2026-07-05 | Default toolbar protocol + TUI | done | Vendor =tool-bar-setup= inventory from =vendor/emacs-lisp/tool-bar.el= is exposed as structured =:default-toolbar= data and frame =:toolbar= data; =toolbar-invoke= maps default items to session command semantics; TUI row 0 renders the toolbar and supports =F10= or =M-`= focus, Left/Right, RET, and ESC; TUI smoke invokes Save through the toolbar, opens the file prompt through the toolbar, and asserts all default labels render |
 
 The 2026-07-04 movement/delete increment was picked because M0 and M1
 were already complete and M2 (Section 7) was the first milestone with
@@ -359,6 +360,57 @@ existing session and process smokes remain the reader/session protocol
 coverage.
 
 The Section 7 ladder M0-M5 is now done.
+
+The default global toolbar is now implemented for =nemacs-next= protocol
+and TUI rendering from the authoritative vendor source
+=vendor/emacs-lisp/tool-bar.el=, =tool-bar-setup=.  The exact default
+sequence is:
+
+| Order | Icon | Key/id | Vendor command source | Vendor enable condition | V0 fidelity |
+|-------+------+--------+-----------------------+-------------------------+-------------|
+| 1 | =new= | =toolbar.new-file= | =find-file=, label "New File", =:vert-only t= | inherited from File/New File: =(menu-bar-non-minibuffer-window-p)= | =find-file= prompt; creates a new visited buffer when the chosen path does not exist |
+| 2 | =open= | =toolbar.open-file= | =menu-find-file-existing=, label "Open", =:vert-only t= | inherited from File/Open File: =(menu-bar-non-minibuffer-window-p)= | =find-file= prompt using the existing file command path |
+| 3 | =diropen= | =toolbar.dired= | =dired=, =:vert-only t= | inherited from File/Open Directory: =(menu-bar-non-minibuffer-window-p)= | directory-listing buffer v1; real Dired marks and file operations are not claimed |
+| 4 | =close= | =toolbar.kill-buffer= | =kill-this-buffer=, =:vert-only t= | inherited from File/Close: =(kill-this-buffer-enabled-p)= | kills the current session buffer through =kill-buffer= |
+| 5 | =save= | =toolbar.save-buffer= | =save-buffer=, label "Save" | inherited from File/Save: =(and (buffer-modified-p) (buffer-file-name) (menu-bar-non-minibuffer-window-p))= | real =save-buffer= through reusable file I/O |
+| 6 | separator | =separator-1= | =menu-bar-separator= | n/a | separator |
+| 7 | =undo= | =toolbar.undo= | =undo= | inherited from Edit/Undo: writable buffer, undo enabled, and undo history/pending undo exists | single edit-group undo through =emacs-undo= |
+| 8 | separator | =separator-2= | =menu-bar-separator= | n/a | separator |
+| 9 | =cut= | =toolbar.cut= | =(lookup-key menu-bar-edit-menu [cut])= -> =kill-region= | =(and mark-active (not buffer-read-only))= | =kill-region= when =:start= and =:end= are supplied |
+| 10 | =copy= | =toolbar.copy= | =(lookup-key menu-bar-edit-menu [copy])= -> =kill-ring-save= / =copy-region-as-kill= semantics | =mark-active= | =copy-region-as-kill= when =:start= and =:end= are supplied |
+| 11 | =paste= | =toolbar.paste= | =(lookup-key menu-bar-edit-menu [paste])= -> =yank= | writable buffer and GUI clipboard or kill-ring/yank-menu availability | real =yank= from the session kill ring |
+| 12 | separator | =separator-3= | =menu-bar-separator= | n/a | separator |
+| 13 | =search= | =toolbar.search= | =isearch-forward=, label "Search", =:vert-only t= | no explicit =:enable= in the inherited Search/Forward String menu item | search-prompt v1: prompts for a literal string and moves to the next match; no live incremental overlay yet |
+
+The mode-specific toolbar inventory found by grepping vendor
+=tool-bar-map= modifications is recorded as follow-up scope, not part of
+the default global toolbar shipped here:
+
+| Source | Mode/map | Toolbar items / source shape |
+|--------+----------+------------------------------|
+| =info.el= | =info-tool-bar-map= | Back, Forward, Prev, Next, Up, Top, Goto Node, Index, Search, Exit |
+| =progmodes/grep.el= | =grep-mode-tool-bar-map= | Previous match, next match, stop grep, restart grep, appended around default toolbar |
+| =progmodes/gud.el= | =gud-tool-bar-map= | Break, remove, print, pstar, pp, watch, run, go, stop, continue, until, next, step, finish, nexti, stepi, up, down, info |
+| =progmodes/gdb-mi.el= | extends =gud-tool-bar-map= | all-threads and current-thread GDB-MI toggles |
+| =gnus/message.el= | =message-tool-bar= via =gmm-tool-bar-from-list= | spell, send, attach, secure/sign/encrypt, importance, receipt entries, with visibility rules |
+| =gnus/gnus-group.el= | =gnus-group-tool-bar= via =gmm-tool-bar-from-list= | compose, agent plug/unplug, send queue, get news, read/open group, save newsrc, describe, subscription toggle, prev/next unread group, exit, preferences, help |
+| =gnus/gnus-sum.el= | =gnus-summary-tool-bar= via =gmm-tool-bar-from-list= | post, get new articles, reply/followup/forward, save article, search, print, tick, save newsrc, prev/next article, next page, expire/spam/ham, preferences |
+| =mail/rmail.el= | =rmail-tool-bar-map= | Rmail mail navigation and actions; local map replaces default toolbar in Rmail buffers |
+| =help-mode.el= | =help-mode-tool-bar-map= | quit help and search, plus help-mode menu/history actions |
+| =doc-view.el= | =doc-view-tool-bar-map= | new/open plus document search, previous/next search result, previous/next page |
+| =net/eww.el= | =eww-tool-bar-map= | browser navigation/action toolbar for EWW buffers |
+| =net/dictionary.el= | =dictionary-tool-bar-map= | new/open plus search and history-back |
+| =vc/log-edit.el= | =log-edit-tool-bar-map= | new/open plus log-edit done, changelog, generate, diff, files, history navigation |
+| =vc/vc-dir.el= | =vc-dir-tool-bar-map= | new/open, commit, log, stop/refresh, next/previous, search |
+| =net/newst-plainview.el= | =newsticker--plainview-tool-bar-map= | prev/next feed/item, narrow, mark immortal/read, get/update news, browse URL, close, preferences |
+| =net/newst-treeview.el= | =newsticker-treeview-tool-bar-map= | prev/next feed/item, mark immortal/read, get/update news, browse URL, close, preferences |
+| =xwidget.el= | =xwidget-webkit-tool-bar-map= | WebKit browser URL/input/copy/search actions |
+| =mh-e/mh-tool-bar.el= | =mh-folder-*=, =mh-show-*=, =mh-letter-*= maps | MH folder/show/letter toolbar sets generated by MH macros |
+| =cus-edit.el= | =custom-tool-bar-map=, =custom-dirlocals-tool-bar-map= | Custom buffer action toolbar |
+| =dired.el= | local =tool-bar-map= mutation | Dired-specific toolbar replacement/additions |
+| =progmodes/compile.el= | =compilation-mode-tool-bar-map= | compilation next/previous/stop/recompile toolbar additions |
+| =mpc.el= | =mpc-tool-bar-map= | music player control toolbar |
+| =window-tool-bar.el= | window-local toolbar support | infrastructure for per-window toolbar maps |
 
 The first daily-drivable frontend loop after the ladder is now present
 under =apps/nemacs-next/frontends/tui/=.  It is intentionally a small Bash
