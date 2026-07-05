@@ -70,7 +70,7 @@ requiring app/bootstrap or legacy GUI modules.")
   "Protocol V0 message types sent from frontend to editor session.")
 
 (defconst nemacs-next-session-message-types
-  '(hello snapshot delta minibuffer echo menu request error)
+  '(hello frame-config snapshot delta minibuffer echo menu request error)
   "Protocol V0 message types sent from editor session to frontend.")
 
 (defun nemacs-next--manifest-package-names ()

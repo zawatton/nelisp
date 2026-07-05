@@ -5,11 +5,14 @@ ROOT=${NEMACS_NEXT_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd
 tmp_file=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.txt
 utf8_file=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.utf8.txt
 diff_file=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.diff.txt
+init_dir=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.empty-init
 out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.out
 utf8_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.utf8.out
 diff_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.diff.out
+rm -rf "$init_dir"
 rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out"
-trap 'rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out"' EXIT
+mkdir -p "$init_dir"
+trap 'rm -rf "$init_dir"; rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out"' EXIT
 
 printf '' > "$tmp_file"
 printf '' > "$utf8_file"
@@ -29,7 +32,8 @@ printf 'abc' > "$diff_file"
   printf '\r'
   printf '\007'
   printf '\030\003'
-} | NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
+} | NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
     "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$out" 2>&1
 
 if [ "$(cat "$tmp_file")" != "ac" ]; then
@@ -73,7 +77,8 @@ fi
   printf '* 見出し'
   printf '\030\023'
   printf '\030\003'
-} | NEMACS_NEXT_TUI_DRAW=never timeout 90s \
+} | NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=never timeout 90s \
     "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$utf8_out" 2>&1
 
 expected_utf8=$(printf 'こんにちは\n* 見出し')
@@ -102,7 +107,8 @@ fi
   printf '\r'
   printf '\002'
   printf '\030\003'
-} | NEMACS_NEXT_TUI_DRAW=always NEMACS_NEXT_TUI_DRAW_STATS=1 timeout 90s \
+} | NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=always NEMACS_NEXT_TUI_DRAW_STATS=1 timeout 90s \
     "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$diff_out" 2>&1
 
 cursor_stat=$(
