@@ -127,6 +127,12 @@ NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK_SUMMARY ?= $(BUILD_DIR)/nemacs-libra
 NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT ?= 0
 NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT)),t,nil)
 NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT ?= 0
+
+proc-async-smoke:
+	$(EMACS) -Q -L src -L test \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l emacs-process-builtins-test \
+	  --eval '(ert-run-tests-batch "^emacs-process-builtins-test/\\(make-process-uses-native-nelisp-object\\|native-poll-pump-git-probe\\)$$")'
 NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT)),t,nil)
 NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT ?= 0
 NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT)),t,nil)
