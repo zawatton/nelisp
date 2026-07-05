@@ -133,6 +133,44 @@ Implementation notes:
   uncaught signal; the session stays alive and can keep handling
   commands afterward, same as the =out-of-range= movement/delete errors.
 
+* M3 Minibuffer/File Loop
+
+M3 adds the file and buffer loop named in Doc 31 Section 7:
+
+| Name | Meaning |
+|------+---------|
+| =find-file= | visit required =:path= through reusable file I/O APIs and return a snapshot |
+| =save-buffer= | save the current visited buffer through reusable file I/O APIs and return a snapshot with =:saved-file= |
+| =switch-to-buffer= | select required =:buffer-name= through reusable buffer APIs and return a snapshot |
+| =kill-buffer= | kill =:buffer-name= or the current buffer through reusable buffer APIs and return the next snapshot |
+| =complete= / =completion= | return a =minibuffer= payload with candidate strings for =:purpose= / =:input= |
+
+The protocol-level =open= message is treated as an OS file-open request
+and delegates to the same =find-file= path.
+
+Implementation notes:
+
+- The app session calls =emacs-fileio-visit-file-direct= and
+  =emacs-fileio-save-buffer-direct= when available, falling back only to
+  reusable Emacs-compatible file commands if the direct helpers are not
+  loaded.  GUI/frontend code does not read files, write files, or decide
+  visited-file state.
+- =switch-to-buffer= and =kill-buffer= use the reusable buffer registry
+  and =nelisp-ec-set-buffer= / =nelisp-ec-kill-buffer= path.  A missing
+  kill target returns a structured =no-such-buffer= protocol =error= and
+  the session stays alive.
+- Completion responses have =:type minibuffer=, =:active t=,
+  =:purpose=, =:prompt=, =:contents=, =:completion=, and =:candidates=.
+  Buffer completion derives candidates from the reusable buffer list.
+  File completion derives candidates from the reusable directory/file-name
+  APIs when available.  Tests also cover an explicit =:collection= list
+  so frontend completion refresh can be validated without file-system
+  dependence.
+- Successful file and buffer commands return full buffer snapshots.  The
+  snapshot now includes =:file-name= and =:modified= so a frontend can
+  render visited-file and dirty-state indicators without owning the
+  semantics.
+
 * Rule
 
 Protocol messages may carry editor state, but they must not move editor
