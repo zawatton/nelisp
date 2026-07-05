@@ -781,6 +781,26 @@ mutation, file I/O, and completion to reusable library APIs."
           (nemacs-next-session--string-equal name "backward-char"))
       (nemacs-next-session--move-point
        (- (nemacs-next-session--command-count message 1))))
+     ((or (nemacs-next-session--string-equal name 'next-line)
+          (nemacs-next-session--string-equal name "next-line"))
+      (nemacs-next-session-current-buffer-or-create)
+      (if (fboundp 'emacs-line-next-line-direct)
+          (progn
+            (emacs-line-next-line-direct
+             (nemacs-next-session--command-count message 1))
+            (nemacs-next-session-buffer-snapshot))
+        (nemacs-next-session-error
+         'unavailable "next-line command is not available")))
+     ((or (nemacs-next-session--string-equal name 'previous-line)
+          (nemacs-next-session--string-equal name "previous-line"))
+      (nemacs-next-session-current-buffer-or-create)
+      (if (fboundp 'emacs-line-previous-line-direct)
+          (progn
+            (emacs-line-previous-line-direct
+             (nemacs-next-session--command-count message 1))
+            (nemacs-next-session-buffer-snapshot))
+        (nemacs-next-session-error
+         'unavailable "previous-line command is not available")))
      ((or (nemacs-next-session--string-equal name 'goto-char)
           (nemacs-next-session--string-equal name "goto-char"))
       (nemacs-next-session--goto-char

@@ -241,6 +241,7 @@ a separate numbered increment ladder of its own.
 | 2026-07-05 | M3 Minibuffer/file loop | done | =find-file=, =save-buffer=, =switch-to-buffer=, =kill-buffer= session commands; =complete=/=completion= minibuffer candidate payload; =open= delegates to =find-file=; all app smokes cover file/buffer/completion loop plus one standalone org-mode + =org-element-parse-buffer= assertion |
 | 2026-07-05 | M4 Modern GUI shell | done | =hello= advertises GUI-shell capabilities; =frame-snapshot= / =render-frame-text= expose buffer viewport + modeline; =resize= / =input= / IME commit produce frame =delta= payloads; =menu= / =toolbar= items route to protocol commands; clipboard read/write produce frontend =request= payloads; =scripts/m4-gui-shell-smoke.sh= renders one frame to plain text |
 | 2026-07-05 | M5 Package smoke | done | =fixtures/m5-package/nemacs-next-m5-fixture.el= + =nemacs-next-m5-fixture-extra.el= load as pure-Elisp package fixtures; =scripts/package-smoke.sh= verifies mode activation, keymap lookup, hook execution, face/text-property state, buffer edit, companion feature load, and tracked package-compat debt |
+| 2026-07-05 | Frontend v1 terminal loop | done | =frontends/tui/nemacs-next-tui= starts one persistent bootstrap REPL, switches an interactive terminal to raw mode, maps printable keys/arrows/control chords to protocol messages, redraws the session plain-text frame render, shows modeline/echo, and positions the ANSI cursor; =frontends/tui/smoke.sh= drives a scripted find-file/edit/delete/save/quit sequence and asserts saved file content plus rendered frame content |
 
 The 2026-07-04 movement/delete increment was picked because M0 and M1
 were already complete and M2 (Section 7) was the first milestone with
@@ -358,11 +359,31 @@ coverage.
 
 The Section 7 ladder M0-M5 is now done.
 
-Remaining for a daily-drivable editor after the ladder:
+The first daily-drivable frontend loop after the ladder is now present
+under =apps/nemacs-next/frontends/tui/=.  It is intentionally a small Bash
+frontend rather than a new semantics layer: terminal raw-mode handling,
+escape-sequence decoding, the =C-x C-f= prompt line, ANSI clear/redraw,
+and cursor placement are frontend-owned; buffer mutation, movement, undo,
+file visit/save, and frame/modeline rendering continue to route through
+=nemacs-next-session-handle-message= and reusable library-backed session
+commands.  The process model is one persistent =nelisp --repl
+--no-prompt --no-print= session loaded with the existing bootstrap REPL,
+and EOF on stdin exits cleanly for non-interactive smoke use.
 
-- A real frontend loop that a human can keep open, such as a terminal or
-  native window loop that feeds key events into protocol =input= messages
-  and redraws frame snapshots after each command.
+The v1 key surface is deliberately narrow but usable: printable
+characters, RET, DEL/Backspace, arrows, =C-f= / =C-b= / =C-n= / =C-p=,
+=C-/= undo, =C-x C-f= find-file, =C-x C-s= save-buffer, and =C-x C-c=
+quit.  =next-line= and =previous-line= were added as protocol command
+names that delegate to the reusable =emacs-line-*-direct= movement
+helpers, keeping line movement in the session/library path rather than in
+the terminal frontend.
+
+Remaining for the next daily-driver increments:
+
+- A native GUI window loop with real widget/window-system integration.
+- Faces/colors and richer terminal attributes instead of plain text only.
+- Incremental redraw/performance work; v1 clears and redraws the whole
+  frame after each input.
 - Real OS clipboard/IME/window integration behind the M4 request and input
   protocol shapes.
 - Command/keymap breadth beyond the M2/M3 subset: practical open, edit,

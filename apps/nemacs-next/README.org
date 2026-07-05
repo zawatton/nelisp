@@ -6,7 +6,7 @@
 * Purpose
 
 =nemacs-next= is the new product editor path for using the current
-=nelisp-emacs= library成果 to build an Emacs-compatible text editor with a
+=nelisp-emacs= library work to build an Emacs-compatible text editor with a
 fresh GUI.
 
 This directory is an app consumer.  It must not become the owner of buffer
@@ -23,6 +23,9 @@ apps/nemacs-next/
   lisp/nemacs-next-session.el
   fixtures/m5-package/nemacs-next-m5-fixture.el
   fixtures/m5-package/nemacs-next-m5-fixture-extra.el
+  frontends/tui/nemacs-next-tui
+  frontends/tui/smoke.sh
+  frontends/tui/README
   protocol/protocol-v0.org
   scripts/m4-gui-shell-smoke.sh
   scripts/package-smoke.sh
@@ -51,6 +54,8 @@ apps/nemacs-next/scripts/smoke.sh
 apps/nemacs-next/scripts/session-smoke.sh
 apps/nemacs-next/scripts/process-smoke.sh
 apps/nemacs-next/scripts/m4-gui-shell-smoke.sh
+apps/nemacs-next/scripts/package-smoke.sh
+apps/nemacs-next/frontends/tui/smoke.sh
 #+end_src
 
 The host smoke uses Emacs to prove that the app contract loads
@@ -78,3 +83,8 @@ host half verifies mode activation, local keymap lookup, hook execution,
 face registration/text properties, buffer edits, companion feature load,
 and explicit package-compat debt rows.  The standalone half is a lighter
 reader/load sanity check for the same fixture path.
+
+The TUI smoke is the first frontend-loop proof.  It pipes a deterministic
+byte sequence through =frontends/tui/nemacs-next-tui=, drives the
+=find-file= prompt, edits a temporary file, saves it, quits, and asserts
+both the final file content and rendered frame output.
