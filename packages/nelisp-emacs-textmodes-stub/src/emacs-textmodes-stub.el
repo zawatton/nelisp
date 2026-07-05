@@ -156,6 +156,34 @@
   (defvar normal-auto-fill-function 'do-auto-fill
     "Function used as `auto-fill-function' when Auto Fill mode is active."))
 
+(unless (boundp 'filter-buffer-substring-functions)
+  (defvar filter-buffer-substring-functions nil
+    "Obsolete wrapper hook around `buffer-substring--filter'."))
+
+(unless (boundp 'filter-buffer-substring-function)
+  (defvar filter-buffer-substring-function #'buffer-substring--filter
+    "Function used by `filter-buffer-substring' to filter copied text."))
+
+(unless (fboundp 'delete-and-extract-region)
+  (defun delete-and-extract-region (beg end)
+    "Delete text between BEG and END and return it."
+    (let ((text (buffer-substring beg end)))
+      (delete-region beg end)
+      text)))
+
+(unless (fboundp 'buffer-substring--filter)
+  (defun buffer-substring--filter (beg end &optional delete)
+    "Default function for `filter-buffer-substring-function'."
+    (if delete
+        (delete-and-extract-region beg end)
+      (buffer-substring beg end))))
+
+(unless (fboundp 'filter-buffer-substring)
+  (defun filter-buffer-substring (beg end &optional delete)
+    "Return filtered buffer text between BEG and END.
+When DELETE is non-nil, delete the source text after copying."
+    (funcall filter-buffer-substring-function beg end delete)))
+
 (unless (boundp 'fill-nobreak-predicate)
   (defvar fill-nobreak-predicate nil
     "Hook of predicates preventing line breaks during filling."))

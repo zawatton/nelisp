@@ -72,6 +72,8 @@
                   (pcomplete-termination-string . nil)
                   (auto-fill-function . nil)
                   (normal-auto-fill-function . do-auto-fill)
+                  (filter-buffer-substring-functions . nil)
+                  (filter-buffer-substring-function . buffer-substring--filter)
                   (fill-nobreak-predicate . nil)
                   (paragraph-start . "\f\\|[ \t]*$")
                   (paragraph-separate . "[ \t\f]*$")
@@ -110,8 +112,21 @@
                   (comment-multi-line . nil)
                   (comment-empty-lines . nil)
                   (comment-line-break-function . comment-indent-new-line)))
-    (should (boundp (car cell)))
-    (should (equal (default-value (car cell)) (cdr cell)))))
+      (should (boundp (car cell)))
+      (should (equal (default-value (car cell)) (cdr cell)))))
+
+(ert-deftest emacs-textmodes-test/filter-buffer-substring-defaults ()
+  "The bootstrap textmodes substrate exposes simple.el substring filtering."
+  (should (boundp 'filter-buffer-substring-function))
+  (should (fboundp 'filter-buffer-substring))
+  (should (fboundp 'buffer-substring--filter))
+  (should (fboundp 'delete-and-extract-region))
+  (with-temp-buffer
+    (insert "abcdef")
+    (should (equal "bcd" (filter-buffer-substring 2 5)))
+    (should (equal "abcdef" (buffer-string)))
+    (should (equal "bc" (filter-buffer-substring 2 4 t)))
+    (should (equal "adef" (buffer-string)))))
 
 (ert-deftest emacs-textmodes-test/paragraph-defaults-register-locality-in-source ()
   (let* ((file (locate-library "emacs-textmodes-stub"))

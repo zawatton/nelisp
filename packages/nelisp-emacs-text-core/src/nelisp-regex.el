@@ -609,6 +609,131 @@ where SLOT is 1 or 2 indicating which transition slot is dangling."
        (nelisp-rx--mkfrag :start sstart :outs (list (cons send 1)))))
     (_ (error "nelisp-rx: unknown AST node %S" ast))))
 
+(defun nelisp-rx--build (ast)
+  "Build a fragment for AST using standalone-safe dispatch."
+  (let ((tag (car ast)))
+    (cond
+     ((eq tag :lit)
+      (let ((s (nelisp-rx--add-state :char nil nil (cadr ast))))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :any)
+      (let ((s (nelisp-rx--add-state :any nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :bol)
+      (let ((s (nelisp-rx--add-state :bol nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :eol)
+      (let ((s (nelisp-rx--add-state :eol nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :wb)
+      (let ((s (nelisp-rx--add-state :wb nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :nwb)
+      (let ((s (nelisp-rx--add-state :nwb nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :wbs)
+      (let ((s (nelisp-rx--add-state :wbs nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :wbe)
+      (let ((s (nelisp-rx--add-state :wbe nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :bos)
+      (let ((s (nelisp-rx--add-state :bos nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :eos)
+      (let ((s (nelisp-rx--add-state :eos nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :class)
+      (let* ((positive (nth 1 ast))
+             (ranges (nth 2 ast))
+             (s (nelisp-rx--add-state :class nil nil
+                                      (cons positive ranges))))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :concat)
+      (let ((children (cdr ast)))
+        (if (null children)
+            (let ((s (nelisp-rx--add-state :split nil nil nil)))
+              (nelisp-rx--mkfrag :start s
+                                 :outs (list (cons s 1) (cons s 2))))
+          (let* ((first (nelisp-rx--build (car children)))
+                 (start (nelisp-rx--frag-start first))
+                 (outs (nelisp-rx--frag-outs first)))
+            (dolist (rest (cdr children))
+              (let ((next (nelisp-rx--build rest)))
+                (nelisp-rx--patch outs (nelisp-rx--frag-start next))
+                (setq outs (nelisp-rx--frag-outs next))))
+            (nelisp-rx--mkfrag :start start :outs outs)))))
+     ((eq tag :alt)
+      (let* ((a (nelisp-rx--build (nth 1 ast)))
+             (b (nelisp-rx--build (nth 2 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start a)
+                                      (nelisp-rx--frag-start b)
+                                      nil)))
+        (nelisp-rx--mkfrag :start s
+                           :outs (append (nelisp-rx--frag-outs a)
+                                         (nelisp-rx--frag-outs b)))))
+     ((eq tag :star)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start inner)
+                                      nil nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 2)))))
+     ((eq tag :plus)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start inner)
+                                      nil nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                           :outs (list (cons s 2)))))
+     ((eq tag :opt)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start inner)
+                                      nil nil)))
+        (nelisp-rx--mkfrag :start s
+                           :outs (cons (cons s 2)
+                                       (nelisp-rx--frag-outs inner)))))
+     ((eq tag :star-lazy)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      nil
+                                      (nelisp-rx--frag-start inner)
+                                      nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :plus-lazy)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      nil
+                                      (nelisp-rx--frag-start inner)
+                                      nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                           :outs (list (cons s 1)))))
+     ((eq tag :opt-lazy)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      nil
+                                      (nelisp-rx--frag-start inner)
+                                      nil)))
+        (nelisp-rx--mkfrag :start s
+                           :outs (cons (cons s 1)
+                                       (nelisp-rx--frag-outs inner)))))
+     ((eq tag :group)
+      (let* ((idx (nth 1 ast))
+             (inner (nelisp-rx--build (nth 2 ast)))
+             (sstart (nelisp-rx--add-state :gstart nil nil idx))
+             (send (nelisp-rx--add-state :gend nil nil idx)))
+        (aset (aref nelisp-rx--build-states sstart) 1
+              (nelisp-rx--frag-start inner))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) send)
+        (nelisp-rx--mkfrag :start sstart :outs (list (cons send 1)))))
+     (t
+      (error "nelisp-rx: unknown AST node %S" ast)))))
+
 (defun nelisp-rx--build-nfa (ast)
   "Compile AST to an NFA struct.
 Returns plist: (:states VEC :start INT :match INT :groups INT)."
@@ -761,93 +886,93 @@ backtracking semantics."
               (let* ((s (aref states sidx))
                      (label (aref s 0))
                      (ok
-                      (pcase label
-                      (:match
-                       (setq best (cons pos (vconcat groups))) ; freeze copy
-                       t)
-                      (:char
-                       (let ((c (char-at pos)))
-                         (and c (eq c (aref s 3))
-                              (walk (aref s 1) (1+ pos)))))
-                      (:any
-                       (let ((c (char-at pos)))
-                         (and c (walk (aref s 1) (1+ pos)))))
-                      (:class
-                       (let* ((c (char-at pos))
-                              (data (aref s 3)))
-                         (and c
-                              (nelisp-rx--class-match-p (car data) (cdr data) c)
-                              (walk (aref s 1) (1+ pos)))))
-                      (:bol
-                       (and (or (= pos 0)
-                                (eq (prev-char pos) ?\n))
-                            (walk (aref s 1) pos)))
-                      (:eol
-                       (and (or (= pos slen)
-                                (eq (char-at pos) ?\n))
-                            (walk (aref s 1) pos)))
-                      (:bos
-                       (and (= pos 0)
-                            (walk (aref s 1) pos)))
-                      (:eos
-                       (and (= pos slen)
-                            (walk (aref s 1) pos)))
-                      (:wb
-                       (let* ((before (and (> pos 0)
-                                           (nelisp-rx--word-char-p (prev-char pos))))
-                              (after  (and (< pos slen)
-                                           (nelisp-rx--word-char-p (char-at pos)))))
-                         (and (not (eq before after))
-                              (walk (aref s 1) pos))))
-                      (:nwb
-                       (let* ((before (and (> pos 0)
-                                           (nelisp-rx--word-char-p (prev-char pos))))
-                              (after  (and (< pos slen)
-                                           (nelisp-rx--word-char-p (char-at pos)))))
-                         (and (eq before after)
-                              (walk (aref s 1) pos))))
-                      ;; Doc 51 Track J — `\<' matches at word start.
-                      (:wbs
-                       (let* ((before (and (> pos 0)
-                                           (nelisp-rx--word-char-p (prev-char pos))))
-                              (after  (and (< pos slen)
-                                           (nelisp-rx--word-char-p (char-at pos)))))
-                         (and (not before) after
-                              (walk (aref s 1) pos))))
-                      ;; Doc 51 Track J — `\>' matches at word end.
-                      (:wbe
-                       (let* ((before (and (> pos 0)
-                                           (nelisp-rx--word-char-p (prev-char pos))))
-                              (after  (and (< pos slen)
-                                           (nelisp-rx--word-char-p (char-at pos)))))
-                         (and before (not after)
-                              (walk (aref s 1) pos))))
-                      (:split
-                       ;; If this split is already on the current path at POS,
-                       ;; re-entering is a zero-width epsilon cycle that yields no
-                       ;; new match -- cut it.  Otherwise mark, recurse, restore
-                       ;; (so sibling DFS branches may legitimately revisit later).
-                       (let ((mark (aref split-mark sidx)))
-                         (if (and mark (= mark pos))
-                             nil
-                           (aset split-mark sidx pos)
-                           (prog1 (or (walk (aref s 1) pos)
-                                      (and (aref s 2) (walk (aref s 2) pos)))
-                             (aset split-mark sidx mark)))))
-                      (:gstart
-                       (let* ((idx (aref s 3))
-                              (saved (aref groups idx)))
-                         (aset groups idx (cons pos nil))
-                         (or (walk (aref s 1) pos)
-                             (progn (aset groups idx saved) nil))))
-                      (:gend
-                       (let* ((idx   (aref s 3))
-                              (saved (aref groups idx))
-                              (open  (and saved (car saved))))
-                         (aset groups idx (cons open pos))
-                         (or (walk (aref s 1) pos)
-                             (progn (aset groups idx saved) nil))))
-                      (_ (error "nelisp-rx: unknown state label %S" label)))))
+                      (cond
+                       ((eq label :match)
+                        (setq best (cons pos (vconcat groups))) ; freeze copy
+                        t)
+                       ((eq label :char)
+                        (let ((c (char-at pos)))
+                          (and c (eq c (aref s 3))
+                               (walk (aref s 1) (1+ pos)))))
+                       ((eq label :any)
+                        (let ((c (char-at pos)))
+                          (and c (walk (aref s 1) (1+ pos)))))
+                       ((eq label :class)
+                        (let* ((c (char-at pos))
+                               (data (aref s 3)))
+                          (and c
+                               (nelisp-rx--class-match-p (car data) (cdr data) c)
+                               (walk (aref s 1) (1+ pos)))))
+                       ((eq label :bol)
+                        (and (or (= pos 0)
+                                 (eq (prev-char pos) ?\n))
+                             (walk (aref s 1) pos)))
+                       ((eq label :eol)
+                        (and (or (= pos slen)
+                                 (eq (char-at pos) ?\n))
+                             (walk (aref s 1) pos)))
+                       ((eq label :bos)
+                        (and (= pos 0)
+                             (walk (aref s 1) pos)))
+                       ((eq label :eos)
+                        (and (= pos slen)
+                             (walk (aref s 1) pos)))
+                       ((eq label :wb)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and (not (eq before after))
+                               (walk (aref s 1) pos))))
+                       ((eq label :nwb)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and (eq before after)
+                               (walk (aref s 1) pos))))
+                       ;; Doc 51 Track J — `\<' matches at word start.
+                       ((eq label :wbs)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and (not before) after
+                               (walk (aref s 1) pos))))
+                       ;; Doc 51 Track J — `\>' matches at word end.
+                       ((eq label :wbe)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and before (not after)
+                               (walk (aref s 1) pos))))
+                       ((eq label :split)
+                        ;; If this split is already on the current path at POS,
+                        ;; re-entering is a zero-width epsilon cycle that yields no
+                        ;; new match -- cut it.  Otherwise mark, recurse, restore
+                        ;; (so sibling DFS branches may legitimately revisit later).
+                        (let ((mark (aref split-mark sidx)))
+                          (if (and mark (= mark pos))
+                              nil
+                            (aset split-mark sidx pos)
+                            (prog1 (or (walk (aref s 1) pos)
+                                       (and (aref s 2) (walk (aref s 2) pos)))
+                              (aset split-mark sidx mark)))))
+                       ((eq label :gstart)
+                        (let* ((idx (aref s 3))
+                               (saved (aref groups idx)))
+                          (aset groups idx (cons pos nil))
+                          (or (walk (aref s 1) pos)
+                              (progn (aset groups idx saved) nil))))
+                       ((eq label :gend)
+                        (let* ((idx   (aref s 3))
+                               (saved (aref groups idx))
+                               (open  (and saved (car saved))))
+                          (aset groups idx (cons open pos))
+                          (or (walk (aref s 1) pos)
+                              (progn (aset groups idx saved) nil))))
+                       (t (error "nelisp-rx: unknown state label %S" label)))))
                 (unless ok
                   (puthash (fail-key sidx pos) t failed))
                 ok))))
