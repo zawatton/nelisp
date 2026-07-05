@@ -147,6 +147,7 @@
       (should (= 2 (length v)))
       (should (= ?h (aref v 0)))
       (should (= ?i (aref v 1))))
+    (should (equal [104 105] (emacs-command-loop-recent-keys)))
     (emacs-command-loop-clear-this-command-keys)
     (should (equal "" (emacs-command-loop-this-command-keys)))))
 
