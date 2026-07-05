@@ -270,6 +270,32 @@ P2 can verify the command-surface keymap behavior directly."
     (should (keymapp (nth 2 (emacs-keymap-lookup-key
                              map (vector (easy-menu-intern "Agenda"))))))))
 
+(ert-deftest emacs-keymap-builtins-test/easy-menu-convert-item-cache-returns-fresh-conses ()
+  (let* ((file (locate-library "emacs-keymap-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file))
+         (previous (and (fboundp 'easy-menu-convert-item)
+                        (symbol-function 'easy-menu-convert-item))))
+    (unwind-protect
+        (let ((easy-menu-converted-items-table (make-hash-table :test 'equal))
+              (item ["Open" find-file t :help "Open a file"]))
+          (fmakunbound 'easy-menu-convert-item)
+          ;; Re-load this bridge source with the host easymenu binding cleared
+          ;; so the test covers the standalone substrate implementation.
+          (load file nil t)
+          (let ((first (easy-menu-convert-item item)))
+            (setcar (cdr first) 'mutated-menu-item)
+            (setcdr first '(mutated-tail))
+            (let ((second (easy-menu-convert-item item)))
+              (should-not (eq first second))
+              (should-not (eq (cdr first) (cdr second)))
+              (should (equal second
+                             '(Open menu-item "Open" find-file
+                                    :help "Open a file"))))))
+      (when previous
+        (fset 'easy-menu-convert-item previous)))))
+
 ;;;; H. Idempotence
 
 (ert-deftest emacs-keymap-builtins-test/require-is-idempotent ()
