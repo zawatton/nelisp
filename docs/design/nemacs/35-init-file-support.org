@@ -1,0 +1,531 @@
+#+TITLE: nelisp-emacs Doc 35 -- init-file loading, startup-screen control, and message/package substrate scoping
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-07-05
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 28 compatibility global API policy, Doc 31 nemacs-next editor product plan, Doc 33 Emacs C-core substrate priority plan, Doc 34 Emacs replacement development rules
+
+* 0. Purpose
+
+This is an investigation-only design note.  It answers, from
+=vendor/emacs-lisp/= sources with file:line citations, exactly how GNU
+Emacs (a) locates and loads =early-init.el=/=init.el=, (b) lets a user
+control the toolbar, initial frame size, and font from those files, (c)
+sequences =load-path=, =custom-file=, and init-related hooks, (d) creates
+the =*scratch*= buffer and logs to =*Messages*=, and (e) activates
+packages via =package.el=.  It then reads the user's real
+=~/.emacs.d/early-init.el= + =~/.emacs.d/init.el= as a compatibility
+target, and maps every mechanism onto the current =nemacs-next=
+architecture to scope an increment plan.
+
+No source under =src/= or =gui/= was modified for this document.
+
+* 1. Startup sequence (=normal-top-level= / =command-line=)
+
+Boot entry is =normal-top-level= (=vendor/emacs-lisp/startup.el:578=),
+which does locale/=load-path= setup and then calls =command-line=
+inside an =unwind-protect= (=startup.el:787=).  =command-line=
+(=startup.el:1150=) is where every init-related decision happens, in
+this order:
+
+1. =user-emacs-directory= is computed once, very early, in
+   =normal-top-level= itself, via =startup--xdg-or-homedot=
+   (=startup.el:605-606=, helper at =startup.el:510-528=).  Precedence:
+   prefer =~/.emacs.d/= if it exists (or a legacy dotfile =~/.emacs=
+   exists); else prefer the XDG dir (=$XDG_CONFIG_HOME/emacs/= or
+   =~/.config/emacs/=) if *that* exists; else default to =~/.emacs.d/=.
+   This is re-derived a second time inside =command-line= as
+   =startup-init-directory= once =init-file-user= is known
+   (=startup.el:1368-1380=), because =-u USER= / =su= can change whose
+   home directory is in play.
+2. Command-line flags are parsed first (=startup.el:1216-1326=):
+   =-Q=/=-q=/=-u=/=--init-directory=/=--no-site-file=/=--debug-init=
+   etc. mutate =init-file-user=, =site-run-file=,
+   =user-emacs-directory= *before* anything is loaded.
+3. **early-init.el loads first** (=startup.el:1382-1392=), via
+   =startup--load-user-init-file= looking for
+   =<startup-init-directory>/early-init.el=.  =early-init-file= is set
+   to the resolved path afterward (=startup.el:1392=; the var itself is
+   declared nil-during-load at =startup.el:315-319= so code inside
+   early-init.el can detect it is running before its own file is
+   fully loaded).
+4. **package-activate-all** runs next, but only if a package directory
+   exists on disk (probe loop, =startup.el:1400-1416=): the condition
+   is =user-init-file AND package-enable-at-startup AND (not
+   package--activated) AND at least one dir under package-user-dir /
+   package-directory-list contains a package description file=. This
+   placement -- after early-init, before init.el -- is exactly why the
+   Emacs manual tells users to put =load-path=/package-related tuning
+   in early-init.el: init.el runs *after* packages are already
+   activated.
+5. Window-system initialization runs conditionally
+   (=startup.el:1420-1436=): opens the display connection
+   (=window-system-initialization=, generic dispatch declared at
+   =startup.el:906-911=) using whatever =initial-window-system= says.
+6. =before-init-hook= runs (=startup.el:1456=).
+7. **The initial frame is created** by =frame-initialize=
+   (=startup.el:1459-1464=, skipped for daemons), consuming
+   =default-frame-alist= (+ =initial-frame-alist=/
+   =window-system-default-frame-alist=) *as they stand at this exact
+   moment* -- i.e. whatever early-init.el has already pushed onto them.
+   =tool-bar-setup= runs right after (=startup.el:1466-1470=).
+8. =site-run-file= loads (=startup.el:1500-1511=, default
+   ="site-start"=, defcustom at =startup.el:358-380=; run *before*
+   =init.el= on purpose, per its own docstring, load order documented
+   as 1. site-run-file 2. user-init-file 3. default.el).
+9. **init.el loads** (=startup.el:1513-1539=), again via
+   =startup--load-user-init-file=, target
+   =<startup-init-directory>/init.el=, falling back to legacy
+   =~/.emacs=/=~/_emacs=. The shared loader mechanics
+   (=startup--load-user-init-file=, =startup.el:1045-1145=) set
+   =user-init-file=, resolve =.elc=/=.eln= back to =.el= source names,
+   honor =init-file-debug=/=--debug-init=, and catch+display (never
+   propagate) load errors, setting =init-file-had-error= instead.
+   =default.el= loads afterward unless =inhibit-default-init=.
+10. =after-init-time= is stamped and =after-init-hook= +
+    =delayed-warnings-hook= run (=startup.el:1581-1585=) -- this is
+    still inside =command-line=, so it fires *before* control returns
+    to =normal-top-level=.
+11. Back in =normal-top-level=, once =command-line= returns:
+    =emacs-startup-hook=/=term-setup-hook= run first
+    (=startup.el:816-817=), *then* =frame-notice-user-settings=
+    reconciles the already-created frame against whatever init.el just
+    changed in =initial-frame-alist=/=default-frame-alist=
+    (=startup.el:843-852=, impl =frame.el:313-...=), *then*
+    =window-setup-hook= runs last (=startup.el:857-858=).
+
+Gating variables: =user-init-file=, =early-init-file=, =site-run-file=,
+=inhibit-startup-screen= / =inhibit-startup-message= /
+=inhibit-startup-echo-area-message= / =inhibit-startup-buffer-menu=
+(defcustoms at =startup.el:68-108=), =inhibit-default-init=,
+=init-file-user= (nil under =-q=/=--no-init-file=, =""= for the current
+user, or a username string), =noninteractive=.
+
+* 2. Screen-control mechanisms
+
+** 2.a Toolbar on/off
+
+Two distinct mechanisms with different timing:
+
+- =(push '(tool-bar-lines . 0) default-frame-alist)=: a plain alist
+  edit.  If done in *early-init.el*, it is already present when
+  =frame-initialize= reads =default-frame-alist= to build the first
+  frame (step 7 above) -- the frame is built without toolbar space from
+  the start, no resize.  If done in *init.el*, the frame already
+  exists; =frame-notice-user-settings= (=frame.el:412-451=) detects the
+  zero/absent =tool-bar-lines= entry, calls =(tool-bar-mode -1)=, and
+  shrinks the already-visible frame by the toolbar's pixel height
+  (=frame.el:422-451=) -- functionally equivalent but with a visible
+  correction step.
+- =(tool-bar-mode -1)=: the minor mode itself
+  (=tool-bar.el:45-66=). =:global t=; on toggle it (i) walks
+  =(frame-list)= and does =(set-frame-parameter frame 'tool-bar-lines
+  0)= on every *live* frame immediately, and (ii) if
+  =default-frame-alist= already has a =tool-bar-lines= entry, replaces
+  it in place so *future* frames also get it. Calling this from
+  init.el therefore affects the current frame live (no need for
+  =frame-notice-user-settings= to intervene) and future frames via the
+  alist side effect.
+
+=tool-bar-lines= itself is consumed by the low-level frame-creation
+primitive (=frame-creation-function=, =frame.el:30-46=, dispatched per
+window-system) at frame-build time, and re-consumed by
+=frame-notice-user-settings= (=frame.el:412-451=) as a post-hoc
+correction after init.el has run.
+
+** 2.b Initial window size
+
+=initial-frame-alist= (defcustom, =frame.el:66-97=) and
+=default-frame-alist= are both read by the same frame-creation path.
+The =initial-frame-alist= docstring is explicit about the exact same
+early-vs-late distinction as 2.a: /"Emacs reads your main init file
+after creating the initial frame, so setting it there won't have the
+expected effect. Instead, you can set it in =early-init-file=."/
+(=frame.el:80-82=). Precedence (highest first) is
+=initial-frame-alist= > =window-system-default-frame-alist= (per
+window-system) > =default-frame-alist=, all merged in
+=frame-notice-user-settings= (=frame.el:323-331=, =:486-490=). Width
+and height keys are otherwise ordinary frame parameters consumed the
+same way as any other =default-frame-alist= entry -- there is no
+separate "size" code path.
+
+** 2.c Font
+
+Three mechanisms, in increasing "liveness":
+
+1. =(font . "...")= inside =default-frame-alist=/=initial-frame-alist=:
+   read once at frame-creation time, same early-init-vs-init.el timing
+   split as 2.a/2.b.
+2. =(set-face-attribute 'default nil :family F :height H)=: mutates the
+   =default= face's theme spec directly; face realization then derives
+   the frame's font from it. Can run at any time (typically directly
+   in init.el, not gated on a hook), and every live frame using the
+   =default= face re-renders at that font immediately.
+3. =(set-frame-font FONT KEEP-SIZE FRAMES)= (=frame.el:1433-1489=): a
+   convenience wrapper that iterates the target frame list and, per
+   frame, calls =(set-face-attribute 'default f :width 'normal :weight
+   'normal :slant 'normal :font FONT)= (=frame.el:1479-1484=) -- i.e.
+   mechanism 2 plus resetting the other size-affecting face attributes
+   Emacs infers a font from, plus (optionally) also writing the change
+   back into Customize state for future frames.
+
+=startup.el= also runs a startup-only correction for font at
+=startup.el:825-841=: if =face-font-rescale-alist= changed during
+init.el loading, the already-realized default face's =:font= is reset
+so the rescale takes effect. =frame-inhibit-implied-resize= (a plain
+defvar, no vendor-side special handling beyond being read by the C
+frame-resize path) decouples pixel frame size from character-cell
+count when the font changes -- set it to =t= in early-init.el to avoid
+Emacs resizing the *pixel* window every time mechanism 2/3 picks a
+larger font than the system default.
+
+* 3. Load settings
+
+- =load-path= manipulation in *early-init.el* matters because
+  =package-activate-all= (step 4 in section 1) runs immediately after
+  early-init.el and before init.el; anything init.el needs
+  package-activation to see (custom =package-directory-list= entries,
+  etc.) must be set in early-init.el, not init.el.  Ordinary
+  =(add-to-list 'load-path ...)= calls for hand-managed (non-ELPA)
+  directories have no such constraint -- they only need to run before
+  the first =require=/=load= that needs them, which for most personal
+  packages simply means "earlier in init.el than first use."
+- =custom-file=: there is **no vendor startup.el code that
+  auto-loads =custom-file=** -- =custom-file= is purely a user-facing
+  defcustom (naming which file =customize-save-variable= writes to)
+  that the user is expected to =(load custom-file 'noerror)=
+  themselves, typically from init.el or a hook. Nothing in
+  =startup.el= reads it.
+- =after-init-hook= runs inside =command-line=, strictly before
+  =command-line= returns (=startup.el:1585=), and therefore strictly
+  before =emacs-startup-hook= (=startup.el:817=, run in
+  =normal-top-level= after =command-line= returns) and before
+  =frame-notice-user-settings= and =window-setup-hook=
+  (=startup.el:845-858=). Practical order: =before-init-hook= (5) →
+  init.el body executes → =after-init-hook= + =delayed-warnings-hook=
+  (10) → [return to normal-top-level] → =emacs-startup-hook= /
+  =term-setup-hook= (11) → =frame-notice-user-settings= (frame
+  parameter reconciliation + background-mode) → =window-setup-hook=
+  (last). Code that depends on the *final*, post-reconciliation frame
+  parameters (e.g. background-mode-derived faces) belongs on
+  =window-setup-hook=, not =after-init-hook= or even
+  =emacs-startup-hook=.
+
+* 4. =*scratch*= buffer lifecycle
+
+=*scratch*= exists before any Lisp in =startup.el= runs at all (the
+=normal-top-level= comment at =startup.el:681-682= notes it is
+"probably the only" buffer that exists when locale decoding begins --
+it is a C-side bootstrap artifact, not something =startup.el= creates).
+Lisp-visible touch points:
+
+- =get-scratch-buffer-create= (=simple.el:11147-11160=): returns the
+  existing =*scratch*= or creates one; *only* when freshly creating
+  does it insert =initial-scratch-message= and call
+  =initial-major-mode= (default =lisp-interaction-mode=, defcustom at
+  =startup.el:337-339=).
+- =command-line-1= calls this when =initial-buffer-choice= is =t=
+  (the default) to guarantee it exists (=startup.el:2823-2826=), then
+  separately, if the buffer exists and is *still empty*, inserts
+  =initial-scratch-message= (=startup.el:2830-2835=; this is the path
+  that actually fires for the always-already-existing C-created
+  buffer, since =get-scratch-buffer-create='s own insert branch only
+  fires for a buffer it just created via =get-buffer-create=).
+- Back in =command-line= (after =command-line-1= returns): if
+  =(get-buffer "*scratch*")= exists and its major mode is still
+  =fundamental-mode= (i.e. the C-side buffer was never touched by the
+  above), =initial-major-mode= is invoked on it directly
+  (=startup.el:1587-1591=). This is the final catch-all that turns the
+  raw bootstrap buffer into a real =lisp-interaction-mode= buffer.
+- It becomes the *displayed/current* buffer via the ordinary
+  =displayable-buffers=/=switch-to-buffer= logic in =command-line-1=
+  (=startup.el:2843-2868=), not via anything scratch-specific.
+
+* 5. =*Messages*= buffer / message logging contract
+
+=(message ...)= itself is a C primitive (=Fmessage=, not present
+anywhere under =vendor/emacs-lisp/=); the only elisp-visible surface is:
+
+- =messages-buffer-mode= (=simple.el:10907-10916=, derived from
+  =special-mode=, sets =window-point-insertion-type t= so point tracks
+  the tail as new lines append -- the "tail -f" behavior).
+- =messages-buffer= (=simple.el:10918-10924=): =(get-buffer
+  "*Messages*")= or create + apply =messages-buffer-mode=. There is no
+  =messages-buffer-name= variable in vendor sources -- the string
+  ="*Messages*"= is a literal everywhere (=startup.el:753=,
+  =simple.el:10921-10923=).
+- =message-log-max= (a C =DEFVAR_LISP=; only its customize metadata is
+  visible in elisp, at =cus-start.el:683=) caps how many lines
+  =*Messages*= keeps; =messages-buffer-max-lines= is a pure alias for
+  it (=subr.el:2012=). The actual "log the formatted message, append
+  to =*Messages*=, trim to =message-log-max= lines" behavior
+  (=message_dolog= in the real C sources) has **no elisp
+  implementation anywhere in this vendor tree** -- it is a pure-C
+  contract that a substrate reimplementing =message= must recreate
+  from scratch: append text (+ newline-if-needed) to the =*Messages*=
+  buffer, respect =message-log-max= (=t= = unlimited, =nil= = don't
+  log, integer = cap lines by trimming from the top), and separately
+  echo to the echo area (a distinct, transient display, not the same
+  as the buffer).
+
+* 6. =package.el= usability
+
+=package.el= lives at =vendor/emacs-lisp/emacs-lisp/package.el= (a
+subdirectory, not directly under =vendor/emacs-lisp/=).
+=Package-Requires: ((tabulated-list "1.0"))= (=package.el:10=); it also
+pulls in =seq=/=cl-lib= transitively and, for install/GPG paths, =epg=
+/ =url= -- but *activation* (the only part startup.el calls) needs none
+of that beyond what is already preloaded.
+
+Activation model, precisely:
+
+1. =package-load-all-descriptors= (=package.el:735-748=) walks
+   =package-user-dir= (default =(locate-user-emacs-file "elpa")=,
+   =package.el:303=) + =package-directory-list=
+   (=package.el:315=-ish), and for each subdirectory whose
+   description file exists (a =<pkg>-pkg.el= containing a
+   =(define-package ...)= form, or the single-file header-derived
+   equivalent), calls =package-load-descriptor= →
+   =package-process-define-package= → pushes onto =package-alist=
+   (=package.el:686-748=). A directory with **no description file is
+   invisible to this scan** (checked directly by =startup.el='s probe
+   loop at =startup.el:1406-1415= before even calling
+   =package-activate-all=).
+2. =package-activate-all= (=package.el:1704-1732=) either loads a
+   quickstart file (a precomputed activation script) or, failing that,
+   =(require 'package)= + =package--activate-all=
+   (=package.el:1734-1740=), which calls =package-activate= on every
+   entry now in =package-alist=.
+3. =package-activate-1= (=package.el:883-919=) is where the
+   filesystem effect actually happens: it =(load
+   (package--autoloads-file-name pkg-desc) nil t)= -- i.e. it loads a
+   *generated* =<pkg>-autoloads.el= file
+   (=package.el:819-824=). **It never adds the package directory to
+   =load-path= itself** -- that add happens once, earlier, as a side
+   effect of package installation (=package-generate-autoloads=,
+   =package.el:1090=, and the install path that calls it), not as part
+   of activation. So package.el's contract genuinely requires two
+   generated artifacts per package (a description file + an autoloads
+   file), both normally produced by =package-install=/=package-vc-install=,
+   never by a bare =git clone=.
+4. =package-initialize= (=package.el:1673-1700=) is the all-in-one
+   entrypoint (=(setq package-alist nil) (package-load-all-descriptors)
+   ... (package-activate-all)=); most users never call it directly
+   because =startup.el= already does the equivalent gated call at
+   startup (section 1, step 4).
+
+Consequence for a directory like =~/.emacs.d/external-packages/= that
+holds 177 plain =git clone='d repos (magit, dash.el, transient, ... --
+see section 7): **none of them have a =<pkg>-pkg.el= or
+=<pkg>-autoloads.el=**, so =package-load-all-descriptors= would find
+zero of them even if pointed at that directory via
+=package-directory-list=. This is exactly why real Emacs users in this
+situation disable package.el activation entirely
+(=package-enable-at-startup nil=) and hand-manage =load-path= /
+=require= per package in init.el instead -- which is what section 7
+shows the user actually does.
+
+* 7. User's real init compatibility target
+
+Read (context, read-only): =~/.emacs.d/early-init.el= (165 lines) and
+=~/.emacs.d/init.el= (10522 lines). =~/.emacs.d/external-packages/=
+contains 177 package directories (raw upstream clones -- e.g.
+=magit=, =dash.el=, =org-roam=, =vertico=, =consult=, =evil=,
+=eat-windows-pty=, =anvil.el=, =anvil.el-worktrees=, ... full listing
+omitted here for length; none carry ELPA description/autoloads files).
+
+| Category | Where set | Mechanism | Timing bucket |
+|---+---+---+---|
+| Toolbar/menu-bar/scrollbar | early-init.el:74-77 | push onto =default-frame-alist= (=menu-bar-lines=, =tool-bar-lines=, =vertical-scroll-bars=), macOS GUI exempted from menu-bar suppression | early-init (frame built without them, no resize) |
+| Initial size/position | early-init.el:83-99 | =default-frame-alist= =top/left/width/height= = =100/150/125/45= | early-init |
+| Fullscreen override | early-init.el:105-116 | =(add-to-list 'default-frame-alist '(fullscreen . maximized))= for Linux-non-WSL and Darwin | early-init |
+| Startup screen | early-init.el:79-81 | =inhibit-splash-screen=, =inhibit-startup-message=, =initial-scratch-message ""= | early-init |
+| Package activation | early-init.el:67, 148-150 | =package-enable-at-startup nil=; =(require 'package)= kept but =package-initialize= commented out | early-init (disables section-6 path entirely) |
+| GC/perf startup tuning | early-init.el:56-64,72,118-145 | =gc-cons-threshold=, =frame-inhibit-implied-resize t=, =native-comp-async-jobs-number=, =file-name-handler-alist= nil-then-restore on =emacs-startup-hook= | early-init (+ restore on emacs-startup-hook) |
+| =site-run-file= | early-init.el:139 | =(setq site-run-file nil)= | early-init |
+| Load-path (personal pkgs) | init.el:24-27,39,4259,4895-4900,4958,5573,6927,6978,9259 (representative) | ~100+ explicit =(add-to-list 'load-path ...)= into =~/.emacs.d/external-packages/<pkg>= and =~/Cowork/Notes/dev/*=; also a =custom-lisp/load-path.el= indirection file | init.el body (not early-init: no package.el dependency to beat) |
+| =custom-file= | init.el:206-210 | =(setq custom-file ".../customs.el")= then =(add-hook 'after-init-hook (lambda () (load custom-file 'noerror)))= | after-init-hook (user-chosen, not automatic) |
+| Font | init.el:2056-2091 | hostname/display-conditioned =(set-face-attribute 'default nil :family ... :height ...)=, plus fontset tweaks on =after-init-hook= (init.el:2099) | init.el body (live update; cushioned by =frame-inhibit-implied-resize=) |
+| after-init-hook usage | ~45 call sites (grep count) | package setup functions, =show-paren-mode=, =embark=, custom-file load, MCP worker spawn, eat-dev spawn, yaml/org-download setup, etc. | after init.el, before command-line returns |
+| emacs-startup-hook usage | ~10 call sites | theme application (=apply-appropriate-theme=, explicit comment: faster/more-correct at this point), =global-emojify-mode=, IME/SKK deactivation, VMware env check, ESS setup | after command-line returns, before frame reconciliation |
+
+* 8. Current =nemacs-next= architecture vs. these mechanisms
+
+Verified by reading the actual sources (not assumed from names):
+
+- **Bootstrap/session layer** is =src/nemacs-loadup.el= (=nemacs-init=,
+  wired from =bin/nemacs=:483,495 and =bin/nemacs-server=:95). Per its
+  own commentary (=nemacs-loadup.el:30-33=) it explicitly treats
+  "command-line option parsing (= --eval / --load / -l etc.)" as *out
+  of scope for this MVP*. Its actual steps
+  (=nemacs-loadup.el:80-116=) are: ensure a =*scratch*=-equivalent
+  buffer exists (=nemacs--ensure-scratch-buffer=,
+  =nemacs-loadup.el:64-71=, always =fundamental-mode=, no
+  =initial-scratch-message=/=initial-major-mode= equivalent), run
+  =nemacs-startup-hook= once, done. **There is no early-init phase,
+  no user-init-file discovery, no package-activation call, and no
+  frame-parameter application anywhere in this module.**
+- **Init-file loading is currently frontend-owned**, not
+  session-owned, and duplicated per frontend:
+  - GTK: =nemacs-gtk--load-user-init-file=
+    (=src/nemacs-gtk-frontend.el:2938-2980=) checks *only*
+    =~/.emacs.d/init.el= → =~/.emacs.el= → =~/.emacs=
+    (=:2929-2936=) -- no early-init.el, no XDG, no
+    =user-emacs-directory= variable, no =site-run-file=, no
+    package-activation-before-init, no =after-init-hook= run. Errors
+    are caught and manually mirrored into =*Messages*= via a hand-rolled
+    =(with-current-buffer (get-buffer-create "*Messages*") ... insert)=
+    (=:2972-2979=) rather than going through a shared logging path.
+  - TUI: =src/nemacs-main.el= has no init-file auto-discovery at all;
+    only explicit =--load PATH= / =--eval FORM= CLI options
+    (=nemacs-main--load-option-path= / =nemacs-main--eval-option-form=,
+    =:1776-1834=, dispatched from =nemacs-main--apply-options=,
+    =:1835-1876=).
+  - This contradicts this repo's own ownership rule
+    (=AGENTS.md:53-54=: "apps: =nemacs-loadup=, =emacs-init=,
+    =nemacs-main=, launchers") -- init-file *discovery and loading* is
+    app/session-tier behavior, not frontend-tier, and belongs beside
+    =nemacs-init= rather than duplicated per frontend.
+- **=message= has no =*Messages*= integration.** The only substrate
+  =message= definition is the =unless (fboundp 'message)= fallback stub
+  at =src/emacs-stub.el:882-888=, which =princ='s to stderr and returns
+  -- it never touches a buffer or =message-log-max=. Every
+  =*Messages*=-adjacent behavior seen in the GTK frontend
+  (=:2850-2857=, =:2972-2979=, =:4521-4545=) is hand-rolled
+  =get-buffer-create= + =insert= at each call site, which is exactly
+  the pattern Doc 34 (=34-emacs-replacement-development-rules.org=)
+  warns against: app/frontend glue re-implementing substrate-owned
+  behavior instead of a shared module owning it once.
+- **=package.el= usability**: =src/package.el= is a from-scratch
+  *minimal facade*, not the vendor state machine from section 6. It
+  requires =package-alist= to already be populated with
+  =(name . (desc ...))= entries carrying a =:dir= plist key
+  (=src/package.el:64-80=); there is no equivalent of
+  =package-load-all-descriptors= (no directory scan, no
+  =-pkg.el=/=-autoloads.el= parsing) anywhere in =src/=. With an empty
+  =package-alist= (nothing currently populates it),
+  =package-activate-all= is a correct no-op -- matching the measured
+  bootstrap state (=package-activate-all=/=package-initialize=/
+  =featurep 'package= all nil).
+- **No frame-parameter config message exists** in the transport layers
+  (=gui/nemacs-editor-transport.el=, =src/emacs-tui-backend.el=): no
+  hit for toolbar/width/height/font config keys in either. Toolbar
+  row and initial geometry are therefore currently frontend
+  hard-coded, not something a session-level early-init-equivalent can
+  influence yet.
+
+* 9. Increment plan
+
+Ownership target per Doc 34/AGENTS.md: init-file discovery/loading,
+frame-parameter application, message logging, and package activation
+are session/library-tier behavior; TUI/GUI stay thin consumers.
+
+** (a) Init-file discovery + loading -- own it in the session, not the frontend
+
+Move (not duplicate) =nemacs-gtk--candidate-init-files= /
+=nemacs-gtk--load-user-init-file= logic into =src/nemacs-loadup.el= (or
+a new small sibling module at the same "apps" tier, e.g.
+=src/nemacs-init-file.el=, required by =nemacs-loadup.el=), as a new
+step inserted before "run =nemacs-startup-hook=":
+
+1. Resolve a =nemacs-user-emacs-directory= (recommend: honor the real
+   =~/.emacs.d/= / XDG precedence from section 1 rather than a
+   nemacs-specific directory -- the stated goal is replacement, and
+   the user's actual init.el already assumes =user-emacs-directory=
+   semantics, e.g. =custom-file= at init.el:206). Do not special-case
+   a =~/.nemacs.d/=; that would defeat compatibility for zero benefit.
+2. Load =early-init.el= if present, *before* any package-activation or
+   frame creation step.
+3. Run the (currently no-op-safe) package-activation call.
+4. Apply default frame parameters gathered from
+   =default-frame-alist=/=initial-frame-alist= (see (b)) -- this must
+   happen after early-init.el, before the frontend paints its first
+   frame, mirroring section 1 step 7.
+5. Load =init.el= (falling back to =~/.emacs= for parity, low
+   priority), with the same non-fatal error handling GTK already has
+   (keep it, just relocate it) plus recording to a real
+   =*Messages*= via (c) instead of a hand-rolled insert.
+6. Run =after-init-hook= then the existing =nemacs-startup-hook=
+   (treat the latter as this project's =emacs-startup-hook=
+   equivalent).
+Defer: =site-run-file=, =-u USER= support, =.elc=/=.eln= source
+resolution -- none are exercised by the compatibility target in
+section 7 (site-run-file is explicitly disabled there).
+
+** (b) Frame-parameters config message
+
+Add a small config payload (toolbar-lines / width / height / font, at
+minimum) to the existing transport surfaces
+(=gui/nemacs-editor-transport.el= for GTK, =src/emacs-tui-backend.el=
+for TUI) populated from =default-frame-alist=/=initial-frame-alist=
+*after* early-init.el has run and *before* first paint -- this is the
+direct analogue of section 1 step 7 / section 2's early-vs-late split.
+TUI notes: =toolbar-lines= maps to an on/off toolbar *row* in the
+terminal grid (no pixel geometry); =width=/=height= are a
+best-effort initial hint, subordinate to the real terminal size
+(=SIGWINCH=/=nemacs-main--handle-winsize=, =nemacs-main.el:896-927=,
+already exists and must keep winning after startup); =font= is TUI
+no-op, GUI-only. Future GUI (non-GTK) frontends consume the same
+message; do not special-case GTK.
+
+** (c) =message= → =*Messages*= substrate
+
+Replace the =src/emacs-stub.el:882-888= stub with a real
+implementation in shared substrate (buffer/edit tier, not a frontend):
+format the string, append (+ newline) to a =*Messages*= buffer created
+via a =messages-buffer=-equivalent helper (mode: =special-mode=-derived,
+tail-follow point), respect =message-log-max= (=t=/=nil=/integer per
+section 5), and separately surface the same text to whatever
+echo-area-equivalent the active frontend has. Delete the GTK
+frontend's hand-rolled =get-buffer-create= + =insert= call sites
+(=:2972-2979=, =:4545=) once this lands -- they become redundant with
+correct =message= wiring, per Doc 34's "no local replacement for
+substrate-owned behavior."
+
+** (d) =after-init-hook=/=emacs-startup-hook= timing
+
+Wire both hooks into the session sequence from (a) in the exact
+section-3 order (=after-init-hook= before returning from "load
+init.el", =nemacs-startup-hook= as the =emacs-startup-hook= analogue
+afterward). No new hook variable needed for =after-init-hook= itself
+if =nemacs-startup-hook= is kept as-is for the later slot; simply add
+an explicit =after-init-hook= run point *inside* the init-loading
+step, before it returns. Defer a separate =window-setup-hook=
+equivalent until frame-parameter reconciliation (b) actually exists to
+reconcile against.
+
+** (e) =*scratch*= buffer parity
+
+Extend =nemacs--ensure-scratch-buffer= (=nemacs-loadup.el:64-71=) to
+also apply =initial-scratch-message= (new nemacs defcustom, default
+mirroring =startup.el:1705-1713=) and =initial-major-mode= (new nemacs
+defcustom mirroring =startup.el:337-339=, default whatever this
+project's =lisp-interaction-mode= equivalent is, else
+=fundamental-mode= if none exists yet) instead of hardcoding
+=fundamental-mode=, matching section 4's two-stage logic (create-time
+init if fresh, catch-all mode fixup if still default afterward).
+
+** (f) Package activation -- do not build the ELPA scanner yet
+
+Section 6/8 show the vendor activation model requires generated
+=-pkg.el=/=-autoloads.el= artifacts that nothing in this repo produces
+yet, *and* the section-7 compatibility target explicitly disables
+package.el and load-path-manages 177 raw directories instead. Recommend:
+leave =src/package.el='s facade as-is (still correct for anything that
+does populate =package-alist= directly), and treat the *actual*
+near-term compatibility need as (a)'s plain =load-path=
+management -- i.e. init.el's own =(add-to-list 'load-path ...)= forms
+already work once (a) lands, with zero package.el involvement, exactly
+as they do for the real user today. Building =package-load-all-descriptors=
++ autoloads-file consumption is a separate, larger increment; do not
+fold it into this scope.
+
+** (g) Deferred out of scope
+
+=site-run-file=, XDG config-home support beyond "prefer =~/.emacs.d/=
+if it exists" (no user-visible need in section 7), =.eln=/native-comp
+cache redirection, =-u USER=/=su= home-directory switching,
+=default.el=, X-resource-driven frame settings
+(=x-apply-session-resources=), and a full ELPA package-activation
+scanner (see (f)). All are real vendor mechanisms (cited in sections
+1/3/6) but none are exercised by the section-7 compatibility target
+and none are prerequisites for (a)-(e).
