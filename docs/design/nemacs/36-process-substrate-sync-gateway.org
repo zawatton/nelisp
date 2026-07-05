@@ -1,0 +1,47 @@
+#+TITLE: nelisp-emacs Doc 36 -- Process substrate sync gateway
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 25 library consumer contract
+
+* 0. Purpose
+
+This note records the process substrate inventory for the nemacs-next
+Tramp/Magit prerequisite and the synchronous gateway shipped from this pass.
+
+* 1. Inventory
+
+| Layer | Current capability | Evidence |
+|-------+--------------------+----------|
+| Library process facade | =emacs-process.el= owns the reusable process API and delegates host Emacs to captured native subrs, standalone to registered primitives or =nelisp-process= facades. | =src/emacs-process.el:72=, =src/emacs-process.el:83=, =src/emacs-process.el:356= |
+| Synchronous call-process | Standalone can run a real child through =nelisp-process-start=, wait, drain output, and insert/write it according to the supported DESTINATION forms. | =src/emacs-process.el:390=, =src/emacs-process.el:407=, =src/emacs-process.el:443=, =src/emacs-process.el:498=, =src/emacs-process.el:528= |
+| process-file | Local =process-file= now performs file-name-handler dispatch first, then calls the local =call-process= substrate. | =src/emacs-process.el:561=, =src/emacs-process.el:580=, =src/emacs-process.el:597= |
+| Unprefixed bridge | =emacs-process-builtins.el= installs process shims in standalone mode and preserves host-native process functions under host Emacs. | =src/emacs-process-builtins.el:38=, =src/emacs-process-builtins.el:45=, =src/emacs-process-builtins.el:51= |
+| Pipe/eventloop substrate | =emacs-pipe-process.el= registers read fds so =accept-process-output= can fire filters for non-socket pipes; the binary verify writes to a pipe and polls it. | =src/emacs-pipe-process.el:29=, =src/emacs-pipe-process.el:42=, =test/emacs-pipe-process-binary-verify.el:38= |
+| PTY substrate | =emacs-pty-ffi.el= opens =/dev/ptmx= and can spawn through the PTY helper; current binary verify proves PTY open and byte round trip, not a full shell process. | =src/emacs-pty-ffi.el:42=, =src/emacs-pty-ffi.el:76=, =src/emacs-pty-ffi.el:98=, =test/emacs-pty-ffi-binary-verify.el:92= |
+| Reader process primitives | The reader has real process smokes for =nelisp-process-call-process= exit status and =nelisp-process-start= + =nelisp-process-wait= + =nelisp-process-read-output= capture. | =/home/madblack-21/Cowork/Notes/dev/nelisp/Makefile:435=, =/home/madblack-21/Cowork/Notes/dev/nelisp/Makefile:442= |
+| Reader FFI/syscall base | The reader exposes =nl-ffi-call= smokes and delegates host-shaped process names in its eval allowlist, but native =nelisp-process-start= remains output-oriented. | =/home/madblack-21/Cowork/Notes/dev/nelisp/Makefile:338=, =/home/madblack-21/Cowork/Notes/dev/nelisp/src/nelisp-eval.el:747=, =scripts/nemacs-runtime-process-preload.el:22= |
+| Runtime preload bidi async | =scripts/nemacs-runtime-process-preload.el= contains a pure-Elisp fork/pipe/execve bidi layer and a standalone smoke for live =process-send-string=, filter, and sentinel behavior. This is runtime-preload proof, not yet the small package-source async API. | =scripts/nemacs-runtime-process-preload.el:20=, =scripts/nemacs-runtime-process-preload.el:30=, =test/nemacs-process-bidi-smoke.el:45=, =test/nemacs-process-bidi-smoke.el:82= |
+
+* 2. Vendor Contract
+
+| Consumer | Minimum process need | Current status |
+|----------+----------------------+----------------|
+| Magit core | Synchronous =call-process= and =process-file= with stdout capture, buffer destinations, file-name-handler hook point, and numeric exit status. | Shipped for local paths. =proc-smoke= proves =echo=, =false=, buffer destination, and =git --version=. |
+| Tramp local/remote dispatch | =process-file= must call file-name handlers before local execution so Tramp can own remote process execution later. | Hook point shipped; remote handler implementation remains Tramp-side/future integration. |
+| Tramp connections and Magit async jobs | Async =make-process= / =start-process= with live stdin, output filters, process buffers, sentinels, and status transitions. | Stopped at source-package follow-up. The runtime preload has a bidi proof; the reader-native primitive requirement is a child-stdin write primitive or adoption of the preload's fork/pipe/execve layer into reusable source. |
+
+* 3. Fidelity Table
+
+| API | Fidelity now | Gap |
+|-----+--------------+-----|
+| =call-process= | Real spawn on standalone through reader process primitives; captures output into current buffer, named buffer, buffer object, or =(:file FILE)=; returns exit code. | Separate stderr routing in =(REAL-BUFFER STDERR-FILE)= is not implemented because the current reader capture pipe is merged. DISPLAY is ignored. Large streaming output still depends on the reader buffer capacity. |
+| =process-file= | Local case delegates to =call-process= after handler dispatch. | Remote handlers are not implemented here; Tramp will supply them. |
+| =shell-command-to-string= | Already routes through =call-process= when host helper is absent. | Same stderr/coding limits as =call-process=. |
+| =make-process= / =start-process= | Existing source path can start output-oriented native reader processes and fire filters/sentinels during =accept-process-output=. Runtime preload has a stronger bidi smoke. | Package-source async still lacks a reusable stdin write path for native reader objects. |
+
+* 4. Verification
+
+- =make proc-smoke=
+- =emacs --batch --eval '(setq load-prefer-newer t)' -L src -L test -l test/emacs-process-builtins-test.el -f ert-run-tests-batch-and-exit=
+- =make test-fast=
+- =make nemacs-library-contract nemacs-library-consumer-smoke=
+- =make nemacs-public-api-inventory nemacs-library-package-api nemacs-library-package-catalog nemacs-library-api-promotion-queue nemacs-library-package-verify=
+- =make nemacs-library-package-scaffold nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke=

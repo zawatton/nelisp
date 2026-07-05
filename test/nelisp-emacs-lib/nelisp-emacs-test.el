@@ -416,6 +416,7 @@
   '(emacs-process-delegate
     emacs-process-call-process
     emacs-process-call-process-region
+    emacs-process-process-file
     emacs-process-start-process
     emacs-process-make-process
     emacs-process-processp
