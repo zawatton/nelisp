@@ -2366,6 +2366,12 @@ MVP: each char of the string accumulator becomes one element."
       (setq i (+ i 1)))
     v))
 
+(defun emacs-command-loop-recent-keys (&optional _include-cmds)
+  "Return recent command input as a vector.
+The standalone substrate does not keep a lossage ring yet, so this returns
+the current command key accumulator in the same vector shape."
+  (emacs-command-loop-this-command-keys-vector))
+
 ;;;; --- command bookkeeping -------------------------------------------
 
 (defun emacs-command-loop-set-this-command (cmd)

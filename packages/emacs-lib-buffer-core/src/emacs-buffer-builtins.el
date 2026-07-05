@@ -48,6 +48,10 @@
 
 (require 'nelisp-emacs-compat)
 
+(unless (boundp 'text-property-default-nonsticky)
+  (defvar text-property-default-nonsticky nil
+    "Default non-sticky text properties for inserted text."))
+
 (defun emacs-buffer-builtins--standalone-p ()
   "Non-nil on a standalone NeLisp reader (nemacs).
 nemacs binds the variable `emacs-version' for vendor compatibility, so a
@@ -126,6 +130,27 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
     (dolist (--cell-- --aliases--)
       (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
         (unless (fboundp --name--)
+          (defalias --name-- --target--))))))
+
+(require 'emacs-buffer)
+
+(let ((--local-aliases--
+       '((make-local-variable       . emacs-buffer-make-local-variable)
+         (buffer-local-variables    . emacs-buffer-buffer-local-variables)
+         (buffer-local-value        . emacs-buffer-buffer-local-value)
+         (local-variable-p          . emacs-buffer-local-variable-p)
+         (default-value             . emacs-buffer-default-value)
+         (default-boundp            . emacs-buffer-default-boundp)
+         (set-default               . emacs-buffer-set-default)
+         (kill-local-variable       . emacs-buffer-kill-local-variable)
+         (kill-all-local-variables  . emacs-buffer-kill-all-local-variables))))
+  (if (emacs-buffer-builtins--standalone-p)
+      (dolist (--cell-- --local-aliases--)
+        (fset (car --cell--) (cdr --cell--)))
+    (dolist (--cell-- --local-aliases--)
+      (let ((--name-- (car --cell--))
+            (--target-- (cdr --cell--)))
+        (when (emacs-buffer-builtins--install-function-p --name--)
           (defalias --name-- --target--))))))
 
 (defun emacs-buffer-builtins-buffer-narrowed-p ()

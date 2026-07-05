@@ -22,7 +22,7 @@
 ;;   - Functions: read-event / read-char / read-command /
 ;;     this-command-keys / this-command-keys-vector /
 ;;     this-single-command-keys / this-single-command-raw-keys /
-;;     clear-this-command-keys
+;;     clear-this-command-keys / recent-keys
 ;;
 ;;   - Variables: this-command / last-command / real-this-command /
 ;;     last-command-event / last-input-event / last-nonmenu-event /
@@ -99,6 +99,9 @@ an `emacs-stub-bulk' placeholder."
 (when (emacs-command-loop-builtins--install-function-p 'clear-this-command-keys)
   (defalias 'clear-this-command-keys
     #'emacs-command-loop-clear-this-command-keys))
+
+(when (emacs-command-loop-builtins--install-function-p 'recent-keys)
+  (defalias 'recent-keys #'emacs-command-loop-recent-keys))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-key-sequence)
   (defalias 'read-key-sequence

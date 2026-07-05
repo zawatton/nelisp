@@ -52,7 +52,8 @@
                  insert-and-inherit char-before char-after following-char
                  preceding-char subst-char-in-region
                  buffer-modified-tick buffer-chars-modified-tick))
-    (should (fboundp sym))))
+    (should (fboundp sym)))
+  (should (boundp 'text-property-default-nonsticky)))
 
 (ert-deftest emacs-buffer-builtins-test/default-and-char-property-bridges-in-source ()
   (let* ((file (locate-library "emacs-buffer-builtins"))
@@ -63,9 +64,10 @@
     (should (and file (file-exists-p file)))
     (with-temp-buffer
       (insert-file-contents file)
-      (dolist (needle '("(defalias 'default-value #'emacs-buffer-default-value"
-                        "(defalias 'default-boundp #'emacs-buffer-default-boundp"
-                        "(defalias 'set-default #'emacs-buffer-set-default"
+      (dolist (needle '("(default-value             . emacs-buffer-default-value)"
+                        "(default-boundp            . emacs-buffer-default-boundp)"
+                        "(set-default               . emacs-buffer-set-default)"
+                        "(buffer-local-value        . emacs-buffer-buffer-local-value)"
                         "(defun get-char-property"
                         "(defalias 'text-properties-at"
                         "emacs-buffer-text-property-at"
@@ -90,6 +92,19 @@
                         "(defalias 'buffer-chars-modified-tick"))
         (goto-char (point-min))
         (should (search-forward needle nil t))))))
+
+(ert-deftest emacs-buffer-builtins-test/buffer-local-value-falls-back-to-global ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer " *blv*"))
+          (sym (make-symbol "emacs-buffer-builtins-test-local")))
+      (unwind-protect
+          (progn
+            (set sym '(visible-global))
+            (should (equal '(visible-global)
+                           (emacs-buffer-buffer-local-value sym buf))))
+        (when (boundp sym)
+          (makunbound sym))
+        (nelisp-ec-kill-buffer buf)))))
 
 (ert-deftest emacs-buffer-builtins-test/text-properties-at-bridge-uses-substrate ()
   (emacs-buffer-builtins-test--with-fresh-world

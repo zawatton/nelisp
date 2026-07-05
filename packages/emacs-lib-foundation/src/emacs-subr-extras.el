@@ -79,11 +79,77 @@ return nil."
 
 (unless (fboundp 'member-ignore-case)
   (defun member-ignore-case (elt list)
-    "Like `member', but case-insensitive on string elements."
+    "Like `member', but case-insensitive on string elements.
+Non-string elements in LIST are ignored, matching `subr.el'."
     (while (and list
-                (not (eq t (compare-strings elt 0 nil (car list) 0 nil t))))
+                (not (and (stringp (car list))
+                          (string-equal-ignore-case elt (car list)))))
       (setq list (cdr list)))
     list))
+
+(unless (fboundp 'md5)
+  (defun md5 (object &optional start end _coding-system _noerror)
+    "Return a stable 32-character hexadecimal digest for OBJECT.
+This standalone fallback is non-cryptographic; it provides the Emacs `md5'
+shape needed by cache and equality callers when no primitive is present."
+    (let* ((string (cond
+                    ((stringp object) object)
+                    ((and (fboundp 'bufferp) (bufferp object))
+                     (with-current-buffer object (buffer-string)))
+                    (t (prin1-to-string object))))
+           (from (or start 0))
+           (to (or end (length string)))
+           (h1 2166136261)
+           (h2 2166136261)
+           (h3 2166136261)
+           (h4 2166136261)
+           (i from))
+      (while (< i to)
+        (let ((c (aref string i)))
+          (setq h1 (logand (* (logxor h1 c) 16777619) #xffffffff))
+          (setq h2 (logand (* (logxor h2 (+ c i)) 16777619) #xffffffff))
+          (setq h3 (logand (* (logxor h3 (+ c h1)) 16777619) #xffffffff))
+          (setq h4 (logand (* (logxor h4 (+ c h2)) 16777619) #xffffffff)))
+        (setq i (1+ i)))
+      (format "%08x%08x%08x%08x" h1 h2 h3 h4))))
+
+(unless (fboundp 'user-uid)
+  (defun user-uid ()
+    "Return the standalone user's numeric uid."
+    1000))
+
+(unless (fboundp 'user-real-uid)
+  (defun user-real-uid ()
+    "Return the standalone user's real numeric uid."
+    (user-uid)))
+
+(unless (fboundp 'group-gid)
+  (defun group-gid ()
+    "Return the standalone user's numeric gid."
+    1000))
+
+(when (or (not (fboundp 'user-login-name))
+          (get 'user-login-name 'emacs-stub-bulk))
+  (defun user-login-name (&optional _uid)
+    "Return the current login name for standalone consumers."
+    (or (and (fboundp 'getenv)
+             (or (getenv "LOGNAME") (getenv "USER")))
+        "standalone"))
+  (put 'user-login-name 'emacs-stub-bulk nil))
+
+(unless (fboundp 'user-real-login-name)
+  (defun user-real-login-name ()
+    "Return the current real login name for standalone consumers."
+    (user-login-name)))
+
+(when (or (not (fboundp 'user-full-name))
+          (eq (symbol-function 'user-full-name) 'nelisp--unbound-marker))
+  (defun user-full-name (&optional _uid)
+    "Return the current full user name for standalone consumers."
+    (or (and (boundp 'user-full-name)
+             (stringp (symbol-value 'user-full-name))
+             (symbol-value 'user-full-name))
+        (user-login-name))))
 
 ;; ---- length comparison primitives (Emacs 29+ C builtins) ----
 ;; Vendor packages (and modern subr-x users) call `length<' / `length=' /

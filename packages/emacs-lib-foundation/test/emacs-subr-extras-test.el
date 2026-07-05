@@ -68,6 +68,31 @@
 (ert-deftest emacs-subr-extras-member-ignore-case-missing ()
   (should (null (member-ignore-case "qux" '("foo" "bar")))))
 
+(ert-deftest emacs-subr-extras-member-ignore-case-skips-non-strings ()
+  (let ((tail (member-ignore-case "bar" '(foo ("nope") "BAR" baz))))
+    (should (equal tail '("BAR" baz)))))
+
+;;;; md5
+
+(ert-deftest emacs-subr-extras-md5-fallback-shape ()
+  (let ((a (md5 "abc"))
+        (b (md5 "abd")))
+    (should (stringp a))
+    (should (= (length a) 32))
+    (should (string-match-p "\\`[0-9a-f]+\\'" a))
+    (should (equal a (md5 "abc")))
+    (should-not (equal a b))))
+
+;;;; user identity
+
+(ert-deftest emacs-subr-extras-user-identity-shape ()
+  (should (integerp (user-uid)))
+  (should (integerp (user-real-uid)))
+  (should (integerp (group-gid)))
+  (should (stringp (user-login-name)))
+  (should (stringp (user-real-login-name)))
+  (should (stringp (user-full-name))))
+
 ;;;; four-level cdr/car (spot-check 4 of 15 — full coverage in cl-lib's defaliases)
 
 (ert-deftest emacs-subr-extras-caaaar ()
