@@ -22,9 +22,14 @@ printf 'abc' > "$diff_file"
   printf 'abc'
   printf '\033[D'
   printf '\177'
-  printf '\030\023'
+  printf '\033`'
+  printf '\033[C\033[C\033[C\033[C'
+  printf '\r'
+  printf '\033[D\033[D\033[D'
+  printf '\r'
+  printf '\007'
   printf '\030\003'
-} | NEMACS_NEXT_TUI_DRAW=never timeout 90s \
+} | NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
     "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$out" 2>&1
 
 if [ "$(cat "$tmp_file")" != "ac" ]; then
@@ -42,6 +47,20 @@ fi
 if ! grep -q "Wrote $tmp_file" "$out"; then
   cat "$out" >&2
   echo "nemacs-next-tui-smoke: save echo was not rendered" >&2
+  exit 1
+fi
+
+for label in 'New File' 'Open' 'Dired' 'Close' 'Save' 'Undo' 'Cut' 'Copy' 'Paste' 'Search'; do
+  if ! grep -q "$label" "$out"; then
+    cat "$out" >&2
+    echo "nemacs-next-tui-smoke: toolbar line did not include default label: $label" >&2
+    exit 1
+  fi
+done
+
+if ! grep -q 'Find file:' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-tui-smoke: toolbar Open did not show find-file prompt" >&2
   exit 1
 fi
 

@@ -185,7 +185,8 @@ editor semantics into GUI code:
 | =input= | accepts frontend-decoded keyboard text, Enter, Backspace, or IME commit text and delegates mutation to existing session commands; terminal frontends must send complete UTF-8 text units, not partial bytes |
 | =clipboard= | with a string payload, treats the payload as committed paste input; without payload, returns a clipboard read =request= |
 | =clipboard-read= / =clipboard-write= | return frontend OS-integration =request= payloads |
-| =menu= / =toolbar= | return a =menu= payload whose items name protocol commands such as =find-file= and =save-buffer= |
+| =menu= / =toolbar= | return a =menu= payload whose items name protocol commands and whose =:default-toolbar= carries the vendor default toolbar inventory |
+| =toolbar-invoke= | invokes a default toolbar item by =:id=, using the same session command semantics as direct protocol commands |
 
 The frame payload is intentionally character-cell based for V0:
 
@@ -238,6 +239,33 @@ to shared command/file/minibuffer APIs.
 Menus and toolbar entries deliberately carry command names and arguments
 for the protocol path.  Frontends should call those commands instead of
 copying file, buffer, undo, or minibuffer behavior locally.
+
+The default toolbar inventory is taken from
+=vendor/emacs-lisp/tool-bar.el=, =tool-bar-setup=, in this exact order:
+
+| id | icon | command | enabled in V0 | fidelity |
+|----+------+---------+---------------+----------|
+| =toolbar.new-file= | =new= | =find-file= | t | file prompt; creates a new visited buffer for a new path |
+| =toolbar.open-file= | =open= | =find-file= (=menu-find-file-existing= in vendor) | t | file prompt on the existing file command path |
+| =toolbar.dired= | =diropen= | =dired= | t | directory-listing buffer v1, not full Dired |
+| =toolbar.kill-buffer= | =close= | =kill-buffer= (=kill-this-buffer= in vendor) | current buffer | current-buffer kill |
+| =toolbar.save-buffer= | =save= | =save-buffer= | current buffer | real reusable file-I/O save |
+| =separator-1= | separator | n/a | n/a | separator |
+| =toolbar.undo= | =undo= | =undo= | current buffer | one edit-group undo |
+| =separator-2= | separator | n/a | n/a | separator |
+| =toolbar.cut= | =cut= | =kill-region= | region args supplied | requires =:start= and =:end= in V0 |
+| =toolbar.copy= | =copy= | =copy-region-as-kill= | region args supplied | requires =:start= and =:end= in V0 |
+| =toolbar.paste= | =paste= | =yank= | kill ring non-empty | real session kill-ring yank |
+| =separator-3= | separator | n/a | n/a | separator |
+| =toolbar.search= | =search= | =isearch-forward= | current buffer | search-prompt v1: literal next-match move, no incremental overlay |
+
+Invoking =toolbar.new-file= or =toolbar.open-file= without =:path=
+returns a =minibuffer= prompt with =:purpose file=.  Invoking
+=toolbar.dired= without =:directory= returns =:purpose directory=.
+Invoking =toolbar.search= without =:query= returns =:purpose search=.
+Supplying the argument executes the mapped command.  Cut/copy require
+explicit region endpoints because protocol V0 has no independent GUI
+selection state.
 
 * M5 Package Smoke
 
