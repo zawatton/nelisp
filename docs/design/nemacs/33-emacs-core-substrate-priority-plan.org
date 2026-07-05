@@ -12527,3 +12527,76 @@ path:
    =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
    =NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture/target/nelisp=;
    it completed =status=done=, exit 0, elapsed 603.19 s.
+
+232. Substrate gap-fill round 5 batch pre-port for in-buffer Org
+   activation, 2026-07-05.  Reader provenance was verified before image
+   work: branch =integ/org-agenda-daily= entered the round at
+   =536766b1=, and the operator-guaranteed reader clone
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= was at
+   =7aa3ed8b= with the existing =target/nelisp= used without rebuilding.
+
+   The required static pre-port sweep added 58 standard Org/outline text
+   and editing variables in the textmodes owner, with faithful default
+   values and buffer-local registration where Emacs makes the variable
+   buffer-local by default.  The swept symbols were: =tab-width=,
+   =fill-column=, =indent-tabs-mode=, =left-margin=, =fill-prefix=,
+   =truncate-lines=, =word-wrap=, =case-fold-search=,
+   =selective-display=, =cursor-type=, =align-mode-rules-list=,
+   =calc-embedded-open-mode=, =buffer-face-mode-face=, the
+   =pcomplete-*= activation hooks, auto-fill/fill/paragraph/sentence/page
+   defaults, adaptive-fill defaults, and comment setup variables from
+   =comment-use-syntax= through =comment-line-break-function=.  Focused
+   host ERT =test/emacs-textmodes-stub-test.el= passed 14/14, including
+   =emacs-textmodes-test/org-activation-standard-vars-defaults=.  This
+   batch landed as =9300ec0f=.
+
+   Fresh runtime-image probing first stopped before Org activation with
+   stderr =nelisp: uncaught error: void-variable:
+   (nemacs-runtime-image-preload--script-directory)=.  The runtime image
+   preload script used constants in a way that the standalone reader did
+   not replay safely, so the script-directory variables were changed to
+   source-v1-safe =setq= setup and guarded fallback lookup.  Host load of
+   =scripts/nemacs-runtime-image-preload.el= then printed
+   =preload-load-ok=, and forced rebuilds of =build/nemacs-runtime.nlri=
+   and =build/nemacs-vendor-core-runtime.nlri= completed successfully.
+   This fix landed as =b7606319=.
+
+   After the preload fix, the direct fresh image activation probe
+   =(with-temp-buffer (org-mode) (nl-write-file "/tmp/om.txt"
+   (symbol-name major-mode)))= against
+   =build/nemacs-vendor-core-runtime.nlri= failed with stderr
+   =nelisp: uncaught error: void-function: (org-mode)=, showing that this
+   image does not preload the full vendor Org activation path.  Extending
+   the image with =(require 'org)= produced an image, but executing forms
+   against that extended image and requiring Org directly against the
+   vendor-core image both failed with stderr =nelisp: uncaught error:
+   error: (org)=.
+
+   The full vendor 68-file Org replay harness was then used for the
+   activation path.  A side-effect proof file attempted to write
+   =org-mode= into =/tmp/om.txt= after =(with-temp-buffer (org-mode)
+   ...)=.  The replay reached =proof:start= but the reader process
+   segfaulted: exit 11, timed-out=nil, elapsed 595.75 s, terminal output
+   =Process vendor-repl-standalone segmentation fault=.  =/tmp/om.txt=
+   existed but was empty; the byte-dump check printed =om= and no bytes.
+   The success condition was therefore not met, and the requested
+   =org-element-parse-buffer= parse probe was not run.
+
+   The preserved 68-file Org-chain gate was run once with
+   =make diagnose-vendor-repl-replay-fast=,
+   =VENDOR_FAST_FILES= from =tmp-diag/org-chain-68-files-item222.txt=,
+   =VENDOR_FAST_PROOF_FORM_FILE=tmp-diag/proof-item225-org-chain-plus-backquote.el=,
+   =VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+   =NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture/target/nelisp=;
+   it completed =status=done=, exit 0, elapsed 658.32 s.
+
+   Final verification: =make test-fast= ran 1078 tests with 1072 expected
+   results and the same 6 known unexpected failures only:
+   =emacs-redisplay-test-mode-line-full-width-inverse=,
+   =emacs-redisplay-test-redisplay-truncates-long-line=,
+   =emacs-redisplay-test-redisplay-window-narrow-region=,
+   =emacs-redisplay-test/core-initial-paint-produces-output=,
+   =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=.
