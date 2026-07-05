@@ -240,7 +240,7 @@ a separate numbered increment ladder of its own.
 | 2026-07-04 | M2 Editing loop (newline, undo, kill/yank slice) | done | =newline=, =undo=, =kill-region=, =kill-line=, =yank= session commands wired to already-shipped Track E/E.2 substrate (=emacs-undo-*=, =emacs-edit-*-direct=); structured =empty-kill-ring=, =bad-command=, =no-further-undo-information= errors instead of uncaught signals or silent no-ops |
 | 2026-07-05 | M3 Minibuffer/file loop | done | =find-file=, =save-buffer=, =switch-to-buffer=, =kill-buffer= session commands; =complete=/=completion= minibuffer candidate payload; =open= delegates to =find-file=; all app smokes cover file/buffer/completion loop plus one standalone org-mode + =org-element-parse-buffer= assertion |
 | 2026-07-05 | M4 Modern GUI shell | done | =hello= advertises GUI-shell capabilities; =frame-snapshot= / =render-frame-text= expose buffer viewport + modeline; =resize= / =input= / IME commit produce frame =delta= payloads; =menu= / =toolbar= items route to protocol commands; clipboard read/write produce frontend =request= payloads; =scripts/m4-gui-shell-smoke.sh= renders one frame to plain text |
-| -- | M5 Package smoke | open | not yet implemented |
+| 2026-07-05 | M5 Package smoke | done | =fixtures/m5-package/nemacs-next-m5-fixture.el= + =nemacs-next-m5-fixture-extra.el= load as pure-Elisp package fixtures; =scripts/package-smoke.sh= verifies mode activation, keymap lookup, hook execution, face/text-property state, buffer edit, companion feature load, and tracked package-compat debt |
 
 The 2026-07-04 movement/delete increment was picked because M0 and M1
 were already complete and M2 (Section 7) was the first milestone with
@@ -340,4 +340,34 @@ hardware clipboard/IME implementation.  Those remain frontend-owned
 surfaces for the next GUI integration slice; M5 in Section 7 remains the
 package-smoke milestone.
 
-Remaining after M4: M5 package smoke.
+M5 (Section 7) is now complete.  The exact scope was: load selected pure
+Elisp package fixtures; verify mode activation, keymaps, hooks, faces, and
+buffer edits; track unsupported APIs as package-compat debt.  The
+implementation adds an app-local package fixture pair under
+=apps/nemacs-next/fixtures/m5-package/= and the M5-specific
+=scripts/package-smoke.sh= gate.  The host half of the smoke is the full
+surface assertion: it requires both fixture features, creates a reusable
+session buffer, activates =nemacs-next-m5-fixture-mode=, verifies the
+local keymap binding, runs the fixture command, checks hook count,
+registered face foreground, face text property, final buffer text, companion
+feature load, and package-compat debt rows for =byte-compile-file= and
+=autoload-cookie-generation=.  The standalone half uses the existing
+bootstrap REPL pattern as a lighter fixture load/debt sanity check; the
+existing session and process smokes remain the reader/session protocol
+coverage.
+
+The Section 7 ladder M0-M5 is now done.
+
+Remaining for a daily-drivable editor after the ladder:
+
+- A real frontend loop that a human can keep open, such as a terminal or
+  native window loop that feeds key events into protocol =input= messages
+  and redraws frame snapshots after each command.
+- Real OS clipboard/IME/window integration behind the M4 request and input
+  protocol shapes.
+- Command/keymap breadth beyond the M2/M3 subset: practical open, edit,
+  search, help, eval, dired/org/project, save, quit, and error recovery
+  workflows driven by normal keys rather than scripted smoke forms.
+- Package compatibility beyond the M5 fixture: byte/native compilation,
+  autoload generation, package metadata/install flow, and real third-party
+  package fixtures.
