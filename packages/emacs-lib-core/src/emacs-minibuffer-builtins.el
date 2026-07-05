@@ -95,6 +95,15 @@
 (when (emacs-minibuffer-builtins--install-function-p 'completing-read)
   (defalias 'completing-read #'emacs-minibuffer-completing-read))
 
+(when (emacs-minibuffer-builtins--install-function-p 'try-completion)
+  (defalias 'try-completion #'emacs-minibuffer-try-completion))
+
+(when (emacs-minibuffer-builtins--install-function-p 'all-completions)
+  (defalias 'all-completions #'emacs-minibuffer-all-completions))
+
+(when (emacs-minibuffer-builtins--install-function-p 'test-completion)
+  (defalias 'test-completion #'emacs-minibuffer-test-completion))
+
 ;;;; --- minibuffer state / control --------------------------------------
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibufferp)

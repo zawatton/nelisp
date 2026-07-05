@@ -12601,6 +12601,82 @@ path:
    =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
    with =void-function Info-find-file=.
 
+235. Org activation nadvice dependency gap-fill round 7, 2026-07-05.
+   Repository provenance was verified at =4e1a9b42= on
+   =integ/org-agenda-daily=.  The reader clone
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= was verified
+   at =41a7b17e= and was not rebuilt.
+
+   Strategy decision: rejected adding raw vendor =nadvice.el= to the
+   bootstrap/org chain for this round.  A small-chain replay with
+   =nadvice.el= prepended loaded all files but failed the proof with
+   =void-function advice--make-how-alist=.  An isolated =nadvice.el=
+   proof failed the same way.  The root cause is that the standalone
+   source normalizer drops top-level =eval-when-compile= bodies, while
+   vendor =nadvice.el= defines helper macro =advice--make-how-alist=
+   there.  The landed strategy was therefore targeted substrate support
+   for the advice/add-function pieces Org activation exercises.
+
+   Implementation: =src/emacs-stub.el= now provides =advice--p=,
+   symbol/value =add-function= and =remove-function= helpers, and advice
+   execution for =:filter-args= and =:filter-return= in addition to the
+   existing before/after/around/override subset.  Standalone
+   =(local 'SYMBOL)= advice is accepted as an activation no-op to avoid
+   dumping large vendor-local closures into the cold image.  The
+   minibuffer bridge now installs unprefixed =try-completion=,
+   =all-completions=, and =test-completion=, and =dnd-protocol-alist= is
+   defaulted for Org's DND setup path.  =emacs-mode-define-derived-mode=
+   now reasserts the child mode before running hooks so incomplete
+   buffer-local paths inside large vendor mode bodies cannot leave hooks
+   or callers seeing a corrupted =major-mode=.
+
+   Fresh cold-image e2e used the verified reader binary and this
+   worktree's regenerated =build/nemacs-bootstrap.repl=:
+   =/tmp/cold-image-org-e2e.EAQ5p0/org-run1.img=, exit 0,
+   =RESULT: IDENTICAL=, replay/cold probe =(t t t t (interactive) t)=,
+   cold boot 838145 us, peak RSS 1328016 KB, image size 1358874872 B.
+
+   Activation blocker sequence:
+   - vendor =nadvice.el= strategy probe: load-ok but proof failed with
+     =void-function advice--make-how-alist=.
+   - first fresh image after advice support: activation reached
+     =void-function try-completion=.
+   - after minibuffer completion bridges: activation reached
+     =void-variable dnd-protocol-alist=.
+   - after =dnd-protocol-alist=: activation returned but wrote an empty
+     mode name because Org body-side substrate drift left =major-mode=
+     corrupted.
+   - after derived-mode child reassertion: exact activation succeeded.
+
+   Exact activation probe against
+   =/tmp/cold-image-org-e2e.EAQ5p0/org-run1.img=:
+   =(with-temp-buffer (org-mode) (nl-write-file "/tmp/om.txt"
+   (symbol-name major-mode)))=, =timeout 180=, rc 0, stdout =t=, stderr
+   empty, and =/tmp/om.txt= contained =org-mode=.
+
+   Requested parse probe against the same image:
+   =(with-temp-buffer (org-mode) (insert "* h") (nl-write-file
+   "/tmp/pb.txt" (format "%S" (org-element-parse-buffer))))=,
+   =timeout 330=, rc 0, stdout =nil=, =/tmp/pb.txt= empty, and stderr
+   verbatim:
+   =nelisp: uncaught error: nelisp-ec-no-current-buffer: nil=
+   =nelisp: uncaught error: nelisp-ec-no-current-buffer: nil=
+   =nelisp: uncaught error: void-variable: (v)=.
+
+   Focused ERTs: =test/emacs-mode-builtins-test.el= 20/20,
+   =test/emacs-stub-residuals-test.el=, =test/emacs-minibuffer-test.el=,
+   and =test/emacs-textmodes-stub-test.el= together passed 149/149.
+   Org 68-file replay gate ran once with =status=done=, exit 0, elapsed
+   582.6411039829254 seconds.  Final =make test-fast= ran 1079 tests
+   with the same six known unexpected failures only:
+   =emacs-redisplay-test-mode-line-full-width-inverse=,
+   =emacs-redisplay-test-redisplay-truncates-long-line=,
+   =emacs-redisplay-test-redisplay-window-narrow-region=,
+   =emacs-redisplay-test/core-initial-paint-produces-output=,
+   =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=.
+
 234. Org cold-image substrate gap-fill round 6, 2026-07-05.  Reader
    provenance was verified without rebuilding the capture clone:
    =git -C /home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture log

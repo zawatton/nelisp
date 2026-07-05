@@ -67,6 +67,11 @@ Unix-like systems do not need additional suffixes."))
 Standalone NeLisp starts with Emacs' C bootstrap sentinel so
 vendor simple.el can replace it with its Elisp dispatcher."))
 
+(unless (boundp 'dnd-protocol-alist)
+  (defvar dnd-protocol-alist nil
+    "Polyfill: drag-and-drop protocol handlers.
+Standalone has no GUI drag-and-drop source; Org/Dired may still append local
+handlers during mode activation."))
 
 (unless (boundp 'gc-cons-threshold)
   (defvar gc-cons-threshold 800000

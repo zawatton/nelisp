@@ -121,6 +121,16 @@
   (push 'body-a my-test-derived-sequence-events)
   (push 'body-b my-test-derived-sequence-events))
 
+(defvar my-test-derived-reassert-hook-mode nil
+  "Mode observed by the derived-mode reassertion regression hook.")
+
+(emacs-mode-define-derived-mode my-test-derived-reassert-mode
+  emacs-mode-text-mode
+  "MyDerivedReassert"
+  "Test-only mode proving body-side mode drift is corrected before hooks."
+  (setq major-mode 'wrong-mode)
+  (setq emacs-mode--current-major-mode 'wrong-mode))
+
 (ert-deftest emacs-mode-builtins-test/define-derived-mode-registers ()
   (emacs-mode-builtins-test--with-fresh-mode
     ;; Activate the test-defined derived mode.
@@ -161,6 +171,18 @@
       (should (eq 'my-test-derived-sequence-mode (emacs-mode-major-mode)))
       (should (equal '(hook body-b body-a)
                      my-test-derived-sequence-events)))))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-reasserts-before-hooks ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let ((my-test-derived-reassert-mode-hook
+           (list (lambda ()
+                   (setq my-test-derived-reassert-hook-mode major-mode)))))
+      (setq my-test-derived-reassert-hook-mode nil)
+      (my-test-derived-reassert-mode)
+      (should (eq 'my-test-derived-reassert-mode major-mode))
+      (should (eq 'my-test-derived-reassert-mode (emacs-mode-major-mode)))
+      (should (eq 'my-test-derived-reassert-mode
+                  my-test-derived-reassert-hook-mode)))))
 
 ;;;; G. run-mode-hooks
 
