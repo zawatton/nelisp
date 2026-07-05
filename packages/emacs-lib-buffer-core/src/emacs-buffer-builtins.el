@@ -725,21 +725,21 @@ required N parameter (= the same lambda-arity-mismatch that bit
 
 (when (emacs-buffer-builtins--install-function-p 'save-excursion)
   (defmacro save-excursion (&rest body)
-    "Phase 9 polyfill: forward to `nelisp-ec-save-excursion'."
+    "Phase 9 polyfill: expand to `nelisp-ec-save-excursion' semantics."
     (declare (indent 0) (debug (body)))
-    (cons 'nelisp-ec-save-excursion body)))
+    (nelisp-ec--save-excursion-form body)))
 
 (when (emacs-buffer-builtins--install-function-p 'save-restriction)
   (defmacro save-restriction (&rest body)
-    "Phase 9 polyfill: forward to `nelisp-ec-save-restriction'."
+    "Phase 9 polyfill: expand to `nelisp-ec-save-restriction' semantics."
     (declare (indent 0) (debug (body)))
-    (cons 'nelisp-ec-save-restriction body)))
+    (nelisp-ec--save-restriction-form body)))
 
 (when (emacs-buffer-builtins--install-function-p 'save-current-buffer)
   (defmacro save-current-buffer (&rest body)
-    "Phase 9 polyfill: forward to `nelisp-ec-save-current-buffer'."
+    "Phase 9 polyfill: expand to `nelisp-ec-save-current-buffer' semantics."
     (declare (indent 0) (debug (body)))
-    (cons 'nelisp-ec-save-current-buffer body)))
+    (nelisp-ec--save-current-buffer-form body)))
 
 ;;;; --- narrow / widen ---------------------------------------------------
 

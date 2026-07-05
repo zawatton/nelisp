@@ -479,6 +479,15 @@
         (should (= 2 (nelisp-ec-point-min)))
         (should (= 5 (nelisp-ec-point-max)))))))
 
+(ert-deftest emacs-buffer-builtins-test/save-restriction-restores-current-buffer ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((outer (nelisp-ec-generate-new-buffer "restrict-outer"))
+          (inner (nelisp-ec-generate-new-buffer "restrict-inner")))
+      (nelisp-ec-with-current-buffer outer
+        (nelisp-ec-save-restriction
+          (nelisp-ec-set-buffer inner))
+        (should (eq outer (nelisp-ec-current-buffer)))))))
+
 ;;;; H2. save-current-buffer
 
 (ert-deftest emacs-buffer-builtins-test/save-current-buffer-restores-selection ()
