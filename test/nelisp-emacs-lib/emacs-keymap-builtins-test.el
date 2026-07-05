@@ -263,6 +263,13 @@ P2 can verify the command-surface keymap behavior directly."
                           files-map
                           (vector (easy-menu-intern "one.org")))))))))
 
+(ert-deftest emacs-keymap-builtins-test/easy-menu-add-item-accepts-keymap-item ()
+  (let ((map (emacs-keymap-make-sparse-keymap))
+        (submenu (easy-menu-create-menu "Agenda" nil)))
+    (easy-menu-add-item map nil submenu)
+    (should (keymapp (nth 2 (emacs-keymap-lookup-key
+                             map (vector (easy-menu-intern "Agenda"))))))))
+
 ;;;; H. Idempotence
 
 (ert-deftest emacs-keymap-builtins-test/require-is-idempotent ()
