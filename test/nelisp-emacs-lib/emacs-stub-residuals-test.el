@@ -87,6 +87,8 @@
                   emacs-stub--run-hook
                   emacs-stub--advice-add emacs-stub--advice-remove
                   emacs-stub--advice-member-p
+                  emacs-stub--add-function-value
+                  emacs-stub--remove-function-value
                   emacs-stub--run-with-timer
                   emacs-stub--run-with-idle-timer
                   emacs-stub--cancel-timer
@@ -204,6 +206,39 @@ It was void on the reader, blocking `define-inline' / cl-generic users."
     (emacs-stub--advice-add target :after after)
     (should (equal '(around orig value) (funcall target 'value)))
     (should (equal '((after value) (before value)) seen))))
+
+(ert-deftest emacs-stub-residuals-test/advice-helpers-support-filters ()
+  (let ((target (make-symbol "emacs-stub-test--filter-target"))
+        (filter-args (make-symbol "emacs-stub-test--filter-args"))
+        (filter-return (make-symbol "emacs-stub-test--filter-return")))
+    (fset target (lambda (x) (concat x "-body")))
+    (fset filter-args (lambda (args) (list (concat (car args) "-args"))))
+    (fset filter-return (lambda (value) (concat value "-return")))
+    (emacs-stub--advice-add target :filter-args filter-args)
+    (emacs-stub--advice-add target :filter-return filter-return)
+    (should (equal "x-args-body-return" (funcall target "x")))))
+
+(ert-deftest emacs-stub-residuals-test/add-function-value-filter-return ()
+  "The standalone add-function substrate composes :filter-return advice."
+  (let* ((base (lambda (s) (concat s "-base")))
+         (filter (lambda (s) (concat s "-filtered")))
+         (wrapped (emacs-stub--add-function-value :filter-return base filter)))
+    (should (eq (get wrapped 'emacs-stub--advice-original) base))
+    (should (equal "x-base-filtered" (funcall wrapped "x")))
+    (setq wrapped (emacs-stub--remove-function-value wrapped filter))
+    (should (eq wrapped base))
+    (should (equal "x-base" (funcall wrapped "x")))))
+
+(ert-deftest emacs-stub-residuals-test/add-function-symbol-filter-return ()
+  "The standalone add-function substrate can update a function variable."
+  (let ((sym (make-symbol "emacs-stub-test--filter-var"))
+        (filter (lambda (s) (concat s ":filtered"))))
+    (set sym (lambda (beg end &optional delete)
+               (format "%s:%s:%s" beg end delete)))
+    (emacs-stub--add-function-symbol :filter-return sym filter nil nil)
+    (should (equal "1:2:nil:filtered" (funcall (symbol-value sym) 1 2 nil)))
+    (emacs-stub--remove-function-symbol sym filter nil)
+    (should (equal "1:2:nil" (funcall (symbol-value sym) 1 2 nil)))))
 
 (ert-deftest emacs-stub-residuals-test/timer-helpers-create-and-cancel ()
   (let ((timer-list nil)
