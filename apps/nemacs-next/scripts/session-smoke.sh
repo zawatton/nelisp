@@ -29,8 +29,12 @@ fi
 tmp=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.repl
 out=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.out
 marker=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.sentinel
-rm -f "$tmp" "$out" "$marker"
-trap 'rm -f "$tmp" "$out" "$marker"' EXIT
+m3_file=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.txt
+org_file=${TMPDIR:-/tmp}/nemacs-next-session-smoke.$$.org
+rm -f "$tmp" "$out" "$marker" "$m3_file" "$org_file"
+trap 'rm -f "$tmp" "$out" "$marker" "$m3_file" "$org_file"' EXIT
+printf 'seed' > "$m3_file"
+printf '* TODO Project\nBody\n** NEXT Child\n' > "$org_file"
 
 cat "$BOOTSTRAP_REPL" > "$tmp"
 cat >> "$tmp" <<EOF
@@ -100,6 +104,46 @@ cat >> "$tmp" <<EOF
 (setq nemacs-next-session-smoke-alive
       (nemacs-next-session-handle-message
        (quote (:type command :name snapshot))))
+(setq nemacs-next-session-smoke-find-file
+      (nemacs-next-session-handle-message
+       (quote (:type command :name find-file :path "$m3_file"))))
+(setq nemacs-next-session-smoke-file-append
+      (nemacs-next-session-handle-message
+       (quote (:type command :name insert-text :text "!"))))
+(setq nemacs-next-session-smoke-save
+      (nemacs-next-session-handle-message
+       (quote (:type command :name save-buffer))))
+(setq nemacs-next-session-smoke-buffer-complete
+      (nemacs-next-session-handle-message
+       (quote (:type command :name complete :purpose buffer
+               :input "nemacs-next-session-smoke."))))
+(setq nemacs-next-session-smoke-generic-complete
+      (nemacs-next-session-handle-message
+       (quote (:type command :name complete :input "fi"
+               :collection ("find-file" "save-buffer" "switch-to-buffer")))))
+(setq nemacs-next-session-smoke-switch
+      (nemacs-next-session-handle-message
+       (quote (:type command :name switch-to-buffer
+               :buffer-name "nemacs-next-session-smoke"))))
+(setq nemacs-next-session-smoke-kill-file
+      (nemacs-next-session-handle-message
+       (list :type (quote command) :name (quote kill-buffer)
+             :buffer-name
+             (plist-get nemacs-next-session-smoke-find-file :buffer-name))))
+(setq nemacs-next-session-smoke-missing-kill
+      (nemacs-next-session-handle-message
+       (quote (:type command :name kill-buffer
+               :buffer-name "missing-buffer"))))
+(setq nemacs-next-session-smoke-org-open
+      (nemacs-next-session-handle-message
+       (quote (:type command :name find-file :path "$org_file"))))
+(setq nemacs-next-session-smoke-org-parse-ok nil)
+(require (quote org))
+(when (and (fboundp (quote org-mode))
+           (fboundp (quote org-element-parse-buffer)))
+  (org-mode)
+  (setq nemacs-next-session-smoke-org-parse-ok
+        (if (org-element-parse-buffer) t nil)))
 (if (and (= nemacs-next-session-smoke-count 3)
          (not nemacs-next-session-smoke-missing)
          (fboundp (quote nemacs-next-session-plan))
@@ -147,6 +191,35 @@ cat >> "$tmp" <<EOF
          (eq (plist-get nemacs-next-session-smoke-undo-empty :code)
              (quote no-further-undo-information))
          (eq (plist-get nemacs-next-session-smoke-alive :type) (quote snapshot))
+         (eq (plist-get nemacs-next-session-smoke-find-file :type)
+             (quote snapshot))
+         (equal (plist-get nemacs-next-session-smoke-find-file :file-name)
+                "$m3_file")
+         (equal (plist-get nemacs-next-session-smoke-find-file :text) "seed")
+         (equal (plist-get nemacs-next-session-smoke-file-append :text)
+                "seed!")
+         (equal (plist-get nemacs-next-session-smoke-save :saved-file)
+                "$m3_file")
+         (equal (rdf "$m3_file") "seed!")
+         (eq (plist-get nemacs-next-session-smoke-buffer-complete :type)
+             (quote minibuffer))
+         (member (plist-get nemacs-next-session-smoke-find-file :buffer-name)
+                 (plist-get nemacs-next-session-smoke-buffer-complete
+                            :candidates))
+         (equal (plist-get nemacs-next-session-smoke-generic-complete
+                           :candidates)
+                (quote ("find-file")))
+         (equal (plist-get nemacs-next-session-smoke-switch :buffer-name)
+                "nemacs-next-session-smoke")
+         (eq (plist-get nemacs-next-session-smoke-kill-file :type)
+             (quote snapshot))
+         (eq (plist-get nemacs-next-session-smoke-missing-kill :type)
+             (quote error))
+         (eq (plist-get nemacs-next-session-smoke-missing-kill :code)
+             (quote no-such-buffer))
+         (eq (plist-get nemacs-next-session-smoke-org-open :type)
+             (quote snapshot))
+         nemacs-next-session-smoke-org-parse-ok
          (not (featurep (quote emacs-init)))
          (not (featurep (quote nemacs-main)))
          (not (featurep (quote nemacs-gtk-frontend)))
@@ -154,7 +227,7 @@ cat >> "$tmp" <<EOF
     (nl-write-file "$marker" "ok")
   (nl-write-file
    "$marker"
-   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S"
+   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S"
            nemacs-next-session-smoke-count
            nemacs-next-session-smoke-missing
            (fboundp (quote nemacs-next-session-plan))
@@ -177,12 +250,22 @@ cat >> "$tmp" <<EOF
            nemacs-next-session-smoke-yank-2
            nemacs-next-session-smoke-bad-kill
            nemacs-next-session-smoke-undo-empty
-           nemacs-next-session-smoke-alive)))
+           nemacs-next-session-smoke-alive
+           nemacs-next-session-smoke-find-file
+           nemacs-next-session-smoke-file-append
+           nemacs-next-session-smoke-save
+           nemacs-next-session-smoke-buffer-complete
+           nemacs-next-session-smoke-generic-complete
+           nemacs-next-session-smoke-switch
+           nemacs-next-session-smoke-kill-file
+           nemacs-next-session-smoke-missing-kill
+           nemacs-next-session-smoke-org-open
+           nemacs-next-session-smoke-org-parse-ok)))
 ,quit
 EOF
 
 set +e
-"$NELISP_BIN" --repl --no-prompt --no-print < "$tmp" > "$out" 2>&1
+timeout 120s "$NELISP_BIN" --repl --no-prompt --no-print < "$tmp" > "$out" 2>&1
 rc=$?
 set -e
 
