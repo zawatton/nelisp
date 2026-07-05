@@ -213,6 +213,50 @@ Menus and toolbar entries deliberately carry command names and arguments
 for the protocol path.  Frontends should call those commands instead of
 copying file, buffer, undo, or minibuffer behavior locally.
 
+* M5 Package Smoke
+
+M5 closes the Doc 31 Section 7 ladder with package-compatibility evidence,
+not a new user command.  The smoke loads selected pure-Elisp package
+fixtures from =apps/nemacs-next/fixtures/m5-package/=:
+
+| Fixture feature | Purpose |
+|-----------------+---------|
+| =nemacs-next-m5-fixture= | defines a package-shaped mode, mode hook, keymap, face, and edit command |
+| =nemacs-next-m5-fixture-extra= | companion feature proving multi-feature package loading |
+
+The fixture report uses the same protocol encoder on the host path and
+returns a diagnostic =package-smoke= payload:
+
+#+begin_src emacs-lisp
+(:type package-smoke
+ :milestone m5
+ :fixture "nemacs-next-m5-fixture"
+ :status "ok"
+ :mode nemacs-next-m5-fixture-mode
+ :mode-name "M5-Fixture"
+ :hook-count 1
+ :key-binding "nemacs-next-m5-fixture-insert-stamp"
+ :face-foreground "green"
+ :text-property nemacs-next-m5-fixture-face
+ :text "M5 fixture edit"
+ :companion-loaded t
+ :package-compat-debt ((:api "byte-compile-file" ...)
+                       (:api "autoload-cookie-generation" ...)))
+#+end_src
+
+The host half is the authoritative surface assertion for mode activation,
+local keymaps, hooks, faces, and buffer edits.  The standalone half uses
+the existing bootstrap REPL pattern as a lighter fixture load sanity check;
+the existing session/process smokes remain the reader/session command
+coverage for protocol V0.
+
+Current package-compat debt tracked by the fixture:
+
+| API | Status | Owner | Reason |
+|-----+--------+-------+--------|
+| =byte-compile-file= | unsupported | =package-compat= | M5 loads source fixtures only; byte/native compilation remains outside protocol V0. |
+| =autoload-cookie-generation= | unsupported | =package-compat= | M5 requires explicit fixture loading; package autoload generation is future package-compat work. |
+
 * Rule
 
 Protocol messages may carry editor state, but they must not move editor
