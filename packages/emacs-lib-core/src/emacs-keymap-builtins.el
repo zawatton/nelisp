@@ -47,6 +47,7 @@
 
 ;;; Code:
 
+(require 'emacs-list)
 (require 'emacs-keymap)
 
 (defun emacs-keymap-builtins--install-function-p (symbol)
@@ -261,74 +262,80 @@ text-property keymaps are already handled by `emacs-keymap-chain-at'."
   (defun easy-menu-convert-item (item)
     "Convert easymenu ITEM to a keymap binding cell.
 This ports the upstream keymap representation used by batch mode setup.
-Display-only popup effects are intentionally outside this substrate."
+Display-only popup effects are intentionally outside this substrate.
+
+The upstream cache returns the memoized cell directly because its menu
+builders do not mutate the returned binding tail.  This substrate feeds
+the result into local keymap mutation helpers, so return a deep copy of
+the memoized value and keep the cache as a template only."
     (let ((cached (gethash item easy-menu-converted-items-table)))
-      (or cached
-          (let* ((result
-                  (cond
-                   ((stringp item)
-                    (let ((key (easy-menu-intern item)))
-                      (cons key
-                            (if (string-match-p "\\`-+\\'" item)
-                                menu-bar-separator
-                              (list 'menu-item item nil :enable nil)))))
-                   ((and (vectorp item) (>= (length item) 2))
-                    (let* ((name (aref item 0))
-                           (command (aref item 1))
-                           (active (and (> (length item) 2) (aref item 2)))
-                           (props nil)
-                           (i 2))
-                      (while (< i (length item))
-                        (let ((key (aref item i)))
-                          (if (and (keywordp key) (< (1+ i) (length item)))
-                              (let ((value (aref item (1+ i))))
-                                (pcase key
-                                  ((or :active :enable)
-                                   (setq active value))
-                                  (:visible
-                                   (unless (easy-menu-always-true-p value)
-                                     (setq props (plist-put props :visible value))))
-                                  (:included
-                                   (unless (easy-menu-always-true-p value)
-                                     (setq props (plist-put props :visible value))))
-                                  (:help
-                                   (setq props (plist-put props :help value)))
-                                  (:keys
-                                   (setq props (plist-put props :keys value)))
-                                  (:key-sequence
-                                   (setq props (plist-put props :key-sequence value)))
-                                  (:style
-                                   (let ((button (cdr (assq value easy-menu-button-prefix))))
-                                     (when button
-                                       (setq props (plist-put props :button button)))))
-                                  (:selected
-                                   (let ((button (plist-get props :button)))
-                                     (when button
-                                       (setq props
-                                             (plist-put props :button
-                                                        (cons button value)))))))
-                                (setq i (+ i 2)))
-                            (setq i (1+ i)))))
-                      (when (and active (not (easy-menu-always-true-p active)))
-                        (setq props (plist-put props :enable active)))
-                      (cons (easy-menu-intern name)
-                            (append (list 'menu-item name command) props))))
-                   ((keymapp item)
-                    (let ((prompt (or (keymap-prompt item) "")))
-                      (cons (easy-menu-intern prompt)
-                            (list 'menu-item prompt item))))
-                   ((and (consp item) (stringp (car item))
-                         (keymapp (cdr item)))
-                    (cons (easy-menu-intern (car item))
-                          (list 'menu-item (car item) (cdr item))))
-                   ((and (consp item) (stringp (car item)))
-                    (let ((submenu (easy-menu-create-menu (car item) (cdr item))))
-                      (cons (easy-menu-intern (car item))
-                            (list 'menu-item (car item) submenu))))
-                   (t
-                    (error "Invalid menu item in easymenu")))))
-            (puthash item result easy-menu-converted-items-table)
-            result)))))
+      (copy-tree
+       (or cached
+           (let* ((result
+                   (cond
+                    ((stringp item)
+                     (let ((key (easy-menu-intern item)))
+                       (cons key
+                             (if (string-match-p "\\`-+\\'" item)
+                                 menu-bar-separator
+                               (list 'menu-item item nil :enable nil)))))
+                    ((and (vectorp item) (>= (length item) 2))
+                     (let* ((name (aref item 0))
+                            (command (aref item 1))
+                            (active (and (> (length item) 2) (aref item 2)))
+                            (props nil)
+                            (i 2))
+                       (while (< i (length item))
+                         (let ((key (aref item i)))
+                           (if (and (keywordp key) (< (1+ i) (length item)))
+                               (let ((value (aref item (1+ i))))
+                                 (pcase key
+                                   ((or :active :enable)
+                                    (setq active value))
+                                   (:visible
+                                    (unless (easy-menu-always-true-p value)
+                                      (setq props (plist-put props :visible value))))
+                                   (:included
+                                    (unless (easy-menu-always-true-p value)
+                                      (setq props (plist-put props :visible value))))
+                                   (:help
+                                    (setq props (plist-put props :help value)))
+                                   (:keys
+                                    (setq props (plist-put props :keys value)))
+                                   (:key-sequence
+                                    (setq props (plist-put props :key-sequence value)))
+                                   (:style
+                                    (let ((button (cdr (assq value easy-menu-button-prefix))))
+                                      (when button
+                                        (setq props (plist-put props :button button)))))
+                                   (:selected
+                                    (let ((button (plist-get props :button)))
+                                      (when button
+                                        (setq props
+                                              (plist-put props :button
+                                                         (cons button value)))))))
+                                 (setq i (+ i 2)))
+                             (setq i (1+ i)))))
+                       (when (and active (not (easy-menu-always-true-p active)))
+                         (setq props (plist-put props :enable active)))
+                       (cons (easy-menu-intern name)
+                             (append (list 'menu-item name command) props))))
+                    ((keymapp item)
+                     (let ((prompt (or (keymap-prompt item) "")))
+                       (cons (easy-menu-intern prompt)
+                             (list 'menu-item prompt item))))
+                    ((and (consp item) (stringp (car item))
+                          (keymapp (cdr item)))
+                     (cons (easy-menu-intern (car item))
+                           (list 'menu-item (car item) (cdr item))))
+                    ((and (consp item) (stringp (car item)))
+                     (let ((submenu (easy-menu-create-menu (car item) (cdr item))))
+                       (cons (easy-menu-intern (car item))
+                             (list 'menu-item (car item) submenu))))
+                    (t
+                     (error "Invalid menu item in easymenu")))))
+             (puthash item result easy-menu-converted-items-table)
+             result))))))
 
 (when (emacs-keymap-builtins--easy-menu-install-p 'easy-menu-create-menu)
   (defun easy-menu-create-menu (menu-name menu-items)
