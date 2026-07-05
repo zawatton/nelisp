@@ -65,6 +65,9 @@
 (declare-function nelisp-process-start "nelisp-process" (program &rest args))
 (declare-function nelisp-process-wait "nelisp-process" (proc))
 (declare-function nelisp-process-read-output "nelisp-process" (proc n))
+(declare-function nelisp-process-write "nelisp-process" (proc string))
+(declare-function nelisp-process-close-stdin "nelisp-process" (proc))
+(declare-function nelisp-process-poll "nelisp-process" (proc))
 (declare-function find-file-name-handler "files" (filename operation))
 
 ;;;; --- delegate plumbing ---------------------------------------------
@@ -236,6 +239,17 @@ re-load after a wrapper leak keeps the original subr capture.")
           (funcall sentinel process event))
         t))))
 
+(defun emacs-process--native-poll-event (process)
+  "Return native PROCESS poll event as (READY EXITED EXIT-CODE), or nil."
+  (when (fboundp 'nelisp-process-poll)
+    (let ((event (ignore-errors (nelisp-process-poll process))))
+      (cond
+       ((and (vectorp event) (>= (length event) 3))
+        (list (aref event 0) (aref event 1) (aref event 2)))
+       ((and (consp event) (consp (cdr event)) (consp (cddr event)))
+        event)
+       (t nil)))))
+
 (defun emacs-process--native-live-processes ()
   "Return known native processes not marked deleted."
   (let ((processes nil))
@@ -249,14 +263,27 @@ re-load after a wrapper leak keeps the original subr capture.")
   (let ((observed nil))
     (dolist (process processes)
       (when (emacs-process--native-process-p process)
-        (when (emacs-process--native-drain-output process)
-          (setq observed t))
-        (when (emacs-process--native-maybe-fire-sentinel process)
-          (setq observed t))))
+        (let* ((event (emacs-process--native-poll-event process))
+               (ready (and event (nth 0 event)))
+               (exited (and event (nth 1 event))))
+          (when (or (null event)
+                    (and (integerp ready) (not (= ready 0))))
+            (when (emacs-process--native-drain-output process)
+              (setq observed t)))
+          (when (or (and (integerp exited) (not (= exited 0)))
+                    (and (null event)
+                         (not (eq (emacs-process--native-status-symbol process)
+                                  'run))))
+            (when (emacs-process--native-drain-output process)
+              (setq observed t))
+            (when (emacs-process--native-maybe-fire-sentinel process)
+              (setq observed t))))))
     observed))
 
 (defun emacs-process--native-delete (process)
   "Delete native PROCESS and mark metadata deleted."
+  (when (fboundp 'nelisp-process-close-stdin)
+    (ignore-errors (nelisp-process-close-stdin process)))
   (when (fboundp 'nelisp-process-delete)
     (nelisp-process-delete process))
   (emacs-process--native-set-metadata process :deleted t)
@@ -812,15 +839,25 @@ top-level alias for parity with the Emacs API."
 
 (defun emacs-process-process-send-string (process string)
   "Send STRING to PROCESS's stdin."
-  (if (emacs-process--process-object-p process)
-      nil
-    (emacs-process--delegate 'process-send-string (list process string))))
+  (cond
+   ((emacs-process--fallback-process-p process) nil)
+   ((emacs-process--native-process-p process)
+    (when (fboundp 'nelisp-process-write)
+      (nelisp-process-write process string))
+    nil)
+   (t
+    (emacs-process--delegate 'process-send-string (list process string)))))
 
 (defun emacs-process-process-send-eof (&optional process)
   "Send EOF to PROCESS's stdin."
-  (if (emacs-process--process-object-p process)
-      nil
-    (emacs-process--delegate 'process-send-eof (list process))))
+  (cond
+   ((emacs-process--fallback-process-p process) nil)
+   ((emacs-process--native-process-p process)
+    (when (fboundp 'nelisp-process-close-stdin)
+      (nelisp-process-close-stdin process))
+    nil)
+   (t
+    (emacs-process--delegate 'process-send-eof (list process)))))
 
 (defun emacs-process-delete-process (process)
   "Kill PROCESS."
