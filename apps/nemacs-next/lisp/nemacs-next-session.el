@@ -31,10 +31,57 @@
 (defun nemacs-next-session--buffer-name (buffer)
   "Return BUFFER's name using the reusable buffer API."
   (cond
-   ((and buffer (fboundp 'nelisp-ec-buffer-name))
+   ((and buffer
+         (fboundp 'nelisp-ec-buffer-p)
+         (nelisp-ec-buffer-p buffer)
+         (fboundp 'nelisp-ec-buffer-name))
     (nelisp-ec-buffer-name buffer))
    ((and buffer (fboundp 'buffer-name))
     (buffer-name buffer))
+   (t nil)))
+
+(defun nemacs-next-session--buffer-file-name (buffer)
+  "Return BUFFER's visited file name through reusable file I/O APIs."
+  (let (path)
+    (when (and (null path)
+               (fboundp 'emacs-fileio-buffer-file-direct)
+               buffer)
+      (setq path (emacs-fileio-buffer-file-direct buffer)))
+    (when (and (or (not (stringp path))
+                   (equal path "nelisp--unbound-marker"))
+               (boundp 'emacs-fileio--buffer-files))
+      (setq path (cdr (assq buffer emacs-fileio--buffer-files))))
+    (when (and (or (not (stringp path))
+                   (equal path "nelisp--unbound-marker"))
+               (fboundp 'emacs-fileio-buffer-file-name)
+               buffer)
+      (setq path (emacs-fileio-buffer-file-name buffer)))
+    (when (and (or (not (stringp path))
+                   (equal path "nelisp--unbound-marker"))
+               (fboundp 'buffer-file-name)
+               buffer)
+      (setq path
+            (condition-case nil
+                (buffer-file-name buffer)
+              (error nil))))
+    (and (stringp path)
+         (not (equal path "nelisp--unbound-marker"))
+         path)))
+
+(defun nemacs-next-session--buffer-modified-p (buffer)
+  "Return non-nil when BUFFER has unsaved changes."
+  (cond
+   ((and (fboundp 'emacs-buffer-buffer-modified-p) buffer)
+    (emacs-buffer-buffer-modified-p buffer))
+   ((and (fboundp 'nelisp-ec-buffer-p)
+         (nelisp-ec-buffer-p buffer)
+         (fboundp 'nelisp-ec-buffer-modified-p)
+         buffer)
+    (nelisp-ec-buffer-modified-p buffer))
+   ((and (fboundp 'buffer-modified-p) buffer)
+    (condition-case nil
+        (buffer-modified-p buffer)
+      (error nil)))
    (t nil)))
 
 (defun nemacs-next-session--with-buffer (buffer thunk)
@@ -76,6 +123,9 @@ The text, point, and size are read through reusable buffer APIs."
              :version nemacs-next-session-snapshot-version
              :protocol-version nemacs-next-protocol-version
              :buffer-name (nemacs-next-session--buffer-name target)
+             :file-name (nemacs-next-session--buffer-file-name target)
+             :modified (and target
+                            (nemacs-next-session--buffer-modified-p target))
              :point (and (fboundp 'nelisp-ec-point)
                          (nelisp-ec-point))
              :point-min (and (fboundp 'nelisp-ec-point-min)
@@ -130,6 +180,126 @@ REQUEST is included for diagnostics when supplied."
   "Return an integer :count argument from MESSAGE, or DEFAULT (default 1)."
   (let ((count (nemacs-next-session--command-arg message :count)))
     (if (integerp count) count (or default 1))))
+
+(defun nemacs-next-session--buffer-list ()
+  "Return live session buffers through reusable buffer APIs."
+  (let (buffers)
+    (when (fboundp 'emacs-buffer-buffer-list)
+      (dolist (buffer (emacs-buffer-buffer-list))
+        (when (and buffer
+                   (or (not (fboundp 'nelisp-ec-buffer-p))
+                       (nelisp-ec-buffer-p buffer)))
+          (setq buffers (cons buffer buffers)))))
+    (when (and (boundp 'nelisp-ec--buffers)
+               (listp nelisp-ec--buffers))
+      (dolist (cell nelisp-ec--buffers)
+        (when (cdr cell)
+          (setq buffers (cons (cdr cell) buffers)))))
+    (when (fboundp 'buffer-list)
+      (dolist (buffer (buffer-list))
+        (when (and buffer
+                   (or (not (fboundp 'nelisp-ec-buffer-p))
+                       (nelisp-ec-buffer-p buffer)))
+          (setq buffers (cons buffer buffers)))))
+    (let (seen out)
+      (dolist (buffer buffers (nreverse out))
+        (unless (memq buffer seen)
+          (setq seen (cons buffer seen))
+          (setq out (cons buffer out)))))))
+
+(defun nemacs-next-session--find-buffer (buffer-or-name)
+  "Return a live buffer named by BUFFER-OR-NAME, or nil."
+  (cond
+   ((and buffer-or-name
+         (fboundp 'nelisp-ec-buffer-p)
+         (nelisp-ec-buffer-p buffer-or-name)
+         (not (nelisp-ec-buffer-killed-p buffer-or-name)))
+    buffer-or-name)
+   ((and (stringp buffer-or-name)
+         (fboundp 'get-buffer)
+         (get-buffer buffer-or-name))
+    (get-buffer buffer-or-name))
+   ((stringp buffer-or-name)
+    (catch 'found
+      (dolist (buffer (nemacs-next-session--buffer-list))
+        (when (equal (nemacs-next-session--buffer-name buffer) buffer-or-name)
+          (throw 'found buffer)))
+      nil))
+   (t nil)))
+
+(defun nemacs-next-session--buffer-name-candidates ()
+  "Return live buffer names for minibuffer completion."
+  (let (names)
+    (dolist (buffer (nemacs-next-session--buffer-list) (nreverse names))
+      (let ((name (nemacs-next-session--buffer-name buffer)))
+        (when (stringp name)
+          (setq names (cons name names)))))))
+
+(defun nemacs-next-session--file-candidates (input)
+  "Return file-name completion candidates for INPUT."
+  (let* ((text (or input ""))
+         (dir (or (and (fboundp 'file-name-directory)
+                       (file-name-directory text))
+                  "."))
+         (prefix (or (and (fboundp 'file-name-nondirectory)
+                          (file-name-nondirectory text))
+                     text))
+         (entries (and (fboundp 'directory-files)
+                       (condition-case nil
+                           (directory-files dir nil nil t)
+                         (error nil))))
+         candidates)
+    (dolist (entry entries (nreverse candidates))
+      (when (and (stringp entry)
+                 (not (equal entry "."))
+                 (not (equal entry ".."))
+                 (or (equal prefix "")
+                     (string-prefix-p prefix entry)))
+        (setq candidates
+              (cons (if (or (null dir) (equal dir "./") (equal dir "."))
+                        entry
+                      (concat dir entry))
+                    candidates))))))
+
+(defun nemacs-next-session--minibuffer-completion (message)
+  "Return a minibuffer candidate payload for MESSAGE."
+  (let* ((purpose (or (nemacs-next-session--command-arg message :purpose)
+                      (nemacs-next-session--command-arg message :kind)
+                      'generic))
+         (input (or (nemacs-next-session--command-arg message :input) ""))
+         (collection (nemacs-next-session--command-arg message :collection))
+         (table (cond
+                 ((and collection (listp collection)) collection)
+                 ((or (nemacs-next-session--string-equal purpose 'buffer)
+                      (nemacs-next-session--string-equal purpose "buffer"))
+                  (nemacs-next-session--buffer-name-candidates))
+                 ((or (nemacs-next-session--string-equal purpose 'file)
+                      (nemacs-next-session--string-equal purpose "file"))
+                  (nemacs-next-session--file-candidates input))
+                 (t nil)))
+         (candidates
+          (cond
+           ((and (fboundp 'emacs-minibuffer-all-completions) table)
+            (emacs-minibuffer-all-completions input table))
+           (table
+            (let (matches)
+              (dolist (candidate table (nreverse matches))
+                (when (and (stringp candidate)
+                           (string-prefix-p input candidate))
+                  (setq matches (cons candidate matches))))))
+           (t nil)))
+         (completion
+          (and (fboundp 'emacs-minibuffer-try-completion)
+               table
+               (emacs-minibuffer-try-completion input table))))
+    (list :type 'minibuffer
+          :active t
+          :purpose purpose
+          :prompt (or (nemacs-next-session--command-arg message :prompt)
+                      "Completion: ")
+          :contents input
+          :completion completion
+          :candidates candidates)))
 
 (defun nemacs-next-session--move-point (delta)
   "Move point by DELTA characters through the reusable movement API.
@@ -279,10 +449,101 @@ when the kill ring has no entries."
            'empty-kill-ring "yank: kill ring is empty")))
     (nemacs-next-session-error 'unavailable "yank command is not available")))
 
+(defun nemacs-next-session--find-file (path)
+  "Visit PATH through reusable file I/O APIs and return a snapshot."
+  (if (and (stringp path) (> (length path) 0))
+      (condition-case err
+          (let ((buffer (cond
+                         ((fboundp 'emacs-fileio-visit-file-direct)
+                          (emacs-fileio-visit-file-direct path))
+                         ((fboundp 'find-file)
+                          (find-file path))
+                         (t nil))))
+            (if buffer
+                (nemacs-next-session-buffer-snapshot buffer)
+              (nemacs-next-session-error
+               'unavailable "find-file command is not available")))
+        (error
+         (nemacs-next-session-error
+          'file-error (format "find-file failed: %S" err))))
+    (nemacs-next-session-error
+     'bad-command "find-file requires a non-empty string :path")))
+
+(defun nemacs-next-session--save-buffer ()
+  "Save the current buffer through reusable file I/O APIs and return a snapshot."
+  (nemacs-next-session-current-buffer-or-create)
+  (condition-case err
+      (let ((path (cond
+                   ((fboundp 'emacs-fileio-save-buffer-direct)
+                    (emacs-fileio-save-buffer-direct))
+                   ((fboundp 'save-buffer)
+                    (save-buffer))
+                   (t nil))))
+        (if path
+            (append (nemacs-next-session-buffer-snapshot)
+                    (list :saved-file path))
+          (nemacs-next-session-error
+           'unavailable "save-buffer command is not available")))
+    (error
+     (nemacs-next-session-error
+      'file-error (format "save-buffer failed: %S" err)))))
+
+(defun nemacs-next-session--switch-to-buffer (target)
+  "Switch to TARGET buffer through reusable buffer APIs and return a snapshot."
+  (if (and (stringp target) (> (length target) 0))
+      (let ((buffer (or (nemacs-next-session--find-buffer target)
+                        (and (fboundp 'nelisp-ec-generate-new-buffer)
+                             (nelisp-ec-generate-new-buffer target)))))
+        (if buffer
+            (progn
+              (when (fboundp 'nelisp-ec-set-buffer)
+                (nelisp-ec-set-buffer buffer))
+              (nemacs-next-session-buffer-snapshot buffer))
+          (nemacs-next-session-error
+           'unavailable "switch-to-buffer command is not available")))
+    (nemacs-next-session-error
+     'bad-command "switch-to-buffer requires a non-empty string :buffer-name")))
+
+(defun nemacs-next-session--kill-buffer (target)
+  "Kill TARGET or the current buffer and return the next buffer snapshot."
+  (let ((buffer (cond
+                 ((stringp target)
+                  (nemacs-next-session--find-buffer target))
+                 (target target)
+                 (t (nemacs-next-session-current-buffer-or-create)))))
+    (cond
+     ((null buffer)
+      (nemacs-next-session-error
+       'no-such-buffer "kill-buffer target does not name a live buffer"))
+     ((and (fboundp 'nelisp-ec-kill-buffer)
+           (fboundp 'nelisp-ec-buffer-p)
+           (nelisp-ec-buffer-p buffer))
+      (nelisp-ec-kill-buffer buffer)
+      (let ((next (car (nemacs-next-session--buffer-list))))
+        (if next
+            (progn
+              (when (fboundp 'nelisp-ec-set-buffer)
+                (nelisp-ec-set-buffer next))
+              (nemacs-next-session-buffer-snapshot next))
+          (nemacs-next-session-buffer-snapshot
+           (nemacs-next-session-current-buffer-or-create)))))
+     ((fboundp 'kill-buffer)
+      (condition-case err
+          (progn
+            (kill-buffer buffer)
+            (nemacs-next-session-buffer-snapshot
+             (nemacs-next-session-current-buffer-or-create)))
+        (error
+         (nemacs-next-session-error
+          'buffer-error (format "kill-buffer failed: %S" err)))))
+     (t
+      (nemacs-next-session-error
+       'unavailable "kill-buffer command is not available")))))
+
 (defun nemacs-next-session-handle-command (message)
   "Handle a command protocol MESSAGE and return a response payload.
-The supported M1/M2 commands are deliberately small and delegate editor
-mutation to reusable buffer/editing APIs."
+The supported commands are deliberately small and delegate editor
+mutation, file I/O, and completion to reusable library APIs."
   (let ((name (nemacs-next-session--command-name message)))
     (cond
      ((or (nemacs-next-session--string-equal name 'snapshot)
@@ -347,6 +608,29 @@ mutation to reusable buffer/editing APIs."
      ((or (nemacs-next-session--string-equal name 'yank)
           (nemacs-next-session--string-equal name "yank"))
       (nemacs-next-session--yank))
+     ((or (nemacs-next-session--string-equal name 'find-file)
+          (nemacs-next-session--string-equal name "find-file"))
+      (nemacs-next-session--find-file
+       (or (nemacs-next-session--command-arg message :path)
+           (nemacs-next-session--command-arg message :file))))
+     ((or (nemacs-next-session--string-equal name 'save-buffer)
+          (nemacs-next-session--string-equal name "save-buffer"))
+      (nemacs-next-session--save-buffer))
+     ((or (nemacs-next-session--string-equal name 'switch-to-buffer)
+          (nemacs-next-session--string-equal name "switch-to-buffer"))
+      (nemacs-next-session--switch-to-buffer
+       (or (nemacs-next-session--command-arg message :buffer-name)
+           (nemacs-next-session--command-arg message :buffer))))
+     ((or (nemacs-next-session--string-equal name 'kill-buffer)
+          (nemacs-next-session--string-equal name "kill-buffer"))
+      (nemacs-next-session--kill-buffer
+       (or (nemacs-next-session--command-arg message :buffer-name)
+           (nemacs-next-session--command-arg message :buffer))))
+     ((or (nemacs-next-session--string-equal name 'complete)
+          (nemacs-next-session--string-equal name "complete")
+          (nemacs-next-session--string-equal name 'completion)
+          (nemacs-next-session--string-equal name "completion"))
+      (nemacs-next-session--minibuffer-completion message))
      (t
       (nemacs-next-session-error
        'unknown-command
@@ -367,6 +651,9 @@ mutation to reusable buffer/editing APIs."
      ((or (nemacs-next-session--string-equal type 'command)
           (nemacs-next-session--string-equal type "command"))
       (nemacs-next-session-handle-command message))
+     ((or (nemacs-next-session--string-equal type 'open)
+          (nemacs-next-session--string-equal type "open"))
+      (nemacs-next-session--find-file (plist-get message :path)))
      (t
       (nemacs-next-session-error
        'unknown-message
