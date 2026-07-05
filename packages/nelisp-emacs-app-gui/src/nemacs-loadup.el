@@ -51,8 +51,8 @@
 
 (defvar nemacs-package-activation-hook nil
   "Hook run at the package activation slot between early-init and init.
-This is intentionally a no-op hook point for now; Doc 35 defers a full
-ELPA descriptor/autoload scanner.")
+This hook runs after the built-in package.el activation attempt, so tests or
+frontends can observe the same startup slot without owning package semantics.")
 
 (defvar nemacs-initialized nil
   "Non-nil once `nemacs-init' has run.  Reset by `nemacs-uninit'.")
@@ -216,6 +216,33 @@ when it exists, otherwise default to ~/.emacs.d."
        (message "init error: %s - %s" path (error-message-string err)))
      nil)))
 
+(defun nemacs--package-startup-enabled-p ()
+  "Return non-nil when startup package activation should run."
+  (if (boundp 'package-enable-at-startup)
+      package-enable-at-startup
+    t))
+
+(defun nemacs--package-already-activated-p ()
+  "Return non-nil when package.el has already run startup activation."
+  (and (boundp 'package--activated) package--activated))
+
+(defun nemacs-activate-packages-at-startup ()
+  "Run package.el activation at the Emacs startup package slot.
+Activation is skipped when `package-enable-at-startup' is nil, or when
+package.el has already activated packages.  Errors are logged through
+`message' and do not prevent init.el from loading."
+  (when (and (nemacs--package-startup-enabled-p)
+             (not (nemacs--package-already-activated-p)))
+    (condition-case err
+        (progn
+          (require 'package)
+          (when (nemacs--package-startup-enabled-p)
+            (package-activate-all)))
+      (error
+       (when (fboundp 'message)
+         (message "package activation error: %s" (error-message-string err)))
+       nil))))
+
 (defun nemacs-candidate-init-files ()
   "Return candidate user init files in load order.
 When `NEMACS_USER_EMACS_DIRECTORY' is set, only that fixture directory's
@@ -242,6 +269,7 @@ of reimplementing init discovery."
           found-init)
       (when (nemacs--init-file-readable-p early)
         (nemacs--load-init-file early 'early-init))
+      (nemacs-activate-packages-at-startup)
       (when (fboundp 'run-hooks)
         (run-hooks 'nemacs-package-activation-hook))
       (catch 'done
