@@ -12215,3 +12215,71 @@ path:
    =org-mode=.  Conclusion: the structural cleanup-arm body blowup has
    been removed, but a separate cold-image parent activation/line-drop
    defect remains.
+
+227. Invisibility-spec compat setters ported for in-buffer Org activation,
+   2026-07-05.  Root cause from item 226 follow-up: upstream
+   =outline-mode= and =org-mode= mode bodies call
+   =add-to-invisibility-spec=, but the NeLisp buffer-core bridge had only
+   =buffer-invisibility-spec= and the read-side =invisible-p= analog.
+   The missing unprefixed compatibility functions made real mode
+   activation abort with =void-function add-to-invisibility-spec= once REPL
+   diagnostics became visible.
+
+   Fix shape: =src/emacs-buffer-builtins.el= now provides
+   =emacs-buffer-builtins-add-to-invisibility-spec= and
+   =emacs-buffer-builtins-remove-from-invisibility-spec=, with
+   =add-to-invisibility-spec= / =remove-from-invisibility-spec= aliases
+   installed only through the existing standalone-or-missing builtin gate.
+   The list semantics match upstream =subr.el=: adding to =t= first turns
+   the spec into =(t)= before consing the new element, and removal uses
+   =delete= for list specs or =(t)= for non-list specs.  Because the
+   standalone buffer substrate does not intercept ordinary =setq= for
+   buffer-local variables, the setter path writes through
+   =emacs-buffer-set-buffer-local-value= when a NeLisp current buffer
+   exists; host Emacs keeps ordinary =setq= semantics.  The read-side
+   =invisible-p= helper now reads the current buffer's local
+   =buffer-invisibility-spec= value when present.
+
+   Regression coverage: =test/emacs-buffer-builtins-test.el= adds
+   add/remove coverage for atom entries and =(SYMBOL . ELLIPSIS)= cons
+   entries, plus a temp-buffer locality check proving one buffer's
+   invisibility spec does not leak to another.  Focused Host ERT:
+   =emacs-buffer-builtins-test/invisibility-spec= 2/2 PASS.  Full
+   =test/emacs-buffer-builtins-test.el=: 41/41 PASS.  =make test-fast=:
+   1075 tests, 1069 expected, the same 6 known failures only
+   (=emacs-redisplay-test= x5 and
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=); no new failures.
+
+   Generated artifacts: =make nemacs-library-package-scaffold
+   build-nelisp-bootstrap= refreshed
+   =packages/nelisp-emacs-buffer-core/lisp/emacs-buffer-builtins.el= and
+   regenerated =build/nemacs-bootstrap.repl= so the bridge ships to the
+   standalone reader replay.
+
+   Cold-image e2e with the diagnostics reader from
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= at
+   =440cdfb7=, =NELISP_E2E_KEEP=1=, one run, then workdir deleted:
+   replay-load 6.729 s, dump 0.531 s, cold boot 0.519 s, cold-boot peak
+   RSS 513408 KB, faithfulness =(t t t t (interactive) t)= identical.
+   Probe (a), exact form =(with-temp-buffer (outline-mode) (prin1
+   major-mode))=, timeout 30, RSS abort 8 GiB, one reader: exit 0,
+   killed=none, wall 532 ms, peak RSS 513860 KB, stdout empty, stderr
+   exactly =nelisp: uncaught error: void-variable: (paragraph-start)=.
+   Probe (b), exact form =(with-temp-buffer (org-mode) (prin1
+   major-mode))=, timeout 120, RSS abort 8 GiB, one reader: exit 0,
+   killed=none, wall 534 ms, peak RSS 513872 KB, stdout empty, stderr
+   exactly =nelisp: uncaught error: void-variable: (paragraph-start)=.
+   Probe (c) was not run because (b) did not print =org-mode=.  This
+   confirms the invisibility-spec blocker is removed and exposes the next
+   activation blocker as =paragraph-start=, not chased in this item.
+
+   Gate sanity: the preserved 68-file Org-chain proof from item 222
+   (=tmp-diag/org-chain-68-files-item222.txt=) with item 225's
+   5-conjunct-plus-backquote proof
+   (=tmp-diag/proof-item225-org-chain-plus-backquote.el=) was run once
+   using =VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+   =NELISP_BIN=vendor/nelisp/target/nelisp= after killing only
+   =[v]endor/nelisp/target/nelisp=.  Result: =status=done=, exit 0,
+   elapsed 350.16 s.
