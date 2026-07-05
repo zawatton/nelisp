@@ -41,38 +41,14 @@ cat >> "$tmp" <<EOF
 (load "$ROOT/src/nemacs-loadup.el")
 (unless nemacs-initialized (nemacs-init t))
 (load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
-(setq nemacs-next-init-smoke-frame-config
-      (nemacs-next-session-frame-config))
-(setq nemacs-next-init-smoke-frame
-      (nemacs-next-session-frame-snapshot 40 6))
-(setq nemacs-next-init-smoke-scratch-text
-      (nelisp-ec-with-current-buffer nemacs--initial-buffer
-        (nelisp-ec-buffer-string)))
-(setq nemacs-next-init-smoke-messages-text
-      (let ((buf (emacs-special-buffers-ensure-buffer messages-buffer-name)))
-        (nelisp-ec-with-current-buffer buf
-          (nelisp-ec-buffer-string))))
-(nelisp--write-stdout-bytes
- (concat "frame-config-tool-bar-lines="
-         (number-to-string
-          (plist-get nemacs-next-init-smoke-frame-config :tool-bar-lines))
-         "\n"))
-(nelisp--write-stdout-bytes
- (concat "frame-toolbar-present="
-         (if (plist-get (plist-get nemacs-next-init-smoke-frame :frame) :toolbar)
-             "yes" "no")
-         "\n"))
-(nelisp--write-stdout-bytes
- (concat "scratch="
-         (if (equal nemacs-next-init-smoke-scratch-text
-                    "fixture scratch message\n")
-             "custom" "bad")
-         "\n"))
-(nelisp--write-stdout-bytes
- (concat "messages="
-         (if (string-match "init loaded" nemacs-next-init-smoke-messages-text)
-             "init-loaded" "bad")
-         "\n"))
+(setq nemacs-next-init-smoke-frame-config (nemacs-next-session-frame-config))
+(setq nemacs-next-init-smoke-frame (nemacs-next-session-frame-snapshot 40 6))
+(setq nemacs-next-init-smoke-scratch-text (nelisp-ec-with-current-buffer nemacs--initial-buffer (nelisp-ec-buffer-string)))
+(setq nemacs-next-init-smoke-messages-text (let ((buf (emacs-special-buffers-ensure-buffer messages-buffer-name))) (nelisp-ec-with-current-buffer buf (nelisp-ec-buffer-string))))
+(nelisp--write-stdout-bytes (concat "frame-config-tool-bar-lines=" (number-to-string (plist-get nemacs-next-init-smoke-frame-config :tool-bar-lines)) "\n"))
+(nelisp--write-stdout-bytes (concat "frame-toolbar-present=" (if (plist-get (plist-get nemacs-next-init-smoke-frame :frame) :toolbar) "yes" "no") "\n"))
+(nelisp--write-stdout-bytes (concat "scratch=" (if (equal nemacs-next-init-smoke-scratch-text "fixture scratch message\n") "custom" "bad") "\n"))
+(nelisp--write-stdout-bytes (concat "messages=" (if (string-match "init loaded" nemacs-next-init-smoke-messages-text) "init-loaded" "bad") "\n"))
 ,quit
 EOF
 

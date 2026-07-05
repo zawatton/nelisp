@@ -549,9 +549,11 @@ now call =message= instead of inserting into =*Messages*= directly.
 Protocol V0 now documents a =frame-config= session message carrying
 =tool-bar-lines=, =width=, =height=, and =font=.  The session computes the
 payload after init files have applied =default-frame-alist= /
-=initial-frame-alist=.  The TUI smoke remains green with an empty fixture init
-directory, but the new fixture =init-smoke.sh= still exposes a standalone REPL
-failure (=void-variable v=) when asserting the configured frame alist.  The host
-session path loads and computes =frame-config= correctly; the standalone
-fixture smoke remains the open implementation gap before declaring this doc
-complete.
+=initial-frame-alist=.  The fixture =init-smoke.sh= now passes in the
+standalone REPL and verifies =frame-config-tool-bar-lines=0=, hidden TUI
+toolbar rendering, custom =*scratch*= contents, and persisted =*Messages*=
+text containing =init loaded=.  The closed failure had two parts: the smoke
+generator emitted multi-line top-level =setq= forms that the standalone reader
+mis-evaluated as =void-variable v=, and =emacs-stub-bulk.el= prebound
+=message-log-max= to nil before the =emacs-special-buffers.el= owner installed
+the message-log default.
