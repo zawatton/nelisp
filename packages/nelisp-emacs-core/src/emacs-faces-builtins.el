@@ -19,12 +19,13 @@
 ;;
 ;;   - Functions: facep / make-face / face-attribute /
 ;;     set-face-attribute / face-foreground / face-background /
-;;     set-face-foreground / set-face-background / face-list
-;;   - Macro: defface (= delegates to `emacs-faces-defface')
+;;     set-face-foreground / set-face-background / face-list /
+;;     load-theme / enable-theme / disable-theme / provide-theme /
+;;     custom-theme-set-faces / custom-theme-set-variables
+;;   - Macros: defface / deftheme
 ;;
 ;; Deferred to later γ phases:
 ;;   - face-spec-set-2 (= display-class precedence resolution)
-;;   - face inheritance resolution at attribute-read time
 ;;   - face-remap, frame-parameter-driven attribute fallback
 ;;   - X-resource fallback
 
@@ -70,6 +71,28 @@
 (when (emacs-faces-builtins--install-function-p 'face-list)
   (defalias 'face-list #'emacs-faces-list))
 
+;;;; --- Custom theme bridges ---------------------------------------------
+
+(dolist (pair '((custom-theme-name-valid-p . custom-theme-name-valid-p)
+                (custom-make-theme-feature . custom-make-theme-feature)
+                (custom-declare-theme . custom-declare-theme)
+                (custom-theme-p . custom-theme-p)
+                (custom-check-theme . custom-check-theme)
+                (provide-theme . provide-theme)
+                (custom-theme--load-path . custom-theme--load-path)
+                (custom-available-themes . custom-available-themes)
+                (custom-theme-set-faces . custom-theme-set-faces)
+                (custom-set-faces . custom-set-faces)
+                (custom-theme-set-variables . custom-theme-set-variables)
+                (custom-set-variables . custom-set-variables)
+                (enable-theme . enable-theme)
+                (disable-theme . disable-theme)
+                (load-theme . load-theme)))
+  (let ((symbol (car pair))
+        (target (cdr pair)))
+    (when (emacs-faces-builtins--install-function-p symbol)
+      (defalias symbol target))))
+
 ;;;; --- defface macro -------------------------------------------------
 
 (when (emacs-faces-builtins--install-function-p 'defface)
@@ -80,6 +103,15 @@
            (emacs-faces-make-face ',name)
            ',name)
       `(emacs-faces-defface ,name ,spec ,doc ,@opts))))
+
+(when (emacs-faces-builtins--install-function-p 'deftheme)
+  (defmacro deftheme (theme &optional doc &rest properties)
+    "Standalone bridge: delegate to `custom-declare-theme'."
+    (declare (doc-string 2) (indent 1))
+    `(custom-declare-theme ',theme
+                           ',(custom-make-theme-feature theme)
+                           ,doc
+                           ',properties)))
 
 (provide 'emacs-faces-builtins)
 
