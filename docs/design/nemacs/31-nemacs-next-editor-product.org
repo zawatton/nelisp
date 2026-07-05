@@ -242,6 +242,7 @@ a separate numbered increment ladder of its own.
 | 2026-07-05 | M4 Modern GUI shell | done | =hello= advertises GUI-shell capabilities; =frame-snapshot= / =render-frame-text= expose buffer viewport + modeline; =resize= / =input= / IME commit produce frame =delta= payloads; =menu= / =toolbar= items route to protocol commands; clipboard read/write produce frontend =request= payloads; =scripts/m4-gui-shell-smoke.sh= renders one frame to plain text |
 | 2026-07-05 | M5 Package smoke | done | =fixtures/m5-package/nemacs-next-m5-fixture.el= + =nemacs-next-m5-fixture-extra.el= load as pure-Elisp package fixtures; =scripts/package-smoke.sh= verifies mode activation, keymap lookup, hook execution, face/text-property state, buffer edit, companion feature load, and tracked package-compat debt |
 | 2026-07-05 | Frontend v1 terminal loop | done | =frontends/tui/nemacs-next-tui= starts one persistent bootstrap REPL, switches an interactive terminal to raw mode, maps printable keys/arrows/control chords to protocol messages, redraws the session plain-text frame render, shows modeline/echo, and positions the ANSI cursor; =frontends/tui/smoke.sh= drives a scripted find-file/edit/delete/save/quit sequence and asserts saved file content plus rendered frame content |
+| 2026-07-05 | Frontend v2 terminal loop | done | =frame-snapshot= viewport rows now carry optional =:face-runs= sourced from =face= / =font-lock-face= text properties plus an Org-heading fallback; the TUI maps =org-level-1=..=org-level-4=, =bold=, =font-lock-comment-face=, =font-lock-string-face=, =default=, and small resolved named colors to ANSI SGR; terminal draws compare rendered rows and skip unchanged rows, with the smoke measuring a cursor-only move at 12B versus a 94B full-frame equivalent in the latest run; input reads complete UTF-8 byte sequences before dispatch, and the smoke saves Japanese text through the terminal path |
 
 The 2026-07-04 movement/delete increment was picked because M0 and M1
 were already complete and M2 (Section 7) was the first milestone with
@@ -381,11 +382,9 @@ the terminal frontend.
 Remaining for the next daily-driver increments:
 
 - A native GUI window loop with real widget/window-system integration.
-- Faces/colors and richer terminal attributes instead of plain text only.
-- Incremental redraw/performance work; v1 clears and redraws the whole
-  frame after each input.
 - Real OS clipboard/IME/window integration behind the M4 request and input
-  protocol shapes.
+  protocol shapes.  The TUI path now covers terminal IME commit text as
+  UTF-8 input; native OS IME APIs remain GUI-owned.
 - Command/keymap breadth beyond the M2/M3 subset: practical open, edit,
   search, help, eval, dired/org/project, save, quit, and error recovery
   workflows driven by normal keys rather than scripted smoke forms.

@@ -175,17 +175,117 @@ The text, point, and size are read through reusable buffer APIs."
       (substring line 0 width)
     line))
 
-(defun nemacs-next-session--viewport-lines (text width height)
-  "Return a viewport line list for TEXT, WIDTH, and HEIGHT."
+(defun nemacs-next-session--face-symbol (face)
+  "Return the first concrete face symbol in FACE."
+  (cond
+   ((symbolp face) face)
+   ((and (consp face) (symbolp (car face))) (car face))
+   (t nil)))
+
+(defun nemacs-next-session--face-color (face attribute)
+  "Return FACE's ATTRIBUTE color when the face substrate can answer it."
+  (let ((symbol (nemacs-next-session--face-symbol face)))
+    (and symbol
+         (fboundp 'emacs-faces-attribute)
+         (let ((value (emacs-faces-attribute symbol attribute)))
+           (and (not (eq value 'unspecified)) value)))))
+
+(defun nemacs-next-session--face-weight (face)
+  "Return FACE's weight attribute when available."
+  (nemacs-next-session--face-color face :weight))
+
+(defun nemacs-next-session--org-heading-face (line)
+  "Return an Org heading face for LINE, or nil."
+  (let ((i 0)
+        (n (length line)))
+    (while (and (< i n) (= (aref line i) ?*))
+      (setq i (+ i 1)))
+    (and (> i 0)
+         (< i n)
+         (= (aref line i) ?\s)
+         (cond
+          ((= i 1) 'org-level-1)
+          ((= i 2) 'org-level-2)
+          ((= i 3) 'org-level-3)
+          (t 'org-level-4)))))
+
+(defun nemacs-next-session--face-run (start end face)
+  "Return a protocol face run for START..END carrying FACE."
+  (let ((run (list :start start
+                   :end end
+                   :face (nemacs-next-session--face-symbol face)))
+        (fg (nemacs-next-session--face-color face :foreground))
+        (bg (nemacs-next-session--face-color face :background))
+        (weight (nemacs-next-session--face-weight face)))
+    (when fg
+      (setq run (append run (list :foreground fg))))
+    (when bg
+      (setq run (append run (list :background bg))))
+    (when weight
+      (setq run (append run (list :weight weight))))
+    run))
+
+(defun nemacs-next-session--line-face-runs (buffer line line-start line-width)
+  "Return face runs for BUFFER LINE at LINE-START clipped to LINE-WIDTH."
+  (let ((line-end (+ line-start (length line)))
+        runs)
+    (when (and buffer
+               (> line-width 0)
+               (fboundp 'emacs-buffer-text-property-view))
+      (dolist (span (emacs-buffer-text-property-view
+                     line-start line-end '(face font-lock-face) buffer))
+        (let* ((start (nth 0 span))
+               (end (nth 1 span))
+               (props (nth 2 span))
+               (face (or (plist-get props 'face)
+                         (plist-get props 'font-lock-face))))
+          (when face
+            (setq runs
+                  (cons (nemacs-next-session--face-run
+                         (- start line-start)
+                         (min line-width (- end line-start))
+                         face)
+                        runs))))))
+    (when (and (null runs) (> line-width 0))
+      (let ((org-face (nemacs-next-session--org-heading-face line)))
+        (when org-face
+          (setq runs (list (nemacs-next-session--face-run
+                            0 line-width org-face))))))
+    (nreverse runs)))
+
+(defun nemacs-next-session--maybe-fontify-buffer (buffer)
+  "Refresh font-lock for BUFFER when the substrate has active font-lock."
+  (when buffer
+    (nemacs-next-session--with-buffer
+     buffer
+     (lambda ()
+       (cond
+        ((and (fboundp 'emacs-font-lock-flush-pending)
+              (fboundp 'emacs-font-lock-mode-enabled-p)
+              (emacs-font-lock-mode-enabled-p buffer))
+         (emacs-font-lock-flush-pending buffer))
+        ((and (fboundp 'font-lock-fontify-buffer)
+              (boundp 'font-lock-mode)
+              font-lock-mode)
+         (font-lock-fontify-buffer)))))))
+
+(defun nemacs-next-session--viewport-lines (text width height &optional buffer)
+  "Return a viewport line list for TEXT, WIDTH, HEIGHT, and BUFFER."
   (let ((lines (nemacs-next-session--split-lines (or text "")))
         (row 0)
+        (line-start 1)
         out)
     (while (and lines (< row height))
-      (setq out
-            (cons (list :row row
-                        :text (nemacs-next-session--truncate-line
-                               (car lines) width))
-                  out))
+      (let* ((raw (car lines))
+             (line (nemacs-next-session--truncate-line raw width))
+             (face-runs (nemacs-next-session--line-face-runs
+                         buffer line line-start (length line))))
+        (setq out
+              (cons (append (list :row row :text line)
+                            (when face-runs
+                              (list :face-runs face-runs)))
+                    out))
+        (setq line-start (+ line-start (length raw) 1)))
       (setq row (+ row 1))
       (setq lines (cdr lines)))
     (while (< row height)
@@ -224,9 +324,10 @@ WIDTH and HEIGHT, when supplied, update the session frame geometry."
     (setq nemacs-next-session-frame-width width))
   (when (and (integerp height) (> height 1))
     (setq nemacs-next-session-frame-height height))
-  (let* ((snapshot
-          (nemacs-next-session-buffer-snapshot
-           (nemacs-next-session-current-buffer-or-create)))
+  (let* ((buffer (nemacs-next-session-current-buffer-or-create))
+         (_fontified (nemacs-next-session--maybe-fontify-buffer buffer))
+         (snapshot
+          (nemacs-next-session-buffer-snapshot buffer))
          (frame-width nemacs-next-session-frame-width)
          (frame-height nemacs-next-session-frame-height)
          (text (or (plist-get snapshot :text) ""))
@@ -238,7 +339,7 @@ WIDTH and HEIGHT, when supplied, update the session frame geometry."
                 :cursor (nemacs-next-session--cursor-position
                          text (plist-get snapshot :point))
                 :viewport (nemacs-next-session--viewport-lines
-                           text frame-width body-height)
+                           text frame-width body-height buffer)
                 :mode-line (nemacs-next-session--mode-line
                             snapshot frame-width)
                 :echo nemacs-next-session-echo-message)))
