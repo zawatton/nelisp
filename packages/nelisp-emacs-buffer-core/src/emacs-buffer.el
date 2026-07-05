@@ -210,6 +210,10 @@ value exists.  Ignores narrowing / current-buffer state."
      (cell (cdr cell))
      ((emacs-buffer-default-boundp sym)
       (emacs-buffer-default-value sym))
+     ;; Standalone `setq-local' still degrades to an ordinary `setq' in the
+     ;; stub layer.  Treat that visible global binding as the buffer value
+     ;; until full local setq interception is available.
+     ((boundp sym) (symbol-value sym))
      (t (signal 'void-variable (list sym))))))
 
 ;;;###autoload
