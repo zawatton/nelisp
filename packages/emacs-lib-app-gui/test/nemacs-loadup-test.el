@@ -17,7 +17,8 @@
   (declare (indent 0) (debug (body)))
   `(progn
      (nemacs-uninit)
-     (let ((nemacs-startup-hook nil))
+     (let ((nemacs-startup-hook nil)
+           (init-file-user nil))
        (unwind-protect
            (progn ,@body)
          (nemacs-uninit)))))
