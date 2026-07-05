@@ -395,17 +395,16 @@ Verified by reading the actual sources (not assumed from names):
   the pattern Doc 34 (=34-emacs-replacement-development-rules.org=)
   warns against: app/frontend glue re-implementing substrate-owned
   behavior instead of a shared module owning it once.
-- **=package.el= usability**: =src/package.el= is a from-scratch
-  *minimal facade*, not the vendor state machine from section 6. It
-  requires =package-alist= to already be populated with
-  =(name . (desc ...))= entries carrying a =:dir= plist key
-  (=src/package.el:64-80=); there is no equivalent of
-  =package-load-all-descriptors= (no directory scan, no
-  =-pkg.el=/=-autoloads.el= parsing) anywhere in =src/=. With an empty
-  =package-alist= (nothing currently populates it),
-  =package-activate-all= is a correct no-op -- matching the measured
-  bootstrap state (=package-activate-all=/=package-initialize=/
-  =featurep 'package= all nil).
+- **=package.el= usability**: initial measurement found =src/package.el=
+  was a minimal facade requiring pre-populated =package-alist= rows and doing
+  no ELPA directory scan.  The 2026-07-05 follow-up replaced that with the
+  activation subset of the package.el model: =package-load-all-descriptors=
+  scans =package-user-dir= / =package-directory-list= for
+  =NAME-VERSION/NAME-pkg.el= descriptors, =package-activate-all= activates
+  dependencies first and loads =NAME-autoloads.el=, and
+  =package-initialize= combines descriptor loading with optional activation.
+  Install, refresh, archive, URL, process, and GPG paths remain explicit
+  stubs/errors rather than partial network implementations.
 - **No frame-parameter config message exists** in the transport layers
   (=gui/nemacs-editor-transport.el=, =src/emacs-tui-backend.el=): no
   hit for toolbar/width/height/font config keys in either. Toolbar
@@ -504,20 +503,19 @@ project's =lisp-interaction-mode= equivalent is, else
 =fundamental-mode=, matching section 4's two-stage logic (create-time
 init if fresh, catch-all mode fixup if still default afterward).
 
-** (f) Package activation -- do not build the ELPA scanner yet
+** (f) Package activation -- implemented as the activation subset
 
-Section 6/8 show the vendor activation model requires generated
-=-pkg.el=/=-autoloads.el= artifacts that nothing in this repo produces
-yet, *and* the section-7 compatibility target explicitly disables
-package.el and load-path-manages 177 raw directories instead. Recommend:
-leave =src/package.el='s facade as-is (still correct for anything that
-does populate =package-alist= directly), and treat the *actual*
-near-term compatibility need as (a)'s plain =load-path=
-management -- i.e. init.el's own =(add-to-list 'load-path ...)= forms
-already work once (a) lands, with zero package.el involvement, exactly
-as they do for the real user today. Building =package-load-all-descriptors=
-+ autoloads-file consumption is a separate, larger increment; do not
-fold it into this scope.
+The 2026-07-05 package increment supersedes the earlier deferral.  The
+strategy pass first tested loading vendored =package.el=, but normal
+nemacs-next startup had already loaded the local compatibility =cl-lib=;
+that caused vendor UI/helper macroexpansion failures before activation could
+run.  The landed implementation therefore keeps ownership in =src/package.el=
+and implements the activation subset directly:
+=package-load-all-descriptors=, =package-load-descriptor=,
+=package-process-define-package=, =package-activate-all=,
+=package-activate=, =package-activate-1=, and =package-initialize=.
+This preserves the real ELPA activation contract without pulling in
+install/network UI paths that the substrate cannot yet support.
 
 ** (g) Deferred out of scope
 
@@ -525,10 +523,10 @@ fold it into this scope.
 if it exists" (no user-visible need in section 7), =.eln=/native-comp
 cache redirection, =-u USER=/=su= home-directory switching,
 =default.el=, X-resource-driven frame settings
-(=x-apply-session-resources=), and a full ELPA package-activation
-scanner (see (f)). All are real vendor mechanisms (cited in sections
-1/3/6) but none are exercised by the section-7 compatibility target
-and none are prerequisites for (a)-(e).
+(=x-apply-session-resources=), package quickstart generation, package
+archive refresh, package installation, URL/process/GPG-backed package
+transactions, and package menu UI. All are real vendor mechanisms (cited in
+sections 1/3/6), but the activation subset now works without them.
 
 * 10. Implementation status -- 2026-07-05
 
@@ -557,3 +555,27 @@ generator emitted multi-line top-level =setq= forms that the standalone reader
 mis-evaluated as =void-variable v=, and =emacs-stub-bulk.el= prebound
 =message-log-max= to nil before the =emacs-special-buffers.el= owner installed
 the message-log default.
+
+The package activation slot is now real.  =nemacs-loadup= calls
+=nemacs-activate-packages-at-startup= after =early-init.el= and before
+=init.el=, then runs =nemacs-package-activation-hook= for observers.  The
+helper skips when =package-enable-at-startup= is nil or =package--activated=
+is already non-nil.  =src/package.el= implements ELPA activation directly:
+
+| Path | Fidelity | Status |
+|------+----------+--------|
+| descriptor scan | real | scans =package-user-dir= and =package-directory-list= for package directories containing =*-pkg.el= |
+| descriptor parsing | real | reads =define-package= forms, normalizes package names and dependency versions, and populates =package-alist= |
+| activation | real | =package-activate-all= / =package-activate= activate dependencies first, load =NAME-autoloads.el=, update =package-activated-list=, and set =package--activated= |
+| load-path | real package.el contract | package directories are added by generated/fixture autoload files, not by descriptor scanning |
+| package-initialize | real activation subset | reloads descriptors and optionally activates; archive cache compatibility table work is not implemented |
+| package quickstart | deferred | variable exists; quickstart file generation/loading is not implemented |
+| refresh/install/archive/network/GPG | stub | =package-refresh-contents=, =package-install=, and =package-install-selected-packages= signal clear =user-error= messages |
+
+=apps/nemacs-next/fixtures/elpa/= now holds two ELPA-layout fixture packages
+with a dependency edge.  =apps/nemacs-next/scripts/package-smoke.sh= proves
+that activation adds both package dirs to =load-path=, autoloaded functions
+are =fboundp= before =require=, requiring the dependent package works,
+dependency activation order is =(base dependent)=, and
+=package-enable-at-startup nil= skips activation.  The original M5 plain
+=load-path= package fixture remains part of the same smoke.

@@ -6,6 +6,9 @@ EMACS=${EMACS:-emacs}
 NELISP_BIN=${NELISP_BIN:-${NELISP:-}}
 BOOTSTRAP_REPL=${NEMACS_BOOTSTRAP_REPL:-$ROOT/build/nemacs-bootstrap.repl}
 FIXTURE_DIR="$ROOT/apps/nemacs-next/fixtures/m5-package"
+ELPA_FIXTURE_DIR="$ROOT/apps/nemacs-next/fixtures/elpa"
+ELPA_INIT_DIR="$ROOT/apps/nemacs-next/fixtures/elpa-init"
+ELPA_INIT_SKIP_DIR="$ROOT/apps/nemacs-next/fixtures/elpa-init-skip"
 
 if [ -z "$NELISP_BIN" ]; then
   if [ -x "$ROOT/../nelisp/target/nelisp" ]; then
@@ -24,6 +27,26 @@ fi
   --eval "(require 'nemacs-next-protocol)" \
   --eval "(require 'nemacs-next-m5-fixture-extra)" \
   --eval "(let* ((buffer (nelisp-ec-generate-new-buffer \"nemacs-next-m5-host\")) report binding face text-prop) (nelisp-ec-set-buffer buffer) (setq nemacs-next-m5-fixture-mode-hook nil nemacs-next-m5-fixture-hook-count 0) (add-hook 'nemacs-next-m5-fixture-mode-hook #'nemacs-next-m5-fixture--hook-marker) (nemacs-next-m5-fixture-mode) (setq binding (emacs-keymap-lookup-key (emacs-keymap-current-local-map) \"n\")) (unless (eq binding 'nemacs-next-m5-fixture-insert-stamp) (error \"bad M5 fixture key binding: %S\" binding)) (funcall binding) (setq face (emacs-faces-attribute 'nemacs-next-m5-fixture-face :foreground)) (setq text-prop (emacs-buffer-get-text-property 1 'face)) (setq report (list :type 'package-smoke :milestone 'm5 :fixture \"nemacs-next-m5-fixture\" :status \"ok\" :mode (emacs-mode-major-mode) :mode-name (emacs-mode-mode-name) :hook-count nemacs-next-m5-fixture-hook-count :key-binding (symbol-name binding) :face-foreground face :text-property text-prop :text (nelisp-ec-buffer-string) :companion-loaded (nemacs-next-m5-fixture-extra-loaded-p) :package-compat-debt nemacs-next-m5-fixture-package-compat-debt)) (unless (and (equal (plist-get report :status) \"ok\") (eq (plist-get report :mode) 'nemacs-next-m5-fixture-mode) (equal (plist-get report :mode-name) \"M5-Fixture\") (= (plist-get report :hook-count) 1) (equal (plist-get report :key-binding) \"nemacs-next-m5-fixture-insert-stamp\") (equal (plist-get report :face-foreground) \"green\") (eq (plist-get report :text-property) 'nemacs-next-m5-fixture-face) (equal (plist-get report :text) \"M5 fixture edit\") (plist-get report :companion-loaded) (consp (plist-get report :package-compat-debt)) (not (featurep 'emacs-init)) (not (featurep 'nemacs-main)) (not (featurep 'nemacs-gtk-frontend)) (not (featurep 'nemacs-gui-file-bridge-runtime))) (error \"bad M5 package smoke report: %S\" report)) (princ (nemacs-next-protocol-encode-line report)))"
+
+NEMACS_NEXT_ELPA_FIXTURE_DIR="$ELPA_FIXTURE_DIR" \
+NEMACS_USER_EMACS_DIRECTORY="$ELPA_INIT_DIR" \
+"$EMACS" -Q --batch \
+  -L "$ROOT/src" \
+  -L "$ROOT/apps/nemacs-next/lisp" \
+  --eval "(require 'nemacs-loadup)" \
+  --eval "(setq init-file-user \"\")" \
+  --eval "(nemacs-init t)" \
+  --eval "(let ((report (list :type 'package-smoke-v2 :fixture \"elpa-init\" :status \"ok\" :autoload-before-require nemacs-next-elpa-init-autoload-before-require :base-load-path (and nemacs-next-elpa-init-load-path-has-base t) :dependent-load-path (and nemacs-next-elpa-init-load-path-has-dependent t) :activation-order nemacs-next-elpa-init-activation-order :required-value nemacs-next-elpa-init-required-value :activated package--activated))) (unless (and (plist-get report :autoload-before-require) (plist-get report :base-load-path) (plist-get report :dependent-load-path) (equal (plist-get report :activation-order) '(base dependent)) (equal (plist-get report :required-value) '(dependent-ready base-ready)) (plist-get report :activated)) (error \"bad ELPA activation report: %S\" report)) (princ (format \"package-smoke-v2: activation=%S\\n\" report)))"
+
+NEMACS_NEXT_ELPA_FIXTURE_DIR="$ELPA_FIXTURE_DIR" \
+NEMACS_USER_EMACS_DIRECTORY="$ELPA_INIT_SKIP_DIR" \
+"$EMACS" -Q --batch \
+  -L "$ROOT/src" \
+  -L "$ROOT/apps/nemacs-next/lisp" \
+  --eval "(require 'nemacs-loadup)" \
+  --eval "(setq init-file-user \"\")" \
+  --eval "(nemacs-init t)" \
+  --eval "(let ((report (list :type 'package-smoke-v2 :fixture \"elpa-init-skip\" :status \"ok\" :autoload-before-require nemacs-next-elpa-skip-autoload-before-require :activated nemacs-next-elpa-skip-package-activated))) (unless (and (not (plist-get report :autoload-before-require)) (not (plist-get report :activated))) (error \"bad ELPA skip report: %S\" report)) (princ (format \"package-smoke-v2: skip=%S\\n\" report)))"
 
 if [ ! -x "$NELISP_BIN" ]; then
   echo "nemacs-next-package-smoke: nelisp binary is not executable: $NELISP_BIN" >&2
@@ -117,4 +140,4 @@ if ! grep -q '^debt=byte-compile-file$' "$out"; then
   exit 1
 fi
 
-echo "nemacs-next-package-smoke: host package fixture + standalone load sanity ok"
+echo "nemacs-next-package-smoke: host package fixture + ELPA activation + standalone load sanity ok"
