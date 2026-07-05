@@ -23,6 +23,9 @@ apps/nemacs-next/
   lisp/nemacs-next-session.el
   fixtures/m5-package/nemacs-next-m5-fixture.el
   fixtures/m5-package/nemacs-next-m5-fixture-extra.el
+  frontends/gui/nemacs-next-gui
+  frontends/gui/smoke.sh
+  frontends/gui/README
   frontends/tui/nemacs-next-tui
   frontends/tui/smoke.sh
   frontends/tui/README
@@ -57,6 +60,7 @@ apps/nemacs-next/scripts/m4-gui-shell-smoke.sh
 apps/nemacs-next/scripts/package-smoke.sh
 apps/nemacs-next/scripts/theme-smoke.sh
 apps/nemacs-next/frontends/tui/smoke.sh
+apps/nemacs-next/frontends/gui/smoke.sh
 #+end_src
 
 The host smoke uses Emacs to prove that the app contract loads
@@ -106,3 +110,9 @@ vendor =tool-bar-setup= sequence: New File, Open, Dired, Close, Save,
 Undo, Cut, Copy, Paste, Search, with the vendor separators preserved.
 Use =F10= or =M-`= to focus it, Left/Right to move, RET to invoke, and
 ESC to leave toolbar focus.
+
+The GUI smoke starts a private Xvfb server and launches
+=frontends/gui/nemacs-next-gui=.  It verifies that an X11 window maps,
+captures the framebuffer and checks that rendered glyphs produce non-empty
+pixel contrast, then drives =C-x C-f= / text insertion / =C-x C-s= through
+=xdotool= and asserts the saved file content.

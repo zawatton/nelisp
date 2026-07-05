@@ -445,6 +445,14 @@ handle_byte() {
   fi
 
   case "$ch" in
+    q)
+      if [ "${NEMACS_NEXT_TUI_Q_QUITS:-0}" = 1 ]; then
+        quit_requested=1
+      else
+        send_message text "$ch"
+        draw
+      fi
+      ;;
     $'\003')
       quit_requested=1
       ;;

@@ -1,0 +1,40 @@
+nemacs-next GUI v1
+==================
+
+Launch:
+
+  apps/nemacs-next/frontends/gui/nemacs-next-gui
+
+The current v1 route is a thin X11 terminal shim around the existing
+nemacs-next M4 session frontend.  It opens a real X11 window with xterm,
+honors DISPLAY values of the form :N, :N.S, host:N, and host:N.S, and passes
+NEMACS_NEXT_GUI_WIDTH / NEMACS_NEXT_GUI_HEIGHT through to the M4 frame
+snapshot request.
+
+Why this route:
+
+The raw-X11 Elisp spike proves that a pure-Elisp/AOT client can open a window,
+load a core font, and blit glyphs.  For increments 1-2, the blocker for using
+that path end-to-end is not drawing; it is live persistent-session I/O and
+dynamic frame transport without adding a second app protocol or changing the
+legacy GUI transport.  The v1 shim keeps editor semantics in
+nemacs-next-session and gives users a real X11 window now.  The raw-X11/AOT
+client remains the intended replacement for the xterm process once the frontend
+has a narrow event/frame transport.
+
+Works now:
+
+- real X11 window on DISPLAY
+- M4 frame rendering through the same snapshot path as the TUI
+- toolbar row text from the protocol data
+- printable keys, arrows, RET, DEL/Backspace, C-f/C-b/C-n/C-p, C-/ undo
+- C-x C-f, C-x C-s, C-x C-c
+- q exits when launched through this GUI wrapper
+
+Deferred:
+
+- raw-X11/AOT live renderer replacing the xterm shim
+- mouse clicks and toolbar hit testing
+- native menus
+- OS clipboard integration
+- OS IME integration beyond terminal text commit
