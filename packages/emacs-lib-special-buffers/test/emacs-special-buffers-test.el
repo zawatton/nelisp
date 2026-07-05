@@ -67,7 +67,8 @@
   (should (equal "" (emacs-special-buffers-default-text
                      emacs-special-buffers-messages-name)))
   (should (equal "" (emacs-special-buffers-default-text
-                     emacs-special-buffers-warnings-name))))
+                     emacs-special-buffers-warnings-name)))
+  (should message-log-max))
 
 (ert-deftest emacs-special-buffers-test/message-and-warning-append ()
   (emacs-special-buffers-test--with-fresh-world

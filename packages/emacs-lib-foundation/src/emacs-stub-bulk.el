@@ -296,7 +296,7 @@ Forwarder to `forward-char' with negated count."
     history-length horizontal-scroll-bar inhibit-changing-match-data inhibit-field-text-motion inhibit-modification-hooks inhibit-nul-byte-detection inhibit-null-byte-detection inhibit-point-motion-hooks
     inhibit-read-only input-decode-map input-method-function jka-compr-load-suffixes keyboard-translate-table kill-buffer-hook kill-buffer-query-functions lexical-binding
     line-spacing load-dangerous-libraries load-file-name load-file-rep-suffixes load-history load-path load-suffixes macro-declarations-alist
-    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended max-lisp-eval-depth menu-prompting message-log-max
+    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended max-lisp-eval-depth menu-prompting
     messages-buffer-max-lines minibuffer-auto-raise minibuffer-default-prompt-format minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
     most-negative-fixnum most-positive-fixnum native-comp-deferred-compilation native-comp-enable-subr-trampolines native-comp-jit-compilation needed noninteractive obarray
     operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
