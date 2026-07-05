@@ -12600,3 +12600,70 @@ path:
    =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
    =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
    with =void-function Info-find-file=.
+
+233. Easymenu conversion memo aliasing fixed after cold-image bisect,
+   2026-07-05.  The bisect note
+   =tmp-diag/e2e-regression-bisect.md= identified =a6868f72=, the
+   easymenu substrate port, as the first bad commit for the cold-image
+   pipeline: =433ee459= was the last good e2e run at about 979 MiB, while
+   =a6868f72= and descendants produced a larger image and cold-boot
+   reader crash in the env mirror walk.
+
+   Upstream semantics check: both the vendored
+   =vendor/emacs-lisp/emacs-lisp/easymenu.el= and host Emacs 30.1
+   =easymenu.el= keep =easy-menu-converted-items-table= and return the
+   memoized conversion cell directly.  They rely on their menu-building
+   insertion paths not mutating the returned binding tail.  The local
+   substrate feeds converted cells into local keymap mutation helpers
+   during batch/runtime-image setup, so the cache is now treated as a
+   template: =easy-menu-convert-item= stores the converted result but
+   returns =(copy-tree ...)= for every call.  This keeps the upstream cache
+   behavior while preventing one keymap insertion or replacement path from
+   sharing mutable cons structure with another.
+
+   Implementation: =src/emacs-keymap-builtins.el= now requires
+   =emacs-list= for the portable =copy-tree= shim, returns deep copies from
+   =easy-menu-convert-item=, and documents why this substrate diverges from
+   upstream's direct cache return.  The generated package scaffold copy
+   =packages/nelisp-emacs-core/lisp/emacs-keymap-builtins.el= was refreshed
+   by =make nemacs-library-package-scaffold build-nelisp-bootstrap= after
+   deleting the gitignored =build/nemacs-bootstrap.el= and
+   =build/nemacs-bootstrap.repl= artifacts.
+
+   Focused ERT: =test/emacs-keymap-builtins-test.el= adds
+   =emacs-keymap-builtins-test/easy-menu-convert-item-cache-returns-fresh-conses=,
+   which forces the local bridge conversion path, mutates one returned
+   conversion in place, and proves a subsequent conversion of the same
+   item returns fresh, unpoisoned cons structure.  Focused host ERT
+   =test/emacs-keymap-builtins-test.el= passed 18/18.
+
+   Cold-image e2e was run once from the operator-guaranteed reader clone
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= at reader
+   binary provenance =7aa3ed8b=, without rebuilding that clone:
+   =NELISP_E2E_KEEP=1 timeout 900 bash scripts/cold-image-org-e2e.sh 1=.
+   Result: exit 0, =RESULT: IDENTICAL=, cold-boot probe
+   =(t t t t (interactive) t)=, cold-boot peak RSS 1191820 KB, and image
+   =/tmp/cold-image-org-e2e.5U68yd/org-run1.img= size 1,219,237,408 B.
+   This fixes the cold-boot crash, but the image did not return to the
+   earlier ~979 MiB baseline; the remaining size delta is therefore still
+   visible after the aliasing fix and should be tracked separately from
+   this crash unblock.
+
+   Activation probe against that kept image, exact form
+   =(with-temp-buffer (org-mode) (nl-write-file "/tmp/om.txt"
+   (symbol-name major-mode)))= with =timeout 180=: exit 1, stdout empty,
+   =/tmp/om.txt= missing, stderr rendered as
+   =nelisp: uncaught error: void-variable: (LULF\0\0\0\0...\0F\0\0\0\0)=
+   with corrupted/NUL bytes in the symbol name.  Since =org-mode= was not
+   written, the requested =org-element-parse-buffer= parse probe was not
+   run.
+
+   Final verification: =make test-fast= ran 1079 tests with 1073 expected
+   results and the same 6 known unexpected failures only:
+   =emacs-redisplay-test-mode-line-full-width-inverse=,
+   =emacs-redisplay-test-redisplay-truncates-long-line=,
+   =emacs-redisplay-test-redisplay-window-narrow-region=,
+   =emacs-redisplay-test/core-initial-paint-produces-output=,
+   =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=.
