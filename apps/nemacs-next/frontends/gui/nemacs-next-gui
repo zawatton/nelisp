@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=${NEMACS_NEXT_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd -P)}
+TUI=${NEMACS_NEXT_GUI_TUI:-$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui}
+WIDTH=${NEMACS_NEXT_GUI_WIDTH:-${NEMACS_NEXT_TUI_WIDTH:-80}}
+HEIGHT=${NEMACS_NEXT_GUI_HEIGHT:-${NEMACS_NEXT_TUI_HEIGHT:-24}}
+FONT=${NEMACS_NEXT_GUI_FONT:-fixed}
+TITLE=${NEMACS_NEXT_GUI_TITLE:-nemacs-next GUI}
+DISPLAY_VALUE=${DISPLAY:-}
+
+usage() {
+  cat <<'EOF'
+Usage: nemacs-next-gui [--help]
+
+Start the nemacs-next M4 frontend in a real X11 window.
+
+Environment:
+  DISPLAY                  X11 display, supports :N, :N.S, host:N, host:N.S
+  NEMACS_NEXT_GUI_WIDTH    frame width in character cells, default 80
+  NEMACS_NEXT_GUI_HEIGHT   frame height in rows, default 24
+  NEMACS_NEXT_GUI_FONT     X core font name for xterm, default fixed
+  NEMACS_NEXT_GUI_XTERM    xterm executable, default xterm
+EOF
+}
+
+parse_display_number() {
+  local value=$1 rest number
+  case "$value" in
+    *:*) rest=${value##*:} ;;
+    *) return 1 ;;
+  esac
+  number=${rest%%.*}
+  case "$number" in
+    ''|*[!0-9]*) return 1 ;;
+    *) printf '%s\n' "$number" ;;
+  esac
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage
+  exit 0
+fi
+
+if [ -z "$DISPLAY_VALUE" ]; then
+  echo "nemacs-next-gui: DISPLAY is not set" >&2
+  exit 2
+fi
+
+if ! parse_display_number "$DISPLAY_VALUE" >/dev/null; then
+  echo "nemacs-next-gui: unsupported DISPLAY syntax: $DISPLAY_VALUE" >&2
+  exit 2
+fi
+
+if [ ! -x "$TUI" ]; then
+  echo "nemacs-next-gui: TUI frontend is not executable: $TUI" >&2
+  exit 1
+fi
+
+XTERM=${NEMACS_NEXT_GUI_XTERM:-xterm}
+if ! command -v "$XTERM" >/dev/null 2>&1; then
+  echo "nemacs-next-gui: xterm is required for the current GUI v1 shim" >&2
+  exit 127
+fi
+
+case "$WIDTH" in ''|*[!0-9]*) WIDTH=80 ;; esac
+case "$HEIGHT" in ''|*[!0-9]*) HEIGHT=24 ;; esac
+
+export NEMACS_NEXT_TUI_WIDTH=$WIDTH
+export NEMACS_NEXT_TUI_HEIGHT=$HEIGHT
+export NEMACS_NEXT_TUI_DRAW=always
+export NEMACS_NEXT_TUI_Q_QUITS=1
+
+exec "$XTERM" \
+  -class NemacsNextGUI \
+  -name nemacs-next-gui \
+  -T "$TITLE" \
+  -geometry "${WIDTH}x${HEIGHT}" \
+  -fn "$FONT" \
+  -e "$TUI"
