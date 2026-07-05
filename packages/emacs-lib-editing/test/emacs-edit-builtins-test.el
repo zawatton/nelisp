@@ -53,7 +53,9 @@ Also resets kill-ring + kill-ring-yank-pointer."
   (should (boundp 'kill-ring))
   (should (boundp 'kill-ring-max))
   (should (boundp 'kill-ring-yank-pointer))
-  (should (boundp 'last-command-event)))
+  (should (boundp 'last-command-event))
+  (should (boundp 'line-move-ignore-invisible))
+  (should (boundp 'auto-fill-inhibit-regexp)))
 
 ;;;; B. self-insert-command body — inserts char N times
 
