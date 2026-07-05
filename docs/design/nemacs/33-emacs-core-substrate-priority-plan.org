@@ -12345,3 +12345,120 @@ path:
    invocation error (=load-ok-count=1/1= with proof false); the corrected
    invocation expanded the 68 file names and completed =status=done=,
    exit 0, elapsed 350.19 s.
+
+229. Iterative substrate gap-fill round 2 stopped on reproduced activation
+   crash, 2026-07-05.  Entry state requested for this round was the
+   post-reader-fix probe blocker
+   =nelisp: uncaught error: void-function: (easy-menu-change)= from
+   =(with-temp-buffer (org-mode) (prin1 major-mode))=.  This checkout was
+   verified at =f19f595b= on branch =integ/org-agenda-daily=, with the
+   diagnostics reader clone at
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture=,
+   branch =segv-diag=, commit =23ab8670=, and its built
+   =target/nelisp=.  The sibling =dev/nelisp= main checkout was also
+   verified at merge commit =52928050=.
+
+   Preflight regenerated scaffold/bootstrap with
+   =make nemacs-library-package-scaffold build-nelisp-bootstrap=; it
+   completed successfully and produced no git diff.  A fresh cold image was
+   then built with the clone script using =NELISP_E2E_KEEP=1= and
+   =NELISP_LIB_ROOT= pointing at this checkout.  The run kept
+   =/tmp/cold-image-org-e2e.V1Ebb0=, reported replay-load 6.665 s,
+   dump 0.527 s, cold boot 0.507 s, cold-boot peak RSS 513432 KB, and
+   identical faithfulness columns =(t t t t (interactive) t)=.
+
+   Probe (b), exact form =(with-temp-buffer (org-mode) (prin1
+   major-mode))=, timeout 120, RSS abort 8 GiB, one reader, against
+   =/tmp/cold-image-org-e2e.V1Ebb0/org-run1.img=: exit 139,
+   killed=none, probe-side peak RSS 1808 KB, stdout empty, stderr empty;
+   the shell emitted =Segmentation fault= for the timed reader command.
+   Rebuilding bootstrap before image generation did not change this outcome.
+   This means the round did not reach the expected =easy-menu-change=
+   missing-symbol blocker in this session, so no =easymenu.el= symbols were
+   ported and probe (c) / =org-element-parse-buffer= was not run.  Per the
+   iterative gap-fill rule, the loop stopped early on the crash rather than
+   chasing a non-reproducible missing-symbol state.
+
+   A one-shot check of the image command entry points also failed before
+   any useful Elisp result: both =eval-runtime-image= and
+   =exec-runtime-image= against the same image/form exited 1 with stderr
+   beginning =nelisp: uncaught error: void-variable:= followed by corrupted
+   symbol bytes.  This was recorded only to distinguish the stdin
+   cold-load crash from alternate invocation behavior; it was not used as a
+   substrate fix target.
+
+   Final verification after the early stop: =make test-fast= ran 1075
+   tests with 1069 expected results and the same 6 known unexpected
+   failures only (=emacs-redisplay-test= x5 plus
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=).  The preserved 68-file Org-chain
+   gate was run once with
+   =make diagnose-vendor-repl-replay-fast=,
+   =VENDOR_FAST_FILES= from
+   =tmp-diag/org-chain-68-files-item222.txt=,
+   =VENDOR_FAST_PROOF_FORM_FILE=tmp-diag/proof-item225-org-chain-plus-backquote.el=,
+   =VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+   =NELISP_BIN=vendor/nelisp/target/nelisp= after killing only
+   =[v]endor/nelisp/target/nelisp=; it completed =status=done=,
+   exit 0, elapsed 349.51 s.  Two earlier accidental invocations of the
+   fast gate used the target defaults (=simple.el= only) before the correct
+   =VENDOR_FAST_*= variables were applied; both default runs exited 0 and
+   were not counted as the required Org gate.
+
+230. Easymenu batch/keymap substrate ported for in-buffer Org activation,
+   2026-07-05.  Iteration log: =easy-menu-change= and the directly needed
+   easymenu siblings were added under the =emacs-keymap-builtins.el= CORE
+   owner, with the generated
+   =packages/nelisp-emacs-core/lisp/emacs-keymap-builtins.el= scaffold
+   refreshed by =make nemacs-library-package-scaffold
+   build-nelisp-bootstrap=.  The port keeps upstream-style keymap
+   construction/mutation for =easy-menu-create-menu=,
+   =easy-menu-add-item=, =easy-menu-change=,
+   =easy-menu-remove-item= / =easy-menu-item-present-p=,
+   =easy-menu-define= / =easy-menu-do-define=, and lookup helpers.
+   Pure menu-bar display entry points that have no batch/session effect
+   remain documented no-ops following upstream behavior:
+   =easy-menu-remove= and =easy-menu-add= alias =ignore=; popup display is
+   represented by a no-display interactive command because GUI adapters own
+   real menu presentation.
+
+   Focused host ERT for the owning module:
+   =test/emacs-keymap-builtins-test.el= 16/16 PASS, including a new
+   =easy-menu-change= regression that creates an =Agenda= menu, replaces
+   the =Agenda Files= submenu, and verifies the converted vector items in
+   the resulting keymap.
+
+   Required diagnostics-reader provenance was attempted in
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= and confirmed
+   at =596cf204= (=Fix unwind-protect cleanup error swallowing=).  The
+   required =make standalone-reader= did not complete, so this round did
+   not build a fresh cold image and did not run the org-mode or
+   =org-element-parse-buffer= cold probes.  The normal reader build failed
+   before linking in =nelisp-standalone--reader-neln-demo-build-spec= with
+   =wrong-type-argument (stringp nil)= while decoding
+   =:text-base64=.  A dynamic-reader retry was also not usable in this
+   sandbox because it tried to create
+   =target/standalone-units/linux-x86_64-dyn= inside the read-only clone
+   checkout and failed with =file-error ("Creating directory" "Read-only
+   file system" ...)=.  Per the provenance rule, the existing executable
+   =target/nelisp= in the clone was treated as potentially stale and was not
+   used for cold-image probing.
+
+   Final org-mode probe state: not run because the required reader build
+   failed before cold-image generation.  Final parse-buffer probe state:
+   not run for the same reason; no parse failure was chased.
+
+   Final verification for this checkout: =make test-fast= ran 1076 tests
+   with 1070 expected results and the same 6 known unexpected failures only
+   (=emacs-redisplay-test= x5 plus
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=).  The preserved 68-file Org-chain
+   gate was run once with =make diagnose-vendor-repl-replay-fast=,
+   =VENDOR_FAST_FILES= from =tmp-diag/org-chain-68-files-item222.txt=,
+   =VENDOR_FAST_PROOF_FORM_FILE=tmp-diag/proof-item225-org-chain-plus-backquote.el=,
+   =VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+   =NELISP_BIN=vendor/nelisp/target/nelisp= after killing only
+   =[v]endor/nelisp/target/nelisp=; it completed =status=done=, exit 0,
+   elapsed 348.06 s.

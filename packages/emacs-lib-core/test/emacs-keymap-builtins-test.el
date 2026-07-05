@@ -30,7 +30,9 @@
                  key-parse key-valid-p
                  keymap-set keymap-lookup keymap-unset
                  keymap-global-set keymap-local-set
-                 keymap-global-unset keymap-local-unset))
+                 keymap-global-unset keymap-local-unset
+                 easy-menu-change easy-menu-create-menu
+                 easy-menu-add-item easy-menu-remove-item))
     (should (fboundp sym))))
 
 ;;;; B. Substrate-direct: prefixed make-* + keymapp shape
@@ -229,6 +231,37 @@ P2 can verify the command-surface keymap behavior directly."
                          "(defalias 'key-valid-p #'emacs-keymap-key-valid-p"))
         (goto-char (point-min))
         (should (search-forward snippet nil t))))))
+
+;;;; G3. Easymenu batch/keymap substrate
+
+(ert-deftest emacs-keymap-builtins-test/easy-menu-change-mutates-submenu-keymap ()
+  (let ((map (emacs-keymap-make-sparse-keymap)))
+    (easy-menu-add-item map nil (easy-menu-create-menu "Agenda" nil))
+    (easy-menu-change
+     '("Agenda") "Agenda Files"
+     (list ["Edit File List" org-edit-agenda-file-list t]
+           "--"
+           ["one.org" find-file t])
+     nil map)
+    (let* ((agenda-binding
+            (emacs-keymap-lookup-key map (vector (easy-menu-intern "Agenda"))))
+           (agenda-map (nth 2 agenda-binding))
+           (files-binding
+            (emacs-keymap-lookup-key agenda-map
+                                     (vector (easy-menu-intern "Agenda Files"))))
+           (files-map (nth 2 files-binding)))
+      (should (eq 'menu-item (car-safe agenda-binding)))
+      (should (eq 'menu-item (car-safe files-binding)))
+      (should (keymapp files-map))
+      (should (equal (emacs-keymap-keymap-prompt files-map) "Agenda Files"))
+      (should (eq 'org-edit-agenda-file-list
+                  (nth 2 (emacs-keymap-lookup-key
+                          files-map
+                          (vector (easy-menu-intern "Edit File List"))))))
+      (should (eq 'find-file
+                  (nth 2 (emacs-keymap-lookup-key
+                          files-map
+                          (vector (easy-menu-intern "one.org")))))))))
 
 ;;;; H. Idempotence
 
