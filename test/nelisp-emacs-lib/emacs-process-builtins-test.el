@@ -30,7 +30,7 @@
 (ert-deftest emacs-process-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-process-builtins))
   (should (featurep 'emacs-process))
-  (dolist (sym '(call-process call-process-region
+  (dolist (sym '(call-process call-process-region process-file
                  start-process make-process
                  processp process-list process-status
                  process-exit-status process-buffer process-name
@@ -448,7 +448,7 @@
     (should (and file (file-exists-p file)))
     (with-temp-buffer
       (insert-file-contents file)
-      (dolist (sym '(call-process call-process-region start-process
+      (dolist (sym '(call-process call-process-region process-file start-process
                      make-process processp process-list process-status
                      process-exit-status process-buffer process-name
                      process-command process-live-p process-id process-mark
@@ -478,8 +478,19 @@
     (should (null (emacs-process--call-process-target-buffer nil)))
     (should (null (emacs-process--call-process-target-buffer 0)))
     (should (eq (current-buffer) (emacs-process--call-process-target-buffer t)))
+    (should (bufferp (emacs-process--call-process-target-buffer " *named*")))
+    (should (null (emacs-process--call-process-target-buffer '(:file "/tmp/out"))))
     ;; A list uses its car (the stdout destination).
     (should (eq (current-buffer) (emacs-process--call-process-target-buffer '(t "errs"))))))
+
+(ert-deftest emacs-process-builtins-test/call-process-target-file ()
+  (should (null (emacs-process--call-process-target-file nil)))
+  (should (null (emacs-process--call-process-target-file t)))
+  (should (equal (emacs-process--call-process-target-file '(:file "/tmp/out"))
+                 "/tmp/out"))
+  (should (equal (emacs-process--call-process-target-file
+                  '((:file "/tmp/stdout") nil))
+                 "/tmp/stdout")))
 
 (ert-deftest emacs-process-builtins-test/standalone-call-process-captures-stdout ()
   "stdout is drained chunk-by-chunk (to the nil EOF marker) into DESTINATION."
@@ -492,7 +503,7 @@
               ((symbol-function 'nelisp-process-wait)
                (lambda (_proc) (setq waited t) 0)))
       (with-temp-buffer
-        (let ((rc (emacs-process--standalone-call-process "/bin/echo" t '("hi"))))
+        (let ((rc (emacs-process--standalone-call-process "/bin/echo" nil t '("hi"))))
           (should (eq rc 0))
           (should waited)
           (should (equal (buffer-string) "hello world\n")))))))
@@ -504,9 +515,70 @@
               ((symbol-function 'nelisp-process-read-output) (lambda (_p _n) (pop chunks)))
               ((symbol-function 'nelisp-process-wait) (lambda (_p) 3)))
       (with-temp-buffer
-        (let ((rc (emacs-process--standalone-call-process "/bin/false" nil '())))
+        (let ((rc (emacs-process--standalone-call-process "/bin/false" nil nil '())))
           (should (eq rc 3))
           (should (equal (buffer-string) "")))))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-writes-file-destination ()
+  "(:file FILE) destinations are written by the standalone capture path."
+  (let ((chunks (list "file-output\n"))
+        (file (make-temp-file "emacs-process-dest-")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'nelisp-process-start) (lambda (&rest _) 'p))
+                  ((symbol-function 'nelisp-process-read-output)
+                   (lambda (_p _n) (pop chunks)))
+                  ((symbol-function 'nelisp-process-wait) (lambda (_p) 0)))
+          (let ((rc (emacs-process--standalone-call-process
+                     "/bin/echo" nil (list :file file) '("ignored"))))
+            (should (eq rc 0))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "file-output\n"))))
+      (ignore-errors (delete-file file)))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-infile-shell-wrapper ()
+  "INFILE is represented through the shell redirection wrapper."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'nelisp-process-start)
+               (lambda (&rest command) (setq captured command) 'p))
+              ((symbol-function 'nelisp-process-read-output) (lambda (_p _n) nil))
+              ((symbol-function 'nelisp-process-wait) (lambda (_p) 0)))
+      (should (eq (emacs-process--standalone-call-process
+                   "/bin/cat" "/tmp/input.txt" nil '("--flag"))
+                  0))
+      (should (equal captured
+                     (list emacs-process-shell-file-name
+                           emacs-process-shell-command-switch
+                           "infile=$1; shift; exec \"$@\" < \"$infile\""
+                           "emacs-process-call-process"
+                           "/tmp/input.txt"
+                           "/bin/cat"
+                           "--flag"))))))
+
+(ert-deftest emacs-process-builtins-test/process-file-local-uses-call-process ()
+  "Local process-file dispatches through the call-process substrate."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'emacs-process-call-process)
+               (lambda (&rest args) (setq captured args) 0)))
+      (should (eq (emacs-process-process-file
+                   "/bin/echo" nil t nil "local")
+                  0))
+      (should (equal captured '("/bin/echo" nil t nil "local"))))))
+
+(ert-deftest emacs-process-builtins-test/process-file-handler-dispatch ()
+  "A file-name handler gets first chance to implement process-file."
+  (let ((file-name-handler-alist
+         (list (cons "\\`/remote:" #'emacs-process-builtins-test--handler)))
+        (inhibit-file-name-handlers nil)
+        (captured nil))
+    (cl-letf (((symbol-function 'emacs-process-builtins-test--handler)
+               (lambda (&rest args) (setq captured args) 42)))
+      (should (eq (emacs-process-process-file
+                   "/remote:/bin/git" nil t nil "--version")
+                  42))
+      (should (equal captured
+                     '(process-file "/remote:/bin/git" nil t nil "--version"))))))
 
 (provide 'emacs-process-builtins-test)
 

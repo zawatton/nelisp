@@ -26,7 +26,7 @@
 ;; binding), we signal rather than recurse.
 ;;
 ;; Bridged API (γ MVP):
-;;   - call-process / call-process-region
+;;   - call-process / call-process-region / process-file
 ;;   - start-process / make-process (= placeholder for async)
 ;;   - processp / process-list / process-status /
 ;;     process-exit-status / process-buffer / process-name
@@ -65,6 +65,7 @@
 (declare-function nelisp-process-start "nelisp-process" (program &rest args))
 (declare-function nelisp-process-wait "nelisp-process" (proc))
 (declare-function nelisp-process-read-output "nelisp-process" (proc n))
+(declare-function find-file-name-handler "files" (filename operation))
 
 ;;;; --- delegate plumbing ---------------------------------------------
 
@@ -320,6 +321,7 @@ the lower event loop / pipe implementation is still being integrated."
 Avoids infinite recursion when the bridge has aliased the
 unprefixed name to one of our substrate functions."
   (and (fboundp sym)
+       (fboundp 'indirect-function)
        (let ((our-prefixed
               (intern-soft (concat "emacs-process-"
                                    (symbol-name sym)))))
@@ -395,22 +397,105 @@ not do (it returns only an exit code and leaks stdout to the parent)."
        (fboundp 'nelisp-process-wait)
        (fboundp 'nelisp-process-read-output)))
 
+(defun emacs-process--call-process-real-destination (destination)
+  "Return the stdout destination part of call-process DESTINATION."
+  (if (and (consp destination)
+           (not (eq (car destination) :file)))
+      (car destination)
+    destination))
+
 (defun emacs-process--call-process-target-buffer (destination)
   "Resolve the stdout buffer for call-process DESTINATION, or nil to discard.
-Covers the part of the Emacs DESTINATION contract we support: nil / 0
-discard; t = current buffer; a string names a buffer; a buffer object is
-used directly; a list uses its car (the stdout destination)."
-  (cond
-   ((null destination) nil)
-   ((eq destination 0) nil)
-   ((eq destination t) (current-buffer))
-   ((stringp destination) (get-buffer-create destination))
-   ((consp destination)
-    (emacs-process--call-process-target-buffer (car destination)))
-   ((and (fboundp 'bufferp) (not (bufferp destination))) (current-buffer))
-   (t destination)))
+Covers nil / 0 discard; t = current buffer; a buffer name string; a buffer
+object; and list destinations via their stdout car.  `(:file FILE)' returns
+nil because file output is handled separately."
+  (let ((real (emacs-process--call-process-real-destination destination)))
+    (cond
+     ((null real) nil)
+     ((eq real 0) nil)
+     ((eq real t) (current-buffer))
+     ((and (consp real) (eq (car real) :file)) nil)
+     ((stringp real) (get-buffer-create real))
+     ((and (fboundp 'bufferp) (bufferp real)) real)
+     ((not (fboundp 'bufferp)) real)
+     (t nil))))
 
-(defun emacs-process--standalone-call-process (program destination args)
+(defun emacs-process--call-process-target-file (destination)
+  "Resolve the stdout file for call-process DESTINATION, or nil."
+  (let ((real (emacs-process--call-process-real-destination destination)))
+    (and (consp real)
+         (eq (car real) :file)
+         (stringp (cadr real))
+         (cadr real))))
+
+(defun emacs-process--write-string-to-file (text file)
+  "Write TEXT to FILE, replacing any existing contents."
+  (cond
+   ((fboundp 'nl-write-file)
+    (nl-write-file file text))
+   ((fboundp 'write-region)
+    (with-temp-buffer
+      (insert text)
+      (write-region (point-min) (point-max) file nil 'silent)))
+   (t
+    (signal 'emacs-process-not-implemented (list 'write-region)))))
+
+(defun emacs-process--insert-call-process-output (destination output)
+  "Insert or write call-process OUTPUT according to DESTINATION."
+  (let ((target (emacs-process--call-process-target-buffer destination))
+        (file (emacs-process--call-process-target-file destination)))
+    (cond
+     (file (emacs-process--write-string-to-file output file))
+     (target
+      (with-current-buffer target
+        (insert output))))))
+
+(defun emacs-process--program-name-absolute-p (program)
+  "Return non-nil when PROGRAM already names a path."
+  (and (stringp program)
+       (or (string-match-p "/" program)
+           (and (> (length program) 1)
+                (eq (aref program 1) ?:)))))
+
+(defun emacs-process--resolve-program (program)
+  "Resolve PROGRAM through `exec-path' for standalone process primitives."
+  (cond
+   ((not (stringp program)) program)
+   ((emacs-process--program-name-absolute-p program) program)
+   ((fboundp 'executable-find)
+    (or (executable-find program) program))
+   ((boundp 'exec-path)
+    (catch 'found
+      (dolist (dir exec-path)
+        (let ((candidate (concat (if (and (> (length dir) 0)
+                                          (= (aref dir (1- (length dir))) ?/))
+                                     dir
+                                   (concat dir "/"))
+                                 program)))
+          (when (and (fboundp 'file-executable-p)
+                     (file-executable-p candidate))
+            (throw 'found candidate))
+          (when (and (not (fboundp 'file-executable-p))
+                     (fboundp 'file-exists-p)
+                     (file-exists-p candidate))
+            (throw 'found candidate))))
+      program))
+   (t program)))
+
+(defun emacs-process--call-process-command (program infile args)
+  "Return command list for PROGRAM ARGS with optional INFILE redirection."
+  (setq program (emacs-process--resolve-program program))
+  (if infile
+      (append (list emacs-process-shell-file-name
+                    emacs-process-shell-command-switch
+                    "infile=$1; shift; exec \"$@\" < \"$infile\""
+                    "emacs-process-call-process"
+                    infile
+                    program)
+              args)
+    (cons program args)))
+
+(defun emacs-process--standalone-call-process (program infile destination args)
   "Run PROGRAM with ARGS synchronously via the nelisp-process async
 primitives, capturing stdout and inserting it per call-process
 DESTINATION.  Returns the child's integer exit code.
@@ -423,32 +508,33 @@ returns an exit code and leaks the child's stdout to the parent.
 data is buffered *yet*, not only at EOF), so we `nelisp-process-wait'
 for the child to exit first and then drain the buffered stdout to the
 nil EOF marker -- the ordering the reader's own process smoke uses.
-Stdin redirection (INFILE) is not handled here; the caller routes INFILE
-cases to the generic delegate instead.
+INFILE is handled through a small `/bin/sh -c' wrapper because the current
+reader primitive surface has no direct child-stdin redirection parameter.
 
 Caveat: draining after exit assumes the child's total stdout fits the
 reader's stdout buffer; multi-megabyte streaming output is out of scope
 for this synchronous path."
-  (let* ((proc (apply #'nelisp-process-start program args))
+  (let* ((command (emacs-process--call-process-command program infile args))
+         (proc (apply #'nelisp-process-start command))
          (rc (nelisp-process-wait proc))
          (out "")
          (chunk nil))
     (while (setq chunk (nelisp-process-read-output proc 65536))
       (setq out (concat out chunk)))
-    (let ((target (emacs-process--call-process-target-buffer destination)))
-      (when (and target (> (length out) 0))
-        (with-current-buffer target (insert out)))
-      (if (integerp rc) rc 0))))
+    (when (> (length out) 0)
+      (emacs-process--insert-call-process-output destination out))
+    (if (integerp rc) rc 0)))
 
 (defun emacs-process-call-process (program &optional infile destination
                                            display &rest args)
   "Synchronous program execution.  See `call-process' for semantics.
 
-On the standalone reader, when stdin is not redirected (INFILE nil) and
-the nelisp-process async capture primitives are available, route through
+On the standalone reader, when the nelisp-process async capture
+primitives are available, route through
 `emacs-process--standalone-call-process' so stdout is actually captured
-into DESTINATION (the synchronous facade returns only an exit code and
-leaks stdout to the parent).
+into DESTINATION.  INFILE is supported through a small shell redirection
+wrapper because the reader primitive surface does not yet expose direct
+child-stdin redirection.
 
 Otherwise, when no host binding and no standalone primitive exists,
 degrade GRACEFULLY: return a non-zero exit code (1, = \"program failed\")
@@ -457,9 +543,8 @@ feature/tool detection in vendor packages (e.g. org.el probing for
 external tools via `(eq 0 (call-process ...))') then treats the tool as
 unavailable and proceeds, rather than aborting the whole load."
   (if (and (emacs-standalone-mode-p)
-           (null infile)
            (emacs-process--standalone-capture-available-p))
-      (emacs-process--standalone-call-process program destination args)
+      (emacs-process--standalone-call-process program infile destination args)
     (condition-case nil
         (emacs-process--delegate 'call-process
                                  (cons program (cons infile (cons destination
@@ -473,6 +558,59 @@ unavailable and proceeds, rather than aborting the whole load."
   (emacs-process--delegate 'call-process-region
                            (append (list start end program delete buffer display)
                                    args)))
+
+(defun emacs-process--find-file-name-handler (filename operation)
+  "Return file-name handler for FILENAME and OPERATION, if any."
+  (cond
+   ((fboundp 'find-file-name-handler)
+    (find-file-name-handler filename operation))
+   ((and (boundp 'file-name-handler-alist)
+         file-name-handler-alist
+         (stringp filename))
+    (catch 'handler
+      (dolist (entry file-name-handler-alist)
+        (when (and (consp entry)
+                   (functionp (cdr entry))
+                   (string-match-p (car entry) filename)
+                   (not (and (boundp 'inhibit-file-name-handlers)
+                             (memq (cdr entry) inhibit-file-name-handlers))))
+          (throw 'handler (cdr entry))))
+      nil))
+   (t nil)))
+
+(defun emacs-process--process-file-handler-filename (program infile destination)
+  "Return the first filename whose handler should receive `process-file'."
+  (cond
+   ((and (stringp program)
+         (emacs-process--find-file-name-handler program 'process-file))
+    program)
+   ((and (stringp infile)
+         (emacs-process--find-file-name-handler infile 'process-file))
+    infile)
+   ((and (consp destination)
+         (eq (car destination) :file)
+         (stringp (cadr destination))
+         (emacs-process--find-file-name-handler (cadr destination)
+                                                'process-file))
+    (cadr destination))
+   (t nil)))
+
+(defun emacs-process-process-file (program &optional infile destination
+                                           display &rest args)
+  "Run PROGRAM synchronously, with file-name-handler dispatch.
+This implements the local `process-file' case by delegating to
+`emacs-process-call-process'.  Remote handlers such as Tramp get the first
+chance to handle the operation, matching the `files.el' convention."
+  (let* ((handler-file
+          (emacs-process--process-file-handler-filename
+           program infile destination))
+         (handler (and handler-file
+                       (emacs-process--find-file-name-handler
+                        handler-file 'process-file))))
+    (if handler
+        (apply handler 'process-file program infile destination display args)
+      (apply #'emacs-process-call-process
+             program infile destination display args))))
 
 ;;;; --- asynchronous: start-process / make-process -------------------
 

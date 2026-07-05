@@ -184,6 +184,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-eventloop.el= | IO/CORE | event-loop substrate | audit display/app coupling |
 | =emacs-fileio-builtins.el= | IO | unprefixed fileio shim | keep explicit shim |
 | =emacs-fileio.el= | IO | file command semantics and adapters | split pure semantics vs host ops |
+| =emacs-ffi.el= | IO | generic NeLisp runtime FFI adapter | keep adapter-gated |
 | =emacs-io.el= | IO | reusable IO/runtime package-group loader | public loader entry |
 | =files-runtime.el= | IO/FND | lightweight files runtime predicates | shared below facade and fallback substrate |
 | =emacs-network-ffi.el= | IO | network FFI adapter | keep adapter-gated |
