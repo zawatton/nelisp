@@ -20,6 +20,27 @@
 (defconst nemacs-next-session-default-buffer-name "*scratch*"
   "Default buffer name used when the session has no current buffer yet.")
 
+(defconst nemacs-next-session-gui-shell-capabilities
+  '((:surface native-window :owner frontend :path shell)
+    (:surface renderer :owner frontend :path shell)
+    (:surface keyboard-input :owner frontend :path input)
+    (:surface ime :owner frontend :path input)
+    (:surface clipboard :owner frontend :path request)
+    (:surface buffer-viewport :owner session :path snapshot)
+    (:surface modeline :owner session :path snapshot)
+    (:surface menu :owner frontend :path command)
+    (:surface toolbar :owner frontend :path command))
+  "M4 modern GUI shell capabilities exposed through the session protocol.")
+
+(defvar nemacs-next-session-frame-width 80
+  "Current protocol frame width in character cells for M4 snapshots.")
+
+(defvar nemacs-next-session-frame-height 24
+  "Current protocol frame height in character rows for M4 snapshots.")
+
+(defvar nemacs-next-session-echo-message ""
+  "Last echo-area message exported to the frontend shell.")
+
 (defun nemacs-next-session--string-equal (a b)
   "Return non-nil when A and B name the same protocol atom."
   (let ((as (if (symbolp a) (symbol-name a) a))
@@ -137,11 +158,189 @@ The text, point, and size are read through reusable buffer APIs."
              :text (and (fboundp 'nelisp-ec-buffer-string)
                         (nelisp-ec-buffer-string)))))))
 
+(defun nemacs-next-session--split-lines (text)
+  "Return TEXT split into display lines."
+  (let ((start 0)
+        lines)
+    (while (string-match "\n" text start)
+      (setq lines (cons (substring text start (match-beginning 0)) lines))
+      (setq start (match-end 0)))
+    (nreverse (cons (substring text start) lines))))
+
+(defun nemacs-next-session--truncate-line (line width)
+  "Return LINE truncated to WIDTH display cells."
+  (if (and (integerp width)
+           (> width 0)
+           (> (length line) width))
+      (substring line 0 width)
+    line))
+
+(defun nemacs-next-session--viewport-lines (text width height)
+  "Return a viewport line list for TEXT, WIDTH, and HEIGHT."
+  (let ((lines (nemacs-next-session--split-lines (or text "")))
+        (row 0)
+        out)
+    (while (and lines (< row height))
+      (setq out
+            (cons (list :row row
+                        :text (nemacs-next-session--truncate-line
+                               (car lines) width))
+                  out))
+      (setq row (+ row 1))
+      (setq lines (cdr lines)))
+    (while (< row height)
+      (setq out (cons (list :row row :text "") out))
+      (setq row (+ row 1)))
+    (nreverse out)))
+
+(defun nemacs-next-session--cursor-position (text point)
+  "Return cursor row/column for 1-based POINT in TEXT."
+  (let ((limit (max 0 (1- (or point 1))))
+        (i 0)
+        (row 0)
+        (column 0))
+    (while (and (< i limit) (< i (length text)))
+      (if (= (aref text i) ?\n)
+          (progn
+            (setq row (+ row 1))
+            (setq column 0))
+        (setq column (+ column 1)))
+      (setq i (+ i 1)))
+    (list :row row :column column)))
+
+(defun nemacs-next-session--mode-line (snapshot width)
+  "Return a modeline string for SNAPSHOT clipped to WIDTH."
+  (let* ((name (or (plist-get snapshot :buffer-name) "<no-buffer>"))
+         (file (or (plist-get snapshot :file-name) ""))
+         (modified (if (plist-get snapshot :modified) "**" "--"))
+         (raw (format " %s  %s  %s  point:%s "
+                      modified name file (or (plist-get snapshot :point) "?"))))
+    (nemacs-next-session--truncate-line raw width)))
+
+(defun nemacs-next-session-frame-snapshot (&optional width height)
+  "Return a complete M4 frame snapshot for the current buffer.
+WIDTH and HEIGHT, when supplied, update the session frame geometry."
+  (when (and (integerp width) (> width 0))
+    (setq nemacs-next-session-frame-width width))
+  (when (and (integerp height) (> height 1))
+    (setq nemacs-next-session-frame-height height))
+  (let* ((snapshot
+          (nemacs-next-session-buffer-snapshot
+           (nemacs-next-session-current-buffer-or-create)))
+         (frame-width nemacs-next-session-frame-width)
+         (frame-height nemacs-next-session-frame-height)
+         (text (or (plist-get snapshot :text) ""))
+         (body-height (max 1 (- frame-height 1)))
+         (frame
+          (list :id "main"
+                :width frame-width
+                :height frame-height
+                :cursor (nemacs-next-session--cursor-position
+                         text (plist-get snapshot :point))
+                :viewport (nemacs-next-session--viewport-lines
+                           text frame-width body-height)
+                :mode-line (nemacs-next-session--mode-line
+                            snapshot frame-width)
+                :echo nemacs-next-session-echo-message)))
+    (list :type 'snapshot
+          :version nemacs-next-session-snapshot-version
+          :protocol-version nemacs-next-protocol-version
+          :frame frame
+          :buffers (list snapshot))))
+
+(defun nemacs-next-session-frame-delta (reason snapshot)
+  "Return a frame delta for REASON using SNAPSHOT as the new frame state."
+  (list :type 'delta
+        :frame (plist-get snapshot :frame)
+        :changes (list (list :reason reason))))
+
+(defun nemacs-next-session-render-frame-text (&optional snapshot)
+  "Render SNAPSHOT, or the current frame snapshot, as plain text.
+This is a smoke/demo renderer for the M4 protocol frame payload; it is not
+a replacement for the native GUI renderer."
+  (let* ((state (or snapshot (nemacs-next-session-frame-snapshot)))
+         (frame (plist-get state :frame))
+         (lines (plist-get frame :viewport))
+         (out ""))
+    (dolist (line lines)
+      (setq out
+            (concat out
+                    (plist-get line :text)
+                    "\n")))
+    (setq out (concat out (plist-get frame :mode-line) "\n"))
+    (when (> (length (or (plist-get frame :echo) "")) 0)
+      (setq out (concat out "echo: " (plist-get frame :echo) "\n")))
+    out))
+
+(defun nemacs-next-session-menu-model ()
+  "Return the M4 menu/toolbar model.
+Items name protocol commands.  They do not duplicate command semantics in
+frontend code."
+  (list :type 'menu
+        :items
+        (list
+         (list :id "file.open" :label "Open" :command "find-file")
+         (list :id "file.save" :label "Save" :command "save-buffer")
+         (list :id "buffer.switch" :label "Switch Buffer"
+               :command "switch-to-buffer")
+         (list :id "buffer.kill" :label "Kill Buffer"
+               :command "kill-buffer"))
+        :toolbar
+        (list
+         (list :id "toolbar.open" :label "Open" :command "find-file")
+         (list :id "toolbar.save" :label "Save" :command "save-buffer")
+         (list :id "toolbar.undo" :label "Undo" :command "undo"))))
+
+(defun nemacs-next-session--clipboard-request (op &optional payload)
+  "Return a frontend clipboard request for OP and optional PAYLOAD."
+  (append (list :type 'request
+                :request-id (format "clipboard-%s" op)
+                :op op)
+          (when payload
+            (list :payload payload))))
+
+(defun nemacs-next-session--handle-input (message)
+  "Handle an M4 frontend input MESSAGE and return a frame delta."
+  (let* ((event (plist-get message :event))
+         (text (or (and (listp event) (plist-get event :text))
+                   (and (listp event) (plist-get event :commit))
+                   (plist-get message :text)))
+         (key (or (and (listp event) (plist-get event :key))
+                  (plist-get message :key)))
+         response)
+    (cond
+     ((stringp text)
+      (setq response
+            (nemacs-next-session-handle-command
+             (list :type 'command :name 'insert-text :text text))))
+     ((or (nemacs-next-session--string-equal key 'return)
+          (nemacs-next-session--string-equal key "RET")
+          (nemacs-next-session--string-equal key "Enter"))
+      (setq response
+            (nemacs-next-session-handle-command
+             '(:type command :name newline))))
+     ((or (nemacs-next-session--string-equal key 'backspace)
+          (nemacs-next-session--string-equal key "Backspace"))
+      (setq response
+            (nemacs-next-session-handle-command
+             '(:type command :name delete-char :count -1))))
+     (t
+      (setq response
+            (nemacs-next-session-error
+             'bad-input "input requires :event text/commit or a supported key"
+             message))))
+    (if (eq (plist-get response :type) 'error)
+        response
+      (nemacs-next-session-frame-delta
+       'input (nemacs-next-session-frame-snapshot)))))
+
 (defun nemacs-next-session-hello ()
   "Return a minimal protocol hello payload for frontend negotiation."
   (list :type 'hello
         :protocol-version nemacs-next-protocol-version
         :snapshot-version nemacs-next-session-snapshot-version
+        :gui-shell-capabilities
+        (copy-sequence nemacs-next-session-gui-shell-capabilities)
         :client-message-types (copy-sequence nemacs-next-client-message-types)
         :session-message-types (copy-sequence nemacs-next-session-message-types)
         :session-plan (nemacs-next-session-plan)))
@@ -631,6 +830,34 @@ mutation, file I/O, and completion to reusable library APIs."
           (nemacs-next-session--string-equal name 'completion)
           (nemacs-next-session--string-equal name "completion"))
       (nemacs-next-session--minibuffer-completion message))
+     ((or (nemacs-next-session--string-equal name 'frame-snapshot)
+          (nemacs-next-session--string-equal name "frame-snapshot"))
+      (nemacs-next-session-frame-snapshot
+       (nemacs-next-session--command-arg message :width)
+       (nemacs-next-session--command-arg message :height)))
+     ((or (nemacs-next-session--string-equal name 'render-frame-text)
+          (nemacs-next-session--string-equal name "render-frame-text"))
+      (let ((frame (nemacs-next-session-frame-snapshot
+                    (nemacs-next-session--command-arg message :width)
+                    (nemacs-next-session--command-arg message :height))))
+        (append frame
+                (list :rendered-text
+                      (nemacs-next-session-render-frame-text frame)))))
+     ((or (nemacs-next-session--string-equal name 'menu)
+          (nemacs-next-session--string-equal name "menu")
+          (nemacs-next-session--string-equal name 'toolbar)
+          (nemacs-next-session--string-equal name "toolbar"))
+      (nemacs-next-session-menu-model))
+     ((or (nemacs-next-session--string-equal name 'clipboard-read)
+          (nemacs-next-session--string-equal name "clipboard-read"))
+      (nemacs-next-session--clipboard-request 'clipboard-read))
+     ((or (nemacs-next-session--string-equal name 'clipboard-write)
+          (nemacs-next-session--string-equal name "clipboard-write"))
+      (let ((text (nemacs-next-session--command-text message)))
+        (if (stringp text)
+            (nemacs-next-session--clipboard-request 'clipboard-write text)
+          (nemacs-next-session-error
+           'bad-command "clipboard-write requires a string :text" message))))
      (t
       (nemacs-next-session-error
        'unknown-command
@@ -651,6 +878,23 @@ mutation, file I/O, and completion to reusable library APIs."
      ((or (nemacs-next-session--string-equal type 'command)
           (nemacs-next-session--string-equal type "command"))
       (nemacs-next-session-handle-command message))
+     ((or (nemacs-next-session--string-equal type 'resize)
+          (nemacs-next-session--string-equal type "resize"))
+      (nemacs-next-session-frame-delta
+       'resize
+       (nemacs-next-session-frame-snapshot
+        (plist-get message :width)
+        (plist-get message :height))))
+     ((or (nemacs-next-session--string-equal type 'input)
+          (nemacs-next-session--string-equal type "input"))
+      (nemacs-next-session--handle-input message))
+     ((or (nemacs-next-session--string-equal type 'clipboard)
+          (nemacs-next-session--string-equal type "clipboard"))
+      (let ((payload (plist-get message :payload)))
+        (if (stringp payload)
+            (nemacs-next-session--handle-input
+             (list :type 'input :event (list :commit payload)))
+          (nemacs-next-session--clipboard-request 'clipboard-read))))
      ((or (nemacs-next-session--string-equal type 'open)
           (nemacs-next-session--string-equal type "open"))
       (nemacs-next-session--find-file (plist-get message :path)))

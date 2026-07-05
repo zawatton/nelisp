@@ -34,7 +34,10 @@ requiring app/bootstrap or legacy GUI modules.")
   "Reusable package groups that are useful but not core session blockers.")
 
 (defconst nemacs-next-frontend-owned-surfaces
-  '(raw-input-decoding
+  '(native-window
+    renderer
+    raw-input-decoding
+    keyboard-input
     text-rendering
     font-discovery
     ime
