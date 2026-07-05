@@ -238,7 +238,7 @@ a separate numbered increment ladder of its own.
 | 2026-06-25 | M1 Persistent session proof | done | =lisp/nemacs-next-session.el= + =lisp/nemacs-next-protocol.el= + =scripts/session-smoke.sh= + =scripts/process-smoke.sh= (=hello=, =create-buffer=, =insert-text=) |
 | 2026-07-04 | M2 Editing loop (movement/delete slice) | done | =forward-char=, =backward-char=, =goto-char=, =delete-char= session commands; out-of-range requests return a structured protocol =error= instead of an uncaught signal |
 | 2026-07-04 | M2 Editing loop (newline, undo, kill/yank slice) | done | =newline=, =undo=, =kill-region=, =kill-line=, =yank= session commands wired to already-shipped Track E/E.2 substrate (=emacs-undo-*=, =emacs-edit-*-direct=); structured =empty-kill-ring=, =bad-command=, =no-further-undo-information= errors instead of uncaught signals or silent no-ops |
-| -- | M3 Minibuffer/file loop | open | not yet implemented |
+| 2026-07-05 | M3 Minibuffer/file loop | done | =find-file=, =save-buffer=, =switch-to-buffer=, =kill-buffer= session commands; =complete=/=completion= minibuffer candidate payload; =open= delegates to =find-file=; all app smokes cover file/buffer/completion loop plus one standalone org-mode + =org-element-parse-buffer= assertion |
 | -- | M4 Modern GUI shell | open | not yet implemented |
 | -- | M5 Package smoke | open | not yet implemented |
 
@@ -298,6 +298,27 @@ afterward rather than crashing.  =make test-fast= was not run because
 no =packages/= substrate file changed; the three app smokes are the
 relevant gate per Section 8.
 
-M2 (Section 7) is now complete.  The next milestone is M3
-(minibuffer/file loop: =find-file=, =save-buffer=, =switch-to-buffer=,
-=kill-buffer=, completion protocol).
+M3 (Section 7) is now complete.  The app session implements the exact
+minibuffer/file loop named by the milestone: =find-file=, =save-buffer=,
+=switch-to-buffer=, =kill-buffer=, and completion protocol responses for
+minibuffer candidates.  The implementation remains app-thin:
+=nemacs-next-session.el= delegates file visit/save to
+=emacs-fileio-visit-file-direct= / =emacs-fileio-save-buffer-direct=,
+buffer selection and kill to the reusable buffer registry, and candidate
+filtering to the minibuffer completion APIs.  Successful commands return
+buffer snapshots; missing/invalid file or buffer requests return
+structured protocol =error= payloads and leave the session alive.
+
+The M3 smoke coverage extends all three existing app smokes:
+=smoke.sh= covers the host-Emacs consumer path, =session-smoke.sh=
+covers one persistent NeLisp session, and =process-smoke.sh= covers
+newline-delimited JSON responses from one persistent NeLisp process.
+The standalone session smoke also opens an Org file through the M3
+=find-file= command, activates =org-mode=, and asserts
+=org-element-parse-buffer= returns a parse tree.  This is an
+editor-on-substrate assertion only; it does not promote Org parsing into
+the M3 protocol scope.
+
+Remaining after M3: M4 modern GUI shell (native window, renderer,
+keyboard input, IME, clipboard, viewport/modeline rendering, and
+menus/toolbar routed through protocol commands) and M5 package smoke.

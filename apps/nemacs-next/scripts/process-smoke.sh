@@ -28,8 +28,10 @@ fi
 
 tmp=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.repl
 out=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.out
-rm -f "$tmp" "$out"
-trap 'rm -f "$tmp" "$out"' EXIT
+m3_file=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.txt
+rm -f "$tmp" "$out" "$m3_file"
+trap 'rm -f "$tmp" "$out" "$m3_file"' EXIT
+printf 'seed' > "$m3_file"
 
 cat "$BOOTSTRAP_REPL" > "$tmp"
 cat >> "$tmp" <<EOF
@@ -54,6 +56,14 @@ cat >> "$tmp" <<EOF
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name create-buffer :buffer-name "nemacs-next-process-smoke-undo-empty"))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name undo))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name snapshot))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name find-file :path "$m3_file"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name insert-text :text "!"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name save-buffer))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name complete :purpose buffer :input "nemacs-next-process-smoke."))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name complete :input "fi" :collection ("find-file" "save-buffer" "switch-to-buffer")))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name switch-to-buffer :buffer-name "nemacs-next-process-smoke"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-buffer :buffer-name "nemacs-next-process-smoke.$$.txt"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-buffer :buffer-name "missing-buffer"))))
 ,quit
 EOF
 
@@ -69,9 +79,9 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 lines=$(wc -l < "$out" | tr -d ' ')
-if [ "$lines" != "19" ]; then
+if [ "$lines" != "27" ]; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail lines=$lines expected=19" >&2
+  echo "nemacs-next-process-smoke: fail lines=$lines expected=27" >&2
   exit 1
 fi
 
@@ -111,9 +121,9 @@ if ! grep -q '"text":"ac"' "$out"; then
   exit 1
 fi
 
-if [ "$(grep -c '"type":"error"' "$out")" != "4" ]; then
+if [ "$(grep -c '"type":"error"' "$out")" != "5" ]; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail expected exactly four error responses (out-of-range, empty-kill-ring, bad-command, no-further-undo-information)" >&2
+  echo "nemacs-next-process-smoke: fail expected exactly five error responses (out-of-range, empty-kill-ring, bad-command, no-further-undo-information, no-such-buffer)" >&2
   exit 1
 fi
 
@@ -156,6 +166,48 @@ fi
 if ! grep -q '"code":"no-further-undo-information"' "$out"; then
   cat "$out" >&2
   echo "nemacs-next-process-smoke: fail missing no-further-undo-information error code for undo on a fresh buffer" >&2
+  exit 1
+fi
+
+if ! grep -q "\"file-name\":\"$m3_file\"" "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing find-file snapshot for M3 file" >&2
+  exit 1
+fi
+
+if ! grep -q '"text":"seed!"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing post-M3 append text=seed! snapshot" >&2
+  exit 1
+fi
+
+if ! grep -q "\"saved-file\":\"$m3_file\"" "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing save-buffer saved-file" >&2
+  exit 1
+fi
+
+if [ "$(cat "$m3_file")" != "seed!" ]; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail M3 save-buffer did not write seed!" >&2
+  exit 1
+fi
+
+if ! grep -q '"type":"minibuffer"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing minibuffer completion response" >&2
+  exit 1
+fi
+
+if ! grep -q '"candidates":\["find-file"\]' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing generic completion candidate find-file" >&2
+  exit 1
+fi
+
+if ! grep -q '"code":"no-such-buffer"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing no-such-buffer error for kill-buffer" >&2
   exit 1
 fi
 
