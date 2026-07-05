@@ -44,6 +44,15 @@ status_message=
 prompt_mode=0
 prompt_text=
 quit_requested=0
+first_draw=1
+last_draw_actual_bytes=0
+last_draw_full_bytes=0
+last_draw_changed_lines=0
+
+declare -a current_lines=()
+declare -a current_runs=()
+declare -a rendered_lines=()
+declare -a drawn_lines=()
 
 cleanup() {
   if [ "$raw_enabled" = 1 ]; then
@@ -114,6 +123,9 @@ start_session() {
 
 read_render() {
   current_render=
+  current_lines=()
+  current_runs=()
+  rendered_lines=()
   cursor_row=1
   cursor_col=1
   status_message=
@@ -136,6 +148,18 @@ read_render() {
       NEMACS_NEXT_TUI_STATUS$'\t'*)
         status_message=${line#*$'\t'}
         ;;
+      NEMACS_NEXT_TUI_LINE$'\t'*)
+        local rest=${line#*$'\t'}
+        local row=${rest%%$'\t'*}
+        local text=${rest#*$'\t'}
+        current_lines[$row]=$text
+        ;;
+      NEMACS_NEXT_TUI_RUN$'\t'*)
+        local rest=${line#*$'\t'}
+        local row=${rest%%$'\t'*}
+        rest=${rest#*$'\t'}
+        current_runs[$row]+="${rest};"
+        ;;
       *)
         if [ "$in_render" = 1 ]; then
           current_render+="$line"$'\n'
@@ -146,11 +170,87 @@ read_render() {
   return 1
 }
 
+ansi_for_face() {
+  local face=$1 fg=${2-} bg=${3-} weight=${4-}
+  local sgr=
+  case "$face" in
+    org-level-1) sgr='1;38;5;33' ;;
+    org-level-2) sgr='1;38;5;39' ;;
+    org-level-3) sgr='1;38;5;70' ;;
+    org-level-4) sgr='1;38;5;178' ;;
+    bold) sgr='1' ;;
+    font-lock-comment-face) sgr='38;5;244' ;;
+    font-lock-string-face) sgr='38;5;35' ;;
+    default|'') sgr='0' ;;
+  esac
+  case "$fg" in
+    green) sgr='38;5;34' ;;
+    blue) sgr='38;5;33' ;;
+    cyan) sgr='38;5;37' ;;
+    yellow) sgr='38;5;220' ;;
+    red) sgr='38;5;196' ;;
+    magenta|purple) sgr='38;5;127' ;;
+    white) sgr='37' ;;
+    black) sgr='30' ;;
+  esac
+  case "$bg" in
+    black) sgr="${sgr:+$sgr;}40" ;;
+    white) sgr="${sgr:+$sgr;}47" ;;
+  esac
+  if [ "$weight" = "bold" ] && [ "${sgr#*1}" = "$sgr" ]; then
+    sgr="${sgr:+$sgr;}1"
+  fi
+  printf '%s' "${sgr:-0}"
+}
+
+render_line_with_runs() {
+  local row=$1 text=${current_lines[$row]-} runs=${current_runs[$row]-}
+  local out= pos=0
+  local IFS=';'
+  for run in $runs; do
+    [ -n "$run" ] || continue
+    local rest=$run start end face fg bg weight
+    start=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    end=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    face=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    fg=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    bg=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    weight=$rest
+    if [ "$start" -gt "$pos" ]; then
+      out+="${text:pos:start-pos}"
+    fi
+    out+="\033[$(ansi_for_face "$face" "$fg" "$bg" "$weight")m${text:start:end-start}\033[0m"
+    pos=$end
+  done
+  out+="${text:pos}"
+  printf '%b' "$out"
+}
+
+render_current_lines() {
+  current_render=
+  rendered_lines=()
+  local row=0
+  while [ "$row" -lt "$HEIGHT" ]; do
+    rendered_lines[$row]=$(render_line_with_runs "$row")
+    current_render+="${rendered_lines[$row]}"$'\n'
+    row=$((row + 1))
+  done
+}
+
 send_message() {
   local expr
   expr=$(message_expr "$@")
-  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-rendered (nemacs-next-session-render-frame-text nemacs-next-tui-frame-state))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes nemacs-next-tui-rendered) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-row 0)) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (dolist (nemacs-next-tui-line (plist-get nemacs-next-tui-frame :viewport)) (let ((nemacs-next-tui-row (or (plist-get nemacs-next-tui-line :row) nemacs-next-tui-row))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string nemacs-next-tui-row) \"\t\" (or (plist-get nemacs-next-tui-line :text) \"\") \"\n\")) (dolist (nemacs-next-tui-run (plist-get nemacs-next-tui-line :face-runs)) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_RUN\t\" (number-to-string nemacs-next-tui-row) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :start) 0)) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :end) 0)) \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :face) 'default)) \"\t\" (or (plist-get nemacs-next-tui-run :foreground) \"\") \"\t\" (or (plist-get nemacs-next-tui-run :background) \"\") \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :weight) 'normal)) \"\n\"))))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\t\" (or (plist-get nemacs-next-tui-frame :mode-line) \"\") \"\n\")) (when (> (length (or (plist-get nemacs-next-tui-frame :echo) \"\")) 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\techo: \" (plist-get nemacs-next-tui-frame :echo) \"\n\"))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   read_render
+  render_current_lines
+}
+
+emit_draw_stats() {
+  if [ "${NEMACS_NEXT_TUI_DRAW_STATS:-0}" = 1 ]; then
+    printf '\nNEMACS_NEXT_TUI_DRAW_STATS\t%s\t%s\t%s\n' \
+      "$last_draw_actual_bytes" "$last_draw_full_bytes" \
+      "$last_draw_changed_lines" >&2
+  fi
 }
 
 draw() {
@@ -159,18 +259,94 @@ draw() {
     if [ "$prompt_mode" = 1 ]; then
       printf 'Find file: %s\n' "$prompt_text"
     fi
+    last_draw_actual_bytes=${#current_render}
+    last_draw_full_bytes=$last_draw_actual_bytes
+    last_draw_changed_lines=$HEIGHT
+    emit_draw_stats
     return
   fi
-  printf '\033[?25l\033[H\033[2J'
-  printf '%s' "$current_render"
+  local bytes=0 full_bytes=0 changed=0 row=0 chunk=
+  full_bytes=$(( ${#current_render} + 16 ))
+  if [ "$first_draw" = 1 ]; then
+    chunk=$'\033[?25l\033[H\033[2J'
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    while [ "$row" -lt "$HEIGHT" ]; do
+      chunk="${rendered_lines[$row]-}"$'\n'
+      printf '%s' "$chunk"
+      bytes=$((bytes + ${#chunk}))
+      drawn_lines[$row]=${rendered_lines[$row]-}
+      changed=$((changed + 1))
+      row=$((row + 1))
+    done
+    first_draw=0
+  else
+    while [ "$row" -lt "$HEIGHT" ]; do
+      if [ "${drawn_lines[$row]-}" != "${rendered_lines[$row]-}" ]; then
+        chunk=$(printf '\033[%s;1H%s\033[K' "$((row + 1))" "${rendered_lines[$row]-}")
+        printf '%s' "$chunk"
+        bytes=$((bytes + ${#chunk}))
+        drawn_lines[$row]=${rendered_lines[$row]-}
+        changed=$((changed + 1))
+      fi
+      row=$((row + 1))
+    done
+  fi
   if [ "$prompt_mode" = 1 ]; then
-    printf 'Find file: %s\033[K' "$prompt_text"
+    chunk=$(printf '\033[%s;1HFind file: %s\033[K' "$HEIGHT" "$prompt_text")
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
     cursor_row=$HEIGHT
     cursor_col=$((12 + ${#prompt_text}))
-  elif [ -n "$status_message" ]; then
-    printf '%s\033[K' "$status_message"
   fi
-  printf '\033[%s;%sH\033[?25h' "$cursor_row" "$cursor_col"
+  chunk=$(printf '\033[%s;%sH\033[?25h' "$cursor_row" "$cursor_col")
+  printf '%s' "$chunk"
+  bytes=$((bytes + ${#chunk}))
+  last_draw_actual_bytes=$bytes
+  last_draw_full_bytes=$full_bytes
+  last_draw_changed_lines=$changed
+  emit_draw_stats
+}
+
+byte_ord() {
+  local LC_ALL=C
+  printf '%d' "'$1"
+}
+
+read_byte() {
+  local __var=$1 byte=
+  local LC_ALL=C
+  if IFS= read -rsn1 byte; then
+    printf -v "$__var" '%s' "$byte"
+    return 0
+  fi
+  return 1
+}
+
+read_utf8_unit() {
+  local __var=$1 first= need=0 ord rest= unit=
+  if ! read_byte first; then
+    return 1
+  fi
+  ord=$(byte_ord "$first")
+  unit=$first
+  if [ "$ord" -ge 240 ]; then
+    need=3
+  elif [ "$ord" -ge 224 ]; then
+    need=2
+  elif [ "$ord" -ge 192 ]; then
+    need=1
+  fi
+  while [ "$need" -gt 0 ]; do
+    if read_byte rest; then
+      unit+=$rest
+      need=$((need - 1))
+    else
+      break
+    fi
+  done
+  printf -v "$__var" '%s' "$unit"
+  return 0
 }
 
 handle_byte() {
@@ -204,7 +380,7 @@ handle_byte() {
       ;;
     $'\030')
       local next=
-      if IFS= read -rsn1 next; then
+      if read_utf8_unit next; then
         case "$next" in
           $'\003') quit_requested=1 ;;
           $'\006') prompt_mode=1; prompt_text= ;;
@@ -279,7 +455,7 @@ draw
 
 while [ "$quit_requested" = 0 ]; do
   ch=
-  if ! IFS= read -rsn1 ch; then
+  if ! read_utf8_unit ch; then
     break
   fi
   handle_byte "$ch"

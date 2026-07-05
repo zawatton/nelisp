@@ -28,9 +28,10 @@ fi
 
 tmp=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.repl
 out=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.out
+err=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.err
 m3_file=${TMPDIR:-/tmp}/nemacs-next-process-smoke.$$.txt
-rm -f "$tmp" "$out" "$m3_file"
-trap 'rm -f "$tmp" "$out" "$m3_file"' EXIT
+rm -f "$tmp" "$out" "$err" "$m3_file"
+trap 'rm -f "$tmp" "$out" "$err" "$m3_file"' EXIT
 printf 'seed' > "$m3_file"
 
 cat "$BOOTSTRAP_REPL" > "$tmp"
@@ -75,12 +76,13 @@ cat >> "$tmp" <<EOF
 EOF
 
 set +e
-timeout 60s "$NELISP_BIN" --repl --no-prompt --no-print < "$tmp" > "$out" 2>&1
+timeout 60s "$NELISP_BIN" --repl --no-prompt --no-print < "$tmp" > "$out" 2> "$err"
 rc=$?
 set -e
 
 if [ "$rc" -ne 0 ]; then
   cat "$out" >&2
+  cat "$err" >&2
   echo "nemacs-next-process-smoke: fail rc=$rc" >&2
   exit 1
 fi

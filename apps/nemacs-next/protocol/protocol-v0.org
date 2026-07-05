@@ -179,10 +179,10 @@ editor semantics into GUI code:
 | Name/message | Meaning |
 |--------------+---------|
 | =hello= | advertises =:gui-shell-capabilities= for native window, renderer, keyboard input, IME, clipboard, viewport/modeline, menu, and toolbar ownership |
-| =frame-snapshot= | returns a =snapshot= with =:frame= viewport rows, cursor row/column, modeline, and echo area plus the underlying buffer snapshot |
+| =frame-snapshot= | returns a =snapshot= with =:frame= viewport rows, per-row face runs, cursor row/column, modeline, and echo area plus the underlying buffer snapshot |
 | =render-frame-text= | returns the same frame snapshot with =:rendered-text= for smoke/demo inspection |
 | =resize= | updates frame width/height and returns a =delta= with the new frame payload |
-| =input= | accepts frontend-decoded keyboard text, Enter, Backspace, or IME commit text and delegates mutation to existing session commands |
+| =input= | accepts frontend-decoded keyboard text, Enter, Backspace, or IME commit text and delegates mutation to existing session commands; terminal frontends must send complete UTF-8 text units, not partial bytes |
 | =clipboard= | with a string payload, treats the payload as committed paste input; without payload, returns a clipboard read =request= |
 | =clipboard-read= / =clipboard-write= | return frontend OS-integration =request= payloads |
 | =menu= / =toolbar= | return a =menu= payload whose items name protocol commands such as =find-file= and =save-buffer= |
@@ -195,11 +195,37 @@ The frame payload is intentionally character-cell based for V0:
          :width 80
          :height 24
          :cursor (:row 0 :column 0)
-         :viewport ((:row 0 :text "...") ...)
+         :viewport ((:row 0
+                      :text "* Heading"
+                      :face-runs ((:start 0
+                                   :end 9
+                                   :face org-level-1
+                                   :foreground "blue"
+                                   :weight bold)))
+                    ...)
          :mode-line " --  buffer  file  point:1 "
          :echo "")
  :buffers ((:type snapshot ...)))
 #+end_src
+
+Each viewport row may carry =:face-runs=.  Run coordinates are zero-based
+character columns within that row and use a half-open =:start= / =:end=
+range.  =:face= is the substrate face symbol selected from =face= or
+=font-lock-face= text properties.  =:foreground=, =:background=, and
+=:weight= are optional resolved face attributes when the face substrate can
+answer them.  Rows without styling omit =:face-runs=.
+
+The TUI frontend maps the initial face set to ANSI colors:
+=org-level-1= bright blue bold, =org-level-2= bright cyan bold,
+=org-level-3= green bold, =org-level-4= yellow bold, =bold= bold,
+=font-lock-comment-face= gray, =font-lock-string-face= green, and
+=default= reset.  Resolved foreground names from the face registry override
+that table for the small named-color set currently supported by the TUI.
+
+When full font-lock state is not active, the session still exposes useful
+Org heading runs for visible lines beginning with stars, mapping levels 1
+through 4 to =org-level-1= through =org-level-4=.  This keeps the fallback in
+the session snapshot rather than in frontend command semantics.
 
 This gives a human-visible terminal-renderable demo hook and a stable
 renderer input shape.  It does not claim that this repository now owns a
