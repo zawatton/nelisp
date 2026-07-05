@@ -42,7 +42,10 @@ cursor_row=1
 cursor_col=1
 status_message=
 prompt_mode=0
+prompt_kind=file
 prompt_text=
+toolbar_focus=0
+toolbar_index=0
 quit_requested=0
 first_draw=1
 last_draw_actual_bytes=0
@@ -53,6 +56,18 @@ declare -a current_lines=()
 declare -a current_runs=()
 declare -a rendered_lines=()
 declare -a drawn_lines=()
+declare -a toolbar_ids=(
+  toolbar.new-file
+  toolbar.open-file
+  toolbar.dired
+  toolbar.kill-buffer
+  toolbar.save-buffer
+  toolbar.undo
+  toolbar.cut
+  toolbar.copy
+  toolbar.paste
+  toolbar.search
+)
 
 cleanup() {
   if [ "$raw_enabled" = 1 ]; then
@@ -98,6 +113,15 @@ message_expr() {
       ;;
     find-file)
       printf "(list :type 'command :name 'find-file :path %s)" "$(elisp_string "$arg")"
+      ;;
+    dired)
+      printf "(list :type 'command :name 'dired :directory %s)" "$(elisp_string "$arg")"
+      ;;
+    search)
+      printf "(list :type 'command :name 'isearch-forward :query %s)" "$(elisp_string "$arg")"
+      ;;
+    toolbar-invoke)
+      printf "(list :type 'command :name 'toolbar-invoke :id %s)" "$(elisp_string "$arg")"
       ;;
     *)
       echo "nemacs-next-tui: unknown message kind: $kind" >&2
@@ -240,7 +264,7 @@ render_current_lines() {
 send_message() {
   local expr
   expr=$(message_expr "$@")
-  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-row 0)) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (dolist (nemacs-next-tui-line (plist-get nemacs-next-tui-frame :viewport)) (let ((nemacs-next-tui-row (or (plist-get nemacs-next-tui-line :row) nemacs-next-tui-row))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string nemacs-next-tui-row) \"\t\" (or (plist-get nemacs-next-tui-line :text) \"\") \"\n\")) (dolist (nemacs-next-tui-run (plist-get nemacs-next-tui-line :face-runs)) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_RUN\t\" (number-to-string nemacs-next-tui-row) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :start) 0)) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :end) 0)) \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :face) 'default)) \"\t\" (or (plist-get nemacs-next-tui-run :foreground) \"\") \"\t\" (or (plist-get nemacs-next-tui-run :background) \"\") \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :weight) 'normal)) \"\n\"))))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\t\" (or (plist-get nemacs-next-tui-frame :mode-line) \"\") \"\n\")) (when (> (length (or (plist-get nemacs-next-tui-frame :echo) \"\")) 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\techo: \" (plist-get nemacs-next-tui-frame :echo) \"\n\"))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :directory) (setq nemacs-next-tui-status (concat \"Directory \" (plist-get nemacs-next-tui-response :directory))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :search-query) (setq nemacs-next-tui-status (concat \"Search \" (plist-get nemacs-next-tui-response :search-query))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-row 0)) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 2 (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t0\t\" (nemacs-next-session-toolbar-render-line $toolbar_index (if (= $toolbar_focus 1) t nil) $WIDTH) \"\n\")) (dolist (nemacs-next-tui-line (plist-get nemacs-next-tui-frame :viewport)) (let ((nemacs-next-tui-row (+ 1 (or (plist-get nemacs-next-tui-line :row) nemacs-next-tui-row)))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string nemacs-next-tui-row) \"\t\" (or (plist-get nemacs-next-tui-line :text) \"\") \"\n\")) (dolist (nemacs-next-tui-run (plist-get nemacs-next-tui-line :face-runs)) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_RUN\t\" (number-to-string nemacs-next-tui-row) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :start) 0)) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :end) 0)) \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :face) 'default)) \"\t\" (or (plist-get nemacs-next-tui-run :foreground) \"\") \"\t\" (or (plist-get nemacs-next-tui-run :background) \"\") \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :weight) 'normal)) \"\n\"))))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\t\" (or (plist-get nemacs-next-tui-frame :mode-line) \"\") \"\n\")) (when (> (length (or (plist-get nemacs-next-tui-frame :echo) \"\")) 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\techo: \" (plist-get nemacs-next-tui-frame :echo) \"\n\"))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   read_render
   render_current_lines
 }
@@ -257,7 +281,11 @@ draw() {
   if [ "$DRAW" = "never" ] || { [ "$DRAW" = "auto" ] && [ ! -t 1 ]; }; then
     printf '%s' "$current_render"
     if [ "$prompt_mode" = 1 ]; then
-      printf 'Find file: %s\n' "$prompt_text"
+      case "$prompt_kind" in
+        directory) printf 'Dired directory: %s\n' "$prompt_text" ;;
+        search) printf 'Search: %s\n' "$prompt_text" ;;
+        *) printf 'Find file: %s\n' "$prompt_text" ;;
+      esac
     fi
     last_draw_actual_bytes=${#current_render}
     last_draw_full_bytes=$last_draw_actual_bytes
@@ -293,11 +321,16 @@ draw() {
     done
   fi
   if [ "$prompt_mode" = 1 ]; then
-    chunk=$(printf '\033[%s;1HFind file: %s\033[K' "$HEIGHT" "$prompt_text")
+    local prompt_label="Find file: "
+    case "$prompt_kind" in
+      directory) prompt_label="Dired directory: " ;;
+      search) prompt_label="Search: " ;;
+    esac
+    chunk=$(printf '\033[%s;1H%s%s\033[K' "$HEIGHT" "$prompt_label" "$prompt_text")
     printf '%s' "$chunk"
     bytes=$((bytes + ${#chunk}))
     cursor_row=$HEIGHT
-    cursor_col=$((12 + ${#prompt_text}))
+    cursor_col=$((1 + ${#prompt_label} + ${#prompt_text}))
   fi
   chunk=$(printf '\033[%s;%sH\033[?25h' "$cursor_row" "$cursor_col")
   printf '%s' "$chunk"
@@ -355,8 +388,13 @@ handle_byte() {
     case "$ch" in
       $'\r'|$'\n')
         prompt_mode=0
-        send_message find-file "$prompt_text"
+        case "$prompt_kind" in
+          directory) send_message dired "$prompt_text" ;;
+          search) send_message search "$prompt_text" ;;
+          *) send_message find-file "$prompt_text" ;;
+        esac
         prompt_text=
+        prompt_kind=file
         ;;
       $'\177'|$'\b')
         prompt_text=${prompt_text%?}
@@ -364,6 +402,7 @@ handle_byte() {
       $'\003'|$'\007')
         prompt_mode=0
         prompt_text=
+        prompt_kind=file
         status_message="Quit"
         ;;
       *)
@@ -413,7 +452,34 @@ handle_byte() {
       draw
       ;;
     $'\r'|$'\n')
-      send_message key return
+      if [ "$toolbar_focus" = 1 ]; then
+        local id=${toolbar_ids[$toolbar_index]}
+        case "$id" in
+          toolbar.new-file|toolbar.open-file)
+            prompt_kind=file
+            prompt_mode=1
+            prompt_text=
+            send_message toolbar-invoke "$id"
+            ;;
+          toolbar.dired)
+            prompt_kind=directory
+            prompt_mode=1
+            prompt_text=.
+            send_message toolbar-invoke "$id"
+            ;;
+          toolbar.search)
+            prompt_kind=search
+            prompt_mode=1
+            prompt_text=
+            send_message toolbar-invoke "$id"
+            ;;
+          *)
+            send_message toolbar-invoke "$id"
+            ;;
+        esac
+      else
+        send_message key return
+      fi
       draw
       ;;
     $'\177'|$'\b')
@@ -425,11 +491,47 @@ handle_byte() {
       if IFS= read -rsn1 -t 0.05 seq1 && [ "$seq1" = "[" ]; then
         if IFS= read -rsn1 -t 0.05 seq2; then
           case "$seq2" in
-            C) send_message count-command forward-char ;;
-            D) send_message count-command backward-char ;;
+            C)
+              if [ "$toolbar_focus" = 1 ]; then
+                toolbar_index=$(( (toolbar_index + 1) % ${#toolbar_ids[@]} ))
+                send_message frame
+              else
+                send_message count-command forward-char
+              fi
+              ;;
+            D)
+              if [ "$toolbar_focus" = 1 ]; then
+                toolbar_index=$(( (toolbar_index + ${#toolbar_ids[@]} - 1) % ${#toolbar_ids[@]} ))
+                send_message frame
+              else
+                send_message count-command backward-char
+              fi
+              ;;
             B) send_message count-command next-line ;;
             A) send_message count-command previous-line ;;
+            2)
+              local seq3= seq4=
+              if IFS= read -rsn1 -t 0.05 seq3 && [ "$seq3" = "1" ]; then
+                IFS= read -rsn1 -t 0.05 seq4 || true
+                toolbar_focus=1
+                send_message frame
+              fi
+              ;;
           esac
+          draw
+        fi
+      elif [ "$seq1" = "\`" ]; then
+        if [ "$toolbar_focus" = 1 ]; then
+          toolbar_focus=0
+        else
+          toolbar_focus=1
+        fi
+        send_message frame
+        draw
+      else
+        if [ "$toolbar_focus" = 1 ]; then
+          toolbar_focus=0
+          send_message frame
           draw
         fi
       fi

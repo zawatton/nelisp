@@ -32,6 +32,42 @@
     (:surface toolbar :owner frontend :path command))
   "M4 modern GUI shell capabilities exposed through the session protocol.")
 
+(defconst nemacs-next-session-default-toolbar-spec
+  '((:id "toolbar.new-file" :icon "new" :label "New File"
+     :command "find-file" :vendor-command find-file
+     :enable always :fidelity "find-file prompt; creates a new visited buffer when the chosen path does not exist")
+    (:id "toolbar.open-file" :icon "open" :label "Open"
+     :command "find-file" :vendor-command menu-find-file-existing
+     :enable always :fidelity "find-file prompt using the existing file command path")
+    (:id "toolbar.dired" :icon "diropen" :label "Dired"
+     :command "dired" :vendor-command dired
+     :enable always :fidelity "directory-listing buffer v1; real Dired marks and file operations are not claimed")
+    (:id "toolbar.kill-buffer" :icon "close" :label "Close"
+     :command "kill-buffer" :vendor-command kill-this-buffer
+     :enable has-buffer :fidelity "kills the current session buffer through kill-buffer")
+    (:id "toolbar.save-buffer" :icon "save" :label "Save"
+     :command "save-buffer" :vendor-command save-buffer
+     :enable has-buffer :fidelity "real save-buffer through reusable file I/O")
+    (:id "separator-1" :separator t)
+    (:id "toolbar.undo" :icon "undo" :label "Undo"
+     :command "undo" :vendor-command undo
+     :enable has-buffer :fidelity "single edit-group undo through emacs-undo")
+    (:id "separator-2" :separator t)
+    (:id "toolbar.cut" :icon "cut" :label "Cut"
+     :command "kill-region" :vendor-command kill-region
+     :enable region :fidelity "kill-region when :start and :end are supplied; no implicit GUI selection state in protocol v0")
+    (:id "toolbar.copy" :icon "copy" :label "Copy"
+     :command "copy-region-as-kill" :vendor-command copy-region-as-kill
+     :enable region :fidelity "copy-region-as-kill when :start and :end are supplied; no implicit GUI selection state in protocol v0")
+    (:id "toolbar.paste" :icon "paste" :label "Paste"
+     :command "yank" :vendor-command yank
+     :enable kill-ring :fidelity "real yank from the session kill ring")
+    (:id "separator-3" :separator t)
+    (:id "toolbar.search" :icon "search" :label "Search"
+     :command "isearch-forward" :vendor-command isearch-forward
+     :enable has-buffer :fidelity "search-prompt v1: prompts for a string and moves to the next match; no live incremental overlay yet"))
+  "Vendor-derived default toolbar spec from `vendor/emacs-lisp/tool-bar.el'.")
+
 (defvar nemacs-next-session-frame-width 80
   "Current protocol frame width in character cells for M4 snapshots.")
 
@@ -317,6 +353,59 @@ The text, point, and size are read through reusable buffer APIs."
                       modified name file (or (plist-get snapshot :point) "?"))))
     (nemacs-next-session--truncate-line raw width)))
 
+(defun nemacs-next-session--toolbar-item-enabled-p (item)
+  "Return non-nil when toolbar ITEM should be enabled in protocol v0."
+  (let ((predicate (plist-get item :enable)))
+    (cond
+     ((plist-get item :separator) nil)
+     ((eq predicate 'always) t)
+     ((eq predicate 'has-buffer)
+      (and (nemacs-next-session-current-buffer-or-create) t))
+     ((eq predicate 'kill-ring)
+      (and (boundp 'kill-ring) kill-ring t))
+     ((eq predicate 'region)
+      nil)
+     (t t))))
+
+(defun nemacs-next-session-toolbar-items ()
+  "Return structured default toolbar items for the current session state."
+  (let (items)
+    (dolist (item nemacs-next-session-default-toolbar-spec (nreverse items))
+      (setq items
+            (cons
+             (if (plist-get item :separator)
+                 (list :id (plist-get item :id) :separator t)
+               (list :id (plist-get item :id)
+                     :icon (plist-get item :icon)
+                     :label (plist-get item :label)
+                     :command (plist-get item :command)
+                     :vendor-command (plist-get item :vendor-command)
+                     :enabled (nemacs-next-session--toolbar-item-enabled-p item)
+                     :fidelity (plist-get item :fidelity)))
+             items)))))
+
+(defun nemacs-next-session-toolbar-render-line (&optional selected focused width)
+  "Return a plain text toolbar line for SELECTED item index and WIDTH."
+  (let ((index 0)
+        (line ""))
+    (dolist (item (nemacs-next-session-toolbar-items))
+      (if (plist-get item :separator)
+          (setq line (concat line " |"))
+        (let* ((label (plist-get item :label))
+               (enabled (plist-get item :enabled))
+               (text (cond
+                      ((and focused (= index (or selected 0)))
+                       (format ">{%s}<" label))
+                      ((= index (or selected -1))
+                       (format "[%s]" label))
+                      (enabled
+                       (format " %s " label))
+                      (t
+                       (format " (%s) " label)))))
+          (setq line (concat line text))
+          (setq index (1+ index)))))
+    (nemacs-next-session--truncate-line line (or width nemacs-next-session-frame-width))))
+
 (defun nemacs-next-session-frame-snapshot (&optional width height)
   "Return a complete M4 frame snapshot for the current buffer.
 WIDTH and HEIGHT, when supplied, update the session frame geometry."
@@ -331,11 +420,13 @@ WIDTH and HEIGHT, when supplied, update the session frame geometry."
          (frame-width nemacs-next-session-frame-width)
          (frame-height nemacs-next-session-frame-height)
          (text (or (plist-get snapshot :text) ""))
-         (body-height (max 1 (- frame-height 1)))
+         (body-height (max 1 (- frame-height 2)))
+         (toolbar (nemacs-next-session-toolbar-items))
          (frame
           (list :id "main"
                 :width frame-width
                 :height frame-height
+                :toolbar toolbar
                 :cursor (nemacs-next-session--cursor-position
                          text (plist-get snapshot :point))
                 :viewport (nemacs-next-session--viewport-lines
@@ -390,7 +481,8 @@ frontend code."
         (list
          (list :id "toolbar.open" :label "Open" :command "find-file")
          (list :id "toolbar.save" :label "Save" :command "save-buffer")
-         (list :id "toolbar.undo" :label "Undo" :command "undo"))))
+         (list :id "toolbar.undo" :label "Undo" :command "undo"))
+        :default-toolbar (nemacs-next-session-toolbar-items)))
 
 (defun nemacs-next-session--clipboard-request (op &optional payload)
   "Return a frontend clipboard request for OP and optional PAYLOAD."
@@ -723,6 +815,20 @@ are missing or not integers (`bad-command'), or out of buffer bounds
     (nemacs-next-session-error
      'bad-command "kill-region requires integer :start and :end")))
 
+(defun nemacs-next-session--copy-region (start end)
+  "Copy START..END through the reusable kill-ring API and return a snapshot."
+  (nemacs-next-session-current-buffer-or-create)
+  (if (and (integerp start) (integerp end))
+      (condition-case _err
+          (progn
+            (emacs-edit-copy-region-direct start end)
+            (nemacs-next-session-buffer-snapshot))
+        (nelisp-ec-args-out-of-range
+         (nemacs-next-session-error
+          'out-of-range "copy-region-as-kill start/end out of range")))
+    (nemacs-next-session-error
+     'bad-command "copy-region-as-kill requires integer :start and :end")))
+
 (defun nemacs-next-session--kill-line ()
   "Kill from point to end of line (including the trailing newline when
 point is already at end of line) through the reusable kill-ring API and
@@ -768,6 +874,61 @@ when the kill ring has no entries."
           'file-error (format "find-file failed: %S" err))))
     (nemacs-next-session-error
      'bad-command "find-file requires a non-empty string :path")))
+
+(defun nemacs-next-session--directory-listing (directory)
+  "Open DIRECTORY as a simple directory-listing buffer and return a snapshot.
+This is a toolbar Dired fallback, not a full Dired implementation."
+  (let ((dir (or directory "."))
+        entries)
+    (if (and (stringp dir) (> (length dir) 0))
+        (condition-case err
+            (progn
+              (setq entries (directory-files dir nil nil t))
+              (let ((buffer (and (fboundp 'nelisp-ec-generate-new-buffer)
+                                 (nelisp-ec-generate-new-buffer
+                                  (format "*Directory %s*" dir)))))
+                (when (and buffer (fboundp 'nelisp-ec-set-buffer))
+                  (nelisp-ec-set-buffer buffer))
+                (nelisp-ec-insert (format "Directory: %s\n\n" dir))
+                (dolist (entry entries)
+                  (unless (member entry '("." ".."))
+                    (nelisp-ec-insert entry)
+                    (nelisp-ec-insert "\n")))
+                (append (nemacs-next-session-buffer-snapshot buffer)
+                        (list :directory dir
+                              :fidelity "directory-listing buffer v1"))))
+          (error
+           (nemacs-next-session-error
+            'file-error (format "dired directory listing failed: %S" err))))
+      (nemacs-next-session-error
+       'bad-command "dired requires a non-empty string :directory"))))
+
+(defun nemacs-next-session--search-forward (query)
+  "Move point to the next literal QUERY match and return a snapshot."
+  (nemacs-next-session-current-buffer-or-create)
+  (if (and (stringp query) (> (length query) 0))
+      (let* ((text (or (and (fboundp 'nelisp-ec-buffer-string)
+                            (nelisp-ec-buffer-string))
+                       ""))
+             (start (max 0 (1- (or (and (fboundp 'nelisp-ec-point)
+                                         (nelisp-ec-point))
+                                    1))))
+             (pos (or (string-match (regexp-quote query) text start)
+                      (string-match (regexp-quote query) text 0))))
+        (if pos
+            (progn
+              (nelisp-ec-goto-char (1+ pos))
+              (append (nemacs-next-session-buffer-snapshot)
+                      (list :search-query query
+                            :fidelity "search-prompt v1")))
+          (nemacs-next-session-error
+           'search-failed (format "search string not found: %s" query))))
+    (list :type 'minibuffer
+          :active t
+          :purpose 'search
+          :prompt "Search: "
+          :contents ""
+          :candidates nil)))
 
 (defun nemacs-next-session--save-buffer ()
   "Save the current buffer through reusable file I/O APIs and return a snapshot."
@@ -839,6 +1000,63 @@ when the kill ring has no entries."
      (t
       (nemacs-next-session-error
        'unavailable "kill-buffer command is not available")))))
+
+(defun nemacs-next-session--toolbar-prompt (purpose prompt)
+  "Return a toolbar minibuffer prompt for PURPOSE with PROMPT."
+  (list :type 'minibuffer
+        :active t
+        :purpose purpose
+        :prompt prompt
+        :contents ""
+        :candidates nil))
+
+(defun nemacs-next-session--toolbar-invoke (id message)
+  "Invoke toolbar item ID using protocol command semantics from MESSAGE."
+  (let ((path (or (nemacs-next-session--command-arg message :path)
+                  (nemacs-next-session--command-arg message :file)))
+        (directory (nemacs-next-session--command-arg message :directory))
+        (query (nemacs-next-session--command-arg message :query))
+        (start (nemacs-next-session--command-arg message :start))
+        (end (nemacs-next-session--command-arg message :end)))
+    (cond
+     ((or (nemacs-next-session--string-equal id "toolbar.new-file")
+          (nemacs-next-session--string-equal id 'toolbar.new-file)
+          (nemacs-next-session--string-equal id "toolbar.open-file")
+          (nemacs-next-session--string-equal id 'toolbar.open-file))
+      (if path
+          (nemacs-next-session--find-file path)
+        (nemacs-next-session--toolbar-prompt 'file "Find file: ")))
+     ((or (nemacs-next-session--string-equal id "toolbar.dired")
+          (nemacs-next-session--string-equal id 'toolbar.dired))
+      (if directory
+          (nemacs-next-session--directory-listing directory)
+        (nemacs-next-session--toolbar-prompt 'directory "Dired directory: ")))
+     ((or (nemacs-next-session--string-equal id "toolbar.kill-buffer")
+          (nemacs-next-session--string-equal id 'toolbar.kill-buffer))
+      (nemacs-next-session--kill-buffer nil))
+     ((or (nemacs-next-session--string-equal id "toolbar.save-buffer")
+          (nemacs-next-session--string-equal id 'toolbar.save-buffer))
+      (nemacs-next-session--save-buffer))
+     ((or (nemacs-next-session--string-equal id "toolbar.undo")
+          (nemacs-next-session--string-equal id 'toolbar.undo))
+      (nemacs-next-session--undo))
+     ((or (nemacs-next-session--string-equal id "toolbar.cut")
+          (nemacs-next-session--string-equal id 'toolbar.cut))
+      (nemacs-next-session--kill-region start end))
+     ((or (nemacs-next-session--string-equal id "toolbar.copy")
+          (nemacs-next-session--string-equal id 'toolbar.copy))
+      (nemacs-next-session--copy-region start end))
+     ((or (nemacs-next-session--string-equal id "toolbar.paste")
+          (nemacs-next-session--string-equal id 'toolbar.paste))
+      (nemacs-next-session--yank))
+     ((or (nemacs-next-session--string-equal id "toolbar.search")
+          (nemacs-next-session--string-equal id 'toolbar.search))
+      (nemacs-next-session--search-forward query))
+     (t
+      (nemacs-next-session-error
+       'unknown-toolbar-item
+       (format "unknown toolbar item: %S" id)
+       message)))))
 
 (defun nemacs-next-session-handle-command (message)
   "Handle a command protocol MESSAGE and return a response payload.
@@ -922,6 +1140,11 @@ mutation, file I/O, and completion to reusable library APIs."
       (nemacs-next-session--kill-region
        (nemacs-next-session--command-arg message :start)
        (nemacs-next-session--command-arg message :end)))
+     ((or (nemacs-next-session--string-equal name 'copy-region-as-kill)
+          (nemacs-next-session--string-equal name "copy-region-as-kill"))
+      (nemacs-next-session--copy-region
+       (nemacs-next-session--command-arg message :start)
+       (nemacs-next-session--command-arg message :end)))
      ((or (nemacs-next-session--string-equal name 'kill-line)
           (nemacs-next-session--string-equal name "kill-line"))
       (nemacs-next-session--kill-line))
@@ -933,6 +1156,15 @@ mutation, file I/O, and completion to reusable library APIs."
       (nemacs-next-session--find-file
        (or (nemacs-next-session--command-arg message :path)
            (nemacs-next-session--command-arg message :file))))
+     ((or (nemacs-next-session--string-equal name 'dired)
+          (nemacs-next-session--string-equal name "dired"))
+      (nemacs-next-session--directory-listing
+       (or (nemacs-next-session--command-arg message :directory)
+           (nemacs-next-session--command-arg message :path))))
+     ((or (nemacs-next-session--string-equal name 'isearch-forward)
+          (nemacs-next-session--string-equal name "isearch-forward"))
+      (nemacs-next-session--search-forward
+       (nemacs-next-session--command-arg message :query)))
      ((or (nemacs-next-session--string-equal name 'save-buffer)
           (nemacs-next-session--string-equal name "save-buffer"))
       (nemacs-next-session--save-buffer))
@@ -951,6 +1183,12 @@ mutation, file I/O, and completion to reusable library APIs."
           (nemacs-next-session--string-equal name 'completion)
           (nemacs-next-session--string-equal name "completion"))
       (nemacs-next-session--minibuffer-completion message))
+     ((or (nemacs-next-session--string-equal name 'toolbar-invoke)
+          (nemacs-next-session--string-equal name "toolbar-invoke"))
+      (nemacs-next-session--toolbar-invoke
+       (or (nemacs-next-session--command-arg message :id)
+           (nemacs-next-session--command-arg message :item))
+       message))
      ((or (nemacs-next-session--string-equal name 'frame-snapshot)
           (nemacs-next-session--string-equal name "frame-snapshot"))
       (nemacs-next-session-frame-snapshot
