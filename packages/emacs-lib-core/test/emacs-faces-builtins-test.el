@@ -39,7 +39,8 @@
   (dolist (sym '(facep make-face face-attribute set-face-attribute
                  face-foreground face-background
                  set-face-foreground set-face-background
-                 face-list defface))
+                 face-list load-theme enable-theme disable-theme
+                 provide-theme custom-theme-set-faces deftheme defface))
     (should (fboundp sym))))
 
 ;;;; B. make-face + facep
@@ -173,6 +174,76 @@
     (should (= 0 (hash-table-count emacs-redisplay--face-registry)))
     (should (= 0 (hash-table-count emacs-redisplay--face-cache)))))
 
+(ert-deftest emacs-faces-builtins-test/theme-overrides-defface-default ()
+  (emacs-faces-builtins-test--with-fresh-registry
+    (let ((saved-known custom-known-themes)
+          (saved-enabled custom-enabled-themes))
+      (unwind-protect
+          (progn
+            (setq custom-known-themes '(user)
+                  custom-enabled-themes nil)
+            (emacs-faces-defface themed-face
+              '((t :foreground "#ff0000" :weight normal))
+              "doc")
+            (custom-declare-theme 'theme-a 'theme-a-theme "doc")
+            (custom-theme-set-faces
+             'theme-a
+             '(themed-face ((t :foreground "#00ff00" :weight bold))))
+            (enable-theme 'theme-a)
+            (should (equal "#00ff00"
+                           (emacs-faces-attribute
+                            'themed-face :foreground nil t)))
+            (should (eq 'bold
+                        (emacs-faces-attribute
+                         'themed-face :weight nil t)))
+            (disable-theme 'theme-a)
+            (should (equal "#ff0000"
+                           (emacs-faces-attribute
+                            'themed-face :foreground nil t))))
+        (setq custom-known-themes saved-known
+              custom-enabled-themes saved-enabled)
+        (put 'theme-a 'theme-settings nil)
+        (put 'themed-face 'theme-face nil)))))
+
+(ert-deftest emacs-faces-builtins-test/multiple-theme-precedence-newest-wins ()
+  (emacs-faces-builtins-test--with-fresh-registry
+    (let ((saved-known custom-known-themes)
+          (saved-enabled custom-enabled-themes))
+      (unwind-protect
+          (progn
+            (setq custom-known-themes '(user)
+                  custom-enabled-themes nil)
+            (emacs-faces-defface multi-themed-face
+              '((t :foreground "#111111"))
+              "doc")
+            (custom-declare-theme 'older-theme 'older-theme-theme "doc")
+            (custom-theme-set-faces
+             'older-theme
+             '(multi-themed-face ((t :foreground "#222222"))))
+            (custom-declare-theme 'newer-theme 'newer-theme-theme "doc")
+            (custom-theme-set-faces
+             'newer-theme
+             '(multi-themed-face ((t :foreground "#333333"))))
+            (enable-theme 'older-theme)
+            (should (equal "#222222"
+                           (emacs-faces-attribute
+                            'multi-themed-face :foreground nil t)))
+            (enable-theme 'newer-theme)
+            (should (equal '(newer-theme older-theme)
+                           custom-enabled-themes))
+            (should (equal "#333333"
+                           (emacs-faces-attribute
+                            'multi-themed-face :foreground nil t)))
+            (disable-theme 'newer-theme)
+            (should (equal "#222222"
+                           (emacs-faces-attribute
+                            'multi-themed-face :foreground nil t))))
+        (setq custom-known-themes saved-known
+              custom-enabled-themes saved-enabled)
+        (put 'older-theme 'theme-settings nil)
+        (put 'newer-theme 'theme-settings nil)
+        (put 'multi-themed-face 'theme-face nil)))))
+
 ;;;; J. Idempotent require
 
 (ert-deftest emacs-faces-builtins-test/require-is-idempotent ()
@@ -196,7 +267,7 @@
       (insert-file-contents file)
       (dolist (sym '(facep make-face face-attribute set-face-attribute
                      face-foreground face-background set-face-foreground
-                     set-face-background face-list defface))
+                     set-face-background face-list defface deftheme))
         (goto-char (point-min))
         (should (search-forward
                  (format "(when (emacs-faces-builtins--install-function-p '%s)"

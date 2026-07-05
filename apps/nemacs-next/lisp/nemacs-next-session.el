@@ -270,7 +270,7 @@ The text, point, and size are read through reusable buffer APIs."
   (let ((symbol (nemacs-next-session--face-symbol face)))
     (and symbol
          (fboundp 'emacs-faces-attribute)
-         (let ((value (emacs-faces-attribute symbol attribute)))
+         (let ((value (emacs-faces-attribute symbol attribute nil t)))
            (and (not (eq value 'unspecified)) value)))))
 
 (defun nemacs-next-session--face-weight (face)

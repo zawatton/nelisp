@@ -55,6 +55,7 @@ apps/nemacs-next/scripts/session-smoke.sh
 apps/nemacs-next/scripts/process-smoke.sh
 apps/nemacs-next/scripts/m4-gui-shell-smoke.sh
 apps/nemacs-next/scripts/package-smoke.sh
+apps/nemacs-next/scripts/theme-smoke.sh
 apps/nemacs-next/frontends/tui/smoke.sh
 #+end_src
 
