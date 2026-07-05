@@ -579,3 +579,76 @@ are =fboundp= before =require=, requiring the dependent package works,
 dependency activation order is =(base dependent)=, and
 =package-enable-at-startup nil= skips activation.  The original M5 plain
 =load-path= package fixture remains part of the same smoke.
+
+* 11. Custom theme investigation and implementation -- 2026-07-05
+
+Vendor mechanism summary:
+
+- A theme file is conventionally named =THEME-theme.el= and contains
+  =deftheme=, =custom-theme-set-variables= / =custom-theme-set-faces=, and
+  =provide-theme= (=vendor/emacs-lisp/custom.el:1140-1157=).  =deftheme=
+  expands to =custom-declare-theme= with the feature symbol
+  =THEME-theme= (=custom.el:1159-1174=), and =provide-theme= provides the
+  symbol stored on the theme's =theme-feature= property
+  (=custom.el:1242-1250=).
+- Theme file lookup is driven by =custom-theme-load-path=, whose entries may
+  be =custom-theme-directory=, =t= for the built-in =themes/= directory
+  under =data-directory=, or a string directory (=custom.el:1206-1232=).
+  =load-theme= searches that expanded path for =THEME-theme.el=
+  (=custom.el:1339-1341=), while =custom-available-themes= scans the same
+  path for matching filenames (=custom.el:1465-1487=).
+- Emacs records theme settings on symbol properties.  Variable entries land
+  on =theme-value= and face entries land on =theme-face= via
+  =custom-push-theme= (=custom.el:1017-1055= for variables; face
+  recalculation later consumes =theme-face=).  =enable-theme= walks the
+  theme's =theme-settings= rows, stores the active =(THEME . VALUE)= entry
+  on the affected symbol property, and recalculates variables/faces
+  (=custom.el:1539-1575=).  =disable-theme= removes that theme's entries
+  from each affected symbol property and recalculates the exposed lower
+  precedence state (=custom.el:1625-1675=).
+- Precedence is list order: =custom-enabled-themes= is "highest precedence
+  first" (=custom.el:1584-1598=), and =enable-theme= moves the enabled theme
+  to the front while keeping the special =user= theme above non-user themes
+  (=custom.el:1576-1580=).  Loading a theme does not disable older themes;
+  the newly enabled one wins (=custom.el:1310-1313=).
+- Safety in GNU Emacs is hash/prompt based unless =NO-CONFIRM= is passed,
+  =custom-safe-themes= is =t=, or the theme is built-in and =default= is in
+  =custom-safe-themes= (=custom.el:1278-1294= and =custom.el:1343-1362=).
+  Nemacs-next standalone is noninteractive and has no persistent hash prompt
+  yet, so the implemented policy is: init files should call
+  =(load-theme 'name t)= or set =custom-safe-themes= to =t=.  Without either,
+  the standalone loader fails closed with a clear unsafe-theme error.
+- Face attribute reads in real Emacs go through =face-attribute=, which
+  returns direct attributes and optionally follows =:inherit= through
+  =face-attribute-merged-with= (=vendor/emacs-lisp/faces.el:460-516=).
+  Theme changes trigger =custom-theme-recalc-face=, which calls
+  =face-spec-recalc= on live frames (=custom.el:1720-1729=).  Nemacs-next
+  implements the same effective precedence at the registry boundary:
+  enabled =theme-face= spec first, then the =defface= default registry,
+  with basic =:inherit= resolution for face-run attributes.
+- This checkout does not vendor any real built-in =NAME-theme.el= files:
+  only =vendor/emacs-lisp/cus-theme.el= and
+  =vendor/emacs-lisp/theme-loaddefs.el= are present.  The proof therefore
+  uses =apps/nemacs-next/fixtures/theme-smoke/themes/nemacs-demo-theme.el=,
+  a real fixture theme file using =deftheme=, =custom-theme-set-faces=, and
+  =provide-theme=.
+
+Implementation status:
+
+- =src/emacs-faces.el= now owns the reusable custom-theme subset:
+  =deftheme=, =provide-theme=, =load-theme=, =enable-theme=,
+  =disable-theme=, =custom-theme-set-faces=, =custom-theme-set-variables=,
+  =custom-available-themes=, and =custom-theme-load-path= expansion.
+- =apps/nemacs-next/lisp/nemacs-next-session.el= now exports face-runs with
+  effective themed =:foreground=, =:background=, and =:weight= values.
+- =apps/nemacs-next/frontends/tui/nemacs-next-tui= renders themed =#rrggbb=
+  colors as truecolor SGR when =COLORTERM=truecolor= / =24bit=, otherwise
+  approximates to the xterm 256-color cube.
+- =apps/nemacs-next/scripts/theme-smoke.sh= proves init.el control:
+  =(add-to-list 'custom-theme-load-path ...)= plus
+  =(load-theme 'nemacs-demo t)= enables the theme at startup, the first
+  face-run inherits =#5fd7ff= from the theme rather than the seeded default
+  registry color =#ff0000=, TUI output contains
+  =ESC[38;2;95;215;255m=, and =disable-theme= exposes the original default
+  color again.  Host ERT covers the narrower =theme > defface default= and
+  multiple-theme precedence rules.
