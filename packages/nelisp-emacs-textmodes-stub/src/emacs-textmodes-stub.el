@@ -37,6 +37,25 @@
 
 (unless (boundp 'fill-column) (defvar fill-column 70))
 
+;; -- paragraph defaults -----------------------------------------------
+;; Upstream `textmodes/paragraphs.el' defines these standard variables.
+;; Vendor `outline-mode' and `org-mode' read them during mode activation
+;; before loading the full paragraphs command surface.
+
+(unless (boundp 'paragraph-start)
+  (defvar paragraph-start "\f\\|[ \t]*$"
+    "Regexp for beginning of a line that starts or separates paragraphs."))
+
+(unless (boundp 'paragraph-separate)
+  (defvar paragraph-separate "[ \t\f]*$"
+    "Regexp for beginning of a line that separates paragraphs."))
+
+(when (and (fboundp 'make-variable-buffer-local)
+           (or (not (boundp 'emacs-version))
+               (fboundp 'nelisp--write-stdout-bytes)))
+  (make-variable-buffer-local 'paragraph-start)
+  (make-variable-buffer-local 'paragraph-separate))
+
 ;; -- word-wrap (pure-string helper) ------------------------------------
 
 (defun emacs-textmodes--word-wrap (s width)

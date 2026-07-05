@@ -12283,3 +12283,65 @@ path:
    =NELISP_BIN=vendor/nelisp/target/nelisp= after killing only
    =[v]endor/nelisp/target/nelisp=.  Result: =status=done=, exit 0,
    elapsed 350.16 s.
+
+228. Paragraph regexp defaults ported for in-buffer Org activation,
+   2026-07-05.  Iteration log: =paragraph-start= / =paragraph-separate=
+   -> commit =433ee459= ("Port paragraph defaults for org activation")
+   -> probe delta: the previous visible
+   =void-variable: (paragraph-start)= blocker disappeared, but the next
+   result is a reader-level segmentation fault rather than another simple
+   missing symbol.
+
+   Fix shape: =src/emacs-textmodes-stub.el= now defines the upstream
+   =textmodes/paragraphs.el= defaults when absent:
+   =paragraph-start= as ="\f\\|[ \t]*$"= and
+   =paragraph-separate= as ="[ \t\f]*$"=.  The generated scaffold copy
+   =packages/nelisp-emacs-textmodes-stub/lisp/emacs-textmodes-stub.el=
+   was refreshed by =make nemacs-library-package-scaffold
+   build-nelisp-bootstrap=.  The module also registers both variables
+   through =make-variable-buffer-local= on standalone/missing-host
+   runtimes.  Focused host ERT for the owning module:
+   =test/emacs-textmodes-stub-test.el= 13/13 PASS.
+
+   Cold-image e2e with the diagnostics reader from
+   =/home/madblack-21/Cowork/Notes/dev/nelisp.clone-capture= at
+   =440cdfb7=, =NELISP_E2E_KEEP=1=, one run, replacing and deleting the
+   previous workdir: replay-load 6.731 s, dump 0.525 s, cold boot 0.511
+   s, cold-boot peak RSS 513436 KB, faithfulness
+   =(t t t t (interactive) t)= identical.
+
+   Probe (a), exact form =(with-temp-buffer (outline-mode) (prin1
+   major-mode))=, timeout 120, RSS abort 8 GiB, one reader: first run
+   reported exit 0, killed=none, wall 523 ms, probe-side peak RSS 1848
+   KB, stdout exactly =outline-modeoutline-mode=, and stderr from the
+   shell reported =Segmentation fault= for the timed reader command.  A
+   direct recheck on the same image again printed stdout exactly
+   =outline-modeoutline-mode= and emitted the same shell-level
+   =Segmentation fault= diagnostic.
+
+   Probe (b), exact form =(with-temp-buffer (org-mode) (prin1
+   major-mode))=, timeout 120, RSS abort 8 GiB, one reader: first run
+   reported exit 139, killed=none, wall 2609 ms, probe-side peak RSS 1760
+   KB, stdout empty, stderr empty.  A direct recheck again returned
+   exit 139 with stdout empty and stderr empty.  Probe (c) was not run
+   because (b) did not print =org-mode=.  Per the iterative gap-fill
+   rule, this stops the loop early: the next blocker is not a simple
+   =void-variable= / =void-function= standard symbol gap, but a
+   reader-level crash after =paragraph-start= was resolved.
+
+   Final verification: =make test-fast= ran 1075 tests with 1069 expected
+   results and the same 6 known unexpected failures only
+   (=emacs-redisplay-test= x5 plus
+   =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
+   with =void-function Info-find-file=).  The preserved 68-file Org-chain
+   proof from item 222
+   (=tmp-diag/org-chain-68-files-item222.txt=) with item 225's
+   5-conjunct-plus-backquote proof
+   (=tmp-diag/proof-item225-org-chain-plus-backquote.el=) was run once
+   using =VENDOR_REPL_TIMEOUT=900s=,
+   =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=860=, and
+   =NELISP_BIN=vendor/nelisp/target/nelisp=.  The first invocation
+   accidentally passed the list file itself and failed as a harness
+   invocation error (=load-ok-count=1/1= with proof false); the corrected
+   invocation expanded the 68 file names and completed =status=done=,
+   exit 0, elapsed 350.19 s.

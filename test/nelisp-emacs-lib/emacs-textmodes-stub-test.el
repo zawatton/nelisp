@@ -44,6 +44,27 @@
 
 ;;;; fill-region (buffer-side, prefixed entry point) -------------------
 
+(ert-deftest emacs-textmodes-test/paragraph-defaults-are-available ()
+  (should (boundp 'paragraph-start))
+  (should (boundp 'paragraph-separate))
+  (should (string= "\f\\|[ \t]*$" paragraph-start))
+  (should (string= "[ \t\f]*$" paragraph-separate)))
+
+(ert-deftest emacs-textmodes-test/paragraph-defaults-register-locality-in-source ()
+  (let* ((file (locate-library "emacs-textmodes-stub"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (needle '("(defvar paragraph-start"
+                        "(defvar paragraph-separate"
+                        "(make-variable-buffer-local 'paragraph-start)"
+                        "(make-variable-buffer-local 'paragraph-separate)"))
+        (goto-char (point-min))
+        (should (search-forward needle nil t))))))
+
 (ert-deftest emacs-textmodes-test/fill-region-shrinks-to-column ()
   (with-temp-buffer
     (insert "hello world foo bar baz")
