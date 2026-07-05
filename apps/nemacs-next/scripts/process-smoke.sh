@@ -64,6 +64,13 @@ cat >> "$tmp" <<EOF
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name switch-to-buffer :buffer-name "nemacs-next-process-smoke"))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-buffer :buffer-name "nemacs-next-process-smoke.$$.txt"))))
 (nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name kill-buffer :buffer-name "missing-buffer"))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name frame-snapshot :width 24 :height 4))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name menu))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type resize :width 22 :height 3))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type input :event (:text "x")))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type input :event (:commit "y")))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name clipboard-read))))
+(nelisp--write-stdout-bytes (nemacs-next-protocol-handle-message-line (quote (:type command :name clipboard-write :text "copy-me"))))
 ,quit
 EOF
 
@@ -79,9 +86,9 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 lines=$(wc -l < "$out" | tr -d ' ')
-if [ "$lines" != "27" ]; then
+if [ "$lines" != "34" ]; then
   cat "$out" >&2
-  echo "nemacs-next-process-smoke: fail lines=$lines expected=27" >&2
+  echo "nemacs-next-process-smoke: fail lines=$lines expected=34" >&2
   exit 1
 fi
 
@@ -208,6 +215,36 @@ fi
 if ! grep -q '"code":"no-such-buffer"' "$out"; then
   cat "$out" >&2
   echo "nemacs-next-process-smoke: fail missing no-such-buffer error for kill-buffer" >&2
+  exit 1
+fi
+
+if ! grep -q '"frame":{"id":"main"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing M4 frame snapshot/delta payload" >&2
+  exit 1
+fi
+
+if ! grep -q '"type":"menu"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing M4 menu model" >&2
+  exit 1
+fi
+
+if ! grep -q '"command":"find-file"' "$out"; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail missing menu protocol command target" >&2
+  exit 1
+fi
+
+if [ "$(grep -c '"type":"delta"' "$out")" != "3" ]; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail expected three M4 delta responses (resize, keyboard input, IME commit)" >&2
+  exit 1
+fi
+
+if [ "$(grep -c '"type":"request"' "$out")" != "2" ]; then
+  cat "$out" >&2
+  echo "nemacs-next-process-smoke: fail expected two M4 clipboard requests" >&2
   exit 1
 fi
 

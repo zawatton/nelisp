@@ -22,6 +22,7 @@ apps/nemacs-next/
   lisp/nemacs-next-protocol.el
   lisp/nemacs-next-session.el
   protocol/protocol-v0.org
+  scripts/m4-gui-shell-smoke.sh
   scripts/process-smoke.sh
   scripts/session-smoke.sh
   scripts/smoke.sh
@@ -46,6 +47,7 @@ but it is not the target product transport.
 apps/nemacs-next/scripts/smoke.sh
 apps/nemacs-next/scripts/session-smoke.sh
 apps/nemacs-next/scripts/process-smoke.sh
+apps/nemacs-next/scripts/m4-gui-shell-smoke.sh
 #+end_src
 
 The host smoke uses Emacs to prove that the app contract loads
@@ -61,3 +63,9 @@ The process smoke sends several request forms through one persistent
 NeLisp REPL process and verifies newline-delimited JSON responses for
 =hello=, buffer creation, and insertion.  The insertion response is a
 buffer snapshot.
+
+The M4 GUI shell smoke runs under host Emacs and renders one protocol
+frame snapshot to plain text.  It is the current human-visible demo hook:
+buffer viewport and modeline are visible in a terminal, while the session
+also proves menu command targets, resize deltas, keyboard/IME input
+deltas, and clipboard OS-integration requests.

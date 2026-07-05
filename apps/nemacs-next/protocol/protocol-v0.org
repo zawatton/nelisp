@@ -171,6 +171,48 @@ Implementation notes:
   render visited-file and dirty-state indicators without owning the
   semantics.
 
+* M4 Modern GUI Shell
+
+M4 adds the protocol shell needed by a modern frontend without moving
+editor semantics into GUI code:
+
+| Name/message | Meaning |
+|--------------+---------|
+| =hello= | advertises =:gui-shell-capabilities= for native window, renderer, keyboard input, IME, clipboard, viewport/modeline, menu, and toolbar ownership |
+| =frame-snapshot= | returns a =snapshot= with =:frame= viewport rows, cursor row/column, modeline, and echo area plus the underlying buffer snapshot |
+| =render-frame-text= | returns the same frame snapshot with =:rendered-text= for smoke/demo inspection |
+| =resize= | updates frame width/height and returns a =delta= with the new frame payload |
+| =input= | accepts frontend-decoded keyboard text, Enter, Backspace, or IME commit text and delegates mutation to existing session commands |
+| =clipboard= | with a string payload, treats the payload as committed paste input; without payload, returns a clipboard read =request= |
+| =clipboard-read= / =clipboard-write= | return frontend OS-integration =request= payloads |
+| =menu= / =toolbar= | return a =menu= payload whose items name protocol commands such as =find-file= and =save-buffer= |
+
+The frame payload is intentionally character-cell based for V0:
+
+#+begin_src emacs-lisp
+(:type snapshot
+ :frame (:id "main"
+         :width 80
+         :height 24
+         :cursor (:row 0 :column 0)
+         :viewport ((:row 0 :text "...") ...)
+         :mode-line " --  buffer  file  point:1 "
+         :echo "")
+ :buffers ((:type snapshot ...)))
+#+end_src
+
+This gives a human-visible terminal-renderable demo hook and a stable
+renderer input shape.  It does not claim that this repository now owns a
+real OS-native GUI window; native window creation, compositor rendering,
+font discovery, raw platform input, IME integration, and clipboard device
+access remain frontend-owned surfaces.  The session owns the protocol
+messages that describe editor state and route decoded frontend events back
+to shared command/file/minibuffer APIs.
+
+Menus and toolbar entries deliberately carry command names and arguments
+for the protocol path.  Frontends should call those commands instead of
+copying file, buffer, undo, or minibuffer behavior locally.
+
 * Rule
 
 Protocol messages may carry editor state, but they must not move editor

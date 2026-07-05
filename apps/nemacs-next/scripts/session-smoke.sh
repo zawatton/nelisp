@@ -134,6 +134,27 @@ cat >> "$tmp" <<EOF
       (nemacs-next-session-handle-message
        (quote (:type command :name kill-buffer
                :buffer-name "missing-buffer"))))
+(setq nemacs-next-session-smoke-frame
+      (nemacs-next-session-handle-message
+       (quote (:type command :name frame-snapshot :width 24 :height 4))))
+(setq nemacs-next-session-smoke-rendered-frame
+      (nemacs-next-session-render-frame-text
+       nemacs-next-session-smoke-frame))
+(setq nemacs-next-session-smoke-menu
+      (nemacs-next-session-handle-message
+       (quote (:type command :name menu))))
+(setq nemacs-next-session-smoke-resize
+      (nemacs-next-session-handle-message
+       (quote (:type resize :width 22 :height 3))))
+(setq nemacs-next-session-smoke-input
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:text "x")))))
+(setq nemacs-next-session-smoke-ime
+      (nemacs-next-session-handle-message
+       (quote (:type input :event (:commit "y")))))
+(setq nemacs-next-session-smoke-clipboard
+      (nemacs-next-session-handle-message
+       (quote (:type command :name clipboard-read))))
 (setq nemacs-next-session-smoke-org-open
       (nemacs-next-session-handle-message
        (quote (:type command :name find-file :path "$org_file"))))
@@ -217,6 +238,25 @@ cat >> "$tmp" <<EOF
              (quote error))
          (eq (plist-get nemacs-next-session-smoke-missing-kill :code)
              (quote no-such-buffer))
+         (eq (plist-get nemacs-next-session-smoke-frame :type)
+             (quote snapshot))
+         (plist-get nemacs-next-session-smoke-frame :frame)
+         (string-match-p "nemacs-next-session-smoke"
+                         nemacs-next-session-smoke-rendered-frame)
+         (eq (plist-get nemacs-next-session-smoke-menu :type)
+             (quote menu))
+         (equal (plist-get (car (plist-get nemacs-next-session-smoke-menu
+                                           :items))
+                           :command)
+                "find-file")
+         (eq (plist-get nemacs-next-session-smoke-resize :type)
+             (quote delta))
+         (eq (plist-get nemacs-next-session-smoke-input :type)
+             (quote delta))
+         (eq (plist-get nemacs-next-session-smoke-ime :type)
+             (quote delta))
+         (eq (plist-get nemacs-next-session-smoke-clipboard :type)
+             (quote request))
          (eq (plist-get nemacs-next-session-smoke-org-open :type)
              (quote snapshot))
          nemacs-next-session-smoke-org-parse-ok
@@ -259,6 +299,13 @@ cat >> "$tmp" <<EOF
            nemacs-next-session-smoke-switch
            nemacs-next-session-smoke-kill-file
            nemacs-next-session-smoke-missing-kill
+           nemacs-next-session-smoke-frame
+           nemacs-next-session-smoke-rendered-frame
+           nemacs-next-session-smoke-menu
+           nemacs-next-session-smoke-resize
+           nemacs-next-session-smoke-input
+           nemacs-next-session-smoke-ime
+           nemacs-next-session-smoke-clipboard
            nemacs-next-session-smoke-org-open
            nemacs-next-session-smoke-org-parse-ok)))
 ,quit

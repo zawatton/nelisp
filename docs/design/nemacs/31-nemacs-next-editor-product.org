@@ -239,7 +239,7 @@ a separate numbered increment ladder of its own.
 | 2026-07-04 | M2 Editing loop (movement/delete slice) | done | =forward-char=, =backward-char=, =goto-char=, =delete-char= session commands; out-of-range requests return a structured protocol =error= instead of an uncaught signal |
 | 2026-07-04 | M2 Editing loop (newline, undo, kill/yank slice) | done | =newline=, =undo=, =kill-region=, =kill-line=, =yank= session commands wired to already-shipped Track E/E.2 substrate (=emacs-undo-*=, =emacs-edit-*-direct=); structured =empty-kill-ring=, =bad-command=, =no-further-undo-information= errors instead of uncaught signals or silent no-ops |
 | 2026-07-05 | M3 Minibuffer/file loop | done | =find-file=, =save-buffer=, =switch-to-buffer=, =kill-buffer= session commands; =complete=/=completion= minibuffer candidate payload; =open= delegates to =find-file=; all app smokes cover file/buffer/completion loop plus one standalone org-mode + =org-element-parse-buffer= assertion |
-| -- | M4 Modern GUI shell | open | not yet implemented |
+| 2026-07-05 | M4 Modern GUI shell | done | =hello= advertises GUI-shell capabilities; =frame-snapshot= / =render-frame-text= expose buffer viewport + modeline; =resize= / =input= / IME commit produce frame =delta= payloads; =menu= / =toolbar= items route to protocol commands; clipboard read/write produce frontend =request= payloads; =scripts/m4-gui-shell-smoke.sh= renders one frame to plain text |
 | -- | M5 Package smoke | open | not yet implemented |
 
 The 2026-07-04 movement/delete increment was picked because M0 and M1
@@ -319,6 +319,25 @@ The standalone session smoke also opens an Org file through the M3
 editor-on-substrate assertion only; it does not promote Org parsing into
 the M3 protocol scope.
 
-Remaining after M3: M4 modern GUI shell (native window, renderer,
-keyboard input, IME, clipboard, viewport/modeline rendering, and
-menus/toolbar routed through protocol commands) and M5 package smoke.
+M4 is now implemented as the first modern GUI shell protocol slice under
+=apps/nemacs-next=.  The exact Section 7 scope was: native window,
+renderer, keyboard input, IME, clipboard; buffer viewport and modeline
+rendering; menus/toolbar call protocol commands, not GUI command copies.
+This commit provides the session/protocol side of that scope: V0 =hello=
+advertises ownership/capability rows for those shell surfaces;
+=frame-snapshot= returns character-cell viewport rows, cursor position,
+modeline, echo area, and the underlying buffer snapshot; =render-frame-text=
+turns that frame payload into a plain-text terminal demo; =resize=,
+keyboard text input, Enter/Backspace, and IME commit text return =delta=
+payloads after delegating buffer mutation to existing shared command
+paths; clipboard read/write are frontend OS-integration =request= payloads;
+and the menu/toolbar model carries protocol command names such as
+=find-file= and =save-buffer= instead of reimplementing command behavior.
+
+The user-facing gap is explicit: this is human-visible and operable at the
+protocol/text-render level, but it is not yet a real OS-native window or
+hardware clipboard/IME implementation.  Those remain frontend-owned
+surfaces for the next GUI integration slice; M5 in Section 7 remains the
+package-smoke milestone.
+
+Remaining after M4: M5 package smoke.
