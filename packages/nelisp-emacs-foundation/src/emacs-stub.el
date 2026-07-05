@@ -2587,6 +2587,14 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
     (list 'unless (list 'member item place)
           (list 'setq place (list 'cons item place)))))
 
+(when (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (not (boundp 'emacs-version))
+          (get 'push 'emacs-stub-bulk))
+  (defmacro push (item place)
+    "Compatibility macro: cons ITEM onto PLACE."
+    (list 'setq place (list 'cons item place))))
+
 (unless (fboundp 'cl-letf)
   (defmacro cl-letf (bindings &rest body)
     "Stub: cl-letf → simple let* (= no place mutation tracking)."

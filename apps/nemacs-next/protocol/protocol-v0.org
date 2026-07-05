@@ -33,6 +33,7 @@ transport can replace it without moving editor semantics into the GUI.
 | Type | Required fields | Meaning |
 |------+-----------------+---------|
 | =hello= | =protocol=, =capabilities= | accepted session capabilities |
+| =frame-config= | =tool-bar-lines= | startup frame configuration derived after early/init files |
 | =snapshot= | =frame=, =buffers= | complete state needed to paint a frame |
 | =delta= | =frame=, =changes= | incremental state update |
 | =minibuffer= | =active=, =prompt=, =contents= | minibuffer state and optional candidates |
@@ -180,6 +181,7 @@ editor semantics into GUI code:
 |--------------+---------|
 | =hello= | advertises =:gui-shell-capabilities= for native window, renderer, keyboard input, IME, clipboard, viewport/modeline, menu, and toolbar ownership |
 | =frame-snapshot= | returns a =snapshot= with =:frame= viewport rows, per-row face runs, cursor row/column, modeline, and echo area plus the underlying buffer snapshot |
+| =frame-config= | returns toolbar-lines / width / height / font after startup init files have applied =default-frame-alist= and =initial-frame-alist= |
 | =render-frame-text= | returns the same frame snapshot with =:rendered-text= for smoke/demo inspection |
 | =resize= | updates frame width/height and returns a =delta= with the new frame payload |
 | =input= | accepts frontend-decoded keyboard text, Enter, Backspace, or IME commit text and delegates mutation to existing session commands; terminal frontends must send complete UTF-8 text units, not partial bytes |
@@ -239,6 +241,26 @@ to shared command/file/minibuffer APIs.
 Menus and toolbar entries deliberately carry command names and arguments
 for the protocol path.  Frontends should call those commands instead of
 copying file, buffer, undo, or minibuffer behavior locally.
+
+Startup frame configuration is a separate session message emitted before a
+frontend requests or paints the first frame snapshot:
+
+#+begin_src emacs-lisp
+(:type frame-config
+ :tool-bar-lines 0
+ :width 125
+ :height 45
+ :font "Fira Code-14"
+ :notes ((:field width :note "TUI treats width as terminal-constrained")
+         (:field height :note "TUI treats height as terminal-constrained")
+         (:field font :note "TUI ignores font; GUI frontends may consume it")))
+#+end_src
+
+=tool-bar-lines= is consumed by the TUI as a toolbar row count; =0= hides the
+toolbar row and moves buffer viewport row 0 to terminal row 0.  =width= and
+=height= are startup hints only in the TUI because the real terminal size and
+later resize events win.  =font= is a TUI no-op and is included for GUI
+frontends.
 
 The default toolbar inventory is taken from
 =vendor/emacs-lisp/tool-bar.el=, =tool-bar-setup=, in this exact order:

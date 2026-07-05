@@ -6,6 +6,8 @@
 (require 'cl-lib)
 (require 'emacs-special-buffers)
 
+(defvar nemacs-next-session-echo-message "")
+
 (defmacro emacs-special-buffers-test--with-fresh-world (&rest body)
   "Run BODY with clean core buffer and special-buffer backend state."
   (declare (indent 0) (debug (body)))
@@ -81,6 +83,34 @@
       (should (string-match-p "hello world" messages))
       (should (string-match-p "Warning \\[nemacs\\]: careful" messages))
       (should (string-match-p "Warning \\[nemacs\\]: careful" warnings)))))
+
+(ert-deftest emacs-special-buffers-test/message-log-max-truncates-old-lines ()
+  (emacs-special-buffers-test--with-fresh-world
+    (let ((message-log-max 2))
+      (emacs-special-buffers-message "one")
+      (emacs-special-buffers-message "two")
+      (emacs-special-buffers-message "three")
+      (let ((messages (emacs-special-buffers-test--buffer-string
+                       (emacs-special-buffers--find-buffer "*Messages*"))))
+        (should-not (string-match-p "one" messages))
+        (should (equal "two\nthree\n" messages))))))
+
+(ert-deftest emacs-special-buffers-test/message-nil-clears-echo-without-log ()
+  (emacs-special-buffers-test--with-fresh-world
+    (let ((nemacs-next-session-echo-message "old"))
+      (let ((messages-buffer-name "*Messages Test*"))
+        (unwind-protect
+            (progn
+              (emacs-special-buffers-message "logged")
+              (should (equal "logged" nemacs-next-session-echo-message))
+              (should-not (emacs-special-buffers-message nil))
+              (should (equal "" nemacs-next-session-echo-message))
+              (let ((messages (emacs-special-buffers-test--buffer-string
+                               (emacs-special-buffers--find-buffer
+                                messages-buffer-name))))
+                (should (equal "logged\n" messages))))
+          (when (get-buffer messages-buffer-name)
+            (kill-buffer messages-buffer-name)))))))
 
 (ert-deftest emacs-special-buffers-test/warn-and-lwarn-append ()
   (emacs-special-buffers-test--with-fresh-world

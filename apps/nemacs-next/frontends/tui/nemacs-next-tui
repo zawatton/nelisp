@@ -46,6 +46,7 @@ prompt_kind=file
 prompt_text=
 toolbar_focus=0
 toolbar_index=0
+toolbar_lines=1
 quit_requested=0
 first_draw=1
 last_draw_actual_bytes=0
@@ -135,6 +136,9 @@ start_session() {
   session_pid=$NEMACS_NEXT_TUI_SESSION_PID
   cat "$BOOTSTRAP_REPL" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   printf '%s\n' "(setq load-path (list $(elisp_string "$ROOT/src") $(elisp_string "$ROOT/apps/nemacs-next/lisp")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(load $(elisp_string "$ROOT/src/emacs-special-buffers.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(load $(elisp_string "$ROOT/src/nemacs-loadup.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(unless nemacs-initialized (nemacs-init t))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   printf '%s\n' "(load $(elisp_string "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   printf '%s\n' "(nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_READY\n\")" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   local line
@@ -171,6 +175,10 @@ read_render() {
         ;;
       NEMACS_NEXT_TUI_STATUS$'\t'*)
         status_message=${line#*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_FRAME_CONFIG$'\t'*)
+        local rest=${line#*$'\t'}
+        toolbar_lines=${rest%%$'\t'*}
         ;;
       NEMACS_NEXT_TUI_LINE$'\t'*)
         local rest=${line#*$'\t'}
