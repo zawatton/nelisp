@@ -172,13 +172,55 @@ nil MARKER-OR-INTEGER returns a detached marker, matching Emacs."
 (defvar buffer-invisibility-spec nil
   "Standalone bridge for Emacs's per-buffer invisibility spec.")
 
+(when (fboundp 'make-variable-buffer-local)
+  (make-variable-buffer-local 'buffer-invisibility-spec))
+
+(defun emacs-buffer-builtins--buffer-invisibility-spec ()
+  "Return the current buffer's `buffer-invisibility-spec' value."
+  (if (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'nelisp-ec-current-buffer)
+           (nelisp-ec-current-buffer)
+           (fboundp 'emacs-buffer-local-variable-p)
+           (emacs-buffer-local-variable-p 'buffer-invisibility-spec
+                                          (nelisp-ec-current-buffer)))
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-buffer-local-value
+       (list 'buffer-invisibility-spec (nelisp-ec-current-buffer)))
+    buffer-invisibility-spec))
+
+(defun emacs-buffer-builtins--set-buffer-invisibility-spec (value)
+  "Set the current buffer's `buffer-invisibility-spec' to VALUE."
+  (if (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'nelisp-ec-current-buffer)
+           (nelisp-ec-current-buffer))
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-set-buffer-local-value
+       (list 'buffer-invisibility-spec (nelisp-ec-current-buffer) value))
+    (setq buffer-invisibility-spec value)))
+
+(defun emacs-buffer-builtins-add-to-invisibility-spec (element)
+  "Add ELEMENT to `buffer-invisibility-spec'."
+  (let ((spec (emacs-buffer-builtins--buffer-invisibility-spec)))
+    (when (eq spec t)
+      (setq spec (list t)))
+    (emacs-buffer-builtins--set-buffer-invisibility-spec
+     (cons element spec))))
+
+(defun emacs-buffer-builtins-remove-from-invisibility-spec (element)
+  "Remove ELEMENT from `buffer-invisibility-spec'."
+  (let ((spec (emacs-buffer-builtins--buffer-invisibility-spec)))
+    (emacs-buffer-builtins--set-buffer-invisibility-spec
+     (if (consp spec)
+         (delete element spec)
+       (list t)))))
+
 (defun emacs-buffer-builtins-invisible-p (prop)
   "Return non-nil when PROP is hidden by `buffer-invisibility-spec'.
 The standalone bridge preserves the host-visible shape needed by
 redisplay callers: direct symbol matches return t, cons/list spec
 matches return 2, and absent matches return nil."
   (let ((spec (and (boundp 'buffer-invisibility-spec)
-                   buffer-invisibility-spec)))
+                   (emacs-buffer-builtins--buffer-invisibility-spec))))
     (cond
      ((null prop) nil)
      ((eq spec t) t)
@@ -237,6 +279,14 @@ String text properties are accepted as a no-op in the standalone MVP."
 
 (when (emacs-buffer-builtins--install-function-p 'invisible-p)
   (defalias 'invisible-p #'emacs-buffer-builtins-invisible-p))
+
+(when (emacs-buffer-builtins--install-function-p 'add-to-invisibility-spec)
+  (defalias 'add-to-invisibility-spec
+    #'emacs-buffer-builtins-add-to-invisibility-spec))
+
+(when (emacs-buffer-builtins--install-function-p 'remove-from-invisibility-spec)
+  (defalias 'remove-from-invisibility-spec
+    #'emacs-buffer-builtins-remove-from-invisibility-spec))
 
 (defun emacs-buffer-builtins-next-property-change (pos &optional object limit)
   "Return next property change after POS in OBJECT.
