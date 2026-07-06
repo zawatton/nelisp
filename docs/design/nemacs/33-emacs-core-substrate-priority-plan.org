@@ -13731,3 +13731,143 @@ path:
    `vendor/nelisp' branch `fix/llama-shorthand-value' only; this repo
    has no commits this pass (reproduction/verification only, per this
    pass's scope).
+
+243. Task #17 M2 continuation, 2026-07-06: root-caused the "section
+   tree is empty" symptom (item 242's successor blocker after the
+   buffer-local swap engine landed) and fixed SEVEN substrate defect
+   classes on the `magit-status-smoke' path; M2 still does not PASS --
+   the fix loop was stopped at the >5-new-defect-classes budget with a
+   per-hook error enumeration finally in hand (below).  Branch
+   `feat/magit-tui'; vendor/nelisp NOT modified (all fixes live in this
+   repo's own substrate files).
+
+   How the real cause was found: the "per-section error swallowing"
+   hypothesis was WRONG -- `magit-run-section-hook' has no per-entry
+   `condition-case' at all.  A print-on-enter/error function-wrap trace
+   of the whole `magit-status-setup-buffer' chain showed
+   `magit-status-refresh-buffer' entering and exiting WITHOUT ever
+   calling `magit-insert-section--create' or `magit-run-section-hook':
+   the `(magit-insert-section (status) ...)' macro call itself expanded
+   to nil.  `magit-root-section' therefore stayed nil and
+   `magit-status-goto-initial-section''s
+   `(magit-section-siblings (magit-current-section) 'next)' did
+   `(oref nil parent)' => the reported `wrong-type-argument
+   ((or eieio-object cl-structure-object oclosure) nil)'.
+
+   Defect classes root-caused and FIXED this pass (each verified by
+   probe progression against the rebaked image; `make test-fast' green
+   at the same 6 known-unexpected results after all of them):
+
+   (1) `pcase-let' / `pcase-let*' / `pcase-dolist' strict-match gating
+   (`src/emacs-pcase.el', the LIVE implementation; same fix mirrored in
+   the older `src/emacs-stub.el' family).  Real Emacs `pcase-let'
+   treats patterns as "assumed to match" and destructures
+   unconditionally; the polyfills wrapped BODY in `(when TEST ...)', so
+   `magit-insert-section''s parser pattern `((,class ,value ,hide
+   . ,args) . ,body)' against the common SHORT form `((status)
+   BODY...)' failed its `consp' chain and the whole macro expansion
+   evaluated to nil, silently.  This was the section-tree-empty root
+   cause.
+
+   (2) `src/emacs-stub.el' pcase backquote-pattern dialect gap: it only
+   recognized the NeLisp reader's normalized `backquote'/`comma'/
+   `comma-at' heads, not host Emacs's `\`'/`\,'/`\,@' symbols that the
+   host-normalized bridge bundle actually contains (defense-in-depth;
+   `emacs-pcase.el' already knew both).
+
+   (3) `cl-pushnew' symbol-only place expansion
+   (`src/emacs-cl-macros.el'): `(cl-pushnew cname
+   (eieio--class-children c))' expanded to `(setq (eieio--class-children
+   c) ...)', and a non-symbol `setq' target is a FLAGLESS abort on the
+   standalone evaluator (same defect class as the `push' fix already
+   documented in emacs-stub.el).  This silently killed EVERY
+   `(defclass ...)' in the bundle partway (classes half-registered:
+   childp predicate defined, `cl--find-class' registered, but zero
+   slots) -- which is why `magit-insert-section--create''s constructor
+   call aborted.  Also fixed the same-shape latent bug in
+   `emacs-stub.el''s `cl-pushnew' (generalized-place variant kept).
+
+   (4) `cl-slot-descriptor' machinery missing (`src/emacs-cl-macros.el',
+   new seed next to item 241's `cl--class' seed): `cl-preloaded.el' is
+   excluded from the bundle but is upstream's only owner of
+   `cl--make-slot-descriptor' / `cl--slot-descriptor-*' /
+   `cl--copy-slot-descriptor', which `eieio-defclass-internal''s slots
+   loop calls once per slot => `void-function: cl--make-slot-descriptor'
+   after registration, leaving classes slot-less.  Seeded the 4-slot
+   struct (BOA constructor, `:conc-name cl--slot-descriptor-') plus a
+   manual `cl--copy-slot-descriptor' (props alist copied, not shared).
+
+   (5) `copy-sequence' record identity (`src/emacs-list.el'): the NeLisp
+   stdlib prelude's `copy-sequence' falls through `(t seq)' for native
+   records, returning the SAME object.  EIEIO's `make-instance' is
+   `(copy-sequence (eieio--class-default-object-cache class))', so every
+   constructed object would BE the shared per-class cache (all instances
+   aliasing).  Added a record-aware upgrade gated on a runtime
+   self-probe (only wraps when a fresh record round-trips `eq' through
+   the live `copy-sequence'; host Emacs never trips it).
+
+   (6) `cl-typep' minimal-prelude shadowing (`src/emacs-cl-macros.el'):
+   the stdlib prelude ships a 10-case atomic-only `cl-typep' (no
+   compound types, no TYPE-p predicate fallback, `(t nil)') which is
+   fbound before this repo's rich implementation, whose
+   `(unless (fboundp ...))' gate then left it dead.  `eieio-oset'/`oref'
+   dispatch on `(cl-typep obj '(or eieio-object cl-structure-object))'
+   => always nil => every slot write signalled `wrong-type-argument'.
+   Gate replaced by a self-probe (`(cl-typep nil '(or null))'): host
+   Emacs answers t and is untouched; the minimal version gets replaced.
+
+   (7) pcase `app' pattern unsupported (`src/emacs-pcase.el'): EIEIO's
+   `pcase-defmacro eieio' expands to `(and (pred eieio-object-p) (app
+   (eieio-oref _ 'NAME) PAT) ...)'; the unknown `app' head fell into the
+   permissive catch-all (test t, NO bindings), so magit-section's
+   `(pcase-let (((eieio start end children keymap) section)) ...)'
+   left all four unbound => `void-variable: keymap'.  Implemented `app'
+   (function-symbol/lambda form and `(F ARG...)' form with the literal
+   `_' EXPVAL placeholder or appended EXPVAL).
+
+   STATE AFTER THE SEVEN FIXES (why M2 is still open): `defclass' /
+   `make-instance' / `oref' / `oset' now genuinely work; the status
+   root section and several child sections are REALLY inserted
+   (`magit-insert-section--create'/`--finish' pairs observed
+   completing); the remaining failures are finally enumerable per
+   inserter.  A per-entry condition-case shim over
+   `magit-run-section-hook' (tmp-diag/diag-20260706-section-hook-
+   errors.el) reports, against the fully-fixed image:
+
+   - `magit-insert-status-headers'  => (wrong-type-argument
+     (or eieio-object cl-structure-object oclosure) nil) -- an `oref'
+     on nil somewhere inside the headers machinery; not yet bisected.
+   - `magit-insert-untracked-files' / `magit-insert-unstaged-changes' /
+     `magit-insert-staged-changes' => (void-function
+     text-property-not-all) -- the text-property scanning primitive is
+     not provided by the buffer substrate; owner should be
+     `src/emacs-buffer.el' text-property layer + unprefixed alias in
+     `emacs-buffer-builtins.el'.
+   - `magit-insert-unpushed-to-upstream-or-recent' => (void-function
+     magit-unpushed-section) -- `(defclass magit-unpushed-section
+     (magit-log-section) nil)' still aborts (parent chain
+     `magit-log-section' -> `magit-section' includes an `:abstract t'
+     class; not yet bisected).
+   - After the hook loop, refresh dies with `(void-variable
+     magit-section-visibility-indicators)': that defvar's default value
+     template calls `char-displayable-p' (void standalone), so the
+     defvar form aborted at load => variable unbound.  Crisp repro:
+     `(char-displayable-p 8230)' => void-function.
+
+   These four (plus any behind them) are the remaining M2 blockers.
+   None of them looks core-bound; all fit the established bridge/
+   substrate precondition pattern (text-property primitive, defclass
+   abstract-parent bisect, `char-displayable-p' polyfill, headers oref
+   bisect).
+
+   Regression: `make magit-load-smoke' => MAGIT-LOAD PASS on the fully
+   rebaked image (base `nemacs-runtime.nlri' + magit image rebuilt from
+   scratch after every fix -- the bake only existence-checks the base
+   image, so both .nlri files were `rm'ed each round).  `make test-fast'
+   => 1127 tests, same 6 known-unexpected (5 emacs-redisplay + 1
+   Info-find-file vendor test), bit-for-bit identical to the pre-change
+   baseline run this same session -- zero regressions.  The
+   `packages/nelisp-emacs-foundation/lisp/' scaffold mirrors of
+   emacs-pcase/emacs-stub/emacs-cl-macros/emacs-list picked up the
+   identical changes via `make nemacs-library-package-scaffold' on
+   rebake and are committed together.

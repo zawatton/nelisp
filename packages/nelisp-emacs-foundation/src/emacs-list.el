@@ -39,6 +39,49 @@
         (setq cur (cdr cur)))
       (nreverse acc))))
 
+;; Record-aware `copy-sequence' upgrade (Doc 33 item 243).  The NeLisp
+;; stdlib prelude's `copy-sequence' handles nil / cons / string / vector
+;; and falls through to `(t seq)' for everything else -- including
+;; native records -- so copying a record returns the SAME object.  EIEIO
+;; relies on real record copying in a load-bearing spot: `make-instance'
+;; is `(copy-sequence (eieio--class-default-object-cache class))', so
+;; with the identity fallback every constructed object IS the class's
+;; shared default-object cache -- all instances alias one another and
+;; each `oset' scribbles over every other live instance (first visible
+;; casualty: magit's section objects).  Gate = a runtime self-probe: only
+;; wrap when a freshly-made record round-trips `eq' through the current
+;; `copy-sequence' (host Emacs's C implementation copies records fine and
+;; never trips this).
+(when (and (fboundp 'make-record)
+           (fboundp 'recordp)
+           (fboundp 'nelisp--record-length)
+           (fboundp 'nelisp--record-type)
+           (fboundp 'nelisp--record-ref)
+           (fboundp 'nelisp--record-set)
+           (condition-case nil
+               (let ((probe (make-record 'emacs-list--copy-probe 1 nil)))
+                 (and (recordp probe)
+                      (not (recordp '(emacs-list--copy-probe)))
+                      (eq (copy-sequence probe) probe)))
+             (error nil)))
+  (defalias 'emacs-list--copy-sequence-nonrecord
+    (symbol-function 'copy-sequence)
+    "The pre-upgrade `copy-sequence' (correct for all non-record types).")
+  (defun copy-sequence (sequence)
+    "Return a shallow copy of SEQUENCE, records included.
+Records go through the `nelisp--record-*' accessors; every other type
+delegates to the previous implementation (see the upgrade comment
+above -- Doc 33 item 243)."
+    (if (recordp sequence)
+        (let* ((n (nelisp--record-length sequence))
+               (new (make-record (nelisp--record-type sequence) n nil))
+               (i 0))
+          (while (< i n)
+            (nelisp--record-set new i (nelisp--record-ref sequence i))
+            (setq i (1+ i)))
+          new)
+      (emacs-list--copy-sequence-nonrecord sequence))))
+
 (unless (fboundp 'copy-tree)
   (defun copy-tree (tree &optional vecp)
     "Return a recursive copy of TREE.  Conses are recursively copied."
