@@ -1770,12 +1770,42 @@ arm64 Linux has no legacy x86 numbering)."
                         (+ (ptr-read-u64 (data-addr nl_gc_diag) 40) 1))
                       (nl_gc_poison_fill hdr 16 (nl_hdr_bt hdr)))
            0)))))
+    ;; Doc 155 new-retention-edge FORENSIC INSTRUMENT (gated by nl_gc_diag+32,
+    ;; the shared "GC free forensics" enable; default 0 = zero behaviour change).
+    ;; Doc 155 established that the retention-edge bug is specifically a LIVE
+    ;; lexframe hash-table/buckets child sitting on a GROWTH chunk (not chunk 0)
+    ;; being swept -> freed -> the free-link write clobbers the live box.
+    ;; §8.9 asked to "instrument the FREEING site" to name the exact unmarked
+    ;; edge.  This counts every block freed by a sweep that lives OUTSIDE chunk 0
+    ;; (i.e. on a growth chunk -- the suspect class) into nl_gc_diag+48, and
+    ;; captures the FIRST such block's header address into nl_gc_diag+56 so a
+    ;; follow-up single-run HW-watchpoint (`watch *ADDR') can be armed on it
+    ;; deterministically (both exposed via the `nelisp--gc-diag' builtin as the
+    ;; 10th/11th list elements).  Chunk-0 base/size come from the chunk-head
+    ;; descriptor (*268436160): base @ desc+0, size @ desc+8.  Growth iff the
+    ;; header is below chunk-0 base OR at/above chunk-0 end.  Cheap (2 reads +
+    ;; 2 compares) and only when the gate is armed; the normal path pays one
+    ;; `(= ... 0)' branch and returns.
+    (defun nl_gc_growth_free_note (hdr)
+      (if (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 0) 0
+        (let* ((c0 (ptr-read-u64 268436160 0))
+               (b (ptr-read-u64 c0 0))
+               (sz (ptr-read-u64 (+ c0 8) 0)))
+          (if (if (< hdr b) 1 (if (< hdr (+ b sz)) 0 1))
+              (nl_seq2
+               (ptr-write-u64 (data-addr nl_gc_diag) 48
+                              (+ (ptr-read-u64 (data-addr nl_gc_diag) 48) 1))
+               (if (= (ptr-read-u64 (data-addr nl_gc_diag) 56) 0)
+                   (ptr-write-u64 (data-addr nl_gc_diag) 56 hdr)
+                 0))
+            0))))
     (defun nl_gc_free_block (hdr)
       (if (= (nl_gc_is_boot hdr) 1) 0   ; HARD: never free a chunk-0 boot block
-       (nl_gc_free_block_link hdr
-        (if (< (nl_hdr_bt hdr) 16) 268435552
-          (if (< 472 (nl_hdr_bt hdr)) 268435552
-            (+ 268435696 (- (nl_hdr_bt hdr) 16)))))))
+       (nl_seq2 (nl_gc_growth_free_note hdr)
+        (nl_gc_free_block_link hdr
+         (if (< (nl_hdr_bt hdr) 16) 268435552
+           (if (< 472 (nl_hdr_bt hdr)) 268435552
+             (+ 268435696 (- (nl_hdr_bt hdr) 16))))))))
     ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
     ;; skip); returns the block's live byte contribution (bt if live, else
     ;; 0).  No control mutation -> safe to call from the iterative loop.
@@ -3589,12 +3619,20 @@ unresolved at link time."
                                           (if (= (wf_argval args 0) 18)
                                               (ptr-write-u64 (data-addr nl_fvcache_disable_lookup) 0 0)
                                             0))))))))))))))))))
-        (let* ((nils (alloc-bytes 32 8)) (s8 (alloc-bytes 32 8)) (s7 (alloc-bytes 32 8)) (s6 (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
+        (let* ((nils (alloc-bytes 32 8)) (t11 (alloc-bytes 32 8)) (t10 (alloc-bytes 32 8))
+               (s8 (alloc-bytes 32 8)) (s7 (alloc-bytes 32 8)) (s6 (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
                (s3 (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
           (seq
             (wf_write_nil nils)
-            ;; 9th element (tail): bind-path legacy force flag.
-            (wf_cons_int (ptr-read-u64 (data-addr nl_bind_clone_force) 0) nils s8)
+            ;; Doc 155 new-edge forensic counters, appended at the TAIL so the
+            ;; existing 9 positions are unchanged (10th = growth-chunk free
+            ;; count nl_gc_diag+48, 11th = first growth-chunk-freed block addr
+            ;; nl_gc_diag+56).  Both stay 0 unless the free forensics gate
+            ;; (`(nelisp--gc-diag 1)') is armed.
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 56) nils t11)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 48) t11 t10)
+            ;; 9th element: bind-path legacy force flag.
+            (wf_cons_int (ptr-read-u64 (data-addr nl_bind_clone_force) 0) t10 s8)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) s8 s7)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0) s7 s6)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 32) s6 s5)
