@@ -25,7 +25,7 @@ Tramp/Magit prerequisite and the synchronous gateway shipped from this pass.
 | Consumer | Minimum process need | Current status |
 |----------+----------------------+----------------|
 | Magit core | Synchronous =call-process= and =process-file= with stdout capture, buffer destinations, file-name-handler hook point, and numeric exit status. | Shipped for local paths. =proc-smoke= proves =echo=, =false=, buffer destination, and =git --version=. |
-| Tramp local/remote dispatch | =process-file= must call file-name handlers before local execution so Tramp can own remote process execution later. | Hook point shipped; remote handler implementation remains Tramp-side/future integration. |
+| Tramp local/remote dispatch | =process-file= must call file-name handlers before local execution so Tramp can own remote process execution later. | Shipped and consumed: Doc 37 (task #16) brings up vendored Tramp on the ssh/scp methods against this exact hook point, plus promotes the dispatch logic into a shared =src/emacs-file-name-handler.el= and extends the same convention to =start-file-process= and the 14 file-I/O primitives in =emacs-fileio-builtins.el=. |
 | Tramp connections and Magit async jobs | Async =make-process= / =start-process= with live stdin, output filters, process buffers, sentinels, and status transitions. | Stopped at source-package follow-up. The runtime preload has a bidi proof; the reader-native primitive requirement is a child-stdin write primitive or adoption of the preload's fork/pipe/execve layer into reusable source. |
 
 * 3. Fidelity Table
