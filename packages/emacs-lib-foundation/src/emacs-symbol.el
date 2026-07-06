@@ -53,7 +53,23 @@ the underlying NeLisp runtime has no native property-cell.")
 
 (unless (fboundp 'intern-soft)
   (defun intern-soft (name &optional _obarray)
-    (intern (if (symbolp name) (symbol-name name) name))))
+    "Return the canonical symbol interned as NAME, or nil if none exists.
+Unlike `intern', this does not create a new symbol on a miss.
+
+On NeLisp standalone this dispatches the string case to the native
+`nelisp--intern-lookup' probe-without-insert primitive (see Doc 163
+`dev/nelisp' \\=`docs/design/163-magit-bundle-intern-soft-hang.org\\=' §8)
+so a never-interned NAME reports nil instead of interning it (the
+previous unconditional `intern' call never soft-failed, which hung
+Magit-bundle loads on message.el's `message-cited-text-N' discovery
+loop).  When the primitive is unavailable (host Emacs, or a NeLisp
+build predating Doc 163 Phase C), fall back to the old `intern'
+behavior so this shim keeps working there too."
+    (if (symbolp name)
+        name
+      (if (fboundp 'nelisp--intern-lookup)
+          (nelisp--intern-lookup name)
+        (intern name)))))
 
 (provide 'emacs-symbol)
 
