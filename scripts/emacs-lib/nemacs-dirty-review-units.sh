@@ -7,10 +7,10 @@ mkdir -p "$(dirname "$output")"
 unit_for_path() {
   local path="$1"
   case "$path" in
-    bin/nemacs|src/nemacs-main.el|src/emacs-fns.el|scripts/verify-nemacs-tui.sh)
+    bin/nemacs|src/nemacs-main.el|src/emacs-fns.el|scripts/verify-nemacs-tui.sh|src/nemacs-loadup.el)
       printf '%s' "production-launcher-tui"
       ;;
-    src/emacs-fileio-gui.el|src/emacs-dired-min-gui.el|src/emacs-help-gui.el|src/emacs-info.el|src/emacs-special-buffers.el|src/emacs-toolbar.el|src/nemacs-gtk-view-menu.el|src/nemacs-gui-file-bridge-runtime.el)
+    src/emacs-fileio-gui.el|src/emacs-dired-min-gui.el|src/emacs-help-gui.el|src/emacs-info.el|src/emacs-special-buffers.el|src/emacs-toolbar.el|src/nemacs-gtk-view-menu.el|src/nemacs-gui-file-bridge-runtime.el|src/nemacs-init-transport.el)
       printf '%s' "shared-gui-runtime-adapters"
       ;;
     src/cl-lib.el|src/emacs-command-loop.el|src/emacs-dired-min.el|src/emacs-eventloop.el|src/emacs-fileio.el|src/emacs-help.el|src/emacs-init.el|src/emacs-minibuffer.el|src/emacs-project.el|src/emacs-shell-command.el|src/emacs-stub.el|src/ert.el|src/files-standalone-buffer.el|src/generator.el|src/help-mode.el|src/image-loader.el|src/info.el|src/let-alist.el|src/subr-x.el|src/thunk.el|src/emacs-server-polyfills.el|src/emacs-server-client-polyfills.el|src/emacs-pty-ffi.el|src/emacs-network-syscall-shim.el|src/emacs-network-ffi-inet6.el|src/emacs-process-events.el|src/emacs-pipe-process.el|src/emacs-weak-table.el|src/emacs-tls-ffi.el|src/emacs-font-ffi.el)
@@ -32,6 +32,9 @@ unit_for_path() {
       printf '%s' "project-docs"
       ;;
     test/*)
+      printf '%s' "tests"
+      ;;
+    apps/nemacs-next/scripts/*|apps/nemacs-next/fixtures/*)
       printf '%s' "tests"
       ;;
     target/*|tmp-diag/*|src/*.elc.disabled-*|docs/worklog/*~)
