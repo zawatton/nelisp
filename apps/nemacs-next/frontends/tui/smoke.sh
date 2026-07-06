@@ -11,15 +11,19 @@ utf8_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.utf8.out
 diff_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.diff.out
 icon_ascii_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.icon-ascii.out
 icon_unicode_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.icon-unicode.out
+mx_file=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.mx.txt
+mx_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.mx.out
+mx_out2=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.mx2.out
 rm -rf "$init_dir"
 rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out" \
-      "$icon_ascii_out" "$icon_unicode_out"
+      "$icon_ascii_out" "$icon_unicode_out" "$mx_file" "$mx_out" "$mx_out2"
 mkdir -p "$init_dir"
-trap 'rm -rf "$init_dir"; rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out" "$icon_ascii_out" "$icon_unicode_out"' EXIT
+trap 'rm -rf "$init_dir"; rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out" "$icon_ascii_out" "$icon_unicode_out" "$mx_file" "$mx_out" "$mx_out2"' EXIT
 
 printf '' > "$tmp_file"
 printf '' > "$utf8_file"
 printf 'abc' > "$diff_file"
+printf '' > "$mx_file"
 
 {
   printf '\030\006'
@@ -163,9 +167,73 @@ if [ "$actual_bytes" -ge 40 ] || [ "$actual_bytes" -ge "$full_bytes" ]; then
   exit 1
 fi
 
+{
+  printf '\030\006'
+  printf '%s' "$mx_file"
+  printf '\r'
+  printf 'hi'
+  printf '\033x'
+  printf 'sav'
+  printf '\t'
+  printf '\r'
+  printf '\030\003'
+} | NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
+    "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$mx_out" 2>&1
+
+if [ "$(cat "$mx_file")" != "hi" ]; then
+  cat "$mx_out" >&2
+  echo "nemacs-next-tui-smoke: M-x save-buffer did not save file content" >&2
+  exit 1
+fi
+
+if ! grep -q "Wrote $mx_file" "$mx_out"; then
+  cat "$mx_out" >&2
+  echo "nemacs-next-tui-smoke: M-x save-buffer did not echo Wrote status" >&2
+  exit 1
+fi
+
+if ! grep -q 'M-x ' "$mx_out"; then
+  cat "$mx_out" >&2
+  echo "nemacs-next-tui-smoke: M-x prompt was never rendered" >&2
+  exit 1
+fi
+
+if ! grep -qF '{save-buffer}' "$mx_out"; then
+  cat "$mx_out" >&2
+  echo "nemacs-next-tui-smoke: M-x candidate summary line did not show save-buffer" >&2
+  exit 1
+fi
+
+if ! grep -q 'M-x save-buffer' "$mx_out"; then
+  cat "$mx_out" >&2
+  echo "nemacs-next-tui-smoke: Tab completion did not fill in save-buffer" >&2
+  exit 1
+fi
+
+{
+  printf '\033x'
+  printf 'zzz'
+  printf '\007'
+  printf '\033x'
+  printf 'not-a-real-command'
+  printf '\r'
+  printf '\030\003'
+} | NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
+    "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$mx_out2" 2>&1
+
+if ! grep -q 'unbound' "$mx_out2"; then
+  cat "$mx_out2" >&2
+  echo "nemacs-next-tui-smoke: M-x unknown command did not report unbound" >&2
+  exit 1
+fi
+
 echo "nemacs-next-tui-smoke: scripted terminal loop ok"
 echo "nemacs-next-tui-smoke: multibyte input ok"
 echo "nemacs-next-tui-smoke: color runs ok"
 echo "nemacs-next-tui-smoke: differential cursor draw actual=${actual_bytes}B full=${full_bytes}B"
 echo "nemacs-next-tui-smoke: toolbar icon ASCII fallback ok"
 echo "nemacs-next-tui-smoke: toolbar icon Unicode glyphs ok"
+echo "nemacs-next-tui-smoke: M-x execute-extended-command + TAB completion ok"
+echo "nemacs-next-tui-smoke: M-x C-g abort + unknown-command ok"
