@@ -273,6 +273,32 @@ editor-style file APIs.  UTF-8 decoding is handled by
 Used by `nelisp--builtin-require' for set-based circular detection
 per Doc 12 §2.3 A.")
 
+(defun nelisp-load--runtime-features ()
+  "Return the NeLisp runtime's user-visible `features' list, if bound."
+  (when (and (boundp 'nelisp--globals)
+             (hash-table-p nelisp--globals))
+    (let ((value (gethash 'features nelisp--globals nelisp--unbound)))
+      (unless (eq value nelisp--unbound)
+        value))))
+
+(defun nelisp-load--register-feature (feature)
+  "Register FEATURE in both load and runtime feature registries."
+  (unless (memq feature nelisp--features)
+    (setq nelisp--features (cons feature nelisp--features)))
+  (when (and (boundp 'nelisp--globals)
+             (hash-table-p nelisp--globals))
+    (let ((runtime-features (nelisp-load--runtime-features)))
+      (unless (memq feature runtime-features)
+        (puthash 'features
+                 (cons feature runtime-features)
+                 nelisp--globals))))
+  feature)
+
+(defun nelisp-load--feature-provided-p (feature)
+  "Return non-nil when FEATURE is provided in any NeLisp feature registry."
+  (or (memq feature nelisp--features)
+      (memq feature (nelisp-load--runtime-features))))
+
 (defun nelisp-load--reset-registry ()
   "Clear NeLisp feature / loading registers.
 Invoked from `nelisp--reset' via `fboundp' guard; callable directly
@@ -293,7 +319,8 @@ names."
   (unless (symbolp feature)
     (signal 'wrong-type-argument (list 'symbolp feature)))
   (cond
-   ((memq feature nelisp--features) feature)
+   ((nelisp-load--feature-provided-p feature)
+    (nelisp-load--register-feature feature))
    ((memq feature nelisp--loading)
     (signal 'nelisp-load-error
             (list :phase 'require
@@ -307,8 +334,7 @@ names."
    ;; circuit too.  This keeps NeLisp source files loadable through
    ;; both host `load' and `nelisp-load-file' without divergence.
    ((and (null filename) (featurep feature))
-    (push feature nelisp--features)
-    feature)
+    (nelisp-load--register-feature feature))
    (t
     (let ((path (or filename (nelisp-locate-file feature))))
       (cond
@@ -319,13 +345,13 @@ names."
        (t
         (let ((nelisp--loading (cons feature nelisp--loading)))
           (nelisp-load-file path))
-        (unless (memq feature nelisp--features)
+        (unless (nelisp-load--feature-provided-p feature)
           (signal 'nelisp-load-error
                   (list :phase 'require
                         :feature feature
                         :source path
                         :cause 'did-not-provide)))
-        feature))))))
+        (nelisp-load--register-feature feature)))))))
 
 (defun nelisp--builtin-provide (feature &optional _subfeatures)
   "Phase 5-A.3 NeLisp `provide'.
@@ -333,9 +359,7 @@ Register FEATURE as available for `nelisp-require'.  SUBFEATURES
 is accepted for host-parity but not yet honoured."
   (unless (symbolp feature)
     (signal 'wrong-type-argument (list 'symbolp feature)))
-  (unless (memq feature nelisp--features)
-    (setq nelisp--features (cons feature nelisp--features)))
-  feature)
+  (nelisp-load--register-feature feature))
 
 ;;;###autoload
 (defun nelisp-require (feature &optional filename noerror)

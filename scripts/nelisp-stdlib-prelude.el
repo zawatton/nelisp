@@ -4062,7 +4062,10 @@ Doc 156: was `(apply #\\='vector ...)', but the reader now exposes a native
 (unless (fboundp 'make-temp-name)
   (defun make-temp-name (prefix)
     (setq nelisp--temp-name-counter (1+ nelisp--temp-name-counter))
-    (format "%s%d-%d" prefix nelisp--temp-name-counter (length prefix))))
+    (concat prefix
+            (number-to-string nelisp--temp-name-counter)
+            "-"
+            (number-to-string (length prefix)))))
 ;; File-system ops via the reader's path-syscall builtins (nelisp--syscall-path
 ;; = syscall(NR, cpath); -path-int = syscall(NR, cpath, INT)).  x86_64 NRs:
 ;; access=21, unlink=87, mkdir=83.  Returns 0 on success / -errno.
@@ -4733,15 +4736,26 @@ native `format', which lacks only the field-width layer."
                   (if (= conv 37)        ; ?%
                       (setq out (concat out "%"))
                     (let* ((arg (car argp))
-                           (body (if (and (numberp arg)
-                                          (or (= conv 102) (= conv 70)   ; f F
-                                              (= conv 101) (= conv 69)   ; e E
-                                              (= conv 103) (= conv 71)   ; g G
-                                              (= conv 97) (= conv 65)))  ; a A (Doc 159 §11)
-                                     (nelisp--fmt-float
-                                      (if (integerp arg) (+ arg 0.0) arg)
-                                      conv (if (or (= conv 97) (= conv 65))
-                                               (or prec -1) (or prec 6)))
+                           (body (cond
+                                  ((= conv 115) ; ?s
+                                   (if (stringp arg) arg (prin1-to-string arg)))
+                                  ((= conv 83) ; ?S
+                                   (prin1-to-string arg))
+                                  ((= conv 99) ; ?c
+                                   (char-to-string arg))
+                                  ((or (= conv 100) (= conv 105)) ; ?d ?i
+                                   (number-to-string
+                                    (if (floatp arg) (truncate arg) arg)))
+                                  ((and (numberp arg)
+                                        (or (= conv 102) (= conv 70)   ; f F
+                                            (= conv 101) (= conv 69)   ; e E
+                                            (= conv 103) (= conv 71)   ; g G
+                                            (= conv 97) (= conv 65)))  ; a A (Doc 159 §11)
+                                   (nelisp--fmt-float
+                                    (if (integerp arg) (+ arg 0.0) arg)
+                                    conv (if (or (= conv 97) (= conv 65))
+                                             (or prec -1) (or prec 6))))
+                                  (t
                                    ;; %d/%i/%o/%x/%X of a float: truncate toward
                                    ;; zero like Emacs (native reads the raw bits
                                    ;; otherwise).  Doc 159 §13.
@@ -4750,7 +4764,7 @@ native `format', which lacks only the field-width layer."
                                     (if (and (floatp arg)
                                              (or (= conv 100) (= conv 105) (= conv 111)
                                                  (= conv 120) (= conv 88)))
-                                        (truncate arg) arg)))))
+                                        (truncate arg) arg))))))
                       (setq argp (cdr argp))
                       (when (and prec (or (= conv 115) (= conv 83))   ; s S
                                  (> (length body) prec))

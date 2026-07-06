@@ -644,11 +644,18 @@ entries carry explicit hex-encoded byte sections."
 
 (defun nelisp-standalone--cached-unit (name source source-file)
   "Return the link-unit for NAME, compiling SOURCE only if SOURCE-FILE
-or the toolchain is newer than the cached object."
+or the toolchain is newer than the cached object.
+SOURCE-FILE may be a single file or a list of dependency files.
+CACHE-STALENESS (2026-07-03): units whose SOURCE comes from a `require'd
+lisp/nelisp-cc-*.el defconst must list that library file here too --
+depending only on this build script left the cached object stale when the
+library changed, so edits to e.g. the combiner-apply source were silently
+not linked."
   (let* ((name (nelisp-standalone--target-object-name name))
          (cache-dir (nelisp-standalone--target-cache-dir))
          (cache (expand-file-name (concat name ".unit") cache-dir))
-         (deps (cons source-file (nelisp-standalone--dep-files)))
+         (deps (append (if (listp source-file) source-file (list source-file))
+                       (nelisp-standalone--dep-files)))
          (fresh (and (file-exists-p cache)
                      (cl-every (lambda (f) (or (null f) (file-newer-than-file-p cache f))) deps))))
     (if fresh
@@ -777,28 +784,60 @@ or the toolchain is newer than the cached object."
        (if (= prev 0)
            (ptr-write-u64 268435552 0 0)
          (ptr-write-u64 prev 0 0))))
+    ;; PERF (2026-07-03): iterative + step-bounded (128) fallback scan.
+    ;; The old exact-fit recursion walked the whole mixed-size legacy list
+    ;; on every BT>472 alloc; after a large sweep that list holds tens of
+    ;; thousands of blocks, so each big string/vector alloc became O(list)
+    ;; with an `nl_gc_in_arena' call per entry -- a dominant vendor-replay
+    ;; cost (40-120s per replayed form, gdb-sampled).  Bounding the scan
+    ;; keeps exact-fit reuse for near-head hits and falls back to bump
+    ;; allocation when no fit is found quickly (bounded over-retention; no
+    ;; correctness change -- integrity-guard drops behave exactly as before
+    ;; within the scan window).  Iterative so list length no longer bounds
+    ;; native recursion depth.  All setqs stay in the single outer let
+    ;; scope (AOT nested-let+outer-setq pitfall).
     (defun nl_freelist_scan (prev cur want)
-      (if (= cur 0)
-          0
-        ;; Fallback-list integrity guard.  Bucketed reuse already validates the
-        ;; head before dereferencing it; the large-block fallback used to read
-        ;; the header unconditionally and crashed when a stale next-link had
-        ;; been overwritten by live string bytes.  Drop the corrupt tail and
-        ;; continue by bump allocation.
-        (if (= (nl_gc_in_arena cur) 0)
-            (nl_seq2 (nl_freelist_scan_drop_tail prev cur 0 want) 0)
-          (if (= (logand cur 7) 0)
-              (if (= (nl_hdr_mark (- cur 8)) 2)
-                  (let ((bt (nl_hdr_bt (- cur 8))))
-                    (if (= bt want)
-                        (nl_seq2
-                         (if (= prev 0)
-                             (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))
-                           (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))
-                         (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
-                      (nl_freelist_scan cur (ptr-read-u64 cur 0) want)))
-                (nl_seq2 (nl_freelist_scan_drop_tail prev cur (nl_hdr_bt (- cur 8)) want) 0))
-            (nl_seq2 (nl_freelist_scan_drop_tail prev cur 0 want) 0)))))
+      (let* ((p prev)
+             (c cur)
+             (steps 0)
+             (res 0)
+             (done 0)
+             (bt 0))
+        (seq
+         (while (= done 0)
+           (if (= c 0)
+               (setq done 1)
+             (if (> steps 127)
+                 (setq done 1)
+               ;; Fallback-list integrity guard.  Bucketed reuse already
+               ;; validates the head before dereferencing it; the large-block
+               ;; fallback used to read the header unconditionally and crashed
+               ;; when a stale next-link had been overwritten by live string
+               ;; bytes.  Drop the corrupt tail and continue by bump allocation.
+               (if (= (nl_gc_in_arena c) 0)
+                   (nl_seq2 (nl_freelist_scan_drop_tail p c 0 want)
+                            (setq done 1))
+                 (if (= (logand c 7) 0)
+                     (if (= (nl_hdr_mark (- c 8)) 2)
+                         (seq
+                          (setq bt (nl_hdr_bt (- c 8)))
+                          (if (= bt want)
+                              (seq
+                               (if (= p 0)
+                                   (ptr-write-u64 268435552 0 (ptr-read-u64 c 0))
+                                 (ptr-write-u64 p 0 (ptr-read-u64 c 0)))
+                               (nl_hdr_set_mark (- c 8) 0)
+                               (setq res c)
+                               (setq done 1))
+                            (seq
+                             (setq p c)
+                             (setq c (ptr-read-u64 c 0))
+                             (setq steps (+ steps 1)))))
+                       (nl_seq2 (nl_freelist_scan_drop_tail p c (nl_hdr_bt (- c 8)) want)
+                                (setq done 1)))
+                   (nl_seq2 (nl_freelist_scan_drop_tail p c 0 want)
+                            (setq done 1)))))))
+         res)))
     ;; Doc 152 §11.39 Stage 3a: permanent guard-trip counter.  Records into the
     ;; nl_gc_diag bss block whenever the integrity guard drops a corrupt chain
     ;; (= a double-link event).  +0 count, +8/16/24 first-bad cur/bt/want.  Only
@@ -862,11 +901,15 @@ or the toolchain is newer than the cached object."
     ;; bump-block invariant (object starts all-zero), so every constructor
     ;; sees the clean memory it relies on.  Bump blocks need no zeroing (the
     ;; mmap already zero-fills untouched pages).
+    ;; PERF (2026-07-03): iterative zero-fill (was 8-bytes-per-recursive-call,
+    ;; so a large reused block cost thousands of native calls per alloc).
     (defun nl_alloc_zero_fill (obj off nbytes)
-      (if (< off nbytes)
-          (nl_seq2 (ptr-write-u64 (+ obj off) 0 0)
-                   (nl_alloc_zero_fill obj (+ off 8) nbytes))
-        0))
+      (let* ((o off))
+        (seq
+         (while (< o nbytes)
+           (nl_seq2 (ptr-write-u64 (+ obj o) 0 0)
+                    (setq o (+ o 8))))
+         0)))
     (defun nl_chunk_cursor_addr (chunk)
       (if (= chunk (ptr-read-u64 268436160 0))
           268435456
@@ -1389,8 +1432,47 @@ arm64 Linux has no legacy x86 numbering)."
         (if (= (nl_gc_chunk_contains chunk addr) 1)
             1
           (nl_gc_chunk_contains_any (ptr-read-u64 (+ chunk 48) 0) addr))))
+    ;; PERF (2026-07-03): iterative single-loop membership with a
+    ;; current-alloc-chunk fast path.  The old body delegated to the
+    ;; recursive `nl_gc_chunk_contains_any' (~6 calls per chunk hop); on
+    ;; multi-GB arenas (dozens of growth chunks) that made every freelist
+    ;; validation and every GC mark bounds-check O(chunks) with a heavy
+    ;; call constant.  gdb stack sampling on a stalled vendor replay showed
+    ;; nl_alloc_bytes -> nl_freelist_take -> nl_gc_in_arena ->
+    ;; nl_gc_chunk_contains_any xN dominating wall time (40-120s per
+    ;; replayed form).  Fresh allocations live in the CURRENT chunk (tail
+    ;; desc @268436168), so probe it first, then walk the list inline.
+    ;; Semantics unchanged: membership is [data-start, base+cursor) per
+    ;; chunk; the head chunk's cursor lives at the legacy global 268435456,
+    ;; growth chunk cursors at desc+16 (same fields nl_gc_chunk_contains /
+    ;; nl_gc_chunk_cursor read).  DSL constraints: let* (multi-binding
+    ;; plain `let' miscompiles here) and setq only on let*-bound locals.
     (defun nl_gc_in_arena (addr)
-      (nl_gc_chunk_contains_any (ptr-read-u64 268436160 0) addr))
+      (let* ((head (ptr-read-u64 268436160 0))
+             (chunk (ptr-read-u64 268436168 0))
+             (found 0)
+             (pass 0))
+        (seq
+         (while (and (= found 0) (< pass 2))
+           (if (= chunk 0)
+               (if (= pass 0)
+                   (nl_seq2 (setq pass 1) (setq chunk head))
+                 (setq pass 2))
+             (seq
+              (if (< addr (ptr-read-u64 (+ chunk 24) 0))
+                  0
+                (if (< addr (+ (ptr-read-u64 chunk 0)
+                               (if (= chunk head)
+                                   (ptr-read-u64 268435456 0)
+                                 (ptr-read-u64 (+ chunk 16) 0))))
+                    (setq found 1)
+                  0))
+              (if (= found 1)
+                  0
+                (if (= pass 0)
+                    (nl_seq2 (setq pass 1) (setq chunk head))
+                  (setq chunk (ptr-read-u64 (+ chunk 48) 0)))))))
+         found)))
     ;; BOOT-GENERATION predicate.  The boot image is the prefix of CHUNK 0
     ;; [chunk0_base, watermark).  The old test was a bare `(< addr watermark)'
     ;; scalar compare, which is UNSOUND once growth chunks exist: the OS can
@@ -12151,7 +12233,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                         "eval-inner-kw.o"
                         (nelisp-standalone--patch-eval-inner
                          (symbol-value 'nelisp-cc-eval-inner--source))
-                        nelisp-standalone--this-file)))
+                        (list nelisp-standalone--this-file (locate-library "nelisp-cc-eval-inner")))))
          ;; M6 catch/throw dispatch + void-function miss fix.  The old
          ;; macro-expansion cache is disabled inside the patch for Doc 147.
          (combiner-cons (progn
@@ -12160,7 +12242,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                            "combiner-cons-ct-doc147.o"
                            (nelisp-standalone--patch-combiner-cons-full
                             (symbol-value 'nelisp-cc-evalport-combiner-cons--source))
-                           nelisp-standalone--this-file)))
+                           (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-cons")))))
          ;; M3: do_fset rc-fix patched combiner-apply.
          (combiner (progn
                      (require 'nelisp-cc-evalport-combiner-apply)
@@ -12168,7 +12250,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                       "combiner-apply-fix.o"
                       (nelisp-standalone--patch-combiner-apply
                        (symbol-value 'nelisp-cc-evalport-combiner-apply--source))
-                      nelisp-standalone--this-file)))
+                      (list nelisp-standalone--this-file (locate-library "nelisp-cc-evalport-combiner-apply")))))
          (extras (mapcar #'nelisp-standalone--reader-extra-unit
                          nelisp-standalone--reader-extra-manifest))
          (float-stub (nelisp-standalone--reader-float-unit))
@@ -12187,6 +12269,38 @@ genuine general interpreter for the 11 special forms + installed builtins."
                              ("sf-frame-ensure-cap.o"
                               (nelisp-standalone--reader-extra-unit-epoch
                                entry '(nelisp_frame_stack_ensure_capacity_grow)))
+                             ;; FIX (2026-07-03): `nelisp_frame_push' installs the
+                             ;; freshly-pushed frame into the persistent frames-record
+                             ;; backing[depth] (slot 0) AND bumps the persistent depth
+                             ;; Int (slot 1) via `record-slot-set' / `vector-slot-set' --
+                             ;; the exact same "install a box into a PERSISTENT record"
+                             ;; escape-site pattern already covered above for backing-
+                             ;; vector GROWTH.  Growth was epoch-protected but ordinary
+                             ;; push/pop (which fires on every lambda/let, not just
+                             ;; growth) was not, so a net-balanced push+pop pair inside a
+                             ;; top-level form whose own result is immediate would let
+                             ;; `nl_boundary_maybe_reclaim' rewind the arena PAST the
+                             ;; freshly-allocated depth-Int box that frames-record slot 1
+                             ;; still points at.  The next top-level form's reader (cons
+                             ;; allocation while parsing) then reuses that exact address,
+                             ;; silently corrupting the live depth counter (observed: a
+                             ;; correctly-written depth=0 box read back as depth=2 moments
+                             ;; later with no intervening write to the slot word itself --
+                             ;; the WORD was untouched, its POINTEE got clobbered).  This
+                             ;; is the root cause of the lexframe capture SIGSEGV in
+                             ;; `nl_capture_walk_frame' / `nl_record_slot_ptr' (frame_ptr+8
+                             ;; reads a NULL box_ptr because backing[i] itself was reused
+                             ;; the same way).  Mirrors the growth/setq fix exactly.
+                             ("frame-push.o"
+                              (nelisp-standalone--reader-extra-unit-epoch
+                               entry '(nelisp_frame_push)))
+                             ;; FIX (2026-07-03): companion to the push fix above --
+                             ;; `nelisp_frame_pop_inner' is the leaf that actually writes
+                             ;; Nil into backing[new-depth] and the new depth Int into the
+                             ;; persistent frames-record slot 1; same escape-site hazard.
+                             ("frame-pop.o"
+                              (nelisp-standalone--reader-extra-unit-epoch
+                               entry '(nelisp_frame_pop_inner)))
                              ("sf-env-set-value.o"
                               (progn
                                 (require 'nelisp-cc-evalport-env-leaves-bind)
