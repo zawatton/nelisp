@@ -866,6 +866,11 @@ Placement rules:
   =bin/build-nelisp= (= =make nelisp=).  A sibling =../nelisp= checkout
   or explicit =NELISP_HOME= is also supported for local development.  This
   directory vendors =nelisp=, not =nelisp-emacs= itself.
+- =vendor/emacs-etc/images/= — vendored copy of Emacs 30.1's
+  =etc/images/= tree (classic toolbar icons, =symbols/= SVG+PBM pairs,
+  =splash.*=).  GUI icon and splash-screen asset source for the
+  GUI/TUI frontend; see =vendor/emacs-etc/README.md= for provenance
+  and per-icon license attribution.
 - =docs/design/= — design documents for each port phase
 - =bench/= — micro-benchmarks (advisory; not merge gates)
 
