@@ -54,23 +54,22 @@
                             nemacs-server-loop-dir
                           "/tmp/nemacs-server"))
 
-;; M18: apply the user's wrapped init (load-path requires resolved to
-;; absolute loads by scripts/nemacs-wrap-init.el) so emacsclient evals
-;; see the user's packages.  The marker calls are satisfied by these
-;; counters; the GUI bridge owns the report file, so the server only
-;; tallies for its own log line.
-(defvar nemacs-init--applied 0)
-(defvar nemacs-init--last-load-path-dir nil)
-(defun nemacs-init--begin (n _hint) n)
-(defun nemacs-init--ok (n)
-  (setq nemacs-init--applied (+ nemacs-init--applied 1))
-  n)
-(if (file-exists-p "/tmp/nemacs-init-wrapped")
-    (progn
-      (load "/tmp/nemacs-init-wrapped" nil t)
-      (nelisp--write-stderr-line
-       (concat "nemacs-server-loop: user init applied forms="
-               (number-to-string nemacs-init--applied))))
+;; Loader reconcile Phase 3: apply the user's wrapped init (load-path
+;; requires resolved to absolute loads by scripts/nemacs-wrap-init.el) so
+;; emacsclient evals see the user's packages, through the shared
+;; per-form marker state/consume orchestration in
+;; nemacs-init-transport.el (src/nemacs-init-transport.el) instead of a
+;; hand-rolled, incomplete duplicate of it (the previous defuns here
+;; tallied `applied' but never defined `nemacs-init--note-file' /
+;; `nemacs-init--file-loaded-p', so any wrapped form using a resolved
+;; `require' would hard-abort under the CAUTION above).  The GUI bridge
+;; owns the report file for its own transport dir; this loop only reads
+;; `nemacs-init--applied' afterward for its own log line.
+(load (concat nemacs-server-loop-root "/src/nemacs-init-transport.el") nil t)
+(if (nemacs-init-transport-consume "/tmp/nemacs-init-wrapped" nil)
+    (nelisp--write-stderr-line
+     (concat "nemacs-server-loop: user init applied forms="
+             (number-to-string nemacs-init--applied)))
   nil)
 
 (nemacs-server-start)
