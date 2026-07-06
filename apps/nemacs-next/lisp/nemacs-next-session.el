@@ -84,6 +84,57 @@
     (:field font :note "TUI ignores font; GUI frontends may consume it"))
   "Frame-config notes for frontends whose surface is terminal-constrained.")
 
+(defvar nemacs-next-session--minibuffer-active nil
+  "Non-nil while a generic session minibuffer prompt (M-x and its
+chained follow-up prompts) is reading input.  Session `input' messages
+route to the active prompt instead of buffer-editing commands while
+this is set (see `nemacs-next-session--handle-input').  Lifecycle
+state comes from `emacs-minibuffer-gui-enter-state'/
+`emacs-minibuffer-gui-exit-state' -- the same GUI-neutral helpers
+`nemacs-gtk--begin-prompt'/`nemacs-gtk--end-prompt' already apply to
+GTK's own prompt vars -- so this never switches the session's current
+buffer to a minibuffer buffer.")
+
+(defvar nemacs-next-session--minibuffer-purpose nil
+  "Symbol naming the active session minibuffer prompt's purpose, e.g.
+`exec' for M-x, or `file'/`directory'/`buffer' for a chained follow-up
+argument prompt.")
+
+(defvar nemacs-next-session--minibuffer-prompt ""
+  "Prompt string for the active session minibuffer.")
+
+(defvar nemacs-next-session--minibuffer-input ""
+  "Accumulated input text for the active session minibuffer.")
+
+(defvar nemacs-next-session--minibuffer-on-confirm nil
+  "Function called with the committed input string when the active
+session minibuffer prompt is confirmed with Return.")
+
+(defvar nemacs-next-session--minibuffer-completion-fn nil
+  "Function of one argument (the current input) returning the raw
+candidate collection for the active session minibuffer prompt.
+Prefix filtering happens centrally in
+`nemacs-next-session--minibuffer-candidates-for' via
+`emacs-minibuffer-all-completions'.")
+
+(defvar nemacs-next-session--minibuffer-candidates nil
+  "Cached, already prefix-filtered completion candidates for the
+active session minibuffer prompt's current input.")
+
+(defvar nemacs-next-session--minibuffer-depth 0
+  "Recursive session-minibuffer nesting depth (0 = inactive).  D-1
+tracks this only for display -- a `[N]' recursion indicator on the
+prompt line -- it does not implement a real recursive-minibuffer
+stack: entering a new prompt while one is already active overwrites
+the active prompt's state instead of suspending it underneath a
+resumable outer read.  Full recursive-minibuffer command-loop
+semantics land with the command-loop integration (D-2).")
+
+(defconst nemacs-next-session-minibuffer-reserved-lines 2
+  "Frame rows the session reserves for an active minibuffer prompt: one
+candidate-summary row and one prompt/input row, mirrored to frontends
+through `nemacs-next-session-frame-snapshot's `:minibuffer-lines'.")
+
 (defun nemacs-next-session--string-equal (a b)
   "Return non-nil when A and B name the same protocol atom."
   (let ((as (if (symbolp a) (symbol-name a) a))
@@ -501,17 +552,22 @@ WIDTH and HEIGHT, when supplied, update the session frame geometry."
          (frame-width nemacs-next-session-frame-width)
          (frame-height nemacs-next-session-frame-height)
          (tool-bar-lines (nemacs-next-session-tool-bar-lines))
+         (minibuffer-lines (nemacs-next-session-minibuffer-lines))
          (text (or (plist-get snapshot :text) ""))
-         (body-height (max 1 (- frame-height 1 tool-bar-lines)))
+         (body-height (max 1 (- frame-height 1 tool-bar-lines minibuffer-lines)))
          (toolbar (nemacs-next-session-toolbar-items))
          (frame
           (append
            (list :id "main"
                  :width frame-width
                  :height frame-height
-                 :tool-bar-lines tool-bar-lines)
+                 :tool-bar-lines tool-bar-lines
+                 :minibuffer-lines minibuffer-lines)
            (when (> tool-bar-lines 0)
              (list :toolbar toolbar))
+           (when (> minibuffer-lines 0)
+             (list :minibuffer
+                   (nemacs-next-session--minibuffer-payload frame-width)))
            (list :cursor (nemacs-next-session--cursor-position
                           text (plist-get snapshot :point))
                  :viewport (nemacs-next-session--viewport-lines
@@ -538,6 +594,7 @@ a replacement for the native GUI renderer."
   (let* ((state (or snapshot (nemacs-next-session-frame-snapshot)))
          (frame (plist-get state :frame))
          (lines (plist-get frame :viewport))
+         (minibuffer (plist-get frame :minibuffer))
          (out ""))
     (dolist (line lines)
       (setq out
@@ -545,6 +602,11 @@ a replacement for the native GUI renderer."
                     (plist-get line :text)
                     "\n")))
     (setq out (concat out (plist-get frame :mode-line) "\n"))
+    (when minibuffer
+      (setq out (concat out
+                        (or (plist-get minibuffer :candidates-line) "") "\n"
+                        (or (plist-get minibuffer :prompt) "")
+                        (or (plist-get minibuffer :contents) "") "\n")))
     (when (> (length (or (plist-get frame :echo) "")) 0)
       (setq out (concat out "echo: " (plist-get frame :echo) "\n")))
     out))
@@ -578,39 +640,44 @@ frontend code."
             (list :payload payload))))
 
 (defun nemacs-next-session--handle-input (message)
-  "Handle an M4 frontend input MESSAGE and return a frame delta."
-  (let* ((event (plist-get message :event))
-         (text (or (and (listp event) (plist-get event :text))
-                   (and (listp event) (plist-get event :commit))
-                   (plist-get message :text)))
-         (key (or (and (listp event) (plist-get event :key))
-                  (plist-get message :key)))
-         response)
-    (cond
-     ((stringp text)
-      (setq response
-            (nemacs-next-session-handle-command
-             (list :type 'command :name 'insert-text :text text))))
-     ((or (nemacs-next-session--string-equal key 'return)
-          (nemacs-next-session--string-equal key "RET")
-          (nemacs-next-session--string-equal key "Enter"))
-      (setq response
-            (nemacs-next-session-handle-command
-             '(:type command :name newline))))
-     ((or (nemacs-next-session--string-equal key 'backspace)
-          (nemacs-next-session--string-equal key "Backspace"))
-      (setq response
-            (nemacs-next-session-handle-command
-             '(:type command :name delete-char :count -1))))
-     (t
-      (setq response
-            (nemacs-next-session-error
-             'bad-input "input requires :event text/commit or a supported key"
-             message))))
-    (if (eq (plist-get response :type) 'error)
-        response
-      (nemacs-next-session-frame-delta
-       'input (nemacs-next-session-frame-snapshot)))))
+  "Handle an M4 frontend input MESSAGE and return a frame delta.
+Routes to the active session minibuffer prompt first (M-x, or a
+chained follow-up) when one is active; otherwise dispatches to the
+current buffer's editing commands as before."
+  (if nemacs-next-session--minibuffer-active
+      (nemacs-next-session--minibuffer-handle-input message)
+    (let* ((event (plist-get message :event))
+           (text (or (and (listp event) (plist-get event :text))
+                     (and (listp event) (plist-get event :commit))
+                     (plist-get message :text)))
+           (key (or (and (listp event) (plist-get event :key))
+                    (plist-get message :key)))
+           response)
+      (cond
+       ((stringp text)
+        (setq response
+              (nemacs-next-session-handle-command
+               (list :type 'command :name 'insert-text :text text))))
+       ((or (nemacs-next-session--string-equal key 'return)
+            (nemacs-next-session--string-equal key "RET")
+            (nemacs-next-session--string-equal key "Enter"))
+        (setq response
+              (nemacs-next-session-handle-command
+               '(:type command :name newline))))
+       ((or (nemacs-next-session--string-equal key 'backspace)
+            (nemacs-next-session--string-equal key "Backspace"))
+        (setq response
+              (nemacs-next-session-handle-command
+               '(:type command :name delete-char :count -1))))
+       (t
+        (setq response
+              (nemacs-next-session-error
+               'bad-input "input requires :event text/commit or a supported key"
+               message))))
+      (if (eq (plist-get response :type) 'error)
+          response
+        (nemacs-next-session-frame-delta
+         'input (nemacs-next-session-frame-snapshot))))))
 
 (defun nemacs-next-session-hello ()
   "Return a minimal protocol hello payload for frontend negotiation."
@@ -777,6 +844,276 @@ REQUEST is included for diagnostics when supplied."
           :contents input
           :completion completion
           :candidates candidates)))
+
+;;; Generic session minibuffer prompt (M-x and chained follow-ups).
+;;
+;; D-1 wiring: a session-owned minibuffer read/write state plus a TUI
+;; input loop generalization, both non-recursive (see
+;; `nemacs-next-session--minibuffer-depth').  Recursive-minibuffer
+;; command-loop integration is D-2, deferred until the magit
+;; `emacs-command-loop.el' changes land (that file is not touched
+;; here).
+
+(defconst nemacs-next-session-mx-command-names
+  '("save-buffer" "find-file" "dired" "switch-to-buffer" "kill-buffer"
+    "undo" "yank" "kill-line" "newline" "next-line" "previous-line"
+    "forward-char" "backward-char" "delete-char" "snapshot"
+    "execute-extended-command")
+  "Curated M-x candidate command names -- the data-table projection of
+`nemacs-next-session-handle-command's dispatch cond used for M-x
+completion.  `nemacs-next-session--mx-confirm' re-invokes the typed
+command name through that same cond on commit, matching the pattern
+already used for the GTK frontend's `nemacs-gtk--m-x-commands'.
+`find-file'/`dired'/`switch-to-buffer' need a follow-up argument and
+chain into a fresh prompt instead of dispatching directly; the rest
+run with their existing zero-argument defaults.")
+
+(defun nemacs-next-session--mx-completion-fn (_input)
+  "Return the raw M-x command-name table for any INPUT.
+Prefix filtering happens centrally via `emacs-minibuffer-all-completions'."
+  nemacs-next-session-mx-command-names)
+
+(defun nemacs-next-session--minibuffer-candidates-for (completion-fn input)
+  "Return COMPLETION-FN's candidates for INPUT filtered by prefix
+through `emacs-minibuffer-all-completions', or nil when COMPLETION-FN
+is nil or returns no collection."
+  (and completion-fn (fboundp 'emacs-minibuffer-all-completions)
+       (let ((collection (funcall completion-fn (or input ""))))
+         (and collection
+              (emacs-minibuffer-all-completions (or input "") collection)))))
+
+(defun nemacs-next-session--minibuffer-begin
+    (purpose prompt on-confirm &optional completion-fn)
+  "Enter a generic session minibuffer prompt for PURPOSE.
+Uses `emacs-minibuffer-gui-enter-state' so the frontend's current
+buffer is never switched to a minibuffer buffer -- the same
+buffer-switch-free pattern `nemacs-gtk--begin-prompt' already applies
+for the GTK frontend."
+  (let ((state (if (fboundp 'emacs-minibuffer-gui-enter-state)
+                   (emacs-minibuffer-gui-enter-state prompt on-confirm completion-fn)
+                 (list :active t :prompt prompt :input "" :on-confirm on-confirm
+                       :completion-fn completion-fn :candidates nil))))
+    (setq nemacs-next-session--minibuffer-depth
+          (1+ nemacs-next-session--minibuffer-depth))
+    (setq nemacs-next-session--minibuffer-purpose purpose)
+    (setq nemacs-next-session--minibuffer-active (plist-get state :active))
+    (setq nemacs-next-session--minibuffer-prompt (plist-get state :prompt))
+    (setq nemacs-next-session--minibuffer-input (plist-get state :input))
+    (setq nemacs-next-session--minibuffer-on-confirm (plist-get state :on-confirm))
+    (setq nemacs-next-session--minibuffer-completion-fn
+          (plist-get state :completion-fn))
+    (setq nemacs-next-session--minibuffer-candidates
+          (plist-get state :candidates))))
+
+(defun nemacs-next-session--minibuffer-end ()
+  "Exit the active session minibuffer prompt.
+D-1 has no real recursive-minibuffer stack, so ending always fully
+closes the session minibuffer (depth resets to 0) regardless of how
+deep Esc-x nesting reached -- there is no inner-prompt state to pop
+back to an outer prompt that nesting may already have overwritten; see
+`nemacs-next-session--minibuffer-depth'."
+  (let ((state (if (fboundp 'emacs-minibuffer-gui-exit-state)
+                   (emacs-minibuffer-gui-exit-state)
+                 (list :active nil :prompt "" :input "" :on-confirm nil
+                       :completion-fn nil :candidates nil))))
+    (setq nemacs-next-session--minibuffer-depth 0)
+    (setq nemacs-next-session--minibuffer-purpose nil)
+    (setq nemacs-next-session--minibuffer-active (plist-get state :active))
+    (setq nemacs-next-session--minibuffer-prompt (plist-get state :prompt))
+    (setq nemacs-next-session--minibuffer-input (plist-get state :input))
+    (setq nemacs-next-session--minibuffer-on-confirm (plist-get state :on-confirm))
+    (setq nemacs-next-session--minibuffer-completion-fn
+          (plist-get state :completion-fn))
+    (setq nemacs-next-session--minibuffer-candidates
+          (plist-get state :candidates))))
+
+(defun nemacs-next-session-minibuffer-lines ()
+  "Return the number of frame rows the active session minibuffer
+prompt reserves (see `nemacs-next-session-minibuffer-reserved-lines'),
+or 0 when no session minibuffer prompt is active."
+  (if nemacs-next-session--minibuffer-active
+      nemacs-next-session-minibuffer-reserved-lines
+    0))
+
+(defun nemacs-next-session--minibuffer-payload (&optional width)
+  "Return the protocol minibuffer payload for the active session
+prompt.  `:candidates-line' is a single reusable-library-formatted
+summary row (`emacs-minibuffer-gui-candidate-suffix'); a full
+multi-column `*Completions*'-style grid is out of scope for this v1
+fidelity, matching the fidelity notes used elsewhere in this file
+(e.g. `nemacs-next-session--directory-listing')."
+  (list :type 'minibuffer
+        :active (and nemacs-next-session--minibuffer-active t)
+        :purpose nemacs-next-session--minibuffer-purpose
+        :prompt nemacs-next-session--minibuffer-prompt
+        :contents nemacs-next-session--minibuffer-input
+        :candidates nemacs-next-session--minibuffer-candidates
+        :candidates-line
+        (nemacs-next-session--truncate-line
+         (if (fboundp 'emacs-minibuffer-gui-candidate-suffix)
+             (emacs-minibuffer-gui-candidate-suffix
+              (and nemacs-next-session--minibuffer-completion-fn t)
+              nemacs-next-session--minibuffer-candidates)
+           "")
+         (or width nemacs-next-session-frame-width))
+        :depth nemacs-next-session--minibuffer-depth))
+
+(defun nemacs-next-session--minibuffer-refresh-candidates ()
+  "Recompute `nemacs-next-session--minibuffer-candidates' for the
+current input."
+  (setq nemacs-next-session--minibuffer-candidates
+        (nemacs-next-session--minibuffer-candidates-for
+         nemacs-next-session--minibuffer-completion-fn
+         nemacs-next-session--minibuffer-input)))
+
+(defun nemacs-next-session--minibuffer-insert (text)
+  "Insert TEXT at the end of the active session minibuffer input."
+  (when (fboundp 'emacs-minibuffer-gui-text-insert-state)
+    (let ((state (emacs-minibuffer-gui-text-insert-state
+                  nemacs-next-session--minibuffer-input
+                  (length nemacs-next-session--minibuffer-input)
+                  text)))
+      (setq nemacs-next-session--minibuffer-input (plist-get state :text))))
+  (nemacs-next-session--minibuffer-refresh-candidates)
+  (nemacs-next-session-frame-delta
+   'minibuffer (nemacs-next-session-frame-snapshot)))
+
+(defun nemacs-next-session--minibuffer-delete-backward ()
+  "Delete one character backward from the active session minibuffer input."
+  (when (fboundp 'emacs-minibuffer-gui-text-delete-backward-state)
+    (let ((state (emacs-minibuffer-gui-text-delete-backward-state
+                  nemacs-next-session--minibuffer-input
+                  (length nemacs-next-session--minibuffer-input))))
+      (setq nemacs-next-session--minibuffer-input (plist-get state :text))))
+  (nemacs-next-session--minibuffer-refresh-candidates)
+  (nemacs-next-session-frame-delta
+   'minibuffer (nemacs-next-session-frame-snapshot)))
+
+(defun nemacs-next-session--minibuffer-complete ()
+  "Handle Tab in the active session minibuffer: extend input to the
+longest unambiguous completion via `emacs-minibuffer-try-completion'
+and refresh the candidate list via `emacs-minibuffer-all-completions'
+-- the same reusable completion primitives
+`nemacs-next-session--minibuffer-completion' already uses for the
+buffer/file completion payload."
+  (let ((table (nemacs-next-session--minibuffer-candidates-for
+                nemacs-next-session--minibuffer-completion-fn
+                nemacs-next-session--minibuffer-input)))
+    (when (and table (fboundp 'emacs-minibuffer-try-completion))
+      (let ((completion (emacs-minibuffer-try-completion
+                         nemacs-next-session--minibuffer-input table)))
+        (when (stringp completion)
+          (setq nemacs-next-session--minibuffer-input completion)))))
+  (nemacs-next-session--minibuffer-refresh-candidates)
+  (nemacs-next-session-frame-delta
+   'minibuffer (nemacs-next-session-frame-snapshot)))
+
+(defun nemacs-next-session--minibuffer-confirm ()
+  "Commit the active session minibuffer prompt on Return.
+The callback's raw result (e.g. a `save-buffer'/`find-file' buffer
+snapshot carrying `:saved-file'/`:file-name') is returned unwrapped,
+exactly like a plain `:type command' dispatch already returns it.  Do
+not pre-build a `:frame' snapshot here: the frontend only recomputes
+the frame snapshot itself when the response has no `:frame' key, and
+recomputing it after this function returns is what lets it observe
+the echo-area status this same command dispatch may have just set (see
+`nemacs-next-session-echo-message'); embedding a `:frame' captured
+before that would show a stale status line."
+  (let ((input nemacs-next-session--minibuffer-input)
+        (callback nemacs-next-session--minibuffer-on-confirm))
+    (nemacs-next-session--minibuffer-end)
+    (if (not callback)
+        (nemacs-next-session-frame-delta
+         'minibuffer (nemacs-next-session-frame-snapshot))
+      (funcall callback input))))
+
+(defun nemacs-next-session--minibuffer-abort ()
+  "Abort the active session minibuffer prompt on C-g/Escape."
+  (nemacs-next-session--minibuffer-end)
+  (nemacs-next-session-frame-delta
+   'minibuffer (nemacs-next-session-frame-snapshot)))
+
+(defun nemacs-next-session--minibuffer-handle-input (message)
+  "Route an M4 input MESSAGE to the active session minibuffer prompt.
+`nemacs-next-session--handle-input' delegates here instead of running
+buffer-editing commands while a session minibuffer prompt is active."
+  (let* ((event (plist-get message :event))
+         (text (and (listp event) (plist-get event :text)))
+         (key (or (and (listp event) (plist-get event :key))
+                  (plist-get message :key))))
+    (cond
+     ((or (nemacs-next-session--string-equal key 'return)
+          (nemacs-next-session--string-equal key "RET")
+          (nemacs-next-session--string-equal key "Enter"))
+      (nemacs-next-session--minibuffer-confirm))
+     ((or (nemacs-next-session--string-equal key 'tab)
+          (nemacs-next-session--string-equal key "TAB")
+          (nemacs-next-session--string-equal key "Tab"))
+      (nemacs-next-session--minibuffer-complete))
+     ((or (nemacs-next-session--string-equal key 'backspace)
+          (nemacs-next-session--string-equal key "Backspace"))
+      (nemacs-next-session--minibuffer-delete-backward))
+     ((or (nemacs-next-session--string-equal key 'C-g)
+          (nemacs-next-session--string-equal key "C-g")
+          (nemacs-next-session--string-equal key 'escape)
+          (nemacs-next-session--string-equal key "Escape"))
+      (nemacs-next-session--minibuffer-abort))
+     ((stringp text)
+      (nemacs-next-session--minibuffer-insert text))
+     (t
+      (nemacs-next-session-frame-delta
+       'minibuffer (nemacs-next-session-frame-snapshot))))))
+
+(defun nemacs-next-session--mx-chain-argument-prompt (name)
+  "Chain M-x NAME into its own follow-up argument prompt.
+`find-file'/`dired'/`switch-to-buffer' need a path/directory/buffer
+name the M-x command line does not carry; entering a fresh prompt for
+it mirrors real Emacs's M-x argument prompting."
+  (cond
+   ((equal name "find-file")
+    (nemacs-next-session--minibuffer-begin
+     'file "Find file: "
+     #'nemacs-next-session--find-file
+     #'nemacs-next-session--file-candidates))
+   ((equal name "dired")
+    (nemacs-next-session--minibuffer-begin
+     'directory "Dired directory: "
+     #'nemacs-next-session--directory-listing
+     nil))
+   ((equal name "switch-to-buffer")
+    (nemacs-next-session--minibuffer-begin
+     'buffer "Switch to buffer: "
+     #'nemacs-next-session--switch-to-buffer
+     (lambda (_input) (nemacs-next-session--buffer-name-candidates)))))
+  (nemacs-next-session-frame-delta
+   'minibuffer (nemacs-next-session-frame-snapshot)))
+
+(defun nemacs-next-session--mx-confirm (name)
+  "Commit an M-x command NAME (typed into the M-x prompt) by
+re-invoking it through `nemacs-next-session-handle-command' -- the
+same dispatch cond every other frontend entry point already uses."
+  (cond
+   ((or (null name) (equal name ""))
+    (nemacs-next-session-error 'bad-command "M-x: empty command name"))
+   ((not (member name nemacs-next-session-mx-command-names))
+    (nemacs-next-session-error
+     'unknown-command (format "M-x: %s -- unbound" name)))
+   ((member name '("find-file" "dired" "switch-to-buffer"))
+    (nemacs-next-session--mx-chain-argument-prompt name))
+   (t
+    (nemacs-next-session-handle-command
+     (list :type 'command :name (intern name))))))
+
+(defun nemacs-next-session--execute-extended-command ()
+  "Begin the M-x (`execute-extended-command') session minibuffer
+prompt.  Recursive invocation (Esc x again while already active) is
+allowed and only bumps `nemacs-next-session--minibuffer-depth' for
+display -- see that variable's docstring for the exact limitation."
+  (nemacs-next-session--minibuffer-begin
+   'exec "M-x " #'nemacs-next-session--mx-confirm
+   #'nemacs-next-session--mx-completion-fn)
+  (nemacs-next-session-frame-delta
+   'minibuffer (nemacs-next-session-frame-snapshot)))
 
 (defun nemacs-next-session--move-point (delta)
   "Move point by DELTA characters through the reusable movement API.
@@ -1268,6 +1605,12 @@ mutation, file I/O, and completion to reusable library APIs."
           (nemacs-next-session--string-equal name 'completion)
           (nemacs-next-session--string-equal name "completion"))
       (nemacs-next-session--minibuffer-completion message))
+     ((or (nemacs-next-session--string-equal name 'execute-extended-command)
+          (nemacs-next-session--string-equal name "execute-extended-command"))
+      (nemacs-next-session--execute-extended-command))
+     ((or (nemacs-next-session--string-equal name 'minibuffer-state)
+          (nemacs-next-session--string-equal name "minibuffer-state"))
+      (nemacs-next-session--minibuffer-payload))
      ((or (nemacs-next-session--string-equal name 'toolbar-invoke)
           (nemacs-next-session--string-equal name "toolbar-invoke"))
       (nemacs-next-session--toolbar-invoke

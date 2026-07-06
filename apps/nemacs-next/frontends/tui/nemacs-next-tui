@@ -47,6 +47,11 @@ prompt_text=
 toolbar_focus=0
 toolbar_index=0
 toolbar_lines=1
+mb_lines=0
+mb_prompt=
+mb_input=
+mb_candidates_line=
+mb_depth=0
 quit_requested=0
 first_draw=1
 last_draw_actual_bytes=0
@@ -179,6 +184,16 @@ read_render() {
       NEMACS_NEXT_TUI_FRAME_CONFIG$'\t'*)
         local rest=${line#*$'\t'}
         toolbar_lines=${rest%%$'\t'*}
+        mb_lines=${rest#*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_MINIBUFFER$'\t'*)
+        local rest=${line#*$'\t'}
+        mb_depth=${rest%%$'\t'*}
+        rest=${rest#*$'\t'}
+        mb_prompt=${rest%%$'\t'*}
+        rest=${rest#*$'\t'}
+        mb_input=${rest%%$'\t'*}
+        mb_candidates_line=${rest#*$'\t'}
         ;;
       NEMACS_NEXT_TUI_LINE$'\t'*)
         local rest=${line#*$'\t'}
@@ -295,7 +310,7 @@ render_current_lines() {
 send_message() {
   local expr
   expr=$(message_expr "$@")
-  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :directory) (setq nemacs-next-tui-status (concat \"Directory \" (plist-get nemacs-next-tui-response :directory))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :search-query) (setq nemacs-next-tui-status (concat \"Search \" (plist-get nemacs-next-tui-response :search-query))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-frame :tool-bar-lines) 0)) (nemacs-next-tui-row 0)) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_FRAME_CONFIG\t\" (number-to-string nemacs-next-tui-toolbar-lines) \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (when (> nemacs-next-tui-toolbar-lines 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t0\t\" (nemacs-next-session-toolbar-render-line $toolbar_index (if (= $toolbar_focus 1) t nil) $WIDTH) \"\n\"))) (dolist (nemacs-next-tui-line (plist-get nemacs-next-tui-frame :viewport)) (let ((nemacs-next-tui-row (+ nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-line :row) nemacs-next-tui-row)))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string nemacs-next-tui-row) \"\t\" (or (plist-get nemacs-next-tui-line :text) \"\") \"\n\")) (dolist (nemacs-next-tui-run (plist-get nemacs-next-tui-line :face-runs)) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_RUN\t\" (number-to-string nemacs-next-tui-row) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :start) 0)) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :end) 0)) \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :face) 'default)) \"\t\" (or (plist-get nemacs-next-tui-run :foreground) \"\") \"\t\" (or (plist-get nemacs-next-tui-run :background) \"\") \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :weight) 'normal)) \"\n\"))))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\t\" (or (plist-get nemacs-next-tui-frame :mode-line) \"\") \"\n\")) (when (> (length (or (plist-get nemacs-next-tui-frame :echo) \"\")) 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\techo: \" (plist-get nemacs-next-tui-frame :echo) \"\n\"))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :directory) (setq nemacs-next-tui-status (concat \"Directory \" (plist-get nemacs-next-tui-response :directory))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :search-query) (setq nemacs-next-tui-status (concat \"Search \" (plist-get nemacs-next-tui-response :search-query))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-frame :tool-bar-lines) 0)) (nemacs-next-tui-minibuffer (plist-get nemacs-next-tui-frame :minibuffer)) (nemacs-next-tui-row 0)) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_FRAME_CONFIG\t\" (number-to-string nemacs-next-tui-toolbar-lines) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-frame :minibuffer-lines) 0)) \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_MINIBUFFER\t\" (number-to-string (or (plist-get nemacs-next-tui-minibuffer :depth) 0)) \"\t\" (or (plist-get nemacs-next-tui-minibuffer :prompt) \"\") \"\t\" (or (plist-get nemacs-next-tui-minibuffer :contents) \"\") \"\t\" (or (plist-get nemacs-next-tui-minibuffer :candidates-line) \"\") \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (when (> nemacs-next-tui-toolbar-lines 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t0\t\" (nemacs-next-session-toolbar-render-line $toolbar_index (if (= $toolbar_focus 1) t nil) $WIDTH) \"\n\"))) (dolist (nemacs-next-tui-line (plist-get nemacs-next-tui-frame :viewport)) (let ((nemacs-next-tui-row (+ nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-line :row) nemacs-next-tui-row)))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string nemacs-next-tui-row) \"\t\" (or (plist-get nemacs-next-tui-line :text) \"\") \"\n\")) (dolist (nemacs-next-tui-run (plist-get nemacs-next-tui-line :face-runs)) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_RUN\t\" (number-to-string nemacs-next-tui-row) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :start) 0)) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :end) 0)) \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :face) 'default)) \"\t\" (or (plist-get nemacs-next-tui-run :foreground) \"\") \"\t\" (or (plist-get nemacs-next-tui-run :background) \"\") \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :weight) 'normal)) \"\n\"))))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\t\" (or (plist-get nemacs-next-tui-frame :mode-line) \"\") \"\n\")) (when (> (length (or (plist-get nemacs-next-tui-frame :echo) \"\")) 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\techo: \" (plist-get nemacs-next-tui-frame :echo) \"\n\"))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
   read_render
   render_current_lines
 }
@@ -317,6 +332,12 @@ draw() {
         search) printf 'Search: %s\n' "$prompt_text" ;;
         *) printf 'Find file: %s\n' "$prompt_text" ;;
       esac
+    fi
+    if [ "${mb_lines:-0}" -gt 0 ]; then
+      printf '%s%s\n' "$mb_prompt" "$mb_input"
+      if [ -n "$mb_candidates_line" ]; then
+        printf '%s\n' "$mb_candidates_line"
+      fi
     fi
     last_draw_actual_bytes=${#current_render}
     last_draw_full_bytes=$last_draw_actual_bytes
@@ -362,6 +383,18 @@ draw() {
     bytes=$((bytes + ${#chunk}))
     cursor_row=$HEIGHT
     cursor_col=$((1 + ${#prompt_label} + ${#prompt_text}))
+  fi
+  if [ "${mb_lines:-0}" -gt 0 ]; then
+    local cand_row=$((HEIGHT - 1 - mb_lines))
+    local prompt_row=$((HEIGHT - 2))
+    chunk=$(printf '\033[%s;1H%s\033[K' "$((cand_row + 1))" "$mb_candidates_line")
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    chunk=$(printf '\033[%s;1H%s%s\033[K' "$((prompt_row + 1))" "$mb_prompt" "$mb_input")
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    cursor_row=$((prompt_row + 1))
+    cursor_col=$((1 + ${#mb_prompt} + ${#mb_input}))
   fi
   chunk=$(printf '\033[%s;%sH\033[?25h' "$cursor_row" "$cursor_col")
   printf '%s' "$chunk"
@@ -442,6 +475,32 @@ handle_byte() {
     esac
     draw
     return
+  fi
+
+  # Session-driven generic minibuffer prompt (M-x and its chained
+  # follow-ups, entered via Esc x below).  Unlike the local
+  # `prompt_mode' above, keystrokes here are sent one at a time so the
+  # session can offer live TAB completion and a candidate list; the
+  # session tracks input/candidates itself
+  # (`nemacs-next-session--minibuffer-active').  Tab and C-g need an
+  # explicit case here because their default handling below would
+  # otherwise self-insert a literal tab or fall through unhandled.
+  # Return/Backspace already send plain `key return'/`key backspace'
+  # messages further down, which the session routes to the minibuffer
+  # the same way.
+  if [ "${mb_lines:-0}" -gt 0 ]; then
+    case "$ch" in
+      $'\t')
+        send_message key tab
+        draw
+        return
+        ;;
+      $'\007')
+        send_message key C-g
+        draw
+        return
+        ;;
+    esac
   fi
 
   case "$ch" in
@@ -567,8 +626,20 @@ handle_byte() {
         fi
         send_message frame
         draw
+      elif [ "$seq1" = "x" ]; then
+        # Alt+x / Esc x -- M-x execute-extended-command.  Sent as a
+        # `command' message (not `input') so it reaches the session's
+        # dispatch cond directly, regardless of whether a session
+        # minibuffer prompt is already active (that is how recursive
+        # M-x nesting bumps the depth counter; see
+        # `nemacs-next-session--minibuffer-depth').
+        send_message command execute-extended-command
+        draw
       else
-        if [ "$toolbar_focus" = 1 ]; then
+        if [ "${mb_lines:-0}" -gt 0 ]; then
+          send_message key escape
+          draw
+        elif [ "$toolbar_focus" = 1 ]; then
           toolbar_focus=0
           send_message frame
           draw
