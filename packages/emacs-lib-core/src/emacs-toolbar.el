@@ -224,6 +224,126 @@ Return a plist with `:keys', `:command', `:effective-command', and
                 :effective-command ""
                 :menu ""))))))
 
+;;; Icon registry: TUI glyph resolution + GUI image asset resolution -----
+;;
+;; `nemacs-next-session-toolbar-render-line' (an app/session adapter)
+;; resolves the `:icon' name on each toolbar item through
+;; `emacs-toolbar-icon-glyph' instead of hard-coding TUI decoration
+;; here.  GUI frontends can resolve the same names to a vendored image
+;; through `emacs-toolbar-icon-file'.  Names match the vendor
+;; `tool-bar-setup' basenames already used by
+;; `nemacs-next-session-default-toolbar-spec' :icon slots
+;; (new/open/diropen/close/save/undo/cut/copy/paste/search) and the
+;; vendored image basenames under `vendor/emacs-etc/images/'.
+
+(defconst emacs-toolbar-icon-registry
+  '(("new"     . (:glyph "✚" :ascii "[N]" :file "new"))
+    ("open"    . (:glyph "▶" :ascii "[O]" :file "open"))
+    ("diropen" . (:glyph "▤" :ascii "[D]" :file "diropen"))
+    ("close"   . (:glyph "✕" :ascii "[X]" :file "close"))
+    ("save"    . (:glyph "▣" :ascii "[S]" :file "save"))
+    ("undo"    . (:glyph "↺" :ascii "[U]" :file "undo"))
+    ("cut"     . (:glyph "✂" :ascii "[K]" :file "cut"))
+    ("copy"    . (:glyph "❐" :ascii "[W]" :file "copy"))
+    ("paste"   . (:glyph "❏" :ascii "[Y]" :file "paste"))
+    ("search"  . (:glyph "⌕" :ascii "[/]" :file "search")))
+  "Toolbar icon name -> (:glyph UNICODE :ascii FALLBACK :file BASENAME).
+Every `:glyph' is a single BMP codepoint outside the East Asian Wide /
+emoji ranges in `emacs-string--build-char-width-table', so it always
+measures as one display column under this runtime's `string-width'.
+`:ascii' is a short bracketed mnemonic for non-UTF-8 terminals, loosely
+tied to the underlying Emacs command (K = kill-region, W = kill-ring-save,
+Y = yank).  `:file' is the vendored image basename resolved by
+`emacs-toolbar-icon-file'.")
+
+(defvar emacs-toolbar-icon-force-mode nil
+  "Override automatic locale detection for icon glyph resolution.
+Nil auto-detects Unicode capability from `LC_ALL'/`LC_CTYPE'/`LANG' (see
+`emacs-toolbar-icon-unicode-capable-p').  Set to `unicode' or `ascii' to
+force a mode regardless of the process environment.  Tests and
+frontends that already know the terminal's capability out-of-band
+should let-bind this instead of mutating environment variables.")
+
+(defun emacs-toolbar-icon--locale-value ()
+  "Return the most specific locale environment value, or nil.
+Consults `LC_ALL', then `LC_CTYPE', then `LANG', matching POSIX locale
+precedence."
+  (let (found)
+    (dolist (name '("LC_ALL" "LC_CTYPE" "LANG"))
+      (unless found
+        (let ((value (and (fboundp 'getenv) (getenv name))))
+          (when (and (stringp value) (> (length value) 0))
+            (setq found value)))))
+    found))
+
+(defun emacs-toolbar-icon-environment-unicode-p ()
+  "Return non-nil when the locale environment declares a UTF-8 charset."
+  (let ((value (emacs-toolbar-icon--locale-value)))
+    (and value (string-match-p "utf-?8" (downcase value)) t)))
+
+;;;###autoload
+(defun emacs-toolbar-icon-unicode-capable-p ()
+  "Return non-nil when toolbar icons should render as Unicode glyphs.
+`emacs-toolbar-icon-force-mode' overrides detection when set; otherwise
+this consults `emacs-toolbar-icon-environment-unicode-p'.  An
+environment that declares nothing falls back to nil (ASCII) rather
+than risk unreadable glyphs, matching this module's
+silent-fallback-over-broken-output policy."
+  (cond
+   ((eq emacs-toolbar-icon-force-mode 'unicode) t)
+   ((eq emacs-toolbar-icon-force-mode 'ascii) nil)
+   (t (emacs-toolbar-icon-environment-unicode-p))))
+
+;;;###autoload
+(defun emacs-toolbar-icon-glyph (name)
+  "Return the resolved icon prefix text for icon NAME.
+Returns the registry's `:glyph' when the environment is Unicode-capable
+\(see `emacs-toolbar-icon-unicode-capable-p'\), the `:ascii' fallback
+otherwise, and \"\" for an unknown NAME so callers can silently omit
+the icon instead of misrendering."
+  (let ((entry (and (stringp name) (assoc name emacs-toolbar-icon-registry))))
+    (if (not entry)
+        ""
+      (or (plist-get (cdr entry)
+                      (if (emacs-toolbar-icon-unicode-capable-p) :glyph :ascii))
+          ""))))
+
+(defconst emacs-toolbar-icon-file-extensions '("xpm" "pbm")
+  "Preferred vendored image extensions for toolbar icon resolution, in order.")
+
+(defconst emacs-toolbar-icon--source-directory
+  (and (boundp 'load-file-name)
+       (stringp load-file-name)
+       (fboundp 'file-name-directory)
+       (file-name-directory load-file-name))
+  "Directory this module was loaded from (src/), or nil.")
+
+;;;###autoload
+(defun emacs-toolbar-icon-file (name &optional directory)
+  "Return the vendored GUI image path for icon NAME, or nil.
+DIRECTORY overrides the default `vendor/emacs-etc/images/' lookup root,
+which is otherwise resolved relative to this module's own source
+directory when known (mirrors `emacs-startup-screen-image-path').
+Prefers `.xpm' then `.pbm' and only returns a path that exists on disk;
+returns nil for an unknown NAME or when no vendored asset is present so
+GUI callers fall back to the text glyph instead of referencing a
+missing file."
+  (let ((entry (and (stringp name) (assoc name emacs-toolbar-icon-registry)))
+        (dir (or directory
+                 (and emacs-toolbar-icon--source-directory
+                      (concat emacs-toolbar-icon--source-directory
+                              "../vendor/emacs-etc/images/"))
+                 "vendor/emacs-etc/images/"))
+        found)
+    (when (and entry (fboundp 'file-exists-p))
+      (let ((base (plist-get (cdr entry) :file)))
+        (when base
+          (dolist (ext emacs-toolbar-icon-file-extensions)
+            (let ((path (concat (file-name-as-directory dir) base "." ext)))
+              (when (and (not found) (file-exists-p path))
+                (setq found path)))))))
+    found))
+
 (provide 'emacs-toolbar)
 
 ;;; emacs-toolbar.el ends here
