@@ -179,18 +179,34 @@ consults this variable is `emacs-startup-screen'
 
 (defun nemacs-resolve-user-emacs-directory ()
   "Resolve the nemacs user init directory.
-`NEMACS_USER_EMACS_DIRECTORY' is a test/frontend-safe override.  Without it,
-follow real Emacs precedence: prefer ~/.emacs.d when it exists, otherwise XDG
-when it exists, otherwise default to ~/.emacs.d."
+`NEMACS_USER_EMACS_DIRECTORY' is a test/frontend-safe override.  Without
+it, and without a cached `nemacs-user-emacs-directory', prefer a
+~/.nemacs.d directory when one exists on disk: that is the historical M15
+GUI-bridge wrapped-init lane's directory (scripts/nemacs-wrap-init.el),
+previously hardcoded independently by the GUI launcher instead of going
+through this resolver.  Loader reconcile Phase 3 makes this resolver the
+single source every driver/launcher defers to instead: the GUI launcher,
+`bin/nemacs' (nelisp driver), and `bin/nemacs-server' now all either read
+~/.nemacs.d through this same precedence or explicitly set
+`NEMACS_USER_EMACS_DIRECTORY' when they need a different directory,
+instead of hardcoding their own directory constant.  Without a
+~/.nemacs.d directory, fall back to real Emacs precedence: ~/.emacs.d
+when it exists, otherwise XDG when it exists, otherwise default to
+~/.emacs.d."
   (or (nemacs--directory-with-slash
        (and (fboundp 'getenv) (getenv "NEMACS_USER_EMACS_DIRECTORY")))
       nemacs-user-emacs-directory
       (let* ((home (nemacs--home-directory))
+             (legacy-nemacs-dir (nemacs--directory-with-slash
+                                 (concat home "/.nemacs.d")))
              (dot-emacs-dir (nemacs--directory-with-slash
                              (concat home "/.emacs.d")))
              (legacy-dotfile (concat home "/.emacs"))
              (xdg-dir (nemacs--xdg-config-emacs-directory home)))
         (cond
+         ((and (fboundp 'file-directory-p)
+               (file-directory-p legacy-nemacs-dir))
+          legacy-nemacs-dir)
          ((and (fboundp 'file-directory-p)
                (file-directory-p dot-emacs-dir))
           dot-emacs-dir)
@@ -286,8 +302,11 @@ Phase 2)."
 `nemacs-wrap-init' (scripts/nemacs-wrap-init.el, run ahead of time under
 a full host Emacs) writes its OUT file here, plus the `-packages' /
 `-pkgs-lowered' companions `nemacs-init-transport-consume' also reads.
-Wiring the generator invocation itself into the launchers is Phase 3;
-Phase 2 only consumes a transport that is already present on disk."
+`bin/nemacs' (nelisp driver) and `gui/bin/nemacs' now run the generator
+themselves ahead of dispatch (loader reconcile Phase 3); a standalone
+session with no such transport (host Emacs unavailable, or nothing to
+wrap) keeps consuming whatever is already present on disk, same as
+Phase 2."
   (concat nemacs-user-emacs-directory "nemacs-init-wrapped"))
 
 (defun nemacs--load-user-init-via-transport ()
