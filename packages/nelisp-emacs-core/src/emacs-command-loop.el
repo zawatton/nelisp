@@ -4209,6 +4209,40 @@ calls) to skip the minibuffer reader."
     (let ((emacs-command-loop--prefix-arg prefix-arg-incoming))
       (emacs-command-loop-call-interactively cmd))))
 
+;;;; --- frontend key dispatch (Task #17, M3) --------------------------
+
+;;;###autoload
+(defun emacs-command-loop-dispatch-key (key)
+  "Look up KEY in the active keymap chain and run it if it is a command.
+
+KEY is a single input event (a character or an event symbol such as
+`tab').  Returns the command that ran when KEY resolves, through
+`emacs-keymap-key-binding' (= the current buffer's local map, minor-mode
+maps, and the global map, in that priority order), to a bound
+interactive command; returns nil without any side effect when KEY has
+no binding, or when the binding is a prefix keymap (this MVP only
+dispatches single-event bindings; a caller wanting full prefix-key
+sequences should use `emacs-command-loop-step' instead) or a
+non-interactive function.
+
+This is the shared \"dispatch or let the caller fall back\" primitive a
+frontend uses so a buffer's real keymap (installed via `use-local-map'
+when its major mode is set up, e.g. Magit's `magit-section-mode-map')
+can override a frontend's fixed key table without that frontend
+re-implementing keymap walking (Doc 33/AGENTS.md: keymap lookup +
+`call-interactively' stay in this shared command-loop/keymap layer, not
+in app/session glue)."
+  (let ((binding (emacs-command-loop--lookup-command (vector key))))
+    (cond
+     ((null binding) nil)
+     ((or (and (fboundp 'emacs-keymap-keymapp) (emacs-keymap-keymapp binding))
+          (and (fboundp 'keymapp) (keymapp binding)))
+      nil)
+     ((emacs-command-loop--commandp binding)
+      (emacs-command-loop-call-interactively binding)
+      binding)
+     (t nil))))
+
 (provide 'emacs-command-loop)
 
 ;;; emacs-command-loop.el ends here
