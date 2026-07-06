@@ -31,6 +31,12 @@ Key map
 The toolbar is rendered on the top row from session protocol data.  The
 default item order follows vendor `tool-bar-setup`: New File, Open, Dired,
 Close, Save, Undo, Cut, Copy, Paste, Search, with separators preserved.
+Each button is prefixed with a glyph resolved by `emacs-toolbar.el''s icon
+registry (`emacs-toolbar-icon-glyph'): a single-column Unicode symbol in a
+UTF-8-capable locale (`LC_ALL'/`LC_CTYPE'/`LANG' containing "UTF-8"), or a
+short bracketed ASCII mnemonic otherwise (e.g. `[S]` for Save, `[K]`/`[W]`/
+`[Y]` for Cut/Copy/Paste).  An unrecognized icon name falls back to the
+label alone.
 
 The v2 renderer consumes the session frame snapshot directly. Viewport rows may
 include face runs sourced from buffer text properties, and the frontend maps the
@@ -62,4 +68,7 @@ The smoke pipes deterministic byte sequences through the frontend. It keeps the
 find-file/edit/delete/quit path, invokes toolbar Save, invokes toolbar Open and
 asserts the prompt, checks that every default toolbar label rendered, adds
 Japanese UTF-8 insertion, asserts ANSI color output for an Org heading face run,
-and checks that a cursor-only move is much smaller than a full-frame redraw.
+checks that a cursor-only move is much smaller than a full-frame redraw, and
+launches the frontend under a forced `LC_ALL=C` and a forced `LC_ALL=C.UTF-8`
+environment to assert the toolbar row falls back to ASCII icon tags and
+renders Unicode icon glyphs respectively.
