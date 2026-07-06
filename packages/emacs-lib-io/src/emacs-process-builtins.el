@@ -17,7 +17,7 @@
 ;;
 ;; Bridged today:
 ;;   - call-process / call-process-region / process-file
-;;   - start-process / make-process
+;;   - start-process / start-file-process / make-process
 ;;   - processp / process-list / process-status /
 ;;     process-exit-status / process-buffer / process-name
 ;;   - process-send-string / process-send-eof / delete-process
@@ -53,6 +53,9 @@
 
 (when (emacs-process-builtins--install-function-p 'start-process)
   (defalias 'start-process #'emacs-process-start-process))
+
+(when (emacs-process-builtins--install-function-p 'start-file-process)
+  (defalias 'start-file-process #'emacs-process-start-file-process))
 
 (when (emacs-process-builtins--install-function-p 'make-process)
   (defalias 'make-process #'emacs-process-make-process))

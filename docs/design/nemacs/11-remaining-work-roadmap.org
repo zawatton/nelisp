@@ -488,6 +488,23 @@ the loopback run needs one-time user setup):
 3. In the editor: =find-file /ssh:localhost:/tmp/real-tramp-probe.txt=, edit,
    =save-buffer=, then verify the file content from a shell.
 
+Close evidence (M1-M4, task #16, branch =tramp-ssh-lane=, Doc 37):
+implementation targeted the *host driver* (=emacs -Q -L src=) as the
+primary lane per the approved implementation plan, with the standalone
+NeLisp reader's full Tramp load chain deferred (substrate pieces
+=process-mark=/=start-file-process=/=process-file= shipped and covered
+by regression, but the full vendored Tramp dependency chain on the bare
+reader was not brought up -- see Doc 37 Sec 4).  The hermetic stub-ssh
+round-trip (=make tramp-stub-smoke=, =test/nemacs-tramp-stub-ssh-test.el=)
+runs under host Emacs instead and covers load-chain, non-remote
+passthrough, the unsupported-method guard, remote read, remote write
+round-trip, and =process-file= exit-status/stdout -- 5/5 passing.  Real
+localhost ssh verification remains a manual checklist item exactly as
+above; =make tramp-localhost-smoke= automates the same checks and skips
+cleanly when the checklist is not done (confirmed on this development
+host: publickey/password both denied for localhost).  See Doc 37 for
+the full substrate change list and the Magit (#17) coordination notes.
+
 ** M12. Display/Font Vendor Lane (v1 CLOSED 2026-06-10)
 
 Focus (from §3.7): redisplay correctness beyond the current GUI bridge
