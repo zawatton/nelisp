@@ -136,6 +136,7 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
 
 (let ((--local-aliases--
        '((make-local-variable       . emacs-buffer-make-local-variable)
+         (make-variable-buffer-local . emacs-buffer-make-variable-buffer-local)
          (buffer-local-variables    . emacs-buffer-buffer-local-variables)
          (buffer-local-value        . emacs-buffer-buffer-local-value)
          (local-variable-p          . emacs-buffer-local-variable-p)
@@ -199,6 +200,39 @@ nil MARKER-OR-INTEGER returns a detached marker, matching Emacs."
 
 (when (fboundp 'make-variable-buffer-local)
   (make-variable-buffer-local 'buffer-invisibility-spec))
+
+;; Doc 33 §8 item 242 (buffer-local swap engine, M2 completion
+;; blocker): register Emacs's own `DEFVAR_PER_BUFFER' variables so
+;; every buffer switch swaps them regardless of whether a given buffer
+;; ever called `make-local-variable' on them.  `buffer-read-only' is
+;; the M2 minimal-repro symbol itself (Doc 33 §8: a brand-new buffer
+;; must never read back a DIFFERENT buffer's `buffer-read-only' value);
+;; `major-mode' and `default-directory' are the other two builtins the
+;; M2 magit-status smoke path depends on.  Gated to standalone only —
+;; under host Emacs these are genuine C-level per-buffer variables
+;; already, so declaring them here too would fight the host's own
+;; machinery instead of bridging a gap.
+;;
+;; `default-directory' is registered conditionally on `boundp': this
+;; file (`emacs-buffer-builtins.el') loads BEFORE `emacs-fileio.el''s
+;; own `(defvar default-directory "/" ...)' (`emacs-fileio.el' itself
+;; `require's this file), so at this point in the load order the name
+;; is not bound yet.  Passing an explicit `nil' default here regardless
+;; would freeze `nil' into the registered default forever
+;; (`emacs-buffer-declare-per-buffer' tracks "a default WAS given" via
+;; its own `&rest' arity, so even an explicit `nil' would count) and
+;; permanently shadow the real `"/"' default `emacs-fileio.el' goes on
+;; to establish moments later — so the unbound case omits the DEFAULT
+;; argument entirely, leaving `emacs-buffer-default-value''s ordinary
+;; `boundp' fallback to pick up whatever value eventually gets
+;; `defvar'd.
+(when (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'emacs-buffer-declare-per-buffer))
+  (emacs-buffer-declare-per-buffer 'buffer-read-only nil)
+  (emacs-buffer-declare-per-buffer 'major-mode 'fundamental-mode)
+  (if (boundp 'default-directory)
+      (emacs-buffer-declare-per-buffer 'default-directory default-directory)
+    (emacs-buffer-declare-per-buffer 'default-directory)))
 
 (defun emacs-buffer-builtins--buffer-invisibility-spec ()
   "Return the current buffer's `buffer-invisibility-spec' value."
@@ -740,6 +774,30 @@ required N parameter (= the same lambda-arity-mismatch that bit
     "Phase 9 polyfill: expand to `nelisp-ec-save-current-buffer' semantics."
     (declare (indent 0) (debug (body)))
     (nelisp-ec--save-current-buffer-form body)))
+
+;; Doc 33 §8 item 242: the vendor NeLisp stdlib's own `setq-default'
+;; (`vendor/nelisp/lisp/nelisp-stdlib-eval-special.el') is a plain
+;; `setq' alias ("NeLisp has no buffer-local"), so without this
+;; polyfill every buffer would share one poisoned default the moment
+;; ANY buffer ran `setq-default' on a per-buffer symbol — e.g.
+;; `nelisp-emacs-magit-bridge--ensure-buffer-defaults's own
+;; `(setq-default buffer-read-only nil)' would otherwise never persist
+;; once `magit-section-mode' next sets the GLOBAL `buffer-read-only' to
+;; `t' via ordinary `setq'.  Each SYM/VALUE pair routes through
+;; `emacs-buffer-setq-default-1' (function, not macro, since macro
+;; expansion here just needs to call something once per pair).
+(when (emacs-buffer-builtins--install-function-p 'setq-default)
+  (defmacro setq-default (&rest pairs)
+    "Phase 9/Doc 33 item 242 polyfill: route through the swap engine.
+Supersedes the vendor NeLisp stdlib `setq-default' (plain `setq' alias)
+— see the commentary immediately above this form."
+    (let (forms (rest pairs))
+      (while rest
+        (push (list 'emacs-buffer-setq-default-1
+                     (list 'quote (car rest)) (cadr rest))
+              forms)
+        (setq rest (cddr rest)))
+      (cons 'progn (nreverse forms)))))
 
 ;;;; --- narrow / widen ---------------------------------------------------
 

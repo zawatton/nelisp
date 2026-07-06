@@ -464,6 +464,8 @@ The new buffer is empty, has POINT = 1, and is registered in
                  :text-tick 0
                  :killed-p nil))))
     (push (cons unique buf) nelisp-ec--buffers)
+    (when (fboundp 'emacs-buffer--inherit-new-buffer)
+      (emacs-buffer--inherit-new-buffer buf))
     buf))
 
 ;;;###autoload
@@ -473,11 +475,39 @@ The new buffer is empty, has POINT = 1, and is registered in
 
 ;;;###autoload
 (defun nelisp-ec-set-buffer (buf)
-  "Make BUF the current buffer and return BUF."
+  "Make BUF the current buffer and return BUF.
+Routes through `emacs-buffer-switch-current-buffer' (Doc 33 §8 item 242
+swap engine) when that layer is loaded, so buffer-local variables'
+shared global cells stay consistent with the invariant \"the global
+cell always reflects the current buffer's value\".  Guarded by
+`fboundp' rather than a hard `require': `nelisp-emacs-compat' must stay
+loadable without `emacs-buffer' (the dependency runs the other way —
+`emacs-buffer' requires `nelisp-emacs-compat' — so a hard require here
+would be circular)."
   (unless (nelisp-ec-buffer-p buf)
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (nelisp-ec--check-live buf)
-  (setq nelisp-ec--current-buffer buf)
+  (let ((old nelisp-ec--current-buffer))
+    (setq nelisp-ec--current-buffer buf)
+    (when (fboundp 'emacs-buffer-switch-current-buffer)
+      (emacs-buffer-switch-current-buffer old buf)))
+  buf)
+
+(defun nelisp-ec--restore-current-buffer (buf)
+  "Restore BUF as the current buffer on unwind and return BUF.
+Used by the `save-current-buffer'/`with-current-buffer' unwind-protect
+cleanup forms instead of a direct `setq' so a non-local exit still
+routes through `emacs-buffer-switch-current-buffer' (Doc 33 §8 item
+242) exactly like `nelisp-ec-set-buffer' — otherwise every buffer-local
+global cell would keep reflecting whichever buffer BODY last selected,
+not the buffer being restored.  Unlike `nelisp-ec-set-buffer', this
+never signals on a killed BUF (restoring after `kill-buffer' ran inside
+the protected body is a normal occurrence) and accepts nil (no buffer
+selected)."
+  (let ((old nelisp-ec--current-buffer))
+    (setq nelisp-ec--current-buffer buf)
+    (when (fboundp 'emacs-buffer-switch-current-buffer)
+      (emacs-buffer-switch-current-buffer old buf)))
   buf)
 
 ;;;###autoload
@@ -508,13 +538,19 @@ system has no such limitation."
           (list 'unwind-protect
                 (append (list 'progn (list 'nelisp-ec-set-buffer newbuf))
                         body)
-                (list 'setq 'nelisp-ec--current-buffer saved)))))
+                (list 'nelisp-ec--restore-current-buffer saved)))))
 
 ;;;###autoload
 (defun nelisp-ec-kill-buffer (buf)
   "Kill BUF.  Returns t.
 The buffer is removed from the registry, marked killed, and if it was
-the current buffer the selection is cleared (set to nil)."
+the current buffer the selection is cleared (set to nil) — routed
+through `nelisp-ec--restore-current-buffer' like every other
+current-buffer transition, so a killed current buffer's last
+`setq'-mutated values are still captured before its state is dropped.
+Also forgets BUF's buffer-local variable state via
+`emacs-buffer--forget' (Doc 33 §8 item 242 swap engine), when that
+layer is loaded, so a killed buffer's extended state does not linger."
   (unless (nelisp-ec-buffer-p buf)
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (unless (nelisp-ec-buffer-killed-p buf)
@@ -523,7 +559,9 @@ the current buffer the selection is cleared (set to nil)."
             (assoc-delete-all name nelisp-ec--buffers)))
     (nelisp-ec--set-buffer-killed-p buf t)
     (when (eq buf nelisp-ec--current-buffer)
-      (setq nelisp-ec--current-buffer nil)))
+      (nelisp-ec--restore-current-buffer nil))
+    (when (fboundp 'emacs-buffer--forget)
+      (emacs-buffer--forget buf)))
   t)
 
 ;;; B. point + cursor control  (7 APIs)
@@ -806,7 +844,7 @@ backquote-free on the standalone bootstrap path."
     (list 'let (list (list saved 'nelisp-ec--current-buffer))
           (list 'unwind-protect
                 (cons 'progn body)
-                (list 'setq 'nelisp-ec--current-buffer saved)))))
+                (list 'nelisp-ec--restore-current-buffer saved)))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-current-buffer (&rest body)
