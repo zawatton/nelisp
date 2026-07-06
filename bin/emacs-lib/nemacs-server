@@ -28,6 +28,30 @@ NELISP=${NELISP:-$ROOT/vendor/nelisp/target/nelisp}
 mkdir -p "$SOCK_DIR"
 chmod 700 "$SOCK_DIR"
 
+# Loader reconcile Phase 3: wrapped-init directory unification.  Default to
+# `/tmp' (unchanged) so the existing convention of the GUI launcher
+# (gui/bin/nemacs, NEMACS_TRANSPORT_DIR default /tmp) already having written
+# nemacs-init-wrapped(+companions) there keeps working with zero behavior
+# change.  A caller may instead point `NEMACS_USER_EMACS_DIRECTORY' at a
+# directory of its own early-init.el/init.el; when host Emacs is available
+# this server then wraps it itself ahead of time (same generator the GUI
+# launcher and `bin/nemacs' use) -- opt-in, not run against the default /tmp
+# case, so this stays exactly as safe/fast as before for existing callers.
+NEMACS_EMACS=${NEMACS_EMACS:-emacs}
+NEMACS_USER_EMACS_DIRECTORY=${NEMACS_USER_EMACS_DIRECTORY:-/tmp}
+export NEMACS_USER_EMACS_DIRECTORY
+NEMACS_SERVER_WRAP_DIR=${NEMACS_USER_EMACS_DIRECTORY%/}
+NEMACS_SERVER_WRAPPER="$NEMACS_SERVER_WRAP_DIR/nemacs-init-wrapped"
+if [ "$NEMACS_SERVER_WRAP_DIR" != "/tmp" ] \
+   && [ ! -e "$NEMACS_SERVER_WRAPPER" ] \
+   && { [ -f "$NEMACS_SERVER_WRAP_DIR/early-init.el" ] || [ -f "$NEMACS_SERVER_WRAP_DIR/init.el" ]; } \
+   && command -v "$NEMACS_EMACS" >/dev/null 2>&1; then
+  "$NEMACS_EMACS" -Q --batch \
+    -l "$ROOT/scripts/nemacs-wrap-init.el" \
+    --eval "(nemacs-wrap-init \"$NEMACS_SERVER_WRAPPER\" \"$NEMACS_SERVER_WRAP_DIR/early-init.el\" \"$NEMACS_SERVER_WRAP_DIR/init.el\")" \
+    >/dev/null 2>&1 || true
+fi
+
 PRE=$(mktemp /tmp/nemacs-server-preamble.XXXXXX.el)
 trap 'rm -f "$PRE"' EXIT
 # The whole driver is generated FLAT so every load runs at nesting
@@ -48,23 +72,6 @@ cat >"$PRE" <<EOF
 (setq server-name "$NAME")
 (setq server-use-tcp nil)
 (setq server-socket-dir "$SOCK_DIR")
-(defvar nemacs-init--applied 0)
-(defvar nemacs-init--last-load-path-dir nil)
-(defvar nemacs-init--files nil)
-(defun nemacs-init--begin (n _hint) n)
-(defun nemacs-init--ok (n)
-  (setq nemacs-init--applied (+ nemacs-init--applied 1))
-  n)
-(defun nemacs-init--note-file (f)
-  (setq nemacs-init--files (cons f nemacs-init--files)))
-(defun nemacs-init--file-loaded-p (f)
-  (let ((xs nemacs-init--files)
-        (hit nil))
-    (while xs
-      (if (equal (car xs) f)
-          (progn (setq hit t) (setq xs nil))
-        (setq xs (cdr xs))))
-    hit))
 ;; L5: bring up the full nemacs runtime (buffer/editor core, real
 ;; find-file / save-buffer) on top of the M14 server/emacsclient
 ;; polyfills already loaded above.  Same load-path / vendor-root
@@ -82,37 +89,30 @@ cat >"$PRE" <<EOF
               (and (boundp 'load-path) load-path)))
 (load "$ROOT/src/emacs-fns.el" nil t)
 ;; save-buffer / write-file (installed below by nemacs-main.el's
-;; emacs-fileio-builtins chain) declare themselves with `(interactive
-;; ...)'.  That form is only a no-op polyfill under src/emacs-eval.el
+;; emacs-fileio-builtins chain) declare themselves with (interactive
+;; ...).  That form is only a no-op polyfill under src/emacs-eval.el
 ;; (real Emacs has a native Finteractive primitive; the standalone
 ;; reader does not), and emacs-eval.el is not on nemacs-loadup's
-;; require graph.  Load it here, flat top-level, so `interactive' is
+;; require graph.  Load it here, flat top-level, so interactive is
 ;; bound before any client calls a command that declares it -- doing
 ;; this load lazily from inside a request handler instead hits the
 ;; same nested-load risk class as the M18 finding above.
 (load "$ROOT/src/emacs-eval.el" nil t)
 (load "$ROOT/src/nemacs-main.el" nil t)
+;; Loader reconcile Phase 3: nemacs-init (via nemacs-load-user-init-files,
+;; src/nemacs-loadup.el) already consumes any wrapped-init transport at
+;; NEMACS_USER_EMACS_DIRECTORY/nemacs-init-wrapped through the shared
+;; nemacs-init-transport-consume helper (src/nemacs-init-transport.el, the
+;; same one the GUI bridge uses) -- no separate hand-rolled marker/load
+;; dance is needed here any more.
 (nemacs-init t)
+(nelisp--write-stderr-line
+ (concat "nemacs-server: user init applied forms="
+         (number-to-string (if (boundp 'nemacs-init--applied)
+                                nemacs-init--applied
+                              0))))
 EOF
-# M18: the user's resolved packages, still at depth 2; the wrapped
-# init's registry guards skip the re-loads (the reader's provide
-# registers nothing, so featurep cannot be the guard).
-if [ -f /tmp/nemacs-init-wrapped-packages ]; then
-  while IFS= read -r pkg; do
-    if [ -f "$pkg" ]; then
-      printf '(nemacs-init--note-file "%s")\n' "$pkg" >>"$PRE"
-      printf '(load "%s" nil t)\n' "$pkg" >>"$PRE"
-    fi
-  done < /tmp/nemacs-init-wrapped-packages
-fi
 cat >>"$PRE" <<EOF
-(if (file-exists-p "/tmp/nemacs-init-wrapped")
-    (progn
-      (load "/tmp/nemacs-init-wrapped" nil t)
-      (nelisp--write-stderr-line
-       (concat "nemacs-server: user init applied forms="
-               (number-to-string nemacs-init--applied))))
-  nil)
 (nemacs-server-start)
 (nelisp--write-stderr-line
  (concat "nemacs-server: listening on " (server--file-name)))

@@ -342,6 +342,36 @@ if (( DOCTOR )); then
   exit $?
 fi
 
+# --- macro-less driver pre-pass: wrap user init ahead of time (Phase 3) --
+#
+# Loader reconcile Phase 3.  The nelisp/standalone driver's reader cannot
+# reliably macro-expand every user init construct (Doc reconcile plan
+# §1), so ahead of dispatch we run the same host-side `nemacs-wrap-init'
+# generator the GUI launcher uses (scripts/nemacs-wrap-init.el), writing
+# its output under `nemacs-resolve-user-emacs-directory' (src/nemacs-
+# loadup.el) -- the single source every driver now defers to -- so
+# `nemacs-loadup''s Phase 2 consumer (`nemacs--load-user-init-via-
+# transport') picks it up automatically once `nemacs-init' runs below.
+#
+# Skipped entirely for the host driver (host Emacs macro-expands every
+# construct itself, Phase 1's raw `load' is always sufficient there) and
+# under -q/-Q (`NO_INIT'; the loadup init gate skips loading either way --
+# double closure, nothing to wrap).  Host Emacs unavailable, or the
+# generator failing, is a silent degrade to the Phase 1 raw-load lane
+# (unchanged pre-Phase-3 behavior).
+if [[ "$NEMACS_DRIVER" == "nelisp" && "$NO_INIT" != 1 ]] \
+   && command -v "$NEMACS_EMACS" >/dev/null 2>&1; then
+  "$NEMACS_EMACS" -Q --batch -L "$NEMACS_HOME/src" \
+    -l nemacs-loadup -l "$NEMACS_HOME/scripts/nemacs-wrap-init.el" \
+    --eval "(let ((dir (nemacs-resolve-user-emacs-directory)))
+              (when (or (file-readable-p (concat dir \"early-init.el\"))
+                        (file-readable-p (concat dir \"init.el\")))
+                (nemacs-wrap-init (concat dir \"nemacs-init-wrapped\")
+                                   (concat dir \"early-init.el\")
+                                   (concat dir \"init.el\"))))" \
+    >/dev/null 2>&1 || true
+fi
+
 # --- bootstrap form ------------------------------------------------
 
 # Build the lisp form we hand to the driver.  The form sets the

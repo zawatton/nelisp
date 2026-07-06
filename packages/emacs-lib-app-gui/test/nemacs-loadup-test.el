@@ -187,6 +187,63 @@ observe whether `nemacs-load-user-init-files' actually loaded it."
       (should nemacs-loadup-test--fixture-init-ran)
       (should nemacs-init-file-loaded))))
 
+;;;; L. Loader reconcile Phase 3 — ~/.nemacs.d resolver precedence
+
+(defmacro nemacs-loadup-test--with-fake-home (&rest body)
+  "Run BODY with HOME pointing at a fresh empty temp directory and
+`NEMACS_USER_EMACS_DIRECTORY'/`nemacs-user-emacs-directory' cleared, so
+`nemacs-resolve-user-emacs-directory' exercises its real-directory
+precedence tiers against a controlled filesystem instead of the
+developer's actual dotfiles."
+  (declare (indent 0) (debug (body)))
+  `(let* ((home (directory-file-name (make-temp-file "nemacs-loadup-test-home-" t)))
+          (process-environment
+           (append (list (format "HOME=%s" home)
+                         "NEMACS_USER_EMACS_DIRECTORY=")
+                   process-environment))
+          (nemacs-user-emacs-directory nil))
+     (unwind-protect
+         (progn ,@body)
+       (delete-directory home t))))
+
+(ert-deftest nemacs-loadup-test/resolver-defaults-to-dot-emacs-d-when-nothing-present ()
+  "With neither ~/.nemacs.d nor ~/.emacs.d/~/.emacs/XDG present, the
+resolver falls back to ~/.emacs.d (unchanged pre-Phase-3 default)."
+  (nemacs-loadup-test--with-fake-home
+    (should (equal (concat (getenv "HOME") "/.emacs.d/")
+                    (nemacs-resolve-user-emacs-directory)))))
+
+(ert-deftest nemacs-loadup-test/resolver-prefers-dot-emacs-d-when-only-that-exists ()
+  "~/.emacs.d precedence is unaffected when no ~/.nemacs.d exists (native
+driver back-compat)."
+  (nemacs-loadup-test--with-fake-home
+    (make-directory (concat (getenv "HOME") "/.emacs.d"))
+    (should (equal (concat (getenv "HOME") "/.emacs.d/")
+                    (nemacs-resolve-user-emacs-directory)))))
+
+(ert-deftest nemacs-loadup-test/resolver-prefers-nemacs-d-over-dot-emacs-d ()
+  "Loader reconcile Phase 3: when both ~/.nemacs.d and ~/.emacs.d exist,
+~/.nemacs.d (the historical GUI M15 wrapped-init lane directory) now wins
+-- the single resolver every driver/launcher defers to."
+  (nemacs-loadup-test--with-fake-home
+    (make-directory (concat (getenv "HOME") "/.emacs.d"))
+    (make-directory (concat (getenv "HOME") "/.nemacs.d"))
+    (should (equal (concat (getenv "HOME") "/.nemacs.d/")
+                    (nemacs-resolve-user-emacs-directory)))))
+
+(ert-deftest nemacs-loadup-test/resolver-env-override-wins-over-nemacs-d ()
+  "An explicit `NEMACS_USER_EMACS_DIRECTORY' override still wins over the
+~/.nemacs.d tier (test/frontend isolation is never shadowed)."
+  (nemacs-loadup-test--with-fake-home
+    (make-directory (concat (getenv "HOME") "/.nemacs.d"))
+    (let* ((override (file-name-as-directory (make-temp-file "nemacs-loadup-test-override-" t)))
+           (process-environment
+            (cons (format "NEMACS_USER_EMACS_DIRECTORY=%s" override)
+                  process-environment)))
+      (unwind-protect
+          (should (equal override (nemacs-resolve-user-emacs-directory)))
+        (delete-directory override t)))))
+
 (provide 'nemacs-loadup-test)
 
 ;;; nemacs-loadup-test.el ends here
