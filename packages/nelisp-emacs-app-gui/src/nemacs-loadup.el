@@ -106,7 +106,8 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
 Non-nil suppresses it (Emacs's `-Q' implies this).  `nemacs-loadup' only
 declares the variable so the CLI/options-plist wiring in `bin/nemacs' and
 `nemacs-main' has a stable place to set it; the splash-screen owner that
-consults this variable lands in a later UX session."))
+consults this variable is `emacs-startup-screen'
+(`emacs-startup-screen-use-p')."))
 
 (unless (boundp 'initial-major-mode)
   (defvar initial-major-mode 'lisp-interaction-mode
@@ -306,6 +307,18 @@ of reimplementing init discovery."
      ((fboundp 'emacs-mode-fundamental-mode)
       (emacs-mode-fundamental-mode)))))
 
+(defun nemacs--maybe-startup-screen ()
+  "Create and select the startup splash screen when its gate allows it.
+The splash owner is `emacs-startup-screen' (an editor-semantics module
+loaded by app entry points such as `nemacs-main'); when it is absent
+this step is a no-op.  `emacs-startup-screen-use-p' suppresses the
+splash for `inhibit-startup-screen' non-nil, a loaded user init file,
+or CLI file arguments.  Returns the splash buffer when selected."
+  (when (and (fboundp 'emacs-startup-screen-use-p)
+             (fboundp 'emacs-startup-screen-select)
+             (emacs-startup-screen-use-p))
+    (emacs-startup-screen-select)))
+
 (defun nemacs--report-banner (batch-p)
   "Emit the readiness banner.  No-op under BATCH-P."
   (unless batch-p
@@ -324,8 +337,11 @@ Steps:
   1. Load early-init.el when present.
   2. Run the package activation hook point.
   3. Load init.el when present.
-  4. Run `after-init-hook', create *scratch*, then run `nemacs-startup-hook'.
-  5. Mark `nemacs-initialized' = t.
+  4. Run `after-init-hook', create *scratch*.
+  5. Interactive only: show the startup splash screen when the
+     `emacs-startup-screen' gate allows it, then run
+     `nemacs-startup-hook'.
+  6. Mark `nemacs-initialized' = t.
 
 Returns the symbol `ready' on success."
   (when nemacs-initialized
@@ -344,6 +360,11 @@ Returns the symbol `ready' on success."
     (when (and buf (fboundp 'nelisp-ec-set-buffer))
       (nelisp-ec-set-buffer buf)))
   (nemacs--apply-initial-major-mode)
+  ;; Batch bootstraps never show the splash (Emacs `noninteractive'
+  ;; semantics); this also keeps every existing `(nemacs-init t)' caller
+  ;; on today's *scratch* initial buffer.
+  (unless batch-p
+    (nemacs--maybe-startup-screen))
   (when (fboundp 'run-hooks)
     (run-hooks 'nemacs-startup-hook))
   (setq nemacs-initialized t)

@@ -42,7 +42,8 @@ cat >> "$tmp" <<EOF
 (setq load-path (list "$ROOT/src" "$ROOT/apps/nemacs-next/lisp"))
 (load "$ROOT/src/emacs-special-buffers.el")
 (load "$ROOT/src/nemacs-loadup.el")
-(unless nemacs-initialized (nemacs-init t))
+(load "$ROOT/src/emacs-startup-screen.el")
+(unless nemacs-initialized (nemacs-init))
 (load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
 (setq nemacs-next-init-smoke-frame-config (nemacs-next-session-frame-config))
 (setq nemacs-next-init-smoke-frame (nemacs-next-session-frame-snapshot 40 6))
@@ -52,6 +53,7 @@ cat >> "$tmp" <<EOF
 (nelisp--write-stdout-bytes (concat "frame-toolbar-present=" (if (plist-get (plist-get nemacs-next-init-smoke-frame :frame) :toolbar) "yes" "no") "\n"))
 (nelisp--write-stdout-bytes (concat "scratch=" (if (equal nemacs-next-init-smoke-scratch-text "fixture scratch message\n") "custom" "bad") "\n"))
 (nelisp--write-stdout-bytes (concat "messages=" (if (string-match "init loaded" nemacs-next-init-smoke-messages-text) "init-loaded" "bad") "\n"))
+(nelisp--write-stdout-bytes (concat "splash=" (if (or (emacs-startup-screen-buffer) (equal (nelisp-ec-buffer-name (nelisp-ec-current-buffer)) emacs-startup-screen-buffer-name)) "bad-splash-shown" "suppressed") "\n"))
 ,quit
 EOF
 
@@ -73,7 +75,8 @@ for expected in \
   'frame-config-tool-bar-lines=0' \
   'frame-toolbar-present=no' \
   'scratch=custom' \
-  'messages=init-loaded'; do
+  'messages=init-loaded' \
+  'splash=suppressed'; do
   if ! grep -q "^$expected$" "$out"; then
     cat "$out" >&2
     cat "$err" >&2
@@ -94,8 +97,9 @@ cat >> "$tmp_q" <<EOF
 (setq load-path (list "$ROOT/src" "$ROOT/apps/nemacs-next/lisp"))
 (load "$ROOT/src/emacs-special-buffers.el")
 (load "$ROOT/src/nemacs-loadup.el")
+(load "$ROOT/src/emacs-startup-screen.el")
 (setq init-file-user nil)
-(unless nemacs-initialized (nemacs-init t))
+(unless nemacs-initialized (nemacs-init))
 (load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
 (setq nemacs-next-init-smoke-frame-config-q (nemacs-next-session-frame-config))
 (setq nemacs-next-init-smoke-scratch-text-q (nelisp-ec-with-current-buffer nemacs--initial-buffer (nelisp-ec-buffer-string)))
@@ -103,6 +107,10 @@ cat >> "$tmp_q" <<EOF
 (nelisp--write-stdout-bytes (concat "q-frame-config-tool-bar-lines=" (number-to-string (or (plist-get nemacs-next-init-smoke-frame-config-q :tool-bar-lines) -1)) "\n"))
 (nelisp--write-stdout-bytes (concat "q-scratch=" (if (equal nemacs-next-init-smoke-scratch-text-q "fixture scratch message\n") "bad-fixture-loaded" "default") "\n"))
 (nelisp--write-stdout-bytes (concat "q-messages=" (if (string-match "init loaded" nemacs-next-init-smoke-messages-text-q) "bad-fixture-loaded" "no-init-message") "\n"))
+(setq nemacs-next-init-smoke-splash-text-q (if (emacs-startup-screen-buffer) (nelisp-ec-with-current-buffer (emacs-startup-screen-buffer) (nelisp-ec-buffer-string)) ""))
+(nelisp--write-stdout-bytes (concat "q-splash-current=" (if (equal (nelisp-ec-buffer-name (nelisp-ec-current-buffer)) emacs-startup-screen-buffer-name) "gnu-emacs" "bad") "\n"))
+(nelisp--write-stdout-bytes (concat "q-splash-body=" (if (and (string-match "Welcome to nemacs" nemacs-next-init-smoke-splash-text-q) (string-match "ABSOLUTELY NO WARRANTY" nemacs-next-init-smoke-splash-text-q)) "welcome" "bad") "\n"))
+(nelisp--write-stdout-bytes (concat "q-splash-read-only=" (if (and (boundp (quote buffer-read-only)) buffer-read-only) "t" "bad") "\n"))
 ,quit
 EOF
 
@@ -122,7 +130,10 @@ fi
 
 for expected in \
   'q-scratch=default' \
-  'q-messages=no-init-message'; do
+  'q-messages=no-init-message' \
+  'q-splash-current=gnu-emacs' \
+  'q-splash-body=welcome' \
+  'q-splash-read-only=t'; do
   if ! grep -q "^$expected$" "$out_q"; then
     cat "$out_q" >&2
     cat "$err_q" >&2
@@ -157,3 +168,6 @@ echo "nemacs-next-init-smoke: scratch=custom"
 echo "nemacs-next-init-smoke: messages=init-loaded"
 echo "nemacs-next-init-smoke: q-scratch=default"
 echo "nemacs-next-init-smoke: q-messages=no-init-message"
+echo "nemacs-next-init-smoke: splash=suppressed"
+echo "nemacs-next-init-smoke: q-splash-current=gnu-emacs"
+echo "nemacs-next-init-smoke: q-splash-body=welcome"

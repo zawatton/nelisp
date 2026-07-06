@@ -49,6 +49,7 @@
 (require 'emacs-command-loop)
 (require 'emacs-fileio-builtins)
 (require 'emacs-keymap)
+(require 'emacs-startup-screen)
 
 (declare-function emacs-buffer-ui-confirm-kill-buffer "emacs-buffer-ui"
                   (buffer name read-confirmation-function))
@@ -1905,11 +1906,15 @@ Recognised keys:
                             `nemacs-load-user-init-files' skip early-init.el,
                             package activation, and init.el
                             (src/nemacs-loadup.el).
-  :inhibit-startup-screen  Consulted by the splash-screen owner added in a
-                            later UX session; nil is the default (show
-                            splash), non-nil suppresses it.
+  :inhibit-startup-screen  Consulted by the splash-screen owner
+                            (`emacs-startup-screen-use-p'); nil is the
+                            default (show splash), non-nil suppresses it.
+  :args                    CLI file arguments.  Reflected onto
+                            `emacs-startup-screen-file-arguments' so the
+                            splash gate can suppress the splash when the
+                            session starts on visited files.
 
-Both keys are optional; a key absent from `nemacs-main-options' leaves the
+All keys are optional; a key absent from `nemacs-main-options' leaves the
 corresponding global untouched, so callers that never pass these options
 (most existing tests and direct `nemacs-init' callers) keep today's
 behaviour.  Centralising the reflection here — rather than injecting the
@@ -1918,11 +1923,14 @@ globals from more than one call site across `bin/nemacs' and
   (let ((init-file-user-cell
          (nemacs-main--startup-gate-option :init-file-user))
         (inhibit-startup-screen-cell
-         (nemacs-main--startup-gate-option :inhibit-startup-screen)))
+         (nemacs-main--startup-gate-option :inhibit-startup-screen))
+        (args-cell (nemacs-main--startup-gate-option :args)))
     (when init-file-user-cell
       (setq init-file-user (car init-file-user-cell)))
     (when (and inhibit-startup-screen-cell (boundp 'inhibit-startup-screen))
-      (setq inhibit-startup-screen (car inhibit-startup-screen-cell)))))
+      (setq inhibit-startup-screen (car inhibit-startup-screen-cell)))
+    (when (and args-cell (boundp 'emacs-startup-screen-file-arguments))
+      (setq emacs-startup-screen-file-arguments (car args-cell)))))
 
 (defun nemacs-batch-main ()
   "--batch entry: bootstrap, run -l / --eval, exit.
