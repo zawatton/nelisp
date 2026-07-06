@@ -183,6 +183,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | File | Future package | Ownership notes | Extraction action |
 |------+----------------+-----------------+-------------------|
 | =emacs-eventloop.el= | IO/CORE | event-loop substrate | audit display/app coupling |
+| =emacs-file-name-handler.el= | IO | find-file-name-handler dispatch substrate (Doc 37 Tramp/Magit gateway) | keep host-inert, shared foundation |
 | =emacs-fileio-builtins.el= | IO | unprefixed fileio shim | keep explicit shim |
 | =emacs-fileio.el= | IO | file command semantics and adapters | split pure semantics vs host ops |
 | =emacs-ffi.el= | IO | generic NeLisp runtime FFI adapter | keep adapter-gated |
@@ -209,6 +210,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =nemacs-runtime-cdb.el= | IO/TXT | runtime CDB adapter | keep adapter-gated |
 | =nemacs-runtime-skk.el= | IO/TXT/FEAT | SKK runtime data adapter | keep feature/adapter boundary |
 | =nemacs-runtime-stdlib-extra.el= | IO/FND | runtime extra stdlib | fold reusable parts into FND |
+| =nemacs-tramp.el= | IO | ssh-only Tramp lane glue (task #16, Doc 37); never loaded from =nemacs-main= | keep glue thin, dynamic-require only |
 
 ** 3.6 Display and terminal backend (DSP)
 

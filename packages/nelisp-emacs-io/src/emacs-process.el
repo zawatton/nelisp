@@ -639,6 +639,21 @@ chance to handle the operation, matching the `files.el' convention."
       (apply #'emacs-process-call-process
              program infile destination display args))))
 
+(defun emacs-process-start-file-process (name buffer program &rest program-args)
+  "Start PROGRAM asynchronously, with file-name-handler dispatch on
+`default-directory'.  This implements the local `start-file-process'
+case by delegating to `emacs-process-start-process'.  Remote handlers
+such as Tramp get the first chance to handle the operation (Doc 37 M4;
+matches the `files.el' convention of dispatching `start-file-process' on
+`default-directory' rather than on PROGRAM)."
+  (let ((handler (and (boundp 'default-directory)
+                      (stringp default-directory)
+                      (emacs-process--find-file-name-handler
+                       default-directory 'start-file-process))))
+    (if handler
+        (apply handler 'start-file-process name buffer program program-args)
+      (apply #'emacs-process-start-process name buffer program program-args))))
+
 ;;;; --- asynchronous: start-process / make-process -------------------
 
 (defun emacs-process-start-process (name buffer program &rest program-args)
@@ -793,6 +808,27 @@ chance to handle the operation, matching the `files.el' convention."
    (t (emacs-process--delegate 'set-process-sentinel
                                (list process sentinel)))))
 
+(defun emacs-process--native-accept-until (processes budget-ms)
+  "Poll PROCESSES for output/status changes for up to BUDGET-MS.
+Returns non-nil as soon as `emacs-process--native-accept' observes
+something; otherwise sleeps in 10ms slices and retries until BUDGET-MS
+elapses.  Doc 37 risk #1 (insurance): Tramp's synchronous connection
+setup blocks on `accept-process-output' for multi-second stretches, so a
+single non-blocking poll (the previous behaviour here) is not enough --
+the bidirectional process layer in
+`scripts/nemacs-runtime-process-preload.el' already honours SECONDS this
+way; this mirrors that for the `nelisp-process' native-object path."
+  (let ((slice-ms 10)
+        (waited 0)
+        (observed (emacs-process--native-accept processes)))
+    (while (and (not observed)
+               (< waited budget-ms)
+               (fboundp 'sleep-for))
+      (sleep-for 0 slice-ms)
+      (setq waited (+ waited slice-ms))
+      (setq observed (emacs-process--native-accept processes)))
+    observed))
+
 (defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
   "Block until PROCESS produces output or SECONDS pass.
 
@@ -803,10 +839,11 @@ substrate returns nil when only synchronous fallback processes exist."
       (if (or (emacs-process--native-process-p process)
               (and (null process)
                    emacs-process--native-process-metadata))
-          (emacs-process--native-accept
+          (emacs-process--native-accept-until
            (if process
                (list process)
-             (emacs-process--native-live-processes)))
+             (emacs-process--native-live-processes))
+           (+ (* (or seconds 0) 1000) (or millisec 0)))
         (emacs-process--delegate 'accept-process-output
                                  (list process seconds millisec just-this-one)))
     (emacs-process-not-implemented nil)))

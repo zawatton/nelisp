@@ -39,7 +39,15 @@
                         nemacs-runtime-image-package-load-paths)
                 (list (concat repo-root "/vendor/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/emacs-lisp")
-                      (concat repo-root "/vendor/emacs-lisp/vc"))
+                      (concat repo-root "/vendor/emacs-lisp/vc")
+                      ;; Doc 37 (task #16): vendor Tramp's own
+                      ;; directory plus `parse-time''s home under
+                      ;; calendar/.  Path-only -- nothing here `require's
+                      ;; Tramp into the baked image (Doc 37 risk #10);
+                      ;; `nemacs-tramp-setup' calls `require' dynamically
+                      ;; after session start.
+                      (concat repo-root "/vendor/emacs-lisp/net")
+                      (concat repo-root "/vendor/emacs-lisp/calendar"))
                 load-path))
   t)
 

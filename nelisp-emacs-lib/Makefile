@@ -708,6 +708,7 @@ TEST_FAST_FILES = \
 	test/emacs-buffer-test.el \
 	test/emacs-edit-builtins-test.el \
 	test/emacs-fileio-builtins-test.el \
+	test/emacs-file-name-handler-test.el \
 	test/files-test.el \
 	test/emacs-fileio-test.el \
 	test/emacs-keymap-builtins-test.el \
@@ -1777,6 +1778,30 @@ test-nemacs-process-bidi-smoke: standalone-reader-passthrough
 	else \
 	  echo "[test-nemacs-process-bidi-smoke] FAIL"; exit 1; \
 	fi
+
+# Doc 37 (Tramp ssh-only lane, task #16).  Hermetic, sshd-independent
+# round-trip: a fake `ssh' executable ahead of exec-path/PATH forwards to
+# a real local shell so `tramp-sh' negotiates for real without touching
+# the network.  Runs under host Emacs (the vendored Tramp uses genuine
+# host C primitives there, so this is the "host driver" target the
+# implementation plan treats as primary); CI-safe, no sshd required.
+tramp-stub-smoke:
+	$(EMACS) --eval '(setq load-prefer-newer t)' \
+		-L src -L test \
+		-l test/nemacs-tramp-stub-ssh-test.el \
+		-f ert-run-tests-batch-and-exit
+
+# Doc 37 (Tramp ssh-only lane, task #16).  Optional real-host check:
+# needs passwordless `ssh -o BatchMode=yes localhost true' (see the
+# manual checklist in docs/design/11-remaining-work-roadmap.org M11 and
+# docs/design/37-tramp-ssh-lane.org); skips cleanly via `ert-skip'
+# otherwise, so this target is safe to run even where localhost key auth
+# is not configured.
+tramp-localhost-smoke:
+	$(EMACS) --eval '(setq load-prefer-newer t)' \
+		-L src -L test \
+		-l test/nemacs-tramp-localhost-smoke.el \
+		-f ert-run-tests-batch-and-exit
 
 # Ensure the standalone reader binary exists (build it if missing) without
 # rebuilding when present, so the smoke can run cheaply.
