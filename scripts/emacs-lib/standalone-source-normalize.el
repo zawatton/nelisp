@@ -13,7 +13,7 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 131
+(defconst standalone-source-normalize-cache-version 132
   "Cache format version for normalized standalone source forms.
 Bump this whenever normalization semantics change so stale cache entries
 self-invalidate; the cache key otherwise only covers the source file's
@@ -117,7 +117,21 @@ traffic for even a stub function definition to exceed the standalone replay
 envelope.")
 
 (defvar standalone-source-normalize-retained-large-defun-symbols
-  '(nelisp-rx--build)
+  '(nelisp-rx--build
+    ;; Task #17 M2: load-bearing functions in the Magit bridge bundle
+    ;; whose generic size-based elision silently corrupts the status
+    ;; buffer path rather than merely trimming optional UI:
+    ;; - `format-spec' returning nil makes every Magit buffer name nil
+    ;;   (magit-generate-buffer-name-default-function), aborting
+    ;;   `magit-generate-new-buffer' with wrong-type-argument.
+    ;; - `eieio-defclass-internal' returning nil makes every `defclass'
+    ;;   in the chain (magit-section's whole section class hierarchy)
+    ;;   a silent no-op.
+    ;; - `magit-diff-wash-diff' returning nil silently empties the
+    ;;   unstaged/staged diff sections a status buffer is asserted on.
+    format-spec
+    eieio-defclass-internal
+    magit-diff-wash-diff)
   "Top-level defuns exempt from generic large-body replay elision.
 These symbols are core runtime substrate where replacing the body with a
 callable nil stub silently corrupts downstream semantics.")

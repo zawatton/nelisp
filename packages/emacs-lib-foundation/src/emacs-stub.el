@@ -1946,8 +1946,23 @@ The copy uses the default hash test, since the runtime does not expose
 
 (unless (fboundp 'gv-letplace)
   (defmacro gv-letplace (vars place &rest body)
-    "Stub: just eval BODY (= no real getter/setter binding)."
-    (ignore vars place) (cons 'progn body)))
+    "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
+
+Binds VARS' first symbol (GETTER) to the PLACE expression itself and
+its second symbol (SETTER) to a function that, given a value
+expression V, returns `(setf PLACE V)' -- the standard macro-writer
+contract real gv.el provides, minus the no-multiple-evaluation
+guarantee (PLACE's subforms may be evaluated more than once by the
+built form, same trade-off as this file's `with-memoization' shim).
+The previous stub here expanded to a bare `(progn BODY...)' with VARS
+completely unbound, so every real user of the contract (e.g. Compat
+31's `incf'/`decf', which Magit's `magit--with-refresh-cache' relies
+on) hit `void-variable' on the setter symbol at first invocation."
+    (let ((getter (nth 0 vars))
+          (setter (nth 1 vars)))
+      `(let* ((,getter ,place)
+              (,setter (lambda (v) (list 'setf ,getter v))))
+         ,@body))))
 
 (unless (fboundp 'gv-get)
   (defun gv-get (place do)
@@ -2584,16 +2599,29 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
 
 (unless (fboundp 'cl-pushnew)
   (defmacro cl-pushnew (item place &rest _keys)
+    ;; Same generalized-place handling as `push' below: a non-symbol
+    ;; PLACE goes through the substrate's `setf' polyfill instead of an
+    ;; invalid `(setq (cdr ...) ...)' expansion.
     (list 'unless (list 'member item place)
-          (list 'setq place (list 'cons item place)))))
+          (if (symbolp place)
+              (list 'setq place (list 'cons item place))
+            (list 'setf place (list 'cons item place))))))
 
 (when (or (fboundp 'nl-write-file)
           (fboundp 'nelisp--write-stdout-bytes)
           (not (boundp 'emacs-version))
           (get 'push 'emacs-stub-bulk))
   (defmacro push (item place)
-    "Compatibility macro: cons ITEM onto PLACE."
-    (list 'setq place (list 'cons item place))))
+    "Compatibility macro: cons ITEM onto PLACE.
+PLACE may be a symbol (expands to `setq', as before) or a generalized
+place handled by this substrate's `setf' polyfill, e.g. `(cdr CELL)' --
+real Emacs `push' accepts any gv place, and vendor code relies on that
+(Magit's `magit--with-refresh-cache' pushes onto
+`(cdr magit--refresh-cache)'; the old symbol-only expansion produced
+`(setq (cdr ...) ...)', which this evaluator aborts on flagless)."
+    (if (symbolp place)
+        (list 'setq place (list 'cons item place))
+      (list 'setf place (list 'cons item place)))))
 
 (unless (fboundp 'cl-letf)
   (defmacro cl-letf (bindings &rest body)
