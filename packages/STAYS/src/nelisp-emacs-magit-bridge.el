@@ -282,6 +282,48 @@ records for later (here, unused) coding introspection."
       (ignore eol-type)
       (or coding-system 'utf-8-unix))))
 
+(defun nelisp-emacs-magit-bridge--ensure-backquote-marker-symbols ()
+  "Ensure the three advertised backquote/unquote/splice marker constants exist.
+
+Real Emacs's `backquote.el' (always preloaded/dumped, so it never shows
+up as a \"newly loaded\" file when this bridge's bundle generator
+records `load-history' diffs from a clean host Emacs session -- hence
+it is absent from `nelisp-emacs-magit-bridge-bundle-files') advertises
+three `defconst's other packages use to introspect or build raw,
+un-expanded backquote forms: `backquote-backquote-symbol' (the reader
+head for `` ` ''), `backquote-unquote-symbol' (`` , ''), and
+`backquote-splice-symbol' (`` ,@ '').  `vendor/llama/llama.el' (the
+`##'/`llama' macro transient/magit/with-editor use pervasively for
+short lambdas) and `vendor/emacs-lisp/emacs-lisp/pp.el' both reference
+these three names directly as plain variables at macro-expansion or
+load time, e.g. `(eq (car-safe fn) backquote-backquote-symbol)' in
+`llama--collect'.  This NeLisp reader expands backquote templates
+fully at READ time (`nelisp-reader--read-backquote') instead of
+leaving a `` (\\=` ...) ''-headed literal for a `backquote' MACRO to
+expand later the way real Emacs does, so it never produces a runtime
+value whose `car' is `eq' to one of these markers -- but the mere act
+of *evaluating* the bare variable reference to compare against still
+requires the variable to be bound, and this bridge never provided it,
+so any `##...' call site anywhere in the real vendor chain signalled
+`void-variable: backquote-backquote-symbol' the first time the
+enclosing (uncompiled, so lazily macro-expanded) function was actually
+called (found probing M2's `magit-toplevel', which reaches
+`magit-ignore-submodules-p's `(cl-find-if (##string-prefix-p ...) ...)'
+by way of ordinary git-status plumbing, not anything Magit-status-
+buffer specific -- this affects the `##' shorthand generally).
+Declaring the three constants with real Emacs's own values is a
+session-level precondition fix, not a vendor patch: because this
+reader's backquote representation never round-trips through the
+tagged-list shape these constants exist to recognize, the comparisons
+that use them will correctly always take the \"not a nested backquote
+template\" branch, which is the semantically right answer here."
+  (unless (boundp 'backquote-backquote-symbol)
+    (defconst backquote-backquote-symbol '\`))
+  (unless (boundp 'backquote-unquote-symbol)
+    (defconst backquote-unquote-symbol '\,))
+  (unless (boundp 'backquote-splice-symbol)
+    (defconst backquote-splice-symbol '\,@)))
+
 (defun nelisp-emacs-magit-bridge--ensure-preconditions ()
   "Ensure every session precondition the vendor chain assumes is live."
   (nelisp-emacs-magit-bridge--ensure-process-substrate)
@@ -294,7 +336,8 @@ records for later (here, unused) coding introspection."
   (nelisp-emacs-magit-bridge--ensure-ansi-color-update-face-vec-stub)
   (nelisp-emacs-magit-bridge--ensure-compat-maybe-require)
   (nelisp-emacs-magit-bridge--ensure-default-process-coding-system)
-  (nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion))
+  (nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion)
+  (nelisp-emacs-magit-bridge--ensure-backquote-marker-symbols))
 
 (defun nelisp-emacs-magit-bridge-load ()
   "Load the real vendor Magit chain into the current NeLisp session.
