@@ -1298,6 +1298,18 @@ defining `emit-before-strings' / `emit-after-strings')."
 (unless (fboundp 'cl-labels)
   (defalias 'cl-labels 'cl-flet))
 
+;; Task #17 M2: `cl-flet*' (sequential scoping -- each binding may call
+;; the ones before it) is exactly what the MVP `cl-flet' above already
+;; provides: it installs the names globally IN ORDER, so an earlier
+;; binding is visible while a later binding's body runs (e.g. Magit's
+;; `magit-get-mode-buffer' defines `b', then `w' calling `b', then `f'
+;; calling `w').  Upstream's difference -- parallel `cl-flet' must NOT
+;; see sibling bindings -- is a hygiene restriction this MVP never had,
+;; so one alias covers both faithfully at this implementation's fidelity
+;; level (same shape as the `cl-labels' alias above).
+(unless (fboundp 'cl-flet*)
+  (defalias 'cl-flet* 'cl-flet))
+
 (unless (fboundp 'emacs-cl-macros--symbol-macrolet-walk)
   (defun emacs-cl-macros--symbol-macrolet-walk (form env)
     "Replace symbol references in FORM according to ENV."

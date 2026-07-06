@@ -679,13 +679,45 @@
              nil)
            process)))
 
+;; Real Emacs `call-process' runs the child with `default-directory' as
+;; its working directory; the native `nelisp-process-call-process'
+;; primitive spawns in the parent's own cwd.  Without this wrapper a
+;; caller that let-binds `default-directory' (e.g. Magit running git
+;; against a repository that is not the parent's cwd) silently executes
+;; in the wrong directory and gets answers about the wrong repository.
+;; Only local absolute directories are handled; exit 127 mirrors the
+;; shell's own cannot-execute convention for a missing directory.
+(fset 'emacs-process--call-process-cwd
+      '(lambda ()
+         (if (boundp 'default-directory)
+             (if (stringp default-directory)
+                 (if (> (length default-directory) 0)
+                     (if (= (aref default-directory 0) ?/)
+                         default-directory
+                       nil)
+                   nil)
+               nil)
+           nil)))
+
 (fset 'emacs-process-call-process
-      '(lambda (&rest args)
-         (if (fboundp 'nelisp-process-call-process)
-             (apply 'nelisp-process-call-process args)
-           (if (fboundp 'nelisp-call-process)
-               (apply 'nelisp-call-process args)
-             1))))
+      '(lambda (program &optional infile destination display &rest args)
+         (let ((cwd (emacs-process--call-process-cwd)))
+           (if cwd
+               (progn
+                 (setq args
+                       (cons "-c"
+                             (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
+                                   (cons "emacs-process-call-process-cwd"
+                                         (cons cwd (cons program args))))))
+                 (setq program "/bin/sh"))
+             nil)
+           (if (fboundp 'nelisp-process-call-process)
+               (apply 'nelisp-process-call-process
+                      program infile destination display args)
+             (if (fboundp 'nelisp-call-process)
+                 (apply 'nelisp-call-process
+                        program infile destination display args)
+               1)))))
 
 (fset 'call-process
       '(lambda (&rest args)

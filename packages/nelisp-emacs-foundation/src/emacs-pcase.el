@@ -344,6 +344,28 @@ See `emacs-pcase--test' for supported pattern shapes."
                       (cons 'let (cons pattern-bindings body)))
               (cons 'when (cons test body)))))))
 
+;; Task #17 M2: real `pcase-exhaustive' (was a nil-expanding bulk stub).
+;; Magit/transient use it in load-bearing dispatch positions
+;; (`magit-diff--get-value' maps 'status to the right
+;; `magit-*-use-buffer-arguments' option, `transient--insert-suffix'
+;; dispatches insert/append/replace, `transient-infix-value' dispatches
+;; on multi-value shape) -- a nil expansion there is not a safe
+;; degradation, it silently changes behavior.  Semantics follow real
+;; pcase.el: exactly `pcase', plus signal an error when no clause
+;; matches instead of returning nil.
+(when (emacs-pcase--install-function-p 'pcase-exhaustive)
+  (defmacro pcase-exhaustive (expr &rest cases)
+    "Like `pcase' EXPR CASES, but signal an error when nothing matches."
+    (let ((value-sym (make-symbol "--pcase-exhaustive-value--")))
+      (list 'let (list (list value-sym expr))
+            (cons 'pcase
+                  (cons value-sym
+                        (append cases
+                                (list (list '_
+                                            (list 'error
+                                                  "No clause matching %S"
+                                                  value-sym))))))))))
+
 ;; Doc 16 breadth round 26: pcase-lambda (was void).
 (when (emacs-pcase--install-function-p 'pcase-lambda)
   (defmacro pcase-lambda (lambda-list &rest body)
