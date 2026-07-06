@@ -2910,3 +2910,71 @@ non-special event is left for normal dispatch (Doc 06 B4)."
           (emacs-command-loop-step)
           (should-not ran))
       (fmakunbound 'emacs-command-loop-builtins-test--special))))
+
+;;;; O. Task #17 M3 — frontend key dispatch (`emacs-command-loop-dispatch-key')
+
+(defun emacs-command-loop-builtins-test--dispatch-fixture ()
+  "Test fixture command for `emacs-command-loop-dispatch-key' tests."
+  (interactive)
+  (setq emacs-command-loop-builtins-test--dispatch-ran t))
+
+(defvar emacs-command-loop-builtins-test--dispatch-ran nil)
+
+(ert-deftest emacs-command-loop-builtins-test/dispatch-key-runs-bound-command ()
+  "A key bound to an interactive command in the local map runs via
+`call-interactively' and the command symbol is returned (Doc 33/AGENTS.md:
+this is the shared keymap-lookup + call-interactively primitive a
+frontend uses instead of re-implementing keymap walking; Magit's
+`magit-section-mode-map' TAB/n/p bindings are the concrete Task #17
+motivation)."
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let ((emacs-command-loop-builtins-test--dispatch-ran nil)
+          (local (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key local "n"
+                               'emacs-command-loop-builtins-test--dispatch-fixture)
+      (let ((emacs-keymap-local-map local))
+        (should (eq 'emacs-command-loop-builtins-test--dispatch-fixture
+                    (emacs-command-loop-dispatch-key ?n)))
+        (should emacs-command-loop-builtins-test--dispatch-ran)))))
+
+(ert-deftest emacs-command-loop-builtins-test/dispatch-key-unbound-is-noop ()
+  "An unbound key returns nil without any side effect, so callers can fall
+back to their own default handling (e.g. self-insert)."
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let ((emacs-command-loop-builtins-test--dispatch-ran nil))
+      (should-not (emacs-command-loop-dispatch-key ?z))
+      (should-not emacs-command-loop-builtins-test--dispatch-ran))))
+
+(ert-deftest emacs-command-loop-builtins-test/dispatch-key-prefix-keymap-is-noop ()
+  "A key bound to a prefix keymap (not a leaf command) is left undispatched."
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let ((local (emacs-keymap-make-sparse-keymap))
+          (sub (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key local (vector ?\C-c) sub)
+      (let ((emacs-keymap-local-map local))
+        (should-not (emacs-command-loop-dispatch-key ?\C-c))))))
+
+(ert-deftest emacs-command-loop-builtins-test/dispatch-key-non-interactive-is-noop ()
+  "A key bound to a plain (non-interactive) function is left undispatched."
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let ((local (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key local "x"
+                               'emacs-command-loop-builtins-test--noop)
+      (let ((emacs-keymap-local-map local))
+        (should-not (emacs-command-loop-dispatch-key ?x))))))
+
+(ert-deftest emacs-command-loop-builtins-test/dispatch-key-local-map-overrides-global ()
+  "A buffer-local map binding (as installed by `use-local-map' when a major
+mode is set up, e.g. Magit's section-mode-map) takes priority over a
+global-map binding of the same key -- the exact mechanism a real mode's
+keymap needs to override a frontend's default handling for that key."
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let ((emacs-command-loop-builtins-test--dispatch-ran nil)
+          (local (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key emacs-keymap-global-map "n" 'self-insert-command)
+      (emacs-keymap-define-key local "n"
+                               'emacs-command-loop-builtins-test--dispatch-fixture)
+      (let ((emacs-keymap-local-map local))
+        (should (eq 'emacs-command-loop-builtins-test--dispatch-fixture
+                    (emacs-command-loop-dispatch-key ?n)))
+        (should emacs-command-loop-builtins-test--dispatch-ran)))))

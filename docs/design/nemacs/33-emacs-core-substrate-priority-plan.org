@@ -13176,3 +13176,149 @@ path:
    that itself redefines a macro the substrate already fixed the same
    way -- the exclusion-list mechanism used here is a per-occurrence
    bundle-layer workaround, not a substitute for that reader fix.
+
+239. Task #17 M2 attempted, 2026-07-06: two real bridge preconditions
+   fixed and committed; a new, wider-blast-radius reader-side blocker
+   found and left OPEN.  M3 (session/TUI wiring) was not started because
+   it needs a working M2; the one M3 piece that is independent of Magit
+   (shared keymap-lookup + `call-interactively' key dispatch) was added
+   and covered with focused ERTs.
+
+   Environment pitfall (costly to rediscover, recording so it is not lost
+   again): this repo's own default `NELISP_ROOT' resolution
+   (`Makefile' `DEFAULT_NELISP_ROOT') prefers `vendor/nelisp' when it
+   exists, and it exists in this checkout as a stale, unrelated clone
+   (its own git log is TLS/FFI/glyph-transform work, no relation to Doc
+   163's `intern-soft' fix) -- every `make bake-magit-runtime-image
+   magit-load-smoke magit-status-smoke ...' in this pass reproduced
+   item 237/238's OLD unbounded-RSS rc=88 hang until `NELISP_ROOT'/
+   `NELISP_BIN' were explicitly pointed at this session's real, current
+   `dev/nelisp' checkout (`main' = b41cbdf8, the one carrying Doc 163's
+   `nelisp--intern-lookup' fix).  Always pass
+   `NELISP_ROOT=$(HOME)/Notes/dev/nelisp' (or the equivalent absolute
+   path) explicitly for any Magit bridge `make' target in this
+   environment; do not trust the bare default.
+
+   Fix 1 (real bug, committed): `default-process-coding-system' was
+   never a real dynamic variable in this substrate.  Magit's own
+   lexical-binding files only ever `let'-bind it locally around a
+   process call and never `defvar' it themselves (exactly like real
+   Emacs, which declares it as a built-in special variable) --
+   `vendor/magit/lisp/magit-git.el' reads the SAME name from a
+   different function, outside that `let''s lexical extent, and without
+   a prior `defvar' that reference resolved as `void-variable' instead
+   of seeing Magit's dynamic binding.  `src/nelisp-emacs-magit-bridge.el'
+   now `defvar's it (a `(nil . nil)' cons, matching real Emacs' default
+   shape) as a session precondition.
+
+   Fix 2 (real bug, committed): `coding-system-change-eol-conversion'
+   was entirely unbound (`void-function'), needed by
+   `magit--process-coding-system' (`magit-process.el') whenever
+   `magit-process-ensure-unix-line-ending' is non-nil (the default).
+   Added as a bridge precondition: returns CODING-SYSTEM unchanged (or
+   `utf-8-unix' when nil), which is faithful enough for this bridge's
+   read-only M2/M3 use (no CRLF translation is modeled or needed here)
+   and lets Magit's own process setup finish instead of aborting before
+   any git process starts.
+
+   BLOCKER found past both fixes, NOT resolved: `magit-toplevel'/
+   `magit-git-string' (and, by direct code inspection, most of Magit's
+   real behavior) depend on the vendored `cond-let' package's
+   `cond-let'/`cond-let*' macros, and invoking them signals or silently
+   mis-evaluates in this reader.  Minimal repro (no Magit involved):
+   `(cond-let* ([x 1] [x (+ x 1)] x) (t 99))' against the M1 magit
+   runtime image raises `void-variable: x' -- the SAME class of defect
+   item 221 root-caused for `define-derived-mode' ("invoking a
+   user-defined macro whose expansion-producing body is a backquote
+   template" mis-evaluates in the standalone reader), here hitting a
+   macro whose own clause-preparation helper
+   (`cond-let--prepare-clauses' in `vendor/cond-let/cond-let.el')
+   constructs its expansion via nested backquote/`,@'-splicing.  Ruled
+   out: this is NOT the "body-less serialized defmacro clobbers
+   `backquote'" defect documented in dev/nelisp's `FINDINGS.md' (that
+   fix, re-asserting `(defmacro backquote (form) (nelisp--bq-expand
+   form))' and the `` ` `` alias before calling `cond-let*', was tried
+   first and made no difference); bare `(backquote ...)' and `` `...' ``
+   both evaluate correctly in the very same session, and the substrate's
+   OWN `if-let*'/`when-let*' polyfills (`src/emacs-subr-extras.el',
+   already active before the Magit chain loads) work correctly too
+   (`(if-let* ((x 5)) (+ x 1) 0)' => 6, `(when-let* ((y 7)) (+ y 1))'
+   => 8) -- so the blast radius is specifically `cond-let'/`cond-let*'
+   invocation, not backquote/`,@' in general and not every
+   binding-conditional macro.
+
+   Blast radius: `cond-let'/`cond-let*' are used pervasively, not just
+   in `magit-toplevel' -- a source grep across
+   `vendor/magit/lisp/*.el'+`vendor/transient/lisp/transient.el'+
+   `vendor/with-editor/lisp/with-editor.el' finds 70+ call sites,
+   including core paths this task needs directly
+   (`magit-git.el' ~10 sites including `magit-toplevel' itself,
+   `magit-status.el', `magit-section.el', `magit-diff.el',
+   `transient.el' ~15 sites).  M2's honest conclusion: `magit-status-
+   setup-buffer' against a real fixture repo does not reach its
+   completion conditions -- it silently exits the whole `exec-runtime-
+   image' process (rc=0, zero bytes written, ~24s in, matching the
+   chain-replay time) with no Lisp-level error surfaced, consistent
+   with the same defect firing somewhere inside Magit's process/status
+   refresh path without an enclosing `condition-case' to report it.  M3
+   (which needs a live, correctly populated status buffer to render or
+   dispatch keys against) was not attempted for the same reason.
+
+   Two alternatives for whoever picks this up next (neither started):
+   - Alt A (stays in this bridge, bounded but nontrivial): rewrite
+     `cond-let'/`cond-let*'/`cond-let--prepare-clauses' (and the four
+     `cond-let--when-let*'/`-when-let'/`-and-let*'/`-and-let' helper
+     macros it dispatches to) without backquote -- list/append/quote
+     construction, exactly the pattern item 221 already used for
+     `define-derived-mode' -- then exclude the vendor `cond-let.el'
+     defmacro forms from the generated bundle the same way
+     `derived.el''s `define-derived-mode' is excluded today
+     (`nelisp-emacs-magit-bridge-bundle-excluded-defuns' in
+     `scripts/build-nelisp-emacs-magit-bridge-bundle.el'). One fix point
+     covers all 70+ call sites; risk is faithfully reproducing
+     `cond-let.el''s clause-shape semantics (plain/binding/binding-vector
+     clauses, sequential vs parallel `let'/`let*' choice, the
+     `cond-let--and$'/`when$'/`thread$' siblings if anything in the
+     chain also uses those) well enough that M2/M3's "honest
+     verification" bar is not just "loads" but "behaves correctly."
+   - Alt B (the durable fix item 221 already called for): fix backquote-
+     bodied macro invocation in dev/nelisp's own reader/evaluator. Fixes
+     this defect for `cond-let' AND any other vendor macro of the same
+     shape this bridge (or a future one) encounters, instead of one more
+     per-occurrence bundle exclusion; the cost is a deep-dive into a
+     different repository's (`~/Notes/dev/nelisp') macro-expansion
+     internals, not scoped or attempted here.
+
+   M3 delivered independently of the M2 blocker: `emacs-command-loop-
+   dispatch-key' (`src/emacs-command-loop.el') -- the shared "look up
+   KEY in the active keymap chain via `emacs-keymap-key-binding' and
+   `call-interactively' it if it resolves to a leaf interactive command,
+   else return nil so the caller can fall back to its own default
+   handling (e.g. self-insert)" primitive the approved plan's §3 M3.3/M3.4
+   calls for, built entirely from already-existing shared substrate
+   (`emacs-command-loop--lookup-command', `emacs-command-loop-call-
+   interactively') with no Magit dependency.  Covered by five focused
+   ERTs in `test/emacs-command-loop-builtins-test.el' (bound command
+   runs and returns the command; unbound key and a bound prefix-keymap
+   and a bound non-interactive function are all no-ops; a buffer-local
+   map binding takes priority over an equally-bound global-map key,
+   the exact mechanism a real major mode's keymap needs to override a
+   frontend's fixed key table).  The session/TUI wiring around it
+   (`nemacs-next-session' `magit-status' command, face-run/overlay
+   surfacing, the actual TAB/n/p forwarding) was NOT built: wiring it to
+   a Magit buffer that cannot itself be constructed yet would not be
+   honestly verifiable, and per this doc's own repeated standard,
+   "loads/defines" is not "verified working."
+
+   Regression: `make test-fast' reproduces the same 6 known unexpected
+   results bit-for-bit (the four `emacs-redisplay-test' cases and
+   `vendor-first-core-modes-test/lightweight-support-libraries-load-
+   vendor-source'), no new failures; `make proc-smoke' green; `make
+   nemacs-library-contract' and `make nemacs-library-consumer-smoke'
+   green (no facade/contract surface changed).  New M2 artifacts
+   (`scripts/nemacs-magit-fixture.sh', `scripts/nemacs-magit-status-
+   smoke-probe.el', the `nemacs-magit-fixture'/`magit-status-smoke'
+   `Makefile' targets) are real and wired correctly -- `make
+   NELISP_ROOT=$(HOME)/Notes/dev/nelisp magit-status-smoke' currently
+   FAILS for the documented `cond-let*' reason above, not because of a
+   plumbing bug in the new targets themselves.
