@@ -284,7 +284,20 @@ Forwarder to `forward-char' with negated count."
     with-temp-buffer-window)))
   (dolist (--s-- --stub-defmacros--)
     (unless (fboundp --s--)
-      (fset --s-- (cons 'macro (lambda (&rest _) nil)))
+      ;; Install through a constructed `defmacro' form, NOT a raw
+      ;; `(fset SYM (cons 'macro (lambda ...)))'.  The NeLisp standalone
+      ;; evaluator registers macros through the `defmacro' path; a macro
+      ;; whose function cell is a hand-built `(macro . CLOSURE)' cons is
+      ;; `fboundp' and `macrop' but *invoking* it aborts the enclosing
+      ;; top-level form flagless (bare rc=1, no error stash -- verified
+      ;; in isolation: `(fset 'x (cons 'macro (lambda (&rest _) nil)))'
+      ;; then `(x)' aborts, while the equivalent `defmacro' works).  Any
+      ;; vendor call site reaching one of these stubs (e.g. Magit/
+      ;; transient's `pcase-exhaustive' uses) previously killed its whole
+      ;; form silently instead of expanding to nil as intended.  Host
+      ;; Emacs accepts both shapes, so the constructed `defmacro' is
+      ;; strictly more portable.
+      (eval (list 'defmacro --s-- '(&rest _) nil) t)
       (put --s-- 'emacs-stub-bulk t))))
 
 (let ((--stub-defvars--

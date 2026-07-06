@@ -324,8 +324,114 @@ template\" branch, which is the semantically right answer here."
   (unless (boundp 'backquote-splice-symbol)
     (defconst backquote-splice-symbol '\,@)))
 
+(defun nelisp-emacs-magit-bridge--ensure-files-el-globals ()
+  "Ensure the `files.el'-defined globals the vendor chain reads directly exist.
+
+Real Emacs preloads/dumps `files.el' as part of the core, exactly like
+`backquote.el' (see
+`nelisp-emacs-magit-bridge--ensure-backquote-marker-symbols' above), so it
+never shows up as a newly-loaded file when this bridge's bundle generator
+diffs `load-history' against a clean host Emacs session -- `files.el'
+itself is therefore correctly absent from
+`nelisp-emacs-magit-bridge-bundle-files', but the NeLisp substrate never
+preloads its globals either, so any of these names signals `void-variable'
+the first time evaluation actually reaches it, at whatever call depth that
+happens to be (M2 probing hit `find-file-visit-truename' this way, deep
+inside `magit-toplevel' -- by direct code inspection this is one of many,
+not an isolated case).  This list was built by a static cross-reference of
+every top-level `files.el' defcustom/defvar/defconst name against the full
+vendor chain (magit+transient+with-editor+compat+cond-let+llama), narrowed
+to the subset a live `boundp' probe against this bridge's own baked
+runtime image confirmed both referenced AND still missing -- notably,
+`auto-mode-alist'/`file-name-history'/`find-file-hook'/`font-lock-keywords'/
+`kill-buffer-hook'/`magic-fallback-mode-alist' also match the reference
+search but are already bound elsewhere in this substrate (or, for some
+Compat-shimmed names, become bound as a side effect of Compat's own
+version-gated logic once `emacs-version' reads \"30.1\"; not blindly
+ported here since they are not gaps).  Declaring each with real Emacs's
+own default value (copied from `files.el', not reinterpreted) is a
+session-level precondition fix, not a vendor patch.  A few defaults are
+deliberately simplified stand-ins rather than literal copies because the
+real value either names a function this read-only M2/M3 bridge never
+calls (`revert-buffer-function' defaults to nil here, not
+`#'revert-buffer--default', since `files.el' -- and that function with
+it -- is never loaded) or duplicates the caching keybinding-prompt logic
+of a function `save-some-buffers' this bridge does not need to run
+(`save-some-buffers-action-alist' is left nil rather than the real
+value's `##'-heavy alist); both are noted inline."
+  (dolist (spec
+           '((after-revert-hook . nil)
+             (after-save-hook . nil)
+             (before-revert-hook . nil)
+             (before-save-hook . nil)
+             (backup-directory-alist . nil)
+             (confirm-nonexistent-file-or-buffer . after-completion)
+             (directory-abbrev-alist . nil)
+             (directory-files-no-dot-files-regexp . "[^.]\\|\\.\\.\\.")
+             (enable-local-variables . t)
+             ;; Real default is platform-conditional; this bridge only
+             ;; ever runs on the non-Windows branch of `files.el''s own
+             ;; `(if (memq system-type '(windows-nt cygwin)) ...)'.
+             (mounted-file-systems
+              . "^\\(?:/\\(?:afs/\\|m\\(?:edia/\\|nt\\)\\|\\(?:ne\\|tmp_mn\\)t/\\)\\)")
+             (find-file-literally . nil)
+             (find-file-not-found-functions . nil)
+             (find-file-visit-truename . nil)
+             (lock-file-name-transforms . nil)
+             (remote-file-name-inhibit-cache . 10)
+             ;; Simplified stand-in: real default is `#'revert-buffer--default',
+             ;; a `files.el' function this bridge never loads or calls.
+             (revert-buffer-function . nil)
+             (revert-without-query . nil)
+             ;; Simplified stand-in: real default is a keybinding/prompt alist
+             ;; for the interactive `save-some-buffers' prompt loop, unused by
+             ;; this bridge's read-only M2/M3 status-buffer path.
+             (save-some-buffers-action-alist . nil)
+             (trash-directory . nil)
+             (trusted-content . nil)))
+    (unless (boundp (car spec))
+      ;; `defvar' is a special form and cannot take a runtime symbol as its
+      ;; first argument, so a data-driven `dolist' has to go through `eval'
+      ;; to build and run the equivalent `(defvar SYM 'VALUE)' form -- this
+      ;; still makes SYM a genuine special (dynamically-scoped) variable,
+      ;; unlike plain `set', which would only populate its global value
+      ;; cell without marking it special for a later `let' to bind
+      ;; dynamically (the same distinction
+      ;; `nelisp-emacs-magit-bridge--ensure-default-process-coding-system'
+      ;; documents above).
+      (eval (list 'defvar (car spec) (list 'quote (cdr spec))) t)))
+  ;; Two names need a non-literal default value (a hash table, a quoted
+  ;; list), so they cannot live in the simple dotted-pair table above.
+  (unless (boundp 'file-has-changed-p--hash-table)
+    (defvar file-has-changed-p--hash-table (make-hash-table :test #'equal)))
+  (unless (boundp 'ignored-local-variables)
+    (defvar ignored-local-variables
+      '(ignored-local-variables safe-local-variable-values
+        file-local-variables-alist dir-local-variables-alist))))
+
+(defun nelisp-emacs-magit-bridge--ensure-current-buffer ()
+  "Ensure the session has a live current buffer, like real Emacs always does.
+
+Real Emacs guarantees `(current-buffer)' is never nil -- a bare session
+starts inside *scratch*.  The nemacs batch bootstrap leaves this image
+with an empty `buffer-list' and a nil `current-buffer' until the first
+explicit buffer switch, so any code path that hands the \"currently
+displayed\" buffer around hits `wrong-type-argument (nelisp-ec-buffer-p
+nil)' -- M2 probing hit this inside `magit-get-mode-buffer', whose
+window-scan maps `window-buffer' over `window-list' and passes each
+result straight to `with-current-buffer' (with the window substrate's
+own buffer slot falling back to `current-buffer', i.e. nil here).
+Creating and selecting *scratch* is a session-level precondition fix
+mirroring the real Emacs startup invariant, not a vendor patch."
+  (when (and (fboundp 'current-buffer)
+             (fboundp 'get-buffer-create)
+             (fboundp 'set-buffer)
+             (null (current-buffer)))
+    (set-buffer (get-buffer-create "*scratch*"))))
+
 (defun nelisp-emacs-magit-bridge--ensure-preconditions ()
   "Ensure every session precondition the vendor chain assumes is live."
+  (nelisp-emacs-magit-bridge--ensure-current-buffer)
   (nelisp-emacs-magit-bridge--ensure-process-substrate)
   (nelisp-emacs-magit-bridge--ensure-emacs-version-identity)
   (nelisp-emacs-magit-bridge--ensure-buffer-defaults)
@@ -337,7 +443,8 @@ template\" branch, which is the semantically right answer here."
   (nelisp-emacs-magit-bridge--ensure-compat-maybe-require)
   (nelisp-emacs-magit-bridge--ensure-default-process-coding-system)
   (nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion)
-  (nelisp-emacs-magit-bridge--ensure-backquote-marker-symbols))
+  (nelisp-emacs-magit-bridge--ensure-backquote-marker-symbols)
+  (nelisp-emacs-magit-bridge--ensure-files-el-globals))
 
 (defun nelisp-emacs-magit-bridge-load ()
   "Load the real vendor Magit chain into the current NeLisp session.

@@ -509,18 +509,53 @@ nil because file output is handled separately."
       program))
    (t program)))
 
+(defun emacs-process--call-process-cwd ()
+  "Return the directory the child process should run in, or nil.
+
+Real Emacs `call-process' runs the subprocess with `default-directory'
+as its working directory.  The standalone reader's process-start
+primitives spawn in the parent's own cwd instead, so a caller that
+let-binds `default-directory' (e.g. Magit running git inside a
+repository that is not the parent's cwd) silently executes in the wrong
+directory.  Returns nil when no chdir is needed (no usable
+`default-directory', or it is not a local absolute path this simple
+shell wrapper can handle)."
+  (and (boundp 'default-directory)
+       (stringp default-directory)
+       (> (length default-directory) 0)
+       (= (aref default-directory 0) ?/)
+       default-directory))
+
 (defun emacs-process--call-process-command (program infile args)
-  "Return command list for PROGRAM ARGS with optional INFILE redirection."
+  "Return command list for PROGRAM ARGS with optional INFILE redirection.
+When `default-directory' names a local absolute directory, the command
+is additionally wrapped so the child chdirs there first, matching real
+Emacs `call-process' semantics (see `emacs-process--call-process-cwd')."
   (setq program (emacs-process--resolve-program program))
-  (if infile
-      (append (list emacs-process-shell-file-name
-                    emacs-process-shell-command-switch
-                    "infile=$1; shift; exec \"$@\" < \"$infile\""
-                    "emacs-process-call-process"
-                    infile
-                    program)
-              args)
-    (cons program args)))
+  (let ((command
+         (if infile
+             (append (list emacs-process-shell-file-name
+                           emacs-process-shell-command-switch
+                           "infile=$1; shift; exec \"$@\" < \"$infile\""
+                           "emacs-process-call-process"
+                           infile
+                           program)
+                     args)
+           (cons program args)))
+        (cwd (emacs-process--call-process-cwd)))
+    (if cwd
+        (append (list emacs-process-shell-file-name
+                      emacs-process-shell-command-switch
+                      ;; 127 mirrors the shell's own "cannot execute"
+                      ;; convention; real Emacs signals a file-error when
+                      ;; default-directory does not exist, and a nonzero
+                      ;; code is the nearest honest equivalent this
+                      ;; exit-code-only path can express.
+                      "cd \"$1\" || exit 127; shift; exec \"$@\""
+                      "emacs-process-call-process-cwd"
+                      cwd)
+                command)
+      command)))
 
 (defun emacs-process--standalone-call-process (program infile destination args)
   "Run PROGRAM with ARGS synchronously via the nelisp-process async

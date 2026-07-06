@@ -228,10 +228,24 @@ Mirrors Emacs `windowp'."
   (or window (emacs-window-selected-window)))
 
 (defun emacs-window-window-buffer (&optional window)
-  "Return the buffer displayed by WINDOW (selected window if nil)."
+  "Return the buffer displayed by WINDOW (selected window if nil).
+
+Real Emacs guarantees every live window displays some buffer, and
+callers rely on that invariant (e.g. Magit's `magit-get-mode-buffer'
+maps `window-buffer' over `window-list' and passes each result straight
+into `with-current-buffer').  This Phase-1 window model creates the
+root window with an empty buffer slot and nothing ever assigns one
+until `set-window-buffer' is called, so the raw slot can still be nil
+here.  Lazily adopt the current buffer in that case (persisting it in
+the slot so repeated reads stay stable), which matches what the
+just-bootstrapped single-window session semantically shows anyway."
   (let ((w (emacs-window-get-window window)))
     (emacs-window--check-leaf w)
-    (emacs-window-buffer w)))
+    (or (emacs-window-buffer w)
+        (let ((fallback (and (fboundp 'current-buffer) (current-buffer))))
+          (when fallback
+            (setf (emacs-window-buffer w) fallback))
+          fallback))))
 
 (defun emacs-window-window-frame (&optional window)
   "Return the frame containing WINDOW.

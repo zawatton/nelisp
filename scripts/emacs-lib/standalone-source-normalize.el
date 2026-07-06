@@ -13,7 +13,7 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 130
+(defconst standalone-source-normalize-cache-version 131
   "Cache format version for normalized standalone source forms.
 Bump this whenever normalization semantics change so stale cache entries
 self-invalidate; the cache key otherwise only covers the source file's
@@ -1604,6 +1604,29 @@ Handles the normal defun body shape with an optional docstring and
    (t
     (list (standalone-source-normalize-form form)))))
 
+(defun standalone-source-normalize--apply-file-local-shorthands ()
+  "Activate the current buffer's file-local `read-symbol-shorthands', if any.
+
+Some vendor packages (notably Magit's own lisp files) rely on Emacs's
+read-symbol-shorthands feature: the file's trailing Local Variables
+block maps short names such as `and$'/`if-let*' onto this package-
+prefixed real symbols (`cond-let--and$'/`cond-let--if-let*'), and the
+READER performs that mapping, per buffer.  A plain `read' from a fresh
+temp buffer never sees the mapping, so every shorthand call site
+normalizes to the bare short symbol -- for names with no global
+definition (`and$'/`when$'/`thread$') that is a guaranteed
+void-function at runtime, and for names that do exist globally
+(`if-let*' etc.) it silently swaps in a different implementation than
+the file's author selected.  `hack-local-variables' applies the block
+to this (temp) buffer the same way `find-file' would;
+`enable-local-eval' stays nil so only variable settings apply, and
+errors are ignored so a file with no or malformed local variables
+normalizes exactly as before."
+  (let ((enable-local-variables :all)
+        (enable-local-eval nil)
+        (enable-dir-local-variables nil))
+    (ignore-errors (hack-local-variables))))
+
 (defun standalone-source-normalize-read-forms-from-file (file)
   "Return top-level forms from FILE, normalized for standalone NeLisp."
   (let ((standalone-source-normalize-current-file
@@ -1613,6 +1636,7 @@ Handles the normal defun body shape with an optional docstring and
               standalone-source-normalize-read-max-lisp-eval-depth)))
     (with-temp-buffer
       (insert-file-contents file)
+      (standalone-source-normalize--apply-file-local-shorthands)
       (let (forms)
         (goto-char (point-min))
         (condition-case err

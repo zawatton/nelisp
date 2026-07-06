@@ -1873,7 +1873,7 @@ bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-a
 # mirrors bake-vendor-core-runtime-image's mechanism (extend-runtime-image
 # on the base batch image), calling
 # nemacs-runtime-image-preload-magit-extension.
-$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el src/nelisp-emacs-magit-bridge.el
+$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el
 	$(EMACS) -L scripts \
 		--eval '(setq nelisp-emacs-magit-bridge-bundle-output-file "$(abspath $(NEMACS_MAGIT_BRIDGE_BUNDLE))")' \
 		-l scripts/build-nelisp-emacs-magit-bridge-bundle.el \

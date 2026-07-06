@@ -422,15 +422,43 @@ image startup."
                             (emacs-process--fallback-sentinel-event status))
                  nil)
                process))))
+  ;; Mirrors nemacs-runtime-process-preload.el: real Emacs `call-process'
+  ;; runs the child in `default-directory'; the native primitive spawns in
+  ;; the parent's cwd, so wrap with a `cd' shell prefix for local absolute
+  ;; directories (exit 127 = shell cannot-execute convention).
+  (unless (fboundp 'emacs-process--call-process-cwd)
+    (fset 'emacs-process--call-process-cwd
+          '(lambda ()
+             (if (boundp 'default-directory)
+                 (if (stringp default-directory)
+                     (if (> (length default-directory) 0)
+                         (if (= (aref default-directory 0) ?/)
+                             default-directory
+                           nil)
+                       nil)
+                   nil)
+               nil))))
   (unless (fboundp 'emacs-process-call-process)
     (fset 'emacs-process-call-process
-          '(lambda (&rest args)
-             (cond
-              ((fboundp 'nelisp-process-call-process)
-               (apply 'nelisp-process-call-process args))
-              ((fboundp 'nelisp-call-process)
-               (apply 'nelisp-call-process args))
-              (t 1)))))
+          '(lambda (program &optional infile destination display &rest args)
+             (let ((cwd (emacs-process--call-process-cwd)))
+               (if cwd
+                   (progn
+                     (setq args
+                           (cons "-c"
+                                 (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
+                                       (cons "emacs-process-call-process-cwd"
+                                             (cons cwd (cons program args))))))
+                     (setq program "/bin/sh"))
+                 nil)
+               (cond
+                ((fboundp 'nelisp-process-call-process)
+                 (apply 'nelisp-process-call-process
+                        program infile destination display args))
+                ((fboundp 'nelisp-call-process)
+                 (apply 'nelisp-call-process
+                        program infile destination display args))
+                (t 1))))))
   (unless (fboundp 'call-process)
     (fset 'call-process
           '(lambda (&rest args)
