@@ -13322,3 +13322,135 @@ path:
    NELISP_ROOT=$(HOME)/Notes/dev/nelisp magit-status-smoke' currently
    FAILS for the documented `cond-let*' reason above, not because of a
    plumbing bug in the new targets themselves.
+240. Task #17 M2 continuation, 2026-07-06: ten more defect classes peeled
+   off the `magit-status-smoke' path via a fix-one-probe-again loop; M2
+   completion conditions NOT yet reached; stopped per the >5-iteration /
+   core-bound-defect rule with a crisp core-side minimal repro (below).
+   Branch `feat/magit-tui', commits 6211f91b + this pass's follow-up;
+   companion dev/nelisp commit 2de6ef0f (branch
+   `fix/runtime-image-mode3-loud-abort').
+
+   Enabler shipped first (dev/nelisp 2de6ef0f): `nl_eval_source_all''s
+   report_errors=3 branch (eval/exec-runtime-image + artifact command
+   replay) used to return a bare 0 on a flag=0 abort -- rc=0, zero
+   output, indistinguishable from success (item 239's "silently exits
+   the whole exec-runtime-image process" is exactly this).  It now
+   prints `nelisp: form aborted without signal (rc=N)' to stderr while
+   keeping the same return value and loop-continuation behavior
+   (FINDINGS.md recommendation 1(b), narrowed to the runtime-image
+   path).  This made every subsequent loop iteration's failure visible
+   in seconds and is why the rest of this item exists.
+
+   Fixed this pass, in loop order (each isolated by a minimal probe
+   against the baked magit runtime image before fixing):
+   1. `files.el' globals (24 names, `find-file-visit-truename' first,
+      hit inside `magit-toplevel'): host-preloaded file, so correctly
+      absent from the bundle but its globals were never declared.
+      Bridge precondition `--ensure-files-el-globals' (static
+      cross-reference of files.el top-level names against the vendor
+      chain, narrowed by a live boundp probe; values are real-Emacs
+      defaults; two documented nil stand-ins).
+   2. `call-process' cwd: the native process primitives spawn in the
+      parent's cwd, ignoring `default-directory' -- git answered about
+      the WRONG repository (probe showed `magit-toplevel' = "/" and
+      rev-parse returning the HOST repo's HEAD).  `cd "$1" || exit 127'
+      shell wrapper at the `emacs-process' layer and both runtime
+      preload copies.
+   3. Raw `(macro . CLOSURE)' stubs: invoking a macro installed via
+      `(fset SYM (cons 'macro (lambda ...)))' aborts the enclosing form
+      flagless (minimal repro preserved; `defmacro'-defined macros are
+      fine) -- `emacs-stub-bulk.el' macro stubs now install through a
+      constructed `defmacro'.  Also `pcase-exhaustive' got a real
+      implementation (pcase + no-match error) in `emacs-pcase.el': a
+      nil-expanding stub silently mis-dispatches `magit-diff--get-value'
+      and transient's dispatch sites.
+   4. `cl-flet*' void: aliased to the MVP `cl-flet' (which installs
+      bindings globally in order = sequential scoping already).
+   5. No current buffer: the batch bootstrap leaves `(current-buffer)'
+      nil and `buffer-list' empty, violating the real-Emacs invariant;
+      `magit-get-mode-buffer''s window scan passes `window-buffer'
+      results into `with-current-buffer' and died on nil.  Window layer
+      now lazily adopts the current buffer for an empty window slot;
+      bridge precondition creates/selects *scratch*.
+   6. read-symbol-shorthands: the normalizer read vendor files with
+      plain `read', so Magit's file-local shorthands (`and$' ->
+      `cond-let--and$', `if-let*' -> `cond-let--if-let*', ...) never
+      applied -- `and$'/`when$'/`thread$' call sites were guaranteed
+      void-function and the `*-let*' families silently bound to a
+      different implementation than the file selected.
+      `standalone-source-normalize' now runs `hack-local-variables'
+      (variables only) before reading; cache version 130 -> 132;
+      the magit bundle Makefile rule now depends on the normalizer.
+   7. Generic size-based body elision (>3500 printed chars) silently
+      gutted three load-bearing functions in this chain: `format-spec'
+      (every Magit buffer name became nil -> wrong-type-argument),
+      `eieio-defclass-internal' (every defclass a silent no-op), and
+      `magit-diff-wash-diff' (empty diff sections).  All three added to
+      `standalone-source-normalize-retained-large-defun-symbols'.
+   8. `uniquify.el' globals + `special-mode' + `simple.el' globals
+      (host-preload class again): three new bridge preconditions --
+      uniquify defvars with real defaults plus a documented no-op
+      `uniquify-rationalize-file-buffer-names'; `special-mode' copied
+      verbatim from vendor simple.el (parent of `magit-section-mode');
+      14 simple.el defvars (`line-move-visual' first, from
+      magit-section-mode's own body) via the same audit method as
+      files.el.  Plus third-party soft vars magit `setq-local's
+      (`symbol-overlay-inhibit-map', bookmark/imenu/isearch hook vars),
+      no-op `hack-dir-local-variables-non-file-buffer' and
+      `face-remap-add-relative' stand-ins, and verbatim
+      `internal--format-docstring-line'/`internal--fill-string-single-
+      line' (subr.el) -- the latter pair unblocked `defclass' EXPANSION
+      chain-wide (it is called at macro-expansion time and its absence
+      silently killed every defclass in the bundle load).
+   9. `gv-letplace' stub semantics: the old stub expanded to a bare
+      `(progn BODY)' with the getter/setter VARS unbound, so Compat
+      31's `incf'/`decf' (used by `magit--with-refresh-cache') hit
+      void-variable.  Now binds GETTER to the place expression and
+      SETTER to a `setf'-form builder (documented multiple-evaluation
+      trade-off, same as the with-memoization shim).
+   10. `push'/`cl-pushnew' generalized places: both expanded to
+      `(setq (cdr CELL) ...)' for a non-symbol place, which the
+      evaluator aborts on flagless (`magit--with-refresh-cache' pushes
+      onto `(cdr magit--refresh-cache)').  Both now route non-symbol
+      places through the substrate's `setf'.  Also `emacs-stub-bulk''s
+      defvars now install via constructed `defvar' instead of `set', so
+      vendor `let'-bindings of them (e.g. `inhibit-read-only') are
+      genuinely dynamic -- the `default-process-coding-system' class
+      from item 239, closed for the whole bulk list at once.
+
+   Verified state at stop: `magit-toplevel'/`magit-git-string'/
+   `magit-gitdir' return correct fixture-repo answers through the real
+   git plumbing; `magit-diff--get-value'/`magit-log--get-value' return
+   correct argument lists; `magit-generate-new-buffer' creates a
+   correctly named buffer; `(magit-status-mode)' activates (mode body
+   runs to completion, `major-mode' set); `magit-display-buffer'
+   completes.  `cond-let'/`cond-let*'/`--if-let'/`--when-let'/
+   `--and-let*'/`--while-let' all evaluate correctly under the current
+   dev/nelisp main (1236ff96) -- item 239's cond-let BLOCKER is
+   resolved.  `make test-fast' reproduces the same 6 known unexpected
+   results bit-for-bit; `make proc-smoke' green.
+
+   REMAINING BLOCKER (core-bound, why this pass stopped): `defclass'
+   registration aborts flagless at runtime.  Minimal repro against
+   `build/nemacs-magit-runtime.nlri':
+     (defclass eieio-default-superclass nil nil "Doc." :abstract t)
+   -> `nelisp: form aborted without signal (rc=1)', uncatchable by
+   `condition-case' (nothing stashed).  The defclass EXPANSION now
+   succeeds (macroexpand returns a progn; the docstring-helper gap is
+   closed), so the abort is inside evaluating the expansion --
+   i.e. `eieio-defclass-internal''s registration path or a macro it
+   invokes.  Because the root class never registers, every later
+   `defclass' in the chain fails with `(error eieio-default-superclass)',
+   `magit-insert-section--create' stays void, and a status-buffer
+   refresh completes but inserts nothing (buffer-size 0,
+   `magit-root-section' nil) -- which is exactly what the smoke's
+   MAGIT-STATUS-BUFFER FAIL now means.  This is the "bare rc=1 with no
+   error stash" evaluator class FINDINGS.md recommendation 1(a) already
+   assigns to dev/nelisp (audit the remaining rc!=0-without-stash call
+   sites); the loud reporter shipped in this pass will name the exact
+   site once one of those calls stashes or prints context.  M2's
+   completion conditions (MAGIT-STATUS-BUFFER PASS + MAGIT-GIT-EXEC
+   PASS) therefore remain open; MAGIT-GIT-EXEC's own conjuncts
+   (toplevel + rev-parse) are individually verified working, but the
+   smoke asserts both lines and the status-buffer half needs the
+   defclass fix first.

@@ -319,7 +319,17 @@ Forwarder to `forward-char' with negated count."
     x-gtk-use-window-move yank-transform-functions)))
   (dolist (--s-- --stub-defvars--)
     (unless (boundp --s--)
-      (set --s-- nil))))
+      ;; Constructed `defvar', not `set': every name in this list is a
+      ;; real dynamic (special) variable in Emacs, and vendor code
+      ;; let-binds many of them expecting other functions to observe the
+      ;; binding dynamically.  A bare `set' only populates the global
+      ;; value cell without marking the symbol special, so under
+      ;; lexical-binding a later `(let ((inhibit-read-only t)) ...)'
+      ;; creates an invisible LEXICAL binding and the read-only check in
+      ;; `emacs-buffer--barf-if-read-only' still sees the global nil --
+      ;; exactly the `default-process-coding-system' defect class the
+      ;; magit bridge documented, recurring here for every name below.
+      (eval (list 'defvar --s-- nil) t))))
 
 (unless (fboundp 'define-abbrev-table)
   (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)

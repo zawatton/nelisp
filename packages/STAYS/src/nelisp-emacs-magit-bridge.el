@@ -409,6 +409,213 @@ value's `##'-heavy alist); both are noted inline."
       '(ignored-local-variables safe-local-variable-values
         file-local-variables-alist dir-local-variables-alist))))
 
+(defun nelisp-emacs-magit-bridge--ensure-uniquify-globals ()
+  "Ensure the `uniquify.el' names Magit's buffer naming touches exist.
+
+`uniquify.el' is preloaded/dumped by real Emacs (same class as
+`files.el' and `backquote.el' above: never appears in a load-history
+diff, so it is correctly absent from the bundle, but this substrate
+never preloads it either).  `magit--maybe-uniquify-buffer-names'
+(`vendor/magit/lisp/magit-mode.el') runs unconditionally for every new
+Magit buffer when `magit-uniquify-buffer-names' is non-nil (the
+default): it pushes onto `uniquify-list-buffers-directory-modes',
+let-binds `uniquify-buffer-name-style', sets the built-in buffer-local
+`list-buffers-directory', and calls
+`uniquify-rationalize-file-buffer-names'.  The two defvars and the
+defcustom get real Emacs's own default values.  The rationalize
+function is a documented no-op stand-in, NOT a copy: its only job is
+cosmetic buffer-name disambiguation across same-named buffers, this
+bridge's buffers are already unique via `generate-new-buffer', and
+porting uniquify's full rationalize/rename machinery is out of scope
+for a read-only status buffer."
+  (unless (boundp 'uniquify-list-buffers-directory-modes)
+    (defvar uniquify-list-buffers-directory-modes
+      '(dired-mode cvs-mode vc-dir-mode)))
+  (unless (boundp 'uniquify-buffer-name-style)
+    (defvar uniquify-buffer-name-style 'post-forward-angle-brackets))
+  (unless (boundp 'list-buffers-directory)
+    (defvar list-buffers-directory nil))
+  (unless (fboundp 'uniquify-rationalize-file-buffer-names)
+    (defun uniquify-rationalize-file-buffer-names (_base _dirname _newbuf)
+      "Stub: cosmetic buffer-name disambiguation is not modeled.
+See `nelisp-emacs-magit-bridge--ensure-uniquify-globals'."
+      nil)))
+
+(defun nelisp-emacs-magit-bridge--ensure-simple-el-globals ()
+  "Ensure the `simple.el'-defined globals the vendor chain reads exist.
+
+Same host-preload gap class as
+`nelisp-emacs-magit-bridge--ensure-files-el-globals' above, for
+`simple.el' (also dumped into real Emacs, so also correctly absent from
+the bundle).  Built the same way: static cross-reference of simple.el's
+top-level defcustom/defvar/defconst names against the vendor chain,
+narrowed by a live `boundp' probe against the baked runtime image
+(`kill-ring'/`minibuffer-history'/`shell-command-switch' matched the
+reference scan but are already bound here).  M2 hit
+`line-move-visual' first, via `magit-section-mode''s own
+`(setq-local line-move-visual t)' body.  Values are real Emacs's own
+defaults; the two `redisplay-*-region-function' defaults name simple.el
+functions this bridge never loads, so they are nil here (their only
+consumer is region highlighting, not modeled by this substrate), and
+that simplification is deliberately documented rather than silent."
+  (dolist (spec
+           '((deactivate-mark-hook . nil)
+             (line-move-visual . t)
+             (minibuffer-default . nil)
+             (minibuffer-default-add-function . nil)
+             (prefix-command-preserve-state-hook . nil)
+             (read-extended-command-predicate . nil)
+             ;; Real defaults are #'redisplay--highlight-overlay-function /
+             ;; #'redisplay--unhighlight-overlay-function (simple.el
+             ;; functions not loaded here); region highlighting is not
+             ;; modeled, so nil.
+             (redisplay-highlight-region-function . nil)
+             (redisplay-unhighlight-region-function . nil)
+             (shell-command-default-error-buffer . nil)
+             (shift-select-mode . t)
+             (tabulated-list-entries . nil)
+             (tabulated-list-format . nil)
+             (tabulated-list-sort-key . nil)
+             (widen-automatically . t)))
+    (unless (boundp (car spec))
+      ;; Same `eval'-built `defvar' as -ensure-files-el-globals: makes
+      ;; the name genuinely special so vendor `let'/`setq-local' work.
+      (eval (list 'defvar (car spec) (list 'quote (cdr spec))) t))))
+
+(defun nelisp-emacs-magit-bridge--ensure-third-party-soft-vars ()
+  "Ensure third-party variables Magit declares value-less exist with nil.
+
+`vendor/magit/lisp/magit-section.el' carries `(defvar
+symbol-overlay-inhibit-map)' -- a value-less special declaration for an
+optional third-party package -- and then does `(setq-local
+symbol-overlay-inhibit-map t)' unconditionally in
+`magit-section-mode''s body.  Real Emacs accepts a `setq-local' (or
+`set') of a symbol that has no binding yet; this substrate's
+`setq-local' fallback expands through `set', which signals
+`void-variable' for a never-bound name instead of creating it.  Giving
+the declared name a real nil default here matches what any Emacs
+session without the symbol-overlay package effectively observes."
+  (unless (boundp 'symbol-overlay-inhibit-map)
+    (defvar symbol-overlay-inhibit-map nil))
+  ;; Same class, found by auditing every `setq-local' target in the
+  ;; magit-section/magit-mode/magit-status mode bodies against a live
+  ;; `boundp' probe: hook-function variables owned by host-preloaded or
+  ;; optional packages (bookmark.el, imenu.el, isearch.el) that the mode
+  ;; bodies overwrite unconditionally.  Real defaults name functions
+  ;; from files this bridge never loads, so nil (= "package facility not
+  ;; active", exactly what the vendor code then replaces) is the honest
+  ;; default here.
+  (unless (boundp 'bookmark-make-record-function)
+    (defvar bookmark-make-record-function nil))
+  (unless (boundp 'imenu-create-index-function)
+    (defvar imenu-create-index-function nil))
+  (unless (boundp 'imenu-default-goto-function)
+    (defvar imenu-default-goto-function nil))
+  (unless (boundp 'isearch-filter-predicate)
+    (defvar isearch-filter-predicate nil))
+  ;; `magit-mode''s body calls this `files.el' function unconditionally.
+  ;; Dir-local variables are not modeled by this substrate at all, so a
+  ;; documented no-op stand-in (NOT a copy) is faithful: with no
+  ;; .dir-locals machinery there is nothing to hack in.
+  (unless (fboundp 'hack-dir-local-variables-non-file-buffer)
+    (defun hack-dir-local-variables-non-file-buffer ()
+      "Stub: dir-local variables are not modeled by this substrate.
+See `nelisp-emacs-magit-bridge--ensure-third-party-soft-vars'."
+      nil))
+  ;; `magit-mode''s body also calls `face-remap-add-relative'
+  ;; (face-remap.el, host-preloaded) to restyle the header line.  Face
+  ;; remapping is purely cosmetic display state with no consumer in this
+  ;; substrate, so a documented no-op stand-in returning nil (the shape
+  ;; of a remapping cookie consumers may later pass to
+  ;; `face-remap-remove-relative') is faithful for M2/M3.
+  (unless (fboundp 'face-remap-add-relative)
+    (defun face-remap-add-relative (_face &rest _specs)
+      "Stub: face remapping is not modeled by this substrate.
+See `nelisp-emacs-magit-bridge--ensure-third-party-soft-vars'."
+      nil)))
+
+(defun nelisp-emacs-magit-bridge--ensure-docstring-fill-helpers ()
+  "Ensure subr.el's docstring fill helpers used by `defclass' exist.
+
+EIEIO's `defclass' macro calls `internal--format-docstring-line' (a
+host-preloaded `subr.el' helper, same absence class as `static-if'
+above) while building each accessor's docstring -- at MACRO EXPANSION
+time, so with it missing every `(defclass ...)' in the whole vendor
+chain fails, and inside the bundle's per-form load tolerance those
+failures were completely silent: `magit-section'/`magit-status' classes
+simply never registered, leaving `magit-insert-section--create' void
+and every status-buffer refresh empty (0 bytes, root section nil).
+Both helpers are copied verbatim from `vendor/emacs-lisp/subr.el' (not
+reimplemented) and installed only when absent.  `fill-column' gets its
+real Emacs default when unbound, since the fill helper reads it."
+  (unless (boundp 'fill-column)
+    (defvar fill-column 70))
+  (unless (fboundp 'internal--fill-string-single-line)
+    (defun internal--fill-string-single-line (str)
+      "Fill string STR to `fill-column'.
+This is intended for very simple filling while bootstrapping
+Emacs itself, and does not support all the customization options
+of fill.el (for example `fill-region')."
+      (if (< (length str) fill-column)
+          str
+        (let* ((limit (min fill-column (length str)))
+               (fst (substring str 0 limit))
+               (lst (substring str limit)))
+          (cond ((string-match "\\( \\)$" fst)
+                 (setq fst (replace-match "\n" nil nil fst 1)))
+                ((string-match "^ \\(.*\\)" lst)
+                 (setq fst (concat fst "\n"))
+                 (setq lst (match-string 1 lst)))
+                ((string-match ".*\\( \\(.+\\)\\)$" fst)
+                 (setq lst (concat (match-string 2 fst) lst))
+                 (setq fst (replace-match "\n" nil nil fst 1))))
+          (concat fst (internal--fill-string-single-line lst))))))
+  (unless (fboundp 'internal--format-docstring-line)
+    (defun internal--format-docstring-line (string &rest objects)
+      "Format a single line from a documentation string out of STRING and OBJECTS.
+Signal an error if STRING contains a newline.
+This is intended for internal use only.  Avoid using this for the
+first line of a docstring; the first line should be a complete
+sentence (see Info node `(elisp) Documentation Tips')."
+      (when (string-match "\n" string)
+        (error "Unable to fill string containing newline: %S" string))
+      (internal--fill-string-single-line (apply #'format string objects)))))
+
+(defun nelisp-emacs-magit-bridge--ensure-special-mode ()
+  "Ensure `special-mode' (real Emacs `simple.el') exists as a parent mode.
+
+`simple.el' is preloaded/dumped by real Emacs (same class as `files.el'
+and `uniquify.el' above), and `magit-section-mode' is
+`(define-derived-mode magit-section-mode special-mode ...)' -- so the
+first `(magit-status-mode)' activation walks its parent chain into a
+`void-function special-mode'.  Body and `mode-class' property are
+copied from `vendor/emacs-lisp/simple.el' (not reimplemented); the
+keymap is built with plain `define-key' instead of `defvar-keymap'
+(which this substrate lacks) but binds the same keys to the same
+commands."
+  (unless (fboundp 'special-mode)
+    (unless (boundp 'special-mode-map)
+      (defvar special-mode-map
+        (let ((map (make-sparse-keymap)))
+          (when (fboundp 'suppress-keymap)
+            (suppress-keymap map))
+          (define-key map "q" 'quit-window)
+          (define-key map " " 'scroll-up-command)
+          (define-key map "\d" 'scroll-down-command)
+          (define-key map "?" 'describe-mode)
+          (define-key map "h" 'describe-mode)
+          (define-key map ">" 'end-of-buffer)
+          (define-key map "<" 'beginning-of-buffer)
+          (define-key map "g" 'revert-buffer)
+          map)))
+    (put 'special-mode 'mode-class 'special)
+    (define-derived-mode special-mode nil "Special"
+      "Parent major mode from which special major modes should inherit.
+
+A special major mode is intended to view specially formatted data
+rather than files.  These modes usually use read-only buffers."
+      (setq buffer-read-only t))))
+
 (defun nelisp-emacs-magit-bridge--ensure-current-buffer ()
   "Ensure the session has a live current buffer, like real Emacs always does.
 
@@ -444,7 +651,12 @@ mirroring the real Emacs startup invariant, not a vendor patch."
   (nelisp-emacs-magit-bridge--ensure-default-process-coding-system)
   (nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion)
   (nelisp-emacs-magit-bridge--ensure-backquote-marker-symbols)
-  (nelisp-emacs-magit-bridge--ensure-files-el-globals))
+  (nelisp-emacs-magit-bridge--ensure-files-el-globals)
+  (nelisp-emacs-magit-bridge--ensure-uniquify-globals)
+  (nelisp-emacs-magit-bridge--ensure-simple-el-globals)
+  (nelisp-emacs-magit-bridge--ensure-third-party-soft-vars)
+  (nelisp-emacs-magit-bridge--ensure-docstring-fill-helpers)
+  (nelisp-emacs-magit-bridge--ensure-special-mode))
 
 (defun nelisp-emacs-magit-bridge-load ()
   "Load the real vendor Magit chain into the current NeLisp session.
