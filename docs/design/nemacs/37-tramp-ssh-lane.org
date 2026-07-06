@@ -1,0 +1,187 @@
+#+TITLE: nelisp-emacs Doc 37 -- Tramp ssh-only lane
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 20 files/runtime boundary, Doc 36 process substrate sync gateway
+
+* 0. Purpose
+
+Task #16.  Makes =/ssh:HOST:/path= usable in nelisp-emacs: vendored
+Emacs Tramp (=vendor/emacs-lisp/net/tramp*.el=, version 2.7.1.30.1) is
+brought up on the ssh/scp methods only, with the file-name-handler
+dispatch substrate Tramp needs and every other Tramp method blocked with
+an explicit signal instead of an obscure half-loaded failure.
+
+Approved scope (2026-06-10 user decision, =docs/design/11-remaining-work-roadmap.org=
+M11): ssh/scp file read/write/process round-trip.  Dired full
+integration, multi-hop (=/ssh:a|ssh:b:/path=), interactive pty/password
+auth, and every non-ssh/scp Tramp method are explicitly out of scope.
+
+Naming note: =vendor/nelisp/packages/nelisp-tramp/= is the NeLisp
+trampoline evaluator (public API =nelisp-tramp-eval=) and is unrelated to
+this work; nothing in this lane is named =nelisp-tramp-*=.
+
+* 1. What ships
+
+| Component | File | Role |
+|-----------+------+------|
+| Handler dispatch foundation | =src/emacs-file-name-handler.el= (new) | =find-file-name-handler=, =emacs-fnh-dispatch=, =emacs-fnh-wrap=; handler-aware =file-remote-p=/=file-local-name=/=unhandled-file-name-directory= fallbacks. All =unless (fboundp ...)= gated -- inert under host Emacs. |
+| File-I/O dispatch wrappers | =src/emacs-fileio-builtins.el= | The 14 handler-dispatched primitives (=expand-file-name=, =file-name-directory=, =file-name-nondirectory=, =file-name-as-directory=, =substitute-in-file-name=, =file-exists-p=, =file-readable-p=, =file-executable-p=, =file-directory-p=, =file-attributes=, =directory-files=, =delete-file=, =rename-file=, =insert-file-contents=) get an =emacs-fnh-wrap= closure instead of a bare =nelisp-ec-*= alias; =write-region= gets an inline dispatch (FILENAME is its 3rd arg, not 1st).  =file-name-absolute-p=/=executable-find= keep the bare alias -- real Emacs does not dispatch those two through =file-name-handler-alist=. Purely additive: *which* primitives install is unchanged (still =emacs-fileio-builtins--install-function-p=, host Emacs stays inert); only what gets installed changed. |
+| Tramp glue | =src/nemacs-tramp.el= (new) | =nemacs-tramp-setup=: adds vendor =net/=+=calendar/= to =load-path=, requires =tramp=+=tramp-sh= only, installs the ssh/scp-only method guard, sets lane defaults.  Idempotent; never called from =nemacs-main=/=nemacs-loadup= (risk #10). |
+| Method guard | =src/nemacs-tramp.el= | =nemacs-tramp--guard-vec= as =:filter-return= advice on =tramp-dissect-file-name=; signals =nemacs-tramp-unsupported-method= for any method outside =nemacs-tramp-supported-methods= ("ssh" "scp"). |
+| Async substrate (standalone, shared with Magit #17) | =scripts/nemacs-runtime-process-preload.el=, =src/emacs-process.el=, =src/emacs-process-builtins.el= | =process-mark= real marker (lazy, vector slot 13); =start-file-process= + =process-file= with handler dispatch at the preload layer; =accept-process-output= SECONDS-honouring retry for the native (non-bidi) path (insurance). |
+| Runtime-image load-path | =scripts/nemacs-runtime-image-preload.el= | =vendor/emacs-lisp/net= + =vendor/emacs-lisp/calendar= added to the baked image's =load-path= (path only, no eager =require=). |
+
+* 2. Substrate gaps found and closed
+
+- *file-name-handler-alist had no dispatcher.* =find-file-name-handler=
+  did not exist as a standalone primitive; the 16 file-I/O primitives in
+  =emacs-fileio-builtins.el= were bare =nelisp-ec-*= aliases with no
+  handler check at all.  Closed by =emacs-file-name-handler.el= +
+  the =emacs-fileio-builtins.el= dolist split (Sec 1).  All host-inert.
+- *=process-mark= was hard-wired nil* in the standalone bidi process
+  layer.  =tramp-sh=/=comint= read =process-mark= to track how much
+  output they have consumed.  Closed with a lazily created real marker
+  in bidi-process vector slot 13, kept in sync by
+  =emacs-process--bidi-drain='s insert path.
+- *=start-file-process=/=process-file= were absent* from the bare
+  standalone preload script (only present at the =src/emacs-process.el=
+  layer, which a bare preload image does not load).  Added at both
+  layers for defence in depth.
+- *=accept-process-output='s native (non-bidi) path ignored SECONDS*,
+  doing a single non-blocking poll.  Given a 10ms-slice retry loop up to
+  the requested budget, mirroring the bidi layer's existing pattern
+  (insurance -- Tramp's synchronous connection setup can block on this
+  call for multi-second stretches).
+
+* 3. The hermetic stub-ssh discovery (read before touching the test)
+
+=test/nemacs-tramp-stub-ssh-test.el= installs a fake =ssh= executable
+ahead of =exec-path=/PATH that ignores every ssh(1) argument and execs a
+real local shell in its place.  This works because the default "ssh"
+Tramp method opens one persistent shell session over ssh's stdin/stdout
+with no trailing command (see =tramp-methods= in =tramp-sh.el=), so Tramp
+does not depend on the real ssh(1) wire protocol once a shell answers.
+
+The first implementation (=exec /bin/sh=) hung indefinitely.  Diagnosed
+with =strace -f=: the spawned shell sat parked on a blocking =read(0,
+...)= forever, because Tramp's own first write to the channel never
+happened.  =tramp-actions-before-shell= makes
+=tramp-open-connection-setup-interactive-shell=/=tramp-process-actions=
+wait to observe a shell prompt (=shell-prompt-pattern=/
+=tramp-shell-prompt-pattern=) before sending anything at all -- and a
+POSIX shell only emits its PS1 prompt when it considers itself
+*interactive*, and conventionally writes that prompt to *stderr*.  The
+fix is =exec /bin/sh -i 2>&1=: `-i` turns on the prompt, `2>&1` puts it
+on the channel Tramp actually reads (stdout).  Without both flags the
+wait has no bound reachable in this configuration and the test hangs
+forever rather than failing fast.
+
+This is the single reusable fact from this whole investigation: *any*
+future hermetic Tramp/ssh test-double in this repository needs
+=-i 2>&1= (or equivalent) on its fake login shell.
+
+* 4. Verification
+
+- =(require 'nemacs-tramp) (nemacs-tramp-setup)= under
+  =emacs --batch -L src -L test= (host driver, the plan's primary
+  target): =(tramp-tramp-file-p "/ssh:localhost:/tmp/x")= = t,
+  =(file-remote-p "/ssh:localhost:/tmp/x")= = ="/ssh:localhost:"=.
+  Local paths (=file-exists-p=, =expand-file-name=) unaffected.
+- =make tramp-stub-smoke= (=test/nemacs-tramp-stub-ssh-test.el=, 5
+  tests, hermetic, ~0.3s): M1 load chain + non-remote passthrough, M1
+  unsupported-method guard (=/smb:= signals, =/scp:= does not), M2 read
+  (=insert-file-contents=/=file-exists-p=/=file-attributes= through the
+  fake ssh), M3 write round-trip (=write-region= through the fake ssh,
+  verified with a plain local read), M4 =process-file= exit status
+  ("true"/"false") + stdout capture ("echo").
+- =make tramp-localhost-smoke= (=test/nemacs-tramp-localhost-smoke.el=):
+  same M2/M3/M4 coverage against a genuine =ssh localhost=; skips
+  cleanly via =ert-skip= when passwordless key auth is not configured
+  (the case on this development host -- =ssh -o BatchMode=yes localhost
+  true= exits 255, "Permission denied (publickey,password)").  Manual
+  checklist unchanged from Doc 11 M11.
+- =test/emacs-file-name-handler-test.el= (10 tests, host, in
+  =TEST_FAST_FILES=): dispatch/no-match/inhibited-operation/wrap/
+  remote-fallback coverage for =emacs-file-name-handler.el= directly.
+- =make test-fast=: 1114 tests (was 1104 before this task; +10 from the
+  new file-name-handler test), 1108 as expected, the same pre-existing 6
+  unexpected failures as the pre-task baseline (=emacs-redisplay-test-*=
+  x4, =emacs-redisplay-test/core-*= x2 wait, plus
+  =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source= --
+  none of these touch fileio/process/Tramp; zero new failures).
+- =make proc-smoke= and =make test-nemacs-process-bidi-smoke=
+  (standalone reader, via the prebuilt =../nelisp/target/nelisp=
+  binary): both PASS after the =process-mark=/=process-file=/
+  =start-file-process= additions to
+  =scripts/nemacs-runtime-process-preload.el=.
+- Standalone runtime *Tramp* smoke (plan Sec 4.3, full ssh negotiation
+  on the NeLisp standalone reader rather than host Emacs) was not
+  attempted: bringing up vendored Tramp's dependency chain
+  (=auth-source=, =parse-time=/=iso8601=/=time-date= cl-lib macro
+  expansion, =format-spec=, ...) on the bare standalone reader is a
+  substantially larger effort than this task's approved scope, and the
+  plan explicitly allows deferring it to post-integration.  The
+  substrate pieces this task adds for that path (=process-mark=,
+  =start-file-process=, =process-file=, load-path) are implemented and
+  covered by the existing bidi/proc-smoke regression, but the full Tramp
+  load chain on the standalone reader is untested.
+
+* 5. Known limitations / out of scope
+
+- Only "ssh" and "scp" methods are accepted; every other method
+  (=smb=, =adb=, =sudo=, =su=, =rsh=, =telnet=, =rclone=, =fuse=,
+  =crypt=, =container=, =archive=, =ftp=, ...) signals
+  =nemacs-tramp-unsupported-method= via the =tramp-dissect-file-name=
+  guard.
+- No multi-hop (=/ssh:a|ssh:b:/path=).
+- No pty/interactive password prompting: =tramp-process-connection-type=
+  is forced nil (pipe); key-based auth only.  =auth-sources= is nil so
+  Tramp never touches =~/.authinfo=/=~/.netrc=.
+- No Dired integration beyond whatever =tramp-sh='s own generic
+  =directory-files=/=insert-directory= handler already provides; a
+  polished Dired UX is explicitly a separate task.
+- =rename-file='s handler dispatch only inspects FILE, not NEWNAME
+  (cross-host rename is out of scope for the ssh-only lane).
+- The standalone-reader (NeLisp, not host Emacs) full Tramp load chain
+  is unverified (Sec 4).
+
+* 6. Coordination with Magit (task #17)
+
+Shared substrate, listed here for the integration merge:
+
+- =find-file-name-handler= foundation: new file
+  =src/emacs-file-name-handler.el=, self-contained, =unless (fboundp
+  ...)= gated throughout -- no conflict surface, Magit can =require= it
+  directly.
+- =start-file-process=: added to =src/emacs-process.el=
+  (=emacs-process-start-file-process=) +
+  =src/emacs-process-builtins.el= (alias registration) +
+  =scripts/nemacs-runtime-process-preload.el= (bare preload fset).  Same
+  handler-dispatch convention as the pre-existing =process-file=.
+- =process-mark=: real marker in the bidi process vector (slot 13,
+  vector grew from 13 to 14 elements) instead of the fixed =nil= stub;
+  =emacs-process--bidi-drain= keeps it in sync.  If Magit's work also
+  touches this vector's shape, coordinate on the slot-13 addition before
+  merging (a length mismatch would break =emacs-process--bidi-process-p='s
+  =(<= 13 (length object))= check only if slot count *decreases*, not if
+  another consumer adds slot 14+).
+- =accept-process-output= SECONDS-honouring retry: added to the native
+  (non-bidi) path in =src/emacs-process.el= only; the bidi layer already
+  had this.  Purely additive, no behaviour change when SECONDS/MILLISEC
+  are both nil/0.
+- Both tasks add to =scripts/nemacs-runtime-image-preload.el='s
+  =nemacs-runtime-image-setup-paths= load-path list; keep both additions
+  (=vendor/emacs-lisp/net=, =vendor/emacs-lisp/calendar= from this task)
+  when reconciling.
+
+* 7. Verification commands
+
+#+begin_src shell
+emacs --batch -L src -L test --eval \
+  "(progn (require 'nemacs-tramp) (nemacs-tramp-setup) \
+     (princ (list (tramp-tramp-file-p \"/ssh:localhost:/tmp/x\") \
+                  (file-remote-p \"/ssh:localhost:/tmp/x\"))))"
+make tramp-stub-smoke
+make tramp-localhost-smoke   # optional, needs key-auth localhost
+make test-fast
+make proc-smoke
+make test-nemacs-process-bidi-smoke
+#+end_src
