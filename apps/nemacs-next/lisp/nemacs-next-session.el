@@ -214,6 +214,21 @@ This is session assembly only; buffer allocation is delegated to
           (nelisp-ec-set-buffer buffer))
         buffer)))
 
+(defun nemacs-next-session-apply-startup-screen ()
+  "Select the startup splash buffer as the session's initial buffer.
+When the `emacs-startup-screen' owner is loaded and its gate
+\(`emacs-startup-screen-use-p') allows the splash — no
+`inhibit-startup-screen', no loaded user init file, no CLI file
+arguments — create the `*GNU Emacs*' buffer and make it current, so the
+first `frame-snapshot' renders the welcome screen without any frontend
+change.  Returns the splash buffer when selected, nil otherwise.  This
+is session assembly only; the splash semantics are owned by
+`emacs-startup-screen'."
+  (when (and (fboundp 'emacs-startup-screen-use-p)
+             (fboundp 'emacs-startup-screen-select)
+             (emacs-startup-screen-use-p))
+    (emacs-startup-screen-select)))
+
 (defun nemacs-next-session-buffer-snapshot (&optional buffer)
   "Return a protocol snapshot plist for BUFFER or the current buffer.
 The text, point, and size are read through reusable buffer APIs."
