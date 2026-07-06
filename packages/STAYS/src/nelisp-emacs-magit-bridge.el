@@ -235,6 +235,53 @@ have been a no-op here anyway.  A literal no-op stands in for it."
   (unless (fboundp 'compat--maybe-require)
     (defmacro compat--maybe-require () nil)))
 
+(defun nelisp-emacs-magit-bridge--ensure-default-process-coding-system ()
+  "Ensure `default-process-coding-system' is a real dynamic (special) variable.
+
+Real Emacs declares this as a built-in, always-special defvar (default
+value a DECODING . ENCODING cons set during startup).  NeLisp's
+substrate never declares it at all.  Magit's own lexical-binding files
+only ever *bind* it locally around a process call
+(`(let ((default-process-coding-system (magit--process-coding-system)))
+...)' in `vendor/magit/lisp/magit-process.el'/`magit-git.el') and never
+`defvar' it themselves, exactly like real Emacs magit assumes the name
+is already special.  Without a prior `defvar', a lexical-binding `let'
+on an unknown name creates a plain LEXICAL binding instead of a dynamic
+one, so a *different* function reading the same name later in the same
+dynamic extent (e.g. `magit-git.el:1342', not textually nested inside
+that `let') hits `void-variable' instead of seeing Magit's own binding
+-- this is what M2 probing hit running `magit-git-string' for real.
+Declaring the name here with a value shaped like real Emacs' own
+default (a cons of decoding and encoding coding systems, both nil =
+`no-conversion') is a session-level precondition fix, not a vendor
+patch: it only makes the name a genuine special variable so Magit's
+existing dynamic `let' behaves the way it already assumes."
+  (unless (boundp 'default-process-coding-system)
+    (defvar default-process-coding-system (cons nil nil))))
+
+(defun nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion ()
+  "Ensure `coding-system-change-eol-conversion' exists.
+
+`magit--process-coding-system' (`vendor/magit/lisp/magit-process.el')
+calls this real-Emacs function to derive an EOL-specific variant of a
+coding system (e.g. mapping a generic symbol + `unix' to `utf-8-unix')
+whenever `magit-process-ensure-unix-line-ending' is non-nil (the
+default).  NeLisp's substrate does not model coding systems as objects
+with an EOL-conversion axis at all, and this bridge's process substrate
+already always reads/writes subprocess bytes as given (no CRLF
+translation applied anywhere), so returning CODING-SYSTEM unchanged (or
+`utf-8-unix' when CODING-SYSTEM is nil, i.e. no coding system was
+configured) is a faithful-enough stand-in for M2/M3's read-only status-
+buffer use: it lets Magit's own process setup finish instead of
+`void-function' aborting before any git process is even started, and it
+does not change what bytes get inserted -- only what symbol Magit
+records for later (here, unused) coding introspection."
+  (unless (fboundp 'coding-system-change-eol-conversion)
+    (defun coding-system-change-eol-conversion (coding-system eol-type)
+      "See `nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion'."
+      (ignore eol-type)
+      (or coding-system 'utf-8-unix))))
+
 (defun nelisp-emacs-magit-bridge--ensure-preconditions ()
   "Ensure every session precondition the vendor chain assumes is live."
   (nelisp-emacs-magit-bridge--ensure-process-substrate)
@@ -245,7 +292,9 @@ have been a no-op here anyway.  A literal no-op stands in for it."
   (nelisp-emacs-magit-bridge--ensure-cl-declaim)
   (nelisp-emacs-magit-bridge--ensure-defalias-forward-reference)
   (nelisp-emacs-magit-bridge--ensure-ansi-color-update-face-vec-stub)
-  (nelisp-emacs-magit-bridge--ensure-compat-maybe-require))
+  (nelisp-emacs-magit-bridge--ensure-compat-maybe-require)
+  (nelisp-emacs-magit-bridge--ensure-default-process-coding-system)
+  (nelisp-emacs-magit-bridge--ensure-coding-system-change-eol-conversion))
 
 (defun nelisp-emacs-magit-bridge-load ()
   "Load the real vendor Magit chain into the current NeLisp session.
