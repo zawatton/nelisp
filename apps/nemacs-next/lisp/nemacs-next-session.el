@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'nemacs-next)
+(require 'emacs-toolbar)
 
 (defconst nemacs-next-session-snapshot-version 0
   "Current nemacs-next snapshot payload version.")
@@ -446,6 +447,16 @@ The text, point, and size are read through reusable buffer APIs."
                      :fidelity (plist-get item :fidelity)))
              items)))))
 
+(defun nemacs-next-session--toolbar-icon-prefix (icon)
+  "Return the resolved glyph prefix for toolbar ICON name, or \"\".
+Delegates to `emacs-toolbar-icon-glyph' (the reusable icon registry
+owner); an unknown ICON name or a missing `emacs-toolbar' resolves to
+\"\" so the caller silently falls back to a label-only button instead
+of misrendering."
+  (if (and icon (fboundp 'emacs-toolbar-icon-glyph))
+      (or (emacs-toolbar-icon-glyph icon) "")
+    ""))
+
 (defun nemacs-next-session-toolbar-render-line (&optional selected focused width)
   "Return a plain text toolbar line for SELECTED item index and WIDTH."
   (let ((index 0)
@@ -453,7 +464,10 @@ The text, point, and size are read through reusable buffer APIs."
     (dolist (item (nemacs-next-session-toolbar-items))
       (if (plist-get item :separator)
           (setq line (concat line " |"))
-        (let* ((label (plist-get item :label))
+        (let* ((icon (nemacs-next-session--toolbar-icon-prefix
+                      (plist-get item :icon)))
+               (label (plist-get item :label))
+               (label (if (> (length icon) 0) (concat icon " " label) label))
                (enabled (plist-get item :enabled))
                (text (cond
                       ((and focused (= index (or selected 0)))
