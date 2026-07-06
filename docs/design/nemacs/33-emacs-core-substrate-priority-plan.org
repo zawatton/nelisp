@@ -13588,3 +13588,146 @@ path:
    Commits: pending (this pass's `src/emacs-cl-macros.el' +
    `packages/nelisp-emacs-foundation/lisp/emacs-cl-macros.el' +
    this Doc 33 entry).
+
+242. Task #17 M2 continuation, 2026-07-06: root-caused and fixed item
+   241's llama `##' short-lambda-as-value defect (vendor/nelisp reader,
+   not this bridge); M2 still does not PASS -- one further, core-bound
+   defect found and given a crisp minimal repro, then stopped there
+   (this is the first new defect class this pass; it is not fixable at
+   this bridge's precondition layer, see below). Branch
+   `fix/llama-shorthand-value' in the `vendor/nelisp' checkout (main
+   9ea60deb); this repo (`feat/magit-tui', c32422a2) was used only to
+   reproduce/verify against the real magit bridge bundle and is
+   otherwise unmodified.
+
+   Root cause of item 241's blocker: `vendor/nelisp's AOT reader lexer
+   (`lisp/nelisp-cc-reader-lexer.el', `nelisp_reader_lex_sharpsign' --
+   this is the reader the compiled `target/nelisp' binary actually
+   runs; the parallel elisp-source readers `src/nelisp-read.el' /
+   `src/nelisp-reader.el' are unrelated legacy/prototype
+   implementations not wired into this binary at all, confirmed by
+   `nelisp-read-from-string' being `void-function' under plain
+   `--eval') special-cased `#' immediately followed by a second `#' to
+   fall through to the ordinary atom scanner starting at the FIRST `#',
+   with the comment "`##' is an ordinary symbol in Emacs Lisp arglists,
+   notably in Org's declare-function hints." Since `#' is not an atom
+   terminator, that scanner greedily consumes every following atom-
+   constituent byte, so `##string-prefix-p' lexed as ONE symbol
+   literally named `"##string-prefix-p"' instead of two tokens (`##'
+   then `string-prefix-p', matching real Emacs's reader, verified via
+   `(read-from-string "(cl-assoc filename x :test
+   (##string-prefix-p %2 %1))")' against host Emacs 30.1, which returns
+   `(cl-assoc filename x :test (## string-prefix-p %2 %1))' -- a 5-
+   element list, not a 4-element one with a merged `:test' symbol).
+   That single merged symbol is never `fboundp', hence item 241's
+   `void-function: (##string-prefix-p)'. The bare `##' case the
+   original comment targeted (Org's declare-function arglist
+   placeholder) happened to still work under the old code because
+   `lex_atom' naturally stops after exactly 2 bytes when `##' is
+   followed by whitespace/`)' anyway -- so the bug was invisible until
+   `##' meets a following identifier with no space, exactly llama.el's
+   `##FN' convention.
+
+   Fix (`lisp/nelisp-cc-reader-lexer.el', `nelisp_reader_lex_sharpsign''s
+   `##' arm only; ~30 lines, comment-heavy): emit `##' as a fixed 2-byte
+   Sym token (kind 23, via the same `mut-str-push-byte' +
+   `nelisp_reader_finalize_classified' pattern the rest of the lexer
+   uses) instead of falling through to `nelisp_reader_lex_atom'. This
+   interns a symbol literally named `"##"' (matching `\#\#' in real
+   Emacs) rather than the true empty-string-name symbol real Emacs
+   produces -- but llama.el's own `(defalias (intern "") 'llama)' AND
+   `(defalias '\#\# 'llama)' both alias to the same macro, so either
+   spelling resolves correctly; true empty-symbol identity was not
+   needed. Rebuilt via `make standalone-reader' (vendor/nelisp's own
+   AOT self-build, per-unit cache invalidated only this one lexer unit).
+
+   Verification: minimal repro `(cl-assoc "foo" nil :test
+   (##string-prefix-p %2 %1))' now evaluates to `nil' (empty alist,
+   correct) instead of aborting; `(magit-expand-git-file-name
+   "/some/absolute/path")' now returns the path unchanged instead of
+   erroring; `make magit-load-smoke' -> `MAGIT-LOAD PASS'. Regression:
+   all `standalone-reader-*-smoke' targets (load/intern-soft/intern-
+   soft-loop/fmt/prelude-equal-reload/declare-strip/nested-backquote-
+   macro/pcase-quote-literal/cond-let-shape/catch-throw-tag/derived-
+   mode-shape, plus `standalone-reader-test' and
+   `standalone-reader-prelude-test') still PASS. `vendor/nelisp make
+   test-fast': `Ran 4449 tests, 4294 results as expected, 43 unexpected,
+   112 skipped' both BEFORE (git-stashed fix, rebuilt, reran) and AFTER
+   this fix -- byte-identical set of 43 failing test names in both runs
+   (`nelisp-async-*', `nelisp-eventloop-multiplex-*',
+   `nelisp-filenotify-*', `nelisp-load-selfhost-roundtrip-via-ec',
+   `nelisp-standalone-target-*', `nelisp-stdlib-run-at-time-registered',
+   `nelisp-text-buffer-*', `nelisp-worker-*',
+   `nelisp-asm-arm64/x86_64-f64-*'; unrelated subsystems, pre-existing
+   on this machine, confirmed by an explicit stash+rebuild+rerun
+   baseline comparison) -- no regression from this change. Commit
+   `b08d6e75' on `vendor/nelisp' branch `fix/llama-shorthand-value'
+   (not merged/pushed).
+
+   NEW BLOCKER found once the llama defect was unblocked (why
+   `magit-status-smoke' still does not PASS): `make magit-status-smoke'
+   now runs past the llama call entirely and fails with `nelisp:
+   uncaught error: text-read-only: nil' inside `magit-status-setup-
+   buffer'. Bisected down to a magit-free, bridge-free minimal repro:
+   creating buffer B1, `(with-current-buffer B1 (setq buffer-read-only
+   t))', then creating a brand-new, never-touched buffer B2 shows
+   `(buffer-local-value 'buffer-read-only B2)' => `t' -- i.e. setting
+   `buffer-read-only' non-nil in ONE buffer leaks into a DIFFERENT,
+   just-created buffer's value, and even an explicit
+   `(with-current-buffer B1 (make-local-variable 'buffer-read-only)
+   (setq buffer-read-only 'B1VAL))' followed by reading the same symbol
+   from B2 returns `B1VAL' too. Root cause (by direct source read, not
+   inference): `vendor/nelisp' has no buffer-local variable storage at
+   all -- `lisp/nelisp-stdlib-eval-special.el' defines `setq-default' /
+   `setq-local' as "NeLisp has no buffer-local; equivalent to `setq'"
+   and `with-current-buffer'/`with-temp-buffer' as "ignore BUFFER, run
+   BODY in current context" (this repo's OWN `with-current-buffer' in
+   `src/emacs-buffer-builtins.el' does provide genuine buffer switching
+   -- confirmed working throughout this pass's probes, e.g.
+   `(buffer-name)' correctly reflects the switched-to buffer -- so this
+   particular stdlib-eval-special fallback is not what is active here);
+   this repo's own `src/emacs-stub.el' `make-variable-buffer-local' /
+   `make-local-variable' are both documented no-op stubs ("Stub: accept
+   VARIABLE and return it ... Even without a full buffer-local
+   subsystem ..."). So any `setq' of a variable like `buffer-read-only'
+   writes through to the single shared/global value cell regardless of
+   current buffer, which is exactly why `nelisp-emacs-magit-bridge--
+   ensure-buffer-defaults' (`src/nelisp-emacs-magit-bridge.el') already
+   has to reset the GLOBAL default of `buffer-read-only' to nil once at
+   bridge-load time (its own doc comment: "every freshly-created
+   buffer ... inherits it") -- but that reset only helps until the
+   FIRST buffer sets `buffer-read-only' to `t' again, which
+   `magit-section-mode' does immediately for the real status buffer,
+   re-poisoning the shared default for every subsequently-created
+   buffer for the rest of the process -- including the numerous
+   `with-temp-buffer's magit's own git-calling machinery
+   (`magit--with-temp-process-buffer' in `magit-git.el') creates while
+   `magit-toplevel'/`magit-repository-local-get' run from inside the
+   status buffer. This is why the M1-era smokes (`magit-toplevel'
+   called from a plain, non-magit buffer) never hit it, and why it only
+   surfaces now that a real end-to-end status-buffer refresh runs far
+   enough to call git from within a `magit-section-mode' buffer.
+
+   This is a genuine, pre-existing, explicitly-documented architectural
+   gap ("no buffer-local subsystem" / "no full buffer-local subsystem")
+   in the buffer-variable model this bridge builds on, not a missing
+   precondition constant/macro this bridge's established
+   `nelisp-emacs-magit-bridge--ensure-*' pattern can patch -- fixing it
+   for real needs genuine per-buffer variable storage (a symbol -> per-
+   buffer-table lookup wired into `set'/`symbol-value'/`default-value'/
+   `make-local-variable', mirroring which built-ins are "automatically"
+   buffer-local the way real Emacs's C `DEFVAR_PER_BUFFER' list works),
+   which is a new subsystem, not a session-level fix, and risks
+   regressing every currently-passing test that depends on the current
+   (admittedly wrong but currently-uniform) "one shared value" behavior
+   if attempted hastily. Left as the crisp minimal repro above rather
+   than patched in this pass. M2's completion conditions
+   (`MAGIT-STATUS-BUFFER PASS' + `MAGIT-GIT-EXEC PASS') remain open;
+   this buffer-local gap is now the actual blocker, not llama/`##'.
+
+   `make test-fast' in THIS repo (nelisp-emacs-lib) was not re-run this
+   pass (no source file in this repo changed); `vendor/nelisp make
+   test-fast' result is reported above. Commits: `b08d6e75' on
+   `vendor/nelisp' branch `fix/llama-shorthand-value' only; this repo
+   has no commits this pass (reproduction/verification only, per this
+   pass's scope).
