@@ -15,7 +15,7 @@
 ;; Pattern syntax supported:
 ;;   `_'                — catch-all
 ;;   INTEGER / STRING   — `equal' test
-;;   `(quote X)' / `'X' — `eq' test
+;;   `(quote X)' / `'X' — `equal' test (structural, not identity)
 ;;   SYMBOL (bare)      — bind to value, always match
 ;;   `(pred FN)'        — call (FN value), match if non-nil
 ;;   `(and P1 P2 ...)'  — match if every P matches (binds ALL)
@@ -109,9 +109,24 @@ to let-bind in the case body when matched."
       (let ((head (car pattern))
             (rest (cdr pattern)))
         (cond
-         ;; (quote X)
+         ;; (quote DATUM)
          ((eq head 'quote)
-          (cons (list 'eq value-form (list 'quote (car rest))) nil))
+          ;; `equal', not `eq': a `(quote DATUM)' pattern must match any
+          ;; value that is STRUCTURALLY the same, not merely the same
+          ;; object.  `eq' happens to work for the common case of a
+          ;; quoted symbol (interned, so `eq'-comparable) but silently
+          ;; never matches a quoted compound datum (list/vector/string)
+          ;; compared against a freshly-consed runtime value of the same
+          ;; shape -- `(eq (list t t) '(t t))' is nil in both this
+          ;; polyfill and real Emacs.  That silent non-match let a later,
+          ;; structurally-overlapping backquote-pattern clause win
+          ;; instead, selecting the wrong helper macro out of a `pcase'
+          ;; dispatch that assumed exact-match precedence -- root cause
+          ;; of the Magit bridge M2 blocker (nelisp-emacs-lib Doc 33 item
+          ;; 239's `cond-let*' repro `(cond-let* ([x 1] [x (+ x 1)] x)
+          ;; (t 99))' => `void-variable: x', mirrors dev/nelisp commit
+          ;; 71de60a6).
+          (cons (list 'equal value-form (list 'quote (car rest))) nil))
          ;; (pred FN)
          ((eq head 'pred)
           (let ((fn (car rest)))
