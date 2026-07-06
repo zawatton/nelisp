@@ -35,6 +35,8 @@
      "packages/nelisp-emacs-app-gui/lisp/emacs-init.el")
     ("app-bootstrap" "src/nemacs-loadup.el"
      "packages/nelisp-emacs-app-gui/lisp/nemacs-loadup.el")
+    ("app-utility" "src/nemacs-init-transport.el"
+     "packages/nelisp-emacs-app-gui/lisp/nemacs-init-transport.el")
     ("app-utility" "src/image-baker.el"
      "packages/nelisp-emacs-app-gui/lisp/image-baker.el")
     ("app-entry" "src/nemacs-main.el"

@@ -116,6 +116,7 @@
     ;; A representative slice of every Track's bridge module.
     (dolist (feat '(emacs-init
                     nelisp-emacs
+                    nemacs-init-transport
                     emacs-buffer-builtins
                     emacs-search-builtins
                     emacs-line-builtins

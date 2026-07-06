@@ -306,6 +306,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-init.el= | APP | current load-order assembly | convert to package manifest over time |
 | =image-baker.el= | APP | batch image baking orchestration over =nemacs-loadup= | keep app utility; stage outside reusable packages |
 | =nemacs-loadup.el= | APP | bootstrap entry | keep app-only |
+| =nemacs-init-transport.el= | APP | shared wrapped-init transport consumer (loader reconcile Phase 2), reused by =nemacs-loadup= and the GUI bridge's =files--load-user-init= | keep app utility; stage outside reusable packages |
 | =nemacs-main.el= | APP | interactive runner | remove reusable semantics over time |
 
 * 4. gui/ inventory
