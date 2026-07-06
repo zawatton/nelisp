@@ -48,11 +48,20 @@
    "src/emacs-help-gui.el"
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
+(defconst nemacs-gui-file-bridge-runtime-test--init-transport
+  (expand-file-name
+   "src/nemacs-init-transport.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root)
+  "Loader reconcile Phase 2: shared wrapped-init transport consumer.
+`files--load-user-init' (in the bridge-runtime source below) delegates
+to `nemacs-init-transport-consume', so this must load before it.")
+
 (defconst nemacs-gui-file-bridge-runtime-test--image-sources
   `(("fileio-gui" . ,nemacs-gui-file-bridge-runtime-test--fileio-gui)
     ("dired-gui" . ,nemacs-gui-file-bridge-runtime-test--dired-gui)
     ("info-gui" . ,nemacs-gui-file-bridge-runtime-test--info-gui)
     ("help-gui" . ,nemacs-gui-file-bridge-runtime-test--help-gui)
+    ("init-transport" . ,nemacs-gui-file-bridge-runtime-test--init-transport)
     ("bridge-runtime" . ,nemacs-gui-file-bridge-runtime-test--source))
   "Source files included in generated GUI bridge runtime images.")
 
@@ -247,6 +256,8 @@ and app copies for staged app/frontend glue; otherwise return SOURCE."
        nemacs-gui-file-bridge-runtime-test--info-gui)
       (nemacs-gui-file-bridge-runtime-test--insert-image-source
        nemacs-gui-file-bridge-runtime-test--help-gui)
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--init-transport)
       (nemacs-gui-file-bridge-runtime-test--insert-image-source
        nemacs-gui-file-bridge-runtime-test--source)
       (insert "\n)\n"))

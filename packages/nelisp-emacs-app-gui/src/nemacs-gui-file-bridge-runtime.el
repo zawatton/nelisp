@@ -7703,44 +7703,14 @@
 ;; skipped + one failed line per form the substrate could not apply).
 ;; A form that hard-aborts loses its ok marker; the next begin (or the
 ;; final flush) records it as failed instead of dying silently.
-
-(setq nemacs-init--pending "")
-(setq nemacs-init--applied 0)
-(setq nemacs-init--seen 0)
-(setq nemacs-init--failed "")
-(setq nemacs-init--files nil)
-(setq nemacs-init--last-load-path-dir nil)
-
-(fset 'nemacs-init--note-file
-      (lambda (f)
-        (setq nemacs-init--files (cons f nemacs-init--files))
-        f))
-
-(fset 'nemacs-init--file-loaded-p
-      (lambda (f)
-        (let ((xs nemacs-init--files)
-              (hit nil))
-          (while xs
-            (if (equal (car xs) f)
-                (progn (setq hit t) (setq xs nil))
-              (setq xs (cdr xs))))
-          hit)))
-
-(fset 'nemacs-init--begin
-      (lambda (n hint)
-        (if (equal nemacs-init--pending "")
-            nil
-          (setq nemacs-init--failed
-                (concat nemacs-init--failed "failed\t" nemacs-init--pending "\n")))
-        (setq nemacs-init--pending hint)
-        (setq nemacs-init--seen n)
-        n))
-
-(fset 'nemacs-init--ok
-      (lambda (n)
-        (setq nemacs-init--applied (+ nemacs-init--applied 1))
-        (setq nemacs-init--pending "")
-        n))
+;;
+;; Loader reconcile Phase 2: the marker state/functions and the actual
+;; consume orchestration moved to the session/library-tier
+;; `nemacs-init-transport.el' (`nemacs-init-transport-consume'), reused
+;; by `nemacs-loadup.el' for the standalone/macro-less driver lane.
+;; This file keeps only its own `/tmp' transport-path naming
+;; (`files--init-wrapper-path'/`files--init-report-path') and delegates
+;; the load itself to the shared helper.
 
 (fset 'files--init-wrapper-path
       (lambda ()
@@ -7769,76 +7739,11 @@
             nil)
           out)))
 
-(setq nemacs-init--loaded-mtime "")
-
 (fset 'files--load-user-init
       (lambda ()
-        (if (fboundp 'nelisp--syscall-stat-field)
-            (let ((wrapper (files--init-wrapper-path))
-                  (mtime 0)
-                  (mstr "")
-                  (skipped 0))
-              (if (files--file-exists-p wrapper)
-                  (progn
-                    (setq mtime (nelisp--syscall-stat-field wrapper 88))
-                    (setq mstr (number-to-string mtime))
-                    ;; the guard is process-local: every fresh one-shot
-                    ;; bridge process re-applies the init (its globals
-                    ;; start from defaults), a session process applies
-                    ;; once per wrapper mtime
-                    (if (equal nemacs-init--loaded-mtime mstr)
-                        nil
-                      (progn
-                        (setq nemacs-init--pending "")
-                        (setq nemacs-init--applied 0)
-                        (setq nemacs-init--seen 0)
-                        (setq nemacs-init--failed "")
-                        (setq nemacs-init--loaded-mtime mstr)
-                        ;; pre-note every resolved package file from the
-                        ;; companion list: the IMAGE evaluator drops their
-                        ;; defuns anyway, and a big nested package load
-                        ;; inside the image replay crashes the reader —
-                        ;; the registry guards then skip those forms
-                        ;; (package use in the editor = M19-2 transpile)
-                        (let ((plist2 (rdf (concat wrapper "-packages")))
-                              (pi2 0)
-                              (pn2 0)
-                              (pls2 0))
-                          (setq pn2 (length plist2))
-                          (while (< pi2 pn2)
-                            (setq pls2 pi2)
-                            (while (if (< pi2 pn2)
-                                       (if (= (aref plist2 pi2) 10) nil t)
-                                     nil)
-                              (setq pi2 (+ pi2 1)))
-                            (if (> pi2 pls2)
-                                (nemacs-init--note-file
-                                 (substring plist2 pls2 pi2))
-                              nil)
-                            (setq pi2 (+ pi2 1))))
-                        (load wrapper nil t)
-                        ;; M19-2: the lowered package transpile gives the
-                        ;; image evaluator callable package functions
-                        ;; (raw files drop their defuns there); forms it
-                        ;; cannot evaluate abort alone per top-level unit
-                        (if (files--file-exists-p (concat wrapper "-pkgs-lowered"))
-                            (load (concat wrapper "-pkgs-lowered") nil t)
-                          nil)
-                        (if (equal nemacs-init--pending "")
-                            nil
-                          (progn
-                            (setq nemacs-init--failed
-                                  (concat nemacs-init--failed "failed\t" nemacs-init--pending "\n"))
-                            (setq nemacs-init--pending "")))
-                        (setq skipped (- nemacs-init--seen nemacs-init--applied))
-                        (nl-write-file (files--init-report-path)
-                                       (concat "mtime\t" mstr "\n"
-                                               "total\t" (number-to-string nemacs-init--seen) "\n"
-                                               "applied\t" (number-to-string nemacs-init--applied) "\n"
-                                               "skipped\t" (number-to-string skipped) "\n"
-                                               nemacs-init--failed)))))
-                nil))
-          nil)))
+        (nemacs-init-transport-consume
+         (files--init-wrapper-path)
+         (files--init-report-path))))
 
 ;; M13 info/customize lane.
 ;; Info reader subset: parse \x1f-separated nodes from a real .info

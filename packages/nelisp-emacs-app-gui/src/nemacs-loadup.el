@@ -40,6 +40,7 @@
 
 (require 'emacs-init)
 (require 'emacs-dump)
+(require 'nemacs-init-transport)
 
 ;;;; --- version + hook surface ----------------------------------------
 
@@ -266,28 +267,85 @@ init.el is considered, so tests never fall through to the user's real home."
               (concat home "/.emacs.el")
               (concat home "/.emacs"))))))
 
+(defun nemacs--macro-less-runtime-p ()
+  "Return non-nil when the running driver may need pre-lowered init forms.
+Same standalone-vs-host guard used across `src/' (e.g. `emacs-fns.el'
+require polyfill, and this file's own `push' compat macro above): a
+real host Emacs macro-expands every user construct normally, so a raw
+`load' of early-init.el/init.el is always sufficient there.  The
+standalone NeLisp reader may not reliably macro-expand every construct
+a real third-party package uses (Doc reconcile plan §1), which is what
+`nemacs-wrap-init' host-side pre-lowering exists for (loader reconcile
+Phase 2)."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))
+      (not (stringp emacs-version))))
+
+(defun nemacs--init-wrapped-transport-path ()
+  "Return the wrapped-init transport path under `nemacs-user-emacs-directory'.
+`nemacs-wrap-init' (scripts/nemacs-wrap-init.el, run ahead of time under
+a full host Emacs) writes its OUT file here, plus the `-packages' /
+`-pkgs-lowered' companions `nemacs-init-transport-consume' also reads.
+Wiring the generator invocation itself into the launchers is Phase 3;
+Phase 2 only consumes a transport that is already present on disk."
+  (concat nemacs-user-emacs-directory "nemacs-init-wrapped"))
+
+(defun nemacs--load-user-init-via-transport ()
+  "Consume a pre-lowered wrapped-init transport when one is present.
+Returns non-nil when the transport was found and applied (whether
+freshly loaded this call or already applied for the same mtime by an
+earlier call in this process), so the caller should skip the raw
+`load' fallback; returns nil when there is no transport to consume
+\(no wrapper file, or the runtime lacks the primitives
+`nemacs-init-transport-consume' needs), so the caller should fall back
+to the Phase 1 raw-load lane unchanged."
+  (and (nemacs--macro-less-runtime-p)
+       (fboundp 'nemacs-init-transport-consume)
+       (let ((wrapper (nemacs--init-wrapped-transport-path)))
+         (nemacs-init-transport-consume wrapper (concat wrapper "-report")))))
+
 (defun nemacs-load-user-init-files ()
   "Load early-init.el, run the package slot, then load init.el.
 The loader is session-owned; frontend wrappers should delegate here instead
-of reimplementing init discovery."
+of reimplementing init discovery.
+
+Under the standalone macro-less runtime, a pre-lowered wrapped-init
+transport (written by `nemacs-wrap-init', scripts/nemacs-wrap-init.el)
+takes priority over the raw early-init.el/init.el `load' when one is
+present at `nemacs--init-wrapped-transport-path' -- this is the loader
+reconcile Phase 2 lane (`nemacs-init-transport-consume',
+src/nemacs-init-transport.el).  A real host Emacs, and a standalone
+session with no such transport, keep the Phase 1 raw-load path
+unchanged."
   (setq nemacs-user-emacs-directory (nemacs-resolve-user-emacs-directory))
   (when (boundp 'user-emacs-directory)
     (setq user-emacs-directory nemacs-user-emacs-directory))
   (unless (null init-file-user)
-    (let ((early (concat nemacs-user-emacs-directory "early-init.el"))
-          found-init)
-      (when (nemacs--init-file-readable-p early)
-        (nemacs--load-init-file early 'early-init))
-      (nemacs-activate-packages-at-startup)
-      (when (fboundp 'run-hooks)
-        (run-hooks 'nemacs-package-activation-hook))
+    (let* ((early (concat nemacs-user-emacs-directory "early-init.el"))
+           (early-readable (nemacs--init-file-readable-p early))
+           found-init)
       (catch 'done
         (dolist (path (nemacs-candidate-init-files))
           (when (nemacs--init-file-readable-p path)
             (setq found-init path)
             (throw 'done t))))
-      (when found-init
-        (nemacs--load-init-file found-init 'init))))
+      (if (nemacs--load-user-init-via-transport)
+          (progn
+            (when early-readable
+              (setq early-init-file early))
+            (when found-init
+              (setq user-init-file found-init))
+            (nemacs-activate-packages-at-startup)
+            (when (fboundp 'run-hooks)
+              (run-hooks 'nemacs-package-activation-hook)))
+        (progn
+          (when early-readable
+            (nemacs--load-init-file early 'early-init))
+          (nemacs-activate-packages-at-startup)
+          (when (fboundp 'run-hooks)
+            (run-hooks 'nemacs-package-activation-hook))
+          (when found-init
+            (nemacs--load-init-file found-init 'init))))))
   (setq nemacs-init-file-loaded t))
 
 (defun nemacs--apply-initial-major-mode ()
