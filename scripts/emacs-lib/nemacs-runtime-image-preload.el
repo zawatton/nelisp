@@ -3218,6 +3218,23 @@ image startup."
 (when (fboundp 'nelisp--write-stdout-bytes)
   (nemacs-runtime-image-preload--force-install-frame-tab-core))
 
+;; Task #17 (M1) — Magit bridge extension.  Mirrors
+;; `nemacs-runtime-image-preload-vendor-core-extension' above: a thin
+;; dispatcher that hands off to the real logic owned by
+;; `src/nelisp-emacs-magit-bridge.el' (per CLAUDE.md/AGENTS.md, session/image
+;; wiring stays thin; the reusable "bring the real vendor Magit chain into a
+;; NeLisp session" behavior belongs in a `src/' module, not here).
+(defun nemacs-runtime-image-preload-magit-extension (repo-root)
+  "Extend an already-baked base runtime image with the real vendor Magit chain.
+REPO-ROOT is the repository root (matches the other preload entry points'
+REPO-ROOT convention); the Magit bridge bundle and its own preconditions
+are resolved relative to it."
+  (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo-root)
+        nil 'no-message t t)
+  (setq nelisp-emacs-magit-bridge-repo-root repo-root)
+  (nelisp-emacs-magit-bridge-load)
+  t)
+
 (provide 'nemacs-runtime-image-preload)
 
 ;;; nemacs-runtime-image-preload.el ends here
