@@ -44,6 +44,7 @@
 (require 'emacs-buffer-builtins)
 (require 'emacs-string)
 (require 'files-runtime)
+(require 'emacs-file-name-handler)
 
 (defconst emacs-fileio-builtins--standalone-overrides
   '(insert-file-contents
@@ -106,31 +107,73 @@ leaving stub function cells in place."
 ;; All 14 substrate-direct file-I/O bridges in this file map uniformly to
 ;; `nelisp-ec-<same-name>', so we use a bare symbol list (no pairs) and
 ;; synthesize the target name with `(intern (concat "nelisp-ec-" ...))'.
+;;
+;; Doc 37 (Tramp ssh-only lane, task #16) splits the original single
+;; dolist in two.  Most of these primitives are Emacs "magic file name"
+;; operations: real Emacs dispatches them through `file-name-handler-alist'
+;; (via `find-file-name-handler') before ever reaching the local
+;; filesystem, which is exactly how Tramp intercepts a `/ssh:host:' path.
+;; `emacs-fileio-builtins--handler-dispatch-ops' gets a thin
+;; `emacs-fnh-wrap' wrapper instead of a bare alias so a magic file name
+;; reaches its handler first; `emacs-fileio-builtins--handler-passthrough-ops'
+;; keeps the previous bare alias because Emacs does not dispatch those two
+;; through `file-name-handler-alist' (`file-name-absolute-p' is pure
+;; string syntax; `executable-find' walks `exec-path', not a file name).
+;;
+;; This is purely additive: which primitives get *installed* here is
+;; still governed by `emacs-fileio-builtins--install-function-p' exactly
+;; as before (host Emacs's own C primitives win there and this whole
+;; block stays inert); only what a standalone install becomes has
+;; changed, from a bare `nelisp-ec-*' alias to a handler-aware wrapper
+;; around the same `nelisp-ec-*' function.
 
-(dolist (--name--
-         '(;; --- file-name parsing
-           expand-file-name
-           file-name-absolute-p
-           file-name-directory
-           file-name-nondirectory
-           file-name-as-directory
-           substitute-in-file-name
-           ;; --- predicates / attributes
-           file-exists-p
-           file-readable-p
-           file-executable-p
-           file-directory-p
-           file-attributes
-           directory-files
-           executable-find
-           ;; --- mutation
-           delete-file
-           rename-file
-           ;; --- read / write
-           insert-file-contents))
+(defconst emacs-fileio-builtins--handler-passthrough-ops
+  '(file-name-absolute-p
+    executable-find)
+  "File-I/O primitives Emacs does NOT dispatch through
+`file-name-handler-alist' (pure string syntax or a `exec-path' search).
+These keep the historical bare `nelisp-ec-*' alias.")
+
+(defconst emacs-fileio-builtins--handler-dispatch-ops
+  '(;; --- file-name parsing
+    expand-file-name
+    file-name-directory
+    file-name-nondirectory
+    file-name-as-directory
+    substitute-in-file-name
+    ;; --- predicates / attributes
+    file-exists-p
+    file-readable-p
+    file-executable-p
+    file-directory-p
+    file-attributes
+    directory-files
+    ;; --- mutation
+    delete-file
+    rename-file
+    ;; --- read
+    insert-file-contents)
+  "File-I/O primitives whose Emacs operation symbol matches their own
+function name in `file-name-handler-alist' dispatch (the `files.el'/
+`fileio.c' convention).  Each entry here gets a handler-aware wrapper
+(see `emacs-fnh-wrap') instead of a bare `nelisp-ec-*' alias so a magic
+file name (e.g. a Tramp `/ssh:' path) reaches its handler before falling
+through to the local `nelisp-ec-*' substrate.
+`emacs-fnh-wrap' only inspects the FIRST argument.  `rename-file' takes
+FILE and NEWNAME; real Emacs also checks NEWNAME's handler for
+cross-filesystem renames, but the ssh-only lane's approved scope
+excludes cross-host operations, so only FILE is dispatched here.")
+
+(dolist (--name-- emacs-fileio-builtins--handler-passthrough-ops)
   (when (emacs-fileio-builtins--install-function-p --name--)
     (defalias --name--
       (intern (concat "nelisp-ec-" (symbol-name --name--))))))
+
+(dolist (--name-- emacs-fileio-builtins--handler-dispatch-ops)
+  (when (emacs-fileio-builtins--install-function-p --name--)
+    (fset --name--
+          (emacs-fnh-wrap --name--
+                          (intern (concat "nelisp-ec-" (symbol-name --name--)))))))
 
 ;; --- access(2)-backed predicates for the standalone reader ----------
 ;; The `emacs-fileio-builtins--install-function-p' standalone clause keys
@@ -262,13 +305,27 @@ Emacs API parity and ignored."
 
 ;; insert-file-contents batched into the dolist near the top.
 
+(defun emacs-fileio-builtins--local-write-region
+    (start end filename &optional append visit _lockname _mustbenew)
+  "Local `write-region' body: forward to `nelisp-ec-write-region'.
+LOCKNAME / MUSTBENEW are accepted for API parity but ignored -- the
+substrate has no file-locking subsystem yet."
+  (nelisp-ec-write-region start end filename append visit))
+
 (when (emacs-fileio-builtins--install-function-p 'write-region)
   (defun write-region (start end filename &optional append visit lockname mustbenew)
-    "Phase D polyfill: forward to `nelisp-ec-write-region'.
-LOCKNAME / MUSTBENEW are accepted for API parity but ignored —
-the substrate has no file-locking subsystem yet."
-    (ignore lockname mustbenew)
-    (nelisp-ec-write-region start end filename append visit)))
+    "Phase D polyfill: forward to `nelisp-ec-write-region', with dispatch.
+Doc 37: FILENAME (the third argument, not the first -- unlike the
+generic `emacs-fnh-dispatch' convention) is checked against
+`file-name-handler-alist' first, so a magic file name (e.g. a Tramp
+`/ssh:' path) reaches its handler; a local FILENAME falls through
+unchanged to `emacs-fileio-builtins--local-write-region'."
+    (let ((handler (emacs-fnh-find-file-name-handler filename 'write-region)))
+      (if handler
+          (funcall handler 'write-region
+                   start end filename append visit lockname mustbenew)
+        (emacs-fileio-builtins--local-write-region
+         start end filename append visit lockname mustbenew)))))
 
 ;;;; --- temp files -----------------------------------------------------
 ;; `make-temp-file' is absent on the standalone reader (nemacs), and a

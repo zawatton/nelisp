@@ -552,7 +552,17 @@
                (if buffer
                    (with-current-buffer buffer
                      (goto-char (point-max))
-                     (insert chunk))
+                     (insert chunk)
+                     ;; Doc 37 (task #16): keep an already-created
+                     ;; `process-mark' marker following the insertion
+                     ;; point, the way Emacs' real process filters do,
+                     ;; so callers such as `tramp-sh' / `comint' that
+                     ;; track "how much output have I consumed" via
+                     ;; `process-mark' see it advance.  A no-op when no
+                     ;; marker has been requested yet (`markerp' nil).
+                     (if (and (fboundp 'markerp) (markerp (aref process 13)))
+                         (set-marker (aref process 13) (point) buffer)
+                       nil))
                  nil)
                (if (emacs-process--callable-p filter)
                    (funcall filter process chunk)
@@ -594,10 +604,13 @@
                nil
              (progn
                (setq process
+                     ;; Slot 13 (added Doc 37 task #16) is the lazily
+                     ;; created `process-mark' marker; see
+                     ;; `emacs-process-process-mark' below.
                      (vector emacs-process--bidi-tag name buffer command
                              'run nil filter sentinel nil
                              (nth 0 spawn) (nth 1 spawn) (nth 2 spawn)
-                             nil))
+                             nil nil))
                (setq emacs-process--bidi-processes
                      (cons process emacs-process--bidi-processes))
                process)))))
@@ -708,6 +721,52 @@
       '(lambda (&rest args)
          (apply 'emacs-process-call-process-region args)))
 
+;; Doc 37 (task #16, M4): `process-file' with file-name-handler dispatch
+;; on PROGRAM/INFILE/DESTINATION -- the same convention already shipped
+;; at the `emacs-process.el' layer (Doc 36) for hosts that assemble a
+;; full image on top of `src/*.el'.  This copy exists so a bare preload
+;; (no `src/*.el' loaded, as in the standalone-reader bidi smoke) still
+;; gets Tramp-ready dispatch once `find-file-name-handler' is available.
+(fset 'emacs-process--process-file-handler-filename
+      '(lambda (program infile destination)
+         (if (if (stringp program)
+                 (if (fboundp 'find-file-name-handler)
+                     (find-file-name-handler program 'process-file)
+                   nil)
+               nil)
+             program
+           (if (if (stringp infile)
+                   (if (fboundp 'find-file-name-handler)
+                       (find-file-name-handler infile 'process-file)
+                     nil)
+                 nil)
+               infile
+             (if (if (if (consp destination) (eq (car destination) :file) nil)
+                     (if (stringp (car (cdr destination)))
+                         (if (fboundp 'find-file-name-handler)
+                             (find-file-name-handler
+                              (car (cdr destination)) 'process-file)
+                           nil)
+                       nil)
+                   nil)
+                 (car (cdr destination))
+               nil)))))
+
+(fset 'emacs-process-process-file
+      '(lambda (program &optional infile destination display &rest args)
+         (let* ((handler-file (emacs-process--process-file-handler-filename
+                               program infile destination))
+                (handler (if (if handler-file (fboundp 'find-file-name-handler) nil)
+                             (find-file-name-handler handler-file 'process-file)
+                           nil)))
+           (if handler
+               (apply handler 'process-file program infile destination display args)
+             (apply 'call-process program infile destination display args)))))
+
+(fset 'process-file
+      '(lambda (&rest args)
+         (apply 'emacs-process-process-file args)))
+
 (fset 'emacs-process-start-process
       '(lambda (name buffer program &rest program-args)
          (if (emacs-process--native-start-available-p)
@@ -725,6 +784,29 @@
 (fset 'start-process
       '(lambda (&rest args)
          (apply 'emacs-process-start-process args)))
+
+;; Doc 37 (task #16, M2): `start-file-process' with file-name-handler
+;; dispatch on `default-directory' (the `files.el' convention -- unlike
+;; `process-file', the handler check is on the *directory*, not on
+;; PROGRAM/INFILE/DESTINATION).
+(fset 'emacs-process-start-file-process
+      '(lambda (name buffer program &rest program-args)
+         (let ((handler (if (if (boundp 'default-directory)
+                                (if (stringp default-directory)
+                                    (fboundp 'find-file-name-handler)
+                                  nil)
+                              nil)
+                            (find-file-name-handler
+                             default-directory 'start-file-process)
+                          nil)))
+           (if handler
+               (apply handler 'start-file-process name buffer program
+                      program-args)
+             (apply 'start-process name buffer program program-args)))))
+
+(fset 'start-file-process
+      '(lambda (&rest args)
+         (apply 'emacs-process-start-file-process args)))
 
 (fset 'emacs-process-make-process
       '(lambda (&rest plist)
@@ -876,9 +958,33 @@
       '(lambda (process)
          (emacs-process-process-id process)))
 
+;; Doc 37 (task #16): a real marker instead of the fixed-nil stub.
+;; `tramp-sh' (and `comint') read `process-mark' to track how much of a
+;; process buffer they have already consumed.  Lazily creates the
+;; marker in vector slot 13 (see `emacs-process--bidi-make-process')
+;; the first time it is asked for, initialised at the buffer's current
+;; `point-max' (Emacs' own convention for a freshly attached process
+;; filter); `emacs-process--bidi-drain' keeps it advancing afterwards.
+;; A no-op (returns nil, the previous behaviour) when `make-marker' is
+;; not available in this image (e.g. the bare bidi-smoke harness, which
+;; loads only this preload script with no buffer-marker polyfill).
 (fset 'emacs-process-process-mark
       '(lambda (process)
-         nil))
+         (if (emacs-process--bidi-process-p process)
+             (if (fboundp 'make-marker)
+                 (let ((marker (aref process 13)))
+                   (if (if (fboundp 'markerp) (markerp marker) nil)
+                       marker
+                     (let ((m (make-marker))
+                           (buffer (aref process 2)))
+                       (if buffer
+                           (set-marker m (with-current-buffer buffer (point-max))
+                                       buffer)
+                         (set-marker m 1))
+                       (aset process 13 m)
+                       m)))
+               nil)
+           nil)))
 
 (fset 'process-mark
       '(lambda (process)
