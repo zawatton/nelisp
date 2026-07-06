@@ -109,7 +109,26 @@ batch tests and local runtime modules."
            (noerror nil)
            (t (error "Required feature was not provided: %S" feature))))
          (noerror nil)
-         (t (error "Cannot open load file: %S" feature)))))))
+         (t (error "Cannot open load file: %S" feature))))))
+
+  ;; Self-check (nemacs init loader reconcile, Phase 1): prove the
+  ;; `require' just defined above actually shadows reader-native
+  ;; dispatch instead of merely being reachable via `fboundp'.
+  ;; Standalone drivers may otherwise dispatch `require' to an interim
+  ;; stub that unconditionally returns FEATURE -- regardless of
+  ;; NOERROR, and regardless of whether anything was ever located,
+  ;; loaded, or provided.  That silent "success" was empirically
+  ;; confirmed on the standalone runtime prior to this file loading
+  ;; (`(require 'x nil t)' returned `x' instead of nil for an
+  ;; unresolvable feature).  Once shadowed, the same call must return
+  ;; nil.  Fail loudly here instead of letting a reintroduced silent
+  ;; no-op surface confusingly in some later consumer's `require' call.
+  (let ((probe (require (make-symbol "nelisp-require-shadow-probe") nil t)))
+    (when probe
+      (error (concat "emacs-fns: `require' polyfill did not shadow the "
+                      "reader-native dispatch (got %S back for an "
+                      "unresolvable feature under NOERROR, expected nil)")
+             probe))))
 
 (when (and (fboundp 'rdf)
            (not (fboundp 'nl-syscall-read-file)))
