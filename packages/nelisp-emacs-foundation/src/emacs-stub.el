@@ -243,6 +243,30 @@ single-frame backends (= some bare-minimum TUIs) ship."
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
 
+;; Doc 33 item 244 (M2 completion blocker): `char-displayable-p' is void
+;; in the standalone runtime, so a `defcustom'/`defvar' default value
+;; template that calls it at load time (e.g. `magit-section-visibility-
+;; indicators''s ellipsis-character default in `magit-section.el')
+;; aborts the whole form, leaving the variable unbound.  Real Emacs
+;; consults per-frame/per-terminal font and charset capability, which
+;; this runtime has no database for yet, so this follows
+;; `emacs-display-multi-frame-p''s own precedent: treat any live
+;; display backend (including 'tui, unlike `display-graphic-p', since a
+;; modern terminal is assumed UTF-8/Unicode-capable) as able to render
+;; CHAR, and a nil backend (batch / headless / pre-bootstrap, e.g.
+;; while a runtime image is being baked before any frontend attaches)
+;; conservatively as not.
+(defun emacs-display-char-displayable-p (char)
+  "MVP: assume any live display backend (`emacs-display-system' non-nil)
+can render CHAR; a nil backend (batch/headless) cannot.  See the note
+above for why this is a faithful-enough stand-in rather than a real
+font/charset capability query."
+  (ignore char)
+  (not (null emacs-display-system)))
+
+(when (emacs-stub--install-function-p 'char-displayable-p)
+  (defalias 'char-displayable-p #'emacs-display-char-displayable-p))
+
 
 ;;;; --- window.c -----------------------------------------------------------
 ;;;; --- window.c -----------------------------------------------------------
@@ -1905,6 +1929,28 @@ E is V itself when V is self-quoting, otherwise (quote V)."
              (or (keywordp v) (not (symbolp v)) (memq v '(nil t))))
         v
       (list 'quote v))))
+
+;; Doc 33 item 244: `macroexp-const-p' must be REAL, not the bulk no-op
+;; (`emacs-stub-bulk' installs an always-nil lambda for it).  EIEIO's
+;; `eieio-defclass-internal' asks it whether a slot's :initform is
+;; already a constant expression; with the always-nil stub every quoted
+;; initform (e.g. magit-file-section's `(quote magit-file-section-map)')
+;; got wrapped by `macroexp-quote' a SECOND time, so `eieio-oref-default''s
+;; single `eval' unwrapped only one layer and every constructed object
+;; carried `(quote SYM)' in the slot instead of SYM — downstream,
+;; magit-section's `(symbol-value keymap)' on that cons aborted the whole
+;; enclosing form flagless.  Semantics copied from macroexp.el.
+(when (or (not (fboundp 'macroexp-const-p))
+          (get 'macroexp-const-p 'emacs-stub-bulk))
+  (defun macroexp-const-p (exp)
+    "Return non-nil if EXP will always evaluate to the same value."
+    (cond ((consp exp) (or (eq (car exp) 'quote)
+                           (and (eq (car exp) 'function)
+                                (symbolp (cadr exp)))))
+          ((symbolp exp) (or (memq exp '(nil t))
+                             (keywordp exp)))
+          (t t)))
+  (put 'macroexp-const-p 'emacs-stub-bulk nil))
 
 ;;;; --- Doc 16 breadth round 15: copy-hash-table (was void) -------------
 ;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The

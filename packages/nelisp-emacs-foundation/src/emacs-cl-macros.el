@@ -156,12 +156,28 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
 This shim keeps the runtime arglist Emacs-compatible by replacing
 `(ARG DEFAULT)' with plain `ARG' and applying DEFAULT in the body when ARG is
 nil.  It is intentionally conservative but enough for vendored Org load-time
-forms such as `(cl-defun org-knuth-hash (number &optional (base 32)) ...)'."
+forms such as `(cl-defun org-knuth-hash (number &optional (base 32)) ...)'.
+
+Doc 33 item 244: a three-element `(ARG DEFAULT SUPPLIED-P)' spec (e.g.
+magit-margin.el's `(previous-line nil sline)') additionally binds
+SUPPLIED-P.  Because the flattened Emacs arglist cannot distinguish
+\"caller passed nil\" from \"argument omitted\", SUPPLIED-P is
+approximated as `(and ARG t)' — exact for every real call shape where
+the argument is either omitted (ARG nil via a nil DEFAULT => nil) or
+passed as a non-nil value (=> t); only an explicit nil argument
+misreads as unsupplied.  The SUPPLIED-P binding is emitted BEFORE the
+DEFAULT application so it observes the raw argument, not the default."
   (let (bindings)
     (dolist (spec optionals)
       (when (and (consp spec)
                  (symbolp (car spec))
                  (consp (cdr spec)))
+        (when (and (consp (cdr (cdr spec)))
+                   (symbolp (car (cdr (cdr spec))))
+                   (car (cdr (cdr spec))))
+          (push (list (car (cdr (cdr spec)))
+                      (list 'and (car spec) t))
+                bindings))
         (push (list (car spec)
                     (list 'if (car spec)
                           (car spec)
