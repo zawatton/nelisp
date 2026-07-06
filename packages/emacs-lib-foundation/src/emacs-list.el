@@ -67,13 +67,77 @@
   (defalias 'emacs-list--copy-sequence-nonrecord
     (symbol-function 'copy-sequence)
     "The pre-upgrade `copy-sequence' (correct for all non-record types).")
+
+  ;; Doc 33 item 244 (CRITICAL, upgrades item 243's record copy): the
+  ;; runtime has NO working record-length primitive.  Native `length' on
+  ;; a tag-12 record returns 0, and the stdlib prelude's
+  ;; `nelisp--record-length' is just `(length rec)', so it returns 0 for
+  ;; every record.  Item 243's copy loop therefore ran ZERO iterations
+  ;; and, far worse, `(make-record TYPE 0 nil)' produced a ZERO-slot
+  ;; copy: EIEIO's `make-instance' copies the class's default-object
+  ;; cache through `copy-sequence', so every constructed object was a
+  ;; 0-slot record whose subsequent `oset' calls (slot indexes 1..N)
+  ;; were silent OUT-OF-BOUNDS heap writes -- wild scribbles over
+  ;; whatever the allocator placed next.  This is the likely true root
+  ;; of the session's \"GC collects live lexframe children\"-signature
+  ;; SIGSEGVs (heap corruption, not only the Doc 155 collector gap).
+  ;; Since no primitive can recover a record's slot count after creation
+  ;; (and `eq' hash tables cannot look records back up either --
+  ;; `puthash' with a record key stores an entry `gethash' never finds),
+  ;; recover it from the record's TYPE TAG instead:
+  ;;   - symbol tag (cl-defstruct-shaped records: `eieio--class',
+  ;;     `cl-slot-descriptor', ...): every instance of the type has the
+  ;;     same arity, so stash the count on the tag symbol's plist at
+  ;;     creation via wrapped `make-record'/`record'.
+  ;;   - record tag (EIEIO objects: the tag is the class record): the
+  ;;     class's own slots vector length is authoritative.
+  ;;   - anything else: fall back to `nelisp--record-length' (returns 0
+  ;;     today; kept so a future fixed runtime wins).
+
+  (defalias 'emacs-list--orig-make-record (symbol-function 'make-record)
+    "The runtime's own `make-record' (correct except for length recovery).")
+  (defun make-record (type slots init)
+    "Create a record; remember the type's slot count (Doc 33 item 244)."
+    (when (and (symbolp type)
+               (< (or (get type 'emacs-list--record-slot-count) -1) slots))
+      (put type 'emacs-list--record-slot-count slots))
+    (emacs-list--orig-make-record type slots init))
+
+  (when (fboundp 'record)
+    (defalias 'emacs-list--orig-record (symbol-function 'record)
+      "The runtime's own `record' builtin.")
+    (defun record (type &rest slots)
+      "Create a record from SLOTS; remember the type's slot count."
+      (let ((n (length slots)))
+        (when (and (symbolp type)
+                   (< (or (get type 'emacs-list--record-slot-count) -1) n))
+          (put type 'emacs-list--record-slot-count n)))
+      (apply 'emacs-list--orig-record type slots)))
+
+  (defun emacs-list--record-length (rec)
+    "Return REC's slot count (excluding the type slot), best effort.
+See the item 244 note above for the recovery order."
+    (let ((tag (nelisp--record-type rec)))
+      (or (and (symbolp tag) (get tag 'emacs-list--record-slot-count))
+          ;; EIEIO object: the tag is the class metadata object itself
+          ;; (a list-backed cl-defstruct under this substrate, so no
+          ;; `recordp' pre-check -- `eieio--class-p' is the test).
+          (and (not (symbolp tag))
+               (fboundp 'eieio--class-p)
+               (fboundp 'eieio--class-slots)
+               (condition-case nil
+                   (and (eieio--class-p tag)
+                        (length (eieio--class-slots tag)))
+                 (error nil)))
+          (nelisp--record-length rec))))
+
   (defun copy-sequence (sequence)
     "Return a shallow copy of SEQUENCE, records included.
-Records go through the `nelisp--record-*' accessors; every other type
-delegates to the previous implementation (see the upgrade comment
-above -- Doc 33 item 243)."
+Records go through the `nelisp--record-*' accessors with the item 244
+length recovery; every other type delegates to the previous
+implementation (see the upgrade comments above)."
     (if (recordp sequence)
-        (let* ((n (nelisp--record-length sequence))
+        (let* ((n (emacs-list--record-length sequence))
                (new (make-record (nelisp--record-type sequence) n nil))
                (i 0))
           (while (< i n)
@@ -89,6 +153,28 @@ above -- Doc 33 item 243)."
     (cond
      ((not (consp tree)) tree)
      (t (cons (copy-tree (car tree)) (copy-tree (cdr tree)))))))
+
+;; Doc 33 item 244 (M2 completion blocker): `copy-alist' is an ordinary
+;; host Emacs subr that every prior caller in this substrate happened
+;; never to need, so it was never polyfilled -- until EIEIO's
+;; `eieio-defclass-internal' hit it while building any CHILD class's
+;; own `initarg-tuples'/allocation alists from its parent's (`magit-
+;; section' itself has no user-defined parent, so its defclass never
+;; took this path; any subclass, e.g. `magit-commit-section', does).
+;; Missing `copy-alist' made the whole `(defclass CHILD (PARENT) ...)'
+;; form abort with `(void-function copy-alist)' right after the child
+;; had already been pushed onto the parent's `eieio--class-children'
+;; (an earlier, unrelated step), leaving the child's own `cl--class'
+;; unset and its constructor function undefined -- the root cause of
+;; `(void-function magit-unpushed-section)'.
+(unless (fboundp 'copy-alist)
+  (defun copy-alist (alist)
+    "Return a copy of ALIST.
+Only the top-level list structure and each element's own cons cell are
+copied; each element's key and value are shared with ALIST, matching
+real Emacs's `copy-alist'."
+    (mapcar (lambda (elt) (if (consp elt) (cons (car elt) (cdr elt)) elt))
+            alist)))
 
 (unless (fboundp 'last)
   (defun last (list &optional n)

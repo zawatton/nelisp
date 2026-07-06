@@ -820,29 +820,53 @@ when neither carries PROP."
                 (emacs-buffer--text-read-only-in-range-p start end buf)))
       (signal 'text-read-only nil))))
 
+(defun emacs-buffer--pos-number (pos)
+  "Coerce POS to an integer position, resolving markers.
+Real Emacs's text-property builtins accept markers anywhere a position
+is expected (Doc 33 item 244: `magit-section--set-section-properties'
+passes the section `start'/`end' slots, which are markers, straight
+into `add-text-properties'/`put-text-property').  Non-marker,
+non-integer values are returned unchanged so each caller's own
+`integerp' check still signals the faithful `wrong-type-argument'."
+  (cond
+   ((integerp pos) pos)
+   ((and (fboundp 'nelisp-ec-marker-p)
+         (nelisp-ec-marker-p pos)
+         (fboundp 'nelisp-ec-marker-position))
+    (nelisp-ec-marker-position pos))
+   ((markerp pos) (marker-position pos))
+   (t pos)))
+
 ;;;###autoload
 (defun emacs-buffer-put-text-property (start end prop value &optional buf)
   "Set the text property PROP to VALUE on [START, END) in BUF.
-START and END are 1-based.  Existing properties in PROP are
-overwritten on this range; other properties are preserved."
+START and END are 1-based (markers accepted).  Existing properties in
+PROP are overwritten on this range; other properties are preserved."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Doc 33 item 244: real Emacs treats an empty [START, END) range as
+  ;; a no-op for text-property mutation (Magit's washers routinely make
+  ;; START == END calls); only a reversed range signals.
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
-                                start end (list prop value)))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
+                                  start end (list prop value)))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-get-text-property (pos prop &optional buf)
   "Return the value of property PROP at POS in BUF, or nil if unset.
-POS is 1-based.  Honours `category' inheritance — when PROP is not
-explicitly set on the range, the `category' value (if a symbol) is
-consulted via `(get CATEGORY PROP)'."
+POS is 1-based (markers accepted).  Honours `category' inheritance —
+when PROP is not explicitly set on the range, the `category' value (if
+a symbol) is consulted via `(get CATEGORY PROP)'."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -856,40 +880,51 @@ consulted via `(get CATEGORY PROP)'."
 ;;;###autoload
 (defun emacs-buffer-add-text-properties (start end plist &optional buf)
   "Add PLIST properties to the half-open range [START, END) in BUF.
-Properties not in PLIST are preserved on the affected range."
+START/END may be markers.  Properties not in PLIST are preserved on
+the affected range."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Empty range = no-op, matching real Emacs (see the put-text-property
+  ;; note above).
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
   (unless (and (listp plist) (zerop (mod (length plist) 2)))
     (signal 'wrong-type-argument (list 'plist plist)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
-                                start end plist))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
+                                  start end plist))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-remove-text-properties (start end keys &optional buf)
   "Remove KEYS from the property plist on [START, END) in BUF.
 KEYS is either a flat list of symbol names, or a plist whose keys we
 look at (matching Emacs semantics where `remove-text-properties' takes
-a (PROP nil ...) list)."
+a (PROP nil ...) list).  START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Empty range = no-op, matching real Emacs (see the put-text-property
+  ;; note above).
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (gethash b emacs-buffer--state)))
-    (when ext
-      (let ((kk (emacs-buffer--keys-from-arg keys)))
-        (setf (emacs-buffer--ext-text-props ext)
-              (emacs-buffer--tp-remove (emacs-buffer--ext-text-props ext)
-                                       start end kk)))
-      (cl-incf (emacs-buffer--ext-modified-tick ext)))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (gethash b emacs-buffer--state)))
+      (when ext
+        (let ((kk (emacs-buffer--keys-from-arg keys)))
+          (setf (emacs-buffer--ext-text-props ext)
+                (emacs-buffer--tp-remove (emacs-buffer--ext-text-props ext)
+                                         start end kk)))
+        (cl-incf (emacs-buffer--ext-modified-tick ext)))
+      nil)))
 
 (defun emacs-buffer--keys-from-arg (arg)
   "Return a flat list of property names from ARG.
@@ -908,28 +943,36 @@ ARG may be a list of symbols or an Emacs-style plist."
 (defun emacs-buffer-set-text-properties (start end plist &optional buf)
   "Replace the property plist on [START, END) in BUF with PLIST.
 Existing properties on the range are discarded — only PLIST keys
-remain.  When PLIST is nil the range is stripped of all properties."
+remain.  When PLIST is nil the range is stripped of all properties.
+START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Empty range = no-op, matching real Emacs (see the put-text-property
+  ;; note above).
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
   (unless (and (listp plist) (zerop (mod (length plist) 2)))
     (signal 'wrong-type-argument (list 'plist plist)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (if (null plist)
-              (emacs-buffer--tp-clip (emacs-buffer--ext-text-props ext)
-                                     start end)
-            (emacs-buffer--tp-merge (emacs-buffer--ext-text-props ext)
-                                    start end plist)))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (if (null plist)
+                (emacs-buffer--tp-clip (emacs-buffer--ext-text-props ext)
+                                       start end)
+              (emacs-buffer--tp-merge (emacs-buffer--ext-text-props ext)
+                                      start end plist)))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-next-property-change (pos &optional buf limit)
   "Return the next position after POS at which any property changes.
-Returns LIMIT (when given and reached) or nil when no further change."
+Returns LIMIT (when given and reached) or nil when no further change.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -949,7 +992,9 @@ Returns LIMIT (when given and reached) or nil when no further change."
 ;;;###autoload
 (defun emacs-buffer-previous-property-change (pos &optional buf limit)
   "Return the largest position less than POS at which any property changes.
-Returns LIMIT (when given and reached) or nil when no earlier change."
+Returns LIMIT (when given and reached) or nil when no earlier change.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -979,7 +1024,9 @@ Returns LIMIT (when given and reached) or nil when no earlier change."
 (defun emacs-buffer-next-single-property-change (pos prop &optional buf limit)
   "Return the next position > POS where the value of PROP differs.
 Honours `category' inheritance for the comparison.  Returns LIMIT
-(when given and reached) or nil when no further change is found."
+(when given and reached) or nil when no further change is found.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -1002,7 +1049,9 @@ Honours `category' inheritance for the comparison.  Returns LIMIT
 (defun emacs-buffer-previous-single-property-change (pos prop &optional buf limit)
   "Return the largest position < POS where the value of PROP differs.
 Honours `category' inheritance for the comparison.  Returns LIMIT
-(when given and reached) or nil when no earlier change is found."
+(when given and reached) or nil when no earlier change is found.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -1020,6 +1069,43 @@ Honours `category' inheritance for the comparison.  Returns LIMIT
             (unless (emacs-buffer--tp-prop-eq val cur)
               (throw 'done prev))
             (setq scan prev))))))))
+
+;; Doc 33 item 244 (M2 completion blocker): `text-property-not-all' is a
+;; read-only scanning primitive, missing from this file alongside its
+;; siblings above.  `magit-section-heading' (`vendor/magit/lisp/magit-
+;; section.el') calls it on a STRING object (a heading built via
+;; `concat', not a buffer) to decide whether the heading already carries
+;; a face before applying the default one.  Built directly on top of
+;; `emacs-buffer-get-text-property'/`emacs-buffer-next-single-property-
+;; change' rather than a new storage layer: those already treat a
+;; non-buffer OBJECT as carrying no properties (the established
+;; standalone string text-property MVP -- see `propertize' in
+;; `src/emacs-string.el'), so scanning a string this way correctly
+;; reports "PROP is VALUE everywhere" without needing real string
+;; property storage.
+;;;###autoload
+(defun emacs-buffer-text-property-not-all (start end prop value &optional buf)
+  "Return the first position in [START, END) of BUF where PROP is not
+`eq' to VALUE, or nil when every position in the half-open range
+already has PROP `eq' to VALUE (real `text-property-not-all' semantics).
+BUF may be a live `nelisp-ec' buffer, nil for the current buffer, or a
+plain string -- see the note above for how a string OBJECT is handled.
+START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
+  (unless (and (integerp start) (integerp end))
+    (signal 'wrong-type-argument (list 'integerp start end)))
+  (if (>= start end)
+      nil
+    (let ((scan start))
+      (catch 'done
+        (while (< scan end)
+          (unless (emacs-buffer--tp-prop-eq
+                   (emacs-buffer-get-text-property scan prop buf) value)
+            (throw 'done scan))
+          (setq scan (emacs-buffer-next-single-property-change
+                      scan prop buf end)))
+        nil))))
 
 (defun emacs-buffer--overlay-property-priority (ov)
   "Return OV's numeric overlay priority for property precedence."
@@ -1517,8 +1603,11 @@ record with equal START)."
 ;;;###autoload
 (defun emacs-buffer-make-overlay (beg end &optional buf front-adv rear-adv)
   "Create an overlay covering [BEG, END) in BUF (default = current).
-FRONT-ADV and REAR-ADV control endpoint behaviour under insertion at
-the respective endpoint, mirroring Emacs `make-overlay' semantics."
+BEG/END may be markers.  FRONT-ADV and REAR-ADV control endpoint
+behaviour under insertion at the respective endpoint, mirroring Emacs
+`make-overlay' semantics."
+  (setq beg (emacs-buffer--pos-number beg)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp beg) (integerp end))
     (signal 'wrong-type-argument (list 'integerp beg end)))
   (let* ((buffer (or buf (emacs-buffer--current)))
@@ -1577,7 +1666,10 @@ Signals `emacs-buffer-error' if OV has been deleted."
 ;;;###autoload
 (defun emacs-buffer-move-overlay (ov beg end &optional buf)
   "Move OV to cover [BEG, END) in BUF (default = OV's current buffer).
-Returns OV.  Signals `emacs-buffer-error' if OV has been deleted."
+BEG/END may be markers.  Returns OV.  Signals `emacs-buffer-error' if
+OV has been deleted."
+  (setq beg (emacs-buffer--pos-number beg)
+        end (emacs-buffer--pos-number end))
   (emacs-buffer--overlay-check-alive ov)
   (let* ((old-buf (emacs-buffer--overlay-rec-buffer ov))
          (new-buf (or buf old-buf))
@@ -1616,10 +1708,11 @@ Returns OV.  Signals `emacs-buffer-error' if OV has been deleted."
 ;;;###autoload
 (defun emacs-buffer-remove-overlays (&optional beg end name value buf)
   "Remove overlays between BEG and END in BUF matching NAME and VALUE.
-When NAME is nil, remove every overlay overlapping the region."
+BEG/END may be markers.  When NAME is nil, remove every overlay
+overlapping the region."
   (let* ((buffer (or buf (emacs-buffer--current)))
-         (start (or beg (nelisp-ec-point-min)))
-         (limit (or end (nelisp-ec-point-max))))
+         (start (or (emacs-buffer--pos-number beg) (nelisp-ec-point-min)))
+         (limit (or (emacs-buffer--pos-number end) (nelisp-ec-point-max))))
     (when (< start limit)
       (dolist (ov (copy-sequence (emacs-buffer-overlays-in start limit buffer)))
         (when (or (null name)

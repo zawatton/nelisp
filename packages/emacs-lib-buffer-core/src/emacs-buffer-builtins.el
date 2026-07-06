@@ -446,6 +446,23 @@ String text properties are accepted as a no-op in the standalone MVP."
          'emacs-buffer-set-text-properties
          (list start end props target))))))
 
+;; Doc 33 item 244 (M2 completion blocker): unlike the mutating
+;; text-property builtins above, `text-property-not-all' is read-only,
+;; so a string OBJECT does not need the `:string-or-unsupported' no-op
+;; dispatch -- `emacs-buffer-text-property-not-all' (via the plain
+;; `emacs-buffer-get-text-property' it is built on) already treats any
+;; non-buffer OBJECT as carrying no properties, matching the standalone
+;; string text-property MVP.  Passing OBJECT straight through covers
+;; both a real buffer and a string with one call.
+(when (emacs-buffer-builtins--install-function-p 'text-property-not-all)
+  (defun text-property-not-all (start end prop value &optional object)
+    "Return the position in [START, END) of OBJECT where PROP first
+differs (via `eq') from VALUE, or nil if it never does.  OBJECT may be
+a buffer, nil for the current buffer, or a string."
+    (emacs-buffer-builtins--call-emacs-buffer
+     'emacs-buffer-text-property-not-all
+     (list start end prop value object))))
+
 (defun emacs-buffer-builtins-ensure-initial-buffer (&optional name)
   "Ensure standalone NeLisp has a selected initial buffer.
 NAME defaults to \"*scratch*\".  If a current buffer already exists,

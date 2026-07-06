@@ -224,7 +224,8 @@ Applies this bridge's basename un-drop (see
 
 (defvar nelisp-emacs-magit-bridge-bundle-excluded-defuns
   '((ansi-color . (ansi-color--update-face-vec))
-    (derived . (define-derived-mode)))
+    (derived . (define-derived-mode))
+    (magit-section . (magit-insert-headers)))
   "Alist of (FEATURE . (SYMBOL-NAME ...)) top-level defuns to drop.
 
 `ansi-color--update-face-vec' (`ansi-color.el') contains a bool-vector
@@ -265,7 +266,33 @@ exactly matching item 221's own verified magit-base/text-mode/Org
 chains, none of which included `derived.el' either.  The reader-level
 backquote-macro-invocation gap itself remains open in dev/nelisp; this
 is a narrow bundle-generator exclusion, not a vendor patch (`derived.el'
-on disk is untouched) and not a NeLisp core fix.")
+on disk is untouched) and not a NeLisp core fix.
+
+`magit-insert-headers' (`magit-section.el') collects the top-level
+sections a header-hook run inserted by `add-hook'ing a short closure
+onto `magit-insert-section-hook' at depth -90 that does `(push
+magit-insert-section--current header-sections)', then regroups those
+sections once the hook run finishes.  Doc 33 item 244 bisection found
+that this closure — created while `magit-insert-section--current'
+already has an ACTIVE outer dynamic binding (the enclosing status-
+buffer root section) — always reads back that OUTER value instead of
+the correctly re-bound INNER value once invoked from within a still
+more deeply nested re-binding of the same variable (each individual
+header line's own section): a NeLisp interpreter gap in how closures
+resolve a special variable across more than one level of nested
+dynamic re-binding, reproduced with a minimal repro needing neither
+Magit, EIEIO, nor `add-hook'/`run-hooks' (plain nested `let' forms over
+an ordinary `defvar' already exhibit it).  That is a core interpreter
+gap, out of this bridge's scope to fix (see
+`docs/design/33-emacs-core-substrate-priority-plan.org' item 244); the
+bridge instead installs a hook-and-closure-free replacement (see
+`nelisp-emacs-magit-bridge--ensure-magit-insert-headers') that collects
+the same sections via `magit-insert-section--finish''s own direct
+parent-attachment (a plain function, not a closure, so unaffected by
+the gap) instead of the closure-based accumulator.  Dropping just this
+one function — not `magit-insert-status-headers' or any other
+`magit-section.el' definition — leaves every other real vendor behavior
+intact; `magit-section.el' on disk is untouched.")
 
 (defun nelisp-emacs-magit-bridge-bundle--form-defun-name (form-string)
   "Return the defined symbol name if FORM-STRING is a top-level defun/defalias.
@@ -287,40 +314,125 @@ FORM-STRING is the raw normalized form, not yet `unless'-wrapped."
       (expand-file-name "build/nelisp-emacs-magit-bridge-bundle.el"
                         nelisp-emacs-magit-bridge-bundle-repo-root)))
 
+(defvar nelisp-emacs-magit-bridge-bundle-part-forms 400
+  "Maximum number of gated top-level forms per generated bundle part file.
+
+Doc 33 item 244: a single NeLisp standalone `load' call degrades with the
+number of top-level forms it has already processed -- once roughly 700-950
+forms of this bundle's density have been evaluated in ONE `load', the next
+form whose evaluation runs deep (a `cl-defmethod' registration, an error
+being signalled inside a `defvar' default) crashes the process with
+SIGSEGV, while the very same form `load'ed as the first form of a FRESH
+`load' call evaluates fine (bisected twice at two independent positions:
+bundle form #951 and form #1658; both PASS as fresh loads, both SIGSEGV
+in-context).  This became visible when the item 244 `copy-alist' fix let
+every `defclass' in the bundle complete real EIEIO registration (deeper
+evaluation per form) instead of aborting early down a shallow error path.
+The core per-load degradation is a vendor/nelisp reader gap, out of this
+generator's scope; the bundle-level mitigation is to split the bundle into
+part files of at most this many forms each and chain them with one nested
+`(load ...)' per part -- each nested `load' resets the per-load budget.
+400 leaves a >40% safety margin under the lowest observed crash
+threshold.")
+
+(defun nelisp-emacs-magit-bridge-bundle--part-file (output n)
+  "Return the part-N file name for bundle OUTPUT."
+  (format "%s-part%d.el" (file-name-sans-extension output) n))
+
 (defun nelisp-emacs-magit-bridge-bundle--write (output)
-  "Normalize `nelisp-emacs-magit-bridge-bundle-files' and write OUTPUT."
+  "Normalize `nelisp-emacs-magit-bridge-bundle-files' and write OUTPUT.
+
+OUTPUT itself becomes a small loader manifest that `load's the generated
+`...-partN.el' files (each holding at most
+`nelisp-emacs-magit-bridge-bundle-part-forms' gated forms) in order --
+see that variable for why the split exists.  Callers keep loading OUTPUT
+exactly as before; the parts live next to it and are resolved relative
+to the manifest's own `load-file-name' so the build directory stays
+relocatable."
   (make-directory (file-name-directory output) t)
-  (with-temp-buffer
-    (insert ";;; nelisp-emacs-magit-bridge-bundle.el --- generated magit bridge bundle  -*- lexical-binding: t; -*-\n")
-    (insert ";;; Generated by scripts/build-nelisp-emacs-magit-bridge-bundle.el; do not edit.\n\n")
-    (dolist (feature nelisp-emacs-magit-bridge-bundle-stub-features)
-      (insert (format "(unless (featurep '%s) (provide '%s))\n" feature feature)))
-    (insert "\n")
-    (dolist (entry nelisp-emacs-magit-bridge-bundle-files)
-      (let* ((rel (car entry))
-             (feature (cdr entry))
-             (file (expand-file-name rel nelisp-emacs-magit-bridge-bundle-repo-root)))
-        (unless (file-readable-p file)
-          (error "magit bridge bundle: missing vendor source %s" file))
-        (insert (format "\n;;; >>> %s (%s)\n" rel feature))
-        ;; Gate each top-level form individually (`(unless (featurep 'X)
-        ;; FORM)' per form), not one `unless' wrapped around the whole
-        ;; file.  NeLisp's `load' tolerates (does not propagate) an error
-        ;; inside one top-level form and continues with the file's next
-        ;; top-level form; wrapping the whole file in a single `unless'
-        ;; would instead make one bad top-level form (e.g. an EIEIO/Magit
-        ;; forward-referenced `define-obsolete-function-alias' call that
-        ;; hits an unrelated native-defalias forward-reference bug) abort
-        ;; every remaining definition in that file, including its trailing
-        ;; `(provide 'FEATURE)'.  Per-form gating mirrors the already-proven
-        ;; `vendor-repl-standalone-replay.el' mechanism (one REPL round trip
-        ;; per normalized form), just via `load' instead of a REPL feed.
-        (dolist (form (nelisp-emacs-magit-bridge-bundle--normalize-file-to-form-strings file))
-          (unless (nelisp-emacs-magit-bridge-bundle--excluded-p feature form)
-            (insert (format "(unless (featurep '%s) %s)\n" feature form))))
-        (insert (format ";;; <<< %s\n" rel))))
-    (let ((coding-system-for-write 'utf-8-unix))
-      (write-region (point-min) (point-max) output nil 'silent))))
+  (let ((forms nil))
+    ;; Collect every gated form (and structural comment) in order.
+    ;; Comments ride along with the following form so part boundaries
+    ;; never separate a `;;; >>>' marker from its first form.
+    (let ((pending-comments nil))
+      (dolist (feature nelisp-emacs-magit-bridge-bundle-stub-features)
+        (push (format "(unless (featurep '%s) (provide '%s))\n" feature feature)
+              forms))
+      (dolist (entry nelisp-emacs-magit-bridge-bundle-files)
+        (let* ((rel (car entry))
+               (feature (cdr entry))
+               (file (expand-file-name rel nelisp-emacs-magit-bridge-bundle-repo-root)))
+          (unless (file-readable-p file)
+            (error "magit bridge bundle: missing vendor source %s" file))
+          (push (format "\n;;; >>> %s (%s)\n" rel feature) pending-comments)
+          ;; Gate each top-level form individually (`(unless (featurep 'X)
+          ;; FORM)' per form), not one `unless' wrapped around the whole
+          ;; file.  NeLisp's `load' tolerates (does not propagate) an error
+          ;; inside one top-level form and continues with the file's next
+          ;; top-level form; wrapping the whole file in a single `unless'
+          ;; would instead make one bad top-level form (e.g. an EIEIO/Magit
+          ;; forward-referenced `define-obsolete-function-alias' call that
+          ;; hits an unrelated native-defalias forward-reference bug) abort
+          ;; every remaining definition in that file, including its trailing
+          ;; `(provide 'FEATURE)'.  Per-form gating mirrors the already-proven
+          ;; `vendor-repl-standalone-replay.el' mechanism (one REPL round trip
+          ;; per normalized form), just via `load' instead of a REPL feed.
+          (dolist (form (nelisp-emacs-magit-bridge-bundle--normalize-file-to-form-strings file))
+            (unless (nelisp-emacs-magit-bridge-bundle--excluded-p feature form)
+              (push (concat (apply #'concat (nreverse pending-comments))
+                            (format "(unless (featurep '%s) %s)\n" feature form))
+                    forms)
+              (setq pending-comments nil)))
+          (push (format ";;; <<< %s\n" rel) pending-comments)))
+      (when pending-comments
+        (push (apply #'concat (nreverse pending-comments)) forms)))
+    (setq forms (nreverse forms))
+    ;; Write the parts.
+    (let ((part 1)
+          (part-names nil))
+      (while forms
+        (let ((chunk nil)
+              (count 0))
+          (while (and forms (< count nelisp-emacs-magit-bridge-bundle-part-forms))
+            (push (pop forms) chunk)
+            (setq count (1+ count)))
+          (let ((part-file (nelisp-emacs-magit-bridge-bundle--part-file output part)))
+            (with-temp-buffer
+              (insert (format ";;; %s --- generated magit bridge bundle part %d  -*- lexical-binding: t; -*-\n"
+                              (file-name-nondirectory part-file) part))
+              (insert ";;; Generated by scripts/build-nelisp-emacs-magit-bridge-bundle.el; do not edit.\n\n")
+              (dolist (s (nreverse chunk)) (insert s))
+              (let ((coding-system-for-write 'utf-8-unix))
+                (write-region (point-min) (point-max) part-file nil 'silent)))
+            (push (file-name-nondirectory part-file) part-names)))
+        (setq part (1+ part)))
+      ;; Write the loader manifest at OUTPUT.
+      (with-temp-buffer
+        (insert ";;; nelisp-emacs-magit-bridge-bundle.el --- generated magit bridge bundle loader  -*- lexical-binding: t; -*-\n")
+        (insert ";;; Generated by scripts/build-nelisp-emacs-magit-bridge-bundle.el; do not edit.\n")
+        (insert ";;; One nested `load' per part resets NeLisp's per-load form budget\n")
+        (insert ";;; (see `nelisp-emacs-magit-bridge-bundle-part-forms').\n\n")
+        ;; NeLisp's standalone `load' does not set `load-file-name' -- and
+        ;; worse, the name is bound to the truthy placeholder symbol
+        ;; `nelisp--unbound-marker' there, so a bare `(or load-file-name
+        ;; ...)' would short-circuit to a non-string.  Guard every
+        ;; candidate with `stringp'; the bridge's own resolved bundle path
+        ;; is the reliable anchor under NeLisp, with `load-file-name'/
+        ;; `buffer-file-name' kept first for a host Emacs loading the
+        ;; manifest directly.
+        (insert "(let ((nelisp-emacs-magit-bridge-bundle--dir\n")
+        (insert "       (file-name-directory\n")
+        (insert "        (or (and (stringp load-file-name) load-file-name)\n")
+        (insert "            (and (stringp buffer-file-name) buffer-file-name)\n")
+        (insert "            (and (fboundp 'nelisp-emacs-magit-bridge--bundle-file)\n")
+        (insert "                 (nelisp-emacs-magit-bridge--bundle-file))))))\n")
+        (dolist (name (nreverse part-names))
+          (insert (format "  (load (expand-file-name %S nelisp-emacs-magit-bridge-bundle--dir)\n        nil 'no-message t t)\n"
+                          name)))
+        (insert ")\n")
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region (point-min) (point-max) output nil 'silent)))
+      (1- part))))
 
 (defun nelisp-emacs-magit-bridge-bundle-build-batch ()
   "Generate the magit bridge bundle and print a short summary."
@@ -333,13 +445,14 @@ FORM-STRING is the raw normalized form, not yet `unless'-wrapped."
          (cache-dir (expand-file-name "build/nelisp-emacs-magit-bridge-bundle-cache" repo-root)))
     (setq nelisp-emacs-vendor-root (expand-file-name "vendor" repo-root))
     (setq standalone-source-normalize-cache-directory cache-dir)
-    (let ((output (nelisp-emacs-magit-bridge-bundle--output-file))
-          (start (float-time)))
-      (nelisp-emacs-magit-bridge-bundle--write output)
-      (princ (format "nelisp-emacs-magit-bridge-bundle output=%s files=%d stubs=%d elapsed=%.2fs\n"
+    (let* ((output (nelisp-emacs-magit-bridge-bundle--output-file))
+           (start (float-time))
+           (parts (nelisp-emacs-magit-bridge-bundle--write output)))
+      (princ (format "nelisp-emacs-magit-bridge-bundle output=%s files=%d stubs=%d parts=%d elapsed=%.2fs\n"
                      output
                      (length nelisp-emacs-magit-bridge-bundle-files)
                      (length nelisp-emacs-magit-bridge-bundle-stub-features)
+                     parts
                      (- (float-time) start))))))
 
 (provide 'build-nelisp-emacs-magit-bridge-bundle)

@@ -662,8 +662,215 @@ patch."
 See `nelisp-emacs-magit-bridge--ensure-save-some-buffers'."
       nil)))
 
+(defvar nelisp-emacs-magit-bridge-arena-base-sym-addr
+  (let* ((env (getenv "NELISP_ARENA_BASE_SYM_ADDR"))
+         (n (and env (string-to-number env))))
+    (if (and n (> n 0)) n #x839000))
+  "Address of the standalone binary's `nl_arena_base' bss slot.
+
+The vendored `vendor/nelisp/target/nelisp' is a non-PIE static ELF
+executable (loaded at its fixed 0x400000 link address, so bss symbol
+addresses are stable across runs); `nm target/nelisp | grep -w
+nl_arena_base' reports 0x839000 for the current vendor build.  If the
+vendor binary is ever rebuilt, override via the
+NELISP_ARENA_BASE_SYM_ADDR environment variable (decimal).  The value
+is only ever used after
+`nelisp-emacs-magit-bridge--ensure-gc-collect-disabled' has
+independently verified against /proc/self/maps that the address lies
+inside a mapped rw segment AND that the u64 stored there names the
+start of an rw mapping — a wrong address fails those checks and the
+poke is skipped, never attempted blind.")
+
+(defun nelisp-emacs-magit-bridge--proc-maps-lines ()
+  "Return /proc/self/maps as a list of lines, or nil when unreadable."
+  (when (file-readable-p "/proc/self/maps")
+    (with-temp-buffer
+      (insert-file-contents "/proc/self/maps")
+      (split-string (buffer-string) "\n" t))))
+
+;; Implementation notes for the two matchers below, both dictated by
+;; standalone NeLisp behavior when these functions arrive via `load':
+;; - anchor with `^' (not `\\`'): the buffer-start escape does not
+;;   survive the standalone file read and the pattern silently never
+;;   matches; `^' behaves identically here because each LINES element
+;;   is a single line with no embedded newline.
+;; - no `catch'/`throw' early exit: non-local exit through a `dolist'
+;;   inside a `load'ed function is unreliable on the standalone reader
+;;   (known vendor gap, cf. condition-case/throw confusion notes), so
+;;   both walkers accumulate into a plain result variable instead.
+
+(defun nelisp-emacs-magit-bridge--hex-to-number (s)
+  "Parse hex string S to an integer.
+Standalone NeLisp's `string-to-number' silently ignores its BASE
+argument (parses decimal regardless), so this open-codes the base-16
+accumulation."
+  (let ((n 0) (i 0) (len (length s)))
+    (while (< i len)
+      (let* ((c (aref s i))
+             (d (cond ((and (>= c ?0) (<= c ?9)) (- c ?0))
+                      ((and (>= c ?a) (<= c ?f)) (+ 10 (- c ?a)))
+                      ((and (>= c ?A) (<= c ?F)) (+ 10 (- c ?A)))
+                      (t nil))))
+        (if d (setq n (+ (* n 16) d))
+          (setq i len)))
+      (setq i (1+ i)))
+    n))
+
+(defun nelisp-emacs-magit-bridge--maps-rw-range-containing (addr lines)
+  "Return non-nil when ADDR falls inside an rw mapping in LINES."
+  (let ((hit nil))
+    (dolist (l lines)
+      (when (and (not hit)
+                 (string-match "^\\([0-9a-f]+\\)-\\([0-9a-f]+\\) rw" l))
+        (let ((a (nelisp-emacs-magit-bridge--hex-to-number (match-string 1 l)))
+              (b (nelisp-emacs-magit-bridge--hex-to-number (match-string 2 l))))
+          (when (and (<= a addr) (< addr b))
+            (setq hit t)))))
+    hit))
+
+;; NOTE: the arena's chunk 0 base is NOT necessarily the exact start of
+;; an OS-level mapping (the runtime reserves a larger region and places
+;; chunk 0 at an interior offset), so the write-side validation below
+;; checks containment in a mapped rw region -- same predicate as the
+;; read side -- not exact-start equality.
+
+(defun nelisp-emacs-magit-bridge--ensure-gc-collect-disabled ()
+  "Disable the standalone runtime's GC reclaimer for this Magit session.
+
+Doc 33 item 244: replaying the full vendor Magit bundle with real EIEIO
+class registration live (the item 244 `copy-alist' fix) makes the
+standalone runtime SIGSEGV partway through the load with the exact
+Doc 155 signature from vendor/nelisp (`nl_vector_slot_ptr' NULL deref
+under `nelisp_frame_stack_find_in_frame' during an ordinary variable
+lookup: a live lexframe's hash-table/buckets child reclaimed by the
+collector while the frame record survives).  vendor/nelisp Doc 155
+closed one instance of that marker gap (Path B, commit b31179ce, part
+of this vendor snapshot), but this workload exposes a further one;
+fixing the collector is vendor/nelisp core work, out of this bridge's
+scope.
+
+The vendor's own sanctioned stopgap for exactly this bug class (Doc 155
+§8.8 \"Fix A\": collection disabled as a sound stopgap) is a runtime
+gate the build script documents as \"RECLAIMER GATE: base+160 = 1 ->
+nl_gc_collect is a NO-OP\".  This precondition flips that gate for the
+current session through the exposed `ptr-read-u64'/`ptr-write-u64'
+primitives.  Memory then only grows for the session's lifetime (the
+arena still adds chunks on demand); the magit smoke session peaks well
+under 2 GiB, an acceptable trade for a sound session.
+
+Safety: this never pokes blind.  It requires (a) the standalone
+primitives to exist (host Emacs has no `ptr-read-u64' and is
+untouched), (b) /proc/self/maps to confirm the configured
+`nl_arena_base' bss address is inside a mapped rw segment before the
+READ, and (c) maps to confirm the u64 read back (chunk 0's base) also
+falls inside a mapped rw segment before the WRITE.  A rebuilt vendor
+binary whose bss moved fails (b)/(c) and is left alone (the load then
+simply risks the original crash — no wild write)."
+  (when (and (fboundp 'ptr-read-u64)
+             (fboundp 'ptr-write-u64)
+             (fboundp 'nelisp--write-stdout-bytes))
+    (let ((lines (nelisp-emacs-magit-bridge--proc-maps-lines)))
+      (when (and lines
+                 (nelisp-emacs-magit-bridge--maps-rw-range-containing
+                  nelisp-emacs-magit-bridge-arena-base-sym-addr lines))
+        (let ((base (ptr-read-u64 nelisp-emacs-magit-bridge-arena-base-sym-addr 0)))
+          (when (and (integerp base) (> base 0)
+                     (nelisp-emacs-magit-bridge--maps-rw-range-containing
+                      (+ base 160) lines))
+            (ptr-write-u64 (+ base 160) 0 1)
+            t))))))
+
+(defun nelisp-emacs-magit-bridge--ensure-lambda-documentation-form ()
+  "Make a lambda-body-leading `(:documentation ...)' form evaluate harmlessly.
+
+Real Emacs treats `(:documentation FORM)' at the head of a lambda body
+as a special dynamic-docstring construct (handled by cconv/oclosure
+machinery, never actually *called*).  EIEIO generates exactly that
+shape for every class it defines -- `eieio-defclass-internal''s
+backward-compatible `NAME-list-p' defalias and the class predicates
+funnel through `(lambda (obj) (:documentation ...) ...)' -- and the
+standalone NeLisp evaluator, which has no special handling for the
+construct, evaluates it as an ordinary function call of the keyword
+`:documentation' the first time such a predicate is INVOKED (found on
+the M2 status-buffer path right after the item 244 `copy-alist' fix
+let those EIEIO predicates be defined for real:
+`(void-function :documentation)').  Binding the keyword's function
+cell to an ignore-everything lambda makes the doc form a cheap no-op
+(its argument is a docstring literal or a pure formatting call) while
+leaving the body's real forms untouched -- the same observable
+behavior real Emacs has at call time, where the construct contributes
+nothing to the function's return value."
+  (unless (fboundp :documentation)
+    (defalias :documentation (lambda (&rest _) nil))))
+
+(defun nelisp-emacs-magit-bridge--ensure-magit-insert-headers ()
+  "Install a hook-and-closure-free `magit-insert-headers' after the bundle loads.
+
+Real `magit-insert-headers' (`vendor/magit/lisp/magit-section.el',
+excluded from this bundle — see `nelisp-emacs-magit-bridge-bundle-
+excluded-defuns' in `scripts/build-nelisp-emacs-magit-bridge-bundle.el')
+collects the top-level sections a header-hook run inserted by
+`add-hook'ing a short closure onto `magit-insert-section-hook' at depth
+-90 that does `(push magit-insert-section--current header-sections)',
+then regroups those sections (making the first one the parent of the
+rest) once the hook run finishes.
+
+Doc 33 item 244 bisection found that this closure — created while
+`magit-insert-section--current' already has an ACTIVE outer dynamic
+binding (the enclosing status-buffer root section) — always reads back
+that OUTER (root) value instead of the correctly re-bound INNER value
+once actually invoked from within a still more deeply nested re-binding
+of the same variable (each individual header line's own section): a
+NeLisp interpreter gap in how closures resolve a special variable
+across more than one level of nested dynamic re-binding, reproduced
+with a minimal repro that needs neither Magit, EIEIO, nor `add-hook'/
+`run-hooks' (plain nested `let' forms over an ordinary `defvar' already
+exhibit it — see `docs/design/33-emacs-core-substrate-priority-
+plan.org' item 244 for the full bisection).  Every section the original
+closure collected therefore turns out to be the (status) root itself,
+whose own `parent' slot is nil, so the regroup step's `(oset
+header-parent children ...)' aborts with `(wrong-type-argument (or
+eieio-object cl-structure-object oclosure) nil)' the moment it tries to
+write a slot on that nil `header-parent'.  This is a core interpreter
+gap, out of this bridge's scope to fix.
+
+This replacement collects the SAME set of sections a different, hook-
+and-closure-free way that sidesteps the gap entirely: `magit-insert-
+section--finish' (an ordinary function, not a closure) already appends
+each newly finished section directly onto its real parent's `children'
+slot before returning — a plain, non-closure `oref'/`oset' round trip
+that Doc 33 item 244 confirmed is reliable.  Snapshotting the parent's
+child count before running HOOK and taking the newly appended tail
+afterward yields exactly the sections HOOK inserted, in the same
+creation order the original closure's `nreverse'd accumulator produced
+(assumes normal append-order insertion; `magit-section-insert-in-
+reverse' is a log-rendering knob that headers never bind).  The
+regroup logic below is copied verbatim from the original; only the
+collection mechanism differs."
+  (unless (fboundp 'magit-insert-headers)
+    (defun magit-insert-headers (hook)
+      (let* ((parent magit-insert-section--current)
+             (before (length (oref parent children)))
+             header-sections)
+        (magit-run-section-hook hook)
+        (setq header-sections (nthcdr before (oref parent children)))
+        (when header-sections
+          (insert "\n")
+          (when (cdr header-sections)
+            (let* ((1st-header (pop header-sections))
+                   (header-parent (oref 1st-header parent)))
+              (oset header-parent children (list 1st-header))
+              (oset 1st-header children header-sections)
+              (oset 1st-header content (oref (car header-sections) start))
+              (oset 1st-header end (oref (car (last header-sections)) end))
+              (dolist (sub-header header-sections)
+                (oset sub-header parent 1st-header))
+              (magit-section-maybe-add-heading-map 1st-header))))))))
+
 (defun nelisp-emacs-magit-bridge--ensure-preconditions ()
   "Ensure every session precondition the vendor chain assumes is live."
+  (nelisp-emacs-magit-bridge--ensure-gc-collect-disabled)
+  (nelisp-emacs-magit-bridge--ensure-lambda-documentation-form)
   (nelisp-emacs-magit-bridge--ensure-current-buffer)
   (nelisp-emacs-magit-bridge--ensure-process-substrate)
   (nelisp-emacs-magit-bridge--ensure-emacs-version-identity)
@@ -700,6 +907,12 @@ bundle has not been built yet (`make bake-magit-runtime-image' or
         (error "nelisp-emacs-magit-bridge: bundle not built: %s (run scripts/build-nelisp-emacs-magit-bridge-bundle.el under host Emacs)"
                bundle))
       (load bundle nil 'no-message t t)
+      ;; Post-load fixup: `magit-insert-headers' is excluded from the
+      ;; bundle (see `nelisp-emacs-magit-bridge--ensure-magit-insert-
+      ;; headers'), so its replacement needs `oref'/`oset'/`magit-run-
+      ;; section-hook' already defined, unlike the pre-load precondition
+      ;; steps above.
+      (nelisp-emacs-magit-bridge--ensure-magit-insert-headers)
       (setq nelisp-emacs-magit-bridge-loaded t)))
   nelisp-emacs-magit-bridge-loaded)
 
