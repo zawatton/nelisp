@@ -1,0 +1,600 @@
+#+TITLE: nelisp-emacs Doc 38 -- Everyday Emacs feature gap audit
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-07-06
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 11 remaining-work roadmap, Doc 31 nemacs-next editor product, Doc 33 C-core substrate priority plan, Doc 34 replacement development rules, Doc 36 process substrate, Doc 37 Tramp ssh lane
+
+* 0. Purpose and method
+
+This document is a systematic, implementation-grounded inventory of what
+nemacs is still missing relative to the *everyday feel of using Emacs*.  It
+exists to become the supply source for the next implementation sprints:
+each row is meant to convert into a scoped, prioritized work item.
+
+Method (this is the important part):
+
+- Status is judged by *real implementation and tests*, not by what an
+  older design doc claims.  A milestone marked "v1 CLOSED" in Doc 11 or a
+  "standalone vendor replay has succeeded" line in Doc 33 is *evidence of
+  loading + a representative surface proof*, not evidence that the feature
+  is wired into an interactive editor and usable by a person pressing keys.
+- Every verdict below cites a concrete file (and usually a line) in =src/=,
+  =apps/=, =test/=, or =scripts/=.  Where a feature "exists" only as an
+  unmodified GNU file under =vendor/emacs-lisp/= that nothing requires, it
+  is scored as *vendor-only, not wired*.
+- Task #19.  Sibling tasks: #16 Tramp ssh lane (Doc 37, shipped), #17 Magit
+  substrate, #18 the four-point UX pass.  Coordination is in Section 8.
+
+* 1. The three-layer status model
+
+Emacs "feel" is a property of the *interactive product*, but this codebase
+separates behavior into reusable libraries.  A feature therefore has three
+independent states, and the everyday gap is almost always in the third:
+
+1. *Substrate* -- is there a real, tested reusable implementation
+   (=src/emacs-*.el=) or a vendor-replay-proven vendor file?
+2. *Wired* -- is a standard command / keybinding installed in at least one
+   shipped product front-end, so a user can invoke it?
+3. *Daily-usable* -- when invoked, does it behave like Emacs (live echo,
+   region highlight, incremental feedback, buffer navigation), or is it a
+   degraded one-shot / canned / listing-only stand-in?
+
+The dominant finding of this audit: *substrate coverage is broad and
+tested; the gap is layers 2 and 3 (wiring + fidelity), concentrated in the
+command-loop UX, selection, search, and file-lifecycle families.*
+
+* 2. Product surfaces (read this before the matrix)
+
+There is no single "nemacs".  Four interactive surfaces exist, with very
+different feature coverage.  "Wired" below always means "wired in which
+surface".
+
+| Key | Surface | File(s) | Role today | Notable coverage |
+|-----+---------+---------+------------+------------------|
+| MAIN | Shipped TUI daily-driver | =src/nemacs-main.el= (2018 lines) | The =make verify-nemacs-daily-driver= gate (=scripts/verify-nemacs-tui.sh=), on host =emacs -Q -L src= and the standalone reader | Multi-window (real split render), =M-x=, project, =shell-command=, ielm, info, =describe-key=, query-replace, dired-listing |
+| GTK | X11 GUI reintegration | =src/nemacs-gtk-frontend.el= (+ =src/nemacs-gui-file-bridge-runtime.el=, 25207 lines) | Reference/validation GUI (nelisp-gui transport). The 25k file-bridge is the per-event architecture Doc 31 s9 explicitly refuses as the product path | Most interactive commands: mark/region, =M-y=, incremental isearch, mouse, register, bookmark, help, undo |
+| NEXT | nemacs-next product | =apps/nemacs-next/= (session + bash TUI + X11 GUI frontends) | The strategic daily driver (Doc 31, Doc 34 s1.3): persistent NeLisp session, clean protocol, replaceable frontend | Narrowest: M0-M5 command set + toolbar (insert/move/delete/undo/kill/yank/find-file/save/switch/kill-buffer, single-shot search, dired-listing) |
+| LIB | Reusable substrate | =src/emacs-*.el= + =vendor/emacs-lisp/**= | Owns package-visible behavior; consumed by the surfaces above | See per-feature rows |
+
+Consequence: a feature can be *done in GTK, absent in NEXT, and half-wired
+in MAIN* simultaneously.  Since Doc 31/34 name =nemacs-next= as the target
+daily driver and Doc 31 s9 rejects growing the 25k bridge, the priority
+lens below weights *bringing MAIN's and NEXT's interactive surface up to
+the substrate that already exists*, preferring vendor-first bring-up for
+whole applications (Doc 34 s2.2).
+
+* 3. Feature audit by category
+
+Legend: Substrate / Wired / Daily columns use none / partial / done.
+Cost = engineering size to close the *daily* gap (S <= ~1 day, M <= ~1
+sprint slice, L = multi-slice / vendor bring-up).  Impact = everyday-use
+weight.
+
+** 3.1 Windows and display
+
+*** Multiple windows (C-x 2/3, C-x o, C-x 1/0) -- Substrate done, MAIN done, NEXT none
+
+- Substrate: =src/emacs-window.el= is "a real window-tree model"
+  (=emacs-window-builtins.el:20=): =split-window-below/right= (932/941),
+  =other-window= (966), =delete-window= (975), =delete-other-windows=
+  (981).  Tests: =test/emacs-window-test.el=, =test/emacs-window-builtins-test.el=.
+- Wired MAIN: =src/nemacs-main.el:431-435= binds =C-x 2/3/0/1/o= to the
+  real commands, and Track V (=nemacs-main.el:1687-1705=) walks *every leaf
+  window* via =emacs-redisplay-redisplay= so a fresh split/delete/other
+  re-paints all visible windows -- i.e. multiple windows really render.
+- Wired NEXT: *none*.  The nemacs-next session/TUI is single-viewport
+  (=apps/nemacs-next/frontends/tui/nemacs-next-tui=; the TUI prints
+  "Undefined C-x key" for splits, =nemacs-next-tui:466=).
+- Load-gating caveat: the split *commands* live in
+  =emacs-window-builtins.el=, which is loaded via =emacs-core= but *not* by
+  the runtime-image preload or =nemacs-main='s lazy
+  =emacs-init-load-editor-features= (which load =emacs-window= the model
+  only). Since =build-standard-keymap= gates bindings on =command-bound-p=,
+  =C-x 2/3/o= are only bound in a MAIN image that has loaded =emacs-core=;
+  confirm this in the shipped daily-driver image.
+- Gap / cost: *M* -- guarantee =emacs-window-builtins= loads in the MAIN
+  image, and bring the window model + multi-viewport render into the
+  nemacs-next protocol (MAIN already proves the render works). Impact
+  *high*.
+
+*** Mouse (click-to-point, region drag, wheel) -- GTK done, TUI none
+
+- Substrate (frontend-neutral mark math): =src/emacs-edit-builtins.el=
+  =emacs-edit-mouse-drag-region-plan= (1183), =-mouse-yank-primary-direct=
+  (1899), word/line selection (2242), exported via =nelisp-emacs.el:326=.
+- Wired GTK: =src/nemacs-gtk-frontend.el= binds mouse-1 set-point (478),
+  mouse-2 yank-primary (410), drag-region (481), double/triple select
+  (483/484), wheel scroll (152-156).
+- Wired MAIN/NEXT: *none*.  =src/emacs-tui-event.el:74= /
+  =emacs-tui-backend.el:76= mark terminal mouse as deferred; no
+  =xterm-mouse-mode= anywhere.
+- Gap / cost: *M* (SGR/X10 mouse decoding in =emacs-tui-event= +
+  route to the existing drag-plan). Impact *medium* (keyboard-first users
+  survive without it).
+
+** 3.2 Search and navigation
+
+*** Incremental isearch (C-s / C-r) -- Substrate done, GTK done, MAIN/NEXT none
+
+- Substrate: =src/emacs-isearch.el= (438 lines) implements a *real
+  incremental loop*: =emacs-isearch--run= (382) reads keys in a loop,
+  =emacs-isearch--dispatch-event= (336) handles printing chars, =C-s=/=C-r=
+  repeat (344/347), =C-g= abort, =RET= commit, =DEL=; it maintains a match
+  *highlight face* (=emacs-isearch--ensure-face=, =--clear-highlight=).
+  Tests: =test/emacs-isearch-test.el=.
+- Wired GTK: =src/nemacs-gtk-frontend.el:39= requires =emacs-isearch=,
+  whose =emacs-isearch--ensure-global-bindings= (77) installs =C-s=/=C-r=
+  globally -- real incremental isearch with highlight in the GUI.
+- Wired MAIN: *none* -- =nemacs-main.el= does not require =emacs-isearch=;
+  no =C-s= binding.
+- Wired NEXT: *degraded* -- =nemacs-next-session--search-forward=
+  (=nemacs-next-session.el:962=) is a single-shot literal jump tagged
+  =:fidelity "search-prompt v1"=; the toolbar Search item is explicitly
+  "no live incremental overlay yet" (Doc 31 toolbar table).
+- Fidelity gaps even where wired: *no lazy-highlight* (other matches are
+  not highlighted), *literal only* (=regexp-p= accepted and ignored,
+  416-421), and the current-match highlight is a *text property*
+  (='face '=isearch=), so it is *invisible on the fast TUI paint path* --
+  see Section 7 (=emacs-redisplay-core= drops faces). Highlight shows only
+  under the full =emacs-redisplay.el= engine or GTK.
+- Gap / cost: *S-M* -- feed the product raw-key stream into the existing
+  =emacs-isearch--run= loop; *depends on* the redisplay-core face gap
+  (Section 7) for the highlight to be visible in the TUI. Impact *very
+  high* (=C-s= is the single most reflexive Emacs key). Best next-sprint
+  candidate.
+
+*** query-replace (M-%) / query-replace-regexp -- Substrate done, MAIN M-x-only, degraded
+
+- Substrate: =src/emacs-replace.el= (532) has the real y/n/!/q decision
+  loop: =emacs-query-replace-region= (201), =--read-decision= (187),
+  =emacs-query-replace= (234), =-regexp= (239), plus a stateful GUI session
+  engine (246-428). Tests: =test/emacs-replace-test.el= (21 ERT).
+- Wired MAIN: via =M-x query-replace= (=nemacs-main-query-replace-interactive=,
+  1454). *No =M-%= keybinding*; the non-callback TUI path defaults the
+  decision to =act-all= (auto replace-all) rather than per-match prompting;
+  the pty probe (=scripts/verify-nemacs-tui.sh:832=) degrades to a non-fatal
+  TODO. Caveats: uses =string-match= (reader lacks =re-search-forward=,
+  documented at 171); no =.= / =^= decisions.
+- Gap / cost: *S* -- bind =M-%=; make the per-match decision loop drive the
+  minibuffer over the pty. Impact *high*.
+
+*** occur (M-s o) / multi-occur -- Substrate partial, not wired
+
+- Substrate: =src/emacs-replace.el= =emacs-occur= (67) builds an =*Occur*=
+  text buffer and =display-buffer=s it; =emacs-occur-goto= (89) jumps
+  *programmatically*.  *No =occur-mode= / =occur-mode-map=* (no RET / click
+  to jump); *no =multi-occur=*.
+- Wired: *none* in MAIN/NEXT (no =M-s o=; MAIN requires =emacs-replace= but
+  never calls =emacs-replace-install=, so the =occur= alias is not even
+  installed -> =M-x occur= fails in the product).
+- Gap / cost: *M* (add =occur-mode= navigable buffer + wire =M-s o=).
+  Impact *medium*.
+
+*** imenu / xref -- Substrate partial (Elisp-only), not wired
+
+- =src/emacs-imenu.el= (131): =emacs-imenu= (103) regex-scans top-level
+  Elisp defs and completing-read-jumps; Elisp-only. Tests: 9 ERT.
+- =src/emacs-xref.el= (134): =emacs-xref-find-definitions= (71) with =M-.=
+  / =M-,= marker stack (installs bindings at 125); definitions only, no
+  references / tags DB. Tests: 7 ERT.
+- Wired MAIN/NEXT: *none* (absent from the =M-x= handler tables).
+- Gap / cost: *M*. Impact *medium* (dev workflow).
+
+** 3.3 Selection and killing
+
+*** Mark, region, transient-mark highlight (C-SPC) -- Substrate partial, GTK wired, no visual region
+
+- Substrate: mark tracked via =emacs-edit-set-mark-direct= /
+  region kill helpers in =src/emacs-edit-builtins.el=.
+- Wired GTK: =src/nemacs-gtk-frontend.el= binds =C-SPC=
+  (=nemacs-gtk-set-mark-command=, keymap 399; impl 982) and kills/copies
+  the =(mark .. point)= range (1105/1121).
+- Daily gap (the real one): *no region face highlight in redisplay*. Grep
+  of =src/emacs-redisplay*.el= finds no region/mark face path; even GTK
+  tracks the mark but does not paint an active-region overlay
+  (=nemacs-gtk-frontend.el:104= notes a =set-mark= stub returning nil).
+  MAIN/NEXT bind no =C-SPC= at all.
+- Gap / cost: *M* -- add an active-region overlay/face to the redisplay
+  span computation + bind =C-SPC= + transient-mark semantics. Impact *very
+  high* (a highlighted region is core Emacs feel and is what every
+  copy/cut/replace-in-region workflow keys off).
+
+*** kill-ring cycling (M-y yank-pop) -- Substrate done, GTK wired, MAIN/NEXT none
+
+- Substrate: =src/emacs-edit-builtins.el= defines =kill-ring=,
+  =kill-ring-max=, =kill-ring-yank-pointer= (297-305), =yank= (1944),
+  =yank-pop= (2056), with pointer cycling (1975-2002).
+- Wired GTK: =M-y= -> =nemacs-gtk-yank-pop= (=nemacs-gtk-frontend.el:433=).
+- Wired NEXT: =yank= only (no =yank-pop= command). MAIN: no =M-y=.
+- Gap / cost: *S* -- bind =M-y= to =yank-pop= in MAIN/NEXT. Impact
+  *medium-high*.
+
+** 3.4 Command loop
+
+*** Universal / prefix argument (C-u, digit args) -- Substrate partial (commands exist), keys unbound
+
+- Substrate: the *commands do exist* --
+  =emacs-command-loop-universal-argument= (=emacs-command-loop.el:2883=,
+  handles =C-u C-u= multiply), =-digit-argument= (2904, appends
+  =last-command-event= digit), =-negative-argument= (2928), aliased to the
+  standard =universal-argument= / =digit-argument= / =negative-argument= in
+  =emacs-command-loop-builtins.el:140-146=; =prefix-arg= /
+  =current-prefix-arg= defvars (254-259), =prefix-numeric-value= (270).
+  Tests: =test/emacs-command-loop-builtins-test.el= (prefix-arg lane
+  380-393).
+- Wired MAIN/NEXT: *none* -- =C-u= and the digit keys are *not bound* to
+  those commands in the standard keymap (grep for a =C-u= /
+  =universal-argument= define-key is empty; the keymap tables at
+  =emacs-command-loop.el:1228,1435= contain no prefix-arg keys). The GUI
+  uses a *separate textual* prefix mechanism
+  (=emacs-command-loop-gui-prefix-arg= 108, =-gui-universal-argument= etc.
+  4090-4112), not the reusable command accumulator.
+- Gap / cost: *M* -- bind =C-u= + digits to the existing commands and drive
+  the accumulation loop through the product event stream. Impact *high*
+  (=C-u N= and =C-u C-SPC= are pervasive).
+
+*** Keyboard macros (C-x ( / ) / e) -- No reusable substrate
+
+- No =kmacro-*= / =start-kbd-macro= / =defining-kbd-macro= defun in =src/=.
+  A working implementation exists only as =files--kmacro-*= state +
+  dispatch inside =src/nemacs-gui-file-bridge-runtime.el= (the retiring
+  bridge, key table 463-503) and as vendor =kmacro.el= / =edmacro.el=
+  (load-replay-proven, Doc 33 s2).
+- Wired MAIN/NEXT: *none*.
+- Gap / cost: *L* -- prefer vendor =kmacro.el= bring-up (Doc 34 s2.2) over a
+  new local clone; needs a real event-recording command loop. Impact
+  *medium*.
+
+*** Undo / undo-redo -- Substrate done, NEXT+GTK wired, MAIN partial
+
+- Substrate: =src/emacs-undo-ui.el= =undo= (86) + =undo-redo= (108) +
+  =undo-boundary= (143) over a real per-buffer undo list
+  (=emacs-undo.el=, Doc 51 Track E.2). Tests: =emacs-undo-ui-test.el=,
+  =emacs-undo-builtins-test.el=.
+- Wired NEXT: =undo= command (=C-/=), with per-command boundaries
+  (Doc 31 progress log, M2). GTK: requires =emacs-undo= (=nemacs-gtk-frontend.el:45=).
+- Caveats: =emacs-undo-ui.el= (the interactive =undo=/=undo-redo= +
+  =C-/=/=C-_=/=C-x u= bindings, =--install-bindings= 159) is *orphaned* --
+  =require='d by nobody but its own test; =emacs-editing.el:15-19= loads
+  only the undo *substrate*, and the runtime-image preload installs no
+  undo-core, so the chord bindings likely are *not active in the shipped
+  MAIN TUI*. Also: =C-x u= is bound to =undo-redo= (Emacs uses =C-x u= =
+  undo); *no =undo-only=* (explicitly deferred,
+  =emacs-undo-builtins.el:26=); redo uses a *custom side-list*, not the
+  canonical Emacs undo-list format (no marker / group / =(apply ...)=
+  fidelity).
+- Gap / cost: *S* -- require =emacs-undo-ui= in the MAIN image, fix
+  =C-x u= = undo, add =undo-only=. Impact *high* but mostly already closed.
+
+** 3.5 Help and discovery
+
+*** C-h help system (*Help* buffer) -- Substrate done, MAIN degraded, GTK done
+
+- Substrate: =src/emacs-help.el= (1416) -- =describe-function= (1070),
+  =describe-variable= (1076), =describe-key= (1099) render into a *real
+  navigable read-only =*Help*= buffer* (=emacs-help--render-buffer= 458),
+  with =help-mode= (1021) and =help-mode-map= (q quit / g revert). Real
+  docstrings via =documentation= (218). Tests: =emacs-help-test.el= (40 ERT).
+- Wired MAIN (degraded): =nemacs-main.el:447-448= routes
+  =describe-function= / =describe-variable= to
+  =emacs-help-gui-describe-*-prompt-command=, which read from a *hardcoded
+  ~12-command doc table* (=emacs-help-gui--command-doc= 684), *not* real
+  docstrings for arbitrary symbols. =describe-key= (1099) is real. GTK
+  requires the real =emacs-help=.
+- Missing: clickable xref/buttons in =*Help*= (=help-go-back/forward= exist
+  at 1049/1059 but are unbound); =describe-mode= is a canned string.
+- Gap / cost: *S* -- route the MAIN describe-function/variable path to the
+  *real* =describe-function= instead of the canned table. Impact *high*
+  ("describe any function" is a daily reflex and is currently broken in the
+  shipped TUI).
+
+*** apropos / describe-bindings -- partial
+
+- =apropos*= and =describe-bindings= are wired in MAIN
+  (=nemacs-main.el:446,449=) via =emacs-help-gui-*=. Adequate; low priority.
+
+*** customize UI (M-x customize) -- none (unsupported facade)
+
+- No =customize= / =cus-edit= defun in =src/=. =src/widget.el= is a 9-line
+  loader; =src/emacs-tier3-facades.el:25-68= makes =widget-create= etc.
+  *signal unsupported*. Vendor =cus-edit.el= unused.
+- Gap / cost: *L* (vendor cus-edit bring-up over the widget substrate).
+  Impact *low-medium*. Deferred (Doc 11 M13 shipped only a "customize-lite"
+  set/save in the GUI bridge, not the buffer UI).
+
+** 3.6 Files, buffers, and session lifecycle
+
+*** auto-save + backup files (#file#, file~, recover-file) -- none (stub)
+
+- No =backup-buffer= / =make-auto-save-file-name= / =do-auto-save= /
+  =recover-file= anywhere in =src/=. =auto-save-mode= is a no-op in the bulk
+  stub list (=src/emacs-stub-bulk.el:~192=, emit loop 275-278). The real
+  save path (=nemacs-next-session.el:989=, =emacs-fileio-save-buffer-direct=)
+  performs *no backup step*.
+- Gap / cost: *M*. Impact *high* -- this is data-safety; an editor without
+  =file~= backups and auto-save is risky for daily writing.
+
+*** recentf / savehist / saveplace / desktop -- vendor-only, not wired
+
+- No =src/= files; not required anywhere. Genuine GNU files exist under
+  =vendor/emacs-lisp/= (=recentf.el=, =savehist.el=, =saveplace.el=,
+  =desktop.el=) and are *load-replay-proven* (Doc 33 s2) but have *no
+  runtime =*-mode= wiring*. Session persistence: none.
+- Gap / cost: *M* (bundle: bring up + hook the three small ones). Impact
+  *medium* (returning to where you were / recent files / minibuffer history
+  is a strong daily comfort).
+
+*** registers (C-x r s/i/SPC/j) -- Substrate partial, GTK-only
+
+- Substrate: real alist helpers in =src/emacs-edit-builtins.el=
+  (=copy-to-register-direct= 1630, =insert-register-direct= 1645,
+  =point-to-register-direct= 1668, =jump-to-register-target= 1683).
+- Wired GTK only: =nemacs-gtk-frontend.el:329-332,1929-2044= binds
+  =C-x r s/i/SPC/j=. Standard command names appear only in completion lists,
+  not as commands in MAIN/NEXT. =number-to-register= /
+  =window-configuration-to-register= unimplemented.
+- Gap / cost: *S-M*. Impact *medium*.
+
+*** bookmark (C-x r m/b/l) -- Substrate partial, GTK-only, no persistence
+
+- Substrate: presentation helpers in =src/emacs-bookmark-ui.el= (candidates
+  34, listing 45, jump-plan 66) but *no storage / =bookmark-default-file=*.
+- Wired GTK only: =nemacs-gtk-frontend.el:2047+=. Vendor =bookmark.el=
+  unused (though replay-proven, Doc 33 s2).
+- Gap / cost: *M* (add persistence + wire MAIN/NEXT). Impact *low-medium*.
+
+*** abbrev / dabbrev -- vendor-only, not wired
+
+- =abbrev-mode= is a no-op stub. Real =vendor/emacs-lisp/abbrev.el= /
+  =dabbrev.el= exist and replay (Doc 33 s2, dabbrev proof executes an
+  expansion) but nothing requires them; no =define-abbrev= in =src/=.
+- Gap / cost: *M*. Impact *low* (power-user feature).
+
+*** tab-bar / tab-line -- tab-bar real-minimal, tab-line near-stub
+
+- =src/tab-bar.el= (168, not vendor) is a real minimal implementation:
+  =tab-bar-new-tab= (69), =-select-tab= (81), =-close-tab= (112), rename
+  (131), and it *captures/restores per-tab window configurations*
+  (47-67). MAIN binds =C-x t *= (=nemacs-gui-file-bridge-runtime.el:507-520=
+  in the bridge). =src/tab-line.el= (57) is thin (flags + buffer-name
+  format, no render).
+- Gap / cost: tab-bar *S* to surface in MAIN/NEXT render; tab-line *M*.
+  Impact *low-medium*.
+
+** 3.7 Applications (prefer vendor-first bring-up, Doc 34 s2.2)
+
+*** Dired -- Substrate real (nav+mark+ops), MAIN/NEXT listing-only
+
+- Substrate: =src/emacs-dired-min.el= (483) is a real interactive mode:
+  =dired-mode-map= binds RET =dired-find-file= (316), n/p movement, =^= up,
+  =m= mark, =u= unmark, =d= flag, =x= do-flagged-delete (416, really
+  deletes), =R= =dired-do-rename= (437), =C= =dired-do-copy= (466). Tests:
+  =test/emacs-dired-min-test.el= (33 ERT). Vendor =dired.el= also
+  replay-proven (Doc 33 s2).
+- Wired MAIN/NEXT (degraded): both render a *read-only directory listing
+  only*. =nemacs-main.el:1277-1290= registers only
+  =:list-directory/:current-directory/:buffer-name= with
+  =emacs-dired-min-gui= and *omits* the rename/copy/delete/name-at-point
+  callbacks, so =emacs-dired-min-gui-do-*-core= return "unsupported".
+  =nemacs-next= dired = =:fidelity "directory-listing buffer v1"=
+  (=nemacs-next-session.el:955=).
+- Gap / cost: *M* -- wire the missing =emacs-dired-min-gui= callbacks (or,
+  per Doc 34, bring up vendor =dired.el= interactively). Impact *high*
+  (file management is a daily loop; listing-only forces shell escape).
+
+*** shell / eshell / comint / ielm -- ielm done+wired; shell/eshell one-shot; comint substrate only
+
+- ielm: *done + wired*. =src/emacs-ielm.el= (288) is a real in-process
+  Elisp REPL (=ielm-input-handler= 224 evals against the live image); MAIN
+  reaches it via feature hint (=nemacs-main.el:1166=). No subprocess needed.
+- shell-mode: *partial, not in MAIN*. =src/emacs-shell.el= (155) runs each
+  line as a one-shot =SHELL -c LINE= via =call-process= (no persistent
+  subprocess). MAIN requires only =emacs-shell-command= (=M-!=), not the
+  interactive =*shell*=.
+- eshell: *partial, not wired*. =src/emacs-eshell.el= (166) hybrid
+  lisp/builtin/external dispatch; not required at boot.
+- comint: *substrate only* (=src/emacs-comint.el= 224, real via
+  =make-process= + filter); not wired to keys.
+- Root blocker: Doc 36 s3 -- the standalone reader's =make-process= is
+  output-oriented and *cannot hold an interactive subprocess open* (no
+  maintained stdin pipe), so a live held-open =bash= REPL only works under
+  host Emacs. This is the L1 async gap shared with #16/#17.
+- Gap / cost: *L* (reader child-stdin write primitive). Impact *medium*.
+
+*** compile / next-error -- Substrate done, not wired
+
+- =src/emacs-compile.el= (172): =emacs-compile-run= (84) into
+  =*compilation*=, error parse (48), =next-error=/=previous-error= that
+  *visit the file at the line* (118), =recompile= (104), =C-x `= bound at
+  load. Tests: 8 ERT. Not required by MAIN/NEXT.
+- Gap / cost: *S* (require + wire =M-x compile= / =C-x `=). Impact *medium*.
+
+*** man / woman -- Substrate partial, not wired
+
+- =src/emacs-man.el= (96): =emacs-man= (66) runs =man TOPIC | col -b= into a
+  read-only =*Man*= buffer; =woman= aliased to the same (no pure-Elisp
+  nroff). No nav buttons; not wired. Cost *S*, impact *low*.
+
+* 4. Consolidated matrix
+
+Sorted roughly by everyday impact, then by how cheap the daily gap is.
+"Wired" lists the surfaces where a real (non-degraded) command exists.
+
+| Feature | Substrate | Wired (real) | Daily-usable today | Impact | Close cost |
+|---------+-----------+--------------+--------------------+--------+------------|
+| Incremental isearch C-s/C-r | done | GTK | GTK only | high | S-M |
+| Mark/region + region highlight | partial | GTK (no visual) | none (no visible region) | high | M |
+| C-u universal/digit argument | partial (cmds exist) | -- (keys unbound) | none | high | M |
+| C-h describe-any-function | done | GTK | MAIN canned / GTK real | high | S |
+| kill-ring cycling M-y | done | GTK | GTK only | med-high | S |
+| Undo / undo-redo | done | NEXT, GTK | mostly done | high | S |
+| Multiple windows | done | MAIN | MAIN done, NEXT none | high | M |
+| auto-save / backup files | none | -- | none | high | M |
+| Dired (marks + file ops) | done | (host lib) | listing-only in product | high | M |
+| query-replace M-% | done | MAIN (M-x) | act-all default, no M-% | high | S |
+| recentf/savehist/saveplace | vendor-only | -- | none | med | M |
+| occur / multi-occur | partial | -- | none (no nav buffer) | med | M |
+| compile / next-error | done | -- | none | med | S |
+| Mouse (TUI) | done (GTK) | GTK | GTK only | med | M |
+| registers C-x r | partial | GTK | GTK only | med | S-M |
+| imenu / xref | partial | -- | none | med | M |
+| shell / eshell (held REPL) | partial | -- | one-shot only | med | L |
+| keyboard macros | none (src) | (bridge/vendor) | none | med | L |
+| bookmark C-x r m | partial | GTK | GTK only, no persist | low-med | M |
+| tab-bar | real-min | MAIN(bridge) | partial | low-med | S-M |
+| abbrev / dabbrev | vendor-only | -- | none | low | M |
+| man / woman | partial | -- | none | low | S |
+| customize UI | none | -- | none (unsupported) | low-med | L |
+
+* 5. Prioritized queue and phases
+
+Priority = impact / cost, biased toward items whose *substrate already
+exists* (so the work is wiring + fidelity, the cheapest high-value class),
+and toward the two forward products (MAIN, NEXT) per Doc 31/34.
+
+** Phase 1 -- Everyday reflex layer (all substrate-present or small; parallelizable)
+
+These are the keys a person hits in the first five minutes and misses
+immediately. Each is independent -> good for parallel sub-agents.
+
+1. *Incremental isearch* C-s/C-r into MAIN and NEXT (substrate done; feed
+   the raw-key stream into =emacs-isearch--run=).
+2. *Mark + visible region* -- add =set-mark-command= /
+   =region-beginning= / =region-end= / transient-mark to the reusable
+   substrate, bind C-SPC, and paint an active-region overlay
+   (unblocks copy/cut/replace-in-region feel).
+   *Shared prerequisite with item 1:* teach the fast =emacs-redisplay-core=
+   paint path to honor at least the =isearch= and =region= faces/overlays
+   (Section 7) -- do this once and both highlights become visible in the
+   TUI. This is the single highest-leverage substrate fix in the sprint.
+3. *Command-loop UX bundle* -- =universal-argument=/=digit-argument=
+   (C-u + digits) and =yank-pop= (M-y). Shared command-loop plumbing, so
+   bundle them.
+4. *Help fidelity* -- route MAIN =describe-function=/=describe-variable= to
+   the real =emacs-help= path (retire the ~12-entry canned table).
+5. *Save safety net* -- =backup-buffer= (file~) + basic auto-save in the
+   shared save path.
+
+** Phase 2 -- Everyday application layer
+
+6. *Dired file ops* -- wire the missing =emacs-dired-min-gui= callbacks in
+   MAIN (rename/copy/delete/name-at-point) or bring up vendor =dired.el=.
+7. *query-replace polish* -- bind M-%, drive per-match decisions over the
+   pty minibuffer (stop defaulting to act-all).
+8. *compile + next-error* and *occur navigable buffer* (M-s o, occur-mode).
+9. *Session persistence* -- recentf + savehist + saveplace bring-up + hooks.
+10. *registers* in MAIN/NEXT (substrate ready; GTK is the reference wiring).
+
+** Phase 3 -- Power-user and heavier bring-up
+
+11. *Keyboard macros* via vendor =kmacro.el= bring-up.
+12. *Held-open shell/eshell/comint* -- gated on the reader child-stdin
+    primitive (Doc 36 s3; shared with #16/#17 async work).
+13. *Mouse in the TUI* (SGR decoding).
+14. *customize buffer UI* / *abbrev* / *bookmark persistence* / *tab-line
+    render* -- lower daily weight; do on demand.
+
+** Recommended next-sprint set (3-5)
+
+Pick Phase 1 items 1-5. Rationale:
+
+- All five are *substrate-present or small*; none needs new reader
+  primitives, so they land inside one sprint.
+- They are the highest everyday-impact gaps: isearch, a *visible* region,
+  C-u/M-y, real help, and backup safety together move the shipped product
+  from "demo editor" to "I can actually live in this for an hour".
+- They are mutually independent -> parallelizable across sub-agents.
+- They exercise exactly the substrate families Doc 33 already hardened
+  (P2 command loop/keymaps, P3 overlays/markers, P5 help, P7 search), so
+  they validate that hardening from the product side.
+
+If only three: *isearch (1)*, *visible region (2)*, *help fidelity (4)* --
+the three most reflexive daily interactions with the lowest cost-to-value.
+
+* 6. Verification approach for closing items
+
+Follow Doc 11 tracking rule 3 and Doc 33/34: each promoted command needs a
+host ERT plus a product-level smoke, and behavior is judged by callable UX,
+not =fboundp=.
+
+- Substrate: focused ERT in =test/emacs-*-test.el= (the pattern already
+  exists for every audited feature).
+- Product wiring: extend =scripts/verify-nemacs-tui.sh= (the
+  =verify-nemacs-daily-driver= gate) with a pty probe that presses the real
+  keys (C-s, C-SPC, C-u, M-y) and asserts the observable frame/echo/region,
+  and/or the nemacs-next app smokes
+  (=apps/nemacs-next/frontends/tui/smoke.sh=, =scripts/*-smoke.sh=).
+- Do not accept "vendor replay succeeded" or "M-x reaches it" as closure
+  for a Phase 1 item; the close signal is a scripted keystroke producing
+  the Emacs-equivalent visible result.
+
+* 7. Cross-cutting notes discovered during the audit
+
+- *Two redisplay engines; the fast TUI one drops faces (root cause of
+  invisible highlights).* There are two =emacs-redisplay-redisplay=
+  definitions: the *lightweight* =src/emacs-redisplay-core.el:536= (the fast
+  first-frame TUI path loaded by =emacs-init-load-tui-core-features=,
+  =emacs-init.el:104-105=) renders *plain text with no faces/overlays*
+  (render path 510-517), while the *full* =src/emacs-redisplay.el:2426=
+  emits face/overlay glyphs (256-color / truecolor). Consequence: isearch
+  match highlight and any active-region overlay *exist as data but are not
+  painted* on the fast TUI core -- they only appear under the full engine or
+  GTK. Any Phase 1 highlight work (isearch, region) therefore has a *shared
+  dependency*: make the fast paint path honor a small face/overlay set (at
+  least =isearch= and =region=), or route those buffers through the full
+  engine. Markers and overlays themselves are real substrate
+  (=emacs-buffer-builtins.el:117-124= markers, =emacs-buffer.el:1275=
+  overlays).
+- *Facade shims mislead.* Files like =src/dired.el=, =src/replace.el=,
+  =src/compile.el= (21-48 lines) only =require= the real =emacs-*= module
+  and, on the standalone reader, call =*-install= to alias standard names.
+  Under host Emacs the alias is often *not* installed, so a name being
+  =fboundp= says nothing about product reachability.
+- *MAIN requires modules without installing their commands.* MAIN requires
+  =emacs-replace= but never calls =emacs-replace-install=, so =occur= is
+  unreachable there. Auditing "wired" must check the actual keymap /
+  =M-x= handler table (=nemacs-main--mx-handlers= 1482,
+  =--mx-command-feature-hints= 1162), not just =require=.
+- *The 25k file-bridge is a false positive for coverage.*
+  =src/nemacs-gui-file-bridge-runtime.el= has a near-complete global-map key
+  *table* (C-x 2/3/o, C-u, kmacro, dired) implemented via =fset= +
+  =files--bridge-command= dispatch. It "works", but Doc 31 s9 forbids it as
+  the product architecture, so it does not count toward NEXT's daily
+  surface. Treat it as a behavior reference, not the target.
+
+* 8. Dependencies and coordination with #16 / #17 / #18
+
+- *#16 Tramp ssh lane (Doc 37, shipped).* Independent of Phase 1.
+  Interacts with Phase 2 item 6: interactive Dired *over* =/ssh:= needs
+  both the dired file-ops wiring and the Tramp handler dispatch (already
+  shipped, =src/emacs-file-name-handler.el=). No blocking either way.
+- *#17 Magit substrate.* Downstream and heavy. It depends on Doc 33
+  P2 (keymaps/command loop), P3 (text-properties/overlays/markers), P4
+  (process). This audit's Phase 1 item 2 (active-region *overlay* in
+  redisplay) and the command-loop bundle (item 3) *share substrate* with
+  Magit's P2/P3 needs -- doing them first de-risks #17. The held-open
+  process gap (Phase 3 item 12) is the same L1 blocker Magit async needs
+  (Doc 36 s2, "Magit async jobs").
+- *#18 UX four-point pass.* *Likely overlaps Phase 1.* Before dispatching,
+  reconcile #18's four points against Phase 1 items 1-5 so the same
+  isearch/region/help/prefix-arg work is not implemented twice. If #18
+  already claims two of these, Phase 1 should absorb the remainder and add
+  Phase 2 items to refill the sprint.
+- *Doc 33 substrate priority.* Every Phase 1 item maps onto an already
+  hardened Pn family (P2/P3/P5/P7), so Phase 1 is "consume the hardening
+  from the product side", not new substrate research.
+- *Doc 34 vendor-first.* For whole applications (Dired, kmacro, customize,
+  abbrev, recentf/savehist) prefer bringing up the replay-proven vendor
+  source over extending the local minimal modules; for C-core editor
+  behavior (isearch loop, region overlay, prefix arg, kill-ring) the
+  reusable =src/emacs-*= substrate is the correct owner.
+
+* 9. Non-goals for this audit's queue
+
+Consistent with Doc 11 s5 and Doc 33 s7:
+
+- No customize/EDE/Semantic, Gnus/Rmail/MH-E, or legacy coding families in
+  the everyday queue.
+- No Magit clone or local Dired replacement -- vendor-first only.
+- No new reader primitives on the Phase 1 critical path (that is why the
+  held-open shell REPL is Phase 3, gated on the shared async work).
