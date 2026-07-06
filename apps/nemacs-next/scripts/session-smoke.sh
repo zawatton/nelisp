@@ -161,6 +161,12 @@ cat >> "$tmp" <<EOF
 (setq nemacs-next-session-smoke-org-open
       (nemacs-next-session-handle-message
        (quote (:type command :name find-file :path "$org_file"))))
+(setq nemacs-next-session-smoke-toolbar-unicode
+      (let ((emacs-toolbar-icon-force-mode (quote unicode)))
+        (nemacs-next-session-toolbar-render-line 0 t 140)))
+(setq nemacs-next-session-smoke-toolbar-ascii
+      (let ((emacs-toolbar-icon-force-mode (quote ascii)))
+        (nemacs-next-session-toolbar-render-line 0 t 140)))
 (setq nemacs-next-session-smoke-org-parse-ok nil)
 (require (quote org))
 (when (and (fboundp (quote org-mode))
@@ -273,6 +279,13 @@ cat >> "$tmp" <<EOF
          (string-match-p "ABSOLUTELY NO WARRANTY"
                          (plist-get nemacs-next-session-smoke-splash-snapshot
                                     :text))
+         (string-match-p ">{✚ New File}<" nemacs-next-session-smoke-toolbar-unicode)
+         (string-match-p "▶\\|▤\\|✕\\|▣\\|↺\\|✂\\|❐\\|❏\\|⌕"
+                         nemacs-next-session-smoke-toolbar-unicode)
+         (= 1 (string-width (emacs-toolbar-icon-glyph "new")))
+         (string-match-p ">{\\[N\\] New File}<" nemacs-next-session-smoke-toolbar-ascii)
+         (string-match-p "\\[O\\]\\|\\[D\\]\\|\\[X\\]\\|\\[S\\]\\|\\[U\\]"
+                         nemacs-next-session-smoke-toolbar-ascii)
          (not (featurep (quote emacs-init)))
          (not (featurep (quote nemacs-main)))
          (not (featurep (quote nemacs-gtk-frontend)))
@@ -280,7 +293,7 @@ cat >> "$tmp" <<EOF
     (nl-write-file "$marker" "ok")
   (nl-write-file
    "$marker"
-   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s splash=%S splash-snapshot=%S goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S"
+   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s splash=%S splash-snapshot=%S goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S toolbar-unicode=%S toolbar-ascii=%S"
            nemacs-next-session-smoke-count
            nemacs-next-session-smoke-missing
            (fboundp (quote nemacs-next-session-plan))
@@ -322,7 +335,9 @@ cat >> "$tmp" <<EOF
            nemacs-next-session-smoke-ime
            nemacs-next-session-smoke-clipboard
            nemacs-next-session-smoke-org-open
-           nemacs-next-session-smoke-org-parse-ok)))
+           nemacs-next-session-smoke-org-parse-ok
+           nemacs-next-session-smoke-toolbar-unicode
+           nemacs-next-session-smoke-toolbar-ascii)))
 ,quit
 EOF
 

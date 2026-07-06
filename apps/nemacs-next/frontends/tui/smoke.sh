@@ -9,10 +9,13 @@ init_dir=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.empty-init
 out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.out
 utf8_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.utf8.out
 diff_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.diff.out
+icon_ascii_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.icon-ascii.out
+icon_unicode_out=${TMPDIR:-/tmp}/nemacs-next-tui-smoke.$$.icon-unicode.out
 rm -rf "$init_dir"
-rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out"
+rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out" \
+      "$icon_ascii_out" "$icon_unicode_out"
 mkdir -p "$init_dir"
-trap 'rm -rf "$init_dir"; rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out"' EXIT
+trap 'rm -rf "$init_dir"; rm -f "$tmp_file" "$utf8_file" "$diff_file" "$out" "$utf8_out" "$diff_out" "$icon_ascii_out" "$icon_unicode_out"' EXIT
 
 printf '' > "$tmp_file"
 printf '' > "$utf8_file"
@@ -67,6 +70,34 @@ if ! grep -q 'Find file:' "$out"; then
   echo "nemacs-next-tui-smoke: toolbar Open did not show find-file prompt" >&2
   exit 1
 fi
+
+{
+  printf '\030\003'
+} | LC_ALL=C LANG=C LC_CTYPE=C NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
+    "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$icon_ascii_out" 2>&1
+
+for tag in '[N]' '[O]' '[D]' '[X]' '[S]' '[U]' '[K]' '[W]' '[Y]' '[/]'; do
+  if ! grep -qF -- "$tag" "$icon_ascii_out"; then
+    cat "$icon_ascii_out" >&2
+    echo "nemacs-next-tui-smoke: non-UTF-8 locale did not fall back to ASCII toolbar icon: $tag" >&2
+    exit 1
+  fi
+done
+
+{
+  printf '\030\003'
+} | LC_ALL=C.UTF-8 LANG=C.UTF-8 LC_CTYPE=C.UTF-8 NEMACS_USER_EMACS_DIRECTORY="$init_dir" \
+    NEMACS_NEXT_TUI_DRAW=never NEMACS_NEXT_TUI_WIDTH=140 timeout 90s \
+    "$ROOT/apps/nemacs-next/frontends/tui/nemacs-next-tui" > "$icon_unicode_out" 2>&1
+
+for glyph in '✚' '▶' '▤' '✕' '▣' '↺' '✂' '❐' '❏' '⌕'; do
+  if ! grep -qF -- "$glyph" "$icon_unicode_out"; then
+    cat "$icon_unicode_out" >&2
+    echo "nemacs-next-tui-smoke: UTF-8 locale did not render Unicode toolbar icon: $glyph" >&2
+    exit 1
+  fi
+done
 
 {
   printf '\030\006'
@@ -136,3 +167,5 @@ echo "nemacs-next-tui-smoke: scripted terminal loop ok"
 echo "nemacs-next-tui-smoke: multibyte input ok"
 echo "nemacs-next-tui-smoke: color runs ok"
 echo "nemacs-next-tui-smoke: differential cursor draw actual=${actual_bytes}B full=${full_bytes}B"
+echo "nemacs-next-tui-smoke: toolbar icon ASCII fallback ok"
+echo "nemacs-next-tui-smoke: toolbar icon Unicode glyphs ok"
