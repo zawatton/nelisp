@@ -2053,8 +2053,11 @@ to let-bind in the case body when matched."
          ;; (or P1 P2 ...)
          ((eq head 'or)
           (emacs-stub--pcase-or rest value-form))
-         ;; (backquote ...) - destructure cons / atom shape
-         ((eq head 'backquote)
+         ;; (backquote ...) - destructure cons / atom shape.  Accept both
+         ;; the NeLisp reader's normalized `backquote' head and host
+         ;; Emacs's `\\=`' symbol (host-normalized bundles print patterns
+         ;; as `(\\=` ...)', Doc 33 item 243).
+         ((or (eq head 'backquote) (eq head '\`))
           (emacs-stub--pcase-backquote (car rest) value-form))
          ;; Unknown — treat as opaque catch-all (= permissive).
          (t (cons t nil)))))
@@ -2098,15 +2101,16 @@ Walks PAT recursively; `(comma SYM)' binds SYM to corresponding
 position; literal cons recurses with `car'/`cdr' index forms; atom
 does `equal' check."
     (cond
-     ;; (comma SYM) — bind SYM to value-form, always match.
-     ((and (consp pat) (eq (car pat) 'comma))
+     ;; (comma SYM) — bind SYM to value-form, always match.  `\\=,' is
+     ;; host Emacs's comma symbol (host-normalized bundles, item 243).
+     ((and (consp pat) (or (eq (car pat) 'comma) (eq (car pat) '\,)))
       (let ((sym (car (cdr pat))))
         (cond
          ((eq sym '_) (cons t nil))
          ((symbolp sym) (cons t (list (list sym value-form))))
          (t (emacs-stub--pcase-test sym value-form)))))
      ;; (comma-at SYM) — bind SYM to remaining list (= value-form is tail).
-     ((and (consp pat) (eq (car pat) 'comma-at))
+     ((and (consp pat) (or (eq (car pat) 'comma-at) (eq (car pat) '\,@)))
       (let ((sym (car (cdr pat))))
         (cons t (list (list sym value-form)))))
      ;; Cons cell — recursively destructure car / cdr.
@@ -2160,7 +2164,20 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
-    "Minimal `pcase-let' supporting the local pcase pattern subset."
+    "Minimal `pcase-let' supporting the local pcase pattern subset.
+Faithful to Emacs semantics: the patterns are ASSUMED to match, so the
+bindings destructure unconditionally instead of gating BODY behind a
+match test (Emacs: \"BINDINGS are treated as if they always match\").
+A too-short list therefore binds the missing positions to nil -- e.g.
+`(pcase-let ((\\=`(,a ,b ,c) \\='(1))) ...)' binds a=1, b=nil, c=nil,
+because the binding value-forms are plain `car'/`cdr' chains and
+`(car nil)' is nil.  Doc 33 item 243: the previous strict `(when TEST
+...)' gating silently evaluated the whole form to nil whenever the
+value was shorter than the pattern -- vendor code like magit's
+`magit-insert-section' macro (pattern `((,class ,value ,hide . ,args)
+. ,body)' against the common short form `((status) BODY...)') relies
+on the real, lenient destructuring, and the strict variant made that
+macro expand to nil, so no status section was ever inserted."
     (let ((forms body)
           (rev-bindings nil))
       (dolist (binding bindings)
@@ -2168,14 +2185,12 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
       (dolist (binding rev-bindings)
         (let* ((built (emacs-stub--pcase-let-binding binding))
                (temp-binding (car built))
-               (test (car (cdr built)))
                (pattern-bindings (car (cdr (cdr built)))))
           (setq forms
                 (list (list 'let (list temp-binding)
                             (if pattern-bindings
-                                (list 'when test
-                                      (cons 'let (cons pattern-bindings forms)))
-                              (cons 'when (cons test forms))))))))
+                                (cons 'let (cons pattern-bindings forms))
+                              (cons 'progn forms)))))))
       (if bindings (car forms) (cons 'progn body)))))
 
 (unless (fboundp 'pcase-let*)
@@ -2188,19 +2203,20 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 
 (unless (fboundp 'pcase-dolist)
   (defmacro pcase-dolist (spec &rest body)
-    "Minimal `pcase-dolist' supporting the local pcase pattern subset."
+    "Minimal `pcase-dolist' supporting the local pcase pattern subset.
+Like `pcase-let' (see there), Emacs treats PATTERN as if it always
+matches, so each element destructures unconditionally -- no per-element
+match filtering (Doc 33 item 243, same lenient-destructure fix)."
     (let* ((pattern (car spec))
            (list-form (car (cdr spec)))
            (result-form (car (cdr (cdr spec))))
            (value-sym (make-symbol "--pcase-dolist-value--"))
            (built (emacs-stub--pcase-test pattern value-sym))
-           (test (car built))
            (pattern-bindings (cdr built)))
       (list 'dolist (list value-sym list-form result-form)
             (if pattern-bindings
-                (list 'when test
-                      (cons 'let (cons pattern-bindings body)))
-              (cons 'when (cons test body)))))))
+                (cons 'let (cons pattern-bindings body))
+              (cons 'progn body))))))
 
 (unless (featurep 'pcase) (provide 'pcase))
 

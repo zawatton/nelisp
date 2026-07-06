@@ -1146,6 +1146,44 @@ Mirrors the five slots the real `cl-preloaded.el' declares for
     (slots nil)
     (index-table nil)))
 
+;; `cl-slot-descriptor' seed (Doc 33 item 243, same rationale as the
+;; `cl--class' seed above): `cl-preloaded.el' is the only upstream owner
+;; of `cl--make-slot-descriptor' / `cl--slot-descriptor-*' /
+;; `cl--copy-slot-descriptor', and it is excluded from the standalone
+;; bundle.  Real, unpatched vendor `eieio-core.el' builds one descriptor
+;; per slot inside `eieio-defclass-internal' (and copies parents'
+;; descriptors in `eieio-copy-parents-into-subclass'), so with the
+;; constructor void every `defclass' in the vendor Magit chain aborted
+;; in its slots loop -- classes ended up registered (the `setf' of
+;; `cl--find-class' precedes the loop) but with ZERO slots /
+;; initarg-tuples / index-table / default-object cache, which
+;; `make-instance' then surfaced as `invalid-slot-name (nil :type)'.
+;; Slot order and the BOA constructor signature mirror `cl-preloaded.el'.
+(unless (fboundp 'cl--make-slot-descriptor)
+  (cl-defstruct (cl-slot-descriptor
+                 (:conc-name cl--slot-descriptor-)
+                 (:constructor nil)
+                 (:constructor cl--make-slot-descriptor
+                               (name initform &optional type props))
+                 (:copier nil))
+    "Slot metadata descriptor (standalone stand-in for `cl-preloaded.el')."
+    (name nil)
+    (initform nil)
+    (type t)
+    (props nil)))
+
+(unless (fboundp 'cl--copy-slot-descriptor)
+  (defun cl--copy-slot-descriptor (slot)
+    "Return a copy of SLOT with its props alist copied (not shared).
+Mirrors `cl-preloaded.el': `eieio-copy-parents-into-subclass' mutates
+the copy's props in place, which must not leak into the parent class's
+descriptor."
+    (cl--make-slot-descriptor
+     (cl--slot-descriptor-name slot)
+     (cl--slot-descriptor-initform slot)
+     (cl--slot-descriptor-type slot)
+     (copy-alist (cl--slot-descriptor-props slot)))))
+
 ;;;; --- cl-case / cl-pushnew --------------------------------------------
 
 (unless (fboundp 'cl-case)
@@ -1169,8 +1207,19 @@ Mirrors the five slots the real `cl-preloaded.el' declares for
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-pushnew))
   (defmacro cl-pushnew (item place &rest _keys)
+    "Cons ITEM onto PLACE unless it is already `member' of PLACE.
+PLACE may be a symbol (expands to `setq') or a generalized place
+handled by the substrate `setf' polyfill.  Doc 33 item 243: the
+previous symbol-only expansion emitted `(setq (ACCESSOR X) ...)' for a
+struct-slot place -- `eieio-defclass-internal' does `(cl-pushnew cname
+(eieio--class-children c))' -- and a non-symbol `setq' target is a
+FLAGLESS abort on the standalone evaluator (same defect class as the
+`push' fix documented in emacs-stub.el), which silently killed every
+`defclass' registration in the magit bridge bundle."
     (list 'unless (list 'member item place)
-          (list 'setq place (list 'cons item place)))))
+          (if (symbolp place)
+              (list 'setq place (list 'cons item place))
+            (list 'setf place (list 'cons item place))))))
 
 ;;;; --- cl-letf / cl-flet / cl-block -----------------------------------
 
@@ -1892,7 +1941,20 @@ Honours `:test' and `:key'.  (This shim does not destroy SEQ.)"
 ;; with a nested backquote) to stay clear of the runtime backquote quirks
 ;; documented in Doc 22 / Doc 16 §4.
 
-(unless (fboundp 'cl-typep)
+;; Gate note (Doc 33 item 243): the NeLisp stdlib prelude ships its own
+;; minimal `cl-typep' (a 10-case atomic-symbol cond, no compound types,
+;; no `TYPEp'/`TYPE-p' predicate fallback, `(t nil)') which is fbound
+;; before this file loads, so a plain `(unless (fboundp ...))' gate left
+;; the rich implementation below dead.  EIEIO depends on the rich
+;; grammar in a load-bearing spot: `eieio-oset'/`eieio-oref' dispatch on
+;; `(cl-typep obj '(or eieio-object cl-structure-object))', which the
+;; minimal version answers nil for every object, sending every slot
+;; write into the `wrong-type-argument' arm.  Self-probe the live
+;; implementation with a trivial compound type instead: host Emacs's
+;; real `cl-typep' answers t and is left alone; the prelude minimal one
+;; answers nil (or errors) and gets replaced.
+(when (or (not (fboundp 'cl-typep))
+          (not (condition-case nil (cl-typep nil '(or null)) (error nil))))
   (defun cl-typep (val type)
     "Return non-nil if VAL is of TYPE.
 Supports the common Common-Lisp type specifiers used by `cl-check-type'
