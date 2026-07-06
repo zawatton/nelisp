@@ -31,8 +31,11 @@ tmp=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.repl
 out=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.out
 err=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.err
 tui_out=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.tui.out
-rm -f "$tmp" "$out" "$err" "$tui_out"
-trap 'rm -f "$tmp" "$out" "$err" "$tui_out"' EXIT
+tmp_q=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.q.repl
+out_q=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.q.out
+err_q=${TMPDIR:-/tmp}/nemacs-next-init-smoke.$$.q.err
+rm -f "$tmp" "$out" "$err" "$tui_out" "$tmp_q" "$out_q" "$err_q"
+trap 'rm -f "$tmp" "$out" "$err" "$tui_out" "$tmp_q" "$out_q" "$err_q"' EXIT
 
 cat "$BOOTSTRAP_REPL" > "$tmp"
 cat >> "$tmp" <<EOF
@@ -79,6 +82,61 @@ for expected in \
   fi
 done
 
+# --- paired verification: UX #18 session A -------------------------
+#
+# Same fixture, but `init-file-user' is forced nil before `nemacs-init'
+# runs (= the -q/-Q CLI gate's effect at the nemacs-loadup level).  The
+# fixture's early-init.el/init.el side effects (tool-bar-lines=0, custom
+# scratch text, "init loaded" message) must NOT appear this time.
+
+cat "$BOOTSTRAP_REPL" > "$tmp_q"
+cat >> "$tmp_q" <<EOF
+(setq load-path (list "$ROOT/src" "$ROOT/apps/nemacs-next/lisp"))
+(load "$ROOT/src/emacs-special-buffers.el")
+(load "$ROOT/src/nemacs-loadup.el")
+(setq init-file-user nil)
+(unless nemacs-initialized (nemacs-init t))
+(load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
+(setq nemacs-next-init-smoke-frame-config-q (nemacs-next-session-frame-config))
+(setq nemacs-next-init-smoke-scratch-text-q (nelisp-ec-with-current-buffer nemacs--initial-buffer (nelisp-ec-buffer-string)))
+(setq nemacs-next-init-smoke-messages-text-q (let ((buf (emacs-special-buffers-ensure-buffer messages-buffer-name))) (nelisp-ec-with-current-buffer buf (nelisp-ec-buffer-string))))
+(nelisp--write-stdout-bytes (concat "q-frame-config-tool-bar-lines=" (number-to-string (or (plist-get nemacs-next-init-smoke-frame-config-q :tool-bar-lines) -1)) "\n"))
+(nelisp--write-stdout-bytes (concat "q-scratch=" (if (equal nemacs-next-init-smoke-scratch-text-q "fixture scratch message\n") "bad-fixture-loaded" "default") "\n"))
+(nelisp--write-stdout-bytes (concat "q-messages=" (if (string-match "init loaded" nemacs-next-init-smoke-messages-text-q) "bad-fixture-loaded" "no-init-message") "\n"))
+,quit
+EOF
+
+set +e
+NEMACS_USER_EMACS_DIRECTORY=$FIXTURE_DIR \
+  timeout 90s "$NELISP_BIN" --repl --no-prompt --no-print \
+  < "$tmp_q" > "$out_q" 2> "$err_q"
+rc_q=$?
+set -e
+
+if [ "$rc_q" -ne 0 ]; then
+  cat "$out_q" >&2
+  cat "$err_q" >&2
+  echo "nemacs-next-init-smoke: -q equivalent session fail rc=$rc_q" >&2
+  exit 1
+fi
+
+for expected in \
+  'q-scratch=default' \
+  'q-messages=no-init-message'; do
+  if ! grep -q "^$expected$" "$out_q"; then
+    cat "$out_q" >&2
+    cat "$err_q" >&2
+    echo "nemacs-next-init-smoke: missing $expected" >&2
+    exit 1
+  fi
+done
+
+if grep -q '^q-frame-config-tool-bar-lines=0$' "$out_q"; then
+  cat "$out_q" >&2
+  echo "nemacs-next-init-smoke: early-init.el side effect (tool-bar-lines=0) leaked with init-file-user nil" >&2
+  exit 1
+fi
+
 {
   printf '\030\003'
 } | NEMACS_USER_EMACS_DIRECTORY=$FIXTURE_DIR \
@@ -97,3 +155,5 @@ echo "nemacs-next-init-smoke: frame-config-tool-bar-lines=0"
 echo "nemacs-next-init-smoke: tui-toolbar-hidden ok"
 echo "nemacs-next-init-smoke: scratch=custom"
 echo "nemacs-next-init-smoke: messages=init-loaded"
+echo "nemacs-next-init-smoke: q-scratch=default"
+echo "nemacs-next-init-smoke: q-messages=no-init-message"

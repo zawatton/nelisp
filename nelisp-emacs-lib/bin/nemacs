@@ -15,6 +15,12 @@
 #   nemacs --batch --load-image FILE legacy: restore Lisp-visible .nli state
 #   nemacs --batch --eval FORM      batch + eval FORM
 #   nemacs --batch -l a -l b --eval '(...)'
+#   nemacs -q                       skip user init.el/early-init.el (like Emacs -q)
+#   nemacs --no-init-file           same as -q
+#   nemacs -Q                       -q + suppress the startup splash (like Emacs -Q)
+#   nemacs --quick                  same as -Q
+#   nemacs --no-splash              suppress the startup splash screen only
+#   nemacs --no-site-file           accepted for Emacs CLI compatibility (no-op)
 #   nemacs --driver=nelisp ...      use NeLisp as driver
 #   nemacs --driver=host ...        force host emacs driver (= default)
 #   nemacs --print-paths            dump the resolved load-path / vendor root
@@ -95,7 +101,7 @@ fi
 NEMACS_VERSION="0.1.0-mvp"
 
 usage() {
-  sed -n '2,30p' "$0"
+  sed -n '2,36p' "$0"
 }
 
 print_paths() {
@@ -269,6 +275,8 @@ run_doctor() {
 
 BATCH=0
 NO_BANNER=0
+NO_INIT=0
+NO_SPLASH=0
 DOCTOR=0
 LOAD_FILES=()
 LOAD_PATHS=()
@@ -286,7 +294,10 @@ while (( $# > 0 )); do
       exit 0 ;;
     --print-paths) print_paths; exit 0 ;;
     --doctor) DOCTOR=1; shift ;;
-    -Q|--quick) shift ;;
+    -q|--no-init-file) NO_INIT=1; shift ;;
+    -Q|--quick) NO_INIT=1; NO_SPLASH=1; shift ;;
+    --no-splash) NO_SPLASH=1; shift ;;
+    --no-site-file) shift ;;
     -nw|--no-window-system)
       HOST_EARLY_ARGS+=("$1"); shift ;;
     --batch) BATCH=1; shift ;;
@@ -480,7 +491,7 @@ if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
   if (( BATCH )); then
     BOOT_ENTRY_FORM="$(cat <<'EOF'
   (when (fboundp 'install-sigint-handler) (install-sigint-handler))
-  (unless nemacs-initialized (nemacs-init t))
+  (unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init t))
   (nemacs-main--apply-options)
   (unless (nemacs-main-option :no-banner)
     (when (fboundp 'message)
@@ -492,7 +503,7 @@ EOF
   (when (fboundp 'install-sigint-handler) (install-sigint-handler))
   (when (fboundp 'install-winsize-handler) (install-winsize-handler))
   (when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))
-  (unless nemacs-initialized (nemacs-init))
+  (unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init))
   (nemacs-main--apply-options)
   (setq nemacs-main--repl-tui-ok (nemacs-main--realise-tui))
   (if nemacs-main--repl-tui-ok
@@ -529,6 +540,8 @@ $BOOT_NELISP_SOURCE_REFRESH
         (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
               :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
               :driver '$NEMACS_DRIVER
+              :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+              :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
               :images (list$IMAGE_LIST)
               :load-path (list$LOAD_PATH_LIST)
               :load (list$LOAD_LIST)
@@ -586,6 +599,8 @@ case "$NEMACS_DRIVER" in
       (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
             :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
             :driver '$NEMACS_DRIVER
+            :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+            :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
             :images (list$IMAGE_LIST)
             :load-path (list$LOAD_PATH_LIST)
             :load (list$LOAD_LIST)
@@ -600,14 +615,14 @@ EOF
           # nil when one closure calls another.  Keep batch CLI processing at
           # top level so -L/-l/--eval/-f see the plist installed above.
           printf '%s\n' "(when (fboundp 'install-sigint-handler) (install-sigint-handler))" >> "$tmp"
-          printf '%s\n' "(unless nemacs-initialized (nemacs-init t))" >> "$tmp"
+          printf '%s\n' "(unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init t))" >> "$tmp"
           printf '%s\n' "(nemacs-main--apply-options)" >> "$tmp"
           printf '%s\n' "(unless (nemacs-main-option :no-banner) (when (fboundp 'message) (message \"%s\" (nemacs-main-status-banner))))" >> "$tmp"
         else
           printf '%s\n' "(when (fboundp 'install-sigint-handler) (install-sigint-handler))" >> "$tmp"
           printf '%s\n' "(when (fboundp 'install-winsize-handler) (install-winsize-handler))" >> "$tmp"
           printf '%s\n' "(when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))" >> "$tmp"
-          printf '%s\n' "(unless nemacs-initialized (nemacs-init))" >> "$tmp"
+          printf '%s\n' "(unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init))" >> "$tmp"
           printf '%s\n' "(nemacs-main--apply-options)" >> "$tmp"
           printf '%s\n' "(setq nemacs-main--repl-tui-ok (nemacs-main--realise-tui))" >> "$tmp"
           if (( ! NO_BANNER )); then

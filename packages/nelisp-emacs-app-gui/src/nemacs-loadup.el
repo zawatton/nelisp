@@ -100,6 +100,14 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
     ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n"
     "Initial contents inserted into a newly-created *scratch* buffer."))
 
+(unless (boundp 'inhibit-startup-screen)
+  (defvar inhibit-startup-screen nil
+    "Compatibility gate for the startup splash screen.
+Non-nil suppresses it (Emacs's `-Q' implies this).  `nemacs-loadup' only
+declares the variable so the CLI/options-plist wiring in `bin/nemacs' and
+`nemacs-main' has a stable place to set it; the splash-screen owner that
+consults this variable lands in a later UX session."))
+
 (unless (boundp 'initial-major-mode)
   (defvar initial-major-mode 'lisp-interaction-mode
     "Major mode used for the initial *scratch* buffer."))
