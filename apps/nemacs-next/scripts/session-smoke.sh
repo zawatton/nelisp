@@ -41,6 +41,9 @@ cat >> "$tmp" <<EOF
 (setq load-path (list "$ROOT/src" "$ROOT/apps/nemacs-next/lisp"))
 (setq nemacs-next-session-smoke-count 0)
 (load "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el")
+(load "$ROOT/src/emacs-startup-screen.el")
+(setq nemacs-next-session-smoke-splash-buffer (nemacs-next-session-apply-startup-screen))
+(setq nemacs-next-session-smoke-splash-snapshot (nemacs-next-session-buffer-snapshot))
 (setq nemacs-next-session-smoke-count (+ nemacs-next-session-smoke-count 1))
 (setq nemacs-next-session-smoke-plan (nemacs-next-session-plan))
 (setq nemacs-next-session-smoke-count (+ nemacs-next-session-smoke-count 1))
@@ -260,6 +263,16 @@ cat >> "$tmp" <<EOF
          (eq (plist-get nemacs-next-session-smoke-org-open :type)
              (quote snapshot))
          nemacs-next-session-smoke-org-parse-ok
+         nemacs-next-session-smoke-splash-buffer
+         (equal (plist-get nemacs-next-session-smoke-splash-snapshot
+                           :buffer-name)
+                "*GNU Emacs*")
+         (string-match-p "Welcome to nemacs"
+                         (plist-get nemacs-next-session-smoke-splash-snapshot
+                                    :text))
+         (string-match-p "ABSOLUTELY NO WARRANTY"
+                         (plist-get nemacs-next-session-smoke-splash-snapshot
+                                    :text))
          (not (featurep (quote emacs-init)))
          (not (featurep (quote nemacs-main)))
          (not (featurep (quote nemacs-gtk-frontend)))
@@ -267,7 +280,7 @@ cat >> "$tmp" <<EOF
     (nl-write-file "$marker" "ok")
   (nl-write-file
    "$marker"
-   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S"
+   (format "fail count=%s missing=%s fbound=%s facade=%s init=%s main=%s gtk=%s bridge=%s splash=%S splash-snapshot=%S goto=%S fwd=%S back=%S del=%S oor=%S yank-empty=%S nl=%S undo-nl=%S kill-region=%S yank-1=%S kill-line=%S yank-2=%S bad-kill=%S undo-empty=%S alive=%S find-file=%S file-append=%S save=%S buffer-complete=%S generic-complete=%S switch=%S kill-file=%S missing-kill=%S org-open=%S org-parse-ok=%S"
            nemacs-next-session-smoke-count
            nemacs-next-session-smoke-missing
            (fboundp (quote nemacs-next-session-plan))
@@ -276,6 +289,8 @@ cat >> "$tmp" <<EOF
            (featurep (quote nemacs-main))
            (featurep (quote nemacs-gtk-frontend))
            (featurep (quote nemacs-gui-file-bridge-runtime))
+           nemacs-next-session-smoke-splash-buffer
+           nemacs-next-session-smoke-splash-snapshot
            nemacs-next-session-smoke-goto
            nemacs-next-session-smoke-fwd
            nemacs-next-session-smoke-back

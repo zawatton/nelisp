@@ -169,6 +169,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =emacs-minibuffer.el= | CORE | minibuffer/completion semantics | high-value public API |
 | =emacs-mode-builtins.el= | CORE | unprefixed mode shim | keep explicit shim |
 | =emacs-mode.el= | CORE | major/minor mode substrate | keep shared |
+| =emacs-startup-screen.el= | CORE/FEAT | startup splash screen semantics (buffer/text/gate) | keep shared, adapter-thin |
 | =emacs-syntax-table.el= | CORE/TXT | syntax table for modes/font-lock | keep reusable |
 | =emacs-toolbar.el= | CORE/GUI | toolbar behavior | keep adapter-thin |
 | =emacs-window-builtins.el= | CORE | unprefixed window shim | keep explicit shim |
