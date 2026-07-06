@@ -1884,6 +1884,46 @@ options makes `-L src -l test/foo.el' behave like Emacs batch loading."
 
 ;;;; --- entry points -------------------------------------------------
 
+(defun nemacs-main--startup-gate-option (key)
+  "Return (VALUE . t) when KEY is explicitly present in `nemacs-main-options'.
+Return nil when KEY is absent.  Distinguishing an explicit nil VALUE from an
+absent key is what lets `nemacs-main--apply-startup-gate' leave the global
+compat variable untouched for callers that never pass these keys, instead of
+clobbering it via `nemacs-main-option''s default-on-missing behaviour (that
+helper cannot tell \"key maps to nil\" apart from \"key is absent\")."
+  (let* ((plist (and (boundp 'nemacs-main-options)
+                     (symbol-value 'nemacs-main-options)))
+         (cell (plist-member plist key)))
+    (when cell (cons (cadr cell) t))))
+
+(defun nemacs-main--apply-startup-gate ()
+  "Reflect `nemacs-main-options' startup-gate keys onto their globals.
+Call before `nemacs-init' so the gate is in effect for the whole bootstrap.
+
+Recognised keys:
+  :init-file-user          Emacs `-q'/`-Q' semantics.  Nil makes
+                            `nemacs-load-user-init-files' skip early-init.el,
+                            package activation, and init.el
+                            (src/nemacs-loadup.el).
+  :inhibit-startup-screen  Consulted by the splash-screen owner added in a
+                            later UX session; nil is the default (show
+                            splash), non-nil suppresses it.
+
+Both keys are optional; a key absent from `nemacs-main-options' leaves the
+corresponding global untouched, so callers that never pass these options
+(most existing tests and direct `nemacs-init' callers) keep today's
+behaviour.  Centralising the reflection here — rather than injecting the
+globals from more than one call site across `bin/nemacs' and
+`nemacs-loadup' — is what avoids a double-injection ordering bug."
+  (let ((init-file-user-cell
+         (nemacs-main--startup-gate-option :init-file-user))
+        (inhibit-startup-screen-cell
+         (nemacs-main--startup-gate-option :inhibit-startup-screen)))
+    (when init-file-user-cell
+      (setq init-file-user (car init-file-user-cell)))
+    (when (and inhibit-startup-screen-cell (boundp 'inhibit-startup-screen))
+      (setq inhibit-startup-screen (car inhibit-startup-screen-cell)))))
+
 (defun nemacs-batch-main ()
   "--batch entry: bootstrap, run -l / --eval, exit.
 Returns the exit-code symbol (= `ok' on success)."
@@ -1893,6 +1933,7 @@ Returns the exit-code symbol (= `ok' on success)."
   (when (fboundp 'install-sigint-handler)
     (install-sigint-handler))
   (unless nemacs-initialized
+    (nemacs-main--apply-startup-gate)
     (nemacs-init t))
   (nemacs-main--apply-options)
   (unless (nemacs-main-option :no-banner)
@@ -1932,6 +1973,7 @@ takes over and dispatches TUI events directly."
     (nemacs-batch-main))
    (t
     (unless nemacs-initialized
+      (nemacs-main--apply-startup-gate)
       (nemacs-init))
     (nemacs-main--apply-options)
     (nemacs-main--init-keymap)

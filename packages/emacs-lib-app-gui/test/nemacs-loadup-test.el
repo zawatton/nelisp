@@ -133,6 +133,59 @@
                     emacs-process-builtins))
       (should (featurep feat)))))
 
+;;;; K. UX #18 Session A — `init-file-user' nil gates user init loading
+
+(defmacro nemacs-loadup-test--with-fixture-init (&rest body)
+  "Run BODY with `NEMACS_USER_EMACS_DIRECTORY' pointing at a fresh temp
+directory containing an init.el that flips a marker variable, so BODY can
+observe whether `nemacs-load-user-init-files' actually loaded it."
+  (declare (indent 0) (debug (body)))
+  `(let* ((dir (file-name-as-directory (make-temp-file "nemacs-loadup-test-fixture-" t)))
+          (process-environment
+           (cons (format "NEMACS_USER_EMACS_DIRECTORY=%s" dir)
+                 process-environment)))
+     (unwind-protect
+         (progn
+           (with-temp-file (expand-file-name "init.el" dir)
+             (insert "(defvar nemacs-loadup-test--fixture-init-ran nil)\n"
+                     "(setq nemacs-loadup-test--fixture-init-ran t)\n"))
+           ,@body)
+       (delete-directory dir t))))
+
+(ert-deftest nemacs-loadup-test/init-file-user-nil-skips-fixture-init ()
+  "-q equivalent: init-file-user nil must not load the fixture's init.el."
+  (nemacs-loadup-test--with-fixture-init
+    (let ((init-file-user nil)
+          (nemacs-init-file-loaded nil)
+          (nemacs-user-emacs-directory nil)
+          (user-init-file nil)
+          (early-init-file nil))
+      (defvar nemacs-loadup-test--fixture-init-ran nil)
+      (setq nemacs-loadup-test--fixture-init-ran nil)
+      (cl-letf (((symbol-function 'nemacs-activate-packages-at-startup)
+                 (lambda () nil)))
+        (nemacs-load-user-init-files))
+      (should-not nemacs-loadup-test--fixture-init-ran)
+      ;; Only the *loading* is skipped; the "init handling is done" flag
+      ;; still flips, matching Emacs's own `-q' contract.
+      (should nemacs-init-file-loaded))))
+
+(ert-deftest nemacs-loadup-test/init-file-user-non-nil-loads-fixture-init ()
+  "Control case: a non-nil init-file-user still loads the fixture's init.el."
+  (nemacs-loadup-test--with-fixture-init
+    (let ((init-file-user "")
+          (nemacs-init-file-loaded nil)
+          (nemacs-user-emacs-directory nil)
+          (user-init-file nil)
+          (early-init-file nil))
+      (defvar nemacs-loadup-test--fixture-init-ran nil)
+      (setq nemacs-loadup-test--fixture-init-ran nil)
+      (cl-letf (((symbol-function 'nemacs-activate-packages-at-startup)
+                 (lambda () nil)))
+        (nemacs-load-user-init-files))
+      (should nemacs-loadup-test--fixture-init-ran)
+      (should nemacs-init-file-loaded))))
+
 (provide 'nemacs-loadup-test)
 
 ;;; nemacs-loadup-test.el ends here
