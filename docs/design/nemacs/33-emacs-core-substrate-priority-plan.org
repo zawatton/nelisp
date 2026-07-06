@@ -12900,3 +12900,167 @@ path:
    =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
    =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
    with =void-function Info-find-file=.
+237. Task #17 (Magit TUI bridge) M1-M3 implementation attempt, branch
+   =feat/magit-tui=, 2026-07-06.  Scope: bring the real, unpatched vendor
+   Magit/transient/with-editor/compat/cond-let/llama chain into the
+   *interactive bootstrap session* (not the throwaway standalone-replay
+   harness this doc's earlier items used) via a new
+   =src/nelisp-emacs-magit-bridge.el= session-side loader,
+   =scripts/build-nelisp-emacs-magit-bridge-bundle.el= (host-Emacs bundle
+   generator, mirrors =build-nelisp-bootstrap.el=), a
+   =nemacs-runtime-image-preload-magit-extension= entry in
+   =scripts/nemacs-runtime-image-preload.el=, and =make
+   bake-magit-runtime-image=/=magit-load-smoke= Makefile targets mirroring
+   =bake-vendor-core-runtime-image=.
+
+   File-list recovery (M1 spike, §1): the curated 85-ish-file chain from
+   items 208/218 was not a preserved artifact, so it was recovered
+   empirically instead of re-derived: `(require 'magit)` under host Emacs
+   30.1 with only the vendor packages on `load-path`, reading the
+   resulting `load-history` in dependency order.  This reproduced the
+   historical counts exactly (37 Magit-named files + compat/cond-let/
+   llama/transient/with-editor = 44 vendor-family files; `cl-eval-when
+   (load eval)` in `magit.el` gates 9 files, e.g. `magit-patch`/
+   `magit-ediff`/`git-rebase`, behind `(unless noninteractive ...)`, so
+   they never load in batch).  A live gap-check against the actual nemacs
+   batch bootstrap (not a guess) found 19 of the 145 candidate features
+   already natively provided (`cl-lib`, `seq`, `dired`, `map`, `json`,
+   `url`, `comint`, `shell`, ...); the remaining 126 became the bridge's
+   load list, minus a 7-feature native-compiler cluster
+   (`comp`/`bytecomp`/`byte-opt`/...) stubbed with a bare `provide`
+   (confirmed via a native-comp-JIT-disabled re-run to be a host-Emacs
+   compilation-machinery artifact, not a real Magit runtime dependency).
+
+   M1 spike result (§6 step 1, required by the plan): raw `(require
+   'magit)` over the vendor load-path in a persistent `nelisp --repl`
+   session returns cleanly but silently drops every definition
+   (`featurep`/`commandp`/`fboundp` all nil) -- confirms the plan's R1 risk
+   and the established normalized-loading requirement.  Normalized loading
+   via `standalone-source-normalize-file-to-form-strings` (same mechanism
+   as `vendor-repl-standalone-replay.el`) was used instead, pre-generated
+   once under host Emacs into one bundle file the bridge `load`s.
+
+   Bugs found and fixed at the bridge/precondition layer (never patching
+   vendor source, per Doc rule): (1) `emacs-version` is an unbound-marker
+   placeholder after `nemacs-init`, which made `compat.el`'s
+   `compat-require` macro-expansion-time `(version< emacs-version "30.1")`
+   guard spuriously true and try to require a `compat-30.el` this repo's
+   vendor snapshot never carries; (2) `default-value 'buffer-read-only` is
+   `t` after `nemacs-init` (real Emacs default is nil), so every
+   `with-temp-buffer` (e.g. Compat's own docstring formatter) signalled
+   `text-read-only`; (3) `static-if` (Emacs 29's own always-preloaded
+   `subr.el` macro) and (4) `cl-generic-define-generalizer` (a small
+   `cl-generic.el` convenience macro EIEIO needs; the underlying
+   `cl-generic-make-generalizer` function is already native) are both
+   absent from the nemacs substrate and had to be copied in verbatim; (5)
+   `cl-declaim` (`cl-lib.el`) is void, stood in with a no-op (byte-compiler
+   hint only, inert under interpretation); (6) the native `defalias`
+   eagerly resolves its DEFINITION argument and signals `void-variable` on
+   a not-yet-defined forward-reference target (`(defalias SYM (function
+   NOT-YET-DEFINED))`, the standard `define-obsolete-function-alias`
+   pattern used throughout EIEIO/Magit) -- `src/emacs-eval.el` already
+   carries a polyfill for exactly this case but it never activates because
+   it is gated behind `(unless (fboundp 'defalias) ...)` and a native
+   `defalias` already satisfies that guard; the bridge reinstalls that same
+   already-written logic unconditionally.
+
+   Architecture fix that unblocked most of the chain: the bundle initially
+   wrapped each *file's* entire form sequence in one `(unless (featurep
+   'X) FORM1 FORM2 ... (provide 'X))` block.  `load` tolerates (does not
+   propagate) an error inside one top-level form and moves on to the
+   file's next top-level form, but that resilience operates at the
+   *top-level form* granularity the bundle itself defines -- one bad form
+   deep inside a per-file block (e.g. an EIEIO forward-reference hitting
+   bug (6) above, before it was fixed) aborted every remaining definition
+   in that file, including its trailing `(provide ...)`.  Switching to
+   per-form gating (`(unless (featurep 'X) FORM)` once per top-level form,
+   still generated by the same bundle generator) immediately unblocked
+   `eieio-core`/`eieio`/`icons`/`warnings`/`help-mode` reaching `provide`
+   despite still having 1-2 individually-failing forms inside them.
+
+   Two narrow, documented content exclusions (not vendor patches): (a)
+   `kmacro.el`/`edmacro.el` (pulled in only because `transient.el` has a
+   top-level `(require 'edmacro)` for its keyboard-macro-edit integration,
+   unrelated to Magit's read-only status/section-navigation path) are
+   stubbed with a bare `provide`, after isolating that the real
+   `kmacro.el` hits a NeLisp evaluator robustness gap (a `global-set-key`
+   call deep in the file corrupts the reader's forward progress for the
+   rest of that `load`, verified in isolation, unrelated to Magit); (b)
+   `ansi-color.el`'s `ansi-color--update-face-vec` (the extended
+   256-color/24-bit SGR face-bookkeeping path only; ordinary 8/16-color
+   SGR codes never reach it) contains a bool-vector reader literal (`#&8"
+   "`) that reproducibly corrupts the same way, so only that one
+   definition is dropped from the bundle (keeping the rest of
+   `ansi-color.el` real) and the bridge installs a narrow, documented
+   no-op stand-in.
+
+   Verified progress (hard evidence, `build/nelisp-emacs-magit-bridge-bundle.el`
+   generation `files=117 stubs=9`, run inside the real
+   `build/nemacs-bootstrap.repl` + `nemacs-init` session the TUI launcher
+   itself boots): a `nelisp-emacs-magit-bridge-load` run completed in
+   seconds and left `(featurep ...)` = t for, in order,
+   `compat-macs`/`compat-31`/`compat`/`cond-let`/`eieio-core`/`eieio`/
+   `icons`/`warnings`/`help-mode`/`llama`/`crm`/`format-spec`/`pp`/
+   `transient`/`cursor-sensor`/`benchmark`/`derived`/`magit-section`/
+   `info`/`vc-dispatcher`/`track-changes`/`diff-mode`/`vc-git`/
+   `which-func`/`magit-base`/`server`/`files-x`/`magit-git`/`mailcap`/
+   `password-cache`/`auth-source`/`url-util`/`url-domsuf`/
+   `generate-lisp-file`/`url-cookie`/`url-history`/`url-methods`/
+   `url-expand`/`url-privacy`/`url-proxy`/`browse-url`/`elp`/`magit-mode`
+   (32 files, including the full EIEIO substrate, the real
+   `magit-section`/`magit-base`/`magit-mode` object/mode model, and
+   `transient`) -- this is the honest in-session re-verification of Doc 33
+   item 216's EIEIO/section/mode claims, this time through the actual
+   interactive bootstrap, not the replay harness.
+
+   BLOCKER found past that point, not resolved in this pass: loading (or
+   replaying) the chain from `ansi-color.el` onward -- reproducibly via
+   the ad hoc `nelisp --repl` stdin path AND via the real production path
+   (`make bake-magit-runtime-image` completes trivially since
+   `extend-runtime-image` only appends to the image's "source-v1" replay
+   recipe without executing it, but `make magit-load-smoke`'s
+   `exec-runtime-image`, which actually replays/executes that recipe,
+   reproducibly hangs with unbounded RSS growth, observed past 13 GB
+   before being killed) -- enters a state that never returns and never
+   errors, confirmed deterministic across 5 repeated runs in this same
+   session.  This directly contradicts one still-unexplained EARLIER run
+   in this same session that DID complete in seconds with 32/119 features
+   correctly resolved (exact stdout log preserved under the session's
+   scratch dir) using what appears to be equivalent bundle content.  Ruled
+   out as causes: dedicated-cache corruption (cleared and rebuilt, hang
+   persisted), NeLisp binary drift (mtime unchanged all session), stack
+   ulimit (unlimited made no difference), structural malformation of the
+   generated bundle (verified with host Emacs's own reader: forms parse
+   cleanly), and system resource contention (idle system, 47 GiB free).
+   Leading hypothesis, not confirmed: a genuine algorithmic
+   non-termination bug in NeLisp's EIEIO/cl-generic class-precedence or
+   method-dispatch-cache computation (`eieio--class-precedence-c3`/`-dfs`/
+   `-bfs` in `eieio-core.el`) that is sensitive to incidental hash/symbol
+   iteration order (e.g. ASLR-influenced), which would explain both the
+   one clean run and the since-consistent hangs without any content
+   change.  This is a NeLisp interpreter-level question, out of a Magit
+   bridge's scope to fix; M2 (real git-status buffer) and M3 (TUI
+   display/keymap dispatch) were not attempted since they need
+   `magit-status`/`magit-git`, both past this blocker, and any output
+   would not be an honest verification.
+
+   Follow-up recorded per the approved plan's §3 M4 (do not implement):
+   M4a (sync stage/unstage via `magit-stage`/`magit-unstage` on the
+   existing sync process substrate, no editor) is feasible once M1's
+   blocker clears; M4b (commit, needing an async-stdin-write primitive +
+   `with-editor` sleeping-editor + a transient popup UI) additionally
+   needs that async-stdin-write primitive shipped and a green
+   `with-editor` sleeping-editor smoke.  Neither was started.
+
+   Regression preflight run clean against this branch's actual diff
+   (`src/nelisp-emacs-magit-bridge.el`,
+   `scripts/build-nelisp-emacs-magit-bridge-bundle.el`,
+   `scripts/nemacs-runtime-image-preload.el`, `Makefile`): `make
+   test-fast` reproduces the exact same 6 known unexpected failures listed
+   above bit-for-bit on a stashed clean baseline of the same commit (not a
+   regression); `make proc-smoke`, `make nemacs-library-contract`, and
+   `make nemacs-library-consumer-smoke` all pass.  `make
+   nemacs-ownership-coverage` flags `src/nelisp-emacs-magit-bridge.el` as
+   `unowned` alongside two pre-existing unowned files
+   (`src/cl-preloaded-shim.el`, `src/oclosure-shim.el`); Doc 18 gained an
+   IO-group row for the new file in this pass.

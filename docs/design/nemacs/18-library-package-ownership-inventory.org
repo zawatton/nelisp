@@ -142,6 +142,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | =nelisp-emacs-compat-face.el= | BUF/CORE | face compatibility over buffer/display | audit dependencies |
 | =nelisp-emacs-compat-fileio.el= | BUF/IO | fileio bridge over buffer model | isolate IO adapter |
 | =nelisp-emacs-compat.el= | BUF | core buffer/point compatibility | high-value public API |
+| =nelisp-emacs-magit-bridge.el= | IO | real vendor Magit/transient/with-editor chain loader into a live NeLisp session (Task #17) | keep adapter-gated; loads a host-Emacs-normalized bundle, never patches vendor source |
 | =nelisp-text-buffer.el= | BUF | text buffer data structure | keep reusable |
 
 ** 3.4 Editor core (CORE)
