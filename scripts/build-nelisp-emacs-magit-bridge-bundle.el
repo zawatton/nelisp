@@ -223,7 +223,8 @@ Applies this bridge's basename un-drop (see
     (standalone-source-normalize-file-to-form-strings file)))
 
 (defvar nelisp-emacs-magit-bridge-bundle-excluded-defuns
-  '((ansi-color . (ansi-color--update-face-vec)))
+  '((ansi-color . (ansi-color--update-face-vec))
+    (derived . (define-derived-mode)))
   "Alist of (FEATURE . (SYMBOL-NAME ...)) top-level defuns to drop.
 
 `ansi-color--update-face-vec' (`ansi-color.el') contains a bool-vector
@@ -239,7 +240,32 @@ the whole file, unlike the `kmacro'/`edmacro' stub — keeps the rest of
 bridge's own precondition step installs a narrow, documented
 last-resort no-op stand-in so a stray call does not signal
 `void-function' (see
-`nelisp-emacs-magit-bridge--ensure-ansi-color-update-face-vec-stub').")
+`nelisp-emacs-magit-bridge--ensure-ansi-color-update-face-vec-stub').
+
+`define-derived-mode' (`emacs-lisp/derived.el') is a backquote-template
+macro.  Per Doc 33 item 221 (dev/nelisp docs/design/33 —
+`emacs-core-substrate-priority-plan.org'), the standalone reader's
+per-form replay signals an error invoking ANY macro whose
+expansion-producing body is a backquote template, silently dropping
+that one top-level form; item 221 fixed this for the bootstrap-path
+`define-derived-mode' bridge (`src/emacs-mode.el'/
+`src/emacs-mode-builtins.el', rewritten with explicit `list'/`append'/
+`quote' construction) but explicitly flagged that any vendor chain
+which itself replays `derived.el' re-shadows that fix with the vendor
+macro and re-breaks every later `define-derived-mode' call in the same
+session (`magit-mode', `magit-section-mode', `magit-status-mode', ...
+all left `fboundp' nil while their keymap defvars, defined by separate
+top-level forms, still bind normally — confirmed via this bridge's own
+Doc 163-followup full-bundle run).  Dropping just this one macro
+definition from the bundle — not any of `derived.el's other four
+`derived-mode-*-name' defsubst helpers, and not the file's `provide' —
+leaves `define-derived-mode' bound to the already-fixed substrate
+macro for every later `(define-derived-mode ...)' call in this bundle,
+exactly matching item 221's own verified magit-base/text-mode/Org
+chains, none of which included `derived.el' either.  The reader-level
+backquote-macro-invocation gap itself remains open in dev/nelisp; this
+is a narrow bundle-generator exclusion, not a vendor patch (`derived.el'
+on disk is untouched) and not a NeLisp core fix.")
 
 (defun nelisp-emacs-magit-bridge-bundle--form-defun-name (form-string)
   "Return the defined symbol name if FORM-STRING is a top-level defun/defalias.

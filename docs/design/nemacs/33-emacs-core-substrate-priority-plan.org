@@ -13064,3 +13064,115 @@ path:
    `unowned` alongside two pre-existing unowned files
    (`src/cl-preloaded-shim.el`, `src/oclosure-shim.el`); Doc 18 gained an
    IO-group row for the new file in this pass.
+
+238. Task #17 M1 CLOSED, 2026-07-06.  Both gaps left open by item 237's
+   BLOCKER paragraph are root-caused and fixed; `M1 completion condition`
+   (`(and (featurep 'magit) (commandp 'magit-status) (commandp
+   'magit-status-mode) (keymapp magit-mode-map) (fboundp
+   'magit-run-git))`) is now verified `t` end-to-end via `make
+   bake-magit-runtime-image && make magit-load-smoke`
+   (`nelisp-emacs-magit-bridge-loaded-p` = `MAGIT-LOAD PASS`).
+
+   Gap 1 (item 237's unbounded-RSS hang, "loading the chain from
+   ansi-color.el onward ... enters a state that never returns"): NOT an
+   EIEIO class-precedence non-termination bug as item 237 speculated.
+   Root cause was `intern-soft' (`src/emacs-symbol.el') having no
+   soft-fail path -- its `(unless (fboundp 'intern-soft) ...)' polyfill
+   called `intern' unconditionally for a string argument, so
+   `gnus/message.el''s `message-font-lock-keywords' defvar (`(while
+   (setq cited-text-face (intern-soft (format
+   "message-cited-text-%d" maxlevel))) ...)') never sees a soft-fail
+   and loops forever, interning a fresh symbol and allocating a fresh
+   `format' string every iteration until the process exhausts its
+   address space.  This exact bug and mechanism were independently
+   diagnosed and fixed at the dev/nelisp reader level (see
+   dev/nelisp's Doc 163, "Magit-bundle load hang at message.el:
+   intern-soft never soft-fails"), which added a native
+   probe-without-insert primitive (`nelisp--intern-lookup') and
+   confirmed nelisp-emacs-lib's OWN, independently-written, textually
+   near-identical `intern-soft' polyfill has the same defect and does
+   not call it.  Fix here (this commit): `src/emacs-symbol.el''s
+   `intern-soft' now dispatches its string-argument case to
+   `nelisp--intern-lookup' when that primitive is `fboundp' (i.e. on a
+   NeLisp build carrying dev/nelisp's Doc 163 Phase C fix or later),
+   falling back to the old unconditional `intern' otherwise (host Emacs,
+   or an older NeLisp build) so the shim never regresses environments
+   without the primitive.  Verified: the item 237-repro 5502-line
+   bundle truncation at the exact `message-font-lock-keywords' line
+   (previously the hang boundary) now `exec-runtime-image`s to
+   completion, rc=0, ~33s, under `ulimit -v 4G' (unchanged from the
+   pre-fix 5501-line pass); the full 7759-line bundle likewise
+   completes rc=0 in ~48-53s (was rc=88 unbounded-RSS hang, observed
+   >27 GiB before manual kill, per item 237's own log).  IMPORTANT for
+   future re-runs: `make magit-load-smoke'/`bake-magit-runtime-image'
+   do NOT set `ulimit -v' themselves (only `ulimit -s'); always wrap
+   manual invocations in `(ulimit -v 4194304; ...)' plus a `timeout'
+   until a durable NeLisp-side runaway-allocator guard exists (compare
+   dev/nelisp's retained `nelisp--append-collect' cdr-walk trap, a
+   different, already-closed hypothesis for a structurally similar
+   symptom).
+
+   Gap 2 (past Gap 1, newly exposed once the bundle stopped hanging
+   mid-load): `nelisp-emacs-magit-bridge-loaded-p' reported
+   `MAGIT-LOAD FAIL' on the now-completing full bundle even though
+   `(featurep 'magit)', `(fboundp 'magit-run-git)', and `(keymapp
+   magit-mode-map)' were all already `t' -- narrowed to exactly one
+   failing conjunct, `(commandp 'magit-status-mode)' (`fboundp' nil).
+   Diagnosis (single `exec-runtime-image' probe form checking each
+   conjunct plus `magit-mode'/`magit-section-mode'): `magit-mode',
+   `magit-section-mode', AND `magit-status-mode' were ALL `fboundp'
+   nil, while `magit-mode-map' (a separate top-level `defvar' form)
+   bound fine -- this is item 221's own documented, still-open residual
+   recurring exactly as item 221 warned it would: `emacs-lisp/derived.el'
+   IS part of this bridge's real vendor file chain (`vendor/emacs-lisp/
+   emacs-lisp/derived.el', bundle position 85, well before
+   `magit-mode.el' at 111 and `magit-status.el' at 164), and its
+   backquote-template `define-derived-mode' defmacro re-shadows the
+   substrate's own already-fixed (item 221, list/append/quote-based)
+   `define-derived-mode', re-triggering the standalone reader's
+   backquote-macro-invocation defect (item 221: "any vendor chain that
+   replays emacs-lisp/derived.el will re-shadow define-derived-mode
+   ... and re-break") for every later `(define-derived-mode ...)' call
+   in the same session -- silently dropped by the bundle's per-form
+   `(unless (featurep 'X) FORM)' load-tolerance, leaving each mode's
+   `defvar'-based keymap/hook/syntax-table intact but its command/mode
+   function cell void.  Fix here (bridge/bundle layer only, no vendor
+   patch, per this doc's standing rule): added `(derived .
+   (define-derived-mode))' to
+   `nelisp-emacs-magit-bridge-bundle-excluded-defuns'
+   (`scripts/build-nelisp-emacs-magit-bridge-bundle.el'), the same
+   narrow single-top-level-form-drop mechanism already used for
+   `ansi-color--update-face-vec'.  `derived.el''s other four
+   `derived-mode-*-name' defsubst helpers and its `(provide 'derived)'
+   are untouched and still load; only its `defmacro define-derived-mode'
+   form is omitted from the generated bundle, so every later
+   `(define-derived-mode ...)' call in the bundle (`magit-mode',
+   `magit-section-mode', `magit-status-mode', ...) resolves against the
+   substrate's already-working macro instead.  This reproduces, inside
+   the real full vendor chain, exactly the outcome item 221 already
+   verified on its own derived.el-free magit-base/text-mode/Org test
+   chains.  Verified: post-fix `exec-runtime-image' diagnostic probe
+   shows `magit-mode'/`magit-section-mode'/`magit-status-mode' all
+   `fboundp' AND `commandp' non-nil; `make bake-magit-runtime-image &&
+   make magit-load-smoke' (`ulimit -v 4G'-wrapped) now prints
+   `MAGIT-LOAD PASS' in ~26s.
+
+   Regression after both fixes: `make test-fast` reproduces the exact
+   same 6 known unexpected results (the four `emacs-redisplay-test`
+   cases, `vendor-first-core-modes-test/lightweight-support-libraries-
+   load-vendor-source`) bit-for-bit, no new failures; `make proc-smoke`
+   green.
+
+   M1 is now genuinely closed end-to-end via the real, unpatched vendor
+   Magit chain (not a replay-harness proxy).  M2 (real git-status
+   buffer via `magit-status`/`magit-git`) and M3 (TUI display/keymap
+   dispatch) are unblocked and were not attempted in this pass --
+   neither needs further bridge/bundle work to start; both were merely
+   waiting on M1's blocker.  The dev/nelisp-side reader gap this item's
+   Gap 2 depends on (backquote-macro invocation inside the standalone
+   reader's per-form replay) remains open there; item 221's own note
+   that "the durable resolution is fixing backquote macro invocation in
+   the reader" still applies for any FUTURE vendor file this bridge adds
+   that itself redefines a macro the substrate already fixed the same
+   way -- the exclusion-list mechanism used here is a per-occurrence
+   bundle-layer workaround, not a substitute for that reader fix.
