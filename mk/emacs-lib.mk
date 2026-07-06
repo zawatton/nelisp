@@ -708,6 +708,7 @@ TEST_FAST_FILES = \
 	test/emacs-standalone-test.el \
 	test/emacs-buffer-builtins-test.el \
 	test/emacs-buffer-test.el \
+	test/emacs-buffer-local-swap-test.el \
 	test/emacs-edit-builtins-test.el \
 	test/emacs-fileio-builtins-test.el \
 	test/emacs-file-name-handler-test.el \

@@ -15,14 +15,21 @@
 ;;; Fresh-world fixture (resets every global in both modules)
 
 (defmacro emacs-buffer-test--with-fresh-world (&rest body)
-  "Run BODY with clean nelisp-ec + emacs-buffer state."
+  "Run BODY with clean nelisp-ec + emacs-buffer state.
+Also resets the Doc 33 §8 item 242 swap-engine globals
+(`emacs-buffer--per-buffer-symbols' / `emacs-buffer--swapped-in') so a
+test that calls `emacs-buffer-make-variable-buffer-local' (which now
+also registers the symbol for swap tracking) cannot leak that
+registration into a later test in the same batch Emacs process."
   (declare (indent 0) (debug (body)))
   `(let ((nelisp-ec--buffers nil)
          (nelisp-ec--current-buffer nil)
          (emacs-buffer--state (make-hash-table :test 'eq))
          (emacs-buffer--variable-buffer-local nil)
          (emacs-buffer--default-values (make-hash-table :test 'eq))
-         (emacs-buffer--overlay-counter 0))
+         (emacs-buffer--overlay-counter 0)
+         (emacs-buffer--per-buffer-symbols nil)
+         (emacs-buffer--swapped-in (make-hash-table :test 'eq)))
      ,@body))
 
 ;;;; A. buffer registry/local variables (11 tests)
@@ -100,7 +107,15 @@
       (emacs-buffer-make-local-variable 'a)
       (emacs-buffer-make-local-variable 'b)
       (let ((alist (emacs-buffer-buffer-local-variables b)))
-        (should (= 2 (length alist)))
+        ;; Doc 33 §8 item 242: every freshly-created buffer now also
+        ;; carries an explicit `default-directory' local cell, seeded
+        ;; by `emacs-buffer--inherit-new-buffer' at
+        ;; `nelisp-ec-generate-new-buffer' time (matching real Emacs,
+        ;; where `default-directory' is unconditionally buffer-local in
+        ;; every buffer) — so the alist length is 3, not 2, and the
+        ;; assertion checks membership rather than an exact count that
+        ;; predates that fix.
+        (should (assq 'default-directory alist))
         (should (assq 'a alist))
         (should (assq 'b alist))))))
 

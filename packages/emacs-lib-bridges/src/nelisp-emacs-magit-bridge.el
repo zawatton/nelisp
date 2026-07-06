@@ -636,6 +636,32 @@ mirroring the real Emacs startup invariant, not a vendor patch."
              (null (current-buffer)))
     (set-buffer (get-buffer-create "*scratch*"))))
 
+(defun nelisp-emacs-magit-bridge--ensure-save-some-buffers ()
+  "Ensure `save-some-buffers' (real Emacs `files.el') exists.
+
+`files.el' is preloaded/dumped by real Emacs (same host-preload-gap
+class as `-ensure-files-el-globals' above), so it never shows up as a
+newly-loaded file in this bridge's bundle, but the substrate never
+preloads it either.  `magit-save-repository-buffers'
+(`vendor/magit/lisp/magit-mode.el') calls `(save-some-buffers ARG
+PRED)' as a precondition before refreshing/opening the status buffer
+-- found once the M2 buffer-local swap-engine fix (Doc 33 §8 item 242)
+unblocked the earlier `text-read-only' abort and status-buffer setup
+ran far enough to reach it.  Real `save-some-buffers' walks every live,
+file-visiting, modified buffer PRED selects and interactively prompts
+to save each one; this bridge's M2/M3 status-buffer smoke never opens
+an Emacs buffer on a modified file (the fixture's unstaged edit and
+untracked files are plain filesystem state the whole time) and has no
+minibuffer-prompt loop to drive one anyway, so a no-op returning nil
+-- matching what real Emacs itself returns when there is nothing to
+save -- is a faithful stand-in for this read-only path, not a vendor
+patch."
+  (unless (fboundp 'save-some-buffers)
+    (defun save-some-buffers (&optional _arg _pred)
+      "Stub: no interactive buffer-save prompt loop is modeled.
+See `nelisp-emacs-magit-bridge--ensure-save-some-buffers'."
+      nil)))
+
 (defun nelisp-emacs-magit-bridge--ensure-preconditions ()
   "Ensure every session precondition the vendor chain assumes is live."
   (nelisp-emacs-magit-bridge--ensure-current-buffer)
@@ -656,7 +682,8 @@ mirroring the real Emacs startup invariant, not a vendor patch."
   (nelisp-emacs-magit-bridge--ensure-simple-el-globals)
   (nelisp-emacs-magit-bridge--ensure-third-party-soft-vars)
   (nelisp-emacs-magit-bridge--ensure-docstring-fill-helpers)
-  (nelisp-emacs-magit-bridge--ensure-special-mode))
+  (nelisp-emacs-magit-bridge--ensure-special-mode)
+  (nelisp-emacs-magit-bridge--ensure-save-some-buffers))
 
 (defun nelisp-emacs-magit-bridge-load ()
   "Load the real vendor Magit chain into the current NeLisp session.
