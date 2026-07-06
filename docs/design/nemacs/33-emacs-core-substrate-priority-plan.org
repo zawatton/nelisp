@@ -13454,3 +13454,137 @@ path:
    (toplevel + rev-parse) are individually verified working, but the
    smoke asserts both lines and the status-buffer half needs the
    defclass fix first.
+
+241. Task #17 M2 continuation, 2026-07-06: root-caused and fixed item
+   240's `defclass' blocker; one further defect class found and given a
+   crisp minimal repro, then stopped there per the >5-iteration rule
+   (only one new class this pass, but it is core-adjacent -- llama `##'
+   short-lambda-as-value support -- and deserves its own investigation
+   rather than a rushed fix). Branch `feat/magit-tui'; vendor/nelisp
+   NOT modified (fix lives entirely in this repo's own
+   `src/emacs-cl-macros.el').
+
+   Root cause of the `cl-defstruct' `:include' inheritance bug (item
+   240's blocker): standalone NeLisp has *two* independent
+   `cl-defstruct' implementations -- vendor/nelisp's own
+   `lisp/nelisp-cl-macros.el' (record-based, real `:include' chain,
+   baked into the interpreter's `scripts/nelisp-stdlib-prelude.el' and
+   active from process start) and this repo's `src/emacs-cl-macros.el'
+   (alist-based standalone fallback, Doc 51 Track O, predates the
+   vendor implementation). The latter's `cl-defstruct' macro is gated
+   `(when (or (not (boundp 'emacs-version)) ...) (defmacro cl-defstruct
+   ...))' -- under standalone NeLisp `emacs-version' is never bound, so
+   that `or' is unconditionally true and the stub **unconditionally
+   redefines** `cl-defstruct', clobbering the already-working
+   vendor/nelisp macro the moment this repo's bootstrap bundle
+   (`build/nemacs-bootstrap.el', which inlines `cl-lib.el' /
+   `emacs-cl-macros.el' regardless of `require' short-circuiting,
+   since `nelisp-bootstrap--write-bundle' embeds raw file contents, not
+   `require' forms) executes. This is the same defect shape as
+   `feedback_anvil_stub_unconditional_defun_clobber' (Fable memory):
+   a polyfill missing an `(unless (fboundp ...))' guard.
+
+   That alone would just mean the *stub's own* `:include' bookkeeping
+   (`emacs-cl-macros--struct-defs') is in play instead of vendor's
+   (`nelisp-cl-macros--struct-info') -- survivable, since the stub's
+   `:include' resolution is otherwise correct. The actual blocker is
+   that `cl--class' -- the parent struct real `eieio-core.el' declares
+   via `(cl-defstruct (eieio--class (:include cl--class) ...))' -- is
+   *never defined by any `cl-defstruct' call in either registry*: real
+   vendor `cl-preloaded.el' is the only place upstream Emacs defines
+   `cl--class', and it is deliberately excluded from the magit bridge
+   bundle (`scripts/build-nelisp-emacs-magit-bridge-bundle.el' calls
+   its `cl-lib' surface "already provided natively" by this repo's own
+   substrate). With the parent missing, the stub's `:include' handling
+   (`(when pdef ...)') silently no-ops instead of erroring, so
+   `eieio--class' gets only its own explicit slots
+   (children/initarg-tuples/class-slots/...), never the five inherited
+   from `cl--class' (name/docstring/parents/slots/index-table).
+   `eieio--class-parents' (and its "--setter") consequently never get
+   defined; `eieio-defclass-internal''s `(setf (eieio--class-parents
+   newc) ...)' then falls through the standalone `setf' polyfill's
+   generic-fallback path, which constructs and calls a
+   `eieio--class-parents--setter' symbol that does not exist ->
+   item 240's `void-function' abort.
+
+   Fix (`src/emacs-cl-macros.el', ~35 new lines right after the
+   `cl-defstruct' macro body, before the `cl-case' section; no vendor
+   source touched): seed a minimal `cl--class' via `(cl-defstruct
+   (cl--class (:constructor nil) (:copier nil)) (name nil) (docstring
+   nil) (parents nil) (slots nil) (index-table nil))', matching
+   `cl-preloaded.el''s five declared slots, guarded on `(unless
+   (fboundp 'cl--class-p) ...)' so host Emacs (which already dumps the
+   real `cl--class') never sees it and re-loads of this file stay
+   idempotent. This does not need the full `cl-preloaded.el' metaclass
+   machinery (`cl--find-class' backpatching, purecopy, `cl-assert'
+   forms, `built-in-class' etc.) -- only the five-slot parent shape
+   `:include' needs to resolve. `packages/nelisp-emacs-foundation/lisp/emacs-cl-macros.el'
+   (the `make nemacs-library-package-scaffold' generated mirror)
+   picked up the identical change automatically on rebake; both files
+   are part of this pass's commit.
+
+   Verification: minimal repro `(defclass eieio-default-superclass nil
+   nil "Doc." :abstract t)' now succeeds (previously
+   `void-function: eieio--class-parents--setter'). Rebuilt
+   `build/nemacs-runtime.nlri' + `build/nemacs-magit-runtime.nlri' from
+   scratch; `make magit-load-smoke' -> `MAGIT-LOAD PASS'. `make
+   magit-status-smoke' now runs past `defclass' registration entirely
+   (the item 240 blocker is gone) and reaches the actual status-buffer
+   probe, where it hits the next item's defect instead. `make
+   test-fast' still reports exactly the same 6 known-unexpected results
+   bit-for-bit (`emacs-redisplay-test-mode-line-full-width-inverse',
+   `emacs-redisplay-test-redisplay-truncates-long-line',
+   `emacs-redisplay-test-redisplay-window-narrow-region',
+   `emacs-redisplay-test/core-initial-paint-produces-output',
+   `emacs-redisplay-test/core-matrix-accessors-expose-cache-state',
+   `vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source')
+   -- no regression from this fix.
+
+   New blocker found once `defclass' was unblocked: `magit-status-smoke'
+   now fails with `nelisp: uncaught error: no-catch: (t nil)' instead of
+   the old abort. Bisected (each step re-run against the baked magit
+   runtime image with a real fixture repo) down to a crisp, magit-free
+   minimal repro:
+     (magit-expand-git-file-name "/some/absolute/path")
+   fails the same way, and calling its `:test' predicate directly --
+     (cl-assoc "foo" nil :test (##string-prefix-p %2 %1))
+   -- fails with `void-function: (##string-prefix-p)'. Root cause:
+   `magit-expand-git-file-name' passes a llama.el `##FN' short-lambda as
+   a plain *value* (the `:test' keyword argument of `cl-assoc', never
+   itself immediately funcalled at the call site) rather than in the
+   immediately-applied position (`(##fn a b)' called directly) that the
+   rest of this bridge's llama support already covers; the standalone
+   reader does not expand `##string-prefix-p' into a callable value in
+   that position, so any caller of `cl-assoc'/`cl-member' etc. with a
+   llama `:test' hits this. (Separately: whatever converts that
+   void-function into the generic `(throw t nil)' report by the time it
+   surfaces from `magit-toplevel' -- rather than the direct
+   `void-function: ...' message seen calling `cl-assoc' at the top level
+   -- was not tracked further this pass; worth a follow-up if the loud
+   error-name work from item 240 gets extended to this error-conversion
+   path.) This is core-adjacent (reader/short-lambda substrate, not this
+   bridge's own preconditions), so left as the crisp minimal repro above
+   rather than fixed in this pass.
+
+   Non-deterministic-looking symptoms audited this pass turned out to be
+   a bisection-methodology artifact, not real nondeterminism: every
+   `exec-runtime-image' invocation cold-reinterprets the full ~5.4MB
+   bootstrap + magit-bridge bundle from scratch (the `.nlri' file is a
+   replay script, `;;; nelisp-runtime-image source-v1', not a memory
+   snapshot), which costs a fixed ~30s regardless of how trivial the
+   evaluated form is. Several early isolated single-call probes used
+   8-20s shell timeouts and were killed mid-cold-load, misreporting as
+   hangs; re-run with >=60s timeouts, every one of them completed and
+   several turned out to work correctly (`seq-some', `cl-flet'/`cl-flet*',
+   `catch'/`throw', `mapc' are all fine standalone). The one apparent
+   `text-read-only: nil' sighting came from an intentionally-incomplete
+   probe (`funcall'ing `magit-status-mode' on a bare
+   `get-buffer-create' buffer, skipping `magit-generate-new-buffer' and
+   the fixture `default-directory') and is not a defect in the real
+   `magit-status-setup-buffer' path -- not re-encountered once probes
+   matched the real call shape. `magit-outside-git-repo' was not
+   encountered this pass.
+
+   Commits: pending (this pass's `src/emacs-cl-macros.el' +
+   `packages/nelisp-emacs-foundation/lisp/emacs-cl-macros.el' +
+   this Doc 33 entry).

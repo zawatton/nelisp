@@ -1108,6 +1108,44 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                   forms)))
         (cons 'progn (nreverse forms))))))
 
+;; `cl--class' :include seed (magit bridge cl-defstruct inheritance fix).
+;;
+;; Real vendor `cl-preloaded.el' is intentionally excluded from the
+;; standalone bundle (see the exclusion rationale in
+;; `scripts/build-nelisp-emacs-magit-bridge-bundle.el': its `cl-lib'
+;; surface is considered "already provided natively" by this file).  But
+;; `cl-preloaded.el' is also the *only* place upstream Emacs defines
+;; `cl--class' as an actual `cl-defstruct', and real, unpatched vendor
+;; `eieio-core.el' declares `(cl-defstruct (eieio--class (:include
+;; cl--class) ...))'.  Without `cl--class' registered in
+;; `emacs-cl-macros--struct-defs', that `:include' silently drops the
+;; parent's five slots (this stub's `:include' handling only warns via
+;; a no-op `when pdef', never an error) -- so `eieio--class-parents' (and
+;; its "--setter" counterpart) never get defined, and `defclass'
+;; eventually hits a `void-function' on the missing setter instead of a
+;; clear "parent not defined" error.
+;;
+;; Seed a minimal `cl--class' here with the same five slots
+;; `cl-preloaded.el' declares (name / docstring / parents / slots /
+;; index-table) so the `:include' chain resolves.  Guarded on
+;; `cl--class-p' so host Emacs (which already dumps the real
+;; `cl--class' from `cl-preloaded.el') never sees this and standalone
+;; re-loads of this file stay idempotent.
+(unless (fboundp 'cl--class-p)
+  (cl-defstruct (cl--class
+                 (:constructor nil)
+                 (:copier nil))
+    "Abstract supertype of all type descriptors (standalone stand-in).
+Mirrors the five slots the real `cl-preloaded.el' declares for
+`cl--class' so `:include cl--class' in vendored Elisp (e.g.
+`eieio-core.el') resolves its parent slot list even though the full
+`cl-preloaded.el' metaclass system is not loaded standalone."
+    (name nil)
+    (docstring nil)
+    (parents nil)
+    (slots nil)
+    (index-table nil)))
+
 ;;;; --- cl-case / cl-pushnew --------------------------------------------
 
 (unless (fboundp 'cl-case)
