@@ -126,8 +126,14 @@ consults this variable is `emacs-startup-screen'
           (fboundp 'nelisp--write-stdout-bytes)
           (not (boundp 'emacs-version)))
   (defmacro push (item place)
-    "Standalone compatibility macro: cons ITEM onto PLACE."
-    (list 'setq place (list 'cons item place))))
+    "Standalone compatibility macro: cons ITEM onto PLACE.
+PLACE may be a symbol (`setq') or a generalized place the substrate's
+`setf' polyfill handles (real Emacs `push' accepts any gv place; a
+symbol-only expansion emits `(setq (cdr ...) ...)', which the
+standalone evaluator aborts on flagless)."
+    (if (symbolp place)
+        (list 'setq place (list 'cons item place))
+      (list 'setf place (list 'cons item place)))))
 
 (define-error 'nemacs-error "nemacs bootstrap error")
 (define-error 'nemacs-already-initialized

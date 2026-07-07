@@ -12900,3 +12900,1072 @@ path:
    =emacs-redisplay-test/core-matrix-accessors-expose-cache-state=, and
    =vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source=
    with =void-function Info-find-file=.
+237. Task #17 (Magit TUI bridge) M1-M3 implementation attempt, branch
+   =feat/magit-tui=, 2026-07-06.  Scope: bring the real, unpatched vendor
+   Magit/transient/with-editor/compat/cond-let/llama chain into the
+   *interactive bootstrap session* (not the throwaway standalone-replay
+   harness this doc's earlier items used) via a new
+   =src/nelisp-emacs-magit-bridge.el= session-side loader,
+   =scripts/build-nelisp-emacs-magit-bridge-bundle.el= (host-Emacs bundle
+   generator, mirrors =build-nelisp-bootstrap.el=), a
+   =nemacs-runtime-image-preload-magit-extension= entry in
+   =scripts/nemacs-runtime-image-preload.el=, and =make
+   bake-magit-runtime-image=/=magit-load-smoke= Makefile targets mirroring
+   =bake-vendor-core-runtime-image=.
+
+   File-list recovery (M1 spike, §1): the curated 85-ish-file chain from
+   items 208/218 was not a preserved artifact, so it was recovered
+   empirically instead of re-derived: `(require 'magit)` under host Emacs
+   30.1 with only the vendor packages on `load-path`, reading the
+   resulting `load-history` in dependency order.  This reproduced the
+   historical counts exactly (37 Magit-named files + compat/cond-let/
+   llama/transient/with-editor = 44 vendor-family files; `cl-eval-when
+   (load eval)` in `magit.el` gates 9 files, e.g. `magit-patch`/
+   `magit-ediff`/`git-rebase`, behind `(unless noninteractive ...)`, so
+   they never load in batch).  A live gap-check against the actual nemacs
+   batch bootstrap (not a guess) found 19 of the 145 candidate features
+   already natively provided (`cl-lib`, `seq`, `dired`, `map`, `json`,
+   `url`, `comint`, `shell`, ...); the remaining 126 became the bridge's
+   load list, minus a 7-feature native-compiler cluster
+   (`comp`/`bytecomp`/`byte-opt`/...) stubbed with a bare `provide`
+   (confirmed via a native-comp-JIT-disabled re-run to be a host-Emacs
+   compilation-machinery artifact, not a real Magit runtime dependency).
+
+   M1 spike result (§6 step 1, required by the plan): raw `(require
+   'magit)` over the vendor load-path in a persistent `nelisp --repl`
+   session returns cleanly but silently drops every definition
+   (`featurep`/`commandp`/`fboundp` all nil) -- confirms the plan's R1 risk
+   and the established normalized-loading requirement.  Normalized loading
+   via `standalone-source-normalize-file-to-form-strings` (same mechanism
+   as `vendor-repl-standalone-replay.el`) was used instead, pre-generated
+   once under host Emacs into one bundle file the bridge `load`s.
+
+   Bugs found and fixed at the bridge/precondition layer (never patching
+   vendor source, per Doc rule): (1) `emacs-version` is an unbound-marker
+   placeholder after `nemacs-init`, which made `compat.el`'s
+   `compat-require` macro-expansion-time `(version< emacs-version "30.1")`
+   guard spuriously true and try to require a `compat-30.el` this repo's
+   vendor snapshot never carries; (2) `default-value 'buffer-read-only` is
+   `t` after `nemacs-init` (real Emacs default is nil), so every
+   `with-temp-buffer` (e.g. Compat's own docstring formatter) signalled
+   `text-read-only`; (3) `static-if` (Emacs 29's own always-preloaded
+   `subr.el` macro) and (4) `cl-generic-define-generalizer` (a small
+   `cl-generic.el` convenience macro EIEIO needs; the underlying
+   `cl-generic-make-generalizer` function is already native) are both
+   absent from the nemacs substrate and had to be copied in verbatim; (5)
+   `cl-declaim` (`cl-lib.el`) is void, stood in with a no-op (byte-compiler
+   hint only, inert under interpretation); (6) the native `defalias`
+   eagerly resolves its DEFINITION argument and signals `void-variable` on
+   a not-yet-defined forward-reference target (`(defalias SYM (function
+   NOT-YET-DEFINED))`, the standard `define-obsolete-function-alias`
+   pattern used throughout EIEIO/Magit) -- `src/emacs-eval.el` already
+   carries a polyfill for exactly this case but it never activates because
+   it is gated behind `(unless (fboundp 'defalias) ...)` and a native
+   `defalias` already satisfies that guard; the bridge reinstalls that same
+   already-written logic unconditionally.
+
+   Architecture fix that unblocked most of the chain: the bundle initially
+   wrapped each *file's* entire form sequence in one `(unless (featurep
+   'X) FORM1 FORM2 ... (provide 'X))` block.  `load` tolerates (does not
+   propagate) an error inside one top-level form and moves on to the
+   file's next top-level form, but that resilience operates at the
+   *top-level form* granularity the bundle itself defines -- one bad form
+   deep inside a per-file block (e.g. an EIEIO forward-reference hitting
+   bug (6) above, before it was fixed) aborted every remaining definition
+   in that file, including its trailing `(provide ...)`.  Switching to
+   per-form gating (`(unless (featurep 'X) FORM)` once per top-level form,
+   still generated by the same bundle generator) immediately unblocked
+   `eieio-core`/`eieio`/`icons`/`warnings`/`help-mode` reaching `provide`
+   despite still having 1-2 individually-failing forms inside them.
+
+   Two narrow, documented content exclusions (not vendor patches): (a)
+   `kmacro.el`/`edmacro.el` (pulled in only because `transient.el` has a
+   top-level `(require 'edmacro)` for its keyboard-macro-edit integration,
+   unrelated to Magit's read-only status/section-navigation path) are
+   stubbed with a bare `provide`, after isolating that the real
+   `kmacro.el` hits a NeLisp evaluator robustness gap (a `global-set-key`
+   call deep in the file corrupts the reader's forward progress for the
+   rest of that `load`, verified in isolation, unrelated to Magit); (b)
+   `ansi-color.el`'s `ansi-color--update-face-vec` (the extended
+   256-color/24-bit SGR face-bookkeeping path only; ordinary 8/16-color
+   SGR codes never reach it) contains a bool-vector reader literal (`#&8"
+   "`) that reproducibly corrupts the same way, so only that one
+   definition is dropped from the bundle (keeping the rest of
+   `ansi-color.el` real) and the bridge installs a narrow, documented
+   no-op stand-in.
+
+   Verified progress (hard evidence, `build/nelisp-emacs-magit-bridge-bundle.el`
+   generation `files=117 stubs=9`, run inside the real
+   `build/nemacs-bootstrap.repl` + `nemacs-init` session the TUI launcher
+   itself boots): a `nelisp-emacs-magit-bridge-load` run completed in
+   seconds and left `(featurep ...)` = t for, in order,
+   `compat-macs`/`compat-31`/`compat`/`cond-let`/`eieio-core`/`eieio`/
+   `icons`/`warnings`/`help-mode`/`llama`/`crm`/`format-spec`/`pp`/
+   `transient`/`cursor-sensor`/`benchmark`/`derived`/`magit-section`/
+   `info`/`vc-dispatcher`/`track-changes`/`diff-mode`/`vc-git`/
+   `which-func`/`magit-base`/`server`/`files-x`/`magit-git`/`mailcap`/
+   `password-cache`/`auth-source`/`url-util`/`url-domsuf`/
+   `generate-lisp-file`/`url-cookie`/`url-history`/`url-methods`/
+   `url-expand`/`url-privacy`/`url-proxy`/`browse-url`/`elp`/`magit-mode`
+   (32 files, including the full EIEIO substrate, the real
+   `magit-section`/`magit-base`/`magit-mode` object/mode model, and
+   `transient`) -- this is the honest in-session re-verification of Doc 33
+   item 216's EIEIO/section/mode claims, this time through the actual
+   interactive bootstrap, not the replay harness.
+
+   BLOCKER found past that point, not resolved in this pass: loading (or
+   replaying) the chain from `ansi-color.el` onward -- reproducibly via
+   the ad hoc `nelisp --repl` stdin path AND via the real production path
+   (`make bake-magit-runtime-image` completes trivially since
+   `extend-runtime-image` only appends to the image's "source-v1" replay
+   recipe without executing it, but `make magit-load-smoke`'s
+   `exec-runtime-image`, which actually replays/executes that recipe,
+   reproducibly hangs with unbounded RSS growth, observed past 13 GB
+   before being killed) -- enters a state that never returns and never
+   errors, confirmed deterministic across 5 repeated runs in this same
+   session.  This directly contradicts one still-unexplained EARLIER run
+   in this same session that DID complete in seconds with 32/119 features
+   correctly resolved (exact stdout log preserved under the session's
+   scratch dir) using what appears to be equivalent bundle content.  Ruled
+   out as causes: dedicated-cache corruption (cleared and rebuilt, hang
+   persisted), NeLisp binary drift (mtime unchanged all session), stack
+   ulimit (unlimited made no difference), structural malformation of the
+   generated bundle (verified with host Emacs's own reader: forms parse
+   cleanly), and system resource contention (idle system, 47 GiB free).
+   Leading hypothesis, not confirmed: a genuine algorithmic
+   non-termination bug in NeLisp's EIEIO/cl-generic class-precedence or
+   method-dispatch-cache computation (`eieio--class-precedence-c3`/`-dfs`/
+   `-bfs` in `eieio-core.el`) that is sensitive to incidental hash/symbol
+   iteration order (e.g. ASLR-influenced), which would explain both the
+   one clean run and the since-consistent hangs without any content
+   change.  This is a NeLisp interpreter-level question, out of a Magit
+   bridge's scope to fix; M2 (real git-status buffer) and M3 (TUI
+   display/keymap dispatch) were not attempted since they need
+   `magit-status`/`magit-git`, both past this blocker, and any output
+   would not be an honest verification.
+
+   Follow-up recorded per the approved plan's §3 M4 (do not implement):
+   M4a (sync stage/unstage via `magit-stage`/`magit-unstage` on the
+   existing sync process substrate, no editor) is feasible once M1's
+   blocker clears; M4b (commit, needing an async-stdin-write primitive +
+   `with-editor` sleeping-editor + a transient popup UI) additionally
+   needs that async-stdin-write primitive shipped and a green
+   `with-editor` sleeping-editor smoke.  Neither was started.
+
+   Regression preflight run clean against this branch's actual diff
+   (`src/nelisp-emacs-magit-bridge.el`,
+   `scripts/build-nelisp-emacs-magit-bridge-bundle.el`,
+   `scripts/nemacs-runtime-image-preload.el`, `Makefile`): `make
+   test-fast` reproduces the exact same 6 known unexpected failures listed
+   above bit-for-bit on a stashed clean baseline of the same commit (not a
+   regression); `make proc-smoke`, `make nemacs-library-contract`, and
+   `make nemacs-library-consumer-smoke` all pass.  `make
+   nemacs-ownership-coverage` flags `src/nelisp-emacs-magit-bridge.el` as
+   `unowned` alongside two pre-existing unowned files
+   (`src/cl-preloaded-shim.el`, `src/oclosure-shim.el`); Doc 18 gained an
+   IO-group row for the new file in this pass.
+
+238. Task #17 M1 CLOSED, 2026-07-06.  Both gaps left open by item 237's
+   BLOCKER paragraph are root-caused and fixed; `M1 completion condition`
+   (`(and (featurep 'magit) (commandp 'magit-status) (commandp
+   'magit-status-mode) (keymapp magit-mode-map) (fboundp
+   'magit-run-git))`) is now verified `t` end-to-end via `make
+   bake-magit-runtime-image && make magit-load-smoke`
+   (`nelisp-emacs-magit-bridge-loaded-p` = `MAGIT-LOAD PASS`).
+
+   Gap 1 (item 237's unbounded-RSS hang, "loading the chain from
+   ansi-color.el onward ... enters a state that never returns"): NOT an
+   EIEIO class-precedence non-termination bug as item 237 speculated.
+   Root cause was `intern-soft' (`src/emacs-symbol.el') having no
+   soft-fail path -- its `(unless (fboundp 'intern-soft) ...)' polyfill
+   called `intern' unconditionally for a string argument, so
+   `gnus/message.el''s `message-font-lock-keywords' defvar (`(while
+   (setq cited-text-face (intern-soft (format
+   "message-cited-text-%d" maxlevel))) ...)') never sees a soft-fail
+   and loops forever, interning a fresh symbol and allocating a fresh
+   `format' string every iteration until the process exhausts its
+   address space.  This exact bug and mechanism were independently
+   diagnosed and fixed at the dev/nelisp reader level (see
+   dev/nelisp's Doc 163, "Magit-bundle load hang at message.el:
+   intern-soft never soft-fails"), which added a native
+   probe-without-insert primitive (`nelisp--intern-lookup') and
+   confirmed nelisp-emacs-lib's OWN, independently-written, textually
+   near-identical `intern-soft' polyfill has the same defect and does
+   not call it.  Fix here (this commit): `src/emacs-symbol.el''s
+   `intern-soft' now dispatches its string-argument case to
+   `nelisp--intern-lookup' when that primitive is `fboundp' (i.e. on a
+   NeLisp build carrying dev/nelisp's Doc 163 Phase C fix or later),
+   falling back to the old unconditional `intern' otherwise (host Emacs,
+   or an older NeLisp build) so the shim never regresses environments
+   without the primitive.  Verified: the item 237-repro 5502-line
+   bundle truncation at the exact `message-font-lock-keywords' line
+   (previously the hang boundary) now `exec-runtime-image`s to
+   completion, rc=0, ~33s, under `ulimit -v 4G' (unchanged from the
+   pre-fix 5501-line pass); the full 7759-line bundle likewise
+   completes rc=0 in ~48-53s (was rc=88 unbounded-RSS hang, observed
+   >27 GiB before manual kill, per item 237's own log).  IMPORTANT for
+   future re-runs: `make magit-load-smoke'/`bake-magit-runtime-image'
+   do NOT set `ulimit -v' themselves (only `ulimit -s'); always wrap
+   manual invocations in `(ulimit -v 4194304; ...)' plus a `timeout'
+   until a durable NeLisp-side runaway-allocator guard exists (compare
+   dev/nelisp's retained `nelisp--append-collect' cdr-walk trap, a
+   different, already-closed hypothesis for a structurally similar
+   symptom).
+
+   Gap 2 (past Gap 1, newly exposed once the bundle stopped hanging
+   mid-load): `nelisp-emacs-magit-bridge-loaded-p' reported
+   `MAGIT-LOAD FAIL' on the now-completing full bundle even though
+   `(featurep 'magit)', `(fboundp 'magit-run-git)', and `(keymapp
+   magit-mode-map)' were all already `t' -- narrowed to exactly one
+   failing conjunct, `(commandp 'magit-status-mode)' (`fboundp' nil).
+   Diagnosis (single `exec-runtime-image' probe form checking each
+   conjunct plus `magit-mode'/`magit-section-mode'): `magit-mode',
+   `magit-section-mode', AND `magit-status-mode' were ALL `fboundp'
+   nil, while `magit-mode-map' (a separate top-level `defvar' form)
+   bound fine -- this is item 221's own documented, still-open residual
+   recurring exactly as item 221 warned it would: `emacs-lisp/derived.el'
+   IS part of this bridge's real vendor file chain (`vendor/emacs-lisp/
+   emacs-lisp/derived.el', bundle position 85, well before
+   `magit-mode.el' at 111 and `magit-status.el' at 164), and its
+   backquote-template `define-derived-mode' defmacro re-shadows the
+   substrate's own already-fixed (item 221, list/append/quote-based)
+   `define-derived-mode', re-triggering the standalone reader's
+   backquote-macro-invocation defect (item 221: "any vendor chain that
+   replays emacs-lisp/derived.el will re-shadow define-derived-mode
+   ... and re-break") for every later `(define-derived-mode ...)' call
+   in the same session -- silently dropped by the bundle's per-form
+   `(unless (featurep 'X) FORM)' load-tolerance, leaving each mode's
+   `defvar'-based keymap/hook/syntax-table intact but its command/mode
+   function cell void.  Fix here (bridge/bundle layer only, no vendor
+   patch, per this doc's standing rule): added `(derived .
+   (define-derived-mode))' to
+   `nelisp-emacs-magit-bridge-bundle-excluded-defuns'
+   (`scripts/build-nelisp-emacs-magit-bridge-bundle.el'), the same
+   narrow single-top-level-form-drop mechanism already used for
+   `ansi-color--update-face-vec'.  `derived.el''s other four
+   `derived-mode-*-name' defsubst helpers and its `(provide 'derived)'
+   are untouched and still load; only its `defmacro define-derived-mode'
+   form is omitted from the generated bundle, so every later
+   `(define-derived-mode ...)' call in the bundle (`magit-mode',
+   `magit-section-mode', `magit-status-mode', ...) resolves against the
+   substrate's already-working macro instead.  This reproduces, inside
+   the real full vendor chain, exactly the outcome item 221 already
+   verified on its own derived.el-free magit-base/text-mode/Org test
+   chains.  Verified: post-fix `exec-runtime-image' diagnostic probe
+   shows `magit-mode'/`magit-section-mode'/`magit-status-mode' all
+   `fboundp' AND `commandp' non-nil; `make bake-magit-runtime-image &&
+   make magit-load-smoke' (`ulimit -v 4G'-wrapped) now prints
+   `MAGIT-LOAD PASS' in ~26s.
+
+   Regression after both fixes: `make test-fast` reproduces the exact
+   same 6 known unexpected results (the four `emacs-redisplay-test`
+   cases, `vendor-first-core-modes-test/lightweight-support-libraries-
+   load-vendor-source`) bit-for-bit, no new failures; `make proc-smoke`
+   green.
+
+   M1 is now genuinely closed end-to-end via the real, unpatched vendor
+   Magit chain (not a replay-harness proxy).  M2 (real git-status
+   buffer via `magit-status`/`magit-git`) and M3 (TUI display/keymap
+   dispatch) are unblocked and were not attempted in this pass --
+   neither needs further bridge/bundle work to start; both were merely
+   waiting on M1's blocker.  The dev/nelisp-side reader gap this item's
+   Gap 2 depends on (backquote-macro invocation inside the standalone
+   reader's per-form replay) remains open there; item 221's own note
+   that "the durable resolution is fixing backquote macro invocation in
+   the reader" still applies for any FUTURE vendor file this bridge adds
+   that itself redefines a macro the substrate already fixed the same
+   way -- the exclusion-list mechanism used here is a per-occurrence
+   bundle-layer workaround, not a substitute for that reader fix.
+
+239. Task #17 M2 attempted, 2026-07-06: two real bridge preconditions
+   fixed and committed; a new, wider-blast-radius reader-side blocker
+   found and left OPEN.  M3 (session/TUI wiring) was not started because
+   it needs a working M2; the one M3 piece that is independent of Magit
+   (shared keymap-lookup + `call-interactively' key dispatch) was added
+   and covered with focused ERTs.
+
+   Environment pitfall (costly to rediscover, recording so it is not lost
+   again): this repo's own default `NELISP_ROOT' resolution
+   (`Makefile' `DEFAULT_NELISP_ROOT') prefers `vendor/nelisp' when it
+   exists, and it exists in this checkout as a stale, unrelated clone
+   (its own git log is TLS/FFI/glyph-transform work, no relation to Doc
+   163's `intern-soft' fix) -- every `make bake-magit-runtime-image
+   magit-load-smoke magit-status-smoke ...' in this pass reproduced
+   item 237/238's OLD unbounded-RSS rc=88 hang until `NELISP_ROOT'/
+   `NELISP_BIN' were explicitly pointed at this session's real, current
+   `dev/nelisp' checkout (`main' = b41cbdf8, the one carrying Doc 163's
+   `nelisp--intern-lookup' fix).  Always pass
+   `NELISP_ROOT=$(HOME)/Notes/dev/nelisp' (or the equivalent absolute
+   path) explicitly for any Magit bridge `make' target in this
+   environment; do not trust the bare default.
+
+   Fix 1 (real bug, committed): `default-process-coding-system' was
+   never a real dynamic variable in this substrate.  Magit's own
+   lexical-binding files only ever `let'-bind it locally around a
+   process call and never `defvar' it themselves (exactly like real
+   Emacs, which declares it as a built-in special variable) --
+   `vendor/magit/lisp/magit-git.el' reads the SAME name from a
+   different function, outside that `let''s lexical extent, and without
+   a prior `defvar' that reference resolved as `void-variable' instead
+   of seeing Magit's dynamic binding.  `src/nelisp-emacs-magit-bridge.el'
+   now `defvar's it (a `(nil . nil)' cons, matching real Emacs' default
+   shape) as a session precondition.
+
+   Fix 2 (real bug, committed): `coding-system-change-eol-conversion'
+   was entirely unbound (`void-function'), needed by
+   `magit--process-coding-system' (`magit-process.el') whenever
+   `magit-process-ensure-unix-line-ending' is non-nil (the default).
+   Added as a bridge precondition: returns CODING-SYSTEM unchanged (or
+   `utf-8-unix' when nil), which is faithful enough for this bridge's
+   read-only M2/M3 use (no CRLF translation is modeled or needed here)
+   and lets Magit's own process setup finish instead of aborting before
+   any git process starts.
+
+   BLOCKER found past both fixes, NOT resolved: `magit-toplevel'/
+   `magit-git-string' (and, by direct code inspection, most of Magit's
+   real behavior) depend on the vendored `cond-let' package's
+   `cond-let'/`cond-let*' macros, and invoking them signals or silently
+   mis-evaluates in this reader.  Minimal repro (no Magit involved):
+   `(cond-let* ([x 1] [x (+ x 1)] x) (t 99))' against the M1 magit
+   runtime image raises `void-variable: x' -- the SAME class of defect
+   item 221 root-caused for `define-derived-mode' ("invoking a
+   user-defined macro whose expansion-producing body is a backquote
+   template" mis-evaluates in the standalone reader), here hitting a
+   macro whose own clause-preparation helper
+   (`cond-let--prepare-clauses' in `vendor/cond-let/cond-let.el')
+   constructs its expansion via nested backquote/`,@'-splicing.  Ruled
+   out: this is NOT the "body-less serialized defmacro clobbers
+   `backquote'" defect documented in dev/nelisp's `FINDINGS.md' (that
+   fix, re-asserting `(defmacro backquote (form) (nelisp--bq-expand
+   form))' and the `` ` `` alias before calling `cond-let*', was tried
+   first and made no difference); bare `(backquote ...)' and `` `...' ``
+   both evaluate correctly in the very same session, and the substrate's
+   OWN `if-let*'/`when-let*' polyfills (`src/emacs-subr-extras.el',
+   already active before the Magit chain loads) work correctly too
+   (`(if-let* ((x 5)) (+ x 1) 0)' => 6, `(when-let* ((y 7)) (+ y 1))'
+   => 8) -- so the blast radius is specifically `cond-let'/`cond-let*'
+   invocation, not backquote/`,@' in general and not every
+   binding-conditional macro.
+
+   Blast radius: `cond-let'/`cond-let*' are used pervasively, not just
+   in `magit-toplevel' -- a source grep across
+   `vendor/magit/lisp/*.el'+`vendor/transient/lisp/transient.el'+
+   `vendor/with-editor/lisp/with-editor.el' finds 70+ call sites,
+   including core paths this task needs directly
+   (`magit-git.el' ~10 sites including `magit-toplevel' itself,
+   `magit-status.el', `magit-section.el', `magit-diff.el',
+   `transient.el' ~15 sites).  M2's honest conclusion: `magit-status-
+   setup-buffer' against a real fixture repo does not reach its
+   completion conditions -- it silently exits the whole `exec-runtime-
+   image' process (rc=0, zero bytes written, ~24s in, matching the
+   chain-replay time) with no Lisp-level error surfaced, consistent
+   with the same defect firing somewhere inside Magit's process/status
+   refresh path without an enclosing `condition-case' to report it.  M3
+   (which needs a live, correctly populated status buffer to render or
+   dispatch keys against) was not attempted for the same reason.
+
+   Two alternatives for whoever picks this up next (neither started):
+   - Alt A (stays in this bridge, bounded but nontrivial): rewrite
+     `cond-let'/`cond-let*'/`cond-let--prepare-clauses' (and the four
+     `cond-let--when-let*'/`-when-let'/`-and-let*'/`-and-let' helper
+     macros it dispatches to) without backquote -- list/append/quote
+     construction, exactly the pattern item 221 already used for
+     `define-derived-mode' -- then exclude the vendor `cond-let.el'
+     defmacro forms from the generated bundle the same way
+     `derived.el''s `define-derived-mode' is excluded today
+     (`nelisp-emacs-magit-bridge-bundle-excluded-defuns' in
+     `scripts/build-nelisp-emacs-magit-bridge-bundle.el'). One fix point
+     covers all 70+ call sites; risk is faithfully reproducing
+     `cond-let.el''s clause-shape semantics (plain/binding/binding-vector
+     clauses, sequential vs parallel `let'/`let*' choice, the
+     `cond-let--and$'/`when$'/`thread$' siblings if anything in the
+     chain also uses those) well enough that M2/M3's "honest
+     verification" bar is not just "loads" but "behaves correctly."
+   - Alt B (the durable fix item 221 already called for): fix backquote-
+     bodied macro invocation in dev/nelisp's own reader/evaluator. Fixes
+     this defect for `cond-let' AND any other vendor macro of the same
+     shape this bridge (or a future one) encounters, instead of one more
+     per-occurrence bundle exclusion; the cost is a deep-dive into a
+     different repository's (`~/Notes/dev/nelisp') macro-expansion
+     internals, not scoped or attempted here.
+
+   M3 delivered independently of the M2 blocker: `emacs-command-loop-
+   dispatch-key' (`src/emacs-command-loop.el') -- the shared "look up
+   KEY in the active keymap chain via `emacs-keymap-key-binding' and
+   `call-interactively' it if it resolves to a leaf interactive command,
+   else return nil so the caller can fall back to its own default
+   handling (e.g. self-insert)" primitive the approved plan's §3 M3.3/M3.4
+   calls for, built entirely from already-existing shared substrate
+   (`emacs-command-loop--lookup-command', `emacs-command-loop-call-
+   interactively') with no Magit dependency.  Covered by five focused
+   ERTs in `test/emacs-command-loop-builtins-test.el' (bound command
+   runs and returns the command; unbound key and a bound prefix-keymap
+   and a bound non-interactive function are all no-ops; a buffer-local
+   map binding takes priority over an equally-bound global-map key,
+   the exact mechanism a real major mode's keymap needs to override a
+   frontend's fixed key table).  The session/TUI wiring around it
+   (`nemacs-next-session' `magit-status' command, face-run/overlay
+   surfacing, the actual TAB/n/p forwarding) was NOT built: wiring it to
+   a Magit buffer that cannot itself be constructed yet would not be
+   honestly verifiable, and per this doc's own repeated standard,
+   "loads/defines" is not "verified working."
+
+   Regression: `make test-fast' reproduces the same 6 known unexpected
+   results bit-for-bit (the four `emacs-redisplay-test' cases and
+   `vendor-first-core-modes-test/lightweight-support-libraries-load-
+   vendor-source'), no new failures; `make proc-smoke' green; `make
+   nemacs-library-contract' and `make nemacs-library-consumer-smoke'
+   green (no facade/contract surface changed).  New M2 artifacts
+   (`scripts/nemacs-magit-fixture.sh', `scripts/nemacs-magit-status-
+   smoke-probe.el', the `nemacs-magit-fixture'/`magit-status-smoke'
+   `Makefile' targets) are real and wired correctly -- `make
+   NELISP_ROOT=$(HOME)/Notes/dev/nelisp magit-status-smoke' currently
+   FAILS for the documented `cond-let*' reason above, not because of a
+   plumbing bug in the new targets themselves.
+240. Task #17 M2 continuation, 2026-07-06: ten more defect classes peeled
+   off the `magit-status-smoke' path via a fix-one-probe-again loop; M2
+   completion conditions NOT yet reached; stopped per the >5-iteration /
+   core-bound-defect rule with a crisp core-side minimal repro (below).
+   Branch `feat/magit-tui', commits 6211f91b + this pass's follow-up;
+   companion dev/nelisp commit 2de6ef0f (branch
+   `fix/runtime-image-mode3-loud-abort').
+
+   Enabler shipped first (dev/nelisp 2de6ef0f): `nl_eval_source_all''s
+   report_errors=3 branch (eval/exec-runtime-image + artifact command
+   replay) used to return a bare 0 on a flag=0 abort -- rc=0, zero
+   output, indistinguishable from success (item 239's "silently exits
+   the whole exec-runtime-image process" is exactly this).  It now
+   prints `nelisp: form aborted without signal (rc=N)' to stderr while
+   keeping the same return value and loop-continuation behavior
+   (FINDINGS.md recommendation 1(b), narrowed to the runtime-image
+   path).  This made every subsequent loop iteration's failure visible
+   in seconds and is why the rest of this item exists.
+
+   Fixed this pass, in loop order (each isolated by a minimal probe
+   against the baked magit runtime image before fixing):
+   1. `files.el' globals (24 names, `find-file-visit-truename' first,
+      hit inside `magit-toplevel'): host-preloaded file, so correctly
+      absent from the bundle but its globals were never declared.
+      Bridge precondition `--ensure-files-el-globals' (static
+      cross-reference of files.el top-level names against the vendor
+      chain, narrowed by a live boundp probe; values are real-Emacs
+      defaults; two documented nil stand-ins).
+   2. `call-process' cwd: the native process primitives spawn in the
+      parent's cwd, ignoring `default-directory' -- git answered about
+      the WRONG repository (probe showed `magit-toplevel' = "/" and
+      rev-parse returning the HOST repo's HEAD).  `cd "$1" || exit 127'
+      shell wrapper at the `emacs-process' layer and both runtime
+      preload copies.
+   3. Raw `(macro . CLOSURE)' stubs: invoking a macro installed via
+      `(fset SYM (cons 'macro (lambda ...)))' aborts the enclosing form
+      flagless (minimal repro preserved; `defmacro'-defined macros are
+      fine) -- `emacs-stub-bulk.el' macro stubs now install through a
+      constructed `defmacro'.  Also `pcase-exhaustive' got a real
+      implementation (pcase + no-match error) in `emacs-pcase.el': a
+      nil-expanding stub silently mis-dispatches `magit-diff--get-value'
+      and transient's dispatch sites.
+   4. `cl-flet*' void: aliased to the MVP `cl-flet' (which installs
+      bindings globally in order = sequential scoping already).
+   5. No current buffer: the batch bootstrap leaves `(current-buffer)'
+      nil and `buffer-list' empty, violating the real-Emacs invariant;
+      `magit-get-mode-buffer''s window scan passes `window-buffer'
+      results into `with-current-buffer' and died on nil.  Window layer
+      now lazily adopts the current buffer for an empty window slot;
+      bridge precondition creates/selects *scratch*.
+   6. read-symbol-shorthands: the normalizer read vendor files with
+      plain `read', so Magit's file-local shorthands (`and$' ->
+      `cond-let--and$', `if-let*' -> `cond-let--if-let*', ...) never
+      applied -- `and$'/`when$'/`thread$' call sites were guaranteed
+      void-function and the `*-let*' families silently bound to a
+      different implementation than the file selected.
+      `standalone-source-normalize' now runs `hack-local-variables'
+      (variables only) before reading; cache version 130 -> 132;
+      the magit bundle Makefile rule now depends on the normalizer.
+   7. Generic size-based body elision (>3500 printed chars) silently
+      gutted three load-bearing functions in this chain: `format-spec'
+      (every Magit buffer name became nil -> wrong-type-argument),
+      `eieio-defclass-internal' (every defclass a silent no-op), and
+      `magit-diff-wash-diff' (empty diff sections).  All three added to
+      `standalone-source-normalize-retained-large-defun-symbols'.
+   8. `uniquify.el' globals + `special-mode' + `simple.el' globals
+      (host-preload class again): three new bridge preconditions --
+      uniquify defvars with real defaults plus a documented no-op
+      `uniquify-rationalize-file-buffer-names'; `special-mode' copied
+      verbatim from vendor simple.el (parent of `magit-section-mode');
+      14 simple.el defvars (`line-move-visual' first, from
+      magit-section-mode's own body) via the same audit method as
+      files.el.  Plus third-party soft vars magit `setq-local's
+      (`symbol-overlay-inhibit-map', bookmark/imenu/isearch hook vars),
+      no-op `hack-dir-local-variables-non-file-buffer' and
+      `face-remap-add-relative' stand-ins, and verbatim
+      `internal--format-docstring-line'/`internal--fill-string-single-
+      line' (subr.el) -- the latter pair unblocked `defclass' EXPANSION
+      chain-wide (it is called at macro-expansion time and its absence
+      silently killed every defclass in the bundle load).
+   9. `gv-letplace' stub semantics: the old stub expanded to a bare
+      `(progn BODY)' with the getter/setter VARS unbound, so Compat
+      31's `incf'/`decf' (used by `magit--with-refresh-cache') hit
+      void-variable.  Now binds GETTER to the place expression and
+      SETTER to a `setf'-form builder (documented multiple-evaluation
+      trade-off, same as the with-memoization shim).
+   10. `push'/`cl-pushnew' generalized places: both expanded to
+      `(setq (cdr CELL) ...)' for a non-symbol place, which the
+      evaluator aborts on flagless (`magit--with-refresh-cache' pushes
+      onto `(cdr magit--refresh-cache)').  Both now route non-symbol
+      places through the substrate's `setf'.  Also `emacs-stub-bulk''s
+      defvars now install via constructed `defvar' instead of `set', so
+      vendor `let'-bindings of them (e.g. `inhibit-read-only') are
+      genuinely dynamic -- the `default-process-coding-system' class
+      from item 239, closed for the whole bulk list at once.
+
+   Verified state at stop: `magit-toplevel'/`magit-git-string'/
+   `magit-gitdir' return correct fixture-repo answers through the real
+   git plumbing; `magit-diff--get-value'/`magit-log--get-value' return
+   correct argument lists; `magit-generate-new-buffer' creates a
+   correctly named buffer; `(magit-status-mode)' activates (mode body
+   runs to completion, `major-mode' set); `magit-display-buffer'
+   completes.  `cond-let'/`cond-let*'/`--if-let'/`--when-let'/
+   `--and-let*'/`--while-let' all evaluate correctly under the current
+   dev/nelisp main (1236ff96) -- item 239's cond-let BLOCKER is
+   resolved.  `make test-fast' reproduces the same 6 known unexpected
+   results bit-for-bit; `make proc-smoke' green.
+
+   REMAINING BLOCKER (core-bound, why this pass stopped): `defclass'
+   registration aborts flagless at runtime.  Minimal repro against
+   `build/nemacs-magit-runtime.nlri':
+     (defclass eieio-default-superclass nil nil "Doc." :abstract t)
+   -> `nelisp: form aborted without signal (rc=1)', uncatchable by
+   `condition-case' (nothing stashed).  The defclass EXPANSION now
+   succeeds (macroexpand returns a progn; the docstring-helper gap is
+   closed), so the abort is inside evaluating the expansion --
+   i.e. `eieio-defclass-internal''s registration path or a macro it
+   invokes.  Because the root class never registers, every later
+   `defclass' in the chain fails with `(error eieio-default-superclass)',
+   `magit-insert-section--create' stays void, and a status-buffer
+   refresh completes but inserts nothing (buffer-size 0,
+   `magit-root-section' nil) -- which is exactly what the smoke's
+   MAGIT-STATUS-BUFFER FAIL now means.  This is the "bare rc=1 with no
+   error stash" evaluator class FINDINGS.md recommendation 1(a) already
+   assigns to dev/nelisp (audit the remaining rc!=0-without-stash call
+   sites); the loud reporter shipped in this pass will name the exact
+   site once one of those calls stashes or prints context.  M2's
+   completion conditions (MAGIT-STATUS-BUFFER PASS + MAGIT-GIT-EXEC
+   PASS) therefore remain open; MAGIT-GIT-EXEC's own conjuncts
+   (toplevel + rev-parse) are individually verified working, but the
+   smoke asserts both lines and the status-buffer half needs the
+   defclass fix first.
+
+241. Task #17 M2 continuation, 2026-07-06: root-caused and fixed item
+   240's `defclass' blocker; one further defect class found and given a
+   crisp minimal repro, then stopped there per the >5-iteration rule
+   (only one new class this pass, but it is core-adjacent -- llama `##'
+   short-lambda-as-value support -- and deserves its own investigation
+   rather than a rushed fix). Branch `feat/magit-tui'; vendor/nelisp
+   NOT modified (fix lives entirely in this repo's own
+   `src/emacs-cl-macros.el').
+
+   Root cause of the `cl-defstruct' `:include' inheritance bug (item
+   240's blocker): standalone NeLisp has *two* independent
+   `cl-defstruct' implementations -- vendor/nelisp's own
+   `lisp/nelisp-cl-macros.el' (record-based, real `:include' chain,
+   baked into the interpreter's `scripts/nelisp-stdlib-prelude.el' and
+   active from process start) and this repo's `src/emacs-cl-macros.el'
+   (alist-based standalone fallback, Doc 51 Track O, predates the
+   vendor implementation). The latter's `cl-defstruct' macro is gated
+   `(when (or (not (boundp 'emacs-version)) ...) (defmacro cl-defstruct
+   ...))' -- under standalone NeLisp `emacs-version' is never bound, so
+   that `or' is unconditionally true and the stub **unconditionally
+   redefines** `cl-defstruct', clobbering the already-working
+   vendor/nelisp macro the moment this repo's bootstrap bundle
+   (`build/nemacs-bootstrap.el', which inlines `cl-lib.el' /
+   `emacs-cl-macros.el' regardless of `require' short-circuiting,
+   since `nelisp-bootstrap--write-bundle' embeds raw file contents, not
+   `require' forms) executes. This is the same defect shape as
+   `feedback_anvil_stub_unconditional_defun_clobber' (Fable memory):
+   a polyfill missing an `(unless (fboundp ...))' guard.
+
+   That alone would just mean the *stub's own* `:include' bookkeeping
+   (`emacs-cl-macros--struct-defs') is in play instead of vendor's
+   (`nelisp-cl-macros--struct-info') -- survivable, since the stub's
+   `:include' resolution is otherwise correct. The actual blocker is
+   that `cl--class' -- the parent struct real `eieio-core.el' declares
+   via `(cl-defstruct (eieio--class (:include cl--class) ...))' -- is
+   *never defined by any `cl-defstruct' call in either registry*: real
+   vendor `cl-preloaded.el' is the only place upstream Emacs defines
+   `cl--class', and it is deliberately excluded from the magit bridge
+   bundle (`scripts/build-nelisp-emacs-magit-bridge-bundle.el' calls
+   its `cl-lib' surface "already provided natively" by this repo's own
+   substrate). With the parent missing, the stub's `:include' handling
+   (`(when pdef ...)') silently no-ops instead of erroring, so
+   `eieio--class' gets only its own explicit slots
+   (children/initarg-tuples/class-slots/...), never the five inherited
+   from `cl--class' (name/docstring/parents/slots/index-table).
+   `eieio--class-parents' (and its "--setter") consequently never get
+   defined; `eieio-defclass-internal''s `(setf (eieio--class-parents
+   newc) ...)' then falls through the standalone `setf' polyfill's
+   generic-fallback path, which constructs and calls a
+   `eieio--class-parents--setter' symbol that does not exist ->
+   item 240's `void-function' abort.
+
+   Fix (`src/emacs-cl-macros.el', ~35 new lines right after the
+   `cl-defstruct' macro body, before the `cl-case' section; no vendor
+   source touched): seed a minimal `cl--class' via `(cl-defstruct
+   (cl--class (:constructor nil) (:copier nil)) (name nil) (docstring
+   nil) (parents nil) (slots nil) (index-table nil))', matching
+   `cl-preloaded.el''s five declared slots, guarded on `(unless
+   (fboundp 'cl--class-p) ...)' so host Emacs (which already dumps the
+   real `cl--class') never sees it and re-loads of this file stay
+   idempotent. This does not need the full `cl-preloaded.el' metaclass
+   machinery (`cl--find-class' backpatching, purecopy, `cl-assert'
+   forms, `built-in-class' etc.) -- only the five-slot parent shape
+   `:include' needs to resolve. `packages/nelisp-emacs-foundation/lisp/emacs-cl-macros.el'
+   (the `make nemacs-library-package-scaffold' generated mirror)
+   picked up the identical change automatically on rebake; both files
+   are part of this pass's commit.
+
+   Verification: minimal repro `(defclass eieio-default-superclass nil
+   nil "Doc." :abstract t)' now succeeds (previously
+   `void-function: eieio--class-parents--setter'). Rebuilt
+   `build/nemacs-runtime.nlri' + `build/nemacs-magit-runtime.nlri' from
+   scratch; `make magit-load-smoke' -> `MAGIT-LOAD PASS'. `make
+   magit-status-smoke' now runs past `defclass' registration entirely
+   (the item 240 blocker is gone) and reaches the actual status-buffer
+   probe, where it hits the next item's defect instead. `make
+   test-fast' still reports exactly the same 6 known-unexpected results
+   bit-for-bit (`emacs-redisplay-test-mode-line-full-width-inverse',
+   `emacs-redisplay-test-redisplay-truncates-long-line',
+   `emacs-redisplay-test-redisplay-window-narrow-region',
+   `emacs-redisplay-test/core-initial-paint-produces-output',
+   `emacs-redisplay-test/core-matrix-accessors-expose-cache-state',
+   `vendor-first-core-modes-test/lightweight-support-libraries-load-vendor-source')
+   -- no regression from this fix.
+
+   New blocker found once `defclass' was unblocked: `magit-status-smoke'
+   now fails with `nelisp: uncaught error: no-catch: (t nil)' instead of
+   the old abort. Bisected (each step re-run against the baked magit
+   runtime image with a real fixture repo) down to a crisp, magit-free
+   minimal repro:
+     (magit-expand-git-file-name "/some/absolute/path")
+   fails the same way, and calling its `:test' predicate directly --
+     (cl-assoc "foo" nil :test (##string-prefix-p %2 %1))
+   -- fails with `void-function: (##string-prefix-p)'. Root cause:
+   `magit-expand-git-file-name' passes a llama.el `##FN' short-lambda as
+   a plain *value* (the `:test' keyword argument of `cl-assoc', never
+   itself immediately funcalled at the call site) rather than in the
+   immediately-applied position (`(##fn a b)' called directly) that the
+   rest of this bridge's llama support already covers; the standalone
+   reader does not expand `##string-prefix-p' into a callable value in
+   that position, so any caller of `cl-assoc'/`cl-member' etc. with a
+   llama `:test' hits this. (Separately: whatever converts that
+   void-function into the generic `(throw t nil)' report by the time it
+   surfaces from `magit-toplevel' -- rather than the direct
+   `void-function: ...' message seen calling `cl-assoc' at the top level
+   -- was not tracked further this pass; worth a follow-up if the loud
+   error-name work from item 240 gets extended to this error-conversion
+   path.) This is core-adjacent (reader/short-lambda substrate, not this
+   bridge's own preconditions), so left as the crisp minimal repro above
+   rather than fixed in this pass.
+
+   Non-deterministic-looking symptoms audited this pass turned out to be
+   a bisection-methodology artifact, not real nondeterminism: every
+   `exec-runtime-image' invocation cold-reinterprets the full ~5.4MB
+   bootstrap + magit-bridge bundle from scratch (the `.nlri' file is a
+   replay script, `;;; nelisp-runtime-image source-v1', not a memory
+   snapshot), which costs a fixed ~30s regardless of how trivial the
+   evaluated form is. Several early isolated single-call probes used
+   8-20s shell timeouts and were killed mid-cold-load, misreporting as
+   hangs; re-run with >=60s timeouts, every one of them completed and
+   several turned out to work correctly (`seq-some', `cl-flet'/`cl-flet*',
+   `catch'/`throw', `mapc' are all fine standalone). The one apparent
+   `text-read-only: nil' sighting came from an intentionally-incomplete
+   probe (`funcall'ing `magit-status-mode' on a bare
+   `get-buffer-create' buffer, skipping `magit-generate-new-buffer' and
+   the fixture `default-directory') and is not a defect in the real
+   `magit-status-setup-buffer' path -- not re-encountered once probes
+   matched the real call shape. `magit-outside-git-repo' was not
+   encountered this pass.
+
+   Commits: pending (this pass's `src/emacs-cl-macros.el' +
+   `packages/nelisp-emacs-foundation/lisp/emacs-cl-macros.el' +
+   this Doc 33 entry).
+
+242. Task #17 M2 continuation, 2026-07-06: root-caused and fixed item
+   241's llama `##' short-lambda-as-value defect (vendor/nelisp reader,
+   not this bridge); M2 still does not PASS -- one further, core-bound
+   defect found and given a crisp minimal repro, then stopped there
+   (this is the first new defect class this pass; it is not fixable at
+   this bridge's precondition layer, see below). Branch
+   `fix/llama-shorthand-value' in the `vendor/nelisp' checkout (main
+   9ea60deb); this repo (`feat/magit-tui', c32422a2) was used only to
+   reproduce/verify against the real magit bridge bundle and is
+   otherwise unmodified.
+
+   Root cause of item 241's blocker: `vendor/nelisp's AOT reader lexer
+   (`lisp/nelisp-cc-reader-lexer.el', `nelisp_reader_lex_sharpsign' --
+   this is the reader the compiled `target/nelisp' binary actually
+   runs; the parallel elisp-source readers `src/nelisp-read.el' /
+   `src/nelisp-reader.el' are unrelated legacy/prototype
+   implementations not wired into this binary at all, confirmed by
+   `nelisp-read-from-string' being `void-function' under plain
+   `--eval') special-cased `#' immediately followed by a second `#' to
+   fall through to the ordinary atom scanner starting at the FIRST `#',
+   with the comment "`##' is an ordinary symbol in Emacs Lisp arglists,
+   notably in Org's declare-function hints." Since `#' is not an atom
+   terminator, that scanner greedily consumes every following atom-
+   constituent byte, so `##string-prefix-p' lexed as ONE symbol
+   literally named `"##string-prefix-p"' instead of two tokens (`##'
+   then `string-prefix-p', matching real Emacs's reader, verified via
+   `(read-from-string "(cl-assoc filename x :test
+   (##string-prefix-p %2 %1))")' against host Emacs 30.1, which returns
+   `(cl-assoc filename x :test (## string-prefix-p %2 %1))' -- a 5-
+   element list, not a 4-element one with a merged `:test' symbol).
+   That single merged symbol is never `fboundp', hence item 241's
+   `void-function: (##string-prefix-p)'. The bare `##' case the
+   original comment targeted (Org's declare-function arglist
+   placeholder) happened to still work under the old code because
+   `lex_atom' naturally stops after exactly 2 bytes when `##' is
+   followed by whitespace/`)' anyway -- so the bug was invisible until
+   `##' meets a following identifier with no space, exactly llama.el's
+   `##FN' convention.
+
+   Fix (`lisp/nelisp-cc-reader-lexer.el', `nelisp_reader_lex_sharpsign''s
+   `##' arm only; ~30 lines, comment-heavy): emit `##' as a fixed 2-byte
+   Sym token (kind 23, via the same `mut-str-push-byte' +
+   `nelisp_reader_finalize_classified' pattern the rest of the lexer
+   uses) instead of falling through to `nelisp_reader_lex_atom'. This
+   interns a symbol literally named `"##"' (matching `\#\#' in real
+   Emacs) rather than the true empty-string-name symbol real Emacs
+   produces -- but llama.el's own `(defalias (intern "") 'llama)' AND
+   `(defalias '\#\# 'llama)' both alias to the same macro, so either
+   spelling resolves correctly; true empty-symbol identity was not
+   needed. Rebuilt via `make standalone-reader' (vendor/nelisp's own
+   AOT self-build, per-unit cache invalidated only this one lexer unit).
+
+   Verification: minimal repro `(cl-assoc "foo" nil :test
+   (##string-prefix-p %2 %1))' now evaluates to `nil' (empty alist,
+   correct) instead of aborting; `(magit-expand-git-file-name
+   "/some/absolute/path")' now returns the path unchanged instead of
+   erroring; `make magit-load-smoke' -> `MAGIT-LOAD PASS'. Regression:
+   all `standalone-reader-*-smoke' targets (load/intern-soft/intern-
+   soft-loop/fmt/prelude-equal-reload/declare-strip/nested-backquote-
+   macro/pcase-quote-literal/cond-let-shape/catch-throw-tag/derived-
+   mode-shape, plus `standalone-reader-test' and
+   `standalone-reader-prelude-test') still PASS. `vendor/nelisp make
+   test-fast': `Ran 4449 tests, 4294 results as expected, 43 unexpected,
+   112 skipped' both BEFORE (git-stashed fix, rebuilt, reran) and AFTER
+   this fix -- byte-identical set of 43 failing test names in both runs
+   (`nelisp-async-*', `nelisp-eventloop-multiplex-*',
+   `nelisp-filenotify-*', `nelisp-load-selfhost-roundtrip-via-ec',
+   `nelisp-standalone-target-*', `nelisp-stdlib-run-at-time-registered',
+   `nelisp-text-buffer-*', `nelisp-worker-*',
+   `nelisp-asm-arm64/x86_64-f64-*'; unrelated subsystems, pre-existing
+   on this machine, confirmed by an explicit stash+rebuild+rerun
+   baseline comparison) -- no regression from this change. Commit
+   `b08d6e75' on `vendor/nelisp' branch `fix/llama-shorthand-value'
+   (not merged/pushed).
+
+   NEW BLOCKER found once the llama defect was unblocked (why
+   `magit-status-smoke' still does not PASS): `make magit-status-smoke'
+   now runs past the llama call entirely and fails with `nelisp:
+   uncaught error: text-read-only: nil' inside `magit-status-setup-
+   buffer'. Bisected down to a magit-free, bridge-free minimal repro:
+   creating buffer B1, `(with-current-buffer B1 (setq buffer-read-only
+   t))', then creating a brand-new, never-touched buffer B2 shows
+   `(buffer-local-value 'buffer-read-only B2)' => `t' -- i.e. setting
+   `buffer-read-only' non-nil in ONE buffer leaks into a DIFFERENT,
+   just-created buffer's value, and even an explicit
+   `(with-current-buffer B1 (make-local-variable 'buffer-read-only)
+   (setq buffer-read-only 'B1VAL))' followed by reading the same symbol
+   from B2 returns `B1VAL' too. Root cause (by direct source read, not
+   inference): `vendor/nelisp' has no buffer-local variable storage at
+   all -- `lisp/nelisp-stdlib-eval-special.el' defines `setq-default' /
+   `setq-local' as "NeLisp has no buffer-local; equivalent to `setq'"
+   and `with-current-buffer'/`with-temp-buffer' as "ignore BUFFER, run
+   BODY in current context" (this repo's OWN `with-current-buffer' in
+   `src/emacs-buffer-builtins.el' does provide genuine buffer switching
+   -- confirmed working throughout this pass's probes, e.g.
+   `(buffer-name)' correctly reflects the switched-to buffer -- so this
+   particular stdlib-eval-special fallback is not what is active here);
+   this repo's own `src/emacs-stub.el' `make-variable-buffer-local' /
+   `make-local-variable' are both documented no-op stubs ("Stub: accept
+   VARIABLE and return it ... Even without a full buffer-local
+   subsystem ..."). So any `setq' of a variable like `buffer-read-only'
+   writes through to the single shared/global value cell regardless of
+   current buffer, which is exactly why `nelisp-emacs-magit-bridge--
+   ensure-buffer-defaults' (`src/nelisp-emacs-magit-bridge.el') already
+   has to reset the GLOBAL default of `buffer-read-only' to nil once at
+   bridge-load time (its own doc comment: "every freshly-created
+   buffer ... inherits it") -- but that reset only helps until the
+   FIRST buffer sets `buffer-read-only' to `t' again, which
+   `magit-section-mode' does immediately for the real status buffer,
+   re-poisoning the shared default for every subsequently-created
+   buffer for the rest of the process -- including the numerous
+   `with-temp-buffer's magit's own git-calling machinery
+   (`magit--with-temp-process-buffer' in `magit-git.el') creates while
+   `magit-toplevel'/`magit-repository-local-get' run from inside the
+   status buffer. This is why the M1-era smokes (`magit-toplevel'
+   called from a plain, non-magit buffer) never hit it, and why it only
+   surfaces now that a real end-to-end status-buffer refresh runs far
+   enough to call git from within a `magit-section-mode' buffer.
+
+   This is a genuine, pre-existing, explicitly-documented architectural
+   gap ("no buffer-local subsystem" / "no full buffer-local subsystem")
+   in the buffer-variable model this bridge builds on, not a missing
+   precondition constant/macro this bridge's established
+   `nelisp-emacs-magit-bridge--ensure-*' pattern can patch -- fixing it
+   for real needs genuine per-buffer variable storage (a symbol -> per-
+   buffer-table lookup wired into `set'/`symbol-value'/`default-value'/
+   `make-local-variable', mirroring which built-ins are "automatically"
+   buffer-local the way real Emacs's C `DEFVAR_PER_BUFFER' list works),
+   which is a new subsystem, not a session-level fix, and risks
+   regressing every currently-passing test that depends on the current
+   (admittedly wrong but currently-uniform) "one shared value" behavior
+   if attempted hastily. Left as the crisp minimal repro above rather
+   than patched in this pass. M2's completion conditions
+   (`MAGIT-STATUS-BUFFER PASS' + `MAGIT-GIT-EXEC PASS') remain open;
+   this buffer-local gap is now the actual blocker, not llama/`##'.
+
+   `make test-fast' in THIS repo (nelisp-emacs-lib) was not re-run this
+   pass (no source file in this repo changed); `vendor/nelisp make
+   test-fast' result is reported above. Commits: `b08d6e75' on
+   `vendor/nelisp' branch `fix/llama-shorthand-value' only; this repo
+   has no commits this pass (reproduction/verification only, per this
+   pass's scope).
+
+243. Task #17 M2 continuation, 2026-07-06: root-caused the "section
+   tree is empty" symptom (item 242's successor blocker after the
+   buffer-local swap engine landed) and fixed SEVEN substrate defect
+   classes on the `magit-status-smoke' path; M2 still does not PASS --
+   the fix loop was stopped at the >5-new-defect-classes budget with a
+   per-hook error enumeration finally in hand (below).  Branch
+   `feat/magit-tui'; vendor/nelisp NOT modified (all fixes live in this
+   repo's own substrate files).
+
+   How the real cause was found: the "per-section error swallowing"
+   hypothesis was WRONG -- `magit-run-section-hook' has no per-entry
+   `condition-case' at all.  A print-on-enter/error function-wrap trace
+   of the whole `magit-status-setup-buffer' chain showed
+   `magit-status-refresh-buffer' entering and exiting WITHOUT ever
+   calling `magit-insert-section--create' or `magit-run-section-hook':
+   the `(magit-insert-section (status) ...)' macro call itself expanded
+   to nil.  `magit-root-section' therefore stayed nil and
+   `magit-status-goto-initial-section''s
+   `(magit-section-siblings (magit-current-section) 'next)' did
+   `(oref nil parent)' => the reported `wrong-type-argument
+   ((or eieio-object cl-structure-object oclosure) nil)'.
+
+   Defect classes root-caused and FIXED this pass (each verified by
+   probe progression against the rebaked image; `make test-fast' green
+   at the same 6 known-unexpected results after all of them):
+
+   (1) `pcase-let' / `pcase-let*' / `pcase-dolist' strict-match gating
+   (`src/emacs-pcase.el', the LIVE implementation; same fix mirrored in
+   the older `src/emacs-stub.el' family).  Real Emacs `pcase-let'
+   treats patterns as "assumed to match" and destructures
+   unconditionally; the polyfills wrapped BODY in `(when TEST ...)', so
+   `magit-insert-section''s parser pattern `((,class ,value ,hide
+   . ,args) . ,body)' against the common SHORT form `((status)
+   BODY...)' failed its `consp' chain and the whole macro expansion
+   evaluated to nil, silently.  This was the section-tree-empty root
+   cause.
+
+   (2) `src/emacs-stub.el' pcase backquote-pattern dialect gap: it only
+   recognized the NeLisp reader's normalized `backquote'/`comma'/
+   `comma-at' heads, not host Emacs's `\`'/`\,'/`\,@' symbols that the
+   host-normalized bridge bundle actually contains (defense-in-depth;
+   `emacs-pcase.el' already knew both).
+
+   (3) `cl-pushnew' symbol-only place expansion
+   (`src/emacs-cl-macros.el'): `(cl-pushnew cname
+   (eieio--class-children c))' expanded to `(setq (eieio--class-children
+   c) ...)', and a non-symbol `setq' target is a FLAGLESS abort on the
+   standalone evaluator (same defect class as the `push' fix already
+   documented in emacs-stub.el).  This silently killed EVERY
+   `(defclass ...)' in the bundle partway (classes half-registered:
+   childp predicate defined, `cl--find-class' registered, but zero
+   slots) -- which is why `magit-insert-section--create''s constructor
+   call aborted.  Also fixed the same-shape latent bug in
+   `emacs-stub.el''s `cl-pushnew' (generalized-place variant kept).
+
+   (4) `cl-slot-descriptor' machinery missing (`src/emacs-cl-macros.el',
+   new seed next to item 241's `cl--class' seed): `cl-preloaded.el' is
+   excluded from the bundle but is upstream's only owner of
+   `cl--make-slot-descriptor' / `cl--slot-descriptor-*' /
+   `cl--copy-slot-descriptor', which `eieio-defclass-internal''s slots
+   loop calls once per slot => `void-function: cl--make-slot-descriptor'
+   after registration, leaving classes slot-less.  Seeded the 4-slot
+   struct (BOA constructor, `:conc-name cl--slot-descriptor-') plus a
+   manual `cl--copy-slot-descriptor' (props alist copied, not shared).
+
+   (5) `copy-sequence' record identity (`src/emacs-list.el'): the NeLisp
+   stdlib prelude's `copy-sequence' falls through `(t seq)' for native
+   records, returning the SAME object.  EIEIO's `make-instance' is
+   `(copy-sequence (eieio--class-default-object-cache class))', so every
+   constructed object would BE the shared per-class cache (all instances
+   aliasing).  Added a record-aware upgrade gated on a runtime
+   self-probe (only wraps when a fresh record round-trips `eq' through
+   the live `copy-sequence'; host Emacs never trips it).
+
+   (6) `cl-typep' minimal-prelude shadowing (`src/emacs-cl-macros.el'):
+   the stdlib prelude ships a 10-case atomic-only `cl-typep' (no
+   compound types, no TYPE-p predicate fallback, `(t nil)') which is
+   fbound before this repo's rich implementation, whose
+   `(unless (fboundp ...))' gate then left it dead.  `eieio-oset'/`oref'
+   dispatch on `(cl-typep obj '(or eieio-object cl-structure-object))'
+   => always nil => every slot write signalled `wrong-type-argument'.
+   Gate replaced by a self-probe (`(cl-typep nil '(or null))'): host
+   Emacs answers t and is untouched; the minimal version gets replaced.
+
+   (7) pcase `app' pattern unsupported (`src/emacs-pcase.el'): EIEIO's
+   `pcase-defmacro eieio' expands to `(and (pred eieio-object-p) (app
+   (eieio-oref _ 'NAME) PAT) ...)'; the unknown `app' head fell into the
+   permissive catch-all (test t, NO bindings), so magit-section's
+   `(pcase-let (((eieio start end children keymap) section)) ...)'
+   left all four unbound => `void-variable: keymap'.  Implemented `app'
+   (function-symbol/lambda form and `(F ARG...)' form with the literal
+   `_' EXPVAL placeholder or appended EXPVAL).
+
+   STATE AFTER THE SEVEN FIXES (why M2 is still open): `defclass' /
+   `make-instance' / `oref' / `oset' now genuinely work; the status
+   root section and several child sections are REALLY inserted
+   (`magit-insert-section--create'/`--finish' pairs observed
+   completing); the remaining failures are finally enumerable per
+   inserter.  A per-entry condition-case shim over
+   `magit-run-section-hook' (tmp-diag/diag-20260706-section-hook-
+   errors.el) reports, against the fully-fixed image:
+
+   - `magit-insert-status-headers'  => (wrong-type-argument
+     (or eieio-object cl-structure-object oclosure) nil) -- an `oref'
+     on nil somewhere inside the headers machinery; not yet bisected.
+   - `magit-insert-untracked-files' / `magit-insert-unstaged-changes' /
+     `magit-insert-staged-changes' => (void-function
+     text-property-not-all) -- the text-property scanning primitive is
+     not provided by the buffer substrate; owner should be
+     `src/emacs-buffer.el' text-property layer + unprefixed alias in
+     `emacs-buffer-builtins.el'.
+   - `magit-insert-unpushed-to-upstream-or-recent' => (void-function
+     magit-unpushed-section) -- `(defclass magit-unpushed-section
+     (magit-log-section) nil)' still aborts (parent chain
+     `magit-log-section' -> `magit-section' includes an `:abstract t'
+     class; not yet bisected).
+   - After the hook loop, refresh dies with `(void-variable
+     magit-section-visibility-indicators)': that defvar's default value
+     template calls `char-displayable-p' (void standalone), so the
+     defvar form aborted at load => variable unbound.  Crisp repro:
+     `(char-displayable-p 8230)' => void-function.
+
+   These four (plus any behind them) are the remaining M2 blockers.
+   None of them looks core-bound; all fit the established bridge/
+   substrate precondition pattern (text-property primitive, defclass
+   abstract-parent bisect, `char-displayable-p' polyfill, headers oref
+   bisect).
+
+   Regression: `make magit-load-smoke' => MAGIT-LOAD PASS on the fully
+   rebaked image (base `nemacs-runtime.nlri' + magit image rebuilt from
+   scratch after every fix -- the bake only existence-checks the base
+   image, so both .nlri files were `rm'ed each round).  `make test-fast'
+   => 1127 tests, same 6 known-unexpected (5 emacs-redisplay + 1
+   Info-find-file vendor test), bit-for-bit identical to the pre-change
+   baseline run this same session -- zero regressions.  The
+   `packages/nelisp-emacs-foundation/lisp/' scaffold mirrors of
+   emacs-pcase/emacs-stub/emacs-cl-macros/emacs-list picked up the
+   identical changes via `make nemacs-library-package-scaffold' on
+   rebake and are committed together.
+
+245. Task #17 M2 continuation, 2026-07-07: vendor/nelisp Policy B
+   (retained-generation GC, Doc 155 §8.13, `fix/gc-retention-edge-magit'
+   3ad65697) replaces the item-244 raw-memory-poke stopgap; closes the
+   poke's own item-lineage (240/242/243/244) but surfaces a NEW,
+   separate M2 blocker in the status-buffer-setup path.  Branch
+   `feat/magit-tui'; vendor/nelisp NOT modified from this repo (the
+   fix lives entirely in the dev/nelisp checkout named by NELISP_ROOT).
+
+   Background: item 244 root-caused the `magit-status-smoke' SIGSEGV to
+   a further instance of the Doc 155 lexframe-child retention-edge class
+   (a live growth-chunk hash-table/buckets child swept by the
+   form-boundary collector while its owning frame record survives) and
+   worked around it with
+   `nelisp-emacs-magit-bridge--ensure-gc-collect-disabled': a
+   session-scoped `ptr-read-u64'/`ptr-write-u64' poke of the vendor
+   binary's internal RECLAIMER GATE (base+160), i.e. disabling ALL GC
+   reclamation for the whole session (Doc 155 §8.8 "Fix A" applied at
+   the bridge layer).  vendor/nelisp Policy B (this session, dev/nelisp
+   commit 3ad65697) replaces that blunt session-wide disable with a
+   sound core policy scoped to exactly the form-boundary collector: a
+   `nl_gc_retain_scope' flag, armed only around that collector's own
+   sweep, makes it treat every growth-chunk (non-chunk-0) box it would
+   otherwise free as belonging to a retained generation instead --
+   sound by construction, since a block that is never freed can never
+   be wrongly freed.  `(garbage-collect)' and the mid-form loop
+   collector are untouched and keep reclaiming growth-chunk garbage
+   exactly as before.  This entire poke (the `nelisp-emacs-magit-bridge-
+   arena-base-sym-addr' defvar, the `/proc/self/maps' validation
+   helpers, and `-ensure-gc-collect-disabled' itself, ~120 lines) is
+   REMOVED from `src/nelisp-emacs-magit-bridge.el'; the bridge no
+   longer touches the vendor binary's internal GC gate at all.
+
+   VALIDATION, vendor/nelisp side (dev/nelisp, not this repo): `make
+   standalone-reader-test' (runtime-image/cli/neln/repl smokes + exit
+   42), the load/intern-soft(x2)/pcase-quote/catch-throw/cond-let
+   smokes, and `make standalone-chunk-growth-test' all PASS under
+   Policy B (the chunk-growth-test needed an isolated git worktree to
+   rule out a one-off concurrency artifact from an earlier run sharing
+   `target/nelisp' with a live magit-smoke bake; in isolation it is a
+   clean PASS, chunk-count 1->2).  A custom 172k-form growth-boundary
+   regression (plain vector churn) crosses chunk 0 -> chunk 1 and
+   completes at rc=0 with a live root intact under the policy.
+
+   VALIDATION, this repo: `make magit-load-smoke' (full vendor bundle
+   bake into a runtime image + a trivial
+   `nelisp-emacs-magit-bridge-loaded-p' check) => **MAGIT-LOAD PASS**,
+   run alone with NO memory ceiling, confirming the bundle LOAD itself
+   completes soundly and in bounded memory under Policy B with the poke
+   gone.  `make test-fast' => 1127 tests, 7 unexpected (the existing 6
+   plus `vendor-first-core-modes-test/lightweight-support-libraries-
+   load-vendor-source', a `void-function Info-find-file' vendor gap
+   already present on the unmodified baseline this same session --
+   confirmed byte-identical via a stash A/B, not caused by this change;
+   the Doc 33 "6 known-unexpected" baseline above is stale and should
+   be refreshed to 7 in a future pass) -- zero regressions from the
+   poke removal.
+
+   REMAINING M2 BLOCKER (new, separate from the item-244 GC-retention-
+   edge crash the poke and Policy B both target): `make
+   magit-status-smoke' -- which additionally drives
+   `magit-status-setup-buffer' against the git fixture, not just the
+   bundle load -- does NOT complete.  Three attempts, run alone (no
+   concurrent nelisp process) with increasing `ulimit -v' ceilings (8
+   GiB, 24 GiB, 40 GiB) each hit the documented "silent OOM-avoidance"
+   exit 88 with no output; a fourth attempt with NO ceiling at all grew
+   past 34 GiB RSS / hundreds of seconds of wall time with no sign of
+   convergence before the process was reaped (OOM-kill or an internal
+   crash; no core dump, no kernel log access in this sandbox to
+   distinguish the two) partway through the status-buffer-setup phase,
+   again before printing either PASS marker.  Because `magit-load-smoke'
+   (bundle load only) is cheap and clean, this is NOT the item-244
+   retention-edge bug recurring and NOT a general Policy-B soundness
+   problem -- it is a NEW memory-scaling characteristic specific to
+   `magit-status-setup-buffer'/section-rendering's allocation shape
+   (many small, short-lived per-section allocations across many more
+   top-level forms than a plain bundle load), which the retained-
+   generation policy turns into unbounded standing memory because nothing
+   downstream in that path calls `(garbage-collect)' (the one collector
+   Policy B leaves fully reclaiming) to reclaim it.
+
+   STATE: the item 240/242/243/244 poke-era lineage is CLOSED (poke
+   removed, superseded by a sound core policy, `magit-load-smoke' PASS
+   is the replacement regression proof for the load path). M2 itself
+   (`magit-status-smoke' PASS, both markers) is NOT reached this pass;
+   the blocker moved from "core GC bug requiring a poke" to "Policy B's
+   per-collector retained generation has an unbounded-memory failure
+   mode for allocation-heavy, `(garbage-collect)'-free loops like
+   section rendering". Next-step options for M3, undecided pending
+   review: (a) have `magit-status-setup-buffer'-class heavy loops
+   periodically call `(garbage-collect)' themselves (cheap, bridge-side,
+   no core change -- exercises the collector Policy B already keeps
+   fully sound); (b) bound Policy B itself, e.g. periodically let ONE
+   form-boundary sweep in N do a real reclaim instead of retain,
+   trading back a sliver of the original crash risk for a memory
+   ceiling; (c) the deferred plan A (precise closure-env marking) done
+   properly, closing the retention edge without ever needing to retain
+   growth-chunk garbage at all.

@@ -288,12 +288,12 @@ yielding `quantifier without operand'."
         (unless cls (signal 'nelisp-rx-syntax-error '("trailing \\S")))
         (nelisp-rx--advance)
         (nelisp-rx--make-class nil (list (cons :syntax cls)))))
-     ;; `\\1' .. `\\9' -- backref deferred (Phase 9c).  Reject early so users
-     ;; do not silently fall through.
+     ;; `\\1' .. `\\9' -- backreference (Doc 33 item 244: Magit's
+     ;; `magit-diff-wash-diff' matches `diff --git \\(?2:.+?\\) \\2',
+     ;; the first backreference the vendor chain actually exercises).
      ((and (>= c ?1) (<= c ?9))
-      (signal 'nelisp-rx-syntax-error
-              (list (format "backreference \\%c not supported in MVP"
-                            c))))
+      (nelisp-rx--advance)
+      (list :backref (- c ?0)))
      ;; Any other char -> literal.  Covers the punctuation/escape table:
      ;;   \\\\ \\. \\* \\+ \\? \\^ \\$ \\[ \\] \\{ \\} etc.
      (t (nelisp-rx--advance) (list :lit c)))))
@@ -731,6 +731,9 @@ where SLOT is 1 or 2 indicating which transition slot is dangling."
               (nelisp-rx--frag-start inner))
         (nelisp-rx--patch (nelisp-rx--frag-outs inner) send)
         (nelisp-rx--mkfrag :start sstart :outs (list (cons send 1)))))
+     ((eq tag :backref)
+      (let ((s (nelisp-rx--add-state :backref nil nil (nth 1 ast))))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
      (t
       (error "nelisp-rx: unknown AST node %S" ast)))))
 
@@ -763,6 +766,10 @@ NeLisp's restricted built-in pcase grammar."
            (nelisp-rx--collect-max-group (nth 2 ast))))
      ((memq tag '(:star :plus :opt :star-lazy :plus-lazy :opt-lazy))
       (nelisp-rx--collect-max-group (nth 1 ast)))
+     ;; A backreference to group N requires the groups vector to cover N
+     ;; even when the referenced group parses later (forward reference —
+     ;; matches empty, like real Emacs).
+     ((eq tag :backref) (1+ (nth 1 ast)))
      (t 1))))
 
 ;;; --------------------------------------------------------------------------
@@ -872,7 +879,18 @@ backtracking semantics."
          ;; NFA state and input position is independent of capture contents.
          ;; Memoizing only failures preserves capture side effects on success
          ;; while avoiding exponential retry storms in large org regexps.
+         ;; With a backreference anywhere in the pattern that independence
+         ;; no longer holds (the same state+position can fail under one
+         ;; capture history and succeed under another), so the memo is
+         ;; disabled for such patterns (Doc 33 item 244).
          (failed (make-hash-table :test 'equal))
+         (memo-ok (let ((i 0) (n (length states)) (found nil))
+                    (while (< i n)
+                      (when (eq (aref (aref states i) 0) :backref)
+                        (setq found t)
+                        (setq i n))
+                      (setq i (1+ i)))
+                    (not found)))
          (best   nil))
     (with-no-warnings
       (cl-labels
@@ -881,7 +899,7 @@ backtracking semantics."
            (fail-key (sidx pos) (+ (* sidx (1+ slen)) pos))
            (walk
             (sidx pos)
-            (if (gethash (fail-key sidx pos) failed)
+            (if (and memo-ok (gethash (fail-key sidx pos) failed))
                 nil
               (let* ((s (aref states sidx))
                      (label (aref s 0))
@@ -972,8 +990,28 @@ backtracking semantics."
                           (aset groups idx (cons open pos))
                           (or (walk (aref s 1) pos)
                               (progn (aset groups idx saved) nil))))
+                       ((eq label :backref)
+                        ;; Match the exact text group N captured earlier on
+                        ;; this path.  A group that has not (fully) matched
+                        ;; yet contributes an empty match, like real Emacs.
+                        (let* ((idx (aref s 3))
+                               (cell (and (< idx (length groups))
+                                          (aref groups idx))))
+                          (if (not (and cell (car cell) (cdr cell)))
+                              (walk (aref s 1) pos)
+                            (let* ((gs (car cell)) (ge (cdr cell))
+                                   (glen (- ge gs)))
+                              (and (<= (+ pos glen) slen)
+                                   (let ((i 0) (same t))
+                                     (while (and same (< i glen))
+                                       (unless (eq (aref str (+ pos i))
+                                                   (aref str (+ gs i)))
+                                         (setq same nil))
+                                       (setq i (1+ i)))
+                                     same)
+                                   (walk (aref s 1) (+ pos glen)))))))
                        (t (error "nelisp-rx: unknown state label %S" label)))))
-                (unless ok
+                (when (and (not ok) memo-ok)
                   (puthash (fail-key sidx pos) t failed))
                 ok))))
         (walk (nelisp-rx-pattern-start pat) start)

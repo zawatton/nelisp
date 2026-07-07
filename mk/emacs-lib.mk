@@ -14,6 +14,7 @@ NELISP_BOOT_PROFILE_LIMIT ?= nil
 NELISP_VENDOR_CORE_TIMEOUT ?= 900s
 NEMACS_RUNTIME_BAKE_TIMEOUT ?= 900s
 NEMACS_VENDOR_CORE_RUNTIME_BAKE_TIMEOUT ?= 900s
+NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT ?= 900s
 NEMACS_RUNTIME_REPLAY_TIMEOUT ?= 900s
 NEMACS_INTERACTIVE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
 NEMACS_VENDOR_CORE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
@@ -26,6 +27,10 @@ NEMACS_IMAGE ?= $(BUILD_DIR)/nemacs-loadup.nli
 NEMACS_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-runtime.nlri
 NEMACS_INTERACTIVE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-interactive-runtime.nlri
 NEMACS_VENDOR_CORE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-vendor-core-runtime.nlri
+NEMACS_MAGIT_BRIDGE_BUNDLE ?= $(BUILD_DIR)/nelisp-emacs-magit-bridge-bundle.el
+NEMACS_MAGIT_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-magit-runtime.nlri
+NEMACS_MAGIT_FIXTURE_DIR ?= $(BUILD_DIR)/nemacs-magit-fixture
+NEMACS_MAGIT_FIXTURE_COMMITS ?= 15
 NEMACS_RUNTIME_PRELOAD ?= scripts/nemacs-runtime-image-preload.el
 NEMACS_RUNTIME_PROCESS_PRELOAD ?= scripts/nemacs-runtime-process-preload.el
 NEMACS_RUNTIME_FRAME_TAB_PRELOAD ?= scripts/nemacs-runtime-frame-tab-preload.el
@@ -703,6 +708,7 @@ TEST_FAST_FILES = \
 	test/emacs-standalone-test.el \
 	test/emacs-buffer-builtins-test.el \
 	test/emacs-buffer-test.el \
+	test/emacs-buffer-local-swap-test.el \
 	test/emacs-edit-builtins-test.el \
 	test/emacs-fileio-builtins-test.el \
 	test/emacs-file-name-handler-test.el \
@@ -729,7 +735,7 @@ TEST_FAST_FILES = \
 	test/emacs-tier3-facades-test.el \
 	test/nemacs-wrap-init-test.el
 
-.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image bake-magit-runtime-image magit-load-smoke magit-status-smoke test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
@@ -1859,6 +1865,72 @@ bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-a
 		"$(abspath $(NEMACS_VENDOR_CORE_RUNTIME_IMAGE)).tmp" \
 		'(nemacs-runtime-image-preload-vendor-core-extension)'
 	mv "$(NEMACS_VENDOR_CORE_RUNTIME_IMAGE).tmp" "$(NEMACS_VENDOR_CORE_RUNTIME_IMAGE)"
+
+# Task #17 (M1) — Magit bridge bundle + runtime image.  The bundle
+# generator runs under host Emacs (mirrors build-nelisp-bootstrap.el);
+# it normalizes the real, unpatched vendor Magit/transient/with-editor/
+# compat/cond-let/llama chain plus its Emacs-distributed dependency
+# closure (scripts/build-nelisp-emacs-magit-bridge-bundle.el has the full
+# recovery-method and exclusion-rationale docs).  bake-magit-runtime-image
+# mirrors bake-vendor-core-runtime-image's mechanism (extend-runtime-image
+# on the base batch image), calling
+# nemacs-runtime-image-preload-magit-extension.
+$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el
+	$(EMACS) -L scripts \
+		--eval '(setq nelisp-emacs-magit-bridge-bundle-output-file "$(abspath $(NEMACS_MAGIT_BRIDGE_BUNDLE))")' \
+		-l scripts/build-nelisp-emacs-magit-bridge-bundle.el \
+		-f nelisp-emacs-magit-bridge-bundle-build-batch
+
+bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE) nemacs-library-package-scaffold nemacs-library-app-scaffold
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
+	test -x "$(NELISP_BIN)"
+	mkdir -p "$(dir $(NEMACS_MAGIT_RUNTIME_IMAGE))"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" extend-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$(abspath $(NEMACS_MAGIT_RUNTIME_IMAGE)).tmp" \
+		'(nemacs-runtime-image-preload-magit-extension "$(abspath .)")'
+	mv "$(NEMACS_MAGIT_RUNTIME_IMAGE).tmp" "$(NEMACS_MAGIT_RUNTIME_IMAGE)"
+
+# Non-TUI smoke: boots the magit runtime image and asserts the Doc 33
+# anti-silent-drop proof form (commandp, not just featurep, on the two
+# modes most at risk of silent define-derived-mode drops).
+magit-load-smoke: bake-magit-runtime-image
+	test -x "$(NELISP_BIN)"
+	@out="$$(timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_MAGIT_RUNTIME_IMAGE))" \
+		'(nelisp--write-stdout-bytes (if (nelisp-emacs-magit-bridge-loaded-p) "MAGIT-LOAD PASS\n" "MAGIT-LOAD FAIL\n"))' 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	printf '%s\n' "$$out" | grep -q '^MAGIT-LOAD PASS$$'
+
+# Task #17 (M2).  Scratch git repo fixture shared by magit-status-smoke and
+# magit-tui-smoke: NUM_COMMITS commits on `main', one unstaged edit, two
+# untracked files (scripts/nemacs-magit-fixture.sh has the full recipe).
+# Rebuilt unconditionally (always-run) so stale fixture state never leaks
+# between invocations; still a separate target so both smokes share one
+# build instead of duplicating the shell recipe inline.
+.PHONY: nemacs-magit-fixture
+nemacs-magit-fixture: scripts/nemacs-magit-fixture.sh
+	mkdir -p "$(BUILD_DIR)"
+	./scripts/nemacs-magit-fixture.sh "$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))" $(NEMACS_MAGIT_FIXTURE_COMMITS)
+
+# Task #17 (M2) — real git-status buffer smoke, TUI-independent.  Proves
+# git executes through the shared process substrate
+# (`magit-toplevel'/`magit-git-string') and that `magit-status-setup-buffer'
+# builds a real `magit-status-mode' buffer with real sections against a
+# real git fixture, with no display stubbing -- the honest in-session
+# re-run of Doc 33's replay proofs (tmp-diag/proof-20260703-magit-status-
+# buffer.el, proof-20260703-magit-git-exec.el).  Proof form:
+# scripts/nemacs-magit-status-smoke-probe.el.
+magit-status-smoke: bake-magit-runtime-image nemacs-magit-fixture
+	test -x "$(NELISP_BIN)"
+	@out="$$(timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_MAGIT_FIXTURE_DIR="$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_MAGIT_RUNTIME_IMAGE))" \
+		"$$(cat scripts/nemacs-magit-status-smoke-probe.el)" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	printf '%s\n' "$$out" | grep -q '^MAGIT-STATUS-BUFFER PASS$$'; \
+	printf '%s\n' "$$out" | grep -q '^MAGIT-GIT-EXEC PASS$$'
 
 test-nelisp: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"

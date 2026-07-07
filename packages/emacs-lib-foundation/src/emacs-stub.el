@@ -243,6 +243,30 @@ single-frame backends (= some bare-minimum TUIs) ship."
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
 
+;; Doc 33 item 244 (M2 completion blocker): `char-displayable-p' is void
+;; in the standalone runtime, so a `defcustom'/`defvar' default value
+;; template that calls it at load time (e.g. `magit-section-visibility-
+;; indicators''s ellipsis-character default in `magit-section.el')
+;; aborts the whole form, leaving the variable unbound.  Real Emacs
+;; consults per-frame/per-terminal font and charset capability, which
+;; this runtime has no database for yet, so this follows
+;; `emacs-display-multi-frame-p''s own precedent: treat any live
+;; display backend (including 'tui, unlike `display-graphic-p', since a
+;; modern terminal is assumed UTF-8/Unicode-capable) as able to render
+;; CHAR, and a nil backend (batch / headless / pre-bootstrap, e.g.
+;; while a runtime image is being baked before any frontend attaches)
+;; conservatively as not.
+(defun emacs-display-char-displayable-p (char)
+  "MVP: assume any live display backend (`emacs-display-system' non-nil)
+can render CHAR; a nil backend (batch/headless) cannot.  See the note
+above for why this is a faithful-enough stand-in rather than a real
+font/charset capability query."
+  (ignore char)
+  (not (null emacs-display-system)))
+
+(when (emacs-stub--install-function-p 'char-displayable-p)
+  (defalias 'char-displayable-p #'emacs-display-char-displayable-p))
+
 
 ;;;; --- window.c -----------------------------------------------------------
 ;;;; --- window.c -----------------------------------------------------------
@@ -1906,6 +1930,28 @@ E is V itself when V is self-quoting, otherwise (quote V)."
         v
       (list 'quote v))))
 
+;; Doc 33 item 244: `macroexp-const-p' must be REAL, not the bulk no-op
+;; (`emacs-stub-bulk' installs an always-nil lambda for it).  EIEIO's
+;; `eieio-defclass-internal' asks it whether a slot's :initform is
+;; already a constant expression; with the always-nil stub every quoted
+;; initform (e.g. magit-file-section's `(quote magit-file-section-map)')
+;; got wrapped by `macroexp-quote' a SECOND time, so `eieio-oref-default''s
+;; single `eval' unwrapped only one layer and every constructed object
+;; carried `(quote SYM)' in the slot instead of SYM — downstream,
+;; magit-section's `(symbol-value keymap)' on that cons aborted the whole
+;; enclosing form flagless.  Semantics copied from macroexp.el.
+(when (or (not (fboundp 'macroexp-const-p))
+          (get 'macroexp-const-p 'emacs-stub-bulk))
+  (defun macroexp-const-p (exp)
+    "Return non-nil if EXP will always evaluate to the same value."
+    (cond ((consp exp) (or (eq (car exp) 'quote)
+                           (and (eq (car exp) 'function)
+                                (symbolp (cadr exp)))))
+          ((symbolp exp) (or (memq exp '(nil t))
+                             (keywordp exp)))
+          (t t)))
+  (put 'macroexp-const-p 'emacs-stub-bulk nil))
+
 ;;;; --- Doc 16 breadth round 15: copy-hash-table (was void) -------------
 ;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The
 ;; runtime does not expose `hash-table-test', so the copy uses the default
@@ -1946,8 +1992,23 @@ The copy uses the default hash test, since the runtime does not expose
 
 (unless (fboundp 'gv-letplace)
   (defmacro gv-letplace (vars place &rest body)
-    "Stub: just eval BODY (= no real getter/setter binding)."
-    (ignore vars place) (cons 'progn body)))
+    "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
+
+Binds VARS' first symbol (GETTER) to the PLACE expression itself and
+its second symbol (SETTER) to a function that, given a value
+expression V, returns `(setf PLACE V)' -- the standard macro-writer
+contract real gv.el provides, minus the no-multiple-evaluation
+guarantee (PLACE's subforms may be evaluated more than once by the
+built form, same trade-off as this file's `with-memoization' shim).
+The previous stub here expanded to a bare `(progn BODY...)' with VARS
+completely unbound, so every real user of the contract (e.g. Compat
+31's `incf'/`decf', which Magit's `magit--with-refresh-cache' relies
+on) hit `void-variable' on the setter symbol at first invocation."
+    (let ((getter (nth 0 vars))
+          (setter (nth 1 vars)))
+      `(let* ((,getter ,place)
+              (,setter (lambda (v) (list 'setf ,getter v))))
+         ,@body))))
 
 (unless (fboundp 'gv-get)
   (defun gv-get (place do)
@@ -2038,8 +2099,11 @@ to let-bind in the case body when matched."
          ;; (or P1 P2 ...)
          ((eq head 'or)
           (emacs-stub--pcase-or rest value-form))
-         ;; (backquote ...) - destructure cons / atom shape
-         ((eq head 'backquote)
+         ;; (backquote ...) - destructure cons / atom shape.  Accept both
+         ;; the NeLisp reader's normalized `backquote' head and host
+         ;; Emacs's `\\=`' symbol (host-normalized bundles print patterns
+         ;; as `(\\=` ...)', Doc 33 item 243).
+         ((or (eq head 'backquote) (eq head '\`))
           (emacs-stub--pcase-backquote (car rest) value-form))
          ;; Unknown — treat as opaque catch-all (= permissive).
          (t (cons t nil)))))
@@ -2083,15 +2147,16 @@ Walks PAT recursively; `(comma SYM)' binds SYM to corresponding
 position; literal cons recurses with `car'/`cdr' index forms; atom
 does `equal' check."
     (cond
-     ;; (comma SYM) — bind SYM to value-form, always match.
-     ((and (consp pat) (eq (car pat) 'comma))
+     ;; (comma SYM) — bind SYM to value-form, always match.  `\\=,' is
+     ;; host Emacs's comma symbol (host-normalized bundles, item 243).
+     ((and (consp pat) (or (eq (car pat) 'comma) (eq (car pat) '\,)))
       (let ((sym (car (cdr pat))))
         (cond
          ((eq sym '_) (cons t nil))
          ((symbolp sym) (cons t (list (list sym value-form))))
          (t (emacs-stub--pcase-test sym value-form)))))
      ;; (comma-at SYM) — bind SYM to remaining list (= value-form is tail).
-     ((and (consp pat) (eq (car pat) 'comma-at))
+     ((and (consp pat) (or (eq (car pat) 'comma-at) (eq (car pat) '\,@)))
       (let ((sym (car (cdr pat))))
         (cons t (list (list sym value-form)))))
      ;; Cons cell — recursively destructure car / cdr.
@@ -2145,7 +2210,20 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
-    "Minimal `pcase-let' supporting the local pcase pattern subset."
+    "Minimal `pcase-let' supporting the local pcase pattern subset.
+Faithful to Emacs semantics: the patterns are ASSUMED to match, so the
+bindings destructure unconditionally instead of gating BODY behind a
+match test (Emacs: \"BINDINGS are treated as if they always match\").
+A too-short list therefore binds the missing positions to nil -- e.g.
+`(pcase-let ((\\=`(,a ,b ,c) \\='(1))) ...)' binds a=1, b=nil, c=nil,
+because the binding value-forms are plain `car'/`cdr' chains and
+`(car nil)' is nil.  Doc 33 item 243: the previous strict `(when TEST
+...)' gating silently evaluated the whole form to nil whenever the
+value was shorter than the pattern -- vendor code like magit's
+`magit-insert-section' macro (pattern `((,class ,value ,hide . ,args)
+. ,body)' against the common short form `((status) BODY...)') relies
+on the real, lenient destructuring, and the strict variant made that
+macro expand to nil, so no status section was ever inserted."
     (let ((forms body)
           (rev-bindings nil))
       (dolist (binding bindings)
@@ -2153,14 +2231,12 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
       (dolist (binding rev-bindings)
         (let* ((built (emacs-stub--pcase-let-binding binding))
                (temp-binding (car built))
-               (test (car (cdr built)))
                (pattern-bindings (car (cdr (cdr built)))))
           (setq forms
                 (list (list 'let (list temp-binding)
                             (if pattern-bindings
-                                (list 'when test
-                                      (cons 'let (cons pattern-bindings forms)))
-                              (cons 'when (cons test forms))))))))
+                                (cons 'let (cons pattern-bindings forms))
+                              (cons 'progn forms)))))))
       (if bindings (car forms) (cons 'progn body)))))
 
 (unless (fboundp 'pcase-let*)
@@ -2173,19 +2249,20 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 
 (unless (fboundp 'pcase-dolist)
   (defmacro pcase-dolist (spec &rest body)
-    "Minimal `pcase-dolist' supporting the local pcase pattern subset."
+    "Minimal `pcase-dolist' supporting the local pcase pattern subset.
+Like `pcase-let' (see there), Emacs treats PATTERN as if it always
+matches, so each element destructures unconditionally -- no per-element
+match filtering (Doc 33 item 243, same lenient-destructure fix)."
     (let* ((pattern (car spec))
            (list-form (car (cdr spec)))
            (result-form (car (cdr (cdr spec))))
            (value-sym (make-symbol "--pcase-dolist-value--"))
            (built (emacs-stub--pcase-test pattern value-sym))
-           (test (car built))
            (pattern-bindings (cdr built)))
       (list 'dolist (list value-sym list-form result-form)
             (if pattern-bindings
-                (list 'when test
-                      (cons 'let (cons pattern-bindings body)))
-              (cons 'when (cons test body)))))))
+                (cons 'let (cons pattern-bindings body))
+              (cons 'progn body))))))
 
 (unless (featurep 'pcase) (provide 'pcase))
 
@@ -2584,16 +2661,29 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
 
 (unless (fboundp 'cl-pushnew)
   (defmacro cl-pushnew (item place &rest _keys)
+    ;; Same generalized-place handling as `push' below: a non-symbol
+    ;; PLACE goes through the substrate's `setf' polyfill instead of an
+    ;; invalid `(setq (cdr ...) ...)' expansion.
     (list 'unless (list 'member item place)
-          (list 'setq place (list 'cons item place)))))
+          (if (symbolp place)
+              (list 'setq place (list 'cons item place))
+            (list 'setf place (list 'cons item place))))))
 
 (when (or (fboundp 'nl-write-file)
           (fboundp 'nelisp--write-stdout-bytes)
           (not (boundp 'emacs-version))
           (get 'push 'emacs-stub-bulk))
   (defmacro push (item place)
-    "Compatibility macro: cons ITEM onto PLACE."
-    (list 'setq place (list 'cons item place))))
+    "Compatibility macro: cons ITEM onto PLACE.
+PLACE may be a symbol (expands to `setq', as before) or a generalized
+place handled by this substrate's `setf' polyfill, e.g. `(cdr CELL)' --
+real Emacs `push' accepts any gv place, and vendor code relies on that
+(Magit's `magit--with-refresh-cache' pushes onto
+`(cdr magit--refresh-cache)'; the old symbol-only expansion produced
+`(setq (cdr ...) ...)', which this evaluator aborts on flagless)."
+    (if (symbolp place)
+        (list 'setq place (list 'cons item place))
+      (list 'setf place (list 'cons item place)))))
 
 (unless (fboundp 'cl-letf)
   (defmacro cl-letf (bindings &rest body)
