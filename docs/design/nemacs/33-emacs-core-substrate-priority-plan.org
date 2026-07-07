@@ -13871,3 +13871,101 @@ path:
    emacs-pcase/emacs-stub/emacs-cl-macros/emacs-list picked up the
    identical changes via `make nemacs-library-package-scaffold' on
    rebake and are committed together.
+
+245. Task #17 M2 continuation, 2026-07-07: vendor/nelisp Policy B
+   (retained-generation GC, Doc 155 §8.13, `fix/gc-retention-edge-magit'
+   3ad65697) replaces the item-244 raw-memory-poke stopgap; closes the
+   poke's own item-lineage (240/242/243/244) but surfaces a NEW,
+   separate M2 blocker in the status-buffer-setup path.  Branch
+   `feat/magit-tui'; vendor/nelisp NOT modified from this repo (the
+   fix lives entirely in the dev/nelisp checkout named by NELISP_ROOT).
+
+   Background: item 244 root-caused the `magit-status-smoke' SIGSEGV to
+   a further instance of the Doc 155 lexframe-child retention-edge class
+   (a live growth-chunk hash-table/buckets child swept by the
+   form-boundary collector while its owning frame record survives) and
+   worked around it with
+   `nelisp-emacs-magit-bridge--ensure-gc-collect-disabled': a
+   session-scoped `ptr-read-u64'/`ptr-write-u64' poke of the vendor
+   binary's internal RECLAIMER GATE (base+160), i.e. disabling ALL GC
+   reclamation for the whole session (Doc 155 §8.8 "Fix A" applied at
+   the bridge layer).  vendor/nelisp Policy B (this session, dev/nelisp
+   commit 3ad65697) replaces that blunt session-wide disable with a
+   sound core policy scoped to exactly the form-boundary collector: a
+   `nl_gc_retain_scope' flag, armed only around that collector's own
+   sweep, makes it treat every growth-chunk (non-chunk-0) box it would
+   otherwise free as belonging to a retained generation instead --
+   sound by construction, since a block that is never freed can never
+   be wrongly freed.  `(garbage-collect)' and the mid-form loop
+   collector are untouched and keep reclaiming growth-chunk garbage
+   exactly as before.  This entire poke (the `nelisp-emacs-magit-bridge-
+   arena-base-sym-addr' defvar, the `/proc/self/maps' validation
+   helpers, and `-ensure-gc-collect-disabled' itself, ~120 lines) is
+   REMOVED from `src/nelisp-emacs-magit-bridge.el'; the bridge no
+   longer touches the vendor binary's internal GC gate at all.
+
+   VALIDATION, vendor/nelisp side (dev/nelisp, not this repo): `make
+   standalone-reader-test' (runtime-image/cli/neln/repl smokes + exit
+   42), the load/intern-soft(x2)/pcase-quote/catch-throw/cond-let
+   smokes, and `make standalone-chunk-growth-test' all PASS under
+   Policy B (the chunk-growth-test needed an isolated git worktree to
+   rule out a one-off concurrency artifact from an earlier run sharing
+   `target/nelisp' with a live magit-smoke bake; in isolation it is a
+   clean PASS, chunk-count 1->2).  A custom 172k-form growth-boundary
+   regression (plain vector churn) crosses chunk 0 -> chunk 1 and
+   completes at rc=0 with a live root intact under the policy.
+
+   VALIDATION, this repo: `make magit-load-smoke' (full vendor bundle
+   bake into a runtime image + a trivial
+   `nelisp-emacs-magit-bridge-loaded-p' check) => **MAGIT-LOAD PASS**,
+   run alone with NO memory ceiling, confirming the bundle LOAD itself
+   completes soundly and in bounded memory under Policy B with the poke
+   gone.  `make test-fast' => 1127 tests, 7 unexpected (the existing 6
+   plus `vendor-first-core-modes-test/lightweight-support-libraries-
+   load-vendor-source', a `void-function Info-find-file' vendor gap
+   already present on the unmodified baseline this same session --
+   confirmed byte-identical via a stash A/B, not caused by this change;
+   the Doc 33 "6 known-unexpected" baseline above is stale and should
+   be refreshed to 7 in a future pass) -- zero regressions from the
+   poke removal.
+
+   REMAINING M2 BLOCKER (new, separate from the item-244 GC-retention-
+   edge crash the poke and Policy B both target): `make
+   magit-status-smoke' -- which additionally drives
+   `magit-status-setup-buffer' against the git fixture, not just the
+   bundle load -- does NOT complete.  Three attempts, run alone (no
+   concurrent nelisp process) with increasing `ulimit -v' ceilings (8
+   GiB, 24 GiB, 40 GiB) each hit the documented "silent OOM-avoidance"
+   exit 88 with no output; a fourth attempt with NO ceiling at all grew
+   past 34 GiB RSS / hundreds of seconds of wall time with no sign of
+   convergence before the process was reaped (OOM-kill or an internal
+   crash; no core dump, no kernel log access in this sandbox to
+   distinguish the two) partway through the status-buffer-setup phase,
+   again before printing either PASS marker.  Because `magit-load-smoke'
+   (bundle load only) is cheap and clean, this is NOT the item-244
+   retention-edge bug recurring and NOT a general Policy-B soundness
+   problem -- it is a NEW memory-scaling characteristic specific to
+   `magit-status-setup-buffer'/section-rendering's allocation shape
+   (many small, short-lived per-section allocations across many more
+   top-level forms than a plain bundle load), which the retained-
+   generation policy turns into unbounded standing memory because nothing
+   downstream in that path calls `(garbage-collect)' (the one collector
+   Policy B leaves fully reclaiming) to reclaim it.
+
+   STATE: the item 240/242/243/244 poke-era lineage is CLOSED (poke
+   removed, superseded by a sound core policy, `magit-load-smoke' PASS
+   is the replacement regression proof for the load path). M2 itself
+   (`magit-status-smoke' PASS, both markers) is NOT reached this pass;
+   the blocker moved from "core GC bug requiring a poke" to "Policy B's
+   per-collector retained generation has an unbounded-memory failure
+   mode for allocation-heavy, `(garbage-collect)'-free loops like
+   section rendering". Next-step options for M3, undecided pending
+   review: (a) have `magit-status-setup-buffer'-class heavy loops
+   periodically call `(garbage-collect)' themselves (cheap, bridge-side,
+   no core change -- exercises the collector Policy B already keeps
+   fully sound); (b) bound Policy B itself, e.g. periodically let ONE
+   form-boundary sweep in N do a real reclaim instead of retain,
+   trading back a sliver of the original crash risk for a memory
+   ceiling; (c) the deferred plan A (precise closure-env marking) done
+   properly, closing the retention edge without ever needing to retain
+   growth-chunk garbage at all.

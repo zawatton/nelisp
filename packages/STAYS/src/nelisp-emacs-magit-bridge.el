@@ -662,123 +662,29 @@ patch."
 See `nelisp-emacs-magit-bridge--ensure-save-some-buffers'."
       nil)))
 
-(defvar nelisp-emacs-magit-bridge-arena-base-sym-addr
-  (let* ((env (getenv "NELISP_ARENA_BASE_SYM_ADDR"))
-         (n (and env (string-to-number env))))
-    (if (and n (> n 0)) n #x839000))
-  "Address of the standalone binary's `nl_arena_base' bss slot.
-
-The vendored `vendor/nelisp/target/nelisp' is a non-PIE static ELF
-executable (loaded at its fixed 0x400000 link address, so bss symbol
-addresses are stable across runs); `nm target/nelisp | grep -w
-nl_arena_base' reports 0x839000 for the current vendor build.  If the
-vendor binary is ever rebuilt, override via the
-NELISP_ARENA_BASE_SYM_ADDR environment variable (decimal).  The value
-is only ever used after
-`nelisp-emacs-magit-bridge--ensure-gc-collect-disabled' has
-independently verified against /proc/self/maps that the address lies
-inside a mapped rw segment AND that the u64 stored there names the
-start of an rw mapping — a wrong address fails those checks and the
-poke is skipped, never attempted blind.")
-
-(defun nelisp-emacs-magit-bridge--proc-maps-lines ()
-  "Return /proc/self/maps as a list of lines, or nil when unreadable."
-  (when (file-readable-p "/proc/self/maps")
-    (with-temp-buffer
-      (insert-file-contents "/proc/self/maps")
-      (split-string (buffer-string) "\n" t))))
-
-;; Implementation notes for the two matchers below, both dictated by
-;; standalone NeLisp behavior when these functions arrive via `load':
-;; - anchor with `^' (not `\\`'): the buffer-start escape does not
-;;   survive the standalone file read and the pattern silently never
-;;   matches; `^' behaves identically here because each LINES element
-;;   is a single line with no embedded newline.
-;; - no `catch'/`throw' early exit: non-local exit through a `dolist'
-;;   inside a `load'ed function is unreliable on the standalone reader
-;;   (known vendor gap, cf. condition-case/throw confusion notes), so
-;;   both walkers accumulate into a plain result variable instead.
-
-(defun nelisp-emacs-magit-bridge--hex-to-number (s)
-  "Parse hex string S to an integer.
-Standalone NeLisp's `string-to-number' silently ignores its BASE
-argument (parses decimal regardless), so this open-codes the base-16
-accumulation."
-  (let ((n 0) (i 0) (len (length s)))
-    (while (< i len)
-      (let* ((c (aref s i))
-             (d (cond ((and (>= c ?0) (<= c ?9)) (- c ?0))
-                      ((and (>= c ?a) (<= c ?f)) (+ 10 (- c ?a)))
-                      ((and (>= c ?A) (<= c ?F)) (+ 10 (- c ?A)))
-                      (t nil))))
-        (if d (setq n (+ (* n 16) d))
-          (setq i len)))
-      (setq i (1+ i)))
-    n))
-
-(defun nelisp-emacs-magit-bridge--maps-rw-range-containing (addr lines)
-  "Return non-nil when ADDR falls inside an rw mapping in LINES."
-  (let ((hit nil))
-    (dolist (l lines)
-      (when (and (not hit)
-                 (string-match "^\\([0-9a-f]+\\)-\\([0-9a-f]+\\) rw" l))
-        (let ((a (nelisp-emacs-magit-bridge--hex-to-number (match-string 1 l)))
-              (b (nelisp-emacs-magit-bridge--hex-to-number (match-string 2 l))))
-          (when (and (<= a addr) (< addr b))
-            (setq hit t)))))
-    hit))
-
-;; NOTE: the arena's chunk 0 base is NOT necessarily the exact start of
-;; an OS-level mapping (the runtime reserves a larger region and places
-;; chunk 0 at an interior offset), so the write-side validation below
-;; checks containment in a mapped rw region -- same predicate as the
-;; read side -- not exact-start equality.
-
-(defun nelisp-emacs-magit-bridge--ensure-gc-collect-disabled ()
-  "Disable the standalone runtime's GC reclaimer for this Magit session.
-
-Doc 33 item 244: replaying the full vendor Magit bundle with real EIEIO
-class registration live (the item 244 `copy-alist' fix) makes the
-standalone runtime SIGSEGV partway through the load with the exact
-Doc 155 signature from vendor/nelisp (`nl_vector_slot_ptr' NULL deref
-under `nelisp_frame_stack_find_in_frame' during an ordinary variable
-lookup: a live lexframe's hash-table/buckets child reclaimed by the
-collector while the frame record survives).  vendor/nelisp Doc 155
-closed one instance of that marker gap (Path B, commit b31179ce, part
-of this vendor snapshot), but this workload exposes a further one;
-fixing the collector is vendor/nelisp core work, out of this bridge's
-scope.
-
-The vendor's own sanctioned stopgap for exactly this bug class (Doc 155
-§8.8 \"Fix A\": collection disabled as a sound stopgap) is a runtime
-gate the build script documents as \"RECLAIMER GATE: base+160 = 1 ->
-nl_gc_collect is a NO-OP\".  This precondition flips that gate for the
-current session through the exposed `ptr-read-u64'/`ptr-write-u64'
-primitives.  Memory then only grows for the session's lifetime (the
-arena still adds chunks on demand); the magit smoke session peaks well
-under 2 GiB, an acceptable trade for a sound session.
-
-Safety: this never pokes blind.  It requires (a) the standalone
-primitives to exist (host Emacs has no `ptr-read-u64' and is
-untouched), (b) /proc/self/maps to confirm the configured
-`nl_arena_base' bss address is inside a mapped rw segment before the
-READ, and (c) maps to confirm the u64 read back (chunk 0's base) also
-falls inside a mapped rw segment before the WRITE.  A rebuilt vendor
-binary whose bss moved fails (b)/(c) and is left alone (the load then
-simply risks the original crash — no wild write)."
-  (when (and (fboundp 'ptr-read-u64)
-             (fboundp 'ptr-write-u64)
-             (fboundp 'nelisp--write-stdout-bytes))
-    (let ((lines (nelisp-emacs-magit-bridge--proc-maps-lines)))
-      (when (and lines
-                 (nelisp-emacs-magit-bridge--maps-rw-range-containing
-                  nelisp-emacs-magit-bridge-arena-base-sym-addr lines))
-        (let ((base (ptr-read-u64 nelisp-emacs-magit-bridge-arena-base-sym-addr 0)))
-          (when (and (integerp base) (> base 0)
-                     (nelisp-emacs-magit-bridge--maps-rw-range-containing
-                      (+ base 160) lines))
-            (ptr-write-u64 (+ base 160) 0 1)
-            t))))))
+;; Doc 155 §8.13 / nelisp Policy B (retained-generation growth-chunk boxes,
+;; vendor/nelisp commit range fix/gc-retention-edge-magit) removed the need
+;; for a bridge-side raw memory poke here.  Doc 33 item 244 found that
+;; replaying the full vendor Magit bundle with real EIEIO class registration
+;; live made the standalone runtime SIGSEGV partway through the load with
+;; the Doc 155 signature (`nl_vector_slot_ptr' NULL deref under
+;; `nelisp_frame_stack_find_in_frame': a live lexframe's hash-table/buckets
+;; child reclaimed by the form-boundary collector while the frame record
+;; survives) -- a further instance of the marker-gap class Path B
+;; (b31179ce) had already closed once.  Formerly this bridge worked around
+;; it with `nelisp-emacs-magit-bridge--ensure-gc-collect-disabled', a
+;; session-scoped `ptr-read-u64'/`ptr-write-u64' poke of the vendor
+;; binary's RECLAIMER GATE (base+160) -- effectively disabling the
+;; standalone runtime's GC reclaimer for the whole session (Doc 155 §8.8
+;; "Fix A", the sound-but-blunt stopgap).  The vendor core now ships the
+;; real fix instead: the form-boundary collector treats every growth-chunk
+;; (non-chunk-0) box it would otherwise free as belonging to a retained
+;; generation, exactly like the existing chunk-0 boot watermark, so it can
+;; never wrongly free a live growth-chunk child.  `(garbage-collect)' and
+;; the mid-form loop collector are untouched by this policy and keep
+;; reclaiming growth-chunk garbage normally.  With the core sound by
+;; construction, this bridge no longer needs to (and no longer does) touch
+;; the vendor binary's internal GC gate at all.
 
 (defun nelisp-emacs-magit-bridge--ensure-lambda-documentation-form ()
   "Make a lambda-body-leading `(:documentation ...)' form evaluate harmlessly.
@@ -869,7 +775,6 @@ collection mechanism differs."
 
 (defun nelisp-emacs-magit-bridge--ensure-preconditions ()
   "Ensure every session precondition the vendor chain assumes is live."
-  (nelisp-emacs-magit-bridge--ensure-gc-collect-disabled)
   (nelisp-emacs-magit-bridge--ensure-lambda-documentation-form)
   (nelisp-emacs-magit-bridge--ensure-current-buffer)
   (nelisp-emacs-magit-bridge--ensure-process-substrate)
