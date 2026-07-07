@@ -231,12 +231,16 @@ registration into a later test in the same batch Emacs process."
       (should (equal '((1 3 (face category-face)))
                      (emacs-buffer-text-property-view 1 3 '(face) b))))))
 
-(ert-deftest emacs-buffer-put-text-property-rejects-empty-range ()
+(ert-deftest emacs-buffer-put-text-property-empty-range-noop-reversed-signals ()
+  ;; Doc 33 item 244: real Emacs treats an empty [START, END) range as a
+  ;; no-op for text-property mutation (Magit washers routinely call
+  ;; START == END); only a reversed range (START > END) signals.
   (emacs-buffer-test--with-fresh-world
     (let ((b (nelisp-ec-generate-new-buffer "tp")))
       (nelisp-ec-set-buffer b)
       (nelisp-ec-insert "x")
-      (should-error (emacs-buffer-put-text-property 1 1 'face 'bold)
+      (should (null (emacs-buffer-put-text-property 1 1 'face 'bold)))
+      (should-error (emacs-buffer-put-text-property 2 1 'face 'bold)
                     :type 'nelisp-ec-args-out-of-range))))
 
 ;;;; B'. text-property advanced (14 tests)
