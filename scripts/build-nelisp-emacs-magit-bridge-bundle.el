@@ -224,8 +224,7 @@ Applies this bridge's basename un-drop (see
 
 (defvar nelisp-emacs-magit-bridge-bundle-excluded-defuns
   '((ansi-color . (ansi-color--update-face-vec))
-    (derived . (define-derived-mode))
-    (magit-section . (magit-insert-headers)))
+    (derived . (define-derived-mode)))
   "Alist of (FEATURE . (SYMBOL-NAME ...)) top-level defuns to drop.
 
 `ansi-color--update-face-vec' (`ansi-color.el') contains a bool-vector
