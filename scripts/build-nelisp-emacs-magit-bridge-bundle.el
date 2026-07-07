@@ -426,9 +426,13 @@ relocatable."
         (insert "            (and (stringp buffer-file-name) buffer-file-name)\n")
         (insert "            (and (fboundp 'nelisp-emacs-magit-bridge--bundle-file)\n")
         (insert "                 (nelisp-emacs-magit-bridge--bundle-file))))))\n")
-        (dolist (name (nreverse part-names))
-          (insert (format "  (load (expand-file-name %S nelisp-emacs-magit-bridge-bundle--dir)\n        nil 'no-message t t)\n"
-                          name)))
+        (let ((ordered-part-names (nreverse part-names)))
+          (while ordered-part-names
+            (let ((name (pop ordered-part-names)))
+              (insert (format "  (load (expand-file-name %S nelisp-emacs-magit-bridge-bundle--dir)\n        nil 'no-message t t)\n"
+                              name))
+              (when ordered-part-names
+                (insert "  (garbage-collect)\n")))))
         (insert ")\n")
         (let ((coding-system-for-write 'utf-8-unix))
           (write-region (point-min) (point-max) output nil 'silent)))
