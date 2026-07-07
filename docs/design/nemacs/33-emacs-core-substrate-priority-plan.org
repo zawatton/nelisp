@@ -13112,6 +13112,27 @@ path:
    different, already-closed hypothesis for a structurally similar
    symptom).
 
+   Follow-up rerun on 2026-07-07 (branch =feat/magit-tui=, with the
+   exact Doc 163 §8.5 =intern-soft= body restored in
+   =src/emacs-symbol.el= and the scaffold regenerated) exposed the NEXT
+   independent unbounded-memory cause.  Bisection of the generated
+   bundle's part 1 under =ulimit -v 4G= shows a hard boundary at the
+   399th top-level form: the exact textual prefix through form 398
+   (`build/nelisp-emacs-magit-bridge-bundle-part1.el`, through line
+   431) =exec-runtime-image=s rc=0, while adding any 399th form at all
+   flips to rc=88, including the real form at line 432
+   (`llama--match-and-fontify`) and trivial sentinels like =nil= or
+   =(defun llama-plain () t)=.  This means the remaining runaway is NOT
+   specific to the `llama' body; it is a dev/nelisp core many-form-count
+   load-path problem triggered once one =load= crosses roughly 398
+   top-level forms on this validated core config.  The strongest current
+   core-side lead remains the known unconditional clone-on-bind cost in
+   =nl_val_clone_into= / =nelisp_frame_bind_*= documented in
+   =../nelisp/FINDINGS.md=: every additional top-level form adds more
+   bind/clone work, and once this load crosses the threshold the replay
+   path runs out of memory before reaching the proof form.  Treat this
+   as a CORE escalation, not an emacs-lib-local patch point.
+
    Gap 2 (past Gap 1, newly exposed once the bundle stopped hanging
    mid-load): `nelisp-emacs-magit-bridge-loaded-p' reported
    `MAGIT-LOAD FAIL' on the now-completing full bundle even though
