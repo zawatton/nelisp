@@ -13628,6 +13628,8 @@ correctly."
                                        "--load")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_neln_selftest
                                        "--neln-selftest")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_mirror_special_smoke
+                                       "--mirror-special-smoke")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
                                        "--embedded")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
@@ -13729,6 +13731,54 @@ correctly."
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
 	      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
+    (defun nl_dynvar_phase1_write_t_sym (sym_slot)
+      (let* ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 116)
+             (nl_alloc_symbol buf 1 sym_slot))))
+    (defun nl_dynvar_phase1_write_smoke_sym_a (sym_slot)
+      (let* ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 7955812)
+             (nl_alloc_symbol buf 3 sym_slot))))
+    (defun nl_dynvar_phase1_write_smoke_sym_b (sym_slot)
+      (let* ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 8021348)
+             (nl_alloc_symbol buf 3 sym_slot))))
+    (defun nl_dynvar_phase1_build_special_scratch (unbound_ptr out_vec_slot)
+      (let* ((box_ptr (nl_alloc_vector 11))
+             (sym0_slot (alloc-bytes 32 8))
+             (t_slot (alloc-bytes 32 8))
+             (nil_slot (alloc-bytes 32 8)))
+        (seq
+         (nl_logic_write_symentry sym0_slot)
+         (nl_dynvar_phase1_write_t_sym t_slot)
+         (nl_logic_write_nil_slot nil_slot)
+         (nl_vector_set_slot box_ptr 5 sym0_slot)
+         (nl_vector_set_slot box_ptr 7 unbound_ptr)
+         (nl_vector_set_slot box_ptr 8 unbound_ptr)
+         (nl_vector_set_slot box_ptr 9 t_slot)
+         (nl_vector_set_slot box_ptr 10 nil_slot)
+         (ptr-write-u64 out_vec_slot 0 8)
+         (ptr-write-u64 (+ out_vec_slot 8) 0 box_ptr)
+         (ptr-write-u64 (+ out_vec_slot 16) 0 0)
+         (ptr-write-u64 (+ out_vec_slot 24) 0 0)
+         out_vec_slot)))
+    (defun nl_dynvar_phase1_mirror_special_smoke (ctx)
+      (let* ((mirror_ptr (+ ctx 0))
+             (unbound_ptr (+ ctx 64))
+             (special_sym_slot (alloc-bytes 32 8))
+             (plain_sym_slot (alloc-bytes 32 8))
+             (scratch_vec_slot (alloc-bytes 32 8)))
+        (seq
+         (nl_dynvar_phase1_write_smoke_sym_a special_sym_slot)
+         (nl_dynvar_phase1_write_smoke_sym_b plain_sym_slot)
+         (nl_dynvar_phase1_build_special_scratch unbound_ptr scratch_vec_slot)
+         (nelisp_mirror_set_special_or_insert
+          mirror_ptr special_sym_slot scratch_vec_slot 0)
+         (if (= (nl_mirror_is_special_p mirror_ptr special_sym_slot) 1)
+             (if (= (nl_mirror_is_special_p mirror_ptr plain_sym_slot) 0)
+                 42
+               13)
+           13))))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -13805,11 +13855,13 @@ correctly."
                   1
                 (if (= (nl_cstr_eq_cold_load_from ptr) 1)
                     1
-                  (if (= (nl_cstr_eq_embedded ptr) 1)
+                  (if (= (nl_cstr_eq_mirror_special_smoke ptr) 1)
                       1
-                    (if (= (nl_runtime_image_command_p ptr) 1)
+                    (if (= (nl_cstr_eq_embedded ptr) 1)
                         1
-                      (nl_artifact_command_p ptr))))))))))
+                      (if (= (nl_runtime_image_command_p ptr) 1)
+                          1
+                        (nl_artifact_command_p ptr)))))))))))
     (defun nl_cli_bare_legacy_command_p (ptr)
       (if (= (nl_cstr_eq_bare_eval ptr) 1)
           1
@@ -14468,6 +14520,8 @@ correctly."
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_neln_selftest path) 1)
           (nl_neln_demo_exec ctx 41))
+         ((= (nl_cstr_eq_mirror_special_smoke path) 1)
+          (nl_dynvar_phase1_mirror_special_smoke ctx))
          ((= (nl_cstr_eq_embedded path) 1)
           (seq
            ;; report_errors=0: `--embedded' backs `nelisp-standalone-reader-test'`s
@@ -14648,6 +14702,7 @@ correctly."
     ("sf-mirror-clearval.o" nelisp-cc-mirror-clear-value         nelisp-cc-mirror-clear-value--source)
     ("sf-mirror-clearfn.o" nelisp-cc-mirror-clear-function       nelisp-cc-mirror-clear-function--source)
     ("sf-mirror-setconst.o" nelisp-cc-mirror-set-constant-or-insert nelisp-cc-mirror-set-constant-or-insert--source)
+    ("sf-mirror-setspecial.o" nelisp-cc-mirror-set-special-or-insert nelisp-cc-mirror-set-special-or-insert--source)
     ("sf-bind-formals.o"   nelisp-cc-bind-formals                nelisp-cc-bind-formals--source)
     ("sf-env-set-value2.o" nelisp-cc-env-set-value               nelisp-cc-env-set-value--source)
     ("sf-frame-stack-find.o" nelisp-cc-frame-stack-find          nelisp-cc-frame-stack-find--source)
@@ -15837,6 +15892,7 @@ loader when it is absent."
               (nelisp-standalone--reader-hash-table-literal-smoke)
               (nelisp-standalone--reader-large-quoted-alist-mutation-smoke)
               (nelisp-standalone--reader-setcar-setcdr-type-smoke)
+              (nelisp-standalone--reader-mirror-special-smoke)
               (nelisp-standalone--reader-runtime-image-smoke)
               (nelisp-standalone--reader-cli-smoke)
               (nelisp-standalone--reader-neln-selftest-smoke)
@@ -16075,6 +16131,13 @@ guards the slot-pool floor directly without loading the full vendor file."
           (unless (= rc 42)
             (error "setcar/setcdr wrong-type smoke exit=%S" rc)))
       (ignore-errors (delete-file tmp)))))
+
+(defun nelisp-standalone--reader-mirror-special-smoke ()
+  "Assert Phase 1 mirror special-flag storage on fresh symbols."
+  (let ((rc (call-process nelisp-standalone--reader-out nil nil nil
+                          "--mirror-special-smoke")))
+    (unless (= rc 42)
+      (error "mirror special smoke exit=%S" rc))))
 
 (defun nelisp-standalone--reader-runtime-image-smoke ()
   "Assert standalone-reader runtime-image eval/exec command semantics."

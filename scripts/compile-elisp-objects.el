@@ -301,6 +301,10 @@
      :source-var nelisp-cc-mirror-set-constant-or-insert--source
      :output "nelisp_mirror_set_constant_or_insert.o"
      :requires-arch x86_64)
+    (nelisp-cc-mirror-set-special-or-insert
+     :source-var nelisp-cc-mirror-set-special-or-insert--source
+     :output "nelisp_mirror_set_special_or_insert.o"
+     :requires-arch x86_64)
     (nelisp-cc-mirror-install-entry-or-insert
      :source-var nelisp-cc-mirror-install-entry-or-insert--source
      :output "nelisp_mirror_install_entry_or_insert.o"
