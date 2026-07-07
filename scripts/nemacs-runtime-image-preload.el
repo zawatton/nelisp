@@ -422,15 +422,43 @@ image startup."
                             (emacs-process--fallback-sentinel-event status))
                  nil)
                process))))
+  ;; Mirrors nemacs-runtime-process-preload.el: real Emacs `call-process'
+  ;; runs the child in `default-directory'; the native primitive spawns in
+  ;; the parent's cwd, so wrap with a `cd' shell prefix for local absolute
+  ;; directories (exit 127 = shell cannot-execute convention).
+  (unless (fboundp 'emacs-process--call-process-cwd)
+    (fset 'emacs-process--call-process-cwd
+          '(lambda ()
+             (if (boundp 'default-directory)
+                 (if (stringp default-directory)
+                     (if (> (length default-directory) 0)
+                         (if (= (aref default-directory 0) ?/)
+                             default-directory
+                           nil)
+                       nil)
+                   nil)
+               nil))))
   (unless (fboundp 'emacs-process-call-process)
     (fset 'emacs-process-call-process
-          '(lambda (&rest args)
-             (cond
-              ((fboundp 'nelisp-process-call-process)
-               (apply 'nelisp-process-call-process args))
-              ((fboundp 'nelisp-call-process)
-               (apply 'nelisp-call-process args))
-              (t 1)))))
+          '(lambda (program &optional infile destination display &rest args)
+             (let ((cwd (emacs-process--call-process-cwd)))
+               (if cwd
+                   (progn
+                     (setq args
+                           (cons "-c"
+                                 (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
+                                       (cons "emacs-process-call-process-cwd"
+                                             (cons cwd (cons program args))))))
+                     (setq program "/bin/sh"))
+                 nil)
+               (cond
+                ((fboundp 'nelisp-process-call-process)
+                 (apply 'nelisp-process-call-process
+                        program infile destination display args))
+                ((fboundp 'nelisp-call-process)
+                 (apply 'nelisp-call-process
+                        program infile destination display args))
+                (t 1))))))
   (unless (fboundp 'call-process)
     (fset 'call-process
           '(lambda (&rest args)
@@ -3225,6 +3253,23 @@ image startup."
 
 (when (fboundp 'nelisp--write-stdout-bytes)
   (nemacs-runtime-image-preload--force-install-frame-tab-core))
+
+;; Task #17 (M1) — Magit bridge extension.  Mirrors
+;; `nemacs-runtime-image-preload-vendor-core-extension' above: a thin
+;; dispatcher that hands off to the real logic owned by
+;; `src/nelisp-emacs-magit-bridge.el' (per CLAUDE.md/AGENTS.md, session/image
+;; wiring stays thin; the reusable "bring the real vendor Magit chain into a
+;; NeLisp session" behavior belongs in a `src/' module, not here).
+(defun nemacs-runtime-image-preload-magit-extension (repo-root)
+  "Extend an already-baked base runtime image with the real vendor Magit chain.
+REPO-ROOT is the repository root (matches the other preload entry points'
+REPO-ROOT convention); the Magit bridge bundle and its own preconditions
+are resolved relative to it."
+  (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo-root)
+        nil 'no-message t t)
+  (setq nelisp-emacs-magit-bridge-repo-root repo-root)
+  (nelisp-emacs-magit-bridge-load)
+  t)
 
 (provide 'nemacs-runtime-image-preload)
 

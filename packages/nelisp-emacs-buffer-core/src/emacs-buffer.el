@@ -167,9 +167,26 @@ The initial value of the buffer-local cell is the current default
 value of SYM.  Returns SYM.
 
 If SYM already has a local binding in BUF the call is a no-op
-(matches Emacs semantics)."
+(matches Emacs semantics).
+
+Doc 33 §8 item 242 (swap engine): the FIRST time any buffer localizes
+SYM, its then-current value is also frozen into the default-values
+hash (via `emacs-buffer-set-default', when not already recorded) —
+mirroring real Emacs, where a per-buffer variable's default lives in
+its own persistent storage slot from the moment the variable exists,
+completely unaffected by which buffer is current.  Without this, a
+SECOND, never-touched buffer that gets pulled into the same swap
+(because BUF now has an explicit cell for SYM) would fall through to
+`emacs-buffer-default-value''s ordinary `boundp' fallback, which reads
+the global cell *live* — and that cell can be BUF's own
+just-`setq'-mutated value at the exact moment the swap looks for a
+default, leaking it into a buffer that never called `make-local-variable'
+at all."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
+  (unless (gethash sym emacs-buffer--default-values)
+    (when (boundp sym)
+      (emacs-buffer-set-default sym (symbol-value sym))))
   (let* ((b (or buf (emacs-buffer--current)))
          (ext (emacs-buffer--ensure-ext b)))
     (unless (assq sym (emacs-buffer--ext-locals ext))
@@ -180,11 +197,31 @@ If SYM already has a local binding in BUF the call is a no-op
 ;;;###autoload
 (defun emacs-buffer-make-variable-buffer-local (sym)
   "Mark SYM so that any buffer that `setq's it gets a local binding.
-In MVP this only affects the predicate `local-variable-if-set-p' and
-the metadata.  Returns SYM."
+Since the swap engine cannot intercept `setq' at the primitive level,
+SYM is additionally registered via `emacs-buffer-declare-per-buffer' so
+every buffer switch treats it as if it always had a local cell: before
+any `setq' in a given buffer, the swap engine's default-value fallback
+returns the same value ordinary Emacs would (the default), and the
+first `setq' in that buffer is captured verbatim on the next swap-out
+(`emacs-buffer--swap-out''s dirty check) — exactly the Emacs contract
+for a `make-variable-buffer-local'd symbol.
+
+When SYM is already bound, its CURRENT value is frozen as the
+registered default right now (mirroring real Emacs, which snapshots
+the pre-existing global value into a buffer-independent default slot
+the moment a variable becomes buffer-local) — this is deliberately NOT
+left to `emacs-buffer-default-value''s ordinary `boundp' fallback,
+which reads the global cell *live*: once this symbol participates in
+the swap engine, the global cell for it may be an OUTGOING buffer's
+just-persisted value at the exact moment some OTHER buffer's swap-in
+looks for a default, which would leak that outgoing value forward into
+every subsequently-created buffer.  Returns SYM."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
   (cl-pushnew sym emacs-buffer--variable-buffer-local)
+  (if (boundp sym)
+      (emacs-buffer-declare-per-buffer sym (symbol-value sym))
+    (emacs-buffer-declare-per-buffer sym))
   sym)
 
 ;;;###autoload
@@ -201,20 +238,32 @@ the metadata.  Returns SYM."
 (defun emacs-buffer-buffer-local-value (sym buf)
   "Return the value of SYM in BUF (= local if bound, else default).
 Signals `void-variable' if neither a local binding nor a default
-value exists.  Ignores narrowing / current-buffer state."
+value exists.  Ignores narrowing / current-buffer state.
+
+When BUF is the current buffer, the swap-engine invariant guarantees
+SYM's global cell already holds BUF's live value — and that live value
+can be *newer* than any cached `ext.locals' cell when ordinary code
+wrote SYM with a plain `setq' since the last buffer switch (nothing
+observes that write until the next swap-out).  Prefer the live global
+value over a possibly-stale cache in that case; this is required for
+e.g. probing `major-mode' right after `(setq major-mode \='SOME-MODE)'
+inside a `with-current-buffer' body, before any subsequent switch has
+run a swap-out."
   (unless (symbolp sym)
     (signal 'wrong-type-argument (list 'symbolp sym)))
-  (let* ((ext (gethash buf emacs-buffer--state))
-         (cell (and ext (assq sym (emacs-buffer--ext-locals ext)))))
-    (cond
-     (cell (cdr cell))
-     ((emacs-buffer-default-boundp sym)
-      (emacs-buffer-default-value sym))
-     ;; Standalone `setq-local' still degrades to an ordinary `setq' in the
-     ;; stub layer.  Treat that visible global binding as the buffer value
-     ;; until full local setq interception is available.
-     ((boundp sym) (symbol-value sym))
-     (t (signal 'void-variable (list sym))))))
+  (if (and (eq buf (nelisp-ec-current-buffer)) (boundp sym))
+      (symbol-value sym)
+    (let* ((ext (gethash buf emacs-buffer--state))
+           (cell (and ext (assq sym (emacs-buffer--ext-locals ext)))))
+      (cond
+       (cell (cdr cell))
+       ((emacs-buffer-default-boundp sym)
+        (emacs-buffer-default-value sym))
+       ;; Standalone `setq-local' still degrades to an ordinary `setq' in the
+       ;; stub layer.  Treat that visible global binding as the buffer value
+       ;; until full local setq interception is available.
+       ((boundp sym) (symbol-value sym))
+       (t (signal 'void-variable (list sym)))))))
 
 ;;;###autoload
 (defun emacs-buffer-set-buffer-local-value (sym buf value)
@@ -296,9 +345,13 @@ The default value seeds new buffer-local bindings created by
 ;;;###autoload
 (defmacro emacs-buffer-setq-default (sym value)
   "Set the default value of SYM to VALUE.  Macro form for symmetry with Emacs.
-SYM is *not* evaluated; VALUE is."
+SYM is *not* evaluated; VALUE is.  Also updates the current buffer's
+live global cell immediately when it has no explicit local override
+for SYM, matching Emacs `setq-default' semantics (a buffer without its
+own local binding sees a new default right away) — see
+`emacs-buffer-setq-default-1'."
   (declare (debug (symbolp form)))
-  `(emacs-buffer-set-default ',sym ,value))
+  `(emacs-buffer-setq-default-1 ',sym ,value))
 
 ;;;###autoload
 (defun emacs-buffer-kill-local-variable (sym &optional buf)
@@ -322,6 +375,196 @@ removed unconditionally."
     (when ext
       (setf (emacs-buffer--ext-locals ext) nil))
     nil))
+
+;;; A2. buffer-switch swap engine (Doc 33 §8 item 242, Phase 1 M2)
+;;
+;; `set'/`symbol-value'/`setq' are Rust primitives in the NeLisp
+;; runtime — this module cannot intercept them to redirect a symbol's
+;; storage to a per-buffer cell.  The only lever left is the buffer
+;; *switch* itself: whenever the current buffer changes, swap the
+;; contents of each active symbol's single shared global cell so it
+;; always reflects the NEW current buffer's value, and stash the OLD
+;; current buffer's value (as observed in the global cell right before
+;; the switch) back into its `emacs-buffer--ext' locals alist.
+;;
+;; Invariant: for every symbol in the active set, the global cell
+;; always holds the value belonging to the current buffer.  Reads that
+;; go straight to the global cell (e.g. `barf-if-read-only' reading
+;; `buffer-read-only') are therefore correct without any further
+;; change, and this is exactly the minimal repro this section fixes:
+;; `(with-current-buffer B1 (setq buffer-read-only t))' followed by
+;; `(buffer-local-value 'buffer-read-only B2)' on a brand-new B2 must
+;; read nil, not t.
+;;
+;; Active set = `emacs-buffer--per-buffer-symbols' (declared
+;; always-per-buffer, Emacs `DEFVAR_PER_BUFFER' analog) UNION the
+;; symbols with an explicit local cell in OLD's or NEW's `ext.locals'.
+;; We never walk the *entire* variable-buffer-local registry — this
+;; keeps a swap O(active-set-size), independent of how many symbols
+;; have ever been made buffer-local process-wide (frequent short-lived
+;; `with-temp-buffer' churn must stay cheap).
+
+(defvar emacs-buffer--per-buffer-symbols nil
+  "Symbols always considered per-buffer (Emacs `DEFVAR_PER_BUFFER' analog).
+Every buffer switch swaps these symbols' global cells regardless of
+whether the buffer has an explicit local cell yet — the first observed
+value seeds one lazily.  Populated by `emacs-buffer-declare-per-buffer'.")
+
+(defvar emacs-buffer--swapped-in (make-hash-table :test 'eq)
+  "Hash SYM -> the value last written into SYM's global cell by the swap
+engine.  Used by `emacs-buffer--swap-out' to detect whether ordinary
+Elisp code mutated the global cell directly (a plain `setq') since the
+last swap-in — such a mutation must still be captured into the
+outgoing buffer's local value, even though it never went through
+`emacs-buffer-set-buffer-local-value'.")
+
+;;;###autoload
+(defun emacs-buffer-declare-per-buffer (sym &rest default-args)
+  "Mark SYM as always-per-buffer (Emacs `DEFVAR_PER_BUFFER' analog).
+Every buffer switch from now on swaps SYM's global cell in/out via the
+buffer-local machinery, whether or not the buffer already has an
+explicit local binding.
+
+DEFAULT-ARGS is an internal `&rest' slot used only to distinguish \"no
+default given\" from \"the default is nil\": call as
+`(emacs-buffer-declare-per-buffer SYM)' for no default, or
+`(emacs-buffer-declare-per-buffer SYM DEFAULT)' to supply one (only the
+first extra argument is used; a plain `&optional' argument cannot make
+this distinction via truthiness alone, which would silently break
+exactly the `buffer-read-only' nil default this whole swap engine
+exists to install — and `cl-defun''s `&optional (default nil
+default-supplied-p)' supplied-p form, while correct in isolation,
+byte-compiles to broken bytecode in this file (`void-variable:
+default-supplied-p' at runtime), so this uses a plain `&rest' instead
+of that cl-lib construct).
+
+If a default WAS given and SYM has no default EXPLICITLY recorded yet
+(a raw hash lookup, deliberately NOT `emacs-buffer-default-boundp' —
+that predicate also falls back to plain `boundp', so it already reads
+true for any ordinary pre-existing global variable such as
+`major-mode' or an ordinary `defvar'd test symbol; if this guard used
+it, the explicit default here would be silently skipped for every such
+symbol, leaving `emacs-buffer-default-value' to read the *live* global
+cell instead of a frozen default — which, once this symbol
+participates in the swap engine, may be some OTHER buffer's
+just-persisted value at the exact moment a fresh buffer's swap-in
+looks for a default, leaking it forward), seed one via
+`emacs-buffer-set-default'.  Returns SYM."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (cl-pushnew sym emacs-buffer--per-buffer-symbols)
+  (when (and default-args (not (gethash sym emacs-buffer--default-values)))
+    (emacs-buffer-set-default sym (car default-args)))
+  sym)
+
+(defun emacs-buffer--swap-active-symbols (old new)
+  "Return the de-duplicated list of symbols a switch from OLD to NEW must swap.
+Union of `emacs-buffer--per-buffer-symbols' with the symbols that have
+an explicit local cell in OLD or NEW (either may be nil)."
+  (let ((syms (copy-sequence emacs-buffer--per-buffer-symbols)))
+    (when old
+      (let ((ext (gethash old emacs-buffer--state)))
+        (when ext
+          (dolist (cell (emacs-buffer--ext-locals ext))
+            (push (car cell) syms)))))
+    (when new
+      (let ((ext (gethash new emacs-buffer--state)))
+        (when ext
+          (dolist (cell (emacs-buffer--ext-locals ext))
+            (push (car cell) syms)))))
+    (delete-dups syms)))
+
+(defun emacs-buffer--swap-out (old syms)
+  "Persist the current global-cell values of SYMS into OLD's locals.
+No-op when OLD is nil (nothing to persist into).  Only writes back a
+symbol when it is dirty for OLD: OLD already has an explicit local
+cell for it, it is globally per-buffer, or the global value has
+drifted from the value the swap engine itself last installed there (a
+plain `setq' bypassing `emacs-buffer-set-buffer-local-value').  No-op
+for symbols that are unbound."
+  (when old
+    (dolist (sym syms)
+      (when (boundp sym)
+        (let* ((ext (gethash old emacs-buffer--state))
+               (has-cell (and ext (assq sym (emacs-buffer--ext-locals ext))))
+               (per-buffer (memq sym emacs-buffer--per-buffer-symbols))
+               (dirty (not (eq (symbol-value sym)
+                               (gethash sym emacs-buffer--swapped-in
+                                        'emacs-buffer--swap-unset)))))
+          (when (or has-cell per-buffer dirty)
+            (emacs-buffer-set-buffer-local-value sym old (symbol-value sym))))))))
+
+(defun emacs-buffer--swap-in (new syms)
+  "Install NEW's per-symbol values from SYMS into the global cells.
+No-op when NEW is nil (no buffer selected — global cells are left as
+they were).  For each symbol with an explicit local cell in NEW,
+install that value.  Otherwise fall back to the recorded default value
+via `emacs-buffer-default-boundp'/`emacs-buffer-default-value' (which
+already degrades to the ordinary global value for a plain `defvar'
+that was never buffer-local).  A symbol with neither is left alone."
+  (when new
+    (let ((ext (gethash new emacs-buffer--state)))
+      (dolist (sym syms)
+        (let ((cell (and ext (assq sym (emacs-buffer--ext-locals ext)))))
+          (cond
+           (cell
+            (set sym (cdr cell))
+            (puthash sym (cdr cell) emacs-buffer--swapped-in))
+           ((emacs-buffer-default-boundp sym)
+            (let ((value (emacs-buffer-default-value sym)))
+              (set sym value)
+              (puthash sym value emacs-buffer--swapped-in)))))))))
+
+;;;###autoload
+(defun emacs-buffer-switch-current-buffer (old new)
+  "Swap per-buffer variable global cells from OLD to NEW.  Return NEW.
+The single choke point every buffer-selection path (`set-buffer',
+`with-current-buffer' entry/exit, `save-current-buffer' exit,
+`kill-buffer') must route through so the invariant \"the global cell
+always reflects the current buffer's value\" holds.  No-op when OLD
+and NEW are `eq' (including both nil)."
+  (unless (eq old new)
+    (let ((syms (emacs-buffer--swap-active-symbols old new)))
+      (emacs-buffer--swap-out old syms)
+      (emacs-buffer--swap-in new syms)))
+  new)
+
+;;;###autoload
+(defun emacs-buffer-setq-default-1 (sym value)
+  "Set SYM's per-buffer default to VALUE and return VALUE.
+Also updates the current buffer's live global cell immediately when it
+has no explicit local override for SYM (Emacs `setq-default' semantics:
+a buffer without its own binding sees a new default right away).  This
+is the function-call counterpart the unprefixed `setq-default' polyfill
+in `emacs-buffer-builtins.el' calls once per SYM/VALUE pair (macro
+expansion needs a plain function, not another macro, to call per pair)."
+  (emacs-buffer-set-default sym value)
+  (let ((buf (nelisp-ec-current-buffer)))
+    (when (and buf (not (emacs-buffer-local-variable-p sym buf)))
+      (set sym value)
+      (puthash sym value emacs-buffer--swapped-in)))
+  value)
+
+;;;###autoload
+(defun emacs-buffer--inherit-new-buffer (buf)
+  "Snapshot the creating buffer's `default-directory' into fresh BUF.
+Called once from `nelisp-ec-generate-new-buffer' right after BUF is
+constructed (BUF is not yet current, so nothing has swapped its global
+cells in yet).  Mirrors real Emacs's `Fget_buffer_create', which copies
+the CURRENT buffer's `directory' slot into every freshly created
+buffer — a hardcoded special case for `default-directory' specifically,
+needed because Magit's git-calling `with-temp-buffer's
+(`magit--with-temp-process-buffer') depend on inheriting the caller's
+directory to invoke git in the right place.  This is NOT a general
+\"inherit every per-buffer variable\" rule: `buffer-read-only' /
+`major-mode' must NOT inherit this way — a new buffer created while the
+current buffer is read-only must still default to writable, matching
+Emacs and avoiding exactly the cross-buffer leak this swap engine
+exists to fix.  Skips silently when there is no current
+`default-directory' value yet to snapshot."
+  (when (and (boundp 'default-directory) default-directory)
+    (emacs-buffer-set-buffer-local-value 'default-directory buf
+                                         default-directory)))
 
 ;;; B. text-property  (11 APIs)
 ;;
@@ -577,29 +820,53 @@ when neither carries PROP."
                 (emacs-buffer--text-read-only-in-range-p start end buf)))
       (signal 'text-read-only nil))))
 
+(defun emacs-buffer--pos-number (pos)
+  "Coerce POS to an integer position, resolving markers.
+Real Emacs's text-property builtins accept markers anywhere a position
+is expected (Doc 33 item 244: `magit-section--set-section-properties'
+passes the section `start'/`end' slots, which are markers, straight
+into `add-text-properties'/`put-text-property').  Non-marker,
+non-integer values are returned unchanged so each caller's own
+`integerp' check still signals the faithful `wrong-type-argument'."
+  (cond
+   ((integerp pos) pos)
+   ((and (fboundp 'nelisp-ec-marker-p)
+         (nelisp-ec-marker-p pos)
+         (fboundp 'nelisp-ec-marker-position))
+    (nelisp-ec-marker-position pos))
+   ((markerp pos) (marker-position pos))
+   (t pos)))
+
 ;;;###autoload
 (defun emacs-buffer-put-text-property (start end prop value &optional buf)
   "Set the text property PROP to VALUE on [START, END) in BUF.
-START and END are 1-based.  Existing properties in PROP are
-overwritten on this range; other properties are preserved."
+START and END are 1-based (markers accepted).  Existing properties in
+PROP are overwritten on this range; other properties are preserved."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Doc 33 item 244: real Emacs treats an empty [START, END) range as
+  ;; a no-op for text-property mutation (Magit's washers routinely make
+  ;; START == END calls); only a reversed range signals.
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
-                                start end (list prop value)))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
+                                  start end (list prop value)))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-get-text-property (pos prop &optional buf)
   "Return the value of property PROP at POS in BUF, or nil if unset.
-POS is 1-based.  Honours `category' inheritance — when PROP is not
-explicitly set on the range, the `category' value (if a symbol) is
-consulted via `(get CATEGORY PROP)'."
+POS is 1-based (markers accepted).  Honours `category' inheritance —
+when PROP is not explicitly set on the range, the `category' value (if
+a symbol) is consulted via `(get CATEGORY PROP)'."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -613,40 +880,51 @@ consulted via `(get CATEGORY PROP)'."
 ;;;###autoload
 (defun emacs-buffer-add-text-properties (start end plist &optional buf)
   "Add PLIST properties to the half-open range [START, END) in BUF.
-Properties not in PLIST are preserved on the affected range."
+START/END may be markers.  Properties not in PLIST are preserved on
+the affected range."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Empty range = no-op, matching real Emacs (see the put-text-property
+  ;; note above).
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
   (unless (and (listp plist) (zerop (mod (length plist) 2)))
     (signal 'wrong-type-argument (list 'plist plist)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
-                                start end plist))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
+                                  start end plist))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-remove-text-properties (start end keys &optional buf)
   "Remove KEYS from the property plist on [START, END) in BUF.
 KEYS is either a flat list of symbol names, or a plist whose keys we
 look at (matching Emacs semantics where `remove-text-properties' takes
-a (PROP nil ...) list)."
+a (PROP nil ...) list).  START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Empty range = no-op, matching real Emacs (see the put-text-property
+  ;; note above).
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (gethash b emacs-buffer--state)))
-    (when ext
-      (let ((kk (emacs-buffer--keys-from-arg keys)))
-        (setf (emacs-buffer--ext-text-props ext)
-              (emacs-buffer--tp-remove (emacs-buffer--ext-text-props ext)
-                                       start end kk)))
-      (cl-incf (emacs-buffer--ext-modified-tick ext)))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (gethash b emacs-buffer--state)))
+      (when ext
+        (let ((kk (emacs-buffer--keys-from-arg keys)))
+          (setf (emacs-buffer--ext-text-props ext)
+                (emacs-buffer--tp-remove (emacs-buffer--ext-text-props ext)
+                                         start end kk)))
+        (cl-incf (emacs-buffer--ext-modified-tick ext)))
+      nil)))
 
 (defun emacs-buffer--keys-from-arg (arg)
   "Return a flat list of property names from ARG.
@@ -665,28 +943,36 @@ ARG may be a list of symbols or an Emacs-style plist."
 (defun emacs-buffer-set-text-properties (start end plist &optional buf)
   "Replace the property plist on [START, END) in BUF with PLIST.
 Existing properties on the range are discarded — only PLIST keys
-remain.  When PLIST is nil the range is stripped of all properties."
+remain.  When PLIST is nil the range is stripped of all properties.
+START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  (when (>= start end)
+  ;; Empty range = no-op, matching real Emacs (see the put-text-property
+  ;; note above).
+  (when (> start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
   (unless (and (listp plist) (zerop (mod (length plist) 2)))
     (signal 'wrong-type-argument (list 'plist plist)))
-  (let* ((b (or buf (emacs-buffer--current)))
-         (ext (emacs-buffer--ensure-ext b)))
-    (setf (emacs-buffer--ext-text-props ext)
-          (if (null plist)
-              (emacs-buffer--tp-clip (emacs-buffer--ext-text-props ext)
-                                     start end)
-            (emacs-buffer--tp-merge (emacs-buffer--ext-text-props ext)
-                                    start end plist)))
-    (cl-incf (emacs-buffer--ext-modified-tick ext))
-    nil))
+  (unless (= start end)
+    (let* ((b (or buf (emacs-buffer--current)))
+           (ext (emacs-buffer--ensure-ext b)))
+      (setf (emacs-buffer--ext-text-props ext)
+            (if (null plist)
+                (emacs-buffer--tp-clip (emacs-buffer--ext-text-props ext)
+                                       start end)
+              (emacs-buffer--tp-merge (emacs-buffer--ext-text-props ext)
+                                      start end plist)))
+      (cl-incf (emacs-buffer--ext-modified-tick ext))
+      nil)))
 
 ;;;###autoload
 (defun emacs-buffer-next-property-change (pos &optional buf limit)
   "Return the next position after POS at which any property changes.
-Returns LIMIT (when given and reached) or nil when no further change."
+Returns LIMIT (when given and reached) or nil when no further change.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -706,7 +992,9 @@ Returns LIMIT (when given and reached) or nil when no further change."
 ;;;###autoload
 (defun emacs-buffer-previous-property-change (pos &optional buf limit)
   "Return the largest position less than POS at which any property changes.
-Returns LIMIT (when given and reached) or nil when no earlier change."
+Returns LIMIT (when given and reached) or nil when no earlier change.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -736,7 +1024,9 @@ Returns LIMIT (when given and reached) or nil when no earlier change."
 (defun emacs-buffer-next-single-property-change (pos prop &optional buf limit)
   "Return the next position > POS where the value of PROP differs.
 Honours `category' inheritance for the comparison.  Returns LIMIT
-(when given and reached) or nil when no further change is found."
+(when given and reached) or nil when no further change is found.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -759,7 +1049,9 @@ Honours `category' inheritance for the comparison.  Returns LIMIT
 (defun emacs-buffer-previous-single-property-change (pos prop &optional buf limit)
   "Return the largest position < POS where the value of PROP differs.
 Honours `category' inheritance for the comparison.  Returns LIMIT
-(when given and reached) or nil when no earlier change is found."
+(when given and reached) or nil when no earlier change is found.
+POS may be a marker."
+  (setq pos (emacs-buffer--pos-number pos))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
@@ -777,6 +1069,43 @@ Honours `category' inheritance for the comparison.  Returns LIMIT
             (unless (emacs-buffer--tp-prop-eq val cur)
               (throw 'done prev))
             (setq scan prev))))))))
+
+;; Doc 33 item 244 (M2 completion blocker): `text-property-not-all' is a
+;; read-only scanning primitive, missing from this file alongside its
+;; siblings above.  `magit-section-heading' (`vendor/magit/lisp/magit-
+;; section.el') calls it on a STRING object (a heading built via
+;; `concat', not a buffer) to decide whether the heading already carries
+;; a face before applying the default one.  Built directly on top of
+;; `emacs-buffer-get-text-property'/`emacs-buffer-next-single-property-
+;; change' rather than a new storage layer: those already treat a
+;; non-buffer OBJECT as carrying no properties (the established
+;; standalone string text-property MVP -- see `propertize' in
+;; `src/emacs-string.el'), so scanning a string this way correctly
+;; reports "PROP is VALUE everywhere" without needing real string
+;; property storage.
+;;;###autoload
+(defun emacs-buffer-text-property-not-all (start end prop value &optional buf)
+  "Return the first position in [START, END) of BUF where PROP is not
+`eq' to VALUE, or nil when every position in the half-open range
+already has PROP `eq' to VALUE (real `text-property-not-all' semantics).
+BUF may be a live `nelisp-ec' buffer, nil for the current buffer, or a
+plain string -- see the note above for how a string OBJECT is handled.
+START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
+  (unless (and (integerp start) (integerp end))
+    (signal 'wrong-type-argument (list 'integerp start end)))
+  (if (>= start end)
+      nil
+    (let ((scan start))
+      (catch 'done
+        (while (< scan end)
+          (unless (emacs-buffer--tp-prop-eq
+                   (emacs-buffer-get-text-property scan prop buf) value)
+            (throw 'done scan))
+          (setq scan (emacs-buffer-next-single-property-change
+                      scan prop buf end)))
+        nil))))
 
 (defun emacs-buffer--overlay-property-priority (ov)
   "Return OV's numeric overlay priority for property precedence."
@@ -1274,8 +1603,11 @@ record with equal START)."
 ;;;###autoload
 (defun emacs-buffer-make-overlay (beg end &optional buf front-adv rear-adv)
   "Create an overlay covering [BEG, END) in BUF (default = current).
-FRONT-ADV and REAR-ADV control endpoint behaviour under insertion at
-the respective endpoint, mirroring Emacs `make-overlay' semantics."
+BEG/END may be markers.  FRONT-ADV and REAR-ADV control endpoint
+behaviour under insertion at the respective endpoint, mirroring Emacs
+`make-overlay' semantics."
+  (setq beg (emacs-buffer--pos-number beg)
+        end (emacs-buffer--pos-number end))
   (unless (and (integerp beg) (integerp end))
     (signal 'wrong-type-argument (list 'integerp beg end)))
   (let* ((buffer (or buf (emacs-buffer--current)))
@@ -1334,7 +1666,10 @@ Signals `emacs-buffer-error' if OV has been deleted."
 ;;;###autoload
 (defun emacs-buffer-move-overlay (ov beg end &optional buf)
   "Move OV to cover [BEG, END) in BUF (default = OV's current buffer).
-Returns OV.  Signals `emacs-buffer-error' if OV has been deleted."
+BEG/END may be markers.  Returns OV.  Signals `emacs-buffer-error' if
+OV has been deleted."
+  (setq beg (emacs-buffer--pos-number beg)
+        end (emacs-buffer--pos-number end))
   (emacs-buffer--overlay-check-alive ov)
   (let* ((old-buf (emacs-buffer--overlay-rec-buffer ov))
          (new-buf (or buf old-buf))
@@ -1373,10 +1708,11 @@ Returns OV.  Signals `emacs-buffer-error' if OV has been deleted."
 ;;;###autoload
 (defun emacs-buffer-remove-overlays (&optional beg end name value buf)
   "Remove overlays between BEG and END in BUF matching NAME and VALUE.
-When NAME is nil, remove every overlay overlapping the region."
+BEG/END may be markers.  When NAME is nil, remove every overlay
+overlapping the region."
   (let* ((buffer (or buf (emacs-buffer--current)))
-         (start (or beg (nelisp-ec-point-min)))
-         (limit (or end (nelisp-ec-point-max))))
+         (start (or (emacs-buffer--pos-number beg) (nelisp-ec-point-min)))
+         (limit (or (emacs-buffer--pos-number end) (nelisp-ec-point-max))))
     (when (< start limit)
       (dolist (ov (copy-sequence (emacs-buffer-overlays-in start limit buffer)))
         (when (or (null name)

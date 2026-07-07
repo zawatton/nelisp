@@ -15,7 +15,7 @@
 ;; Pattern syntax supported:
 ;;   `_'                — catch-all
 ;;   INTEGER / STRING   — `equal' test
-;;   `(quote X)' / `'X' — `eq' test
+;;   `(quote X)' / `'X' — `equal' test (structural, not identity)
 ;;   SYMBOL (bare)      — bind to value, always match
 ;;   `(pred FN)'        — call (FN value), match if non-nil
 ;;   `(and P1 P2 ...)'  — match if every P matches (binds ALL)
@@ -109,9 +109,24 @@ to let-bind in the case body when matched."
       (let ((head (car pattern))
             (rest (cdr pattern)))
         (cond
-         ;; (quote X)
+         ;; (quote DATUM)
          ((eq head 'quote)
-          (cons (list 'eq value-form (list 'quote (car rest))) nil))
+          ;; `equal', not `eq': a `(quote DATUM)' pattern must match any
+          ;; value that is STRUCTURALLY the same, not merely the same
+          ;; object.  `eq' happens to work for the common case of a
+          ;; quoted symbol (interned, so `eq'-comparable) but silently
+          ;; never matches a quoted compound datum (list/vector/string)
+          ;; compared against a freshly-consed runtime value of the same
+          ;; shape -- `(eq (list t t) '(t t))' is nil in both this
+          ;; polyfill and real Emacs.  That silent non-match let a later,
+          ;; structurally-overlapping backquote-pattern clause win
+          ;; instead, selecting the wrong helper macro out of a `pcase'
+          ;; dispatch that assumed exact-match precedence -- root cause
+          ;; of the Magit bridge M2 blocker (nelisp-emacs-lib Doc 33 item
+          ;; 239's `cond-let*' repro `(cond-let* ([x 1] [x (+ x 1)] x)
+          ;; (t 99))' => `void-variable: x', mirrors dev/nelisp commit
+          ;; 71de60a6).
+          (cons (list 'equal value-form (list 'quote (car rest))) nil))
          ;; (pred FN)
          ((eq head 'pred)
           (let ((fn (car rest)))
@@ -134,6 +149,30 @@ to let-bind in the case body when matched."
          ;; (cons P1 P2)
          ((eq head 'cons)
           (emacs-pcase--cons rest value-form))
+         ;; (app FUN PAT) — match PAT against (FUN EXPVAL).  FUN is a
+         ;; function symbol / lambda (EXPVAL becomes its sole argument)
+         ;; or a call form (F ARG...) where a literal `_' marks EXPVAL's
+         ;; position (else EXPVAL is appended as the last argument,
+         ;; mirroring real pcase).  Doc 33 item 243: EIEIO's
+         ;; `pcase-defmacro eieio' expands to `(and (pred eieio-object-p)
+         ;; (app (eieio-oref _ 'NAME) PAT) ...)' -- without `app' support
+         ;; this fell into the permissive catch-all below, which binds
+         ;; NOTHING, so `(pcase-let (((eieio keymap) section)) ...)' left
+         ;; `keymap' unbound (`void-variable') in magit-section's
+         ;; property/keymap plumbing.
+         ((eq head 'app)
+          (let* ((fun (car rest))
+                 (sub-pat (car (cdr rest)))
+                 (call-form
+                  (cond
+                   ((and (consp fun)
+                         (not (memq (car fun) '(lambda function closure))))
+                    (if (memq '_ fun)
+                        (mapcar (lambda (x) (if (eq x '_) value-form x))
+                                fun)
+                      (append fun (list value-form))))
+                   (t (list 'funcall (list 'function fun) value-form)))))
+            (emacs-pcase--test sub-pat call-form)))
          ;; (backquote ...) - destructure cons / atom shape
          ((or (eq head 'backquote) (eq head '\`))
           (emacs-pcase--backquote (car rest) value-form))
@@ -287,7 +326,21 @@ See `emacs-pcase--test' for supported pattern shapes."
 
 (when (emacs-pcase--install-function-p 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
-    "Minimal `pcase-let' supporting the local pcase pattern subset."
+    "Minimal `pcase-let' supporting the local pcase pattern subset.
+Faithful to Emacs semantics: the patterns are ASSUMED to match, so the
+bindings destructure unconditionally instead of gating BODY behind a
+match test (Emacs: \"BINDINGS are treated as if they always match\").
+A too-short list therefore binds the missing positions to nil -- the
+binding value-forms are plain `car'/`cdr' chains and `(car nil)' is
+nil.  Doc 33 item 243: the previous strict `(when TEST ...)' gating
+silently evaluated the whole form to nil whenever the value was
+shorter than the pattern -- magit's `magit-insert-section' macro
+destructures its args with the pattern `((,class ,value ,hide . ,args)
+. ,body)' against the common short form `((status) BODY...)', relying
+on real pcase-let's lenient destructuring; under the strict variant
+that macro expanded to nil, so `magit-status-refresh-buffer' never
+created the root section and the whole status section tree came out
+empty."
     (let ((forms body)
           (rev-bindings nil))
       (dolist (binding bindings)
@@ -295,14 +348,12 @@ See `emacs-pcase--test' for supported pattern shapes."
       (dolist (binding rev-bindings)
         (let* ((built (emacs-pcase--let-binding binding))
                (temp-binding (car built))
-               (test (car (cdr built)))
                (pattern-bindings (car (cdr (cdr built)))))
           (setq forms
               (list (list 'let (list temp-binding)
                             (if pattern-bindings
-                                (list 'when test
-                                      (cons 'let (cons pattern-bindings forms)))
-                              (cons 'when (cons test forms))))))))
+                                (cons 'let (cons pattern-bindings forms))
+                              (cons 'progn forms)))))))
       (if bindings (car forms) (cons 'progn body)))))
 
 (when (emacs-pcase--install-function-p 'pcase-let*)
@@ -315,19 +366,42 @@ See `emacs-pcase--test' for supported pattern shapes."
 
 (when (emacs-pcase--install-function-p 'pcase-dolist)
   (defmacro pcase-dolist (spec &rest body)
-    "Minimal `pcase-dolist' supporting the local pcase pattern subset."
+    "Minimal `pcase-dolist' supporting the local pcase pattern subset.
+Like `pcase-let' (see there), Emacs treats PATTERN as if it always
+matches, so each element destructures unconditionally -- no per-element
+match filtering (Doc 33 item 243, same lenient-destructure fix)."
     (let* ((pattern (car spec))
            (list-form (car (cdr spec)))
            (result-form (car (cdr (cdr spec))))
            (value-sym (make-symbol "--pcase-dolist-value--"))
            (built (emacs-pcase--test pattern value-sym))
-           (test (car built))
            (pattern-bindings (cdr built)))
       (list 'dolist (list value-sym list-form result-form)
             (if pattern-bindings
-                (list 'when test
-                      (cons 'let (cons pattern-bindings body)))
-              (cons 'when (cons test body)))))))
+                (cons 'let (cons pattern-bindings body))
+              (cons 'progn body))))))
+
+;; Task #17 M2: real `pcase-exhaustive' (was a nil-expanding bulk stub).
+;; Magit/transient use it in load-bearing dispatch positions
+;; (`magit-diff--get-value' maps 'status to the right
+;; `magit-*-use-buffer-arguments' option, `transient--insert-suffix'
+;; dispatches insert/append/replace, `transient-infix-value' dispatches
+;; on multi-value shape) -- a nil expansion there is not a safe
+;; degradation, it silently changes behavior.  Semantics follow real
+;; pcase.el: exactly `pcase', plus signal an error when no clause
+;; matches instead of returning nil.
+(when (emacs-pcase--install-function-p 'pcase-exhaustive)
+  (defmacro pcase-exhaustive (expr &rest cases)
+    "Like `pcase' EXPR CASES, but signal an error when nothing matches."
+    (let ((value-sym (make-symbol "--pcase-exhaustive-value--")))
+      (list 'let (list (list value-sym expr))
+            (cons 'pcase
+                  (cons value-sym
+                        (append cases
+                                (list (list '_
+                                            (list 'error
+                                                  "No clause matching %S"
+                                                  value-sym))))))))))
 
 ;; Doc 16 breadth round 26: pcase-lambda (was void).
 (when (emacs-pcase--install-function-p 'pcase-lambda)

@@ -284,7 +284,20 @@ Forwarder to `forward-char' with negated count."
     with-temp-buffer-window)))
   (dolist (--s-- --stub-defmacros--)
     (unless (fboundp --s--)
-      (fset --s-- (cons 'macro (lambda (&rest _) nil)))
+      ;; Install through a constructed `defmacro' form, NOT a raw
+      ;; `(fset SYM (cons 'macro (lambda ...)))'.  The NeLisp standalone
+      ;; evaluator registers macros through the `defmacro' path; a macro
+      ;; whose function cell is a hand-built `(macro . CLOSURE)' cons is
+      ;; `fboundp' and `macrop' but *invoking* it aborts the enclosing
+      ;; top-level form flagless (bare rc=1, no error stash -- verified
+      ;; in isolation: `(fset 'x (cons 'macro (lambda (&rest _) nil)))'
+      ;; then `(x)' aborts, while the equivalent `defmacro' works).  Any
+      ;; vendor call site reaching one of these stubs (e.g. Magit/
+      ;; transient's `pcase-exhaustive' uses) previously killed its whole
+      ;; form silently instead of expanding to nil as intended.  Host
+      ;; Emacs accepts both shapes, so the constructed `defmacro' is
+      ;; strictly more portable.
+      (eval (list 'defmacro --s-- '(&rest _) nil) t)
       (put --s-- 'emacs-stub-bulk t))))
 
 (let ((--stub-defvars--
@@ -306,7 +319,17 @@ Forwarder to `forward-char' with negated count."
     x-gtk-use-window-move yank-transform-functions)))
   (dolist (--s-- --stub-defvars--)
     (unless (boundp --s--)
-      (set --s-- nil))))
+      ;; Constructed `defvar', not `set': every name in this list is a
+      ;; real dynamic (special) variable in Emacs, and vendor code
+      ;; let-binds many of them expecting other functions to observe the
+      ;; binding dynamically.  A bare `set' only populates the global
+      ;; value cell without marking the symbol special, so under
+      ;; lexical-binding a later `(let ((inhibit-read-only t)) ...)'
+      ;; creates an invisible LEXICAL binding and the read-only check in
+      ;; `emacs-buffer--barf-if-read-only' still sees the global nil --
+      ;; exactly the `default-process-coding-system' defect class the
+      ;; magit bridge documented, recurring here for every name below.
+      (eval (list 'defvar --s-- nil) t))))
 
 (unless (fboundp 'define-abbrev-table)
   (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)

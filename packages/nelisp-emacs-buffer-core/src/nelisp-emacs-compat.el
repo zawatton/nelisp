@@ -464,6 +464,8 @@ The new buffer is empty, has POINT = 1, and is registered in
                  :text-tick 0
                  :killed-p nil))))
     (push (cons unique buf) nelisp-ec--buffers)
+    (when (fboundp 'emacs-buffer--inherit-new-buffer)
+      (emacs-buffer--inherit-new-buffer buf))
     buf))
 
 ;;;###autoload
@@ -473,11 +475,39 @@ The new buffer is empty, has POINT = 1, and is registered in
 
 ;;;###autoload
 (defun nelisp-ec-set-buffer (buf)
-  "Make BUF the current buffer and return BUF."
+  "Make BUF the current buffer and return BUF.
+Routes through `emacs-buffer-switch-current-buffer' (Doc 33 §8 item 242
+swap engine) when that layer is loaded, so buffer-local variables'
+shared global cells stay consistent with the invariant \"the global
+cell always reflects the current buffer's value\".  Guarded by
+`fboundp' rather than a hard `require': `nelisp-emacs-compat' must stay
+loadable without `emacs-buffer' (the dependency runs the other way —
+`emacs-buffer' requires `nelisp-emacs-compat' — so a hard require here
+would be circular)."
   (unless (nelisp-ec-buffer-p buf)
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (nelisp-ec--check-live buf)
-  (setq nelisp-ec--current-buffer buf)
+  (let ((old nelisp-ec--current-buffer))
+    (setq nelisp-ec--current-buffer buf)
+    (when (fboundp 'emacs-buffer-switch-current-buffer)
+      (emacs-buffer-switch-current-buffer old buf)))
+  buf)
+
+(defun nelisp-ec--restore-current-buffer (buf)
+  "Restore BUF as the current buffer on unwind and return BUF.
+Used by the `save-current-buffer'/`with-current-buffer' unwind-protect
+cleanup forms instead of a direct `setq' so a non-local exit still
+routes through `emacs-buffer-switch-current-buffer' (Doc 33 §8 item
+242) exactly like `nelisp-ec-set-buffer' — otherwise every buffer-local
+global cell would keep reflecting whichever buffer BODY last selected,
+not the buffer being restored.  Unlike `nelisp-ec-set-buffer', this
+never signals on a killed BUF (restoring after `kill-buffer' ran inside
+the protected body is a normal occurrence) and accepts nil (no buffer
+selected)."
+  (let ((old nelisp-ec--current-buffer))
+    (setq nelisp-ec--current-buffer buf)
+    (when (fboundp 'emacs-buffer-switch-current-buffer)
+      (emacs-buffer-switch-current-buffer old buf)))
   buf)
 
 ;;;###autoload
@@ -508,13 +538,19 @@ system has no such limitation."
           (list 'unwind-protect
                 (append (list 'progn (list 'nelisp-ec-set-buffer newbuf))
                         body)
-                (list 'setq 'nelisp-ec--current-buffer saved)))))
+                (list 'nelisp-ec--restore-current-buffer saved)))))
 
 ;;;###autoload
 (defun nelisp-ec-kill-buffer (buf)
   "Kill BUF.  Returns t.
 The buffer is removed from the registry, marked killed, and if it was
-the current buffer the selection is cleared (set to nil)."
+the current buffer the selection is cleared (set to nil) — routed
+through `nelisp-ec--restore-current-buffer' like every other
+current-buffer transition, so a killed current buffer's last
+`setq'-mutated values are still captured before its state is dropped.
+Also forgets BUF's buffer-local variable state via
+`emacs-buffer--forget' (Doc 33 §8 item 242 swap engine), when that
+layer is loaded, so a killed buffer's extended state does not linger."
   (unless (nelisp-ec-buffer-p buf)
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (unless (nelisp-ec-buffer-killed-p buf)
@@ -523,7 +559,9 @@ the current buffer the selection is cleared (set to nil)."
             (assoc-delete-all name nelisp-ec--buffers)))
     (nelisp-ec--set-buffer-killed-p buf t)
     (when (eq buf nelisp-ec--current-buffer)
-      (setq nelisp-ec--current-buffer nil)))
+      (nelisp-ec--restore-current-buffer nil))
+    (when (fboundp 'emacs-buffer--forget)
+      (emacs-buffer--forget buf)))
   t)
 
 ;;; B. point + cursor control  (7 APIs)
@@ -551,16 +589,26 @@ the buffer length + 1 (= one past the last char)."
 
 ;;;###autoload
 (defun nelisp-ec-goto-char (pos)
-  "Set POINT to POS in the current buffer.  Return POS.
-POS must be a 1-based integer in [`point-min', `point-max'].  Out-of-
-range values signal `nelisp-ec-args-out-of-range'."
+  "Set POINT to POS in the current buffer.  Return the position moved to.
+POS is a 1-based integer (or a `nelisp-ec' marker).  Out-of-range
+values are CLAMPED to [`point-min', `point-max'], matching real
+Emacs's `goto-char': \"if the position is ... outside the accessible
+portion of the buffer, point goes to the beginning or end of the
+accessible portion\" — it never signals for an out-of-range integer.
+(Doc 33 item 244: Magit's diff washers rely on this while operating
+inside `save-restriction' narrowing; the previous signalling behavior
+aborted `magit-insert-unstaged-changes' with
+`nelisp-ec-args-out-of-range'.)"
+  (when (and (not (integerp pos))
+             (nelisp-ec-marker-p pos))
+    (setq pos (nelisp-ec-marker-position pos)))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let ((buf (nelisp-ec--ensure-current))
         (lo (nelisp-ec-point-min))
         (hi (nelisp-ec-point-max)))
-    (when (or (< pos lo) (> pos hi))
-      (signal 'nelisp-ec-args-out-of-range (list pos lo hi)))
+    (cond ((< pos lo) (setq pos lo))
+          ((> pos hi) (setq pos hi)))
     (nelisp-ec--set-buffer-point buf pos)
     pos))
 
@@ -649,13 +697,26 @@ dynamically)."
                 (nelisp-ec--set-buffer-narrow-end buf (+ ne n-chars))))))))
     nil))
 
+(defun nelisp-ec--position-arg (pos)
+  "Coerce POS to an integer position, resolving `nelisp-ec' markers.
+Doc 33 item 244: real Emacs accepts markers everywhere a position is
+expected (`delete-region', `buffer-substring', `narrow-to-region',
+...); Magit passes section `start'/`end' slot markers into these
+directly.  Non-marker values pass through unchanged so each caller's
+own `integerp' check still signals faithfully."
+  (if (nelisp-ec-marker-p pos)
+      (nelisp-ec-marker-position pos)
+    pos))
+
 ;;;###autoload
 (defun nelisp-ec-delete-region (start end)
   "Delete the text between positions START and END.  Return nil.
-Both positions are 1-based; START <= END.  POINT is moved to MIN
-(START, END) if it lay inside the deleted range, or shifted left by
-the deleted char count if it lay after END.  Narrowing bounds are
-adjusted analogously."
+Both positions are 1-based integers or markers; START <= END.  POINT
+is moved to MIN (START, END) if it lay inside the deleted range, or
+shifted left by the deleted char count if it lay after END.  Narrowing
+bounds are adjusted analogously."
+  (setq start (nelisp-ec--position-arg start)
+        end (nelisp-ec--position-arg end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -712,7 +773,9 @@ modes; our MVP simply erases the visible region."
 
 ;;;###autoload
 (defun nelisp-ec-buffer-substring (start end)
-  "Return the text between positions START and END (1-based)."
+  "Return the text between positions START and END (1-based, markers OK)."
+  (setq start (nelisp-ec--position-arg start)
+        end (nelisp-ec--position-arg end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -806,7 +869,7 @@ backquote-free on the standalone bootstrap path."
     (list 'let (list (list saved 'nelisp-ec--current-buffer))
           (list 'unwind-protect
                 (cons 'progn body)
-                (list 'setq 'nelisp-ec--current-buffer saved)))))
+                (list 'nelisp-ec--restore-current-buffer saved)))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-current-buffer (&rest body)
@@ -824,8 +887,10 @@ backquote-free on the standalone bootstrap path."
 ;;;###autoload
 (defun nelisp-ec-narrow-to-region (start end)
   "Restrict POINT-MIN / POINT-MAX of the current buffer to [START, END).
-START / END are 1-based; START <= END.  POINT is clamped to the new
-range.  Returns nil."
+START / END are 1-based integers or markers; START <= END.  POINT is
+clamped to the new range.  Returns nil."
+  (setq start (nelisp-ec--position-arg start)
+        end (nelisp-ec--position-arg end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -877,6 +942,7 @@ affects where you can move POINT, not where a marker may sit."
     (nelisp-ec--set-marker-position marker nil)
     (nelisp-ec--set-marker-buffer marker nil))
    (t
+    (setq pos (nelisp-ec--position-arg pos))
     (unless (integerp pos)
       (signal 'wrong-type-argument (list 'integerp pos)))
     (let ((b (or buf (nelisp-ec--ensure-current))))
