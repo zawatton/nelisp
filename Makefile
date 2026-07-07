@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-mirror-special-smoke standalone-reader-defvar-special-smoke standalone-reader-dynvar-target-smoke standalone-reader-dynvar-lexical-smoke standalone-reader-dynvar-throw-restore-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
         standalone-reader-mod-float-smoke standalone-reader-match-data-smoke standalone-reader-current-time-smoke \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
         nelisp-nelix-operational-gate \
@@ -474,6 +474,86 @@ standalone-reader-cond-let-shape-smoke: standalone-reader
 	  echo "[standalone-reader-cond-let-shape-smoke] PASS: -> $$out"; \
 	else \
 	  echo "[standalone-reader-cond-let-shape-smoke] FAIL: -> $$out (expected 2)"; \
+	  exit 1; \
+	fi
+
+standalone-reader-mirror-special-smoke: standalone-reader
+	@mkdir -p target
+	@stdout_file=target/standalone-reader-mirror-special-smoke.out; \
+	rm -f "$$stdout_file"; \
+	set +e; \
+	./target/nelisp --mirror-special-smoke >"$$stdout_file"; \
+	rc=$$?; \
+	set -e; \
+	out="$$(cat "$$stdout_file")"; \
+	if [ "$$rc" -eq 42 ] && [ -z "$$out" ]; then \
+	  echo "[standalone-reader-mirror-special-smoke] PASS: exit=$$rc stdout=<empty>"; \
+	else \
+	  echo "[standalone-reader-mirror-special-smoke] FAIL: exit=$$rc stdout=$$out"; \
+	  exit 1; \
+	fi
+
+standalone-reader-defvar-special-smoke: standalone-reader
+	@mkdir -p target
+	@stdout_file=target/standalone-reader-defvar-special-smoke.out; \
+	rm -f "$$stdout_file"; \
+	set +e; \
+	./target/nelisp --defvar-special-smoke >"$$stdout_file"; \
+	rc=$$?; \
+	set -e; \
+	out="$$(cat "$$stdout_file")"; \
+	if [ "$$rc" -eq 42 ] && [ -z "$$out" ]; then \
+	  echo "[standalone-reader-defvar-special-smoke] PASS: exit=$$rc stdout=<empty>"; \
+	else \
+	  echo "[standalone-reader-defvar-special-smoke] FAIL: exit=$$rc stdout=$$out"; \
+	  exit 1; \
+	fi
+
+standalone-reader-dynvar-target-smoke: standalone-reader
+	@mkdir -p target
+	@stdout_file=target/standalone-reader-dynvar-target-smoke.out; \
+	rm -f "$$stdout_file"; \
+	set +e; \
+	./target/nelisp --dynvar-target-smoke >"$$stdout_file"; \
+	rc=$$?; \
+	set -e; \
+	out="$$(cat "$$stdout_file")"; \
+	if [ "$$rc" -eq 42 ] && [ -z "$$out" ]; then \
+	  echo "[standalone-reader-dynvar-target-smoke] PASS: exit=$$rc stdout=<empty>"; \
+	else \
+	  echo "[standalone-reader-dynvar-target-smoke] FAIL: exit=$$rc stdout=$$out"; \
+	  exit 1; \
+	fi
+
+standalone-reader-dynvar-lexical-smoke: standalone-reader
+	@mkdir -p target
+	@stdout_file=target/standalone-reader-dynvar-lexical-smoke.out; \
+	rm -f "$$stdout_file"; \
+	set +e; \
+	./target/nelisp --dynvar-lexical-smoke >"$$stdout_file"; \
+	rc=$$?; \
+	set -e; \
+	out="$$(cat "$$stdout_file")"; \
+	if [ "$$rc" -eq 42 ] && [ -z "$$out" ]; then \
+	  echo "[standalone-reader-dynvar-lexical-smoke] PASS: exit=$$rc stdout=<empty>"; \
+	else \
+	  echo "[standalone-reader-dynvar-lexical-smoke] FAIL: exit=$$rc stdout=$$out"; \
+	  exit 1; \
+	fi
+
+standalone-reader-dynvar-throw-restore-smoke: standalone-reader
+	@mkdir -p target
+	@stdout_file=target/standalone-reader-dynvar-throw-restore-smoke.out; \
+	rm -f "$$stdout_file"; \
+	set +e; \
+	./target/nelisp --dynvar-throw-restore-smoke >"$$stdout_file"; \
+	rc=$$?; \
+	set -e; \
+	out="$$(cat "$$stdout_file")"; \
+	if [ "$$rc" -eq 42 ] && [ -z "$$out" ]; then \
+	  echo "[standalone-reader-dynvar-throw-restore-smoke] PASS: exit=$$rc stdout=<empty>"; \
+	else \
+	  echo "[standalone-reader-dynvar-throw-restore-smoke] FAIL: exit=$$rc stdout=$$out"; \
 	  exit 1; \
 	fi
 

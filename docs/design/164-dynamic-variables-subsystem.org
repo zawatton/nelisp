@@ -1,6 +1,6 @@
 #+TITLE: Doc 164 — Dynamic (Special) Variable Subsystem for the Standalone Reader
 #+DATE: 2026-07-07
-#+STATUS: design-only, not implemented
+#+STATUS: SHIPPED (Phases 1-5)
 
 * 0. Problem statement (confirmed by reading, 2026-07-07)
 
@@ -685,3 +685,21 @@ reading pass).
   lambda formal parameter) is explicitly out of scope (§2.5) and left
   as a known, narrower, pre-existing gap for a follow-on design if it
   ever matters in practice.
+
+* 8. Outcome (SHIPPED 2026-07-07)
+
+Option A shipped as designed: mirror plist-slot =Sexp::T= sentinel,
+=nl_logic_bind_local= split into dispatcher/lexical/dynamic helpers,
+sentinel-key dynsave threading, and restore-before-pop at the three
+finish functions. The §4 throw path was confirmed to unwind through the
+same rc=1 CPS choke point; the throw-restore smoke passes.
+
+Verification is complete: target repro returns =20=, lexical control
+returns =10=, throw-restore restores =dv-z=1=, full
+=standalone-reader-test= is green, and the =pcase=/=catch-throw=/=cond-let=/=load=/=intern-soft=/=chunk-growth=
+smokes are green. No Rust change was required, and the 4-slot mirror
+layout remains preserved.
+
+Still open for follow-on work from §2.5/§7: a special variable used as
+a lambda formal parameter is not yet dynamically bound. That narrower
+gap remains out of scope for this ship.
