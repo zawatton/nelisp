@@ -1,6 +1,7 @@
 #+TITLE: Doc 155 - GC collects live lexframe children (audit/lock-check SIGSEGV)
 #+DATE: 2026-06-22
 #+STATUS: CLOSED (2026-06-22) — fixed via Path B (sound GC, reclamation RE-ENABLED), merged to main (b31179ce; main HEAD 39646470). Root cause (§8.12): the conservative native-stack scan marks an in-flight record/vector BOX interior pointer's block but mark_slot misreads its type_tag and does NOT recurse the record's slots; the now-marked block makes the PRECISE marker skip recursion (mark_block returns 0), so a lexframe ht's children (bucket-count/buckets) are never marked and get swept -> free-link clobbers the live box -> SIGSEGV. Fix B (b31179ce, pushed): decouple "alive" from "recursed" — conserv pins with mark 4 (not 1), mark_block treats 4 like 0 (upgrade+recurse), sweep keeps+resets 4 like 1; reclaimer gate base+160 re-enabled (0). VALIDATED: full Debian no-Nix RC container gate (474-test) GREEN; audit 10/10 + (garbage-collect) + heavy churn all clean on the 838605da/256MiB repro. (History: §8.8 Fix A d5724bb3 disabled collection as a sound stopgap; Path B supersedes it and restores reclamation.)
+#+REOPENED-NOTE: §8.13 (2026-07-07) — Path B closed ONE marking-reach gap (conservative-scan-poisons-precise-recursion). The emacs-lib magit-status-smoke workload (nelisp-emacs-lib Doc 33 item 244) found a FURTHER instance of the same lexframe-child-on-a-growth-chunk class, classified as "root leak" rather than "marking gap": a persisted closure's captured environment that the precise marker cannot reliably re-derive. Diagnosed via commit 6407e7bb (growth-chunk free forensic counter); fixed via commit 3ad65697, a retained-generation policy (plan B) rather than a precise-marking fix (plan A, deferred — needs a settled closure/backtrace layout first). See §8.13 below for the mechanism and its own cost caveat.
 #+SEVERITY: latent (masked in production by Doc 154 churn-reduction work)
 
 * 1. Purpose
@@ -598,6 +599,74 @@ VALIDATION:
   the local commit (NELISP_REPO_URL=/work/nelisp).
 Pushed to feat.  Path B supersedes Path A: form-boundary reclamation is on
 again, soundly.
+
+** 8.13 REOPENED: a further retention-edge instance, closed by a retained-generation policy B (2026-07-07)
+
+The emacs-lib =magit-status-smoke= workload (replaying the full vendor
+Magit bundle with real EIEIO class registration, nelisp-emacs-lib Doc 33
+item 244) SIGSEGV'd with the exact Doc 155 signature
+(=nl_vector_slot_ptr= NULL deref under
+=nelisp_frame_stack_find_in_frame=: a live lexframe's hash-table/buckets
+child reclaimed while the frame record survives) even with Path B
+(§8.12) shipped.  A synthetic repro was not achievable (per §8.3/8.5,
+the bug needs the =defclass= registration allocation shape); emacs-lib
+worked around it with a session-wide raw-memory poke of the reclaimer
+gate (Doc 155 §8.8 Fix A, reapplied at the bridge layer) as an interim
+stopgap while this was investigated as a dedicated task.
+
+Mechanism (classification #2, "root leak" rather than "marking-reach
+gap"): a persisted closure captures an environment; when that
+environment's lexframe hash-table/buckets child lands on a GROWTH
+chunk (not chunk 0), the precise marker cannot reliably re-derive the
+capture edge to it, so the form-boundary collector's sweep frees a
+still-live block.  This is a DIFFERENT failure inside the same class
+Path B addressed — Path B fixed a marking-RECURSION gap (a live block
+was marked but not recursed into); this is a marking-REACH gap (the
+block is never marked at all because the root edge to it is not
+enumerable from the closure alone).  A full precise fix (plan A:
+follow persisted-closure-captured environments explicitly) was not
+pursued this pass — it needs a settled closure/backtrace layout, which
+is not yet in hand.
+
+Diagnostic instrument (commit 6407e7bb, still gated by the existing
+=nl_gc_diag+32= free-forensics enable, default off): =nl_gc_growth_free_note=
+counted every block freed by the form-boundary sweep that lives outside
+chunk 0 (a growth chunk — the suspect region for this class), exposed
+as the 10th/11th =nelisp--gc-diag= elements.
+
+Fix (plan B, commit 3ad65697): rather than pursue precise marking, make
+the bug class structurally impossible for the ONE collector it affects.
+=nl_gc_free_block= now retains (never frees) any growth-chunk box while
+a new =nl_gc_retain_scope= flag reads 1; =nl_gc_collect= (the
+form-boundary path only) arms that flag for the exact duration of its
+own =nl_gc_sweep= call.  This is the same trick as the existing chunk-0
+boot-watermark retained generation (=nl_gc_is_boot=), just applied
+scope-limited to growth chunks and only for this one collector — sound
+by construction, since a block that is never freed can never be
+wrongly freed.  =(garbage-collect)= and the mid-form loop collector
+(=nl_gc_collect_from_recorded_roots=, which never touches the new flag)
+are unaffected and keep reclaiming growth-chunk garbage exactly as
+before.  =nl_gc_growth_free_note='s counter is repointed from counting
+frees to counting retains (same wiring/positions, new meaning).
+
+VALIDATED (dev/nelisp side): =make standalone-reader-test= (all
+smokes), the load/intern-soft(x2)/pcase-quote/catch-throw/cond-let
+smokes, and =make standalone-chunk-growth-test= (in an isolated git
+worktree, after an earlier in-repo run raced a concurrent magit-smoke
+bake sharing the same =target/nelisp= and produced a one-off false
+FAIL) all PASS.  A custom 172k-form pure-vector-churn regression
+crosses the default 256 MiB growth boundary (chunk-count 1->2, via
+=nelisp--arena-stats=) and completes at rc=0 with a live root intact.
+
+COST CAVEAT (emacs-lib side, nelisp-emacs-lib Doc 33 item 245): with the
+poke removed, =make magit-load-smoke= (bundle load only) PASSES cleanly
+with no memory ceiling, but =make magit-status-smoke= (bundle load +
+=magit-status-setup-buffer=) does not complete even past 34 GiB RSS —
+an allocation-heavy, =(garbage-collect)=-free loop (section rendering)
+turns policy B's per-collector retention into unbounded standing
+memory.  This is a NEW, separate scaling limitation of policy B, not a
+recurrence of this section's crash; see nelisp-emacs-lib Doc 33 item
+245 for the full writeup and next-step options.
 
 * 9. Closeout (2026-06-22)
 
