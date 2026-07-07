@@ -78,7 +78,9 @@
     ;; Arity 4 (even).
     (defun nl_sf_let_finish (body-rc env out _pad)
       (nl_sf_let_ret
-       (extern-call nl_env_pop_frame env)
+       (seq
+        (extern-call nl_dynsave_restore_all env)
+        (extern-call nl_env_pop_frame env))
        body-rc 0 0))
 
     ;; After nelisp_eval_call on one body form: check rc, advance list.

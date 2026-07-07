@@ -13658,6 +13658,12 @@ correctly."
                                        "--mirror-special-smoke")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_defvar_special_smoke
                                        "--defvar-special-smoke")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dynvar_target_smoke
+                                       "--dynvar-target-smoke")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dynvar_lexical_smoke
+                                       "--dynvar-lexical-smoke")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dynvar_throw_restore_smoke
+                                       "--dynvar-throw-restore-smoke")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
                                        "--embedded")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
@@ -13838,6 +13844,48 @@ correctly."
                         13)
                     13)
                 13))
+           13))))
+    (defun nl_dynvar_phase3_target_smoke (ctx)
+      (let* ((src_str (alloc-bytes 32 8))
+             (eval_args (alloc-bytes 32 8))
+             (nil_slot (alloc-bytes 32 8))
+             (eval_out (alloc-bytes 32 8)))
+        (seq
+         (sexp-write-str-lit
+          src_str
+          "(defvar dv-x 1) (if (= (let ((dv-x 10)) (let ((f (lambda () dv-x))) (let ((dv-x 20)) (funcall f)))) 20) 42 13)")
+         (nl_cons_write_nil nil_slot)
+         (nelisp_cons_construct src_str nil_slot eval_args)
+         (if (= (bf_eval_source_string eval_args ctx eval_out) 0)
+             (ptr-read-u64 eval_out 8)
+           13))))
+    (defun nl_dynvar_phase3_lexical_smoke (ctx)
+      (let* ((src_str (alloc-bytes 32 8))
+             (eval_args (alloc-bytes 32 8))
+             (nil_slot (alloc-bytes 32 8))
+             (eval_out (alloc-bytes 32 8)))
+        (seq
+         (sexp-write-str-lit
+          src_str
+          "(if (= (let ((lex-y 10)) (let ((g (lambda () lex-y))) (let ((lex-y 20)) (funcall g)))) 10) 42 13)")
+         (nl_cons_write_nil nil_slot)
+         (nelisp_cons_construct src_str nil_slot eval_args)
+         (if (= (bf_eval_source_string eval_args ctx eval_out) 0)
+             (ptr-read-u64 eval_out 8)
+           13))))
+    (defun nl_dynvar_phase4_throw_restore_smoke (ctx)
+      (let* ((src_str (alloc-bytes 32 8))
+             (eval_args (alloc-bytes 32 8))
+             (nil_slot (alloc-bytes 32 8))
+             (eval_out (alloc-bytes 32 8)))
+        (seq
+         (sexp-write-str-lit
+          src_str
+          "(defvar dv-z 1) (catch 'tag (let ((dv-z 99)) (throw 'tag nil))) (if (= dv-z 1) 42 13)")
+         (nl_cons_write_nil nil_slot)
+         (nelisp_cons_construct src_str nil_slot eval_args)
+         (if (= (bf_eval_source_string eval_args ctx eval_out) 0)
+             (ptr-read-u64 eval_out 8)
            13))))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
@@ -14584,6 +14632,12 @@ correctly."
           (nl_dynvar_phase1_mirror_special_smoke ctx))
          ((= (nl_cstr_eq_defvar_special_smoke path) 1)
           (nl_dynvar_phase2_defvar_special_smoke ctx))
+         ((= (nl_cstr_eq_dynvar_target_smoke path) 1)
+          (nl_dynvar_phase3_target_smoke ctx))
+         ((= (nl_cstr_eq_dynvar_lexical_smoke path) 1)
+          (nl_dynvar_phase3_lexical_smoke ctx))
+         ((= (nl_cstr_eq_dynvar_throw_restore_smoke path) 1)
+          (nl_dynvar_phase4_throw_restore_smoke ctx))
          ((= (nl_cstr_eq_embedded path) 1)
           (seq
            ;; report_errors=0: `--embedded' backs `nelisp-standalone-reader-test'`s
@@ -15956,6 +16010,9 @@ loader when it is absent."
               (nelisp-standalone--reader-setcar-setcdr-type-smoke)
               (nelisp-standalone--reader-mirror-special-smoke)
               (nelisp-standalone--reader-defvar-special-smoke)
+              (nelisp-standalone--reader-dynvar-target-smoke)
+              (nelisp-standalone--reader-dynvar-lexical-smoke)
+              (nelisp-standalone--reader-dynvar-throw-restore-smoke)
               (nelisp-standalone--reader-runtime-image-smoke)
               (nelisp-standalone--reader-cli-smoke)
               (nelisp-standalone--reader-neln-selftest-smoke)
@@ -16208,6 +16265,27 @@ guards the slot-pool floor directly without loading the full vendor file."
                           "--defvar-special-smoke")))
     (unless (= rc 42)
       (error "defvar special smoke exit=%S" rc))))
+
+(defun nelisp-standalone--reader-dynvar-target-smoke ()
+  "Assert special-variable closures read the current dynamic value."
+  (let ((rc (call-process nelisp-standalone--reader-out nil nil nil
+                          "--dynvar-target-smoke")))
+    (unless (= rc 42)
+      (error "dynvar target smoke exit=%S" rc))))
+
+(defun nelisp-standalone--reader-dynvar-lexical-smoke ()
+  "Assert non-special lexical capture is unchanged."
+  (let ((rc (call-process nelisp-standalone--reader-out nil nil nil
+                          "--dynvar-lexical-smoke")))
+    (unless (= rc 42)
+      (error "dynvar lexical smoke exit=%S" rc))))
+
+(defun nelisp-standalone--reader-dynvar-throw-restore-smoke ()
+  "Assert throw unwinds dynamic special bindings before the frame pop."
+  (let ((rc (call-process nelisp-standalone--reader-out nil nil nil
+                          "--dynvar-throw-restore-smoke")))
+    (unless (= rc 42)
+      (error "dynvar throw-restore smoke exit=%S" rc))))
 
 (defun nelisp-standalone--reader-runtime-image-smoke ()
   "Assert standalone-reader runtime-image eval/exec command semantics."
