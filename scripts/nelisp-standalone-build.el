@@ -9035,7 +9035,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      ;; (defconst NAME VALUE [DOC]) -> evaluate (set (quote NAME) VALUE), return NAME.
      (if (= (sexp-tag args) 7)
          (let* ((name_ptr (nl_cons_car_ptr args))
-                (rest_ptr (nl_cons_cdr_ptr args)))
+                (rest_ptr (nl_cons_cdr_ptr args))
+                (special_scratch (alloc-bytes 32 8)))
            (if (= (sexp-tag rest_ptr) 7)
                (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
                       (sbuf (alloc-bytes 8 1)) (set_sym (alloc-bytes 32 8))
@@ -9050,6 +9051,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                       (form (alloc-bytes 32 8))
                       (scratch (alloc-bytes 32 8)))
                  (seq
+                  (nl_dynvar_phase1_build_special_scratch (+ env 64) special_scratch)
                   (ptr-write-u64 sbuf 0 7628147)      (nl_alloc_symbol sbuf 3 set_sym)
                   (ptr-write-u64 qbuf 0 435745158513) (nl_alloc_symbol qbuf 5 quote_sym)
                   (nl_sexp_clone_into name_ptr name_clone)
@@ -9063,9 +9065,20 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                   (nelisp_cons_construct quote_form val_list args_list)
                   (nelisp_cons_construct set_sym args_list form)
                   (let* ((rc (nelisp_eval_call form env scratch)))
-                    (if (= rc 0) (seq (nl_sexp_clone_into name_ptr out) 0) rc))))
+                    (if (= rc 0)
+                        (seq
+                         (nelisp_mirror_set_special_or_insert
+                          (+ env 0) name_ptr special_scratch 0)
+                         (nl_sexp_clone_into name_ptr out)
+                         0)
+                      rc))))
              ;; no VALUE: just yield NAME
-             (seq (nl_sexp_clone_into name_ptr out) 0)))
+             (seq
+              (nl_dynvar_phase1_build_special_scratch (+ env 64) special_scratch)
+              (nelisp_mirror_set_special_or_insert
+               (+ env 0) name_ptr special_scratch 0)
+              (nl_sexp_clone_into name_ptr out)
+              0)))
        1)))
 
 (defconst nelisp-standalone--sf-defvar
@@ -9075,7 +9088,8 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
      ;; only.  Either way return NAME.
      (if (= (sexp-tag args) 7)
          (let* ((name_ptr (nl_cons_car_ptr args))
-                (rest_ptr (nl_cons_cdr_ptr args)))
+                (rest_ptr (nl_cons_cdr_ptr args))
+                (special_scratch (alloc-bytes 32 8)))
            (if (= (sexp-tag rest_ptr) 7)
                (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
                       (ibuf (alloc-bytes 8 1)) (if_sym (alloc-bytes 32 8))
@@ -9098,6 +9112,7 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                       (e3 (alloc-bytes 32 8)) (form (alloc-bytes 32 8))
                       (scratch (alloc-bytes 32 8)))
                  (seq
+                  (nl_dynvar_phase1_build_special_scratch (+ env 64) special_scratch)
                   (ptr-write-u64 ibuf 0 26217)          (nl_alloc_symbol ibuf 2 if_sym)
                   (ptr-write-u64 bbuf 0 123576652230498) (nl_alloc_symbol bbuf 6 boundp_sym)
                   (ptr-write-u64 sbuf 0 7628147)        (nl_alloc_symbol sbuf 3 set_sym)
@@ -9128,9 +9143,20 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                   (nelisp_cons_construct bp_form e2 e3)
                   (nelisp_cons_construct if_sym e3 form)
                   (let* ((rc (nelisp_eval_call form env scratch)))
-                    (if (= rc 0) (seq (nl_sexp_clone_into name_ptr out) 0) rc))))
+                    (if (= rc 0)
+                        (seq
+                         (nelisp_mirror_set_special_or_insert
+                          (+ env 0) name_ptr special_scratch 0)
+                         (nl_sexp_clone_into name_ptr out)
+                         0)
+                      rc))))
              ;; no VALUE: pure declaration -> yield NAME
-             (seq (nl_sexp_clone_into name_ptr out) 0)))
+             (seq
+              (nl_dynvar_phase1_build_special_scratch (+ env 64) special_scratch)
+              (nelisp_mirror_set_special_or_insert
+               (+ env 0) name_ptr special_scratch 0)
+              (nl_sexp_clone_into name_ptr out)
+              0)))
        1)))
 
 ;; `defalias' / `defmacro' / `cl-defun' for the reader's native evaluator.
@@ -13630,6 +13656,8 @@ correctly."
                                        "--neln-selftest")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_mirror_special_smoke
                                        "--mirror-special-smoke")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_defvar_special_smoke
+                                       "--defvar-special-smoke")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
                                        "--embedded")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
@@ -13778,6 +13806,38 @@ correctly."
              (if (= (nl_mirror_is_special_p mirror_ptr plain_sym_slot) 0)
                  42
                13)
+           13))))
+    (defun nl_dynvar_phase2_defvar_special_smoke (ctx)
+      (let* ((mirror_ptr (+ ctx 0))
+             (src_str (alloc-bytes 32 8))
+             (eval_args (alloc-bytes 32 8))
+             (nil_slot (alloc-bytes 32 8))
+             (eval_out (alloc-bytes 32 8))
+             (dv_foo_slot (alloc-bytes 32 8))
+             (dv_bar_slot (alloc-bytes 32 8))
+             (dv_plain_slot (alloc-bytes 32 8))
+             (buf_foo (alloc-bytes 8 1))
+             (buf_bar (alloc-bytes 8 1))
+             (buf_plain (alloc-bytes 8 1)))
+        (seq
+         (sexp-write-str-lit src_str "(defvar dv-foo 1) (defconst dv-bar 2)")
+         (nl_cons_write_nil nil_slot)
+         (nelisp_cons_construct src_str nil_slot eval_args)
+         (if (= (bf_eval_source_string eval_args ctx eval_out) 0)
+             (seq
+              (ptr-write-u64 buf_foo 0 122524246308452)
+              (nl_alloc_symbol buf_foo 6 dv_foo_slot)
+              (ptr-write-u64 buf_bar 0 125762584540772)
+              (nl_alloc_symbol buf_bar 6 dv_bar_slot)
+              (ptr-write-u64 buf_plain 0 7955997335093081700)
+              (nl_alloc_symbol buf_plain 8 dv_plain_slot)
+              (if (= (nl_mirror_is_special_p mirror_ptr dv_foo_slot) 1)
+                  (if (= (nl_mirror_is_special_p mirror_ptr dv_bar_slot) 1)
+                      (if (= (nl_mirror_is_special_p mirror_ptr dv_plain_slot) 0)
+                          42
+                        13)
+                    13)
+                13))
            13))))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
@@ -14522,6 +14582,8 @@ correctly."
           (nl_neln_demo_exec ctx 41))
          ((= (nl_cstr_eq_mirror_special_smoke path) 1)
           (nl_dynvar_phase1_mirror_special_smoke ctx))
+         ((= (nl_cstr_eq_defvar_special_smoke path) 1)
+          (nl_dynvar_phase2_defvar_special_smoke ctx))
          ((= (nl_cstr_eq_embedded path) 1)
           (seq
            ;; report_errors=0: `--embedded' backs `nelisp-standalone-reader-test'`s
@@ -15893,6 +15955,7 @@ loader when it is absent."
               (nelisp-standalone--reader-large-quoted-alist-mutation-smoke)
               (nelisp-standalone--reader-setcar-setcdr-type-smoke)
               (nelisp-standalone--reader-mirror-special-smoke)
+              (nelisp-standalone--reader-defvar-special-smoke)
               (nelisp-standalone--reader-runtime-image-smoke)
               (nelisp-standalone--reader-cli-smoke)
               (nelisp-standalone--reader-neln-selftest-smoke)
@@ -16138,6 +16201,13 @@ guards the slot-pool floor directly without loading the full vendor file."
                           "--mirror-special-smoke")))
     (unless (= rc 42)
       (error "mirror special smoke exit=%S" rc))))
+
+(defun nelisp-standalone--reader-defvar-special-smoke ()
+  "Assert Phase 2 defvar/defconst special marking through eval."
+  (let ((rc (call-process nelisp-standalone--reader-out nil nil nil
+                          "--defvar-special-smoke")))
+    (unless (= rc 42)
+      (error "defvar special smoke exit=%S" rc))))
 
 (defun nelisp-standalone--reader-runtime-image-smoke ()
   "Assert standalone-reader runtime-image eval/exec command semantics."
