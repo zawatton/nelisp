@@ -494,7 +494,17 @@ storage — not an arena reservation."
    ;; BSS flag (= allow `nl_val_clone_into' to shallow-rebox safe boxes).
    ;; `(nelisp--debug-switch 15)' sets it to 1 to force the legacy fresh-box
    ;; clone path, and `(nelisp--debug-switch 16)' clears it for A/B checks.
-   (list (cons 'bss (+ 57568 1048576 48)))
+   ;; Doc 155 §8.13 retained-generation policy B: nl_gc_retain_scope is an
+   ;; ordinary zero-fill BSS flag (NOT user-toggleable; no debug-switch wired)
+   ;; set to 1 only for the duration of the form-boundary collector's own
+   ;; `nl_gc_sweep' call (see `nl_gc_collect') and back to 0 immediately
+   ;; after.  `nl_gc_free_block' consults it to retain (never free)
+   ;; growth-chunk boxes ONLY while it reads 1, so the policy is scoped to
+   ;; exactly the form-boundary collector -- `(garbage-collect)' and the
+   ;; mid-form loop collector (`nl_gc_collect_from_recorded_roots', which
+   ;; never touches this flag) keep freeing growth-chunk garbage exactly as
+   ;; before.
+   (list (cons 'bss (+ 57568 1048576 56)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
@@ -520,6 +530,8 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_fvcache_table_base" (+ 57600 1048576)
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_fvcache_disable_lookup" (+ 57608 1048576)
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_gc_retain_scope" (+ 57616 1048576)
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_frame_push_sym1" (+ 57528 1048576)
                              :section 'bss :bind 'global :type 'object)
@@ -1770,38 +1782,63 @@ arm64 Linux has no legacy x86 numbering)."
                         (+ (ptr-read-u64 (data-addr nl_gc_diag) 40) 1))
                       (nl_gc_poison_fill hdr 16 (nl_hdr_bt hdr)))
            0)))))
-    ;; Doc 155 new-retention-edge FORENSIC INSTRUMENT (gated by nl_gc_diag+32,
-    ;; the shared "GC free forensics" enable; default 0 = zero behaviour change).
-    ;; Doc 155 established that the retention-edge bug is specifically a LIVE
-    ;; lexframe hash-table/buckets child sitting on a GROWTH chunk (not chunk 0)
-    ;; being swept -> freed -> the free-link write clobbers the live box.
-    ;; §8.9 asked to "instrument the FREEING site" to name the exact unmarked
-    ;; edge.  This counts every block freed by a sweep that lives OUTSIDE chunk 0
-    ;; (i.e. on a growth chunk -- the suspect class) into nl_gc_diag+48, and
-    ;; captures the FIRST such block's header address into nl_gc_diag+56 so a
-    ;; follow-up single-run HW-watchpoint (`watch *ADDR') can be armed on it
-    ;; deterministically (both exposed via the `nelisp--gc-diag' builtin as the
-    ;; 10th/11th list elements).  Chunk-0 base/size come from the chunk-head
-    ;; descriptor (*268436160): base @ desc+0, size @ desc+8.  Growth iff the
-    ;; header is below chunk-0 base OR at/above chunk-0 end.  Cheap (2 reads +
-    ;; 2 compares) and only when the gate is armed; the normal path pays one
-    ;; `(= ... 0)' branch and returns.
+    ;; Doc 155 §8.13 retention-edge POLICY B: growth-chunk (non-chunk-0) box
+    ;; MEMBERSHIP test, unconditional (no diag gate -- this is a real policy
+    ;; decision, not a debug probe).  Chunk-0 base/size come from the
+    ;; chunk-head descriptor (*268436160): base @ desc+0, size @ desc+8.
+    ;; A header is "on a growth chunk" iff it is below chunk-0's base OR
+    ;; at/above chunk-0's end.  Cheap: 2 reads + 2 compares.
+    (defun nl_gc_hdr_on_growth_chunk (hdr)
+      (let* ((c0 (ptr-read-u64 268436160 0))
+             (b (ptr-read-u64 c0 0))
+             (sz (ptr-read-u64 (+ c0 8) 0)))
+        (if (< hdr b) 1 (if (< hdr (+ b sz)) 0 1))))
+    ;; Doc 155 new-retention-edge FORENSIC COUNTER (gated by nl_gc_diag+32,
+    ;; the shared "GC free forensics" enable; default 0 = zero behaviour
+    ;; change).  Originally counted every block freed outside chunk 0
+    ;; (Doc 155 §8.9 "instrument the FREEING site"); since policy B (below)
+    ;; those blocks are no longer freed by the form-boundary collector, so
+    ;; this now counts RETAIN events instead -- every growth-chunk box the
+    ;; form-boundary sweep decides to keep alive rather than free -- into
+    ;; nl_gc_diag+48, and captures the FIRST such block's header address
+    ;; into nl_gc_diag+56 (both exposed via the `nelisp--gc-diag' builtin
+    ;; as the 10th/11th list elements; same wiring, new meaning).  Only
+    ;; called from the retain branch of `nl_gc_free_block', so the growth
+    ;; membership test itself is not repeated here.
     (defun nl_gc_growth_free_note (hdr)
       (if (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 0) 0
-        (let* ((c0 (ptr-read-u64 268436160 0))
-               (b (ptr-read-u64 c0 0))
-               (sz (ptr-read-u64 (+ c0 8) 0)))
-          (if (if (< hdr b) 1 (if (< hdr (+ b sz)) 0 1))
-              (nl_seq2
-               (ptr-write-u64 (data-addr nl_gc_diag) 48
-                              (+ (ptr-read-u64 (data-addr nl_gc_diag) 48) 1))
-               (if (= (ptr-read-u64 (data-addr nl_gc_diag) 56) 0)
-                   (ptr-write-u64 (data-addr nl_gc_diag) 56 hdr)
-                 0))
-            0))))
+        (nl_seq2
+         (ptr-write-u64 (data-addr nl_gc_diag) 48
+                        (+ (ptr-read-u64 (data-addr nl_gc_diag) 48) 1))
+         (if (= (ptr-read-u64 (data-addr nl_gc_diag) 56) 0)
+             (ptr-write-u64 (data-addr nl_gc_diag) 56 hdr)
+           0))))
+    ;; Doc 155 §8.13 retention-edge POLICY B (growth-chunk retained
+    ;; generation).  The bug class: a LIVE lexframe hash-table/buckets child
+    ;; landing on a GROWTH chunk (not chunk 0) is swept -> freed -> the
+    ;; free-link write clobbers the live box, because the precise closure-env
+    ;; marker cannot reliably follow every persisted-closure edge onto growth
+    ;; memory (Doc 155 classification #2).  Rather than free such a block
+    ;; and risk clobbering a missed-but-live child, treat EVERY growth-chunk
+    ;; box the FORM-BOUNDARY collector's sweep would otherwise free as
+    ;; belonging to a retained generation, exactly like the existing
+    ;; chunk-0 boot watermark (`nl_gc_is_boot') -- sound by construction,
+    ;; at the cost of leaking dead growth-chunk garbage.
+    ;;
+    ;; SCOPE: this is NOT a blanket "never free growth chunks" rule.  It is
+    ;; gated on `nl_gc_retain_scope', which `nl_gc_collect' (the form-
+    ;; boundary path only) sets to 1 for the duration of its own
+    ;; `nl_gc_sweep' call and clears immediately after.  `(garbage-collect)'
+    ;; and the mid-form loop collector (`nl_gc_collect_from_recorded_roots')
+    ;; never touch that flag, so they keep freeing growth-chunk garbage
+    ;; exactly as before this change -- only the form-boundary collector's
+    ;; growth-chunk reclamation is disabled.
     (defun nl_gc_free_block (hdr)
       (if (= (nl_gc_is_boot hdr) 1) 0   ; HARD: never free a chunk-0 boot block
-       (nl_seq2 (nl_gc_growth_free_note hdr)
+       (if (if (= (ptr-read-u64 (data-addr nl_gc_retain_scope) 0) 1)
+               (= (nl_gc_hdr_on_growth_chunk hdr) 1)
+             0)
+           (nl_gc_growth_free_note hdr) ; policy B: retain, do not free
         (nl_gc_free_block_link hdr
          (if (< (nl_hdr_bt hdr) 16) 268435552
            (if (< 472 (nl_hdr_bt hdr)) 268435552
@@ -2943,7 +2980,16 @@ arm64 Linux has no legacy x86 numbering)."
          (nl_gc_mark_roots ctx result out pool src cursor bsym))
        (if (= (ptr-read-u64 268435608 0) 1)    ; Doc146 §5: compact (incl. reclaim, no sweep)
            (nl_gc_compact ctx result out pool src cursor bsym)
-         (nl_gc_sweep)))))
+         ;; Doc 155 §8.13 policy B: arm the growth-chunk retention scope
+         ;; ONLY around this collector's own sweep, then disarm it right
+         ;; after -- `(garbage-collect)' / the mid-form loop collector never
+         ;; set this flag, so their sweeps are unaffected.  `ptr-write-u64'
+         ;; returns a `1' sentinel (not its written value), so the sweep's
+         ;; own return is captured in `r' and returned AFTER the disarm
+         ;; write to keep `nl_gc_collect's return value unchanged.
+         (let ((r (nl_seq2 (ptr-write-u64 (data-addr nl_gc_retain_scope) 0 1)
+                           (nl_gc_sweep))))
+           (nl_seq2 (ptr-write-u64 (data-addr nl_gc_retain_scope) 0 0) r))))))
     ;; Form-boundary collections run after a top-level form has finished
     ;; evaluating.  The RAW reader parse pool allocation itself must remain
     ;; pinned for the next parse, but stale/unused slots from prior forms are
