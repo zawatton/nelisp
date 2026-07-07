@@ -812,12 +812,6 @@ bundle has not been built yet (`make bake-magit-runtime-image' or
         (error "nelisp-emacs-magit-bridge: bundle not built: %s (run scripts/build-nelisp-emacs-magit-bridge-bundle.el under host Emacs)"
                bundle))
       (load bundle nil 'no-message t t)
-      ;; Post-load fixup: `magit-insert-headers' is excluded from the
-      ;; bundle (see `nelisp-emacs-magit-bridge--ensure-magit-insert-
-      ;; headers'), so its replacement needs `oref'/`oset'/`magit-run-
-      ;; section-hook' already defined, unlike the pre-load precondition
-      ;; steps above.
-      (nelisp-emacs-magit-bridge--ensure-magit-insert-headers)
       (setq nelisp-emacs-magit-bridge-loaded t)))
   nelisp-emacs-magit-bridge-loaded)
 
