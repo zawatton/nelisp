@@ -1,0 +1,687 @@
+#+TITLE: Doc 164 — Dynamic (Special) Variable Subsystem for the Standalone Reader
+#+DATE: 2026-07-07
+#+STATUS: design-only, not implemented
+
+* 0. Problem statement (confirmed by reading, 2026-07-07)
+
+The "REAL special-form" evaluator path in the standalone reader
+(=target/nelisp=) has no concept of a special/dynamic variable.
+=let=/=let*= (and =condition-case='s VAR) always push a *lexical* frame
+binding, unconditionally, regardless of whether the symbol was ever
+=defvar='d.  Consequence: a closure that captures a name already bound
+in an active outer =let= freezes the outer (creation-time) value.  When
+the closure is invoked from inside a *deeper* re-binding of the same
+name, it returns the outer value instead of the current dynamic value.
+Real Emacs returns the inner (call-time) value whenever the variable is
+special.  Confirmed repro shape:
+
+#+begin_src elisp
+(defvar dv-x 1)
+(let ((dv-x 10))
+  (let ((f (lambda () dv-x)))
+    (let ((dv-x 20))
+      (funcall f))))
+;; Real Emacs 30.1: 20   (dv-x is special -> dynamic read at call time)
+;; nelisp today:    10   (dv-x is always lexical -> frozen at capture time)
+#+end_src
+
+Verified call graph (read, not assumed):
+
+- =nl_let_setup= (=lisp/nelisp-cc-evalport-env-leaves-logic.el=, single
+  giant ~(seq (defun ...) ...)~ blob) dispatches to =nl_let_collect_walk=
+  + =nl_let_bind_walk= for parallel =let=, or =nl_let_star_walk= for
+  sequential =let*=.  Every one of these three walkers calls
+  =nl_logic_bind_local(env, name_ptr, val_ptr)= for *every* binding,
+  which always calls the extern =nelisp_env_bind_local= — an
+  unconditional *lexical* push onto the frame at =(+ env 32)=.  There is
+  no special-ness check anywhere in this path today.
+- =nl_cc_clause_walk= (condition-case VAR bind, same file) calls the
+  *same* =nl_logic_bind_local= to bind the error variable.  It shares
+  the exact same choke point.
+- =nl_sf_defvar= / =nl_sf_defconst=
+  (=scripts/nelisp-standalone-build.el= lines ~9019-9139) synthesize
+  =(if (boundp 'NAME) nil (set 'NAME VALUE))= / =(set 'NAME VALUE)= and
+  run them through =nelisp_eval_call=.  Neither marks =NAME= special in
+  any way — confirmed by =grep= showing no =nl_sf_put=/=nl_sf_get=/
+  =symbol-plist= primitives exist yet anywhere in the tree.
+- Symbol *reads* — both from the plain interpreter
+  (=lisp/nelisp-cc-evalport-env-leaves-simple.el= ~=nl_env_lookup_val=~)
+  and from the AOT/JIT compiler's free-variable codegen
+  (=lisp/nelisp-aot-compiler.el:7684=) — funnel through exactly one
+  primitive: =nelisp_env_lookup_value(mirror_ptr, frames_ptr, name_ptr,
+  out)= (defined in =lisp/nelisp-cc-env-lookup-value.el=).  Its body is:
+  call =nelisp_frame_stack_find(frames_ptr, name_ptr)=; on a *miss*
+  (cell-ptr = 0) fall through to =nelisp_env_lkv_mirror= which reads
+  slot 0 of the symbol's global "mirror" entry.  On a *hit*, read the
+  frame cell directly and *never* touch the mirror.
+- Closures: =nl_capture_descend_native=
+  (=lisp/nelisp-cc-frame-stack-find.el:386=) walks the live frame stack
+  innermost-first and snapshots every =(name . cell)= pair currently
+  visible into an alist at lambda-creation time.  Apply-time,
+  =nl_env_push_captured= / =nl_push_captured_walk=
+  (=lisp/nelisp-cc-evalport-env-leaves-frame.el:144-174=) rebinds that
+  *same* alist (cell objects reused verbatim, not copied) into a fresh
+  frame pushed onto the *same shared* frame stack via
+  =nelisp_frame_bind=, then =nl_apply_lambda_inner= evaluates the body.
+- Mirror entries are Rust-side 4-slot records — confirmed in
+  =lisp/nelisp-cc-mirror-alloc-entry.el= (~"symbol-entry" Record, 4
+  slots: value / function / plist / constant~) and mirrored by every
+  sibling helper (=nelisp-cc-mirror-set-value-or-insert.el=,
+  =-set-constant-or-insert.el=, =-set-function-or-insert.el=,
+  =-install-entry(-or-insert).el=).  Slot 2 (plist) is pre-filled with
+  =Sexp::Nil= on allocation and is *not read or written by any wired
+  Lisp primitive today* — =put=/=get=/=symbol-plist= do not exist yet
+  (only the unrelated =plist-get=/=plist-put=/=plist-member= list-based
+  keyword helpers in =scripts/nelisp-stdlib-prelude.el= exist, which
+  operate on arbitrary conses, not the mirror slot).
+
+This confirms every claim in the task brief's "confirmed mechanism"
+section and the closure-capture-cell double-wrap note in
+=lisp/nelisp-cc-apply-lambda-inner.el:126-143=.
+
+* 1. Chosen option: A (mirror plist-slot flag + always-lexical-first dispatch)
+
+*Option A is chosen.*  Justification against the stated constraints:
+
+- *Rust LOC must not increase*: Option A adds **zero** new
+  ~extern "C"~ functions and touches **zero** Rust source files.  Every
+  new function introduced below is a plain pure-elisp =defun= written
+  in the exact same low-level DSL (=alloc-bytes=, =ptr-write-u64=,
+  =record-slot-ref=/=record-slot-set=, =extern-call= into *already
+  existing* externs) used throughout
+  =nelisp-cc-evalport-env-leaves-logic.el= and its siblings.  The only
+  externs used are ones that already exist and are already linked:
+  =nelisp_mirror_lookup_entry=, =nelisp_mirror_alloc_entry=,
+  =nelisp_mirror_bucket_prepend=, =nelisp_env_lookup_value=,
+  =nelisp_env_set_value=, =nelisp_mirror_clear_value=,
+  =nelisp_cons_construct=, =nelisp_frame_push=/=nelisp_frame_pop=,
+  =nl_alloc_symbol=, =record-slot-ref=/=record-slot-set=, =sexp-tag=.
+- *4-slot mirror constraint*: Option A reuses the *existing* slot 2
+  (plist) rather than adding a 5th slot.  Because no live Lisp feature
+  reads or writes that slot today, storing a sentinel value there (the
+  bare symbol =t=, which a real property list can *never* legally be —
+  a plist value is always =nil= or a cons) cannot collide with any
+  current behavior.  Record layout, GC trace, and dump serialization
+  are all completely unchanged (slot 2 was always present and always
+  traced/dumped; we just start writing a different value into it for
+  symbols that opt in via =defvar=/=defconst=).
+- *Option B (dedicated specpdl)* would need a new reserved memory
+  region, arena-rebase handling for that region, and a fresh GC-root
+  audit for its stack of saved values — 400-600+ LOC of new
+  Rust-adjacent plumbing per the brief's own estimate, for a benefit
+  (an authentic specpdl with =max-specpdl-size= semantics, backtrace
+  frames, etc.) that is not required to fix the confirmed bug.  Given
+  the hard "Rust LOC must not increase" and "4-slot layout frozen"
+  constraints, Option B is strictly worse here and is not pursued.
+- The dispatch itself is minimally invasive: the *existing*
+  =nl_logic_bind_local(env, name_ptr, val_ptr)= keeps its exact 3-arg
+  signature and is called, unmodified at every call site, by all three
+  existing walkers (=nl_let_star_walk=, =nl_let_bind_walk=,
+  =nl_cc_clause_walk=).  Only its *body* changes, to a 1-line dispatch
+  on "is NAME declared special", branching to the old logic (renamed
+  =nl_logic_bind_local_lexical=, byte-for-byte unchanged) or a new
+  dynamic-bind path.  For every symbol that was never =defvar='d
+  (i.e. the overwhelming majority of all variables in any real program)
+  the dispatch takes the lexical branch and behavior is provably
+  identical to today.
+
+* 2. Exact touch points
+
+** 2.1 New file: =lisp/nelisp-cc-mirror-set-special-or-insert.el=
+
+Clone of =lisp/nelisp-cc-mirror-set-constant-or-insert.el= (74 lines) —
+copy its =nelisp_mirror_set_constant_or_insert_dispatch= /
+=nelisp_mirror_set_constant_or_insert= pair verbatim, renaming and
+changing exactly two details:
+
+- Hit path: ~(record-slot-set entry-ptr 2 <T-slot>)~ instead of slot 3.
+  ~<T-slot>~ is a scratch slot pre-loaded with the sentinel truthy
+  value (=Sexp::T=, packed the same way the existing file loads its
+  slot-10 constant flag).
+- Miss/insert path: call =nelisp_mirror_alloc_entry= with the *plist*
+  argument (its slot-9 position in the existing call, see
+  =nelisp-cc-mirror-set-constant-or-insert.el= lines 46-51) set to the
+  =Sexp::T= sentinel instead of =Sexp::Nil=; the *constant* argument
+  (slot 10) stays =Sexp::Nil= (unaffected — defvar/defconst do not
+  imply constant-ness in this subsystem; =defconst='s existing
+  behavior is untouched, see §2.2).
+
+Public entry, matching the naming convention of every sibling file:
+
+#+begin_src elisp
+(defun nelisp_mirror_set_special_or_insert (mirror-ptr sym-ptr scratch-vec-ptr _pad)
+  (nelisp_mirror_set_special_or_insert_dispatch
+   (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+   mirror-ptr sym-ptr scratch-vec-ptr 0 0))
+#+end_src
+
+Add to the same file a pure-elisp predicate, modeled directly on the
+existing =nl_cc_sym_is_t=-style helper already present in
+=nelisp-cc-evalport-env-leaves-logic.el= (compare a fetched record
+slot's tag/identity against the canonical =t= symbol):
+
+#+begin_src elisp
+(defun nl_mirror_is_special_p (mirror-ptr sym-ptr)
+  (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
+    (if (= entry 0)
+        0
+      (let* ((plist-slot (alloc-bytes 32 8)))
+        (seq (record-slot-ref entry 2 plist-slot)
+             ;; plist-slot holds either Sexp::Nil (not special / no
+             ;; plist), Sexp::T (special sentinel, no real plist), or —
+             ;; pre-existing behavior we must not break — nothing else
+             ;; today, since no plist writer is wired up yet.
+             (if (= (sexp-tag plist-slot) 1) 1 0))))))  ; tag 1 = symbol; refine
+                                                          ; to exact `t' compare
+                                                          ; using the same
+                                                          ; nelisp_eq_symbol
+                                                          ; idiom as nl_cc_sym_is_t.
+#+end_src
+
+(Implementer: use the *exact* =nl_cc_sym_is_t= pattern already in
+=nelisp-cc-evalport-env-leaves-logic.el= — pack ="t"= into a 1-byte
+buffer, =nl_alloc_symbol=, =nelisp_eq_symbol=, compare tag — rather
+than the sketch above, which is illustrative only.  Do not hand-roll a
+new symbol-equality test.)
+
+Register the new object in =scripts/compile-elisp-objects.el= following
+the exact pattern of the neighboring =:output
+"nelisp_mirror_set_constant_or_insert.o"= entry (same section that
+lists =nelisp_env_lookup_value.o= etc., confirmed present at
+=compile-elisp-objects.el:1449= and surrounding lines).
+
+** 2.2 =scripts/nelisp-standalone-build.el= — =nl_sf_defvar= / =nl_sf_defconst=
+
+Lines ~9033-9069 (=nl_sf_defconst=) and ~9071-9139+ (=nl_sf_defvar=,
+continuing past what was read).  Both functions already build a
+synthesized form (=(set 'NAME VALUE)= or the boundp-guarded variant),
+evaluate it via =nelisp_eval_call=, then =nl_sexp_clone_into name_ptr
+out=.  Add exactly one extra step *before* the final clone-and-return,
+in both functions:
+
+#+begin_src elisp
+(extern-call nelisp_mirror_set_special_or_insert
+             (+ env 0)     ; mirror_ptr
+             name_ptr
+             special-scratch-vec  ; pre-built scratch with slot holding Sexp::T
+             0)
+#+end_src
+
+This does not change either function's =(args env out _pad)= arity-4
+signature, does not change its return protocol (still 0=Ok / propagate
+the eval rc on failure), and runs unconditionally whenever a
+=defvar=/=defconst= form is evaluated — matching real Emacs: both forms
+mark the symbol special *unconditionally*, independent of whether the
+VALUE argument was supplied or whether the symbol was already bound.
+Note =nl_sf_defvar='s no-VALUE branch (pure declaration, `(defvar
+NAME)`) — the special-mark call must be added there too (real Emacs:
+`(defvar x)` with no value still declares `x` special for the rest of
+the file, this is the classic "just mark special, don't set" idiom used
+constantly in real Emacs source).
+
+** 2.3 =lisp/nelisp-cc-evalport-env-leaves-logic.el= — bind-local split
+
+This file is a single =(defconst ...--source '(seq (defun ...) ...))=
+blob (currently 1 physical line, ~for readability treat each ~(defun
+...)~ as its own unit when editing~).  Changes, all *inside* this one
+=seq= blob:
+
+*** (a) Split =nl_logic_bind_local= into lexical + dispatcher
+
+Rename the current body of =nl_logic_bind_local= to a new function
+=nl_logic_bind_local_lexical= (byte-for-byte identical logic, same
+3-arg signature =(env name_ptr val_ptr)=).  Redefine
+=nl_logic_bind_local= itself, *same signature*, as a pure dispatcher:
+
+#+begin_src elisp
+(defun nl_logic_bind_local (env name_ptr val_ptr)
+  (if (= (nl_mirror_is_special_p (+ env 0) name_ptr) 1)
+      (nl_logic_bind_local_dynamic env name_ptr val_ptr)
+    (nl_logic_bind_local_lexical env name_ptr val_ptr)))
+#+end_src
+
+All three existing call sites (=nl_let_star_walk=, =nl_let_bind_walk=,
+=nl_cc_clause_walk=) keep calling =nl_logic_bind_local= exactly as
+today — *zero* call-site edits needed for the dispatch itself.  This
+single choke point means =let=, =let*=, *and* =condition-case='s VAR
+all get correct dynamic-bind behavior from one patch.
+
+*** (b) New =nl_logic_bind_local_dynamic=
+
+#+begin_src elisp
+(defun nl_logic_bind_local_dynamic (env name_ptr val_ptr)
+  (let* ((mirror_ptr (+ env 0)) (frames_ptr (+ env 32))
+         (unbound_ptr (+ env 64))
+         (old_slot (alloc-bytes 32 8)) (scratch1 (alloc-bytes 32 8))
+         (scratch2 (alloc-bytes 32 8)))
+    (seq
+     ;; 1. Capture the CURRENT dynamic value before overwriting it.
+     ;;    nelisp_env_lookup_value returns 1 (unbound) and leaves
+     ;;    old_slot UNWRITTEN on a miss -- confirmed by reading
+     ;;    nelisp_env_lkv_mirror's body (`(if (= entry 0) 1 ...)').
+     ;;    Do not trust old_slot's bytes when rc=1; use unbound_ptr.
+     (let* ((rc (extern-call nelisp_env_lookup_value
+                             mirror_ptr frames_ptr name_ptr old_slot)))
+       (if (= rc 1) (nl_sexp_clone_into unbound_ptr old_slot) 0))
+     ;; 2. Cons (NAME . OLD-VALUE) onto this frame's dynsave list.
+     (nl_dynsave_push env name_ptr old_slot)
+     ;; 3. Install the NEW value as the current dynamic value.  Because
+     ;;    a special NAME never occupies a frame-stack slot (this is
+     ;;    the whole point), nelisp_env_set_value's frame search always
+     ;;    misses and falls through to a mirror write -- exactly the
+     ;;    "install new dynamic value" step, using an EXISTING extern.
+     (extern-call nelisp_env_set_value
+                  mirror_ptr frames_ptr name_ptr val_ptr scratch2 0))))
+#+end_src
+
+*** (c) The dynsave sentinel key + push/seed/restore helpers
+
+A single reserved, *uninterned*, statically-cached symbol is the
+sentinel binding key, following the *exact* lazy-static-address-cache
+idiom already used by =nl_logic_build_scratch= (see the top of this
+same file: check a fixed address for 0, allocate+=nl_alloc_symbol=
+once, cache the pointer, reuse thereafter).  Implementer: pick the next
+free static scratch address by grepping this file (and its
+Doc 111/115/135 siblings) for the =268436xxx= address family already in
+use — do not literally reuse =268436328= (that slot is
+=nl_logic_build_scratch='s own cache).  Because the symbol is allocated
+via raw =nl_alloc_symbol= and its pointer is only ever read back from
+this one cached static slot — *never* re-derived from =intern= on a
+name string — no real user symbol can ever alias it, independent of
+whether the frame hash buckets key on pointer identity or on a
+name-hash (confirmed the bucket pair car is the raw =name_ptr= itself,
+per =nl_let_collect_walk='s pair construction, so identity-based reuse
+of one cached pointer is safe either way).
+
+#+begin_src elisp
+(defun nl_dynsave_key () ; returns cached sentinel symbol ptr, lazy-init once
+  (if (= (ptr-read-u64 <NEW-STATIC-ADDR> 0) 0)
+      (let* ((s (alloc-bytes 32 8)))
+        (seq (nl_alloc_symbol <reserved-byte-pattern> <len> s)
+             (ptr-write-u64 <NEW-STATIC-ADDR> 0 s)))
+    0)
+  (ptr-read-u64 <NEW-STATIC-ADDR> 0))
+
+(defun nl_dynsave_seed_frame (env)
+  ;; Bind the sentinel to nil in the CURRENT (just-pushed, topmost)
+  ;; frame, unconditionally, via the LEXICAL path directly -- bypassing
+  ;; the special-check dispatcher entirely (the sentinel is never
+  ;; special; routing it through nl_logic_bind_local would be
+  ;; harmless but wasteful and conceptually wrong).
+  (let* ((nil_slot (alloc-bytes 32 8)))
+    (seq (nl_logic_write_nil_slot nil_slot)
+         (nl_logic_bind_local_lexical env (nl_dynsave_key) nil_slot))))
+
+(defun nl_dynsave_push (env name_ptr old_val_ptr)
+  ;; Cons (NAME . OLD-VALUE) onto the CURRENT frame's own dynsave list
+  ;; (guaranteed present -- see nl_dynsave_seed_frame, called
+  ;; unconditionally by every let/let*/condition-case frame push).
+  (let* ((mirror_ptr (+ env 0)) (frames_ptr (+ env 32))
+         (key (nl_dynsave_key))
+         (cur_list (alloc-bytes 32 8)) (name_clone (alloc-bytes 32 8))
+         (val_clone (alloc-bytes 32 8)) (pair_slot (alloc-bytes 32 8))
+         (new_list (alloc-bytes 32 8)) (scratch (alloc-bytes 32 8)))
+    (seq
+     (extern-call nelisp_env_lookup_value mirror_ptr frames_ptr key cur_list)
+     (nl_sexp_clone_into name_ptr name_clone)
+     (nl_sexp_clone_into old_val_ptr val_clone)
+     (nelisp_cons_construct name_clone val_clone pair_slot)
+     (nelisp_cons_construct pair_slot cur_list new_list)
+     (extern-call nelisp_env_set_value mirror_ptr frames_ptr key new_list scratch 0))))
+
+(defun nl_dynsave_restore_walk (pairs_ptr mirror_ptr frames_ptr unbound_ptr scratch)
+  (if (= (sexp-tag pairs_ptr) 7)
+      (let* ((pair_ptr (nl_cons_car_ptr pairs_ptr))
+             (rest_ptr (nl_cons_cdr_ptr pairs_ptr))
+             (name_ptr (nl_cons_car_ptr pair_ptr))
+             (val_ptr (nl_cons_cdr_ptr pair_ptr)))
+        (seq
+         (if (nl_sexp_ptr_eq val_ptr unbound_ptr)   ; identity/tag compare
+             (extern-call nelisp_mirror_clear_value mirror_ptr name_ptr)
+           (extern-call nelisp_env_set_value
+                        mirror_ptr frames_ptr name_ptr val_ptr scratch 0))
+         (nl_dynsave_restore_walk rest_ptr mirror_ptr frames_ptr unbound_ptr scratch)))
+    0))
+
+(defun nl_dynsave_restore_all (env)
+  (let* ((mirror_ptr (+ env 0)) (frames_ptr (+ env 32))
+         (unbound_ptr (+ env 64)) (key (nl_dynsave_key))
+         (list_slot (alloc-bytes 32 8)) (scratch (alloc-bytes 32 8)))
+    (seq (extern-call nelisp_env_lookup_value mirror_ptr frames_ptr key list_slot)
+         (nl_dynsave_restore_walk list_slot mirror_ptr frames_ptr unbound_ptr scratch))))
+#+end_src
+
+(=nl_sexp_ptr_eq= above is illustrative; implementer should use
+whatever existing raw-pointer/tag identity comparison idiom this file
+already uses elsewhere for "is this the unbound marker" checks — several
+call sites already compare against =unbound_ptr= by clone-and-tag or by
+direct pointer equality; follow the established one, do not invent a
+new comparison primitive.)
+
+*** (d) Seed every let/let*/condition-case frame
+
+In =nl_let_setup=, immediately after *each* of its two
+=(nelisp_frame_push frames_ptr push_scratch)= call sites (the
+parallel-let branch and the sequential-let* branch — both inside the
+same function body), insert =(nl_dynsave_seed_frame env)=.  In
+=nl_cc_clause_walk=, immediately after its
+=(nelisp_frame_push frames_ptr push_scratch)= call, insert the same.
+This guarantees every frame that =nl_logic_bind_local_dynamic= could
+ever target already owns its *own* dynsave-list entry, so the restore
+step at exit always finds *this* frame's list (frame search is
+innermost-first and this frame is topmost at its own exit point) and
+never accidentally restores an outer let's entries.  Frames with zero
+special bindings simply carry an unused =nil= list — negligible
+overhead, same class of cost as the existing per-frame scratch-metadata
+vector already built by =nl_logic_frame_push_scratch=.
+
+** 2.4 Restore-before-pop at every let-family finish point
+
+Three files, three functions, *identical* one-line body edit, *zero*
+signature change (all three already take =env= as a parameter):
+
+| File                                   | Function             | Existing body (unconditional pop) |
+|-----------------------------------------+-----------------------+------------------------------------|
+| =lisp/nelisp-cc-sf-let.el=              | =nl_sf_let_finish=    | =(extern-call nl_env_pop_frame env)= |
+| =lisp/nelisp-cc-sf-let-star.el=         | =nl_sf_let_star_finish= | same shape (confirmed via grep)  |
+| =lisp/nelisp-cc-sf-condition-case.el=   | =nl_sf_cc_finish=     | same shape (confirmed via grep)  |
+
+Edit (shown for =nl_sf_let_finish=; apply identically to the other two):
+
+#+begin_src elisp
+(defun nl_sf_let_finish (body-rc env out _pad)
+  (nl_sf_let_ret
+   (seq (extern-call nl_dynsave_restore_all env)
+        (extern-call nl_env_pop_frame env))
+   body-rc 0 0))
+#+end_src
+
+=nl_dynsave_restore_all= must run *before* =nl_env_pop_frame= (it reads
+the about-to-be-popped frame's own dynsave-list entry via the normal
+frame-search path; popping first would either miss it or, worse,
+silently find an *outer* let's list instead).  =extern-call= is used
+for the cross-compiled-unit call exactly as =nl_env_pop_frame= already
+is from this file (the two live in different =.o= units per the
+=compile-elisp-objects.el= one-file-per-helper convention) — register
+=nl_dynsave_restore_all= (and every new function in §2.3) in that
+manifest the same way.
+
+** 2.5 Read path and closures — confirmed to need NO change
+
+Both consumers of variable reads —
+=lisp/nelisp-cc-evalport-env-leaves-simple.el='s =nl_env_lookup_val=
+(plain interpreter) and =lisp/nelisp-aot-compiler.el:7684='s free-
+variable codegen (JIT/AOT compiler) — call the *same*
+=nelisp_env_lookup_value(mirror, frames, name, out)=, whose body (read
+in full, =lisp/nelisp-cc-env-lookup-value.el:72-95=) is: search frames
+via =nelisp_frame_stack_find=; on miss, read the mirror.  Because this
+design *never* pushes a frame entry for a special name (§2.3a routes
+it to =nl_logic_bind_local_dynamic=, which touches only the mirror and
+the frame's dynsave list — never the name itself as a frame key), every
+read of a special variable — top-level, inside a nested =let=, or
+inside a closure body invoked from anywhere — necessarily misses every
+frame and falls through to the mirror, returning the *current* dynamic
+value.  This is exactly the desired semantics and requires editing
+neither =nl_capture_descend_native=
+(=lisp/nelisp-cc-frame-stack-find.el:386=, which only ever captures
+names that *are* in some live frame — specials are never there to
+capture) nor =nl_apply_lambda_inner=/=nl_env_push_captured=
+(=lisp/nelisp-cc-evalport-env-leaves-frame.el:144-174=, which only
+replays whatever the capture alist contains).  Non-goal, explicitly out
+of scope for this design: =nl_apply_lambda_inner='s *parameter* binding
+path (a function whose formal parameter name happens to be
+=defvar='d special) is not routed through =nl_logic_bind_local= today
+and is not touched here; real Emacs also dynamically binds such
+parameters, so this is a known, pre-existing, narrower gap left for a
+follow-on design (see §7).
+
+* 3. Dynamic-save threading design (the "sentinel-key technique")
+
+The hard constraint is the let CPS chain's *even-arity* discipline:
+every function in =nl_sf_let=/=nl_sf_let_star=/=nl_sf_condition_case=
+has an even argument count so that "body-entry rsp ≡ 0 mod 16" holds,
+and every =extern-call= is argument 0 at its call site.  Threading a
+new "list of old values to restore" as an explicit extra parameter
+through =nl_sf_let_body=/=_body_cdr=/=_body_eval=/=_body_step= (and the
+=let*=/=condition-case= equivalents) would force every one of those
+functions from arity 4 to arity 5 (odd), breaking the alignment
+invariant documented in every one of these files' commentary — clearly
+not acceptable.
+
+The design instead threads the save-list *implicitly*, riding inside
+=env= (which every function in the chain already carries unchanged) as
+an ordinary frame binding under a reserved sentinel key
+(=nl_dynsave_key=, §2.3c):
+
+- At frame-push time (=nl_let_setup=, both branches, and
+  =nl_cc_clause_walk=), §2.3d unconditionally seeds the sentinel key to
+  =nil= in the *newly pushed* (topmost) frame.
+- Each dynamic bind (§2.3b/c, =nl_logic_bind_local_dynamic= ->
+  =nl_dynsave_push=) *conses* a fresh =(NAME . OLD-VALUE)= pair onto the
+  head of whatever the sentinel key currently holds *in this frame*,
+  via the exact same =nelisp_env_lookup_value= (read) +
+  =nelisp_env_set_value= (write) pair already used everywhere else in
+  this file for ordinary =setq=-style mutation of an existing binding.
+  No new frame push, no new extern, no signature change anywhere.
+- At the finish point (§2.4), *before* the existing unconditional
+  =nl_env_pop_frame=, =nl_dynsave_restore_all= reads that same sentinel
+  key back out of =env= (frame search finds it in the current topmost
+  frame, since it was seeded there and this frame's own finish runs
+  before that frame is popped) and walks it, restoring each entry.
+
+Because every list is built by *consing new entries onto the front*,
+the list is naturally in most-recent-first order.  Restoring
+head-to-tail therefore undoes bindings in exact LIFO order — correct
+even for pathological cases like =(let ((x 1) (x 2)) ...)= binding the
+same special name twice in one form, or nested =let*= re-binding the
+same name repeatedly: each undo step restores the value that was
+current *immediately before* that particular bind, which chains
+correctly back to the true original value once all entries for that
+frame are walked. Because the list lives *inside this frame's own
+hash bucket* (not some global stack), nested lets never see or disturb
+each other's lists — each finish point only ever restores its own
+frame's entries, in its own natural CPS-unwind order, which already
+nests correctly by construction (inner =let='s finish always runs
+before outer =let='s finish, exactly matching real specpdl unwind
+order).
+
+* 4. Non-local-exit correctness
+
+Read in full: =lisp/nelisp-cc-sf-let.el='s own CPS structure. Confirmed
+by inspection that =nl_sf_let_finish= is *already* the single
+unconditional exit choke point for =let=, reached on *both* code paths:
+
+- Normal completion: =nl_sf_let_body= hits =Nil= (body exhausted) and
+  calls =(nl_sf_let_finish 0 env out 0)=.
+- Any error/non-local exit during body evaluation:
+  =nl_sf_let_body_step= sees =eval-rc != 0= from =nelisp_eval_call= and
+  calls =(nl_sf_let_finish 1 env out 0)= — i.e. the frame is already
+  popped *today*, unconditionally, on the error path, with no explicit
+  =unwind-protect=-style machinery required, because the interpreter's
+  error propagation convention is "return rc=1 and let every CPS layer
+  above notice and finish" rather than a host-level unwind.
+
+Since our restore call is added *inside* =nl_sf_let_finish='s body
+(§2.4), it inherits this existing unconditional-on-both-paths property
+for free — no additional plumbing is needed for plain =error=/=signal=
+propagation through a =let=.  Same argument applies identically to
+=nl_sf_let_star_finish= and =nl_sf_cc_finish=.
+
+*Open verification item, explicitly flagged (not yet confirmed by
+reading — this design's one unverified assumption):* =unwind-protect='s
+own commentary (=lisp/nelisp-cc-sf-unwind-protect.el= lines 33-48)
+mentions an "M6 arena stash" carrying FLAG/TAG/VAL for a non-local exit,
+strongly suggesting =throw= is implemented as a variant of the same
+rc=1 signal-stash convention that ordinary errors use — in which case
+it *also* propagates through =nelisp_eval_call= returning 1 and hits
+=nl_sf_let_finish='s existing error path exactly as above, with no
+special-casing needed. Phase 4 (§5) must open
+=lisp/nelisp-cc-sf-catch.el= (or wherever =throw=/=catch= actually
+live — not read for this design due to budget) and confirm this before
+declaring the throw-restore test (§6, test 3) passing is sufficient
+evidence; if =throw= instead bypasses the rc=1 CPS convention via some
+other mechanism, the restore call must additionally be placed at
+*that* mechanism's unwind point.
+
+* 5. Phase split (5 phases, 1 implementer session each)
+
+*** Phase 1 — Mirror special-flag storage
+- New file =lisp/nelisp-cc-mirror-set-special-or-insert.el= (§2.1):
+  =nelisp_mirror_set_special_or_insert= + =nl_mirror_is_special_p=.
+- Register new object in =scripts/compile-elisp-objects.el=.
+- *Completion criteria*: builds and links cleanly; a standalone smoke
+  (call =nelisp_mirror_set_special_or_insert= on a fresh symbol, then
+  =nl_mirror_is_special_p= returns 1 for it and 0 for an untouched
+  symbol) passes. No behavior change to any existing feature (plist
+  slot was unused; nothing else reads it yet).
+
+*** Phase 2 — =defvar=/=defconst= mark special
+- Edit =nl_sf_defvar= and =nl_sf_defconst=
+  (=scripts/nelisp-standalone-build.el= ~9019-9139) per §2.2, including
+  the no-VALUE =(defvar NAME)= declaration-only branch.
+- *Completion criteria*: =(defvar foo 1)= and =(defconst bar 2)= both
+  leave =foo=/=bar= reporting special via =nl_mirror_is_special_p=
+  (exercised through a temporary debug hook or the Phase-4 end-to-end
+  test); existing =defvar=/=defconst= regression behavior (boundp
+  guard, doc-string arg tolerance, return-NAME value) unchanged —
+  spot-check against current passing tests for these forms.
+
+*** Phase 3 — Dynamic-bind dispatch + dynsave infrastructure
+- =lisp/nelisp-cc-evalport-env-leaves-logic.el= (§2.3): split
+  =nl_logic_bind_local= into dispatcher + =_lexical=; add
+  =nl_logic_bind_local_dynamic=, =nl_dynsave_key=,
+  =nl_dynsave_seed_frame=, =nl_dynsave_push=, =nl_dynsave_restore_walk=,
+  =nl_dynsave_restore_all=.
+- Seed calls added to both branches of =nl_let_setup= and to
+  =nl_cc_clause_walk=.
+- Register any newly-split object boundaries in
+  =scripts/compile-elisp-objects.el= if these helpers move to their own
+  =.o= (matches the one-helper-per-file convention; keeping them in the
+  existing =nelisp-cc-evalport-env-leaves-logic.el= object is also
+  acceptable and requires no manifest change).
+- *Completion criteria*: ordinary (non-special) =let=/=let*=/
+  =condition-case= behavior is byte-for-byte unchanged (full existing
+  regression suite green — this phase must not yet flip the target bug,
+  since restore-on-exit (Phase 4) isn't wired yet; verify only that
+  nothing regresses). A targeted debug probe confirms a =defvar='d
+  variable's mirror value changes across a =let= entry (dynamic install
+  observed) even though restore is not yet wired.
+
+*** Phase 4 — Restore-on-exit wiring
+- Edit =nl_sf_let_finish=, =nl_sf_let_star_finish=, =nl_sf_cc_finish=
+  per §2.4.
+- Resolve the §4 open verification item (locate and read the actual
+  =throw=/=catch= implementation; confirm or adjust the restore
+  placement accordingly).
+- *Completion criteria*: all three tests in §6.1-6.3 pass, in
+  particular the target repro (§0) now returns 20, matching real Emacs.
+
+*** Phase 5 — Regression sweep + Makefile wiring + docs
+- Add the three new smokes (§6) as Makefile targets.
+- Run the full existing regression gate (§6.4).
+- Update any AOT-compiler-adjacent documentation that enumerates
+  special forms' semantics, if such a doc exists, to note =let=/=let*=/
+  =condition-case= now honor =defvar=-declared specialness.
+- *Completion criteria*: green CI/make run including the three new
+  smokes; no existing smoke regresses.
+
+* 6. Test plan
+
+** 6.1 Target repro (must go from FAIL to PASS)
+#+begin_src elisp
+(defvar dv-x 1)
+(let ((dv-x 10))
+  (let ((f (lambda () dv-x)))
+    (let ((dv-x 20))
+      (funcall f))))
+#+end_src
+Expected: =20= (matches real Emacs 30.1 for a special variable).
+
+** 6.2 Control: lexical (non-special) closure capture unaffected
+#+begin_src elisp
+(let ((lex-y 10))
+  (let ((g (lambda () lex-y)))
+    (let ((lex-y 20))
+      (funcall g))))
+#+end_src
+Expected: =10= in both real Emacs (lexical-binding) and nelisp, before
+and after this change — =lex-y= is never =defvar='d, stays lexical, and
+must not be affected by the special-dispatch branch at all (proves the
+default branch of §2.3a is a true no-op for ordinary variables).
+
+** 6.3 Special-var dynamic-scope restore-on-throw
+#+begin_src elisp
+(defvar dv-z 1)
+(catch 'tag
+  (let ((dv-z 99))
+    (throw 'tag nil)))
+dv-z
+#+end_src
+Expected: =1= after the =catch= returns — proves =nl_dynsave_restore_all=
+runs even when the =let= body exits via a non-local =throw=, not just on
+normal completion or a plain =error=.
+
+** 6.4 Regression gates (must stay green)
+Existing smokes covering: standalone-reader-test, load, repl,
+intern-soft, pcase, catch-throw, cond-let, chunk-growth (exact Makefile
+target names to be confirmed by the implementer at Phase 5 time — not
+enumerated here to avoid asserting names not directly verified in this
+reading pass).
+
+** 6.5 Optional/nice-to-have (Phase 5, non-blocking)
+- Restore-to-unbound: a =defvar='d-but-never-set special, dynamically
+  bound then unwound, ends up =(boundp 'x)= = nil again (exercises the
+  =nelisp_mirror_clear_value= branch of §2.3c(=nl_dynsave_restore_walk=)).
+- =let*= sequential visibility: a special variable re-bound twice in one
+  =let*= sees the intermediate value from within the second binding's
+  value expression, and both bindings correctly unwind in LIFO order.
+
+* 7. Risks and mitigations
+
+- *Plist-slot reuse forecloses future real =symbol-plist= support in
+  its current form.* Mitigation: the sentinel is the bare symbol =t=,
+  which is never a legal real plist value (a plist is always =nil= or a
+  cons) — no ambiguity today. Forward-compatible path for whenever
+  =put=/=get=/=symbol-plist= are eventually implemented: encode
+  "special with a plist" as a cons =(t . REAL-PLIST)= and "special, no
+  plist" as bare =t=, keeping "not special" as bare =nil= or a bare
+  cons (an ordinary plist with no special marker). =nl_mirror_is_special_p=
+  and the future plist reader/writer would need to check for/preserve
+  this convention; not needed for this design, flagged for whoever
+  implements plists next.
+- *Every =let=/=let*=/=condition-case= binding now pays one extra
+  mirror hash lookup* (=nl_mirror_is_special_p=) *and every frame push
+  gets one extra hash-bucket entry* (the dynsave seed). Both are O(1)
+  and consistent in kind with existing per-binding/per-frame overhead
+  (mirror lookups and scratch-metadata vectors already happen on these
+  paths); no new complexity class introduced. If profiling later shows
+  this matters, a cheap follow-on optimization is caching a "known
+  special" bit directly alongside the interned symbol object so the
+  hot path skips the mirror hash entirely — out of scope here.
+- *Sentinel-key collision.* Mitigated by allocating the sentinel via
+  raw =nl_alloc_symbol= cached at a dedicated static address (never
+  =intern='d, never derived from a name string at lookup time) — see
+  §2.3c. Implementer must pick a genuinely free static address (grep
+  the =268436xxx= family already in use in this file rather than
+  guessing) to avoid clobbering an unrelated existing cache slot.
+- *Backquote-free macro discipline.* All new sexp construction (the
+  dynsave pair/list conses, the special-mark call) uses the same raw
+  =nelisp_cons_construct=/=alloc-bytes=/=ptr-write-u64= idiom already
+  used pervasively in this file — no backquote/unquote sugar is
+  introduced anywhere in this design.
+- *Non-regression of lexical semantics.* By construction (§2.3a), any
+  symbol whose mirror plist slot is not exactly the =t= sentinel takes
+  the untouched =nl_logic_bind_local_lexical= path — identical to
+  today's only path. Default mirror-entry allocation already zero-fills
+  this slot to =Sexp::Nil= (confirmed, =nelisp-cc-mirror-alloc-entry.el=),
+  so every symbol that has never been through =nl_sf_defvar=/=defconst=
+  is guaranteed to take the lexical branch, with zero behavior change.
+- *Unverified throw/catch unwind mechanism* (§4's open item) is the
+  single largest residual risk to Phase 4's completion — must be
+  resolved by reading the actual catch/throw implementation before
+  Phase 4 is declared done, not assumed from the unwind-protect
+  commentary alone.
+- *Function-parameter dynamic binding* (a special variable used as a
+  lambda formal parameter) is explicitly out of scope (§2.5) and left
+  as a known, narrower, pre-existing gap for a follow-on design if it
+  ever matters in practice.
