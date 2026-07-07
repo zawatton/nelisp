@@ -13969,3 +13969,56 @@ path:
    ceiling; (c) the deferred plan A (precise closure-env marking) done
    properly, closing the retention edge without ever needing to retain
    growth-chunk garbage at all.
+
+246. Task #17 M2 decision, 2026-07-07: M2 (magit-status in-session
+   render smoke) is DEFERRED as a scoped core GC/runtime follow-up; the
+   substrate work is MERGED to main as a milestone.  Definitive run:
+   with Policy B + a bridge-side periodic ~(garbage-collect)~ advice on
+   ~magit-insert-section--finish~, ~magit-status-smoke~ ran 60 min with
+   NO VSZ cap and still did not print either marker -- RSS climbed
+   monotonically to 25.2 GiB (no plateau) until the 64 GiB VSZ backstop
+   forced exit 88.  No crash at any point (the Doc 155 corruption is
+   solved and the reclaimer poke is removed, item 245).  So option (a)
+   (periodic GC) is REJECTED: it cannot bound RSS because growth chunks
+   are never ~munmap~'d, so RSS is the arena high-water mark and section
+   rendering (which allocates heavily without ever calling
+   ~garbage-collect~) pushes that mark up without limit.  The earlier
+   "RSS ~3.35 GiB plateau" reading was an artifact of an 8 GiB VSZ cap
+   forcing early exit before deep status-setup.  Cost attribution over
+   the 60 min run: bake ~4 s (elcache hot); ~exec-runtime-image~ cold
+   re-interpret of the whole 117-file magit bundle 0->11 GiB over ~15
+   min; ~magit-status-setup-buffer~ section rendering 11->25 GiB over
+   ~36 min.  Blocker character has thus shifted from "core GC crash
+   needing a poke" to "Policy B's per-collector retained generation
+   scales unboundedly on section-render allocation + a heavy fixed
+   cold-replay cost" -- both core/runtime, not bridge-patchable.
+
+   What SHIPPED to main (milestone, this repo): magit M1
+   (~magit-load-smoke~ = MAGIT-LOAD PASS: featurep/commandp/keymaps),
+   the buffer-local swap engine (item 242), and a large body of general
+   substrate fixes surfaced while peeling the status path (lenient
+   ~pcase-let~, ~cl--class~ seed for ~:include~, ~copy-sequence~ record
+   aliasing fix, ~text-property-not-all~, ~char-displayable-p~,
+   ~intern-soft~/pcase/catch-throw/~##~ in vendor/nelisp, ...), plus the
+   GC-reclaimer poke removal (item 245).  magit is API-usable (loads,
+   commands, keymaps); in-session status RENDER is the deferred piece.
+
+   Starting point for the deferred GC/runtime project (do NOT re-derive):
+   dev/nelisp branch ~fix/gc-retention-edge-magit~ carries Policy B
+   (3ad65697) + the growth-chunk free/retain diagnostic (6407e7bb,
+   default-off, ~nelisp--gc-diag~ positions 10/11).  Recommended real
+   fix = option (c) plan A: additive precise marking of a persisted
+   closure's captured environment (~(closure ALIST FORMALS BODY...)~,
+   ALIST = snapshot ~((NAME . CELL)...)~ whose CELLs are shared with the
+   live frame buckets) so form-boundary GC reclaims section-render
+   garbage correctly and RSS bounds itself -- additive marking is sound
+   by construction (can only prevent free-of-live, never cause it) and
+   is end-to-end testable (status-smoke completes with bounded RSS and
+   no crash).  Its earlier stall was "cannot synthesize the exact edge",
+   but the fix does not need the crash repro, only the (now-documented)
+   closure layout.  Orthogonal win = option (d): cut the 15 min / 11 GiB
+   ~exec-runtime-image~ cold-replay fixed cost (re-interpreting 117
+   files every invocation) -- helps all magit iteration and other
+   runtime-image uses regardless of the GC fix.  Instrumentation note:
+   the true memory metric is RSS, not VSZ (VSZ is unbounded by the
+   no-~munmap~ design and only usable as a runaway backstop).
