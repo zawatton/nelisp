@@ -44,6 +44,11 @@ jobs:
         shell: bash
         run: make macho-acceptance-test
 
+      - name: NeLisp wasm pomodoro app (nlri -> wasm -> headless smoke)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make wasm-pomo-smoke
+
       - name: Run smoke tests
         shell: bash
         run: make test
@@ -82,6 +87,10 @@ jobs:
         run: make dtw-android-apk
       - name: Bundle sync check (assets must match site/dtw)
         run: git diff --exit-code dtw-android/app/src/main/assets
-      - name: Report APK
-        run: ls -la dtw-android/app/build/outputs/apk/debug/
+      - name: Build Pomo debug APK (NeLisp pomodoro shell)
+        run: cd pomo-android && ./gradlew --no-daemon assembleDebug
+      - name: Pomo bundle sync check (assets must match site/pomo)
+        run: git diff --exit-code pomo-android/app/src/main/assets
+      - name: Report APKs
+        run: ls -la dtw-android/app/build/outputs/apk/debug/ pomo-android/app/build/outputs/apk/debug/
 

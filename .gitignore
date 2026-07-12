@@ -50,3 +50,7 @@ dist/
 dtw-android/.gradle/
 dtw-android/**/build/
 dtw-android/local.properties
+
+pomo-android/.gradle/
+pomo-android/**/build/
+pomo-android/local.properties

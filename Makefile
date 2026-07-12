@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-parallel test-one wasm-smoke wasm-runtime-image-smoke wasm-dtw-skeleton-smoke wasm-dtw-transpile wasm-dtw-compile wasm-dtw-smoke wasm-dtw-site wasm-dtw-site-smoke dtw-android-sync-assets dtw-android-apk compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
+.PHONY: test test-fast test-parallel test-one wasm-smoke wasm-runtime-image-smoke wasm-dtw-skeleton-smoke wasm-dtw-transpile wasm-dtw-compile wasm-dtw-smoke wasm-dtw-site wasm-dtw-site-smoke dtw-android-sync-assets dtw-android-apk wasm-pomo-nlri wasm-pomo-compile wasm-pomo-smoke wasm-pomo-site pomo-android-sync-assets pomo-android-apk compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -162,6 +162,37 @@ dtw-android-sync-assets:
 
 dtw-android-apk: dtw-android-sync-assets
 	cd dtw-android && ./gradlew --no-daemon assembleDebug
+
+# First non-dtw wasm app: NeLisp pomodoro timer (practical practice app).
+wasm-pomo-nlri:
+	node tools/wasm-pomo/build-pomo.mjs
+
+wasm-pomo-compile: wasm-pomo-nlri
+	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
+	  --eval '(setq load-prefer-newer t)' \
+	  --eval "(progn \
+	    (require 'nelisp-artifact) \
+	    (compile-runtime-image \
+	     '(\"compile-runtime-image\" \"--kind\" \"auto\" \
+	       \"--target\" \"wasm32-wasi\" \
+	       \"--input\" \"target/wasm-pomo/pomo.nlri\" \
+	       \"--output\" \"target/wasm-pomo/pomo.wasm\")))"
+
+wasm-pomo-smoke: wasm-pomo-compile
+	node tools/wasm-pomo/smoke.mjs target/wasm-pomo/pomo.wasm
+
+wasm-pomo-site: wasm-pomo-compile
+	mkdir -p site/pomo
+	cp tools/wasm-pomo/site-template/index.html tools/wasm-pomo/site-template/app.js site/pomo/
+	cp target/wasm-pomo/pomo.wasm site/pomo/
+
+pomo-android-sync-assets:
+	mkdir -p pomo-android/app/src/main/assets/pomo
+	cp site/pomo/index.html site/pomo/app.js site/pomo/pomo.wasm \
+	  pomo-android/app/src/main/assets/pomo/
+
+pomo-android-apk: pomo-android-sync-assets
+	cd pomo-android && ./gradlew --no-daemon assembleDebug
 
 compile:
 	$(EMACS) --batch -Q -L src \

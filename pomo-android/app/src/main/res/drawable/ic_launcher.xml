@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon: a tomato-red timer square on the panel blue. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+  <path
+      android:fillColor="#142231"
+      android:pathData="M6,4h36a2,2 0 0 1 2,2v36a2,2 0 0 1 -2,2h-36a2,2 0 0 1 -2,-2v-36a2,2 0 0 1 2,-2z"/>
+  <path
+      android:fillColor="#DA6338"
+      android:pathData="M24,10a14,14 0 1 1 -0.01,0z"/>
+  <path
+      android:fillColor="#142231"
+      android:pathData="M22,14h4v10h8v4h-12z"/>
+</vector>
