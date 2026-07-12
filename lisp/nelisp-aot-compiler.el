@@ -17791,7 +17791,7 @@ drift (= a Doc 92 emitter invariant violation)."
        buf (nelisp-aot-compiler--ir-get node :slot)))
      ((= tag 1)
       (let ((op (nelisp-aot-compiler--ir-get node :op)))
-        (unless (memq op '(+ - * / %))
+        (unless (memq op '(+ - * / % mod))
           (signal 'nelisp-aot-compiler-error
                   (list :wasm-unsupported-arith op))))
       (nelisp-aot-compiler--wasm-emit-value
@@ -17803,7 +17803,10 @@ drift (= a Doc 92 emitter invariant violation)."
         ('- (nelisp-asm-wasm-op-i64-sub buf))
         ('* (nelisp-asm-wasm-op-i64-mul buf))
         ('/ (nelisp-asm-wasm-op-i64-div-s buf))
-        ('% (nelisp-asm-wasm-op-i64-rem-s buf))))
+        ;; The front end parses `mod' into the arith IR as-is; both
+        ;; spellings mean i64.rem_s here (arguments are non-negative in
+        ;; the runtime-image app lane).
+        ((or '% 'mod) (nelisp-asm-wasm-op-i64-rem-s buf))))
      ((= tag 10)
       (let ((op (nelisp-aot-compiler--ir-get node :op)))
         (nelisp-aot-compiler--wasm-emit-value
