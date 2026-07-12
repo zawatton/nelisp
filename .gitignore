@@ -45,3 +45,8 @@ target/
 # OSS-bound repo (= ad-hoc local file is fine, but never tracked).
 /CLAUDE.md
 dist/
+
+# Android shell (Doc 165 W1) build outputs
+dtw-android/.gradle/
+dtw-android/**/build/
+dtw-android/local.properties

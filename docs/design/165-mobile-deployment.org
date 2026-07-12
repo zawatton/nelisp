@@ -229,7 +229,9 @@ in-process, offline, with a proper origin via the asset loader (below).
 Loading app assets over =file:///android_asset/…= has the *same two defects* as
 iOS =file://=: null origin + no =application/wasm= MIME, so
 =instantiateStreaming= fails.  =androidx.webkit.WebViewAssetLoader= fixes both:
-register a virtual =https://appassets.androidx.org/= origin with an
+register a virtual =https://appassets.androidplatform.net/= origin (the
+library's =DEFAULT_DOMAIN=; W1 verified the =androidx.org= domain this doc
+originally named does NOT match and falls through to the network) with an
 =AssetsPathHandler= mapping =/assets/dtw/…= → =src/main/assets/dtw/…=.  The loader
 serves each file with the *correct MIME* (including =application/wasm=) over a
 *secure https origin*, so =WebAssembly.instantiateStreaming= works and =dtw.js=

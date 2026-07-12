@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon: a D-pad cross on the bundle's panel blue.  A vector
+     drawable keeps the repo free of binary PNG assets. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+  <path
+      android:fillColor="#142231"
+      android:pathData="M6,4h36a2,2 0 0 1 2,2v36a2,2 0 0 1 -2,2h-36a2,2 0 0 1 -2,-2v-36a2,2 0 0 1 2,-2z"/>
+  <path
+      android:fillColor="#96AF7E"
+      android:pathData="M20,8h8v12h12v8h-12v12h-8v-12h-12v-8h12z"/>
+</vector>

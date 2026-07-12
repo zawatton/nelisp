@@ -66,6 +66,58 @@ addEventListener('keyup', (e) => {
   e.preventDefault();
 });
 
+// Touch controls (Doc 165 2.1 contract): a feature-detected D-pad overlay
+// whose zones feed the SAME key-level Set the keyboard feeds.  JS still
+// forwards only levels; press/release edges stay in wasm (P4 4.6), so touch
+// and keyboard produce identical in-wasm behaviour.  One dtw.js serves web,
+// Android WebView, and WKWebView -- the overlay is additive, never a fork.
+const TOUCH_ZONES = [
+  { code: 37, label: '←', col: 1, row: 2 },
+  { code: 38, label: '↑', col: 2, row: 1 },
+  { code: 39, label: '→', col: 3, row: 2 },
+  { code: 40, label: '↓', col: 2, row: 3 }
+];
+
+function installTouchControls() {
+  // Headless harnesses (site-smoke.mjs) have no window; skip silently.
+  if (typeof window === 'undefined') return;
+  const coarse = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+    || 'ontouchstart' in window;
+  if (!coarse) return;
+  const pad = document.createElement('div');
+  pad.id = 'dpad';
+  pad.style.cssText = 'display:grid;grid-template-columns:repeat(3,64px);'
+    + 'grid-template-rows:repeat(3,64px);gap:6px;justify-content:center;'
+    + 'margin:14px auto 0;touch-action:none;user-select:none;-webkit-user-select:none;';
+  for (const zone of TOUCH_ZONES) {
+    const btn = document.createElement('div');
+    btn.textContent = zone.label;
+    btn.style.cssText = `grid-column:${zone.col};grid-row:${zone.row};`
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'font:28px monospace;color:var(--fg,#d8e2ef);'
+      + 'background:rgba(52,80,107,0.35);border:1px solid var(--line,#34506b);'
+      + 'border-radius:10px;touch-action:none;';
+    const press = (e) => {
+      keys.add(zone.code);
+      btn.style.background = 'rgba(52,80,107,0.75)';
+      e.preventDefault();
+    };
+    const release = (e) => {
+      keys.delete(zone.code);
+      btn.style.background = 'rgba(52,80,107,0.35)';
+      e.preventDefault();
+    };
+    btn.addEventListener('pointerdown', press);
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('pointerleave', release);
+    pad.appendChild(btn);
+  }
+  canvas.insertAdjacentElement('afterend', pad);
+}
+
+installTouchControls();
+
 let mem;
 
 function readCString(off) {

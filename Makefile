@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-parallel test-one wasm-smoke wasm-runtime-image-smoke wasm-dtw-skeleton-smoke wasm-dtw-transpile wasm-dtw-compile wasm-dtw-smoke wasm-dtw-site wasm-dtw-site-smoke compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
+.PHONY: test test-fast test-parallel test-one wasm-smoke wasm-runtime-image-smoke wasm-dtw-skeleton-smoke wasm-dtw-transpile wasm-dtw-compile wasm-dtw-smoke wasm-dtw-site wasm-dtw-site-smoke dtw-android-sync-assets dtw-android-apk compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -152,6 +152,16 @@ wasm-dtw-site: wasm-dtw-compile
 
 wasm-dtw-site-smoke: wasm-dtw-site
 	node tools/wasm-dtw-p4b/site-smoke.mjs site/dtw
+
+# Doc 165 W1: copy the published bundle into the Android shell's assets so
+# every surface (web / Android) ships a byte-identical dtw.wasm and dtw.js.
+dtw-android-sync-assets:
+	mkdir -p dtw-android/app/src/main/assets/dtw
+	cp site/dtw/index.html site/dtw/dtw.js site/dtw/dtw.wasm site/dtw/README.md \
+	  dtw-android/app/src/main/assets/dtw/
+
+dtw-android-apk: dtw-android-sync-assets
+	cd dtw-android && ./gradlew --no-daemon assembleDebug
 
 compile:
 	$(EMACS) --batch -Q -L src \

@@ -68,3 +68,20 @@ jobs:
         shell: bash
         run: make standalone-parallel-compile-test
 
+  # Doc 165 Track 1 W1: the Android WebView shell must stay buildable and
+  # its bundled assets byte-identical to site/dtw.
+  dtw-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build debug APK (uses the runner's preinstalled Android SDK)
+        run: make dtw-android-apk
+      - name: Bundle sync check (assets must match site/dtw)
+        run: git diff --exit-code dtw-android/app/src/main/assets
+      - name: Report APK
+        run: ls -la dtw-android/app/build/outputs/apk/debug/
+
