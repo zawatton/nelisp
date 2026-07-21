@@ -7179,6 +7179,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--eval-source-string") . (bf_eval_source_string args env out))
     ((:lit "nelisp--syscall-read-file") . (seq (nl_bi_read_file args out) 0))
     ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
+    ((:lit "nl-append-file") . (nl_bi_append_file_t args out))
     ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
     ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
     ((:lit "nelisp--syscall-path-int") . (nl_bi_syscall_path_int args out))
@@ -7582,6 +7583,31 @@ extern arms in dynamic builds."
       (if (= (ptr-read-u64 sx 0) 6)
           (ptr-read-u64 (ptr-read-u64 sx 8) 16)
         (ptr-read-u64 sx 24)))
+    ;; Convert NeLisp's Latin-1 byte-string representation to raw bytes while
+    ;; leaving ASCII and 3+-byte UTF-8 sequences untouched.  This mirrors the
+    ;; AOT nl-write-file object and is shared by truncate + append writers.
+    (defun nl_bi_raw_decode (src src-len dst src-idx dst-idx)
+      (if (= src-idx src-len)
+          dst-idx
+        (let ((b (ptr-read-u8 src src-idx)))
+          (if (< b 194)
+              (nl_seq2
+               (ptr-write-u8 dst dst-idx b)
+               (nl_bi_raw_decode src src-len dst (+ src-idx 1) (+ dst-idx 1)))
+            (if (= b 194)
+                (nl_seq2
+                 (ptr-write-u8 dst dst-idx (ptr-read-u8 src (+ src-idx 1)))
+                 (nl_bi_raw_decode src src-len dst (+ src-idx 2) (+ dst-idx 1)))
+              (if (= b 195)
+                  (nl_seq2
+                   (ptr-write-u8 dst dst-idx
+                                 (+ (ptr-read-u8 src (+ src-idx 1)) 64))
+                   (nl_bi_raw_decode src src-len dst
+                                     (+ src-idx 2) (+ dst-idx 1)))
+                (nl_seq2
+                 (ptr-write-u8 dst dst-idx b)
+                 (nl_bi_raw_decode src src-len dst
+                                   (+ src-idx 1) (+ dst-idx 1)))))))))
     (defun nl_bi_cpath_loop (src dst i n)
       (if (= i n)
           (nl_seq2 (ptr-write-u8 dst n 0) dst)
@@ -7592,8 +7618,25 @@ extern arms in dynamic builds."
                         0 (nl_bi_strlen sx)))
     (defun nl_bi_wf_withfd (fd ptr len)
       (if (< fd 0) fd
-        (let* ((wr (nl_os_write_file_handle fd ptr len)))
+        (let* ((wr (nl_bi_write_all fd ptr len 0)))
           (nl_seq2 (nl_os_close_handle fd) wr))))
+    ;; Loop partial writes.  Raw Linux syscall wrappers return -errno, so -4
+    ;; is EINTR and retries without advancing the offset.
+    (defun nl_bi_write_all (fd ptr len off)
+      (if (>= off len)
+          off
+        (let ((wr (nl_os_write_file_handle fd (+ ptr off) (- len off))))
+          (if (= wr -4)
+              (nl_bi_write_all fd ptr len off)
+            (if (< wr 1)
+                wr
+              (nl_bi_write_all fd ptr len (+ off wr)))))))
+    (defun nl_bi_write_decoded (fd sx)
+      (let* ((src (nl_bi_strptr sx))
+             (src-len (nl_bi_strlen sx))
+             (dst (alloc-bytes (if (= src-len 0) 1 src-len) 1))
+             (dst-len (nl_bi_raw_decode src src-len dst 0 0)))
+        (nl_bi_write_all fd dst dst-len 0)))
     (defun nl_bi_write_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)) (cont_sx (wf_arg_ptr args 1)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
@@ -8774,8 +8817,18 @@ pre-existing `nl_os_process_fork' stub there."
              (fd (nl_os_open_write_truncate cpath)))
         (if (< fd 0)
             (wf_write_nil out)
-          (let* ((wr (nl_os_write_file_handle fd (nl_bi_strptr cont_sx)
-                                             (nl_bi_strlen cont_sx))))
+          (let* ((wr (nl_bi_write_decoded fd cont_sx)))
+            (seq
+             (nl_os_close_handle fd)
+             (if (< wr 0) (wf_write_nil out) (wf_write_t out)))))))
+    (defun nl_bi_append_file_t (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (cont_sx (wf_arg_ptr args 1))
+             (cpath (nl_bi_make_cpath path_sx))
+             (fd (nl_os_open_write_append cpath)))
+        (if (< fd 0)
+            (wf_write_nil out)
+          (let* ((wr (nl_bi_write_decoded fd cont_sx)))
             (seq
              (nl_os_close_handle fd)
              (if (< wr 0) (wf_write_nil out) (wf_write_t out))))))))
@@ -10798,7 +10851,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
-    "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
+    "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file" "nl-append-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
     "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
@@ -13081,6 +13134,9 @@ boundary (Doc 151 Phase B):
        (defun nl_os_open_write_truncate (path)
          (let* ((wpath (nl_win_utf8_wcs_dup path)))
            (extern-call CreateFileW wpath 1073741824 0 0 2 128 0)))
+       (defun nl_os_open_write_append (path)
+         (let* ((wpath (nl_win_utf8_wcs_dup path)))
+           (extern-call CreateFileW wpath 4 0 0 4 128 0)))
        (defun nl_os_close_handle (h)
          (if (< h 0) 0 (extern-call CloseHandle h)))
        (defun nl_os_read_file_handle (h ptr len)
@@ -13264,6 +13320,8 @@ boundary (Doc 151 Phase B):
          (syscall-direct 5 path 0 0 0 0 0))
        (defun nl_os_open_write_truncate (path)
          (syscall-direct 5 path 1537 420 0 0 0))
+       (defun nl_os_open_write_append (path)
+         (syscall-direct 5 path 521 420 0 0 0))
        (defun nl_os_close_handle (fd)
          (syscall-direct 6 fd 0 0 0 0 0))
        (defun nl_os_read_file_handle (fd ptr len)
@@ -13331,6 +13389,8 @@ boundary (Doc 151 Phase B):
          (syscall-direct 56 -100 path 0 0 0 0))
        (defun nl_os_open_write_truncate (path)
          (syscall-direct 56 -100 path 577 420 0 0))
+       (defun nl_os_open_write_append (path)
+         (syscall-direct 56 -100 path 1089 420 0 0))
        (defun nl_os_close_handle (fd)
          (syscall-direct 57 fd 0 0 0 0 0))
        (defun nl_os_read_file_handle (fd ptr len)
@@ -13397,6 +13457,8 @@ boundary (Doc 151 Phase B):
          (syscall-direct 2 path 0 0 0 0 0))
        (defun nl_os_open_write_truncate (path)
          (syscall-direct 2 path 577 420 0 0 0))
+       (defun nl_os_open_write_append (path)
+         (syscall-direct 2 path 1089 420 0 0 0))
        (defun nl_os_close_handle (fd)
          (syscall-direct 3 fd 0 0 0 0 0))
        (defun nl_os_read_file_handle (fd ptr len)
@@ -13596,57 +13658,66 @@ correctly."
                  (ib0 (ptr-read-u64 (+ base0 832) 0)))
             (seq
              (nl_fa_read_all fd ib0 64 0)
-             (let* ((slen (ptr-read-u64 ib0 8))
-                    (isz (ptr-read-u64 ib0 16))
-                    (tlen (ptr-read-u64 ib0 24))
-                    ;; capture the dumping run's intern base BEFORE the interned
-                    ;; region read below overwrites the header sitting in `ib0'.
-                    (oldib (ptr-read-u64 ib0 56))
-                    ;; required chunk-0 bytes: control block + coalesced region
-                    ;; + reloc table (its transient DS+slen scratch) + 8 MiB
-                    ;; slack (room for the boot allocs that land right after
-                    ;; the cursor before the next natural chunk growth), 64 KiB
-                    ;; aligned (matches `nl_chunk_size_for's convention).
-                    (needed (nl_align_up
-                             (+ 1024 (+ slen (+ (* tlen 8) 8388608)))
-                             65536))
-                    (cursize (ptr-read-u64 (+ base0 216) 0)))
+             (if (= (ptr-read-u64 ib0 0) 1179407692)
+                 (let* ((slen (ptr-read-u64 ib0 8))
+                        (isz (ptr-read-u64 ib0 16))
+                        (tlen (ptr-read-u64 ib0 24))
+                        ;; capture the dumping run's intern base BEFORE the interned
+                        ;; region read below overwrites the header sitting in `ib0'.
+                        (oldib (ptr-read-u64 ib0 56))
+                        ;; required chunk-0 bytes: control block + coalesced region
+                        ;; + reloc table (its transient DS+slen scratch) + 8 MiB
+                        ;; slack (room for the boot allocs that land right after
+                        ;; the cursor before the next natural chunk growth), 64 KiB
+                        ;; aligned (matches `nl_chunk_size_for's convention).
+                        (needed (nl_align_up
+                                 (+ 1024 (+ slen (+ (* tlen 8) 8388608)))
+                                 65536))
+                        (cursize (ptr-read-u64 (+ base0 216) 0)))
+                   (seq
+                    (if (> needed cursize) (nl_cold_grow_chunk0 needed) 0)
+                    (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
+                           (ds (+ base 1024))
+                           (ib (ptr-read-u64 (+ base 832) 0))
+                           (tbl (+ ds slen)))
+                      (seq
+                       (nl_fa_read_all fd tbl (* tlen 8) 0)
+                       (nl_fa_read_all fd ds slen 0)
+                       (nl_fa_read_all fd ib isz 0)
+                       (nl_os_close_handle fd)
+                       (nl_cold_reloc tbl tlen ds slen ib)
+                       (nl_cold_reloc_intern ib oldib)
+                       ;; scrub the now-dead relocation table so the bump cursor (set to
+                       ;; 1024+slen below) re-arms over ZEROED memory -- matching the
+                       ;; fresh-mmap invariant the boot constructors depend on.
+                       (nl_cold_zero tbl (* tlen 8))
+                       (nl_cold_clear_marks ds (+ ds slen))
+                       (ptr-write-u64 base 0 (+ 1024 slen))
+                       ;; Keep the chunk-0 descriptor cursor in sync with the
+                       ;; legacy bump cursor immediately after cold-load.  The
+                       ;; head chunk normally reads `base+0', but descriptor-only
+                       ;; walkers must not see the bootstrap cursor (1024).
+                       (ptr-write-u64 (+ base 784) 0 (+ 1024 slen))
+                       (ptr-write-u64 (+ base 840) 0 (+ ib isz))
+                       ;; push the GC next-trigger far out so a collection does not fire
+                       ;; on the freshly-loaded (already-live) image during early eval.
+                       (ptr-write-u64 (+ base 104) 0 (+ (+ 1024 slen) 1073741824))
+                       1))))
                (seq
-                (if (> needed cursize) (nl_cold_grow_chunk0 needed) 0)
-                (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
-                       (ds (+ base 1024))
-                       (ib (ptr-read-u64 (+ base 832) 0))
-                       (tbl (+ ds slen)))
-                  (seq
-                   (nl_fa_read_all fd tbl (* tlen 8) 0)
-                   (nl_fa_read_all fd ds slen 0)
-                   (nl_fa_read_all fd ib isz 0)
-                   (nl_os_close_handle fd)
-                   (nl_cold_reloc tbl tlen ds slen ib)
-                   (nl_cold_reloc_intern ib oldib)
-                   ;; scrub the now-dead relocation table so the bump cursor (set to
-                   ;; 1024+slen below) re-arms over ZEROED memory -- matching the
-                   ;; fresh-mmap invariant the boot constructors depend on.
-                   (nl_cold_zero tbl (* tlen 8))
-                   (nl_cold_clear_marks ds (+ ds slen))
-                   (ptr-write-u64 base 0 (+ 1024 slen))
-                   ;; Keep the chunk-0 descriptor cursor in sync with the
-                   ;; legacy bump cursor immediately after cold-load.  The
-                   ;; head chunk normally reads `base+0', but descriptor-only
-                   ;; walkers must not see the bootstrap cursor (1024).
-                   (ptr-write-u64 (+ base 784) 0 (+ 1024 slen))
-                   (ptr-write-u64 (+ base 840) 0 (+ ib isz))
-                   ;; push the GC next-trigger far out so a collection does not fire
-                   ;; on the freshly-loaded (already-live) image during early eval.
-                   (ptr-write-u64 (+ base 104) 0 (+ (+ 1024 slen) 1073741824))
-                   1)))))))))
-    ;; cold path globals install: re-read the header for globals_off and point
-    ;; the GLOBALS slot at the loaded globals Record (tag 12, box = DS + goff).
-    ;; Frames/unbound keep the fresh ones from `nl_bootstrap_make_mirror'.
+                (nl_os_close_handle fd)
+                -1)))))))
+    (defun nl_cold_root_ptr (off span ds ib)
+      (if (< off span)
+          (+ ds off)
+        (+ ib (- off span))))
+    ;; cold path root install: re-read the header for globals/frames/unbound
+    ;; and point the live root slots at the loaded image instead of re-evaluating
+    ;; the prelude/user top-level sources.  Return 1 on success, else 0 so the
+    ;; caller can fall back to normal source replay.
     ;; OVERRIDE mirrors `nl_cold_load_arena's: 0 = default marker path,
     ;; non-zero = the `--cold-load-from PATH' path (must be the SAME path
     ;; used for the load, since both re-open + re-read the header).
-    (defun nl_cold_overwrite_globals (globals override)
+    (defun nl_cold_install_roots (globals frames unbound override)
       (let* ((cpath (if (= override 0) (nl_cold_marker_cpath) override))
              (fd (nl_os_open_read cpath)))
         (if (< fd 0) 0
@@ -13654,15 +13725,33 @@ correctly."
             (seq
              (nl_fa_read_all fd hdr 64 0)
              (nl_os_close_handle fd)
-             (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
-                    (ds (+ base 1024))
-                    (goff (ptr-read-u64 hdr 32)))
-               (seq
-                (ptr-write-u8 globals 0 12)
-                (ptr-write-u64 globals 8 (+ ds goff))
-                (ptr-write-u64 globals 16 0)
-                (ptr-write-u64 globals 24 0)
-                1)))))))
+             (if (not (= (ptr-read-u64 hdr 0) 1179407692))
+                 0
+               (let* ((base (ptr-read-u64 (data-addr nl_arena_base) 0))
+                      (ds (+ base 1024))
+                      (ib (ptr-read-u64 (+ base 832) 0))
+                      (slen (ptr-read-u64 hdr 8))
+                      (isz (ptr-read-u64 hdr 16))
+                      (limit (+ slen isz))
+                      (goff (ptr-read-u64 hdr 32))
+                      (foff (ptr-read-u64 hdr 40))
+                      (uoff (ptr-read-u64 hdr 48)))
+                 (if (or (>= goff limit) (>= foff limit) (>= uoff limit))
+                     0
+                   (seq
+                    (ptr-write-u8 globals 0 12)
+                    (ptr-write-u64 globals 8 (nl_cold_root_ptr goff slen ds ib))
+                    (ptr-write-u64 globals 16 0)
+                    (ptr-write-u64 globals 24 0)
+                    (ptr-write-u8 frames 0 12)
+                    (ptr-write-u64 frames 8 (nl_cold_root_ptr foff slen ds ib))
+                    (ptr-write-u64 frames 16 0)
+                    (ptr-write-u64 frames 24 0)
+                    (ptr-write-u8 unbound 0 4)
+                    (ptr-write-u64 unbound 8 (nl_cold_root_ptr uoff slen ds ib))
+                    (ptr-write-u64 unbound 16 0)
+                    (ptr-write-u64 unbound 24 0)
+                    1)))))))))
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -14316,9 +14405,14 @@ correctly."
             (linebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1)))
        (seq
         (nl_bootstrap_make_mirror globals frames unbound)
-        ;; cold path: replace the fresh empty globals with the loaded image's
-        ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
-        (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_override))
+        ;; cold path: replace the fresh bootstrap roots with the loaded image's
+        ;; globals/frames/unbound roots.  If root install declines the image,
+        ;; flip back to normal replay boot.
+        (if (< _cl 0)
+            0
+          (if (= (nl_cold_install_roots globals frames unbound cold_override) 1)
+              0
+            (setq _cl -1)))
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ;; PERF (2026-07-03): populate the two shared frame-push-scratch
@@ -14371,6 +14465,12 @@ correctly."
         ;; runtime-image commands) and sidesteps the deep-nesting bug entirely.
         (nl_argv_list_from argc sp0 1 argv_list)
         (nl_env_set_value ctx argv_sym argv_list)
+        ;; Publish the initial envp before environment initialization so the
+        ;; standalone prelude can inspect the inherited process block.
+        (ptr-write-u64 268435600 0
+                       (if (= sp0 0)
+                           0
+                         (+ sp0 (* (+ argc 2) 8))))
         ;; fix/windows-env-inherit: `nl_os_environ_init' is the real
         ;; GetEnvironmentStringsW-backed populator on Windows and a
         ;; `wf_write_nil' no-op (POSIX unchanged) everywhere else -- same
@@ -14383,14 +14483,6 @@ correctly."
 ;; that ceiling, so deep recursion (cnt(100000) -> 42) succeeds while still erroring
 ;; at the guard -- never SIGSEGV -- once it exceeds the budget.
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 300000)
-        ;; M11 env inherit: stash the initial-stack envp (= sp0 + (argc+2)*8,
-        ;; the char** right after argv's NULL) in arena slot +144 (268435600)
-        ;; so the process substrate's execve passes the parent environment to
-        ;; children instead of an empty one.  0 = unavailable (no sp).
-        (ptr-write-u64 268435600 0
-                       (if (= sp0 0)
-                           0
-                         (+ sp0 (* (+ argc 2) 8))))
         (ptr-write-u64 268436448 0 32768)                       ; Doc 147 P1.5 — store the RAW parse-pool cap (32768 slots) for the GC pool arms.  Raised from 8192 after vendored eucjp-ms' 2069-entry generated alist exceeded the flat-list tail depth; 32768 => MAX_DEPTH ~8191 for the current 3+4*MAX_DEPTH reader slot shape.
         (ptr-write-u64 268436464 0 1)  ; Doc 152 §11.21: CONSERVATIVE native-stack scan ON — closes the eval root-coverage gap (Doc 146 §2) so a collection never frees/blanks a still-referenced in-flight box.  Pairs with compaction OFF (mark+sweep) below; verified to stop the anvil-pkg suite SIGSEGV (suite-readiness now completes cleanly).
         ;; GC trigger: collect at a form boundary once the bump offset
@@ -14580,7 +14672,7 @@ correctly."
          ;; `--cold-load-from PATH': explicit cold-load (Increment 2), so
          ;; tests / callers don't have to clobber the fixed marker file.
          ;; `cold_override' (bound above, before `_cl') already carries PATH
-         ;; through to `nl_cold_load_arena' / `nl_cold_overwrite_globals'; this
+         ;; through to `nl_cold_load_arena' / `nl_cold_install_roots'; this
          ;; branch just runs the same REPL-loop body `--repl' does (PATH
          ;; consumes the arg2 slot, so only arg3 is available for
          ;; --no-prompt/--no-print, same as `--repl' with one fewer free slot).

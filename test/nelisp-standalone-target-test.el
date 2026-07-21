@@ -37,6 +37,57 @@
   (should (eq nelisp-standalone--target 'linux-x86_64))
   (should (eq (nelisp-standalone--target-abi 'linux-x86_64) 'sysv)))
 
+(ert-deftest nelisp-standalone-target-append-writer-uses-o-append-without-read ()
+  "The Phase-A append primitive must be an atomic open+write path."
+  (let* ((nelisp-standalone--target 'linux-x86_64)
+         (forms (nelisp-standalone--fileio-source))
+         (append-form
+          (cl-find-if (lambda (form)
+                        (and (consp form)
+                             (eq (car form) 'defun)
+                             (eq (cadr form) 'nl_bi_append_file_t)))
+                      forms))
+         (os-source (prin1-to-string
+                     (nelisp-standalone--reader-os-source-forms)))
+         (append-source (prin1-to-string append-form))
+         (builtins-source (prin1-to-string
+                           (nelisp-standalone--applyfn-reader-table))))
+    (should append-form)
+    (should (string-match-p
+             "(defun nl_os_open_write_append (path) (syscall-direct 2 path 1089 420"
+             os-source))
+    (should (string-match-p "nl_os_open_write_append" append-source))
+    (should (string-match-p "nl_bi_write_decoded" append-source))
+    (should-not (string-match-p "read" append-source))
+    (should (string-match-p "nl-append-file" builtins-source))))
+
+(ert-deftest nelisp-standalone-target-stdlib-write-region-contracts-are-synced ()
+  "The canonical stdlib and winning prelude use the same append primitive."
+  (dolist (path '("lisp/nelisp-stdlib-misc.el"
+                  "scripts/nelisp-stdlib-prelude.el"))
+    (let ((source (with-temp-buffer
+                    (insert-file-contents path)
+                    (buffer-string))))
+      (should (string-match-p "(nl-append-file filename bytes)" source))
+      (should (string-match-p "(nl-write-file filename bytes)" source))
+      (should-not (string-match-p
+                   "write-region stub: APPEND not supported" source)))))
+
+(ert-deftest nelisp-standalone-target-stdlib-package-resolution-contracts-are-synced ()
+  "The canonical stdlib and winning prelude keep real package resolution."
+  (dolist (path '("lisp/nelisp-stdlib-misc.el"
+                  "scripts/nelisp-stdlib-prelude.el"))
+    (let ((source (with-temp-buffer
+                    (insert-file-contents path)
+                    (buffer-string))))
+      (should (string-match-p "(defun nelisp--normalize-posix-path" source))
+      (should (string-match-p "(defun nelisp--expand-home-prefix" source))
+      (should (string-match-p "(defun load-file (file)" source))
+      (should (string-match-p "(defun require (feature &optional filename noerror)"
+                              source))
+      (should-not (string-match-p "nl-getenv" source))
+      (should-not (string-match-p "(provide feature)" source)))))
+
 (ert-deftest nelisp-standalone-target-windows-uses-win64 ()
   "The Windows-native target maps to the Microsoft x64 ABI."
   (should (eq (nelisp-standalone--target-abi 'windows-x86_64) 'win64)))
@@ -1144,6 +1195,31 @@ scratch chunks have their cursor reset."
   (should (= nelisp-standalone--macos-native-stack-size #x20000000))
   (should (< nelisp-standalone--macos-native-stack-size
              nelisp-standalone--native-stack-size)))
+
+(ert-deftest nelisp-standalone-target-cold-load-installs-live-roots ()
+  "Cold-load boot installs globals, frames, and unbound from the image."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((forms (nelisp-standalone--reader-driver-source)))
+      (should (tree-member-p '(defun nl_cold_root_ptr (off span ds ib)
+                                (if (< off span)
+                                    (+ ds off)
+                                  (+ ib (- off span))))
+                             forms))
+      (should (tree-member-p
+               '(if (< _cl 0)
+                    0
+                  (if (= (nl_cold_install_roots globals frames unbound cold_override) 1)
+                      0
+                    (setq _cl -1)))
+               forms))
+      (should (tree-member-p '(ptr-write-u8 frames 0 12) forms))
+      (should (tree-member-p '(ptr-write-u8 unbound 0 4) forms)))))
 
 (provide 'nelisp-standalone-target-test)
 
