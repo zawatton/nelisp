@@ -65,6 +65,9 @@
 (defconst nelisp-heap-image--tag 'nelisp-heap-image-v0
   "Top-level data tag for heap-v0 images.")
 
+(defconst nelisp-heap-image--table-mask #xFFFFFFFF
+  "Mask used by heap-image private hash maps.")
+
 (defconst nelisp-heap-image--env-root-manifest
   '(("globals_record" env-globals-record)
     ("frames_record" env-frames-record)
@@ -88,6 +91,197 @@ while dumping or restoring an Env.")
       (setq out (cons nil out))
       (setq n (1- n)))
     out))
+
+(defun nelisp-heap-image--table-power-of-two-at-least (n)
+  "Return a power-of-two bucket count at least N."
+  (let ((size 8)
+        (target (if (and (integerp n) (> n 0)) n 8)))
+    (while (< size target)
+      (setq size (* size 2)))
+    size))
+
+(defun nelisp-heap-image--table-mix (seed value)
+  "Mix VALUE into SEED for heap-image private hash maps."
+  (logand (+ (* seed 33) value #x9E3779B9)
+          nelisp-heap-image--table-mask))
+
+(defun nelisp-heap-image--table-string-hash (string)
+  "Return a stable bounded hash for STRING."
+  (let ((h #x811C9DC5)
+        (i 0)
+        (n (length string)))
+    (while (< i n)
+      (setq h (logxor h (aref string i)))
+      (setq h (logand (* h #x01000193) nelisp-heap-image--table-mask))
+      (setq i (1+ i)))
+    h))
+
+(defun nelisp-heap-image--table-immediate-hash (obj)
+  "Return a stable bounded hash for immediate OBJ."
+  (cond
+   ((null obj) 1)
+   ((eq obj t) 2)
+   ((integerp obj) (logand obj nelisp-heap-image--table-mask))
+   ((floatp obj) (nelisp-heap-image--table-string-hash (number-to-string obj)))
+   ((stringp obj) (nelisp-heap-image--table-string-hash obj))
+   ((symbolp obj) (nelisp-heap-image--table-string-hash (symbol-name obj)))
+   (t 0)))
+
+(defun nelisp-heap-image--table-ref-hash (obj depth)
+  "Return a shallow stable hash for OBJ, bounded by DEPTH."
+  (if (<= depth 0)
+      (cond
+       ((consp obj) 17)
+       ((vectorp obj) (nelisp-heap-image--table-mix 19 (length obj)))
+       ((recordp obj)
+        (nelisp-heap-image--table-mix
+         (nelisp-heap-image--table-string-hash
+          (symbol-name (nelisp--record-type obj)))
+         (nelisp--record-length obj)))
+       ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
+        (nelisp-heap-image--table-mix 23 (length obj)))
+       (t (nelisp-heap-image--table-immediate-hash obj)))
+    (cond
+     ((consp obj)
+      (let ((h 29))
+        (setq h (nelisp-heap-image--table-mix
+                 h (nelisp-heap-image--table-ref-hash (car obj) (1- depth))))
+        (nelisp-heap-image--table-mix
+         h (nelisp-heap-image--table-ref-hash (cdr obj) (1- depth)))))
+     ((vectorp obj)
+      (let ((h (nelisp-heap-image--table-mix 31 (length obj)))
+            (i 0)
+            (limit (min 4 (length obj))))
+        (while (< i limit)
+          (setq h (nelisp-heap-image--table-mix
+                   h
+                   (nelisp-heap-image--table-ref-hash
+                    (aref obj i) (1- depth))))
+          (setq i (1+ i)))
+        h))
+     ((recordp obj)
+      (let ((h (nelisp-heap-image--table-string-hash
+                (symbol-name (nelisp--record-type obj))))
+            (i 0)
+            (limit (min 4 (nelisp--record-length obj))))
+        (setq h (nelisp-heap-image--table-mix h (nelisp--record-length obj)))
+        (while (< i limit)
+          (setq h (nelisp-heap-image--table-mix
+                   h
+                   (nelisp-heap-image--table-ref-hash
+                    (nelisp--record-ref obj i) (1- depth))))
+          (setq i (1+ i)))
+        h))
+     ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
+      (let ((h (nelisp-heap-image--table-mix 37 (length obj)))
+            (i 0)
+            (limit (min 16 (length obj))))
+        (while (< i limit)
+          (setq h (nelisp-heap-image--table-mix h (if (aref obj i) 1 0)))
+          (setq i (1+ i)))
+        h))
+     (t (nelisp-heap-image--table-immediate-hash obj)))))
+
+(defun nelisp-heap-image--object-key-hash (obj)
+  "Return a stable shallow hash for heap-image object key OBJ."
+  (nelisp-heap-image--table-ref-hash obj 2))
+
+(defun nelisp-heap-image--table-make (test hasher &optional size)
+  "Return a private heap-image table for TEST using HASHER and SIZE."
+  (vector test
+          hasher
+          (make-vector (nelisp-heap-image--table-power-of-two-at-least
+                        (or size 64))
+                       nil)
+          0))
+
+(defun nelisp-heap-image--table-test (table)
+  "Return TABLE's equality predicate tag."
+  (aref table 0))
+
+(defun nelisp-heap-image--table-hasher (table)
+  "Return TABLE's hash function."
+  (aref table 1))
+
+(defun nelisp-heap-image--table-buckets (table)
+  "Return TABLE's bucket vector."
+  (aref table 2))
+
+(defun nelisp-heap-image--table-set-buckets (table buckets)
+  "Store BUCKETS in TABLE."
+  (aset table 2 buckets))
+
+(defun nelisp-heap-image--table-count (table)
+  "Return TABLE's live entry count."
+  (aref table 3))
+
+(defun nelisp-heap-image--table-set-count (table count)
+  "Store COUNT in TABLE."
+  (aset table 3 count))
+
+(defun nelisp-heap-image--table-keys-equal-p (table a b)
+  "Return non-nil when TABLE considers A and B equal."
+  (if (eq (nelisp-heap-image--table-test table) 'eq)
+      (eq a b)
+    (eql a b)))
+
+(defun nelisp-heap-image--table-index-for-hash (table hash)
+  "Return TABLE bucket index for HASH."
+  (logand hash (1- (length (nelisp-heap-image--table-buckets table)))))
+
+(defun nelisp-heap-image--table-rehash (table)
+  "Double TABLE's bucket count and reinsert every entry."
+  (let* ((old-buckets (nelisp-heap-image--table-buckets table))
+         (new-buckets (make-vector (* 2 (length old-buckets)) nil))
+         (i 0))
+    (nelisp-heap-image--table-set-buckets table new-buckets)
+    (while (< i (length old-buckets))
+      (let ((cur (aref old-buckets i)))
+        (while cur
+          (let* ((entry (car cur))
+                 (hash (funcall (nelisp-heap-image--table-hasher table)
+                                (car entry)))
+                 (index (nelisp-heap-image--table-index-for-hash table hash)))
+            (aset new-buckets index (cons entry (aref new-buckets index))))
+          (setq cur (cdr cur))))
+      (setq i (1+ i)))))
+
+(defun nelisp-heap-image--table-put (table key value)
+  "Store KEY -> VALUE in private heap-image TABLE and return VALUE."
+  (let* ((hash (funcall (nelisp-heap-image--table-hasher table) key))
+         (buckets (nelisp-heap-image--table-buckets table))
+         (index (nelisp-heap-image--table-index-for-hash table hash))
+         (cur (aref buckets index))
+         (found nil))
+    (while (and cur (not found))
+      (when (nelisp-heap-image--table-keys-equal-p table (car (car cur)) key)
+        (setcdr (car cur) value)
+        (setq found t))
+      (setq cur (cdr cur)))
+    (unless found
+      (aset buckets index (cons (cons key value) (aref buckets index)))
+      (nelisp-heap-image--table-set-count
+       table (1+ (nelisp-heap-image--table-count table)))
+      (when (> (* 4 (nelisp-heap-image--table-count table))
+               (* 3 (length buckets)))
+        (nelisp-heap-image--table-rehash table)))
+    value))
+
+(defun nelisp-heap-image--table-get (table key &optional default)
+  "Return TABLE[KEY] or DEFAULT when KEY is absent."
+  (let* ((hash (funcall (nelisp-heap-image--table-hasher table) key))
+         (bucket (aref (nelisp-heap-image--table-buckets table)
+                       (nelisp-heap-image--table-index-for-hash table hash)))
+         (result default)
+         (found nil))
+    (while (and bucket (not found))
+      (when (nelisp-heap-image--table-keys-equal-p table
+                                                   (car (car bucket))
+                                                   key)
+        (setq result (cdr (car bucket))
+              found t))
+      (setq bucket (cdr bucket)))
+    result))
 
 (defun nelisp-heap-image--immediate-ref (obj)
   "Return an immediate reference for OBJ, or nil if OBJ needs an id."
@@ -119,13 +313,13 @@ SEEN maps object identity to ids, OBJECTS is a cons cell whose cdr is
 the reversed object descriptor list, and NEXT-ID-CELL is a cons cell
 holding the next integer id in its car."
   (or (nelisp-heap-image--immediate-ref obj)
-      (let ((existing (gethash obj seen nil)))
+      (let ((existing (nelisp-heap-image--table-get seen obj nil)))
         (if existing
             (list 'ref existing)
           (let* ((id (car next-id-cell))
                  (kind (nelisp-heap-image--alloc-kind obj)))
             (setcar next-id-cell (1+ id))
-            (puthash obj id seen)
+            (nelisp-heap-image--table-put seen obj id)
             (let ((desc
                    (cond
                     ((eq kind 'cons)
@@ -179,7 +373,10 @@ holding the next integer id in its car."
   "Encode ROOTS as a heap-v0 data form.
 ROOTS is an alist of (NAME . VALUE), where NAME is a symbol or string.
 Return a readable data form, not a source program."
-  (let ((seen (make-hash-table :test 'eq))
+  (let ((seen (nelisp-heap-image--table-make
+               'eq
+               'nelisp-heap-image--object-key-hash
+               (* 4 (max 8 (length roots)))))
         (objects (cons nil nil))
         (next-id-cell (cons 1 nil))
         (encoded-roots nil)
@@ -711,7 +908,7 @@ semantics and misbehave under native-i64 (where (ash 1 64) = 1)."
    ((and (consp ref) (eq (car ref) 'imm))
     (nelisp-heap-image--decode-immediate ref))
    ((and (consp ref) (eq (car ref) 'ref))
-    (let ((obj (gethash (car (cdr ref)) table nil)))
+    (let ((obj (nelisp-heap-image--table-get table (car (cdr ref)) nil)))
       (if obj obj
         (signal 'error (list "unknown heap image object id"
                              (car (cdr ref)))))))
@@ -734,7 +931,11 @@ semantics and misbehave under native-i64 (where (ash 1 64) = 1)."
          (version (nelisp-heap-image--plist-get plist :version))
          (roots (nelisp-heap-image--plist-get plist :roots))
          (objects (nelisp-heap-image--plist-get plist :objects))
-         (table (make-hash-table :test 'eql))
+         (table (nelisp-heap-image--table-make
+                 'eql
+                 (lambda (id)
+                   (logand id nelisp-heap-image--table-mask))
+                 (* 4 (max 8 (length objects)))))
          (cur objects))
     (unless (= version 0)
       (signal 'error (list "unsupported heap image version" version)))
@@ -754,13 +955,13 @@ semantics and misbehave under native-i64 (where (ash 1 64) = 1)."
                ((eq kind 'bool-vector)
                 (make-bool-vector (length (nth 2 desc)) nil))
                (t (signal 'error (list "unknown heap image object" kind)))))
-        (puthash id placeholder table))
+        (nelisp-heap-image--table-put table id placeholder))
       (setq cur (cdr cur)))
     ;; Pass 2: fill placeholders.
     (setq cur objects)
     (while cur
       (let* ((desc (car cur))
-             (obj (gethash (nth 0 desc) table))
+             (obj (nelisp-heap-image--table-get table (nth 0 desc)))
              (kind (nth 1 desc)))
         (cond
          ((eq kind 'cons)

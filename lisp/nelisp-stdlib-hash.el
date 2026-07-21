@@ -43,6 +43,10 @@
 (defconst nelisp--hash-mask #xFFFFFFFF
   "Mask used by the small pure-Elisp structural hash.")
 
+(defun nelisp--hash-mix (seed value)
+  "Mix VALUE into SEED for the structural hash."
+  (logand (+ (* seed 33) value #x9E3779B9) nelisp--hash-mask))
+
 (defun nelisp--hash-power-of-two-at-least (n)
   "Return a power-of-two bucket count at least N."
   (let ((size 1)
@@ -68,8 +72,9 @@
    ((null key) 0)
    ((symbolp key) (nelisp--hash-string (symbol-name key)))
    ((stringp key) (nelisp--hash-string key))
-   ((numberp key) (logand key nelisp--hash-mask))
-   (t (logand key nelisp--hash-mask))))
+   ((integerp key) (logand key nelisp--hash-mask))
+   ((floatp key) (nelisp--hash-string (number-to-string key)))
+   (t (nelisp--hash-string (format "%s" (type-of key))))))
 
 (defun nelisp--hash-key (key depth)
   "Return a bounded structural hash for KEY.
@@ -77,10 +82,45 @@ DEPTH is currently used as a compatibility guard; cons keys hash their first
 pair with atom-level hashing because SMIE hot keys are usually (TOKEN . TOKEN)."
   (cond
    ((consp key)
-    (logand (+ #x9E3779B9
-               (* 33 (nelisp--hash-atom (car key)))
-               (* 65599 (nelisp--hash-atom (cdr key))))
-            nelisp--hash-mask))
+    (let ((h #x9E3779B9))
+      (setq h (nelisp--hash-mix
+               h
+               (if (> depth 0)
+                   (nelisp--hash-key (car key) (1- depth))
+                 (nelisp--hash-atom (car key)))))
+      (nelisp--hash-mix
+       h
+       (if (> depth 0)
+           (nelisp--hash-key (cdr key) (1- depth))
+         (nelisp--hash-atom (cdr key))))))
+   ((vectorp key)
+    (let ((h (nelisp--hash-mix #x85EBCA6B (length key)))
+          (i 0)
+          (limit (min 4 (length key))))
+      (while (< i limit)
+        (setq h (nelisp--hash-mix h (nelisp--hash-key (aref key i) (1- depth))))
+        (setq i (1+ i)))
+      h))
+   ((recordp key)
+    (let ((h (nelisp--hash-mix
+              (nelisp--hash-string (symbol-name (nelisp--record-type key)))
+              (nelisp--record-length key)))
+          (i 0)
+          (limit (min 4 (nelisp--record-length key))))
+      (while (< i limit)
+        (setq h (nelisp--hash-mix
+                 h
+                 (nelisp--hash-key (nelisp--record-ref key i) (1- depth))))
+        (setq i (1+ i)))
+      h))
+   ((and (fboundp 'bool-vector-p) (bool-vector-p key))
+    (let ((h (nelisp--hash-mix #xC2B2AE35 (length key)))
+          (i 0)
+          (limit (min 16 (length key))))
+      (while (< i limit)
+        (setq h (nelisp--hash-mix h (if (aref key i) 1 0)))
+        (setq i (1+ i)))
+      h))
    (t (nelisp--hash-atom key))))
 
 (defun nelisp--hash-index (key buckets)
