@@ -17,6 +17,7 @@ const proofs = [
   ['proof-07-wasi-file.mjs', []],
   ['proof-08-wasi-start-exit.mjs', []],
   ['proof-09-wasi-random.mjs', []],
+  ['proof-10-arith-mod.mjs', []],
 ];
 let allOk = true;
 for (const [file, flags] of proofs) {

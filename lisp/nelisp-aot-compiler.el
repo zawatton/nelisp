@@ -17039,6 +17039,10 @@ drift (= a Doc 92 emitter invariant violation)."
   "Return CTX's scratch i32 local used by alloc-bytes."
   (nelisp-aot-compiler--wasm-context-get ctx :alloc-scratch-local))
 
+(defun nelisp-aot-compiler--wasm-arith-scratch-local (ctx)
+  "Return CTX's extra scratch i64 local used by arithmetic lowering."
+  (nelisp-aot-compiler--wasm-context-get ctx :arith-scratch-local))
+
 (defun nelisp-aot-compiler--wasm-function-index (ctx name)
   "Return wasm function index for NAME from CTX, or nil when unresolved."
   (cdr (assq name
@@ -17303,6 +17307,50 @@ drift (= a Doc 92 emitter invariant violation)."
   "Emit boolean OP into BUF, then zero-extend it to i64."
   (funcall op buf)
   (nelisp-asm-wasm-op-i64-extend-i32-u buf))
+
+(defun nelisp-aot-compiler--wasm-emit-arith-mod (a b buf ctx)
+  "Emit floored `mod' for A and B into BUF under CTX."
+  (let ((remainder-local (nelisp-aot-compiler--wasm-logic-scratch-local ctx))
+        (divisor-local (nelisp-aot-compiler--wasm-arith-scratch-local ctx)))
+    (nelisp-aot-compiler--wasm-emit-value a buf ctx)
+    (nelisp-aot-compiler--wasm-emit-value b buf ctx)
+    (nelisp-asm-wasm-op-local-tee buf divisor-local)
+    (nelisp-asm-wasm-op-i64-rem-s buf)
+    (nelisp-asm-wasm-op-local-tee buf remainder-local)
+    (nelisp-asm-wasm-op-i64-eqz buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-local-get buf remainder-local)
+    (nelisp-asm-wasm-op-else buf)
+    ;; Do not use `((a rem_s b) + b) rem_s b' here: the intermediate
+    ;; `r + b' can overflow near the i64 limits, and wasm `i64.add'
+    ;; wraps silently.
+    (nelisp-asm-wasm-op-local-get buf remainder-local)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-lt-s buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-local-get buf divisor-local)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-gt-s buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-local-get buf remainder-local)
+    (nelisp-asm-wasm-op-local-get buf divisor-local)
+    (nelisp-asm-wasm-op-i64-add buf)
+    (nelisp-asm-wasm-op-else buf)
+    (nelisp-asm-wasm-op-local-get buf remainder-local)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-else buf)
+    (nelisp-asm-wasm-op-local-get buf divisor-local)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-lt-s buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-local-get buf remainder-local)
+    (nelisp-asm-wasm-op-local-get buf divisor-local)
+    (nelisp-asm-wasm-op-i64-add buf)
+    (nelisp-asm-wasm-op-else buf)
+    (nelisp-asm-wasm-op-local-get buf remainder-local)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-end buf)))
 
 (defun nelisp-aot-compiler--wasm-emit-drop-value (node buf ctx)
   "Emit NODE to BUF and drop its i64 result."
@@ -17787,23 +17835,30 @@ drift (= a Doc 92 emitter invariant violation)."
         (signal 'nelisp-aot-compiler-error
                 (list :wasm-unsupported-ref-class
                       (nelisp-aot-compiler--ir-get node :class))))
-      (nelisp-asm-wasm-op-local-get
+     (nelisp-asm-wasm-op-local-get
        buf (nelisp-aot-compiler--ir-get node :slot)))
      ((= tag 1)
       (let ((op (nelisp-aot-compiler--ir-get node :op)))
-        (unless (memq op '(+ - * / %))
+        (unless (memq op '(+ - * / % mod))
           (signal 'nelisp-aot-compiler-error
-                  (list :wasm-unsupported-arith op))))
-      (nelisp-aot-compiler--wasm-emit-value
-       (nelisp-aot-compiler--ir-get node :a) buf ctx)
-      (nelisp-aot-compiler--wasm-emit-value
-       (nelisp-aot-compiler--ir-get node :b) buf ctx)
-      (pcase (nelisp-aot-compiler--ir-get node :op)
-        ('+ (nelisp-asm-wasm-op-i64-add buf))
-        ('- (nelisp-asm-wasm-op-i64-sub buf))
-        ('* (nelisp-asm-wasm-op-i64-mul buf))
-        ('/ (nelisp-asm-wasm-op-i64-div-s buf))
-        ('% (nelisp-asm-wasm-op-i64-rem-s buf))))
+                  (list :wasm-unsupported-arith op)))
+        (pcase op
+          ((or '+ '- '* '/ '%)
+           (nelisp-aot-compiler--wasm-emit-value
+            (nelisp-aot-compiler--ir-get node :a) buf ctx)
+           (nelisp-aot-compiler--wasm-emit-value
+            (nelisp-aot-compiler--ir-get node :b) buf ctx)
+           (pcase op
+             ('+ (nelisp-asm-wasm-op-i64-add buf))
+             ('- (nelisp-asm-wasm-op-i64-sub buf))
+             ('* (nelisp-asm-wasm-op-i64-mul buf))
+             ('/ (nelisp-asm-wasm-op-i64-div-s buf))
+             ('% (nelisp-asm-wasm-op-i64-rem-s buf))))
+          ('mod
+           (nelisp-aot-compiler--wasm-emit-arith-mod
+            (nelisp-aot-compiler--ir-get node :a)
+            (nelisp-aot-compiler--ir-get node :b)
+            buf ctx)))))
      ((= tag 10)
       (let ((op (nelisp-aot-compiler--ir-get node :op)))
         (nelisp-aot-compiler--wasm-emit-value
@@ -18201,12 +18256,14 @@ drift (= a Doc 92 emitter invariant violation)."
                                                  :value (1+ next-local))))))
               (setq next-local (+ next-local 2)))
             (let* ((logic-scratch-local next-local)
-                   (alloc-scratch-local (1+ logic-scratch-local))
+                   (arith-scratch-local (1+ logic-scratch-local))
+                   (alloc-scratch-local (1+ arith-scratch-local))
                    (locals (append (make-list rt-slot-count
                                               nelisp-aot-compiler--wasm-i64-type)
                                    (make-list (* 2 (length handler-ids))
                                               nelisp-aot-compiler--wasm-i64-type)
                                    (list nelisp-aot-compiler--wasm-i64-type
+                                         nelisp-aot-compiler--wasm-i64-type
                                          nelisp-aot-compiler--wasm-i32-type)))
                    (ctx (list :function-indices function-indices
                               :import-indices import-map
@@ -18214,6 +18271,7 @@ drift (= a Doc 92 emitter invariant violation)."
                               :type-map type-map
                               :handler-locals handler-locals
                               :logic-scratch-local logic-scratch-local
+                              :arith-scratch-local arith-scratch-local
                               :alloc-scratch-local alloc-scratch-local
                               :data-symbol-addrs (and layout
                                                       (plist-get layout :symbol-addrs))))

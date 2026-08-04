@@ -252,6 +252,37 @@
     (should (equal (mapcar (lambda (export) (plist-get export :index)) exports)
                    '(0 1 2)))))
 
+(ert-deftest nelisp-asm-wasm/compiler-lowers-mod-distinct-from-rem ()
+  (let* ((mod-ir
+          (nelisp-aot-compiler--parse
+           '(defun wasm_mod (a b) (mod a b))))
+         (rem-ir
+          (nelisp-aot-compiler--parse
+           '(defun wasm_rem (a b) (+ a b))))
+         (rem-old-body (nelisp-aot-compiler--ir-get rem-ir :body))
+         (rem-body-ir
+          (nelisp-aot-compiler--make-ir
+           'arith :op '%
+           :a (nelisp-aot-compiler--ir-get rem-old-body :a)
+           :b (nelisp-aot-compiler--ir-get rem-old-body :b)))
+         (body-index (cl-position :body rem-ir :test #'eq))
+         mod-body
+         rem-body)
+    (aset rem-ir (1+ body-index) rem-body-ir)
+    (let* ((nelisp-aot-compiler--arch 'wasm32)
+           (nelisp-aot-compiler--os 'wasi)
+           (unit (nelisp-aot-compiler--compile-to-wasm-unit
+                  (list mod-ir rem-ir)))
+           (functions (plist-get unit :wasm-functions)))
+      (dolist (fn functions)
+        (pcase (plist-get fn :name)
+          ("wasm_mod" (setq mod-body (plist-get fn :body)))
+          ("wasm_rem" (setq rem-body (plist-get fn :body))))))
+    (should mod-body)
+    (should rem-body)
+    (should-not (equal mod-body rem-body))
+    (should (> (length mod-body) (length rem-body)))))
+
 (provide 'nelisp-asm-wasm-test)
 
 ;;; nelisp-asm-wasm-test.el ends here
