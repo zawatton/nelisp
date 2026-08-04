@@ -1,0 +1,574 @@
+#+TITLE: Doc 164 P2 — Instruction-level implementation blueprint (imports/WASI + non-local exit)
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 4.8 + zawatton)
+#+DATE: 2026-07-12
+#+STATUS: BLUEPRINT — ready for a codex implementer.  Every binary encoding
+#+STATUS: below is PROVEN by a saved Node v24.14.1 proof script under
+#+STATUS: tools/wasm-proofs/ (WebAssembly.validate + instantiate + execute).
+
+This document closes the gaps the codex implementer cited in =build-notes-p2.md=
+(repo root) and turns Doc 164 §5/§3.6 from "speculative opcode bytes" into
+"proven byte sequences."  It maps every P2 step onto existing code with
+=file:line= against HEAD =d387ac12=.  Read alongside Doc 164
+(=docs/design/164-wasm-backend.org=) §3.5/§3.6/§4.1/§5 and the proof scripts.
+
+*Read this first — the two decisions that shape everything below:*
+
+1. *EH dialect = LEGACY EH, flag-free* (=try= 0x06 / =catch= 0x07 / =catch_all=
+   0x19 / =rethrow= 0x09 / =throw= 0x08 + Tag section id 13).  Doc 164 §3.6
+   named =try_table= as primary; experiment (=proof-01=) shows *V8 in Node
+   v24.14.1 gates =try_table= (0x1f) / =throw_ref= (0x0a) / =exnref= behind
+   =--experimental-wasm-exnref=*, while legacy EH runs with no flag
+   (=proof-02=, =proof-03=).  P2 therefore emits legacy EH so
+   =make wasm-eh-smoke= needs no special Node flags.  The standardized
+   =try_table= bytes are also proven (=proof-01=, with the flag) and belong in
+   the encoder behind a switch for the eventual migration, but are *not* the
+   P2 default.  =throw_ref=/=exnref= are *not needed at all* — tag-mismatch
+   rethrow re-throws a fresh =(tag,value)= (=proof-02=).
+
+2. *=shadow_sp= global is NOT needed in P2; it is a P3 concern.*  Doc 164
+   §3.6/§4.1 stores the native SP in a handler record and restores it in the
+   catch clause.  Under wasm EH the engine *automatically* restores the
+   operand stack and locals of the catching frame on unwind — there is no
+   manual SP to restore.  A =shadow_sp= global only becomes necessary once
+   values are spilled to *linear memory* (allocator arenas, =applyn= arg
+   arrays), which is P3 (alloc-bytes / heap_ptr, explicitly out of P2 — see
+   §7).  P2 programs keep every live value on the wasm operand stack / in
+   locals, so P2 emits *no* =shadow_sp= global and *no* =aot-current-sp= /
+   =aot-machine-landing-jump= (§C.4 replaces the whole native landing-jump
+   desugar for =wasm32=).
+
+* §0 Executive summary
+
+P2 adds four things to the landed P0/P1 wasm path
+(=lisp/nelisp-asm-wasm.el=, =lisp/nelisp-wasm-write.el=, and the wasm emit arm
+in =lisp/nelisp-aot-compiler.el= ~=:16785–17186=):
+
+1. *Import section (id 2)* in the writer + *import-count function-index
+   offset* in =--compile-to-wasm-unit= (§B, §C.1).  Proven: =proof-04=.
+2. *WASI lowering* for =syscall-direct= (and a new =wasi-call= primitive) →
+   =wasi_snapshot_preview1= imports, using a *fixed linear-memory scratch
+   region* (1024..4095) to bridge the raw-syscall arg shape to the WASI
+   iovec/out-param ABI (§C.2).  P2 minimum imports: =fd_write=, =fd_read=,
+   =path_open=, =fd_close=, =clock_time_get=, =proc_exit=, =random_get=;
+   everything else → =i64.const -38= (=-ENOSYS=).  Proven: =proof-05= (fd_write),
+   =proof-06= (clock), =proof-07= (path_open+fd_write+fd_close hello-file),
+   =proof-08= (proc_exit/_start), =proof-09= (random_get).
+3. *=env= imports* for unresolved intra-module =extern-call= symbols, replacing
+   the =:wasm-p1-extern-call-deferred= error at =:16995–17011= (§C.3).  Proven:
+   =proof-04=.
+4. *Legacy-EH non-local-exit lowering* for =catch= / =throw= / =unwind-protect=
+   / =condition-case=, intercepted at *parse time* for =arch = 'wasm32= so the
+   native longjmp desugar (=:6038–:6352=, =aot-machine-landing-jump= =:15997=)
+   is *bypassed*, plus a *Tag section (id 13)* in the writer at its mandated
+   slot (§B, §C.4).  Proven: =proof-01b= (tag order), =proof-02= (nested
+   catch/throw/rethrow), =proof-03= (unwind-protect cleanup on both paths).
+
+All ten proofs pass (=node tools/wasm-proofs/run-all.mjs= → =ALL PROOFS OK=).
+
+* §1 Ground truths (each PROVEN — validate=true + executed under Node v24.14.1)
+
+| # | claim (byte-level) | proof script | validate / run result |
+|---+--------------------+--------------+------------------------|
+| 1 | Legacy EH =try= 0x06 / =catch= 0x07 / =throw= 0x08 / =catch_all= 0x19 / =rethrow= 0x09 + Tag(13) run *flag-free*; nested catch + tag-match + rethrow | =proof-02= | valid; =throw INNER 42→42=, =throw OUTER 99→99= (inner rethrows to outer) |
+| 2 | =try_table= 0x1f / =throw= 0x08 / catch-clause 0x00; catch label depth (0 or 1 both reach the enclosing block here) | =proof-01= | *invalid without* =--experimental-wasm-exnref=; *valid + run=42 with* it |
+| 3 | Tag section id 13 MUST sit after Memory(5) / before Global(6) | =proof-01b= | =true= before Global; =false= after Global / after Export / after Code |
+| 4 | =throw_ref= / =exnref= NOT required (rethrow = fresh =throw (tag,value)=) | =proof-02= | outer path returns 99 via a re-=throw= in the =else= arm |
+| 5 | unwind-protect: =catch_all= 0x19 + =rethrow= 0x09 for the exceptional path, duplicated cleanup on the normal path; cleanup runs *exactly once* on both | =proof-03= | =normal result=7 counter=1=; =throw result=-1 counter=1= |
+| 6 | Import section (id 2); imported funcs occupy indices =0..k-1= before defined funcs; =call 0= hits the import | =proof-04= | valid; =run(3,4)=1007= (= =env.ext_add(3,4)= + 1000) |
+| 7 | =node:wasi= =fd_write(fd,iovs,iovs_len,nwritten)→errno= via a fixed iovec; reactor (=_initialize=) path | =proof-05= | valid; prints =hi=; =errno=0 nwritten=3= |
+| 8 | =clock_time_get(clock_id,precision,ts_ptr)→errno= writes u64 ns | =proof-06= | valid; =errno=0=, ts nonzero |
+| 9 | hello-file: =path_open= + =fd_write= + =fd_close= in a preopen dir; *new-file fd rights = 0x46* (=FD_READ|FD_SEEK|FD_WRITE=; dir-only =path_*= rights → =ENOTCAPABLE=76=) | =proof-07= | valid; =rc=0=, file content =hello\n= |
+| 10 | WASI *command* module: export =memory=+=_start=, =wasi.start(instance)=; =proc_exit(code)= with =returnOnExit:true= makes =wasi.start= *return* code | =proof-08= | valid; prints =cmd=; returns 0 and 42 |
+| 11 | =random_get(buf,len)→errno= fills the buffer | =proof-09= | valid; =errno=0=, nonzero draw |
+
+*WASI command vs reactor (Doc 164 §4.3):*  a *command* exports =memory= +
+=_start= and is driven by =wasi.start= (=proof-08=); a *reactor* exports
+=memory= + optional =_initialize= and after =wasi.initialize= its other exports
+are callable (=proof-05..07,09=).  P2 =hello-file= / =hello-clock= are cleanest
+as *reactors* (assert the return value + read memory); =proc_exit= programs are
+*commands*.
+
+* §A Encoder additions — lisp/nelisp-asm-wasm.el
+
+The P0/P1 encoder already has LEB128, the buffer abstraction, blocks/if/loops,
+=i64.*=, =call=/=call_indirect=, i64 loads/stores, =drop=/=select=, and the
+Type/Func-body builders.  Add the following.  Each row gives the *exact byte(s)*
+and operand encoding, from the cited proof.  (Immediate operands: =tagidx=,
+=depth=, =global idx=, =mem align/offset= are =uleb128=; =i32.const=/=i64.const=
+are =sleb128=; block types are one value-type byte or =0x40=.)
+
+** §A.1 Legacy EH ops (the P2 default) — proof-02, proof-03
+
+| helper (proposed) | bytes | operands | source proof |
+|-------------------+-------+----------+--------------|
+| =op-try= (buf &optional rt) | =0x06= + blocktype | blocktype byte (=--i64=/=--empty-block-type=) | proof-02 |
+| =op-catch= (buf tagidx) | =0x07= + uleb(tagidx) | tag index | proof-02 |
+| =op-catch-all= (buf) | =0x19= | — | proof-03 |
+| =op-delegate= (buf depth) | =0x18= + uleb(depth) | rel depth | (encoder completeness) |
+| =op-rethrow= (buf depth) | =0x09= + uleb(depth) | rel depth | proof-03 |
+| =op-throw= (buf tagidx) | =0x08= + uleb(tagidx) | tag index | proof-02/03 |
+
+Note: legacy =try…catch…end= keeps the handler *inline* — the encoder needs no
+new block-depth bookkeeping beyond the P1 =end= balancing.  A =try (result
+i64)= uses the single-byte blocktype =0x7e= exactly like the existing =op-if=.
+
+** §A.2 Standardized EH ops (encoder support, NOT P2 default) — proof-01
+
+Behind a =nelisp-asm-wasm--eh-dialect= switch (default ='legacy):
+| =op-try-table= (buf rt catches) | =0x1f= + blocktype + =vec(catch-clauses)= |
+| catch clause | =0x00 uleb(tag) uleb(label)= (catch) / =0x01 …= (catch_ref) / =0x02 uleb(label)= (catch_all) / =0x03 uleb(label)= (catch_all_ref) |
+| =op-throw-ref= (buf) | =0x0a= |
+Catch =label= is a *relative branch depth* counted with the =try_table='s own
+frame at depth 0 (=proof-01=).  =try_table= with a *multi-value* payload needs a
+type-index blocktype (=sleb128= s33) — but P2 legacy EH keeps a single-i64
+blocktype and never needs this.
+
+** §A.3 i32 + global ops (needed by the WASI scratch marshalling) — proof-04..09
+
+| =op-i32-const= (buf value) | =0x41= + sleb128(value) | proof-05 (addresses), proof-08 |
+| =op-i32-load= (buf &optional align offset) | =0x28= + uleb(align=2) + uleb(offset=0) | proof-07 (load opened fd) |
+| =op-i32-store= (buf &optional align offset) | =0x36= + uleb(align=2) + uleb(offset=0) | proof-06 (store errno) |
+| =op-global-get= (buf idx) | =0x23= + uleb(idx) | proof-03 (counter) |
+| =op-global-set= (buf idx) | =0x24= + uleb(idx) | proof-03 |
+
+(=op-i64-load= / =op-i64-store= already exist for the timestamp/iovec.)  These
+i32 ops are also the ones the P3 allocator will reuse for =$heap_ptr=.
+
+** §A.4 Attribute constants
+Add =(defconst nelisp-asm-wasm--extern-func-kind #x00)= for import/export descriptors,
+=(defconst nelisp-asm-wasm--mem-kind #x02)= (export memory) and
+=(defconst nelisp-asm-wasm--global-kind #x03)= (export global), used by §B.
+
+* §B Writer changes — lisp/nelisp-wasm-write.el
+
+** §B.1 Section ORDER is the load-bearing invariant (proof-01b)
+
+The current writer emits =magic, Type(1), Function(3), [Table(4)], Memory(5),
+Export(7), [Element(9)], Code(10)= (=:106–120=).  P2 inserts *Import(2)*,
+*Tag(13)*, optional *Global(6)*, and *Data(11)* at their mandated slots.  V8
+rejects any other Tag position (=proof-01b=: valid only *after Memory / before
+Global*).  Final P2 order:
+
+: magic
+: 1  Type
+: 2  Import        <-- NEW (host imports; §C.2/§C.3)
+: 3  Function
+: 4  Table         (P1)
+: 5  Memory        (P1)
+: 13 Tag           <-- NEW, HERE (after Memory, before Global)   [proof-01b]
+: 6  Global        <-- optional; P2 omits it ($shadow_sp/$heap_ptr are P3)
+: 7  Export
+: 9  Element       (P1)
+: 10 Code
+: 11 Data          <-- NEW (baked strings / iovec seeds if any; §C.2)
+
+Concretely, in =nelisp-wasm-write-binary= (=:99=) insert an =(when imports
+(emit-section buf 2 …))= immediately after the Type section, an =(when tag
+(emit-section buf 13 …))= immediately after the Memory section, and =(when data
+(emit-section buf 11 …))= after the Code section.
+
+** §B.2 Import section payload (id 2) — proof-04
+
+=vec(imports)=; each import = =name(module)= ++ =name(field)= ++ =kind(0x00)=
+++ =uleb(typeidx)=.  Drive from a new =unit= key =:wasm-imports= (list of
+=(:module M :field F :type-index N)=, in the exact index order 0..k-1):
+
+#+begin_src elisp
+(defun nelisp-wasm-write--payload-imports (imports)
+  (let ((buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-emit-uleb128 buf (length imports))
+    (dolist (im imports)
+      (nelisp-asm-wasm-emit-name buf (plist-get im :module))
+      (nelisp-asm-wasm-emit-name buf (plist-get im :field))
+      (nelisp-asm-wasm-emit-byte buf #x00)            ; func import
+      (nelisp-asm-wasm-emit-uleb128 buf (plist-get im :type-index)))
+    (nelisp-asm-wasm-buffer-bytes buf)))
+#+end_src
+
+** §B.3 Tag section payload (id 13) — proof-02/03
+
+One tag carrying the unwind token.  P2 token type = =[i64 i64]->[]=
+(tag_handle, value).  =vec(tags)=; each tag = =attribute(0x00)= ++
+=uleb(typeidx)=.  The tag's type must be present in the Type section (add a
+=[i64 i64]->[]= functype and record its index as =unit :wasm-tag-type-index=):
+
+#+begin_src elisp
+(defun nelisp-wasm-write--payload-tags (tag-type-index)
+  (let ((buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-emit-uleb128 buf 1)
+    (nelisp-asm-wasm-emit-byte buf #x00)               ; attribute (exception)
+    (nelisp-asm-wasm-emit-uleb128 buf tag-type-index)
+    (nelisp-asm-wasm-buffer-bytes buf)))
+#+end_src
+
+Emit the Tag section only when =(plist-get unit :wasm-tag-type-index)= is set
+(i.e. the program contains a catch/throw/unwind-protect/condition-case).
+
+** §B.4 Export section — memory + entrypoint
+
+P1 exports only functions (=:79–89=).  P2 also exports =memory= (index 0, kind
+=0x02=) whenever WASI/EH scratch is used, and an entrypoint =_initialize=
+(reactor) or =_start= (command).  Extend =--payload-exports= to consume
+=unit :wasm-exports= = list of =(:name S :kind K :index N)= so the writer can
+emit memory/global/function exports uniformly (kinds: func 0x00, table 0x01,
+mem 0x02, global 0x03).  Memory export is required by =node:wasi= for any
+module that touches linear memory (=proof-05..07=).
+
+** §B.5 Data section payload (id 11) — proof-05/07
+
+Active segments only (no DataCount/bulk-memory needed): =vec(segments)=; each
+active segment (flag =0x00=) = =0x00= ++ =(i32.const ADDR)(end)= ++ =vec(bytes)=.
+Drive from =unit :wasm-data= = list of =(:addr A :bytes B)=.  P2 uses this to
+seed *constant* iovec/path bytes if the compiler chooses to bake them; the
+=syscall-direct= marshalling in §C.2 instead builds iovecs at *runtime* in the
+scratch region, so Data segments are optional for the P2 smokes.
+
+** §B.6 Memory section — grow the minimum to fit scratch
+P1 emits =min=1 page= (=:41–47=).  Keep min=1 (64 KiB ≫ the 1024..4095 scratch
+window).  No =max=; single-threaded, non-shared (Doc 164 §1.2).
+
+* §C Compiler emit changes — lisp/nelisp-aot-compiler.el
+
+** §C.1 Function-index offset by import count
+
+The P1 index builder is =--compile-to-wasm-unit= (=:17109=): it walks =defuns=
+and assigns =function-indices= / =table-indices= starting at =index = 0=
+(=:17116, :17125–17127=).  On wasm, *imported functions occupy indices
+=0..k-1= before any defined function* (=proof-04=).  Edit:
+
+1. *Collect the import set first* (§C.2 WASI + §C.3 env), assigning each import
+   a stable index =0..k-1= and a Type-section entry.  Build
+   =unit :wasm-imports= (§B.2) in that order.
+2. *Offset defined-function indices by =k== (the import count): initialise
+   =(index k)= at =:17116= instead of =0=; then =function-indices= and
+   =table-indices= (=:17125–17126=) all start at =k=.  The Element segment
+   (=:17182–17185=, =number-sequence 0..n-1=) must likewise become
+   =number-sequence k (+ k n -1)= so table slots reference the *defined*
+   functions, not the imports.
+3. The catch/throw =throw= op and every WASI/env call use =uleb= *function
+   indices* that already account for =k= because they resolve through
+   =function-indices= / the import table.  The *Tag* index (for =throw=) is a
+   *tag index* (0), independent of the function index space.
+
+The emit-time resolver =--wasm-function-index= (=:16812=) is unchanged; it just
+now returns import-offset-correct indices because the ctx =:function-indices=
+were built with the =k= offset.
+
+** §C.2 syscall-direct / wasi-call → WASI imports  (§5.2)
+
+*IR reality:* =syscall-direct= is IR kind *tag 78* with fields =:nr :a0..:a5=
+(parse at =:9522–:9540=; native emit at =:14531=).  The wasm =--wasm-emit-value=
+=cond= (=:16874=) has *no* tag-78 arm today → it falls to =t= →
+=:wasm-unsupported-ir=.  P2 adds a tag-78 arm.
+
+*The arg-shape problem and its fix (the scratch region).*  Raw Linux syscalls
+and WASI imports do not share an ABI: =write(fd,buf,len)= vs
+=fd_write(fd,iovs,iovs_len,nwritten)→errno=.  P2 bridges them by *building the
+iovec / out-params at runtime in a FIXED linear-memory scratch region* that the
+emit arm owns.  This is the "iov/scratch FIXED memory layout" the task asks
+for.  Proven addresses and shapes come from =proof-05/06/07/09=.
+
+*FIXED P2 scratch layout* (reserve =[1024, 4096)=; documented, no allocator):
+: 1024  IOV0.buf   (i32)   ] one iovec, reused by fd_write/fd_read
+: 1028  IOV0.len   (i32)   ]
+: 1032  OUT_A      (i32/i64) nwritten / opened-fd / errno out-param
+: 1040  OUT_B      (i64)     clock timestamp / misc
+: 1048  PATH_STAGE (bytes)   path buffer for path_open (caller stores bytes)
+: 1088..4095       spare
+Single-threaded ⇒ no locking; each syscall fully consumes the scratch before
+returning (no cross-call aliasing).  (This window is disjoint from the P3
+=$heap_ptr= region, which starts at =STACK_TOP= well above 4096 — §7.)
+
+*Dispatch on the constant =:nr=.*  The tag-78 arm reads =:nr=; it must be a
+compile-time =i64.const= (IR int-lit).  Map the *Linux x86_64* NR to a WASI
+import + marshalling recipe.  P2 minimum table (unknown NR → =i64.const -38=):
+
+| logical op | Linux NR | WASI import | signature | marshalling recipe (proven) |
+|------------+----------+-------------+-----------+-----------------------------|
+| =write=  | 1   | =fd_write= | =(i32,i32,i32,i32)->i32= | store a0→[1024]=buf, a2→[1028]=len (i32.wrap_i64 each); =fd_write(a1=fd, 1024, 1, 1032)=; load i64.load32_u [1032]=nwritten; on errno≠0 return −errno (proof-05) |
+| =read=   | 0   | =fd_read=  | =(i32,i32,i32,i32)->i32= | same iovec shape as write; return nread from [1032] (proof-05 shape) |
+| =close=  | 3   | =fd_close= | =(i32)->i32= | =fd_close(a0=fd)=; return errno (proof-07) |
+| =openat= | 257 | =path_open=| =(i32,i32,i32,i32,i32,i64,i64,i32,i32)->i32= | =path_open(a0=dirfd, 0, a1=path_ptr, a2=path_len, OFLAGS, RIGHTS=0x46, 0, 0, 1032)=; load i32 opened-fd from [1032]; see §C.2.1 (proof-07) |
+| =clock_gettime= | 228 | =clock_time_get= | =(i32,i64,i32)->i32= | =clock_time_get(a0=clock_id, 0, 1040)=; load i64 [1040] (proof-06) |
+| =getrandom= | 318 | =random_get= | =(i32,i32)->i32= | =random_get(a0=buf, a1=len)= (proof-09) |
+| =exit_group= | 231 | =proc_exit= | =(i32)->()= | =proc_exit(a0=code)=; noreturn — emit trailing =unreachable= for type balance (proof-08) |
+
+*Recommended cleaner path (primary for P2 test programs):* add a =wasi-call=
+parse+IR primitive =(wasi-call NAME ARG…)= (arch =wasm32= only) whose args are
+*already in the WASI shape*; its emit arm registers =NAME= in =:wasm-imports=
+(module =wasi_snapshot_preview1=) with the signature from a static table, then
+=call $import_idx=.  This sidesteps NR translation entirely and is what the
+hello-file / hello-clock P2 smokes use directly.  The =syscall-direct= NR-table
+above is the *fallback* for raw =syscall-direct= sites (the runtime's fileio in
+P3); its constant-NR + scratch marshalling is fully mechanical from the proofs.
+
+*** §C.2.1 path_open constants (from proof-07)
+- =dirflags= = 0.
+- =oflags= for create+truncate = =O_CREAT(1) | O_TRUNC(8) = 9=.
+- =fs_rights_base= for the *new file fd* = =FD_READ(0x02) | FD_SEEK(0x04) |
+  FD_WRITE(0x40) = 0x46=.  *Do NOT request dir-only =path_*= rights on a file
+  fd → =ENOTCAPABLE=76= (proven failure→fix in proof-07).*
+- =fs_rights_inheriting= = 0.  =fdflags= = 0.
+- The preopen dir fd is 3 (=node:wasi= assigns preopens from fd 3 upward); the
+  driver supplies =preopens= (§D).
+
+** §C.3 extern-call → env import  (replaces :wasm-p1-extern-call-deferred)
+
+The P1 extern-call arm is =tag 23= at =:16995–17011=.  Today: if the symbol
+resolves to a defined function index → =call idx=; else → error
+=:wasm-p1-extern-call-deferred= (=:17001, :17010=).  P2 replaces the *else*
+branch: an unresolved symbol becomes an =env= import.
+
+Recipe at =:17006–17011=:
+1. =index = (--wasm-function-index ctx fn-name)=.  If integer → =call index=
+   (intra-module, unchanged).
+2. Else, look up / intern =fn-name= in an =env=-import registry keyed by
+   =(name . arity)=.  *Signature derivation rule* (Doc 164 §3.5, matches
+   =--wasm-call-type-key=, =:16797=): params = =arity= × =i64=, result = one
+   =i64= for =extern-call= (=:ret-class 'gp=), or =f64= for =extern-call-f64=
+   (=:ret-class 'f64=, =:9478/:9504=).  Register =(:module "env" :field
+   NAME :type-index T)= in =:wasm-imports= with a fresh import index; add the
+   functype to the Type section if absent.
+3. Emit =call $import_index=.  Because imports are indices =0..k-1= (§C.1), and
+   defined functions are offset by =k=, both resolve correctly (=proof-04=).
+4. =:fn-value= (extern-call-ptr, =:16999=) stays a P2 error (=call_indirect=
+   through the env table is P3) — keep a narrow signal there.
+
+The driver provides =env.NAME= (§D).  The P2 smoke uses =env.ext_add=
+(=proof-04=): =(extern-call ext_add A B)= with =env.ext_add=(a,b)=>a+b=.
+
+** §C.4 Non-local exit — legacy-EH lowering, intercepted at PARSE time
+
+*Why parse-time interception (not emit-arm reinterpretation).*  The native
+desugar (=--parse-aot-catch-normal-exit= =:8202=, =--…-condition-case-normal-
+exit= =:8209=, =--…-unwind-protect-normal-exit= =:8216=; helpers =:6038–:6352=,
+=:6790–:6919=) lowers these constructs to =aot-push-catch= / =throw=
+(→ =extern-call nelisp_aot_throw= =:4783=) / =aot-landing-label= /
+=aot-machine-landing-jump (aot-current-sp) LABEL= (=:15997=, a *longjmp*).  That
+output is unusable on wasm for two reasons: (a) =aot-machine-landing-jump= is an
+arbitrary inter-frame jump wasm cannot express (Doc 164 §3.4); (b) it routes
+through runtime helpers (=nelisp_aot_throw= etc.) that a small P2 module does
+not contain.  So for =arch = 'wasm32= we *bypass the native desugar entirely*
+and lower each construct directly onto legacy EH.
+
+*Where to branch.*  At the parser dispatch (=:8199–:8217=) add, in each of the
+three arms, a leading =(if (eq nelisp-aot-compiler--arch 'wasm32)
+(--parse-wasm-catch …) (--parse-aot-catch-normal-exit …))= (and similarly for
+=throw=/=signal= at =:4761/:4788=).  These produce *new IR kinds* consumed by
+new emit arms in =--wasm-emit-value= (=:16874=):
+
+- =wasm-throw= — fields =:tag :value= (both value-IR).
+- =wasm-catch= — fields =:tag :body=.
+- =wasm-unwind-protect= — fields =:body :cleanups= (list).
+- =wasm-condition-case= — fields =:var :body :clauses=.
+
+*Scratch locals.*  Each catch/condition handler needs two =i64= scratch locals
+(=$tag=, =$val=).  Allocate a *fresh pair per handler site* the way P1 allocates
+the logic scratch (=logic-scratch-local=, =:16136=, =rt-slot-count= growth):
+extend =--compile-to-wasm-unit='s per-defun local vector (=:17137–17139=) with 2
+i64 slots per catch/condition-case in the body.  (Legacy =try…catch= is
+lexically nested, so pairs never overlap in *time*, but per-site allocation is
+simplest and always correct.)
+
+*** wasm-throw  (proof-02)
+: <emit :tag>        ; i64 tag handle
+: <emit :value>      ; i64 value handle
+: throw   $unwind    ; op-throw 0x08, tag index 0
+The tag type is =[i64 i64]->[]=; =throw= pops (tag, value) in push order.  Being
+stack-polymorphic, no further code is reachable after =throw=.
+
+*** wasm-catch  (proof-02)  — result: matched value, else re-raise
+: try (result i64)
+:   <emit :body>                 ; leaves the normal i64 result
+: catch $unwind                  ; op-catch 0x07 tag 0 ; payload tag,val on stack
+:   local.set $val
+:   local.set $tag
+:   local.get $tag
+:   <emit :tag>                  ; this catch's tag handle
+:   i64.eq
+:   if (result i64)
+:     local.get $val             ; MATCH: catch value is the result
+:   else
+:     local.get $tag             ; MISMATCH: rethrow SAME (tag,val) to outer
+:     local.get $val
+:     throw $unwind
+:   end
+: end
+Nested =catch= forms nest their =try…catch=; a mismatched inner rethrow is
+caught by the enclosing =try= (=proof-02= returns 99 for the outer-tag throw via
+exactly this inner-rethrow → outer-catch path).  This reproduces the native
+runtime's linear handler-stack search *structurally*, with no handler stack and
+no =throw_ref=.
+
+*** wasm-unwind-protect  (proof-03)  — cleanup on BOTH paths
+: try (result i64)
+:   <emit :body>                 ; normal i64 result
+: catch_all                      ; op-catch-all 0x19 ; no payload
+:   <emit each :cleanup as drop-value>   ; side effects; values dropped
+:   rethrow 0                    ; op-rethrow 0x09 depth 0 ; re-raise
+: end
+: <emit each :cleanup as drop-value>     ; DUPLICATED normal-exit cleanup
+The =try= result (=:body='s i64) stays on the stack across the normal-path
+cleanups (they =drop= their own values) → it is the unwind-protect result.
+Exceptional path: cleanup runs, then =rethrow= re-raises to the enclosing
+handler.  =proof-03= proves the cleanup runs *exactly once* on each path
+(counter=1 in both).  This mirrors the native desugar, which also emits cleanup
+on both the normal-exit and landing paths (=:6113–:6116, :6163–:6166=).
+
+*** wasm-condition-case  (proof-02 shape, extended)
+: try (result i64)
+:   <emit :body>
+: catch $unwind
+:   local.set $val               ; the signalled error object (Sexp handle)
+:   local.set $tag               ; the condition/tag handle
+:   ;; per-clause match: for each (COND HANDLER):
+:   ;;   compare $tag/$val's condition against COND's symbol(s);
+:   ;;   on match: (when :var) local.set $var = $val ; <emit HANDLER> ; (result i64)
+:   ;;   else fall through to the next clause
+:   ;; no clause matches: local.get $tag; local.get $val; throw $unwind  (re-raise)
+: end
+P2 handles the common =(error VAR BODY)= / single-symbol-selector case with an
+=i64.eq= tag compare (the same shape as =wasm-catch=).  *Full condition-symbol
+hierarchy matching* (=error= subsumes many conditions; =:6921–:6947=
+=--aot-condition-case-selectors=) reuses the runtime predicate
+=nelisp_aot_*= helpers and lands with the P3 runtime-image — P2's exit criterion
+(Doc 164 §6 P2) requires only =catch/throw= + =unwind-protect= parity, so
+condition-case beyond the single-symbol case is a documented P2 stub.
+
+*** shadow_sp  — NOT emitted in P2
+No =aot-current-sp= / =aot-machine-landing-jump= / =$shadow_sp= global is
+produced for =wasm32= (they never reach emit because the native desugar is
+bypassed).  The engine restores the catching frame's operand stack + locals on
+unwind (=proof-02/03=).  =$shadow_sp= re-enters only in P3, when the allocator /
+=applyn= arg-arrays put addressable values in linear memory that must be rewound
+on non-local exit; add it then as a Global (§B.1) restored inside =catch_all=.
+
+* §D Driver — tools/wasm-wasi-driver.mjs
+
+Superset of the P1 =tools/wasm-driver.mjs= (validate → instantiate → call export
+→ BigInt-compare).  New responsibilities, all proven in =tools/wasm-proofs/=:
+
+*Arguments:*
+: node tools/wasm-wasi-driver.mjs FILE.wasm MODE EXPORT [EXPECTED] [--preopen GUEST=HOST] [--arg X ...]
+- =MODE= ∈ =plain= | =wasi-reactor= | =wasi-command=.
+- =plain=: P1 behaviour (imports =env= only), keeps P1 regression green.
+- =wasi-reactor=: =new WASI({version:'preview1', args, env, preopens})=;
+  =instantiate(bytes, {...wasi.getImportObject(), env})=;
+  =wasi.initialize(instance)=; then call =instance.exports[EXPORT](...args)= and
+  BigInt-compare to =EXPECTED= (proof-05..07,09 pattern).
+- =wasi-command=: same WASI construction with =returnOnExit:true=; run
+  =const rc = wasi.start(instance)=; compare =rc= to =EXPECTED= (proof-08).
+
+*Imports it must provide:*
+- =wasi_snapshot_preview1.*= via =wasi.getImportObject()= (Node built-in).
+- =env.ext_add = (a,b)=>a+b= (and any other =env.*= the program declares) so the
+  extern-call smoke (§C.3, proof-04) links.
+- Determinism hook (Doc 164 §7.4): a =--stub-clock N= / =--stub-random N= flag
+  that *overrides* the WASI import object's =clock_time_get= / =random_get= with
+  a fixed-value shim so assertions are stable; default = real WASI.
+
+*Preopens:* =--preopen /sandbox=/abs/host/tmp= maps a guest path to a host dir
+so =path_open= (fd 3) creates real files (proof-07).  The =make wasm-wasi-smoke=
+target creates a temp dir, passes it as the preopen, runs =hello-file=, and
+asserts the file's bytes on the host side.
+
+*Expected-value assertion:* identical to P1 — BigInt(actual) === BigInt(EXPECTED)
+for numeric exports; for =hello-file= the driver additionally reads the preopen
+file and string-compares (proof-07); exit 1 on any mismatch, print
+=validate=/=result=/=expected= like =wasm-driver.mjs=.
+
+* §E P2 test programs (exact source forms + expected values, for the integrator)
+
+Compile each with =nelisp-aot-compile-to-object … :arch 'wasm32 :format 'wasm
+:wasm-eh t= (legacy dialect), then run under the driver.  (Tag/int-handle note:
+to isolate the *new* EH mechanism from symbol interning, the catch/throw smokes
+below use *integer* tags — a direct analog of =proof-02= — before the fuller
+symbol-based =standalone-reader-catch-throw-tag-smoke= parity, which needs the
+P3 runtime-image's symbol/list infra.)
+
+1. *hello-clock* (reactor) — =clock_time_get= returns nonzero:
+   : (defun hello-clock () (wasi-call clock_time_get 0 0 1040) (ptr-read-u64 1040 0))
+   Run =wasi-reactor hello-clock=; assert result ≠ 0 (proof-06).
+
+2. *hello-file* (reactor) — =path_open= + =fd_write= + =fd_close= → 0:
+   the elisp stages "out.txt" + "hello\n" into scratch, then
+   =(wasi-call path_open 3 0 …)= / =(wasi-call fd_write …)= / =(wasi-call
+   fd_close …)=, returning 0 on success.  Run =wasi-reactor hello-file … --preopen
+   /sandbox=<tmp>=; assert rc=0 AND host file = =hello\n= (proof-07).
+
+3. *catch/throw parity* (plain) — mirrors =proof-02=:
+   : (defun cat () (catch 11 (catch 22 (throw 22 42))))   ; => 42 (inner)
+   : (defun cot () (catch 11 (catch 22 (throw 11 99))))   ; => 99 (inner rethrows to outer)
+   Assert 42 and 99.  Symbol-tag version (=(catch 'inner (throw 'inner …))= →
+   =(a b c 42 inner outer)=, the =Makefile:425= smoke) is the P3 parity target.
+
+4. *unwind-protect parity* (plain) — cleanup runs on both paths (proof-03):
+   : (defun up-normal () (let ((n 0)) (unwind-protect 7 (setq n (+ n 1))) n))       ; body value 7, n=1
+   : (defun up-throw ()  (catch 1 (let ((n 0)) (unwind-protect (throw 1 5) (setq n (+ n 1))))))
+   Assert =up-normal=→7 (and observable cleanup), =up-throw=→5 with cleanup
+   having run (model the counter as in proof-03 if the program can expose it).
+
+5. *env.ext_add import* (plain) — mirrors =proof-04=:
+   : (defun addx (a b) (+ (extern-call ext_add a b) 1000))
+   Run =plain addx 1007 --arg 3 --arg 4= with driver =env.ext_add=(a,b)=>a+b=;
+   assert 1007.
+
+6. *P1 regression* — re-run the existing P0/P1 =tools/wasm-driver.mjs= smokes
+   (=(defun f () (+ (* 6 7) 0))= → 42, =fact=/=fib=/=while=/funcall/=sqrt=)
+   unchanged; the import-offset (§C.1) must keep a *zero-import* module byte-
+   identical to P1 (=k=0= ⇒ indices unchanged, Element =number-sequence 0..n-1=
+   unchanged).  Guard: a module with no imports/tags emits no Import/Tag/Data
+   sections (the =when= guards in §B.1).
+
+* §F Explicitly OUT of P2 (do not scope-creep — Doc 164 §4/§6 P3)
+
+- =alloc-bytes= / =dealloc-bytes= lowering (Doc 164 §4.1, =:14493=) — the bump
+  allocator, =memory.grow=, and =$heap_ptr= are *P3*.  P2 uses only the fixed
+  1024..4095 scratch window; it never grows memory or allocates.
+- =$shadow_sp= global and any SP save/restore (§C.4) — *P3*, tied to the
+  allocator / =applyn= arg-arrays.
+- The baked frozen-heap Data segment + =_start= booting the interpreter
+  (Doc 164 §4.2/§6 P3) — *P3*.
+- Full condition-case condition-hierarchy matching via runtime predicates
+  (§C.4) — *P3* (P2 does single-symbol/=error= tag-eq only).
+- =extern-call-ptr= / =call_indirect= through env imports (§C.3 step 4) — *P3*.
+- Standardized =try_table= as the *default* dialect — deferred until V8 ships it
+  flag-free or the driver opts into =--experimental-wasm-exnref= (§1 #2).
+- newDTW custom imports / =step= / canvas (Doc 164 §5.3/§6 P4).
+
+* §G Riskiest remaining assumption (for codex)
+
+*The single riskiest assumption: that legacy wasm EH (=try= 0x06 / =catch=
+0x07 / =catch_all= 0x19 / =rethrow= 0x09) stays available in the harness Node.*
+It is proven flag-free *today* on Node v24.14.1 (=proof-02/03=), and it is what
+makes =make wasm-eh-smoke= runnable without special flags — but V8 has signalled
+eventual *removal* of the legacy EH opcodes in favour of =try_table=.  If a
+future Node drops legacy EH, the P2 smokes break even though the compiler is
+correct.  *Mitigation already designed in:* the encoder carries *both* dialects
+behind =nelisp-asm-wasm--eh-dialect= (§A.2), the standardized =try_table= bytes
+are proven (=proof-01=, with =--experimental-wasm-exnref=), and the driver can
+pass that flag — so the switch to =try_table= is a one-line dialect flip plus a
+driver flag, not a re-derivation.  Codex should keep the two dialects
+byte-symmetric from the start so the flip is trivial.
+
+Secondary risk: the =syscall-direct= NR→WASI *auto*-translation (§C.2) assumes a
+compile-time-constant =:nr= and a Linux-x86_64 NR namespace; any dynamic-NR or
+Darwin-NR =syscall-direct= site reaching the wasm arm must fall to =-ENOSYS=
+(=i64.const -38=) rather than mis-dispatch.  The P2 *smokes* avoid this entirely
+by using the =wasi-call= primitive (§C.2), so the risk is confined to the P3
+runtime-image fileio, not the P2 exit criteria.
+
+* §H References
+- Doc 164 (=docs/design/164-wasm-backend.org=): §3.5 calls, §3.6 non-local exit,
+  §4.1 memory/scratch, §4.3 boot, §5.2 WASI subset, §6 P2 exit criteria, §7.1
+  EH availability, §7.4 determinism.
+- Proof scripts (=tools/wasm-proofs/=, run =run-all.mjs=): =proof-01= try_table,
+  =proof-01b= tag order, =proof-02= legacy nested catch/rethrow, =proof-03=
+  unwind, =proof-04= env import + index offset, =proof-05= fd_write, =proof-06=
+  clock, =proof-07= hello-file, =proof-08= command/proc_exit, =proof-09= random.
+- Code (HEAD =d387ac12=): P1 wasm emit =:16785–17186=; extern-call wasm arm
+  =:16995–17011=; =syscall-direct= parse =:9522=, native emit =:14531=;
+  non-local-exit desugar =:6038–:6352=, =:6790–:6919=; landing-jump =:15997=;
+  parser dispatch for catch/condition-case/unwind-protect =:8199–:8217=;
+  =throw=/=signal= parse =:4761/:4788=; writer =lisp/nelisp-wasm-write.el=;
+  encoder =lisp/nelisp-asm-wasm.el=.

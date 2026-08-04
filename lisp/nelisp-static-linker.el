@@ -360,7 +360,15 @@ ACC and BYTES are unibyte-strings or vectors; BYTES may be nil."
                   (t (nelisp-link--vec->ubstring bytes)))))
     (concat a b)))
 
-(defun nelisp-link-combine-sections (units)
+(defun nelisp-link--unit-section-alignment (section-name machine)
+  "Return the required start alignment for SECTION-NAME on MACHINE."
+  (if (and (eq section-name 'text) (eq machine 'aarch64)) 4 1))
+
+(defun nelisp-link--padding-bytes (n)
+  "Return N zero bytes for inter-unit padding."
+  (make-string n 0))
+
+(defun nelisp-link-combine-sections (units &optional machine)
   "Concat all UNITS' same-named sections into one combined buffer.
 For `text' / `rodata' / `data', the returned bytes are the
 ordered concatenation of every unit's contribution (unit order =
@@ -380,7 +388,18 @@ time the unit was visited."
           (let* ((uname (plist-get u :name))
                  (sec (nelisp-link--unit-section u sn))
                  (len (nelisp-link--section-length sec sn))
+                 (align (nelisp-link--unit-section-alignment sn machine))
                  (off (if (eq sn 'bss) acc (length acc))))
+            (when (and (not (eq sn 'bss))
+                       sec
+                       (> align 1))
+              (let ((aligned (nelisp-link--align-up off align)))
+                (when (> aligned off)
+                  ;; AArch64 alignment gaps can be 1-3 bytes, so zero-fill is
+                  ;; the only exact padding that preserves entry alignment.
+                  (setq acc (nelisp-link--bytes-append
+                             acc (nelisp-link--padding-bytes (- aligned off))))
+                  (setq off aligned))))
             (push (cons uname off) offs)
             (setq acc (if (eq sn 'bss) (+ acc len)
                         (nelisp-link--bytes-append acc sec)))))
@@ -541,7 +560,7 @@ SECTION-LAYOUT is the same alist passed to pass 1."
 
 ;; ---- §93.b (4) partial driver ----
 
-(defun nelisp-link-units-2pass (units section-layout)
+(defun nelisp-link-units-2pass (units section-layout &optional machine)
   "Run §93.b pass 1 + pass 2 over UNITS and return the link result.
 SECTION-LAYOUT is an alist `((SECTION-NAME . VIRTUAL-ADDRESS)
 ...)' that pins each combined section's load address; the caller
@@ -554,7 +573,7 @@ SECTION-LAYOUT is an alist `((SECTION-NAME . VIRTUAL-ADDRESS)
                        `nelisp-link-combine-sections' (verbatim)
 Signals `nelisp-link--duplicate-symbol' on STRONG collisions and
 `nelisp-link--unresolved-symbol' on missing externs."
-  (let* ((combined (nelisp-link-combine-sections units))
+  (let* ((combined (nelisp-link-combine-sections units machine))
          (symtab (nelisp-link--collect-defined-symbols
                   units combined section-layout))
          (bytes (nelisp-link--resolve-relocs
@@ -684,14 +703,15 @@ Pipeline: combine sections (§93.b), compute layout (§93.c), run
 2-pass symtab + reloc resolution (§93.b), export symtab to ELF
 writer shape (§93.c), then call `nelisp-elf-write-binary' with
 `:text' / `:rodata' / `:data' / `:bss-size' / `:symbols' /
-`:entry-sym' / `:machine'.  `:relocs' is intentionally omitted (=
+  `:entry-sym' / `:machine'.  `:relocs' is intentionally omitted (=
 relocs are fully resolved into the bytes already, so the writer
 must NOT emit a `.rela.text' section).  Returns FILE-PATH."
   (require 'nelisp-elf-write)
-  (let* ((combined (nelisp-link-combine-sections units))
+  (let* ((mach (or machine 'x86_64))
+         (combined (nelisp-link-combine-sections units mach))
          (layout (or section-layout
                      (nelisp-link--compute-layout combined)))
-         (link-result (nelisp-link-units-2pass units layout))
+         (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
          (symbols (nelisp-link--export-symtab symtab layout))
@@ -700,7 +720,6 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
          (data (nelisp-link--bytes-or-empty bytes 'data))
          (bss-size (or (cdr (assq 'bss bytes)) 0))
          (entry (or entry-sym "_start"))
-         (mach (or machine 'x86_64))
          (plist (list :text text
                       :rodata rodata
                       :data data
@@ -931,11 +950,11 @@ a writable segment."
   (require 'nelisp-mach-o-write)
   (let* ((entry (or entry-sym "_main"))
          (mach (or machine 'aarch64))
-         (combined (nelisp-link-combine-sections units))
+         (combined (nelisp-link-combine-sections units mach))
          (data-size (nelisp-link--section-len combined 'data))
          (bss-size (nelisp-link--section-len combined 'bss))
          (layout (nelisp-link--macho-exec-layout combined))
-         (link-result (nelisp-link-units-2pass units layout))
+         (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
          (text (nelisp-link--bytes-or-empty bytes 'text))

@@ -1,4 +1,4 @@
-.PHONY: test test-fast test-parallel test-one compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
+.PHONY: test test-fast test-parallel test-one wasm-smoke wasm-runtime-image-smoke wasm-dtw-skeleton-smoke wasm-dtw-transpile wasm-dtw-compile wasm-dtw-smoke wasm-dtw-site wasm-dtw-site-smoke compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -94,6 +94,65 @@ test-one:
 	  $(addprefix -l ,$(FILE)) \
 	  -f ert-run-tests-batch-and-exit
 
+wasm-smoke:
+	mkdir -p target/wasm-smoke
+	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
+	  --eval '(setq load-prefer-newer t)' \
+	  --eval "(progn \
+	    (require 'nelisp-aot-compiler) \
+	    (nelisp-aot-compile-to-object \
+	     '(defun f () (+ (* 6 7) 0)) \
+	     \"target/wasm-smoke/f.wasm\" \
+	     :arch 'wasm32 :format 'wasm) \
+	    (nelisp-aot-compile-to-object \
+	     '(seq \
+	       (defun g (y) (+ y 1)) \
+	       (defun f () (let ((x (+ (g 3) 4))) (g x)))) \
+	     \"target/wasm-smoke/f-locals.wasm\" \
+	     :arch 'wasm32 :format 'wasm))"
+	node tools/wasm-driver.mjs target/wasm-smoke/f.wasm f 42
+	node tools/wasm-driver.mjs target/wasm-smoke/f-locals.wasm f 9
+
+wasm-runtime-image-smoke:
+	mkdir -p target/wasm-runtime-image
+	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
+	  --eval '(setq load-prefer-newer t)' \
+	  --eval "(progn \
+	    (require 'nelisp-artifact) \
+	    (compile-runtime-image \
+	     '(\"compile-runtime-image\" \"--kind\" \"neln\" \
+	       \"--target\" \"wasm32-wasi\" \
+	       \"--input\" \"tools/wasm-runtime-image-p3c.nlri\" \
+	       \"--output\" \"target/wasm-runtime-image/runtime-image.wasm\")))"
+	node tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3
+
+wasm-dtw-skeleton-smoke:
+	node tools/wasm-proofs/p4-run-all.mjs
+
+wasm-dtw-transpile:
+	mkdir -p target/wasm-dtw
+	node tools/wasm-dtw-p4b/transpile-slice.mjs
+
+wasm-dtw-compile: wasm-dtw-transpile
+	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
+	  --eval '(setq load-prefer-newer t)' \
+	  --eval "(progn \
+	    (require 'nelisp-artifact) \
+	    (compile-runtime-image \
+	     '(\"compile-runtime-image\" \"--kind\" \"neln\" \
+	       \"--target\" \"wasm32-wasi\" \
+	       \"--input\" \"target/wasm-dtw/dtw-p4b.nlri\" \
+	       \"--output\" \"target/wasm-dtw/dtw.wasm\")))"
+
+wasm-dtw-smoke: wasm-dtw-compile
+	node tools/wasm-dtw-p4b/smoke.mjs target/wasm-dtw/dtw.wasm
+
+wasm-dtw-site: wasm-dtw-compile
+	node tools/wasm-dtw-p4b/build-site.mjs
+
+wasm-dtw-site-smoke: wasm-dtw-site
+	node tools/wasm-dtw-p4b/site-smoke.mjs site/dtw
+
 compile:
 	$(EMACS) --batch -Q -L src \
 	  $(PACKAGE_SRC_LOADS) \
@@ -128,6 +187,18 @@ standalone-eval-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-test
+
+# macOS Mach-O acceptance (CI macos runner): emit arm64 MH_EXECUTE x2 +
+# MH_OBJECT via the pure-elisp writers, then codesign/run/clang-link
+# them on the Darwin side.  Emission is host-agnostic; the check
+# script requires macOS (arm64) and fails the job on any regression.
+macho-acceptance-emit:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-macho-acceptance -f nelisp-macho-acceptance-emit
+
+macho-acceptance-test: macho-acceptance-emit
+	sh scripts/macho-acceptance-check.sh dist/macho-acceptance
 
 standalone-eval-clean:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \

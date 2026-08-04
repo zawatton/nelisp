@@ -1,0 +1,494 @@
+#+TITLE: Doc 164 P4 — Instruction-level implementation blueprint (newDTW game loop + canvas on GitHub Pages)
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 4.8 + zawatton)
+#+DATE: 2026-07-12
+#+STATUS: BLUEPRINT — ready for a codex implementer.  Every browser-pipeline
+#+STATUS: mechanism P4a introduces (the frame_out draw-op ring buffer, key_state
+#+STATUS: LEVEL import + wasm-side press/release EDGE detection, a now_ms f64
+#+STATUS: clock driving a walk-cycle, an exported init()/step() loop, and a full
+#+STATUS: 340x340 frame of draw-ops blitted to <canvas>) is PROVEN by a saved
+#+STATUS: Node v24.14.1 proof under tools/wasm-proofs/p4-*.mjs
+#+STATUS: (WebAssembly.validate + instantiate + a headless step() loop against a
+#+STATUS: mock canvas).  Run: node tools/wasm-proofs/p4-run-all.mjs => ALL P4 PROOFS OK.
+#+STATUS: The served bundle is tools/wasm-proofs/p4-www/ (index.html + dtw.js +
+#+STATUS: dtw.wasm); open index.html for the human eyeball check.
+
+This document turns Doc 164 §5.3/§5.4 and §6 P4 from "speculative plan" into a
+landable sequence, mapped onto existing code with =file:line= against nelisp HEAD
+=df6f04d1= and the read-only game repo =C:/Users/kuroz/Cowork/Notes/dev/newDTW-nelisp=
+(=nelisp_runtime/game-runner.el= etc.).  Read alongside Doc 164
+(=docs/design/164-wasm-backend.org=) §5.3/§5.4/§6 P4, the P3 blueprint
+(=docs/design/164-wasm-backend-p3-blueprint.org=, whose §H explicitly deferred
+"newDTW canvas / step / custom imports" to P4), and the six =p4-*= proof scripts.
+
+*Read this first — the two findings that decide P4's whole shape:*
+
+** Finding 1 — THE CRUX: architecture.  Transpile the corpus (B), do NOT interpret game-runner.el in wasm (A)
+
+The task frames a choice between (A) compiling =game-runner.el='s IR interpreter to
+wasm with the corpus baked as Data-segment ASTs, and (B) transpiling the corpus
+into AOT-dialect =(defun ...)= functions over flat linear-memory state.  Reading
+the actual game repo settles it decisively in favour of *B*, and reveals that the
+corpus is *already* two-thirds of the way there:
+
+1. *Architecture A is the P3 Rust-extern wall again, scaled up.*  =game-runner.el=
+   is 131 KB / ~1490 LOC of *regular* Elisp: =gr-state= is a =make-hash-table=
+   (:24, :1426), the draw stream =gr-sumi= is a cons list built with =push= (:1107,
+   :3443), dispatch is =gethash= on *string* function names (=gr-run-func=, :3454),
+   and it pulls in =string-match= / =replace-regexp-in-string= (:3462-3464), =format=,
+   msgpack encode/decode (:446-:663), and file IO (=gr-bload= / =gr-bsave=, :705-:762).
+   Compiling that to wasm through the AOT dialect requires a *full cons + hash +
+   string + regex runtime* — precisely the pure-elisp-combiner/allocator port that
+   P3 Finding 2 identified as a hard multi-phase blocker (=nl_eval_inner= delegates
+   to Rust externs).  A is out of any P4 budget.  *Rejected.*
+
+2. *The corpus is not an opaque AST needing an interpreter — it is a small, uniform,
+   already-lowered Elisp dialect.*  There are two corpus representations, and the
+   large one is the friendly one:
+   - =gamedata-simple.el= — 57 *flat state-diff IR* closures
+     =(gr-defun "funcNNN" '((SLOT VALUE) (core-call ...) (game-set-message ...) ...))=.
+     Purely mechanical: slot writes, =core-call=, draw-op emission, and value
+     expressions =((state-slot-ref N))= / =((math-add A B))= / =((index-ref B I))=
+     / =((i18n-format FMT ARGS))= (=game-runner.el= =gr-eval-op= :3376, =gr-exec-entry=
+     :3420).
+   - =gamedata-conditional.el= — 8.7 MB, *1205* =(defun gr-native-funcXXX (&rest _args)
+     (catch 'gr-return ...))= functions + *1324* =(gr-defnative "funcXXX" #'...)=
+     registrations.  These are the branchy funcs the flat IR can't express, emitted
+     as *plain Elisp with a tiny fixed vocabulary*.  A frequency scan of the whole
+     8.7 MB file shows the ENTIRE construct set:
+     | construct | sites | lowers to |
+     |-----------+-------+-----------|
+     | =gr-get= SLOT | 125 444 | =slots[]= load (AOT =ptr-read-u64=) |
+     | =gr-num= X | 73 513 | i64 coerce (nil->0) |
+     | =gr-set= SLOT V | 52 465 | =slots[]= store (AOT =ptr-write-u64=) |
+     | =equal= A B | 32 934 | i64 =eq= (numeric) / interned-offset eq (string) |
+     | =gr-index-ref= ARR I | 31 936 | bounds-checked array load |
+     | =if=/=when=/=progn=/=and=/=or=/=not= | 25606/3821/16119/12804/14069/4392 | AOT §3.3 control flow (P1) |
+     | =+= =-= =*= =/= =<= =>= =>== =<== | 14069/8881/6715/270/7146/1119/6510/800 | AOT arithmetic/cmp (P0/P1) |
+     | =gr-emit= OP ARGS | 12 031 | append one 96-byte record to the ring buffer (p4-01) |
+     | =gr-run-func= "funcNNN" | 11 348 | *static* =call= / =call_indirect= (name is a literal) |
+     | =let=/=setq= | 5439/3598 | AOT =let= locals (§3.2) |
+     | =catch 'gr-return=/=throw= | 4661/3601 | AOT =catch=/=throw= (P2!) |
+     | =while= | 1714 | AOT =while= (P1) |
+     | =gr-random= N | 885 | AOT LCG/xorshift PRNG defun |
+     | =gr-format= / =gr-i18n-t= | 496/24 | STRING op — the wall (see Finding 2) |
+     | =gr-read-key-state= CODE | 56 | =key_state= import (p4-03) |
+     | =gr-call= FN | 12 | dynamic dispatch — edge case, deferrable |
+
+   Every control-flow, arithmetic, comparison, state-slot, array, emit and dispatch
+   construct in the corpus *already has an AOT-dialect lowering that P0–P3 landed*
+   (control flow P1, catch/throw P2, =ptr-read/-write= + =alloc-bytes= P3).  What is
+   NOT yet present is a thin =gr-*= *runtime layer* (=gr-get/-set/-emit/-num/-index-ref/
+   -random/-run-func=) — but each of those is itself expressible as a handful of
+   AOT-dialect defuns over linear memory (§4.3), NOT a Rust extern.  This is the
+   opposite of the A wall: *B needs a ~200-LOC runtime shim, not a language runtime.*
+
+*Decision: Architecture B.*  Transpile the corpus's uniform Elisp subset →
+AOT-dialect defuns operating on a flat =slots[]= array in linear memory; provide the
+=gr-*= runtime as AOT defuns; lower =gr-emit= to the proven draw-op ring buffer;
+compile with =:arch 'wasm32 :format 'wasm=.  Effort/scope in Finding 2 and §5.
+
+** Finding 2 — the string wall forces a demo-scoped SLICE, exactly as P3 hand-authored a reduced core
+
+Two things bound P4 to a *slice*, not the full game — and Doc 164 §6 P4's exit text
+("renders to <canvas> and responds to keys ... a non-blank frame + a key-driven
+state change") does *not* require the full game, so this is honest, not a dodge:
+
+1. *The string wall (hard).*  The AOT dialect has *no string runtime* (P3 §H).  But
+   corpus slots hold Japanese/CP932 strings (=gamedata-simple.el:29= =(283 "ｽｸｱｰﾛ「こんな…")=),
+   =equal= compares strings, =gr-emit "gui-draw-text"= carries text, and =gr-format=
+   / =i18n-format= *concatenate* strings with numbers (=game-runner.el:3412=).  Three
+   tractable tactics, in order of P4 reach:
+   - *Baked string literals* → each distinct literal is a NUL-terminated UTF-8 (or
+     CP932) blob in a Data segment; a "string-valued slot" holds its *absolute
+     linear-mem offset*; a =DRAW_TEXT= record carries that offset; JS =TextDecoder=
+     decodes.  *Proven*: =p4-01= blits =draw-text "DTW"= via a baked offset.
+   - *String =equal=* of two *interned* literals → offset equality (interning makes
+     equal strings share one offset).  Byte-compare only for the rare dynamic case.
+   - *=gr-format= / dynamic text* (the real wall) → *push formatting to JS*: lower to
+     a =DRAW_TEXT_FMT= record = fmt-offset + up to N numeric args; JS does the ={0}=
+     substitution.  This keeps wasm string-free.  Full in-wasm string concat is
+     *deferred* (post-P4).
+2. *The renderer is 34 hand-written native funcs, not IR (soft, but real).*  The
+   heavy draw logic — =func324= map (=gr-live-native-func324=, :2190), =func337= the
+   ~80-way frame orchestrator (:2854), =func345= player sprite (:2695), =func342/343=
+   status, =func396/397= items, =func566/568= scroll — is *hand-written* =gr-live-native-*=
+   Elisp (34 defuns, registered by =gr-install-live-native-overrides= :3279).  These
+   use vectors + arithmetic (portable to AOT arrays) but are NOT mechanical corpus;
+   each one the slice touches must be *hand-ported*, not auto-transpiled.
+
+*Decision: scope P4 to the smallest honest SLICE that lights the whole pipeline.*
+Recommended slice (§5, primary): a *map-walk demo* — a player walks a baked tile
+map with the arrow keys, a 4-frame walk-cycle sprite, one status line.  Rationale:
+(a) it is the iconic newDTW overworld frame, (b) it is *numeric-heavy* (tile grid +
+=(px,py)= + =anim=), so it dodges most of the string wall, (c) it needs porting only
+a *reduced* =func324= (tile blits from a baked map array) + a =func345=-style player
+draw + arrow-key dispatch — a bounded port, not the full 80-way =func337=.  A
+title/menu key-nav slice is an equally valid, even smaller fallback (§5.4).  The
+*full-corpus transpile* (all 1205 conditional funcs + 57 IR funcs + the string
+runtime + the remaining 33 render funcs) is explicitly *deferred to a post-P4
+"full-game" phase* (§6, §7).
+
+This mirrors P3 exactly: P3's gate baked a *hand-authored reduced eval core*, not
+the full standalone interpreter, and asserted the P3-specific mechanisms.  P4b
+transpiles a *real but reduced game slice*, and asserts the P4-specific mechanisms
+(canvas frame + key-driven state change), not full-game fidelity.
+
+* §0 Executive summary
+
+P4 adds, on top of the landed P0–P3 wasm path (=lisp/nelisp-asm-wasm.el=,
+=lisp/nelisp-wasm-write.el=, wasm emit arm in =lisp/nelisp-aot-compiler.el=,
+=lisp/nelisp-artifact.el= =--target wasm32-wasi=):
+
+1. *Three custom host imports* under module =env= (Doc 164 §5.3), all proven:
+   =key_state(code:i32)->i32= (key LEVEL; edges computed in wasm — =p4-03=),
+   =now_ms()->f64= (=performance.now=; frame timing — =p4-04=), and
+   =frame_out(ptr:i32,count:i32)->()= (hand off a run of draw-op records — =p4-01=).
+2. *The draw-op ring-buffer ABI* — a run of fixed 96-byte records
+   =[op:u64, a0..a9:u64, textOff:u64]= + a NUL-terminated string blob, ALL in linear
+   memory; =frame_out= is called *once per frame* (1 boundary crossing) regardless of
+   op count (=p4-01=); the rejected per-op-import alternative costs O(ops/frame) — 289
+   crossings for one 17x17 map frame (=p4-02=).  This record layout is *lifted directly*
+   from the game's existing binary packer =nelisp_runtime/live-feed-loop.el=
+   =gr-live-feed-pack-rec= (:412), which already packs =op:u64 + 10 slots + text:u64=.
+3. *A =gr-emit= → record lowering* and a thin =gr-*= runtime as AOT defuns (§4.3).
+4. *Exported =init()= + =step()=* (Doc 164 §4.3) — =init= seeds state + emits the
+   asset-load manifest, =step= advances one frame; a =requestAnimationFrame= loop in
+   =dtw.js= calls =step= (=p4-05=, =p4-06=).
+5. *The Pages bundle* — =index.html= + a ~40-line =dtw.js= shim + =dtw.wasm= + a small
+   asset manifest (§4.7), servable with *no cross-origin-isolation headers*
+   (single module, single thread, no =SharedArrayBuffer=).
+
+All six proofs pass flag-free: =node tools/wasm-proofs/p4-run-all.mjs= => =ALL P4
+PROOFS OK=.  =p4-www/dtw.wasm= (936 bytes, hand-assembled) is the working P4a
+skeleton the browser serves today.
+
+* §1 Ground truths (each PROVEN — validate=true + executed under Node v24.14.1)
+
+| # | claim (byte-level / behaviour) | proof | validate / run result |
+|---+--------------------------------+-------+------------------------|
+| 1 | =frame_out= ring buffer: step() writes N 96-byte records + a baked string blob into linear memory, ONE =frame_out(ptr,count)= crossing/frame; JS drains the whole run (fill+blit+text+present, draw-text payload="DTW", blit id/dx/dy correct) | =p4-01= | valid; crossings=1, ops=FILL_RECT,DRAW_IMAGE,DRAW_TEXT,PRESENT, text="DTW" |
+| 2 | Rejected alt: one import call per draw-op costs O(ops/frame); a 17x17=289-tile map frame = 289 crossings vs the ring buffer's 1 | =p4-02= | valid; per-op crossings=289 |
+| 3 | =key_state(code)->i32= LEVEL import + wasm-side rising-EDGE detection (=cur - (cur & prev)=, mirrors func1000 xor/and, =gamedata-simple.el:58=): press moves once, HOLD does not, release re-arms | =p4-03= | valid; px trace [100,120,120,120,120,140] |
+| 4 | =now_ms()->f64= clock drives a 4-frame walk-cycle every 200 ms, frame-rate independent | =p4-04= | valid; sx=[0,40,80,120,0] at t=[0,200,400,600,800] |
+| 5 | The FULL P4a skeleton loop, headless: the real =dtw.wasm= + mock canvas + key queue + clock; init() emits the asset manifest; NON-BLANK frame0 (fillRect+2 blits+text+present); KEY-DRIVEN change (Right => player dx 150->170); walk-cycle advances | =p4-05= | valid; manifest=["map","player"], frame0 non-blank, moved, sx cycles |
+| 6 | The Pages BUNDLE self-consistency: the ON-DISK =dtw.wasm= (936 B, what Pages serves) validates+instantiates, exports [memory,init,step], step() renders a full frame; index.html<->dtw.js<->dtw.wasm wiring + import/export names match the ABI | =p4-06= | valid; 936 B, exports ok, all 7 wiring checks ok |
+
+* §2 Architecture decision — A vs B vs C, with effort
+
+| option | what it is | verdict | why |
+|--------+------------+---------+-----|
+| *A* interpret =game-runner.el= in wasm (corpus as baked ASTs) | port the IR interpreter core to the AOT dialect | *REJECT* | needs a full cons/hash/string/regex runtime = the P3 Finding-2 Rust-extern wall, scaled up; weeks, not P4 |
+| *B* transpile corpus → AOT defuns over flat =slots[]= | mechanical retranslation of an already-uniform Elisp subset (Finding 1) | *ADOPT* | every construct already has an AOT lowering; only a ~200-LOC =gr-*= runtime shim + the string tactics (Finding 2) are new |
+| *C* hybrid / demo slice | B applied to the smallest honest slice; full corpus deferred | *ADOPT (scope)* | Doc 164 §6 P4's exit needs a non-blank frame + key-driven change, NOT the full game; a slice proves the pipeline end-to-end |
+
+*Chosen: B, scoped to a slice (C).*  Effort for the SLICE (§5):
+- P4a skeleton (the six proofs + =p4-www/= bundle): *≈0.5 d* — essentially *landed* by
+  this blueprint's proofs; remaining work is a =Makefile= target + a README note.
+- P4b transpiler + slice: *3–5 d* — the corpus-subset transpiler, the =gr-*= AOT
+  runtime, the baked-map + player render port, the string tactics for the slice.
+- P4c Pages bundle + headless smoke + docs: *1–1.5 d*.
+- *Total P4 (slice): ≈5–7 engineer-days* — a touch above Doc 164's 3–5 d because the
+  transpiler is genuine work; the slice keeps it bounded.  The *full-corpus* port
+  (all funcs + full string runtime + all 34 render funcs) is a *separate multi-week
+  phase* (§7), NOT P4.
+
+* §3 The P4a skeleton proof (browser pipeline, pure hand-wasm — LANDED)
+
+=tools/wasm-proofs/p4-*= + =p4-www/= implement and prove the entire browser pipeline
+with *no elisp yet*, so P4b starts from a byte-fixed target.
+
+** §3.1 The draw-op record ABI (=p4-helpers.mjs=, mirrors =live-feed-loop.el=)
+
+: record[i] = 96 bytes, little-endian
+:   lane 0      op       : u64   (OP.* below)
+:   lane 1..10  a0..a9   : u64   (integers; f64 lanes read via getFloat64)
+:   lane 11     textOff  : u64   (ABSOLUTE linear-mem offset of a NUL-terminated
+:                                 UTF-8 string, or 0 = none)
+: frame_out(ptr, count)  =>  JS reads `count` contiguous records starting at `ptr`.
+
+Op codes (cover the =gr-sumi= vocabulary in =func337= / =sumi-title-stream.json=):
+=LOAD_IMAGE=1= (a0=buffer id, text=asset name), =FILL_RECT=2= (x,y,w,h,rgba),
+=SET_COLOR=3=, =DRAW_IMAGE=4= (id,dx,dy,dw,dh,sx,sy,sw,sh), =DRAW_TEXT=5= (x,y,rgba,text),
+=SET_ALPHA=6=, =SELECT_BUFFER=7=, =PRESENT=8=.  This is a direct byte-for-byte
+generalisation of =gr-live-feed-pack-rec= (=live-feed-loop.el:412=), which the game's
+native renderer already drains — so the wasm frame stream is *the same format the
+existing renderer speaks*.
+
+*Why the ring buffer, not per-op imports* (=p4-01= vs =p4-02=): a 340x340 newDTW frame
+is hundreds of ops (a full map is a 17x17+ tile grid = 289 blits before sprites /
+status / text).  Per-op imports cost one wasm->JS crossing *each* (289/frame, =p4-02=);
+the ring buffer costs *one* crossing/frame regardless (=p4-01=).  The ring buffer wins
+decisively; per-op is documented only to justify rejecting it.
+
+** §3.2 Imports (=env=) and the exported contract
+
+- =env.key_state(code:i32) -> i32= — key LEVEL (0/1).  The game reads levels
+  (=dtw-read-key-state=, =game-runner.el:689=) and computes edges in the corpus
+  (=func1000=: rising = =cur xor (mask and cur)=).  So the *import stays a level read*
+  and edges are computed *in wasm* (=p4-03=: =edge = cur - (cur & prev)=; press moves
+  once, hold does not, release re-arms).
+- =env.now_ms() -> f64= — =performance.now=; the wasm timing accumulator advances a
+  walk-cycle every 200 ms independent of rAF cadence (=p4-04=).
+- =env.frame_out(ptr:i32,count:i32) -> ()= — hand off one frame's records (§3.1).
+- *Exports*: =memory= (kind 0x02) so JS can read records; =init()= (seed state + emit
+  the =LOAD_IMAGE= manifest); =step()= (advance one frame).  Instantiate order:
+  =init()= once, then =requestAnimationFrame(step)= (=dtw.js=; =p4-05= drives it headless).
+
+** §3.3 The served bundle =tools/wasm-proofs/p4-www/
+
+- =build-dtw-wasm.mjs= — hand-assembles =dtw.wasm= (the P4b codegen emits a module of
+  *exactly this shape*; only the frame CONTENT changes).  Run directly => writes
+  =dtw.wasm=; =import { buildDtwWasm }= for the proofs.  Memory layout it uses is the
+  P4b template: =PX=256 PY=264= (i32), =LAST_MS=280= (f64), =ANIM=288= (i32),
+  per-key =PREV=300..312=, =SCRATCH=320=, string blob @512, ring buffer @1024.
+- =dtw.js= (~40 lines) — placeholder assets (offscreen canvases keyed by buffer id;
+  P4b swaps for real PNGs via the manifest), keydown/keyup => key Set, =now_ms=,
+  =frame_out= drain => Canvas2D, =init()= + rAF loop.
+- =index.html= — a 340x340 =<canvas id="screen">= + the shim; no COI headers.
+- =dtw.wasm= — the 936-byte built artifact (regenerated by =p4-06=).
+
+* §4 The elisp side — exact port plan (P4b)
+
+** §4.1 Where the transpiler lives
+
+*In the GAME repo's tools, not nelisp.*  The corpus is game-specific and the game
+repo already owns the lowering pipeline (=nelisp_runtime/statediff-to-elisp.el=
+generated =gamedata-simple.el=; a "conditional" lowerer generated
+=gamedata-conditional.el=).  Add =nelisp_runtime/corpus-to-aot.el= (game repo) that
+reads the two corpus forms and emits an AOT-dialect =.nlri= / =(progn (defun ...))=
+bundle.  nelisp stays the *compiler*: =nelisp-aot-compile-to-object … :arch 'wasm32
+:format 'wasm= consumes the bundle.  (This mirrors P3, where the reduced eval core
+=.nlri= lived as a source bundle fed to the compiler, not baked into nelisp.)
+*Do NOT modify the game repo in P4b design work — it is read-only here;* the
+transpiler is authored when P4b is actually implemented, in the game repo, by that
+task.
+
+** §4.2 State-memory layout (the =slots[]= array)
+
+=gr-state= is a hash keyed by *int OR string*; values are int | string | vector.
+Lower it to a *flat i64 array* =slots[]= in linear memory at a fixed base =SLOTS_BASE=:
+
+- *Integer slots* (e.g. 283, 655, 3924) and *interned string keys* ("lang_cursor",
+  "belongings_item_list", "key_Z_on", "open_item_menue", …) are unified into ONE dense
+  integer index space by a *transpile-time intern table* (string key -> slot id).  The
+  corpus's string keys are a bounded finite set (scan them once).  =gr-get SLOT= =>
+  =ptr-read-u64(SLOTS_BASE + id*8)=; =gr-set SLOT V= => =ptr-write-u64=.
+- *Numeric values* live inline (i64).  *String values* live as an *offset* into a
+  string region (Finding 2); *array/vector values* (slot 233 = belongings 2D, 24/25/26,
+  476-479) live as an *offset* to an =alloc-bytes= sub-array with an =[len, elem0, …]=
+  header.  A transpile-time *slot-type map* (numeric | string | array) disambiguates
+  what a slot's i64 means, so no runtime tag bit is needed.
+- =bss=: =slots[]= is zero-initialised for free (wasm linear memory); =init()= writes
+  only the non-zero seeds (the game's =gr-seed-state= / bootstrap arrays,
+  =game-runner.el:937=).
+
+** §4.3 The =gr-*= runtime as AOT defuns (the ~200-LOC shim)
+
+Each is a self-contained AOT-dialect defun (only ops that lower to pure wasm):
+
+#+begin_src elisp
+(defun gr-get (id)      (ptr-read-u64 (+ SLOTS_BASE (* id 8)) 0))        ; nil-slot => 0 by zero-init
+(defun gr-set (id v)    (ptr-write-u64 (+ SLOTS_BASE (* id 8)) 0 v))
+(defun gr-num (x)       x)                                               ; ints only in the slice; nil coercion at transpile
+(defun gr-index-ref (arr i)                                             ; arr = offset to [len, e0, e1, ...]
+  (if (and (>= i 0) (< i (ptr-read-u64 arr 0)))
+      (ptr-read-u64 arr (* (+ i 1) 8)) 0))
+(defun gr-index-set (arr i v)
+  (if (and (>= i 0) (< i (ptr-read-u64 arr 0)))
+      (ptr-write-u64 arr (* (+ i 1) 8) v) 0))
+(defun gr-random (n)    (mod (gr--lcg-next) n))                          ; xorshift/LCG global (deterministic)
+(defun gr-read-key-state (code) (key_state code))                       ; extern-call the import (56 sites)
+;; gr-emit: append one 96-byte record to the ring buffer, bump the record count.
+(defun gr-emit1 (op a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 textoff)
+  (let ((rec (+ RING_BASE (* (gr--frame-count) 96))))
+    (seq (ptr-write-u64 rec 0 op)  (ptr-write-u64 rec 8 a0) ... (ptr-write-u64 rec 88 textoff)
+         (gr--frame-count-inc))))
+#+end_src
+
+- =gr-run-func "funcNNN"= (11 348 sites) — the name is a *string literal* in the
+  generated corpus, so it resolves at transpile time to a *direct =call=* of the
+  transpiled defun (or a =call_indirect= via a funcref Table for the ~12 dynamic
+  =gr-call= sites).  No runtime string dispatch, no hash.
+- =catch 'gr-return= / =throw= (4661 / 3601 sites) — lower to the AOT =catch=/=throw=
+  landed in P2 (Doc 164 §3.6); =gr-break= / =gr-continue= (loop control) likewise.
+- At end of frame, =step()= calls =frame_out(RING_BASE, frame_count)= and resets
+  =frame_count=.
+
+** §4.4 =gr-emit= → =frame_out= lowering (draw-ops leave wasm)
+
+The corpus emits draw-ops by =gr-emit "gui-draw-image-scaled" id dx dy dw dh sx sy sw sh=
+etc. (=game-runner.el:1383=, native renderer uses it throughout =func337=).  Lowering:
+map each =gr-emit= op-name string to an integer =OP.*= at transpile time, then call
+=gr-emit1= (§4.3) which writes one 96-byte record.  Text-carrying ops (=gui-draw-text=)
+pass =textOff= = the baked-string offset (Finding 2 tactic 1) or a =DRAW_TEXT_FMT=
+record (tactic 3).  =step()= makes the single =frame_out= crossing.  This is exactly
+=p4-01='s proven path; the game's own =live-feed-loop.el= already produces this record
+shape for its native renderer, so the wasm output is drain-compatible.
+
+** §4.5 =init()= / =step()= export contract
+
+- =init()=: write the non-zero state seeds into =slots[]=; emit the =LOAD_IMAGE=
+  manifest records (one per referenced buffer id, =textOff= = asset name); one
+  =frame_out= so JS learns the manifest (=p4-05= asserts =["map","player"]=).  Runs once
+  at instantiate (or a wasm Start section, Doc 164 §4.3).
+- =step()=: read keys (=key_state= + wasm edge calc), advance timing (=now_ms=), run the
+  slice's frame logic (transpiled =funcNNN= + ported render funcs) which =gr-emit='s the
+  frame, then =frame_out(RING_BASE, frame_count)=.  Called every rAF tick.
+
+** §4.6 Input mapping (must match the game's key-state model)
+
+The game's key state is *level* per keycode (=dtw-read-key-state code=), and *edges*
+are computed in the corpus (=func1000=/=func1001=: =3915 = cur xor (mask and cur)=,
+=gamedata-simple.el:58-59=).  So: =dtw.js= keydown/keyup maintain a per-code LEVEL Set;
+=key_state(code)= returns the level; the transpiled corpus computes press/release edges
+in wasm exactly as it does natively (=p4-03= proves the edge algebra).  Keycodes: reuse
+the game's own codes (slots 728/735 hold the configured key codes, =gamedata-simple.el:58=);
+=dtw.js= maps browser =ArrowLeft/Up/Right/Down= => 37/38/39/40 and Z/X/A => the game's
+action codes.  *Do not invent a new key model* — edges must be wasm-side to match.
+
+** §4.7 The Pages bundle layout + asset manifest (the 34 507-PNG problem)
+
+: p4-www/            (or the game repo's docs/ Pages dir)
+:   index.html       ~40 lines: <canvas id=screen 340x340> + <script src=dtw.js>
+:   dtw.js           ~40 lines: assets, key Set, now_ms, frame_out drain, init+rAF
+:   dtw.wasm         the compiled slice
+:   assets/          ONLY the slice's referenced images (see below)
+
+*Asset strategy (critical — Pages size).*  The game ships *34 507 PNGs / 103 MB* under
+=assets/sprites/= (pre-rendered per-frame sprites) plus *28 base images / 8.6 MB* under
+=assets/img/= (=img_map.gif.png=, =img_mychara.gif.png=, …).  You *cannot* ship 103 MB
+to Pages.  The manifest discipline:
+1. =init()= emits =LOAD_IMAGE(id, name)= for *only* the buffer ids the slice uses (the
+   map-walk slice: =img_map= (id 5) + =img_mychara= (id 3) + a few enemy sheets — a
+   handful of the 28 base images, tens of KB).
+2. =dtw.js= maintains =images = { id: HTMLImageElement }=; on each =LOAD_IMAGE= it sets
+   =images[id].src = 'assets/' + name= (or a =Promise= gate before the first frame).
+3. =DRAW_IMAGE(id,…)= => =ctx.drawImage(images[id], sx,sy,sw,sh, dx,dy,dw,dh)=.
+4. Ship =assets/= = only the manifest's files.  A build step copies the referenced
+   base images (from =newDTW-nelisp/assets/img/=) into the bundle; the 103 MB sprite
+   set stays out.  (The P4a skeleton sidesteps this entirely: =dtw.js= *generates*
+   placeholder canvases keyed by id, so it needs zero asset files.)
+
+*Licensing (JoJo/newDTW fan-game art).*  The base images are third-party fan-game
+assets — do NOT publish them to a public Pages site without clearing rights.  P4a
+ships *generated placeholders* (no assets); P4b/P4c should either (a) keep placeholders
+for the public demo, or (b) gate the real-asset bundle behind a private/unlisted Pages
+deploy.  Call this out to the integrator (§6).
+
+* §5 Phasing P4a / P4b / P4c with exit criteria
+
+** P4a — skeleton browser pipeline (0.5 d — essentially LANDED by this blueprint)
+- The six =p4-*= proofs + =p4-www/= bundle already exist and pass.  Remaining: a
+  =Makefile= target =wasm-dtw-skeleton-smoke= running =node tools/wasm-proofs/p4-run-all.mjs=
+  (pattern of the P3 =wasm-runtime-image-smoke=), and a README note pointing at
+  =p4-www/index.html= for the eyeball.
+- *Exit*: =node tools/wasm-proofs/p4-run-all.mjs= => =ALL P4 PROOFS OK=; opening
+  =p4-www/index.html= (served statically) shows a non-blank 340x340 canvas with a
+  sprite that walks one tile per arrow-key press.  (Serve: =python -m http.server=
+  from =p4-www/=, or =npx serve=; =WebAssembly.instantiateStreaming= needs an HTTP
+  origin, not =file://=.)
+
+** P4b — transpiled slice renders REAL game frames (3–5 d)
+- Author =corpus-to-aot.el= (game repo, §4.1): the slot intern/type maps (§4.2), the
+  construct lowering (Finding 1 table), the =gr-*= AOT runtime (§4.3), =gr-emit= =>
+  record (§4.4), the string tactics for the slice (Finding 2).
+- Port the slice's render funcs: a reduced =func324= (baked tile map => =DRAW_IMAGE=
+  blits) + a =func345=-style player draw + the arrow-key frame dispatch (a reduced
+  =func337=).  Compile the bundle with =:arch 'wasm32 :format 'wasm=.
+- Swap =dtw.js= placeholders for the real base images via the manifest (§4.7).
+- *Exit*: the compiled =dtw.wasm= (real slice) instantiates in the =p4-05= harness and
+  in the browser; =init()= manifest lists the slice's real buffer ids; a frame shows
+  the *actual newDTW tile map + player sprite*; an arrow key walks the player on the
+  map (a headless assert on the =DRAW_IMAGE= player dx/dy changing + the eyeball on the
+  tiles).  New game-repo target/smoke mirrors =p4-05=.
+
+** P4c — Pages bundle + headless smoke + docs (1–1.5 d)
+- Assemble the Pages dir (§4.7) with the manifest's assets; a =puppeteer= /
+  headless-Chrome smoke (Doc 164 §8 P4 row) that loads the served =index.html=,
+  asserts a *non-blank* canvas (read =getImageData=, > K non-background pixels) and a
+  *key-driven change* (dispatch an =ArrowRight= =KeyboardEvent=, assert the canvas
+  differs), matching Doc 164 §6 P4's exit verbatim.
+- Docs: a game-repo README section + a nelisp docs pointer; the licensing/asset note.
+- *Exit* (= Doc 164 §6 P4): the static bundle served on GitHub Pages (no COI headers)
+  renders to =<canvas>= and responds to keys; the headless smoke asserts a non-blank
+  frame + a key-driven state change.
+
+* §6 Risks
+
+- *Strings / CP932 text (HIGHEST).*  =draw-text= carries Japanese; =gr-format=
+  concatenates.  *Mitigation*: bake literals as offsets (=p4-01= proves the path);
+  push =gr-format= substitution to JS (=DRAW_TEXT_FMT=); pick a numeric-heavy slice
+  (§5) so P4b touches few strings; defer full in-wasm string concat.  *Encoding*: bake
+  UTF-8 and decode with =TextDecoder('utf-8')= (the game's own =live-feed-loop.el:383=
+  already emits UTF-8), NOT CP932, to avoid a =shift_jis= decoder dependency.
+- *Performance (interpreted-vs-AOT budget for 340x340).*  This is *compiled* code, not
+  the Elisp interpreter (=feedback_nelisp_perf_not_elisp_interpreter=), so a full-map
+  frame (289 blits + sprites) at 60 fps is well within budget; the only per-frame JS
+  cost is one =frame_out= drain of ~hundreds of records (=p4-01= amortises to 1
+  crossing).  *Open*: measure a real P4b frame's record count and drain time; if a
+  frame exceeds the ring buffer size, grow it (=memory.grow=, P3) or double-buffer.
+- *Asset size + licensing on Pages.*  103 MB sprite set must NOT ship (§4.7);
+  third-party fan-game art must not be published publicly without rights.
+  *Mitigation*: manifest-only asset copy; placeholders for the public demo; private
+  Pages for the real-asset build.
+- *Browser key handling.*  =keydown= autorepeat can fake "hold" edges; the game's model
+  is LEVEL + wasm edges (§4.6), so JS must track true press/release (Set add/remove),
+  and =preventDefault= on arrows so the page doesn't scroll (=dtw.js= does this).
+  =instantiateStreaming= needs an HTTP origin (Pages is fine; =file://= is not).
+
+* §7 Riskiest remaining assumption (for codex)
+
+*The single riskiest assumption: that a numeric-heavy SLICE faithfully represents the
+P4 gate without dragging in the string runtime or the full 80-way frame orchestrator.*
+Doc 164 §6 P4's exit ("renders to <canvas> and responds to keys ... non-blank frame +
+key-driven state change") is satisfied *in mechanism* by a map-walk (or title-nav)
+slice, but it is *not* the full newDTW game.  The gap is deliberate and forced by
+Finding 2 (the string wall + the 34 hand-written render funcs), exactly as P3's
+reduced-core gate was forced by the Rust-extern wall.  *Mitigation*: (a) this blueprint
+states the scope boundary explicitly (§2, §5) and the gate asserts the P4-specific
+mechanisms (canvas frame from wasm-emitted draw-ops + key-driven state change), not
+full-game fidelity; (b) the slice uses *only* corpus constructs that also appear in the
+real game (Finding 1 table), so it is a genuine subset, not a toy; (c) the full-corpus
+port — all 1205 conditional funcs + 57 IR funcs + the string runtime + the remaining 33
+render funcs + the msgpack save/load — is tracked as its own multi-week phase, with the
+string-runtime and render-func-port work called out.
+
+Secondary risk: *=gr-run-func= is assumed to be a compile-time-resolvable direct call.*
+11 348 of 11 360 sites pass a *string literal* name (resolvable), but ~12 =gr-call=
+sites and any computed-name =core-call= need a funcref Table + =call_indirect= (Doc 164
+§3.5, landed P1) keyed by an intern of the funcNNN space; if the slice hits one, wire
+the Table rather than special-casing.
+
+* §8 References
+- Doc 164 (=docs/design/164-wasm-backend.org=): §4.3 boot/step export, §5.3 custom
+  imports table (=frame_out/key_in/now_ms=, :491-505), §5.4 JS shim sketch (:507-522),
+  §6 P4 exit (:569-575), §7.2 perf framing, §8 P4 smoke row.
+- P3 blueprint (=docs/design/164-wasm-backend-p3-blueprint.org=): §H (newDTW canvas
+  deferred to P4), Finding 2 (reduced-core precedent for slice scoping), §1 ground-truth
+  table format, §F phasing format.
+- Proof scripts (=tools/wasm-proofs/=, run =node tools/wasm-proofs/p4-run-all.mjs=):
+  =p4-helpers.mjs= (record ABI + byte builders), =p4-01= ring buffer, =p4-02= per-op
+  reject, =p4-03= key edges, =p4-04= now_ms timing, =p4-05= headless skeleton loop,
+  =p4-06= Pages bundle; served bundle =p4-www/= (=build-dtw-wasm.mjs= / =dtw.js= /
+  =index.html= / =dtw.wasm=).
+- Game repo (read-only, =C:/Users/kuroz/Cowork/Notes/dev/newDTW-nelisp=):
+  - =nelisp_runtime/game-runner.el= — =gr-state= hash :24, =gr-get/-set= :3347/:3353,
+    =gr-eval-op= :3376, =gr-exec-entry= :3420, =gr-run-func= (string dispatch) :3454,
+    =gr-emit= :1383, =gr-reset= :1424, =gr-read-key-state= :689, the 34 =gr-live-native-func*=
+    renderers (=func337= :2854, =func324= :2190, =func345= :2695), =gr-install-live-native-overrides=
+    :3279, =gr-format= :3412.
+  - =nelisp_runtime/gamedata-simple.el= — 57 flat state-diff IR closures;
+    =func1000= key-edge algebra :58.
+  - =nelisp_runtime/gamedata-conditional.el= — 1205 =gr-native-func*= defuns + 1324
+    =gr-defnative= (the uniform-Elisp corpus, Finding 1).
+  - =nelisp_runtime/live-feed-loop.el= — =gr-live-feed-pack-rec= :412 (the 96-byte
+    record + string-blob packer the wasm ABI mirrors), =string-bytes= UTF-8 :377.
+  - =nelisp_runtime/sumi-json.el= / =sumi-title-stream.json= — the draw-op op-name
+    vocabulary (=gui-screen/-load-image/-draw-image-scaled/-draw-text/-present=).
+  - =assets/img= (28 base images, 8.6 MB) vs =assets/sprites= (34 507 PNGs, 103 MB) —
+    the manifest-only asset discipline (§4.7).
+- Memory: =feedback_nelisp_perf_not_elisp_interpreter= (perf framing, §6),
+  =feedback_nelisp_core_vs_layer2_boundary= (import vs in-core split, §3.2),
+  =feedback_nelisp_ci_make_compile_gate= (=make compile= gate for any new elisp).
+
+;;; 164-wasm-backend-p4-blueprint.org ends here

@@ -7,6 +7,15 @@
 ;;
 ;; A file record is (NAME DTYPE MODE SIZE MTIME).
 
+(declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
+(declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
+(declare-function ptr-read-u32 "ext:nelisp-runtime" (ptr offset))
+(declare-function ptr-read-u64 "ext:nelisp-runtime" (ptr offset))
+(declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
+(declare-function string-byte "subr" (string bytepos))
+(declare-function syscall-direct "ext:nelisp-runtime"
+                  (nr a0 a1 a2 a3 a4 a5))
+
 (defconst nelisp-dired--o-directory 65536)   ; O_DIRECTORY (0x10000)
 
 ;;; Raw fs access -----------------------------------------------------

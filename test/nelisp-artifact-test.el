@@ -1528,6 +1528,58 @@ bytecode compiler path is too slow for the current development gate."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/runtime-image-compile-wasm32-wasi-routes-to-wasm-object ()
+  "`compile-runtime-image --kind auto --target wasm32-wasi' reaches the wasm lane."
+  (let* ((temp-dir (make-temp-file "nelisp-runtime-image-wasm-" t))
+         (image-path (expand-file-name "runtime.nlri" temp-dir))
+         (artifact-path (expand-file-name "runtime-image.wasm" temp-dir))
+         (captured nil))
+    (unwind-protect
+        (progn
+          (write-region
+           ";;; nelisp-runtime-image source-v1
+(progn
+(defun boot-hot () 99)
+(provide 'rt-wasm)
+)
+"
+           nil image-path nil 'silent)
+          (cl-letf (((symbol-function 'nelisp-artifact--ensure-native-compiler)
+                     (lambda () t))
+                    ((symbol-function 'nelisp-aot-compile-to-object)
+                     (lambda (sexp out-path &rest keys)
+                       (setq captured (list :sexp sexp
+                                            :out-path out-path
+                                            :keys keys))
+                       (write-region "wasm" nil out-path nil 'silent)
+                       out-path)))
+            (should (= 0 (compile-runtime-image
+                          (list "compile-runtime-image" "--kind" "auto"
+                                "--target" "wasm32-wasi"
+                                "--input" image-path "--output" artifact-path))))
+            (should (equal (plist-get captured :sexp)
+                           '(seq
+                             (defun boot-hot nil 99)
+                             (provide 'rt-wasm))))
+            (should (equal (plist-get captured :out-path) artifact-path))
+            (should (equal (plist-get captured :keys)
+                           '(:arch wasm32 :format wasm)))
+            (should (nelisp-artifact--runtime-image-wasm-target-p
+                     "wasm32-wasi"))
+            (should (equal (plist-get
+                            (nelisp-artifact--parse-compile-runtime-image-args
+                             (list "compile-runtime-image" "--kind" "wasm"
+                                   "--target" "wasm32-wasi"
+                                   "--input" image-path "--output" artifact-path))
+                            :kind)
+                           "wasm"))
+            (should (file-exists-p artifact-path))
+            (should-not
+             (file-exists-p
+              (nelisp-artifact--sibling-manifest-path artifact-path)))))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (ert-deftest nelisp-artifact/runtime-image-load-neln-installs-native-wrapper ()
   "Loading a `.neln' runtime-image cache installs native wrappers.
 Normal NeLisp calls then prefer the native artifact and keep the bytecode

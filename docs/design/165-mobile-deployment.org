@@ -1,0 +1,590 @@
+#+TITLE: Doc 165 — iOS/Android deployment paths (WebView wrapper now, true-native later)
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 4.8 + zawatton)
+#+DATE: 2026-07-12
+#+STATUS: DRAFT — design only, sprint-closing.  Track 1 (WebView wrapper) is
+#+STATUS: implementable next sprint with NO nelisp changes (it ships the EXISTING
+#+STATUS: wasm bundle); Track 2 (true native) is a design SKETCH, not yet a
+#+STATUS: blueprint.  Team model (per project_nelisp_mobile_wasm_program_2026_07):
+#+STATUS: Opus designs → codex implements → Claude verifies/commits.
+
+* §0 TL;DR
+
+The wasm backend (Doc 164, all of P0–P4) is COMPLETE and the newDTW map-walk
+slice is *already live* at =https://zawatton.github.io/newDTW-nelisp/dtw/= — a
+static bundle (=site/dtw/=, built by =make wasm-dtw-site=: a ~10 KB =dtw.wasm= +
+a ~40-line =dtw.js= presenter shim + =index.html= + *placeholder* assets).  That
+bundle is the entire mobile payload we need for a store-ready app *today* — the
+game logic is already compiled wasm running single-threaded in the browser
+engine.
+
+This doc lays out *two tracks* to iOS/Android, sequenced deliberately:
+
+- *Track 1 — WebView wrapper (ship next sprint).*  Wrap the *unchanged* live
+  =site/dtw/= bundle in a thin native shell — =WKWebView= on iOS,
+  =android.webkit.WebView= on Android — so the same wasm runs inside each OS's
+  own WebKit/Chromium engine.  *Zero nelisp work*; the only new code is a native
+  shell project per OS + an on-screen touch D-pad in =dtw.js= (additive, feature-
+  detected, no fork).  This is *first-to-both-stores fast* and is unambiguously
+  App-Store-legal (bundled content, no downloaded code — rule 2.5.2, §2.1).
+  *What it proves*: the whole "elisp → app in a user's pocket" loop end-to-end,
+  on real hardware, in both stores.  *What it defers*: native UI, native perf,
+  and the "apps written in elisp all the way down" endgame — Track 1 still has a
+  browser engine between the game and the pixels.
+
+- *Track 2 — true native (design sketch).*  Compile the game to a real native
+  binary per OS — extend the Mach-O writer for the iOS platform (LC_BUILD_VERSION
+  platform=2, dynamically linked to =libSystem=, full-AOT bake so the no-JIT rule
+  is satisfied by construction), and emit an Android ELF =.so= driven by
+  =NativeActivity= + =ANativeWindow= software blit.  Presentation follows the
+  *sumi pattern* the project already uses: game logic in elisp, a thin
+  per-platform presenter.  *What it proves*: the endgame — apps in elisp with no
+  browser engine, native draw, and (on Android only) runtime codegen.  *What it
+  defers to a later blueprint*: everything here — it depends on nelisp compiler/
+  linker items that have not landed (§3.3).
+
+Recommended order (matches =project_nelisp_mobile_wasm_program_2026_07=): ship
+Track 1 to be first on both stores, keep the =linux-aarch64= / Termux real-device
+track warm in parallel (Doc 151), and only start Track 2 once Track 1 validates
+demand.  *Effort*: Track 1 W1 (Android) ≈1.5–2.5 d, W2 (iOS) ≈2–3 d *given a
+Mac*.  Track 2 is multi-week and out of this sprint.
+
+* §1 Motivation & the two-track strategy
+
+** §1.1 The goal and why two tracks
+
+The owner's stated goal (=project_nelisp_mobile_wasm_program_2026_07=,
+2026-07-12): /"将来的に iOS/Android アプリを elisp(nelisp仕様)で実装できる
+ようにする"/ — make it possible to *write iOS/Android apps in elisp*.  There are
+two honestly different ways to get there, with an order-of-magnitude difference
+in both payoff and cost, so we run them as explicit tracks rather than pretending
+one supersedes the other:
+
+| | Track 1 — WebView wrapper | Track 2 — true native |
+|-+---------------------------+-----------------------|
+| payload | the *existing* =site/dtw/= wasm bundle, unchanged | a per-OS native binary compiled from the same elisp |
+| engine | the OS's WebKit (iOS) / Chromium (Android) runs the wasm | nelisp's own AOT output runs on the CPU directly |
+| new nelisp work | *none* | substantial (§3.3) — Mach-O iOS bits, p_align, presenter bridges |
+| new app code | a thin shell per OS + a touch overlay in =dtw.js= | a native entry stub + a draw presenter per OS |
+| time to a store | days | weeks |
+| proves | the full elisp→app loop ships to both stores | the "elisp all the way to the pixels" endgame |
+| defers | native UI / native perf | nothing — it *is* the endgame |
+
+*Track 1 proves* that the self-hosted-elisp → wasm → app pipeline reaches real
+users on both stores, and it does so *without touching the compiler* — it is pure
+integration.  It *defers* native rendering, native input latency, and the
+"no engine in the middle" purity goal.
+
+*Track 2 proves* the endgame: a NeLisp-compiled app with native draw and no
+browser engine, the general form of the sumi "logic-in-elisp, thin presenter"
+architecture.  It *defers* nothing conceptually but *depends on* several nelisp
+compiler/linker items that must land first (§3.3), so it is a sketch here, not a
+buildable plan.
+
+** §1.2 Why Track 1 first (and why it is not throwaway)
+
+Track 1 is not a stopgap that Track 2 discards — it is the *distribution and
+demand-validation* layer.  The wasm bundle it ships is the same artifact Doc 164
+P4 already proved and =make wasm-dtw-site= already builds; wrapping it is the
+lowest-risk way to (a) exercise real App Store / Play Store submission, signing,
+and review, (b) get the game onto a phone the owner can hand to someone, and (c)
+learn the mobile input/asset/rights constraints *before* investing weeks in
+Track 2.  Every one of those lessons transfers to Track 2 (the touch model, the
+asset/rights policy, the store accounts are all reused).  Track 1 also remains
+the correct target for *web* distribution (the live Pages URL) indefinitely.
+
+** §1.3 Scope of this doc
+
+Track 1 is specified to *blueprint-adjacent* detail (an implementer can start it
+next sprint).  Track 2 is a *design sketch* — enough to name the pieces, the
+dependencies, and the risks, but explicitly *not* an instruction-level blueprint
+(that is a future doc, the way Doc 164's P2/P3/P4 blueprints followed the Doc 164
+design).  Non-goals: no browser Emacs (the target is the newDTW game loop, per
+Doc 164 §1.3); no store-listing copy; no Track-2 byte-level encodings.
+
+* §2 Track 1 — WebView wrapper (implementable next sprint)
+
+The contract Track 1 wraps is fixed by Doc 164 P4 and the live bundle: an
+exported =init()= + =step()= wasm module, three =env= imports (=key_state=,
+=now_ms=, =frame_out=), a draw-op ring buffer drained once per frame to a
+=<canvas>=, and a =dtw.js= presenter that feeds *key levels* while the wasm
+computes *edges* (Doc 164 §4.6 / P4 §4.6).  Both native shells host exactly this;
+neither changes the wasm.
+
+** §2.1 iOS — WKWebView shell
+
+*** Shell + how the bundle is loaded (=WKURLSchemeHandler=, not =file://=)
+
+The iOS app is a normal =.app= whose root view controller creates a =WKWebView=
+and loads =index.html= from a copy of =site/dtw/= embedded as a bundle resource.
+There are two ways to serve those files to the web view, and the choice is
+*forced by wasm*:
+
+- =loadFileURL:allowingReadAccessToURL:= (the =file://= path) — simplest, but
+  =file://= responses in WKWebView carry an *opaque/null origin* and WKWebView
+  does *not* attach an =application/wasm= =Content-Type=.
+  =WebAssembly.instantiateStreaming(fetch('dtw.wasm'))= *requires* the response
+  MIME to be exactly =application/wasm=, so streaming compile fails on =file://=;
+  you would have to force =dtw.js= onto the non-streaming
+  =fetch().arrayBuffer()= + =WebAssembly.instantiate= path.
+- *=WKURLSchemeHandler= (CHOSEN)* — register a custom scheme (e.g. =app://=) via
+  =WKWebViewConfiguration.setURLSchemeHandler(_:forURLScheme:)=; the handler
+  reads each requested file from the bundle and returns a =URLResponse= with the
+  *correct MIME* (=application/wasm= for =.wasm=, =text/html=, =text/javascript=,
+  image types for assets).  This gives both a *real, stable origin*
+  (=app://dtw/=) and the =application/wasm= MIME, so =instantiateStreaming=
+  works, and it keeps =dtw.js= *byte-identical* to the web build.
+
+*Decision: =WKURLSchemeHandler= for wasm MIME correctness and a real origin.*
+The =file://= route is documented only as a fallback that forces a =dtw.js=
+feature-branch, which we avoid.
+
+*** App Store legality (rule 2.5.2)
+
+App Store Review Guideline *2.5.2* forbids an app that /"download[s], install[s],
+or execute[s] code which introduces or changes features or functionality"/.
+Track 1 does none of that: the wasm bytes are *bundled inside the signed app* and
+are executed by *WKWebView's own WebKit engine* (the same engine, with Apple's
+own JIT entitlement in the isolated WebContent process, that every browser-based
+game and every Capacitor/Cordova/PWA-wrapper ships).  Nothing is downloaded at
+runtime; nothing generates new native code in our process.  This is the routine,
+demonstrably-approved shape for wrapped-web games — Track 1 is App-Store-legal by
+construction.  (Contrast Track 2's constraint, §3.1: there we ship native code,
+so the relevant rule becomes "no JIT", satisfied by full-AOT bake.)
+
+*** Touch input — the on-screen D-pad contract
+
+Phones have no arrow keys, but the wasm side is *input-source agnostic*: it only
+calls =env.key_state(code)= for a *level* and computes press/release *edges
+itself* (Doc 164 P4 §4.6, =func1000= edge algebra).  So mobile input needs *no
+wasm change* — only a touch layer in =dtw.js= that feeds the *same key-level
+Set* that =keydown=/=keyup= already feed.
+
+Minimal touch-controls contract (shared verbatim by iOS and Android):
+
+1. *Overlay.*  An on-screen D-pad (4 direction zones) + N action buttons (the
+   game's Z/X/A actions), drawn as HTML/CSS elements over the =<canvas>= (or
+   painted into a second canvas).  =touch-action: none= on the overlay and a
+   =<meta viewport>= that disables pinch-zoom so gestures don't scroll the page.
+2. *KEYMAP extension.*  =dtw.js= already maps browser keys →game keycodes
+   (=ArrowLeft/Up/Right/Down= → 37/38/39/40, Z/X/A → the game's action codes,
+   P4 §4.6).  Extend the *same* KEYMAP with *touch zones*: each zone carries the
+   identical keycode.  =pointerdown=/=touchstart= on a zone → =keys.add(code)=;
+   =pointerup=/=touchend=/=pointercancel= → =keys.delete(code)=.
+   =key_state(code)= returns 1 iff =code ∈ keys= — identical to the keyboard
+   path.  Multi-touch (hold a direction *and* press an action) falls out of the
+   Set model for free.
+3. *Edges stay in wasm.*  JS still feeds only *levels*; the wasm computes edges
+   (=cur - (cur & prev)=).  We do *not* invent a new edge model on the JS side —
+   this is the P4 §4.6 rule, unchanged, so touch and keyboard produce identical
+   in-wasm behaviour.
+4. *Feature detection, no fork.*  Show the overlay iff a coarse pointer is
+   present (=window.matchMedia('(pointer: coarse)').matches= or
+   ='ontouchstart' in window=); otherwise rely on the keyboard.  *One =dtw.js=*
+   serves web + iOS + Android; the touch layer is purely additive.
+
+*** Codesigning / TestFlight distribution
+
+- *Signing.*  iOS binaries must be code-signed with an Apple-issued
+  certificate + a provisioning profile; there is no unsigned sideload path.  A
+  *free* Apple ID can sign a build onto a personally-owned device (7-day
+  profile); *TestFlight* and the App Store require the paid *Apple Developer
+  Program* ($99/yr).
+- *Distribution ladder*: Simulator (no account) → dev-signed on a tethered
+  device (free account, 7-day) → *TestFlight internal testing* (paid, up to 100
+  internal testers, no App-Review wait) → App Store (paid, full review).
+  TestFlight internal is the practical first shareable milestone.
+- *Hard constraint*: all of this needs a *Mac with Xcode* (§2.4 W2).  There is
+  no Windows path to build/sign an iOS app.
+
+*** Xcode project skeleton
+
+: DTW/                         (Xcode project root)
+:   DTW.xcodeproj
+:   DTW/
+:     App.swift                (SwiftUI/@main lifecycle — or AppDelegate.swift)
+:     ContentView.swift        (hosts the web view via UIViewRepresentable)
+:     WebViewController.swift  (builds WKWebView + config; loads app://dtw/index.html)
+:     WasmSchemeHandler.swift  (WKURLSchemeHandler: reads bundle files, sets MIME —
+:                               application/wasm for *.wasm)
+:     Info.plist               (bundle id, orientation, no ATS exception needed —
+:                               app:// is local; viewport handled in HTML)
+:     Assets.xcassets          (app icon / launch)
+:     www/                     (copy of site/dtw: index.html, dtw.js, dtw.wasm,
+:                               assets/) — added as a *folder reference* bundle
+:                               resource so the tree ships verbatim
+
+** §2.2 Android — WebView shell
+
+*** WebView, not Custom Tabs
+
+Android offers =WebView= (an embeddable Chromium view) and *Custom Tabs* (hand
+off to the user's browser).  We need =WebView=: Custom Tabs cannot host a
+*bundled offline* app served from app assets, cannot host a custom scheme/origin,
+and hands control of the chrome to the browser.  =WebView= hosts the bundle
+in-process, offline, with a proper origin via the asset loader (below).
+*Decision: =WebView= (offline bundle); Custom Tabs rejected.*
+
+*** =WebViewAssetLoader= for MIME/origin
+
+Loading app assets over =file:///android_asset/…= has the *same two defects* as
+iOS =file://=: null origin + no =application/wasm= MIME, so
+=instantiateStreaming= fails.  =androidx.webkit.WebViewAssetLoader= fixes both:
+register a virtual =https://appassets.androidx.org/= origin with an
+=AssetsPathHandler= mapping =/assets/dtw/…= → =src/main/assets/dtw/…=.  The loader
+serves each file with the *correct MIME* (including =application/wasm=) over a
+*secure https origin*, so =WebAssembly.instantiateStreaming= works and =dtw.js=
+stays byte-identical to the web + iOS builds.  (Enable JavaScript;
+=setAllowFileAccess(false)= — the asset loader replaces raw =file://=.)
+
+*** minSdk choice
+
+The real gate is the *WebView (Chromium) version*, not the OS API level —
+System WebView is Play-updatable and unbundled on Android ≥7, so most devices
+run a recent Chromium regardless of OS.  wasm itself is supported since
+Chromium 57 (2017); =WebViewAssetLoader= is in =androidx.webkit= and broadly
+available.  *Recommend =minSdk 24= (Android 7.0)* — ~98%+ device coverage with an
+unbundled, updatable WebView — and, if the shipped =dtw.wasm= uses wasm exception
+handling, add a *runtime WebView-version check* with a graceful "please update
+Android System WebView" message for ancient un-updated WebViews (the P4 map-walk
+slice is numeric-heavy and may avoid EH entirely — confirm the shipped module's
+opcode set, §5).  =minSdk 26= is a defensible alternative that trims old-device QA.
+
+*** Touch controls
+
+Identical to iOS (§2.1 touch contract) — the *same* =dtw.js= overlay, KEYMAP
+touch-zone extension, level-feed/edge-in-wasm rule, and feature detection.  No
+Android-specific input code beyond what the shared =dtw.js= already does.
+
+*** Gradle project skeleton
+
+: dtw-android/
+:   settings.gradle.kts
+:   build.gradle.kts             (root; AGP + Kotlin)
+:   app/
+:     build.gradle.kts           (applicationId, minSdk 24, deps:
+:                                 androidx.webkit:webkit)
+:     src/main/
+:       AndroidManifest.xml      (single Activity, no INTERNET perm needed —
+:                                 fully offline)
+:       java/…/MainActivity.kt   (WebView + WebViewAssetLoader +
+:                                 shouldInterceptRequest)
+:       assets/dtw/              (copy of site/dtw: index.html, dtw.js, dtw.wasm,
+:                                 assets/)
+:       res/                     (icons, minimal layout / theme)
+
+** §2.3 Shared — bundle refresh, versioning, dtw.js changes
+
+- *Bundle refresh flow.*  =make wasm-dtw-site= (nelisp repo) regenerates
+  =site/dtw/= = the compiled =dtw.wasm= + =dtw.js= + =index.html= + placeholder
+  assets.  A small *sync step* (a =Makefile= target or a script per shell) copies
+  =site/dtw/*= into the two app resource dirs — iOS =DTW/www/= and Android
+  =app/src/main/assets/dtw/=.  Because the copy is mechanical, the three surfaces
+  (web / iOS / Android) always ship a *byte-identical =dtw.wasm= and =dtw.js=*;
+  only the host shell differs.
+- *Versioning.*  Stamp a version string (git HEAD short SHA or a =VERSION= file)
+  into the bundle at =make wasm-dtw-site= time and surface it in a tiny manifest
+  =dtw.js= can read/display, so a running app reports which slice it ships.  Bump
+  on any slice change.  Updating the game in a *store* build = rebuild the bundle
+  + re-copy + re-submit (bundled, not OTA — an OTA fetch of newer wasm would
+  reopen the iOS 2.5.2 "downloaded code" question, so store builds stay bundled).
+- *dtw.js changes (additive only).*  The *only* diff from the current web
+  =dtw.js= is the feature-detected touch overlay (§2.1).  No logic fork, no
+  per-OS file — the same =dtw.js= runs on Pages, in WKWebView, and in Android
+  WebView.  Everything else (=frame_out= drain, key Set, =now_ms=, =init()= + rAF
+  loop) is unchanged from Doc 164 P4.
+
+** §2.4 Phasing — W1 (Android) then W2 (iOS)
+
+*** W1 — Android first (buildable from this Windows box)
+
+Android is first *because it has no Mac dependency and no external signing
+authority*: the whole toolchain (Android SDK + JDK + Gradle) runs on Windows,
+=./gradlew assembleDebug= produces an APK auto-signed with the debug keystore
+(installable via =adb install= with zero friction), and a release APK/AAB needs
+only a *self-generated* keystore (no Apple-style provisioning). Play Store
+*listing* needs a Google Play Console account ($25 one-time); sideload / internal
+testing needs *nothing*.
+
+- *Effort*: ≈1.5–2.5 engineer-days (shell Activity + asset loader + touch overlay
+  + build/sync wiring).
+- *Exit criteria (W1)*:
+  1. =./gradlew assembleDebug= from this Windows box produces =app-debug.apk= —
+     no Mac, no external signing authority.
+  2. The APK installs (emulator or device via =adb install=) and launches to the
+     newDTW map-walk slice rendering a *non-blank* 340×340 canvas.
+  3. The on-screen D-pad walks the player one tile per direction tap, and an
+     action button fires — i.e. the touch KEYMAP → key-level → wasm-edge path
+     works end-to-end (the mobile analog of Doc 164 §6 P4's "key-driven state
+     change").
+  4. Works fully *offline* (airplane mode): the bundle is in =assets/=, the app
+     declares no INTERNET permission, and =WebViewAssetLoader= serves
+     =application/wasm= so =instantiateStreaming= succeeds.
+  5. =dtw.js= is byte-identical to the web build (diff = zero); the touch overlay
+     is feature-detected, not a fork.
+
+*** W2 — iOS (needs a Mac or a CI mac runner — stated honestly)
+
+*Practical constraint, stated plainly*: you *cannot* build, sign, or run an iOS
+app from this Windows box.  Xcode is macOS-only; code-signing requires Apple's
+toolchain; device install / TestFlight requires the paid Apple Developer Program.
+The options are (a) a Mac the owner controls, (b) a *CI mac runner* (GitHub
+Actions =macos-*= images, or a cloud-Mac service) that builds/signs headlessly, or
+(c) defer iOS and ship Android-only until a Mac is available.  W2 assumes one of
+(a)/(b).
+
+- *Effort*: ≈2–3 engineer-days *given Mac access* (WKWebView controller + scheme
+  handler + touch overlay reuse + Info.plist); +≈0.5 d if standing up a CI mac
+  runner + signing secrets.
+- *Exit criteria (W2)*:
+  1. Xcode builds =DTW.app=; it runs in the *Simulator* (no paid account) showing
+     the slice + the touch D-pad, driven through =app://dtw/index.html= with
+     =application/wasm= served by the scheme handler (=instantiateStreaming=
+     succeeds).
+  2. A *dev-signed* build runs on a tethered real device (free account, 7-day
+     profile).
+  3. A *TestFlight internal* build (paid account) distributes to the owner's
+     device with no App-Review wait.
+  4. Touch-input parity with W1 (same overlay, same wasm behaviour).
+
+* §3 Track 2 — true native (design sketch, NOT a blueprint yet)
+
+The endgame: compile the game to a *native* binary per OS with *no browser engine
+in the middle*, following the sumi pattern — game logic stays elisp, each OS gets
+a thin presenter.  This section names the pieces and the dependencies; it is
+deliberately a sketch (a future doc turns it into a P-style blueprint, the way
+Doc 164's blueprints followed Doc 164).
+
+** §3.1 iOS native
+
+- *Mach-O writer, iOS platform.*  The AOT chain already has an *aarch64* codegen
+  and a *Mach-O writer v1* for macOS arm64 (=lisp/nelisp-aot-compiler.el= ~=:17172=),
+  plus a Darwin syscall arm (=x16= / =SVC #0x80= with the =#x02000000= class,
+  ~=:14548=).  Extending it to iOS means: emit =LC_BUILD_VERSION= with
+  *platform = 2* (iOS device; =7= for the Simulator) and the min-OS / SDK version
+  fields, in place of the macOS platform (=1=).
+- *No raw SVC on iOS — libc-only lowering (mandatory, not a preference).*  Unlike
+  =linux-aarch64= (Doc 151), where nelisp emits a *freestanding static* =ET_EXEC=
+  that issues raw =SVC= syscalls, *iOS forbids this*: the syscall numbers are not
+  a stable ABI, the sandbox + pointer-auth + mandatory code-signing require going
+  through =libSystem=, and there is no static libc to link.  So the iOS Mach-O
+  must be a *dynamically linked* =MH_EXECUTE= (=LC_LOAD_DYLIB
+  /usr/lib/libSystem.B.dylib=, =LC_MAIN=, chained-fixup/bind info,
+  =LC_CODE_SIGNATURE= placeholder for the external =codesign=), and every OS
+  access lowers to an *=extern-call= through a libSystem symbol* (the Darwin
+  =SVC= arm is replaced by a libc-import arm under an =os = 'ios= selector) —
+  the exact os-conditional-syscall precedent Doc 151 §B established, but resolved
+  to dyld-bound imports instead of raw numbers.
+- *Full-AOT bake satisfies the no-JIT rule for free.*  iOS bans runtime codegen
+  (=mmap= =PROT_EXEC= + write) without a special entitlement; nelisp's JIT
+  (=src/nelisp-cc-*=) would be *illegal* on iOS.  But Doc 164 §1.2's *full-AOT
+  bake* means the game is compiled and *signed at build time* with no runtime
+  codegen — so the no-JIT rule holds *by construction*.  (This is why the wasm
+  work's AOT discipline is the load-bearing choice for iOS native, too:
+  disable/omit the JIT lane entirely for =os = 'ios=.)
+- *Presenter — two options.*
+  - *(a) draw-op stream → Metal / CoreAnimation thin presenter (the sumi
+    pattern, RECOMMENDED first).*  Reuse the P4 draw-op record ABI (the 96-byte
+    =[op, a0..a9, textOff]= records + string blob, Doc 164 P4 §3.1): the game
+    =gr-emit='s a frame into a linear buffer; a small Objective-C/Swift presenter
+    drains it once per frame and blits to a =CAMetalLayer= /
+    =CGContext=/=CALayer=.  This is the *lowest-risk* native target — the game
+    stays pixel-oriented (matches its software-composed frames) and the presenter
+    surface is tiny, exactly the sumi split.
+  - *(b) =objc_msgSend= extern-call bridge for real UIKit (the general-app
+    endgame).*  For apps that want *native controls* (not a canvas), bridge into
+    the Objective-C runtime via three imported symbols: =objc_getClass(name) →
+    Class=, =sel_registerName(name) → SEL=, =objc_msgSend(id, SEL, …) → id=.
+    Each becomes an =extern-call= (through libSystem/=libobjc=), letting elisp
+    drive =UIView=/=UILabel=/etc.  *Minimal surface*: on arm64 the historical
+    =objc_msgSend_fpret= / =objc_msgSend_stret= variants *collapse into plain
+    =objc_msgSend== (struct returns use the =x8= indirect-result register), so
+    the bridge is just those *three* symbols.
+  - *The Apple arm64 variadic gotcha (must design around).*  =objc_msgSend= is
+    *declared* variadic, but on *Apple arm64* variadic arguments are passed *on
+    the stack*, NOT in =x2..x7= / =d0..= the way fixed arguments are.  If nelisp
+    emitted =objc_msgSend= as a true variadic call, the method arguments would
+    land in the wrong place and corrupt the call.  The rule (Apple's own): *cast
+    =objc_msgSend= to the concrete, fixed-arity prototype of the target method at
+    each call site* so arguments go in registers.  This maps *cleanly* onto
+    nelisp's existing *fixed-arity =extern-call=* model (Doc 151 §2 notes the
+    codebase is fixed-arity AAPCS64): emit each =objc_msgSend= site at a concrete
+    signature (receiver + SEL + the method's real arg types), never as varargs.
+
+** §3.2 Android native
+
+- *ELF =.so= + =NativeActivity= / JNI.*  Android's native entry is a
+  =NativeActivity= (or a JNI =.so= loaded by a thin Kotlin =Activity=) exporting
+  =ANativeActivity_onCreate=.  nelisp emits an aarch64 *ELF shared object* (the
+  aarch64 ELF writer + AAPCS64 emit already exist per Doc 151), and the presenter
+  blits software-composed frames to an *=ANativeWindow=* (lock buffer → write the
+  draw-op-rendered pixels → unlock/post).  This *matches the game's
+  software-composed frames* — same draw-op ABI as P4/§3.1(a), no GPU pipeline
+  required for the first milestone.
+- *The 16 KB-page =p_align= work item.*  The Termux scoping
+  (=project_nelisp_mobile_wasm_program_2026_07=) flagged that 16 KB-page devices
+  (Pixel 8+, Android 15+) need segment =p_align= = =0x4000= to avoid a W^X /
+  mapping collision.  =lisp/nelisp-static-linker.el= =compute-layout= (~=:570=) is
+  *already parameterized*, so this is a *target-knob wiring* item: for
+  =aarch64-android= emit =p_align 0x4000= (vs the current =0x1000=).  This is the
+  concrete forward fix of the Termux blocker and is *shared* with the
+  =linux-aarch64= real-device track.
+- *bionic vs raw-syscall stance.*  Android's libc is *bionic*; like Doc 151's
+  =linux-aarch64= xlat layer, the choice is between (i) raw =SVC= with an aarch64
+  NR table (the Doc 151 precedent — works, since Android is Linux-ABI under the
+  hood) and (ii) binding through bionic symbols.  Recommendation: *reuse the Doc
+  151 raw-NR aarch64 path* for the freestanding parts (it is proven under qemu),
+  but note that the raw =nelisp--syscall= *resolver is x86_64-hardcoded*
+  (=lisp/nelisp-cc-bi-syscall-resolve-nr.el=) — the *core reader path is
+  unaffected* (Doc 151), but any interpreted-layer raw-syscall site needs the
+  same per-target NR translation Doc 151 §B built for =linux-aarch64=.  When the
+  presenter must touch bionic-only APIs (=ANativeWindow=, =AAssetManager=), those
+  go through JNI/NDK symbols, not raw syscalls.
+- *JIT is ALLOWED on Android → runtime codegen is viable (Android only).*  Unlike
+  iOS, Android permits =mmap= =PROT_EXEC=, so nelisp's JIT lane (=nelisp-cc-*=)
+  *can* run — a *future* runtime-codegen / eval-on-device capability is possible
+  on Android but *not* iOS.  v1 Track 2 still targets full-AOT bake for parity;
+  JIT-on-Android is noted as a *later* differentiator, not a v1 goal.
+
+** §3.3 Dependencies on nelisp work (what must land before a Track 2 blueprint)
+
+| # | item | where | status |
+|---+------+-------+--------|
+| 1 | Mach-O *iOS platform* bits — =LC_BUILD_VERSION= platform=2/7 + min/SDK; switch from static =ET_EXEC= discipline to dynamically-linked =MH_EXECUTE= (=LC_LOAD_DYLIB= libSystem, =LC_MAIN=, chained fixups, =LC_CODE_SIGNATURE= placeholder) | extends Mach-O writer v1, =nelisp-aot-compiler.el= ~=:17172= | NOT started |
+| 2 | =os = 'ios= syscall arm — replace the Darwin raw =SVC= (~=:14548=) with *libSystem-extern* lowering (no raw SVC on iOS) | new os arm, Doc 151 §B precedent | NOT started |
+| 3 | =p_align= parameterization for =aarch64-android= (=0x4000=, 16 KB pages) | =nelisp-static-linker.el= =compute-layout= ~=:570= (already parameterized) | knob-wiring only |
+| 4 | *f64-return import lane* — the native (Mach-O/ELF) backends must carry the same =extern-call-f64= result class the wasm =now_ms()->f64= import proved (Doc 164 P4 / P2 §C.3 =:ret-class 'f64=), so a native presenter's clock / float bridge works | AOT extern-call emit, native arms | partial (wasm arm exists) |
+| 5 | =objc_msgSend= fixed-arity extern-call emit (variadic-on-stack safe, §3.1) | AAPCS64 fixed-arity extern-call (Doc 151 §2) | design only |
+| 6 | *string / CP932 runtime* for the *full game* — the P4 slice dodges strings (baked offsets + push-format-to-JS, P4 Finding 2); a full newDTW native build inherits the same wall and needs the deferred in-core string/concat + CP932/UTF-8 runtime | deferred (post-P4), both tracks | NOT started |
+| 7 | aarch64 codegen / ELF writer / raw-NR xlat | =nelisp-aot-compiler.el=, =nelisp-static-linker.el=, Doc 151 | *exists* (=linux-aarch64= builds today, =target/nelisp-aarch64= 8.8 MB static ELF after the 4-align fix =fe1a9ab1=) |
+
+Items 1, 2, 5 are the iOS long pole; item 3 is the Android near-term unblock
+(shared with Termux); items 4 and 6 are shared prerequisites for a *full-game*
+(vs demo-slice) native build.
+
+* §4 Decision points for the owner
+
+1. *Mac availability for W2.*  Own a Mac, use a CI mac runner (GitHub Actions
+   =macos-*= / cloud Mac), or ship Android-only first and defer iOS?  This gates
+   W2 entirely (§2.4).  Recommendation: W1 (Android) proceeds regardless; decide
+   the Mac path before committing W2 to the next sprint.
+2. *Store accounts (lead-time sensitive).*  Apple Developer Program ($99/yr,
+   required for TestFlight/device/App Store, and enrollment can take days) and
+   Google Play Console ($25 one-time).  Sideload (Android) and Simulator (iOS)
+   need neither.  Decide whether to enroll *now* (so accounts are ready when W1/W2
+   exit) or *after* the demo validates — Apple's enrollment latency argues for
+   starting early if a store listing is likely.
+3. *Does the demo slice suffice for a STORE build, or wait for a bigger slice?*
+   The current map-walk slice is enough for *internal* distribution (sideload,
+   TestFlight internal, internal Play track) and for the exit criteria.  A
+   *public store listing* of a tiny demo risks an iOS *4.2 "minimum
+   functionality"* rejection.  Recommendation: use W1/W2 to reach internal/
+   TestFlight now; *delay public listing* until a slice with enough gameplay to
+   clear 4.2.  Owner sets the bar.
+4. *Asset / rights policy (recap — unchanged from P4 §4.7).*  newDTW's art is
+   third-party JoJo fan-game assets (34,507 sprite PNGs / 103 MB + 28 base
+   images / 8.6 MB) — do *not* publish real assets to a public store or Pages
+   without clearing rights.  The shipping bundle uses *generated placeholders*
+   (P4a) for any public build; a *real-asset* build stays *private/unlisted*
+   (internal TestFlight / internal Play track / sideload).  Owner must fix the
+   rights posture *before* any public listing.
+
+* §5 Risks & open questions
+
+- *iOS WKWebView wasm MIME / streaming compile (Track 1, HIGHEST for iOS).*  If
+  the scheme handler doesn't return =application/wasm=,
+  =instantiateStreaming= fails.  *Mitigation*: =WKURLSchemeHandler= sets the MIME
+  (§2.1); =dtw.js= can also feature-detect and fall back to non-streaming
+  =instantiate=.  Android's =WebViewAssetLoader= closes the same risk (§2.2).
+- *iOS 2.5.2 / JIT posture.*  Track 1 relies on *WKWebView's own* (Apple-blessed)
+  JIT running *bundled* content — legal (§2.1).  Track 2 native must *never*
+  enable nelisp's JIT on iOS (=mmap PROT_EXEC=) — full-AOT bake only (§3.1).
+  *Open*: audit the iOS native build to confirm no code path arms the JIT lane.
+- *iOS 4.2 minimum-functionality* rejection for a demo-scale public listing
+  (§4.3) — mitigate by keeping public listing gated on a bigger slice; use
+  internal/TestFlight meanwhile.
+- *Mac dependency for iOS* — a hard external constraint on W2 and on all of
+  Track 2 iOS (§2.4, §3.1).  No Windows workaround.
+- *16 KB-page Android (Track 2)* — the native =.so= needs =p_align 0x4000=
+  (§3.2, item 3).  The *Track 1 WebView path is unaffected* (no native segments
+  ship).  *Open*: device matrix / minSdk for the native track.
+- *wasm EH availability in old Android WebViews (Track 1)* — if the shipped
+  =dtw.wasm= uses exception handling, very old un-updated WebViews may reject it
+  (legacy EH vs =try_table= availability, Doc 164 P2 §1).  *Open*: confirm the
+  shipped map-walk slice's opcode set (it is numeric-heavy and may avoid EH) and
+  set the minSdk / WebView-version message accordingly (§2.2).
+- *Touch input fidelity* — on-screen D-pad ergonomics, multi-touch (move +
+  action), and =keydown= autorepeat must not fake "hold" edges.  The model keeps
+  *levels in JS, edges in wasm* (§2.1, P4 §4.6), so JS must track true
+  press/release and =preventDefault= gestures.  *Open*: exact touch-zone geometry
+  and accessibility.
+- *Objective-C arm64 variadic gotcha (Track 2 iOS)* — every =objc_msgSend= must
+  be emitted at a concrete fixed-arity prototype (Apple arm64 puts varargs on the
+  stack); a naive variadic emit corrupts arguments.  *Mitigation*: nelisp's
+  fixed-arity extern-call model (§3.1).
+- *Native presenter scope (Track 2)* — full UIKit-via-=objc_msgSend= is a large
+  surface; the draw-op → Metal/CoreAnimation (iOS) / =ANativeWindow= (Android)
+  thin presenter is the lower-risk *first* native milestone (§3.1(a), §3.2).
+  *Open*: which presenter for the first native cut.
+- *Bundle drift (Track 1)* — an app's copy of =site/dtw/= can go stale vs the
+  live web build.  *Mitigation*: the =make wasm-dtw-site= → sync step + a version
+  stamp (§2.3).
+- *Full-game string/CP932 wall (both tracks)* — deferred from P4; a full newDTW
+  (native or wasm) needs the in-core string runtime (§3.3 item 6).  The demo slice
+  sidesteps it; the full game cannot.
+
+* §6 References
+
+** §6.1 Docs (the Doc 164 chain + Doc 151)
+- =docs/design/164-wasm-backend.org= — the wasm backend design (P0–P4 COMPLETE);
+  §1.2 full-AOT bake / single-thread, §3.1 value repr, §4.3 boot/=step=, §5.3
+  custom imports (=frame_out/key_in/now_ms=), §6 phasing, §7 risks.
+- =docs/design/164-wasm-backend-p2-blueprint.org= — imports/WASI + non-local
+  exit; §C.3 =extern-call-f64= result lane (=:ret-class 'f64=), legacy-EH vs
+  =try_table= availability (§1).
+- =docs/design/164-wasm-backend-p3-blueprint.org= — baked runtime-image boot
+  (frozen-heap Data segment).
+- =docs/design/164-wasm-backend-p4-blueprint.org= — newDTW slice: the draw-op
+  record ABI (§3.1), =init()=/=step()= contract (§4.5), touch/key edge model
+  (§4.6), asset-manifest + rights policy (§4.7), the numeric-heavy slice scoping.
+- =docs/design/151-arm64-targets.org= — the target-family precedent:
+  =NELISP_STANDALONE_TARGET=linux-aarch64= cross-builds from Windows via the
+  *pure-elisp static linker* (no external toolchain); qemu-verified; per-target
+  syscall NR xlat layer (§B); =p_align= / 16 KB-page note; the os-conditional
+  syscall arm the iOS libSystem arm extends.
+
+** §6.2 Live artifact
+- =https://zawatton.github.io/newDTW-nelisp/dtw/= — the live newDTW map-walk
+  slice.  Static bundle =site/dtw/= (built by =make wasm-dtw-site=): ~10 KB
+  =dtw.wasm= + ~40-line =dtw.js= presenter shim + =index.html= + *placeholder*
+  assets.  This is the exact payload Track 1 wraps unchanged.
+
+** §6.3 Code (file:line)
+- =lisp/nelisp-aot-compiler.el= — aarch64 codegen; Mach-O writer v1 (macOS arm64)
+  ~=:17172= (Track 2 item 1 extends it for iOS); Darwin syscall lowering
+  (=x16=/=SVC #0x80=, =#x02000000= class) ~=:14548= (Track 2 item 2 replaces it
+  with a libSystem arm for =os = 'ios=); =extern-call-f64= result class (item 4).
+- =lisp/nelisp-static-linker.el= — =compute-layout= ~=:570= (already
+  parameterized; Track 2 item 3 wires =p_align 0x4000= for =aarch64-android=).
+- =lisp/nelisp-cc-bi-syscall-resolve-nr.el= — the raw =nelisp--syscall= NR
+  resolver, *x86_64-hardcoded* (core reader path unaffected; interpreted-layer
+  raw-syscall sites need per-target NR xlat as in Doc 151 §B).
+- =target/nelisp-aarch64= — the 8.8 MB static ELF that builds today (=linux-
+  aarch64=) after the 4-byte-align fix (commit =fe1a9ab1=), via the pure-elisp
+  static linker with no external toolchain.
+
+** §6.4 Memory entries
+- =project_nelisp_mobile_wasm_program_2026_07= — the mobile roadmap and the
+  "Termux scoping": agreed order (wasm → WebView wrapper first-to-both-stores →
+  parallel Termux/arm64 real-device → true native), the team model (Opus design /
+  codex implement / Claude verify+commit), and the 16 KB-page =p_align= / raw-
+  syscall-resolver / real-device-process risks §3/§5 build on.
+- =project_newdtw_roadmap_closeout_2026_07_12= — the newDTW roadmap closeout the
+  live slice belongs to.
+- =feedback_nelisp_selfhost_zero_rust_wasm_path= — the zero-Rust self-host wasm
+  path underpinning the Track 1 payload.
+- =feedback_nelisp_perf_not_elisp_interpreter= — do not project Elisp-interpreter
+  speed onto the *compiled* native/wasm output (Track 2 perf framing).
+- =feedback_nelisp_core_vs_layer2_boundary= — language-rule-in-core vs
+  OS-primitive-as-import split (informs the libSystem/bionic import boundaries).
+
+;;; 165-mobile-deployment.org ends here

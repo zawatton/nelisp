@@ -280,6 +280,50 @@ matches ELF64 r_addend)."
     (aset vec (+ slot 2)   (logand (ash u -16) #xFF))
     (aset vec (+ slot 3)   (logand (ash u -24) #xFF))))
 
+(defun nelisp-asm-arm64-externalize-dangling-bl26 (buf)
+  "Convert bl26 fixups against undefined labels into `b26-pc' relocs.
+A BL whose target label is never defined in BUF is a call into
+another link unit — in object mode that is a runtime helper such as
+`nl_alloc_str' living in the standalone runtime (x86_64 records these
+as plt32 relocs at emit time; the arm64 emitters use in-buffer labels
+so the executable/self-host path can resolve helpers locally).
+Rewrite each such fixup as an external CALL26 relocation at the same
+instruction slot so `resolve-fixups' no longer sees it.  Other fixup
+types (`b26' / `b19' / `adr21') stay strict — an undefined target
+there is a codegen bug, not an external reference.  The combined
+reloc list is re-sorted by offset.  Returns the number of fixups
+externalized."
+  (let* ((plist (nelisp-asm-arm64--unwrap buf))
+         (labels (plist-get plist :labels))
+         (fixups (plist-get plist :fixups))
+         (relocs (plist-get plist :relocs))
+         (kept nil)
+         (n 0))
+    (dolist (fixup fixups)
+      (let ((slot (nth 0 fixup))
+            (label (nth 1 fixup))
+            (type (nth 2 fixup)))
+        (if (and (eq type 'bl26) (not (assq label labels)))
+            (progn
+              (setq relocs
+                    (append relocs
+                            (list (list :type 'b26-pc
+                                        :symbol (symbol-name label)
+                                        :sym label
+                                        :offset slot
+                                        :addend 0
+                                        :section 'text))))
+              (setq n (1+ n)))
+          (push fixup kept))))
+    (setq plist (plist-put plist :fixups (nreverse kept)))
+    (setq plist (plist-put plist :relocs
+                           (sort relocs
+                                 (lambda (a b)
+                                   (< (plist-get a :offset)
+                                      (plist-get b :offset))))))
+    (nelisp-asm-arm64--rewrap buf plist)
+    n))
+
 (defun nelisp-asm-arm64-resolve-fixups (buf)
   "Apply every pending fixup in BUF, returning the patched bytes.
 Each fixup `(SLOT LABEL TYPE)' is resolved to imm26 = `(label-pos

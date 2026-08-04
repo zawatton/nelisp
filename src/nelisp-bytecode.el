@@ -64,6 +64,10 @@
 ;; Emacs `defvar' with initial value is idempotent — whichever file
 ;; loads first wins, the other is a no-op.
 (defvar nelisp-gc--active-vms nil)
+(defvar nelisp--globals)
+(defvar nelisp--functions)
+(defvar nelisp--macros)
+(defvar nelisp--unbound)
 
 (define-error 'nelisp-bc-error "NeLisp bytecode error")
 (define-error 'nelisp-bc-unimplemented

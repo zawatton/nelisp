@@ -471,6 +471,46 @@ fixture code."
     (should (equal (plist-get (cdr (assq 'text c)) :offsets) nil))
     (should (= (plist-get (cdr (assq 'bss c)) :bytes) 0))))
 
+(ert-deftest nelisp-link-combine-aarch64-text-units-align-each-start ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o" :text (nelisp-link-test--ub #x00 #x00 #x00 #x94)))
+         (ub (nelisp-link-test--unit
+              "odd.o" :text (nelisp-link-test--ub #xAA)))
+         (uc (nelisp-link-test--unit
+              "target.o" :text (nelisp-link-test--ub #xC0 #x03 #x5F #xD6)
+              :symbols (list (nelisp-link-symbol "target" 0))))
+         (combined (nelisp-link-combine-sections (list ua ub uc) 'aarch64))
+         (text (plist-get (cdr (assq 'text combined)) :bytes)))
+    (should (equal (plist-get (cdr (assq 'text combined)) :offsets)
+                   '(("a.o" . 0) ("odd.o" . 4) ("target.o" . 8))))
+    (should (equal text
+                   (nelisp-link-test--ub
+                    #x00 #x00 #x00 #x94
+                    #xAA #x00 #x00 #x00
+                    #xC0 #x03 #x5F #xD6)))))
+
+(ert-deftest nelisp-link-aarch64-branch-regression-aligns-odd-target-unit ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--ub #x00 #x00 #x00 #x94)
+              :symbols (list (nelisp-link-symbol "_start" 0))
+              :relocs (list (nelisp-link-reloc 0 'b26-pc "target"))))
+         (ub (nelisp-link-test--unit
+              "odd.o" :text (nelisp-link-test--ub #xAA)))
+         (uc (nelisp-link-test--unit
+              "target.o"
+              :text (nelisp-link-test--ub #xC0 #x03 #x5F #xD6)
+              :symbols (list (nelisp-link-symbol "target" 0))))
+         (combined (nelisp-link-combine-sections (list ua ub uc) 'aarch64))
+         (layout (nelisp-link--compute-layout combined))
+         (result (nelisp-link-units-2pass (list ua ub uc) layout 'aarch64))
+         (text (cdr (assq 'text (plist-get result :bytes)))))
+    (should (= (cdr (assoc "target.o"
+                           (plist-get (cdr (assq 'text combined)) :offsets)))
+               8))
+    (should (equal (substring text 0 4)
+                   (nelisp-link-test--ub #x02 #x00 #x00 #x94)))))
+
 ;; ---- §93.b (3) 2-pass symtab merge ----
 
 (ert-deftest nelisp-link-collect-single-defined ()

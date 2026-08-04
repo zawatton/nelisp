@@ -24,6 +24,15 @@
 (require 'cl-lib)
 (require 'nelisp-actor)
 (require 'nelisp-eventloop)
+(declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
+(declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
+(declare-function ptr-read-u32 "ext:nelisp-runtime" (ptr offset))
+(declare-function ptr-write-u32 "ext:nelisp-runtime" (ptr offset value))
+(declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
+(declare-function ptr-write-u64 "ext:nelisp-runtime" (ptr offset value))
+(declare-function nl-nanosleep "ext:nelisp-runtime" (timespec-ptr))
+(declare-function syscall-direct "ext:nelisp-runtime"
+                  (nr a0 a1 a2 a3 a4 a5))
 
 ;;; Clock + sleep -----------------------------------------------------
 

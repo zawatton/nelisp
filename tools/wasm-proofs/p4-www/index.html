@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>newDTW wasm skeleton (Doc 164 P4a)</title>
+<style>
+  body { background: #0b0f18; color: #cdd6e4; font: 14px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px; }
+  canvas { image-rendering: pixelated; border: 1px solid #33405a; width: 340px; height: 340px; background: #000; }
+  kbd { background: #1c2740; border: 1px solid #33405a; border-radius: 4px; padding: 1px 6px; }
+  p { max-width: 380px; text-align: center; }
+</style>
+</head>
+<body>
+  <h1>newDTW &rarr; wasm (P4a skeleton)</h1>
+  <canvas id="screen" width="340" height="340"></canvas>
+  <p>All logic runs in <code>dtw.wasm</code>. Use the <kbd>&larr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&rarr;</kbd> arrow keys to walk the sprite one tile per press. JS only blits the wasm-emitted draw-op stream and forwards key state.</p>
+  <script src="dtw.js"></script>
+</body>
+</html>

@@ -1,0 +1,705 @@
+#+TITLE: Doc 164 P3 — Instruction-level implementation blueprint (baked runtime image boots the interpreter)
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 4.8 + zawatton)
+#+DATE: 2026-07-12
+#+STATUS: BLUEPRINT — ready for a codex implementer.  Every wasm mechanism P3
+#+STATUS: introduces (active Data segments, memory.grow, a mutable heap_ptr
+#+STATUS: global, an inline bump allocator, a baked-heap boot returning 3) is
+#+STATUS: PROVEN by a saved Node v24.14.1 proof script under
+#+STATUS: tools/wasm-proofs/p3-*.mjs (WebAssembly.validate + instantiate +
+#+STATUS: execute).  Run: node tools/wasm-proofs/p3-run-all.mjs => ALL P3 PROOFS OK.
+
+This document turns Doc 164 §4 (memory model & baked image) and §6 P3 from
+"speculative plan" into a landable, byte-proven sequence, mapped onto existing
+code with =file:line= against HEAD =89347210=.  Read alongside Doc 164
+(=docs/design/164-wasm-backend.org=) §3.1/§4/§6 P3, the P2 blueprint
+(=docs/design/164-wasm-backend-p2-blueprint.org=, whose §F explicitly deferred
+alloc-bytes / =$heap_ptr= / =$shadow_sp= / baked-image to P3), and the six
+proof scripts.
+
+*Read this first — the two findings that decide P3's whole shape:*
+
+** Finding 1 — THE CRUX: how pointers in the frozen heap must be relocated for wasm
+
+The task framed this as "the native image bakes absolute addresses — do they
+need rebasing for wasm?"  The real answer is more decisive, and it changes the
+P3 plan:
+
+1. *The AOT runtime never bakes a static absolute-pointer heap in the first
+   place.*  In the pure-elisp AOT runtime a =Sexp= is a 32-byte record — tag
+   word at offset 0, *payload = a raw allocator return* at offset 8
+   (=lisp/nelisp-cc-cons-construct.el:37-44=; =SEXP_TAG_CONS=7=,
+   =SEXP_PAYLOAD_OFFSET=8= at =lisp/nelisp-cc-jit-cons-car-ptr.el:25-28=).  A
+   cons cell's car/cdr are 8-byte *tagged words*: low-bit-0 = an *absolute*
+   pointer to a child 32-byte box, low-bit-1 = an immediate (fixnum =(n<<2)|1=,
+   =Nil=3=, =T=7=; =lisp/nelisp-cc-jit-cons-car-ptr.el:37-56=,
+   =lisp/nelisp-aot-compiler.el:12708-12746,12889-12914=).  These pointers are
+   *only known at runtime* — they are the return values of =nl_alloc_consbox= /
+   =nl_alloc_bytes=.  There is *no compile-time image of absolute Sexp
+   pointers to rebase*: the AOT runtime *builds* its heap at runtime by calling
+   the allocator.
+
+2. *The native ELF path that DOES bake static data blobs emits symbolic
+   relocations, not absolute addresses.*  A pointer baked into a =.data= blob
+   becomes an =abs64= reloc against a *symbol name*
+   (=blob-data-relocs=, =lisp/nelisp-aot-compiler.el:18187-18200=, type =abs64=
+   at :18196; appended to =:relocs= at :18342), left *unresolved for the system
+   linker =ld=*.  =ld= computes the absolute virtual address at static-link
+   time (and a PIE loader may further slide it).  So even on native there is no
+   "baked absolute address" until link time.
+
+3. *A real static value-heap serializer already exists and it is
+   position-independent by id.*  =lisp/nelisp-heap-image.el= (heap-v0-bin)
+   serializes an object graph where *inter-object pointers are numeric object
+   ids* (=(ref ID)=), reconstructed by a 2-pass placeholder+fill decode that
+   *allocates real boxes* and rewrites ids→addresses.  This is the exact shape
+   Doc 98's Rust =decode_v3_into= had, and it is inherently relocatable.
+
+*The wasm relocation answer, therefore, has two layers:*
+
+- *wasm has no external linker and linear memory is ALWAYS based at 0 with no
+  load-time slide.*  So whatever static bytes a wasm module bakes, the *writer*
+  must play the role of =ld= and resolve every static reloc *at emit time*,
+  because it alone chooses the Data-segment base addresses and the full layout
+  is known then.  A =abs64= data-blob reloc whose target is a data/rodata/bss
+  symbol resolves to =segment_base(target) + symbol_value(target)= and is
+  *patched directly into the segment bytes* — and because memory is based at 0
+  and never slides, *that baked offset is final: no runtime relocation pass is
+  needed* (unlike PIE native).  Pointer *width* narrows from abs64 to a 32-bit
+  linear-memory offset; the runtime keeps handles as i64 and =i32.wrap_i64='s
+  on every access (Doc 164 §3.1), so a baked pointer slot stays 8 bytes holding
+  the 32-bit offset zero-extended, OR'd with the handle tag bits if tagged
+  (low-bit-0 for a pointer).  *Proven*: =p3-06= bakes a root node whose
+  =args_ptr= is an absolute linear-mem offset (=B+16=) computed at emit time and
+  dereferenced at boot — returns 3.
+
+- *For the frozen VALUE heap the honest P3 design does NOT bake absolute
+  pointers at all — it bakes an id/offset-based pool and MATERIALISES the heap
+  at boot via the allocator* (Mode 1, the heap-v0-bin 2-pass decode running as
+  compiled wasm).  This is *why P3 introduces the allocator as a hard
+  prerequisite*: the AOT runtime's live heap pointers are absolute allocator
+  addresses that can only be minted at boot, so you cannot boot a frozen heap
+  without a working =alloc-bytes= / =$heap_ptr=.  The writer-relocated
+  absolute-offset variant (Mode 2) is legal on wasm (memory based at 0) and is
+  documented for the machine-code =.data=-blob reloc pattern, but the value
+  heap uses Mode 1.
+
+- *The one genuinely NEW wasm relocation category is code pointers → funcref
+  TABLE INDICES.*  On native a =.data= blob may hold a function address
+  (=lisp/nelisp-aot-compiler.el:18212-18237= filters same-unit defun names like
+  =posixOpen= out of the extern set so they resolve to a FUNC symbol).  wasm
+  code is *not addressable in linear memory*, so a "function pointer" is a
+  *table index* (its slot in the funcref Table, §3.5), consumed by
+  =call_indirect=.  A code-pointer data reloc resolves to that table index.
+  This is why =extern-call-ptr= / call-through-a-baked-function-pointer stays
+  deferred (P2 blueprint §F).
+
+** Finding 2 — minimal corpus for the =(+ 1 2)=→3 gate: a HAND-AUTHORED reduced eval core, NOT the standalone corpus
+
+The P3 gate must NOT bake the full standalone reader+evaluator+stdlib.  Two
+independent reasons, one of them a hard wall:
+
+1. *Scale (soft):* the full corpus is *low thousands* of functions — 658
+   top-level stdlib defuns across 21 =nelisp-stdlib*.el= files (~11.7 k LOC) +
+   771 inner defuns across 116 =nelisp-cc-*.el= AOT sources, plus a ~2.7 k-LOC
+   reader.  Module *size* is not the blocker (=p3-04= validates+instantiates a
+   200 000-function / 32 MB / 33.5 MB module in Node in ~0.2 s), but lowering
+   all of it to wasm is weeks, not the 2–4 days §6 P3 budgets.
+
+2. *Rust-extern dependency (HARD wall):* the pure-elisp eval core =nl_eval_inner=
+   *delegates the cons/combiner path to the Rust extern =nl_eval_inner_cons=*
+   (=lisp/nelisp-cc-eval-inner.el:119-139=), and arithmetic/allocation bottom out
+   in Rust substrate builtins (=nelisp--add2=, =nl_alloc_consbox=).  These are
+   *not elisp defuns* — they cannot become same-module wasm functions, and there
+   is nothing to import them from in a self-contained module.  This is Doc 164
+   §7.6's "helper-closure closure" question, now answered: for the *real*
+   interpreter it is a *hard blocker*, not merely an open item.  Porting the
+   combiner + allocator to pure elisp (so they lower to wasm) is its own
+   multi-phase effort, out of P3 scope.
+
+*Decision:* P3c bakes a *hand-authored reduced eval core* — a self-contained
+=.nlri= implementing a tiny tree-walk evaluator over a *baked arithmetic AST*,
+using only AOT primitives that lower to pure wasm (=+ - * = < ...=,
+=ptr-read/-write=, =alloc-bytes=, =let=, =if=, =while=, =seq=).  It boots from
+a Data-segment node pool, materialises/uses the heap via =alloc-bytes=, and
+returns 3 for the baked form =(+ 1 2)=.  That is a faithful "interpreter booting
+from Data-segment globals, no re-parse" (the form is a baked AST, never a
+string), and it exercises every mechanism P3 introduces.  =p3-06= is its
+byte-level proof.  The full-corpus port is explicitly deferred (§H, §I).
+
+* §0 Executive summary
+
+P3 adds five things to the landed P0/P1/P2 wasm path (=lisp/nelisp-asm-wasm.el=,
+=lisp/nelisp-wasm-write.el=, wasm emit arm in =lisp/nelisp-aot-compiler.el=
+=:16908–17980=, integration in =lisp/nelisp-artifact.el=):
+
+1. *=memory.grow= / =memory.size= opcodes* in the encoder (=proof p3-02=), and a
+   *Global section (id 6)* in the writer for the mutable =$heap_ptr= i32 global
+   (=proof p3-03=).  The i32 global-get/set, i32.const, wrap/extend ops the
+   allocator needs *already exist* (=lisp/nelisp-asm-wasm.el:301-318=).
+2. *=alloc-bytes= / =dealloc-bytes= wasm emit arms* — an inline bump allocator on
+   =$heap_ptr= with align-up + =memory.grow= on overflow (Doc 164 §4.1); dealloc
+   is a no-op returning the sentinel i64 1 (arena bump allocator, §C.2).  Proven
+   end-to-end (align + grow + write-then-read roundtrip) by =proof p3-05=.
+3. *Data-segment mapping WITH emit-time reloc resolution* — the wasm unit builder
+   currently drops all static data (=:rodata (unibyte-string)= / =:data
+   (unibyte-string)= / =:relocs nil= at =:17943-17948=); P3 wires =data-blob=
+   bytes into active Data segments and resolves each reloc to an absolute
+   linear-mem offset (data target) or funcref table index (code target) — the
+   =ld=-analog described in Finding 1 (§C.3).  Proven: =p3-01= (multi-segment
+   init), =p3-06= (baked pointer relocation).
+4. *A boot entry* (=_start= export) that runs baked module-init and evaluates a
+   baked form, returning its i64 result (§C.4, §B.4).  Proven: =p3-06=.
+5. *=--target wasm32-wasi= runtime-image integration* in =nelisp-artifact.el=:
+   =nelisp-artifact--target-arch= (=:959=) learns =wasm32=; a new wasm
+   runtime-image lane routes =compile-runtime-image= (=:1868=,:4671) to
+   =nelisp-aot-compile-to-object … :arch 'wasm32 :format 'wasm= and writes a
+   standalone =.wasm= (§D).
+
+=$shadow_sp=: still *NOT required* for the P3 gate (§C.5) — the reduced eval
+core keeps live values on the operand stack / in locals and in freshly bumped
+heap cells; no addressable-value spill is rewound on non-local exit.  It is
+specified as a Global for the *future* full-corpus phase (deep interpreter
+recursion + =applyn= arg arrays that put addressable temporaries in linear
+memory), added exactly like =$heap_ptr= and restored inside =catch_all=.
+
+All six proofs pass flag-free: =node tools/wasm-proofs/p3-run-all.mjs= →
+=ALL P3 PROOFS OK=.
+
+* §1 Ground truths (each PROVEN — validate=true + executed under Node v24.14.1)
+
+| # | claim (byte-level) | proof | validate / run result |
+|---+--------------------+-------+------------------------|
+| 1 | Multiple *active Data segments* (flag 0x00, =i32.const ADDR;end= ++ =vec(bytes)=) initialise linear memory at instantiate at their distinct offsets, copied for free | =p3-01= | valid; seg@100 = =1122334455667788=, seg@4096 = =deadbeef= |
+| 2 | =memory.grow= = =0x40 0x00= (returns prev size in pages, −1 on max-exceeded); =memory.size= = =0x3f 0x00=; store/load into the grown region works; Memory limits flag =0x01 min max= | =p3-02= | valid; =size 1→3=, grown store/load ok, =grow past max = −1= |
+| 3 | Global section (id 6): =vec(globals)=, each = valtype(0x7f) ++ mut(0x01) ++ =i32.const;end=; =global.get/set= (0x23/0x24) mutate it; exported (kind 0x03) global readable from JS via =.value= | =p3-03= | valid; =bump 66000→66016=, exported =heap_ptr=66048= |
+| 4 | Module scale is not the P3 blocker: 200 000 funcs + 32 MB Data segment + 33.5 MB module validates+instantiates in Node | =p3-04= | valid; instantiate ok in ~0.2 s; =first()=0 last()=199999= |
+| 5 | P3a allocator contract end-to-end: inline bump on =$heap_ptr= (align-up via =(hp+align-1) & -align=, =memory.grow= on overflow) returns a ptr, written then read back through linear memory | =p3-05= | valid; =boot()=1122334455667788=, =heap_ptr 65530→65552= (grew past page 1) |
+| 6 | P3b/P3c capstone: baked frozen-heap Data segment + emit-time absolute-offset *pointer relocation* (=args_ptr=) + boot-time =alloc-bytes= + exported =_start= evaluating baked =(+ 1 2)= | =p3-06= | valid; =_start()=3=, =heap_ptr 65536→65544= (allocator ran on boot) |
+
+Section-ORDER note (extends P2 blueprint §B.1, proof-01b): the *Global section
+(id 6) sits after Tag(13) and before Export(7)*.  Full P3 order:
+=magic, 1 Type, 2 Import, 3 Function, 4 Table, 5 Memory, 13 Tag, 6 Global,
+7 Export, 9 Element, 10 Code, 11 Data=.  The current writer emits every section
+except *Global* already, in this order (=lisp/nelisp-wasm-write.el:145-168=); P3
+inserts the =(when globals (emit-section buf 6 …))= immediately after the Tag
+slot (=:159=) and before Export (=:160=).
+
+* §A Encoder additions — lisp/nelisp-asm-wasm.el
+
+The P0–P2 encoder already has: LEB128, buffers, blocks/if/loop, all =i64.*=
+arith/cmp, =call=/=call_indirect=, i64 + i32 loads/stores, =drop=/=select=,
+legacy EH ops, and — crucially — the i32 primitives the allocator reuses:
+=op-i32-const= (=:301=), =op-global-get= / =op-global-set= (=:306,:311=),
+=op-i32-wrap-i64= (=:297=), =op-i64-extend-i32-u= (=:316=), value-type +
+kind constants incl. =--global-kind #x03= (=:31=).  Add ONLY:
+
+| helper (proposed) | bytes | operands | source proof |
+|-------------------+-------+----------+--------------|
+| =op-memory-grow= (buf) | =0x40 0x00= | mem index 0 (uleb) | p3-02, p3-05 |
+| =op-memory-size= (buf) | =0x3f 0x00= | mem index 0 (uleb) | p3-02, p3-05 |
+| =op-i32-add= (buf) | =0x6a= | — | p3-05 (bump) |
+| =op-i32-sub= (buf) | =0x6b= | — | p3-05 (align-up) |
+| =op-i32-and= (buf) | =0x71= | — | p3-05 (align mask) |
+| =op-i32-shl= (buf) | =0x74= | — | p3-05 (size<<16) |
+| =op-i32-gt-u= (buf) | =0x4b= | — | p3-05 (grow test) |
+| =op-i32-eq= (buf) | =0x46= | — | p3-06 (optag dispatch) |
+
+(=op-i32-load= / =op-i32-store= already exist for the WASI scratch; the
+allocator reuses them.)  The =0x00= trailing byte on =memory.grow/size= is the
+memory index, =uleb128=; keep it explicit so a future multi-memory switch is a
+one-liner.
+
+* §B Writer changes — lisp/nelisp-wasm-write.el
+
+** §B.1 Global section (id 6) — proof p3-03
+
+Add a payload builder and splice it between the Tag and Export sections:
+
+#+begin_src elisp
+(defun nelisp-wasm-write--payload-globals (globals)
+  "Build the Global section payload for GLOBALS.
+Each GLOBAL is (:type VALTYPE :mut BOOL :init-i32 N) (P3 only needs i32
+globals with an i32.const initialiser)."
+  (let ((buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-emit-uleb128 buf (length globals))
+    (dolist (g globals)
+      (nelisp-asm-wasm-emit-byte buf (plist-get g :type))          ; 0x7f i32
+      (nelisp-asm-wasm-emit-byte buf (if (plist-get g :mut) 1 0))  ; mutability
+      (nelisp-wasm-write--emit-const-i32-expr buf (plist-get g :init-i32)))
+    (nelisp-asm-wasm-buffer-bytes buf)))
+#+end_src
+
+In =nelisp-wasm-write-binary= (=:128=) add =(globals (plist-get unit
+:wasm-globals))= and, immediately after the Tag =(when tag-type-index …)= block
+(=:157-159=) and before the Export section (=:160=):
+
+#+begin_src elisp
+(when globals
+  (nelisp-asm-wasm-emit-section buf 6 (nelisp-wasm-write--payload-globals globals)))
+#+end_src
+
+=--emit-const-i32-expr= (=:71=) already produces =0x41 sleb(V) 0x0b=, exactly
+the init-expr p3-03 proves.
+
+** §B.2 Memory section — parameterise min/max — proof p3-02
+
+=--payload-memory= (=:52-58=) hardcodes =flags=0 min=1=.  Replace with:
+
+#+begin_src elisp
+(defun nelisp-wasm-write--payload-memory (unit)
+  (let ((min (or (plist-get unit :wasm-mem-min) 1))
+        (max (plist-get unit :wasm-mem-max))
+        (buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-emit-uleb128 buf 1)             ; one memory
+    (if max
+        (progn (nelisp-asm-wasm-emit-byte buf 1)     ; flags: has-max
+               (nelisp-asm-wasm-emit-uleb128 buf min)
+               (nelisp-asm-wasm-emit-uleb128 buf max))
+      (nelisp-asm-wasm-emit-byte buf 0)              ; flags: min only
+      (nelisp-asm-wasm-emit-uleb128 buf min))
+    (nelisp-asm-wasm-buffer-bytes buf)))
+#+end_src
+
+and pass =unit= at the call site (=:155-156=).  P3 sets =:wasm-mem-min= to
+=ceil((DATA_END)/65536)= so the baked segments + scratch fit before the heap,
+and leaves =:wasm-mem-max= *nil* (unbounded growth) for the runtime image —
+Doc 164 §1.2 single-threaded, non-shared.  (=proof p3-02= proves both the
+min-only and min+max encodings; the runtime image uses min-only.)
+
+** §B.3 Data section — already supported
+
+=--payload-data= (=:116-126=) and the =(when data (emit-section buf 11 …))=
+(=:166-168=) already emit active segments from =unit :wasm-data= = list of
+=(:addr A :bytes B)=.  =p3-01= proves the exact bytes.  P3 only changes the
+*producer* of =:wasm-data= (§C.3), not the writer.
+
+** §B.4 Export section — add =_start= / =heap_ptr= — proof p3-03/p3-06
+
+=--payload-exports= (=:98-106=) already emits =(:name :kind :index)= uniformly
+with mem/global/func kinds.  P3 adds two entries to =unit :wasm-exports=
+(built in §C.4): the boot function as =_start= (kind 0x00) and, for driver
+observability (asserting the allocator advanced), =$heap_ptr= as a global export
+(kind 0x03, =--global-kind=).  =memory= is already exported when the module
+touches linear memory (=lisp/nelisp-aot-compiler.el:17969-17973=); P3 forces it
+on whenever data/globals are present.
+
+* §C Compiler emit changes — lisp/nelisp-aot-compiler.el
+
+** §C.1 IR reality — where alloc/dealloc land today
+
+- =alloc-bytes= is IR tag *0* (parse at =:9378=, native emit
+  =--emit-alloc-bytes= at =:14630= → =nl_alloc_bytes(size,align)=); =dealloc-bytes=
+  is IR tag *20* (parse =:9393=, native emit =:14639= → =nl_dealloc_bytes=,
+  returns sentinel 1).  Neither has a wasm arm today, so both fall through the
+  =--wasm-emit-value= =cond= to =t= → =:wasm-unsupported-ir= (=:17841-17844=).
+- The memory ops the allocator feeds (=ptr-read/-write-u8/16/32/64=, IR tags
+  39–46) *already have* wasm arms (=:17768-17819=) via
+  =--wasm-emit-memory-address= (=:17100=, emits ptr, offset, then =i32.wrap_i64=
+  and the load/store).  So once =alloc-bytes= returns a valid i64 handle, the
+  whole read/write path works unchanged.
+
+** §C.2 =alloc-bytes= / =dealloc-bytes= wasm arms — proof p3-05
+
+Reserve two module-level *globals* (emitted via §B.1, values chosen in §C.3):
+- =$heap_ptr= (i32, mutable, global index 0) — bump pointer, init =STACK_TOP=.
+- (=$shadow_sp= reserved for the future full corpus — §C.5 — NOT emitted in P3.)
+
+Add a helper that emits the inline bump allocator and two =cond= arms in
+=--wasm-emit-value= (insert near the ptr arms at =:17768=).  The exact byte
+shape is =proof p3-05='s =alloc= body:
+
+#+begin_src elisp
+;; alloc-bytes SIZE ALIGN  (SIZE/ALIGN are compile-time int-lits like the
+;; native path, or evaluated i64s; ALIGN is a power of two).  Returns the
+;; old heap_ptr as an i64 handle (i64.extend_i32_u), so downstream ptr-* ops
+;; i32.wrap_i64 it straight back.
+(defun nelisp-aot-compiler--wasm-emit-alloc-bytes (node buf ctx)
+  (let ((hp nelisp-aot-compiler--wasm-heap-ptr-global))   ; = 0
+    ;; ptr = (heap_ptr + align - 1) & -align
+    (nelisp-asm-wasm-op-global-get buf hp)
+    (nelisp-aot-compiler--wasm-emit-value (ir :align) buf ctx) ; i64 -> need i32
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf) (nelisp-asm-wasm-op-i32-add buf)
+    (nelisp-asm-wasm-op-i32-const buf 1) (nelisp-asm-wasm-op-i32-sub buf)
+    (nelisp-asm-wasm-op-i32-const buf 0)
+    (nelisp-aot-compiler--wasm-emit-value (ir :align) buf ctx)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf) (nelisp-asm-wasm-op-i32-sub buf)  ; -align
+    (nelisp-asm-wasm-op-i32-and buf)
+    (nelisp-asm-wasm-op-local-tee buf ALLOC-SCRATCH-I32)   ; ptr saved
+    ;; heap_ptr = ptr + size
+    (nelisp-aot-compiler--wasm-emit-value (ir :size) buf ctx)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf) (nelisp-asm-wasm-op-i32-add buf)
+    (nelisp-asm-wasm-op-global-set buf hp)
+    ;; grow if heap_ptr > memory.size << 16
+    (nelisp-asm-wasm-op-global-get buf hp)
+    (nelisp-asm-wasm-op-memory-size buf)
+    (nelisp-asm-wasm-op-i32-const buf 16) (nelisp-asm-wasm-op-i32-shl buf)
+    (nelisp-asm-wasm-op-i32-gt-u buf)
+    (nelisp-asm-wasm-op-if buf)                            ; empty block type
+    ;;   grow by ceil((need - cur)/65536); P3 minimum: grow 1 page in a loop,
+    ;;   or compute pages = ((heap_ptr - cur) >> 16) + 1.  p3-05 grows 1 (its
+    ;;   allocs are < 1 page); the runtime-image emitter uses the computed form.
+    (nelisp-asm-wasm-op-i32-const buf 1) (nelisp-asm-wasm-op-memory-grow buf)
+    (nelisp-asm-wasm-op-drop buf)
+    (nelisp-asm-wasm-op-end buf)
+    ;; return ptr as an i64 handle
+    (nelisp-asm-wasm-op-local-get buf ALLOC-SCRATCH-I32)
+    (nelisp-asm-wasm-op-i64-extend-i32-u buf)))
+#+end_src
+
+=dealloc-bytes= arm: a *no-op* returning =i64.const 1= (matching the native
+sentinel at =:14648=; the bump/arena allocator does not free — Doc 164 §4.1).
+Evaluate the =:ptr/:size/:align= sub-exprs only for their side effects if any,
+then push =i64.const 1=.
+
+*Alignment contract (matches native):* native =nl_alloc_bytes(size, align)=
+returns an =align=-aligned pointer with no header; the wasm bump uses the same
+=(hp+align-1) & -align= rounding.  =align= is a power of two (guaranteed by the
+IR: alloc-bytes' size/align are int-lit constants, =:9378-9382=), so =-align=
+== =~(align-1)= — the mask =p3-05= proves.  *dealloc semantics:* arena
+no-op-free (native =nl_dealloc_bytes= is =void=), so wasm dealloc rewinds
+nothing — identical observable behaviour.
+
+*Scratch local:* the allocator needs one i32 scratch (=ALLOC-SCRATCH-I32=).
+Allocate it per-defun the way the logic scratch is allocated
+(=logic-scratch-local=, =:17910=; grow the per-defun local vector at
+=:17910-17915= by one i32 when the body contains any alloc-bytes).
+
+** §C.3 Data-segment mapping + emit-time reloc resolution (THE CRUX in code)
+
+Today =--compile-to-wasm-unit= (=:17846=) *discards* all static data: it returns
+=:rodata (unibyte-string)=, =:data (unibyte-string)=, =:relocs nil= and never
+sets =:wasm-data= (=:17943-17980=).  It also never consumes =data-blobs=
+(collected by =--collect-data-blobs=, =:10436=; blob IR at =:9897=).  P3 wires
+this up, mirroring the ELF link-unit's blob layout (=:18139-18211=) but *doing
+=ld='s job at emit time* (Finding 1):
+
+1. *Collect blobs and choose a fixed linear-memory layout.*  Reuse the ELF
+   partitioning (=blob-rodata-blobs= / =blob-data-blobs= / =blob-bss-blobs=,
+   =:18139-18150=) and the per-blob offset layout (=blob-*-layout=,
+   =:18151-18174=).  Assign section bases *above the P2 WASI scratch window*
+   (=1024..4095=, =:16912-16916=):
+   : DATA_RO_BASE  = 4096            ; rodata blobs (strings, static tables, baked node pool)
+   : DATA_RW_BASE  = 4096 + len(rodata)   (8-aligned)
+   : BSS_BASE      = DATA_RW_BASE + len(data)   (8-aligned; zero by construction)
+   : STACK_TOP     = BSS_BASE + bss_size  (8-aligned)   ; = $heap_ptr init
+   Set =:wasm-globals= = one mutable i32 =$heap_ptr= init =STACK_TOP=, and
+   =:wasm-mem-min= = =ceil(STACK_TOP/65536)= (§B.1/§B.2).
+2. *Build a symbol → absolute-linear-offset map.*  For each blob symbol
+   (=blob-symbols=, =:18202-18211=, carrying =:section= + =:offset= + =:len=):
+   =addr(sym) = section_base(:section) + :offset=.
+3. *Resolve `(data-addr NAME)` references* (the IR node the emit arm sees for a
+   blob reference) to =i64.const addr(NAME)= — the same value the reduced eval
+   core's =_start= uses to find the baked form (=p3-06='s =B=).  This replaces
+   the native ELF's =PC32/abs64= symbolic reloc with a *concrete constant*,
+   because the layout is fully known at emit time.
+4. *Patch pointers baked INSIDE blobs (=blob-data-relocs=, =:18187-18200=).*
+   For each =abs64= reloc =(:offset O :symbol S :addend A)= in a blob:
+   - if =S= is a *data/rodata/bss symbol*: write
+     =zext32(addr(S) + A) | tag= as a little-endian 8-byte slot at the blob's
+     final offset =O= (tag = the handle's low bits; low-bit-0 for a raw
+     pointer).  wasm memory is base-0, little-endian, same as x86_64/arm64, so
+     the surrounding blob bytes transfer without byte-swap; only the pointer
+     slot is rewritten from an unresolved reloc to a final offset.  (=p3-06=
+     proves the dereference of exactly such a baked absolute-offset slot.)
+   - if =S= is a *defun* (a code pointer): resolve to its *table index*
+     (=table-indices=, =:17888-17890=), write that i32 into the slot, ensure the
+     defun is in the Element table, and require the consumer to =call_indirect=
+     (§3.5).  For P3 the reduced core has *no* baked code pointers, so this arm
+     is a *narrow signal* (=:wasm-p3-code-pointer-in-data=) reserved for the
+     full corpus.
+   - if =S= is an *extern (env import)*: =:wasm-p3-extern-pointer-in-data=
+     (deferred, P2 blueprint §F).
+5. *Emit =:wasm-data==.*  Concatenate each section's (now-patched) blob bytes and
+   set =:wasm-data= = =(list (:addr DATA_RO_BASE :bytes rodata) (:addr
+   DATA_RW_BASE :bytes data))= (omit bss — zero by construction, Doc 164 §4.2).
+
+*No runtime relocation pass runs* — every pointer is final at instantiate,
+because the writer computed absolute offsets and wasm memory never slides
+(Finding 1).  For the *value heap* the reduced eval core does NOT bake absolute
+Sexp pointers; it bakes a small id/offset node pool (à la
+=nelisp-heap-image.el=) and materialises live boxes with =alloc-bytes= at boot
+(Mode 1) — so step 4's absolute-pointer patching is used only for the
+*self-referential AST* (=args_ptr=), not for a full runtime heap.
+
+** §C.4 Boot entry — =_start= that evals the baked form — proof p3-06
+
+The reduced eval core =.nlri= (§G) declares an entry defun (e.g.
+=nelisp-boot=).  The wasm unit builder marks it as the module's =_start= export:
+add to =:wasm-exports= (=:17967-17979=) an entry =(:name "_start" :kind 0x00
+:index <boot idx>)=.  The boot defun's body is ordinary AOT IR (tree-walk over
+=(data-addr nelisp-boot-form)=, using =ptr-read-*= + =alloc-bytes= + arith),
+compiled by the existing =--wasm-emit-value= arms — *no new control flow*.  Its
+i64 return is the eval result; =p3-06= proves the exported =_start= returns 3
+and =$heap_ptr= advanced (allocator ran).
+
+Reactor vs command (P2 blueprint §1): the numeric gate is cleanest as a
+*reactor* — export =memory= + =_start= + =heap_ptr=, driver calls =_start()= and
+BigInt-compares (=p3-06='s exact shape; §E).  A WASI =_start= *command* (run by
+=wasi.start=, printing via =fd_write=) is the CLI-faithful variant and reuses
+the P2 =proof-08= path; P3c's minimal gate uses the reactor to keep the
+assertion a pure return value.
+
+** §C.5 =$shadow_sp= — still NOT emitted in P3 (scope guard)
+
+The reduced eval core keeps every live value on the wasm operand stack, in
+locals, or in freshly-bumped heap cells; a non-local exit (legacy EH, landed in
+P2) auto-restores the catching frame's operand stack + locals, and the bump
+allocator's =$heap_ptr= is *not* rewound on unwind (arena semantics — a thrown
+computation's allocations are simply abandoned, exactly as the native arena does
+until GC).  So *no =$shadow_sp= is produced*.  It re-enters only in the future
+full corpus, when deep interpreter recursion or =applyn= arg arrays spill
+*addressable* temporaries into linear memory whose lifetime must be rewound on
+non-local exit — added then as a second mutable i32 Global (§B.1) saved at
+handler-establish time and restored inside =catch_all= (Doc 164 §3.6/§4.1).
+Codex must NOT emit =$shadow_sp= for the P3 gate.
+
+* §D Artifact integration — lisp/nelisp-artifact.el
+
+** §D.1 Teach =--target wasm32-wasi= to the arch mapper
+
+=nelisp-artifact--target-arch= (=:959-965=) maps target triples to
+=x86_64=/=arm64= and returns *nil* for anything else — so =wasm32-wasi= today
+means "unsupported native target" (=--native-compile-section=, =:1386-1390=).
+Add:
+
+#+begin_src elisp
+((string-match-p "wasm32" target) 'wasm32)
+#+end_src
+
+** §D.2 A dedicated wasm runtime-image lane (do NOT reuse the .nelc/.neln path)
+
+=compile-runtime-image= (=:4671=) → =nelisp-artifact-compile-runtime-image-file=
+(=:1868=) flattens the =.nlri= into a temp =.el= (=--runtime-image-source=,
+=:1862=) and calls =nelisp-artifact-compile-file= with =target= + =kind=.  The
+=.nelc=/=.neln= lanes produce bytecode modules / embedded ELF objects for
+*host replay* + *native mmap-exec* — neither is a standalone runnable =.wasm=.
+A wasm module is *self-contained after instantiate* (Doc 164 §4.3), so P3 adds a
+*separate lane* that bypasses the bytecode/manifest machinery:
+
+1. In =compile-runtime-image= (=:4671=), when =(nelisp-artifact--target-arch
+   target)= is =wasm32=, route to a new =nelisp-artifact--compile-runtime-image-wasm=
+   instead of =compile-file=.
+2. That function: read + flatten the =.nlri= forms (=--runtime-image-forms=,
+   =:1846=), wrap as =(seq DEFUN…)=, and call
+   =(nelisp-aot-compile-to-object (cons 'seq forms) OUTPUT :arch 'wasm32
+   :format 'wasm)= — the object dispatch already has the wasm arm
+   (=nelisp-aot-compile-to-object= pcase → =nelisp-wasm-write-binary=,
+   =:18436=).  Output path is the =.wasm= directly (no =.manifest.el= sidecar
+   needed for a self-contained module; optionally still write a manifest
+   recording the source =--file-record= for staleness like =:1893=).
+3. =--ensure-native-compiler= (=:1243=) already loads the AOT chain; extend its
+   dep list check to accept the wasm modules (=nelisp-asm-wasm.el=,
+   =nelisp-wasm-write.el=) so the lane works from a bare standalone runtime.
+
+*Rationale:* keep the wasm lane orthogonal to =.nelc/.neln= — Doc 164 §2.3 wires
+=--kind nwasm= / =--target wasm32-wasi= as the wasm route; the runtime-image
+CLI just forwards =--target=.  No change to the bytecode/native cache-key logic.
+
+* §E Driver additions — tools/wasm-wasi-driver.mjs
+
+The landed P2 driver (=tools/wasm-wasi-driver.mjs=) already supports
+=plain= / =wasi-reactor= / =wasi-command= modes with BigInt compare, =env=
+imports, preopens, and =--stub-clock/--stub-random=.  The P3 gate needs *no new
+mode* — the reduced-core reactor is called exactly like a =plain= export:
+
+: node tools/wasm-wasi-driver.mjs runtime-image.wasm plain _start 3
+
+returns 3 (=p3-06='s assertion, via the driver).  Two small additions:
+
+1. *Observability flag* =--expect-heap-advanced= (optional): after the call, read
+   =instance.exports.heap_ptr.value= and assert it moved — proves the allocator
+   ran on the boot path (the P3 mechanism, not just the number).  =p3-06=
+   demonstrates the read.
+2. *The =--invoke eval= string ABI (DESIGN; wasm-side deferred to full corpus).*
+   The CLI-faithful =nelisp eval '(+ 1 2)'= maps to a memory+ABI protocol:
+   - module exports =memory= + =eval_at(ptr, len) -> i64= (+ =alloc_input(len)
+     -> i32= that bumps =$heap_ptr= and returns a scratch address).
+   - driver: =const p = exports.alloc_input(bytes.length); new
+     Uint8Array(exports.memory.buffer).set(utf8Bytes, p); const r =
+     exports.eval_at(p, bytes.length);= then BigInt-compare / =prin1= the result.
+   - wasm side: =eval_at= runs the *reader* (bytes → AST in the heap via
+     =alloc-bytes=) then the evaluator.  This needs the reader+evaluator corpus,
+     which is *out of P3* (Finding 2).  So the *P3 gate uses the baked-form
+     reactor* (=_start=, no string passing — the form is a baked AST, satisfying
+     "no re-parse"), and =--invoke eval= is specified here for the full-corpus
+     phase, its byte plumbing (memory write + call) already proven by =p3-01=
+     (memory init) + =p3-05= (alloc scratch) + =proof-05= (host reads/writes
+     linear memory).
+
+Keep the existing =plain=/reactor regression (P1/P2 smokes) byte-identical: a
+runtime image with data/globals emits the new sections; a program with no
+alloc/data emits *none* of them (the =when= guards in §B), so P0/P1/P2 modules
+stay unchanged.
+
+* §F Phasing within P3 (sub-steps a codex task can land one at a time)
+
+Effort ranges are engineer-days for a codex implementer following this doc.
+
+** P3a — allocator + globals (0.5–1 d)
+- Encoder: =memory.grow/size= + i32 arith ops (§A).  Writer: Global section (id
+  6) + parameterised Memory min/max (§B.1/§B.2).  Compiler: =alloc-bytes= /
+  =dealloc-bytes= wasm arms + per-defun alloc scratch local + =$heap_ptr= global
+  emission (§C.2).
+- *Exit*: compile =(defun f () (let ((p (alloc-bytes 16 8)))
+  (seq (ptr-write-u64 p 0 305419896) (ptr-read-u64 p 0))))= with =:arch 'wasm32
+  :format 'wasm=; =node tools/wasm-driver.mjs f.wasm f 305419896= → the written
+  value read back through allocated memory.  (Byte-for-byte = =p3-05=.)  ERT:
+  encoder round-trip for the 8 new ops.
+
+** P3b — baked Data segment boot (0.5–1 d)
+- Compiler: =data-blob= → active Data segment mapping + =(data-addr NAME)= →
+  =i64.const abs-offset= + =blob-data-relocs= absolute-offset patching (§C.3);
+  =_start= boot export (§C.4).  Writer already emits Data (§B.3) + the export
+  (§B.4).
+- *Exit*: a *hand-baked* program with one =data-blob= holding a small node pool
+  and a defun that reads a relocated pointer out of it and returns a value from
+  the segment; =node tools/wasm-driver.mjs boot.wasm _start <expected>=.
+  (Byte-for-byte = =p3-06='s segment + relocation, minus the arithmetic
+  dispatch.)
+
+** P3c — full =compile-runtime-image --target wasm32-wasi= → =(+ 1 2)=3 (1–2 d)
+- Author the reduced eval core =.nlri= (§G).  Artifact: =--target wasm32-wasi=
+  arch mapping + the wasm runtime-image lane (§D).  Driver: run the reactor.
+- *Exit* (= Doc 164 §6 P3): =nelisp compile-runtime-image --kind neln --target
+  wasm32-wasi --input eval-core.nlri --output runtime-image.wasm= then
+  =node tools/wasm-wasi-driver.mjs runtime-image.wasm plain _start 3= → =3=,
+  interpreter booting from Data-segment globals, no re-parse.  New =Makefile=
+  target =wasm-runtime-image-smoke= (pattern of =wasm-smoke=, =Makefile:97-114=).
+  (Byte-for-byte mechanism = =p3-06=.)
+
+Total P3: *2–4 engineer-days*, matching Doc 164 §6 P3.
+
+* §G Reduced eval core =.nlri= (exact shape for the integrator)
+
+A =.nlri= is a =source-v1= bundle: =";;; nelisp-runtime-image source-v1\n" +
+(progn …)= (=lisp/nelisp-runtime-image.el:16,107-112=; confirmed by the six
+=target/*-standalone-reader/*.nlri= fixtures, which are literally =(progn
+(setq …))=).  The reduced core bundles (a) the baked AST as a =data-blob=, (b)
+a tiny tree-walk evaluator, (c) the boot entry.  Sketch (the integrator tunes
+the node encoding to the AOT =ptr-*= ABI; =p3-06= fixes the exact byte layout):
+
+#+begin_src elisp
+;;; nelisp-runtime-image source-v1
+(progn
+ ;; Baked frozen heap for (+ 1 2): optag=1(add) at +0, args_ptr at +8
+ ;; (relocated to the args cell), operands 1,2 at +16/+24.
+ (data-blob nelisp-boot-form
+   "...32 bytes: le32(1) le32(0) le64((data-addr nelisp-boot-args)) ..."
+   rodata (((:offset 8 :symbol nelisp-boot-args :addend 0 :type abs64))))
+ (data-blob nelisp-boot-args "...le64(1) le64(2)..." rodata nil)
+ ;; Reduced tree-walk eval: dispatch on optag, follow args_ptr, sum, box.
+ (defun nelisp-boot-eval (form)
+   (if (= (ptr-read-u32 form 0) 1)
+       (let ((aptr (ptr-read-u64 form 8))
+             (cell (alloc-bytes 8 8)))
+         (seq
+          (ptr-write-u64 cell 0
+            (+ (ptr-read-u64 aptr 0) (ptr-read-u64 aptr 8)))
+          (ptr-read-u64 cell 0)))
+     -1))
+ (defun nelisp-boot ()
+   (nelisp-boot-eval (data-addr nelisp-boot-form))))
+#+end_src
+
+=nelisp-boot= is exported as =_start=; it returns 3.  Every op used
+(=if=, =let=, =seq=, ==, =+=, =ptr-read/-write-u32/u64=, =alloc-bytes=,
+=data-addr=) lowers through the P1/P2/P3a arms — no Rust extern, so the module
+is self-contained (Finding 2).
+
+* §H Explicitly OUT of P3 (do not scope-creep — Doc 164 §6 P4 / full-corpus phase)
+
+- *The full standalone reader + evaluator + stdlib port* (Finding 2): the real
+  =nl_eval_inner= delegates to Rust externs (=nl_eval_inner_cons=, =nelisp--add2=,
+  =nl_alloc_consbox=) that are not elisp defuns — a hard blocker.  Porting the
+  combiner + arithmetic + allocator to pure elisp so they lower to wasm is a
+  separate multi-phase effort.
+- *String-passing =eval_at(ptr,len)= with an in-wasm reader* (§E.2) — needs the
+  reader corpus; P3 uses the baked-form reactor.
+- *=$shadow_sp= + non-local-exit SP rewind* (§C.5) — only needed once addressable
+  temporaries spill to linear memory (deep recursion / =applyn= arg arrays).
+- *Code-pointer-in-data → funcref table index reloc* and =extern-call-ptr= /
+  =call_indirect= through baked pointers (§C.3 step 4) — P3 core has none.
+- *Mode-2 writer-relocated absolute-pointer VALUE heap* — P3 uses Mode-1
+  boot-time materialisation for the value heap; Mode-2 is documented for the
+  machine-code =.data=-blob pattern only.
+- *newDTW canvas / =step= / custom imports* (Doc 164 §5.3/§6 P4).
+
+* §I Riskiest remaining assumption (for codex)
+
+*The single riskiest assumption: that a "reduced eval core" faithfully
+represents the P3 gate.*  Doc 164 §6 P3's exit text — "=runtime-image.wasm=
+evaluates =(+ 1 2)= → 3, interpreter booting from Data-segment globals, no
+re-parse" — is satisfied *in mechanism* by the hand-authored reduced core
+(baked AST + tree-walk eval + allocator, =p3-06=), but it is *not* the full
+=./target/release/nelisp eval '(+ 1 2)'= standalone binary the native Doc 98
+§3.3 gate runs.  The gap is deliberate and forced by Finding 2 (the Rust-extern
+wall), but codex and reviewers must not mistake the reduced-core gate for a
+booting *full* interpreter.  *Mitigation:* (a) this blueprint states the scope
+boundary explicitly (§H) and the gate asserts the P3-specific mechanisms
+(Data-segment boot + =$heap_ptr= advance + relocated pointer deref), not merely
+"returns 3"; (b) the reduced core uses *only* ops that also appear in the real
+interpreter's pure-elisp fragments, so it is a genuine subset, not a toy; (c)
+the full-corpus port is tracked as its own phase with the helper-closure /
+Rust-extern-elimination work called out.
+
+Secondary risk: *the align/grow arithmetic in the allocator assumes power-of-two
+=align= and 32-bit-fitting sizes.*  The IR guarantees compile-time-constant
+power-of-two align (=:9378=), and Doc 164 §7.5 fixes the ≤4 GiB wasm32 ceiling;
+any non-power-of-two or >4 GiB alloc reaching the wasm arm must signal
+(=:wasm-p3-bad-align= / rely on the memory64 future switch, Doc 164 §4.4) rather
+than mis-align.  =p3-05='s =-align= mask is exact only for powers of two.
+
+* §J References
+- Doc 164 (=docs/design/164-wasm-backend.org=): §3.1 value repr / wrap-extend,
+  §4.1 linear-memory layout + alloc-bytes/heap_ptr/shadow_sp table (=:363-382=),
+  §4.2 baked image → Data segments (=:384-408=), §4.3 boot, §4.4 memory64,
+  §6 P3 exit criteria (=:559-567=), §7.5 4 GiB ceiling, §7.6 helper closure.
+- P2 blueprint (=docs/design/164-wasm-backend-p2-blueprint.org=): §F (alloc /
+  shadow_sp / baked-image deferred to P3), §B.1 section order, §1 reactor/command.
+- Doc 98 (=docs/design/98-stage-95-real-frozen-heap-baker.org=): §0.2 real
+  frozen-heap semantics (decode into env globals, no re-parse) — the concept P3
+  Mode-1 realises via boot-time materialisation.
+- Proof scripts (=tools/wasm-proofs/=, run =node tools/wasm-proofs/p3-run-all.mjs=):
+  =p3-helpers.mjs= (byte builders), =p3-01= data segments, =p3-02= memory.grow,
+  =p3-03= mutable global, =p3-04= module-size ceiling, =p3-05= bump allocator,
+  =p3-06= baked-boot capstone.
+- Code (HEAD =89347210=):
+  - =lisp/nelisp-aot-compiler.el= — wasm consts/scratch =:16908-16916=, wasm emit
+    dispatch =--wasm-emit-value= =:17519= (ptr arms =:17768-17819=, unsupported
+    fallthrough =:17841=), =--wasm-emit-memory-address= =:17100=,
+    =--compile-to-wasm-unit= =:17846= (unit plist drops data/relocs
+    =:17943-17980=, exports =:17967=, table/element =:17888-17966=), native
+    =--emit-alloc-bytes= =:14630= / =--emit-dealloc-bytes= =:14639=, alloc/dealloc
+    IR parse =:9378/:9393=, =--collect-data-blobs= =:10436= / data-blob IR
+    =:9897=, link-unit reloc assembly =:18049-18345= (blob layout =:18139-18174=,
+    =blob-data-relocs=/abs64 =:18187-18200=, blob-symbols =:18202-18211=,
+    code-ptr-in-data filter =:18212-18237=, =:relocs= append =:18342=),
+    arch/abi/os bind =:18014-18029=, object dispatch → =nelisp-wasm-write-binary=
+    =:18436=.
+  - =lisp/nelisp-asm-wasm.el= — i32/global/wrap/extend ops =:297-318=, section +
+    body builders =:125-162=, kind consts =:28-31= (NO memory.grow/size yet).
+  - =lisp/nelisp-wasm-write.el= — memory payload (hardcoded min=1) =:52-58=,
+    section order in =write-binary= =:145-168= (no Global id 6), data payload
+    =:116-126=, exports =:98-106=.
+  - =lisp/nelisp-artifact.el= — =--target-arch= =:959= (returns nil for wasm),
+    =compile-runtime-image-file= =:1868= / =--runtime-image-source= =:1862= /
+    =--runtime-image-forms= =:1846=, =compile-runtime-image= CLI =:4671=,
+    =--native-compile-section= =:1372=, =--ensure-native-compiler= =:1243=.
+  - =lisp/nelisp-runtime-image.el= — source-v1 magic + wrap =:16,107-112=
+    (=.nlri= = source-replay bundle).
+  - =lisp/nelisp-heap-image.el= — heap-v0-bin node pool, id-based (=ref ID=)
+    pointers, 2-pass placeholder+fill decode (the Mode-1 precedent).
+  - =lisp/nelisp-cc-cons-construct.el:37-44= (absolute pointer payload),
+    =lisp/nelisp-cc-jit-cons-car-ptr.el:25-56= (tag=7 / tagged car-cdr words),
+    =lisp/nelisp-cc-eval-inner.el:119-139= (=nl_eval_inner_cons= Rust extern),
+    =lisp/nelisp-cc-jit-arith.el:36-56= (=nelisp_jit_add2=, no allocation),
+    =lisp/nelisp-aot-compiler.el:12708-12746,12889-12914= (fixnum immediate
+    =(n<<2)|1=, =Nil=3=, =T=7=).
+  - =Makefile:97-114= — =wasm-smoke= target pattern for the new
+    =wasm-runtime-image-smoke=.
+- Memory: =feedback_nelisp_perf_not_elisp_interpreter= (perf framing),
+  =feedback_nelisp_core_vs_layer2_boundary= (which ops stay in-core vs import),
+  =feedback_nelisp_ci_make_compile_gate= (=make compile= error-on-warn gate for
+  the new encoder/writer helpers).
+
+;;; 164-wasm-backend-p3-blueprint.org ends here

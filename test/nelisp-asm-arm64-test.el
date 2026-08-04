@@ -922,6 +922,35 @@ imm byte-offset = -4 -> immlo = 0, immhi = 0x7FFFF -> (0x7FFFF<<5)|Rd."
     (should-error (nelisp-asm-arm64-resolve-fixups b)
                   :type 'nelisp-asm-arm64-error)))
 
+(ert-deftest nelisp-asm-arm64-externalize-dangling-bl26 ()
+  "A BL against an undefined label becomes a `b26-pc' reloc.
+Defined-label BLs keep their fixup and still resolve in place."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    ;; BL to an undefined runtime helper at slot 0.
+    (nelisp-asm-arm64--emit-word b #x94000000)
+    (nelisp-asm-arm64-emit-fixup b 0 'nl_alloc_str 'bl26)
+    ;; BL to a same-buffer label at slot 4.
+    (nelisp-asm-arm64-bl b 'local)
+    (nelisp-asm-arm64-define-label b 'local)
+    (nelisp-asm-arm64-ret b)
+    (should (= (nelisp-asm-arm64-externalize-dangling-bl26 b) 1))
+    (let ((relocs (nelisp-asm-arm64-buffer-relocs b)))
+      (should (= (length relocs) 1))
+      (should (equal (plist-get (car relocs) :symbol) "nl_alloc_str"))
+      (should (eq (plist-get (car relocs) :type) 'b26-pc))
+      (should (= (plist-get (car relocs) :offset) 0)))
+    ;; The surviving local fixup resolves without error.
+    (should (nelisp-asm-arm64-resolve-fixups b))))
+
+(ert-deftest nelisp-asm-arm64-externalize-keeps-b26-strict ()
+  "Externalization only rewrites bl26 — a dangling B still signals."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64--emit-word b #x14000000)
+    (nelisp-asm-arm64-emit-fixup b 0 'nope 'b26)
+    (should (= (nelisp-asm-arm64-externalize-dangling-bl26 b) 0))
+    (should-error (nelisp-asm-arm64-resolve-fixups b)
+                  :type 'nelisp-asm-arm64-error)))
+
 (provide 'nelisp-asm-arm64-test)
 
 ;;; nelisp-asm-arm64-test.el ends here

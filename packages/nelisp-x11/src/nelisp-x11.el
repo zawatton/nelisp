@@ -12,6 +12,14 @@
 ;; A "display" is a vector:
 ;;   [FD ID-BASE ID-MASK ID-NEXT ROOT VISUAL WHITE BLACK DEPTH MIN-KC MAX-KC]
 
+(declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
+(declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
+(declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
+(declare-function string-byte "subr" (string bytepos))
+(declare-function ptr-write-u64 "ext:nelisp-runtime" (ptr offset value))
+(declare-function syscall-direct "ext:nelisp-runtime"
+                  (nr a0 a1 a2 a3 a4 a5))
+
 (defconst nelisp-x11--d-fd 0)
 (defconst nelisp-x11--d-idbase 1)
 (defconst nelisp-x11--d-idmask 2)

@@ -65,7 +65,7 @@
 (defconst nelisp-artifact--usage
   "usage: nelisp compile-elisp-artifact --kind nelc|neln|elc|auto --input FILE.el --output FILE.nelc|FILE.neln|FILE.elc [--manifest FILE.manifest.el] [--load-path DIR]... [--preload FILE.el]... [--feature FEATURE] [--target TARGET] [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms] [--cache-key KEY]
        nelisp compile-elisp-artifacts --kind nelc|neln|auto [--load-path DIR]... [--preload FILE.el]... [--target TARGET] [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms] FILE.el|DIR...
-       nelisp compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE.nelc|FILE.neln [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms]
+       nelisp compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE.nelc|FILE.neln|FILE.wasm [--target TARGET] [--native-policy opportunistic|required] [--module-policy bytecode|eval-only] [--profile-stages] [--profile-forms]
        nelisp audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...
        nelisp exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
        nelisp eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
@@ -964,6 +964,11 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
    ((string-match-p "aarch64\\|arm64" target) 'arm64)
    (t nil)))
 
+(defun nelisp-artifact--runtime-image-wasm-target-p (target)
+  "Return non-nil when TARGET selects the wasm runtime-image lane."
+  (and (stringp target)
+       (string-match-p "wasm32" target)))
+
 (defun nelisp-artifact--write-elf-rel-object (path unit)
   "Write ELF relocatable UNIT to PATH."
   (nelisp-elf-write-binary
@@ -1228,10 +1233,12 @@ coverage when a native executor rejects the call."
   (let* ((lisp-dir (file-name-directory path))
          (load-path (cons lisp-dir load-path))
          (deps '("nelisp-asm-arm64.el"
+                 "nelisp-asm-wasm.el"
                  "nelisp-asm-x86_64.el"
                  "nelisp-cc-runtime.el"
                  "nelisp-elf-write.el"
                  "nelisp-sexp-layout.el"
+                 "nelisp-wasm-write.el"
                  "nelisp-aot-compiler.el")))
     (dolist (dep deps)
       (let ((dep-path (expand-file-name dep lisp-dir)))
@@ -1851,7 +1858,7 @@ top-level `defun' forms remain visible to the `.neln' native compiler."
   (let* ((source (nelisp-artifact--read-file-as-string image-path))
          (forms (nelisp-artifact--read-all-from-string source))
          (out nil))
-    (unless (string-prefix-p ";;; nelisp-runtime-image source-v1\n" source)
+    (unless (string-match-p "\\`;;; nelisp-runtime-image source-v1\r?\n" source)
       (error "unsupported runtime image format: %s" image-path))
     (dolist (form forms)
       (if (and (consp form) (eq (car form) 'progn))
@@ -1864,6 +1871,31 @@ top-level `defun' forms remain visible to the `.neln' native compiler."
   (mapconcat (lambda (form) (concat (prin1-to-string form) "\n"))
              (nelisp-artifact--runtime-image-forms image-path)
              ""))
+
+(defun nelisp-artifact--compile-runtime-image-wasm
+    (image-path artifact-path &optional target load-paths preloads requested-feature)
+  "Compile runtime IMAGE-PATH to a standalone wasm ARTIFACT-PATH.
+This bypasses the `.nelc' / `.neln' artifact path and emits one
+self-contained `.wasm' via `nelisp-aot-compile-to-object'."
+  (unless (nelisp-artifact--runtime-image-wasm-target-p target)
+    (error "unsupported wasm runtime-image target: %S" target))
+  (unless (nelisp-artifact--ensure-native-compiler)
+    (error "native compiler unavailable"))
+  (let* ((forms nil)
+         (features nil)
+         (program nil)
+         (load-path (append load-paths load-path))
+         (nelisp-load-path (append load-paths nelisp-load-path)))
+    (dolist (preload preloads)
+      (load preload nil t))
+    (setq forms (nelisp-artifact--runtime-image-forms image-path))
+    (setq features (nelisp-artifact--collect-features forms))
+    (when (and requested-feature (not (memq requested-feature features)))
+      (error "compile-runtime-image: source did not provide %S" requested-feature))
+    (setq program (if forms (cons 'seq forms) 0))
+    (nelisp-aot-compile-to-object
+     program artifact-path :arch 'wasm32 :format 'wasm)
+    artifact-path))
 
 (defun nelisp-artifact-compile-runtime-image-file
     (image-path artifact-path &optional manifest-path target load-paths preloads
@@ -3833,8 +3865,11 @@ is loaded into host Emacs, so FORMS are evaluated with host `eval'."
       (setq last (if (eq kind 'elc) (eval form t) (nelisp-eval form))))
     last))
 
-(defun nelisp-artifact--parse-compile-args (args)
-  "Parse `compile-elisp-artifact' ARGS into a plist."
+(defun nelisp-artifact--parse-compile-args (args &optional runtime-image-p)
+  "Parse `compile-elisp-artifact' ARGS into a plist.
+When RUNTIME-IMAGE-P is non-nil, allow the wasm runtime-image lane to
+resolve `--kind auto' or `--kind wasm' to the distinct kind value
+`\"wasm\"' when `--target' selects a wasm32 triple."
   (let ((rest (cdr args))
         (kind nil)
         (input nil)
@@ -3894,15 +3929,24 @@ is loaded into host Emacs, so FORMS are evaluated with host `eval'."
           (error "unknown flag %s" flag)))))
     (unless (and kind input output)
       (error "compile-elisp-artifact requires --kind, --input, and --output"))
-    (unless (member kind '("nelc" "neln" "elc" "auto"))
+    (unless (member kind (if runtime-image-p
+                             '("nelc" "neln" "elc" "auto" "wasm")
+                           '("nelc" "neln" "elc" "auto")))
       (error "unsupported --kind %s" kind))
     ;; Resolve `auto' from the output suffix (Doc 142 §6.5).
-    (let ((resolved (cond ((equal kind "auto")
-                           (cond ((string-suffix-p ".neln" output) "neln")
-                                 ((string-suffix-p ".elc" output) "elc")
-                                 (t "nelc")))
-                          (t kind))))
+    (let* ((resolved (cond
+                      ((and runtime-image-p
+                            (nelisp-artifact--runtime-image-wasm-target-p target)
+                            (member kind '("auto" "wasm")))
+                       "wasm")
+                      ((equal kind "auto")
+                       (cond ((string-suffix-p ".neln" output) "neln")
+                             ((string-suffix-p ".elc" output) "elc")
+                             (t "nelc")))
+                      (t kind))))
       (cond
+       ((and (equal resolved "wasm") (not (string-suffix-p ".wasm" output)))
+        (error "compile-elisp-artifact --kind wasm output must use the .wasm suffix"))
        ((and (equal resolved "nelc") (not (string-suffix-p ".nelc" output)))
         (error "compile-elisp-artifact --kind nelc output must use the .nelc suffix"))
        ((and (equal resolved "neln") (not (string-suffix-p ".neln" output)))
@@ -4663,7 +4707,8 @@ and returns a stable sorted list."
 (defun nelisp-artifact--parse-compile-runtime-image-args (args)
   "Parse `compile-runtime-image' ARGS into a plist."
   (let ((opts (nelisp-artifact--parse-compile-args
-               (cons "compile-elisp-artifact" (cdr args)))))
+               (cons "compile-elisp-artifact" (cdr args))
+               t)))
     (when (equal (plist-get opts :kind) "elc")
       (error "compile-runtime-image does not support --kind elc"))
     opts))
@@ -4672,22 +4717,31 @@ and returns a stable sorted list."
   "CLI entry point for `nelisp compile-runtime-image'."
   (condition-case err
       (let* ((opts (nelisp-artifact--parse-compile-runtime-image-args args))
-             (kind (intern (plist-get opts :kind))))
+             (kind (intern (plist-get opts :kind)))
+             (target (plist-get opts :target)))
         (let ((nelisp-artifact-profile-stages
                (plist-get opts :profile-stages))
               (nelisp-artifact-profile-forms
                (plist-get opts :profile-forms)))
-          (nelisp-artifact-compile-runtime-image-file
-           (plist-get opts :input)
-           (plist-get opts :output)
-	           (plist-get opts :manifest)
-	           (plist-get opts :target)
-	           (plist-get opts :load-paths)
-	           (plist-get opts :preloads)
-	           (plist-get opts :requested-feature)
-	           kind
-	           (plist-get opts :native-policy)
-	           (plist-get opts :module-policy)))
+          (if (nelisp-artifact--runtime-image-wasm-target-p target)
+              (nelisp-artifact--compile-runtime-image-wasm
+               (plist-get opts :input)
+               (plist-get opts :output)
+               target
+               (plist-get opts :load-paths)
+               (plist-get opts :preloads)
+               (plist-get opts :requested-feature))
+            (nelisp-artifact-compile-runtime-image-file
+             (plist-get opts :input)
+             (plist-get opts :output)
+	             (plist-get opts :manifest)
+	             target
+	             (plist-get opts :load-paths)
+	             (plist-get opts :preloads)
+	             (plist-get opts :requested-feature)
+	             kind
+	             (plist-get opts :native-policy)
+	             (plist-get opts :module-policy))))
         0)
     (error
      (nelisp-artifact--print-error

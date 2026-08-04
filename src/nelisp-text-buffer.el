@@ -30,6 +30,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(declare-function string-byte "subr" (string bytepos))
 
 ;;; defstruct
 

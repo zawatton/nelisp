@@ -11759,6 +11759,37 @@ materialized closure temporary."
           (should (= (nelisp-aot-doc129-test--run-binary path) 7)))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-doc129/aarch64-helper-calls-externalize ()
+  "aarch64 link units record runtime-helper BLs as CALL26 relocs.
+The arm64 emitters BL runtime helpers via in-buffer labels (so the
+executable/self-host path resolves them locally); in a standalone
+link unit those labels dangle and must surface as extern relocs,
+mirroring the plt32 entries x86_64 records directly."
+  (let* ((unit (nelisp-aot-compile-to-link-unit
+                '(defun hlen () (str-len "hello"))
+                :arch 'aarch64 :format 'elf))
+         (relocs (plist-get unit :relocs))
+         (undef nil))
+    (dolist (sym (plist-get unit :symbols))
+      (when (eq (plist-get sym :section) 'undef)
+        (push (plist-get sym :name) undef)))
+    (should (equal undef '("nl_alloc_str")))
+    (should (= (length relocs) 1))
+    (should (eq (plist-get (car relocs) :type) 'b26-pc))
+    (should (equal (plist-get (car relocs) :symbol) "nl_alloc_str"))))
+
+(ert-deftest nelisp-aot-doc129/mach-o-defvar-module-embeds-metadata ()
+  "Mach-O link units embed the same module-init rodata as ELF (v3)."
+  (let* ((elf-unit (nelisp-aot-compile-to-link-unit
+                    '(seq (defvar counter 7))
+                    :arch 'aarch64 :format 'elf))
+         (macho-unit (nelisp-aot-compile-to-link-unit
+                      '(seq (defvar counter 7))
+                      :arch 'aarch64 :format 'mach-o)))
+    (should (> (length (plist-get macho-unit :rodata)) 0))
+    (should (equal (plist-get macho-unit :rodata)
+                   (plist-get elf-unit :rodata)))))
+
 (provide 'nelisp-aot-doc129-test)
 
 ;;; nelisp-aot-doc129-test.el ends here

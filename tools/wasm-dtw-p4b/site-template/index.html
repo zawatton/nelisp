@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>newDTW wasm map-walk</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg0: #081018;
+    --bg1: #142231;
+    --fg: #d8e2ef;
+    --muted: #94a7bb;
+    --line: #34506b;
+    --panel: rgba(10, 18, 28, 0.92);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background:
+      radial-gradient(circle at top, rgba(54, 99, 150, 0.28), transparent 36%),
+      linear-gradient(180deg, var(--bg1), var(--bg0));
+    color: var(--fg);
+    font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
+  }
+  main {
+    width: min(100%, 560px);
+    padding: 20px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  }
+  h1 {
+    margin: 0 0 10px;
+    font-size: clamp(1.2rem, 3vw, 1.7rem);
+    letter-spacing: 0.02em;
+  }
+  p {
+    margin: 0 0 12px;
+    color: var(--muted);
+  }
+  canvas {
+    display: block;
+    width: min(100%, 340px);
+    height: auto;
+    margin: 16px auto 14px;
+    image-rendering: pixelated;
+    border: 1px solid var(--line);
+    background: #000;
+  }
+  kbd {
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    background: #162434;
+    color: var(--fg);
+  }
+</style>
+</head>
+<body>
+  <main>
+    <h1>newDTW -> wasm map-walk</h1>
+    <p>This bundle serves the transpiled P4b slice as a static browser demo. The wasm emits draw ops; JS only forwards key levels, decodes the ring buffer, and paints the canvas.</p>
+    <canvas id="screen" width="340" height="340"></canvas>
+    <p>Controls: <kbd>&larr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&rarr;</kbd>. Placeholder art is generated in-browser from the manifest; no fan-game PNGs are shipped here.</p>
+    <script src="dtw.js"></script>
+  </main>
+</body>
+</html>

@@ -1,0 +1,695 @@
+#+TITLE: Doc 164 — WebAssembly (wasm32) backend for the self-hosted AOT compiler
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 4.8 + zawatton)
+#+DATE: 2026-07-12
+#+STATUS: DRAFT — design only, implementation queued for codex. v1 = full-AOT bake, single-threaded, no runtime codegen.
+
+* §0 TL;DR
+
+Add a third target family to the Doc 97 AOT chain — =wasm32= — alongside the
+existing =x86_64= and =aarch64= native backends.  A WebAssembly module is *not*
+a relocatable object holding a flat =.text= byte stream (as ELF/COFF/Mach-O
+all are); it is a typed, structured stack-machine module.  So the wasm target
+does *not* reuse =nelisp-asm-x86_64= / =nelisp-asm-arm64= byte encoders — it
+gets a *new encoder module* (=lisp/nelisp-asm-wasm.el=, LEB128 + section
+builder) and a *new module writer* (=lisp/nelisp-wasm-write.el=), and every
+=nelisp-aot-compiler--emit-*= helper grows a third arm keyed on
+=nelisp-aot-compiler--arch = 'wasm32=.
+
+Three structural facts from the current code make this tractable:
+
+1. *The IR control flow is already structured* — =if= / =while= / =cond= /
+   =and= / =or= lower to properly-nested constructs (see
+   =nelisp-aot-compiler--emit-if= at =lisp/nelisp-aot-compiler.el:15789=,
+   =--emit-while= at :15823, =--emit-cond= at :15862).  They map *directly*
+   onto wasm =if/else/end=, =block/loop/br/br_if=.  *No relooper is needed.*
+2. *The only arbitrary-jump construct is the non-local-exit landing* —
+   =throw= / =catch= / =condition-case= / =unwind-protect= are lowered to a
+   handler stack + a *saved native stack pointer* + an *arbitrary jump to a
+   landing label* (=aot-machine-landing-jump=, =:15981=; desugar at
+   :6038-:6352 using =(aot-current-sp)= + =aot-push-catch/unwind=).  That is
+   a =longjmp= and is exactly what wasm cannot express.  It is replaced (see
+   §3.6), not relooped.
+3. *The OS boundary is small.*  Of ~453 =extern-call= sites the overwhelming
+   majority target *intra-module* runtime helpers (=nelisp_aot_*=, =nl_*=,
+   =nelisp_mirror_*=, =nelisp_env_*=, …) that resolve to same-module wasm
+   functions.  The genuine host imports are ~13 libc symbols
+   (=open close read write stat poll ioctl mkdir getenv realpath tcgetattr
+   tcsetattr cfmakeraw=) + 3 libm (=sin cos sqrt=) + the =syscall-direct=
+   raw path (55 call sites routed through a syscall-number table).  See §5.
+
+*Non-local-exit recommendation*: lower to the *wasm exception-handling
+proposal* (=try_table= / =throw= / =throw_ref=), keeping the existing runtime
+handler stack; replace "restore native SP + arbitrary jump" with "throw a tag
++ restore the shadow-stack-pointer global inside the =catch= clause."  Keep
+*result-code threading* as a documented, feature-flagged MVP-only fallback.
+Rationale in §3.6.
+
+*Verification*: Node.js =v24.14.1= is installed (no wasmtime, no wabt); it is
+the harness.  V8 in Node 24 ships standardized wasm EH and =node:wasi=, so the
+whole plan can be exercised toolless on this machine — and, unlike the
+Linux-gated native e2e tests, the wasm e2e tests run on *every* host.
+
+Effort estimate P0→P4: *~7–12 engineer-days* to a booting baked
+=runtime-image.wasm= (P3); newDTW on Pages (P4) adds ~3–5 more.
+
+* §1 Motivation & scope
+
+** §1.1 Why wasm
+
+=docs/00-motivation.org= §2.1(d) already names this as a first-class payoff of
+self-hosting: /"=nelisp → native-comp= で standalone binary、=nelisp → wasm= で
+browser 上 Emacs、mobile"/.  A wasm backend turns the pure-elisp AOT compiler
+into a *distribution* mechanism the native backends cannot reach:
+
+- *newDTW browser target*: the immediate driver.  A NeLisp-compiled game/app
+  loop that renders to a =<canvas>= and reads keyboard, hosted as *static
+  files on GitHub Pages*.  Pages serves no cross-origin-isolation headers, so
+  =SharedArrayBuffer= and threads are unavailable → *single-threaded* is a
+  hard constraint, not a choice.
+- *general =nelisp → wasm= distribution*: any AOT-compilable Sexp program (and,
+  at P3, the baked interpreter runtime-image itself) becomes a =.wasm= that
+  runs in browsers, Node, Deno, wasmtime, or any WASI host with no native
+  toolchain and no per-OS porting.
+
+** §1.2 v1 scope (this doc)
+
+- *Full AOT bake ahead of time.*  wasm cannot generate-and-execute code
+  in-place the way the JIT (=src/nelisp-cc-*=) mmaps a page; a wasm module's
+  code is immutable after instantiation.  v1 therefore bakes *everything*
+  ahead of time and ships one immutable module.  Runtime module
+  instantiation (JS-mediated =WebAssembly.instantiate= of freshly compiled
+  bytes) is a *future phase*, sketched in §6.P5-future, *not* v1.
+- *Single-threaded.*  No =atomic.*= threads, no shared memory.  The
+  =atomic-fetch-add= / =atomic-compare-exchange= primitives
+  (=lisp/nelisp-aot-compiler.el:14697,14709=) lower to *plain* load/op/store
+  in a single-threaded module (correct because there is no other agent), or
+  optionally to wasm =atomic.*= with a non-shared memory (also legal).
+- *wasm32* (32-bit linear-memory addresses).  =memory64= is noted as future
+  in §4.4.
+
+** §1.3 Non-goals (v1)
+
+- No relooper / no irreducible-CFG handling (§3.4 shows it is unnecessary).
+- No DWARF / source maps.
+- No SIMD, no GC proposal, no tail-call proposal dependence (tail calls are
+  a P1 optimisation note, not a requirement).
+- No browser =Emacs= — the newDTW target is a *game/app loop*, not the editor.
+- JS carries *presentation only* (canvas blit, key events, clock).  Zero game
+  logic in JS, consistent with the project's substrate discipline.
+
+* §2 Architecture
+
+** §2.1 Where it hooks in
+
+The compiler already separates an *arch-independent front end* (parse → IR →
+collect strings/tables/defuns, =§97.1= at :503, =§97.3= at :10252) from
+*arch-conditional emit* (every =--emit-*= helper branches on
+=nelisp-aot-compiler--arch=, e.g. :15761, :15804, :15837).  The public entry
+points bind three dynvars before emit:
+
+- =nelisp-aot-compiler--arch= (=:148=) ∈ {=x86_64=, =aarch64=} → add =wasm32=.
+- =nelisp-aot-compiler--abi= (=:153=) ∈ {=sysv=, =win64=} → add =wasm= (the
+  wasm calling convention: typed params/locals, no register budgeting).
+- =nelisp-aot-compiler--os= (=:183=) ∈ {=linux=, =darwin=} → add =wasi= (the
+  =syscall-direct= convention: WASI imports instead of =SYSCALL= / =SVC=).
+
+The object-format dispatch lives in =nelisp-aot-compile-to-object='s
+=pcase format= (=:17160=), today handling ='elf= / ='mach-o= / ='coff=.  Add a
+='wasm= arm.
+
+*Key architectural difference from the ELF/COFF/Mach-O trio*: those three
+writers all consume the *same* =text-bytes= produced by the *same* native
+encoder and merely wrap them in different container headers + reloc tables.
+wasm is different in kind — its "code section" is structured wasm bytecode,
+not native machine code — so the wasm path *forks earlier*, at emit time, by
+selecting a wasm emit buffer and wasm emit arms, and then the writer serialises
+*sections*, not a =.text= blob + relocs.
+
+** §2.2 New modules
+
+*** =lisp/nelisp-asm-wasm.el= (encoder layer)
+
+Mirrors the =nelisp-asm-x86_64= / =nelisp-asm-arm64= buffer abstraction
+(=lisp/nelisp-asm-x86_64.el:23-55=, =lisp/nelisp-asm-arm64.el:29-58=) but for
+wasm's very different needs:
+
+- *LEB128* unsigned/signed varint encoders (=uleb128=, =sleb128=) — wasm
+  encodes almost every integer (indices, sizes, i32/i64 constants) as LEB128.
+  This is the single most correctness-critical primitive; it gets its own ERT
+  table (§7.3, §8-P0).
+- *Instruction emitters* producing wasm opcodes: =i64.const=, =i32.const=,
+  =i64.add/sub/mul=, =i64.eq/lt_s/gt_s/…=, =local.get/set/tee=,
+  =global.get/set=, =call=, =call_indirect=, =if/else/end=, =block/loop/end=,
+  =br/br_if/br_table=, =return=, =i64.load/store=, =i32.wrap_i64=,
+  =i64.extend_i32_u=, =memory.grow/size=, and (behind the EH flag)
+  =try_table/throw/throw_ref=.
+- *Structured-control-flow bookkeeping*: unlike the native encoders' rel32/
+  imm26 *fixups against absolute labels*, wasm branches carry a *relative
+  block depth* (=br N= exits N enclosing blocks).  The encoder tracks a block
+  nesting stack so an emit helper can say "branch to the =end= of the block I
+  opened K levels up."  This *replaces* the label/fixup/two-pass machinery
+  entirely (§3.3).
+- *Function-body buffer*: a per-function byte buffer (locals decl + expr) that
+  the module writer concatenates into the Code section.
+
+*** =lisp/nelisp-wasm-write.el= (module writer)
+
+Sibling of =nelisp-elf-write= / =nelisp-pe-write= / =nelisp-mach-o-write=.
+Serialises the wasm binary:
+
+: magic  \0asm      (0x00 0x61 0x73 0x6d)
+: version 0x01000000
+: then the section sequence (each = id byte + LEB128 size + payload):
+:   1  Type      — distinct func signatures
+:   2  Import    — host imports (WASI + custom), §5
+:   3  Function  — decl: which type each defun uses
+:   4  Table     — one funcref table for call_indirect (§3.5)
+:   5  Memory    — linear memory: min/max pages (§4)
+:   6  Global    — shadow-stack pointer, heap bump pointer, etc. (§4)
+:   7  Export    — "memory", "_start"/"main", newDTW step entry (§5.3)
+:   8  Start     — optional module start (baked-init, §4.3)
+:   9  Element   — table init: defun→slot (§3.5)
+:  10  Code      — every function body (from the emit buffers)
+:  11  Data      — active segments from the frozen heap / data-blobs (§4.2)
+:  13  Tag       — (EH only) the exception tag carrying the unwind token (§3.6)
+
+The writer consumes the *same link-unit plist shape* the native path already
+produces in =nelisp-aot-compile-to-link-unit= (=:16783=): =:text= becomes the
+Code-section bodies, =:rodata= / =:data= / =:bss-size= become Data segments +
+memory sizing, =:symbols= / =:defuns= drive the Function/Export/Element
+sections, and =:extern-symbols= drive the Import section.  Intra-module
+=:relocs= that the ELF path leaves for the linker are instead *resolved at
+emit time* into function indices / data offsets (wasm has an index space, not
+a symbol table), so the wasm link-unit reports *no* relocs (analogous to the
+Mach-O writer's "no reloc support" invariant at =:17179=).
+
+** §2.3 =:format 'wasm= entry wiring
+
+- =nelisp-aot-compile-to-link-unit= (=:16783=): accept =arch 'wasm32=; bind
+  =--abi 'wasm= and =--os 'wasi=; run parse → IR (shared); run the emit pass
+  through a =nelisp-asm-wasm-make-buffer= instead of the x86_64/arm64 buffer;
+  return the link-unit plist with wasm-resolved indices.
+- =nelisp-aot-compile-to-object= (=:17126=): add =('wasm (require
+  'nelisp-wasm-write) (nelisp-wasm-write-binary file-path unit))= to the
+  =pcase=.  (For a *runnable* module rather than a relocatable, this is the
+  natural analog of =-compile-sexp='s executable path, since a wasm module is
+  self-contained — see §4.3/§6.)
+- =lisp/nelisp-artifact.el= (=compile-elisp-artifact=, usage at :66): add a
+  =--target wasm32-wasi= (and/or =--kind nwasm=) that routes the native lane
+  (=nelisp-aot-compile-to-object … :format 'wasm=) and embeds/writes the
+  =.wasm= — reusing the existing manifest / cache-key / preload plumbing.
+
+* §3 Codegen design
+
+** §3.1 Value representation
+
+The native backends keep every Lisp value / raw pointer in a *single 64-bit
+value register* (=rax= / =x0=) and spill through a push/pop temp stack
+(=nelisp-aot-compiler--rsp-temp-depth=, :162; =--emit-temp-push/pop=, :173).
+Tagged =Sexp= handles and raw allocator pointers are all i64.
+
+wasm decision:
+
+- *Lisp values / =Sexp= handles = =i64=* on the wasm value stack.  This
+  matches the runtime's 64-bit tagged-handle assumption everywhere and keeps
+  the arithmetic/comparison lowering trivially parallel to the native arms.
+- *Linear-memory addresses = =i32=* (wasm32).  This is the one real
+  impedance mismatch: =alloc-bytes= (:14493) currently returns an i64
+  "pointer"; =ptr-read-u64= / =ptr-write-u64= (:14596/:14608) take an i64
+  pointer.  On wasm32 a "pointer" is a 32-bit offset into linear memory.
+  Design: the allocator returns an i32 offset that is =i64.extend_i32_u='d
+  into the handle domain; every memory access =i32.wrap_i64='s the handle back
+  to an i32 address before =i64.load/store=.  All heap objects live below the
+  4 GiB linear-memory ceiling, so the wrap is lossless.  This wrap/extend pair
+  is mechanical and localised to the memory-op emit arms (§4.1).
+- *Floats = =f64=* (=extern-call-f64= path, :561): kept in the value domain as
+  =f64=; =sin/cos/sqrt= map to wasm =f64.sqrt= (native op) or a libm import
+  (§5).  Note =feedback_nemacs_bridge_runtime_float_broken= — float parity is
+  a known-fragile area and gets explicit P1 tests.
+
+** §3.2 Locals vs the register strategy
+
+The native strategy is "one value register + manual push/pop temp stack + a
+two-pass sizing scheme so every emit is byte-length-invariant"
+(=:63-87= architecture comment).  *None of that is needed on wasm*:
+
+- The *implicit wasm operand stack* replaces the =rax= + push/pop discipline
+  for free — evaluating a sub-expression leaves its i64 on the stack; a binary
+  op consumes two and pushes one.  =--emit-temp-push/pop= become no-ops (the
+  value is already on the operand stack in the right order).
+- *Function-scoped =local= slots* replace param registers, the runtime-let
+  frame slots (=--next-rt-let-slot=, :190), and comparison scratch.  Each
+  defun declares =(param i64 …)= for its args and =(local i64 …)= for its
+  let-bindings/temporaries; =local.get/set/tee= address them by index.
+- The *two-pass byte-invariance* machinery (=--pass=, :16626; pass-1/pass-2
+  length assert at :16743) is *dropped* for wasm: structured branches use
+  relative depth, not sized rel32 offsets, so a single emit pass suffices.
+  (Section sizes are back-patched by the writer via LEB128 after the body is
+  built — a size prefix, not an address fixup.)
+
+This makes the wasm emit *simpler* than the native path, not harder.
+
+** §3.3 Structured control flow — direct mapping (with IR evidence)
+
+Evidence that the IR is structured, not a jump soup:
+
+| IR construct | current native lowering | wasm mapping |
+|--------------+-------------------------+--------------|
+| =if= (:15789) | test→=rax=; =cmp/jz else=; then; =jmp end=; =else:=; else; =end:= | =<test>= =i32.eqz= =if (result i64) <then> else <else> end= |
+| =while= (:15823) | =start:= test =jz end=; body; =jmp start=; =end:= | =block $b (loop $l <test> i32.eqz br_if $b <body> br $l) end= |
+| =cond= (:15862) | per-clause pred/=jz next=/body/=jmp end= | nested =if/else= or =block= + =br_if= chain |
+| =and=/=or= (:15922) | short-circuit =jz/jnz end= | =block= + =br_if= on the short-circuit condition |
+
+Every branch target in these constructs is a *forward exit* or a *backward
+loop-header* of a *properly nested* region — precisely the shape wasm
+=block/loop/br/br_if= expresses.  The label names are already parse-time-unique
+(=:86=) and strictly nested, so the encoder's block-depth stack (§2.2) can
+translate each =define-label= + =jz LABEL= pair into "=br_if= to depth K."
+*Therefore no relooper is required* — a claim this doc makes concrete rather
+than assumed.  The =mov rax,0= / =mov x0,0= sentinel tails (=:15860=, :15848)
+become a trailing =i64.const 0= to keep the block's result type.
+
+** §3.4 The one exception to structuredness
+
+The *only* construct that reads/writes a raw stack pointer and performs an
+arbitrary inter-frame jump is the non-local-exit landing:
+=aot-machine-landing-jump= (=:15981=) does =mov r10,rax; mov rsp,r10;
+jmp target= (native) — i.e. *restore a saved SP and branch to a landing label
+in an ancestor region*.  It is emitted by the =catch= / =condition-case= /
+=unwind-protect= desugar (:6038-:6352) which captures =(aot-current-sp)= at
+handler-establish time and stores it in the runtime handler record via
+=aot-push-catch/unwind= (:4949-:4985).  This is a hand-rolled =setjmp/longjmp=.
+It cannot be expressed in wasm and is the subject of §3.6.
+
+** §3.5 Calls — direct and indirect
+
+- *Direct call* (=defun= → =(NAME ARG …)=, and every intra-module
+  =extern-call nelisp_aot_*/nl_*=): wasm =call $funcidx=.  The
+  writer assigns each collected defun (and each intra-module runtime helper) a
+  function index; the reloc that the ELF path would emit against the symbol is
+  resolved at emit time to that index.  Arguments are pushed left-to-right on
+  the operand stack (replacing the arg-register marshalling in
+  =--emit-runtime-call-args=, :14467).
+- *Indirect call* (=funcall= / =apply= on a computed function *value*, today
+  routed via =nelisp_aot_funcall1/2/n= / =nelisp_aot_apply=,
+  :4554-:4687): wasm =call_indirect (type $sig) <tableidx>=.  Every defun that
+  can be taken by reference (closure capture, =make-closure=, :4169) gets a
+  slot in the funcref *Table* (section 4) initialised by an *Element* segment
+  (section 9); a function *handle* encodes its table index in the i64 payload.
+  The runtime funcall helpers become thin wasm functions that
+  =call_indirect= through that table.  wasm's type-check on =call_indirect=
+  (signature must match) is a *feature*: arity/type mismatches trap loudly
+  instead of corrupting the stack.
+- *Variadic / apply-n*: the =nelisp_aot_funcalln= / =applyn= path already
+  marshals args through a runtime array (:4652/:4687); on wasm that array
+  lives in linear memory and the helper reads it — unchanged in spirit.
+
+** §3.6 Non-local exit — RECOMMENDATION
+
+*Decision: lower to the wasm exception-handling proposal (=try_table= /
+=throw= / =throw_ref=); keep result-code threading as a feature-flagged
+MVP-only fallback.*
+
+Why EH is the right primary:
+
+1. *It is the structural analog of the existing model.*  The runtime already
+   maintains a handler *stack* (=aot-push-catch/unwind/condition=,
+   :4949) and matches tags dynamically.  Under EH we keep that stack
+   *unchanged*; we only swap the *return mechanism*:
+   - =throw= / =signal= (=nelisp_aot_throw=, :4767; =nelisp_aot_signal=,
+     :4794) → wasm =throw $unwind_tag= carrying the (tag, value) unwind token
+     as an =i64= (or an =externref= to a boxed token).
+   - =catch= / =condition-case= body → wrap in =try_table (catch $unwind_tag
+     $handler_block)=; the handler compares the caught tag against this
+     lexical handler's tag (exactly what the runtime helper does today by
+     walking the stack) and, on mismatch, =throw_ref='s to re-raise —
+     reproducing the linear search naturally via nested =try_table=.
+   - =unwind-protect= cleanup → =try_table (catch_all …)= that runs the
+     cleanup then re-throws, plus the normal-exit path also runs it.
+   - The =saved-sp= concept *survives* but moves off the native register: the
+     handler record stores the *shadow-stack-pointer global* (§4.1) value at
+     establish time, and the =catch= clause restores that global — the
+     portable equivalent of "restore RSP."  =aot-machine-landing-jump=
+     (:15981) and =aot-current-sp= (:16000) are re-implemented as
+     =global.get/set $shadow_sp= inside the catch block.  *No arbitrary jump
+     is emitted* — control naturally lands at the =try_table='s catch label.
+2. *It is baseline-available in every v1 target engine.*  Standardized wasm EH
+   (=try_table=, post-2023 opcodes) ships in V8 (Chrome / Node ≥18; our
+   harness is Node 24), SpiderMonkey (Firefox), and JavaScriptCore
+   (Safari ≥15.2).  The newDTW GitHub-Pages audience and the Node test harness
+   both cover it.
+3. *Zero happy-path overhead.*  Unlike result-code threading, EH imposes no
+   per-call check on the common (non-throwing) path — important once P3
+   compiles interpreter-scale code with millions of calls.
+
+The documented *fallback* (=--wasm-eh nil=): *result-code threading*.  Every
+callee returns a 2-word result =(is_unwind, value)= (e.g. value in the normal
+return + an =is_unwind= flag in a global, or a sentinel-tagged i64); every call
+site does =global.get $is_unwind; br_if $fn_unwind_exit=; each function has a
+trailing unwind-exit block that runs pending =unwind-protect= cleanups (which
+are lexically in scope as enclosing =block=s) and re-returns the token.  This
+is *fully MVP-wasm-compatible* (no proposal needed), deterministic, and maps
+onto the structured =block= exits — but costs a check per call and complicates
+the emit.  It exists so a target engine lacking EH is not a hard blocker.
+
+* §4 Memory model & baked image
+
+** §4.1 Linear-memory layout
+
+wasm gives one contiguous, zero-initialised *linear memory* addressed from 0,
+growable in 64 KiB pages via =memory.grow=.  The runtime's raw-memory
+primitives map onto it verbatim:
+
+| runtime primitive | file:line | wasm lowering |
+|-------------------+-----------+---------------|
+| =alloc-bytes SIZE ALIGN= | :14493 | bump the =$heap_ptr= global (align up), =memory.grow= if past current size, return old ptr as i32→i64 |
+| =dealloc-bytes= | :14502 | no-op sentinel (arena bump allocator; already void, :14663) |
+| =ptr-read-u8/16/32/64= | :14596,:14625 | =i32.wrap_i64 addr= + =i64.load{8_u,16_u,32_u,}= at =offset= |
+| =ptr-write-u8/16/32/64= | :14608,:14640 | =i32.wrap_i64 addr= + =i64.store{8,16,32,}= |
+| =atomic-fetch-add= / =-compare-exchange= | :14697,:14709 | single-threaded: plain load/op/store (or wasm =i64.atomic.*= on non-shared memory) |
+
+Proposed static layout of linear memory (all below the wasm32 4 GiB ceiling):
+
+: [ 0 .. DATA_END )        active Data segments  (frozen heap + rodata + data blobs, §4.2)
+: [ DATA_END .. STACK_TOP ) shadow stack          (grows down; $shadow_sp global; used
+:                                                   only if a value must be addressable —
+:                                                   §3.6 handler SP save/restore, args arrays)
+: [ STACK_TOP .. )          bump heap             ($heap_ptr global; alloc-bytes)
+
+Two reserved *globals* replace the native SP/scratch usage:
+=$shadow_sp= (i32, non-local-exit SP save/restore + arg-array staging) and
+=$heap_ptr= (i32, allocator bump).  =memory.grow= extends the heap region.
+Single-threaded ⇒ no locking on either global.
+
+** §4.2 Baked image → Data segments
+
+The link-unit already partitions static bytes into =rodata= / =data= / =bss=
+with per-blob offsets (=nelisp-aot-compile-to-link-unit=,
+:16905-:16989; =:rodata=/=:data=/=:bss-size= at :17115-:17118).  This maps
+*one-to-one* onto wasm *active Data segments*:
+
+- =rodata= blobs (strings, static-imm32 tables, module-init metadata) →
+  one active Data segment at =[base_ro, …)=; the segment's =memory.init=-style
+  offset is the segment's base address, written by the writer.  (=data-blob=
+  addresses that the ELF path resolves via reloc become *absolute linear-mem
+  offsets* baked into the code, since the layout is known at emit time.)
+- =data= blobs (writable, initialised) → an active Data segment at
+  =[base_rw, …)=.  Pointers baked *into* =data= blobs
+  (=blob-data-relocs=, :16965) become absolute linear-mem offsets.
+- =bss= (=bss-size=, :16959) → *no* Data segment; just reserve the address
+  range (linear memory is zero-initialised by definition, so bss is free).
+
+The *frozen-heap baker* concept (Doc 98) — a pre-evaluated =Env= serialised
+into a node pool + globals — maps onto the same Data-segment mechanism: the
+baked heap image is a byte blob laid into an active Data segment at a fixed
+base; at instantiation the engine copies it into linear memory *for free*
+(that is what active segments do).  The interpreter then boots from those
+globals with no re-parse, exactly the Doc 98 §0.2 goal, now realised as
+"Data-segment copy" instead of "decode_v3_into."  This is the P3 payload.
+
+** §4.3 Instantiation & boot
+
+A v1 =.wasm= is *self-contained after the Data segments are copied*.  Boot uses
+either an exported =_start= (called by the WASI host / JS after instantiate) or
+a wasm *Start section* function that runs baked module-init before returning
+control.  For newDTW (§5.3) the module also exports a =step= function the JS
+=requestAnimationFrame= loop calls each frame; module-init runs once at
+instantiate, the loop drives =step=.
+
+** §4.4 wasm32 vs memory64
+
+v1 targets *wasm32* (i32 addresses) — universally supported.  =memory64= (i64
+addresses, no wrap needed, ≥4 GiB heaps) is a clean future switch: it removes
+the =i32.wrap_i64= / =i64.extend_i32_u= pair (§3.1) and widens =$heap_ptr= /
+=$shadow_sp= to i64.  Gated to a future phase because engine support is
+narrower and v1 heaps fit in 4 GiB.
+
+* §5 Import / boundary layer
+
+** §5.1 What is actually imported (sizing)
+
+Grep of =lisp/= (see the §0 measurement): ~453 =extern-call= sites, but the
+distinct targets partition as:
+
+- *Intra-module* (NOT imports; resolve to same-module wasm functions):
+  ~110 distinct helpers — =nelisp_aot_*= (funcall/apply/closure/throw/signal/
+  landing/roots/handler), =nl_*= (allocator, cons/cell/record/vector accessors,
+  bind-formals, gc, str), =nelisp_mirror_*=, =nelisp_env_*=, =nelisp_frame_*=,
+  =nelisp_reader_lex_one=, =nelisp_eval_call*=, =nelisp_fnv1a=,
+  =nelisp_cstr_from_sexp=, etc.  These are compiled defuns; the wasm writer
+  gives each a function index.  *They contribute zero import surface.*
+- *Genuine host imports* (the real boundary to design):
+  | category | symbols | count |
+  |----------+---------+-------|
+  | libc file/io/proc | =open close read write stat poll ioctl mkdir getenv realpath= | 10 |
+  | termios (TTY) | =tcgetattr tcsetattr cfmakeraw= | 3 |
+  | libm | =sin cos sqrt= | 3 |
+  | raw syscalls | =syscall-direct= (+ =-store-x1=, arm variants) | 55 sites |
+
+  (The tokens =F FIRST FUNC NAME SYM extern g to= in the raw grep are
+  macro/template artifacts, not real symbols.)
+
+So the *import surface to design is ~a dozen fd/path operations + a clock +
+randomness + =proc_exit=*, plus 3 math functions.  Small.
+
+** §5.2 WASI subset (from =syscall-direct= + the fileio builtins)
+
+=syscall-direct= (:14515) is the raw-kernel path; on native it emits =SYSCALL=
+(Linux) or =SVC #0x80= with =#x02000000= class on Darwin (:14548, :14560) —
+this is the exact OS-conditional precedent the wasm =--os 'wasi= arm extends.
+Under wasm, =syscall-direct= lowers to a *WASI preview1 import call* chosen by
+syscall class.  Coverage map (the fileio builtin set is enumerated in
+=docs/design/151-arm64-targets.org= §B):
+
+| runtime need | Linux syscall(s) | WASI preview1 import |
+|--------------+------------------+----------------------|
+| read/write | read, write | =fd_read=, =fd_write= |
+| open/close | openat, close | =path_open=, =fd_close= |
+| stat/lstat | newfstatat, statx | =path_filestat_get=, =fd_filestat_get= |
+| mkdir/rmdir | mkdirat, unlinkat | =path_create_directory=, =path_remove_directory= |
+| unlink/rename | unlinkat, renameat | =path_unlink_file=, =path_rename= |
+| link/symlink/readlink | linkat, symlinkat, readlinkat | =path_link=, =path_symlink=, =path_readlink= |
+| readdir | getdents64 | =fd_readdir= |
+| chmod/utimes | fchmodat, utimensat | =path_filestat_set_times= (chmod: n/a → stub) |
+| poll | ppoll | =poll_oneoff= |
+| time | clock_gettime | =clock_time_get= |
+| random | getrandom | =random_get= |
+| exit | exit_group | =proc_exit= |
+| env | (getenv, libc) | =environ_get= / =environ_sizes_get= |
+| args | (argv) | =args_get= / =args_sizes_get= |
+
+*No WASI equivalent* (→ =-ENOSYS=-style stub, matching the doc-151 policy of
+=-38= stubs for absent syscalls): =mmap= / =munmap= (linear memory replaces the
+arena mmap — the arena grows via =memory.grow=, not =mmap=; :46 of doc 151
+shows the native path mmaps a 1 GiB stack, which on wasm is just the reserved
+heap region), =fork= / =clone= / =execve= / =pipe2= (no processes under WASI
+preview1 / browser), =ioctl= / termios (=tcgetattr/tcsetattr/cfmakeraw= — no
+TTY in browser; return canonical stubbed values).  These stubs are correct for
+the newDTW target (no subprocesses, no TTY) and are the same "safe -ENOSYS"
+discipline the arm64 port already uses for cross-target syscalls.
+
+** §5.3 Custom imports (newDTW, browser)
+
+Beyond WASI, newDTW declares a tiny custom import module (=env= or =dtw=),
+presentation-only:
+
+| import | signature | purpose |
+|--------+-----------+---------|
+| =frame_out(ptr,len)= | (i32,i32)→() | hand off a *draw-op stream* (a byte buffer in linear memory) to JS for canvas blit |
+| =key_in()= | ()→i32 | pull the next queued key event (0 = none) |
+| =now_ms()= | ()→f64 | monotonic clock (=performance.now=) for the game loop |
+
+And exports back to JS: =memory= (so JS can read the draw-op buffer),
+=step(dt)= (advance one frame), optionally =init()=.  *All game logic stays in
+wasm*; JS only blits bytes and forwards input — consistent with the project's
+no-script-game-logic principle.
+
+** §5.4 JS shim sketch (minimal, presentation-only)
+
+Two hosts, one shim each:
+
+- *Node harness* (tests): =import { WASI } from 'node:wasi'= provides the
+  WASI imports; a ~20-line driver instantiates the =.wasm=, wires =wasi.start=
+  or calls =_start=, and reads stdout / exit code — the wasm analog of the
+  native e2e =call-process= runner (=test/nelisp-aot-compiler-test.el:41=).
+- *Browser / Pages* (newDTW): a static =index.html= + =dtw.js= (~40 lines) that
+  =WebAssembly.instantiateStreaming(fetch('dtw.wasm'), imports)=, supplies
+  =frame_out= (copy the draw-op bytes from =memory= to a =CanvasRenderingContext2D=),
+  =key_in= (drain a keydown queue), =now_ms= (=performance.now=), a minimal
+  WASI polyfill (only =fd_write=→console, =proc_exit=, =random_get=,
+  =clock_time_get= are actually reached in-browser), and a
+  =requestAnimationFrame= loop calling =step=.  No cross-origin-isolation, no
+  =SharedArrayBuffer=, no worker — single module, single thread.
+
+* §6 Phasing with exit criteria
+
+Effort ranges are engineer-days for a codex implementer following this doc.
+
+** P0 — spike: arithmetic module runs in Node  (1–2 d)
+- Build =nelisp-asm-wasm.el= LEB128 + a minimal opcode set (=i64.const=,
+  =i64.add/sub/mul=, =local.get/set=, =call=, =return=) and
+  =nelisp-wasm-write.el= (Type/Function/Export/Code/Memory sections).
+- Wire =arch 'wasm32= through =compile-to-link-unit= for a =d2-a-class=
+  arithmetic program (the existing =(let ((x (+ 3 4))) …)= / defun-call shapes,
+  cf. =test/nelisp-aot-compiler-test.el:106,119=).
+- *Exit*: =nelisp-aot-compile-to-object '(defun f () (+ (* 6 7) 0)) "f.wasm"
+  :arch 'wasm32 :format 'wasm=; a Node driver instantiates =f.wasm=, calls the
+  export, asserts =42=.  LEB128 round-trip ERT green.
+
+** P1 — core codegen: control flow + calls  (2–3 d)
+- Third arm on =--emit-if/while/cond/logic/cmp= (§3.3), =local=-slot let
+  (§3.2), direct =call= + =call_indirect= via Table/Element (§3.5), the
+  i32/i64 wrap/extend memory ops (§4.1).
+- *Exit*: recursive =fact=/=fib= and a =while= loop compile and return correct
+  values under Node; a =funcall= through a function value dispatches via
+  =call_indirect=; float =sqrt= returns f64 correctly (parity guard, cf.
+  =feedback_nemacs_bridge_runtime_float_broken=).
+
+** P2 — imports / WASI + non-local exit  (2–3 d)
+- =--os 'wasi= arm for =syscall-direct= → WASI imports (§5.2); Import section;
+  the ~13-symbol host surface; EH lowering for =catch/throw/condition-case/
+  unwind-protect= (§3.6) behind =--wasm-eh t=, with the result-code fallback
+  behind =--wasm-eh nil=.
+- *Exit*: =hello-file= (=path_open= + =fd_write= + =fd_close=) and
+  =hello-clock= (=clock_time_get=) programs run under =node:wasi=; a
+  =catch/throw= and an =unwind-protect= cleanup program produce the same result
+  as the native backend (mirror =standalone-reader-catch-throw-tag-smoke=,
+  =Makefile:425=).
+
+** P3 — baked runtime-image boots the interpreter  (2–4 d)
+- Bake the frozen-heap image into a Data segment (§4.2); export =_start= that
+  boots from the baked globals and evals a form; integrate with
+  =compile-runtime-image= (=nelisp-artifact.el= usage :68) via
+  =--target wasm32-wasi=.
+- *Exit*: a =runtime-image.wasm= instantiated in Node evaluates =(+ 1 2)= →
+  =3= (the wasm analog of Doc 98 §3.3's =./target/release/nelisp eval '(+ 1
+  2)'= gate and =standalone-reader-load-smoke=, =Makefile:182=), with the
+  interpreter booting from Data-segment globals, *no re-parse*.
+
+** P4 — newDTW: game loop + canvas on Pages  (3–5 d)
+- Custom imports =frame_out/key_in/now_ms= (§5.3); exported =step=; the
+  ~40-line =dtw.js= + =index.html= browser shim (§5.4); single-threaded loop.
+- *Exit*: the newDTW loop compiles to =dtw.wasm=, renders to =<canvas>= and
+  responds to keys when the static bundle is served (GitHub Pages, no COI
+  headers); a headless-Chrome or =puppeteer= smoke asserts a non-blank frame +
+  a key-driven state change.
+
+** P5 (future, NOT v1) — JS-mediated runtime module instantiation
+Document only: an escape hatch where NeLisp compiles a fresh Sexp to wasm
+bytes *at runtime* and hands them to JS =WebAssembly.instantiate= for
+dynamic-eval — the wasm analog of the JIT's in-place codegen, deferred because
+v1 is full-AOT-bake.
+
+* §7 Risks & open questions
+
+** §7.1 EH proposal availability
+Standardized wasm EH is in all v1 target engines (Node 24/V8, Firefox, Safari
+≥15.2).  *Risk*: a very old browser on Pages lacks it → mitigated by the
+=--wasm-eh nil= result-code-threading fallback (§3.6), which needs only MVP
+wasm.  *Open*: settle whether newDTW ships EH-only or dual-builds both.
+
+** §7.2 Performance vs native
+Per =feedback_nelisp_perf_not_elisp_interpreter=, do *not* project Elisp-
+interpreter speed here — this is compiled code.  Expect wasm within a small
+constant of native for arithmetic/control flow; the =i32.wrap_i64= at every
+memory access (§3.1) and =call_indirect= type checks add overhead the native
+path lacks.  Baseline single-threaded (no SAB) removes any parallel speedup.
+*Open*: measure P1 =fib= vs the native standalone to set expectations; consider
+memory64 (§4.4) if wrap overhead dominates.
+
+** §7.3 LEB128 / section-writer correctness
+The single highest-risk area (silent mis-encode → engine rejects the module or
+mis-decodes an index).  *Strategy*: (a) an ERT table of LEB128 round-trip
+vectors incl. boundary values (0, 63/64, 127/128, 16383/16384, negative
+sleb128, i64 max) *before* any codegen; (b) validate every emitted module by
+instantiating under Node (=WebAssembly.validate= then =instantiate=) — Node's
+V8 validator is a strict, free oracle since no wabt/wasmtime is installed;
+(c) back-patch section/body sizes as an LEB128 *size prefix* computed after the
+payload is built (no address fixups, unlike the native two-pass).
+
+** §7.4 Test determinism
+wasm results are deterministic; the non-determinism risk is in the *imports*
+(clock, random).  *Strategy*: P2/P3 tests inject fixed =clock_time_get= /
+=random_get= stubs from the JS driver so assertions are stable; file tests use
+a =node:wasi= sandbox with a temp preopen dir.  Node being cross-platform, the
+wasm e2e suite runs on Windows/macOS/Linux — *unlike* the Linux-gated native
+e2e (=test/nelisp-aot-compiler-test.el:22,33=) — a determinism *bonus*.
+
+** §7.5 wasm32 4 GiB ceiling
+The interpreter runtime-image + heap must fit under 4 GiB linear memory.
+Expected fine for v1; memory64 (§4.4) is the release valve.
+
+** §7.6 Open: intra-module helper set closure
+The wasm module must contain *every* =nelisp_aot_*/nl_*= helper it calls (they
+are imports on native via the linker, but must be *same-module functions* on
+wasm).  *Open*: confirm the AOT link-unit already collects the full transitive
+helper closure, or add a helper-closure pass so no call resolves to a missing
+function index.
+
+* §8 Test plan per phase → repo make targets
+
+Mirror the existing conventions: ERT unit/emit tests in
+=test/nelisp-*-test.el= run under =make test-one FILE=…= and =make test=; a
+byte-compile lint gate =make compile= (=byte-compile-error-on-warn=,
+=Makefile:97=); e2e "compile → run → assert output" smokes as new =Makefile=
+targets analogous to the =standalone-reader-*-smoke= family (:182-:676).
+
+| Phase | new test file / target | gate |
+|-------+------------------------+------|
+| all | =make compile= | =nelisp-asm-wasm.el= / =nelisp-wasm-write.el= byte-compile clean (error-on-warn) |
+| P0 | =test/nelisp-asm-wasm-test.el= | LEB128 round-trip + minimal-module ERT |
+| P0 | =make wasm-smoke= (new): compile arith =.wasm=, run via Node driver, assert =42= | e2e |
+| P1 | =test/nelisp-wasm-codegen-test.el= | emit-shape ERT for if/while/cond/call/call_indirect |
+| P1 | =make wasm-smoke=: =fact=/=fib=/=while=/funcall/=sqrt= under Node | e2e (cross-platform) |
+| P2 | =make wasm-wasi-smoke= (new): hello-file / hello-clock under =node:wasi= | e2e |
+| P2 | =make wasm-eh-smoke=: catch/throw + unwind-protect parity vs native | e2e (both =--wasm-eh= modes) |
+| P3 | =make wasm-runtime-image-smoke=: baked image evals =(+ 1 2)= → =3= under Node | e2e (Doc 98 §3.3 analog) |
+| P4 | =make wasm-dtw-smoke=: puppeteer/headless-chrome canvas + key smoke on the static bundle | e2e |
+| CI | =make test= | all new ERT files join the =test/nelisp*-test.el= glob (=Makefile:34=) automatically |
+
+New =Makefile= targets follow the =standalone-reader-*-smoke= pattern (build
+the =.wasm=, run =node driver.mjs=, string-compare stdout, =exit 1= on
+mismatch).  Because Node is the runner, these are *not* host-gated — add them
+to the default suite rather than an =ert-skip=-on-non-Linux guard.
+
+* §9 References
+
+** §9.1 Code (file:line)
+- =lisp/nelisp-aot-compiler.el= — front end §97.1 (:503), emit control flow
+  §97.c (:15735), =--emit-if= (:15789) =--emit-while= (:15823) =--emit-cond=
+  (:15862) =--emit-logic= (:15922), syscall §125.B (:14513) incl. Darwin
+  class/=x16=/=SVC#0x80= (:14548,:14560), alloc/ptr ops (:14465-:14658),
+  atomics (:14697,:14709), non-local exit desugar (:6038-:6352),
+  =aot-machine-landing-jump= (:15981) / =aot-current-sp= (:16000),
+  =aot-push-catch/unwind= (:4949), dynvars arch/abi/os (:148,:153,:183),
+  orchestrator =--pass= (:16626), =-compile-sexp= (:16661),
+  =-compile-to-link-unit= (:16783), =-compile-to-object= =pcase format=
+  (:17160).
+- =lisp/nelisp-asm-x86_64.el:23-80= / =lisp/nelisp-asm-arm64.el:29-73= — buffer
+  / label / fixup / reloc abstraction the wasm encoder mirrors (structurally,
+  not literally).
+- =lisp/nelisp-elf-write.el= / =-pe-write.el= / =-mach-o-write.el= — writer
+  siblings; =nelisp-wasm-write.el= is the fourth.
+- =lisp/nelisp-artifact.el= — =compile-elisp-artifact= / =compile-runtime-
+  image= pipeline (usage :66-:68) the wasm target plugs into.
+- =test/nelisp-aot-compiler-test.el:22-69= — Linux-gated e2e runner pattern.
+- =Makefile:34,97,182-676= — TESTS glob, =compile= lint gate,
+  =standalone-*-smoke= e2e pattern.
+
+** §9.2 Docs
+- =docs/00-motivation.org= §2.1(d) — wasm distribution as an explicit payoff.
+- =docs/design/151-arm64-targets.org= — the precedent for adding a target
+  family (per-target dispatch + syscall-number layer + writer); the
+  "-ENOSYS stub absent syscalls" discipline reused in §5.2.
+- =docs/design/98-stage-95-real-frozen-heap-baker.org= — frozen-heap image
+  semantics that §4.2 maps onto wasm Data segments (note: Doc 98 predates the
+  pure-elisp move and cites a Rust =image.rs=; the *concept* transfers, the
+  Rust locations do not).
+
+** §9.3 Memory entries
+- =feedback_nelisp_perf_not_elisp_interpreter= — perf framing (§7.2).
+- =feedback_nemacs_bridge_runtime_float_broken= — float fragility (§3.1, P1).
+- =feedback_nelisp_core_vs_layer2_boundary= — language-rule vs OS-primitive
+  split, informs which =syscall-direct= ops are stubbable (§5.2).
+- =feedback_nelisp_ci_make_compile_gate= — =make compile= error-on-warn gate
+  (§8).

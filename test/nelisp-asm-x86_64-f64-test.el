@@ -896,13 +896,13 @@ epilogue layout."
 ;;   48 89 EC                 ; mov rsp, rbp
 ;;   5D                       ; pop rbp
 ;;   C3                       ; ret
-;; Total = 40 bytes.
+;; Total = 55 bytes.
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-add-canonical-bytes ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-add a b)))))
-    (should (= (length bytes) 40))
+    (should (= (length bytes) 55))
     (should (equal bytes
                    (nelisp-asm-x86_64-f64-test--ub
                     ;; Prologue
@@ -911,10 +911,13 @@ epilogue layout."
                     #x48 #x81 #xEC #x10 #x00 #x00 #x00  ; sub rsp, 16
                     #xF2 #x0F #x11 #x45 #xF8      ; movsd [rbp-8], xmm0
                     #xF2 #x0F #x11 #x4D #xF0      ; movsd [rbp-16], xmm1
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00  ; sub rsp, 16
+                    #x48 #x89 #x5D #xE8           ; mov [rbp-24], rbx
                     ;; Body: eval B → xmm1, eval A → xmm0, addsd
                     #xF2 #x0F #x10 #x4D #xF0      ; movsd xmm1, [rbp-16]
                     #xF2 #x0F #x10 #x45 #xF8      ; movsd xmm0, [rbp-8]
                     #xF2 #x0F #x58 #xC1           ; addsd xmm0, xmm1
+                    #x48 #x8B #x5D #xE8           ; mov rbx, [rbp-24]
                     ;; Epilogue
                     #x48 #x89 #xEC                ; mov rsp, rbp
                     #x5D                          ; pop rbp
@@ -939,22 +942,22 @@ epilogue layout."
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-sub a b)))))
-    (should (= (length bytes) 40))
-    (should (= (aref bytes 33) #x5C))))
+    (should (= (length bytes) 55))
+    (should (= (aref bytes 44) #x5C))))
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-mul-body-opcode ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-mul a b)))))
-    (should (= (length bytes) 40))
-    (should (= (aref bytes 33) #x59))))
+    (should (= (length bytes) 55))
+    (should (= (aref bytes 44) #x59))))
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-div-body-opcode ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-div a b)))))
-    (should (= (length bytes) 40))
-    (should (= (aref bytes 33) #x5E))))
+    (should (= (length bytes) 55))
+    (should (= (aref bytes 44) #x5E))))
 
 ;; GP path unchanged — `(defun fn (a b) (+ a b))' still compiles to
 ;; the legacy `push rdi / push rsi / mov rax via spill / add via
@@ -988,39 +991,41 @@ epilogue layout."
 
 ;; ---- §110.C.2.a (2) f64-cmp emit canonical bytes ----
 ;;
-;; Canonical 46-byte layout for `(defun fn ((a :type f64) (b :type f64))
+;; Canonical 61-byte layout for `(defun fn ((a :type f64) (b :type f64))
 ;; (f64-lt a b))':
 ;;
-;;   Prologue (21 bytes): same as f64-add — push rbp; mov rbp, rsp;
-;;     sub rsp, 16; spill xmm0 to [rbp-8]; spill xmm1 to [rbp-16]
+;;   Prologue (32 bytes): same as f64-add, including the SysV rbx save
 ;;   Body (20 bytes):
 ;;     F2 0F 10 4D F0     ; movsd xmm1, [rbp - 16]   (= eval B)
 ;;     F2 0F 10 45 F8     ; movsd xmm0, [rbp - 8]    (= eval A)
 ;;     66 0F 2E C8        ; UCOMISD xmm1, xmm0   (= swap: cmp b vs a)
 ;;     0F 97 C0           ; SETA al              (= 1 iff b>a ordered)
 ;;     0F B6 C0           ; MOVZX eax, al        (= zext into rax)
-;;   Epilogue (5 bytes): mov rsp, rbp; pop rbp; ret
+;;   Restore + epilogue (9 bytes): mov rbx,[rbp-24]; mov rsp,rbp; pop rbp; ret
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-lt-canonical-bytes ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-lt a b)))))
-    (should (= (length bytes) 46))
+    (should (= (length bytes) 61))
     (should (equal bytes
                    (nelisp-asm-x86_64-f64-test--ub
-                    ;; Prologue (21)
+                    ;; Prologue (32)
                     #x55                          ; push rbp
                     #x48 #x89 #xE5                ; mov rbp, rsp
                     #x48 #x81 #xEC #x10 #x00 #x00 #x00 ; sub rsp, 16
                     #xF2 #x0F #x11 #x45 #xF8      ; movsd [rbp-8], xmm0
                     #xF2 #x0F #x11 #x4D #xF0      ; movsd [rbp-16], xmm1
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00 ; sub rsp, 16
+                    #x48 #x89 #x5D #xE8           ; mov [rbp-24], rbx
                     ;; Body (20)
                     #xF2 #x0F #x10 #x4D #xF0      ; movsd xmm1, [rbp-16]
                     #xF2 #x0F #x10 #x45 #xF8      ; movsd xmm0, [rbp-8]
                     #x66 #x0F #x2E #xC8           ; UCOMISD xmm1, xmm0
                     #x0F #x97 #xC0                ; SETA al
                     #x0F #xB6 #xC0                ; MOVZX eax, al
-                    ;; Epilogue (5)
+                    ;; Restore + epilogue (9)
+                    #x48 #x8B #x5D #xE8           ; mov rbx, [rbp-24]
                     #x48 #x89 #xEC                ; mov rsp, rbp
                     #x5D                          ; pop rbp
                     #xC3)))))                     ; ret
@@ -1038,35 +1043,35 @@ epilogue layout."
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-gt a b)))))
-    (should (= (length bytes) 46))
+    (should (= (length bytes) 61))
     ;; UCOMISD operand order direct (= a vs b): ModR/M = 0xC1
-    (should (= (aref bytes 34) #xC1))
+    (should (= (aref bytes 45) #xC1))
     ;; SETA still (= strict ordered greater)
-    (should (= (aref bytes 36) #x97))))
+    (should (= (aref bytes 47) #x97))))
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-le-uses-swap-setae ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-le a b)))))
-    (should (= (length bytes) 46))
+    (should (= (length bytes) 61))
     ;; UCOMISD swap (= b vs a): ModR/M = 0xC8
-    (should (= (aref bytes 34) #xC8))
+    (should (= (aref bytes 45) #xC8))
     ;; SETAE (= ordered above-or-equal)
-    (should (= (aref bytes 36) #x93))))
+    (should (= (aref bytes 47) #x93))))
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-ge-direct-setae ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-ge a b)))))
-    (should (= (length bytes) 46))
+    (should (= (length bytes) 61))
     ;; UCOMISD direct (= a vs b): ModR/M = 0xC1
-    (should (= (aref bytes 34) #xC1))
+    (should (= (aref bytes 45) #xC1))
     ;; SETAE
-    (should (= (aref bytes 36) #x93))))
+    (should (= (aref bytes 47) #x93))))
 
-;; Cross-op discrimination: 4 cmp ops produce 46-byte sequences
-;; that differ in exactly 2 positions (UCOMISD ModR/M @ 34 + SETcc
-;; opcode @ 36); everything else identical.
+;; Cross-op discrimination: 4 cmp ops produce 61-byte sequences
+;; that differ in exactly 2 positions (UCOMISD ModR/M @ 45 + SETcc
+;; opcode @ 47); everything else identical.
 
 (ert-deftest nelisp-asm-x86_64-f64/cmp-discrimination ()
   (let* ((compile (lambda (op)
@@ -1077,20 +1082,20 @@ epilogue layout."
          (gt (funcall compile 'f64-gt))
          (le (funcall compile 'f64-le))
          (ge (funcall compile 'f64-ge)))
-    (should (= (length lt) 46))
-    ;; UCOMISD ModR/M byte @ 34: swap = 0xC8, direct = 0xC1
-    (should (= (aref lt 34) #xC8))  ; LT: swap
-    (should (= (aref gt 34) #xC1))  ; GT: direct
-    (should (= (aref le 34) #xC8))  ; LE: swap
-    (should (= (aref ge 34) #xC1))  ; GE: direct
-    ;; SETcc opcode byte @ 36: strict = 0x97, oreq = 0x93
-    (should (= (aref lt 36) #x97))  ; SETA
-    (should (= (aref gt 36) #x97))  ; SETA
-    (should (= (aref le 36) #x93))  ; SETAE
-    (should (= (aref ge 36) #x93))  ; SETAE
+    (should (= (length lt) 61))
+    ;; UCOMISD ModR/M byte @ 45: swap = 0xC8, direct = 0xC1
+    (should (= (aref lt 45) #xC8))  ; LT: swap
+    (should (= (aref gt 45) #xC1))  ; GT: direct
+    (should (= (aref le 45) #xC8))  ; LE: swap
+    (should (= (aref ge 45) #xC1))  ; GE: direct
+    ;; SETcc opcode byte @ 47: strict = 0x97, oreq = 0x93
+    (should (= (aref lt 47) #x97))  ; SETA
+    (should (= (aref gt 47) #x97))  ; SETA
+    (should (= (aref le 47) #x93))  ; SETAE
+    (should (= (aref ge 47) #x93))  ; SETAE
     ;; Everything else identical across the 4 ops
     (dotimes (i (length lt))
-      (unless (memq i '(34 36))
+      (unless (memq i '(45 47))
         (let ((ref (aref lt i)))
           (should (= (aref gt i) ref))
           (should (= (aref le i) ref))
@@ -1250,7 +1255,7 @@ epilogue layout."
     (should (eq (nelisp-aot-compiler--ir-get body :op) 'f64-eq-eps))))
 
 ;; Total byte length:
-;;   prologue 21 + body 63 + epilogue 5 = 89 bytes
+;;   prologue 32 + body 63 + restore 4 + epilogue 5 = 104 bytes
 ;; Body (63 bytes):
 ;;   2 × MOVSD load              =  10
 ;;   SUBSD xmm0, xmm1            =   4
@@ -1269,7 +1274,7 @@ epilogue layout."
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-eq-eps a b)))))
-    (should (= (length bytes) 89))))
+    (should (= (length bytes) 104))))
 
 ;; Spot-check key bytes in the body to lock the canonical
 ;; sequence in place:
@@ -1347,40 +1352,46 @@ epilogue layout."
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-call-exp-canonical-bytes ()
   (let* ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                  '(defun fn ((x :type f64)) (f64-call exp x)))))
-    (should (= (length bytes) 31))
+    (should (= (length bytes) 46))
     (should (equal bytes
                    (nelisp-asm-x86_64-f64-test--ub
-                    ;; Prologue (16)
+                    ;; Prologue (27)
                     #x55
                     #x48 #x89 #xE5
                     #x48 #x81 #xEC #x10 #x00 #x00 #x00
                     #xF2 #x0F #x11 #x45 #xF8
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00
+                    #x48 #x89 #x5D #xE8
                     ;; Body (10)
                     #xF2 #x0F #x10 #x45 #xF8
                     #xE8 #x00 #x00 #x00 #x00
-                    ;; Epilogue (5)
+                    ;; Restore + epilogue (9)
+                    #x48 #x8B #x5D #xE8
                     #x48 #x89 #xEC
                     #x5D
                     #xC3)))))
 
 ;; Identity defun = `(defun fn ((x :type f64)) x)' compiles to
-;; prologue (16) + MOVSD-load (5) + epilogue (5) = 26 bytes.
+;; prologue (27) + MOVSD-load (5) + restore (4) + epilogue (5) = 41 bytes.
 ;; This is the `nl_jit_float_float' shape.
 
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-identity-canonical-bytes ()
   (let* ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                  '(defun fn ((x :type f64)) x))))
-    (should (= (length bytes) 26))
+    (should (= (length bytes) 41))
     (should (equal bytes
                    (nelisp-asm-x86_64-f64-test--ub
-                    ;; Prologue (16)
+                    ;; Prologue (27)
                     #x55
                     #x48 #x89 #xE5
                     #x48 #x81 #xEC #x10 #x00 #x00 #x00
                     #xF2 #x0F #x11 #x45 #xF8
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00
+                    #x48 #x89 #x5D #xE8
                     ;; Body — just MOVSD xmm0, [rbp - 8] (5)
                     #xF2 #x0F #x10 #x45 #xF8
-                    ;; Epilogue (5)
+                    ;; Restore + epilogue (9)
+                    #x48 #x8B #x5D #xE8
                     #x48 #x89 #xEC
                     #x5D
                     #xC3)))))
@@ -1390,53 +1401,53 @@ epilogue layout."
                 '(defun fn ((a :type f64) (b :type f64))
                    (f64-eq-eps a b)))))
     ;; SUBSD opcode at body-start + 8 (after 2 MOVSD loads)
-    (should (= (aref bytes 31) #xF2))  ; F2 prefix
-    (should (= (aref bytes 33) #x5C))  ; SUBSD opcode
-    ;; MOV r10, imm64 starts at byte 35: REX.W+R.B (= 0x49)
-    (should (= (aref bytes 35) #x49))  ; REX
-    (should (= (aref bytes 36) #xBA))  ; MOV r10 opcode (= B8 + 2)
-    ;; abs-mask low byte (= 0xFF) at byte 37 (little-endian)
-    (should (= (aref bytes 37) #xFF))
-    (should (= (aref bytes 38) #xFF))
-    (should (= (aref bytes 39) #xFF))
-    (should (= (aref bytes 40) #xFF))
-    (should (= (aref bytes 41) #xFF))
-    (should (= (aref bytes 42) #xFF))
-    (should (= (aref bytes 43) #xFF))
-    (should (= (aref bytes 44) #x7F))  ; abs-mask high byte
-    ;; MOVQ xmm1, r10 at byte 45
-    (should (= (aref bytes 45) #x66))
-    (should (= (aref bytes 46) #x49))
-    (should (= (aref bytes 49) #xCA))  ; ModR/M
-    ;; ANDPD xmm0, xmm1 at byte 50
-    (should (= (aref bytes 50) #x66))
-    (should (= (aref bytes 52) #x54))  ; ANDPD opcode
-    (should (= (aref bytes 53) #xC1))
-    ;; 1e-15 bit pattern at bytes 56..63 (= after `49 BA' prefix
-    ;; at 54..55).  Little-endian 0x3CD203AF9EE75616:
+    (should (= (aref bytes 42) #xF2))  ; F2 prefix
+    (should (= (aref bytes 44) #x5C))  ; SUBSD opcode
+    ;; MOV r10, imm64 starts at byte 46: REX.W+R.B (= 0x49)
+    (should (= (aref bytes 46) #x49))  ; REX
+    (should (= (aref bytes 47) #xBA))  ; MOV r10 opcode (= B8 + 2)
+    ;; abs-mask low byte (= 0xFF) at byte 48 (little-endian)
+    (should (= (aref bytes 48) #xFF))
+    (should (= (aref bytes 49) #xFF))
+    (should (= (aref bytes 50) #xFF))
+    (should (= (aref bytes 51) #xFF))
+    (should (= (aref bytes 52) #xFF))
+    (should (= (aref bytes 53) #xFF))
+    (should (= (aref bytes 54) #xFF))
+    (should (= (aref bytes 55) #x7F))  ; abs-mask high byte
+    ;; MOVQ xmm1, r10 at byte 56
+    (should (= (aref bytes 56) #x66))
+    (should (= (aref bytes 57) #x49))
+    (should (= (aref bytes 60) #xCA))  ; ModR/M
+    ;; ANDPD xmm0, xmm1 at byte 61
+    (should (= (aref bytes 61) #x66))
+    (should (= (aref bytes 63) #x54))  ; ANDPD opcode
+    (should (= (aref bytes 64) #xC1))
+    ;; 1e-15 bit pattern at bytes 67..74 (= after `49 BA' prefix
+    ;; at 65..66).  Little-endian 0x3CD203AF9EE75616:
     ;;   0x16 0x56 0xE7 0x9E 0xAF 0x03 0xD2 0x3C
-    (should (= (aref bytes 54) #x49))
-    (should (= (aref bytes 55) #xBA))
-    (should (= (aref bytes 56) #x16))
-    (should (= (aref bytes 57) #x56))
-    (should (= (aref bytes 58) #xE7))
-    (should (= (aref bytes 59) #x9E))
-    (should (= (aref bytes 60) #xAF))
-    (should (= (aref bytes 61) #x03))
-    (should (= (aref bytes 62) #xD2))
-    (should (= (aref bytes 63) #x3C))  ; 1e-15 high byte
+    (should (= (aref bytes 65) #x49))
+    (should (= (aref bytes 66) #xBA))
+    (should (= (aref bytes 67) #x16))
+    (should (= (aref bytes 68) #x56))
+    (should (= (aref bytes 69) #xE7))
+    (should (= (aref bytes 70) #x9E))
+    (should (= (aref bytes 71) #xAF))
+    (should (= (aref bytes 72) #x03))
+    (should (= (aref bytes 73) #xD2))
+    (should (= (aref bytes 74) #x3C))  ; 1e-15 high byte
     ;; SETB al + SETNP cl + AND al,cl + MOVZX at the tail
-    (should (= (aref bytes 73) #x0F))
-    (should (= (aref bytes 74) #x92))  ; SETB
-    (should (= (aref bytes 75) #xC0))  ; AL
-    (should (= (aref bytes 76) #x0F))
-    (should (= (aref bytes 77) #x9B))  ; SETNP
-    (should (= (aref bytes 78) #xC1))  ; CL
-    (should (= (aref bytes 79) #x20))  ; AND opcode
-    (should (= (aref bytes 80) #xC8))  ; al, cl ModR/M
-    (should (= (aref bytes 81) #x0F))
-    (should (= (aref bytes 82) #xB6))  ; MOVZX
-    (should (= (aref bytes 83) #xC0))))
+    (should (= (aref bytes 84) #x0F))
+    (should (= (aref bytes 85) #x92))  ; SETB
+    (should (= (aref bytes 86) #xC0))  ; AL
+    (should (= (aref bytes 87) #x0F))
+    (should (= (aref bytes 88) #x9B))  ; SETNP
+    (should (= (aref bytes 89) #xC1))  ; CL
+    (should (= (aref bytes 90) #x20))  ; AND opcode
+    (should (= (aref bytes 91) #xC8))  ; al, cl ModR/M
+    (should (= (aref bytes 92) #x0F))
+    (should (= (aref bytes 93) #xB6))  ; MOVZX
+    (should (= (aref bytes 94) #xC0))))
 
 (provide 'nelisp-asm-x86_64-f64-test)
 

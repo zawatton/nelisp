@@ -1,0 +1,30 @@
+;;; nelisp-runtime-image source-v1
+(progn
+  ;; Root AST node for (+ 1 2):
+  ;;   +0  = optag i32 1 ("add")
+  ;;   +4  = pad i32 0
+  ;;   +8  = args pointer (relocated to `nelisp-boot-args')
+  (data-blob nelisp-boot-form
+             (1 0 0 0 0 0 0 0
+              0 0 0 0 0 0 0 0)
+             rodata
+             ((8 nelisp-boot-args 0)))
+  ;; Operand cell:
+  ;;   +0  = i64 1
+  ;;   +8  = i64 2
+  (data-blob nelisp-boot-args
+             (1 0 0 0 0 0 0 0
+              2 0 0 0 0 0 0 0)
+             rodata)
+  (defun nelisp-boot-eval (form)
+    (if (= (ptr-read-u32 form 0) 1)
+        (let ((aptr (ptr-read-u64 form 8))
+              (cell (alloc-bytes 8 8)))
+          (seq
+           (ptr-write-u64 cell 0
+                          (+ (ptr-read-u64 aptr 0)
+                             (ptr-read-u64 aptr 8)))
+           (ptr-read-u64 cell 0)))
+      -1))
+  (defun _start ()
+    (nelisp-boot-eval (data-addr nelisp-boot-form))))
