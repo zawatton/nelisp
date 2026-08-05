@@ -5,7 +5,7 @@
 ;; Rust-min: pcase の Elisp 実装 (= Rust special form 削除に伴う migrate)。
 ;;
 ;; 対応 pattern shape:
-;;   _, t, nil          ワイルドカード / 真偽リテラル
+;;   _, pcase--dontcare ワイルドカード / t, nil 真偽リテラル
 ;;   :keyword           keyword 自己評価リテラル (eq 比較)
 ;;   integer / string   数値・文字列リテラル (equal 比較)
 ;;   symbol             変数 binding (常に match)
@@ -25,10 +25,17 @@
 
 ;;; Code:
 
+(defvar nelisp-pcase--outer-bindings nil
+  "Bindings hoisted out of `pcase' clauses during macro expansion.")
+
+(defun nelisp-pcase--wildcard-p (pattern)
+  "Return non-nil when PATTERN is a wildcard with no binding."
+  (or (eq pattern '_) (eq pattern 'pcase--dontcare)))
+
 (defun nelisp-pcase--test (pattern value-form)
   "Build (TEST-FORM . BINDINGS) for matching PATTERN against VALUE-FORM."
   (cond
-   ((eq pattern '_) (cons t nil))
+   ((nelisp-pcase--wildcard-p pattern) (cons t nil))
    ((keywordp pattern)
     (cons (list 'eq value-form pattern) nil))
    ((or (null pattern) (eq pattern t))
@@ -102,20 +109,43 @@
           bindings)))
 
 (defun nelisp-pcase--or (patterns value-form)
-  "Build (TEST . BINDINGS) for an `or' pattern (no bindings)."
-  (let ((tests nil)
-        (cur patterns))
-    (while cur
-      (let* ((built (nelisp-pcase--test (car cur) value-form))
-             (t1 (car built)))
-        (setq tests (cons t1 tests)))
-      (setq cur (cdr cur)))
-    (cons (cons 'or (let ((rev nil))
-                      (while tests
-                        (setq rev (cons (car tests) rev))
-                        (setq tests (cdr tests)))
-                      rev))
-          nil)))
+  "Build (TEST . BINDINGS) for an `or' pattern.
+The selected alternative is tracked with a fresh choice symbol hoisted into
+the outer `pcase' let via `nelisp-pcase--outer-bindings'."
+  (let ((choice (make-symbol "--pcase-choice--"))
+        (idx 0)
+        (tests nil)
+        (alt-bindings nil)
+        (vars nil)
+        (bindings nil))
+    (push (list choice nil) nelisp-pcase--outer-bindings)
+    (while patterns
+      (let* ((built (nelisp-pcase--test (car patterns) value-form))
+             (test (car built))
+             (bindings-for-alt (cdr built)))
+        (push (list 'and test (list 'setq choice idx)) tests)
+        (push bindings-for-alt alt-bindings)
+        (dolist (binding bindings-for-alt)
+          (unless (assq (car binding) vars)
+            (push (cons (car binding) nil) vars))))
+      (setq idx (1+ idx))
+      (setq patterns (cdr patterns)))
+    (setq tests (nreverse tests))
+    (setq alt-bindings (nreverse alt-bindings))
+    (setq vars (nreverse vars))
+    (dolist (var-entry vars)
+      (let ((var (car var-entry))
+            (clauses nil)
+            (alt 0)
+            (cur alt-bindings))
+        (while cur
+          (let ((binding (assq var (car cur))))
+            (when binding
+              (push (list (list 'eq choice alt) (cadr binding)) clauses)))
+          (setq alt (1+ alt))
+          (setq cur (cdr cur)))
+        (push (list var (cons 'cond (nreverse clauses))) bindings)))
+    (cons (cons 'or tests) (nreverse bindings))))
 
 (defun nelisp-pcase--cons (rest value-form)
   "Build (TEST . BINDINGS) for a `(cons P1 P2)' pattern."
@@ -135,7 +165,7 @@
    ((and (consp pat) (eq (car pat) 'comma))
     (let ((sym (car (cdr pat))))
       (cond
-       ((eq sym '_) (cons t nil))
+       ((nelisp-pcase--wildcard-p sym) (cons t nil))
        ((symbolp sym) (cons t (list (list sym value-form))))
        (t (nelisp-pcase--test sym value-form)))))
    ((and (consp pat) (eq (car pat) 'comma-at))
@@ -162,7 +192,8 @@ See `nelisp-pcase--test' for supported pattern shapes.
 
 Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (let ((value-sym (make-symbol "--pcase-value--"))
-        (cond-clauses nil))
+        (cond-clauses nil)
+        (nelisp-pcase--outer-bindings nil))
     (dolist (case cases)
       (let* ((pat (car case))
              (body (cdr case))
@@ -174,11 +205,12 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
                         (cons 'let (cons bindings body))
                       (cons 'progn body)))
               cond-clauses)))
-    (let ((forward nil))
+    (let ((forward nil)
+          (outer-bindings (nreverse nelisp-pcase--outer-bindings)))
       (while cond-clauses
         (setq forward (cons (car cond-clauses) forward))
         (setq cond-clauses (cdr cond-clauses)))
-      (list 'let (list (list value-sym expr))
+      (list 'let (append (list (list value-sym expr)) outer-bindings)
             (cons 'cond forward)))))
 
 ;; nelisp-pcase.el ends here

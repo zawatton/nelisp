@@ -139,18 +139,54 @@
         (if (= (sexp-tag name-ptr) 4)
             1
           (if (= (sexp-tag name-ptr) 5) 1 0))))
+
+    (defun nelisp_env_set_value_alias
+        (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr depth)
+      (if (>= depth 64)
+          1
+        (let ((entry-ptr
+               (extern-call nelisp_mirror_lookup_entry
+                            mirror-ptr name-ptr)))
+          (if (and (not (= entry-ptr 0))
+                   (< 4 (record-slot-count entry-ptr))
+                   (= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 4))
+              (nelisp_env_set_value_alias
+               mirror-ptr frames-ptr
+               (record-slot-ref-ptr entry-ptr 4)
+               val-ptr scratch-ptr (+ depth 1))
+            (if (and (not (= entry-ptr 0))
+                     (= (sexp-tag
+                         (record-slot-ref-ptr entry-ptr 3)) 1))
+                1
+              (let ((cell-ptr
+                     (extern-call nelisp_frame_stack_find
+                                  frames-ptr name-ptr)))
+                (if (= cell-ptr 0)
+                    (if (= entry-ptr 0)
+                        (nelisp_env_setv_mirror
+                         mirror-ptr name-ptr scratch-ptr 0)
+                      (seq
+                       (record-slot-set entry-ptr 0 val-ptr)
+                       0))
+                  (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))))
+
     (defun nelisp_env_set_value
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
           1
-        (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
-            1
-          (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
-            (if (= cell-ptr 0)
-                ;; Frame miss: write to mirror.
-                (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0)
-              ;; Frame hit: overwrite lexical cell (refcount-safe).
-              (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))
+        (if (= (extern-call nelisp_env_variable_alias_count mirror-ptr) 0)
+            (if (= (extern-call nelisp_mirror_is_constant
+                                mirror-ptr name-ptr) 1)
+                1
+              (let ((cell-ptr
+                     (extern-call nelisp_frame_stack_find
+                                  frames-ptr name-ptr)))
+                (if (= cell-ptr 0)
+                    (nelisp_env_setv_mirror
+                     mirror-ptr name-ptr scratch-ptr 0)
+                  (nelisp_env_setv_cell_hit cell-ptr val-ptr))))
+          (nelisp_env_set_value_alias
+           mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0)))))
   "AOT source for Wave a-2 `Env::set_value' body.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist on the `frame_stack_find'

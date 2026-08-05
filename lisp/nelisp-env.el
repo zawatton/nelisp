@@ -32,12 +32,14 @@
 ;;     slot 0 = GLOBALS  : fast-hash-table mapping string → symbol-entry
 ;;     slot 1 = (reserved for frames stack — Phase 3)
 ;;     slot 2 = (reserved for extern_builtins — Phase 6)
+;;     slot 3 = VARIABLE-ALIAS-COUNT : integer, zero when no redirects exist
 ;;
 ;;   symbol-entry record (`Sexp::Record' type-tag `symbol-entry'):
 ;;     slot 0 = VALUE     : Sexp or `nelisp--unbound-marker'
 ;;     slot 1 = FUNCTION  : Sexp or `nelisp--unbound-marker'
 ;;     slot 2 = PLIST     : Sexp (list, default nil)
 ;;     slot 3 = CONSTANT  : Sexp::T / Sexp::Nil
+;;     slot 4 = REDIRECT  : target symbol / Nil (variable alias)
 ;;
 ;; The `unbound-marker' sentinel is shared with the fast-hash
 ;; module via `lisp/nelisp-stdlib-fast-hash.el's defvar.  See Doc
@@ -60,7 +62,8 @@ CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
                        (or value nelisp--unbound-marker)
                        (or function nelisp--unbound-marker)
                        (or plist nil)
-                       (or constant nil)))
+                       (or constant nil)
+                       nil))
 
 (defun nelisp-env--symbol-entry-p (obj)
   "Return non-nil iff OBJ is a symbol-entry record."
@@ -83,6 +86,10 @@ CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
   "Return non-nil iff ENTRY is marked constant (= setq rejects writes)."
   (nelisp--record-ref entry 3))
 
+(defun nelisp-env--symbol-entry-redirect (entry)
+  "Return ENTRY's variable redirect target, or nil for a direct variable."
+  (nelisp--record-ref entry 4))
+
 (defun nelisp-env--symbol-entry-set-value (entry value)
   "Set ENTRY's value cell.  Returns VALUE."
   (nelisp--record-set entry 0 value)
@@ -92,6 +99,11 @@ CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
   "Set ENTRY's function cell.  Returns FUNC."
   (nelisp--record-set entry 1 func)
   func)
+
+(defun nelisp-env--symbol-entry-set-redirect (entry target)
+  "Set ENTRY's variable redirect to TARGET and return TARGET."
+  (nelisp--record-set entry 4 target)
+  target)
 
 ;; ---- Env record construction + introspection ----
 
@@ -104,7 +116,7 @@ env record layout."
     ;; Two extra slots reserved for the Phase 3+ frames stack
     ;; and Phase 6+ extern_builtins table.  Filled with nil for
     ;; now; downstream phases set them as the migration lands.
-    (nelisp--make-record 'nelisp-env globals nil nil)))
+    (nelisp--make-record 'nelisp-env globals nil nil 0)))
 
 (defun nelisp-env-p (obj)
   "Return non-nil iff OBJ is a nelisp-env record."

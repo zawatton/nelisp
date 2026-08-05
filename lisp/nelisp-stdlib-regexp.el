@@ -106,9 +106,21 @@ Stops at \\| , \\) , or end."
             (if (< j n)
                 (let ((q (aref pat j)))
                   (cond
-                   ((eq q ?*) (setq nodes (cons (list :star atom) nodes) j (1+ j)))
-                   ((eq q ?+) (setq nodes (cons (list :plus atom) nodes) j (1+ j)))
-                   ((eq q ??) (setq nodes (cons (list :opt atom) nodes) j (1+ j)))
+                   ;; A `?' directly after a quantifier makes it lazy.  Without
+                   ;; this the `?' parsed as a literal question mark, so `.*?'
+                   ;; meant "any run, then a literal ?".
+                   ((eq q ?*)
+                    (if (and (< (1+ j) n) (eq (aref pat (1+ j)) ??))
+                        (setq nodes (cons (list :lazy-star atom) nodes) j (+ j 2))
+                      (setq nodes (cons (list :star atom) nodes) j (1+ j))))
+                   ((eq q ?+)
+                    (if (and (< (1+ j) n) (eq (aref pat (1+ j)) ??))
+                        (setq nodes (cons (list :lazy-plus atom) nodes) j (+ j 2))
+                      (setq nodes (cons (list :plus atom) nodes) j (1+ j))))
+                   ((eq q ??)
+                    (if (and (< (1+ j) n) (eq (aref pat (1+ j)) ??))
+                        (setq nodes (cons (list :lazy-opt atom) nodes) j (+ j 2))
+                      (setq nodes (cons (list :opt atom) nodes) j (1+ j))))
                    ((and (eq q ?\\) (< (1+ j) n) (eq (aref pat (1+ j)) ?{))
                     (let* ((br (nlre--parse-brace atom pat (+ j 2) n)))
                       ;; br = (REVERSED-NODES . newpos)
@@ -155,15 +167,41 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
      ((eq c ?\\)
       (let ((d (aref pat (1+ i))))
         (cond
-         ((eq d ?\() ;; group start
-          (setq nlre--gcount (1+ nlre--gcount))
-          (let* ((gn nlre--gcount)
-                 (r (nlre--parse-alt pat (+ i 2) n))
-                 (inner (car r)) (j (cdr r)))
-            ;; consume \)
-            (when (and (< (1+ j) n) (eq (aref pat j) ?\\) (eq (aref pat (1+ j)) ?\)))
-              (setq j (+ j 2)))
-            (cons (list :group gn inner) j)))
+         ((eq d ?\() ;; group start: \( , \(?: shy , \(?N: explicitly numbered
+          ;; A `:group' whose number is nil is shy: it groups for the
+          ;; quantifier and alternation parsers but saves no capture.  An
+          ;; explicit number does not advance the implicit counter unless it
+          ;; exceeds it, which is what Emacs does and what keeps `nlre--caps'
+          ;; wide enough.
+          (let ((k (+ i 2))
+                (gn nil)
+                (shy nil))
+            (when (and (< k n) (eq (aref pat k) ??))
+              (if (and (< (1+ k) n) (eq (aref pat (1+ k)) ?:))
+                  (setq shy t k (+ k 2))
+                (let ((j (1+ k))
+                      (digits ""))
+                  (while (and (< j n)
+                              (>= (aref pat j) ?0)
+                              (<= (aref pat j) ?9))
+                    (setq digits (concat digits (substring pat j (1+ j))))
+                    (setq j (1+ j)))
+                  ;; Anything else after `?' is not a group prefix; leave K at
+                  ;; the `?' so it parses as an ordinary atom, as before.
+                  (when (and (> (length digits) 0) (< j n) (eq (aref pat j) ?:))
+                    (setq gn (string-to-number digits))
+                    (setq k (1+ j))))))
+            (cond
+             (shy nil)
+             (gn (when (> gn nlre--gcount) (setq nlre--gcount gn)))
+             (t (setq nlre--gcount (1+ nlre--gcount))
+                (setq gn nlre--gcount)))
+            (let* ((r (nlre--parse-alt pat k n))
+                   (inner (car r)) (j (cdr r)))
+              ;; consume \)
+              (when (and (< (1+ j) n) (eq (aref pat j) ?\\) (eq (aref pat (1+ j)) ?\)))
+                (setq j (+ j 2)))
+              (cons (list :group gn inner) j))))
          ((eq d ?w) (cons (list :word nil) (+ i 2)))
          ((eq d ?W) (cons (list :word t) (+ i 2)))
          ((eq d ?s)
@@ -266,6 +304,13 @@ Return end-pos or nil."
        ((eq tag :opt)
         (or (nlre--match-list (cons (nth 1 nd) rest) s pos n)
             (nlre--match-list rest s pos n)))
+       ((eq tag :lazy-star) (nlre--match-lazy-star (nth 1 nd) rest s pos n))
+       ((eq tag :lazy-plus)
+        (nlre--match-list
+         (cons (nth 1 nd) (cons (list :lazy-star (nth 1 nd)) rest)) s pos n))
+       ((eq tag :lazy-opt)
+        (or (nlre--match-list rest s pos n)
+            (nlre--match-list (cons (nth 1 nd) rest) s pos n)))
        ((eq tag :alt)
         (let ((branches (nth 1 nd)) (res nil))
           (while (and branches (not res))
@@ -273,12 +318,16 @@ Return end-pos or nil."
             (setq branches (cdr branches)))
           res))
        ((eq tag :group)
-        (nlre--match-list
-         (append (list (list :savestart (nth 1 nd)))
-                 (nlre--seq-nodes (nth 2 nd))
-                 (list (list :saveend (nth 1 nd)))
-                 rest)
-         s pos n))
+        (if (nth 1 nd)
+            (nlre--match-list
+             (append (list (list :savestart (nth 1 nd)))
+                     (nlre--seq-nodes (nth 2 nd))
+                     (list (list :saveend (nth 1 nd)))
+                     rest)
+             s pos n)
+          ;; shy: no capture slots to save or restore
+          (nlre--match-list
+           (append (nlre--seq-nodes (nth 2 nd)) rest) s pos n)))
        ((eq tag :savestart)
         (let* ((gn (nth 1 nd)) (old (aref nlre--caps gn)))
           (aset nlre--caps gn (cons pos (cdr old)))
@@ -308,15 +357,25 @@ Return end-pos or nil."
         (and p2 (> p2 pos) (nlre--match-star x rest s p2 n)))
       (nlre--match-list rest s pos n)))
 
+(defun nlre--match-lazy-star (x rest s pos n)
+  "Lazy star of atom/group X then REST: prefer the fewest repetitions.
+Mirror of `nlre--match-star' with the two alternatives swapped, so REST is
+tried before consuming another X."
+  (or (nlre--match-list rest s pos n)
+      (let ((p2 (nlre--match-one x s pos n)))
+        (and p2 (> p2 pos) (nlre--match-lazy-star x rest s p2 n)))))
+
 (defun nlre--match-one (x s pos n)
   "Match exactly one X (atom or group) at POS, no rest; return end or nil."
   (cond
    ((eq (car x) :group)
-    (nlre--match-list
-     (append (list (list :savestart (nth 1 x)))
-             (nlre--seq-nodes (nth 2 x))
-             (list (list :saveend (nth 1 x))))
-     s pos n))
+    (if (nth 1 x)
+        (nlre--match-list
+         (append (list (list :savestart (nth 1 x)))
+                 (nlre--seq-nodes (nth 2 x))
+                 (list (list :saveend (nth 1 x))))
+         s pos n)
+      (nlre--match-list (nlre--seq-nodes (nth 2 x)) s pos n)))
    ((memq (car x) '(:alt :seq))
     (nlre--match-list (list x) s pos n))
    (t (nlre--match-atom1 x s pos n))))

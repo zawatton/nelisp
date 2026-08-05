@@ -10,9 +10,10 @@
 
 ;; Doc 119 §119.A — pure-elisp port of the Rust
 ;; `mirror_insert_new_entry' helper.  Allocates a fresh
-;; `symbol-entry' Record (= 4 slots: value / function / plist /
-;; constant) and refcount-safely installs the caller-supplied Sexps
-;; into the four slots.  The result `Sexp::Record(symbol-entry)' is
+;; `symbol-entry' Record (= 5 slots: value / function / plist /
+;; constant / variable redirect) and refcount-safely installs the
+;; caller-supplied Sexps plus a nil redirect.  The result
+;; `Sexp::Record(symbol-entry)' is
 ;; written into RESULT-SLOT (= caller-owned `*mut Sexp', pre-set to
 ;; `Sexp::Nil' by the Rust safe wrapper).
 ;;
@@ -37,7 +38,7 @@
 ;; alignment audit).
 ;;
 ;; ABI deps satisfied:
-;;   §111.B  `record-slot-set'  — refcount-safe slot 0-3 install.
+;;   §111.B  `record-slot-set'  — refcount-safe slot 0-4 install.
 ;;   §115.3  `record-make'      — fresh `NlRecord' allocator.
 
 ;;; Code:
@@ -60,26 +61,28 @@
      ;; Returns: i64 — 1 on success.  All sub-ops materialise non-zero
      ;; rax sentinels so the `and' value-form chain threads through.
      ;;
-     ;; Refcount discipline: `record-make' allocates with all 4 slots
+     ;; Refcount discipline: `record-make' allocates with all 5 slots
      ;; pre-filled with `Sexp::Nil' (= via `nl_alloc_record').  The
-     ;; subsequent four `record-slot-set' calls dispatch to
+     ;; subsequent five `record-slot-set' calls dispatch to
      ;; `nl_record_set_slot' which `(*val).clone()' the source Sexp
      ;; before writing (= refcount-bumps any box-tagged variant), so
      ;; the caller's stack values stay live across the call.  When the
      ;; caller's frame unwinds, each box's refcount drops back to its
      ;; pre-call value while the record retains its own ref.
-     (and
-      ;; Step 1: allocate fresh symbol-entry record with 4 slots.
-      (record-make tag-sym-ptr 4 result-slot)
-      ;; Step 2-5: refcount-safely install each slot.
-      (record-slot-set result-slot 0 value-ptr)
-      (record-slot-set result-slot 1 function-ptr)
-      (record-slot-set result-slot 2 plist-ptr)
-      (record-slot-set result-slot 3 constant-ptr)))
+     (let ((redirect-ptr (alloc-bytes 32 8)))
+       (and
+        ;; Slot 4 is the NeLisp variable redirect.  Nil means direct.
+        (sexp-write-nil redirect-ptr)
+        (record-make tag-sym-ptr 5 result-slot)
+        (record-slot-set result-slot 0 value-ptr)
+        (record-slot-set result-slot 1 function-ptr)
+        (record-slot-set result-slot 2 plist-ptr)
+        (record-slot-set result-slot 3 constant-ptr)
+        (record-slot-set result-slot 4 redirect-ptr))))
   "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
 Allocates a fresh `symbol-entry' Record via `record-make' (§115.3)
-+ four refcount-safe `record-slot-set' (§111.B) installs.  Replaces
++ five refcount-safe `record-slot-set' (§111.B) installs.  Replaces
 the ~12 LOC Rust helper `Env::mirror_insert_new_entry' (= the
 slot-pre-resolution + `Sexp::record(...)' allocator branch).
 The bucket-prepend follow-up lives in `nelisp-cc-mirror-bucket-prepend.el'.")

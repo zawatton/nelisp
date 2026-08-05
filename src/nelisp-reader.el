@@ -161,22 +161,57 @@ just past the matching `|#'.  Signals on EOF without close."
       (setq pos (1+ pos)))
     pos))
 
+(defun nelisp-reader--escaped-atom (str pos)
+  "Read an Emacs-style escaped atom from STR at POS.
+Return (TOKEN NEW-POS ESCAPED-P); a backslash quotes and is removed from
+the following character."
+  (let ((len (length str))
+        (chars nil)
+        (escaped-p nil)
+        (done nil))
+    (while (and (< pos len) (not done))
+      (let ((c (aref str pos)))
+        (cond
+         ((eq c ?\\)
+          (when (>= (1+ pos) len)
+            (signal 'nelisp-reader-error
+                    (list "unterminated symbol escape" pos)))
+          (setq escaped-p t)
+          (push (aref str (1+ pos)) chars)
+          (setq pos (+ pos 2)))
+         ((nelisp-reader--atom-char-p c)
+          (push c chars)
+          (setq pos (1+ pos)))
+         (t
+          (setq done t)))))
+    (list (apply #'string (nreverse chars)) pos escaped-p)))
+
 (defun nelisp-reader--read-atom (str pos)
   "Read a number-or-symbol atom in STR at POS.
 Return (VALUE . NEW-POS).  Numeric tokens with `.' or `eE' coerce to
 float to match Emacs `read' semantics across versions."
-  (let* ((end (nelisp-reader--atom-end str pos))
-         (tok (substring str pos end)))
+  (let* ((escaped (nelisp-reader--escaped-atom str pos))
+         (tok (car escaped))
+         (end (cadr escaped))
+         (escaped-p (caddr escaped)))
     (when (string-empty-p tok)
       (signal 'nelisp-reader-error
               (list "expected atom" pos)))
-    (cons (if (string-match-p nelisp-reader--numeric-regexp tok)
-              (let ((n (string-to-number tok)))
-                (if (and (integerp n)
-                         (string-match-p "[.eE]" tok))
-                    (float n)
-                  n))
-            (intern tok))
+    (cons (cond
+           ((and (not escaped-p)
+                 (string-match-p nelisp-reader--numeric-regexp tok))
+            (let ((n (string-to-number tok)))
+              (if (and (integerp n)
+                       (string-match-p "[.eE]" tok))
+                  (float n)
+                n)))
+           ;; Preserve Lisp's canonical self-evaluating constants without
+           ;; relying on standalone `intern', which returns distinct symbols
+           ;; named "nil" and "t".  Escaped tokens defer to `intern', whose
+           ;; standalone implementation also canonicalises these names.
+           ((and (not escaped-p) (string= tok "nil")) nil)
+           ((and (not escaped-p) (string= tok "t")) t)
+           (t (intern tok)))
           end)))
 
 (defun nelisp-reader--read-string (str pos)
@@ -590,16 +625,22 @@ time."
 
 (defun nelisp-reader--read-comma (str pos len)
   "Read an unquote `,' or splice `,@' (STR at POS = one past `,').
-Signals when used outside a backquote."
-  (when (zerop nelisp-reader--bq-depth)
-    (signal 'nelisp-reader-error
-            (list "comma outside backquote" pos)))
+Outside a backquote, preserve GNU Emacs's literal reader-marker form."
   (let* ((is-splice (and (< pos len) (eq (aref str pos) ?@)))
          (after-marker (if is-splice (1+ pos) pos))
          (after-ws (nelisp-reader--skip-ws str after-marker))
-         (nelisp-reader--bq-depth (1- nelisp-reader--bq-depth))
+         (outside-p (zerop nelisp-reader--bq-depth))
+         (nelisp-reader--bq-depth
+          (if outside-p
+              0
+            (1- nelisp-reader--bq-depth)))
          (res (nelisp-reader--read-sexp str after-ws)))
-    (cons (list (if is-splice 'bq-splice 'bq-unquote) (car res))
+    (cons (list (if outside-p
+                    (if is-splice
+                        nelisp-reader--bq-splice-symbol
+                      nelisp-reader--bq-comma-symbol)
+                  (if is-splice 'bq-splice 'bq-unquote))
+                (car res))
           (cdr res))))
 
 (defun nelisp-reader--bq-expand (form &optional depth)

@@ -30,10 +30,10 @@
 ;;   3. Install buckets into ht.slot 1 via `record-slot-set'.
 ;;   4. Install Sexp::Int(1024) into ht.slot 0 (bucket-count).
 ;;   5. Install Sexp::Int(0) into ht.slot 2 (size).
-;;   6. Allocate a fresh `nelisp-env' Record (3 slots) directly into
+;;   6. Allocate a fresh `nelisp-env' Record (4 slots) directly into
 ;;      *globals-out via `record-make'.
 ;;   7. Install the fast-hash-table into globals.slot 0.
-;;      (slots 1, 2 stay Sexp::Nil = auto-set by record-make.)
+;;      (slots 1, 2 stay Sexp::Nil; slot 3 is alias-count Int(0).)
 ;;   8. Allocate a fresh 8-element backing Sexp::Vector (Doc 147 P1.5:
 ;;      into its own fresh stack slot `backing-slot', NOT a raw-overwrite
 ;;      of a shared scratch slot — so the old 32KB scratch-ref leak is
@@ -155,15 +155,20 @@
         (record-slot-set ht-slot
                          2
                          int-slot)
-        ;; Step 6: allocate nelisp-env record (3 slots) into *globals-out.
+        ;; Step 6: allocate nelisp-env record (4 slots) into *globals-out.
+        ;; Slot 3 is the flat-image-persistent variable-alias count.
         (record-make (vector-ref-ptr scratch-ptr 0)  ; nelisp-env type-tag sym
-                     3
+                     4
                      globals-out)
         ;; Step 7: globals.slot 0 = fast-hash-table.
         ;; (slots 1, 2 stay Sexp::Nil; set by record-make.)
         (record-slot-set globals-out
                          0
                          ht-slot)
+        (sexp-int-make int-slot 0)
+        (record-slot-set globals-out
+                         3
+                         int-slot)
         ;; Step 8: allocate 8-element backing Sexp::Vector into backing-slot
         ;; (its own stack slot; no scratch-overwrite, no leak).
         (vector-make 8 backing-slot)

@@ -36,6 +36,7 @@
 ;; API (consumed by Stage 3):
 ;;   nl_root_mark      -> current top (a release marker; LIFO)
 ;;   nl_root_reserve   -> lazy-init + reserve one zeroed 32B slot, return addr
+;;   nl_root_track S   -> reserve a descriptor that marks live slot S in place
 ;;   nl_root_release M -> restore top to marker M (pop the frame)
 
 ;;; Code:
@@ -55,21 +56,48 @@
     ;; Reserve one 32-byte slot at top, zero it, bump top, return slot addr.
     (defun nl_root_reserve_slot (slot)
       (if (= slot 0) 0
+        ;; The fixed BSS region is exactly 1 MiB.  Refuse the reservation
+        ;; before touching SLOT when its full 32-byte extent would cross the
+        ;; end; otherwise an exhausted root stack overwrites the following
+        ;; diagnostic/control BSS objects.
+        (if (< (+ (data-addr nl_rootstack_region) 1048576)
+               (+ slot 32))
+            0
           (seq (ptr-write-u64 slot 0 0)
                (ptr-write-u64 (+ slot 8) 0 0)
                (ptr-write-u64 (+ slot 16) 0 0)
                (ptr-write-u64 (+ slot 24) 0 0)
                (ptr-write-u64 (data-addr nl_rootstack_top) 0 (+ slot 32))
-               slot)))
+               slot))))
     (defun nl_root_reserve ()
       (seq (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) (nl_rootstack_init) 0)
            (nl_root_reserve_slot (ptr-read-u64 (data-addr nl_rootstack_top) 0))))
+    ;; A tracked slot must retain its address identity (environment bindings
+    ;; may store that exact slot pointer), so it cannot be copied into the BSS
+    ;; root entry.  Tag 255 is outside the runtime Sexp tag range [0,13].
+    ;; The walker dereferences target@+8 at collection time, observing values
+    ;; written after this descriptor was pushed.
+    (defun nl_root_track (target)
+      (let* ((slot (nl_root_reserve)))
+        (if (= slot 0) 0
+          (seq (ptr-write-u64 slot 0 255)
+               (ptr-write-u64 (+ slot 8) 0 target)
+               slot))))
     (defun nl_root_release (marker) (ptr-write-u64 (data-addr nl_rootstack_top) 0 marker))
     ;; GC: walk [region, top) in 32-byte steps, mark each slot like a root.
     (defun nl_gc_mark_rootstack_walk (p end)
-      (if (>= p end) 0
-          (seq (extern-call nl_gc_mark_slot p)
-               (nl_gc_mark_rootstack_walk (+ p 32) end))))
+      (let* ((cur p))
+        (seq
+         ;; A live evaluator can occupy thousands of root entries.  Walking
+         ;; recursively would consume one native frame per slot during GC.
+         (while (< cur end)
+           (seq
+            (if (= (ptr-read-u64 cur 0) 255)
+                (extern-call nl_gc_mark_recorded_slot
+                             (ptr-read-u64 (+ cur 8) 0))
+              (extern-call nl_gc_mark_slot cur))
+            (setq cur (+ cur 32))))
+         0)))
     (defun nl_gc_mark_rootstack ()
       (if (= (ptr-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
           (nl_gc_mark_rootstack_walk (data-addr nl_rootstack_region)

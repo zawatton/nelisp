@@ -94,14 +94,11 @@
 ;;; Code:
 
 (require 'nelisp-read)
-;; Phase 6.2.0 — anvil-http port preparation. `url-host' / `url-port' /
-;; `url-filename' / `url-type' are cl-defstruct accessors defined in
-;; `url-parse'; without an explicit require they remain unbound and the
-;; primitive install loop trips on `symbol-function'.
-(require 'url-parse)
-;; `url-hexify-string' is autoloaded from url-util.  Store the actual function
-;; object in the NeLisp primitive table, not the autoload placeholder.
-(require 'url-util)
+;; URL functions are optional host capabilities.  The primitive installer
+;; registers whichever functions are already available; code that actually
+;; uses URL support is responsible for loading the corresponding URL library.
+;; This keeps the evaluator bootstrap usable in artifact runtimes that do not
+;; provide Emacs's URL modules.
 
 (define-error 'nelisp-eval-error
   "NeLisp evaluation error")
@@ -195,10 +192,15 @@ Special (dynamic) variables bypass ENV and read directly from
    ((eq sym nil) nil)
    ((eq sym t) t)
    ((keywordp sym) sym)
+   ;; The unbound sentinel has no representable table entry: storing it in
+   ;; `nelisp--globals' is indistinguishable from "no entry", so seeding can
+   ;; never make it resolve.  Its identity is exactly what callers compare
+   ;; against, so resolve the symbol to the live sentinel directly.
+   ((eq sym 'nelisp--unbound) nelisp--unbound)
    ((gethash sym nelisp--specials)
     (let ((g (gethash sym nelisp--globals nelisp--unbound)))
       (if (eq g nelisp--unbound)
-          (signal 'nelisp-unbound-variable (list sym))
+          (nelisp--lookup-host sym)
         g)))
    (t
     (let ((cell (assq sym env)))
@@ -206,16 +208,40 @@ Special (dynamic) variables bypass ENV and read directly from
           (cdr cell)
         (let ((g (gethash sym nelisp--globals nelisp--unbound)))
           (if (eq g nelisp--unbound)
-              (signal 'nelisp-unbound-variable (list sym))
+              (nelisp--lookup-host sym)
             g)))))))
+
+(defun nelisp--lookup-host (sym)
+  "Return SYM's runtime global value, or signal `nelisp-unbound-variable'.
+The sandbox tables shadow the runtime's own globals rather than replacing
+them: a name with no `nelisp--globals' entry may still be a perfectly bound
+runtime variable (measured: `most-positive-fixnum', which
+`src/nelisp-bytecode.el' reads).  Treating a missing entry as unbound made
+every such name invisible to replayed module code."
+  (if (boundp sym)
+      (symbol-value sym)
+    (signal 'nelisp-unbound-variable (list sym))))
 
 (defun nelisp--function-of (sym)
   "Return the callable bound to SYM in `nelisp--functions'.
-Signal `nelisp-void-function' if none is bound."
+Fall back to SYM itself when the sandbox table has no entry and the runtime
+does bind it: the sandbox shadows the runtime rather than replacing it, which
+is the rule `nelisp--lookup-host' already applies to variables and the one
+`nelisp--apply' already applies to a symbol handed to it directly.  Without
+this, a call written inside a sandbox closure could not reach a runtime helper
+that `nelisp--apply' reaches -- measured on a 13.24 MB bootstrap replay, a
+captured `cl-defstruct' expander died with (nelisp-void-function
+nelisp-cl-macros--struct-name-or-options).
+
+The symbol is returned rather than `symbol-function': the runtime holds
+prelude defuns as `(closure ...)' lists, which `nelisp--apply' rejects as
+\"not a function\", while its symbol arm calls `(apply SYM ARGS)' regardless of
+representation.  Signal `nelisp-void-function' when neither side binds SYM."
   (let ((f (gethash sym nelisp--functions nelisp--unbound)))
-    (if (eq f nelisp--unbound)
-        (signal 'nelisp-void-function (list sym))
-      f)))
+    (cond
+     ((not (eq f nelisp--unbound)) f)
+     ((fboundp sym) sym)
+     (t (signal 'nelisp-void-function (list sym))))))
 
 ;;; Evaluator ----------------------------------------------------------
 
@@ -268,7 +294,12 @@ Signal `nelisp-void-function' if none is bound."
         (nelisp-eval-form (nelisp-macroexpand (cons head args)) env))
        (t (nelisp--eval-call head args env)))))
    (t
-    (signal 'nelisp-eval-error (list "cannot evaluate" form)))))
+    ;; Emacs self-evaluates every object that is neither a cons nor a symbol,
+    ;; so vectors, records, hash tables and byte-code objects evaluate to
+    ;; themselves.  Signalling here instead made a plain keymap definition
+    ;; fail: measured on the 13.24 MB bootstrap, `(emacs-keymap-define-key map
+    ;; [line-wrapping] ...)' died with ("cannot evaluate" [line-wrapping]).
+    form)))
 
 (defun nelisp--eval-body (forms env)
   "Evaluate FORMS sequentially in ENV, return the last value."
@@ -425,6 +456,21 @@ has just mutated."
           (nelisp--eval-body body new-env))
       (nelisp--restore-dynamic dyn-saves))))
 
+(defvar nelisp--recent-function-defs nil
+  "Names installed into `nelisp--functions' since this list was last drained.
+Artifact replay drains it so a function defined by an `:eval' module item gets
+the same function cell an `:fn' item gets from
+`nelisp-artifact--install-function'.  Without it a natively dispatched caller
+cannot see a sandbox-only definition: measured on the 13.24 MB bootstrap, the
+buffer-builtins alias loop signalled (void-function nelisp-ec-buffer-p) even
+though `nelisp--functions' held it.")
+
+(defvar nelisp--recent-var-defs nil
+  "Names special-declared by `defvar'/`defconst' since the last mirror pass.
+The artifact replay drains this to give natively dispatched functions a
+native binding for sandbox-declared globals (the variable-side twin of
+`nelisp--recent-function-defs').")
+
 (defun nelisp--eval-defun (args env)
   "(defun NAME (PARAMS) BODY...) — install a global closure."
   (let ((name (car args))
@@ -434,6 +480,8 @@ has just mutated."
       (signal 'nelisp-eval-error (list "defun needs a symbol" name)))
     (puthash name (nelisp--make-closure env params body)
              nelisp--functions)
+    (setq nelisp--recent-function-defs
+          (cons name nelisp--recent-function-defs))
     name))
 
 (defun nelisp--eval-cl-defun (args env)
@@ -448,6 +496,8 @@ required args, `&optional' entries as symbols or `(VAR DEFAULT
       (signal 'nelisp-eval-error (list "cl-defun needs a symbol" name)))
     (puthash name (nelisp--make-interpreter-closure env params body)
              nelisp--functions)
+    (setq nelisp--recent-function-defs
+          (cons name nelisp--recent-function-defs))
     name))
 
 (defun nelisp--eval-defvar (args env)
@@ -460,6 +510,8 @@ required args, `&optional' entries as symbols or `(VAR DEFAULT
                (eq (gethash name nelisp--globals nelisp--unbound)
                    nelisp--unbound))
       (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals))
+    (when (symbolp name)
+      (setq nelisp--recent-var-defs (cons name nelisp--recent-var-defs)))
     name))
 
 (defun nelisp--eval-defvar-local (args env)
@@ -479,6 +531,8 @@ metadata."
       (signal 'nelisp-eval-error (list "defconst needs a value" name)))
     (puthash name t nelisp--specials)
     (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals)
+    (when (symbolp name)
+      (setq nelisp--recent-var-defs (cons name nelisp--recent-var-defs)))
     name))
 
 (defun nelisp--eval-setq (args env)
@@ -721,6 +775,7 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     stringp concat substring string= string-to-number number-to-string
     upcase downcase format prin1-to-string string make-string
     aref aset string-match-p string-match string-empty-p
+    nelisp--string-byte-at
     char-or-string-p
     ;; String search / split (Phase 5-B.0)
     string-search split-string
@@ -782,9 +837,8 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     sqlite-available-p sqlitep sqlite-open sqlite-close
     sqlite-execute sqlite-select
     ;; URL + crypto primitives (Phase 6.2.0 — anvil-http port 前提、
-    ;; SBCL-style host 委譲。url package は Emacs 29 built-in、
-    ;; url-host / url-port / url-filename / url-type は url-parse の
-    ;; cl-defstruct accessors なので require 'url-parse 済 (上記)。
+    ;; SBCL-style host 委譲。install時にavailableな関数だけを登録し、
+    ;; URLを実利用する高水準コードが対応するURL libraryを提供する。
     ;; 動的バインド変数 url-request-method / url-request-extra-headers
     ;; は host symbol cell に住むため NeLisp 側の dynamic-let では
     ;; 触れない — 高水準 wrapper (nelisp-http-fetch 等、Phase 6.2.1)
@@ -862,11 +916,45 @@ Self-evaluating atoms (nil, t, keywords) are always bound."
                nelisp--unbound)))))
 
 (defun nelisp--builtin-fboundp (sym)
-  "Non-nil if SYM has a function (or macro) in the NeLisp tables."
+  "Non-nil if SYM names a function or macro reachable from replayed code.
+The sandbox tables are consulted first, then the runtime binding — the same
+shadow-not-replace rule `nelisp--function-of' uses to resolve a call and
+`nelisp--lookup-host' uses to read a variable.  Reporting only the sandbox
+tables made this predicate contradict them: a name the sandbox could call
+was reported absent.  Bundle code branches on `fboundp' to choose between its
+host and standalone paths, so the wrong answer selected the wrong path —
+measured on the 13.24 MB bootstrap, `src/emacs-keymap.el' guards
+\(require 'keymap) with (not (or (fboundp 'nl-write-file) (fboundp
+'nelisp--write-stdout-bytes))); both are bound in the runtime, yet replay
+took the host branch and died with (\"Cannot open load file: keymap\")."
   (or (not (eq (gethash sym nelisp--functions nelisp--unbound)
                nelisp--unbound))
       (not (eq (gethash sym nelisp--macros nelisp--unbound)
-               nelisp--unbound))))
+               nelisp--unbound))
+      (and (symbolp sym) (fboundp sym) t)))
+
+(defun nelisp--builtin-symbol-function (sym)
+  "Return SYM's function definition: sandbox tables first, then the runtime.
+Mirrors `nelisp--builtin-fboundp' so the two cannot disagree.  `fboundp'
+already answers for either namespace, but `symbol-function' was left as the
+raw host primitive, which sees only the runtime cell — so a name the sandbox
+owns was reported bound and then had no definition.  Measured on the 13.24 MB
+bootstrap: `(and (fboundp \\='shell-command)
+\(subrp (symbol-function \\='shell-command)) ...)' signalled `void-function'
+one form after `fboundp' had answered t.
+
+Returns nil for an unbound function cell, as Emacs does — the runtime
+primitive signals `void-function' there, which is its own divergence."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (let ((f (gethash sym nelisp--functions nelisp--unbound)))
+    (if (not (eq f nelisp--unbound))
+        f
+      (let ((m (gethash sym nelisp--macros nelisp--unbound)))
+        (cond
+         ((not (eq m nelisp--unbound)) (cons 'macro m))
+         ((fboundp sym) (symbol-function sym))
+         (t nil))))))
 
 (defun nelisp--builtin-symbol-value (sym)
   "Return SYM's NeLisp value — dynamic / global only, not lexical.
@@ -897,27 +985,28 @@ No module registry yet; just acknowledge the symbol so source files
 that end with `(provide ...)' work as-is."
   feature)
 
+(defun nelisp--string-byte-at (string index)
+  "Return the raw byte at INDEX from STRING without UTF-8 character decode."
+  (aref (if (fboundp 'string-as-unibyte)
+            (string-as-unibyte string)
+          string)
+        index))
+
 (defun nelisp--install-primitives ()
   "Bind every primitive symbol in `nelisp--functions'.
 Host Emacs functions cover pure data ops; higher-order primitives
 and tables-specific queries go through NeLisp-aware wrappers so
 closures, NeLisp-only defuns, and our own hash tables stay visible.
 
-`nelisp--primitive-symbols' assumes a real-Emacs host, where every
-entry (including sqlite-/url-/process-/terminal-facing ones) is
-always `fboundp'.  On the standalone NeLisp runtime's own bootstrap
-substrates (`eval-elisp-artifact' et al., which self-host this very
-evaluator before the host has anything beyond the stdlib prelude
-installed) that assumption does not hold for every entry.  Before
-this `fboundp' guard, a single missing entry (e.g. `string-match-p'
-prior to Doc 143's regexp matcher being loaded, or a rarely-used
-entry such as `char-or-string-p') made `symbol-function' signal
-`void-function' and abort this whole call -- silently skipping every
-remaining `puthash', including `funcall'/`apply'/`mapcar' below.
-Skipping an unbound entry here defers that same `void-function' to
-the point some artifact actually calls it (now a real, catchable
-signal per FINDINGS.md recommendation 1(a)), instead of taking down
-primitive installation for entries nothing in a given run needs."
+`nelisp--primitive-symbols' includes optional sqlite-/url-/process-/
+terminal-facing host capabilities.  A real Emacs host may provide
+them after their libraries are loaded, while standalone bootstrap
+substrates (`eval-elisp-artifact' et al.) may not provide them at all.
+The `fboundp' guard registers only functions available at install
+time.  Skipping an unbound entry defers `void-function' to actual use
+(where it is a normal catchable signal) instead of aborting primitive
+installation and silently skipping all remaining entries, including
+`funcall'/`apply'/`mapcar' below."
   (dolist (sym nelisp--primitive-symbols)
     (when (fboundp sym)
       (puthash sym (symbol-function sym) nelisp--functions)))
@@ -930,6 +1019,7 @@ primitive installation for entries nothing in a given run needs."
   (puthash 'boundp       #'nelisp--builtin-boundp       nelisp--functions)
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
+  (puthash 'symbol-function #'nelisp--builtin-symbol-function nelisp--functions)
   (puthash 'defalias     #'nelisp--builtin-defalias     nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)

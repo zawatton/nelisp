@@ -175,11 +175,38 @@
     ;;
     ;; Arity 6 (even) ✓.
     ;; No extern-call in this defun ✓.
+    (defun nelisp_env_bind_local_alias
+        (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr depth)
+      (if (>= depth 64)
+          1
+        (let ((entry-ptr
+               (extern-call nelisp_mirror_lookup_entry
+                            mirror-ptr name-ptr)))
+          (if (and (not (= entry-ptr 0))
+                   (< 4 (record-slot-count entry-ptr))
+                   (= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 4))
+              (nelisp_env_bind_local_alias
+               mirror-ptr frames-ptr
+               (record-slot-ref-ptr entry-ptr 4)
+               val-ptr scratch-ptr (+ depth 1))
+            (if (= (sexp-int-unwrap
+                    (record-slot-ref-ptr frames-ptr 1)) 0)
+                (nelisp_env_bl_mirror
+                 mirror-ptr name-ptr scratch-ptr 0)
+              (nelisp_env_bl_frame
+               frames-ptr name-ptr val-ptr scratch-ptr))))))
+
     (defun nelisp_env_bind_local
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
-      (if (= (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 0)
-          (nelisp_env_bl_mirror mirror-ptr name-ptr scratch-ptr 0)
-        (nelisp_env_bl_frame frames-ptr name-ptr val-ptr scratch-ptr))))
+      (if (= (extern-call nelisp_env_variable_alias_count mirror-ptr) 0)
+          (if (= (sexp-int-unwrap
+                  (record-slot-ref-ptr frames-ptr 1)) 0)
+              (nelisp_env_bl_mirror
+               mirror-ptr name-ptr scratch-ptr 0)
+            (nelisp_env_bl_frame
+             frames-ptr name-ptr val-ptr scratch-ptr))
+        (nelisp_env_bind_local_alias
+         mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0))))
   "AOT source for Wave b `Env::bind_local' body.
 
 Three-defun CPS composition (all in same seq = intra-seq calls):

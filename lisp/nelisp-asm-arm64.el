@@ -124,6 +124,12 @@ Returns a unibyte-string of length 4."
                     (logand (ash u -16) #xFF)
                     (logand (ash u -24) #xFF))))
 
+(defun nelisp-asm-arm64--string-byte-at (string index)
+  "Return STRING's raw byte at INDEX."
+  (if (fboundp 'string-byte)
+      (string-byte string index)
+    (aref (string-as-unibyte string) index)))
+
 ;; ---- buffer abstraction (= mirror §92.a) ----
 ;;
 ;; Same single-cell-vector-wrapping-plist shape as §92.a so that
@@ -196,7 +202,11 @@ O(N²) for long buffers."
          (chunks (plist-get plist :chunks))
          (len (plist-get plist :length)))
     (setq plist (plist-put plist :chunks (cons bs chunks)))
-    (setq plist (plist-put plist :length (+ len (length bs))))
+    (setq plist (plist-put plist :length
+                           (+ len
+                              (if (fboundp 'string-bytes)
+                                  (string-bytes bs)
+                                (length bs)))))
     (nelisp-asm-arm64--rewrap buf plist)))
 
 (defun nelisp-asm-arm64--emit-word (buf word)
@@ -345,11 +355,14 @@ O(total-bytes))."
          (bytes  (apply #'concat (nreverse (copy-sequence chunks))))
          (labels (plist-get plist :labels))
          (fixups (plist-get plist :fixups))
-         (n (length bytes))
+         (n (if (fboundp 'string-bytes)
+                (string-bytes bytes)
+              (length bytes)))
+         (byte-at #'nelisp-asm-arm64--string-byte-at)
          (vec (make-vector n 0))
          (i 0))
     (while (< i n)
-      (aset vec i (aref bytes i))
+      (aset vec i (funcall byte-at bytes i))
       (setq i (1+ i)))
     (dolist (fix fixups)
       (let* ((slot  (nth 0 fix))

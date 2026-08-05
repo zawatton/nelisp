@@ -113,19 +113,39 @@ re-interning of `backquote' / `comma' / `comma-at' under abbrev forms."
   "Print the body of LST (= cons cell) without enclosing parens.
 Handles proper / dotted lists.  Element separator is a single space;
 a non-nil non-cons tail prints as ` . TAIL'."
+  ;; Cycle guard.  Without one, a list that turns back on itself makes this
+  ;; walk accumulate chunks until memory runs out, which surfaces as
+  ;; `form aborted without signal' with no error text -- and because this
+  ;; printer is what renders error data, it hides the very error it was
+  ;; called to report.  Stock Emacs guards the same loop in `print_object'
+  ;; with a tortoise/hare pointer, so do the same: HALFTAIL advances one
+  ;; step for every two of CUR, and CUR catching it proves a cycle.  A
+  ;; recursion-depth cap would not help -- a circular list is an infinite
+  ;; iteration at a single depth.
   (let ((chunks (cons nil nil))
         (cur lst)
-        (first t))
-    (while (consp cur)
+        (halftail lst)
+        (n 0)
+        (first t)
+        (cycle nil))
+    (while (and (consp cur) (not cycle))
       (unless first
         (nelisp--prn-chunks-add chunks " "))
       (nelisp--prn-chunks-add chunks
                               (nelisp--prn-to-string (car cur) escape))
       (setq first nil)
-      (setq cur (cdr cur)))
-    (unless (null cur)
+      (setq cur (cdr cur))
+      (setq n (1+ n))
+      (if (= (% n 2) 0)
+          (setq halftail (cdr halftail)))
+      (if (and (consp cur) (eq cur halftail))
+          (setq cycle t)))
+    (cond
+     (cycle
+      (nelisp--prn-chunks-add chunks " . #0"))
+     ((not (null cur))
       (nelisp--prn-chunks-add chunks " . ")
-      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape)))
+      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape))))
     (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-vector (vec escape)
@@ -159,11 +179,32 @@ a non-nil non-cons tail prints as ` . TAIL'."
     (nelisp--prn-chunks-add chunks ")")
     (nelisp--prn-chunks-string chunks)))
 
+(defvar nelisp--prn-depth 0
+  "Current `nelisp--prn-to-string' recursion depth.")
+
+(defvar nelisp--prn-max-depth 200
+  "Depth past which `nelisp--prn-to-string' prints `...' instead of recursing.
+Records can nest into themselves -- an eieio class holds a
+`default-object-cache' record whose type tag is that same class -- so an
+unbounded printer recurses forever on perfectly ordinary objects.  Stock
+Emacs bounds the same recursion in `print_object' and signals there, but
+this printer is what renders error text, so signalling would fail while
+reporting a failure.  Truncate the way Emacs' `print-level' does instead:
+printing then always terminates and always produces output.")
+
 (defun nelisp--prn-to-string (obj escape)
   "Convert OBJ to its printed representation.
 ESCAPE = t  → readable form (= prin1).
 ESCAPE = nil → non-readable form (= princ): strings without quotes /
-escaping; everything else identical."
+escaping; everything else identical.
+Recursion is bounded by `nelisp--prn-max-depth'."
+  (if (> nelisp--prn-depth nelisp--prn-max-depth)
+      "..."
+    (let ((nelisp--prn-depth (1+ nelisp--prn-depth)))
+      (nelisp--prn-to-string-1 obj escape))))
+
+(defun nelisp--prn-to-string-1 (obj escape)
+  "Body of `nelisp--prn-to-string'; call that, not this."
   (cond
    ((null obj) "nil")
    ((eq obj t) "t")

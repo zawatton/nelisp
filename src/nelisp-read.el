@@ -70,10 +70,18 @@
   "Characters that end an atom token.")
 
 (defconst nelisp-read--numeric-regexp
-  "\\`[-+]?\\(?:[0-9]+\\(?:\\.[0-9]*\\)?\\|\\.[0-9]+\\)\\(?:[eE][-+]?[0-9]+\\)?\\'"
+  "\\`[-+]?\\([0-9]+\\(\\.[0-9]*\\)?\\|\\.[0-9]+\\)\\([eE][-+]?[0-9]+\\)?\\'"
   "Decimal integer or float token.
 Matches `42' / `-3' / `3.14' / `.5' / `1.' / `-2.5e3'.  Parsing is
-handed to `string-to-number', which returns the correct type.")
+handed to `string-to-number', which returns the correct type.
+
+Plain groups, not shy ones: the standalone regexp engine
+\(`lisp/nelisp-stdlib-regexp.el') does not implement `\\(?:' , so the shy
+form matched nothing and every numeric token fell through to `intern'.
+Measured on the 13.24 MB bootstrap, that made `nelisp--install-core-macros'
+read the `2' of `(nth 2 spec)' as a symbol and replay died with
+\(nelisp-unbound-variable 2).  Nothing here reads match data, so dropping the
+shy form changes no behaviour beyond making the match work.")
 
 (defvar nelisp-read--bq-depth 0
   "Tracks how deep we are inside nested backquotes.
@@ -83,9 +91,7 @@ propagation (`,,x', `,@,y') is still out of scope and would require
 the full qbq-comma dance.")
 
 ;; Symbols used to mark nested backquote / comma / splice as literal
-;; data when expanding depth >= 2 forms.  Interned via `intern' so
-;; the source stays parseable by NeLisp's reader, which does not
-;; support backslash-escaped symbol literals such as `\\=`' / `\\,'.
+;; data when expanding depth >= 2 forms.
 (defconst nelisp-read--bq-quasi-symbol (intern "`")
   "Symbol placed at the head of a nested-backquote cons at runtime.
 Emacs' printer renders this symbol as `\\=`', giving the familiar
@@ -123,26 +129,63 @@ Return the new position."
       (setq pos (1+ pos)))
     pos))
 
+(defun nelisp-read--escaped-atom (str pos)
+  "Read an Emacs-style escaped atom from STR at POS.
+Backslash quotes the following character, including whitespace and reader
+punctuation, and is omitted from the resulting symbol name.  Return
+(TOKEN NEW-POS ESCAPED-P)."
+  (let ((len (length str))
+        (chars nil)
+        (escaped-p nil)
+        (done nil))
+    (while (and (< pos len) (not done))
+      (let ((c (aref str pos)))
+        (cond
+         ((eq c ?\\)
+          (when (>= (1+ pos) len)
+            (signal 'nelisp-read-error
+                    (list "unterminated symbol escape" pos)))
+          (setq escaped-p t)
+          (push (aref str (1+ pos)) chars)
+          (setq pos (+ pos 2)))
+         ((nelisp-read--atom-char-p c)
+          (push c chars)
+          (setq pos (1+ pos)))
+         (t
+          (setq done t)))))
+    (list (apply #'string (nreverse chars)) pos escaped-p)))
+
 (defun nelisp-read--atom (str pos)
   "Read a number-or-symbol atom in STR at POS.
 Return (VALUE . NEW-POS)."
-  (let* ((end (nelisp-read--atom-end str pos))
-         (tok (substring str pos end)))
+  (let* ((escaped (nelisp-read--escaped-atom str pos))
+         (tok (car escaped))
+         (end (cadr escaped))
+         (escaped-p (caddr escaped)))
     (when (string-empty-p tok)
       (signal 'nelisp-read-error
               (list "expected atom" pos)))
-    (cons (if (string-match-p nelisp-read--numeric-regexp tok)
-              (let ((n (string-to-number tok)))
-                ;; `string-to-number' drops the fractional part from
-                ;; tokens like "1." on some Emacs versions, yielding
-                ;; an integer where the source clearly asked for a
-                ;; float.  Coerce to float whenever the token itself
-                ;; contains a decimal point or an exponent marker.
-                (if (and (integerp n)
-                         (string-match-p "[.eE]" tok))
-                    (float n)
-                  n))
-            (intern tok))
+    (cons (cond
+           ((and (not escaped-p)
+                 (string-match-p nelisp-read--numeric-regexp tok))
+            (let ((n (string-to-number tok)))
+              ;; `string-to-number' drops the fractional part from
+              ;; tokens like "1." on some Emacs versions, yielding
+              ;; an integer where the source clearly asked for a
+              ;; float.  Coerce to float whenever the token itself
+              ;; contains a decimal point or an exponent marker.
+              (if (and (integerp n)
+                       (string-match-p "[.eE]" tok))
+                  (float n)
+                n)))
+           ;; Standalone `intern' does not canonicalise these two names:
+           ;; it creates truthy Symbol("nil") / Symbol("t") impostors.
+           ;; Unescaped reader tokens are handled directly.  Escaped tokens
+           ;; defer to `intern', which itself canonicalises these names just
+           ;; like GNU Emacs.
+           ((and (not escaped-p) (string= tok "nil")) nil)
+           ((and (not escaped-p) (string= tok "t")) t)
+           (t (intern tok)))
           end)))
 
 (defun nelisp-read--hex-digit-value (c)
@@ -569,18 +612,24 @@ structure at runtime."
 
 (defun nelisp-read--unquote (str pos len)
   "Read an unquote or splice (STR at POS = one past the comma).
-Signals when used outside a backquote.  Returns a marker pair
-`(bq-unquote FORM)' or `(bq-splice FORM)' that the backquote
-expander in `nelisp-read--bq-expand' consumes."
-  (when (zerop nelisp-read--bq-depth)
-    (signal 'nelisp-read-error
-            (list "comma outside backquote" pos)))
+Outside a backquote, preserve GNU Emacs's literal reader-marker form.
+Inside a backquote, return a marker pair `(bq-unquote FORM)' or
+`(bq-splice FORM)' that `nelisp-read--bq-expand' consumes."
   (let* ((is-splice (and (< pos len) (eq (aref str pos) ?@)))
          (after-marker (if is-splice (1+ pos) pos))
          (after-ws (nelisp-read--skip-ws str after-marker))
-         (nelisp-read--bq-depth (1- nelisp-read--bq-depth))
+         (outside-p (zerop nelisp-read--bq-depth))
+         (nelisp-read--bq-depth
+          (if outside-p
+              0
+            (1- nelisp-read--bq-depth)))
          (res (nelisp-read--sexp str after-ws)))
-    (cons (list (if is-splice 'bq-splice 'bq-unquote) (car res))
+    (cons (list (if outside-p
+                    (if is-splice
+                        nelisp-read--bq-splice-symbol
+                      nelisp-read--bq-comma-symbol)
+                  (if is-splice 'bq-splice 'bq-unquote))
+                (car res))
           (cdr res))))
 
 (defun nelisp-read--bq-expand (form &optional depth)

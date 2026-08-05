@@ -17,10 +17,10 @@
 ;;   1. Check mirror entry existence via `nelisp_mirror_lookup_entry'.
 ;;      If miss (= 0), return 1 (= unbound-fn sentinel).
 ;;
-;;   2. If hit: call `nelisp_mirror_lookup_function' to fill out-ptr
-;;      with the function Sexp (refcount-aware copy via record-slot-ref
-;;      which delegates to `nl_sexp_clone_into' since Doc 111 §111.C v3).
-;;      Return 0 (= found).
+;;   2. If hit: fill out-ptr via record-slot-ref (refcount-aware copy
+;;      which delegates to `nl_sexp_clone_into' since Doc 111 §111.C v3),
+;;      then test slot 1 for the unbound marker; return 1 (= miss) if
+;;      the function slot is the unbound marker, else 0 (= found).
 ;;
 ;; Signature:
 ;;   (nelisp_env_lookup_function MIRROR-PTR UNBOUND-PTR NAME-PTR OUT-PTR)
@@ -43,38 +43,54 @@
 ;;; Code:
 
 (defconst nelisp-cc-env-lookup-function--source
-  '(defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
-     ;; Main entry: check mirror for the function entry; return 1 on
-     ;; miss or fill out-ptr with the function Sexp on hit (= 0).
-     ;;
-     ;; R11a CSE-hoist: the previous two-defun CPS shape called
-     ;; `nelisp_mirror_lookup_entry' for the existence check and then
-     ;; `nelisp_mirror_lookup_function' on hit (= 2 FNV-1a hashes).
-     ;; The hoisted shape calls `nelisp_mirror_lookup_entry' once via
-     ;; `let' (= let-rt frame slot) and reads slot 1 directly via
-     ;; `record-slot-ref' — bypassing the `nelisp_mirror_lookup_function'
-     ;; wrapper since we already hold the entry pointer.  `record-slot-
-     ;; ref' delegates to `nl_sexp_clone_into' (refcount-safe, same
-     ;; semantics as the previous wrapper).
-     ;;
-     ;; Arity 4 (even) ✓.  `(extern-call nelisp_mirror_lookup_entry ...)'
-     ;; is arg 0 of the let-binding (= itself the value-form of let-rt,
-     ;; satisfying the "extern-call as arg 0" alignment rule).
-     (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
-       (if (= entry 0)
-           1
-         (and (record-slot-ref entry 1 out-ptr) 0))))
-  "AOT source for Wave a-2 `Env::lookup_function' body.
+  '(seq
+    (defun nelisp_env_lookup_function_hop (mirror-ptr unbound-ptr name-ptr out-ptr depth pad)
+      ;; One lookup step + bounded alias chase (arity 6, even).
+      ;; DEPTH counts remaining hops; 0 = budget exhausted (cycle),
+      ;; reported as miss.  PAD keeps the arity even.
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0)
+            1
+          ;; Inspect the LIVE in-arena function-cell view first; the
+          ;; mirror's valid-key guard (`nl_gc_in_arena') rejects any
+          ;; out-of-arena pointer, so the caller's out slot (typically a
+          ;; root-stack slot) must never be used as a chase key.  The
+          ;; clone into out-ptr happens exactly once, on final success,
+          ;; which also avoids per-hop refcount leaks.
+          (let ((cell (record-slot-ref-ptr entry 1)))
+            (if (= (symbol-name-eq cell "\001elisp--unbound-marker") 1)
+                1
+              (if (= (sexp-tag cell) 4)
+                  (if (= depth 0)
+                      1
+                    (nelisp_env_lookup_function_hop
+                     mirror-ptr unbound-ptr cell out-ptr (- depth 1) pad))
+                (seq
+                 (record-slot-ref entry 1 out-ptr)
+                 0)))))))
+    (defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
+      ;; ABI entry (arity 4, unchanged for existing callers): delegate
+      ;; to the chase helper with an 8-hop budget.
+      (nelisp_env_lookup_function_hop mirror-ptr unbound-ptr name-ptr out-ptr 8 0)))
+  "AOT source for `Env::lookup_function' with bounded alias chase.
 
-R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun
-using `let-rt' CSE hoist of the entry pointer + `record-slot-ref'
-direct slot-1 read.  Previous shape paid 2 FNV-1a hashes per call
-(`lookup_entry' + `lookup_function'); hoisted shape pays 1.
+The pre-chase unit returned the raw function-cell contents, so a cell
+holding a SYMBOL (an Emacs-style function alias installed by
+`fset'/`defalias') was handed to callers as the callable itself, and
+`nl_apply_do_fset' compensated by eagerly resolving symbol definitions
+at fset time -- which broke forward aliases (`(defalias 'a 'later)')
+with a premature void-function.  The chase helper resolves alias
+chains at LOOKUP time instead, up to 8 hops; exhaustion (cycles)
+reports miss (1), which call sites surface as void-function.
 
-The `unbound-ptr' parameter is unused (retained for call-site symmetry
-with `lookup_value' and to keep even arity).  The miss sentinel is 1
-(= unbound-fn), found is 0 (= out-ptr filled with function Sexp via
-the refcount-safe `nl_sexp_clone_into' invoked by `record-slot-ref').")
+Known divergences from Emacs, accepted for now: `fboundp' of an alias
+whose target is still undefined answers nil (Emacs: t), and
+`symbol-function' reports the chased final definition rather than the
+alias symbol.
+
+Contract change: on a miss discovered mid-chain, out-ptr may hold an
+intermediate alias symbol rather than being untouched; callers must
+not read out-ptr when the return is 1 (they already don't).")
 
 (provide 'nelisp-cc-env-lookup-function)
 

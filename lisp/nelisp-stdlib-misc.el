@@ -274,6 +274,57 @@ call time, so it is safe for FN to mutate TABLE during the walk
 ;; sets `default-directory' at startup so that fallback never fired
 ;; in practice and is dropped here.
 
+(defun nelisp--canonicalize-file-name (path)
+  ;; Resolve a leading root marker ("/" or the POSIX-special "//") plus
+  ;; "//", "/./" and "/../" components of an ABSOLUTE path by pure string
+  ;; arithmetic (no filesystem access), matching Emacs `expand-file-name'
+  ;; output for existing-component cases:
+  ;;  - EXACTLY two leading slashes is a distinct root ("//"); three or
+  ;;    more collapse to a single "/".
+  ;;  - ".." above a "/" root is preserved as a leading ".."; ".." above
+  ;;    a "//" root is dropped (the "//" root itself can't be popped).
+  ;;  - a trailing "/" on the input is preserved on the output, unless
+  ;;    the result is bare root.
+  ;; Uses `while' loops rather than `dolist': this file has no confirmed
+  ;; prior `dolist' use at load time, so the more primitive form is used
+  ;; defensively (see nelisp-stdlib-prelude.el for the `dolist' variant,
+  ;; kept algorithmically in sync otherwise).
+  (let* ((n (length path))
+         (two-slash-root
+          (and (> n 1) (eq (aref path 0) ?/) (eq (aref path 1) ?/)
+               (or (< n 3) (not (eq (aref path 2) ?/)))))
+         (root (if two-slash-root "//" "/"))
+         (i (if two-slash-root 2 1))
+         (start i)
+         (parts nil)
+         (updirs 0))
+    (while (<= i n)
+      (when (or (= i n) (eq (aref path i) ?/))
+        (let ((seg (substring path start i)))
+          (cond ((or (= (length seg) 0) (equal seg ".")))
+                ((equal seg "..")
+                 (if parts
+                     (setq parts (cdr parts))
+                   (when (equal root "/") (setq updirs (1+ updirs)))))
+                (t (setq parts (cons seg parts)))))
+        (setq start (1+ i)))
+      (setq i (1+ i)))
+    (if (and (= updirs 0) (null parts))
+        root
+      (let ((comps (nreverse parts)) (k updirs))
+        (while (> k 0)
+          (setq comps (cons ".." comps))
+          (setq k (1- k)))
+        (let ((acc root) (first t) (rest comps))
+          (while rest
+            (setq acc (if first (concat acc (car rest)) (concat acc "/" (car rest))))
+            (setq first nil)
+            (setq rest (cdr rest)))
+          (when (and (eq (aref path (1- n)) ?/)
+                     (not (equal acc root))
+                     (not (eq (aref acc (1- (length acc))) ?/)))
+            (setq acc (concat acc "/")))
+          acc)))))
 (defun expand-file-name (path &optional base)
   "Convert PATH to absolute, anchoring against BASE (or `default-directory').
 Already-absolute paths (starting with `/') are returned unchanged."
@@ -281,12 +332,13 @@ Already-absolute paths (starting with `/') are returned unchanged."
    ;; Empty path: return as-is (= mirrors Rust `Path::new(\"\").to_path_buf()').
    ((or (null path) (= (length path) 0)) path)
    ;; Already absolute.
-   ((eq (aref path 0) ?/) path)
+   ((eq (aref path 0) ?/) (nelisp--canonicalize-file-name path))
    ;; Relative: join with BASE (or `default-directory').
    (t
     (let ((b (or base (and (boundp 'default-directory) default-directory))))
-      (if (and (stringp b) (> (length b) 0))
-          (concat (file-name-as-directory b) path)
+      (if (and (stringp b) (> (length b) 0) (eq (aref b 0) ?/))
+          (nelisp--canonicalize-file-name
+           (concat (file-name-as-directory b) path))
         ;; No base anchor available — return PATH as-is.  Prior Rust
         ;; tried `current_dir()' as last resort but NeLisp's startup
         ;; always sets `default-directory' so this branch is unreachable
@@ -385,10 +437,12 @@ regular file (per `nelisp--syscall-stat'), or nil if none match."
   "Search `load-path' for a file named NAME, returning its absolute
 path or nil.  Tries NAME as-given first, then NAME with `.elc' appended
 (Wave A21 NeLisp `.elc' is preferred for compiled-defun fast-path),
-then NAME with `.el' appended (unless NAME already ends in `.el' /
-`.elc').  Optional NOSUFFIX / PATH / INTERACTIVE-CALL args are
-accepted for host-Emacs compatibility but ignored — the load-path
-override + interactive message machinery aren't wired."
+then NAME with `.el' appended.  A NAME that already ends in `.el'
+resolves to that exact file before any `.elc' sibling; a NAME ending
+in `.elc' is probed as-given only.  Optional NOSUFFIX / PATH /
+INTERACTIVE-CALL args are accepted for host-Emacs compatibility but
+ignored — the load-path override + interactive message machinery
+aren't wired."
   (let* ((n (length name))
          (has-elc (and (> n 4)
                        (eq (aref name (- n 4)) ?.)
@@ -406,7 +460,14 @@ override + interactive message machinery aren't wired."
          ;; in `.elc', only the bare name is probed (caller decided).
          (suffixes (cond
                     (has-elc (list ""))
-                    (has-el (list "c" ""))           ; FOO.el → FOO.elc, FOO.el
+                    ;; An explicit `.el' name is the caller's decision and
+                    ;; must win: probing "c" first resolved FOO.el to a
+                    ;; stale sibling FOO.elc, whose byte-compiled
+                    ;; `#@NNN' docstring markers read as symbols on the
+                    ;; text load path (measured: `void-variable: (#@187)'
+                    ;; loading the magit bridge).  Bare names keep the
+                    ;; `.elc'-first fast path below.
+                    (has-el (list "" "c"))           ; FOO.el → FOO.el, FOO.elc
                     (t (list ".elc" ".el" "")))))
     (cond
      ;; Absolute path: probe directly, skip load-path walk.
@@ -503,6 +564,53 @@ overflow the standalone arena on upstream-sized package files."
           (garbage-collect))))
     last))
 
+(defun nelisp--load-mirror-save-value (symbol)
+  "Return the global mirror binding state for SYMBOL.
+The car is non-nil when SYMBOL was bound; the cdr is its prior value."
+  (if (nelisp--env-globals-op 'is-bound symbol)
+      (cons t (nelisp--env-globals-op 'get-value symbol))
+    (cons nil nil)))
+
+(defun nelisp--load-mirror-restore-value (symbol state)
+  "Restore SYMBOL's global mirror binding from STATE."
+  (if (car state)
+      (nelisp--env-globals-op 'set-value symbol (cdr state))
+    (nelisp--env-globals-op 'clear-value symbol)))
+
+(defun nelisp--load-eval-with-context (source resolved parent)
+  "Evaluate SOURCE while publishing its load context to native eval.
+RESOLVED and PARENT become `load-file-name' and `default-directory'.
+When the standalone global-mirror primitive is available, the caller's
+current dynamic `load-path' is published too.  Nested loads save the outer
+mirror values and `unwind-protect' restores them, including unbound state."
+  (let ((load-file-name resolved)
+        (default-directory parent))
+    (if (not (fboundp 'nelisp--env-globals-op))
+        ;; Host Emacs eval inherits the special-variable bindings above.
+        (nelisp--load-eval-source-incremental source)
+      (let ((prior-load-path
+             (nelisp--load-mirror-save-value 'load-path))
+            (prior-load-file-name
+             (nelisp--load-mirror-save-value 'load-file-name))
+            (prior-default-directory
+             (nelisp--load-mirror-save-value 'default-directory)))
+        (unwind-protect
+            (progn
+              (nelisp--env-globals-op
+               'set-value 'load-path
+               (if (boundp 'load-path) load-path nil))
+              (nelisp--env-globals-op
+               'set-value 'load-file-name resolved)
+              (nelisp--env-globals-op
+               'set-value 'default-directory parent)
+              (nelisp--load-eval-source-incremental source))
+          (nelisp--load-mirror-restore-value
+           'default-directory prior-default-directory)
+          (nelisp--load-mirror-restore-value
+           'load-file-name prior-load-file-name)
+          (nelisp--load-mirror-restore-value
+           'load-path prior-load-path))))))
+
 (defun load (file &optional noerror _nomessage _nosuffix _must-suffix)
   "Execute the elisp file FILE.  See `nelisp-stdlib-misc.el' top-of-
 section comment for the full contract."
@@ -519,18 +627,10 @@ section comment for the full contract."
             (signal 'file-error (list "read error" resolved))))
          (t
           (let* ((parent (or (file-name-directory resolved) "./"))
-                 (prior-lfn (and (boundp 'load-file-name)
-                                 load-file-name))
-                 (prior-dd (and (boundp 'default-directory)
-                                default-directory))
                  (err-obj nil))
-            (setq load-file-name resolved)
-            (setq default-directory parent)
             (condition-case e
-                (nelisp--load-eval-source-incremental source)
+                (nelisp--load-eval-with-context source resolved parent)
               (error (setq err-obj e)))
-            (setq load-file-name prior-lfn)
-            (setq default-directory prior-dd)
             (cond
              ((null err-obj) t)
              (noerror nil)
@@ -563,25 +663,30 @@ already there.  Returns FEATURE."
   (if (memq feature features) t nil))
 
 (defun require (feature &optional filename noerror)
-  "If FEATURE is not already provided, `load' FILENAME (or the symbol-name
-of FEATURE if FILENAME is nil) and verify the load did `provide' it.
-Returns FEATURE on success, nil on failure when NOERROR is non-nil,
-or signals `error' otherwise.  Replaces the deleted Rust `bi_require'."
+  "Load FEATURE unless it is already provided.
+FILENAME defaults to the symbol name of FEATURE.  NOERROR suppresses only
+a missing file; errors from a located file and failure to provide FEATURE
+are always signalled."
   (if (featurep feature)
       feature
-    (if (and (not filename) (not (boundp 'load-path)))
-        (progn (provide feature) feature)
-      (let ((load-ok (condition-case _
-                         (progn (load (or filename (symbol-name feature)) noerror) t)
-                       (error nil))))
-        (if (featurep feature)
-            feature
-          (if (or noerror (not load-ok))
-              (if noerror nil
-                (signal 'error (list (format "Required feature `%s' was not provided"
-                                             feature))))
-            (signal 'error (list (format "Required feature `%s' was not provided"
-                                         feature)))))))))
+    (let ((resolved (locate-library
+                     (or filename (symbol-name feature)))))
+      (if (null resolved)
+          (if noerror nil
+            (signal 'error
+                    (list
+                     (format "Cannot open load file for feature `%s'"
+                             feature))))
+        (progn
+          ;; RESOLVED exists, so NOERROR must not hide evaluation failures.
+          (load resolved nil)
+          (if (featurep feature)
+              feature
+            (signal
+             'error
+             (list
+              (format "Loading file %s failed to provide feature `%s'"
+                      resolved feature)))))))))
 
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a

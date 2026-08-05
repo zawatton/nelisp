@@ -241,21 +241,45 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= (nl_intern_slotmatch (+ table (* idx 16)) p n) 1)
             (+ table (* idx 16))
           (nl_intern_probe table (logand (+ idx 1) 1048575) p n))))
+    ;; Reserve N bytes for the name PLUS one trailing separator byte, and
+    ;; refuse to hand out storage past the end of the 64 MiB region.
+    ;;
+    ;; Names used to be packed back-to-back with no separator, so a symbol
+    ;; Sexp carrying a length larger than its real name read straight into
+    ;; the next entry and produced a plausible-looking merged identifier
+    ;; (measured 2026-08-03: `nelisp-ec-current-bufferneli' = the 24-byte
+    ;; `nelisp-ec-current-buffer' plus 4 bytes of its neighbour).  The
+    ;; separator makes such an overrun stop at a NUL instead of silently
+    ;; concatenating, so the corruption is visible where it happens.
+    ;;
+    ;; The bump cursor also had no upper bound: once the 48 MiB name arena
+    ;; was exhausted it kept returning addresses outside the mapping.
+    ;; Returning 0 instead lets the caller fail loudly.
     (defun nl_intern_bump (n)
-      (and (ptr-write-u64 268436296 0
-                          (+ (ptr-read-u64 268436296 0) (if (= n 0) 1 n)))
-           (- (ptr-read-u64 268436296 0) (if (= n 0) 1 n))))
+      (let* ((need (+ (if (= n 0) 1 n) 1))
+             (cur (ptr-read-u64 268436296 0))
+             (end (+ (ptr-read-u64 268436288 0) 67108864)))
+        (if (> (+ cur need) end)
+            0
+          (and (ptr-write-u64 268436296 0 (+ cur need))
+               (ptr-write-u8 (+ cur (- need 1)) 0 0)
+               cur))))
     (defun nl_intern_write_sexp (result-slot buf n)
       (and (ptr-write-u8  result-slot 0  4)
            (ptr-write-u64 result-slot 8  (if (= n 0) 1 n))
            (ptr-write-u64 result-slot 16 buf)
            (ptr-write-u64 result-slot 24 n)
            result-slot))
+    ;; BUF = 0 means `nl_intern_bump' refused (region exhausted).  Writing the
+    ;; table slot anyway would publish a null name pointer that every later
+    ;; probe would dereference, so leave the slot empty and report failure.
     (defun nl_intern_insert (slot p n result-slot buf)
-      (and (nl_alloc_str_copy_loop p buf 0 n)
-           (ptr-write-u64 slot 0 (+ n 1))
-           (ptr-write-u64 slot 8 buf)
-           (nl_intern_write_sexp result-slot buf n)))
+      (if (= buf 0)
+          0
+        (and (nl_alloc_str_copy_loop p buf 0 n)
+             (ptr-write-u64 slot 0 (+ n 1))
+             (ptr-write-u64 slot 8 buf)
+             (nl_intern_write_sexp result-slot buf n))))
     (defun nl_intern_finish (slot p n result-slot)
       (if (= (ptr-read-u64 slot 0) 0)
           (nl_intern_insert slot p n result-slot (nl_intern_bump n))
@@ -274,9 +298,41 @@ lifetime of a Sexp value.  No `let' binding needed.")
                           bytes-ptr n)
          bytes-ptr n result-slot)))
 
+    ;; Doc-less guard (2026-08-04): a symbol name never contains a NUL, and
+    ;; interned names are NUL-separated in the bump arena, so a NUL inside
+    ;; [0,LEN) proves LEN ran past the real name.  Three corrupted symbols
+    ;; captured on magit loads all had this shape (a correct long name plus
+    ;; 3-4 bytes of the neighbouring entry), and the intern table only ever
+    ;; matches on an exact length, so the bad length arrives from the CALLER.
+    ;; Report at the call boundary, where the evaluator frames are still live
+    ;; and `bf_report_eval_stack' therefore names the actual caller chain.
+    ;; PRINT-ONLY: the symbol is still created exactly as before, so no
+    ;; currently-succeeding load changes behaviour.
+    (defun nl_alloc_symbol_scan_nul (bytes-ptr i n)
+      (if (>= i n)
+          0
+        (if (= (ptr-read-u8 bytes-ptr i) 0)
+            1
+          (nl_alloc_symbol_scan_nul bytes-ptr (+ i 1) n))))
+    (defun nl_alloc_symbol_report_overrun ()
+      (let* ((msg (alloc-bytes 24 1)))
+        (seq
+         (ptr-write-u64 msg 0 2322292198855173486)
+         (ptr-write-u64 (+ msg 8) 0 5705302362488133971)
+         (ptr-write-u64 (+ msg 16) 0 2900878127416662)
+         (bf_report_eval_stack)
+         (nl_os_write_stderr msg 23)
+         0)))
+
     ;; Public entry: nl_alloc_symbol(bytes_ptr, len, result_slot).
     (defun nl_alloc_symbol (bytes-ptr len result-slot)
-      (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot))
+      (seq
+       (if (= (nl_alloc_symbol_scan_nul
+               bytes-ptr 0 (if (< len 0) 0 len))
+              1)
+           (nl_alloc_symbol_report_overrun)
+         0)
+       (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot)))
 
     ;; ---- symbol-name LOOKUP WITHOUT INSERT (Doc 163 Phase C) ----
     ;; `nl_alloc_symbol' always inserts on a miss (= `intern' semantics: the

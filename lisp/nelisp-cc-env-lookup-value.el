@@ -58,6 +58,27 @@
 
 (defconst nelisp-cc-env-lookup-value--source
   '(seq
+    ;; globals record slot 3 is a flat-image-persistent alias count.  Old
+    ;; three-slot records mean zero aliases.  This makes the common zero-alias
+    ;; path byte-for-byte allocation-free and preserves frame-first lookup.
+    (defun nelisp_env_variable_alias_count (mirror-ptr)
+      (if (< (record-slot-count mirror-ptr) 4)
+          0
+        (sexp-int-unwrap (record-slot-ref-ptr mirror-ptr 3))))
+
+    ;; The standalone value representation compares symbols by name.  Treat
+    ;; the environment's private unbound marker as a lookup miss after either
+    ;; a mirror or frame-cell read, so `boundp', direct reads and
+    ;; `symbol-value' agree after `makunbound'.
+    ;; The sentinel's name deliberately starts with a control byte (0x01) so
+    ;; ordinary Elisp source cannot read a symbol equal to it: the standalone
+    ;; representation compares symbols by NAME, so a forgeable name made every
+    ;; value that merely *is* that symbol look unbound (measured: printing
+    ;; `(eq f 'nelisp--unbound-marker)' from library source signalled
+    ;; `void-variable').
+    (defun nelisp_env_value_is_unbound (value-ptr)
+      (symbol-name-eq value-ptr "\001elisp--unbound-marker"))
+
     ;; nelisp_env_lkv_mirror
     ;;
     ;; Mirror path (called on frame miss): check entry existence then
@@ -73,7 +94,40 @@
       (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
         (if (= entry 0)
             1
-          (and (record-slot-ref entry 0 out-ptr) 0))))
+          (seq
+           (record-slot-ref entry 0 out-ptr)
+           (nelisp_env_value_is_unbound out-ptr)))))
+
+    (defun nelisp_env_lookup_entry_value
+        (entry-ptr frames-ptr name-ptr out-ptr)
+      (let ((cell-ptr
+             (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+        (if (= cell-ptr 0)
+            (if (= entry-ptr 0)
+                1
+              (seq
+               (record-slot-ref entry-ptr 0 out-ptr)
+               (nelisp_env_value_is_unbound out-ptr)))
+          (seq
+           (extern-call nl_cell_get_value cell-ptr out-ptr)
+           (nelisp_env_value_is_unbound out-ptr)))))
+
+    (defun nelisp_env_lookup_value_alias
+        (mirror-ptr frames-ptr name-ptr out-ptr depth _pad)
+      (if (>= depth 64)
+          1
+        (let ((entry-ptr
+               (extern-call nelisp_mirror_lookup_entry
+                            mirror-ptr name-ptr)))
+          (if (and (not (= entry-ptr 0))
+                   (< 4 (record-slot-count entry-ptr))
+                   (= (sexp-tag (record-slot-ref-ptr entry-ptr 4)) 4))
+              (nelisp_env_lookup_value_alias
+               mirror-ptr frames-ptr
+               (record-slot-ref-ptr entry-ptr 4)
+               out-ptr (+ depth 1) 0)
+            (nelisp_env_lookup_entry_value
+             entry-ptr frames-ptr name-ptr out-ptr)))))
 
     ;; nelisp_env_lookup_value
     ;;
@@ -87,12 +141,17 @@
     ;; once for the cell-hit dispatch).  On frame-hit: 1 hash instead
     ;; of 2.  On frame-miss + mirror-hit: 2 hashes instead of 3.
     (defun nelisp_env_lookup_value (mirror-ptr frames-ptr name-ptr out-ptr)
-      (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
-        (if (= cell-ptr 0)
-            ;; Frame miss: check mirror.
-            (nelisp_env_lkv_mirror mirror-ptr name-ptr out-ptr 0)
-          ;; Frame hit: read cell value (refcount-safe).
-          (extern-call nl_cell_get_value cell-ptr out-ptr)))))
+      (if (= (nelisp_env_variable_alias_count mirror-ptr) 0)
+          (let ((cell-ptr
+                 (extern-call nelisp_frame_stack_find
+                              frames-ptr name-ptr)))
+            (if (= cell-ptr 0)
+                (nelisp_env_lkv_mirror mirror-ptr name-ptr out-ptr 0)
+              (seq
+               (extern-call nl_cell_get_value cell-ptr out-ptr)
+               (nelisp_env_value_is_unbound out-ptr))))
+        (nelisp_env_lookup_value_alias
+         mirror-ptr frames-ptr name-ptr out-ptr 0 0))))
   "AOT source for Wave a-2 `Env::lookup_value' body.
 
 R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:

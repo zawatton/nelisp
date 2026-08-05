@@ -215,6 +215,12 @@ join them with `concat'."
         (push (apply #'unibyte-string (nreverse bytes)) chunks)))
     (apply #'concat (nreverse chunks))))
 
+(defun nelisp-asm-x86_64--string-byte-at (string index)
+  "Return STRING's raw byte at INDEX."
+  (if (fboundp 'string-byte)
+      (string-byte string index)
+    (aref (string-as-unibyte string) index)))
+
 ;; ---- buffer abstraction (= §92.a (1)) ----
 ;;
 ;; Wave 19 — flat-vector buffer layout.  The buffer is a 7-slot
@@ -433,7 +439,10 @@ bump the length slot, instead of `(concat old bs)' which was O(N²)
 for long buffers.  Wave 19: direct aref / aset on the flat-vector
 layout replaces the plist-get / plist-put roundtrip."
   (aset buf 0 (cons bs (aref buf 0)))
-  (aset buf 1 (+ (aref buf 1) (length bs)))
+  (aset buf 1 (+ (aref buf 1)
+                 (if (fboundp 'string-bytes)
+                     (string-bytes bs)
+                   (length bs))))
   buf)
 
 ;; ---- Wave 20 — hand-inline emit macros for hot prologue/epilogue path ----
@@ -837,12 +846,15 @@ subsequent `buffer-bytes' calls remain O(total-bytes))."
   (let* ((bytes  (apply #'concat (nreverse (copy-sequence (aref buf 0)))))
          (labels (aref buf 2))
          (fixups (aref buf 3))
+         (n (if (fboundp 'string-bytes)
+                (string-bytes bytes)
+              (length bytes)))
+         (byte-at #'nelisp-asm-x86_64--string-byte-at)
          ;; Build mutable vector so we can aset.
-         (n (length bytes))
          (vec (make-vector n 0))
          (i 0))
     (while (< i n)
-      (aset vec i (aref bytes i))
+      (aset vec i (funcall byte-at bytes i))
       (setq i (1+ i)))
     (dolist (fix fixups)
       (let* ((slot (car fix))

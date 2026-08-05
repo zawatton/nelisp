@@ -114,15 +114,21 @@
     (defun nelisp_reader_p_spare_idx (d) (+ 6 (* d 4)))
 
     ;; ===========================================================
-    ;; Slot address helper (Doc 147 Phase 1.5 Group P).  The slot-pool
-    ;; is now a RAW 32B-slot buffer (alloc-bytes (* cap 32) 8) rather
-    ;; than a GC-managed Sexp::Vector.  Slot N lives at BASE + N*32.
-    ;; This is a pure idempotent address — exactly like the old
-    ;; `vector-ref-ptr' on a 32B-stride Vector — so recursive
-    ;; write-through composes identically.
+    ;; Slot address helper (Doc 147 Phase 1.5 Group P).  BASE points 16
+    ;; bytes into the pool's owning allocation: cap is at BASE-16 and
+    ;; used/high-water is at BASE-8.  Slot N lives at BASE + N*32.
+    ;; Recording max(used,N+1) lets every GC arm walk this pool's live
+    ;; prefix without consulting process-global state.
     ;; ===========================================================
 
-    (defun nelisp_reader_p_slot (base n) (+ base (* n 32)))
+    (defun nelisp_reader_p_slot (base n)
+      (let ((next (+ n 1))
+            (used (ptr-read-u64 (- base 8) 0)))
+        (seq
+         (if (> next used)
+             (ptr-write-u64 (- base 8) 0 next)
+           0)
+         (+ base (* n 32)))))
 
     ;; ===========================================================
     ;; ASCII digit predicate.
@@ -1056,8 +1062,23 @@
 
     (defun nelisp_reader_parse_one
         (str-ptr cursor-slot result-slot slot-pool depth)
-      (nelisp_reader_p_parse_at
-       str-ptr cursor-slot result-slot slot-pool depth)))
+      (let ((i 0)
+            (used (ptr-read-u64 (- slot-pool 8) 0)))
+        (seq
+         ;; The pool is reused between top-level forms.  Clear only its
+         ;; previous high-water prefix so stale pointers cannot become GC
+         ;; roots.  Do not call `nelisp_reader_p_slot' here: reset itself
+         ;; must not raise the new parse's high-water mark.
+         (while (< i used)
+           (seq
+            (ptr-write-u64 (+ slot-pool (* i 32)) 0 0)
+            (ptr-write-u64 (+ slot-pool (* i 32)) 8 0)
+            (ptr-write-u64 (+ slot-pool (* i 32)) 16 0)
+            (ptr-write-u64 (+ slot-pool (* i 32)) 24 0)
+            (setq i (+ i 1))))
+         (ptr-write-u64 (- slot-pool 8) 0 0)
+         (nelisp_reader_p_parse_at
+          str-ptr cursor-slot result-slot slot-pool depth)))))
 
   "AOT source for Doc 116 §116.B pure-elisp Reader parser.
 

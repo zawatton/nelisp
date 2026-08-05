@@ -211,6 +211,83 @@ defun's param count (= first slot after param spill area).  Each
 that binding.  Nil at top level (= outside any defun parse), where
 runtime `let' is not yet supported.")
 
+(defvar nelisp-aot-compiler--scratch-temp-slot nil
+  "Per-defun rotating scratch-vector temp slot allocator state.
+Bound to a mutable single-cell list during a defun body parse.  The
+free-variable value lowering claims scratch vector slots 16..31
+round-robin so staged argument pointers never alias the shared
+boundary `out' / `name_slot' blocks (Doc 147 word-vector scratch).")
+
+(defun nelisp-aot-compiler--claim-scratch-temp-slot ()
+  "Return the next rotating scratch-vector temp slot index (16..31)."
+  (unless nelisp-aot-compiler--scratch-temp-slot
+    (signal 'nelisp-aot-compiler-error
+            (list :scratch-temp-requires-defun-context)))
+  (let ((n (car nelisp-aot-compiler--scratch-temp-slot)))
+    (setcar nelisp-aot-compiler--scratch-temp-slot (1+ n))
+    (+ 16 (mod n 16))))
+
+(defvar nelisp-aot-compiler--boxed-param-word-abi t
+  "Doc 166: non-nil switches user-el AOT defun params to value words.
+When nil (default) the historical raw payload-word parameter ABI is
+byte-for-byte preserved.  Stage C flips this together with the
+boundary `wf_argword' switch; until then all Doc 166 machinery is
+dormant.")
+
+(defvar nelisp-aot-compiler--user-el-aot-context nil
+  "Doc 166: non-nil only while compiling user-el artifact defuns.
+Bound by the nelisp-artifact native compile entries.  The standalone
+cc-unit build also enables `--allow-external-user-calls', so that
+variable cannot discriminate the two worlds; this one does.  All
+boxed-param word-ABI machinery activates only when BOTH this and
+`nelisp-aot-compiler--boxed-param-word-abi' are non-nil.")
+
+(defun nelisp-aot-compiler--ir-vclass (node)
+  "Return IR NODE's static value class: `word' or `raw'.
+Doc 166 §2.3.  Nodes without an explicit `:vclass' default to `raw'
+(the historical Phase 47 machine-integer surface)."
+  (or (and node (nelisp-aot-compiler--ir-get node :vclass)) 'raw))
+
+(defun nelisp-aot-compiler--coerce-raw (ir env fenv defuns)
+  "Doc 166 §2.3: wrap word-class IR into a `word-to-raw' decode.
+No-op unless the boxed-param ABI is on and IR is word-class."
+  (if (and nelisp-aot-compiler--boxed-param-word-abi
+           nelisp-aot-compiler--user-el-aot-context
+           (eq (nelisp-aot-compiler--ir-vclass ir) 'word))
+      (nelisp-aot-compiler--make-ir 'word-to-raw
+            :value ir
+            :env (nelisp-aot-compiler--parse-value 'mirror env fenv defuns)
+            :out (nelisp-aot-compiler--parse-value 'out env fenv defuns))
+    ir))
+
+(defun nelisp-aot-compiler--coerce-truth (ir env fenv defuns)
+  "Doc 166 §2.3: coerce word-class IR to a raw truth value.
+Elisp truth over value words: only nil (word 3) is false, so
+`(logxor word 3)' yields 0 exactly for nil — integer 0 (word 1)
+stays truthy, matching Elisp semantics for the first time on this
+path.  No-op unless the boxed-param ABI is on and IR is word-class."
+  (ignore env fenv defuns)
+  (if (and nelisp-aot-compiler--boxed-param-word-abi
+           nelisp-aot-compiler--user-el-aot-context
+           (eq (nelisp-aot-compiler--ir-vclass ir) 'word))
+      (nelisp-aot-compiler--make-ir 'arith
+            :op 'logxor
+            :a ir
+            :b (nelisp-aot-compiler--make-ir 'imm :value 3))
+    ir))
+
+(defun nelisp-aot-compiler--coerce-word (ir)
+  "Doc 166 §2.3: wrap raw-class IR into a `raw-to-word' encode.
+Total for statically-raw values (always integers by construction).
+No-op unless the boxed-param ABI is on and IR is raw-class."
+  (if (and nelisp-aot-compiler--boxed-param-word-abi
+           nelisp-aot-compiler--user-el-aot-context
+           (eq (nelisp-aot-compiler--ir-vclass ir) 'raw))
+      (nelisp-aot-compiler--make-ir 'raw-to-word
+            :vclass 'word
+            :value ir)
+    ir))
+
 (defvar nelisp-aot-compiler--table-vaddrs nil
   "Alist `((NAME . VADDR) ...)' of absolute vaddrs for static-imm32 tables.
 Bound by `--pass' before emit so `--emit-table-lookup' can resolve
@@ -225,6 +302,43 @@ Doc 129 uses this only while producing ET_REL objects for user `.el'
 modules.  Static executable output keeps the stricter historical rule:
 ordinary calls must target a same-unit AOT defun unless they use
 the explicit `extern-call' surface.")
+
+(defvar nelisp-aot-compiler--external-native-symbols nil
+  "Global native function names available outside the current compile unit.
+Nil preserves the historical object-mode policy: every unknown symbol-head
+call becomes a direct external relocation.  When non-nil, only names in this
+list retain that direct native-call lowering; other unknown calls use the
+boxed `nelisp_aot_builtin_calln' boundary when available.
+
+Entries may be symbols or strings.  This variable is dynamically bound by a
+chunked artifact compile plan after it has collected the artifact-wide native
+definition set.")
+
+(defconst nelisp-aot-compiler--aot-builtinn-max-argc 8
+  "Maximum user argument count accepted by `nelisp_aot_builtin_calln'.")
+
+(defconst nelisp-aot-compiler--aot-vararg-bridge-max-argc 8
+  "Maximum trailing argument count for fixed-width AOT vararg bridges.
+The standalone `nelisp_aot_funcalln', `nelisp_aot_applyn', and
+`nelisp_aot_listn' bridge ABIs expose only a0 through a7.")
+
+(defun nelisp-aot-compiler--check-aot-vararg-bridge-argc
+    (bridge argc sexp)
+  "Reject BRIDGE use with ARGC beyond the standalone ABI for SEXP."
+  (when (> argc nelisp-aot-compiler--aot-vararg-bridge-max-argc)
+    (signal 'nelisp-aot-compiler-error
+            (list :aot-vararg-bridge-too-many-args
+                  bridge
+                  :maximum nelisp-aot-compiler--aot-vararg-bridge-max-argc
+                  :got argc
+                  :form sexp))))
+
+(defun nelisp-aot-compiler--external-native-symbol-p (symbol)
+  "Return non-nil when SYMBOL is in the artifact-wide native allowlist."
+  (and nelisp-aot-compiler--external-native-symbols
+       (or (memq symbol nelisp-aot-compiler--external-native-symbols)
+           (member (symbol-name symbol)
+                   nelisp-aot-compiler--external-native-symbols))))
 
 (defun nelisp-aot-compiler--x86_64-push-width (reg)
   "Return the encoded byte width of `push REG' in the current backend subset."
@@ -732,6 +846,8 @@ at its kind-fixed offset since per-kind layout is constant."
 (defconst nelisp-aot-compiler--ir-kind-tags
   '((alloc-bytes . 0)
     (addr-of . 97)
+    (word-to-raw . 104)
+    (raw-to-word . 105)
     (data-addr . 99)
     (data-blob . 102)
     (arith . 1)
@@ -981,7 +1097,9 @@ START-SLOT is the first reserved frame slot after source parameters."
           (extra nil))
       (dolist (sym nelisp-aot-compiler--object-hidden-boundary-symbols)
         (unless (assq sym fenv)
-          (push (cons sym (list :slot slot :class 'gp :root-p t)) extra)
+          (push (cons sym (list :slot slot :class 'gp :vclass 'word
+                                :root-p t))
+                extra)
           (setq slot (1+ slot))))
       (let ((count (length extra)))
         (list :fenv (append (nreverse extra) fenv)
@@ -4235,7 +4353,10 @@ caller-owned boundary params in the current defun:
     (unless (= (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
               (list :aot-builtin1-call-arity sexp)))
-    (let* ((arg (nth 1 sexp))
+    (let* ((arg (if (and nelisp-aot-compiler--boxed-param-word-abi
+                         nelisp-aot-compiler--user-el-aot-context)
+                    (nelisp-aot-compiler--aot-value-arg-expr (nth 1 sexp))
+                  (nth 1 sexp)))
            (boundary
             (nelisp-aot-compiler--aot-builtin1-boundary-symbols
              fenv sexp))
@@ -4344,8 +4465,15 @@ caller-owned boundary params in the current defun:
                                  (cdr (assq idx keyword-slot-alist)))
                                 ((assq idx designator-slot-alist)
                                  (cdr (assq idx designator-slot-alist)))
-                                (t arg)))
-            args))
+                                (t (if (and nelisp-aot-compiler--boxed-param-word-abi
+                                            nelisp-aot-compiler--user-el-aot-context)
+                                       (nelisp-aot-compiler--aot-value-arg-expr
+                                        arg)
+                                     arg))))
+            (if (and nelisp-aot-compiler--boxed-param-word-abi
+                     nelisp-aot-compiler--user-el-aot-context)
+                (mapcar #'nelisp-aot-compiler--aot-value-arg-expr args)
+              args)))
          (arg-prefix
           (append
            (cl-loop for idx in keyword-positions
@@ -4549,6 +4677,35 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
+(defconst nelisp-aot-compiler--aot-value-word-int-limit (expt 2 61)
+  "Exclusive magnitude bound for immediate integer value words.
+The Doc 147 value-word encoding is 4N+1 inside a signed 64-bit
+register, so N must satisfy -2^61 <= N < 2^61.")
+
+(defun nelisp-aot-compiler--aot-value-arg-expr (form)
+  "Return FORM lowered for a Doc 129.7 boxed-value argument position.
+Self-evaluating scalar literals become their canonical immediate
+value words (integer N -> 4N+1, nil -> 3, t -> 7), which
+`nl_val_clone_into' / `nl_val_load' accept directly (low bit 1).
+Any other FORM (variables, quoted symbols, strings, nested
+expressions) already yields a slot-pointer word and passes through
+unchanged.  Raw scalar literals must not reach the bridge: an even
+raw word is dereferenced as a slot pointer (SIGSEGV), and an odd
+raw word is silently misread as a different integer."
+  (cond
+   ((integerp form)
+    (unless (and (>= form (- nelisp-aot-compiler--aot-value-word-int-limit))
+                 (< form nelisp-aot-compiler--aot-value-word-int-limit))
+      (signal 'nelisp-aot-compiler-error
+              (list :aot-value-arg-int-range form)))
+    (+ (* form 4) 1))
+   ((null form) 3)
+   ((eq form t) 7)
+   (t (if (and nelisp-aot-compiler--boxed-param-word-abi
+               nelisp-aot-compiler--user-el-aot-context)
+          `(value-word-of ,form)
+        form))))
+
 (defun nelisp-aot-compiler--parse-aot-funcall1
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG)' through the Doc 129.7 one-arg dispatcher."
@@ -4568,7 +4725,7 @@ caller-owned boundary params in the current defun:
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
-         (arg (nth 2 sexp)))
+         (arg (nelisp-aot-compiler--aot-value-arg-expr (nth 2 sexp))))
     (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
@@ -4601,8 +4758,8 @@ caller-owned boundary params in the current defun:
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
-         (arg0 (nth 2 sexp))
-         (arg1 (nth 3 sexp)))
+         (arg0 (nelisp-aot-compiler--aot-value-arg-expr (nth 2 sexp)))
+         (arg1 (nelisp-aot-compiler--aot-value-arg-expr (nth 3 sexp))))
     (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
@@ -4635,9 +4792,9 @@ caller-owned boundary params in the current defun:
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
-         (arg0 (nth 2 sexp))
-         (arg1 (nth 3 sexp))
-         (arg2 (nth 4 sexp)))
+         (arg0 (nelisp-aot-compiler--aot-value-arg-expr (nth 2 sexp)))
+         (arg1 (nelisp-aot-compiler--aot-value-arg-expr (nth 3 sexp)))
+         (arg2 (nelisp-aot-compiler--aot-value-arg-expr (nth 4 sexp))))
     (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
@@ -4652,6 +4809,8 @@ caller-owned boundary params in the current defun:
   (when (< (length sexp) 6)
     (signal 'nelisp-aot-compiler-error
             (list :aot-funcalln-arity sexp)))
+  (nelisp-aot-compiler--check-aot-vararg-bridge-argc
+   'nelisp_aot_funcalln (- (length sexp) 2) sexp)
   (let* ((boundary
           (nelisp-aot-compiler--aot-funcall1-boundary-symbols
            fenv sexp))
@@ -4665,7 +4824,8 @@ caller-owned boundary params in the current defun:
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
-         (args (nthcdr 2 sexp))
+         (args (mapcar #'nelisp-aot-compiler--aot-value-arg-expr
+                       (nthcdr 2 sexp)))
          (argc (length args)))
     (nelisp-aot-compiler--parse-value
      `(seq
@@ -4681,6 +4841,8 @@ caller-owned boundary params in the current defun:
   (when (< (length sexp) 3)
     (signal 'nelisp-aot-compiler-error
             (list :aot-apply-arity sexp)))
+  (nelisp-aot-compiler--check-aot-vararg-bridge-argc
+   'nelisp_aot_applyn (- (length sexp) 2) sexp)
   (let* ((boundary
           (nelisp-aot-compiler--aot-funcall1-boundary-symbols
            fenv sexp))
@@ -4694,7 +4856,8 @@ caller-owned boundary params in the current defun:
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
-         (apply-args (nthcdr 2 sexp))
+         (apply-args (mapcar #'nelisp-aot-compiler--aot-value-arg-expr
+                             (nthcdr 2 sexp)))
          (argc (length apply-args)))
     (nelisp-aot-compiler--parse-value
      (if (= argc 1)
@@ -7772,24 +7935,34 @@ functions `((NAME . ARITY) ...)'."
                   :reg (plist-get info :reg)
                   :slot (plist-get info :slot)
                   :class (or (plist-get info :class) 'gp)
+                  :vclass (plist-get info :vclass)
                   :root-p (plist-get info :root-p)))
         (if (and nelisp-aot-compiler--allow-external-user-calls
                  (nelisp-aot-compiler--fenv-has-symbol-p fenv 'out)
                  (nelisp-aot-compiler--fenv-has-symbol-p fenv 'mirror)
                  (nelisp-aot-compiler--fenv-has-symbol-p fenv 'frames)
+                 (nelisp-aot-compiler--fenv-has-symbol-p fenv 'scratch)
                  (or (nelisp-aot-compiler--fenv-has-symbol-p
                       fenv 'name-slot)
                      (nelisp-aot-compiler--fenv-has-symbol-p
                       fenv 'name_slot)))
-            (let ((name-slot
-                   (nelisp-aot-compiler--aot-name-slot-symbol
-                    fenv sexp)))
+            ;; Stage the symbol name and the looked-up value into rotating
+            ;; scratch-vector temp slots instead of the shared boundary
+            ;; `name_slot' / `out' blocks: bridge call sites stage POINTERS
+            ;; to these slots, so a shared slot means every later free-var
+            ;; materialization clobbers the earlier staged args (measured
+            ;; miscompile: `(list q-v1 q-v2)' passed two aliased pointers).
+            (let ((name-idx (nelisp-aot-compiler--claim-scratch-temp-slot))
+                  (value-idx (nelisp-aot-compiler--claim-scratch-temp-slot)))
               (nelisp-aot-compiler--parse-value
                `(seq
-                 (sexp-write-symbol-lit ,name-slot ,(symbol-name sexp))
+                 (sexp-write-symbol-lit (vector-ref-ptr scratch ,name-idx)
+                                        ,(symbol-name sexp))
                  (extern-call nelisp_env_lookup_value
-                              mirror frames ,name-slot out)
-                 out)
+                              mirror frames
+                              (vector-ref-ptr scratch ,name-idx)
+                              (vector-ref-ptr scratch ,value-idx))
+                 (vector-ref-ptr scratch ,value-idx))
                env fenv defuns))
           (signal 'nelisp-aot-compiler-error
                   (list :free-symbol sexp
@@ -7820,8 +7993,14 @@ functions `((NAME . ARITY) ...)'."
         (let* ((var (car pairs))
                (pcell (assq var fenv))
                (slot (plist-get (cdr pcell) :slot))
-               (value-ir (nelisp-aot-compiler--parse-value
-                          (cadr pairs) env fenv defuns)))
+               (cell-vclass (or (plist-get (cdr pcell) :vclass) 'raw))
+               (value-ir
+                (let ((parsed (nelisp-aot-compiler--parse-value
+                               (cadr pairs) env fenv defuns)))
+                  (if (eq cell-vclass 'word)
+                      (nelisp-aot-compiler--coerce-word parsed)
+                    (nelisp-aot-compiler--coerce-raw
+                     parsed env fenv defuns)))))
           (push (nelisp-aot-compiler--make-ir 'setq-local
                        :var var
                        :slot slot
@@ -7941,10 +8120,14 @@ functions `((NAME . ARITY) ...)'."
               (list :arith-arity (car sexp) sexp)))
     (nelisp-aot-compiler--make-ir 'arith
           :op (car sexp)
-          :a (nelisp-aot-compiler--parse-value
-              (nth 1 sexp) env fenv defuns)
-          :b (nelisp-aot-compiler--parse-value
-              (nth 2 sexp) env fenv defuns)))
+          :a (nelisp-aot-compiler--coerce-raw
+              (nelisp-aot-compiler--parse-value
+               (nth 1 sexp) env fenv defuns)
+              env fenv defuns)
+          :b (nelisp-aot-compiler--coerce-raw
+              (nelisp-aot-compiler--parse-value
+               (nth 2 sexp) env fenv defuns)
+              env fenv defuns)))
    ;; Doc 110 §110.E.1 f64 arithmetic — flat binop form only
    ;; (`f64-add' / `f64-sub' / `f64-mul' / `f64-div').  Each arm
    ;; is `(f64-OP A B)' where A, B are themselves value-producing
@@ -7994,10 +8177,14 @@ functions `((NAME . ARITY) ...)'."
               (list :shift-arity (car sexp) sexp)))
     (nelisp-aot-compiler--make-ir 'shift
           :op (car sexp)
-          :a (nelisp-aot-compiler--parse-value
-              (nth 1 sexp) env fenv defuns)
-          :b (nelisp-aot-compiler--parse-value
-              (nth 2 sexp) env fenv defuns)))
+          :a (nelisp-aot-compiler--coerce-raw
+              (nelisp-aot-compiler--parse-value
+               (nth 1 sexp) env fenv defuns)
+              env fenv defuns)
+          :b (nelisp-aot-compiler--coerce-raw
+              (nelisp-aot-compiler--parse-value
+               (nth 2 sexp) env fenv defuns)
+              env fenv defuns)))
 	   ;; Comparison op (= < > <= >= =).
 	   ((and (consp sexp)
 	         (memq (car sexp) nelisp-aot-compiler--cmp-ops)
@@ -8017,30 +8204,53 @@ functions `((NAME . ARITY) ...)'."
 	              (list :cmp-arity (car sexp) sexp)))
     (nelisp-aot-compiler--make-ir 'cmp
           :op (car sexp)
-          :a (nelisp-aot-compiler--parse-value
-              (nth 1 sexp) env fenv defuns)
-          :b (nelisp-aot-compiler--parse-value
-              (nth 2 sexp) env fenv defuns)))
+          :a (nelisp-aot-compiler--coerce-raw
+              (nelisp-aot-compiler--parse-value
+               (nth 1 sexp) env fenv defuns)
+              env fenv defuns)
+          :b (nelisp-aot-compiler--coerce-raw
+              (nelisp-aot-compiler--parse-value
+               (nth 2 sexp) env fenv defuns)
+              env fenv defuns)))
    ;; (if TEST THEN ELSE) — control-flow value form.
    ((and (consp sexp) (eq (car sexp) 'if))
     (unless (= (length sexp) 4)
       (signal 'nelisp-aot-compiler-error
               (list :if-arity sexp)))
-    (nelisp-aot-compiler--make-ir 'if
-          :id (nelisp-aot-compiler--gensym "if")
-          :test (nelisp-aot-compiler--parse-value
-                 (nth 1 sexp) env fenv defuns)
-          :then (nelisp-aot-compiler--parse-value
-                 (nth 2 sexp) env fenv defuns)
-          :else (nelisp-aot-compiler--parse-value
-                 (nth 3 sexp) env fenv defuns)))
+    (let* ((then-ir (nelisp-aot-compiler--parse-value
+                     (nth 2 sexp) env fenv defuns))
+           (else-ir (nelisp-aot-compiler--parse-value
+                     (nth 3 sexp) env fenv defuns))
+           (mixed (and nelisp-aot-compiler--boxed-param-word-abi
+                       nelisp-aot-compiler--user-el-aot-context
+                       (not (eq (nelisp-aot-compiler--ir-vclass then-ir)
+                                (nelisp-aot-compiler--ir-vclass else-ir)))))
+           (then-ir (if mixed
+                        (nelisp-aot-compiler--coerce-word then-ir)
+                      then-ir))
+           (else-ir (if mixed
+                        (nelisp-aot-compiler--coerce-word else-ir)
+                      else-ir)))
+      (nelisp-aot-compiler--make-ir 'if
+            :id (nelisp-aot-compiler--gensym "if")
+            :vclass (if mixed
+                        'word
+                      (nelisp-aot-compiler--ir-vclass then-ir))
+            :test (nelisp-aot-compiler--coerce-truth
+                   (nelisp-aot-compiler--parse-value
+                    (nth 1 sexp) env fenv defuns)
+                   env fenv defuns)
+            :then then-ir
+            :else else-ir)))
    ;; (while TEST BODY...) — returns 0 after loop exit.
    ((and (consp sexp) (eq (car sexp) 'while))
     (unless (>= (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
               (list :while-arity sexp)))
-    (let ((test (nelisp-aot-compiler--parse-value
-                 (nth 1 sexp) env fenv defuns))
+    (let ((test (nelisp-aot-compiler--coerce-truth
+                 (nelisp-aot-compiler--parse-value
+                  (nth 1 sexp) env fenv defuns)
+                 env fenv defuns))
           ;; Multiple body forms wrap as an implicit seq of value
           ;; forms; each result is discarded except the last (=
           ;; rax) which `while' itself overwrites with 0 on exit.
@@ -8096,8 +8306,10 @@ functions `((NAME . ARITY) ...)'."
             :op op
             :id (nelisp-aot-compiler--gensym (symbol-name op))
             :forms (mapcar (lambda (e)
-                             (nelisp-aot-compiler--parse-value
-                              e env fenv defuns))
+                             (nelisp-aot-compiler--coerce-truth
+                              (nelisp-aot-compiler--parse-value
+                               e env fenv defuns)
+                              env fenv defuns))
                            args))))
    ;; Doc 129.1: value-context sequence, produced by macro-expanded
    ;; multi-form `progn'.  Every child must itself be value-producing;
@@ -8108,11 +8320,14 @@ functions `((NAME . ARITY) ...)'."
       (when (null children)
         (signal 'nelisp-aot-compiler-error
                 (list :empty-value-seq sexp)))
-      (nelisp-aot-compiler--make-ir 'value-seq
-            :forms (mapcar (lambda (e)
+      (let ((forms (mapcar (lambda (e)
                              (nelisp-aot-compiler--parse-value
                               e env fenv defuns))
-                           children))))
+                           children)))
+        (nelisp-aot-compiler--make-ir 'value-seq
+              :vclass (nelisp-aot-compiler--ir-vclass
+                       (car (last forms)))
+              :forms forms))))
    ;; Doc 129.7X: escaping literal lambda values materialize as
    ;; canonical runtime heap closures, not synthetic defun symbols.
    ((and (consp sexp) (eq (car sexp) 'aot-closure-lambda))
@@ -8207,6 +8422,7 @@ functions `((NAME . ARITY) ...)'."
          (memq (car sexp)
                nelisp-aot-compiler--aot-builtin1-delegation-symbols)
          (not (assq (car sexp) defuns))
+         (not (nelisp-aot-compiler--external-native-symbol-p (car sexp)))
          (or (= (length sexp) 2)
              (not nelisp-aot-compiler--allow-external-user-calls))
          (or (not nelisp-aot-compiler--allow-external-user-calls)
@@ -8222,6 +8438,7 @@ functions `((NAME . ARITY) ...)'."
          (memq (car sexp)
                nelisp-aot-compiler--aot-builtinn-delegation-symbols)
          (not (assq (car sexp) defuns))
+         (not (nelisp-aot-compiler--external-native-symbol-p (car sexp)))
          (or (not nelisp-aot-compiler--allow-external-user-calls)
              (nelisp-aot-compiler--aot-builtin-boundary-available-p
               fenv)))
@@ -8696,11 +8913,53 @@ functions `((NAME . ARITY) ...)'."
                 (nth 2 sexp) env fenv defuns)
           :slot (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
+   ;; Doc 166 §2.3 — `(value-word-of X)': ensure X is a canonical value
+   ;; word.  Word-class X passes through; raw-class X (statically an
+   ;; integer) wraps in `raw-to-word'.  Used by the bridge argument
+   ;; lowerings for non-literal argument forms under the boxed-param ABI.
+   ((and (consp sexp) (eq (car sexp) 'value-word-of))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :value-word-of-arity sexp)))
+    (nelisp-aot-compiler--coerce-word
+     (nelisp-aot-compiler--parse-value (nth 1 sexp) env fenv defuns)))
+   ;; Doc 166 §2.3 — `(word->raw X)': canonical value word -> raw machine
+   ;; integer.  Immediate words decode as (word-1)/4 in the helper's fast
+   ;; path; pointer words tag-check the 32B slot (Int -> payload, anything
+   ;; else -> clean wrong-type stash through the boundary error plumbing),
+   ;; so the op is only valid inside boundary defuns.  Dormant until the
+   ;; Stage C flip; nothing emits it while
+   ;; `nelisp-aot-compiler--boxed-param-word-abi' is nil.
+   ((and (consp sexp) (eq (car sexp) 'word->raw))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :word-to-raw-arity sexp)))
+    (unless (and (nelisp-aot-compiler--fenv-has-symbol-p fenv 'mirror)
+                 (nelisp-aot-compiler--fenv-has-symbol-p fenv 'out))
+      (signal 'nelisp-aot-compiler-error
+              (list :word-to-raw-boundary-missing sexp)))
+    (nelisp-aot-compiler--make-ir 'word-to-raw
+          :value (nelisp-aot-compiler--parse-value
+                  (nth 1 sexp) env fenv defuns)
+          :env (nelisp-aot-compiler--parse-value 'mirror env fenv defuns)
+          :out (nelisp-aot-compiler--parse-value 'out env fenv defuns)))
+   ;; Doc 166 §2.3 — `(raw->word X)': raw machine integer -> immediate
+   ;; value word 4N+1.  Total for statically-raw values (always integers
+   ;; by construction).  Result is word-class.
+   ((and (consp sexp) (eq (car sexp) 'raw->word))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-aot-compiler-error
+              (list :raw-to-word-arity sexp)))
+    (nelisp-aot-compiler--make-ir 'raw-to-word
+          :vclass 'word
+          :value (nelisp-aot-compiler--parse-value
+                  (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'vector-ref-ptr))
     (unless (= (length sexp) 3)
       (signal 'nelisp-aot-compiler-error
               (list :vector-ref-ptr-arity sexp)))
     (nelisp-aot-compiler--make-ir 'vector-ref-ptr
+          :vclass 'word
           :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-aot-compiler--parse-value
@@ -9705,46 +9964,31 @@ functions `((NAME . ARITY) ...)'."
         (signal 'nelisp-aot-compiler-error
                 (list :too-many-args name arity)))
       (if (nelisp-aot-compiler--defun-signature-rest-p signature)
-          (let* ((fixed-count
-                  (nelisp-aot-compiler--defun-signature-fixed-count
-                   signature))
-                 (min-count
-                  (nelisp-aot-compiler--defun-signature-min-count
-                   signature))
-                 (given (length args)))
-            (when (< given min-count)
+          ;; Doc 129.7 gap: a same-unit direct call cannot populate the
+          ;; callee's boundary rt slots (only the native-call-boundary
+          ;; trampoline pre-spills out/mirror/frames/scratch/name_slot), so
+          ;; the &rest callee read uninitialized frame slots (measured SEGV),
+          ;; and the raw fixed-arg convention feeds the callee's bridge arms
+          ;; the wrong representation.  Route the call through the ordinary
+          ;; funcall dispatcher instead: the quoted-symbol designator
+          ;; resolves via the mirror to the callee's native wrapper, which
+          ;; enters through the boundary with correct rt slots, boxed
+          ;; arguments, and result contract.
+          (let ((min-count
+                 (nelisp-aot-compiler--defun-signature-min-count
+                  signature)))
+            (when (< (length args) min-count)
               (signal 'nelisp-aot-compiler-error
                       (list :call-arity-mismatch name
                             :expected-at-least min-count
-                            :got given)))
-            (let* ((boundary
-                    (nelisp-aot-compiler--aot-funcall1-boundary-symbols
-                     fenv sexp))
-                   (out (plist-get boundary :out))
-                   (mirror (plist-get boundary :mirror))
-                   (frames (plist-get boundary :frames))
-                   (scratch (plist-get boundary :scratch))
-                   (given-fixed (min given fixed-count))
-                   (fixed-args
-                    (append (cl-subseq args 0 given-fixed)
-                            (make-list (- fixed-count given-fixed) 0)))
-                   (rest-args (nthcdr fixed-count args))
-                   (list-node
-                    (nelisp-aot-compiler--parse-value
-                     `(extern-call nelisp_aot_listn
-                                   ,mirror ,frames ,(length rest-args)
-                                   ,scratch ,out ,@rest-args)
-                     env fenv defuns))
-                   (call-node
-                    (nelisp-aot-compiler--make-ir 'call
-                          :name name
-                          :args (mapcar
-                                 (lambda (a)
-                                   (nelisp-aot-compiler--parse-value
-                                    a env fenv defuns))
-                                 (append fixed-args (list scratch))))))
-              (nelisp-aot-compiler--make-ir 'value-seq
-                    :forms (list list-node call-node))))
+                            :got (length args))))
+            (when (null args)
+              (signal 'nelisp-aot-compiler-error
+                      (list :aot-rest-call-zero-args-unsupported name
+                            :form sexp)))
+            (nelisp-aot-compiler--parse-value
+             `(funcall (quote ,name) ,@args)
+             env fenv defuns))
         (let ((min-count
                (nelisp-aot-compiler--defun-signature-min-count
                 signature)))
@@ -9755,9 +9999,14 @@ functions `((NAME . ARITY) ...)'."
                           :expected arity :got (length args)))))
         (nelisp-aot-compiler--make-ir 'call
               :name name
+              :vclass (if (and nelisp-aot-compiler--boxed-param-word-abi
+                               nelisp-aot-compiler--user-el-aot-context)
+                          'word
+                        'raw)
               :args (mapcar (lambda (a)
-                              (nelisp-aot-compiler--parse-value
-                               a env fenv defuns))
+                              (nelisp-aot-compiler--coerce-word
+                               (nelisp-aot-compiler--parse-value
+                                a env fenv defuns)))
                             (append args
                                     (make-list (- arity (length args))
                                                0)))))))
@@ -9772,15 +10021,35 @@ functions `((NAME . ARITY) ...)'."
          (not (memq (car sexp)
                     nelisp-aot-compiler--external-user-call-reserved-ops)))
     (let* ((name (car sexp))
-           (raw-args (cdr sexp))
-           (parsed (nelisp-aot-compiler--parse-extern-call-args
-                    'extern-call name raw-args env fenv defuns)))
-      (nelisp-aot-compiler--make-ir 'extern-call
-            :name name
-            :ret-class 'gp
-            :args (plist-get parsed :args)
-            :varargs-p (plist-get parsed :varargs-p)
-            :f64-count (plist-get parsed :f64-count))))
+           (raw-args (cdr sexp)))
+      (cond
+       ;; Nil policy remains byte-for-byte compatible with the historical
+       ;; object-mode behavior.  A non-nil artifact-wide allowlist keeps only
+       ;; known cross-section native definitions on the direct PLT32 path.
+       ((or (null nelisp-aot-compiler--external-native-symbols)
+            (nelisp-aot-compiler--external-native-symbol-p name))
+        (let ((parsed (nelisp-aot-compiler--parse-extern-call-args
+                       'extern-call name raw-args env fenv defuns)))
+          (nelisp-aot-compiler--make-ir 'extern-call
+                :name name
+                :ret-class 'gp
+                :args (plist-get parsed :args)
+                :varargs-p (plist-get parsed :varargs-p)
+                :f64-count (plist-get parsed :f64-count))))
+       ((not (nelisp-aot-compiler--aot-builtin-boundary-available-p fenv))
+        (signal 'nelisp-aot-compiler-error
+                (list :external-user-call-boundary-missing
+                      name :form sexp)))
+       ((> (length raw-args) nelisp-aot-compiler--aot-builtinn-max-argc)
+        (signal 'nelisp-aot-compiler-error
+                (list :external-user-call-too-many-args
+                      name
+                      :maximum nelisp-aot-compiler--aot-builtinn-max-argc
+                      :got (length raw-args)
+                      :form sexp)))
+       (t
+        (nelisp-aot-compiler--parse-aot-builtinn-call
+         sexp env fenv defuns)))))
    ;; (let ((VAR VAL)) BODY) — value context (= inside defun body).
    ;; Compile-time-foldable values fold into ENV (= compile-time fold
    ;; path, same as `--parse-stmt'); non-foldable values allocate a
@@ -9826,6 +10095,9 @@ functions `((NAME . ARITY) ...)'."
                    ;; Extend FENV: var → slot (gp class, no reg = not
                    ;; a param but loads via the same `ref' mechanism).
                    (new-fenv (cons (cons var (list :slot slot :class 'gp
+                                                   :vclass
+                                                   (nelisp-aot-compiler--ir-vclass
+                                                    val-ir)
                                                    :root-p root-p))
                                    fenv))
                    (body-ir (nelisp-aot-compiler--parse-value
@@ -9997,6 +10269,9 @@ Returns one of:
                    (val-ir (nelisp-aot-compiler--parse-value
                             val-sexp env fenv defuns))
                    (new-fenv (cons (cons var (list :slot slot :class 'gp
+                                                   :vclass
+                                                   (nelisp-aot-compiler--ir-vclass
+                                                    val-ir)
                                                    :root-p root-p))
                                    fenv))
                    (body-ir (nelisp-aot-compiler--parse-stmt
@@ -10154,6 +10429,13 @@ Returns one of:
                    (setq idx (1+ idx))
                    (cons p (list :reg r :slot idx
                                  :class cls
+                                 ;; Doc 166 §2.3: params carry canonical
+                                 ;; value words once the boxed-param ABI
+                                 ;; is on; raw payload words until then.
+                                 :vclass (if (and nelisp-aot-compiler--boxed-param-word-abi
+                                                  nelisp-aot-compiler--user-el-aot-context)
+                                             'word
+                                           'raw)
                                  :root-p (nth idx root-flags))))
                  params param-regs classes)))
              (hidden-boundary
@@ -10168,9 +10450,12 @@ Returns one of:
              ;; gives us `rt-slot-count = (car cell) - arity'.
              (rt-slot-cell (list (+ arity hidden-boundary-count)))
              (body-ir (let ((nelisp-aot-compiler--next-rt-let-slot
-                             rt-slot-cell))
-                        (nelisp-aot-compiler--parse-value
-                         body env parse-fenv defuns)))
+                             rt-slot-cell)
+                            (nelisp-aot-compiler--scratch-temp-slot
+                             (list 0)))
+                        (nelisp-aot-compiler--coerce-word
+                         (nelisp-aot-compiler--parse-value
+                          body env parse-fenv defuns))))
              (rt-slot-count (- (car rt-slot-cell) arity))
              (gc-root-slots
               (nelisp-aot-compiler--gc-root-slots-for-defun body-ir))
@@ -11601,6 +11886,10 @@ the node's class to consume the result correctly."
        (nelisp-aot-compiler--emit-vector-ref node buf))
       ((= tag 84)               ; vector-ref-ptr
        (nelisp-aot-compiler--emit-vector-ref-ptr node buf))
+      ((= tag 104)              ; word-to-raw
+       (nelisp-aot-compiler--emit-word-to-raw node buf))
+      ((= tag 105)              ; raw-to-word
+       (nelisp-aot-compiler--emit-raw-to-word node buf))
       ((= tag 85)               ; vector-slot-set
        (nelisp-aot-compiler--emit-vector-slot-set node buf))
       ((= tag 82)               ; vector-make
@@ -13406,6 +13695,42 @@ elsewhere in AOT."
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_vector_slot_ptr" -4 'text)
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC))))
+
+(defun nelisp-aot-compiler--emit-word-to-raw (node buf)
+  "Doc 166 §2.3: decode a canonical value WORD into a raw integer.
+Unconditional call to the `nl_word_int_payload (word, env, out)'
+runtime helper (Stage B): immediate words decode inline there,
+pointer words tag-check the slot and stash a wrong-type error
+through ENV/OUT.  Same dynamic rsp alignment idiom as
+`--emit-vector-slot-ptr-core' (save rsp in rbx, `and rsp,-16',
+restore after the call).  Fast-path inlining is the Doc 166
+Stage E optimization; correctness first."
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :value) buf)
+  (nelisp-aot-compiler--emit-temp-push buf 'rax)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :env) buf)
+  (nelisp-aot-compiler--emit-temp-push buf 'rax)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :out) buf)
+  (nelisp-aot-compiler--emit-temp-push buf 'rax)
+  (nelisp-aot-compiler--emit-temp-pop buf 'rdx)          ; out (arg2)
+  (nelisp-aot-compiler--emit-temp-pop buf 'rsi)          ; env (arg1)
+  (nelisp-aot-compiler--emit-temp-pop buf 'rdi)          ; word (arg0)
+  (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xE3))
+  (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+  (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+  (nelisp-asm-x86_64-reloc-plt32-here
+   buf "nl_word_int_payload" -4 'text)
+  (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC)))
+
+(defun nelisp-aot-compiler--emit-raw-to-word (node buf)
+  "Doc 166 §2.3: encode a raw integer as the immediate word 4N+1.
+Single `lea rax,[rax*4+1]' after evaluating the operand into rax."
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :value) buf)
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #x8D #x04 #x85 #x01 #x00 #x00 #x00)))
 
 (defun nelisp-aot-compiler--emit-vector-len (node buf)
   "Read `vector.value.len' into rax."
@@ -17835,7 +18160,7 @@ drift (= a Doc 92 emitter invariant violation)."
         (signal 'nelisp-aot-compiler-error
                 (list :wasm-unsupported-ref-class
                       (nelisp-aot-compiler--ir-get node :class))))
-     (nelisp-asm-wasm-op-local-get
+      (nelisp-asm-wasm-op-local-get
        buf (nelisp-aot-compiler--ir-get node :slot)))
      ((= tag 1)
       (let ((op (nelisp-aot-compiler--ir-get node :op)))
@@ -18661,6 +18986,12 @@ register budgeting while ELF/Mach-O keep SysV."
                                                  (nelisp-aot-compiler--ir-get
                                                   ir-node :params))
                                             nil))
+                         :rest-p (and ir-node
+                                      (nelisp-aot-compiler--ir-get
+                                       ir-node :rest-p))
+                         :fixed-count (and ir-node
+                                           (nelisp-aot-compiler--ir-get
+                                            ir-node :fixed-param-count))
                          :param-class (or (and ir-node
                                                (nelisp-aot-compiler--ir-get
                                                 ir-node :param-class))

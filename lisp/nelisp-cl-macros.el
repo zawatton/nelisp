@@ -1130,6 +1130,35 @@ ENV is an alist (NAME . (FORMALS BODY...))."
         (cons (nelisp-cl-macros--macrolet-walk head env)
               (nelisp-cl-macros--macrolet-walk-list (cdr form) env))))))))
 
+(defun nelisp--setf-composite-accessor-p (head)
+  "Non-nil if HEAD names a standard composite list accessor c[ad]{2,4}r."
+  (and (symbolp head)
+       (let* ((name (symbol-name head))
+              (len (length name)))
+         (and (>= len 4)
+              (<= len 6)
+              (eq (aref name 0) ?c)
+              (eq (aref name (1- len)) ?r)
+              (let ((i 1))
+                (while (and (< i (1- len))
+                            (memq (aref name i) '(?a ?d)))
+                  (setq i (1+ i)))
+                (= i (1- len)))))))
+
+(defun nelisp--setf-composite-accessor-form (head base val)
+  "Return the `setf' expansion for composite accessor HEAD, BASE and VAL.
+Scan HEAD's name from right to left so the composite path never needs
+`substring'."
+  (let* ((name (symbol-name head))
+         (len (length name))
+         (form base)
+         (i (- len 2))
+         (outer (if (eq (aref name 1) ?a) 'setcar 'setcdr)))
+    (while (>= i 2)
+      (setq form (list (if (eq (aref name i) ?a) 'car 'cdr) form))
+      (setq i (1- i)))
+    (list outer form val)))
+
 (defmacro setf (&rest pairs)
   "Generalised assignment macro (NeLisp minimal).
 Each pair PLACE VAL assigns VAL to PLACE.  Supported PLACE shapes:
@@ -1138,6 +1167,8 @@ Each pair PLACE VAL assigns VAL to PLACE.  Supported PLACE shapes:
                             slot accessor → `(nelisp--record-set REC I VAL)'
   - (car X)  / (cdr X)     → `(setcar X VAL)' / `(setcdr X VAL)'
   - (aref V I) / (nth I L) → `(aset V I VAL)' / `(setcar (nthcdr I L) VAL)'
+  - standard composite list accessors c[ad]{2,4}r
+                           → nested `setcar' / `setcdr' on the base place
   - registered simple setter → calls setter with PLACE args + VAL
   - registered struct setter → calls setter with REC + VAL
 Other shapes signal a host `error' at expand time."
@@ -1175,6 +1206,10 @@ Other shapes signal a host `error' at expand time."
            (let ((idx (cdr (assq (car place)
                                  nelisp-cl-macros--accessor-info))))
              (list 'nelisp--record-set (cadr place) idx val)))
+          ((and (consp place) (null (cddr place))
+                (symbolp (car place))
+                (nelisp--setf-composite-accessor-p (car place)))
+           (nelisp--setf-composite-accessor-form (car place) (cadr place) val))
           (t
            (signal 'error
                    (list "setf: unsupported place"

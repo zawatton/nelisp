@@ -154,6 +154,14 @@ raw byte strings directly, so returning STR as-is is correct there."
       (string-make-unibyte str)
     str))
 
+(defun nelisp-elf--byte-length (value)
+  "Return VALUE's byte length."
+  (unless (stringp value)
+    (signal 'wrong-type-argument (list 'stringp value)))
+  (if (fboundp 'string-bytes)
+      (string-bytes value)
+    (length value)))
+
 (defun nelisp-elf-buffer-bytes (cbuf)
   "Finalize CBUF and return its accumulated unibyte string.
 Joins the reverse-order chunk list with one `apply' + `concat' after
@@ -174,7 +182,7 @@ Uses `setcar' against the plist value cells so the original `cbuf'
 cons survives — callers that hold a reference (= every writer
 helper) see the new length without needing to rebind."
   (let* ((bytes (nelisp-elf--coerce-unibyte bytes))
-         (len (length bytes))
+         (len (nelisp-elf--byte-length bytes))
         ;; cbuf = (:chunks CHUNKS :length LEN)
         ;;        car=:chunks cdr=(CHUNKS :length LEN)
         ;;                        car=CHUNKS cdr=(:length LEN)
@@ -1489,14 +1497,14 @@ Doc 91 §91.c."
             nelisp-elf--em-aarch64)
            ((integerp machine-arg) machine-arg)
            (t (error "nelisp-elf: invalid :machine %S" machine-arg))))
-         (have-rodata (and rodata (> (length rodata) 0)))
-         (have-data   (and data (> (length data) 0)))
+         (have-rodata (and rodata (> (nelisp-elf--byte-length rodata) 0)))
+         (have-data   (and data (> (nelisp-elf--byte-length data) 0)))
          (have-bss    (> bss-size 0))
          (have-rw     (or have-data have-bss))
          (have-rela   (and relocs (> (length relocs) 0)))
-         (text-size   (length text))
-         (rodata-size (if have-rodata (length rodata) 0))
-         (data-size   (if have-data (length data) 0))
+         (text-size   (nelisp-elf--byte-length text))
+         (rodata-size (if have-rodata (nelisp-elf--byte-length rodata) 0))
+         (data-size   (if have-data (nelisp-elf--byte-length data) 0))
          (vaddr-base  nelisp-elf--minimal-vaddr-base)
          (page-size   #x1000)
          ;; ---- RX segment layout (= Ehdr + Phdrs + .text + .rodata).
@@ -2263,8 +2271,8 @@ treated as section-relative offsets (= no vaddr-base addition)."
             nelisp-elf--em-aarch64)
            ((integerp machine-arg) machine-arg)
            (t (error "nelisp-elf: invalid :machine %S" machine-arg))))
-         (have-rodata (and rodata (> (length rodata) 0)))
-         (have-data   (and data (> (length data) 0)))
+         (have-rodata (and rodata (> (nelisp-elf--byte-length rodata) 0)))
+         (have-data   (and data (> (nelisp-elf--byte-length data) 0)))
          (have-bss    (> bss-size 0))
          ;; Relocs are split by the section they patch: `.rela.text'
          ;; (default) vs `.rela.data' (a pointer baked into a `.data' blob,
@@ -2279,9 +2287,9 @@ treated as section-relative offsets (= no vaddr-base addition)."
                (nreverse a)))
          (have-rela   (and text-relocs (> (length text-relocs) 0)))
          (have-rela-data (and data-relocs (> (length data-relocs) 0)))
-         (text-size   (length text))
-         (rodata-size (if have-rodata (length rodata) 0))
-         (data-size   (if have-data (length data) 0))
+         (text-size   (nelisp-elf--byte-length text))
+         (rodata-size (if have-rodata (nelisp-elf--byte-length rodata) 0))
+         (data-size   (if have-data (nelisp-elf--byte-length data) 0))
          ;; ---- File layout (= no Phdrs, sections start after Ehdr).
          (text-off    nelisp-elf--ehdr-size)
          (rodata-off  (+ text-off text-size))

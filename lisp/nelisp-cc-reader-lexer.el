@@ -64,7 +64,8 @@
 ;;     sharps-paren / char-table bracket / int / float / str / sym / char /
 ;;     radix-int / eof.
 ;;   - String escapes: \\n, \\t, \\r, \\f, \\v, \\e, \\a, \\b, \\d,
-;;     \\s, \\\\, \\\"; line continuation `\\<SP>' / `\\<LF>';
+;;     \\s, \\\\, \\\", and one-to-three-digit octal escapes;
+;;     line continuation `\\<SP>' / `\\<LF>';
 ;;     any other `\\X' drops the backslash + pushes X (= Doc 51
 ;;     Phase 3-A''-1 Emacs reader compat).
 ;;   - Char literals `?X' / `?\\C-a' / `?\\M-X' covered (Doc 116 §116.B+).
@@ -457,9 +458,63 @@
            (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
            (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))))))
 
+    (defun nelisp_reader_string_octal_digit_p (b)
+      (if (>= b 48) (if (<= b 55) 1 0) 0))
+
+    (defun nelisp_reader_string_octal_finish
+        (str-ptr cursor n scratch value)
+      ;; Scratch stores UTF-8, not arbitrary codepoint bytes.  ASCII/control
+      ;; octals stay one byte; the three-digit 0200..0777 range is encoded as
+      ;; a two-byte UTF-8 codepoint before scanning resumes.
+      (if (< value 128)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch value)
+           (nelisp_reader_string_body str-ptr cursor n scratch))
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch (+ 192 (/ value 64)))
+         (nelisp_reader_prog2
+          (mut-str-push-byte scratch (+ 128 (logand value 63)))
+          (nelisp_reader_string_body str-ptr cursor n scratch)))))
+
+    (defun nelisp_reader_string_octal_escape (str-ptr cursor n scratch)
+      ;; CURSOR is the first octal digit.  GNU Emacs consumes at most three
+      ;; digits, so `\\341x' emits byte 225 then resumes at `x', while
+      ;; `\\3', `\\11', and `\\15' consume only the digits present.
+      (let* ((value0 (- (str-byte-at str-ptr cursor) 48))
+             (next1 (+ cursor 1)))
+        (if (< next1 n)
+            (if (= (nelisp_reader_string_octal_digit_p
+                    (str-byte-at str-ptr next1))
+                   1)
+                (let* ((value1
+                        (+ (* value0 8)
+                           (- (str-byte-at str-ptr next1) 48)))
+                       (next2 (+ next1 1)))
+                  (if (< next2 n)
+                      (if (= (nelisp_reader_string_octal_digit_p
+                              (str-byte-at str-ptr next2))
+                             1)
+                          (nelisp_reader_string_octal_finish
+                           str-ptr (+ next2 1) n scratch
+                           (+ (* value1 8)
+                              (- (str-byte-at str-ptr next2) 48)))
+                        (nelisp_reader_string_octal_finish
+                         str-ptr next2 n scratch value1))
+                    (nelisp_reader_string_octal_finish
+                     str-ptr next2 n scratch value1)))
+              (nelisp_reader_string_octal_finish
+               str-ptr next1 n scratch value0))
+          (nelisp_reader_string_octal_finish
+           str-ptr next1 n scratch value0))))
+
     (defun nelisp_reader_string_escape (str-ptr cursor n scratch)
       ;; CURSOR points at the byte AFTER `\\'.
       (cond
+       ;; GNU Emacs octal escape: one to three digits, including `\\0'.
+       ((= (nelisp_reader_string_octal_digit_p
+            (str-byte-at str-ptr cursor))
+           1)
+        (nelisp_reader_string_octal_escape str-ptr cursor n scratch))
        ;; `\\a' -> BEL
        ((= (str-byte-at str-ptr cursor) 97)
         (nelisp_reader_prog2
@@ -509,11 +564,6 @@
        ((= (str-byte-at str-ptr cursor) 118)
         (nelisp_reader_prog2
          (mut-str-push-byte scratch 11)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\0' -> NUL
-       ((= (str-byte-at str-ptr cursor) 48)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 0)
          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
        ;; `\\\\' -> backslash
        ((= (str-byte-at str-ptr cursor) 92)

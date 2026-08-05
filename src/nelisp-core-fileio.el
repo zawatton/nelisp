@@ -28,9 +28,7 @@
 
 ;;; Code:
 
-(require 'cl-lib)
-(require 'subr-x)
-(require 'nelisp-coding)
+(require 'nelisp-coding-utf8)
 
 (declare-function nl-syscall-access "nelisp-runtime")
 (declare-function nl-syscall-stat-ex "nelisp-runtime")
@@ -58,7 +56,12 @@ The trailing slash is preserved (= directory part is itself a
 directory name)."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
-  (let ((idx (cl-position ?/ name :from-end t)))
+  (let ((idx nil)
+        (pos (1- (length name))))
+    (while (and (null idx) (>= pos 0))
+      (if (eq (aref name pos) ?/)
+          (setq idx pos)
+        (setq pos (1- pos))))
     (and idx (substring name 0 (1+ idx)))))
 
 ;;;###autoload
@@ -77,7 +80,7 @@ Returns the simplified list (does NOT touch leading `/')."
   (let ((acc nil))
     (dolist (seg segments)
       (cond
-       ((or (string-empty-p seg) (string-equal seg ".")) nil)
+       ((or (= (length seg) 0) (string-equal seg ".")) nil)
        ((string-equal seg "..")
         (when acc (pop acc)))
        (t (push seg acc))))

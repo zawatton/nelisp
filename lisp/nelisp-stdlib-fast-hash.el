@@ -69,7 +69,7 @@ multiply can grow large; mask after each iteration.")
 ;; symbol (= same `eq' identity throughout the env table's life).
 ;; Re-exported by `lisp/nelisp-env.el' as the canonical None
 ;; marker.
-(defvar nelisp--unbound-marker (make-symbol "nelisp--unbound-marker")
+(defvar nelisp--unbound-marker (make-symbol "\001elisp--unbound-marker")
   "Sentinel value for absent SymbolEntry cells in the env table.
 A fresh uninterned symbol, so user code that interns the name
 \"nelisp--unbound-marker\" via `(intern ...)' yields a different

@@ -30,7 +30,11 @@
     (defun nl_env_lookup_val (name_ptr env out)
       (let ((mirror_ptr (+ env 0))
             (frames_ptr (+ env 32)))
-        (nelisp_env_lookup_value mirror_ptr frames_ptr name_ptr out)))
+        (let ((rc
+               (nelisp_env_lookup_value mirror_ptr frames_ptr name_ptr out)))
+          (if (= rc 0)
+              rc
+            (seq (bf_report_eval_stack) rc)))))
     (defun nl_env_pop_frame (env _pad)
       (let ((frames_ptr (+ env 32))
             (scratch_slot (alloc-bytes 32 8)))
