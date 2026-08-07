@@ -971,6 +971,22 @@ accepted by `nelisp--apply'."
   (puthash symbol definition nelisp--functions)
   symbol)
 
+(defun nelisp--defalias-late (symbol definition &optional docstring)
+  "Install SYMBOL's alias to DEFINITION at the moment this call runs.
+Target of the `--rewrite-defalias-late' artifact rewrite: with that flag
+`nelisp-artifact--rewrite-defalias-late-form' replaces every top-level
+`defalias' in an artifact source with a call to this function, keeping the
+original arguments verbatim.  The argument list therefore has to match
+`defalias' (SYMBOL, DEFINITION, optional DOCSTRING), and the effect has to be
+the one `defalias' itself has here, which is `nelisp--builtin-defalias'.
+
+What the rewrite buys is that the artifact compiler sees an ordinary opaque
+call rather than a definition form, so nothing aliases while the module and
+native sections are being built; the aliasing happens when the replayed
+`:eval' module item reaches this function.  DOCSTRING is accepted and ignored
+for the same reason `nelisp--builtin-defalias' ignores it.  Return SYMBOL."
+  (nelisp--builtin-defalias symbol definition docstring))
+
 (defun nelisp--builtin-require (feature &optional _filename _noerror)
   "Phase 2 NeLisp `require' stub.
 NeLisp does not yet maintain a module table; the dependents are
@@ -1021,6 +1037,14 @@ installation and silently skipping all remaining entries, including
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
   (puthash 'symbol-function #'nelisp--builtin-symbol-function nelisp--functions)
   (puthash 'defalias     #'nelisp--builtin-defalias     nelisp--functions)
+  ;; `--rewrite-defalias-late' artifacts call this instead of `defalias', and
+  ;; the sandbox resolves calls through `nelisp--functions' first, so it needs
+  ;; the same entry `defalias' gets.  The runtime function cell above covers
+  ;; the replay routes that evaluate `:eval' items with the plain runtime
+  ;; `eval' (the flat artifact cache and source-command bootstraps) instead of
+  ;; `nelisp-eval'.
+  (puthash 'nelisp--defalias-late
+           #'nelisp--builtin-defalias nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
   (when (fboundp 'nelisp--builtin-load-file)
