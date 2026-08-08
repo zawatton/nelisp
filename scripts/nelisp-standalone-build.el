@@ -535,7 +535,11 @@ storage — not an arena reservation."
    ;; compares instead of scanning both tables on every eval-hot-path free.
    ;; Zero-fill on process start means ptr = 0 = "empty cache" / lo = hi = 0 =
    ;; "empty span", which are always safe.
-   (list (cons 'bss (+ 57568 1048576 56 (* 162 8) 16 96 1152 16)))
+   ;; fix/flat-image-dump-live: nl_lm_base is one more ordinary zero-fill BSS
+   ;; slot holding the flat-image LIVE MAP's mmap address while a dump is in
+   ;; flight (0 = no map published = the pre-existing raw high-water behaviour).
+   ;; Appended at the tail so every pre-existing symbol offset is unchanged.
+   (list (cons 'bss (+ 57568 1048576 56 (* 162 8) 16 96 1152 24)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
@@ -599,6 +603,8 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_u8_cache_lo" (+ 57568 1048576 56 (* 162 8) 16 96 1152)
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_u8_cache_hi" (+ 57568 1048576 56 (* 162 8) 16 96 1152 8)
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_lm_base" (+ 57568 1048576 56 (* 162 8) 16 96 1152 16)
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -4447,6 +4453,187 @@ unresolved at link time."
     ;; the existing single-chunk cold-load unchanged.  For a SINGLE chunk these
     ;; reduce to (addr - chunk0-data-start), so nl_fa_field/nl_fa_emit stay
     ;; byte-identical for the verified single-chunk path.
+    ;; ---- flat-image LIVE MAP (fix/flat-image-dump-live) --------------------
+    ;; The dump used to stream each chunk's whole [data-start, cursor) span, i.e.
+    ;; the arena's bump HIGH-WATER MARK.  Nothing ever lowers that cursor: the
+    ;; mid-form collector always sweeps and never compacts
+    ;; (`nl_gc_collect_from_recorded_roots'), the form-boundary collector is
+    ;; gated on depth==0 and a CLI command is a single top-level form, Lisp
+    ;; `(garbage-collect)' only sets `nl_gc_pending', and compaction is off by
+    ;; default (268435608 = 0).  So every block the sweep had already freed was
+    ;; still copied verbatim.  Measured in-process on the bootstrap heap before
+    ;; the output file was even opened: live 34,605,000 B against free
+    ;; 89,952,136 B -- 72% of the image was dead arena.
+    ;;
+    ;; The fix REDEFINES the image's logical address space.  It used to be "the
+    ;; concatenation of every chunk's used span"; it is now "the concatenation of
+    ;; every chunk's LIVE blocks", with free runs removed.  A free block is
+    ;; exactly one the runtime itself put on a free list -- header mark 2, written
+    ;; by `nl_gc_sweep_free_block' / `nl_gc_free_block_link' and consumed by
+    ;; `nl_freelist_*' -- so removing it removes nothing a live object can reach.
+    ;; Block totals are self-describing, so the surviving blocks still form one
+    ;; contiguous, exactly-terminating header chain: `nl_cold_clear_marks' and
+    ;; `bf_arena_load_image_from_file' walk the loaded payload unchanged.
+    ;;
+    ;; WHY THE RELOCATION TABLE STAYS CONSISTENT WITH THE PAYLOAD.  It is one
+    ;; function, not two agreeing conventions.  `nl_fa_field' derives BOTH the
+    ;; table entry (the field's own offset, `wlog') and the value written into
+    ;; that field (the target's offset, `tlog') from `nl_mc_logoff'; the intern
+    ;; region is addressed as `span + (tgt - ib)' where `span' is `nl_mc_total';
+    ;; the header's slen is that same `nl_mc_total'; and `nl_mc_write_chunks'
+    ;; streams exactly the spans this map calls live.  Change the map and all
+    ;; four move together.  The pre-existing short-write assertion
+    ;; (wsum == 64 + tlen*8 + total + isz) independently re-checks that the
+    ;; writer and `nl_mc_total' walked the heap identically, and a mismatch is
+    ;; reported as -2 instead of being published.
+    ;;
+    ;; A pointer field, or a pointer target, that lands INSIDE a removed run
+    ;; would be a live edge into free memory -- the pre-existing GC
+    ;; root-coverage gap, not something an address mapping can repair.
+    ;; `nl_lm_new' counts those; `bf_arena_dump_image_stream' refuses to publish
+    ;; (returns -3) when the count is non-zero rather than writing a table that
+    ;; disagrees with its payload.
+    ;;
+    ;; The map lives in a dedicated mmap that is NOT linked into the chunk chain,
+    ;; so it is invisible to `nl_mc_write_chunks' / `nl_mc_total' and is never
+    ;; itself dumped.  Layout:
+    ;;   +0   H      number of free runs recorded
+    ;;   +8   P      page-index entries = (raw >> 12) + 2
+    ;;   +16  LIVE   kept bytes = raw - freed (the new coalesced size)
+    ;;   +24  RAW    old coalesced size (sum of every chunk's used bytes)
+    ;;   +32  DANG   offsets that fell inside a removed run
+    ;;   +40  HBASE  hole-array address
+    ;;   +48  FREED  running freed total (final value = cum[H])
+    ;;   +56  CAP    mmap size, for the matching munmap
+    ;;   +64  pageidx[P]: index of the first run whose END exceeds p*4096
+    ;;   HBASE + i*24: (start, end, freed-before), all in RAW logical offsets
+    ;; The page index makes the offset map O(1) in practice: a lookup starts at
+    ;; the first run that can possibly end after the page start and advances at
+    ;; most as many runs as begin inside that one 4 KiB page.
+    (defun nl_lm_scan_chunk (m chunk acc)
+      (let* ((hb (ptr-read-u64 (+ m 40) 0))
+             (cbase (ptr-read-u64 chunk 0))
+             (cds (+ cbase 1024))
+             (end (+ cbase (bf_arena_chunk_cursor chunk)))
+             (hdr cds)
+             (bt 0)
+             (h (ptr-read-u64 m 0))
+             (cum (ptr-read-u64 (+ m 48) 0)))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               ;; Walk desync: keep the remainder verbatim.  `nl_mc_write_chunk_live'
+               ;; stops on the same test and flushes the same tail, so the map and
+               ;; the writer cannot disagree about it.
+               (setq hdr end)
+             (seq
+              (if (= (nl_hdr_mark hdr) 2)
+                  (seq
+                   (ptr-write-u64 (+ hb (* h 24)) 0 (+ acc (- hdr cds)))
+                   (ptr-write-u64 (+ hb (* h 24)) 8 (+ acc (- (+ hdr bt) cds)))
+                   (ptr-write-u64 (+ hb (* h 24)) 16 cum)
+                   (setq cum (+ cum bt))
+                   (setq h (+ h 1)))
+                0)
+              (setq hdr (+ hdr bt)))))
+         (ptr-write-u64 m 0 h)
+         (ptr-write-u64 (+ m 48) 0 cum)
+         0)))
+    (defun nl_lm_scan_chunks (m chunk acc)
+      (if (= chunk 0) 0
+        (nl_seq2 (nl_lm_scan_chunk m chunk acc)
+                 (nl_lm_scan_chunks m (ptr-read-u64 (+ chunk 48) 0)
+                                    (+ acc (bf_arena_chunk_used chunk))))))
+    ;; pageidx[p] = first run index whose END exceeds p*4096.  Single loop (no
+    ;; nested `while'): advance J, or emit and advance I.
+    (defun nl_lm_fill_pages (m)
+      (let* ((hb (ptr-read-u64 (+ m 40) 0))
+             (h (ptr-read-u64 m 0))
+             (p (ptr-read-u64 (+ m 8) 0))
+             (i 0)
+             (j 0))
+        (seq
+         (while (< i p)
+           (if (if (< j h)
+                   (if (< (ptr-read-u64 (+ hb (* j 24)) 8) (+ (* i 4096) 1)) 1 0)
+                 0)
+               (setq j (+ j 1))
+             (seq (ptr-write-u64 (+ m (+ 64 (* i 8))) 0 j)
+                  (setq i (+ i 1)))))
+         0)))
+    (defun nl_lm_build (raw)
+      ;; A run needs at least 16 bytes and carries a 24-byte record, so the hole
+      ;; array can never exceed 1.5x RAW; 2x RAW + the page index + 1 MiB is a
+      ;; hard upper bound.  Anonymous mmap is demand-paged (see
+      ;; `nl_os_commit_range'), so over-provisioning costs virtual address space
+      ;; only, not physical memory.
+      (let* ((p (+ (sar raw 12) 2))
+             (hb0 (+ 64 (* p 8)))
+             (cap (+ (+ (* raw 2) hb0) 1048576))
+             (m (nl_os_alloc_chunk cap)))
+        (if (= m 0) 0
+          (seq
+           (ptr-write-u64 m 0 0)
+           (ptr-write-u64 (+ m 8) 0 p)
+           (ptr-write-u64 (+ m 16) 0 raw)
+           (ptr-write-u64 (+ m 24) 0 raw)
+           (ptr-write-u64 (+ m 32) 0 0)
+           (ptr-write-u64 (+ m 40) 0 (+ m hb0))
+           (ptr-write-u64 (+ m 48) 0 0)
+           (ptr-write-u64 (+ m 56) 0 cap)
+           (nl_lm_scan_chunks m (ptr-read-u64 268436160 0) 0)
+           (nl_lm_fill_pages m)
+           (ptr-write-u64 (+ m 16) 0 (- raw (ptr-read-u64 (+ m 48) 0)))
+           ;; Publish LAST: every `nl_mc_logoff' / `nl_mc_total' /
+           ;; `nl_mc_write_chunks' consumer switches to the compacted address
+           ;; space the instant this is non-zero, so it must not be visible
+           ;; while the map is still half-built.
+           (ptr-write-u64 (data-addr nl_lm_base) 0 m)
+           1))))
+    (defun nl_lm_release ()
+      (let* ((m (ptr-read-u64 (data-addr nl_lm_base) 0))
+             (cap (if (= m 0) 0 (ptr-read-u64 (+ m 56) 0))))
+        (if (= m 0) 0
+          (nl_seq2 (ptr-write-u64 (data-addr nl_lm_base) 0 0)
+                   (nl_os_free_chunk m cap)))))
+    (defun nl_lm_dangling ()
+      (let ((m (ptr-read-u64 (data-addr nl_lm_base) 0)))
+        (if (= m 0) 0 (ptr-read-u64 (+ m 32) 0))))
+    ;; RAW logical offset -> compacted (live-only) offset.  IDENTITY while no map
+    ;; is published, so `bf_arena_swizzle_verify' and the step-4 load spikes keep
+    ;; their byte-for-byte round-trip behaviour, and a failed map mmap degrades
+    ;; the dump to exactly the pre-fix path.
+    (defun nl_lm_new (lo)
+      (let* ((m (ptr-read-u64 (data-addr nl_lm_base) 0))
+             (hb 0) (h 0) (pp 0) (j 0) (res 0) (done 0))
+        (if (= m 0) lo
+          (seq
+           (setq hb (ptr-read-u64 (+ m 40) 0))
+           (setq h (ptr-read-u64 m 0))
+           (setq pp (sar lo 12))
+           (if (< pp (ptr-read-u64 (+ m 8) 0)) 0
+             (setq pp (- (ptr-read-u64 (+ m 8) 0) 1)))
+           (setq j (ptr-read-u64 (+ m (+ 64 (* pp 8))) 0))
+           (while (= done 0)
+             (if (< j h)
+                 (if (< (ptr-read-u64 (+ hb (* j 24)) 8) (+ lo 1))
+                     (setq j (+ j 1))
+                   (setq done 1))
+               (setq done 1)))
+           ;; J is now the first run whose END exceeds LO.
+           (if (< j h)
+               (if (< (ptr-read-u64 (+ hb (* j 24)) 0) (+ lo 1))
+                   ;; LO is inside a removed run: a live edge into free memory.
+                   ;; Count it; the dump refuses to publish when the count is
+                   ;; non-zero.
+                   (seq
+                    (ptr-write-u64 (+ m 32) 0 (+ (ptr-read-u64 (+ m 32) 0) 1))
+                    (setq res (- (ptr-read-u64 (+ hb (* j 24)) 0)
+                                 (ptr-read-u64 (+ hb (* j 24)) 16))))
+                 (setq res (- lo (ptr-read-u64 (+ hb (* j 24)) 16))))
+             (setq res (- lo (ptr-read-u64 (+ m 48) 0))))
+           res))))
     (defun nl_mc_logoff_walk (chunk addr acc)
       (if (= chunk 0) -1
         (let* ((cbase (ptr-read-u64 chunk 0))
@@ -4455,8 +4642,11 @@ unresolved at link time."
           (if (if (< addr cds) 0 (if (< addr (+ cds cused)) 1 0))
               (+ acc (- addr cds))
             (nl_mc_logoff_walk (ptr-read-u64 (+ chunk 48) 0) addr (+ acc cused))))))
-    (defun nl_mc_logoff (addr)
+    (defun nl_mc_logoff_raw (addr)
       (nl_mc_logoff_walk (ptr-read-u64 268436160 0) addr 0))
+    (defun nl_mc_logoff (addr)
+      (let ((lo (nl_mc_logoff_raw addr)))
+        (if (< lo 0) lo (nl_lm_new lo))))
     (defun nl_mc_phys_walk (chunk logoff acc)
       (if (= chunk 0) 0
         (let* ((cbase (ptr-read-u64 chunk 0))
@@ -4464,14 +4654,22 @@ unresolved at link time."
           (if (if (< logoff acc) 0 (if (< logoff (+ acc cused)) 1 0))
               (+ (+ cbase 1024) (- logoff acc))
             (nl_mc_phys_walk (ptr-read-u64 (+ chunk 48) 0) logoff (+ acc cused))))))
+    ;; NOTE: `nl_mc_phys' is the inverse of the RAW (high-water) offset space
+    ;; only.  It is used exclusively by `bf_arena_inplace_restore_mc', which the
+    ;; dump now calls only on the no-map fallback path where the two spaces
+    ;; coincide.  The map-present path restores from the saved original words
+    ;; instead (`bf_arena_restore_saved'), which needs no inverse at all.
     (defun nl_mc_phys (logoff)
       (nl_mc_phys_walk (ptr-read-u64 268436160 0) logoff 0))
     (defun nl_mc_total_walk (chunk acc)
       (if (= chunk 0) acc
         (nl_mc_total_walk (ptr-read-u64 (+ chunk 48) 0)
                           (+ acc (bf_arena_chunk_used chunk)))))
-    (defun nl_mc_total ()
+    (defun nl_mc_total_raw ()
       (nl_mc_total_walk (ptr-read-u64 268436160 0) 0))
+    (defun nl_mc_total ()
+      (let ((m (ptr-read-u64 (data-addr nl_lm_base) 0)))
+        (if (= m 0) (nl_mc_total_raw) (ptr-read-u64 (+ m 16) 0))))
     ;; image offset of ADDR for the coalesced image: chunk -> logical offset;
     ;; intern -> total + (addr-ib); else 0.
     (defun nl_mc_imgoff (addr total ib ie)
@@ -4485,15 +4683,48 @@ unresolved at link time."
     ;; caller here discarded that, so a dump could write nothing at all and
     ;; still report success.  Measured on a 530 MB image: returned 530226320,
     ;; file 0 bytes.
+    ;; Stream one chunk's LIVE spans: every maximal run of blocks whose header
+    ;; mark is not 2 (free).  This is the writer half of the live map; the
+    ;; predicate, the walk and the desync handling are the same three lines as
+    ;; `nl_lm_scan_chunk', so the bytes written and the offsets handed out by
+    ;; `nl_mc_logoff' describe the same layout.
+    (defun nl_mc_write_chunk_live (fd chunk)
+      (let* ((cbase (ptr-read-u64 chunk 0))
+             (cds (+ cbase 1024))
+             (end (+ cbase (bf_arena_chunk_cursor chunk)))
+             (hdr cds)
+             (runstart cds)
+             (bt 0)
+             (w 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               (setq hdr end)
+             (if (= (nl_hdr_mark hdr) 2)
+                 (seq
+                  (if (< runstart hdr)
+                      (setq w (+ w (nl_fa_write_all fd runstart (- hdr runstart) 0)))
+                    0)
+                  (setq hdr (+ hdr bt))
+                  (setq runstart hdr))
+               (setq hdr (+ hdr bt)))))
+         (if (< runstart end)
+             (setq w (+ w (nl_fa_write_all fd runstart (- end runstart) 0)))
+           0)
+         w)))
     (defun nl_mc_write_chunks (fd chunk)
       (if (= chunk 0) 0
         ;; ORDER: bind the current chunk's write FIRST.  This DSL evaluates
         ;; `+' arguments right-to-left, so `(+ (write cur) (recurse next))'
         ;; wrote the chain in REVERSE (measured: a 2-chunk compacted image
         ;; landed [tospace][chunk-0] while goff/table assume chain order).
-        (let* ((w (nl_fa_write_all fd (+ (ptr-read-u64 chunk 0) 1024)
-                                   (bf_arena_chunk_used chunk) 0)))
-          (+ w (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0))))))
+        (if (= (ptr-read-u64 (data-addr nl_lm_base) 0) 0)
+            (let* ((w (nl_fa_write_all fd (+ (ptr-read-u64 chunk 0) 1024)
+                                       (bf_arena_chunk_used chunk) 0)))
+              (+ w (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0))))
+          (let* ((w (nl_mc_write_chunk_live fd chunk)))
+            (+ w (nl_mc_write_chunks fd (ptr-read-u64 (+ chunk 48) 0)))))))
     ;; in-place un-swizzle (offset -> pointer) over the LIVE multi-chunk arena via
     ;; the table of logical field offsets.  For 1 chunk this equals the single-chunk
     ;; restore (nl_mc_phys = sstart + off).
@@ -4510,17 +4741,50 @@ unresolved at link time."
                 (ptr-write-u64 faddr 0 (+ ib (- o total))))
               (setq i (+ i 1)))))
          0)))
+    ;; fix/flat-image-dump-live: when the caller ROUTED the table (the override
+    ;; is set -- only `bf_arena_dump_image_stream' does that), dir 3 also saves,
+    ;; per entry, the field's physical address and the word it is about to
+    ;; overwrite, into two arrays that follow the offset table at a fixed
+    ;; SPAN+65536 stride.  The in-place un-swizzle then writes those words back
+    ;; verbatim instead of inverting an offset->address map: with the image's
+    ;; logical space no longer equal to the arena's raw span, an inverse would be
+    ;; a second thing to keep in agreement, while "put back exactly what was
+    ;; there" is exact by construction.  Entries are replayed in REVERSE order so
+    ;; a field emitted twice (shared root slots across recorded frames) still
+    ;; ends at its original word.  The in-buffer default table slot (probe paths,
+    ;; override 0) is unchanged and gains no extra writes.
     (defun nl_fa_emit (loc imgoff fldoff dest span ib ie cin dir)
-      (let ((tbl (if (= (ptr-read-u64 (data-addr nl_fa_tbl_base) 0) 0)
-                     (+ dest (+ span (+ (nl_align_up (if (< ie ib) 0 (- ie ib)) 8) 256)))
-                   (ptr-read-u64 (data-addr nl_fa_tbl_base) 0))))
+      (let* ((ovr (ptr-read-u64 (data-addr nl_fa_tbl_base) 0))
+             (tbl (if (= ovr 0)
+                      (+ dest (+ span (+ (nl_align_up (if (< ie ib) 0 (- ie ib)) 8) 256)))
+                    ovr))
+             (stride (+ span 65536)))
         (nl_seq2
          (if (= dir 3)
-             (ptr-write-u64 (+ tbl (* 8 (ptr-read-u64 cin 0))) 0 fldoff)
+             (nl_seq2
+              (ptr-write-u64 (+ tbl (* 8 (ptr-read-u64 cin 0))) 0 fldoff)
+              (if (= ovr 0) 0
+                (nl_seq2
+                 (ptr-write-u64 (+ (+ tbl stride) (* 8 (ptr-read-u64 cin 0))) 0 loc)
+                 (ptr-write-u64 (+ (+ tbl (* stride 2)) (* 8 (ptr-read-u64 cin 0))) 0
+                                (ptr-read-u64 loc 0)))))
            0)
          (nl_seq2
           (ptr-write-u64 cin 0 (+ (ptr-read-u64 cin 0) 1))
           (ptr-write-u64 loc 0 (if (= dir 2) (+ dest imgoff) imgoff))))))
+    ;; Exact in-place un-swizzle for the routed-table dump: replay the saved
+    ;; (address, original word) pairs backwards.
+    (defun bf_arena_restore_saved (tbl span tlen)
+      (let* ((stride (+ span 65536))
+             (rloc (+ tbl stride))
+             (rval (+ tbl (* stride 2)))
+             (i tlen))
+        (seq
+         (while (> i 0)
+           (setq i (- i 1))
+           (ptr-write-u64 (ptr-read-u64 (+ rloc (* i 8)) 0) 0
+                          (ptr-read-u64 (+ rval (* i 8)) 0)))
+         0)))
     ;; chunk-map-aware: a field at WADDR (in ANY chunk) recording its LOGICAL offset,
     ;; targets resolved to logical (chunk) or total+(tgt-ib) (intern).  For 1 chunk
     ;; nl_mc_logoff(addr) = addr-ds, so this is byte-identical to the prior version.
@@ -5036,6 +5300,22 @@ unresolved at link time."
               (setq i (+ i 1)))))
          0)))
     (defun bf_arena_dump_image_stream (args out)
+      ;; TRIED AND REVERTED (2026-08-08): forcing one more mid-form collect here,
+      ;; as the first binding, so the sweep would also mark the not-yet-swept
+      ;; unreachable blocks FREE and let the live map drop them too.  It shrinks
+      ;; the image further (a 50-form probe went 49,141,936 -> 45,040,224 bytes)
+      ;; but it is UNSOUND at this call site: the same 200-form probe then died
+      ;; with `unknown flag --flat-artifact-finalize<garbage byte>', i.e. the
+      ;; collection freed one of the argument strings that
+      ;; `nelisp-artifact-prepare-flat-image-cache' has already built and still
+      ;; holds in an interpreted `let' binding.  That is the known root-coverage
+      ;; gap (Doc 146 §2 / Doc 152 §11.18-20): the recorded frames plus the
+      ;; conservative native-stack scan do not cover every live interpreted
+      ;; binding, and the 16 MiB alloc-debt watermark merely happens not to land
+      ;; on this window.  It failed at 200 forms while passing at 50, which is
+      ;; exactly the workload-dependent unsoundness that must not ship.  The
+      ;; residual per-form payload is therefore left alone here; closing it needs
+      ;; the root-coverage fix, not a collection point.
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))   ; alloc the header FIRST so all used/total
                                         ; computations below see a stable cursor (no
@@ -5048,7 +5328,15 @@ unresolved at link time."
              (ib (ptr-read-u64 (+ abase 832) 0))
              (ie (ptr-read-u64 (+ abase 840) 0))
              (isz (nl_align_up (if (< ie ib) 0 (- ie ib)) 8))
-             (total (nl_mc_total))                    ; coalesced size = sum of ALL chunks' used bytes
+             ;; fix/flat-image-dump-live: index the arena's FREE runs before
+             ;; anything reads an offset, so `nl_mc_logoff' / `nl_mc_total' /
+             ;; `nl_mc_write_chunks' all describe the live-only layout from here
+             ;; on.  Built AFTER `hdr' (the last arena allocation) and released
+             ;; before this builtin returns; a failed mmap leaves the map
+             ;; unpublished and the whole dump degrades to the pre-fix path.
+             (rawtotal (nl_mc_total_raw))
+             (_lm (nl_lm_build rawtotal))
+             (total (nl_mc_total))                    ; coalesced size = sum of ALL chunks' LIVE bytes
              ;; Reloc-table scratch -- Increment 1 fix (multi-chunk cold-load).
              ;; The previous placement piggybacked on chunk-0's own leftover mmap
              ;; tail (single-chunk) or the interned-region's leftover mmap tail
@@ -5067,7 +5355,11 @@ unresolved at link time."
              ;; for the two counters. Anonymous mmap is demand-paged (see
              ;; `nl_os_commit_range'), so over-provisioning this scratch region
              ;; costs virtual address space only, not physical memory.
-             (tblcap (+ total 1048576))
+             ;; Three arrays now, not one: the offset table plus the two
+             ;; restore arrays `nl_fa_emit' fills (saved field address, saved
+             ;; original word).  Same bound per array, same demand-paged mmap;
+             ;; the +65536 keeps the strides distinct for a degenerate empty heap.
+             (tblcap (+ (* 3 (+ total 65536)) 1048576))
              (tblbase (nl_os_alloc_chunk tblcap))
              (cin tblbase) (cout (+ tblbase 8)) (tbl (+ tblbase 16))
              (depth (ptr-read-u64 (data-addr nl_gc_loop_ctx) 0))
@@ -5079,9 +5371,9 @@ unresolved at link time."
              (goff (nl_mc_imgoff gbox total ib ie))
              (foff (nl_mc_imgoff fbox total ib ie))
              (uoff (nl_mc_imgoff ubox total ib ie))
-             (tlen 0) (fd 0) (wsum 0))
+             (tlen 0) (fd 0) (wsum 0) (dang 0))
         (if (= tblbase 0)
-            (wf_write_int out -1)
+            (nl_seq2 (nl_lm_release) (wf_write_int out -1))
           (seq
            ;; header is fully built from pre-swizzle reads (slen=total, tlen patched after)
            (ptr-write-u64 hdr 0 1179407692)
@@ -5090,7 +5382,9 @@ unresolved at link time."
            (ptr-write-u64 hdr 56 ib)
            (setq fd (nl_os_open_write_truncate cpath))
            (if (< fd 0)
-               (nl_seq2 (nl_os_free_chunk tblbase tblcap) (wf_write_int out -1))
+               (nl_seq2 (nl_lm_release)
+                        (nl_seq2 (nl_os_free_chunk tblbase tblcap)
+                                 (wf_write_int out -1)))
              (seq
               ;; route nl_fa_emit's table to the dedicated scratch mmap
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
@@ -5103,26 +5397,49 @@ unresolved at link time."
               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 24 0)
               (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 0)   ; reset override
               (setq tlen (ptr-read-u64 cin 0))
+              (setq dang (nl_lm_dangling))
               (ptr-write-u64 hdr 8 total) (ptr-write-u64 hdr 24 tlen)
-              ;; Accumulate what each region ACTUALLY wrote.  Reporting the
-              ;; arithmetic expectation regardless meant a dump that wrote zero
-              ;; bytes still claimed success, and the caller's only complaint
-              ;; was that the file size disagreed -- with no hint that `write'
-              ;; was the failing side.
-              (setq wsum (nl_fa_write_all fd hdr 64 0))
-              (setq wsum (+ wsum (nl_fa_write_all fd tbl (* tlen 8) 0)))
-              (setq wsum (+ wsum (nl_mc_write_chunks fd head)))   ; coalesced chunk regions, logical order (single: chunk-0)
-              (setq wsum (+ wsum (nl_fa_write_all fd ib isz 0)))   ; live intern (un-swizzled, fixed on load)
-              (nl_os_close_handle fd)
-              (bf_arena_inplace_restore_mc tbl tlen ib total)   ; restore the live arena
-              (nl_os_free_chunk tblbase tblcap)
-              ;; -2 = short write: distinguishable from -1 (open failed) and
-              ;; from any plausible byte count, so the elisp caller's message
-              ;; names the failing side instead of only the size disagreement.
-              (wf_write_int out
-                            (if (= wsum (+ 64 (+ (* tlen 8) (+ total isz))))
-                                wsum
-                              -2))))))))
+              ;; -3 = a pointer field, or a pointer target, resolved INSIDE a
+              ;; run this dump would drop, i.e. a live edge into free memory.
+              ;; Removing that block would publish a relocation table that
+              ;; disagrees with its payload -- an image that loads and then
+              ;; misbehaves.  Un-swizzle, drop the (already truncated) file's
+              ;; handle and report instead of writing.
+              (if (> dang 0)
+                  (seq
+                   (if (= (ptr-read-u64 (data-addr nl_lm_base) 0) 0)
+                       (bf_arena_inplace_restore_mc tbl tlen ib total)
+                     (bf_arena_restore_saved tbl total tlen))
+                   (nl_os_close_handle fd)
+                   (nl_os_free_chunk tblbase tblcap)
+                   (nl_lm_release)
+                   (wf_write_int out -3))
+                (seq
+                 ;; Accumulate what each region ACTUALLY wrote.  Reporting the
+                 ;; arithmetic expectation regardless meant a dump that wrote zero
+                 ;; bytes still claimed success, and the caller's only complaint
+                 ;; was that the file size disagreed -- with no hint that `write'
+                 ;; was the failing side.
+                 (setq wsum (nl_fa_write_all fd hdr 64 0))
+                 (setq wsum (+ wsum (nl_fa_write_all fd tbl (* tlen 8) 0)))
+                 (setq wsum (+ wsum (nl_mc_write_chunks fd head)))   ; coalesced chunk regions, logical order (single: chunk-0)
+                 (setq wsum (+ wsum (nl_fa_write_all fd ib isz 0)))   ; live intern (un-swizzled, fixed on load)
+                 (nl_os_close_handle fd)
+                 ;; restore the live arena.  With a live map published the image
+                 ;; offsets are no longer raw arena offsets, so the saved
+                 ;; original words are replayed instead of inverting the map.
+                 (if (= (ptr-read-u64 (data-addr nl_lm_base) 0) 0)
+                     (bf_arena_inplace_restore_mc tbl tlen ib total)
+                   (bf_arena_restore_saved tbl total tlen))
+                 (nl_os_free_chunk tblbase tblcap)
+                 (nl_lm_release)
+                 ;; -2 = short write: distinguishable from -1 (open failed) and
+                 ;; from any plausible byte count, so the elisp caller's message
+                 ;; names the failing side instead of only the size disagreement.
+                 (wf_write_int out
+                               (if (= wsum (+ 64 (+ (* tlen 8) (+ total isz))))
+                                   wsum
+                                 -2))))))))))
     (defun bf_arena_load_image_from_file (args out)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
              (hdr (alloc-bytes 64 8))
