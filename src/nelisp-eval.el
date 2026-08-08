@@ -984,8 +984,50 @@ What the rewrite buys is that the artifact compiler sees an ordinary opaque
 call rather than a definition form, so nothing aliases while the module and
 native sections are being built; the aliasing happens when the replayed
 `:eval' module item reaches this function.  DOCSTRING is accepted and ignored
-for the same reason `nelisp--builtin-defalias' ignores it.  Return SYMBOL."
-  (nelisp--builtin-defalias symbol definition docstring))
+for the same reason `nelisp--builtin-defalias' ignores it.  Return SYMBOL.
+
+SYMBOL is recorded in `nelisp--recent-function-defs' the way `defun' and
+`cl-defun' record theirs.  `nelisp--builtin-defalias' only does the `puthash',
+which leaves the alias reachable through the sandbox but with no function
+cell, so a natively dispatched caller gets `void-function' -- exactly the
+failure `nelisp-artifact--mirror-recent-function-defs' exists to prevent, and
+the one its docstring cites from the bootstrap's buffer-builtins alias loop.
+Measured 2026-08-08 on a 200-defun/200-defalias artifact before this line:
+every defun had a function cell and every alias had none."
+  (nelisp--builtin-defalias-late symbol definition docstring))
+
+(defun nelisp--builtin-defalias-late (symbol definition &optional docstring)
+  "`nelisp--builtin-defalias' plus the recent-defs record the mirror drains.
+This exists as its own builtin because the sandbox resolves a call head
+through `nelisp--functions' first, so an entry mapping
+`nelisp--defalias-late' straight to `nelisp--builtin-defalias' bypasses the
+Elisp body of `nelisp--defalias-late' entirely -- which is why adding the
+record there had no effect (measured 2026-08-08: alias function cells stayed
+at 0/20).  Mapping the entry to this symbol instead keeps the sandbox path and
+the function-cell path doing the same thing, without the self-reference that
+`(puthash 'x #'x)' would create.
+
+Plain `defalias' is deliberately left alone: it keeps recording nothing, so
+this changes only the artifact-rewrite path.
+
+The function cell is set HERE rather than by recording SYMBOL for
+`nelisp-artifact--mirror-recent-function-defs' to drain, because that drain
+runs only on the `lisp/nelisp-artifact.el' replay path
+\(`nelisp-artifact.el:5585', the sole caller).  The direct route's
+`nelisp-standalone-source-cache--replay-item' hands an `:eval' item straight
+to `eval' and never drains anything, so a recorded name is simply dropped
+there -- measured 2026-08-08, twice: recording alone left alias function
+cells at 0/20 on `eval-elisp-artifact'.  Setting the cell at definition time
+is route-independent.
+
+`fboundp' guards the write for the same reason the mirror does: an existing
+host, prelude or runtime definition must never be clobbered."
+  (nelisp--builtin-defalias symbol definition docstring)
+  (unless (fboundp symbol)
+    (fset symbol definition))
+  (setq nelisp--recent-function-defs
+        (cons symbol nelisp--recent-function-defs))
+  symbol)
 
 (defun nelisp--builtin-require (feature &optional _filename _noerror)
   "Phase 2 NeLisp `require' stub.
@@ -1044,7 +1086,7 @@ installation and silently skipping all remaining entries, including
   ;; `eval' (the flat artifact cache and source-command bootstraps) instead of
   ;; `nelisp-eval'.
   (puthash 'nelisp--defalias-late
-           #'nelisp--builtin-defalias nelisp--functions)
+           #'nelisp--builtin-defalias-late nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
   (when (fboundp 'nelisp--builtin-load-file)
