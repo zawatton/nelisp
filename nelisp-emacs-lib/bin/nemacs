@@ -7,11 +7,15 @@
 #
 #   nemacs                          interactive TUI runner
 #   nemacs --batch                  batch entry (= boots, runs --eval/-l, exits)
+#   nemacs -q|--no-init-file        skip user early-init.el/init.el
+#   nemacs -Q|--quick               skip user init and package startup
 #   nemacs --batch -l FILE          batch + load FILE
 #   nemacs --batch -L DIR           batch + prepend DIR to load-path
 #   nemacs --batch -f FUNCTION      batch + call FUNCTION after load/eval
 #   nemacs --batch --runtime-image FILE load a NeLisp .nlri runtime image first
 #   nemacs --runtime-image auto       choose build/*.nlri by batch/interactive mode
+#   nemacs --cold-image FILE --cold-artifact FILE
+#                                  prepare/use a validated flat-arena cold image
 #   nemacs --batch --load-image FILE legacy: restore Lisp-visible .nli state
 #   nemacs --batch --eval FORM      batch + eval FORM
 #   nemacs --batch -l a -l b --eval '(...)'
@@ -35,6 +39,13 @@
 #                    (default: $NEMACS_HOME/build/nemacs-bootstrap.repl)
 #   NEMACS_RUNTIME_IMAGE optional NeLisp .nlri runtime image for --driver=nelisp
 #                    (set to `auto' to choose build/*.nlri by mode)
+#   NEMACS_COLD_IMAGE flat-arena cold image output/cache path
+#                    (default: ${XDG_CACHE_HOME:-$HOME/.cache}/nemacs/)
+#   NEMACS_COLD_ARTIFACT bootstrap .neln cache path
+#                    (default: beside NEMACS_COLD_IMAGE)
+#   NEMACS_DISABLE_COLD_CACHE set to 1/t/true/yes to use normal bootstrap
+#   NEMACS_COLD_LOCK_TIMEOUT seconds to wait for another cache builder
+#                    (default: 120)
 
 set -euo pipefail
 
@@ -86,9 +97,15 @@ NEMACS_NELISP_MEMORY="${NEMACS_NELISP_MEMORY:-8388608}"
 NEMACS_BOOTSTRAP_BUNDLE="${NEMACS_BOOTSTRAP_BUNDLE:-$NEMACS_HOME/build/nemacs-bootstrap.el}"
 NEMACS_BOOTSTRAP_REPL="${NEMACS_BOOTSTRAP_REPL:-$NEMACS_HOME/build/nemacs-bootstrap.repl}"
 NEMACS_RUNTIME_IMAGE="${NEMACS_RUNTIME_IMAGE:-}"
+NEMACS_COLD_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/nemacs"
+NEMACS_COLD_ARTIFACT="${NEMACS_COLD_ARTIFACT:-$NEMACS_COLD_CACHE_ROOT/nemacs-bootstrap.neln}"
+NEMACS_COLD_IMAGE="${NEMACS_COLD_IMAGE:-$NEMACS_COLD_CACHE_ROOT/nemacs-bootstrap.flat.nlri}"
+NEMACS_DISABLE_COLD_CACHE="${NEMACS_DISABLE_COLD_CACHE:-}"
+NEMACS_COLD_LOCK_TIMEOUT="${NEMACS_COLD_LOCK_TIMEOUT:-120}"
 NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-runtime.nlri}"
 NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-interactive-runtime.nlri}"
 NEMACS_VENDOR_CORE_RUNTIME_IMAGE="${NEMACS_VENDOR_CORE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-vendor-core-runtime.nlri}"
+NEMACS_KEEP_REPL_BOOT="${NEMACS_KEEP_REPL_BOOT:-}"
 if [[ "$NEMACS_BOOTSTRAP_BUNDLE" == "none" ]]; then
   NEMACS_BOOTSTRAP_BUNDLE=""
 fi
@@ -111,6 +128,10 @@ nemacs paths:
   NEMACS_BOOTSTRAP_BUNDLE = ${NEMACS_BOOTSTRAP_BUNDLE:-<disabled>}
   NEMACS_BOOTSTRAP_REPL = ${NEMACS_BOOTSTRAP_REPL:-<disabled>}
   NEMACS_RUNTIME_IMAGE = ${NEMACS_RUNTIME_IMAGE:-<disabled>}
+  NEMACS_COLD_IMAGE = $NEMACS_COLD_IMAGE
+  NEMACS_COLD_ARTIFACT = $NEMACS_COLD_ARTIFACT
+  NEMACS_DISABLE_COLD_CACHE = ${NEMACS_DISABLE_COLD_CACHE:-<disabled>}
+  NEMACS_COLD_LOCK_TIMEOUT = $NEMACS_COLD_LOCK_TIMEOUT
   NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
   NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
   NEMACS_VENDOR_CORE_RUNTIME_IMAGE = $NEMACS_VENDOR_CORE_RUNTIME_IMAGE
@@ -131,6 +152,79 @@ nelisp_driver_kind() {
     nelisp|nelisp-standalone-reader) printf '%s\n' "standalone-reader" ;;
     *) printf '%s\n' "cli" ;;
   esac
+}
+
+cold_cache_disabled_p() {
+  case "$NEMACS_DISABLE_COLD_CACHE" in
+    1|t|T|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+cold_cache_lock_owned=0
+cold_cache_lock_dir=""
+
+release_cold_cache_lock() {
+  if (( cold_cache_lock_owned )) && [[ -n "$cold_cache_lock_dir" ]]; then
+    rm -f "$cold_cache_lock_dir/pid"
+    rmdir "$cold_cache_lock_dir" 2>/dev/null || true
+  fi
+  cold_cache_lock_owned=0
+}
+
+acquire_cold_cache_lock() {
+  local waited=0 owner=""
+  local timeout="$NEMACS_COLD_LOCK_TIMEOUT"
+  case "$timeout" in
+    ""|*[!0-9]*) timeout=120 ;;
+  esac
+  cold_cache_lock_dir="${NEMACS_COLD_IMAGE}.lock"
+  while ! mkdir "$cold_cache_lock_dir" 2>/dev/null; do
+    if [[ -r "$cold_cache_lock_dir/pid" ]]; then
+      owner="$(sed -n '1p' "$cold_cache_lock_dir/pid" 2>/dev/null || true)"
+      case "$owner" in
+        ""|*[!0-9]*) ;;
+        *)
+          if ! kill -0 "$owner" 2>/dev/null; then
+            rm -f "$cold_cache_lock_dir/pid"
+            rmdir "$cold_cache_lock_dir" 2>/dev/null || true
+            continue
+          fi
+          ;;
+      esac
+    fi
+    if (( waited >= timeout )); then
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$cold_cache_lock_dir/pid"
+  cold_cache_lock_owned=1
+  trap 'release_cold_cache_lock' EXIT
+  trap 'release_cold_cache_lock; exit 130' INT
+  trap 'release_cold_cache_lock; exit 143' TERM HUP
+}
+
+compile_bootstrap_artifact() {
+  [[ -n "$NEMACS_BOOTSTRAP_BUNDLE" && -r "$NEMACS_BOOTSTRAP_BUNDLE" ]] || return 1
+  "$NEMACS_NELISP" compile-elisp-artifact \
+    --kind neln \
+    --input "$NEMACS_BOOTSTRAP_BUNDLE" \
+    --output "$NEMACS_COLD_ARTIFACT" \
+    --rewrite-defalias-late \
+    --native-policy opportunistic \
+    --load-path "$NEMACS_HOME/src" \
+    --load-path "$NEMACS_HOME/vendor/emacs-lisp" \
+    --load-path "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"
+}
+
+prepare_cold_cache() {
+  "$NEMACS_NELISP" compile-runtime-image \
+    --flat-artifact-cache \
+    --runtime "$NEMACS_NELISP" \
+    --input "$NEMACS_COLD_ARTIFACT" \
+    --output "$NEMACS_COLD_IMAGE"
 }
 
 nelisp_standalone_eval_value() {
@@ -269,6 +363,8 @@ run_doctor() {
 
 BATCH=0
 NO_BANNER=0
+NO_INIT=0
+QUICK=0
 DOCTOR=0
 LOAD_FILES=()
 LOAD_PATHS=()
@@ -286,7 +382,8 @@ while (( $# > 0 )); do
       exit 0 ;;
     --print-paths) print_paths; exit 0 ;;
     --doctor) DOCTOR=1; shift ;;
-    -Q|--quick) shift ;;
+    -q|--no-init-file) NO_INIT=1; shift ;;
+    -Q|--quick) NO_INIT=1; QUICK=1; shift ;;
     -nw|--no-window-system)
       HOST_EARLY_ARGS+=("$1"); shift ;;
     --batch) BATCH=1; shift ;;
@@ -313,6 +410,14 @@ while (( $# > 0 )); do
       [[ -n "${2-}" ]] || { echo "nemacs: --runtime-image requires an argument" >&2; exit 2; }
       NEMACS_RUNTIME_IMAGE="$2"; shift 2 ;;
     --runtime-image=*) NEMACS_RUNTIME_IMAGE="${1#*=}"; shift ;;
+    --cold-image)
+      [[ -n "${2-}" ]] || { echo "nemacs: --cold-image requires an argument" >&2; exit 2; }
+      NEMACS_COLD_IMAGE="$2"; shift 2 ;;
+    --cold-image=*) NEMACS_COLD_IMAGE="${1#*=}"; shift ;;
+    --cold-artifact)
+      [[ -n "${2-}" ]] || { echo "nemacs: --cold-artifact requires an argument" >&2; exit 2; }
+      NEMACS_COLD_ARTIFACT="$2"; shift 2 ;;
+    --cold-artifact=*) NEMACS_COLD_ARTIFACT="${1#*=}"; shift ;;
     --eval)
       [[ -n "${2-}" ]] || { echo "nemacs: --eval requires an argument" >&2; exit 2; }
       EVAL_FORMS+=("$2"); shift 2 ;;
@@ -514,17 +619,76 @@ else
   BOOT_ENTRY_FORM="  $ENTRY_CALL"
 fi
 
+if (( BATCH || NO_INIT )); then
+  NEMACS_INIT_GATE_FORM="(setq init-file-user nil)"
+else
+  NEMACS_INIT_GATE_FORM="(setq init-file-user \"\")"
+fi
+
+if (( BATCH || NO_INIT || QUICK )); then
+  NEMACS_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup nil)"
+else
+  NEMACS_PACKAGE_STARTUP_FORM="(setq package-enable-at-startup t)"
+fi
+
 BOOT_FORM="$(cat <<EOF
 (progn
   (setq native-comp-enable-subr-trampolines nil
         comp-enable-subr-trampolines nil)
+  (unless (boundp 'load-file-name) (defvar load-file-name nil))
+  (unless (boundp 'buffer-file-name) (defvar buffer-file-name nil))
+  (unless (boundp 'default-directory)
+    (defvar default-directory "$(shell_quote "$NEMACS_HOME")/"))
+  (unless (boundp 'nemacs-nelisp-executable)
+    (defvar nemacs-nelisp-executable nil))
+  (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
   (unless (boundp 'load-path) (defvar load-path nil))
+  $NEMACS_INIT_GATE_FORM
+  $NEMACS_PACKAGE_STARTUP_FORM
   (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
 $BOOT_HOST_PRELOAD_FORM
 $BOOT_LOAD_PATH_FORM
+(setq emacs-load-auto-native-compile nil)
 $BOOTSTRAP_BUNDLE_LOAD
 $BOOT_NELISP_SOURCE_REFRESH
+(setq emacs-load-auto-native-compile t)
+  (require 'emacs-cl-macros)
   (require 'nemacs-main)
+  (setq nemacs-main-options
+        (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
+              :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
+              :driver '$NEMACS_DRIVER
+              :images (list$IMAGE_LIST)
+              :load-path (list$LOAD_PATH_LIST)
+              :load (list$LOAD_LIST)
+              :eval-forms (list$EVAL_LIST)
+              :funcall (list$FUNCALL_LIST)
+              :args (list$ARG_LIST)))
+$BOOT_ENTRY_FORM)
+EOF
+)"
+
+# A cold image already contains the bootstrap artifact.  Reassert only
+# per-process context and command-line options: snapshots must not pin the
+# caller's default-directory/load-path, and warm startup must not replay the
+# bootstrap bundle or source files.
+COLD_BOOT_FORM="$(cat <<EOF
+(progn
+  (setq native-comp-enable-subr-trampolines nil
+        comp-enable-subr-trampolines nil)
+  (unless (boundp 'load-file-name) (defvar load-file-name nil))
+  (unless (boundp 'buffer-file-name) (defvar buffer-file-name nil))
+  (unless (boundp 'default-directory) (defvar default-directory nil))
+  (setq default-directory "$(shell_quote "$NEMACS_HOME")/")
+  (unless (boundp 'nemacs-nelisp-executable)
+    (defvar nemacs-nelisp-executable nil))
+  (setq nemacs-nelisp-executable "$(shell_quote "$NEMACS_NELISP")")
+  (unless (boundp 'load-path) (defvar load-path nil))
+  $NEMACS_INIT_GATE_FORM
+  $NEMACS_PACKAGE_STARTUP_FORM
+  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+$BOOT_LOAD_PATH_FORM
+  (setq emacs-load-auto-native-compile t)
   (setq nemacs-main-options
         (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
               :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
@@ -546,7 +710,7 @@ case "$NEMACS_DRIVER" in
     if (( BATCH )); then
       exec "$NEMACS_EMACS" -Q --batch "${HOST_EARLY_ARGS[@]+"${HOST_EARLY_ARGS[@]}"}" --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
     else
-      # Interactive: -Q keeps user init out of nemacs's way.
+      # Host -Q keeps host Emacs startup out of the way; nemacs owns init loading.
       exec "$NEMACS_EMACS" -Q "${HOST_EARLY_ARGS[@]+"${HOST_EARLY_ARGS[@]}"}" --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
     fi
     ;;
@@ -557,14 +721,87 @@ case "$NEMACS_DRIVER" in
       echo "  Direct build: cd $NELISP_HOME && make standalone-reader" >&2
       exit 1
     fi
-    if [[ -n "$NEMACS_RUNTIME_IMAGE" && ! -r "$NEMACS_RUNTIME_IMAGE" ]]; then
+    ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
+    [[ "$NEMACS_NELISP_MEMORY" == "unlimited" ]] || ulimit -v "$NEMACS_NELISP_MEMORY" 2>/dev/null || true
+    cold_image_ready=0
+    if cold_cache_disabled_p; then
+      :
+    elif mkdir -p "$(dirname "$NEMACS_COLD_ARTIFACT")" \
+                   "$(dirname "$NEMACS_COLD_IMAGE")"; then
+      if acquire_cold_cache_lock; then
+        cold_prepare_status=""
+        cold_needs_compile=0
+        if [[ -r "$NEMACS_COLD_ARTIFACT" &&
+              -r "$NEMACS_COLD_ARTIFACT.manifest.el" ]]; then
+          if cold_prepare_status="$(prepare_cold_cache)"; then
+            cold_image_ready=1
+          else
+            cold_needs_compile=1
+            echo "nemacs: cached bootstrap artifact is stale or unusable; rebuilding" >&2
+          fi
+        else
+          cold_needs_compile=1
+        fi
+        if (( cold_needs_compile )); then
+          if compile_bootstrap_artifact; then
+            if cold_prepare_status="$(prepare_cold_cache)"; then
+              cold_image_ready=1
+            else
+              echo "nemacs: cold image prepare failed after AOT compile" >&2
+            fi
+          else
+            echo "nemacs: bootstrap AOT compile failed or source is unavailable" >&2
+          fi
+        fi
+        release_cold_cache_lock
+        trap - EXIT INT TERM HUP
+        if (( cold_image_ready )) && [[ -n "$cold_prepare_status" ]]; then
+          printf '%s\n' "$cold_prepare_status" >&2
+        fi
+      else
+        echo "nemacs: cold cache lock timed out after ${NEMACS_COLD_LOCK_TIMEOUT}s" >&2
+      fi
+      if (( ! cold_image_ready )); then
+        echo "nemacs: cold cache unavailable; falling back to normal startup" >&2
+      fi
+    else
+      echo "nemacs: cannot create cold cache directory; falling back to normal startup" >&2
+    fi
+    if (( ! cold_image_ready )) &&
+       [[ -n "$NEMACS_RUNTIME_IMAGE" && ! -r "$NEMACS_RUNTIME_IMAGE" ]]; then
       echo "nemacs: runtime image is not readable: $NEMACS_RUNTIME_IMAGE" >&2
       exit 1
     fi
-    ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
-    [[ "$NEMACS_NELISP_MEMORY" == "unlimited" ]] || ulimit -v "$NEMACS_NELISP_MEMORY" 2>/dev/null || true
+    # The cold-load stdin reader is line-oriented: it evaluates the first
+    # complete form on each line and discards the rest.  A multi-line boot
+    # form is therefore shredded, and inner forms that happen to start a line
+    # run on their own, outside the guards that enclose them in the source.
+    # That -- not the image -- is what made warm starts fail: the banner's
+    # `(message "%s" (nemacs-main-status-banner))' ran detached from its
+    # `(when (fboundp 'message)' guard and signalled, while the 118 MB image
+    # itself cold-loads in under a second (measured 2026-08-09).
+    #
+    # Collapse the form onto one line.  A `;' comment would then swallow the
+    # remainder of that line, so refuse the cold path rather than boot a
+    # silently truncated form.
+    COLD_BOOT_LINE="${COLD_BOOT_FORM//$'\n'/ }"
+    if (( cold_image_ready )) && [[ "$COLD_BOOT_LINE" == *";"* ]]; then
+      echo "nemacs: cold boot form contains a ';' comment and cannot be put" >&2
+      echo "  on one line for the cold-load reader; using normal startup" >&2
+      cold_image_ready=0
+    fi
     if [[ "$(nelisp_driver_kind)" == "standalone-reader" ]]; then
-      if [[ -n "$NEMACS_RUNTIME_IMAGE" ]]; then
+      if (( cold_image_ready )); then
+        tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-cold-boot.XXXXXX.el")"
+        printf '%s\n0\n' "$COLD_BOOT_LINE" > "$tmp"
+        set +e
+        "$NEMACS_NELISP" --cold-load-from "$NEMACS_COLD_IMAGE" \
+          --no-prompt --no-print < "$tmp"
+        rc=$?
+        set -e
+        rm -f "$tmp"
+        exit "$rc"
+      elif [[ -n "$NEMACS_RUNTIME_IMAGE" ]]; then
         exec "$NEMACS_NELISP" exec-runtime-image "$NEMACS_RUNTIME_IMAGE" "$BOOT_FORM"
       elif [[ -r "$NEMACS_BOOTSTRAP_REPL" ]]; then
         tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-repl-boot.XXXXXX.el")"
@@ -573,14 +810,24 @@ case "$NEMACS_DRIVER" in
           printf '(nelisp--eval-source-string "%s")\n' \
             "$(lisp_file_string "$NELISP_HOME/scripts/nelisp-stdlib-prelude.el")" >> "$tmp"
         fi
-        cat "$NEMACS_BOOTSTRAP_REPL" >> "$tmp"
+        printf '%s\n' "(unless (boundp 'load-file-name) (defvar load-file-name nil))" >> "$tmp"
+        printf '%s\n' "(unless (boundp 'buffer-file-name) (defvar buffer-file-name nil))" >> "$tmp"
+        printf '%s\n' "(unless (boundp 'default-directory) (defvar default-directory \"$(shell_quote "$NEMACS_HOME")/\"))" >> "$tmp"
+        printf '%s\n' "(unless (boundp 'nemacs-nelisp-executable) (defvar nemacs-nelisp-executable nil))" >> "$tmp"
+        printf '%s\n' "(setq nemacs-nelisp-executable \"$(shell_quote "$NEMACS_NELISP")\")" >> "$tmp"
         printf '%s\n' "(setq native-comp-enable-subr-trampolines nil comp-enable-subr-trampolines nil)" >> "$tmp"
         printf '%s\n' "(unless (boundp 'load-path) (defvar load-path nil))" >> "$tmp"
+        printf '%s\n' "$NEMACS_INIT_GATE_FORM" >> "$tmp"
+        if [[ -n "$NEMACS_PACKAGE_STARTUP_FORM" ]]; then
+          printf '%s\n' "$NEMACS_PACKAGE_STARTUP_FORM" >> "$tmp"
+        fi
+        printf '%s\n' "(setq emacs-load-auto-native-compile nil)" >> "$tmp"
+        cat "$NEMACS_BOOTSTRAP_REPL" >> "$tmp"
         printf '%s\n' "(setq nelisp-emacs-vendor-root \"$(shell_quote "$NEMACS_HOME/vendor")\")" >> "$tmp"
         printf '%s\n' "$(one_line_form "$BOOT_LOAD_PATH_FORM")" >> "$tmp"
-        printf '%s\n' "(load \"$(shell_quote "$NEMACS_HOME/src/emacs-fns.el")\" nil 'no-message)" >> "$tmp"
-        printf '%s\n' "(load \"$(shell_quote "$NEMACS_HOME/src/nemacs-main.el")\" nil 'no-message)" >> "$tmp"
+        printf '%s\n' "(require 'emacs-cl-macros)" >> "$tmp"
         printf '%s\n' "(require 'nemacs-main)" >> "$tmp"
+        printf '%s\n' "(setq emacs-load-auto-native-compile t)" >> "$tmp"
         REPL_OPTIONS_FORM="$(cat <<EOF
 (setq nemacs-main-options
       (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
@@ -625,7 +872,7 @@ EOF
             printf '%s\n' "(if nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input)) (progn (when (fboundp 'message) (message \"nemacs: TUI not available, running batch-style\")) (nemacs-main--apply-options)))" >> "$tmp"
           fi
         fi
-        printf '%s\n' ",quit" >> "$tmp"
+        printf '%s\n' "0" >> "$tmp"
         restore_repl_tty() {
           if (( ! BATCH )); then
             stty sane < /dev/tty 2>/dev/null || true
@@ -643,7 +890,11 @@ EOF
         if (( ! BATCH )); then
           trap - TERM HUP INT
         fi
-        rm -f "$tmp"
+        if [[ -n "$NEMACS_KEEP_REPL_BOOT" ]]; then
+          echo "nemacs: keeping repl boot file $tmp" >&2
+        else
+          rm -f "$tmp"
+        fi
         exit "$rc"
       else
         tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-boot.XXXXXX.el")"
