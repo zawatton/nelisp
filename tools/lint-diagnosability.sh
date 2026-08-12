@@ -26,7 +26,7 @@ MODE="${1:-report}"
 # tools/run-with-deadline.sh, which says TIMEOUT/SIGNAL/EXIT in the caller's
 # own voice and warns when a passing run is near its budget.
 count_bare_timeout() {
-  grep -cE '^\s+.*\btimeout \$\(' Makefile 2>/dev/null || echo 0
+  { grep -cE '^\s+.*\btimeout \$\(' Makefile 2>/dev/null || true; } | head -1
 }
 
 # `guard-mismatch': a probe that tests one name but gates the definition of
@@ -34,7 +34,7 @@ count_bare_timeout() {
 # that evidence skips defining `make-keymap', `make-sparse-keymap' AND
 # `suppress-keymap'.  A guard must test what it gates.
 count_guard_mismatch() {
-  grep -cE '\(unless probe$' src/nelisp-emacs-magit-bridge.el 2>/dev/null || echo 0
+  { grep -cE '\(unless probe$' src/nelisp-emacs-magit-bridge.el 2>/dev/null || true; } | head -1
 }
 
 # `alloc-in-diagnostic': a diagnostic that allocates changes the thing it is
@@ -45,8 +45,8 @@ count_guard_mismatch() {
 # NORMAL path must not allocate; ones that fire only on an already-detected
 # fault may.  Counted as bridge-level tracers that call an allocating builtin.
 count_alloc_in_diagnostic() {
-  grep -cE 'nelisp--write-stdout-bytes.*\((make-keymap|make-vector|make-list|make-hash-table)' \
-    src/nelisp-emacs-magit-bridge.el 2>/dev/null || echo 0
+  { grep -cE 'nelisp--write-stdout-bytes.*\((make-keymap|make-vector|make-list|make-hash-table)' \
+      src/nelisp-emacs-magit-bridge.el 2>/dev/null || true; } | head -1
 }
 
 RULES="bare-timeout guard-mismatch alloc-in-diagnostic"
