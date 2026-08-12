@@ -101,6 +101,30 @@ NEMACS_COLD_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/nemacs"
 NEMACS_COLD_ARTIFACT="${NEMACS_COLD_ARTIFACT:-$NEMACS_COLD_CACHE_ROOT/nemacs-bootstrap.neln}"
 NEMACS_COLD_IMAGE="${NEMACS_COLD_IMAGE:-$NEMACS_COLD_CACHE_ROOT/nemacs-bootstrap.flat.nlri}"
 NEMACS_DISABLE_COLD_CACHE="${NEMACS_DISABLE_COLD_CACHE:-}"
+# Set to 0 to always ask `compile-runtime-image' itself whether the cached
+# image is current, instead of the cheap sidecar probe (see `cold_cache_probe_hit').
+NEMACS_COLD_CACHE_PROBE="${NEMACS_COLD_CACHE_PROBE:-1}"
+# Build the cold image by loading the source bundle, not by replaying the
+# `.neln' AOT artifact.  Set to 0 for the old artifact route.
+#
+# Measured 2026-08-12, same machine, both routes tried on both binaries:
+#
+#                       source route          .neln replay
+#   dev bin 4268fe9a    131 s  rc=0  82 MB    4949 s  rc=1
+#   vendor  e6eae129    133 s  rc=0  82 MB    2913 s  rc=139 (SEGV)
+#
+# The replay route did not produce an image at all in either attempt, and the
+# one it produced earlier (2026-08-11, 116 MB, still in the cache) is broken:
+# on a 22-check functional probe it failed 6, including `(void-function
+# point-max)', and `with-temp-buffer' did not isolate, so every check wrote
+# into the shared scratch buffer.  Cause: replaying through the sandbox
+# evaluator puts names in `nelisp--functions' without installing the host
+# function cell -- `point-max' is IN-TABLE with `fboundp' nil while `point-min'
+# has a cell.  The source route installs host cells directly and has no sandbox
+# table at all, which src/nelisp-bytecode.el:2087 documents as the correct
+# standalone shape.  Same probe on the source image: 22/22, ~1 s.
+NEMACS_COLD_SOURCE_ROUTE="${NEMACS_COLD_SOURCE_ROUTE:-1}"
+NEMACS_COLD_SIDECAR="${NEMACS_COLD_SIDECAR:-$NEMACS_COLD_IMAGE.srcinputs}"
 NEMACS_COLD_LOCK_TIMEOUT="${NEMACS_COLD_LOCK_TIMEOUT:-120}"
 NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-runtime.nlri}"
 NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-interactive-runtime.nlri}"
@@ -131,6 +155,9 @@ nemacs paths:
   NEMACS_COLD_IMAGE = $NEMACS_COLD_IMAGE
   NEMACS_COLD_ARTIFACT = $NEMACS_COLD_ARTIFACT
   NEMACS_DISABLE_COLD_CACHE = ${NEMACS_DISABLE_COLD_CACHE:-<disabled>}
+  NEMACS_COLD_CACHE_PROBE = $NEMACS_COLD_CACHE_PROBE
+  NEMACS_COLD_SOURCE_ROUTE = $NEMACS_COLD_SOURCE_ROUTE
+  NEMACS_COLD_SIDECAR = $NEMACS_COLD_SIDECAR
   NEMACS_COLD_LOCK_TIMEOUT = $NEMACS_COLD_LOCK_TIMEOUT
   NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
   NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
@@ -219,7 +246,120 @@ compile_bootstrap_artifact() {
     --load-path "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"
 }
 
+# `compile-runtime-image --flat-artifact-cache' cannot look at the freshness
+# sidecar until its artifact runtime is up, and in the standalone reader that
+# bootstrap is a fixed cost paid on every start.  Measured 2026-08-10 against a
+# deliberately absent input, so only the fixed cost was timed: 531 s total, of
+# which 5.7 s is interpreted preamble and 525 s is replaying
+# `target/nelisp-artifact-runtime.el.neln'.  Sixty-six stack samples put that
+# replay entirely in the tree-walking interpreter -- no bytecode, no native
+# frame, 71% of leaves in the allocator/GC -- so the AOT cache buys nothing
+# there.
+#
+# The decision itself reads a 1,874-byte plist and hashes four files.  Run it
+# on the bare reader route instead: same predicate
+# (`nelisp-artifact--flat-image-cache-sidecar-hit', loaded from source rather
+# than replayed), about 4 s.
+#
+# Only `hit' short-circuits.  `miss', `error', a missing probe, a non-reader
+# driver, and any nonzero exit all fall through to the real command, so the
+# worst a broken probe can do is cost 4 s -- it cannot approve a stale image.
+cold_cache_probe_hit() {
+  local probe="$NELISP_HOME/tools/nelisp-flat-image-cache-probe.el"
+  [[ "$NEMACS_COLD_CACHE_PROBE" != "0" ]] || return 1
+  [[ -r "$probe" ]] || return 1
+  [[ "$(nelisp_driver_kind)" == "standalone-reader" ]] || return 1
+  local out=""
+  out="$(NELISP_HOME="$NELISP_HOME" \
+         NELISP_FLAT_CACHE_ARTIFACT="$NEMACS_COLD_ARTIFACT" \
+         NELISP_FLAT_CACHE_IMAGE="$NEMACS_COLD_IMAGE" \
+         NELISP_FLAT_CACHE_RUNTIME="$NEMACS_NELISP" \
+         "$NEMACS_NELISP" --load "$probe")" || return 1
+  [[ "$out" == *"flat-image-cache-probe=hit"* ]]
+}
+
+# --- cold image, source route ------------------------------------------
+#
+# The image is a pure function of these five files.  Freshness is therefore
+# decided in the shell with five sha256sums (~30 ms) instead of by starting the
+# runtime: the artifact route had to boot its own artifact runtime before it
+# could read a 1,874-byte sidecar, and that bootstrap alone cost 531 s.
+cold_source_inputs() {
+  printf '%s\n' \
+    "$NEMACS_NELISP" \
+    "$NEMACS_BOOTSTRAP_BUNDLE" \
+    "$NEMACS_HOME/scripts/nemacs-runtime-process-preload.el" \
+    "$NEMACS_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
+    "$NEMACS_HOME/scripts/nemacs-runtime-image-preload.el"
+}
+
+cold_source_route_available_p() {
+  [[ "$NEMACS_COLD_SOURCE_ROUTE" != "0" ]] || return 1
+  [[ -n "$NEMACS_BOOTSTRAP_BUNDLE" ]] || return 1
+  [[ "$(nelisp_driver_kind)" == "standalone-reader" ]] || return 1
+  local f
+  while read -r f; do
+    [[ -r "$f" ]] || return 1
+  done < <(cold_source_inputs)
+  return 0
+}
+
+# Inputs' hashes plus the image's own size.  The size catches a truncated or
+# half-written image without hashing 82 MB on every start.
+cold_source_fingerprint() {
+  local sums size
+  sums="$(cold_source_inputs | tr '\n' '\0' | xargs -0 sha256sum 2>/dev/null |
+          awk '{printf "%s ", $1}')" || return 1
+  [[ -n "$sums" ]] || return 1
+  size="$(stat -Lc%s "$NEMACS_COLD_IMAGE" 2>/dev/null || echo 0)"
+  printf 'v1 %simage-size=%s\n' "$sums" "$size"
+}
+
+cold_source_cache_hit_p() {
+  [[ -s "$NEMACS_COLD_IMAGE" ]] || return 1
+  [[ -r "$NEMACS_COLD_SIDECAR" ]] || return 1
+  [[ "$(cat "$NEMACS_COLD_SIDECAR" 2>/dev/null)" == "$(cold_source_fingerprint)" ]]
+}
+
+build_cold_image_from_source() {
+  local tmp="$NEMACS_COLD_IMAGE.tmp.$$" drv rc=0
+  drv="$(mktemp "${TMPDIR:-/tmp}/nemacs-cold-src.XXXXXX.el")" || return 1
+  {
+    printf '(progn '
+    printf '(load "%s" nil (quote no-message) t t) ' \
+      "$NEMACS_HOME/scripts/nemacs-runtime-process-preload.el" \
+      "$NEMACS_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
+      "$NEMACS_HOME/scripts/nemacs-runtime-image-preload.el"
+    # `-batch' is the verified entry (22/22 functional checks on its image).
+    # `nemacs-runtime-image-preload-interactive' bakes the TUI too and would
+    # plausibly start faster, but it has not been checked -- do not swap it in
+    # without running the probe again.
+    printf '(nemacs-runtime-image-preload-batch "%s" "%s") ' \
+      "$NEMACS_HOME" "$NEMACS_BOOTSTRAP_BUNDLE"
+    printf '(nelisp--arena-dump-image-stream "%s"))\n' "$tmp"
+  } > "$drv"
+  NELISP_HOME="$NELISP_HOME" "$NEMACS_NELISP" --load "$drv" >/dev/null || rc=$?
+  rm -f "$drv"
+  if (( rc != 0 )) || [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    printf 'flat-image-cache=failed route=source rc=%s\n' "$rc"
+    return 1
+  fi
+  mv -f "$tmp" "$NEMACS_COLD_IMAGE" || { rm -f "$tmp"; return 1; }
+  # The artifact route's sidecar describes an image that no longer exists here.
+  # Left in place it would let `cold_cache_probe_hit' approve this image on a
+  # later fallback run, on evidence about a different file.
+  rm -f "$NEMACS_COLD_IMAGE.manifest.el"
+  cold_source_fingerprint > "$NEMACS_COLD_SIDECAR" || return 1
+  printf 'flat-image-cache=rebuilt route=source image=%s (%s B)\n' \
+    "$NEMACS_COLD_IMAGE" "$(stat -Lc%s "$NEMACS_COLD_IMAGE" 2>/dev/null || echo '?')"
+}
+
 prepare_cold_cache() {
+  if cold_cache_probe_hit; then
+    printf 'flat-image-cache=hit image=%s probe=sidecar\n' "$NEMACS_COLD_IMAGE"
+    return 0
+  fi
   "$NEMACS_NELISP" compile-runtime-image \
     --flat-artifact-cache \
     --runtime "$NEMACS_NELISP" \
@@ -731,8 +871,28 @@ case "$NEMACS_DRIVER" in
       if acquire_cold_cache_lock; then
         cold_prepare_status=""
         cold_needs_compile=0
-        if [[ -r "$NEMACS_COLD_ARTIFACT" &&
-              -r "$NEMACS_COLD_ARTIFACT.manifest.el" ]]; then
+        # Source route first; the artifact route stays as the fallback so a
+        # tree without build/nemacs-bootstrap.el still starts.
+        if cold_source_route_available_p; then
+          if cold_source_cache_hit_p; then
+            cold_prepare_status="flat-image-cache=hit route=source image=$NEMACS_COLD_IMAGE"
+            cold_image_ready=1
+          else
+            # 131 s measured.  Say so before the wait rather than after: the
+            # artifact route's equivalent silence lasted 85 minutes and read as
+            # a hang.
+            echo "nemacs: building cold image from source (~2 min)" >&2
+            if cold_prepare_status="$(build_cold_image_from_source)"; then
+              cold_image_ready=1
+            else
+              echo "nemacs: source-route image build failed; trying the artifact route" >&2
+            fi
+          fi
+        fi
+        if (( cold_image_ready )); then
+          :
+        elif [[ -r "$NEMACS_COLD_ARTIFACT" &&
+                -r "$NEMACS_COLD_ARTIFACT.manifest.el" ]]; then
           if cold_prepare_status="$(prepare_cold_cache)"; then
             cold_image_ready=1
           else
@@ -755,7 +915,12 @@ case "$NEMACS_DRIVER" in
         fi
         release_cold_cache_lock
         trap - EXIT INT TERM HUP
-        if (( cold_image_ready )) && [[ -n "$cold_prepare_status" ]]; then
+        # Report the prepare output on both outcomes.  Gating it on success
+        # discarded exactly the diagnostics that explain a failure: a SEGV
+        # after the image was already written, or a multi-minute stall inside
+        # `compile-runtime-image', both looked like a bare "prepare failed"
+        # line with no detail (measured 2026-08-09).
+        if [[ -n "$cold_prepare_status" ]]; then
           printf '%s\n' "$cold_prepare_status" >&2
         fi
       else
