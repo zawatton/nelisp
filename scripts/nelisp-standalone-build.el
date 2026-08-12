@@ -272,9 +272,12 @@ symbols) would be reused by the static link and fail with
 (defconst nelisp-standalone--artifact-runtime-cache-enable-path
   (concat nelisp-standalone--artifact-runtime-cache-path ".enable")
   "Marker enabling the standalone artifact runtime cache.
-`nelisp-standalone-build-artifact-runtime-cache' writes this marker together
-with the cache artifact.  Removing it is the supported fallback switch for
-diagnosing the full source command path.")
+Absent by default: `nelisp-standalone-build-artifact-runtime-cache' writes
+the digest to PATH.off unless NELISP_ARTIFACT_RUNTIME_CACHE_ENABLE is set, so
+artifact commands take the full source command path.  That path is not a
+degraded fallback -- measured 2026-08-10 it is ~130x faster to start (4 s vs
+531 s); see that function for the measurement.  Renaming PATH.off to PATH
+switches the cache back on.")
 
 (defconst nelisp-standalone--source-command-cache-stats-path
   (expand-file-name "target/nelisp-source-command-cache.stats"
@@ -11977,12 +11980,15 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
          (nl_sf_cond_walk args env out 0)
        (seq (nl_cons_write_nil out) 0))))
 
-;; prog1/prog2 (direct eval) + dolist/dotimes (synthesise a mapc/let form and
-;; evaluate it, reusing the working mapc / number-sequence / let / lambda).
+;; prog1/prog2 (direct eval) + dolist (synthesise a mapc/let form and evaluate
+;; it, reusing the working mapc / let / lambda) + dotimes (synthesise a
+;; let/while form; see the measurements above nl_sf_dotimes for why it does not
+;; use mapc/number-sequence the way dolist does).
 ;; u64 packings: "prog1"=212188754544, "prog2"=216483721840,
 ;; "dolist"=128039038775140, "dotimes"=32481142916804452, "mapc"=1668309357,
 ;; "let"=7628140, "1-"=11569, "number-sequence"=[8299415468082296174,
-;; 28538298447524197].
+;; 28538298447524197], "while"=435610544247, "<"=60, "setq"=1903453555,
+;; "1+"=11057, "--nl-dotimes-n"=[8390034777069989165, 121141488610665].
 (defconst nelisp-standalone--sp-eq-prog1
   '(defun nl_sp_eq_prog1 (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
@@ -12103,8 +12109,28 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
        (seq (nl_cons_write_nil out) 0))))
 
 ;; (dotimes (VAR COUNT [RESULT]) BODY...) -> evaluate
-;;   (progn (mapc (lambda (VAR) BODY...) (number-sequence 0 (1- COUNT)))
-;;          (let ((VAR COUNT)) RESULT))   ; COUNT is evaluated twice (minor).
+;;   (let ((--nl-dotimes-n COUNT) (VAR 0))
+;;     (while (< VAR --nl-dotimes-n) (progn BODY...) (setq VAR (1+ VAR)))
+;;     RESULT)
+;;
+;; This used to synthesise `(mapc (lambda (VAR) BODY...)
+;; (number-sequence 0 (1- COUNT)))', which pays for the loop twice: once to
+;; materialise an N-element list, and again for a closure call per element.
+;; Measured 2026-08-11 at N=200000 through the flat image: `dotimes' cost
+;; 320us/iteration, of which `number-sequence' alone was 146us and mapc's
+;; per-element call 171us -- 317 of the 320 accounted for, additively.  The
+;; `while' form below runs the same body at 85us.  Cross-checked on the bare
+;; reader with no image at N=10000 (157us vs 50us) and linear in N on both.
+;;
+;; `dolist' deliberately keeps its mapc shape.  Its list already exists, so the
+;; same rewrite measured only 174us -> 157us per element (11%), which does not
+;; pay for a rebuild.  The win here is not "avoid the closure call", it is
+;; "do not build a list in order to count to N".
+;;
+;; COUNT is now evaluated once rather than twice, which also moves this closer
+;; to Emacs.  BODY sees one shared binding of VAR across iterations, as it does
+;; under Emacs' own `dotimes' expansion.  Nested loops are safe: the inner
+;; `let' shadows --nl-dotimes-n and restores the outer binding on exit.
 (defconst nelisp-standalone--sf-dotimes
   '(defun nl_sf_dotimes (args env out _pad)
      (if (= (sexp-tag args) 7)
@@ -12115,70 +12141,84 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
                       (spec_cdr (nl_cons_cdr_ptr spec))
                       (count_ptr (nl_cons_car_ptr spec_cdr))
                       (spec_cddr (nl_cons_cdr_ptr spec_cdr))
-                      (pbuf (alloc-bytes 8 1)) (progn_sym (alloc-bytes 32 8))
-                      (mbuf (alloc-bytes 8 1)) (mapc_sym (alloc-bytes 32 8))
-                      (abuf (alloc-bytes 8 1)) (lambda_sym (alloc-bytes 32 8))
                       (lbuf (alloc-bytes 8 1)) (let_sym (alloc-bytes 32 8))
-                      (sbuf (alloc-bytes 8 1)) (sub_sym (alloc-bytes 32 8))
-                      (nbuf (alloc-bytes 16 1)) (numseq_sym (alloc-bytes 32 8))
+                      (wbuf (alloc-bytes 8 1)) (while_sym (alloc-bytes 32 8))
+                      (tbuf (alloc-bytes 8 1)) (lt_sym (alloc-bytes 32 8))
+                      (qbuf (alloc-bytes 8 1)) (setq_sym (alloc-bytes 32 8))
+                      (obuf (alloc-bytes 8 1)) (oneplus_sym (alloc-bytes 32 8))
+                      (pbuf (alloc-bytes 8 1)) (progn_sym (alloc-bytes 32 8))
+                      (nbuf (alloc-bytes 16 1))
+                      (limit1 (alloc-bytes 32 8)) (limit2 (alloc-bytes 32 8))
                       (var1 (alloc-bytes 32 8)) (var2 (alloc-bytes 32 8))
-                      (count1 (alloc-bytes 32 8)) (count2 (alloc-bytes 32 8))
-                      (body_clone (alloc-bytes 32 8))
+                      (var3 (alloc-bytes 32 8)) (var4 (alloc-bytes 32 8))
+                      (count1 (alloc-bytes 32 8)) (body_clone (alloc-bytes 32 8))
                       (result_slot (alloc-bytes 32 8)) (niln (alloc-bytes 32 8))
                       (zero_slot (alloc-bytes 32 8))
-                      (arglist (alloc-bytes 32 8))
-                      (lambda_inner (alloc-bytes 32 8)) (lambda_form (alloc-bytes 32 8))
-                      (sub_inner (alloc-bytes 32 8)) (sub_form (alloc-bytes 32 8))
-                      (ns_inner (alloc-bytes 32 8)) (ns_args (alloc-bytes 32 8)) (ns_form (alloc-bytes 32 8))
-                      (mapc_inner (alloc-bytes 32 8)) (mapc_args (alloc-bytes 32 8)) (mapc_form (alloc-bytes 32 8))
-                      (letbind_inner (alloc-bytes 32 8)) (letbind (alloc-bytes 32 8)) (letbinds (alloc-bytes 32 8))
-                      (letbody (alloc-bytes 32 8)) (let_args (alloc-bytes 32 8)) (let_form (alloc-bytes 32 8))
-                      (progn_inner (alloc-bytes 32 8)) (progn_args (alloc-bytes 32 8)) (form (alloc-bytes 32 8)))
+                      (incr_inner (alloc-bytes 32 8)) (incr_form (alloc-bytes 32 8))
+                      (setq_inner (alloc-bytes 32 8)) (setq_args (alloc-bytes 32 8)) (setq_form (alloc-bytes 32 8))
+                      (progn_body (alloc-bytes 32 8))
+                      (wbody_tail (alloc-bytes 32 8)) (while_body (alloc-bytes 32 8))
+                      (test_inner (alloc-bytes 32 8)) (test_args (alloc-bytes 32 8)) (test_form (alloc-bytes 32 8))
+                      (while_args (alloc-bytes 32 8)) (while_form (alloc-bytes 32 8))
+                      (bind1_inner (alloc-bytes 32 8)) (bind1 (alloc-bytes 32 8))
+                      (bind2_inner (alloc-bytes 32 8)) (bind2 (alloc-bytes 32 8))
+                      (binds_tail (alloc-bytes 32 8)) (binds (alloc-bytes 32 8))
+                      (letbody_tail (alloc-bytes 32 8)) (letbody (alloc-bytes 32 8))
+                      (let_args (alloc-bytes 32 8)) (form (alloc-bytes 32 8)))
                  (seq
-                  (ptr-write-u64 pbuf 0 474181759600)    (nl_alloc_symbol pbuf 5 progn_sym)
-                  (ptr-write-u64 mbuf 0 1668309357)      (nl_alloc_symbol mbuf 4 mapc_sym)
-                  (ptr-write-u64 abuf 0 107083775959404) (nl_alloc_symbol abuf 6 lambda_sym)
-                  (ptr-write-u64 lbuf 0 7628140)         (nl_alloc_symbol lbuf 3 let_sym)
-                  (ptr-write-u64 sbuf 0 11569)           (nl_alloc_symbol sbuf 2 sub_sym)
-                  (ptr-write-u64 nbuf 0 8299415468082296174)
-                  (ptr-write-u64 nbuf 8 28538298447524197)
-                  (nl_alloc_symbol nbuf 15 numseq_sym)
+                  (ptr-write-u64 lbuf 0 7628140)      (nl_alloc_symbol lbuf 3 let_sym)
+                  (ptr-write-u64 wbuf 0 435610544247) (nl_alloc_symbol wbuf 5 while_sym)
+                  (ptr-write-u64 tbuf 0 60)           (nl_alloc_symbol tbuf 1 lt_sym)
+                  (ptr-write-u64 qbuf 0 1903453555)   (nl_alloc_symbol qbuf 4 setq_sym)
+                  (ptr-write-u64 obuf 0 11057)        (nl_alloc_symbol obuf 2 oneplus_sym)
+                  (ptr-write-u64 pbuf 0 474181759600) (nl_alloc_symbol pbuf 5 progn_sym)
+                  (ptr-write-u64 nbuf 0 8390034777069989165)
+                  (ptr-write-u64 nbuf 8 121141488610665)
+                  (nl_alloc_symbol nbuf 14 limit1)
+                  (ptr-write-u64 nbuf 0 8390034777069989165)
+                  (ptr-write-u64 nbuf 8 121141488610665)
+                  (nl_alloc_symbol nbuf 14 limit2)
                   (nl_sexp_clone_into var_ptr var1)
                   (nl_sexp_clone_into var_ptr var2)
+                  (nl_sexp_clone_into var_ptr var3)
+                  (nl_sexp_clone_into var_ptr var4)
                   (nl_sexp_clone_into count_ptr count1)
-                  (nl_sexp_clone_into count_ptr count2)
                   (nl_sexp_clone_into body_ptr body_clone)
                   (nl_cons_write_nil niln)
                   (sexp-int-make zero_slot 0)
                   (if (= (sexp-tag spec_cddr) 7)
                       (nl_sexp_clone_into (nl_cons_car_ptr spec_cddr) result_slot)
                     (nl_cons_write_nil result_slot))
-                  ;; (lambda (VAR) BODY...)
-                  (nelisp_cons_construct var1 niln arglist)
-                  (nelisp_cons_construct arglist body_clone lambda_inner)
-                  (nelisp_cons_construct lambda_sym lambda_inner lambda_form)
-                  ;; (1- COUNT)
-                  (nelisp_cons_construct count1 niln sub_inner)
-                  (nelisp_cons_construct sub_sym sub_inner sub_form)
-                  ;; (number-sequence 0 (1- COUNT))
-                  (nelisp_cons_construct sub_form niln ns_inner)
-                  (nelisp_cons_construct zero_slot ns_inner ns_args)
-                  (nelisp_cons_construct numseq_sym ns_args ns_form)
-                  ;; (mapc (lambda ...) (number-sequence ...))
-                  (nelisp_cons_construct ns_form niln mapc_inner)
-                  (nelisp_cons_construct lambda_form mapc_inner mapc_args)
-                  (nelisp_cons_construct mapc_sym mapc_args mapc_form)
-                  ;; (let ((VAR COUNT)) RESULT)
-                  (nelisp_cons_construct count2 niln letbind_inner)
-                  (nelisp_cons_construct var2 letbind_inner letbind)
-                  (nelisp_cons_construct letbind niln letbinds)
-                  (nelisp_cons_construct result_slot niln letbody)
-                  (nelisp_cons_construct letbinds letbody let_args)
-                  (nelisp_cons_construct let_sym let_args let_form)
-                  ;; (progn (mapc ...) (let ...))
-                  (nelisp_cons_construct let_form niln progn_inner)
-                  (nelisp_cons_construct mapc_form progn_inner progn_args)
-                  (nelisp_cons_construct progn_sym progn_args form)
+                  ;; (1+ VAR)
+                  (nelisp_cons_construct var4 niln incr_inner)
+                  (nelisp_cons_construct oneplus_sym incr_inner incr_form)
+                  ;; (setq VAR (1+ VAR))
+                  (nelisp_cons_construct incr_form niln setq_inner)
+                  (nelisp_cons_construct var3 setq_inner setq_args)
+                  (nelisp_cons_construct setq_sym setq_args setq_form)
+                  ;; (progn BODY...) as one element, so the body needs no tail walk
+                  (nelisp_cons_construct progn_sym body_clone progn_body)
+                  (nelisp_cons_construct setq_form niln wbody_tail)
+                  (nelisp_cons_construct progn_body wbody_tail while_body)
+                  ;; (< VAR --nl-dotimes-n)
+                  (nelisp_cons_construct limit2 niln test_inner)
+                  (nelisp_cons_construct var2 test_inner test_args)
+                  (nelisp_cons_construct lt_sym test_args test_form)
+                  ;; (while TEST (progn BODY...) (setq VAR (1+ VAR)))
+                  (nelisp_cons_construct test_form while_body while_args)
+                  (nelisp_cons_construct while_sym while_args while_form)
+                  ;; ((--nl-dotimes-n COUNT) (VAR 0))
+                  (nelisp_cons_construct count1 niln bind1_inner)
+                  (nelisp_cons_construct limit1 bind1_inner bind1)
+                  (nelisp_cons_construct zero_slot niln bind2_inner)
+                  (nelisp_cons_construct var1 bind2_inner bind2)
+                  (nelisp_cons_construct bind2 niln binds_tail)
+                  (nelisp_cons_construct bind1 binds_tail binds)
+                  ;; (let BINDS (while ...) RESULT)
+                  (nelisp_cons_construct result_slot niln letbody_tail)
+                  (nelisp_cons_construct while_form letbody_tail letbody)
+                  (nelisp_cons_construct binds letbody let_args)
+                  (nelisp_cons_construct let_sym let_args form)
                   (nelisp_eval_call form env out)))
              (seq (nl_cons_write_nil out) 0)))
        (seq (nl_cons_write_nil out) 0))))
@@ -19405,15 +19445,40 @@ loader when it is absent."
    nelisp-standalone--artifact-runtime-source-path
    nelisp-standalone--artifact-runtime-cache-path
    nil nil nil nil nil 'neln)
-  (with-temp-file nelisp-standalone--artifact-runtime-cache-enable-path
-    (insert "enabled "
-            (secure-hash
-             'sha256
-             (nelisp-artifact--read-file-as-string
-              nelisp-standalone--artifact-runtime-cache-path))
-            "\n"))
-  (message "[standalone-reader] artifact runtime cache -> %s (enabled)"
-           nelisp-standalone--artifact-runtime-cache-path)
+  ;; Build the cache, but do not switch it on by default.  Measured 2026-08-10
+  ;; with the same binary, the same command, the same deliberately absent input
+  ;; and the same failure point, so only the marker differed:
+  ;;
+  ;;     marker present (AOT cache route)   531 s
+  ;;     marker absent  (full source route)   4 s
+  ;;
+  ;; The cache replays through the tree-walking interpreter -- 66 stack samples
+  ;; held no bytecode and no native frame, and 71% of leaves were in the
+  ;; allocator/GC -- so on this route it is ~130x slower than reading the source
+  ;; it caches, and every `compile-runtime-image --flat-artifact-cache' pays it
+  ;; before it can even look at the freshness sidecar.
+  ;;
+  ;; Its intended payoff is a faster artifact decode during a REBUILD, and that
+  ;; is still unproven: the source-route rebuild measured 88 min against 95.5
+  ;; min for the cache route.  Set NELISP_ARTIFACT_RUNTIME_CACHE_ENABLE=1 to
+  ;; write the live marker and measure that claim; the digest is recorded either
+  ;; way so switching it on later is a rename.
+  (let* ((enabled (and (getenv "NELISP_ARTIFACT_RUNTIME_CACHE_ENABLE") t))
+         (path (if enabled
+                   nelisp-standalone--artifact-runtime-cache-enable-path
+                 (concat nelisp-standalone--artifact-runtime-cache-enable-path
+                         ".off"))))
+    (with-temp-file path
+      (insert "enabled "
+              (secure-hash
+               'sha256
+               (nelisp-artifact--read-file-as-string
+                nelisp-standalone--artifact-runtime-cache-path))
+              "\n"))
+    (message "[standalone-reader] artifact runtime cache -> %s (%s)"
+             nelisp-standalone--artifact-runtime-cache-path
+             (if enabled "enabled"
+               "not enabled; set NELISP_ARTIFACT_RUNTIME_CACHE_ENABLE=1")))
   nelisp-standalone--artifact-runtime-cache-path)
 
 ;;;###autoload

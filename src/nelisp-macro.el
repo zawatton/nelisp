@@ -70,6 +70,28 @@ NAME."
               (list "name is already bound as a function" name)))
     (puthash name (nelisp--make-closure env params body)
              nelisp--macros)
+    ;; Parity with the native `nl_sf_defmacro' special form, which lowers
+    ;; `defmacro' to (fset 'NAME (list 'macro (lambda ...))).  Two owners for
+    ;; one behaviour: whichever handles a given `defmacro' decides whether the
+    ;; symbol also gets a host `(macro EXPANDER)' cell, and a call site that
+    ;; was never macro-expanded resolves through that cell.  Where it is
+    ;; missing, the call dies with `void-function' naming the macro itself.
+    ;;
+    ;; Measured 2026-08-10 on a bootstrap flat image built through the source
+    ;; route: 107 of the 171 macros in `nelisp--macros' had no host cell, so
+    ;; `(message "%s" "x")' -- and therefore `nemacs-init' -- failed with
+    ;; (void-function nelisp-ec-with-current-buffer).  Installing
+    ;; (list 'macro CLOSURE) for exactly those 107 made both return ok.  A
+    ;; cache-route image of the same artifact and runtime showed 171/0 and
+    ;; worked, which is why the gap read as already fixed.
+    ;;
+    ;; Standalone runtime only, and only into an empty function cell: under
+    ;; host Emacs this must not publish sandbox macros into the host
+    ;; namespace, and a name the runtime already implements -- a special form
+    ;; above all -- must never be shadowed.
+    (when (and (fboundp 'nelisp--write-stdout-bytes)
+               (not (fboundp name)))
+      (fset name (list 'macro (gethash name nelisp--macros))))
     name))
 
 (defun nelisp--macro-lookup (head)
