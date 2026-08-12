@@ -14,7 +14,11 @@ NELISP_BOOT_PROFILE_LIMIT ?= nil
 NELISP_VENDOR_CORE_TIMEOUT ?= 900s
 NEMACS_RUNTIME_BAKE_TIMEOUT ?= 900s
 NEMACS_VENDOR_CORE_RUNTIME_BAKE_TIMEOUT ?= 900s
-NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT ?= 900s
+# 1800s, not 900s: measured 2026-08-12, the magit bundle load takes 1188 s, so
+# the old ceiling could never be reached and every run died as a bare timeout
+# with no output -- which read as a crash for months.  Raise it when the
+# deadline helper's "used N% of the deadline" note starts appearing.
+NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT ?= 1800s
 NEMACS_RUNTIME_REPLAY_TIMEOUT ?= 900s
 NEMACS_INTERACTIVE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
 NEMACS_VENDOR_CORE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
@@ -23,6 +27,8 @@ NELISP_STACK_LIMIT ?= unlimited
 BUILD_DIR ?= build
 NEMACS_BOOTSTRAP_BUNDLE ?= $(BUILD_DIR)/nemacs-bootstrap.el
 NEMACS_BOOTSTRAP_REPL ?= $(BUILD_DIR)/nemacs-bootstrap.repl
+NEMACS_BOOTSTRAP_ARTIFACT ?= $(BUILD_DIR)/nemacs-bootstrap.neln
+NEMACS_BOOTSTRAP_COLD_IMAGE ?= $(BUILD_DIR)/nemacs-bootstrap.flat.nlri
 NEMACS_IMAGE ?= $(BUILD_DIR)/nemacs-loadup.nli
 NEMACS_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-runtime.nlri
 NEMACS_INTERACTIVE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-interactive-runtime.nlri
@@ -30,7 +36,11 @@ NEMACS_VENDOR_CORE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-vendor-core-runtime.nlri
 NEMACS_MAGIT_BRIDGE_BUNDLE ?= $(BUILD_DIR)/nelisp-emacs-magit-bridge-bundle.el
 NEMACS_MAGIT_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-magit-runtime.nlri
 NEMACS_MAGIT_FIXTURE_DIR ?= $(BUILD_DIR)/nemacs-magit-fixture
+NEMACS_ORG_BRIDGE_BUNDLE ?= $(BUILD_DIR)/nelisp-emacs-org-bridge-bundle.el
 NEMACS_MAGIT_FIXTURE_COMMITS ?= 15
+NEMACS_MAGIT_DIAG_LOG ?= $(BUILD_DIR)/nemacs-magit-status-diagnose.log
+NEMACS_MAGIT_LIVE_DIAG_LOG ?= $(BUILD_DIR)/nemacs-magit-status-live-diagnose.log
+NEMACS_MAGIT_BUNDLE_TRACE_FORMS ?=
 NEMACS_RUNTIME_PRELOAD ?= scripts/nemacs-runtime-image-preload.el
 NEMACS_RUNTIME_PROCESS_PRELOAD ?= scripts/nemacs-runtime-process-preload.el
 NEMACS_RUNTIME_FRAME_TAB_PRELOAD ?= scripts/nemacs-runtime-frame-tab-preload.el
@@ -177,9 +187,28 @@ NEMACS_PUBLIC_API_INVENTORY ?= $(BUILD_DIR)/nemacs-public-api-inventory.tsv
 NEMACS_PUBLIC_API_SUMMARY ?= $(BUILD_DIR)/nemacs-public-api-summary.org
 NEMACS_OWNERSHIP_COVERAGE ?= $(BUILD_DIR)/nemacs-ownership-coverage.tsv
 NEMACS_OWNERSHIP_COVERAGE_SUMMARY ?= $(BUILD_DIR)/nemacs-ownership-coverage-summary.org
-VENDOR_CLASS_A_LIMIT ?= 18
+VENDOR_CLASS_A_LIMIT ?= 58
 VENDOR_CLASS_A_STRICT ?= 0
 VENDOR_CLASS_A_STRICT_ELISP := $(if $(filter 1 t true yes,$(VENDOR_CLASS_A_STRICT)),t,nil)
+VENDOR_CLASS_A_LOAD_TIMEOUT ?= 2400
+VENDOR_CLASS_A_PROBE_OFFSET ?= 0
+VENDOR_CLASS_A_PROBE_LIMIT ?= 300
+VENDOR_CLASS_B_PROBE_LIMIT ?= 17
+VENDOR_CLASS_B_PROBE_OFFSET ?= 0
+VENDOR_CLASS_B_PROBE_OUTPUT ?= build/vendor-class-b-probe.tsv
+VENDOR_CLASS_B_PROBE_LOG_DIR ?= build/vendor-class-b-probe-logs
+VENDOR_CLASS_C_PROBE_LIMIT ?= 50
+VENDOR_CLASS_C_PROBE_OFFSET ?= 0
+VENDOR_CLASS_C_PROBE_OUTPUT ?= build/vendor-class-c-probe.tsv
+VENDOR_CLASS_C_PROBE_LOG_DIR ?= build/vendor-class-c-probe-logs
+VENDOR_CLASS_D_PROBE_LIMIT ?= 50
+VENDOR_CLASS_D_PROBE_OFFSET ?= 0
+VENDOR_CLASS_D_PROBE_OUTPUT ?= build/vendor-class-d-probe.tsv
+VENDOR_CLASS_D_PROBE_LOG_DIR ?= build/vendor-class-d-probe-logs
+VENDOR_CLASS_E_PROBE_LIMIT ?= 45
+VENDOR_CLASS_E_PROBE_OFFSET ?= 0
+VENDOR_CLASS_E_PROBE_OUTPUT ?= build/vendor-class-e-probe.tsv
+VENDOR_CLASS_E_PROBE_LOG_DIR ?= build/vendor-class-e-probe-logs
 VENDOR_CORE_LIMIT ?= 0
 VENDOR_CORE_MODULES ?=
 VENDOR_CORE_STRICT ?= 1
@@ -734,7 +763,7 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el
 
-.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image bake-magit-runtime-image magit-load-smoke magit-status-smoke test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image bake-magit-runtime-image magit-load-smoke magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke magit-status-diagnose magit-status-live-diagnose org-mode-smoke org-workflow-smoke org-bundle-diagnose test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert test-nelisp-project-smoke test-nelisp-xref-imenu-smoke test-nelisp-help-smoke test-nelisp-dired-workflow-smoke test-nelisp-minibuffer-smoke test-nelisp-vc-workflow-smoke test-nelisp-shell-smoke test-nelisp-eshell-smoke test-nelisp-compile-smoke profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-class-a diagnose-vendor-class-b diagnose-vendor-class-c diagnose-vendor-class-d diagnose-vendor-class-e verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-class-a-load verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
@@ -861,6 +890,8 @@ help:
 	@echo "  make build-nelisp-bootstrap  generate build/nemacs-bootstrap.el and .repl"
 	@echo "  make bake-image      legacy .nli state image via emacs-dump"
 	@echo "  make bake-runtime-image  generate build/nemacs-runtime.nlri via standalone reader"
+	@echo "  make compile-nelisp-bootstrap-artifact  AOT compile bootstrap to .neln"
+	@echo "  make prepare-nelisp-bootstrap-cold-cache  validate/build flat bootstrap cache"
 	@echo "  make bake-interactive-runtime-image  generate image with TUI/editor features"
 	@echo "  make bake-vendor-core-runtime-image  extend base .nlri with daily-driver vendor core"
 	@echo "  make test-nelisp     build bundle + run one nelisp-driver boot smoke"
@@ -868,6 +899,18 @@ help:
 	@echo "  make test-nelisp-interactive-runtime-image  bake + smoke-test TUI realise"
 	@echo "  make test-nelisp-vendor-core-runtime-image  experimental vendor-core image smoke"
 	@echo "  make test-nelisp-ert run nelisp-driver bootstrap ERTs (very slow)"
+	@echo "  make test-nelisp-project-smoke run standalone reader project root/file smoke"
+	@echo "  make test-nelisp-xref-imenu-smoke run standalone reader xref/imenu smoke"
+	@echo "  make test-nelisp-help-smoke run standalone reader Help buffer/history smoke"
+	@echo "  make test-nelisp-dired-workflow-smoke run standalone reader Dired workflow smoke"
+	@echo "  make test-nelisp-minibuffer-smoke run standalone reader minibuffer/completion/history smoke"
+	@echo "  make test-nelisp-vc-workflow-smoke run standalone reader VC status/diff/log/annotate workflow"
+	@echo "  make test-nelisp-shell-smoke run standalone reader shell/comint smoke"
+	@echo "  make test-nelisp-eshell-smoke run standalone reader eshell smoke"
+	@echo "  make test-nelisp-compile-smoke run standalone reader compile/next-error smoke"
+	@echo "  make org-mode-smoke run vendor-first Org mode smoke on the base runtime image"
+	@echo "  make org-workflow-smoke run vendor-first Org capture/agenda workflow smoke"
+	@echo "  make org-bundle-diagnose trace vendor Org bundle file load boundaries"
 	@echo "  make profile-nelisp-bootstrap  time standalone bootstrap sections"
 	@echo "  make diagnose-vendor-form-walk  eval a vendor file form by form"
 	@echo "  make diagnose-vendor-load-replay  load vendor files through standalone reader"
@@ -1820,11 +1863,42 @@ doctor:
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
 $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES)
-	$(EMACS) -L src -L scripts $(NELISP_LOAD_PATH) \
+	$(EMACS) -Q -L src -L scripts $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \
 		-l scripts/build-nelisp-bootstrap.el \
 		-f nelisp-bootstrap-build-batch
+
+.PHONY: compile-nelisp-bootstrap-artifact prepare-nelisp-bootstrap-cold-cache
+
+compile-nelisp-bootstrap-artifact: $(NEMACS_BOOTSTRAP_ARTIFACT)
+	@test -r "$(NEMACS_BOOTSTRAP_ARTIFACT).manifest.el" || { \
+		rm -f "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
+		$(MAKE) "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
+	}
+	test -r "$(NEMACS_BOOTSTRAP_ARTIFACT).manifest.el"
+
+$(NEMACS_BOOTSTRAP_ARTIFACT): $(NEMACS_BOOTSTRAP_BUNDLE)
+	test -x "$(NELISP_BIN)"
+	mkdir -p "$(dir $(NEMACS_BOOTSTRAP_ARTIFACT))"
+	"$(NELISP_BIN)" compile-elisp-artifact \
+		--kind neln \
+		--input "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))" \
+		--output "$(abspath $(NEMACS_BOOTSTRAP_ARTIFACT))" \
+		--rewrite-defalias-late \
+		--native-policy opportunistic \
+		--load-path "$(abspath src)" \
+		--load-path "$(abspath vendor/emacs-lisp)" \
+		--load-path "$(abspath vendor/emacs-lisp/emacs-lisp)"
+
+prepare-nelisp-bootstrap-cold-cache: compile-nelisp-bootstrap-artifact
+	test -x "$(NELISP_BIN)"
+	mkdir -p "$(dir $(NEMACS_BOOTSTRAP_COLD_IMAGE))"
+	"$(NELISP_BIN)" compile-runtime-image \
+		--flat-artifact-cache \
+		--runtime "$(abspath $(NELISP_BIN))" \
+		--input "$(abspath $(NEMACS_BOOTSTRAP_ARTIFACT))" \
+		--output "$(abspath $(NEMACS_BOOTSTRAP_COLD_IMAGE))"
 
 bake-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
 	$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) $(NELISP_LOAD_PATH) \
@@ -1875,10 +1949,16 @@ bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-a
 # on the base batch image), calling
 # nemacs-runtime-image-preload-magit-extension.
 $(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el
-	$(EMACS) -L scripts \
+	NEMACS_MAGIT_BUNDLE_TRACE_FORMS="$(NEMACS_MAGIT_BUNDLE_TRACE_FORMS)" $(EMACS) -Q -L scripts \
 		--eval '(setq nelisp-emacs-magit-bridge-bundle-output-file "$(abspath $(NEMACS_MAGIT_BRIDGE_BUNDLE))")' \
 		-l scripts/build-nelisp-emacs-magit-bridge-bundle.el \
 		-f nelisp-emacs-magit-bridge-bundle-build-batch
+
+$(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el src/nelisp-emacs-org-bridge.el scripts/standalone-source-normalize.el
+	$(EMACS) --batch -Q -L src -L scripts \
+		--eval '(setq nelisp-emacs-org-bridge-bundle-output-file "$(abspath $(NEMACS_ORG_BRIDGE_BUNDLE))")' \
+		-l scripts/build-nelisp-emacs-org-bridge-bundle.el \
+		-f nelisp-emacs-org-bridge-bundle-build-batch
 
 bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE) nemacs-library-package-scaffold nemacs-library-app-scaffold
 	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
@@ -1894,9 +1974,14 @@ bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE) nemacs-library-package-s
 # Non-TUI smoke: boots the magit runtime image and asserts the Doc 33
 # anti-silent-drop proof form (commandp, not just featurep, on the two
 # modes most at risk of silent define-derived-mode drops).
+# The deadline is reported in the caller's own voice.  A bare `timeout' kills
+# the run and leaves an empty log, which reads as a crash: measured 2026-08-12,
+# this load needs 1188 s against the 900 s allowed here, and sessions spent
+# months looking for a memory or printer bug that did not exist.
 magit-load-smoke: bake-magit-runtime-image
 	test -x "$(NELISP_BIN)"
-	@out="$$(timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) --label magit-load -- \
+		env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_MAGIT_RUNTIME_IMAGE))" \
 		'(nelisp--write-stdout-bytes (if (nelisp-emacs-magit-bridge-loaded-p) "MAGIT-LOAD PASS\n" "MAGIT-LOAD FAIL\n"))' 2>&1)"; \
 	printf '%s\n' "$$out"; \
@@ -1919,17 +2004,134 @@ nemacs-magit-fixture: scripts/nemacs-magit-fixture.sh
 # builds a real `magit-status-mode' buffer with real sections against a
 # real git fixture, with no display stubbing -- the honest in-session
 # re-run of Doc 33's replay proofs (tmp-diag/proof-20260703-magit-status-
-# buffer.el, proof-20260703-magit-git-exec.el).  Proof form:
-# scripts/nemacs-magit-status-smoke-probe.el.
-magit-status-smoke: bake-magit-runtime-image nemacs-magit-fixture
+# buffer.el, proof-20260703-magit-git-exec.el).  This runs against the
+# base runtime image plus the live Magit bridge so baked magit-runtime
+# replay failures stay separate.  Proof form:
+# scripts/nemacs-magit-status-live-smoke-probe.el.
+magit-status-smoke: $(NEMACS_MAGIT_BRIDGE_BUNDLE) bake-runtime-image nemacs-magit-fixture
 	test -x "$(NELISP_BIN)"
-	@out="$$(timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
-		NEMACS_MAGIT_FIXTURE_DIR="$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))" \
-		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_MAGIT_RUNTIME_IMAGE))" \
-		"$$(cat scripts/nemacs-magit-status-smoke-probe.el)" 2>&1)"; \
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) --label magit -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$$(printf '%s\n%s\n%s' '(setq nemacs-magit-probe-repo-root "$(abspath .)")' '(setq nemacs-magit-probe-fixture-dir "$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))")' "$$(cat scripts/nemacs-magit-status-live-smoke-probe.el)")" 2>&1)"; \
 	printf '%s\n' "$$out"; \
 	printf '%s\n' "$$out" | grep -q '^MAGIT-STATUS-BUFFER PASS$$'; \
 	printf '%s\n' "$$out" | grep -q '^MAGIT-GIT-EXEC PASS$$'
+
+magit-stage-workflow-smoke: $(NEMACS_MAGIT_BRIDGE_BUNDLE) bake-runtime-image nemacs-magit-fixture
+	test -x "$(NELISP_BIN)"
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) --label magit -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$$(printf '%s\n%s\n%s' '(setq nemacs-magit-probe-repo-root "$(abspath .)")' '(setq nemacs-magit-probe-fixture-dir "$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))")' "$$(cat scripts/nemacs-magit-stage-workflow-probe.el)")" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	printf '%s\n' "$$out" | grep -q '^MAGIT-STAGE-WORKFLOW PASS$$'
+
+magit-transient-workflow-smoke: $(NEMACS_MAGIT_BRIDGE_BUNDLE) bake-runtime-image nemacs-magit-fixture
+	test -x "$(NELISP_BIN)"
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) --label magit -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$$(printf '%s\n%s\n%s' '(setq nemacs-magit-probe-repo-root "$(abspath .)")' '(setq nemacs-magit-probe-fixture-dir "$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))")' "$$(cat scripts/nemacs-magit-transient-workflow-probe.el)")" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	printf '%s\n' "$$out" | grep -q '^MAGIT-TRANSIENT-WORKFLOW PASS$$'
+
+magit-bundle-diagnose: $(NEMACS_MAGIT_BRIDGE_BUNDLE) bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	@set +e; \
+	log="$(BUILD_DIR)/nemacs-magit-bundle-diagnose.log"; \
+	rcfile="$$log.rc"; \
+	rm -f "$$log" "$$rcfile"; \
+	part_count="$$(find "$(BUILD_DIR)" -maxdepth 1 -name 'nelisp-emacs-magit-bridge-bundle-part*.el' | wc -l)"; \
+	( timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_MAGIT_REPO_ROOT="$(abspath .)" \
+		NEMACS_MAGIT_BUNDLE_TRACE_FILES=1 \
+		NEMACS_MAGIT_BUNDLE_TRACE_FORMS="$${NEMACS_MAGIT_BUNDLE_TRACE_FORMS:-magit-diff}" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$$(printf '%s\n%s\n%s' '(setq nemacs-magit-probe-repo-root "$(abspath .)")' "(setq nemacs-magit-bundle-part-count $$part_count)" "$$(cat scripts/nemacs-magit-bundle-diagnose-probe.el)")" 2>&1; \
+	  printf '%s\n' "$$?" > "$$rcfile" ) | tee "$$log"; \
+	rc="$$(cat "$$rcfile" 2>/dev/null || printf 1)"; \
+	rm -f "$$rcfile"; \
+	set -e; \
+	printf 'MAGIT-BUNDLE-RC %s\n' "$$rc"; \
+	grep -q '^MAGIT-BUNDLE-SUMMARY PASS$$' "$$log"
+
+# Task #17 (M2) diagnostic companion.  Prints one stable marker per layer:
+# fixture/git/status setup/status buffer/section navigation/git after status.
+# Use this before editing bridge or core files when `magit-status-smoke'
+# fails with a collapsed top-level error.
+magit-status-diagnose: bake-magit-runtime-image nemacs-magit-fixture
+	test -x "$(NELISP_BIN)"
+	@set +e; \
+	rcfile="$(NEMACS_MAGIT_DIAG_LOG).rc"; \
+	rm -f "$(NEMACS_MAGIT_DIAG_LOG)" "$$rcfile"; \
+	( timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_MAGIT_FIXTURE_DIR="$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))" \
+		NEMACS_MAGIT_BRIDGE_TRACE=1 \
+		NEMACS_MAGIT_BUNDLE_TRACE_FILES=1 \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_MAGIT_RUNTIME_IMAGE))" \
+		"$$(cat scripts/nemacs-magit-status-diagnose-probe.el)" 2>&1; \
+	  printf '%s\n' "$$?" > "$$rcfile" ) \
+		| tee "$(NEMACS_MAGIT_DIAG_LOG)"; \
+	rc="$$(cat "$$rcfile" 2>/dev/null || printf 1)"; \
+	rm -f "$$rcfile"; \
+	set -e; \
+	printf 'MAGIT-DIAG-RC %s\n' "$$rc"; \
+	grep -q '^MAGIT-DIAG-SUMMARY PASS$$' "$(NEMACS_MAGIT_DIAG_LOG)"
+
+magit-status-live-diagnose: $(NEMACS_MAGIT_BRIDGE_BUNDLE) bake-runtime-image nemacs-magit-fixture
+	test -x "$(NELISP_BIN)"
+	@set +e; \
+	rcfile="$(NEMACS_MAGIT_LIVE_DIAG_LOG).rc"; \
+	rm -f "$(NEMACS_MAGIT_LIVE_DIAG_LOG)" "$$rcfile"; \
+	( timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_MAGIT_REPO_ROOT="$(abspath .)" \
+		NEMACS_MAGIT_FIXTURE_DIR="$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))" \
+		NEMACS_MAGIT_BRIDGE_TRACE=1 \
+		NEMACS_MAGIT_BUNDLE_TRACE_FILES=1 \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$$(cat scripts/nemacs-magit-status-live-diagnose-probe.el)" 2>&1; \
+	  printf '%s\n' "$$?" > "$$rcfile" ) \
+		| tee "$(NEMACS_MAGIT_LIVE_DIAG_LOG)"; \
+	rc="$$(cat "$$rcfile" 2>/dev/null || printf 1)"; \
+	rm -f "$$rcfile"; \
+	set -e; \
+	printf 'MAGIT-LIVE-RC %s\n' "$$rc"; \
+	grep -q '^MAGIT-DIAG-SUMMARY PASS$$' "$(NEMACS_MAGIT_LIVE_DIAG_LOG)"
+
+org-mode-smoke: $(NEMACS_ORG_BRIDGE_BUNDLE) bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) --label magit -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"(progn (load \"$(abspath src/nelisp-emacs-org-bridge.el)\" nil t t) (setq nemacs-org-mode-smoke--repo-root \"$(abspath .)\") (load \"$(abspath scripts/nemacs-org-mode-smoke-probe.el)\" nil t t))" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	printf '%s\n' "$$out" | grep -q '^ORG-MODE-SMOKE PASS$$'
+
+org-workflow-smoke: $(NEMACS_ORG_BRIDGE_BUNDLE) bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	@set +e; \
+	out="$$(timeout $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"(progn (load \"$(abspath src/nelisp-emacs-org-bridge.el)\" nil t t) (setq nemacs-org-workflow-probe--repo-root \"$(abspath .)\") (load \"$(abspath scripts/nemacs-org-workflow-probe.el)\" nil t t))" 2>&1)"; \
+	rc="$$?"; \
+	printf '%s\n' "$$out"; \
+	printf 'ORG-WORKFLOW-RC %s\n' "$$rc"; \
+	printf '%s\n' "$$out" | grep -q '^ORG-WORKFLOW PASS$$'
+
+org-bundle-diagnose: $(NEMACS_ORG_BRIDGE_BUNDLE) bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	@out="$$(./tools/run-with-deadline.sh $(NEMACS_MAGIT_RUNTIME_BAKE_TIMEOUT) --label magit -- env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_ORG_BUNDLE_TRACE_FILES=1 \
+		"$(NELISP_BIN)" exec-runtime-image "$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		"(progn (load \"$(abspath src/nelisp-emacs-org-bridge.el)\" nil t t) (setq nemacs-org-mode-smoke--repo-root \"$(abspath .)\") (load \"$(abspath scripts/nemacs-org-mode-smoke-probe.el)\" nil t t))" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	printf '%s\n' "$$out" | grep -q '^ORG-MODE-SMOKE PASS$$'
 
 test-nelisp: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"
@@ -1937,17 +2139,17 @@ test-nelisp: build-nelisp-bootstrap
 	  nelisp|nelisp-standalone-reader) \
 	    tmp=$$(mktemp "$${TMPDIR:-/tmp}/nemacs-standalone-smoke.XXXXXX.el"); \
 	    printf '%s\n' '(+ 40 2)' > "$$tmp"; \
-	    set +e; timeout $(NELISP_BOOT_TIMEOUT) "$(NELISP_BIN)" --load "$$tmp"; rc=$$?; set -e; \
+	    set +e; out=$$(timeout $(NELISP_BOOT_TIMEOUT) "$(NELISP_BIN)" --load "$$tmp" 2>&1); rc=$$?; set -e; \
 	    rm -f "$$tmp"; \
-	    if [ "$$rc" -eq 42 ]; then echo "STANDALONE-READER=ok exit=42"; else echo "STANDALONE-READER=fail exit=$$rc expected=42"; exit 1; fi; \
-	    out=$$(timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
-	      NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
-	      NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
-	      NEMACS_RUNTIME_IMAGE= \
-	      ./bin/nemacs --driver=nelisp --batch --no-banner \
-	      --eval '(if (and (fboundp (quote nemacs-batch-main)) (featurep (quote nemacs-main))) (nelisp--write-stdout-bytes "NEMACS-STANDALONE-BOOT=ok\n") (nelisp--write-stdout-bytes "NEMACS-STANDALONE-BOOT=fail\n"))'); \
+	    trimmed=$$(printf '%s' "$$out" | tr -d '[:space:]'); \
 	    printf '%s\n' "$$out"; \
-	    printf '%s\n' "$$out" | grep -q '^NEMACS-STANDALONE-BOOT=ok$$' ;; \
+	    if [ "$$rc" -eq 42 ]; then echo "STANDALONE-READER=ok exit=42"; \
+	    elif [ "$$rc" -eq 0 ] && [ "$$trimmed" = 42 ]; then echo "STANDALONE-READER=ok exit=0 value=42"; \
+	    else echo "STANDALONE-READER=fail exit=$$rc expected=42"; exit 1; fi; \
+	    timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+	      NELISP_BIN="$(abspath $(NELISP_BIN))" \
+	      NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+	      ./scripts/verify-nemacs-standalone-batch-repl.sh ;; \
 	  *) \
 	    timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 	      NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
@@ -1992,6 +2194,105 @@ test-nelisp-ert: bake-runtime-image
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		-f ert-run-tests-batch-and-exit
 
+test-nelisp-project-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/project-callable$$")'
+
+test-nelisp-xref-imenu-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/imenu-xref-callable$$")'
+
+test-nelisp-help-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/help-callable$$")'
+
+test-nelisp-dired-workflow-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/dired-workflow-callable$$")'
+
+test-nelisp-minibuffer-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/minibuffer-callable$$")'
+
+test-nelisp-vc-workflow-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/vc-workflow-callable$$")'
+
+test-nelisp-shell-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/shell-callable$$")'
+
+test-nelisp-eshell-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/eshell-callable$$")'
+
+test-nelisp-compile-smoke: bake-runtime-image
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_NELISP_ERT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
+		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
+		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		-l test/nemacs-bootstrap-nelisp-test.el \
+		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/compile-callable$$")'
+
 profile-nelisp-bootstrap: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"
 	timeout $(NELISP_BOOT_PROFILE_TIMEOUT) $(EMACS) -Q -L scripts \
@@ -2008,7 +2309,7 @@ diagnose-vendor-form-walk: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"
 	timeout $(VENDOR_FORM_WALK_TIMEOUT) $(EMACS) -Q -L scripts \
 		--eval '(setq vendor-form-standalone-reader "$(abspath $(NELISP_BIN))")' \
-		--eval '(setq vendor-form-standalone-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
+		--eval '(setq vendor-form-standalone-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \
 		--eval '(setq vendor-form-standalone-prelude "$(VENDOR_FORM_WALK_PRELUDE)")' \
 		--eval '(setq vendor-form-standalone-file "$(VENDOR_FORM_WALK_FILE)")' \
 		--eval '(setq vendor-form-standalone-preload-files "$(VENDOR_FORM_WALK_PRELOAD_FILES)")' \
@@ -2023,10 +2324,10 @@ diagnose-vendor-form-walk: build-nelisp-bootstrap
 
 diagnose-vendor-form-walk-fast:
 	test -x "$(NELISP_BIN)"
-	test -r "$(NEMACS_BOOTSTRAP_BUNDLE)" || { echo "missing $(NEMACS_BOOTSTRAP_BUNDLE); run make build-nelisp-bootstrap once"; exit 1; }
+	test -r "$(NEMACS_BOOTSTRAP_REPL)" || { echo "missing $(NEMACS_BOOTSTRAP_REPL); run make build-nelisp-bootstrap once"; exit 1; }
 	timeout $(VENDOR_FORM_WALK_TIMEOUT) $(EMACS) -Q -L scripts \
 		--eval '(setq vendor-form-standalone-reader "$(abspath $(NELISP_BIN))")' \
-		--eval '(setq vendor-form-standalone-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
+		--eval '(setq vendor-form-standalone-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \
 		--eval '(setq vendor-form-standalone-prelude "$(VENDOR_FORM_WALK_PRELUDE)")' \
 		--eval '(setq vendor-form-standalone-file "$(VENDOR_FORM_WALK_FILE)")' \
 		--eval '(setq vendor-form-standalone-preload-files "$(VENDOR_FORM_WALK_PRELOAD_FILES)")' \
@@ -2118,14 +2419,110 @@ verify-vendor-inventory:
 
 verify-vendor-class-a: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
 	timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
-		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
 		NEMACS_RUNTIME_IMAGE= \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
 		VENDOR_CLASS_A_LIMIT="$(VENDOR_CLASS_A_LIMIT)" \
-		VENDOR_CLASS_A_STRICT="$(VENDOR_CLASS_A_STRICT)" \
-		./bin/nemacs --driver=nelisp --batch --no-banner \
-		-l "$(abspath scripts/vendor-class-a-smoke.el)" \
-		--eval '(progn (setq vendor-class-a-smoke-default-limit $(VENDOR_CLASS_A_LIMIT)) (setq vendor-class-a-smoke-strict $(VENDOR_CLASS_A_STRICT_ELISP)) (vendor-class-a-smoke-batch))'
+		VENDOR_CLASS_A_STRICT_ELISP="$(VENDOR_CLASS_A_STRICT_ELISP)" \
+		./scripts/verify-vendor-class-a-repl.sh
+
+diagnose-vendor-class-a: build-nelisp-bootstrap
+	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NELISP_VENDOR_CORE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		./scripts/probe-vendor-class-a-standalone.sh \
+			--class-name A
+
+diagnose-vendor-class-b: build-nelisp-bootstrap
+	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NELISP_VENDOR_CORE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		./scripts/probe-vendor-class-a-standalone.sh \
+			--class-name B \
+			--offset $(VENDOR_CLASS_B_PROBE_OFFSET) \
+			--limit $(VENDOR_CLASS_B_PROBE_LIMIT) \
+			--output $(VENDOR_CLASS_B_PROBE_OUTPUT) \
+			--log-dir $(VENDOR_CLASS_B_PROBE_LOG_DIR)
+
+diagnose-vendor-class-c: build-nelisp-bootstrap
+	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NELISP_VENDOR_CORE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		./scripts/probe-vendor-class-a-standalone.sh \
+			--class-name C \
+			--offset $(VENDOR_CLASS_C_PROBE_OFFSET) \
+			--limit $(VENDOR_CLASS_C_PROBE_LIMIT) \
+			--output $(VENDOR_CLASS_C_PROBE_OUTPUT) \
+			--log-dir $(VENDOR_CLASS_C_PROBE_LOG_DIR)
+
+diagnose-vendor-class-d: build-nelisp-bootstrap
+	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NELISP_VENDOR_CORE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		./scripts/probe-vendor-class-a-standalone.sh \
+			--class-name D \
+			--offset $(VENDOR_CLASS_D_PROBE_OFFSET) \
+			--limit $(VENDOR_CLASS_D_PROBE_LIMIT) \
+			--output $(VENDOR_CLASS_D_PROBE_OUTPUT) \
+			--log-dir $(VENDOR_CLASS_D_PROBE_LOG_DIR)
+
+diagnose-vendor-class-e: build-nelisp-bootstrap
+	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(NELISP_VENDOR_CORE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		./scripts/probe-vendor-class-a-standalone.sh \
+			--class-name E \
+			--offset $(VENDOR_CLASS_E_PROBE_OFFSET) \
+			--limit $(VENDOR_CLASS_E_PROBE_LIMIT) \
+			--output $(VENDOR_CLASS_E_PROBE_OUTPUT) \
+			--log-dir $(VENDOR_CLASS_E_PROBE_LOG_DIR)
+
+verify-vendor-class-a-load: build-nelisp-bootstrap
+	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
+	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
+	timeout $(VENDOR_CLASS_A_LOAD_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		./scripts/probe-vendor-class-a-standalone.sh \
+			--class-name A \
+			--offset $(VENDOR_CLASS_A_PROBE_OFFSET) \
+			--limit $(VENDOR_CLASS_A_PROBE_LIMIT) \
+			--strict \
+			--output build/vendor-class-a-probe-all.tsv \
+			--log-dir build/vendor-class-a-probe-all-logs
 
 verify-vendor-core: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"
