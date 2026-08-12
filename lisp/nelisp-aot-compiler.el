@@ -113,6 +113,25 @@
 (declare-function nelisp-wasm-write-binary "nelisp-wasm-write"
                   (file-path unit))
 
+(defconst nelisp-aot-compiler--must-use-callees
+  '(nelisp_eval_call)
+  "Callees whose return value is a STATUS, not an effect.
+
+Discarding one of these silently drops a failure.  Found by scanning every
+AOT source on 2026-08-13 (236 files, 2,729 top-level forms): `nl_thread_run'
+and `bf_fork_spawn' both ran
+
+    (seq (extern-call nelisp_eval_call ...) (syscall-direct 60 0 ...))
+
+so a spawned thread or forked child whose body signalled exited 0 and was
+indistinguishable, to its parent, from one that succeeded.
+
+Keep this list to callees where the evidence exists.  A name added on the
+theory that its value \"looks like\" a status turns a real check into noise,
+and a check people route around protects nothing.  `nl_alloc_str' is
+deliberately absent: it writes through an out-slot and its value is not a
+status, so eleven of the thirteen scan hits were legitimate.")
+
 (define-error 'nelisp-aot-compiler-error
   "Doc 97 AOT Sexp compiler error")
 
@@ -8320,6 +8339,20 @@ functions `((NAME . ARITY) ...)'."
       (when (null children)
         (signal 'nelisp-aot-compiler-error
                 (list :empty-value-seq sexp)))
+      ;; must-use: every child but the last has its value thrown away.  For a
+      ;; callee that returns a status, that is a dropped failure -- refuse to
+      ;; compile it rather than let it become a silent success at runtime.
+      (let ((n (length children)) (i 0))
+        (dolist (e children)
+          (setq i (1+ i))
+          (when (< i n)
+            (let ((callee (cond ((and (consp e) (eq (car e) 'extern-call))
+                                 (nth 1 e))
+                                ((and (consp e) (symbolp (car e)))
+                                 (car e)))))
+              (when (memq callee nelisp-aot-compiler--must-use-callees)
+                (signal 'nelisp-aot-compiler-error
+                        (list :discarded-status-value callee e)))))))
       (let ((forms (mapcar (lambda (e)
                              (nelisp-aot-compiler--parse-value
                               e env fenv defuns))
