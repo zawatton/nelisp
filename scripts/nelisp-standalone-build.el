@@ -19557,9 +19557,42 @@ NELISP_SKIP_BUFFER_LEN_GATE to build anyway."
             (error "buffer-len gate: %d (ptr,len) pair(s) read past their buffer"
                    bad)))))))
 
+;;;###autoload
+(defun nelisp-standalone--reclaim-veto-preflight ()
+  "Refuse to build when a new, unvetoed reclaim producer has appeared.
+
+`nl_boundary_maybe_reclaim' rewinds the per-form bump arena when the
+mutation epoch (268435544) and the signal/quit flags (268435472,
+268435464) are unchanged since the form started.  Any defun that both
+allocates arena storage and installs it into the env mirror or a
+lexical frame is handing the reclaim a pointer that must not be rewound,
+so it must either bump the epoch / raise a flag itself (veto the
+reclaim) or be a deliberately tracked exception.
+
+`tools/nelisp-reclaim-veto-census.el' finds every such defun and checks
+it against the tracked exception list; see its header for the full
+contract.  Set NELISP_SKIP_RECLAIM_VETO_CENSUS to build anyway."
+  (unless (getenv "NELISP_SKIP_RECLAIM_VETO_CENSUS")
+    (let ((gate (expand-file-name "tools/nelisp-reclaim-veto-census.el"
+                                  nelisp-standalone--repo-root)))
+      (when (file-readable-p gate)
+        (load gate nil t)
+        (let ((bad (funcall
+                    (intern "nelisp-reclaim-veto-census-run")
+                    (append
+                     (file-expand-wildcards
+                      (expand-file-name "lisp/*.el" nelisp-standalone--repo-root))
+                     (file-expand-wildcards
+                      (expand-file-name "scripts/*.el"
+                                        nelisp-standalone--repo-root))))))
+          (when (> bad 0)
+            (error "reclaim-veto census: %d unvetoed reclaim producer(s) not in the allowlist"
+                   bad)))))))
+
 (defun nelisp-standalone-build-reader ()
   "Incrementally build the reader-path standalone binary; return its path."
   (nelisp-standalone--buffer-len-preflight)
+  (nelisp-standalone--reclaim-veto-preflight)
   (setq nelisp-standalone--recompiled nil)
   (let* ((units (nelisp-standalone--reader-units))
          (out (nelisp-standalone--output-path t)))
