@@ -17084,6 +17084,17 @@ correctly."
       (if (< off span)
           (+ ds off)
         (+ ib (- off span))))
+    ;; "\1elisp--unbound-marker" (22 bytes), byte-for-byte the name
+    ;; `nl_bootstrap_make_mirror' interns for the live sentinel.  Keep the two
+    ;; in step: a cold-loaded marker that spells its name differently is not
+    ;; `bf_eq2'-equal to the one baked into the image's mirror entries.
+    (defun nl_cold_install_unbound_marker (unbound)
+      (let* ((ubuf (alloc-bytes 24 1)))
+        (seq
+         (ptr-write-u64 ubuf 0 3255381746650998017)
+         (ptr-write-u64 (+ ubuf 8) 0 3270860680036773493)
+         (ptr-write-u64 (+ ubuf 16) 0 125779919921517)
+         (nl_alloc_symbol ubuf 22 unbound))))
     ;; cold path root install: re-read the header for globals/frames/unbound
     ;; and point the live root slots at the loaded image instead of re-evaluating
     ;; the prelude/user top-level sources.  Return 1 on success, else 0 so the
@@ -17121,10 +17132,26 @@ correctly."
                     (ptr-write-u64 frames 8 (nl_cold_root_ptr foff slen ds ib))
                     (ptr-write-u64 frames 16 0)
                     (ptr-write-u64 frames 24 0)
-                    (ptr-write-u8 unbound 0 4)
-                    (ptr-write-u64 unbound 8 (nl_cold_root_ptr uoff slen ds ib))
-                    (ptr-write-u64 unbound 16 0)
-                    (ptr-write-u64 unbound 24 0)
+                    ;; The unbound marker is a Symbol, not a Record, and the
+                    ;; two layouts disagree about where the payload lives: a
+                    ;; Record keeps its box at +8, a Symbol keeps cap at +8 and
+                    ;; its name at ptr@16 / len@24.  Writing the box at +8 and
+                    ;; zeroing 16/24 -- as the globals/frames arms above
+                    ;; correctly do for their Records -- left the marker with
+                    ;; an EMPTY name, while the mirror entries restored from
+                    ;; the same image still hold the original 22-byte
+                    ;; "\1elisp--unbound-marker".  `bf_eq2' compares Symbols by
+                    ;; name, so after a cold load the live marker no longer
+                    ;; compared equal to the one the image was built with.
+                    ;;
+                    ;; The name is a build-time constant, so the loader does
+                    ;; not need the image to carry it: re-intern it and the
+                    ;; canonical buffer is the same one the image's own intern
+                    ;; table was relocated onto.  UOFF stays in the header
+                    ;; (format unchanged, still bounds-checked above) but no
+                    ;; longer feeds the marker -- it recorded slot+8, which for
+                    ;; a Symbol was the capacity word, never the name.
+                    (nl_cold_install_unbound_marker unbound)
                     1)))))))))
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
@@ -19498,8 +19525,41 @@ loader when it is absent."
   nelisp-standalone--artifact-runtime-cache-path)
 
 ;;;###autoload
+(defun nelisp-standalone--buffer-len-preflight ()
+  "Refuse to build when a (ptr,len) pair reads past the buffer it describes.
+
+The runtime passes raw pointer/length pairs to `nl_alloc_symbol' and
+`nl_alloc_str'.  Nothing ties the two together, and getting them out of step
+does not crash: it produces a symbol whose name is the real name plus a few
+bytes of its neighbour, which then propagates as a plausible-looking
+identifier.  That failure has been observed since 2026-08-04 and its runtime
+guard only fires when the corrupted symbol is later read back, which happened
+on roughly one magit load in seven.  A build-time refusal does not depend on
+the corrupt symbol ever being printed.
+
+`tools/nelisp-buffer-len-gate.el' proves the bound only where it is decidable
+and counts what it could not judge; see its header.  Set
+NELISP_SKIP_BUFFER_LEN_GATE to build anyway."
+  (unless (getenv "NELISP_SKIP_BUFFER_LEN_GATE")
+    (let ((gate (expand-file-name "tools/nelisp-buffer-len-gate.el"
+                                  nelisp-standalone--repo-root)))
+      (when (file-readable-p gate)
+        (load gate nil t)
+        (let ((bad (funcall
+                    (intern "nelisp-buffer-len-gate-run")
+                    (append
+                     (file-expand-wildcards
+                      (expand-file-name "lisp/*.el" nelisp-standalone--repo-root))
+                     (file-expand-wildcards
+                      (expand-file-name "scripts/*.el"
+                                        nelisp-standalone--repo-root))))))
+          (when (> bad 0)
+            (error "buffer-len gate: %d (ptr,len) pair(s) read past their buffer"
+                   bad)))))))
+
 (defun nelisp-standalone-build-reader ()
   "Incrementally build the reader-path standalone binary; return its path."
+  (nelisp-standalone--buffer-len-preflight)
   (setq nelisp-standalone--recompiled nil)
   (let* ((units (nelisp-standalone--reader-units))
          (out (nelisp-standalone--output-path t)))
