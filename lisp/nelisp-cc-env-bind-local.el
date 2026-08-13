@@ -198,15 +198,20 @@
 
     (defun nelisp_env_bind_local
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
-      (if (= (extern-call nelisp_env_variable_alias_count mirror-ptr) 0)
-          (if (= (sexp-int-unwrap
-                  (record-slot-ref-ptr frames-ptr 1)) 0)
-              (nelisp_env_bl_mirror
-               mirror-ptr name-ptr scratch-ptr 0)
-            (nelisp_env_bl_frame
-             frames-ptr name-ptr val-ptr scratch-ptr))
-        (nelisp_env_bind_local_alias
-         mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0))))
+      ;; Reclaim-veto fix: bump the mutation epoch first so the boundary
+      ;; reclaim declines for this form -- full rationale at
+      ;; `nelisp_mirror_install_entry' (lisp/nelisp-cc-mirror-install-entry.el).
+      (seq
+       (atomic-fetch-add 268435544 1)
+       (if (= (extern-call nelisp_env_variable_alias_count mirror-ptr) 0)
+           (if (= (sexp-int-unwrap
+                   (record-slot-ref-ptr frames-ptr 1)) 0)
+               (nelisp_env_bl_mirror
+                mirror-ptr name-ptr scratch-ptr 0)
+             (nelisp_env_bl_frame
+              frames-ptr name-ptr val-ptr scratch-ptr))
+         (nelisp_env_bind_local_alias
+          mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0)))))
   "AOT source for Wave b `Env::bind_local' body.
 
 Three-defun CPS composition (all in same seq = intra-seq calls):

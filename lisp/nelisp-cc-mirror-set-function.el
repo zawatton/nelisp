@@ -35,9 +35,14 @@
       ;;
       ;; Returns: i64.  1 on hit (slot 1 overwritten in place), 0 on
       ;; miss (entry not found — caller falls back to install).
-      (nelisp_mirror_set_function_apply
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       val-ptr)))
+      ;; Reclaim-veto fix: bump the mutation epoch first so the boundary
+      ;; reclaim declines for this form -- full rationale at
+      ;; `nelisp_mirror_install_entry' (lisp/nelisp-cc-mirror-install-entry.el).
+      (seq
+       (atomic-fetch-add 268435544 1)
+       (nelisp_mirror_set_function_apply
+        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+        val-ptr))))
   "AOT source for Doc 111 §111.E #8 `mirror_set_function'.
 
 Compose-on-7 with slot index 1 (= the function-cell slot, vs. the

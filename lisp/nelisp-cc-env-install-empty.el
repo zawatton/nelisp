@@ -130,7 +130,13 @@
      ;;   new owner, no leak, no double-free; the original rc invariant
      ;;   (and its Step-12 neutraliser removal) is preserved, and the
      ;;   Step-8 scratch-overwrite leak is additionally eliminated.
-     (let ((ht-slot (alloc-bytes 32 8))
+     ;;
+     ;; Reclaim-veto fix: bump the mutation epoch first so the boundary
+     ;; reclaim declines for this form -- full rationale at
+     ;; `nelisp_mirror_install_entry' (lisp/nelisp-cc-mirror-install-entry.el).
+     (seq
+      (atomic-fetch-add 268435544 1)
+      (let ((ht-slot (alloc-bytes 32 8))
            (buckets-slot (alloc-bytes 32 8))
            (backing-slot (alloc-bytes 32 8))
            (int-slot (alloc-bytes 32 8)))
@@ -184,7 +190,7 @@
         (sexp-int-make int-slot 0)
         (record-slot-set frames-out
                          1
-                         int-slot))))
+                         int-slot)))))
   "AOT source for Wave h `nelisp_env_install_empty_globals_frames'.
 
 Builds a fresh empty globals mirror (nelisp-env Record with a 1024-bucket

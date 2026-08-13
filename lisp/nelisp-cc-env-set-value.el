@@ -172,7 +172,12 @@
 
     (defun nelisp_env_set_value
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
-      (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
+      ;; Reclaim-veto fix: bump the mutation epoch first so the boundary
+      ;; reclaim declines for this form -- full rationale at
+      ;; `nelisp_mirror_install_entry' (lisp/nelisp-cc-mirror-install-entry.el).
+      (seq
+       (atomic-fetch-add 268435544 1)
+       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
           1
         (if (= (extern-call nelisp_env_variable_alias_count mirror-ptr) 0)
             (if (= (extern-call nelisp_mirror_is_constant
@@ -186,7 +191,7 @@
                      mirror-ptr name-ptr scratch-ptr 0)
                   (nelisp_env_setv_cell_hit cell-ptr val-ptr))))
           (nelisp_env_set_value_alias
-           mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0)))))
+           mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0))))))
   "AOT source for Wave a-2 `Env::set_value' body.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist on the `frame_stack_find'

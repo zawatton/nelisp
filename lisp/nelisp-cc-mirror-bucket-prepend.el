@@ -182,7 +182,13 @@
       ;; clones it in.  `sexp-write-str' KEY and `sexp-int-make' count are
       ;; consumed (cloned) by `cons-set-car' / `record-slot-set'
       ;; respectively, identical to before.  No new owner, no leak.
-      (let ((key-slot (alloc-bytes 32 8))
+      ;;
+      ;; Reclaim-veto fix: bump the mutation epoch first so the boundary
+      ;; reclaim declines for this form -- full rationale at
+      ;; `nelisp_mirror_install_entry' (lisp/nelisp-cc-mirror-install-entry.el).
+      (seq
+       (atomic-fetch-add 268435544 1)
+       (let ((key-slot (alloc-bytes 32 8))
             (pair-slot (alloc-bytes 32 8))
             (outer-slot (alloc-bytes 32 8))
             (count-slot (alloc-bytes 32 8)))
@@ -228,7 +234,7 @@
                            1))
          (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
                           2
-                          count-slot)))))
+                          count-slot))))))
   "AOT source for Doc 119 §119.A `mirror_bucket_prepend'.
 
 Pure-elisp port of `Env::mirror_prepend_to_bucket' (~45 LOC).

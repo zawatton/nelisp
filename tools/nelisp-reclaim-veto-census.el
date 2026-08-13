@@ -18,33 +18,53 @@
 ;; storage past the form boundary is expected to raise one of them, so the
 ;; reclaim declines.
 ;;
-;; This file censuses the producer side of that contract.  It finds every
-;; `defun' in the tree whose body both (a) allocates per-form arena storage
-;; via `alloc-bytes' or `nl_alloc_vector', and (b) calls one of the
-;; `nelisp-reclaim-veto-census--escape-primitives' -- the operations that
-;; install a value into a long-lived structure (the env mirror or a lexical
-;; frame) reachable after the form returns.  Calls are recognised whether
-;; direct (`(FN ...)') or cross-unit (`(extern-call FN ...)'); this AOT
-;; substrate uses both calling conventions for what is, at the source level,
-;; the same kind of call.  Any such defun is an ESCAPE: it hands the reclaim
-;; a storage location that must not be rewound.  If its own body also
-;; contains the veto write (an epoch bump at 268435544 or a flag write to
-;; 268435472/268435464), the reclaim is told to decline and the escape is
-;; VETOED.  If it does not, the defun's storage is at risk of being rewound
-;; out from under a value that is still reachable.
+;; FIXED 2026-08 (use-after-reclaim defect, confirmed by a placebo-
+;; controlled experiment: filling a rewound span with 0xFF made the
+;; corruption vanish, a code-layout placebo did not).  Before the fix, the
+;; twelve `nelisp-reclaim-veto-census--escape-primitives' -- the operations
+;; that install a value into a long-lived structure (the env mirror or a
+;; lexical frame) reachable after the calling form returns -- never vetoed
+;; the reclaim themselves, so any caller that escaped storage through one of
+;; them without separately vetoing left that storage exposed to being
+;; rewound out from under a value still reachable; a later reader of the
+;; stale span built corrupt symbols (SYMNAME-OVERREAD, void-function with
+;; mangled names).  The fix makes each of the twelve primitives bump the
+;; mutation epoch (268435544) itself, unconditionally, as the FIRST thing
+;; its own body does -- so every present and future caller is covered
+;; without having to remember to veto individually.  See
+;; `nelisp_mirror_install_entry' in `lisp/nelisp-cc-mirror-install-entry.el'
+;; for the full rationale comment; the other eleven carry a one-line
+;; pointer back to it.
 ;;
-;; Measured 2026-08: the two producer sets do not overlap.  Every function
-;; that installs into a long-lived structure while allocating arena storage
-;; is UNVETOED; every function that vetoes does so for an unrelated reason
-;; (signal stashing, `bf_make_symbol') and does not itself escape storage
-;; this way.  Whether an invariant elsewhere (a bound on possible escape
-;; shapes, a caller-side guarantee) makes this safe anyway is UNESTABLISHED;
-;; this is directly adjacent to the open 2026-08 symbol-name-overread defect
-;; (task #13).  This file does not change runtime behaviour and does not
-;; add veto writes -- it only makes the current producer set explicit, in
-;; `nelisp-reclaim-veto-census--known-unvetoed', so a NEW escaping,
-;; unvetoed producer cannot appear silently.  Whoever adds one must either
-;; make it veto or consciously extend the allowlist.
+;; This file censuses BOTH sides of that contract now:
+;;
+;;   Pass 1 -- PRODUCER-KEEPS-ITS-VETO.  Every `defun' occurrence of each of
+;;   the twelve escape primitives (a primitive can appear more than once --
+;;   see the note on `nelisp-standalone-build.el' duplicates below) must
+;;   itself contain the veto write (an epoch bump at 268435544, checked
+;;   literally in its own body).  A primitive occurrence missing the bump is
+;;   a violation: "primitive lost its veto".  This is what would have
+;;   caught the original defect before it shipped, and what stops it from
+;;   silently coming back (e.g. a future edit that reorders or drops the
+;;   bump while refactoring one of these functions).
+;;
+;;   Pass 2 -- NO NEW UNVETOED ESCAPE PATH.  As before, this finds every
+;;   `defun' in the tree whose body both (a) allocates per-form arena
+;;   storage via `alloc-bytes' or `nl_alloc_vector', and (b) calls one of
+;;   the escape primitives -- direct (`(FN ...)') or cross-unit
+;;   (`(extern-call FN ...)'); this AOT substrate uses both calling
+;;   conventions for what is, at the source level, the same kind of call.
+;;   Any such defun is an ESCAPE.  Given Pass 1 holds, a defun that escapes
+;;   ONLY by calling one or more of the (now verified-vetoing) primitives is
+;;   VETOED transitively -- the primitive bumps the epoch on its behalf, so
+;;   the caller does not have to also do it.  A defun is UNVETOED only when
+;;   neither its own body contains a veto write NOR are all of the escape
+;;   primitives it calls verified-vetoing (e.g. it escapes through some
+;;   other path this census's syntactic per-defun scan cannot see through).
+;;   An UNVETOED escape must be in `nelisp-reclaim-veto-census--known-
+;;   unvetoed' or the census fails.  Measured 2026-08-13 after the fix: the
+;;   allowlist is empty -- every escaping defun found in the tree escapes
+;;   exclusively through one of the twelve now-vetoing primitives.
 ;;
 ;; A stale allowlist entry (a name no longer found as an escaping-and-
 ;; unvetoed defun) is also a violation: a producer that disappears must not
@@ -61,11 +81,13 @@
 ;; `tools/nelisp-buffer-len-gate.el' (see its header): a defun only counts
 ;; as ESCAPES when an allocation call and an escape-primitive call are both
 ;; literally present in its own body, at any nesting depth.  It does not
-;; trace the call graph across defuns, so an indirect escape (allocate in A,
-;; hand the pointer to B, B calls the primitive) is not detected here.  That
-;; is a real gap, not a rounding error, and the report's denominators make
-;; clear how many defuns were actually examined and how each classified --
-;; "0 violations" is only meaningful next to that count.
+;; trace the call graph across defuns beyond the one hop Pass 2 now credits
+;; to a verified-vetoing primitive, so an indirect escape through a NON-
+;; primitive intermediary (allocate in A, hand the pointer to B, B is not
+;; one of the twelve) is still not detected here.  That is a real gap, not
+;; a rounding error, and the report's denominators make clear how many
+;; defuns were actually examined and how each classified -- "0 violations"
+;; is only meaningful next to that count.
 
 ;;; Code:
 
@@ -92,6 +114,12 @@ defun that both calls one of these AND allocates per-form arena storage
 (`alloc-bytes' / `nl_alloc_vector') is handing the reclaim a pointer it
 must not rewind past; see the file header for the full contract.
 
+FIXED 2026-08: each of these twelve now bumps the mutation epoch
+(268435544) itself, as the first form in its own body, so it vetoes the
+boundary reclaim on behalf of every caller.  `nelisp-reclaim-veto-
+census-run' Pass 1 asserts every `defun' occurrence of each name still
+carries that bump.
+
 All twelve were confirmed present as `defun' forms in lisp/*.el or
 scripts/*.el by grep before this list was written down.")
 
@@ -111,65 +139,42 @@ as a whole, it is not one of the per-form veto conditions.")
   "Name of the defun whose shape this census asserts against drift.")
 
 (defconst nelisp-reclaim-veto-census--known-unvetoed
-  '(;; env-mirror / frame installers -- mirror_*_or_insert dispatch bodies
-    ;; (Doc 119 Sec.A): each stages a fresh symbol-entry in a per-form
-    ;; alloc-bytes slot, then extern-calls `nelisp_mirror_bucket_prepend'
-    ;; to splice it into the global mirror on a miss.
-    nelisp_mirror_set_value_or_insert_dispatch
-    nelisp_mirror_set_function_or_insert_dispatch
-    nelisp_mirror_set_constant_or_insert_dispatch
-    ;; env-leaves-logic.el (condition-case / let-binding CPS logic):
-    ;; binds a lexical/global var and, on an unmatched signal, stashes it
-    ;; into an Env variable -- both via `nelisp_env_bind_local' /
-    ;; `nelisp_env_set_value' while allocating the scratch vector.
-    nl_logic_bind_local
-    nl_logic_stash_signal
-    ;; evalport-bootstrap.el: installs a builtin/macro into the mirror
-    ;; during bootstrap, and allocates the empty globals+frames pair.
-    nl_install_one
-    nl_bootstrap_make_mirror
-    ;; evalport-combiner-apply.el (`apply'/`funcall'/`fset' combinators):
-    ;; wrong-type-argument stash, lexical bind, and the verbatim-fset path
-    ;; all allocate then install into the mirror or a frame.
-    nl_apply_stash_wta
-    nl_apply_bind_local
-    nl_apply_do_fset
-    ;; evalport-combiner-entry.el: max-recursion-depth / quit signal
-    ;; stashes bound into the Env via `nelisp_env_bind_local'.
-    nl_entry_stash_max_depth
-    nl_entry_stash_quit
-    ;; evalport-env-leaves-bind.el (`setq'/formal-parameter binding):
-    ;; every bind/set leaf allocates its scratch vector then installs.
-    nl_env_set_value
-    nl_bf_bind_sym
-    nl_bf_bind_optional
-    nl_bf_bind_rest)
+  nil
   "Defuns that escape arena storage into a long-lived structure without
-vetoing the boundary reclaim (see the file header for the contract).
+vetoing the boundary reclaim, directly or transitively (see the file
+header for the full contract).
 
-Whether a compensating invariant elsewhere makes each of these safe
-despite not vetoing is UNESTABLISHED -- this sits next to the open
-2026-08 symbol-name-overread defect (task #13).  This list exists so a
-NEW escaping producer cannot join the set silently: anyone who adds one
-must either make it veto the reclaim (bump the epoch at 268435544, or
-raise the signal/quit flag at 268435472/268435464) or consciously extend
-this list, understanding they are doing the same thing every entry here
-already does.
+Empty as of 2026-08-13, after the twelve `nelisp-reclaim-veto-census--
+escape-primitives' were fixed to bump the mutation epoch themselves:
+every escaping defun found in the tree escapes exclusively by calling
+one of the twelve, so `nelisp-reclaim-veto-census-run' Pass 2 credits
+each of them as VETOED transitively and none remain to allowlist.
 
-A name here can appear in more than one file: `scripts/nelisp-standalone-
-build.el' patches several env-leaves-bind / combiner-apply defuns at
-build time (`nelisp-standalone--patch-env-leaves-bind-rest' and the
-`nelisp-standalone--reader-*-fixed' constants around its Doc 137 M3
-comment), so both the pre-patch `lisp/*.el' body and the patched
-replacement are read by this census as separate `defun' occurrences of
-the same name.  Some patched replacements (`nl_apply_stash_wta',
-`nl_env_stash_signal') DO veto in their fixed form; others
-(`nl_apply_do_fset', `nl_bf_bind_rest') still do not.  Listing the name
-here covers every occurrence, vetoed or not -- an already-vetoed
-occurrence simply never reaches the allowlist check.
+Before the fix (measured 2026-08-13, pre-fix tree), this held 16 names /
+18 occurrences -- every producer that installed into a long-lived
+structure while allocating arena storage was UNVETOED, because the
+primitives it went through did not veto on their own:
+`nelisp_mirror_set_value_or_insert_dispatch',
+`nelisp_mirror_set_function_or_insert_dispatch',
+`nelisp_mirror_set_constant_or_insert_dispatch' (Doc 119 Sec.A mirror
+`_or_insert' dispatch bodies), `nl_logic_bind_local' /
+`nl_logic_stash_signal' (env-leaves-logic.el condition-case / let-
+binding CPS logic), `nl_install_one' / `nl_bootstrap_make_mirror'
+(evalport-bootstrap.el), `nl_apply_stash_wta' / `nl_apply_bind_local' /
+`nl_apply_do_fset' (evalport-combiner-apply.el `apply'/`funcall'/`fset'
+combinators), `nl_entry_stash_max_depth' / `nl_entry_stash_quit'
+(evalport-combiner-entry.el), and `nl_env_set_value' / `nl_bf_bind_sym'
+/ `nl_bf_bind_optional' / `nl_bf_bind_rest' (evalport-env-leaves-
+bind.el).  `scripts/nelisp-standalone-build.el' patches several of these
+at build time, so some names had both a pre-patch `lisp/*.el' occurrence
+and a separate patched occurrence; both were tracked identically.
 
-Discovered by running this census over the tree on 2026-08-13; see
-`nelisp-reclaim-veto-census-run'.")
+This list exists so a NEW escaping-and-unvetoed producer cannot join the
+set silently: anyone who adds one must either make it veto the reclaim
+itself (bump the epoch at 268435544, raise the signal/quit flag at
+268435472/268435464, or escape exclusively through an already-verified-
+vetoing primitive) or consciously re-populate this list, understanding
+they are reintroducing the exact defect the 2026-08 fix closed.")
 
 (defvar nelisp-reclaim-veto-census--found nil
   "Accumulator: list of (NAME FILE BODY) for every `defun' seen this run.
@@ -300,10 +305,21 @@ either means this census is no longer looking at the gate it claims to."
           (list t nil)))))))
 
 (defun nelisp-reclaim-veto-census-run (files)
-  "Census FILES for escaping-but-unvetoed reclaim producers.
+  "Census FILES for the two-part reclaim-veto contract.
 Returns the number of violations found.  See the file header for the
-contract and `nelisp-reclaim-veto-census--known-unvetoed' for the
-allowlist this asserts against."
+full contract:
+
+  Pass 1 -- every `defun' occurrence of each of the twelve
+  `nelisp-reclaim-veto-census--escape-primitives' must itself contain
+  the veto write (an epoch bump at 268435544).  A missing bump on any
+  occurrence is \"primitive lost its veto\".
+
+  Pass 2 -- every defun that both allocates per-form arena storage and
+  calls an escape primitive must be VETOED, either directly (its own
+  body also contains a veto write) or transitively (every escape
+  primitive it calls is Pass-1-verified to veto on its own).  An
+  unvetoed escape must be listed in
+  `nelisp-reclaim-veto-census--known-unvetoed' or the census fails."
   (setq nelisp-reclaim-veto-census--found nil)
   (dolist (file files)
     (with-temp-buffer
@@ -321,25 +337,60 @@ allowlist this asserts against."
          (escaping nil)
          (violations nil)
          (vetoed-count 0)
-         (allowlisted-count 0))
+         (allowlisted-count 0)
+         (primitive-vetoing nil))
+    ;; Pass 1: producer-keeps-its-veto.  Every `defun' occurrence of each
+    ;; of the twelve escape primitives (a primitive can appear more than
+    ;; once -- e.g. `scripts/nelisp-standalone-build.el' carries a never-
+    ;; executed trap-stub duplicate of `nelisp_env_bind_local', patched
+    ;; identically) must itself contain the veto write.  Only primitives
+    ;; for which EVERY occurrence vetoes are credited transitively in
+    ;; Pass 2; a primitive with zero occurrences at all is also a
+    ;; violation, since Pass 2's transitive credit depends on it existing.
+    (dolist (prim nelisp-reclaim-veto-census--escape-primitives)
+      (let ((occurrences (cl-remove-if-not
+                          (lambda (r) (eq (car r) prim))
+                          nelisp-reclaim-veto-census--found)))
+        (if (null occurrences)
+            (push (format
+                   "MISSING PRIMITIVE `%s': no `defun' found anywhere in the scanned files"
+                   prim)
+                  violations)
+          (let ((all-veto t))
+            (dolist (occ occurrences)
+              (cl-destructuring-bind (name file body) occ
+                (unless (nelisp-reclaim-veto-census--vetoes body)
+                  (setq all-veto nil)
+                  (push (format
+                         "%s: escape primitive `%s' lost its veto -- its own defun body no longer contains the epoch bump `(atomic-fetch-add 268435544 ...)'"
+                         file name)
+                        violations))))
+            (when all-veto (push prim primitive-vetoing))))))
     ;; Pass 2a: classify every defun that both allocates and calls an
-    ;; escape primitive.
+    ;; escape primitive.  Vetoed directly (its own body contains the veto
+    ;; write, e.g. the unrelated signal-stash / `bf_make_symbol' cases) or
+    ;; transitively (every escape primitive it calls is Pass-1-verified to
+    ;; veto on its own, so it vetoes on this caller's behalf too).
     (dolist (rec nelisp-reclaim-veto-census--found)
       (cl-destructuring-bind (name file body) rec
         (let ((calls (nelisp-reclaim-veto-census--escape-calls body))
               (allocs (nelisp-reclaim-veto-census--allocates body)))
           (when (and calls allocs)
-            (let* ((vetoes (nelisp-reclaim-veto-census--vetoes body))
-                   (vetoed (and vetoes t))
+            (let* ((direct (and (nelisp-reclaim-veto-census--vetoes body) t))
+                   (transitive (and (not direct)
+                                    (cl-every (lambda (c) (memq c primitive-vetoing))
+                                              calls)))
+                   (vetoed (or direct transitive))
                    (allowlisted (and (not vetoed)
                                      (memq name nelisp-reclaim-veto-census--known-unvetoed)
-                                     t)))
-              (push (list name file calls vetoed allowlisted) escaping)
+                                     t))
+                   (kind (cond (direct 'direct) (transitive 'transitive) (t nil))))
+              (push (list name file calls vetoed allowlisted kind) escaping)
               (cond
                (vetoed (cl-incf vetoed-count))
                (allowlisted (cl-incf allowlisted-count))
                (t (push (format
-                         "%s: `%s' escapes arena storage via %S without vetoing the reclaim, and is not in `nelisp-reclaim-veto-census--known-unvetoed'"
+                         "%s: `%s' escapes arena storage via %S without vetoing the reclaim (directly or transitively), and is not in `nelisp-reclaim-veto-census--known-unvetoed'"
                          file name calls)
                         violations))))))))
     (setq escaping (nreverse escaping))
@@ -360,17 +411,21 @@ allowlist this asserts against."
         (push gate-msg violations))
       (setq violations (nreverse violations))
       (dolist (e escaping)
-        (cl-destructuring-bind (name file calls vetoed allowlisted) e
+        (cl-destructuring-bind (name file calls vetoed allowlisted kind) e
           (message "[reclaim-veto-census] %s (%s): calls=%S %s"
                    name file calls
-                   (cond (vetoed "vetoed")
+                   (cond ((eq kind 'direct) "vetoed(direct)")
+                         ((eq kind 'transitive) "vetoed(transitive)")
                          (allowlisted "allowlisted")
                          (t "VIOLATION")))))
       (dolist (v violations)
         (message "VIOLATION %s" v))
       (message (concat "[reclaim-veto-census] defuns-examined=%d escapes=%d"
-                       " vetoed=%d allowlisted=%d gate-shape=%s violations=%d")
+                       " vetoed=%d allowlisted=%d primitives-verified=%d/%d"
+                       " gate-shape=%s violations=%d")
                total-defuns (length escaping) vetoed-count allowlisted-count
+               (length primitive-vetoing)
+               (length nelisp-reclaim-veto-census--escape-primitives)
                (if gate-ok "ok" "FAIL") (length violations))
       (length violations))))
 

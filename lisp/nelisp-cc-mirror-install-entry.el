@@ -88,9 +88,34 @@
       ;; complexity.  All `Option<Sexp>' / `bool' resolution happens on
       ;; the Rust side before the call (= explicit unbound-marker /
       ;; Sexp::T / Sexp::Nil pointers).
-      (nelisp_mirror_install_entry_apply
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       value-ptr function-ptr plist-ptr constant-ptr)))
+      ;;
+      ;; Reclaim-veto fix (2026-08, use-after-reclaim defect): this
+      ;; primitive installs arena-allocated storage into the env mirror
+      ;; -- a long-lived structure reachable after the calling top-level
+      ;; form returns.  The standalone runtime's form-boundary bump-
+      ;; allocator reclaim (`nl_boundary_maybe_reclaim') rewinds per-form
+      ;; arena storage unless the mutation-epoch counter (268435544) has
+      ;; moved since the form started, so any code that escapes storage
+      ;; into a long-lived structure must veto the reclaim itself or the
+      ;; storage gets rewound out from under a value that is still
+      ;; reachable -- a later reader of the stale span then sees garbage
+      ;; (this was the observed SYMNAME-OVERREAD / void-function defect).
+      ;; Bumping the epoch here, unconditionally, as the FIRST thing this
+      ;; primitive's body does, covers every present and future caller
+      ;; without requiring each one to remember to veto individually.
+      ;; The epoch word doubles as `bf_make_symbol''s gensym counter
+      ;; (see lisp/nelisp-cc-jit-make-symbol.el); an extra bump here only
+      ;; skips a counter value, which is harmless.  Cost: one lock-free
+      ;; atomic add on a path that already makes at least one
+      ;; extern-call; reclaim is intentionally forfeited for any form
+      ;; that escapes storage this way.  `tools/nelisp-reclaim-veto-
+      ;; census.el' enforces at build time that this primitive keeps
+      ;; this bump.
+      (seq
+       (atomic-fetch-add 268435544 1)
+       (nelisp_mirror_install_entry_apply
+        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+        value-ptr function-ptr plist-ptr constant-ptr))))
   "AOT source for Doc 111 §111.E #12 `mirror_install_entry'.
 
 Implements only the existing-entry update fast path (= 4

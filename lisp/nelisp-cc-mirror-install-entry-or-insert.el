@@ -57,9 +57,14 @@
       ;; See `nelisp_mirror_set_value_or_insert' for ABI / scratch layout.
       ;; Hit-path writes all four slots; slot 7=value / 8=function /
       ;; 9=plist / 10=constant.
-      (nelisp_mirror_install_entry_or_insert_dispatch
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       mirror-ptr sym-ptr scratch-vec-ptr 0 0)))
+      ;; Reclaim-veto fix: bump the mutation epoch first so the boundary
+      ;; reclaim declines for this form -- full rationale at
+      ;; `nelisp_mirror_install_entry' (lisp/nelisp-cc-mirror-install-entry.el).
+      (seq
+       (atomic-fetch-add 268435544 1)
+       (nelisp_mirror_install_entry_or_insert_dispatch
+        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+        mirror-ptr sym-ptr scratch-vec-ptr 0 0))))
   "AOT source for Doc 119 §119.A `mirror_install_entry_or_insert'.
 
 Full 4-slot install variant of `mirror_set_value_or_insert'.")

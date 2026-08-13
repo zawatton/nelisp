@@ -12730,7 +12730,15 @@ and `nl_eval_inner_cons' swapped for the cache-aware versions above."
     (defun nl_env_lookup_val (_f _e _o) 1) (defun nl_cell_get_value (_c _o) 1)
     (defun nl_apply_lambda_inner (_cap _f _b _a _e _o) 1)
     (defun nelisp_frame_push (_f _s) 1) (defun nelisp_frame_pop (_f _s) 1)
-    (defun nelisp_env_bind_local (_m _f _n _v _vec _flag) 1)
+    ;; Reclaim-veto fix: this trap stub is never executed on the plain
+    ;; (OP A B) builtin path this manifest targets (see file banner), but
+    ;; it duplicates the real `nelisp_env_bind_local' name (lisp/nelisp-
+    ;; cc-env-bind-local.el, linked instead via the reader-real-sf
+    ;; overlay), so it gets the same epoch bump for uniformity with the
+    ;; build-time census in `tools/nelisp-reclaim-veto-census.el', which
+    ;; checks every occurrence of the name, not just the linked one.
+    (defun nelisp_env_bind_local (_m _f _n _v _vec _flag)
+      (seq (atomic-fetch-add 268435544 1) 1))
     (defun nelisp_env_shim_op (_op _m _s _u _o _p) 0)
     (defun nelisp_env_shim_set_op (_op _m _s _sc _o _z) 0)
     (defun nl_env_push_captured (_e _a) 1)
