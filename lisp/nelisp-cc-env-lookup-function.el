@@ -68,60 +68,11 @@
                 (seq
                  (record-slot-ref entry 1 out-ptr)
                  0)))))))
-    ;; PERMANENT INVARIANT CHECK, not scaffolding.
-    ;;
-    ;; Every Symbol Sexp is created with cap == len -- `nl_alloc_symbol_write'
-    ;; writes cap<-alloc-n / len<-n and `nl_intern_write_sexp' writes cap<-n /
-    ;; len<-n, and both are the only producers.  So cap /= len means the length
-    ;; word was overwritten after creation, which is a memory-corruption defect
-    ;; that has been open since 2026-08-05.
-    ;;
-    ;; Kept on permanently because it is two loads and a compare, on the miss
-    ;; path only, and because as a temporary probe it answered in ONE run
-    ;; (2026-08-12: cap=40, len=43) a question that a week of sampling had not.
-    ;; A cheap invariant that fires where the corruption happens is worth more
-    ;; than any amount of post-hoc profiling.
-    ;;
-    ;; Original note (2026-08-12, handoff §4.2 / the codex task's section 4).
-    ;;
-    ;; `nl_intern_write_sexp' writes cap == len when a Symbol Sexp is created,
-    ;; so cap and len disagreeing proves the length word was overwritten AFTER
-    ;; creation -- which decides the open question: producer side, or a later
-    ;; 32-byte box reuse clobbering offset 24.  `nl_alloc_symbol''s NUL scan
-    ;; already rules out creation with a too-long length (it is linked and has
-    ;; never fired), so this is the other half of the same test.
-    ;;
-    ;; Reported on a lookup MISS only, and only when cap /= len, so the common
-    ;; miss (every failing `fboundp') stays silent.  The name is printed at the
-    ;; CAP length, i.e. what the name should have been; the error message that
-    ;; follows prints it at the corrupted length.  The two together give both
-    ;; numbers without a formatter.
-    ;;
-    ;; PRINT-ONLY: the return value is the hop helper's, unchanged.
-    (defun nl_symcap_report (name-ptr pad)
-      (let* ((msg (alloc-bytes 24 1)) (nl (alloc-bytes 1 1)))
-        (seq
-         (ptr-write-u64 msg 0 2322292198855173486)
-         (ptr-write-u64 (+ msg 8) 0 5633246950142597459)
-         (ptr-write-u64 (+ msg 16) 0 35520542158149)
-         (ptr-write-u8 nl 0 10)
-         (bf_report_eval_stack)
-         (nl_os_write_stderr msg 22)
-         (nl_os_write_stderr (ptr-read-u64 name-ptr 16) (ptr-read-u64 name-ptr 8))
-         (nl_os_write_stderr nl 1)
-         0)))
-    (defun nl_symcap_check (name-ptr pad)
-      (if (= (sexp-tag name-ptr) 4)
-          (if (= (ptr-read-u64 name-ptr 8) (ptr-read-u64 name-ptr 24))
-              0
-            (nl_symcap_report name-ptr pad))
-        0))
     (defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
       ;; ABI entry (arity 4, unchanged for existing callers): delegate
       ;; to the chase helper with an 8-hop budget.
-      (let ((rc (nelisp_env_lookup_function_hop
-                 mirror-ptr unbound-ptr name-ptr out-ptr 8 0)))
-        (seq (if (= rc 1) (nl_symcap_check name-ptr 0) 0) rc))))
+      (nelisp_env_lookup_function_hop
+       mirror-ptr unbound-ptr name-ptr out-ptr 8 0)))
   "AOT source for `Env::lookup_function' with bounded alias chase.
 
 The pre-chase unit returned the raw function-cell contents, so a cell

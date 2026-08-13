@@ -9519,11 +9519,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                                ;; the common one.  Print and continue: the Str is
                                ;; still built exactly as before.
                                (if (= (nl_alloc_symbol_scan_nul p 0 n) 1)
-                                   (let* ((msg (alloc-bytes 32 1))
-                                          (tagbuf (alloc-bytes 8 1))
-                                          (nlbuf (alloc-bytes 1 1))
-                                          (locbuf (alloc-bytes 16 1))
-                                          (cap (ptr-read-u64 s 8)))
+                                   (let* ((msg (alloc-bytes 32 1)))
                                      (seq
                                       (ptr-write-u64 msg 0 2322292198855173486)
                                       (ptr-write-u64 (+ msg 8) 0 3262098447981697363)
@@ -9531,50 +9527,17 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                                       (ptr-write-u64 (+ msg 24) 0 10)
                                       (bf_report_eval_stack)
                                       (nl_os_write_stderr msg 25)
-                                      ;; 2026-08-12, the codex task's section 4.
-                                      ;; `nl_intern_write_sexp' writes cap == len
-                                      ;; at creation, so which of the two words
-                                      ;; disagrees names the culprit:
-                                      ;;   CAPNE -- cap still holds the true
-                                      ;;     length, so only len@24 was
-                                      ;;     overwritten AFTER creation (the
-                                      ;;     32-byte box reuse suspects).
-                                      ;;   CAPEQ -- both words carry the long
-                                      ;;     length, so it arrived together and
-                                      ;;     the producer-side reasoning (whose
-                                      ;;     NUL guard has never fired) needs
-                                      ;;     revisiting.
-                                      ;; The name is printed at CAP, i.e. what it
-                                      ;; should have been; the caller's error
-                                      ;; prints it at the corrupted length, so the
-                                      ;; pair gives both numbers without a
-                                      ;; formatter.  Bounded at 200 bytes in case
-                                      ;; cap is corrupt too.
-                                      (ptr-write-u64 tagbuf 0
-                                                     (if (= cap n)
-                                                         35533427327299
-                                                       35482038714691))
-                                      (ptr-write-u8 nlbuf 0 10)
-                                      (nl_os_write_stderr tagbuf 6)
-                                      ;; Where does the corrupted box LIVE?  One
-                                      ;; occurrence then decides whether the
-                                      ;; form-boundary reclaim can be the writer:
-                                      ;; it only ever rewinds the temporary arena,
-                                      ;; so a box with BOOT=1 (persistent, never
-                                      ;; reclaimed) exonerates it, while
-                                      ;; ARENA=1 BOOT=0 puts the box in exactly the
-                                      ;; memory `nl_boundary_reclaim' hands back.
-                                      ;; Two existing predicates, so no formatter.
-                                      (ptr-write-u64 locbuf 0 67350695334465)
-                                      (ptr-write-u8 locbuf 6
-                                                    (+ 48 (nl_gc_in_arena s)))
-                                      (ptr-write-u64 locbuf 8 67432317141536)
-                                      (ptr-write-u8 locbuf 14
-                                                    (+ 48 (nl_gc_is_boot s)))
-                                      (ptr-write-u8 locbuf 15 32)
-                                      (nl_os_write_stderr locbuf 16)
-                                      (nl_os_write_stderr p (if (> cap 200) 200 cap))
-                                      (nl_os_write_stderr nlbuf 1)
+                                      ;; A cap/len comparison used to be printed
+                                      ;; here on the theory that Symbol Sexps are
+                                      ;; always created with cap == len.  They are
+                                      ;; not: `nelisp-cc-reader-parser.el' builds a
+                                      ;; symbol by finalising a MutStr and then
+                                      ;; overwriting the tag byte to 4, so cap holds
+                                      ;; the BUFFER CAPACITY and cap /= len is normal
+                                      ;; for every reader-created symbol.  Two
+                                      ;; producers had been checked and six exist.
+                                      ;; The NUL scan above stands on its own: a name
+                                      ;; never contains a NUL, whoever built it.
                                       0))
                                  0)
                                (nl_alloc_str p n out)
