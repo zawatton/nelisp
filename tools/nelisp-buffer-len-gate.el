@@ -64,6 +64,19 @@ census is asserted at build time instead of re-counted by hand.
 Adding a producer is fine.  Adding one WITHOUT updating this list, and thereby
 silently invalidating whatever a reader has assumed about symbols, is not.")
 
+(defvar nelisp-buffer-len-gate--all-sinks nil
+  "Every sink call seen, as (FILE CALLEE PTR-FORM LEN-FORM).
+Kept so the report can separate \"examined and could not be modelled\" from
+\"never examined at all\".  Reporting both as one skipped=33 hid the fact that
+31 of them are sinks whose pointer is not a let-bound buffer, which the
+let-scope analysis never looks at.")
+
+(defvar nelisp-buffer-len-gate--unmodelled nil
+  "Sink calls whose buffer fill this checker could not account for.
+These are the only places an over-long length can still hide once the
+judgeable sites are proved, so they are listed on request rather than left as
+a bare count.")
+
 (defvar nelisp-buffer-len-gate--tag4-sites nil
   "Alist of (FUNCTION . COUNT) for each source-level Symbol-tag store.")
 
@@ -182,7 +195,10 @@ lists, and recursing down every `cdr' exhausts `max-lisp-eval-depth'."
                 nelisp-buffer-len-gate--violations))
          (opaque
           ;; Capacity proved, coverage not modellable.
-          (cl-incf nelisp-buffer-len-gate--checked))
+          (cl-incf nelisp-buffer-len-gate--checked)
+          (push (format "%s: %s len=%s buf=`%s' (fill not modelled)"
+                        file sink len buf)
+                nelisp-buffer-len-gate--unmodelled))
          ((and (integerp len) (> len covered))
           (cl-incf nelisp-buffer-len-gate--checked)
           (push (format "%s: COVERAGE %s reads %d bytes from `%s' but only %d were written"
@@ -205,7 +221,9 @@ lists, and recursing down every `cdr' exhausts `max-lisp-eval-depth'."
                 (when size
                   (nelisp-buffer-len-gate--check-buffer (car b) size body file))))))))
     (when (memq (car-safe form) nelisp-buffer-len-gate--sinks)
-      (cl-incf nelisp-buffer-len-gate--sink-calls))
+      (cl-incf nelisp-buffer-len-gate--sink-calls)
+      (push (list file (car form) (nth 1 form) (nth 2 form))
+            nelisp-buffer-len-gate--all-sinks))
     (pcase form
       (`(ptr-write-u8 ,_dst 0 ,(pred (lambda (v)
                                        (equal v nelisp-buffer-len-gate--symbol-tag))))
@@ -235,6 +253,8 @@ lists, and recursing down every `cdr' exhausts `max-lisp-eval-depth'."
         nelisp-buffer-len-gate--skipped 0
         nelisp-buffer-len-gate--sink-calls 0
         nelisp-buffer-len-gate--tag4-sites nil
+        nelisp-buffer-len-gate--unmodelled nil
+        nelisp-buffer-len-gate--all-sinks nil
         nelisp-buffer-len-gate--violations nil)
   (dolist (file files)
     (with-temp-buffer
@@ -246,6 +266,17 @@ lists, and recursing down every `cdr' exhausts `max-lisp-eval-depth'."
               (nelisp-buffer-len-gate--walk (read (current-buffer)) short))
           (end-of-file nil)
           (invalid-read-syntax nil)))))
+  (when (getenv "NELISP_BUFFER_LEN_GATE_LIST_SKIPPED")
+    (dolist (u (reverse nelisp-buffer-len-gate--unmodelled))
+      (message "UNMODELLED %s" u))
+    ;; A sink whose pointer argument is not a plain symbol cannot be a
+    ;; let-bound buffer, so the let-scope analysis never sees it.  These are
+    ;; the propagation sites -- a length copied out of an existing Sexp or a
+    ;; Str -- and a wrong length arriving here is inherited, not minted.
+    (dolist (c (reverse nelisp-buffer-len-gate--all-sinks))
+      (unless (symbolp (nth 2 c))
+        (message "NOT-EXAMINED %s: %s ptr=%S len=%S"
+                 (nth 0 c) (nth 1 c) (nth 2 c) (nth 3 c)))))
   ;; Producer census: report both directions, so a producer that DISAPPEARS
   ;; (leaving a stale allowlist entry that would wave through its replacement)
   ;; is as visible as one that appears.
@@ -270,15 +301,24 @@ lists, and recursing down every `cdr' exhausts `max-lisp-eval-depth'."
         (nreverse nelisp-buffer-len-gate--violations))
   (dolist (v nelisp-buffer-len-gate--violations)
     (message "VIOLATION %s" v))
-  (message (concat "[buffer-len-gate] sink-calls=%d judged=%d"
-                   " skipped-unmodelled=%d skipped-unknown-len=%d violations=%d")
-           nelisp-buffer-len-gate--sink-calls
-           nelisp-buffer-len-gate--checked
-           (- nelisp-buffer-len-gate--sink-calls
-              nelisp-buffer-len-gate--checked
-              nelisp-buffer-len-gate--skipped)
-           nelisp-buffer-len-gate--skipped
-           (length nelisp-buffer-len-gate--violations))
+  ;; Split the skipped total.  Reporting one "skipped=33" implied 33 buffers
+  ;; had been looked at and found unmodellable; in fact 2 were, and the other
+  ;; 31 are sinks whose pointer is not a let-bound buffer at all, which this
+  ;; analysis never examines.  Those two numbers mean different things and only
+  ;; one of them is a gap in the modelling.
+  (let* ((examined-unmodelled (length nelisp-buffer-len-gate--unmodelled))
+         (not-examined (- nelisp-buffer-len-gate--sink-calls
+                          nelisp-buffer-len-gate--checked
+                          nelisp-buffer-len-gate--skipped)))
+    (message (concat "[buffer-len-gate] sink-calls=%d judged=%d"
+                     " unmodelled-fill=%d not-let-bound=%d"
+                     " unknown-len=%d violations=%d")
+             nelisp-buffer-len-gate--sink-calls
+             nelisp-buffer-len-gate--checked
+             examined-unmodelled
+             not-examined
+             nelisp-buffer-len-gate--skipped
+             (length nelisp-buffer-len-gate--violations)))
   (length nelisp-buffer-len-gate--violations))
 
 (provide 'nelisp-buffer-len-gate)
