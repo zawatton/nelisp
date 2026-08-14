@@ -542,7 +542,7 @@ storage — not an arena reservation."
    ;; slot holding the flat-image LIVE MAP's mmap address while a dump is in
    ;; flight (0 = no map published = the pre-existing raw high-water behaviour).
    ;; Appended at the tail so every pre-existing symbol offset is unchanged.
-   (list (cons 'bss (+ 57568 1048576 56 (* 162 8) 16 96 1152 24)))
+   (list (cons 'bss (+ 57568 1048576 56 (* 162 8) 16 96 1152 24 8)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
@@ -608,6 +608,11 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_u8_cache_hi" (+ 57568 1048576 56 (* 162 8) 16 96 1152 8)
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_lm_base" (+ 57568 1048576 56 (* 162 8) 16 96 1152 16)
+                             :section 'bss :bind 'global :type 'object)
+         ;; Freelist spinlock word (2026-08-14): BSS-declared so no
+         ;; computed control-block address can alias it (a fixed-address pick
+         ;; landed inside the size-class head array and spun forever).
+         (nelisp-link-symbol "nl_fl_lockword" (+ 57568 1048576 56 (* 162 8) 16 96 1152 24)
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -1138,7 +1143,38 @@ not linked."
     ;; larger canonical bins before running the bounded guarded fallback
     ;; first-fit scan over the legacy list.  Returns the object pointer, or 0
     ;; if none.
-    (defun nl_freelist_take (want)
+    ;; Freelist mutual exclusion (2026-08-14).  The bump path reserves its
+    ;; cursor range with CAS "for concurrent allocators", but every freelist
+    ;; pop and link was a plain read-validate-write: two threads popping the
+    ;; same size-class head both pass validation on the same block and both
+    ;; receive it -- a double handout whose two owners then interleave their
+    ;; Sexp field writes (tag/ptr from one, len from the other), which is the
+    ;; exact shape of the symbol-name overreads open since 2026-08-05 (a
+    ;; 24-byte name read with a neighbour's 27/28 length).  One spinlock word
+    ;; (268435704, arena-zeroed at boot) now serialises every pop and link.
+    ;; The lock is NOT reentrant: nl_freelist_take_inner and everything it
+    ;; calls (pop_guarded / scan / split_block / take_upward) must not lock,
+    ;; and nl_gc_free_block_inner likewise; the sweep and chunk-rebuild link
+    ;; sites lock around their single calls.  Critical sections are a few
+    ;; loads/stores, so contention is spin-brief.
+    (defun nl_fl_lock ()
+      ;; CAS spin, with the CAS in the loop BODY via setq (a CAS in the while
+      ;; CONDITION never lowered correctly), and the pointer let-bound like
+      ;; the one prior CAS user.  The fetch-add test-and-set variant
+      ;; deterministically corrupted a load-path string at every non-empty
+      ;; environment pad; a plain CAS never leaves the word transiently >1.
+      (let* ((lw (data-addr nl_fl_lockword))
+             (got 0))
+        (while (= got 0)
+          (setq got (atomic-compare-exchange lw 0 1)))
+        0))
+    (defun nl_fl_unlock ()
+      (ptr-write-u64 (data-addr nl_fl_lockword) 0 0))
+        (defun nl_freelist_take (want)
+      (nl_seq2 (nl_fl_lock)
+       (let* ((r (nl_freelist_take_inner want)))
+         (nl_seq2 (nl_fl_unlock) r))))
+    (defun nl_freelist_take_inner (want)
       (if (< want 16)
           (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
         (if (< want 473)
@@ -2113,6 +2149,10 @@ arm64 Linux has no legacy x86 numbering)."
     ;; mid-form loop collector (`nl_gc_collect_from_recorded_roots') never
     ;; touches the flag and keeps freeing growth-chunk garbage.
     (defun nl_gc_free_block (hdr)
+      (nl_seq2 (nl_fl_lock)
+       (let* ((r (nl_gc_free_block_inner hdr)))
+         (nl_seq2 (nl_fl_unlock) r))))
+    (defun nl_gc_free_block_inner (hdr)
       (if (= (nl_gc_in_arena hdr) 0)
           (nl_seq2 (nl_fl_record_trip (+ hdr 8) 0 0) 0)
         (let* ((bt (nl_hdr_bt hdr))
@@ -2237,8 +2277,9 @@ arm64 Linux has no legacy x86 numbering)."
       (if (< span 16)
           0
         (nl_seq2 (ptr-write-u64 hdr 0 span)
-                 (nl_gc_free_block_link hdr
-                                        (nl_gc_free_block_head span)))))
+                 (nl_seq2 (nl_fl_lock)
+                 (nl_seq2 (nl_gc_free_block_link hdr
+                                        (nl_gc_free_block_head span)) (nl_fl_unlock))))))
     (defun nl_gc_rebuild_chunk (chunk)
       (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
              (end (nl_gc_chunk_end chunk))
