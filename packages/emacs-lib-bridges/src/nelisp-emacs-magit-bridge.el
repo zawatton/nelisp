@@ -4645,11 +4645,24 @@ Functions:
   (unless (boundp 'desktop-buffer-mode-handlers)
     (defvar desktop-buffer-mode-handlers nil))
   (unless (boundp 'vc-git-log-view-mode-map)
-    (defvar vc-git-log-view-mode-map nil))
+    ;; Keymap variables must hold a real (empty) keymap, not nil: vendor
+    ;; code derives child maps from them / passes them to keymap builtins,
+    ;; and nil dies as `emacs-keymap-not-keymap' (measured on part 15 with
+    ;; a nil `minibuffer-local-completion-map' placeholder, 2026-08-14).
+    (defvar vc-git-log-view-mode-map (make-sparse-keymap)))
+  (unless (boundp 'minibuffer-local-completion-map)
+    (defvar minibuffer-local-completion-map (make-sparse-keymap)))
   (unless (boundp 'mode-line-misc-info)
     (defvar mode-line-misc-info nil))
   (unless (boundp 'idle-update-delay)
     (defvar idle-update-delay 0.5))
+  (unless (boundp 'completion-styles)
+    ;; Real Emacs defaults to (basic partial-completion emacs22); `basic'
+    ;; alone is the conservative subset whose style functions the
+    ;; substrate is known to carry.
+    (defvar completion-styles (list 'basic)))
+  (unless (boundp 'completion-category-defaults)
+    (defvar completion-category-defaults nil))
   (unless (fboundp 'file-chase-links)
     (defun file-chase-links (filename &optional limit)
       "Chase links in FILENAME until a name that is not a link.
@@ -4686,7 +4699,31 @@ Ignore the exit status of PROGRAM (unlike `process-lines')."
     (defun coding-system-get (_coding-system _prop)
       "Return nil: the substrate has no coding-system attribute table.
 See `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'."
-      nil)))
+      nil))
+  ;; menu-bar.el is never loaded either; log-edit's tool-bar defvar (part 15
+  ;; line 582 in the bundle) reads `menu-bar-edit-menu' at load time via
+  ;; (lookup-key menu-bar-edit-menu [cut]) -- an empty keymap makes that a
+  ;; benign nil, and `menu-bar-separator' is its string form ("--").
+  (unless (boundp 'menu-bar-edit-menu)
+    (defvar menu-bar-edit-menu (make-sparse-keymap)))
+  (unless (boundp 'menu-bar-separator)
+    (defvar menu-bar-separator "--"))
+  ;; text-mode.el is not bundled; message.el's `message-tab' consults
+  ;; `text-mode-map' at RUN time (never at load), so an empty keymap keeps
+  ;; the fallback chain ((lookup-key text-mode-map "\t") -> global-map)
+  ;; working instead of dying on nil.
+  (unless (boundp 'text-mode-map)
+    (defvar text-mode-map (make-sparse-keymap)))
+  ;; `tool-bar-local-item-from-menu' (vendor tool-bar.el, loaded by PRECOND
+  ;; 51 which runs before this) resolves menu entries through global-map's
+  ;; [menu-bar] subtree -- which this substrate does not populate, so the
+  ;; lookup chain hands nil to a keymap builtin and dies as
+  ;; `emacs-keymap-not-keymap' (measured: part 15 log-edit-tool-bar-map,
+  ;; bisected 2026-08-14).  Tool bars are inert decoration on this batch
+  ;; substrate (same rationale as the PRECOND 36 ansi-color stub), so make
+  ;; only the from-menu variant a no-op; `tool-bar-local-item' (help-mode's
+  ;; need, the reason PRECOND 51 loads the real file) stays real.
+  (fset 'tool-bar-local-item-from-menu (lambda (&rest _ignored) nil)))
 
 (defun nelisp-emacs-magit-bridge--precond-trace (text)
   "Write TEXT as a precondition progress marker."
