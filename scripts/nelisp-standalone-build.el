@@ -8801,8 +8801,35 @@ applyfn.")
     ;; the global, not 9.  Route through `nelisp_env_lookup_value' (frame stack
     ;; first, then mirror) with the same env layout the eval machinery uses:
     ;; mirror @ env+0, frame-stack @ env+32.  rc is the void-variable sentinel.
+    ;; Unbound miss: stash `(void-variable NAME)' exactly like the direct
+    ;; symbol-reference arm (nl_stash_void_variable, eval-inner unit) so the
+    ;; abort is a CATCHABLE signal.  Without this, `symbol-value' on an
+    ;; unbound name propagated a bare rc=1: condition-case never matched,
+    ;; and on the cold route (no bare-abort printer) the whole boot form
+    ;; died as a clean exit(0) -- the magit bundle part-4 silent stop
+    ;; (info.el's top-level `add-to-list' on the never-loaded desktop.el
+    ;; var walked through the add-to-list polyfill's `symbol-value').
+    (defun bf_sv_stash_void_variable (name_ptr)
+      (let* ((tag_buf (alloc-bytes 16 1))
+             (clone_slot (alloc-bytes 32 8))
+             (nil_slot (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 tag_buf 0 8241998730394955638)  ; "void-var"
+         (ptr-write-u64 (+ tag_buf 8) 0 435610083689)   ; "iable"
+         (nl_alloc_symbol tag_buf 13 268435480)
+         (nl_alloc_symbol (ptr-read-u64 name_ptr 16)
+                          (ptr-read-u64 name_ptr 24) clone_slot)
+         (wf_write_nil nil_slot)
+         (nelisp_cons_construct clone_slot nil_slot 268435512)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         1)))
     (defun bf_symbol_value (args env out)
-      (nelisp_env_lookup_value (+ env 0) (+ env 32) (wf_arg_ptr args 0) out))
+      (let* ((rc (nelisp_env_lookup_value (+ env 0) (+ env 32)
+                                          (wf_arg_ptr args 0) out)))
+        (if (= rc 0)
+            0
+          (bf_sv_stash_void_variable (wf_arg_ptr args 0)))))
     ;; `makunbound' follows the same alias graph as lookup/set/bind.  A current
     ;; lexical/dynamic binding is cleared in its frame cell; otherwise clear
     ;; the resolved global mirror slot.  env+64 is the canonical unbound
