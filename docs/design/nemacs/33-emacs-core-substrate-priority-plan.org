@@ -13990,3 +13990,44 @@ path:
    ceiling; (c) the deferred plan A (precise closure-env marking) done
    properly, closing the retention edge without ever needing to retain
    growth-chunk garbage at all.
+
+* 9. Open substrate defects from the 2026-08-14 magit bundle peel
+
+Two loud, minimally-reproduced defect classes remain after the peel that
+took the magit cold bundle from part 4 (silent stop since 2026-08-05) to
+parts 4-15 all loading.  Both reproduce on the p10 baked state (parts
+1-14 loaded) with no magit involvement in the repro itself.
+
+** D1. pcase treats unregistered extension patterns as match-all
+
+- Repro (all wrong, measured 2026-08-14):
+  : (pcase 5   ((cl-type keyword) 'KW) (_ 'OTHER))  ;=> KW   (expected OTHER)
+  : (pcase "x" ((cl-type keyword) 'KW) (_ 'OTHER))  ;=> KW   (expected OTHER)
+  : (pcase 5   ((totally-unknown-pat x) 'HIT) (_ 'OTHER)) ;=> HIT
+  :                                    ;(real Emacs: error "Unknown ... pattern")
+  : (get 'cl-type 'pcase-macroexpander)             ;=> nil  (unregistered)
+- =cl-typep= itself is CORRECT (=(cl-typep nil 'keyword)= => nil); only the
+  pcase pattern layer is broken, in two stacked ways: (a) =cl-type='s
+  =pcase-macroexpander= is never registered, and (b) the pcase engine
+  degrades an unknown pattern head to match-all instead of signaling.
+  (b) is the dangerous half -- the same silent-wrong-answer shape as the
+  no-op stub class -- and hides every instance of (a).
+- Field impact: bundle part 16 (magit-diff) dies at load with transient's
+  "Need command, argument, `:info', `:info*' or `:cons'; got `nil'" --
+  transient's suffix parser has (cl-type keyword) as its FIRST branch, so
+  every spec element falls into it.
+- Fix direction: make unknown pcase pattern heads signal (loud-first),
+  then register the cl-lib pattern macros (bridge precondition or vendor
+  cl-macs load).
+
+** D2. defvar-keymap silently drops its bindings
+
+- Repro (p14 state, 2026-08-14):
+  : (defvar-keymap m :doc "t" "M-p" 'ignore)  ; m => (keymap)  -- EMPTY
+  : (define-keymap "M-p" 'ignore)             ;=> (keymap (134217888 . ignore))
+- =define-keymap= is correct; the =defvar-keymap= macro loses the
+  binding pairs somewhere around its keyword-argument prefix handling.
+  =keymapp= still holds, so every vendor mode map defined this way
+  (log-edit-mode-map, git-commit-mode-map, ...) loads fine and is dead
+  at runtime -- keybindings will silently not exist.  Load-gates cannot
+  catch this class; it needs a binding-presence check.
