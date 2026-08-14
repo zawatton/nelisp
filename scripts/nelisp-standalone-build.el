@@ -5455,6 +5455,11 @@ unresolved at link time."
                        (bf_arena_inplace_restore_mc tbl tlen ib total)
                      (bf_arena_restore_saved tbl total tlen))
                    (nl_os_close_handle fd)
+                   ;; Clear the visited marks the roots walk set (see the
+                   ;; success arm below for why skipping this frees live data).
+                   (ptr-write-u64 cin 0 0)
+                   (ptr-write-u64 cout 0 0)
+                   (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cin cout)
                    (nl_os_free_chunk tblbase tblcap)
                    (nl_lm_release)
                    (wf_write_int out -3))
@@ -5475,6 +5480,24 @@ unresolved at link time."
                  (if (= (ptr-read-u64 (data-addr nl_lm_base) 0) 0)
                      (bf_arena_inplace_restore_mc tbl tlen ib total)
                    (bf_arena_restore_saved tbl total tlen))
+                 ;; Clear the visited marks `nl_fa_roots' set: the flat-arena
+                 ;; walkers reuse the GC mark bits as their visited set (see
+                 ;; `nl_gc_mark_block'), and `bf_arena_swizzle_verify' clears
+                 ;; them after every pass -- but this dump returned with every
+                 ;; live block still marked.  The NEXT collection's mark phase
+                 ;; then early-exits on the stale marks without ever reaching
+                 ;; blocks allocated AFTER the dump, and the sweep frees that
+                 ;; still-live data: a `defvar' cell allocated post-dump
+                 ;; vanished (void-variable) on a small heap, and a recycled
+                 ;; frame vector SIGSEGV'd the lookup walk on a large one
+                 ;; (post-dump-continuation crash, measured 2026-08-14).  The
+                 ;; production bake path exits right after dumping, which is
+                 ;; why this never surfaced there.  Reuse cin/cout as the
+                 ;; reach/total scratch counters -- the table mmap is still
+                 ;; alive here.
+                 (ptr-write-u64 cin 0 0)
+                 (ptr-write-u64 cout 0 0)
+                 (bf_arena_mr_chunks (ptr-read-u64 268436160 0) cin cout)
                  (nl_os_free_chunk tblbase tblcap)
                  (nl_lm_release)
                  ;; -2 = short write: distinguishable from -1 (open failed) and
