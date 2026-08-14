@@ -9024,7 +9024,20 @@ applyfn.")
                    (if (= rc 0) 0
                      (seq
                       (bf_report_failing_source cursor result)
-                      (nl_eval_source_print_error)))
+                      ;; Cold-route flagless-abort parity: `nl_eval_source_print_error'
+                      ;; is a no-op whenever the M6 flag word (268435472) reads 0 -- the
+                      ;; documented "flagless abort" class (an internal builtin returns a
+                      ;; nonzero rc without stashing a signal).  Before this guard, a bare
+                      ;; abort inside a nested `(load FILE)' printed NOTHING at all: the
+                      ;; loop still "deliberately continues" (see above), so the only
+                      ;; observable symptom was downstream (e.g. a later void-function),
+                      ;; exactly the silent-stop class `nl_eval_source_print_bare_abort'
+                      ;; (nl_eval_source_all's mode-3 replay dispatch) exists to defeat.
+                      ;; Mirror that same guard here so every route prints, even the ones
+                      ;; that deliberately keep going afterward.
+                      (if (= (ptr-read-u64 268435472 0) 0)
+                          (nl_eval_source_print_bare_abort rc)
+                        (nl_eval_source_print_error))))
                    ;; GC trigger must compare TOTAL allocated bytes across all
                    ;; chunks (268436184 = chunk-bytes-reserved running counter),
                    ;; not the chunk-0 bump offset (268435456) — after Doc 140's
@@ -9075,7 +9088,14 @@ applyfn.")
                      ;; `m5_prin1' cannot walk crashes the process, and the
                      ;; failing form is the part worth keeping.
                      (bf_report_failing_source cursor result)
-                     (nl_eval_source_print_error)
+                     ;; Same flagless-abort guard as `bf_load_eval_loop' above:
+                     ;; `nl_eval_source_print_error' prints nothing when the M6 flag
+                     ;; word reads 0, so a bare abort here (this is the loop
+                     ;; artifact/module replay actually goes through, per the comment
+                     ;; above) was just as silent as the nested `(load FILE)' case.
+                     (if (= (ptr-read-u64 268435472 0) 0)
+                         (nl_eval_source_print_bare_abort rc)
+                       (nl_eval_source_print_error))
                      (setq more 2)))))
              (setq more 0)))))
       more)
