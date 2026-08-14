@@ -189,6 +189,25 @@ graph the buffer already holds."
     (when (and line (fboundp 'nelisp--write-stdout-bytes))
       (condition-case nil
           (nelisp--write-stdout-bytes line)
+        (error nil)))
+    ;; Symbol invariant sweep at every part boundary (2026-08-13).
+    ;;
+    ;; The read-side guard only reports a corrupted symbol once something reads
+    ;; its name: across seven magit loads it fired once.  This asks the heap
+    ;; directly, so a corruption is caught whether or not anything looks at it.
+    ;; The seventh field is the cap/=len count and the sixth is how many symbols
+    ;; were examined -- a zero is only meaningful beside that second number.
+    ;;
+    ;; The sweep allocates nothing per symbol; it walks existing blocks.  That
+    ;; matters: a probe that allocated at these same boundaries already changed
+    ;; the failure it was watching from a named void-function into a silent
+    ;; abort, so anything added here has to stay out of the allocator.
+    (when (fboundp 'nelisp--arena-walk-verify)
+      (condition-case nil
+          (let ((wv (nelisp--arena-walk-verify)))
+            (nelisp--write-stdout-bytes
+             (format "SWEEP %s part=%s symbols=%s cap/=len=%s\n"
+                     phase n (nth 5 wv) (nth 6 wv))))
         (error nil)))))
 
 (defun nelisp-emacs-magit-bridge--repo-root ()
@@ -4594,6 +4613,81 @@ standalone runtime, so use it instead of a stub."
       (load (expand-file-name "vendor/emacs-lisp/tool-bar.el" root)
             nil 'no-message t t))))
 
+(defun nelisp-emacs-magit-bridge--ensure-vendor-preload-globals ()
+  "Ensure vendor-file load-time globals from never-loaded Emacs files exist.
+
+Bundle parts 4-11 execute vendor top-level forms that reference
+variables and functions whose *defining* Emacs file is not part of the
+bundle (desktop.el, vc-hooks.el, files.el, subr.el, mule.el).  Real
+Emacs preloads or autoloads those, so the vendor files never notice;
+on this substrate each one died as `void-variable'/`void-function'
+\(measured 2026-08-14 by an auto-collecting walk over parts 4-20 after
+the symbol-value flagless-abort core fix made these lookups signal
+instead of killing the process silently -- dev/nelisp 57ee800c).
+
+Variables (all reached from vendor top-level forms):
+- `desktop-buffer-mode-handlers' (desktop.el; info.el part-4 form #298
+  does `add-to-list' on it -- THE original part-4 silent stop)
+- `vc-git-log-view-mode-map' (part 5), `mode-line-misc-info' (part 5)
+- `idle-update-delay' (subr.el default 0.5; part 5)
+
+Functions:
+- `file-chase-links' (files.el): real symlink-chasing implementation,
+  bounded like the original (100-hop safety cap, optional LIMIT).
+- `process-lines-ignore-status' (subr.el): real implementation via
+  `call-process' -- NOT a stub; magit's vc/git probes call it for real
+  output and a nil stub would silently break them downstream.
+- `coding-system-get' (mule.el): the substrate has no coding-system
+  attribute table at all, so every property is honestly \"unknown\" =
+  nil.  This is a documented substrate gap, not a lazy stub: callers
+  in the vendor chain only use it for optional decoration (eol/BOM
+  display), and nil takes their fallback branch."
+  (unless (boundp 'desktop-buffer-mode-handlers)
+    (defvar desktop-buffer-mode-handlers nil))
+  (unless (boundp 'vc-git-log-view-mode-map)
+    (defvar vc-git-log-view-mode-map nil))
+  (unless (boundp 'mode-line-misc-info)
+    (defvar mode-line-misc-info nil))
+  (unless (boundp 'idle-update-delay)
+    (defvar idle-update-delay 0.5))
+  (unless (fboundp 'file-chase-links)
+    (defun file-chase-links (filename &optional limit)
+      "Chase links in FILENAME until a name that is not a link.
+Does not examine containing directories for links.  If LIMIT is a
+number, stop after that many link expansions."
+      (let ((tem filename) (count 100) (link nil) (done nil))
+        (while (not done)
+          (setq link (and (fboundp 'file-symlink-p) (file-symlink-p tem)))
+          (if (or (not link) (<= count 0) (and limit (<= limit 0)))
+              (setq done t)
+            (setq count (1- count))
+            (when limit (setq limit (1- limit)))
+            (setq tem (if (file-name-absolute-p link)
+                          link
+                        (expand-file-name
+                         link (file-name-directory tem))))))
+        tem)))
+  (unless (fboundp 'process-lines-ignore-status)
+    (defun process-lines-ignore-status (program &rest args)
+      "Execute PROGRAM with ARGS, returning its output as a list of lines.
+Ignore the exit status of PROGRAM (unlike `process-lines')."
+      (with-temp-buffer
+        (apply #'call-process program nil (current-buffer) nil args)
+        (goto-char (point-min))
+        (let ((lines nil))
+          (while (not (eobp))
+            (setq lines (cons (buffer-substring-no-properties
+                               (line-beginning-position)
+                               (line-end-position))
+                              lines))
+            (forward-line 1))
+          (nreverse lines)))))
+  (unless (fboundp 'coding-system-get)
+    (defun coding-system-get (_coding-system _prop)
+      "Return nil: the substrate has no coding-system attribute table.
+See `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'."
+      nil)))
+
 (defun nelisp-emacs-magit-bridge--precond-trace (text)
   "Write TEXT as a precondition progress marker."
   (if (fboundp 'nelisp--write-stdout-bytes)
@@ -4711,6 +4805,8 @@ standalone runtime, so use it instead of a stub."
   (nelisp-emacs-magit-bridge--ensure-magit-setup-buffer-macro)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 54 save-some-buffers\n")
   (nelisp-emacs-magit-bridge--ensure-save-some-buffers)
+  (nelisp-emacs-magit-bridge--precond-trace "PRECOND 55 vendor-preload-globals\n")
+  (nelisp-emacs-magit-bridge--ensure-vendor-preload-globals)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND-ALL-OK\n"))
 
 (defun nelisp-emacs-magit-bridge-load ()
