@@ -3720,6 +3720,20 @@ bindings provide.  &rest is honoured."
 (defvar nelisp-pcase--outer-bindings nil
   "Bindings hoisted out of `pcase' clauses during macro expansion.")
 
+;; Backquote-family head symbols come in TWO spellings depending on who
+;; read the source: the NeLisp reader's own macro produces
+;; `backquote'/`comma'/`comma-at', while sources printed by host Emacs
+;; and re-read here carry the raw punctuation symbols.  The punctuation
+;; symbols are built with `intern' because writing their literal
+;; backslash-escape syntax in THIS file would trip the very reader gap
+;; (old `\\,'-style escapes) that keeps vendored pcase.el unloadable.
+;; Before the unknown-pattern signal existed, the punctuation spelling
+;; fell into the permissive catch-all and silently matched EVERYTHING
+;; (surfaced by the loud error on magit bundle part 16's `(t ,_)').
+(defconst nelisp-pcase--backquote-heads (list 'backquote (intern "`")))
+(defconst nelisp-pcase--comma-heads (list 'comma (intern ",")))
+(defconst nelisp-pcase--comma-at-heads (list 'comma-at (intern ",@")))
+
 (defun nelisp-pcase--wildcard-p (pattern)
   "Return non-nil when PATTERN is a wildcard with no binding."
   (or (eq pattern '_) (eq pattern 'pcase--dontcare)))
@@ -3776,10 +3790,64 @@ bindings provide.  &rest is honoured."
         (nelisp-pcase--or rest value-form))
        ((eq head 'cons)
         (nelisp-pcase--cons rest value-form))
-       ((eq head 'backquote)
+       ((memq head nelisp-pcase--backquote-heads)
         (nelisp-pcase--backquote (car rest) value-form))
-       (t (cons t nil)))))
+       ;; (app FUN PAT) -- match PAT against (FUN value).  FUN is a
+       ;; function symbol/lambda (value becomes its sole argument) or a
+       ;; call form (F ARG...) where a literal `_' marks value's
+       ;; position (else value is appended last, mirroring real pcase).
+       ;; Mirrors the bridge polyfill's support (nelisp-emacs-lib Doc 33
+       ;; item 243: EIEIO's `pcase-defmacro eieio' expands through
+       ;; `app'; without it the pattern fell into the old permissive
+       ;; catch-all, which binds nothing).
+       ((eq head 'app)
+        (let* ((fun (car rest))
+               (sub-pat (car (cdr rest)))
+               (call-form
+                (cond
+                 ((and (consp fun)
+                       (not (memq (car fun) (list 'lambda 'function 'closure))))
+                  (if (memq '_ fun)
+                      (mapcar (lambda (x) (if (eq x '_) value-form x)) fun)
+                    (append fun (list value-form))))
+                 (t (list 'funcall (list 'function fun) value-form)))))
+          (nelisp-pcase--test sub-pat call-form)))
+       ;; (cl-type TYPE) -- built into the engine rather than registered
+       ;; through the `pcase-macroexpander' property below, because this
+       ;; file is spliced into the stdlib prelude and loads BEFORE
+       ;; `get'/`put' exist (a load-time registration form died with
+       ;; void-function: get).  Real Emacs registers it in cl-macs.el;
+       ;; `cl-typep' itself is correct on this substrate.
+       ((eq head 'cl-type)
+        (nelisp-pcase--test
+         (list 'pred (list 'lambda (list 'v)
+                           (list 'cl-typep 'v
+                                 (list 'quote (car rest)))))
+         value-form))
+       ;; (CUSTOM ...) registered via a `pcase-macroexpander' symbol
+       ;; property (real pcase's `pcase-defmacro' mechanism; the bridge
+       ;; polyfill's `pcase-defmacro' also registers through this
+       ;; property).  Safe to consult here even though the prelude loads
+       ;; before `get' exists: this branch runs at pcase macro-expansion
+       ;; time, long after the full runtime is up.
+       ((and (symbolp head) (fboundp 'get) (get head 'pcase-macroexpander))
+        (nelisp-pcase--test (apply (get head 'pcase-macroexpander) rest)
+                            value-form))
+       ;; Unknown pattern head: SIGNAL, exactly like real pcase.  The
+       ;; old permissive catch-all (match everything, bind nothing) was
+       ;; the silent-wrong-answer shape: it hid the missing `app'
+       ;; support and the unregistered `cl-type' expander -- every
+       ;; value fell into transient's FIRST `(cl-type keyword)' branch,
+       ;; killing the magit bundle part 16 with "Need command ... got
+       ;; `nil'" (nelisp-emacs-lib Doc 33 SS9 D1, 2026-08-15).  A
+       ;; missing pattern must name itself here, not corrupt match
+       ;; results downstream.
+       (t (error "Unknown pcase pattern `%S'" pattern)))))
    (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
+
+;; `cl-type' support lives INSIDE `nelisp-pcase--test' (see the cl-type
+;; branch there): a load-time `put' registration is impossible here
+;; because the prelude splices this file in before `get'/`put' exist.
 
 (defun nelisp-pcase--and (patterns value-form)
   "Build (TEST . BINDINGS) for an `and' pattern."
@@ -3854,13 +3922,13 @@ the outer `pcase' let via `nelisp-pcase--outer-bindings'."
 (defun nelisp-pcase--backquote (pat value-form)
   "Build (TEST . BINDINGS) for a backquote pattern."
   (cond
-   ((and (consp pat) (eq (car pat) 'comma))
+   ((and (consp pat) (memq (car pat) nelisp-pcase--comma-heads))
     (let ((sym (car (cdr pat))))
       (cond
        ((nelisp-pcase--wildcard-p sym) (cons t nil))
        ((symbolp sym) (cons t (list (list sym value-form))))
        (t (nelisp-pcase--test sym value-form)))))
-   ((and (consp pat) (eq (car pat) 'comma-at))
+   ((and (consp pat) (memq (car pat) nelisp-pcase--comma-at-heads))
     (let ((sym (car (cdr pat))))
       (cons t (list (list sym value-form)))))
    ((consp pat)

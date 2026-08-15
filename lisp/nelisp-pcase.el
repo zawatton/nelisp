@@ -120,11 +120,25 @@
                     (append fun (list value-form))))
                  (t (list 'funcall (list 'function fun) value-form)))))
           (nelisp-pcase--test sub-pat call-form)))
+       ;; (cl-type TYPE) -- built into the engine rather than registered
+       ;; through the `pcase-macroexpander' property below, because this
+       ;; file is spliced into the stdlib prelude and loads BEFORE
+       ;; `get'/`put' exist (a load-time registration form died with
+       ;; void-function: get).  Real Emacs registers it in cl-macs.el;
+       ;; `cl-typep' itself is correct on this substrate.
+       ((eq head 'cl-type)
+        (nelisp-pcase--test
+         (list 'pred (list 'lambda (list 'v)
+                           (list 'cl-typep 'v
+                                 (list 'quote (car rest)))))
+         value-form))
        ;; (CUSTOM ...) registered via a `pcase-macroexpander' symbol
        ;; property (real pcase's `pcase-defmacro' mechanism; the bridge
        ;; polyfill's `pcase-defmacro' also registers through this
-       ;; property).  Expand and recurse.
-       ((and (symbolp head) (get head 'pcase-macroexpander))
+       ;; property).  Safe to consult here even though the prelude loads
+       ;; before `get' exists: this branch runs at pcase macro-expansion
+       ;; time, long after the full runtime is up.
+       ((and (symbolp head) (fboundp 'get) (get head 'pcase-macroexpander))
         (nelisp-pcase--test (apply (get head 'pcase-macroexpander) rest)
                             value-form))
        ;; Unknown pattern head: SIGNAL, exactly like real pcase.  The
@@ -139,17 +153,9 @@
        (t (error "Unknown pcase pattern `%S'" pattern)))))
    (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
 
-;; `cl-type' pattern (real Emacs registers it in cl-macs.el, which the
-;; standalone substrate does not load).  `cl-typep' itself is correct
-;; here, so registration is all that was missing.  Built with explicit
-;; `list' calls like the rest of this file (no backquote).
-(unless (get 'cl-type 'pcase-macroexpander)
-  (defun nelisp-pcase--cl-type-expander (type)
-    "Expand (cl-type TYPE) to a `cl-typep' pred (Doc 33 SS9 D1)."
-    (list 'pred
-          (list 'lambda (list 'v)
-                (list 'cl-typep 'v (list 'quote type)))))
-  (put 'cl-type 'pcase-macroexpander 'nelisp-pcase--cl-type-expander))
+;; `cl-type' support lives INSIDE `nelisp-pcase--test' (see the cl-type
+;; branch there): a load-time `put' registration is impossible here
+;; because the prelude splices this file in before `get'/`put' exist.
 
 (defun nelisp-pcase--and (patterns value-form)
   "Build (TEST . BINDINGS) for an `and' pattern."
