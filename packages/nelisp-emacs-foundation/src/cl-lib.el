@@ -28,6 +28,57 @@
 
 ;;; Code:
 
+;;;; --- defer to a genuine cl-lib when the host has one ---------------
+
+;; The commentary above assumed host Emacs always has `cl-lib' preloaded,
+;; so `(require 'cl-lib)' would be a no-op and this shim would only ever
+;; run under nelisp.  That is false for `emacs -Q --batch', which starts
+;; with `cl-lib' unloaded: `require' then finds THIS file, the genuine
+;; library never loads, and the deliberately minimal `cl-loop' in
+;; `emacs-cl-macros.el' wins.  That one returns nil for every pattern it
+;; does not recognise, so a complete implementation gets replaced by a
+;; partial one with no warning at all.
+;;
+;; So when a genuine CL implementation exists OUTSIDE this repository,
+;; load it and let it win.  Searching only outside the repo is what keeps
+;; nelisp on the shim: the vendored copy this file exists to avoid lives
+;; under the repo and stays invisible here.  `cl-macs' is the probe
+;; because only a real Emacs lisp tree carries it -- a sibling scaffolded
+;; package would offer another copy of this shim instead.  Loading
+;; `cl-macs'/`cl-extra'/`cl-seq' eagerly matters too: left as autoloads
+;; they read as "not defined" to the shims' own guards, which would
+;; clobber them anyway.  Every definition below is `fboundp'-gated, so
+;; they all turn into no-ops once the genuine library is in.
+
+(defvar nelisp-emacs-cl-lib-force-shim
+  (and (getenv "NELISP_EMACS_CL_LIB_FORCE_SHIM") t)
+  "Non-nil to keep this shim even when a genuine `cl-lib' is available.
+Set this for tests that mean to exercise the shim on a host that has
+the real library, such as the package load-path smoke.")
+
+(defvar nelisp-emacs-cl-lib-genuine nil
+  "Path of the genuine `cl-lib' this shim deferred to, or nil under nelisp.")
+
+(let* ((this (or load-file-name buffer-file-name))
+       (dir (and this (file-name-directory this)))
+       (root (and dir (file-name-as-directory
+                       (file-truename
+                        (directory-file-name
+                         (file-name-directory
+                          (directory-file-name dir)))))))
+       (outside nil))
+  (when (and root (not nelisp-emacs-cl-lib-force-shim))
+    (dolist (entry load-path)
+      (when (and (stringp entry) (file-directory-p entry))
+        (unless (string-prefix-p
+                 root (file-truename (file-name-as-directory entry)) t)
+          (setq outside (cons entry outside)))))
+    (let ((load-path (nreverse outside)))
+      (when (locate-library "cl-macs")
+        (setq nelisp-emacs-cl-lib-genuine (locate-library "cl-lib"))
+        (dolist (feature '(cl-lib cl-macs cl-extra cl-seq))
+          (require feature nil t))))))
+
 (defun cl-lib--define-p (symbol)
   "Return non-nil when SYMBOL should be supplied by this shim."
   (or (not (fboundp symbol))
