@@ -250,9 +250,12 @@ pass on one platform and fail on the other."
           (progn
             (setq new-file (expand-file-name "gamma.txt" (plist-get tree :root)))
             (dired (plist-get tree :root))
-            (should-not (member (emacs-dired-min-test--entry-line
-                                 "  " "gamma.txt" new-file)
-                                (emacs-dired-min-test--buffer-lines)))
+            ;; The file does not exist yet, so there are no attributes to
+            ;; build an expected line from -- and the property under test
+            ;; is just that nothing names it before the rescan.
+            (should-not (cl-find-if
+                         (lambda (line) (string-match "gamma\\.txt" line))
+                         (emacs-dired-min-test--buffer-lines)))
             (emacs-dired-min-test--write-file new-file "gamma!")
             (emacs-dired-min-revert-buffer)
             (should (member (emacs-dired-min-test--entry-line

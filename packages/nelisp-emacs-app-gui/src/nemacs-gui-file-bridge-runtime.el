@@ -347,11 +347,19 @@
 (setq files--access-write 2)
 (setq files--access-read 4)
 (setq files--access-path "")
+;; The switch below is "-c", which only a POSIX shell understands, so
+;; the two have to be decided together.  Executability is not enough of
+;; a test: on Windows the ambient `shell-file-name' is cmdproxy.exe,
+;; which is executable, takes /c rather than -c, and fails every command
+;; line with status 255.  Keep the host's shell only when "-c" fits it.
 ;; This file does not require `emacs-process', so the resolver may be
 ;; absent; fall back rather than signalling void-function.
 (unless (and (boundp 'shell-file-name)
              (stringp shell-file-name)
-             (file-executable-p shell-file-name))
+             (file-executable-p shell-file-name)
+             (string-match
+              "\\`\\(sh\\|bash\\|dash\\|zsh\\|ksh\\|ash\\)\\(\\.exe\\)?\\'"
+              (file-name-nondirectory shell-file-name)))
   (setq shell-file-name
         (if (fboundp 'emacs-process-resolve-shell-file-name)
             (emacs-process-resolve-shell-file-name)
