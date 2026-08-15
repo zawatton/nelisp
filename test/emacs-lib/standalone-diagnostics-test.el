@@ -29,6 +29,37 @@
        (file-name-directory (or load-file-name buffer-file-name)))
       nil t)
 
+(defun standalone-diagnostics-test--symbolic-link-capable-p ()
+  "Return non-nil when symbolic links can be created in a temp directory."
+  (let* ((real-dir (make-temp-file "standalone-diagnostics-real-" t))
+         (link-dir (make-temp-file "standalone-diagnostics-link-")))
+    (delete-file link-dir)
+    (unwind-protect
+        (condition-case nil
+            (progn
+              (make-symbolic-link real-dir link-dir)
+              t)
+          (file-error nil))
+      (when (file-exists-p link-dir)
+        (delete-file link-dir))
+      (when (file-directory-p real-dir)
+        (delete-directory real-dir t)))))
+
+(defun standalone-diagnostics-test--direct-script-exec-capable-p ()
+  "Return non-nil when a generated shell script is directly executable."
+  (let ((reader (make-temp-file "standalone-diagnostics-reader-" nil ".sh")))
+    (unwind-protect
+        (condition-case nil
+            (progn
+              (with-temp-file reader
+                (insert "#!/bin/sh\nexit 0\n"))
+              (set-file-modes reader #o755)
+              (call-process reader nil nil nil)
+              t)
+          (file-error nil))
+      (when (file-exists-p reader)
+        (delete-file reader)))))
+
 (ert-deftest standalone-diagnostics-test/profile-splits-bootstrap-sections ()
   (let ((sections
          (standalone-bootstrap-profile--sections
@@ -512,6 +543,7 @@
         (delete-directory root t)))))
 
 (ert-deftest standalone-diagnostics-test/vendor-load-debug-program-is-kept ()
+  (skip-unless (standalone-diagnostics-test--direct-script-exec-capable-p))
   (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
         (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
         (source (make-temp-file "vendor-load-source-" nil ".el"))
@@ -558,6 +590,7 @@
                    '("/repo/a.el" "/repo/b.el")))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-canonicalize-symlinks ()
+  (skip-unless (standalone-diagnostics-test--symbolic-link-capable-p))
   (let* ((real-dir (make-temp-file "vendor-repl-real-" t))
          (link-dir (make-temp-file "vendor-repl-link-"))
          (real-file (expand-file-name "a.el" real-dir))
@@ -840,6 +873,7 @@
         (delete-directory root t)))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-input-canonicalizes-repo-root ()
+  (skip-unless (standalone-diagnostics-test--symbolic-link-capable-p))
   (let* ((real-root (make-temp-file "vendor-repl-root-real-" t))
          (link-root (make-temp-file "vendor-repl-root-link-"))
          (bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))

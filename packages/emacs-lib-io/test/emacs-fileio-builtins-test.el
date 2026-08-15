@@ -132,7 +132,13 @@
     (with-temp-buffer
       (insert-file-contents file)
       (goto-char (point-min))
-      (should (search-forward "(nelisp-ec--split-string-char seed ?/ t)" nil t))
+      ;; The property being guarded is that `expand-file-name' splits with
+      ;; the local splitter rather than the host `split-string'.  Match the
+      ;; call, not its argument: pinning the argument text broke this the
+      ;; first time the surrounding code was refactored, which said nothing
+      ;; about the property itself.
+      (should (search-forward "(defun nelisp-ec-expand-file-name" nil t))
+      (should (search-forward "(nelisp-ec--split-string-char" nil t))
       (goto-char (point-min))
       (should-not (search-forward "(split-string seed" nil t)))))
 

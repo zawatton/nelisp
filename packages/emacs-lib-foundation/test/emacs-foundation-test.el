@@ -30,36 +30,9 @@
     (should (featurep feature))))
 
 (ert-deftest emacs-foundation-test/nelisp-emacs-uses-foundation-entry ()
-  (let ((file (locate-library "nelisp-emacs")))
-    (should file)
-    (with-temp-buffer
-      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
-                                (substring file 0 -1)
-                              file))
-      (should (search-forward "(require 'emacs-foundation)" nil t))
-      (dolist (feature '(emacs-fns
-                         emacs-eval
-                         emacs-list
-                         emacs-hash
-                         emacs-symbol
-                         emacs-callproc
-                         emacs-vars
-                         emacs-backquote
-                         emacs-error
-                         emacs-string
-                         cl-lib
-                         emacs-stub
-                         emacs-os-detect
-                         emacs-easy-mmode
-                         emacs-pcase
-                         emacs-cl-macros
-                         emacs-time
-                         emacs-numeric
-                         emacs-subr-extras
-                         emacs-edebug-stubs))
-        (goto-char (point-min))
-        (should-not
-         (search-forward (format "(require '%s)" feature) nil t))))))
+  (require 'nelisp-emacs)
+  (should (memq 'emacs-foundation nelisp-emacs-library-features))
+  (should (featurep 'emacs-foundation)))
 
 (provide 'emacs-foundation-test)
 

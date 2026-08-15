@@ -3,6 +3,17 @@
 ;;; Code:
 
 (require 'ert)
+
+(defconst nelisp-emacs-consumer-smoke-test--preload-clean-p
+  (not (or (featurep 'emacs-init)
+           (featurep 'image-baker)
+           (featurep 'nemacs-main)
+           (featurep 'nemacs-gtk-frontend)
+           (featurep 'nemacs-editor-transport)
+           (featurep 'nemacs-gtk-view-menu)
+           (featurep 'nemacs-gui-file-bridge-runtime)))
+  "Non-nil when facade smoke tests started in a fresh process.")
+
 (require 'nelisp-emacs)
 
 (defconst nelisp-emacs-consumer-smoke-test--expected-package-names
@@ -1060,6 +1071,7 @@
     (featurep feature)))
 
 (ert-deftest nelisp-emacs-consumer-smoke-test/require-facade-from-src-only ()
+  (skip-unless nelisp-emacs-consumer-smoke-test--preload-clean-p)
   (should (= nelisp-emacs-library-contract-version 1))
   (should (featurep 'nelisp-emacs))
   (should (equal (nelisp-emacs-library-package-names)
@@ -1158,6 +1170,7 @@
       (should (memq (plist-get entry :kind) '(function variable))))))
 
 (ert-deftest nelisp-emacs-consumer-smoke-test/facade-does-not-load-app-or-frontends ()
+  (skip-unless nelisp-emacs-consumer-smoke-test--preload-clean-p)
   (dolist (feature nelisp-emacs-consumer-smoke-test--forbidden-features)
     (should-not (featurep feature)))
   (dolist (file nelisp-emacs-consumer-smoke-test--forbidden-files)
