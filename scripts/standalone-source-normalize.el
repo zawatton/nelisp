@@ -13,8 +13,10 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 122
-  "Cache format version for normalized standalone source forms.")
+(defconst standalone-source-normalize-cache-version 123
+  "Cache format version for normalized standalone source forms.
+123 adds a content digest to the cached file state, so entries written
+by 122 are discarded rather than trusted.")
 
 (defvar standalone-source-normalize-large-defun-character-limit 3500
   "Maximum printed top-level defun size retained during standalone replay.
@@ -1521,7 +1523,18 @@ Handles the normal defun body shape with an optional docstring and
   (let ((attrs (file-attributes file)))
     (list :truename (file-truename file)
           :mtime (nth 5 attrs)
-          :size (nth 7 attrs))))
+          :size (nth 7 attrs)
+          ;; Timestamp and size alone let an edit through: two writes in
+          ;; the same clock tick that happen to produce the same length
+          ;; -- `(defvar a 1)' becoming `(defvar b 2)' -- leave both
+          ;; unchanged, and the cache then serves the old forms with no
+          ;; sign anything is wrong.  A digest costs one read of a file
+          ;; the miss path was about to read anyway.
+          :digest (condition-case nil
+                      (with-temp-buffer
+                        (insert-file-contents-literally file)
+                        (secure-hash 'sha1 (current-buffer)))
+                    (error nil)))))
 
 (defun standalone-source-normalize--cache-file (file)
   "Return the normalized-source cache path for FILE, or nil."
