@@ -65,7 +65,8 @@
 ;;     → write raw bytes via simulator (no-conversion).
 ;;
 ;; Non-goals (deferred to later phases, per task spec):
-;;   * Windows / macOS specific path normalization (POSIX-only MVP).
+;;   * Full platform-specific pathname edge-case parity beyond the
+;;     drive-root / UNC / HOME handling below.
 ;;   * file-notify (= Phase 9d.A4 separate task = T82).
 ;;   * symlink resolution corner cases (`file-truename', etc).
 ;;   * VISIT side-effects on buffer-modified-p / buffer-name (Emacs's
@@ -169,16 +170,114 @@ Returns the integer backend result, or nil when no backend is wired."
 ;;; §1. Pure string-surgery APIs (no host syscall, deterministic)
 ;;; ──────────────────────────────────────────────────────────────────────
 
-;;;###autoload
-(defun nelisp-ec-file-name-absolute-p (name)
-  "Return non-nil if NAME starts with `/' (POSIX absolute path).
-Tilde-expansion (~user/) is treated as absolute as in Emacs.  This
-helper does NOT touch the filesystem."
-  (unless (stringp name)
-    (signal 'wrong-type-argument (list 'stringp name)))
+(defvar nelisp-ec-file-name-drive-letters
+  (memq system-type '(windows-nt ms-dos cygwin))
+  "When non-nil, treat drive-root and UNC names as absolute.
+This affects `nelisp-ec-file-name-absolute-p' and the corresponding
+Windows-aware branch inside `nelisp-ec-expand-file-name'.  Relative
+drive names such as `c:foo' stay relative.")
+
+(defun nelisp-ec--ascii-alpha-p (char)
+  "Return non-nil if CHAR is an ASCII alphabetic character."
+  (or (and (>= char ?A) (<= char ?Z))
+      (and (>= char ?a) (<= char ?z))))
+
+(defun nelisp-ec--replace-char (string from to)
+  "Return STRING with each FROM character replaced by TO."
+  (let ((i 0)
+        (len (length string))
+        (out string))
+    (while (< i len)
+      (when (eq (aref out i) from)
+        (aset out i to))
+      (setq i (1+ i)))
+    out))
+
+(defun nelisp-ec--windows-drive-root-p (name)
+  "Return non-nil if NAME starts with a Windows drive root."
+  (and (>= (length name) 3)
+       (nelisp-ec--ascii-alpha-p (aref name 0))
+       (eq (aref name 1) ?:)
+       (or (eq (aref name 2) ?/)
+           (eq (aref name 2) ?\\))))
+
+(defun nelisp-ec--unc-root-p (name)
+  "Return non-nil if NAME starts with a UNC root marker."
+  (and (>= (length name) 2)
+       (or (string-prefix-p "//" name)
+           (string-prefix-p "\\\\" name))))
+
+(defun nelisp-ec--path-absolute-p (name &optional allow-windows)
+  "Return non-nil if NAME is absolute under the selected rules."
   (and (> (length name) 0)
        (or (eq (aref name 0) ?/)
-           (eq (aref name 0) ?~))))
+           (eq (aref name 0) ?~)
+           (and allow-windows
+                (or (nelisp-ec--windows-drive-root-p name)
+                    (nelisp-ec--unc-root-p name))))))
+
+(defun nelisp-ec--normalize-home-path (home)
+  "Normalize HOME for path surgery after tilde expansion."
+  (let ((home (nelisp-ec--replace-char (copy-sequence home) ?\\ ?/)))
+    (if (nelisp-ec--windows-drive-root-p home)
+        (concat (downcase (substring home 0 1))
+                (substring home 1))
+      home)))
+
+(defun nelisp-ec--expand-leading-tilde (name)
+  "Expand leading `~' in NAME and report whether HOME was used.
+Returns a cons cell (PATH . FROM-HOME-P).  `~user' is left unchanged."
+  (if (and (> (length name) 0) (eq (aref name 0) ?~))
+      (let ((home (nelisp-ec--normalize-home-path
+                   (or (getenv "HOME") "/"))))
+        (cond
+         ((or (= (length name) 1) (eq (aref name 1) ?/))
+          (cons (concat home (substring name 1)) t))
+         (t (cons name nil))))
+    (cons name nil)))
+
+(defun nelisp-ec--split-path-prefix (name &optional allow-windows)
+  "Split NAME into (PREFIX . REST) before segment collapsing."
+  (cond
+   ((and allow-windows (nelisp-ec--windows-drive-root-p name))
+    (cons (substring name 0 2)
+          (substring name 3)))
+   ((string-prefix-p "//" name)
+    (cons "//" (substring name 2)))
+   ((and allow-windows (string-prefix-p "\\\\" name))
+    (cons "//"
+          (substring (nelisp-ec--replace-char (copy-sequence name) ?\\ ?/) 2)))
+   ((and (> (length name) 0) (eq (aref name 0) ?/))
+    (cons "/" (substring name 1)))
+   (t
+    (cons "" name))))
+
+(defun nelisp-ec--join-path-prefix (prefix joined)
+  "Join PREFIX and JOINED after segment collapsing.
+A root prefix (`/' or `//') already carries its separator, so adding
+another turns an ordinary POSIX path into a UNC one.  A drive prefix
+(`c:') carries none and needs one inserted."
+  (let ((sep (if (and (> (length prefix) 0)
+                      (eq (aref prefix (1- (length prefix))) ?/))
+                 ""
+               "/")))
+    (cond
+     ((= (length prefix) 0) joined)
+     ((= (length joined) 0)
+      (if (string-equal sep "") prefix (concat prefix "/")))
+     (t (concat prefix sep joined)))))
+
+;;;###autoload
+(defun nelisp-ec-file-name-absolute-p (name)
+  "Return non-nil if NAME is absolute under the configured path rules.
+`/' and `~' are always treated as absolute starts.  When
+`nelisp-ec-file-name-drive-letters' is non-nil, drive roots such as
+`C:/' and UNC names such as `//server/share' are also absolute, while
+drive-relative names such as `c:foo' stay relative.  This helper does
+NOT touch the filesystem."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (nelisp-ec--path-absolute-p name nelisp-ec-file-name-drive-letters))
 
 (defun nelisp-ec--last-index-of-char (char string)
   "Return the last index of CHAR in STRING, or nil."
@@ -353,38 +452,49 @@ Returns the simplified list (does NOT touch leading `/')."
 
 ;;;###autoload
 (defun nelisp-ec-expand-file-name (name &optional default-dir)
-  "Convert NAME to an absolute POSIX path.
+  "Convert NAME to an absolute path using host-like string surgery.
 If NAME is already absolute, only `.' / `..' / `//' collapsing is
-performed.  Otherwise NAME is appended to DEFAULT-DIR (which is
-itself made absolute against the host CWD when relative).  When
-DEFAULT-DIR is omitted the value of the host `default-directory' is
-used.
+performed.  Otherwise NAME is appended to DEFAULT-DIR.  A `~' prefix
+in either NAME or DEFAULT-DIR expands through `HOME`; when that HOME
+path carries a drive root its backslashes are normalized to `/` and
+the drive letter is downcased.  When
+`nelisp-ec-file-name-drive-letters' is non-nil, Windows drive roots
+and UNC roots are preserved during collapsing.  When DEFAULT-DIR is
+omitted the value of the host `default-directory' is used.
 
 This helper is *pure NeLisp string surgery* — no host syscall is
 invoked beyond reading `default-directory' for the seed CWD."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
-  (let* ((dd (or default-dir
-                 (and (boundp 'default-directory) default-directory)
-                 "/"))
-         (dd (if (eq (aref dd 0) ?/) dd (concat "/" dd)))
-         (seed (cond
-                ;; NAME absolute → seed = NAME, ignore dd
-                ((nelisp-ec-file-name-absolute-p name) name)
-                (t (concat (nelisp-ec-file-name-as-directory dd) name))))
-         ;; Tilde at very start of seed → expand to $HOME (host getenv).
-         (seed (cond
-                ((and (> (length seed) 0) (eq (aref seed 0) ?~))
-                 (let ((home (or (getenv "HOME") "/")))
-                   (cond
-                    ((or (= (length seed) 1) (eq (aref seed 1) ?/))
-                     (concat home (substring seed 1)))
-                    (t seed)))) ;; ~user/ unsupported — leave verbatim
-                (t seed)))
-         (segments (nelisp-ec--split-string-char seed ?/ t))
+  (let* ((dd0 (or default-dir
+                  (and (boundp 'default-directory) default-directory)
+                  "/"))
+         (name* (nelisp-ec--expand-leading-tilde name))
+         (dd* (nelisp-ec--expand-leading-tilde dd0))
+         (name-path (car name*))
+         (name-home-p (cdr name*))
+         (dd-path (car dd*))
+         (dd-home-p (cdr dd*))
+         (dd-windows-p (or nelisp-ec-file-name-drive-letters dd-home-p))
+         (dd-path (if (nelisp-ec--path-absolute-p dd-path dd-windows-p)
+                      dd-path
+                    (concat "/" dd-path)))
+         (seed (if (nelisp-ec--path-absolute-p
+                    name-path
+                    (or nelisp-ec-file-name-drive-letters name-home-p))
+                   name-path
+                 (concat (nelisp-ec-file-name-as-directory dd-path) name-path)))
+         (seed-windows-p (or nelisp-ec-file-name-drive-letters
+                             name-home-p
+                             dd-home-p))
+         (seed (if seed-windows-p
+                   (nelisp-ec--replace-char (copy-sequence seed) ?\\ ?/)
+                 seed))
+         (prefix+rest (nelisp-ec--split-path-prefix seed seed-windows-p))
+         (segments (nelisp-ec--split-string-char (cdr prefix+rest) ?/ t))
          (collapsed (nelisp-ec--collapse-segments segments))
          (joined (mapconcat #'identity collapsed "/")))
-    (concat "/" joined)))
+    (nelisp-ec--join-path-prefix (car prefix+rest) joined)))
 
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; §2. Stat-backed predicates
