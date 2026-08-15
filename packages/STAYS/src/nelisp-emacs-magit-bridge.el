@@ -4660,6 +4660,46 @@ Functions:
     (defvar minibuffer-local-must-match-map (make-sparse-keymap)))
   (unless (boundp 'minibuffer-local-map)
     (defvar minibuffer-local-map (make-sparse-keymap)))
+  ;; Batch closure of the same class (static sweep of all 20 bundle
+  ;; parts for *-map/*-menu reads minus bundle-defined symbols,
+  ;; 2026-08-15, after isearch-mode-map died one smoke round after
+  ;; minibuffer-local-must-match-map): real-Emacs preloaded keymap
+  ;; VARIABLES only.  Deliberately excluded: generic names that vendor
+  ;; code let-binds lexically (local-map, default-map -- a defvar would
+  ;; flip those lets to dynamic), magit's own symbols (resolved inside
+  ;; the bundle), and function names the sweep cannot distinguish.
+  ;; overriding-local-map / overriding-terminal-local-map get nil --
+  ;; that IS their real-Emacs default, not a placeholder.
+  (unless (boundp 'isearch-mode-map)
+    (defvar isearch-mode-map (make-sparse-keymap)))
+  (unless (boundp 'button-map)
+    (defvar button-map (make-sparse-keymap)))
+  (unless (boundp 'button-buffer-map)
+    (defvar button-buffer-map (make-sparse-keymap)))
+  (unless (boundp 'ctl-x-map)
+    (defvar ctl-x-map (make-sparse-keymap)))
+  (unless (boundp 'local-function-key-map)
+    (defvar local-function-key-map (make-sparse-keymap)))
+  (unless (boundp 'overriding-local-map)
+    (defvar overriding-local-map nil))
+  (unless (boundp 'overriding-terminal-local-map)
+    (defvar overriding-terminal-local-map nil))
+  (unless (boundp 'read-expression-map)
+    (defvar read-expression-map (make-sparse-keymap)))
+  (unless (boundp 'y-or-n-p-map)
+    (defvar y-or-n-p-map (make-sparse-keymap)))
+  (unless (boundp 'minibuffer-visible-completions-map)
+    (defvar minibuffer-visible-completions-map (make-sparse-keymap)))
+  (unless (boundp 'vc-log-mode-map)
+    (defvar vc-log-mode-map (make-sparse-keymap)))
+  (unless (boundp 'vc-dir-filename-mouse-map)
+    (defvar vc-dir-filename-mouse-map (make-sparse-keymap)))
+  (unless (boundp 'vc-dir-status-mouse-map)
+    (defvar vc-dir-status-mouse-map (make-sparse-keymap)))
+  (unless (boundp 'bug-reference-map)
+    (defvar bug-reference-map (make-sparse-keymap)))
+  (unless (boundp 'tool-bar-map)
+    (defvar tool-bar-map (make-sparse-keymap)))
   (unless (boundp 'mode-line-misc-info)
     (defvar mode-line-misc-info nil))
   (unless (boundp 'idle-update-delay)
