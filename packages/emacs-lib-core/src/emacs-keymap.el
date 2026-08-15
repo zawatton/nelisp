@@ -681,6 +681,24 @@ MAP is active when the symbol-value of VAR is non-nil.")
                      (emacs-keymap-keymapp map))
            collect map))
 
+(defun emacs-keymap--var-value (prefixed unprefixed)
+  "Return active value for PREFIXED / UNPREFIXED compatibility variables.
+The prefixed variable is the substrate-owned state used by tests and
+standalone internals.  The unprefixed variable mirrors Emacs' public
+surface.  Prefer a non-nil prefixed binding so lexical/dynamic local
+tests can exercise the substrate without being shadowed by host Emacs'
+always-bound unprefixed globals; otherwise fall back to the unprefixed
+value when present."
+  (let ((prefixed-value (and (boundp prefixed) (symbol-value prefixed))))
+    (or prefixed-value
+        (and (boundp unprefixed) (symbol-value unprefixed)))))
+
+(defun emacs-keymap--alist-var-value (prefixed unprefixed)
+  "Return merged active alist/list value for PREFIXED and UNPREFIXED vars."
+  (let ((prefixed-value (and (boundp prefixed) (symbol-value prefixed)))
+        (unprefixed-value (and (boundp unprefixed) (symbol-value unprefixed))))
+    (append prefixed-value unprefixed-value)))
+
 ;;;###autoload
 (defun emacs-keymap-chain-at (&optional point)
   "Return the active keymap chain at POINT (priority-ordered).
@@ -691,19 +709,37 @@ the current buffer; it is only consulted when the 9 段 flag is on."
   (let ((chain '()))
     ;; Build in order, then collect — Emacs lookups walk in the order
     ;; we return.
-    (when emacs-keymap-overriding-terminal-local-map
-      (push emacs-keymap-overriding-terminal-local-map chain))
-    (when emacs-keymap-overriding-local-map
-      (push emacs-keymap-overriding-local-map chain))
-    (dolist (m (emacs-keymap--active-minor-mode-maps
-                emacs-keymap-minor-mode-overriding-map-alist))
-      (push m chain))
-    (dolist (m (emacs-keymap--active-minor-mode-maps
-                emacs-keymap-minor-mode-map-alist))
-      (push m chain))
-    (dolist (alist emacs-keymap-emulation-mode-map-alists)
-      (dolist (m (emacs-keymap--active-minor-mode-maps alist))
-        (push m chain)))
+    (let ((overriding-terminal
+           (emacs-keymap--var-value
+            'emacs-keymap-overriding-terminal-local-map
+            'overriding-terminal-local-map))
+          (overriding-local
+           (emacs-keymap--var-value
+            'emacs-keymap-overriding-local-map
+            'overriding-local-map))
+          (minor-overriding
+           (emacs-keymap--alist-var-value
+            'emacs-keymap-minor-mode-overriding-map-alist
+            'minor-mode-overriding-map-alist))
+          (minor-maps
+           (emacs-keymap--alist-var-value
+            'emacs-keymap-minor-mode-map-alist
+            'minor-mode-map-alist))
+          (emulation-maps
+           (emacs-keymap--alist-var-value
+            'emacs-keymap-emulation-mode-map-alists
+            'emulation-mode-map-alists)))
+      (when overriding-terminal
+        (push overriding-terminal chain))
+      (when overriding-local
+        (push overriding-local chain))
+      (dolist (m (emacs-keymap--active-minor-mode-maps minor-overriding))
+        (push m chain))
+      (dolist (m (emacs-keymap--active-minor-mode-maps minor-maps))
+        (push m chain))
+      (dolist (alist emulation-maps)
+        (dolist (m (emacs-keymap--active-minor-mode-maps alist))
+          (push m chain))))
     ;; --- Doc 41 §2.5 opt-in slots 6 (overlay) & 7 (text-property) ---
     (when emacs-keymap-chain-with-textprop
       (let ((pt (or point
@@ -961,8 +997,28 @@ to plug into a real event source."
 ;; fallback below instead: the upstream file is regexp-heavy and stalls
 ;; during bootstrap before the full regex/keymap stack is available.
 
-(when (boundp 'emacs-version)
+(when (and (boundp 'emacs-version)
+           (not (or (fboundp 'nl-write-file)
+                    (fboundp 'nelisp--write-stdout-bytes))))
   (require 'keymap))
+
+(defun emacs-keymap--standalone-bare-function-key-p (word)
+  "Return non-nil when WORD is a bare kbd function-key token."
+  (let ((index 0)
+        (length-word (length word))
+        (ok (> (length word) 1)))
+    (while (and ok (< index length-word))
+      (let ((ch (aref word index)))
+        (setq ok
+              (if (= index 0)
+                  (or (and (>= ch ?A) (<= ch ?Z))
+                      (and (>= ch ?a) (<= ch ?z)))
+                (or (and (>= ch ?A) (<= ch ?Z))
+                    (and (>= ch ?a) (<= ch ?z))
+                    (and (>= ch ?0) (<= ch ?9))
+                    (= ch ?-)))))
+      (setq index (1+ index)))
+    ok))
 
 (defun emacs-keymap--standalone-key-token (token)
   "Parse one kbd-style TOKEN for the standalone NeLisp fallback."
@@ -1017,6 +1073,16 @@ to plug into a real event source."
      ((equal token "ESC") (+ bits ?\e))
      ((equal token "SPC") (+ bits ?\s))
      ((equal token "DEL") (+ bits 127))
+     ((and (> (length token) 1)
+           (emacs-keymap--standalone-bare-function-key-p token))
+      (intern (if (= bits 0)
+                  token
+                (concat (cond
+                         ((= bits ?\S-\0) "S-")
+                         ((= bits ?\C-\0) "C-")
+                         ((= bits ?\M-\0) "M-")
+                         (t ""))
+                        token))))
      ((= (length token) 1)
       (let ((ch (aref token 0)))
         (if ctrl
@@ -1028,17 +1094,38 @@ to plug into a real event source."
              (t (+ bits ch)))
           (+ bits ch))))
      (t
-      (signal 'emacs-keymap-bad-key (list token))))))
+     (signal 'emacs-keymap-bad-key (list token))))))
+
+(defun emacs-keymap--standalone-key-tokens (keys)
+  "Split kbd-style KEYS on runs of literal spaces.
+This parser is intentionally independent of `split-string': the standalone
+bootstrap may expose a reduced regexp-backed implementation whose explicit
+separator path retains empty fields.  Empty fields between key tokens are
+separators in Emacs key syntax, not key events."
+  (let ((index 0)
+        (length-keys (length keys))
+        (tokens nil))
+    (while (< index length-keys)
+      (while (and (< index length-keys)
+                  (= (aref keys index) 32))
+        (setq index (1+ index)))
+      (let ((start index))
+        (while (and (< index length-keys)
+                    (/= (aref keys index) 32))
+          (setq index (1+ index)))
+        (when (< start index)
+          (setq tokens (cons (substring keys start index) tokens)))))
+    (nreverse tokens)))
 
 (defun emacs-keymap--standalone-key-parse (keys)
   "Parse common kbd-style KEYS without relying on regexp features."
   (unless (and (stringp keys) (> (length keys) 0))
     (signal 'emacs-keymap-bad-key (list keys)))
-  (let ((tokens (split-string keys " "))
+  (let ((tokens (emacs-keymap--standalone-key-tokens keys))
         events)
+    (unless tokens
+      (signal 'emacs-keymap-bad-key (list keys)))
     (dolist (token tokens)
-      (when (= (length token) 0)
-        (signal 'emacs-keymap-bad-key (list keys)))
       (push (emacs-keymap--standalone-key-token token) events))
     (vconcat (nreverse events))))
 
@@ -1047,6 +1134,33 @@ to plug into a real event source."
   (condition-case nil
       (progn (emacs-keymap--standalone-key-parse keys) t)
     (error nil)))
+
+(defun emacs-keymap--defvar-keymap-build (base parent suppress defs)
+  "Build the keymap value for the `defvar-keymap' fallback.
+BASE is the :keymap argument (an existing map to add to) or nil.
+PARENT/SUPPRESS are the evaluated :parent/:suppress arguments.  DEFS
+is the flat, already-evaluated (KEY DEF ...) list.  A KEY the
+standalone parser cannot handle is skipped -- narrowing the old
+drop-EVERYTHING fallback (which returned an always-empty keymap and
+silently killed every keybinding of every vendor mode map defined via
+`defvar-keymap': log-edit-mode-map, git-commit-mode-map, ...;
+Doc 33 SS9 D2, measured 2026-08-14) down to just the genuinely
+unparseable pair (e.g. \"<remap> <foo>\"), which was the original
+motivation for dropping."
+  (let ((map (or base (emacs-keymap-make-sparse-keymap))))
+    (when suppress
+      (suppress-keymap map (eq suppress 'nodigits)))
+    (when parent
+      (emacs-keymap-set-keymap-parent map parent))
+    (while defs
+      (let ((key (car defs))
+            (def (car (cdr defs))))
+        (setq defs (cdr (cdr defs)))
+        (unless (eq key :menu)
+          (condition-case nil
+              (keymap-set map key def)
+            (error nil)))))
+    map))
 
 (when (or (fboundp 'nl-write-file)
           (not (boundp 'emacs-version))
@@ -1167,10 +1281,13 @@ to plug into a real event source."
       (ignore opts)
       (unless (zerop (% (length defs) 2))
         (error "Uneven number of key/definition pairs: %S" defs))
-      ;; Standalone load-time materialization must not be blocked by
-      ;; complex GNU key syntax such as "<remap> <foo>".  The real
-      ;; binding parser remains available through `keymap-set'; this
-      ;; fallback only guarantees that mode maps exist as keymaps.
+      ;; Apply the bindings through `emacs-keymap--defvar-keymap-build':
+      ;; parent/suppress and every parseable KEY/DEF pair land in the
+      ;; map; only a key the standalone parser cannot handle (complex
+      ;; GNU syntax such as "<remap> <foo>") is skipped.  The previous
+      ;; expansion dropped ALL of them and returned an empty keymap --
+      ;; loadable, but every vendor mode map defined via this macro had
+      ;; zero keybindings at runtime (Doc 33 SS9 D2).
       ;;
       ;; Build the expansion without backquote.  The standalone prelude
       ;; installs its own backquote/macroexpander before this file is
@@ -1179,8 +1296,11 @@ to plug into a real event source."
       (cons 'progn
             (cons (append (list 'defvar
                                 variable-name
-                                (or keymap
-                                    (list 'list (list 'quote 'keymap))))
+                                (list 'emacs-keymap--defvar-keymap-build
+                                      keymap
+                                      parent
+                                      suppress
+                                      (cons 'list defs)))
                           (and doc (list doc)))
                   (cons (list 'quote variable-name) nil))))))
 
