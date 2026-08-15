@@ -113,6 +113,38 @@ re-load after a wrapper leak keeps the original subr capture.")
 (defvar emacs-process--native-process-metadata nil
   "Metadata alist for native NeLisp process objects.")
 
+(defvar emacs-process--resolved-shell-file-name nil
+  "Cached shell path returned by `emacs-process-resolve-shell-file-name'.")
+
+(defun emacs-process--shell-executable-p (path)
+  "Return non-nil when PATH names an executable shell."
+  (and (stringp path)
+       (> (length path) 0)
+       (file-executable-p path)))
+
+(defun emacs-process--compute-shell-file-name ()
+  "Resolve the preferred POSIX shell path for this host."
+  (or (and (emacs-process--shell-executable-p "/bin/sh")
+           "/bin/sh")
+      (and (fboundp 'executable-find)
+           (let ((found (executable-find "sh")))
+             (and (emacs-process--shell-executable-p found)
+                  found)))
+      (and (boundp 'shell-file-name)
+           (emacs-process--shell-executable-p shell-file-name)
+           shell-file-name)
+      "/bin/sh"))
+
+(defun emacs-process-clear-shell-file-name-cache ()
+  "Clear the cached shell path so the next resolve re-probes the host."
+  (setq emacs-process--resolved-shell-file-name nil))
+
+(defun emacs-process-resolve-shell-file-name ()
+  "Return the cached preferred POSIX shell path for this host."
+  (or emacs-process--resolved-shell-file-name
+      (setq emacs-process--resolved-shell-file-name
+            (emacs-process--compute-shell-file-name))))
+
 (defun emacs-process--fallback-process-p (object)
   "Return non-nil when OBJECT is a fallback process vector."
   (and (vectorp object)
@@ -696,7 +728,8 @@ top-level alias for parity with the Emacs API."
 
 ;;;; --- shell-command / shell-command-to-string ----------------------
 
-(defvar emacs-process-shell-file-name "/bin/sh"
+(defvar emacs-process-shell-file-name
+  (emacs-process-resolve-shell-file-name)
   "Substrate-internal mirror of `shell-file-name'.")
 
 (defvar emacs-process-shell-command-switch "-c"

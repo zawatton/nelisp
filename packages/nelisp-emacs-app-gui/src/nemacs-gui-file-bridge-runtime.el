@@ -347,7 +347,15 @@
 (setq files--access-write 2)
 (setq files--access-read 4)
 (setq files--access-path "")
-(setq shell-file-name "/bin/sh")
+;; This file does not require `emacs-process', so the resolver may be
+;; absent; fall back rather than signalling void-function.
+(unless (and (boundp 'shell-file-name)
+             (stringp shell-file-name)
+             (file-executable-p shell-file-name))
+  (setq shell-file-name
+        (if (fboundp 'emacs-process-resolve-shell-file-name)
+            (emacs-process-resolve-shell-file-name)
+          "/bin/sh")))
 (setq shell-command-switch "-c")
 
 (setq files--keymap-source

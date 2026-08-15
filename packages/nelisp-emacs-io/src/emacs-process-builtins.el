@@ -116,7 +116,7 @@
 ;;;; --- variable bridges ----------------------------------------------
 
 (unless (boundp 'shell-file-name)
-  (defvar shell-file-name "/bin/sh"
+  (defvar shell-file-name (emacs-process-resolve-shell-file-name)
     "Track I bridge: path to the shell used by `shell-command'."))
 
 (unless (boundp 'shell-command-switch)
