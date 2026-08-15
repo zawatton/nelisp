@@ -41,13 +41,21 @@
   "Return non-nil when SYMBOL should be installed by this module."
   (or (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
+      (not (stringp emacs-version))
       (not (fboundp symbol))))
 
 (defun emacs-pcase--pred-form (fn value-form)
   "Build a predicate test form for (pred FN) against VALUE-FORM."
   (if (and (consp fn) (eq (car fn) 'not))
       (list 'not (emacs-pcase--pred-form (car (cdr fn)) value-form))
-    (list 'funcall (list 'function fn) value-form)))
+    (cond
+     ((and (consp fn)
+           (not (memq (car fn) '(lambda function closure))))
+      (if (memq '_ fn)
+          (mapcar (lambda (x) (if (eq x '_) value-form x)) fn)
+        (append fn (list value-form))))
+     (t
+      (list 'funcall (list 'function fn) value-form)))))
 
 (defun emacs-pcase--macroexpand-pattern (pattern)
   "Expand a single pcase macro PATTERN when it names a local expander."
@@ -180,8 +188,16 @@ to let-bind in the case body when matched."
          ((and (symbolp head) (get head 'pcase-macroexpander))
           (emacs-pcase--test (emacs-pcase--macroexpand-pattern pattern)
                              value-form))
-         ;; Unknown — treat as opaque catch-all (= permissive).
-         (t (cons t nil)))))
+         ;; Unknown pattern head: SIGNAL, exactly like real pcase.  The
+         ;; old permissive catch-all (match-all, bind nothing) was the
+         ;; silent-wrong-answer shape: it hid the missing `app' support
+         ;; (Doc 33 item 243) and then hid the unregistered `cl-type'
+         ;; expander -- every value fell into transient's FIRST
+         ;; `(cl-type keyword)' branch, killing bundle part 16 with
+         ;; "Need command ... got `nil'" (dev/nelisp Doc 33 SS9 D1,
+         ;; 2026-08-15).  A missing pattern must name itself here, not
+         ;; corrupt match results downstream.
+         (t (error "Unknown pcase pattern `%S'" pattern)))))
      ;; Other atom (symbol via symbolp above; vector etc.)
      (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
 
@@ -315,6 +331,17 @@ See `emacs-pcase--test' for supported pattern shapes."
          (defun ,fsym ,args ,@body)
          (put ',name 'pcase-macroexpander ',fsym)
          ',name))))
+
+;; `cl-type' pattern (real Emacs registers it in cl-macs.el, which this
+;; substrate never loads).  Expand to a self-contained `pred' lambda --
+;; `cl-typep' itself is correct here (verified: (cl-typep nil 'keyword)
+;; => nil) -- so registration is all that was missing.  Guarded so a
+;; host Emacs (where cl-macs owns the pattern) is left alone.
+(unless (get 'cl-type 'pcase-macroexpander)
+  (defun emacs-pcase--cl-type-expander (type)
+    "Expand (cl-type TYPE) to a `cl-typep' pred (Doc 33 SS9 D1)."
+    `(pred (lambda (v) (cl-typep v ',type))))
+  (put 'cl-type 'pcase-macroexpander 'emacs-pcase--cl-type-expander))
 
 (defun emacs-pcase--let-binding (binding)
   "Return (TEMP TEST BINDINGS) for a single pcase-let BINDING."
