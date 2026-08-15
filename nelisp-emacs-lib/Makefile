@@ -647,6 +647,15 @@ NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_STANDALONE_SMOKE_SELECTOR ?= (or \
 # (nemacs-process-bidi-smoke.el, elprop-forms-auto.el) that define no
 # tests and are meant to be run on their own; loading them here aborted
 # the whole suite before a single test ran.
+# Windows Emacs derives `temporary-file-directory' from TEMP/TMP/TMPDIR.
+# This make does not pass the ambient environment into recipes, so with
+# all three unset Emacs falls back to the drive root and every test that
+# calls `make-temp-file' dies with permission-denied.  Export them here,
+# as the nelisp repo already does.
+export TMPDIR ?= /tmp
+export TEMP   ?= /tmp
+export TMP    ?= /tmp
+
 TEST_FILES = $(wildcard test/*-test.el)
 # Heavy integration ERTs spawn subprocesses and need NEMACS_NELISP_ROOT + a
 # built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
