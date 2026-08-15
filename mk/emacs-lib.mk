@@ -643,7 +643,11 @@ NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_STANDALONE_SMOKE_SELECTOR ?= (or \
 	nemacs-gui-file-bridge-runtime-test/standalone-bridge-find-file-writeback-helper \
 	nemacs-gui-file-bridge-runtime-test/standalone-bridge-buffer-switch-writeback-helper \
 	nemacs-gui-file-bridge-runtime-test/standalone-bridge-bookmark-writeback-helper)
-TEST_FILES = $(wildcard test/*.el)
+# Only *-test.el are ERT files.  test/ also holds driver scripts
+# (nemacs-process-bidi-smoke.el, elprop-forms-auto.el) that define no
+# tests and are meant to be run on their own; loading them here aborted
+# the whole suite before a single test ran.
+TEST_FILES = $(wildcard test/*-test.el)
 # Heavy integration ERTs spawn subprocesses and need NEMACS_NELISP_ROOT + a
 # built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
 # and must stay out of the umbrella `make test'.
