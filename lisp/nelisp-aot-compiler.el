@@ -3105,6 +3105,19 @@ Default nil: the pass is never invoked and compiled output is
 byte-identical to a pre-pass compiler.  Bound per build by
 `nelisp-standalone--compile-to-unit' from the NELISP_TCO make flag.")
 
+(defvar nelisp-aot-compiler-tco-lisp-flag nil
+  "Non-nil emits the TCO loop flag as a Lisp truth value.
+The optimal continue-flag representation is layer-dependent.  Runtime
+units are compiled from the Phase 47 raw-i64 grammar, where `t' / `nil'
+are not usable as a loop flag -- a build that emits them produces a
+binary that cannot evaluate anything (measured: exit 127) -- so those
+keep an integer flag tested with `='.  User artifacts hold real Lisp
+values, where `while' can test the flag directly and the arithmetic
+compare is pure overhead; the Linux CI native lane measured that
+overhead at roughly 10% against the hand-written `nl-loop' baseline
+(Doc 171 G4).  `nelisp-artifact--native-compile-section' binds this to
+t; `nelisp-standalone--compile-to-unit' leaves it nil.")
+
 (defvar nelisp-aot-compiler--tco-log nil
   "Names of defuns rewritten by the TCO pass, newest first.
 Audit trail (Doc 171 sec 11): lets a build inspect exactly which
@@ -3189,7 +3202,7 @@ frame per iteration."
             (push (car ts) pairs)
             (setq ps (cdr ps) ts (cdr ts))))
         (push cont pairs)
-        (push 1 pairs)
+        (push (if nelisp-aot-compiler-tco-lisp-flag t 1) pairs)
         `(seq (setq ,@(nreverse pairs)) 0)))))
 
 (defun nelisp-aot-compiler--tco-walk (form name params required cont
@@ -3312,10 +3325,15 @@ and the defun compiles exactly as before."
         (unless (car found)
           (throw 'nelisp-tco-skip nil))
         (push name nelisp-aot-compiler--tco-log)
-        `(let ((,cont 1) (,ret 0)
+        `(let ((,cont ,(if nelisp-aot-compiler-tco-lisp-flag t 1))
+               (,ret 0)
                ,@(mapcar (lambda (tmp) (list tmp 0)) temps))
-           (seq (while (= ,cont 1)
-                  (seq (setq ,cont 0)
+           (seq (while ,(if nelisp-aot-compiler-tco-lisp-flag
+                            cont
+                          `(= ,cont 1))
+                  (seq (setq ,cont ,(if nelisp-aot-compiler-tco-lisp-flag
+                                        nil
+                                      0))
                        (setq ,ret ,new-body)))
                 ,ret))))))
 

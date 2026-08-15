@@ -26,6 +26,7 @@
 (declare-function nelisp-aot-compile-to-link-unit "nelisp-aot-compiler"
                   (sexp &rest keys))
 (defvar nelisp-aot-compiler-tco-enabled)
+(defvar nelisp-aot-compiler-tco-lisp-flag)
 (declare-function nelisp-elf-write-binary "nelisp-elf-write"
                   (file-path sections))
 (declare-function nelisp--rd-one "nelisp-stdlib-prelude"
@@ -1424,7 +1425,11 @@ module."
             (symbols nil)
             (compile-report nil)
             (nelisp-aot-compiler-tco-enabled
-             (nelisp-artifact--native-tco-enabled-p)))
+             (nelisp-artifact--native-tco-enabled-p))
+            ;; Doc 171 G4: user artifacts hold Lisp values, so the TCO
+            ;; loop flag is a truth value here, not the integer the
+            ;; raw-grammar runtime units need.
+            (nelisp-aot-compiler-tco-lisp-flag t))
         (if (eq policy 'required)
             (nelisp-artifact--native-compile-required-section defuns arch)
           (or (nelisp-artifact--native-compile-fast-batch-section defuns arch)
