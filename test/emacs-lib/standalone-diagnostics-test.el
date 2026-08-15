@@ -122,9 +122,14 @@
           (let ((program (with-temp-buffer
                            (insert-file-contents output)
                            (buffer-string))))
+            ;; The generated program carries expanded paths, so the
+            ;; expectation has to expand too: on Windows a rootless
+            ;; absolute path picks up the current drive.
             (should (string-match-p
                      (regexp-quote
-                      "(setq load-path '(\"/repo/src\" \"/repo/scripts\"")
+                      (format "(setq load-path '(%S %S"
+                              (expand-file-name "/repo/src")
+                              (expand-file-name "/repo/scripts")))
                      program))
             (should (string-match-p
                      (regexp-quote "(nelisp--eval-source-string")
@@ -296,8 +301,13 @@
 
 (ert-deftest standalone-diagnostics-test/vendor-load-files-splits-string ()
   (let ((vendor-load-standalone-files "/repo/a.el /repo/b.el"))
+    ;; The splitter promises absolute names, so the expectation has to go
+    ;; through the same expansion: on Windows a rootless absolute path
+    ;; picks up the current drive, and comparing against the literal
+    ;; would be asserting POSIX rather than the property under test.
     (should (equal (vendor-load-standalone--files)
-                   '("/repo/a.el" "/repo/b.el")))))
+                   (list (expand-file-name "/repo/a.el")
+                         (expand-file-name "/repo/b.el"))))))
 
 (ert-deftest standalone-diagnostics-test/vendor-load-shortens-selected-runtime-file-name ()
   (should (equal (vendor-load-standalone--runtime-file-name
@@ -586,8 +596,10 @@
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-splits-string ()
   (let ((vendor-repl-standalone-files "/repo/a.el /repo/b.el"))
+    ;; Absolute names come back expanded; see the load-side twin.
     (should (equal (vendor-repl-standalone--files)
-                   '("/repo/a.el" "/repo/b.el")))))
+                   (list (expand-file-name "/repo/a.el")
+                         (expand-file-name "/repo/b.el"))))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-canonicalize-symlinks ()
   (skip-unless (standalone-diagnostics-test--symbolic-link-capable-p))

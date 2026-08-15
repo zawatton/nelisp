@@ -502,44 +502,64 @@ on identity should re-bind the variable holding PLIST."
   (defun terminal-raw-mode--u16 (buf off)
     (+ (ptr-read-u8 buf off)
        (* (ptr-read-u8 buf (+ off 1)) 256)))
+  ;; These are bootstrap placeholders for a bare NeLisp terminal, not the
+  ;; real handlers: they answer t without recording anything, so a caller
+  ;; asking `_sigint-handler-installed-p' gets nil forever.  Mark them so
+  ;; the owning modules -- emacs-command-loop-builtins and
+  ;; emacs-tui-event -- overwrite them instead of deferring to whichever
+  ;; file happened to load first.
+  (dolist (placeholder '(install-winsize-handler
+                         install-sigint-handler
+                         install-jobctrl-handlers
+                         terminal-current-winsize
+                         terminal-take-winsize-changed
+                         terminal-take-sigcont))
+    (put placeholder 'emacs-stub-bulk t))
 
-  (defun install-winsize-handler ()
-    (setq terminal-raw-mode--winsize-changed nil)
-    t)
 
-  (defun install-sigint-handler ()
-    t)
-
-  (defun install-jobctrl-handlers ()
-    t)
-
-  (defun terminal-take-winsize-changed ()
-    (let ((pending terminal-raw-mode--winsize-changed))
+  (unless (fboundp 'install-winsize-handler)
+    (defun install-winsize-handler ()
       (setq terminal-raw-mode--winsize-changed nil)
-      pending))
+      t))
 
-  (defun terminal-take-sigcont ()
-    nil)
+  (unless (fboundp 'install-sigint-handler)
+    (defun install-sigint-handler ()
+      t))
 
-  (defun terminal-current-winsize ()
-    (let* ((fd0 terminal-raw-mode--fd)
-           (fd (or fd0
-                   (syscall-direct 2 (terminal-raw-mode--dev-tty-path)
-                                   2 0 0 0 0)))
-           (buf (terminal-raw-mode--ensure-buf
-                 'terminal-raw-mode--winsize 8 4)))
-      (if (or (not fd) (< fd 0))
-          (cons 80 24)
-        (let ((rc (syscall-direct 16 fd 21523 buf 0 0 0)))
-          (unless fd0
-            (syscall-direct 3 fd 0 0 0 0 0))
-          (if (< rc 0)
-              (cons 80 24)
-            (let ((rows (terminal-raw-mode--u16 buf 0))
-                  (cols (terminal-raw-mode--u16 buf 2)))
-              (if (and (> rows 0) (> cols 0))
-                  (cons cols rows)
-                (cons 80 24))))))))
+  (unless (fboundp 'install-jobctrl-handlers)
+    (defun install-jobctrl-handlers ()
+      t))
+
+  (unless (fboundp 'terminal-take-winsize-changed)
+    (defun terminal-take-winsize-changed ()
+      (let ((pending terminal-raw-mode--winsize-changed))
+        (setq terminal-raw-mode--winsize-changed nil)
+        pending)))
+
+  (unless (fboundp 'terminal-take-sigcont)
+    (defun terminal-take-sigcont ()
+      nil))
+
+  (unless (fboundp 'terminal-current-winsize)
+    (defun terminal-current-winsize ()
+      (let* ((fd0 terminal-raw-mode--fd)
+             (fd (or fd0
+                     (syscall-direct 2 (terminal-raw-mode--dev-tty-path)
+                                     2 0 0 0 0)))
+             (buf (terminal-raw-mode--ensure-buf
+                   'terminal-raw-mode--winsize 8 4)))
+        (if (or (not fd) (< fd 0))
+            (cons 80 24)
+          (let ((rc (syscall-direct 16 fd 21523 buf 0 0 0)))
+            (unless fd0
+              (syscall-direct 3 fd 0 0 0 0 0))
+            (if (< rc 0)
+                (cons 80 24)
+              (let ((rows (terminal-raw-mode--u16 buf 0))
+                    (cols (terminal-raw-mode--u16 buf 2)))
+                (if (and (> rows 0) (> cols 0))
+                    (cons cols rows)
+                  (cons 80 24)))))))))
 
 (provide 'emacs-fns)
 

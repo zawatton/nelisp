@@ -1022,6 +1022,25 @@ control characters return 1."
     (condition-case _err (char-width ch) (error 1)))
    (t 1)))
 
+(defun emacs-redisplay--combining-mark-p (ch)
+  "Return non-nil when CH composes with the character before it.
+`emacs-redisplay--char-width' is not a usable test for this.  It defers
+to `char-width', and on a host with no display configured `char-width'
+answers 2 for U+0301 COMBINING ACUTE ACCENT -- whose Unicode general
+category is Mn, nonspacing mark.  The category is what actually says a
+character carries no column of its own, so ask for it where the
+property tables exist and fall back to the width elsewhere."
+  (let ((category (and (integerp ch)
+                       (fboundp 'get-char-code-property)
+                       (condition-case _err
+                           (get-char-code-property ch 'general-category)
+                         (error nil)))))
+    (if category
+        ;; Mn nonspacing, Me enclosing.  Mc is a *spacing* combining
+        ;; mark and does take a column, so it is deliberately absent.
+        (memq category '(Mn Me))
+      (= (emacs-redisplay--char-width ch) 0))))
+
 (defun emacs-redisplay--char-bidi-class (ch)
   "Return the simplified bidi class of CH: `L', `R', `AL', or `neutral'.
 Only the strong directional classes needed for base-direction detection
@@ -1648,7 +1667,7 @@ the overlay anchor position."
          ;; composition (one grapheme cluster, no extra column) instead of
          ;; emitting its own cell.  A leading combining mark (no previous
          ;; glyph) falls through to the normal branch and takes width 1.
-         ((and (= cw 0) last-glyph)
+         ((and (emacs-redisplay--combining-mark-p ch) last-glyph)
           (setf (emacs-redisplay-glyph-composition last-glyph)
                 (append (emacs-redisplay-glyph-composition last-glyph)
                         (list ch)))

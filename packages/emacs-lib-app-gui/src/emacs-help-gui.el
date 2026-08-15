@@ -160,9 +160,18 @@ BINDINGS defaults to `emacs-help-gui-standard-keymap-source-bindings'."
   "Show GUI help buffer with TITLE and BODY."
   (setq emacs-help-gui-status "ok")
   (or (emacs-help-gui--backend-call :show-help-buffer title body)
-      (progn
-        (setq emacs-help-gui-status "unsupported")
-        nil)))
+      (let ((buffer (emacs-help--buffer)))
+        (with-current-buffer buffer
+          (help-mode)
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert title "\n\n" body)
+            (unless (string-suffix-p "\n" body)
+              (insert "\n"))
+            (goto-char (point-min))
+            (setq buffer-read-only t)))
+        (emacs-help--show-buffer buffer)
+        emacs-help--buffer-name)))
 
 ;;;###autoload
 (defun emacs-help-gui-show-help-buffer (title body)
@@ -631,17 +640,105 @@ BINDINGS defaults to `emacs-help-gui-standard-keymap-source-bindings'."
 ;;;###autoload
 (defun emacs-help-gui-static-command (command)
   "Render static GUI help for COMMAND."
-  (let ((entry (emacs-help-gui--static-text command)))
-    (emacs-help-gui--show-help-buffer (car entry) (cdr entry))))
+  (let ((title "")
+        (body ""))
+    (pcase command
+      ('about-emacs
+       (setq title "About GNU Emacs")
+       (setq body "GNU Emacs is the extensible, customizable, self-documenting editor.  This nemacs bridge runtime provides an Emacs-compatible help buffer for the native GUI replacement path."))
+      ('describe-copying
+       (setq title "GNU Emacs Copying Conditions")
+       (setq body "GNU Emacs is free software.  You may redistribute and/or modify it under the terms of the GNU General Public License.  This bridge help text is a compact compatibility summary."))
+      ('view-emacs-debugging
+       (setq title "GNU Emacs Debugging")
+       (setq body "Emacs provides debugging tools such as backtraces, debuggers, and bug reporting support.  The nemacs GUI bridge keeps command semantics in nelisp-emacs so failures can be isolated there."))
+      ('view-external-packages
+       (setq title "External Packages")
+       (setq body "External packages extend Emacs.  Package management UI is not yet implemented in this GUI bridge runtime; this command records the expected Help buffer behavior."))
+      ('view-emacs-FAQ
+       (setq title "GNU Emacs FAQ")
+       (setq body "The GNU Emacs FAQ answers common questions about using and configuring Emacs.  Full Info/manual navigation is a future nelisp-emacs feature."))
+      ('view-emacs-news
+       (setq title "GNU Emacs News")
+       (setq body "Emacs news normally lists recent user-visible changes.  This runtime exposes the Help command path while detailed release notes are not yet loaded."))
+      ('describe-distribution
+       (setq title "GNU Emacs Distribution")
+       (setq body "GNU Emacs is distributed by the GNU Project.  The nemacs replacement path keeps distribution/help command semantics in nelisp-emacs."))
+      ('view-emacs-problems
+       (setq title "GNU Emacs Known Problems")
+       (setq body "Known problems are normally documented with the Emacs distribution.  This bridge command opens a read-only Help buffer as the compatibility surface."))
+      ('view-emacs-todo
+       (setq title "GNU Emacs TODO")
+       (setq body "The Emacs TODO file tracks planned work.  Full distribution file viewing is not yet implemented in this GUI bridge runtime."))
+      ('describe-no-warranty
+       (setq title "GNU Emacs No Warranty")
+       (setq body "GNU Emacs is distributed in the hope that it will be useful, but without warranty.  See the GNU General Public License for the complete terms."))
+      ('describe-gnu-project
+       (setq title "About the GNU Project")
+       (setq body "The GNU Project develops the GNU operating system and free software, including GNU Emacs."))
+      ('view-hello-file
+       (setq title "Hello")
+       (setq body "Hello from GNU Emacs.  Multilingual hello text is not yet bundled in this bridge runtime."))
+      ('describe-coding-system
+       (setq title "Coding System")
+       (setq body "Coding system inspection is not yet connected to the full Emacs coding database.  This bridge command records the Help buffer behavior in nelisp-emacs."))
+      ('describe-input-method
+       (setq title "Input Method")
+       (setq body "Input method descriptions are not yet backed by the full Emacs input method registry.  GUI input decoding remains in nelisp-gui; input method semantics belong in nelisp-emacs."))
+      ('describe-language-environment
+       (setq title "Language Environment")
+       (setq body "Language environment details are not yet loaded from Emacs data files.  This command provides the expected read-only Help buffer surface."))
+      ('view-lossage
+       (setq title "Recent Keys")
+       (setq body "Recent key lossage is not yet persisted by the GUI bridge runtime."))
+      ('describe-mode
+       (setq title "Mode Help")
+       (setq body (concat "Major mode: Fundamental\nBuffer: "
+                          emacs-help-gui-buffer-name
+                          "\nThe current GUI bridge runtime exposes a minimal mode description.")))
+      ('help-quit
+       (setq title "Help Quit")
+       (setq body "Help quit was requested.  Window closing is not modeled here; the command is represented as a read-only Help buffer update."))
+      ('describe-syntax
+       (setq title "Syntax Table")
+       (setq body "Syntax table details are not yet backed by full Emacs syntax table data.  Word/symbol movement currently uses the bridge runtime character predicates."))
+      ('help-with-tutorial
+       (setq title "Emacs Tutorial")
+       (setq body "The full Emacs tutorial is not yet bundled in this bridge runtime.  This command opens the expected read-only Help buffer."))
+      ('display-local-help
+       (setq title "Local Help")
+       (setq body "Local contextual help was requested.  The GUI bridge runtime represents the request as a read-only Help buffer; widget and text-property help lookup remains a nelisp-emacs task."))
+      ('help-find-source
+       (setq title "Find Source")
+       (setq body "Source lookup for the current help target is not yet backed by full symbol-to-source metadata.  This command opens the expected Help surface without adding GUI-side command semantics."))
+      ('help-quick-toggle
+       (setq title "Quick Help Toggle")
+       (setq body "Quick help display toggling is represented in the bridge runtime as a Help buffer update.  Help window display policy remains owned by nelisp-emacs."))
+      ('search-forward-help-for-help
+       (setq title "Search Help")
+       (setq body "Search within the Help-for-Help buffer was requested.  Full incremental help search is not yet implemented in the bridge runtime."))
+      ('finder-by-keyword
+       (setq title "Package Finder")
+       (setq body "Package keyword browsing is not yet backed by the full package index.  This command opens the expected read-only Help buffer."))
+      (_
+       (setq title (symbol-name command))
+       (setq body "This help command is recognized but does not have detailed text yet.")))
+    (emacs-help-gui--show-help-buffer title body)))
 
 ;;;###autoload
 (defun emacs-help-gui-apropos-command (&optional pattern)
   "Render GUI apropos-command help for PATTERN."
-  (let ((arg (or pattern emacs-help-gui-arg)))
-    (emacs-help-gui--show-help-buffer
-     "Apropos Commands"
-     (concat "Apropos command search is not yet backed by the full command index.\nPattern: "
-             arg))))
+  (let* ((arg (or pattern emacs-help-gui-arg))
+         (names-fn (emacs-help-gui--backend-function :apropos-command-names))
+         (names (and names-fn (funcall names-fn))))
+    (if names
+        (let ((result (emacs-help-apropos-text arg names)))
+          (emacs-help-gui--show-help-buffer
+           "Apropos Commands" (plist-get result :text)))
+      (emacs-help-gui--show-help-buffer
+       "Apropos Commands"
+       (concat "Apropos command search is not yet backed by the full command index.\nPattern: "
+               arg)))))
 
 ;;;###autoload
 (defun emacs-help-gui-apropos-documentation (&optional pattern)
