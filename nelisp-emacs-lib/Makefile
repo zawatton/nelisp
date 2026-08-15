@@ -857,8 +857,14 @@ help:
 	@echo "  VENDOR_FAST_PROOF_FORM=$(VENDOR_FAST_PROOF_FORM)  fast load/REPL proof"
 	@echo "  VENDOR_FAST_DETAIL_FORM=$(VENDOR_FAST_DETAIL_FORM)  fast REPL failure detail"
 
+# load-prefer-newer matters here: compiling a file loads its requires,
+# and without it a .elc left over from an earlier build wins over the
+# .el that has just been edited.  A function added to a module in this
+# run then reads as void to every module that requires it, and the
+# build fails on source that is perfectly correct.
 compile:
 	$(EMACS) -L src $(NELISP_LOAD_PATH) \
+		--eval '(setq load-prefer-newer t)' \
 		--eval '(setq native-comp-enable-subr-trampolines nil)' \
 		-f batch-byte-compile $(SRC_BYTE_COMPILE_FILES)
 	$(EMACS) -Q -L src -l src/generator.el \
