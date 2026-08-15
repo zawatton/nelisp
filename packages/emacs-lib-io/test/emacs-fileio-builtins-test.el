@@ -38,6 +38,15 @@
          (emacs-fileio--buffer-files nil))
      ,@body))
 
+(defmacro emacs-fileio-builtins-test--with-path-mode (drive-letters home &rest body)
+  "Run BODY with path mode DRIVE-LETTERS and HOME."
+  (declare (indent 2) (debug (form form body)))
+  `(let ((nelisp-ec-file-name-drive-letters ,drive-letters))
+     (cl-letf (((symbol-function 'getenv)
+                (lambda (variable)
+                  (and (equal variable "HOME") ,home))))
+       ,@body)))
+
 (defun emacs-fileio-builtins-test--read-defun (file marker)
   "Return the source of the form starting at MARKER in FILE."
   (with-temp-buffer
@@ -161,6 +170,75 @@
                  (nelisp-ec-file-name-as-directory "/tmp/file")))
   (should (equal "/tmp/file/"
                  (nelisp-ec-file-name-as-directory "/tmp/file/"))))
+
+(ert-deftest emacs-fileio-builtins-test/windows-acceptance-table-drive-letters-on ()
+  (emacs-fileio-builtins-test--with-path-mode t "C:\\Users\\kuroz"
+    (let ((default-directory "~/Cowork/Notes/dev/nelisp-emacs/")
+          (cwd "c:/Users/kuroz/Cowork/Notes/dev/nelisp-emacs"))
+      (should (nelisp-ec-file-name-absolute-p "~/x"))
+      (should (equal "c:/Users/kuroz/x"
+                     (nelisp-ec-expand-file-name "~/x")))
+      (should (nelisp-ec-file-name-absolute-p "C:/Foo"))
+      (should (equal "C:/Foo"
+                     (nelisp-ec-expand-file-name "C:/Foo")))
+      (should (nelisp-ec-file-name-absolute-p "c:/Foo"))
+      (should (equal "c:/Foo"
+                     (nelisp-ec-expand-file-name "c:/Foo")))
+      (should (nelisp-ec-file-name-absolute-p "//server/share/x"))
+      (should (equal "//server/share/x"
+                     (nelisp-ec-expand-file-name "//server/share/x")))
+      (should-not (nelisp-ec-file-name-absolute-p "rel/path"))
+      (should (equal (concat cwd "/rel/path")
+                     (nelisp-ec-expand-file-name "rel/path")))
+      (should (nelisp-ec-file-name-absolute-p "/posix/abs"))
+      (should (equal "/posix/abs"
+                     (nelisp-ec-expand-file-name "/posix/abs"))))))
+
+(ert-deftest emacs-fileio-builtins-test/windows-acceptance-table-drive-letters-off ()
+  (emacs-fileio-builtins-test--with-path-mode nil "C:\\Users\\kuroz"
+    (let ((default-directory "/tmp/base/")
+          (cwd "/tmp/base"))
+      (should (nelisp-ec-file-name-absolute-p "~/x"))
+      (should (equal "c:/Users/kuroz/x"
+                     (nelisp-ec-expand-file-name "~/x")))
+      (should-not (nelisp-ec-file-name-absolute-p "C:/Foo"))
+      (should (equal (concat cwd "/C:/Foo")
+                     (nelisp-ec-expand-file-name "C:/Foo")))
+      (should-not (nelisp-ec-file-name-absolute-p "c:/Foo"))
+      (should (equal (concat cwd "/c:/Foo")
+                     (nelisp-ec-expand-file-name "c:/Foo")))
+      (should (nelisp-ec-file-name-absolute-p "//server/share/x"))
+      (should (equal "//server/share/x"
+                     (nelisp-ec-expand-file-name "//server/share/x")))
+      (should-not (nelisp-ec-file-name-absolute-p "rel/path"))
+      (should (equal (concat cwd "/rel/path")
+                     (nelisp-ec-expand-file-name "rel/path")))
+      (should (nelisp-ec-file-name-absolute-p "/posix/abs"))
+      (should (equal "/posix/abs"
+                     (nelisp-ec-expand-file-name "/posix/abs"))))))
+
+(ert-deftest emacs-fileio-builtins-test/windows-drive-root-collapse-preserves-prefix ()
+  (emacs-fileio-builtins-test--with-path-mode t "C:\\Users\\kuroz"
+    (should (equal "C:/Bar"
+                   (nelisp-ec-expand-file-name "C:/Foo/../Bar")))))
+
+(ert-deftest emacs-fileio-builtins-test/drive-relative-name-stays-relative ()
+  (emacs-fileio-builtins-test--with-path-mode t "C:\\Users\\kuroz"
+    (let ((default-directory "/tmp/base/"))
+      (should-not (nelisp-ec-file-name-absolute-p "c:foo"))
+      (should (equal "/tmp/base/c:foo"
+                     (nelisp-ec-expand-file-name "c:foo"))))))
+
+(ert-deftest emacs-fileio-builtins-test/relative-name-against-tilde-default-dir ()
+  (emacs-fileio-builtins-test--with-path-mode nil "/home/tester"
+    (should (equal "/home/tester/base/rel/path"
+                   (nelisp-ec-expand-file-name "rel/path" "~/base/")))))
+
+(ert-deftest emacs-fileio-builtins-test/unc-root-survives-expansion ()
+  (emacs-fileio-builtins-test--with-path-mode t "C:\\Users\\kuroz"
+    (should (equal "//server/share/dir/file"
+                   (nelisp-ec-expand-file-name
+                    "//server/share/dir/./sub/../file")))))
 
 (ert-deftest emacs-fileio-builtins-test/file-readable-p-missing-is-nil ()
   (let ((missing (emacs-fileio-builtins-test--tmp-path "missing.txt")))
