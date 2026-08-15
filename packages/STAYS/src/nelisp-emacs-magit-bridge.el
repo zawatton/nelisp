@@ -4676,14 +4676,16 @@ Functions:
     (defvar button-map (make-sparse-keymap)))
   (unless (boundp 'button-buffer-map)
     (defvar button-buffer-map (make-sparse-keymap)))
-  (unless (boundp 'ctl-x-map)
-    (defvar ctl-x-map (make-sparse-keymap)))
-  (unless (boundp 'local-function-key-map)
-    (defvar local-function-key-map (make-sparse-keymap)))
-  (unless (boundp 'overriding-local-map)
-    (defvar overriding-local-map nil))
-  (unless (boundp 'overriding-terminal-local-map)
-    (defvar overriding-terminal-local-map nil))
+  ;; REMOVED from the batch (measured 2026-08-15): pre-binding
+  ;; `tool-bar-map' turned bundle part 16's load into a deterministic
+  ;; SIGSEGV (isolated by leave-one-out + an inert same-shape filler
+  ;; substitution: the dummy survives, the real name dies -- semantic,
+  ;; not layout).  The real map belongs to vendor tool-bar.el, which
+  ;; PRECOND 51 loads; an empty pre-bound map collides with that path.
+  ;; `ctl-x-map', `local-function-key-map', and the two overriding-*
+  ;; variables were dropped with it: none was a measured blocker, and
+  ;; speculative over-provisioning is exactly what caused this crash.
+  ;; If execution ever reads one, it now fails loudly by name.
   (unless (boundp 'read-expression-map)
     (defvar read-expression-map (make-sparse-keymap)))
   (unless (boundp 'y-or-n-p-map)
