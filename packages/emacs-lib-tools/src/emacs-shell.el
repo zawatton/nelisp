@@ -25,12 +25,13 @@
 
 ;;; Code:
 
+(require 'emacs-process)
 (require 'emacs-comint)
 
 (defvar emacs-shell-buffer-name "*shell*"
   "Buffer name used by `emacs-shell'.")
 
-(defvar emacs-shell-file-name "/bin/sh"
+(defvar emacs-shell-file-name (emacs-process-resolve-shell-file-name)
   "Shell program run for each submitted command line.")
 
 (defvar emacs-shell-prompt-string "$ "

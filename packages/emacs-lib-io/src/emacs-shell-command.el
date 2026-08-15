@@ -30,6 +30,10 @@
 (defconst emacs-shell-command-async-buffer-name "*Async Shell Command*"
   "Default output buffer for asynchronous shell commands.")
 
+(defvar emacs-shell-command-shell-file-name
+  (emacs-process-resolve-shell-file-name)
+  "Shell program used by the GUI bridge shell-command helpers.")
+
 (defvar emacs-shell-command-last-async-process nil
   "Most recent process started by `async-shell-command'.")
 
@@ -350,7 +354,7 @@ UNAVAILABLE-TEXT is used when no process substrate is available."
              (not (equal command "")))
         (setq status
               (emacs-shell-command-gui--call-process
-               "/bin/sh" nil nil nil "-c"
+               emacs-shell-command-shell-file-name nil nil nil "-c"
                (concat "exec > " output-file " 2>&1\n"
                        command)))
       (setq status 127))
@@ -415,7 +419,7 @@ UNAVAILABLE-TEXT is used when no process substrate is available."
                  (not (equal command "")))
             (setq status
                   (emacs-shell-command-gui--call-process
-                   "/bin/sh" nil output-file nil "-c"
+                   emacs-shell-command-shell-file-name nil output-file nil "-c"
                    command))
           (setq status 127))
         (if (emacs-shell-command-gui--call-process-available-p)
@@ -462,7 +466,7 @@ UNAVAILABLE-TEXT is used when no process substrate is available."
              (not (equal command "")))
         (setq status
               (emacs-shell-command-gui--call-process
-               "/bin/sh" nil nil nil "-c"
+               emacs-shell-command-shell-file-name nil nil nil "-c"
                (concat "cd "
                        (emacs-shell-command-gui-shell-quote-argument
                         directory)
