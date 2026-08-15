@@ -4652,6 +4652,14 @@ Functions:
     (defvar vc-git-log-view-mode-map (make-sparse-keymap)))
   (unless (boundp 'minibuffer-local-completion-map)
     (defvar minibuffer-local-completion-map (make-sparse-keymap)))
+  ;; Siblings from the same minibuffer.el keymap family: the magit-status
+  ;; smoke's EXECUTION phase (first phase past load-time) died on
+  ;; `minibuffer-local-must-match-map' (measured 2026-08-15); provide the
+  ;; base map too, the read paths chain through both.
+  (unless (boundp 'minibuffer-local-must-match-map)
+    (defvar minibuffer-local-must-match-map (make-sparse-keymap)))
+  (unless (boundp 'minibuffer-local-map)
+    (defvar minibuffer-local-map (make-sparse-keymap)))
   (unless (boundp 'mode-line-misc-info)
     (defvar mode-line-misc-info nil))
   (unless (boundp 'idle-update-delay)
