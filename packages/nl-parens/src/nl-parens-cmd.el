@@ -28,6 +28,13 @@
 
 ;; Flymake is a host-only convenience.  Keep this file out of the standalone
 ;; load path so the analysis package retains its dependency-free contract.
+;;
+;; The two functions below are defined inside the `when', so the byte
+;; compiler does not register them the way it registers a top-level
+;; `defun'; declare the one referenced by the other or `make compile'
+;; fails under `byte-compile-error-on-warn'.
+(declare-function nl-parens-flymake-backend "nl-parens-cmd" (report-fn &rest _args))
+
 (when (require 'flymake nil t)
   (defun nl-parens-flymake-backend (report-fn &rest _args)
     "Report current-buffer nl-parens findings to Flymake through REPORT-FN."
