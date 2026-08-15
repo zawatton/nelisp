@@ -164,8 +164,13 @@ Each value is a plist with keys:
       "")))
 
 (defun org-capture--time-string (format-string)
-  "Return a time string for FORMAT-STRING using the current time."
-  (format-time-string format-string (current-time)))
+  "Return a time string for FORMAT-STRING using the current time.
+Formatted under the C locale: the `%t' / `%T' / `%U' placeholders
+produce Org timestamps, which other tools parse, and `%a' inside them
+is locale-dependent -- on a Japanese host it renders a day name no Org
+timestamp reader expects."
+  (let ((system-time-locale "C"))
+    (format-time-string format-string (current-time))))
 
 (defun org-capture--replacement-for-code (code)
   "Return replacement text for placeholder CODE."

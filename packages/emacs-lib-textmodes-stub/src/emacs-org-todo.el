@@ -221,8 +221,13 @@ with `:old-keyword' and `:new-keyword'."
 ;;;; Logging
 
 (defun org-todo--timestamp-string ()
-  "Return a lightweight Org CLOSED timestamp."
-  (format-time-string "[%Y-%m-%d %a %H:%M]"))
+  "Return a lightweight Org CLOSED timestamp.
+The day name is formatted under the C locale.  An Org timestamp is
+data that other tools parse, and `%a' is locale-dependent: on this
+host it renders as a Japanese day name, which no Org timestamp reader
+expects."
+  (let ((system-time-locale "C"))
+    (format-time-string "[%Y-%m-%d %a %H:%M]")))
 
 (defun org-todo--direct-logbook-range ()
   "Return plist describing an immediate LOGBOOK drawer, or nil.
