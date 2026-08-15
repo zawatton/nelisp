@@ -4714,6 +4714,18 @@ See `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'."
   ;; working instead of dying on nil.
   (unless (boundp 'text-mode-map)
     (defvar text-mode-map (make-sparse-keymap)))
+  ;; Parts 17-20 load-time reads (harvested by walk v9, 2026-08-15):
+  ;; tabulated-list.el / project.el / startup.el are not bundled.
+  ;; `after-init-time' nil is even the real-Emacs value while startup
+  ;; is still in progress, so nil is honest here, not a placeholder.
+  (unless (boundp 'tabulated-list-mode-map)
+    (defvar tabulated-list-mode-map (make-sparse-keymap)))
+  (unless (boundp 'project-prefix-map)
+    (defvar project-prefix-map (make-sparse-keymap)))
+  (unless (boundp 'project-switch-commands)
+    (defvar project-switch-commands nil))
+  (unless (boundp 'after-init-time)
+    (defvar after-init-time nil))
   ;; `tool-bar-local-item-from-menu' (vendor tool-bar.el, loaded by PRECOND
   ;; 51 which runs before this) resolves menu entries through global-map's
   ;; [menu-bar] subtree -- which this substrate does not populate, so the
@@ -4724,6 +4736,28 @@ See `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'."
   ;; only the from-menu variant a no-op; `tool-bar-local-item' (help-mode's
   ;; need, the reason PRECOND 51 loads the real file) stays real.
   (fset 'tool-bar-local-item-from-menu (lambda (&rest _ignored) nil)))
+
+(defun nelisp-emacs-magit-bridge--ensure-bundled-forward-features ()
+  "Pre-provide bundled features that earlier parts `require' forward.
+
+Bundle parts 16-19 carry vendor top-level `(require 'magit)' forms,
+but the `magit' feature itself is provided by part 20: in real Emacs
+the `require' would load magit.el from `load-path' on demand, while
+here it dies with \"Cannot open load file: magit\" (measured on part
+16, 2026-08-15).  The bundle generator already topologically orders
+the REAL definition dependencies, so satisfying the feature check
+up front is sound; the actual part-20 forms still execute because the
+bundle's own resume guard tracks
+`nelisp-emacs-magit-bridge-bundle--loaded-features', a separate
+variable from `features'.
+
+Known risk, accepted deliberately: vendor code that probes
+`(featurep 'magit)' during parts 1-19 to conditionally integrate will
+see t early.  Any resulting reference to a not-yet-loaded definition
+now fails LOUDLY (void-function/void-variable) thanks to the
+substrate's signal fixes, so this cannot regress into a silent stop."
+  (unless (featurep 'magit)
+    (provide 'magit)))
 
 (defun nelisp-emacs-magit-bridge--precond-trace (text)
   "Write TEXT as a precondition progress marker."
@@ -4844,6 +4878,8 @@ See `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'."
   (nelisp-emacs-magit-bridge--ensure-save-some-buffers)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 55 vendor-preload-globals\n")
   (nelisp-emacs-magit-bridge--ensure-vendor-preload-globals)
+  (nelisp-emacs-magit-bridge--precond-trace "PRECOND 56 bundled-forward-features\n")
+  (nelisp-emacs-magit-bridge--ensure-bundled-forward-features)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND-ALL-OK\n"))
 
 (defun nelisp-emacs-magit-bridge-load ()
