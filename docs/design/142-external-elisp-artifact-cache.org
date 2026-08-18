@@ -85,9 +85,11 @@
   compiles native-eligible top-level =defun= bodies through the pure-elisp
   AOT compiler (=nelisp-aot-compile-to-object=) into one ET_REL
   object, embeds it (base64) in the artifact's =:native= section alongside
-  the FULL portable bytecode module, and records native metadata (arch,
-  symbols, object sha256) in the manifest with =:artifact-class native= and
-  =:runtime-abi nelisp-neln-aot-v1=.  Per §6.3 the bytecode lane is the
+  the FULL portable bytecode module.  The manifest records only the
+  wrapper-install subset (=symbols= and =defuns=), with
+  =:artifact-class native= and =:runtime-abi nelisp-neln-aot-v1=; full native
+  metadata (arch, object sha256, relocs, externs) and code remain in the
+  integrity-covered artifact payload.  Per §6.3 the bytecode lane is the
   portable fallback, so a =.neln= loads and runs on host (and any non-x86_64
   target) via bytecode while carrying native code for a standalone runtime.
   Each defun is probed individually so one unsupported body does not sink the

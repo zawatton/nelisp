@@ -1795,6 +1795,148 @@ form through emit-extern-call → asm reloc → ELF writer so that
             (should (string-match-p "UND[ \t]+ext_helper" ss-out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/chunk-external-native-stays-direct ()
+  "An allowlisted native from another chunk remains a direct PLT32 call."
+  (let* ((nelisp-aot-compiler--external-native-symbols '("cross-native"))
+         (unit (nelisp-aot-compile-to-link-unit
+                '(defun caller (x) (cross-native x)))))
+    (should (equal (plist-get unit :extern-symbols)
+                   '("cross-native")))))
+
+(ert-deftest nelisp-aot-compiler/chunk-nonnative-calls-use-calln ()
+  "Non-native symbol-head calls cross the AOT builtin_calln boundary."
+  (let ((nelisp-aot-compiler--external-native-symbols '(cross-native)))
+    (dolist (source '((defun caller (x) (aref x 0))
+                      (defun caller (x) (arbitrary-elisp x))))
+      (let ((unit (nelisp-aot-compile-to-link-unit source)))
+        (should (equal (plist-get unit :extern-symbols)
+                       '("nelisp_aot_builtin_calln" "nl_alloc_symbol")))))))
+
+(ert-deftest nelisp-aot-compiler/chunk-explicit-extern-call-stays-raw ()
+  "Explicit `extern-call' is unaffected by the chunk call policy."
+  (let* ((nelisp-aot-compiler--external-native-symbols '(cross-native))
+         (unit (nelisp-aot-compile-to-link-unit
+                '(defun caller (x) (extern-call raw_helper x)))))
+    (should (equal (plist-get unit :extern-symbols)
+                   '("raw_helper")))))
+
+(ert-deftest nelisp-aot-compiler/chunk-nil-policy-is-backward-compatible ()
+  "A nil chunk policy preserves the legacy direct-external behavior."
+  (let* ((nelisp-aot-compiler--external-native-symbols nil)
+         (unit (nelisp-aot-compile-to-link-unit
+                '(defun caller (x) (arbitrary-elisp x)))))
+    (should (equal (plist-get unit :extern-symbols)
+                   '("arbitrary-elisp")))))
+
+(ert-deftest nelisp-aot-compiler/chunk-same-unit-defun-takes-priority ()
+  "A same-unit definition wins over the external-native symbol policy."
+  (let* ((nelisp-aot-compiler--external-native-symbols '(cross-native))
+         (unit (nelisp-aot-compile-to-link-unit
+                '(seq
+                  (defun local-helper (x) x)
+                  (defun caller (x) (local-helper x))))))
+    (should-not (plist-get unit :extern-symbols))))
+
+(ert-deftest nelisp-aot-compiler/chunk-calln-requires-boundary ()
+  "A non-native chunk call fails deterministically without an AOT boundary."
+  (let ((nelisp-aot-compiler--allow-external-user-calls t)
+        (nelisp-aot-compiler--external-native-symbols '(cross-native))
+        caught)
+    (condition-case err
+        (nelisp-aot-compiler--parse-value
+         '(arbitrary-elisp 1) nil nil nil)
+      (nelisp-aot-compiler-error
+       (setq caught err)))
+    (should caught)
+    (should (eq (nth 1 caught)
+                :external-user-call-boundary-missing))))
+
+(ert-deftest nelisp-aot-compiler/chunk-calln-rejects-too-many-args ()
+  "A chunk call beyond builtin_calln's arity limit fails deterministically."
+  (let ((nelisp-aot-compiler--external-native-symbols '(cross-native))
+        caught)
+    (condition-case err
+        (nelisp-aot-compile-to-link-unit
+         '(defun caller (x)
+            (arbitrary-elisp x x x x x x x x x)))
+      (nelisp-aot-compiler-error
+       (setq caught err)))
+    (should caught)
+    (should (eq (nth 1 caught)
+                :external-user-call-too-many-args))
+    (should (= (nth 4 caught) 8))
+    (should (= (nth 6 caught) 9))))
+
+(ert-deftest nelisp-aot-compiler/vararg-bridges-accept-eight-args ()
+  "Fixed-width funcalln/applyn/listn bridges accept their full a0..a7 ABI."
+  (dolist
+      (case
+       '((nelisp_aot_funcalln
+          (defun bridge-funcall8 (fn)
+            (funcall fn 0 1 2 3 4 5 6 7)))
+         (nelisp_aot_applyn
+          (defun bridge-apply8 (fn tail)
+            (apply fn 0 1 2 3 4 5 6 tail)))
+         (nelisp_aot_listn
+          (seq
+           (defun bridge-rest8 (a b c d e f &rest rest) rest)
+           (defun bridge-list8 ()
+             (bridge-rest8 0 1 2 3 4 5 6 7 8 9 10 11 12 13))))))
+    (let ((unit (nelisp-aot-compile-to-link-unit (nth 1 case))))
+      (should (member (symbol-name (nth 0 case))
+                      (plist-get unit :extern-symbols))))))
+
+(ert-deftest nelisp-aot-compiler/vararg-bridges-reject-nine-args ()
+  "A ninth trailing bridge argument fails before unsafe object emission."
+  (dolist
+      (case
+       '((nelisp_aot_funcalln
+          (defun bridge-funcall9 (fn)
+            (funcall fn 0 1 2 3 4 5 6 7 8)))
+         (nelisp_aot_applyn
+          (defun bridge-apply9 (fn tail)
+            (apply fn 0 1 2 3 4 5 6 7 tail)))
+         (nelisp_aot_listn
+         (seq
+           (defun bridge-rest9 (a b c d e f &rest rest) rest)
+           (defun bridge-list9 ()
+             (bridge-rest9 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14))))))
+    (let ((caught nil)
+          (path (make-temp-file "nelisp-vararg-bridge-overflow-" nil ".o")))
+      (unwind-protect
+          (progn
+            (delete-file path)
+            (condition-case err
+                (nelisp-aot-compile-to-object (nth 1 case) path)
+              (nelisp-aot-compiler-error
+               (setq caught err)))
+            (should caught)
+            (should (eq (nth 1 caught)
+                        :aot-vararg-bridge-too-many-args))
+            (should (eq (nth 2 caught) (nth 0 case)))
+            (should (= (nth 4 caught) 8))
+            (should (= (nth 6 caught) 9))
+            (should-not (file-exists-p path)))
+        (ignore-errors (delete-file path))))))
+
+(ert-deftest nelisp-aot-compiler/fixed-funcall-and-apply-bridges-unchanged ()
+  "Fixed funcall1/2/3 and one-list apply keep their dedicated ABIs."
+  (let* ((unit
+          (nelisp-aot-compile-to-link-unit
+           '(seq
+             (defun bridge-fixed1 (fn x) (funcall fn x))
+             (defun bridge-fixed2 (fn x y) (funcall fn x y))
+             (defun bridge-fixed3 (fn x y z) (funcall fn x y z))
+             (defun bridge-fixed-apply (fn tail) (apply fn tail)))))
+         (externs (plist-get unit :extern-symbols)))
+    (dolist (name '("nelisp_aot_funcall1"
+                    "nelisp_aot_funcall2"
+                    "nelisp_aot_funcall3"
+                    "nelisp_aot_apply"))
+      (should (member name externs)))
+    (should-not (member "nelisp_aot_funcalln" externs))
+    (should-not (member "nelisp_aot_applyn" externs))))
+
 (ert-deftest nelisp-aot-compiler/e2e-variadic-defun-forwards-va-list ()
   "Defined-varargs: a `defun' whose param list ends with `&c-varargs'
 emits the SysV AMD64 variadic prologue (= a 176-byte register-save-area

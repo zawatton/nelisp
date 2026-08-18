@@ -21,12 +21,14 @@
 ;;     macro, recursive macros, macros invoked from a defun after
 ;;     the macro itself is defined (call-time expansion)
 ;;
-;; Backquote is deferred to Phase 2, so every test macro builds its
-;; result with explicit `list' / `cons' construction.
+;; Backquote is deferred to Phase 2, so most test macros still build
+;; their result with explicit `list' / `cons' construction; the
+;; backquote/comma regression below is intentional.
 
 ;;; Code:
 
 (require 'ert)
+(require 'nelisp-load)
 (require 'nelisp-macro)
 
 (defun nelisp-macro-test--define-unless ()
@@ -36,6 +38,14 @@ backquote, which the Week 3-4 reader does not yet handle."
   (nelisp-eval
    '(defmacro my-unless (c &rest body)
       (list 'if c nil (cons 'progn body)))))
+
+(defconst nelisp-macro-test--cl-macros-source
+  (expand-file-name "../lisp/nelisp-cl-macros.el"
+                    (file-name-directory (or load-file-name buffer-file-name))))
+
+(defun nelisp-macro-test--load-cl-macros-source ()
+  "Load the source version of `nelisp-cl-macros.el' into host Emacs."
+  (load-file nelisp-macro-test--cl-macros-source))
 
 ;;; Sanity ------------------------------------------------------------
 
@@ -201,6 +211,22 @@ backquote, which the Week 3-4 reader does not yet handle."
   (let ((expanded (nelisp-macroexpand-all '(+ (one) 2))))
     (should (equal expanded '(+ (quote 1) 2)))))
 
+;;; setf -------------------------------------------------------------
+
+(ert-deftest nelisp-macro-setf-composite-accessors-expand ()
+  "Composite list accessors expand to nested `setcar' / `setcdr'."
+  (nelisp-macro-test--load-cl-macros-source)
+  (should (equal (macroexpand-1 '(setf (cddr x) v))
+                 '(setcdr (cdr x) v)))
+  (should (equal (macroexpand-1 '(setf (caadr x) v))
+                 '(setcar (car (cdr x)) v)))
+  (should (equal (macroexpand-1 '(setf (cdadr x) v))
+                 '(setcdr (car (cdr x)) v)))
+  (should (equal (macroexpand-1 '(setf (cadddr x) v))
+                 '(setcar (cdr (cdr (cdr x))) v)))
+  (should-error (macroexpand-1 '(setf (cddr x y) v))
+                :type 'error))
+
 ;;; Integration with evaluator --------------------------------------
 
 (ert-deftest nelisp-macro-unless-anchor ()
@@ -283,6 +309,20 @@ table and returns the first-step expansion."
   (should (equal (nelisp-eval
                   '(macroexpand-all (quote (let ((x (one))) x))))
                  '(let ((x 1)) x))))
+
+(ert-deftest nelisp-macro-source-eval-macroexpand-all-backquote-closure ()
+  "Source evaluation can macroexpand a backquote-based macro closure.
+This is the faithful regression for the historical cc-mode/source-eval
+gate: the macro body uses backquote/comma, and the expansion runs through
+`nelisp-load-string' rather than the host evaluator."
+  (nelisp--reset)
+  (should (equal
+           (nelisp-load-string
+            "(progn
+               (defmacro cc-provide (feature)
+                 `(progn (provide ,feature)))
+               (macroexpand-all '(cc-provide 'cc-defs-probe)))")
+           '(progn (provide 'cc-defs-probe)))))
 
 ;;; Doc 12 §3.4 — host `macroexpand' は呼ばれないこと dynamic trace ----
 

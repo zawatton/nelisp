@@ -85,6 +85,25 @@
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-core-fileio/read-file-as-string-strips-utf8-bom ()
+  "Core source reads decode non-ASCII UTF-8 and strip an initial BOM."
+  (let* ((file-path (make-temp-file "nelisp-core-fileio-bom-" nil ".el"))
+         (expected "(setq greeting \"こんにちは\")\n")
+         (bytes (append nelisp-coding-utf8-bom
+                        (nelisp-coding-utf8-encode expected))))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert (apply #'unibyte-string bytes))
+            (let ((coding-system-for-write 'no-conversion))
+              (write-region (point-min) (point-max) file-path nil 'silent)))
+          (should (string-equal
+                   (nelisp-core-read-file-as-string file-path)
+                   expected)))
+      (when (file-exists-p file-path)
+        (delete-file file-path)))))
+
 (provide 'nelisp-core-fileio-test)
 
 ;;; nelisp-core-fileio-test.el ends here

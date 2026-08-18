@@ -74,6 +74,32 @@
 (ert-deftest nelisp-reader-char-literal-at-eof ()
   (should-error (nelisp-read "?") :type 'nelisp-read-error))
 
+;;; Escaped symbols ----------------------------------------------------
+
+(ert-deftest nelisp-reader-symbol-escapes-reader-punctuation ()
+  "Backslash-quoted punctuation is symbol data, not reader syntax."
+  (should (equal (symbol-name (nelisp-read "\\,")) ","))
+  (should (equal (symbol-name (nelisp-read "\\,@")) ",@"))
+  (should (equal (symbol-name (nelisp-read "\\`")) "`"))
+  (should (equal (symbol-name (nelisp-read "\\(")) "(")))
+
+(ert-deftest nelisp-reader-symbol-escapes-whitespace-and-numeric-text ()
+  (should (equal (symbol-name (nelisp-read "foo\\ bar")) "foo bar"))
+  (let ((value (nelisp-read "\\1")))
+    (should (symbolp value))
+    (should (equal (symbol-name value) "1"))))
+
+(ert-deftest nelisp-reader-symbol-escape-in-quoted-form ()
+  "The nemacs bootstrap backquote constants use this exact reader shape."
+  (let ((comma (intern ",")))
+    (should
+     (equal (nelisp-read "(defconst backquote-unquote-symbol '\\,)")
+            (list 'defconst 'backquote-unquote-symbol
+                  (list 'quote comma))))))
+
+(ert-deftest nelisp-reader-symbol-trailing-escape-errors ()
+  (should-error (nelisp-read "foo\\") :type 'nelisp-read-error))
+
 ;;; Backquote — reader level --------------------------------------------
 
 (ert-deftest nelisp-reader-bq-atom-quotes-it ()
@@ -146,9 +172,9 @@ The expansion evaluates to the same list as a plain quote."
 
 ;;; Backquote errors ---------------------------------------------------
 
-(ert-deftest nelisp-reader-unquote-outside-backquote ()
-  (should-error (nelisp-read ",x")   :type 'nelisp-read-error)
-  (should-error (nelisp-read ",@x")  :type 'nelisp-read-error))
+(ert-deftest nelisp-reader-unquote-outside-backquote-is-literal-marker ()
+  (should (equal (nelisp-read ",x") (list (intern ",") 'x)))
+  (should (equal (nelisp-read ",@x") (list (intern ",@") 'x))))
 
 (ert-deftest nelisp-reader-splice-outside-list ()
   "A bare `,@x' directly after a backquote (not in a list) is invalid."

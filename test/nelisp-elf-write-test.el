@@ -1096,6 +1096,56 @@ Used by the §99.A smoke + ld-can-link tests.  Total 12 bytes of .text."
             (should (= (aref bytes (+ 64 11)) #x05))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-elf-write-rel-multibyte-byte-lengths ()
+  "ET_REL keeps section-header offsets on byte boundaries for multibyte raw bytes."
+  (let* ((text (string #x80 #x81 #x82 #x83 #x84))
+         (rodata (string #x85 #x86 #x87))
+         (data (string #x88 #x89))
+         (text-bytes (string-bytes text))
+         (rodata-bytes (string-bytes rodata))
+         (data-bytes (string-bytes data))
+         (text-off nelisp-elf--ehdr-size)
+         (shstrtab-size (+ 1
+                           (+ (length ".text") 1)
+                           (+ (length ".rodata") 1)
+                           (+ (length ".data") 1)
+                           (+ (length ".shstrtab") 1)
+                           (+ (length ".strtab") 1)
+                           (+ (length ".symtab") 1)))
+         (strtab-size (+ 1 (length "_start") 1))
+         (symtab-off (nelisp-elf--align-up
+                      (+ text-off text-bytes rodata-bytes data-bytes
+                         shstrtab-size strtab-size)
+                      8))
+         (expected-shoff (nelisp-elf--align-up
+                          (+ symtab-off (* 2 nelisp-elf--sym-size))
+                          8))
+         (path (make-temp-file "nelisp-elf-rel-multibyte-" nil ".o")))
+    (should (> text-bytes (length text)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'nelisp-elf--coerce-unibyte) #'identity))
+            (nelisp-elf-write-binary
+             path
+             (list :e-type 'rel
+                   :text text
+                   :rodata rodata
+                   :data data
+                   :symbols (list (list :name "_start" :value 0
+                                        :size text-bytes
+                                        :section 'text :bind 'global
+                                        :type 'func)))))
+          (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+                 (shoff (nelisp-elf--read-le64 bytes 40))
+                 (shentsize (nelisp-elf--read-le16 bytes 58))
+                 (shnum (nelisp-elf--read-le16 bytes 60)))
+            (should (= shnum 7))
+            (should (= shoff expected-shoff))
+            (should (= (+ shoff (* shnum shentsize)) (length bytes)))
+            (should (= (length bytes)
+                       (+ expected-shoff (* shnum shentsize))))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-elf-write-rel-readelf-h ()
   "`readelf -h' confirms the emitted .o is ET_REL (= `Relocatable file')."
   (skip-unless (executable-find "readelf"))

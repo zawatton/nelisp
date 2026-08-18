@@ -23,6 +23,16 @@
 (require 'ert)
 (require 'nelisp)
 
+(defconst nelisp-phase2-stdlib-test--prelude-source
+  (expand-file-name "../scripts/nelisp-stdlib-prelude.el"
+                    (file-name-directory (or load-file-name buffer-file-name))))
+
+(defun nelisp-phase2-stdlib-test--load-core-stdlib ()
+  "Load the stdlib prelude into a fresh NeLisp evaluator."
+  (let ((nelisp-load-prefer-artifacts nil)
+        (nelisp-load-auto-compile-artifacts nil))
+    (nelisp-load-file nelisp-phase2-stdlib-test--prelude-source)))
+
 ;;; Hash tables ------------------------------------------------------
 
 (ert-deftest nelisp-phase2-hash-table-basic ()
@@ -98,6 +108,31 @@
   (should (= (nelisp-eval '(car *p*)) 99))
   (nelisp-eval '(setcdr *p* 100))
   (should (= (nelisp-eval '(cdr *p*)) 100)))
+
+(ert-deftest nelisp-phase2-setf-composite-accessors-mutate-once ()
+  "Composite accessor places mutate through `nelisp-eval' and evaluate base once."
+  (nelisp--reset)
+  (nelisp-phase2-stdlib-test--load-core-stdlib)
+  (nelisp-eval '(defvar nelisp-phase2-setf-test--count 0))
+  (nelisp-eval
+   '(defun nelisp-phase2-setf-test--spine ()
+      (setq nelisp-phase2-setf-test--count
+            (1+ nelisp-phase2-setf-test--count))
+      nelisp-phase2-setf-test--list))
+  (nelisp-eval '(defvar nelisp-phase2-setf-test--list (list 1 2 3 4)))
+  (nelisp-eval '(setf (cddr (nelisp-phase2-setf-test--spine))
+                      (list 9 10)))
+  (should (equal (nelisp-eval 'nelisp-phase2-setf-test--list)
+                 '(1 2 9 10)))
+  (should (= (nelisp-eval 'nelisp-phase2-setf-test--count) 1))
+  (nelisp-eval '(defvar nelisp-phase2-setf-test--tree
+                 (list (list 1 2) (list 3 4))))
+  (nelisp-eval '(setf (caadr nelisp-phase2-setf-test--tree) 99))
+  (should (equal (nelisp-eval 'nelisp-phase2-setf-test--tree)
+                 '((1 2) (99 4))))
+  (nelisp-eval '(setf (cadddr nelisp-phase2-setf-test--list) 77))
+  (should (equal (nelisp-eval 'nelisp-phase2-setf-test--list)
+                 '(1 2 9 77))))
 
 ;;; Symbol utilities -------------------------------------------------
 

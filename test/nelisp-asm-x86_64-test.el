@@ -58,6 +58,10 @@
   "Construct a unibyte-string from the integer args BS."
   (apply #'unibyte-string bs))
 
+(defun nelisp-asm-x86_64-test--mb (&rest bs)
+  "Construct a multibyte string by decoding the raw UTF-8 bytes BS."
+  (decode-coding-string (apply #'unibyte-string bs) 'utf-8))
+
 ;; ---- L0 helpers ----
 
 (ert-deftest nelisp-asm-x86_64-rex-all-zero ()
@@ -120,6 +124,16 @@
   (let ((b (nelisp-asm-x86_64-make-buffer)))
     (nelisp-asm-x86_64-syscall b)
     (should (= (nelisp-asm-x86_64-buffer-pos b) 2))))
+
+(ert-deftest nelisp-asm-x86_64-buffer-pos-uses-string-bytes ()
+  (skip-unless (fboundp 'string-bytes))
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (chunk (nelisp-asm-x86_64-test--mb #x66 #xC3 #xA9 #x67)))
+    (should (/= (length chunk) (string-bytes chunk)))
+    (nelisp-asm-x86_64--append-bytes b chunk)
+    (should (= (nelisp-asm-x86_64-buffer-pos b)
+               (string-bytes chunk)))
+    (should (equal (nelisp-asm-x86_64-buffer-bytes b) chunk))))
 
 ;; ---- single-byte / opcode-only instructions ----
 
@@ -790,6 +804,27 @@
         (should (= (length chunks) 1))
         (should (equal (car chunks) patched)))
       ;; And `buffer-bytes' returns the patched form.
+      (should (equal (nelisp-asm-x86_64-buffer-bytes b) patched)))))
+
+(ert-deftest nelisp-asm-x86_64-92d-resolve-fixups-preserves-raw-high-bytes ()
+  ;; Regression for standalone multibyte chunk materialization:
+  ;; high-byte raw payload must survive fixup resolution unchanged
+  ;; outside the patched 4-byte slot.
+  (let* ((chunk (nelisp-asm-x86_64-test--mb
+                 #x55 #x48 #xC3 #x85 #x48
+                 #x00 #x00 #x00 #x00
+                 #xC3 #xA9 #xC3 #xB1))
+         (expected (nelisp-asm-x86_64-test--ub
+                    #x55 #x48 #xC3 #x85 #x48
+                    #x00 #x00 #x00 #x00
+                    #xC3 #xA9 #xC3 #xB1))
+         (b (nelisp-asm-x86_64-make-buffer)))
+    (aset b 0 (list chunk))
+    (aset b 1 (string-bytes expected))
+    (aset b 2 '((foo . 9)))
+    (aset b 3 '((5 . foo)))
+    (let ((patched (nelisp-asm-x86_64-resolve-fixups b)))
+      (should (equal patched expected))
       (should (equal (nelisp-asm-x86_64-buffer-bytes b) patched)))))
 
 (ert-deftest nelisp-asm-x86_64-92d-benchmark-emit-100kb ()

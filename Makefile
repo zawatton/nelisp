@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-getenv-smoke standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-reader-batch-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
         standalone-reader-mod-float-smoke standalone-reader-match-data-smoke standalone-reader-current-time-smoke \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
         nelisp-nelix-operational-gate \
@@ -272,6 +272,17 @@ standalone-reader-load-smoke: standalone-reader
 	  exit 1; \
 	fi
 
+standalone-reader-getenv-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' '(list (getenv "HOME") (getenv "NELISP_ENV_SMOKE"))' > target/standalone-reader-getenv-smoke.el
+	@out="$$(HOME=/tmp/nelisp-getenv-smoke-home NELISP_ENV_SMOKE=nelisp-getenv-smoke ./target/nelisp --load target/standalone-reader-getenv-smoke.el)"; \
+	if [ "$$out" = '("/tmp/nelisp-getenv-smoke-home" "nelisp-getenv-smoke")' ]; then \
+	  echo "[standalone-reader-getenv-smoke] PASS: --load -> $$out"; \
+	else \
+	  echo "[standalone-reader-getenv-smoke] FAIL: --load -> $$out (expected (\"/tmp/nelisp-getenv-smoke-home\" \"nelisp-getenv-smoke\"))"; \
+	  exit 1; \
+	fi
+
 # Doc 163 Phase C regression: `intern-soft' real soft-fail semantics.
 # The base reader image has no stdlib prelude auto-loaded (plain --load
 # only has the ~175 natively-dispatched builtins; `intern-soft' is a
@@ -328,6 +339,55 @@ standalone-reader-intern-soft-loop-smoke: standalone-reader
 	  echo "[standalone-reader-intern-soft-loop-smoke] FAIL: -> $$out (expected 5)"; \
 	  exit 1; \
 	fi
+
+standalone-reader-batch-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(let* ((f1 "(alpha (beta gamma))")' \
+	  '       (f2 "\"a\\\\b\"")' \
+	  '       (f3 "'\''foo")' \
+	  '       (f4 "\"あ\"")' \
+	  '       (src (concat f1 " " f2 " " f3 " " f4))' \
+	  '       (c1 (string-bytes f1))' \
+	  '       (c2 (+ c1 1 (string-bytes f2)))' \
+	  '       (c3 (+ c2 1 (string-bytes f3)))' \
+	  '       (c4 (+ c3 1 (string-bytes f4)))' \
+	  '       (r1 (nelisp--read-batch-from-string-native src 0 2))' \
+	  '       (r2 (nelisp--read-batch-from-string-native src (cdr r1) 2))' \
+	  '       (r3 (nelisp--read-batch-from-string-native src (cdr r2) 2)))' \
+	  '  (unless (and (equal (car r1) (list (quote (alpha (beta gamma))) "a\\b"))' \
+	  '               (= (cdr r1) c2)' \
+	  '               (equal (car r2) (list (list (quote quote) (quote foo)) "あ"))' \
+	  '               (= (cdr r2) c4)' \
+	  '               (null (car r3))' \
+	  '               (= (cdr r3) c4)' \
+	  '               (< 0 c1 c2 c3 c4))' \
+	  '    (error "batch reader smoke failed: %S %S %S" r1 r2 r3))' \
+	  '  t)' \
+	  > target/standalone-reader-batch-smoke.el
+	@out="$$(./target/nelisp --load target/standalone-reader-batch-smoke.el)"; \
+	if [ "$$out" = "t" ]; then \
+	  echo "[standalone-reader-batch-smoke] PASS: --load -> $$out"; \
+	else \
+	  echo "[standalone-reader-batch-smoke] FAIL: --load -> $$out (expected t)"; \
+	  exit 1; \
+	fi
+	@printf '%s\n' '(nelisp--read-batch-from-string-native "(a)" 4 1)' > target/standalone-reader-batch-smoke-oob.el
+	@printf '%s\n' '(nelisp--read-batch-from-string-native "(a)" 0 0)' > target/standalone-reader-batch-smoke-zero.el
+	@printf '%s\n' '(nelisp--read-batch-from-string-native "(a" 0 1)' > target/standalone-reader-batch-smoke-malformed.el
+	@run_fail() { \
+	  file="$$1"; label="$$2"; \
+	  set +e; ./target/nelisp --load "$$file" >/dev/null 2>&1; rc="$$?"; set -e; \
+	  if [ "$$rc" -ne 0 ]; then \
+	    echo "[$$label] PASS: rejected with exit $$rc"; \
+	  else \
+	    echo "[$$label] FAIL: expected nonzero exit"; \
+	    exit 1; \
+	  fi; \
+	}; \
+	run_fail target/standalone-reader-batch-smoke-oob.el standalone-reader-batch-smoke-oob; \
+	run_fail target/standalone-reader-batch-smoke-zero.el standalone-reader-batch-smoke-zero; \
+	run_fail target/standalone-reader-batch-smoke-malformed.el standalone-reader-batch-smoke-malformed
 
 # Regression smoke for the native `format' directive arms in the reader's
 # m5_fmt_loop (scripts/nelisp-standalone-build.el).  Before the Doc147 fix,

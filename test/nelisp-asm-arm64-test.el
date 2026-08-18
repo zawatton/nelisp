@@ -43,6 +43,10 @@
   "Construct a unibyte-string from the integer args BS."
   (apply #'unibyte-string bs))
 
+(defun nelisp-asm-arm64-test--mb (&rest bs)
+  "Construct a multibyte string by decoding the raw UTF-8 bytes BS."
+  (decode-coding-string (apply #'unibyte-string bs) 'utf-8))
+
 (defun nelisp-asm-arm64-test--word (word)
   "Return WORD as a unibyte-string in 4 LE bytes."
   (nelisp-asm-arm64-test--ub
@@ -88,6 +92,16 @@
   (let ((b (nelisp-asm-arm64-make-buffer)))
     (nelisp-asm-arm64-nop b)
     (should (= (nelisp-asm-arm64-buffer-pos b) 4))))
+
+(ert-deftest nelisp-asm-arm64-buffer-pos-uses-string-bytes ()
+  (skip-unless (fboundp 'string-bytes))
+  (let* ((b (nelisp-asm-arm64-make-buffer))
+         (chunk (nelisp-asm-arm64-test--mb #x66 #xC3 #xA9 #x67)))
+    (should (/= (length chunk) (string-bytes chunk)))
+    (nelisp-asm-arm64--append-bytes b chunk)
+    (should (= (nelisp-asm-arm64-buffer-pos b)
+               (string-bytes chunk)))
+    (should (equal (nelisp-asm-arm64-buffer-bytes b) chunk))))
 
 ;; ---- single-word opcodes ----
 
@@ -466,24 +480,30 @@
                  (nelisp-asm-arm64-test--word #x9AC02BBD))))
 
 (ert-deftest nelisp-asm-arm64-b-cond-eq-placeholder-and-fixup ()
-  ;; B.eq foo emits the base word with imm19 = 0 and records a b19 fixup.
+  ;; B.eq foo emits the documented long-safe 2-instruction form:
+  ;;   B.ne .+8
+  ;;   B    foo
   (let ((b (nelisp-asm-arm64-make-buffer)))
     (nelisp-asm-arm64-b-cond b 'eq 'foo)
     (should (equal (nelisp-asm-arm64-buffer-bytes b)
-                   (nelisp-asm-arm64-test--word #x54000000)))
+                   (concat (nelisp-asm-arm64-test--word #x54000041)
+                           (nelisp-asm-arm64-test--word #x14000000))))
     (should (equal (nelisp-asm-arm64-buffer-fixups b)
-                   '((0 foo b19))))))
+                   '((4 foo b26))))
+    (should (= (nelisp-asm-arm64-buffer-pos b) 8))))
 
 (ert-deftest nelisp-asm-arm64-b-cond-lt-after-nop-placeholder-and-fixup ()
-  ;; B.lt foo at slot 4 keeps imm19 clear in the placeholder and records b19.
+  ;; B.lt foo after one NOP still uses the documented long-safe 2-instruction form.
   (let ((b (nelisp-asm-arm64-make-buffer)))
     (nelisp-asm-arm64-nop b)
     (nelisp-asm-arm64-b-cond b 'lt 'foo)
     (should (equal (nelisp-asm-arm64-buffer-bytes b)
                    (concat (nelisp-asm-arm64-test--word #xD503201F)
-                           (nelisp-asm-arm64-test--word #x5400000B))))
+                           (nelisp-asm-arm64-test--word #x5400004A)
+                           (nelisp-asm-arm64-test--word #x14000000))))
     (should (equal (nelisp-asm-arm64-buffer-fixups b)
-                   '((4 foo b19))))))
+                   '((8 foo b26))))
+    (should (= (nelisp-asm-arm64-buffer-pos b) 12))))
 
 (ert-deftest nelisp-asm-arm64-str-pre-sp-16-x0 ()
   ;; STR x0, [sp, #-16]! = 0xF81F0FE0 | 0 = 0xF81F0FE0
@@ -779,6 +799,29 @@ exec a probe and check exit status."
         (should (= (length chunks) 1))
         (should (equal (car chunks) patched)))
       ;; And `buffer-bytes' returns the patched form.
+      (should (equal (nelisp-asm-arm64-buffer-bytes b) patched)))))
+
+(ert-deftest nelisp-asm-arm64-92d-resolve-fixups-preserves-raw-high-bytes ()
+  ;; Regression for standalone multibyte chunk materialization:
+  ;; b26 fixup slot5->label9 resolves to 1 and must patch only the
+  ;; expected slot byte; the remaining raw high bytes must stay intact.
+  (let* ((chunk (nelisp-asm-arm64-test--mb
+                 #x55 #x48 #xC3 #x85 #x48
+                 #x00 #x00 #x00 #x00
+                 #xC3 #xA9 #xC3 #xB1))
+         (expected (nelisp-asm-arm64-test--ub
+                    #x55 #x48 #xC3 #x85 #x48
+                    #x01 #x00 #x00 #x00
+                    #xC3 #xA9 #xC3 #xB1))
+         (b (nelisp-asm-arm64-make-buffer))
+         (plist nil))
+    (setq plist (plist-put plist :chunks (list chunk)))
+    (setq plist (plist-put plist :length (string-bytes expected)))
+    (setq plist (plist-put plist :labels '((foo . 9))))
+    (setq plist (plist-put plist :fixups '((5 foo b26))))
+    (nelisp-asm-arm64--rewrap b plist)
+    (let ((patched (nelisp-asm-arm64-resolve-fixups b)))
+      (should (equal patched expected))
       (should (equal (nelisp-asm-arm64-buffer-bytes b) patched)))))
 
 (ert-deftest nelisp-asm-arm64-92d-benchmark-emit-100kb ()

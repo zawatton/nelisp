@@ -39,7 +39,13 @@ target/
 # Local agent worktrees (Claude Code agent / per-task git worktrees).
 # Developer-local workspaces; not part of the published tree.
 /.claude/
+/.serena/
 /.worktrees/
+
+# Per-machine anvil worklog SQLite index; the canonical one lives under
+# the Notes workspace, this one only appears when a tool resolves its
+# root to this repository.
+/.anvil-worklog/
 
 # AI-specific drift-prevention rules — lives in personal memory, not the
 # OSS-bound repo (= ad-hoc local file is fine, but never tracked).

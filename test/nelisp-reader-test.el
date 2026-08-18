@@ -24,6 +24,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'nelisp-reader)
 
 ;;; --- Atom literals --------------------------------------------------
@@ -34,6 +35,20 @@
 
 (ert-deftest nelisp-reader-test/atom-t ()
   (should (eq (nelisp-reader-read "t") t)))
+
+(ert-deftest nelisp-reader-test/canonical-constants-bypass-intern ()
+  "Unescaped nil/t must not depend on standalone `intern' semantics."
+  (let (interned)
+    (cl-letf (((symbol-function 'intern)
+               (lambda (name &optional _obarray)
+                 (push name interned)
+                 'intern-result)))
+      (should (null (nelisp-reader-read "nil")))
+      (should (eq (nelisp-reader-read "t") t))
+      ;; Escaped names defer to `intern'; this stub observes that route.
+      (should (eq (nelisp-reader-read "\\nil") 'intern-result))
+      (should (eq (nelisp-reader-read "\\t") 'intern-result))
+      (should (equal interned '("t" "nil"))))))
 
 (ert-deftest nelisp-reader-test/atom-integer ()
   (should (= (nelisp-reader-read "0")    0))
@@ -202,9 +217,19 @@
                    '(a 1 2 3 b)))))
 
 (ert-deftest nelisp-reader-test/backquote-comma-outside-errors ()
-  (should-error (nelisp-reader-read ",foo")
-                :type 'nelisp-reader-error)
-  (should-error (nelisp-reader-read ",@foo")
+  (should (equal (nelisp-reader-read ",foo")
+                 (list (intern ",") 'foo)))
+  (should (equal (nelisp-reader-read ",@foo")
+                 (list (intern ",@") 'foo))))
+
+(ert-deftest nelisp-reader-test/escaped-symbols ()
+  (should (equal (symbol-name (nelisp-reader-read "\\,")) ","))
+  (should (equal (symbol-name (nelisp-reader-read "\\,@")) ",@"))
+  (should (equal (symbol-name (nelisp-reader-read "foo\\ bar")) "foo bar"))
+  (let ((value (nelisp-reader-read "\\1")))
+    (should (symbolp value))
+    (should (equal (symbol-name value) "1")))
+  (should-error (nelisp-reader-read "foo\\")
                 :type 'nelisp-reader-error))
 
 ;;; --- Character literals ---------------------------------------------

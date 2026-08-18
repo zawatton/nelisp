@@ -17,6 +17,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'nelisp-read)
 
 ;;; Atoms --------------------------------------------------------------
@@ -27,6 +28,21 @@
 
 (ert-deftest nelisp-read-t ()
   (should (eq (nelisp-read "t") t)))
+
+(ert-deftest nelisp-read-canonical-constants-bypass-intern ()
+  "Unescaped nil/t must not depend on standalone `intern' semantics."
+  (let (interned)
+    (cl-letf (((symbol-function 'intern)
+               (lambda (name &optional _obarray)
+                 (push name interned)
+                 'intern-result)))
+      (should (null (nelisp-read "nil")))
+      (should (eq (nelisp-read "t") t))
+      ;; Escaped names defer to `intern'; real GNU Emacs / standalone intern
+      ;; canonicalises them, while this stub proves the reader call path.
+      (should (eq (nelisp-read "\\nil") 'intern-result))
+      (should (eq (nelisp-read "\\t") 'intern-result))
+      (should (equal interned '("t" "nil"))))))
 
 (ert-deftest nelisp-read-positive-int ()
   (should (equal (nelisp-read "0") 0))

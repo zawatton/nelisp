@@ -21,6 +21,12 @@
 (require 'cl-lib)
 (require 'nelisp-eval)
 
+(defconst nelisp-eval-test--source-file
+  (expand-file-name
+   "../src/nelisp-eval.el"
+   (file-name-directory (or load-file-name buffer-file-name)))
+  "Evaluator source inspected by source-shape tests.")
+
 ;;; Self-evaluating and variable lookup -------------------------------
 
 (ert-deftest nelisp-eval-self-evaluating ()
@@ -268,9 +274,48 @@ binding is visible on each invocation.  Tightens the lexical contract."
 
 ;;; Phase 6.2.0 — url-* + secure-hash primitive registration ----------
 
+(ert-deftest nelisp-eval-optional-primitives-have-no-eager-url-require ()
+  "Evaluator bootstrap skips missing host primitives without loading URL."
+  (let (forms)
+    (with-temp-buffer
+      (insert-file-contents-literally nelisp-eval-test--source-file)
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (push (read (current-buffer)) forms))
+        (end-of-file nil)))
+    (should-not (member '(require 'url-parse) forms))
+    (should-not (member '(require 'url-util) forms))
+    (let* ((install
+            (cl-find-if
+             (lambda (form)
+               (and (consp form)
+                    (eq (car form) 'defun)
+                    (eq (cadr form) 'nelisp--install-primitives)))
+             forms))
+           (source (prin1-to-string install)))
+      (should install)
+      (should (string-match-p
+               (regexp-quote
+                "(when (fboundp sym) (puthash sym (symbol-function sym) nelisp--functions))")
+               source)))))
+
+(ert-deftest nelisp-eval-install-primitives-skips-unavailable-host-function ()
+  "An unavailable optional host function does not abort installation."
+  (let ((missing 'nelisp-eval-test--missing-optional-host-function)
+        (nelisp--primitive-symbols
+         (cons 'nelisp-eval-test--missing-optional-host-function
+               nelisp--primitive-symbols)))
+    (should-not (fboundp missing))
+    (nelisp--reset)
+    (should-not (gethash missing nelisp--functions))
+    (should (gethash 'funcall nelisp--functions))))
+
 (ert-deftest nelisp-eval-primitive-url-symbols-installed ()
   "Phase 6.2.0: 11 url + secure-hash primitives are reachable through
 the NeLisp function table after `nelisp--install-primitives'."
+  (require 'url-parse)
+  (require 'url-util)
   (nelisp--reset)
   (dolist (sym '(url-retrieve-synchronously url-generic-parse-url
                  url-encode-url url-hexify-string url-unhex-string
@@ -281,6 +326,8 @@ the NeLisp function table after `nelisp--install-primitives'."
 (ert-deftest nelisp-eval-primitive-url-parse-roundtrip ()
   "Phase 6.2.0: NeLisp source can parse a URL via the host primitive
 and read back individual fields."
+  (require 'url-parse)
+  (require 'url-util)
   (nelisp--reset)
   (let ((parsed (nelisp-eval
                  '(url-generic-parse-url
@@ -292,6 +339,8 @@ and read back individual fields."
 (ert-deftest nelisp-eval-primitive-secure-hash-cache-key ()
   "Phase 6.2.0: secure-hash is reachable for cache-key derivation
 (Phase 6.2.1 nelisp-http--cache-key uses sha1 over URL)."
+  (require 'url-parse)
+  (require 'url-util)
   (nelisp--reset)
   (should (equal (nelisp-eval '(secure-hash 'sha1 "https://example.com/"))
                  "b559c7edd3fb67374c1a25e739cdd7edd1d79949"))

@@ -46,9 +46,10 @@
 (defvar nelisp-stdlib-hash-test--builtin-clrhash
   (symbol-function 'clrhash))
 
-(load-file (expand-file-name "../lisp/nelisp-stdlib-hash.el"
-                             (file-name-directory
-                              (or load-file-name buffer-file-name))))
+(let ((native-comp-enable-subr-trampolines nil))
+  (load-file (expand-file-name "../lisp/nelisp-stdlib-hash.el"
+                               (file-name-directory
+                                (or load-file-name buffer-file-name)))))
 
 (defalias 'nelisp-stdlib-hash-test--make-hash-table
   (symbol-function 'make-hash-table))
