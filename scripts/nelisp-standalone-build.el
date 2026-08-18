@@ -7104,6 +7104,70 @@ unresolved at link time."
       (if (= (bf_require_arg_present_p args 2) 1)
           (if (= (ptr-read-u64 (wf_arg_ptr args 2) 0) 0) 0 1)
         0))
+    ;; `load-path' resolution for `require'.  A feature name was used as a
+    ;; literal path and nothing read `load-path', so no feature resolved --
+    ;; not even a file sitting in this tree.  Measured before writing this:
+    ;; (require 'f "dir/f.el") loads and its defun is callable, and
+    ;; (load "dir/f.el" nil t) works, so only the name-to-path step was
+    ;; missing.  Each piece below has a working model in this same file:
+    ;; bf_features_symbol / bf_features_get for reading a global, and
+    ;; bf_feature_member_p for walking a list.
+    (defun bf_load_path_symbol (out)
+      (let* ((buf (alloc-bytes 16 1)))
+        (seq (ptr-write-u64 buf 0 8386107321400520556) ; "load-pat"
+             (ptr-write-u8 (+ buf 8) 0 104)            ; "h"
+             (nl_alloc_symbol buf 9 out)
+             0)))
+    ;; Not `bf_features_get''s mirror-only read.  `features' lands in the
+    ;; mirror because `provide' writes it there natively; `load-path' arrives
+    ;; by `setq' and can sit on the frame stack at env+32, where a mirror
+    ;; lookup cannot see it.  `bf_symbol_value' carries the same correction,
+    ;; with a comment about (let ((x 9)) (symbol-value 'x)) reading the global.
+    (defun bf_load_path_get (env out)
+      (let* ((sym (alloc-bytes 32 8)))
+        (seq
+         (bf_load_path_symbol sym)
+         (if (= (nelisp_env_lookup_value (+ env 0) (+ env 32) sym out) 0)
+             0
+           (seq (wf_write_nil out) 0)))))
+    ;; Copy N bytes of SRC into DST at DSTI.  `nl_bi_cpath_loop' is the same
+    ;; shape but always writes from 0 and NUL-terminates, so it cannot append.
+    (defun bf_rq_copy (src dst dsti i n)
+      (if (= i n)
+          (+ dsti n)
+        (nl_seq2 (ptr-write-u8 dst (+ dsti i) (ptr-read-u8 src i))
+                 (bf_rq_copy src dst dsti (+ i 1) n))))
+    ;; DIR + "/" + FEATURE + ".el" as a Str.  A Symbol (tag 4) carries the
+    ;; same ptr@16/len@24 layout a Str does, which is what `symbol-name'
+    ;; relies on, so the accessors read a feature directly.  The separator is
+    ;; unconditional: "a//b" and "a/b" name the same file here.
+    (defun bf_require_candidate (feature dir out)
+      (let* ((dptr (nl_bi_strptr dir))
+             (dlen (nl_bi_strlen dir))
+             (nptr (nl_bi_strptr feature))
+             (nlen (nl_bi_strlen feature))
+             (total (+ (+ dlen 1) (+ nlen 3)))
+             (buf (alloc-bytes total 1)))
+        (seq
+         (bf_rq_copy dptr buf 0 0 dlen)
+         (ptr-write-u8 buf dlen 47)                    ; "/"
+         (bf_rq_copy nptr buf (+ dlen 1) 0 nlen)
+         (ptr-write-u8 buf (+ (+ dlen 1) nlen) 46)     ; "."
+         (ptr-write-u8 buf (+ (+ dlen 2) nlen) 101)    ; "e"
+         (ptr-write-u8 buf (+ (+ dlen 3) nlen) 108)    ; "l"
+         (nl_alloc_str buf total out)
+         0)))
+    ;; Walk `load-path' and leave the first readable candidate in OUT.
+    ;; Returns 1 when one was found, 0 otherwise.
+    (defun bf_require_search (feature dirs out)
+      (if (= (ptr-read-u64 dirs 0) 7)
+          (let* ((cand (alloc-bytes 32 8)))
+            (seq
+             (bf_require_candidate feature (nl_cons_car_ptr dirs) cand)
+             (if (= (bf_require_file_readable_p cand) 1)
+                 (seq (wf_copy32 out cand) 1)
+               (bf_require_search feature (nl_cons_cdr_ptr dirs) out))))
+        0))
     (defun bf_require_file_missing (feature)
       (let* ((buf (alloc-bytes 16 1)))
         (seq
@@ -7159,9 +7223,27 @@ unresolved at link time."
            ;; require from converting a missing dependency into false success.
            (if (= (bf_require_file_readable_p file) 1)
                (bf_require_after_load (bf_require_load_file file env out) feature noerror env out)
-             (if (= noerror 1)
-                 (seq (wf_write_nil out) 0)
-               (bf_require_file_missing feature)))))))
+             ;; The literal name did not name a readable file.  Search
+             ;; `load-path' before giving up -- but only when the caller named
+             ;; no FILENAME, since the candidates are built from the FEATURE
+             ;; and would silently answer a different question than the one an
+             ;; explicit path asked.  Anything that resolved before still
+             ;; resolves the same way: this runs only where the old code was
+             ;; already on its way to `file-missing'.
+             (let* ((dirs (alloc-bytes 32 8))
+                    (found (alloc-bytes 32 8)))
+               (seq
+                (bf_load_path_get env dirs)
+                (if (= (bf_require_arg_present_p args 1) 1)
+                    (if (= noerror 1)
+                        (seq (wf_write_nil out) 0)
+                      (bf_require_file_missing feature))
+                  (if (= (bf_require_search feature dirs found) 1)
+                      (bf_require_after_load
+                       (bf_require_load_file found env out) feature noerror env out)
+                    (if (= noerror 1)
+                        (seq (wf_write_nil out) 0)
+                      (bf_require_file_missing feature)))))))))))
     (defun bf_set (args env out)
       (let* ((sym (wf_arg_ptr args 0))
              (val (wf_arg_ptr args 1)))
