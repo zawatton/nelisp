@@ -10,8 +10,7 @@
         standalone-reader-mod-float-smoke standalone-reader-match-data-smoke standalone-reader-current-time-smoke \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
         nelisp-nelix-operational-gate \
-        nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate \
-        lint-stash
+        nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate
 
 EMACS ?= emacs
 
@@ -222,16 +221,6 @@ reader-surface-audit:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l reader-surface-audit -f nelisp-reader-surface-audit
-
-# bf_* stash census (flagless-abort defect class, warn-only -- never gates
-# the build): lists builtins whose body has no "stash"-named callee anywhere
-# and can return a nonzero literal or an unchecked callee rc in tail
-# position.  See scripts/nelisp-standalone-lint-stash.el for the heuristic
-# and its documented false-positive tradeoffs.
-lint-stash:
-	$(EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-lint-stash -f nelisp-standalone-lint-stash
 
 standalone-reader-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
