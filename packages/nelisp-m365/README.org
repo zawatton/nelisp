@@ -1,0 +1,238 @@
+#+TITLE: nelisp-m365 Package
+
+* Summary
+
+=nelisp-m365= is a Model Context Protocol server that gives an AI client
+read-only access to a *personal* Microsoft account -- a Microsoft 365
+Personal or Family subscription, or a plain outlook.com / hotmail /
+live.jp account.  It is written entirely in Emacs Lisp and runs on the
+NeLisp standalone runtime.
+
+It exists because the hosted Microsoft 365 connector authenticates
+against Microsoft Entra ID and expects a work or school account.  This
+one targets the =consumers= tenant instead, which is the single
+configuration choice that makes it a personal-account connector.
+
+Teams, SharePoint and Planner are absent on purpose: Microsoft Graph
+does not expose them for consumer accounts, so no scope grant can reach
+them.
+
+* Status
+
+- Package status: active, read-only surface, 18 tools
+- Transport: stdio only.  A remote transport needs a TLS terminator in
+  front of this process (see /Remote transport/ below)
+- Verified platform: Linux build of the standalone runtime.  The Windows
+  PE build is *not usable* today (see /Runtime substrate/)
+
+* Layout
+
+#+begin_src text
+packages/nelisp-m365/
+├── README.org
+├── bin/
+│   └── nelisp-m365-mcp          launcher; generates the bootstrap file
+├── src/
+│   ├── nelisp-m365-compat.el    substrate shims
+│   ├── nelisp-m365-curl.el      HTTP transport over a curl subprocess
+│   ├── nelisp-m365-auth.el      OAuth device-code grant and token cache
+│   ├── nelisp-m365-graph.el     Microsoft Graph client
+│   ├── nelisp-m365-tools.el     tool implementations and registry
+│   └── nelisp-m365-mcp.el       JSON-RPC dispatch and stdio read loop
+└── test/
+    └── nelisp-m365-test.el      offline ERT suite
+#+end_src
+
+* Tools
+
+All read-only apart from the two sign-in calls.
+
+| Tool                        | Purpose                                        |
+|-----------------------------+------------------------------------------------|
+| =m365_authenticate=         | start device-code sign-in                      |
+| =m365_authenticate_finish=  | complete it once the code has been entered     |
+| =m365_status=               | local connection state, no network call        |
+| =m365_profile=              | signed-in account                              |
+| =m365_search_mail=          | full-text search over Outlook mail             |
+| =m365_get_mail=             | one message, body rendered as plain text       |
+| =m365_list_mail_folders=    | folders with unread and total counts           |
+| =m365_list_calendar=        | events in an ISO 8601 window                   |
+| =m365_search_onedrive=      | OneDrive search by name and content            |
+| =m365_list_onedrive=        | list a folder by id or path                    |
+| =m365_get_onedrive_text=    | contents of a small text file                  |
+| =m365_excel_list_worksheets=| worksheets in a OneDrive workbook              |
+| =m365_excel_read_range=     | cell values from a worksheet range             |
+| =m365_list_contacts=        | list or search Outlook contacts                |
+| =m365_todo_lists=           | Microsoft To Do lists                          |
+| =m365_todo_tasks=           | tasks in one To Do list                        |
+| =m365_onenote_pages=        | list or filter OneNote pages                   |
+| =m365_get_onenote_page=     | one page rendered as plain text                |
+
+Every tool returning account content marks its payload as untrusted
+external input, so a model reading a mail body or a OneNote page is told
+not to follow instructions found inside it.
+
+* Microsoft Entra setup
+
+One-time, in the Microsoft Entra admin centre:
+
+1. Register an application.
+2. Supported account types: /Personal Microsoft accounts only/, or
+   /Any organizational directory and personal Microsoft accounts/.
+3. Under Authentication, enable /Allow public client flows/.  The
+   device-code grant requires it.
+4. Copy the Application (client) ID.
+
+Delegated permissions do not need to be pre-registered.  The v2.0
+endpoint consents dynamically, so the scope list in
+=nelisp-m365-scopes= can grow without touching the portal; the next
+sign-in simply shows a fresh consent screen.
+
+Default scopes, all read-only apart from the refresh-token grant:
+
+#+begin_src text
+offline_access User.Read Mail.Read Calendars.Read
+Files.Read Contacts.Read Tasks.Read Notes.Read
+#+end_src
+
+* Configuration
+
+The launcher reads =$XDG_CONFIG_HOME/nelisp-m365/config.sh=
+(default =~/.config/nelisp-m365/config.sh=).  Environment variables
+already set for the launcher take precedence.
+
+#+begin_src sh
+M365_CLIENT_ID=00000000-0000-0000-0000-000000000000
+M365_TENANT=consumers
+M365_TOKEN_CACHE="$HOME/.local/state/nelisp-m365/token.json"
+M365_LOG_FILE="$HOME/.local/state/nelisp-m365/mcp.log"
+#+end_src
+
+=NELISP= overrides the runtime binary, which defaults to
+=<repo>/target/nelisp=.
+
+** Token storage
+
+The token cache is JSON written with mode 0600.  It holds a refresh
+token in the clear: anyone who can read the file can read the account
+until the token is revoked.  There is no OS keychain integration --
+=@azure/msal-node-extensions= wraps DPAPI through a native addon, and
+this runtime has no FFI.  Revoke at
+https://account.live.com/consent/Manage if the file is exposed.
+
+* Running
+
+** Claude Code
+
+#+begin_src sh
+claude mcp add --scope user m365-personal-nelisp -- \
+  wsl.exe -d Debian -- bash /path/to/packages/nelisp-m365/bin/nelisp-m365-mcp
+#+end_src
+
+Drop the =wsl.exe -d Debian --= prefix when Claude Code and the runtime
+are on the same Linux host.  Then call =m365_authenticate=, enter the
+code in a browser, and call =m365_authenticate_finish=.
+
+** Codex
+
+Point an MCP server entry at =bin/nelisp-m365-mcp=; it speaks plain
+stdio JSON-RPC with no client-specific behaviour.
+
+** Remote transport
+
+The runtime has no socket primitives at all -- =make-network-process=
+and =open-network-stream= are both void -- so this process cannot listen
+for HTTP.  Reaching a claude.ai custom connector means running a TLS
+terminator (Cloudflare Tunnel, Caddy) in front of a thin adapter that
+drives this process over the same stdio pipe.  The tool implementations
+need no change for that.
+
+* Runtime substrate
+
+The standalone runtime implements a subset of Emacs Lisp.  These gaps
+were measured against the 2026-08-19 Linux build and the 2026-08-13
+Windows PE build, and they shape the code far more than the Graph API
+does.  =nelisp-m365-compat.el= closes each one in a single place.
+
+| Primitive                     | Linux      | Windows PE  |
+|-------------------------------+------------+-------------|
+| =make-network-process=        | void       | void        |
+| =match-beginning= / =-end=    | nil        | nil         |
+| =format-time-string=          | nil        | nil         |
+| =float-time=                  | works      | nil         |
+| =sit-for=                     | no delay   | no delay    |
+| =getenv= / =command-line-args=| nil        | getenv works|
+| =load-path=                   | empty      | empty       |
+| =file-attributes=             | non-standard | nil always |
+| =set-file-modes=              | works      | errno -38   |
+| =call-process=                | works      | works       |
+| =read-stdin-bytes=            | works      | works       |
+
+Three of these drive design decisions worth restating:
+
+- *No regexp capture groups.*  =match-beginning=, =match-end= and
+  =match-data= all return nil, so only the index from =string-match= and
+  =string-search= is usable.  Every parser here is built from literal
+  search plus =substring=.
+- *No environment and no argv.*  Configuration cannot be passed in, so
+  =bin/nelisp-m365-mcp= resolves everything and writes a bootstrap file
+  containing absolute =load= calls and =setq= forms.
+- *Unimplemented builtins abort uncatchably.*  Calling one aborts the
+  whole form without signalling, and =condition-case= does not catch it.
+  Nothing in this package probes a primitive by calling it inside a
+  handler.
+
+The Windows PE build cannot run this package: every filesystem predicate
+returns nil and there is no clock.  Run it under WSL, or on Linux.
+
+* JSON encoding rules
+
+=nelisp-json-encode= reads a list as an alist, so =("a" "b")= encodes as
+={"a":"b"}= and a list of alists aborts the encoder.  Two rules follow,
+and both also hold for the host =json-encode=, which keeps the package
+dual-target:
+
+- JSON arrays are *vectors*; use =nelisp-m365-compat-json-array=
+- JSON booleans are =t= and =:json-false=; a bare nil encodes as null,
+  so use =nelisp-m365-compat-json-bool=
+
+* Testing
+
+The ERT suite is offline and runs under a regular Emacs:
+
+#+begin_src sh
+emacs -Q --batch -L packages/nelisp-m365/src -L packages/nelisp-m365/test \
+  -l ert -l nelisp-m365-test -f ert-run-tests-batch-and-exit
+#+end_src
+
+The root =Makefile= discovers =packages/*/src= and =packages/*/test=, so
+=make compile= and =make test= pick this package up without a rule
+change.
+
+The request path is covered separately by driving the launcher with a
+scripted stdio session, since 401 refresh, 429 backoff and =nextLink=
+paging only mean anything against a live endpoint.
+
+* Known limitations
+
+- Read-only.  No send, upload, or calendar write.
+- =read-stdin-bytes= is wrapped in =String::from_utf8_lossy=, so a
+  request larger than the 64 KiB read chunk can lose a multi-byte
+  character at the chunk boundary.  Normal requests are consumed whole.
+- Paging stops at =nelisp-m365-graph-max-pages=; results say so through
+  the =truncated= flag rather than implying completeness.
+- =--load= prints its return value, so a stray =nil= reaches stdout
+  after the client closes stdin.  The runtime has no working
+  =kill-emacs= or =exit= to suppress it; it lands after the session is
+  over and no client sees it.
+- The Excel workbook endpoints are reached with =Files.Read=.  Microsoft
+  documents some workbook operations as requiring =Files.ReadWrite=; if
+  a range read answers 403, that scope is why.
+
+* Dependencies
+
+- NeLisp core standalone runtime
+- =nelisp-json= for JSON on the runtime; the host =json= library under
+  a regular Emacs
+- =curl= on PATH at one of the absolute paths in
+  =nelisp-m365-compat--curl-candidates=
