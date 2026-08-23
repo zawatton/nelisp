@@ -22,8 +22,8 @@ them.
 * Status
 
 - Package status: active, 30 tools, read-only apart from local downloads
-- Transport: stdio only.  A remote transport needs a TLS terminator in
-  front of this process (see /Remote transport/ below)
+- Transports: stdio, and Streamable HTTP with OAuth 2.1 through
+  =bin/nelisp-m365-http= (see /Remote transport/)
 - Verified platform: Linux build of the standalone runtime.  The Windows
   PE build is *not usable* today (see /Runtime substrate/)
 - All 30 tools verified against a live personal Microsoft account
@@ -34,7 +34,8 @@ them.
 packages/nelisp-m365/
 ├── README.org
 ├── bin/
-│   └── nelisp-m365-mcp          launcher; generates the bootstrap file
+│   ├── nelisp-m365-mcp          stdio launcher; writes the bootstrap file
+│   └── nelisp-m365-http         Streamable HTTP + OAuth 2.1 front end
 ├── src/
 │   ├── nelisp-m365-compat.el    substrate shims
 │   ├── nelisp-m365-curl.el      HTTP transport over a curl subprocess
@@ -187,11 +188,77 @@ stdio JSON-RPC with no client-specific behaviour.
 
 ** Remote transport
 
-The runtime has no socket primitives at all -- =make-network-process=
-and =open-network-stream= are both void -- so this process cannot listen
-for HTTP.  Reaching a remote MCP client means running a TLS terminator
-in front of a thin adapter that drives this process over the same stdio
-pipe.  The tool implementations need no change for that.
+=bin/nelisp-m365-http= serves the same 30 tools over the Streamable HTTP
+transport.  The runtime has no socket primitives at all --
+=make-network-process= and =open-network-stream= are both void -- so the
+adapter owns the socket and drives the runtime over the same stdio pipe
+the local transport uses.  No tool implementation changes.
+
+It is Python standard library only: no pip install, and nothing to keep
+patched beyond the interpreter.
+
+| =POST /mcp=   | JSON-RPC request or notification; answers JSON |
+| =DELETE /mcp= | ends the session named by =Mcp-Session-Id=     |
+| =GET /mcp=    | 405; this server never initiates a stream      |
+
+One NeLisp child is shared by all sessions, serialised by a lock.  A
+child per session would multiply a ~120 MB baseline for no benefit --
+the runtime holds no per-session state, only the token cache.  If the
+child dies the next call restarts it and returns a JSON-RPC error
+instead of taking the adapter down with it.
+
+*** Bearer token, for a tunnel you control
+
+#+begin_src sh
+bin/nelisp-m365-http --port 8765 --token "$(openssl rand -base64 32)"
+#+end_src
+
+Binds to loopback by default.  =--no-auth= is refused on any other
+address.
+
+*** OAuth 2.1, for a claude.ai custom connector
+
+A custom connector expects OAuth 2.1 with PKCE, so =--oauth= serves the
+endpoints it discovers:
+
+| =/.well-known/oauth-protected-resource=   | RFC 9728 resource metadata |
+| =/.well-known/oauth-authorization-server= | RFC 8414 server metadata   |
+| =POST /register=                          | RFC 7591 dynamic registration |
+| =GET/POST /authorize=                     | consent, then an auth code |
+| =POST /token=                             | code exchange and refresh  |
+
+#+begin_src sh
+bin/nelisp-m365-http --host 127.0.0.1 --port 8765 --oauth \
+  --base-url https://m365.example.com \
+  --passphrase "$(cat ~/.config/nelisp-m365/passphrase)"
+#+end_src
+
+Then point a TLS terminator -- Cloudflare Tunnel, Caddy, whatever you
+already run -- at that port, and add =https://m365.example.com/mcp= as a
+custom connector.  Claude registers itself through DCR, sends you to the
+consent page, and you approve with the operator passphrase.
+
+This server has exactly one user by construction, so there is no user
+database: the consent page is gated on a single operator passphrase.
+=--oauth= refuses to start without =--passphrase= (the page would
+otherwise approve anyone who finds the URL) or without =--base-url= (the
+metadata and the redirect would name loopback instead of the tunnel).
+
+Only S256 PKCE is accepted; =plain= is refused rather than quietly
+downgraded.  A =redirect_uri= that is not registered for the client is
+rejected outright and never echoed into a redirect, so the endpoint
+cannot be used as an open redirector.  Authorization codes are single
+use, and a refresh token is replaced on every use.
+
+Registered clients and tokens are persisted at =--oauth-store= with mode
+0600, so restarting the adapter does not silently break an
+already-connected client.
+
+*** Exposure
+
+Everything behind this reads a live mailbox.  Do not run it on a public
+address without =--token= or =--oauth=, and prefer a tunnel that you can
+revoke over opening a port.
 
 * Runtime substrate
 

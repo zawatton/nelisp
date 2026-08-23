@@ -1,0 +1,786 @@
+#!/usr/bin/env python3
+"""Streamable HTTP front end for the nelisp-m365 stdio MCP server.
+
+The NeLisp runtime has no socket primitives -- `make-network-process' and
+`open-network-stream' are both void -- so it cannot listen for HTTP
+itself.  This process owns the socket and drives the runtime over the
+same stdio pipe the local transport uses, which keeps the entire tool
+surface in Emacs Lisp and unchanged.
+
+Deliberately Python standard library only: no pip install, and nothing
+to keep patched beyond the interpreter.
+
+MCP endpoint, per the 2025-06-18 Streamable HTTP transport:
+
+  POST   /mcp   JSON-RPC request or notification; answers application/json
+  DELETE /mcp   ends the session named by Mcp-Session-Id
+  GET    /mcp   405 -- this server never initiates a stream
+
+OAuth 2.1 authorization server, for a claude.ai custom connector:
+
+  GET  /.well-known/oauth-protected-resource   RFC 9728 resource metadata
+  GET  /.well-known/oauth-authorization-server RFC 8414 server metadata
+  POST /register                               RFC 7591 dynamic registration
+  GET  /authorize                              consent form
+  POST /authorize                              passphrase check, issues a code
+  POST /token                                  authorization_code and refresh
+
+Two authentication modes, and they compose:
+
+  --token     a bearer token shared out of band.  Enough for a tunnel
+              you control and for scripted testing.
+  --oauth     the endpoints above, which is what claude.ai expects.
+              Access is gated by a single operator passphrase; this
+              server has one user by construction.
+
+One NeLisp child is shared by every session and calls are serialised
+through a lock.  A child per session would multiply a ~120 MB baseline
+by the session count for no benefit: the runtime holds no per-session
+state, only the token cache.  If the child dies the next call restarts
+it and reports a JSON-RPC error rather than failing the whole process.
+
+Never run this on a public address without --token or --oauth: every
+tool behind it reads a live mailbox.
+"""
+
+import argparse
+import base64
+import hashlib
+import hmac
+import html
+import json
+import os
+import secrets
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_LAUNCHER = os.path.join(HERE, "nelisp-m365-mcp")
+
+ACCESS_TOKEN_TTL = 3600
+AUTH_CODE_TTL = 300
+MCP_PATHS = ("/mcp", "")
+
+
+def b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+# --------------------------------------------------------------------
+# Runtime bridge
+# --------------------------------------------------------------------
+
+class RuntimeBridge:
+    """A single NeLisp child, spoken to one request at a time."""
+
+    def __init__(self, launcher, log):
+        self.launcher = launcher
+        self.log = log
+        self.lock = threading.Lock()
+        self.proc = None
+
+    def _alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def _start(self):
+        self.log(f"starting runtime: {self.launcher}")
+        self.proc = subprocess.Popen(
+            ["bash", self.launcher],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", bufsize=1,
+        )
+
+    def stop(self):
+        with self.lock:
+            if self._alive():
+                try:
+                    self.proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    self.proc.wait(timeout=5)
+                except Exception:
+                    self.proc.kill()
+            self.proc = None
+
+    def call(self, message, timeout=180):
+        """Send one JSON-RPC message and return the reply, or None.
+
+        None means the message was a notification and needs no answer.
+        Raises RuntimeError when the child cannot be reached.
+        """
+        wants_reply = "id" in message and message.get("id") is not None
+        with self.lock:
+            if not self._alive():
+                self._start()
+            try:
+                self.proc.stdin.write(json.dumps(message) + "\n")
+                self.proc.stdin.flush()
+            except (BrokenPipeError, ValueError):
+                # The child died between the liveness check and the
+                # write; bring up a fresh one and try once more.
+                self._start()
+                self.proc.stdin.write(json.dumps(message) + "\n")
+                self.proc.stdin.flush()
+            if not wants_reply:
+                return None
+            deadline = time.time() + timeout
+            while True:
+                if time.time() > deadline:
+                    raise RuntimeError("runtime timed out")
+                line = self.proc.stdout.readline()
+                if not line:
+                    code = self.proc.poll()
+                    self.proc = None
+                    raise RuntimeError(
+                        f"runtime exited (code {code}) before replying")
+                line = line.strip()
+                if not line.startswith("{"):
+                    # The runtime prints its final form value after the
+                    # pipe closes; anything non-JSON is not a reply.
+                    continue
+                reply = json.loads(line)
+                if reply.get("id") == message.get("id"):
+                    return reply
+
+
+class Sessions:
+    """MCP session ids handed out at initialize, with an idle timeout."""
+
+    def __init__(self, ttl):
+        self.ttl = ttl
+        self.lock = threading.Lock()
+        self.seen = {}
+
+    def create(self):
+        sid = secrets.token_urlsafe(24)
+        with self.lock:
+            self.seen[sid] = time.time()
+        return sid
+
+    def touch(self, sid):
+        with self.lock:
+            cutoff = time.time() - self.ttl
+            for stale in [s for s, t in self.seen.items() if t < cutoff]:
+                del self.seen[stale]
+            if sid in self.seen:
+                self.seen[sid] = time.time()
+                return True
+            return False
+
+    def drop(self, sid):
+        with self.lock:
+            return self.seen.pop(sid, None) is not None
+
+
+# --------------------------------------------------------------------
+# OAuth 2.1 authorization server
+# --------------------------------------------------------------------
+
+class OAuthStore:
+    """Clients, codes and tokens for a single-operator server.
+
+    Persisted so that restarting the adapter does not silently break an
+    already-connected client: Claude would otherwise have to be
+    reconnected by hand every time this process is bounced.
+    """
+
+    def __init__(self, path, log):
+        self.path = path
+        self.log = log
+        self.lock = threading.Lock()
+        self.clients = {}
+        self.tokens = {}     # access token  -> {client_id, expires}
+        self.refresh = {}    # refresh token -> {client_id}
+        self.codes = {}      # code -> {client_id, challenge, redirect, expires}
+        self._load()
+
+    def _load(self):
+        if not self.path or not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.clients = data.get("clients", {})
+            self.tokens = data.get("tokens", {})
+            self.refresh = data.get("refresh", {})
+            self.log(f"loaded {len(self.clients)} client(s) from {self.path}")
+        except Exception as exc:
+            self.log(f"could not read {self.path}: {exc}")
+
+    def _save(self):
+        if not self.path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"clients": self.clients, "tokens": self.tokens,
+                           "refresh": self.refresh}, fh)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+        except Exception as exc:
+            self.log(f"could not write {self.path}: {exc}")
+
+    def register(self, metadata):
+        client_id = "mcp-" + secrets.token_urlsafe(16)
+        redirects = metadata.get("redirect_uris") or []
+        record = {
+            "client_id": client_id,
+            "client_name": metadata.get("client_name", "unnamed"),
+            "redirect_uris": redirects,
+            "created": int(time.time()),
+        }
+        with self.lock:
+            self.clients[client_id] = record
+            self._save()
+        self.log(f"registered client {record['client_name']} ({client_id})")
+        return record
+
+    def client(self, client_id):
+        with self.lock:
+            return self.clients.get(client_id)
+
+    def issue_code(self, client_id, redirect_uri, challenge, method):
+        code = secrets.token_urlsafe(32)
+        with self.lock:
+            self.codes[code] = {
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "challenge": challenge,
+                "method": method,
+                "expires": time.time() + AUTH_CODE_TTL,
+            }
+        return code
+
+    def redeem_code(self, code, client_id, redirect_uri, verifier):
+        """Exchange an authorization code, checking PKCE.  Returns a
+        token pair, or raises ValueError with an OAuth error code."""
+        with self.lock:
+            record = self.codes.pop(code, None)
+        if not record:
+            raise ValueError("invalid_grant")
+        if record["expires"] < time.time():
+            raise ValueError("invalid_grant")
+        if record["client_id"] != client_id:
+            raise ValueError("invalid_grant")
+        if redirect_uri and record["redirect_uri"] != redirect_uri:
+            raise ValueError("invalid_grant")
+        if not verifier:
+            raise ValueError("invalid_request")
+        if record["method"] == "S256":
+            digest = hashlib.sha256(verifier.encode()).digest()
+            if not hmac.compare_digest(b64url(digest), record["challenge"]):
+                raise ValueError("invalid_grant")
+        else:
+            # Only S256 is advertised; a plain challenge should never
+            # reach here, and accepting one would defeat PKCE.
+            raise ValueError("invalid_request")
+        return self._mint(client_id)
+
+    def refresh_pair(self, refresh_token, client_id):
+        with self.lock:
+            record = self.refresh.get(refresh_token)
+        if not record or record["client_id"] != client_id:
+            raise ValueError("invalid_grant")
+        with self.lock:
+            self.refresh.pop(refresh_token, None)
+        return self._mint(client_id)
+
+    def _mint(self, client_id):
+        access = secrets.token_urlsafe(32)
+        refresh = secrets.token_urlsafe(32)
+        with self.lock:
+            now = time.time()
+            for tok in [t for t, r in self.tokens.items()
+                        if r["expires"] < now]:
+                del self.tokens[tok]
+            self.tokens[access] = {"client_id": client_id,
+                                   "expires": now + ACCESS_TOKEN_TTL}
+            self.refresh[refresh] = {"client_id": client_id}
+            self._save()
+        return {"access_token": access, "token_type": "Bearer",
+                "expires_in": ACCESS_TOKEN_TTL, "refresh_token": refresh}
+
+    def valid_access_token(self, token):
+        with self.lock:
+            record = self.tokens.get(token)
+            if not record:
+                return False
+            if record["expires"] < time.time():
+                del self.tokens[token]
+                return False
+            return True
+
+
+CONSENT_PAGE = """<!doctype html>
+<title>Connect to Microsoft 365 Personal</title>
+<style>
+ body{{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;
+      padding:0 1rem;line-height:1.6}}
+ .app{{background:#f4f4f5;border-radius:.5rem;padding:1rem;margin:1.5rem 0}}
+ input{{font:inherit;padding:.5rem;width:100%;box-sizing:border-box}}
+ button{{font:inherit;padding:.6rem 1.2rem;margin-top:1rem}}
+ .err{{color:#b91c1c}}
+</style>
+<h1>Connect to Microsoft 365 Personal</h1>
+<p>An application is asking to read this Microsoft account through the
+   nelisp-m365 connector.</p>
+<div class="app">
+  <strong>{client_name}</strong><br>
+  <small>redirect: {redirect_uri}</small>
+</div>
+{error}
+<form method="post" action="/authorize">
+  <input type="hidden" name="client_id" value="{client_id}">
+  <input type="hidden" name="redirect_uri" value="{redirect_uri}">
+  <input type="hidden" name="state" value="{state}">
+  <input type="hidden" name="code_challenge" value="{code_challenge}">
+  <input type="hidden" name="code_challenge_method" value="{method}">
+  <label>Operator passphrase<br>
+    <input type="password" name="passphrase" autofocus autocomplete="off">
+  </label>
+  <button type="submit">Approve</button>
+</form>
+"""
+
+
+# --------------------------------------------------------------------
+# HTTP handler
+# --------------------------------------------------------------------
+
+def make_handler(cfg):
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "nelisp-m365-http"
+
+        def log_message(self, fmt, *args):
+            cfg["log"]("%s %s" % (self.address_string(), fmt % args))
+
+        # -- responses -------------------------------------------------
+
+        def _send(self, status, payload=None, headers=None, raw=None,
+                  content_type="application/json"):
+            if raw is not None:
+                body = raw
+            else:
+                body = b"" if payload is None else json.dumps(payload).encode()
+            self.send_response(status)
+            if body:
+                self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def _html(self, status, markup):
+            self._send(status, raw=markup.encode(),
+                       content_type="text/html; charset=utf-8")
+
+        def _rpc_error(self, status, rid, code, message, headers=None):
+            self._send(status, {"jsonrpc": "2.0", "id": rid,
+                                "error": {"code": code, "message": message}},
+                       headers)
+
+        def _oauth_error(self, status, code, description=""):
+            self._send(status, {"error": code,
+                                "error_description": description})
+
+        def _form(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode() if length else ""
+            return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
+
+        def _query(self):
+            parsed = urllib.parse.urlparse(self.path)
+            return parsed.path, {k: v[0] for k, v in
+                                 urllib.parse.parse_qs(parsed.query).items()}
+
+        # -- auth ------------------------------------------------------
+
+        def _bearer(self):
+            header = self.headers.get("Authorization", "")
+            return header[7:] if header.startswith("Bearer ") else None
+
+        def _authorised(self):
+            presented = self._bearer()
+            if cfg["token"]:
+                if presented and hmac.compare_digest(presented, cfg["token"]):
+                    return True
+            if cfg["oauth"]:
+                if presented and cfg["oauth"].valid_access_token(presented):
+                    return True
+            return not cfg["token"] and not cfg["oauth"]
+
+        def _unauthorised(self):
+            # RFC 9728: point the client at the resource metadata so it
+            # can discover where to authenticate.
+            challenge = 'Bearer'
+            if cfg["oauth"]:
+                challenge = ('Bearer resource_metadata='
+                             f'"{cfg["base_url"]}'
+                             '/.well-known/oauth-protected-resource"')
+            self._send(401, {"error": "unauthorized"},
+                       {"WWW-Authenticate": challenge})
+
+        def _origin_ok(self):
+            # DNS-rebinding protection: a browser on another site must not
+            # be able to drive a server bound to loopback.
+            origin = self.headers.get("Origin")
+            if origin is None:
+                return True
+            return origin in cfg["allowed_origins"]
+
+        # -- verbs -----------------------------------------------------
+
+        def do_GET(self):
+            path, query = self._query()
+            if path == "/.well-known/oauth-protected-resource":
+                self._send(200, {
+                    "resource": cfg["base_url"],
+                    "authorization_servers": [cfg["base_url"]],
+                    "bearer_methods_supported": ["header"],
+                })
+                return
+            if path in ("/.well-known/oauth-authorization-server",
+                        "/.well-known/openid-configuration"):
+                base = cfg["base_url"]
+                self._send(200, {
+                    "issuer": base,
+                    "authorization_endpoint": f"{base}/authorize",
+                    "token_endpoint": f"{base}/token",
+                    "registration_endpoint": f"{base}/register",
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code",
+                                              "refresh_token"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"],
+                    "scopes_supported": ["mcp"],
+                })
+                return
+            if path == "/authorize":
+                self._authorize_page(query, error="")
+                return
+            if path.rstrip("/") in MCP_PATHS:
+                # No server-initiated streams: there is nothing for the
+                # runtime to push, and pretending otherwise would leave
+                # the client holding an idle connection open.
+                self._send(405,
+                           {"error": "this server does not open streams"},
+                           {"Allow": "POST, DELETE"})
+                return
+            self._send(404, {"error": "not found"})
+
+        def do_DELETE(self):
+            if not self._authorised():
+                self._unauthorised()
+                return
+            sid = self.headers.get("Mcp-Session-Id")
+            if sid and cfg["sessions"].drop(sid):
+                self._send(204)
+            else:
+                self._send(404, {"error": "unknown session"})
+
+        def do_POST(self):
+            path, _ = self._query()
+            if path == "/register":
+                self._register()
+                return
+            if path == "/authorize":
+                self._authorize_submit()
+                return
+            if path == "/token":
+                self._token()
+                return
+            if path.rstrip("/") in MCP_PATHS:
+                self._mcp()
+                return
+            self._send(404, {"error": "not found"})
+
+        # -- OAuth -----------------------------------------------------
+
+        def _require_oauth(self):
+            if not cfg["oauth"]:
+                self._oauth_error(404, "not_found",
+                                  "this server was started without --oauth")
+                return False
+            return True
+
+        def _register(self):
+            if not self._require_oauth():
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                metadata = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                self._oauth_error(400, "invalid_client_metadata",
+                                  "body is not JSON")
+                return
+            redirects = metadata.get("redirect_uris") or []
+            if not redirects:
+                self._oauth_error(400, "invalid_client_metadata",
+                                  "redirect_uris is required")
+                return
+            record = cfg["oauth"].register(metadata)
+            self._send(201, {
+                "client_id": record["client_id"],
+                "client_name": record["client_name"],
+                "redirect_uris": record["redirect_uris"],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            })
+
+        def _authorize_page(self, params, error):
+            if not self._require_oauth():
+                return
+            client = cfg["oauth"].client(params.get("client_id", ""))
+            if not client:
+                self._oauth_error(400, "invalid_client", "unknown client_id")
+                return
+            redirect_uri = params.get("redirect_uri", "")
+            if redirect_uri not in client["redirect_uris"]:
+                # Never redirect to an unregistered URI, and never echo
+                # it back into a redirect: that is an open redirector.
+                self._oauth_error(400, "invalid_request",
+                                  "redirect_uri is not registered")
+                return
+            if params.get("code_challenge_method", "S256") != "S256":
+                self._oauth_error(400, "invalid_request",
+                                  "only S256 PKCE is supported")
+                return
+            if not params.get("code_challenge"):
+                self._oauth_error(400, "invalid_request",
+                                  "code_challenge is required")
+                return
+            self._html(200, CONSENT_PAGE.format(
+                client_name=html.escape(client["client_name"]),
+                client_id=html.escape(client["client_id"]),
+                redirect_uri=html.escape(redirect_uri),
+                state=html.escape(params.get("state", "")),
+                code_challenge=html.escape(params["code_challenge"]),
+                method="S256",
+                error=(f'<p class="err">{html.escape(error)}</p>'
+                       if error else ""),
+            ))
+
+        def _authorize_submit(self):
+            if not self._require_oauth():
+                return
+            form = self._form()
+            passphrase = form.pop("passphrase", "")
+            if not cfg["passphrase"] or not hmac.compare_digest(
+                    passphrase, cfg["passphrase"]):
+                cfg["log"]("authorize: wrong passphrase")
+                self._authorize_page(form, error="Incorrect passphrase.")
+                return
+            client = cfg["oauth"].client(form.get("client_id", ""))
+            if not client or form.get("redirect_uri") not in client["redirect_uris"]:
+                self._oauth_error(400, "invalid_request", "bad client")
+                return
+            code = cfg["oauth"].issue_code(
+                form["client_id"], form["redirect_uri"],
+                form.get("code_challenge", ""),
+                form.get("code_challenge_method", "S256"))
+            target = form["redirect_uri"]
+            joiner = "&" if "?" in target else "?"
+            location = (f"{target}{joiner}code={urllib.parse.quote(code)}"
+                        f"&state={urllib.parse.quote(form.get('state', ''))}")
+            cfg["log"](f"authorize: approved {client['client_name']}")
+            self._send(302, None, {"Location": location})
+
+        def _token(self):
+            if not self._require_oauth():
+                return
+            form = self._form()
+            grant = form.get("grant_type")
+            client_id = form.get("client_id", "")
+            try:
+                if grant == "authorization_code":
+                    pair = cfg["oauth"].redeem_code(
+                        form.get("code", ""), client_id,
+                        form.get("redirect_uri"), form.get("code_verifier"))
+                elif grant == "refresh_token":
+                    pair = cfg["oauth"].refresh_pair(
+                        form.get("refresh_token", ""), client_id)
+                else:
+                    self._oauth_error(400, "unsupported_grant_type", grant or "")
+                    return
+            except ValueError as exc:
+                self._oauth_error(400, str(exc))
+                return
+            self._send(200, pair, {"Cache-Control": "no-store"})
+
+        # -- MCP -------------------------------------------------------
+
+        def _mcp(self):
+            if not self._origin_ok():
+                self._send(403, {"error": "origin not allowed"})
+                return
+            if not self._authorised():
+                self._unauthorised()
+                return
+
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                self._rpc_error(400, None, -32600, "empty body")
+                return
+            try:
+                message = json.loads(self.rfile.read(length))
+            except Exception:
+                self._rpc_error(400, None, -32700, "parse error")
+                return
+
+            batch = isinstance(message, list)
+            messages = message if batch else [message]
+            if not messages:
+                self._rpc_error(400, None, -32600, "empty batch")
+                return
+
+            is_initialize = any(m.get("method") == "initialize"
+                                for m in messages if isinstance(m, dict))
+            sid = self.headers.get("Mcp-Session-Id")
+            if not is_initialize:
+                if not sid:
+                    self._rpc_error(400, messages[0].get("id"), -32600,
+                                    "Mcp-Session-Id header is required")
+                    return
+                if not cfg["sessions"].touch(sid):
+                    # 404 tells a client with a stale id to start over,
+                    # which is what the transport spec asks for.
+                    self._rpc_error(404, messages[0].get("id"), -32600,
+                                    "session expired; re-initialize")
+                    return
+
+            replies = []
+            for m in messages:
+                if not isinstance(m, dict):
+                    replies.append({"jsonrpc": "2.0", "id": None,
+                                    "error": {"code": -32600,
+                                              "message": "invalid message"}})
+                    continue
+                try:
+                    reply = cfg["bridge"].call(m)
+                except RuntimeError as exc:
+                    cfg["log"](f"bridge error: {exc}")
+                    replies.append({"jsonrpc": "2.0", "id": m.get("id"),
+                                    "error": {"code": -32603,
+                                              "message": str(exc)}})
+                    continue
+                if reply is not None:
+                    replies.append(reply)
+
+            headers = {}
+            if is_initialize:
+                headers["Mcp-Session-Id"] = cfg["sessions"].create()
+            if not replies:
+                self._send(202, None, headers)   # everything was a notification
+                return
+            self._send(200, replies if batch else replies[0], headers)
+
+    return Handler
+
+
+# --------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="address to bind (default loopback)")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--launcher", default=DEFAULT_LAUNCHER,
+                    help="path to the stdio launcher")
+    ap.add_argument("--token", default=os.environ.get("M365_HTTP_TOKEN"),
+                    help="static bearer token; generated when omitted "
+                         "unless --oauth or --no-auth is given")
+    ap.add_argument("--oauth", action="store_true",
+                    help="serve the OAuth 2.1 endpoints a claude.ai custom "
+                         "connector needs")
+    ap.add_argument("--passphrase",
+                    default=os.environ.get("M365_HTTP_PASSPHRASE"),
+                    help="operator passphrase for the consent page")
+    ap.add_argument("--base-url",
+                    default=os.environ.get("M365_HTTP_BASE_URL"),
+                    help="public https URL this server is reachable at; "
+                         "required with --oauth so metadata and redirects "
+                         "point at the tunnel rather than at loopback")
+    ap.add_argument("--oauth-store",
+                    default=os.environ.get(
+                        "M365_HTTP_OAUTH_STORE",
+                        os.path.expanduser(
+                            "~/.local/state/nelisp-m365/oauth.json")),
+                    help="where registered clients and tokens are kept")
+    ap.add_argument("--no-auth", action="store_true",
+                    help="serve without any authentication (loopback only)")
+    ap.add_argument("--session-ttl", type=int, default=3600)
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+
+    def log(msg):
+        if not args.quiet:
+            print(f"[nelisp-m365-http] {msg}", file=sys.stderr, flush=True)
+
+    loopback = args.host in ("127.0.0.1", "::1", "localhost")
+    if args.no_auth and not loopback:
+        sys.exit("refusing --no-auth on a non-loopback address: "
+                 "every tool behind this reads a live mailbox")
+
+    oauth = None
+    if args.oauth:
+        if not args.base_url:
+            sys.exit("--oauth needs --base-url: the metadata documents and "
+                     "the redirect have to name the public URL")
+        if not args.passphrase:
+            sys.exit("--oauth needs --passphrase: without it the consent "
+                     "page would approve anyone who finds the URL")
+        oauth = OAuthStore(args.oauth_store, log)
+
+    if args.no_auth:
+        token = None
+    elif args.token:
+        token = args.token
+    elif oauth:
+        token = None          # OAuth alone is the gate
+    else:
+        token = secrets.token_urlsafe(32)
+
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    cfg = {
+        "bridge": RuntimeBridge(args.launcher, log),
+        "sessions": Sessions(args.session_ttl),
+        "token": token,
+        "oauth": oauth,
+        "passphrase": args.passphrase,
+        "base_url": base_url.rstrip("/"),
+        "allowed_origins": {f"http://{args.host}:{args.port}",
+                            f"http://localhost:{args.port}",
+                            base_url.rstrip("/")},
+        "log": log,
+    }
+
+    httpd = ThreadingHTTPServer((args.host, args.port), make_handler(cfg))
+    log(f"listening on http://{args.host}:{args.port}/mcp")
+    if oauth:
+        log(f"oauth metadata at {cfg['base_url']}"
+            "/.well-known/oauth-authorization-server")
+    if token and not args.token:
+        log(f"bearer token: {token}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        log("shutting down")
+    finally:
+        httpd.server_close()
+        cfg["bridge"].stop()
+
+
+if __name__ == "__main__":
+    main()
