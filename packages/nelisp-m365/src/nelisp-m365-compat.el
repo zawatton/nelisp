@@ -271,27 +271,69 @@ successful `curl --version' is the only portable evidence."
 ;; Everything below is built from `string-search' (literal index) and
 ;; `substring', both of which are verified working.
 
+(defconst nelisp-m365-compat-scan-window 512
+  "Characters examined per slice by `nelisp-m365-compat-find'.
+Small enough that a scan over a large document stays roughly linear,
+large enough that the per-slice overhead stays negligible.")
+
+(defun nelisp-m365-compat-find (needle haystack &optional start)
+  "Return the index of NEEDLE in HAYSTACK at or after START, or nil.
+
+Searches in bounded slices rather than calling `string-search' with a
+START argument.  That argument allocates in proportion to the *remaining*
+haystack on this runtime -- about 150 kB per call on a 7 KB input -- so
+a scan that walks a document tag by tag ends up quadratic in the
+document size.  Slicing caps the cost of each individual search.
+
+Consecutive slices overlap by one character less than NEEDLE, so a match
+straddling a slice boundary is still found."
+  (let* ((len (length haystack))
+         (nlen (length needle))
+         (pos (or start 0))
+         (found nil)
+         (done nil))
+    (if (or (= nlen 0) (> nlen len))
+        nil
+      (while (not done)
+        (if (> (+ pos nlen) len)
+            (setq done t)
+          (let* ((end (min len (+ pos nelisp-m365-compat-scan-window)))
+                 (idx (string-search needle (substring haystack pos end))))
+            (cond
+             (idx (setq found (+ pos idx))
+                  (setq done t))
+             ((>= end len) (setq done t))
+             ;; Step back by nlen-1 so a straddling match is not missed.
+             (t (setq pos (- end (1- nlen))))))))
+      found)))
+
 (defun nelisp-m365-compat-split-once (string separator)
   "Split STRING at the first occurrence of literal SEPARATOR.
 Return (BEFORE . AFTER), or nil when SEPARATOR does not occur."
-  (let ((idx (string-search separator string)))
+  (let ((idx (nelisp-m365-compat-find separator string)))
     (and idx
          (cons (substring string 0 idx)
                (substring string (+ idx (length separator)))))))
 
 (defun nelisp-m365-compat-split-all (string separator)
   "Split STRING on every occurrence of literal SEPARATOR.
-Return a list of the pieces, including empty ones."
+Return a list of the pieces, including empty ones.
+
+Walks with absolute indices rather than repeatedly re-slicing the
+remainder: the obvious `(setq rest (substring rest ...))' loop copies
+the tail once per piece, which is quadratic in the input."
   (let ((parts nil)
-        (rest string)
+        (pos 0)
+        (len (length string))
+        (slen (length separator))
         (done nil))
     (while (not done)
-      (let ((idx (string-search separator rest)))
+      (let ((idx (nelisp-m365-compat-find separator string pos)))
         (if idx
             (progn
-              (push (substring rest 0 idx) parts)
-              (setq rest (substring rest (+ idx (length separator)))))
-          (push rest parts)
+              (push (substring string pos idx) parts)
+              (setq pos (+ idx slen)))
+          (push (substring string pos len) parts)
           (setq done t))))
     (nreverse parts)))
 

@@ -8,10 +8,12 @@ Personal or Family subscription, or a plain outlook.com / hotmail /
 live.jp account.  It is written entirely in Emacs Lisp and runs on the
 NeLisp standalone runtime.
 
-It exists because the hosted Microsoft 365 connector authenticates
-against Microsoft Entra ID and expects a work or school account.  This
-one targets the =consumers= tenant instead, which is the single
-configuration choice that makes it a personal-account connector.
+It exists because the hosted Microsoft 365 connector does not accept
+these accounts.  Its documented prerequisite is "a work or school
+Microsoft account on a Microsoft Entra tenant (personal accounts such as
+outlook.com, hotmail.com, or live.com aren't supported)".  This server
+authenticates against the =consumers= tenant instead, which is the
+single configuration choice that makes it a personal-account connector.
 
 Teams, SharePoint and Planner are absent on purpose: Microsoft Graph
 does not expose them for consumer accounts, so no scope grant can reach
@@ -19,11 +21,12 @@ them.
 
 * Status
 
-- Package status: active, read-only surface, 18 tools
+- Package status: active, 30 tools, read-only apart from local downloads
 - Transport: stdio only.  A remote transport needs a TLS terminator in
   front of this process (see /Remote transport/ below)
 - Verified platform: Linux build of the standalone runtime.  The Windows
   PE build is *not usable* today (see /Runtime substrate/)
+- All 30 tools verified against a live personal Microsoft account
 
 * Layout
 
@@ -45,28 +48,56 @@ packages/nelisp-m365/
 
 * Tools
 
-All read-only apart from the two sign-in calls.
+Read-only apart from the two sign-in calls and the three that write a
+downloaded file to local disk.
 
-| Tool                        | Purpose                                        |
-|-----------------------------+------------------------------------------------|
-| =m365_authenticate=         | start device-code sign-in                      |
-| =m365_authenticate_finish=  | complete it once the code has been entered     |
-| =m365_status=               | local connection state, no network call        |
-| =m365_profile=              | signed-in account                              |
-| =m365_search_mail=          | full-text search over Outlook mail             |
-| =m365_get_mail=             | one message, body rendered as plain text       |
-| =m365_list_mail_folders=    | folders with unread and total counts           |
-| =m365_list_calendar=        | events in an ISO 8601 window                   |
-| =m365_search_onedrive=      | OneDrive search by name and content            |
-| =m365_list_onedrive=        | list a folder by id or path                    |
-| =m365_get_onedrive_text=    | contents of a small text file                  |
-| =m365_excel_list_worksheets=| worksheets in a OneDrive workbook              |
-| =m365_excel_read_range=     | cell values from a worksheet range             |
-| =m365_list_contacts=        | list or search Outlook contacts                |
-| =m365_todo_lists=           | Microsoft To Do lists                          |
-| =m365_todo_tasks=           | tasks in one To Do list                        |
-| =m365_onenote_pages=        | list or filter OneNote pages                   |
-| =m365_get_onenote_page=     | one page rendered as plain text                |
+** Account
+
+| =m365_authenticate=        | start device-code sign-in                  |
+| =m365_authenticate_finish= | complete it once the code has been entered |
+| =m365_status=              | connection state, no network call          |
+| =m365_profile=             | signed-in account                          |
+
+** Outlook mail
+
+| =m365_search_mail=           | full-text search; returns =conversationId= |
+| =m365_get_mail=              | one message, body as plain text            |
+| =m365_get_mail_thread=       | every message in one conversation          |
+| =m365_list_mail_folders=     | folders with unread and total counts       |
+| =m365_list_mail_attachments= | attachments on a message                   |
+| =m365_save_mail_attachment=  | save an attachment to local disk           |
+
+** Calendar
+
+| =m365_list_calendars= | the calendars on this account   |
+| =m365_list_calendar=  | events in an ISO 8601 window    |
+
+** OneDrive
+
+| =m365_search_onedrive=        | search by name and content       |
+| =m365_list_onedrive=          | list a folder by id or path      |
+| =m365_get_onedrive_text=      | contents of a small text file    |
+| =m365_download_onedrive_file= | any file to local disk           |
+| =m365_recent_files=           | recently used items              |
+| =m365_shared_with_me=         | items shared with this account   |
+| =m365_drive_info=             | drive identity and quota         |
+
+** Excel
+
+| =m365_excel_list_worksheets= | worksheets in a workbook       |
+| =m365_excel_read_range=      | cells from a worksheet range   |
+| =m365_excel_list_tables=     | named tables in a workbook     |
+| =m365_excel_read_table=      | every cell of a named table    |
+
+** Contacts, To Do, OneNote
+
+| =m365_list_contacts=      | list or search contacts        |
+| =m365_todo_lists=         | Microsoft To Do lists          |
+| =m365_todo_tasks=         | tasks in one list              |
+| =m365_onenote_notebooks=  | notebooks                      |
+| =m365_onenote_sections=   | sections, optionally in one notebook |
+| =m365_onenote_pages=      | pages, optionally filtered     |
+| =m365_get_onenote_page=   | one page as plain text         |
 
 Every tool returning account content marks its payload as untrusted
 external input, so a model reading a mail body or a OneNote page is told
@@ -95,6 +126,14 @@ offline_access User.Read Mail.Read Calendars.Read
 Files.Read Contacts.Read Tasks.Read Notes.Read
 #+end_src
 
+=Files.Read= turned out to be enough for the Excel workbook endpoints
+and for =sharedWithMe=, both of which the documentation suggests might
+need more.
+
+The tenant must be =consumers=.  A refresh token issued through the
+=common= authority is rejected at its first refresh, so a session
+authenticated that way dies about an hour after sign-in.
+
 * Configuration
 
 The launcher reads =$XDG_CONFIG_HOME/nelisp-m365/config.sh=
@@ -105,6 +144,7 @@ already set for the launcher take precedence.
 M365_CLIENT_ID=00000000-0000-0000-0000-000000000000
 M365_TENANT=consumers
 M365_TOKEN_CACHE="$HOME/.local/state/nelisp-m365/token.json"
+M365_DOWNLOAD_DIR="$HOME/.local/state/nelisp-m365/downloads"
 M365_LOG_FILE="$HOME/.local/state/nelisp-m365/mcp.log"
 #+end_src
 
@@ -120,6 +160,13 @@ until the token is revoked.  There is no OS keychain integration --
 this runtime has no FFI.  Revoke at
 https://account.live.com/consent/Manage if the file is exposed.
 
+** Downloads
+
+=m365_save_mail_attachment= and =m365_download_onedrive_file= write into
+=M365_DOWNLOAD_DIR= and nowhere else.  File names arrive from whoever
+sent the mail or shared the file, so path separators, drive letters and
+leading dots are stripped before the name is used.
+
 * Running
 
 ** Claude Code
@@ -129,7 +176,7 @@ claude mcp add --scope user m365-personal-nelisp -- \
   wsl.exe -d Debian -- bash /path/to/packages/nelisp-m365/bin/nelisp-m365-mcp
 #+end_src
 
-Drop the =wsl.exe -d Debian --= prefix when Claude Code and the runtime
+Drop the =wsl.exe -d Debian --= prefix when the client and the runtime
 are on the same Linux host.  Then call =m365_authenticate=, enter the
 code in a browser, and call =m365_authenticate_finish=.
 
@@ -142,10 +189,9 @@ stdio JSON-RPC with no client-specific behaviour.
 
 The runtime has no socket primitives at all -- =make-network-process=
 and =open-network-stream= are both void -- so this process cannot listen
-for HTTP.  Reaching a claude.ai custom connector means running a TLS
-terminator (Cloudflare Tunnel, Caddy) in front of a thin adapter that
-drives this process over the same stdio pipe.  The tool implementations
-need no change for that.
+for HTTP.  Reaching a remote MCP client means running a TLS terminator
+in front of a thin adapter that drives this process over the same stdio
+pipe.  The tool implementations need no change for that.
 
 * Runtime substrate
 
@@ -154,21 +200,27 @@ were measured against the 2026-08-19 Linux build and the 2026-08-13
 Windows PE build, and they shape the code far more than the Graph API
 does.  =nelisp-m365-compat.el= closes each one in a single place.
 
-| Primitive                     | Linux      | Windows PE  |
-|-------------------------------+------------+-------------|
-| =make-network-process=        | void       | void        |
-| =match-beginning= / =-end=    | nil        | nil         |
-| =format-time-string=          | nil        | nil         |
-| =float-time=                  | works      | nil         |
-| =sit-for=                     | no delay   | no delay    |
-| =getenv= / =command-line-args=| nil        | getenv works|
-| =load-path=                   | empty      | empty       |
-| =file-attributes=             | non-standard | nil always |
-| =set-file-modes=              | works      | errno -38   |
-| =call-process=                | works      | works       |
-| =read-stdin-bytes=            | works      | works       |
+| Primitive                     | Linux        | Windows PE  |
+|-------------------------------+--------------+-------------|
+| =make-network-process=        | void         | void        |
+| =match-beginning= / =-end=    | nil          | nil         |
+| =format-time-string=          | nil          | nil         |
+| =float-time=                  | works        | nil         |
+| =sit-for=                     | no delay     | no delay    |
+| =getenv= / =command-line-args=| nil          | getenv works|
+| =load-path=                   | empty        | empty       |
+| =file-attributes=             | non-standard | nil always  |
+| =set-file-modes=              | works        | errno -38   |
+| =call-process=                | works        | works       |
+| =read-stdin-bytes=            | works        | works       |
 
-Three of these drive design decisions worth restating:
+Buffers exist only as containers: =with-temp-buffer=, =insert=,
+=insert-file-contents= and =buffer-string= work, but =goto-char=,
+=point=, =search-forward=, =delete-region=, =re-search-forward=,
+=looking-at= and =char-after= are all void, so a buffer cannot be
+navigated or edited.  Text processing has to be done on strings.
+
+Three consequences worth restating:
 
 - *No regexp capture groups.*  =match-beginning=, =match-end= and
   =match-data= all return nil, so only the index from =string-match= and
@@ -177,24 +229,67 @@ Three of these drive design decisions worth restating:
 - *No environment and no argv.*  Configuration cannot be passed in, so
   =bin/nelisp-m365-mcp= resolves everything and writes a bootstrap file
   containing absolute =load= calls and =setq= forms.
-- *Unimplemented builtins abort uncatchably.*  Calling one aborts the
-  whole form without signalling, and =condition-case= does not catch it.
-  Nothing in this package probes a primitive by calling it inside a
-  handler.
+- *A broken builtin can be uncatchable.*  A genuinely missing builtin is
+  fine -- it signals =void-function=, which =condition-case= catches.
+  But a builtin that is declared and broken is not: =nelisp--syscall=
+  aborts the form without signalling, and =alloc-bytes= and
+  =ptr-read-u64= take SIGSEGV and kill the process outright, even with
+  valid arguments.  Nothing here calls those.
 
 The Windows PE build cannot run this package: every filesystem predicate
 returns nil and there is no clock.  Run it under WSL, or on Linux.
 
+* Allocation
+
+The runtime never collects garbage on its own, and several string
+primitives allocate far more than their input size suggests.  Getting
+this wrong is not a performance nuisance here -- it is what killed the
+server mid-session, at a different tool each run, until the cause was
+found.  Measured on the 2026-08-19 Linux build:
+
+| Operation                             | Allocated |
+|---------------------------------------+-----------|
+| =string-replace= on a 7 KB string      | 376 MB    |
+| =downcase= of a 7 KB string            | 163 MB    |
+| =string-search= with START, 600 calls  | 89 MB     |
+| =substring=, 600 slices of 7 KB        | 158 MB    |
+| =nelisp-json-parse-string=, 16 KB      | 2.7 MB    |
+
+Rules that follow, and that any change here has to keep:
+
+- *Never call =string-replace=.*  One call costs more than the entire
+  rest of a request.
+- *Never build a whole-document copy*, including =downcase=.
+- *Never pass START to =string-search=*; it allocates in proportion to
+  the remaining haystack, which makes any tag-by-tag walk quadratic.
+  Use =nelisp-m365-compat-find=, which searches in bounded slices.
+- *Collect after every request.*  =nelisp-m365-mcp-collect-garbage=
+  runs =garbage-collect= once the response is on the wire.  It does not
+  return pages to the OS -- resident size plateaus rather than dropping
+  -- but reclaimed memory is reused, which is the difference between a
+  flat 142 MB and a linear climb to 438 MB over five rounds of the same
+  work.
+
+JSON parsing, by contrast, is well behaved and scales linearly; it was
+suspected early and cleared by measurement.
+
 * JSON encoding rules
 
 =nelisp-json-encode= reads a list as an alist, so =("a" "b")= encodes as
-={"a":"b"}= and a list of alists aborts the encoder.  Two rules follow,
-and both also hold for the host =json-encode=, which keeps the package
-dual-target:
+={"a":"b"}= and a list of alists aborts the encoder.  It also rejects
+floats outright, reporting them as NaN or infinity.  Three rules follow,
+all of which also hold for the host =json-encode=, which keeps the
+package dual-target:
 
 - JSON arrays are *vectors*; use =nelisp-m365-compat-json-array=
 - JSON booleans are =t= and =:json-false=; a bare nil encodes as null,
   so use =nelisp-m365-compat-json-bool=
+- timestamps are *integers*; =nelisp-m365-compat-now= truncates
+
+Parsing is pinned to the same representation, and the host parser's
+output is normalised: it spells =:array-type= as =array= rather than
+=vector=, and interns object keys as symbols where =nelisp-json= leaves
+them as strings.
 
 * Testing
 
@@ -215,7 +310,7 @@ paging only mean anything against a live endpoint.
 
 * Known limitations
 
-- Read-only.  No send, upload, or calendar write.
+- Read-only against the account.  No send, upload, or calendar write.
 - =read-stdin-bytes= is wrapped in =String::from_utf8_lossy=, so a
   request larger than the 64 KiB read chunk can lose a multi-byte
   character at the chunk boundary.  Normal requests are consumed whole.
@@ -225,14 +320,14 @@ paging only mean anything against a live endpoint.
   after the client closes stdin.  The runtime has no working
   =kill-emacs= or =exit= to suppress it; it lands after the session is
   over and no client sees it.
-- The Excel workbook endpoints are reached with =Files.Read=.  Microsoft
-  documents some workbook operations as requiring =Files.ReadWrite=; if
-  a range read answers 403, that scope is why.
+- Thread retrieval sorts on the client: Exchange answers
+  =InefficientFilter= when =$orderby= is combined with a
+  =conversationId= filter.
 
 * Dependencies
 
 - NeLisp core standalone runtime
 - =nelisp-json= for JSON on the runtime; the host =json= library under
   a regular Emacs
-- =curl= on PATH at one of the absolute paths in
+- =curl= at one of the absolute paths in
   =nelisp-m365-compat--curl-candidates=

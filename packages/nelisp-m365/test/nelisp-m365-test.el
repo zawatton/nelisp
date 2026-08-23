@@ -210,6 +210,42 @@ an array of objects, and parsing arrays as lists made it unencodable."
   (should (equal (nelisp-m365-tools-html-to-text "&amp;lt;") "&lt;"))
   (should (equal (nelisp-m365-tools-html-to-text "x&nbsp;y") "x y")))
 
+(ert-deftest nelisp-m365-test-html-entity-edge-cases ()
+  "The single-pass entity decoder handles the awkward inputs.
+Rewritten from a chain of `string-replace' calls, which allocated
+gigabytes; these cases pin the behaviour that rewrite has to preserve."
+  ;; A bare ampersand in prose is left alone, and does not send the
+  ;; decoder scanning to the end of the document looking for a semicolon.
+  (should (equal (nelisp-m365-tools-html-to-text "Tom & Jerry") "Tom & Jerry"))
+  ;; An unknown entity is passed through rather than eaten.
+  (should (equal (nelisp-m365-tools-html-to-text "a&zzz;b") "a&zzz;b"))
+  ;; A semicolon far away is not treated as an entity terminator.
+  (should (equal (nelisp-m365-tools-html-to-text "a & b ; c") "a & b ; c"))
+  ;; Adjacent entities both decode.
+  (should (equal (nelisp-m365-tools-html-to-text "&lt;&gt;") "<>"))
+  ;; Text produced by a replacement is never re-examined, so an encoded
+  ;; entity cannot become live markup.
+  (should (equal (nelisp-m365-tools-html-to-text "&amp;lt;") "&lt;"))
+  (should (equal (nelisp-m365-tools-html-to-text "&amp;amp;") "&amp;")))
+
+(ert-deftest nelisp-m365-test-html-collapses-blank-runs ()
+  "Long runs of blank lines collapse to a single separator."
+  (should (equal (nelisp-m365-tools-html-to-text "<p>a</p><p></p><p></p><p>b</p>")
+                 "a\n\nb"))
+  (should (equal (nelisp-m365-tools-html-to-text "a<br><br><br><br>b")
+                 "a\n\nb")))
+
+(ert-deftest nelisp-m365-test-html-drops-uppercase-script ()
+  "Container skipping is case-insensitive without copying the document.
+The downcased twin this used to rely on cost about 160 MB per 7 KB of
+input, so the tag name is now normalised one tag at a time."
+  (should (equal (nelisp-m365-tools-html-to-text
+                  "<DIV>keep<SCRIPT>alert('x')</SCRIPT>this</DIV>")
+                 "keep\nthis"))
+  (should (equal (nelisp-m365-tools-html-to-text
+                  "a<Style>p{color:red}</Style>b")
+                 "a\nb")))
+
 (ert-deftest nelisp-m365-test-html-keeps-japanese ()
   "Non-ASCII text survives the tag walk unchanged."
   (should (equal (nelisp-m365-tools-html-to-text
@@ -233,7 +269,7 @@ an array of objects, and parsing arrays as lists made it unencodable."
           (should (equal (cdr (assoc "type" schema)) "object"))
           (should (assoc "properties" schema))
           (should (vectorp (cdr (assoc "required" schema)))))))
-    (should (= (length names) 18))))
+    (should (= (length names) 30))))
 
 (ert-deftest nelisp-m365-test-registry-required-args-declared ()
   "Tools that require an argument also declare it in properties."
@@ -252,6 +288,53 @@ an array of objects, and parsing arrays as lists made it unencodable."
   (should (= (nelisp-m365-tools--int-arg nil "n" 10 1 50) 10))
   (should (= (nelisp-m365-tools--int-arg '(("n" . "7")) "n" 10 1 50) 7))
   (should (= (nelisp-m365-tools--int-arg '(("n" . "junk")) "n" 10 1 50) 1)))
+
+(ert-deftest nelisp-m365-test-thread-ordering ()
+  "Thread messages sort oldest first on the client.
+Exchange answers `InefficientFilter' when `$orderby' is combined with a
+`conversationId' filter, so the ordering has to happen here."
+  ;; Built with `list' rather than quoted: `sort' is destructive, and a
+  ;; quoted literal is shared across calls to the enclosing function.
+  (let ((rows (list (list (cons "receivedDateTime" "2026-08-03T10:00:00Z")
+                          (cons "id" "c"))
+                    (list (cons "receivedDateTime" "2026-08-01T09:00:00Z")
+                          (cons "id" "a"))
+                    (list (cons "receivedDateTime" "2026-08-02T23:59:59Z")
+                          (cons "id" "b")))))
+    (should (equal (mapcar (lambda (r) (cdr (assoc "id" r)))
+                           (sort rows #'nelisp-m365-tools--by-received))
+                   '("a" "b" "c"))))
+  ;; A row missing the field must not break the comparison.
+  (should (listp (sort (list '(("id" . "x"))
+                             '(("receivedDateTime" . "2026-01-01T00:00:00Z")))
+                       #'nelisp-m365-tools--by-received))))
+
+;;; Download safety ---------------------------------------------------------
+
+(ert-deftest nelisp-m365-test-safe-basename ()
+  "A hostile attachment name cannot steer a write out of the directory.
+Attachment and drive item names are chosen by whoever sent the mail or
+shared the file, so path separators, drive letters and dot segments have
+to be stripped rather than trusted."
+  (should (equal (nelisp-m365-tools--safe-basename "report.pdf") "report.pdf"))
+  (should (equal (nelisp-m365-tools--safe-basename "年次点検.pdf") "年次点検.pdf"))
+  (should-not (string-search "/" (nelisp-m365-tools--safe-basename
+                                  "../../etc/passwd")))
+  (should-not (string-search "\\" (nelisp-m365-tools--safe-basename
+                                   "..\\..\\windows\\system32\\evil.dll")))
+  (should-not (string-prefix-p "." (nelisp-m365-tools--safe-basename
+                                    ".bashrc")))
+  (should-not (string-search ":" (nelisp-m365-tools--safe-basename
+                                  "C:/Windows/evil.exe")))
+  ;; A name made only of structural characters still yields a usable one.
+  (should (equal (nelisp-m365-tools--safe-basename "..") "download"))
+  (should (equal (nelisp-m365-tools--safe-basename "") "download"))
+  (should (equal (nelisp-m365-tools--safe-basename nil) "download")))
+
+(ert-deftest nelisp-m365-test-download-requires-configured-dir ()
+  "Downloads refuse to run when no directory is configured."
+  (let ((nelisp-m365-download-dir nil))
+    (should-error (nelisp-m365-tools--download-path "x.pdf"))))
 
 ;;; MCP dispatch ---------------------------------------------------------------
 
@@ -279,7 +362,7 @@ an array of objects, and parsing arrays as lists made it unencodable."
                 '(("jsonrpc" . "2.0") ("id" . 2) ("method" . "tools/list"))))
          (tools (cdr (assoc "tools" (cdr (assoc "result" resp))))))
     (should (vectorp tools))
-    (should (= (length tools) 18))
+    (should (= (length tools) 30))
     (should (equal (cdr (assoc "name" (aref tools 0))) "m365_authenticate"))))
 
 (ert-deftest nelisp-m365-test-mcp-notification-has-no-reply ()

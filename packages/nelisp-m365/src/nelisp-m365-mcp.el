@@ -69,6 +69,26 @@ Never stdout: that stream carries the JSON-RPC framing.")
 (defvar nelisp-m365-mcp-read-chunk 65536
   "Bytes requested per `read-stdin-bytes' call.")
 
+(defvar nelisp-m365-mcp-collect-garbage t
+  "Whether to run `garbage-collect' after each dispatched request.
+
+The standalone runtime never collects on its own, so a long-lived server
+grows without bound and is eventually killed by the OS.  Measured on the
+2026-08-19 Linux build, allocating and dropping 20 MB five times over:
+
+  no collection     22 MB -> 126 -> 204 -> 282 -> 360 -> 438 MB, linear
+  collecting        22 MB -> 126 -> 137 -> 142 -> 142 -> 142 MB, flat
+
+`garbage-collect' does not hand pages back to the OS -- resident size
+plateaus rather than dropping -- but reclaimed memory is reused, which
+is what keeps the process off the OOM killer's list.  Without this, a
+session died at a different tool each run: whichever call happened to
+cross the limit.
+
+Set to nil to measure the difference; there is no reason to in normal
+use, since a collection is far cheaper than the network round trip it
+follows.")
+
 (defun nelisp-m365-mcp-log (format-string &rest args)
   "Append a diagnostic line to `nelisp-m365-mcp-log-file' when set."
   (when nelisp-m365-mcp-log-file
@@ -218,7 +238,8 @@ Returns nil for a notification, which must not be answered."
 ;;; Read loop ---------------------------------------------------------------
 
 (defun nelisp-m365-mcp--dispatch-line (line)
-  "Parse and handle one framed JSON-RPC LINE, writing any response."
+  "Parse and handle one framed JSON-RPC LINE, writing any response.
+Collects garbage afterwards -- see `nelisp-m365-mcp-collect-garbage'."
   (let ((trimmed (string-trim line)))
     (unless (equal trimmed "")
       (let ((request (condition-case nil
@@ -228,7 +249,12 @@ Returns nil for a notification, which must not be answered."
             (nelisp-m365-mcp--write
              (nelisp-m365-mcp--error nil -32700 "parse error"))
           (let ((response (nelisp-m365-mcp-handle request)))
-            (when response (nelisp-m365-mcp--write response))))))))
+            (when response (nelisp-m365-mcp--write response)))))
+      ;; After the response is on the wire, so the collection never adds
+      ;; to the client's latency for this request.
+      (when (and nelisp-m365-mcp-collect-garbage
+                 (fboundp 'garbage-collect))
+        (garbage-collect)))))
 
 (defun nelisp-m365-mcp-serve ()
   "Serve MCP over stdin and stdout until the input stream closes.
