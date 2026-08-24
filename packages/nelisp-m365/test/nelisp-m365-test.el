@@ -291,7 +291,7 @@ input, so the tag name is now normalised one tag at a time."
           (should (equal (cdr (assoc "type" schema)) "object"))
           (should (assoc "properties" schema))
           (should (vectorp (cdr (assoc "required" schema)))))))
-    (should (= (length names) 30))))
+    (should (= (length names) 31))))
 
 (ert-deftest nelisp-m365-test-write-tools-are-off-by-default ()
   "The write tools are absent until they are switched on.
@@ -300,13 +300,13 @@ sitting in the registry of a session that only meant to read."
   (let ((nelisp-m365-write-enabled nil))
     (let ((names (mapcar (lambda (tool) (plist-get tool :name))
                          (nelisp-m365-tools-registry))))
-      (should (= (length names) 30))
+      (should (= (length names) 31))
       (should-not (member "m365_send_mail" names))
       (should-not (member "m365_create_draft" names))))
   (let ((nelisp-m365-write-enabled t))
     (let ((names (mapcar (lambda (tool) (plist-get tool :name))
                          (nelisp-m365-tools-registry))))
-      (should (= (length names) 38))
+      (should (= (length names) 43))
       (should (member "m365_send_mail" names))
       (should (member "m365_create_draft" names)))))
 
@@ -323,9 +323,17 @@ sitting in the registry of a session that only meant to read."
         (should (vectorp required))
         (dolist (name (append required nil))
           (should (assoc name props)))))
-    ;; Deleting an event is the one that destroys existing data.
-    (let ((del (nelisp-m365-mcp--find-tool "m365_delete_event")))
-      (should (plist-get del :destructive)))))
+    ;; Everything that removes existing data says so, and nothing else
+    ;; claims to -- the annotation is what a client shows before asking
+    ;; the user to confirm.
+    (dolist (name '("m365_delete_event" "m365_delete_mail"
+                    "m365_delete_onedrive_item" "m365_delete_todo_task"))
+      (should (plist-get (nelisp-m365-mcp--find-tool name) :destructive)))
+    (dolist (name '("m365_create_draft" "m365_send_draft" "m365_send_mail"
+                    "m365_create_event" "m365_upload_onedrive_file"
+                    "m365_create_todo_task" "m365_complete_todo_task"))
+      (should-not (plist-get (nelisp-m365-mcp--find-tool name)
+                             :destructive)))))
 
 (ert-deftest nelisp-m365-test-recipient-shapes ()
   "A recipient argument accepts one address or several."
@@ -449,7 +457,7 @@ to be stripped rather than trusted."
                 '(("jsonrpc" . "2.0") ("id" . 2) ("method" . "tools/list"))))
          (tools (cdr (assoc "tools" (cdr (assoc "result" resp))))))
     (should (vectorp tools))
-    (should (= (length tools) 30))
+    (should (= (length tools) 31))
     (should (equal (cdr (assoc "name" (aref tools 0))) "m365_authenticate"))))
 
 (ert-deftest nelisp-m365-test-mcp-notification-has-no-reply ()

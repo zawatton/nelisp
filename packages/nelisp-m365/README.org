@@ -21,13 +21,13 @@ them.
 
 * Status
 
-- Package status: active.  30 read tools always; 8 write tools when
+- Package status: active.  31 read tools always; 12 write tools when
   =M365_ENABLE_WRITE= is set
 - Transports: stdio, and Streamable HTTP with OAuth 2.1 through
   =bin/nelisp-m365-http= (see /Remote transport/)
 - Verified platform: Linux build of the standalone runtime.  The Windows
   PE build is *not usable* today (see /Runtime substrate/)
-- All 38 tools verified against a live personal Microsoft account
+- All 43 tools verified against a live personal Microsoft account
 
 * Layout
 
@@ -62,6 +62,7 @@ section and appear only when switched on.
 
 ** Outlook mail
 
+| =m365_list_mail=             | list a folder, newest first                |
 | =m365_search_mail=           | full-text search; returns =conversationId= |
 | =m365_get_mail=              | one message, body as plain text            |
 | =m365_get_mail_thread=       | every message in one conversation          |
@@ -121,10 +122,23 @@ it on and the account has to consent again.
 | =m365_delete_event=          | remove one -- the only destructive tool |
 | =m365_upload_onedrive_file=  | upload a local file, up to 60 MB      |
 | =m365_create_todo_task=      | add a To Do task                      |
+| =m365_delete_mail=           | to Deleted Items, or purge            |
+| =m365_delete_onedrive_item=  | to the OneDrive recycle bin           |
+| =m365_complete_todo_task=    | mark a task done                      |
+| =m365_delete_todo_task=      | remove a task -- no recycle bin       |
 
 Composing is split from sending deliberately: a draft can be read back
 and corrected, a sent message cannot be recalled.  The descriptions say
 so, and =m365_send_mail= points at the two-step path.
+
+Nothing purges by default.  Mail is *moved* to Deleted Items rather than
+DELETEd, because the two do not land in the same place: measured on a
+personal account, =DELETE /me/messages/{id}= puts the message in
+Recoverable Items -- Outlook's "Recover items deleted from this folder",
+a screen most people never open -- and it never appears in Deleted Items
+at all.  =permanent= selects the DELETE path and says where the message
+went.  A OneDrive item goes to the recycle bin.  Only To Do is
+unrecoverable, which its tool reports as =recoverable: false=.
 
 Attachments are encoded by the OS rather than in Lisp, and OneDrive
 uploads are streamed by curl, so file bytes never pass through the
@@ -417,11 +431,13 @@ paging only mean anything against a live endpoint.
 
 * Known limitations
 
-- No delete tools beyond =m365_delete_event=.  Mail, OneDrive files and
-  To Do tasks can be created but not removed through this server.
 - =read-stdin-bytes= is wrapped in =String::from_utf8_lossy=, so a
   request larger than the 64 KiB read chunk can lose a multi-byte
   character at the chunk boundary.  Normal requests are consumed whole.
+- =$search= is index-backed, so a message that just arrived or was just
+  moved, and a file uploaded moments ago, can be missing from
+  =m365_search_mail= and =m365_search_onedrive= while plainly existing.
+  Use =m365_list_mail= or =m365_list_onedrive= to answer "is it there?".
 - Paging stops at =nelisp-m365-graph-max-pages=; results say so through
   the =truncated= flag rather than implying completeness.
 - =--load= prints its return value, so a stray =nil= reaches stdout

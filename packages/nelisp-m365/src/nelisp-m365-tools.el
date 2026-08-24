@@ -309,6 +309,24 @@ into `m365_get_mail_thread'.")
            (cons "body_truncated"
                  (nelisp-m365-compat-json-bool (cdr clipped)))))))
 
+(defun nelisp-m365-tools-list-mail (args)
+  "List messages in a mail folder, newest first.
+
+Distinct from `m365_search_mail' because `$search' is index-backed: a
+message that has just arrived or just been moved is invisible to it
+while plainly existing.  Anything that has to answer \"is it there?\"
+rather than \"find me something about X\" belongs here."
+  (let* ((folder (nelisp-m365-tools--arg args "folder" "inbox"))
+         (limit (nelisp-m365-tools--int-arg args "maxResults" 25 1 100))
+         (path (concat "/me/mailFolders/"
+                       (nelisp-m365-compat-url-encode folder) "/messages"
+                       (nelisp-m365-graph-query
+                        (list (cons "$select" nelisp-m365-tools--message-fields)
+                              (cons "$orderby" "receivedDateTime desc")
+                              (cons "$top" limit)))))
+         (collected (nelisp-m365-graph-collection path limit)))
+    (nelisp-m365-tools--collection-result "messages" collected)))
+
 (defun nelisp-m365-tools-list-mail-folders (args)
   "List Outlook mail folders with their unread and total counts."
   (let* ((limit (nelisp-m365-tools--int-arg args "maxResults" 30 1 100))
@@ -1038,6 +1056,92 @@ has to handle both the attached and unattached cases."
       (nelisp-m365-graph-pick created '("id" "title" "status"
                                         "createdDateTime")))))
 
+;;; Delete tools -----------------------------------------------------------------
+
+;; Nothing here purges.  A driveItem goes to the OneDrive recycle bin,
+;; and mail is moved to Deleted Items, so a wrong call is recoverable by
+;; whoever notices it.
+;;
+;; Mail is *moved* rather than DELETEd because the two do not end up in
+;; the same place.  Measured on this account: DELETE /me/messages/{id}
+;; puts the message in recoverableitemsdeletions -- Outlook's "Recover
+;; items deleted from this folder", which is a different screen most
+;; people never open -- while it never appears in the Deleted Items
+;; folder at all.  Moving is both predictable and where a person looks.
+
+(defun nelisp-m365-tools-delete-mail (args)
+  "Move one message to Deleted Items, or purge it when PERMANENT is set."
+  (let* ((id (nelisp-m365-tools--require-arg args "messageId"))
+         (encoded (nelisp-m365-compat-url-encode id))
+         (permanent (eq (nelisp-m365-tools--arg args "permanent") t))
+         (subject (condition-case nil
+                      (cdr (assoc "subject"
+                                  (nelisp-m365-graph-get
+                                   (concat "/me/messages/" encoded
+                                           "?$select=subject"))))
+                    (error nil))))
+    (if permanent
+        (progn
+          (nelisp-m365-graph-delete (concat "/me/messages/" encoded))
+          (list (cons "deleted" t)
+                (cons "messageId" id)
+                (cons "subject" subject)
+                (cons "recoverable" t)
+                (cons "location" "recoverableitemsdeletions")
+                (cons "note" (concat "Deleted. Not in Deleted Items: it is in "
+                                     "Recoverable Items, reachable from "
+                                     "Outlook's \"Recover items deleted from "
+                                     "this folder\"."))))
+      (let ((moved (nelisp-m365-graph-post
+                    (concat "/me/messages/" encoded "/move")
+                    (list (cons "destinationId" "deleteditems")))))
+        (list (cons "deleted" t)
+              (cons "messageId" (or (cdr (assoc "id" moved)) id))
+              (cons "subject" subject)
+              (cons "recoverable" t)
+              (cons "location" "deleteditems")
+              (cons "note" "Moved to Deleted Items; it can be restored from there."))))))
+
+(defun nelisp-m365-tools-delete-onedrive-item (args)
+  "Move one OneDrive file or folder to the recycle bin."
+  (let* ((id (nelisp-m365-tools--require-arg args "itemId"))
+         (encoded (nelisp-m365-compat-url-encode id))
+         (meta (condition-case nil
+                   (nelisp-m365-graph-get
+                    (concat "/me/drive/items/" encoded "?$select=name,size"))
+                 (error nil))))
+    (nelisp-m365-graph-delete (concat "/me/drive/items/" encoded))
+    (list (cons "deleted" t)
+          (cons "itemId" id)
+          (cons "name" (cdr (assoc "name" meta)))
+          (cons "recoverable" t)
+          (cons "note" "Moved to the OneDrive recycle bin; it can be restored from there."))))
+
+(defun nelisp-m365-tools-complete-todo-task (args)
+  "Mark a To Do task completed, leaving it in the list."
+  (let* ((list-id (nelisp-m365-tools--require-arg args "listId"))
+         (task-id (nelisp-m365-tools--require-arg args "taskId"))
+         (updated (nelisp-m365-graph-patch
+                   (concat "/me/todo/lists/"
+                           (nelisp-m365-compat-url-encode list-id)
+                           "/tasks/" (nelisp-m365-compat-url-encode task-id))
+                   (list (cons "status" "completed")))))
+    (nelisp-m365-graph-pick updated
+                            '("id" "title" "status" "completedDateTime"))))
+
+(defun nelisp-m365-tools-delete-todo-task (args)
+  "Remove a To Do task from its list.
+Unlike mail and OneDrive, To Do has no recycle bin: this is permanent."
+  (let* ((list-id (nelisp-m365-tools--require-arg args "listId"))
+         (task-id (nelisp-m365-tools--require-arg args "taskId")))
+    (nelisp-m365-graph-delete
+     (concat "/me/todo/lists/" (nelisp-m365-compat-url-encode list-id)
+             "/tasks/" (nelisp-m365-compat-url-encode task-id)))
+    (list (cons "deleted" t)
+          (cons "taskId" task-id)
+          (cons "recoverable" :json-false)
+          (cons "note" "To Do has no recycle bin; this task is gone."))))
+
 ;;; Schemas ---------------------------------------------------------------------
 
 (defun nelisp-m365-tools--schema (properties required)
@@ -1131,6 +1235,21 @@ return a value the MCP layer encodes as structured content."
                                "string" "Message id from m365_search_mail.")))
                   '("messageId"))
          :handler #'nelisp-m365-tools-get-mail)
+
+   (list :name "m365_list_mail"
+         :title "List messages in a folder"
+         :description "List messages in a mail folder, newest first. Use this rather than m365_search_mail when you need to know what is actually in a folder right now: search is index-backed, so a message that just arrived or was just moved can be missing from it."
+         :read-only t
+         :untrusted t
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "folder"
+                              (nelisp-m365-tools--prop
+                               "string"
+                               "Folder id or well-known name: inbox, drafts, sentitems, deleteditems, archive."
+                               (cons "default" "inbox")))
+                        (cons "maxResults" (nelisp-m365-tools--max-results 25 100)))
+                  nil)
+         :handler #'nelisp-m365-tools-list-mail)
 
    (list :name "m365_list_mail_folders"
          :title "List Outlook mail folders"
@@ -1599,7 +1718,67 @@ a sent message cannot be recalled."
                               (nelisp-m365-tools--prop
                                "string" "Due date in UTC, e.g. 2026-09-01T00:00:00.")))
                   '("listId" "title"))
-         :handler #'nelisp-m365-tools-create-todo-task)))
+         :handler #'nelisp-m365-tools-create-todo-task)
+
+   (list :name "m365_delete_mail"
+         :title "Delete a message"
+         :description "Move a message to Deleted Items, where it can be restored. With permanent, delete it instead, which puts it in Recoverable Items rather than Deleted Items. Confirm with the user first either way."
+         :read-only nil
+         :destructive t
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "messageId"
+                              (nelisp-m365-tools--prop
+                               "string" "Message or draft id."))
+                        (cons "permanent"
+                              (nelisp-m365-tools--prop
+                               "boolean"
+                               "Delete rather than move to Deleted Items."
+                               (cons "default" :json-false))))
+                  '("messageId"))
+         :handler #'nelisp-m365-tools-delete-mail)
+
+   (list :name "m365_delete_onedrive_item"
+         :title "Delete a OneDrive file or folder"
+         :description "Move a OneDrive item to the recycle bin. Deleting a folder takes its contents with it. Recoverable from the recycle bin, but confirm with the user first."
+         :read-only nil
+         :destructive t
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "itemId"
+                              (nelisp-m365-tools--prop
+                               "string" "Item id from m365_search_onedrive or m365_list_onedrive.")))
+                  '("itemId"))
+         :handler #'nelisp-m365-tools-delete-onedrive-item)
+
+   (list :name "m365_complete_todo_task"
+         :title "Complete a To Do task"
+         :description "Mark a task done, leaving it in the list. Prefer this over deleting a task."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "listId"
+                              (nelisp-m365-tools--prop "string" "List id."))
+                        (cons "taskId"
+                              (nelisp-m365-tools--prop
+                               "string" "Task id from m365_todo_tasks.")))
+                  '("listId" "taskId"))
+         :handler #'nelisp-m365-tools-complete-todo-task)
+
+   (list :name "m365_delete_todo_task"
+         :title "Delete a To Do task"
+         :description "Remove a task from its list. To Do has no recycle bin, so this is permanent; prefer m365_complete_todo_task unless the task should not exist at all."
+         :read-only nil
+         :destructive t
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "listId"
+                              (nelisp-m365-tools--prop "string" "List id."))
+                        (cons "taskId"
+                              (nelisp-m365-tools--prop
+                               "string" "Task id from m365_todo_tasks.")))
+                  '("listId" "taskId"))
+         :handler #'nelisp-m365-tools-delete-todo-task)))
 
 (defun nelisp-m365-tools-registry ()
   "Return every tool this server exposes.
