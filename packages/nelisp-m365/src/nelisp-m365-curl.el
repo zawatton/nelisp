@@ -95,11 +95,17 @@ wins."
   "Perform an HTTP METHOD request to URL through curl.
 
 OPTIONS is a plist:
-  :headers  alist of extra request headers
-  :bearer   OAuth access token, added as an Authorization header
-  :body     request body string, sent with `--data-binary'
-  :timeout  seconds before curl aborts (default
-            `nelisp-m365-curl-default-timeout')
+  :headers      alist of extra request headers
+  :bearer       OAuth access token, added as an Authorization header
+  :body         request body string, sent with `--data-binary'
+  :body-file    path whose contents are the body, sent with
+                `--data-binary @FILE'.  Use this rather than :body for
+                anything non-ASCII or large: it keeps the payload off
+                the command line, where encoding and length limits are
+                the platform's business rather than ours
+  :upload-file  path sent with `--upload-file', for a raw PUT
+  :timeout      seconds before curl aborts (default
+                `nelisp-m365-curl-default-timeout')
 
 Return a plist (:status CODE :headers ALIST :body STRING).  Signal
 `nelisp-m365-http-error' when curl itself fails; a non-2xx HTTP response
@@ -116,12 +122,16 @@ is returned normally so the caller can read the error payload."
     (when bearer
       (setq headers (cons (cons "Authorization" (concat "Bearer " bearer))
                           headers)))
-    (let* ((argv (append
+    (let* ((body-file (plist-get options :body-file))
+           (upload-file (plist-get options :upload-file))
+           (argv (append
                   (list curl "-sS" "-D" "-" "-o" "-"
                         "--max-time" (number-to-string timeout)
                         "-X" (upcase method))
                   (nelisp-m365-curl--header-args headers)
                   (when body (list "--data-binary" body))
+                  (when body-file (list "--data-binary" (concat "@" body-file)))
+                  (when upload-file (list "--upload-file" upload-file))
                   (list url)))
            (res (nelisp-m365-compat-run-program argv)))
       (unless res

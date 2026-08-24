@@ -21,12 +21,13 @@ them.
 
 * Status
 
-- Package status: active, 30 tools, read-only apart from local downloads
+- Package status: active.  30 read tools always; 8 write tools when
+  =M365_ENABLE_WRITE= is set
 - Transports: stdio, and Streamable HTTP with OAuth 2.1 through
   =bin/nelisp-m365-http= (see /Remote transport/)
 - Verified platform: Linux build of the standalone runtime.  The Windows
   PE build is *not usable* today (see /Runtime substrate/)
-- All 30 tools verified against a live personal Microsoft account
+- All 38 tools verified against a live personal Microsoft account
 
 * Layout
 
@@ -49,8 +50,8 @@ packages/nelisp-m365/
 
 * Tools
 
-Read-only apart from the two sign-in calls and the three that write a
-downloaded file to local disk.
+The read tools below are always present.  The write tools are a separate
+section and appear only when switched on.
 
 ** Account
 
@@ -104,6 +105,33 @@ Every tool returning account content marks its payload as untrusted
 external input, so a model reading a mail body or a OneNote page is told
 not to follow instructions found inside it.
 
+** Write tools
+
+Absent unless =M365_ENABLE_WRITE= is set.  Sending mail is outward-facing
+and irreversible; a tool that can do it should not be sitting in the
+registry of a session that only meant to read.  The same switch widens
+the OAuth scopes, so the grant and the tool surface stay in step -- turn
+it on and the account has to consent again.
+
+| =m365_create_draft=          | compose a draft, attachments optional |
+| =m365_create_reply_draft=    | reply draft, Outlook's quoting kept   |
+| =m365_send_draft=            | send a draft -- irreversible          |
+| =m365_send_mail=             | compose and send in one step          |
+| =m365_create_event=          | add a calendar event                  |
+| =m365_delete_event=          | remove one -- the only destructive tool |
+| =m365_upload_onedrive_file=  | upload a local file, up to 60 MB      |
+| =m365_create_todo_task=      | add a To Do task                      |
+
+Composing is split from sending deliberately: a draft can be read back
+and corrected, a sent message cannot be recalled.  The descriptions say
+so, and =m365_send_mail= points at the two-step path.
+
+Attachments are encoded by the OS rather than in Lisp, and OneDrive
+uploads are streamed by curl, so file bytes never pass through the
+runtime -- every string there is UTF-8, and a binary file would not
+survive the trip.  Verified by attaching 1046 bytes covering every byte
+value 0-255, sending it, downloading it back and comparing SHA-256.
+
 * Microsoft Entra setup
 
 One-time, in the Microsoft Entra admin centre:
@@ -147,6 +175,8 @@ M365_TENANT=consumers
 M365_TOKEN_CACHE="$HOME/.local/state/nelisp-m365/token.json"
 M365_DOWNLOAD_DIR="$HOME/.local/state/nelisp-m365/downloads"
 M365_LOG_FILE="$HOME/.local/state/nelisp-m365/mcp.log"
+# Uncomment to expose the write tools; re-run m365_authenticate after.
+# M365_ENABLE_WRITE=1
 #+end_src
 
 =NELISP= overrides the runtime binary, which defaults to
@@ -278,6 +308,7 @@ does.  =nelisp-m365-compat.el= closes each one in a single place.
 | =load-path=                   | empty        | empty       |
 | =file-attributes=             | non-standard | nil always  |
 | =set-file-modes=              | works        | errno -38   |
+| =write-region=                | byte/char bug| byte/char bug|
 | =call-process=                | works        | works       |
 | =read-stdin-bytes=            | works        | works       |
 
@@ -296,6 +327,15 @@ Three consequences worth restating:
 - *No environment and no argv.*  Configuration cannot be passed in, so
   =bin/nelisp-m365-mcp= resolves everything and writes a bootstrap file
   containing absolute =load= calls and =setq= forms.
+- *=write-region= cannot write non-ASCII.*  The stub compares the number
+  of bytes it wrote against the number of characters it was given and
+  signals when they differ, so any file containing Japanese fails
+  outright -- "wrf returned 305 (expected 227)".  Request bodies are
+  therefore escaped to pure ASCII with =\uXXXX= before being written;
+  JSON says an escape means exactly the character it names, so the
+  server sees the same text.  The ASCII check is a length-versus-bytes
+  comparison rather than a scan, so a multi-megabyte base64 attachment
+  skips the escaping pass entirely.
 - *A broken builtin can be uncatchable.*  A genuinely missing builtin is
   fine -- it signals =void-function=, which =condition-case= catches.
   But a builtin that is declared and broken is not: =nelisp--syscall=
@@ -377,7 +417,8 @@ paging only mean anything against a live endpoint.
 
 * Known limitations
 
-- Read-only against the account.  No send, upload, or calendar write.
+- No delete tools beyond =m365_delete_event=.  Mail, OneDrive files and
+  To Do tasks can be created but not removed through this server.
 - =read-stdin-bytes= is wrapped in =String::from_utf8_lossy=, so a
   request larger than the 64 KiB read chunk can lose a multi-byte
   character at the chunk boundary.  Normal requests are consumed whole.

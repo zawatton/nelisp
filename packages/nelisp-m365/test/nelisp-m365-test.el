@@ -83,6 +83,28 @@ naive conversion drifts."
                  '("a" "b" "c")))
   (should (equal (nelisp-m365-compat-split-all "" ",") '(""))))
 
+(ert-deftest nelisp-m365-test-ascii-escaping ()
+  "Non-ASCII escapes to \\uXXXX so a body can be written to disk.
+The runtime's `write-region' compares bytes written against characters
+given and signals when they differ, so a request body containing
+Japanese cannot reach a file unescaped."
+  (should (nelisp-m365-compat-ascii-p "plain ascii"))
+  (should-not (nelisp-m365-compat-ascii-p "年次"))
+  (should (equal (nelisp-m365-compat-escape-non-ascii "abc") "abc"))
+  (should (equal (nelisp-m365-compat-escape-non-ascii "a年b")
+                 "a\\u5E74b"))
+  (should (equal (nelisp-m365-compat-escape-non-ascii "é") "\\u00E9"))
+  ;; Outside the BMP JSON has no \U, so a surrogate pair is required.
+  (should (equal (nelisp-m365-compat-escape-non-ascii "\U0001F600")
+                 "\\uD83D\\uDE00"))
+  ;; The escaped form must parse back to the original text.
+  (let* ((value (list (cons "subject" "年次点検 ✓")))
+         (encoded (nelisp-m365-compat-json-encode-ascii value)))
+    (should (nelisp-m365-compat-ascii-p encoded))
+    (should (equal (cdr (assoc "subject"
+                               (nelisp-m365-compat-json-parse encoded)))
+                   "年次点検 ✓"))))
+
 (ert-deftest nelisp-m365-test-json-shapes ()
   "Arrays encode from vectors and booleans avoid null."
   (should (equal (nelisp-m365-compat-json-array '(1 2)) [1 2]))
@@ -270,6 +292,71 @@ input, so the tag name is now normalised one tag at a time."
           (should (assoc "properties" schema))
           (should (vectorp (cdr (assoc "required" schema)))))))
     (should (= (length names) 30))))
+
+(ert-deftest nelisp-m365-test-write-tools-are-off-by-default ()
+  "The write tools are absent until they are switched on.
+Sending mail is outward-facing and irreversible, so it should not be
+sitting in the registry of a session that only meant to read."
+  (let ((nelisp-m365-write-enabled nil))
+    (let ((names (mapcar (lambda (tool) (plist-get tool :name))
+                         (nelisp-m365-tools-registry))))
+      (should (= (length names) 30))
+      (should-not (member "m365_send_mail" names))
+      (should-not (member "m365_create_draft" names))))
+  (let ((nelisp-m365-write-enabled t))
+    (let ((names (mapcar (lambda (tool) (plist-get tool :name))
+                         (nelisp-m365-tools-registry))))
+      (should (= (length names) 38))
+      (should (member "m365_send_mail" names))
+      (should (member "m365_create_draft" names)))))
+
+(ert-deftest nelisp-m365-test-write-tools-well-formed ()
+  "Write tools declare themselves as writes and carry usable schemas."
+  (let ((nelisp-m365-write-enabled t))
+    (dolist (tool (nelisp-m365-tools--write-registry))
+      (should (stringp (plist-get tool :name)))
+      (should (functionp (plist-get tool :handler)))
+      (should-not (plist-get tool :read-only))
+      (let* ((schema (plist-get tool :schema))
+             (props (cdr (assoc "properties" schema)))
+             (required (cdr (assoc "required" schema))))
+        (should (vectorp required))
+        (dolist (name (append required nil))
+          (should (assoc name props)))))
+    ;; Deleting an event is the one that destroys existing data.
+    (let ((del (nelisp-m365-mcp--find-tool "m365_delete_event")))
+      (should (plist-get del :destructive)))))
+
+(ert-deftest nelisp-m365-test-recipient-shapes ()
+  "A recipient argument accepts one address or several."
+  ;; Checked through the reader rather than against a literal: the two
+  ;; have to agree on the shape, which is the property that matters.
+  (let ((one (nelisp-m365-tools--recipients "a@example.com")))
+    (should (vectorp one))
+    (should (= (length one) 1))
+    (should (equal (nelisp-m365-graph-address (aref one 0))
+                   "a@example.com")))
+  (let ((many (nelisp-m365-tools--recipients ["a@example.com" "b@example.com"])))
+    (should (= (length many) 2))
+    (should (equal (nelisp-m365-graph-address (aref many 1))
+                   "b@example.com")))
+  (should (equal (length (nelisp-m365-tools--recipients [])) 0)))
+
+(ert-deftest nelisp-m365-test-message-body-shape ()
+  "A composed message carries the fields Graph expects."
+  (let ((msg (nelisp-m365-tools--message-body
+              '(("to" . "a@example.com") ("subject" . "件名")
+                ("body" . "本文")))))
+    (should (equal (cdr (assoc "subject" msg)) "件名"))
+    (should (equal (cdr (assoc "contentType" (cdr (assoc "body" msg))))
+                   "Text"))
+    (should (vectorp (cdr (assoc "toRecipients" msg))))
+    ;; Absent optional recipients are omitted, not sent as null.
+    (should-not (assoc "ccRecipients" msg)))
+  (let ((msg (nelisp-m365-tools--message-body
+              '(("to" . "a@example.com") ("html" . t)))))
+    (should (equal (cdr (assoc "contentType" (cdr (assoc "body" msg))))
+                   "HTML"))))
 
 (ert-deftest nelisp-m365-test-registry-required-args-declared ()
   "Tools that require an argument also declare it in properties."

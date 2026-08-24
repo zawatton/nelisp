@@ -798,6 +798,246 @@ tools once they are on disk."
     (list (cons "sections"
                 (nelisp-m365-compat-json-array (cdr (assoc "value" body)))))))
 
+;;; Write tools ---------------------------------------------------------------
+
+(defvar nelisp-m365-write-enabled nil
+  "Whether the write tools are exposed at all.
+
+Off by default, and turned on by the launcher from `M365_ENABLE_WRITE'.
+Sending mail is outward-facing and irreversible; a tool that can do it
+should not be sitting in the registry of a session that only meant to
+read.  Turning it on also widens the OAuth scopes, so the account has to
+consent again -- the grant and the tool surface stay in step.")
+
+(defconst nelisp-m365-tools-max-attachment-bytes 3145728
+  "Largest file accepted as an inline attachment.
+Graph refuses an inline attachment over about 3 MB; beyond that it wants
+an upload session, which this package does not implement.")
+
+(defun nelisp-m365-tools--recipients (value)
+  "Return VALUE as a Graph recipient array.
+VALUE may be one address string or an array of them."
+  (let ((addresses (if (stringp value)
+                       (list value)
+                     (nelisp-m365-compat-to-list value))))
+    (nelisp-m365-compat-json-array
+     (mapcar (lambda (a)
+               (list (cons "emailAddress" (list (cons "address" a)))))
+             addresses))))
+
+(defun nelisp-m365-tools--message-body (args)
+  "Build the Graph message object described by ARGS."
+  (let ((to (nelisp-m365-tools--arg args "to"))
+        (cc (nelisp-m365-tools--arg args "cc"))
+        (bcc (nelisp-m365-tools--arg args "bcc"))
+        (subject (nelisp-m365-tools--arg args "subject" ""))
+        (body (nelisp-m365-tools--arg args "body" ""))
+        (html (eq (nelisp-m365-tools--arg args "html") t)))
+    (let ((message (list (cons "subject" subject)
+                         (cons "body" (list (cons "contentType"
+                                                  (if html "HTML" "Text"))
+                                            (cons "content" body))))))
+      (when to
+        (setq message (append message
+                              (list (cons "toRecipients"
+                                          (nelisp-m365-tools--recipients to))))))
+      (when cc
+        (setq message (append message
+                              (list (cons "ccRecipients"
+                                          (nelisp-m365-tools--recipients cc))))))
+      (when bcc
+        (setq message (append message
+                              (list (cons "bccRecipients"
+                                          (nelisp-m365-tools--recipients bcc))))))
+      message)))
+
+(defun nelisp-m365-tools--attach (message-id path)
+  "Attach the local file PATH to the draft MESSAGE-ID."
+  (let ((size (nelisp-m365-compat-file-size path)))
+    (unless size
+      (error "nelisp-m365: cannot read %s" path))
+    (when (> size nelisp-m365-tools-max-attachment-bytes)
+      (error "nelisp-m365: %s is %s bytes, over the %s byte inline limit"
+             path size nelisp-m365-tools-max-attachment-bytes))
+    (let ((encoded (nelisp-m365-compat-base64-file path)))
+      (unless encoded
+        (error "nelisp-m365: could not base64-encode %s" path))
+      (nelisp-m365-graph-post
+       (concat "/me/messages/" (nelisp-m365-compat-url-encode message-id)
+               "/attachments")
+       (list (cons "@odata.type" "#microsoft.graph.fileAttachment")
+             (cons "name" (nelisp-m365-tools--safe-basename
+                           (file-name-nondirectory path)))
+             (cons "contentBytes" encoded))))))
+
+(defun nelisp-m365-tools--attach-all (message-id args)
+  "Attach every path in the ARGS `attachments' array to MESSAGE-ID."
+  (let ((paths (nelisp-m365-compat-to-list
+                (nelisp-m365-tools--arg args "attachments")))
+        (names nil))
+    (dolist (path paths)
+      (nelisp-m365-tools--attach message-id path)
+      (push (file-name-nondirectory path) names))
+    (nreverse names)))
+
+(defun nelisp-m365-tools-create-draft (args)
+  "Create an Outlook draft, optionally with local files attached."
+  (let* ((draft (nelisp-m365-graph-post
+                 "/me/messages" (nelisp-m365-tools--message-body args)))
+         (id (cdr (assoc "id" draft)))
+         (attached (nelisp-m365-tools--attach-all id args)))
+    (list (cons "messageId" id)
+          (cons "subject" (cdr (assoc "subject" draft)))
+          (cons "webLink" (cdr (assoc "webLink" draft)))
+          (cons "attached" (nelisp-m365-compat-json-array attached))
+          (cons "note" "Draft created but not sent. Review it, then call m365_send_draft."))))
+
+(defun nelisp-m365-tools-create-reply-draft (args)
+  "Create a reply draft for one message, with quoting already in place."
+  (let* ((id (nelisp-m365-tools--require-arg args "messageId"))
+         (draft (nelisp-m365-graph-post
+                 (concat "/me/messages/" (nelisp-m365-compat-url-encode id)
+                         "/createReply")
+                 (nelisp-m365-compat-json-object)))
+         (draft-id (cdr (assoc "id" draft)))
+         (comment (nelisp-m365-tools--arg args "body")))
+    (when comment
+      ;; createReply seeds the draft with the quoted original; replacing
+      ;; the body wholesale would throw that away, so the new text is
+      ;; prepended to what Graph produced.
+      (let* ((existing (cdr (assoc "body" draft)))
+             (kind (or (cdr (assoc "contentType" existing)) "html"))
+             (original (or (cdr (assoc "content" existing)) ""))
+             (joined (if (equal (downcase kind) "html")
+                         (concat "<p>" comment "</p>" original)
+                       (concat comment "\n\n" original))))
+        (nelisp-m365-graph-patch
+         (concat "/me/messages/" (nelisp-m365-compat-url-encode draft-id))
+         (list (cons "body" (list (cons "contentType" kind)
+                                  (cons "content" joined)))))))
+    (let ((attached (nelisp-m365-tools--attach-all draft-id args)))
+      (list (cons "messageId" draft-id)
+            (cons "attached" (nelisp-m365-compat-json-array attached))
+            (cons "note" "Reply draft created but not sent. Review it, then call m365_send_draft.")))))
+
+(defun nelisp-m365-tools-send-draft (args)
+  "Send an existing Outlook draft."
+  (let ((id (nelisp-m365-tools--require-arg args "messageId")))
+    (nelisp-m365-graph-post
+     (concat "/me/messages/" (nelisp-m365-compat-url-encode id) "/send")
+     (nelisp-m365-compat-json-object))
+    (list (cons "sent" t) (cons "messageId" id))))
+
+(defun nelisp-m365-tools-send-mail (args)
+  "Compose and send a message in one step.
+
+Goes through a draft rather than /me/sendMail so that attachments work:
+sendMail takes the whole message in one request, and the same path then
+has to handle both the attached and unattached cases."
+  (let* ((draft (nelisp-m365-graph-post
+                 "/me/messages" (nelisp-m365-tools--message-body args)))
+         (id (cdr (assoc "id" draft)))
+         (attached (nelisp-m365-tools--attach-all id args)))
+    (nelisp-m365-graph-post
+     (concat "/me/messages/" (nelisp-m365-compat-url-encode id) "/send")
+     (nelisp-m365-compat-json-object))
+    (list (cons "sent" t)
+          (cons "messageId" id)
+          (cons "attached" (nelisp-m365-compat-json-array attached)))))
+
+(defun nelisp-m365-tools-create-event (args)
+  "Create a calendar event."
+  (let* ((zone (nelisp-m365-tools--arg args "timeZone" "Tokyo Standard Time"))
+         (event (list (cons "subject" (nelisp-m365-tools--require-arg
+                                       args "subject"))
+                      (cons "start"
+                            (list (cons "dateTime"
+                                        (nelisp-m365-tools--require-arg
+                                         args "start"))
+                                  (cons "timeZone" zone)))
+                      (cons "end"
+                            (list (cons "dateTime"
+                                        (nelisp-m365-tools--require-arg
+                                         args "end"))
+                                  (cons "timeZone" zone)))))
+         (location (nelisp-m365-tools--arg args "location"))
+         (body (nelisp-m365-tools--arg args "body"))
+         (attendees (nelisp-m365-tools--arg args "attendees")))
+    (when location
+      (setq event (append event
+                          (list (cons "location"
+                                      (list (cons "displayName" location)))))))
+    (when body
+      (setq event (append event
+                          (list (cons "body"
+                                      (list (cons "contentType" "Text")
+                                            (cons "content" body)))))))
+    (when attendees
+      (setq event
+            (append event
+                    (list (cons "attendees"
+                                (nelisp-m365-compat-json-array
+                                 (mapcar
+                                  (lambda (a)
+                                    (list (cons "emailAddress"
+                                                (list (cons "address" a)))
+                                          (cons "type" "required")))
+                                  (nelisp-m365-compat-to-list attendees))))))))
+    (let ((created (nelisp-m365-graph-post "/me/events" event)))
+      (nelisp-m365-graph-pick created '("id" "subject" "webLink"
+                                        "start" "end")))))
+
+(defun nelisp-m365-tools-delete-event (args)
+  "Delete a calendar event."
+  (let ((id (nelisp-m365-tools--require-arg args "eventId")))
+    (nelisp-m365-graph-delete
+     (concat "/me/events/" (nelisp-m365-compat-url-encode id)))
+    (list (cons "deleted" t) (cons "eventId" id))))
+
+(defun nelisp-m365-tools-upload-onedrive (args)
+  "Upload a local file to OneDrive."
+  (let* ((source (nelisp-m365-tools--require-arg args "path"))
+         (target (nelisp-m365-tools--require-arg args "destination"))
+         (size (nelisp-m365-compat-file-size source)))
+    (unless size
+      (error "nelisp-m365: cannot read %s" source))
+    ;; A simple PUT is documented up to 250 MB, but this is the plain
+    ;; upload path with no resume; keep it to something a single request
+    ;; can carry comfortably.
+    (when (> size 62914560)
+      (error "nelisp-m365: %s is %s bytes; this uploads at most 60 MB in one request"
+             source size))
+    (let ((item (nelisp-m365-graph-upload
+                 (concat "/me/drive/root:/"
+                         (nelisp-m365-compat-url-encode target)
+                         ":/content")
+                 source)))
+      (append (nelisp-m365-graph-pick item '("id" "name" "size" "webUrl"))
+              (list (cons "uploaded" t))))))
+
+(defun nelisp-m365-tools-create-todo-task (args)
+  "Create a task in a Microsoft To Do list."
+  (let* ((list-id (nelisp-m365-tools--require-arg args "listId"))
+         (title (nelisp-m365-tools--require-arg args "title"))
+         (due (nelisp-m365-tools--arg args "dueDateTime"))
+         (note (nelisp-m365-tools--arg args "body"))
+         (task (list (cons "title" title))))
+    (when note
+      (setq task (append task (list (cons "body"
+                                          (list (cons "contentType" "text")
+                                                (cons "content" note)))))))
+    (when due
+      (setq task (append task
+                         (list (cons "dueDateTime"
+                                     (list (cons "dateTime" due)
+                                           (cons "timeZone" "UTC")))))))
+    (let ((created (nelisp-m365-graph-post
+                    (concat "/me/todo/lists/"
+                            (nelisp-m365-compat-url-encode list-id) "/tasks")
+                    task)))
+      (nelisp-m365-graph-pick created '("id" "title" "status"
+                                        "createdDateTime")))))
+
 ;;; Schemas ---------------------------------------------------------------------
 
 (defun nelisp-m365-tools--schema (properties required)
@@ -819,8 +1059,8 @@ EXTRA is appended verbatim, for keywords such as minimum or default."
 
 ;;; Registry -----------------------------------------------------------------------
 
-(defun nelisp-m365-tools-registry ()
-  "Return the tool definitions this server exposes.
+(defun nelisp-m365-tools--read-registry ()
+  "Return the read-only tool definitions.
 
 Each entry is a plist with :name, :title, :description, :schema,
 :handler and :untrusted.  Handlers take the parsed argument alist and
@@ -1188,6 +1428,185 @@ return a value the MCP layer encodes as structured content."
                                "string" "Notebook id from m365_onenote_notebooks.")))
                   nil)
          :handler #'nelisp-m365-tools-onenote-sections)))
+
+(defun nelisp-m365-tools--recipient-prop (description)
+  "Return a schema property accepting one address or an array of them."
+  (list (cons "description" description)
+        (cons "oneOf"
+              (nelisp-m365-compat-json-array
+               (list (list (cons "type" "string"))
+                     (list (cons "type" "array")
+                           (cons "items" (list (cons "type" "string")))))))))
+
+(defun nelisp-m365-tools--attachments-prop ()
+  "Return the schema property for a list of local files to attach."
+  (list (cons "type" "array")
+        (cons "items" (list (cons "type" "string")))
+        (cons "description"
+              (concat "Local file paths to attach, each under 3 MB. "
+                      "Use m365_save_mail_attachment or "
+                      "m365_download_onedrive_file first to get a path."))))
+
+(defun nelisp-m365-tools--write-registry ()
+  "Return the write tool definitions.
+
+Only reachable when `nelisp-m365-write-enabled' is set.  Composing is
+split from sending on purpose: a draft can be read back and corrected,
+a sent message cannot be recalled."
+  (list
+   (list :name "m365_create_draft"
+         :title "Create an Outlook draft"
+         :description "Compose a draft, optionally attaching local files. The draft is NOT sent; review it and then call m365_send_draft. Prefer this over m365_send_mail when a human should see the message first."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "to" (nelisp-m365-tools--recipient-prop
+                                    "Recipient address, or an array of them."))
+                        (cons "cc" (nelisp-m365-tools--recipient-prop "Cc."))
+                        (cons "bcc" (nelisp-m365-tools--recipient-prop "Bcc."))
+                        (cons "subject"
+                              (nelisp-m365-tools--prop "string" "Subject line."))
+                        (cons "body"
+                              (nelisp-m365-tools--prop "string" "Message body."))
+                        (cons "html"
+                              (nelisp-m365-tools--prop
+                               "boolean" "Treat the body as HTML."
+                               (cons "default" :json-false)))
+                        (cons "attachments" (nelisp-m365-tools--attachments-prop)))
+                  '("to" "subject" "body"))
+         :handler #'nelisp-m365-tools-create-draft)
+
+   (list :name "m365_create_reply_draft"
+         :title "Draft a reply"
+         :description "Create a reply draft for one message, keeping Outlook's quoting of the original. The reply is NOT sent; review it and then call m365_send_draft."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "messageId"
+                              (nelisp-m365-tools--prop
+                               "string" "Message being replied to."))
+                        (cons "body"
+                              (nelisp-m365-tools--prop
+                               "string" "Text to put above the quoted original."))
+                        (cons "attachments" (nelisp-m365-tools--attachments-prop)))
+                  '("messageId"))
+         :handler #'nelisp-m365-tools-create-reply-draft)
+
+   (list :name "m365_send_draft"
+         :title "Send a draft"
+         :description "Send an existing draft. This is irreversible: a sent message cannot be recalled. Confirm the recipients with the user before calling it."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "messageId"
+                              (nelisp-m365-tools--prop
+                               "string" "Draft id from m365_create_draft.")))
+                  '("messageId"))
+         :handler #'nelisp-m365-tools-send-draft)
+
+   (list :name "m365_send_mail"
+         :title "Compose and send mail"
+         :description "Compose and send in one step, with no review. This is irreversible. Prefer m365_create_draft plus m365_send_draft unless the user explicitly asked to send immediately."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "to" (nelisp-m365-tools--recipient-prop
+                                    "Recipient address, or an array of them."))
+                        (cons "cc" (nelisp-m365-tools--recipient-prop "Cc."))
+                        (cons "bcc" (nelisp-m365-tools--recipient-prop "Bcc."))
+                        (cons "subject"
+                              (nelisp-m365-tools--prop "string" "Subject line."))
+                        (cons "body"
+                              (nelisp-m365-tools--prop "string" "Message body."))
+                        (cons "html"
+                              (nelisp-m365-tools--prop
+                               "boolean" "Treat the body as HTML."
+                               (cons "default" :json-false)))
+                        (cons "attachments" (nelisp-m365-tools--attachments-prop)))
+                  '("to" "subject" "body"))
+         :handler #'nelisp-m365-tools-send-mail)
+
+   (list :name "m365_create_event"
+         :title "Create a calendar event"
+         :description "Add an event to the default calendar."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "subject"
+                              (nelisp-m365-tools--prop "string" "Event title."))
+                        (cons "start"
+                              (nelisp-m365-tools--prop
+                               "string" "Start, e.g. 2026-09-01T09:00:00."))
+                        (cons "end"
+                              (nelisp-m365-tools--prop "string" "End."))
+                        (cons "timeZone"
+                              (nelisp-m365-tools--prop
+                               "string" "Windows time zone name."
+                               (cons "default" "Tokyo Standard Time")))
+                        (cons "location"
+                              (nelisp-m365-tools--prop "string" "Location."))
+                        (cons "body"
+                              (nelisp-m365-tools--prop "string" "Notes."))
+                        (cons "attendees"
+                              (list (cons "type" "array")
+                                    (cons "items" (list (cons "type" "string")))
+                                    (cons "description" "Attendee addresses."))))
+                  '("subject" "start" "end"))
+         :handler #'nelisp-m365-tools-create-event)
+
+   (list :name "m365_delete_event"
+         :title "Delete a calendar event"
+         :description "Remove an event from the calendar. This is destructive; confirm with the user first."
+         :read-only nil
+         :destructive t
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "eventId"
+                              (nelisp-m365-tools--prop
+                               "string" "Event id from m365_list_calendar.")))
+                  '("eventId"))
+         :handler #'nelisp-m365-tools-delete-event)
+
+   (list :name "m365_upload_onedrive_file"
+         :title "Upload a file to OneDrive"
+         :description "Upload a local file to a path in OneDrive, creating or replacing it. Up to 60 MB."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "path"
+                              (nelisp-m365-tools--prop
+                               "string" "Local file to upload."))
+                        (cons "destination"
+                              (nelisp-m365-tools--prop
+                               "string" "Target path in OneDrive relative to the drive root, e.g. Documents/2026/report.pdf.")))
+                  '("path" "destination"))
+         :handler #'nelisp-m365-tools-upload-onedrive)
+
+   (list :name "m365_create_todo_task"
+         :title "Create a To Do task"
+         :description "Add a task to a Microsoft To Do list."
+         :read-only nil
+         :untrusted nil
+         :schema (nelisp-m365-tools--schema
+                  (list (cons "listId"
+                              (nelisp-m365-tools--prop
+                               "string" "List id from m365_todo_lists."))
+                        (cons "title"
+                              (nelisp-m365-tools--prop "string" "Task title."))
+                        (cons "body"
+                              (nelisp-m365-tools--prop "string" "Task notes."))
+                        (cons "dueDateTime"
+                              (nelisp-m365-tools--prop
+                               "string" "Due date in UTC, e.g. 2026-09-01T00:00:00.")))
+                  '("listId" "title"))
+         :handler #'nelisp-m365-tools-create-todo-task)))
+
+(defun nelisp-m365-tools-registry ()
+  "Return every tool this server exposes.
+The write tools appear only when `nelisp-m365-write-enabled' is set."
+  (append (nelisp-m365-tools--read-registry)
+          (when nelisp-m365-write-enabled
+            (nelisp-m365-tools--write-registry))))
 
 (provide 'nelisp-m365-tools)
 

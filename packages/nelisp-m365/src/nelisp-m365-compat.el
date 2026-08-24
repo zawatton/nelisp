@@ -229,6 +229,31 @@ the OS."
      (list "/bin/sleep" (format "%s" seconds))))
   nil)
 
+(defun nelisp-m365-compat-base64-file (path)
+  "Return the contents of PATH base64-encoded on a single line, or nil.
+
+Encoded by the OS rather than in Lisp: every string in this runtime is
+UTF-8, so reading a binary file into one corrupts any byte above 127.
+The base64 that comes back is ASCII and therefore safe to carry."
+  (let ((res (nelisp-m365-compat-run-program
+              (if (nelisp-m365-compat-windows-p)
+                  (list "cmd.exe" "/c"
+                        (concat "powershell -NoProfile -Command "
+                                "\"[Convert]::ToBase64String("
+                                "[IO.File]::ReadAllBytes('" path "'))\""))
+                (list "/bin/sh" "-c"
+                      (concat "base64 -w0 -- '" path "'"))))))
+    (and res (equal (car res) 0)
+         (let ((text (string-trim (cdr res))))
+           (and (not (equal text "")) text)))))
+
+(defun nelisp-m365-compat-file-size (path)
+  "Return the size of PATH in bytes, or nil when it cannot be read."
+  (let ((attrs (nelisp-m365-compat--file-attributes path)))
+    (and attrs
+         (let ((size (nth 7 attrs)))
+           (and (numberp size) size)))))
+
 ;;; Executable lookup -------------------------------------------------
 
 (defconst nelisp-m365-compat--curl-candidates
@@ -465,6 +490,45 @@ this package must follow:
    ((fboundp 'nelisp-json-encode) (nelisp-json-encode value))
    ((fboundp 'json-encode) (json-encode value))
    (t (error "nelisp-m365: no JSON encoder available"))))
+
+(defun nelisp-m365-compat-ascii-p (string)
+  "Return non-nil when STRING contains no character above U+007F.
+Compares the character count with the byte count, which is O(1) on both
+back ends and avoids walking a multi-megabyte payload."
+  (if (fboundp 'string-bytes)
+      (= (length string) (string-bytes string))
+    (not (let ((found nil))
+           (dolist (c (string-to-list string) found)
+             (when (> c 127) (setq found t)))))))
+
+(defun nelisp-m365-compat-escape-non-ascii (string)
+  "Return STRING with every non-ASCII character as a JSON \\uXXXX escape.
+
+Needed because the runtime's `write-region' is a stub that compares the
+number of *bytes* it wrote against the number of *characters* it was
+given, and signals when they differ -- so any file containing Japanese
+fails to write at all.  Escaping first makes the payload pure ASCII, and
+JSON says a \\uXXXX escape means exactly the character it names, so the
+server sees the same text either way."
+  (if (nelisp-m365-compat-ascii-p string)
+      string
+    (let ((out nil))
+      (dolist (c (string-to-list string))
+        (cond
+         ((< c 128) (push (char-to-string c) out))
+         ((< c #x10000) (push (format "\\u%04X" c) out))
+         (t
+          ;; Outside the BMP: JSON has no \U, so emit a surrogate pair.
+          (let* ((v (- c #x10000))
+                 (hi (+ #xD800 (ash v -10)))
+                 (lo (+ #xDC00 (logand v #x3FF))))
+            (push (format "\\u%04X\\u%04X" hi lo) out)))))
+      (apply #'concat (nreverse out)))))
+
+(defun nelisp-m365-compat-json-encode-ascii (value)
+  "Encode VALUE as JSON with every non-ASCII character escaped."
+  (nelisp-m365-compat-escape-non-ascii
+   (nelisp-m365-compat-json-encode value)))
 
 (defun nelisp-m365-compat-json-array (list)
   "Return LIST as a vector, ready to encode as a JSON array.

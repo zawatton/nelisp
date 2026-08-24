@@ -117,6 +117,8 @@ and the Windows build has no clock at all.  A 429 is retried up to
                     :bearer token
                     :headers headers
                     :body (plist-get options :body)
+                    :body-file (plist-get options :body-file)
+                    :upload-file (plist-get options :upload-file)
                     :timeout (plist-get options :timeout)))
              (status (plist-get resp :status))
              (body (nelisp-m365-graph--parse-body (plist-get resp :body))))
@@ -165,6 +167,58 @@ than silently implying the list is complete."
     (when (and next (>= pages nelisp-m365-graph-max-pages))
       (setq truncated t))
     (list :items (nreverse items) :truncated truncated)))
+
+(defun nelisp-m365-graph--with-json-body (value fn)
+  "Write VALUE as JSON to a temporary file and call FN with its path.
+The file is removed afterwards.  Request bodies go through a file rather
+than the command line because they carry Japanese subjects and bodies,
+and because a mail with an attachment is megabytes of base64."
+  (let ((file (make-temp-file "nelisp-m365-body-" nil ".json")))
+    (unwind-protect
+        (progn
+          ;; Escaped to pure ASCII: the runtime's `write-region' compares
+          ;; bytes written against characters given and signals when they
+          ;; differ, so a body containing Japanese cannot be written at
+          ;; all otherwise.
+          (nelisp-m365-compat-write-file
+           file (nelisp-m365-compat-json-encode-ascii value))
+          (funcall fn file))
+      (condition-case nil (delete-file file) (error nil)))))
+
+(defun nelisp-m365-graph-send-json (method path value &rest options)
+  "Send VALUE as a JSON body to Graph PATH with METHOD.
+Returns the parsed response body, or nil for a 204."
+  (nelisp-m365-graph--with-json-body
+   value
+   (lambda (file)
+     (apply #'nelisp-m365-graph-request method path
+            :body-file file
+            :headers (cons (cons "Content-Type" "application/json")
+                           (plist-get options :headers))
+            options))))
+
+(defun nelisp-m365-graph-post (path value &rest options)
+  "POST VALUE as JSON to Graph PATH."
+  (apply #'nelisp-m365-graph-send-json "POST" path value options))
+
+(defun nelisp-m365-graph-patch (path value &rest options)
+  "PATCH Graph PATH with VALUE as JSON."
+  (apply #'nelisp-m365-graph-send-json "PATCH" path value options))
+
+(defun nelisp-m365-graph-delete (path &rest options)
+  "DELETE Graph PATH."
+  (apply #'nelisp-m365-graph-request "DELETE" path options))
+
+(defun nelisp-m365-graph-upload (path source &rest options)
+  "PUT the contents of the local file SOURCE to Graph PATH.
+curl streams the file, so its bytes never pass through the runtime --
+which matters because every string here is UTF-8 and a binary file would
+not survive the trip."
+  (apply #'nelisp-m365-graph-request "PUT" path
+         :upload-file source
+         :headers (cons (cons "Content-Type" "application/octet-stream")
+                        (plist-get options :headers))
+         options))
 
 (defun nelisp-m365-graph-download (path dest)
   "Download Graph PATH to the local file DEST and return its HTTP status.

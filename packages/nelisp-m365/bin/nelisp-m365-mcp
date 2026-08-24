@@ -16,6 +16,8 @@
 #   M365_SCOPES        space-separated delegated scopes
 #   M365_TENANT        identity tenant segment, default "consumers"
 #   M365_DOWNLOAD_DIR  where attachments and file downloads are written
+#   M365_ENABLE_WRITE  set to 1 to expose the write tools and widen the
+#                      OAuth scopes; re-run m365_authenticate afterwards
 #   M365_LOG_FILE      diagnostics path; unset discards them
 #   NELISP             nelisp binary, default <repo>/target/nelisp
 
@@ -36,7 +38,16 @@ STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
 M365_CLIENT_ID=${M365_CLIENT_ID:-}
 M365_TENANT=${M365_TENANT:-consumers}
 M365_TOKEN_CACHE=${M365_TOKEN_CACHE:-$STATE_HOME/nelisp-m365/token.json}
-M365_SCOPES=${M365_SCOPES:-"offline_access User.Read Mail.Read Calendars.Read Files.Read Contacts.Read Tasks.Read Notes.Read"}
+M365_ENABLE_WRITE=${M365_ENABLE_WRITE:-}
+M365_READ_SCOPES="offline_access User.Read Mail.Read Calendars.Read Files.Read Contacts.Read Tasks.Read Notes.Read"
+# Widening the grant and exposing the tools are the same switch, so the
+# consented scopes never quietly exceed what the surface can use.
+M365_WRITE_SCOPES="Mail.ReadWrite Mail.Send Calendars.ReadWrite Files.ReadWrite Tasks.ReadWrite"
+if [ -n "$M365_ENABLE_WRITE" ]; then
+  M365_SCOPES=${M365_SCOPES:-"$M365_READ_SCOPES $M365_WRITE_SCOPES"}
+else
+  M365_SCOPES=${M365_SCOPES:-"$M365_READ_SCOPES"}
+fi
 M365_DOWNLOAD_DIR=${M365_DOWNLOAD_DIR:-$STATE_HOME/nelisp-m365/downloads}
 M365_LOG_FILE=${M365_LOG_FILE:-}
 NELISP=${NELISP:-$ROOT_DIR/target/nelisp}
@@ -83,6 +94,8 @@ trap 'rm -f "$BOOT"' EXIT
   printf '(setq nelisp-m365-scopes %s)\n' "$(elisp_scope_list "$M365_SCOPES")"
   printf '(setq nelisp-m365-download-dir %s)\n' \
     "$(elisp_string "$M365_DOWNLOAD_DIR")"
+  printf '(setq nelisp-m365-write-enabled %s)\n' \
+    "$([ -n "$M365_ENABLE_WRITE" ] && printf 't' || printf 'nil')"
   printf '(setq nelisp-m365-mcp-log-file %s)\n' \
     "$([ -n "$M365_LOG_FILE" ] && elisp_string "$M365_LOG_FILE" || printf 'nil')"
   printf '(nelisp-m365-mcp-serve)\n'

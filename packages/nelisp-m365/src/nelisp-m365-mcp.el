@@ -126,7 +126,9 @@ follows.")
               (list (cons "readOnlyHint"
                           (nelisp-m365-compat-json-bool
                            (plist-get tool :read-only)))
-                    (cons "destructiveHint" :json-false)
+                    (cons "destructiveHint"
+                          (nelisp-m365-compat-json-bool
+                           (plist-get tool :destructive)))
                     (cons "openWorldHint" t)))))
 
 (defun nelisp-m365-mcp--find-tool (name)
