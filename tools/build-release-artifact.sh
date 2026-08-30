@@ -15,7 +15,11 @@
 #   VERSION defaults to stage-d-v2.0.
 #
 # Caller must have already run `make standalone-reader` before invoking this
-# script so that target/nelisp is present.
+# script -- or let step 1 below run it -- so the standalone binary is
+# present.  Which path it looks for is target-aware (see step 1): it is
+# NOT always target/nelisp.  Set NELISP_STANDALONE_TARGET to select a
+# non-default target (e.g. linux-aarch64), same as `make standalone-reader`
+# itself; unset defaults to linux-x86_64, unchanged from before.
 #
 # Outputs (under dist/):
 #   <VERSION>-<PLATFORM>.tar.gz         — release tarball (Doc 32 v2 §2.3 採用 A)
@@ -48,7 +52,30 @@ echo "  platform: $PLATFORM"
 echo "  repo    : $REPO_ROOT"
 
 # 1. Build the pure-elisp standalone binary if not already present.
-STANDALONE_BIN="target/nelisp"
+#
+# The output path is target-dependent: nelisp-standalone--output-path
+# (scripts/nelisp-standalone-build.el) arch-suffixes cross-built targets
+# (e.g. linux-aarch64 -> target/nelisp-aarch64) "so they never clobber the
+# host-arch target/nelisp".  This used to be hardcoded here as the
+# unsuffixed "target/nelisp" for every PLATFORM, which was silently wrong
+# whenever NELISP_STANDALONE_TARGET pointed anywhere else -- concretely, a
+# "linux-arm64" release tarball shipped whatever binary
+# `make standalone-reader`'s own env-var-less default produced
+# (linux-x86_64), checksummed but never executed, so nothing ever caught
+# the mismatch.
+#
+# Ask the elisp for its own answer instead of duplicating its per-target
+# table here, so the two cannot drift apart again: nelisp-standalone
+# --output-path is the single source of truth this queries, not a second
+# copy of its pcase.
+EMACS="${EMACS:-emacs}"
+STANDALONE_BIN="$("$EMACS" --batch -Q -L lisp -L src -L scripts \
+  --eval '(setq load-prefer-newer t)' \
+  -l nelisp-standalone-build \
+  --eval '(princ (nelisp-standalone--output-path t))')" ||
+  { err "failed to resolve the standalone binary's output path for NELISP_STANDALONE_TARGET=${NELISP_STANDALONE_TARGET:-<unset, defaults to linux-x86_64>}"; exit 1; }
+[[ -n "$STANDALONE_BIN" ]] || { err "resolved standalone binary path came back empty"; exit 1; }
+log "resolved standalone binary path: $STANDALONE_BIN"
 if [[ ! -x "$STANDALONE_BIN" ]]; then
   log "standalone binary not found — running make standalone-reader"
   make standalone-reader

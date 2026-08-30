@@ -109,7 +109,8 @@
           0
         (if (= (sexp-tag sym-ptr) 4)
             1
-          (if (= (sexp-tag sym-ptr) 5) 1 0))))
+          (if (or (= (sexp-tag sym-ptr) 5)
+                  (= (sexp-tag sym-ptr) 14)) 1 0))))
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
       ;;             (= `globals_record', tag `nelisp-env').

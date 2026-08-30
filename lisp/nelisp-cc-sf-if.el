@@ -38,11 +38,17 @@
 ;; items on stack, result passed as first register arg to f. ✓
 ;; Never: (= (extern-call g ...) LITERAL) — that pushes LITERAL first.
 ;;
-;; Structure (10 defuns):
+;; Else-loop GC invariant:
+;;   nl_cons_cdr_ptr returns a real child box for a pointer cdr, but
+;;   materialises a fresh unrooted view for an immediate cdr (including Nil).
+;;   Therefore the else-list CONS itself is carried across nelisp_eval_call,
+;;   and its cdr is taken only after eval returns; no materialised view crosses
+;;   eval's possible collection.
+;;
+;; Structure (9 defuns):
 ;;   Else-branch (progn-like walk):
-;;   nl_sf_if_else_rc  (rc cdr env out)  — check eval rc, recurse on cdr
-;;   nl_sf_if_else_eval(car cdr env out) — call nelisp_eval_call (FIRST)
-;;   nl_sf_if_else_cdr (cdr2 cdr env out)— get car(cdr) (FIRST), then eval
+;;   nl_sf_if_else_rc  (rc els env out)  — check rc, get cdr after eval (FIRST)
+;;   nl_sf_if_else_eval(car els env out) — call nelisp_eval_call (FIRST)
 ;;   nl_sf_if_else     (els env out _pad)— else-list walk entry
 ;;   Then-branch:
 ;;   nl_sf_if_then_eval(form env out _pad)— call nelisp_eval_call (FIRST)
@@ -61,36 +67,35 @@
 
     ;;--- Else-branch helpers (progn-like sequential eval) ---
 
-    ;; After eval of one else-form: check rc and recurse.
+    ;; After eval of one else-form: check rc, then fetch cdr (extern-call FIRST
+    ;; ✓) and recurse.  Fetching the cdr only after eval avoids carrying an
+    ;; unrooted materialised immediate-cdr view across eval's possible
+    ;; collection; els is the real CONS box and is already kept alive by the
+    ;; enclosing form.
     ;; Arity 4 (even).
-    (defun nl_sf_if_else_rc (rc cdr env out)
+    (defun nl_sf_if_else_rc (rc els env out)
       (if (= rc 0)
-          (nl_sf_if_else cdr env out 0)
+          (nl_sf_if_else
+           (extern-call nl_cons_cdr_ptr els)
+           env out 0)
         1))
 
-    ;; Eval car via nelisp_eval_call (extern-call FIRST ✓), then check.
+    ;; Eval car via nelisp_eval_call (extern-call FIRST ✓), carrying the
+    ;; rooted else-list CONS rather than a possibly materialised cdr view.
     ;; Arity 4 (even).
-    (defun nl_sf_if_else_eval (car cdr env out)
+    (defun nl_sf_if_else_eval (car els env out)
       (nl_sf_if_else_rc
        (extern-call nelisp_eval_call car env out)
-       cdr env out))
-
-    ;; cdr2 = nl_cons_cdr_ptr(cdr) already fetched (passed as first arg).
-    ;; Get car = nl_cons_car_ptr(cdr) (extern-call FIRST ✓), then eval.
-    ;; Arity 4 (even).
-    (defun nl_sf_if_else_cdr (cdr2 cdr env out)
-      (nl_sf_if_else_eval
-       (extern-call nl_cons_car_ptr cdr)
-       cdr2 env out))
+       els env out))
 
     ;; Walk else-list as progn.
-    ;; If Nil → return 0 (out stays Nil); else fetch cdr first (FIRST ✓).
+    ;; If Nil → return 0 (out stays Nil); else fetch car first (FIRST ✓).
     ;; Arity 4 (even).
     (defun nl_sf_if_else (els env out _pad)
       (if (= (sexp-tag els) 0)
           0
-        (nl_sf_if_else_cdr
-         (extern-call nl_cons_cdr_ptr els)
+        (nl_sf_if_else_eval
+         (extern-call nl_cons_car_ptr els)
          els env out)))
 
     ;;--- Then-branch helper ---
@@ -154,13 +159,13 @@
 
   "AOT source for `nl_sf_if' (eval/special_forms.rs sf_if → elisp).
 
-Ten defuns (seq form).  Each extern-call is argument 0 at its call site.
+Nine defuns (seq form).  Each extern-call is argument 0 at its call site.
 
 Entry chain:
   nl_sf_if → nl_sf_if_cdr → nl_sf_if_test_ptr → nl_sf_if_truthy →
   nl_sf_if_branch → then: nl_sf_if_then_eval
-                  → else: nl_sf_if_else → nl_sf_if_else_cdr →
-                          nl_sf_if_else_eval → nl_sf_if_else_rc → (recurse)
+                  → else: nl_sf_if_else → nl_sf_if_else_eval →
+                          nl_sf_if_else_rc → (cdr after eval) → (recurse)
 
 Alignment fix: every extern-call is the first evaluated argument so rsp
 is 0 mod 16 when each extern-call instruction executes.")

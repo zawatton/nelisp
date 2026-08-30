@@ -4,6 +4,12 @@
 # Expected: last line = "=== Cross-platform verify PASS ==="
 set -euo pipefail
 
+# One version for the whole run.  The tarball is built under this name and
+# the installer smoke looks for it under the same name; they used to be
+# separate literals and drifted apart at the v1.0.1 bump.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/nelisp-version.sh"
+NELISP_RELEASE_VERSION="$(nelisp_version)"
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 EMACS="${EMACS:-emacs}"
@@ -32,7 +38,8 @@ run_posix_standalone_install_smoke() {
   prefix="$root/install"
   (
     trap 'rm -rf "$root"' EXIT
-    release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist" --prefix "$prefix"
+    release/stage-d-v3.0/install-v3.sh --version "$NELISP_RELEASE_VERSION" \
+      --from "$(pwd)/dist" --prefix "$prefix"
     set +e
     output="$("$prefix/bin/nelisp" --eval "(+ 40 2)")"
     code=$?
@@ -82,6 +89,28 @@ uname -a
 "$EMACS" --version | head -1
 
 if [ "$(uname -s)" = "Darwin" ]; then
+  # Everything under this branch targets macos-aarch64 -- the self-host
+  # smoke builds aarch64 Mach-O images, the standalone builds pass
+  # `--target macos-aarch64', and the tarball is named for it.  On an
+  # Intel host those images cannot execute: every smoke exits 126, which
+  # is "found but not executable", not a defect in what was built.
+  #
+  # That was always true and never visible, because macos-15-intel could
+  # not install Emacs at all -- Nixpkgs 26.11 dropped x86_64-darwin, so
+  # the job died at setup.  Moving that job to Homebrew let it reach these
+  # tests for the first time, and it reached them on the wrong machine.
+  #
+  # So on Intel: build everything, run nothing.  A cross-built artifact
+  # that compiles and links is what this host can honestly attest to, and
+  # the aarch64 host attests to the rest.  Saying so out loud, rather than
+  # silently passing, is the same rule the gates here follow.
+  if [ "$(uname -m)" != "arm64" ]; then
+    echo "GATE-SKIP macOS host is $(uname -m); the aarch64 images built here cannot run on it"
+    echo "--- macOS: cross-build only on $(uname -m) (execution needs an arm64 host) ---"
+    SKIP_NATIVE_SMOKES=1
+    BUILD_ONLY_STANDALONE_SMOKES=1
+  fi
+
   echo ""
   echo "--- make compile (byte-compile elisp) ---"
   make EMACS="$EMACS" compile 2>&1 | tail -5
@@ -94,6 +123,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
     echo ""
     echo "--- macOS OS compatibility ERT smoke ---"
     tools/macos-os-compat-test.sh --emacs "$EMACS"
+  else
+    if [ "$(uname -m)" != "arm64" ]; then
+      echo ""
+      echo "--- macOS arm64 Mach-O self-host smoke (emit only) ---"
+      tools/macos-selfhost-test.sh --emacs "$EMACS" --emit-only
+    fi
   fi
 
   echo ""
@@ -123,11 +158,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
   if [ "$INCLUDE_TARBALL" -eq 1 ]; then
     echo ""
     echo "--- macOS standalone tarball smoke ---"
-    tools/build-standalone-tarball.sh v0.6.0 macos-aarch64 --emacs "$EMACS"
+    tools/build-standalone-tarball.sh "$NELISP_RELEASE_VERSION" macos-aarch64 --emacs "$EMACS"
     if [ "$BUILD_ONLY_STANDALONE_SMOKES" -eq 1 ]; then
-      tools/verify-standalone-tarball.sh v0.6.0 macos-aarch64 --layout-only
+      tools/verify-standalone-tarball.sh "$NELISP_RELEASE_VERSION" macos-aarch64 --layout-only
     else
-      tools/verify-standalone-tarball.sh v0.6.0 macos-aarch64
+      tools/verify-standalone-tarball.sh "$NELISP_RELEASE_VERSION" macos-aarch64
     fi
 
     if [ "$BUILD_ONLY_STANDALONE_SMOKES" -eq 0 ]; then
@@ -175,8 +210,8 @@ tools/linux-standalone-reader-test.sh --emacs "$EMACS"
 if [ "$INCLUDE_TARBALL" -eq 1 ]; then
   echo ""
   echo "--- Linux standalone tarball smoke ---"
-  tools/build-standalone-tarball.sh v0.6.0 linux-x86_64 --emacs "$EMACS"
-  tools/verify-standalone-tarball.sh v0.6.0 linux-x86_64
+  tools/build-standalone-tarball.sh "$NELISP_RELEASE_VERSION" linux-x86_64 --emacs "$EMACS"
+  tools/verify-standalone-tarball.sh "$NELISP_RELEASE_VERSION" linux-x86_64
 
   echo ""
   echo "--- Linux standalone installer smoke ---"

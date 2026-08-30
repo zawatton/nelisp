@@ -85,9 +85,17 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
                    (gethash 'k probe)))
     (error "nl-ns-standalone-smoke: puthash precondition failed")))
 
+(load "packages/nl-prelude/src/nl-prelude-trampoline.el") ; wave8: nl-prelude requires it
 (load "packages/nl-prelude/src/nl-prelude.el")
 
 (load "packages/nl-ns/src/nl-ns.el")
+;; Doc 189 §4 Phase 1: `nl-ns-test.el' now evaluates real `nl-ns-define'/
+;; `nl-ns-in' forms (its advisory/enforcement consistency test), so
+;; `nl-ns-in.el' has to be a real `load', not the `(require 'nl-ns-in)'
+;; at that file's own top -- `require' silently "succeeds" here even
+;; with the file absent (same reason every other load in this file is
+;; explicit).
+(load "packages/nl-ns/src/nl-ns-in.el")
 (load "packages/nl-ns/test/nl-ns-test.el")
 
 (let ((tests (reverse nl-smoke--tests))
@@ -110,8 +118,8 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
         (setq all (cdr all))))
     (error "nl-ns-standalone-smoke: %d failure(s), %d passed"
            (length failures) ran))
-  (when (< ran 36)
-    (error "nl-ns-standalone-smoke: only %d tests ran (expected >= 30)"
+  (when (< ran 48)
+    (error "nl-ns-standalone-smoke: only %d tests ran (expected >= 48)"
            ran))
   (princ (format "nl-ns-standalone-smoke: PASS (%d tests)\n" ran)))
 

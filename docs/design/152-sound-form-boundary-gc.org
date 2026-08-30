@@ -1,7 +1,12 @@
 #+TITLE: Doc 152 — Sound form-boundary tracing GC（稼働 GC の有効化と健全性）
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-14
-#+STATUS: DESIGN（実装前）。Doc 146（統合設計）の「② root-coverage 健全性」+「稼働化」を、run-suite 完走を gate にして carve out。
+#+STATUS: Stage 1-5 SHIPPED（2026-08-26）— mid-form collect が既定 ON になり、既定ビルドの
+#+STATUS: 200k 割り当て loop peak RSS が 669,936 → 339,920 KiB（-49.3%）、1M でも RSS 横ばい。
+#+STATUS: Stage 6（write barrier）は Doc 199 の park barrier により不要と確定（§11.44）。残は
+#+STATUS: Stage 7（世代別コピー）と §11.43「残」1/2（reuse 率・safepoint 拡張）のみ。
+#+STATUS: 出自: Doc 146（統合設計）の「② root-coverage 健全性」+「稼働化」を carve out。
+#+VERIFIED-BY: standalone-midform-gc-bounded emacs-parity ert-full compile nelisp-thread-percpu-roots-smoke
 #+OPTIONS: toc:3 num:t
 
 * §0 要旨
@@ -1993,3 +1998,323 @@ nelisp-standalone-build.el の gc-source + lisp/nelisp-cc-sf-while.el、Rust 無
 - *残（4c/4d）*: 残 RSS high-water（sweep は chunk を munmap しない + freelist exact-fit reuse の取りこぼし）→
   compaction / trigger 調整。4c = nested call / multi-form body へ safepoint 拡張（同 validation）。
 - *次 = 4c*: multi-form body / nested call boundary へ safepoint を拡張、poison + ctx-depth>1 で同 soundness 検証。
+
+* §11.42 Stage 3 SHIPPED（root stack に初の利用者、rooting 下で sound な mid-form collect、2026-08-25）
+Stage 2 の root stack は 2 ヶ月 dormant（region と mark 側だけ在り、=nl_root_reserve= の caller ゼロ、
+write 側の defun 自体が不在）だった。Stage 3 でその write 側を実装し、§11.39 の 5 hot GAP slot を全て
+root 化した。commit は本節と同一。
+
+** 実装
+- =lisp/nelisp-cc-rootstack.el=: =nl_root_mark= / =nl_root_reserve=（lazy-init + 32B slot bump）/
+  =nl_root_release=（LIFO pop）/ =nl_gc_mark_rootstack(_walk)=（[region,top) を 32B step で
+  =nl_gc_mark_slot=）。
+- rooting（reserve … release で bracket、slot index は helper ARGS で thread。§11.39 の
+  「cc-unit は runtime 値を let 不可」制約を遵守、生成 helper に runtime let は 1 個も無い）:
+  - 3b =nl_eval_arg_list_walk= eval_slot（最 hot、per-arg）
+  - 3c =nl_eval_inner_cons= func_slot
+  - 3d =nl_apply_do_apply= func_slot
+  - =nl_apply_sym_eq_bytes= は rooting でなく**確保レス化**（immediate-word 比較 =nl_apply_sym_eq_w=）で
+    tmp/result の GAP 2 個を構造的に消去 → 5 GAP のうち 3 個 rooted + 2 個消去 = 全消化。
+- *unwind-safety*（§11.39 が最大リスクとした点）: 正常 return / error / throw / unwind-protect cleanup /
+  失敗 apply の 5 経路で root depth が 3→3 に戻ることを実測。root せず見送った slot はゼロ。
+
+** root region 拡大（1 MiB → 4 MiB）— rec_max を下げない
+rooting は非末尾再帰 1 段あたり root-depth =3N+6= を消費するため、32768 slot 固定では N=15000 で
+region が溢れる。初版は rec_max を 100000→16000 に下げて回避したが、**実測すると非末尾再帰の実効上限が
+N≈20000 → N≈5000-7000 へ約 1/4 低下**する実質的な機能後退だった。bss は zero-fill で「触るまで RSS
+コスト無し」（§11.37 Stage 2 の設計根拠そのもの）なので、*region を 4 MiB（131072 slot）へ拡大し
+rec_max=100000 を維持*する方を採った。=arena-base.o= の bss size と region 以降の全 symbol offset は
+=1048576= 基準の式で書かれているので、その 16 箇所のみを =4194304= へ同期更新（無関係な同値定数には
+触れない）。実測で N=20000 の成功を回復し、=recursion-guard-smoke= も PASS。
+
+** 検証（すべて実測）
+- =make compile= exit 0（warnings=errors）、=make parens-check= checked=463 findings=0。
+- =make emacs-parity= checked=19967 findings=0（19967 bytes identical to stock Emacs）。
+- =make standalone-reader-test= checked=27 findings=0（IPv6 socket smoke 含む全 smoke PASS）。
+- =test/nelisp-standalone-target-test.el= ERT 55/55（bss layout の期待 offset は 4 MiB 基準の式へ更新）。
+- =recursion-guard-smoke= PASS（shallow=1000 / deep=excessive-lisp-nesting）。
+- *armed mid-form collect（=(nelisp--debug-switch 5)=）下で 500k loop*: result=500000、**trip=0**、
+  fired=7、poison hit 無し。poison ON で **20,458,482 object が実際に free**。
+  = rooting 下で mid-form collect が sound に大量回収する、の実証。
+
+** DoD #4「loop RSS が bounded」は未達 — ただし真因は Stage 3 ではない（切り分け実測）
+| 指標 | rooting 前 | rooting 後 |
+| poison count（実 free 数） | 21,063,727 | 20,458,482 |
+| trip（root 漏れ） | 0 | 0 |
+| armed peak RSS（500k） | 339.9 MB | 340.2 MB |
+| armed RSS slope | ~262 B/iter | ~262 B/iter |
+collect は rooting の前から既に 2000 万 object 規模を正しく回収しており、rooting はそれを *sound に*
+する（trip=0 を保証する）役割を果たした。にもかかわらず RSS が線形に増えるのは、**sweep が chunk を
+OS へ返さず、freelist の exact-fit reuse も取りこぼす**ためで、これは §11.41 が残件として自ら予告した
+*Stage 4c/4d（compaction / trigger 調整 / safepoint 拡張）*の領域である。DoD #4 を Stage 3 に置いたのは
+本書の見立て違いで、Stage 3 の達成条件は「rooting 下で collect が sound（trip=0 / poison hit 無し）」
+であり、それは満たされた。armed は dormant 比で 807 MB → 340 MB（-58%）。
+
+** 残（Stage 4c/4d、次の一手）
+1. sweep が空 chunk を munmap して RSS を返す（現状は返さない = 線形増の主因）。
+2. freelist exact-fit reuse の取りこぼし解消（同サイズ block の再利用率を上げる）。
+3. safepoint を nested call / multi-form body へ拡張（§11.41 の 4c）。
+4. 2-form / 4-form battery に残る freelist guard trip 1/2（rooting 前の binary でも同数 = *既存バグ*で
+   Stage 3 起因ではない。切り分け済み、Stage 4/5 で回収）。
+
+* §11.43 Stage 4c/4d SHIPPED — armed loop の RSS が bounded に（DoD #4 達成、2026-08-25）
+§11.42 が Stage 3 の残件として切り分けた「回収はしているが RSS が返らない」を解消した。armed
+mid-form collect 下の =(while (< i N) (setq i (1+ i)))= は **N を増やしても RSS が増えなくなった**。
+
+** 実装
+- *空 chunk の OS 返却（4c-1、主因）*: sweep が chunk 単位で「全 block が free か」を判定し、空と
+  *証明された* growth chunk を chunk chain（next @+48、head 268436160）から unlink して
+  =nl_os_free_chunk= 経由で munmap する。従来この関数は =0= を返すだけの stub で、platform 側の
+  munmap（linux-x86_64 = syscall 11 等）には一度も到達していなかった。chunk 0（arena base）、live
+  block を残す chunk、bump cursor が居る chunk は決して返さない。返す前にその chunk を指す free-list
+  bucket entry を落とす（残すと次の take が dangling を返す＝この変更の最大ハザード）。
+- *診断*: =nelisp--debug-switch= の診断 tuple に index 10-15（bucket / linear / bump hit 数、
+  reclaimed chunks、reclaimed bytes、release failures）を追加。=(nelisp--debug-switch 24/25)= で
+  reuse 計測を制御。
+- *4d（trigger）*: コード変更なし。16 MiB re-arm watermark に対して growth chunk が 64 MiB なので、
+  各 growth が既に次の trigger を跨ぐ。1M で fired=5 / reclaimed=4 = 最早の reclaim 機会で発火して
+  おり、trigger を触る理由が測定上無かった。
+
+** 実測（claude 独立測定。armed = =(nelisp--debug-switch 5)=）
+| N | 変更前 peak RSS | 変更後 peak RSS |
+| 250k | 274,656 KiB | 274,668 KiB |
+| 500k | 340,192 KiB | 340,204 KiB |
+| 1M | （線形増） | *340,200 KiB* |
+- *500k → 1M の steady slope: 268.231 → -0.614 B/iter*（gate script 計測 0.295 B/iter）。500k 以降
+  約 340 MiB で plateau。**変更前は ~262 B/iter の線形増**だったので、DoD #4 の「bounded」は達成。
+- *OS 返却の実働*: 500k で reclaimed=1 chunk / 67,108,864 B、1M で reclaimed=4 / 268,435,456 B、
+  release failures=0。
+- *soundness 非退行*: armed+poison 500k で result=500000、**trip=0**、32,785,290 object を poison-free、
+  fired=3 / reclaimed=2 / release failures=0。空 chunk を誤って返せば poison hit か SIGSEGV になる
+  ので、これがこのクラスの取り違えを捕まえる gate である。
+
+** gate
+- 新 gate =standalone-midform-gc-bounded=（=tools/nelisp-midform-gc-bounded.py=）: N=125k/250k/500k/1M
+  + poison 500k を回し、result 一致・trip=0・release failures=0・steady slope ≤ 32 B/iter を assert。
+  三点配線済（=gates.expected= / =nelisp-ai.sh cmd_extras= / =gate-mutations.txt=）。実測
+  =GATE-COUNT checked=5 findings=0=、report も生成される。
+- mutation row: =nl_os_empty_chunk_reclaim_p= を 1→0 にすると空 chunk 返却が止まり線形増に戻る
+  → gate が RED（against-the-bug）。
+- 既存 gate: compile 0 / parens 463-0 / **emacs-parity 19970 findings=0** / standalone-reader-test
+  27 findings=0 / target ERT 55/55 / ns-inventory・ns-gate clean・fallback・gate-selfcheck・doc-claims
+  すべて PASS。
+
+** 残（この loop 以外で bounded を主張するために）
+1. 4c-2 の reuse 率改善は未着手（bucket は 16..472 のみ、範囲外は線形 scan、guard trip 時に bucket
+   chain を丸ごと捨てる）。今回の loop は chunk 返却だけで plateau したので優先度が下がった。
+2. safepoint はまだ while backedge のみ。nested call / multi-form body への拡張（§11.41 の 4c 本来の
+   範囲）は未了で、そこに入らない形状の long-running workload は依然 collect 機会が乏しい。
+3. mid-form collect は既定 OFF（arm が必要）。既定 ON 化は Stage 5（全面化 + write barrier）の判断。
+
+** §11.43.1 訂正 — chunk 返却は free-list 以外の arena ポインタ保持者も無効化しなければならない（SIGSEGV、2026-08-25）
+§11.43 初版の chunk 返却は free-list だけを purge していた。CI round 19 の ubuntu-30.1 lane が
+=nelisp-ai.sh perf= で落ち、中身は性能退行ではなく **=compile-elisp-artifact= の SIGSEGV**（gate は
+=GATE-COUNT checked=0 findings=1=、= 1 件も計測できずに死んだ）だった。
+
+*二分（実測）*: Stage 3 のみの binary では exit 0 / Stage 3+4c では exit 139 /
+=nl_os_empty_chunk_reclaim_p= を 1→0 にすると exit 0。→ crash は空 chunk の munmap そのもの。
+
+*root cause*: arena を指す global は free-list だけではない。=nl_mxcache_table_base=（macro 展開
+cache）と =nl_fvcache_table_base=（function-value cache）は生の arena ポインタを保持したままで、
+その chunk が munmap されると次の lookup が dangling を踏む。=compile-elisp-artifact= は macro を
+多用するので最初に踏む経路になった。mutation gate（reclaim を止める）でも bounded gate でも
+検出できない（どちらもこの cache 経路を通らない）ため、full CI が唯一の発見手段だった。
+
+*fix*: chunk 解放シーケンスを「free-list purge → =nl_mxcache_epoch= を +1 → chunk unlink → munmap」
+に変更。epoch bump は =nl_gc_compact= が relocation 前に使うのと同じ無効化機構で、mxcache と
+fvcache は同一 epoch を共有するため 1 回の bump で両方が stale 化する（両 lookup が epoch 照合を
+先に行うことを新 ERT
+=nelisp-standalone-target-chunk-reclaim-invalidates-pointer-caches= で pin）。
+
+*audit の副産物*: 同じ監査で =nl_gc_loop_ctx= も arena ポインタの BSS 保持者と判明し、nested =load=
+の外側 driver frame が **full form-boundary GC からは未走査**だったことが分かった（mid-form
+collector は既に走査していた）。=nl_gc_mark_roots= に =nl_gc_mark_recorded_contexts= を追加。
+これは今回の crash とは独立の、既存の root-coverage gap の解消である。
+
+*再検証（claude 独立実測）*: =compile-elisp-artifact= exit 0（139 から回復）/ =nelisp-performance-gate=
+=checked=9 findings=0=（0 件計測から回復）/ **bounded は維持** — N=1M で RSS 339,772 KiB、
+=STEADY_SLOPE_B_PER_ITER=0.582=、1M で 268,435,456 B 返却、release failures=0 / armed+poison 500k は
+result=500000・trip=0・32,818,196 obj free / compile 0 / parens 463-0 / emacs-parity 19970 findings=0 /
+standalone-reader-test 27-0 / target ERT 56/56 / ert-full 5461 tests 0 unexpected。
+
+*教訓*: 「解放するメモリを指しうる参照」を数え上げるとき、free-list のような明示的な構造だけでなく
+**cache と診断用 BSS も含めて全部列挙する**こと。ここでは epoch という既存の一括無効化機構が
+あったので安く直せたが、無ければ chunk 返却は成立しなかった。
+
+** §11.43.2 訂正2 — chunk 返却は Tier 3a の並列 worker 中は行ってはならない（メモリ逼迫時のみ露見、2026-08-25）
+§11.43.1 の epoch 修正で =compile-elisp-artifact= の SIGSEGV は解けたが、CI round 20 は別の失敗で
+落ちた: =nelisp-thread-allocating-standalone-smoke=（Doc 199 Tier 3a）が
+=wrong-type-argument: (number-or-marker-p (2 0 <form> ADDR ADDR))= — worker が構築した生きたリストが
+読み戻すと壊れている。
+
+*決定的な再現条件（claude 実測）*: 通常メモリでは PASS するが、=( ulimit -v 4000000; ./target/nelisp
+--load tools/nelisp-thread-allocating-standalone-smoke.el )= で **決定的に再現**する。だから手元の
+無制限実行では緑で、CI runner でだけ落ちた。
+
+*二分（全て fresh build）*:
+| tree | 4 GB 制約下 |
+| round-16（Tier 3a、Stage 3/4 なし） | PASS |
+| Stage 3 + Stage 4c（reclaim ON） | CORRUPT |
+| Stage 3 のみ（reclaim OFF） | PASS |
+→ Stage 3 の rooting は無罪、**空 chunk の munmap が原因**。
+
+*root cause*: Tier 3a の worker は private EvalCtx + private root reserve を使い、process-global の
+=nl_rootstack_top= には **意図的に繋がっていない**（=nl_thread_private_env_make= の注記: 「collection
+が抑止されているので root scan は不要」）。ところが =nl_gc_sweep=（したがってその中の新しい
+empty-chunk reclaim）は **抑止フラグを見ていない**（フラグを見るのは =nl_gc_collect_from_recorded_roots=
+側）。別経路の collect が sweep を走らせると、worker のオブジェクトは marker から不可視なので
+その chunk が「全 block FREE」に見え、**まだ使用中の mapping が unmap される**。
+
+*fix*: 抑止フラグ（=nl_gc_loop_ctx+24=）と Tier 3a の worker-live bit
+（=nl_thread_parallel_ctx+16=）を、**reclaim traversal の入口と munmap の直前の両方**で確認する二重
+ガード。block 単位の sweep/free はそのままで、*unmap だけ*を止める。Tier 3a が記録する chunk
+snapshot（+8）はセクション後も保持する。
+
+*回帰 gate*: この欠陥は無制限実行では通ってしまうので、=nelisp-thread-allocating-standalone-smoke=
+の Makefile target に **=ulimit -v 4000000= での再実行**を追加した（決定的再現）。mutation row も
+追加し、両ガードを潰すと gate が red になる。
+
+*claude 独立検証（fresh build、reclaim は有効 =1= のまま）*: ulimit **8 GB / 4 GB / 2 GB すべて PASS** /
+bounded は維持（N=1M で RSS 339,924 KiB、=STEADY_SLOPE_B_PER_ITER=0.713=、**268,435,456 B 返却**、
+release failures 0、trip 0）/ =nelisp-performance-gate= checked=9 findings=0（SIGSEGV 非再発）/
+Tier 2 smoke PASS / compile 0 / parens 463-0 / emacs-parity 19970 findings=0 / reader-test 27-0 /
+**ert-full 5461 tests 0 unexpected** / ns-inventory・ns-gate clean・fallback・gate-selfcheck・doc-claims
+すべて PASS。
+
+*gate 閾値の根拠（claude 実測）*: round-16 baseline は 3 GB / 2 GB でも PASS、1.5 GB で初めて落ちる
+（= 真の OOM、欠陥ではない）。一方バグ版は 4 GB で既に決定的に壊れる。よって 4 GB は
+「baseline に余裕があり、欠陥は確実に捕まる」水準として妥当。
+
+*教訓*: 「GC を抑止したから root は要らない」という設計は、**抑止フラグを見ていない経路が一つでも
+あると崩れる**。今回 sweep がそれだった。抑止に依存する仕組みを足すときは、*抑止フラグを読む場所を
+全部数え上げて*、依存側が全部そこを通ることを確かめる必要がある。加えて、この種の欠陥は
+**メモリに余裕があると再現しない**ので、余裕を奪う gate（ulimit）を回帰テストに入れないと再発する。
+
+** §11.43.3 追跡の決着 — 再現条件は「抑止を無視する collect 経路」、smoke は片方しか触れない（2026-08-25）
+§11.43.2 の後、CI round 21 は =gate-mutation= で落ちた: 「chunk 返却ガードを潰したのに
+=nelisp-thread-allocating-standalone-smoke= が緑のまま」。**gate が欠陥を捕まえられない**という
+指摘であり、gate 体系としては正しい失敗である。
+
+*ローカル追跡（約 130 回、すべて再現せず）*: ulimit 8 GB→2.2 GB の刻み / 32 コア CPU 飽和 /
+46 GB メモリ枯渇 / 2 プロセス並列 / ビルド並走 / 当時の codex-fix2 版を再ビルド（20/20 成功）/
+ガードを潰した mutation 版（0/12）/ 診断ビルド 30 回。**一度も再現しなかった**。
+
+*claude の誤結論 2 件（記録として残す）*:
+1. 「私の inhibit gate で corruption が 3/12 → 0/12 に消えた」→ *誤り*。対照実験（修正前を再ビルド
+   して低負荷で再測定）が 0/12 を返し、差は修正の有無ではなく**測定時のマシン負荷**だった。
+2. 「codex の fix2 は不完全」→ *誤り*。fix2 版そのものが 20/20 で安定し、CI の診断 run でも
+   smoke 本体は =GATE-COUNT checked=8 findings=0= だった。fix2 は有効である。
+
+*決着（コード構造から確定）*: sweep を呼ぶ経路は 2 つあり、抑止 gate の有無が違っていた。
+| 呼出元 | 抑止 gate |
+| =nl_gc_collect_from_recorded_roots= (:3620) | あり (:3621) |
+| =nl_gc_collect= (:3669) | *なし* |
+smoke の =(garbage-collect)= builtin は前者を呼ぶので、**後者の穴を踏まない**。だから
+「chunk 返却ガードを潰しても緑」は正常な挙動であって、gate が弱いのではなく *その mutation が
+到達しない経路を狙っていた*。一方 =nl_gc_collect= は
+=nl_gc_collect_form_boundary= 経由で driver の form 境界 3 箇所から呼ばれ、**並列区間中に
+main thread が form 境界へ達すれば抑止を無視して collect+sweep が走る** — これは実在する穴。
+
+*本節の fix*: =nl_gc_collect= の入口に抑止 gate を追加（=nl_gc_collect_from_recorded_roots= と
+同じ形）。*効果を smoke で実証することはできない*（smoke はこの経路を通らない）ので、そう明記した
+コメントを添えている。同時に、到達不能だった chunk 返却ガードの mutation row を **理由を書いて
+削除**した（残した方の row = 抑止そのものを潰す = は "went red as it should" と実証済み）。
+
+*検証*: compile 0 / parens 463-0 / emacs-parity 19970 findings=0 / allocating smoke は
+通常 1 回 + =ulimit -v 4000000= 5 回すべて PASS / bounded 維持（=STEADY_SLOPE_B_PER_ITER=0.098=、
+=GATE-COUNT checked=5 findings=0=）/ gate-selfcheck PASS。
+
+*教訓*: mutation testing の失敗は「gate が弱い」と「mutation が到達しない経路を狙っている」の
+二通りある。今回は後者で、それを取り違えて 130 回の再現試行と 2 度の誤結論を招いた。*mutation を
+足すときは、その欠陥に至る経路を対象 gate が本当に通るかを先に確かめる*。
+
+* §11.44 Stage 5 SHIPPED — mid-form collect の既定 ON 化（既定ビルドで RSS 半減、2026-08-26）
+§11.43 の「残」3 が指していた最後の一手。Stage 4c/4d は空 chunk を OS へ返すところまで作ったが、
+collect 自体が =(nelisp--debug-switch 5)= の裏にあり、**既定ビルドではこの節までの成果が一切
+効いていなかった**。200k 割り当て loop
+=(let ((i 0) (acc nil)) (while (< i 200000) (setq acc (list i (list 1 2 3))) (setq i (1+ i))) (length acc))=
+の実測:
+
+| build | peak RSS |
+| 本節の変更前（既定） | 669,936 KiB |
+| *本節の変更後（既定）* | *339,920 KiB（-49.3%）* |
+
+** 実装
+- *boot 経路での arming*: reader driver が permanent-generation watermark を凍結した **直後** に、
+  switch 5 と同一の 3 書き込みを行う — enable（=nl_gc_loop_ctx= +8）、next-trigger（+40）=
+  chunk-bytes-reserved（268436184）+ 16 MiB、fired-count（+32）= 0。この位置は必然であって
+  任意ではない: =nl_arena_init= が 268436184 を seed し boot 中の chunk 確保がそれを維持するので、
+  watermark はここで初めて意味を持つ。BSS 既定は OFF のままなので、watermark 確定前に collect が
+  走る窓は無い。switch 5 は runtime re-arm、switch 6 は escape hatch として残す。
+- *tag-9 / tag-10 の子エッジ精密化（既定 ON 化の前提）*: 後述 §11.44.1。
+- *Stage 6（write barrier）は不要と確定*: §11.43 の「残」3 は既定 ON 化を「Stage 5（全面化 +
+  write barrier）」と書いていたが、Doc 199 Tier 3b の park barrier が全 mutator を停止させた
+  状態でのみ mark するため、tri-color 不変条件は **構成上** 成立する。barrier で守るべき
+  「mark 中に mutator が黒→白の辺を作る」窓が存在しない。Stage 6 は本 doc の残件から落ちる。
+
+** §11.44.1 既定 ON 化が偽と暴いた前提 — CharTable / BoolVector の子は walk されていなかった
+=nelisp-standalone--gc-source= は tag 9（CharTable）/ tag 10（BoolVector）について
+「*reader graph に出現しない*ので box は mark するが children は walk しない（documented
+limitation, gated by the test suite）」と宣言していた。**この宣言は偽だった** — reader 自身の
+char-table command smoke が tag-9 値を global mirror に保持する。到達可能なのに未 walk = 生存
+ブロックが sweep される潜在欠陥で、*既定で collect していなかったから顕在化していなかっただけ*。
+
+- =nl_gc_mark_char_table_box=: subtype（box+0）と default（box+32）slot、entries buffer と
+  その 40 バイト ={i64 key, 32B Sexp}= 行、parent 連鎖、extra-slots buffer と その 32 バイト行を
+  すべて mark。parent 再帰の停止性は =nl_gc_mark_block= が **fresh mark のときだけ 1 を返す**
+  （mark 0 または 4 を 1 に昇格、既 mark / free / 非 arena は 0）契約に依存する。
+- =nl_gc_mark_bool_vector_box=: raw data ポインタを mark。
+- =nl_gc_mark_char_table_slots=: buffer membership guard を全 dereference の前に置く
+  （=nl_gc_mark_vec_slots= と同じ防御契約）。
+
+*教訓*: 既定 OFF の機構を既定 ON にする作業は「機能追加」ではなく **「これまで検査されて
+いなかった前提の一斉検査」**。「起きないから正しい」と書かれた限定は、起こす側に回った瞬間に
+検証対象になる。
+
+** §11.44.2 二次効果 — ctx+8 は frame recording も arm する
+=nl_gc_loop_ctx= +8 は mid-form collect だけでなく frame recording も arm するため、既定 ON に
+した時点で「素の既定プロセス」は =standalone-reader-bounded-backtrace-smoke= の dormant control
+として成立しなくなった（Doc 180 Phase 2 item 3）。同 smoke の control 側を =(nelisp--debug-switch 6)=
+で明示的に disarm してから測る形に改めた。armed 側は disarm 後に item 2 の
+=(nelisp--debug-switch 22)=（collector 非依存の frame arm）を重ねる。
+
+** 実測（claude 独立検証 → CI round 28 で追認）
+| 計測 | claude ローカル | CI round 28 (Linux) |
+| 200k loop peak RSS（既定） | 339,920 KiB | — |
+| 500k =standalone-midform-gc-bounded= | 339,908 KiB / FIRED=2 RECLAIMED=1 / 64 MiB 返却 | 352,624 KiB / FIRED=2 RECLAIMED=1 / 64 MiB |
+| 1M 同上 | — | *352,620 KiB* / FIRED=5 RECLAIMED=4 / *256 MiB 返却* |
+| =binary-size-ratchet= | delta +152 B | *7,976,384 B*（ceiling 8,024,470）PASS |
+| =bench-aot-tco= | 0.987x（base 0.974x、floor 0.95） | 0.997x PASS |
+
+- *500k → 1M で RSS が横ばい*（352,624 → 352,620 KiB）。割り当てを倍にしても常駐が増えない =
+  §11.43 が armed 限定で示した bounded RSS が、**既定ビルドで成立**した。=RELEASE_FAILURES=0=。
+- *実行時間は速くなった*: 同一バイナリで 200k loop が既定 ON 5,204 ms / disarm 8,125 ms（-36%）。
+  小ヒープの locality 改善と成長 mmap 回避による。**メモリと速度のトレードオフを前提に設計判断
+  してはいけない** ことの実例。AOT 経路の backedge チェックコストは測定限界以下
+  （=bench-aot-tco= の絶対時間 tco 0.0982s vs base 0.0993s）。
+
+** gate
+- =standalone-midform-gc-bounded= は明示 arm（switch 5）を式から落とし、**production の既定 boot
+  状態のまま**回収を証明する gate になった。mutation row（=nl_os_empty_chunk_reclaim_p= 1→0）は
+  同じ注入のまま「既定経路で到達する」旨に記述を改めた。
+- 既存 gate 非退行: =emacs-parity= checked=19961 findings=0（*不動*）/ check-tier VERDICT PASS
+  (22 gates) / verify VERDICT PASS (66 gates) / =ert-full= 5466 tests 0 unexpected 157 skipped /
+  extras 7 gate findings=0（=PARK-DIAG parked=3 current=0 missed=0 collections=1= を含む）。
+- =tools/unsafe-inventory-baseline.txt=: =unsafe-call= 632 → 636、
+  =pinned-kernel-call scripts/nelisp-standalone-build.el= 608 → 612。§11.44.1 の子 walker が足す
+  4 件の raw read。既に計上済みのものと同種であって新しい種類ではない。
+
+** §11.44.3 手順上の教訓 — ratchet をローカル絶対値で判定しない
+=binary-size-ratchet= の pin は **CI のビルドに校正されている**。同一コミット =efa22af65= で
+CI 7,976,232 B に対しローカルは 8,033,688 B（差 ~57KB は toolchain 差であって source 増ではない）。
+ローカル絶対値を pin と突き合わせると「落ちる」と誤判定し、そこで baseline を上げると **CI 側に
+実在する 48KB の余裕を潰して**将来の実増加を隠す。正しい見方は (a) CI ログの
+=[binary-size-ratchet] PASS: ... is N bytes= を読む、または (b) BASE と HEAD を両方ローカルで
+ビルドして **delta だけ**を見る。本節は (b) で +152 B と切り分け、そこから CI 値 7,976,384 B を
+予測し、実測とバイト単位で一致した。baseline 更新は不要だった。
+
+** 残（Doc 152 として）
+1. *Stage 7（世代別コピー GC）* のみ。Stage 6 は上記のとおり不要と確定した。
+2. §11.43「残」1（reuse 率改善）と 2（safepoint を while backedge 以外へ拡張）は依然未着手。
+   既定 ON 化で while 形状の workload は bounded になったが、その形に入らない long-running
+   workload の collect 機会が乏しい点は変わっていない。

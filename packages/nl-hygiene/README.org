@@ -1,0 +1,74 @@
+#+TITLE: nl-hygiene — opt-in hygienic macro composition for NeLisp
+
+* Scope
+
+=nl-hygiene= is the pure-Elisp, opt-in Doc 198 Phase 3 library.  Loading
+it changes no reader, evaluator, compiler, or ordinary =defmacro=
+behavior.  Only code that requires the package, defines macros with
+=nl-defmacro-hygienic=, and uses the resolution-aware reader path gets
+the combined mechanism.
+
+* Mechanism
+
+=nl-defmacro-hygienic= composes two existing facilities:
+
+1. It delegates to =nl-defmacro=.  Trailing-=#= symbols in the produced
+   expansion are replaced by fresh, expansion-local gensyms, so bindings
+   introduced with names such as =value\#= cannot capture a caller's
+   =value=.
+2. When the defining source is read through =nl-ns-read-in=,
+   =nl-ns-read-from-string-in=, or =nl-ns-read-all-in=, literal free
+   identifiers declared as namespace =:members= are qualified by the
+   reader.  The qualified symbol is baked into the macro template at
+   definition time and cannot resolve to the same short global name at
+   the call site.
+
+#+begin_src elisp
+(require 'nl-hygiene)
+(require 'nl-ns-in)
+
+(nl-ns-define my-macros :members (helper))
+
+;; The loader reads this source string through the opted-in namespace.
+(dolist (form
+         (nl-ns-read-all-in
+          'my-macros
+          "(defun helper (x) (* x 2))
+           (nl-defmacro-hygienic my-twice (x)
+             `(let ((value# ,x)) (helper value#)))"))
+  (eval form t))
+#+end_src
+
+The example's =helper= tokens become =my-macros-helper= while reading.
+Each expansion independently replaces =value#= with a gensym.
+
+* Ceiling
+
+This is not =syntax-case= or a syntax-object system.  Its guarantee is
+limited to:
+
+- macro-introduced template names explicitly marked with trailing =#=;
+- literal free symbols declared as members of one =nl-ns= namespace;
+- macro-defining source that actually passes through an
+  =nl-ns-read-*-in= entry point.
+
+It does not track provenance for programmatically constructed symbols,
+caller forms inserted with unquote/splicing, undeclared identifiers,
+lexical variables captured around the definition, =eval= strings read
+outside the resolver, or dynamically loaded source.  Plain =require=
+does not activate namespace resolution in Doc 198 Phase 3; a
+resolution-aware require wrapper is the separate Phase 4 gap.
+
+* Tests
+
+Host ERT:
+
+#+begin_src sh
+make test-one FILE=packages/nl-hygiene/test/nl-hygiene-test.el
+#+end_src
+
+Standalone NeLisp (also proves one million mutual-recursion bounces):
+
+#+begin_src sh
+./target/nelisp --load packages/nl-hygiene/test/nl-hygiene-standalone-smoke.el
+#+end_src

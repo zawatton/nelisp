@@ -25,6 +25,9 @@
 ;;   resource-double     a path consumes the same resource twice
 ;;   resource-untracked  the resource left this checker's sight
 ;;   unsafe-call         an unsafe primitive called outside `nl-unsafe'
+;;   unsafe-call-quoted  the same, inside a quoted form -- reported by
+;;                       `nl-check-file-quoted-unsafe', never by
+;;                       `nl-check-file', and never gated
 ;;
 ;; Soundness is deliberately partial, and says so.  Doc 170 section 6.3:
 ;; the moment a resource is captured by a lambda or handed to a function
@@ -90,57 +93,6 @@ deliberate discard in `ignore' to silence it, the way Rust uses
 Passing a tracked resource to anything else is treated as a move and
 reported as `resource-untracked'.")
 
-(defun nl-check--proper-list (tail)
-  "Return the proper-list prefix of TAIL (drops a dotted terminator).
-Real source files contain dotted forms (alist literals in macro
-positions and the like); iterating them with `dolist' signals
-wrong-type-argument, so every walk over user form tails goes through
-this."
-  (let ((out nil))
-    (while (consp tail)
-      (push (car tail) out)
-      (setq tail (cdr tail)))
-    (nreverse out)))
-
-(defun nl-check--quoted-p (form)
-  "Return non-nil when FORM is a quoted constant the walker must skip."
-  (and (consp form) (memq (car form) '(quote function))
-       ;; (function (lambda ...)) still needs walking for capture checks.
-       (not (and (eq (car form) 'function)
-                 (consp (car (cdr form)))
-                 (eq (car (car (cdr form))) 'lambda)))))
-
-(defun nl-check--backquote-p (form)
-  "Return non-nil when FORM is a backquote template."
-  (and (consp form) (memq (car form) '(\` backquote))))
-
-(defun nl-check--unquoted (template acc)
-  "Collect TEMPLATE's unquote-position forms onto ACC.
-A backquote template is data except where `,' and `,@' put live code,
-so those are the only parts a checker may walk.  Walking the whole
-template treats a macro's output as if it ran at the definition site --
-which reported a resource `let' inside every `defmacro' that builds
-one, and, worse, said nothing about the expansion where the resource
-actually appears."
-  (cond
-   ((not (consp template)) acc)
-   ((memq (car template) '(\, \,@ unquote unquote-splicing))
-    (cons (car (cdr template)) acc))
-   (t
-    (let ((rest template))
-      (while (consp rest)
-        (setq acc (nl-check--unquoted (car rest) acc))
-        (setq rest (cdr rest)))
-      acc))))
-
-(defun nl-check--live-parts (form)
-  "Return the parts of FORM a walker should treat as code.
-For a backquote template that is its unquote positions; for anything
-else it is the form itself."
-  (if (nl-check--backquote-p form)
-      (nreverse (nl-check--unquoted (car (cdr form)) nil))
-    (list form)))
-
 (defun nl-check--body-of (form)
   "Return (BODY . VALUE-INDEX) description for FORM, or nil.
 BODY is the list of forms evaluated in sequence; every element but the
@@ -161,9 +113,9 @@ last sits in statement position."
 STATEMENT-P is non-nil when FORM's value is discarded."
   (cond
    ((not (consp form)) findings)
-   ((nl-check--quoted-p form) findings)
-   ((nl-check--backquote-p form)
-    (dolist (part (nl-check--live-parts form) findings)
+   ((nl--walk-quoted-p form) findings)
+   ((nl--walk-backquote-p form)
+    (dolist (part (nl--walk-live-parts form) findings)
       (setq findings (nl-check--must-use-scan part t findings))))
    ;; `ignore' is the sanctioned discard, like Rust's `let _ ='.
    ((eq (car form) 'ignore) findings)
@@ -191,7 +143,7 @@ STATEMENT-P is non-nil when FORM's value is discarded."
     (cond
      ;; Binding inits are value positions; the body is a sequence.
      ((memq head '(let let*))
-      (dolist (binding (nl-check--proper-list (car (cdr form))))
+      (dolist (binding (nl--walk-proper-list (car (cdr form))))
         (when (consp binding)
           (setq findings (nl-check--must-use-seq (cdr binding) findings))))
       (nl-check--must-use-seq body findings))
@@ -201,7 +153,7 @@ STATEMENT-P is non-nil when FORM's value is discarded."
      ((eq head 'while)
       (setq findings (nl-check--must-use-scan (nth 1 form) nil findings))
       ;; Every form in a `while' body is a statement.
-      (dolist (sub (nl-check--proper-list (cdr (cdr form))))
+      (dolist (sub (nl--walk-proper-list (cdr (cdr form))))
         (setq findings (nl-check--must-use-scan sub t findings)))
       findings)
      ((eq head 'if)
@@ -209,19 +161,19 @@ STATEMENT-P is non-nil when FORM's value is discarded."
       (setq findings (nl-check--must-use-scan (nth 2 form) nil findings))
       (nl-check--must-use-seq (nthcdr 3 form) findings))
      ((eq head 'cond)
-      (dolist (clause (nl-check--proper-list (cdr form)))
+      (dolist (clause (nl--walk-proper-list (cdr form)))
         (when (consp clause)
           (setq findings (nl-check--must-use-scan (car clause) nil findings))
           (setq findings (nl-check--must-use-seq (cdr clause) findings))))
       findings)
      ((eq head 'prog1)
       (setq findings (nl-check--must-use-scan (nth 1 form) nil findings))
-      (dolist (sub (nl-check--proper-list (cdr (cdr form))))
+      (dolist (sub (nl--walk-proper-list (cdr (cdr form))))
         (setq findings (nl-check--must-use-scan sub t findings)))
       findings)
      ((eq head 'unwind-protect)
       (setq findings (nl-check--must-use-scan (nth 1 form) nil findings))
-      (dolist (sub (nl-check--proper-list (cdr (cdr form))))
+      (dolist (sub (nl--walk-proper-list (cdr (cdr form))))
         (setq findings (nl-check--must-use-scan sub t findings)))
       findings)
      ((eq head 'setq)
@@ -234,7 +186,7 @@ STATEMENT-P is non-nil when FORM's value is discarded."
      (body (nl-check--must-use-seq body findings))
      ;; Ordinary call: every argument is a value position.
      (t
-      (dolist (sub (nl-check--proper-list (cdr form)))
+      (dolist (sub (nl--walk-proper-list (cdr form)))
         (setq findings (nl-check--must-use-scan sub nil findings)))
       findings))))
 
@@ -245,7 +197,7 @@ STATEMENT-P is non-nil when FORM's value is discarded."
   (cond
    ((eq form var) t)
    ((not (consp form)) nil)
-   ((nl-check--quoted-p form) nil)
+   ((nl--walk-quoted-p form) nil)
    (t (let ((tail form) (found nil))
         (while (and (consp tail) (not found))
           (setq found (nl-check--mentions-p (car tail) var))
@@ -258,9 +210,9 @@ Capture by a lambda, or being handed to any call other than the
 resource observers, counts as an escape (Doc 170 section 6.3)."
   (cond
    ((not (consp form)) nil)
-   ((nl-check--quoted-p form) nil)
-   ((nl-check--backquote-p form)
-    (nl-check--escapes-seq (nl-check--live-parts form) var))
+   ((nl--walk-quoted-p form) nil)
+   ((nl--walk-backquote-p form)
+    (nl-check--escapes-seq (nl--walk-live-parts form) var))
    ((memq (car form) '(lambda closure))
     (nl-check--mentions-p (cdr form) var))
    ((and (eq (car form) 'function) (consp (car (cdr form))))
@@ -317,9 +269,9 @@ Branches take the maximum of their arms; sequences take the sum.  A
 its body more than once."
   (cond
    ((not (consp form)) 0)
-   ((nl-check--quoted-p form) 0)
-   ((nl-check--backquote-p form)
-    (nl-check--consumes-seq (nl-check--live-parts form) var))
+   ((nl--walk-quoted-p form) 0)
+   ((nl--walk-backquote-p form)
+    (nl-check--consumes-seq (nl--walk-live-parts form) var))
    ((and (memq (car form) '(nl-drop nl-forget))
          (eq (car (cdr form)) var))
     1)
@@ -329,7 +281,7 @@ its body more than once."
             (nl-check--consumes-seq (nthcdr 3 form) var))))
    ((eq (car form) 'cond)
     (let ((worst 0))
-      (dolist (clause (nl-check--proper-list (cdr form)))
+      (dolist (clause (nl--walk-proper-list (cdr form)))
         (when (consp clause)
           (setq worst (max worst (nl-check--consumes-seq clause var)))))
       worst))
@@ -362,14 +314,14 @@ its body more than once."
   "Collect resource findings in FORM onto FINDINGS and return it."
   (cond
    ((not (consp form)) findings)
-   ((nl-check--quoted-p form) findings)
-   ((nl-check--backquote-p form)
-    (dolist (part (nl-check--live-parts form) findings)
+   ((nl--walk-quoted-p form) findings)
+   ((nl--walk-backquote-p form)
+    (dolist (part (nl--walk-live-parts form) findings)
       (setq findings (nl-check--resource-scan part findings))))
    (t
     (when (memq (car form) '(let let*))
       (let ((body (cdr (cdr form))))
-        (dolist (binding (nl-check--proper-list (car (cdr form))))
+        (dolist (binding (nl--walk-proper-list (car (cdr form))))
           (when (and (consp binding)
                      (symbolp (car binding))
                      (nl-check--fresh-resource-p (car (cdr binding))))
@@ -406,7 +358,7 @@ its body more than once."
   "Collect unsafe-primitive calls in FORM outside `nl-unsafe' blocks."
   (cond
    ((not (consp form)) findings)
-   ((nl-check--quoted-p form) findings)
+   ((nl--walk-quoted-p form) findings)
    ((eq (car form) 'nl-unsafe)
     (let ((tail (cdr form)))
       (while (consp tail)
@@ -420,10 +372,63 @@ its body more than once."
       (setq findings
             (cons (list :kind 'unsafe-call :subject (car form) :form form)
                   findings)))
+    ;; The head is walked too when it is itself a form.  Walking only the
+    ;; cdr reads `(let ((x (alloc-bytes 1 1))) x)' as clean: the binding
+    ;; list is (BINDING ...), BINDING is a cons, and the first one lives
+    ;; in car position where nothing looked.  Measured on this tree the
+    ;; day it was found -- 369 reported, 428 present, and nearly every one
+    ;; of the 59 was an allocation in the first `let*' binding, the
+    ;; house idiom of the standalone build.
+    (when (consp (car form))
+      (setq findings
+            (nl-check--unsafe-scan (car form) inside-unsafe findings)))
     (let ((tail (cdr form)))
       (while (consp tail)
         (setq findings
               (nl-check--unsafe-scan (car tail) inside-unsafe findings))
+        (setq tail (cdr tail))))
+    findings)))
+
+(defun nl-check--unsafe-scan-quoted (form findings)
+  "Collect unsafe-primitive calls that `nl-check--unsafe-scan\=' skips.
+Quoted forms are not code at their own site, which is why the scan
+above steps over them: an opcode table like (ptr-read-u16 . 39) or a
+name list is data, and counting it would be a lie in the other
+direction.
+
+But this tree writes its runtime as quoted generator bodies --
+`(defconst nelisp-cc-...--source \='(seq (defun ...) ...))\=' -- so the
+unsafe kernel itself lives inside quotes, and the gated count sees
+almost none of it.  Reporting that as a separate number is the honest
+position: the exclusion is a real one, and a reader who is told 369
+without being told what it excludes will read it as the surface."
+  (cond
+   ((not (consp form)) findings)
+   ((memq (car form) '(quote function))
+    (nl-check--unsafe-collect (cdr form) findings))
+   (t
+    (let ((tail form))
+      (while (consp tail)
+        (setq findings (nl-check--unsafe-scan-quoted (car tail) findings))
+        (setq tail (cdr tail))))
+    findings)))
+
+(defun nl-check--unsafe-collect (form findings)
+  "Collect every unsafe-primitive head in FORM, quoted or not."
+  (cond
+   ((not (consp form)) findings)
+   (t
+    (when (and (symbolp (car form))
+               (memq (car form) nl-safe-unsafe-primitives))
+      (setq findings
+            (cons (list :kind 'unsafe-call-quoted :subject (car form)
+                        :form form)
+                  findings)))
+    (when (consp (car form))
+      (setq findings (nl-check--unsafe-collect (car form) findings)))
+    (let ((tail (cdr form)))
+      (while (consp tail)
+        (setq findings (nl-check--unsafe-collect (car tail) findings))
         (setq tail (cdr tail))))
     findings)))
 
@@ -503,6 +508,15 @@ Reading only; nothing from PATH is evaluated."
                 (setq done t)
               (setq forms (cons form forms)))))))
     (nl-check-forms (nreverse forms))))
+
+(defun nl-check-file-quoted-unsafe (path)
+  "Return PATH\='s `unsafe-call-quoted\=' findings.
+The calls `nl-check-file\=' steps over because they sit inside a quoted
+form.  Reported, never gated: see `nl-check--unsafe-scan-quoted\='."
+  (let ((findings nil))
+    (dolist (form (nl-check-file-forms path))
+      (setq findings (nl-check--unsafe-scan-quoted form findings)))
+    (nreverse findings)))
 
 (defun nl-check-file-forms (path)
   "Read PATH and return its top-level forms.  Nothing is evaluated."

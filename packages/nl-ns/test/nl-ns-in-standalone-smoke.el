@@ -60,6 +60,7 @@
                    (gethash 'k probe)))
     (error "nl-ns-in-standalone-smoke: puthash precondition failed")))
 
+(load "packages/nl-prelude/src/nl-prelude-trampoline.el") ; wave8: nl-prelude requires it
 (load "packages/nl-prelude/src/nl-prelude.el")
 (load "packages/nl-ns/src/nl-ns-in.el")
 (load "packages/nl-ns/test/nl-ns-in-test.el")
@@ -84,8 +85,8 @@
         (setq all (cdr all))))
     (error "nl-ns-in-standalone-smoke: %d failure(s), %d passed"
            (length failures) ran))
-  (when (< ran 33)
-    (error "nl-ns-in-standalone-smoke: only %d tests ran (expected >= 33)"
+  (when (< ran 41)
+    (error "nl-ns-in-standalone-smoke: only %d tests ran (expected >= 41)"
            ran))
   (princ (format "nl-ns-in-standalone-smoke: PASS (%d tests)\n" ran)))
 

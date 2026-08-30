@@ -18,6 +18,12 @@ if ([string]::IsNullOrWhiteSpace($Emacs)) {
 }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+
+# One version for the whole run, from ./VERSION -- the same source the
+# POSIX side reads.  These were four separate version literals; the
+# v1.0.1 bump did not reach them, which is how stage-d came to build a
+# v1.0.1 tarball and then look for a v0.6.0 one.
+$NelispReleaseVersion = (Get-Content -Raw (Join-Path $RepoRoot "VERSION")).Trim()
 Set-Location $RepoRoot
 
 function Invoke-Checked {
@@ -45,7 +51,7 @@ function Invoke-WindowsStandaloneInstallSmoke {
         & (Join-Path $RepoRoot "release\stage-d-v3.0\install-v3.ps1") `
             -From (Join-Path $RepoRoot "dist") `
             -Prefix $Prefix `
-            -Version "v0.6.0"
+            -Version $NelispReleaseVersion
         $InstallCode = $LASTEXITCODE
         if ($null -eq $InstallCode) {
             $InstallCode = 0
@@ -120,10 +126,10 @@ if ($IncludeTarball) {
     Invoke-Checked "Windows standalone tarball smoke" {
         & (Join-Path $RepoRoot "tools\build-standalone-tarball.ps1") `
             -Emacs $Emacs `
-            -Version "v0.6.0" `
+            -Version $NelispReleaseVersion `
             -Target "windows-x86_64"
         & (Join-Path $RepoRoot "tools\verify-standalone-tarball.ps1") `
-            -Version "v0.6.0" `
+            -Version $NelispReleaseVersion `
             -Target "windows-x86_64"
     }
 

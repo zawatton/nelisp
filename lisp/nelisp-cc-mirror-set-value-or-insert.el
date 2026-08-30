@@ -107,7 +107,7 @@
                           (vector-ref-ptr scratch-vec-ptr 9)  ; plist
                           (vector-ref-ptr scratch-vec-ptr 10) ; constant
                           entry-slot)                         ; result (stack)
-             (extern-call nelisp_mirror_bucket_prepend
+             (extern-call nelisp_mirror_bucket_prepend_unchecked
                           mirror-ptr sym-ptr
                           entry-slot                          ; entry (stack)
                           scratch-vec-ptr)))                  ; scratch
@@ -123,9 +123,12 @@
       ;; _pad:            unused — keeps outer arity even (= 4).
       ;;
       ;; Returns: i64 — 1 on success (hit-update OR miss-insert).
-      (nelisp_mirror_set_value_or_insert_dispatch
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       mirror-ptr sym-ptr scratch-vec-ptr 0 0)))
+      (if (= (extern-call nl_thread_mirror_mutation_guard
+                          mirror-ptr sym-ptr) 1)
+          (- 0 4)
+        (nelisp_mirror_set_value_or_insert_dispatch
+         (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+         mirror-ptr sym-ptr scratch-vec-ptr 0 0))))
   "AOT source for Doc 119 §119.A `mirror_set_value_or_insert'.
 
 Composes `mirror_lookup_entry' (= helper #1) + on-hit `record-slot-set'

@@ -94,11 +94,74 @@ jobs:
         with:
           version: '30.1'
 
+      # Adjacent defect flagged in fe3ec9328 (the gap #5 commit on this
+      # branch): this step used to call build-release-artifact.sh with no
+      # NELISP_STANDALONE_TARGET set, and the Makefile's STANDALONE_GATE_TARGET
+      # defaults to linux-x86_64 whenever that variable is unset and $(OS) !=
+      # Windows_NT.  So the tarball this step has been shipping as
+      # "linux-arm64" -- on an ubuntu-22.04-arm runner -- actually contains a
+      # linux-x86_64 binary: the wrong instruction set for this platform,
+      # never caught because nothing ever executed it (checksum-only
+      # verification, and the runnable-on-host predicate this branch also
+      # fixes turned every execution-based gate away before this fix).
+      # Setting NELISP_STANDALONE_TARGET=linux-aarch64 here is NOT
+      # CI-verified from this session (no arm64 runner available); the
+      # likeliest first-run outcome is NOT a clean fix but a new, louder
+      # failure: build-release-artifact.sh hardcodes
+      # STANDALONE_BIN="target/nelisp", while
+      # `nelisp-standalone--output-path' arch-suffixes cross-built targets
+      # (linux-aarch64 -> target/nelisp-aarch64) "so they never clobber the
+      # host-arch target/nelisp" -- a policy written for cross-building
+      # linux-aarch64 alongside a linux-x86_64 host build, not for running
+      # natively on real arm64 hardware where there is no host-arch binary to
+      # avoid clobbering.  With the target now set correctly, `make
+      # standalone-reader' will build target/nelisp-aarch64, the script's own
+      # `[[ -x "$STANDALONE_BIN" ]]' check on target/nelisp will still see
+      # nothing there, and it will exit 1 with "standalone binary still
+      # missing after build: target/nelisp" -- turning a silent
+      # wrong-architecture artifact into a loud, diagnosable failure instead
+      # of a working correctly-labeled one.  Making build-release-artifact.sh
+      # (or the output-path policy) target-aware is the follow-up fix; out of
+      # scope here per instruction to touch only this job's target wiring.
       - name: Build release artifact
+        env:
+          NELISP_STANDALONE_TARGET: linux-aarch64
         run: ./tools/build-release-artifact.sh linux-arm64 stage-d-v2.0
 
       - name: Verify checksum
         run: cd dist && sha256sum --check stage-d-v2.0-linux-arm64.tar.gz.sha256
+
+      # 2026-08-22 survey gap #5: nelisp-standalone--target-runnable-on-host-p
+      # (scripts/nelisp-standalone-build.el) did not recognize this runner as
+      # able to run a linux-aarch64 binary, so every binary-building
+      # correctness gate silently reported "not runnable" here and this
+      # artifact was validated only by checksum, never executed.  The
+      # `linux-arm64' PLATFORM arg above only names the release tarball; the
+      # `Build release artifact' step calls `make standalone-reader' with no
+      # NELISP_STANDALONE_TARGET, which defaults to linux-x86_64 -- so
+      # target/nelisp there is NOT the binary this step exercises.  These
+      # steps set NELISP_STANDALONE_TARGET=linux-aarch64 explicitly and build
+      # to target/nelisp-aarch64 (arch-suffixed so it never collides with the
+      # x86_64 one above), a genuinely separate, real ARM64 build+run.  This
+      # is the FIRST time this code path has ever executed on real hardware;
+      # see the predicate's docstring for what is and is not exercised
+      # elsewhere already.  (The `Build release artifact' step above now also
+      # sets NELISP_STANDALONE_TARGET=linux-aarch64, fixing the adjacent
+      # mislabeled-artifact defect noted there, but is expected to fail
+      # before producing anything -- see that step's comment.  This gate
+      # builds target/nelisp-aarch64 through its own independent
+      # `make standalone-reader-test' invocation regardless of whether that
+      # step succeeds, so it is unaffected either way.)
+      - name: Standalone reader correctness gate (linux-aarch64, first real run)
+        env:
+          NELISP_STANDALONE_TARGET: linux-aarch64
+        run: make standalone-reader-test
+
+      - name: Native artifact correctness gate (linux-aarch64, first real run)
+        env:
+          NELISP_STANDALONE_TARGET: linux-aarch64
+          NELISP: target/nelisp-aarch64
+        run: make nelisp-native-artifact-gate
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

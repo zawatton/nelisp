@@ -350,7 +350,8 @@
     (defun nl_jit_alias (name out)
       ;; Type guard: accepts Symbol (tag 4) or Str (tag 5).
       ;; Returns 1 for any other input type (= TRAMPOLINE_ERR).
-      (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 5))
+      (if (or (= (sexp-tag name) 4) (= (sexp-tag name) 5)
+              (= (sexp-tag name) 14))
           (nl_jit_alias_dispatch name out (nl_jit_alias_buf))
         1)))
 

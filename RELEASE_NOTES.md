@@ -1,3 +1,159 @@
+# NeLisp Release Notes
+
+## v1.1.1 — 2026-08-30
+
+Full notes: [`release/v1.1.1/RELEASE.md`](release/v1.1.1/RELEASE.md).
+
+Fourteen precise-root defects in the standalone runtime, all of two shapes,
+plus the missing bound that had to be fixed first -- and four in the AOT
+compiler, where a raw machine word crossed a defun boundary that expects a
+Sexp pointer.
+
+- **The layout-dependent crash is gone.** anvil's standalone MCP server produced
+  correct output and then died -- SIGSEGV or `form aborted without signal`,
+  decided by memory layout.  Cause: `nl_gc_mark_recorded_pool` walked each
+  recorded frame's parse pool with a global capacity word naming a different
+  load.  Amplifier: `nl_gc_mark_char_table_slots` believed the length it found
+  there and walked 1.26 GB past the arena.
+- **Eleven walkers stopped carrying a materialised cdr across an eval.**
+  `setq`, `let` bindings and bodies, `let*`, `if`'s else branch, `while`,
+  `progn`, lambda bodies, `condition-case` handlers, `catch` and `throw`.
+  Position decides: `(progn (f) 1)` was always correct, `(progn 1 (f))`
+  answered 47826824.
+- **Four live values stopped living in unrooted scratch** -- `let`'s value slot,
+  the builtin argument list, and the `catch` / `throw` tags.  A blanked tag
+  makes a `throw` walk past its own `catch` and report `no-catch`.
+- **`nl_root_reserve_slot` has a bound.** It bumped through a fixed
+  131072-entry region with none, writing past it under deep recursion.
+- **New gate:** `make precise-root-coverage`, 51 configurations run with the
+  conservative native-stack scan off, asserting values -- most of these defects
+  answered wrongly rather than crashing.
+- **AOT: raw words stopped crossing a value-word boundary.** In the lane where
+  user `.el` modules compile to native code every parameter arrives as a Sexp
+  pointer, but nothing converted the values going the other way: `(g 0)` had
+  the callee load `[0+8]`.  Call arguments, the string grammar's index and
+  count operands, defun returns, and the `call` node's own declared
+  representation were all missing their conversion.  `(defun f (x) (g 0 x))`
+  in nine lines reproduced it; `nelisp-nelix-native-hot-gate` goes from failing
+  its fourth case to 6/6.
+
+With that scan disabled, the whole standalone tier and anvil's own module load
+now pass; before, the load segfaulted in under a second.  The scan stays on.
+
+## v1.1.0 — 2026-08-27
+
+Full notes: [`release/v1.1.0/RELEASE.md`](release/v1.1.0/RELEASE.md).
+
+Closes v1.0.1's own known issue. Unibyte strings are now a distinct
+representation -- Sexp tags 14 and 15 -- so a raw byte and a character are told
+apart everywhere it matters.
+
+- **`(append (unibyte-string 200 201 202) nil)` answers `(200 201 202)`.** It
+  answered `(521 640 0)`. `equal`, `length`, `aref`, `concat`, `substring`,
+  `upcase`, `multibyte-string-p` and the printer all agree with stock Emacs
+  30.1 now; the measured before/after table is in the full notes.
+- **`equal` compares characters, then bytes, then content** -- as Emacs does,
+  never the multibyte flag. `(equal "abc" (unibyte-string 97 98 99))` stays
+  `t`; a tag-identity rule would have broken it.
+- **`aset` follows Emacs 31.1's fixed-width rules.** The Sexp tag and
+  `string-bytes` are asserted invariant under mutation.
+- **The reader implements `\NNN` and `\xNN`.** A separate, older defect:
+  `"\310"` had been the three-character string `"310"` and `"\x1b["` had been
+  `"x1b["`, silently. Zero files in the tree used them, which is why it
+  survived.
+- **Two tests had been passing for the wrong reason**, and implementing the
+  reader escapes is what exposed them. One compared received bytes against a
+  literal that both sides had been misreading identically; fixing the literal
+  made the comparison real, and it failed because `nelisp-socket-recv` was
+  labelling bytes off a wire as UTF-8. It answers a unibyte string now.
+- **A countable audit, not an asserted one.** `make doc200-census` enumerates
+  every site that tests or writes the string tag and fails when one appears or
+  vanishes. v1.0.1's notes estimated 59 such lines by grep; the structural
+  census finds 119, in a 174-row ledger. Six mutation rows, one per consumer
+  arm including the GC marker's, all go red.
+
+Not done, and recorded as not done: raw-byte characters (`#x3FFF00 + B`) have
+no representation here, so mixing a non-ASCII unibyte string into a multibyte
+context signals rather than inventing a character; `\N{U+XXXX}` is
+unimplemented; and `aset` diverges from the 30.1 parity host, which is laxer
+than 31.1.
+
+## v1.0.1 — 2026-08-26
+
+Full notes: [`release/v1.0.1/RELEASE.md`](release/v1.0.1/RELEASE.md).
+
+A same-day follow-up to v1.0.0, carrying the in-process `.neln` loader and
+three defects that v1.0.0's own change -- the collector running by default --
+brought into the open.
+
+- **The loader runs any artifact, read at run time.** v1.0.0's version was a
+  demo: bytes and extern addresses baked in at build time, one function only.
+- **`pcase` now supports `(cl-type TYPE)`.** It signalled where Emacs answers.
+  `emacs-parity` compares 19,995 behaviours and this was not among them.
+- **`base64-decode-string` returns bytes, not characters.** The pair did not
+  round-trip for any input with a high byte; only the encoder had been fixed.
+- **The loader's digest buffer was not a GC root.** The same intact artifact
+  digested differently on every run -- the signature of reading reclaimed
+  storage. Impossible before the collector ran by default.
+- **The native harness's slot registry grows** instead of stopping at 64,
+  which every tight arithmetic loop exhausted in tens of iterations.
+- **`stage-d` parity ran for the first time in 12 attempts** -- it had been
+  demanding a `main` branch from a sibling that is on `master`.
+
+Known issues, both stated in the full notes: macOS aarch64's `boxed` parity
+case segfaults (not a regression -- previously unreachable), and unibyte
+strings are still not a distinct representation, which is what makes `append`
+answer `(521 640 0)` for three raw bytes. `docs/design/200-unibyte-string-
+representation.org` records that one rather than half-fixing it.
+
+---
+
+## v1.0.0 — 2026-08-26
+
+Full notes: [`release/v1.0.0/RELEASE.md`](release/v1.0.0/RELEASE.md).
+
+Two things make this 1.0 rather than another point release.
+
+**The runtime collects garbage by default.** The precise-root collector
+existed before and was correct, but only ran behind a debug switch, so a
+default build grew without bound. On a 200k allocating loop peak RSS falls
+**669,936 KiB → 339,920 KiB (-49.3%)**, RSS is flat from 500k to 1M
+iterations, and 256 MiB goes back to the OS. It is also faster — 5,204 ms
+collected vs 8,125 ms uncollected — so this was not a memory-for-speed trade.
+
+**Ordinary allocating Elisp runs on real OS threads.** Doc 199 Tiers 1–3b:
+cooperative futures, GC-free `clone(2)` workers, bounded allocating tasks, and
+finally unrestricted allocating Elisp with per-thread precise roots and a park
+barrier. The barrier stops every mutator before marking, which is why Doc 152's
+planned write barrier (Stage 6) was retired rather than implemented.
+
+Also in 1.0:
+
+- **Standard Emacs names are the API.** `current-buffer`, `insert`, `point`,
+  `make-process`, `set-process-filter`, `make-network-process`, `run-at-time`,
+  `add-hook` and 15 more are `fboundp` in a default `target/nelisp` with no
+  `--load`. The `nelisp-`-prefixed functions are the implementation beneath.
+- **Opt-in language extensions**, all sharing one rule — loading them changes
+  nothing about plain Elisp semantics: `nl-safe`/`nl-static`/`nl-check`/
+  `nl-contract` (borrow cells, fat pointers, an `nl-unsafe` boundary under a CI
+  ratchet, expansion-time totality and types, contracts with blame), `nl-ns`
+  (namespace crossings reported, nothing rewritten, nothing at run time),
+  `nl-clj` (persistent vector/map/set, atom, eager and lazy seqs). 39 packages.
+- **Buffers, bignums and full backquote** — all three were listed as deferred
+  in the v0.6.0 README and all three had in fact shipped.
+- **Networking** — processes, event loop, `make-network-process`,
+  `open-network-stream`, `/etc/hosts`, DNS over TCP, nonblocking sockets, IPv6.
+- **Zero Rust.** No `.rs` files remain.
+
+Verification: 5,466 tests / 0 unexpected; `emacs-parity` **19,961 checks, 0
+findings** against a real stock Emacs; `verify` PASS (66 gates); six CI lanes
+plus a fast Linux `gates` job.
+
+Known limits are listed in the full notes — no windows or frames, no markers
+or overlays, Linux-only sockets, worker heaps reclaimed at process exit.
+
+---
+
 # NeLisp v0.6.0 Release Notes — Pure-Elisp Standalone Runtime
 
 v0.6.0 (2026-06-26) is the current stable SemVer tag.  It collects the

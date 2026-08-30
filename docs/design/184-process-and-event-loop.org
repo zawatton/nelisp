@@ -1,0 +1,733 @@
+#+TITLE: Doc 184 — processes under standard names, and one event loop
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 5 + zawatton)
+#+DATE: 2026-08-22
+#+STATUS: SHIPPED (P0-P3, 2026-08-23, branch feat/process-standard-names) — P4 (=make-network-process=) remains explicitly out of scope, documented and loudly refused, per §1.7/§6. UPDATE 2026-08-24 (integration/wave6 phase 2A audit hardening): P1/P2's fix, landed as an opt-in =--load=able layer never reachable from a shipped binary (see §5.5's original text below), is now wired into the DEFAULT standalone bootstrap — every =target/nelisp= carries it with no =--load= required. See the note appended to §5.5.
+#+VERIFIED-BY: standalone-reader-async-core-smoke standalone-reader-process-adapter-smoke standalone-reader-process-adapter-smoke-red standalone-reader-repl-idle-pump-smoke standalone-reader-smokes
+
+* §0 TL;DR
+
+Real subprocess machinery already exists and is verified: the native
+=nelisp-process-*= builtins (spawn, pipe write/read, poll, wait, exit
+status) pass =standalone-reader-process-smoke= end to end
+(=Makefile:1652-1667=, rebuilt and re-run on this clone: PASS). A
+*partial*, already-shipped standard-name layer sits directly on top of
+them in the prelude (=make-process=, =call-process=, =start-process=,
+=kill-process=, =accept-process-output=, =executable-find= — all real,
+all reachable in =target/nelisp=, confirmed by probe). A *second*,
+more complete adapter (=packages/nelisp-process/src/nelisp-process.el=,
+"Emacs-compatible process API surface") also exists, but cannot load in
+the standalone binary at all today — it transitively requires
+=generator=, which does not exist anywhere in this tree (confirmed:
+=file-missing: generator=). A *real* deferred timer queue + poll(2)
+event loop also exists (=packages/nelisp-eventloop/src/nelisp-async.el=)
+and even upgrades =run-at-time= to honour REPEAT when loaded — but it
+too requires =generator= transitively (via =nelisp-actor=), so it is
+equally unreachable from =target/nelisp= as shipped, a fact independently
+confirmed by =recipes/README.org='s own verdict: "TUI (async event
+loop) | fails today | ... dies with =void-variable: (declarations)=
+loading the host =generator.el=."
+
+This doc designs three things: (1) closing the gaps in the
+already-shipped prelude adapter (=:filter= is silently dropped,
+=process-filter=/=set-process-filter=/=process-sentinel= do not exist,
+=accept-process-output= ignores which process it was asked to wait for);
+(2) extracting a *generator-free* core from the existing timer queue so
+it can actually load standalone, since most of its logic
+(=nelisp-async--fire-due=, =-next-deadline=, =-sit-for=) never touches
+actors at all — only the higher-level drivers do; (3) the ONE event
+loop's shape: timers + the existing native process fds share the same
+poll(2)-based wait, with =accept-process-output= as the blocking pump
+point and an optional idle-loop pump for the =--repl= entry point.
+=make-network-process= is out of scope for the adapter itself (no
+native socket primitive family exists yet, unlike processes) but its
+absence is scoped precisely in §6.
+
+* §1 Problem — measured evidence
+
+** §1.1 The native primitives: real, verified
+
+=Makefile:1652-1667= (=standalone-reader-process-smoke=) drives
+=nelisp-process-call-process=, =-start=, =-wait=, =-read-output=,
+=-write=, =-close-stdin=, =-poll=, =-object-p=, =-pid=, =-status=,
+=-exit-status=, =-delete= against real =/bin/sh=/=/bin/cat= subprocesses.
+Rebuilt on this clone and re-run:
+
+#+begin_src text
+[standalone-reader-process-smoke] PASS: call-process exit=7,
+  read-output -> "process-smoke-ok", cat -> (13 "cat-roundtrip" 1 1 0),
+  poll -> (0 0 1 1 "sleepy")
+#+end_src
+
+These are native dispatch-table entries
+(=scripts/nelisp-standalone-build.el:9347-9360=, =nl_bi_process_*=
+backing calls) — real =posix_spawn=/pipe/wait4 underneath, not a stub.
+
+** §1.2 A partial standard-name adapter already ships
+
+=scripts/nelisp-stdlib-prelude.el:6031= defines =make-process= for real,
+sitting directly on the native primitive:
+
+#+begin_src elisp
+(unless (fboundp 'make-process)
+  (defun make-process (&rest plist)
+    (let* ((name (or (plist-get plist :name) "process"))
+           (command (plist-get plist :command))
+           (stderr-buffer (plist-get plist :stderr))
+           (sentinel (plist-get plist :sentinel))
+           (resolved (and command (cons (or (executable-find (car command)) (car command)) (cdr command)))))
+      (unless command (signal 'wrong-type-argument (list 'listp command)))
+      (if (fboundp 'nelisp-process-start)
+          (let ((proc (apply #'nelisp-process-start resolved)))
+            (process-put proc :name name)
+            (process-put proc :sentinel sentinel)
+            (process-put proc :stderr stderr-buffer)
+            (setq nelisp--pending-processes (cons proc nelisp--pending-processes))
+            proc)
+        ...))))
+#+end_src
+
+=call-process= (=:6055=), =start-process= (=:6067=), =kill-process=
+(=:6004=), =delete-process=, =accept-process-output= (=:6075=) and
+=executable-find= (=:6008=) are all real and reachable — confirmed by
+probe against =target/nelisp=:
+
+#+begin_src text
+(fboundp 'make-process)          => t
+(fboundp 'process-filter)        => nil
+(fboundp 'set-process-filter)    => nil
+(fboundp 'make-network-process)  => nil
+#+end_src
+
+** §1.3 The gaps in that adapter, read from its own source
+
+- *=:filter= is silently dropped.* =make-process='s =plist-get= list
+  reads =:name=, =:command=, =:stderr=, =:sentinel= — never =:filter=.
+  A caller supplying =:filter= gets no error and no filter; output can
+  only be retrieved after the fact via =nelisp-process-read-output=
+  through whatever holds the process object, never streamed.
+- *=process-filter=/=set-process-filter=/=process-sentinel= do not
+  exist as standalone functions* — only the =:sentinel= keyword to
+  =make-process= is honoured (partially — see next point), and there is
+  no way to set or read a filter/sentinel after construction.
+- *=accept-process-output= ignores its own arguments.*
+  =scripts/nelisp-stdlib-prelude.el:6075=:
+  #+begin_src elisp
+  (defun accept-process-output (&rest _args)
+    (let ((pending nelisp--pending-processes))
+      (setq nelisp--pending-processes nil)
+      (dolist (proc pending)
+        (when (nelisp-process-object-p proc) (nelisp-process-wait proc))
+        ...
+        (let ((sentinel (process-get proc :sentinel)))
+          (when sentinel (funcall sentinel proc "finished\n"))))) t)
+  #+end_src
+  PROCESS/SECONDS/MILLISEC/JUST-THIS-ONE are all in =&rest _args=,
+  read by nothing. Every call drains *every* pending process
+  unconditionally, blocks on each with =nelisp-process-wait= (a real
+  wait, not a poll — so "accept output for at most N seconds" cannot be
+  honoured at all), and then invokes the stored sentinel with the
+  literal string ="finished\n"= regardless of the process's actual exit
+  status — Emacs's own sentinel contract ("finished\n" vs "exited
+  abnormally with code N\n" vs "killed\n") collapses to one string no
+  matter what really happened. Already named in
+  =tools/partial-accepted.txt=: =accept-process-output|scripts/nelisp-stdlib-prelude.el|_args|not
+  yet reviewed=.
+
+** §1.4 A second, more complete adapter exists, and cannot load standalone
+
+=packages/nelisp-process/src/nelisp-process.el= (1154 lines) implements
+a much richer "Layer B" — =nelisp-make-process= with the full Doc 39
+keyword surface (=:filter=, =:sentinel=, =:buffer=, =:coding=, =:stderr=,
+=:noquery=, =:stop=, =:tty=, ...), =nelisp-set-process-filter=,
+=nelisp-set-process-sentinel=, =nelisp-process-status=,
+=nelisp-process-live-p=, and eventloop-multiplexer registration. It
+=(require 'nelisp-actor)=, and =nelisp-actor.el:40= unconditionally
+=(require 'generator)=. There is no =generator.el= anywhere in this
+tree (confirmed: no file, no =(provide 'generator)=). Probed directly:
+
+#+begin_src text
+$ ./target/nelisp --load packages/nelisp-actor/src/nelisp-actor.el
+nelisp: uncaught error: file-missing: generator
+#+end_src
+
+So this file, despite being the more complete design, is unreachable
+prior art from the standalone binary today, not something this doc can
+build on directly without first addressing §1.6.
+
+** §1.5 A real timer + I/O event loop exists, and has the same problem
+
+=packages/nelisp-eventloop/src/nelisp-async.el= (303 lines) is a genuine
+deadline-ordered timer queue: =nelisp-async-run-at-time= (vector
+=[DEADLINE REPEAT FN ARGS LIVE]=), =nelisp-async--fire-due=,
+=nelisp-async--next-deadline=, =nelisp-async-sit-for= (fires due timers
+while waiting), and =(defalias 'run-at-time #'nelisp-async-run-at-time)=
+at =:298= — loading this file genuinely upgrades =run-at-time= from the
+synchronous stub to a real deferred/repeating one. It also has a
+single-fd (stdin) poll(2)-multiplexed TTY driver,
+=nelisp-async-run-tty=, all OS contact through =syscall-direct= (poll=7,
+read=0, ioctl=16 for raw-mode termios) — genuinely efficient, no
+busy-loop: it blocks in =poll(2)= for =min(next-deadline, forever)=.
+
+But =nelisp-async.el= itself =(require 'nelisp-actor)= at file scope
+(needed only by its *driver* functions, =nelisp-async-run=/
+=-run-tty=, which call =nelisp-actor-run-until-idle=/=-status= — the
+timer-queue functions themselves, =-fire-due=/=-next-deadline=/
+=-sit-for=, never touch an actor). So the whole file inherits the same
+=generator= dependency wall as §1.4, confirmed independently by
+=recipes/README.org='s own measured verdict on the =TUI (async event
+loop)= recipe shape:
+
+#+begin_quote
+fails today | =tools/nelisp-async-tty-smoke.sh= dies with
+=void-variable: (declarations)= loading the host =generator.el=, and
+reports nothing (2026-08-18, WSL)
+#+end_quote
+
+Note this is a *different* failure mode than the plain =file-missing=
+this doc's own probe hit: =tools/nelisp-async-tty-smoke.sh= sets
+=NELISP_GENERATOR= to a real, unmodified GNU Emacs
+=generator.el= vendored in a sibling checkout
+(=../nemacs-next/vendor/emacs-lisp/emacs-lisp/generator.el=, confirmed
+present on this machine, 801 lines, genuine FSF copyright header) — so
+even *with* the real generator.el available, loading it into this
+substrate fails with a macro-expansion-time error
+(=void-variable: (declarations)=), a second, independent defect layered
+on top of "generator.el is simply absent" in a from-scratch clone. Both
+failure modes matter to this doc's recommendation (§2): neither
+"just vendor generator.el" nor "the file is merely missing" is the
+whole story.
+
+** §1.6 A separate fd multiplexer exists, explicitly scoped away from timers, and is host-Emacs-bound
+
+=packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el=
+(539 lines) is a *different* piece of prior art: a general
+=nelisp-eventloop-select-fd=/=-register-fd=/=-tick= API. Its own header
+explicitly scopes out exactly what this doc needs:
+
+#+begin_quote
+Out of scope for this Phase 9d.K (per Doc 39 §1.6):
+  - =run-at-time=/=run-with-timer= integration (= Phase 9d.A8)
+#+end_quote
+
+and its shipped "bootstrap backend" readiness-probes fds via *host
+Emacs's own* =process-status= + =accept-process-output PROC 0= — i.e.
+it is designed to run hosted inside real Emacs, bridging to host
+process objects, not to multiplex the standalone binary's native
+=nelisp-process-*= fds. So today there is no general multi-process
+multiplexer reachable from =target/nelisp= either; the closest thing is
+=nelisp-async-run-tty='s single, hardcoded stdin fd (§1.5), and that
+file cannot load standalone at all.
+
+** §1.7 =make-network-process=: absent, and with no native primitive to sit on
+
+=(fboundp 'make-network-process)= is nil in =target/nelisp= (confirmed
+by probe). =src/nelisp-eval.el:766= lists it only among the names the
+*host-hosted* =nelisp-eval= interpreter (running as a guest inside real
+Emacs, not the standalone binary) forwards straight to the host's own
+=make-network-process= — irrelevant to the standalone runtime this doc
+scopes. =packages/nelisp-network/src/nelisp-network.el= is, by its own
+header, "a thin wrapper over host =make-network-process=/
+=open-network-stream=" — also host-Emacs-only. Unlike processes
+(§1.1), there is no =nelisp-network-*= native builtin family; the raw
+capability that exists is =syscall-direct= socket/connect calls (used
+directly, ad hoc, in the standalone TLS smoke at =Makefile= around the
+=standalone-reader-tls-smoke= target), which is a real foundation but a
+materially bigger lift than the process adapter, which already has
+native spawn/pipe/poll primitives to sit on. Scoped out of this doc's
+phased plan; see §6.
+
+* §2 Decided direction
+
+*Do not try to make the existing generator-dependent files (§1.4, §1.5)
+load as-is.* Two independent, converging pieces of evidence say the
+=generator= path is a dead end for the near term: it is not merely
+absent (a vendoring exercise) but, even when a real, unmodified
+=generator.el= is supplied, fails at macro-expansion time inside this
+substrate (§1.5's =void-variable: (declarations)=) — a genuine
+interpreter/macro-expander compatibility gap, not a missing-file
+problem, and fixing *that* is out of this doc's scope (it is a
+substrate-compatibility question closer to doc 185's "does the
+interpreter support enough of real Emacs's macro machinery" territory
+than to process/timer design).
+
+Instead: *extract the actor-free core of =nelisp-async.el='s timer
+queue* (=-run-at-time=, =-cancel-timer=, =-fire-due=,
+=-next-deadline=, =-sit-for= — none of which call into
+=nelisp-actor=) into a small module with no =(require 'nelisp-actor)=,
+and build the standard-name process adapter as a *new*, minimal Layer B
+directly on the native =nelisp-process-*= primitives (§1.1) plus this
+actor-free timer core — reusing =packages/nelisp-process/src/nelisp-process.el=
+(§1.4) only as a *reference* for keyword semantics and calling
+conventions, not as code to load. This is cheaper than either fixing
+the generator wall or reinventing the timer queue from nothing, and it
+is exactly the boundary the existing file already has (the file's own
+functions split cleanly along the actor dependency, they were just
+never separated into two files).
+
+The ONE event loop's shape (§1's "who pumps it" question): a single
+poll(2) call per iteration, timeout = time to the next timer deadline,
+watching stdin *and* every live process's stdout/stderr fd (the native
+=nelisp-process-*= layer already exposes fds implicitly through
+=nelisp-process-poll=; extending the poll(2) call from one hardcoded fd
+(§1.5) to a *set* registered via a small =nelisp-process-register-fd=/
+=-unregister-fd= pair is the concrete extension this doc designs, distinct
+from and much smaller than §1.6's host-Emacs-bound multiplexer). Pumped
+from two places, matching real Emacs's own two pump points:
+
+1. *Explicitly*, via a fixed =accept-process-output= that actually
+   reads PROCESS/SECONDS/MILLISEC (§1.3's gap, closed) and polls only
+   until that process (or the timeout) is ready — not a blind drain of
+   every pending process.
+2. *Implicitly*, from the =--repl= command loop's read step — real
+   Emacs pumps its event loop between keystrokes in the top-level
+   command loop; NeLisp's =--repl= has an analogous read point where a
+   bounded =accept-process-output=-style poll can run before blocking
+   on the next line of input, giving interactive use of timers/process
+   output without requiring every script to call =accept-process-output=
+   by hand.
+
+A batch script (=--load=/=--eval=, no =--repl=) that never calls
+=accept-process-output= and never asks for =sit-for= sees exactly
+today's behaviour: nothing pumps in the background, matching Emacs's
+own batch-mode contract (Emacs does not pump its event loop in
+=--batch= either, outside explicit waits).
+
+* §3 Design detail
+
+** §3.1 Splitting =nelisp-async.el=
+
+New file, no =nelisp-actor=/=generator= dependency:
+=packages/nelisp-eventloop/src/nelisp-async-core.el=, containing
+verbatim the timer-queue vector shape and =-run-at-time=/=-cancel-timer=/
+=-fire-due=/=-next-deadline=/=-sit-for= (this is a cut, not a rewrite —
+these functions, read in full this session, already have zero actor
+coupling; the only change is which file they live in and dropping the
+top-of-file =(require 'nelisp-actor)=). =nelisp-async.el= itself
+becomes a thin actor-integration layer on top of =nelisp-async-core.el=
+for callers that *do* want the actor-driven =nelisp-async-run=/
+=-run-tty=, unchanged in behaviour, still gated on generator until
+§1.5's macro-expander gap is separately fixed.
+
+** §3.2 The process-side adapter
+
+New Layer B, built directly on §1.1's native primitives (not on
+§1.4's unreachable file), with the keyword surface §1.3 measured as
+missing:
+
+- =make-process= gains a real =:filter= slot: read from the plist,
+  stored via =process-put= exactly as =:sentinel= already is (§1.2), and
+  actually invoked — by the poll loop (§3.3) when new output becomes
+  available on the process's read fd, via =nelisp-process-read-output=,
+  matching Emacs's "filter gets called with (PROC CHUNK) as data
+  arrives" contract rather than the current all-or-nothing "read
+  everything after wait finishes" shape.
+- =process-filter=/=set-process-filter=/=process-sentinel=/
+  =set-process-sentinel= added as real functions over the same
+  =process-put=/=process-get= plist already used for =:name=/
+  =:sentinel=/=:stderr= (§1.2) — no new storage, just accessor functions
+  for state that is already there.
+- =accept-process-output= rewritten to honour its arguments: PROCESS
+  narrows the wait to one process (or all, if nil, matching Emacs);
+  SECONDS/MILLISEC bound the poll via §3.1's timer-core deadline
+  machinery instead of a blocking =nelisp-process-wait=; JUST-THIS-ONE
+  is honoured by stopping after the first fd becomes ready rather than
+  draining every pending process.
+- The sentinel-string collapse (§1.3, "finished\n" always) is fixed by
+  reading the real exit status from =nelisp-process-exit-status=/
+  =-status= (both real, native, §1.1) and formatting the same three
+  strings Emacs's own sentinel contract uses.
+
+** §3.3 The poll set
+
+=nelisp-process-poll= (native, §1.1) already answers readiness for one
+process. The extension: a small registry (a list of live process
+wraps, populated by =make-process=, pruned by =delete-process=) that
+the pump functions (§2's =accept-process-output=/=--repl= pump point)
+iterate, calling =nelisp-process-poll= per entry with a zero timeout
+inside a =poll(2)=-driven outer wait whose timeout is
+=min(next-timer-deadline, caller's SECONDS/MILLISEC)= — reusing
+§3.1's =-next-deadline= directly. This is deliberately *not* a
+kernel-level =select(2)=/=epoll(2)= over all fds at once (that would
+require exposing raw fds from =nelisp-process-*=, a bigger native-layer
+change); it is a bounded poll-and-sleep loop, cheap to build, adequate
+for the process counts this runtime's actual users (a handful of
+subprocesses, not thousands) will have. §6 flags the cost tradeoff
+explicitly for scale-sensitive future use.
+
+* §4 Phased plan with costs
+
+** P0 — split =nelisp-async.el=, ship a generator-free timer core (0.5-1 d)
+
+- =packages/nelisp-eventloop/src/nelisp-async-core.el= per §3.1.
+- *Exit*: =./target/nelisp --load packages/nelisp-eventloop/src/nelisp-async-core.el=
+  succeeds (no =generator= error); =(run-at-time 0.1 nil (lambda () ...))=
+  followed by an explicit =(nelisp-async-core-fire-due (nelisp-async-core--now))=
+  fires the callback; a REPEAT timer fires more than once across two
+  =-fire-due= calls with an intervening sleep — closing the exact gap
+  =tools/partial-accepted.txt='s =run-at-time= entry documents.
+
+** P1 — fix the prelude adapter's measured gaps (1-2 d)
+
+- =:filter= plumbing, =process-filter=/=set-process-filter=/
+  =process-sentinel=/=set-process-sentinel=, the honoured
+  =accept-process-output= arguments, the real sentinel-status strings
+  (§3.2).
+- *Exit*: a Makefile smoke mirroring
+  =standalone-reader-process-smoke= (§1.1) but asserting FILTER chunks
+  arrive incrementally (spawn =/bin/cat=, write two separate chunks,
+  assert the filter was called twice with the right bytes, not once at
+  the end) and that a killed process's sentinel reports "killed",
+  not "finished\n".
+
+** P2 — poll-set extension + =accept-process-output= real semantics (1-2 d)
+
+- §3.3's registry + bounded poll loop; =accept-process-output= built on
+  it directly.
+- *Exit*: two concurrently-running subprocesses, one finishing before
+  the other; =(accept-process-output proc1 1)= returns as soon as
+  =proc1= is ready without waiting for =proc2=, and does not drain
+  =proc2='s pending sentinel as a side effect (closing §1.3's "drains
+  *every* pending process unconditionally" defect).
+
+** P3 — =--repl= pump point (0.5-1 d)
+
+- Wire a bounded poll (§3.3, small fixed timeout, e.g. 0-50ms) into the
+  =--repl= read step so a timer armed from the REPL, or output from a
+  backgrounded process, becomes visible between prompts without an
+  explicit =accept-process-output= call.
+- *Exit*: from =--repl=, =(run-at-time 1 nil (lambda () (princ "tick")))=
+  followed by hitting Enter on an empty line prints =tick= within the
+  expected window, without the user calling =sit-for=/
+  =accept-process-output= by hand; a =--load=/=--eval= batch run of the
+  identical form does *not* pump (§2's batch-mode parity guarantee) —
+  both are gate assertions, not just the interactive one.
+
+** P4 (documented, not built) — =make-network-process=
+
+Explicitly deferred (§1.7): building the raw socket primitive family
+analogous to =nelisp-process-*= is a native-layer project of its own
+scale, not a small addition to this doc's adapter work. This phase is
+listed so the roadmap does not silently drop it; see §6 for what a
+future doc would need to measure first.
+
+Update (2026-08-24): the raw socket primitive family this phase asked
+for has landed (=feat/socket-primitives-p1=,
+=scripts/nelisp-standalone-build.el='s =nelisp-standalone--socket-forms=
+/ =-socket-dispatch-arms=) — =nelisp-socket-listen/-accept/-connect/
+-send/-recv/-close=, raw SYSCALL on Linux x86_64 (socket/connect/
+accept4/bind/listen/setsockopt/shutdown; send/recv reuse the existing
+=nl_os_read_file_handle=/=nl_os_write_file_handle= byte-IO path), the
+catchable =nelisp-unsupported-primitive= signal (not a wrong syscall
+number) on every other target. IPv4 dotted-decimal + literal
+"localhost" only — DNS, IPv6, and nonblocking I/O are still out of
+scope, and every syscall failure is a catchable =nelisp-socket-error=.
+=standalone-reader-socket-smoke= (own Makefile target, folded into
+=standalone-reader-test='s dolist) proves a loopback round-trip
+including a UTF-8 payload, byte-clean. This is the foundation P4 asked
+for, not the adapter itself: =make-network-process= (a family of
+callbacks, filters, sentinels, and the standard-name argument surface
+=nelisp-process-*='s own adapter already carries for processes) has not
+been built on top of it. The adapter can follow now that the socket
+primitive family it was blocked on exists; see
+=packages/nelisp-sys/src/nelisp-sys.el='s =nelisp-sys--portable-syscall-
+table=, which still has no socket-family entries at all — the new
+primitives bake their Linux x86_64 syscall numbers directly into the
+native unit rather than resolving them through that table, a design
+choice recorded in =nelisp-standalone--socket-forms='s banner comment.
+
+* §5 Verification design
+
+** §5.1 Against-the-bug
+
+Each measured defect (§1.3) gets a regression case that reproduces it
+exactly as measured, then asserts the fix:
+
+#+begin_src elisp
+;; test/nelisp-process-adapter-test.el (new)
+(ert-deftest nelisp-make-process-filter-not-silently-dropped ()
+  (let (got)
+    (make-process :name "t" :command '("/bin/echo" "hi")
+                  :filter (lambda (_p chunk) (push chunk got)))
+    (accept-process-output nil 1)
+    (should got)))
+(ert-deftest nelisp-accept-process-output-does-not-drain-unrelated-processes ()
+  ;; proc2's sentinel must not fire as a side effect of waiting on proc1.
+  ...)
+#+end_src
+
+plus the Makefile-level smokes named in P1/P2's exit criteria, since
+(per this doc's own evidence, §1.1) the ERT suite running under host
+Emacs and the built =target/nelisp= binary are not the same claim —
+the defects in §1.3 were only visible by probing the built binary
+directly.
+
+** §5.2 Parity forms
+
+=nelisp-parity-probe= forms comparing against stock Emacs 30.1 for the
+newly-added standard names: filter invocation shape (=(PROC CHUNK)=
+arguments), sentinel status-string shape for finished/exited-abnormally/
+killed, and =accept-process-output='s return value (non-nil iff output
+was received before the timeout, matching Emacs's documented contract)
+— all three are exactly the axes §1.3 found broken, so parity coverage
+here is not exploratory, it targets the measured gaps directly.
+
+** §5.3 Mutation rows for new gates
+
+#+begin_src text
+nelisp-process-adapter-smoke|scripts/nelisp-stdlib-prelude.el|s/(when sentinel/(when nil (when sentinel/|the sentinel call is silently disabled but the gate stays green
+nelisp-process-adapter-smoke|scripts/nelisp-stdlib-prelude.el|s/(process-put proc :name name)/(ignore name)/|the :name keyword is silently dropped
+#+end_src
+
+(illustrative; the implementer fills in exact expressions once P1/P2
+land, per =tools/gate-mutations.txt='s own convention of choosing an
+injection that removes something the corpus mentions exactly once, not
+a name so common the count does not move.)
+
+** §5.4 VERIFIED-BY
+
+Filled at SHIPPED (branch =feat/process-standard-names=, off
+=feat/native-observability= @ =71d5f17ef=): =standalone-reader-async-core-
+smoke= (P0), =standalone-reader-process-adapter-smoke= +
+=standalone-reader-process-adapter-smoke-red= (P1/P2, red+green pair),
+=standalone-reader-repl-idle-pump-smoke= (P3), and the aggregate
+=standalone-reader-smokes= gate all four now run inside (already a
+required gate, =tools/ai/gates.expected=; no new required gate was
+added — these four join the existing ~29-smoke aggregate the same way
+every other =standalone-reader-*-smoke= target already does, per that
+gate's own "one gate rather than N entries" design). No new
+=tools/gate-mutations.txt= row: the aggregate is explicitly exempted
+from per-member mutation rows by its own header comment, and this
+session's own =-smoke-red= target is itself a standing red/green pair
+against the exact measured defect (not a sed injection, but the same
+evidentiary shape).
+
+* §5.5 Landed (2026-08-23) — what shipped and where
+
+- *P0*: =packages/nelisp-eventloop/src/nelisp-async-core.el= (new). A
+  byte-for-byte cut of §1's actor-free timer-queue functions, renamed to
+  the =nelisp-async-core-= prefix (=-run-at-time=, =-cancel-timer=,
+  =-fire-due=, =-next-deadline=, =-sit-for=, =--now=, =--nanosleep=,
+  =-reset-timers=); loads standalone with no =generator= error.
+  =packages/nelisp-eventloop/src/nelisp-async.el= now =(require
+  'nelisp-async-core)= instead of duplicating the queue, keeping only its
+  actor/TTY driver (=nelisp-async-run=/=-run-tty=/=-run-tty-raw=, still
+  gated on =generator= exactly as before) — its own ERT suite
+  (=packages/nelisp-eventloop/test/nelisp-async-test.el=) passes
+  unchanged.
+- *P1/P2*: =packages/nelisp-process-adapter/src/nelisp-process-adapter.el=
+  (new) — the "Layer B" §2 describes, built directly on the native
+  =nelisp-process-*= primitives (§1.1) plus =nelisp-async-core=, not on
+  =packages/nelisp-process/src/nelisp-process.el= (§1.4, reference only).
+  Loading it upgrades =make-process= (real =:filter=), adds
+  =process-filter=/=set-process-filter=/=process-sentinel=/
+  =set-process-sentinel=, rewrites =accept-process-output= (PROCESS
+  narrows the poll set, SECONDS/MILLISEC bound the wait via
+  =nelisp-async-core='s deadline machinery, JUST-THIS-ONE honoured),
+  rewrites =delete-process=/=kill-process= (prunes the registry, fires a
+  real sentinel exactly once), and defines =make-network-process= to
+  loudly signal a named =error= (§1.7/P4, unchanged: still no native
+  socket primitive to build on).
+- *P3*: =scripts/nelisp-stdlib-prelude.el= gained one baked-in default,
+  =(defun nelisp--repl-idle-pump () nil)= (a no-op, ~15 lines including
+  comment); =scripts/nelisp-standalone-build.el='s =nl_repl_loop= blank-
+  Enter branch (previously a bare =0=, doing nothing) now evaluates
+  =(nelisp--repl-idle-pump)= through the same =nl_repl_make_source=-style
+  literal-source injection a typed line uses. Loading
+  =nelisp-process-adapter.el= inside a =--repl= session upgrades the hook
+  to a real bounded (50ms) pump sharing the exact same wait loop
+  =accept-process-output= uses — proving "run-at-time honours REPEAT
+  through the SAME loop" literally, not just for two separate
+  mechanisms that happen to agree. Binary-size cost: +8280 bytes
+  (6741200 -> 6749480, +0.12%, see =tools/nelisp-binary-size-baseline.txt=)
+  — entirely from these two small baked-in pieces; neither new package
+  file is linked into =target/nelisp= at all. *[STALE as of
+  integration/wave6 phase 2A, see the note appended to this section —
+  both new package files ARE now embedded into every standalone
+  binary.]*
+- *Two honest deviations from this doc's own illustrative text*,
+  measured rather than assumed:
+  1. §1.3/P1's exit criterion says a killed process's sentinel should
+     report *"killed"*. Measured against host Emacs 30.1
+     (=signal-process=/=process-sentinel=): SIGTERM produces
+     ="terminated\n"=, SIGKILL produces ="killed\n"=. This substrate's
+     native =nl_bi_process_delete_object= (the primitive backing
+     =delete-process=/=kill-process=, unchanged — out of this doc's
+     elisp-adapter scope) hardcodes SIGTERM(15), not SIGKILL(9). The
+     shipped sentinel formatter (=nelisp-process-adapter--signal-name=)
+     is a real signal-number -> name table, not a single hardcoded
+     string, so it honestly reports ="terminated\n"= for what this
+     runtime's =delete-process= actually does — the fix that matters
+     (§1.3's real defect) is reading the TRUE exit status at all, not
+     which of two English words gets printed for one specific signal.
+     A future doc changing the native primitive to SIGKILL would need
+     no elisp-layer change to then report "killed\n" correctly.
+  2. §5.1's own illustrative =accept-process-output-does-not-drain-
+     unrelated-processes= test doesn't specify a return-value contract;
+     measured against host Emacs 30.1: a status-only change with no
+     output bytes returns nil from =accept-process-output=, even when
+     the process being waited on has already exited. The shipped
+     implementation matches this (returns non-nil only when real output
+     bytes were delivered), not "anything happened."
+- =test/nelisp-process-adapter-test.el= (new): the §5.1 illustrative
+  cases plus five more (filter increments, sentinel status strings,
+  return-value contract, REPEAT-through-shared-loop,
+  =make-network-process='s error), all =skip-unless (fboundp
+  'nelisp-process-start)= — real coverage once/if a host-bridge or a
+  standalone =ert= port exists, skip (not fail) under plain host Emacs
+  today, matching this doc's own §5.1 rationale for why the Makefile
+  smokes are the authoritative evidence here, not this file alone.
+- =tools/partial-accepted.txt='s =run-at-time|scripts/nelisp-stdlib-
+  prelude.el|_repeat|...= and =accept-process-output|...|_args|...=
+  entries are UNCHANGED: they describe the baked-in prelude's own
+  default functions, which this doc's fix does not rewrite in place
+  (§2's decided direction: an opt-in loadable upgrade layer, matching
+  the precedent =nelisp-async.el= already set for =run-at-time= before
+  this doc existed) — both entries remain accurate descriptions of what
+  a script gets when it loads neither new file. *[Still textually true
+  as of integration/wave6 phase 2A below — =scripts/nelisp-stdlib-
+  prelude.el='s OWN source is untouched — but "a script gets when it
+  loads neither new file" no longer describes what a default STANDALONE
+  BINARY does; see the note immediately below.]*
+
+** UPDATE 2026-08-24 (integration/wave6 phase 2A audit hardening): wired into the default bootstrap
+
+A read-only wave audit (measured, not assumed) found this section's own
+"opt-in loadable upgrade layer" framing had become a real gap: Doc 184
+P1/P2's fix is loaded ONLY by its own Makefile smoke recipes
+(=NELISP_PROCESS_ADAPTER_LOAD_2= above), NEVER by the default standalone
+bootstrap — so =make-process='s real =:filter=, =accept-process-output='s
+real PROCESS/SECONDS/MILLISEC args, and the real sentinel exit status
+never reached a shipped =target/nelisp= at all. Every claim of "fixed"
+in §5.5 above was true only for a binary built with an extra =--load=
+flag no normal invocation of =target/nelisp= ever passes.
+
+*Fixed*: =nelisp-standalone--reader-repl-prelude-source=
+(=scripts/nelisp-standalone-build.el=) now concatenates
+=packages/nelisp-eventloop/src/nelisp-async-core.el= and
+=packages/nelisp-process-adapter/src/nelisp-process-adapter.el='s
+source onto the embedded prelude blob, in dependency order, after the
+existing =lisp/nelisp-stdlib-regexp.el= + =string-match=-family
+insertion it already did for Doc 143. Both files are pure elisp with
+no native/binary change (exactly §2's own decided direction); the one
+=(require 'nelisp-async-core)= in =nelisp-process-adapter.el= is
+satisfied because =(provide 'nelisp-async-core)= registers the feature
+the moment its own source is evaluated, a few forms earlier in the same
+blob — =require= never touches =load-path= once a feature is already
+provided. This is the SAME "upgrade-on-load" replacement mechanism both
+files' own headers already described (later =defun=s override the
+prelude's own weaker defaults at evaluation time); the only change is
+that the load now always happens, at boot, instead of needing an opt-in
+flag.
+
+*Verified* against a clean =make standalone-reader= build, no
+=--load= of either file: =(fboundp 'process-filter)= -> ~t~,
+=(fboundp 'process-sentinel)= -> ~t~, a real =:filter= fires and
+captures =("first-" "second")= for a two-write =cat= process, a process
+that exits 7 reports =sentinel = "exited abnormally with code 7\n"=
+(not the old literal ="finished\n"=), and =run-at-time='s REPEAT still
+honours the shared poll loop (=(>= n 2)= after one =accept-process-
+output= wait). =make-network-process= still loudly signals its named
+=error= (§1.7/P4 unchanged, no native socket primitive to build on
+yet).
+
+*Cost*: +172776 bytes (7393896 -> 7566672, +2.34%, see
+=tools/nelisp-binary-size-baseline.txt=) — the two files' combined
+~540 source lines, embedded as executable prelude text exactly like
+every other prelude-size raise this file's own history already
+documents (hooks/map.el/fixnum, buffer-unification, cl-generic-subset,
+...), just landing all at once instead of incrementally.
+
+*Smokes repurposed, not broken*: =standalone-reader-process-adapter-
+smoke-red= and =standalone-reader-repl-idle-pump-smoke= both existed
+to prove the PRE-fix defect shape reproduced on an unmodified binary —
+a shape that can no longer exist on ANY standalone build now that the
+fix is unconditional. Both were rewritten (Makefile) to assert the
+opposite, now-correct claim instead: the fix ships on the default
+binary with NO explicit =--load=. =standalone-reader-process-adapter-
+smoke= (GREEN, still explicitly loads both files) is unaffected — a
+redundant re-load of an already-provided feature is a no-op, not an
+error. All three, plus =standalone-reader-async-core-smoke= and the
+full =standalone-reader-test= battery (25 internal smokes), pass on
+the wired binary.
+
+* §6 Open questions
+
+- *Scale of the poll-set (§3.3)*: a linear-scan poll-and-sleep loop is
+  adequate for the handful of subprocesses a script realistically
+  spawns, but this doc does not measure the point at which a real
+  =select(2)=/=epoll(2)= native primitive (exposing raw fds from
+  =nelisp-process-*=, a bigger change than anything phased here) becomes
+  necessary. Left for a future doc if a real workload demands it.
+- *Should the actor-free split (§3.1) also unblock =nelisp-eventloop-multiplex.el=
+  (§1.6)?* That file's own scope note says timer integration is future
+  work (Phase 9d.A8) independent of the generator wall; this doc does
+  not attempt to merge the two multiplexers, only to make one of them
+  (the timer queue) load standalone. Whether they should later become
+  one module is left open.
+- *=generator.el='s macro-expansion failure (§1.5, =void-variable:
+  (declarations)=)* is a real, previously-diagnosed substrate gap this
+  doc deliberately does not fix — closing it would let §1.4/§1.5's
+  richer, already-written files load as-is instead of needing the
+  extraction in §3.1/§3.2. Whether that is worth pursuing instead of
+  (or alongside) this doc's plan is a judgment call for whoever owns
+  the interpreter's macro-expansion compatibility work, not this doc.
+- *=make-network-process= (§1.7/P4)*: no recommendation is made here
+  beyond "scoped out" — a future doc should measure whether
+  =syscall-direct= socket/connect/bind/listen calls (already proven
+  usable ad hoc in the TLS smoke) are worth wrapping in a
+  =nelisp-network-*= native family before designing the adapter, the
+  same sequencing this doc's own §1.1-then-§3.2 approach followed for
+  processes.
+
+* §7 References
+
+** §7.1 Code (file:line)
+
+- =Makefile:1652-1667= — =standalone-reader-process-smoke=, re-run PASS
+  on this clone.
+- =scripts/nelisp-standalone-build.el:9347-9360= — native
+  =nelisp-process-*= dispatch-table entries.
+- =scripts/nelisp-stdlib-prelude.el:6031-6090= — =make-process=/
+  =call-process=/=start-process=/=kill-process=/=accept-process-output=/
+  =executable-find=, the already-shipped partial adapter.
+- =scripts/nelisp-stdlib-prelude.el:2372-2390= — the synchronous
+  =run-at-time= stub and its REPEAT-ignored contract.
+- =packages/nelisp-process/src/nelisp-process.el:1-90,340-470= —
+  the richer, generator-blocked "Layer B" adapter (reference only, not
+  buildable-on directly per §1.4).
+- =packages/nelisp-eventloop/src/nelisp-async.el= (full file, 303
+  lines) — the real timer queue + TTY poll(2) driver; §3.1 splits its
+  actor-free functions out.
+- =packages/nelisp-actor/src/nelisp-actor.el:40= — the
+  =(require 'generator)= that blocks §1.4/§1.5 from loading standalone.
+- =packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el:1-90=
+  — the host-Emacs-bound fd multiplexer, explicitly out-of-scope for
+  timer integration (§1.6).
+- =src/nelisp-eval.el:755-775= — the host-forwarding name list for the
+  interpreter-inside-real-Emacs mode, not the standalone runtime this
+  doc scopes.
+- =packages/nelisp-network/src/nelisp-network.el:1-40= — the
+  host-Emacs-only network wrapper, confirming §1.7's "no native
+  primitive" gap.
+- =tools/partial-accepted.txt= — the =run-at-time=/=accept-process-output=
+  entries cited in §1.3/§1.5.
+
+** §7.2 Docs
+
+- =recipes/README.org= — "TUI (async event loop) | fails today" verdict
+  (§1.5), independently corroborating this doc's own probe.
+- =tools/nelisp-async-tty-smoke.sh= — the smoke that surfaces §1.5's
+  =void-variable: (declarations)= failure mode with a real vendored
+  =generator.el= supplied.
+- =docs/design/164-wasm-backend.org= — structural precedent for this
+  doc's format.
+- =tools/ai/README.md= — gate-report/mutation-row conventions used in
+  §5.
+
+** §7.3 Memory / prior findings
+
+- =feedback_nelisp_require_silent_success= — a reminder that this
+  substrate's =require= can silently succeed without actually loading
+  what was asked for; every "does X load standalone" claim in this doc
+  was checked by probing =fboundp= on a name the file defines, not by
+  trusting a non-error =load= return value alone.

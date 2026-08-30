@@ -1,0 +1,495 @@
+#+TITLE: Doc 191 — Hot code reload: what already swaps live, and what a REPL-reload increment would need
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-22
+#+STATUS: Phase 1 SHIPPED, Phase 2 SHIPPED (scoped) — Phase 1 verified the
+#+STATUS: existing defun/fset redefinition path end-to-end against a built
+#+STATUS: target/nelisp and pinned it as two standalone-reader-test smokes;
+#+STATUS: Phase 2 shipped a queryable Hazard-B predicate for the one Hazard
+#+STATUS: B source a running process can actually ask about (the native-
+#+STATUS: wrapper install path), and records precisely why the standalone
+#+STATUS: build's separate hand-curated compile-unit table is NOT covered
+#+STATUS: rather than half-implementing it.  Phase 3 (watch-mode wrapper)
+#+STATUS: not started, per §3's own ordering.  See §4 for both phases'
+#+STATUS: outcome subsections.  Grounded in two commits from the week this
+#+STATUS: doc was drafted (dc31b187f, a62b40669) that independently
+#+STATUS: exercised the exact mechanism a reload design would sit on, plus a
+#+STATUS: direct read of extend-runtime-image's implementation to correct the
+#+STATUS: record on what it actually is.
+#+VERIFIED-BY: standalone-reader-test substrate-parity-smoke ert-full
+
+* Status
+
+| item     | value                                                             |
+|----------+--------------------------------------------------------------------|
+| Doc #    | 191                                                               |
+| State    | Phase 1 SHIPPED, Phase 2 SHIPPED (scoped, see §4), Phase 3 not started |
+| Related  | Doc 119 (env mirror), Doc 140 Stage 5 (arena reclamation / mutation epoch), Doc 153 (runtime image cache), Doc 163 (intern soft-fail), Doc 171 (AOT call-lowering, cited and re-verified independently, §2.3) |
+| Reads    | =lisp/nelisp-runtime-image.el=, =scripts/nelisp-standalone-build.el= (mirror install / mutation epoch), =lisp/nelisp-artifact.el= (function-cell bridge) |
+
+* 1. Problem: naming what =extend-runtime-image= actually is
+
+The design brief for this doc starts from a correction, and it holds up
+on direct reading: =extend-runtime-image= is not reload. Its own
+implementation says so in its own comment, not just its name:
+
+#+begin_quote
+a replayable source bundle: loading an image evaluates the stored
+#+end_quote
+
+(=lisp/nelisp-runtime-image.el=, top-of-file commentary). The CLI
+implementation (=nelisp-runtime-image--extend-cli=, same file) confirms
+this is literal, not figurative: it reads BASE-IMAGE's source text,
+reads the new forms, and writes =OUT-IMAGE= as
+
+#+begin_src elisp
+(concat (nelisp-runtime-image--ensure-final-newline base-source)
+        extension-image)
+#+end_src
+
+— string concatenation of source text, to a *new file on disk*. Nothing
+about a running process changes. =eval-runtime-image=/
+=exec-runtime-image= then read that concatenated file *from the
+beginning*, evaluating every form in it in order, in a *fresh*
+evaluator. This is cold-start replay: extending an image is closer to
+appending to a shell history file than to replacing a running
+function. Doc 153's own vocabulary agrees throughout ("a replayable
+source bundle," "source replay image," "the loader ... replaying...").
+Nothing in this doc treats =extend-runtime-image= as a reload mechanism
+going forward; it is the *cold-boot* answer to "add code," and stays
+that. Real reload is a different question: can a form typed into an
+*already running* evaluator change what a *previously defined* name
+resolves to, for calls that have not happened yet.
+
+* 2. What the mirror/env machinery actually allows, studied from two commits this week
+
+** 2.1 Existence proof: symbol entries can be swapped live, in place
+
+=defvaralias= (=a62b40669=, landed 2026-08-22) is not itself a reload
+feature, but its implementation is direct, load-bearing evidence about
+what the underlying structure tolerates. The mirror stores *one
+symbol-entry record per NAME* in a name-keyed hash bucket
+(=nelisp_mirror_lookup_entry= and callers); =defvaralias= installs
+BASE-VARIABLE's *existing* entry object under NEW-ALIAS's name too, via
+=nelisp_mirror_bucket_prepend= — a bucket-prepend shadow, head-first
+walk, so every future lookup of either name finds the (possibly newer)
+entry first. The commit message states the property directly: "every
+existing read/write primitive needs zero changes and aliasing chains
+resolve for free." That is a structure that already supports more than
+one name resolving to a shared, live-mutable object, with zero changes
+needed to any of the primitives that read or write through it — which
+is close to, but not identical to, what reload needs (reload needs one
+name to resolve to a *different* object over time, not two names to
+share one object; §3 works out the difference).
+
+** 2.2 A second, sharper proof: same-name redefinition already works, and had a live bug in the guard around it
+
+=dc31b187f= (2026-08-21, one day earlier) is more directly on point,
+because it is about the exact case reload needs: redefining the *same*
+name twice in a running process, and something reading that name
+*after* the second definition. The bug it fixed: =(fset 'k 5)= at top
+level made *unrelated global functions disappear*, and walking the
+symbol table afterward crashed the process.
+
+Root cause, in the commit's own words: installing an entry in the
+mirror is a mutation that "puts an arena-allocated record and its
+bucket cons cells into a table that outlives the form," but the mirror
+install path was not on the hand-kept list of things that bump a
+shared *mutation epoch* counter (a fixed global address,
+=@268435544=, the same design pattern as the intern table's fixed
+address studied in Doc 189 §1.1 — this tree keeps several pieces of
+process-wide shared state at fixed addresses, consulted by name-free
+pointer arithmetic rather than through any indirection). A separate
+mechanism, =nl_boundary_maybe_reclaim= (Doc 140 Stage 5), rewinds the
+*per-top-level-form arena* after a form whose result is an immediate
+value and the epoch has not moved — an optimization: "nothing escaped,
+the form's garbage is dead, reclaim it." Because the mirror-install path
+did not bump the epoch, a bare =(fset 'k 5)= (result: the immediate
+integer =5=) looked to the reclaimer like a form that escaped nothing,
+so the arena holding the *just-installed* mirror entry got rewound and
+reused by whatever the reader parsed next — corrupting a live binding
+that had nothing to do with =k=.
+
+The fix routes both mirror-mutation paths (=nelisp_mirror_bucket_prepend=
+for the insert/alias case, =nelisp_mirror_set_function_or_insert= for
+the "hit path, which stores a box into an existing record" — i.e. the
+ordinary case of *redefining a symbol that is already bound*) through
+the same epoch-bump wrapper every other escape site already used. Once
+fixed, the commit's own verification is exactly the reload experiment
+this doc's Phase 1 needs run for real: "the interleaved insert-and-walk
+that used to end the process runs 4 rounds with no losses," and =set=,
+=defvar=, =defun=, =puthash= and the hit-path =fset= were "probed for
+the same hazard and clean."
+
+*This is the second, sharper existence proof the design brief asked
+for*: redefining an already-bound name, in place, in a running process,
+already works correctly as of this week — for the interpreter dispatch
+path. The commit fixed a bug *in* that mechanism, which is different
+from and stronger evidence than merely observing the mechanism exists:
+it means someone has already stood on this exact ground, found it
+cracked, and repaired it under test.
+
+** 2.3 What still invalidates: two distinct hazards, not one
+
+*** Hazard A — the hand-kept epoch-bump list itself
+
+=dc31b187f='s own retrospective is explicit that this is not a closed
+problem: "This is the third instance of one pattern," referring to the
+macro-expansion cache store and =nelisp_frame_push=/=_pop_inner= having
+needed the identical fix earlier, and states plainly: "The gate is only
+as good as the hand-kept list of sites that bump it." Any *new* mutation
+path a reload feature introduces — for example, a dedicated
+=reload-defun= entry point distinct from the ordinary =defun=/=fset=
+paths already covered — inherits this exact risk unless it is
+independently confirmed to sit on one of the already-covered
+primitives (reusing =fset= itself, as =nl_sf_defun= already does per
+§2.4, is the safe choice specifically because it avoids introducing a
+new site to this list). This is not a hypothetical caveat; it is the
+literal bug this week's own commit fixed, and a reload design's first
+obligation is to not reintroduce it.
+
+*** Hazard B — AOT-compiled call sites do not consult the mirror at all
+
+This is the hazard the design brief named directly: "AOT-compiled
+natives pointing at old entries." Independently re-read on this clone
+(not merely cited from Doc 171, which predates this branch): compiled
+=nelisp-aot-compiler.el= output resolves calls in one of two ways, and
+neither consults the mirror at call time.
+
+- *Same-compile-unit calls* lower to a direct =call= IR node with a
+  fixed =:name=, resolved against the unit's own =--collect-defuns=
+  alist at *compile* time — no function-cell or mirror-entry lookup
+  happens at the call site, ever, once compiled.
+- *Cross-unit calls* (=nelisp-aot-compiler--allow-external-user-calls=,
+  the path the standalone build's own compile-to-unit step uses) lower
+  to =extern-call= + PLT relocation, resolved at *link* time.
+
+Both are early-bound, by design, for performance — this is not a
+defect, it is the documented, shipped behavior Doc 171 describes and
+this doc independently confirms still holds. The consequence for
+reload: redefining a =defun='s *source* — even through the now-verified-
+correct §2.2 mechanism — updates the mirror entry an *interpreted*
+caller or the =nelisp-artifact--install-function= bridge consults
+(=lisp/nelisp-artifact.el=: the function cell it installs is
+deliberately "a small bridge that looks up the current hash value at
+call time, so later native-wrapper replacement is visible without
+another =fset="). It does *not* retroactively change what an
+*already-compiled* native call instruction jumps to — that address was
+baked in at compile or link time and nothing about redefining the
+source touches the machine code already emitted. A reload design has
+to either (a) scope itself to code that has never been AOT-compiled
+(the REPL/interpreter-only case, §3), or (b) detect and refuse to claim
+liveness for any function whose callers include AOT-compiled code, or
+(c) accept that AOT callers keep calling the stale target until the
+*process* restarts — which is not reload, it is exactly the same
+cold-restart story =extend-runtime-image= already tells, just deferred
+to whenever the process happens to end. This doc does not attempt (c)
+as a design; it is not distinguishable from "no reload happened."
+
+** 2.4 The standalone reader's own =defun= special form is *already* fset-shaped
+
+One more directly relevant, independently-verified fact: the
+standalone reader's native =defun= special form
+(=nl_sf_defun=, =scripts/nelisp-standalone-build.el=) does not have a
+bespoke install path at all. Its own comment states the design choice:
+"Rather than reimplement the mirror function-cell + scratch-vec install
+ABI, =nl_sf_defun= SYNTHESISES the equivalent =(fset (quote NAME)
+(lambda . (cdr args)))= ... and evaluates it through
+=nelisp_eval_call=, reusing the already-working =fset= builtin." This
+means an ordinary =(defun NAME ...)= typed a second time at the
+standalone REPL, for a name already defined, is *already*, today,
+routing through exactly the hit-path =nelisp_mirror_set_function_or_insert=
+mechanism §2.2 just fixed and verified — which is strong (though not
+yet experimentally confirmed end-to-end by this doc; that confirmation
+is Phase 1, §4) reason to believe the "reload one defun in a REPL
+session" increment the design brief asks for is *already substantially
+present* for interpreted code, and the actual gap is verification and
+naming it as a feature, not building new machinery.
+
+* 3. Decided direction
+
+**Reload is not one feature; it is a claim about a specific, narrow
+subset of code (interpreted, mirror-dispatched, never AOT-compiled)
+that this week's own bug-fix history shows is already close to correct
+— plus an honest, unclaimed boundary around everything else (§2.3
+Hazard B).** The decided direction is: do not build a new "reload"
+entry point. Instead, (1) *verify* the existing =defun=/=fset=
+redefinition path end-to-end as a supported, tested capability (Phase
+1), (2) *name* its actual boundary explicitly rather than letting users
+discover Hazard B by surprise (a function that was ever routed through
+AOT compilation is permanently excluded from "reload" claims for that
+process's lifetime), and (3) build a thin watch-mode wrapper *on top*
+of the verified Phase 1 primitive only after it is verified — because a
+watch-mode wrapper (file-change detection + re-=eval= the changed
+top-level forms into the same live process) is, honestly, hours of
+process-external engineering once the underlying primitive is trusted,
+and none of that engineering touches the mirror/arena/epoch machinery
+this doc spent §2 studying. Building the wrapper before verifying the
+primitive would be building on an unverified claim; that ordering is
+this doc's central recommendation, more than any specific new
+mechanism.
+
+(This doc looked for a "DX survey" document, referenced in the design
+brief as the source for the "watch-mode is hours, reload is
+architecture" framing, and could not locate one in this checkout —
+=docs/= has no file matching that description as of this branch point.
+The framing above is derived independently from §2's evidence, not from
+a citation this doc could not verify exists. If such a survey exists
+elsewhere — e.g. among Docs 172-188, which had not landed on
+=origin/feat/native-observability= at clone time — it should supersede
+this doc's independent derivation where the two disagree.)
+
+* 4. Phased plan
+
+** Phase 1 — verify, and name, the already-plausible increment
+
+Confirm, by direct experiment against a built =target/nelisp= binary
+(not by further static reading — this is exactly the class of claim
+AI.md's own rules say must be measured, not inferred): start a
+=--repl= session, define a function, call it, redefine it with a
+different body, call it again through the *same* function reference
+obtained *before* the redefinition (a local variable holding
+=(symbol-function 'f)=, or a closure that captured a call to =f=
+indirectly rather than a fresh =(f)= call — the interesting case is
+whether *already-existing* references see the update, not just whether
+a fresh call does, since a fresh call trivially re-resolves by name).
+Confirm the =dc31b187f=-fixed guard holds under this exact sequence
+(the commit's own smoke covered =defun= directly, but not specifically
+inside a =--repl= session's per-line eval boundary, which is a
+different top-level-form boundary than a =--load='d file's). If this
+holds, Phase 1's output is not new code — it is a named, tested,
+documented claim: "redefining a =defun= that has never been AOT-
+compiled is live in a =--repl= session," backed by a smoke test wired
+into =nelisp-standalone-reader-test='s existing dolist (matching the
+=--reader-defvaralias-smoke= / =...-intern-canonical-smoke= wiring
+pattern both landed this exact week).
+
+*** Phase 1 outcome (SHIPPED)
+
+=VERIFIED-BY: 90460bc97 (standalone-reader-test report, 2026-08-23)=,
+=a13037d74= (baseline follow-up, same date). Run against a built
+=target/nelisp= via =nelisp-standalone--reader-defun-redefine-smoke= and
+=nelisp-standalone--reader-defun-redefine-epoch-smoke=
+(=scripts/nelisp-standalone-build.el=), wired into
+=nelisp-standalone-reader-test='s dolist per the reader-defvaralias-smoke
+precedent this section already named. Case-by-case, inside a
+=--repl --no-prompt= session:
+
+- *A, fresh call sees redefinition*: holds. Define =f= (returns =1=),
+  call it, redefine =f= (returns =2=), call it again by name → =1=, then
+  =2=.
+- *B, a captured =(symbol-function 'f)= reference is a snapshot*: this
+  is the case the paragraph above predicted might not see the update —
+  it does not, and that is correct, not a defect: calling the captured
+  function object directly bypasses the mirror, the same as it always
+  has in host Emacs. Measured: capture =f= (body returns =10=), redefine
+  =f= (body returns =20=), =(funcall captured)= still returns =10=,
+  =(f)= returns =20=.
+- *C, a closure that calls the name INSTEAD of holding a captured
+  function object*: the opposite of B, and the reading of "a closure
+  captured a call to =f= indirectly" this paragraph offered as the other
+  option — re-resolves through the mirror on every call, so it DOES see
+  the redefinition (=100= → =200=). B and C together are why the case
+  list keeps "captured function object" and "closure that calls by
+  name" as two different cases rather than one: they are opposite
+  answers to what reads like the same question.
+- *E (§6's second open question, dynamic-variable closures)*: holds,
+  and resolved. A closure over a =defvar='d variable is not a capture at
+  all — dynamic variables are looked up by name at every reference,
+  lexical closures included — so it sees a later =setq= on the global
+  (=5= → =6=), the same shape as C. §6's second open question is
+  answered: no, a closure does not snapshot a dynamic variable's value.
+- *D (§6's first open question, a =let=-bound shadow while the global
+  default reloads mid-scope)*: NOT constructible. =set-default= and
+  =default-value= are both =void-function= in this standalone reader —
+  measured directly against the built binary before writing the smoke,
+  not assumed. §6's first open question stays open, for a different
+  reason than expected: not "untested," but "the primitive the
+  scenario needs does not exist here yet." Recorded rather than
+  silently dropped; a real gap, out of this doc's scope to close.
+- *Hazard A regression probe (=dc31b187f= class)*: red-provable, but
+  only through =--load=, not =--repl=. Reverting =dc31b187f= in a
+  scratch clone and rebuilding turns the =--load='d-file version of this
+  probe red (=wrong-type-argument: number-or-marker-p nil=, at round 2
+  of 3) while every other standalone-reader smoke, cases A/B/C/E above
+  included, stayed green on the same reverted binary. The identical
+  construction through =--repl --no-prompt= does not turn red on the
+  same revert, even though both entry points share one per-form eval
+  loop that calls =nl_boundary_maybe_reclaim= unconditionally. This is
+  the measured (not inferred) answer to this section's own "a different
+  top-level-form boundary than a =--load='d file's" question: the
+  corruption is real either way — both modes skip the identical epoch
+  bump when reverted — but whether one specific probe happens to OBSERVE
+  it looks sensitive to incidental allocation-pattern differences
+  between reading a whole file upfront and reading one line at a time,
+  not to a difference in the reclaim call itself. The regression probe
+  is wired as =nelisp-standalone--reader-defun-redefine-epoch-smoke=,
+  run via =--load= for exactly this reason.
+- *Host-Emacs controls*: cases A and B — the sharpest "holds"/"does not
+  hold" contrast, and the one this doc's Phase 1 brief called out by
+  name — are host-comparable (ordinary Elisp semantics, not a NeLisp-
+  specific claim), so they are also pinned as two =shared= forms
+  (originally 39, 40 on this branch alone; renumbered to 41, 42 at
+  integration/wave4 merge 7/9 after feat/char-table-elisp-layer claimed
+  39/40 first — indices are never reused, see that merge commit) in
+  =tools/nelisp-substrate-parity-corpus.el=, confirmed matching host
+  Emacs via =substrate-parity-smoke= (measured =0= unaccepted findings
+  on this branch alone; form 39 — now 41 — needed one new, documented
+  accepted-ledger entry for an unrelated, pre-existing
+  source-fallback-substrate gap in how that one substrate's
+  =symbol-function= interacts with its own self-hosted =defun= path —
+  see the ledger entry itself). Cases C,
+  D, and E were checked by hand against host Emacs during this
+  verification pass (not separately pinned as corpus forms, since D
+  could not even be constructed and C/E are the same "dynamic scoping,
+  not capture" fact host Emacs has always had); all three matched.
+
+** Phase 2 — the AOT boundary check
+
+A predicate, callable from the REPL or a future watch-mode wrapper,
+answering "has this symbol's function ever been installed via the
+native-wrapper path (=nelisp-artifact--install-native-functions=) or
+compiled into the standalone binary's own hand-curated unit table" —
+i.e. surfacing Hazard B (§2.3) as a queryable fact rather than a silent
+trap. This does not lift the limitation; it makes it visible before a
+user wastes time debugging why their redefinition "didn't take."
+
+*** Phase 2 outcome (SHIPPED, scoped)
+
+=VERIFIED-BY: 2d4ff0227 (ert-full report, 2026-08-23)=. Implemented as
+=nelisp-artifact-reloadable-p= (=lisp/nelisp-artifact.el=), covering the
+FIRST half of this section's own sketch — "installed via the native-
+wrapper path (=nelisp-artifact--install-native-functions=)" — and
+explicitly NOT the second: "compiled into the standalone binary's own
+hand-curated unit table."
+
+The two halves are not the same kind of thing to query, and only one of
+them is queryable by a running process at all. The native-wrapper path
+is a runtime event inside an =nelisp-eval=-hosted process: loading a
+=.neln= artifact calls =nelisp-artifact--install-native-functions=,
+which now also records the installed symbol into a new
+=nelisp-artifact--native-installed-symbols= hash, checked by the
+predicate. The standalone binary's hand-curated unit table
+(=scripts/nelisp-standalone-build.el='s =nelisp-standalone--manifest=
+and the =--collect-defuns= alist §2.3 read directly) is build-time-only
+data inside the SEPARATE =nelisp-standalone-build.el= Emacs process that
+compiles the freestanding binary — once that binary exists, nothing
+inside it, and nothing in any OTHER process, has a handle to ask "was
+this symbol one of the ones compiled into you." Making that branch
+queryable would mean teaching the standalone build to bake its own
+compile-unit provenance into the binary as new, permanent, queryable
+runtime state — which is new machinery by §3's own definition, not
+surfacing an existing fact, and this doc's decided direction is not to
+build new reload machinery without it earning its way in. Recorded here
+as an explicitly bigger follow-on rather than silently dropped or
+half-implemented: it would need its own design (what state to bake in,
+where, read by what at binary startup) before it is a small addition to
+this one.
+
+The predicate is also explicitly per-*symbol*, not per-*caller* — it
+answers "was this symbol ever native-installed," not "would redefining
+this symbol reach caller X specifically." §6's third open question
+(symbol-scoped vs. process-lifetime-scoped) stays open for the same
+reason the standalone-unit-table branch is out of scope: answering it
+per-caller would mean walking an AOT-compiled caller's own call graph,
+and nothing in this tree retains that as queryable state either. The
+per-symbol answer is what §5's own ERT design below actually asks for,
+and is not weakened by staying at that scope rather than reaching for
+the fuller, unimplemented question.
+
+Verified against real installed functions, not mocked state (§5, two
+new ERT cases in =test/nelisp-artifact-test.el=): a plain interpreted
+=defun= answers reloadable; compiling a real =.neln= artifact (cc +
+objcopy, linux-x86_64) and loading it flips the answer to not-
+reloadable, and a later =defun= redefining the SAME symbol does not flip
+it back — the hazard the predicate reports is about callers that may
+already exist elsewhere, which no later redefinition of the symbol
+itself can retroactively fix.
+
+** Phase 3 — thin watch-mode wrapper
+
+File-change detection (this repo already has =file-notify= machinery,
+per the actor package's dependents list, Doc 193 §-adjacent) triggering
+a re-read-and-re-eval of the changed top-level forms into the same live
+=--repl= process, restricted by construction to forms whose head symbol
+passes Phase 2's boundary check. This phase is deliberately last and
+deliberately thin: per §3's decided direction, it is process-external
+engineering on top of a verified primitive, not new runtime mechanism,
+and should not be started before Phase 1's experiment actually runs.
+
+* 5. Verification design
+
+- *Phase 1* (DONE): the experiment described above, run against a fresh
+  build. Wired as two standalone-reader-test smokes on success, following
+  the exact =--reader-defvaralias-smoke= wiring precedent (dolist entry,
+  =18 -> 20= checked-count bump, GATE-COUNT reported). The
+  =nelisp-ai.sh probe= artifact-capture path this bullet originally
+  specified was used for interactive exploration while designing the
+  case list; the case list's actual, durable evidence is the smoke
+  itself plus the red/green revert test recorded in §4's Phase 1 outcome
+  — a checked-in, re-runnable gate rather than a one-off probe directory,
+  which is the stronger form of the same "artifact, not transcript" rule
+  AI.md rule 4 asks for.
+- *Regression coverage for Hazard A* (DONE, trivially): neither new
+  smoke introduces a new mirror-mutating call site — both drive only
+  existing =defun=/=defvar=/=fset=/=setq=/=funcall= primitives from
+  Lisp-level test input, so the hand-kept epoch-bump list in
+  =scripts/nelisp-standalone-build.el= needed no new entry. Confirmed by
+  grep, not assumed.
+- *Phase 2* (DONE): ERT covering both branches of the boundary predicate
+  — a plain interpreted =defun= (predicate says "reloadable") and a
+  function installed through =nelisp-artifact--install-native-functions=
+  (predicate says "not reloadable") — against real installed functions,
+  not mocked state. Two cases,
+  =nelisp-artifact/reloadable-p-plain-defun= and
+  =nelisp-artifact/reloadable-p-native-installed=, in
+  =test/nelisp-artifact-test.el=.
+- *Phase 3* (NOT STARTED, per §3's ordering: not before Phase 1's
+  experiment ran, which it now has — this remains the next increment,
+  not begun in this pass): an end-to-end smoke — edit a =.el= file on
+  disk while a =--repl= process is running under the watch-mode wrapper,
+  confirm the running process's behavior changes without restart,
+  confirm a *second* file touching an AOT-compiled symbol is correctly
+  refused per Phase 2's predicate rather than silently ignored.
+
+* 6. Open questions
+
+- PARTIALLY ANSWERED, STAYS OPEN for a different reason than expected.
+  Does the =dc31b187f= fix's coverage extend to =defvar=/=defconst=
+  redefinition with the same correctness guarantee the commit's own
+  "=set=, =defvar=, =defun=, =puthash= ... probed ... and clean" line
+  claims, or was that probe narrower than full variable-reload
+  semantics (e.g. does a =let=-bound dynamic shadow of a variable whose
+  *global* mirror entry gets reloaded mid-scope behave correctly, or is
+  that combination untested)? Phase 1 tried to build exactly this case
+  (§4 Phase 1 outcome, Case D) and could not: =set-default=/
+  =default-value= are =void-function= in the standalone reader, measured
+  directly. The question is not "untested" anymore, it is "blocked on a
+  missing primitive" — a real, separate gap, left for whoever adds
+  =set-default= to re-open this.
+- ANSWERED (§4 Phase 1 outcome, Cases C and E). Closures: a closure
+  captured *before* a reload, over a variable whose global mirror entry
+  is later reloaded — does the closure's captured environment reference
+  the mirror entry (sees the update) or a snapshot (does not)? Sees the
+  update: a closure over a =defvar='d (dynamic) variable is never a
+  capture at all in Elisp's own semantics, lexical-binding files
+  included — dynamic variables are always looked up by name — so this
+  turned out to be the same fact as Case C (a closure that calls a
+  redefined function BY NAME re-resolves), not a new one. Confirmed
+  against host Emacs too, by hand.
+- STILL OPEN, and now the ONE real limit on Phase 2's shipped scope
+  rather than a caveat about a future phase. Whether Hazard B's boundary
+  (§2.3, Phase 2) should be per-*symbol* (as designed and shipped, §4
+  Phase 2 outcome) or per-*process-lifetime-so-far* — i.e. once any
+  symbol has ever been AOT-compiled, does that change any global
+  compiler state (the =--collect-defuns= alist, or the intern table's
+  contents) in a way that makes a *different*, never-compiled symbol's
+  reload also unsafe? Not established; needs checking against the AOT
+  compiler's actual global-state footprint before this predicate's
+  per-symbol answer can be trusted with full confidence at the process-
+  lifetime level, not just the single-symbol level it was built and ERT-
+  verified at.
+- Unchanged. This doc's independent derivation of the watch-mode/reload
+  cost asymmetry (§3) should be reconciled against the actual DX survey
+  referenced in the design brief once it is located (see §3's note) —
+  it may contain evidence this doc did not have access to on this
+  branch. Not revisited in the Phase 1/2 pass; Phase 3 has not started.

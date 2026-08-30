@@ -209,6 +209,36 @@ marker, not the symbol `.'.  But `.foo' or `foo.' is still a symbol."
   "?\\s without trailing `-' is the space char, NOT a super modifier."
   (should (= 32 (nelisp-read "?\\s"))))
 
+;;; Doc 190 Phase A (bignums) -------------------------------------------
+;;
+;; `nelisp-read--atom''s plain-decimal-integer path calls the
+;; standalone-runtime-only native `nl--read-int' when it is `fboundp',
+;; falling back to the unchanged `string-to-number' path otherwise (see
+;; that function's own Commentary).  Under host Emacs, `nl--read-int' is
+;; never bound, so these tests exercise -- and pin -- the fallback: this
+;; file's OWN bignum handling here is "whatever `string-to-number'
+;; already does", which on a real Emacs (27+) is a genuine bignum.  The
+;; native path itself (Sexp tag 13, GC integration, comparison, printing)
+;; has no host-Emacs analogue to test here; it is covered by
+;; `scripts/standalone-bignum-smoke.el' (`make standalone-reader-bignum-
+;; smoke') and the host-comparable forms in `tools/nelisp-substrate-
+;; parity-corpus.el' (entries 43/44).
+
+(ert-deftest nelisp-read-bignum-fallback-not-native ()
+  "`nl--read-int' is never bound under host Emacs -- confirms the
+`fboundp' guard is actually exercising the fallback branch below, not a
+native builtin that happens to also exist here."
+  (should-not (fboundp 'nl--read-int)))
+
+(ert-deftest nelisp-read-bignum-fallback-reads-large-literal ()
+  "A literal past `most-positive-fixnum' still reads to the exact value
+via the `string-to-number' fallback -- real Emacs's own bignum, on a host
+new enough to have one."
+  (should (= (nelisp-read "99999999999999999999999999999")
+             99999999999999999999999999999))
+  (should (= (nelisp-read "-99999999999999999999999999999")
+             -99999999999999999999999999999)))
+
 (provide 'nelisp-read-test)
 
 ;;; nelisp-read-test.el ends here

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 zawatton
 
 ;; Author: zawatton <kurozawawo@gmail.com>
-;; Version: 0.0.0
+;; Version: 1.0.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: lisp, languages
 ;; URL: https://github.com/zawatton/nelisp
@@ -64,7 +64,7 @@ directly to the cross-compiled NeLisp runtime."
     (puthash sym t nelisp--specials)
     (puthash sym (symbol-value sym) nelisp--globals)))
 
-(defconst nelisp-version "0.0.0"
+(defconst nelisp-version "1.0.1"
   "Current version of NeLisp.
 Phase 1 complete (reader + eval + macro + dynamic + cond + stdlib);
 Phase 2 multi-form file loader + reader extensions + core macros are in.")

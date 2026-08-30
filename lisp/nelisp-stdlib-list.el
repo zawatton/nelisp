@@ -8,31 +8,68 @@
   "Return the cdr of OBJECT if it is a cons cell, otherwise nil."
   (if (consp object) (cdr object) nil))
 
+;; Kept in step with scripts/nelisp-stdlib-prelude.el, the copy the
+;; standalone runs; `make ns-gate' reports any drift.
 (defun nthcdr (n list)
-  (if (= n 0) list
-    (if (null list) nil
-      (nthcdr (1- n) (cdr list)))))
+  (unless (integerp n) (signal 'wrong-type-argument (list 'integerp n)))
+  (if (<= n 0) list (if (null list) nil (nthcdr (1- n) (cdr list)))))
+
+;;; nelisp-stdlib-list.el --- Sweep 9 G1 list operations  -*- lexical-binding: t; -*-
 
 (defun nth (n list)
   (car (nthcdr n list)))
 
-(defun reverse (list)
-  (let ((acc nil))
-    (while list
-      (setq acc (cons (car list) acc))
-      (setq list (cdr list)))
-    acc))
+;; Kept byte-for-byte in step with the copy in
+;; scripts/nelisp-stdlib-prelude.el, which is the one baked into the
+;; standalone.  `make ns-gate' reports these as an ns-collision-divergent
+;; the moment they differ, and it did: fixing only the prelude produced
+;; exactly the drift that made this file's `split-string' and `sort' stale
+;; enough to send a review chasing code nothing runs.
+(defun reverse (seq)
+  (cond
+   ((null seq) nil)
+   ((consp seq)
+    (let ((acc nil) (tail seq))
+      (while tail
+        (setq acc (cons (car tail) acc))
+        (setq tail (cdr tail)))
+      acc))
+   ((stringp seq)
+    (let ((n (length seq)) (out "") (i 0))
+      (while (< i n)
+        (setq out (concat (substring seq i (1+ i)) out))
+        (setq i (1+ i)))
+      out))
+   ((vectorp seq)
+    (let* ((n (length seq)) (out (make-vector n nil)) (i 0))
+      (while (< i n)
+        (aset out (- (- n 1) i) (aref seq i))
+        (setq i (1+ i)))
+      out))
+   (t (signal 'wrong-type-argument (list 'sequencep seq)))))
 
-(defun nreverse (list)
-  (let ((prev nil)
-        (cur list)
-        next)
-    (while cur
-      (setq next (cdr cur))
-      (setcdr cur prev)
-      (setq prev cur)
-      (setq cur next))
-    prev))
+(defun nreverse (seq)
+  (cond
+   ((null seq) nil)
+   ((consp seq)
+    (let ((prev nil) (cur seq) next)
+      (while cur
+        (setq next (cdr cur))
+        (setcdr cur prev)
+        (setq prev cur)
+        (setq cur next))
+      prev))
+   ((vectorp seq)
+    (let* ((n (length seq)) (i 0) (j (- n 1)) tmp)
+      (while (< i j)
+        (setq tmp (aref seq i))
+        (aset seq i (aref seq j))
+        (aset seq j tmp)
+        (setq i (1+ i))
+        (setq j (- j 1)))
+      seq))
+   ((stringp seq) (reverse seq))
+   (t (signal 'wrong-type-argument (list 'sequencep seq)))))
 
 ;; Wave A28 (2026-05-24) — `last' / `butlast' polyfill for standalone
 ;; NeLisp.  Host Emacs provides both as native primitives (= subr in

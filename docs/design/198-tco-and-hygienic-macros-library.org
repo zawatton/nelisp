@@ -1,0 +1,826 @@
+#+TITLE: Doc 198 — TCO trampolines and hygienic macros as opt-in libraries
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-24
+#+STATUS: PARTIAL — build-first Phases 1-3 implemented and verified
+#+STATUS: 2026-08-24: the missing million-step =nl-recur= control,
+#+STATUS: tagged =nl-trampoline=/=nl-bounce= mutual recursion inside
+#+STATUS: =nl-prelude=, and the pure-Elisp =nl-hygiene= package.  Phase
+#+STATUS: 4's resolution-aware =require= wrapper remains intentionally
+#+STATUS: open, so definition-environment resolution still requires an
+#+STATUS: explicit =nl-ns-read-*-in= path.  Phase 5 remains Doc 171's
+#+STATUS: separate default-on decision.  No reader/runtime/Rust source
+#+STATUS: was changed by Phases 1-3.
+#+VERIFIED-BY: compile parens-check ert-focus nl-hygiene-standalone-smoke
+
+* Status
+
+| item     | value                                                              |
+|----------+----------------------------------------------------------------------|
+| Doc #    | 198                                                                 |
+| State    | PARTIAL — Phases 1-3 implemented; Phases 4-5 remain open          |
+| Parent   | Doc 168 (extension libraries, layer discipline and non-goals)      |
+| Sibling  | Doc 169 (nl-prelude — ships =nl-loop=/=nl-recur=/auto-gensym already), Doc 171 (AOT TCO runtime pass), Doc 189 (nl-ns, reader-time namespace resolution), Doc 195 (nl-clj — the first real consumer of =nl-loop=/=nl-recur=) |
+| Reads    | =docs/design/168-extension-libraries.org=, =docs/design/169-nl-prelude.org=, =docs/design/171-aot-tail-call-optimization.org=, =docs/design/189-nl-ns-enforced-namespaces.org=, =docs/design/195-clojure-compat-library.org=, =packages/nl-prelude/src/nl-prelude.el=, =packages/nl-prelude/README.org=, =packages/nl-prelude/test/nl-prelude-test.el=, =packages/nl-ns/src/nl-ns-reader.el=, =packages/nl-ns/src/nl-ns-in.el=, =packages/nl-clj/src/nl-clj-seq.el=, =src/nelisp-read.el=, =lisp/nelisp-stdlib-misc.el=, =lisp/nelisp-cl-macros.el= |
+| Probed   | =target/nelisp --eval EXPR= against the binary identified above    |
+| Top constraint | OPT-IN LIBRARY. Unannotated Elisp is stock-compatible. Only code that =(require 'nl-prelude)= / a new =nl-trampoline= split / a new =nl-hygiene= package gets any of this. |
+
+* 1. What this doc is actually for
+
+The brief that opened this survey asked for a design of =nl-loop=/
+=nl-recur= as a library-shaped trampoline, "like Clojure's own =loop=/
+=recur=." Reading Doc 169 first (as AI.md's own orientation rule
+requires — read the closest sibling doc before designing its
+neighbor) turns up the load-bearing fact that reframes this entire
+document:
+
+*=nl-loop= and =nl-recur= already ship.* =packages/nl-prelude/src/nl-
+prelude.el= L676 (=defmacro nl-loop=) and L584 (=defmacro nl-recur=),
+Doc 169 §5, Phase 2a, SHIPPED 2026-08-15 per Doc 169's own achievement
+record (§8, "*達成記録*"). They are not a hypothetical to design from
+scratch; they are production code with 12+ ERT cases
+(=packages/nl-prelude/test/nl-prelude-test.el= L462-521) and a real
+downstream consumer already depending on them by file:line citation
+(=packages/nl-clj/src/nl-clj-seq.el= L28, and Doc 195 §4.7's own text,
+quoted in full in §3.4 below).
+
+So this doc's actual job splits into three pieces that are honestly
+different in kind:
+
+1. *Audit, not design*: confirm what =nl-loop=/=nl-recur= already
+   guarantees, and — this is the part that was missing — give it the
+   against-the-bug verification Doc 169's own test suite does not yet
+   have (§9.1).
+2. *Design, filling a real gap*: =nl-trampoline=, the mutual-recursion
+   companion Doc 169 §5.1 named and reserved
+   (=packages/nl-prelude/README.org= L134: "=nl-trampoline= (mutual
+   recursion) is deferred") but that no file in this tree implements.
+   Worse, the two docs that each mention it point at each other: Doc
+   169's own decision log says mutual recursion was punted *to* Doc
+   171's AOT pass ("=nl-trampoline= は見送り (Phase 5 AOT TCO = Doc
+   171 blueprint へ)", Doc 169 L280), while Doc 171 §3.2 explicitly
+   punts the *same* case back to L1 =nl-trampoline= ("*推奨: 相互再帰
+   は本 Doc の対象外とし、L1 =nl-trampoline= に委ねる。*", Doc 171
+   L99). Mutual recursion is, as of this survey, an orphaned scope —
+   nobody in this tree currently owns it. §4 designs the mechanism
+   that would close that loop.
+3. *Design, genuinely new*: =nl-defmacro-hygienic=, since the auto-
+   gensym that already ships (=nl-defmacro='s trailing-=#= mechanism,
+   Doc 169 §4) is explicitly scoped by its own documentation to *not*
+   be a hygiene system — "*It is not syntax-case: free-variable and
+   function-position capture are not prevented*"
+   (=packages/nl-prelude/README.org= L115-116, and Doc 169 §7 sends
+   "衛生的マクロの完全実装（syntax objects）" — full hygienic macros —
+   to the L3 bucket these docs call "Doc 90." §5 designs the definition-
+   environment half of hygiene as a genuinely new opt-in mechanism,
+   §6 states its ceiling honestly.
+
+This doc does not propose renaming or relocating =nl-loop=/=nl-recur=.
+=packages/nl-clj= already depends on their current location and names
+by file:line citation; moving them would be a breaking change to a
+package that shipped nine days before this survey (Doc 195's own
+=#+STATUS=, dated 2026-08-24).
+
+* 2. The pattern to model on: Doc 168's three-layer classification
+
+Doc 168 §3.1 (LOCKED) is the actual "opt-in library pattern" the task
+brief pointed at, and every design choice below follows it rather than
+re-deriving it:
+
+| Layer | Implementation means            | Blast radius        | Cost to withdraw |
+|-------+----------------------------------+----------------------+-------------------|
+| L1    | Macros and functions only        | Inside one package   | Low               |
+| L2    | AOT/JIT compiler pass            | One compilation unit | Medium            |
+| L3    | Evaluator/reader extension        | Whole runtime        | High              |
+
+The discipline (Doc 168 §3.1): assign every feature to the *shallowest*
+layer that can implement it; do not start L2/L3 work until an L1
+version has shipped and produced real usage data. =nl-loop=/=nl-recur=
+already are that discipline in action — Doc 169 §1's own table marks
+them L1/Phase 2a and lists the L2 "本命" (the real target) as a
+*separate* row (#4′) pointing at Doc 171. §4-§6 below stay at L1 for
+the same reason Doc 168 mandates it, and §3 exists specifically to
+keep that L1/L2 split honest rather than letting this doc's framing
+blur it.
+
+* 3. =nl-loop=/=nl-recur=: audited as shipped
+
+** 3.1 What it is, verbatim from the source
+
+#+begin_src elisp
+;; packages/nl-prelude/src/nl-prelude.el, L676-712 (abbreviated)
+(defmacro nl-loop (bindings &rest body)
+  ;; expands to a `let' binding each variable, wrapped in a `while t'
+  ;; whose body is BODY with every tail-position `(nl-recur v1 v2 ...)'
+  ;; rewritten to a simultaneous `setq' of the loop variables followed
+  ;; by `continue' back to the top; any non-`nl-recur' tail value sets
+  ;; a `done' flag and breaks out.
+  ...)
+
+(defmacro nl-recur (&rest _args)
+  "Rebind the enclosing `nl-loop' variables and restart the loop.
+Valid only in tail position inside `nl-loop'; reaching this global
+definition directly is always a mistake."
+  (error "nl-recur: only valid in tail position inside `nl-loop'"))
+#+end_src
+
+The mechanism is *not* a trampoline in the classic (Steele/Sussman,
+later Clojure) sense of "return a sentinel and let a driver loop
+re-dispatch it." It is a compile-time, syntactic rewrite: the =nl-loop=
+macro walks its own BODY (=nl--loop-walk=, L611-674), finds every
+=nl-recur= that is lexically in tail position — analyzed through
+=progn=/=if=/=cond=/=when=/=unless=/=let=/=let*=/=and=/=or=
+(=packages/nl-prelude/README.org= L128-129) — and replaces each one
+with a =setq= of hidden gensym registers plus a jump back to the
+=while='s top. Anything not in tail position, or not textually inside
+this =nl-loop= form (a nested =nl-loop= owns its own =nl-recur=,
+README L131), is an *expansion-time error*, not a runtime one:
+=packages/nl-prelude/test/nl-prelude-test.el= L509-517 has three
+=should-error (macroexpand ...)= cases proving this (outside any loop,
+non-tail position, wrong arity).
+
+This matters for the "sentinel value a loop re-dispatches on" framing
+the task brief used: that framing describes =nl-trampoline= (§4), which
+does not exist yet, not =nl-loop=/=nl-recur=, which does. =nl-loop=/
+=nl-recur='s cost model is therefore *not* "a cons allocation and a
+dispatch per iteration" — it is exactly the cost of a hand-written
+=while= loop, because after macro-expansion that is literally what the
+code is. §4.2's "cost vs. a raw =while= loop" question has a one-line
+answer for this mechanism: zero, by construction, because there is no
+runtime indirection left to cost anything.
+
+** 3.2 What it optimizes
+
+Self-recursion, rewritten by the programmer as explicit =nl-recur=
+calls in tail position of one =nl-loop= form. This delivers the
+Scheme-style *guarantee* (not "usually fine" — an expansion-time error
+on any non-tail =nl-recur=, so a violation cannot silently degrade into
+stack growth) for exactly the shape Clojure's own =loop=/=recur= covers,
+using the identical technique Clojure uses under the hood (JVM bytecode
+has no proper tail calls either; Clojure's =recur= is a documented,
+intentional macro-level trampoline restricted to self-tail-position for
+the same reason — a fact worth stating plainly, since the task brief
+asked this design to be honest that this is what Clojure itself does,
+not a lesser imitation of it).
+
+** 3.3 What it does not optimize
+
+- *Mutual recursion.* Two =nl-loop= forms cannot =nl-recur= into each
+  other; each nested =nl-loop= "owns its own =nl-recur='"
+  (README L131). This is precisely the gap §4 designs a fix for.
+- *Tail calls through higher-order functions.* =nl-recur= only rewrites
+  calls whose head is textually the symbol =nl-recur=, found by walking
+  the *literal S-expression* of BODY (=nl--loop-walk-body=, L602-609).
+  A tail call reached by =funcall=-ing a value passed in as a parameter,
+  or returned from a nested closure and invoked later by a caller
+  outside the =nl-loop= form's own syntax, is invisible to this walker
+  by construction — there is no S-expression for it to find. This is
+  not a missing feature that a smarter walker could add; the call site
+  literally is not textually present inside the =nl-loop= form when the
+  macro runs.
+- *Any use outside explicit =nl-recur= syntax.* Doc 169 §5.2 already
+  states this precisely, and it is worth quoting rather than
+  re-deriving: "本 L1 版は明示的な構文を要求するため、既存コードには
+  効かない" (this L1 version requires explicit syntax, so it has no
+  effect on existing code). An ordinary self-recursive =defun= gets
+  nothing from this package unless it is rewritten to use =nl-loop=/
+  =nl-recur=. This is the top constraint (opt-in) working as intended,
+  not a limitation to apologize for.
+
+** 3.4 A live example of the boundary, dated the same week as this survey
+
+=packages/nl-clj/src/nl-clj-seq.el= L281-289 (=nl-clj-reduce=) is
+exactly the case §3.2 covers: a left fold over a materialized list,
+written as a plain =while=, with a comment explaining *why* it did not
+need =nl-loop=/=nl-recur= — "a plain =while= walk, not recursion —
+stack-safe over an arbitrarily long seq for free." Doc 195 §4.7,
+written the same day, states the opposite case just as precisely: the
+*deferred* lazy-seq design ("§4.7-lazy... not started" per Doc 195's
+own =#+STATUS=) needs =nl-loop=/=nl-recur= to be *load-bearing*, not
+optional, for its =reduce= consumer walk over =seq-first=/=seq-rest= —
+but the *producer* side of that same design (a lazy-seq's own
+generating thunk, a closure captured once and invoked later by whatever
+forces it) is a different shape entirely, one no macro operating on a
+single lexical form can rewrite, trampoline or not — the closure's
+eventual invocation site is not textually present anywhere near its
+definition. This is the concrete version of §3.3's "tail calls through
+higher-order functions" bullet, occurring in this repository's own
+in-flight work rather than as a hypothetical.
+
+* 4. =nl-trampoline=: designing the missing piece
+
+** 4.1 Representation
+
+A tagged list, following the exact convention =nl-prelude= already
+uses for Result/Option (Doc 169 §2.1: "=(nl--ok . VALUE)= / =(nl--err
+. VALUE)=... タグは interned symbol とし、=eq= 比較で判定する"):
+
+#+begin_src elisp
+;; A bounce: (nl--bounce TARGET ARGS)
+;; TARGET: a function value or a symbol with a function definition.
+;; ARGS:   a plain list of the arguments TARGET should be called with.
+
+(defmacro nl-bounce (target &rest args)
+  "Tail-position only, inside a function invoked through
+`nl-trampoline'.  Return a request that TARGET be called with ARGS
+next, from `nl-trampoline''s own driving frame, instead of calling
+TARGET directly from here."
+  `(list 'nl--bounce ,target (list ,@args)))
+
+(defun nl-trampoline (target &rest args)
+  "Call TARGET with ARGS in constant native/interpreter stack, chasing
+every `nl-bounce' sentinel the call chain returns.  Returns the first
+value that is not a bounce sentinel."
+  (let ((result (apply target args)))
+    (while (and (consp result) (eq (car result) 'nl--bounce))
+      (setq result (apply (cadr result) (caddr result))))
+    result))
+#+end_src
+
+This is a deliberate departure from Clojure's own =trampoline=, which
+uses bare functions as the sentinel ("while the result is a function,
+call it with no arguments"). That design has a real, documented
+footgun: a trampolined function whose genuine business value *is* a
+function gets re-invoked instead of returned. A tagged list, =eq=-
+checked on an interned symbol nobody else conses as a list head by
+convention, is the same "loud rather than silently ambiguous" choice
+Result/Option already made in this package, and costs nothing extra a
+bare-function sentinel would not also cost (one allocation, one
+dispatch check, per bounce).
+
+** 4.2 What it optimizes
+
+Tail calls between *cooperating* functions — ones written to return
+=(nl-bounce other-fn args...)= in tail position instead of calling
+=other-fn= directly — reached through =nl-trampoline= at the outermost
+call. This delivers O(1) native/interpreter stack for a mutual-
+recursion cycle of any length and any shape, as long as every hop in
+the cycle bounces rather than calls, matching Doc 169 §5.1's own
+description of the mechanism's job ("相互再帰は =nl-trampoline= で別
+途対応する").
+
+** 4.3 What it does not optimize
+
+- *Any hop written as a direct call instead of =nl-bounce=.* Exactly
+  like =nl-recur= outside tail position, this is not silently wrong —
+  it is silently *not accelerated*: the direct call consumes a real
+  stack frame, same as calling it without any of this machinery. This
+  library cannot make that loud the way =nl-recur='s expansion-time
+  check can, because =nl-trampoline= cannot see inside an arbitrary
+  function body the way =nl-loop= can see inside its own BODY argument
+  — a real, honest asymmetry between the two mechanisms worth stating:
+  =nl-recur='s guarantee is stronger than =nl-trampoline='s precisely
+  because =nl-loop= owns the entire syntax of the loop body, while
+  =nl-trampoline= only ever sees one function's *return value*, never
+  its source.
+- *Calling a bounce-shaped function directly, without =nl-trampoline=.*
+  A function written to return =nl-bounce= sentinels, if called by
+  something other than =nl-trampoline= (or the tail-call chase inside
+  it), returns a raw =(nl--bounce ...)= list as its value — a footgun
+  identical in shape to Clojure's own =trampoline= contract, disclosed
+  the same way: document it, do not attempt to detect it at runtime
+  (detecting it would mean guessing whether every returned tagged list
+  was meant as a bounce or as genuine data, the same ambiguity §4.1
+  designed away for the *common* case, not eliminated for a
+  deliberately-misused one).
+- *The higher-order/closure case from §3.4.* Nothing changes here
+  versus =nl-recur=: a closure captured and invoked later, outside any
+  syntax =nl-trampoline= or its caller can see, is not something a
+  library-level mechanism can rewrite. A programmer *can* hand-write
+  such a closure to return bounces instead of values and drive it with
+  =nl-trampoline= at its eventual call site — that is a valid, supported
+  use — but nothing automates the rewrite.
+
+** 4.4 Cost vs. a raw =while= loop
+
+Unlike =nl-loop=/=nl-recur= (§3.1: zero indirection cost, it *is* a
+=while= loop after expansion), =nl-trampoline= pays real, non-zero
+cost per bounce: one =list= allocation for the sentinel, one =consp=
++ =eq= check in the driver, one =apply= instead of a direct call. This
+is not free, and this doc does not claim it benchmarks favorably
+without measurement — Doc 171's own decision log (§11.1, 2026-08-16
+through 2026-08-19) is the strongest possible argument in this exact
+tree for why: its G4 perf gate went FAIL → (after fixing the
+*codegen*, "route 2," a real fix) → FAIL again → (after fixing the
+*measurement methodology* — repeats=5 was too short a window to let
+CPU frequency scaling settle, masking a real ≈0.95x steady-state ratio
+under noise) → PASS, over four days, on a mechanism with *zero*
+allocation per iteration. A mechanism that *does* allocate per bounce
+should be assumed to cost more than a raw manual mutual-recursion
+rewrite until measured the same way — §7.2 makes this an explicit DoD
+item, not an aspiration.
+
+** 4.5 Where it lives
+
+=packages/nl-prelude/README.org= L134 already documents "=nl-
+trampoline= (mutual recursion) is deferred" *inside* the =nl-loop=/
+=nl-recur= section of =nl-prelude='s own README — i.e., the existing
+documentation already treats this as =nl-prelude='s own scope, just
+unbuilt. Given =nl-prelude/src/nl-prelude.el= is already 712 lines
+(well past its own Phase 1 400-line scope-discipline marker, Doc 169
+§8), the precedent set by =packages/nl-clj= — a single package split
+across five source files (=nl-clj-core.el=, =-atom.el=, =-hash.el=,
+=-seq.el=, =-vector.el=, per its own =src/= listing) rather than one
+growing file — is the model to follow: add
+=packages/nl-prelude/src/nl-prelude-trampoline.el= as =nl-prelude='s
+first internal split, loaded by the package the same way =nl-clj.el=
+loads its siblings, rather than opening a new top-level package or
+further growing the single existing file. This keeps =(require 'nl-
+prelude)= as the one opt-in surface consumers like =nl-clj= already
+depend on, unchanged.
+
+* 5. The library/runtime TCO boundary, formalized
+
+Doc 169 §5.2 already drew this boundary in two sentences; this section
+exists to make it precise enough to cite, not to redraw it:
+
+#+begin_quote
+本 L1 版は明示的な構文を要求するため、既存コードには効かない。本命は
+Phase 5 の AOT パス（Doc 168 §5）であり、そちらは既存の =defun= に対
+して透過的に働く。
+#+end_quote
+
+** 5.1 What Doc 171's runtime pass actually covers today
+
+Reading Doc 171 in full turns up a fact the task brief's framing got
+wrong, and this doc should say so plainly rather than propagate it:
+Doc 171's own AOT pass does *not* generalize to mutual recursion or
+higher-order tail calls "later" — it declares both *permanently* out
+of scope, for reasons independent of implementation effort:
+
+- *Mutual recursion* (Doc 171 §3.2): three designs were compared (SCC-
+  fused single function, sibling-jmp code-gen, trampoline) and the
+  trampoline was the one *adopted* — as an L1 mechanism, i.e. exactly
+  §4 above, not as future AOT work. The other two were rejected on
+  structural grounds (frame-shape incompatibility between sibling
+  =defun='s, and per-architecture emitter cost respectively), not
+  "not yet done."
+- *General tail calls through arbitrary/HOF call sites* (Doc 171 §3.3):
+  rejected for three independent reasons, none of which is "needs more
+  engineering time" — (1) it would change the calling convention/ABI
+  for every call site, since the callee's frame requirements cannot be
+  known statically when the target is late-bound; (2) it is
+  *semantically unprovable*: a call target can be replaced via
+  =advice=/=fset= at runtime, so "does the tail call need its caller's
+  frame" is not statically decidable in general; (3) it would blow up
+  the byte-identical-when-disabled verification surface (§9's gate) to
+  every call site in every compiled unit, not just tail-recursive
+  =defun='s. Doc 171 §10.2 confirms both permanent exclusions in its
+  own non-goals list, and its decision log (§13) marks the mutual-
+  recursion punt to L1 =nl-trampoline= as a decision, not a stub.
+
+The practical upshot: *general TCO is not coming to either layer.*
+Only self-tail-recursion is transparently optimized (Doc 171, once
+Phase 5.3 flips its build flag to default-on — see §5.3), and only
+self-tail-recursion plus explicitly-cooperating mutual recursion is
+optimized at all, anywhere in this design space, guaranteed, opt-in or
+not. A program with a tail call to a value passed in as a parameter
+gets no guarantee from either layer, ever, for the reasons above — not
+because nobody got to it yet.
+
+** 5.2 Doc 171's own scope, precisely
+
+Doc 171's *only* in-scope case (§3.1, its "第 1 出荷単位" — first
+shipping unit) is: a =(defun f ...)= whose body contains a tail-
+position call to =f= itself, where that call already lowers to the
+compiler's own "same-unit direct call" IR arm (§2.1, L9687 of
+=lisp/nelisp-aot-compiler.el=). This is the AOT-native mirror of
+exactly what =nl-recur= handles at the source level — the two
+mechanisms cover the *same* case (self-tail-recursion), through
+different means, at different layers, which is precisely the
+"complementary, not competing" relationship the task brief asked this
+section to state. Doc 169 §5.2's "本命" (real target) framing for Doc
+171 does not mean =nl-loop=/=nl-recur= is a stopgap Doc 171 will
+obsolete; it means Doc 171, once shipped and defaulted on, extends the
+*same guarantee* to code that was never rewritten to use =nl-recur= at
+all — an ordinary =defun=, source-unchanged.
+
+** 5.3 Doc 171's current, exact status (not the doc's own header line)
+
+Doc 171's status header (L12) reads "G4 は実測 FAIL → 5.3 ブロック" —
+but its own decision log (§13) contains four later entries
+(2026-08-16 through 2026-08-19) that supersede it: the measurement
+methodology itself was found to be the problem (a 5-repeat timing
+window too short for CPU frequency scaling to settle), a real codegen
+fix ("route 2," collapsing per-back-edge temporaries to one shared
+=setq=) landed alongside it, and the last log line (2026-08-19) reads
+"*G4 green. 5.3 (既定 ON) のブロック条件は満たされた*" — the block is
+lifted. What remains open is *not* a gate failure but a user judgment
+call the same log line names explicitly: whether to flip the
+=NELISP_TCO= build flag to default-on immediately or bake it for one
+release first (Doc 171 §12, open question #1). This doc flags the
+header/log mismatch rather than trusting the header, per AI.md rule 4
+("read values out of files... not terminal output" — the same
+discipline applies to a doc's own stale summary line versus its dated
+log).
+
+The practical consequence for this survey: *as of today, neither
+layer forces TCO on unannotated code by default.* =nl-loop=/=nl-recur=
+never did (explicit syntax, always opt-in, by design). Doc 171's AOT
+pass currently doesn't either — it sits behind a build flag Phase 5.3
+has not yet flipped. This doc's top constraint (opt-in library) is
+therefore not in tension with Doc 171 at all right now; both paths to
+guaranteed self-tail-call safety in this tree are, today, something a
+program has to ask for.
+
+* 6. =nl-defmacro-hygienic=: design
+
+** 6.1 What already exists and what it does not reach
+
+=nl-defmacro='s auto-gensym (Doc 169 §4, =packages/nl-prelude/src/nl-
+prelude.el= L565-580) rewrites any symbol spelled with a trailing =#=
+inside a macro's quasiquoted body into a fresh, per-expansion gensym
+(=nl--rename-auto-gensyms=, L538-563, keyed by symbol *name*, working
+identically whether the source spells it =foo#= — accepted by the
+NeLisp standalone reader — or =foo\#= — required for host-Emacs-loaded
+source, since host Emacs's reader treats a bare trailing =#= as a read
+error; both spellings behave identically once past the reader,
+=packages/nl-prelude/README.org= L108-112).
+
+This is genuinely half of hygiene — the half Kohlbecker/Clinger call
+*non-capture*: a macro-introduced binding must not accidentally bind
+(or be shadowed by) an identifier the macro's caller also happens to
+use. What it does not touch, stated by the package's own README rather
+than by this doc's inference (L115-116): "*It is not syntax-case:
+free-variable and function-position capture are not prevented.*" That
+is the *other* half — referential transparency: a free identifier
+written inside a macro's own template should resolve against the
+macro's *definition* environment, not whatever happens to be bound at
+the call site. Today, nothing in this tree provides that half at all.
+
+** 6.2 A genuinely new mechanism: reusing =nl-ns='s reader hook
+
+Doc 189 (dated 2026-08-23, one day before this survey) shipped
+something that turns out to be exactly the missing primitive, though
+it was not designed with macro hygiene in mind at all — it was
+designed to stop namespace short-name collisions in the flat obarray.
+=src/nelisp-read.el= L85 defines =nelisp-read-namespace-resolve=, a
+special variable, default nil, consulted at L209-210 by the reader's
+own atom-tokenizer, *before* an identifier token is interned: when
+bound to a hash table (short-name string -> already-qualified symbol)
+and the token is a key in it, the reader interns the *qualified* name
+straight away; a miss, or the variable being nil (every call site in
+this tree today except the one described below), falls through to
+plain =intern=, byte-identical to today's behavior.
+
+=packages/nl-ns/src/nl-ns-reader.el= (121 lines total) is the only
+thing in this tree that ever binds it to something else:
+=nl-ns-read-with-resolution=/=nl-ns-read-eval-in= (L76-99) bind it,
+for the dynamic extent of one call, to a table built from an
+=nl-ns-define='d namespace's =:members= list (L59-72, via the already-
+public =nl-ns-member-list=/=nl-ns-qualify=).
+
+The reason this reaches into *macro definition-environment* territory,
+not just source-file namespacing: a =defmacro='s quasiquoted body is
+*read once*, when the file containing the =defmacro= form is loaded —
+not re-read at every call site. Any free, bare symbol written literally
+inside that template is therefore resolved by whatever reader context
+was active *at the macro's own definition load time* — which, if that
+file were loaded through =nl-ns-read-in=/=nl-ns-read-from-string-in=/
+=nl-ns-read-all-in= instead of plain =nelisp-load=/=require=, means a
+free identifier like =helper= inside a macro's template resolves to the
+macro author's own namespace-qualified =mypkg-helper=, permanently,
+baked in at read time — *not* to whatever a call site's =mypkg-helper=
+looking symbol happens to mean there, because there was never a bare
+=helper= symbol interned at all; the reader produced the qualified one
+directly. This is the referential-transparency half of hygiene, for
+literal free identifiers in a macro's own source, obtained as a side
+effect of a mechanism §6.1 correctly notes was designed for something
+else.
+
+** 6.3 =nl-defmacro-hygienic=, concretely
+
+A thin composition of two existing, opt-in mechanisms — no new reader
+change, no new runtime state beyond what Doc 189 Phase 0 already
+shipped:
+
+#+begin_src elisp
+(nl-ns-define my-macros :members (helper))
+
+(dolist (form
+         (nl-ns-read-all-in
+          'my-macros
+          "(nl-defmacro-hygienic nl-with-helper (x)
+             ;; helper# -> fresh gensym per expansion (non-capture)
+             ;; helper  -> my-macros-helper while THIS string is read
+             `(let ((helper# ,x)) (helper helper#)))"))
+  (eval form t))
+#+end_src
+
+The source-string/read-all shape is load-bearing.  Wrapping an already
+read macro form in =nl-ns-read-with-resolution= cannot retroactively
+qualify symbols the ordinary reader has already interned; the macro-
+defining text itself must enter through an =nl-ns-read-*-in= path.
+
+=nl-defmacro-hygienic= is exactly this pattern packaged as one macro-
+defining form: expand its body through =nl-defmacro='s existing auto-
+gensym walk (§6.1, unchanged) *and* require the defining file/block to
+be loaded through =nl-ns-read-*-in= so every free reference to a
+declared member of the macro's own namespace resolves at definition
+time rather than call-site time. The two mechanisms are independent
+and already composable exactly as shown; the only genuinely new code
+is the macro that wires them together and the discipline of declaring
+which free identifiers in a hygienic macro's body are meant to be
+namespace-resolved members (everything else — anything not a declared
+member of the surrounding =nl-ns-define=, including ordinary Elisp
+builtins like =let=/=if=/=cons= — resolves exactly as it does today,
+by design, since Doc 189's own resolution table only ever contains a
+namespace's own =:members=).
+
+** 6.4 What this new mechanism costs to adopt
+
+Everything in §6.2-6.3 is opt-in on top of opt-in: a package must (1)
+declare an =nl-ns-define= for its own helper set (already a real,
+independent adoption cost — Doc 189 §4 Phase 0's own honest accounting
+names the reader entry-point coverage risk explicitly), and (2) load
+its macro-defining file through =nl-ns-read-all-in= rather than plain
+=require=. Point (2) is a genuine, currently-unaddressed gap: Doc 189's
+own commentary in =nl-ns-reader.el= (L47-49) states plainly that wiring
+an opted-in file into the production loader (=nelisp-load.el=,
+=require=) is *explicitly out of scope for Phase 0* — today, calling
+plain =(require 'my-macros)= on a file written this way does *not*
+apply the resolution table at all; only a caller that goes through
+=nl-ns-read-all-in= by hand gets it. §8 Phase 2 below names closing
+this gap (a resolution-aware =require= wrapper) as the first real
+implementation task, because without it §6.3's pattern only works in a
+one-off script, not as a normal package a consumer =require='s.
+
+* 7. The hygiene ceiling — stated honestly
+
+The task brief asked this section to be explicit about where the
+mechanism stops short of real syntax-case hygiene. Four separate,
+independent gaps, each real:
+
+1. *Only declared namespace members are covered.* Doc 189's resolution
+   table (§6.2) is built from =nl-ns-define='s =:members= list —
+   global, named, registered bindings. A macro's free reference to a
+   *lexical* variable captured from its own definition scope (a
+   closure-over-a-let, not a top-level =defun=) has no representation
+   in this table at all; nl-ns's whole design (Doc 189 §1.1, §3) is
+   about the flat global obarray, not lexical scoping, and this doc
+   does not extend it to cover that case — doing so would mean
+   threading lexical-environment identity through the reader, which is
+   a different and much larger problem (closer to what real syntax
+   objects carry) than a namespace-qualification table can express.
+2. *Only literal, statically-written free identifiers are covered.* A
+   macro that constructs a symbol programmatically — via =intern=, via
+   unquote-splicing a caller-supplied form, via anything that does not
+   pass through the reader as a token inside the macro's own file —
+   never touches =nelisp-read-namespace-resolve= at all, because that
+   hook fires during =read=, once, on text. True syntax-case tracks
+   provenance (which lexical/definition context an identifier came
+   from) as a property of the *symbol itself* (or a wrapping syntax
+   object), surviving arbitrary programmatic construction and re-
+   quoting; nothing in this design attaches provenance to a symbol
+   after it has been read. This is exactly the gap Doc 169 §7 already
+   named when it sent "衛生的マクロの完全実装（syntax objects）" to the
+   L3 bucket — this doc's contribution narrows that gap for one common,
+   real case (literal free references in a macro template) without
+   claiming to close it.
+3. *No integration with the production loader, today* (§6.4's point 2):
+   a plain =require= on a file written this way gets none of the
+   resolution — a real, currently-open implementation gap, not a
+   theoretical ceiling, and the first thing §8's phase plan schedules.
+4. *=eval= and dynamically-loaded code are outside the resolution
+   table's reach by construction*, the same limitation Doc 189 itself
+   states about namespace resolution generally (its own §1.1: "=eval=
+   と実行時再定義がある以上、全プログラムに対する健全性は主張しない"
+   — full-program soundness is never claimed given =eval= and runtime
+   redefinition) — a hygienic macro whose expansion is later
+   re-processed through =eval= on a string, or whose defining file is
+   loaded outside any =nl-ns-read-*-in= wrapper, gets exactly today's
+   behavior: no resolution, no error, silently the status quo. This is
+   consistent with the top constraint (unannotated code is unaffected)
+   but worth naming so nobody mistakes "opt-in and unenforced" for
+   "opt-in and guaranteed."
+
+What this design *does* honestly deliver, stacked against those four
+gaps: for a macro package that (a) declares its own helper namespace,
+(b) is loaded through the resolution-aware entry point, and (c) writes
+its free references as literal symbols in its own template — the two
+classic hygiene failure modes (a macro-introduced binding capturing a
+user variable; a macro's free reference to its own helper being
+shadowed by a same-named user variable at the call site) are both
+addressed, by two independently-shipped, genuinely opt-in mechanisms,
+composed rather than reinvented.
+
+* 8. Package layout
+
+#+begin_example
+nl-prelude  ─┬──────────────────────────────────────► nl-trampoline
+             │   (new file inside nl-prelude, §4.5;   (nl-prelude's own
+             │    nl-loop/nl-recur/auto-gensym          split, not a new
+             │    unchanged, existing consumers         top-level package)
+             │    (nl-clj) untouched)
+             │
+             └──────► nl-ns ──────────────────────────► nl-hygiene
+                   (unchanged;                       (new package: composes
+                    Phase 0 reader hook               nl-defmacro's auto-
+                    already shipped,                  gensym (from nl-prelude)
+                    §6.2)                              with nl-ns-reader's
+                                                        resolution hook (§6.3);
+                                                        depends on both, per
+                                                        Doc 168 §4.1's acyclic-
+                                                        graph discipline)
+#+end_example
+
+- =packages/nl-prelude/src/nl-prelude-trampoline.el= (new): =nl-bounce=,
+  =nl-trampoline=. No new dependency — same package, same manifest.
+- =packages/nl-hygiene/= (new top-level package): =manifest.el= with
+  =:requires ("nl-prelude" "nl-ns")=, matching the existing convention
+  (=packages/nl-ns/manifest.el=: =:requires ("nl-prelude")=). Contains
+  =nl-defmacro-hygienic= and the documentation of §6.3's composition
+  pattern; does not modify =nl-prelude= or =nl-ns= themselves.
+
+Neither addition touches =src/nelisp-read.el= or any file outside
+=packages/=, keeping both changes L1 per Doc 168 §3.1.
+
+* 9. Verification (DoD)
+
+Per AI.md's Definition of Done: against-the-bug evidence (red on the
+defect, green on the fix, run not asserted), plus a parity/mutation
+row where applicable, plus real gate wiring — not a plan to eventually
+write tests.
+
+** 9.1 =nl-trampoline= — against-the-bug
+
+The existing =nl-loop= suite already has a *positive* stack-safety
+test (=nl-prelude-loop-constant-stack=, 100k iterations, L471-474) but
+no *negative* control showing what happens without the mechanism —
+exactly the gap AI.md's own Definition of Done warns is easiest to
+skip ("positive-path... tests do not exercise it at all," the same
+phrase Doc 195 §4.7 used about its own reentrancy test). Two tests to
+add, matching the task brief's own DoD shape:
+
+#+begin_src elisp
+;; RED without nl-recur: naive self-recursion at the same depth
+;; overflows the interpreter's rec_max guard (Doc 171 §2.4: ~50000-
+;; 68000 reachable depth as of the 2026-08-19 recalibration).
+(ert-deftest nl-prelude-naive-self-recursion-overflows-at-1e6 ()
+  (should-error
+   (let ((f (lambda (n acc) (if (zerop n) acc (funcall f (1- n) (1+ acc))))))
+     (funcall f 1000000 0))))
+
+;; GREEN with nl-recur: the same depth, same shape, constant stack.
+(ert-deftest nl-prelude-loop-1e6-does-not-overflow ()
+  (should (equal (nl-loop ((n 1000000) (acc 0))
+                   (if (zerop n) acc (nl-recur (1- n) (1+ acc))))
+                 1000000)))
+#+end_src
+
+And the mutual-recursion equivalent for =nl-trampoline= itself, once
+built — an even-or-odd ping-pong at 1e6, naive direct mutual recursion
+overflowing, =nl-bounce=/=nl-trampoline= completing in constant stack.
+This is the single most important pair of tests in this whole design,
+per the same "most likely to be skipped if verification is written
+casually" caution Doc 195 §4.7 gave its own reentrancy test.
+
+** 9.2 =nl-trampoline= — the measurement Doc 171 already paid for
+
+Before any perf claim for =nl-trampoline=, run it through the *exact*
+methodology Doc 171's decision log (§4.4 above) had to discover the
+hard way: repeats/rounds with a median, not a single 5-repeat sample;
+native lane only (host byte-code VM has a different, noisier cost
+model per Doc 171's own G4 note); record what else was running. Do not
+assume the cons-per-bounce overhead is negligible; measure it against
+a hand-written mutual-recursion-via-direct-call baseline the same way
+Doc 171 measured TCO against a hand-written =nl-loop=.
+
+** 9.3 =nl-defmacro-hygienic= — the classic hygiene test, red then green
+
+#+begin_src elisp
+;; RED without the gensym pass: the macro-introduced binding captures
+;; the caller's expression, which contains the same literal symbol.
+(defmacro plain-capture (user-form)
+  `(let ((scratch 41)) (list scratch ,user-form)))
+(ert-deftest hygiene-classic-capture-without-mechanism ()
+  (should (equal (let ((scratch 7)) (plain-capture scratch))
+                 '(41 41))))
+
+;; GREEN with nl-hygiene: scratch# is fresh for this expansion, so the
+;; unquoted caller expression still denotes the caller's scratch.
+(nl-defmacro-hygienic hygienic-capture (user-form)
+  `(let ((scratch# 41)) (list scratch# ,user-form)))
+(ert-deftest hygiene-classic-capture-with-mechanism ()
+  (should (equal (let ((scratch 7)) (hygienic-capture scratch))
+                 '(41 7))))
+#+end_src
+
+The same caller symbol is present in both cases; only the gensym pass
+changes.  Definition-environment resolution has a separate test: macro
+source read through =nl-ns-read-all-in= bakes in its qualified helper
+and defeats a conflicting short-name global helper.  Elisp is Lisp-2,
+so a value binding such as =(let ((helper ...)) ...)= does not capture a
+direct function-position =(helper ...)= reference and is not a valid
+RED control for that half.
+
+** 9.4 Existing coverage retained and explicit integration coverage added
+
+=nl-defmacro='s own non-capture guarantee (auto-gensym) already has
+red/green-shaped coverage: =nl-prelude-auto-gensym-unique-across-
+expansions= and =nl-prelude-auto-gensym-distinct-names-distinct-
+gensyms= (=nl-prelude-test.el= L446-458) prove two different-spelled
+=#=-suffixed symbols get distinct gensyms and that repeated expansions
+never reuse one.  Phase 3 nevertheless adds §9.3's public-surface
+RED/GREEN pair so the new wrapper's non-capture contract is tested
+directly, plus the separate definition-environment resolution case.
+
+** 9.5 Non-invasiveness
+
+Both additions follow Doc 168 §6's existing gate table unchanged: full
+ERT suite unaffected for files that never =(require 'nl-trampoline)= /
+=(require 'nl-hygiene)=; standalone execution on =target/nelisp= green
+for both; a build flag can disable either without touching the other
+(they do not share code, only §8's shared dependency on =nl-prelude='s
+existing gensym primitive).
+
+* 10. Phase plan
+
+| Phase | Scope                                                              | Depends on               |
+|-------+----------------------------------------------------------------------+---------------------------|
+| 1     | §9.1's negative (RED) test added to =nl-prelude-test.el=, proving the existing gap in coverage, before any new code | Nothing — pure test, ships first, on the mechanism that already exists |
+| 2     | =nl-trampoline=/=nl-bounce= (§4), as =nl-prelude-trampoline.el=, with §9.1's positive test and §9.2's measured cost | Phase 1 (red evidence exists first) |
+| 3     | =nl-hygiene= package (§6.3), composing existing =nl-defmacro= + existing =nl-ns-reader=, with §9.3's classic-capture test | Nothing new at the mechanism level — both dependencies already ship; this phase is integration + the =require=-wrapper gap (§6.4 point 2) |
+| 4     | Close the §6.4/§7 point-3 gap: a resolution-aware =require= wrapper, so =nl-hygiene=-using packages work under plain =(require ...)=, not only =nl-ns-read-all-in= | Phase 3 |
+| 5     | (Not this doc's scope — tracked here only as a dependency) Doc 171 §12's own open question #1: flip =NELISP_TCO= to default-on. Once flipped, ordinary =defun= self-tail-recursion gets Doc 171's guarantee without =nl-recur= at all; §5.2's "complementary, not competing" relationship becomes visible in practice, not only on paper | Doc 171's own decision, this doc does not gate on it |
+
+Phase 1 before Phase 2 is deliberate: per AI.md's Definition of Done,
+"against-the-bug evidence... run, not asserted" — writing the RED test
+against the *already-shipped* =nl-loop= mechanism first (it should
+currently pass trivially, since naive recursion at 1e6 really does
+overflow today) is cheap, immediate, and gives every later phase a
+real baseline rather than a claimed one.
+
+** 10.1 Implementation report (2026-08-24)
+
+- *Phase 1 complete.* =nl-prelude-test.el= now runs a named, naive
+  one-million-call self recursion that signals stack exhaustion, then
+  the same count through =nl-loop=/=nl-recur=, which returns 1,000,000.
+  The named helper corrects §9.1's sample: a self-reference from an
+  ordinary lexical =let= initializer is not a recursive binding in
+  Elisp and can signal =void-variable= before measuring stack depth.
+- *Phase 2 complete.* =nl-prelude-trampoline.el= provides the tagged
+  =(nl--bounce TARGET ARGS)= request and an =eq=-checked dispatch loop.
+  Naive mutual recursion overflows; one million explicit bounces return
+  correctly.  =nl-prelude.el= requires the split, preserving the
+  existing =(require 'nl-prelude)= opt-in surface and =nl-clj=
+  dependency location.
+- *Phase 3 complete.* =packages/nl-hygiene/= provides
+  =nl-defmacro-hygienic= as the composition of =nl-defmacro='s
+  trailing-=#= gensym pass and =nl-ns-reader='s already-qualified
+  literal symbols.  The committed RED/GREEN capture pair produces
+  =(41 41)= with ordinary =defmacro= and =(41 7)= with the gensym pass;
+  a separate test proves a resolved definition helper defeats a
+  conflicting short-name global helper.
+- *Verification.* Focused host ERT is 100/100 (95 =nl-prelude= + 5
+  =nl-hygiene=).  The dedicated standalone smoke passes all 5 hygiene
+  tests and 1,000,000 mutual bounces on the freshly built
+  =target/nelisp=.  =make compile= is warning-clean, =parens-check=
+  reports 451 files / 0 findings, and =pkg-graph= reports the intended
+  acyclic =nl-hygiene -> nl-prelude,nl-ns= edges.  The full 5,358-test
+  host run reached every new case successfully; its unrelated failures
+  were isolated to sandbox-denied loopback listeners, a read-only
+  default artifact cache (green with =XDG_CACHE_HOME= under =/tmp=),
+  and one timing sample that passed alone.
+- *Still open.* Phase 4's resolution-aware =require= wrapper and Phase
+  5's Doc 171 decision are unchanged.  The hygiene ceiling in §7 is the
+  shipped contract, not deferred polish.
+
+* 11. Risks
+
+| Risk                                                    | Mitigation                                                                 |
+|-----------------------------------------------------------+-------------------------------------------------------------------------------|
+| =nl-trampoline='s allocation cost makes it a worse choice than hand-written direct mutual recursion for shallow cycles | §9.2 measures before any perf claim ships; document the crossover depth once measured, do not assume it favors the trampoline |
+| =nl-hygiene= adoption requires two separate opt-ins (=nl-ns-define= + a resolution-aware load path) — friction may mean nobody uses it | §8 Phase 4 exists specifically to remove the second opt-in (a =require= wrapper); ship Phase 3 with the friction named honestly rather than hidden |
+| §7's ceiling gets forgotten and =nl-hygiene= gets marketed as "real hygiene" | This doc's §7 is the citation for that claim in any future README; Doc 169 §7's own precedent (naming the L3 gap plainly rather than papering over it) is the model |
+| Confusing =nl-recur= (loop-local rebind) with =nl-bounce=/=nl-trampoline= (cross-function bounce) — different mechanisms, similar-sounding names | Deliberately different verb (=recur= vs =bounce=) chosen in §4.1 for this reason; README for the new file should cross-reference §3.3/§4.3's own "what it does not do" lists |
+| Doc 171's status header (L12) is stale relative to its own decision log (§5.3) — a future reader of Doc 171 alone could report a wrong perf-gate state | §5.3 names the discrepancy explicitly with citations to both; flagging it here is this doc's contribution, fixing Doc 171's header is out of this doc's scope (READ-ONLY survey) |
+
+* 12. Non-goals
+
+- Full =syntax-case=-equivalent hygiene (syntax objects, provenance
+  surviving programmatic symbol construction) — §7 states the ceiling;
+  closing it is Doc 169 §7's own L3 bucket, out of scope for an opt-in
+  library by definition.
+- General tail-call elimination through arbitrary/HOF call sites, at
+  either L1 or L2 — permanently out of scope per Doc 171 §3.3's own
+  three reasons (§5.1), not a future phase of this doc.
+- Any change to Doc 171's AOT pass, its build flag, or its Phase 5.3
+  default-on decision — that decision belongs to Doc 171 and its own
+  open question #1 (§10 Phase 5 only tracks it as a dependency).
+- Moving, renaming, or modifying =nl-loop=/=nl-recur='s existing
+  implementation or location — §1 states this explicitly; =nl-clj=
+  already depends on the current file:line.
+- A =nl-tco= package name, as the task brief's own framing used — §4.5
+  explains why the trampoline belongs inside =nl-prelude= instead,
+  given the existing README already scoped it there.
+
+* 13. Decision log
+
+| Date       | Decision                                                                    | Status |
+|------------+--------------------------------------------------------------------------------+--------|
+| 2026-08-24 | =nl-loop=/=nl-recur= are audited as shipped, not designed from scratch; this doc adds only the missing against-the-bug test (§9.1) | IMPLEMENTED |
+| 2026-08-24 | =nl-trampoline= designed as a tagged-list bounce sentinel (§4.1), not a bare-function sentinel (departs from Clojure's own =trampoline=, for the reason given) | IMPLEMENTED |
+| 2026-08-24 | =nl-trampoline= ships as =nl-prelude/src/nl-prelude-trampoline.el=, not a new top-level package (§4.5, §8) | IMPLEMENTED |
+| 2026-08-24 | General/HOF-threaded tail calls stated as permanently out of scope at both layers, correcting the task brief's own framing that this "awaits Doc 171's real pass" (§5.1) | DRAFT |
+| 2026-08-24 | =nl-defmacro-hygienic= designed as a composition of two already-shipped, independently-motivated mechanisms (=nl-defmacro= auto-gensym + =nl-ns-reader='s Phase 0 resolution hook), not a new hygiene engine (§6.3) | IMPLEMENTED |
+| 2026-08-24 | Doc 171's stale status header (L12) vs. its own newer decision log (§13) flagged explicitly, without editing Doc 171 (out of this survey's scope) | DRAFT |

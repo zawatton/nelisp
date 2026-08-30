@@ -83,6 +83,19 @@ criterion 15: the release cadence differs from NeLisp core).")
 (defconst nelisp-sys-stderr 2)
 (defconst nelisp-sys-wnohang 1)
 
+;; Doc 184 socket-primitives follow-on (2026-08-24,
+;; feat/socket-primitives-p1): this table has no socket-family entries
+;; (socket/connect/accept4/bind/listen/setsockopt/shutdown).  The new
+;; standalone-reader socket primitives
+;; (nelisp-socket-listen/-accept/-connect/-send/-recv/-close,
+;; scripts/nelisp-standalone-build.el's `nelisp-standalone--socket-forms')
+;; deliberately do NOT resolve their syscall numbers through this table --
+;; they bake Linux x86_64 numbers directly into the native unit at compile
+;; time, the same way `nelisp-standalone--os-syscall-xlat-forms' already
+;; branches other raw syscall numbers per target, rather than adding a
+;; runtime table lookup layer here.  Extending THIS table with a socket
+;; family (so `nelisp-sys'/`nelisp-process'-style code could reuse it) is a
+;; real, separate follow-up, not attempted in that change.
 (defconst nelisp-sys--portable-syscall-table
   '((gnu/linux
      (read . 0) (write . 1) (open . 2) (close . 3)

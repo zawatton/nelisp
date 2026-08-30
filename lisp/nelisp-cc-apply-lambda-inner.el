@@ -44,6 +44,13 @@
 ;; arity constraint: SysV AMD64 has 6 GP argument registers (rdi..r9).
 ;; All defuns must have arity ≤ 6, and arity must be EVEN for rsp alignment.
 ;;
+;; Body-loop GC invariant:
+;;   nl_cons_cdr_ptr returns a real child box for a pointer cdr, but
+;;   materialises a fresh unrooted view for an immediate cdr (including Nil).
+;;   Therefore the body CONS itself is carried across nelisp_eval_call, and its
+;;   cdr is taken only after eval returns; no materialised view crosses eval's
+;;   possible collection.
+;;
 ;; CPS call graph:
 ;;
 ;;   nl_apply_lambda_inner(captured formals body-list args-list env out)
@@ -55,6 +62,11 @@
 ;;     arity 6 (even)
 ;;     cap-rc≠0 → return 1 (push_captured failed)
 ;;     cap-rc=0 → nl_ali_push_frame(formals body-list args-list env out 1)
+;;
+;;   Body loop after nl_ali_bind_done:
+;;     nl_ali_body → (nl_cons_car_ptr FIRST) → nl_ali_body_eval
+;;       → (nelisp_eval_call FIRST) → nl_ali_body_step
+;;       → (nl_cons_cdr_ptr FIRST, after eval) → nl_ali_body
 ;;
 ;;   nl_ali_push_frame(formals body-list args-list env out cap-flag)
 ;;     arity 6 (even)
@@ -129,7 +141,8 @@
 ;; is fixed for the entire call — it doesn't change between body forms.
 ;; So we don't actually need to "return" it; we just need to pass it each
 ;; time we call nelisp_eval_call.  We need it in the body loop, which means
-;; it must be threaded through nl_ali_body → nl_ali_body_cdr → nl_ali_body_eval.
+;; it must be threaded through nl_ali_body → nl_ali_body_eval →
+;; nl_ali_body_step.
 ;;
 ;; COMPACT APPROACH: avoid `out' in the early setup chain by passing the
 ;; args differently. Specifically:
@@ -462,39 +475,37 @@
        body-rc env cap-flag))
 
     ;; After nelisp_eval_call: check eval-rc.
-    ;; eval-rc=0 → recurse on cdr-body.
+    ;; eval-rc=0 → fetch cdr(body) (extern-call FIRST ✓), then recurse.
+    ;; Fetching the cdr only after eval avoids carrying an unrooted
+    ;; materialised immediate-cdr view across eval's possible collection;
+    ;; body is the real CONS box and is already kept alive by the form.
     ;; eval-rc!=0 → finish with error (pop both frames as needed).
     ;; Arity 6 (even).
-    (defun nl_ali_body_step (eval-rc cdr-body env out cap-flag _p6)
+    (defun nl_ali_body_step (eval-rc body env out cap-flag _p6)
       (if (= eval-rc 0)
-          (nl_ali_body cdr-body env out cap-flag 0 0)
+          (nl_ali_body
+           (extern-call nl_cons_cdr_ptr body)
+           env out cap-flag 0 0)
         (nl_ali_finish 1 env out cap-flag 0 0)))
 
     ;; car-ptr = nl_cons_car_ptr(body) fetched as first arg.
-    ;; Eval this form (extern-call FIRST ✓).
+    ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
+    ;; rather than a possibly materialised cdr view.
     ;; Arity 6 (even).
-    (defun nl_ali_body_eval (car-ptr cdr-body env out cap-flag _p6)
+    (defun nl_ali_body_eval (car-ptr body env out cap-flag _p6)
       (nl_ali_body_step
        (extern-call nelisp_eval_call car-ptr env out)
-       cdr-body env out cap-flag 0))
-
-    ;; cdr-body = nl_cons_cdr_ptr(body) fetched as first arg.
-    ;; Fetch car(body) — extern-call FIRST ✓.
-    ;; Arity 6 (even).
-    (defun nl_ali_body_cdr (cdr-body body env out cap-flag _p6)
-      (nl_ali_body_eval
-       (extern-call nl_cons_car_ptr body)
-       cdr-body env out cap-flag 0))
+       body env out cap-flag 0))
 
     ;; Recursive body-eval entry.
     ;; sexp-tag 0 = Nil → body done, finish with 0.
-    ;; Else: fetch cdr(body) FIRST ✓.
+    ;; Else: fetch car(body) FIRST ✓.
     ;; Arity 6 (even).
     (defun nl_ali_body (body env out cap-flag _p5 _p6)
       (if (= (sexp-tag body) 0)
           (nl_ali_finish 0 env out cap-flag 0 0)
-        (nl_ali_body_cdr
-         (extern-call nl_cons_cdr_ptr body)
+        (nl_ali_body_eval
+         (extern-call nl_cons_car_ptr body)
          body env out cap-flag 0)))
 
     ;; After nl_push_and_bind: start body eval or finish cleanup on error.
@@ -544,18 +555,33 @@
     ;; Returns: 0=Ok (last body value in *out), 1=Err.
     ;; Arity 6 (even).
     (defun nl_apply_lambda_inner (captured formals body-list args-list env out)
-      (if (= (sexp-tag captured) 0)
-          ;; No captured env: skip push_captured, cap-flag=0.
-          (nl_ali_push_frame formals body-list args-list env out 0)
-        ;; Has captured env: push it FIRST ✓, cap-flag=1 on success.
-        (nl_ali_after_cap
-         (extern-call nl_env_push_captured env captured)
-         formals body-list args-list env out))))
+      ;; OUT is documented above as "Sexp::Nil on entry", and that was an
+      ;; assumption about every caller rather than something enforced here.
+      ;; Callers reuse a slot, so a lambda with an EMPTY body -- which walks
+      ;; to `nl_ali_body' with a Nil body-list and finishes without ever
+      ;; writing OUT -- returned whatever the previous form had left in it.
+      ;; Measured 2026-08-19: `(progn 42 (f))' answered 42 where Emacs
+      ;; answers nil, and the same in a `let' body, an `if' branch, an `or',
+      ;; and after a `while'.  `(funcall (lambda ()))' too, so it was never
+      ;; about `defun'.  Only a top-level call and `list' -- which gives each
+      ;; element its own slot -- came out right.
+      ;;
+      ;; Establishing the contract instead of assuming it: one write, and a
+      ;; non-empty body overwrites it with the last form's value as before.
+      (seq
+       (nl_cons_write_nil out)
+       (if (= (sexp-tag captured) 0)
+           ;; No captured env: skip push_captured, cap-flag=0.
+           (nl_ali_push_frame formals body-list args-list env out 0)
+         ;; Has captured env: push it FIRST ✓, cap-flag=1 on success.
+         (nl_ali_after_cap
+          (extern-call nl_env_push_captured env captured)
+          formals body-list args-list env out)))))
 
   "AOT source for `nl_apply_lambda_inner'
 (eval/mod.rs apply_lambda_inner → elisp).
 
-Eleven defuns (seq form).  Replaces the ~27-LOC Rust `apply_lambda_inner'
+Ten defuns (seq form).  Replaces the ~27-LOC Rust `apply_lambda_inner'
 body in `build-tool/src/eval/mod.rs'.
 
 New ABI externs (defined in eval/special_forms.rs):

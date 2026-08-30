@@ -186,6 +186,29 @@ Each entry is `(:type TYPE :sym SYM :offset OFFSET :addend N)' —
 order matches emit order, suitable for Doc 93 linker handoff."
   (plist-get (nelisp-asm-arm64--unwrap buf) :relocs))
 
+(defsubst nelisp-asm-arm64--byte-length (s)
+  "Return the number of BYTES in S.
+
+`length' answers characters.  On host Emacs the emitted chunks are unibyte
+strings, so the two agree; the standalone runtime stores every string as UTF-8
+with no unibyte flag, so a byte pair that happens to be valid UTF-8 counts as
+one character and a byte offset comes out short.  `string-bytes' answers bytes
+on both.  Same defect and same fix as `nelisp-asm-x86_64--byte-length', found
+there first because the self-host driver is x86_64-only and never reached this
+file."
+  (string-bytes s))
+
+(defsubst nelisp-asm-arm64--byte-at (s i)
+  "Return byte I of S, counting bytes rather than characters.
+
+`aref' answers a character, which on the standalone is the UTF-8 decode of
+whatever bytes it spans.  `string-byte' is the byte-level accessor added for
+byte-IO in Doc 161; host Emacs has no such function and does not need one,
+because `aref' on a unibyte string is already bytewise."
+  (if (fboundp 'string-byte)
+      (string-byte s i)
+    (aref s i)))
+
 (defun nelisp-asm-arm64--append-bytes (buf bs)
   "Append unibyte-string BS to BUF's byte stream and advance pos.
 Internal mutator — call sites are the per-instruction emitters.
@@ -196,7 +219,8 @@ O(N²) for long buffers."
          (chunks (plist-get plist :chunks))
          (len (plist-get plist :length)))
     (setq plist (plist-put plist :chunks (cons bs chunks)))
-    (setq plist (plist-put plist :length (+ len (length bs))))
+    (setq plist (plist-put plist :length
+                          (+ len (nelisp-asm-arm64--byte-length bs))))
     (nelisp-asm-arm64--rewrap buf plist)))
 
 (defun nelisp-asm-arm64--emit-word (buf word)
@@ -345,11 +369,13 @@ O(total-bytes))."
          (bytes  (apply #'concat (nreverse (copy-sequence chunks))))
          (labels (plist-get plist :labels))
          (fixups (plist-get plist :fixups))
-         (n (length bytes))
+         ;; Counted and indexed in BYTES, not characters: see
+         ;; `nelisp-asm-arm64--byte-length'.
+         (n (nelisp-asm-arm64--byte-length bytes))
          (vec (make-vector n 0))
          (i 0))
     (while (< i n)
-      (aset vec i (aref bytes i))
+      (aset vec i (nelisp-asm-arm64--byte-at bytes i))
       (setq i (1+ i)))
     (dolist (fix fixups)
       (let* ((slot  (nth 0 fix))

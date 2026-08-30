@@ -907,7 +907,20 @@ The file must contain one readable plist with keys `:emacs-version',
                                   :files (cdr collision)
                                   :count (length (cdr collision)))
                             (if divergent
-                                (list :heads (nreverse heads))
+                                ;; `:shape' fingerprints WHAT diverges, not
+                                ;; merely that something does.  Without it the
+                                ;; accepted-set key is kind+subject+files, so
+                                ;; once a divergence is accepted the two
+                                ;; definitions may drift into any other shape
+                                ;; and still match the same key.  Measured
+                                ;; 2026-08-21 by `gate-mutation': injecting a
+                                ;; real change into the prelude's `round' left
+                                ;; ns-gate green, because `round' was already
+                                ;; an accepted divergence.
+                                (list :heads (nreverse heads)
+                                      :shape (nl-ns--definition-shape
+                                              (cdr collision) analysis
+                                              (car collision)))
                               nil))
                     findings))))
     findings))
@@ -1239,6 +1252,53 @@ BASELINE is nil, a baseline plist, or a path accepted by
 ;; new.  Removing a divergence is also visible -- the entry goes stale --
 ;; so the list cannot quietly grow stale in the other direction either.
 
+;; 2026-08-23 Windows gate-battery inventory (target/ai/windows-inventory-
+;; 2026-08-23.md on feat/windows-gate-inventory) measured 19-20 of the
+;; digests this function returns differing from the Linux-pinned baseline,
+;; with the underlying collision set itself apparently unchanged
+;; (ns-inventory/ns-gate found the same number of collisions, only the
+;; fingerprints moved) -- consistent with the same symbols producing a
+;; different %S print form of FORM on Windows.  Investigated on Linux and
+;; not confirmed:
+;;
+;;   * CRLF-vs-LF file content -- tested directly by reading a real
+;;     multi-line-docstring fixture through `nl-ns--read-file-entry' both
+;;     as written (LF) and as a byte-for-byte CRLF-converted copy: the
+;;     parsed :forms and their %S/sha1 were byte-identical between the
+;;     two.  Emacs's own `insert-file-contents' coding-system detection
+;;     strips a carriage return before `read' ever sees it, so one that
+;;     survives a Windows git checkout inside a docstring or string
+;;     literal does not reach FORM through this code path.  This rules
+;;     out the most obvious guess, not every possible one -- it does not
+;;     rule out that same character entering some OTHER way (a
+;;     coding-system that fails to auto-detect DOS EOL in some Windows
+;;     Emacs configuration, for instance).
+;;   * Path-separator-sensitive sort order -- both `nl-ns-gate--files'
+;;     (`directory-files-recursively') and `nl-ns-inventory--files'
+;;     (`file-expand-wildcards') are pure Elisp; both always return
+;;     `/'-separated paths on every `system-type', so the `sort files
+;;     #'string<' below should order identically on Windows.  Not
+;;     directly exercised on a Windows filesystem from here.
+;;
+;; Neither hypothesis reproduces the divergence, so the real mechanism is
+;; still open.  To narrow it on the actual machine: dump the :heads plist
+;; this function's caller attaches to each ns-collision-divergent finding
+;; (`nl-ns--check-collisions', above) for the 19-20 symbols that moved,
+;; and diff the exact FORM text Linux vs Windows -- which byte differs is
+;; the fastest way to also learn why.
+(defun nl-ns--definition-shape (files analysis symbol)
+  "Return a short digest of how SYMBOL is defined across FILES.
+
+Two definitions that differ anywhere produce different digests, so an accepted
+divergence stops matching the moment either side is edited.  That is the point:
+accepting a divergence should accept THAT divergence, not the name."
+  (let ((parts nil))
+    (dolist (file (sort (copy-sequence files) #'string<))
+      (let* ((entry (nl-ns--analysis-file-entry analysis file))
+             (form (nl-ns--entry-definition entry symbol)))
+        (setq parts (cons (if form (format "%S" form) "-") parts))))
+    (secure-hash 'sha1 (mapconcat #'identity (nreverse parts) "\0"))))
+
 (defun nl-ns-finding-key (finding)
   "Return a stable string key for FINDING.
 Built from kind, subject and the sorted file list, so it survives a
@@ -1246,27 +1306,57 @@ reordering of the scan and changes only when the finding itself does."
   (let ((files nil))
     (dolist (f (plist-get finding :files))
       (setq files (cons f files)))
-    (format "%s\t%s\t%s"
+    (format "%s\t%s\t%s%s"
             (plist-get finding :kind)
             (plist-get finding :subject)
-            (mapconcat #'identity (sort files #'string<) " "))))
+            (mapconcat #'identity (sort files #'string<) " ")
+            ;; The shape, when the finding carries one, so accepting a
+            ;; divergence accepts THAT divergence rather than the name.
+            (let ((shape (plist-get finding :shape)))
+              (if shape (format "\t%s" (substring shape 0 12)) "")))))
 
 (defun nl-ns-load-accepted (path)
   "Read the accepted-divergence file at PATH.
-Return a plist with `:generated-at', `:reason' and `:keys' (a hash
-table of key -> t).  A missing file yields an empty set rather than an
-error: a tree that has not adopted the ratchet still reports normally."
+Return a plist with `:generated-at\=', `:reason\=', `:keys\=' (a hash table of
+key -> t) and `:notes\=' (an alist of key -> reason string).  A missing file
+yields an empty set rather than an error: a tree that has not adopted the
+ratchet still reports normally.  A file with no `:notes\=' loads as before --
+per-entry notes are additive.
+
+Why per-entry notes exist.  The file-level `:reason\=' says one thing about
+every entry, and on 2026-08-19 that one thing was \"package-local fallbacks
+are fboundp-gated on purpose\" -- true of a fallback that DEFERS correctly,
+and the justification under which two fallbacks that answered WRONGLY sat
+unnoticed (`nelisp-sys-access\=' ignored its mode argument while every caller
+passed 1).  A blanket reason cannot distinguish those two, so it stops being
+a reason and becomes a place to put things."
   (let ((keys (make-hash-table :test 'equal))
         (generated nil)
-        (reason nil))
+        (reason nil)
+        (notes nil))
     (when (and (stringp path) (file-readable-p path))
       (let ((entry (car (nl-ns-read-file path))))
         (when (consp entry)
           (setq generated (plist-get entry :generated-at))
           (setq reason (plist-get entry :reason))
+          (setq notes (plist-get entry :notes))
           (dolist (key (plist-get entry :keys))
             (puthash key t keys)))))
-    (list :generated-at generated :reason reason :keys keys)))
+    (list :generated-at generated :reason reason :keys keys :notes notes)))
+
+(defun nl-ns-accepted-note (accepted key)
+  "Return the per-entry note recorded for KEY in ACCEPTED, or nil."
+  (cdr (assoc key (plist-get accepted :notes))))
+
+(defun nl-ns-unnoted-accepted (accepted)
+  "Return the accepted keys that carry no per-entry note, sorted.
+An acceptance without a reason is a decision nobody wrote down."
+  (let ((notes (plist-get accepted :notes))
+        (out nil))
+    (maphash (lambda (key _v)
+               (unless (assoc key notes) (setq out (cons key out))))
+             (plist-get accepted :keys))
+    (sort out #'string<)))
 
 (defun nl-ns-unaccepted (findings accepted)
   "Return the FINDINGS whose key is absent from ACCEPTED.
@@ -1293,20 +1383,39 @@ stops describing the tree."
              (plist-get accepted :keys))
     (sort out #'string<)))
 
-(defun nl-ns-write-accepted (findings path &optional generated-at reason)
+(defun nl-ns-write-accepted (findings path &optional generated-at reason notes)
   "Write FINDINGS as the accepted-divergence set at PATH.
-GENERATED-AT and REASON are recorded verbatim so the file says when it
-was taken and why its contents are considered settled."
-  (let ((keys nil))
+GENERATED-AT and REASON are recorded verbatim so the file says when it was
+taken and why its contents are considered settled.
+
+NOTES is an alist of key -> reason carried over from the file being
+replaced.  Only notes whose key is still present survive; a note for a
+divergence that has since been resolved goes with its key.  Regenerating
+without passing NOTES silently discards every per-entry reason anyone
+wrote, which is why the caller reads the old file first --
+`nelisp-pkg-manifest-render\=' preserves author-written keys the same way and
+for the same reason."
+  (let ((keys nil)
+        (kept nil))
     (dolist (finding findings)
       (setq keys (cons (nl-ns-finding-key finding) keys)))
     (setq keys (sort keys #'string<))
+    (dolist (key keys)
+      (let ((note (cdr (assoc key notes))))
+        (when note (setq kept (cons (cons key note) kept)))))
+    (setq kept (nreverse kept))
     (with-temp-buffer
       (insert ";; nl-ns accepted divergences -- generated, review before commit.\n")
       (insert ";; Regenerate with the make target that produced it; do not\n")
       (insert ";; hand-add keys to silence a finding.\n")
+      (insert ";;\n")
+      (insert ";; :notes is an alist of key -> why THIS entry is accepted, and it\n")
+      (insert ";; survives regeneration.  The file-level :reason cannot tell a\n")
+      (insert ";; fallback that defers correctly from one that answers wrongly;\n")
+      (insert ";; two of the latter sat under it until 2026-08-19.\n")
       (prin1 (list :generated-at generated-at
                    :reason reason
+                   :notes kept
                    :keys keys)
              (current-buffer))
       (insert "\n")

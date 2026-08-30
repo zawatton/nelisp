@@ -1,0 +1,199 @@
+#+TITLE: Doc 166 — Boxed-param value-word ABI for user-el AOT defuns (DRAFT)
+#+DATE: 2026-08-02
+#+STATUS: SHIPPED — Stages A-D implemented and gated 2026-08-02
+#+VERIFIED-BY: aot-differential neln-loader-test standalone-reader-test ert-full compile
+# Stage gates: A/B byte-identical + smokes; C full probe matrix green
+# (qc 8/8 incl. recursion, rest folding, nil-param falsiness; q1 9/9;
+# p9x 9/9; p9m 42); D vendor scale (nemacs bootstrap AOT 165s with 2
+# non-native fallbacks, flat bake 5286s uncaught=0, image boot verify
+# green).  Implementation addenda beyond §2/§3: dedicated activation
+# discriminator `--user-el-aot-context' (see §2.5 note), same-unit
+# direct-call args/result word coercion, if-arm class reconciliation,
+# native descriptor :rest-p/:fixed-count + boundary-path rest folding,
+# GC root marker immediate-word skip.  Known divergences: raw literal
+# conditions keep Phase 47 C-truth (word values get Elisp truth);
+# `cond'/`and'/`or' result-value semantics unchanged (operand truth
+# coercion only); Stage E fast-path inlining still open.
+
+* 0. Addendum 2026-08-19 — where the convention was not applied
+
+This document was written and the work marked SHIPPED while the file
+itself was tracked on no branch: it survived only in a working tree, was
+swept into =wip/uncommitted-2026-08-18= for preservation, and is promoted
+here because this is the line the ABI lives on.
+
+Three call sites reached compiled bodies with bare =long= after the
+convention landed, each answering =(9-1)/4 = 2= for an argument of 9:
+
+- the integer fast driver, and one copy of its C source in
+  =native-exec-fast-simple-uncached= (d62690849, 2026-08-18);
+- =nelisp-artifact-native-exec=, a THIRD copy of the same driver
+  (b309f4e9a, 2026-08-19);
+- the hand-written caller in
+  =nelisp-aot-compiler/e2e-native-exec-neln-artifact-in-process=, which
+  =call-ptr='s into an mmap'd artifact and so is the caller side of this
+  ABI written out by hand (b309f4e9a).
+
+The pattern worth keeping: every copy of the driver C that was found got
+folded into one generator, and the one that was missed is the one that
+had been copied rather than called.
+
+* 1. Problem
+
+Measured 2026-08-01/02 (worklogs 57e83ca7, 624c5cf8, de638aec; repro
+=/tmp/miniflat/q1-t.flat.nlri= + =(q-rest-var)=, seconds):
+
+User-el AOT compiled defuns receive their parameters through
+=bf_native_call_boundary=, whose per-arg extraction is
+
+#+begin_src elisp
+(defun wf_argval (args n) (ptr-read-u64 (wf_arg_ptr args n) 8))
+#+end_src
+
+i.e. the raw PAYLOAD word at offset 8 of the caller's 32-byte Sexp arg
+slot: an =Int= arg arrives as the raw machine integer, a =Cons=/=Str=/...
+arg arrives as the payload box pointer.
+
+Inside the compiled body the same parameter has two incompatible
+consumer classes:
+
+- raw-i64 consumers (Phase 47 grammar): =(+ x 1)=, comparisons, loop
+  counters.  These REQUIRE the raw integer.  (=add1= smoke depends on
+  this.)
+- boxed-value consumers (Doc 129.7 bridges): funcall/apply/builtin
+  dispatch arms, =nelisp_cons_construct=/=nl_val_clone_into= chains.
+  These REQUIRE canonical value words (Doc 147: int N -> 4N+1, nil ->
+  3, t -> 7, low-bit-0 = pointer to a 32B Sexp slot).
+
+A runtime integer parameter flowing into a bridge arm is consumed as a
+value word: even integers dereference as slot pointers (SIGSEGV in
+=nl_vci_store_slot_imm=), odd integers silently decode as different
+integers.  Literal arguments survive by accident only because the
+compile-time value-word encoding (4N+1, shipped 2026-08-01) makes them
+odd immediates.  The gap is pre-existing on every entry path (boot
+funcall, bridge funcall, same-unit direct call) and is the concrete
+substance of the "automatic native object frame-slot ABI selection"
+roadmap item left pending in Doc 129 §7.
+
+There is no runtime-only fix: a raw payload word cannot be classified
+as integer-vs-pointer after the fact.  The representation must be
+made uniform at the ABI level.
+
+* 2. Design: params are canonical value words
+
+** 2.1 Convention
+
+Every user-el AOT defun parameter is passed as a Doc 147 canonical
+value word:
+
+| runtime value | word                              |
+|---------------+-----------------------------------|
+| integer N     | 4N+1 (low bit 1)                  |
+| nil           | 3                                 |
+| t             | 7                                 |
+| anything else | pointer to a 32B Sexp slot (low bit 0) |
+
+The pointer case points at the ARG SLOT (caller-owned, stable for the
+call), never at the payload box.  This is exactly the word class that
+=nl_val_clone_into= / =nl_val_load= already accept, so every existing
+bridge arm consumes params correctly with no change.
+
+** 2.2 Boundary change
+
+=bf_native_call_boundary= replaces =wf_argval= extraction with a
+wordify step per arg (classification identical to
+=nl_vci_store_slot_imm=):
+
+#+begin_src elisp
+(defun wf_argword (args n)
+  (let* ((slot (wf_arg_ptr args n))
+         (tag (ptr-read-u8 slot 0)))
+    (if (= tag 0) 3
+      (if (= tag 1) 7
+        (if (= tag 2) (+ (* (ptr-read-u64 (+ slot 8) 0) 4) 1)
+          slot)))))
+#+end_src
+
+The same wordify applies at every other entry producer (the C shim's
+=neln_raw_to_sexp= path, and the direct-call convention once Phase 2
+lands).
+
+** 2.3 Codegen: static two-class value tracking
+
+The compiler tracks a static value class on IR nodes and fenv
+entries: =:vclass raw= (machine i64: arith results, int literals in
+arith position, argc counts, addresses) vs =:vclass word= (params,
+free-var lookup results, bridge results, value-word literals).
+Conversions are emitted exactly at class-crossing consumer sites:
+
+- word -> raw (arith operand, index, condition): inline
+  =test wl,1; jnz imm= / immediate path =sar 2=; pointer path calls a
+  new helper =nl_word_int_payload(word, env, out)= that tag-checks the
+  slot (Int -> payload; anything else -> clean wrong-type-argument
+  stash through the existing Doc 129.8 error plumbing).  All user
+  defuns already carry the boundary rt slots (rt-slot-count >= 17),
+  so the error path is always available.
+- raw -> word (bridge value position, defun-call argument, return
+  value): inline =lea word, [raw*4+1]=.  Statically-raw values are
+  always integers by construction, so this is total.
+
+Class rules: literals keep today's contexts; =let=-bound vars inherit
+the initializer's class into fenv; =setq= coerces to the slot's
+declared class; =if= arms must agree (coerce to word when mixed).
+
+** 2.4 Return contract
+
+A user defun returns its result as a value word in rax.  The boundary
+epilogue stores it into OUT via =nl_val_clone_into(word -> out)= —
+replacing the current fragile "native-result == out" heuristic.  Raw
+arithmetic bodies therefore end with one =lea rax,[rax*4+1]=.
+
+** 2.5 Explicitly out of scope
+
+- The cc-unit DSL world (=lisp/nelisp-cc-*.el=, standalone runtime
+  units) stays raw-i64.  NOTE (measured 2026-08-02): the standalone
+  unit build binds =--allow-external-user-calls= to t as well
+  (=nelisp-standalone--compile-to-unit=), so that variable CANNOT
+  discriminate the two worlds.  The class machinery therefore
+  activates only under a dedicated context flag,
+  =nelisp-aot-compiler--user-el-aot-context=, bound t exclusively by
+  the nelisp-artifact native compile entries.
+- The same-unit direct-call rt-slot supply gap (Doc 129.7 gap;
+  currently: &rest callees reroute through the funcall bridge, other
+  boundary-consuming callees remain direct-call-unsafe).  Phase 2
+  below makes direct calls word-correct for ARGUMENTS, but rt-slot
+  supply remains routed through the boundary until the trampoline and
+  prologue conventions are unified.
+- Floats, bignums beyond |N| < 2^61: loud compile/runtime errors as
+  today.
+
+* 3. Staged plan and gates
+
+Each stage is independently gated by image bake (source route, ~12 s)
+plus boot probes; no stage ships without its gate.
+
+- Stage A — vclass plumbing behind a flag (default off).  IR/fenv
+  carry =:vclass=; conversions emit only when the flag is on.
+  Gate: flag-off byte-identical compile of the q1/p9x/p9m probe set.
+- Stage B — helper =nl_word_int_payload= + boundary =wf_argword=
+  (runtime units), still dormant.
+  Gate: rebuild + reader smokes; boundary behavior unchanged with the
+  compile flag off (wf_argval retained under the flag).
+- Stage C — flip the flag for the user path; recompile probes.
+  Gate matrix: add1 41->42 (raw arith); =(defun f (a b) (list (+ a 1)
+  b))= mixed classes; recursion with int params; q1 9/9 including
+  =q-rest-var= -> (20 22); p9x 9/9; p9m 42; negative ints; nil/t
+  params; boot direct =(q-rest-r 3 4)= -> (3 4).
+- Stage D — vendor-scale regression (nemacs bootstrap bake + magit
+  load smoke per the existing harness) before any wider rollout.
+
+* 4. Alternatives considered
+
+- Runtime reconcile at bridge staging (box "if it looks like an int"):
+  rejected — raw payload words are not classifiable at runtime
+  (measured: even ints are indistinguishable from pointers).
+- Per-defun ABI selection (raw fast path for arith-only bodies):
+  deferred, not rejected.  It becomes a Stage E optimization: bodies
+  whose params never cross into word class can keep the raw ABI, with
+  the class analysis of Stage A providing the classifier for free.
+  Correctness first, then the fast path.

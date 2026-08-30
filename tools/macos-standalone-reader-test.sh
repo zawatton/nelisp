@@ -31,7 +31,19 @@ cd "$REPO_ROOT"
 if [ -z "$TARGET" ]; then
   case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
     Darwin-arm64) TARGET="macos-aarch64" ;;
-    Darwin-x86_64) TARGET="macos-x86_64" ;;
+    # NOT macos-x86_64.  scripts/nelisp-standalone-build.el says so at
+    # length: the Mach-O writer and the x86_64 assembler both support the
+    # primitives, but the per-target orchestration (-abi, -arch, -os, the
+    # arena source and the start unit) "has no `macos-x86_64' clause
+    # anywhere and falls into an explicit \"unsupported target\" error",
+    # and calls closing that "real follow-up work, not something this
+    # predicate can or should paper over".
+    #
+    # Choosing it here is what asked for that error.  An Intel host
+    # cross-builds the aarch64 target instead -- which is the only macOS
+    # target that exists -- and verify-cross-platform.sh already declines
+    # to execute what it builds there.
+    Darwin-x86_64) TARGET="macos-aarch64" ;;
     *) TARGET="macos-aarch64" ;;
   esac
 fi

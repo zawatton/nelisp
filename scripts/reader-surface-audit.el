@@ -28,7 +28,14 @@
     (with-temp-buffer
       (insert-file-contents file)
       (goto-char (point-min))
-      (while (re-search-forward "((:\\(?:lit\\|u8\\) \"\\([^\"]+\\)\")" nil t)
+      ;; Two spellings, both real.  Most arms sit in a quoted alist, so the
+      ;; name follows the list's own open paren.  A few are built with
+      ;; `cons' because the arm is computed rather than literal (the FFI
+      ;; arms, and the loader's runtime-address arms, whose bodies are
+      ;; generated from a symbol list).  Matching only the first spelling
+      ;; reported the second as fboundp-liars -- names that dispatch and
+      ;; answer when called, the opposite of what this audit looks for.
+      (while (re-search-forward "(:\\(?:lit\\|u8\\) \"\\([^\"]+\\)\")" nil t)
         (push (match-string 1) names)))
     names))
 

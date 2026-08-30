@@ -139,6 +139,23 @@
           (if (<= b 57) 1 0)
         0))
 
+    (defun nelisp_reader_is_oct_digit (b)
+      (if (>= b 48) (if (<= b 55) 1 0) 0))
+
+    (defun nelisp_reader_hex_digit_value (b)
+      (cond
+       ((>= b 48)
+        (if (<= b 57)
+            (- b 48)
+          (if (>= b 65)
+              (if (<= b 70)
+                  (+ (- b 65) 10)
+                (if (>= b 97)
+                    (if (<= b 102) (+ (- b 97) 10) -1)
+                  -1))
+            -1)))
+       (t -1)))
+
     (defun nelisp_reader_is_atom_term (b)
       ;; Atom terminators: whitespace + ( ) [ ] ' ` , ; "
       (cond
@@ -234,6 +251,9 @@
            ;; No digits seen -> bare sign / dot / sign-only-with-non-digit
            ;; -> Sym.  Without this, `(+ x y)' lexes as Int "+".
            ((= (logand class 8) 0) 23)
+           ;; Last byte was `e'/`E' (bit 4 still set) -> an exponent marker
+           ;; with no exponent after it.  `12e' is a symbol on a host.
+           ((= (logand class 16) 16) 23)
            ;; Has dot OR exponent -> Float.
            ((> (logand class 3) 0) 21)
            ;; Otherwise -> Int.
@@ -245,17 +265,34 @@
          ((= (nelisp_reader_is_digit (str-byte-at str-ptr i)) 1)
           (nelisp_reader_classify_step str-ptr (+ i 1) end
                                        (logior (logand class 15) 8)))
-         ;; `.': set dot (bit 0), clear last-was-e.
+         ;; `.': set dot (bit 0), clear last-was-e.  A SECOND dot, or a dot
+         ;; after an exponent, matches neither integer nor float syntax, so
+         ;; the token is a symbol -- `(read "7.1.4")' answers the symbol
+         ;; 7.1.4 on a host, consuming all five characters.  Without this the
+         ;; token lexed as a float, the parser errored on it, and the caller
+         ;; read that as end of input: `src/nelisp-cc-arm64.el' stopped
+         ;; loading at its `:phase '7.1.4' and `load' still returned t.
          ((= (str-byte-at str-ptr i) 46)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior (logand class 15) 1)))
-         ;; `e' / `E': set has-e (bit 1) AND last-was-e (bit 4).
+          (if (> (logand class 3) 0)
+              (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                           (logior (logand class 15) 5))
+            (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                         (logior (logand class 15) 1))))
+         ;; `e' / `E': set has-e (bit 1) AND last-was-e (bit 4).  A SECOND
+         ;; exponent marker is not number syntax -- `1e2e3' is a symbol on a
+         ;; host -- so it forces sym (bit 2) the way a second dot does.
          ((= (str-byte-at str-ptr i) 101)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 18)))
+          (if (= (logand class 2) 2)
+              (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                           (logior class 22))
+            (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                         (logior class 18))))
          ((= (str-byte-at str-ptr i) 69)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 18)))
+          (if (= (logand class 2) 2)
+              (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                           (logior class 22))
+            (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                         (logior class 18))))
          ;; `+'/`-': sign after digit (bit 3 set) AND not just-after-e
          ;; (bit 4 clear) forces sym (`1+' / `1-' lex as symbols, not
          ;; `Int(1)' + dropped sign).  Otherwise (start, after e/E)
@@ -441,6 +478,108 @@
     ;; resolved bytes into SCRATCH.
     ;; ===========================================================
 
+    (defun nelisp_reader_scratch_has_high_loop (data i len)
+      (if (>= i len)
+          0
+        (if (>= (nl_bytes_byte_at data i) 128)
+            1
+          (nelisp_reader_scratch_has_high_loop data (+ i 1) len))))
+
+    (defun nelisp_reader_scratch_has_high_p (scratch)
+      (nelisp_reader_scratch_has_high_loop
+       (str-bytes-ptr scratch) 0 (mut-str-len scratch)))
+
+    (defun nelisp_reader_string_plain (str-ptr cursor n scratch)
+      (let* ((b (str-byte-at str-ptr cursor)))
+        ;; A plain high source byte belongs to a UTF-8 character.  Once a
+        ;; raw-byte escape has made SCRATCH tag 15 the two representations
+        ;; cannot coexist.
+        (if (if (>= b 128) (= (sexp-tag scratch) 15) 0)
+            -2
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch b)
+           (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))))
+
+    (defun nelisp_reader_oct_count (str-ptr cursor n count)
+      (if (>= count 3)
+          count
+        (if (>= (+ cursor count) n)
+            count
+          (if (= (nelisp_reader_is_oct_digit
+                  (str-byte-at str-ptr (+ cursor count))) 1)
+              (nelisp_reader_oct_count str-ptr cursor n (+ count 1))
+            count))))
+
+    (defun nelisp_reader_oct_value (str-ptr cursor count i acc)
+      (if (>= i count)
+          acc
+        (nelisp_reader_oct_value
+         str-ptr cursor count (+ i 1)
+         (+ (* acc 8) (- (str-byte-at str-ptr (+ cursor i)) 48)))))
+
+    (defun nelisp_reader_string_push_multibyte
+        (str-ptr next n scratch value)
+      (if (= (sexp-tag scratch) 15)
+          -2
+        ;; A three-digit octal escape is at most 511, hence two UTF-8 bytes.
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch (+ 192 (/ value 64)))
+         (nelisp_reader_prog2
+          (mut-str-push-byte scratch
+                             (+ 128 (- value (* (/ value 64) 64))))
+          (nelisp_reader_string_body str-ptr next n scratch)))))
+
+    (defun nelisp_reader_string_push_raw_byte
+        (str-ptr next n scratch value)
+      (if (= (sexp-tag scratch) 15)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch value)
+           (nelisp_reader_string_body str-ptr next n scratch))
+        ;; A high byte already in a tag-6 builder is a UTF-8 character seen
+        ;; before this escape.  Do not flip that invalid mixture to tag 15.
+        (if (= (nelisp_reader_scratch_has_high_p scratch) 1)
+            -2
+          (nelisp_reader_prog2
+           (nl_mut_str_mark_unibyte scratch)
+           (nelisp_reader_prog2
+            (mut-str-push-byte scratch value)
+            (nelisp_reader_string_body str-ptr next n scratch))))))
+
+    (defun nelisp_reader_string_push_numeric
+        (str-ptr next n scratch value)
+      (if (< value 128)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch value)
+           (nelisp_reader_string_body str-ptr next n scratch))
+        (if (<= value 255)
+            (nelisp_reader_string_push_raw_byte
+             str-ptr next n scratch value)
+          (nelisp_reader_string_push_multibyte
+           str-ptr next n scratch value))))
+
+    (defun nelisp_reader_string_octal (str-ptr cursor n scratch)
+      (let* ((count (nelisp_reader_oct_count str-ptr cursor n 0))
+             (value (nelisp_reader_oct_value str-ptr cursor count 0 0)))
+        (nelisp_reader_string_push_numeric
+         str-ptr (+ cursor count) n scratch value)))
+
+    (defun nelisp_reader_string_hex (str-ptr cursor n scratch)
+      ;; CURSOR points at `x'; exactly two following hex digits are decoded.
+      (if (>= (+ cursor 2) n)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 120)
+           (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
+        (let* ((hi (nelisp_reader_hex_digit_value
+                    (str-byte-at str-ptr (+ cursor 1))))
+               (lo (nelisp_reader_hex_digit_value
+                    (str-byte-at str-ptr (+ cursor 2)))))
+          (if (if (< hi 0) 1 (if (< lo 0) 1 0))
+              (nelisp_reader_prog2
+               (mut-str-push-byte scratch 120)
+               (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
+            (nelisp_reader_string_push_numeric
+             str-ptr (+ cursor 3) n scratch (+ (* hi 16) lo))))))
+
     (defun nelisp_reader_string_body (str-ptr cursor n scratch)
       (if (>= cursor n)
           -1
@@ -452,14 +591,19 @@
           (if (>= (+ cursor 1) n)
               -1
             (nelisp_reader_string_escape str-ptr (+ cursor 1) n scratch)))
-         (t
-          (nelisp_reader_prog2
-           (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
-           (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))))))
+         (t (nelisp_reader_string_plain str-ptr cursor n scratch)))))
 
     (defun nelisp_reader_string_escape (str-ptr cursor n scratch)
       ;; CURSOR points at the byte AFTER `\\'.
       (cond
+       ;; One to three octal digits.  Values 128..255 are raw bytes and
+       ;; values 256..511 are ordinary multibyte characters.
+       ((= (nelisp_reader_is_oct_digit
+            (str-byte-at str-ptr cursor)) 1)
+        (nelisp_reader_string_octal str-ptr cursor n scratch))
+       ;; Exactly two hex digits, yielding one byte.
+       ((= (str-byte-at str-ptr cursor) 120)
+        (nelisp_reader_string_hex str-ptr cursor n scratch))
        ;; `\\a' -> BEL
        ((= (str-byte-at str-ptr cursor) 97)
         (nelisp_reader_prog2
@@ -509,11 +653,6 @@
        ((= (str-byte-at str-ptr cursor) 118)
         (nelisp_reader_prog2
          (mut-str-push-byte scratch 11)
-         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\0' -> NUL
-       ((= (str-byte-at str-ptr cursor) 48)
-        (nelisp_reader_prog2
-         (mut-str-push-byte scratch 0)
          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
        ;; `\\\\' -> backslash
        ((= (str-byte-at str-ptr cursor) 92)
@@ -685,16 +824,21 @@
 
     (defun nelisp_reader_lex_string_finalize
         (end-or-err payload-slot cursor-out-slot scratch)
-      (if (< end-or-err 0)
+      (if (= end-or-err -2)
+          ;; A raw-byte escape and a multibyte character were mixed.
+          (nelisp_reader_prog2
+           (sexp-int-make cursor-out-slot 0)
+           -2)
+        (if (< end-or-err 0)
           ;; Error: write a stable cursor (= 0) and return -1.
           (nelisp_reader_prog2
            (sexp-int-make cursor-out-slot 0)
            -1)
-        (nelisp_reader_prog2
-         (sexp-int-make cursor-out-slot end-or-err)
-         (nelisp_reader_prog2
-          (mut-str-finalize scratch payload-slot)
-          22))))
+          (nelisp_reader_prog2
+           (sexp-int-make cursor-out-slot end-or-err)
+           (nelisp_reader_prog2
+            (mut-str-finalize scratch payload-slot)
+            22)))))
 
     (defun nelisp_reader_lex_string
         (str-ptr cursor n payload-slot cursor-out-slot scratch)

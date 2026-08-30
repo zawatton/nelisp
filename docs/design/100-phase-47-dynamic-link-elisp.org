@@ -375,3 +375,128 @@ Codegen wiring (nelisp-standalone-build.el):
   prior forms, ~eval-runtime-image "(image-hot)"~ => 99, full ffi-smoke.  The
   native evaluator now runs ordinary Elisp (special forms + definers + the core
   + iteration macros + user macros) with NO prelude required.
+- 2026-08-23: *owner real-machine probe found `nl-ffi-call' void on both a
+  Windows PE build and a WSL Debian Linux ELF `target/nelisp' -- root-caused
+  and fixed (fix/ffi-surface-availability).*  Every status entry above that
+  says "static reader unaffected... `nl-ffi-call' absent (nil)" was
+  describing the correct behaviour of an OPT-IN capability, but nothing told
+  the two callers who actually build a binary the ordinary way -- `make
+  standalone-reader' / `make standalone-reader-test' / `nelisp-ai.sh
+  standalone' / ~tools/build-release-artifact.sh~ (the release pipeline the
+  owner's Windows PE and Linux ELF both came from) -- that `nl-ffi-call' is
+  conditional at all.  None of them set `NELISP_READER_DYNAMIC=1'; only
+  `make standalone-reader-ffi-smoke'/`standalone-reader-tls-smoke' (and a
+  by-hand build for a language survey the day before) ever did.  Root cause,
+  fix and the full before/after availability matrix are section 7 below.
+
+* 7. FFI availability by build (2026-08-23 finding)
+
+  *Root cause, precisely (measured on this host, 2026-08-23):*
+  + The extern arms that back `nl-ffi-call' are appended to the reader's
+    dispatch table, and the name is installed into the builtins mirror
+    `fboundp' reads, ONLY when `NELISP_READER_DYNAMIC' is set at build time
+    (`nelisp-standalone--reader-dynamic-p', scripts/nelisp-standalone-build.el).
+    Absent that flag -- the default, and what every one of the four paths
+    above produces -- the name is not a candidate in the dispatch chain at
+    all: `(fboundp 'nl-ffi-call)' answers nil and a call raised a bare
+    `void-function', uniformly across bare FILE, `--load', `--eval',
+    `eval-elisp-source', the REPL, and a compiled artifact -- presence is a
+    property of the linked BINARY, not of how it is invoked, so no entry
+    path was ever "narrower" than another on the same build.
+  + `NELISP_READER_DYNAMIC' itself only takes effect for the (implicit)
+    default target, i.e. linux-x86_64: `nelisp-standalone-build-reader''s
+    target `pcase' sends `windows-x86_64'/`windows-aarch64' to
+    `nelisp-link-units-pe32' and `macos-aarch64'/`linux-aarch64' to their
+    own static branches unconditionally, never consulting the flag.  Windows
+    is not merely "flag not passed" -- confirmed by forcing the combination
+    (`NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_TARGET=windows-x86_64 make
+    standalone-reader'): the extern-call units still carry unresolved
+    references to e.g. `toupper', and `nelisp-link-units-pe32' has no
+    PE import-table/GOT machinery to resolve them, so the build hard-fails
+    with `nelisp-link--unresolved-symbol'.  The PE writer would need real
+    Windows DLL import-table emission (a separate, unstarted project) before
+    a Windows `target/nelisp.exe' could ever route `nl-ffi-call' to a DLL
+    the way the ELF path routes it to a `.so' -- unrelated to the
+    ~examples/ffi-cairo/~ Windows path below, which sidesteps this entirely
+    by compiling to a `.o'/COFF object and linking with an external `cc'/
+    mingw toolchain instead of this repo's own PE writer.
+  + The presence sweep (`tools/nelisp-substrate-presence-corpus.el',
+    `make substrate-presence-sweep') never had a row for `nl-ffi-call' to
+    catch any of this with: its corpus is generated from two sources
+    (~scripts/nelisp-stdlib-prelude.el~'s top-level defining forms and
+    `nelisp--primitive-symbols'), and `nl-ffi-call' is invisible to both --
+    see `tools/nelisp-substrate-presence-gen.el''s `nlsp--extra-names' for
+    why.  Fixed there too (below), a distinct bug from the void-ness itself.
+
+  *Fix:* `nl-ffi-call' now always exists.  A first version of this fix added
+  an elisp-level `(unless (fboundp 'nl-ffi-call) (defun nl-ffi-call ...))'
+  fallback to `scripts/nelisp-stdlib-prelude.el' -- `unsafe-inventory'
+  correctly rejected it: `nl-ffi-call' is a listed
+  `nl-safe-unsafe-primitives' name (packages/nl-safe/src/nl-safe.el), and
+  `tools/unsafe-kernel.txt' only lets a small fixed set of files (this one
+  among them) mention an unsafe-primitive name at all, quoted or not --
+  correctly, since the whole point of that boundary is not to distinguish
+  "just the name" from "an actual call".  The shipped fix instead lives
+  entirely in `scripts/nelisp-standalone-build.el' (already a kernel file,
+  already `nl-ffi-call''s real home):
+  - `nelisp-standalone--reader-extern-builtin-names' now installs the
+    `nl-ffi-call' name into the builtins mirror `fboundp' reads
+    UNCONDITIONALLY, not only under `NELISP_READER_DYNAMIC'.
+  - `nelisp-standalone--reader-ffi-live-p' is a new, narrower predicate than
+    `nelisp-standalone--reader-dynamic-p': true only for the dynamic
+    linux-x86_64 build where the real extern dispatcher can actually link.
+    `nelisp-standalone--applyfn-reader-table' picks the real PLT-backed arm
+    (`nelisp-standalone--applyfn-extern-arms') when it is true, otherwise a
+    new `nelisp-standalone--applyfn-extern-arms-unsupported' arm
+    (`nelisp-standalone--applyfn-ffi-unsupported-form') that raises
+    `nelisp-unsupported-primitive' with data `(nl-ffi-call)' -- built from
+    packed symbol-name bytes via `nelisp-standalone--name-words', the same
+    technique the `bf_wrong_type_*' family already uses to raise a fixed
+    condition with fixed data, so the fix needed no new low-level machinery.
+  - Since `nelisp-standalone--reader-ffi-live-p' is target-aware (unlike the
+    bare env-var check), forcing `NELISP_READER_DYNAMIC=1' for a
+    non-linux-x86_64 target no longer hits the `nelisp-link--unresolved-
+    symbol' link failure section 6 above measured for windows-x86_64: the
+    dispatch table picks the unsupported arm instead, so nothing references
+    an unresolved `toupper' import to begin with.
+  - `nelisp-unsupported-primitive''s `error-conditions'/`error-message'
+    registration stays in `scripts/nelisp-stdlib-prelude.el' (loaded by
+    every entry path uniformly) -- it is NOT itself a listed unsafe
+    primitive, so that file is the ordinary place for it, unaffected by the
+    relocation above.  A new NeLisp-specific `error-conditions' entry (not
+    an Emacs-standard one) for "this primitive exists but this substrate
+    cannot do its job" as distinct from "this name was never defined";
+    coordinated with branch `feat/socket-primitives-p1', which introduces
+    the same symbol for the same purpose on a different primitive family.
+  `tools/nelisp-substrate-presence-gen.el' gained a third corpus
+  source (`nlsp--extra-names') for exactly this class of name-invisible-to-
+  both-automatic-sources gap, tagged `standalone-only' (host Emacs never has
+  `nl-ffi-call' regardless of the fix, and the tag's usual `nelisp-' prefix
+  rule does not match this name -- fixed in `nlsp--tag' too, or the corpus
+  addition would have manufactured a permanent false "gap vs host" finding).
+  New gate: `standalone-reader-ffi-unsupported-smoke' (folded into
+  `standalone-reader-smokes') builds the plain static default -- explicitly
+  with `NELISP_READER_DYNAMIC' and `NELISP_STANDALONE_TARGET' unset, unlike
+  `standalone-reader-ffi-smoke' above, which only ever tests the opt-in
+  dynamic variant -- and asserts `nl-ffi-call' is `fboundp' and raises
+  `nelisp-unsupported-primitive' on every entry path a user can reach it
+  from.  Measured red on the pre-fix tree (`fboundp' -> nil), green after.
+
+  *Availability matrix* (F = `fboundp', C = a call's outcome; identical
+  across bare FILE / `--load' / `--eval' / `eval-elisp-source' / REPL /
+  compiled artifact on a given binary -- presence does not vary by entry
+  path, only by build):
+
+  | Build                                                    | Before (F / C)                     | After (F / C) |
+  |------------------------------------------------------------+-------------------------------------+-----------------|
+  | linux-x86_64, static (default: `standalone-reader', release pipeline) | nil / `void-function'  | t / `nelisp-unsupported-primitive' |
+  | linux-x86_64, `NELISP_READER_DYNAMIC=1'                    | t / real FFI (toupper etc.)         | t / real FFI (unchanged) |
+  | windows-x86_64 / windows-aarch64, `NELISP_READER_DYNAMIC' unset (default) | nil / `void-function' | t / `nelisp-unsupported-primitive' |
+  | windows-x86_64 / windows-aarch64, `NELISP_READER_DYNAMIC=1' forced | BUILD FAILS (`nelisp-link--unresolved-symbol') | builds; t / `nelisp-unsupported-primitive' |
+  | macos-aarch64 / linux-aarch64 (any flag)                   | nil / `void-function'                | t / `nelisp-unsupported-primitive' |
+  | host Emacs (this repo's own dev Emacs)                     | nil / `void-function'                | nil / `void-function' (unchanged -- `nl-ffi-call' is standalone-only by design, host Emacs never gains it) |
+
+  The owner's two probes (Windows PE, WSL Debian Linux ELF) both landed in
+  the first "Before" row's platform-equivalent cells -- both built the
+  ordinary way, both correctly void by the old design, neither told apart
+  from "this NeLisp is too old to know what FFI is" until now.

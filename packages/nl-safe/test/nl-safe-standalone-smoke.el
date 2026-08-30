@@ -69,11 +69,16 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
         (t nl-smoke--r))))
   (provide 'ert))
 
+(load "packages/nl-prelude/src/nl-prelude-trampoline.el") ; wave8: nl-prelude requires it
 (load "packages/nl-prelude/src/nl-prelude.el")
 (load "packages/nl-safe/src/nl-safe.el")
 (load "packages/nl-safe/src/nl-safe-report.el")
 (load "packages/nl-safe/test/nl-safe-test.el")
 (load "packages/nl-safe/test/nl-safe-report-test.el")
+
+;; Doc 170 borrow-violation example (examples/nl-safe/borrow-violation.el):
+;; keeps the demo honest on the substrate its README claims to support.
+(load "packages/nl-safe/test/nl-safe-example-test.el")
 
 (let ((tests (reverse nl-smoke--tests))
       (ran 0)
@@ -88,6 +93,10 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
          (setq failures
                (cons (format "%s: %S" (car test) err) failures)))))
     (setq tests (cdr tests)))
+  ;; `tools/ai/nelisp-ai.sh gate NAME -- ...' requires this exact line to
+  ;; report what the gate checked; its absence is itself a hard failure
+  ;; there (see tools/ai/nelisp-ai.sh's `cmd_gate').
+  (princ (format "GATE-COUNT checked=%d findings=%d\n" ran (length failures)))
   (when failures
     (let ((all failures))
       (while all
@@ -95,8 +104,8 @@ KEYS supports `:type SYMBOL' for condition matching like ert."
         (setq all (cdr all))))
     (error "nl-safe-standalone-smoke: %d failure(s), %d passed"
            (length failures) ran))
-  (when (< ran 95)
-    (error "nl-safe-standalone-smoke: only %d tests ran (expected >= 95)"
+  (when (< ran 106)
+    (error "nl-safe-standalone-smoke: only %d tests ran (expected >= 106)"
            ran))
   (princ (format "nl-safe-standalone-smoke: PASS (%d tests)\n" ran)))
 

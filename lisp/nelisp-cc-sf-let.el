@@ -41,20 +41,25 @@
 ;;   Every function has even arity so body-entry rsp ≡ 0 mod 16.
 ;;   Every extern-call appears as argument 0 at its call site.
 ;;
-;; Structure (7 defuns):
+;; Body-loop GC invariant:
+;;   nl_cons_cdr_ptr returns a real child box for a pointer cdr, but
+;;   materialises a fresh unrooted view for an immediate cdr (including Nil).
+;;   Therefore the body CONS itself is carried across nelisp_eval_call, and its
+;;   cdr is taken only after eval returns; no materialised view crosses eval's
+;;   possible collection.
+;;
+;; Structure (8 defuns):
 ;;   nl_sf_let_ret        (pop-rc body-rc _p2 _p3) — arity 4
 ;;     Return body-rc after frame pop.
 ;;   nl_sf_let_finish     (body-rc env out _pad) — arity 4
 ;;     Pop frame (extern-call FIRST), delegate to nl_sf_let_ret.
-;;   nl_sf_let_body_step  (eval-rc cdr-body env out) — arity 4
-;;     Advance body cons list after one eval.
-;;   nl_sf_let_body_eval  (car-ptr cdr-body env out) — arity 4
+;;   nl_sf_let_body_step  (eval-rc body env out) — arity 4
+;;     After eval, get cdr(body) (extern-call FIRST) and advance.
+;;   nl_sf_let_body_eval  (car-ptr body env out) — arity 4
 ;;     Eval one body form (extern-call FIRST), delegate to step.
-;;   nl_sf_let_body_cdr   (cdr-body body env out) — arity 4
-;;     Get car(body) for eval (extern-call FIRST), delegate to eval.
 ;;   nl_sf_let_body       (body env out _pad) — arity 4
 ;;     Recursive body-eval entry.  If Nil → finish (0).
-;;     Else: fetch cdr(body) FIRST → body_cdr.
+;;     Else: fetch car(body) FIRST → body_eval.
 ;;   nl_sf_let_setup_done (setup-rc args env out) — arity 4
 ;;     If setup failed → return 1.  Else get cdr(args) FIRST → body.
 ;;   nl_sf_let_got_bindings (bindings args env out) — arity 4
@@ -82,40 +87,38 @@
        body-rc 0 0))
 
     ;; After nelisp_eval_call on one body form: check rc, advance list.
-    ;; eval-rc=0 → recurse on remaining body forms.
+    ;; eval-rc=0 → fetch cdr(body) (extern-call FIRST ✓), then recurse.
+    ;; Fetching the cdr only after eval avoids carrying an unrooted
+    ;; materialised immediate-cdr view across eval's possible collection;
+    ;; body is the real CONS box and is already kept alive by the form.
     ;; eval-rc!=0 → finish with error (pop frame).
     ;; Arity 4 (even).
-    (defun nl_sf_let_body_step (eval-rc cdr-body env out)
+    (defun nl_sf_let_body_step (eval-rc body env out)
       (if (= eval-rc 0)
-          (nl_sf_let_body cdr-body env out 0)
+          (nl_sf_let_body
+           (extern-call nl_cons_cdr_ptr body)
+           env out 0)
         (nl_sf_let_finish 1 env out 0)))
 
     ;; car-ptr = nl_cons_car_ptr(body) already fetched as first arg.
-    ;; Eval this form (extern-call FIRST ✓), delegate to step.
+    ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
+    ;; rather than a possibly materialised cdr view.
     ;; Arity 4 (even).
-    (defun nl_sf_let_body_eval (car-ptr cdr-body env out)
+    (defun nl_sf_let_body_eval (car-ptr body env out)
       (nl_sf_let_body_step
        (extern-call nelisp_eval_call car-ptr env out)
-       cdr-body env out))
-
-    ;; cdr-body = nl_cons_cdr_ptr(body) already fetched as first arg.
-    ;; Get car(body) for eval (extern-call FIRST ✓).
-    ;; Arity 4 (even).
-    (defun nl_sf_let_body_cdr (cdr-body body env out)
-      (nl_sf_let_body_eval
-       (extern-call nl_cons_car_ptr body)
-       cdr-body env out))
+       body env out))
 
     ;; Recursive body-eval entry.
     ;; body: remaining forms cons list.
     ;; If Nil → all forms done, pop frame + return 0.
-    ;; Else: fetch cdr(body) FIRST ✓, then eval car.
+    ;; Else: fetch car(body) FIRST ✓.
     ;; Arity 4 (even).
     (defun nl_sf_let_body (body env out _pad)
       (if (= (sexp-tag body) 0)
           (nl_sf_let_finish 0 env out 0)
-        (nl_sf_let_body_cdr
-         (extern-call nl_cons_cdr_ptr body)
+        (nl_sf_let_body_eval
+         (extern-call nl_cons_car_ptr body)
          body env out)))
 
     ;; setup-rc = result of nl_let_setup (0=Ok, 1=Err).
@@ -154,7 +157,7 @@
 
   "AOT source for `nl_sf_let' (eval/special_forms.rs sf_let → elisp).
 
-Nine defuns (seq form).  CPS chain decomposed into frame-setup +
+Eight defuns (seq form).  CPS chain decomposed into frame-setup +
 body-eval + frame-pop phases.
 
 Externs:
@@ -167,9 +170,9 @@ Entry chain:
   nl_sf_let → (car(args) FIRST) → nl_sf_let_got_bindings
   → (nl_let_setup FIRST) → nl_sf_let_setup_done
   → (cdr(args) FIRST) → nl_sf_let_body
-  → (cdr(body) FIRST) → nl_sf_let_body_cdr
   → (car(body) FIRST) → nl_sf_let_body_eval
-  → (nelisp_eval_call FIRST) → nl_sf_let_body_step → nl_sf_let_body
+  → (nelisp_eval_call FIRST) → nl_sf_let_body_step
+  → (cdr(body) FIRST, after eval) → nl_sf_let_body
   When body exhausted: → nl_sf_let_finish
   → (nl_env_pop_frame FIRST) → nl_sf_let_ret → body_rc
 

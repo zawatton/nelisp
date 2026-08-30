@@ -75,103 +75,153 @@ any `-l FILE'.")
 ;; 4. getenv / setenv
 ;; ---------------------------------------------------------------------------
 
-(defun getenv (variable)
-  "Return the value of environment variable VARIABLE, or nil.
+(unless (fboundp 'getenv)   ; noqa: NeLisp builtin-compat
+  ;; Gated, because this file's own job is to FILL A GAP: "pure-elisp shims
+  ;; that fill the gap between the nelisp standalone runtime and the Emacs
+  ;; batch-mode functions" (top of this file).  A gap-filler that defines
+  ;; unconditionally does not fill a gap, it replaces whatever was there --
+  ;; on a host Emacs that is Emacs's own definition.  `nelisp--cli-batch-
+  ;; ensure-host', which loads this file, already gates its own fallback
+  ;; stub the same way; this file did not.  (2026-08-19, found by
+  ;; `make emacs-compat'.)
+  (defun getenv (variable)
+    "Return the value of environment variable VARIABLE, or nil.
 
-Looks up VARIABLE in `process-environment' (a list of \"VAR=VAL\"
-strings).  Returns the VAL substring on match, nil if not found.
-An entry whose value portion is the empty string returns \"\"."
-  (let ((prefix (concat variable "="))
-        (plen   (+ (length variable) 1))
-        (found  nil)
-        (cur    process-environment))
-    (while (and cur (not found))
-      (let ((entry (car cur)))
-        (when (and (stringp entry)
-                   (>= (length entry) plen)
-                   (string-equal (substring entry 0 plen) prefix))
-          (setq found (substring entry plen))))
-      (setq cur (cdr cur)))
-    found))
-
-(defun setenv (variable &optional value substitute)
-  "Set environment variable VARIABLE to VALUE in `process-environment'.
-
-If VALUE is nil, remove VARIABLE from the list.  SUBSTITUTE is
-accepted for Emacs-API compatibility but ignored.  Returns VALUE."
-  (let ((prefix (concat variable "="))
-        (plen   (+ (length variable) 1))
-        (new-env nil)
-        (found  nil))
-    ;; Walk the list, rebuild without the old entry.
-    (let ((cur process-environment))
-      (while cur
+  Looks up VARIABLE in `process-environment' (a list of \"VAR=VAL\"
+  strings).  Returns the VAL substring on match, nil if not found.
+  An entry whose value portion is the empty string returns \"\"."
+    (let ((prefix (concat variable "="))
+          (plen   (+ (length variable) 1))
+          (found  nil)
+          (cur    process-environment))
+      (while (and cur (not found))
         (let ((entry (car cur)))
-          (if (and (stringp entry)
-                   (>= (length entry) plen)
-                   (string-equal (substring entry 0 plen) prefix))
-              (setq found t)           ; drop old entry
-            (setq new-env (cons entry new-env))))
-        (setq cur (cdr cur))))
-    (setq new-env (nreverse new-env))
-    ;; Prepend new entry when VALUE is given.
-    (when value
-      (setq new-env (cons (concat variable "=" value) new-env)))
-    (setq process-environment new-env)
-    value))
+          (when (and (stringp entry)
+                     (>= (length entry) plen)
+                     (string-equal (substring entry 0 plen) prefix))
+            (setq found (substring entry plen))))
+        (setq cur (cdr cur)))
+      found))
+)
+
+(unless (fboundp 'setenv)   ; noqa: NeLisp builtin-compat
+  ;; Gated, because this file's own job is to FILL A GAP: "pure-elisp shims
+  ;; that fill the gap between the nelisp standalone runtime and the Emacs
+  ;; batch-mode functions" (top of this file).  A gap-filler that defines
+  ;; unconditionally does not fill a gap, it replaces whatever was there --
+  ;; on a host Emacs that is Emacs's own definition.  `nelisp--cli-batch-
+  ;; ensure-host', which loads this file, already gates its own fallback
+  ;; stub the same way; this file did not.  (2026-08-19, found by
+  ;; `make emacs-compat'.)
+  (defun setenv (variable &optional value substitute)
+    "Set environment variable VARIABLE to VALUE in `process-environment'.
+
+  If VALUE is nil, remove VARIABLE from the list.  SUBSTITUTE is
+  accepted for Emacs-API compatibility but ignored.  Returns VALUE."
+    (let ((prefix (concat variable "="))
+          (plen   (+ (length variable) 1))
+          (new-env nil)
+          (found  nil))
+      ;; Walk the list, rebuild without the old entry.
+      (let ((cur process-environment))
+        (while cur
+          (let ((entry (car cur)))
+            (if (and (stringp entry)
+                     (>= (length entry) plen)
+                     (string-equal (substring entry 0 plen) prefix))
+                (setq found t)           ; drop old entry
+              (setq new-env (cons entry new-env))))
+          (setq cur (cdr cur))))
+      (setq new-env (nreverse new-env))
+      ;; Prepend new entry when VALUE is given.
+      (when value
+        (setq new-env (cons (concat variable "=" value) new-env)))
+      (setq process-environment new-env)
+      value))
+)
 
 ;; ---------------------------------------------------------------------------
 ;; 5. add-to-list — idempotent list prepend.
 ;; ---------------------------------------------------------------------------
 
-(defun add-to-list (list-var element &optional append compare-fn)
-  "Add ELEMENT to the value of LIST-VAR if not already present.
+(unless (fboundp 'add-to-list)   ; noqa: NeLisp builtin-compat
+  ;; Gated, because this file's own job is to FILL A GAP: "pure-elisp shims
+  ;; that fill the gap between the nelisp standalone runtime and the Emacs
+  ;; batch-mode functions" (top of this file).  A gap-filler that defines
+  ;; unconditionally does not fill a gap, it replaces whatever was there --
+  ;; on a host Emacs that is Emacs's own definition.  `nelisp--cli-batch-
+  ;; ensure-host', which loads this file, already gates its own fallback
+  ;; stub the same way; this file did not.  (2026-08-19, found by
+  ;; `make emacs-compat'.)
+  (defun add-to-list (list-var element &optional append compare-fn)
+    "Add ELEMENT to the value of LIST-VAR if not already present.
 
-APPEND non-nil means append rather than prepend.  COMPARE-FN
-defaults to `equal'.  Returns the (possibly updated) list value."
-  (let* ((lst     (symbol-value list-var))
-         (cmp-fn  (or compare-fn 'equal))
-         (present (let ((cur lst))
-                    (catch 'hit
-                      (while cur
-                        (when (funcall cmp-fn (car cur) element)
-                          (throw 'hit t))
-                        (setq cur (cdr cur)))
-                      nil))))
-    (unless present
-      (if append
-          (set list-var (append lst (list element)))
-        (set list-var (cons element lst))))
-    (symbol-value list-var)))
+  APPEND non-nil means append rather than prepend.  COMPARE-FN
+  defaults to `equal'.  Returns the (possibly updated) list value."
+    (let* ((lst     (symbol-value list-var))
+           (cmp-fn  (or compare-fn 'equal))
+           (present (let ((cur lst))
+                      (catch 'hit
+                        (while cur
+                          (when (funcall cmp-fn (car cur) element)
+                            (throw 'hit t))
+                          (setq cur (cdr cur)))
+                        nil))))
+      (unless present
+        (if append
+            (set list-var (append lst (list element)))
+          (set list-var (cons element lst))))
+      (symbol-value list-var)))
+)
 
 ;; ---------------------------------------------------------------------------
 ;; 6. make-directory — forward to nl-make-directory primitive.
 ;; ---------------------------------------------------------------------------
 
-(defun make-directory (dir &optional parents)
-  "Create directory DIR.
+(unless (fboundp 'make-directory)   ; noqa: NeLisp builtin-compat
+  ;; Gated, because this file's own job is to FILL A GAP: "pure-elisp shims
+  ;; that fill the gap between the nelisp standalone runtime and the Emacs
+  ;; batch-mode functions" (top of this file).  A gap-filler that defines
+  ;; unconditionally does not fill a gap, it replaces whatever was there --
+  ;; on a host Emacs that is Emacs's own definition.  `nelisp--cli-batch-
+  ;; ensure-host', which loads this file, already gates its own fallback
+  ;; stub the same way; this file did not.  (2026-08-19, found by
+  ;; `make emacs-compat'.)
+  (defun make-directory (dir &optional parents)
+    "Create directory DIR.
 
-When PARENTS is non-nil, create any missing parent directories
-first (like `mkdir -p').  Signals `file-error' on failure.
+  When PARENTS is non-nil, create any missing parent directories
+  first (like `mkdir -p').  Signals `file-error' on failure.
 
-Delegates to the `nl-make-directory' Rust primitive which accepts
-a path string and a boolean.  Returns nil on success, matching the
-Emacs contract."
-  (let ((rc (nl-make-directory dir (if parents t nil))))
-    (when (and (integerp rc) (< rc 0))
-      (signal 'file-error (list "Cannot create directory" dir rc)))
-    nil))
+  Delegates to the `nl-make-directory' Rust primitive which accepts
+  a path string and a boolean.  Returns nil on success, matching the
+  Emacs contract."
+    (let ((rc (nl-make-directory dir (if parents t nil))))
+      (when (and (integerp rc) (< rc 0))
+        (signal 'file-error (list "Cannot create directory" dir rc)))
+      nil))
+)
 
 ;; ---------------------------------------------------------------------------
 ;; 7. system-name — hostname from environment or static fallback.
 ;; ---------------------------------------------------------------------------
 
-(defun system-name ()
-  "Return the host name of the current machine.
+(unless (fboundp 'system-name)   ; noqa: NeLisp builtin-compat
+  ;; Gated, because this file's own job is to FILL A GAP: "pure-elisp shims
+  ;; that fill the gap between the nelisp standalone runtime and the Emacs
+  ;; batch-mode functions" (top of this file).  A gap-filler that defines
+  ;; unconditionally does not fill a gap, it replaces whatever was there --
+  ;; on a host Emacs that is Emacs's own definition.  `nelisp--cli-batch-
+  ;; ensure-host', which loads this file, already gates its own fallback
+  ;; stub the same way; this file did not.  (2026-08-19, found by
+  ;; `make emacs-compat'.)
+  (defun system-name ()
+    "Return the host name of the current machine.
 
-In NeLisp batch mode we read the HOSTNAME environment variable;
-if unset, fall back to \"localhost\"."
-  (or (getenv "HOSTNAME") "localhost"))
+  In NeLisp batch mode we read the HOSTNAME environment variable;
+  if unset, fall back to \"localhost\"."
+    (or (getenv "HOSTNAME") "localhost"))
+)
 
 ;; ---------------------------------------------------------------------------
 ;; 8. cl-lib shims — `require 'cl-lib' already works in the runtime,

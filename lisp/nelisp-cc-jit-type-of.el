@@ -236,9 +236,11 @@
        ((= tag 2) (nl_jit_to_write_integer out))
        ;; Float (3) → "float"
        ((= tag 3) (nl_jit_to_write_float out))
-       ;; Str (5), MutStr (6) → "string"
+       ;; Str (5), MutStr (6), UnibyteStr (14), UnibyteMutStr (15) → "string"
        ((= tag 5) (nl_jit_to_write_string out))
        ((= tag 6) (nl_jit_to_write_string out))
+       ((= tag 14) (nl_jit_to_write_string out))
+       ((= tag 15) (nl_jit_to_write_string out))
        ;; Vector (8) → "vector"
        ((= tag 8) (nl_jit_to_write_vector out))
        ;; CharTable (9) → "char-table"

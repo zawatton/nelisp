@@ -67,7 +67,11 @@
          (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
        (if (= (sexp-tag arg) 6)
            (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
-         1)))
+         (if (= (sexp-tag arg) 14)
+             (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
+           (if (= (sexp-tag arg) 15)
+               (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
+             1)))))
   "AOT source for the `nl_jit_intern' trampoline.
 
 Reuses the existing `sexp-write-symbol' allocator op plus the

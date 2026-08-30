@@ -1,46 +1,26 @@
 # Sexp ABI — frozen byte-layout contract
 
-**Status**: SHIPPED (Doc 100 v2 §100.B, 2026-05-12; Doc 101 §101.A extension, 2026-05-17; Doc 111 §111.A extension, 2026-05-17)
-**Scope**: byte-precise layout of `Sexp` and its `Sexp::Int` (Doc 100), `Sexp::Cons` / `Sexp::Symbol` / `Sexp::Str` (Doc 101), `NlRecord` / `NlVector` / `NlCell` boxed layouts (Doc 111) — sufficient for Doc 100 §100.C plus Doc 101 §101.B-D and Doc 111 §111.B-E swaps.
+**Status**: SHIPPED (including Doc 200 Phase 1 tags 14/15, 2026-08-26)
+**Scope**: byte-precise layout of standalone `Sexp` slots and their directly
+addressed payloads, including the unibyte string representation.
 
 This document is the **single source of truth** for the byte layout of
-`Sexp` values that AOT-compiled elisp `.o` objects read or write
-directly.  Three artifacts encode the same numbers:
+`Sexp` values that AOT-compiled elisp objects read or write directly.  Three
+artifacts encode the same numbers:
 
 1. This file — human-readable spec.
-2. `build-tool/src/eval/sexp_abi_assert.rs` — Rust-side `const_assert!`
-   block that fails compilation if the underlying enum drifts.
-3. `lisp/nelisp-sexp-layout.el` — elisp `defconst` constants the Phase
-   47 compiler reads when emitting load / store offsets.
+2. `lisp/nelisp-sexp-layout.el` — elisp `defconst` constants the compiler
+   reads when emitting loads and stores.
+3. `test/nelisp-sexp-layout-test.el` — exact tag and offset assertions.
 
-The `make sexp-abi-check` target runs a tiny driver that prints the
-Rust-computed values and diffs them against the elisp constants.  CI
-fails on drift; the elisp `.o` therefore can never load against a Rust
-enum whose layout silently changed.
+The repository contains no Rust source.  CI's layout tests and generated-source
+checks make representation drift visible before a standalone is shipped.
 
 ---
 
-## 1. The `Sexp` enum
+## 1. The `Sexp` slot
 
-```rust
-#[derive(Debug, Clone, PartialEq)]
-#[repr(C, u8)]
-pub enum Sexp {
-    Nil,                  // tag 0
-    T,                    // tag 1
-    Int(i64),             // tag 2 + 8-byte payload
-    Float(f64),           // tag 3 + 8-byte payload
-    Symbol(String),       // tag 4 + 24-byte String
-    Str(String),          // tag 5 + 24-byte String
-    MutStr(NlStrRef),     // tag 6 + 8-byte handle
-    Cons(NlConsBoxRef),   // tag 7 + 8-byte handle
-    Vector(NlVectorRef),  // tag 8 + 8-byte handle
-    // CharTable / BoolVector / Cell / Record have tags 9..12 but
-    // their payload layouts are not required by Doc 100 / 101.
-}
-```
-
-`#[repr(C, u8)]` pins the layout as:
+The standalone runtime uses a fixed 32-byte tagged slot:
 
 ```
 +----+--------------------------------+
@@ -51,8 +31,6 @@ pub enum Sexp {
 | unused tail (to round up to 32)    |
 +----+--------------------------------+
 ```
-
-Defined in `build-tool/src/eval/sexp.rs:57`.
 
 ## 2. Tag byte values
 
@@ -71,6 +49,9 @@ Defined in `build-tool/src/eval/sexp.rs:57`.
 | `BoolVector`  | 10            | `SEXP_TAG_BOOL_VECTOR`   |
 | `Cell`        | 11            | `SEXP_TAG_CELL`          |
 | `Record`      | 12            | `SEXP_TAG_RECORD`        |
+| `Bignum`      | 13            | `SEXP_TAG_BIGNUM`        |
+| `UnibyteStr`  | 14            | `SEXP_TAG_UNIBYTE_STR`   |
+| `UnibyteMutStr` | 15          | `SEXP_TAG_UNIBYTE_MUT_STR` |
 
 Adding a variant **must append** at the end of this table and the
 enum.  Re-ordering invalidates every compiled `.o` and the layout
@@ -185,38 +166,45 @@ AOT emit reads / writes through this layout:
 
 Box allocation requires `nl_alloc_consbox` Rust helper (Doc 101 §101.D) — AOT emits `call nl_alloc_consbox` via the §100.A `extern-call` grammar.
 
-## 7. `Sexp::Symbol(String)` / `Sexp::Str(String)` payload (Doc 101 §101.A)
+## 7. Inline Symbol / Str / UnibyteStr payload
 
-`Sexp::Symbol` (tag 4) and `Sexp::Str` (tag 5) carry a Rust `String` value inline.  A `String` is a `Vec<u8>` header: 24 bytes consisting of `(ptr, capacity, length)`.  Per the standard Rust stdlib layout (stable since Rust 1.0 in practice; formally not a frozen contract but pinned in this repo by `rust-toolchain.toml`):
+`Symbol` (tag 4), `Str` (tag 5), and `UnibyteStr` (tag 14) carry a
+24-byte header inline.  Its order is `(capacity, pointer, byte length)`:
 
 ```
 String layout (offsets within the String header, sizes in bytes):
-    [0, 8)     ptr         (NonNull<u8>, 8 bytes)
-    [8, 16)    capacity    (usize, 8 bytes)
+    [0, 8)     capacity    (usize, 8 bytes)
+    [8, 16)    pointer     (*mut u8, 8 bytes)
     [16, 24)   length      (usize, BYTE count not char count)
     total:     24 bytes
 ```
 
-Sexp slot for `Sexp::Symbol` / `Sexp::Str`:
+Sexp slot for `Symbol` / `Str` / `UnibyteStr`:
 
 ```
 offset:   0  1..7   8 9 10 11 12 13 14 15 16..23 24..31
-value:    04 <pad>  <ptr to UTF-8 bytes>  <cap>   <len>
+value:    TT <pad>  <capacity>  <byte pointer>  <byte length>
           ^^        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-          tag = 4   24-byte String header (ptr/cap/len)
+          tag       24-byte inline header (cap/pointer/byte length)
 ```
 
 AOT emit:
 
 - Read byte length: `mov rax, qword ptr [rdi + 24]` (= length field at offset 24 of Sexp slot).
-- Read byte pointer: `mov rax, qword ptr [rdi + 8]` (= ptr field at offset 8 of Sexp slot).
+- Read byte pointer: `mov rax, qword ptr [rdi + 16]`.
 - Read individual byte at index N: load byte pointer + load `[ptr + N]` (= composed op).
 - Short-string byte-for-byte equality (= ≤ 16 bytes): SIMD compare two 16-byte loads.
 - Long-string equality: `extern-call memcmp` via Doc 100 §100.A grammar.
 
-**Layout drift note**: the `String` layout is the stdlib internal representation.  The Rust stdlib does not formally guarantee this layout but has not changed it since 1.0; the repo pins the toolchain via `rust-toolchain.toml` and `sexp_abi_assert.rs` adds `const_assert!` for each String offset to fail fast on drift.
+For tag 5 the bytes are well-formed UTF-8.  For tag 14 they are raw bytes and
+the character count is defined to equal the byte count.  `UnibyteStr` is
+layout-identical to `Str`; admitting the new tag must never change a field
+offset.
 
-If the stdlib ever changes the layout, the fix is either to bump the toolchain back, or to migrate `Sexp::Symbol/Str` to hold a NeLisp-internal `NlString` type with explicit `#[repr(C)]` (deferred to a future `NlString` proposal).
+`MutStr` (tag 6) and `UnibyteMutStr` (tag 15) are also layout-identical: the
+slot holds an `NlStr*` at offset 8, and that box stores capacity at +0, byte
+pointer at +8, byte length at +16, and refcount at +24.  Tag 15 likewise has
+character count equal to byte count.
 
 ## 10. `NlRecord` layout (Doc 111 §111.A)
 

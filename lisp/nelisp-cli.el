@@ -93,12 +93,12 @@ constant before the elisp `nelisp-cli-main' dispatch runs.")
        nelisp eval EXPR                 # evaluate EXPR and print the result
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
-       nelisp compile-elisp-artifact ...  # write a private .nelc + manifest
+       nelisp compile-elisp-artifact ...  # --kind nelc|neln private, or elc: genuine GNU Emacs .elc (Doc 142 §6.2)
        nelisp compile-elisp-artifacts ... # compile FILE.el/DIR trees to adjacent artifacts
        nelisp compile-runtime-image ...   # compile runtime image to .nelc/.neln
        nelisp audit-elisp-artifacts ...   # report native coverage for adjacent .neln artifacts
-       nelisp exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
-       nelisp eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
+       nelisp exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...  # .elc is HOST-EMACS-ONLY here; load it with real Emacs instead
+       nelisp eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...  # .elc is HOST-EMACS-ONLY here; load it with real Emacs instead
        nelisp load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el
        nelisp eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...
        nelisp native-exec-elisp-artifact FILE.neln SYMBOL ARG...

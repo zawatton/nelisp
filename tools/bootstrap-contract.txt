@@ -1,0 +1,40 @@
+# Terms every standalone bootstrap's generated source must contain.
+# One per line; '#' comments and blank lines ignored.  Matched literally.
+#
+# Add a line when a fact has to hold on every entry point, and the gate will
+# say which bootstrap does not have it yet.  Remove one only as a decision,
+# stating here why the bootstraps are allowed to disagree about it.
+#
+# nelisp-standalone--load-path-src
+#   Baked at build time; `require' cannot resolve a tree feature without it.
+#   Measured 2026-08-19: present in the REPL prelude only, so `--eval' saw 36
+#   load-path entries and `compile-elisp-artifact' saw none, and the same
+#   `(require 'nelisp-core-fileio)' answered ok or file-missing depending on
+#   the entry point.  Wiring it took three passes -- one bootstrap, then
+#   three, then the fourth -- which is the argument for asking mechanically.
+
+build-time load-path (nelisp-standalone--load-path-src)
+
+# nlre-string-match
+#   The tree has one regexp engine, lisp/nelisp-stdlib-regexp.el.  A bootstrap
+#   that defines `string-match-p' some other way defines a different language.
+#   Measured 2026-08-19: the artifact command runtime carried a `string-match-p'
+#   that recognised five literal regexps by `equal' and answered every other one
+#   with a substring search FOR THE REGEXP TEXT.  So
+#   `"\`;;; nelisp-runtime-image source-v1\r?\n"' was looked for verbatim inside
+#   the image, never found, and `compile-runtime-image' rejected every
+#   well-formed image it was given -- `standalone-reader-test' had been failing
+#   on it with no message.  This gate passed throughout: it asked whether the
+#   NAME was defined, and it was.  Requiring the engine asks whether the name
+#   MEANS the same thing, which is the question that was actually open.
+#
+#   What the term proves is that the bootstrap REFERS to the engine -- by
+#   loading it, or (on the cache route, which exists to skip 400 lines) by
+#   asserting the replayed module supplied it.  It does not prove the engine is
+#   reachable: a bootstrap could keep the wrappers and drop the file.  That
+#   failure is loud -- `void-function: nlre-string-match' at the call -- and the
+#   term is aimed at the silent one.  Checked 2026-08-19 by putting the tree
+#   back the way it was: the gate names the runtime substrate and the two
+#   bootstraps that compose it, three findings, and passes again once restored.
+
+nlre-string-match

@@ -1,0 +1,583 @@
+#+TITLE: Doc 192 — wasm backend maturation: lifting the calling-convention ceiling and defining "mature enough"
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-22
+#+STATUS: DRAFT — Phase A (§3) implemented and measured 2026-08-23;
+#+STATUS: Phase B's boundary-slot mechanism (§3) implemented and measured
+#+STATUS: 2026-08-23 for its two named ops (=sexp-write-symbol-lit=/
+#+STATUS: =sexp-write-str-lit=); the general symbol-dispatching host
+#+STATUS: import (calln's own runtime bridge) remains unbuilt, and a new,
+#+STATUS: more precise gap is now on record in its place (§3 Phase B
+#+STATUS: update below) — Phase C untouched.  §4's ladder is measured,
+#+STATUS: not projected, through rung 3.  wasm is still NOT added to
+#+STATUS: =tools/nelisp-substrate-parity.el='s =--substrate-order= (§4
+#+STATUS: rung 0 still literally holds) because rung 3's own measured
+#+STATUS: delta (compiles, not runs) does not clear the bar §4 sets for
+#+STATUS: that step either.  Doc 164 (P0-P4) and its three blueprint
+#+STATUS: children are all honest DRAFT/BLUEPRINT themselves; this doc is
+#+STATUS: the next tranche after P0-P4's shipped work, not a replacement
+#+STATUS: for any of them.
+
+* Status
+
+| item     | value                                                             |
+|----------+--------------------------------------------------------------------|
+| Doc #    | 192                                                               |
+| State    | DRAFT (Phase A SHIPPED 2026-08-23, see §3; Phase B's boundary-slot mechanism landed 2026-08-23 for =sexp-write-symbol-lit=/=sexp-write-str-lit=, see §3 Phase B update) |
+| Parent   | Doc 164 (wasm32 backend, §0 DRAFT), Doc 164-p2/p3/p4-blueprint (BLUEPRINT, "ready for a codex implementer") |
+| Reads    | =lisp/nelisp-aot-compiler.el= (extern-call parsing, calln lowering, wasm emit arms), =tools/nelisp-substrate-parity.el= (substrate list), =recipes/README.org=, =site/dtw/dtw.js=, =docs/design/165-mobile-deployment.org= |
+| Verified | =wasm-smoke= (grown to =checked=4=, =tools/ai/gates.expected=, optional/needs-node) — =Makefile= target =wasm-smoke=, host glue =tools/wasm-arg-budget-env.mjs=; =sexp-write-str-lit= additionally verified from a scratch probe (§3 Phase B update), not wired into the tracked gate |
+
+* 1. Problem, measured on this clone
+
+** 1.1 What has actually shipped (correcting an over-broad read of "not usable")
+
+Doc 165 (mobile deployment, sibling doc, already ACTIVE) states plainly
+that "The wasm backend (Doc 164, all of P0–P4) is COMPLETE" — and this
+is independently verifiable, not just cited: =site/dtw/dtw.js= exists
+and its =env= import object contains exactly the shape the P4
+blueprint specified (=key_state=, =frame_out=), =lisp/nelisp-asm-wasm.el=
+has a real =nelisp-asm-wasm-op-memory-grow= emitter (P3's bump
+allocator prerequisite), and the =Makefile= has a full
+=wasm-dtw-skeleton-smoke -> wasm-dtw-transpile -> wasm-dtw-compile ->
+wasm-dtw-smoke -> wasm-dtw-site -> wasm-dtw-site-smoke= pipeline. This
+is a real, shipped, curated application running compiled Elisp in a
+browser. =recipes/README.org= corroborates at the recipe-shape level:
+"WASM / browser | compiles and runs | =make wasm-smoke= compiles two
+Elisp functions to wasm32, validates both modules and executes them
+under node, on Windows and Linux alike (2026-08-18)." So the framing
+"wasm doesn't work" is wrong; the honest framing is narrower, and §1.2
+locates it precisely.
+
+** 1.2 The actual wall: the generic builtin-call bridge, not arithmetic, not P0-P4's own scope
+
+=nelisp-aot-compiler--parse-extern-call-args= (the shared parser behind
+every =extern-call=, including the =nelisp_aot_builtin_calln= bridge
+every non-specially-lowered builtin call goes through) enforces a GP
+argument-register budget:
+
+#+begin_src elisp
+(when (and (> (length gp-args)
+              (length (nelisp-aot-compiler--current-arg-regs)))
+           (not (and (eq nelisp-aot-compiler--arch 'x86_64)
+                     (memq nelisp-aot-compiler--abi '(sysv win64)))))
+  (signal 'nelisp-aot-compiler-error
+          (list :extern-call-too-many-gp-args name (length gp-args))))
+#+end_src
+
+=--current-arg-regs= dispatches on architecture — =aarch64= gets its own
+8-register list, =win64= gets its own list — but wasm has *no dedicated
+case*. It falls through to the =(t nelisp-aot-compiler--arg-regs)=
+default, which is the plain *x86_64 SysV* register list: =(rdi rsi rdx
+rcx r8 r9)=, six entries. And because wasm is not =x86_64=, it is also
+not in the exempted set that gets stack-argument spilling for an
+over-budget call — so once six GP arguments are in flight, any further
+argument is a hard compile error on wasm specifically, with no
+fallback path at all (x86_64 SysV/Win64 have one; wasm does not).
+
+=nelisp_aot_builtin_calln='s own fixed ABI prefix — =mirror, frames,
+name, argc, out, scratch= — is *six* arguments, before a single user
+argument is added (=(extern-call nelisp_aot_builtin_calln ,mirror
+,frames ,name-slot ,argc ,out ,scratch ,@lowered-args)=,
+=lisp/nelisp-aot-compiler.el=). Six fixed arguments against a six-slot
+budget that has no spill path on wasm means *any* =calln=-routed
+builtin call taking one or more user arguments fails to compile for
+wasm today — not "beyond a large N," beyond *zero*. This is measured
+directly against this clone's source, not inferred: the design brief's
+figure of "8 gp args" does not match what =--current-arg-regs= actually
+returns for wasm (six, via the x86_64-shaped fallback, not eight, which
+is aarch64's own separate list) — worth stating plainly, because it
+changes the fix (§3): the ceiling is not merely too low, it is set by
+omission to a completely unrelated architecture's physical register
+count, for a target that has no physical registers at all.
+
+This is exactly why "arithmetic" is what currently survives: =+=/=-=/
+=*=/=mod=/comparisons compile to direct wasm value-stack instructions
+(=nelisp-aot-compiler--emit-arith=, its wasm arm; the =mod= emitter
+studied in Doc 190 §1.2 for its overflow comment) and never touch
+=calln= or =--parse-extern-call-args= at all. Named-function calls that
+lower to direct =call $funcidx= (IR tag 5, same-module or resolved
+import) and P2's environment-import mechanism (IR tag 23, the
+=nelisp-aot-compiler--wasm-emit-call-import= arm, which *already*
+constructs a wasm function type keyed purely by =(length args)= — see
+§1.3) also survive, because neither goes through the six-slot GP-
+register gate at all. Only the vararg/generic *builtin dispatch*
+bridge — the path every builtin without a specially-lowered direct
+call goes through — hits the wall.
+
+** 1.3 Why this is a cheap fix, not a hard one: the wasm side already generalizes over arity
+
+The P2-implemented environment-import arm
+(=nelisp-aot-compiler--wasm-function-index= /
+=--wasm-call-type-key= at the =(= tag 23)= case,
+=lisp/nelisp-aot-compiler.el=) already builds its wasm function *type*
+key from =(length args)= with no upper bound and no register concept at
+all — a wasm function type is just a list of value-kind slots
+(=i64=/=f64=), and the module's type section can declare as many
+distinct arities as the compiler emits calls for. There is no ISA-level
+"six GP registers" constraint on wasm the way there genuinely is on
+x86_64 SysV or AAPCS64 — the six-slot ceiling measured in §1.2 is
+*purely* an artifact of =--current-arg-regs= reusing a native-ISA-
+shaped list for a target that does not have that ISA's constraint,
+not a real limit this backend has to engineer around. This is the
+single most load-bearing fact in this doc: lifting the ceiling for
+wasm is not "design a stack-spill ABI" (the hard problem x86_64/aarch64
+genuinely have); it is "stop pretending wasm has six physical
+registers."
+
+* 2. Decided direction
+
+**Give wasm its own =--current-arg-regs= entry, sized generously (not
+matched to any native ISA's register count, because none applies), and
+confirm the calln runtime bridge's =env= import signature — the host-
+side function Node/the browser actually implements — accepts that
+arity. Do not attempt a stack-spill ABI for wasm; §1.3 already showed
+none is needed.**
+
+This is deliberately the smallest fix that removes the actual wall.
+Two things have to be verified, not assumed, before calling it done:
+
+1. *The compiler side*: extending =--current-arg-regs= with a =wasm32=
+   branch returning a placeholder list long enough for real corpus
+   forms (the multi-arg builtins the parity corpus already exercises
+   are the right sizing signal — see §4) removes the compile-time
+   error. This does not by itself prove the *runtime* bridge works;
+   §2.2 is separate.
+2. *The runtime bridge side*: =nelisp_aot_builtin_calln='s current wasm
+   lowering, once it compiles at all under a raised ceiling, needs its
+   host-side counterpart (whatever plays the role =site/dtw/dtw.js='s
+   =env= object plays for the DTW recipe) to actually exist and
+   correctly dispatch by symbol name with the received argument count.
+   This is new work, not already covered by P0-P4's shipped scope —
+   DTW's =env= object is curated for DTW's own thirteen-ish import
+   needs (§1.1), not a general builtin dispatcher. Building *that* is
+   the second, larger half of this doc's next tranche, and is scoped
+   separately from the ceiling fix in §3's phasing because the ceiling
+   fix is verifiable in isolation (does it compile) while the runtime
+   bridge needs an actual host harness to test against (Node, per Doc
+   164 §0's own verification stance: "Node.js v24.14.1 is installed...
+   it is the harness").
+
+* 3. Phased plan
+
+** Phase A — lift the compile-time ceiling only [SHIPPED 2026-08-23]
+
+Add the =wasm32= case to =--current-arg-regs=. Pick the list length
+from the parity corpus's own actual maximum builtin-call arity (measure
+first, do not guess a round number) plus headroom. Verify: every
+corpus form that previously failed to compile for wasm specifically
+because of =:extern-call-too-many-gp-args= now compiles (a clean,
+mechanical, git-log-style before/after diff of compiler errors across
+the fixed corpus — the same "measured before, measured after" discipline
+this repo's own recent commits, e.g. =342d098cc='s explicit
+before/after probe output, already model). This phase does *not* touch
+the runtime bridge and does not by itself make any new form *run*
+correctly — only *compile*.
+
+*Implemented*: =nelisp-aot-compiler--wasm-arg-regs= (a 32-entry
+placeholder list — see its docstring, =lisp/nelisp-aot-compiler.el=)
+plus a =wasm32= cond clause in =--current-arg-regs= (same file),
+matching the pattern the file already used in two other places for the
+identical "no ISA register constraint applies to wasm" rationale
+(the direct-call and defun-param wasm32 arity checks, both literal
+=32=). Measured against this clone's parity corpus
+(=tools/nelisp-substrate-parity-corpus.el=, 39 forms, indices 0-38,
+each wrapped as =(defun f () FORM)= and compiled with =:arch 'wasm32
+:format 'wasm=):
+
+- *Corpus's actual maximum calln-routed GP-argument count, measured*:
+  8 (6 fixed ABI-prefix args + 2 user args — every failing corpus form
+  called a 2-argument builtin such as =eq=/=equal=; nothing in this
+  corpus needs more). 32 keeps this measured number well inside the
+  budget rather than sizing to it exactly, since ordinary multi-arg
+  builtins outside this small corpus need more than 2 user args.
+- *Before the fix*: 17 of 39 forms signal
+  =:extern-call-too-many-gp-args= (indices 0-6, 15-19, 22, 35-38 — all
+  at exactly =8=, matching the measured maximum above); 3 signal
+  =:wasm-unsupported-ir sexp-write-symbol-lit= (indices 7, 20, 21,
+  pre-existing and unrelated to this ceiling); 2 signal
+  =:integer-math-arity floor= (indices 13, 14, also pre-existing and
+  unrelated); the remaining 17 already compile.
+- *After the fix*: 0 of 39 forms signal
+  =:extern-call-too-many-gp-args= — the ceiling this phase targets is
+  gone, exactly as designed, on every corpus form that hit it. *But*
+  all 17 formerly-blocked forms now hit =:wasm-unsupported-ir
+  sexp-write-symbol-lit= instead (joining the 3 that already had it),
+  because every one of them is a =calln=-routed builtin call and
+  =calln='s own lowering always precedes the dispatch with
+  =(sexp-write-symbol-lit NAME-SLOT BUILTIN-NAME)= to materialize the
+  builtin's name — a *different*, pre-existing wasm gap this phase does
+  not touch (§4 records the corpus-rows-passing count is unchanged: 17
+  compile before, 17 compile after — this specific corpus gets zero net
+  new compiles from Phase A, even though the named defect is fully and
+  verifiably fixed).
+- *Decoupled proof the fix itself is real and load-bearing*: rather
+  than block on the separate =sexp-write-symbol-lit= gap, =wasm-smoke=
+  (=Makefile=) grew a third pair — compile
+  =(defun arg-budget-sum8 (a b c d e f g h) (extern-call
+  nelisp_aot_wasm_arg_budget_sum8 a b c d e f g h))= (8 GP args, no
+  Sexp-boxing involved at all) and run it under Node with a purpose-built
+  =env= import (=tools/wasm-arg-budget-env.mjs=). Before this fix that
+  compile signals =(:extern-call-too-many-gp-args
+  nelisp_aot_wasm_arg_budget_sum8 8)= verbatim (same shape, same =8=,
+  confirmed by reverting just the compiler change and re-running =make
+  wasm-smoke=, which fails with =Error 255= at the compile step before
+  ever reaching Node); after this fix it compiles, validates, and Node
+  returns the correct sum (=1+2+...+8=36=) through the wasm =env=-import
+  arm P2 already built (=nelisp-aot-compiler--wasm-emit-call-import=,
+  the tag-23 =extern-call= case in =--wasm-emit-value=, which keys its
+  wasm function type purely by =(length args)= as §1.3 describes — no
+  new compiler code needed for the *runtime* half of this proof, only
+  the =env= import a host must supply).
+
+** Phase B — the calln runtime bridge's wasm-side host import
+
+Design (separately, and this doc does not attempt the design here,
+because it depends on decisions Phase A's measurement should inform —
+specifically, how many distinct symbol names actually need dispatch
+through =calln= once direct-call and env-import lowering have taken the
+cases they already handle) a general symbol-dispatching host import,
+analogous to =nelisp_aot_builtin_calln='s native-side bridge
+(=nelisp-cc-runtime-aot-builtin-calln=, =src/nelisp-cc-runtime.el=,
+which resolves a symbol name to a builtin and dispatches via
+=nelisp--apply=/=apply=) but implemented as a wasm =env= import backed
+by the same host process the module is instantiated in — Node today,
+a browser under P4's precedent tomorrow. This is real, unscoped-yet
+implementation work; Phase B's deliverable in *this doc* is only
+"confirm this is the right shape by getting one previously-uncompilable
+multi-arg builtin call to round-trip end-to-end under Node," not a
+production dispatcher.
+
+*Narrowly done, 2026-08-23*: the =arg-budget-sum8= smoke described
+under Phase A confirms the shape for a *plain-GP-argument* extern-call
+(no Sexp boxing) — the P2 env-import mechanism generalizes over arity
+under Node exactly as §1.3 claims, verified rather than assumed.  It
+does *not* confirm the shape for =nelisp_aot_builtin_calln= itself,
+because tracing corpus form 0 (=(eq (intern "nil") nil)=) past the
+=sexp-write-symbol-lit= wall this session's Phase A measurement exposed
+turned up a second, more structural gap worth recording precisely for
+whoever scopes the real Phase B:
+
+- Native's boxed-boundary convention (=out=/=mirror=/=frames=/=scratch=/
+  =name-slot=) treats these as =*mut Sexp= *pointers* — a helper like
+  =nl_alloc_symbol= writes its result through the pointer, and the
+  caller re-reads the same memory later (the =(seq (sexp-write-symbol-lit
+  NAME-SLOT ...) (extern-call nelisp_aot_builtin_calln ... NAME-SLOT
+  ...) ...)= pattern used at every =calln=/=call1= call site, e.g.
+  =lisp/nelisp-aot-compiler.el= lines near =--parse-aot-builtinn-call=).
+- Wasm's =ref= IR node (tag 53) already compiles to a plain
+  =local.get= (=nelisp-aot-compiler--wasm-emit-value=, the tag-53 arm) —
+  confirmed by reading the emit arm directly, not inferred — meaning
+  every one of these "boundary slot" names is, on wasm, an ordinary
+  *value* local, not an address a callee can write through.  A wasm
+  =env= import cannot mutate a caller's locals at all (imports only see
+  linear memory), so =nl_alloc_symbol='s native pointer-out-param
+  contract has no direct wasm equivalent.
+- The fix is architecturally straightforward — give wasm's own
+  =sexp-write-symbol-lit=/=sexp-write-str-lit= emission a *return-value*
+  convention instead (call an =env= import that takes =(ptr, len)= and
+  returns the materialized value, then =local.tee= it into the slot's
+  local index, matching how tag-53 already reads slots by value) — but
+  it is genuinely separate work from anything Phase A touches: it needs
+  a wasm-only literal-byte data-blob registration pass (the existing
+  =data-blob=/=data-addr= mechanism, tag 99, already wasm-wired but only
+  for author-written top-level blobs, not auto-derived from literals
+  inside a defun body) plus a host-side symbol table (a canonicalizing
+  interner, mirroring what =342d098cc= fixed natively for =nil=/=t=) —
+  and =nelisp_aot_builtin_calln='s own =(seq ... NAME-SLOT)=-shaped
+  call sites additionally assume the *bare trailing =out= ref* pattern
+  reads back whatever the call wrote through the pointer, which itself
+  only works once the point above is fixed.  None of this blocks Phase
+  A's own claim (§3's own text: "does not by itself make any new form
+  run correctly — only compile") — it *sharpens* Phase B's scope from
+  "unscoped-yet" to a concrete three-part list a future session can
+  pick up directly.
+
+*Boundary-slot mechanism landed, 2026-08-23 (a later session than the
+update directly above)*: =sexp-write-symbol-lit=/=sexp-write-str-lit=
+(IR tags 90/91) now emit for wasm
+(=nelisp-aot-compiler--wasm-emit-sexp-write-lit=,
+=lisp/nelisp-aot-compiler.el=, dispatched from the two new tag-90/91 arms
+in =--wasm-emit-value=).  This landed the *return-value* convention the
+update above sketched, but not by the =env=-import route that update
+guessed at — the dispatch brief's own design note pointed at a smaller
+mechanism once linear memory is taken seriously, and it is smaller:
+
+- *No host import, no interner, no separate data-blob pass.*  The op
+  self-allocates a =32 + LEN=-byte region via the wasm bump allocator
+  already wired for =alloc-bytes= (tag 0,
+  =nelisp-aot-compiler--wasm-emit-alloc-bytes=, unmodified) — a 32-byte
+  header (tag byte / cap / char-buf-ptr / length, byte-for-byte the same
+  four fields =nl_alloc_str_write=/=nl_alloc_symbol_write= use natively,
+  =lisp/nelisp-cc-nlstr-direct-ops.el=) immediately followed by the
+  literal's own bytes as *inline* payload, char-buf-ptr set to
+  =own-address + 32= rather than a second allocation.  The literal bytes
+  themselves are written with plain =i64.store8= immediates per byte, at
+  compile-time-known offsets — no rodata, no data segment, matching the
+  same "object-mode can't use =.rodata=" constraint that made native's
+  =--emit-sexp-write-lit= push a temporary stack byte buffer instead
+  (§1 of this doc's own reads list; =lisp/nelisp-aot-compiler.el= lines
+  near =nelisp-aot-compiler--bytes->u64-chunks=).  Then =local.set= makes
+  SLOT hold the new region's address.
+- *This is the "boundary-slot area in linear memory" the dispatch brief
+  named, but scoped to what this op alone needs* — a fresh region per
+  call site, not a shared, pre-allocated =out=/=mirror=/=frames=/
+  =scratch=/=name_slot= arena wired into every AOT-compiled defun's
+  wasm prologue.  Building that *general* arena (so every hidden
+  boundary slot is valid the instant a defun starts, matching what a
+  =calln= dispatcher's other four fixed-prefix arguments would also
+  need) is still the unscoped-yet Phase B work the section above
+  describes; today's fix makes exactly the two ops the dispatch brief
+  named self-sufficient without it, which is what unblocks the ceiling
+  measured at rung 2 below without widening this session's blast radius
+  into calln's own result convention (next point).
+- *A genuinely new finding, not assumed*: disassembling
+  =(defun f () (if (eq (intern "nil") nil) 1 0))= for =x86_64 elf= (this
+  exact form, =objdump -dr=) shows =name_slot='s frame-slot value is read
+  as *uninitialized stack memory* at function entry — this 0-arity
+  user defun's prologue never spills anything into the hidden-boundary
+  slot region, because there is nothing to spill (0 declared params,
+  and the ELF symbol carries no ABI hint that 17 extra pointer args are
+  expected).  =nl_alloc_symbol= is handed whatever garbage happens to be
+  on the stack as =result_slot=.  This matches, rather than contradicts,
+  what =nelisp-aot-compiler-test.el='s own
+  =e2e-native-exec-neln-artifact-call1-in-process= test already
+  documents in its commentary: running a calln/call1-routed AOT object
+  at all requires a *caller-supplied trampoline* that pre-populates all
+  17 hidden slots as real extra arguments (the test hand-builds one,
+  18 imm64 patches, one per hidden slot plus the entry point) — and that
+  test's own words call wiring this trampoline into the real reader path
+  "the remaining gate-6 integration step," i.e. not done for ordinary
+  user Elisp on *native* either.  So wasm's self-allocating op is not
+  "catching up to a working native mechanism" so much as "solving, for
+  two ops, a problem neither backend fully solves yet for ordinary
+  top-level Elisp" — worth recording exactly rather than glossing as
+  parity work.
+- *Consequently still open, and now sharper than "the calln round trip is
+  NOT done"*: even with this fix, reading the compiled IR for corpus form
+  0 shows that after a =calln= call the compiler reads the *raw local
+  value* of =out= (a plain =(ref out)=, i.e. an ordinary wasm
+  =local.get=/native stack read) as the call's logical result — not a
+  dereference through the pointer =out= holds.  For that to carry
+  =eq='s boolean correctly, either =nelisp_aot_builtin_calln= would need
+  to additionally write its result back into =out='s *own* frame-slot
+  storage (a calln/call1-specific post-call fixup neither backend's
+  current emission does, verified by reading both the x86_64
+  =--emit-extern-call= arm and the wasm tag-23 arm), or the boundary-slot
+  convention needs a documented rule for which ops read "the pointer" vs
+  "what the pointer points to." This is a *result-communication*
+  question, independent of the *materialization* question §3 Phase A's
+  update above already answered — recorded here precisely so a future
+  session scoping calln's host bridge does not have to re-derive it from
+  a disassembly.
+- Verified, red then green, on this exact defect class (not asserted):
+  =make wasm-smoke='s grown fourth pair (=Makefile=) compiles
+  =(defun symbol-lit-probe (dest) (seq (sexp-write-symbol-lit dest "eq")
+  ...))= — before this fix, the compile step signals
+  =(:wasm-unsupported-ir sexp-write-symbol-lit)= verbatim (confirmed by
+  stashing just =lisp/nelisp-aot-compiler.el='s change and re-running
+  =make wasm-smoke=, which fails at the compile step, =Error 255=,
+  before Node ever runs); after the fix it compiles, validates, and Node
+  returns =163230213= — a checksum packing the tag byte (4), the
+  char-buf-ptr-minus-own-address offset (32, i.e. "the payload really is
+  inline right after the header"), the length (2), and both literal
+  bytes ('e'=101, 'q'=113) into one return value, so a wrong tag, a wrong
+  inline offset, a wrong length, or either wrong byte all fail the
+  check.  =sexp-write-str-lit= (tag 91, the same helper with TAG-BYTE=5)
+  is verified the identical way from a scratch probe directory (not
+  wired into the tracked =wasm-smoke= gate, to keep this phase's smoke
+  growth to the one case the dispatch brief asked for): materializing
+  =(sexp-write-str-lit dest "nil")= and reading back the same four
+  fields returns =203241108=, matching by hand computation exactly.
+- Corpus-form-0 status, stated precisely rather than rounded up: the
+  form itself (=(if (eq (intern "nil") nil) 1 0)=, wrapped as a defun)
+  now *compiles* for wasm32 where it signaled
+  =(:wasm-unsupported-ir sexp-write-symbol-lit)= before this fix — the
+  "against-the-bug" pair for this exact corpus form, verbatim, both
+  sides measured.  It is *not* claimed to *run* correctly under Node:
+  besides the result-communication gap above, =intern= itself lowers
+  through the separate generic "unknown symbol → =extern-call= by its
+  own bare name" fallback (Doc 129.7AS,
+  =lisp/nelisp-aot-compiler.el= line ~10177 — =intern= is not in either
+  builtin1/builtinn calln-delegation list), so running it would also
+  need a host =intern= import, not just a =calln= one.  Building either
+  is explicitly the unscoped-yet Phase B work; this session's decoupled
+  =symbol-lit-probe=/=str-lit-probe= proofs are this doc's own
+  established substitute for "runs under Node" when the full round trip
+  is out of scope (the same substitution Phase A's own
+  =arg-budget-sum8= already made for the ceiling fix).
+- *Sibling ops, deliberately not touched this session*: re-running the
+  full 39-form corpus compile sweep after this fix (§4 rung 3) surfaces
+  =sexp-write-nil= (5 forms) and =sexp-int-make= (1 form) as the next
+  =:wasm-unsupported-ir= wall — the identical architectural gap
+  (write-through-a-caller-owned-pointer, native-only) for two sibling
+  literal-materialization ops this doc's own §6 already flagged as
+  needing "a dedicated survey" before treating boundary-slot work as
+  done.  Not fixed here: =sexp-int-make='s payload is a *runtime* value,
+  not a compile-time literal, so it does not reduce to the same
+  "self-allocate + immediate-store the bytes" recipe without first
+  confirming native's actual tagged-value convention for =Sexp::Int=
+  (disassembly of =--emit-sexp-int-make= shows a 3-instruction direct
+  write, tag byte + 8-byte payload, no separate allocation — plausible
+  to port, but not measured against the immediate-vs-pointer tagging
+  scheme =--emit-cons-null-p='s "immediate Nil word (3), low bit 1 =
+  immediate" comment implies exists elsewhere in this compiler and this
+  session did not have time to verify end-to-end before committing to a
+  fix).  Recorded as the next wall rather than guessed at.
+
+** Phase C — broaden past the DTW-curated import surface
+
+Doc 164 §1.3's own accounting — ~453 =extern-call= sites, ~13 libc + 3
+libm + a 55-site =syscall-direct= table as the genuine host-import
+surface, the overwhelming rest resolving intra-module — is the honest
+starting inventory for "what would a *general* NeLisp-on-wasm program
+need from its host," as distinct from what DTW specifically needed
+(=key_state=/=frame_out=, a two-function surface sized to one game
+recipe). Phase C is not designing that whole surface (out of scope for
+this doc, and premature before Phase A/B's measurements exist) — it is
+naming that the DTW =env= object is not evidence the general surface is
+solved, only that a curated subset of it is, and that the corpus-driven
+approach in §4 is how the *next* real subset gets chosen, rather than
+guessing at "everything libc-shaped" up front.
+
+* 4. Defining "mature enough": a corpus-rows-passing ladder
+
+The design brief asks for "mature enough" to be defined by
+corpus-rows-passing rather than left qualitative, and the substrate-
+parity corpus already gives this doc a ready-made, already-measured
+instrument to reuse rather than invent: =tools/nelisp-substrate-
+parity.el='s =--substrate-order= constant currently lists exactly six
+substrates — =load, runtime-image, artifact, source-cache,
+source-fallback, host= — run against a fixed corpus
+(=tools/nelisp-substrate-parity-corpus.el=, 215+ forms as of this
+week's =defvaralias= commit) plus a =bare= baseline. *There is no
+=wasm= entry.* That absence is this doc's literal starting rung, not a
+citation — checked directly against =--substrate-order='s definition on
+this clone.
+
+| rung | wasm substrate-parity status                                        | gate                                  |
+|------+-----------------------------------------------------------------------+----------------------------------------|
+|    0 | STILL HOLDS 2026-08-23 — no =wasm= entry in =--substrate-order= at all (checked directly; Phase A did not add one, per this doc's own §2 point 1 / this session's dispatch instructions) | none — this is where the tree stands  |
+|    1 | MEASURED 2026-08-23, out-of-band (no =--substrate-order= entry added — see rung 0): compiling every corpus form (=tools/nelisp-substrate-parity-corpus.el=, 39 forms) for =wasm32= *before* Phase A gives *17/39 compile* (arithmetic, comparisons, =fboundp= checks — no =calln=-routed multi-arg builtins reach compile) | =checked=39 findings=22= in this measurement's own terms (22 = 17 ceiling + 3 =sexp-write-symbol-lit= + 2 =floor= arity) |
+|    2 | MEASURED 2026-08-23: Phase A (§3) landed; re-ran the identical 39-form corpus for =wasm32= — *still 17/39 compile*.  The delta in corpus rows that compile is *zero* for this corpus, not because the fix is wrong (the =arg-budget-sum8= smoke under §3 Phase A proves it is real and correct in isolation) but because every one of the 17 newly-unblocked forms is =calln=-routed and immediately hits the separate, pre-existing =sexp-write-symbol-lit= wasm gap §3 Phase B's update now documents precisely. Honest reading: Phase A is a necessary, verified, zero-regression step for this corpus, not a sufficient one — the *number* Phase A should be judged by (per this row's own instruction) is 0/39 net, and this doc records that rather than a nicer-sounding proxy | =checked=39 findings=22= unchanged from rung 1 (=:extern-call-too-many-gp-args= dropped to 0 but =:wasm-unsupported-ir sexp-write-symbol-lit= rose from 3 to 20, net findings unchanged: 0+20+2=22) |
+|    3 | MEASURED 2026-08-23 (later session than rungs 1-2): Phase B's boundary-slot mechanism (§3 Phase B update) landed for =sexp-write-symbol-lit=/=sexp-write-str-lit= specifically — re-ran the identical 39-form corpus for =wasm32= compile-only (the same metric rungs 1-2 use) — *30/39 compile*, up from 17/39.  =:wasm-unsupported-ir sexp-write-symbol-lit= is fully gone (20 → 0).  The freed 13 rows split: most now compile clean; one (=match-data=, index 15) reaches a *different*, pre-existing gate — =:wasm-import-missing= for a generic =extern-call= whose result type this backend does not model yet — and six hit the sibling literal-materialization ops (=sexp-write-nil= ×5, =sexp-int-make= ×1) §3 Phase B's update names as the deliberately-unfixed next wall.  *This rung is compile-only, same as rungs 1-2* — it does not claim any of the 30 *run* correctly under Node; the two ops this phase fixed are separately proven to run correctly via the decoupled =symbol-lit-probe=/=str-lit-probe= checks (§3 Phase B update), not via the corpus itself, matching the substitution Phase A's own =arg-budget-sum8= already established for exactly this reason | =checked=39 findings=9= (9 = 2 =floor= arity [unchanged, pre-existing] + 1 =wasm-import-missing= [=match-data=, newly reached] + 5 =sexp-write-nil= + 1 =sexp-int-make=); before-this-phase baseline re-confirmed fresh on this clone at =checked=39 findings=22= (0 ceiling + 20 =sexp-write-symbol-lit= + 2 floor), an exact match to rung 2's own recorded numbers |
+|    4 | NOT REACHED 2026-08-23 — "mature enough to gate": wasm's =checked=/=findings= ratio reaches parity with =source-fallback='s current standing (the substrate this repo's own convention already treats as the acceptable floor, not =load='s or =host='s stricter bar) — *this* is the number that should decide whether =wasm-smoke=-class checks move from optional (§5) to required in =tools/ai/gates.expected=, not a round percentage picked without reference to how this repo already treats its other substrates.  Rung 3's 30/39 *compiling* is real, substantial movement (+13 rows, 0 net at rung 2 → +13 here) but rung 4's bar is about =substrate-parity='s own =checked=/=findings= discipline, which scores *running* correctly, not compiling — and rung 3 explicitly does not claim any corpus row runs.  On that bar this rung is still not close, for a different, more precise reason than rung 2's "0/39 net": the wall moved from "does not compile" to "compiles but has no host-side builtin dispatcher to run against," which is Phase B's own still-unscoped calln-bridge work (§3).  Per this doc's own instruction (§2, and this session's dispatch brief) wasm is correctly NOT added to =substrate-parity= yet |
+
+Rung 4 deliberately anchors "mature enough" to an *existing* internal
+bar (source-fallback's accepted-gap count) rather than to "0 findings,"
+because 0 findings is not the bar this repo holds any of its other
+five substrates to today, and holding wasm to a stricter standard than
+=source-fallback= — which has real, long-standing, individually-
+justified gaps against Emacs baked into
+=tools/substrate-parity-accepted.el= right now — would be inventing a
+new, harsher policy specifically for wasm with no stated reason to.
+
+* 5. Verification design
+
+- *Phase A*: a fixed before/after compiler-error diff over the corpus,
+  the same "unfixed binary, then fixed binary, same probe" discipline
+  this week's =342d098cc= commit used for the intern fix — not a claim
+  of "it should work now," a captured list of which specific corpus
+  forms flip from erroring to compiling. DONE 2026-08-23: run for real
+  (=(defun f () FORM)= wrapped, compiled with =:arch 'wasm32 :format
+  'wasm=, condition-case around =nelisp-aot-compile-to-object=) over
+  all 39 corpus forms before and after the =--current-arg-regs= fix —
+  results captured under §3 Phase A and §4 rung 1/2 above, from scratch
+  probe directories, not scrollback.
+- *Phase B*: an end-to-end Node run (Doc 164 §0's stated harness) of
+  one previously-blocked multi-arg builtin call, output captured via
+  the same artifact-not-scrollback discipline AI.md rule 4 requires —
+  =node ... > target/ai/wasm-calln-probe.txt= or equivalent, read from
+  the file. DONE 2026-08-23, in the narrow shape §3 Phase B's own text
+  asks for ("confirm this is the right shape"): =make wasm-smoke='s
+  grown third pair compiles an 8-GP-argument =extern-call= (no
+  =calln=/Sexp-boxing involved — see §3 Phase A's update for why that
+  scope split was necessary this session), red-first-verified by
+  reverting just the compiler fix and re-running =make wasm-smoke=
+  (fails at the compile step, =Error 255=, before Node ever runs), then
+  green with the fix: =node tools/wasm-driver.mjs --env-module
+  tools/wasm-arg-budget-env.mjs target/wasm-smoke/arg-budget-sum8.wasm
+  arg-budget-sum8 36 1 2 3 4 5 6 7 8= exits 0 with =result=36=. The
+  =nelisp_aot_builtin_calln=-specific round trip (corpus form 0 itself)
+  is NOT done — §3 Phase B's update records precisely why and what it
+  needs.
+- *Rungs 1-4 (§4)*: wired as a new, *optional* gate initially (matching
+  how =wasm-smoke= is already listed optional in
+  =tools/ai/gates.expected= — "Optional only because it needs node; it
+  passes on both hosts measured so far") — a =wasm-substrate-parity?=
+  entry reporting =checked=/=findings= the same shape every other
+  substrate-parity run already reports, promoted to required only once
+  rung 4's threshold is measured, not assumed, to hold — the same
+  promotion discipline this repo already applies elsewhere (per AI.md's
+  own rule: "A gate that executed zero cases is not green").
+- *Regression protection once wasm joins substrate-parity*: the corpus
+  is shared infrastructure — any future corpus addition (for any
+  substrate) automatically becomes a wasm-substrate obligation too,
+  which is a real, ongoing cost this doc states plainly rather than
+  hides: adding a =wasm= entry to =--substrate-order= is not a one-time
+  fix, it is opting the wasm backend into every future corpus growth
+  the other six substrates already absorb.
+
+* 6. Open questions
+
+- What is the corpus's actual maximum builtin-call arity today (§3
+  Phase A asks this be measured, not guessed)? This doc does not have
+  that number — it requires running the corpus generator/parser against
+  the current 215+-form corpus and is a five-minute measurement this
+  doc's author did not have a built binary in hand to perform (design-
+  only session, per this doc's own scope).
+- Does the =env= import object's function-type arity need to match
+  *exactly* per call site (as DTW's two-function, fixed-signature
+  =env= object does), or can Phase B's general dispatcher use a single,
+  fixed-arity "argv in linear memory" import (mirroring how x86_64
+  SysV's own stack-spill path already handles over-budget native calls,
+  §1.2) instead of one wasm function type per distinct arity? The
+  latter would sidestep needing to grow the type section per new arity
+  encountered, at the cost of an extra linear-memory marshal step on
+  every =calln= call — a real design decision Phase B should make with
+  a measurement, not assume either way here.
+- Whether the =syscall-direct= 55-call-site table (Doc 164 §1.3) has
+  any overlap with what a general =calln= dispatcher (Phase B) would
+  also need to route through =env= imports, or whether the two paths
+  are cleanly disjoint (calln for Elisp-level builtins, syscall-direct
+  for OS-level primitives) — not verified in this doc; worth checking
+  before Phase C scopes the general import surface, since double-
+  counting or double-implementing either path would be wasted work.
+- Rung 4's anchor (source-fallback parity) assumes source-fallback's
+  own accepted-gap count stays roughly stable going forward. If Doc
+  168's own follow-up work (closing the =nelisp--primitive-symbols=
+  gap that produces most of source-fallback's current accepted list,
+  per §4's citation) lands first, the anchor point moves — this doc's
+  rung 4 should be re-measured against whatever source-fallback's
+  standing is at the time wasm actually approaches it, not against the
+  number quoted here today.
+- ADDED 2026-08-23, answered in part: is wasm's =ref= (frame-slot)
+  representation a *value* or an *address*? Measured directly by
+  reading =nelisp-aot-compiler--wasm-emit-value='s tag-53 arm: it is
+  always a plain =local.get=, for every frame slot including the
+  auto-injected hidden boundary slots (=out=/=mirror=/=frames=/
+  =scratch=/=name-slot=, =nelisp-aot-compiler--object-hidden-boundary-fenv=)
+  that native builds treat as self-allocated =*mut Sexp= stack pointers.
+  This means native's "write a helper's result through a caller-owned
+  pointer, re-read it later" convention has no wasm equivalent as
+  written — wasm =env= imports cannot mutate a caller's locals at all.
+  §3 Phase B's update above names the fix (a return-value convention
+  for the two =sexp-write-*-lit= ops specifically) but leaves open
+  whether other boundary-slot consumers (=nelisp_aot_make_closure=,
+  =nelisp_env_set_value=, the closure-capture and keyword/designator
+  materialization call sites at =lisp/nelisp-aot-compiler.el= lines
+  ~4700-4870, all of which write through =out=/=scratch= the same way)
+  need the identical treatment or hit further, as-yet-unmeasured gaps
+  of their own — worth a dedicated survey before Phase B is scoped as
+  "done" rather than "the two literal-materialization ops work."
+
+- ANSWERED for the two named ops, 2026-08-23 (still open for the rest,
+  per the point directly above): the two =sexp-write-*-lit= ops landed
+  a *self-allocating* variant of the return-value convention rather than
+  the =env=-import one this question originally sketched — see §3 Phase
+  B's "Boundary-slot mechanism landed" update for the mechanism, why no
+  host import or interner turned out to be needed for these two ops
+  specifically, and the newly-measured =sexp-write-nil=/=sexp-int-make=
+  wall this fix exposes as the next instance of the *same* open
+  question, unresolved for those two.  =nelisp_aot_make_closure=/
+  =nelisp_env_set_value= and the ~4700-4870 call sites remain
+  unmeasured for wasm — this session did not reach them.

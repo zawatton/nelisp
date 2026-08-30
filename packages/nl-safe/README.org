@@ -287,6 +287,42 @@ standalone's =require= silently succeeds on missing files):
 ./target/nelisp --load packages/nl-safe/test/nl-resource-standalone-smoke.el
 #+end_src
 
+Both smokes also run =examples/nl-safe/borrow-violation.el= via
+=packages/nl-safe/test/nl-safe-example-test.el= (matches the
+`packages/*/test/nl-*-test.el' glob, so it is also part of the
+host-Emacs `ert-full' gate), so the "caught at the moment of
+violation" example cannot silently rot.
+
+* Portability claim, measured (2026-08-22, target/nelisp built from
+  06ed9bd3a)
+
+Every claim above about running "unchanged on host Emacs and on the
+standalone binary" is TRUE, not just claimed:
+
+- Host Emacs: 132/132 combined `nl-safe-test.el' +
+  `nl-safe-report-test.el' ERT cases and 29/29 `nl-resource-test.el'
+  cases pass (part of `ert-full').
+- Standalone: `nl-safe-standalone-smoke.el' runs the identical
+  `nl-safe'/`nl-safe-report' bodies plus the 3-case example suite --
+  106/106 pass; `nl-resource-standalone-smoke.el' runs the identical
+  `nl-resource' bodies -- 29/29 pass.  Both print `GATE-COUNT
+  checked=N findings=0' and are gated as `nl-safe-standalone-smoke' /
+  `nl-resource-standalone-smoke' in =tools/ai/gates.expected= /
+  `nelisp-ai.sh extras'.
+
+One claim above needed re-checking rather than trusting: "the
+standalone's =require= silently succeeds on missing files" (used to
+justify loading dependencies by explicit =load= path here and in the
+smoke runners).  Measured directly against this =target/nelisp=
+build: =(require 'totally-bogus-feature-xyz)= and =(require
+'generator)= both now signal =(file-missing . FEATURE)= loudly rather
+than succeeding silently.  Whatever produced the silent-success
+behaviour this package's tests were written defensively around is not
+reproducible here; the explicit-=load= style stays (it is correct
+either way, and cheap), but the specific silent-success claim should
+not be repeated as current fact without re-measuring against whatever
+build is in hand.
+
 * Follow-ups
 
 - bench/ measurement of the enabled-checks overhead against the

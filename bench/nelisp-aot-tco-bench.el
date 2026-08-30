@@ -36,8 +36,46 @@ not dominate the function-body timing."
   :type 'integer
   :group 'nelisp-aot-tco-bench)
 
-(defcustom nelisp-aot-tco-bench-repeats 5
-  "Number of timed runs per function."
+(defcustom nelisp-aot-tco-bench-repeats 20
+  "Number of timed runs per function, per round.
+
+Was 5, and 5 could not resolve the 0.95 floor.  One run takes about 5ms,
+so five of them close the timing window at 25ms -- before the CPU has
+finished ramping -- and the ramp is charged to whichever function ran
+first.  Measured 2026-08-19 on the shipped compiler, varying nothing but
+this number:
+
+  repeats  ratios                       mean   per-repeat tco/loop
+        5  0.936 0.914 0.930 0.921      0.925  5.26 / 4.90 ms
+       20  0.954 0.947 0.949 0.950      0.950  5.09 / 4.84 ms
+       40  0.967 0.956 0.962 0.945      0.958  5.05 / 4.81 ms
+
+The per-repeat times settle, and with them the ratio.  20 is where the
+window (about 100ms) is long enough for that and short enough to stay
+cheap in CI.
+
+Raising it does not make the gate easy to pass, which was checked rather
+than assumed: with this setting and the median below, the pre-route-2
+compiler measures 0.955, 0.958, 0.947 -- straddling the floor, failing
+once in three -- while the compiler that ships measures 0.995, 1.004,
+1.007.  The gate still tells the two apart, and still says no to code
+that is genuinely five percent slower."
+  :type 'integer
+  :group 'nelisp-aot-tco-bench)
+
+(defcustom nelisp-aot-tco-bench-rounds 5
+  "Number of independent (tco, loop) measurement rounds.
+The reported ratio is their median.
+
+A single round is one sample from a distribution several points wide --
+the same code measured 0.852 to 0.952 across one session on 2026-08-19 --
+so a gate reading one sample decides partly by luck.  The median of five
+rounds is robust to the occasional round that lands during a burst of
+machine load, which is the failure mode observed while this was being
+worked on (one probe round reported 1.632x).
+
+Cost is small: a round is about 0.2s of measured time, and the artifact
+compile that dominates the target happens once for all rounds."
   :type 'integer
   :group 'nelisp-aot-tco-bench)
 
@@ -114,8 +152,17 @@ here, where nl-prelude is loaded, keeps the baseline the hand-written
       (nelisp-aot-tco-bench--run-once artifact-path symbol n))
     (float-time (time-since start))))
 
+(defun nelisp-aot-tco-bench--median (values)
+  "Return the median of VALUES, a non-empty list of numbers."
+  (let* ((sorted (sort (copy-sequence values) #'<))
+         (n (length sorted)))
+    (if (cl-oddp n)
+        (nth (/ n 2) sorted)
+      (/ (+ (nth (1- (/ n 2)) sorted) (nth (/ n 2) sorted)) 2.0))))
+
 (cl-defun nelisp-aot-tco-bench-run (&key (input nelisp-aot-tco-bench-input)
-                                         (repeats nelisp-aot-tco-bench-repeats))
+                                         (repeats nelisp-aot-tco-bench-repeats)
+                                         (rounds nelisp-aot-tco-bench-rounds))
   "Run the Doc 171 benchmark and return a result plist."
   (unless (nelisp-aot-tco-bench-supported-p)
     (error "Doc 171 bench requires Linux x86_64 with cc + objcopy"))
@@ -143,23 +190,38 @@ here, where nl-prelude is loaded, keeps the baseline the hand-written
                              artifact-path "doc171-bench-tco-sum" input))
                  (loop-value (nelisp-aot-tco-bench--run-once
                               artifact-path "doc171-bench-loop-sum" input))
-                 (tco-seconds (nelisp-aot-tco-bench--measure
-                               artifact-path "doc171-bench-tco-sum" input repeats))
-                 (loop-seconds (nelisp-aot-tco-bench--measure
-                                artifact-path "doc171-bench-loop-sum" input repeats))
-                 (ratio (if (zerop tco-seconds)
-                            0.0
-                          (/ loop-seconds tco-seconds))))
-            (list :input input
-                  :repeats repeats
-                  :expected expected
-                  :tco-value tco-value
-                  :loop-value loop-value
-                  :tco-seconds tco-seconds
-                  :loop-seconds loop-seconds
-                  :ratio ratio
-                  :threshold nelisp-aot-tco-bench-threshold
-                  :pass (>= ratio nelisp-aot-tco-bench-threshold))))
+                 (ratios nil)
+                 (tco-total 0.0)
+                 (loop-total 0.0))
+            ;; Rounds alternate tco and loop rather than timing all of one
+            ;; then all of the other, so a drift in machine state over the
+            ;; measurement lands on both sides instead of on whichever went
+            ;; second.
+            (dotimes (_ rounds)
+              (let ((tco-seconds (nelisp-aot-tco-bench--measure
+                                  artifact-path "doc171-bench-tco-sum"
+                                  input repeats))
+                    (loop-seconds (nelisp-aot-tco-bench--measure
+                                   artifact-path "doc171-bench-loop-sum"
+                                   input repeats)))
+                (setq tco-total (+ tco-total tco-seconds))
+                (setq loop-total (+ loop-total loop-seconds))
+                (push (if (zerop tco-seconds) 0.0 (/ loop-seconds tco-seconds))
+                      ratios)))
+            (setq ratios (nreverse ratios))
+            (let ((ratio (nelisp-aot-tco-bench--median ratios)))
+              (list :input input
+                    :repeats repeats
+                    :rounds rounds
+                    :expected expected
+                    :tco-value tco-value
+                    :loop-value loop-value
+                    :tco-seconds (/ tco-total rounds)
+                    :loop-seconds (/ loop-total rounds)
+                    :ratios ratios
+                    :ratio ratio
+                    :threshold nelisp-aot-tco-bench-threshold
+                    :pass (>= ratio nelisp-aot-tco-bench-threshold)))))
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
@@ -259,11 +321,17 @@ to the host source-shape lane so the target always reports numbers."
         (kill-emacs 0))))
   (let* ((result (nelisp-aot-tco-bench-run))
          (pass (plist-get result :pass)))
-    (message "doc171-bench input=%d repeats=%d tco=%.4fs loop=%.4fs ratio=%.3fx threshold=%.2f %s"
+    ;; Every round is printed, not just the median: a gate that reports one
+    ;; number hides how wide the distribution under it was, and that width
+    ;; is what made this measurement undecidable before 2026-08-19.
+    (message "doc171-bench input=%d repeats=%d rounds=%d tco=%.4fs loop=%.4fs rounds=[%s] ratio=%.3fx threshold=%.2f %s"
              (plist-get result :input)
              (plist-get result :repeats)
+             (plist-get result :rounds)
              (plist-get result :tco-seconds)
              (plist-get result :loop-seconds)
+             (mapconcat (lambda (r) (format "%.3f" r))
+                        (plist-get result :ratios) " ")
              (plist-get result :ratio)
              (plist-get result :threshold)
              (if pass "PASS" "FAIL"))

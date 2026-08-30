@@ -2,11 +2,11 @@
 
 (unless (fboundp 'memq)
   (defun memq (elt list)
+    (unless (listp list) (signal 'wrong-type-argument (list 'listp list)))
     (let ((found nil))
       (while (and list (not found))
-        (if (eq elt (car list))
-            (setq found list)
-          (setq list (cdr list))))
+        (if (eq elt (car list)) (setq found list)
+	  (setq list (cdr list))))
       found)))
 
 (unless (fboundp 'member)
@@ -39,16 +39,22 @@
 
 (unless (fboundp 'assq)
   (defun assq (key alist)
+    (unless (listp alist) (signal 'wrong-type-argument (list 'listp alist)))
     (let ((found nil))
       (while (and alist (not found))
         (let ((pair (car alist)))
-          (if (and (consp pair) (eq (car pair) key))
-              (setq found pair)
-            (setq alist (cdr alist)))))
+	  (if (and (consp pair) (eq (car pair) key)) (setq found pair)
+	    (setq alist (cdr alist)))))
       found)))
 
 (unless (fboundp 'assoc)
+  (unless (fboundp 'nelisp--check-list)
+    (defun nelisp--check-list (x)
+      (unless (listp x) (signal 'wrong-type-argument (list 'listp x)))
+      x))
+
   (defun assoc (key alist &optional testfn)
+    (nelisp--check-list alist)
     (let ((found nil))
       (cond
        (testfn
@@ -60,9 +66,7 @@
        ((stringp key)
         (while (and alist (not found))
           (let ((pair (car alist)))
-            (if (and (consp pair)
-                     (stringp (car pair))
-                     (string= (car pair) key))
+            (if (and (consp pair) (stringp (car pair)) (string= (car pair) key))
                 (setq found pair)
               (setq alist (cdr alist))))))
        ((symbolp key)
@@ -74,9 +78,7 @@
        ((numberp key)
         (while (and alist (not found))
           (let ((pair (car alist)))
-            (if (and (consp pair)
-                     (numberp (car pair))
-                     (= (car pair) key))
+            (if (and (consp pair) (numberp (car pair)) (= (car pair) key))
                 (setq found pair)
               (setq alist (cdr alist))))))
        (t

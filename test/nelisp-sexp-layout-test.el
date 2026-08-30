@@ -95,6 +95,20 @@
   "Sexp::Record tag byte must be 12."
   (should (= nelisp-sexp--tag-record 12)))
 
+(ert-deftest nelisp-sexp-layout--tag-bignum ()
+  "Sexp::Bignum tag byte must be 13."
+  (should (= nelisp-sexp--tag-bignum 13)))
+
+(ert-deftest nelisp-sexp-layout--tag-unibyte-str ()
+  "Sexp::UnibyteStr tag byte must be 14."
+  (should (= nelisp-sexp--tag-unibyte-str 14))
+  (should (= nelisp-sexp-layout-tag-unibyte-str 14)))
+
+(ert-deftest nelisp-sexp-layout--tag-unibyte-mut-str ()
+  "Sexp::UnibyteMutStr tag byte must be 15."
+  (should (= nelisp-sexp--tag-unibyte-mut-str 15))
+  (should (= nelisp-sexp-layout-tag-unibyte-mut-str 15)))
+
 ;; ---------------------------------------------------------------------------
 ;; Sexp slot layout offsets and size
 ;; Mirrors `assert!(SEXP_PAYLOAD_OFFSET == 8)' and `size_of::<Sexp>() == 32'.
@@ -254,7 +268,8 @@ car WORD (8) + cdr WORD (8) + refcount (8)."
   (let ((keys (mapcar #'car nelisp-sexp--abi-export))
         (expected '(tag-nil tag-t tag-int tag-float tag-symbol tag-str
                     tag-mut-str tag-cons tag-vector tag-char-table
-                    tag-bool-vector tag-cell tag-record
+                    tag-bool-vector tag-cell tag-record tag-bignum
+                    tag-unibyte-str tag-unibyte-mut-str
                     offset-tag offset-payload slot-size
                     nlconsbox-offset-car nlconsbox-offset-cdr
                     nlconsbox-offset-refcount nlconsbox-size

@@ -170,10 +170,27 @@
    ((and (null div) (integerp x)) x)
    (t (nelisp--f64-trunc 'ceiling x (or div 1)))))
 
+;; `nelisp--f64-trunc' routes `round' to libm round(), which rounds a half
+;; AWAY FROM ZERO -- so this answered 1 for (round 0.5) and 3 for (round 2.5)
+;; where Emacs answers 0 and 2.  Emacs rounds halves to the EVEN neighbour,
+;; and this is the same text the standalone prelude carries, so the two
+;; substrates cannot drift apart again without `ns-gate' saying so.
+(unless (fboundp 'nelisp--check-number)
+  (defun nelisp--check-number (x)
+    (unless (numberp x) (signal 'wrong-type-argument (list 'numberp x)))
+    x))
+
 (defun round (x &optional div)
-  (cond
-   ((and (null div) (integerp x)) x)
-   (t (nelisp--f64-trunc 'round x (or div 1)))))
+  "Return X (1-arg) or X/DIV (2-arg) rounded to the nearest integer.
+A half is rounded to the even neighbour, as in Emacs."
+  (nelisp--check-number x)
+  (let ((v (if div (/ (float x) (float div)) x)))
+    (if (integerp v) v
+      (let* ((f (floor v)) (d (- v f)))
+        (cond ((< d 0.5) f)
+              ((> d 0.5) (1+ f))
+              ((= 0 (% f 2)) f)
+              (t (1+ f)))))))
 
 ;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
 ;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'
@@ -311,14 +328,47 @@ leading `(declare ...)' forms are treated as declarations."
 ;;     signals `arith-error' on a zero divisor, also matching host
 ;;     Emacs).
 (defun mod (a b)
+  ;; Types before arithmetic: (mod :key 0) is a TYPE error in Emacs, not an
+  ;; arithmetic one -- checking the divisor first reported "Arithmetic
+  ;; error" for a call whose problem was the dividend.
+  (unless (numberp a) (signal 'wrong-type-argument (list 'number-or-marker-p a)))
+  (unless (numberp b) (signal 'wrong-type-argument (list 'number-or-marker-p b)))
   (if (or (floatp a) (floatp b))
       (- a (* b (floor (/ a b))))
     (progn
-      (when (= b 0) (error "Arithmetic error"))
+      ;; Emacs signals the CONDITION `arith-error', not a generic `error'
+      ;; whose message happens to say so -- a handler keys on the condition.
+      (when (= b 0) (signal 'arith-error nil))
       (let* ((n (if (< b 0) (- b) b))
              (r (- a (* n (/ a n)))))
         (when (< r 0) (setq r (+ r n)))
-        (if (< b 0) (- r) r)))))
+        ;; R is now the remainder against |B|, in [0, |B|).  Emacs `mod'
+        ;; returns a value with the sign of B, so for a negative B the answer
+        ;; is R + B, not -R: `(mod 7 -3)' is -2 (7 = -3 * -3 + -2), and -1 is
+        ;; what negating gives.  Zero has no sign to carry and stays 0.
+        (if (and (< b 0) (/= r 0)) (+ r b) r)))))
+
+;; `most-positive-fixnum' / `most-negative-fixnum' were unbound (a latent
+;; `void-variable' crash: src/nelisp-bytecode.el:1207 already reads
+;; `most-positive-fixnum' live, as the "no upper bound" sentinel for a
+;; bytecode function's &rest arg count, and would have signalled the
+;; moment any compiled function with a &rest parameter was actually
+;; called).  MEASURED (2026-08-22), not assumed: `(ash 1 61)' on the
+;; standalone wraps to a NEGATIVE value (-2305843009213693952) while
+;; `(ash 1 60)' does not, and the exact boundary
+;; `(+ (ash 1 60) (- (ash 1 60) 1))' round-trips to 2305843009213693951 --
+;; i.e. this runtime's fixnums are Emacs's own 61-bit-magnitude, 62-bit-
+;; signed range on a 64-bit host, bit for bit.  Confirmed against Emacs
+;; 30.1 directly: `most-positive-fixnum' there is the same
+;; 2305843009213693951.
+(unless (boundp 'most-positive-fixnum)
+  (defconst most-positive-fixnum 2305843009213693951
+    "Largest value that is a valid fixnum in this runtime.  See the
+comment above this definition for how that value was measured."))
+(unless (boundp 'most-negative-fixnum)
+  (defconst most-negative-fixnum -2305843009213693952
+    "Smallest value that is a valid fixnum in this runtime.  See
+`most-positive-fixnum'."))
 
 ;; Rust-min batch 6j (2026-05-06): variadic bitwise fold via 2-arg
 ;; primitives `nelisp--logior2' / -logand2 / -logxor2.  Elisp

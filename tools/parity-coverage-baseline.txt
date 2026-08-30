@@ -1,0 +1,310 @@
+# Parity-corpus coverage floor (tools/nelisp-parity-coverage.el).
+# How many of the shared Emacs/NeLisp names test/nelisp-shadow-differential-cases.el
+# mentions.  Raise it whenever cases are added; it may never go down without a
+# stated reason, so a case cannot be deleted quietly.
+
+covered 265
+
+# 264 -> 265 on 2026-08-23 (Doc 188 P2, buffer unification): the 3 new
+# forms in test/nelisp-shadow-differential-cases.el (current-buffer/
+# set-buffer round trip, buffer-substring argument-order pair, erase-
+# buffer clear) newly mention `current-buffer' -- only 1 above baseline,
+# matching the gate's own "1 above baseline" notice: `set-buffer'/
+# `buffer-substring'/`erase-buffer' are not themselves in docs/emacs-
+# compat-table.txt's tracked shared-name list (that table predates P1's
+# deletion of lisp/nelisp-stdlib-misc.el's dead buffer stubs and was not
+# regenerated then or now -- out of scope for this phase, same call P1
+# made; see that file's own header), the same "not every real fix moves
+# this specific ratchet" shape `point' hit in the P1 note directly below.
+
+# 259 -> 264 on 2026-08-23 (Doc 188 P1, buffer unification): the 4 new
+# forms in test/nelisp-shadow-differential-cases.el (§4.2's `with-temp-
+# buffer'/`insert'/`buffer-string'/`goto-char'/`point'/`point-min'/
+# `point-max' round trips) newly mention `insert', `buffer-string',
+# `goto-char', `point-max' and `with-temp-buffer' -- 5 names, matching
+# the gate's own "5 above baseline" notice (`point' is not itself in
+# docs/emacs-compat-table.txt's tracked name list, so it does not add a
+# 6th; `point-min'/`generate-new-buffer'/`kill-buffer'/`buffer-live-p'
+# were already pinned below from earlier corpus entries).
+#
+# 100 -> 157 on 2026-08-20.  The gate had been printing "ratchet available"
+# for most of the day while the corpus grew from 100 names to 157; leaving
+# the floor at its first-measured value means it stops being a floor.  It
+# also made the mutation harness report this gate as broken -- removing one
+# covered name drops the count by one, which a floor of 100 cannot notice.
+
+# 157 -> 259 on 2026-08-21.  A floor 102 below the measurement is not a floor:
+# the corpus could lose a hundred names and still clear it.
+#
+# The `pinned' lines below are the stronger half.  A COUNT cannot see a
+# specific name leave -- `gate-mutation' renamed `generate-new-buffer' out of
+# the corpus and this gate stayed green, because 258 is still well over 157.
+# Each line names something the corpus exercises today; losing one fails the
+# gate and says which.  Deleting a case is fine, but it has to come with
+# deleting its `pinned' line, which is where somebody gets asked why.
+
+pinned *
+pinned +
+pinned -
+pinned /
+pinned /=
+pinned 1+
+pinned 1-
+pinned <
+pinned =
+pinned >
+pinned >=
+pinned abs
+pinned add-to-list
+pinned alist-get
+pinned and
+pinned append
+pinned apply-partially
+pinned aref
+pinned ash
+pinned assoc
+pinned assoc-string
+pinned assq
+pinned assq-delete-all
+pinned backquote
+pinned base64-decode-string
+pinned base64-encode-string
+pinned bool-vector-p
+pinned boundp
+pinned buffer-file-name
+pinned buffer-live-p
+pinned buffer-string
+pinned buffer-substring-no-properties
+pinned butlast
+pinned byte-compile-file
+pinned cancel-timer
+pinned capitalize
+pinned car
+pinned cdr
+pinned ceiling
+pinned char-equal
+pinned char-to-string
+pinned char-uppercase-p
+pinned compare-strings
+pinned concat
+pinned cons
+pinned copy-hash-table
+pinned copy-sequence
+pinned current-buffer
+pinned declare
+pinned decode-char
+pinned decode-coding-string
+pinned defalias
+pinned defconst
+pinned define-error
+pinned defmacro
+pinned defun
+pinned delete
+pinned delete-directory
+pinned delq
+pinned directory-file-name
+pinned downcase
+pinned elt
+pinned encode-coding-string
+pinned eq
+pinned equal
+pinned equal-including-properties
+pinned error
+pinned error-message-string
+pinned executable-find
+pinned exp
+pinned expand-file-name
+pinned expt
+pinned fceiling
+pinned featurep
+pinned features
+pinned ffloor
+pinned file-attribute-size
+pinned file-executable-p
+pinned file-name-absolute-p
+pinned file-name-as-directory
+pinned file-name-directory
+pinned file-name-extension
+pinned file-name-nondirectory
+pinned file-name-sans-extension
+pinned file-truename
+pinned file-writable-p
+pinned float
+pinned floor
+pinned fmakunbound
+pinned format
+pinned format-message
+pinned frame-height
+pinned frame-width
+pinned fround
+pinned ftruncate
+pinned functionp
+pinned generate-new-buffer
+pinned get
+pinned gethash
+pinned goto-char
+pinned hash-table-count
+pinned hash-table-p
+pinned hash-table-test
+pinned help-add-fundoc-usage
+pinned help-split-fundoc
+pinned identity
+pinned ignore
+pinned insert
+pinned int-to-string
+pinned integerp
+pinned intern
+pinned intern-soft
+pinned json-serialize
+pinned kill-buffer
+pinned last
+pinned length
+pinned list
+pinned listp
+pinned locate-file
+pinned locate-library
+pinned log
+pinned logand
+pinned logior
+pinned lognot
+pinned logxor
+pinned lsh
+pinned macroexp--fgrep
+pinned macroexp-parse-body
+pinned macroexpand
+pinned macroexpand-1
+pinned macroexpand-all
+pinned make-bool-vector
+pinned make-hash-table
+pinned make-list
+pinned make-string
+pinned make-symbolic-link
+pinned make-temp-file
+pinned make-temp-name
+pinned mapc
+pinned mapcan
+pinned mapcar
+pinned mapconcat
+pinned maphash
+pinned max-char
+pinned member
+pinned memq
+pinned memql
+pinned min
+pinned mod
+pinned multibyte-string-p
+pinned natnump
+pinned nconc
+pinned not
+pinned nreverse
+pinned nth
+pinned nthcdr
+pinned number-sequence
+pinned number-to-string
+pinned or
+pinned path-separator
+pinned pcase
+pinned plist-get
+pinned plist-member
+pinned plist-put
+pinned point-max
+pinned point-min
+pinned prefix-numeric-value
+pinned prin1
+pinned prin1-to-string
+pinned princ
+pinned print
+pinned process-get
+pinned process-live-p
+pinned process-put
+pinned process-status
+pinned processp
+pinned put
+pinned puthash
+pinned rassoc
+pinned rassq
+pinned read
+pinned read-from-string
+pinned regexp-opt
+pinned regexp-quote
+pinned remove
+pinned remq
+pinned rename-file
+pinned replace-regexp-in-string
+pinned reverse
+pinned round
+pinned run-at-time
+pinned seq-concatenate
+pinned seq-count
+pinned seq-do
+pinned seq-drop
+pinned seq-elt
+pinned seq-empty-p
+pinned seq-into
+pinned seq-map
+pinned seq-mapcat
+pinned seq-mapn
+pinned seq-max
+pinned seq-min
+pinned seq-partition
+pinned seq-position
+pinned seq-reverse
+pinned seq-sort
+pinned seq-take
+pinned sequencep
+pinned set
+pinned set-buffer-multibyte
+pinned set-file-modes
+pinned setplist
+pinned sort
+pinned special-variable-p
+pinned split-string
+pinned sqrt
+pinned string
+pinned string-as-multibyte
+pinned string-blank-p
+pinned string-chop-newline
+pinned string-empty-p
+pinned string-equal
+pinned string-equal-ignore-case
+pinned string-greaterp
+pinned string-lessp
+pinned string-make-unibyte
+pinned string-match-p
+pinned string-pad
+pinned string-prefix-p
+pinned string-replace
+pinned string-search
+pinned string-split
+pinned string-suffix-p
+pinned string-to-char
+pinned string-to-list
+pinned string-to-number
+pinned string-trim
+pinned string-trim-left
+pinned string-trim-right
+pinned string-version-lessp
+pinned string<
+pinned string=
+pinned stringp
+pinned substring
+pinned sxhash
+pinned sxhash-eq
+pinned sxhash-eql
+pinned sxhash-equal
+pinned symbol-name
+pinned symbol-plist
+pinned symbol-value
+pinned take
+pinned terpri
+pinned truncate
+pinned type-of
+pinned unibyte-string
+pinned unless
+pinned upcase
+pinned vconcat
+pinned vectorp
+pinned when
+pinned with-temp-buffer
+pinned write-char
+pinned zerop

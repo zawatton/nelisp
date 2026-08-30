@@ -106,9 +106,22 @@ Stops at \\| , \\) , or end."
             (if (< j n)
                 (let ((q (aref pat j)))
                   (cond
-                   ((eq q ?*) (setq nodes (cons (list :star atom) nodes) j (1+ j)))
-                   ((eq q ?+) (setq nodes (cons (list :plus atom) nodes) j (1+ j)))
-                   ((eq q ??) (setq nodes (cons (list :opt atom) nodes) j (1+ j)))
+                   ;; A `?' after *, + or ? makes the quantifier non-greedy.
+                   ;; It was consumed as a separate `:opt' over the quantified
+                   ;; node, which is not the same thing: "a.*?b" against
+                   ;; "axbxb" matched "ax" instead of "axb".
+                   ((eq q ?*)
+                    (if (and (< (1+ j) n) (eq (aref pat (1+ j)) ??))
+                        (setq nodes (cons (list :lazystar atom) nodes) j (+ j 2))
+                      (setq nodes (cons (list :star atom) nodes) j (1+ j))))
+                   ((eq q ?+)
+                    (if (and (< (1+ j) n) (eq (aref pat (1+ j)) ??))
+                        (setq nodes (cons (list :lazyplus atom) nodes) j (+ j 2))
+                      (setq nodes (cons (list :plus atom) nodes) j (1+ j))))
+                   ((eq q ??)
+                    (if (and (< (1+ j) n) (eq (aref pat (1+ j)) ??))
+                        (setq nodes (cons (list :lazyopt atom) nodes) j (+ j 2))
+                      (setq nodes (cons (list :opt atom) nodes) j (1+ j))))
                    ((and (eq q ?\\) (< (1+ j) n) (eq (aref pat (1+ j)) ?{))
                     (let* ((br (nlre--parse-brace atom pat (+ j 2) n)))
                       ;; br = (REVERSED-NODES . newpos)
@@ -155,25 +168,61 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
      ((eq c ?\\)
       (let ((d (aref pat (1+ i))))
         (cond
-         ((eq d ?\() ;; group start
-          (setq nlre--gcount (1+ nlre--gcount))
-          (let* ((gn nlre--gcount)
-                 (r (nlre--parse-alt pat (+ i 2) n))
-                 (inner (car r)) (j (cdr r)))
-            ;; consume \)
-            (when (and (< (1+ j) n) (eq (aref pat j) ?\\) (eq (aref pat (1+ j)) ?\)))
-              (setq j (+ j 2)))
-            (cons (list :group gn inner) j)))
+         ((eq d ?\() ;; group start: plain, shy \(?:..\), or numbered \(?N:..\)
+          ;; A `?' directly after \( introduces the shy and the explicitly
+          ;; numbered forms.  Neither was recognised, so the `?' and the `:'
+          ;; were parsed as ordinary pattern characters and \(?:x+\) matched
+          ;; the literal text "?:x..." -- i.e. every shy group in the tree
+          ;; silently failed to match, including the ones `regexp-opt'
+          ;; generates and the ones `string-trim-left' needs.  It failed by
+          ;; not matching rather than by erroring, which is why it survived.
+          (let ((k (+ i 2)) (shy nil) (explicit nil))
+            (when (and (< k n) (eq (aref pat k) ?\?))
+              (let ((m (1+ k)) (num nil))
+                (while (and (< m n) (>= (aref pat m) ?0) (<= (aref pat m) ?9))
+                  (setq num (+ (* (or num 0) 10) (- (aref pat m) ?0)))
+                  (setq m (1+ m)))
+                (when (and (< m n) (eq (aref pat m) ?:))
+                  (if num (setq explicit num) (setq shy t))
+                  (setq k (1+ m)))))
+            (let ((gn (cond (shy nil)
+                            (explicit explicit)
+                            (t (setq nlre--gcount (1+ nlre--gcount))
+                               nlre--gcount))))
+              (when (and explicit (> explicit nlre--gcount))
+                (setq nlre--gcount explicit))
+              (let* ((r (nlre--parse-alt pat k n))
+                     (inner (car r)) (j (cdr r)))
+                ;; consume \)
+                (when (and (< (1+ j) n) (eq (aref pat j) ?\\) (eq (aref pat (1+ j)) ?\)))
+                  (setq j (+ j 2)))
+                ;; A shy group captures nothing, so it simply IS its body.
+                ;; `:seq' and `:alt' are both already node types the matcher
+                ;; dispatches on, in `nlre--match-list' and `nlre--match-one'
+                ;; alike, so this needs no new node type and no new arm.
+                (cons (if shy inner (list :group gn inner)) j)))))
          ((eq d ?w) (cons (list :word nil) (+ i 2)))
          ((eq d ?W) (cons (list :word t) (+ i 2)))
+         ;; \b / \B: zero-width word boundary.  Absent, so \b fell through
+         ;; to the default arm and matched the literal character `b'.
+         ((eq d ?b) (cons (list :wordb nil) (+ i 2)))
+         ((eq d ?B) (cons (list :wordb t) (+ i 2)))
+         ;; \< / \> word edges, \_< / \_> symbol edges.  None were parsed, so
+         ;; \< fell through to the default arm and matched a literal `<'.
+         ((eq d ?<) (cons (list :wordedge nil) (+ i 2)))
+         ((eq d ?>) (cons (list :wordedge t) (+ i 2)))
+         ((and (eq d ?_) (< (+ i 2) n) (eq (aref pat (+ i 2)) ?<))
+          (cons (list :symedge nil) (+ i 3)))
+         ((and (eq d ?_) (< (+ i 2) n) (eq (aref pat (+ i 2)) ?>))
+          (cons (list :symedge t) (+ i 3)))
          ((eq d ?s)
-          ;; \s- = whitespace; consume the class char if present
-          (let ((j (+ i 2)))
-            (when (< j n) (setq j (1+ j)))
-            (cons (list :space nil) j)))
+          (let ((j (+ i 2)) (class nil))
+            (when (< j n) (setq class (aref pat j)) (setq j (1+ j)))
+            (cons (list :syntax class nil) j)))
          ((eq d ?S)
-          (let ((j (+ i 2))) (when (< j n) (setq j (1+ j)))
-               (cons (list :space t) j)))
+          (let ((j (+ i 2)) (class nil))
+            (when (< j n) (setq class (aref pat j)) (setq j (1+ j)))
+            (cons (list :syntax class t) j)))
          ((eq d 96) (cons (list :bos) (+ i 2)))  ;; \` = beginning of string
          ((eq d 39) (cons (list :eos) (+ i 2)))  ;; \' = end of string
          (t (cons (list :lit d) (+ i 2))))))
@@ -226,16 +275,73 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
 
 (defvar nlre--caps nil "Vector of (start . end) per group during a match.")
 
+;; Emacs folds case by default -- `case-fold-search' is t globally -- and
+;; this engine did not honour it at all, so (string-match "A" "a") answered
+;; nil where Emacs answers 0.  Every case-insensitive search in every caller
+;; silently found nothing, which is the failure mode that does not announce
+;; itself.
+;;
+;; The fold is applied at the two comparison sites rather than baked into
+;; the parsed pattern, for two reasons: `nlre--compiled-pattern' caches
+;; ASTs keyed on the pattern string alone, so a folded AST would be handed
+;; to a later case-sensitive match; and downcasing the pattern text would
+;; rewrite \W into \w and \B into \b, turning negated classes into their
+;; opposites.
+;; `case-fold-search' itself is declared in scripts/nelisp-stdlib-prelude.el,
+;; beside the other stock Emacs variables this runtime has to provide -- this
+;; file only reads it, and reads it through `boundp' so a match that runs
+;; before that declaration behaves as case-sensitive rather than erroring.
+(defvar nlre--fold nil "Non-nil while the current match folds case.")
+
+(defun nlre--fold-char (c)
+  (if (and nlre--fold (>= c ?A) (<= c ?Z)) (+ c 32) c))
+
+(defun nlre--flip-case (c)
+  (cond ((and (>= c ?a) (<= c ?z)) (- c 32))
+        ((and (>= c ?A) (<= c ?Z)) (+ c 32))
+        (t c)))
+
 (defun nlre--space-p (c) (or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12)))
+;; `_' is a SYMBOL constituent, not a word constituent, in the standard
+;; syntax table -- (string-match "\\w" "_") is nil in Emacs.  Counting it as a
+;; word character also moved every \\b boundary: (string-match "\\bx" "_x")
+;; answered nil where Emacs answers 1.
 (defun nlre--word-p (c)
   (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z))
-      (and (>= c ?0) (<= c ?9)) (= c ?_)))
+      (and (>= c ?0) (<= c ?9))))
 
-(defun nlre--set-match (neg ranges c)
+(defun nlre--symbol-p (c)
+  (or (nlre--word-p c) (= c ?_)))
+
+;; `\\sC' matches a character whose SYNTAX CLASS is C.  The class character was
+;; parsed and thrown away, so every \\sC behaved as \\s- (whitespace) and every
+;; \\SC as its negation: (string-match "\\Sw" "a") answered 0 where Emacs
+;; answers nil.  A class this does not model matches nothing, which is wrong
+;; in a stated direction rather than in an arbitrary one.
+(defun nlre--syntax-p (class c)
+  (cond ((eq class ?w) (nlre--word-p c))
+        ((eq class ?_) (= c ?_))
+        ((or (eq class ?-) (eq class 32)) (nlre--space-p c))
+        ((eq class ?.) (and (> c 32) (< c 127)
+                            (not (nlre--word-p c)) (/= c ?_)
+                            (not (memq c '(?\( ?\) ?\[ ?\] ?{ ?} ?\" ?\\)))))
+        ((eq class ?\() (memq c '(?\( ?\[ ?{)))
+        ((eq class ?\)) (memq c '(?\) ?\] ?})))
+        ((eq class ?\") (= c ?\"))
+        ((eq class ?\\) (= c ?\\))
+        (t nil)))
+
+(defun nlre--set-in-ranges (ranges c)
   (let ((hit nil) (rs ranges))
     (while (and rs (not hit))
       (when (and (>= c (car (car rs))) (<= c (cdr (car rs)))) (setq hit t))
       (setq rs (cdr rs)))
+    hit))
+
+(defun nlre--set-match (neg ranges c)
+  (let ((hit (or (nlre--set-in-ranges ranges c)
+                 (and nlre--fold
+                      (nlre--set-in-ranges ranges (nlre--flip-case c))))))
     (if neg (not hit) hit)))
 
 (defun nlre--match-atom1 (node s pos n)
@@ -243,11 +349,34 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
 Does NOT continue to any rest (used for one repetition)."
   (let ((tag (car node)))
     (cond
-     ((eq tag :lit) (and (< pos n) (eq (aref s pos) (nth 1 node)) (1+ pos)))
+     ((eq tag :lit) (and (< pos n)
+                         (eq (nlre--fold-char (aref s pos))
+                             (nlre--fold-char (nth 1 node)))
+                         (1+ pos)))
      ((eq tag :any) (and (< pos n) (not (eq (aref s pos) ?\n)) (1+ pos)))
      ((eq tag :set) (and (< pos n) (nlre--set-match (nth 1 node) (nth 2 node) (aref s pos)) (1+ pos)))
      ((eq tag :word) (and (< pos n) (let ((w (nlre--word-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
      ((eq tag :space) (and (< pos n) (let ((w (nlre--space-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
+     ((eq tag :syntax)
+      (and (< pos n)
+           (let ((m (nlre--syntax-p (nth 1 node) (aref s pos))))
+             (if (nth 2 node) (not m) m))
+           (1+ pos)))
+     ((eq tag :wordedge)
+      (let ((before (and (> pos 0) (nlre--word-p (aref s (1- pos))) t))
+            (after (and (< pos n) (nlre--word-p (aref s pos)) t)))
+        (and (if (nth 1 node) (and before (not after)) (and after (not before)))
+             pos)))
+     ((eq tag :symedge)
+      (let ((before (and (> pos 0) (nlre--symbol-p (aref s (1- pos))) t))
+            (after (and (< pos n) (nlre--symbol-p (aref s pos)) t)))
+        (and (if (nth 1 node) (and before (not after)) (and after (not before)))
+             pos)))
+     ((eq tag :wordb)
+      (let* ((before (and (> pos 0) (nlre--word-p (aref s (1- pos))) t))
+             (after (and (< pos n) (nlre--word-p (aref s pos)) t))
+             (boundary (not (eq before after))))
+        (and (if (nth 1 node) (not boundary) boundary) pos)))
      ((eq tag :bol) (and (or (= pos 0) (eq (aref s (1- pos)) ?\n)) pos))
      ((eq tag :eol) (and (or (= pos n) (eq (aref s pos) ?\n)) pos))
      ((eq tag :bos) (and (= pos 0) pos))
@@ -261,6 +390,18 @@ Return end-pos or nil."
     (let* ((nd (car nodes)) (rest (cdr nodes)) (tag (car nd)))
       (cond
        ((eq tag :star) (nlre--match-star (nth 1 nd) rest s pos n))
+       ;; Non-greedy: try the REST first, and only consume another repetition
+       ;; when that fails -- the mirror image of `nlre--match-star'.
+       ((eq tag :lazystar)
+        (or (nlre--match-list rest s pos n)
+            (let ((p2 (nlre--match-one (nth 1 nd) s pos n)))
+              (and p2 (> p2 pos) (nlre--match-list (cons nd rest) s p2 n)))))
+       ((eq tag :lazyplus)
+        (nlre--match-list
+         (cons (nth 1 nd) (cons (list :lazystar (nth 1 nd)) rest)) s pos n))
+       ((eq tag :lazyopt)
+        (or (nlre--match-list rest s pos n)
+            (nlre--match-list (cons (nth 1 nd) rest) s pos n)))
        ((eq tag :plus)
         (nlre--match-list (cons (nth 1 nd) (cons (list :star (nth 1 nd)) rest)) s pos n))
        ((eq tag :opt)
@@ -332,7 +473,8 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
              (fboundp 'nl-write-file))
     (nl-write-file nlre--string-match-counter-file
                    (format "%d" nlre--string-match-calls)))
-  (let* ((compiled (nlre--compiled-pattern regexp))
+  (let* ((nlre--fold (and (boundp 'case-fold-search) case-fold-search))
+         (compiled (nlre--compiled-pattern regexp))
          (ast (car compiled))
          (top (nlre--seq-nodes ast))
          (n (length string))
@@ -389,15 +531,50 @@ implies OMIT-NULLS and leading/trailing trim (matching GNU Emacs)."
         (while (and res (= (length (car res)) 0)) (setq res (cdr res))))
       res)))
 
-(defun nlre-replace-regexp-in-string (regexp rep string)
-  "Subset of `replace-regexp-in-string': REP is a literal string or a
-function of the matched substring.  No \\N backrefs in literal REP (v1)."
-  (let ((out "") (pos 0) (len (length string)) (cont t))
+;; \N, \& and \\ in a string REPLACEMENT were not expanded -- they were
+;; copied through as the two literal characters -- so
+;; (replace-regexp-in-string "\\(a\\)" "[\\1]" "a") produced "[\\1]".
+;; A backreference is the usual reason to write a group in the first place,
+;; so the common call was the broken one.
+(defun nlre--expand-replacement (rep string)
+  (let ((i 0) (n (length rep)) (out ""))
+    (while (< i n)
+      (let ((c (aref rep i)))
+        (if (and (eq c ?\\) (< (1+ i) n))
+            (let ((d (aref rep (1+ i))))
+              (cond
+               ((and (>= d ?0) (<= d ?9))
+                (let* ((g (- d ?0))
+                       (b (nlre-match-beginning g))
+                       (e (nlre-match-end g)))
+                  (setq out (concat out (if (and b e) (substring string b e) ""))))
+                (setq i (+ i 2)))
+               ((eq d ?&)
+                (setq out (concat out (substring string (nlre-match-beginning 0)
+                                                 (nlre-match-end 0))))
+                (setq i (+ i 2)))
+               (t (setq out (concat out (char-to-string d)))
+                  (setq i (+ i 2)))))
+          (setq out (concat out (char-to-string c)))
+          (setq i (1+ i)))))
+    out))
+
+(defun nlre-replace-regexp-in-string (regexp rep string &optional literal subexp start)
+  "`replace-regexp-in-string': REP is a string or a function of the match.
+Unless LITERAL, \\N / \\& / \\\\ in a string REP are expanded.  SUBEXP
+replaces only that group; START omits the first START characters from the
+result, as in Emacs."
+  (let ((out "") (pos (or start 0)) (len (length string)) (cont t))
     (while (and cont (<= pos len) (nlre-string-match regexp string pos))
       (let* ((mb (nlre-match-beginning 0)) (me (nlre-match-end 0))
+             (rb (if subexp (nlre-match-beginning subexp) mb))
+             (re (if subexp (nlre-match-end subexp) me))
              (matched (substring string mb me))
-             (piece (if (stringp rep) rep (funcall rep matched))))
-        (setq out (concat out (substring string pos mb) piece))
+             (piece (cond ((not (stringp rep)) (funcall rep matched))
+                          (literal rep)
+                          (t (nlre--expand-replacement rep string)))))
+        (setq out (concat out (substring string pos rb) piece
+                          (substring string re me)))
         (cond
          ((= me mb)
           (if (>= mb len) (setq cont nil)

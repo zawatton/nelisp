@@ -1,0 +1,129 @@
+#+TITLE: nl-num — opt-in rational and complex arithmetic for NeLisp
+
+* Purpose
+
+=nl-num= is the pure-Elisp numeric tower from Doc 196.  It adds normalized
+rationals and complex numbers on top of NeLisp's shipped tag-13 bignums.
+Loading the package does not advise or redefine any stock arithmetic function:
+callers opt in explicitly with =(require 'nl-num)= and use the =nl-*= API.
+
+#+begin_src elisp
+(require 'nl-num)
+
+(nl-num-pr-str (nl-/ 1 3))
+;; => "1/3"
+
+(nl-num-pr-str (nl-+ (nl-/ 1 3) (nl-/ 1 6)))
+;; => "1/2"
+
+(nl-* (nl-complex 1 2) (nl-complex 3 4))
+;; => [nl--complex -5 10]
+#+end_src
+
+Stock =+=, =-=, =*=, =/=, =<=, and === retain their original function
+objects and behavior.  In particular, requiring this package cannot change
+unannotated Elisp.
+
+* Public API
+
+| family | functions |
+|--------+-----------|
+| arithmetic | =nl-+=, =nl--=, =nl-*=, =nl-/= |
+| rational | =nl-rational=, =nl-rationalp=, =nl-numerator=, =nl-denominator= |
+| complex | =nl-complex=, =nl-complexp=, =nl-realpart=, =nl-imagpart=, =nl-magnitude=, =nl-num-sqrt= |
+| tower predicates | =nl-realp= |
+| comparison | =nl-num-<=, =nl-num-<==, =nl-num-==, =nl-num->=, =nl-num->== |
+| display | =nl-num-pr-str= |
+
+The comparison family uses =nl-num-= rather than the shorter arithmetic
+prefix because =nl->= already belongs to =nl-contract=.
+
+=nl-/= follows Common Lisp, Scheme, and Clojure exact-division semantics:
+two exact operands produce an exact rational, demoting to an integer only
+when the normalized denominator is one.  Mixed arithmetic follows
+
+#+begin_example
+integer < rational < float
+#+end_example
+
+Complex is orthogonal to that real contagion ladder.  A complex calculation
+wraps real components at the resulting level.
+
+* Representation and canonical form
+
+The package introduces no native runtime tag and adds no Rust code.  Values
+are ordinary tagged vectors:
+
+#+begin_example
+[nl--rational NUM DEN]
+[nl--complex RE IM]
+#+end_example
+
+A rational is always gcd-reduced, has =DEN > 0=, and never stores =DEN = 1=;
+that case is the integer =NUM=.  An exact zero imaginary component similarly
+demotes a complex to its real component.  A float zero does not demote, as
+required by CLHS 12.1.5.2-3, so =(nl-complex 1.0 0.0)= remains complex.
+Float contagion inside a complex is bilateral: =(nl-complex 1 2.0)= stores
+=1.0= and =2.0=.
+
+Plain vectors are deliberate.  target/nelisp's records print with =#s(...)=
+syntax but do not read back correctly, while tagged vectors survive
+=prin1-to-string= / =read-from-string=.  The standalone smoke checks both a
+bignum-backed rational and a rational-component complex through that path.
+
+* Bignum-safe foundation
+
+NeLisp's native =/=, =mod=, =%=, =ash=, and bitwise functions reject tag-13
+bignums.  =nl-num--divmod= instead builds the multiples =d, 2d, 4d, ...= with
+addition, stores them largest-first, and greedily subtracts them.  Signed
+inputs receive a Euclidean adjustment, so =n = q*d + r= and
+=0 <= r < abs(d)=.  Euclid's algorithm over that remainder operation supplies
+the gcd used at every rational-normalization choke point.
+
+The standalone native float fold has a separate silent hazard: when one call
+contains both a Float and a Bignum, it reads the bignum's sign word as its
+magnitude.  =nl-num= never makes such a call.  Its integer-to-float bridge
+uses Phase 0 divmod to retain a correctly rounded 53-bit fixnum mantissa, then
+restores the exponent with float-only multiplication.  Rational-to-float
+conversion promotes numerator and denominator separately before dividing two
+floats.
+
+* Reader boundary
+
+This library cannot add =1/3= or =#C(1 2)= reader literals: token
+classification happens in the compiled core reader before an opt-in library
+runs.  Use =nl-rational= / =nl-complex= as constructors and =nl-num-pr-str=
+for cosmetic =N/D= / =#C(RE IM)= output.  That display syntax is not claimed
+as an Elisp reader extension.
+
+* Errors
+
+=nl-num-error= derives from =nl-error=.  Exact division by zero signals the
+more specific =nl-num-division-by-zero-error=.  Ordering a complex signals
+=nl-num-error= because complex numbers have no total order.
+
+* Testing
+
+The host suite contains the CL/Scheme/Clojure reference-contract corpus:
+
+#+begin_src sh
+tools/ai/nelisp-ai.sh test-one packages/nl-num/test/nl-num-test.el
+#+end_src
+
+The same ERT bodies plus the tagged-vector print/read proofs run on the
+standalone binary:
+
+#+begin_src sh
+make nl-num-standalone-smoke
+#+end_src
+
+Run =make compile= and =make parens-check= before committing.  Byte compiler
+warnings are errors in this repository.
+
+* Limits
+
+- General bignum divmod is interpreted Elisp and deliberately slower than a
+  native limb division would be.
+- =nl-num-pr-str= is cosmetic; it does not alter =read=.
+- NaN and infinity component policy remains outside the build-first phases.
+

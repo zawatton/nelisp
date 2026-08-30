@@ -72,6 +72,13 @@ thousands of lines and nobody would read a diff of it.")
          (accepted (nl-ns-load-accepted nl-ns-gate-accepted-file))
          (new (nl-ns-unaccepted gated accepted))
          (stale (nl-ns-stale-accepted gated accepted)))
+    ;; Machine-readable, before the verdict so it survives every exit path.
+    ;; `checked' counts FINDINGS SEEN, which is the only number that can show
+    ;; the scan happened at all: a gate that reports clean because it looked
+    ;; at nothing reads exactly like a gate that reports clean because the
+    ;; tree is clean.  Three checks were in that state on 2026-08-19.
+    (princ (format "GATE-COUNT checked=%d findings=%d\n"
+                   (length findings) (+ (length new) (length stale))))
     (princ (format "nl-ns gate: %d findings, %d in gated kinds, %d accepted\n"
                    (length findings) (length gated)
                    (hash-table-count (plist-get accepted :keys))))
@@ -84,17 +91,33 @@ thousands of lines and nobody would read a diff of it.")
       (princ "Drop them from the accepted set -- it should describe the tree:\n")
       (dolist (key stale)
         (princ (format "  %s\n" key))))
+    ;; Reported, not gated.  Every acceptance ought to say why it is one --
+    ;; the file-level :reason covers all of them with a single sentence, and
+    ;; two fallbacks that answered wrongly rather than deferring sat under it
+    ;; until somebody read them one at a time (2026-08-19).  Failing on this
+    ;; today would fail on every entry, so it counts down instead.
+    (let ((unnoted (nl-ns-unnoted-accepted accepted)))
+      (when unnoted
+        (princ (format "nl-ns gate: %d accepted entr%s without a per-entry note\n"
+                       (length unnoted)
+                       (if (= (length unnoted) 1) "y" "ies")))))
     (+ (length new) (length stale))))
 
 (if (getenv "NL_NS_GATE_WRITE")
     (let* ((findings (nl-ns-check-files (nl-ns-gate--files) nil
                                         nl-ns-gate-baseline-file))
-           (gated (nl-ns-gate--gated findings)))
+           (gated (nl-ns-gate--gated findings))
+           ;; Read the file being replaced FIRST, so its per-entry notes
+           ;; survive.  Regeneration that drops them makes writing one
+           ;; pointless, and a reason nobody can keep is a reason nobody
+           ;; writes.
+           (previous (nl-ns-load-accepted nl-ns-gate-accepted-file)))
       (princ (format "wrote %d accepted key(s) to %s\n"
                      (nl-ns-write-accepted
                       gated nl-ns-gate-accepted-file
                       (format-time-string "%Y-%m-%d")
-                      "Regenerated from a reviewed tree.")
+                      "Regenerated from a reviewed tree."
+                      (plist-get previous :notes))
                      nl-ns-gate-accepted-file)))
   (let ((problems (nl-ns-gate-run)))
     (if (= problems 0)

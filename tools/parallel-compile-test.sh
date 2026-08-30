@@ -16,6 +16,31 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 
+# Needs a host that can run the configured target; the build script's own
+# predicate decides, not a uname table here.  Same convention as
+# tools/selfhost-test.sh.  2026-08-23 Windows inventory: this Linux-only
+# fork(2)/mmap/ELF path exited 127 while building the reader instead of
+# reporting a reasoned skip.
+set +e
+emacs --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+  >/dev/null 2>&1
+host_rc=$?
+set -e
+case "$host_rc" in
+  0) ;;
+  3)
+    printf 'GATE-SKIP target %s cannot run on host %s/%s\n' \
+      "${NELISP_STANDALONE_TARGET:-linux-x86_64}" "$(uname -s)" "$(uname -m)"
+    echo "[parallel] SKIP: target cannot run on this host"
+    exit 0
+    ;;
+  *)
+    echo "[parallel] FAIL: cannot ask host runnability (rc=$host_rc)" >&2
+    exit 1
+    ;;
+esac
+
 RB="target/nelisp"
 if [ ! -x "$RB" ]; then
   echo "[parallel] building reader binary..."
@@ -29,10 +54,16 @@ o1="$(mktemp /tmp/nelisp-par-o1-XXXXXX)"; o2="$(mktemp /tmp/nelisp-par-o2-XXXXXX
 o3="$(mktemp /tmp/nelisp-par-o3-XXXXXX)"; o4="$(mktemp /tmp/nelisp-par-o4-XXXXXX)"
 trap 'rm -f "$driver" "$o1" "$o2" "$o3" "$o4"' EXIT
 
+# Dependency order matters now that `require' signals on a missing file instead
+# of silently succeeding: `nelisp-aot-compiler.el' requires the two assemblers,
+# the layout and the ELF writer, so in one concatenated file their `provide' has
+# to run first.  Same list and same reason as selfhost-test.sh.
 cat scripts/nelisp-stdlib-prelude.el \
-    lisp/nelisp-aot-compiler.el \
+    lisp/nelisp-asm-arm64.el \
     lisp/nelisp-asm-x86_64.el \
+    lisp/nelisp-sexp-layout.el \
     lisp/nelisp-elf-write.el \
+    lisp/nelisp-aot-compiler.el \
     lisp/nelisp-static-linker.el > "$driver"
 
 # positional self-host compile entry (compile-sexp is a cl-defun with &key,
@@ -101,9 +132,13 @@ for pair in "$o1:11" "$o2:22" "$o3:33" "$o4:44"; do
   if [ "$got" != "$want" ]; then echo "[parallel] FAIL: $f -> $got (expected $want)"; fail=1; fi
 done
 
+# Machine-readable tail: four workers, four checks.  Without it a clean run and
+# a run that started no workers print the same thing to `nelisp-ai.sh gate'.
 if [ "$fail" = 0 ]; then
+  echo "GATE-COUNT checked=4 findings=0"
   echo "[parallel] PASS: 4 units compiled CONCURRENTLY by standalone NeLisp -> 11,22,33,44"
   exit 0
 else
+  echo "GATE-COUNT checked=4 findings=1"
   exit 1
 fi

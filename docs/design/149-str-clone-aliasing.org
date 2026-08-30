@@ -2,6 +2,7 @@
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-10
 #+STATUS: P0-P2 SHIPPED（2026-06-10、flag 268435648 default ON、Linux ゲート全 green）。
+#+VERIFIED-BY: standalone-reader-test reader-surface-audit compile
 #+STATUS2: P3 = vendor-core ok / full 319-file vendor-load は *既存 SEGV*（下記）/ Windows・macOS smoke は CI 修復待ち。
 
 * §P3 記録（2026-06-10）

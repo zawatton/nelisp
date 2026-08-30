@@ -15,8 +15,48 @@
 #   not be 42, so the assertion is meaningful.
 set -euo pipefail
 
+# A gate whose only output is its own result lines cannot be told apart from a
+# gate that ran nothing.  CASES counts the checks that finished; the trap
+# reports it however the script exits, so a failure says how far it got.
+# Findings comes from the exit status: this script stops at the first failure.
+CASES=0
+gate_report_count() {
+  gate_rc=$?
+  if [ "$gate_rc" -eq 0 ]; then
+    printf 'GATE-COUNT checked=%s findings=0\n' "$CASES"
+  else
+    printf 'GATE-COUNT checked=%s findings=1\n' "$CASES"
+  fi
+}
+
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
+
+# Needs a host that can run the configured target; the build script's own
+# predicate decides, not a uname table here.  Same convention as
+# tools/selfhost-test.sh.  2026-08-23 Windows inventory: this Linux-only
+# clone(2)/mmap/ELF self-host path exited 127 while building the reader
+# instead of reporting a reasoned skip.
+set +e
+emacs --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+  >/dev/null 2>&1
+host_rc=$?
+set -e
+case "$host_rc" in
+  0) ;;
+  3)
+    printf 'GATE-SKIP target %s cannot run on host %s/%s\n' \
+      "${NELISP_STANDALONE_TARGET:-linux-x86_64}" "$(uname -s)" "$(uname -m)"
+    echo "[selfhost-mt] SKIP: target cannot run on this host"
+    exit 0
+    ;;
+  *)
+    echo "[selfhost-mt] FAIL: cannot ask host runnability (rc=$host_rc)" >&2
+    exit 1
+    ;;
+esac
 
 RB="target/nelisp"
 if [ ! -x "$RB" ]; then
@@ -28,12 +68,18 @@ fi
 
 driver="$(mktemp /tmp/nelisp-selfhost-mt-XXXXXX.el)"
 outbin="$(mktemp /tmp/nelisp-selfhost-mt-bin-XXXXXX)"
-trap 'rm -f "$driver" "$outbin"' EXIT
+trap 'gate_report_count; rm -f "$driver" "$outbin"' EXIT
 
+# Dependency order matters now that `require' signals on a missing file
+# instead of silently succeeding: `nelisp-aot-compiler.el' requires the two
+# assemblers, the layout and the ELF writer, so in one concatenated file their
+# `provide' has to run first.  Same list and same reason as selfhost-test.sh.
 cat scripts/nelisp-stdlib-prelude.el \
-    lisp/nelisp-aot-compiler.el \
+    lisp/nelisp-asm-arm64.el \
     lisp/nelisp-asm-x86_64.el \
+    lisp/nelisp-sexp-layout.el \
     lisp/nelisp-elf-write.el \
+    lisp/nelisp-aot-compiler.el \
     lisp/nelisp-static-linker.el > "$driver"
 
 cat >> "$driver" <<'WRAP'
@@ -121,5 +167,6 @@ for i in 1 2 3 4 5; do
     echo "[selfhost-mt] FAIL: run $i -> exit $rc (expected 42 = 3 parallel workers x 14)"; exit 1
   fi
 done
+CASES=$((CASES + 1))
 echo "[selfhost-mt] PASS: standalone-compiled 3-thread clone(2)+atomics program -> exit 42 x5 (parallel)"
 exit 0

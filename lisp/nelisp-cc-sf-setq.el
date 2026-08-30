@@ -41,8 +41,8 @@
 ;;
 ;; Structure (8 defuns):
 ;;   nl_sf_setq_set_rc (set-rc rest env out) — after set_value
-;;   nl_sf_setq_evaled (eval-rc sym rest env out _pad6) — after nelisp_eval_call, arity 6
-;;   nl_sf_setq_rest   (rest val-form sym env out _pad6) — after cdr(val-cdr), arity 6
+;;   nl_sf_setq_rest   (rest sym env out) — after cdr(val-cdr)
+;;   nl_sf_setq_evaled (eval-rc sym val-cdr env out _pad6) — after nelisp_eval_call, arity 6
 ;;   nl_sf_setq_val    (val-form sym val-cdr env out _pad6) — after car(val-cdr), arity 6
 ;;   nl_sf_setq_sym    (sym val-cdr env out) — after car(args-pair)
 ;;   nl_sf_setq_pair   (val-cdr args-pair env out) — after cdr(args-pair)
@@ -61,31 +61,34 @@
           (nl_sf_setq_step rest env out 0)
         1))
 
-    ;; After nelisp_eval_call: check rc; if Ok, call nl_env_set_value (FIRST ✓).
-    ;; eval-rc: 0=Ok, 1=Err.  sym: ptr to symbol sexp.  rest: remaining pairs.
+    ;; rest = nl_cons_cdr_ptr(val-cdr) already fetched as first arg.
+    ;; Set the evaluated value via nl_env_set_value (extern-call FIRST ✓).
+    ;; Arity 4 (even).
+    (defun nl_sf_setq_rest (rest sym env out)
+      (nl_sf_setq_set_rc
+       (extern-call nl_env_set_value env sym out)
+       rest env out))
+
+    ;; After nelisp_eval_call: check rc; if Ok, fetch rest (extern-call FIRST ✓).
+    ;; Fetch the cdr only after eval: an immediate cdr makes nl_cons_cdr_ptr
+    ;; materialise an unrooted slot view, which must not live across eval's GC.
+    ;; val-cdr is the real CONS box and is already kept alive by the form.
     ;; Arity 6 (even): _pad6 makes arity even → no prologue sub rsp.
-    (defun nl_sf_setq_evaled (eval-rc sym rest env out _pad6)
+    (defun nl_sf_setq_evaled (eval-rc sym val-cdr env out _pad6)
       (if (= eval-rc 0)
-          (nl_sf_setq_set_rc
-           (extern-call nl_env_set_value env sym out)
-           rest env out)
+          (nl_sf_setq_rest
+           (extern-call nl_cons_cdr_ptr val-cdr)
+           sym env out)
         1))
 
-    ;; rest = nl_cons_cdr_ptr(val-cdr) already fetched as first arg.
-    ;; Now eval val-form via nelisp_eval_call (extern-call FIRST ✓).
-    ;; Arity 6 (even): _pad6 makes arity even.
-    (defun nl_sf_setq_rest (rest val-form sym env out _pad6)
-      (nl_sf_setq_evaled
-       (extern-call nelisp_eval_call val-form env out)
-       sym rest env out 0))
-
     ;; val-form = nl_cons_car_ptr(val-cdr) already fetched as first arg.
-    ;; Now fetch rest = nl_cons_cdr_ptr(val-cdr) (extern-call FIRST ✓).
+    ;; Now eval val-form via nelisp_eval_call (extern-call FIRST ✓), carrying
+    ;; the rooted val-cdr rather than a possibly materialised rest view.
     ;; Arity 6 (even): _pad6 makes arity even.
     (defun nl_sf_setq_val (val-form sym val-cdr env out _pad6)
-      (nl_sf_setq_rest
-       (extern-call nl_cons_cdr_ptr val-cdr)
-       val-form sym env out 0))
+      (nl_sf_setq_evaled
+       (extern-call nelisp_eval_call val-form env out)
+       sym val-cdr env out 0))
 
     ;; sym = nl_cons_car_ptr(args-pair) already fetched as first arg.
     ;; val-cdr = cdr(args-pair) already available.
@@ -133,8 +136,8 @@ Entry chain:
   nl_sf_setq → (cdr FIRST) → nl_sf_setq_pair
   → (car FIRST) → nl_sf_setq_sym
   → (car(val-cdr) FIRST) → nl_sf_setq_val
-  → (cdr(val-cdr) FIRST) → nl_sf_setq_rest
   → (nelisp_eval_call FIRST) → nl_sf_setq_evaled
+  → (cdr(val-cdr) FIRST) → nl_sf_setq_rest
   → (nl_env_set_value FIRST) → nl_sf_setq_set_rc
   → nl_sf_setq_step (recurse)
 

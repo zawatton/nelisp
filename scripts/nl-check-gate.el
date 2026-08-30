@@ -106,6 +106,12 @@ file when a comment is added is the same finding."
       (setq new (nreverse new))
       (princ (format "nl-check gate: %d gated finding(s), %d accepted\n"
                      (length findings) (hash-table-count accepted)))
+      ;; Machine-readable tail, the contract in tools/ai/README.md: CHECKED is
+      ;; every gated finding this run looked at, FINDINGS is the ones not in
+      ;; the accepted set.  Without it a clean run and a run that scanned
+      ;; nothing print the same thing to `nelisp-ai.sh gate'.
+      (princ (format "GATE-COUNT checked=%d findings=%d\n"
+                     (length findings) (length new)))
       (if (null new)
           (princ "nl-check gate: clean\n")
         (princ (format "\n%d finding(s) not in the accepted set:\n\n"

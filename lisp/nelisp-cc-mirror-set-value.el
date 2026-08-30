@@ -55,9 +55,12 @@
       ;;
       ;; Pre-conditions: same as `mirror_lookup_entry' (= mirror is a
       ;; well-formed `nelisp-env' record with fast-hash-table at slot 0).
-      (nelisp_mirror_set_value_apply
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       val-ptr)))
+      (if (= (extern-call nl_thread_mirror_mutation_guard
+                          mirror-ptr sym-ptr) 1)
+          (- 0 4)
+        (nelisp_mirror_set_value_apply
+         (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+         val-ptr))))
   "AOT source for Doc 111 §111.E #7 `mirror_set_value'.
 
 Composes `mirror_lookup_entry' (§111.E #1) + `record-slot-set'

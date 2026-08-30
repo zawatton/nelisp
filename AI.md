@@ -30,13 +30,36 @@ tools/ai/nelisp-ai.sh ns FILE...                         # namespace boundaries 
 tools/ai/nelisp-ai.sh gate NAME -- make TARGET            # wrap an existing check
 tools/ai/nelisp-ai.sh test                               # full ERT suite
 tools/ai/nelisp-ai.sh verify                             # the verdict
+tools/ai/nelisp-ai.sh presence                           # ~354-name fboundp sweep, minutes
 ```
 
-`check` runs the same fast gates as the CI lane and then verifies, so
-"what will CI say" is answerable before pushing rather than after.  It
-deliberately does not run the full ERT suite; `verify` holds you to the
-last `ert-full` report and prints its age, so run `test` when that
-column says the evidence is stale.
+`check` runs as one step of the CI Linux lane
+(`.github/workflows/ci.yml`, "AI toolchain check-tier gates") and then
+verifies, so "what will CI say" about that tier is answerable before
+pushing rather than after.  The same Linux lane separately runs the
+binary-tier gates this file's inner loop lists as their own commands
+(`native-artifact`, `perf`, `smokes`, `extras`, plus `standalone-
+reader-test`/`emacs-parity`/`binary-size-ratchet` individually rather
+than through `standalone`, to avoid running `emacs-parity` twice), the
+ERT suite (both JIT settings), and several checks `nelisp-ai.sh` does
+not model at all (`bench-aot-tco`, `macho-acceptance-test`) -- none of
+which `check` itself covers.  `check` deliberately does not run the
+full ERT suite; `verify` holds you to the last `ert-full` report and
+prints its age, so run `test` when that column says the evidence is
+stale.  CI wiring was added 2026-08-22 by running these exact commands
+locally and reading their exit codes and GATE-COUNT lines; its first
+run on an actual GitHub Actions runner (run 32604739757, 2026-08-23)
+found one defect no local run could see -- `check`'s own trailing
+`verify` demanded reports from the binary-tier gates the same Linux
+lane produces AFTER `check` runs, so a runner where every check-tier
+gate had just passed still aborted the job right there, skipping every
+later step.  `check` now scopes that trailing verify to its own gate
+names (`check_tier_manifest` in `tools/ai/nelisp-ai.sh`; plain `verify`
+stays unscoped), and the Linux lane gained a final, unscoped `verify`
+step after every gate step, so "every required gate has a fresh report"
+is asserted exactly once, at the one point in the job where every gate
+has actually had a chance to run.  That fix has not itself been
+observed passing on a runner yet.
 
 `verify` is the only command whose exit code answers "is the tree good".
 Every other command reports on itself; `verify` also knows which gates
@@ -82,6 +105,37 @@ wrap them yet.
 7. **Record generated data recipes next to the generator.**  A dictionary
    was nearly shipped at 60% of its intended size because the real
    two-input recipe lived only in a session transcript.
+
+## Definition of Done
+
+A feature, fix, or gate ships with:
+
+- **Against-the-bug evidence.**  The check or fix shown red on the defect,
+  then green on the fix -- run, not asserted, and said in the commit that
+  lands it.
+- **A parity corpus form**, when the change touches cross-substrate
+  behavior.  `test/nelisp-shadow-differential-cases.el` feeds both
+  `emacs-parity` and `parity-coverage`; `tools/nelisp-substrate-parity-
+  corpus.el` feeds `substrate-parity-smoke`.  See `tools/ai/gates.expected`
+  for which gate reads which corpus.
+- **A mutation row** in `tools/gate-mutations.txt`, when the change adds a
+  new required gate.  A gate nobody has shown a real defect to is a claim
+  about a checker, not a checker -- see that file's header and the
+  "gate-mutation" entry in `tools/ai/gates.expected` for why.
+- **A `#+VERIFIED-BY: gate-name ...` line**, on any `docs/design/*.org` the
+  change marks `#+STATUS: SHIPPED`, naming a gate that exists.  `make
+  doc-claims` enforces this mechanically; legacy docs are tolerated via
+  `tools/nelisp-doc-claims-baseline.txt` while they migrate.
+
+This exists because "SHIPPED" had come to mean "claimed," not "run."  Doc
+142 said SHIPPED for a `--kind elc` lane that crashed on
+`void-variable: invocation-name` the first time anything outside its own
+ERT fixture invoked it, and this file's own Inner-loop section (above)
+claimed a CI wiring that did not exist until the same session that found
+it wrong also fixed it.  Both were the same defect shape every rule in
+the previous section already names -- something read as done and
+silently was not.  The four requirements above are that lesson made
+structural rather than remembered.
 
 ## Where things are
 

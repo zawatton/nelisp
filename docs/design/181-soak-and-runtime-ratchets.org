@@ -1,0 +1,335 @@
+#+TITLE: Doc 181 — Soak and runtime ratchets
+#+AUTHOR: nelisp (design: Claude Fable 5 + zawatton)
+#+DATE: 2026-08-22
+#+STATUS: DRAFT — three ratchets designed, none implemented.  Retarget of
+#+STATUS: the release soak is a redirect of existing machinery; startup-time
+#+STATUS: and RSS-plateau are new baseline+slack files cloning binary-size-
+#+STATUS: ratchet's shape.  All numeric evidence below is freshly measured
+#+STATUS: on this session's own clone, not copied from an earlier survey —
+#+STATUS: see §1 for where that re-measurement disagreed with the brief.
+
+* §0 TL;DR
+
+Three gaps, three ratchets. (1) The only soak this repository runs in CI
+points at a binary this repository does not build; retarget it at
+=target/nelisp= and give it a real workload. (2) There is no ratchet on
+startup time at all. (3) There is no ratchet on the standalone's RSS
+footprint at all, despite a workload existing (=checked-soak=) whose exact
+methodology (round-based, N>=3, a settled baseline, a slack between
+measured noise and a known-answer leak) is *already proven out* one gate
+over and simply not reused. All three baselines below were re-measured on
+a fresh build at this session's own HEAD rather than trusted from an
+earlier write-up; two of the three re-measurements landed close to, but
+not exactly matching, the numbers this doc was briefed with — that
+disagreement is reported plainly in §1 rather than papered over, because
+one number from that same earlier survey was independently refuted this
+week on re-probe, which is the whole reason this doc re-measures instead
+of citing.
+
+* §1 Problem
+
+** §1.1 The release soak validates an absent external package
+
+=tools/soak-test.sh= L30 defaults =ANVIL_BIN= to =$REPO_ROOT/bin/anvil=
+and, at L34, requires it to be =-x=; the workload it drives (L44) is
+literally =\"$ANVIL_BIN\" mcp serve=.
+=.github/workflows/release-qualification.yml='s only blocker-tier soak
+step (L41-44) sets =SOAK_DURATION_HOURS: '1'= and runs
+=./tools/soak-test.sh= with no =ANVIL_BIN= override — so the "release
+qualification" soak, whenever it runs, is this exact default.
+
+Tracing what =bin/anvil mcp serve= actually does (=bin/anvil=
+=cmd_mcp_serve=, L905 on): it resolves =anvil_runtime_bin= (L184-204),
+which walks 3 candidate paths — =$ANVIL_HOME/bin/anvil-runtime=,
+=$ANVIL_HOME/anvil-runtime/target/release/anvil-runtime=,
+=$ANVIL_HOME/nelisp-runtime/target/release/anvil-runtime= — falling back
+to the first path name if none exist. On this clone, checked directly:
+none of =anvil-runtime/=, =nelisp-runtime/= exist as directories at the
+repo root at all (=ls -d anvil-runtime nelisp-runtime= → both "No such
+file or directory"), and =bin/= contains only =anvil=, =anvil.cmd=,
+=nemacs= — no =anvil-runtime= binary. =bin/anvil='s own top-of-file
+comment (L14-15) explains why: "Architecture α Wave 3 (2026-04-29) —
+=anvil-runtime= lives in its own crate now [...] so =nelisp-runtime/=
+stays a pure NeLisp interpreter." That crate was split OUT of this
+repository. So =bundled_runtime_present= is false, and =cmd_mcp_serve='s
+default path (=no_emacs=0=, the flag =soak-test.sh= never sets) falls
+through past the Rust-runtime branch to an Emacs + =anvil.el= MCP-server
+dispatch — a second, *also* external package (an Emacs install plus a
+sibling =anvil.el= checkout), still not this repository's own build
+product. =bin/anvil= itself is unmodified since a 2026-06-28 commit
+(=fb8bc5bb5=), two months stale against this branch's own HEAD.
+
+This repository's actual shipped artifact — the thing
+=tools/build-release-artifact.sh= packages and =release-qualification.yml=
+uploads — is =target/nelisp=, produced by =make standalone-reader=
+(=tools/build-release-artifact.sh= L51-56, L70-71). Nothing in the
+release-qualification pipeline soaks *that* binary. The soak step, as
+wired today, cannot detect a leak in the thing being released; it can
+only detect a leak in a launcher script for a program this repository
+does not build.
+
+** §1.2 No startup-time ratchet exists
+
+No file, gate, or Makefile target measures =target/nelisp='s own
+wall-clock startup cost. Re-measured fresh on this clone (built at HEAD
+=06ed9bd3a5a0b91db86f99bebda5caf5d8bfd208=, Linux x86-64, =target/nelisp=
+6,477,720 bytes, 108 units): 40 runs of =target/nelisp --eval "(+ 40 2)"=
+via =subprocess.run=, wall-clock per run, first run discarded as a cold-
+cache outlier:
+
+#+begin_example
+N=39 (of 40; first discarded)
+mean   = 71.32 ms
+median = 70.95 ms
+stdev  = 1.29 ms
+CV     = 1.81%
+min/max = 69.71 ms / 74.12 ms
+#+end_example
+
+This doc was briefed with a prior figure of "73.86ms +-1.28ms CV 1.7%".
+The re-measurement above lands close in *shape* — stdev and CV both
+within a few percent of the briefed values — but its mean differs by
+about 2.5ms, more than the measured spread would explain as pure noise
+from a single population. Rather than reconcile the two (different
+machine, different moment, and the branch this doc was told to design
+against had not yet had =fix/standalone-reader-input-hardening= merged
+into it), this doc treats *its own* number as the grounding evidence and
+designs the ratchet to re-pin its baseline from a fresh N-run measurement
+taken at implementation time on the tree that is actually shipping —
+exactly the discipline =tools/nelisp-binary-size-baseline.txt='s own
+header already states ("Pinned [...] from a build at this session's own
+HEAD [...] Not a stale or aspirational number").
+
+** §1.3 No RSS-plateau ratchet exists
+
+Also unmeasured by any current gate. =tools/standalone-reader-checked-soak=
+(Makefile L967-1041) is the closest existing thing, but it only runs
+under =NELISP_ALLOC_CHECK=1= (the verifying allocator) and only asserts
+on the *checked allocator's own* live-block census — it says nothing
+about process RSS, and it is not itself a release-soak substitute (it is
+a correctness gate for the redzone/leak allocator, wired into =ci.yml='s
+Linux lane, not into release qualification).
+
+Re-measured directly, with a REPL-driven repeated-eval workload built to
+match =checked-soak='s own per-round churn exactly (4000 48-byte strings,
+4000 12-element vectors, 8000 int-conses, each round ending with an
+explicit =(garbage-collect)=, =scripts/nelisp-stdlib-prelude.el= loaded
+first), sampling =VmRSS= from =/proc/<pid>/status= between rounds over a
+FIFO-driven =--repl --no-prompt --no-print= session, 8 rounds:
+
+#+begin_example
+baseline (process start)      :  44,644 kB
+after stdlib prelude load     :  69,228 kB
+round 1                       : 128,620 kB
+round 2                       : 128,620 kB
+round 3                       : 128,620 kB
+round 4                       : 128,620 kB
+round 5                       : 128,620 kB
+round 6                       : 128,620 kB
+round 7                       : 128,620 kB
+round 8                       : 128,620 kB
+#+end_example
+
+Round 1 establishes the footprint; rounds 2-8 are *bit-identical* to the
+byte — the same qualitative shape this doc was briefed with (a
+"bit-identical plateau"), and the same order of magnitude as the briefed
+126,524 kB, but roughly 1.6% higher than that specific number.  As with
+§1.2, this doc reports its own re-measurement rather than the briefed
+one, for the same reason.
+
+One methodology trap surfaced and is worth recording so the ratchet's own
+harness does not repeat it: an earlier pass at this same measurement used
+=timeout 60 ./target/nelisp --repl ... &= and then read
+=$!= for the PID to sample — but =timeout= forks and does not =exec= into
+its target, so =$!= is =timeout='s own PID, a small wrapper process whose
+RSS is flat by construction. That version reported a flat 1,916-2,080 kB
+"plateau" regardless of workload size (confirmed by scaling the churn
+20x and seeing no change at all) — a believable-looking but entirely
+wrong number. The fix was to drop the =timeout= wrapper and take =$!=
+from the real =target/nelisp= process directly (confirmed via =ps -p
+$REPLPID -o pid,comm,rss= before trusting any subsequent sample). The
+design in §2.3 below bakes this check into the harness itself (assert the
+sampled command name is =nelisp=, not =timeout=, before the first
+sample), not just into how this measurement was taken by hand.
+
+* §2 Decided direction: three ratchets, cloning binary-size-ratchet's shape
+
+=tools/nelisp-binary-size-baseline.txt= is the template: a small text
+file with a =size= (or here, a time/kb) and a =slack-pct= (or a plain
+slack), a header explaining *why* that slack is that big, pinned "from a
+build at this session's own HEAD" rather than aspirationally, with the
+explicit instruction "raise [it] only in the commit that explains the
+growth." All three ratchets below follow that shape.
+
+** §2.1 Ratchet 1: soak retarget
+
+Reuse =tools/soak-test.sh='s sampling code (=ps -o rss= -p "$PID"=, its
+start/peak/end bookkeeping) but redirect it:
+
+- New =SOAK_BIN= variable, default =target/nelisp= (falls back to
+  =target/nelisp.exe= the same way the Makefile's own
+  =STANDALONE_GATE_TARGET= logic already resolves the platform binary
+  name).
+- New workload: *not* =mcp serve= — confirmed via =target/nelisp --help=
+  that the standalone binary has no such subcommand at all (its
+  subcommands are =--eval=/=--load=/=--repl=/=dump-runtime-image=/
+  =extend-runtime-image=/=eval-runtime-image=/=exec-runtime-image=/
+  =compile-*=/=audit-*=/... — an entirely different command surface from
+  =bin/anvil='s). The workload is a REPL-driven repeated-eval loop (§1.3's
+  methodology, packaged as a real script rather than an inline heredoc —
+  see §2.3), driven for the soak's configured duration the same way the
+  existing script already loops on a wall-clock budget (Makefile-side:
+  =SOAK_DURATION_HOURS=1= for the blocker tier, =24= for the post-ship
+  audit tier, unchanged from today).
+- Round-plateau rule, reusing =standalone-reader-checked-soak='s own
+  proven shape (Makefile L967-1041, comment at L964-980): round 1 is
+  warm-up (first-touch page faults, allocator/arena growth to its working
+  set — exactly what §1.3 measured), round 2 is the declared settled
+  baseline, rounds 3..N are compared against round 2 with a slack. That
+  gate's own slack (8 blocks) was set "between the two measured
+  magnitudes" — 1 block of observed run-to-run noise vs. a 4,000-block-
+  per-round known-answer leak. This ratchet's own re-measurement (§1.3)
+  showed *zero* noise across 8 full rounds (bit-identical to the byte),
+  so the honest starting slack is 0 kB, not an invented cushion — revisit
+  once this runs on real CI hardware, since a shared runner can show
+  scheduling/memory noise a quiet dev box does not, and a 0-slack gate
+  that turns out to flap on CI is itself a finding, not a design failure.
+- Tier placement: "minutes, not seconds," exactly like
+  =standalone-reader-checked-soak= — belongs in the binary tier
+  (=nelisp-ai.sh standalone=, or a new =nelisp-ai.sh soak= subcommand
+  alongside it), never in =nelisp-ai.sh check=. It stays release-tier in
+  CI terms too: wired into =release-qualification.yml='s existing soak
+  step (replacing, not duplicating, the current =tools/soak-test.sh=
+  call), since that is the workflow whose whole purpose is qualifying
+  what actually ships.
+
+** §2.2 Ratchet 2: startup-time
+
+New =tools/nelisp-startup-time-baseline.txt=, same shape as the binary-
+size baseline: =median_ms= and =slack-pct=, header stating which build it
+was pinned from and by which method. Per this doc's own brief ("N-run
+median"), the ratchet compares against the *median*, not the mean — §1.2's
+own data shows why: one 74.12ms sample sits visibly above a ~70-71ms
+cluster, and a median is not moved by that kind of single-run scheduling
+hiccup the way a mean is. Baseline candidate from this session's
+re-measurement: =median_ms 70.95=, with a slack-pct sized the same way
+binary-size-ratchet's 2% was — enough to absorb ordinary run-to-run
+scheduler noise (measured CV here is 1.81%, so a slack under ~2x that CV
+would flap) without absorbing a real regression. A concrete starting
+point, to be re-derived from a fresh N-run median at implementation time
+exactly as §1.2 flags, not frozen from this design pass: =slack-pct= on
+the order of 5-8% (comfortably above the ~1.8% CV floor, well below a
+regression-sized jump). Tier placement: fast — a 40-run loop of a
+sub-100ms binary is itself sub-3-seconds — so this belongs in
+=nelisp-ai.sh standalone= alongside =binary-size-ratchet=, consuming the
+same just-built binary rather than its own separate build step, the same
+reuse pattern =binary-size-ratchet= and =emacs-parity= already share.
+
+** §2.3 Ratchet 3: RSS plateau
+
+New =tools/nelisp-rss-plateau-baseline.txt=: =plateau_kb= and
+=slack_kb= (an absolute kB slack, not a percentage — the plateau's own
+bit-identical-across-rounds nature argues for the same absolute-count
+shape =standalone-reader-checked-soak='s own 8-block slack uses, not a
+percentage of a number that has no reason to scale with itself). The
+workload — 4000/4000/8000 churn, prelude-loaded, per-round
+=(garbage-collect)= — should live as a real, checked-in =.el= fixture
+(e.g. =tools/nelisp-rss-plateau-workload.el=) rather than a third copy of
+an inline heredoc, since §2.1's soak retarget and this ratchet want the
+*identical* workload (the soak needs a wall-clock-bounded version of the
+same rounds; this ratchet needs a fixed-round-count version) and
+=standalone-reader-checked-soak= already shows the inline-heredoc
+approach does not stay readable past one caller. Harness discipline from
+§1.3's own trap: before taking the first RSS sample, assert the sampled
+PID's =comm= is =nelisp= (or =nelisp.exe=), not a wrapper — a one-line
+=ps -p $PID -o comm==/proc read-back that turns a silent wrong-process
+measurement into a loud harness error instead. Tier placement: same as
+Ratchet 1 (minutes-scale, binary tier), and in practice the same
+invocation as Ratchet 1's soak can emit both the wall-clock soak verdict
+*and* the plateau-ratchet comparison from one run of the same rounds,
+rather than running the workload twice under two different harnesses.
+
+* §3 Phased plan with costs
+
+| step | what | cost |
+|------+------+------|
+| 1 | Extract the REPL-driven round workload into =tools/nelisp-rss-plateau-workload.el=, reused by Ratchet 1 and Ratchet 3 | small; the workload itself already exists as a proven shape in =standalone-reader-checked-soak='s inline form, this is an extraction, not new design |
+| 2 | Retarget =tools/soak-test.sh= (or a variant) at =target/nelisp=, wire the round-plateau rule from §2.1 | medium; needs the PID-identity assertion from §1.3's trap baked in from the start, and a real N-round, not-mcp-serve workload loop replacing the current idle-daemon RSS sampling |
+| 3 | Add =tools/nelisp-startup-time-baseline.txt= + the N-run-median gate, wire into =nelisp-ai.sh standalone= | small; closely mirrors =binary-size-ratchet='s own Makefile target, ~30-40 lines by that precedent |
+| 4 | Add =tools/nelisp-rss-plateau-baseline.txt= + its gate, wire into the same command | small-medium; the comparison logic is nearly identical to =binary-size-ratchet=, the workload dependency (step 1) is the only extra moving part |
+| 5 | Re-pin all three baselines from a fresh build immediately before shipping (not from this doc's numbers) | required by the "pin from a build at this session's own HEAD" discipline every other ratchet in this repo follows; skipping it reintroduces exactly the stale-number problem §1.2/§1.3 found in the brief this doc was given |
+| 6 | Retarget =release-qualification.yml='s soak step at the new harness | small; a one-line command swap once step 2 exists |
+
+* §4 Verification design (DoD)
+
+Red-proof for each ratchet mirrors =binary-size-ratchet='s own, already-
+demonstrated pattern (=tools/ai/gates.expected= L209-224, "Verified
+red-then-green: a temporarily deflated baseline [...] turned it red at
+[message], restoring the real baseline turned it green again"):
+
+- *Startup-time ratchet*: temporarily write an absurdly low =median_ms=
+  into the baseline file, confirm the gate fails with a message naming
+  the measured median, the baseline, and the ceiling; restore the real
+  baseline, confirm it passes again at the same measured median.
+- *RSS-plateau ratchet*: same shape, temporarily write an absurdly low
+  =plateau_kb=; additionally, since this ratchet's entire point is
+  catching *growth across rounds* rather than only an absolute ceiling, a
+  second red-proof: deliberately hold a small number of allocations past
+  the per-round =(garbage-collect)= (the same "hold N conses past the
+  collect" technique =standalone-reader-checked-soak='s own comment cites
+  as its known-answer leak), confirm round-over-round growth past
+  =slack_kb= fails the gate, then remove the induced hold and confirm the
+  bit-identical plateau returns.
+- *Soak retarget*: red-proof is that the retargeted soak actually
+  exercises =target/nelisp= — confirmed by checking the sampled process's
+  =comm= (per §1.3's trap) and by the workload's own round markers
+  appearing in the log, not merely that the script exits 0. A soak that
+  silently measures nothing (the exact defect this doc's own
+  investigation found in the *current* soak) is the negative case: assert
+  the harness itself fails loudly if the target binary or workload marker
+  is absent, rather than reporting a vacuous pass.
+- *Mutation row*: these are numeric-threshold ratchets, not corpus-
+  coverage gates, so =tools/gate-mutations.txt='s =sed=-on-a-source-line
+  row shape does not map onto them cleanly — there is no source line to
+  corrupt, only a baseline number to perturb, which is exactly what the
+  red-proof above already does. Recommend documenting that
+  baseline-perturbation proof *inline in each baseline file's own header
+  comment* (exactly as =tools/nelisp-binary-size-baseline.txt='s header
+  already does) rather than forcing an ill-fitting row into
+  =gate-mutations.txt=, and leaving these three gates out of that file
+  for the same structural reason =binary-size-ratchet= itself is not in
+  it (its own red-then-green proof lives in =gates.expected='s prose
+  instead).
+- *VERIFIED-BY*: blank at DRAFT time; filled with the shipping commit SHA
+  and gate name(s) at SHIPPED, per this repo's existing convention.
+
+* §5 Open questions
+
+1. Should the soak's round count for the 1h/24h tiers be wall-clock-
+   driven (as many rounds as fit in the budget, which is what
+   =tools/soak-test.sh= already does for its idle-daemon sampling) or
+   fixed-count (matching =standalone-reader-checked-soak='s
+   =STANDALONE_CHECKED_SOAK_ROUNDS=)? Wall-clock better matches "soak,"
+   fixed-count better matches "ratchet." This doc leans wall-clock for
+   Ratchet 1 and fixed-count for Ratchet 3, but a single shared harness
+   (§2.3's last paragraph) needs to pick one shape or explicitly support
+   both.
+2. §1.2 and §1.3 both re-measured close to, but not matching, the
+   numbers this doc was briefed with. Whether that gap is machine
+   variance, tree drift (input-hardening not yet merged), or something
+   else worth chasing down before this ships is open — this doc treats
+   its own numbers as sufficient grounding for the *design*, but the
+   *implementation's* baseline pin should re-measure again on whatever
+   tree and machine actually ships, not reuse either this doc's numbers
+   or the original brief's.
+3. Whether CI-runner noise (shared, virtualized hardware) makes a 0 kB
+   plateau slack or a single-digit-percent startup-time slack too tight
+   in practice is unknown until this runs on an actual runner — flagged
+   here, and again in Doc 183's first-run qualification scope, since that
+   is where the answer will actually surface.
+4. The soak's post-ship-audit tier (24h, weekly) currently has no CI
+   wiring shown in this doc's grounding beyond the comment referencing it
+   in =tools/soak-test.sh='s own header ("post-ship audit (release-audit
+   weekly [...])") — whether that weekly job exists, and whether it also
+   needs retargeting, was not traced here and should be checked before
+   implementation.

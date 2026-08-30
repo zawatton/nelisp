@@ -49,9 +49,12 @@
       ;; The Rust impl is silent on miss (= the entry doesn't exist so
       ;; nothing to clear); the helper preserves that — miss is not an
       ;; error condition for `makunbound'.
-      (nelisp_mirror_clear_value_apply
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       unbound-ptr)))
+      (if (= (extern-call nl_thread_mirror_mutation_guard
+                          mirror-ptr sym-ptr) 1)
+          (- 0 4)
+        (nelisp_mirror_clear_value_apply
+         (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+         unbound-ptr))))
   "AOT source for Doc 111 §111.E #9 `mirror_clear_value'.
 
 Compose-on-7 with the unbound-marker pointer passed as the new slot

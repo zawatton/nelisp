@@ -1,0 +1,1091 @@
+#+TITLE: Doc 188 — Buffer unification
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 5 + zawatton)
+#+DATE: 2026-08-22
+#+STATUS: P2 SHIPPED (2026-08-24) — P0 (add-hook) confirmed already-landed (84950ad30, predates this doc; see §9.1), not by this change. §3's remaining phases (P3 search, P4 markers, P5 overlays, P6 package attach) are still DRAFT, not started by this change.
+#+VERIFIED-BY: standalone-reader-buffer-smoke emacs-parity ns-gate ns-inventory parity-coverage partial-inventory prelude-toplevel-check gate-mutation compile substrate-parity-smoke standalone-reader-shadow-smoke binary-size-ratchet
+#+STATUS2: P1 = generate-new-buffer/get-buffer/buffer-live-p/kill-buffer/with-current-buffer/with-temp-buffer/insert/buffer-string/insert-file-contents/point/goto-char/point-min/point-max wired to the ported src/nelisp-buffer.el model, standalone (see §8). P2 = current-buffer/set-buffer/buffer-substring/erase-buffer wired the same way, plus the P2 exit criterion (nelisp-textprop-hook.el's public entry points against a real buffer, standalone); see §9. P0 (add-hook) independently confirmed already-shipped (§9.1). P3-P6 remain DRAFT.
+
+* §0 TL;DR
+
+Four implementations of "text you can edit" coexist, and none of them is
+what the shipped binary actually runs on the standard names. Two — a
+full-featured gap buffer with real markers/overlays
+(=src/nelisp-buffer.el=, 593 lines) and a =display-concept-0= gap buffer
+that Doc 33 (LOCKED) names as the sanctioned core primitive
+(=src/nelisp-text-buffer.el=, 484 lines) — are both entirely absent from
+=target/nelisp= (fboundp nil for every function either defines, confirmed
+by probe). The one that *is* live is a third, ad-hoc implementation in
+=scripts/nelisp-stdlib-prelude.el= — real for =generate-new-buffer=/
+=get-buffer=/=kill-buffer=/=with-current-buffer=, but =insert= writes to
+a disconnected variable no reader ever consults (§1.3, reproduced live),
+and =point=/=goto-char=/=current-buffer=/=set-buffer=/=re-search-forward=
+are simply void-function. A fourth partial copy in
+=lisp/nelisp-stdlib-misc.el= is honest about being stubs but is neither
+what ships nor what anything else builds on. On top of all four, ~4100
+LOC across four packages (textprop-hook/keymap/display, overlay) assume a
+bare, ambient =(current-buffer)= — the host-Emacs primitive, not any of
+this tree's own — and one of them installs an =add-hook= call,
+unconditionally, at load time, for a function that does not exist in this
+tree at all.
+
+Every one of the 258 ERT tests covering this surface runs under host
+Emacs (=$(EMACS) --batch=, =Makefile:16=); zero run against
+=target/nelisp=. What this doc's own probes found on the actual binary —
+the disconnected =insert=, the void =set-buffer=, the hardcoded-=1=
+=point-min=/=point-max= — was invisible to the existing suite by
+construction, not merely unmeasured.
+
+*Corrections to this doc's own starting brief*, found by re-verifying
+rather than trusting it (per this batch's re-verification mandate — one
+claim across this week's surveys was already known to be wrong):
+- The "prelude registry ~=scripts/nelisp-standalone-build.el= lines
+  5811-5893" citation named the wrong *file*. That line range is real and
+  is the buffer code (=nelisp--current-buffer= through =insert-file-
+  contents=) — but it lives in =scripts/nelisp-stdlib-prelude.el=, not
+  =scripts/nelisp-standalone-build.el= (which, at those same line
+  numbers, is unrelated GC arena-diagnostics code). §1.3 uses the
+  corrected citation throughout.
+- "Four incompatible implementations" undercounts the fragmentation:
+  =with-current-buffer=/=with-temp-buffer= alone have *three*
+  independent bodies (=lisp/nelisp-stdlib-eval-special.el=,
+  =lisp/nelisp-stdlib-misc.el=, =scripts/nelisp-stdlib-prelude.el=),
+  tracked as a known triple divergence by the repo's own name-collision
+  gate (§1.3, §7.4).
+- "What Magit/Org-grade packages need first — cite recipes/README's own
+  list" overstates what that file contains: it has no Magit- or
+  Org-specific enumeration (zero hits for either word). What it *does*
+  have, and what this doc cites instead (§1.7), is a flatter, equally
+  useful verdict: "buffers exist, but buffer navigation does not,"
+  naming =goto-char=/=re-search-forward=/=mapatoms= as the specific void
+  functions.
+
+*Decided direction*: =src/nelisp-buffer.el='s data model (1-indexed
+=point=, real markers, real overlays, flat text-property intervals) is
+the substrate of record — not =nelisp-text-buffer.el='s 0-indexed cursor
+model, which Doc 33 locks in but which nothing else in the tree, including
+the four already-built packages, was ever written against. Adopt
+=nelisp-text-buffer.el='s *gap-buffer byte/UTF-8 implementation
+technique* underneath =nelisp-buffer.el='s *1-indexed point API* — this
+keeps Doc 33's real intent (a fast primitive underneath a compatibility
+layer) while dropping the one piece of it (0-indexing) that is
+incompatible with every real consumer measured in this doc, including
+Emacs itself. Port =nelisp-buffer.el= to load in the standalone reader,
+wire the prelude's standard names to delegate to it instead of the
+disconnected ad-hoc vector, and land the already-designed, currently-
+unmerged generic =add-hook= (Doc 184 §1's sibling finding) *first*,
+since one of the four packages already depends on it unconditionally at
+load time. §6 asks Doc 33's owner to reconcile the LOCKED text explicitly
+rather than this doc silently overriding it.
+
+* §1 Problem — measured evidence
+
+** §1.1 =src/nelisp-buffer.el= (593 lines) — real, feature-complete, host-only
+
+A genuine two-string gap buffer (=before-gap=/=after-gap= string fields
+on =cl-defstruct nelisp-buffer=, =:30-41=), not a list-of-chars or a
+naive single string. =nelisp-goto-char= rebalances the gap by re-slicing
+the concatenated string (=:293-303=); =nelisp-point= is =(1+ (length
+before-gap))=, i.e. genuinely 1-indexed, matching Emacs.
+
+Marker and overlay support is real, not stubbed: =cl-defstruct nelisp-
+marker= (=:43=) and =cl-defstruct nelisp-overlay= (=:53=), plus four
+shift helpers that walk the buffer's marker/overlay/text-property lists
+on every insert/delete and apply Emacs's exact insertion-type/front-
+advance/rear-advance semantics (=:199-289=). =nelisp-insert= (=:306=)
+and =nelisp-delete-region= (=:324=) both call them. Text-property
+intervals are a flat =(START END PLIST)= list (=:41=).
+
+*Wiring*: load-bearing, but exclusively under host Emacs. =(require
+'nelisp-buffer)= appears in =test/nelisp-buffer-test.el:17=,
+=test/nelisp-marker-test.el:28=, =test/nelisp-editor-test.el:30=,
+=packages/nelisp-redisplay/src/nelisp-redisplay.el:11= (+ its test),
+=examples/nelisp-editor/main.el:34=. Every one of these is driven by
+=make test= -> =$(EMACS) --batch= (=Makefile:16,54-60=) — host Emacs, not
+=target/nelisp=. Zero references to any of this file's names exist in
+=scripts/nelisp-stdlib-prelude.el= or =scripts/nelisp-standalone-build.el=
+(grep count 0 in both). Direct probe on =target/nelisp=:
+
+#+begin_example
+(nelisp-generate-new-buffer-fn nil nelisp-goto-char-fn nil
+ nelisp-insert-fn nil make-text-buffer-fn nil text-buffer-insert-fn nil)
+#+end_example
+
+Provenance: header cites "Doc 13 Phase 5-B.1... §2.6 is LOCKED 'Parallel'
+(Doc 13 §5)" (=:7-9=). =docs/design/13-phase5b-core-substrate.org=
+(dated 2026-04-24) is marked =STATE: SHIPPED 2026-04-24=. This is the
+design doc this file implements.
+
+** §1.2 =src/nelisp-text-buffer.el= (484 lines) — Doc-33-sanctioned, zero consumers
+
+A byte-level gap buffer — =bytes= (a unibyte string with an embedded
+gap), =gap-start=/=gap-end= (byte offsets), =char-count=/=byte-count=,
+=cursor-char=/=cursor-byte= (=:37-58=), plus real UTF-8 char/byte
+translation helpers (=:91-129=) — meaningfully more sophisticated at the
+byte level than =nelisp-buffer.el='s substring-based gap.
+
+The header (=:1-28=) states its design intent almost verbatim from Doc
+33 §5.3 (§1.6 below): "no point/marker/overlay/face/major-mode/buffer-
+local var/undo... intentionally a distinct type name from Emacs's
+=buffer=... =nelisp-elisp-compat='s =buffer= implementation is meant to
+use =text-buffer= internally and build marker/overlay/text-property on
+top." This file is the intended Layer-1 primitive per the currently-
+locked architecture doc.
+
+*Incompatibility with §1.1, load-bearing for §2's decision*: =text-
+buffer-cursor= is *0-indexed* (=:353=, doc comment "0-indexed char") vs.
+=nelisp-buffer.el='s =nelisp-point=, which is *1-indexed*, Emacs's own
+convention (=:155-157=). These cannot be merged by simple delegation —
+every caller crossing the boundary needs an explicit +1/-1, a real
+adaptation cost, not a rename.
+
+*Wiring*: dead code outside its own test. A repo-wide grep for =require
+'nelisp-text-buffer= returns exactly one hit,
+=test/nelisp-text-buffer-test.el:10=. Nothing in =src/=, =lisp/=,
+=packages/=, or =examples/= requires it. Probe confirms
+=(fboundp 'make-text-buffer)= and =(fboundp 'text-buffer-insert)= are
+both nil on =target/nelisp=.
+
+** §1.3 The prelude's own buffer — real for objects, disconnected for content
+
+*Correction to this doc's starting brief*: the file this section actually
+lives in is =scripts/nelisp-stdlib-prelude.el= (8402 lines), not
+=scripts/nelisp-standalone-build.el=. The header of that file confirms it
+is what ships: "the binary loads the prelude then user code... =cat
+scripts/nelisp-stdlib-prelude.el yourfile.el > /tmp/prog.el; target/nelisp
+/tmp/prog.el='" (=:9-11=), and =Makefile:915,992,1093,1261= all load it
+by that exact path when building/testing the standalone reader.
+
+Confirmed current line numbers:
+
+| function | lines | behavior |
+|---|---|---|
+| =insert= | 5797-5802 | writes onto =nelisp--with-temp-file-contents=, a =with-temp-file=-only helper variable |
+| =nelisp--current-buffer= (defvar) | 5811 | the "current buffer" pointer =with-current-buffer= binds |
+| =nelisp--buffers= alist + seed | 5818-5822 | =*scratch*=, =*Messages*= |
+| =generate-new-buffer= | 5823-5834 | real, disambiguates =<2>=/=<3>=/... |
+| =get-buffer= | 5835-5841 | real |
+| =buffer-live-p= | 5843-5848 | real |
+| =kill-buffer= | 5849-5862 | real |
+| =with-current-buffer= (macro) | 5868-5871 | real, dynamically binds =nelisp--current-buffer= |
+| =with-temp-buffer= (macro) | 5872-5876 | real, creates via =generate-new-buffer= |
+| =buffer-string= | 5880-5885 | reads =(aref nelisp--current-buffer 2)= |
+| =insert-file-contents= | 5886-5893 | *correctly* writes slot 2 of the buffer vector |
+
+=insert= (5797) and =buffer-string=/=insert-file-contents= (5880-5893)
+read and write *different state* — this is the disconnected-variable bug,
+reproduced live this session:
+
+#+begin_example
+(let ((b (generate-new-buffer "probe")))
+  (with-current-buffer b (insert "abc"))
+  (prin1 (list 'with-temp-file-contents-var nelisp--with-temp-file-contents
+               'buffer-slot2 (aref b 2))))
+=> (with-temp-file-contents-var "abc"  buffer-slot2 "")
+#+end_example
+
+=insert= silently "succeeds" (no error, correct =nil= return per Emacs's
+own contract) and leaves the buffer's actual content slot untouched. This
+is a *known, tracked* divergence, not an undiscovered landmine — the
+repo's own name-collision gate (=scripts/nl-ns-accepted.el=, generated
+2026-08-21) already carries =\"ns-collision-divergent insert lisp/
+nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el 2f43c6e88852\"=
+— but "accepted" there means only that a human signed off that the two
+bodies *differ*, via a content hash; nothing in that gate checks that
+either resulting *behavior* is correct, which is exactly the gap this
+probe closes (§7.4 has the full accepted-entry list this doc's fixes
+touch).
+
+Worse than the disconnected variable alone: =point=, =goto-char=,
+=current-buffer=, =set-buffer=, =erase-buffer=, =delete-region=, =re-
+search-forward=, =search-forward=, =buffer-substring=, and =get-buffer-
+create= are simply *absent* — void-function on =target/nelisp=, confirmed
+by direct probe. An honest first attempt at =(set-buffer buf)= crashes
+outright:
+
+#+begin_example
+nelisp: uncaught error: void-function: (set-buffer)
+#+end_example
+
+=point-min=/=point-max= exist but are hardcoded constants returning =1=
+unconditionally, regardless of buffer state or content
+(=scripts/nelisp-stdlib-prelude.el:247-250=).
+
+** §1.4 =lisp/nelisp-stdlib-misc.el= (849 lines) — honest stubs, mostly bypassed
+
+Per =tools/partial-accepted.txt= (already read: rows 16-17, 32, 35-37),
+=bufferp=/=goto-char=/=insert=/=insert-file-contents= are catalogued
+there. Current definitions, both files:
+
+| function | =lisp/nelisp-stdlib-misc.el= | =scripts/nelisp-stdlib-prelude.el= |
+|---|---|---|
+| =bufferp= | 705-706: honest =nil= stub | 5732-5733: same, semantically identical |
+| =goto-char= | 760-761: true no-op, =_p= discarded | *not defined* (void-function) |
+| =point= | *not defined in either file* | *not defined* (void-function) |
+| =insert= | 753: true no-op, args discarded (=\"no buffer to insert into\"=) | 5797-5802: disconnected-variable bug (§1.3) — a *worse* failure mode than misc.el's honest no-op, since it looks like it did something |
+| =buffer-string= | 745: unconditional =\"\"= | 5880-5885: real (but disconnected) buffer slot |
+| =current-buffer= | 747: honest =nil= stub | *not defined* (void-function) |
+| =get-buffer-create= | *not defined anywhere in the whole tree* | *not defined* |
+| =generate-new-buffer= | *not defined in misc.el* | 5823-5834: real |
+| =set-buffer= | *not defined in misc.el* | *not defined* (void-function, crashes — §1.3) |
+| =with-current-buffer= | lives in =lisp/nelisp-stdlib-eval-special.el:199-200=, a stub discarding BUFFER entirely | 5868-5871: real |
+| =re-search-forward=/=search-forward= | *not defined* | *not defined* (void-function) |
+
+=with-temp-buffer= exists in *three* independent bodies — =lisp/nelisp-
+stdlib-eval-special.el:203-205= (no-op), =lisp/nelisp-stdlib-misc.el:
+749-751= (near-identical no-op), =scripts/nelisp-stdlib-prelude.el:
+5872-5876= (real) — confirmed independently by
+=scripts/nl-ns-accepted.el='s own triple entry:
+=\"ns-collision-divergent with-temp-buffer lisp/nelisp-stdlib-eval-
+special.el lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+72fe4cb5838c\"=.
+
+The prelude is a hand-curated assembly, not a straight concatenation of
+=lisp/nelisp-stdlib-*.el= (its own header, =:15-19=, names a regeneration
+script) — whoever assembled it selectively promoted some of =misc.el='s
+honest stubs to the partial real implementation in §1.3, but never
+touched =insert=, and never picked up =goto-char=/=current-buffer=/
+=set-buffer= at all. That selection gap is *why* the disconnected-=insert=
+bug exists: a real =generate-new-buffer=/=get-buffer=/=buffer-string=
+trio was added without also adding a real =insert= to feed it.
+
+** §1.5 Four packages, ~4100 LOC, assuming an ambient buffer that does not exist here
+
+=packages/nelisp-textprop-hook/src/nelisp-textprop-hook.el= (521),
+=nelisp-textprop-keymap/src/nelisp-textprop-keymap.el= (406),
+=nelisp-textprop-display/src/nelisp-textprop-display.el= (474),
+=nelisp-overlay/src/nelisp-overlay.el= (807) — 2208 LOC of
+implementation, 4133 LOC counting tests/manifests (matching the "~4100"
+figure). All four are Doc 41 ("Phase 9c text-property advanced",
+LOCKED-2026-04-25-v2) sister modules.
+
+None requires =nelisp-buffer=, =nelisp-text-buffer=, or anything from
+=scripts/=. Each has exactly one top-level =(require 'cl-lib)= and calls
+the bare primitive =(current-buffer)= directly (=nelisp-textprop-
+hook.el:291,325,341=, =nelisp-textprop-keymap.el:380=, =nelisp-
+overlay.el:205=) — assuming a real, ambient buffer primitive that exists
+on *none* of §1.1-§1.4's four candidates as shipped in =target/nelisp=.
+
+Deliberate, self-documented non-integration: =nelisp-overlay.el:16-21=
+explains its accessor prefix (=nelisp-ovly-=, not =nelisp-overlay-=) as
+avoiding "a namespace collision with the Phase 5-B.2 placeholder
+=cl-defstruct nelisp-overlay= in =nelisp-buffer.el=" — the package
+authors *knew* =nelisp-buffer.el='s overlay struct existed and
+deliberately built around it rather than on it. These are parallel,
+non-integrated efforts, not layers of one design, and they knew it at the
+time.
+
+*Load-bearing new finding*: =nelisp-textprop-hook.el:351-358= installs a
+global cleanup hook *unconditionally at load time*:
+
+#+begin_src elisp
+(defun nelisp-textprop-hook--install-cleanup ()
+  (add-hook 'kill-buffer-hook #'nelisp-textprop-hook--cleanup-killed-buffer))
+(nelisp-textprop-hook--install-cleanup)   ; auto-install at load time
+#+end_src
+
+=add-hook= does not exist anywhere in this tree today (=grep -rn \"(defun
+add-hook\" .= = 0 hits; probe confirms =(fboundp 'add-hook)= nil on
+=target/nelisp=). Simply *loading* this package on the standalone binary
+would crash immediately with =void-function: add-hook=, before any of
+its own 521 lines run — independent of, and prior to, whichever buffer
+implementation this doc unifies on. §2.3/§4 treat landing generic
+=add-hook= as a hard prerequisite, not a nice-to-have.
+
+Every one of the four packages' test files is host-Emacs-only
+(=(require 'ert)= then the package; 40+33+55+49 = 177 =ert-deftest=
+forms across the four).
+
+** §1.6 Doc 33 (LOCKED) — the architecture this doc has to reconcile with
+
+=docs/design/33-nelisp-v1x-architecture.org= (1209 lines, =#+STATUS:
+LOCKED-2026-04-25-v2=, final user signoff stated as still pending in the
+file itself). Locked positions directly relevant here, verbatim
+citations:
+
+- *L2* (line 197): buffer/marker/overlay/undo are explicitly *out of
+  core*, deferred to a separate-repo extension package.
+- *L4* (211-215): Phase 8's only core addition is "one mutable text
+  primitive (~500-1000 LOC, gap-buffer based, zero display concept)" —
+  =src/nelisp-text-buffer.el= (484 LOC) matches this closely.
+- *L5* (219-222): =nelisp-elisp-compat= — the package meant to hold
+  Emacs-compatible buffer/marker/overlay/text-property/undo/=find-file=/
+  =make-process= — "~5000-10000 LOC, 6-12 months." Confirmed: no such
+  package, directory, or repo exists anywhere in this tree; only
+  referenced in comments.
+- *§4.2a "Phase 9a v2.0 ship-gate — top 20-30 APIs"* (552-565): the
+  doc's own canonical target list — =current-buffer=/=get-buffer-
+  create=/=with-current-buffer=/=buffer-string=/=buffer-substring=/
+  =point=/=point-min=/=point-max=/=goto-char=/=insert=/=delete-region=/
+  =re-search-forward= (simple subset)/=looking-at=/=search-forward=
+  (literal)/=replace-match=, =make-marker=/=set-marker=/=marker-
+  position=, =put-text-property=/=get-text-property=, =buffer-undo-
+  list=, =with-temp-buffer=/=insert-file-contents=/=write-region=. *None
+  of §1.1-§1.4's four implementations satisfies this list end-to-end on
+  =target/nelisp= today* — this is this doc's actual, doc-33-endorsed
+  scope target, and it already names "simple"/"literal" as the reduced
+  bar for regex-touching entries, matching Doc 186's own scoping
+  discipline for the same reason.
+- *§5.3* (800-809): the two-layer model — =text-buffer= (Layer 1,
+  mutable text + cursor, zero display concept) with =buffer= (Layer 2,
+  =nelisp-elisp-compat=) built *on top of* =text-buffer=, adding
+  marker/overlay/text-property. =nelisp-text-buffer.el='s own header
+  quotes this near-verbatim (§1.2) — confirming that file *is* the
+  intended Layer 1. *No Layer-2 code building marker/overlay/text-
+  property on top of =text-buffer= exists anywhere* — every piece of
+  marker/overlay/text-property code that does exist
+  (=nelisp-buffer.el='s own, =nelisp-overlay=, the two =nelisp-
+  textprop-*= packages) was built independently of =text-buffer=,
+  confirmed in §1.1/§1.5.
+
+*The root conflict, not previously cross-referenced anywhere in this
+tree*: =docs/design/13-phase5b-core-substrate.org= (the doc that shipped
+=nelisp-buffer.el= into core, dated 2026-04-24, =STATE: SHIPPED=) and Doc
+33 (dated 2026-04-25 — *one day later*) never mention each other (zero
+grep hits in either direction). Doc 33 locks an architecture — core stays
+super-minimal, buffer/marker/overlay is extension-package-only, not yet
+built — that directly contradicts what Doc 13 had shipped into core the
+day before. This is the actual source of the fragmentation this doc has
+to resolve, not a coincidental multiplicity of independent efforts.
+
+(=docs/design/34-phase9b-extension-substrate.org=, also LOCKED-2026-04-
+25-v2, parent = Doc 33 §4.2b, defines an "MVP interval tree" Doc 41 §5
+says "already has a gap-buffer-adjust contract" — a fifth locked layer
+sitting between Doc 33 and Doc 41 this session did not fully trace; noted
+as adjacent scope, not resolved here.)
+
+** §1.7 What actually blocks first: navigation, not existence
+
+=recipes/README.org:69= (no Magit/Org-specific enumeration exists in this
+file, contrary to this doc's starting brief — corrected in §0):
+
+#+begin_quote
+=goto-char=, =re-search-forward=, =mapatoms= — void.  Buffers exist,
+but buffer *navigation* does not.
+#+end_quote
+
+This matches §1.3/§1.4 precisely: object-level operations
+(=generate-new-buffer=/=get-buffer=/=kill-buffer=/=buffer-live-p=) are
+real in the prelude; everything that *moves through* a buffer's content
+(=point=, =goto-char=, =re-search-forward=, =search-forward=) is void.
+Any future Magit/Org-shaped consumer needs navigation before it needs
+markers or overlays — this doc's phase order (§4) follows that, not the
+brief's original, unverified framing.
+
+** §1.8 ERT coverage: 258 tests, zero against the shipped binary
+
+| test file | =ert-deftest= count | runs against |
+|---|---|---|
+| =test/nelisp-buffer-test.el= | 29 | host Emacs only |
+| =test/nelisp-marker-test.el= | 29 | host Emacs only |
+| =test/nelisp-text-buffer-test.el= | 10 | host Emacs only |
+| =test/nelisp-editor-test.el= | 13 | host Emacs only |
+| =packages/nelisp-textprop-hook/test/*= | 40 | host Emacs only |
+| =packages/nelisp-textprop-keymap/test/*= | 33 | host Emacs only |
+| =packages/nelisp-textprop-display/test/*= | 55 | host Emacs only |
+| =packages/nelisp-overlay/test/*= | 49 | host Emacs only |
+
+258 total, 0% against =target/nelisp=. =make test=/=test-fast=/=test-
+parallel=/=test-one= all share one =$(EMACS) --batch= invocation
+(=Makefile:54-106=) — no path runs any of this suite through the
+standalone binary. No =standalone-reader-*-smoke= Makefile target
+touches buffer functionality at all (grep confirms). Every =(unless
+(fboundp 'X) (defun X ...))=-guarded stub in =misc.el=/the prelude is
+*inert* under host Emacs specifically because host Emacs already has a
+real =X= — so 258 green tests validate host-Emacs behavior the stub code
+never actually executes, and say nothing about =target/nelisp=. The
+disconnected =insert=, the void =set-buffer=, and =nelisp-textprop-
+hook.el='s =add-hook= crash risk were all invisible to this suite by
+construction; they were found only by probing the built binary directly,
+this session.
+
+* §2 Decided direction
+
+** §2.1 Substrate of record: =nelisp-buffer.el='s model, =nelisp-text-buffer.el='s technique
+
+| option | mechanism | verdict |
+|---|---|---|
+| Keep =nelisp-text-buffer.el= (0-indexed) as the sole core primitive, per Doc 33's literal text, build a new Layer 2 on top from scratch | matches the LOCKED doc exactly | *rejected as literally written* — every real consumer measured in this doc (=nelisp-buffer.el='s own markers/overlays, all four packages, Emacs itself) is 1-indexed; building a fresh Layer 2 from a 0-indexed Layer 1 means an index-shift adapter at every call site, for a primitive with zero current consumers, when a working 1-indexed alternative with real markers/overlays already exists |
+| Keep the prelude's ad-hoc vector buffer as-is, patch only the disconnected =insert= | smallest possible diff | *rejected* — does not add markers, overlays, or navigation; leaves =point=/=goto-char=/=re-search-forward= void, which §1.7 shows is the actual first blocker |
+| Adopt =nelisp-buffer.el='s 1-indexed, marker/overlay-complete data model as the substrate of record; port =nelisp-text-buffer.el='s byte/UTF-8 gap-buffer *technique* underneath it as an internal storage optimization | reuses the most feature-complete existing code, keeps Emacs-compatible indexing, and still gets Doc 33's real motivation (a fast gap-buffer core) — just not its 0-indexed API surface | *accepted* |
+
+This keeps Doc 33's *intent* (§5.3: a fast primitive underneath a
+compatibility layer) while dropping the one piece of its *literal text*
+(0-indexing) that is incompatible with every real consumer this doc
+measured, including the four already-shipped packages and Emacs's own
+contract. §6.1 asks Doc 33's owner to amend the locked text to match,
+rather than this doc silently overriding a LOCKED decision on its own
+authority.
+
+** §2.2 Standard-name wiring layer
+
+The prelude's =generate-new-buffer=/=get-buffer=/=kill-buffer=/=buffer-
+live-p=/=with-current-buffer=/=with-temp-buffer= stay — they are real
+and correct today (§1.3) — but are repointed to allocate and read/write a
+ported =nelisp-buffer= struct (§2.1) instead of the current bare vector,
+closing the disconnected-=insert= bug as a side effect of using one real
+representation instead of two. =point=/=goto-char=/=current-buffer=/
+=set-buffer=/=insert=/=delete-region=/=buffer-substring= become thin
+wrappers over =nelisp-buffer.el='s already-correct functions (=nelisp-
+point=/=nelisp-goto-char=/etc., §1.1) rather than new code. =misc.el='s
+three surviving stub copies (§1.4) get replaced by =(unless (fboundp
+'NAME) ...)=-guarded delegates to the same real implementation, per this
+codebase's own established idiom, rather than staying as a fourth
+independent no-op.
+
+** §2.3 Migration order: =add-hook= first, then navigation, then the packages
+
+1. *Land generic =add-hook=/=run-hooks=* (already fully designed on
+   =origin/feat/stdlib-hooks-map-fixnum=, commit =84950ad30=, not yet
+   merged — cross-referenced with Doc 184 §1's independent finding of
+   the same gap from the process/timer side). This is a hard prerequisite,
+   not an optimization: §1.5 already showed =nelisp-textprop-hook.el=
+   crashes at load time without it, and that package is otherwise ready
+   to attach to a real =current-buffer= the moment one exists.
+2. *Port =nelisp-buffer.el= to load in the standalone reader* (§2.1) —
+   the buffer object model plus =point=/=goto-char=/=insert=/=delete-
+   region=, no marker/overlay wiring yet.
+3. *Wire the prelude's standard names to it* (§2.2), closing §1.3's
+   disconnected-=insert= bug and §1.3/§1.4's void-function gaps for the
+   navigation primitives §1.7 identified as the actual first blocker.
+4. *=re-search-forward=/=search-forward=*, literal-then-simple-regexp
+   scope, matching Doc 33 §4.2a's own reduced bar (and Doc 186's =\sC=
+   groundwork, if that doc's regex work has landed by then — a soft
+   dependency, not a hard one, since literal search does not need syntax
+   classes at all).
+5. *Markers*, ported from =nelisp-buffer.el= (already correct, §1.1) —
+   this is where the "why markers matter" payoff becomes externally
+   visible (a =re-search-forward= followed by =set-marker= that survives
+   a subsequent =insert= earlier in the buffer).
+6. *Overlays*, same source. At this point =packages/nelisp-overlay=
+   (§1.5) can very likely attach with *no changes to its own logic* —
+   it already calls only =(current-buffer)= plus generic overlay
+   accessors under its own =nelisp-ovly-= prefix, deliberately avoiding
+   =nelisp-buffer.el='s struct (§1.5) — reconciling that avoidance (reuse
+   vs. keep parallel) is flagged as §6.3, not decided here.
+7. *=nelisp-textprop-hook=/=-keymap=/=-display=* attach last, once (1)
+   and their own =(current-buffer)= assumption (6) both hold.
+
+* §3 What each phase ships (measured, per phase)
+
+Every phase below has a real, standalone-binary exit criterion — no phase
+in this plan is "infrastructure only," per the task's phase-gate
+requirement.
+
+** P0 — merge generic =add-hook=/=run-hooks= (0.5 d, mostly review — already built elsewhere)
+- Merge (or re-derive if the sibling branch has drifted)
+  =origin/feat/stdlib-hooks-map-fixnum='s hooks half only.
+- *Exit*: =(add-hook 'kill-buffer-hook (lambda () (setq ran t)))
+  (run-hooks 'kill-buffer-hook)= sets =ran= to =t=, on =target/nelisp=.
+  Loading =packages/nelisp-textprop-hook/src/nelisp-textprop-hook.el=
+  standalone no longer crashes at =add-hook= (it may still crash later on
+  its own =(current-buffer)= assumption until P2 — that residual failure
+  is P0's honest exit boundary, not silently claimed fixed here).
+
+** P1 — port =nelisp-buffer.el='s object model + point/goto-char/insert/delete-region (2-3 d)
+- Resolve whatever host-Emacs-only dependency currently prevents this
+  file from loading standalone (not yet identified in this doc's
+  research — flagged §6.2) — likely small (it is pure =cl-lib=-based
+  struct code, not obviously host-coupled beyond load path), but must be
+  confirmed rather than assumed.
+- *Exit*: a standalone smoke — =generate-new-buffer=, =insert=, =point=,
+  =goto-char=, =buffer-string= — round-trips correctly on =target/nelisp=,
+  replacing §1.3's disconnected-variable bug with real, verified content.
+
+** P2 — repoint the prelude's standard names (§2.2) (1-2 d)
+- =current-buffer=/=set-buffer=/=with-current-buffer=/=with-temp-buffer=/
+  =buffer-substring=/=erase-buffer= wired to P1's real object; =misc.el='s
+  three stub copies (§1.4) replaced with guarded delegates.
+- *Exit*: the four packages' own =(current-buffer)= call sites (§1.5)
+  return a real buffer object standalone for the first time — a smoke
+  loading =nelisp-textprop-hook.el= after P0+P2 and calling one of its
+  public entry points against a real buffer, not just checking it loads.
+
+** P3 — =re-search-forward=/=search-forward=, literal + simple regexp (1-2 d)
+- Scoped per Doc 33 §4.2a's own reduced bar; =looking-at=/=replace-match=
+  as a natural extension if time allows, not required for this phase's
+  exit.
+- *Exit*: a search-and-replace round trip (=re-search-forward= to a
+  literal string, =replace-match= with a literal replacement) works
+  standalone — closing =recipes/README.org:69='s specific, named gap.
+
+** P4 — markers, ported from =nelisp-buffer.el= (1 d — already-correct code, porting only)
+- *Exit*: =(set-marker (make-marker) (point))= followed by an =insert=
+  earlier in the buffer leaves the marker's =marker-position= correctly
+  shifted, standalone — the concrete, externally observable payoff of
+  choosing =nelisp-buffer.el= over a from-scratch Layer 2 (§2.1).
+
+** P5 — overlays, ported from =nelisp-buffer.el= (1 d, same rationale as P4)
+- *Exit*: an overlay created via the ported primitive survives a
+  same-buffer =insert=/=delete-region= with correct front-advance/rear-
+  advance semantics, standalone.
+
+** P6 — attach the four packages (0.5-1.5 d, contingent on §6.3)
+- Depends on §6.3's reuse-vs-parallel decision for =nelisp-overlay.el=
+  specifically; the two =nelisp-textprop-*= packages have no such
+  conflict and should attach directly once P0-P3 hold.
+- *Exit*: =packages/nelisp-textprop-hook='s own ERT suite (§1.5, 40
+  tests) passes when pointed at =target/nelisp= rather than only host
+  Emacs — the first time any of this doc's 258-test surface (§1.8) is
+  exercised against the actual shipped binary.
+
+Total: *7-11 engineer-days*, P0-P3 independently useful (object model +
+navigation) even if P4-P6 (markers/overlays/package-attach) slip.
+
+* §4 Verification design
+
+** §4.1 Against-the-bug
+
+#+begin_src elisp
+;; test/nelisp-buffer-unification-test.el (new)
+(ert-deftest nelisp-buffer/insert-then-buffer-string-round-trips ()
+  (let ((b (generate-new-buffer "t")))
+    (with-current-buffer b (insert "abc"))
+    (should (equal "abc" (with-current-buffer b (buffer-string))))))
+(ert-deftest nelisp-buffer/goto-char-and-point-agree ()
+  (let ((b (generate-new-buffer "t")))
+    (with-current-buffer b (insert "abcdef") (goto-char 3))
+    (should (= 3 (with-current-buffer b (point))))))
+(ert-deftest nelisp-buffer/marker-shifts-on-earlier-insert ()
+  (let (m)
+    (with-temp-buffer
+      (insert "world") (setq m (point-marker)) (goto-char (point-min))
+      (insert "hello ")
+      (should (= (+ 5 (length "world")) (marker-position m))))))
+#+end_src
+
+Each is red today: the first fails exactly per §1.3's live probe (returns
+=\"\"=, not =\"abc\"=); the second fails on void-function =goto-char=;
+the third fails on void-function =point-marker=/no marker support in
+whatever buffer =with-temp-buffer= currently creates. All three pass
+after P1-P4. Per Doc 187 §6.1's lesson, these must run as a *standalone-
+binary smoke*, not only a host-ERT case — §1.8 already showed host-ERT
+cannot distinguish this bug from its absence (host Emacs's own real
+=insert=/=goto-char=/etc. would make an =nelisp-eval=-mediated version of
+these cases pass regardless of what this tree's own code does).
+
+** §4.2 Parity forms
+
+Added to =test/nelisp-shadow-differential-cases.el= (=emacs-parity=/
+=parity-coverage=, =Makefile:840=):
+
+| form | Emacs | NeLisp (post-fix) |
+|---|---|---|
+| =(with-temp-buffer (insert \"abc\") (buffer-string))= | =\"abc\"= | =\"abc\"= (was =\"\"=) |
+| =(with-temp-buffer (insert \"abcdef\") (goto-char 3) (point))= | =3= | =3= (was void-function) |
+| =(with-temp-buffer (insert \"ab\") (point-min))= | =1= | =1= (anchor — must not regress the one thing already correct) |
+| =(with-temp-buffer (insert \"hi\") (point-max))= | =3= | =3= (was hardcoded =1=, wrong for any non-empty buffer — a real, previously-unmeasured divergence this table surfaces) |
+
+** §4.3 Mutation rows for new gates
+
+#+begin_example
+standalone-reader-buffer-smoke|scripts/nelisp-stdlib-prelude.el|s/(nelisp-insert nelisp--current-buffer-obj/(ignore nelisp--current-buffer-obj/|insert becomes a silent no-op again, buffer-string never reflects it
+parity-coverage|src/nelisp-buffer.el|s/(nelisp--shift-markers/(ignore/|markers stop shifting on insert, every marker-position parity form goes stale
+#+end_example
+
+(placeholders for the exact single-line match, per =tools/gate-
+mutations.txt='s own note that a stale injection "teaches nothing except
+to delete the row" — real rows land with the implementing commit).
+
+** §4.4 VERIFIED-BY at SHIPPED
+
+As in Docs 184-187: each phase's status line records =VERIFIED-BY:
+<commit-sha> (<gate-name> report, <date>)=, pointing at a real
+=target/gates/<name>.json= report, not a hand-written claim.
+
+* §5 Phase gates recap (per the task's "ships something measured" requirement)
+
+| phase | ships |
+|---|---|
+| P0 | a real, standalone =add-hook=/=run-hooks= |
+| P1 | real =insert=/=point=/=goto-char=/=buffer-string= round-trip, standalone |
+| P2 | the four packages' =(current-buffer)= call sites resolve to a real object, standalone |
+| P3 | literal/simple =re-search-forward= + =replace-match=, standalone |
+| P4 | markers that correctly shift on edit, standalone |
+| P5 | overlays with correct front/rear-advance, standalone |
+| P6 | =nelisp-textprop-hook='s own 40-test ERT suite green against =target/nelisp=, not only host Emacs |
+
+* §6 Open questions
+
+** §6.1 Doc 33 needs an explicit amendment, not a silent override
+
+§2.1 keeps Doc 33's *intent* but discards its *literal* 0-indexed
+=text-buffer= API as the thing Layer 2 is built on. Doc 33 is LOCKED with
+signoff stated as pending — this doc's author is not the right owner to
+finalize that change unilaterally. Flagged for whoever owns Doc 33's next
+revision, same posture as Doc 184 §6.1 takes toward the same document.
+
+*Decided 2026-08-22*: owner approved this recommendation (via the
+coordinator) — see =docs/design/33-nelisp-v1x-architecture.org= §12
+amendment.
+
+** §6.2 What actually blocks =nelisp-buffer.el= from loading standalone
+
+§1.1 confirmed it is *not currently loaded* by the standalone build but
+did not identify a specific blocking dependency the way Doc 184 traced
+=generator.el= for the process/eventloop packages. It may simply never
+have been tried (the file's own header cites only Doc 13, with no
+standalone-specific note) — P1's first task is confirming which case
+this is before costing the port further.
+
+** §6.3 =nelisp-overlay.el=: reuse =nelisp-buffer.el='s struct, or keep parallel
+
+§1.5 showed the package deliberately avoided =nelisp-buffer.el='s
+=cl-defstruct nelisp-overlay= to dodge an accessor-name collision. Once
+§2.1 makes =nelisp-buffer.el= the substrate of record, that collision
+reason may no longer apply the same way — but reconciling two overlay
+implementations (which one is source of truth for a given overlay
+object?) is real integration work Doc 41's original authors explicitly
+chose not to do. Not resolved here; P6's cost estimate brackets both
+outcomes.
+
+** §6.4 =nelisp-stdlib-misc.el='s stub-vs-delegate transition
+
+§2.2 proposes replacing =misc.el='s three no-op stub copies with guarded
+delegates to the real implementation. Whether that edit belongs in
+=misc.el= itself (keeping the file as "the fallback layer," now pointing
+at real code instead of no-ops) or should instead retire those
+definitions entirely in favor of the prelude's own guarded defuns is a
+small naming/ownership call left to the implementer.
+
+* §7 References
+
+** §7.1 Code (file:line)
+- =src/nelisp-buffer.el:1-593= (struct defs 30-64, mutation 293-347,
+  marker/overlay shift 199-289) — §2.1's chosen substrate.
+- =src/nelisp-text-buffer.el:1-484= (struct 37-58, UTF-8 helpers 91-129,
+  0-indexed cursor 353) — §2.1's chosen technique, rejected API.
+- =scripts/nelisp-stdlib-prelude.el:247-250= (=point-min=/=point-max=
+  hardcoded =1=), =5797-5893= (buffer registry + the disconnected
+  =insert= bug), =5732-5733= (=bufferp=).
+- =lisp/nelisp-stdlib-misc.el:705-849= (stub block),
+  =lisp/nelisp-stdlib-eval-special.el:199-208= (=with-current-buffer=/
+  =with-temp-buffer=/=with-syntax-table= stubs).
+- =tools/partial-accepted.txt:16-37=.
+- =packages/nelisp-textprop-hook/src/nelisp-textprop-hook.el:291,325,
+  341,351-358= (unguarded =add-hook=, §1.5's crash finding).
+- =packages/nelisp-textprop-keymap/src/nelisp-textprop-keymap.el:380=.
+- =packages/nelisp-overlay/src/nelisp-overlay.el:16-21,205=
+  (namespace-avoidance note, §6.3).
+- =scripts/nl-ns-accepted.el= — tracked =ns-collision-divergent= entries
+  for =insert=/=buffer-string=/=insert-file-contents=/=with-current-
+  buffer=/=with-temp-buffer= (§1.3, §1.4).
+- =recipes/README.org:69= — the corrected, actually-cited verdict (§0,
+  §1.7).
+- =Makefile:16,54-60,840,915,992,1093,1261=.
+
+** §7.2 Docs
+- =docs/design/13-phase5b-core-substrate.org= — source of
+  =nelisp-buffer.el=, SHIPPED 2026-04-24; never cross-referenced by Doc
+  33 despite the one-day gap (§1.6).
+- =docs/design/33-nelisp-v1x-architecture.org:197,211-222,425-459,
+  552-565,800-809= — the LOCKED architecture this doc reconciles with
+  (§1.6, §2.1, §6.1).
+- =docs/design/34-phase9b-extension-substrate.org= — adjacent, not fully
+  traced (§1.6).
+- =docs/design/41-phase9c-textprop-advanced.org= — parent doc of the four
+  packages (§1.5).
+- =docs/design/164-wasm-backend.org= — structural template.
+- =docs/design/184-process-and-event-loop.org= — sibling doc; the
+  generic =add-hook= dependency (§2.3 P0) is cross-referenced from its
+  §1 independently finding the same gap from the process/timer side.
+- =docs/design/186-char-tables.org=, =docs/design/187-native-
+  arithmetic-overflow.org= — sibling docs; §4's VERIFIED-BY and against-
+  the-bug/standalone-smoke conventions follow theirs directly.
+- =tools/gate-mutations.txt=, =tools/ai/README.md= — mutation-row and
+  gate-report conventions §4.3/§4.4 follow.
+
+** §7.3 Memory
+- =feedback_git_worktree_parallel_sessions= — not itself load-bearing for
+  correctness claims, but relevant context: this doc's own research
+  session found evidence of concurrent work on adjacent design docs in
+  this same branch, consistent with that memory's general caution.
+
+** §7.4 Corrected claims (summary, per this batch's re-verification mandate)
+- "=scripts/nelisp-standalone-build.el= lines 5811-5893" -> the correct
+  file is =scripts/nelisp-stdlib-prelude.el= (§0, §1.3).
+- "Four incompatible implementations" -> at least three independent
+  =with-current-buffer=/=with-temp-buffer= bodies exist *in addition to*
+  the four buffer/text-storage implementations (§0, §1.4).
+- "Cite recipes/README's own [Magit/Org] list" -> no such list exists;
+  the file's actual, cited content is a flatter "buffers exist, buffer
+  navigation does not" verdict (§0, §1.7).
+
+* §8 P1 implementation record (SHIPPED 2026-08-23)
+
+** §8.1 What shipped
+
+Per §3's own P1 scope ("port =nelisp-buffer.el='s object model +
+point/goto-char/insert/delete-region... a standalone smoke —
+=generate-new-buffer=, =insert=, =point=, =goto-char=, =buffer-string= —
+round-trips correctly on =target/nelisp="), plus the surrounding
+lifecycle names §2.2 groups with it as one coherent set:
+
+- =src/nelisp-buffer.el='s struct/function bodies (buffer/marker/overlay
+  structs, the marker/overlay/text-property shift helpers =nelisp-insert=/
+  =nelisp-delete-region= call unconditionally, and the full =nelisp-=
+  prefixed API) are ported, effectively verbatim, into
+  =scripts/nelisp-stdlib-prelude.el=, so they are baked into
+  =target/nelisp= — no separate =--load= of =src/nelisp-buffer.el=
+  required. =src/nelisp-buffer.el= itself is untouched; it remains the
+  source of truth and its own host-Emacs ERT suite
+  (=test/nelisp-buffer-test.el=, =test/nelisp-marker-test.el=,
+  =test/nelisp-editor-test.el=) is unaffected.
+- The old ad-hoc 4-slot vector (=(vector 'buffer NAME CONTENT LIVE-P)=)
+  and its disconnected =nelisp--with-temp-file-contents= variable are
+  gone. =generate-new-buffer=/=get-buffer=/=buffer-live-p=/=kill-buffer=/
+  =with-current-buffer=/=with-temp-buffer=/=bufferp=/=insert=/=buffer-
+  string=/=insert-file-contents=/=with-temp-file= are repointed to the
+  ported model, sharing =nelisp--current-buffer= as the one ambient
+  pointer (seeded to a real =*scratch*= buffer at prelude load, with
+  =*Messages*= also seeded — matching the old code's own never-honored
+  intent). =point=/=goto-char=/=point-min=/=point-max= are new,
+  delegating to =nelisp-point=/=nelisp-goto-char=/=nelisp-point-min=/
+  =nelisp-point-max= with =nelisp--current-buffer= threaded through
+  explicitly (never relying on the ported file's own ambient
+  =nelisp-buffer--current=, so the two "current buffer" trackers cannot
+  desync for this standard-name path). =kill-buffer='s nil-argument case
+  (kill the current buffer) is fixed as part of the same coherence pass —
+  the old stub silently no-opped and returned =t=.
+- Not wired (P2+, per §2.2/§3's own split, honored as this task's scope
+  boundary): =current-buffer=, =set-buffer=, =buffer-substring=,
+  =erase-buffer=. Calling these standalone remains void-function, same as
+  before this phase.
+- =lisp/nelisp-stdlib-misc.el='s dead buffer stubs (=bufferp=,
+  =buffer-string=, =current-buffer=, =with-temp-buffer=, =insert=,
+  =insert-file-contents=, =point-min=, =point-max=, =goto-char=) are
+  deleted — §1.4's own research already established they are inert in
+  this file's only real load context (never =require='d; parsed, not
+  evaluated, by host-Emacs tooling and by
+  =test/nelisp-hooks-map-fixnum-test.el=, which extracts only its
+  hook/map.el forms). =set-buffer-multibyte= (an encoding-flag no-op,
+  unrelated to buffer identity) is out of scope and untouched.
+- A NEW load-bearing fix this phase's own smoke found:
+  =nelisp--prn-to-string= (=lisp/nelisp-stdlib-prn.el='s printer, the
+  copy the prelude runs) special-cased the OLD ad-hoc vector to print as
+  =#<buffer NAME>=, matching Emacs. Ported buffers are records, not
+  vectors, so without an equivalent special case they fell through to
+  the generic record printer (=#s(nelisp-buffer "x" "" "" nil nil nil
+  nil nil nil)=) — caught by =make emacs-parity= going red on the
+  =generate-new-buffer= calls already present in
+  =test/nelisp-shadow-differential-cases.el= before this fix landed, not
+  found by inspection. Fixed with an equivalent special case for
+  =nelisp-buffer-p=.
+- §6.2's open question ("what actually blocks =nelisp-buffer.el= from
+  loading standalone") is answered: nothing does. =./target/nelisp --load
+  src/nelisp-buffer.el= (unmodified) loads cleanly and its functions
+  return correct values when called immediately afterward — it had
+  simply never been tried standalone, exactly as §6.2 speculated.
+
+** §8.2 Against-the-bug (verbatim)
+
+Red, reproduced live before any fix (matches §1.3 exactly):
+
+#+begin_example
+(let ((b (generate-new-buffer "probe")))
+  (with-current-buffer b (insert "abc"))
+  (prin1 (list 'with-temp-file-contents-var nelisp--with-temp-file-contents
+               'buffer-slot2 (aref b 2))))
+=> (with-temp-file-contents-var "abc"  buffer-slot2 "")
+#+end_example
+
+Green, same shape, after the fix (probed via
+=tools/ai/nelisp-ai.sh probe=, run against the built =target/nelisp=):
+
+#+begin_example
+(let ((b (generate-new-buffer "hw")))
+  (with-current-buffer b (insert "hello-world"))
+  (with-current-buffer b (buffer-string)))
+=> "hello-world"
+#+end_example
+
+=point-max= (§1.3's hardcoded-=1= bug): =(with-temp-buffer (insert "hi")
+(point-max))= was =1=, is now =3=. =goto-char=/=point=: void-function
+before, =(with-temp-buffer (insert "abcdef") (goto-char 3) (point))= is
+now =3=.
+
+** §8.3 Verification
+
+- *Standalone smoke* (Doc 187 §6.1's lesson: a host-ERT case of these
+  forms cannot distinguish the fix from the bug, §4.1):
+  =test/nelisp-buffer-unification-standalone-smoke.el=, run via
+  =make standalone-reader-buffer-smoke= against =target/nelisp= itself,
+  using =scripts/nelisp-ert-shim.el= (its first real consumer) — 6
+  =ert-deftest= cases (insert/buffer-string round trip, goto-char/point
+  agreement, point-min anchor, point-max no-longer-hardcoded, kill-buffer
+  then not-live, and the task's own "hello-world" =with-temp-file= +
+  =insert-file-contents= + =with-temp-buffer= round trip). All 6 pass.
+- *Host-ERT companion*: =test/nelisp-buffer-unification-test.el=, the
+  literal §4.1 P1 subset (test 3, needing =point-marker=, is P4 scope,
+  not added). Its own Commentary states plainly that it exercises host
+  Emacs's real functions, not this tree's — included because §4.1 asks
+  for it, not as evidence of this fix.
+- *Parity forms* (§4.2, host-comparable): the 4 forms from §4.2's table
+  added to =test/nelisp-shadow-differential-cases.el=; =make emacs-parity=
+  passes byte-identical against stock Emacs 30.1 (19942 bytes). =make
+  parity-coverage= rose from 259 to 264 covered names (=insert=,
+  =buffer-string=, =goto-char=, =point-max=, =with-temp-buffer= — =point=
+  itself is not in the tracked compat-table); baseline and =pinned= lines
+  raised in the same commit.
+- *Mutation row* (§4.3, new required gate =standalone-reader-buffer-
+  smoke=): =tools/gate-mutations.txt= gained a real row (the placeholder
+  in §4.3 named a variable, =nelisp--current-buffer-obj=, that does not
+  exist in the landed code; the real row targets the actual =insert=
+  call site). Confirmed by hand — mutated, forced a rebuild (the gate's
+  own conditional prerequisite only builds when no binary exists, so
+  =tools/nelisp-gate-mutation.sh= needed the same =rebuild_checked=
+  treatment already carved out for =emacs-parity=, for the identical
+  stale-binary reason), the smoke went from 6/6 to 2/6, reverted, rebuilt
+  clean. =make gate-mutation= now runs 15 rows, including this one, all
+  green.
+- *Housekeeping gates touched by the port itself*: =make ns-gate=/=make
+  ns-inventory= (the verbatim port makes every ported name collide,
+  byte-identically, with its own =src/nelisp-buffer.el= source —
+  =ns-collision=, not =-divergent=; 49 new =pinned-collision= lines,
+  baseline raised 180->225; the two =with-current-buffer=/=with-temp-
+  buffer= divergent pairs changed shape, re-pinned with fresh identities,
+  baseline lowered 124->121 since =with-temp-buffer= dropped from a
+  triple to a pair). =make partial-inventory= (misc.el's deleted stubs'
+  ignored-arg rows removed; the prelude's =bufferp= no longer ignores its
+  argument, its row removed too). =make prelude-toplevel-check=
+  (=cl-defstruct= added to the tool's own allowed-top-level-heads list —
+  a genuinely new, legitimate top-level shape, exactly the case its
+  Commentary invites; the =*Messages*= seed changed from a bare top-level
+  call to a =defvar=, avoiding the "call, not a definition" flag the same
+  way the =*scratch*= seed already did via =setq=).
+
+** §8.4 Battery
+
+=make compile=, =make parens-check=, =make generated-source-parse=,
+=tools/ai/nelisp-ai.sh check= (scoped verify), =tools/ai/nelisp-ai.sh
+standalone= (=standalone-reader-test= + =binary-size-ratchet= +
+=emacs-parity=), =tools/ai/nelisp-ai.sh smokes=, =tools/ai/nelisp-ai.sh
+test= (full ERT, host Emacs — =src/nelisp-buffer.el= untouched, so its
+own suite is unaffected), and =make substrate-parity-smoke= all pass. See
+the implementing commits' own messages for exact gate-report numbers;
+=target/gates/= reports are per-machine and untracked.
+
+Binary size: =target/nelisp= grew (the ported model + printer special
+case add real code to the baked-in prelude, as expected and as this
+task's own instructions anticipated — "buffer wiring may grow the
+binary"). =tools/nelisp-binary-size-baseline.txt= raised in the same
+commit as the growth, per that file's own ratchet convention.
+
+** §8.5 Files touched
+
+=scripts/nelisp-stdlib-prelude.el= (the port + standard-name wiring +
+printer fix), =lisp/nelisp-stdlib-misc.el= (dead-stub deletion),
+=test/nelisp-buffer-unification-test.el= (new),
+=test/nelisp-buffer-unification-standalone-smoke.el= (new),
+=test/nelisp-shadow-differential-cases.el= (§4.2 forms), =Makefile= (new
+=standalone-reader-buffer-smoke= target), =tools/ai/nelisp-ai.sh= (gate
+wired into =extras=), =tools/ai/gates.expected=,
+=tools/gate-mutations.txt=, =tools/nelisp-gate-mutation.sh=
+(=rebuild_checked= extended), =tools/nelisp-prelude-toplevel-check.el=
+(=cl-defstruct= allowed), =tools/partial-accepted.txt=,
+=scripts/nl-ns-accepted.el=, =tools/ns-inventory-baseline.txt=,
+=tools/parity-coverage-baseline.txt=,
+=tools/nelisp-binary-size-baseline.txt=.
+
+* §9 P2 implementation record (SHIPPED 2026-08-24)
+
+** §9.1 What shipped
+
+Per §3's own P2 scope ("=current-buffer=/=set-buffer=/=with-current-
+buffer=/=with-temp-buffer=/=buffer-substring=/=erase-buffer= wired to
+P1's real object; =misc.el='s three stub copies (§1.4) replaced with
+guarded delegates... Exit: the four packages' own =(current-buffer)=
+call sites (§1.5) return a real buffer object standalone for the
+first time"):
+
+- =current-buffer=, =set-buffer=, =buffer-substring=, =erase-buffer=
+  are new standard-name wrappers in =scripts/nelisp-stdlib-prelude.el=,
+  thin delegates onto P1's already-ported =nelisp-current-buffer=/
+  =nelisp-set-buffer=/=nelisp-buffer-substring=/=nelisp-erase-buffer=
+  (same threading discipline as P1's =point=/=goto-char=: only
+  =nelisp--current-buffer=, never the ported file's own ambient
+  =nelisp-buffer--current=). =with-current-buffer=/=with-temp-buffer=
+  are unchanged -- P1 shipped both ahead of §3's original schedule, as
+  part of its own "coherent lifecycle set" (top =#+STATUS2=); §3's P2
+  bullet re-lists them only because §3 was drafted before P1 landed.
+- =set-buffer='s error wording and =buffer-substring='s argument-order
+  handling and out-of-range signal are probed against Emacs 30.1
+  (§9.2), not guessed: a missing name signals =(error "No buffer named
+  %s")=, a killed buffer object signals =(error "Selecting deleted
+  buffer")= (distinct cases -- =get-buffer= already returns a dead
+  buffer object unchanged per P1, so =set-buffer= has to check
+  liveness itself), and =buffer-substring= accepts START/END in either
+  order and signals =args-out-of-range= (data = buffer, START, END, in
+  the caller's original unsorted order) outside [=point-min=,
+  =point-max=]. The underlying =nelisp-buffer-substring= (ported
+  verbatim from =src/nelisp-buffer.el=, kept byte-identical for
+  =ns-gate=) does neither of those on its own, so both are handled in
+  the wrapper instead of touching the ported file.
+- =erase-buffer='s one known gap, disclosed rather than silently
+  papered over: real Emacs widens before deleting (probed: erasing a
+  narrowed buffer resets =point-min= back to 1); the ported =nelisp-
+  erase-buffer= does not reset narrowing. Unreachable from this
+  phase's own surface, since no standard name through P2 can SET
+  narrowing (=narrow-to-region=/=widen= are still unwired) -- named
+  here so a future phase that DOES wire narrowing standard names knows
+  to check this, not so it goes unnoticed.
+- P0 (generic =add-hook=/=run-hooks=) turned out to already be
+  shipped, not by this change: =84950ad30= ("stdlib: hooks, a map.el
+  subset, and fixnum overflow completions", merged into
+  =integration/wave3= at =6931ac380=) landed it *before* Doc 188 itself
+  was even authored (=48eff162b=, later in the same log). The top
+  =#+STATUS= line's "P0 add-hook... still DRAFT" was stale from §3's
+  original draft, not re-checked against the tree; this phase's own
+  probe (§9.2) confirms P0's exact §3 exit criterion passes today.
+- =lisp/nelisp-stdlib-misc.el='s "three stub copies" (§2.2) needed no
+  further edit this phase: P1 already deleted its =with-current-
+  buffer=/=with-temp-buffer= copies as dead code (never =require=d, per
+  §1.4's own research), the same disposition §6.4 left open as an
+  implementer's call. =buffer-substring-no-properties= (both
+  =lisp/nelisp-stdlib-misc.el= and a second, independent copy already
+  in =scripts/nelisp-stdlib-prelude.el=) remains an honest-but-wrong
+  stub (unconditional =""=) -- named here as a residual gap, not fixed:
+  it is not in §3's P2 name list, and fixing it is a one-function,
+  independently scoped change that belongs with whatever phase wires
+  text properties (its correct behavior needs to strip properties
+  =buffer-substring= newly returns).
+- The P2 exit criterion itself: =packages/nelisp-textprop-hook/src/
+  nelisp-textprop-hook.el= (§1.5's crash-risk package) now loads
+  standalone and its =(current-buffer)=-consuming public entry points
+  work against a real buffer, not just "the file loads without
+  erroring" -- verified in the standalone smoke (§9.3), not merely
+  attempted.
+
+** §9.2 Against-the-bug (verbatim)
+
+Red, reproduced live before any fix, via =tools/ai/nelisp-ai.sh probe=
+against a clean pre-P2 build (=target/nelisp= sha =102697e453b7e127=,
+size 7281408):
+
+#+begin_example
+(current-buffer)
+=> nelisp: uncaught error: ... void-function: (current-buffer)
+(set-buffer "*scratch*")
+=> nelisp: uncaught error: ... void-function: (set-buffer)
+(with-temp-buffer (insert "hello") (buffer-substring 2 4))
+=> nelisp: uncaught error: ... void-function: (buffer-substring)
+(with-temp-buffer (insert "abc") (erase-buffer) (buffer-string))
+=> nelisp: uncaught error: ... void-function: (erase-buffer)
+#+end_example
+
+Green, same shapes, after the fix (=target/nelisp= sha
+=49662f0b9af8e37c=, size 7314288):
+
+#+begin_example
+(with-temp-buffer (insert "hello") (list (buffer-substring 2 4)
+                                          (buffer-substring 4 2)))
+=> ("el" "el")
+(with-temp-buffer (insert "abc") (erase-buffer) (buffer-string))
+=> ""
+(let ((a (generate-new-buffer "a")) (b (generate-new-buffer "b")))
+  (set-buffer a) (set-buffer b) (eq b (current-buffer)))
+=> t
+#+end_example
+
+P0 (=add-hook=/=run-hooks=), confirmed already-shipped rather than
+assumed (§9.1): =(let ((ran nil)) (add-hook 'kill-buffer-hook (lambda
+() (setq ran t))) (run-hooks 'kill-buffer-hook) ran)= => =t=, probed on
+the same P2 build.
+
+** §9.3 Verification
+
+- *Standalone smoke*: =test/nelisp-buffer-unification-standalone-
+  smoke.el= grew from 6 (P1) to 18 =ert-deftest= cases, run via =make
+  standalone-reader-buffer-smoke= against =target/nelisp= itself --
+  the same Doc 187 §6.1 rationale P1 used (a host-ERT run of these
+  forms cannot distinguish this tree's own wiring from host Emacs's
+  real implementations). The 9 P2 additions cover: =current-buffer=
+  tracking =with-current-buffer='s dynamic extent in and back out;
+  =set-buffer= persisting past the statement that made it (unlike
+  =with-current-buffer=, and a corrected test -- see below);
+  =with-current-buffer= restoring the buffer active on ENTRY even when
+  its body reassigns via =set-buffer=, not "chasing" the reassignment;
+  =set-buffer='s return value, and its two distinct error shapes
+  (missing name vs. killed buffer object); =buffer-substring='s normal
+  range, reversed-argument order, full-span/empty-span fenceposts, and
+  out-of-range signal; =erase-buffer= clearing content AND resetting
+  point to 1 (point-clamping edge case); and the P2 exit-criterion
+  test loading =nelisp-textprop-hook.el= standalone, registering a
+  handler via =nelisp-textprop-hook-add=, firing it via =nelisp-
+  textprop-hook-run= against a real buffer, and checking the depth
+  counter unwinds back to 0. All 18 pass.
+  - One test was caught wrong by running it, not by inspection: an
+    early draft of the =set-buffer=-persistence test nested the
+    assertion inside =with-current-buffer= and expected =set-buffer=
+    inside its body to "stick" past the macro's own exit -- probing
+    real Emacs 30.1 first (§9.2's own discipline, applied to test
+    authorship too) showed =with-current-buffer= restores whatever was
+    current on ENTRY regardless of what the body does, so the test's
+    own expectation, not the implementation, was wrong. Fixed by
+    testing persistence with a bare =set-buffer= (no enclosing dynamic
+    extent) and adding a second test that pins down and documents the
+    ENTRY-restoring behavior explicitly.
+- *Host-ERT companion*: =test/nelisp-buffer-unification-test.el= grew
+  by 3 cases (=current-buffer=/=set-buffer= round trip, =buffer-
+  substring= both argument orders, =erase-buffer=), the readable-spec
+  subset per P1's own established split (edge cases live in the
+  standalone smoke, which is the one that can actually fail on this
+  tree's own defect, not this file).
+- *Parity forms* (§4.2, host-comparable): 3 new forms in =test/nelisp-
+  shadow-differential-cases.el= -- a =current-buffer=/=set-buffer=
+  round trip through a nested =with-temp-buffer=, a =buffer-substring=
+  pair collecting both argument orders into one printed value, and an
+  =erase-buffer= clear. =make emacs-parity= passes byte-identical
+  against stock Emacs 30.1 (19964 bytes, up from P1's 19942). =make
+  standalone-reader-shadow-smoke= (native vs. prelude within the
+  binary itself) also agrees. =make parity-coverage= rose from 264 to
+  265 covered names (=current-buffer= newly mentioned; =set-buffer=/
+  =buffer-substring=/=erase-buffer= are not themselves in the stale,
+  not-regenerated =docs/emacs-compat-table.txt= shared-name list --
+  same "not every real fix moves this specific ratchet" shape P1's own
+  =point= hit); baseline and =pinned current-buffer= line raised in
+  =tools/parity-coverage-baseline.txt= in the same commit.
+- *Mutation row* (new, targeting a P2 call site specifically, not only
+  P1's pre-existing =insert= row): =tools/gate-mutations.txt= gained a
+  row mutating =erase-buffer='s call to =nelisp-erase-buffer= into
+  =ignore=. Confirmed by =make gate-mutation= itself (which mutates,
+  rebuilds, and reverts every row automatically): the grown smoke went
+  from 18/18 to 14 passed/1 failed -- exactly =nelisp-buffer/erase-
+  buffer-clears-and-resets-point=, the one test whose assertions that
+  call site backs -- then reverted and rebuilt clean.
+- *Housekeeping gates touched*: =make ns-gate=/=make ns-inventory=
+  found no new collisions (the four new names are defined nowhere else
+  in the tree -- confirmed by grep before landing, not assumed) so
+  neither baseline needed a change. =make partial-inventory= likewise
+  unaffected: none of the four new functions ignore an argument.
+
+** §9.4 Battery
+
+=make compile=, =make parens-check=, =make generated-source-parse=,
+=tools/ai/nelisp-ai.sh check= (scoped verify, VERDICT: PASS, 22
+gates), =tools/ai/nelisp-ai.sh standalone= (=standalone-reader-test=
+22/22, =binary-size-ratchet= pass, =emacs-parity= 19964 bytes
+identical), =tools/ai/nelisp-ai.sh smokes= (34/34), =tools/ai/nelisp-
+ai.sh test= (full host ERT: 4994 ran, 0 failed, 151 skipped, 76s),
+=tools/ai/nelisp-ai.sh extras= (=substrate-parity-smoke= 269 checked,
+0 unaccepted findings -- the 7 divergences it reports are the
+pre-existing, already-accepted baseline entries, unrelated to this
+phase; =nl-condition=/=nl-safe=/=nl-resource=/=nl-actor= standalone
+smokes all pass; =standalone-reader-buffer-smoke= 18/18), =make
+standalone-reader-shadow-smoke=, and =make parity-coverage= (PASS, no
+"ratchet available" notice after the baseline raise) all pass.
+
+Binary size: =target/nelisp= grew 7240384 -> 7314288 (+73904 bytes,
++1.02%), inside the existing 2% slack but raised anyway per =tools/
+nelisp-binary-size-baseline.txt='s own disclosure rule -- the four new
+wrappers add ~150 source lines to the embedded prelude, the same
+accounting P1's own raise used for the same file.
+
+** §9.5 Files touched
+
+=scripts/nelisp-stdlib-prelude.el= (the four P2 standard-name
+wrappers), =test/nelisp-buffer-unification-standalone-smoke.el= (6 ->
+18 cases), =test/nelisp-buffer-unification-test.el= (+3 host-ERT
+cases), =test/nelisp-shadow-differential-cases.el= (§4.2 forms),
+=tools/gate-mutations.txt= (new P2-targeted row), =tools/parity-
+coverage-baseline.txt= (264 -> 265, =pinned current-buffer=), =tools/
+nelisp-binary-size-baseline.txt= (7240384 -> 7314288).

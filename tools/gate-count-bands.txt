@@ -1,0 +1,49 @@
+# Expected `GATE-COUNT checked=N' band per gate (tools/nelisp-gate-selfcheck.el).
+#
+# Three checks were green on 2026-08-19 while seeing nothing: the soak leak
+# blocker compared rounds that ran in separate processes and so could not
+# fail; the compat tool read quoted data as definitions and counted 1,771
+# names that do not exist; the shadow smoke compared the standalone against
+# itself.  Each printed a confident verdict.
+#
+# A verdict says whether what was looked at was clean.  `checked' says
+# whether anything was looked at.  A number far outside its band means the
+# gate's INPUT changed shape -- a scan that stopped finding files, a corpus
+# that stopped evaluating -- and that is invisible in a PASS.
+#
+# Bands are deliberately wide: this catches collapse and runaway, not drift.
+# Widen one when the tree genuinely grows into it, in the commit that does.
+#
+# GATE            MIN     MAX
+unsafe-inventory  150     600
+ns-inventory      300     600
+ns-gate           1000    4000
+emacs-compat      5000    12000
+fallback-inventory 100    2000
+pkg-graph         15      2000
+bootstrap-contract 1      500
+parity-coverage   300     900
+emacs-parity      1000    100000
+partial-inventory 20      200
+prelude-toplevel-check 200 3000
+
+# Bands were set from the measured values on 2026-08-19, not guessed:
+# unsafe-inventory scans 253 .el files under lisp/ and scripts/, and
+# pkg-graph reads 34 packages.  Guessed bands would have had to be widened
+# on first run, which teaches people to widen without reading -- the same
+# failure the unsafe-inventory baseline file warns about for ratchets.
+#
+# emacs-parity's floor (1000): the 2026-08-23 Windows gate-battery
+# inventory measured `checked=652' there, below this floor -- investigated
+# and NOT a reason to lower it.  That run hit a since-fixed generation bug
+# (Makefile's `emacs-parity' target; see tools/ai/gates.expected's
+# emacs-parity note) that corrupted the wrapped corpus file Emacs reads;
+# 652 is consistent with a handful of the corpus's own top-level forms
+# evaluating before the corruption's stray trailing `)))' aborted the read,
+# not with a legitimately smaller Windows corpus -- the corpus and its
+# reference answers are the same Lisp data on every platform. This
+# session's own Linux measurement after the generation fix reads
+# `checked=19949', comfortably inside this band. Left unchanged rather
+# than made platform-aware; if a Windows re-run after that fix still reads
+# far from ~19949, that is new evidence for a fresh investigation, not
+# grounds to retroactively read this one differently.

@@ -1,0 +1,155 @@
+# How many names this tree is allowed to define UNCONDITIONALLY on top of a
+# name stock Emacs already has (tools/nelisp-emacs-compat.el).
+# One "shared-shadowing COUNT" line.  `make emacs-compat' fails when the
+# count is above it.  Lower it whenever the gate says you can; raise it only
+# in the commit that adds the definition, and say here why that name cannot
+# defer to the host.
+#
+# Why this class and not the others.  A `nelisp-only' name is honest: it does
+# not exist on Emacs and code using it plainly does not run there.  A
+# `shared-deferring' one is compatible by construction -- it is wrapped in
+# `(unless (fboundp ...))', so on a host the host's definition wins.
+# `shared-shadowing' is the one nobody can see: the name exists in both, and
+# THIS tree's definition lands on top, so loading the file changes that
+# Emacs, and inside the runtime it changes which implementation the next
+# caller gets.
+#
+# Measured 2026-08-19, the day this gate was added.  Three defects fixed that
+# same day were this exact shape, and each cost hours because the effective
+# definition was invisible at the call site:
+#
+#   `provide' / `featurep' fset unconditionally over working native builtins
+#   while `require' stayed native, so the three stopped agreeing about the
+#   same feature list and `require' raised file-missing for a file it had
+#   just loaded and watched run its own `(provide ...)'.
+#
+#   a `string-match-p' that recognised five literal regexps and answered
+#   every other one with a substring search FOR THE REGEXP TEXT.
+#
+#   an `error-message-string' that returned `(cadr ...)' and dropped the
+#   error symbol with it.
+#
+# 250 is today's truth, not a target.  The list is in
+# docs/emacs-compat-table.txt; the ones worth moving first are the ones a
+# host would also define -- arithmetic and core special forms are in here.
+
+# 250 -> 245 on 2026-08-19: the five functions in lisp/nelisp-build-host.el
+# (getenv, setenv, add-to-list, make-directory, system-name) now gate on
+# fboundp.  That file says its own job is to "fill the gap between the
+# nelisp standalone runtime and the Emacs batch-mode functions", and a
+# gap-filler that defines unconditionally does not fill a gap -- it replaces
+# what was there.  Measured after: loading it into a host Emacs leaves
+# add-to-list a C subr, where before it became an elisp shim.
+# nelisp--cli-batch-ensure-host, which loads that file, already gated its own
+# fallback stub this way.
+# 248 -> 249 on 2026-08-20: `make-hash-table' is now an unconditional
+# `defun' in scripts/nelisp-stdlib-prelude.el, ON PURPOSE.  The name is a
+# native builtin in the standalone, so `(unless (fboundp ...))' never fires
+# for it and the argument-list validation Emacs performs -- unknown keyword,
+# odd length, bad :test/:size/:weakness -- had nowhere to live.  The
+# shadowing defun does the checks and calls the raw constructor underneath.
+# This is the one shape where shadowing is the fix rather than the bug: the
+# gate's usual advice (wrap it in fboundp) would restore the silence.
+# 249 -> 251 on 2026-08-20: `boundp' and `assoc', both unconditional
+# `defun's on purpose and for the same reason `make-hash-table' is one --
+# each is a native builtin, so `(unless (fboundp ...))' never fires and the
+# check has nowhere else to live.  `boundp' has to answer t for the
+# self-evaluating symbols; `assoc' has to honour TESTFN, which the native
+# arm ignored.  Both call the native walk underneath.
+# 251 -> 268 on 2026-08-26 (macOS v1.0.1 verification).  NOT this
+# verification's own changes -- measured identical, 268 against a pin of
+# 251, on a pristine v1.0.1 worktree (54707c95) with nothing applied.  The
+# pin was left behind by the tree's own growth over the 497 commits between
+# v0.x and v1.0.1: the process/network adapter (`make-process',
+# `make-network-process', `open-network-stream', `accept-process-output',
+# `delete-process', `kill-process', `process-contact', `process-filter',
+# `process-sentinel', `set-process-filter', `set-process-sentinel',
+# `process-send-string', `timerp'), the cl-generic surface
+# (`cl-defgeneric', `cl-defmethod', `cl-call-next-method',
+# `cl-next-method-p'), the printer variables (`print-length',
+# `print-level') and `set' / `safe-length' / `proper-list-p' /
+# `file-name-sans-versions'.
+#
+# Host drift was ruled out rather than assumed: this machine runs Emacs
+# 30.2 and CI's `gates' job runs 30.1, but every name above exists in
+# 30.1 too (none of them is new in 30.2), so the count is the same on
+# both -- the difference is what this tree defines, not what stock Emacs
+# has.  `docs/emacs-compat-table.txt' is stale for the same reason the pin
+# was (its header reads 7114 names; the scan now sees 7817), so the list
+# above is what a 30.2 regeneration adds over that stale table, minus the
+# `boundp' / `assoc' pair the 251 note already accounts for.
+shared-shadowing 268
+
+# 2026-08-19, reviewing the 245 rather than counting them.  The table now
+# carries the defining file, which is half of what makes a class actionable:
+# "does this shadow Emacs" is only useful beside "and where do I look".
+# By file, the shadowings are 111 in scripts/nelisp-stdlib-prelude.el, 34 in
+# lisp/nelisp-stdlib.el, 28 in nelisp-stdlib-misc.el, 22 in
+# nelisp-stdlib-plist-str.el, 10 in nelisp-jit-strategy.el, and a tail.
+#
+# Not all 245 are equally dangerous, and the danger is not the one the class
+# name suggests.  The three defects this class produced on 2026-08-19 did not
+# break a host Emacs -- they broke the STANDALONE, by landing on top of a
+# native builtin that already worked.  Cross-referencing the shadowings
+# against the standalone's own builtin list: 70 of the 245 are names the
+# runtime provides natively, 10 of them in the prelude, which is the set a
+# single run can reach both halves of.
+#
+# `make standalone-reader-shadow-smoke' now evaluates the same expressions
+# with and without the prelude and requires identical answers, so a prelude
+# definition that drifts from the native builtin fails instead of waiting to
+# be found by hand.  Known-answer: a `mod' that truncates instead of flooring
+# takes (mod -7 2) from 1 to -1 and the target fails, printing both sides.
+#
+# That check is deliberately NOT part of this tool.  This one runs in a stock
+# `emacs -Q' that only READS sources, and its answers come from asking that
+# process `fboundp' -- loading the build script to get the builtin list would
+# define names into the very process whose emptiness is the measurement.
+
+# 245 -> 244 on 2026-08-19, and 8885 defined names -> 7114.
+#
+# The tool was reading quoted data as code.  A definer's own list of heads,
+# '(defvar defconst defcustom setq setq-default), was walked as a form: its
+# car is `defvar', so its second element read as a name being defined.  That
+# invented 1771 names and attributed `defconst' to src/nelisp-cc-runtime.el,
+# `defvar' to src/nelisp-bytecode.el and `defmacro' to src/nelisp-macro-ns.el,
+# none of which define them -- all three are in the prelude.  `function-put'
+# was listed as defined and is defined nowhere in the tree.
+#
+# Found by the review this tool exists to make possible, which is the joke:
+# it had the defect it was built to detect, and it is the same one nl-check
+# carries by design -- quoted forms are data.  Backquote is still walked, on
+# purpose: this tree assembles runtime code as backquoted templates, so a
+# definition there is a definition somewhere, while a quoted list of head
+# symbols is not a definition anywhere.
+#
+# One shadowing net: `function-put' left, `defconst'/`defvar'/`defmacro'
+# stayed but moved to the file that really defines them, which is what makes
+# the FILE column worth having.
+
+# 244 -> 245 on 2026-08-19: `file-name-sans-versions', added to the prelude
+# because `file-name-extension' needs it -- Emacs strips backup suffixes
+# before asking about the extension, which is why (file-name-extension
+# "foo.txt~") is "txt" and not "txt~".  There was no implementation of it
+# here at all, so a backup name reported an extension no file ever has.
+#
+# Unconditional, like the prelude's other 111: that file IS the standalone's
+# stdlib, and there is no host definition for it to defer to.
+
+# 245 -> 247 on 2026-08-19: `safe-length' and `proper-list-p'.  They are
+# added because `length' now signals on an improper list, as Emacs does --
+# and without the tolerant counterparts Emacs pairs it with there would be
+# no way to ask about a dotted list at all.  Adding a check and removing the
+# only way around it would be a worse tree than the one that answered wrong.
+#
+# Unconditional, like the prelude's others: that file is the standalone's
+# stdlib and has no host definition to defer to.
+
+# 247 -> 248 on 2026-08-19: `print-length' and `print-level' are now defined
+# -- they did not exist, so the printer ignored both and a long or deep
+# structure printed in full, with nothing bounding the output at all.  Both
+# are Emacs's own variable names, which is the point: code that binds them
+# expects them to be read.
+#
+# One net rather than two: `nelisp--prn-depth' is nelisp-only.
+

@@ -321,8 +321,12 @@ $WrfCode = $LASTEXITCODE
 if ($null -eq $WrfCode) {
     $WrfCode = 0
 }
+# `wrf' (the short M7 builtin, distinct from the longer `nl-write-file')
+# returns the byte count written, not `t' -- confirmed against
+# `nl_bi_write_file' in scripts/nelisp-standalone-build.el and by running
+# this exact probe directly.  "written" is 7 bytes.
 Assert-Output -Label "wrf file write" -Output $WrfOutput `
-    -Code $WrfCode -Expected "t"
+    -Code $WrfCode -Expected "7"
 if (-not (Test-Path $WrfTarget)) {
     throw "wrf file write did not create target"
 }

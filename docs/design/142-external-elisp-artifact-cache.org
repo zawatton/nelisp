@@ -1,6 +1,7 @@
 #+TITLE: Doc 142 - External Elisp native/bytecode artifact cache command surface
 #+DATE: 2026-06-04
 #+STATUS: SHIPPED
+#+VERIFIED-BY: ert-full standalone-reader-smokes standalone-reader-test
 
 * Status
 
@@ -69,6 +70,32 @@
   (=.elc= -> host =load= + host eval; =.nelc=/=.neln= -> NeLisp runtime
   replay).  The manifest pins =:emacs-major-version= and the =.elc= integrity
   hash so a stale source or wrong Emacs version is rejected before load.
+- *Correction 2026-08-22*: the paragraph above was true only of the code path
+  host Emacs takes (gate 9 runs =test/nelisp-artifact-test.el= under
+  =$(EMACS) --batch=).  Nothing in any gate, smoke, or workflow ever ran
+  =--kind elc= on the STANDALONE =target/nelisp= binary itself, and it
+  crashed there: =Symbol's value as variable is void: invocation-name= --
+  =nelisp-artifact--byte-compile-to= unconditionally reads that host-Emacs-
+  only variable to relaunch itself as a clean =batch-byte-compile=
+  subprocess, which only exists when the caller already is host Emacs.
+  =nelisp-artifact--standalone-host-helper-mode= already had a working
+  fallback for exactly this case -- spawn a real host Emacs and run
+  =nelisp-artifact-compile-elc-file= inside it -- but gated it to Windows
+  only; fixed by making =elc= unconditionally =required= there, on every OS.
+  Separately, the standalone's own =eval-elisp-artifact=/=exec-elisp-
+  artifact= turned out to have NO execution path for =.elc= at all: their
+  native =nelisp-standalone-source-cache-load-artifact= has no GNU Emacs
+  bytecode VM (confirmed: the reader never parses =#[...]= literals) and
+  used to fall through to an unrelated =invalid artifact magic= error; it
+  now rejects =.elc= up front with a stated reason instead.  =inspect-elisp-
+  artifact= (metadata only, no execution) is unaffected and still works on
+  =.elc=.  The fixed, three-part contract -- (a) compile produces a real
+  =.elc=, (b) stock host Emacs loads and calls it, (c) the standalone's own
+  exec/eval reject it with a named reason rather than a crash or a silent
+  wrong success, plus (d) a negative for the host helper disabled -- is now
+  measured by =nelisp-standalone--reader-elc-smoke=, wired into the
+  =standalone-reader-test= dolist and run by =make standalone-reader-test=
+  (=tools/ai/gates.expected=, now 15 checks).
 - *Implementation note (§6.1 SHIPPED)*: the =.nelc= lane now precompiles
   eligible top-level =defun= bodies to NeLisp bytecode closures
   (=nelisp-bcl=, via =nelisp-bc-compile=) and replays them onto the NeLisp
@@ -305,6 +332,12 @@ Required behavior:
 - =eval-elisp-artifact= prints the last value for diagnostics.
 - Loading an artifact must not re-open the original source file unless debug
   metadata explicitly requests it.
+- =.elc= artifacts are HOST-EMACS-ONLY for these two commands: the standalone
+  runtime has no GNU Emacs bytecode VM, so its =exec-elisp-artifact=/=eval-
+  elisp-artifact= must reject a =.elc= FILE argument with a clear, named
+  reason rather than attempt to execute it (§6.2).  =load='ing a =.elc= with
+  real host Emacs directly, not through this command, is the supported way
+  to run one.
 
 ** 4.3 Inspect
 
@@ -396,6 +429,34 @@ Long-term bytecode compatibility target.
   provided features as usual.
 - Must not reuse the current NeLisp private text =.elc= magic header
   =nelisp-bytecode-elc-v1= as the public artifact format.
+- *Compile execution boundary*: =--kind elc= compilation runs through a real
+  host Emacs subprocess in every runtime that offers it.  When the caller
+  already is host Emacs, it relaunches itself.  When the caller is the
+  standalone =target/nelisp= binary, =nelisp-artifact--standalone-host-
+  helper-mode= requires that same host-Emacs helper (found via
+  =NELISP_HOST_EMACS=/=EMACS=/PATH) rather than attempting compilation
+  natively -- the standalone runtime has no GNU Emacs byte-compiler of its
+  own.  With no host Emacs reachable, compilation fails with the named
+  diagnostic =host-helper required for --kind elc ...=, never a crash and
+  never a silent fallback to a different format.
+- *Load/exec execution boundary*: =exec-elisp-artifact=/=eval-elisp-
+  artifact= on a =.elc= artifact are HOST-EMACS-ONLY -- load and run one
+  with real Emacs directly (=emacs -Q --batch --load FILE.elc=).  The
+  standalone runtime has no GNU Emacs bytecode VM (it does not parse
+  =#[...]= bytecode-object literals at all), so its own =exec-elisp-
+  artifact=/=eval-elisp-artifact= reject a =.elc= FILE argument up front
+  with that stated reason instead of attempting it.  =inspect-elisp-
+  artifact= (metadata only, no execution) works on =.elc= from either
+  runtime, since it only reads the sibling manifest.
+- *Measured by* =nelisp-standalone--reader-elc-smoke=
+  (=scripts/nelisp-standalone-build.el=), wired into the
+  =standalone-reader-test= dolist and run by =make standalone-reader-test=
+  (see =tools/ai/gates.expected=): (a) compile produces a real =.elc= +
+  manifest; (b) stock host Emacs loads it and calls the compiled function;
+  (c) the standalone's own =eval-elisp-artifact= rejects it with the stated
+  reason instead of executing or crashing; (d) negative -- with the host
+  helper disabled (=NELISP_DISABLE_HOST_HELPER=1=), compilation fails with
+  the named diagnostic, not a crash.
 
 ** 6.3 No GNU Emacs =.eln= compatibility in Doc 142
 
@@ -423,6 +484,142 @@ Future implementation target after bytecode module artifacts are reliable.
   stale.
 - Do not make native artifacts the only cache lane; bytecode remains the
   portable fallback for faster development loops across targets.
+
+*** 6.4.1 In-process loader (SHIPPED 2026-08-16)
+
+=lisp/nelisp-native-load.el= reads a =.neln= at run time and executes its
+native code inside the running reader: no linker, no =cc=, no subprocess.
+=make neln-loader-test= compiles artifacts and has the reader call them.
+
+The predecessor was a demo.  =--neln-selftest= mapped and ran one function
+whose bytes and extern addresses were baked into the reader at build time, so
+nothing about it varied.  Making it general is what surfaced three defects that
+a single-call, literal-free, 122-byte demo never reached (see §6.4.3).
+
+What it does, given a path and a name:
+
+1. read the artifact -- a =;;;= header line and one plist -- and take
+   =:native='s text, relocations and defun metadata;
+2. mmap a code page sized to the text plus one 16-byte stub per extern, and a
+   page for the boundary slots;
+3. copy the text, lay the stubs after it 16-byte aligned, point each stub at
+   its runtime symbol, patch each plt32 relocation at its stub;
+4. build a trampoline for this defun's arity and slot count, fill the boundary
+   slots, enter the body past its prologue;
+5. box the arguments, =ptr-call= the trampoline, unbox the result.
+
+It is interpreted elisp.  The reader already exposed =syscall-direct= (mmap),
+the pointer accessors, =alloc-bytes= and =ptr-call=; the loader added two
+builtins and no other AOT-surface code:
+
+- =nelisp--native-symbol-addr INDEX= -- a runtime symbol's address.  =data-addr=
+  is a compile-time form, so the addresses come from a chain fixed when the
+  reader is built and are selected by index.  The index is the contract; a test
+  asserts the loader's symbol list matches the reader's, in order.
+- =nelisp--native-env= -- the environment pointer the boundary calls =frames=.
+  The demo took it from the CLI dispatcher's =ctx=, a local nothing interpreted
+  can reach.  =nelisp_apply_function= receives the same pointer as =env= and
+  every dispatch arm runs inside it, so the arm hands it back.
+
+*** 6.4.2 Two calling conventions, not recorded in the artifact
+
+A defun either takes Sexp pointers and returns through =out=, or takes raw i64
+and returns in =rax=.  The metadata does not say which -- =param-class= is =gp=
+for both -- and the CLI decides by trying the integer call and falling back.
+That is not available in-process: a wrong guess corrupts rather than errors.
+
+Measured, on =add3= = =(+ a (+ b c))= with no externs, and =inc1= = =(1+ x)=:
+
+| defun | raw arguments | boxed arguments      |
+|-------+---------------+----------------------|
+| add3  | rax = 6       | 406962619651776      |
+| inc1  | --            | out tag=2 value=42   |
+
+So the loader derives it: reaching the boxed boundary means calling through it,
+and every such call leaves an extern behind.  No externs means the integer ABI.
+Being wrong here is silent arithmetic on the wrong values, so a caller that
+knows better overrides =:abi= in the handle.
+
+*** 6.4.3 Limits, stated rather than discovered
+
+Refused before anything is mapped, by =nelisp-native-load-check=:
+
+- non-x86_64 artifacts, and defuns whose =param-class= is not =gp=;
+- arity past six -- the trampoline passes arguments in registers;
+- externs outside =nelisp-native-load-bridgeable-symbols=.
+
+Refused at the boxing boundary:
+
+- floats.  The payload is raw f64 bits; returning the bit pattern as an integer
+  would be a wrong answer rather than a missing one.
+- strings with a character past 255.  The runtime stores strings UTF-8
+  internally, so writing the low byte would hand it a different string.
+
+That UTF-8 representation also cost a debugging round: =base64-decode-string=
+returns a string whose bytes over 127 are UTF-8 encoded, so =string-byte= walks
+the encoding and the text reached the code page with 137 arriving as 194 137.
+=aref= indexes characters, which for a byte string is the byte.
+
+*** 6.4.4 Load-time validation and unmapping (SHIPPED 2026-08-17)
+
+The §6.4 bullets asking for a pre-execution reject and for release are
+implemented.  =nelisp-native-load-check= refuses, before anything is mapped:
+
+- =:format= other than =nelisp-private-nelc-v2=;
+- =:object-format= other than =nelisp-aot-elf-v1=;
+- a =:native-section-version= the loader does not agree with;
+- a decoded text whose length differs from =:text-size=;
+
+alongside the earlier arch / param-class / arity / extern checks.  A
+mismatched bytecode artifact merely misbehaves; a mismatched native one is
+machine code entered with the wrong frame layout, so these are refusals.
+
+A trap worth recording: =:format= and =:object-format= read back as *symbols*
+while =:arch= reads back as a *string*.  Comparing all three as strings
+rejects every artifact, including valid ones.
+
+=nelisp-native-load-unload= munmaps the three regions and blanks the handle's
+addresses, so a stale call dereferences 0 rather than entering whatever the
+kernel maps next.
+
+*Unmapping alone does not bound memory.* Each load also makes arena
+allocations that nothing frees -- the manifest read, the base64 decode, the
+scratch vector and its cells.  Measured with unload in the loop: 5 and 20
+cycles complete, 60 is OOM-killed on a 3.9 GB host.  So the practical ceiling
+is a few tens of loads per process, and it lives in the arena, not in the
+mappings.  This is also why =make nl-safe-native-bench= could not carry more
+pairs.
+
+*** 6.4.5 Artifact-hash validation (SHIPPED 2026-08-17)
+
+=:object-sha256= is now verified before anything is mapped: the loader digests
+the embedded object and refuses on a mismatch, so an artifact edited or
+corrupted between compile and load is rejected rather than executed.
+
+This needed a new reader builtin.  =nelisp--sha256= exists and is correct for
+ASCII -- =sha256("abc")= matches the host exactly -- but it takes a *string*,
+and strings are UTF-8 internally, so it digests the encoded form of any byte
+over 127.  Measured before the fix:
+
+| input                      | reader     | host       |
+|----------------------------+------------+------------|
+| ="abc"=                    | =ba7816bf= | =ba7816bf= |
+| =base64-decode "AAGC/w=="= | =a5d68054= | =ddc6b64d= |
+
+=nelisp--sha256-bytes ADDR LEN= digests raw memory instead, which is the
+shape the loader already works in -- it writes the decoded text to a page
+byte by byte.  =m5_sha256= was split so both entry points share the padding
+and compression (=m5_sha256_run=); only the input copy differs
+(=str-byte-at= vs =ptr-read-u8=).  The pointer copy iterates rather than
+recursing like its string sibling: a short symbol name is bounded, an
+artifact is not.  All three cases now match the host, binary included.
+
+On host Emacs the builtin does not exist, so the check is skipped rather
+than failing closed against a digest it cannot compute.
+
+That closes four of the five §6.4 load-validation bullets -- ABI, target
+triple, artifact version, artifact hash.  Source/preload freshness is the
+=.nelc= lane's (§7) and is not duplicated here.
 
 ** 6.5 Auto artifact
 

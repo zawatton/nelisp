@@ -1,6 +1,6 @@
-#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v0.6.0)
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v1.0.1)
 #+AUTHOR: zawatton
-#+DATE: 2026-06-26
+#+DATE: 2026-08-26
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -44,12 +44,12 @@ way: standalone file I/O, stdout/stderr, process exit, raw memory,
 syscall surface used by the standalone reader are expressed from Elisp
 via AOT codegen and =syscall-direct=.
 
-Current stable release: *v0.6.0* (2026-06-26).  This release keeps the
+Current stable release: *v1.0.1* (2026-08-26).  This release keeps the
 project versioned by SemVer git tags, in the same style as =anvil.el=:
-pin users to =v0.6.0=, let =main= carry active development, and use
+pin users to =v1.0.1=, let =main= carry active development, and use
 release notes for the exact gate status.
 
-v0.6.0 ships:
+v1.0.1 ships:
 - *Pure-Elisp runtime implementation* — evaluator, reader, special
   forms, builtins, compiler, allocator, GC, object writers, codegen,
   and standalone OS interaction all live in Elisp source.
@@ -93,19 +93,29 @@ substrate for Lisp Machine / new-dialect experiments.
 
 * Current Release Highlights
 
-v0.6.0 is the current stable tag.  It collects the large post-v0.5.1
-develop line into one release and makes SemVer tags the user-facing
-versioning scheme.
+v1.0.1 is the current stable tag.  What made the 1.0 line a 1.0 rather than
+another point release: the runtime collects garbage by default, and ordinary
+allocating Elisp runs on real OS threads.  Before it, a long-running loop grew
+without bound unless a debug switch was flipped, and "parallelism" meant
+cooperative scheduling on one thread.
+
+v1.0.1 followed the same day, carrying the in-process =.neln= loader and three
+defects that turning the collector on by default had brought into the open --
+see =release/v1.0.1/RELEASE.md=, which also names two known issues this line
+does NOT fix.
+
+Every figure below was measured on the 1.0 tree; see =Test status= for how.
 
 | Area | What changed |
 |------+--------------|
-| Versioning | Stable users should pin =v0.6.0=.  =main= remains the active development branch; historical stage-d names are retained only for installer/runbook compatibility. |
-| Standalone runtime | =target/nelisp= is the primary no-Emacs runtime: REPL, =--eval=, =--load=, file execution, runtime-image replay, artifact loading, and self-hosting AOT compile. |
-| Pure-Elisp OS/compiler surface | AOT grammar and runtime gained data blobs, =frame-alloc=, =shr=, =f64-bits=, defined SysV varargs, libm/f64 return bridging, and additional raw syscall helpers. |
-| Float / printer correctness | Float parse/print work now covers Eisel-Lemire parsing, correctly-rounded power tables, shortest-round-trip printing, C99 hex-float, negative zero, inf/nan, and =%f/%e/%g= precision. |
-| Stdlib breadth | The bare reader prelude gained broader CL/Elisp coverage for package loading: rx/cl-generic helpers, setf places, =cl-defstruct= breadth, arithmetic gaps, hash-table introspection, list search, and incremental =load=. |
-| Memory footprint | Flat-arena cold-load + compacting GC + 8-byte container slots keep full vendor-load around 118MB peak RSS instead of the older 1.80GB path. |
-| Release artifacts | Standalone tarball defaults now use =v0.6.0= names: =anvil-v0.6.0-<platform>.tar.gz=. |
+| Garbage collection | Doc 152's precise-root collector is ON BY DEFAULT (Stage 5).  A 200k allocating loop's peak RSS falls 669,936 KiB -> 339,920 KiB (-49.3%), and RSS stays flat from 500k to 1M iterations (352,624 -> 352,620 KiB) while 256 MiB is returned to the OS.  It is also *faster*: the same loop runs in 5,204 ms collected vs 8,125 ms uncollected, because a small heap keeps locality and avoids further growth =mmap=s. |
+| True multicore | Doc 199 Tiers 1-3b.  =nl-clj-future=/=pcalls=/=pmap= (cooperative), GC-free =clone(2)= workers, bounded allocating tasks, and finally UNRESTRICTED allocating Elisp on real threads: a per-thread precise-root registry, a park barrier that stops every mutator before marking, atomic claim-fill-publish for the macro/function-value caches, and a catchable refusal of worker writes to the shared globals mirror. |
+| No write barrier needed | The park barrier makes Doc 152's planned Stage 6 unnecessary: with all mutators stopped, the tri-colour invariant holds by construction rather than by instrumenting every store. |
+| Buffers, bignums, backquote | Doc 188 buffer unification, Doc 190 bignums, and full backquote all ship — three things the v0.6.0 README still listed as deferred.  =(* 100000000000 100000000000)= evaluates exactly on =target/nelisp=. |
+| Networking | Doc 184 processes and event loop, Doc 194 =make-network-process=/=open-network-stream=, =/etc/hosts= lookup, a DNS-over-TCP resolver, nonblocking sockets with =:nowait=/=:server=, and IPv6 — all in the default binary with no =--load=. |
+| Extension libraries | 39 opt-in packages including =nl-clj= (Clojure compat), =nl-num= (numeric tower), =nl-static= (build-first totality/borrow/typed checks), =nl-hygiene= (hygienic macros), =nl-ns= (namespaces), and =nl-safe=.  Unannotated Elisp is unaffected by all of them. |
+| Zero Rust | 0 =.rs= files remain in the repository.  The evaluator, reader, compiler, allocator, GC, object writers, native emitters and the syscall surface are Elisp. |
+| CI | Six lanes (Linux/macOS/Windows x Emacs 29.4/30.1) plus a fast Linux-only =gates= job that runs the ratchet and inventory battery in ~2 minutes before the matrix starts, collecting every failure instead of stopping at the first. |
 
 * What NeLisp is
 
@@ -321,6 +331,115 @@ This is the third rung of the self-host ladder, end to end and with no
 Emacs: =text → (the standalone interpreter running the AOT
 compiler) → native ELF=, scaled to *concurrent multi-unit compilation*.
 
+* Standard Emacs names, not a NeLisp dialect
+
+An early NeLisp exposed its own vocabulary -- =nelisp-buffer-insert=,
+=nelisp-process-send=, and so on -- so code written for it was code written
+for NeLisp.  Docs 184, 188 and 194 wired the standard Emacs names on top of
+those models, and the standard name is now the API.
+
+All of the following are =fboundp= in a default =target/nelisp= with no
+=--load= at all (checked by evaluating them in the shipped binary):
+
+- Buffers: =current-buffer=, =set-buffer=, =generate-new-buffer=, =insert=,
+  =point=, =goto-char=, =buffer-string=, =buffer-substring=, =erase-buffer=.
+- Processes: =make-process=, =process-send-string=, =process-filter=,
+  =set-process-filter=, =accept-process-output=, =process-status=,
+  =process-live-p=.
+- Network: =make-network-process=, =open-network-stream=.
+- Timers: =run-at-time=, =cancel-timer=, =timerp=.
+- Hooks: =add-hook=, =run-hooks=.
+
+The =nelisp-=-prefixed functions still exist as the layer underneath; they are
+the implementation, not the interface.  =make emacs-parity= (19,961 checks, 0
+findings) is what keeps the standard names honest -- it diffs behaviour against
+a real stock Emacs rather than against NeLisp's own idea of correct.
+
+* Opt-in language extensions
+
+These are the parts of NeLisp that are not "Emacs, again".  Every one of them
+follows the same rule (Doc 168 section 2), and it is the rule that makes them
+usable at all: *loading one changes nothing about plain Elisp semantics.*
+Unannotated code expands and runs exactly as it does in stock Emacs.  You pay
+only where you annotate.
+
+** Memory safety, borrowed from Rust — =nl-safe=, =nl-static=, =nl-check=
+
+The ordinary Lisp layer is already memory-safe: it is a garbage-collected
+dynamic language.  The danger in this project lives one level down, in the
+*runtime implementation layer* -- raw pointers, =syscall-direct=, arenas, mmap
+regions -- which is written in Elisp too and has none of Lisp's protections.
+=nl-safe= (Doc 170 Stage 1) gives that layer Rust's discipline in three pieces:
+
+1. *Aliasing safety.*  =nl-cell= borrow cells enforce sharing XOR mutation
+   with runtime counters -- the =RefCell= strategy: dynamic checks first,
+   static ones later.
+2. *Memory safety.*  Fat pointers =[nl--ptr BASE LEN GENERATION]= bounds-check
+   every access and catch use-after-free through allocation generations.
+3. *An unsafe boundary.*  Only =nl-unsafe= blocks may mint a raw pointer, and
+   the unsafe surface is a named inventory with a CI ratchet
+   (=make unsafe-inventory=) so it cannot grow quietly.
+
+=nl-static= (Doc 197) moves what it can to macroexpansion time -- =nl-total=
+for totality, =nl-borrow-scope=/=nl-with-borrow-mut= for statically scoped
+borrows, =nl-typed= for argument types -- installing no advice, no compiler
+hook, and no reading pass.  Set =nl-static--enabled= to nil and every
+annotation emits its plain counterpart with no checking residue at all.
+=nl-check= (Doc 170 section 10) adds expansion-time checks across the family:
+where =nl-safe= catches a violation when it happens, =nl-check= tries to catch
+it before it ships.  =nl-contract= (Doc 170 Stage 4) puts Racket-style
+contracts with blame on module boundaries, which is what you want when =eval=
+and runtime redefinition mean the perimeter is the only thing you can trust.
+
+** Namespaces — =nl-ns=
+
+Emacs Lisp has one obarray, so =(defun foo ...)= is assignment to a global
+name and the second definition silently wins.  =nl-ns= (Doc 169 defect #6)
+takes the cheap road deliberately: it does *not* rewrite code and adds
+*nothing* at run time.  It reads files and reports where a boundary Elisp
+cannot enforce has actually been crossed, with a CI ratchet
+(=make ns-inventory=, =make ns-gate=) so the count only moves on purpose.
+
+The bug that motivated it is worth stating, because it is the failure mode a
+namespace system is really for: a file in this tree replaced a host definition
+with a partial stub whose own docstring admitted it was partial, the stub's
+=cl-loop= returned nil in-tree but not in a real Emacs, and three layers of
+callers quietly returned nil.  Nothing about that is a name collision between
+two files; it is a boundary between this tree and the host being crossed
+without anyone noticing.
+
+** Immutability and true parallelism, borrowed from Clojure — =nl-clj=
+
+=nl-clj= (Doc 195) is a persistent-data library: a persistent vector, a
+persistent hash-map and hash-set, an =atom=, and a seq API that is both eager
+and lazy.  Collections are plain Elisp vectors with a tag symbol in slot 0 --
+=nl-cell='s own idiom, deliberately not =cl-defstruct=/=record= -- so they
+stay ordinary Lisp values.  The lazy seq leans on =nl-safe='s borrow cell to
+get realize-once semantics and to make reentrancy signal loudly instead of
+looping; the two libraries compose rather than merely coexisting.
+
+Doc 199 then took the idea past cooperative scheduling.  =nl-clj-future=,
+=nl-clj-pcalls= and =nl-clj-pmap= are Tier 1 and run on one thread.  Tiers 2
+through 3b run *real* =clone(2)= threads: GC-free workers first, then bounded
+allocating tasks, and finally unrestricted allocating Elisp with per-thread
+precise roots.  Immutable structures are what make the last tier tractable --
+there is nothing to race on when readers cannot mutate.
+
+** The park barrier — how the collector and the threads coexist
+
+The hard part of Tier 3b is not spawning threads, it is collecting garbage
+while they run.  NeLisp does not mark concurrently with running mutators and
+does not instrument every store.  Instead the collector asks every registered
+worker to *park*, marks and sweeps with all mutators stopped, and releases
+them.  The tri-colour invariant then holds by construction: a mutator cannot
+create a black-to-white edge while nothing is running.
+
+That is a real design consequence, not a simplification -- it is why Doc 152's
+planned Stage 6 (a write barrier) was retired rather than implemented.  The
+gate proves the barrier actually engages rather than skipping an empty
+registry, by asserting =PARK-DIAG parked=3 current=0 missed=0 collections=1=:
+a genuine collection with three live workers parked.
+
 * Pure-Elisp Substrate (v2.0, 2026-05-22)
 
 The implementation center is Elisp source.  The standalone reader runs
@@ -374,9 +493,9 @@ RBP/RBX/RDI/RSI/R12-R15 callee-save) are pure elisp.
 
 Deferred: aarch64 Windows (=arm64ec=) — currently x86_64 Windows only.
 
-* Status — v0.6.0 (2026-06-26)
+* Status — v1.0.1 (2026-08-26)
 
-NeLisp v0.6.0 centers the runtime in Elisp, keeps the standalone path
+NeLisp v1.0.1 centers the runtime in Elisp, keeps the standalone path
 as the primary user surface, and adds cross-platform native emit across
 5 OS×arch targets.
 
@@ -395,34 +514,41 @@ as the primary user surface, and adds cross-platform native emit across
 
 Two paths.
 
-*** Stable tag — =v0.6.0= (recommended)
+*** Stable tag — =v1.0.1= (recommended)
 
 For source users, pin the current stable tag:
 
 #+begin_src shell
 git clone https://github.com/zawatton/nelisp ~/nelisp
 cd ~/nelisp
-git checkout v0.6.0
+git checkout v1.0.1
 make standalone-reader
 make standalone-reader-test
 #+end_src
 
-For release artifacts, v0.6.0 tarballs use:
+For release artifacts, v1.0.1 tarballs use:
 
 #+begin_src text
-anvil-v0.6.0-linux-x86_64.tar.gz
-anvil-v0.6.0-macos-aarch64.tar.gz
-anvil-v0.6.0-windows-x86_64.tar.gz
+anvil-v1.0.1-linux-x86_64.tar.gz
+anvil-v1.0.1-macos-aarch64.tar.gz
+anvil-v1.0.1-windows-x86_64.tar.gz
 #+end_src
 
 =main= is the development branch.  Use it when hacking on NeLisp
-itself; pin =v0.6.0= when you want reproducible runtime behavior.
+itself; pin =v1.0.1= when you want reproducible runtime behavior.
 
 *** Prerequisites by platform
 
 The standalone-reader build is driven by host Emacs and the pure-Elisp
 AOT toolchain.  Install a normal native build environment for your
 platform, then run =make standalone-reader=.
+
+*Host Emacs 29.4 or newer is required to BUILD from source.*  CI builds
+and tests on 29.4 and 30.1, so those two are the versions actually
+verified; older Emacsen are not supported and have been reported to fail
+part-way through the build (issue #5, on Emacs 28.2).  This requirement
+applies only to building — the resulting =target/nelisp= is a standalone
+binary and needs no Emacs at run time.
 
 Tier guarantees (v2.0):
 - =linux-x86_64= — 1st-class (CI blocker, every release must pass).
@@ -490,8 +616,8 @@ iwr https://github.com/zawatton/nelisp/releases/latest/download/install-v3.ps1 -
 .\install-v3.ps1
 #+end_src
 
-Default install root: =$HOME/.local/share/anvil-v0.6.0/=.
-On Windows the default root is under =$env:LOCALAPPDATA\anvil-v0.6.0=.
+Default install root: =$HOME/.local/share/anvil-v1.0.1/=.
+On Windows the default root is under =$env:LOCALAPPDATA\anvil-v1.0.1=.
 (The =anvil-= prefix is historical packaging — the tarball *is* the
 NeLisp runtime; use =bin/nelisp= or =bin/nelisp.exe= directly.)
 Full install-to-run runbook for Linux x86_64, macOS arm64, and Windows x86_64
@@ -569,7 +695,7 @@ checkouts use the pure-Elisp standalone reader above for REPL
 development and file execution.
 
 #+begin_src shell
-nelisp --version                       # nelisp v0.6.0
+nelisp --help                          # usage; there is no --version flag
 nelisp --eval "(+ 1 2 3)"              # => 6
 nelisp --load ~/nelisp/examples/hello/hello.el
 #+end_src
@@ -661,42 +787,53 @@ directory.
 
 ** What is *not* in v1.0
 
-Said plainly so expectations are calibrated:
+Said plainly so expectations are calibrated.  This list is measured, not
+remembered -- the v0.6.0 README claimed buffers, bignums and full backquote
+were deferred when all three had already shipped, so each item below was
+checked against =target/nelisp= before being written here.
 
-- *No buffer / marker / window primitives.* NeLisp is the language
-  runtime, not the editor.  =emacs-nox= is the closest existing
-  comparison if scripting is all you need; what's different here is
-  the 624 KB standalone tarball and a runtime small enough to read
-  end-to-end.
-- Phase 8.0 evaluator is a *minimal subset* (25 special forms + 75
-  builtins): GC bridge, bignum, full backquote semantics, full
-  =save-excursion= are deferred to Phase 8.x follow-up patches.
-- Default =--no-emacs= still falls back to =emacs --batch= for cold-init
-  failures (3-year safety window).
-- Linux x86_64, macOS arm64, and Windows x86_64 native standalone CLI
-  paths are gated by platform-specific eval, reader, REPL, cache identity,
-  parallel build, and tarball smokes.
-- Linux arm64 remains best-effort.
+- *No windows or frames.*  =selected-window= and =make-frame= are absent by
+  design: NeLisp is Layer 1, the language runtime.  Display belongs to Layer 3
+  (=../nelisp-gui=).
+- *Buffers yes, markers and overlays no.*  Doc 188 landed buffers
+  (=current-buffer=, =set-buffer=, =insert=, =point=, =goto-char=,
+  =buffer-substring=, =buffer-string=, =erase-buffer=), but =make-marker=,
+  =overlay-start= and =save-excursion= are still absent.
+- *Worker heaps are not reclaimed per task.*  A Tier 3b worker's share of the
+  arena comes back at process exit, not at task end.
+- *Workers cannot write the shared globals mirror.*  Such a write signals a
+  catchable =nelisp-worker-mirror-mutation= rather than being serialised.  The
+  read path is unrestricted.
+- *Sockets are Linux-only.*  Doc 194 P6 (Windows) is blocked on Windows PE
+  import-table emission, which does not exist yet; other targets get a
+  catchable =nelisp-unsupported-primitive= from the socket primitives.
+- *Mid-form collection safepoints are =while= backedges only.*  A long-running
+  workload shaped some other way still has few collection opportunities.
+- *Linux arm64 remains best-effort.*  Linux x86_64, macOS arm64 and Windows
+  x86_64 are the gated native standalone targets.
 
-** Test status (HEAD, 2026-08-15)
+** Test status (v1.0.1, 2026-08-26)
 
-- =make test= = *4865 tests / 4519 expected / 0 unexpected / 346 skipped*
-  on the Windows host.  The skipped tests require unavailable standalone
-  primitives, platform capabilities, or platform-specific toolchains.
-- *Standalone self-host gates* (2026-06, all green, zero-Emacs):
-  =standalone-{reader,eval,reader-prelude,selfhost,selfhost-mt,parallel-compile}-test=
-  — the standalone =target/nelisp= binary self-hosts
-  the AOT compiler (recursion → native ELF → 120) and compiles N
-  units concurrently via =fork(2)= workers (4-/5-way verified 100%).
-- The previous 2026-04-29 baseline was 2452 / 2409 / 0 unexpected.  The
-  ~1.5× growth in test count reflects the new sub-systems: AOT
-  self-emission (600+ ERT), Doc 79 v7 GC, Doc 102 mirror, Doc 100/110
-  ABI / arithmetic, Doc 81 cons cluster, Doc 86/87 Tier 1+2 builtins.
-- Cross-platform standalone gates (Linux x86_64 / macOS M1 arm64 /
-  Windows x86_64) now cover native reader/eval execution, REPL command
-  handling, cache identity, parallel build, OS compatibility ERT, and
-  signed standalone tarball verification.  macOS arm64 uses ad-hoc
-  =codesign= for native Mach-O execution.
+Measured on this tree, Linux x86_64, after a clean =make standalone-reader=:
+
+- =tools/ai/nelisp-ai.sh test= = *5466 tests / 5309 expected / 0 unexpected /
+  157 skipped*.  Skipped tests need standalone primitives, platform
+  capabilities, or toolchains the running host does not have.
+- =make emacs-parity= = *19,961 checks, 0 findings* — a differential against a
+  real stock Emacs, and the single number that best describes how much of the
+  language behaves identically.
+- =tools/ai/nelisp-ai.sh verify= = *VERDICT PASS (66 gates)*; =check= =
+  *PASS (22 gates)*.
+- =make bench-aot-tco= = *0.997x* against a 0.95 floor: a TCO-rewritten
+  =defun= is as fast as the hand-written loop it replaces.
+- =make standalone-midform-gc-bounded= proves reclamation through the
+  production default boot state -- at 1M iterations, =FIRED=5 RECLAIMED=4
+  RECLAIMED_BYTES=268435456 RELEASE_FAILURES=0=.
+- CI round 30 ran all six lanes plus the new =gates= job on real runners.
+
+Scale, for context (=wc -l= on this tree): =lisp/= 234 files / 88,447 lines,
+=src/= 42 / 57,859, =scripts/= 20 / 39,799, =packages/= 212 / 55,338.  The
+standalone binary is 7.66 MB (1.77 MB gzipped) and contains no Rust.
 
 ** Key design documents
 

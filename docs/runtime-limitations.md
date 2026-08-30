@@ -107,6 +107,40 @@ Grouped A–E by impact on C-equivalence.  Each item cites a primary source.
     `--emit-runtime-call-args`).  Regression test:
     `nelisp-cfront-odd-arity-stack-arg-extern-align-e2e`.
 
+## F. Standalone Lisp raw-byte characters
+
+- **Unibyte strings are represented and consumed as raw bytes, but a raw byte
+  128–255 still cannot be represented as a character inside a multibyte
+  string.**  `concat`, `format`, `vconcat`, and `append` signal
+  `nelisp-raw-byte-unrepresentable` when such a conversion would be required;
+  `string-to-multibyte` signals the same condition.  ASCII-only unibyte input
+  remains freely mixable.  This is deliberate: silently treating a raw byte
+  buffer as UTF-8 invents characters and was the pre-Doc-200 behaviour.
+  Stock Emacs 30.1 represents such a byte `B` as raw-byte character
+  `#x3FFF00 + B`; measured examples are
+  `(append (concat (unibyte-string 200) "あ") nil)` →
+  `(4194248 12354)`, `(append (string-to-multibyte (unibyte-string 200))
+  nil)` → `(4194248)`, `(append "\310あ" nil)` → `(4194248 12354)`, and
+  `(string-bytes (concat (unibyte-string 200) "あ"))` → `5`.  NeLisp has no
+  representation for `4194248`, so signalling is the explicit scope refusal,
+  not an approximation.  Primary implementation sources:
+  `scripts/nelisp-standalone-build.el` (`bf_raw_byte_unrepresentable`, the
+  `concat`/`format`/`string-to-multibyte` builtin arms) and
+  `docs/design/200-unibyte-string-representation.org` (§4 implementation
+  report).
+- **String `aset` follows the stricter Emacs 31.1 fixed-width rule and
+  deliberately differs from the Emacs 30.1 parity host in two cases.**
+  Unibyte strings accept only values 0–255.  Multibyte strings mutate only
+  when both the replaced and replacement characters are ASCII, keeping the
+  exact Sexp tag and `string-bytes` unchanged.  Emacs 30.1 instead turns a
+  copied `"あ"` into `"a"` and a copied `"ab"` into `"あb"`; NeLisp signals
+  and leaves each string unchanged, matching the 31.1 rule quoted in Doc 200
+  §2.  Primary implementation and executable assertions:
+  `scripts/nelisp-standalone-build.el` (`bf_aset_unibyte_string`,
+  `bf_aset_multibyte_string`),
+  `lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el`, and
+  `test/nelisp-doc200-unibyte-repr-test.el`.
+
 ---
 
 ## Out of scope here (packaging / platform reach, not C-equivalence)

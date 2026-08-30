@@ -1,0 +1,146 @@
+# The files that may touch raw memory (Doc 170 sec 4.3, "Rust の safe core /
+# unsafe kernel と同じ構造").
+#
+# Everything under lisp/ and scripts/ that is NOT matched here must contain
+# no call to a `nl-safe-unsafe-primitives' name at all -- quoted or not.
+# That check has no baseline to raise: raw memory leaving the kernel is the
+# event worth stopping, and it is a yes/no question rather than a number to
+# argue about.
+#
+# This list was derived from the tree rather than declared over it.  Measured
+# 2026-08-19: of the 253 files scanned, exactly 87 contain an unsafe call and
+# 166 contain none, so the safe-core/unsafe-kernel split Doc 170 cites from
+# Rust already existed here -- nobody had written it down, and nothing
+# enforced it.  The patterns below cover all 87 with nothing left over.
+#
+# `lisp/nelisp-cc-*.el' is deliberately a pattern and not 81 filenames: those
+# units ARE the code generators, a new one is a generator by construction,
+# and a list that churns on every rename is a list people stop reading.  The
+# cost is that it grants 194 files what 87 use, which is why the count below
+# is ratcheted -- a new file that starts touching raw memory moves it and has
+# to be acknowledged, even though the pattern already covered the name.
+lisp/nelisp-cc-*.el
+lisp/nelisp-aot-compiler.el
+# Doc 142 section 6.4's in-process `.neln' loader.  A kernel member by
+# construction rather than by exception: its whole job is to mmap a page,
+# write machine code into it with `ptr-write-u8', patch relocations and
+# enter it through `ptr-call'.  No version of that work avoids raw memory,
+# and hiding the calls behind a wrapper would move the same 28 of them one
+# file over while making them harder to audit.
+lisp/nelisp-native-load.el
+lisp/nelisp-stdlib-os-int-helpers.el
+scripts/nelisp-standalone-build.el
+scripts/nelisp-flat-arena-probe.el
+scripts/nelisp-macho-acceptance.el
+scripts/nelisp-macos-build.el
+
+# Files inside the kernel that actually contain an unsafe call.  Raise it in
+# the commit that adds one, and say there what the new file does with raw
+# memory.  Lower it whenever the ratchet notice says you can.
+kernel-files 90
+
+# `pinned-kernel-touch NAME' pins the 88 kernel files that actually touch
+# raw memory today (`unsafe-call' or a quoted form) -- one line per file,
+# generated from the clean tree.  Added 2026-08-21 alongside the same fix
+# to ns-gate and parity-coverage: `kernel-files' above is a COUNT, and a
+# count cannot see one file's calls disappear while a DIFFERENT file's
+# first call appears, net unchanged.  Losing a pinned line is still green
+# (a file that stopped touching raw memory); gaining raw-memory access in a
+# file that was neither pinned nor already counted fails and names it,
+# whatever `kernel-files' does.  Regenerate from a clean tree by scanning
+# for files matching the patterns above where `unsafe-call' + quoted-unsafe
+# findings are non-zero; do not hand-edit into drift from the real scan.
+pinned-kernel-touch lisp/nelisp-aot-compiler.el
+pinned-kernel-touch lisp/nelisp-cc-alloc-dealloc.el
+pinned-kernel-touch lisp/nelisp-cc-alloc-mem.el
+pinned-kernel-touch lisp/nelisp-cc-atomic-raw-mem.el
+pinned-kernel-touch lisp/nelisp-cc-bi-emit-value.el
+pinned-kernel-touch lisp/nelisp-cc-bi-getenv.el
+pinned-kernel-touch lisp/nelisp-cc-bi-meta-dispatch-loop.el
+pinned-kernel-touch lisp/nelisp-cc-bi-meta-walk.el
+pinned-kernel-touch lisp/nelisp-cc-bi-nl-write-file.el
+pinned-kernel-touch lisp/nelisp-cc-bi-quit-flag.el
+pinned-kernel-touch lisp/nelisp-cc-bi-syscall-stat-mtime.el
+pinned-kernel-touch lisp/nelisp-cc-bi-tty-raw.el
+pinned-kernel-touch lisp/nelisp-cc-cons-construct.el
+pinned-kernel-touch lisp/nelisp-cc-cstr-helpers.el
+pinned-kernel-touch lisp/nelisp-cc-env-bind-local.el
+pinned-kernel-touch lisp/nelisp-cc-env-install-empty.el
+pinned-kernel-touch lisp/nelisp-cc-eval-inner.el
+pinned-kernel-touch lisp/nelisp-cc-eval-is-truthy.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-call1.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-bootstrap.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-capture-lexical.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-combiner-apply.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-combiner-arglist.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-combiner-cons.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-combiner-entry.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-bind.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-frame.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-logic.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-simple.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-char-table.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-mut-str-push.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el
+pinned-kernel-touch lisp/nelisp-cc-evalport-str-to-float.el
+pinned-kernel-touch lisp/nelisp-cc-frame-ensure-capacity.el
+pinned-kernel-touch lisp/nelisp-cc-frame-push.el
+pinned-kernel-touch lisp/nelisp-cc-jit-access-aref-bool-vector-inner.el
+pinned-kernel-touch lisp/nelisp-cc-jit-access-aset-bool-vector-inner.el
+pinned-kernel-touch lisp/nelisp-cc-jit-alias.el
+pinned-kernel-touch lisp/nelisp-cc-jit-bool-vector-len.el
+pinned-kernel-touch lisp/nelisp-cc-jit-cons-car-ptr.el
+pinned-kernel-touch lisp/nelisp-cc-jit-cons-cdr-ptr.el
+pinned-kernel-touch lisp/nelisp-cc-jit-downcase.el
+pinned-kernel-touch lisp/nelisp-cc-jit-elt.el
+pinned-kernel-touch lisp/nelisp-cc-jit-make-symbol.el
+pinned-kernel-touch lisp/nelisp-cc-jit-mut-str-set-codepoint.el
+pinned-kernel-touch lisp/nelisp-cc-jit-regex.el
+pinned-kernel-touch lisp/nelisp-cc-jit-secure-hash-ext.el
+pinned-kernel-touch lisp/nelisp-cc-jit-secure-hash.el
+pinned-kernel-touch lisp/nelisp-cc-jit-split-by-non-alnum.el
+pinned-kernel-touch lisp/nelisp-cc-jit-str-codepoint-at.el
+pinned-kernel-touch lisp/nelisp-cc-jit-sxhash.el
+pinned-kernel-touch lisp/nelisp-cc-jit-symbol-name.el
+pinned-kernel-touch lisp/nelisp-cc-jit-syscall-call.el
+pinned-kernel-touch lisp/nelisp-cc-jit-type-of.el
+pinned-kernel-touch lisp/nelisp-cc-jit-upcase.el
+pinned-kernel-touch lisp/nelisp-cc-meta-driver.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-bucket-prepend.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-set-constant-or-insert.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-set-function-or-insert.el
+pinned-kernel-touch lisp/nelisp-cc-mirror-set-value-or-insert.el
+pinned-kernel-touch lisp/nelisp-cc-nlcell-alloc.el
+pinned-kernel-touch lisp/nelisp-cc-nlcell-get-value.el
+pinned-kernel-touch lisp/nelisp-cc-nlconsbox-alloc.el
+pinned-kernel-touch lisp/nelisp-cc-nlrecord-alloc.el
+pinned-kernel-touch lisp/nelisp-cc-nlrecord-set-slot.el
+pinned-kernel-touch lisp/nelisp-cc-nlrecord-slot-ptr.el
+pinned-kernel-touch lisp/nelisp-cc-nlstr-direct-ops.el
+pinned-kernel-touch lisp/nelisp-cc-nlstr-utf8-direct.el
+pinned-kernel-touch lisp/nelisp-cc-nlvector-alloc.el
+pinned-kernel-touch lisp/nelisp-cc-nlvector-set-slot.el
+pinned-kernel-touch lisp/nelisp-cc-nlvector-slot-ptr.el
+pinned-kernel-touch lisp/nelisp-cc-rc-kind.el
+pinned-kernel-touch lisp/nelisp-cc-rc-payload-ptr.el
+pinned-kernel-touch lisp/nelisp-cc-rc-strong-count.el
+pinned-kernel-touch lisp/nelisp-cc-reader-parser.el
+pinned-kernel-touch lisp/nelisp-cc-rootstack.el
+pinned-kernel-touch lisp/nelisp-cc-sexp-clone-into.el
+pinned-kernel-touch lisp/nelisp-cc-sexp-fmt.el
+pinned-kernel-touch lisp/nelisp-cc-sf-lambda.el
+pinned-kernel-touch lisp/nelisp-cc-sf-unwind-protect.el
+pinned-kernel-touch lisp/nelisp-cc-sf-while.el
+pinned-kernel-touch lisp/nelisp-cc-tty-read-byte.el
+pinned-kernel-touch lisp/nelisp-cc-val-load.el
+# Doc 142 section 6.4's in-process `.neln' loader: mmaps a page, writes
+# machine code into it, patches relocations, and enters it via `ptr-call'.
+pinned-kernel-touch lisp/nelisp-native-load.el
+# The AOT evalport's `calln' provider: reads and writes the boundary Sexp
+# slots the compiled call convention passes arguments and results through.
+pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-calln.el
+pinned-kernel-touch lisp/nelisp-stdlib-os-int-helpers.el
+pinned-kernel-touch scripts/nelisp-flat-arena-probe.el
+pinned-kernel-touch scripts/nelisp-macho-acceptance.el
+pinned-kernel-touch scripts/nelisp-macos-build.el
+pinned-kernel-touch scripts/nelisp-standalone-build.el

@@ -69,6 +69,16 @@
            (mut-str-push-byte out (ptr-read-u8 src_ptr idx)))
          (nl_jit_downcase_walk src_ptr src_len out (+ idx 1)))))
 
+    (defun nl_jit_downcase_byte_len (arg)
+      (if (or (= (sexp-tag arg) 6) (= (sexp-tag arg) 15))
+          (ptr-read-u64 (ptr-read-u64 arg 8) 16)
+        (ptr-read-u64 arg 24)))
+
+    (defun nl_jit_downcase_make_builder (arg out)
+      (if (or (= (sexp-tag arg) 14) (= (sexp-tag arg) 15))
+          (nl_alloc_unibyte_mut_str 0 out)
+        (mut-str-make-empty out 0)))
+
     ;; ---- public trampoline --------------------------------------------------
     ;;
     ;; Signature: (arg: *const Sexp, out: *mut Sexp) -> i64
@@ -92,12 +102,14 @@
              0)
           (if (or (= (sexp-tag arg) 4)
                   (= (sexp-tag arg) 5)
-                  (= (sexp-tag arg) 6))
+                  (= (sexp-tag arg) 6)
+                  (= (sexp-tag arg) 14)
+                  (= (sexp-tag arg) 15))
               ;; Str / MutStr / Symbol → walk bytes with ASCII fold
               (and
-               (mut-str-make-empty out 0)
+               (nl_jit_downcase_make_builder arg out)
                (nl_jit_downcase_walk (str-bytes-ptr arg)
-                                     (str-len arg)
+                                     (nl_jit_downcase_byte_len arg)
                                      out
                                      0)
                (mut-str-finalize out out)

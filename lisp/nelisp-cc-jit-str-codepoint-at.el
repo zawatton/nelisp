@@ -90,7 +90,8 @@
       ;; Returns: i64 = 0 on OK, 1 on ERR.
       (if (< idx 0)
           1
-        (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 6))
+        (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 6)
+                (= (sexp-tag arg) 14) (= (sexp-tag arg) 15))
             (nl_jit_str_codepoint_at_walk arg 0 idx out)
           1))))
   "AOT source for the §120.B `nl_jit_str_codepoint_at' swap.

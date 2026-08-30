@@ -281,7 +281,17 @@ time and potentially confuse the user about the origin)."
       (error
        (message "nelisp-gc: post-gc-hook error: %S" err)))))
 
-(add-hook 'post-gc-hook #'nelisp-gc--post-gc-handler)
+;; `post-gc-hook' is a hook of the HOST's garbage collector, so this line
+;; only means anything when there is a host.  The standalone runtime has no
+;; `post-gc-hook' and no `add-hook' either -- it collects its own heap -- and
+;; the bare call aborted the load of this file there, which took
+;; `nelisp-cc-runtime' and `nelisp-aot-compiler' with it and left the native
+;; compiler reported unavailable.  Same reading as the `url-parse' requires
+;; made optional in cd64c0bd7: absence is the expected case off-host, and the
+;; feature it buys is one a hostless runtime cannot use.  It is the only
+;; `add-hook' call in lisp/ and src/ (grep, 2026-08-19).
+(when (fboundp 'add-hook)
+  (add-hook 'post-gc-hook #'nelisp-gc--post-gc-handler))
 
 ;;; Heap introspection (Phase 3c.4) -----------------------------------
 

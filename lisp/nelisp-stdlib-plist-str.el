@@ -1,73 +1,73 @@
 ;;; nelisp-stdlib-plist-str.el --- Sweep 9 G4 plist + simple string  -*- lexical-binding: t; -*-
 
+(unless (fboundp 'nelisp--check-plist)
+  (defun nelisp--check-plist (x)
+    (unless (listp x) (signal 'wrong-type-argument (list 'plistp x)))
+    x))
+
 (defun plist-member (plist key &optional predicate)
-  (let ((cur plist)
-        (found nil))
+  (nelisp--check-plist plist)
+  (let ((cur plist) (found nil))
     (if predicate
         (while (and cur (not found))
-          (if (funcall predicate (car cur) key)
-              (setq found cur)
+          (if (funcall predicate (car cur) key) (setq found cur)
             (setq cur (cdr (cdr cur)))))
       (while (and cur (not found))
-        (if (eq (car cur) key)
-            (setq found cur)
+        (if (eq (car cur) key) (setq found cur)
           (setq cur (cdr (cdr cur))))))
     found))
 
 (defun plist-get (plist key &optional predicate)
-  (let ((cur plist)
-        (found nil)
-        (value nil))
+  ;; Emacs's `plist-get' ANSWERS NIL for a malformed plist, while
+  ;; `plist-member' and `plist-put' signal `plistp'.  Checking all three "for
+  ;; consistency" would be consistent with each other and wrong against
+  ;; Emacs.  The early return is needed because the walk calls `car', and
+  ;; `car' signals `listp' now -- so leniency has to be explicit rather than
+  ;; inherited from a primitive that used to answer nil for anything.
+  (unless (listp plist) (setq plist nil))
+  (let ((cur plist) (found nil) (value nil))
     (if predicate
         (while (and cur (not found))
           (if (funcall predicate (car cur) key)
-              (progn
-                (setq found t)
-                (setq value (car (cdr cur))))
+              (progn (setq found t) (setq value (car (cdr cur))))
             (setq cur (cdr (cdr cur)))))
       (while (and cur (not found))
         (if (eq (car cur) key)
-            (progn
-              (setq found t)
-              (setq value (car (cdr cur))))
+            (progn (setq found t) (setq value (car (cdr cur))))
           (setq cur (cdr (cdr cur))))))
     value))
 
 (defun plist-put (plist key value &optional predicate)
-  (let ((cur plist)
-        (tail nil))
+  (nelisp--check-plist plist)
+  (let ((cur plist) (tail nil))
     (if predicate
         (while (and cur (not tail))
-          (if (funcall predicate (car cur) key)
-              (setq tail cur)
+          (if (funcall predicate (car cur) key) (setq tail cur)
             (setq cur (cdr (cdr cur)))))
       (while (and cur (not tail))
-        (if (eq (car cur) key)
-            (setq tail cur)
+        (if (eq (car cur) key) (setq tail cur)
           (setq cur (cdr (cdr cur))))))
-    (if tail
-        (progn (setcar (cdr tail) value) plist)
-      ;; absent: append "key value" by walking to the end
-      (if (null plist)
-          (cons key (cons value nil))
-        (let ((end plist))
-          (while (cdr (cdr end))
-            (setq end (cdr (cdr end))))
-          (setcdr (cdr end) (cons key (cons value nil)))
-          plist)))))
+    (if tail (progn (setcar (cdr tail) value) plist)
+      (if (null plist) (cons key (cons value nil))
+	(let ((end plist))
+	  (while (cdr (cdr end)) (setq end (cdr (cdr end))))
+	  (setcdr (cdr end) (cons key (cons value nil))) plist)))))
 
-(defun string-empty-p (s)
-  (= (length s) 0))
+;; Kept in step with scripts/nelisp-stdlib-prelude.el, the copy the
+;; standalone runs; `make ns-gate' reports any drift.
+(defun string-empty-p (s) (string-equal s ""))
 
-;; Rust-min batch 6s (2026-05-06): `make-string' migrated from Rust
-;; to elisp.  The previous `bi_make_string' (~22 LOC) was mostly
-;; argument validation (non-negative LEN, valid char codepoint)
-;; wrapped around a 1-line `Sexp::mut_str(c.to_string().repeat(n))'.
-;; Migration moves the validation + arity dispatch to elisp; the
-;; "build a fresh `Sexp::MutStr' of N copies of CH" sliver remains
-;; in Rust as `nelisp--make-mut-string' so that callers like
-;; `emacs-redisplay.el' which `aset' into the result keep their
-;; mutable-string contract.
+;; ---- macroexpand (Doc 47 self-host / compiler frontend) ----
+;;
+;; `defmacro' stores a macro as the function value `(macro CLOSURE)' (= a
+;; two-element list: car `macro', cadr the macro CLOSURE).  `nelisp-aot-
+;; compiler--preprocess-source' calls `(macroexpand FORM)' on every form it
+;; does not structurally recognise, relying on (equal expanded form) to detect
+;; "no expansion happened".  These reproduce host Emacs's contract:
+;;   macroexpand-1  expands at most ONE level.
+;;   macroexpand    expands repeatedly until the head is no longer a macro.
+;; The macro CLOSURE is applied to FORM's UNEVALUATED args (= (cdr FORM)); the
+;; result is the expansion, which is NOT evaluated.
 (defun make-string (n ch &optional _multibyte)
   "Return a fresh string of N chars all set to CH (= int codepoint).
 Result is mutable so callers may `aset' into it.  MULTIBYTE arg
@@ -457,15 +457,23 @@ Width, left-justify (-), zero-pad (0), sign (+/space) and string precision
 ;; the GNU Emacs regex meta-charset.  Migrated from build-tool/src/
 ;; eval/builtins.rs `bi_regexp_quote'.
 (defun regexp-quote (s)
+  ;; Emacs escapes exactly these eight: $ * + . ? [ \\ ^ -- the characters
+  ;; that ARE special in its regexp syntax.  This escaped six more, and five
+  ;; of them made things worse rather than merely noisier: in Emacs regexps
+  ;; ( ) { } | are LITERAL, and the constructs are the backslashed forms, so
+  ;; escaping a literal `(' turns it into a group opener.  `(regexp-quote
+  ;; "(a)")' produced "\\(a\\)", which is a capturing group matching "a" --
+  ;; the opposite of quoting.  Same for | becoming alternation and {} becoming
+  ;; a repetition count.  The sixth, ], Emacs leaves alone; \\] is harmless but
+  ;; is not what Emacs returns, so a caller comparing quoted strings misses.
+  ;; Measured 2026-08-19 against Emacs 30.1 over all 128 ASCII codes.
   (let ((out nil)
         (i 0)
         (n (length s)))
     (while (< i n)
       (let ((ch (aref s i)))
         (when (or (eq ch ?.) (eq ch ?*) (eq ch ?+) (eq ch ??)
-                  (eq ch ?\[) (eq ch ?\]) (eq ch ?^) (eq ch ?$)
-                  (eq ch ?\\) (eq ch ?\() (eq ch ?\))
-                  (eq ch ?\{) (eq ch ?\}) (eq ch ?|))
+                  (eq ch ?\[) (eq ch ?^) (eq ch ?$) (eq ch ?\\))
           (setq out (cons ?\\ out)))
         (setq out (cons ch out)))
       (setq i (1+ i)))
@@ -474,9 +482,16 @@ Width, left-justify (-), zero-pad (0), sign (+/space) and string precision
 ;; Rust-min (2026-05-06): file-name-* — pure path string slicing.
 ;; Migrated from build-tool/src/eval/builtins.rs `bi_file_name_*'.
 
+;; Byte-identical to the prelude copy so `make ns-gate' polices the two.
+(unless (fboundp 'nelisp--check-string)
+  (defun nelisp--check-string (x)
+    (unless (stringp x) (signal 'wrong-type-argument (list 'stringp x)))
+    x))
+
 (defun file-name-directory (path)
   "Return the directory part of PATH, or nil if PATH has no slash.
 Result keeps the trailing slash."
+  (nelisp--check-string path)
   (let ((idx -1)
         (i 0)
         (n (length path)))
@@ -489,41 +504,41 @@ Result keeps the trailing slash."
       (substring path 0 (1+ idx)))))
 
 (defun file-name-nondirectory (path)
-  "Return the non-directory part of PATH (= last `/'-delimited component)."
-  (let ((idx -1)
-        (i 0)
-        (n (length path)))
-    (while (< i n)
-      (when (eq (aref path i) ?/)
-        (setq idx i))
-      (setq i (1+ i)))
-    (if (< idx 0)
-        path
-      (substring path (1+ idx)))))
+  (nelisp--check-string path)
+  (let ((idx -1) (i 0) (n (length path)))
+    (while (< i n) (when (eq (aref path i) ?/) (setq idx i)) (setq i (1+ i)))
+    (if (< idx 0) path (substring path (1+ idx)))))
 
 (defun file-name-as-directory (path)
   "Return PATH with a trailing `/' appended if not already present."
+  (nelisp--check-string path)
   (cond
-   ((= (length path) 0) "/")
+   ((= (length path) 0) "./")
    ((eq (aref path (1- (length path))) ?/) path)
    (t (concat path "/"))))
-
+;; Emacs strips the whole run of trailing slashes, not one of them:
+;; "a//" is "a".  Stripping exactly one left "a/", which still names a
+;; directory and so defeats the point of calling this at all.  A name that
+;; is nothing but slashes keeps one, matching Emacs on "/" and "///".
 (defun directory-file-name (path)
-  "Return PATH with a single trailing `/' stripped (= keeps `/' for root)."
+  (nelisp--check-string path)
   (let ((n (length path)))
-    (cond
-     ((<= n 1) path)
-     ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
-     (t path))))
-
-;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `string-lessp' was
-;; never an explicit builtin in NeLisp (= no `bi_string_lessp'); host
-;; emacs has it as a C primitive.  Adding it as a thin elisp wrapper
-;; over `compare-strings' (already migrated 2026-05-06) lets the new
-;; elisp `directory-files' sort case-sensitively without a new
-;; primitive.  Returns t when STR1 is lexicographically less than
-;; STR2 by ASCII codepoint (= same semantic as host emacs's
-;; `string-lessp', sufficient for Latin-1 / ASCII filenames).
+    (while (if (> n 1) (eq (aref path (1- n)) ?/) nil)
+      (setq n (1- n)))
+    (if (= n (length path)) path (substring path 0 n))))
+;; Rust-min batch 7d (2026-05-07, Doc 50 stage 2): `expand-file-name'
+;; and `file-truename' migrated from Rust to elisp.  expand-file-name
+;; is pure path arithmetic + a `default-directory' lookup; it needs
+;; ZERO new primitives (= file-name-as-directory + concat + aref are
+;; all elisp-side).  file-truename adds 1 syscall primitive
+;; (`nelisp--syscall-canonicalize' = std::fs::canonicalize wrapper)
+;; for the symlink-resolve sliver, with elisp fall-back-on-error
+;; matching the prior Rust `unwrap_or(full)' behaviour.
+;;
+;; The Rust impl had a `current_dir()' fallback for the case where
+;; both BASE arg and `default-directory' were nil; NeLisp always
+;; sets `default-directory' at startup so that fallback never fired
+;; in practice and is dropped here.
 (defun string-lessp (str1 str2)
   "Return t if STR1 sorts before STR2 lexicographically by codepoint."
   (let ((r (compare-strings str1 0 nil str2 0 nil)))
@@ -676,24 +691,6 @@ NEEDLE longer than HAYSTACK returns nil."
                   ((symbolp b) (symbol-name b))
                   (t (signal 'wrong-type-argument (list 'stringp b))))))
     (equal sa sb)))
-
-;; Rust-min batch 6n (2026-05-06): `split-string' migrated from Rust
-;; to elisp.  The previous `bi_split_string' (~25 LOC) implemented
-;; the literal-separator subset of host Emacs's contract — when
-;; SEPARATORS is a non-empty string, split on each non-overlapping
-;; occurrence; otherwise split on runs of whitespace and drop
-;; leading/trailing empties (matching Rust's `str::split_whitespace').
-;; The OMIT-NULLS / TRIM args are accepted for API parity but
-;; *ignored* by the Rust impl too — preserved here for behavioural
-;; bug-for-bug compatibility (= callers that pass `t' for omit-nulls
-;; have always silently retained empty fields on NeLisp; raising the
-;; coverage to "real" omit-nulls is a separate batch).
-;;
-;; Whitespace classification uses `nelisp-stdlib--whitespace-p'
-;; (ASCII space/tab/newline/CR/FF/VT) — slightly narrower than
-;; Rust's `char::is_whitespace' which covers Unicode whitespace.
-;; In practice all extant NeLisp / nelisp-emacs callers split on
-;; ASCII separators so the diff is invisible.
 (defun nelisp--split-on-literal (s sep)
   "Split S on each non-overlapping literal occurrence of SEP.
 Returns a list of strings.  SEP must be non-empty."
@@ -836,39 +833,17 @@ Non-letter chars pass through unchanged."
 ;; void-function so callers fail fast instead of silently no-op.
 
 (defun make-bool-vector (length init)
-  "Return a vector of LENGTH bool entries initialised to (and INIT t).
-Implementation note: bool-vector is a regular vector here; see the
-file commentary for migration history.  Pre-converts INIT to a
-proper t/nil so that downstream `bool-vector-p' checks pass."
-  (make-vector length (and init t)))
+    (unless (and (integerp length) (>= length 0))
+      (signal 'wrong-type-argument (list 'wholenump length)))
+    (make-vector length (and init t)))
 
 (defun bool-vector (&rest args)
-  "Variadic constructor: each ARG is coerced to t/nil and stored in a
-fresh vector."
-  (let* ((n (length args))
-         (out (make-vector n nil))
-         (i 0)
-         (tail args))
-    (while tail
-      (aset out i (and (car tail) t))
-      (setq i (1+ i))
-      (setq tail (cdr tail)))
-    out))
+    "Bool vectors are plain vectors of t/nil in this runtime (Doc 22)."
+    (apply #'vector (mapcar (lambda (x) (and x t)) args)))
 
-(defun bool-vector-p (object)
-  "Return non-nil when OBJECT is a vector all of whose elements are
-t or nil (= bool-vector contract).  An empty vector counts as a
-bool-vector."
-  (and (vectorp object)
-       (let ((i 0)
-             (n (length object))
-             (ok t))
-         (while (and ok (< i n))
-           (let ((v (aref object i)))
-             (unless (or (eq v t) (null v))
-               (setq ok nil)))
-           (setq i (1+ i)))
-         ok)))
+(defun bool-vector-p (_x)
+    "Always nil: bool vectors are plain vectors here (Doc 22)."
+    nil)
 
 ;; Rust-min (2026-05-06 batch 5a): string-to-number — pure-elisp parse
 ;; (= no new Rust primitives required, since NeLisp's mixed-mode
@@ -929,6 +904,7 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                    (eq (aref s i) ?E)))
           (let ((frac-num 0)
                 (frac-denom 1)
+                (frac-digits 0)
                 (exp-sign 1)
                 (exp-val 0)
                 (has-exp nil))
@@ -942,6 +918,7 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                      (d
                       (setq frac-num (+ (* frac-num 10) d))
                       (setq frac-denom (* frac-denom 10))
+                      (setq frac-digits (1+ frac-digits))
                       (setq i (1+ i)))
                      (t (setq continue nil)))))))
             ;; Optional exponent.
@@ -964,6 +941,12 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                       (setq has-exp t))
                      (t (setq continue nil)))))))
             ;; Compute value: (sign * (int-part + frac-num/frac-denom)) * 10^exp.
+            ;; A trailing `.' with nothing after it does NOT make a float:
+            ;; Emacs reads "1." as the integer 1 and "-2." as -2.  Entering
+            ;; the float branch on the `.' alone returned 1.0, which is a
+            ;; different type flowing into whatever the caller does next.
+            (if (and (= frac-digits 0) (not has-exp))
+                (* sign int-part)
             (let* ((mag (+ int-part (/ frac-num (* frac-denom 1.0))))
                    (val (* sign mag)))
               (when has-exp
@@ -972,7 +955,7 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                   (while (> k 0)
                     (setq val (* val mul))
                     (setq k (1- k)))))
-              val)))
+              val))))
          ;; Pure integer.
          ((> int-digits 0) (* sign int-part))
          (t 0))))))
@@ -1070,15 +1053,18 @@ may be modified.  Callers depending on input identity should
    (t
     (signal 'wrong-type-argument (list 'sequencep seq)))))
 
+;; Kept byte-for-byte in step with the copy in
+;; scripts/nelisp-stdlib-prelude.el, which is the one baked into the
+;; standalone.  `make ns-gate' reports these as an ns-collision-divergent
+;; the moment they differ, and it did: fixing only the prelude produced
+;; exactly the drift that made this file's `split-string' and `sort' stale
+;; enough to send a review chasing code nothing runs.
 (defun mapconcat (fn seq &optional sep)
-  "Apply FN to each element of SEQ; concat the resulting strings,
-joined by SEP (default empty string).  SEQ is iterated as a list
-(matching the Rust builtin's MVP contract — vector / string SEQ
-forms are out of scope)."
-  (let ((out "")
-        (first t)
-        (joiner (or sep ""))
-        (tail seq))
+  (let* ((items (if (if (null seq) 1 (consp seq)) seq (append seq nil)))
+         (out "")
+         (first t)
+         (joiner (or sep ""))
+         (tail items))
     (while tail
       (unless first
         (setq out (concat out joiner)))

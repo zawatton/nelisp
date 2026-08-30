@@ -66,9 +66,9 @@
 
     ;; ---- Tag / length helpers -----------------------------------------------
 
-    ;; nl_smp_is_str_tag: 1 if tag is an acceptable string tag (4/5/6), else 0.
+    ;; nl_smp_is_str_tag: 1 for Symbol or any string representation.
     (defun nl_smp_is_str_tag (tag)
-      (if (or (= tag 4) (= tag 5) (= tag 6)) 1 0))
+      (if (or (= tag 4) (= tag 5) (= tag 6) (= tag 14) (= tag 15)) 1 0))
 
     ;; nl_smp_str_len: unified byte-length dispatch.
     ;;   tag 4 (Symbol) or 5 (Str) → str-len
@@ -76,9 +76,10 @@
     ;;   other                      → -1 (error sentinel)
     (defun nl_smp_str_len (sptr)
       (if (or (= (sexp-tag sptr) 5)
+              (= (sexp-tag sptr) 14)
               (= (sexp-tag sptr) 4))
           (str-len sptr)
-        (if (= (sexp-tag sptr) 6)
+        (if (or (= (sexp-tag sptr) 6) (= (sexp-tag sptr) 15))
             (mut-str-len sptr)
           -1)))
 

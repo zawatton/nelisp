@@ -480,7 +480,13 @@ and NeLisp-only defuns see (KEY VALUE) — not the raw host callee."
                    (nelisp--prn-vector [1 "x"] t)
                    (nelisp--prn-to-string '(quote abc) t))))
           (should (equal got
-                         '("a\\\"b\\\\c\\n"
+                         ;; A newline passes through VERBATIM: Emacs `prin1'
+                         ;; escapes only `"' and `\\', measured on 30.1.  This
+                         ;; expected "a\\\"b\\\\c\\n", which is what the printer
+                         ;; produced before it was brought in line -- and the
+                         ;; test asserting the old behaviour is how the change
+                         ;; announced itself.
+                         '("a\\\"b\\\\c\n"
                            "1 \"x\" . y"
                            "[1 \"x\"]"
                            "'abc")))

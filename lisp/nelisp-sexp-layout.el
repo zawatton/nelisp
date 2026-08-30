@@ -8,21 +8,17 @@
 
 ;;; Commentary:
 
-;; Doc 100 v2 §100.B frozen byte-layout constants for the Rust `Sexp'
-;; enum.  The AOT compiler reads these when emitting direct-access
-;; instructions against Sexp values held in caller-provided register
-;; pointers.
+;; Frozen byte-layout constants for the standalone `Sexp' value.  The AOT
+;; compiler reads these when emitting direct-access instructions against
+;; Sexp values held in caller-provided slots.
 ;;
-;; The canonical spec lives in `docs/arch/sexp-abi.md'.  Rust-side
-;; assertions in `build-tool/src/eval/sexp_abi_assert.rs' fail
-;; compilation on drift; `make sexp-abi-check' diffs the two sides at
-;; CI time.  AOT is the ABI's third consumer — keep these
-;; constants in lockstep with both the doc and the assertion module.
+;; The canonical spec lives in `docs/arch/sexp-abi.md'.  Keep these constants
+;; and `test/nelisp-sexp-layout-test.el' in lockstep with that document.
 
 ;;; Code:
 
 ;; ---------------------------------------------------------------------------
-;; Variant tag bytes (= the `#[repr(C, u8)]' discriminant at offset 0).
+;; Variant tag bytes (= the discriminant at offset 0).
 ;; ---------------------------------------------------------------------------
 
 (defconst nelisp-sexp--tag-nil           0 "Sexp::Nil tag byte.")
@@ -38,6 +34,27 @@
 (defconst nelisp-sexp--tag-bool-vector  10 "Sexp::BoolVector(...) tag byte.")
 (defconst nelisp-sexp--tag-cell         11 "Sexp::Cell(...) tag byte.")
 (defconst nelisp-sexp--tag-record       12 "Sexp::Record(...) tag byte.")
+(defconst nelisp-sexp--tag-bignum       13 "Sexp::Bignum(...) tag byte.")
+(defconst nelisp-sexp--tag-unibyte-str  14
+  "Sexp::UnibyteStr tag byte.
+Its slot layout is identical to `nelisp-sexp--tag-str': capacity at +8,
+byte pointer at +16, and byte length at +24.  The payload is raw bytes,
+so its character count is always identical to its byte count.")
+(defconst nelisp-sexp--tag-unibyte-mut-str 15
+  "Sexp::UnibyteMutStr tag byte.
+Its slot layout is identical to `nelisp-sexp--tag-mut-str': an NlStr pointer
+at +8, with capacity, byte pointer, byte length, and refcount at NlStr offsets
+0, 8, 16, and 24.  The payload is raw bytes, so its character count is always
+identical to its byte count.")
+
+;; Public spellings for cross-file emitters.  The historical 0..13 constants
+;; predate the namespace boundary and use private names across files; new ABI
+;; entries do not need to extend that conceded private-name escape surface.
+(defconst nelisp-sexp-layout-tag-unibyte-str nelisp-sexp--tag-unibyte-str
+  "Public Sexp::UnibyteStr tag byte for compiler and tooling consumers.")
+(defconst nelisp-sexp-layout-tag-unibyte-mut-str
+  nelisp-sexp--tag-unibyte-mut-str
+  "Public Sexp::UnibyteMutStr tag byte for compiler and tooling consumers.")
 
 ;; ---------------------------------------------------------------------------
 ;; Field offsets within a Sexp slot.
@@ -108,34 +125,22 @@ Doc 147 Phase 3: car WORD (8) + cdr WORD (8) + refcount (8) = 24 (was 72
 when car / cdr were inline 32B Sexps).")
 
 ;; ---------------------------------------------------------------------------
-;; Doc 101 §101.A — Rust `String' header field offsets within a Sexp::Symbol
-;; or Sexp::Str slot.  The `String' header is laid out as
-;; `(ptr, capacity, length)' at offsets `(8, 16, 24)' of the Sexp slot
-;; (= 0, 8, 16 within the 24-byte `String' header itself).
-;;
-;; NOTE: Rust's `String' layout is stdlib-internal and not formally
-;; frozen across compiler versions.  The repo pins the toolchain via
-;; `rust-toolchain.toml'; `sexp_abi_assert.rs' adds `const_assert!' for
-;; each offset so drift fails compilation.  See docs/arch/sexp-abi.md §7.
+;; Inline string-header fields within a Symbol, Str, or UnibyteStr slot.
+;; The standalone representation is `(capacity, pointer, byte-length)' at
+;; offsets `(8, 16, 24)' of the Sexp slot.
 ;; ---------------------------------------------------------------------------
 
 (defconst nelisp-string--offset-capacity 8
-  "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
-String's capacity field.  Equals `nelisp-sexp--offset-payload' + 0
-because Rust's `String' header currently stores capacity first on the
-repo toolchain.")
+  "Byte offset of an inline Symbol/Str/UnibyteStr capacity field.")
 
 (defconst nelisp-string--offset-ptr      16
-  "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
-String's data pointer.  Equals payload + 8 on the repo toolchain.")
+  "Byte offset of an inline Symbol/Str/UnibyteStr byte pointer.")
 
 (defconst nelisp-string--offset-length   24
-  "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
-String's length field (= byte count, NOT char count).  Equals
-payload + 16.")
+  "Byte offset of an inline Symbol/Str/UnibyteStr byte length.")
 
 (defconst nelisp-string--header-size     24
-  "Total size of a Rust `String' header in bytes (= ptr + cap + len).")
+  "Total size of an inline string header in bytes (= cap + ptr + len).")
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 111 §111.A — boxed-collection layout constants for NlRecord /
@@ -218,6 +223,9 @@ Doc 147 Phase 1: 8-byte value WORD + 8-byte refcount (was 40).")
     (tag-bool-vector  . ,nelisp-sexp--tag-bool-vector)
     (tag-cell         . ,nelisp-sexp--tag-cell)
     (tag-record       . ,nelisp-sexp--tag-record)
+    (tag-bignum       . ,nelisp-sexp--tag-bignum)
+    (tag-unibyte-str  . ,nelisp-sexp--tag-unibyte-str)
+    (tag-unibyte-mut-str . ,nelisp-sexp--tag-unibyte-mut-str)
     (offset-tag       . ,nelisp-sexp--offset-tag)
     (offset-payload   . ,nelisp-sexp--offset-payload)
     (slot-size        . ,nelisp-sexp--slot-size)
@@ -248,10 +256,8 @@ Doc 147 Phase 1: 8-byte value WORD + 8-byte refcount (was 40).")
     (nlcell-offset-value            . ,nelisp-nlcell--offset-value)
     (nlcell-offset-refcount         . ,nelisp-nlcell--offset-refcount)
     (nlcell-size                    . ,nelisp-nlcell--size))
-  "Layout constants flattened to (NAME . VALUE) for cross-side diffing.
-`make sexp-abi-check' runs the Rust driver, prints the same set in
-the same order, and asserts equality.  Order matters for the diff
-output to be readable.")
+  "Layout constants flattened to (NAME . VALUE) for ABI checks.
+Order matters for readable diff output.")
 
 (provide 'nelisp-sexp-layout)
 

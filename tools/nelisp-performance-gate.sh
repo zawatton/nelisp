@@ -33,11 +33,55 @@ STATS_MARKER="target/nelisp-source-command-cache.stats"
 TRACE_FILE="target/nelisp-artifact-runtime.trace"
 TMP_DIR="$(mktemp -d)"
 
+# A gate whose only output is its own result lines cannot be told apart from a
+# gate that checked nothing.  CASES counts the steps that finished; the trap
+# reports it however the script exits, so a failure says how far it got instead
+# of leaving `nelisp-ai.sh gate' with no count at all.  Findings comes from the
+# exit status: this script stops at the first failure, so one abort is one
+# finding.
+CASES=0
+REPORT_COUNT=1
+
 cleanup() {
+  gate_rc=$?
   rm -f "$ENABLE_MARKER" "$STATS_MARKER" "$TRACE_FILE"
   rm -rf "$TMP_DIR"
+  if [ "$REPORT_COUNT" -eq 1 ]; then
+    if [ "$gate_rc" -eq 0 ]; then
+      printf 'GATE-COUNT checked=%s findings=0\n' "$CASES"
+    else
+      printf 'GATE-COUNT checked=%s findings=1\n' "$CASES"
+    fi
+  fi
 }
 trap cleanup EXIT
+
+# This gate builds a binary from the tree and runs it, so it needs a host that
+# can run the configured target.  The build script's own predicate is the
+# authority; a uname table here would be a second copy to drift.  Three
+# outcomes, not two: folding "the predicate said no" together with "the
+# predicate could not be asked" is how a broken Emacs invocation starts reading
+# as a reasoned skip.
+set +e
+"${EMACS:-emacs}" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+  >/dev/null 2>&1
+host_rc=$?
+set -e
+case "$host_rc" in
+  0) ;;
+  3)
+    REPORT_COUNT=0
+    printf 'GATE-SKIP target %s cannot run on host %s/%s\n' \
+      "${NELISP_STANDALONE_TARGET:-linux-x86_64}" "$(uname -s)" "$(uname -m)"
+    printf 'gate_result label=nelisp_performance_gate rc=0 skipped=1\n'
+    exit 0
+    ;;
+  *)
+    echo "gate_fail reason=cannot-ask-host-runnability rc=$host_rc" >&2
+    exit 1
+    ;;
+esac
 
 rm -f "$STATS_MARKER" "$TRACE_FILE"
 if [ "$BUILD" -eq 1 ]; then
@@ -117,28 +161,35 @@ expect_out() {
 
 run_timed cache_default_load "$EXE" load-elisp-source "$MOD"
 expect_out cache_default_load "bench-native-smoke"
+CASES=$((CASES + 1))
 
 run_timed cache_default_eval "$EXE" eval-elisp-source "$MOD" '(bench-native-smoke-add 41)'
 expect_out cache_default_eval "42"
+CASES=$((CASES + 1))
 
 rm -f "$ENABLE_MARKER"
 run_timed fallback_load "$EXE" load-elisp-source "$MOD"
 expect_out fallback_load "bench-native-smoke"
+CASES=$((CASES + 1))
 
 run_timed fallback_eval "$EXE" eval-elisp-source "$MOD" '(bench-native-smoke-add 41)'
 expect_out fallback_eval "42"
+CASES=$((CASES + 1))
 
 make standalone-reader >/dev/null
 if [ ! -f "$ENABLE_MARKER" ]; then
   echo "gate_fail reason=runtime-cache-enable-marker-not-restored-by-build" >&2
   exit 1
 fi
+CASES=$((CASES + 1))
 
 run_timed cache_source_fallback_load "$EXE" load-elisp-source "$FALLBACK_MOD"
 expect_out cache_source_fallback_load "source-fallback"
+CASES=$((CASES + 1))
 
 run_timed cache_source_fallback_eval "$EXE" eval-elisp-source "$FALLBACK_MOD" 'source-fallback-value'
 expect_out cache_source_fallback_eval "42"
+CASES=$((CASES + 1))
 
 touch "$STATS_MARKER"
 run_timed marker_stats "$EXE" eval-elisp-source "$MOD" '(bench-native-smoke-add 41)'
@@ -148,6 +199,7 @@ if ! grep -q '^source-cache stats stage=artifact-after-module ' "$TMP_DIR/marker
   exit 1
 fi
 grep '^source-cache stats stage=' "$TMP_DIR/marker_stats.err" | sed 's/^/gate_stats /'
+CASES=$((CASES + 1))
 
 rm -f "$ENABLE_MARKER" "$STATS_MARKER" "$TRACE_FILE"
 if [ -e "$ENABLE_MARKER" ] || [ -e "$STATS_MARKER" ] || [ -e "$TRACE_FILE" ]; then
@@ -164,6 +216,7 @@ if [ "$RUN_ERT" -eq 1 ]; then
     -l test/nelisp-artifact-test.el \
     --eval "(ert-run-tests-batch-and-exit '(or nelisp-artifact/neln-generic-allows-bytecode-only-module nelisp-artifact/source-loader-installs-adjacent-neln-native-wrapper nelisp-artifact/eval-elisp-source-prefers-adjacent-neln nelisp-artifact/load-elisp-source-auto-compiles-neln))"
   echo "gate_result label=focused_artifact_ert rc=0"
+  CASES=$((CASES + 1))
 fi
 
 echo "gate_result label=nelisp_performance_gate rc=0"

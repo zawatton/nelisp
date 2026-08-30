@@ -1,0 +1,739 @@
+#+TITLE: Doc 185 — cl-generic subset (cl-defgeneric/cl-defmethod)
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 5 + zawatton)
+#+DATE: 2026-08-22
+#+STATUS: SHIPPED (2026-08-23, branch feat/cl-generic-subset) — P0-P3 all
+landed: type+eql specializers, struct dispatch via
+=nelisp-cl-macros--struct-isa= (not =cl-typep=, per §2.1a), primary
+methods + =cl-call-next-method=/=cl-next-method-p=,
+=cl-no-applicable-method=/=cl-no-next-method= signals, ambiguous-dispatch
+detection for same-tier builtin-type matches, and the full §3.5
+loud-failure matrix, all in =lisp/nelisp-cl-macros.el= (host-ERT-loadable)
+mirrored verbatim into =scripts/nelisp-stdlib-prelude.el= (the standalone
+reader). Two corrections found by running, not asserting: (1) §3.5's
+table text for =cl-no-applicable-method='s signal data,
+=(list generic-name args)=, does not match what real Emacs 30.1 actually
+signals (measured this session: =(cons generic-name args)=, flat) — the
+landed code follows the measured shape; (2) =nelisp-cl-generic--ensure='s
+error-condition registration cannot call =define-error= or top-level
+=put= at this block's own position in =scripts/nelisp-stdlib-prelude.el=
+(both are defined LATER in that same sequentially-loaded file) — deferred
+to first actual generic-function definition instead, well after the
+whole prelude has loaded. Every mirror-copy edit (including a
+=cl-typep=-autoload host-Emacs hazard fixed with =funcall= + a quoted
+symbol, §7.1) was applied identically to both files. Test coverage:
+=test/nelisp-cl-generic-test.el= (22 =ert-deftest= cases, all against
+this subset specifically — not real Emacs's =cl-generic=, confirmed by a
+same-session repro of an Emacs/ERT internals hazard documented in that
+file's own commentary), plus a standalone-binary probe (§5's "before"
+=void-function=/"after" probe transcript below) and two parity forms
+against real, unmodified Emacs 30.1 (§5.2).
+#+VERIFIED-BY: ert-full standalone-reader-test binary-size-ratchet emacs-parity
+
+* §0 TL;DR
+
+=cl-defgeneric=/=cl-defmethod= (and EIEIO's =defclass=, which is built on
+the same =cl--class= machinery) are completely absent — every direct
+symbol probed is =fboundp= nil (§1.1). =cl-defstruct= and =cl-typep=,
+which this doc has to build on, are both present, but =cl-typep=
+(=scripts/nelisp-stdlib-prelude.el:1539-1546=) is a hardcoded ten-symbol
+builtin-type allowlist with zero knowledge of =cl-defstruct=-generated
+types — =(cl-typep a-dog 'dog)= answers =nil= today even though
+=(dog-p a-dog)= answers =t= (§1.2). The primitive a type-specializer
+dispatcher actually needs — walking a struct's =:include= ancestry — is
+a *different*, already-working function, =nelisp-cl-macros--struct-isa=
+(=scripts/nelisp-stdlib-prelude.el:4019-4030=), confirmed live and
+correct for multi-level inheritance by direct probe (§1.2).
+
+There is *no in-repo evidence* for what specializer kinds or method
+qualifiers real =cl-defgeneric=/=cl-defmethod= call sites actually use —
+zero real call forms exist anywhere in this tree (a repo-wide grep for
+=(cl-defmethod =/=(cl-defgeneric = returns nothing but linter/indexer
+vocabulary lists that recognize the *syntax* without ever seeing a real
+instance, and no vendored copy of =transient.el=/=magit.el=/=eieio.el=
+exists to measure against). This doc says so plainly rather than
+presenting invented usage as measured (§1.3) — the specializer/qualifier
+scope below is a first-principles design choice, not a repo-measured one.
+
+The load-bearing prior art is Doc 157 (=docs/design/157-builtin-class-
+type-lattice.org=), a 2026-06-23 attempt at porting *real*
+=cl-generic.el= wholesale. Its own §5 hit a wall this doc treats as
+authoritative: with =compiled-function-p= correctly bound (this runtime
+has no byte-compiler), =cl-generic.el='s own eager
+=cl--generic-prefill-dispatchers= tries to =(eval BIG-NESTED-LAMBDA t)=
+~15-20 dispatchers at *require* time and did not finish inside a 280
+second budget. The recorded decision — withhold =compiled-function-p= so
+=cl-generic= stays "loadable but inert" rather than hanging the whole
+load — is *still live today*, verified by a comment at
+=scripts/nelisp-stdlib-prelude.el:4634-4645= and a direct probe (§1.4).
+This is a real go/no-go signal, not narrative: *porting real
+=cl-generic.el= is not viable on this interpreter; a hand-rolled subset,
+built with a bounded, per-generic dispatch-table cost rather than an
+eager global prefill, is the only direction that does not re-hit the same
+wall.*
+
+*Decided direction*: a hand-rolled =cl-defgeneric=/=cl-defmethod=
+subset with *type* and *eql* specializers (structs dispatch via
+=nelisp-cl-macros--struct-isa=, not via widening =cl-typep=), *primary*
+methods plus =cl-call-next-method=/=cl-next-method-p= (needed for
+struct-inheritance dispatch to be worth having at all), building each
+generic's effective-method table once at =cl-defmethod= time rather than
+eagerly at load time (§3.4, directly avoiding Doc 157's wall). Every
+unsupported form — a method-combination qualifier, a specializer kind
+other than type/eql/unspecialized, more than one dispatch argument — is a
+loud, macroexpansion-time =error=, never a silent no-dispatch or a
+silent wrong method (§3.5).
+
+* §1 Problem — measured evidence
+
+** §1.1 Absence, confirmed directly
+
+#+begin_example
+$ ./target/nelisp --load probe.el
+cl-defgeneric                fboundp=nil   macro=nil
+cl-defmethod                 fboundp=nil   macro=nil
+cl-defstruct                 fboundp=t     macro=t
+cl-typep                     fboundp=t     macro=nil
+cl-type-of                   fboundp=nil
+cl-generic-p                 fboundp=nil
+oclosure-define              fboundp=nil
+cl-struct-slot-value         fboundp=nil
+cl-call-next-method           fboundp=nil
+cl-next-method-p             fboundp=nil
+cl-no-applicable-method       fboundp=nil
+featurep cl-generic: nil / eieio: nil / oclosure: nil
+#+end_example
+
+A second probe, on primitives Doc 157 staged as *prerequisites* for a
+full port (§1.4), shows something more specific than blanket absence:
+
+#+begin_example
+cl--find-class                 fboundp=t   (baked helper: (get type 'cl--class))
+with-memoization                fboundp=t   (baked cl-generic-style macro shim)
+ignore / always / closurep /
+byte-code-function-p /
+interpreted-function-p         fboundp=t   (all baked)
+compiled-function-p            fboundp=nil  <- INTENTIONALLY withheld (§1.4)
+current-load-list              boundp=t, fboundp=nil (defvar only)
+eieio-defclass-internal        fboundp=nil
+defclass                       fboundp=nil
+(cl--find-class 'integer) => nil    ; (get 'integer 'cl--class) => nil
+#+end_example
+
+=cl--find-class= exists as a *function* but there is no *data* — nothing
+has ever called =(put TYPE 'cl--class ...)= — so it answers =nil= for
+every type, including built-ins. These five-plus names are staged
+plumbing with nothing plugged into them yet (§1.4 explains why).
+
+** §1.2 What =cl-defstruct=/=cl-typep= already give this doc
+
+Two divergent =cl-defstruct= implementations exist —
+=lisp/nelisp-cl-macros.el:439-472= (older, no =:conc-name=/=:predicate=
+option support) and =scripts/nelisp-stdlib-prelude.el:4001-4037=
+(newer, *this is the one actually baked into =target/nelisp=* — confirmed
+by matching the live macroexpansion byte-for-byte against this copy, not
+the other). =scripts/nl-ns-accepted.el:9= tracks this exact duplication
+as an accepted, known =ns-collision-divergent= finding — it is not a
+surprise this doc discovered, but the *consequence* (which copy is live,
+and what it supports) had not been traced through to a dispatch design
+before.
+
+Runtime representation: structs are tagged records
+(=nelisp--make-record=/=-record-ref=/=-record-type=/=recordp=), *not* a
+vector with an ad-hoc slot-0 tag — =nelisp--record-type= reads the type
+symbol directly. A parallel elisp-level registry,
+=nelisp-cl-macros--struct-info= (alist =NAME -> (:slot-names ... :parent
+...)=), is rebuilt at both macroexpansion time and runtime-eval time of
+every =cl-defstruct= form.
+
+=:include= inheritance is *fully working*, confirmed empirically:
+
+#+begin_src elisp
+(cl-defstruct animal name)
+(cl-defstruct (dog (:include animal)) breed)
+(animal-p (make-dog :name "Rex" :breed "lab"))  => t   ; parent predicate over child record
+(dog-p (make-animal :name "generic"))            => nil ; child predicate excludes parent
+(animal-name (make-dog :name "Rex" :breed "lab")) => "Rex" ; parent accessor works on child record
+#+end_src
+
+via =nelisp-cl-macros--struct-isa= (=scripts/nelisp-stdlib-prelude.el:
+4019-4030=), a plain recursive chain-walk over the =:parent= field in
+=nelisp-cl-macros--struct-info=. *This is the primitive a type-specializer
+dispatcher needs for struct ancestry, and it already exists, independent
+of =cl-typep=.*
+
+=cl-typep= (=scripts/nelisp-stdlib-prelude.el:1539-1546=):
+
+#+begin_src elisp
+(defun cl-typep (val type)
+  (cond ((eq type 'integer) (integerp val))
+        ((eq type 'number) (numberp val))
+        ((eq type 'float) (floatp val))
+        ((eq type 'string) (stringp val))
+        ((eq type 'symbol) (symbolp val))
+        ((eq type 'cons) (consp val))
+        ((eq type 'list) (listp val))
+        ((eq type 'vector) (vectorp val))
+        ((eq type 'null) (null val))
+        ((eq type 't) t)
+        (t nil)))
+#+end_src
+
+A hardcoded ten-symbol allowlist with a =(t nil)= catch-all — *zero*
+knowledge of =cl-defstruct=-generated types. Confirmed empirically:
+=(cl-typep (make-dog ...) 'dog)= => =nil=, even though =(dog-p ...)= =>
+=t= and =(nelisp--record-type (make-dog ...))= => =dog=. *This is the
+single most load-bearing gap for this doc*: a dispatcher that calls
+=cl-typep= naively will silently fail to dispatch on any struct-derived
+type today — it must either extend =cl-typep=, or bypass it for
+record-typed specializers. §2 decides which.
+
+** §1.3 No in-repo call-shape evidence — stated, not papered over
+
+A repo-wide grep for =(cl-defmethod = / =(cl-defgeneric = (real call
+forms, not the bare symbol) returns *zero matches*. The only occurrences
+of these symbols anywhere in the tree are generic-purpose static-analysis
+vocabulary:
+
+- =packages/nl-ns/src/nl-ns.el:77= — =nl-ns-definition-heads=, a flat
+  list of def-form head symbols the namespace-consistency linter
+  recognizes, alongside =defun=/=defmacro=/=cl-defstruct=. A linter's
+  known-heads table, not evidence of usage.
+- =packages/nelisp-defs-index/src/nelisp-defs-index.el:101,108,401,
+  423-424,674,710-718= — a code indexer's "defining forms" lists, and,
+  notably, a real, specific parser at =:710-718= for
+  =(cl-defmethod NAME [:before/:after/:around ...] ARGLIST BODY...)= that
+  correctly skips leading keyword qualifiers before reading the arglist.
+  This shows whoever wrote the indexer understood the real grammar well
+  enough to parse it defensively for arbitrary future/vendored input —
+  it is not evidence any such form exists in this codebase today.
+
+No vendored copy of =transient.el=, =magit.el=, =magit-section.el=, or
+=eieio.el= exists anywhere in this repository (=find . -iname
+'*transient*' -o -iname '*magit*'= turns up only two unrelated design
+docs — =docs/design/163-magit-bundle-intern-soft-hang.org=, about an
+=intern-soft= bug, and =docs/design/145-low-memory-transient-arena.org=,
+about a memory-allocation "transient arena", not =transient.el=). No
+=magit-section=/=transient-define-prefix=/=transient-define-infix= call
+site exists in this repo either — the one hit for =transient-define-
+prefix= (=docs/design/18-stage-d-audit-report-2026-04-25.org:64=) is a
+usage count from a *separate project* (=dev/anvil.el=) whose own plan is
+to *eliminate* that dependency via a CLI rewrite, not evidence of
+in-repo cl-generic consumption.
+
+*This doc's specializer/qualifier scope (§2) is therefore a
+first-principles design choice, explicitly not a repo-measured one* — a
+material difference from Doc 187's arithmetic work, where every claim
+traces to a measured probe. Anyone revising this doc should replace §2's
+reasoning with real measurement the moment an actual =magit=/=transient=
+corpus is vendored or referenced.
+
+** §1.4 Doc 157: the load-bearing prior-art wall
+
+=docs/design/157-builtin-class-type-lattice.org= (149 lines, dated
+2026-06-23, branch =spike/flat-arena-boot-install=) records a *prior,
+more ambitious* attempt: porting Emacs's real =cl-generic.el= (not a
+subset) via two files this doc's author confirmed *do not exist anywhere
+in the repository or its git history* (=git log --all --diff-filter=A=
+finds no commit ever adding =src/cl-preloaded-shim.el= or =src/oclosure-
+shim.el=; the three surviving commits touching Doc 157 are doc-only or
+prelude-comment-only). Only the *prerequisite plumbing* survived —
+exactly the five-plus symbols probed in §1.1's second block.
+
+What Doc 157 §1a describes as "PREREQUISITE, DONE" — =cl-defstruct=
+gaining =:conc-name=/=:predicate= option support so the lattice's own
+=cl--class=/=built-in-class= structs could be defined via =cl-defstruct=
+— is verified live: it is the exact same =scripts/nelisp-stdlib-
+prelude.el:4037= copy §1.2 already confirmed is the one baked into
+=target/nelisp=.
+
+Doc 157 §5 is the wall this doc treats as decisive. With the lattice +
+OClosure re-implementation in place (per that doc's own account — code
+this session did not find, so treated as narrative, not reusable), real
+=cl-defmethod= reaches =cl--generic-make-function= ->
+=cl--generic-get-dispatcher=, needing =cl--generic-compiler=. That
+=defvar='s init branches on =compiled-function-p=; defining it correctly
+(=nil=, no byte-compiler here) binds =cl--generic-compiler= to the eval
+fallback. Once bound, real =cl-generic.el= *eagerly* builds ~15-20
+dispatchers at *load time*
+(=cl--generic-prefill-dispatchers= plus one per internal method), each
+compiling via =(eval BIG-NESTED-LAMBDA t)= on the plain interpreter — and
+the whole load did not finish inside a 280-second budget (=EXIT 124=).
+Recorded decision: =compiled-function-p= stays intentionally *withheld*
+from the prelude so =cl-generic= remains "loadable but inert" (a bare
+=cl-defmethod= call aborts cleanly the moment it is actually invoked,
+rather than hanging the whole load at require-time).
+
+This decision is not stale narrative — it is live in the tree today,
+verbatim:
+
+#+begin_src elisp
+;; scripts/nelisp-stdlib-prelude.el:4634-4645
+;; NOTE (Doc 157 §5): compiled-function-p intentionally left unbound.
+;; ... [full accounting of the 280s prefill-dispatcher wall] ...
+#+end_src
+
+confirmed by direct probe: =compiled-function-p= is still =fboundp= =nil=
+in the shipped binary.
+
+*Consequence for this doc*: do not assume Doc 157's lattice/oclosure
+shim is available to build on — it exists only as narrative plus this
+one hard, still-honored engineering decision. Its real value is as a
+go/no-go signal: *hand-rolling a small subset dispatcher, with a
+per-generic (not global-eager) dispatch cost, is empirically the only
+direction that has not already been tried and shown to fail.*
+
+** §1.5 Magit-bridge blocker evidence: EIEIO's =defclass=, not =cl-generic= dispatch
+
+=docs/design/163-magit-bundle-intern-soft-hang.org= — zero mentions of
+cl-generic/=cl-defgeneric=/=cl-defmethod=/eieio; it is about an unrelated
+=intern-soft= hang loading a magit-bridge bundle, and its own residual,
+unresolved failure is explicitly attributed to a *different repository's*
+=intern-soft= polyfill bug, not to anything in this family.
+
+The one genuine, cited, in-repo evidence of a real magit-bridge blocker
+in the =cl--class= family is a comment, not code:
+
+#+begin_quote
+=scripts/nelisp-standalone-build.el:17936-17945= — "...since
+=cl-defstruct=-generated =setf= places for structs whose
+=cl-struct-setter= property is unset fall back to =(funcall
+'ACCESSOR--setter ...)= — this is also the mechanism behind the
+magit-bridge M2 =defclass= abort (=eieio-defclass-internal= setting an
+inherited =cl--class= slot such as =parents= via a =funcall='ed
+=eieio--class-parents--setter= that was never actually defined)."
+#+end_quote
+
+This documents a real, cited EIEIO =defclass= failure — registering a
+class's inheritance via the =cl--class= slot infrastructure Doc 157 also
+targeted, calling a setter via =funcall= that this substrate never
+defines, producing an *uncatchable void-function abort* (exactly the
+"stub silently breaks a downstream caller" anti-pattern this project's
+own gates police elsewhere). It is EIEIO's =defclass=/=cl--class=-slot-
+setter path, not =cl-defgeneric=/=cl-defmethod= dispatch directly — cited
+here as motivation, with that caveat, since it is the closest real,
+in-repo signal that this infrastructure family is a genuine, already-
+encountered blocker for magit-class code, matching the task background's
+premise even though this doc found no direct =cl-generic= dispatch
+failure to cite alongside it.
+
+* §2 Decided direction
+
+** §2.1 Specializer set: type + eql, structs via =struct-isa= not =cl-typep=
+
+| specializer | supported | mechanism |
+|---|---|---|
+| unspecialized (bare arg, implicit =t=) | yes | always matches, lowest specificity |
+| =(ARG TYPE)=, TYPE a =cl-typep= builtin (integer/string/...) | yes | =cl-typep= unchanged (§2.1a) |
+| =(ARG TYPE)=, TYPE a =cl-defstruct= name | yes | =nelisp--record-type= + =nelisp-cl-macros--struct-isa= (§2.1a) |
+| =(ARG (eql VALUE))= | yes | =eql= comparison, highest specificity |
+| head/list-head specializers | *no* | no evidence any real call site needs this (§1.3); loud error if written (§3.5) |
+| =&context=, custom specializer forms | *no* | same |
+
+*§2.1a — resolves §1.2's open question explicitly*: do NOT widen
+=cl-typep= in place. =cl-typep='s existing ten-symbol contract stays
+frozen — other callers of plain =cl-typep= must not observe a behavior
+change from this doc landing. Dispatch instead through a new, dispatch-
+only predicate, =nelisp-cl-generic--type-match= (§3.2), which tries
+=cl-typep= first for the ten built-ins and falls back to
+=nelisp--record-type=/=nelisp-cl-macros--struct-isa= for anything
+=recordp=. This keeps =cl-typep= composable with ordinary code exactly as
+it is today, and keeps this doc's dispatch logic in one place rather than
+smeared across a widened general-purpose predicate.
+
+** §2.2 Method combination: primary + =cl-call-next-method=, everything else out
+
+*In scope*: primary methods (no qualifier), ordered by specificity
+(eql > struct-child > struct-parent > builtin-type > unspecialized),
+=cl-call-next-method=/=cl-next-method-p= to continue down that ordering.
+Without this, struct-inheritance dispatch (§2.1's main real capability)
+is far less useful — the common shape a class hierarchy actually needs is
+"child method does its own thing, then calls into parent behavior," which
+is exactly what =cl-call-next-method= is for.
+
+*Out of scope, loudly rejected*: =:before=/=:after=/=:around= qualifiers,
+any method combination beyond primary/next-method. §1.3 found zero
+in-repo evidence either way; this doc chooses the smaller, honestly-named
+subset rather than guessing at qualifier semantics with nothing to check
+them against. A =cl-defmethod= form using a qualifier this subset does
+not implement signals a loud, macroexpansion-time error (§3.5) — never a
+silently-ignored qualifier, which would be indistinguishable from a
+correctly-scoped primary method until something depended on the ignored
+behavior and broke.
+
+** §2.3 Dispatch-table construction: per-generic, at define-time — not Doc 157's wall
+
+Each =cl-defgeneric='s effective-method table is built once, when its
+methods are complete enough to be called (i.e., lazily on first
+=funcall=, memoized, OR eagerly at the closing =cl-defmethod= of a given
+generic — §3.4 picks one), and costs work *proportional to that one
+generic's own method count*. This is the direct, explicit answer to
+Doc 157's wall (§1.4): that port's 280-second failure came from *eagerly
+prefilling ~15-20 dispatchers at require time* via full-generality
+=eval=-based dispatcher compilation. Nothing in this design does anything
+at require time beyond defining macros; the first per-generic cost is
+paid when that specific generic is actually used.
+
+* §3 Design
+
+** §3.1 =cl-defgeneric=/=cl-defmethod= macro shape
+
+#+begin_src elisp
+(cl-defgeneric render (obj))              ; declares the generic, no methods yet
+(cl-defmethod render ((obj widget)) ...)  ; type specializer
+(cl-defmethod render ((obj (eql 'special))) ...) ; eql specializer
+(cl-defmethod render (obj) ...)           ; unspecialized fallback
+#+end_src
+
+Single dispatch argument only (position 0) for v1 — real =cl-generic=
+supports specializers on any/multiple arguments; §1.3 found no evidence
+this is needed, and multi-argument dispatch multiplies the effective-
+method-table construction cost §2.3 is trying to keep small. A
+=cl-defmethod= specializing a non-first argument is a loud error (§3.5),
+not silently treated as unspecialized.
+
+** §3.2 =nelisp-cl-generic--type-match=
+
+#+begin_src elisp
+(defun nelisp-cl-generic--type-match (val type)
+  (cond
+   ((memq type '(integer number float string symbol cons list vector null t))
+    (cl-typep val type))
+   ((and (recordp val) (nelisp-cl-macros--struct-isa (nelisp--record-type val) type))
+    t)
+   (t nil)))
+#+end_src
+
+Reuses =cl-typep= for the ten builtins exactly as-is (§2.1a) and
+=nelisp-cl-macros--struct-isa= (already correct, §1.2) for structs — no
+new type-matching logic, only composition of two already-working
+functions.
+
+** §3.3 Specificity ordering for structs
+
+=nelisp-cl-macros--struct-info='s =:parent= chain (§1.2) gives an exact
+ancestry depth for any two related struct types — a method specializing
+=dog= is strictly more specific than one specializing =animal= for a
+=dog= instance, computed by walking the chain and counting steps.
+=eql= specializers outrank every type specializer (an exact-value match
+is always more specific than a type match); unspecialized is always
+least specific. Two methods whose specializers are unrelated types (or
+tie) for a given call is an ambiguous-dispatch condition — signaled
+loudly (§3.5), not resolved by definition order, since silently picking
+"whichever was defined last" is exactly the kind of implicit, surprising
+behavior this doc's loud-failure discipline exists to avoid.
+
+** §3.4 Per-generic table construction: build lazily, on first call
+
+Resolves §2.3's open choice: build the effective-method table *lazily*,
+on the generic's first invocation, cached on the generic's symbol
+property list, invalidated by a new =cl-defmethod= for that generic name
+(the common case — Doc 157's own wall was about *eager*, *global*
+prefilling; a lazy, per-symbol cache sidesteps it entirely and also
+avoids paying for generics that are defined but never called, which
+=cl-defgeneric='s own "declare it before you have all its methods" idiom
+makes common). Invalidating on redefinition, rather than rebuilding
+eagerly, keeps a live-patching workflow (redefine one method, re-eval)
+cheap — only the next actual call pays the rebuild.
+
+** §3.5 Loud failure — the specific error shapes
+
+| condition | contract |
+|---|---|
+| unsupported qualifier (=:before=/=:after=/=:around=/anything but none) | =error= at =cl-defmethod= macroexpansion time, names the qualifier |
+| unsupported specializer form (not a type name, not =(eql V)=, not a bare unspecialized arg) | =error= at macroexpansion time, names the form |
+| specializer on argument position > 0 | =error= at macroexpansion time |
+| call with no applicable method | =signal 'cl-no-applicable-method (list generic-name args)= — same symbol real Emacs uses, a genuine parity point (§6.2) |
+| two applicable primary methods, neither strictly more specific (§3.3) | =error= naming both, at *call* time (this one cannot be caught earlier — it depends on the runtime argument, not the =cl-defmethod= form alone) |
+| =cl-call-next-method= called with no next method | =signal 'cl-no-next-method= (mirrors real Emacs's own error symbol) |
+
+Every one of these is a real, catchable Lisp signal — never a bare
+=funcall= on something that turns out void (the exact failure family
+=scripts/nelisp-standalone-build.el:17936-17945= documents as already
+live and being actively patched elsewhere in this codebase, §1.5). This
+is the concrete answer to the task's "fails loudly rather than silently
+mis-dispatching" requirement: every boundary this subset draws produces
+a signal a caller can =condition-case= around, at the earliest point the
+information to raise it exists.
+
+* §4 Phased plan with costs
+
+Effort estimates are engineer-days for an implementer following this
+doc, on the pattern of Doc 164 §6.
+
+** P0 — =cl-defgeneric=/=cl-defmethod= macros, primary-only, type+eql, single-arg (2-3 d)
+- The macro pair (§3.1), =nelisp-cl-generic--type-match= (§3.2), the
+  specificity ordering (§3.3), the lazy per-generic table (§3.4), and the
+  full loud-failure matrix (§3.5) — this phase is the whole subset's
+  correctness core, sized together because splitting dispatch-order from
+  loud-failure would let one land without the other's safety net.
+- *Exit*: the =against-the-bug= cases in §6.1 all pass; a =cl-defmethod=
+  with an =:around= qualifier or a head specializer signals at
+  macroexpansion time, verified by =should-error= at =eval= time on the
+  =defmethod= form itself, not at first call.
+
+** P1 — =cl-call-next-method=/=cl-next-method-p= (1 d)
+- Threading the remaining effective-method list through the dispatcher's
+  call frame (a dynamic variable bound around each dispatch, restored on
+  return — the standard =cl-generic.el= technique, scoped down).
+- *Exit*: a three-level struct chain (grandparent/parent/child methods,
+  each calling =cl-call-next-method=) produces the same call order as
+  real Emacs's =cl-generic= for the equivalent hierarchy (parity form,
+  §6.2).
+
+** P2 — =cl-no-applicable-method=/=cl-no-next-method= signal parity (0.5 d)
+- Wire the two named-signal cases from §3.5's table.
+- *Exit*: =(condition-case e (render 5) (cl-no-applicable-method 'caught))=
+  returns =caught= when no method applies to a plain integer with no
+  unspecialized fallback defined.
+
+** P3 — ambiguous-dispatch detection (1 d)
+- The "two applicable primaries, neither more specific" case (§3.3's
+  last row) — genuinely needs care to avoid false positives on legitimate
+  unrelated-type overload sets that never collide at a real call site.
+- *Exit*: two methods on unrelated struct types, called with an instance
+  of neither, correctly signals =cl-no-applicable-method= (not ambiguity —
+  neither applies); two methods on sibling structs under a shared,
+  ambiguous multiple-inheritance-like shape (this subset doesn't support
+  multiple =:include=, so this case may turn out unreachable and P3 could
+  shrink — verify against what =:include= actually allows before costing
+  further work here).
+
+Total: *4.5-5.5 engineer-days*. P0 alone is independently useful (single-
+dispatch-argument, primary-only generic functions with correct struct
+inheritance ordering) even if P1-P3 slip.
+
+* §5 Verification design
+
+** §5.1 Against-the-bug
+
+#+begin_src elisp
+;; test/nelisp-cl-generic-test.el (new)
+(ert-deftest nelisp-cl-generic/dispatches-on-struct-type ()
+  (cl-defstruct cgt-animal name)
+  (cl-defstruct (cgt-dog (:include cgt-animal)) breed)
+  (cl-defgeneric cgt-speak (x))
+  (cl-defmethod cgt-speak ((x cgt-animal)) 'generic-noise)
+  (cl-defmethod cgt-speak ((x cgt-dog)) 'woof)
+  (should (eq 'woof (cgt-speak (make-cgt-dog :name "Rex" :breed "lab"))))
+  (should (eq 'generic-noise (cgt-speak (make-cgt-animal :name "generic")))))
+
+(ert-deftest nelisp-cl-generic/unsupported-qualifier-signals-at-defmethod ()
+  (should-error
+   (eval '(cl-defmethod cgt-speak :around ((x cgt-animal)) (cl-call-next-method)) t)
+   :type 'error))
+
+(ert-deftest nelisp-cl-generic/no-applicable-method-signals ()
+  (cl-defgeneric cgt-only-dogs (x))
+  (cl-defmethod cgt-only-dogs ((x cgt-dog)) 'ok)
+  (should-error (cgt-only-dogs 5) :type 'cl-no-applicable-method))
+#+end_src
+
+Each case is red today (=void-function cl-defgeneric=) and green once
+P0-P2 land. Per Doc 187 §6.1's lesson (a naive host-ERT case can fail to
+exercise the actual bug if the bug lives only in the standalone binary),
+this doc's bug lives in the *interpreter's dispatch semantics*, which
+=nelisp-eval= (the host-ERT entry point) DOES exercise correctly — these
+cases are valid host-ERT tests, unlike Doc 187's arithmetic case, and do
+not additionally need a standalone-binary smoke; confirmed by checking
+that =cl-defstruct=/=cl-typep= (this doc's foundation) are themselves
+already covered by ordinary host-ERT cases in the existing suite.
+
+** §5.2 Parity forms
+
+Where a real Emacs comparison exists at all (specializer dispatch order
+and the two named error signals have direct Emacs equivalents; the
+qualifier/head-specializer rejections are a deliberate, documented
+*divergence* from Emacs, which supports them — same shape as Doc 187's
+=overflow-error= divergence, §6.2 there):
+
+| form | Emacs | NeLisp (post-fix) |
+|---|---|---|
+| struct-inheritance dispatch order (§5.1's =cgt-dog=/=cgt-animal= case) | most-specific (=cgt-dog=) wins | same |
+| =cl-call-next-method= chain order, 3-level hierarchy | grandparent-then-parent-then-child call order matches Emacs's own C3-ish linearization for single inheritance | same (single =:include= chain only, so linearization is trivial — no MRO ambiguity possible) |
+| =(cl-defmethod f :around (...) ...)= | defines a method | *documented divergence*: signals an error naming =:around= as unsupported |
+| call with no applicable method, no fallback | =cl-no-applicable-method= | same symbol, same shape |
+
+** §5.3 Mutation rows for new gates
+
+Per =tools/gate-mutations.txt='s rule that an unproven gate is not a
+gate:
+
+#+begin_example
+nelisp-cl-generic-test|scripts/nelisp-stdlib-prelude.el|s/(nelisp-cl-macros--struct-isa (nelisp--record-type val) type)/t/|every struct instance matches every struct-type specializer, dispatch order silently collapses to definition order
+nelisp-cl-generic-test|scripts/nelisp-stdlib-prelude.el|s/(signal 'cl-no-applicable-method/(progn nil ; (signal 'cl-no-applicable-method/|an unmatched dispatch call silently returns nil instead of signaling
+#+end_example
+
+(placeholders for the exact single-line match, per that file's own note
+that a stale injection "teaches nothing except to delete the row" — real
+rows land with the implementing commit, matched against code as actually
+written).
+
+** §5.4 VERIFIED-BY at SHIPPED
+
+As in Doc 187 §6.4 / Doc 186 §6.4: each phase's status line records
+=VERIFIED-BY: <commit-sha> (<gate-name> report, <date>)=, pointing at a
+real =target/gates/<name>.json= report, not a hand-written claim.
+
+** §5.5 As landed (2026-08-23, branch feat/cl-generic-subset)
+
+Implemented per §3-§3.5 with the two corrections noted in the =#+STATUS=
+line above.  Evidence, per this doc's own §5.4 rule (a report, not a
+hand-written claim):
+
+- =target/gates/ert-full.json= (=tools/ai/nelisp-ai.sh test=): full host
+  ERT suite, including this doc's own =test/nelisp-cl-generic-test.el=
+  (22 =ert-deftest= cases) alongside every pre-existing test file in the
+  same shared batch process — 0 unexpected results.
+- =target/gates/standalone-reader-test.json=,
+  =target/gates/binary-size-ratchet.json=,
+  =target/gates/emacs-parity.json= (=tools/ai/nelisp-ai.sh standalone=):
+  all PASS on the rebuilt =target/nelisp= carrying this doc's
+  =scripts/nelisp-stdlib-prelude.el= addition.
+
+Against-the-bug, run both ways this session (not asserted):
+
+#+begin_example
+BEFORE (this session, base 71d5f17ef, target/nelisp rebuilt from a clean
+checkout of that commit):
+  cl-defgeneric fboundp=nil
+  cl-defmethod  fboundp=nil
+  cl-call-next-method fboundp=nil
+  cl-next-method-p    fboundp=nil
+
+AFTER (same probe, target/nelisp rebuilt with this doc's two-file change):
+  cl-defgeneric fboundp=t macro=t
+  cl-defmethod  fboundp=t macro=t
+  cl-call-next-method fboundp=t
+  cl-next-method-p    fboundp=t
+  struct dispatch: dog->woof animal->generic-noise
+  eql dispatch: special->special-form other->fallback
+  call-next-method chain (reverse order): (child parent)
+  no-applicable-method: (caught (cl-no-applicable-method pgt-only-dogs 5))
+  loud error on :around: (caught error)
+#+end_example
+
+Parity forms measured against real, unmodified Emacs 30.1 this session
+(no =nelisp-cl-macros= loaded — real =cl-lib='s own =cl-generic=):
+
+| form | real Emacs 30.1 | this subset |
+|---|---|---|
+| 3-level =:include= chain, =cl-call-next-method= call order | =(child parent grandparent)= | same |
+| =cl-no-applicable-method= signal data shape | =(cons generic-name args)=, flat | same (§+STATUS correction 1) |
+| =(cl-defmethod f :around (...) ...)= | defines a method | documented divergence: loud =error= naming =:around= |
+
+A third, host-Emacs-internals hazard was found and fixed as part of
+getting the ERT suite itself trustworthy, documented in full in
+=test/nelisp-cl-generic-test.el='s own commentary rather than repeated
+here: loading =ert= primes real Emacs's =cl-lib= autoloads, and something
+in ERT's own test-*execution* machinery (not its file-loading machinery)
+re-triggers a full, real =cl-macs.elc= load partway through a batch run,
+silently reclaiming =cl-defstruct=/=setf=/=backquote=/etc. back to real
+Emacs's own versions unless every one of them is forced to resolve
+before this subset's own unconditional overrides install, and re-swapped
+back for the exact dynamic extent of each test.  Confirmed this session:
+without that handling, this doc's own struct-dispatch tests intermittently
+exercised real Emacs's =cl-generic= instead of this subset (a false
+green), and, once =setf= specifically was left overridden process-wide,
+an unrelated sibling test file (=test/nelisp-daemon-test.el=) broke.  Two
+=tools/gate-mutations.txt= rows (§5.3, landed with exact =sed= matches
+rather than the placeholders above) prove the struct-ancestry and
+no-applicable-method loud-failure paths specifically; both confirmed by
+hand to flip =ert-full= red before landing.
+
+* §6 Open questions
+
+** §6.1 Multiple =:include= / diamond inheritance
+
+=cl-defstruct='s =:include= is single-parent only (confirmed by
+=nelisp-cl-macros--struct-info='s =:parent= field being a single slot,
+not a list) — so §3.3's specificity ordering and P3's ambiguous-dispatch
+detection may be simpler than a full diamond-aware =cl-generic= would
+need. Worth confirming this is a hard =cl-defstruct= limit (not just an
+unexercised path) before finalizing P3's scope, since if it is hard, an
+entire class of ambiguity this doc costs for (P3) may not be reachable at
+all.
+
+** §6.2 Whether P0's scope should include struct slot-value specializers
+
+Real =cl-generic= (via =cl-generic-generalizers=) supports specializing
+on more than "is-a-type" — e.g., a struct's own custom generalizer
+forms. Nothing in this doc's evidence base (§1) suggests any consumer
+needs this, and adding it multiplies §2.3's dispatch-table complexity
+for no measured benefit. Left out by default; flagged so a future
+revision with real usage evidence has an explicit place to reopen it
+rather than silently expanding scope.
+
+** §6.3 Should =nelisp-cl-generic--type-match= be exposed as public API
+
+§3.2's helper is dispatch-internal, but it is also exactly the "does
+=cl-typep= but also knows about structs" predicate ordinary user code
+might reasonably want directly (e.g., outside a =cl-defmethod= body).
+Whether to expose it as e.g. =cl-typep-including-structs= or keep it
+=nelisp-cl-generic--=-internal is a naming/API-surface call this doc does
+not make — both are compatible with §2.1a's "don't widen =cl-typep=
+itself" decision either way.
+
+** §6.4 Reusing the five staged Doc-157 primitives
+
+§1.1 found =cl--find-class=/=with-memoization=/=closurep=/=ignore=/
+=always=/=interpreted-function-p= already baked into the prelude
+specifically as cl-generic prerequisites, currently unused by anything.
+This doc's hand-rolled subset does not need any of them (§3's design
+uses only =cl-typep=, =nelisp-cl-macros--struct-isa=, and
+=nelisp--record-type=) — whether to reuse them anyway (for naming
+consistency with a possible *future* fuller port) or leave them
+untouched and unused is a judgment call for the implementer, flagged so
+a future reader does not assume their presence implies more
+cl-generic-adjacent infrastructure exists than actually does.
+
+* §7 References
+
+** §7.1 Code (file:line)
+- =scripts/nelisp-stdlib-prelude.el:1539-1546= — =cl-typep=, the frozen
+  ten-symbol contract (§2.1a).
+- =scripts/nelisp-stdlib-prelude.el:4001-4037= — the live =cl-defstruct=
+  copy (=:conc-name=/=:predicate= support, struct-record/struct-isa).
+- =scripts/nelisp-stdlib-prelude.el:4019-4030= —
+  =nelisp-cl-macros--struct-isa=, the ancestry chain-walk this doc's
+  dispatch reuses directly.
+- =scripts/nelisp-stdlib-prelude.el:4634-4645= — the live "NOTE (Doc 157
+  §5)" comment withholding =compiled-function-p=.
+- =lisp/nelisp-cl-macros.el:439-472= — the older, unused-in-shipped-
+  binary =cl-defstruct= copy (§1.2's divergence).
+- =scripts/nl-ns-accepted.el:9= — the tracked =ns-collision-divergent=
+  entry for the two =cl-defstruct= copies.
+- =packages/nl-ns/src/nl-ns.el:77= — linter vocabulary listing
+  =cl-defgeneric=/=cl-defmethod= as recognized def-form heads.
+- =packages/nelisp-defs-index/src/nelisp-defs-index.el:101,108,401,
+  423-424,674,710-718= — indexer's defensive =cl-defmethod=
+  qualifier-then-arglist parser.
+- =scripts/nelisp-standalone-build.el:17936-17945= — the magit-bridge M2
+  =defclass= abort comment (§1.5).
+- =docs/design/18-stage-d-audit-report-2026-04-25.org:64= — the
+  unrelated-project =transient-define-prefix= usage count (§1.3, ruled
+  out).
+
+** §7.2 Docs
+- =docs/design/157-builtin-class-type-lattice.org= — the load-bearing
+  prior-art wall (§1.4): full document, all 149 lines read.
+- =docs/design/163-magit-bundle-intern-soft-hang.org= — read and ruled
+  out as unrelated (§1.5).
+- =docs/design/164-wasm-backend.org= — structural template.
+- =docs/design/187-native-arithmetic-overflow.org=,
+  =docs/design/186-char-tables.org= — sibling docs in this batch; §5's
+  VERIFIED-BY convention and §5.1's "does the host-ERT path actually
+  exercise the bug" question are modeled on Doc 187 §6.
+- =tools/gate-mutations.txt=, =tools/ai/README.md= — mutation-row and
+  gate-report conventions §5.3/§5.4 follow.
+
+** §7.3 Memory
+- =feedback-stub-silent-downstream-breakage= — the exact pattern
+  §1.5's cited EIEIO =funcall=-to-a-void-setter abort exhibits, and the
+  pattern §3.5's loud-failure matrix exists to avoid reintroducing.
+- =feedback_nelisp_perf_not_elisp_interpreter= — relevant framing if a
+  future phase benchmarks dispatch-table construction cost; not itself
+  load-bearing for this doc's correctness claims.
+
+** §7.4 Sibling docs (forward references, not read during drafting)
+- Doc 188 — buffer unification; no direct dependency identified, noted
+  only because both are in this batch.

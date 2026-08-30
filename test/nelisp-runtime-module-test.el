@@ -47,7 +47,16 @@ file."
   (let ((path (ignore-errors
                 (nelisp-cc-runtime--locate-runtime-module))))
     (unless (and path (file-readable-p path))
-      (ert-skip "nelisp-runtime-module.so missing — run `make runtime-module'"))))
+      (ert-skip "nelisp-runtime-module.so missing — run `make runtime-module'"))
+    ;; The module is half the bootstrap contract: `nelisp-cc-runtime--ensure-
+    ;; module-loaded' hands it the sibling cdylib by absolute path and skips
+    ;; that step when the file is absent, so a module without one loads clean
+    ;; and then fails at the first call with `dlopen failed'.  Gating on the
+    ;; module alone turned that into four failures rather than four skips.
+    (unless (file-readable-p
+             (expand-file-name "libnelisp_runtime.so"
+                               (file-name-directory path)))
+      (ert-skip "libnelisp_runtime.so missing beside the module — run `make runtime-module'"))))
 
 (defun nelisp-runtime-module-test--ensure-loaded ()
   "Module-load + bootstrap the cdylib path.  Idempotent."

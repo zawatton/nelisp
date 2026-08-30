@@ -1,7 +1,7 @@
 #+TITLE: Doc 33 — NeLisp v1.x architecture (core + 3-layer extension model)
 #+AUTHOR: zawatton + Claude (session-A 起草 + 🅒 revise + codex review v2 反映)
 #+DATE: 2026-04-25
-#+STATUS: LOCKED-2026-04-25-v2 (orchestrator codex review MAJOR REVISIONS 5 MAJOR + 5 MINOR 反映、user signoff 待ち)
+#+STATUS: LOCKED-2026-04-25-v2 AMENDED-2026-08-22 (see §12 amendment / doc 188) (orchestrator codex review MAJOR REVISIONS 5 MAJOR + 5 MINOR 反映、user signoff 待ち)
 
 * §0 要旨 (TL;DR)
 
@@ -1207,3 +1207,65 @@ community contribution の障壁を最小化する design:
 - =anvil-dev release-audit :scope doc-33= 緑 (DRAFT stamp 整合、reference
   整合、Phase 7+ SHIPPED 状態の cross-check)
 - 本 v1 = =DRAFT-2026-04-25=、user signoff で main =--no-ff= merge 解禁
+
+* §12 Amendment — 2026-08-22 (owner-approved, Layer 1 substrate + Layer 2 authority)
+
+This section is an amendment, not a rewrite. §0-§11 above are left exactly
+as they were LOCKED on 2026-04-25 and describe the plan as it was signed
+off at the time; nothing above has been edited or deleted to produce this
+section. No prior LOCKED doc in this tree used an =AMENDED= status
+marker before this one — see the commit that introduced this section for
+that note.
+
+** What changed and why
+
+Doc 188 (=docs/design/188-buffer-unification.org=, DRAFT 2026-08-22)
+found that this doc's Layer 1 substrate choice was never actually built
+as written. =docs/design/13-phase5b-core-substrate.org= shipped
+=src/nelisp-buffer.el= — a 1-indexed buffer with real markers and
+overlays — into core on 2026-04-24, one day *before* this doc locked a
+0-indexed, marker-free =text-buffer= (§5) as the Layer 1 primitive and
+pushed marker/overlay to a not-yet-built Layer 2 (§2 L2/L4, §3.1, §5.3).
+The two documents never reference each other (Doc 188 §1.6): nothing
+here was ever reconciled with what had already shipped the day before,
+=nelisp-buffer.el= sat unused (Doc 188 §1.1) while four packages (~4100
+LOC, Doc 188 §1.5) grew up assuming buffer machinery that did not connect
+to it or to anything real.
+
+Doc 188 §2.1 recommends resolving this by keeping this doc's *intent*
+(§5.3: a fast primitive underneath a compatibility layer) while dropping
+the *literal* 0-indexed API surface that no real consumer — not
+=nelisp-buffer.el='s own markers/overlays, not the four packages, not
+Emacs's own contract — actually uses. Doc 188 §6.1 declined to override
+this LOCKED doc silently on its own authority and instead flagged the
+change for this doc's owner. The owner approved Doc 188's recommendation
+on 2026-08-22 (via the coordinator); this section records that approval.
+
+** Decision
+
+- *Layer 1 substrate of record changes to =src/nelisp-buffer.el='s*
+  1-indexed, marker/overlay-complete data model — not the 0-indexed,
+  marker-free =text-buffer= design in §5 of this doc. §5's
+  gap-buffer *technique* (§5.1: byte/UTF-8 gap buffer, O(1) amortized at
+  the gap) is retained, ported underneath =nelisp-buffer.el='s model as
+  an internal storage optimization rather than as a separate 0-indexed
+  API layer — =src/nelisp-text-buffer.el= supplies that technique. §2
+  L4's "one core addition, gap-buffer based" still holds in that sense;
+  §5.2's 0-indexed =text-buffer-*= API sketch does not — that surface is
+  superseded.
+- *Layer 2 design authority moves to Doc 188.* This doc's §2 L5 / §3.2 /
+  §4.2 description of =nelisp-elisp-compat= (the buffer/marker/overlay/
+  text-property/undo/file-UI/process-UI compatibility package) is
+  superseded as a design document by Doc 188, which now owns that
+  layer's design going forward (migration order, phase gates,
+  verification design — Doc 188 §2.2-§2.3, §3-§4).
+- Everything else this doc locked — §2 L1/L3/L6-L11, §3.3-§3.4 display
+  layers, §6-§9 roadmap/risk/community model — is unaffected by this
+  amendment.
+
+** Where to look
+
+Doc 188 (=docs/design/188-buffer-unification.org=) §2.1 "Substrate of
+record" and §1.6 "Doc 33 (LOCKED) — the architecture this doc has to
+reconcile with" carry the full evidence and reasoning behind this
+amendment.

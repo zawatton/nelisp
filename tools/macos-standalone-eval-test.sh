@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # macOS standalone eval smoke.
 #
-# Builds target/nelisp-standalone-eval-macos-* as a pure-elisp Mach-O executable.
+# Builds the standalone eval binary as a pure-elisp Mach-O executable.
 # On native macOS it also executes the binary and checks the exit code.
 set -euo pipefail
 
@@ -37,7 +37,19 @@ cd "$REPO_ROOT"
 if [ -z "$TARGET" ]; then
   case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
     Darwin-arm64) TARGET="macos-aarch64" ;;
-    Darwin-x86_64) TARGET="macos-x86_64" ;;
+    # NOT macos-x86_64.  scripts/nelisp-standalone-build.el says so at
+    # length: the Mach-O writer and the x86_64 assembler both support the
+    # primitives, but the per-target orchestration (-abi, -arch, -os, the
+    # arena source and the start unit) "has no `macos-x86_64' clause
+    # anywhere and falls into an explicit \"unsupported target\" error",
+    # and calls closing that "real follow-up work, not something this
+    # predicate can or should paper over".
+    #
+    # Choosing it here is what asked for that error.  An Intel host
+    # cross-builds the aarch64 target instead -- which is the only macOS
+    # target that exists -- and verify-cross-platform.sh already declines
+    # to execute what it builds there.
+    Darwin-x86_64) TARGET="macos-aarch64" ;;
     *) TARGET="macos-aarch64" ;;
   esac
 fi
@@ -57,7 +69,11 @@ export NELISP_FORM_B="$B"
   -f nelisp-standalone-build
 
 case "$TARGET" in
-  macos-aarch64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-aarch64" ;;
+  # `nelisp-standalone--output-path' keeps the macOS arm64 eval binary at the
+  # short `target/nelisp-standalone-eval' name -- only cross-built targets get
+  # an arch suffix, and aarch64 is the host arch here (same rule the reader
+  # smoke documents for `target/nelisp').
+  macos-aarch64) EXE="$REPO_ROOT/target/nelisp-standalone-eval" ;;
   macos-x86_64) EXE="$REPO_ROOT/target/nelisp-standalone-eval-macos-x86_64" ;;
   *) echo "[macos-standalone-eval] FAIL: unsupported target $TARGET" >&2; exit 2 ;;
 esac

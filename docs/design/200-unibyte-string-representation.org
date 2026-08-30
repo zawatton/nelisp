@@ -1,0 +1,294 @@
+#+TITLE: Doc 200 — Unibyte strings as a distinct representation
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-08-26
+#+STATUS: SHIPPED and verified 2026-08-27 — tags 14/15, all consumers and
+#+STATUS: producers, fixed-width aset, raw-byte-safe printers, numeric reader
+#+STATUS: escapes/tag-14 literals, census and explicit §4 limitation are complete.
+#+STATUS: HISTORY — bounded-work checkpoint status follows unchanged:
+#+STATUS: PARTIAL — bounded implementation SHIPPED and verified 2026-08-27:
+#+STATUS: tags 14/15, consumers/producers, fixed-width aset, raw-byte-safe
+#+STATUS: printer, census and limitation record are complete.  Reader numeric
+#+STATUS: escapes are the remaining measured item; see §8.6.
+#+STATUS: HISTORY — original 2026-08-26 status follows unchanged:
+#+STATUS: DESIGN — not implemented.  Written the day the defect was measured,
+#+STATUS: deliberately NOT folded into v1.0.0: the change touches every code
+#+STATUS: path that asks "is this a string", and a single missed branch is a
+#+STATUS: silent wrong answer.  See §5 for why the timing matters.
+#+VERIFIED-BY: doc200-census substrate-presence-corpus-check standalone-reader-test emacs-parity ert-full doc-claims
+#+OPTIONS: toc:3 num:t
+
+* §0 要旨
+
+NeLisp には unibyte 文字列と multibyte 文字列の区別が **存在しない**。
+すべての文字列は Sexp tag 5（インライン =cap@+8 / ptr@+16 / len@+24=）で、
+種別を記録する場所が無い。
+
+実測（v1.0.0 tip、2026-08-26）:
+
+#+begin_src elisp
+(unibyte-string 227 129 130)   ; "あ" の UTF-8 バイト列
+"あ"
+#+end_src
+
+| 式                            | len | string-bytes | 相互の equal |
+| =(unibyte-string 227 129 130)= |   1 |            3 | =t=          |
+| ="あ"=                         |   1 |            3 | =t=          |
+
+実 Emacs 30.1 では前者が 3 バイトの unibyte、後者が 1 文字の multibyte で
+=equal= は =nil=。**NeLisp では同一オブジェクトになる。**
+
+* §1 症状 — 何が壊れているか
+
+** §1.1 append
+
+#+begin_src elisp
+(append (unibyte-string 200 201 202) nil)
+;; NeLisp : (521 640 0)
+;; Emacs  : (200 201 202)
+
+(append (unibyte-string 127 128 129) nil)
+;; NeLisp : (127)          ← length が 1 を返す（string-bytes は 3）
+;; Emacs  : (127 128 129)
+#+end_src
+
+128 未満のみのバイト列は正しく、**128 以上を含むと壊れる**。
+=nelisp--append-collect= の文字列分岐が =length= / =aref=（文字単位）を
+使っているため。
+
+** §1.2 これは append の欠陥ではない
+
+=append= を =string-bytes= / =string-byte= に直すと、今度は multibyte が
+壊れる（="あ"= が =(227 129 130)= になる）。Emacs の意味論は:
+
+- multibyte 文字列 → **文字**のリスト（="あ"= → =(12354)=）
+- unibyte 文字列 → **バイト**のリスト（=200= → =(200)=）
+
+種別を知らずに正しい答えは出せない。**同じ根が =concat= / =substring= /
+=aref= / =equal= / =sxhash= / printer 全体に及ぶ。**
+
+** §1.3 multibyte-string-p も判定できない
+
+現行実装（=scripts/nelisp-stdlib-prelude.el=）は「127 超の文字を含むか」で
+判定する。unibyte 文字列も高位バイトを持つので =t= を返す。
+
+| 文字列                          | NeLisp | Emacs |
+| =(unibyte-string 200 201)=      | =t=    | =nil= |
+| ="あ"=                          | =t=    | =t=   |
+| ="abc"=                         | =nil=  | =nil= |
+
+* §2 上流の方向 — Emacs 31.1
+
+Emacs 31.1（2026-08-24 リリース）の =etc/NEWS= より、原文:
+
+#+begin_quote
+** String mutation has been restricted further.
+'aset' on unibyte strings now requires the new character to be a single
+byte (0-255).  On multibyte strings the new character and the character
+being replaced must both be ASCII (0-127).
+
+These rules ensure that mutation will never transform a unibyte string
+to multibyte, and that the size of a string in bytes (as reported by
+'string-bytes') never changes.  They also allow strings to be
+represented more efficiently in the future.
+#+end_quote
+
+読むべき点は 3 つ:
+
+1. Emacs は区別を **なくす方向ではなく、境界を厳格化する方向** に進んでいる
+2. 保証したい不変量は「mutation が unibyte → multibyte に変えない」
+3. =allow strings to be represented more efficiently in the future= —
+   **表現変更を予告している**。追随するなら急ぐより方向を合わせる方が良い
+
+NeLisp が区別を持たない限り、この不変量は表現できない。
+
+* §3 選択肢
+
+** §3.1 案 A — 新 tag（tag 14 = UnibyteStr）
+
+Sexp tag は =ptr-read-u8= で読まれ、0〜13 が使用中、**14 以降が空き**。
+
+- 長所: Emacs と同じ意味論。=equal= も正しく =nil= になる。表現として明示的
+- 短所: tag を見る全経路に分岐追加。=stringp= の展開自体が変わる
+
+** §3.2 案 B — cap フィールドに unibyte ビット
+
+文字列の =cap@+8= は実質未使用（GC は =+16=（ptr）のみ参照、clone は 32 バイト
+全体コピーなのでビットは自動伝播する）。
+
+- 長所: tag 経路に触らない
+- 短所: **判定箇所の数は減らない**（§4 参照）。=cap= の意味を変えるので
+  参照箇所の監査が別途必要
+
+** §3.3 案 C — 対処しない
+
+既知の制約として文書化し、=unibyte-string= を使う側が
+=string-bytes= / =string-byte= を使う運用にする。
+
+- 短所: 実 Emacs 非互換が残り、=append= 等が silent wrong answer を返し続ける
+
+* §4 影響範囲（実測 2026-08-26）
+
+Sexp の文字列 tag を判定しているコード行:
+
+| 場所                              | 行数 | 備考                                     |
+| =scripts/nelisp-standalone-build.el= |   23 | GC mark / printer / length / concat / eq / CLI 出力 |
+| =lisp/nelisp-cc-*.el=              |   26 | 19 ファイル。JIT 群 / evalport / sexp-fmt |
+| =lisp/nelisp-aot-compiler.el=      |    3 | =stringp= 述語の展開そのもの              |
+| =src/= / layout / native-load      |    7 |                                          |
+| *合計*                            | *59* | *約 24 ファイル*                          |
+
+=stringp= の展開はこう書かれている:
+
+#+begin_src elisp
+`(or (= (sexp-tag ,arg) ,nelisp-sexp--tag-str)
+     (= (sexp-tag ,arg) ,nelisp-sexp--tag-mut-str))
+#+end_src
+
+案 A / 案 B のどちらでも、これら 59 箇所すべてで「文字列か」と
+「unibyte か」を別々に問う必要がある。**案 B は tag を増やさないだけで、
+判定箇所は減らない。**
+
+具体的に分岐が要る関数群: =stringp= =length= =aref= =aset= =concat=
+=substring= =equal= =sxhash= =prin1= =princ= =format= =upcase= =downcase=
+=secure-hash= =split-string= 正規表現エンジン、GC の mark、
+=nl_sexp_clone_into=、CLI の値出力。
+
+* §5 なぜ v1.0.0 に入れないか
+
+1. **59 箇所のうち 1 つでも漏れれば silent wrong answer になる。** これは
+   このプロジェクトが繰り返し苦しんできた失敗形で、=append= の現状も
+   まさにそれ（エラーを出さず =(521 640 0)= を返す）
+2. **v1.0.0 は 2026-08-26 に 7 job 緑で出荷済み**、同日に Doc 142 s6.4 の
+   ローダ統合（27 ファイル / 6,620 行）も入れた。この上に文字列表現の変更を
+   重ねると、問題が出たときに原因の切り分けができない
+3. **Emacs 31.1 自身が表現変更を予告している**（§2）。上流が動く可能性の
+   ある中で急いで追随すると二度手間になる
+
+* §6 実装したときの Definition of Done
+
+1. =(unibyte-string 227 129 130)= と ="あ"= が =equal= で =nil= を返す
+2. =(append (unibyte-string 200 201 202) nil)= が =(200 201 202)=、
+   =(append "あ" nil)= が =(12354)= を返す（両方とも実 Emacs と一致）
+3. =multibyte-string-p= が実 Emacs と一致（§1.3 の表の 3 ケース）
+4. =aset= が Emacs 31.1 の制約を満たす: unibyte には 0-255 のみ、
+   multibyte には ASCII のみ、=string-bytes= が変化しない
+5. =emacs-parity= が findings=0 を維持（現行 19,995 checks）
+6. =test/nelisp-shadow-differential-cases.el= に raw-byte ケースを追加。
+   ただし比較は派生値のみ（この gate は出力を文字列比較するので、生の
+   バイト列を結果に含めると両側で表示が食い違う。2026-08-26 に実際に
+   踏んだ）
+7. 案 A なら §4 の 59 箇所すべてを歩いた記録を残す。数えられる形で残さないと
+   「全部見た」が検証できない
+
+* §7 参考 — この文書が書かれた経緯
+
+2026-08-26、=base64-decode-string= が文字ではなくバイトを返すよう修正した
+（commit 72205224a）。その回帰テストを =nelisp-shadow-differential-cases.el=
+に書く過程で、移植可能な比較手段を探して =(append DECODED nil)= を試したところ、
+NeLisp が =(521 640 1 1835048 0 0)=、実 Emacs が =(200 201 202 0 1 255)= を
+返した。base64 とは無関係の別欠陥だったため、その場では scope 外として
+テストのコメントに実測値ごと記録し、後日この文書に起こした。
+
+* §8 Implementation report — 2026-08-27
+
+この節は、上の DESIGN 文を削除せず、実装後の事実で上書きする dated record
+である。採用したのは案 A: immutable =UnibyteStr= を tag 14、boxed mutable
+=UnibyteMutStr= を tag 15 とした。tag 14 は tag 5 と同じ inline layout、tag
+15 は tag 6 と同じ NlStr box layout である。ただし「layout が同じなら field
+read をそのまま使える」は tag 15 では偽で、=str-byte-at= 相当の inline read
+は実測で segfault したため、boxed path は必ず NlStr の ptr/len を解決する。
+
+** §8.1 §6 Definition of Done の 7 項目
+
+| # | 結果 | 実測 evidence | 保持する gate |
+|---+------+---------------+---------------|
+| 1 | MET | =(equal (unibyte-string 227 129 130) "あ")= → =nil=。ASCII guard =(equal "abc" (unibyte-string 97 98 99))= → =t=。 | =emacs-parity=, =ert-full= |
+| 2 | MET | unibyte append → =(200 201 202)=、="あ"= append → =(12354)=。 | =emacs-parity=, =ert-full= |
+| 3 | MET | §1.3 の順で =(nil t nil)=（brief の並び =unibyte, ASCII, multibyte= なら =(nil nil t)=）。 | =emacs-parity=, =standalone-reader-test= |
+| 4 | MET | tag 14/15 は 0..255 の 1 byte 更新、tag 5/6 は old/new とも ASCII の時だけ更新。許可・拒否の前後で exact tag と byte length を直接比較した。 | =ert-full= の =nelisp-doc200-unibyte-repr/aset-preserves-exact-tag-and-byte-length=、=standalone-reader-test= |
+| 5 | MET | host Emacs 30.1 で 20,308 bytes identical / findings 0。§8.4 の 31.1 divergence は corpus 外。 | =emacs-parity= |
+| 6 | MET | parity corpus には raw value を出さず、=append= / =length= / =string-bytes= / predicates 等の derived values のみを追加した。 | =emacs-parity= |
+| 7 | MET | generated census は 631 箇所を検査し、ledger 174 rows (=walked= 143, =n-a= 31, =pending= 0) と live keys が一致する。 | =doc200-census= |
+
+** §8.2 Printer
+
+二つの printer を別々に検証した。native CLI =nelisp--repr= と prelude の
+=prin1-to-string= / =format "%S"= は、=(unibyte-string 200 201)= をいずれも
+内容 ="\310\311"= として出す。後二者の derived character list は
+=(34 92 51 49 48 92 51 49 49 34)= で、raw 200/201 は出力に現れない。
+=standalone-reader-test= の Doc 200 smoke が両経路を別々に保持する。
+
+** §8.3 §4 scope refusal — raw-byte characters
+
+NeLisp は Emacs の raw-byte character =#x3FFF00 + B= を表現しない。stock
+Emacs 30.1 の実測は次の通り:
+
+#+begin_src elisp
+(append (concat (unibyte-string 200) "あ") nil)  ; (4194248 12354)
+(append (string-to-multibyte (unibyte-string 200)) nil) ; (4194248)
+(append "\310あ" nil)                            ; (4194248 12354)
+(string-bytes (concat (unibyte-string 200) "あ")) ; 5
+#+end_src
+
+NeLisp で =4194248= を作ったふりをすると、その後の =aref= / =length= / encode
+が再び silent wrong answer になる。このため混在を
+=nelisp-raw-byte-unrepresentable= で signal する。ASCII-only unibyte の混在は
+許可する。これは実装漏れではなく、表現を追加しないという明示的な拒否であり、
+=docs/runtime-limitations.md= §F に primary implementation source とともに記録した。
+
+** §8.4 Emacs 30.1 parity と 31.1 mutation rule の衝突
+
+host 30.1 では次の二形がそれぞれ ="a"= / ="あb"= になるが、31.1 rule は
+両方を拒否する。
+
+#+begin_src elisp
+(let ((s (copy-sequence "あ"))) (aset s 0 ?a) s)
+(let ((s (copy-sequence "ab"))) (aset s 0 ?あ) s)
+#+end_src
+
+=test/nelisp-shadow-differential-cases.el= と
+=tools/nelisp-substrate-parity-corpus.el= のどちらにも =aset= は無く、衝突は
+存在しない。従って 31.1 rule を採用し、この二形は 30.1 の値をコメントした
+NeLisp-only ERT に置いた。30.1 と一つの =progn= を共有する parity corpus へは
+入れていない。
+
+** §8.5 Presence coverage の穴
+
+Phase 2 で =unibyte-string-p= を native builtin に移した結果、prelude top-level
+definitions と =nelisp--primitive-symbols= の自動 union から名前が消えた。stock
+Emacs 30.1 にはこの関数が無いため parity corpus へ強制せず、generator の
+standalone-only extra names に追加した。corpus check は 783→784 names の stale
+failureを先に示し、再生成後 784 names / findings 0。runtime smoke も
+=(list (unibyte-string-p (unibyte-string 200)) (unibyte-string-p "abc"))=
+→ =(t nil)= を直接検査する。
+
+** §8.6 Reader literals — implemented after the bounded-work checkpoint
+
+standalone reader の lexer は numeric escape を一切 decode していなかった。
+実バイナリでの before / after は次の通り:
+
+| form | before | after |
+|------+--------+-------|
+| =(append "\310" nil)= | =(51 49 48)= | =(200)= |
+| =(append "\x41" nil)= | =(120 52 49)= | =(65)= |
+| =(append "\101" nil)= | =(49 48 49)= | =(65)= |
+| =(append "\12" nil)= | =(49 50)= | =(10)= |
+| =(append "\1" nil)= | =(49)= | =(1)= |
+
+=lisp/nelisp-cc-reader-lexer.el= に octal 1–3 桁と hex 2 桁を実装した。
+128..255 の numeric escape を読むと scratch mutable string の tag を 6 から
+15 に変え、既存の =nl_mut_str_finalize= が tag 14 literal を作る。parser の
+copy も tag 14 を保持する。結果として
+=(list (multibyte-string-p "\310") (string-bytes "\310")
+       (unibyte-string-p "\310"))= → =(nil 1 t)= である。
+
+raw-byte escape と multibyte character を同じ literal に入れた
+="\310あ"= と ="あ\310"= は、順序に関係なく read 時に
+=nelisp-raw-byte-unrepresentable= を signal する。numeric decode と tag 14 化は
+同時に landed しており、tag 5 に不正な raw byte を入れる中間状態は無い。
+=\N{U+XXXX}= / =\N{NAME}= は実装しておらず scope 外。five-form regression、
+tag identity、mix rejection は =ert-full= と =standalone-reader-test= の Doc 200
+smoke が保持する。
+
+関連: =feedback_nelisp_standalone_utf8_raw_byte_block=（NeLisp の String は
+Rust の UTF-8 で、byte >= 128 が膨張する既知の制約）。

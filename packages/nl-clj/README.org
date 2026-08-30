@@ -1,0 +1,439 @@
+#+TITLE: nl-clj — a Clojure-compat persistent-data library for NeLisp
+
+* Motivation
+
+Doc 195 (=docs/design/195-clojure-compat-library.org=), build-first
+Tier 1: a persistent vector, a persistent hash-map/hash-set, an
+=atom=, a seq API (eager AND lazy), so NeLisp programs can write in a
+Clojure idiom without giving up plain Elisp semantics anywhere that
+does not opt in.  Doc 195 is a measured survey ("every asset claim
+below was either read from a file at a cited line or measured directly
+against a built =target/nelisp="), not a guess; this package follows
+its decisions on naming, representation, and HAMT design exactly (one
+small, documented representation refinement -- see
+=src/nl-clj-core.el='s Commentary).
+
+This is an *opt-in* extension library (Doc 168 section 2, the
+convention every =nl-= package here follows): loading it changes
+nothing about plain Elisp semantics.  It depends on =nl-prelude= (the
+=nl-error= condition every =nl-clj-error= derives from) and, for the
+lazy-seq phase, =nl-safe= (the =nl-cell= borrow-cell fence that gives
+=nl-clj-lazy-seq= its realize-once + reentrancy-signals-loudly
+guarantee).
+
+* Representation (Doc 195 §3.2)
+
+Every collection is a plain Elisp vector whose slot 0 is a
+distinguishing tag symbol, =nl-cell='s own idiom
+(=packages/nl-safe/src/nl-safe.el=), NOT =cl-defstruct=/=record=:
+
+#+begin_example
+persistent vector: [nl-clj--pvec COUNT SHIFT ROOT TAIL]
+persistent map:    [nl-clj--pmap COUNT ROOT]
+persistent set:    [nl-clj--pset COUNT ROOT]
+persistent list:   ordinary cons cells, nil-terminated (already
+                    Clojure's own representation, no wrapper needed)
+atom:              [nl-clj--atom VALUE WATCHES]
+lazy-seq cell:     [nl-clj--lazy CELL]  CELL an `nl-cell' (nl-safe)
+                   wrapping (THUNK . REALIZED-VALUE-OR-NIL)
+#+end_example
+
+Why not =record=: Doc 195 §2.1 measured, against a built
+=target/nelisp=, that records print with real Emacs =#s(...)= syntax
+but do NOT round-trip through =read-from-string= on this substrate --
+a genuine print/read asymmetry, not merely "records are unreliable."
+Plain tagged vectors round-trip correctly (measured, same section).
+=test/nl-clj-standalone-smoke.el= proves this holds for THIS package's
+own representation specifically, on the real standalone binary, not
+just claims it by analogy.
+
+One small, documented divergence from Doc 195's own literal sketch:
+sets use a distinct =nl-clj--pset= tag rather than sharing =pmap='s
+(the doc's own text: "a map whose values are all the sentinel
+=nl-clj--set-member="). A shared tag would make =nl-clj-map-p=/
+=nl-clj-set-p= unable to tell a map from a set without walking every
+value; a second tag costs nothing (both route through the identical
+HAMT engine in =nl-clj-hash.el=). See =src/nl-clj-core.el='s
+Commentary for the full reasoning.
+
+Trie *internal* nodes (branch arrays inside a vector or a HAMT) are
+deliberately untagged plain vectors/conses -- never handed to a caller
+directly.
+
+* API
+
+** Atom (=nl-clj-atom.el=, Doc 195 §4.5)
+
+#+begin_src elisp
+(require 'nl-clj)
+(let ((a (nl-clj-atom 0)))
+  (nl-clj-swap! a #'1+)                     ; => 1
+  (nl-clj-reset! a 10)                      ; => 10
+  (nl-clj-compare-and-set! a 10 20)         ; => t, now 20
+  (nl-clj-deref a))                         ; => 20
+#+end_src
+
+=nl-clj-swap!=/=reset!=/=compare-and-set!= are single-assignment, not
+a compare-and-set retry loop -- NeLisp's current execution model has
+exactly one thread of Lisp-level control (Doc 195 §2.7), so the retry
+loop's entire reason to exist is absent; see =src/nl-clj-atom.el='s
+Commentary for the full argument and the one honest divergence this
+creates (F runs exactly once, always -- stronger than Clojure's own
+"may retry" contract).  =add-watch=/=set-validator!= are named by Doc
+194 §4.5 as real but peripheral -- deliberately not in this phase.
+
+** Persistent vector (=nl-clj-vector.el=, Doc 195 §4.1)
+
+32-way bit-partitioned trie with a <=32-element tail, matching
+Clojure's own complexity/sharing contract: O(log32 N) =assoc=/=get=,
+O(1) amortized =conj=/=peek=/=pop=.
+
+#+begin_src elisp
+(nl-clj-vector 1 2 3)                       ; construct from items
+(nl-clj-vec '(1 2 3))                       ; construct from any seqable
+(nl-clj-conj v 4)                           ; append
+(nl-clj-assoc v 0 :x)                       ; index update (0..count legal)
+(nl-clj-get v 0)  (nl-clj-nth v 0)          ; get: nil/default on OOB; nth: error
+(nl-clj-count v)  (nl-clj-peek v)  (nl-clj-pop v)
+(nl-clj-subvec v 1 3)
+#+end_src
+
+=nl-clj-subvec= is a deliberate divergence: an eager O(k) rebuild, not
+Clojure's O(1) offset/end-aware view type (Doc 195 §4.1 explicitly
+defers that optimization as separable future work; this package's own
+brief asks for =subvec= in the API, so it ships correctness-first).
+
+** Persistent hash-map / hash-set (=nl-clj-hash.el=, Doc 195 §4.2)
+
+A real HAMT: bitmap-indexed branch nodes (the standard popcount-prefix
+trick), collision buckets for keys whose hash agrees all the way to
+=nl-clj-hash--max-shift=.  A set is the identical engine with values
+ignored.
+
+#+begin_src elisp
+(nl-clj-hash-map :a 1 :b 2)
+(nl-clj-assoc m :c 3)  (nl-clj-dissoc m :a)
+(nl-clj-get m :a)  (nl-clj-contains? m :a)
+(nl-clj-keys m)  (nl-clj-vals m)  (nl-clj-count m)
+
+(nl-clj-hash-set 1 2 3)
+(nl-clj-conj s 4)  (nl-clj-disj s 1)
+(nl-clj-get s 2)  (nl-clj-contains? s 2)
+#+end_src
+
+Deliberate divergence: no small-map array-map special case (Clojure's
+own =PersistentHashMap= flattens <=8-entry maps for cache-friendliness
+before promoting to a true HAMT) -- always-HAMT here, correct but not
+tuned for small maps; Doc 195 §8 leaves this an open question pending
+real usage data.
+
+This file deliberately does NOT use the standard-library =logcount=
+for the popcount step Doc 195 §4.2 itself describes -- a repo-wide
+grep found zero references to it anywhere in this tree, meaning
+nothing has exercised it standalone.  =nl-clj-hash--popcount= is a
+manual bit loop over =logand=/=ash=, both confirmed present in
+=scripts/nelisp-standalone-build.el='s dispatch table.  "Measured, not
+assumed," applied to a primitive choice, not only a fact claim.
+
+** Seq API (=nl-clj-seq.el=, Doc 195 §4.7)
+
+Generic across vector, map, set, lazy seqs, and plain Elisp lists (a
+plain Elisp vector too, as a bonus that costs nothing given the
+dispatch):
+
+#+begin_src elisp
+(nl-clj-seq coll)  (nl-clj-first coll)  (nl-clj-rest coll)  (nl-clj-next coll)
+(nl-clj-cons x coll)
+(nl-clj-into to from)
+(nl-clj-map f coll)  (nl-clj-filter pred coll)  (nl-clj-reduce f init coll)
+(nl-clj-equal a b)   (nl-clj-hash x)
+#+end_src
+
+Eager for an eager COLL (a plain Elisp list, unchanged since before the
+lazy phase); lazy for a lazy COLL: =nl-clj-map=/=nl-clj-filter= over a
+lazy seq return a NEW lazy seq (delegating to =nl-clj-lazy-map=/
+=nl-clj-lazy-filter=, see below) instead of eagerly forcing it, and
+=nl-clj-reduce= always forces (Clojure's own =reduce= contract) --
+`nl-clj-first`/`nl-clj-rest`/`nl-clj-next`/`nl-clj-seq` work
+transparently across both, forcing a lazy COLL exactly one step at a
+time.  Every walker below is a plain =while= loop, not recursion --
+stack-safe over an arbitrarily long seq for free, with no need for
+=nl-loop=/=nl-recur= for the eager walk OR, per =nl-clj-lazy.el='s own
+Commentary (a documented refinement of Doc 195 §4.7's own text on this
+point), for the lazy one either.
+
+A named, documented divergence from Clojure: =nl-clj-rest= and
+=nl-clj-next= are behaviorally identical here.  Real Clojure's own
+distinction only exists because it separates an empty-but-not-=nil=
+=()= from =nil=; this package's seq representation IS a plain Elisp
+list, where empty is always literal =nil= -- there is no distinct
+"empty, not nil" seq object to make the two functions diverge.  Both
+are still defined, under their own names, for full API-surface parity.
+
+** Lazy sequences (=nl-clj-lazy.el=, Doc 195 §4.7's lazy phase)
+
+#+begin_src elisp
+(require 'nl-clj)
+;; the headline demo: an UNBOUNDED range, taken from, terminates
+(nl-clj-lazy-doall (nl-clj-lazy-take 5 (nl-clj-lazy-range)))   ; => (0 1 2 3 4)
+
+;; a lazy pipeline stays lazy end to end: map/filter never touch an
+;; element nothing downstream ever forces
+(nl-clj-lazy-doall
+  (nl-clj-lazy-take 3
+    (nl-clj-filter (lambda (x) (= 0 (mod x 2)))
+      (nl-clj-map (lambda (x) (* x x)) (nl-clj-lazy-range)))))  ; => (0 4 16)
+
+(nl-clj-lazy-seq (cons 1 (cons 2 nil)))       ; a lazy seq realizing to (1 2)
+(nl-clj-lazy-cons 1 coll)                     ; both 1 and coll deferred
+(nl-clj-lazy-take n coll)  (nl-clj-lazy-drop n coll)
+(nl-clj-lazy-take-while pred coll)  (nl-clj-lazy-drop-while pred coll)
+(nl-clj-lazy-range)  (nl-clj-lazy-range end)  (nl-clj-lazy-range start end)
+(nl-clj-lazy-range start end step)
+(nl-clj-lazy-iterate f x)                     ; x, (f x), (f (f x)), ...
+(nl-clj-lazy-repeat x)  (nl-clj-lazy-repeat n x)
+(nl-clj-lazy-cycle coll)
+(nl-clj-lazy-doall coll)  (nl-clj-lazy-dorun coll)   ; force back to eager
+#+end_src
+
+Representation: =[nl-clj--lazy CELL]=, CELL an =nl-cell= (=nl-safe=)
+wrapping =(THUNK . REALIZED-VALUE-OR-NIL)= -- Doc 195 §3.2's own
+sketch, unchanged.  Realize-once and reentrancy-signals-loudly both
+fall out of the SAME mechanism, =nl-with-borrow-mut= wrapping the
+force step: a thunk runs at most once (the second force sees a cached
+result, no re-run); a thunk that forces its own still-unrealized outer
+value -- a real, documented Clojure footgun, not a hypothetical --
+signals =nl-borrow-error= immediately instead of silently
+double-evaluating or recursing forever.  =nl-clj-lazy.el='s own
+Commentary has the full mechanism and the reasoning for why
+=nl-loop=/=nl-recur= (Doc 195 §4.7's own text names them load-bearing
+for this) turn out not to be needed here, named as a deliberate
+refinement rather than a silent gap.
+
+=nl-clj-map=/=nl-clj-filter= (in =nl-clj-seq.el=, not duplicated here)
+are the wired-in lazy-aware entry points -- calling them on a lazy COLL
+returns a lazy result via this file's own =nl-clj-lazy-map=/
+=nl-clj-lazy-filter=, not a second, divergent implementation.
+=nl-clj-first=/=nl-clj-rest=/=nl-clj-next=/=nl-clj-seq=/=nl-clj-count=/
+=nl-clj-nth=/=nl-clj-into=/=nl-clj-conj=/=nl-clj-reduce= (all in
+=nl-clj-seq.el=) work transparently across lazy and eager alike.
+
+=nl-clj-equal=/=nl-clj-hash= exist because plain =equal=/
+=sxhash-equal= walk a tagged vector *structurally* (comparing
+ROOT/TAIL/SHIFT element by element), which is a different question
+from Clojure's own logical collection equality (comparing the
+*sequence of elements*, regardless of internal tree shape -- Doc 195
+§3.2's own named correctness trap).  A named, accepted footgun this
+does NOT solve: passing an nl-clj collection as a key into a *plain*
+=(make-hash-table :test 'equal)= silently uses the wrong notion
+(tree-shape, not content) -- =define-hash-table-test= is void-function
+on this substrate (Doc 195 §2.3), so there is no way to register the
+right one as a real hash-table =:test= at all.
+
+* Naming (Doc 195 §3.1)
+
+Every public symbol is =nl-clj-= prefixed.  Elisp already has
+=assoc=/=get=/=pop=/=atom=/=concat= with different meanings (Doc 195
+§2.6's measured collisions); this package never shadows them.
+
+=nl-ns-in= sugar (=packages/nl-ns=) is optional, demonstration-only,
+and never required to call any function here directly:
+
+#+begin_src elisp
+(require 'nl-ns)
+(nl-ns-define nl-clj :prefix "nl-clj-"
+  :members (conj dissoc get into count seq first rest
+            swap! reset! compare-and-set!))
+(nl-ns-in nl-clj
+  (defun demo (v) (conj v 1)))   ; expands (conj v 1) to (nl-clj-conj v 1)
+#+end_src
+
+=assoc=, =get=, =pop=, =atom=, =concat= are deliberately never listed
+in a =:members= block -- =nl-ns-in='s whole-body rewrite (Doc 195
+§2.6) would otherwise silently redirect a plain Elisp =(atom x)= call
+site inside the same block to =nl-clj-atom=.  This package still
+exports =nl-clj-assoc=/=nl-clj-get=/=nl-clj-atom=/etc. as ordinary
+qualified names either way; only the bare-name sugar for these five
+specific names is withheld.
+
+* Errors
+
+=nl-clj-error= (parent, derives from =nl-prelude='s =nl-error=),
+=nl-clj-index-error= (out-of-bounds =nth=/=assoc=/=pop=/=subvec=),
+=nl-clj-type-error= (wrong collection type for the operation).
+
+** Channels and =go= blocks (=nl-clj-async.el=, Doc 195 §4.6)
+
+Not part of =(require 'nl-clj)= -- pulls in =nelisp-actor= too, so
+callers who only want persistent data structures are not forced to
+load the actor scheduler.  =(require 'nl-clj-async)= explicitly.
+
+#+begin_src elisp
+(let ((ch (nl-clj-chan)))               ; unbuffered (rendezvous)
+  (nl-clj-chan 4)                        ; or buffered, 4 slots
+  (nl-clj-go (nl-clj->! ch :hi) :sent)   ; spawn; returns a channel
+                                          ; receiving :sent
+  (nl-clj-close! ch)
+  (nelisp-actor-run-until-idle)          ; drive the scheduler
+  (nl-clj-<!! ch))                       ; blocking take, top level
+(nl-clj-alts! (list ch1 ch2 (list ch3 :put-val)))  ; inside go: park
+                                                     ; until exactly
+                                                     ; one is ready
+#+end_src
+
+=alts!= reuses =nl-safe='s =nl-cell= as a claim-once race adjudicator
+per §4.6's own design, wrapped in a small =cl-defstruct= record
+(=nl-clj-async--alts-token=) because =nelisp-send='s own message-copy
+policy deep-copies plain vectors -- including =nl-cell= -- and a
+shared claim cell needs every mediator racing for it to see the SAME
+one, not a private copy; see =nl-clj-async--alts-token='s own
+Commentary for the measurement behind that.
+
+Fully ERT-tested on host Emacs (29 cases, Clojure's own documented
+reference semantics as the control -- no host-Emacs analog for
+core.async exists to differentially test against, per §4.6's own
+framing).  Standalone: =nl-clj-go= and this package's own channel
+mediator are proven via a real, multi-round-trip =go= ping/pong
+exchange (=nl-clj-async-standalone-smoke.el=).  That exchange now uses
+=nl-clj-<!=/=nl-clj->!= directly, the smoke separately executes one
+park point of each wrapper twice from the same =while=, and it calls
+the baked demo twice in one process.
+
+* Next phases (Doc 195 §5/§6, out of scope this phase)
+
+- *Transients* (§4.4): reuses =nl-safe='s =nl-cell= borrow-cell fence
+  as the mutability boundary and the "freeze forever" =persistent!=
+  trick -- no new checking mechanism needed, cheap once §4.1/§4.2 have
+  callers to make transient.  (The lazy-seq phase already reuses this
+  same =nl-cell= mechanism a second time, for reentrant-force
+  protection instead of the transient/persistent boundary -- see
+  "Lazy sequences" above; the channels/=go= blocks phase similarly
+  builds on already-standalone-proven =nelisp-actor= primitives --
+  see "Channels and =go= blocks" above.)
+- *Refs/STM* (§5.1) and *true multicore* (§5.2): explicitly NOT
+  recommended for this library's own roadmap (Doc 195's own verdict)
+  until a real second thread of Lisp-level execution and a concurrent-
+  safe GC story exist -- building either now would be a facade, not
+  infrastructure.
+
+* Testing
+
+Host Emacs (part of =make test= at the repo root; the root Makefile
+globs =packages/*/test/nl-*-test.el=):
+
+#+begin_src sh
+emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-safe/src \
+  -L packages/nl-clj/src -L packages/nl-clj/test \
+  -l ert -l nl-clj-atom-test -l nl-clj-vector-test \
+  -l nl-clj-hash-test -l nl-clj-seq-test -l nl-clj-lazy-test \
+  -f ert-run-tests-batch-and-exit
+#+end_src
+
+Standalone NeLisp (no Emacs, no ert -- a minimal shim runs the same
+test bodies; dependencies are loaded by explicit path, matching
+=nl-safe=/=nl-prelude='s own smoke runners):
+
+#+begin_src sh
+./target/nelisp --load packages/nl-clj/test/nl-clj-standalone-smoke.el
+#+end_src
+
+The standalone smoke additionally proves the specific claim this
+package's representation choice depends on: it =prin1=/=read-from-
+string='s a persistent vector on the live binary and asserts the
+result is =equal= to the original AND still behaves as a working
+vector afterward -- the exact property Doc 195 §2.1 found =record=
+lacks on this substrate; and, for the lazy phase, that an UNBOUNDED
+=nl-clj-lazy-range= taken from terminates, and a range whose START is
+already past =most-positive-fixnum= advances by promoting to a Bignum
+(this branch's own bignum Phase B, Doc 190) rather than signalling
+=overflow-error=, on the real standalone binary.
+
+Async (=nl-clj-async.el=; host Emacs, part of =make test=):
+
+#+begin_src sh
+emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-safe/src \
+  -L packages/nelisp-actor/src -L packages/nl-clj/src -L packages/nl-clj/test \
+  -l ert -l nl-clj-async-test -f ert-run-tests-batch-and-exit
+#+end_src
+
+Standalone go/chan (proves =nl-clj-go='s own return-channel and this
+package's channel mediator and both parking wrappers survive repeated
+resumption in a real, multi-round-trip ping/pong exchange):
+
+#+begin_src sh
+./target/nelisp --load packages/nl-clj/test/nl-clj-async-standalone-smoke.el
+#+end_src
+
+Regenerate the standalone bake after editing =nl-clj-async.el= or
+=examples/nl-clj-async/go-ping-pong.el=: =make nl-clj-async-cps-baseline=.
+
+* Follow-ups
+
+- Small-map array-map optimization (Doc 195 §8, open question).
+- Faster =nl-clj-vector--to-list= (currently repeated =nth=; a direct
+  trie walk would be O(n) instead of O(n log32 n)).
+- =add-watch=/=set-validator!= for atoms (Doc 195 §4.5, peripheral).
+- Chunked-seq (Clojure's real 32-wide batch realization for lazy-seq
+  cache/throughput, Doc 195 §4.7's own noted divergence): not in this
+  cut -- a real, separable performance optimization, not a correctness
+  gap; every lazy-seq cell here realizes one element at a time.
+- The remaining "Next phases" items above, in the build-first order
+  Doc 195 §6 ranks them.
+
+* nl-clj-future — cooperative pmap/future/pcalls (Doc 199 Tier 1)
+
+Opt-in via =(require 'nl-clj-future)= (not pulled by the umbrella =nl-clj=,
+same as =nl-clj-async=).  Clojure-shaped concurrency vocabulary:
+
+- =(nl-clj-future THUNK)= — enqueue a 0-arg worker; returns a handle.
+- =(nl-clj-deref F)= / =(nl-clj-future-await F)= — realise the value.
+  =nl-clj-deref= is polymorphic: it derefs atoms *and* futures.
+- =(nl-clj-pcalls THUNK...)= — run each; values in argument order.
+- =(nl-clj-pmap F COLL)= — F over COLL (any finite =nl-clj-seq= input);
+  results in COLL order.
+
+*Correct today, zero speedup today.*  One thread of Lisp execution: the
+workers run to completion cooperatively, so wall-clock is the *sum* of
+their CPU time, not the max.  This is the honest library ceiling Doc 199's
+owner-constraint predicts.  The value is *API stability*: these signatures
+are fixed (Doc 199 §7) so the implementation under =nl-clj-future= can
+later swap this deferred run-queue for a real =nl-thread-spawn= (Doc 199
+§4/§6) with no source change in any caller.
+
+*§7 worker-body discipline* (checkable, not yet load-bearing): a worker
+thunk must reach shared state only through nl-clj's immutable persistent
+structures or an explicit nl-safe borrow cell — never a bare shared
+mutable cons/vector/hash-table.  Harmless under the cooperative scheduler
+(no real interleaving), but a real race the day the runtime tiers land.
+
+The discipline has an opt-in, scoped lint mode; it is off by default:
+
+#+begin_src elisp
+(nl-clj-future-with-lint
+  (nl-clj-pmap worker inputs))
+(nl-clj-future-lint-violations) ; newest-first nl-safe records, or nil
+#+end_src
+
+The scope enables the existing =nl-safe-log-violations= logger while its
+body drives the workers, then retains that scope's records even when a
+worker signals.  The violation itself is still signalled; the lint does
+not swallow or change nl-safe errors.  It catches mistakes nl-safe can
+observe: conflicting borrows, =nl-cell-set= without an exclusive borrow,
+and checked fat-pointer bounds/generation violations.
+
+This is a lint, not a race detector.  Today there is no worker
+interleaving, and nl-safe does not intercept ordinary =setcar=/=aset=/
+=puthash=, prove that captured data is immutable, or expose a hook for
+holding a borrow across an actor yield.  Therefore those cases cannot be
+reported by this mode, nor can it restore nl-safe checks that were compiled
+out with =nl-safe--enabled= nil; use nl-clj persistent structures or
+explicit nl-safe cells by discipline.  When the lint is not explicitly
+invoked, the existing future/pmap/pcalls worker path is unchanged: there is
+no flag test, dynamic binding, or nl-safe load on that path, hence no
+disabled-mode runtime cost.
+
+Tests: =make test-one FILE=packages/nl-clj/test/nl-clj-future-test.el= (15
+ERT) and =make test-one FILE=packages/nl-clj/test/nl-clj-future-lint-test.el=
+(2 ERT).  Standalone: =make nl-clj-future-standalone-smoke= (needs no
+=generator.el= — a future worker never parks, so it runs directly on
+=target/nelisp=; all 17 future/lint tests + a 10000-worker drive).

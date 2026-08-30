@@ -126,7 +126,21 @@ against that image."
     source))
 
 (defun nelisp-runtime-image--read-file (path)
-  "Read PATH as a string or signal an error."
+  "Read PATH as a string or signal an error.
+`rdf'/`nl_bi_read_file' hands back an EMPTY STRING, not an error and not
+nil, for a file it could not open (`wf_copy32_strnil') -- the same value
+an empty file produces, so a bare `stringp' check below cannot tell them
+apart.  This is the exact defect class `scripts/nelisp-standalone-
+build.el's `bf_load'/`bf_require' already carry a comment about (\"load
+reported success for a path that does not exist\") and already work
+around the same way: probe readability before reading, at every
+caller of the raw primitive, rather than trusting its return value to
+distinguish missing from empty.  `extend-runtime-image' on a BASE-IMAGE
+path that does not exist used to exit 0 and silently write an
+OUT-IMAGE containing only the extension, not the base -- caught by
+`nelisp-standalone--reader-extend-runtime-image-smoke's negative case."
+  (unless (file-readable-p path)
+    (error "cannot read runtime image: %s" path))
   (let ((source (if (fboundp 'nelisp--eval-source-string)
                     (rdf path)
                   (nelisp--syscall-read-file path))))

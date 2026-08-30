@@ -13,7 +13,10 @@
 ;; silent exit 127 and no diagnosis.  The ceiling was measured at
 ;; ~136k rec levels -- a self-recursive elisp function survived depth
 ;; 65000 and SIGSEGVed by 72000 -- against a comment claiming ~404k.
-;; rec_max is now 100000, ~74% of the measured ceiling.
+;; Doc 152 Stage 3 roots eval transients, so this non-tail probe now also
+;; holds root-depth=3N+6.  The root region was enlarged 1 MiB -> 4 MiB
+;; (32768 -> 131072 entries) so that budget stays well clear of rec_max;
+;; rec_max stays 100000, ~74% of the measured native-stack ceiling.
 ;;
 ;; This runs on the standalone binary and asserts both halves:
 ;;   1. recursion inside the budget still returns normally, and

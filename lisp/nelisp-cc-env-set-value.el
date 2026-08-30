@@ -83,11 +83,19 @@
     ;; scratch-ptr: *const Sexp — pre-built scratch vector.
     ;; _pad:        i64.
     ;;
-    ;; Arity 4 (even) ✓; extern-call is arg 0 of `and' ✓.
+    ;; -4 is the mirror guard's refusal sentinel.  Translate it to the
+    ;; evaluator's ordinary rc=1 error so `condition-case' can catch the
+    ;; already-stashed `nelisp-worker-mirror-mutation' signal.  The runtime
+    ;; return is threaded through an argument, not a cc-unit let binding.
+    (defun nelisp_env_setv_mirror_finish (set-rv _pad)
+      (if (= set-rv (- 0 4)) 1 0))
+
+    ;; Arity 4 (even) ✓; extern-call result is consumed as a helper arg ✓.
     (defun nelisp_env_setv_mirror (mirror-ptr name-ptr scratch-ptr _pad)
-      (and (extern-call nelisp_mirror_set_value_or_insert
-                        mirror-ptr name-ptr scratch-ptr 0)
-           0))
+      (nelisp_env_setv_mirror_finish
+       (extern-call nelisp_mirror_set_value_or_insert
+                    mirror-ptr name-ptr scratch-ptr 0)
+       0))
 
     ;; nelisp_env_set_value
     ;;
@@ -138,7 +146,8 @@
           0
         (if (= (sexp-tag name-ptr) 4)
             1
-          (if (= (sexp-tag name-ptr) 5) 1 0))))
+          (if (or (= (sexp-tag name-ptr) 5)
+                  (= (sexp-tag name-ptr) 14)) 1 0))))
     (defun nelisp_env_set_value
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)

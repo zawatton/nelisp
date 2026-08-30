@@ -1,194 +1,154 @@
 # NeLisp v1.0.0
 
-**Release date**: 2026-04-27
+**Release date**: 2026-08-26
 **Tag**: `v1.0.0`
-**Tier matrix**: Linux x86_64 = blocker (CI gate); macOS arm64 / Linux arm64 = `v1.0 限定` best-effort 95%+ (Doc 32 v2 §11).
+**Previous stable**: `v0.6.0` (2026-06-26)
 
-> ⚠ Non-native English author note: phrasing edited with LLM
-> assistance, technical claims verified against repo state on tag
-> commit. File issues with anything unclear.
+> Non-native English author note: phrasing was edited with LLM assistance.
+> The technical claims are mine and each figure here was measured on the
+> release tree — see *How these numbers were obtained* at the end.
 
-## Highlights
+## Why this is 1.0
 
-- **Stage D v2.0 — bundled-Emacs tarball**. `bin/anvil` resolves a
-  stripped Emacs binary from `$ANVIL_HOME/emacs/bin/emacs` first, so
-  hosts without `apt install emacs` can run NeLisp. Existing dev
-  checkouts and earlier Stage D tarballs fall through to the system
-  PATH unchanged. (Doc 32 v2 §3.3 LOCKED.)
-- **Phase 8.0 — Rust-side minimal Elisp interpreter + MCP server**. A
-  ~421 KB `anvil-runtime` Rust binary implements the reader, evaluator,
-  MCP stdio JSON-RPC server, and `anvil-host-*` tool registry.
-  `bin/anvil mcp serve --no-emacs` starts an MCP server with **zero
-  Emacs process spawn**. (Doc 44 LOCKED 2026-04-27.)
-- **`v1.0` 完遂条件 #4 ACHIEVED** — true standalone binary distribution
-  available, removing the Emacs-install gate that previously blocked
-  NeLisp public announcement
-  (`feedback_nelisp_announcement_standalone_gate.md` cleared).
+Two things, and they are the whole reason for the version number.
 
-## Phase ship roll-up
+**The runtime collects garbage by default.** Before this release, NeLisp's
+precise-root collector existed and was correct, but it only ran if you flipped
+a debug switch. A default build grew without bound. On a 200,000-iteration
+allocating loop, peak RSS falls from **669,936 KiB to 339,920 KiB (-49.3%)**,
+and RSS is now flat from 500k to 1M iterations (352,624 → 352,620 KiB) while
+**256 MiB is returned to the OS**. It is also *faster* — 5,204 ms collected
+versus 8,125 ms uncollected — because a small heap keeps locality and avoids
+further growth `mmap`s. Memory and speed were not a trade-off here.
 
-| Phase | Topic                                          | Status   |
-|-------|------------------------------------------------|----------|
-| 7.0   | Rust syscall surface trimmed to ~819 LOC       | SHIPPED  |
-| 7.1   | NeLisp native compiler scaffold                | SHIPPED  |
-| 7.2   | Allocator (3-tier ratio bench harness)         | SHIPPED  |
-| 7.3   | GC inner (bench harness, native fast-path TBD) | SHIPPED  |
-| 7.4   | Coding (UTF-8 / SJIS / EUC-JP tier-A bench)    | SHIPPED  |
-| 7.5   | Integration + standalone E2E                   | SHIPPED  |
-| 7.5.3 | `stage-d-v2.0` bundled-Emacs tarball           | SHIPPED  |
-| 8.0.1 | Rust Elisp reader (47 tests, 1456 LOC)         | SHIPPED  |
-| 8.0.2 | Rust Elisp evaluator (24 special forms, ~60 builtins, 3417 LOC) | SHIPPED  |
-| 8.0.3 | NeLisp self-host bridge (559 LOC)              | SHIPPED  |
-| 8.0.4 | Rust MCP stdio JSON-RPC server (598 LOC)       | SHIPPED  |
-| 8.0.5 | `bin/anvil --no-emacs` Rust binary dispatch    | SHIPPED  |
-| 8.x   | Reader parity (backquote / char-lit / `#'`)    | SHIPPED  |
-| 8.x   | Macro/define extension (require / pcase / cl-defun) | SHIPPED |
-| 8.0.5 | anvil-host MCP wire (4 tools end-to-end)       | SHIPPED  |
+**Ordinary allocating Elisp runs on real OS threads.** "Parallelism" used to
+mean cooperative scheduling on one thread. It now means `clone(2)` workers
+evaluating unrestricted allocating Elisp, with per-thread precise roots, a
+park barrier, atomic cache publication, and a catchable refusal of worker
+writes to the shared globals mirror.
 
-## Feature highlights
+## What is in it
 
-### `bin/anvil mcp serve --no-emacs` — MCP server with zero Emacs spawn
+### Garbage collection (Doc 152, all stages)
 
-```
-$ bin/anvil mcp serve --no-emacs
-{"jsonrpc":"2.0","id":1,"method":"initialize", ...}
-{"jsonrpc":"2.0","id":2,"method":"tools/list", ...}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"anvil-host-info","arguments":{}}}
-```
+The collector is on by default, with mid-form collection at `while` backedges.
+Enabling it surfaced a latent defect worth naming: the mark phase asserted that
+char-tables and bool-vectors "do not occur in the reader graph" and so marked
+such a box without walking its children. They do occur — the reader's own
+char-table smoke keeps them in the global mirror — so those children were
+reachable-but-unwalked. Nothing had collected mid-form by default, so nothing
+had ever noticed. Precise child walkers for both now ship.
 
-The `--no-emacs` flag dispatches to `target/release/anvil-runtime`
-when present, otherwise falls back to `emacs --batch` (3-year safety
-window per Doc 44 §3.6 LOCKED). `--strict-no-emacs` refuses the
-fallback.
+Doc 152's planned Stage 6, a write barrier, was **retired rather than
+implemented**: the park barrier below stops every mutator before marking, so
+the tri-colour invariant holds by construction instead of by instrumenting
+every store.
 
-### Stage D v2.0 — install on a host without Emacs
+### True multicore (Doc 199, Tiers 1–3b)
 
-```bash
-# Build the bundled tarball (~25 MB compressed)
-make stage-d-v2-tarball
+- **Tier 1** — `nl-clj-future`, `nl-clj-pcalls`, `nl-clj-pmap`, cooperative.
+- **Tier 2** — GC-free `clone(2)` workers with a publish-happens-after-join
+  protocol.
+- **Tier 3a** — bounded allocating tasks sharing the bump arena, safe because
+  the cursor bump is already lock-free CAS and no mark/sweep runs mid-section.
+- **Tier 3b** — unrestricted allocating Elisp: a 64-entry per-thread root
+  registry, the park barrier, claim-fill-publish for the macro and
+  function-value caches, and `nelisp-worker-mirror-mutation` raised (catchably)
+  when a worker tries to write the shared globals mirror.
 
-# Install (extracts to ~/.local/share/anvil-stage-d-v2.0/)
-./release/stage-d-v2.0/install.sh --from $(pwd)/dist
+The gate asserts the barrier actually engaged rather than skipping an empty
+registry: `PARK-DIAG parked=3 current=0 missed=0 collections=1` — a real
+collection with three live workers parked.
 
-# Verify bundled Emacs is the active binary
-$HOME/.local/share/anvil-stage-d-v2.0/bin/anvil version
-# anvil stage-d-v0.2-pre
-#   emacs            GNU Emacs 30.1 (bundled)
-```
+### Standard Emacs names, not a NeLisp dialect
 
-The `(bundled)` marker confirms the self-contained path. `(system)`
-means the launcher fell through to host PATH (= dev checkout).
+An early NeLisp exposed its own vocabulary, so code written for it was code
+written for NeLisp. Docs 184, 188 and 194 wired standard Emacs names over
+those models. All of these are `fboundp` in a default `target/nelisp` with no
+`--load`: `current-buffer`, `set-buffer`, `generate-new-buffer`, `insert`,
+`point`, `goto-char`, `buffer-string`, `buffer-substring`, `erase-buffer`,
+`make-process`, `process-send-string`, `process-filter`, `set-process-filter`,
+`accept-process-output`, `process-status`, `process-live-p`,
+`make-network-process`, `open-network-stream`, `run-at-time`, `cancel-timer`,
+`timerp`, `add-hook`, `run-hooks`. The `nelisp-`-prefixed functions remain as
+the layer underneath; they are the implementation, not the interface.
 
-## Soak gate result (2026-04-27)
+### Opt-in language extensions
 
-| Tier             | Duration | RSS growth | Result               |
-|------------------|----------|------------|----------------------|
-| blocker (CI)     | 1h       | < 5 MB     | PASS (linux-x86_64)  |
-| post-ship audit  | 24h      | < 10 MB    | scheduled (weekly)   |
+Every one follows the same rule, and the rule is what makes them usable:
+**loading one changes nothing about plain Elisp semantics.** You pay only
+where you annotate.
 
-## Test status
+- **`nl-safe`, `nl-static`, `nl-check`, `nl-contract`** — Rust-style
+  discipline for the *runtime implementation layer* (raw pointers,
+  `syscall-direct`, arenas, mmap), which is where the danger actually lives;
+  ordinary Lisp is already memory-safe. Borrow cells enforcing sharing XOR
+  mutation, fat pointers with generation-based use-after-free detection, an
+  `nl-unsafe` boundary under a CI ratchet, macroexpansion-time totality and
+  type annotations, and Racket-style boundary contracts with blame.
+- **`nl-ns`** — Emacs Lisp has one obarray, so a second `defun` of a name
+  silently wins. `nl-ns` rewrites nothing and adds nothing at run time; it
+  reads files and reports crossings, under a CI ratchet.
+- **`nl-clj`** — persistent vector, hash-map and hash-set, `atom`, and an
+  eager *and* lazy seq API. The lazy seq uses `nl-safe`'s borrow cell for
+  realize-once semantics, so the libraries compose rather than coexist.
+- Also: `nl-num` (numeric tower), `nl-hygiene` (hygienic macros), `nl-prelude`,
+  `nl-condition`, `nl-parens` — 39 packages in total.
 
-- `cargo test --lib`: **236 pass / 0 failed**
-- ERT suite: wired via `make test`
-- `tools/soak-test.sh` 1h soak: PASS on linux-x86_64
+### Networking, buffers, bignums
 
-## Install instructions
+Doc 184 processes and event loop; Doc 194 `make-network-process`,
+`open-network-stream`, `/etc/hosts` lookup, a DNS-over-TCP resolver,
+nonblocking sockets with `:nowait`/`:server`, and IPv6 — all in the default
+binary. Doc 188 buffers, Doc 190 bignums, and full backquote all ship; the
+v0.6.0 README still listed all three as deferred.
 
-### Path A — bundled tarball (no Emacs install required)
+## Verification
 
-```bash
-# Pre-v1.0 (build locally)
-make stage-d-v2-tarball
-./release/stage-d-v2.0/install.sh --from $(pwd)/dist
+| Gate | Result |
+|------|--------|
+| `nelisp-ai.sh test` | 5,466 tests / 5,309 expected / **0 unexpected** / 157 skipped |
+| `make emacs-parity` | **19,961 checks, 0 findings** — differential against real stock Emacs |
+| `nelisp-ai.sh verify` | VERDICT PASS (66 gates) |
+| `nelisp-ai.sh check` | PASS (22 gates) |
+| `make bench-aot-tco` | 0.997x against a 0.95 floor |
+| `make standalone-midform-gc-bounded` | at 1M: `FIRED=5 RECLAIMED=4 RECLAIMED_BYTES=268435456 RELEASE_FAILURES=0` |
+| CI | six lanes (Linux/macOS/Windows × Emacs 29.4/30.1) plus a fast Linux `gates` job |
 
-# Post-v1.0 (curl from GitHub Release; pending upload of v1.0.0 artifact)
-curl -fsSL https://github.com/zawatton/nelisp/releases/download/v1.0.0/install.sh | bash
-```
+`emacs-parity` is the number that matters most: it diffs behaviour against a
+real Emacs rather than against NeLisp's own idea of correct.
 
-Add to `PATH`:
+## Scale
 
-```bash
-export PATH="$HOME/.local/share/anvil-stage-d-v2.0/bin:$PATH"
-```
+`lisp/` 234 files / 88,447 lines · `src/` 42 / 57,859 · `scripts/` 20 / 39,799
+· `packages/` 212 / 55,338. The standalone binary is 7.66 MB (1.77 MB
+gzipped). **Zero `.rs` files remain** — the evaluator, reader, compiler,
+allocator, GC, object writers, native emitters and syscall surface are Elisp.
 
-### Path B — Rust binary only (smallest deployment)
+## Known limits
 
-```bash
-git clone https://github.com/zawatton/nelisp.git
-cd nelisp
-cargo build --release --manifest-path nelisp-runtime/Cargo.toml
-./bin/anvil mcp serve --no-emacs
-```
+Stated plainly, and each one checked against the binary rather than recalled:
 
-The `anvil-runtime` binary (target/release) is ~421 KB.
+- No windows or frames (`selected-window`, `make-frame` absent by design —
+  display is Layer 3, `../nelisp-gui`).
+- Buffers yes; `make-marker`, `overlay-start` and `save-excursion` no.
+- A Tier 3b worker's arena share returns at process exit, not task end.
+- Workers cannot write the shared globals mirror — such a write signals rather
+  than serialising. The read path is unrestricted.
+- Sockets are Linux-only. Windows (Doc 194 P6) is blocked on PE import-table
+  emission, which does not exist yet; other targets get a catchable
+  `nelisp-unsupported-primitive`.
+- Mid-form collection safepoints are `while` backedges only.
+- Linux arm64 is best-effort; Linux x86_64, macOS arm64 and Windows x86_64 are
+  the gated native standalone targets.
 
-### Path C — clone + dev checkout
+## How these numbers were obtained
 
-```bash
-git clone https://github.com/zawatton/nelisp.git
-cd nelisp
-make
-make test
-```
-
-This requires a host Emacs install (Phase 8.0 evaluator does not yet
-cover the full surface required for self-bootstrap; default
-`--no-emacs` will fall back to `emacs --batch` if needed).
-
-## Verifying a downloaded artifact
-
-```bash
-sha256sum --check stage-d-v2.0-linux-x86_64.tar.gz.sha256
-```
-
-GPG signing lands in v2.1+ (Doc 32 v2 §2.5 + §8); v2.0 ships an
-ad-hoc signature placeholder only.
-
-## Known limitations (carried over from `RELEASE_NOTES.md`)
-
-- *macOS notarization*: out of v2.0 scope. Ad-hoc signature only.
-- *Windows native `--no-emacs`*: out of v2.0 scope. Stage A path
-  (Doc 18) still handles Windows via msys2 mingw64.
-- *ARM 32-bit*: out of v2.0 scope.
-- *Self-update*: no `bin/anvil --self-update` in v2.0.
-- *Phase 8.0 deferred features*: GC bridge, bignum, full backquote
-  semantics, full `save-excursion`. Most existing Elisp packages
-  will not run unmodified through `--no-emacs` yet.
-
-## Doc references
-
-- `docs/design/27-phase7-c-runtime-self-impl.org` — Phase 7+ syscall
-  surface (LOCKED 2026-04-25 v2).
-- `docs/design/28-phase7.1-native-compiler.org` — NeLisp native
-  compiler (LOCKED 2026-04-25 v2).
-- `docs/design/32-phase7.5-integration.org` — Phase 7.5 integration
-  + standalone E2E (LOCKED 2026-04-25 v2, includes tier matrix +
-  soak gate).
-- `docs/design/44-phase8.0-rust-elisp-interpreter.org` — Phase 8.0
-  Rust Elisp interpreter (LOCKED 2026-04-27).
-- `docs/design/18-stage-d-standalone.org` — Stage D launcher
-  (LOCKED).
-- `RELEASE_NOTES.md` — release-by-release Stage D v2.0 changelog.
-- `README-stage-d-v2.0.org` — stage-d-v2.0 quickstart.
-
-## Acknowledgments
-
-NeLisp builds on the methodology established by:
-
-- SBCL (Rhodes 2008) — Lisp implemented in itself, on a small non-Lisp
-  runtime.
-- Emacs native-comp (Corallo 2020) — AOT compilation reference for
-  Phase 7.1 design.
-- PyPy / RPython — self-hosting interpreter precedent.
-
-Sister project `anvil.el` (https://github.com/zawatton/anvil.el)
-provides the MCP tool surface that `anvil-host-*` tools port to the
-NeLisp Rust binary.
-
-## License
-
-GPL-3.0+ (matches Emacs).
-
----
-
-🤖 Release notes drafted with assistance from Claude.
+RSS figures come from `wait4(2)`'s own `ru_maxrss` for each child process
+(not `RUSAGE_CHILDREN`, which would carry a maximum over from an earlier
+case). Timings are best-of-three on one machine, comparing the same binary
+with the collector armed and disarmed, so the delta is not a build
+difference. Test, gate and parity counts are the gates' own `GATE-COUNT`
+lines. Line counts are `wc -l`. Binary size is `stat -c %s`; note that a
+local build measures larger than CI's for the same commit, so size should be
+judged from CI's own report or from a BASE-vs-HEAD delta.

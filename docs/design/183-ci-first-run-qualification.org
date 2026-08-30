@@ -1,0 +1,265 @@
+#+TITLE: Doc 183 — CI first-run qualification
+#+AUTHOR: nelisp (design: Claude Fable 5 + zawatton)
+#+DATE: 2026-08-22
+#+STATUS: DRAFT — a qualification PLAN, not a completed run.  Executing it
+#+STATUS: requires a push authorization from the owner (this design branch
+#+STATUS: was built in a scratch clone with no push rights to a real CI-
+#+STATUS: connected remote); nothing in this doc has been observed to pass
+#+STATUS: on an actual GitHub Actions runner.
+
+* §0 TL;DR
+
+Commit =06ed9bd3a5a0b91db86f99bebda5caf5d8bfd208= ("Wire the AI toolchain
+into CI") added =tools/ai/nelisp-ai.sh check|native-artifact|perf|smokes|
+extras= plus =binary-size-ratchet= to =.github/workflows/ci.yml='s Linux
+lane, closing a gap where 16 of =tools/ai/gates.expected='s 33 required
+gates had never run in CI at all. Its own commit message says plainly:
+"none of this has been observed to pass on an actual GitHub Actions
+runner." Separately, a sibling branch already diagnosed and fixed three
+more first-run risks in the arm64/macos-intel release path (§1.2), also
+unverified on real hardware by its own admission. This doc designs the
+qualification pass that closes both gaps at once: what to push, which
+workflows fire, the specific failures to expect and why, how to tell
+environment noise from a real logic bug on first contact with a runner,
+and the exit criterion that says the pass is done.
+
+* §1 Problem: two wirings, neither observed on a real runner
+
+** §1.1 The AI-toolchain wiring itself
+
+Reading =06ed9bd3a5a0b91db86f99bebda5caf5d8bfd208='s own message
+(quoted in full because it is the single best-grounded source for this
+doc's risk list, having been written by the same session that made the
+change): the new Linux-lane steps were validated by running each exact
+command locally and reading its exit code — =check= (85s, all pass),
+=native-artifact= (9/9), =perf= (9/9), =smokes= (28/28), =extras= (9
+members, 2m47s) — and =nelisp-ai.sh verify= reported =VERDICT: PASS (48
+gates)= on that machine. The commit message names its own biggest known
+risk without being asked: *=wasm-runtime-image-smoke= (inside =extras=)
+and =wasm-dtw-skeleton-smoke= (inside =check=) both call =node= directly
+with no availability guard, and neither this workflow nor any prior step
+in it used =node= before this change* — i.e. two gates whose first-ever
+CI execution depends on a tool (=node=) this workflow has never depended
+on before, un-guarded (contrast §2's pattern for a *guarded* dependency,
+e.g. =nelisp-ai.sh='s own =command -v sha256sum= fallback). This doc
+calls these the *node-guard gates* throughout.
+
+** §1.2 A second, already-diagnosed-and-fixed risk pair, sibling to this branch
+
+Independently of the AI-toolchain wiring, =origin/fix/standalone-
+runnable-host-arm64-macos-intel= — based on the exact same
+=feat/native-observability= tip this design branch is also based on —
+diagnosed and fixed two more first-run risks, entirely by reading source
+and probing locally, with the identical "not CI-verified" caveat in every
+one of its three commit messages:
+
+1. *=nelisp-standalone--target-runnable-on-host-p= had no case for
+   =linux-aarch64= or =macos-x86_64=* (=scripts/nelisp-standalone-
+   build.el=; its =pcase= default was =(_ nil)=). CI has been building on
+   an =ubuntu-22.04-arm= runner (=release-qualification.yml='s
+   =build-linux-arm64=) and a =macos-15-intel= runner (=stage-d-v3.0-
+   standalone.yml='s =macos-x86_64=) already — but every binary-tier gate
+   that asks this predicate (=standalone-reader-test=, =native-artifact=,
+   =perf=, =selfhost=, =nelix-native-hot=) unconditionally answered "not
+   runnable" on both, even running natively, so those two platforms' own
+   binaries have only ever been checksummed, never executed. Fixed
+   (=fe3ec9328=), with a 5-tuple =cl-letf=-mocked probe as its own
+   before/after proof (probe table reproduced verbatim below since it is
+   the exact shape this doc's own qualification pass should re-run post-
+   merge to confirm it still holds on this branch's own tree):
+
+   #+begin_example
+   target          system-type   configuration                 before  after
+   linux-x86_64    gnu/linux     x86_64-pc-linux-gnu             t       t
+   windows-x86_64  windows-nt    x86_64-w64-mingw32               t       t
+   macos-aarch64   darwin        aarch64-apple-darwin23.4.0       t       t
+   linux-aarch64   gnu/linux     aarch64-unknown-linux-gnu       nil      t
+   macos-x86_64    darwin        x86_64-apple-darwin23.4.0       nil      t
+   #+end_example
+
+2. *=build-linux-arm64= shipped a =linux-x86_64= binary mislabeled
+   =linux-arm64=*. =tools/build-release-artifact.sh= never set
+   =NELISP_STANDALONE_TARGET=, and the Makefile's own
+   =STANDALONE_GATE_TARGET= default only branches on =$(OS)= (Windows or
+   not) — never on host architecture — so it silently fell back to
+   =linux-x86_64= on the =ubuntu-22.04-arm= runner too. This was
+   independently confirmed by reading the exact same fallback expression
+   this doc's own investigation found (=Makefile= L303) before finding
+   that the fix already existed. Fixed in two steps (=19fb5150f=,
+   =53bd1547b=): first setting =NELISP_STANDALONE_TARGET=linux-aarch64=
+   explicitly on the CI step, then — because that alone only trades a
+   silent wrong binary for a loud "file not found" (cross-built targets
+   get arch-suffixed output paths, e.g. =target/nelisp-aarch64=, so the
+   script's hardcoded =STANDALONE_BIN="target/nelisp"= would then find
+   nothing) — making the script ask the elisp for its own output path
+   (=nelisp-standalone--output-path=) instead of hardcoding or
+   duplicating that per-target table in bash.
+
+Both fixes are, by their own commit messages, unverified on the hardware
+they target ("no arm64/macos-intel runner available"). They are directly
+in scope for this doc: the qualification pass this doc designs is the
+first opportunity either fix gets to run for real, and a qualification
+pass that omits them would just be qualifying a known-still-broken arm64/
+macos-x86_64 release path a second time. §3 treats merging or otherwise
+including this branch as a precondition of a complete qualification
+push, not an optional extra.
+
+* §2 What to push
+
+Two separable qualification targets, since they fire through different
+trigger mechanisms (=ci.yml='s =on:= vs. the release workflows'):
+
+1. *A plain branch push* — fires =.github/workflows/ci.yml= automatically
+   (=on: push: branches: ['**']=, no path filter), covering §1.1's
+   node-guard gates and the rest of the newly-wired Linux-lane steps
+   across the full =[ubuntu-latest, macos-latest, windows-latest] ×
+   ['29.4', '30.1']= matrix. This can be the qualification branch itself
+   (this design branch does not need code changes to trigger it; a
+   throwaway branch carrying =feat/native-observability= plus §1.2's fix
+   branch merged in is the minimal push that exercises both risk sets at
+   once).
+2. *A =workflow_dispatch= of =release-qualification.yml=* (its =on:=
+   also accepts a =stage-d-v2.*= tag push, but =workflow_dispatch= avoids
+   committing to a real release tag for what is explicitly a
+   qualification run) — the only way to fire the =build-linux-arm64= /
+   =build-macos-arm64= legs and observe §1.2 item 2's fix on the actual
+   =ubuntu-22.04-arm= runner.
+3. *A =workflow_dispatch= of =stage-d-v3.0-standalone.yml=* (its =on:=
+   also fires on push/PR to =main= with a path filter, which a
+   qualification branch would not satisfy unless targeting =main=
+   directly) — the only way to observe §1.2 item 1's =macos-x86_64=
+   predicate fix on the actual =macos-15-intel= runner, and to confirm
+   (per Doc 182 §1.1) that this workflow's own PowerShell Windows path
+   keeps passing independently of anything this doc's qualification
+   touches.
+
+Precondition, stated plainly per §1.2's closing paragraph: qualify with
+=fix/standalone-runnable-host-arm64-macos-intel= merged into whatever
+branch gets pushed for step 1 and dispatched for steps 2-3 — a run
+without it would spend its arm64/macos-x86_64 budget re-discovering §1.2
+rather than testing new ground.
+
+* §3 Expected-failure inventory
+
+| # | gate / step | workflow | why it is a first-run risk | category expected |
+|---+--------------+----------+-----------------------------+--------------------|
+| 1 | =wasm-runtime-image-smoke= (inside =nelisp-ai.sh extras=) | ci.yml, Linux | calls =node= directly, no =command -v= guard; this workflow never used =node= before this wiring | environment (node availability/version on =ubuntu-latest='s toolcache) |
+| 2 | =wasm-dtw-skeleton-smoke= (inside =nelisp-ai.sh check=) | ci.yml, Linux | same as #1 | environment |
+| 3 | =nelisp-nelix-native-hot-gate= (inside =extras=) | ci.yml, Linux | needs a sibling =../nelix= checkout; =06ed9bd3a='s own message says it "GATE-SKIPs on a fresh checkout, confirmed by reading [its] own precondition" — expected SKIP, not a failure, but worth confirming the skip message actually fires on a fresh Actions checkout rather than erroring | expected-skip (verify, do not assume) |
+| 4 | =bench-aot-tco= | ci.yml, Linux | needs =cc= + =objcopy=; =ci.yml='s own comment says Linux is the only lane with this toolchain, but "the only lane with it" was asserted, not necessarily confirmed against =ubuntu-latest='s exact preinstalled toolchain versions | environment (toolchain version drift) |
+| 5 | =macho-acceptance-test= | ci.yml, macOS | Darwin-only by design (=scripts/macho-acceptance-check.sh= L16 =uname= check); should simply pass on =macos-latest= (arm64) — a first-run risk only if =codesign=/=ld64= behave differently on whatever concrete macOS version the runner image carries this month | environment (macOS toolchain version) |
+| 6 | =nelisp-native-artifact-gate=, =nelisp-performance-gate=, =standalone-selfhost-test=, =standalone-reader-test=, =binary-size-ratchet=, =emacs-parity=, =gate-mutation= | ci.yml, Linux | all build =target/nelisp= fresh on the runner; local validation used this session's own machine's =cc=/=emacs= — the runner's exact =Emacs 29.4/30.1= build (via =purcell/setup-emacs@v8.0=) and its =cc= may differ in ways that move byte-for-byte-sensitive checks (=binary-size-ratchet='s baseline, =emacs-parity='s differential) | environment, watch closely — a real baseline miss here is plausible and not itself alarming (see §4) |
+| 7 | §1.2 item 1's predicate fix (=linux-aarch64=/=macos-x86_64= newly =t=) | release-qualification.yml (=build-linux-arm64=), stage-d-v3.0-standalone.yml (=macos-x86_64=) | flips several gates from "always skip" to "actually build and run" for the first time ever on those two platforms — anything downstream that only ever saw the skip path is untested by construction | logic (highest-value first-run signal in this whole inventory — this is new code path, not new environment) |
+| 8 | §1.2 item 2's =NELISP_STANDALONE_TARGET=linux-aarch64= threading | release-qualification.yml (=build-linux-arm64=) | =19fb5150f='s own message predicts the LIKELY first-run outcome is a *new, louder* failure ("standalone binary still missing after path: target/nelisp") if =53bd1547b='s follow-up fix is not also included — this is why §2's precondition requires the whole 3-commit branch, not just the first commit | logic (already reasoned through by its own author; qualification's job here is confirmation, not discovery) |
+| 9 | Windows leg of =ci.yml= (unrelated to the AI-toolchain wiring, since none of it runs there — Doc 182 §1) | ci.yml, Windows | zero new surface from this wiring; included here only as a control — it should look identical before/after, and if it does not, that itself is a finding about this qualification push's blast radius | control (expect no change) |
+
+* §4 Triage rules: environment vs. logic
+
+1. *Does the exact same command, run locally against a freshly cloned
+   tree at the same commit, produce the same result as the runner?* If
+   yes, it is environment (toolchain version, missing binary, runner
+   image quirk) by definition — the code path is proven identical, only
+   the machine differs. If the local run cannot even be attempted
+   (arm64/macos-intel hardware unavailable, exactly §1.2's own stated
+   limitation), fall to rule 2.
+2. *Does the failure message name a specific missing/wrong tool or
+   version* (a =command not found=, an ENOENT naming a binary, a version
+   string mismatch)? That is environment. *Does it name a wrong value,
+   a wrong path, a wrong byte count, an assertion about program
+   behavior?* That is logic — the same distinction Doc 182 §5 draws for
+   the Windows inventory, reused here because it is the same question
+   asked of a different platform pair.
+3. *Was the failure already predicted by name in §3?* If yes, its
+   category column is the working hypothesis — confirm or refute it with
+   the failure's actual message rather than re-deriving from scratch.
+4. *A gate that reports GATE-SKIP with a reason is not a failure* (this
+   repository's own convention, =tools/ai/README.md= "The report" table)
+   — do not triage a reasoned skip as either environment or logic; record
+   it as confirming the skip fired for the expected reason (row 3, 5-
+   partial) or, if the reason given does not match the expected one, that
+   mismatch IS a logic finding (the precondition check itself is wrong).
+5. *A gate that reports zero cases executed (=ran=0=) is a failure*,
+   never a skip, never a pass (=tools/ai/README.md=, same table) — if a
+   node-guard gate (§3 rows 1-2) fails this way rather than with a clean
+   =node: command not found=, that is worse than the anticipated failure
+   mode and should be flagged as such, not filed under the same row as a
+   clean ENOENT.
+
+* §5 Exit criterion
+
+Every gate =tools/ai/gates.expected= lists as required (no trailing =?=)
+reports either green or a reasoned skip on the runner, for every
+platform/toolchain combination in the matrices this doc's push exercises
+(ci.yml's 3 OS × 2 Emacs-version matrix; release-qualification.yml's
+linux-x86_64/macos-arm64/linux-arm64; stage-d-v3.0-standalone.yml's four
+platforms including the newly-unblocked macos-x86_64). Concretely:
+
+- =nelisp-ai.sh verify='s own =VERDICT: PASS (N gates)= line, captured
+  from the runner's own log (not re-derived locally), for every matrix
+  leg that runs it.
+- Every row in §3 resolved to either "confirmed as predicted" or "not
+  what was predicted — filed as [environment|logic], see [link]" — no row
+  left in its original "expected" state after the pass, since an
+  unconfirmed prediction is not evidence.
+- §1.2's two fixes specifically demonstrated working on real hardware —
+  the =linux-aarch64= binary in =build-linux-arm64='s uploaded tarball
+  actually executes (not merely checksums) on the =ubuntu-22.04-arm=
+  runner, and the =macos-x86_64= leg's newly-=t= predicate visibly
+  changes which steps run (not skip) in that job's log.
+- Row 9 (the Windows control) unchanged — if it moved, the qualification
+  push's own scope grew beyond what this doc designed for, and that
+  needs its own accounting before the pass can be called done.
+
+Any gate that ends the pass genuinely red, with a message that rule 2
+(§4) puts in the "logic" bucket, is a defect to fix and re-qualify — not
+grounds to weaken the exit criterion.
+
+* §6 Push authorization
+
+Executing anything in §2 requires pushing to a CI-connected GitHub
+remote and, for §2 items 2-3, manually dispatching two workflows. This
+design was produced in a scratch clone (=git clone= of the local
+=dev/nelisp= hub used by this environment's own worktree fleet) whose
+=origin= is that local path, not a GitHub remote — it has no push
+authorization to the real, CI-connected repository, and this doc does
+not attempt to act as though it did. The owner (=zawatton=) is the one
+who can push the qualification branch, merge or carry along
+=fix/standalone-runnable-host-arm64-macos-intel=, and trigger the two
+=workflow_dispatch= runs in §2. This doc's job ends at "here is exactly
+what to push and what to expect"; the push itself is out of this
+design's scope by construction, not by omission.
+
+* §7 Open questions
+
+1. Whether to *merge* =fix/standalone-runnable-host-arm64-macos-intel=
+   into =feat/native-observability= before qualifying, or carry it as a
+   separate branch merged only into the throwaway qualification push —
+   the former is cleaner if the fix is trusted enough to land regardless
+   of qualification's outcome; the latter keeps qualification's blast
+   radius (and any revert, if something in that branch turns out wrong
+   on real hardware) smaller. This doc leans toward merging first, since
+   §1.2's own commits already did careful against-the-bug local proof —
+   but that is the owner's call, not this doc's.
+2. Whether =release-qualification.yml='s =build-macos-arm64= leg (already
+   =continue-on-error: true=, non-blocker per Doc 32 v2 §11) needs its
+   own row in §3 — it was not touched by either wiring this doc
+   qualifies, so it is presumed unaffected, but that presumption itself
+   was not independently re-verified here.
+3. Row 6's baseline-drift risk (=binary-size-ratchet=, =emacs-parity=)
+   could turn out to be the single most disruptive first-run outcome if
+   the runner's =cc=/=Emacs= build differs enough from this session's own
+   machine — whether to pre-emptively widen those two gates' slack before
+   the qualification push, or let the first run demonstrate the actual
+   gap and widen reactively (this repository's own stated preference,
+   per every ratchet's own header comment: "raise [it] only in the commit
+   that explains the growth"), is left to the owner; this doc leans
+   reactive, consistent with that stated preference.
+4. Whether a failed/flaky first run of the two node-guard gates (§3 rows
+   1-2) should get a =command -v node= guard added defensively before
+   ever pushing, rather than waiting to observe the failure — this doc
+   deliberately did not pre-emptively patch them, since §1.1's whole
+   premise is that this has never been observed on a real runner and a
+   defensive fix written against an assumption rather than an observed
+   failure risks fixing the wrong thing (GitHub-hosted runner images do
+   ship Node.js in their default toolcache, which argues these may simply
+   pass — untested, not un-thought-about).

@@ -30,12 +30,30 @@
 ;;  10 BoolVector   — boxed, refcount bump via nelisp_nlboolvector_clone.
 ;;  11 Cell         — boxed, refcount bump via nelisp_nlcell_clone.
 ;;  12 Record       — boxed, refcount bump via nelisp_nlrecord_clone.
+;;  13 Bignum       — Doc 190 Phase A, no Rust precursor (added post-Rust-
+;;                   removal).  Inline pointer+len, same shape as Str
+;;                   (offset 8/16/24 = sign/limb-ptr/limb-count instead of
+;;                   cap/ptr/len); IMMUTABLE once constructed, so it is
+;;                   cloned the same shallow-buffer-alias way Str/Symbol are
+;;                   (a plain 32-byte bit-copy, no allocation, no refcount)
+;;                   -- the tracing GC keeps the aliased limb buffer alive
+;;                   via reachability, exactly as it already does for a
+;;                   Str's char buffer (Doc 149).  No legacy deep-copy flag:
+;;                   this is a new type with no back-compat behaviour to
+;;                   preserve.
 ;;
 ;; Inline String layout (Str/Symbol variants — payload is inline String):
 ;;   Sexp offset 0:  tag (u8)
 ;;   Sexp offset 8:  String.cap  (u64)
 ;;   Sexp offset 16: String.ptr  (u64 — *const u8 char data)
 ;;   Sexp offset 24: String.len  (u64)
+;;
+;; Inline Bignum layout (tag 13 — mirrors the Str layout above exactly):
+;;   Sexp offset 0:  tag (u8) = 13
+;;   Sexp offset 8:  sign        (u64 — 0 non-negative, 1 negative)
+;;   Sexp offset 16: limb-ptr    (u64 — *const u32, little-endian limbs)
+;;   Sexp offset 24: limb-count  (u64 — canonical: no leading zero limb,
+;;                   except a single zero limb for the value 0)
 ;; (Confirmed by `nl_alloc_str' writer in nelisp-cc-nlstr-direct-ops.el.)
 ;;
 ;; AOT `let' is FOLD-ONLY (cannot bind a runtime value). The tag is
@@ -78,7 +96,7 @@
     ;; tag 6 MutStr holds NlStrRef -> nelisp_nlstr_clone (NOT a deep copy).
     (defun nl_sci_bump (tag box)
       (if (= tag 7)  (nelisp_nlconsbox_clone box)
-        (if (= tag 6)  (nelisp_nlstr_clone box)
+        (if (or (= tag 6) (= tag 15)) (nelisp_nlstr_clone box)
           (if (= tag 8)  (nelisp_nlvector_clone box)
             (if (= tag 9)  (nelisp_nlchartable_clone box)
               (if (= tag 10) (nelisp_nlboolvector_clone box)
@@ -104,8 +122,21 @@
     ;; O(len) arena (measured 1.5MB/iter on a 528KB string) with no
     ;; intra-form GC -> the nemacs bridge OOM class.  Escape hatch: flag 0.
     ;; tag < 4 (0..3) = inline atom, plain copy. else (6..12) = boxed.
+    ;; tag 13 (Bignum, Doc 190 Phase A): ALWAYS a shallow buffer alias, no
+    ;; legacy-flag branch and no refcount bump -- a bignum is immutable from
+    ;; the instant it is constructed (there is no in-place bignum mutation
+    ;; path the way MutStr has one), so aliasing the limb buffer is sound
+    ;; unconditionally, the same reachability argument Doc 149 already
+    ;; established for Str/Symbol's flag=1 path above.  Routing it through
+    ;; `nl_sci_rc' instead would silently do nothing useful (`nl_sci_bump'
+    ;; has no tag-13 arm and falls through to its 0 default) while implying
+    ;; a refcounted box that does not exist for this tag; this is an
+    ;; explicit tag-13 arm instead, matching Str/Symbol's own explicitness.
     (defun nl_sci_dispatch (src dst tag)
-      (if (= tag 5)
+      (if (= tag 14)
+          ;; Immutable raw-byte strings always shallow-alias their buffer.
+          (nl_sci_copy src dst)
+        (if (= tag 5)
           (if (= (ptr-read-u64 268435648 0) 1)
               (nl_sci_copy src dst)
             (nl_alloc_str (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst))
@@ -113,8 +144,9 @@
             (if (= (ptr-read-u64 268435648 0) 1)
                 (nl_sci_copy src dst)
               (nl_alloc_symbol (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst))
+          (if (= tag 13) (nl_sci_copy src dst)
           (if (< tag 4) (nl_sci_copy src dst)
-            (nl_sci_rc src dst tag)))))
+            (nl_sci_rc src dst tag)))))))
 
     ;; Public C-ABI entry: nl_sexp_clone_into(dst, src) = ptr::write(dst,(*src).clone()).
     ;; Doc 135 cutover fix: the param order is (DST SRC) to match the Rust
@@ -158,6 +190,11 @@ for immutable Symbol/String values enabled by default.  Sexp is a 32-byte
   tag 6..12 (MutStr/Cons/Vector/CharTable/BoolVector/Cell/Record):
              refcount bump via the per-type nelisp_nl*_clone helper,
              then plain 32-byte bit-copy.
+  tag = 13 (Bignum, Doc 190 Phase A): always a shallow limb-buffer alias
+             (plain 32-byte bit-copy, unconditionally -- no legacy flag,
+             no refcount; sound because a bignum is immutable from
+             construction, matching the reachability argument tag 4/5's
+             flag=1 path already relies on).
 
 AOT `let' is compile-time only; the tag is threaded as an
 extra function parameter (nl_sci_dispatch/nl_sci_rc/nl_sci_bump)

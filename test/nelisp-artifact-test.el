@@ -798,6 +798,236 @@ is still callable through the integer ABI; this must stay on the fast path."
                      (eq (plist-get entry :mode) 'native)))
               report))))
 
+;;;; Doc 193 §3/§8: `nelisp-native-function-call' recovery-ladder
+;;;; equivalence corpus.
+;;
+;; `nelisp-native-function-call' is a hand-rolled, three-tier recovery
+;; ladder (fast integer ABI -> general native -> interpreted/bytecode
+;; fallback), tried in a fixed order via nested `condition-case'.  Doc
+;; 193 §3 proposes rewriting it onto `nl-restart-case'/`nl-handler-
+;; bind' (Doc 169's condition system) as that library's flagship
+;; internal consumer; §8 requires the rewrite's observable behavior --
+;; `nelisp-artifact-native-dispatch-report' shape, which tier(s)
+;; actually ran, and the value returned -- to stay byte-identical to
+;; the original hand-nested implementation.
+;;
+;; This corpus is the differential proof: it is written and made green
+;; against the ORIGINAL implementation first (this commit), then left
+;; UNCHANGED across the `nl-restart-case' rewrite (a later commit) --
+;; a corpus that changed shape along with the implementation it is
+;; supposed to be checking would not prove anything.
+
+(defun nelisp-artifact-test--native-fn (symbol fallback &optional meta)
+  "Build a native wrapper function cell for SYMBOL with FALLBACK/META."
+  (list 'nelisp-native-function
+        "/tmp/nelisp-artifact-test-ladder.neln"
+        symbol fallback
+        (or meta '(:param-class gp))))
+
+(ert-deftest nelisp-artifact/ladder-dispatch-disabled-skips-report ()
+  "Dispatch disabled: the fallback runs directly and neither tier
+function nor the dispatch report is touched at all."
+  (let ((fast-count 0) (general-count 0) (fallback-count 0)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (cl-incf fast-count) (error "must not run")))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) (error "must not run"))))
+      (let* ((nelisp-artifact-native-dispatch-enabled nil)
+             (fn (nelisp-artifact-test--native-fn
+                  'ladder-off
+                  (lambda (&rest args) (cl-incf fallback-count) (apply #'+ args)))))
+        (should (= (nelisp-native-function-call fn '(1 2)) 3))))
+    (should (= fallback-count 1))
+    (should (= fast-count 0))
+    (should (= general-count 0))
+    (should (null (nelisp-artifact-native-dispatch-report)))))
+
+(ert-deftest nelisp-artifact/ladder-fast-succeeds-records-native-once ()
+  "Fast path succeeds: only the fast tier runs, one :mode native entry."
+  (let ((fast-count 0) (general-count 0) (fallback-count 0)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (_artifact _symbol args)
+                 (cl-incf fast-count) (apply #'+ 100 args)))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) (error "must not run"))))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-fast-ok
+                 (lambda (&rest _) (cl-incf fallback-count) :fallback))))
+        (should (= (nelisp-native-function-call fn '(1 2)) 103))))
+    (should (= fast-count 1))
+    (should (= general-count 0))
+    (should (= fallback-count 0))
+    (should (equal (nelisp-artifact-native-dispatch-report)
+                    '((:event call :symbol ladder-fast-ok :mode native :argc 2))))))
+
+(ert-deftest nelisp-artifact/ladder-fast-fails-general-recovers-as-native ()
+  "Fast tier errors; general tier recovers.  Still exactly ONE report
+entry, :mode native -- the fast failure is an internal recovery step,
+not something the caller or the report ever sees."
+  (let ((fast-count 0) (general-count 0) (fallback-count 0)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (cl-incf fast-count) (error "fast broke")))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (_artifact _symbol args)
+                 (cl-incf general-count) (apply #'+ 200 args))))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-fast-then-general
+                 (lambda (&rest _) (cl-incf fallback-count) :fallback))))
+        (should (= (nelisp-native-function-call fn '(1 2)) 203))))
+    (should (= fast-count 1))
+    (should (= general-count 1))
+    (should (= fallback-count 0))
+    (should (equal (nelisp-artifact-native-dispatch-report)
+                    '((:event call :symbol ladder-fast-then-general
+                       :mode native :argc 2))))))
+
+(ert-deftest nelisp-artifact/ladder-non-integer-args-skip-fast-tier ()
+  "Non-integer args are never eligible for the fast integer ABI: general
+runs directly, the fast tier is not even attempted."
+  (let ((fast-count 0) (general-count 0)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (cl-incf fast-count) (error "must not run")))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (_artifact _symbol args)
+                 (cl-incf general-count) (length args))))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-non-integer
+                 (lambda (&rest _) :fallback))))
+        (should (= (nelisp-native-function-call fn '("a" "b" "c")) 3))))
+    (should (= fast-count 0))
+    (should (= general-count 1))
+    (should (equal (nelisp-artifact-native-dispatch-report)
+                    '((:event call :symbol ladder-non-integer
+                       :mode native :argc 3))))))
+
+(ert-deftest nelisp-artifact/ladder-non-gp-param-class-skips-fast-tier ()
+  "A non-`gp' `:param-class' is not eligible for the fast path even with
+all-integer args."
+  (let ((fast-count 0) (general-count 0)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (cl-incf fast-count) (error "must not run")))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) :general)))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-boxed 'ignored '(:param-class boxed))))
+        (should (eq (nelisp-native-function-call fn '(1 2)) :general))))
+    (should (= fast-count 0))
+    (should (= general-count 1))))
+
+(ert-deftest nelisp-artifact/ladder-both-tiers-fail-falls-back-with-reason ()
+  "Fast fails, general (as fast's recovery) also fails: the fallback
+runs, exactly once, with the ORIGINAL args, and the report's :reason
+is general's error message (the last error actually raised) -- not
+fast's, which was only an internal recovery trigger."
+  (let ((fast-count 0) (general-count 0) (fallback-args nil)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (cl-incf fast-count) (error "fast broke")))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) (error "general broke too"))))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-both-fail
+                 (lambda (&rest args) (setq fallback-args args) :fallback))))
+        (should (eq (nelisp-native-function-call fn '(9 9)) :fallback))))
+    (should (= fast-count 1))
+    (should (= general-count 1))
+    (should (equal fallback-args '(9 9)))
+    (should (equal (nelisp-artifact-native-dispatch-report)
+                    '((:event call :symbol ladder-both-fail
+                       :mode fallback :argc 2
+                       :reason "general broke too"))))))
+
+(ert-deftest nelisp-artifact/ladder-general-direct-fails-falls-back-with-reason ()
+  "Not eligible for the fast tier; general (tried directly) fails: the
+fallback runs once with the report carrying general's own reason."
+  (let ((general-count 0) (fallback-args nil)
+        (nelisp-artifact-native-dispatch-report nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) (error "general direct broke"))))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-general-direct-fail
+                 (lambda (&rest args) (setq fallback-args args) :fallback)
+                 '(:param-class boxed))))
+        (should (eq (nelisp-native-function-call fn '(3)) :fallback))))
+    (should (= general-count 1))
+    (should (equal fallback-args '(3)))
+    (should (equal (nelisp-artifact-native-dispatch-report)
+                    '((:event call :symbol ladder-general-direct-fail
+                       :mode fallback :argc 1
+                       :reason "general direct broke"))))))
+
+(ert-deftest nelisp-artifact/ladder-nil-meta-defaults-to-fast-eligible ()
+  "Nil metadata is treated as fast-path eligible (per
+`nelisp-artifact--native-simple-integer-abi-p') when args are all
+integers -- the fast tier is attempted, not skipped."
+  (let ((fast-count 0) (general-count 0))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (cl-incf fast-count) :fast))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) (error "must not run"))))
+      (let ((fn (nelisp-artifact-test--native-fn 'ladder-nil-meta 'ignored nil)))
+        (setf (nth 4 fn) nil)
+        (should (eq (nelisp-native-function-call fn '(1)) :fast))))
+    (should (= fast-count 1))
+    (should (= general-count 0))))
+
+;;;; Doc 193 §3 (post-rewrite): the ladder's `nl-restart-case' shape is
+;;;; introspectable, not just "produces the same output" -- this is the
+;;;; thing the hand-nested `condition-case' version could never offer.
+;;;; `nl-find-restart'/`nl-compute-restarts' only see something real
+;;;; once the ladder is rewritten onto `nl-restart-case', so these
+;;;; tests exercise the restart machinery itself, not just its result.
+
+(ert-deftest nelisp-artifact/ladder-establishes-general-native-restart-during-fast-tier ()
+  "While the fast tier runs, `general-native' is an established restart
+\(and `interpreted-fallback', the outer one, is visible too\); neither
+is established once the call has returned."
+  (let (seen-inside)
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _)
+                 (setq seen-inside (nl-compute-restarts))
+                 :fast))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (error "must not run"))))
+      (let ((fn (nelisp-artifact-test--native-fn 'ladder-restarts-fast 'ignored)))
+        (should (eq (nelisp-native-function-call fn '(1)) :fast))))
+    (should (equal seen-inside '(general-native interpreted-fallback)))
+    (should (null (nl-compute-restarts)))))
+
+(ert-deftest nelisp-artifact/ladder-general-native-restart-invisible-once-general-runs-directly ()
+  "Not fast-eligible: only `interpreted-fallback' is established while
+general runs directly -- there is no `general-native' restart to fall
+back into from there, matching the original code having no inner
+`condition-case' on this branch."
+  (let (seen-inside)
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _)
+                 (setq seen-inside (nl-compute-restarts))
+                 :general)))
+      (let ((fn (nelisp-artifact-test--native-fn
+                 'ladder-restarts-general-direct 'ignored '(:param-class boxed))))
+        (should (eq (nelisp-native-function-call fn '(1)) :general))))
+    (should (equal seen-inside '(interpreted-fallback)))))
+
+(ert-deftest nelisp-artifact/ladder-invoke-restart-general-native-explicitly ()
+  "A handler is free to invoke `general-native' by name (not just via
+the ladder's own default error handler) -- the restart is a real,
+independently invocable one, not an implementation detail masquerading
+as one."
+  (let ((general-count 0))
+    (cl-letf (((symbol-function 'nelisp-artifact-native-exec-fast-simple)
+               (lambda (&rest _) (nl-invoke-restart 'general-native)))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _) (cl-incf general-count) :general)))
+      (let ((fn (nelisp-artifact-test--native-fn 'ladder-explicit-invoke 'ignored)))
+        (should (eq (nelisp-native-function-call fn '(1)) :general))))
+    (should (= general-count 1))))
+
 (ert-deftest nelisp-artifact/native-exec-cli-skips-fast-simple-for-extern-artifact ()
   "CLI native exec routes extern-bearing artifacts to the general trampoline.
 The whole linked object can contain unresolved externs even when the requested
@@ -1021,6 +1251,53 @@ portable fallback."
                            (eq (plist-get entry :symbol) 'source-native-add)
                            (eq (plist-get entry :mode) 'native)))
                     (nelisp-artifact-native-dispatch-report))))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/reloadable-p-plain-defun ()
+  "Doc 191 Phase 2: a plain interpreted `defun', never routed through
+`nelisp-artifact--install-native-functions', answers `reloadable' --
+against a real function definition, not a mocked symbol."
+  (defun nelisp-p2-plain-defun-probe () 1)
+  (should (nelisp-artifact-reloadable-p 'nelisp-p2-plain-defun-probe))
+  ;; Redefining it changes nothing about the answer -- it was never
+  ;; early-bound to begin with.
+  (defun nelisp-p2-plain-defun-probe () 2)
+  (should (nelisp-artifact-reloadable-p 'nelisp-p2-plain-defun-probe)))
+
+(ert-deftest nelisp-artifact/reloadable-p-native-installed ()
+  "Doc 191 Phase 2: a function installed through
+`nelisp-artifact--install-native-functions' answers `not reloadable' --
+against a real compiled `.neln' artifact and a real native-wrapper
+install (Doc 191 §5's own verification design: \"against real installed
+functions, not mocked state\"), same shape as
+`nelisp-artifact/source-loader-installs-adjacent-neln-native-wrapper'
+above."
+  (skip-unless (memq system-type '(gnu/linux berkeley-unix)))
+  (skip-unless (and (executable-find "cc") (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-p2-reloadable-" t))
+         (source-path (expand-file-name "m.el" temp-dir))
+         (artifact-path (concat source-path ".neln")))
+    (unwind-protect
+        (progn
+          (write-region
+           "(defun p2-reloadable-probe (x) (+ x 1))\n(provide 'p2-reloadable-probe)\n"
+           nil source-path nil 'silent)
+          (let ((manifest (nelisp-artifact-compile-file
+                           source-path artifact-path nil nil nil nil nil 'neln)))
+            (should (plist-get manifest :native)))
+          ;; Before the artifact is loaded, this symbol has never been
+          ;; through the native-wrapper install path.
+          (should (nelisp-artifact-reloadable-p 'p2-reloadable-probe))
+          (nelisp-artifact-load-file artifact-path)
+          (should-not (nelisp-artifact-reloadable-p 'p2-reloadable-probe))
+          ;; Redefining the symbol afterward does not undo the hazard the
+          ;; predicate reports: some caller may already hold a direct call
+          ;; to the native code this symbol had at install time, and no
+          ;; later `defun' can reach that caller.  Stays early-bound for
+          ;; the rest of this process's lifetime.
+          (defun p2-reloadable-probe (x) (+ x 2))
+          (should-not (nelisp-artifact-reloadable-p 'p2-reloadable-probe)))
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 

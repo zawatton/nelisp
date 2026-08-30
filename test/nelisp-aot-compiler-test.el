@@ -116,6 +116,273 @@ Caller is responsible for `delete-file' on cleanup."
       (should (eq (nelisp-aot-compiler--ir-kind vnode) 'imm))
       (should (= (nelisp-aot-compiler--ir-get vnode :value) 7)))))
 
+(ert-deftest nelisp-aot-compiler/fresh-shared-borrow-elision-is-non-escaping-only ()
+  "Only a lexical fresh vector whose cell name cannot escape is elided."
+  (let ((nelisp-aot-compiler--aot-borrow-check-elision t))
+    (should
+     (equal
+      (nelisp-aot-compiler--fresh-shared-borrow-source-form
+       '(let ((c (vector 'nl--cell (vector 7) 0)))
+          (nl-with-borrow (v c) (aref v 0))))
+      '(aot-with-fresh-shared-borrow (vector 'nl--cell (vector 7) 0) v
+        (aref v 0))))
+    ;; Passing the cell into the body would permit aliasing, so retain the
+    ;; ordinary checked path even though the initializer is fresh.
+    (should-not
+     (nelisp-aot-compiler--fresh-shared-borrow-source-form
+      '(let ((c (vector 'nl--cell (vector 7) 0)))
+         (nl-with-borrow (v c) (ignore c) (aref v 0)))))
+    (dolist (case
+             '((:state-observed
+                (let ((c (vector 'nl--cell (vector 7) 0)))
+                  (nl-with-borrow (v c) (aref c 2))))
+               (:cell-escape
+                (let ((c (vector 'nl--cell (vector 7) 0)))
+                  (nl-with-borrow (v c) (list c))))
+               (:multiple-path
+                (let ((c (vector 'nl--cell (vector 7) 0)))
+                  (if t (nl-with-borrow (v c) (aref v 0)) 0)))
+               (:exceptional-control
+                (let ((c (vector 'nl--cell (vector 7) 0)))
+                  (nl-with-borrow (v c)
+                    (unwind-protect (aref v 0) (ignore 0)))))
+               (:nested-borrow
+                (let ((c (vector 'nl--cell (vector 7) 0)))
+                  (nl-with-borrow (v c)
+                    (nl-with-borrow (w c) (aref w 0)))))
+               (:exclusive-borrow
+                (let ((c (vector 'nl--cell (vector 7) 0)))
+                  (nl-with-borrow-mut (v c) (aref v 0))))
+               ;; A vector is not automatically a cell.  `nl-with-borrow'
+               ;; type-checks before borrowing and signals `nl-type-error'
+               ;; on a non-cell, so eliding the borrow here would turn a
+               ;; program that must signal into one that quietly succeeds.
+               (:nonfresh-init
+                (let ((c (vector 1 (vector 7) 0)))
+                  (nl-with-borrow (v c) (aref v 0))))
+               ;; Nor is a cell whose state is not provably zero.
+               (:nonfresh-init
+                (let ((c (vector 'nl--cell (vector 7) 1)))
+                  (nl-with-borrow (v c) (aref v 0))))))
+      (should (eq (plist-get
+                   (nelisp-aot-compiler--fresh-shared-borrow-analysis
+                    (nth 1 case))
+                   :reason)
+                   (car case))))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-analysis-is-static-only ()
+  "Fat-pointer check elision requires fresh storage and literal bounds."
+  (should (plist-get
+           (nelisp-aot-compiler--fresh-fat-pointer-analysis
+            '(let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+               (nl-ptr-ref-u8 p 7)))
+           :eligible))
+  (should (plist-get
+           (nelisp-aot-compiler--fresh-fat-pointer-analysis
+            '(let ((p (nl-ptr-make (data-addr private-byte) 1 0)))
+               (nl-ptr-ref-u8 p 0)))
+           :eligible))
+  (dolist (case
+           '((:dynamic-offset
+              (let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+                (nl-ptr-ref-u8 p i)))
+             (:out-of-bounds
+             (let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+                (nl-ptr-ref-u8 p 64)))
+             (:pointer-escape
+              (let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+                (let ((q p)) (nl-ptr-ref-u8 q 0))))
+             (:pointer-escape
+              (let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+                (list p)))))
+    (should (eq (plist-get
+                 (nelisp-aot-compiler--fresh-fat-pointer-analysis
+                  (nth 1 case)) :reason)
+                (car case)))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-lowers-to-raw-read ()
+  "Eligible `nl-ptr-ref-u8' uses the existing raw pointer primitive."
+  (let ((nelisp-aot-compiler--aot-fat-pointer-check-elision t))
+    (should (equal
+             (nelisp-aot-compiler--fresh-fat-pointer-source-form
+             '(let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+                (nl-ptr-ref-u8 p 7)))
+             '(let ((p (alloc-bytes 64 8))) (ptr-read-u8 p 7))))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-covers-static-loop-reads ()
+  "A fresh pointer may be read repeatedly without reintroducing a check."
+  (let ((nelisp-aot-compiler--aot-fat-pointer-check-elision t))
+    (should (equal
+             (nelisp-aot-compiler--fresh-fat-pointer-source-form
+              '(let ((p (nl-ptr-make (alloc-bytes 64 8) 64 0)))
+                 (let ((i 0) (acc 0))
+                   (while (< i 3)
+                     (setq acc (+ acc (nl-ptr-ref-u8 p 0)))
+                     (setq i (+ i 1)))
+                   acc)))
+             '(let ((p (alloc-bytes 64 8)))
+                (let ((i 0) (acc 0))
+                  (while (< i 3)
+                    (setq acc (+ acc (ptr-read-u8 p 0)))
+                    (setq i (+ i 1)))
+                  acc))))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-proves-monotone-loop-index ()
+  "A bounded canonical loop may use its index as a raw byte offset."
+  (let ((nelisp-aot-compiler--aot-fat-pointer-check-elision t))
+    (should (equal
+             (nelisp-aot-compiler--fresh-fat-pointer-source-form
+              '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
+                 (let ((i 0) (acc 0))
+                   (while (< i 8)
+                     (setq acc (+ acc (nl-ptr-ref-u8 p i)))
+                     (setq i (+ i 1)))
+                   acc)))
+             '(let ((p (alloc-bytes 8 8)))
+                (let ((i 0) (acc 0))
+                  (while (< i 8)
+                    (setq acc (+ acc (ptr-read-u8 p i)))
+                    (setq i (+ i 1)))
+                  acc))))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-rejects-unproven-loop-index ()
+  "A non-monotone loop index must retain checked access."
+  (should (eq
+           (plist-get
+            (nelisp-aot-compiler--fresh-fat-pointer-analysis
+             '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
+                (let ((i 0))
+                  (while (< i 8)
+                    (setq i 0)
+                    (nl-ptr-ref-u8 p i)
+                    (setq i (+ i 1))))))
+            :reason)
+           :dynamic-offset)))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-lowers-literal-write ()
+  "A static u8 write is lowered only with a byte-range literal value."
+  (let ((nelisp-aot-compiler--aot-fat-pointer-check-elision t))
+    (should (equal
+             (nelisp-aot-compiler--fresh-fat-pointer-source-form
+              '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
+                 (nl-ptr-set-u8 p 2 255)))
+             '(let ((p (alloc-bytes 8 8))) (ptr-write-u8 p 2 255))))
+  (should (eq
+           (plist-get
+            (nelisp-aot-compiler--fresh-fat-pointer-analysis
+             '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
+                (nl-ptr-set-u8 p 2 value)))
+            :reason)
+           :dynamic-write-value))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-lowers-direct-static-slice ()
+  "A direct in-range slice access folds to its parent raw offset."
+  (let ((nelisp-aot-compiler--aot-fat-pointer-check-elision t))
+    (should (equal
+             (nelisp-aot-compiler--fresh-fat-pointer-source-form
+              '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
+                 (nl-ptr-ref-u8 (nl-ptr-slice p 2 3) 1)))
+             '(let ((p (alloc-bytes 8 8))) (ptr-read-u8 p 3)))))
+  (should (eq
+           (plist-get
+            (nelisp-aot-compiler--fresh-fat-pointer-analysis
+             '(let ((p (nl-ptr-make (alloc-bytes 8 8) 8 0)))
+                (nl-ptr-ref-u8 (nl-ptr-slice p 2 1) 1)))
+            :reason)
+           :out-of-bounds)))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-tracks-nested-derived-slices ()
+  "Nested non-escaping slices compose parent offsets and retain their range."
+  (let ((nelisp-aot-compiler--aot-fat-pointer-check-elision t))
+    (should (equal
+             (nelisp-aot-compiler--fresh-fat-pointer-source-form
+              '(let ((p (nl-ptr-make (alloc-bytes 16 8) 16 0)))
+                 (let ((s (nl-ptr-slice p 2 8)))
+                   (let ((q (nl-ptr-slice s 3 4)))
+                     (nl-ptr-set-u8 q 1 42)
+                     (nl-ptr-ref-u8 q 1)))))
+             '(let ((p (alloc-bytes 16 8)))
+                (seq (ptr-write-u8 p 6 42)
+                     (ptr-read-u8 p 6)))))))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-proves-derived-slice-loop-index ()
+  "A monotone index is proved against the narrowed derived-slice range."
+  (should (plist-get
+           (nelisp-aot-compiler--fresh-fat-pointer-analysis
+            '(let ((p (nl-ptr-make (alloc-bytes 16 8) 16 0)))
+               (let ((s (nl-ptr-slice p 2 4)))
+                 (let ((i 0) (acc 0))
+                   (while (< i 4)
+                     (setq acc (+ acc (nl-ptr-ref-u8 s i)))
+                     (setq i (+ i 1)))
+                   acc))))
+           :eligible)))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-rejects-derived-slice-loop-overrun ()
+  "A root-valid loop cannot bypass the narrower derived-slice bound."
+  (should (eq
+           (plist-get
+            (nelisp-aot-compiler--fresh-fat-pointer-analysis
+             '(let ((p (nl-ptr-make (alloc-bytes 16 8) 16 0)))
+                (let ((s (nl-ptr-slice p 2 4)))
+                  (let ((i 0))
+                    (while (< i 5)
+                      (nl-ptr-ref-u8 s i)
+                      (setq i (+ i 1)))))))
+            :reason)
+           :pointer-escape)))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-rejects-derived-slice-escape ()
+  "Returning or passing a derived pointer keeps all its checks."
+  (should (eq
+           (plist-get
+            (nelisp-aot-compiler--fresh-fat-pointer-analysis
+             '(let ((p (nl-ptr-make (alloc-bytes 16 8) 16 0)))
+                (let ((s (nl-ptr-slice p 2 8))) (list s))))
+           :reason)
+           :pointer-escape)))
+
+(ert-deftest nelisp-aot-compiler/fresh-fat-pointer-elision-rejects-derived-slice-unknown-branch ()
+  "An unknown control branch is not a provenance-preserving path."
+  (should (eq
+           (plist-get
+            (nelisp-aot-compiler--fresh-fat-pointer-analysis
+             '(let ((p (nl-ptr-make (alloc-bytes 16 8) 16 0)))
+                (let ((s (nl-ptr-slice p 2 4)))
+                  (if condition
+                      (nl-ptr-ref-u8 s 0)
+                    0))))
+            :reason)
+           :pointer-escape)))
+
+(ert-deftest nelisp-aot-compiler/raw-pointer-binding-is-not-a-dispatcher-integer ()
+  "A raw byte pointer keeps its distinct representation through `let'."
+  (let* ((ir (nelisp-aot-compiler--parse
+              '(defun probe ()
+                 (let ((p (alloc-bytes 64 8))) (ptr-read-u8 p 0)))))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (ptr (nelisp-aot-compiler--ir-get body :value-ir)))
+    (should (eq (nelisp-aot-compiler--ir-repr ptr) 'raw-ptr))
+    (should (eq (nelisp-aot-compiler--ir-repr
+                 (nelisp-aot-compiler--ir-get
+                  (nelisp-aot-compiler--ir-get body :body) :ptr))
+                'raw-ptr))))
+
+(ert-deftest nelisp-aot-compiler/multi-let-return-repr-reaches-native-loader ()
+  "`let-rt-n' retains the final raw result representation for loader rax."
+  (let* ((ir (nelisp-aot-compiler--parse
+              '(defun probe ()
+                 (let ((p (alloc-bytes 64 8)))
+                   (let ((i 0) (acc 0))
+                     (while (< i 2)
+                       (setq acc (+ acc (ptr-read-u8 p 0)))
+                       (setq i (+ i 1)))
+                     acc)))))
+         (outer (nelisp-aot-compiler--ir-get ir :body))
+         (inner (nelisp-aot-compiler--ir-get outer :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind inner) 'let-rt-n))
+    (should (eq (nelisp-aot-compiler--ir-repr inner) 'raw-i64))))
+
 (ert-deftest nelisp-aot-compiler/parse-nested-let-arith ()
   "Nested let + chained arithmetic resolves to a single integer."
   (let ((ir (nelisp-aot-compiler--parse
@@ -669,7 +936,17 @@ sq(9) = 81 -> exit 81."
                                  (if (< page 4096)
                                      99
                                    (seq ,@writes
-                                        (call-ptr (+ page ,offset) x)))))
+                                        ;; A parameter of a runtime-entered
+                                        ;; defun is a value word: an immediate
+                                        ;; integer N is 4N+1 (2441f5ebc).  This
+                                        ;; is the caller side of that ABI, hand
+                                        ;; written, so it encodes here -- the C
+                                        ;; driver in nelisp-artifact.el does the
+                                        ;; same thing with (atol(v[i])*4+1).
+                                        ;; Passing 9 raw made the body read
+                                        ;; (9-1)/4 = 2 and answer 4.
+                                        (call-ptr (+ page ,offset)
+                                                  (+ (* x 4) 1))))))
                              (exit (native-exec 9)))))
                 (nelisp-aot-compile-sexp sexp path)
                 (should (file-executable-p path))
@@ -738,6 +1015,8 @@ sq(9) = 81 -> exit 81."
          (nelisp-aot-compiler-test--native-mov-rbp-disp-reg-bytes
           (nth i arg-regs)
           (nelisp-aot-compiler-test--native-trampoline-slot-disp i))))
+      ;; The host-proof trampoline supplies the fixed boundary ABI slots.
+      ;; Artifact-local frame slots are allocated by the compiled callee.
       (dotimes (i (+ 5 12))
         (emit-imm64-placeholder)
         (emit
@@ -800,7 +1079,11 @@ integration step."
                                 (plist-get defun0 :body-offset))))
             (should (equal (plist-get defun0 :name) "inc1"))
             (should (= (plist-get defun0 :arity) 1))
-            (should (= (plist-get defun0 :rt-slot-count) 17))
+            ;; `call1' evaluates its argument into a dedicated frame slot
+            ;; before writing the shared dispatcher name slot.  Keep the
+            ;; trampoline assertion tied to the artifact metadata: nested
+            ;; delegated calls may legitimately require further slots.
+            (should (>= (plist-get defun0 :rt-slot-count) 17))
             (should (= (plist-get defun0 :body-offset) 19))
             (should (equal (sort (copy-sequence externs) #'string<)
                            '("nelisp_aot_builtin_call1" "nl_alloc_symbol")))
@@ -3665,6 +3948,55 @@ SysV would emit `push rdi' = 57 instead."
                      (unibyte-string #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/aarch64-extern-call-ten-gp-stack-args ()
+  "AArch64 `extern-call' spills the ninth and tenth GP args to the stack.
+
+Before this, `--emit-extern-call-arm64' raised
+`:extern-call-too-many-args-aarch64' for any ninth GP argument, even
+though `--emit-call-arm64' had carried the AAPCS64 outgoing-stack path
+for direct calls all along.  Doc 180 Phase 1 grew `nl_eval_source_all'
+to ten GP arguments, which made the macOS standalone reader
+uncompilable -- caught only after the macos-aarch64 CI lane stopped
+dying in an earlier smoke.
+
+The asserted shape is the same one `--emit-call-arm64' emits: ten
+16-byte temporary spills, `sub sp,sp,#16' for the two 8-byte outgoing
+slots, the two stack args copied through x9, x0-x7 reloaded from the
+temporaries, then BL and a single `add sp,sp,#176' unwinding both
+areas.  SP stays 16-byte aligned across the BL, which Darwin requires."
+  (let ((path (make-temp-file "nelisp-aarch64-extern-call-10gp-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(defun probe () (extern-call ext10 1 2 3 4 5 6 7 8 9 10))
+           path :arch 'aarch64)
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (sec (nelisp-aot-compiler-test--elf-find-section bytes ".text"))
+                 (text (substring bytes
+                                  (plist-get sec :offset)
+                                  (+ (plist-get sec :offset)
+                                     (plist-get sec :size)))))
+            (should
+             (nelisp-aot-compiler-test--bytes-contain-p
+              text
+              ;; sub sp,sp,#0x10 -- two 8-byte outgoing slots, already
+              ;; 16-aligned so no pad.
+              (unibyte-string #xff #x43 #x00 #xd1
+                              ;; ldr x9,[sp,#0x20]; str x9,[sp]      (arg 9)
+                              #xe9 #x13 #x40 #xf9  #xe9 #x03 #x00 #xf9
+                              ;; ldr x9,[sp,#0x10]; str x9,[sp,#8]   (arg 10)
+                              #xe9 #x0b #x40 #xf9  #xe9 #x07 #x00 #xf9
+                              ;; x0..x7 <- the first eight temporaries.
+                              #xe0 #x53 #x40 #xf9  #xe1 #x4b #x40 #xf9
+                              #xe2 #x43 #x40 #xf9  #xe3 #x3b #x40 #xf9
+                              #xe4 #x33 #x40 #xf9  #xe5 #x2b #x40 #xf9
+                              #xe6 #x23 #x40 #xf9  #xe7 #x1b #x40 #xf9
+                              ;; bl (reloc, addend 0)
+                              #x00 #x00 #x00 #x94
+                              ;; add sp,sp,#0xb0 = 16 outgoing + 10*16 temps.
+                              #xff #xc3 #x02 #x91)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-aot-compiler/win64-internal-call-odd-arity-no-pad ()
   "Win64 internal calls do not use SysV arity-based alignment pads."
   (let ((text (nelisp-aot-compiler-test--coff-text-for
@@ -3985,6 +4317,194 @@ extern (Doc 06 C-3 function-pointer tables), resolved by the linker."
               (should (zerop (plist-get res :exit)))
               (should (equal "105" (string-trim (plist-get res :stdout))))))
         (ignore-errors (delete-directory dir t))))))
+
+;;;; Dynamic user-call lowering ----------------------------------------
+;;
+;; A call the compiler cannot resolve to a same-unit defun or to a
+;; delegation-table builtin becomes a plt32 relocation on the Elisp
+;; function name.  The static-link flow wants that: the linker resolves
+;; the name and a direct call beats a dispatch.  A single `.neln' loaded
+;; in-process has no link step, so the same relocation names a C function
+;; that does not exist and the loader has nothing to point a stub at.
+;;
+;; `nelisp-aot-compiler--dynamic-user-calls' routes those calls through
+;; the calln dispatcher instead.  The property worth testing is not which
+;; instruction is emitted but whether the unit's extern set is CLOSED --
+;; every name in it a C runtime symbol the loader can bridge.
+
+(load (expand-file-name
+       "lisp/nelisp-native-load.el"
+       (locate-dominating-file (or load-file-name buffer-file-name)
+                               "lisp"))
+      nil t)
+
+(defconst nelisp-aot-compiler-test--runtime-extern-symbols
+  nelisp-native-load-bridgeable-symbols
+  "C runtime symbols an in-process loader can resolve to a bridge.
+Anything else in an artifact's extern set is an Elisp name, which no
+stub can point at once the unit is loaded rather than linked.
+
+Taken from the loader rather than copied.  The copy went stale the
+moment the compiler emitted a boxing conversion: `nl_alloc_bytes' and
+`nl_sexp_clone_into' are both bridgeable and both were missing here, so
+this failed on units the loader loads and runs perfectly well.")
+
+(defun nelisp-aot-compiler-test--artifact-externs (dir name source)
+  "Compile SOURCE as NAME under DIR and return its native extern symbols."
+  (require 'nelisp-artifact)
+  (let ((el (expand-file-name (concat name ".el") dir))
+        (neln (expand-file-name (concat name ".neln") dir)))
+    (with-temp-file el (insert source))
+    (nelisp-artifact-compile-file el neln nil nil nil nil nil 'neln)
+    (let ((externs (plist-get (plist-get (nelisp-artifact-read-manifest neln)
+                                         :native)
+                              :extern-symbols)))
+      ;; An empty set reads back as the symbol nil, not the empty list.
+      (if (and (symbolp externs) (null externs)) nil externs))))
+
+(defun nelisp-aot-compiler-test--unbridgeable-externs (externs)
+  "Return the EXTERNS no in-process loader bridge can resolve."
+  (seq-remove (lambda (name)
+                (member name nelisp-aot-compiler-test--runtime-extern-symbols))
+              externs))
+
+(defmacro nelisp-aot-compiler-test--with-artifact-dir (var &rest body)
+  "Run BODY with VAR bound to a temporary artifact directory."
+  (declare (indent 1))
+  `(let ((,var (make-temp-file "aot-dyncall-" t)))
+     (unwind-protect (progn ,@body)
+       (ignore-errors (delete-directory ,var t)))))
+
+(defconst nelisp-aot-compiler-test--dyncall-cases
+  '(("crossunit" . "(defun dc-c (x) (dc-absent-helper x))\n(provide 'dc)\n")
+    ("aref" . "(defun dc-r (v) (aref v 0))\n(provide 'dc)\n")
+    ("aset" . "(defun dc-w (v x) (aset v 0 x))\n(provide 'dc)\n"))
+  "Sources whose calls cannot resolve to a same-unit defun.
+`aref' and `aset' are in neither delegation table, so untyped array
+access takes the same path as a call to a function in another unit.")
+
+(ert-deftest nelisp-aot-compiler-dynamic-user-calls-off-keeps-name-relocs ()
+  "Without the mode, unresolvable calls still relocate on the Elisp name.
+This is the static-link lowering and must not change: there the linker
+resolves the symbol and the direct call is cheaper than a dispatch."
+  (nelisp-aot-compiler-test--with-artifact-dir dir
+    (let ((nelisp-aot-compiler--dynamic-user-calls nil))
+      (should (member "dc-absent-helper"
+                      (nelisp-aot-compiler-test--artifact-externs
+                       dir "off-crossunit"
+                       (cdr (assoc "crossunit"
+                                   nelisp-aot-compiler-test--dyncall-cases)))))
+      (should (member "aref"
+                      (nelisp-aot-compiler-test--artifact-externs
+                       dir "off-aref"
+                       (cdr (assoc "aref"
+                                   nelisp-aot-compiler-test--dyncall-cases)))))
+      (should (member "aset"
+                      (nelisp-aot-compiler-test--artifact-externs
+                       dir "off-aset"
+                       (cdr (assoc "aset"
+                                   nelisp-aot-compiler-test--dyncall-cases))))))))
+
+(ert-deftest nelisp-aot-compiler-dynamic-user-calls-close-the-extern-set ()
+  "With the mode, no Elisp name survives in the artifact's extern set."
+  (nelisp-aot-compiler-test--with-artifact-dir dir
+    (let ((nelisp-aot-compiler--dynamic-user-calls t))
+      (dolist (entry nelisp-aot-compiler-test--dyncall-cases)
+        (let* ((externs (nelisp-aot-compiler-test--artifact-externs
+                         dir (concat "on-" (car entry)) (cdr entry)))
+               (unbridgeable
+                (nelisp-aot-compiler-test--unbridgeable-externs externs)))
+          (should externs)
+          (should (equal unbridgeable nil)))))))
+
+(ert-deftest nelisp-aot-compiler-dynamic-user-calls-close-a-borrow ()
+  "A borrow shape closes too: acquire, guarded body, release, all cross-unit.
+This is the case Doc 170 section 9 needs to measure on the native path,
+and the one that could not be compiled to a loadable unit before: the
+helpers and the array access each contributed an Elisp-name relocation."
+  (nelisp-aot-compiler-test--with-artifact-dir dir
+    (let* ((source
+            (concat "(defun dc-rd (c)\n"
+                    "  (let ((v (dc-acq c)))\n"
+                    "    (unwind-protect (aref v 0) (dc-rel c))))\n"
+                    "(provide 'dc)\n"))
+           (off (let ((nelisp-aot-compiler--dynamic-user-calls nil))
+                  (nelisp-aot-compiler-test--artifact-externs
+                   dir "off-borrow" source)))
+           (on (let ((nelisp-aot-compiler--dynamic-user-calls t))
+                 (nelisp-aot-compiler-test--artifact-externs
+                  dir "on-borrow" source))))
+      (should (member "dc-acq" off))
+      (should (member "dc-rel" off))
+      (should (equal (nelisp-aot-compiler-test--unbridgeable-externs on) nil)))))
+
+(ert-deftest nelisp-aot-compiler-dynamic-calln-cap-matches-the-provider ()
+  "The emitted argument count cannot exceed what the reader can read.
+`nelisp_aot_builtin_calln' takes its user arguments off the stack and
+reads only the parameters it declares.  Nothing links the compiler's cap
+to the provider's declaration at build time, so a drift here would ship
+units that load and then read uninitialised stack."
+  (require 'nelisp-cc-evalport-aot-builtin-calln)
+  (should (= nelisp-aot-compiler--dynamic-calln-max-args
+             nelisp-cc-evalport-aot-builtin-calln--max-args))
+  ;; And the provider really declares that many, not merely name the
+  ;; number: the parameter list is what the ABI depends on.
+  (let ((params (nth 2 nelisp-cc-evalport-aot-builtin-calln--source)))
+    (should (equal (seq-take params 6)
+                   '(mirror frames name argc out scratch)))
+    (should (= (- (length params) 6)
+               nelisp-cc-evalport-aot-builtin-calln--max-args))))
+
+(ert-deftest nelisp-aot-compiler-dynamic-calln-refuses-an-unreadable-call ()
+  "Over the cap the compiler signals instead of emitting a truncated call."
+  (let ((nelisp-aot-compiler--dynamic-user-calls t)
+        (over (1+ nelisp-aot-compiler--dynamic-calln-max-args)))
+    (should-error
+     (nelisp-aot-compiler--parse-aot-builtinn-call
+      (cons 'dc-wide (make-list over 0)) nil nil nil)
+     :type 'nelisp-aot-compiler-error))
+  ;; The cap binds only the dynamic lowering: the host runtime takes the
+  ;; arguments with `&rest', so the default path must stay unrestricted.
+  ;; A boundary-less fenv fails for its own reason, never for the cap.
+  (let* ((nelisp-aot-compiler--dynamic-user-calls nil)
+         (over (1+ nelisp-aot-compiler--dynamic-calln-max-args))
+         (err (should-error
+               (nelisp-aot-compiler--parse-aot-builtinn-call
+                (cons 'dc-wide (make-list over 0)) nil nil nil))))
+    (should-not (eq (cadr err) :dynamic-calln-too-many-args))))
+
+(ert-deftest nelisp-aot-compiler/test-position-stops-at-a-value-argument ()
+  "A tag predicate lowers raw only where its value is read as truth.
+
+With the boundary available a tag predicate delegates to builtin1 and
+returns a boxed Sexp; the direct `sexp-tag' lowering returns a raw i64.
+The raw form is admissible in an `if' test, where only the branch reads
+it, and through the boolean connectives, whose arms are tests too.  It
+is NOT admissible as an argument: `(if (foo (vectorp x)) ...)' hands
+`(vectorp x)' to `foo', which reads it as a value.
+
+Binding the flag across a whole test expression instead of re-checking
+it one level at a time let it reach exactly that argument.  The JIT is
+on by default, so this lowering applies to ordinary runtime closures and
+not only to compiled artifacts."
+  ;; In test position, and through the connectives.
+  (should (nelisp-aot-compiler--aot-test-form-p '(vectorp c)))
+  (should (nelisp-aot-compiler--aot-test-form-p '(not (consp c))))
+  (should (nelisp-aot-compiler--aot-test-form-p '(and (vectorp c) (integerp n))))
+  (should (nelisp-aot-compiler--aot-test-form-p '(or (null c) (stringp c))))
+  ;; Not in test position: a call reads its arguments as values, and a
+  ;; bare variable or literal is not a predicate to lower at all.
+  (should-not (nelisp-aot-compiler--aot-test-form-p '(foo (vectorp c))))
+  (should-not (nelisp-aot-compiler--aot-test-form-p '(aref c 0)))
+  (should-not (nelisp-aot-compiler--aot-test-form-p 'c))
+  (should-not (nelisp-aot-compiler--aot-test-form-p 42))
+  (should-not (nelisp-aot-compiler--aot-test-form-p nil)))
+
+(ert-deftest nelisp-aot-compiler/test-position-is-off-by-default ()
+  "Nothing is in test position unless a test put it there.
+`--parse-value' is entered from many places; a stale non-nil would lower
+a predicate raw in a value position."
+  (should-not nelisp-aot-compiler--aot-test-position))
 
 (provide 'nelisp-aot-compiler-test)
 

@@ -13,8 +13,15 @@ packages/nelisp-actor/
 ├── README.org
 ├── src/
 │   └── nelisp-actor.el
+├── scripts/
+│   └── nelisp-actor-cps-dump.el
+├── generated/
+│   └── two-actor-exchange-cps.el
 └── test/
-    └── nelisp-actor-test.el
+    ├── nelisp-actor-test.el
+    ├── nelisp-actor-example-test.el
+    ├── nelisp-actor-cps-parity-test.el
+    └── nelisp-actor-standalone-smoke.el
 #+end_src
 
 * Public API
@@ -40,8 +47,51 @@ packages/nelisp-actor/
 * Dependencies
 
 - Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
-- Elisp dependencies declared by the library: =cl-lib=, =generator=,
+- Elisp dependencies declared by the library: =cl-lib=, =generator=
+  (soft, since Doc 193 §4.4 Phase 1 -- see Portability below),
   =nelisp-gc=
+
+* Portability, measured (2026-08-23, target/nelisp; see Doc 193 §4)
+
+This package's own claim used to be FALSE, measured directly: loading
+=nelisp-actor.el= against =target/nelisp= signalled =(file-missing
+. generator)= at a hard =(require 'generator)= -- =generator.el= is not
+vendored for the standalone binary, so nothing built with
+=nelisp-actor-lambda= could load there at all.  Doc 193 §4 ("the
+=nelisp-actor= generator.el decision") re-verified that failure,
+decided against both vendoring real =generator.el= (blocked by an
+unreduced reader bug) and hand-porting its CPS transform (the
+=eql=/stdlib-split divergence risk Doc 189 §1 documents), and chose a
+build-time transform instead: macroexpand an actor thunk under host
+Emacs, where =generator.el= unquestionably works, and bake the
+resulting generator-free closures into a checked-in generated file.
+Phase 1 of that plan is done:
+
+- Host Emacs: 41/41 =nelisp-actor-test.el= ERT cases pass (part of
+  =ert-full=), plus the 3-case =examples/nelisp-actor/
+  two-actor-exchange.el= demo (=nelisp-actor-example-test.el=) and the
+  4-case host-vs-generated parity suite
+  (=nelisp-actor-cps-parity-test.el=), all via the =packages/*/test/
+  nelisp*-test.el= glob.
+- Standalone: TRUE for the build-time-transformed path, measured.
+  =nelisp-actor.el= itself now loads clean on =target/nelisp= (a soft
+  =(require 'generator nil t)=, plus a tiny =iter-next=/=iter-close=/
+  =iter-end-of-sequence= runtime shim installed only when real
+  =generator.el= did not load -- see the file's own Commentary).
+  =packages/nelisp-actor/generated/two-actor-exchange-cps.el=
+  (regenerate with =make nelisp-actor-cps-baseline=; generator is
+  =packages/nelisp-actor/scripts/nelisp-actor-cps-dump.el=) is the
+  build-time CPS transform of the ping-pong demo, and its standalone
+  smoke (=make nl-actor-standalone-smoke=,
+  =nelisp-actor-standalone-smoke.el=) proves spawn/mailbox/send/
+  receive/yield/run-until-idle all work on the binary itself, byte-
+  identical to the host-Emacs result across four =hops= values
+  (=nelisp-actor-cps-parity-test.el=).  What is still NOT standalone:
+  writing a NEW =nelisp-actor-lambda= form and expecting it to run
+  there directly -- only pre-transformed, checked-in thunks do, and
+  only for the fields =nelisp-actor-cps-dump.el= has a struct-setter
+  replacement registered for (see that file's Commentary and
+  =nelisp-actor-cps-dump--setter-replacements=).
 
 * Dependents
 

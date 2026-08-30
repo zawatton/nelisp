@@ -1,0 +1,468 @@
+# Standalone `target/nelisp' binary-size ceiling (`make binary-size-ratchet').
+#
+# `binary_identity()' in tools/ai/nelisp-ai.sh has computed this number
+# since it was written; nothing compared it to anything.  The binary grew
+# +54KB earlier in this same session (bare-file init unification) with no
+# ratchet in place to say so out loud -- this file and the gate that reads
+# it are what closes that gap.
+#
+# Pinned 2026-08-22 from a build at this session's own HEAD, Linux x86_64,
+# AFTER the `extend-runtime-image' fix and its smoke landed (see the
+# `standalone-reader-test' note in tools/ai/gates.expected).  Measured
+# before and after that change: unchanged at this size -- the fix widens
+# an embedded command's source text by a few hundred bytes, but the
+# smoke that exercises it is host-side Elisp that shells out to the
+# already-built binary and is never linked in, and the source-text change
+# did not move the linked size either.  Not a stale or aspirational
+# number: this ratchet's job, same as unsafe-inventory / fallback-
+# inventory / pkg-graph, is to make the NEXT unexplained jump visible,
+# not to relitigate today's size.
+#
+# `slack-pct' is how far above `size' the binary may grow before this
+# gate fails, in whole percent.  2% (~129KB against ~6.4MB today) absorbs
+# ordinary linker/alignment noise between two builds of the SAME source
+# (the binary is unstripped and statically linked; measured byte-for-byte
+# identical across repeat builds in this session, so today's slack budget
+# is entirely headroom, not observed jitter) while still catching a
+# stray duplicated unit or an accidentally-unstripped debug section.  A
+# legitimate feature that grows the binary is expected to raise `size' in
+# the SAME commit that adds it, exactly like every other ratchet in this
+# directory -- the slack is not meant to silently absorb that kind of
+# growth, only to leave room for noise.
+#
+# Raise `size' only in the commit that explains the growth, and say what
+# the growth is (new manifest entry, new compiled unit, ...).  Lower it
+# whenever a change shrinks the binary and the gate says you can.
+#
+# Raised 2026-08-22 (6432608 -> 6461752, +29144 bytes, +0.45%, well inside
+# the existing 2% slack -- raised anyway per this file's own rule above,
+# not left for slack to silently absorb) by the standalone-reader input-
+# hardening fix: `nelisp-cc-reader-parser.el' gained an explicit bounded-
+# depth guard (mirrors the eval-side `rec_max' guard) in the recursive-
+# descent parser, and `nelisp-standalone-build.el' gained the reader-
+# completeness fix in `nl_eval_source_all', the `--eval'-EXPR pre-
+# validation that stops the internal wrapper variable from leaking into
+# user-facing errors, the missing-file unification for `--load' and a
+# bare FILE argument (reusing `bf_require_file_missing'), the 2^22 read-
+# cap loud guard, and their new stash/check helper functions.
+#
+# Raised again 2026-08-22, +217664 bytes over the 6432608 base (->
+# 6650272): the hooks/map.el/fixnum stdlib completion added ~380 lines
+# of source text to scripts/nelisp-stdlib-prelude.el (add-hook/remove-
+# hook/run-hooks/run-hook-with-args[-until-success/-until-failure], a
+# map.el subset, and the fixnum constants), which is embedded into the
+# linked binary as executable prelude source rather than compiled
+# bytecode -- the growth is proportional to the added source text (this
+# prelude already averages ~760 bytes of linked size per source line at
+# 8402 lines / 6.4MB before this change), not a duplicated unit or
+# debug section.
+#
+# integration/wave3 (this branch): both raises above land on the same
+# merged tree along with five sibling branches' own source growth
+# (reader depth guard, elc lane, control-flow fixups, cl-macros/
+# prelude mirroring, ELF sizing) plus, in the final merge round, the
+# presence-sweep tooling and the doc-claims/DoD additions (neither
+# links into the binary; docs/design-* is doc-only).  Per this file's
+# own rule the number below is not the arithmetic sum of the deltas
+# above -- it is REMEASURED on the actual merged, built binary:
+#
+#   6432608 (base) -> 6741200, +308592 bytes, +4.8%, still inside the
+#   2% slack window measured against ITSELF (i.e. this raise, like
+#   every other one in this file, is the new pin, not a slack-absorbed
+#   jump) -- `stat -c %s target/nelisp' on integration/wave3 after all
+#   twelve branches (seven wave-3 branches + feat/native-observability,
+#   feat/dod-doc-claims, docs/design-{short,mid,long}-term) landed and
+#   `make standalone-reader-test' relinked target/nelisp from scratch.
+# Raised 2026-08-23 (6741200 -> 6991744, +250544 bytes, +3.7%, exceeding
+# the 2% slack window measured against the PRIOR pin -- expected and
+# explained, not slack-absorbed) by Doc 188 Phase 1 (buffer
+# unification): `src/nelisp-buffer.el''s object model (buffer/marker/
+# overlay structs, the marker/overlay/text-property shift helpers, and
+# the full `nelisp-'-prefixed API -- ~560 source lines) was ported into
+# `scripts/nelisp-stdlib-prelude.el', which is embedded into the linked
+# binary as executable prelude source (same accounting as the 2026-08-22
+# hooks/map.el/fixnum raise above), plus the standard-name wiring layer
+# (`generate-new-buffer'/`insert'/`buffer-string'/`point'/`goto-char'/
+# etc., ~150 lines) and a printer special case for the new buffer
+# representation.  `src/nelisp-buffer.el' itself is unmodified and does
+# not link into the binary on its own; the growth is the port, not a
+# duplicated unit.  Measured with `stat -c %s target/nelisp' after a
+# clean `make standalone-reader'.
+#
+# Raised 2026-08-23 (6741200 -> 6930136, +188936 bytes, +2.8%, over this
+# file's 2% slack -- the gate correctly failed and this is the required
+# same-commit raise, not slack silently absorbing it) by
+# docs/design/185-cl-generic-subset.org's `cl-defgeneric'/`cl-defmethod'
+# subset: ~340 new source lines added to `scripts/nelisp-stdlib-
+# prelude.el' (dispatch table, specificity ordering, `cl-call-next-
+# method'/`cl-next-method-p', the two macros themselves), embedded into
+# the linked binary as executable prelude source exactly like the
+# hooks/map.el/fixnum raise above -- consistent with that raise's own
+# measured ~760 bytes/source-line average (340 lines * ~760 ~= 258KB
+# upper estimate; the actual +188936 is lower, plausible since not every
+# line is equally dense).  Measured before/after on this session's own
+# HEAD via two `make standalone-reader' builds from a byte-identical
+# tree except for this doc's own two-file change.  NOTE: this and the
+# buffer-unification raise immediately above were measured on two
+# DIFFERENT trees (each branch built alone against the wave-4 base);
+# they do not compose additively once both branches share one tree.
+#
+# Raised again same-day 2026-08-23 (6930136 -> 6938328, +8192 bytes,
+# +0.12%) by the defensive bound `nelisp-cl-generic--struct-depth' gained
+# after this session's own `tools/gate-mutations.txt' row for it hung
+# `make gate-mutation' indefinitely: the mutated `nelisp-cl-macros--
+# struct-isa' call sends the ancestry walk through `nil' forever with no
+# termination check, so the fix bounds the walk at the registry's own
+# size and signals instead of looping -- a real robustness fix, not
+# mutation-test-only code (a future bug anywhere upstream of that walk
+# would hang the same way in production).
+#
+# integration/wave4 (this branch, merge 2/9): the two raises above are
+# each real but were measured on non-overlapping trees (buffer-
+# unification-p1 alone, cl-generic-subset alone), so neither number is
+# valid once both land on the same tree.  Per this file's own rule the
+# pin is not the arithmetic sum -- it will be REMEASURED on the actual
+# merged, built binary once all 9 wave-4 branches have landed (three of
+# them touch this file; see the git log for the other two raises) and
+# reset ONCE at that point.  Left at the higher of the two interim
+# pins below until then so the ratchet does not spuriously fail mid-
+# merge against a binary that already carries both branches' growth.
+#
+# Raised 2026-08-23 (Doc 184 P1-P3, feat/process-standard-names), 6741200
+# -> 6749480, +8280 bytes, +0.12%, well inside the 2% slack -- raised
+# anyway per this file's own rule above.  The event-loop work itself
+# (`packages/nelisp-eventloop/src/nelisp-async-core.el',
+# `packages/nelisp-process-adapter/src/nelisp-process-adapter.el') does
+# NOT touch this number at all -- both are separate files loaded via
+# `--load'/`require' at runtime, never linked into `target/nelisp'.  The
+# +8280 bytes are the two small pieces that ARE baked in: (1) a ~15-line
+# no-op default `nelisp--repl-idle-pump' added to
+# `scripts/nelisp-stdlib-prelude.el' (embedded as prelude source text,
+# same mechanism as every other prelude-size raise in this file's
+# history), and (2) `nl_repl_pump_body'/`nl_repl_pump_source' plus the
+# blank-Enter branch of `nl_repl_loop' in
+# `scripts/nelisp-standalone-build.el' (compiled AOT code wiring the
+# `--repl' idle pump).  An event loop feature growing the binary by a
+# baked-in default hook is expected and small; the growth is this
+# specific, named, and bounded -- not open-ended.
+#
+# integration/wave4 (this branch, merge 3/9): same non-additive caveat
+# as merge 2/9's note above -- this raise was also measured on a tree
+# that does not yet carry buffer-unification-p1 or cl-generic-subset.
+# Interim pin bumped by this raise's own delta over the prior interim
+# pin (6938328 + 8280 = 6946608); still provisional at that point.
+#
+# integration/wave4 battery reconciliation (post merge 9/9, full tree,
+# all 9 branches landed): reset ONCE per this file's own rule and the
+# integration playbook, to the real measured size on the merged binary
+# -- `stat -c %s target/nelisp' after a clean `make standalone-reader'
+# on the fully-merged tree: 7247592 bytes, +300984 over the 6946608
+# interim (+4.3%). Every branch after merge 3/9 (native-overflow-checks
+# opt-in AOT flag, form-located-errors' printer/cursor work, char-table
+# layer, reload-verified, wasm-arg-budget's register widening, and
+# extension-flagship-use's actor CPS shim + nl-condition ladder rewrite)
+# also contributed prelude/AOT source growth on top of the interim
+# arithmetic, none of which was accounted for by summing only the first
+# three branches' own deltas -- this measurement supersedes all of the
+# interim arithmetic above, as intended.
+#
+# Raised 2026-08-23 (Doc 190 Phase A, feat/bignum-p1), 7247592 -> 7273216,
+# +25624 bytes, +0.35%, well inside the 2% slack -- raised anyway per this
+# file's own rule above, not left for slack to silently absorb.  A new
+# box type (Sexp tag 13, Bignum) is exactly the shape of change this
+# ratchet exists to make visible: new native construction/comparison/
+# printing code in `scripts/nelisp-standalone-build.el' (`nelisp-
+# standalone--applyfn-bignum-helpers' plus the `nl_num_cmp' family and
+# the `wf_sum'/`wf_prod'/`wf_subtail'/`wf_diff' tag-13 guards, both in
+# `nelisp-standalone--applyfn-core-helpers'), a GC mark/clone arm
+# (`nelisp-standalone--gc-source', `lisp/nelisp-cc-sexp-clone-into.el'),
+# and the reader-parser leaf-materialization change (`lisp/nelisp-cc-
+# reader-parser.el') -- all AOT-compiled into the linked binary, none of
+# it dead weight (every path is exercised by `scripts/standalone-bignum-
+# smoke.el').  Measured with `stat -c %s target/nelisp' after a clean
+# `make standalone-reader' on this branch's own HEAD.
+# (Doc 190 Phase B note: the `size' directive itself moved below, past
+# the 189-nl-ns-enforced-namespaces entry immediately following -- a
+# file must have exactly one machine-read `size' line, since the gate's
+# `awk' picks it up unconditionally; two would concatenate into an
+# invalid arithmetic expression.  This paragraph's own number, 7240384,
+# is preserved as the value Phase B's own raise below transitions FROM.)
+# Raised 2026-08-24 (7240384 -> 7314288, +73904 bytes, +1.02%, well
+# inside the 2% slack -- raised anyway per this file's own rule above,
+# not left for slack to silently absorb) by Doc 188 Phase 2 (buffer
+# unification): `current-buffer'/`set-buffer'/`buffer-substring'/
+# `erase-buffer' -- the four standard names P2 wires -- were added to
+# `scripts/nelisp-stdlib-prelude.el' (~150 source lines including
+# docstrings/comments), embedded into the linked binary as executable
+# prelude source, same accounting as every prior prelude-size raise in
+# this file's history (P1's buffer-unification raise directly above is
+# the closest precedent: same file, same mechanism, four more standard
+# names delegating to the already-ported `nelisp-buffer.el' model
+# functions rather than new data-structure code).  Measured with `stat
+# -c %s target/nelisp' after a clean `make standalone-reader' on this
+# phase's own branch (`feat/buffer-unification-p2', base eb4eb81f3);
+# `binary-size-ratchet' passed without a raise being required (well
+# inside slack), same disclosure discipline as every other entry here.
+#
+# Raised 2026-08-24 (socket primitives, Doc 184 follow-on,
+# feat/socket-primitives-p1), 7240384 -> 7310720, +70336 bytes, +0.97%,
+# well inside the 2% slack -- raised anyway per this file's own rule
+# above, not left for slack to silently absorb.  The six new native
+# units (nelisp-standalone--socket-forms: nl_ipv4_is_localhost,
+# nl_ipv4_octet_walk/-parse_dotted, nl_socket_build_sockaddr,
+# nl_socket_signal_error, nl_socket_listen_impl/-accept_impl/
+# -connect_impl/-send_impl/-recv_impl/-close_impl) plus their six
+# nelisp_apply_function dispatch arms
+# (nelisp-standalone--socket-dispatch-arms) are AOT-compiled directly
+# into the linked binary -- unlike the prelude-source raises earlier in
+# this file's history, this growth is compiled native code, not embedded
+# interpreted source text, so it does not scale with source line count
+# the same way.  Every added unit is exercised by
+# standalone-reader-socket-smoke (loopback round-trip + two catchable-
+# error negatives).  Measured with `stat -c %s target/nelisp' after a
+# clean `make standalone-reader' on this branch's own HEAD (base
+# eb4eb81f3).
+#
+# Raised 2026-08-24 (Doc 194 P0-P2, feat/network-process-p0), 7310720 ->
+# 7331256, +20536 bytes, +0.28%, well inside the 2% slack -- raised
+# anyway per this file's own rule above.  The bulk of Doc 194's P0-P2
+# work (`packages/nelisp-process-adapter/src/nelisp-process-adapter.el':
+# the `network-process' tagged-vector shape, `make-network-process'/
+# `open-network-stream', `process-send-string'/`process-contact', the
+# `/etc/hosts' Phase B lookup, and the full DNS-over-TCP/53 Phase C wire
+# encoder/decoder) does NOT touch this number at all -- that file is
+# loaded via `--load'/`require' at runtime, exactly like Doc 184's own
+# `nelisp-process-adapter.el' additions the 2026-08-23 raise above notes,
+# never linked into `target/nelisp'.  The entire +20536 bytes is
+# `scripts/nelisp-stdlib-prelude.el' gaining one new `cond' arm each in
+# `processp'/`process-get'/`process-put'/`process-status' (a
+# `network-process' branch alongside the existing `process' branch) plus
+# `process-live-p''s vocabulary widening from `run' only to
+# `run'/`open'/`listen'/`connect' -- embedded prelude source text, same
+# accounting as every other prelude-size raise in this file's history.
+# Every added branch is exercised by `standalone-reader-network-process-
+# smoke'/`standalone-reader-hosts-file-smoke'/`standalone-reader-dns-
+# smoke'.  Measured with `stat -c %s target/nelisp' after a clean `make
+# standalone-reader' on this branch's own HEAD.
+# Raised 2026-08-23 (7247592 -> 7251688, +4096 bytes, +0.06%, well
+# inside the 2% slack -- raised anyway per this file's own rule above)
+# by docs/design/189-nl-ns-enforced-namespaces.org Phase 0
+# (reader-time namespace resolution, opt-in): `src/nelisp-read.el'
+# gained one new `defvar' (`nelisp-read-namespace-resolve', default
+# nil) and one new `cond' clause in `nelisp-read--atom' consulting it
+# before falling through to `intern' -- both compile into the linked
+# binary since `nelisp-read.el' is one of the AOT-compiled reader
+# units, unlike the opt-in `packages/nl-ns/src/nl-ns-reader.el' layer
+# above it, which is loaded at runtime and does not link in at all.
+# Measured with `stat -c %s target/nelisp' after a clean `make
+# standalone-reader' on this change alone, base 670ddd885.
+#
+# Raised 2026-08-23 (Doc 190 Phase B, feat/bignum-p2-arith), 7240384 ->
+# 7310768, +70384 bytes, +0.97%, inside the existing 2% slack -- raised
+# anyway per this file's own rule above.  The bignum arithmetic core
+# (contagion) is exactly the shape of change this ratchet exists to make
+# visible: new native code in `scripts/nelisp-standalone-build.el'
+# (`nelisp-standalone--applyfn-core-helpers' gains the schoolbook limb
+# add/sub/mul primitives -- `nl_bignum_add_raw'/`nl_bignum_sub_raw'/
+# `nl_bignum_mul_raw' and their carry/borrow/row loops -- plus the
+# rewritten `wf_sum'/`wf_prod'/`wf_subtail'/`wf_diff' and the three new
+# `wf_*_big' fold continuations, all AOT-compiled into the linked
+# binary), plus a small addition to the interpreted stdlib prelude
+# (`scripts/nelisp-stdlib-prelude.el''s `expt' gained one `bignump'
+# guard, embedded as prelude source text like every other prelude-size
+# raise in this file's history).  None of it dead weight: every new
+# native function is exercised by `scripts/standalone-bignum-smoke.el'
+# (grown from 37 to 54 cases this same commit).  Measured with `stat -c
+# %s target/nelisp' after a clean `make standalone-reader' on this
+# branch's own HEAD (eb4eb81f3 base).
+# Raised 2026-08-23 (fix/ffi-surface-availability), 7240384 -> 7265024,
+# +24640 bytes, +0.34%, well inside the 2% slack -- raised anyway per this
+# file's own rule above.  Fixes the owner's real-machine finding that
+# `nl-ffi-call' was void on the default static build (a Windows PE build
+# and a WSL Debian Linux ELF build, both built the ordinary way -- see
+# docs/design/100-phase-47-dynamic-link-elisp.org section 7).  `nl-ffi-
+# call' is now always installed and dispatched
+# (`nelisp-standalone--reader-extern-builtin-names' unconditional,
+# `nelisp-standalone--applyfn-reader-table' always appends an arm): a
+# build that cannot link the real extern dispatcher gets a new arm
+# (`nelisp-standalone--applyfn-ffi-unsupported-form') that raises
+# `nelisp-unsupported-primitive' instead of falling through to an
+# unresolved builtin name -- packing two boxed Symbols from name bytes, a
+# small fixed amount of new native code in `scripts/nelisp-standalone-
+# build.el' (AOT-compiled into every standalone build; same reason
+# `tools/unsafe-inventory-baseline.txt''s `pinned-kernel-call' for this
+# same file grew alongside this raise).  Measured with `stat -c %s
+# target/nelisp' after a clean `make standalone-reader'
+# (NELISP_READER_DYNAMIC unset) on this branch's own HEAD.
+#
+# integration/wave6 battery reconciliation (post merge 11/11, full
+# tree, all 9 code + 2 doc branches landed): reset ONCE per this
+# file's own rule and the integration playbook, to the real measured
+# size on the merged binary -- `stat -c %s target/nelisp' after a
+# clean `make standalone-reader' on the fully-merged tree: 7393896
+# bytes, +79608 over the 7314288 interim pin (+1.09%). This
+# supersedes every interim number above; the four branches that each
+# independently raised the old `size' line off eb4eb81f3 (buffer-
+# unification-p2, bignum-p2-arith, socket-primitives-p1, fix/ffi-
+# surface-availability) all compose additively once actually built
+# together, plus feat/wasm-boundary-slots and feat/nl-clj-foundation's
+# own smaller native/prelude growth that never touched this file's
+# narrative directly. `binary-size-ratchet' passed against the old
+# interim pin (7393896 < 7460573 ceiling, well inside the 2% slack)
+# without a raise being required, but the pin is reset to the measured
+# value anyway per this file's own "say what the growth is" rule, not
+# left for slack to silently absorb going forward.
+#
+# Raised 2026-08-24 (integration/wave6 phase 2A, Doc 184 P1/P2 audit
+# hardening), 7393896 -> 7566672, +172776 bytes, +2.34%, EXCEEDING
+# this file's 2% slack -- the gate correctly failed and this is the
+# required same-commit raise, not slack silently absorbing it.
+# `packages/nelisp-eventloop/src/nelisp-async-core.el' (166 lines) and
+# `packages/nelisp-process-adapter/src/nelisp-process-adapter.el' (376
+# lines) were wired directly into
+# `nelisp-standalone--reader-repl-prelude-source'
+# (scripts/nelisp-standalone-build.el), so both files' source is now
+# embedded into the linked binary as executable prelude text on every
+# standalone build -- the same accounting as every other prelude-size
+# raise in this file's history (hooks/map.el/fixnum, buffer-
+# unification, cl-generic-subset, ...), just landing all at once for
+# ~540 combined source lines instead of a smaller incremental change.
+# Before this, both files were loaded only via an explicit `--load' in
+# the Makefile smoke recipes and never touched a shipped binary at
+# all. Not dead weight: `make-process''s real `:filter', `process-
+# filter'/`set-process-filter'/`process-sentinel'/`set-process-
+# sentinel', `accept-process-output''s real PROCESS/SECONDS/MILLISEC
+# args and real exit status, and the `--repl' idle pump all now work
+# on a default build with NO `--load' -- verified against this exact
+# binary: `(fboundp (quote process-filter))' -> t, a `:filter' fires
+# and captures real chunks, and `standalone-reader-process-adapter-
+# smoke'/`-smoke-red'/`-repl-idle-pump-smoke' (the latter two
+# repurposed from proving the PRE-fix defect shape, which can no
+# longer reproduce on any build, to proving the default-bootstrap FIX
+# shape instead) all pass. Measured with `stat -c %s target/nelisp'
+# after a clean `make standalone-reader' on this exact change.
+#
+# Raised 2026-08-24 (integration/wave6 phase 2C: bignump added to
+# nelisp--primitive-symbols, src/nelisp-eval.el), 7566672 -> 7570768,
+# +4096 bytes, +0.05%, well inside the 2% slack -- raised anyway per
+# this file's own rule above, not left for slack to silently absorb.
+# One more symbol in a borrow-list that already had ~130 entries;
+# the growth is `nelisp--primitive-symbols' itself (compiled into
+# src/nelisp-eval.el, one of the AOT-compiled reader units) plus a
+# few bytes of comment text, not new dispatch logic -- `bignump'
+# itself is unchanged, already a native dispatch arm since Doc 190.
+# Measured with `stat -c %s target/nelisp' after a clean `make
+# standalone-reader' on this exact change.
+#
+# Raised 2026-08-24 (integration/wave6 battery run: the emacs-parity
+# fix for run-at-time/cancel-timer/timerp), 7570768 -> 7587264,
+# +16496 bytes, +0.22%, well inside the 2% slack -- raised anyway per
+# this file's own rule above, not left for slack to silently absorb.
+# packages/nelisp-eventloop/src/nelisp-async-core.el is loaded via
+# `nelisp-standalone--reader-repl-prelude-source' (Phase 2A) as
+# embedded prelude source, same accounting as every other prelude-
+# size raise in this file's history: the new `nelisp-async-core-
+# timerp' function, `nelisp-async-core-run-at-time''s restored TIME
+# validation, and their docstrings/comments.
+#
+# Raised 2026-08-24 (integration/wave6 battery run: the timerp/
+# cancel-timer host-fallback fix, packages/nelisp-eventloop/src/
+# nelisp-async-core.el), 7587264 -> 7603704, +16440 bytes, +0.22%,
+# well inside the 2% slack -- raised anyway per this file's own
+# rule above, not left for slack to silently absorb. Embedded
+# prelude source growth: two new captured-host-function defvars
+# and the cond-based delegate logic in `nelisp-async-core-timerp'/
+# `nelisp-async-core-cancel-timer', fixing a real cross-test global-
+# state-leak bug (a REAL host Emacs timer, `cancel-timer'd after
+# this file's own defalias had already fired in the same Emacs
+# process, used to hit the wrong-shape branch and signal
+# incorrectly instead of delegating to the real cancel-timer).
+
+# Raised 2026-08-24 (integration/netproc-on-wave6 merge reconciliation,
+# feat/network-process-p0 onto integration/wave6's own tip 5e5e29cd4),
+# 7603704 -> 7784728, +181024 bytes, +2.38%, EXCEEDING this file's 2%
+# slack against the stale interim pin above -- the gate correctly
+# failed and this is the required same-commit raise, not slack
+# silently absorbing it.  netproc's own isolated-branch measurement
+# (the paragraph two above this one, 7310720 -> 7331256, +20536 bytes)
+# assumed `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
+# stays loaded only via `--load'/`require' and never links into
+# `target/nelisp' -- true on that branch alone, but wave6's own Phase 2A
+# (the raise three paragraphs above this one, 7393896 -> 7566672) had
+# already changed that: `scripts/nelisp-standalone-build.el' reads this
+# exact file with `insert-file-contents' at build time and concatenates
+# its source directly into the default binary's prelude. Since git's
+# merge combined both branches' edits to that one file with no conflict,
+# the build now embeds ALL of it -- not just the cond-arm widening in
+# `scripts/nelisp-stdlib-prelude.el' netproc's own note accounted for,
+# but the full `make-network-process'/`open-network-stream'/
+# `process-send-string'/`process-contact' implementation, the `/etc/
+# hosts' Phase B lookup, and the entire DNS-over-TCP/53 Phase C wire
+# encoder/decoder (roughly 480 new source lines over what Phase 2A
+# already embedded) as executable prelude text, same accounting as
+# every other prelude-size raise in this file's history. Verified this
+# is the real mechanism, not a guess: `(fboundp (quote process-filter))'
+# and `(fboundp (quote make-network-process))' both read `t' on this
+# exact binary with NO `--load' of either source file, a loopback
+# `open-network-stream' round-trips immediately (`open' status, no
+# `accept-process-output' call), and a real `/bin/echo' subprocess's
+# `:filter' still fires and captures its output -- both halves of Doc
+# 184 and Doc 194 compose in the one binary.  Measured with `stat -c %s
+# target/nelisp' after a clean `make standalone-reader' on this exact
+# merge commit.
+# integration/wave7 battery reconciliation (post merge 7/7, full tree, 3
+# code branches + 4 additive doc branches landed): reset ONCE per this
+# file's own rule and the integration playbook, to the real measured
+# size on the merged binary -- `stat -c %s target/nelisp' after a clean
+# `make standalone-reader-test' on the fully-merged tree: 7867128 bytes,
+# +82400 over the 7784728 base (+1.06%), well inside the 2% slack --
+# raised anyway per this file's own rule above, not left for slack to
+# silently absorb.  feat/network-process-p345 (Doc 194 P3-P5: nonblocking
+# socket primitives, the poll loop, `:nowait'/`:server' adapter support)
+# is the only one of the three code branches that touches anything
+# AOT-baked into the linked binary -- `scripts/nelisp-standalone-build.el'
+# gained new native forms for the nonblocking/poll/getsockopt primitives,
+# same accounting as every prior socket-primitives raise in this file's
+# history.  feat/nl-clj-lazy and feat/nl-clj-async do NOT move this
+# number: both are ordinary `packages/nl-clj/' library files loaded via
+# `require'/`--load' at runtime, never linked into `target/nelisp' (see
+# docs/design/195-clojure-compat-library.org's own #+STATUS narrative,
+# which measures each against a byte-identical binary for exactly this
+# reason).  The four docs/design-* branches are additive doc-only and
+# touch nothing that links in.  `binary-size-ratchet' passes against
+# this exact pin.
+# Raised 2026-08-27 (Doc 200, unibyte strings as Sexp tags 14/15),
+# 7867128 -> 8143256.  Read the split before reading the number: most of
+# this raise is not Doc 200's.
+#
+#   v1.0.1 (cba351348), clean worktree, `make standalone-reader'  8099488
+#   this branch, same procedure                                   8143256
+#   Doc 200's own growth                                          +43768 (+0.54%)
+#
+# The pin was ALREADY stale at v1.0.1: 8099488 is 232360 over the 7867128
+# above and 75018 over its 2% ceiling, so `binary-size-ratchet' was red on
+# the released tag before this work began.  It is a binary-tier gate and
+# does not run in the check tier, which is how it went unremarked.  This
+# raise absorbs that, and says so rather than folding it silently into a
+# Doc 200 number.
+#
+# Doc 200's own +43768 is: the tag-14/15 arms added to ~120 tag-dispatch
+# sites (the ledger's count, tools/nelisp-doc200-tag-sites.txt); native
+# unibyte producers and the length/aref/concat/substring/equal/sxhash
+# accessors that have to tell a byte from a character; `aset''s Emacs 31.1
+# fixed-width rules in the standalone, AOT and JIT paths; three-digit octal
+# printing; and the reader's numeric-escape lexer (`lisp/nelisp-cc-reader-
+# lexer.el', +156 lines, AOT-compiled into the binary).  All of it links in;
+# none of it is a duplicated unit or an unstripped section.
+#
+# MEASUREMENT NOTE, because it cost a wrong conclusion here first: this
+# number is a COLD build -- a fresh `git worktree' with no target/ at all.
+# A warm tree in this repository measures about 69744 bytes LOWER for the
+# same commit (8073512 vs 8143256 on this branch; the same offset appears
+# at v1.0.1).  Three repeat cold builds at v1.0.1 were byte-identical, so
+# the build itself is deterministic and the offset is the tree, not noise.
+# CI checks out clean, so the cold number is the one this gate should be
+# pinned against.  Do not compare a warm local build to this line.
+#
+size 8143256
+slack-pct 2

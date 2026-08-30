@@ -66,12 +66,39 @@ jobs:
           set -euo pipefail
           clone_related() {
             local repo="$1" dest="$2" ref="$3"
-            if git ls-remote --exit-code --heads "https://github.com/zawatton/${repo}.git" "$ref" >/dev/null 2>&1; then
-              git clone --depth 1 --branch "$ref" "https://github.com/zawatton/${repo}.git" "../${dest}"
-            else
-              echo "::error::required related repo ${repo} has no branch ${ref}; push matching branches for standalone vendor CI"
-              exit 1
+            local url="https://github.com/zawatton/${repo}.git"
+            # A matching branch wins: that is the whole point of this parity
+            # run -- build the sibling at the same feature branch when one
+            # exists.  Falling back to the sibling's OWN default branch when it
+            # does not is what makes the run possible at all: `anvil.el' is on
+            # `master', this repo is on `main', and demanding `main' there
+            # failed every run since the branch rename -- 12 consecutive
+            # failures, none of them about the code being tested.
+            if git ls-remote --exit-code --heads "$url" "$ref" >/dev/null 2>&1; then
+              git clone --depth 1 --branch "$ref" "$url" "../${dest}"
+              return
             fi
+            # Probe the two names a default branch actually has here rather
+            # than parsing `--symref' output: that parse works locally but
+            # came back empty on the runner, and `gh api' is not an option
+            # because this workflow is given no token.  `git ls-remote
+            # --heads NAME' is a plain yes/no against the same URL that is
+            # about to be cloned.
+            local fallback=""
+            local candidate
+            for candidate in main master; do
+              if git ls-remote --exit-code --heads "$url" "$candidate" >/dev/null 2>&1; then
+                fallback="$candidate"
+                break
+              fi
+            done
+            if [ -n "$fallback" ] && [ "$fallback" != "$ref" ]; then
+              echo "::notice::related repo ${repo} has no branch ${ref}; using its default branch ${fallback}"
+              git clone --depth 1 --branch "$fallback" "$url" "../${dest}"
+              return
+            fi
+            echo "::error::required related repo ${repo} has neither branch ${ref} nor a readable default branch"
+            exit 1
           }
           clone_related nelisp-emacs nelisp-emacs "${NELISP_EMACS_REF:-${RELATED_REF:-main}}"
           clone_related anvil.el anvil.el "${ANVIL_REF:-${RELATED_REF:-main}}"
@@ -119,12 +146,39 @@ jobs:
           set -euo pipefail
           clone_related() {
             local repo="$1" dest="$2" ref="$3"
-            if git ls-remote --exit-code --heads "https://github.com/zawatton/${repo}.git" "$ref" >/dev/null 2>&1; then
-              git clone --depth 1 --branch "$ref" "https://github.com/zawatton/${repo}.git" "../${dest}"
-            else
-              echo "::error::required related repo ${repo} has no branch ${ref}; push matching branches for standalone vendor CI"
-              exit 1
+            local url="https://github.com/zawatton/${repo}.git"
+            # A matching branch wins: that is the whole point of this parity
+            # run -- build the sibling at the same feature branch when one
+            # exists.  Falling back to the sibling's OWN default branch when it
+            # does not is what makes the run possible at all: `anvil.el' is on
+            # `master', this repo is on `main', and demanding `main' there
+            # failed every run since the branch rename -- 12 consecutive
+            # failures, none of them about the code being tested.
+            if git ls-remote --exit-code --heads "$url" "$ref" >/dev/null 2>&1; then
+              git clone --depth 1 --branch "$ref" "$url" "../${dest}"
+              return
             fi
+            # Probe the two names a default branch actually has here rather
+            # than parsing `--symref' output: that parse works locally but
+            # came back empty on the runner, and `gh api' is not an option
+            # because this workflow is given no token.  `git ls-remote
+            # --heads NAME' is a plain yes/no against the same URL that is
+            # about to be cloned.
+            local fallback=""
+            local candidate
+            for candidate in main master; do
+              if git ls-remote --exit-code --heads "$url" "$candidate" >/dev/null 2>&1; then
+                fallback="$candidate"
+                break
+              fi
+            done
+            if [ -n "$fallback" ] && [ "$fallback" != "$ref" ]; then
+              echo "::notice::related repo ${repo} has no branch ${ref}; using its default branch ${fallback}"
+              git clone --depth 1 --branch "$fallback" "$url" "../${dest}"
+              return
+            fi
+            echo "::error::required related repo ${repo} has neither branch ${ref} nor a readable default branch"
+            exit 1
           }
           clone_related nelisp-emacs nelisp-emacs "${NELISP_EMACS_REF:-${RELATED_REF:-main}}"
           clone_related anvil.el anvil.el "${ANVIL_REF:-${RELATED_REF:-main}}"
@@ -172,20 +226,54 @@ jobs:
           set -euo pipefail
           clone_related() {
             local repo="$1" dest="$2" ref="$3"
-            if git ls-remote --exit-code --heads "https://github.com/zawatton/${repo}.git" "$ref" >/dev/null 2>&1; then
-              git clone --depth 1 --branch "$ref" "https://github.com/zawatton/${repo}.git" "../${dest}"
-            else
-              echo "::error::required related repo ${repo} has no branch ${ref}; push matching branches for standalone vendor CI"
-              exit 1
+            local url="https://github.com/zawatton/${repo}.git"
+            # A matching branch wins: that is the whole point of this parity
+            # run -- build the sibling at the same feature branch when one
+            # exists.  Falling back to the sibling's OWN default branch when it
+            # does not is what makes the run possible at all: `anvil.el' is on
+            # `master', this repo is on `main', and demanding `main' there
+            # failed every run since the branch rename -- 12 consecutive
+            # failures, none of them about the code being tested.
+            if git ls-remote --exit-code --heads "$url" "$ref" >/dev/null 2>&1; then
+              git clone --depth 1 --branch "$ref" "$url" "../${dest}"
+              return
             fi
+            # Probe the two names a default branch actually has here rather
+            # than parsing `--symref' output: that parse works locally but
+            # came back empty on the runner, and `gh api' is not an option
+            # because this workflow is given no token.  `git ls-remote
+            # --heads NAME' is a plain yes/no against the same URL that is
+            # about to be cloned.
+            local fallback=""
+            local candidate
+            for candidate in main master; do
+              if git ls-remote --exit-code --heads "$url" "$candidate" >/dev/null 2>&1; then
+                fallback="$candidate"
+                break
+              fi
+            done
+            if [ -n "$fallback" ] && [ "$fallback" != "$ref" ]; then
+              echo "::notice::related repo ${repo} has no branch ${ref}; using its default branch ${fallback}"
+              git clone --depth 1 --branch "$fallback" "$url" "../${dest}"
+              return
+            fi
+            echo "::error::required related repo ${repo} has neither branch ${ref} nor a readable default branch"
+            exit 1
           }
           clone_related nelisp-emacs nelisp-emacs "${NELISP_EMACS_REF:-${RELATED_REF:-main}}"
           clone_related anvil.el anvil.el "${ANVIL_REF:-${RELATED_REF:-main}}"
 
-      - name: Set up Emacs
-        uses: purcell/setup-emacs@v8.0
-        with:
-          version: '30.2'
+      # Not purcell/setup-emacs here, unlike the aarch64 job: that action
+      # builds Emacs from nixpkgs, and Nixpkgs 26.11 dropped x86_64-darwin
+      # ("error: Nixpkgs 26.11 has dropped support for x86_64-darwin"), so
+      # this job could not even install Emacs.  Homebrew still ships an
+      # Intel build.  The version is whatever brew has rather than a pinned
+      # 30.2, so print it -- a parity job that does not say which Emacs it
+      # compared against is reporting half a result.
+      - name: Set up Emacs (Homebrew; nixpkgs no longer supports x86_64-darwin)
+        run: |
+          brew install emacs
+          emacs --version | head -1
 
       - name: Verify macOS Intel standalone parity
         shell: bash
@@ -193,6 +281,34 @@ jobs:
           set -o pipefail
           mkdir -p verification-logs
           ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball 2>&1 | tee verification-logs/macos-x86_64.log
+
+      # 2026-08-22 survey gap #5: nelisp-standalone--target-runnable-on-host-p
+      # (scripts/nelisp-standalone-build.el) did not recognize this runner as
+      # able to run a macos-x86_64 binary, so every binary-building
+      # correctness gate silently reported "not runnable" here -- note the
+      # step above never builds one either: verify-cross-platform.sh's Darwin
+      # branch hardcodes `--target macos-aarch64' regardless of host arch, so
+      # today this job builds (and, now that the predicate can see it, will
+      # correctly skip running) an Apple Silicon binary on Intel hardware.
+      # This step is the first thing in this repository that actually asks
+      # for a macos-x86_64 build.
+      #
+      # It is expected to fail on first run, NOT because of anything the
+      # predicate gets wrong: `nelisp-standalone--target-abi'/`-arch'/`-os'
+      # in nelisp-standalone-build.el have no macos-x86_64 clause at all (only
+      # the lower-level lisp/nelisp-mach-o-write.el Mach-O writer and
+      # lisp/nelisp-asm-x86_64.el assembler support the pieces in isolation),
+      # so this should die immediately with a loud
+      # "standalone: unsupported target macos-x86_64" `error' rather than
+      # silently skipping or hanging.  Wiring that orchestration is real
+      # follow-up work outside this gap's scope (see the predicate's
+      # docstring); continue-on-error keeps that known, diagnosed gap from
+      # blocking this job while the failure stays fully visible in the logs.
+      - name: Standalone reader correctness gate (macos-x86_64, first real run)
+        continue-on-error: true
+        env:
+          NELISP_STANDALONE_TARGET: macos-x86_64
+        run: make standalone-reader-test
 
       - name: Upload macOS Intel verification log
         if: always()
@@ -231,10 +347,23 @@ jobs:
               git ls-remote --exit-code --heads $url $Ref *> $null
               if ($LASTEXITCODE -eq 0) {
                   git clone --depth 1 --branch $Ref $url "..\$Dest"
-              } else {
-                  Write-Error "required related repo $Repo has no branch $Ref; push matching branches for standalone vendor CI"
-                  exit 1
+                  return
               }
+              # Same fallback the POSIX half of this step already had: not every
+              # related repo calls its default branch "main".  anvil.el calls it
+              # "master", so demanding $Ref outright failed the Windows job while
+              # the Linux job cloned that very repo without trouble.  Probe the
+              # usual defaults before giving up.
+              foreach ($candidate in @("main", "master")) {
+                  git ls-remote --exit-code --heads $url $candidate *> $null
+                  if ($LASTEXITCODE -eq 0) {
+                      Write-Host "::notice::related repo $Repo has no branch $Ref; using its default branch $candidate"
+                      git clone --depth 1 --branch $candidate $url "..\$Dest"
+                      return
+                  }
+              }
+              Write-Error "required related repo $Repo has neither branch $Ref nor a readable default branch"
+              exit 1
           }
           Clone-Related "nelisp-emacs" "nelisp-emacs" $env:NELISP_EMACS_REF
           Clone-Related "anvil.el" "anvil.el" $env:ANVIL_REF

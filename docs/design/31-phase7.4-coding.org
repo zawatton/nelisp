@@ -381,6 +381,14 @@ Doc 28 §3 / Doc 29 §3 / Doc 30 §3 schema 踏襲、4 sub-phase に分割。
 
 新規 module: =src/nelisp-coding-utf8.el= (~400-700 LOC NeLisp)。
 
+#+begin_quote
+実装追記 (2026-08-19): 7.4.1 は出荷済み。ただしコードは上で名指しした
+別 module ではなく =src/nelisp-coding.el= に入っている
+(=nelisp-coding-utf8-encode= / =-decode= と 11 個の内部 helper)。
+=src/nelisp-coding-utf8.el= というファイルはツリーに存在しない —
+この計画書の名前で grep しても見つからないので、ここに書いておく。
+#+end_quote
+
 *** scope
 - UTF-8 byte sequence (1-4 byte) の encode/decode loop
 - BOM (=EF BB BF=) strip on read / no emit on write

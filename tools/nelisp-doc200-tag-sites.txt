@@ -1,0 +1,174 @@
+# FILE	ENCLOSING	KIND	NTH	STATUS	NOTE
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--aot-direct-tag-predicate-form	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--aot-direct-tag-predicate-form	tag-const-ref	1	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--collect-strings	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-sexp-name-eq	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-sexp-name-eq-arm64	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-stmt	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	1	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	2	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	3	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-aot-funcall3	unresolved-numeric	0	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-value	unresolved-numeric	0	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-value	unresolved-numeric	1	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-value	unresolved-numeric	2	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--preprocess-defun-sexp-builtin1-symbol	unresolved-numeric	0	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--wasm-collect-handler-local-ids	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--wasm-emit-value	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--wasm-register-ir-imports	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-artifact.el	nelisp-artifact--native-driver-c	unparsed-region	0	walked	Hand-inspected the generated native C driver and added tag-14/tag-15 layout-aware value output.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_name_ok	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-evalport-combiner-apply.el	nl_apply_builtin	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el	nl_mut_str_set_codepoint_raw	tag-test-bound-sym	0	walked	Read the fixed-width mutation lower: tag 15 resolves its boxed NlStr and writes one byte in 0..255; tag 6 writes only when both old and new characters are ASCII, preserving tag and byte length.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_valid_key	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-alias.el	nl_jit_alias	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase_byte_len	tag-test-sexp-tag	0	walked	Read the case-conversion byte-length helper and made boxed tags 6/15 resolve NlStr.len before preserving their output representation.
+lisp/nelisp-cc-jit-length.el	nelisp_jit_length	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-make-symbol.el	nl_jit_make_symbol	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-mut-str-set-codepoint.el	nl_jit_mut_str_set_codepoint	tag-test-sexp-tag	0	walked	Read the JIT mutation dispatch: it accepts tag 6/15 and delegates to the fixed-width lower that preserves the exact tag and byte length.
+lisp/nelisp-cc-jit-regex.el	nl_smp_is_str_tag	unresolved-numeric	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-regex.el	nl_smp_is_str_tag	unresolved-numeric	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-regex.el	nl_smp_str_len	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-regex.el	nl_smp_str_len	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	2	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	3	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	4	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	5	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	6	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	7	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	8	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash-ext.el	nl_jit_secure_hash_non_sha1_ext	tag-test-sexp-tag	9	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash.el	nl_jit_secure_hash	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-secure-hash.el	nl_jit_secure_hash	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-split-by-non-alnum.el	nl_jit_split_by_non_alnum	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-split-by-non-alnum.el	nl_jit_split_by_non_alnum	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-str-codepoint-at.el	nl_jit_str_codepoint_at	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-str-codepoint-at.el	nl_jit_str_codepoint_at	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-sxhash.el	nl_jit_sxhash_dispatch	unresolved-numeric	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-sxhash.el	nl_jit_sxhash_dispatch	unresolved-numeric	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-symbol-name.el	nl_jit_symbol_name	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-type-of.el	nl_jit_type_of_tag	unresolved-numeric	0	walked	Read the type-of dispatch and routed both tags 14/15 to the existing string result.
+lisp/nelisp-cc-jit-type-of.el	nl_jit_type_of_tag	unresolved-numeric	1	walked	Read the type-of dispatch and routed both tags 14/15 to the existing string result.
+lisp/nelisp-cc-jit-upcase.el	nl_jit_upcase	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-upcase.el	nl_jit_upcase	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-upcase.el	nl_jit_upcase_byte_len	tag-test-sexp-tag	0	walked	Read the case-conversion byte-length helper and made boxed tags 6/15 resolve NlStr.len before preserving their output representation.
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry_valid_key	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-mut-str.el	nl_jit_mut_str_len	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_alloc_mut_str_write	tag-write-u8	0	walked	Kept the UTF-8 mutable producer writing tag 6 and added the layout-identical unibyte mutable writer/allocator that writes tag 15.
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_alloc_str_write	tag-write-u8	0	walked	Kept the UTF-8 immutable producer writing tag 5 and added the layout-identical unibyte immutable writer/allocator that writes tag 14.
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_mut_str_finalize_write	tag-write-u8	0	walked	Kept tag-6 builders finalizing to tag 5, added the tag-14 writer, and made the public finalizer select tag 14 exactly for a tag-15 source.
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_str_bytes_ptr	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_str_bytes_ptr	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_char_count	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_char_count	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_codepoint_at	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_codepoint_at	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_is_alphanumeric_at	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_is_alphanumeric_at	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_dispatch	unresolved-numeric	0	n-a	This dispatches reader token kinds 5/6 for quote-prefix syntax, not Sexp tags.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_dispatch	unresolved-numeric	1	n-a	This dispatches reader token kinds 5/6 for quote-prefix syntax, not Sexp tags.
+lisp/nelisp-cc-sexp-clone-into.el	nl_sci_bump	unresolved-numeric	0	walked	Read the cloner dispatch: tag 14 shallow-copies the immutable slot and tag 15 follows the tag-6 NlStr refcount path.
+lisp/nelisp-cc-sexp-clone-into.el	nl_sci_dispatch	unresolved-numeric	0	walked	Read the cloner dispatch: tag 14 shallow-copies the immutable slot and tag 15 follows the tag-6 NlStr refcount path.
+lisp/nelisp-cc-sexp-eq.el	nl_sexp_eq	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-sexp-fmt.el	nl_fmt_sexp_dispatch	tag-test-sexp-tag	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+lisp/nelisp-cc-sexp-fmt.el	nl_fmt_sexp_dispatch	tag-test-sexp-tag	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+lisp/nelisp-cc-sexp-fmt.el	nl_fmt_sexp_write_quoted_str	tag-test-sexp-tag	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+lisp/nelisp-cc-sexp-write-str.el	nl_jit_intern	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-sexp-write-str.el	nl_jit_intern	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-val-load.el	nl_val_clone_into	tag-test-read-u8	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-sexp-layout.el	nelisp-sexp--abi-export	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+lisp/nelisp-sexp-layout.el	nelisp-sexp--abi-export	tag-const-ref	1	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el	nelisp-eventloop-multiplex-unregister-fd	unresolved-numeric	0	n-a	This validates the six-field eventloop registration handle shape, not a Sexp tag.
+packages/nelisp-eventloop/src/nelisp-async-core.el	nelisp-async-core-cancel-timer	unresolved-numeric	0	n-a	This validates the five-field timer record shape, not a Sexp tag.
+packages/nelisp-eventloop/src/nelisp-async-core.el	nelisp-async-core-timerp	unresolved-numeric	0	n-a	This validates the five-field timer record shape, not a Sexp tag.
+packages/nelisp-process-adapter/src/nelisp-process-adapter.el	nelisp-process-adapter--signal-name	unresolved-numeric	0	n-a	This compares POSIX signal number 6 (SIGABRT), not a Sexp tag.
+scripts/nelisp-standalone-build.el	bf_aref_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_aref_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_arrayp_raw	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_arrayp_raw	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_aset_checked	tag-test-read-u64	0	walked	Read the tag-14/15 branch: it resolves either inline or boxed storage, permits only byte values 0..255, and writes exactly one byte without changing tag or byte length.
+scripts/nelisp-standalone-build.el	bf_aset_checked	tag-test-read-u64	1	walked	Read the tag-5/6 branch: it permits mutation only when both replaced and replacement characters are ASCII, so the exact tag and byte length remain invariant.
+scripts/nelisp-standalone-build.el	bf_debug_switch	unresolved-numeric	0	n-a	This compares private debug commands 5/6 (mid-form GC arm/disarm), not Sexp tags.
+scripts/nelisp-standalone-build.el	bf_debug_switch	unresolved-numeric	1	n-a	This compares private debug commands 5/6 (mid-form GC arm/disarm), not Sexp tags.
+scripts/nelisp-standalone-build.el	bf_elt	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_elt	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_elt_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_elt_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_eq2	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_eq2	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_eq2	tag-test-bound-sym	2	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_eq2	tag-test-bound-sym	3	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_equal2	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_equal2	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_error	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_error	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_length_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_length_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_str_len	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_str_ptr	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_string_inline_p	tag-test-bound-sym	0	walked	Read the conversion layout dispatch and classified immutable tags 5/14 as inline while boxed tags 6/15 take the NlStr allocation path.
+scripts/nelisp-standalone-build.el	bf_strsym_raw	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_strsym_raw	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_concat_arg_kind	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_concat_arg_kind	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_concat_first_bad	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_concat_first_bad	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_emit_value	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_emit_value	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_json	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_json	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_json_sym_is_null	unresolved-numeric	0	n-a	This compares the five-byte length of the symbol name :null, not a Sexp tag.
+scripts/nelisp-standalone-build.el	m5_length	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_length	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	m5_prin1	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_prin1	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_string_tag_p	unresolved-numeric	0	walked	Read the central string predicate and admitted immutable tag 14 alongside tag 5.
+scripts/nelisp-standalone-build.el	m5_string_tag_p	unresolved-numeric	1	walked	Read the central string predicate and admitted boxed tag 15 alongside tag 6.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	0	walked	Read the quoted standalone builtin arm and added tags 14/15 to its string predicate/access dispatch.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	1	walked	Read the quoted standalone builtin arm and added tags 14/15 to its string predicate/access dispatch.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	2	walked	Read the quoted standalone builtin arm and added tags 14/15 to its string predicate/access dispatch.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	3	walked	Read the quoted standalone builtin arm and added tags 14/15 to its string predicate/access dispatch.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-read-u64	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-read-u64	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-command-cache-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-command-runtime-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-command-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-source-command-cache-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nelisp-standalone--reader-repl-prelude-source	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nl_bi_process_string_sx_p	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_process_string_sx_p	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_strlen	tag-test-bound-sym	1	walked	Read this duplicate generated Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_strlen	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_strptr	tag-test-bound-sym	1	walked	Read this duplicate generated Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_strptr	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_word_byte	unresolved-numeric	0	n-a	This selects byte index 5/6 while unpacking a u64 word, not a Sexp tag.
+scripts/nelisp-standalone-build.el	nl_bi_word_byte	unresolved-numeric	1	n-a	This selects byte index 5/6 while unpacking a u64 word, not a Sexp tag.
+scripts/nelisp-standalone-build.el	nl_cli_value_to_buf	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	nl_cli_value_to_buf	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	nl_compact_pin_src	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_compact_pin_src	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_compact_rw_slot	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_compact_rw_slot	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_compact_unpin_root	unresolved-numeric	0	n-a	This compares GC header mark-state 5 for a pinned root, not a Sexp tag.
+scripts/nelisp-standalone-build.el	nl_ct_tag_eq	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_fa_slot	tag-test-bound-sym	0	walked	Read the flat-arena reachability marker and added tag 14 to the inline-buffer arm and tag 15 to the boxed-NlStr arm.
+scripts/nelisp-standalone-build.el	nl_fa_slot	tag-test-bound-sym	1	walked	Read the flat-arena reachability marker and added tag 14 to the inline-buffer arm and tag 15 to the boxed-NlStr arm.
+scripts/nelisp-standalone-build.el	nl_gc_mark_slot	tag-test-bound-sym	0	walked	Read the precise GC marker and added tag 14 exactly to the inline-buffer arm and tag 15 exactly to the boxed-NlStr arm.
+scripts/nelisp-standalone-build.el	nl_gc_mark_slot	tag-test-bound-sym	1	walked	Read the precise GC marker and added tag 14 exactly to the inline-buffer arm and tag 15 exactly to the boxed-NlStr arm.
+scripts/nelisp-standalone-build.el	nl_ht_key_hash	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_ht_key_hash	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_sf_decl_strip_body	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--ledger-rows	unresolved-numeric	0	n-a	This validates the ledger row has six tab-separated fields, not a Sexp tag.
+tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	0	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
+tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	1	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
+tools/nelisp-thread-allocating-standalone-smoke.el	-	unresolved-numeric	0	n-a	This asserts the expected five-element worker result list, not a Sexp tag.
+tools/nelisp-thread-percpu-roots-smoke.el	-	unresolved-numeric	0	n-a	This asserts the expected worker result integer 5, not a Sexp tag.

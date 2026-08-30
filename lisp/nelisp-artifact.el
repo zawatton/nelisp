@@ -19,6 +19,45 @@
 ;; unsupported top-level effects fall back to `nelisp-eval' replay.
 (require 'nelisp-bytecode)
 (require 'nelisp-eval)
+
+;; Doc 193 §3: `nelisp-native-function-call' (defined below) is
+;; `nl-condition's (Doc 168/169) flagship internal consumer, rewritten
+;; onto `nl-restart-case'/`nl-handler-bind'.  This is a real, non-soft
+;; dependency (unlike the `nl-check' require further down, which stays
+;; optional because Doc 170 §10 says nothing may depend on it) -- but
+;; it is NOT required here at file top level.  `require' needs
+;; `packages/nl-prelude/src'/`packages/nl-condition/src' on `load-path',
+;; and not every caller loads this file with those on `-L' (the
+;; standalone build scripts under `scripts/nelisp-standalone-build.el'
+;; pass `-L lisp -L src -L scripts' only) -- so, following
+;; `src/nelisp-bootstrap.el's `nelisp-bootstrap--add-package-paths',
+;; locating them needs a repo root.  Unlike that module (host-Emacs-
+;; only), THIS file's `require' also has to succeed when the standalone
+;; runtime interprets its OWN source (`nelisp-native-function-call' is
+;; on the every-native-call hot path, so it runs both under host Emacs
+;; AND self-hosted on `target/nelisp'), and `load-file-name'/
+;; `buffer-file-name' are exactly the kind of host-Emacs-only
+;; convenience that breaks there: under the standalone runtime they
+;; resolve to NeLisp's OWN "value absent" sentinel rather than nil or a
+;; `void-variable' signal, so `(or load-file-name buffer-file-name)'
+;; silently hands `file-name-directory' a symbol instead of a string
+;; (measured: `wrong-type-argument: (stringp nelisp--unbound-marker)',
+;; reproduced with plain `target/nelisp --load lisp/nelisp-artifact.el').
+;; `nelisp-artifact--native-compiler-candidates' below already solved
+;; this exact problem for locating `lisp/nelisp-aot-compiler.el'
+;; standalone: `nelisp-artifact-standalone-repo-root' (baked in by the
+;; standalone build) / `NELISP_ROOT' / `default-directory', never
+;; `load-file-name'.  `nelisp-native--ensure-condition' (defined next
+;; to the call site, near `nelisp-native-function-call') mirrors that
+;; same root list, and -- also unlike the top-level `require' this
+;; replaces -- runs LAZILY, on first call, not at file load time: this
+;; file's own `defun' bodies are not macroexpanded until they run (the
+;; same repro above still loads cleanly with dangling
+;; `nl-restart-case'/`nl-handler-bind' references, proving the
+;; standalone loader treats them as inert until called), so the
+;; dependency only needs to resolve by the time the ladder actually
+;; dispatches, which is also the earliest point `default-directory' is
+;; guaranteed to mean anything.
 ;; Loaded lazily by the §6.4 native lane; declared so the bytecode/nelc
 ;; path does not pull the (heavy) AOT compiler at require time.
 (declare-function nelisp-aot-compile-to-object "nelisp-aot-compiler"
@@ -75,7 +114,12 @@
        nelisp native-exec-elisp-artifact FILE.neln SYMBOL ARG...
        nelisp inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc
   (.nelc = NeLisp bytecode module; .neln = bytecode + embedded native object;
-   .elc = genuine GNU Emacs byte-compiled module, Doc 142 §6.2)")
+   .elc = genuine GNU Emacs byte-compiled module, Doc 142 §6.2.
+   .elc is HOST-EMACS-ONLY for exec-elisp-artifact/eval-elisp-artifact: the
+   standalone runtime has no GNU Emacs bytecode VM and rejects a .elc FILE
+   there with a stated reason; load one with real Emacs instead
+   (emacs -Q --batch --load FILE.elc).  compile-elisp-artifact and
+   inspect-elisp-artifact both support .elc from either runtime.)")
 
 (defvar nelisp-artifact--loaded nil
   "Absolute `.nelc' paths already replayed in this process.")
@@ -107,6 +151,18 @@ only the needed values, falling back to full plist parsing on unexpected input."
 
 (defvar nelisp-artifact--last-native-compile-report nil
   "Most recent `.neln' native compile coverage report.")
+
+(defvar nelisp-artifact--native-installed-symbols (make-hash-table :test 'eq)
+  "Symbols whose function was ever installed as a native wrapper by
+`nelisp-artifact--install-native-functions'.  Doc 191 (hot code reload)
+Phase 2: once a symbol enters this table it stays there for the rest of
+this process's lifetime, even if a later `defun'/`fset' overwrites its
+function cell -- some OTHER, already-compiled caller may hold a direct
+`call'/`extern-call' instruction resolved against the native code this
+symbol had at install time (Doc 191 §2.3 Hazard B: neither compiled-call
+shape consults the mirror/function-cell at call time), and no amount of
+redefining SYMBOL after the fact can retroactively fix an address already
+baked into someone else's machine code.  See `nelisp-artifact-reloadable-p'.")
 
 (defvar nelisp-artifact-default-native-policy 'opportunistic
   "Default native policy for `.neln' artifact compilation.
@@ -409,9 +465,36 @@ plist through the standalone reader."
   (when (and path (file-exists-p path))
     (delete-file path)))
 
+(defun nelisp-artifact--temp-directory ()
+  "Return the directory for temp files that do not belong beside a target."
+  (if (and (boundp 'temporary-file-directory)
+           (stringp temporary-file-directory)
+           (> (length temporary-file-directory) 0))
+      temporary-file-directory
+    "/tmp/"))
+
 (defun nelisp-artifact--make-temp-path (path suffix)
-  "Return a temp path near PATH using SUFFIX."
-  (let ((dir (file-name-directory path))
+  "Return a temp path for PATH using SUFFIX.
+
+Where the result goes depends on what PATH is, and the two cases have
+different requirements.
+
+PATH with a directory component is a real target -- an artifact or its
+manifest.  Its temp is the staging or backup file that `rename-file' later
+moves onto that target, and a rename is only atomic within one filesystem, so
+the temp has to stay in the target's directory.
+
+PATH that is a bare name -- `neln-obj', `neln-probe', `nelisp-host-helper',
+`nelisp-win-env', `nelisp-native-helper' -- has no target to stay beside.
+`file-name-directory' answers nil for those, which `expand-file-name' resolved
+against `default-directory': compile
+artifacts from inside a checkout and the object files and helper logs landed
+beside the sources.  They are deleted on the way out, so what survived came
+from runs that did not get there -- one of them reached a commit and sat in
+the tree until 2026-08-21.  Nothing renames these, so nothing keeps them on a
+particular filesystem, and they belong in the temp directory."
+  (let ((dir (or (file-name-directory path)
+                 (nelisp-artifact--temp-directory)))
         (name (file-name-nondirectory path)))
     (expand-file-name
      (format ".%s.%s.%d.%d"
@@ -422,12 +505,13 @@ plist through the standalone reader."
 
 (defun nelisp-artifact--make-temp-directory (prefix)
   "Return a new temporary directory named with PREFIX.
-Prefer system `mktemp -d' because standalone NeLisp's compatibility
-`make-temp-file' can collide across concurrent native-exec processes."
-  (let* ((base (if (and (boundp 'temporary-file-directory)
-                        (stringp temporary-file-directory))
-                   temporary-file-directory
-                 "/tmp/"))
+Prefers system `mktemp -d', which claims the name atomically.  That was once
+the only thing standing between concurrent native-exec processes and a shared
+directory, because the standalone `make-temp-file' named from a per-process
+counter and so named identically in every process.  That is fixed -- the
+process id is in the name again -- but mktemp is still the stronger of the
+two, and the fallback is what runs where mktemp is absent."
+  (let* ((base (nelisp-artifact--temp-directory))
          (template (expand-file-name (concat prefix ".XXXXXX") base))
          (mktemp (and (fboundp 'executable-find)
                       (executable-find "mktemp"))))
@@ -933,12 +1017,12 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
 
 (defun nelisp-artifact--collect-features (forms)
   "Collect top-level provided feature symbols from FORMS."
-  (let ((features nil))
+  (let ((provided nil))
     (dolist (form forms)
       (let ((feature (nelisp-artifact--extract-provided-feature form)))
-        (when (and feature (not (memq feature features)))
-          (setq features (append features (list feature))))))
-    features))
+        (when (and feature (not (memq feature provided)))
+          (setq provided (append provided (list feature))))))
+    provided))
 
 (defun nelisp-artifact--compiler-plist ()
   "Return the Doc 142 §6.1 compiler descriptor."
@@ -977,6 +1061,12 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
    (list :e-type 'rel
          :text (plist-get unit :text)
          :rodata (plist-get unit :rodata)
+         ;; `:data' / `:bss-size' were not forwarded until a unit first
+         ;; carried a writable blob.  Without them the writer emits the
+         ;; symbol and not the bytes, and rejects its own output with
+         ;; "symbol references data but :data is empty".
+         :data (plist-get unit :data)
+         :bss-size (plist-get unit :bss-size)
          :symbols (plist-get unit :symbols)
          :relocs (plist-get unit :relocs)
          :machine (plist-get unit :machine))))
@@ -988,7 +1078,12 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
         :size (plist-get entry :size)
         :arity (plist-get entry :arity)
         :param-class (plist-get entry :param-class)
+        ;; The register class is not the representation.  Recorded so a
+        ;; caller reads how to hand the arguments over instead of
+        ;; inferring it from the extern set, a different question.
+        :param-repr (plist-get entry :param-repr)
         :rt-slot-count (plist-get entry :rt-slot-count)
+        :return-repr (plist-get entry :return-repr)
         :body-offset (plist-get entry :body-offset)))
 
 (defun nelisp-artifact--native-defun-metadata (native symbol)
@@ -1095,6 +1190,16 @@ coverage when a native executor rejects the call."
            sym
            (nelisp-artifact--native-function-wrapper
             artifact-path sym fallback meta))
+          ;; Doc 191 Phase 2: record SYM as early-bound for the rest of
+          ;; this process's lifetime -- see the table's own docstring and
+          ;; `nelisp-artifact-reloadable-p'.  Recorded here, at the one
+          ;; site that actually installs a native wrapper, rather than
+          ;; inferred later from `nelisp--functions' current contents,
+          ;; because a later plain `defun' legitimately overwrites SYM's
+          ;; function-cell entry without undoing the hazard: some caller
+          ;; compiled against SYM's native address before that `defun'
+          ;; ran does not know about it.
+          (puthash sym t nelisp-artifact--native-installed-symbols)
           (setq installed (1+ installed)))))
     (nelisp-artifact--note-native-dispatch
      (list :event 'install
@@ -1103,40 +1208,156 @@ coverage when a native executor rejects the call."
            :skipped skipped))
     installed))
 
+(defun nelisp-artifact-reloadable-p (symbol)
+  "Return non-nil when redefining SYMBOL is expected to be visible to every
+caller that resolves it by name (Doc 191 Phase 1's verified `defun'/`fset'
+path), and nil when SYMBOL is early-bound (Doc 191 §2.3 Hazard B): SYMBOL
+was, at some point in this process, installed as a native wrapper by
+`nelisp-artifact--install-native-functions', so some caller may already
+hold a direct call to the native code SYMBOL had at that time, and
+redefining SYMBOL now cannot reach that caller.
+
+This answers Doc 191 Phase 2's question for the one Hazard B source a
+running process can actually query: `nelisp-artifact--install-native-
+functions', the native-wrapper install path used when loading a `.neln'
+artifact into a running `nelisp-eval'-hosted process.  It does NOT cover
+the standalone build's own separate hand-curated compile-unit table
+\(`scripts/nelisp-standalone-build.el''s `nelisp-standalone--manifest' and
+friends): that is build-time-only data inside the `nelisp-standalone-
+build.el' Emacs process that BUILDS a freestanding binary, with no handle
+any running process -- Emacs-hosted or the freestanding binary itself --
+can query at runtime.  Making that branch queryable would mean the
+standalone build baking its own compile-unit provenance into the binary
+as new, permanent, queryable state, which is new machinery Doc 191 §3
+says not to build without it earning its way in; recorded here as an
+explicitly bigger follow-on, not silently dropped.
+
+This predicate is per-SYMBOL, matching Doc 191 §4's own sketch, not
+per-CALLER: it does not distinguish \"early-bound for THIS caller\" from
+\"early-bound for some caller, unknown which\" -- Doc 191 §6's third open
+question (symbol-scoped vs. process-lifetime-scoped) is still open.  This
+answers the narrower, symbol-scoped question Doc 191 §5's own Phase 2 ERT
+design actually tests: a plain interpreted `defun' is reloadable, a
+function installed through `nelisp-artifact--install-native-functions' is
+not."
+  (not (gethash symbol nelisp-artifact--native-installed-symbols)))
+(defvar nelisp-native--condition-loaded nil
+  "Non-nil once `nl-condition' has been located and required.
+See the Doc 193 §3 commentary above `nelisp-artifact--magic' for why
+this is a lazy, call-time check rather than a file-top-level `require'.")
+
+(defun nelisp-native--condition-root-candidates ()
+  "Return candidate repo roots for locating `packages/nl-{prelude,condition}/src'.
+Same three sources `nelisp-artifact--native-compiler-candidates' already
+trusts standalone, in the same order -- deliberately NOT `load-file-name'/
+`buffer-file-name' (host-Emacs-only; see the commentary this mirrors)."
+  (let ((roots nil))
+    (when (and (boundp 'nelisp-artifact-standalone-repo-root)
+               nelisp-artifact-standalone-repo-root
+               (stringp nelisp-artifact-standalone-repo-root)
+               (> (length nelisp-artifact-standalone-repo-root) 0))
+      (setq roots (append roots (list nelisp-artifact-standalone-repo-root))))
+    (let ((env-root (and (fboundp 'getenv) (getenv "NELISP_ROOT"))))
+      (when (and env-root (stringp env-root) (> (length env-root) 0))
+        (setq roots (append roots (list env-root)))))
+    (when (and (boundp 'default-directory) (stringp default-directory))
+      (setq roots (append roots (list default-directory))))
+    roots))
+
+(defun nelisp-native--ensure-condition ()
+  "Ensure `nl-condition' (and its `nl-prelude' dependency) are on `load-path'
+and required, trying `load-path' as-is first (the common case: `make test'
+et al already put `packages/*/src' on it via `PACKAGE_SRC_LOADS') before
+walking `nelisp-native--condition-root-candidates'.  Idempotent; the ladder
+calls this once per dispatch, so it short-circuits after the first success."
+  (unless nelisp-native--condition-loaded
+    (unless (require 'nl-condition nil t)
+      (let ((roots (nelisp-native--condition-root-candidates))
+            (found nil))
+        (while (and roots (not found))
+          (let* ((root (car roots))
+                 (prelude-src (expand-file-name "packages/nl-prelude/src" root))
+                 (condition-src (expand-file-name "packages/nl-condition/src" root)))
+            (when (and (file-directory-p prelude-src) (file-directory-p condition-src))
+              (add-to-list 'load-path prelude-src)
+              (add-to-list 'load-path condition-src)
+              (setq found t)))
+          (setq roots (cdr roots)))
+        (require 'nl-condition)))
+    (setq nelisp-native--condition-loaded t)))
+
+(defun nelisp-native--tier-call (tier-fn artifact symbol args)
+  "Call TIER-FN (a native exec tier) with ARTIFACT SYMBOL ARGS.
+TIER-FN is one of the two native exec tiers
+(`nelisp-artifact-native-exec-fast-simple' /
+`nelisp-artifact-native-exec-general'), which signal an ordinary
+`error' the same way any other Elisp code does.  `nl-handler-bind'
+(Doc 169) only ever sees conditions raised through `nl-signal', so
+this is the scoped, call-site-local translation Doc 168's own
+non-invasiveness rule requires for adopting `nl-condition' here:
+TIER-FN itself stays a plain `error' signaller, unmodified; only
+`nelisp-native-function-call', at its own call site, routes the
+condition on to `nl-signal' so its `nl-handler-bind' frames can act
+on it pre-unwind."
+  (condition-case err
+      (funcall tier-fn artifact symbol args)
+    (error (nl-signal (car err) (cdr err)))))
+
 (defun nelisp-native-function-call (fn args)
-  "Call native wrapper FN with ARGS, falling back when native cannot run."
+  "Call native wrapper FN with ARGS, falling back when native cannot run.
+
+Doc 193 §3: this is `nl-condition's flagship internal consumer.  The
+three tiers (fast integer ABI, general native, interpreted/bytecode
+fallback) are the SAME named restarts the docstring for `nl-condition'
+uses as its own motivating example -- `fast-simple-abi' is tried
+implicitly as the protected form, `general-native' recovers from its
+failure, `interpreted-fallback' recovers from either native tier
+failing.  Dispatch-report bookkeeping (`nelisp-artifact--note-native-
+dispatch') is a side effect of which branch actually returns a value,
+not hand-threaded through three nested `condition-case' arms as it was
+before this rewrite -- see the differential corpus in
+`test/nelisp-artifact-test.el' (\"ladder-*\" tests) for the behavioral
+equivalence proof this rewrite is held to."
   (let ((artifact (nelisp-artifact--native-function-artifact fn))
         (symbol (symbol-name (nelisp-artifact--native-function-symbol fn)))
         (fallback (nelisp-artifact--native-function-fallback fn))
         (meta (nelisp-artifact--native-function-meta fn)))
     (if (not nelisp-artifact-native-dispatch-enabled)
         (nelisp--apply fallback args)
-      (condition-case native-err
+      (nelisp-native--ensure-condition)
+      (nl-restart-case
           (let ((result
-                 (if (and (nelisp-artifact--all-integers-p args)
-                          (nelisp-artifact--native-simple-integer-abi-p meta))
-                     (condition-case _fast-err
-                         (nelisp-artifact-native-exec-fast-simple
-                          artifact symbol args)
-                       (error
-                        (nelisp-artifact-native-exec-general
-                         artifact symbol args)))
-                   (nelisp-artifact-native-exec-general
-                    artifact symbol args))))
+                 (nl-handler-bind
+                     ((error (lambda (c) (nl-invoke-restart 'interpreted-fallback c))))
+                   (if (and (nelisp-artifact--all-integers-p args)
+                            (nelisp-artifact--native-simple-integer-abi-p meta))
+                       (nl-restart-case
+                           (nl-handler-bind
+                               ((error (lambda (_c) (nl-invoke-restart 'general-native))))
+                             (nelisp-native--tier-call
+                              #'nelisp-artifact-native-exec-fast-simple
+                              artifact symbol args))
+                         (general-native ()
+                           (nelisp-native--tier-call
+                            #'nelisp-artifact-native-exec-general
+                            artifact symbol args)))
+                     (nelisp-native--tier-call
+                      #'nelisp-artifact-native-exec-general
+                      artifact symbol args)))))
             (nelisp-artifact--note-native-dispatch
              (list :event 'call
                    :symbol (intern symbol)
                    :mode 'native
                    :argc (length args)))
             result)
-        (error
-         (nelisp-artifact--note-native-dispatch
-          (list :event 'call
-                :symbol (intern symbol)
-                :mode 'fallback
-                :argc (length args)
-                :reason (error-message-string native-err)))
-         (nelisp--apply fallback args))))))
+        (interpreted-fallback (c)
+          (nelisp-artifact--note-native-dispatch
+           (list :event 'call
+                 :symbol (intern symbol)
+                 :mode 'fallback
+                 :argc (length args)
+                 :reason (error-message-string c)))
+          (nelisp--apply fallback args))))))
 
 (defun nelisp-artifact--native-defun-forms (forms)
   "Return top-level defun forms in FORMS that have a symbol name."
@@ -1255,13 +1476,49 @@ standalone build pipeline."
     (and (fboundp 'nelisp-aot-compile-to-object)
          (fboundp 'nelisp-aot-compile-to-link-unit))))
 
+(defun nelisp-artifact--load-path-hit (err)
+  "Return the `load-path' directory holding the file ERR says is missing.
+`file-missing' names a FEATURE, and on its own that is the same message
+whether `load-path' was never wired or is wired and the feature still does
+not resolve.  Those are different bugs and the second one is the surprising
+one, so say which it is."
+  (let* ((feat (and (consp err) (eq (car err) 'file-missing) (cdr err)))
+         (name (and feat (symbolp feat) (symbol-name feat)))
+         (hit nil))
+    (when name
+      (dolist (dir load-path)
+        (when (and (not hit) (stringp dir)
+                   (file-exists-p (concat dir "/" name ".el")))
+          (setq hit dir))))
+    hit))
+
+(defvar nelisp-artifact--native-compiler-error nil
+  "Why the last `nelisp-artifact--ensure-native-compiler' call came back nil.
+Both attempts it makes used to discard their error, so \"native compiler
+unavailable\" was the whole account of a fallback that cost every hot defun
+its native code -- and the actual cause turned out to be a chain of six
+different failures, each of which had to be found by bisecting the require
+by hand.  Recorded here and reported in the manifest instead.")
+
 (defun nelisp-artifact--ensure-native-compiler ()
   "Ensure the native AOT compiler entry points are loaded."
+  (setq nelisp-artifact--native-compiler-error nil)
   (unless (and (fboundp 'nelisp-aot-compile-to-object)
                (fboundp 'nelisp-aot-compile-to-link-unit))
-    (condition-case nil
+    (condition-case err
         (require 'nelisp-aot-compiler)
-      (error nil)))
+      (error
+       ;; The load-path length travels with the message on purpose: a
+       ;; `file-missing' says nothing about WHICH of the two situations it is
+       ;; -- load-path never got wired, or it is wired and the feature still
+       ;; does not resolve -- and telling those apart by hand cost two build
+       ;; cycles the last time (B-1).
+       (setq nelisp-artifact--native-compiler-error
+             (let ((hit (nelisp-artifact--load-path-hit err)))
+               (format "require nelisp-aot-compiler: %s [load-path %d entries%s]"
+                       (error-message-string err)
+                       (length load-path)
+                       (if hit (format "; the file IS in %s" hit) "")))))))
   (unless (and (fboundp 'nelisp-aot-compile-to-object)
                (fboundp 'nelisp-aot-compile-to-link-unit))
     (let ((candidates (nelisp-artifact--native-compiler-candidates))
@@ -1270,17 +1527,26 @@ standalone build pipeline."
         (let* ((path (car candidates))
                (dir (file-name-directory path)))
           (when (and (file-exists-p path) dir)
-            (condition-case nil
+            (condition-case err
                 (setq loaded
                       (nelisp-artifact--load-native-compiler-from-path path))
-              (error nil))))
-        (setq candidates (cdr candidates)))))
+              (error
+               (setq nelisp-artifact--native-compiler-error
+                     (format "%s load %s: %s"
+                             (or nelisp-artifact--native-compiler-error "")
+                             path (error-message-string err)))))))
+        (setq candidates (cdr candidates)))
+      (unless (or loaded nelisp-artifact--native-compiler-error)
+        (setq nelisp-artifact--native-compiler-error
+              (format "no compiler among %d candidate path(s)"
+                      (length (nelisp-artifact--native-compiler-candidates)))))))
   (and (fboundp 'nelisp-aot-compile-to-object)
        (fboundp 'nelisp-aot-compile-to-link-unit)))
 
 (defun nelisp-artifact--native-section-plist (obj unit arch symbols compile-report)
   "Return the serialized native section plist for OBJ/UNIT."
   (let* ((text-bytes (plist-get unit :text))
+         (data-bytes (or (plist-get unit :data) ""))
          (bytes (nelisp-artifact--read-binary obj)))
     (list :native-section-version
           nelisp-artifact--native-section-version
@@ -1292,6 +1558,19 @@ standalone build pipeline."
           :object-base64 (base64-encode-string bytes t)
           :text-size (length text-bytes)
           :text-base64 (base64-encode-string text-bytes t)
+          ;; The writable data section, when the unit has one.  An
+          ;; in-process loader maps `.text' and resolves externs to stubs;
+          ;; a unit that also carries static writable storage -- a symbol
+          ;; literal's cache slot, say -- needs those bytes and the local
+          ;; symbols naming them, which are otherwise reachable only by
+          ;; re-parsing `:object-base64'.  Omitted entirely when empty, so
+          ;; an artifact without one is byte-identical to before.
+          :data-size (length data-bytes)
+          :data-base64 (and (> (length data-bytes) 0)
+                            (base64-encode-string data-bytes t))
+          :data-symbols
+          (seq-filter (lambda (s) (eq (plist-get s :section) 'data))
+                      (plist-get unit :symbols))
           :relocs (plist-get unit :relocs)
           :extern-symbols (plist-get unit :extern-symbols)
           :compile-report compile-report
@@ -1316,9 +1595,15 @@ standalone build pipeline."
               (let (unit native-section)
                 (setq stage-start (nelisp-artifact--profile-time))
                 (setq unit
-                      (nelisp-aot-compile-to-link-unit
-                       (cons 'seq eligible)
-                       :arch arch :format 'elf))
+                      ;; Entered from the runtime, which hands over Sexps.
+                      ;; The compiler cannot tell that from the source --
+                      ;; the hand-written reader sources reach the same
+                      ;; entry point and are entered natively -- so the
+                      ;; caller says which lane this is.
+                      (let ((nelisp-aot-compiler--runtime-entry-params t))
+                        (nelisp-aot-compile-to-link-unit
+                         (cons 'seq eligible)
+                         :arch arch :format 'elf)))
                 (nelisp-artifact--profile-log
                  "native-required-compile"
                  stage-start
@@ -1370,9 +1655,10 @@ is already native-compatible."
            (native nil))
       (unwind-protect
           (condition-case nil
-              (let ((unit (nelisp-aot-compile-to-link-unit
-                           (cons 'seq defuns)
-                           :arch arch :format 'elf)))
+              (let ((unit (let ((nelisp-aot-compiler--runtime-entry-params t))
+                            (nelisp-aot-compile-to-link-unit
+                             (cons 'seq defuns)
+                             :arch arch :format 'elf))))
                 (nelisp-artifact--write-elf-rel-object obj unit)
                 (setq nelisp-artifact--last-native-compile-report
                       compile-report)
@@ -1412,7 +1698,10 @@ module."
         (not compiler-ready))
       (setq nelisp-artifact--last-native-compile-report
             (nelisp-artifact--native-unsupported-report
-             forms "native compiler unavailable"))
+             forms (if nelisp-artifact--native-compiler-error
+                       (format "native compiler unavailable: %s"
+                               nelisp-artifact--native-compiler-error)
+                     "native compiler unavailable")))
       nil)
      (t
       (setq stage-start (nelisp-artifact--profile-time))
@@ -1451,9 +1740,10 @@ module."
                   (let ((obj (nelisp-artifact--make-temp-path "neln-obj" "o")))
                     (unwind-protect
                         (let* ((unit
-                                (nelisp-aot-compile-to-link-unit
-                                 (cons 'seq (nreverse eligible))
-                                 :arch arch :format 'elf)))
+                                (let ((nelisp-aot-compiler--runtime-entry-params t))
+                                  (nelisp-aot-compile-to-link-unit
+                                   (cons 'seq (nreverse eligible))
+                                   :arch arch :format 'elf))))
                           (nelisp-artifact--write-elf-rel-object obj unit)
                           (nelisp-artifact--native-section-plist
                            obj unit arch (nreverse symbols)
@@ -1817,8 +2107,16 @@ native object for the standalone runtime, Doc 142 §6.4)."
          (source nil)
          (forms nil)
          (eval-source nil)
+         ;; NOT `features': that is Emacs's list of loaded features, and a
+         ;; `let' over it rebinds the global for the whole compile.  Anything
+         ;; that `provide's while the binding is live is discarded when it
+         ;; ends, and anything that reads the list sees an empty one.  In this
+         ;; runtime it was fatal rather than merely wasteful -- `provide'
+         ;; wrote the binding, `featurep' and `require' read the mirror, so
+         ;; `(require 'nelisp-asm-arm64)' raised `file-missing' for a file it
+         ;; had just loaded, and every hot defun fell back to bytecode.
          (module nil)
-         (features nil)
+         (provided-features nil)
          (native nil)
          (native-report nil)
          (artifact-payload nil)
@@ -1850,11 +2148,11 @@ native object for the standalone runtime, Doc 142 §6.4)."
      "module-build" stage-start
      (list :forms (length forms) :module-policy module-policy))
     (setq stage-start (nelisp-artifact--profile-time))
-    (setq features (nelisp-artifact--collect-features forms))
+    (setq provided-features (nelisp-artifact--collect-features forms))
     (nelisp-artifact--profile-log
      "collect-features" stage-start
-     (list :features (length features)))
-    (when (and requested-feature (not (memq requested-feature features)))
+     (list :features (length provided-features)))
+    (when (and requested-feature (not (memq requested-feature provided-features)))
       (error "compile-elisp-artifact: source did not provide %S" requested-feature))
     (when (eq kind 'neln)
       (setq stage-start (nelisp-artifact--profile-time))
@@ -1868,7 +2166,7 @@ native object for the standalone runtime, Doc 142 §6.4)."
        (list :native-policy native-policy)))
     (setq stage-start (nelisp-artifact--profile-time))
     (setq artifact-payload
-          (nelisp-artifact--artifact-payload source-path module features
+          (nelisp-artifact--artifact-payload source-path module provided-features
                                              (length forms) kind native
                                              native-report module-policy))
     (when (and (eq module-policy 'eval-only)
@@ -1884,7 +2182,7 @@ native object for the standalone runtime, Doc 142 §6.4)."
     (setq stage-start (nelisp-artifact--profile-time))
     (setq manifest
           (nelisp-artifact--manifest-plist
-           source-path features (length forms) target
+           source-path provided-features (length forms) target
 	           (secure-hash 'sha256 artifact-content)
            (length artifact-content)
 	           (nelisp-artifact--preload-records preloads)
@@ -1925,7 +2223,12 @@ top-level `defun' forms remain visible to the `.neln' native compiler."
          (forms (nelisp-artifact--read-all-from-string source))
          (out nil))
     (unless (string-match-p "\\`;;; nelisp-runtime-image source-v1\r?\n" source)
-      (error "unsupported runtime image format: %s" image-path))
+      ;; Say what was read, not just which path was asked for: a reader that
+      ;; answers "" for a file it could not open is indistinguishable here
+      ;; from a genuinely foreign image unless the length is in the message.
+      (error "unsupported runtime image format: %s (read %d chars, starts %S)"
+             image-path (length source)
+             (substring source 0 (min 48 (length source)))))
     (dolist (form forms)
       (if (and (consp form) (eq (car form) 'progn))
           (setq out (append out (cdr form)))
@@ -1948,7 +2251,7 @@ self-contained `.wasm' via `nelisp-aot-compile-to-object'."
   (unless (nelisp-artifact--ensure-native-compiler)
     (error "native compiler unavailable"))
   (let* ((forms nil)
-         (features nil)
+         (provided-features nil)
          (program nil)
          (load-path (append load-paths load-path))
          (nelisp-load-path (append load-paths nelisp-load-path)))
@@ -1956,8 +2259,8 @@ self-contained `.wasm' via `nelisp-aot-compile-to-object'."
       (load preload nil t))
     (setq forms (nelisp-artifact--runtime-image-forms image-path))
     (nelisp-artifact-check-forms forms image-path)
-    (setq features (nelisp-artifact--collect-features forms))
-    (when (and requested-feature (not (memq requested-feature features)))
+    (setq provided-features (nelisp-artifact--collect-features forms))
+    (when (and requested-feature (not (memq requested-feature provided-features)))
       (error "compile-runtime-image: source did not provide %S" requested-feature))
     (setq program (if forms (cons 'seq forms) 0))
     (nelisp-aot-compile-to-object
@@ -2766,6 +3069,32 @@ loaded directly with artifact probing disabled to avoid recursive retries."
           (list :artifact nil
                 :value (nelisp-load-file source-path))))))
 
+(defun nelisp-artifact--c-identifier (name)
+  "Return NAME with every character a C identifier cannot carry replaced by `_'.
+
+Written out rather than done with `replace-regexp-in-string' because this runs
+in the standalone artifact runtime, which does not define that function: it was
+reaching it only because `nelisp-aot-compiler.el' required the whole CC
+pipeline at top level and something in there happened to define it.  Making
+that require lazy turned a native-exec into `void-function:
+replace-regexp-in-string', which is a fair description of the dependency this
+code always had.  Sanitising a symbol name into a C identifier needs no regexp
+engine."
+  (let ((out "")
+        (i 0)
+        (n (length name)))
+    (while (< i n)
+      (let ((c (aref name i)))
+        (setq out (concat out (char-to-string
+                               (if (or (and (>= c ?a) (<= c ?z))
+                                       (and (>= c ?A) (<= c ?Z))
+                                       (and (>= c ?0) (<= c ?9))
+                                       (eq c ?_))
+                                   c
+                                 ?_)))))
+      (setq i (1+ i)))
+    out))
+
 (defun nelisp-artifact-native-exec (artifact-path symbol args)
   "Doc 142 §6.4 native EXEC: run the native SYMBOL embedded in a `.neln'.
 Extracts the ET_REL object from ARTIFACT-PATH's `:native' section, links
@@ -2794,7 +3123,7 @@ native object, or SYMBOL is not one of its native functions."
              (obj2 (expand-file-name "mod-c.o" dir))
              (csrc (expand-file-name "drv.c" dir))
              (exe (expand-file-name "run" dir))
-             (csym (replace-regexp-in-string "[^A-Za-z0-9_]" "_" symbol))
+             (csym (nelisp-artifact--c-identifier symbol))
              (argc (length args)))
         (unwind-protect
             (progn
@@ -2805,18 +3134,16 @@ native object, or SYMBOL is not one of its native functions."
                                           (format "--redefine-sym=%s=%s" symbol csym)
                                           obj obj2))
                 (error "objcopy symbol rename failed for %s" symbol))
+              ;; The same generator the fast path uses.  This function
+              ;; carried its own copy of the driver, and so kept handing the
+              ;; compiled body bare `long's after 2441f5ebc made every
+              ;; runtime-entered parameter a value word -- `(* x x)' at 9
+              ;; answered 4, because the body read (9-1)/4 = 2.  d62690849
+              ;; fixed the convention and folded the one other copy it found
+              ;; into the shared generator; this third copy was missed, which
+              ;; is the argument for there being one.
               (with-temp-file csrc
-                (insert "#include <stdlib.h>\n#include <stdio.h>\n")
-                (insert (format "extern long %s(%s);\n" csym
-                                (if (= argc 0) "void"
-                                  (mapconcat (lambda (_) "long") args ","))))
-                (insert "int main(int c,char**v){(void)c;")
-                (insert (format "printf(\"%%ld\\n\",%s(%s));return 0;}\n"
-                                csym
-                                (mapconcat (lambda (i)
-                                             (format "atol(v[%d])" i))
-                                           (number-sequence 1 argc)
-                                           ","))))
+                (insert (nelisp-artifact--native-fast-driver-c csym argc)))
               (unless (eq 0 (call-process cc nil nil nil "-O2" "-o" exe csrc obj2))
                 (error "native link failed for %s" symbol))
               (with-temp-buffer
@@ -2874,6 +3201,24 @@ on the hot path, so use a small deterministic rolling hash there."
              args
              ""))
 
+(defun nelisp-artifact--native-driver-fingerprint (variant argc)
+  "Return a hash of the driver C that VARIANT and ARGC will compile.
+The calling convention lives in that generated source, so hashing it is
+what keeps a cached executable from outliving a change to it.  A written
+-down version token was tried first and is precisely the kind of thing
+that gets forgotten: it has to be bumped by whoever edits the driver, and
+nothing fails when they do not -- the failure lands later, on a machine
+with a warm cache, as a wrong answer rather than as a miss.  Deriving it
+cannot be forgotten, because the thing being hashed is the thing being
+compiled.
+
+The symbol name is a fixed placeholder: it varies per call and is already
+part of the key, so letting it in would only defeat sharing."
+  (nelisp-artifact--small-string-hash
+   (if (equal variant "general")
+       (nelisp-artifact--native-driver-c "nelisp_fp" (list :arity argc))
+     (nelisp-artifact--native-fast-driver-c "nelisp_fp" argc))))
+
 (defun nelisp-artifact--native-exec-cache-key
     (artifact-path symbol argc &optional variant arg-signature)
   "Return a stable cache key for ARTIFACT-PATH, SYMBOL, and ARGC."
@@ -2883,8 +3228,17 @@ on the hot path, so use a small deterministic rolling hash there."
     ;; the benefit of a cached native driver.  Size + mtime + artifact path are
     ;; sufficient to invalidate the private dev-loop executable cache; the
     ;; validating native paths still parse the manifest on fallback/error.
+    ;;
+    ;; The driver is the half the artifact cannot supply.  The cache root is
+    ;; $XDG_CACHE_HOME, shared by every worktree on the machine, and the rest
+    ;; of this key describes the artifact -- so a change to how the driver
+    ;; hands arguments over would leave every warm entry both stale and
+    ;; indistinguishable from a fresh one.  The fingerprint below closes that
+    ;; by hashing the C this key will actually compile.
     (let* ((seed (concat
                   "neln-cache|"
+                  (nelisp-artifact--native-driver-fingerprint variant argc)
+                  "|"
                   (or variant "fast")
                   "|"
                   artifact
@@ -2909,7 +3263,16 @@ on the hot path, so use a small deterministic rolling hash there."
     (nelisp-artifact--native-exec-cache-root))))
 
 (defun nelisp-artifact--native-fast-driver-c (csym argc)
-  "Return the integer ABI fast driver C source for CSYM with ARGC."
+  "Return the integer ABI fast driver C source for CSYM with ARGC.
+Arguments go over as canonical value words, not as bare `long's.  A
+parameter of a runtime-entered defun is a value word -- low bit 1 is the
+immediate integer N encoded as 4N+1, low bit 0 is a Sexp slot address --
+so the compiled body decodes what it is handed.  Passing N raw made it
+read (N-1)/4 instead: `(defun f (x) (+ x 1))' answered 11 for 41, and
+`(defun sq (n) (* n n))' answered 4 for 9.  The general harness reaches
+the same convention from the other side, by boxing into a slot and
+passing its address; an immediate needs no slot and no GC root, which is
+why this path stays a two-line driver."
   (concat
    "#include <stdlib.h>\n#include <stdio.h>\n"
    (format "extern long %s(%s);\n" csym
@@ -2922,7 +3285,10 @@ on the hot path, so use a small deterministic rolling hash there."
              (mapconcat
               (lambda (_)
                 (setq i (1+ i))
-                (format "atol(v[%d])" i))
+                ;; 4N+1, written as multiplication: a left shift of a
+                ;; negative long is not defined by every C standard this
+                ;; driver may be compiled under.
+                (format "(atol(v[%d])*4+1)" i))
               (make-list argc nil)
               ",")))))
 
@@ -2938,7 +3304,7 @@ on the hot path, so use a small deterministic rolling hash there."
            (obj2 (expand-file-name "mod-c.o" dir))
            (csrc (expand-file-name "drv.c" dir))
            (built-exe (expand-file-name "run" dir))
-           (csym (replace-regexp-in-string "[^A-Za-z0-9_]" "_" symbol)))
+           (csym (nelisp-artifact--c-identifier symbol)))
       (unwind-protect
           (progn
             (nelisp-artifact--write-native-object-file artifact-path obj)
@@ -3010,7 +3376,7 @@ for diagnostics, symbol checks, and non-simple artifacts."
            (obj2 (expand-file-name "mod-c.o" dir))
            (csrc (expand-file-name "drv.c" dir))
            (exe (expand-file-name "run" dir))
-           (csym (replace-regexp-in-string "[^A-Za-z0-9_]" "_" symbol))
+           (csym (nelisp-artifact--c-identifier symbol))
            (argc (length args)))
       (unwind-protect
           (progn
@@ -3029,18 +3395,11 @@ for diagnostics, symbol checks, and non-simple artifacts."
                                                 symbol csym)
                                         obj obj2)))
               (error "objcopy symbol rename failed for %s" symbol))
+            ;; One driver, one owner.  This used to carry its own copy of
+            ;; the C source, so the argument convention had two places to
+            ;; be right in and only the cached one was updated.
             (with-temp-file csrc
-              (insert "#include <stdlib.h>\n#include <stdio.h>\n")
-              (insert (format "extern long %s(%s);\n" csym
-                              (if (= argc 0) "void"
-                                (mapconcat (lambda (_) "long") args ","))))
-              (insert "int main(int c,char**v){(void)c;")
-              (insert (format "printf(\"%%ld\\n\",%s(%s));return 0;}\n"
-                              csym
-                              (mapconcat (lambda (i)
-                                           (format "atol(v[%d])" i))
-                                         (number-sequence 1 argc)
-                                         ","))))
+              (insert (nelisp-artifact--native-fast-driver-c csym argc)))
             (unless (eq 0
                         (if sh
                             (call-process
@@ -3252,6 +3611,16 @@ implementation."
                         "nl_alloc_mut_str"
                         "nl_mut_str_push_byte"
                         "nl_mut_str_finalize"
+                        ;; Materialising a string literal allocates its bytes
+                        ;; through this rather than inline, so any unit with a
+                        ;; string in it now carries the symbol.  The harness
+                        ;; provides it the same way it provides the others.
+                        "nl_alloc_bytes"
+                        ;; A dispatcher result aliases the shared OUT
+                        ;; slot, so storing one in a local copies it into
+                        ;; a slot of its own first.  Any unit that assigns
+                        ;; a delegated call to a variable carries this.
+                        "nl_sexp_clone_into"
                         "nelisp_aot_builtin_call1"
                         "nelisp_aot_builtin_calln")))
        externs))))
@@ -3370,6 +3739,13 @@ implementation."
      "  uint64_t refcount;\n"
      "} NelnConsBox;\n"
      "\n"
+     "typedef struct NelnNlStr {\n"
+     "  uint64_t capacity;\n"
+     "  uint64_t bytes;\n"
+     "  uint64_t length;\n"
+     "  uint64_t refcount;\n"
+     "} NelnNlStr;\n"
+     "\n"
      "enum {\n"
      "  NELN_TAG_NIL = 0,\n"
      "  NELN_TAG_T = 1,\n"
@@ -3377,7 +3753,9 @@ implementation."
      "  NELN_TAG_SYMBOL = 4,\n"
      "  NELN_TAG_STR = 5,\n"
      "  NELN_TAG_MUT_STR = 6,\n"
-     "  NELN_TAG_CONS = 7\n"
+     "  NELN_TAG_CONS = 7,\n"
+     "  NELN_TAG_UNIBYTE_STR = 14,\n"
+     "  NELN_TAG_UNIBYTE_MUT_STR = 15\n"
      "};\n"
      "\n"
      "NelnSexp neln_out;\n"
@@ -3387,8 +3765,20 @@ implementation."
      "NelnSexp neln_name_slot;\n"
      "NelnSexp neln_callback_slots[12];\n"
      "\n"
-     "static const void *neln_slot_registry[64];\n"
+     ;; Grown on demand rather than a fixed 64.  The registry is how the
+     ;; harness tells "the callee returned a plain integer" from "the callee
+     ;; returned a Sexp in a slot"; it is bookkeeping, not the answer.  At a
+     ;; fixed 64 -- about 46 usable after the boundary and callback slots --
+     ;; any loop that boxes a value per iteration exhausted it in tens of
+     ;; iterations and the harness then refused to decode its own result, so
+     ;; a tight arithmetic bench could not run at all.  Growing costs a
+     ;; realloc per doubling and removes the ceiling; a failure to grow is
+     ;; still fatal, because a lost slot is a wrong answer wearing the shape
+     ;; of a right one.
+     "static const void **neln_slot_registry = NULL;\n"
      "static size_t neln_slot_registry_len = 0;\n"
+     "static size_t neln_slot_registry_cap = 0;\n"
+     "static int neln_slot_registry_overflowed = 0;\n"
      "\n"
      "static void neln_fail(const char *msg) {\n"
      "  fprintf(stderr, \"neln native harness: %s\\n\", msg);\n"
@@ -3424,9 +3814,35 @@ implementation."
      "  slot->c = (uint64_t)n;\n"
      "}\n"
      "\n"
+     "static int neln_slot_registry_grow(void) {\n"
+     "  size_t want = neln_slot_registry_cap ? neln_slot_registry_cap * 2 : 64;\n"
+     "  const void **grown = (const void **)realloc(\n"
+     "      (void *)neln_slot_registry, want * sizeof(*neln_slot_registry));\n"
+     "  if (!grown) {\n"
+     "    return 0;\n"
+     "  }\n"
+     "  neln_slot_registry = grown;\n"
+     "  neln_slot_registry_cap = want;\n"
+     "  return 1;\n"
+     "}\n"
+     "\n"
      "static void neln_register_slot(const void *ptr) {\n"
-     "  if (neln_slot_registry_len >= (sizeof(neln_slot_registry) / sizeof(neln_slot_registry[0]))) {\n"
-     "    neln_fail(\"slot registry overflow\");\n"
+     "  if (neln_slot_registry_len >= neln_slot_registry_cap && !neln_slot_registry_grow()) {\n"
+     "    neln_fail(\"slot registry could not grow\");\n"
+     "  }\n"
+     "  neln_slot_registry[neln_slot_registry_len++] = ptr;\n"
+     "}\n"
+     "\n"
+     ;; Same, but for slots the compiled code allocates itself rather than
+     ;; the boundary slots this driver pre-registers.  A result Sexp built
+     ;; in one of those is a real Sexp the driver must decode; unregistered
+     ;; it was printed as the raw pointer instead.  Silent when the registry
+     ;; is full: losing the ability to decode a later result is a wrong
+     ;; answer in one case, while failing is a dead harness in every case.
+     "static void neln_register_slot_soft(const void *ptr) {\n"
+     "  if (neln_slot_registry_len >= neln_slot_registry_cap && !neln_slot_registry_grow()) {\n"
+     "    neln_slot_registry_overflowed = 1;\n"
+     "    return;\n"
      "  }\n"
      "  neln_slot_registry[neln_slot_registry_len++] = ptr;\n"
      "}\n"
@@ -3444,6 +3860,7 @@ implementation."
      "static void neln_reset_slots(void) {\n"
      "  size_t i;\n"
      "  neln_slot_registry_len = 0;\n"
+     "  neln_slot_registry_overflowed = 0;\n"
      "  neln_write_nil(&neln_out);\n"
      "  neln_write_nil(&neln_mirror);\n"
      "  neln_write_nil(&neln_frames);\n"
@@ -3530,6 +3947,41 @@ implementation."
      "  result_slot->b = (uint64_t)(uintptr_t)buf;\n"
      "  result_slot->c = (uint64_t)n;\n"
      "  return result_slot;\n"
+     "}\n"
+     "\n"
+     ;; Materialising a string literal allocates its bytes through this
+     ;; before handing them to `nl_alloc_str', so any unit with a string in
+     ;; it references the symbol and the link fails without a definition.
+     ;; Zeroed because a caller may write only part of what it asked for.
+     "void *nl_alloc_bytes(int64_t size, int64_t align) {\n"
+     "  size_t n = (size <= 0) ? 1u : (size_t)size;\n"
+     "  size_t a = (align <= 0) ? 1u : (size_t)align;\n"
+     "  void *p = NULL;\n"
+     "  if (a < sizeof(void *)) {\n"
+     "    a = sizeof(void *);\n"
+     "  }\n"
+     "  if (n % a != 0u) {\n"
+     "    n += a - (n % a);\n"
+     "  }\n"
+     "  if (posix_memalign(&p, a, n) != 0 || !p) {\n"
+     "    neln_fail(\"posix_memalign failed in nl_alloc_bytes\");\n"
+     "  }\n"
+     "  memset(p, 0, n);\n"
+     "  if ((size_t)size == sizeof(NelnSexp)) {\n"
+     "    neln_register_slot_soft(p);\n"
+     "  }\n"
+     "  return p;\n"
+     "}\n"
+     "\n"
+     ;; A dispatcher writes its result into the shared OUT slot, so a
+     ;; local that keeps one has to own a copy before the next call
+     ;; reuses OUT.  The compiler emits this for every such assignment.
+     "void nl_sexp_clone_into(NelnSexp *src, NelnSexp *dst) {\n"
+     "  if (!src || !dst) {\n"
+     "    return;\n"
+     "  }\n"
+     "  *dst = *src;\n"
+     "  neln_register_slot_soft(dst);\n"
      "}\n"
      "\n"
      "NelnSexp *nl_alloc_str(const unsigned char *bytes_ptr, int64_t len, NelnSexp *result_slot) {\n"
@@ -3696,17 +4148,39 @@ implementation."
      "      printf(\"%ld\\n\", (long)((int64_t)ret->a));\n"
      "      return 0;\n"
      "    case NELN_TAG_STR:\n"
+     "    case NELN_TAG_UNIBYTE_STR:\n"
      "      if (ret->b && ret->a > 0) {\n"
      "        fwrite((const void *)(uintptr_t)ret->b, 1u, (size_t)ret->a, stdout);\n"
      "      }\n"
      "      fputc('\\n', stdout);\n"
      "      return 0;\n"
+     "    case NELN_TAG_UNIBYTE_MUT_STR: {\n"
+     "      const NelnNlStr *box = (const NelnNlStr *)(uintptr_t)ret->a;\n"
+     "      if (box && box->bytes && box->length > 0) {\n"
+     "        fwrite((const void *)(uintptr_t)box->bytes, 1u, (size_t)box->length, stdout);\n"
+     "      }\n"
+     "      fputc('\\n', stdout);\n"
+     "      return 0;\n"
+     "    }\n"
      "    case NELN_TAG_SYMBOL:\n"
      "      printf(\"%s\\n\", neln_symbol_name(ret));\n"
      "      return 0;\n"
      "    default:\n"
      "      neln_fail(\"unsupported Sexp result tag\");\n"
      "    }\n"
+     "  }\n"
+     ;; An unregistered pointer means one of two things and they are not the
+     ;; same fact.  If the registry never filled, the callee returned a plain
+     ;; integer and printing it is right.  If it DID fill, this is a Sexp the
+     ;; harness stopped tracking, and printing its address is a wrong answer
+     ;; wearing the shape of a right one -- measured 2026-08-19, that is what
+     ;; `native-exec-general-deep-tail-recursion-smoke\' has been reporting.
+     ;; The registry holds 64 slots, ~46 of them free after the boundary and
+     ;; callback slots, and the compiled code registers one per allocation:
+     ;; a loop that boxes a value each iteration outruns it in tens of
+     ;; iterations, not thousands.  Say which one it is.
+     "  if (neln_slot_registry_overflowed) {\n"
+     "    neln_fail(\"slot registry overflowed: a result Sexp could not be decoded. The harness tracks one slot per allocation and holds 64; a loop that allocates per iteration outruns it\");\n"
      "  }\n"
      "  printf(\"%ld\\n\", (long)((int64_t)(intptr_t)ret));\n"
      "  return 0;\n"
@@ -3728,8 +4202,13 @@ implementation."
         (let ((kind (nth i arg-kinds)))
           (pcase kind
             ('int
-             (format "    case %d: argv_vals[%d] = strtol(argv[i], NULL, 10); break;\n"
-                     i i))
+             ;; A Sexp, like the string case below.  Parameters arrive
+             ;; boxed now, uniformly, so handing over a bare `long' left
+             ;; the compiled body unwrapping an integer as an address:
+             ;; `(defun nat-nx-sq (n) (* n n))' answered 4 for 9.
+             (format "    case %d: neln_write_int(&argv_string_slots[%d], strtol(argv[i], NULL, 10)); neln_register_slot(&argv_string_slots[%d]); argv_vals[%d] = (long)(intptr_t)&argv_string_slots[%d]; break;
+"
+                     i i i i i))
             ('str
              (format "    case %d: neln_write_str(&argv_string_slots[%d], argv[i]); neln_register_slot(&argv_string_slots[%d]); argv_vals[%d] = (long)(intptr_t)&argv_string_slots[%d]; break;\n"
                      i i
@@ -3796,7 +4275,7 @@ implementation."
            (csrc (expand-file-name "drv.c" dir))
            (build-log (expand-file-name "build.log" dir))
            (built-exe (expand-file-name "run" dir))
-           (csym (replace-regexp-in-string "[^A-Za-z0-9_]" "_" symbol)))
+           (csym (nelisp-artifact--c-identifier symbol)))
       (unwind-protect
           (progn
             (nelisp-artifact--write-native-object-file artifact-path obj)
@@ -4150,6 +4629,20 @@ one-line diagnostic -- so dropping this redundant, broken precondition loses
 no real safety."
   (and (nelisp-artifact--standalone-runtime-p)
        (cond
+        ;; `.elc' compilation (`nelisp-artifact-compile-elc-file' /
+        ;; `nelisp-artifact--byte-compile-to') reads `invocation-name' and
+        ;; `invocation-directory' to find "the currently running Emacs" and
+        ;; re-spawn it as a clean `batch-byte-compile' subprocess.  Both
+        ;; variables are host-Emacs-only (set by `emacs.c' at startup); the
+        ;; standalone substrate never binds them, on any OS -- so `elc' is
+        ;; `required' everywhere under the standalone runtime, not only on
+        ;; Windows (where the analogous gap for `nelc'/`neln' was already
+        ;; closed).  Before this arm existed, `--kind elc' on a non-Windows
+        ;; standalone build fell straight into `nelisp-artifact-compile-elc-
+        ;; file' unguarded and crashed with a void-variable `invocation-name'
+        ;; instead of routing through the host helper this file already
+        ;; implements for it (see the `elc' branch below).
+        ((eq kind 'elc) 'required)
         ((nelisp-artifact--standalone-windows-p) 'required)
         ((and (eq kind 'neln)
               (eq (plist-get opts :native-policy) 'required))

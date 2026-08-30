@@ -12,6 +12,10 @@
 # Add a line here the moment a gate becomes load-bearing.  Removing a
 # line is a decision to stop caring about that gate — make it explicitly,
 # not by letting the gate quietly stop emitting.
+#
+# This file is also half of the Definition of Done AI.md describes: a
+# SHIPPED design doc must name one of the gates below (or a Makefile
+# target) in a #+VERIFIED-BY: line, enforced by `doc-claims' further down.
 
 compile
 ert-full
@@ -20,11 +24,86 @@ ert-full
 # prints a GATE-COUNT line so "clean" and "scanned nothing" can be told
 # apart; run them through `nelisp-ai.sh gate NAME -- make TARGET'.
 parens-check
+
+# The standalone build emits Elisp programs as string literals, whose parens
+# `parens-check' cannot see: it reads the .el file, not the text it produces.
+# One dropped paren nested the artifact command dispatch inside an `unless'
+# that never runs, and `compile-elisp-artifact' silently did nothing for two
+# days before a bisect found it.  This one parses the generated text.
+generated-source-parse
+
+# Doc 200's countable pre-change audit: every tracked production/tool Elisp
+# file is structurally read, quoted standalone DSL is walked, and live stable
+# keys must exactly match tools/nelisp-doc200-tag-sites.txt.
+doc200-census
+
 unsafe-inventory
+# ns-inventory: 2026-08-23 Windows inventory finding -- see the ns-gate
+# note further down (same `nl-ns--definition-shape' fingerprint, same
+# investigation, same unconfirmed-from-Linux status).
 ns-inventory
 reader-surface-audit
 pkg-graph
 pkg-load-lists
+fallback-inventory
+bootstrap-contract
+
+# doc-claims (2026-08-22): the Definition of Done's mechanical half -- see
+# AI.md's DoD section.  Every docs/design/*.org whose #+STATUS: line says
+# SHIPPED must carry a #+VERIFIED-BY: line naming a gate that actually
+# exists (a line here, or a Makefile target); tools/nelisp-doc-claims.el
+# checks existence only, not freshness, which `verify' already owns. 13
+# docs currently say SHIPPED; 6 (Docs 142, 149, 151, 154, 160, 163) got a
+# real line -- Doc 142 because this session re-measured its "--kind elc"
+# claim and found the fix not yet on this branch (its own gates 1-9
+# evidence, ert-full + the standalone-reader-smokes realrt-smoke it names
+# in prose, is real and cited instead), the other five because they
+# already named a live gate in their own verification prose and only
+# needed the machine-readable line added. The remaining 7 predate the
+# header and are tolerated via tools/nelisp-doc-claims-baseline.txt, the
+# same pinned-baseline shape unsafe-inventory/fallback-inventory/pkg-graph
+# use -- `findings' below is that baseline count, a floor of known debt
+# like parity-coverage's, not a ceiling. Verified red-then-green three
+# ways: a synthetic SHIPPED doc with no #+VERIFIED-BY and not in the
+# baseline goes red naming it; one whose #+VERIFIED-BY names a gate that
+# does not exist goes red naming both; the clean tree is green with
+# `GATE-COUNT checked=13 findings=7'. Mutation-proven
+# (tools/gate-mutations.txt) the same session.
+doc-claims
+
+# parity-coverage (LEDGER STRAGGLER, closed 2026-08-22): mutation-proven
+# (tools/gate-mutations.txt) since 2026-08-19 -- corrupting one covered
+# name in the shadow-differential corpus turns it red -- but never listed
+# here and never wired into `nelisp-ai.sh check' at all, an oversight
+# this pass found while closing the survey's other gaps.  Its Makefile
+# recipe is `$(EMACS) --batch -Q -l tools/nelisp-parity-coverage.el', no
+# binary prerequisite, same "seconds" shape as `ns-inventory' and the
+# other tree-wide ratchets above it -- measured at 0.26s alone.  Added to
+# `cmd_check''s step list alongside them.  It ratchets a floor, not a
+# ceiling: `GATE-COUNT checked=424 findings=165' passing is expected --
+# `findings' here counts names still uncovered above the pinned floor of
+# 259 covered names (see the `ns-gate'/`parity-coverage' note further
+# down), not defects.
+parity-coverage
+
+# substrate-presence-corpus-check (Task A, added alongside
+# substrate-presence-sweep below): the presence sweep's corpus
+# (tools/nelisp-substrate-presence-corpus.el, ~354 `fboundp' probes) is
+# GENERATED and checked in, by
+# `tools/nelisp-substrate-presence-gen.el' from `scripts/nelisp-stdlib-
+# prelude.el's top-level functions union `nelisp--primitive-symbols' in
+# `src/nelisp-eval.el'.  This gate regenerates it into memory and compares
+# byte-for-byte against the checked-in copy, the same "checked-in
+# reference, live re-derivation, fail on drift" shape `ns-inventory' uses
+# for its baseline, except an exact match rather than a ratcheted count,
+# because the corpus is fully deterministic.  Seconds, no binary --
+# `$(EMACS) --batch -Q -L packages/nl-prelude/src -L packages/nl-ns/src -l
+# tools/nelisp-substrate-presence-gen.el --eval "(kill-emacs
+# (nelisp-substrate-presence-gen-check))"'.  Verified red-then-green: a
+# name temporarily removed from the checked-in corpus turned it red at
+# `GATE-COUNT checked=1 findings=1', naming the corpus file as stale;
+# restoring it turned the gate green again at `findings=0'.
+substrate-presence-corpus-check
 
 # Developer-loop gates: useful, but not evidence about the whole tree.
 ert-focus?
@@ -62,65 +141,1351 @@ runtime-probe?
 wasm-smoke?
 
 # Standalone gates.  These build a binary from the tree and run it, so
-# they need a Linux host; on Windows they now report a reasoned skip
-# (GATE-SKIP) rather than exiting 0, which used to read as a pass.
+# they need a Linux x86_64 host.  Everywhere else the default target
+# (linux-x86_64) is not runnable, `nelisp-standalone--target-runnable-on-host-p'
+# is nil, and the gate prints GATE-SKIP with a reason rather than exiting 0
+# -- which used to read as a pass.  `verify' accepts a reasoned skip for a
+# required gate, so requiring this one does not paint macOS or Windows red.
 #
-# standalone-reader-test is OPTIONAL because it is currently red on
-# Linux, and was before this contract reached it.  Verified 2026-08-18 in
-# WSL Debian on both this branch and plain main, failing identically at
-# the fifth of its eight checks:
+# standalone-reader-test was OPTIONAL because it was red on Linux, and had
+# been before this contract reached it: `require' began signalling
+# `file-missing' instead of silently succeeding (a good change), and the
+# standalone path carried requires that only ever worked because it did not.
+# Measured 2026-08-18 in WSL Debian, failing at the fifth of its eight
+# checks with `file-missing: url-parse'.
 #
-#   GATE-COUNT checked=5 findings=1
-#   FAIL: command smoke: eval-elisp-artifact exit=1
-#         "nelisp: uncaught error: file-missing: url-parse"
+# cd64c0bd7 (2026-08-19) resolved it, by measuring what the tree actually
+# needs rather than assuming: every name the code uses from `subr-x' is
+# already defined by the stdlib prelude, and `url-parse'/`url-util' are
+# wanted only so the primitive install loop finds real function objects on
+# a real host -- a loop that already guards each entry with `fboundp'.  The
+# requires were made optional; the functions were never missing, only the
+# files.
 #
-# Cause: `require' now signals `file-missing' instead of silently
-# succeeding (a good change), and the standalone path carries requires
-# that only ever worked because it did not.  src/nelisp-eval.el:101
-# requires the host library `url-parse', which the standalone runtime
-# does not have; `make pkg-graph' independently lists url-parse among
-# the requires nothing in the tree provides.
+# Promoted 2026-08-21, on measurement rather than on that reasoning:
 #
-# It is a chain, not a line.  Guarding the url-* requires with
-# `ignore-errors' (measured in a throwaway WSL clone) moves the failure
-# on to `file-missing: nelisp-core-fileio', which is a tree file, so the
-# remaining question is how the standalone resolves its own requires --
-# a policy decision for whoever owns that path, not a patch to guess at
-# from here.  `locate-library' is void in the standalone, so that guard
-# is not available either.
+#   HEAD  8 of 8 checks, 0 findings -- twice, once from a wiped target/
+#   main  fails at 5 of 8, `file-missing: url-parse' -- the 08-18 shape
 #
-# One defect, every Linux standalone gate.  Measured 2026-08-18 in WSL:
+# main is an ancestor of HEAD, so the fix and this line merge together and
+# there is no window where the requirement outruns the fix.
 #
-#   standalone-reader-test        file-missing: url-parse   (5 of 8 checks in)
-#   nelisp-native-artifact-gate   file-missing: url-parse   (load_source_uses_neln)
-#   nelisp-performance-gate       file-missing: url-parse   (cache_default_load)
-#   standalone-selfhost-test      file-missing: macroexp    (fact driver)
+# It is not in `nelisp-ai.sh check', for the reason `ert-full' is not: it
+# builds a binary.  `nelisp-ai.sh standalone' produces the report, and
+# `verify' prints its age.
+standalone-reader-test
+
+# nelisp-native-artifact-gate is the second half of the same unblocking, and
+# guards the contract Nelix needs before it can rely on precompiled elisp:
+# bulk .neln builds, `--native-policy required' proving every top-level defun
+# entered native code, the audit reporting coverage gaps, and the
+# load/eval/exec commands preferring the adjacent artifact.  Two of its nine
+# cases are negatives -- a required policy that must refuse an unsupported
+# target, an audit that must reject a missing artifact -- so it fails if the
+# contract stops being enforced, not only if it stops working.
 #
-# The last one names a different library, which makes the shape clear:
-# it is not one bad require, it is every require the standalone path
-# makes to something it cannot resolve.  Resolving that unblocks four
-# gates at once, which is why it is worth doing before wiring any of
-# the other three.
+# Wired and promoted 2026-08-21, measured the same way:
 #
-# Required-vs-optional here is a judgement, not an oversight: making it
-# required would paint every Linux verify red for a defect this harness
-# only reports.  Promote the line once the require chain is resolved.
-standalone-reader-test?
+#   HEAD                9 of 9 cases -- twice, once from a wiped target/
+#   main's binary       fails at case 3, `file-missing: url-parse'
 #
-# Not yet wired, and not wired blind: adding a wrapper whose success
-# path has never run would be the same unverified-gate problem in a new
-# place.
+# That control is the whole argument.  It ran HEAD's script against a binary
+# built from main, so the only variable is the binary: same host, same script,
+# same minute.  It also showed the partial count working -- GATE-COUNT
+# checked=2 findings=1 -- so a failure says how far it got rather than
+# disappearing into "no GATE-COUNT line".
 #
-# To adopt one, on a machine that can run it: give the script a
-# GATE-COUNT line where it already knows its case count, make the
-# can't-run path print a reason instead of failing, wrap it with
-# `nelisp-ai.sh gate', and move the name above this comment.
+# Skips the same way and for the same reason as standalone-reader-test, by
+# asking `--target-runnable-on-host-p' rather than keeping its own uname
+# table.  A predicate that cannot be asked is an error, not a skip: those two
+# are told apart by exit code, since folding them together is how a broken
+# invocation starts reading as a reasoned skip.
 #
-# standalone-reader-test
-# standalone-selfhost-test
-# nelisp-performance-gate
-# nelisp-native-artifact-gate
+# `nelisp-ai.sh native-artifact' produces the report.  Out of `check'
+# alongside standalone-reader-test, for the reason ert-full is: it builds a
+# binary.
+nelisp-native-artifact-gate
 #
-# `make audit' is deliberately absent: it exits 1 on 26 PENDING
-# sub-phases, which is a roadmap state rather than a defect, and a gate
-# that is red by design trains people to ignore the column.
+# nelisp-performance-gate and standalone-selfhost-test were the last two of the
+# four that shared the `file-missing: url-parse' defect.  Both were past it and
+# failing on their own, and both are wired and required as of 2026-08-21.
+#
+# nelisp-performance-gate exercises the pair the artifact runtime cache exists
+# for: the same module loaded and evaluated through the cache and through the
+# source fallback, plus the build restoring the enable marker it removes.  Only
+# the cache half had ever run green.  The source half failed at `fallback_load'
+# with `wrong-type-argument sequencep nil', which was the reader turning
+# `:preloads nil' into a symbol NAMED "nil" -- one that prints as nil and
+# answers nil to `null', `listp' and `sequencep' alike.  Fixed in
+# `nelisp-read--sexp'.
+#
+# standalone-selfhost-test is the standalone interpreter loading its own
+# compiler toolchain as source and emitting a native x86_64 ELF with no Emacs
+# in the loop.  It failed at `file-missing: nelisp-asm-arm64' because the
+# driver concatenated its files in the wrong dependency order -- harmless while
+# `require' silently succeeded on a missing file, fatal once it signalled.
+# Behind that were two more: `nelisp-aot-compiler.el' pulled the whole CC
+# pipeline in through one top-level require, and the assembler counted and
+# indexed its own output in CHARACTERS, so a two-byte instruction whose bytes
+# form valid UTF-8 read back as one character 455 and failed a byte range
+# check.
+#
+# Both skip the same way as the other standalone gates, by asking
+# `--target-runnable-on-host-p'.  `nelisp-ai.sh perf' and `nelisp-ai.sh
+# selfhost' produce the reports; both build a binary, so both stay out of
+# `check'.
+nelisp-performance-gate
+# bench-aot-checked-arith (Doc 187 P4, 2026-08-26): the same native tight
+# `+' loop is compiled with `nelisp-aot-compiler--checked-arith' off/on, and
+# the checked/unchecked slope ratio must remain <= 1.15x.  Five rounds use
+# N=0 subtraction plus a repeated baseline drift guard; fewer than three
+# valid rounds produce GATE-SKIP, never a fake pass.  The native-object hashes
+# must differ before timing, so a flag that stops emitting the check is a
+# structural finding independent of machine speed.  Eleven independent full
+# gate runs on the wiring host measured median-of-five ratios 0.986x..1.046x
+# (median 1.013x, spread 0.060x); maximum observed noise/signal was 0.051, so
+# the 0.15 drift limit is almost 3x observed noise and the 1.15x ceiling leaves
+# about ten percentage points over the worst observed median.  One run costs
+# ~0.94s (ten runs: 9.4s), so `nelisp-ai.sh perf' owns it: cheap enough for
+# that existing tier, semantically a perf ceiling rather than an `extras'
+# subsystem smoke.  Linux x86_64 with cc + objcopy only; other hosts emit the
+# established reasoned GATE-SKIP.  Mutation-proven by the
+# `bench-aot-checked-arith' row in tools/gate-mutations.txt.
+bench-aot-checked-arith
+standalone-selfhost-test
+
+# binary-size-ratchet (2026-08-22): `binary_identity()' in
+# tools/ai/nelisp-ai.sh has computed target/nelisp's size since it was
+# written; nothing compared it to anything, so a jump had no gate to catch
+# it -- the binary grew +54KB earlier this session (bare-file init
+# unification) unmeasured against anything.  Pinned against
+# tools/nelisp-binary-size-baseline.txt (`size 6432608', 2% `slack-pct',
+# recorded 2026-08-22 from a build at this session's HEAD; the file
+# explains both numbers), the same identity-pinning shape unsafe-
+# inventory/fallback-inventory/pkg-graph use for their own baselines --
+# raise `size' in the commit that explains the growth, same discipline.
+# Wired into `nelisp-ai.sh standalone' alongside `standalone-reader-test',
+# consuming the binary that command just built rather than building its
+# own (its Makefile prerequisite is the same conditional
+# `$(wildcard target/nelisp target/nelisp.exe)' check `emacs-parity'
+# uses, so a bare `make binary-size-ratchet' still works standalone).
+# Linux x86_64 only, like several other gates measured on this host; a
+# differently-targeted build reports a reasoned GATE-SKIP rather than
+# comparing an ELF from a different linker against a number never
+# measured for it.  Verified red-then-green: a temporarily deflated
+# baseline (`size 1000000') turned it red at
+# "6432608 bytes, 5432608 over baseline 1000000 -- exceeds ceiling
+# 1020000", restoring the real baseline turned it green again at the
+# same `GATE-COUNT checked=1 findings=0' it reports now.
+binary-size-ratchet
+
+# emacs-parity (LEDGER STRAGGLER, closed 2026-08-22): differential vs the
+# host Emacs already on this machine over `test/nelisp-shadow-
+# differential-cases.el', mutation-proven (tools/gate-mutations.txt)
+# since 2026-08-19, CI-required since before that -- and yet never listed
+# here, and never reachable through `nelisp-ai.sh' at all until this
+# pass, an oversight this pass found while closing the survey's other
+# gaps.  Needs the binary `standalone-reader-test' already builds (same
+# conditional `$(wildcard target/nelisp target/nelisp.exe)' prerequisite
+# `binary-size-ratchet' uses), so it is out of `check' for the same
+# reason every other binary-tier gate is, and is wired into `nelisp-ai.sh
+# standalone' alongside the other two rather than given its own command.
+#
+# Version-pinned since fix/emacs-parity-version-guard (2026-08-23): the
+# "host Emacs already on this machine" above is the reference side of the
+# diff, computed live, but the corpus and the standalone's own answers were
+# both built against Emacs 30.1 (docs/emacs-compat-table.txt's header;
+# packages/nl-ns/baseline/emacs-30.1.el for the separate nl-ns pin).  CI's
+# 29.4 lane (GitHub Actions run 32606582250) failed this gate with a
+# 1,844-line diff that was real Emacs 29.4-vs-30.x behavior, not a NeLisp
+# defect -- the 30.1 lane, same commit, passed.  The Makefile target now
+# probes `$(EMACS) --version' first and reports a reasoned GATE-SKIP on any
+# host outside 30.x rather than failing on a version gap it cannot close;
+# `NELISP_EMACS_PARITY_HOST_VERSION' overrides the probe for exercising the
+# guard itself.  Also fixed in the same change: the target used to print a
+# hardcoded `GATE-COUNT ... findings=0' even on a FAIL, which this ledger's
+# own contract (a checked-out gate's count and verdict must agree) did not
+# actually require until a CI log showed the two disagreeing in the same
+# breath -- `findings' is now 1 exactly when the byte-diff fails, matching
+# the shape `binary-size-ratchet' above already used.
+#
+# 2026-08-23 Windows gate-battery inventory: on a 30.x host (Windows had
+# Emacs 30.2, inside the pinned range, so the version guard above did not
+# fire) this gate FAILED with `invalid-read-syntax (")" 1295 1)' --
+# target/emacs-parity.el lacked its opening `(princ (format "%S" (progn'
+# wrapper and ended with an unmatched `)))'.  The Makefile recipe used to
+# assemble that file from three separate shell steps writing to the same
+# path (`printf ... >', `cat ... >>', `printf ... >>'); it now goes
+# through ONE Emacs `--batch' process and ONE `write-region' call instead,
+# which cannot exhibit "some but not all of several sequential writes
+# landed" because there is only one write.  Verified on Linux (this
+# session) byte-identical to the old three-step output for the current
+# corpus; the exact Windows corruption mechanism could not be reproduced
+# on Linux and is not confirmed.  gate-selfcheck's emacs-parity band (see
+# its own note below) is the same file's `checked=' count and is expected
+# to move back into band once this fix lands on Windows. Not Windows-
+# verified -- the owner's next runbook run is the actual proof.
+emacs-parity
+
+# ===================================================================
+# The 2026-08-21 sweep: every gate-like make target, measured
+# ===================================================================
+#
+# 49 gate-like targets in the Makefile were not listed here, and nothing was
+# running them.  All 49 were measured.  What follows is where each one landed,
+# so the next person does not have to run the sweep again to find out.
+#
+# Five defects came out of it, four of them the same defect -- `length' and
+# `aref' counting CHARACTERS where bytes were meant, in the arm64 assembler and
+# in five sites of the ELF writer.  A 120-byte .text section measured 118.
+# Details in the commit; the point here is that these gates existed and were
+# not run, so the defects sat.
+#
+# GREEN AND WIRED ABOVE: the reader smokes are covered by
+# `standalone-reader-test' (15 checks), which now includes the arm64
+# byte-identity check, the `intern'/`intern-soft' "nil"/"t"
+# canonicalization check, the `defvaralias' four-direction/chain/
+# return-value check (added alongside the nl_sf_defvaralias implementation,
+# see "THE nelix GATES, PART 2" below), an
+# `extend-runtime-image' smoke (`nelisp-standalone--reader-extend-runtime-
+# image-smoke') -- the only one of the binary's 15 subcommands that had no
+# coverage anywhere in the tree.  Dumps a base image, extends it with both
+# a `--load' file and an inline FORM, evals a form against the OUT-IMAGE
+# that can only be 42 if the base binding, the `--load' definition and the
+# extension's own `setq' all landed, plus a negative: extending from a
+# BASE-IMAGE path that does not exist.  The negative case caught a real
+# defect on first run, not a synthetic one -- `nelisp-runtime-image--read-
+# file' (`lisp/nelisp-runtime-image.el') trusted `rdf' to distinguish a
+# missing file from an empty one, and `rdf'/`nl_bi_read_file' hands back an
+# EMPTY STRING for a file it could not open (documented in `scripts/nelisp-
+# standalone-build.el' next to `bf_load'/`bf_require', which already work
+# around the identical defect class at the primitive's other call sites:
+# "load reported success for a path that does not exist").  Measured
+# before the fix: `extend-runtime-image' on a missing BASE-IMAGE exited 0
+# and silently wrote an OUT-IMAGE containing only the extension, not the
+# base.  Fixed by probing `file-readable-p' before calling `rdf', the same
+# pattern `bf_load' already uses.  Re-measured after: exit 1, no OUT-IMAGE
+# written, `GATE-COUNT checked=14 findings=0' at the time.
+#
+# 2026-08-22 added a 15th: `nelisp-standalone--reader-malformed-input-
+# smoke', for the "read one form, then check nothing" defect class (a
+# single fix point, `nl_eval_source_all''s post-parse dispatch in
+# `scripts/nelisp-standalone-build.el', shared by --eval/--load/the REPL/
+# bare FILE) plus the missing-file three-way inconsistency between those
+# same four entry points, plus the reader's own unbounded recursion depth
+# (no guard existed; the CLI driver's fixed 32768-slot parse pool silently
+# overflowed past ~8190 levels of nesting, printing a plausible-looking
+# wrong value well before it, and eventually SIGSEGVing), plus its fixed
+# 2^22-byte read buffer (silently truncated past that many bytes, with no
+# signal anything was dropped).  Table-driven over: a stray close paren, an
+# unterminated string, a second form after a valid one, the same
+# missing-file failure through `--eval '(load ...)'', `--load' and a bare
+# FILE argument, nesting one past the reader's exact depth bound, and a
+# source at the read buffer's exact cap -- each asserting a nonzero exit
+# and a diagnostic naming the real problem -- plus well-formed controls
+# (including nesting one BELOW the bound) asserting the correct answer, so
+# a future change that makes this gate over-reject good input is caught
+# here too.  `GATE-COUNT checked=15 findings=0' after.
+#
+# Beside it stand 28 individual `standalone-reader-*'
+# targets, each measured green on 2026-08-21 -- two of them only after the
+# fixes in this sweep.  Named in full so a later reader can tell "measured and
+# green" from "nobody looked":
+#
+# 2026-08-22: a `nelisp-standalone--reader-elc-smoke' joined the dolist,
+# making it 15.  `docs/design/142-external-elisp-artifact-cache.org' (`#+
+# STATUS: SHIPPED') claimed at its section 6.2 that `compile-elisp-artifact
+# --kind elc' emits a genuine GNU-Emacs-readable `.elc' -- true of the code
+# path host Emacs takes, but nothing in any gate, smoke, or workflow ever
+# ran `--kind elc' on the STANDALONE `target/nelisp' binary itself.  It
+# crashed: `Symbol's value as variable is void: invocation-name' --
+# `nelisp-artifact--byte-compile-to' unconditionally reads that host-Emacs-
+# only variable to relaunch "itself" as a clean `batch-byte-compile'
+# subprocess, which only exists when the caller already is host Emacs.
+# `nelisp-artifact--standalone-host-helper-mode' already had a working
+# fallback for exactly this -- spawn a real host Emacs and run
+# `nelisp-artifact-compile-elc-file' inside it -- but gated it to Windows
+# only; `elc' on Linux/macOS standalone fell straight into the unguarded
+# native path.  Fixed by adding `elc' unconditionally to that gate's
+# `required' arm.  The smoke now measures the doc's actual three-part
+# contract instead of trusting the claim: (a) `compile-elisp-artifact
+# --kind elc' produces a real `.elc' + manifest; (b) stock host Emacs
+# `load's it and calls the compiled function (genuine bytecode, not a
+# private format wearing a `.elc' suffix); (c) the standalone's OWN
+# `eval-elisp-artifact'/`exec-elisp-artifact' do NOT execute it --
+# `nelisp-standalone-source-cache-load-artifact' has no GNU Emacs bytecode
+# VM (confirmed: the reader never parses `#[...]' literals) and previously
+# fell through to the unrelated "invalid artifact magic" error; it now
+# rejects `.elc' up front with a stated reason; (d) negative: with the host
+# helper disabled (`NELISP_DISABLE_HOST_HELPER=1'), `--kind elc' fails with
+# the named `host-helper required for --kind elc' diagnostic, not a crash.
+# `inspect-elisp-artifact' (metadata only, no execution) still works on a
+# `.elc' artifact and was left alone.  `docs/design/142-external-elisp-
+# artifact-cache.org' section 6.2 corrected to name this smoke and state
+# the execution boundary rather than imply a round trip that does not
+# exist.
+#
+#   standalone-reader-catch-throw-tag-smoke   standalone-reader-checked
+#   standalone-reader-checked-soak            standalone-reader-cond-let-shape-smoke
+#   standalone-reader-current-time-smoke      standalone-reader-declare-strip-smoke
+#   standalone-reader-derived-mode-shape-smoke standalone-reader-elt-smoke
+#   standalone-reader-ffi-smoke  (was red: print-circle in the unit cache key)
+#   standalone-reader-fmt-smoke               standalone-reader-getenv-smoke
+#   standalone-reader-intern-soft-loop-smoke  standalone-reader-intern-soft-smoke
+#   standalone-reader-load-smoke              standalone-reader-match-data-smoke
+#   standalone-reader-mod-float-smoke  (was red: `mod' with a negative divisor)
+#   standalone-reader-nested-backquote-macro-smoke
+#   standalone-reader-number-token-smoke      standalone-reader-pcase-quote-literal-smoke
+#   standalone-reader-prelude-equal-reload-smoke  standalone-reader-prelude-test
+#   standalone-reader-process-smoke           standalone-reader-realrt-smoke
+#   standalone-reader-recursion-guard-smoke   standalone-reader-repl-smoke
+#   standalone-reader-require-provide-smoke   standalone-reader-shadow-smoke
+#   standalone-reader-tls-smoke
+#
+# GREEN AND NOW WIRED: these were measured clean by the sweep and had no
+# report, so `verify' could not hold anyone to them.  Each now prints a
+# GATE-COUNT line and is required below.  Nine needed the line added; four
+# already printed one and only needed listing.
+#
+# Split by cost, because that decides where they run:
+#
+#   in `check' (seconds, no binary):
+#     prelude-toplevel-check  partial-inventory  gate-selfcheck  ns-gate
+#     nl-check-gate  fallback-inventory-selftest  wasm-dtw-skeleton-smoke
+#
+#   `nelisp-ai.sh extras' (each builds a binary):
+#     nelisp-runtime-image-cache-gate  nelisp-source-command-substrate-gate
+#     standalone-chunk-growth-test  standalone-parallel-compile-test
+#     standalone-selfhost-mt-test  wasm-runtime-image-smoke
+#
+#   `nelisp-ai.sh smokes':
+#     standalone-reader-smokes -- the 28 individual reader smokes as ONE gate.
+#     28 separate reports would demand 28 freshness checks for one build's
+#     worth of evidence; the count is the signal, and a target that stops
+#     existing shows up as a smaller number.
+#
+prelude-toplevel-check
+partial-inventory
+#
+# gate-selfcheck: 2026-08-23 Windows inventory measured this gate's own
+# emacs-parity band check FAILING with `emacs-parity checked=652' below
+# the pinned floor of 1000 (tools/gate-count-bands.txt).  Investigated,
+# not changed: 652 is almost certainly a symptom of the emacs-parity
+# generation bug fixed above (a corrupted target/emacs-parity.el would
+# make Emacs read a handful of the corpus's own top-level forms before
+# hitting the stray trailing `)))' and erroring out, printing whatever
+# partial output those forms produced before failing rather than the
+# full ~20000-byte %S dump the wrapped corpus produces) -- the corpus and
+# reference answers do not depend on the OS in any way that would
+# legitimately shrink the byte count by a third, and this session's own
+# Linux measurement after the emacs-parity fix reads `GATE-COUNT
+# checked=19949 findings=0', comfortably inside the existing 1000-100000
+# band.  The band is therefore left unchanged; a platform-aware band
+# would have been the wrong fix for a generation defect.  If a Windows
+# re-run after the emacs-parity fix lands still reports a `checked' value
+# far from ~19949 (or fails again), that is new evidence and should be
+# investigated on its own, not folded into this reasoning after the fact.
+gate-selfcheck
+version-consistency
+#
+# ns-gate / ns-inventory: 2026-08-23 Windows inventory measured 19-20
+# `ns-collision-divergent' fingerprints (packages/nl-ns/src/nl-ns.el's
+# `nl-ns--definition-shape', a sha1 of each colliding definition's `%S'
+# print form) differing from the Linux-pinned baseline, with the
+# underlying collisions themselves apparently unchanged (same finding
+# counts, only the fingerprints moved) -- see packages/nl-ns/src/nl-ns.el
+# for the investigation this session ran and could not close: CRLF-vs-LF
+# file content was tested directly (a CRLF-converted copy of a multi-line-
+# docstring fixture read through `nl-ns--read-file-entry' and produced a
+# BYTE-IDENTICAL parsed form and sha1 to the LF original, because Emacs's
+# own `insert-file-contents' coding-system detection strips `\r' before
+# `read' ever sees it), and file-path separators were checked structurally
+# (both `directory-files-recursively' and `file-expand-wildcards' are
+# pure Elisp and always return `/'-separated paths, on any host).  Neither
+# hypothesis reproduces the divergence.  Not fixed; the mechanism is
+# unconfirmed from Linux and needs the actual Windows measurement (which
+# 19-20 symbols, their exact `:heads' diff) to narrow further.
+ns-gate
+nl-check-gate
+fallback-inventory-selftest
+wasm-dtw-skeleton-smoke
+# 2026-08-23 Windows gate-battery inventory (target/ai/windows-inventory-
+# 2026-08-23.md on feat/windows-gate-inventory) found nine of these gates
+# FAILING instead of reasoned-skipping on an unrunnable target -- eight by
+# trying to build or exec a Linux-only ELF/syscall path and getting `Exec
+# format error'/exit 127/126, and `nelisp-runtime-image-cache-gate' by a
+# bare `[ -x $NELISP ]' test misreading a built-but-foreign-architecture
+# binary as simply missing.  All nine now ask
+# `nelisp-standalone--target-runnable-on-host-p' (scripts/nelisp-
+# standalone-build.el) FIRST, the same convention `standalone-reader-test'
+# already used, and print a `GATE-SKIP' line instead: nelisp-runtime-
+# image-cache-gate, nelisp-source-command-substrate-gate, standalone-
+# chunk-growth-test, standalone-parallel-compile-test, standalone-
+# selfhost-mt-test, standalone-reader-smokes (checked once for the whole
+# 34-smoke batch, since every sub-smoke execs the same binary),
+# nelisp-nelix-native-hot-gate (see its own note below), and the nl-
+# condition/nl-safe/nl-resource/standalone-reader-buffer/nl-actor smokes
+# further down.  `nelisp-source-command-substrate-gate' also stopped using
+# `mktemp -d' (which defaults into `/tmp', a namespace Git Bash and native
+# Windows Emacs read differently) for the temp paths it hands to a
+# separate Emacs `--eval'; it now uses a repo-local `target/tmp.XXXXXX'
+# dir, which resolves identically from both sides.  `standalone-reader-
+# smokes' also moved its per-smoke logs from `/tmp' to `target/tmp/' for
+# the same reason (MSYS2 `make' and Git Bash `tail' disagreed about where
+# `/tmp' lived in the same inventory run).  Verified on Linux (this
+# session): mocked unrunnable via `NELISP_STANDALONE_TARGET=windows-
+# x86_64', each of the nine prints its `GATE-SKIP' line and exits 0; with
+# the real linux-x86_64 target, `standalone-reader-smokes' still reports
+# `GATE-COUNT checked=34 findings=0'. Not Windows-verified -- the owner's
+# next runbook run on Windows is the actual proof.
+nelisp-runtime-image-cache-gate
+nelisp-source-command-substrate-gate
+standalone-chunk-growth-test
+# precise-root-coverage (2026-08-29): the mid-form collector marks from the
+# precise recorded-frame arms AND a conservative native-stack scan, and the
+# scan is broad enough to hide the deletion of a precise arm entirely -- the
+# whole reader-smoke suite stays green with `nl_gc_mark_recorded_frame's
+# `result' arm removed.  This gate runs a collection-driving workload with the
+# scan off, where that same deletion is an immediate SIGSEGV, and additionally
+# pins that suppressing the parse-pool slot walk changes nothing.  Its scope is
+# one synthetic workload on purpose: the precise surface does NOT carry a real
+# module load (the anvil bootstrap segfaults in under a second with the scan
+# off, on a clean tree), so this is not a claim that the scan is removable.
+precise-root-coverage
+# Doc 152 Stage 4c: armed loop GC must plateau after warm-up, actually unmap
+# at least one growth chunk, and survive a poison-on-free 500k soundness run.
+standalone-midform-gc-bounded
+standalone-parallel-compile-test
+standalone-selfhost-mt-test
+standalone-eval-test
+wasm-runtime-image-smoke
+standalone-reader-smokes
+# nelisp-nelix-native-hot-gate: promoted 2026-08-21, see "THE nelix GATES,
+# PART 2" below -- also `nelisp-ai.sh extras' (needs target/nelisp built,
+# does not build it).
+#
+# 2026-08-23: this gate's `[ ! -x "$NELISP" ]' check used to run BEFORE
+# the (already-correct) `../nelix' absence check, so on an unrunnable
+# target (Windows inventory: a built linux-x86_64 target/nelisp) it
+# reported a hard `missing-nelisp' FAIL instead of a reasoned skip -- the
+# wrong one of two legitimately different "cannot run" reasons.  The
+# runnable-host predicate is now asked first (see the block above); the
+# nelix-absence check is unchanged and still runs second.
+nelisp-nelix-native-hot-gate
+#
+# substrate-parity-smoke: promoted 2026-08-22, see "SUBSTRATE PARITY" at the
+# end of this file -- also `nelisp-ai.sh extras' (needs target/nelisp built,
+# does not build it).  Green with 3 recorded findings as of the TASK A/B/C
+# ADDENDUM later in "SUBSTRATE PARITY" (was 21 at promotion, 137/117 before
+# that -- see the addendum for the corpus growing to 39 forms and the
+# `nelisp--primitive-symbols' fix that dropped 18 of the 21), not zero
+# findings; read that section before assuming clean means nothing was found.
+substrate-parity-smoke
+#
+# nl-condition/nl-safe standalone smokes: promoted 2026-08-22, also
+# `nelisp-ai.sh extras' (needs target/nelisp built, does not build it).
+# `packages/nl-condition/README.org' and `packages/nl-safe/README.org'
+# both claim (Testing section) that the ERT suite runs unchanged on
+# target/nelisp -- `ert-full' only exercises the host-Emacs half of
+# that claim, since these packages' `*-standalone-smoke.el' files (a
+# mini `ert-deftest'/`should' shim over the exact same test bodies,
+# run through the binary itself) do not match its `-test.el' glob.
+# Each also runs its package's examples/ demo, so the restart-resume
+# and borrow-violation examples cannot rot on this substrate either.
+# Red-proven 2026-08-22 by nulling `nl--handler-stack' in `nl-signal'
+# (packages/nl-condition/src/nl-condition.el): the gate went from
+# `GATE-COUNT checked=33 findings=0' to `checked=15 findings=18',
+# reverted after confirming the failure.
+#
+# 2026-08-23: all three used to check only `[ -f "$$bin" ]' (did the build
+# produce a file), not whether the file could run on this host -- see the
+# runnable-host block above `nelisp-runtime-image-cache-gate'.  Each now
+# asks the predicate first; unchanged on a runnable host (verified PASS on
+# Linux this session).
+nl-condition-standalone-smoke
+nl-safe-standalone-smoke
+nl-resource-standalone-smoke
+#
+# standalone-reader-buffer-smoke: promoted 2026-08-23, Doc 188 Phase 1
+# (buffer unification), also `nelisp-ai.sh extras' (needs target/nelisp
+# built, does not build it).  Runs test/nelisp-buffer-unification-
+# standalone-smoke.el directly against target/nelisp via
+# scripts/nelisp-ert-shim.el (its first real consumer) -- a plain
+# host-Emacs ERT run of the same forms (test/nelisp-buffer-unification-
+# test.el) cannot distinguish this tree's own `insert'/`buffer-string'
+# wiring from host Emacs's, since host Emacs already has real
+# implementations of every name involved (Doc 188 §1.8/§4.1).
+# Red-proven 2026-08-23 by injecting the row in tools/gate-mutations.txt
+# that names this gate.
+#
+# Same runnable-host guard added 2026-08-23 as the nl-condition/nl-safe/
+# nl-resource trio above.
+standalone-reader-buffer-smoke
+# nl-actor-standalone-smoke: added 2026-08-23 (Doc 193 §4.4 Phase 1).
+# nelisp-actor could not have a standalone smoke before this -- loading
+# it against target/nelisp signalled `(file-missing . generator)' at a
+# hard `(require 'generator)', verbatim, since generator.el is not
+# vendored for the substrate (see packages/nelisp-actor/README.org's
+# Portability section for the exact repro).  A soft require plus a
+# tiny iter-next/iter-close/iter-end-of-sequence runtime shim
+# (installed only when real generator.el did not load) fixed that;
+# packages/nelisp-actor/generated/two-actor-exchange-cps.el (the
+# build-time CPS transform of the ping-pong demo, regenerated by `make
+# nelisp-actor-cps-baseline') is what this smoke actually exercises --
+# spawn/mailbox/send/receive/yield/run-until-idle.  Red-proven the same
+# day the same way the nl-condition/nl-safe trio above was: see
+# tools/gate-mutations.txt's nl-actor-standalone-smoke row.
+#
+# Same runnable-host guard added 2026-08-23 as the nl-condition/nl-safe/
+# nl-resource trio above.
+nl-actor-standalone-smoke
+#
+# nl-ns-reader-standalone-smoke: added 2026-08-23, Doc 189 Phase 0
+# (reader-time namespace resolution, opt-in only).  Same shim/load-by-
+# path pattern as nl-condition-standalone-smoke above, proving the
+# `nelisp-read-namespace-resolve' hook `src/nelisp-read.el' gained is
+# real on `target/nelisp' itself, not only under the host Emacs used to
+# develop it.  Listed optional (not promoted to required, no
+# tools/gate-mutations.txt row yet): Phase 0 is a small, first-landing
+# proof-of-concept per docs/design/189-nl-ns-enforced-namespaces.org
+# §4, and its own zero-effect contract means no gate anywhere in this
+# tree depends on it running -- promote alongside Phase 1, or sooner if
+# a real defect surfaces here first.
+nl-ns-reader-standalone-smoke?
+#
+# nl-clj-standalone-smoke: added 2026-08-24, Doc 195
+# (docs/design/195-clojure-compat-library.org) build-first Tier 1 (atom,
+# persistent vector, persistent hash-map/hash-set, eager seq API).  Same
+# shim/load-by-path pattern as nl-condition-standalone-smoke above, plus
+# a print/read round-trip check on a tagged persistent vector -- proving
+# Doc 195 §2.1's own measured print/read asymmetry for `cl-defstruct'/
+# `record' on this substrate does NOT apply to this package's chosen
+# representation (a tagged plain vector, the same idiom `nl-cell'
+# already ships).  Listed optional (not promoted to required, no
+# tools/gate-mutations.txt row yet, not wired into `nelisp-ai.sh
+# extras'): this is this package's own first landing, following the
+# identical "just shipped, not yet promoted" nl-ns-reader-standalone-
+# smoke precedent immediately above -- promote once observed green
+# across more than one session, or sooner if a real defect surfaces
+# here first.
+#
+# Extended same day (still this row, not a new one) by the §4.7 lazy
+# phase (packages/nl-clj/src/nl-clj-lazy.el, feat/nl-clj-lazy): two more
+# inline checks against the live binary -- an UNBOUNDED
+# `nl-clj-lazy-range' taken from terminates, and a range whose START is
+# already past `most-positive-fixnum' advances by promoting to a Bignum
+# rather than signalling `overflow-error' (this branch's own bignum
+# Phase B, Doc 190 §7, landing is what makes the second check possible
+# at all -- a build predating it would fail loudly, not silently, so
+# this is a real substrate proof, not cosmetic) -- plus the lazy phase's
+# own 42 ERT cases via the same shim/load-by-path runner (121 -> 163
+# total).  Still optional, same reasoning as above: not yet promoted,
+# no gate-mutations.txt row (nothing in the lazy phase adds a NEW
+# required gate -- this is the same pre-existing optional gate,
+# extended).
+nl-clj-standalone-smoke?
+nl-clj-future-standalone-smoke?
+# nl-num-standalone-smoke: added 2026-08-24 for Doc 196 Phases 0-4.
+# It replays all 51 CL/Scheme/Clojure reference-contract ERT bodies on the
+# standalone and separately round-trips bignum-backed rational and complex
+# tagged vectors through prin1/read.  Promoted immediately because Doc 196's
+# representation and bignum-float routing decisions are substrate-specific;
+# the Phase 2 mutation in tools/gate-mutations.txt reproduces the native
+# sign-word wrong-value path and proves this gate turns red on it.
+nl-num-standalone-smoke
+# nelisp-thread-standalone-smoke: Doc 199 Tier 2 Shape B.  The smoke is
+# loaded by target/nelisp itself (not self-host compiled), spawns three fixed
+# registry worker-ID 1 clone(2) tasks, publishes three distinct result slots
+# through a shared SeqCst done counter + join, and requires 14+14+14=42.
+# The gate-mutations row suppresses the worker result store, proving this gate
+# detects a worker that completes but publishes the wrong result.
+nelisp-thread-standalone-smoke
+# nelisp-thread-allocating-standalone-smoke: Doc 199 Tier 3a feasibility
+# spike.  Registry worker ID 2 evaluates pre-built ordinary Lisp through
+# nelisp_eval_call with a private mmap EvalCtx, fresh lexical frame stack, and
+# private native clone stack.  The bounded section inhibits collection,
+# disables the non-atomic sweep free-list so allocators use the CAS bump path,
+# preflights 8 MiB in the current chunk, and rejects chunk growth at exit.
+# Checkpoint 1 publishes length 5 from one allocating worker.  Checkpoint 2
+# barriers three workers while their private frames hold live allocated lists,
+# attempts garbage-collect on each, then requires 5+7+11=23 after join.
+# The Makefile target repeats the smoke under `ulimit -v 4000000', the
+# deterministic reproducer for the Stage 4c empty-chunk-unmap corruption.
+# Mutation-proven by suppressing the unique parallel-active publication; the
+# section-exit assertion then rejects the run deterministically.
+nelisp-thread-allocating-standalone-smoke
+# nelisp-thread-mirror-guard-standalone-smoke: the enforced Doc 199 Tier
+# 3a/3b ceiling.  A registered ID-2 worker calls a global function and reads a
+# global value successfully, then hit-path and miss-path setq attempts must
+# raise the named catchable condition without changing/inserting mirror state.
+# A fresh intern-table insertion is refused and remains absent as well.  The
+# mutation row disables the reached registry-match branch and makes these
+# assertions go red against a freshly rebuilt binary.
+nelisp-thread-mirror-guard-standalone-smoke
+# nelisp-thread-percpu-roots-smoke: Doc 199 Tier 3b's real park-barrier proof.
+# Three registry-ID-2 allocating workers wait in join safepoints while private
+# lexical frames hold live lists of lengths 5, 7, and 11.  Main-thread
+# garbage-collect must request and observe parked=3, run one actual mark/sweep,
+# resume the workers with missed-collects unchanged, and preserve 5+7+11=23;
+# bounded-section exit must clear the registry.  The Makefile target runs once
+# normally and five times under `ulimit -v 4000000'.  Its mutation corrupts the
+# reached post-collection last-parked observation, so the mandatory count=3
+# assertion necessarily turns red after the real collector path has run.
+nelisp-thread-percpu-roots-smoke
+#
+# nl-clj-async-standalone-smoke: added 2026-08-24, Doc 195 §4.6
+# (channels/`go' blocks over nelisp-actor).  Same shim/load-by-path
+# pattern as the smokes above, loading `packages/nl-clj/generated/
+# go-ping-pong-cps.el' -- the build-time CPS transform of a `nl-clj-go'
+# ping/pong exchange (`make nl-clj-async-cps-baseline') -- rather than
+# replaying nl-clj-async-test.el's own ERT bodies, most of which spawn
+# actors via `nl-clj-go' directly and stay host-Emacs-only by design.
+# Proves this package's own channel mediator (`nl-clj-async--make-
+# chan-1', the one piece with genuinely new protocol logic over the
+# shipped `nelisp-make-chan') and `nl-clj-go' itself both survive the
+# same standalone substrate `nelisp-actor' does, across the exchange's
+# several round trips.  Makes exactly ONE call into the baked demo --
+# a real, measured, not-yet-root-caused defect this session found: a
+# SECOND top-level call to the same baked function in one process
+# hangs (low, non-spinning CPU across a 60s wait -- genuinely blocked,
+# not a busy loop), even though a single call completes correctly
+# every time this session tested it; prime suspect named, not chased
+# further, in the smoke file's own Commentary (`nelisp-actor--reset'
+# resets the id counter, so a second call's actors reuse a first
+# call's ids while that first call's channel mediators are still
+# alive, by this package's own deliberate immortal-mediator design).
+# A second, separately-named gap the smoke does NOT paper over: the
+# demo exchange itself uses `nelisp-chan-send'/`nelisp-chan-recv'
+# directly, not this package's own `nl-clj-<!'/`nl-clj->!' -- those are
+# fully correct on host Emacs (`nl-clj-async-test.el', 29/29 green,
+# same producer/consumer and ping/pong shapes) but were separately
+# measured to hang standalone under repeated resumption from inside a
+# `while' loop, also not root-caused further; see `examples/nl-clj-
+# async/go-ping-pong.el's own Commentary for the fullest account of
+# both.  Listed optional (not promoted to required, no tools/gate-
+# mutations.txt row yet, not wired into `nelisp-ai.sh extras'): this
+# package's own next landing after `nl-clj-standalone-smoke' above,
+# following that same "just shipped, not yet promoted" precedent --
+# promote once BOTH open gaps above are closed (or the smoke's own
+# scope is re-narrowed to only what is proven), or sooner if a real
+# defect surfaces here first.
+nl-clj-async-standalone-smoke?
+#
+# substrate-presence-sweep (Task A, added same day as the addendum above):
+# own tier, `nelisp-ai.sh presence', not `extras' (see "SUBSTRATE PARITY"'s
+# addendum for the ~15-17 minute measurement).  OPTIONAL, not yet promoted
+# to required: green-with-203-recorded-findings is expected against the
+# freshly-built `tools/substrate-presence-accepted.el' by construction (the
+# ledger's 203 keys are exactly the second run's 203 finding keys), but
+# that specific claim has not been independently re-observed by an actual
+# gate re-run -- a third ~15-17 minute full sweep sharing target/nelisp and
+# its marker file with other in-flight work was skipped this session.
+# Promote to required once a `substrate-presence-sweep' report actually
+# prints `GATE-COUNT checked=2091 findings=0' (0 unaccepted/stale against
+# the ledger) and that report is read here rather than assumed.
+substrate-presence-sweep?
+#
+# CANNOT RUN HERE, AND NOW SAY SO: three of these exit 0 with a GATE-SKIP line
+# and a reason, which `verify' accepts for a required gate.  They are not
+# listed as required yet only because nothing has run their success path --
+# adding a wrapper whose green has never been seen is the unverified-gate
+# problem in a new place -- but the skip is no longer indistinguishable from a
+# failure:
+#
+#   macho-acceptance-test   GATE-SKIP macho acceptance requires macOS.  Also
+#                           counts its 8 checks now, so a macOS runner gets a
+#                           number rather than silence.
+#   wasm-dtw-smoke          GATE-SKIP newDTW-nelisp checkout absent.  The
+#   wasm-dtw-site-smoke     transpile step decides it, so the whole chain skips
+#                           together; DTW_GAME_ROOT points it at a checkout.
+#                           (Its compile step also asked for `--kind neln' with
+#                           a `.wasm' output, the same mismatch fixed in
+#                           wasm-runtime-image-smoke -- corrected here too, so
+#                           a machine that HAS the checkout gets past it.)
+#
+# THE nelix GATES, PART 2 (2026-08-21): both recorded defects below were run
+# down to file:line and one of the two is fixed.  `../nelix' is a separate
+# repository (its own git history, last commit 2026-06-25 before this pass)
+# reached by three make targets; they were filed above as "needs an external
+# checkout" and that was already known to be wrong -- the checkout exists and
+# the gates reach it.  This pass re-measured each of the three from scratch
+# (`make nelisp-nelix-command-gate`, `-operational-gate`, `-native-hot-gate`
+# from this repo's root) before touching anything, to have an against-the-bug
+# baseline rather than trusting the prose above.
+#
+#   nelisp-nelix-native-hot-gate -- FIXED, now green, promoted below.
+#     Baseline matched the record exactly: reaches the nelix checkout, passes
+#     four checks, then `expect_out standalone_subset_audit_id_native' fails
+#     with expected="ok\tfalse\n...bat\nbackend\tnix\n" (literal backslash-t /
+#     backslash-n) vs. actual containing real TAB/NEWLINE bytes.  Byte-level
+#     capture (`xxd` on the artifact's raw stdout) showed the actual value is
+#     `"ok<TAB>false<NL>present<TAB>ripgrep<NL>...nix<NL>"' -- a real
+#     Elisp `prin1-to-string' rendering of that string, wrapped in quotes,
+#     control characters left untouched.  Verified against stock host Emacs
+#     30.1: `(prin1-to-string "a\tb\nc")` also embeds a real TAB/NEWLINE, not
+#     the two-character sequences -- `print-escape-newlines' is nil by
+#     default and tab is never escaped regardless.  So nelisp's native output
+#     was already correct and the defect was the gate's own hard-coded
+#     expectation, in THIS repo, not nelix: `tools/nelisp-nelix-native-hot-
+#     gate.sh:180` and `:189` (`standalone_subset_audit_id_native' and
+#     `standalone_subset_upgrade_id_native') now build the expected value
+#     with `printf' so `\t'/`\n' are read as real bytes, matching every other
+#     payload literal already in this script.  Re-measured after the fix:
+#     6 of 6 checks, `nelix_native_hot_gate_result label=nelix_native_hot_gate
+#     rc=0` -- twice, once through `nelisp-ai.sh gate ... -- make
+#     nelisp-nelix-native-hot-gate`.  Also gained a `GATE-COUNT' line (it had
+#     none before; `nelisp-ai.sh gate' was reading a green run as "no
+#     GATE-COUNT line", i.e. a failure by omission) -- see the sweep note
+#     below.
+#
+#   nelisp-nelix-command-gate / nelisp-nelix-operational-gate -- TWO defects
+#     fixed (see the 2026-08-22 update below the third), a THIRD, DIFFERENT
+#     one is now the block; still red.  Baseline
+#     matched the record: `file-missing: "nelix-compat.el"' from the first
+#     direct-runtime call (`nelisp_direct_list').  Root cause was in
+#     `dev/nelix', confirmed by tracing the actual signal (`file-missing',
+#     not `require's own `file-error' shape) to
+#     `dev/nelix/scripts/nelix-nelisp-smoke.el's `nelix-nelisp-smoke--load-
+#     compat', which called `(load "nelix-compat.el")' -- a bare relative
+#     filename.  NeLisp's standalone `load' primitive
+#     (`nelisp--builtin-load' in this repo's `src/nelisp-load.el') treats its
+#     argument as a literal path and never searches a load-path (only
+#     `require'/`nelisp-locate-file' do); every OTHER cross-file reference in
+#     `bin/nelix' already passes an absolute path in a dedicated variable
+#     (`nelix-nelisp-smoke-*-source'), so this one bare string was the actual
+#     gap, not a load-path that was never set.  Setting NELIX_LISPDIR alone
+#     never reached this call at all, which is why the earlier note that it
+#     "does not help" was correct as stated.  Fixed in `dev/nelix': a new
+#     `nelix-nelisp-smoke-compat-source' variable
+#     (`scripts/nelix-nelisp-smoke.el:58`, consumed at `:184`) that
+#     `bin/nelix:2225` resolves to `${NELIX_LISPDIR:-<repo>}/nelix-compat.el'
+#     (so NELIX_LISPDIR now actually reaches this path, the documented knob
+#     made functional) and `bin/nelix:2259` sets before the direct runner
+#     calls `nelix-nelisp-smoke-preload-suite-runtime'.  Re-measured: the
+#     `file-missing' error is gone.
+#
+#     Past that point a SECOND, unrelated defect is reached and is still
+#     open: `void-function: (defvaralias)`, from `nelix-core.el:95`'s
+#     `(defvaralias 'nelix-default-backend 'nelix-core-default-backend)' (and
+#     four more calls just below it) -- ordinary top-level Elisp that host
+#     Emacs's `--runtime emacs' path runs fine, but NeLisp's standalone
+#     runtime has never implemented `defvaralias'.  This is NOT the same
+#     class of bug as the first one and is NOT a quick addition: the
+#     standalone `target/nelisp' reader-path binary this gate actually runs
+#     does not read `src/nelisp-eval.el's generic `nelisp--install-
+#     primitives' as ordinary Elisp at build time -- confirmed by adding a
+#     `defvaralias' primitive there exactly the way `defalias' already sits
+#     (same function, same registration call) and rebuilding
+#     (`make standalone-reader'): `defalias'/`boundp'/`require' remain
+#     `fboundp' in the rebuilt binary, `defvaralias' does not.  The binary is
+#     instead linked from a hand-curated table of native compiled units
+#     (`scripts/nelisp-standalone-build.el:12509`,
+#     `nelisp-standalone--manifest', plus a second `...--reader-extra-
+#     manifest' of hand-written machine-code fragments with explicit
+#     register-ABI and GC-arena-epoch bookkeeping) -- adding a primitive
+#     there means writing a new compiled unit through that pipeline, not a
+#     one-line Elisp addition, and a wrong arena-epoch annotation on
+#     anything that writes a new global binding is the silent-corruption
+#     class of bug this repo's own `nelisp-cc' commit history warns about.
+#     That is deep enough to guess wrong, so the speculative `nelisp-eval.el'
+#     addition was reverted rather than kept half-working; `target/nelisp'
+#     was rebuilt back to a clean HEAD binary and reconfirmed at the same
+#     `defvaralias' failure before recording this.  Nothing here should be
+#     "papered over" by rewriting `nelix-core.el' to avoid `defvaralias'
+#     either: that call is ordinary, idiomatic Elisp that already works
+#     under host Emacs, so the gap is NeLisp's language coverage, not
+#     nelix's code -- the opposite direction from the first defect, and the
+#     same principle (fix belongs on the side that is actually wrong).
+#     `nelisp-nelix-command-gate' and `nelisp-nelix-operational-gate' stay
+#     unpromoted and unwired below until that gap has an owner.
+#
+#   UPDATE (2026-08-22, this pass): the SECOND defect above (`void-function:
+#     (defvaralias)') is fixed IN THIS REPO -- `defvaralias' is now a native
+#     special form (`nl_sp_eq_defvaralias' / `nl_sf_defvaralias' in
+#     `scripts/nelisp-standalone-build.el', wired into `nl_apply_special' via
+#     `nelisp-standalone--patch-apply-special' / `--patch-combiner-cons', the
+#     SAME dispatch mechanism `defalias' already sits on -- see that
+#     defconst's own preceding commentary for the implementation-point
+#     rationale and the stated value-vs-whole-record trade-off against real
+#     Emacs).  Re-measured from a clean rebuild (`make nelisp-nelix-command-
+#     gate` from this repo's root, `target/nelisp' rebuilt first): the
+#     `void-function: (defvaralias)' signal is GONE.  Confirmed independently
+#     of this gate too, red then green, same process, same minimal probe
+#     (`(defvaralias 'a 'b) (setq b 1) (symbol-value 'a)'): against a binary
+#     built from the pre-fix tree (`git stash` of this defvaralias change,
+#     rebuild) -- `nelisp: uncaught error: void-function: (defvaralias)',
+#     exit 1; against the post-fix rebuild, same probe -- `(1)', exit 0.
+#
+#     Past that point a THIRD, different defect is now reached and is still
+#     open: `file-missing: nelix-manifest', from the same `nelisp_direct_list'
+#     step (`bin/nelix --runtime nelisp list').  Root cause traced the same
+#     way as the first defect (reading the actual failing `require', not
+#     guessing): `bin/nelix:155-176' (`nelix_emit_nelisp_suite_source_files')
+#     builds, in order, the list of files the direct nelisp runtime preloads
+#     via `nelix-nelisp-smoke--load-suite-files'
+#     (`dev/nelix/scripts/nelix-nelisp-smoke.el:399-406', a plain sequential
+#     `(load (car cur))' over that list) -- and the list puts `nelix-dsl.el'
+#     at position 4 (`bin/nelix:162') BEFORE `nelix-manifest.el' at position
+#     12 (`bin/nelix:170').  `nelix-dsl.el:56' calls `(require
+#     'nelix-manifest)' at its own top level; NeLisp's `require' resolves
+#     that by searching `load-path' (unlike `load', which never does, per the
+#     first defect's own finding above) -- but `load-path' is never set
+#     anywhere in `bin/nelix's direct-nelisp runner (confirmed absent by
+#     grep: the only `load-path' hit in the whole file is the COMMENT at
+#     `bin/nelix:2219' documenting that `load' does not search it), so with
+#     `nelix-manifest.el' eight positions further down the SAME preload list,
+#     the `require' has nothing to find yet and signals `file-missing'.  Same
+#     class of bug as the FIRST defect this section fixed -- a file-
+#     resolution ordering gap in `../nelix's own bootstrap sequencing, not a
+#     NeLisp language-coverage gap -- so by the same ownership principle it
+#     belongs there, not here.  Not attempted: `../nelix' is a separate
+#     repository (its own git history) and out of scope for this pass, left
+#     on its own branch per instruction.  Nothing here should be "papered
+#     over" from the NeLisp side either (there is no NeLisp-side lever to
+#     pull -- the gap is a load ordering choice in `bin/nelix' itself).
+#
+#     `nelisp-nelix-command-gate' and `nelisp-nelix-operational-gate' stay
+#     unpromoted and unwired below -- still red, one defect further into the
+#     same script than the previous pass measured, ownership unchanged:
+#     fix belongs on the side that is actually wrong, and that side is
+#     `../nelix', not this repo.
+#
+# Both scripts are deliberately NOT given a GATE-SKIP for either defect:
+# skipping a gate that runs and finds a real defect is exactly how a check
+# starts passing by not running.
+#
+# `nelisp-nelix-native-hot-gate' is required below on the strength of the
+# green measurement above.  It needs `target/nelisp' already built, the same
+# precondition every `nelisp-ai.sh extras' member already has (none of the
+# six build the standalone binary themselves either -- they consume it, same
+# as this one), so it joins that tier rather than `check'.  It joined without
+# a `GATE-COUNT' line before this pass; it has one now (6 checks, one per
+# `run_timed' call, via an EXIT trap so a failing run still reports how far
+# it got instead of vanishing into "no GATE-COUNT line").  `nelisp-nelix-
+# command-gate' got the identical trap+counter treatment (22 checks) so a
+# fixed run reports honestly too, but it is not listed as required and not
+# wired into any tier below -- it is still red, now on the `nelix-manifest'
+# ordering defect above (the `defvaralias' defect that used to block it here
+# is fixed, see the 2026-08-22 update above), and requiring a gate whose
+# green side nobody has seen is the same
+# problem this file exists to prevent.  `nelisp-nelix-operational-gate' has
+# no script of its own (a Makefile dependency on the other two) and follows
+# whichever of them is weaker; it stays unrequired for the same reason.
+#
+# gate-mutation injects a real defect in front of a gate and asks whether the
+# gate goes red.  On 2026-08-21 two of five did not, and it was listed here as
+# correctly-red rather than required -- a true report, not a failure.  Both are
+# fixed, so it is 5/5 and required:
+#
+#   ns-gate stayed green when `round' diverged from its lisp/ mirror, because
+#   the accepted-set key was kind+subject+files.  Once a divergence is
+#   accepted, the two definitions could drift into any other shape and still
+#   match.  The key now carries a digest of the definitions, so accepting a
+#   divergence accepts THAT divergence rather than the name.  (Re-pinned: the
+#   key changed, so the accepted set was regenerated from the clean tree --
+#   144 entries, same as before.)
+#
+#   parity-coverage stayed green when a covered name stopped being mentioned,
+#   because it ratchets on a COUNT and was running 102 above its floor.  A
+#   count cannot see a specific name leave.  The baseline now also pins the
+#   259 names the corpus covers today; losing one fails and says which.  The
+#   floor went 157 -> 259 in the same pass: a floor 102 below the measurement
+#   is not a floor.
+#
+# Later the same day, the same lesson was generalized to the other
+# baseline/ratchet gates in `tools/ai/nelisp-ai.sh check': every count-only
+# ratchet over an INVENTORY OF BAD THINGS (not a curated accept-list) can
+# hide a swap the same way -- one entry resolves, a different one appears,
+# the total does not move.  Four gates got the ns-gate/parity-coverage
+# treatment (an identity-pinned baseline alongside the count, regenerated
+# from the clean tree), and 5/5 became 10/10:
+#
+#   unsafe-inventory pins `pinned-kernel-touch' (87 kernel files that touch
+#   raw memory, replacing the bare `kernel-files' count in
+#   tools/unsafe-kernel.txt) and `pinned-kernel-call FILE COUNT' (the 3
+#   kernel files with an unquoted `unsafe-call', replacing the bare `total'
+#   in tools/unsafe-inventory-baseline.txt).  Verified against the exact
+#   defect: moving one call from `nelisp-flat-arena-probe.el' to
+#   `nelisp-cc-alloc-dealloc.el' left `kernel-files' at 87 and `total' at
+#   538, unmoved, and the new pins caught it by name.
+#
+#   ns-inventory pins `pinned-collision KEY' for `ns-collision' and
+#   `ns-collision-divergent' (279 entries), KEY in `nl-ns-finding-key' shape
+#   -- the same kind+subject+files+shape key ns-gate's fix introduced, reused
+#   here rather than reinvented.  `ns-collision' also dropped 178 -> 157,
+#   its measured value; the ceiling had drifted the same way parity-coverage's
+#   had.  `ns-prefix-violation' (853) and `ns-private-escape' (611) stay
+#   count-only, and say why in tools/nl-ns-inventory.el: they are roughly
+#   8x the size of the pinned pair, `ns-private-escape' is an explicitly
+#   CONCEDED and growing debt rather than a curated set, and most of
+#   `ns-prefix-violation' is public API surface already visible through
+#   `nl-check-gate' and `ns-gate' -- a reasoned exception, not a silent one.
+#
+#   fallback-inventory pins `pinned-site KEY COUNT' across all four kinds
+#   (113 keys, 119 sites -- COUNT because two structurally identical
+#   handlers in one toplevel hash to the same key, and presence alone would
+#   let a third land unpinned).  Regenerating this baseline found the tree
+#   had already drifted past it unnoticed (49/37/33 measured against
+#   48/32/32 checked in) -- caught up in the same commit as the pins, the
+#   same live demonstration parity-coverage's own history gives for why a
+#   number needs a name attached.
+#
+#   pkg-graph pins `pinned-host-require FEATURE FILE' (1 entry).  Verified
+#   by swapping `filenotify' for an unrelated `ert-x' require in the same
+#   file: `hard-host-require' stayed at 1, and the pin caught the new
+#   feature by name.
+#
+#   generated-source-parse had no mutation case at all.  It now does: a
+#   closing paren dropped from a `"(defvar features nil)\n"' string literal
+#   inside `nelisp-standalone--artifact-command-cache-src', the same defect
+#   class -- and the same generator -- the gate was built to catch on
+#   2026-08-19.
+#
+# Each was verified red-then-green against the real swap before being
+# folded into the row below, not only against a plain addition.
+#
+# 2026-08-22 (this session): `ert-full' joined the set proven, 10/10 ->
+# 10 distinct gates covered by 12 rows.  It could not go through the
+# plain `make "$gate"' runner unmodified (`ert-full' is not a raw `make'
+# target), so `tools/nelisp-gate-mutation.sh' gained a small `ert-full'-
+# specific branch that calls `nelisp-ai.sh test' instead, with its report
+# scratched to a throwaway `NELISP_GATE_DIR' so a deliberately-red run
+# never overwrites the tree's real `ert-full' report.  Two rows:
+#
+#   a corrupted widely-used assertion helper -- `nelisp-eval'
+#   (src/nelisp-eval.el), the interpreter entry point nearly every
+#   `(should (equal (nelisp-eval FORM) ...))' in the suite depends on --
+#   made to always return nil.  The full suite costs about 75s per
+#   injection to prove this against, too slow for `gate-mutation' inside
+#   `nelisp-ai.sh check''s fast lane (44s -> 46s total with both new rows
+#   added, measured); scoped via `NELISP_GATE_MUTATION_TEST_FILES' (a
+#   knob added to `test_files()' in `tools/ai/nelisp-ai.sh', used only by
+#   this harness) to `test/nelisp-eval-test.el' alone, which calls
+#   `nelisp-eval' directly and goes red in about a second -- the SAME
+#   `run_ert_gate' path `ert-full' uses for real, over fewer files, not a
+#   different mechanism.  Control: the same scoped invocation against the
+#   clean tree passes 42/42, so the row is not vacuously red.
+#
+#   a test-file glob matching zero files -- `test_files()' itself
+#   (tools/ai/nelisp-ai.sh), corrupted so its output is filtered to
+#   nothing regardless of what matched, the exact defect shape AI.md's
+#   rule 1 documents.  Runs UNSCOPED on purpose: the scoping knob above
+#   would bypass the very line this row tests.  `run_ert_gate' already
+#   carried the guard that catches it -- an empty file list reports
+#   `ran=0 failed=1' and exits 1 before spawning Emacs -- so this row
+#   proves a pre-existing guard, at effectively zero cost (no Emacs
+#   process is even started).  Control: the clean tree's unscoped glob
+#   matches 166 files.
+gate-mutation
+#
+# WAS RED, AND OPEN; NOW FIXED AND REQUIRED: standalone-eval-test failed at
+# link, not at runtime -- `shim.o' called `nl_gc_ctx_pop', defined only in
+# the reader-only `nelisp-standalone--gc-source', which the eval manifest did
+# not list (measured before: `Error: nelisp-link--unresolved-symbol
+# ("nl_gc_ctx_pop" "shim.o")').  The direction recorded here at the time
+# (move reader-only code out of shared units, per `--applyfn-census-helpers')
+# was the right one but incomplete: fixing it uncovered four more of the same
+# shape, each only visible once the linker got past the one before it --
+#
+#   nl_gc_ctx_push/_pop, nl_gc_eval_ctx_push/_pop -- core eval-path plumbing
+#   (`nelisp_eval_call''s only caller) that was misfiled in `gc-source';
+#   moved to `nelisp-standalone--shim-source', shim.o's own unit.
+#
+#   nl_fa_write_all/_read_all, bf_arena_dump_image_to_file and the rest of
+#   the flat-arena persistence + swizzle family in `--applyfn-core-helpers'
+#   -- reader-only (OS file primitives + real GC mark/arena calls), dead in
+#   the baked build (their dispatch arms sit past the baked table's 19-entry
+#   cutoff); excised to `--applyfn-fa-file-helpers' and (one function,
+#   sharing the census family's own reason) `--applyfn-census-helpers'.
+#
+#   bf_sig_copy32 -- core eval plumbing (`eval-inner.o'/`combiner-cons.o'/
+#   `combiner-apply.o' all call it directly to stash a signal), misfiled in
+#   the reader-only `--applyfn-bf-helpers'; moved to `--applyfn-core-helpers'.
+#
+#   nl_gc_free_block/_in_arena/_is_boot/_mark_slot -- `arglist.o',
+#   `rootstack.o', `val-load.o' and `mirror-lookup.o' each call one of these
+#   directly for their own real arena bookkeeping (not dead code, unlike the
+#   flat-arena family above); `reader-gc.o' itself is self-contained (no
+#   dependency on any reader-only I/O unit) and the reader build already
+#   links it unconditionally, so it was added to the eval manifest too,
+#   under the same name, rather than duplicating or stubbing its functions.
+#
+# Measured after: `make standalone-eval-test' builds (47 linked units) and
+# passes (`[standalone] PASS: ... -> exit 3 (expected 3)').
+#
+# `make audit' is deliberately absent: it exits 1 while sub-phases are
+# PENDING (26 at the 2026-08-21 measurement), which is a roadmap state
+# rather than a defect, and a gate that is red by design trains people
+# to ignore the column.
+#
+# SUBSTRATE PARITY (2026-08-22).  This branch's costliest misdiagnosis: a
+# primitive (`emacs-pid'/`random') was probed in ONE substrate
+# (`eval-elisp-source') and the answer was generalized to ANOTHER (the
+# compiled-artifact command runtime), producing a wrong root-cause claim
+# that had to be reverted.  Nothing else in this file runs one probe corpus
+# across every NeLisp entry point and diffs.  `substrate-parity-smoke' does:
+# `tools/nelisp-substrate-parity-corpus.el' (35 normalized-boolean forms --
+# the burned set plus the WHY case above) run through bare-file (baseline),
+# `--load', `dump-runtime-image'+`eval-runtime-image', a compiled `.neln'
+# artifact via `exec-elisp-artifact', `eval-elisp-source' with and without
+# the artifact runtime cache marker, and (its `shared'-tagged 34 of 35
+# forms) host Emacs, one process per form per substrate so a crash on one
+# form does not blank out every later result for that substrate.
+#
+# First run found 137 real divergences (checked=209 form/substrate pairs),
+# not zero -- that is what a new gate over an unmeasured seam is for.  Every
+# one is recorded, with a reason, in `tools/substrate-parity-accepted.el';
+# none were silently swept.  They collapsed to six root causes, of which two
+# (1 and 2 below) are now FIXED (2026-08-22, same day as promotion) and a
+# third (3, already fixed once that day) turned out to have a second,
+# independent layer under it that fixing 1 exposed:
+#
+#   1. WAS OPEN; NOW FIXED AND REQUIRED (2026-08-22).  The bare positional
+#      FILE entry point booted a smaller prelude than `--load'/runtime-image/
+#      artifact/`eval-elisp-source'.  Measured missing there and present
+#      everywhere else: `intern-soft', `read-from-string', `princ', `prin1',
+#      `message', `match-data', `string-match', `nreverse', `read',
+#      `random', `make-temp-name' (11 primitives).  Extended the
+#      pre-existing ADDENDA finding, which named only `intern-soft'.
+#      Root cause: `scripts/nelisp-standalone-build.el's CLI dispatcher's
+#      final `t' cond clause handles three shapes -- runtime-image eval/exec,
+#      the artifact-command family, and (falling through every named
+#      predicate) a bare positional FILE -- but only ran
+#      `nelisp-standalone--reader-repl-prelude-forms' for the first of the
+#      three; `--load' (a sibling, EARLIER cond clause) always ran it.
+#      Fixed by adding the same `_cl < 0'-gated prelude call to the bare-file
+#      fallback, guarded off when `nl_runtime_image_command_p' or
+#      `nl_artifact_command_p' is true so the two command families that
+#      already carry their own prelude (a dumped image, or a compiled
+#      artifact) are untouched -- i.e. unified bare-file with `--load'
+#      rather than patching each missing function by hand.  Before/after,
+#      same rebuilt binary: bare `(fboundp 'princ)' nil -> t, matching
+#      `--load' exactly.  All 80 accepted-ledger keys this collapsed to
+#      (indices 2/3/4/5/15/18/19/21/22/24/25/26/27/28/32/33, each against
+#      load/runtime-image/artifact/source-cache, plus most of the same set
+#      against host) are gone -- confirmed stale by `substrate-parity-smoke'
+#      itself, not asserted.
+#
+#   2. WAS OPEN; NOW FIXED AND REQUIRED (2026-08-22, same commit as #1).
+#      bare-file `mod'/`%%' computed a C-style truncating remainder (sign
+#      follows the dividend) instead of Elisp's floor-based `mod' (sign
+#      follows the divisor), and `floor'/`truncate' silently ignored a
+#      2-argument divisor and returned the dividend unchanged.  A silent
+#      wrong answer, not a crash -- confirmed by direct exit-code probes
+#      before the fix (`(mod 7 -3)' -> 1, not -2; `(floor 7 2)' -> 7, not 3)
+#      and after (`(mod 7 -3)' -> -2; `(floor 7 2)' -> 3, matching `--load').
+#      Every other substrate, including host Emacs, already agreed and was
+#      correct.  Same root cause as #1, not a second fix: `floor'/`mod'/
+#      `%'/`truncate' get their Elisp-semantics overrides from the SAME
+#      prelude #1 restored (see the "A1 floor" cold-path comment near
+#      `nl_cold_overwrite_globals' in `scripts/nelisp-standalone-build.el' --
+#      a normal-boot bare-file process was running only the raw native
+#      builtin, never the prelude override, for the same reason it never saw
+#      `princ').  Regression check: reverting only the dispatcher fix (ledger
+#      left at its new, post-fix shape) turns `substrate-parity-smoke' red
+#      again at `checked=209 findings=124'; restoring the fix returns it to
+#      `findings=0' -- the ledger flip is not a case of a leaner ledger
+#      hiding a real gap.
+#
+#   3. WAS RED, AND OPEN; FIXED 2026-08-22 (first fix that day, described in
+#      the previous paragraph of this file's history before #1/#2 landed);
+#      FIXING #1 THEN EXPOSED A SECOND, INDEPENDENT LAYER UNDER IT THE SAME
+#      DAY.  The most severe finding at first run: `eval-elisp-source's
+#      pure-source fallback path (cache marker absent, no adjacent `.neln'
+#      artifact on disk) looked like it did not share environment between
+#      its load step and its eval-forms step -- a function `defun'd by the
+#      loaded source was void-function when a later FORM argument called it,
+#      on all 35 corpus forms alike (the shim's own `probe-emit' going void,
+#      so this read as one failure, not 35).  Root cause was narrower and
+#      lower than "environment loss": `nelisp-core-read-file-as-string'
+#      (src/nelisp-core-fileio.el) tried `nl-syscall-read-file' first, a
+#      `declare-function' against a "nelisp-runtime" module this tree never
+#      implements, so every whole-file read fell to a buffer-based branch
+#      whose `buffer-substring-no-properties' is a
+#      `scripts/nelisp-stdlib-prelude.el' STUB that always answers "".
+#      Fixed by trying `nelisp--syscall-read-file' (already used the same
+#      way by the artifact/source-cache readers) before falling back to the
+#      buffer path.  That fix exposed 15 new, narrower findings: source-
+#      fallback is the only substrate whose FORM/loaded-file forms run
+#      through the self-hosted `nelisp-eval', whose own
+#      `nelisp--primitive-symbols' omits several native primitives -- at the
+#      time, measured as `floor'/`%'/`unibyte-string'/`match-data'/
+#      `nelisp--write-stdout-bytes' (5 names), ledger at 117 keys (was 137).
+#      FIXING #1 THEN CHANGED THE BASELINE #3's 117 KEYS WERE MEASURED
+#      AGAINST: 6 of those 15 findings had a source-fallback actual value
+#      that happened to equal the OLD, buggy bare-file baseline (both sides
+#      void-function on the same symbol, or both `fboundp'-false) purely by
+#      coincidence, not because source-fallback had the primitive -- fixing
+#      #1 moved the baseline to the correct value and unmasked them as their
+#      own, real, independent divergences (`prin1', plus fboundp-confirmation
+#      of `intern-soft'/`read-from-string'/`match-data'/`nelisp--write-stdout-bytes'
+#      already named, plus `read'/`make-temp-name' via their own corpus
+#      forms).  Complete, re-measured list of what `nelisp--primitive-symbols'
+#      omits (10 names, not 5): `floor', `%', `unibyte-string', `match-data',
+#      `nelisp--write-stdout-bytes', `intern-soft', `read-from-string',
+#      `read', `make-temp-name', `prin1'.  Not fixed here, either time:
+#      completing `nelisp--primitive-symbols' is a separate, broader
+#      prelude-parity sweep than either the file-loading mechanism the first
+#      fix repaired or the bare-file entry point the second one did.
+#      `tools/nelisp-substrate-parity.el's auto-note generator is what had
+#      the latent gap that would have mis-attributed these 6 to the bare-file
+#      cause instead: its source-fallback branch matched only a CRASH result
+#      or form 34, not a plain wrong-value result, and has been broadened to
+#      match every source-fallback finding, since all of them share this one
+#      root cause.
+#
+#   4. WAS OPEN; NOW FIXED (2026-08-22, later the same day as #1/#2/#3).
+#      NeLisp's `string-match-p' shared `string-match''s body verbatim on
+#      every substrate that could run it, so it mutated `nlre--last-caps'
+#      (the vector `match-beginning'/`match-end'/`match-data' read) on
+#      every call, unlike host Emacs, whose documented contract for `-p'
+#      over `string-match' is that it "does not change the match data" --
+#      the entire reason the `-p' variant exists.  Corpus form 15 already
+#      probed exactly this (`string-match' then an intervening
+#      `string-match-p' then re-reading `match-data') but, before this fix,
+#      only pinned that every NeLisp substrate agreed with every other one
+#      on the SAME wrong (clobbered) answer -- it was never diffed for
+#      correctness against host, so the divergence surfaced only in the
+#      `host' column: `checked=209' found `form=15 substrate=host
+#      baseline=0 actual=1' (bare = clobbered = 0, host = preserved = 1),
+#      accepted in the ledger as a known gap alongside the unrelated
+#      `emacs-pid' one.  Three copies of `string-match-p' exist, generated
+#      as string literals in `scripts/nelisp-standalone-build.el' (one
+#      unconditional `defun' feeding `--load'/bare-file's reader-REPL
+#      prelude, two `unless (fboundp ...)'-guarded copies feeding the
+#      compiled-artifact command runtime and the `eval-elisp-source'
+#      source-cache/source-fallback runtime) -- all three called
+#      `nlre-string-match' directly.  Fixed by wrapping that call in each
+#      copy with a save/restore of `nlre--last-caps' (the same
+#      let/unwind-protect shape `save-match-data', defined later in the
+#      same generated block, already uses -- inlined rather than calling
+#      that macro, since two of the three copies define `string-match-p'
+#      textually before `save-match-data' exists and a forward macro
+#      reference should not be the thing this fix depends on), not by
+#      touching `nlre-string-match' itself.  Against-the-bug, rebuilt
+#      binary, `--load' and host Emacs: `(string-match "a" "xa")
+#      (string-match-p "b" "zzb") (match-beginning 0)' returned 2 on
+#      NeLisp before the fix (clobbered by the `-p' call) and 1 on host
+#      Emacs (preserved) both before and after; after the fix NeLisp
+#      returns 1, matching host, confirmed the same way across bare,
+#      `--load', `compile-elisp-artifact'+`exec-elisp-artifact', and
+#      `eval-elisp-source' with and without an adjacent `.neln' cache.
+#      Ledger: `checked=209 findings=0' before and after (the pre-fix
+#      divergence was already inside an accepted key, not a live
+#      finding); regenerating from the fixed tree with
+#      `NELISP_SUBSTRATE_PARITY_WRITE=1' dropped `"15 host 0 1"' (no
+#      longer diverges: bare and host both now answer 1) and re-keyed
+#      `"15 source-fallback 0 CRASH:void-function:match-data"' to
+#      `"15 source-fallback 1 CRASH:void-function:match-data"' (baseline
+#      moved from 0 to 1 with everything else; the crash itself is
+#      unrelated -- item #3's `nelisp-eval' primitive-symbols gap, still
+#      open, not touched by this fix), 21 keys -> 20.  Corpus form 15's
+#      comment was updated to say what it now actually pins: host parity,
+#      not merely cross-substrate agreement on a shared wrong answer.
+#
+#   5. ACCEPTED (by design, class ii): `aref' on a unibyte string holding a
+#      raw byte >= 128 does not return that byte on any NeLisp substrate,
+#      unlike host Emacs -- NeLisp strings are Rust UTF-8 internally, so the
+#      byte round-trips through re-encoding.  Documented in memory
+#      `feedback_nelisp_standalone_utf8_raw_byte_block'.
+#
+#   6. `emacs-pid' is void-function on every NeLisp substrate alike and
+#      present only on host Emacs -- a missing-primitive backlog item
+#      versus host, not a cross-substrate NeLisp divergence (every NeLisp
+#      substrate agrees with every other one here).  Deliberately out of
+#      scope for #1/#2: it is missing identically in EVERY NeLisp substrate,
+#      bare-file included, both before and after the prelude fix, so it is
+#      not a bare-file-shaped divergence -- a backlog gap, not this gate's
+#      bug.
+#
+# Net effect of the 2026-08-22 bare-file prelude-unification fix: ledger
+# 117 keys -> 21 keys (110 stale, dropped; 14 new, all source-fallback,
+# added -- 6 of them the #3 unmasking above, the rest re-keyed #3 entries
+# whose baseline value changed); `checked=209 findings=0' both before and
+# after, since the count is "unaccepted findings", and the fix's whole
+# point was to keep that at zero while telling the truth about what remains.
+#
+# Against-the-bug: a one-line temporary corruption of the `--load' runner
+# for form 0 turned the gate red, naming exactly `form=0 substrate=load
+# baseline=1 actual=0' and nothing else; reverting turned it green again
+# with the same `checked=209 findings=0' it reports now.  See
+# `tools/nelisp-substrate-parity.el' for the corpus/diff/ledger design and
+# `tools/nelisp-substrate-parity-smoke.sh' for the GATE-SKIP predicate.
+#
+# TASK A/B/C ADDENDUM (2026-08-22, same day, later pass): the presence
+# sweep (Task A), the source-fallback primitive-table fix (Task B), and
+# three new unwind-protect behavioral forms (Task C).
+#
+# Task C first, since it changed `substrate-parity-smoke's own corpus size:
+# three new forms (36/37/38, `tools/nelisp-substrate-parity-corpus.el') --
+# cleanup runs on an escaping error before an enclosing `condition-case'
+# resumes, cleanup runs on a `throw' crossing to an outer `catch', and
+# nested unwind-protect cleanup order is LIFO.  Each verified individually
+# against host Emacs and, via `nelisp-substrate-parity--run-all' called
+# directly on a one-form corpus, against every NeLisp substrate BEFORE
+# being added -- 36 forms -> 39, `checked=209' -> `checked=233' (39 forms:
+# 38 `shared' x 5 non-host substrates + 38 host = 233; form 34 stays
+# `standalone-only').  Zero findings introduced by these three alone.
+#
+# Task B: the presence sweep (below) found source-fallback missing
+# `prin1'/`intern-soft'/`read-from-string'/`match-data'/`read'/
+# `make-temp-name'/`floor'/`%'/`unibyte-string'/
+# `nelisp--write-stdout-bytes' -- the same ten names this file's #3 above
+# already named as a KNOWN GAP, now confirmed complete and fixed by
+# extending `nelisp--primitive-symbols' (src/nelisp-eval.el).  Two more
+# surfaced once the first ten stopped masking them: `string-bytes' (form
+# 7's SECOND call, previously unreached) and `defvaralias' (form 35).
+# Measured per name, not batch-assumed, against a rebuilt binary:
+#
+#   - 12 of 13 fixed `checked=233 findings=0' outright: adding the name
+#     to `nelisp--primitive-symbols' was sufficient because each is
+#     `fboundp' in source-fallback's ambient bootstrap environment before
+#     `nelisp--install-primitives' runs -- `nelisp--install-primitives'
+#     only ever copies a name that is BOTH listed AND already `fboundp'
+#     there, and these were `fboundp' but not listed.
+#   - `defvaralias' (form 35) is the exception: adding it FIXES the
+#     identical crash in the sibling source-cache substrate (marker file
+#     present) but NOT source-fallback (marker removed) -- verified
+#     directly with `eval-elisp-source', marker present vs. removed, both
+#     against the same rebuilt binary.  `(fboundp 'defvaralias)' is false
+#     in source-fallback's specific ambient bootstrap despite being a
+#     genuine plain host function (not the special form its call-site
+#     syntax suggests).  Root cause not isolated further; kept in the
+#     list (correct on principle, fixes source-cache) and left as a KNOWN
+#     GAP for source-fallback in `tools/substrate-parity-accepted.el'.
+#
+# Net ledger effect: 21 keys -> 3 keys, all three unchanged pre-existing
+# keys (0 new), 18 dropped as stale (12 of the 18 source-fallback keys
+# this file's #3 above named, plus six more the ten-name fix also
+# resolved that were not separately itemized there).  Remaining three:
+# `35 source-fallback ... defvaralias' (KNOWN GAP, above), `8 host ...'
+# (ACCEPTED, UTF-8 aref, unchanged since #5 above), `20 host ...
+# emacs-pid' (ACCEPTED, backlog vs. host, unchanged since #6 above).
+# `checked=233 findings=0' both before and after this fix, same
+# "unaccepted findings" invariant #1-4 above kept.
+#
+# Task A: the presence sweep, `tools/nelisp-substrate-presence-gen.el' +
+# `tools/nelisp-substrate-presence-corpus.el' + `tools/nelisp-substrate-
+# parity.el's generalized `nelisp-substrate-parity-presence-gate-run'.
+# One `fboundp' probe per name in the definable-name surface (`scripts/
+# nelisp-stdlib-prelude.el's top-level functions union `nelisp--
+# primitive-symbols', src/nelisp-eval.el) -- 363 names as of this commit
+# (169 more than the 36-form/354-name count first measured, both counts
+# moving because Task B's edits to `nelisp--primitive-symbols' feed the
+# SAME generator).  Same corpus/diff/ledger machinery as `substrate-
+# parity-smoke' above, a second corpus and a second ledger
+# (`tools/substrate-presence-accepted.el') so the two finding counts
+# never conflate, plus a host preamble
+# (`nelisp-substrate-parity--presence-host-preamble': `(require 'cl-lib)'
+# / `seq' / `subr-x' / `url-parse') so `cl-*' names and `url-parse's
+# `cl-defstruct' accessors test fairly against a bare `emacs -Q' host
+# instead of reading as false gaps.
+#
+# First run (pre-Task-B-fix baseline, 354 names, `checked=2069'): 233
+# divergences, all source-fallback (the same primitive-table class Task B
+# then fixed) or host.  Among the host findings, 31 were `nelisp-'-
+# namespace internal names (`nelisp-cl-macros--*', `nelisp-pcase--*',
+# `nelisp-format-hexfloat', `nelisp-seq--to-list', `nelisp-stdlib--*')
+# wrongly tagged `shared' instead of `standalone-only' -- the generator's
+# own tag rule checked only the `nelisp--' (double-hyphen) prefix, not
+# the whole `nelisp-' namespace, a generator bug fixed in
+# `tools/nelisp-substrate-presence-gen.el's `nlsp--tag' (regenerated
+# corpus: 361 names, that class of finding gone).  The other 34 host
+# findings are real, individually triaged: 25 are Layer-2 package
+# capabilities (`process-*'/`set-process-*'/`sqlite-*'/`url-*'/
+# `make-network-process' -- present on host, absent from NeLisp's
+# minimal core boot by architecture, ACCEPTED class ii) and 9 are a
+# genuine native-evaluator backlog (`char-or-string-p', `goto-char',
+# `line-number-at-pos', `point', `re-search-forward',
+# `read-from-minibuffer', `secure-hash', `send-string-to-terminal',
+# `user-error' -- listed in `nelisp--primitive-symbols' and working
+# through every self-hosted-eval substrate, but never implemented as a
+# native op in bare-file/--load/runtime-image, KNOWN DEFECT class iii,
+# not fixed this pass).
+#
+# Second run (post-Task-B-fix, generator tag fix, rebuilt binary, 363
+# names): `GATE-COUNT checked=2091 findings=203' -- all 203 recorded in
+# `tools/substrate-presence-accepted.el' (built directly from this run's
+# captured findings text via the driver's own key/note/write functions
+# with `NELISP_SUBSTRATE_PARITY_NO_AUTORUN=1', not a third full binary
+# sweep -- a concurrently-running sibling gate made a second live sweep
+# against the same target/nelisp/marker file unsafe mid-session; the
+# ledger content is identical to what a live `NELISP_SUBSTRATE_PRESENCE_
+# WRITE=1' run over these exact findings would produce, since the write
+# path only ever transforms an already-computed findings list).  Down
+# from the 233 pre-fix findings (mostly source-fallback, Task B's target)
+# to 203 -- NOT a clean sweep, because the fix only ever targeted the
+# twelve/thirteen names it named, and the presence sweep's much larger
+# net (363 names vs. 39 forms) caught a bigger, different-shaped class
+# behind it:
+#
+#   - 168 source-fallback: NOT the `nelisp--primitive-symbols' omission
+#     class Task B fixed.  Every one of these names is either a
+#     `scripts/nelisp-stdlib-prelude.el'-defined macro/function (`defun',
+#     `defmacro', `cond', `when', `push', `pop', `cl-*', the `nelisp--'-
+#     internal helpers, ...) or a native special form -- never something
+#     `nelisp--primitive-symbols' was meant to list ("host primitives
+#     borrowed wholesale", not user-level prelude code).
+#     `nelisp--builtin-fboundp' (src/nelisp-eval.el) only ever queries
+#     `nelisp-eval's own private `nelisp--functions'/`nelisp--macros'
+#     tables, never the ambient environment -- so it answers false for
+#     any name not registered in one of those two, regardless of whether
+#     the form is actually callable there.  KNOWN DEFECT, class iii, real
+#     but LARGER than Task B's fix: needs either a comprehensive registry
+#     of prelude macros/special forms in `nelisp-eval's own tables, or an
+#     ambient-environment fallback inside `nelisp--builtin-fboundp'
+#     itself.  Not undertaken this pass; see the per-key notes in
+#     `tools/substrate-presence-accepted.el' (168 entries, one shared
+#     root-cause explanation).
+#   - 35 host: 25 Layer-2 package capabilities (`process-*'/
+#     `set-process-*'/`sqlite-*'/`url-*'/`make-network-process', ACCEPTED
+#     class ii, same as the first run), 9 native-evaluator KNOWN DEFECT
+#     (`char-or-string-p'/`goto-char'/`line-number-at-pos'/`point'/
+#     `re-search-forward'/`read-from-minibuffer'/`secure-hash'/
+#     `send-string-to-terminal'/`user-error', same as the first run), and
+#     one new one the first run's corpus never separately named:
+#     `defvaralias' -- `fboundp' answers false on EVERY NeLisp substrate
+#     for it, bare-file included, even though calling it works
+#     everywhere (the 39-form corpus's form 35 passes on bare/--load/
+#     runtime-image/artifact) -- a native reader-level special form
+#     (`nl_sf_defvaralias') `fboundp' does not recognize as bound the way
+#     host Emacs's `fboundp' recognizes a genuine special form.  ACCEPTED
+#     (by-design-ish, real but tiny).
+#   - The 31-finding generator-tag-bug class the first run exposed is
+#     GONE (0 of that shape in this run): `nlsp--tag' (`tools/nelisp-
+#     substrate-presence-gen.el') now matches the whole `nelisp-'
+#     namespace, not just the `nelisp--' double-hyphen prefix.
+#
+# Green-with-recorded-findings, never red, BY CONSTRUCTION: the ledger's
+# 203 keys are exactly this run's 203 finding keys (same shape check
+# `nelisp-substrate-parity--finding-key' always uses), so a same-state
+# re-run of `substrate-presence-sweep' is expected to report `GATE-COUNT
+# checked=2091 findings=0' in the accepted-vs-total sense (0 unaccepted,
+# 0 stale) -- not independently re-measured after the ledger write (a
+# third ~15-17 minute full sweep against a shared binary and marker file
+# was skipped this session for the reason above), so read that specific
+# number as "expected, not yet re-observed" until the next `substrate-
+# presence-sweep' report confirms it.  The 203 `GATE-COUNT' this section
+# quotes IS independently measured (the second run's own printed line);
+# all 203 are recorded and reasoned in `tools/substrate-presence-
+# accepted.el', matching this file's own `parity-coverage' precedent of
+# a ratchet floor rather than a defect count.
+#
+# Own tier, not `nelisp-ai.sh extras': measured at ~2400 process launches
+# for ~354-363 names (vs. `substrate-parity-smoke's ~250 for 39 forms),
+# ~15-17 minutes wall time -- too slow for `extras' per-gate budget.
+# `tools/nelisp-substrate-presence-sweep.sh' / `make substrate-presence-
+# sweep' / `tools/ai/nelisp-ai.sh presence'.
+#
+# substrate-presence-corpus-check (already required, `check' tier, added
+# with Task A): the generated corpus's own drift check.  Verified
+# red-then-green: one name temporarily deleted from the checked-in file
+# turned it red at `GATE-COUNT checked=1 findings=1' naming the file
+# stale; restoring it turned it green at `findings=0'.
+#
+# NOT GATES, and listed so the absence is a decision rather than an oversight:
+# `test', `test-fast', `test-jit', `test-nojit', `test-one' and
+# `test-parallel' are ERT drivers over the same suite `ert-full' already
+# reports on -- listing them would count the same evidence six more times.
+# `release-checksum' and `alloc-check-collect' are tooling that produces
+# artifacts, not checks that can pass or fail.

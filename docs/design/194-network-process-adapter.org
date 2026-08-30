@@ -1,0 +1,1358 @@
+#+TITLE: Doc 194 — make-network-process: sockets under the process adapter, nonblocking I/O, and DNS without libc
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-24
+#+STATUS: SHIPPED (P0-P7, 2026-08-24, P7 IPv6 on branch =feat/socket-ipv6=,
+#+STATUS: base =feat/native-observability= tip =976343ee5=) — §4's own P7
+#+STATUS: section has the full IPv6 phase writeup: AF_INET6 sockaddr_in6
+#+STATUS: construction, an IPv6-literal parser (native AND a separate
+#+STATUS: pure-elisp one), AAAA DNS resolution, dual-stack ordering, and
+#+STATUS: =:family 'ipv6= routing through =make-network-process=/=open-
+#+STATUS: network-stream=, all additive — every P0-P5 external contract,
+#+STATUS: name, and the entire IPv4 code path are unchanged, proven by the
+#+STATUS: ORIGINAL, untouched =standalone-reader-socket-smoke= and every
+#+STATUS: smoke this doc's own =#+VERIFIED-BY= line already names staying
+#+STATUS: green verbatim, plus a same-process IPv4 round trip reproduced
+#+STATUS: inside the new =standalone-reader-ipv6-socket-smoke= itself. One
+#+STATUS: more substrate defect found doing this: plain =string= (the
+#+STATUS: multi-arg codepoint constructor =nelisp--dns-u16-be= (§3.2 Phase
+#+STATUS: C, P2) already uses and whose own docstring claims "round-trips
+#+STATUS: the full 0-255 range correctly") UTF-8-multibyte-encodes an
+#+STATUS: individual argument >= 128 when read back through =string-byte=/
+#+STATUS: =string-bytes= — measured fresh on =target/nelisp= building this
+#+STATUS: phase's own AAAA-answer RDATA bytes (=(string 13 184)= reads
+#+STATUS: back as THREE bytes, not two): that claim holds only for the
+#+STATUS: narrow value range every EXISTING P2 call site restricts itself
+#+STATUS: to (every field < 128 by construction, per =nelisp--dns-next-
+#+STATUS: id='s own docstring), not in general. =unibyte-string= is what
+#+STATUS: actually round-trips the full 0-255 range through =string-byte=/
+#+STATUS: =string-bytes= (measured on the same binary, including composed
+#+STATUS: under =concat= with itself and with plain =string= fragments) —
+#+STATUS: used here (=nelisp--ipv6-groups-to-bytes-string=, this phase's
+#+STATUS: own new function) since it is the
+#+STATUS: first thing in this file to actually need bytes >= 128; nothing
+#+STATUS: upstream (P0-P5's own DNS wire code) was touched. Below this
+#+STATUS: point, everything already SHIPPED for P0-P5 (branch =feat/
+#+STATUS: network-process-p345=, base =feat/network-process-p0=/=feat/
+#+STATUS: socket-primitives-p1=) is unchanged and reproduced verbatim —
+#+STATUS: the synchronous client path
+#+STATUS: (=make-network-process=/=open-network-stream=, §3.1), =/etc/hosts=
+#+STATUS: resolution (§3.2 Phase B), DNS-over-TCP/53 (§3.2 Phase C), the P3
+#+STATUS: nonblocking primitives (=nelisp-socket-connect=/-accept's
+#+STATUS: =NOWAIT= argument, =nelisp-socket-poll=, =nelisp-socket-connect-
+#+STATUS: error=, §3.3), P4 (real =:nowait= support, driven by the process
+#+STATUS: adapter's ONE poll loop), and P5 (=:server t=/auto-accept/=:log=,
+#+STATUS: same loop, same primitives) are real, tested (including against a
+#+STATUS: live resolver for DNS and against real GNU Emacs 30.1 for the
+#+STATUS: =:nowait=/=:server t= status/sentinel/child-shape contracts), and
+#+STATUS: pushed.  P6 (Windows, documented-not-built) remains exactly as
+#+STATUS: designed below — not started, out of scope per §1.6/§3.4, blocked
+#+STATUS: on a project (Windows PE import-table emission) that does not
+#+STATUS: exist yet.  =make-network-process= now supports every keyword
+#+STATUS: this doc designs (=:host=/=:service=/=:nowait=/=:server=/=:log=)
+#+STATUS: on linux-x86_64; every other target still gets the catchable
+#+STATUS: =nelisp-unsupported-primitive= signal for the underlying socket
+#+STATUS: primitives themselves (§1.1's own per-target gate, unchanged).
+#+STATUS: Three substrate/design defects
+#+STATUS: were found and fixed/worked around during this pass, all out of
+#+STATUS: this doc's own original scope to have anticipated: (1) P2 —
+#+STATUS: this runtime's =aref=/=length= (Doc 161) — and independently,
+#+STATUS: =unibyte-string= — treat every string as UTF-8 text with no
+#+STATUS: separate byte-oriented type, silently corrupting a raw wire byte
+#+STATUS: >= 0x80; the DNS wire-format code uses the already-shipped
+#+STATUS: =string-byte=/=string-bytes= byte-level accessors instead (see
+#+STATUS: =nelisp--dns-byte='s own comment, =packages/nelisp-process-
+#+STATUS: adapter/src/nelisp-process-adapter.el=, for the measurement).
+#+STATUS: (2) P3 — this doc's own §3.3 item 2 prose ("parameterize the
+#+STATUS: existing poll(2) pattern =nl_os_process_poll_readable= already
+#+STATUS: uses") pointed at a pattern that itself issues the wrong raw
+#+STATUS: syscall number (=230=, =clock_nanosleep= on the Linux x86_64 ABI,
+#+STATUS: not =poll=, which is =7=) — measured with =strace= while
+#+STATUS: implementing =nelisp-socket-poll=: copying that literal number
+#+STATUS: verbatim reached no =poll= syscall at all and silently always
+#+STATUS: answered not-ready.  Fixed in =nl_socket_poll_impl= (=7=, see its
+#+STATUS: own comment for the measurement); the pre-existing
+#+STATUS: =nl_os_process_poll_readable= bug this uncovered is UNFIXED here
+#+STATUS: (out of this doc's scope — the subprocess pipe-poll path, never
+#+STATUS: called by this doc's own P4/P5 wiring, which uses only the new,
+#+STATUS: fixed =nelisp-socket-poll=), flagged for whichever doc owns that
+#+STATUS: path next.  (3) P4 — this doc's own §1.3/§3.3 prose says a
+#+STATUS: nonblocking connect's sentinel fires with a bare =failed\n= on
+#+STATUS: failure; re-measured directly against real GNU Emacs 30.1 while
+#+STATUS: implementing P4 (a fresh probe, not a re-read of §1.3's original
+#+STATUS: one): the real string is =(format "failed with code %d\n"
+#+STATUS: ERRNO)=, e.g. =failed with code 111\n= for a refused loopback
+#+STATUS: connect — =open\n= on success WAS exactly as §1.3 already said.
+#+STATUS: =nelisp--network-process-connect-nowait= (=packages/nelisp-
+#+STATUS: process-adapter/src/nelisp-process-adapter.el=) uses the
+#+STATUS: measured string; ERRNO is exactly what
+#+STATUS: =nelisp-socket-connect-error= already returns, so no separate
+#+STATUS: errno-to-message translation was needed.  (4) P5 — Phase 1's own
+#+STATUS: =nelisp-socket-accept= (§1.1) requests NO peer address at all
+#+STATUS: (=accept4(fd, NULL, NULL, flags)=), so this substrate has no way
+#+STATUS: to learn an accepted connection's remote host/port.  Real Emacs
+#+STATUS: 30.1 (measured fresh while implementing P5, a live probe, not a
+#+STATUS: re-read of §1.3's original one) names each auto-accepted child
+#+STATUS: =SERVERNAME <HOST:PORT>= and fires its sentinel with =open from
+#+STATUS: HOST\n= the instant it is accepted, and calls =:log= with =accept
+#+STATUS: from HOST\n= — all three need that unavailable HOST/PORT.  This
+#+STATUS: implementation names children =SERVERNAME <fd:N>= (N = the
+#+STATUS: connection's own fd, still a unique per-connection identifier)
+#+STATUS: and fires =open\n=/=accept\n= (dropping the missing =" from
+#+STATUS: HOST"= suffix) instead — a deliberate, documented simplification
+#+STATUS: (=nelisp-process-adapter--drain-and-fire-network='s own comment,
+#+STATUS: same file), not a native fix (a real fix needs =accept4= to pass
+#+STATUS: a real =sockaddr= out-param and decode it, additive native work
+#+STATUS: this pass does not attempt).  Every OTHER measured P5 fact holds
+#+STATUS: exactly: =:server t= status is =listen= for the server's whole
+#+STATUS: lifetime; each child's =:filter=/=:sentinel= are the literal SAME
+#+STATUS: function objects as the listener's own (=eq=, not merely
+#+STATUS: =equal=); deleting the server transitions only its own status to
+#+STATUS: =closed=, already-accepted children stay =open= and unaffected
+#+STATUS: ("connection procs outlive it", confirmed rather than assumed).
+#+STATUS: =make-network-process='s contract (§1.3), the FFI
+#+STATUS: availability matrix (§1.4), and the =:nowait=/=:server t= sentinel
+#+STATUS: and child-process-shape contracts (§1.3, reused unchanged by
+#+STATUS: P4/P5) were measured directly, not recalled, against real GNU
+#+STATUS: Emacs 30.1 and =fix/ffi-surface-availability= respectively — see
+#+STATUS: each section for how.  =getsockopt='s syscall number (§6's own
+#+STATUS: open question) is confirmed =55=, immediately following
+#+STATUS: =setsockopt='s already-used =54=, against the standard, stable
+#+STATUS: x86_64 kernel syscall table (=arch/x86/entry/syscalls/
+#+STATUS: syscall_64.tbl=).  P5's own poll loop is COOPERATIVE, single-
+#+STATUS: thread (this doc's own §4 P5 caveat, restated as fact rather
+#+STATUS: than a risk): two concurrent clients are serviced one accept per
+#+STATUS: poll pass, not literally in parallel — expected, not a defect,
+#+STATUS: and =standalone-reader-network-process-server-smoke= calls
+#+STATUS: =accept-process-output= twice for exactly this reason.
+#+VERIFIED-BY: standalone-reader-network-process-smoke standalone-reader-hosts-file-smoke standalone-reader-dns-smoke standalone-reader-nonblocking-socket-smoke standalone-reader-network-process-nowait-smoke standalone-reader-network-process-server-smoke standalone-reader-smokes standalone-reader-socket-smoke standalone-reader-ipv6-socket-smoke standalone-reader-test
+
+* §0 TL;DR
+
+Phase 1 (=feat/socket-primitives-p1=) shipped six raw-fd socket
+primitives on Linux x86_64 — =nelisp-socket-listen/-accept/-connect/
+-send/-recv/-close=, real =SYSCALL= instructions, no libc, no
+=dlopen=/FFI dependency at all. They return *plain integers*, not the
+tagged process objects Doc 184's adapter (=nelisp-process-adapter.el=)
+already knows how to poll, filter, and sentinel. This doc designs the
+missing middle layer: wrap those integers in a *second*, elisp-only
+process-object shape (a tagged vector, =[network-process NAME STATUS
+FD PROPS-ALIST]=, sibling to — not a variant of — the native
+=nelisp-process-object-p= shape Doc 184 already polls), extend the
+already-generic =processp=/=process-get=/=process-put=/=process-status=/
+=process-live-p=/=delete-process= dispatch (=scripts/nelisp-stdlib-
+prelude.el=) with one more branch exactly like the existing =(eq (aref
+process 0) 'process)= fallback branch already has, and teach the
+process adapter's *one* poll loop (=nelisp-process-adapter--wait=/
+=--drain-and-fire=/=--pump-once=) to dispatch on that tag the same way
+it already dispatches on native vs. nothing. The synchronous client
+path (no =:server=, no =:nowait=) needs *no event-loop involvement at
+all* — a blocking =nelisp-socket-connect= completes exactly as fast as
+real Emacs's own default (measured, §1.3: =process-status= reads
+=open= the instant =make-network-process= returns, before any
+=accept-process-output=). =:server t= (auto-accept) and =:nowait=
+(async connect) are what need new native plumbing: a raw-fd
+=poll(2)= primitive, =SOCK_NONBLOCK= on the socket/accept4 calls, and
+one new syscall (=getsockopt=, =SO_ERROR=) Phase 1 never needed.
+
+DNS: pure elisp, on top of Phase 1's own six primitives, zero new
+native code required for the wire protocol. =nl-ffi-call= (the only
+route to =getaddrinfo=) is real only on a *narrow, non-default* build
+variant (§1.4, measured against =fix/ffi-surface-availability=:
+=NELISP_READER_DYNAMIC=1= *and* linux-x86_64 — not what
+=standalone-reader=, =nelisp-ai.sh standalone=, or the release
+pipeline produce) and =getaddrinfo= is not even in the FFI symbol
+table today; adding it would mean marshaling glibc's =struct
+addrinfo= ABI by hand for a path most builds of this runtime cannot
+reach anyway. DNS-over-TCP/53 to a numeric resolver IP, built entirely
+from =nelisp-socket-connect=/=-send=/=-recv=/=-close= plus a hand-rolled
+wire-format encoder/decoder in elisp, reaches every build Phase 1's
+sockets already reach — no chicken-and-egg (the resolver is a
+literal, not a name to resolve), no new native surface, no narrower
+availability than what already ships.
+
+Windows: FFI-only, and blocked on a project that does not exist yet
+(§1.6) — PE emission has no dynamic-linking/import-table machinery at
+all (Doc 100 §7), so *neither* raw syscalls (Windows has no stable
+raw-syscall ABI) *nor* Winsock (a DLL-call surface, same problem as
+any other FFI target) can be reached from this runtime's Windows build
+today. Recorded as out of scope, not silently dropped, mirroring Doc
+184 P4's own "documented, not built" precedent for exactly this kind
+of gap.
+
+* §1 Problem — measured evidence
+
+** §1.1 Phase 1's socket primitives: raw fds, not process objects
+
+=scripts/nelisp-standalone-build.el:16843-17105= (=feat/socket-
+primitives-p1=, banner comment at =:16843=,
+=nelisp-standalone--socket-forms= at =:16870=,
+=nelisp-standalone--socket-dispatch-arms= at =:17075=) is the whole
+family:
+
+| Primitive              | Signature          | Native unit (file:line)                          |
+|-------------------------+--------------------+---------------------------------------------------|
+| =nelisp-socket-listen=  | HOST PORT -> fd     | =nl_socket_listen_impl=, =:16979=                 |
+| =nelisp-socket-accept=  | LISTEN-FD -> fd     | =nl_socket_accept_impl=, =:17008=                 |
+| =nelisp-socket-connect= | HOST PORT -> fd     | =nl_socket_connect_impl=, =:17014=                |
+| =nelisp-socket-send=    | FD STRING -> n      | =nl_socket_send_impl=, =:17039=                   |
+| =nelisp-socket-recv=    | FD MAX-BYTES -> str | =nl_socket_recv_impl=, =:17052=                   |
+| =nelisp-socket-close=   | FD -> nil           | =nl_socket_close_impl=, =:17066=                  |
+
+Every one of these takes/returns a *plain fixnum fd*, never a tagged
+object. =nl_socket_listen_impl= is =socket(41)= -> =setsockopt(54)=
+SO_REUSEADDR (best-effort) -> =bind(49)= -> =listen(50)=, backlog 16.
+=nl_socket_accept_impl= is =accept4(288)= with flags =0= (blocking,
+no peer address requested). =nl_socket_connect_impl= is =socket(41)=
+-> =connect(42)=, also blocking. =send=/=recv= (=:17039=/=:17052=)
+reuse the existing =nl_os_write_file_handle=/=nl_os_read_file_handle=
+byte-IO path verbatim — a connected socket fd is just an fd on Linux,
+the same syscalls that already move bytes for a plain file handle
+move them here, byte-clean (Doc 161: no decode/re-encode pass, UTF-8
+payloads including Japanese text round-trip exactly, per Phase 1's own
+smoke, =nelisp-standalone--reader-socket-smoke=,
+=:21978-22076=). Host resolution (=nl_socket_build_sockaddr=,
+=:16939=, via =nl_ipv4_is_localhost= =:16886= and
+=nl_ipv4_parse_dotted= =:16925=) accepts only the literal
+="localhost"= and IPv4 dotted-decimal; anything else returns =-1=,
+which every caller (=:16995=, =:17026=) turns into a catchable
+=nelisp-socket-error= via =nl_socket_signal_error= (=:16961=) rather
+than binding/connecting to garbage — DNS is explicitly out of scope,
+recorded in the banner comment at =:16855-16869=.
+
+Every syscall failure signals the same catchable =nelisp-socket-error=
+(raw errno, or sentinel =-9999= for "not an OS errno, the host string
+was rejected"). This condition is caught by ordinary
+=condition-case=, proven in Phase 1's own smoke against a
+connect-to-closed-port case (=Makefile:2096-2099=,
+=standalone-reader-socket-smoke=).
+
+*Gated per-target, exactly like Doc 187/191's precedent*: on every
+target other than =linux-x86_64=,
+=nelisp-standalone--socket-dispatch-arms= (=:17075-17103=) wires the
+*same* catchable =nelisp-unsupported-primitive= signal Task A's fix
+(the commit immediately preceding Phase 1 in this branch's history)
+installs as the unknown-builtin default — the six names are still
+=fboundp=, calling one refuses loudly instead of compiling a wrong
+syscall number for a target this DSL was never taught, or silently
+failing to link.
+
+** §1.2 The process adapter's poll loop and the two existing process-object shapes
+
+Doc 184 P0-P3 (SHIPPED, branch =feat/process-standard-names=, merged
+into =feat/native-observability= at =71d5f17ef=, which is this doc's
+own merge-base with =feat/socket-primitives-p1=) built
+=packages/nelisp-process-adapter/src/nelisp-process-adapter.el= as
+"Layer B": =make-process= with a real =:filter=, =process-filter=/
+=set-process-filter=/=process-sentinel=/=set-process-sentinel=, a
+rewritten =accept-process-output= that actually reads its arguments,
+and *one* poll loop shared by three call sites (=accept-process-
+output=, the =--repl= idle pump, =run-at-time= REPEAT). The loop's
+shape, all in that one file:
+
+- =nelisp-process-adapter--live= (=:89=) — the poll-set registry, a
+  plain list of live process objects.
+- =nelisp-process-adapter--drain-and-fire= (=:233=) — one
+  zero-timeout =nelisp-process-poll= pass over one process: dispatch
+  new output to its filter, and on first-observed exit fire the
+  sentinel with a real status string and prune the registry.
+- =nelisp-process-adapter--pump-once= (=:265=) — one non-blocking pass
+  over a list of targets, stopping after the first ready one when
+  asked (closing Doc 184's own measured defect, §1.3 of that doc: the
+  old =accept-process-output= drained *every* pending process
+  unconditionally).
+- =nelisp-process-adapter--wait= (=:288=) — the shared bounded
+  poll-and-sleep cycle behind =accept-process-output=/the REPL pump,
+  bounded by =nelisp-async-core='s next timer deadline
+  (=packages/nelisp-eventloop/src/nelisp-async-core.el=, Doc 184 P0,
+  the actor/generator-free timer queue this doc also depends on
+  unchanged).
+- =make-network-process= (=:361-373=) currently exists ONLY to signal
+  a named, loud =error= — "no native socket primitive family exists
+  yet". That citation is now stale: the primitive family exists
+  (§1.1). This doc's §3.1 replaces this stub.
+
+*Two existing process-object representations*, both already
+recognized by the SAME generic accessor functions in =scripts/nelisp-
+stdlib-prelude.el= — this matters directly for §3.1's design, because
+it means a *third* representation (network processes) is not a novel
+kind of change, it is the same pattern applied once more:
+
+1. The *native* tagged vector (=nelisp-process-object-p=, backed by
+   =nl_bi_process_make_object=, =scripts/nelisp-standalone-
+   build.el:11137-11148=): a 6-slot native vector, magic tag
+   =1886547811= at slot 0, =pid= at 1, =outfd= (read) at 2, =status=
+   at 3 (0 running / 1 exited / 2 signalled / 3 deleted), =exitcode=
+   at 4, =infd= (write) at 5. Its own =refresh=/=delete=
+   (=nl_bi_process_refresh= =:11154=, =nl_bi_process_delete_object=
+   =:11225=) call =wait4(2)=/=kill(2)= on the =pid= slot — this is
+   *specific to real subprocesses* and is the exact reason this doc
+   does NOT reuse this shape for sockets (§2, §3.1): a socket fd has
+   no pid, and calling =wait4=/=kill= on a placeholder pid would be
+   silently wrong in a way nothing here would catch.
+2. The *elisp fallback* tagged vector, already shipped as a
+   *different-purpose* precedent for the exact pattern this doc needs:
+   =scripts/nelisp-stdlib-prelude.el:7118=, =(vector 'process name
+   'run -1 nil sentinel "")=, used by =make-process= (=:7098-7120=)
+   when =nelisp-process-start= is not =fboundp= at all (e.g. the
+   prelude loaded without the native process builtins). =processp=
+   (=:6970=), =process-get=/=process-put= (=:6975=/=:6985=),
+   =process-status= (=:7015=), =process-live-p= (=:7057=), and
+   =delete-process='s prelude default (=:7066=) all already =cond= on
+   =(and (vectorp process) (eq (aref process 0) 'process))= as their
+   SECOND branch, right alongside the =nelisp-process-object-p=
+   branch. Extending each of these five functions with a *third*
+   branch for =(eq (aref process 0) 'network-process)= (§3.1) is
+   textually the same edit five times, not a new mechanism.
+
+** §1.3 =make-network-process=/=open-network-stream=, measured against real Emacs 30.1
+
+Doc 184 §1.7 asserted =(fboundp 'make-network-process)= is nil
+standalone and left the *shape* of a correct implementation
+unspecified — this doc needed the real contract, so it was measured
+directly rather than assumed, on the GNU Emacs 30.1 available on this
+research host:
+
+#+begin_src text
+(let* ((server (make-network-process :name "srv" :server t :service 0
+                                      :host 'local :family 'ipv4
+                                      :filter (lambda (p s) ...))))
+  server status => listen
+  contact => (local 37827)          ; kernel-assigned port readable back
+  (make-network-process :name "cli" :host "127.0.0.1" :service PORT ...)
+  client status => open             ; IMMEDIATELY, before any accept-process-output
+  (process-send-string client "hello")
+  (accept-process-output nil 1) => the SERVER's filter fires with "hello",
+    and process-list now contains THREE processes: "cli", "srv" (the
+    listener), and "srv <127.0.0.1:PORT>" (a NEW process object Emacs
+    created automatically for the accepted connection)
+  (delete-process client) => status closed
+  (delete-process server) => status closed
+  (make-network-process :name "bad" :host "127.0.0.1" :service 1 ...)
+    => SIGNALS (file-error "make client process failed" "Connection refused"
+                            :name "bad" :host "127.0.0.1" :service 1 :family ipv4)
+       synchronously, at the make-network-process call itself — not a
+       silent "failed" status, not a later sentinel call.
+#+end_src
+
+(=documentation= for =make-network-process=/=open-network-stream=,
+also read directly rather than recalled):
+
+- =:server QLEN= creates a *listening* process, =process-status= =>
+  =listen=. Each accepted connection becomes its OWN new process
+  object, named =SERVERNAME <HOST:PORT>=, automatically — the *same*
+  =:filter=/=:sentinel= the listener was created with apply to it
+  unless =:log= (server-only keyword, called =(SERVER CLIENT
+  MESSAGE)= on each accept) intercepts. There is no user-visible
+  "accept" call in this model at all — the server process IS the
+  accept loop, driven by whatever pumps the event loop (§3.3).
+- =:nowait BOOL= — for a stream client, return without waiting for
+  connect to complete; the *sentinel* is later called with a second
+  argument matching =open\n= (success) or =failed\n= — the exact
+  three-shape sentinel-string contract Doc 184's adapter already
+  formats for subprocess exit (=nelisp-process-adapter--sentinel-
+  message=, =:136=). Default (=:nowait= omitted/nil) is a *blocking*
+  connect, and — measured above — completes synchronously inside the
+  =make-network-process= call itself, with no poll loop involvement
+  at all.
+- =open-network-stream= is a thinner wrapper: NAME BUFFER HOST SERVICE
+  plus keywords, no =:server=. A =:type 'starttls=/=:success=/
+  =:capability-command= upgrade path exists (STARTTLS-over-plaintext)
+  but is explicitly out of this doc's scope (§2) — it is TLS record
+  I/O over an already-open socket, the same libgnutls FFI surface
+  already tabled in =nelisp-standalone--reader-extern-table=
+  (=:10331-10339=, =gnutls_handshake=/=-record_send=/=-record_recv=
+  etc., existing rows for the SEPARATE =emacs-tls-ffi.el= consumer
+  bridge) and gated behind §1.4's same narrow FFI availability — a
+  future doc's concern, not this one's.
+
+** §1.4 FFI availability, measured against =fix/ffi-surface-availability=
+
+The obvious DNS path is =getaddrinfo=(3) via =nl-ffi-call=. Measured
+directly against the branch, not assumed:
+
+=nl-ffi-call= is a *declarative, build-time-fixed* FFI surface
+(=nelisp-standalone--reader-extern-table=,
+=scripts/nelisp-standalone-build.el:10317-10373= on that branch): a
+literal Lisp list of =(SYMBOL SONAME ARITY &optional SIG)= rows —
+=toupper=/=tolower= (libc), the full =gnutls_*= handshake/record-I/O
+surface (libgnutls), the =FT_*= face/glyph surface (libfreetype), and
+=sqrt=/=pow=/=sin=/=cos=/=hypot=/=ldexp= (libm, with an =f64= XMM
+marshaling extension, =:10405-10460=). =nelisp-standalone--build-ffi-
+dispatch= (=:10388=) compiles this table into a nested-=if= dispatch
+over the =NAME= argument; *each row needs its own DT_NEEDED soname and
+GOT-slot import wired at build time* (Doc 100 §3's "eager GLOB_DAT
+imports" design) — there is no general runtime =dlopen=/=dlsym= path
+a caller can point at an arbitrary symbol. =getaddrinfo= is not in
+this table today; adding it is native-layer work of the same shape as
+adding a =gnutls_*= row, not something already reachable.
+
+*Availability is a property of the BUILD, not the call site* — the
+2026-08-23 fix (commit =f31aaacab=, that branch) measured this
+precisely after a real-machine probe found =nl-ffi-call= void on both
+a Windows PE build and a plain WSL Linux ELF build, contradicting the
+FFI smoke's own PASS:
+
+| Build                                                    | =nl-ffi-call= |
+|-----------------------------------------------------------+----------------|
+| linux-x86_64, static (=standalone-reader=, release pipeline, the DEFAULT) | =fboundp= t (after this fix), every call raises catchable =nelisp-unsupported-primitive= |
+| linux-x86_64, =NELISP_READER_DYNAMIC=1= (opt-in, dev/test only) | real FFI, PLT-backed |
+| windows-x86_64/-aarch64, macos-aarch64, linux-aarch64 (any flag) | =fboundp= t, every call raises =nelisp-unsupported-primitive= (Windows: forcing the dynamic flag used to hard-fail the LINK — =nelisp-link--unresolved-symbol=, no PE import-table machinery exists — the 2026-08-23 fix made this degrade to unsupported instead of a build failure, but did not add real Windows FFI) |
+
+=NELISP_READER_DYNAMIC=1= is *not* what =make standalone-reader=,
+=make standalone-reader-test=, =nelisp-ai.sh standalone=, or
+=tools/build-release-artifact.sh= (the release pipeline) build with —
+confirmed in that commit's own root-cause writeup, doc 100 §7. So the
+one build variant where =getaddrinfo=-via-FFI could ever work is a
+narrower target than Phase 1's own raw-syscall sockets, which work in
+the DEFAULT static linux-x86_64 build with no flag at all. A DNS
+design that depends on FFI would be *less* portable across this
+runtime's own build matrix than the sockets it is supposed to serve.
+
+Even confined to that narrow build: =getaddrinfo= is =(const char
+*node, const char *service, const struct addrinfo *hints, struct
+addrinfo **res)= — a pointer-out-param to a *linked list* of
+=struct addrinfo=, each with an embedded =struct sockaddr= (glibc's
+exact field layout/padding on LP64, not this runtime's own choice the
+way =nl_socket_build_sockaddr='s 16-byte =sockaddr_in= is). Marshaling
+that correctly is a materially bigger, ABI-fragile lift than any
+existing row in the FFI table (all scalar args/returns, or a single
+pointer in/out at most) — a second reason, independent of
+availability, to not make this the primary path.
+
+** §1.5 Nonblocking gaps in Phase 1, measured from the native units themselves
+
+=nl_socket_accept_impl= (=:17008=) is =accept4(288, fd, 0, 0, flags=0,
+...)= — flags hardcoded to =0=, i.e. always blocking; a listening
+socket with no pending connection blocks the calling thread
+indefinitely. =nl_socket_connect_impl= (=:17014=) is a plain blocking
+=connect(42)=. Neither socket is ever created with =SOCK_NONBLOCK=.
+There is also no raw-fd poll primitive reachable from elisp at all:
+the only poll(2)-shaped native unit is =nl_bi_process_poll_one=
+(=:11216=, requires a =nelisp-process-object-p= tagged object, not a
+bare fd) and =nl_os_process_poll_readable= (per-target,
+e.g. =:17381= for linux-x86_64: =pfd events=1= i.e. =POLLIN= only,
+=syscall-direct 230 ...= i.e. =poll(2)=, checking =(logand revents
+25)= = =POLLIN|POLLERR|POLLHUP= — a private helper, not a dispatch
+table entry, and it never asks for =POLLOUT=). =nl_os_process_set_
+nonblock= exists (=:17379=, =fcntl(92, fd, F_SETFL=4, ...)=) but is
+wired only into the subprocess pipe path, not sockets, and (worth
+flagging, out of this doc's scope to fix) passes =4= as the
+=O_NONBLOCK= value on the x86_64 branch where the sibling aarch64
+branch (=:17446=) correctly passes =2048= — not this doc's socket
+primitives, not touched by this design, noted only because §3.3
+deliberately does NOT reuse that call.
+
+So: connecting to a slow/unreachable host, or listening for a
+connection that may never come, blocks the ENTIRE standalone process
+today — there is no way to build a responsive =:server t= or
+=:nowait= client on Phase 1 as shipped. §3.3 designs the addition.
+
+** §1.6 Windows: no raw syscalls, no dynamic linking, no socket primitive at all
+
+Phase 1's own banner (=:16843-16869=) and gate
+(=nelisp-standalone--socket-dispatch-arms=, =:17075=) already record
+that every non-linux-x86_64 target — including both Windows targets —
+gets the catchable =nelisp-unsupported-primitive= signal instead of
+any socket primitive at all: none of the six native units are even
+*defined* on those targets (=nelisp-standalone--socket-forms= returns
+=nil= for anything but =linux-x86_64=, =:16870-16873=). Two
+independent facts compound this, both already measured in this
+codebase rather than assumed here:
+
+- Windows has no documented, stable raw-=SYSCALL= ABI the way Linux
+  x86_64 does — the entire technique Phase 1's sockets (and every
+  =nl_os_*= file/process primitive before them) are built on simply
+  does not exist as a target for this DSL on Windows. Reaching the
+  kernel on Windows means calling into =ntdll.dll=/=kernel32.dll=
+  (for files/processes) or =ws2_32.dll= (Winsock, for sockets) — a
+  DLL-call surface, i.e. exactly the FFI problem, not the syscall
+  problem.
+- Doc 100 §2/§7 (=fix/ffi-surface-availability=, measured 2026-08-23)
+  records that this runtime's own pure-elisp PE writer
+  (=nelisp-link-units-pe32=) has *no* import-table/GOT machinery at
+  all — forcing the dynamic-FFI flag for =windows-x86_64= used to
+  hard-fail the link with =nelisp-link--unresolved-symbol= on a
+  symbol as simple as libc's =toupper=; the 2026-08-23 fix made that
+  degrade to a catchable "unsupported" signal rather than a build
+  failure, but did *not* add Windows DLL-import emission, which
+  remains, in that doc's own words, "a separate, unstarted project".
+
+A Windows =nelisp-socket-*= implementation therefore cannot be raw
+syscalls (no ABI to target) and cannot be real FFI either (no PE
+import-table emission exists to resolve =ws2_32.dll= symbols through)
+until that unstarted project lands. §3.4 records the scope decision
+this implies.
+
+* §2 Decided direction
+
+1. *Adapter (§3.1)*: a NEW, elisp-only =network-process= tagged-vector
+   shape, sibling to (not sharing slots or refresh/delete logic with)
+   the native =nelisp-process-object-p= shape — because that shape's
+   =refresh=/=delete= are subprocess-specific (=wait4=/=kill= on a
+   =pid= slot a socket does not have, §1.2). Extend the five already-
+   generic accessor functions (=processp=, =process-get=,
+   =process-put=, =process-status=, =process-live-p=,
+   =delete-process=, all in =scripts/nelisp-stdlib-prelude.el=) with
+   one more branch each, mirroring the existing =(eq (aref process 0)
+   'process)= branch exactly. Build =make-network-process=/
+   =open-network-stream= directly on §1.1's six primitives in
+   =nelisp-process-adapter.el=, replacing today's unconditional-error
+   stub (=:361-373=).
+2. *DNS (§3.2)*: pure elisp, in phases — literal IPv4/=localhost=
+   (already Phase 1, unchanged) -> =/etc/hosts= lookup (new, pure
+   elisp, zero native change) -> DNS-over-TCP/53 against a numeric
+   resolver IP, built on Phase 1's own =nelisp-socket-connect=/
+   =-send=/=-recv=/=-close=, zero new native surface. =nl-ffi-call=/
+   =getaddrinfo= is explicitly NOT the path — narrower build
+   availability than the sockets it would serve (§1.4), and a bigger,
+   ABI-fragile marshaling lift even where it is live. Not recommended
+   even as a future enhancement without a build-availability story
+   this doc does not have.
+3. *Nonblocking I/O (§3.3)*: extend =nelisp-socket-connect=/=-accept=
+   with an optional NOWAIT argument (adds =SOCK_NONBLOCK= at
+   socket-creation time, so no separate =fcntl= call and no reuse of
+   the mismeasured =O_NONBLOCK= value at §1.5), add ONE new raw-fd
+   poll primitive (=nelisp-socket-poll FD WANT-WRITE=, the same
+   =poll(2)= shape =nl_os_process_poll_readable= already uses,
+   parameterized), and ONE new syscall this runtime has never called
+   before (=getsockopt(55)=, =SO_ERROR=, to disambiguate a
+   nonblocking connect's success from its failure once the fd
+   becomes writable — the standard POSIX technique). All gated
+   per-target exactly like Phase 1's own six primitives: real on
+   linux-x86_64, catchable =nelisp-unsupported-primitive= everywhere
+   else. Wire these into the process adapter's EXISTING poll loop
+   (=nelisp-process-adapter--wait=/=--drain-and-fire=/=--pump-once=)
+   rather than building a second one.
+4. *Windows (§3.4)*: FFI-only, and explicitly OUT of scope for any
+   phase this doc plans — blocked on Windows DLL-import-table
+   emission (an unstarted project, §1.6), not on anything this doc
+   could build. Recorded, not silently dropped, per Doc 184 P4's own
+   precedent.
+
+* §3 Design detail
+
+** §3.1 The =make-network-process=/=open-network-stream= adapter
+
+*** The =network-process= shape
+
+New tagged vector, defined and consumed entirely inside
+=packages/nelisp-process-adapter/src/nelisp-process-adapter.el=
+(where =make-process=/=make-network-process= already live):
+
+#+begin_src elisp
+;; [0]='network-process  [1]=NAME  [2]=STATUS  [3]=FD  [4]=PROPS-ALIST
+(defun nelisp--make-network-process-object (name status fd)
+  (vector 'network-process name status fd nil))
+#+end_src
+
+STATUS is a symbol matching real Emacs's own contract, measured §1.3:
+=connect= (nonblocking connect in flight) -> =open= (connected) ->
+=closed= (peer closed / locally deleted) or =failed= (nonblocking
+connect did not succeed); a =:server t= process's STATUS is =listen=
+for its own lifetime and never transitions.  FD is the raw integer
+Phase 1's primitives operate on directly — no wrapping/unwrapping
+needed at the call sites that already exist (=nelisp-socket-send FD
+...=, etc.), unlike the native process shape's =vector-ref-ptr=
+indirection.
+
+*** Extending the five generic accessors
+
+Each of =processp=/=process-get=/=process-put=/=process-status=/
+=process-live-p= (=scripts/nelisp-stdlib-prelude.el=, line numbers
+per §1.2) gains one =cond= arm testing =(and (vectorp x) (eq (aref x
+0) 'network-process))=, reading/writing slots 2 (status)/3 (fd)/4
+(props-alist) the same way the existing ='process= arm reads slots
+2/3/4 today. =delete-process= (=:7066=, and the richer §3.1 version
+this doc adds to =nelisp-process-adapter.el=) gains a matching arm
+that calls =nelisp-socket-close= on slot 3 and sets slot 2 to
+=closed=, firing the sentinel with =Emacs's own network-process
+delete contract (measured §1.3: plain =closed\n=, not the subprocess
+family's =finished=/=exited abnormally=/signal-name shapes — a
+DIFFERENT sentinel-string vocabulary this doc's =network-process=
+branch must format independently of =nelisp-process-adapter--sentinel-
+message=, which is subprocess-specific by construction, Doc 184
+§3.2). =process-contact= (new — Doc 184 never needed it, subprocesses
+have no host/port) reads =:host=/=:service= back out of the
+props-alist, populated at construction time.
+
+*** The synchronous client path (maps cleanly — no new plumbing)
+
+=:host=+=:service=, no =:server=, no =:nowait=: this is a direct,
+one-to-one wrap of =nelisp-socket-connect=, and per §1.3's own
+measurement needs *zero* poll-loop involvement, matching real Emacs's
+own synchronous-by-default behaviour exactly:
+
+#+begin_src elisp
+(defun make-network-process (&rest plist)
+  (let* ((name (or (plist-get plist :name) "network-process"))
+         (host (plist-get plist :host))
+         (service (plist-get plist :service))
+         (server (plist-get plist :server))
+         (nowait (plist-get plist :nowait)))
+    (cond
+     (server (nelisp--network-process-listen plist))       ; §3.1 server path
+     (nowait (nelisp--network-process-connect-nowait plist)) ; §3.3
+     (t
+      (let* ((fd (nelisp-socket-connect (nelisp--net-host-string host) service)))
+        ;; nelisp-socket-connect already signals a catchable
+        ;; nelisp-socket-error on any syscall failure (§1.1); real Emacs
+        ;; signals file-error "make client process failed" ... (§1.3) --
+        ;; translate rather than let the raw condition leak through
+        ;; unmapped, so a caller's (condition-case err ... (file-error ...))
+        ;; -- the idiom every existing open-network-stream caller uses --
+        ;; keeps working.
+        (let ((proc (nelisp--make-network-process-object name 'open fd)))
+          (process-put proc :host host) (process-put proc :service service)
+          (process-put proc :filter (plist-get plist :filter))
+          (process-put proc :sentinel (plist-get plist :sentinel))
+          (setq nelisp-process-adapter--live (cons proc nelisp-process-adapter--live))
+          proc))))))
+#+end_src
+
+(=nelisp--net-host-string=/error-translation elided above for
+brevity; the translation wraps the =condition-case (nelisp-socket-
+error ...)= handler around the =nelisp-socket-connect= call and
+re-signals =(signal 'file-error (list "make client process failed"
+... plist))=, matching §1.3's measured shape closely enough for the
+common =condition-case ((file-error) ...)= idiom to keep working —
+exact error-string parity is not attempted, see §6.)
+
+Once wrapped, EVERY existing poll-loop call site in
+=nelisp-process-adapter.el= keeps working unchanged, because they all
+iterate a generic =targets= list and call
+=nelisp-process-adapter--drain-and-fire= per element (=:265=,
+=:233=) — that function is the ONE place needing a real code change
+(§3.3: branch on =(aref proc 0)= to call =nelisp-socket-poll=/
+=-recv=/=-send= instead of =nelisp-process-poll=/=-read-output=/
+=-write= when the target is a =network-process=, not a native
+process object).
+
+*** =:server t= and auto-accept (needs new plumbing — §3.3-dependent)
+
+Real Emacs's own model (§1.3): the server process itself is =listen=-
+status and never delivers I/O; each ACCEPTED connection is a
+separate, automatically-created process object sharing the listener's
+=:filter=/=:sentinel= (or intercepted by =:log=). This doc's design:
+the listener's =network-process= object stores its listening fd like
+any other; §3.3's poll loop, on finding the listening fd readable
+(=POLLIN= on a listening socket means "a connection is pending" —
+already true of the generic =poll(2)= semantics =nl_os_process_poll_
+readable= already relies on for ordinary fds), calls =nelisp-socket-
+accept= (or its nonblocking variant, §3.3) and wraps the returned fd
+in a NEW =network-process= object, copying =:filter=/=:sentinel= from
+the listener (or calling =:log SERVER CHILD "accept\n"= first if
+given) — this is new logic (=nelisp-process-adapter--drain-and-fire=
+gains a =listen=-status branch that does an accept instead of a
+recv), but it is an EXTENSION of the existing per-target dispatch in
+that one function, not a second loop.
+
+*** =open-network-stream=
+
+A thin wrapper matching Emacs's own documented reduction (measured
+§1.3: it is =make-network-process= with a friendlier positional
+signature, no =:server=):
+
+#+begin_src elisp
+(defun open-network-stream (name buffer host service &rest parameters)
+  (apply #'make-network-process :name name :buffer buffer
+         :host host :service service parameters))
+#+end_src
+
+=:type 'starttls=/=:type 'tls=/=:success=/=:capability-command= (the
+STARTTLS-upgrade keywords) are explicitly out of scope (§2) — TLS
+record I/O over an already-open fd is exactly what the existing
+=gnutls_*= FFI rows (§1.4) are for, a SEPARATE, FFI-gated consumer
+concern (=emacs-tls-ffi.el=) this doc does not touch.
+
+** §3.2 DNS resolution
+
+*Phase A (already shipped, unchanged)*: literal =localhost= and IPv4
+dotted-decimal, =nl_ipv4_is_localhost=/=nl_ipv4_parse_dotted=
+(§1.1). No change.
+
+*Phase B — =/etc/hosts=, pure elisp, zero native change.* A plain
+=insert-file-contents=/line-parse over =/etc/hosts= (file read is
+already a working standalone primitive, used throughout the prelude,
+e.g. =insert-file-contents-literally=, =scripts/nelisp-stdlib-
+prelude.el:6968=), building an alist of =(HOSTNAME . "A.B.C.D")=,
+consulted before falling through to Phase C. Cheap, matches every
+other Unix resolver's own precedence (RFC 1123 §2.1's "the local host
+table should be consulted before DNS" convention every =libc=
+=nsswitch.conf= default already encodes as =hosts: files dns=), and
+handles the single most common case (a pinned test host, a container's
+own =/etc/hosts= entry, =localhost= aliases beyond the literal Phase 1
+already special-cases) with no network round trip and no new native
+surface at all.
+
+*Phase C — DNS-over-TCP/53, pure elisp on Phase 1's own primitives.*
+DNS-over-TCP (RFC 7766, mandatory-to-implement in every conformant
+resolver, not an obscure fallback) uses a 2-byte big-endian length
+prefix followed by the identical wire-format message UDP DNS uses
+(RFC 1035 §4) — chosen over UDP specifically because Phase 1's
+=nl_socket_listen_impl=/=nl_socket_connect_impl= hardcode =SOCK_
+STREAM(1)= at socket-creation time (=:16984=, =:17017=): TCP needs
+*zero* native changes, UDP would need a new socket-type parameter
+(recorded as a §6 follow-on, not built here). The resolver is
+addressed by a *numeric IPv4 literal* (a configurable defcustom-style
+variable, default e.g. =1.1.1.1= or =8.8.8.8=, or read from
+=/etc/resolv.conf='s first =nameserver= line if that file parses
+cleanly, itself just another plain-text file read) — sidestepping any
+chicken-and-egg problem (resolving the resolver) since Phase 1's own
+literal-IPv4 path already reaches it directly, no Phase B/C
+involvement needed for THAT one connection.
+
+Wire format, built entirely from string/byte primitives already
+proven live on this substrate (§1.1's own socket smoke sends/receives
+raw multibyte-clean strings; =logand=/=ash=/=unibyte-string=/=aref=/
+=substring= are all real dispatch-table entries in =scripts/nelisp-
+standalone-build.el=, confirmed present, not assumed):
+
+#+begin_src text
+Query:  [2-byte TCP length][12-byte header: ID,flags,QDCOUNT=1,...=0]
+         [QNAME: length-prefixed labels, e.g. 3'www'7'example'3'com'0]
+         [QTYPE=1 (A)][QCLASS=1 (IN)]
+Response: same length-prefix framing; walk the header's ANCOUNT
+         answer records, each RDATA for a type-1 (A) record is 4
+         raw bytes -- exactly the dotted-quad nl_socket_build_
+         sockaddr already knows how to consume once formatted back
+         to "A.B.C.D" text (or, cleaner, teach it to also accept 4
+         raw bytes directly -- a small, additive native change, not
+         required for a first version since the elisp layer can
+         format the string itself with `format "%d.%d.%d.%d"`).
+#+end_src
+
+Name compression (RFC 1035 §4.1.4, a 0xC0-prefixed back-pointer) must
+be handled when walking answer records — every real-world DNS
+response uses it — but is bounded, well-understood parsing work, not
+a new capability class; a malformed/compressed-loop response is
+handled the same way Phase 1 already handles a malformed host string:
+a bounded parse that signals a catchable condition (a new
+=nelisp-dns-error=, same =flag/TAG/VAL= stash convention
+=nl_socket_signal_error= already established at =:16961=, but this
+time built in pure elisp over =signal=, since none of this phase
+touches the native layer) rather than looping or trusting attacker-
+controlled length fields blindly.
+
+*Decision, restated with the reasoning*: =nl-ffi-call=/=getaddrinfo=
+is NOT the recommended path, for two independent, both-measured
+reasons (§1.4) — narrower build availability than Phase 1's own
+sockets (opt-in =NELISP_READER_DYNAMIC=1= dev/test build only, not the
+release pipeline's default), and a materially bigger ABI-marshaling
+lift (a linked list of a libc-defined struct) even where it is live.
+The pure-elisp path in this section reaches every build Phase 1's own
+sockets already reach, adds zero new native surface for Phase B/C
+(only a possible small, optional native addition — accepting raw
+bytes directly in =nl_socket_build_sockaddr= — deferred to §6), and
+keeps the "no libc, no dlopen" property that made Phase 1 itself
+buildable everywhere raw syscalls exist. If a future workload
+specifically needs =getaddrinfo='s fuller semantics (SRV/AAAA/mDNS,
+NSS modules, =/etc/nsswitch.conf= ordering beyond files-then-DNS),
+that is exactly the kind of decision a future doc should measure
+against the THEN-current FFI availability story, per Doc 184 §6's own
+practice of leaving forward-looking judgment calls open rather than
+guessed.
+
+** §3.3 Nonblocking I/O and the poll loop
+
+*Native additions (linux-x86_64 only, same gate shape as Phase 1's
+own six primitives, §1.1's =nelisp-standalone--socket-dispatch-arms=
+pattern reused verbatim — every other target gets =nelisp-
+unsupported-primitive=):*
+
+1. *=nelisp-socket-connect HOST PORT &optional NOWAIT=* and
+   *=nelisp-socket-accept LISTEN-FD &optional NOWAIT=* — backward-
+   compatible arity extensions (Phase 1's own 2-arg/1-arg smoke keeps
+   working unchanged) of =nl_socket_connect_impl=/=nl_socket_accept_
+   impl=. NOWAIT non-nil ORs =SOCK_NONBLOCK= (=2048=, Linux's =type=-
+   argument extension to =socket(2)=, decimal =0x800=) into the
+   =socket(2)=/=accept4(2)= call's existing type/flags argument —
+   *not* a separate =fcntl= call, sidestepping §1.5's =O_NONBLOCK=
+   value mismeasurement in the unrelated subprocess path entirely.
+   For =nelisp-socket-accept= with NOWAIT, =EAGAIN=/=EWOULDBLOCK=
+   (errno =-11=) is a *soft* outcome — "no pending connection yet" is
+   not an error for a poll-driven accept loop — so this ONE negative
+   value returns a sentinel =-1= (an ordinary int, distinguishable
+   from any real fd, which is always =>= 0) rather than raising
+   =nelisp-socket-error=; every OTHER negative value still raises
+   exactly as Phase 1 already does. This is a deliberate, narrow,
+   explicitly-named exception to Phase 1's own "every syscall failure
+   signals" rule — documented here so a future reader does not read
+   it as an accidental swallow.
+2. *=nelisp-socket-poll FD WANT-WRITE=* (new) — the SAME =poll(2)=
+   shape =nl_os_process_poll_readable= already uses per-target
+   (=:17381= for linux-x86_64: =pfd events=..., syscall-direct 230
+   ...=, checking =revents=), parameterized: =events = 1 (POLLIN)= when
+   WANT-WRITE is nil, =4 (POLLOUT)= when non-nil; the ready check
+   becomes =(logand revents 25)= (=POLLIN|POLLERR|POLLHUP=) for read,
+   =(logand revents 28)= (=POLLOUT|POLLERR|POLLHUP=) for write —
+   folding in =POLLERR=/=POLLHUP= on both sides so a caller sees
+   "ready" and then gets the real error from the subsequent =recv=/
+   =getsockopt= call, exactly the precedent =nl_os_process_poll_
+   readable= already sets for the read side. Exposed as a genuine
+   dispatch-table entry (unlike =nl_os_process_poll_readable=, which
+   is a private per-target helper today) since it needs to be callable
+   on an arbitrary fd, not only ones already wrapped in a
+   =nelisp-process-object-p= tagged object.
+3. *=nelisp-socket-connect-error FD=* (new) — =getsockopt(2)=, Linux
+   x86_64 syscall number =55= (immediately following =setsockopt='s
+   =54= Phase 1 already calls, =:16995= — the two are adjacent kernel
+   syscall numbers on this ABI, a detail worth confirming against
+   =asm/unistd_64.h= at implementation time rather than trusting this
+   doc alone, per this codebase's own house rule of measuring rather
+   than asserting), =SOL_SOCKET(1)=, =SO_ERROR(4)=: after a
+   nonblocking connect's fd becomes writable (§3.3.2's =nelisp-
+   socket-poll FD t=), this is the standard POSIX technique to
+   disambiguate "connected" (returns =0=) from "connect failed"
+   (returns the real errno) — =connect(2)='s own return value is
+   useless for this once the call was nonblocking and returned
+   =EINPROGRESS= immediately.
+
+*Wiring into the existing poll loop*: =nelisp-process-adapter--drain-
+and-fire= (=:233=) gains a branch dispatching on =(aref proc 0)=:
+
+- native process (=nelisp-process-object-p=): unchanged, calls
+  =nelisp-process-poll=/=-read-output=/=-write= exactly as today.
+- =network-process=, status =open=: calls =nelisp-socket-poll FD nil=
+  (readable?); on ready, =nelisp-socket-recv= up to a fixed chunk size
+  (matching the native path's =65536= constant, =:247=) and dispatch
+  to =:filter=; a zero-length =recv= (peer closed, TCP EOF) transitions
+  status to =closed= and fires the sentinel with =closed\n=
+  (§3.1), mirroring — not reusing — =nelisp-process-adapter--sentinel-
+  message='s subprocess-specific formatting.
+- =network-process=, status =connect= (nonblocking connect in
+  flight): calls =nelisp-socket-poll FD t= (writable?); on ready,
+  calls =nelisp-socket-connect-error FD=; =0= transitions to =open=
+  and fires the sentinel with =open\n= (§1.3's measured =:nowait=
+  contract exactly); non-zero transitions to =failed= and fires with
+  =failed\n=.
+- =network-process=, status =listen=: calls =nelisp-socket-poll
+  LISTEN-FD nil= (readable = connection pending); on ready, accepts
+  (§3.1's server-path design) instead of receiving.
+
+No second poll loop, no new call sites in =accept-process-output=/
+=nelisp--repl-idle-pump=/=run-at-time= — all three already iterate
+whatever is in =nelisp-process-adapter--live=/the PROCESS argument
+generically and call =--drain-and-fire= per element; adding
+=network-process= objects to that same list is sufficient for all
+three to pick them up for free, exactly Doc 184 §3.3's own "share the
+exact same wait loop" design principle, now extended across two
+process kinds instead of one.
+
+** §3.4 Windows: scope decision
+
+*Decision: out of scope for every phase this doc plans, FFI-only if
+and when it is ever built, and blocked on a project (Windows DLL
+import-table emission in this runtime's own pure-elisp PE writer)
+that does not exist yet.* Recorded per §1.6's two independent,
+measured facts:
+
+- No raw-=SYSCALL= path exists or can exist on Windows for this DSL —
+  unlike Linux/macOS/aarch64 targets (all POSIX-syscall-ABI-shaped,
+  even where Phase 1 has not yet taught the DSL their specific numbers,
+  §1.1's own per-target gate), Windows requires calling through a DLL
+  (=ws2_32.dll= for Winsock) by construction, not by this runtime's
+  current choice.
+- That DLL-call surface IS this runtime's FFI mechanism (§1.4), and
+  the ONE thing standing between "FFI exists on this target" and
+  "FFI does not" for Windows is PE import-table/GOT emission — a
+  project Doc 100 §7 describes as "a separate, unstarted project", not
+  merely unfinished. Building Windows sockets before that project
+  exists would mean inventing PE dynamic linking as a SIDE EFFECT of
+  this doc, wildly out of proportion to a socket adapter.
+
+This mirrors Doc 184 P4's own precedent exactly (§0 of that doc: "P4
+... is listed so the roadmap does not silently drop it") — §6 records
+the follow-on question a future doc would need to answer (does PE
+import-table emission get built as its own project first, unblocking
+BOTH real Windows FFI generally and Windows sockets specifically, or
+does something narrower — e.g. spawning a tiny external helper binary
+via the existing subprocess primitives and talking to it over a pipe —
+get tried instead) without pretending this doc has an answer.
+
+* §4 Phased plan with DoD-shaped verification
+
+Every phase below follows this codebase's own Definition of Done
+(=AI.md=, "Definition of Done"): against-the-bug evidence (a case
+shown red before, green after — not asserted), a parity form or
+loopback smoke comparable to a measured host-Emacs or Phase-1 baseline
+where cross-substrate behavior is touched, and — for anything gated
+per-target — the SAME catchable =nelisp-unsupported-primitive= proof
+Phase 1's own smoke already established for its six primitives
+(=Makefile:2096-2099=), extended to whatever new native names this
+doc's later phases add.
+
+** P0 — =network-process= object + synchronous client (0.5-1 d)
+
+- =nelisp--make-network-process-object=, the five accessor-function
+  extensions (§3.1), =make-network-process='s synchronous-client
+  branch, =open-network-stream=. No native changes.
+- *Exit*: a Makefile-level smoke, same shape as =standalone-reader-
+  socket-smoke= (=:2096=) but through the ELISP entry points instead
+  of the raw primitives directly: build a real listener with
+  =nelisp-socket-listen=/=-accept= (the raw Phase 1 primitives, used
+  here only as the TEST'S OWN server harness — this phase does not yet
+  build =:server t=), then =(open-network-stream "cli" nil "127.0.0.1"
+  PORT)= against it, assert =process-status= reads =open= immediately
+  (no =accept-process-output= call, matching §1.3's own measured
+  timing), send/receive a UTF-8 payload, =delete-process= transitions
+  to =closed=. A second case: connect to a closed port, assert the
+  =condition-case ((file-error) ...)= idiom catches it (§3.1's
+  translation), not a bare =nelisp-socket-error= leaking un-mapped
+  through the standard-name entry point.
+
+** P1 — =/etc/hosts= resolution (0.5 d)
+
+- Pure elisp file read + parse, consulted before Phase 1's own literal
+  IPv4/=localhost= path fails. No native changes.
+- *Exit*: a fixture =/etc/hosts=-shaped temp file with a custom
+  hostname mapped to a loopback-reachable IP; =open-network-stream=
+  against that hostname succeeds through P0's client path without any
+  DNS round trip; a hostname absent from the fixture falls through
+  cleanly to P2 (or, before P2 exists, to Phase 1's own catchable
+  =nelisp-socket-error= for an unresolvable host — never a hang, never
+  a wrong-address connect).
+
+** P2 — DNS-over-TCP/53 (1-2 d)
+
+- Query/response wire-format encode/decode, the numeric-resolver-IP
+  configuration point, name-decompression with a bounded/loop-safe
+  walk. Built entirely on =nelisp-socket-connect=/=-send=/=-recv=/
+  =-close= (§1.1, unchanged). No native changes (§6 records the one
+  optional small native addition this phase could use but does not
+  require).
+- *Exit*: against a real, numeric-IP-addressed DNS resolver reachable
+  from the CI/dev environment (or a hand-rolled loopback DNS-over-TCP
+  stub server, built the same way P0's own test harness is, if a real
+  external resolver is not available in the sandbox this phase's
+  gate runs in — recorded as an implementation-time environment
+  decision, not resolved here), resolve a real hostname to an IPv4
+  address and connect to it via P0's client path; a malformed/
+  truncated response (fixture bytes, not a live server) is shown to
+  signal the new catchable =nelisp-dns-error= rather than looping or
+  reading out of bounds — against-the-bug evidence for the
+  length-prefix/compression-pointer parsing specifically, since that
+  is where an untrusted-input bug would live.
+
+** P3 — Nonblocking primitives (1-2 d) — DONE 2026-08-24
+
+=nelisp-socket-connect=/=-accept='s NOWAIT argument, =nelisp-socket-poll=,
+and =nelisp-socket-connect-error= all real on linux-x86_64, catchable
+=nelisp-unsupported-primitive= elsewhere — =standalone-reader-nonblocking-
+socket-smoke= (Makefile) and =test/nelisp-standalone-target-test.el='s
+=nelisp-standalone-target-socket-dispatch-*= pair (the target-swap ERT
+harness, source-level, no cross-arch binary needed).  =nelisp-socket-
+listen= ALSO gained the same backward-compatible NOWAIT 3rd argument —
+not in this section's own enumeration below, added because a NOWAIT
+=nelisp-socket-accept= against an empty queue cannot return immediately
+unless the LISTENING socket itself is nonblocking (=accept4='s own
+SOCK_NONBLOCK flags argument sets O_NONBLOCK on the newly ACCEPTED fd
+only, never on the fd being accepted FROM — measured against this exact
+phase's own exit criterion, see =nl_socket_listen_impl='s comment).
+=nl_socket_poll_impl='s poll(2) syscall number is =7=, not the =230=
+this section originally pointed at (see this doc's top =#+STATUS=
+block for the measurement).
+
+- =nelisp-socket-connect=/=-accept='s NOWAIT argument,
+  =nelisp-socket-poll=, =nelisp-socket-connect-error= (§3.3, all three
+  native, linux-x86_64-gated). No elisp-layer wiring yet — this phase
+  proves the primitives in isolation, matching Phase 1's own P0-style
+  "prove the raw primitive first" sequencing.
+- *Exit*: a Makefile smoke mirroring =standalone-reader-socket-smoke='s
+  own shape but nonblocking: a NOWAIT =nelisp-socket-connect= to a
+  slow-to-accept loopback listener returns immediately (measured:
+  wall-clock bounded well under a blocking connect's own timeout
+  behaviour) with a fd whose =nelisp-socket-poll FD t= later reports
+  writable and whose =nelisp-socket-connect-error= reads =0=; the same
+  against a closed port reports a non-zero error instead of hanging or
+  silently reporting success; a NOWAIT =nelisp-socket-accept= against
+  an empty listen queue returns the =-1= sentinel (§3.3.1) rather than
+  signalling, and returns a real fd once a connection is actually
+  pending. Every one of these three new names, called on a
+  non-linux-x86_64 build (or the existing target-swap harness Phase
+  1's own gate uses), raises =nelisp-unsupported-primitive= — the same
+  proof shape §1.1 already established, extended to the three new
+  names.
+
+** P4 — Wire nonblocking into the poll loop; =:nowait= client (1-2 d) — DONE 2026-08-24
+
+Real =:nowait= support, driven by =nelisp-process-adapter--drain-and-
+fire-network='s =connect= status branch — =standalone-reader-network-
+process-nowait-smoke= (Makefile), plus the existing =standalone-reader-
+network-process-smoke='s own =refused= case updated (its =:nowait=
+sub-case used to assert =signalled=, now asserts =connect= — the
+against-the-bug flip this phase's own exit criterion asks for).  ONE
+correction against this section's own exit-criterion text below: the
+failure sentinel is =(format "failed with code %d\n" ERRNO)=, not a bare
+=failed\n= — measured directly against real GNU Emacs 30.1 while
+implementing this phase (this doc's top =#+STATUS= block has the full
+measurement).
+
+- =nelisp-process-adapter--drain-and-fire='s =network-process= branch
+  (§3.3), the =open=/=connect=/=failed= status machine, real =:nowait=
+  support in =make-network-process=.
+- *Exit*: =(make-network-process ... :nowait t :sentinel S)= against a
+  slow/unreachable host returns BEFORE the connect completes (measured
+  wall-clock, not asserted); =S= is later called with a second arg
+  matching =open\n= or =failed\n= exactly (§1.3's measured contract) —
+  driven purely by =accept-process-output=/the REPL idle pump, no new
+  call site; a concurrent ordinary subprocess (native process object)
+  and a nonblocking network connect polled through the SAME
+  =accept-process-output= call each become ready independently,
+  closing the same "does not drain the other's queue" contract Doc 184
+  P2 already proved for two subprocesses (that doc's own exit
+  criterion, §4 P2), now proven across the two DIFFERENT process
+  kinds this doc's =(aref proc 0)= dispatch makes possible.
+
+** P5 — =:server t=, auto-accept, =:log= (1-2 d) — DONE 2026-08-24
+
+Real =:server t= listener, per-connection auto-accepted child
+`network-process' objects (=:filter=/=:sentinel= copied, `eq'-identical
+to the listener's own), =:log= interception, all driven by the SAME
+poll loop P4 already wired =standalone-reader-network-process-server-
+smoke= (Makefile, two concurrent clients, verified filter/sentinel
+sharing, verified the server-delete-does-not-affect-children contract).
+This doc's top =#+STATUS= block records the one deliberate deviation
+from the exit criterion below: child NAMING/sentinel/`:log' text all
+originally cited a HOST this substrate cannot obtain (Phase 1's
+=nelisp-socket-accept= requests no peer address, §1.1) — =<fd:N>=/
+=open\n=/=accept\n= are used instead of =<HOST:PORT>=/=open from
+HOST\n=/=accept from HOST\n=, every OTHER measured fact (statuses,
+`eq' filter/sentinel sharing, the server-delete/children-outlive
+contract, process-list-equivalent count) holding exactly as measured.
+
+- The listener's =listen=-status poll branch (§3.1/§3.3), per-
+  connection child =network-process= creation, =:log= interception.
+  Depends on P3's nonblocking accept (a blocking =:server t= would
+  freeze the whole poll loop on every accept attempt, defeating the
+  point).
+- *Exit*: a real multi-client scenario — two clients connect to one
+  =:server t= listener in the same poll window; =process-list=-
+  equivalent (this runtime's own live-registry inspection, mirroring
+  what §1.3's probe read directly off real Emacs's =process-list=)
+  shows three process objects (the listener plus one child per
+  client), matching §1.3's measured =srv=/=srv <host:port>= shape; each
+  child's =:filter= (inherited from the listener, per §1.3's measured
+  contract) fires independently as each client sends data; supplying
+  =:log= intercepts the accept and is called =(SERVER CHILD MESSAGE)=,
+  matching the real =documentation= text quoted in §1.3.
+
+** P6 (documented, not built) — Windows
+
+- §3.4's decision, recorded so a future doc inherits the reasoning
+  rather than re-deriving it, exactly Doc 184 P4's own "documented,
+  not built" shape for =make-network-process= itself one doc ago.
+
+** P7 — IPv6 (1-2 d) — DONE 2026-08-24, branch =feat/socket-ipv6=
+
+§1.1's own banner text ("Host resolution: IPv4 dotted-decimal... and the
+literal =\"localhost\"=... ONLY. DNS is explicitly out of scope") named
+IPv6 as explicitly out of scope for P0-P5 alongside DNS; this phase adds
+it as a new native/elisp pair sitting directly on top of everything
+P0-P5 already shipped, with NO change to P0-P5's own external contract
+(=nelisp-socket-listen/-accept/-connect/-send/-recv/-close/-poll/-connect-
+error= keep their exact eight names and arities; =make-network-process=/
+=open-network-stream=/=process-*= keep their exact signatures) and NO new
+=nelisp_apply_function= dispatch-table entry (§5.3 below).
+
+*Native (=scripts/nelisp-standalone-build.el=, =nelisp-standalone--socket-
+forms=, right after =nl_socket_build_sockaddr=)*: =struct sockaddr_in6=
+(28 bytes, RFC 3493 sec 3.3) is built the SAME way §1.1's own
+=sockaddr_in= already is — entirely inside the native unit's own
+=alloc-bytes= scratch, raw memory never crossing into user space — by a
+new =nl_socket_build_sockaddr6=, alongside a self-contained IPv6-literal
+parser family (=nl_ipv6_has_colon_walk=/=nl_ipv6_find_dcolon=/=nl_hex_
+nibble=/=nl_ipv6_hex_group_walk=/=nl_ipv6_parse_literal=/=nl_bytes_copy=)
+mirroring §1.1's own =nl_ipv4_octet_walk= recursive-walker style exactly:
+1-4 hex digits per colon-separated group, RFC 4291 sec 2.2 =::=
+zero-compression at any position (a LEFT half written directly into the
+output, a RIGHT half parsed into a small scratch buffer first since its
+final offset depends on its own length, then =nl_bytes_copy='d into
+place), and an embedded dotted-IPv4 tail (=::ffff:1.2.3.4=) re-using the
+EXISTING, UNCHANGED =nl_ipv4_octet_walk= over the tail's own sub-range.
+=nl_socket_listen_impl=/=nl_socket_connect_impl= each gained ONE
+side-effect-free =':' =-byte scan (=nl_ipv6_has_colon_walk=), run ONCE
+before =socket(2)=, deciding =AF_INET(2)=/=AF_INET6(10)= — neither
+=nl_socket_build_sockaddr= (v4) nor any of its own callers' syscall
+arguments changed for a host that scan finds no colon in, which is
+EVERY host §1.1's own two literal forms (=localhost=, dotted-decimal)
+ever produce.
+
+*Pure elisp (=packages/nelisp-process-adapter/src/nelisp-process-
+adapter.el=, right after =nelisp--net-host-string=)*: a SEPARATE,
+independent IPv6-literal parser/unparser (=nelisp--ipv6-parse=/=-unparse=,
+plus =-literal-p=/=-strip-brackets=/=-parse-groups=/=-parse-segment=/
+=-group-value=/=-find-dcolon-pos=/=-take=/=-bytes-to-groups=/=-groups-to-
+bytes-string=) — a genuine second implementation of the SAME RFC 4291 sec
+2.2 grammar, not shared with the native family above, matching this doc's
+own §1.1 precedent of Phase 1's IPv4 dotted-quad grammar ALSO already
+having two independent checkers (=nl_ipv4_parse_dotted=, authoritative
+for the raw primitives, and =nelisp--ipv4-dotted-p=, "close enough to
+decide whether resolution is needed at all"). =nelisp--ipv6-unparse=
+implements RFC 5952's own canonical =::=-compression (longest run of
+zero groups); =nelisp--ipv6-parse=/=-unparse= composed is this doc's own
+round-trip test (=test/nelisp-process-adapter-test.el=). DNS (§3.2 Phase
+C) gained AAAA: =nelisp--dns-encode-query=/=nelisp--dns-parse-response=
+both gained a backward-compatible optional QTYPE argument (default 1/A,
+every existing caller omits it and is unaffected), and a new
+=nelisp--dns-resolve-aaaa= (a SEPARATE function reusing the same wire
+encoder/decoder, not a parameterized rewrite of =nelisp--dns-resolve-a=)
+queries type 28. =nelisp--hosts-file-lookup-typed= (Phase B) scans
+=/etc/hosts= for a NAME restricted to one address family, independent of
+=nelisp--hosts-file-lookup='s own untyped, first-line-wins convention
+(unchanged). Dual-stack order for a NAME with no family hint: AAAA
+before A — a deliberate, documented simplification of RFC 6724 (real
+=getaddrinfo(3)= with =AF_UNSPEC= sorts a combined candidate list by RFC
+6724 sec 6's destination-address-selection rules, which need real
+interface/route introspection this substrate does not have; RFC 6724 sec
+10.3 itself notes AAAA-first is the simpler convention many
+implementations already use) — see =nelisp--resolve-host-family='s own
+docstring for the full citation. =nelisp--net-effective-family= decides
+=ipv4=/=ipv6= from a =make-network-process= PLIST: an explicit =:family
+'ipv6=, or a =:host= that is ALREADY an IPv6 literal (Emacs's own
+=:family= auto-detection-from-host, measured convention this doc extends
+rather than newly invents) — every other PLIST shape (every caller before
+this phase, and every =:family 'ipv4=/no-=:family= caller after it) gets
+=ipv4=, which routes through the EXACT SAME code every one of P0-P5's own
+functions already ran, unmodified. =nelisp--net-host-string= gained a
+backward-compatible optional FAMILY argument (nil/omitted unchanged,
+=\\='ipv6= makes the nil/=\\='local= loopback default =\"::1\"= instead of
+=\"127.0.0.1\"=).
+
+*Non-linux-x86_64 (SCOPE item 6, confirmed)*: no new proof was needed and
+none was added. =nelisp-standalone--socket-dispatch-arms='s NAMES list is
+UNCHANGED (still exactly the same eight =nelisp-socket-*= names §1.1/P3
+already had) — this phase adds NO new dispatchable primitive name, so
+the existing per-target gate (§1.1's own banner, §5.3 below) already
+covers it with zero edits.
+=test/nelisp-standalone-target-test.el='s =nelisp-standalone-target-
+socket-dispatch-linux-x86-64-real=/=-non-linux-x86-64-unsupported= pair —
+which already asserts ALL EIGHT names, on every non-linux-x86_64 target,
+share one =eq=-identical =nelisp-unsupported-primitive= signal form
+mentioning none of the eight real =nl_socket_*_impl= native call
+targets — passes UNCHANGED, still green, confirming this by construction
+rather than by inspection alone.
+
+*Exit* (DoD-shaped, this doc's own §4 convention): (a) IPv4 unchanged —
+=standalone-reader-socket-smoke= (the ORIGINAL, UNTOUCHED P1 smoke) and
+every P0-P5 smoke this doc's own =#+VERIFIED-BY= line already names stay
+green VERBATIM, plus =nelisp-standalone-target-socket-dispatch-*= (above)
+and =emacs-parity=; a same-process IPv4 round trip is ALSO reproduced
+inside the new smoke itself (part 2 of 7, immediately after the IPv6
+round trip), against-the-bug evidence that adding IPv6 did not disturb
+IPv4 in the SAME binary, not merely in a separate one. (b) IPv6 loopback
+round trip (listen/connect/accept/send/recv both directions, UTF-8
+Japanese payload, byte-exact, close) on =::1=, at the raw primitive
+level, one process. (c) The reference table (=::=, =::1=, a full
+8-group form, an embedded =::ffff:v4= tail, the bracketed form) parses
+correctly via BOTH the raw primitives (bracketed/full-form loopback
+connect) and the pure-elisp =nelisp--ipv6-parse=, round-tripped through
+=nelisp--ipv6-unparse=; a malformed literal (=gggg::1=) signals the
+catchable =nelisp-socket-error=/=nelisp-dns-error= at each layer
+respectively, never an uncaught error and never a silent wrong parse.
+(d) AAAA resolution: =/etc/hosts= (a fixture mapping one hostname to
+=::1=, resolved via =nelisp--hosts-file-lookup-typed= QTYPE =aaaa= and
+confirmed ABSENT under QTYPE =a=, proving the typed lookup actually
+discriminates rather than returning whatever it finds) and a
+captured/hand-built DNS-over-TCP response with one AAAA/IN answer
+(QTYPE 28 extracts the canonical string; the SAME fixture under QTYPE 1
+finds nothing, proving QTYPE gates extraction) — this sandbox's own
+DNS-over-TCP/53 smoke (=standalone-reader-dns-smoke=) already documents
+no live external resolver egress here, so the fixture path is this
+phase's own authoritative evidence, matching DoD's own "if network
+egress exists one real AAAA lookup, else unit-test the AAAA parser
+against a captured response" clause exactly. All of (a)-(d) are ONE
+Makefile target, =standalone-reader-ipv6-socket-smoke= — own focused
+loop AND a member of =nelisp-standalone-reader-test='s own dolist (this
+doc's own DoD, matching Phase 1's own =standalone-reader-socket-smoke=
+precedent for that exact "dolist + own make target" shape).
+
+- Files: =scripts/nelisp-standalone-build.el= (native sockaddr_in6/
+  literal-parser family + =nl_socket_listen_impl=/=-connect_impl=
+  family-dispatch edit + the new smoke, all in the same socket section
+  §1.1/§3.3 already occupy), =packages/nelisp-process-adapter/src/
+  nelisp-process-adapter.el= (pure-elisp literal parser + AAAA DNS +
+  =:family= routing), =test/nelisp-process-adapter-test.el= (ERT,
+  =skip-unless (fboundp 'nelisp-process-start)=, this doc's own §5.1
+  precedent for a case documentary under host Emacs and authoritative
+  against the built binary), =Makefile= (the new target),
+  =tools/gate-mutations.txt= (one new row).
+
+* §5 Verification design (cross-cutting)
+
+** §5.1 Against-the-bug
+
+Every native addition in P3 gets a red-then-green case reproducing
+the EXACT gap it closes (a blocking accept on an empty queue hangs
+before the fix, returns =-1= after; a nonblocking connect's success
+and failure are indistinguishable without =getsockopt= before the
+fix, distinguishable after) — the same standard Phase 1's own
+=standalone-reader-socket-smoke= and Doc 184's =-process-adapter-
+smoke-red= pair already set.
+
+** §5.2 Parity forms
+
+=nelisp-parity-probe=-style forms comparing the newly-added standard
+names against real Emacs 30.1 (this doc's own §1.3 measurements are
+the FIRST such comparison, not exploratory — implementation-time
+parity coverage should reproduce every scenario in that section as a
+named test, not just assert this doc's prose matches): =process-
+status= symbol vocabulary (=open=/=closed=/=listen=/=connect=/
+=failed=, never =run=/=exit=, which is the SUBPROCESS vocabulary and
+must never leak onto a =network-process=), the =:nowait= sentinel
+two-string contract, the synchronous-connect-refused =file-error=
+shape, the =:server=/=:log=/auto-accept child-process creation shape.
+
+** §5.3 The catchable-error contract
+
+Every new native name (=nelisp-socket-poll=, =-connect-error=, the
+NOWAIT arms) must be proven, on a non-linux-x86_64 build, to raise
+=nelisp-unsupported-primitive= rather than link-fail or silently do
+nothing — the exact proof shape Phase 1's own socket family and the
+=fix/ffi-surface-availability= branch's =standalone-reader-ffi-
+unsupported-smoke= both already established independently for their
+own primitive families; this doc's P3 exit criterion asks for the
+same proof extended to its own three new names, not a new mechanism.
+
+** §5.4 Mutation rows (illustrative, per =tools/gate-mutations.txt='s
+own convention of an injection removing something the corpus
+mentions exactly once)
+
+#+begin_src text
+nelisp-network-process-smoke|scripts/nelisp-standalone-build.el|s/(if (< fd 0)/(if nil (if (< fd 0)/|EAGAIN-as-sentinel branch never taken, every accept blocks
+nelisp-network-process-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/'network-process/'process/|network-process objects silently misclassified as native processes, wrong poll/recv path taken
+#+end_src
+
+* §6 Open questions
+
+- *=PORT 0= auto-assignment* (§1.3's own probe used =:service 0= and
+  read the kernel-assigned port back via =process-contact=) needs a
+  new =getsockname(2)= syscall (Linux x86_64 nr =51=) this doc does
+  not design in detail — most realistic callers pass an explicit
+  port; deferred as a small, bounded follow-on to whichever phase
+  implements =process-contact= for real, not blocking on it.
+- *UDP* is entirely out of this doc's scope — Phase 1's own
+  =SOCK_STREAM=-hardcoded socket creation (§1.1) would need a new
+  socket-TYPE parameter threaded through =nelisp-socket-listen=/
+  =-connect=, itself a small, additive native change, but DNS-over-TCP
+  (§3.2 Phase C) makes it non-essential for THIS doc's own DNS need;
+  a future doc adding real =:type 'datagram= =make-network-process=
+  support would need it for its own sake.
+- *=nl_socket_build_sockaddr= accepting raw 4-byte addresses directly*
+  (rather than a formatted dotted-decimal string) is a small, optional
+  native addition §3.2 Phase C could use to avoid a
+  bytes-to-string-to-bytes round trip when handing a DNS answer's raw
+  =RDATA= to the connect path — not required for a first version,
+  left as an implementation-time judgment call.
+- *TLS* (=open-network-stream='s =:type 'starttls=/=:success= upgrade
+  path) is explicitly not designed here — it composes this doc's raw
+  socket with the ALREADY-TABLED =gnutls_*= FFI rows (§1.4), itself
+  gated behind the same narrow FFI-availability story §1.4 measured;
+  a future doc should treat "TLS over =make-network-process=" as its
+  own integration question once both halves exist, not assume this
+  doc's sockets make it free.
+- *Windows*, restated from §3.4: does PE import-table emission become
+  its own project first (unblocking Windows FFI generally, sockets
+  included), or does a narrower workaround (an external helper
+  process over a pipe, using primitives this runtime already has) get
+  tried instead? Not this doc's call.
+- *=getsockopt= syscall number 55*: stated in §3.3 as "the well-known
+  Linux x86_64 kernel ABI value, immediately following =setsockopt='s
+  54" — this doc did not grep it out of an authoritative kernel header
+  inside this repository (none is vendored) the way every OTHER
+  syscall number in Phase 1's own socket section was presumably
+  checked against one; P3's implementer should confirm it against
+  =asm/unistd_64.h= (or an equivalent authoritative source) before
+  relying on it, per this codebase's own "measure, don't assert" norm
+  that this doc has tried to follow everywhere else.
+
+* §7 References
+
+** §7.1 Code (file:line, =feat/socket-primitives-p1= unless noted)
+
+- =scripts/nelisp-standalone-build.el:16843-17105= — Phase 1's entire
+  socket primitive family (§1.1).
+- =scripts/nelisp-standalone-build.el:17381-17404= (linux-x86_64
+  branch) — =nl_os_process_poll_readable=, the =poll(2)= precedent
+  §3.3's =nelisp-socket-poll= parameterizes.
+- =scripts/nelisp-standalone-build.el:17379=,=:17446= — =nl_os_
+  process_set_nonblock=, the =fcntl=/=O_NONBLOCK= path §3.3
+  deliberately does NOT reuse (§1.5's noted value mismatch between
+  the x86_64 and aarch64 branches).
+- =packages/nelisp-process-adapter/src/nelisp-process-adapter.el=
+  (=feat/socket-primitives-p1=, inherited from Doc 184 P0-P3 SHIPPED
+  unchanged) — the poll loop this doc extends (§1.2, §3.1, §3.3);
+  =:89= registry, =:233= drain-and-fire, =:265= pump-once, =:288=
+  wait, =:335= accept-process-output, =:361-373= today's
+  =make-network-process= stub this doc replaces.
+- =scripts/nelisp-stdlib-prelude.el:6970-7090= — =processp=/=process-
+  get=/=process-put=/=process-status=/=process-live-p=/=delete-
+  process=, the five generic accessors §3.1 extends; =:7118= the
+  existing =(vector 'process ...)= precedent for a non-native tagged
+  process shape.
+- =scripts/nelisp-standalone-build.el:11137-11260= — the native
+  process-object shape (magic tag, =pid=/=wait4=/=kill= coupling) this
+  doc's §2 explains NOT reusing for sockets.
+- =packages/nelisp-eventloop/src/nelisp-async-core.el= (Doc 184 P0) —
+  the timer-queue deadline machinery §3.3's wait loop still bounds
+  itself by, unchanged.
+- =scripts/nelisp-standalone-build.el:10317-10465= (=fix/ffi-surface-
+  availability=) — =nelisp-standalone--reader-extern-table=/
+  =-build-ffi-dispatch=, the declarative FFI surface §1.4/§3.2 measure
+  and decide against for DNS.
+- =scripts/nelisp-standalone-build.el:10476-10603= (=fix/ffi-surface-
+  availability=) — =nelisp-standalone--reader-ffi-live-p=, the
+  target+build-flag predicate behind §1.4's availability matrix.
+- =scripts/nelisp-standalone-build.el= (=feat/socket-ipv6=,
+  P7) — the native IPv6 family: =nl_ipv6_has_colon_walk=/=nl_hex_nibble=/
+  =nl_ipv6_find_dcolon=/=nl_bytes_copy=/=nl_ipv6_hex_group_walk=/
+  =nl_ipv6_parse_literal=/=nl_socket_build_sockaddr6=, all defined right
+  after =nl_socket_build_sockaddr= in =nelisp-standalone--socket-forms=;
+  the family-dispatch edits to =nl_socket_listen_impl=/=nl_socket_
+  connect_impl=; =nelisp-standalone--reader-ipv6-socket-smoke=/
+  =nelisp-standalone-reader-ipv6-socket-test= (the new smoke, own
+  Makefile target AND a =nelisp-standalone-reader-test= dolist member,
+  same shape as P1's own =nelisp-standalone--reader-socket-smoke=).
+- =packages/nelisp-process-adapter/src/nelisp-process-adapter.el=
+  (=feat/socket-ipv6=, P7) — the pure-elisp IPv6 literal parser
+  (=nelisp--ipv6-parse=/=-unparse= and their helpers, right after
+  =nelisp--net-host-string=); the AAAA extension to =nelisp--dns-encode-
+  query=/=nelisp--dns-parse-response= (backward-compatible optional
+  QTYPE) plus the new =nelisp--dns-resolve-aaaa=; =nelisp--hosts-file-
+  lookup-typed= (Phase B, AAAA-aware); =nelisp--net-effective-family=/
+  =nelisp--resolve-host-family= (the =:family= decision + AAAA-first
+  dual-stack order); the family-routing edits to =make-network-process=/
+  =nelisp--network-process-connect-nowait=/=nelisp--network-process-
+  listen=.
+- =test/nelisp-process-adapter-test.el= (=feat/socket-ipv6=, P7) —
+  =nelisp-ipv6-parse-unparse-round-trip=/=-rejects-malformed-literals=/
+  =nelisp-ipv6-literal-p-family-detection=/=nelisp-net-effective-family-
+  detection=/=nelisp-dns-encode-query-aaaa-qtype-byte=/=nelisp-dns-parse-
+  response-aaaa-fixture=, gated =skip-unless (fboundp 'nelisp-process-
+  start)= exactly like every sibling case in this file (§5.1's own
+  documentary-under-host-Emacs/authoritative-against-the-binary
+  convention).
+
+** §7.2 Docs
+
+- =docs/design/184-process-and-event-loop.org= — the process adapter
+  and ONE poll loop this doc integrates into rather than duplicates;
+  §1.7/§6 there is this doc's direct predecessor question.
+- =docs/design/100-phase-47-dynamic-link-elisp.org= §7 — the FFI
+  availability matrix §1.4/§1.6 are grounded in, measured 2026-08-23.
+- =docs/design/56-os-surface-phase4-1-af-unix-inet6.org= — earlier,
+  pre-Phase-1 prior art on socket-shaped OS surface; not built on
+  directly here (Phase 1 superseded it with real syscalls), listed for
+  the next reader who finds it first.
+
+** §7.3 Measurements taken for this doc
+
+- =make-network-process=/=open-network-stream= contract (§1.3): GNU
+  Emacs 30.1, run on the research host preparing this doc,
+  =emacs --batch -Q -l probe-net.el= against a real loopback server/
+  client pair plus a connection-refused case — not recalled from
+  training data, executed and read from the output.
+- FFI availability (§1.4): read directly from =fix/ffi-surface-
+  availability='s own commit message and doc 100 §7, not re-derived.
+- Phase 1 socket primitives (§1.1, §1.5): read directly from
+  =feat/socket-primitives-p1='s =scripts/nelisp-standalone-build.el=,
+  line numbers cited against that exact checkout.

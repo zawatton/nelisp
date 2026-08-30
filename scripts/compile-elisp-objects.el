@@ -1646,6 +1646,14 @@
      :source-var nelisp-cc-evalport-aot-builtin-call1--source
      :output "evalport-aot-builtin-call1.o"
      :requires-arch x86_64)
+    ;; The matching multi-argument dispatcher.  `nelisp_aot_builtin_calln'
+    ;; appeared nowhere in the reader build, so any artifact lowering a
+    ;; multi-argument call through Doc 129.6 delegation had an extern the
+    ;; reader could not resolve and could not be loaded in-process.
+    (nelisp-cc-evalport-aot-builtin-calln
+     :source-var nelisp-cc-evalport-aot-builtin-calln--source
+     :output "evalport-aot-builtin-calln.o"
+     :requires-arch x86_64)
     ;; Doc 135 Stage 135.E (M2 swap) — the elisp cons-form evaluator
     ;; (nl_eval_inner_cons + nl_apply_special + nl_sp_eq_* / nl_cons_* helpers),
     ;; delegating to the wired nl_sf_* special-form impls.  DEFINES

@@ -199,7 +199,8 @@
     ;; MutStr (tag=6) is rejected — it is an internal type and is
     ;; never passed by Elisp `make-symbol' callers.
     (defun nl_jit_make_symbol (arg out)
-      (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 4))
+      (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 4)
+              (= (sexp-tag arg) 14))
           (nl_jit_sym_inner arg out (str-len arg)
                             (extern-call nl_make_symbol_counter_ptr))
         1)))

@@ -1,5 +1,58 @@
 ;;; nelisp-cc-evalport-nonenv-mut-str-set-cp.el --- lowered -*- lexical-binding: t; -*-
 ;;; Code:
 (defconst nelisp-cc-evalport-nonenv-mut-str-set-cp--source
-  (quote (seq (defun nl_msscp_write_int_out (out val_cp) (seq (ptr-write-u64 out 0 2) (ptr-write-u64 (+ out 8) 0 val_cp) 0)) (defun nl_msscp_swap_fields (arg new_nlstr) (let* ((arg_nlstr (ptr-read-u64 (+ arg 8) 0))) (seq (ptr-write-u64 arg_nlstr 0 (ptr-read-u64 new_nlstr 0)) (ptr-write-u64 (+ arg_nlstr 8) 0 (ptr-read-u64 (+ new_nlstr 8) 0)) (ptr-write-u64 (+ arg_nlstr 16) 0 (ptr-read-u64 (+ new_nlstr 16) 0)) 0))) (defun nl_msscp_walk (arg new_slot byte_idx char_j idx val_cp) (let* ((ok (nl_str_codepoint_at arg byte_idx (+ new_slot 16) (+ new_slot 24)))) (if (= ok 0) 0 (let* ((orig_cp (ptr-read-u64 (+ new_slot 16) 0)) (width (ptr-read-u64 (+ new_slot 24) 0))) (seq (nl_mut_str_push_codepoint new_slot (if (= char_j idx) val_cp orig_cp)) (nl_msscp_walk arg new_slot (+ byte_idx width) (+ char_j 1) idx val_cp)))))) (defun nl_msscp_do_build (arg new_slot char_count idx val_cp) (seq (nl_alloc_mut_str char_count new_slot) (nl_msscp_walk arg new_slot 0 0 idx val_cp) (nl_msscp_swap_fields arg (ptr-read-u64 (+ new_slot 8) 0)))) (defun nl_mut_str_set_codepoint_raw (arg idx val_cp out) (if (= (nelisp_ptr_read_u8 arg 0) 6) (if (< val_cp 0) 1 (if (> val_cp 1114111) 1 (if (and (>= val_cp 55296) (<= val_cp 57343)) 1 (let* ((char_count (nl_str_char_count arg))) (if (>= idx char_count) 1 (let* ((new_slot (alloc-bytes 32 8))) (seq (nl_msscp_do_build arg new_slot char_count idx val_cp) (nl_msscp_write_int_out out val_cp)))))))) 1)))))
+  '(seq
+    (defun nl_msscp_write_int_out (out val-cp)
+      (seq
+       (ptr-write-u64 out 0 2)
+       (ptr-write-u64 (+ out 8) 0 val-cp)
+       0))
+    (defun nl_msscp_unibyte_write (arg idx val-cp)
+      (let* ((nlstr (ptr-read-u64 (+ arg 8) 0))
+             (data (ptr-read-u64 (+ nlstr 8) 0))
+             (len (ptr-read-u64 (+ nlstr 16) 0)))
+        (if (if (< val-cp 0) 1 (if (> val-cp 255) 1 0))
+            1
+          (if (>= idx len)
+              1
+            (seq (nelisp_ptr_write_u8 data idx val-cp) 0)))))
+    (defun nl_msscp_multibyte_find_and_write
+        (arg byte-idx char-idx idx val-cp scratch)
+      (let* ((ok (extern-call nl_str_codepoint_at
+                              arg byte-idx scratch (+ scratch 8))))
+        (if (= ok 0)
+            1
+          (let* ((old-cp (ptr-read-u64 scratch 0))
+                 (width (ptr-read-u64 (+ scratch 8) 0)))
+            (if (= char-idx idx)
+                (if (>= old-cp 128)
+                    1
+                  (let* ((nlstr (ptr-read-u64 (+ arg 8) 0))
+                         (data (ptr-read-u64 (+ nlstr 8) 0)))
+                    (seq
+                     (nelisp_ptr_write_u8 data byte-idx val-cp)
+                     0)))
+              (nl_msscp_multibyte_find_and_write
+               arg (+ byte-idx width) (+ char-idx 1) idx val-cp scratch))))))
+    (defun nl_msscp_multibyte_write (arg idx val-cp)
+      (if (if (< val-cp 0) 1 (if (> val-cp 127) 1 0))
+          1
+        (let* ((char-count (extern-call nl_str_char_count arg)))
+          (if (>= idx char-count)
+              1
+            (let* ((scratch (alloc-bytes 16 8)))
+              (nl_msscp_multibyte_find_and_write
+               arg 0 0 idx val-cp scratch))))))
+    (defun nl_mut_str_set_codepoint_raw (arg idx val-cp out)
+      (if (< idx 0)
+          1
+        (let* ((tag (nelisp_ptr_read_u8 arg 0))
+               (rc (if (= tag 15)
+                       (nl_msscp_unibyte_write arg idx val-cp)
+                     (if (= tag 6)
+                         (nl_msscp_multibyte_write arg idx val-cp)
+                       1))))
+          (if (= rc 0)
+              (nl_msscp_write_int_out out val-cp)
+            1))))))
 (provide (quote nelisp-cc-evalport-nonenv-mut-str-set-cp))

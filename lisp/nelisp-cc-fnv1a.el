@@ -70,7 +70,7 @@
 
 (defconst nelisp-cc-fnv1a--source
   '(seq
-    (defun nelisp_fnv1a_step (h str-ptr i n mask)
+    (defun nelisp_fnv1a_step (h bytes i n mask)
       ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
       ;; the 4-byte unrolled main loop has consumed the bulk of the
       ;; string).  R11b Wave 9: extra MASK arg threads the precomputed
@@ -88,10 +88,10 @@
       ;; on (i+1).  Base case: `(< i n)' false → return the final hash.
       (if (< i n)
           (nelisp_fnv1a_step
-           (logand (* (logxor h (str-byte-at str-ptr i)) 16777619) mask)
-           str-ptr (+ i 1) n mask)
+           (logand (* (logxor h (nl_bytes_byte_at bytes i)) 16777619) mask)
+           bytes (+ i 1) n mask)
         h))
-    (defun nelisp_fnv1a_step4 (h str-ptr i n mask)
+    (defun nelisp_fnv1a_step4 (h bytes i n mask)
       ;; Tail-recursive 4-byte unrolled inner loop.  R11b Wave 9
       ;; perf opt: each recursion processes 4 bytes per cycle when
       ;; `(<= (+ i 4) n)' (= at least 4 bytes remain), halving the
@@ -123,20 +123,20 @@
                      (logand
                       (* (logxor
                           (logand
-                           (* (logxor h (str-byte-at str-ptr i))
+                           (* (logxor h (nl_bytes_byte_at bytes i))
                               16777619)
                            mask)
-                          (str-byte-at str-ptr (+ i 1)))
+                          (nl_bytes_byte_at bytes (+ i 1)))
                          16777619)
                       mask)
-                     (str-byte-at str-ptr (+ i 2)))
+                     (nl_bytes_byte_at bytes (+ i 2)))
                     16777619)
                  mask)
-                (str-byte-at str-ptr (+ i 3)))
+                (nl_bytes_byte_at bytes (+ i 3)))
                16777619)
             mask)
-           str-ptr (+ i 4) n mask)
-        (nelisp_fnv1a_step h str-ptr i n mask)))
+           bytes (+ i 4) n mask)
+        (nelisp_fnv1a_step h bytes i n mask)))
     (defun nelisp_fnv1a (str-ptr)
       ;; str-ptr: *const Sexp pointing at Sexp::Str / Sexp::Symbol.
       ;; Returns: i64 — the 32-bit FNV-1a hash of the string's bytes,
@@ -163,7 +163,8 @@
       ;; threaded through both recursions as an explicit arg, avoiding
       ;; the repeated `(shl 1 32)' shift in every inner step.
       (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
-                          str-ptr 0 (str-len str-ptr)
+                          (str-bytes-ptr str-ptr) 0
+                          (str-len str-ptr)
                           (- (shl 1 32) 1))))
   "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.

@@ -156,7 +156,7 @@ LEN must be a non-negative Int; CP must be an Int in-range
   '(defun nl_jit_mut_str_len (arg out)
      ;; arg: *const Sexp.  out: *mut Sexp.
      ;; Returns: i64 = 0 on OK (= MutStr char-count), 1 on ERR.
-     (if (= (sexp-tag arg) 6)
+     (if (or (= (sexp-tag arg) 6) (= (sexp-tag arg) 15))
          (and (sexp-int-make out (str-char-count arg)) 0)
        1))
   "AOT source for the `nl_jit_mut_str_len' trampoline.

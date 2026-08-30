@@ -22,7 +22,7 @@ says so rather than guessing.
 | short-lived CLI / batch job    | ready           | =recipes/batch-data= passes here; =dist/= ships standalone tarballs for four platforms                      |
 | stdio worker under a host      | ready           | =recipes/stdio-service= passes, including the flush check: a response lands while the pipe is still open    |
 | long-lived resident service    | conditional     | the standalone reader's arena never reclaims — about 560 bytes per evaluated operation, and =garbage-collect= frees none of it (measured 2026-08-17).  Supervise and restart, or run one process per request |
-| native hot path (=.neln=)      | not yet usable end to end | compiles with =:native t= on Windows, which cannot execute the result; on Linux, which can, both functions fall back because the compiler's own object write trips =write-region='s character-vs-byte check (measured 2026-08-18) |
+| native hot path (=.neln=)      | ready on linux-x86_64 | compiles with =:native t= and the compiled code actually runs there: =recipes/native-hotpath/verify.sh= passes both gates, =native-exec-elisp-artifact= on the compiled function returns the right answer, and two independent compiles of the same source are byte-identical (fixed 2026-08-22, see =native-hotpath/README.org= -- the 2026-08-18 blocker was two stacked char-vs-byte defects, not the one first suspected) |
 | HTTP service                   | not viable today | the 20-file =nelisp-http= stack loads and reports its features, but only because =load= continues past a signalled error: its =(require 'url)= / =url-parse= / =url-http= / =dom= all fail, and the first real call dies with =void-function url-generic-parse-url= (measured 2026-08-18, WSL) |
 | GUI (X11)                      | works             | =tools/nelisp-x11-hello.sh= opens a real 460x140 window under WSLg, confirmed in =xwininfo -root -tree=.  Pure Elisp on the X11 core protocol over the socket: no Xlib, no C.  Interactive, so not a headless gate |
 | TUI (async event loop)         | fails today       | =tools/nelisp-async-tty-smoke.sh= dies with =void-variable: (declarations)= loading the host =generator.el=, and reports nothing: it captures the output, compares, and exits 1 in silence (2026-08-18, WSL) |
@@ -59,15 +59,22 @@ What two hosts answered on 2026-08-18, same commit:
 
 The three in bold are single-platform defects, which is exactly why a
 recipe written on one host cannot be trusted on the other until it has
-run there.
+run there.  The =write-region= row is dated: fixed 2026-08-22, see
+"Two traps" below.
 
 Beyond the probe, still true of both:
 
 - =read-string=, =read-from-minibuffer= — void.  =read-stdin-bytes= is
   the only way in.
 - =read= — string streams only; it cannot read from stdin.
-- =goto-char=, =re-search-forward=, =mapatoms= — void.  Buffers exist,
-  but buffer *navigation* does not.
+- =re-search-forward=, =mapatoms= — void. =goto-char=/=point=/=point-min=/
+  =point-max= are real as of Doc 188 Phase 1 (2026-08-23,
+  =docs/design/188-buffer-unification.org=) — buffers exist and basic
+  navigation now works (=insert=/=buffer-string=/=with-current-buffer=/
+  =with-temp-buffer=/=generate-new-buffer=/=kill-buffer= are backed by
+  one coherent model instead of the old disconnected-=insert= bug), but
+  *search* (=re-search-forward=, =search-forward=) and *markers/
+  overlays* (Doc 188 P3-P5) do not exist yet.
 - =json-encode=, =sqlite-open= — not in the base runtime; they live in
   =packages/nelisp-json= and =packages/nelisp-sqlite=.
 - =load= does not stop at an error.  A form that signals inside a loaded
@@ -83,16 +90,39 @@ Beyond the probe, still true of both:
 
 * Two traps that cost the most time
 
-** Multibyte writes signal after succeeding
+** Multibyte writes used to signal after succeeding (fixed 2026-08-22)
 
-=write-region= verifies its own work by comparing a character count with
-the byte count the write returned.  Those differ for anything multibyte,
-so writing Japanese text raises
+=write-region= verifies its own work by comparing the byte count the
+write returned against a count of its own.  That second count used to be
+a character count, which differs from the byte count for anything
+multibyte, so writing Japanese text raised
 
 : write-region stub: wrf returned 28 (expected 20)
 
-*after the file has been written correctly*.  Neither the error nor its
-absence tells you anything.  Read the file back and compare.
+*after the file had already been written correctly*.  Neither the error
+nor its absence told you anything; you had to read the file back and
+compare.
+
+The check now compares against =string-bytes= (the byte-clean
+counterpart of =length=, Doc 161) instead, so it agrees with what was
+actually written and multibyte text no longer signals:
+
+#+begin_src sh
+target/nelisp --eval '(write-region "こんにちは" nil "/tmp/x.txt" nil (quote silent))'
+#+end_src
+
+writes silently, and =/tmp/x.txt= holds the correct UTF-8 bytes.
+
+That fix does not, by itself, make every byte-buffer operation safe.
+=aref= and =length= still decode a string as UTF-8 characters (Doc 161's
+contract) rather than reading raw bytes, so code that measures or reads
+back a buffer containing bytes >= 128 with =aref=/=length= instead of
+the byte-clean =string-byte=/=string-bytes= pair gets a wrong answer
+with no signal at all -- the write succeeds, the count agrees with
+itself, and the content is wrong.  =base64-encode-string= and the ELF
+writer's own section-size arithmetic both had exactly that shape of bug,
+and it is what actually blocked =native-hotpath= on Linux (see
+=native-hotpath/README.org=), not the write-region check above.
 
 ** POSIX-looking absolute paths resolve against the current drive
 

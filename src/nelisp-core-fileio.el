@@ -29,12 +29,23 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'subr-x)
+;; Optional: this file is also loaded by the standalone runtime, which has no
+;; Emacs underneath it to load `subr-x' from -- and does not need one.  Every
+;; name the tree uses from it (string-empty-p, string-trim, string-blank-p,
+;; when-let, if-let, hash-table-keys/-values) is already defined by the stdlib
+;; prelude there; measured 2026-08-19, `fboundp' answers t for all of them in
+;; the built reader.  A hard require asks for a file rather than for the
+;; functions, and the file is the part that does not exist.
+(require 'subr-x nil t)
 (require 'nelisp-coding)
 
 (declare-function nl-syscall-access "nelisp-runtime")
 (declare-function nl-syscall-stat-ex "nelisp-runtime")
 (declare-function nl-syscall-read-file "nelisp-runtime")
+;; The one syscall wrapper actually wired on the standalone runtime (see
+;; `nelisp-core--read-raw-bytes' below) -- `nl-syscall-read-file' above
+;; never is, on any host.
+(declare-function nelisp--syscall-read-file "nelisp-stdlib-os" (path))
 
 (defun nelisp-core--syscall-available-p (sym)
   "Return non-nil if the runtime syscall SYM is wired."
@@ -143,6 +154,30 @@ Returns a unibyte string of raw bytes."
   (cond
    ((nelisp-core--syscall-available-p 'nl-syscall-read-file)
     (nl-syscall-read-file file (or beg 0) end))
+   ;; `nl-syscall-read-file' above is declared against a "nelisp-runtime"
+   ;; module that this tree never implements -- it is never `fboundp' on
+   ;; either host Emacs or the standalone runtime, so every whole-file
+   ;; read used to fall straight through to the buffer-based branch
+   ;; below.  On the standalone runtime that branch's
+   ;; `buffer-substring-no-properties' is a `scripts/nelisp-stdlib-prelude.el'
+   ;; stub that unconditionally returns "" (there is no real buffer object
+   ;; behind it there) -- so this function silently returned an EMPTY
+   ;; string for every file, with no error.  `nelisp-load-file' then
+   ;; "loaded" zero forms: a `defun' in the file was simply never
+   ;; installed, and the next thing that called it saw `void-function'.
+   ;; This is exactly the eval-elisp-source pure-source-fallback defect
+   ;; (marker absent, no adjacent artifact) the substrate-parity gate
+   ;; found -- reproduced and root-caused 2026-08-22.
+   ;;
+   ;; `nelisp--syscall-read-file' is the primitive that actually is wired
+   ;; on the standalone runtime (`nelisp-standalone--reader-builtins',
+   ;; and already used the same way by the artifact/source-cache readers
+   ;; in `scripts/nelisp-standalone-build.el').  It only reads a whole
+   ;; file, so it only covers the common BEG/END-less call; a partial
+   ;; read still falls through to the buffer-based branch.
+   ((and (null beg) (null end)
+         (nelisp-core--syscall-available-p 'nelisp--syscall-read-file))
+    (or (nelisp--syscall-read-file file) ""))
    (t
     (with-temp-buffer
       (set-buffer-multibyte nil)

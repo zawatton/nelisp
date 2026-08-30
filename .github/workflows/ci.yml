@@ -7,6 +7,29 @@ on:
     branches: ['**']
 
 jobs:
+  # Fast ratchet/inventory pass, Linux only, run BEFORE the full matrix.
+  #
+  # The full `smoke' matrix below takes roughly an hour and a half per round,
+  # and it is fail-fast, so a moved inventory count -- the most common way a
+  # change breaks CI here -- costs a full round to discover.  These gates are
+  # cheap, deterministic, and Linux-only anyway (the matrix skips them on the
+  # other lanes), so running them first surfaces that whole class in minutes.
+  #
+  # This job does NOT stop at the first failure: `tools/ai/preflight.sh'
+  # collects every gate's result and fails at the end with a summary, so one
+  # round reports every broken gate instead of only the earliest one.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+      - name: "Preflight gates (inventories + parity, all failures collected)"
+        shell: bash
+        run: bash tools/ai/preflight.sh
+
   smoke:
     # Phase 1 Week 1-2 smoke: byte-compile nelisp.el and run the ERT
     # smoke suite on 3 OSes x 2 Emacs versions.  Expands as reader /
@@ -20,6 +43,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gate-mutation's changed-only mode diffs against the merge base,
+          # which a shallow clone does not have.
+          fetch-depth: 0
 
       - name: Set up Emacs (Linux / macOS)
         if: runner.os != 'Windows'
@@ -82,22 +109,115 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: make pkg-load-lists
-      # Reports the ratio on every run but does not fail the build: the
-      # measurement is 0.885x-0.905x, below the 0.95 floor, and Doc 171
-      # sec 11.1 blocks 5.3 (default-on) until that is closed.  Keeping
-      # the step blocking would leave main permanently red and train
-      # everyone to ignore CI, hiding real regressions in the lanes that
-      # are now green.  Re-arm it (drop continue-on-error) together with
-      # the change that reaches the floor.
-      - name: "Doc 171 G4 native TCO benchmark, advisory (TCO-rewritten defun vs hand-written nl-loop, floor 0.95x; Linux is the only lane with the cc + objcopy native-exec toolchain)"
+      # Blocking again since 2026-08-19.  It was advisory because the ratio
+      # sat at 0.885x-0.905x and a permanently red step trains everyone to
+      # ignore CI.  Two things closed that: the back-edge now emits only the
+      # temporaries a later argument actually reads, and the benchmark takes
+      # the median of five rounds of twenty runs instead of one round of
+      # five -- five runs closed the timing window at 25ms, before the CPU
+      # had finished ramping, and could not resolve a 5% floor.  Measured on
+      # the same lane: the pre-change compiler reads 0.955/0.958/0.947 and
+      # the current one 0.995/1.004/1.007, so the step can fail for a real
+      # regression rather than by default.
+      - name: "Doc 171 G4 native TCO benchmark (TCO-rewritten defun vs hand-written nl-loop, floor 0.95x; Linux is the only lane with the cc + objcopy native-exec toolchain)"
         if: runner.os == 'Linux'
-        continue-on-error: true
         shell: bash
         run: make bench-aot-tco
-      - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64 -- the only standalone target with a runtime env probe, which NELISP_ALLOC_CHECK=1 arming needs)"
+      - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
         if: runner.os == 'Windows'
         shell: bash
         run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64
+      # Windows was the only lane that could run this, because arming the
+      # redzone verifier needs the boot env probe and `nl_os_environ_init'
+      # was a no-op off Windows.  It reads envp off the Linux entry stack
+      # since 2026-08-19, so the highest-value check in Doc 170 now runs on
+      # the platform most of the development happens on.
+      - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-reader-checked
+      # Doc 170 sec 5.3.  Rounds share one process, so live-blocks after each
+      # round's garbage-collect is retention: a rise between rounds is the
+      # leak blocker, and a non-zero violation count is the redzone one.
+      # Both were checked by known-answer -- holding 2000 conses past the
+      # collect takes live-blocks 153479 -> 157705 -> 161705 and the target
+      # fails, which is the point of having it.
+      - name: "Standalone NeLisp checked-allocator soak (Doc 170 sec 5.3: redzone + leak blockers; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-reader-checked-soak
+      # 70 of the 245 shared-shadowing names are also native builtins, so
+      # loading the prelude swaps the implementation underneath them.  This
+      # requires both implementations to answer the same.
+      - name: "Standalone NeLisp shadow differential (native builtins vs the prelude's redefinitions; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-reader-shadow-smoke
+
+      # The shadow smoke compares the standalone against itself; this one
+      # compares it against the stock Emacs already installed on the runner,
+      # which is the only check here that can see both halves being wrong the
+      # same way.
+      # Wrapped through `nelisp-ai.sh gate' (rather than bare `make
+      # emacs-parity', as before) so this step also writes
+      # target/gates/emacs-parity.json -- `emacs-parity' is a required
+      # gate in tools/ai/gates.expected, and until this pass nothing in
+      # this workflow produced a report for it at all: the full,
+      # unscoped `verify' at the end of this lane would have called it
+      # MISSING despite this step having just run and passed it.
+      - name: "Emacs parity (differential vs stock Emacs; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate emacs-parity -- make emacs-parity
+
+      # Checks on the checks: every gate must report how much it looked at,
+      # and a name that ignores an argument Emacs defines must say so.
+      - name: "Gate self-check and partial-argument inventory (Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          make prelude-toplevel-check
+          make partial-inventory
+          make parity-coverage
+          make gate-selfcheck
+
+      # `nelisp-ai.sh check' is the ~18-gate fast lane AI.md documents as
+      # the pre-commit command; most of its individual steps were already
+      # scattered above as their own `make TARGET' steps (this workflow
+      # predates AI.md and `tools/ai/'), but seven were not in ANY CI lane
+      # at all: bootstrap-contract, fallback-inventory,
+      # fallback-inventory-selftest, gate-mutation, generated-source-parse,
+      # ns-gate, wasm-dtw-skeleton-smoke.  Running the whole tier here
+      # (rather than hand-picking just the seven) makes `nelisp-ai.sh
+      # check' itself, not a second hand-maintained step list, the source
+      # of truth for what the fast lane is -- the two were already able to
+      # drift (gates.expected grew past this file's own count without
+      # anyone noticing, which is the gap this step closes).  The
+      # overlap with the individual steps above costs real time (measured
+      # locally at 85s for the whole tier) but changes nothing about their
+      # own results.  Linux-only: `gate-mutation''s emacs-parity row
+      # rebuilds target/nelisp through the same cc + objcopy native-exec
+      # toolchain `bench-aot-tco' above notes is Linux-only.
+      - name: "AI toolchain check-tier gates (tools/ai/nelisp-ai.sh check); Linux x86_64"
+        # Emacs-version-independent: this exercises the standalone
+        # BINARY; the host Emacs only builds it.  Running it on both
+        # 29.4 and 30.1 did the same work twice -- measured, the 29.4
+        # lane took 108 minutes against 61 for 30.1, while every other
+        # lane in the matrix finished in 2-12.  check: gate-mutation rebuilds target/nelisp once per row.
+        # Anything that actually differs BY Emacs version -- compile,
+        # emacs-parity, the ERT suites, test-jit/test-nojit -- still
+        # runs on both lanes.
+        if: runner.os == 'Linux' && matrix.emacs-version == '30.1'
+        shell: bash
+        run: |
+          # gate-mutation is not here: it is 1257 of this lane's 2784
+          # seconds, in one serial stretch, and now runs as four parallel
+          # shards in the `mutation' job.  Skipping it leaves no gate
+          # report, so the `verify' job merges the shards' reports back
+          # into one before checking them against gates.expected -- the
+          # mechanism that catches a gate which never ran has to survive
+          # the split, or the split has bought speed with coverage.
+          NELISP_CHECK_SKIP=gate-mutation bash tools/ai/nelisp-ai.sh check
 
       # Placed before the ERT suite so a pre-existing test failure does
       # not skip the Mach-O toolchain-acceptance signal.
@@ -106,9 +226,20 @@ jobs:
         shell: bash
         run: make macho-acceptance-test
 
+      # `make test' alone (as this ran before) never writes a gate report;
+      # only `nelisp-ai.sh test' does, as gate "ert-full" -- a required
+      # gate with no other producer anywhere in this workflow.  `make
+      # clean' first reproduces `test: clean''s own prerequisite (the
+      # `nelisp-ai.sh test' path skips it, to stay usable as a fast TDD
+      # loop): the root Makefile's own `compile' target (run bare, by the
+      # "Byte-compile" step above) leaves .elc files behind rather than
+      # deleting them the way `nelisp-ai.sh compile' does, and stale
+      # byte-compiled `nelisp-eval.el' trips `max-lisp-eval-depth' inside
+      # the self-host probes -- see `test: clean' and the comment above
+      # `all: test' in the Makefile.
       - name: Run smoke tests
         shell: bash
-        run: make test
+        run: make clean && bash tools/ai/nelisp-ai.sh test
       # `nelisp-jit-enabled' is nil by default and the only bindings of
       # it were two of the JIT's own tests, so the translation path was
       # exercised by the tests written for it and by nothing that uses
@@ -129,24 +260,184 @@ jobs:
       - name: Run smoke tests with the JIT disabled
         shell: bash
         run: make test-nojit
-      - name: Standalone NeLisp eval (pure-elisp AOT, zero Rust; x86_64 Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: make standalone-eval-test
+      # Wrapped through `nelisp-ai.sh gate' (rather than bare `make
+      # standalone-reader-test') so this step writes
+      # target/gates/standalone-reader-test.json -- a required gate that,
+      # like `emacs-parity' above, had no report producer anywhere in
+      # this workflow before this pass.
       - name: Standalone NeLisp reader->eval (text -> AOT reader, zero Rust; x86_64 Linux)
         if: runner.os == 'Linux'
         shell: bash
-        run: make standalone-reader-test
+        run: bash tools/ai/nelisp-ai.sh gate standalone-reader-test -- make standalone-reader-test
+      # target/nelisp already exists from the step above (its own
+      # Makefile prerequisite is conditional, same as `emacs-parity'
+      # further up, so this does not rebuild it).
+      - name: "Binary-size ratchet (target/nelisp vs pinned baseline, tools/nelisp-binary-size-baseline.txt; Linux x86_64)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate binary-size-ratchet -- make binary-size-ratchet
+      # Wrapped through `nelisp-ai.sh gate' (rather than bare `make
+      # standalone-selfhost-test'; equivalent to `nelisp-ai.sh selfhost')
+      # so this step writes target/gates/standalone-selfhost-test.json --
+      # a required gate with no report producer anywhere in this workflow
+      # before this pass.
       - name: Standalone NeLisp SELF-HOST (interpreter compiles recursive fact -> native ELF, zero emacs; x86_64 Linux)
         if: runner.os == 'Linux'
         shell: bash
-        run: make standalone-selfhost-test
-      - name: Standalone NeLisp MULTI-THREADED self-host (clone(2)+atomics, 3 parallel threads, zero emacs; x86_64 Linux)
+        run: bash tools/ai/nelisp-ai.sh gate standalone-selfhost-test -- make standalone-selfhost-test
+      # Three of `nelisp-ai.sh''s binary-tier gates were in no CI lane at
+      # all before this pass: nelisp-native-artifact-gate,
+      # nelisp-performance-gate, standalone-reader-smokes (the 28
+      # individual `standalone-reader-*' targets as one gate).  Each
+      # builds target/nelisp itself if it is not already there, the same
+      # way `standalone-selfhost-test' above does.
+      - name: "AI toolchain binary-tier gate: native artifact (tools/ai/nelisp-ai.sh native-artifact); Linux x86_64"
         if: runner.os == 'Linux'
         shell: bash
-        run: make standalone-selfhost-mt-test
-      - name: Standalone NeLisp PARALLEL BUILD (4 units compiled concurrently via fork(2), zero emacs; x86_64 Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: make standalone-parallel-compile-test
+        run: bash tools/ai/nelisp-ai.sh native-artifact
 
+      # Every Linux gate report this lane produced.  The `verify' job
+      # collects these together with the mutation and subsystem jobs' and
+      # checks the union against gates.expected; on its own, no single job
+      # can any longer answer "did every required gate run".
+      - name: Upload gate reports (Linux 30.1 lane)
+        if: always() && runner.os == 'Linux' && matrix.emacs-version == '30.1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-smoke
+          path: target/gates/*.json
+          if-no-files-found: error
+  # ------------------------------------------------------------------
+  # Everything below used to be steps inside the Linux lane of `smoke'.
+  #
+  # Measured on run 32956362867: that lane took 46.4 minutes, of which
+  # 39.1 was work no other lane does at all -- gate-mutation 1257 s,
+  # extras 519 s, smokes 209 s, perf 113 s -- all of it serial, in one
+  # job.  On the steps every OS shares, Linux is not slow (432 s against
+  # macOS 311 s and Windows 484 s); it simply carries the whole gate
+  # suite alone.
+  #
+  # These jobs are Linux/30.1 only for the same reason those steps were:
+  # they exercise the standalone BINARY, and the host Emacs only builds
+  # it.  What actually varies by Emacs version -- compile, emacs-parity,
+  # the ERT suites, test-jit/test-nojit -- stays on all six lanes of
+  # `smoke'.
+  # ------------------------------------------------------------------
+
+  mutation:
+    name: "gate-mutation shard ${{ matrix.shard }}/4"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # changed-only diffs against the merge base, which a shallow
+          # clone does not have.
+          fetch-depth: 0
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+      - name: "gate-mutation, shard ${{ matrix.shard }} of 4"
+        shell: bash
+        run: |
+          # The rows are independent -- each injects a defect, runs the
+          # gate, and restores the file before the next begins -- so they
+          # split cleanly.  Shards are taken modulo, not as contiguous
+          # blocks: the slow rows (six rebuild the binary, six run a
+          # scoped ERT suite) are clustered in the table and contiguous
+          # blocks would pile them into one shard.  Measured: 3/2/3/4 of
+          # the twelve slow rows per shard.
+          #
+          # On the integration branch the full sweep runs; branches and
+          # PRs get it narrowed to the rows their diff can affect, with
+          # the harness, the row table, the Makefile and the tier runner
+          # each forcing a full sweep when they change.
+          if [ "$GITHUB_REF" = refs/heads/main ] || [ "$GITHUB_REF" = refs/heads/master ]; then
+            echo 'gate-mutation: integration branch -- full sweep'
+          else
+            git fetch --quiet origin main 2>/dev/null || git fetch --quiet origin master 2>/dev/null || true
+            for b in origin/main origin/master; do
+              if base=$(git merge-base HEAD "$b" 2>/dev/null); then
+                export NELISP_GATE_MUTATION_BASE="$base"
+                echo "gate-mutation: narrowed against $b ($base)"
+                break
+              fi
+            done
+            # No base found: leave it unset so the sweep stays full.
+          fi
+          NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/4' \
+            bash tools/ai/nelisp-ai.sh gate gate-mutation -- make gate-mutation
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-mutation-${{ matrix.shard }}
+          path: target/gates/*.json
+          if-no-files-found: error
+
+  subsystems:
+    name: "tier ${{ matrix.tier }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Split by cost, measured: extras 519 s, smokes 209 s, perf 113 s.
+        # extras alone is longer than the other two together, so it gets
+        # its own job rather than being paired with one of them.
+        tier: [extras, smokes, perf]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+      - name: "AI toolchain tier: ${{ matrix.tier }}"
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }}
+      - name: Upload gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-${{ matrix.tier }}
+          path: target/gates/*.json
+          if-no-files-found: error
+
+  verify:
+    name: "verify (every required gate produced a report)"
+    runs-on: ubuntu-latest
+    needs: [smoke, mutation, subsystems]
+    # `always()' so a red tier still reaches this job: the point of verify
+    # is to say WHICH gates are missing or failing, and a skipped verify
+    # after a failure tells nobody that.
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+      - name: Collect every job's gate reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gate-reports-*
+          path: collected
+      - name: Merge the mutation shards into one report
+        shell: bash
+        run: |
+          # gates.expected names `gate-mutation' once and verify fails a
+          # gate whose report is absent -- that is what catches a gate
+          # which silently did not run.  Four shards produce four reports
+          # for that one name, so they are summed back into one; a shard
+          # that failed, or that never wrote a report, has to survive into
+          # the merged verdict rather than be averaged away.
+          mkdir -p target/gates
+          find collected -name '*.json' -not -path '*mutation*' -exec cp {} target/gates/ \;
+          bash tools/nelisp-merge-gate-reports.sh gate-mutation 4 collected target/gates
+          ls -1 target/gates/
+      - name: "AI toolchain verify (all tiers, union of every job)"
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh verify

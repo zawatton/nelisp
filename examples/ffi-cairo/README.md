@@ -42,6 +42,20 @@ pure-elisp FFI.
 
 Both linking modes are supported and produce an identical 240×120 "sumi" PNG.
 
+**Not the same FFI as `nl-ffi-call`.** Everything on this page goes through
+the *AOT compiler* (`lisp/nelisp-aot-compiler.el`): `extern-call`/
+`extern-call-ptr`/`dlopen`/`dlsym` are compile-time forms recognised while
+cross-compiling ONE `.el` program to a native object, which an external `cc`/
+mingw toolchain then links — including the Windows-native GTK4 path below,
+via a real PE import table `cc`/mingw itself emits.  `nl-ffi-call' is a
+different thing: the runtime dispatcher inside the pre-built `target/nelisp`
+*standalone reader* binary (`scripts/nelisp-standalone-build.el`), present
+only in a `NELISP_READER_DYNAMIC=1` linux-x86_64 build of that binary — its
+own PE writer has no import-table machinery, so a Windows `target/nelisp.exe`
+cannot route it to a DLL the way this page's external-linker path does.  See
+`docs/design/100-phase-47-dynamic-link-elisp.org` section 7 for the full
+`nl-ffi-call` availability matrix across builds.
+
 ## Build / run loop
 
 The AOT compiler emits x86_64 **ELF**.  On a Windows dev host we compile with the

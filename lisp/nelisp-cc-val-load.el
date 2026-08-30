@@ -161,7 +161,9 @@
                         (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
                       (if (= (ptr-read-u8 src_slot 0) 5)
                           (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
-                        (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))
+                        (if (= (ptr-read-u8 src_slot 0) 14)
+                            (nl_vci_rebox (alloc-bytes 32 8) src_slot dst_word_ptr)
+                          (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr)))))
                 (nl_vci_box (alloc-bytes 32 8) src_slot dst_word_ptr))))))))
   "AOT source for the Doc 147 Phase 0 word<->slot keystone helpers.
 

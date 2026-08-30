@@ -85,8 +85,23 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'pcase)
-(require 'subr-x)
+;; Optional, same reading as `subr-x' (cd64c0bd7), `macroexp' and `seq': this
+;; file is loaded by the standalone runtime, which has no Emacs underneath it
+;; to load `pcase' from -- and does not need one.  The stdlib prelude defines
+;; the `pcase' macro (and `pcase-let' / `pcase-let*'), kept in sync with
+;; lisp/nelisp-pcase.el; measured 2026-08-19, `(fboundp 'pcase)' is t in the
+;; built reader while `(featurep 'pcase)' is nil, because nothing in this tree
+;; provides the FEATURE.  The require asks for the file; the code needs the
+;; macro.
+(require 'pcase nil t)
+;; Optional: this file is also loaded by the standalone runtime, which has no
+;; Emacs underneath it to load `subr-x' from -- and does not need one.  Every
+;; name the tree uses from it (string-empty-p, string-trim, string-blank-p,
+;; when-let, if-let, hash-table-keys/-values) is already defined by the stdlib
+;; prelude there; measured 2026-08-19, `fboundp' answers t for all of them in
+;; the built reader.  A hard require asks for a file rather than for the
+;; functions, and the file is the part that does not exist.
+(require 'subr-x nil t)
 (require 'nelisp-cc)
 (require 'nelisp-cc-runtime)
 

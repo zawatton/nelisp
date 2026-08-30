@@ -72,3 +72,25 @@ suite first):
 #+begin_src sh
 ./target/nelisp --load packages/nl-condition/test/nl-condition-standalone-smoke.el
 #+end_src
+
+Both paths also run the demo in =examples/nl-condition/restart-resume.el=
+via =packages/nl-condition/test/nl-condition-example-test.el= (matches
+the `packages/*/test/nl-*-test.el' glob, so it is also part of the
+host-Emacs `ert-full' gate), so the "resumes past the fault" example
+cannot silently rot.
+
+* Portability claim, measured (2026-08-22, target/nelisp built from
+  06ed9bd3a)
+
+"Opt-in library on plain Elisp; runs on NeLisp standalone and host
+Emacs" above is TRUE, not just claimed:
+
+- Host Emacs: 29/29 `nl-condition-test.el' ERT cases pass (part of
+  `ert-full').
+- Standalone: =nl-condition-standalone-smoke.el= runs the identical
+  29 test bodies plus the 4-case example suite through =target/nelisp=
+  -- 33/33 pass, `GATE-COUNT checked=33 findings=0'.  Gated as
+  `nl-condition-standalone-smoke' in =tools/ai/gates.expected= /
+  `nelisp-ai.sh extras'; red-proven by nulling `nl--handler-stack' in
+  `nl-signal' (the gate dropped to `checked=15 findings=18', then
+  reverted).

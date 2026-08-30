@@ -339,7 +339,28 @@ The normal path (=power2 > 0=) is unchanged.
 
 * 11. C99 %a / %A hex-float conversion (Doc 159 §11)
 
-=format= now supports the C99 hexadecimal-float conversions =%a= / =%A=.  This
+*WITHDRAWN from =format= 2026-08-21.*  =format= now rejects =%a= / =%A= the way
+host Emacs 30.1 does, with "Invalid format operation %a".  The superset below
+was measured against glibc and is correct; it was removed anyway, because a
+conversion that formats here and signals in Emacs is a divergence whichever
+direction it points, and the goal for this runtime is parity.  The formatter
+itself is untouched — =m5_fmt_hexfloat= and the =m5_hexf_*= helpers still exist
+and are still dispatched from =m5_fmt_dispatch= on conv =a=/=A=; what changed is
+that the prelude =format= no longer routes anything to them.
+
+The capability is *not* gone: =(nelisp-format-hexfloat VALUE &optional PRECISION
+UPCASE)= in the prelude is the replacement entry point, and it is the only
+caller of the =a=/=A= dispatch.  =PRECISION= nil is the unspecified-precision
+form (trailing nibbles stripped); =UPCASE= non-nil gives the =%A= spelling.
+A NeLisp-only name is the right home for a NeLisp-only conversion — overloading
+=format=, whose behaviour Emacs pins down, was the actual mistake.  The
+=standalone-reader-prelude-test= breadth smoke asserts four glibc values through
+it, because the differential corpus cannot cover a conversion Emacs refuses.
+The rest of this section documents what the formatter does.
+
+The original note follows.
+
+=format= supports the C99 hexadecimal-float conversions =%a= / =%A=.  This
 is a *NeLisp superset*: host Emacs 30.1 `format' rejects =%a= with "Invalid
 format operation %a", so there is no Emacs oracle — the reference is glibc
 =printf("%a")= and the output matches it exactly on the validation battery.

@@ -1,0 +1,769 @@
+#+TITLE: Doc 186 — Char-tables
+#+AUTHOR: nelisp / nelisp-emacs (design: Claude Opus 5 + zawatton; P0-P2
+implementation: Claude Fable 5, branch feat/char-table-elisp-layer,
+2026-08-23)
+#+DATE: 2026-08-22
+#+STATUS: SHIPPED (P0/P1/P2 — §4). P3 (regex \sC data-backed rewrite) and
+P4 (base64 dead-code correction) were NOT undertaken this pass — out of
+this branch's assigned scope (Elisp-visible constructor/accessor layer
+only; a consumer rewrite is separate work) — and remain open, same as
+before this branch. See §9 for what changed against §1-§3's own
+description of the tree, found while implementing rather than assumed.
+#+VERIFIED-BY: standalone-reader-test emacs-parity substrate-parity-smoke
+
+* §0 TL;DR
+
+The obvious framing of this doc — "char-tables are entirely absent, decide
+between a real range-compressed structure and a hash-backed interim" — is
+*wrong*, and re-verifying it against this branch's own build is what this
+session spent most of its time on. A native =CharTable= type already
+exists, tagged (=nelisp-sexp--tag-char-table= = 9,
+=lisp/nelisp-sexp-layout.el:37,217=), fully wired through =aref=/=aset=
+dispatch (=lisp/nelisp-jit-strategy.el:308-320,455-456,488-489,523=), GC
+(=lisp/nelisp-cc-nlchartable-drop.el=, =-clone.el=), heap-image
+serialization (=lisp/nelisp-heap-image.el:63,662=), and a dedicated
+=nelisp-sys= DSL surface with its own ERT coverage
+(=packages/nelisp-sys/test/nelisp-sys-backend-test.el:197-213=). Its
+storage IS the "hash-backed interim" this doc was asked to weigh against a
+real structure: =lisp/nelisp-cc-evalport-nonenv-char-table.el= implements
+=nl_char_table_get_raw=/=nl_char_table_set_raw= as a growable, *linearly
+scanned* =(key . val)= entry array with parent-chain fallback and a
+default value — not Emacs's actual range-compressed ASCII+super-table+
+sub-table structure. So the real vs. interim question was already decided,
+by someone else, before this doc existed; the interim already ships.
+
+What is missing is the *Elisp-visible* layer on top of that native type:
+=make-char-table=, =char-table-p=, =char-table-parent=/=set-char-table-
+parent=, =char-table-extra-slot=/=set-char-table-extra-slot=,
+=char-table-range=/=set-char-table-range=, and every consumer built on
+those — =standard-syntax-table=, =char-syntax=, =with-syntax-table=
+(present only as a macro stub that discards its argument, =lisp/nelisp-
+stdlib-eval-special.el:207=), =standard-case-table=/=current-case-table=.
+None of these twelve names is =fboundp= on this branch's =target/nelisp=
+(confirmed by direct probe, §1.1).
+
+*Measured consumer priority (§1.4, contradicting both the task background's
+guess AND this doc's own first-draft claim — caught by re-probing before
+committing, not asserted from a stale comment)*: =upcase=/=downcase= do NOT
+need char-tables — they already work, correctly and Unicode-aware, via a
+hardcoded range predicate (=nelisp--case-up-char=/=-down-char=,
+=scripts/nelisp-stdlib-prelude.el:874-975=) with zero dependency on any
+case-table. The regex engine's =\sC= syntax-class escape
+(=lisp/nelisp-stdlib-regexp.el:304-332=) carries a comment claiming "the
+class character was parsed and thrown away, so every =\\sC= behaved as
+=\\s-="; that comment is *stale*. =nlre--syntax-p= (=:321-332=), directly
+below the comment, already =cond=-dispatches on eight real classes (word,
+symbol, whitespace, punctuation, open/close-paren, string-quote, escape).
+Probed directly against this doc's own build: =(string-match "\\sw" "a")=
+=> =0=, =(string-match "\\Sw" "a")= => =nil=, =(string-match "\\s_" "_")=
+=> =0= — all three already match Emacs. *There is no currently-broken
+regex consumer either.* Both of the task background's candidate
+consumers turn out to already work without a char-table, by hardcoding
+Emacs's global default classification as code instead of data.
+
+That hardcoding is itself the real, narrower gap §1.4 lands on: nothing
+can *customize* the classification, because =modify-syntax-entry= does not
+exist anywhere in this tree (confirmed by grep) and nothing outside
+=nelisp-stdlib-regexp.el= even references =nlre--word-p=/=-syntax-p=. A
+consumer that needs =_= counted as word-constituent (many programming-
+language major modes do) or a custom string-quote character has no
+data structure to ask for that change today — not because the current
+classification is wrong, but because it cannot be told to be different.
+
+*Decided direction*: expose the existing native char-table as a thin
+Elisp API (§3) regardless of this correction — the representation
+question (§2) does not depend on which consumer motivates it — and let a
+real, data-backed =nlre--syntax-table= (§3.4) replace the hardcoded
+predicates as the first consumer, so the *customization* seam exists even
+though the *classification* was already correct. This is weaker
+motivation than "fixes an active bug," and this doc says so plainly rather
+than keeping the more dramatic, disproven framing.
+
+* §1 Problem — measured evidence
+
+** §1.1 Absence, confirmed directly
+
+#+begin_example
+$ ./target/nelisp --load t4.el
+(nil nil nil nil nil nil nil t t nil nil nil)
+;; make-char-table char-table-p standard-syntax-table syntax-table
+;; char-syntax standard-case-table current-case-table upcase[t] downcase[t]
+;; forward-word skip-syntax-forward skip-chars-forward
+#+end_example
+
+=docs/emacs-compat-table.txt= (=make emacs-compat-table=, 7114 names
+against Emacs 30.1) lists none of =make-char-table=/=char-table-p=/
+=cl-defgeneric=/=make-network-process=/=standard-syntax-table=/
+=char-syntax= under either =nelisp-only= or =shared-*= — i.e. the
+generator that walks every =fboundp= symbol this tree defines does not
+see these names either, corroborating the probe rather than resting on
+it alone.
+
+** §1.2 The native representation that already exists
+
+=nelisp-sexp--tag-char-table= (=lisp/nelisp-sexp-layout.el:37=, value 9)
+is a first-class =Sexp= tag, on par with cons/string/vector. Storage
+(=lisp/nelisp-cc-evalport-nonenv-char-table.el=, one =defconst= holding
+six =defun= forms compiled into the =nonenv-char-table.o= unit):
+
+#+begin_src elisp
+(defun nl_char_table_get_raw (arg idx out)
+  (let* ((tag (nelisp_ptr_read_u8 arg 0)))
+    (if (= tag 9)
+        (let* ((box (ptr-read-u64 (+ arg 8) 0)))
+          (let* ((entries_ptr (ptr-read-u64 (+ box 64) 0))
+                 (entries_len (ptr-read-u64 (+ box 80) 0)))
+            (nl_ct_get_search box entries_ptr entries_len idx out 0)))
+      1)))
+#+end_src
+
+=nl_ct_get_search= walks the entry array *linearly*, comparing each
+=(key . val)= 40-byte entry's key against =idx=; on exhaustion it recurses
+into the =parent= pointer (box offset 88) if set, else clones the
+=default_val= (box offset 32) into =out=. =nl_ct_set_step=/=nl_ct_push_new=
+append new entries, doubling capacity via =nl_ct_grow_entries= when full
+— this is exactly the "hash/list-backed interim... exposing the API
+surface without the real sparse-range internals" the task background
+asked this doc to weigh as an option. It already exists; the design
+question this doc actually faces is narrower: expose it, or replace it.
+
+The box layout (=lisp/nelisp-cc-nlchartable-drop.el:14-31=, historically
+attributed to a since-deleted =build-tool/src/eval/nlchartable.rs= — this
+repo carries no Rust at all today, confirmed by =find . -name '*.rs'=
+returning nothing; the layout survives only as this comment and the
+elisp kernels that implement it) reserves, but nothing above this layer
+exposes:
+
+| field | offset | size | Elisp-visible today? |
+|---|---|---|---|
+| subtype | 0 | 32B (Sexp) | no (=char-table-subtype= absent) |
+| default_val | 32 | 32B (Sexp) | only as aref fallback, no accessor |
+| entries | 64/72/80 | 24B (Vec header: ptr/cap/len) | no direct accessor (internal only) |
+| parent | 88 | 8B (Option<NlCharTableRef>) | no (=char-table-parent= absent) |
+| extra | ~96 | 24B (Vec<Sexp>, reserved) | no (=char-table-extra-slot= absent) |
+
+Dispatch already routes =aref=/=aset= on a char-table-tagged value through
+this storage (=lisp/nelisp-jit-strategy.el:455-456,488-489,523=), and the
+=nelisp-sys= compiler DSL has first-class =sys:char-table-get=/=sys:char-
+table-set!= forms lowering to =nl_char_table_get_raw=/=set_raw=
+(=packages/nelisp-sys/src/nelisp-sys-frontend.el:407-429=,
+=-backend.el:160-168=), with dedicated ERT coverage of that lowering
+(=packages/nelisp-sys/test/nelisp-sys-backend-test.el:197-213=). None of
+this has an Elisp-level entry point that could ever reach it, because
+nothing allocates a =CharTable= box from Elisp — there is no
+=nl_char_table_new=/=char-table-new= anywhere in the tree (confirmed by
+grep across =*.el=).
+
+** §1.3 The one real call site is dead code
+
+=make-char-table= has exactly one call in the whole repository:
+
+#+begin_src elisp
+;; packages/nelisp-base64/src/nelisp-base64.el:31
+(let ((table (make-char-table 'nelisp-b64--decode-table nil))
+      (index 0))
+  ...)
+#+end_src
+
+This package is not load-bearing for anything the standalone build
+actually ships. The real =base64-decode-string=/=base64-encode-string=
+used throughout the tree (=lisp/nelisp-artifact.el:347,352,1364,1366=,
+=scripts/nelisp-standalone-build.el:15281,18447=) come from the prelude's
+own implementation (=scripts/nelisp-stdlib-prelude.el:7574=), which does
+not use a char-table at all — confirmed by probe:
+=(fboundp 'base64-decode-string)= is =t= in a fresh binary with no
+package required, and =packages/nelisp-base64= is not required by
+=nelisp-artifact.el=, the prelude, or the standalone build script (only
+false-positive substring matches on the generic phrase "base64-decode"
+turned up in an initial grep; none was an actual =require=). If this
+package is ever wired in, calling its decode path today hits a
+void-function error at =make-char-table=, but nothing currently reaches
+that path.
+
+** §1.4 Neither candidate consumer is actually broken — the real gap is customization
+
+=upcase=/=downcase= (=scripts/nelisp-stdlib-prelude.el:911,950=, plus
+=upcase-initials= at :929) implement Unicode case mapping via
+=nelisp--case-up-char=/=-down-char=, a hardcoded ladder of range
+comparisons (ASCII, Latin-1 supplement, and the Cyrillic-extended
+=#x4D0-#x4FF= pair range at minimum — read in full at
+=scripts/nelisp-stdlib-prelude.el:850-906=), including the one-to-many
+=U+00DF -> "SS"= full-string-mapping special case Emacs itself
+special-cases. None of this consults a case-table, a char-table, or
+anything char-table-shaped: it is a closed-form function of the
+character code. *Case operations do not need char-tables* — this
+contradicts the task background's framing, and is the kind of
+divergence a design doc re-verifying its own premises is supposed to
+catch rather than propagate.
+
+The regex engine's =\sC=/=\SC= syntax-class escape looked like the other
+candidate, on the strength of a comment sitting right above its
+implementation:
+
+#+begin_src elisp
+;; lisp/nelisp-stdlib-regexp.el:296-320
+(defun nlre--word-p (c)
+  (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z))
+      (and (>= c ?0) (<= c ?9))))
+;; `\sC' matches a character whose SYNTAX CLASS is C.  The class character was
+;; parsed and thrown away, so every \sC behaved as \s- (whitespace) and every
+;; \SC as its negation: (string-match "\Sw" "a") answered 0 where Emacs
+;; answers nil.  A class this does not model matches nothing, which is wrong
+;; in a stated direction rather than in an arbitrary one.
+#+end_src
+
+*This comment is stale, and taking it at face value was this doc's own
+first-draft mistake — corrected here before committing rather than left
+to be found later.* =nlre--syntax-p= (=:321-332=, the function this
+comment sits directly above) already =cond=-dispatches the class
+character across eight real syntax classes — word, symbol (=_=),
+whitespace, punctuation, open-paren, close-paren, string-quote, escape —
+not a single collapsed "whitespace or not" test. Probed directly against
+this doc's own build: =(string-match "\\sw" "a")= => =0=,
+=(string-match "\\Sw" "a")= => =nil=, =(string-match "\\s_" "_")= =>
+=0= — all three already match Emacs (contradicting the comment's own
+claimed counter-example for =\\Sw=, which this session could not
+reproduce). Git history (=876eb0a35=, =3efc2ae0b=) shows this file has
+already been through at least one real "thirteen answers that differed
+from Emacs" fix pass; the comment almost certainly predates that fix and
+was never updated once =nlre--syntax-p= replaced whatever it used to
+describe.
+
+What IS still true, and is this doc's actual §1.4 finding: =nlre--word-p=/
+=-syntax-p= are closed-form ASCII predicates that happen to agree with
+Emacs's *default global* standard syntax table (=_= correctly read as
+symbol- not word-constituent, per the adjacent :306-309 comment and its
+own cited regression, =(string-match "\\bx" "_x")=). Nothing can
+*customize* that classification — =modify-syntax-entry= does not exist
+anywhere in this tree (confirmed by grep across =*.el=), and no code
+outside =nelisp-stdlib-regexp.el= references =nlre--word-p=/=-syntax-p=
+at all, meaning no consumer has ever needed to ask for a different
+classification, let alone been unable to. This is the real, narrower gap:
+a data-backed syntax table would let =_= become word-constituent for a
+consumer that wants that (many programming-mode syntax tables do), or a
+custom string-quote character be registered — not fix a wrong answer
+today, but remove a customization ceiling nothing has hit yet because
+nothing could ask.
+
+** §1.5 =with-syntax-table= is a full stub
+
+#+begin_src elisp
+;; lisp/nelisp-stdlib-eval-special.el:207-209
+(defmacro with-syntax-table (_table &rest body)
+  "Stub: ignore TABLE, run BODY in current context."
+  (cons 'progn body))
+#+end_src
+
+TABLE is discarded at macro-expansion time — this is a different failure
+shape from the runtime-argument-ignored pattern
+=tools/partial-accepted.txt= inventories (that file tracks =(defun f (...
+_ignored-arg ...))=, not macros that drop a whole sub-form), so it does
+not appear there; noted here so a future audit of that inventory does not
+read its absence as "already reviewed."
+
+* §2 Decided direction
+
+*Expose the existing native char-table; do not build a second
+representation.* The "real range-compressed structure vs. hash-backed
+interim" choice the task background posed has a different answer than
+either option once §1.2 is accounted for: the interim already exists,
+already has GC/heap-image/JIT-dispatch integration, and replacing it with
+a real Emacs-shaped range-compressed structure (fixed ASCII sub-table +
+super-table + sparse sub-char-tables for the supplementary planes) is a
+strictly bigger, riskier rewrite than this doc's measured consumer set
+(§1.4: one regex escape class, currently ASCII-scoped) justifies.
+
+| option | mechanism | verdict |
+|---|---|---|
+| Build Emacs's real range-compressed char-table structure from scratch | fixed top-level table + depth-1/2/3 sub-tables per Emacs's actual C layout | *rejected for this doc* — no measured consumer needs Unicode-scale range assignment yet; §3.3 bounds why the existing linear entry array is adequate for the actual near-term consumer (a syntax table over ASCII + Latin-1, on the order of 200-400 entries) |
+| Build a NEW hash-table-backed char-table type, ignoring the existing native one | =make-hash-table= plus an Elisp-level API shim | *rejected* — throws away working GC/heap-image/JIT-dispatch integration (§1.2) to duplicate exactly what already exists, for no benefit |
+| Expose the existing native =CharTable= tag via a thin Elisp constructor/predicate/accessor layer, accept O(n) lookup for now | =make-char-table=/=char-table-p=/=char-table-parent=/=char-table-extra-slot=/=char-table-range=/=set-char-table-range=, all thin wrappers over =nl_char_table_get_raw=/=set_raw= plus new allocation and parent/extra-slot accessors | *accepted* — §3 |
+
+* §3 Design
+
+** §3.1 Allocation: =nl_char_table_new= (the one missing native primitive)
+
+Every accessor in §1.2 exists except a constructor. A new =nelisp-sys=
+kernel, sibling to =nelisp-cc-evalport-nonenv-char-table.el=, allocates a
+128-byte =NlCharTable= box (=alloc-bytes 128 8=, matching the layout in
+§1.2's table: 32B subtype + 32B default_val + 24B empty entries Vec header
+(ptr=0,cap=0,len=0) + 8B parent (0 = none) + 24B empty extra Vec header +
+8B refcount=1), writes tag 9 into an output Sexp slot pointing at it, and
+returns. This is new code, not exposure of something that silently
+already works — flagged so the phased plan (§4 P0) does not undercount
+it.
+
+** §3.2 Elisp API surface
+
+#+begin_src elisp
+(make-char-table SUBTYPE &optional INIT)   ; alloc + set default_val = INIT
+(char-table-p OBJECT)                       ; sexp-tag == 9
+(char-table-subtype CHAR-TABLE)             ; read box+0
+(char-table-parent CHAR-TABLE)              ; read box+88, nil if 0
+(set-char-table-parent CHAR-TABLE PARENT)   ; write box+88
+(char-table-extra-slot CHAR-TABLE N)        ; index into the reserved
+(set-char-table-extra-slot CHAR-TABLE N V)  ;   `extra' Vec (§3.3 on growth)
+(aref CHAR-TABLE CHAR)                      ; ALREADY WORKS (§1.2)
+(aset CHAR-TABLE CHAR VALUE)                ; ALREADY WORKS (§1.2)
+#+end_src
+
+=aref=/=aset= need no new dispatch — =nelisp-jit-strategy.el:455-456,488-
+489= already routes tag-9 values through =nl_char_table_get_raw=/
+=set_raw=. Only allocation (§3.1) and the four pure accessor/mutator pairs
+above are new.
+
+** §3.3 =char-table-range=/=set-char-table-range= — scoped, not general
+
+Emacs's real =set-char-table-range= accepts a single char, a =(FROM . TO)=
+cons, =nil= (the default slot), or =t= (every char). Against §1.2's
+linearly-scanned entry array, a naive =(set-char-table-range table
+'(0 . 4194303) val)= would push 4.2M entries and make every subsequent
+=aref= an O(n) scan of them — a real scaling trap, not a hypothetical
+one, since nothing currently guards against it.
+
+*Scope for this doc*: support the single-char and =(FROM . TO)= forms by
+expanding the range into individual =nl_char_table_set_raw= calls (no
+new native primitive), but ONLY up to a compile-time-checked entry-count
+ceiling (proposed: 4096, comfortably above a full ASCII+Latin-1+Latin
+Extended-A syntax table, which is the only near-term consumer, §1.4).
+Above the ceiling, signal a distinct, loud error
+(=char-table-range-too-large=, not a silent truncation or a silent slow
+path) rather than accepting an assignment that would degrade every future
+=aref= on that table. =t= (every character) is explicitly OUT of scope —
+it has no honest small-N encoding on top of the entry array — and
+signals the same way. Real range compression (a default-value-per-block
+scheme, short of Emacs's full sub-char-table structure) is filed as
+§7.2, not designed here, because no consumer measured in this doc needs
+it yet.
+
+** §3.4 First real consumer: making syntax classification data instead of code
+
+Once §3.1-§3.2 land, =lisp/nelisp-stdlib-regexp.el='s =\sC= handling gets a
+real backing store: a module-level =nlre--syntax-table= char-table
+(populated at load time with Emacs's standard-syntax-table defaults for
+ASCII, mirroring the eight classes =nlre--syntax-p= already encodes by
+hand — §1.4) replaces the hand-written =cond= with a real
+=(aref nlre--syntax-table c)= lookup. Per §1.4, this is *not* a
+correctness fix — every case this doc probed already answers the same as
+Emacs before and after — it is what makes classification *data a caller
+could eventually rewrite* instead of code baked into the regex engine.
+This is the FIRST place this doc's new API is load-bearing for something
+other than its own tests, and is scoped narrowly: no per-buffer/per-mode
+syntax table yet (that needs =current-buffer=, Doc 188's territory), no
+=modify-syntax-entry= (out of scope, §7.4), just a single global default
+table replacing eight hand-written =cond= arms with one data-driven
+lookup, verified byte-for-byte equivalent to the predicates it replaces
+before this phase is considered done (§6.1's regression cases exist
+specifically to catch a refactor that is not, in fact, behavior-preserving).
+
+** §3.5 =standard-syntax-table=/=with-syntax-table=/case-table objects — named, not built here
+
+=standard-syntax-table=, =syntax-table=, =char-syntax=, =current-case-
+table=, real per-buffer =with-syntax-table= dynamic scoping, and
+=forward-word=/=skip-syntax-forward= all need a *current buffer* to bind
+against — building them here would either invent a buffer-shaped global
+this doc does not own, or duplicate work Doc 188 (buffer unification) is
+already scoped to do. This doc's contribution to that later work is
+narrow and concrete: the char-table type they will all be backed by
+already exists and is now Elisp-constructible (§3.1-§3.2), and §3.4
+already gives the regex layer a working default table to hand off from
+when Doc 188 wires up per-buffer syntax tables. =with-syntax-table='s stub
+(§1.5) stays a stub until Doc 188 has a buffer to bind it against —
+fixing the macro to dynamically rebind a *global* placeholder variable
+instead of a real buffer-local one would be worse than the current honest
+no-op, since it would silently claim per-buffer scoping that does not
+exist.
+
+* §4 Phased plan with costs
+
+Effort estimates are engineer-days for an implementer following this doc,
+on the pattern of Doc 164 §6.
+
+** P0 — =nl_char_table_new= + =make-char-table=/=char-table-p=  (1 d) — SHIPPED
+- The allocation kernel landed as =nl_char_table_alloc=, NOT via
+  =compile-elisp-objects.el= (§9.1: that file turned out to be dead code,
+  unreferenced by any Makefile target) and not as its own =nl_char_table_
+  new= link unit either. §9.2 explains why: the actual production
+  interpreter behind =target/nelisp= has its own closed, self-contained
+  builtin-dispatch table (=nelisp_apply_function='s =bf_*= arms in
+  =scripts/nelisp-standalone-build.el=), not the =nelisp-jit-strategy.el=
+  =nl-jit-call-out-N= bridge §1.2/§3.1 described. =nl_char_table_alloc=
+  and =bf_make_char_table=/=bf_char_table_p= are new =defun=s inside that
+  same file's =nelisp-standalone--applyfn-bf-helpers=/=-bf-arms= blocks,
+  using plain =ptr-write-u64= to write tag 9 + box pointer (mirroring
+  =record-make='s own x86_64 codegen at the machine-code level — no new
+  AOT-compiler grammar op needed, contra §7.1's open question).
+- =char-table-p= as a tag-9 check, exactly as designed.
+- *Exit, run not asserted*: =(char-table-p (make-char-table 'test nil))=
+  is =t= and =(aref (make-char-table 'test 'DEFAULT) ?a)= returns
+  =DEFAULT= on =target/nelisp=, both via the new
+  =nelisp-standalone--reader-char-table-smoke= (wired into the
+  =standalone-reader-test= gate's dolist, GATE-COUNT checked=19
+  findings=0) and cross-checked in =test/nelisp-char-table-test.el=
+  under host Emacs. Against-the-bug: =(fboundp 'make-char-table)= was
+  =nil= on this branch's own pre-change =target/nelisp= (probed directly
+  before writing any code), =t= after.
+
+** P1 — parent/extra-slot/subtype accessors  (0.5–1 d) — SHIPPED
+- The four read/write pairs in §3.2's second half, plus =char-table-
+  subtype=. Extra slots use a fixed 10-slot buffer (Emacs's own
+  =MAX_CHAR_TABLE_EXTRA_SLOTS= ceiling) rather than a per-subtype-
+  registered count: this tree has no =char-table-extra-slots= property
+  machinery, so every char-table is more permissive on extra-slot count
+  than Emacs would be for a subtype registered with fewer — an accepted
+  simplification, documented at the =bf_char_table_extra_slot= site.
+- *Exit*: =(set-char-table-parent child parent)= followed by =(aref
+  child CHAR-NOT-IN-CHILD)= returns the value =aref='d from =parent=
+  directly — verified on =target/nelisp= (the smoke above) and under
+  host Emacs (=test/nelisp-char-table-test.el='s
+  =nelisp-char-table/parent-fallback=).
+
+** P2 — =char-table-range=/=set-char-table-range=, ceiling-guarded  (1–1.5 d) — SHIPPED
+- The expand-to-individual-=aset= implementation plus the
+  =char-table-range-too-large= ceiling (§3.3), for the single-char and
+  =(FROM . TO)= cons forms. =t= signals the same error, per §3.3's own
+  direction. RANGE = =nil= was tried as "the default slot" (the most
+  natural reading of Emacs's third form) and DROPPED after checking host
+  Emacs directly: =(set-char-table-range tbl nil V)= does not change
+  what =aref= falls back to afterward, so this flat, non-block-structured
+  table has no faithful implementation of that form and signals
+  =char-table-range-too-large= for it too rather than shipping a
+  confident, wrong parity claim.
+- *Exit*: =(set-char-table-range table (cons ?a ?c) 'lower)= populates 3
+  entries correctly (measured with a 3-char range rather than the doc's
+  sketched 26-char one — same mechanism, smaller fixture); a range
+  exceeding the 4096 ceiling signals =char-table-range-too-large= rather
+  than truncating or silently accepting. =char-table-range= on a
+  =(FROM . TO)= cons returns the value AT FROM, verified against host
+  Emacs including a non-uniform range (§9.3) — the multi-level sub-
+  char-table docstring's "nil unless uniform" framing does not describe
+  what a small, hand-built test actually observes.
+
+** P3 — regex =\sC=/=\SC= data-backed rewrite  (1–2 d) — NOT UNDERTAKEN
+- The =nlre--syntax-table= default table (§3.4) and the class-lookup
+  rewrite in =lisp/nelisp-stdlib-regexp.el=, replacing =nlre--syntax-p='s
+  =cond= with a table lookup.
+- *Exit*: =(string-match "\\sw" "a")=, =(string-match "\\s_" "_")=, and
+  =(string-match "\\Sw" "a")= all answer *exactly what they already
+  answer today* (§1.4 confirmed these already match Emacs) — this phase's
+  bar is regression-free equivalence, not a behavior fix, and all three
+  join the =emacs-parity= cases file (§6.2) specifically so a future
+  change to the table cannot silently regress classification that
+  already works.
+- Left undone by the P0-P2 branch: the assigned scope was the Elisp-
+  visible constructor/accessor layer, not a consumer rewrite, and §1.4's
+  own finding stands unchanged (=nlre--word-p=/=-syntax-p= already match
+  Emacs; this phase trades code for data, not a correctness fix) — still
+  a reasonable next step for whoever picks it up, using the API this
+  branch shipped.
+
+** P4 — dead-code correction: =packages/nelisp-base64=  (0.25 d, optional) — NOT UNDERTAKEN
+- Now that =make-char-table= exists, =nelisp-base64--ensure-decode-table=
+  (§1.3) stops being a latent void-function trap if the package is ever
+  wired in. No behavior change to anything currently shipped (§1.3
+  confirmed it is unreached); this phase is bookkeeping, not a fix to a
+  live bug, and can be dropped from a minimal cut without affecting P0-P3.
+- Left undone by the P0-P2 branch (optional per its own estimate, and
+  out of the assigned scope); =packages/nelisp-base64/src/nelisp-base64.el:31=
+  still calls =make-char-table=, which is real now instead of void —
+  worth re-checking whether the package's decode table actually builds
+  correctly before calling this phase done, not assumed from P0's own
+  exit criterion alone.
+
+* §5 Cost
+
+Every new code path in §3 is either (a) allocation, called once per
+char-table construction, not per-character — no hot-path concern, or (b)
+already-existing =aref=/=aset= dispatch (§1.2), completely unchanged by
+this doc. The one place this doc's cost claim needs to be more than
+assertion is §3.4's regex integration, since =\w=/=\b= sit in the regex
+engine's per-character match loop: replacing four inlined range
+comparisons (=nlre--word-p= etc., each 1-3 integer compares) with one
+=(aref nlre--syntax-table c)= trades a few inlined branches for a
+function call plus a linear scan capped at the table's real entry count
+(low hundreds, §3.3). This is the kind of claim =AI.md= rule 3 requires
+measuring rather than asserting: P3's exit criterion should include a
+=bench-compare.sh= two-arm run (pattern per Doc 187 §4/§5, which faces the
+identical "bound a per-character hot-path cost honestly" problem) of a
+representative =\w=-heavy regex before/after, reported as a guarded ratio
+rather than assumed negligible.
+
+* §6 Verification design
+
+** §6.1 Against-the-bug
+
+#+begin_src elisp
+;; test/nelisp-char-table-test.el (new)
+(ert-deftest nelisp-char-table/construct-and-aref ()
+  (should (char-table-p (make-char-table 'test nil)))
+  (should (eq 'DEFAULT (aref (make-char-table 'test 'DEFAULT) ?a))))
+(ert-deftest nelisp-char-table/aset-then-aref ()
+  (let ((tbl (make-char-table 'test nil)))
+    (aset tbl ?a 1)
+    (should (eq 1 (aref tbl ?a)))
+    (should (eq nil (aref tbl ?b)))))
+(ert-deftest nelisp-char-table/parent-fallback ()
+  (let ((parent (make-char-table 'test 'from-parent))
+        (child (make-char-table 'test nil)))
+    (set-char-table-parent child parent)
+    (should (eq 'from-parent (aref child ?z)))))
+#+end_src
+
+Each case is red today (=void-function make-char-table=) and green once
+P0/P1 land. There is no analogous against-the-bug case for the P3 regex
+rewrite (§1.4 established =\sC=/=\SC= already answer correctly, so the
+correct verification shape is a *regression* case, not a bug-reproduction
+one — see §6.2's parity table, which pins today's already-correct answers
+so P3's refactor cannot silently change them):
+
+#+begin_src elisp
+(ert-deftest nelisp-regex-syntax-class/sw-matches-word-char ()
+  (should (string-match "\\sw" "a")))       ; already matches; must stay this way through P3
+(ert-deftest nelisp-regex-syntax-class/Sw-rejects-word-char ()
+  (should-not (string-match "\\Sw" "a")))   ; already nil; must stay this way through P3
+#+end_src
+
+** §6.2 Parity forms
+
+Added to =test/nelisp-shadow-differential-cases.el= (the =emacs-parity=/
+=parity-coverage= corpus, run byte-identical against stock Emacs and the
+standalone per =Makefile:840=):
+
+| form | Emacs | NeLisp (post-fix) |
+|---|---|---|
+| =(char-table-p (make-char-table 'test))= | =t= | =t= (new after P0; =void-function= before) |
+| =(aref (make-char-table 'test 'D) ?a)= | =D= | =D= (new after P0/P1) |
+| =(string-match "\\sw" "a")= | =0= | =0= (already =0= before P3 too — §1.4; P3 must not regress it) |
+| =(string-match "\\Sw" "a")= | =nil= | =nil= (already =nil= before P3 too) |
+| =(string-match "\\s_" "_")= | =0= | =0= (already =0= before P3 too) |
+| =(upcase ?\N{U+00DF})= | =#x1E9E= | =#x1E9E= (already correct, no char-table involved — anchor, confirms §1.4's "case ops need no char-table" claim stays true after this doc lands) |
+
+** §6.3 Mutation rows for new gates
+
+Per =tools/gate-mutations.txt='s rule that an unproven gate is not a gate:
+
+#+begin_example
+parity-coverage|lisp/nelisp-stdlib-regexp.el|s/(defun nlre--word-p/(defun nlre--word-p-UNUSED/|\\w stops matching, string-match "\\w" "a" now signals void-function instead of matching
+emacs-parity|lisp/nelisp-cc-evalport-nonenv-char-table.el|s/(if (= key idx)/(if (= key (+ idx 1))/|char-table aset/aref silently reads back the wrong slot -- every parity form in §6.2 that round-trips a value must catch this
+#+end_example
+
+(placeholders for the eventual exact single-line match, per that file's
+own note that a stale injection "teaches nothing except to delete the
+row" — the real rows land with the implementing commit, matched against
+the code as actually written, not this doc's sketch of it).
+
+** §6.4 VERIFIED-BY at SHIPPED
+
+As in Doc 187 §6.4: each phase's status line records =VERIFIED-BY:
+<commit-sha> (<gate-name> report, <date>)=, pointing at a real
+=target/gates/<name>.json= report (=tools/ai/README.md='s contract), not
+a hand-written claim. No phase is SHIPPED without one.
+
+* §7 Open questions
+
+** §7.1 Where exactly does allocation belong — RESOLVED (§9.2), neither guess was right
+
+§3.1's =nl_char_table_new= needs a home in the =nelisp-sys= DSL frontend/
+backend (=packages/nelisp-sys/src/nelisp-sys-frontend.el=/=-backend.el=,
+which already has =sys:char-table-get=/=sys:char-table-set!= but no
+=sys:char-table-new=) or can be written directly as a =lisp/nelisp-cc-*=
+kernel the way =nl_char_table_get_raw= already is, bypassing the DSL.
+This doc does not resolve which — the DSL path gets ERT coverage "for
+free" via the pattern at =nelisp-sys-backend-test.el:197-213=, the direct
+kernel path is less code. Left to the implementer, flagged so it is a
+choice rather than an accident.
+
+RESOLVED during implementation: neither. Both options assumed the
+=nelisp-sys= DSL and the =nelisp-jit-strategy.el=/=nl-jit-call-out-N=
+bridge are on the path that produces =target/nelisp=; §9.2 found they are
+not. =nl_char_table_alloc= lives as a plain =defun= inside =scripts/
+nelisp-standalone-build.el='s own =nelisp-standalone--applyfn-bf-helpers=
+block, called from a new =bf_make_char_table= dispatch arm — the same
+place =bf_make_record=/=bf_make_vector= already live, which is the
+actual, load-bearing precedent this doc did not know to look for.
+
+** §7.2 Real range compression, deferred
+
+§3.3's entry-count ceiling is a guard against a real problem, not a
+solution to it. If a future consumer needs (for example) a
+supplementary-plane-aware case-table or a large custom syntax table, the
+linear entry array stops being adequate well before Unicode's full range.
+A depth-limited block/default scheme (not Emacs's full multi-level
+sub-char-table structure, which this doc has no measured consumer to
+justify) is the likely next step; not designed here because §1.4 found
+no consumer that needs it yet.
+
+** §7.3 Interaction with Doc 188
+
+§3.5 deliberately stops short of =standard-syntax-table=/per-buffer
+=with-syntax-table=/=forward-word=. Doc 188 (buffer unification, a
+sibling doc in this same batch) should confirm it is willing to own that
+handoff — this doc's author has not read Doc 188 and cites it only as a
+forward reference, per the convention Doc 187 §7.4 sets.
+
+** §7.4 Whether eight-class coverage is complete enough for P3
+
+=nlre--syntax-p= (§1.4) already handles eight of Emacs's syntax classes:
+word, symbol, whitespace, punctuation, open-paren, close-paren,
+string-quote, escape. Emacs's standard syntax table has a few more this
+doc did not find handled anywhere in this tree — comment-start/end,
+generic-comment, generic-string, expression-prefix. Since §1.4 refuted
+this doc's own first-draft claim that =\sC= was broken, the honest
+framing is: P3 is a data-representation change for eight already-correct
+classes, and whether the remaining handful are worth adding (either as
+part of P3 or a follow-up) depends on whether anything in this tree's
+test corpus or real target packages (Magit/Org-grade code, per Doc 188)
+actually reaches them — not measured this session, and should be checked
+before P3 is scoped as "done," same as the original open question, just
+for a materially smaller gap than first assumed.
+
+* §8 References
+
+** §8.1 Code (file:line)
+- =lisp/nelisp-sexp-layout.el:37,217= — =nelisp-sexp--tag-char-table= (tag 9).
+- =lisp/nelisp-jit-strategy.el:308-320,455-456,488-489,523= —
+  =nelisp--char-table-aref=/=-aset=, and =aref=/=aset= dispatch on tag 9.
+- =lisp/nelisp-cc-evalport-nonenv-char-table.el= — =nl_char_table_get_raw=/
+  =set_raw=/=nl_ct_get_search=/=-set_step=/=-push_new=/=-grow_entries=,
+  the entries-array + parent + default_val implementation.
+- =lisp/nelisp-cc-nlchartable-drop.el:14-31=, =-clone.el:1-25= — the
+  128-byte box layout (subtype/default_val/entries/parent/extra/refcount).
+- =lisp/nelisp-cc-jit-char-table-aref.el=, =-aset.el= — the AOT trampoline
+  wrapping =nl_char_table_get_raw=/=set_raw= for compiled code.
+- =lisp/nelisp-heap-image.el:63,662= — char-table as heap-image object
+  kind 7 (serialization already handles this type).
+- =packages/nelisp-sys/src/nelisp-sys-frontend.el:407-429=, =-backend.el:
+  160-168= — =sys:char-table-get=/=sys:char-table-set!= DSL lowering.
+- =packages/nelisp-sys/test/nelisp-sys-backend-test.el:197-213= — existing
+  ERT coverage of that lowering (symbols only, not runtime behavior).
+- =packages/nelisp-base64/src/nelisp-base64.el:31= — the one, unreached,
+  =make-char-table= call site (§1.3).
+- =lisp/nelisp-stdlib-eval-special.el:207-209= — =with-syntax-table= stub.
+- =lisp/nelisp-stdlib-regexp.el:296-332= — =nlre--word-p=/=-symbol-p=/
+  =-space-p=/=-syntax-p=; the stale "parsed and thrown away" comment
+  sits at =:316-320=, directly above the working eight-class =cond= at
+  =:321-332= it no longer describes (§1.4).
+- =scripts/nelisp-stdlib-prelude.el:850-975= — =nelisp--case-up-char=/
+  =-down-char=, =upcase=/=downcase=/=upcase-initials=, no char-table
+  dependency.
+- =scripts/nelisp-standalone-build.el:12838= — the =chartable-clone.o=
+  build-orchestrator entry §7.1's DSL-vs-kernel choice would extend.
+- =docs/emacs-compat-table.txt= — generated compat table (=make
+  emacs-compat-table=), corroborates §1.1's absence.
+- =tools/gate-mutations.txt=, =tools/nelisp-gate-mutation.sh= — mutation-
+  row convention §6.3 follows.
+- =tools/ai/README.md= — gate report contract §6.4's =VERIFIED-BY= points at.
+- =Makefile:840= — =emacs-parity=, the byte-identical-vs-Emacs gate §6.2
+  feeds.
+
+** §8.2 Docs
+- =docs/design/164-wasm-backend.org= — structural template.
+- =docs/design/187-native-arithmetic-overflow.org= — sibling doc in this
+  batch; §5's cost-bounding approach and §6's VERIFIED-BY convention are
+  modeled directly on its §5/§6.4.
+- =docs/design/161-core-multibyte.org= — multibyte/character-code context,
+  not re-read in depth this session; flagged as adjacent, not cited for
+  specific claims.
+- =AI.md= — rule 3 ("a measurement is invalid unless its baseline is"),
+  load-bearing for §5.
+
+** §8.3 Sibling docs (forward references, not read during drafting)
+- Doc 188 — buffer unification; §3.5/§7.3 note the handoff (syntax-table/
+  case-table objects, =forward-word=, per-buffer =with-syntax-table=)
+  without claiming its content.
+
+* §9 Implementation notes (2026-08-23, feat/char-table-elisp-layer)
+
+Filed because the task that implemented P0-P2 was explicitly told "tree
+has moved since the doc — re-locate by symbol," and what moved was not
+line numbers. §1.2's own evidence (=lisp/nelisp-sexp-layout.el=, the
+=nelisp-cc-*.el= kernel files, =nelisp-jit-strategy.el='s dispatch cond
+arms) is all real, current, byte-identical to what this doc quotes — but
+it describes a *different* execution architecture than the one that
+actually produces =target/nelisp=. Recording this precisely because §0
+already had to correct one confident wrong framing (the "hash-backed
+interim" question) before this doc existed at all, and this is the same
+shape of correction, one layer further down.
+
+** §9.1 =scripts/compile-elisp-objects.el= is dead code
+
+Not referenced by any Makefile target (confirmed by grep across the
+whole repo) — a leftover from the pre-Rust-removal build (its own
+docstring still says "Invoked by =build-tool/build.rs=", and that file
+does not exist; =find . -name '*.rs'= returns nothing, matching §1.2's
+own observation). §3.1/§4 P0's plan to extend it does nothing for the
+binary this doc's own §1.1 probe was run against.
+
+** §9.2 The real dispatcher: =nelisp_apply_function='s =bf_*= arms, not =nl-jit-call-out-N=
+
+=make standalone-reader= (the target this doc's own §1.1 probe ran
+against) does not compile =nelisp-jit-strategy.el= into =target/nelisp=
+at all. That file's =nl-jit-call-out-N=-bridged =fset= wrappers —
+including the =nelisp--char-table-aref=/=-aset= §1.2 cites at
+=lisp/nelisp-jit-strategy.el:308-320= — belong to a parallel, apparently
+now largely dormant execution architecture (probably the one =make
+standalone-eval= exercises; not investigated further, out of this
+branch's scope). Measured directly: on a freshly built pre-change
+=target/nelisp=, =(fboundp 'make-record)= is =t= and =(make-record 'foo
+3 nil)= runs without error, but =(type-of (make-record 'foo 3 nil))=
+answers =cons=, not =record= — the "record" family §1.2 draws its
+=record-make=/=record-slot-set= evidence from is itself not the mechanism
+backing =make-record= in the actual shipped binary; something else
+(=bf_make_record=, only found by reading =scripts/nelisp-standalone-
+build.el= directly) is.
+
+The real mechanism: =target/nelisp='s own reader/evaluator installs a
+CLOSED, self-contained builtin-name dispatch table
+(=nelisp-standalone--applyfn-reader-table=, built from
+=nelisp-standalone--applyfn-dispatch-table= plus the
+=nelisp-standalone--applyfn-bf-arms= breadth arms, all in =scripts/
+nelisp-standalone-build.el=), matched by literal string name
+(=(:lit "NAME") . BODY=) against a call's function-cell lookup — a
+completely different code path from the general AOT compiler
+(=nelisp-aot-compiler.el=) and its grammar-op vocabulary (=record-make=,
+=vector-make=, =cons-make=, ...) that §1.2/§3.1's =nl_char_table_new=
+plan assumed it would extend. The grammar ops are real and DO exist (and
+this doc's own new =nl_char_table_alloc= reuses two of them,
+=ptr-write-u64=/=alloc-bytes=, directly) — they are just not reached by
+calling =make-char-table= from ordinary Elisp on =target/nelisp=; that
+call goes through =nelisp_apply_function='s literal-name dispatch
+instead, which is what actually needed a new arm.
+
+A second, independent confirmation: neither =nl_char_table_get_raw=/
+=set_raw= (the storage kernel §1.2 correctly identifies as
+pre-existing and correct) nor the =nl_jit_char_table_aref=/=aset=
+trampolines were linked into any =target/nelisp= manifest before this
+branch (confirmed by grep across =scripts/nelisp-standalone-build.el='s
+three manifest =defconst=s — only the Clone kernel, ="chartable-
+clone.o"=, was present). §1.2's "fully wired through aref/aset dispatch"
+claim is true of the *source*, sitting inert and unlinked; it was never
+actually exercised against a running binary, because nothing could
+construct a CharTable value to exercise it with. The storage kernel
+itself needed no changes — reusing it directly from the new
+=bf_aref_checked=/=bf_aset= tag-9 arms is exactly what §2's "expose,
+don't rebuild" decision called for, just wired from a different call
+site than assumed.
+
+** §9.3 =char-table-range= on a cons: measured, not designed
+
+§3.2 lists =char-table-range=/=set-char-table-range= without specifying
+GET's exact return for a =(FROM . TO)= span; the implementation checked
+host Emacs directly (=make-char-table='d table, non-uniform =aset=
+values across the span) and found it answers the value AT FROM, not
+"nil unless uniform" as the general sub-char-table docstring might
+suggest for the real, block-structured implementation. This flat entries-
+array table has no sub-table concept to do otherwise, and matching FROM's
+value is the one behavior measured (not merely plausible) from both a
+uniform and a non-uniform host-Emacs probe — see =test/nelisp-char-table-
+test.el='s =nelisp-char-table/range-single-and-cons=.
+
+RANGE = nil was tried as "the default slot" (the natural reading of
+Emacs's third RANGE form, and briefly implemented that way) and dropped
+after the same kind of direct check: =(set-char-table-range tbl nil V)=
+on host Emacs does NOT change what =aref= falls back to afterward
+(=test/nelisp-char-table-test.el='s =nelisp-char-table/range-nil-not-
+default-slot= pins this). Whatever nil actually targets in Emacs's real
+implementation is not the =default_val= field =aref= reads — scoped out
+(signals =char-table-range-too-large=, same bucket as =t=) rather than
+shipping a confident, wrong parity claim.
+

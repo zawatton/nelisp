@@ -1,6 +1,7 @@
 #+TITLE: Doc 154 - NeLisp Performance Development Plan
 #+DATE: 2026-06-18
 #+STATUS: SHIPPED (fixture gates complete; substrate representation research remains separate) 2026-06-19
+#+VERIFIED-BY: nelisp-performance-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate
 
 * 1. Purpose
 

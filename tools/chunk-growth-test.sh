@@ -21,6 +21,29 @@ cd "$REPO_ROOT"
 EMACS="${EMACS:-emacs}"
 TINY=$((8 * 1024 * 1024))   # 8 MiB first chunk; boot needs ~9 MiB -> growth
 
+# Needs a host that can run the configured target; the build script's own
+# predicate decides, not a uname table here.  Same convention as
+# tools/selfhost-test.sh.  2026-08-23 Windows inventory: this test built a
+# linux-x86_64 target/nelisp and then hit `Exec format error' trying to run
+# it, instead of reporting a reasoned skip.
+"$EMACS" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+  >/dev/null 2>&1
+host_rc=$?
+case "$host_rc" in
+  0) ;;
+  3)
+    printf 'GATE-SKIP target %s cannot run on host %s/%s\n' \
+      "${NELISP_STANDALONE_TARGET:-linux-x86_64}" "$(uname -s)" "$(uname -m)"
+    echo "[chunk-growth] SKIP: target cannot run on this host"
+    exit 0
+    ;;
+  *)
+    echo "[chunk-growth] FAIL: cannot ask host runnability (rc=$host_rc)" >&2
+    exit 1
+    ;;
+esac
+
 build_reader() {  # $1 = NELISP_LINUX_ARENA_SIZE (empty = default 256 MiB)
   # The first-chunk size is baked into compiled units, and the env var is
   # not a source change, so the unit cache must be dropped to re-bake it.
@@ -60,5 +83,11 @@ fi
 echo "[chunk-growth] restoring the default (256 MiB) reader binary ..."
 build_reader ""
 
-if [ "$rc" = "0" ]; then echo "[chunk-growth] RESULT: PASS"; else echo "[chunk-growth] RESULT: FAIL"; fi
+if [ "$rc" = "0" ]; then
+  echo "GATE-COUNT checked=1 findings=0"
+  echo "[chunk-growth] RESULT: PASS"
+else
+  echo "GATE-COUNT checked=1 findings=1"
+  echo "[chunk-growth] RESULT: FAIL"
+fi
 exit "$rc"

@@ -2,6 +2,7 @@
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-10
 #+STATUS: Phase A+B SHIPPED（ビルド + linux-aarch64 qemu 実行検証 + raw-NR 翻訳層。残 = 実機検証のみ）
+#+VERIFIED-BY: standalone-reader-test compile
 
 * §B Phase B 実装記録（2026-06-10 SHIPPED）
 

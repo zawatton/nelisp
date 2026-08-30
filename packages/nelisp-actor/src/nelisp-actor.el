@@ -37,8 +37,66 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'generator)
+;; Doc 193 §4: `generator.el' is not vendored for the standalone
+;; substrate -- §4.1/§4.3 re-verified that loading its real source hits
+;; an unreduced reader bug (`void-variable: (declarations)'), and a
+;; hand-port of its CPS transform risks a second implementation that
+;; silently disagrees with the real one (the Doc 189 §1 `eql'/stdlib-
+;; split story this doc cites as precedent for that exact risk).  A
+;; hard `(require 'generator)' here made this package (and everything
+;; that spawns an actor) unloadable standalone at all -- measured,
+;; verbatim: `nelisp: uncaught error: file-missing: generator', running
+;; `target/nelisp --load packages/nelisp-actor/src/nelisp-actor.el' on
+;; a build with no other changes.
+;;
+;; Soft-require instead, and supply the runtime protocol a build-time-
+;; CPS-transformed thunk actually calls (`iter-next'/`iter-close' from
+;; `nelisp-actor--step' below, the `iter-end-of-sequence' condition it
+;; catches) when the real library is not there to provide them --
+;; nothing here reimplements `iter-lambda'/`iter-yield' or any part of
+;; the CPS transform itself, only the four-name runtime surface real
+;; `generator.el' also keeps this small (Doc 193 §4.2's own reading of
+;; `scripts/nelisp-stdlib-prelude.el' notes the same thing: the parts
+;; of this problem already worked out here are the macro-expansion
+;; accommodations, not a generator runtime, because the runtime never
+;; needed one to speak of).  `packages/nelisp-actor/scripts/nelisp-
+;; actor-cps-dump.el' is the build-time transform (Doc 193 §4.4 Phase
+;; 1): it runs under host Emacs, where `(featurep 'generator)' is
+;; already true, so it always macroexpands against the REAL `iter-
+;; lambda'/`iter-yield', never this fallback -- this shim exists only
+;; to run the resulting closures, not to produce them.
+(require 'generator nil t)
 (require 'nelisp-gc)
+
+(unless (featurep 'generator)
+  ;; Verbatim from Emacs 30.1's generator.el (GPL-3.0-or-later), the
+  ;; whole runtime surface a CPS-transformed thunk needs and NOTHING
+  ;; MORE: `iter-next'/`iter-close' are thin `(funcall iterator OP
+  ;; VAL)' wrappers, `iter-end-of-sequence' is deliberately its own
+  ;; parent condition (NOT a subtype of `error' -- generator.el's own
+  ;; comment: "this was not defined originally as an `error' condition,
+  ;; so we reproduce this by passing itself as the parent").
+  ;; `iter-empty' -- generator.el's other public name -- is DELIBERATELY
+  ;; NOT included: nothing in this package or its generated thunks calls
+  ;; it, and these three necessarily un-prefixed names (they have to
+  ;; match real generator.el's own API surface exactly, or this
+  ;; package's calls to them -- and a build-time-CPS-transformed
+  ;; thunk's baked-in `(signal \\='iter-end-of-sequence ...)' -- would
+  ;; not resolve) already cost `ns-inventory' three counted `ns-prefix-
+  ;; violation' findings; a fourth for something unused would not.
+  (define-error 'iter-end-of-sequence "Iteration terminated"
+    'iter-end-of-sequence)
+  (defun iter-next (iterator &optional yield-result)
+    "Extract a value from an iterator.
+YIELD-RESULT becomes the return value of `iter-yield' in the context
+of the generator.  Raises `iter-end-of-sequence' when ITERATOR is
+exhausted.  See `generator.el' (loaded instead of this definition
+whenever it is available)."
+    (funcall iterator :next yield-result))
+  (defun iter-close (iterator)
+    "Terminate ITERATOR early, running any `unwind-protect' handlers in
+scope at the point it is blocked.  See `generator.el'."
+    (funcall iterator :close nil)))
 
 (define-error 'nelisp-actor-error "NeLisp actor error")
 
@@ -139,6 +197,29 @@ shape does not distinguish `nil'-message from empty."
     (unless (cdr box)
       (setf (nelisp-actor-mailbox-tail actor) nil))
     (car box)))
+
+(defun nelisp-actor--set-status (actor value)
+  "Set ACTOR's status to VALUE.
+
+A named function existing purely so `nelisp-receive''s `(setf
+(nelisp-actor-status ...) ...)' has somewhere portable to go under the
+Doc 193 §4.4 Phase 1 build-time CPS transform
+\(`packages/nelisp-actor/scripts/nelisp-actor-cps-dump.el'\): that
+script has to suppress `cl-defstruct' accessors' `compiler-macro'
+property before macroexpanding a `nelisp-actor-lambda' body \(real
+Emacs's inlined accessor bodies use `aref'/`cl-struct-NAME-tags',
+which NeLisp's own, differently-shaped `cl-defstruct' polyfill
+\(`scripts/nelisp-stdlib-prelude.el', Doc 50 stage 4e\) does not
+define\), and unlike a getter, a struct's setf-ability turns out to be
+provided ENTIRELY by that compiler-macro/gv machinery -- suppressing
+it does not fall back to a real function under a `(setf nelisp-actor-
+status)' name the way it does for a getter, it leaves a reference nothing
+defines \(measured directly on host Emacs: `invalid-function (setf
+nelisp-actor-status)', from both a bare form and `funcall'\).  The dump
+script rewrites that broken call to `(nelisp-actor--set-status PLACE
+VALUE)' instead, a plain, ordinary function each substrate compiles
+fresh against its own struct implementation."
+  (setf (nelisp-actor-status actor) value))
 
 ;;; Shared-immutable message copy (Phase 4.3) ------------------------
 

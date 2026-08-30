@@ -1,0 +1,398 @@
+#+TITLE: Doc 193 — Extension assets: from gated to used, package by package
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-22
+#+STATUS: PARTIALLY IMPLEMENTED (2026-08-23) — §3's nl-condition flagship
+#+STATUS: consumer and §4 Phase 0/1's nelisp-actor build-time CPS transform
+#+STATUS: are implemented and verified (see §8 and #+VERIFIED-BY: below).
+#+STATUS: nl-safe (§2) was already an existence proof, unchanged by this
+#+STATUS: pass. nl-prelude (§5) needed no new work, per its own conclusion.
+#+STATUS: Still open, by design, not oversight: §4 Phase 2 (whether the CPS
+#+STATUS: transform generalizes beyond nelisp-actor) and §7's publication
+#+STATUS: judgment call (repo owner's, not this doc's, to make).
+#+VERIFIED-BY: nl-actor-standalone-smoke gate-mutation nelisp-native-artifact-gate ns-inventory fallback-inventory
+
+* Status
+
+| item     | value                                                             |
+|----------+--------------------------------------------------------------------|
+| Doc #    | 193                                                               |
+| State    | PARTIALLY IMPLEMENTED — §3 and §4 Phase 0/1 done; §4 Phase 2 and §7 still open by design |
+| Covers   | =packages/nl-condition=, =packages/nl-safe= (+nl-contract/nl-check), =packages/nelisp-actor=, =packages/nl-prelude= |
+| Parent   | Doc 168 (extension libraries), Doc 169 (nl-prelude/nl-condition), Doc 170 (nl-safe/nl-contract/nl-check) |
+| Reads    | =packages/*/README.org= x4, =tools/ai/gates.expected=, =recipes/README.org=, =recipes/stdio-service/README.org=, =recipes/checked-resources/README.org=, =scripts/nelisp-stdlib-prelude.el=, =lisp/nelisp-artifact.el= |
+| Implemented | §3: =nelisp-native-function-call= (=lisp/nelisp-artifact.el=) rewritten onto =nl-restart-case=/=nl-handler-bind=, differential-tested (=test/nelisp-artifact-test.el= "ladder-*"), end-to-end verified on =target/nelisp= (=tools/nelisp-native-artifact-gate.sh=). §4 Phase 0/1: =packages/nelisp-actor/src/nelisp-actor.el= loads standalone (soft =require= + runtime shim); =packages/nelisp-actor/scripts/nelisp-actor-cps-dump.el= generates =packages/nelisp-actor/generated/two-actor-exchange-cps.el=; standalone smoke =nl-actor-standalone-smoke= (=tools/gate-mutations.txt= row, red-proven); host-vs-generated parity =nelisp-actor-cps-parity-test.el=. |
+| Publication (§7) | Standing owner-held gate re-cited, not scheduled or satisfied by this pass — see §7.1: standalone verify PASS + CI green (the gate's since-modernized operational shape) both cited as ACHIEVED as of 2026-08-23, without resolving §7's mechanism/intent question or publishing anything, which stays the owner's call. |
+
+* 1. Current state, verified per package, not assumed uniform
+
+The design brief's framing — "all gated green on their supported
+substrates as of this week" — is accurate but hides an important
+asymmetry once checked package by package. "Supported substrates" is
+not the same set for all four:
+
+| package        | host Emacs ERT | standalone smoke                          | external adoption found on this clone |
+|----------------+-----------------+---------------------------------------------+-----------------------------------------|
+| =nl-condition= | yes             | =nl-condition-standalone-smoke.el= (present) | none — zero references outside its own package (grepped) |
+| =nl-safe=      | yes             | =nl-safe-standalone-smoke.el=, =nl-resource-standalone-smoke.el= (present) | *two*: =recipes/checked-resources= (dedicated demo), =recipes/stdio-service= (production-shaped, measured cost) |
+| =nl-prelude=   | yes             | =nl-prelude-standalone-smoke.el= (present)   | six sibling packages depend on it (=nl-ns=, =nl-ns-in=, =nl-check=, =nl-safe=, =nl-resource=, =nl-contract=, =nl-condition= — grepped =require 'nl-prelude=), zero non-family consumers |
+| =nelisp-actor= | yes             | *absent* — no standalone smoke file exists   | five real host-Emacs subsystems (=nelisp-process-pool=, =nelisp-file-notify=, =packages/nelisp-process=, =packages/nelisp-eventloop=, =packages/nelisp-network=, per its own README's Dependents section) — all host-Emacs-only |
+
+So this doc is not four instances of the same question. =nl-safe= has
+*already* made the jump from gated to used, with a measured cost, and
+is treated below (§2) as the template rather than a hypothesis.
+=nl-prelude='s situation is not "unused," it is "used only by its own
+family" — a different, narrower question (§5). =nelisp-actor= is
+"gated" only relative to host Emacs; on the substrate this whole
+roadmap is oriented toward (Doc 191, Doc 192 — the Emacs-less
+standalone runtime), it is not gated at all, it does not load
+(§4). =nl-condition= is the one package here that is a straightforward
+instance of the brief's framing: shipped, tested on both substrates,
+genuinely unused anywhere real (§3).
+
+* 2. nl-safe: the existence proof, read for what it teaches the other three
+
+=recipes/stdio-service/README.org= documents adopting =nl-safe='s
+borrow cells for the service's own request buffer — "bytes read but
+not yet parsed live in a borrow cell instead of a plain [buffer]," one
+borrow per line-read covering fill-and-scan together — and states the
+cost plainly rather than hand-wave it: =make nl-safe-bench=: one borrow
+vs one unchecked read = *46.60x*. =recipes/checked-resources/README.org=
+is the smaller, purpose-built companion: three behavior checks, the
+important one being that taking an exclusive borrow while a shared
+borrow is live actually *signals*, not merely that the happy path
+runs. Both are wired into =tools/ai/gates.expected= (=bench-borrow-check=,
+=bench-service-borrow=, =recipe-checked-resources=), so this is not a
+one-off demo that bit-rots — it is measured on every gate run, and the
+measurement is reported, never gated ("a ratio the machine invalidated
+is neither a pass nor a failure" — this repo's own bench-compare
+discipline, applied here specifically so a future regression is a
+number to look at, not a red gate to fight).
+
+What this teaches, concretely, for §3-5 below: a flagship consumer is
+not "a README example." It is (a) a real recipe — code someone could
+actually copy and ship, not a synthetic unit test, (b) with its own
+=verify.sh= proving the *interesting* failure mode actually fails
+correctly (checked-resources's exclusive-borrow-while-shared-live
+case), and (c) a *measured*, *reported*, *not-gated* cost number,
+because "is this worth the overhead" is a question this repo's own
+culture insists on answering with a file, not an assertion (per AI.md
+rule 3: "A measurement is invalid unless its baseline is"). Any
+candidate proposed below is held to this same three-part bar, not a
+lighter one.
+
+* 3. nl-condition: a concrete candidate, chosen over the brief's own suggestion
+
+The design brief suggests, as an example, "gate scripts' error
+handling" as a candidate consumer. Checked directly: =tools/ai/*.el=
+(the AI toolchain's own gate scripts) contain a combined total of five
+=condition-case= forms across six files, none restart-shaped — they
+are simple catch-and-report, the kind =condition-case= already handles
+without needing pre-unwind handlers or restarts at all. This is a weak
+fit, and rejecting it in favor of a better one, with the reasoning
+shown, matters more here than following the brief's example literally
+(this repo's own culture flags exactly this failure mode — see the
+=fix(standalone)= commit history's insistence on "which predicate an
+error names," measured, not assumed).
+
+A stronger candidate, found by reading rather than by extending the
+brief's own guess: =nelisp-native-function-call=
+(=lisp/nelisp-artifact.el=) is *already*, today, a hand-rolled,
+three-tier recovery ladder, using nested =condition-case=:
+
+#+begin_src elisp
+(condition-case native-err
+    (let ((result
+           (if (fast-integer-abi-applicable-p)
+               (condition-case _fast-err
+                   (nelisp-artifact-native-exec-fast-simple ...)
+                 (error (nelisp-artifact-native-exec-general ...)))
+             (nelisp-artifact-native-exec-general ...))))
+      ...)
+  (error ... (nelisp--apply fallback args)))
+#+end_src
+
+Three named strategies, tried in a fixed order, each recorded via
+=nelisp-artifact--note-native-dispatch= for observability (=:mode
+'native=/='fallback=, =:reason (error-message-string ...)=): fast
+integer ABI, then general native execution, then the interpreted/
+bytecode fallback. This is exactly the shape =nl-condition='s own
+README names as its reason to exist — "a handler, still standing on
+the signaling frame, chooses among recovery strategies offered by
+outer frames" — implemented today by hand, with manual nesting and
+manual bookkeeping, instead of =nl-restart-case='s named restarts
+(=fast-simple-abi=, =general-native=, =interpreted-fallback=) and
+=nl-compute-restarts= for introspection. The dispatch-report bookkeeping
+that today is threaded by hand through three branches would become a
+natural side effect of restart selection instead — a real
+simplification, not just a rename, which is the bar §2 set.
+
+*Recommendation*: propose this as the flagship candidate, but do not
+schedule the rewrite in this doc — it is real production code on a hot
+path (every native-compiled function call in the runtime goes through
+it), and Doc 168's own non-invasiveness rule ("only =nl-signal=
+consults the handler stack — a plain =signal= from arbitrary Elisp is
+untouched") means adopting =nl-condition= here specifically requires
+this call site's own =error= signals to route through =nl-signal=
+rather than plain =signal=, which is a real, scoped, reviewable change,
+not a global behavior shift — but it is still a change to a path this
+repo measures on every native call, and should be proposed as a
+follow-up PR with its own before/after dispatch-report parity check
+(§7), not folded into this design doc.
+
+* 4. nelisp-actor: the generator.el decision
+
+** 4.1 What actually broke, re-verified on this clone
+
+=recipes/README.org='s own TUI verdict: "=tools/nelisp-async-tty-smoke.sh=
+dies with =void-variable: (declarations)= loading the host
+=generator.el=, and reports nothing... (2026-08-18, WSL)." This is not
+hypothetical — a real attempt to load Emacs's actual =generator.el= file
+on the standalone reader already happened, and failed at what reads as
+a basic reader-level obstacle (a token being resolved as a variable
+reference where the source expects something else — =(declare
+...)=/=&context=-class metadata is the likely shape, though this doc
+did not reduce it to a minimal repro; that reduction is exactly
+Phase 0's job, §4.3).
+
+** 4.2 The standalone reader already has real, purpose-built accommodation for generator.el's CPS machinery
+
+This is worth stating because it changes which of the three options
+(vendor / port / build-time transform) is actually cheapest, and
+without it the obvious guess is wrong. =scripts/nelisp-stdlib-prelude.el=
+carries several comments that are not incidental — they describe
+*deliberate* support work already done specifically for generator.el's
+macro-expansion shape: =special-variable-p= is consulted "by
+generator.el's CPS transform to decide" which bindings are lexical; a
+symbol-macro substitution helper is captioned "generator.el CPS
+rewrites" by name; local-macro / macro-environment threading is
+captioned "e.g. generator.el iter-yield." Someone has already invested
+real effort trying to make the macro-expander generator.el-compatible
+*before* this week's =void-variable: (declarations)= failure was
+measured. That failure is therefore not "generator.el's CPS approach is
+fundamentally unsupported" — it is "one specific, still-unidentified
+reader-level obstacle sits between the macro-expander's existing
+generator.el accommodations and a clean file load."
+
+** 4.3 Decided direction: build-time CPS transform, using host Emacs as the oracle — not vendor, not a hand-port
+
+Three options, weighed against §4.1/§4.2:
+
+- *Vendor generator.el verbatim* is, in effect, what
+  =tools/nelisp-async-tty-smoke.sh= already tried, and it is blocked by
+  an unreduced, unknown-cost reader bug. Pursuing this further without
+  first reducing that bug to a minimal repro (this repo has a dedicated
+  workflow for exactly that kind of investigation — loud-error, classify,
+  minimal-repro, core-vs-bridge decision, five-class stop) is guessing
+  at a cost this doc cannot state honestly. *Not recommended as the
+  first move*, but not ruled out either — see Phase 0 below.
+- *Hand-port generator.el's semantics* (re-implement =iter-lambda=/
+  =iter-yield= CPS transformation directly, as new NeLisp-native code)
+  risks exactly the divergence class this repo's whole culture is built
+  to avoid — a second implementation of a subtle macro-expansion
+  algorithm that silently disagrees with the real one in an edge case
+  nobody thought to test, which is the =eql=/stdlib-split story Doc 189
+  §1 documents as a live, real bug in this same tree, not a
+  hypothetical risk.
+- *CPS-transform at build time, using host Emacs's real generator.el as
+  the macro-expansion oracle* — macroexpand =nelisp-actor.el='s
+  =iter-lambda=-based actor thunk construction under real Emacs (where
+  =generator.el= unquestionably works; it ships with Emacs), emit the
+  fully-expanded, generator-free Elisp (ordinary closures implementing
+  the CPS state machine directly), and bake *that* into the standalone
+  build — never asking the standalone reader to load or macro-expand
+  =generator.el= at all, only to execute the closures real Emacs's own
+  macro-expander already produced. *This is the recommended direction.*
+  It has a direct precedent already shipped in this exact repo: =nl-ns='s
+  host baseline (=baseline/emacs-30.1.el=, generated by
+  =scripts/nl-ns-dump-baseline.el= run "under =emacs -Q --batch=," read
+  back by the analyzer that itself runs on =target/nelisp=) is the same
+  shape — a fact host Emacs alone can produce correctly, generated once,
+  consumed by the standalone substrate as data. Applying the identical
+  pattern to macro-expansion output, not baseline data, is a natural
+  extension of a technique this repo already trusts.
+
+** 4.4 Phased plan
+
+*** Phase 0 — reduce the actual failure to a minimal repro
+
+Before choosing between "load generator.el directly, fixed" (a residual
+possibility if the reader bug turns out to be small and generally
+useful to fix anyway) and "build-time transform only," reduce
+=void-variable: (declarations)= to the smallest form that reproduces
+it, using this repo's own established loud-error/minimal-repro/
+classify workflow. This is a bounded, cheap first step regardless of
+which direction wins, and this doc does not skip it in favor of
+guessing.
+
+*** Phase 1 — build-time transform for =nelisp-actor.el= specifically
+
+Macroexpand =nelisp-actor.el='s actor-thunk construction under host
+Emacs, emit the expanded forms as a checked-in generated file (mirroring
+=baseline/emacs-30.1.el='s "generated, checked in, regenerate with a
+named =make= target" pattern — AI.md rule 7, "record generated data
+recipes next to the generator," applies directly here: whatever
+generates this file must be documented beside it, not left in a session
+transcript). Wire a standalone smoke — the one artifact currently
+missing per §1's table — proving actor spawn/mailbox/yield work on
+=target/nelisp= using the generated forms.
+
+*** Phase 2 — decide whether the transform generalizes
+
+Once Phase 1 exists, evaluate whether *other* future standalone
+consumers of =generator.el=-shaped code (the TUI async event loop
+=tools/nelisp-async-tty-smoke.sh= was built for is the obvious next
+candidate, since it hit the identical failure) can reuse the same
+build-time transform mechanically, or whether each consumer needs its
+own hand-curated expansion. Not designed here — Phase 1's actual
+implementation experience is the right input to that decision, not a
+guess made before Phase 1 exists.
+
+* 5. nl-prelude: infrastructure-for-siblings is a real terminus, not a failure to explain away
+
+§1's table already shows =nl-prelude= is not "gated but unused" in the
+same sense =nl-condition= is — six sibling packages depend on it today.
+The honest question is narrower: does =nl-prelude='s =Result=/=Option=
+type (=nl-option->ok=, per Doc 169) need a *non-family* flagship
+consumer to justify further investment, or is "the load-bearing
+dependency six other shipped extension packages build on" already
+enough justification on its own?
+
+This doc's answer: infrastructure-for-siblings is a legitimate, already-
+achieved terminus for =nl-prelude= specifically, and manufacturing an
+external consumer for it alone (as distinct from finding one for
+=nl-condition= or =nl-safe=, which genuinely have none) would be
+solving a problem that does not exist. Where =nl-prelude= *does* need
+more work, per §2's three-part bar, is riding along with whichever of
+=nl-condition= (§3) or =nelisp-actor= (§4) gets a real external
+consumer next — since both already depend on it, a flagship consumer
+for either is automatically also a flagship consumer for =nl-prelude='s
+=Result=/=Option= machinery, at zero additional design cost.
+
+* 6. Doc/example maturity bar, read from what already exists
+
+=nl-safe='s own README (§2) is the template this doc holds the other
+three to, and it already demonstrates the bar in practice rather than
+requiring this doc to invent one: a one-paragraph motivation naming the
+*specific* prior failure that motivated the package (=nl-ns='s
+motivation section does the same — the August 15 =cl-loop= incident,
+named and walked link by link), a runnable code example short enough to
+read in one screen, an explicit *Non-goals* section (every one of the
+four packages already has one), and — the piece that actually
+distinguishes "documented" from "proven" — a real recipe under
+=recipes/= with its own =verify.sh=, not just a README code block. Doc
+maturity for =nl-condition= and =nelisp-actor= specifically means
+adding that last piece once §3/§4's flagship consumers exist; the prose
+documentation quality bar is already met by all four packages as
+measured (each README read for this doc had Motivation, API, Semantics/
+Non-goals, and Testing sections present).
+
+* 7. Criteria for public announcement: cite, do not schedule
+
+There is a standing, owner-held rule gating any NeLisp public GitHub
+Release / announcement behind reaching a genuinely Emacs-less
+standalone distributable state — this doc cites that rule's existence
+and does not attempt to re-litigate, satisfy, or schedule it. Two
+things are worth stating plainly rather than silently, because this
+doc's own research surfaced a tension the rule's original wording did
+not anticipate: the rule as recorded names a specific mechanism ("a
+4-core C runtime split out") as the completion condition, dated
+2026-04-25 — and this same clone's own =README.org= documents a
+*different* mechanism (a fully self-hosted, pure-Elisp standalone
+binary, =target/nelisp=, "no Emacs in the loop at all") already shipped
+since 2026-06, achieved by the project abandoning the C-runtime plan
+entirely in favor of the pure-Elisp path this whole roadmap (Docs
+189-193 included) is built on. Whether that already-shipped standalone
+binary satisfies the *intent* of the original gate (a distributable,
+Emacs-less binary) even though it does not match the rule's originally-
+named *mechanism* is a real, substantive judgment call — and it is the
+repo owner's call to make, not this design doc's. This doc's obligation
+under its own brief is to cite the rule and not schedule around it,
+which is what this section does; flagging the mechanism/intent gap is
+offered as information for that judgment call, not as an argument for
+either resolution.
+
+Separately, and unconditionally regardless of how that judgment call
+resolves: none of =nl-condition=, =nl-safe=, =nl-prelude=, or
+=nelisp-actor= should be announced or released *individually* ahead of
+whatever the standalone-readiness answer turns out to be, since all
+four are extension libraries *of* the substrate that gate concerns, not
+independent of it.
+
+** 7.1 2026-08-23 addendum: citing, not resolving, where the gate stands
+
+The gate's own operational shape has since been described, elsewhere,
+as modernized to two concrete conditions: a passing standalone verify
+and a green CI. Both are cited here as ACHIEVED as of 2026-08-23 —
+=tools/ai/nelisp-ai.sh check= (the standalone-relevant check tier) ran
+22/22 PASS on this clone the same day, and AI.md's Inner-loop section
+records the CI lane's own first green run — without this doc treating
+that as resolving §7's mechanism/intent question above, which remains
+open, or as authorization to publish anything: this doc does not
+publish, announce, or schedule a release, and that stays a call for the
+repo owner to make, not this section's.
+
+* 8. Verification design
+
+- *§3 (nl-condition candidate)*: before/after dispatch-report parity —
+  the existing =nelisp-artifact-native-dispatch-report= output, captured
+  for a fixed corpus of native calls, must be byte-identical in shape
+  (same =:mode=/=:reason= values, same ordering) whether the ladder is
+  the current hand-nested =condition-case= or an =nl-restart-case=
+  rewrite — a differential check, not a "looks equivalent" review,
+  matching this repo's own "byte-identity, not full re-verification"
+  discipline for exactly this class of internal-mechanism swap.
+- *§4 (nelisp-actor build-time transform)*: the new standalone smoke
+  (Phase 1) plus a *host-Emacs* parity check — the same actor-thunk
+  test corpus run once through real =generator.el= on host Emacs and
+  once through the build-time-transformed forms on =target/nelisp=,
+  behavior compared, not just "it runs" — since the whole point of
+  choosing host Emacs as the transform oracle (§4.3) is fidelity to
+  real semantics, and that claim needs its own check, not an assumption.
+- *§6 (doc bar)*: a checklist gate (Motivation-names-a-real-incident,
+  runnable example, Non-goals section, standalone smoke present,
+  recipe-with-verify.sh present) run over all four packages' READMEs,
+  reporting which boxes each package currently has — the same
+  "measured, not asserted" discipline nl-ns's own severity-summary
+  report already models.
+- *§7*: no gate — this section is explicitly "cite, do not schedule,"
+  and inventing a verification step for a decision this doc declines to
+  make would contradict its own scope.
+
+* 9. Open questions
+
+- §3's candidate touches a hot path (every native call). Should the
+  =nl-condition= rewrite be attempted behind a build flag first (both
+  implementations compiled in, differential-tested against each other
+  on every gate run for some trial period) before the hand-rolled
+  ladder is deleted, given how much this repo's own culture (AI.md
+  rule 3, the =bench-compare= drift-discard discipline) distrusts a
+  single-measurement cutover?
+- §4.3's build-time transform needs the actor-thunk expansion to be
+  *regenerable* deterministically from =nelisp-actor.el= plus a pinned
+  host-Emacs version (mirroring =baseline/emacs-30.1.el='s own
+  version-pinning discipline, "regenerate with =make baseline='). Whether
+  =nelisp-actor.el='s actual =iter-lambda= usage is simple enough for
+  this to be a clean, mechanical macroexpansion (no dynamic macro
+  arguments that would make the expanded output version- or input-
+  dependent in a way baking it in would silently freeze incorrectly) is
+  not verified in this doc — Phase 0/1's implementer needs to check this
+  before committing to the approach, not after.
+- Whether =nl-safe='s own two consumers (§2) suggest a *third*,
+  currently-unbuilt recipe shape (something between "toy demo" and
+  "production service") would better showcase =nl-condition='s restart
+  machinery than retrofitting existing production code (§3's
+  =nelisp-native-function-call= candidate) — a dedicated recipe,
+  parallel to =checked-resources=, built specifically to exercise
+  =nl-restart-case= rather than found inside an existing hot path. This
+  doc chose the "found inside existing code" path because it is a
+  stronger, already-proven-necessary case (the recovery ladder already
+  exists and is already load-bearing), but a dedicated recipe is lower-
+  risk to build first and would not require the hot-path caution §3
+  names — worth deciding before Phase-numbering a §3 follow-up doc.
+- §7's mechanism/intent gap is flagged, not resolved, by design. If the
+  repo owner does treat the already-shipped pure-Elisp standalone
+  binary as satisfying the original gate's intent, this doc's own
+  four packages become immediately eligible for the "doc/example
+  maturity bar met -> ready to mention publicly" question §6 set up —
+  worth re-reading this doc's §6/§7 together once that judgment call is
+  made, rather than treating them as sequenced independently.

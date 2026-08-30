@@ -88,6 +88,8 @@ trampoline is available."
 ;; underlying Vec via Rc clone, so behaviour is unchanged.
 ;; Improper list (= non-nil non-cons tail) signals
 ;; `wrong-type-argument' to match the previous list_elements path.
+;; Kept in step with scripts/nelisp-stdlib-prelude.el, the copy the
+;; standalone runs; `make ns-gate' reports any drift.
 (defun copy-sequence (seq)
   "Return a copy of SEQ.  Doc 22 A4: strings and vectors are copied into a
 FRESH buffer (the old `(t seq)' arm returned the same object, so a following
@@ -111,16 +113,10 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
         (aset copy i (aref seq i))
         (setq i (1+ i)))
       copy))
-   (t seq)))
-
-;; Rust-min batch 6h (2026-05-06): `message' migrated from Rust to
-;; elisp.  The previous `bi_message' was just a 4-step pipeline:
-;;   (1) nil-arg guard (return nil for empty / leading-nil args)
-;;   (2) `bi_format' to substitute %s / %d / %S
-;;   (3) writeln-to-stderr + flush
-;;   (4) return the formatted string
-;; Steps (1) (2) (4) are pure elisp; only (3) needs an I/O
-;; primitive, which is now `nelisp--write-stderr-line'.
+   ;; The old arm here returned the object unchanged, so `(copy-sequence 5)'
+   ;; answered 5 where Emacs signals -- and a caller that copied in order to
+   ;; mutate went on to mutate the original.
+   (t (signal 'wrong-type-argument (list 'sequencep seq)))))
 (defun message (&rest args)
   (cond
    ((null args) nil)
@@ -186,26 +182,15 @@ call time, so it is safe for FN to mutate TABLE during the walk
 ;; side effect (two consecutive `intern-soft' calls on the same
 ;; never-interned name both return nil; a name only starts returning its
 ;; symbol once something ELSE actually `intern's it).
-(defun intern-soft (name &optional _obarray)
-  ;; SYMBOL argument: NeLisp has no first-class per-object obarray
-  ;; membership bit -- symbol identity IS name identity here (`eq' on
-  ;; symbols compares names, see `bf_eq2'/`nelisp_eq_symbol'), and every
-  ;; symbol produced by the reader or by `intern' already lives in the one
-  ;; global intern table.  Returning NAME unconditionally is therefore
-  ;; correct for interned symbols but is NOT vendor-accurate for a symbol
-  ;; built by `make-symbol'/`gensym': vendor Emacs would report such an
-  ;; uninterned symbol as absent (nil), whereas this MVP has no way to
-  ;; distinguish "uninterned Symbol Sexp with this name" from "the
-  ;; identically-named interned symbol" and returns NAME either way.  This
-  ;; gap is pre-existing (unrelated to the string-argument hang above),
-  ;; explicit, and out of Doc 163's scope; it is not silently different
-  ;; from what was here before.
-  ;;
-  ;; OBARRAY argument: always ignored.  NeLisp MVP has exactly one global
-  ;; intern table and no first-class obarray object to select among, so a
-  ;; non-nil OBARRAY is not honored -- same pre-existing MVP limitation
-  ;; `intern'/`obarray-make' already have, stated explicitly rather than
-  ;; silently mis-scoping the lookup.
+(defun intern-soft (name &optional obarray)
+  "Return the symbol named NAME if it is interned, else nil.
+NeLisp has one global intern table and no first-class obarray object, so a
+non-nil OBARRAY is not honoured.  The probe is `nelisp--intern-lookup\', which
+reports a miss instead of interning -- falling back to `intern\', which never
+answers nil, is what made a `(while (setq x (intern-soft ...)))\' probe loop
+run forever."
+  (when (and obarray (not (obarrayp obarray)))
+    (signal 'wrong-type-argument (list 'obarrayp obarray)))
   (cond ((symbolp name) name)
         ((stringp name) (nelisp--intern-lookup name))
         (t (signal 'wrong-type-argument (list 'stringp name)))))
@@ -315,33 +300,81 @@ streams fall back to stdout."
 ;; sets `default-directory' at startup so that fallback never fired
 ;; in practice and is dropped here.
 
-(defun expand-file-name (path &optional base)
-  "Convert PATH to absolute, anchoring against BASE (or `default-directory').
-Already-absolute paths (starting with `/') are returned unchanged."
-  (cond
-   ;; Empty path: return as-is (= mirrors Rust `Path::new(\"\").to_path_buf()').
-   ((or (null path) (= (length path) 0)) path)
-   ;; Already absolute.
-   ((eq (aref path 0) ?/) path)
-   ;; Relative: join with BASE (or `default-directory').
-   (t
-    (let ((b (or base (and (boundp 'default-directory) default-directory))))
-      (if (and (stringp b) (> (length b) 0))
-          (concat (file-name-as-directory b) path)
-        ;; No base anchor available — return PATH as-is.  Prior Rust
-        ;; tried `current_dir()' as last resort but NeLisp's startup
-        ;; always sets `default-directory' so this branch is unreachable
-        ;; in practice.
-        path)))))
+;; Kept in step with scripts/nelisp-stdlib-prelude.el, the copy the
+;; standalone runs; `make ns-gate' reports any drift.
+(defun nelisp--path-split (s)
+  ;; Split S on / and drop empty components, so a// collapses like Emacs.
+  (let ((out nil) (cur "") (i 0) (n (length s)))
+    (while (< i n)
+      (if (eq (aref s i) ?/)
+          (progn (when (> (length cur) 0) (setq out (cons cur out)))
+                 (setq cur ""))
+        (setq cur (concat cur (substring s i (1+ i)))))
+      (setq i (1+ i)))
+    (when (> (length cur) 0) (setq out (cons cur out)))
+    (nreverse out)))
 
-(defun file-truename (path)
-  "Return PATH after symlink resolution and absolutification.
-Falls back to `expand-file-name' result when the path doesn't exist
-or canonicalize fails — same as the prior Rust impl which used
-`std::fs::canonicalize(p).unwrap_or(p)'."
-  (let* ((full (expand-file-name path))
-         (canon (nelisp--syscall-canonicalize full)))
-    (or canon full)))
+;; This used to concatenate and stop -- no `.', no `..', no `~', no
+;; collapsing of doubled slashes, and an empty NAME came back empty.  So
+;; (expand-file-name "a/../b") answered /base/dir/a/../b and
+;; (expand-file-name "~/x") answered ~/x, neither of which is a path
+;; anything else can compare with `equal' against one Emacs produced.  For
+;; a runtime meant to host an editor that is a daily defect: buffer names,
+;; `locate-library' hits and every cache key built from a path are all
+;; affected.  Measured 2026-08-19 against Emacs 30.1.
+
+(defun expand-file-name (path &optional base)
+  (let* ((p (if (null path) "" path))
+         (p (if (and (> (length p) 0) (eq (aref p 0) ?~)
+                     (if (= (length p) 1) 1 (eq (aref p 1) ?/)))
+                (concat (or (getenv "HOME") "~") (substring p 1))
+              p))
+         (absolute (if (= (length p) 0) nil (eq (aref p 0) ?/)))
+         (trailing (if (= (length p) 0) nil
+                     (eq (aref p (- (length p) 1)) ?/)))
+         (anchor
+          (if absolute ""
+            (let ((b (or base
+                         (and (boundp 'default-directory) default-directory)
+                         "/")))
+              (if (if (> (length b) 0) (eq (aref b 0) ?/) nil)
+                  (file-name-as-directory b)
+                (file-name-as-directory (expand-file-name b))))))
+         (full (if absolute p (concat anchor p)))
+         (parts (nelisp--path-split full))
+         (stack nil))
+    (while parts
+      (let ((c (car parts)))
+        (cond
+         ((equal c ".") nil)
+         ((equal c "..") (setq stack (cdr stack)))
+         (t (setq stack (cons c stack)))))
+      (setq parts (cdr parts)))
+    (setq stack (nreverse stack))
+    (let ((res (concat "/" (mapconcat 'identity stack "/"))))
+      (if (if trailing (> (length stack) 0) nil)
+          (concat res "/")
+        res))))
+
+;; Emacs strips backup suffixes before asking about the extension, which
+;; is why (file-name-extension "foo.txt~") is "txt" and not "txt~".  There
+;; was no `file-name-sans-versions' here at all, so a backup name reported
+;; an extension no file ever has -- enough to send a mode lookup or a
+;; suffix comparison down the wrong path.  Two shapes are stripped, both
+;; measured against Emacs 30.1: a trailing ~, and a trailing .~N~ where N
+;; is digits.  Nothing else: "a~b.txt" and "foo.txt.~1~x" are left alone.
+
+(defun file-truename (path &optional counter _prev-dirs)
+    ;; Two predicates, by what the argument is: a SYMBOL (nil included) gets
+    ;; `arrayp', anything else `stringp'.  Measured across nil / 1 / a
+    ;; symbol / a vector / a float -- guessing one name gets three of the
+    ;; five wrong.
+    (unless (stringp path)
+      (signal 'wrong-type-argument
+              (list (if (symbolp path) 'arrayp 'stringp) path)))
+    ;; COUNTER is a symlink-depth list in Emacs, and it names `listp'.
+    (unless (listp counter) (signal 'wrong-type-argument (list 'listp counter)))
+    (expand-file-name path))
 
 ;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `directory-files'
 ;; migrated from Rust to elisp on top of the new readdir syscall
@@ -422,50 +455,10 @@ regular file (per `nelisp--syscall-stat'), or nil if none match."
       (setq cur (cdr cur)))
     hit))
 
-(defun locate-library (name &optional _nosuffix _path _interactive-call)
-  "Search `load-path' for a file named NAME, returning its absolute
-path or nil.  Tries NAME as-given first, then NAME with `.elc' appended
-(Wave A21 NeLisp `.elc' is preferred for compiled-defun fast-path),
-then NAME with `.el' appended (unless NAME already ends in `.el' /
-`.elc').  Optional NOSUFFIX / PATH / INTERACTIVE-CALL args are
-accepted for host-Emacs compatibility but ignored — the load-path
-override + interactive message machinery aren't wired."
-  (let* ((n (length name))
-         (has-elc (and (> n 4)
-                       (eq (aref name (- n 4)) ?.)
-                       (eq (aref name (- n 3)) ?e)
-                       (eq (aref name (- n 2)) ?l)
-                       (eq (aref name (- n 1)) ?c)))
-         (has-el (and (not has-elc)
-                      (> n 3)
-                      (eq (aref name (- n 3)) ?.)
-                      (eq (aref name (- n 2)) ?e)
-                      (eq (aref name (- n 1)) ?l)))
-         ;; Suffix probe order: `.elc' is tried before `.el' so a
-         ;; freshly-emitted `.elc' wins, matching Emacs's
-         ;; `load-suffixes' precedence.  When NAME explicitly ends
-         ;; in `.elc', only the bare name is probed (caller decided).
-         (suffixes (cond
-                    (has-elc (list ""))
-                    (has-el (list "c" ""))           ; FOO.el → FOO.elc, FOO.el
-                    (t (list ".elc" ".el" "")))))
-    (cond
-     ;; Absolute path: probe directly, skip load-path walk.
-     ((and (> n 0) (eq (aref name 0) ?/))
-      (nelisp--locate-probe name suffixes))
-     ;; Relative: try `default-directory' first, then walk `load-path'.
-     (t
-      (let ((roots (cons (and (boundp 'default-directory) default-directory)
-                         (and (boundp 'load-path) load-path)))
-            (hit nil))
-        (while (and roots (null hit))
-          (let ((root (car roots)))
-            (when (and (stringp root) (> (length root) 0))
-              (setq hit (nelisp--locate-probe
-                         (expand-file-name name root)
-                         suffixes))))
-          (setq roots (cdr roots)))
-        hit)))))
+(defun locate-library (library &optional _nosuffix _path _interactive-call)
+    "Find LIBRARY on `load-path', trying .el; nil when not found."
+    (nelisp--check-string library)
+    (locate-file library load-path '(".el" "")))
 
 ;; Rust-min batch 7f (2026-05-07, Doc 50 stage 2): `load' migrated
 ;; from Rust to elisp on top of two new I/O / reader primitives:
@@ -632,7 +625,30 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
 ;; callers can distinguish the canonical name).
 (defalias 'equal-including-properties 'equal)
 (defalias 'eql 'equal)
-(defalias 'lsh 'ash)
+(unless (fboundp 'lsh)
+  (defun lsh (value count)
+    ;; Measured: only a NON-NUMBER in argument one names
+    ;; `number-or-marker-p'.  Everything else -- a float anywhere, or a
+    ;; non-number in argument two -- names `integerp'.
+    ;;   (lsh "a" 1) -> number-or-marker-p    (lsh 48 "a") -> integerp
+    ;;   (lsh 1.5 1) -> integerp              (lsh 1 1.5)  -> integerp
+    (unless (numberp value) (signal 'wrong-type-argument (list 'number-or-marker-p value)))
+    (unless (integerp value) (signal 'wrong-type-argument (list 'integerp value)))
+    (unless (integerp count) (signal 'wrong-type-argument (list 'integerp count)))
+    (if (>= count 0)
+        (ash value count)
+      (if (>= value 0)
+          (ash value count)
+        ;; A right shift of a negative value fills with zeros, so the answer
+        ;; is the UNSIGNED 62-bit pattern shifted.  One masked step does the
+        ;; conversion: shift right once arithmetically, then clear the sign
+        ;; bits the shift copied in.  The remaining places are an ordinary
+        ;; `ash' on a value that is now positive.
+        ;;
+        ;; The mask is written `(1- (ash 1 61))' because integers here are
+        ;; 62-bit and `(ash 1 61)' wraps negative -- `most-positive-fixnum'
+        ;; and `integer-length' do not exist in this runtime to ask with.
+        (ash (logand (ash value -1) (1- (ash 1 61))) (+ count 1))))))
 (defalias 'sxhash-equal 'sxhash)
 (defalias 'sxhash-eq 'sxhash)
 (defalias 'sxhash-eql 'sxhash)
@@ -647,10 +663,21 @@ or signals otherwise.  Replaces the deleted Rust `bi_require'."
 ;; (string-bytes "あ") = 3), so for 'utf-8 the encode is identity.
 ;; Other codings unsupported (= error if requested).
 (unless (fboundp 'encode-coding-string)
+  (unless (fboundp 'nelisp--check-symbol)
+    (defun nelisp--check-symbol (x)
+      (unless (symbolp x) (signal 'wrong-type-argument (list 'symbolp x)))
+      x))
+
   (defun encode-coding-string (str coding &optional _nocopy)
-    "NeLisp stub: returns STR as-is (UTF-8 internal repr).
-Only `utf-8' CODING is supported; others signal `error'."
-    (when (and coding (not (eq coding 'utf-8)))
+    (nelisp--check-string str)
+    (nelisp--check-symbol coding)
+    ;; `utf-8' and `latin-1' both answer the string unchanged (every string
+    ;; is already UTF-8 bytes here); an UNKNOWN coding system is a
+    ;; `coding-system-error', the condition Emacs signals.
+    (when (and coding (not (memq coding '(utf-8 latin-1 binary no-conversion
+						us-ascii undecided prefer-utf-8))))
+      (signal 'coding-system-error (list coding)))
+    (when nil
       (signal 'error
               (list (format "encode-coding-string stub: only utf-8 supported, got %S"
                             coding))))
@@ -658,19 +685,31 @@ Only `utf-8' CODING is supported; others signal `error'."
 
 (unless (fboundp 'decode-coding-string)
   (defun decode-coding-string (str coding &optional _nocopy)
-    "NeLisp stub: returns STR as-is (UTF-8 internal repr).
-Only `utf-8' CODING is supported; others signal `error'."
-    (when (and coding (not (eq coding 'utf-8)))
+    (nelisp--check-string str)
+    (nelisp--check-symbol coding)
+    ;; `utf-8' and `latin-1' both answer the string unchanged (every string
+    ;; is already UTF-8 bytes here); an UNKNOWN coding system is a
+    ;; `coding-system-error', the condition Emacs signals.
+    (when (and coding (not (memq coding '(utf-8 latin-1 binary no-conversion
+                                          us-ascii undecided prefer-utf-8))))
+      (signal 'coding-system-error (list coding)))
+    (when nil
       (signal 'error
               (list (format "decode-coding-string stub: only utf-8 supported, got %S"
                             coding))))
     str))
 
-;; NeLisp standalone has no buffer object, only string I/O.
-;; AOT helpers (= elf-write etc.) call bufferp for defensive
-;; type checks; stub returns nil (= no Sexp is a buffer).
-(unless (fboundp 'bufferp)
-  (defun bufferp (_obj) "NeLisp stub: no buffer Sexp exists." nil))
+;; Doc 188 P1 (2026-08-23) removed this file's `bufferp' stub.  It was
+;; permanently, unconditionally `nil' ("no Sexp is a buffer") and dead in
+;; its only real load context: this file is never `require'd (a repo-
+;; wide grep finds none), only parsed -- never evaluated -- by host
+;; Emacs tooling (`tools/nelisp-prelude-toplevel-check.el', `tools/
+;; nelisp-generated-source-parse.el', both read-only) and by test/nelisp-
+;; hooks-map-fixnum-test.el, which extracts only its hook/map.el forms
+;; (see that file's own Commentary), never `bufferp'.  The real `bufferp'
+;; -- and the buffer object this comment said did not exist -- now live
+;; in scripts/nelisp-stdlib-prelude.el's Doc 188 P1 section, ported from
+;; src/nelisp-buffer.el.
 
 ;; multibyte/unibyte distinction collapsed in NeLisp standalone
 ;; (= all strings are internally UTF-8 multibyte). Stubs return t
@@ -680,37 +719,42 @@ Only `utf-8' CODING is supported; others signal `error'."
   (defun multibyte-string-p (obj) "NeLisp stub: t for stringp." (stringp obj)))
 (unless (fboundp 'unibyte-string-p)
   (defun unibyte-string-p (_obj) "NeLisp stub: nil (= all strings multibyte)." nil))
+;; Byte-identical to the prelude copy so `make ns-gate' polices the two.
+(unless (fboundp 'nelisp--check-string)
+  (defun nelisp--check-string (x)
+    (unless (stringp x) (signal 'wrong-type-argument (list 'stringp x)))
+    x))
 (unless (fboundp 'string-as-multibyte)
-  (defun string-as-multibyte (s) "NeLisp stub: identity." s))
+  (defun string-as-multibyte (s)
+    "NeLisp stub: identity, but STRINGP is still checked."
+    (nelisp--check-string s)))
 (unless (fboundp 'string-as-unibyte)
-  (defun string-as-unibyte (s) "NeLisp stub: identity (= already UTF-8 bytes)." s))
+  (defun string-as-unibyte (s)
+    "NeLisp stub: identity (= already UTF-8 bytes); STRINGP is still checked."
+    (nelisp--check-string s)))
 (unless (fboundp 'string-make-multibyte)
-  (defun string-make-multibyte (s) "NeLisp stub: identity." s))
+  (defun string-make-multibyte (s)
+    "NeLisp stub: identity, but STRINGP is still checked."
+    (nelisp--check-string s)))
 (unless (fboundp 'string-make-unibyte)
-  (defun string-make-unibyte (s) "NeLisp stub: identity." s))
+  (defun string-make-unibyte (s)
+    "NeLisp stub: identity, but STRINGP is still checked."
+    (nelisp--check-string s)))
 
-;; Buffer ops collapsed = NeLisp standalone has no buffer Sexp,
-;; all I/O is string-based.  Stubs are no-op / nil.
+;; Buffer ops: `set-buffer-multibyte' is an encoding-flag no-op,
+;; unrelated to which buffer is current, and stays.  The rest of this
+;; block used to be no-op/nil "NeLisp standalone has no buffer Sexp"
+;; stubs for `buffer-string'/`current-buffer'/`with-temp-buffer'/
+;; `insert'/`insert-file-contents'/`point-min'/`point-max'/`goto-char'.
+;; Doc 188 P1 (2026-08-23) removed them: dead in this file's only real
+;; load context for the same reason as `bufferp' above, and the premise
+;; ("no buffer Sexp") that justified them is no longer true -- the real
+;; definitions now live in scripts/nelisp-stdlib-prelude.el's Doc 188 P1
+;; section.
 (unless (fboundp 'set-buffer-multibyte)
-  (defun set-buffer-multibyte (_arg) "NeLisp stub: no-op (= no buffer)." nil))
-(unless (fboundp 'buffer-string)
-  (defun buffer-string () "NeLisp stub: returns empty (= no buffer)." ""))
-(unless (fboundp 'current-buffer)
-  (defun current-buffer () "NeLisp stub: nil (= no buffer)." nil))
-(unless (fboundp 'with-temp-buffer)
-  (defmacro with-temp-buffer (&rest body)
-    "NeLisp stub: run BODY (= no buffer to set up)."
-    (cons 'progn body)))
-(unless (fboundp 'insert)
-  (defun insert (&rest _args) "NeLisp stub: no-op (= no buffer to insert into)." nil))
-(unless (fboundp 'insert-file-contents)
-  (defun insert-file-contents (_path) "NeLisp stub: no-op." nil))
-(unless (fboundp 'point-min)
-  (defun point-min () "NeLisp stub: 1." 1))
-(unless (fboundp 'point-max)
-  (defun point-max () "NeLisp stub: 1." 1))
-(unless (fboundp 'goto-char)
-  (defun goto-char (_p) "NeLisp stub: no-op." nil))
+  (defun set-buffer-multibyte (flag)
+    "Answer FLAG, as Emacs does; there is no buffer to change here."
+    flag))
 
 ;; Wave 13 self-host follow-up (2026-05-23): write-region stub.
 ;; NeLisp standalone has no buffer object, so the
@@ -782,8 +826,9 @@ for the full contract."
 (unless (fboundp 'set-file-modes)
   (defun set-file-modes (filename mode &optional _flag)
     "Apply MODE to FILENAME via chmod(2) when a syscall primitive exists.
-Falls back to a no-op (nl-write-file's default 0644 stands) on substrates
-without `nelisp--syscall-path-int'."
+No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
+    (unless (integerp mode) (signal 'wrong-type-argument (list 'fixnump mode)))
+    (nelisp--check-string filename)
     (when (fboundp 'nelisp--syscall-path-int)
       (let ((rc (nelisp--syscall-path-int 90 filename mode)))   ; chmod
         (unless (= rc 0)
@@ -792,5 +837,391 @@ without `nelisp--syscall-path-int'."
 
 ;; nelisp-stdlib-misc.el ends here
 (unless (fboundp 'buffer-substring-no-properties)
-  (defun buffer-substring-no-properties (_start _end)
-    "NeLisp stub: empty string (= no buffer)." ""))
+  (defun buffer-substring-no-properties (start end)
+    (unless (integerp start)
+      (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
+    (unless (integerp end)
+      (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
+    ""))
+
+
+;; ---------------------------------------------------------------------
+;; Hooks: add-hook / remove-hook / run-hooks / run-hook-with-args /
+;; run-hook-with-args-until-success / run-hook-with-args-until-failure.
+;;
+;; Emacs 30 semantics over ordinary symbol values, measured against
+;; Emacs 30.1 (2026-08-22).  There are no buffers in this runtime, so a
+;; hook variable cannot have a value distinct per buffer: `add-hook' and
+;; `remove-hook' accept LOCAL and IGNORE it.  This is a DOCUMENTED
+;; DIVERGENCE from Emacs, not an oversight -- a silent no-op is the
+;; honest choice precisely because the local/global split LOCAL exists
+;; to select cannot exist here at all.  Emacs would instead call
+;; `make-local-variable' on HOOK and splice a `t' marker into the new
+;; buffer-local value (that marker is still handled below, because a
+;; hand-built hook list can contain one even without buffer-locals).
+;;
+;; DEPTH ordering (`add-hook'): default depth 0; a plain (non-`t', non-
+;; integer) DEPTH argument is Emacs's documented backward-compatibility
+;; case and means 90.  Insertion keeps the hook's list sorted ascending
+;; by depth; a NEW function at the same depth as an existing one goes
+;; AFTER it when DEPTH is strictly positive and BEFORE it otherwise
+;; (Emacs's own wording) -- which is why two `(add-hook 'h f)' calls at
+;; the shared default depth 0 leave the most-recently-added function
+;; FIRST.  Emacs does not store per-function depths in the hook's own
+;; list value (there is no room: the list holds functions and, DEPTH-
+;; blind, the `t' marker) -- they live in a private table, and neither
+;; does this runtime: `nelisp--hook-depths' maps HOOK to an alist of
+;; (FUNCTION . DEPTH).  A function already present in the hook's value
+;; with no recorded depth (spliced in by hand, not via `add-hook') is
+;; treated as depth 0, Emacs's own documented default.  Re-adding a
+;; function that is already a member is a no-op -- notably, it does NOT
+;; move the function to a newly-requested depth; `add-hook' checks
+;; membership before it ever looks at DEPTH (measured: adding a function
+;; at depth -10, then again at depth 50, leaves it exactly where the
+;; first call put it).
+;;
+;; The `t' element (Emacs: "run the global value here too") is honored
+;; even though it can only ever mean "run this same value again": with
+;; no buffer-local/global split, a hook's own value doubles as its own
+;; "global value".  Measured against Emacs 30.1 with a plain (non-
+;; buffer-local) hook list containing `t': the first pass runs the list
+;; once; each `t' met on the first pass triggers ONE re-run of the
+;; WHOLE value from its start (fetched once and cached, then re-walked
+;; -- not re-fetched -- on every subsequent `t'), and any `t' met DURING
+;; that re-run is skipped rather than triggering a further expansion (or
+;; this would never terminate).  `(fn1 t fn2 t)' therefore calls fn1
+;; three times and fn2 three times, in the order fn1 fn1 fn2 fn2 fn1
+;; fn2 -- reproduced exactly by `nelisp--run-hook-value' below.
+(unless (boundp 'nelisp--hook-depths)
+  (defvar nelisp--hook-depths (make-hash-table :test 'eq)
+    "HOOK symbol -> alist of (FUNCTION . DEPTH), for `add-hook' ordering."))
+
+(unless (fboundp 'nelisp--hook-list-p)
+  (defun nelisp--hook-list-p (val)
+    "Return non-nil if VAL is a \"list of hook functions\" shape.
+A hook value is instead a SINGLE function to call directly when it
+satisfies `functionp' (this is what keeps a raw lambda form or closure
+-- itself a cons -- from being walked as a list of functions) or is not
+a cons at all (typically a symbol naming a function)."
+    (and (consp val) (not (functionp val)))))
+
+(unless (fboundp 'add-hook)
+  (defun add-hook (hook function &optional depth local)
+    "Add to the value of HOOK the function FUNCTION.
+FUNCTION is not added if already present (`equal').  See Emacs's
+`add-hook' for DEPTH; LOCAL is accepted and ignored -- see the block
+comment above this definition for why that is the honest behavior here.
+
+(fn HOOK FUNCTION &optional DEPTH LOCAL)"
+    (ignore local)
+    (let ((d (cond ((null depth) 0) ((integerp depth) depth) (t 90))))
+      (unless (boundp hook) (set hook nil))
+      (let ((val (symbol-value hook)))
+        (when (and val (not (nelisp--hook-list-p val)))
+          (setq val (list val)))
+        (unless (member function val)
+          (let ((depths (gethash hook nelisp--hook-depths))
+                (before nil) (cur val) (done nil))
+            (while (and cur (not done))
+              (let ((fd (or (cdr (assoc (car cur) depths)) 0)))
+                (if (or (> fd d) (and (= fd d) (<= d 0)))
+                    (setq done t)
+                  (push (car cur) before)
+                  (setq cur (cdr cur)))))
+            (setq val (append (nreverse before) (list function) cur))
+            (puthash hook (cons (cons function d) depths) nelisp--hook-depths))
+          (set hook val))))
+    nil))
+
+(unless (fboundp 'remove-hook)
+  (defun remove-hook (hook function &optional local)
+    "Remove from the value of HOOK the function FUNCTION.
+LOCAL is accepted and ignored; see `add-hook'.
+
+(fn HOOK FUNCTION &optional LOCAL)"
+    (ignore local)
+    (when (boundp hook)
+      (let ((val (symbol-value hook)))
+        (if (not (nelisp--hook-list-p val))
+            (when (equal val function) (set hook nil))
+          (when (member function val)
+            (let (acc)
+              (dolist (f val) (unless (equal f function) (push f acc)))
+              (set hook (nreverse acc)))
+            (let ((depths (gethash hook nelisp--hook-depths)))
+              (when depths
+                (let (kept)
+                  (dolist (pair depths)
+                    (unless (equal (car pair) function) (push pair kept)))
+                  (puthash hook (nreverse kept) nelisp--hook-depths))))))))
+    nil))
+
+(unless (fboundp 'nelisp--run-hook-call)
+  (defun nelisp--run-hook-call (fn args mode)
+    "Call FN with ARGS; for MODE `until-success'/`until-failure', `throw'
+to the `nelisp--run-hook' tag with the short-circuit result once FN's
+return value decides the outcome.  Always returns nil (the caller reads
+outcomes only through the throw or the final return of the walk)."
+    (let ((r (apply fn args)))
+      (cond
+       ((eq mode 'until-success) (when r (throw 'nelisp--run-hook r)))
+       ((eq mode 'until-failure) (unless r (throw 'nelisp--run-hook nil)))))
+    nil))
+
+(unless (fboundp 'nelisp--run-hook-value)
+  (defun nelisp--run-hook-value (val args mode)
+    "Run hook value VAL against ARGS per MODE (`all' / `until-success' /
+`until-failure') and return the MODE-appropriate result.  See the block
+comment above `add-hook' for the `t'-element algorithm this reproduces."
+    (catch 'nelisp--run-hook
+      (cond
+       ((null val) (if (eq mode 'until-failure) t nil))
+       ((not (nelisp--hook-list-p val))
+        (nelisp--run-hook-call val args mode)
+        nil)
+       (t
+        (let ((global nil) (have-global nil) (cur val))
+          (while cur
+            (let ((elt (car cur)))
+              (if (eq elt t)
+                  (progn
+                    (unless have-global
+                      (setq have-global t)
+                      (setq global (if (nelisp--hook-list-p val) val (list val))))
+                    (let ((gcur global))
+                      (while gcur
+                        (unless (eq (car gcur) t)
+                          (nelisp--run-hook-call (car gcur) args mode))
+                        (setq gcur (cdr gcur)))))
+                (nelisp--run-hook-call elt args mode)))
+            (setq cur (cdr cur)))
+          (if (eq mode 'until-failure) t nil)))))))
+
+(unless (fboundp 'run-hooks)
+  (defun run-hooks (&rest hooks)
+    "Run each hook in HOOKS.  Each argument should be a symbol, a hook
+variable; a void hook variable is treated as nil (a no-op), not an
+error.  See `add-hook' for what a hook's value may be.
+
+(fn &rest HOOKS)"
+    (dolist (hook hooks)
+      (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) nil 'all))
+    nil))
+
+(unless (fboundp 'run-hook-with-args)
+  (defun run-hook-with-args (hook &rest args)
+    "Run HOOK with the specified arguments ARGS.  The final return value
+is unspecified, matching Emacs.  A void HOOK is a no-op.
+
+(fn HOOK &rest ARGS)"
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'all)
+    nil))
+
+(unless (fboundp 'run-hook-with-args-until-success)
+  (defun run-hook-with-args-until-success (hook &rest args)
+    "Run HOOK with ARGS, stopping at the first function that returns
+non-nil, and return that value.  Return nil if all functions return
+nil, if there are none to call, or if HOOK is void.
+
+(fn HOOK &rest ARGS)"
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-success)))
+
+(unless (fboundp 'run-hook-with-args-until-failure)
+  (defun run-hook-with-args-until-failure (hook &rest args)
+    "Run HOOK with ARGS, stopping at the first function that returns
+nil, and return nil.  Otherwise (all functions return non-nil, there
+are none to call, or HOOK is void) return non-nil.
+
+(fn HOOK &rest ARGS)"
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-failure)))
+
+;; ---------------------------------------------------------------------
+;; map.el subset: map-elt / map-put! / map-delete / map-keys / map-values
+;; / map-pairs / map-length / map-do / mapp, over alists, plists (Emacs
+;; 27+ rule: a cons whose car is not itself a cons, i.e. not an alist
+;; pair, is treated as a plist) and hash-tables.
+;;
+;; `map-put!' is the one place Emacs's own contract is NOT "always
+;; mutate": measured against Emacs 30.1, `map-put!' on a PLAIN alist
+;; VALUE (not a place `setf' can reassign) mutates in place -- via
+;; `setcdr' on the matching pair -- only when KEY is already present.
+;; Adding a NEW key to an alist means consing a new pair onto the
+;; FRONT, which needs to replace the list's head; a bare function
+;; cannot do that to its caller's variable, so Emacs signals
+;; `map-not-inplace' rather than silently doing nothing (Emacs's own
+;; docstring: "If it cannot [modify MAP in place], it signals the
+;; `map-not-inplace' error.  To insert an element without modifying
+;; MAP, use `map-insert'.").  A PLIST is different: a new key/value
+;; pair can be NCONC'd onto the END of the existing cons chain, which
+;; mutates the last cons's cdr and needs no new head -- so `map-put!'
+;; on a plist never signals for a new key.  A hash-table always mutates
+;; via `puthash' and never signals.  `map-put!' returns VALUE (the
+;; third argument) in every non-signaling case -- not the map -- this
+;; is Emacs's own documented return, not a shortcut taken here.
+;;
+;; `map-delete' is documented by Emacs itself as NOT reliably
+;; destructive for a list-backed map: "if MAP is a list ... and you're
+;; deleting the [element that empties it, e.g. the sole/first element],
+;; the list isn't actually destructively modified ... So if you're
+;; using this on a list, you have to say (setq map (map-delete map
+;; key))".  This implementation takes Emacs at its documented word
+;; instead of chasing the partial, position-dependent in-place splicing
+;; its C-free `defun' does for other cases: alist/plist deletion here
+;; always returns a new list and never mutates the original cons chain.
+;; Every well-behaved caller was already going to reassign from the
+;; return value per Emacs's own advice, so this is a documented
+;; narrowing, not a functional gap.  Hash-table deletion mutates via
+;; `remhash' and returns the (same) table, matching Emacs exactly.
+(unless (get 'map-not-inplace 'error-conditions)
+  (define-error 'map-not-inplace "Cannot modify map in-place"))
+
+(unless (fboundp 'nelisp--plist-p)
+  (defun nelisp--plist-p (val)
+    "Return non-nil if VAL looks like a plist rather than an alist.
+Emacs 27+'s map.el rule: a non-empty list is a plist when its first
+element is not itself a cons (an alist's elements are (KEY . VALUE)
+pairs, so an alist's CAR is always a cons)."
+    (and (consp val) (not (consp (car val))))))
+
+(unless (fboundp 'mapp)
+  (defun mapp (map)
+    "Return non-nil if MAP is a map (alist/plist, hash-table, array, ...).
+
+(fn MAP)"
+    (or (listp map) (hash-table-p map) (arrayp map))))
+
+(unless (fboundp 'map-elt)
+  (defun map-elt (map key &optional default testfn)
+    "Look up KEY in MAP and return its associated value, or DEFAULT.
+MAP is an alist, a plist, or a hash-table.  TESTFN, if non-nil, is used
+in place of `equal' to compare KEY against an alist's/plist's keys (a
+hash-table always uses its own `:test').
+
+(fn MAP KEY &optional DEFAULT TESTFN)"
+    (cond
+     ((hash-table-p map) (gethash key map default))
+     ((nelisp--plist-p map)
+      (let ((cur map) (found nil) (result default))
+        (while (and cur (not found))
+          (if (funcall (or testfn #'eq) (car cur) key)
+              (progn (setq result (cadr cur)) (setq found t))
+            (setq cur (cddr cur))))
+        result))
+     (t
+      (let ((cur map) (found nil) (result default))
+        (while (and cur (not found))
+          (if (funcall (or testfn #'equal) (caar cur) key)
+              (progn (setq result (cdar cur)) (setq found t))
+            (setq cur (cdr cur))))
+        result)))))
+
+(unless (fboundp 'map-put!)
+  (defun map-put! (map key value &optional testfn)
+    "Associate KEY with VALUE in MAP, modifying MAP in place, and return
+VALUE.  Signals `map-not-inplace' when MAP is an alist and KEY is not
+already present -- see the block comment above this section.
+
+(fn MAP KEY VALUE &optional TESTFN)"
+    (cond
+     ((hash-table-p map) (puthash key value map))
+     ((nelisp--plist-p map)
+      (let ((cur map) (found nil))
+        (while (and cur (not found))
+          (if (funcall (or testfn #'eq) (car cur) key)
+              (progn (setcar (cdr cur) value) (setq found t))
+            (setq cur (cddr cur))))
+        (unless found
+          (let ((last map))
+            (while (cddr last) (setq last (cddr last)))
+            (setcdr (cdr last) (list key value))))))
+     (t
+      (let ((cur map) (found nil))
+        (while (and cur (not found))
+          (if (funcall (or testfn #'equal) (caar cur) key)
+              (progn (setcdr (car cur) value) (setq found t))
+            (setq cur (cdr cur))))
+        (unless found (signal 'map-not-inplace (list map))))))
+    value))
+
+(unless (fboundp 'map-delete)
+  (defun map-delete (map key &optional testfn)
+    "Delete KEY from MAP and return the resulting map.
+For a hash-table this mutates MAP (via `remhash') and returns MAP
+itself.  For an alist/plist this ALWAYS returns a new list -- see the
+block comment above this section for why that, not partial in-place
+splicing, is the honest match for Emacs's own documented contract.
+
+(fn MAP KEY &optional TESTFN)"
+    (cond
+     ((hash-table-p map) (remhash key map) map)
+     ((nelisp--plist-p map)
+      (let (acc (cur map))
+        (while cur
+          (if (funcall (or testfn #'eq) (car cur) key)
+              (setq cur (cddr cur))
+            (push (car cur) acc) (push (cadr cur) acc) (setq cur (cddr cur))))
+        (nreverse acc)))
+     (t
+      (let (acc)
+        (dolist (pair map)
+          (unless (funcall (or testfn #'equal) (car pair) key) (push pair acc)))
+        (nreverse acc))))))
+
+(unless (fboundp 'map-keys)
+  (defun map-keys (map)
+    "Return the list of keys in MAP.
+
+(fn MAP)"
+    (cond
+     ((hash-table-p map) (let (ks) (maphash (lambda (k _v) (push k ks)) map) (nreverse ks)))
+     ((nelisp--plist-p map)
+      (let (ks (cur map)) (while cur (push (car cur) ks) (setq cur (cddr cur))) (nreverse ks)))
+     (t (mapcar #'car map)))))
+
+(unless (fboundp 'map-values)
+  (defun map-values (map)
+    "Return the list of values in MAP.
+
+(fn MAP)"
+    (cond
+     ((hash-table-p map) (let (vs) (maphash (lambda (_k v) (push v vs)) map) (nreverse vs)))
+     ((nelisp--plist-p map)
+      (let (vs (cur map)) (while cur (push (cadr cur) vs) (setq cur (cddr cur))) (nreverse vs)))
+     (t (mapcar #'cdr map)))))
+
+(unless (fboundp 'map-pairs)
+  (defun map-pairs (map)
+    "Return the elements of MAP as a list of (KEY . VALUE) pairs.
+
+(fn MAP)"
+    (cond
+     ((hash-table-p map)
+      (let (ps) (maphash (lambda (k v) (push (cons k v) ps)) map) (nreverse ps)))
+     ((nelisp--plist-p map)
+      (let (ps (cur map))
+        (while cur (push (cons (car cur) (cadr cur)) ps) (setq cur (cddr cur)))
+        (nreverse ps)))
+     (t (copy-sequence map)))))
+
+(unless (fboundp 'map-length)
+  (defun map-length (map)
+    "Return the number of elements in MAP.
+
+(fn MAP)"
+    (cond
+     ((hash-table-p map) (hash-table-count map))
+     ((nelisp--plist-p map) (/ (length map) 2))
+     (t (length map)))))
+
+(unless (fboundp 'map-do)
+  (defun map-do (function map)
+    "Call FUNCTION with two arguments KEY and VALUE for each element in MAP.
+
+(fn FUNCTION MAP)"
+    (cond
+     ((hash-table-p map) (maphash function map))
+     ((nelisp--plist-p map)
+      (let ((cur map))
+        (while cur (funcall function (car cur) (cadr cur)) (setq cur (cddr cur)))))
+     (t (dolist (pair map) (funcall function (car pair) (cdr pair)))))
+    nil))

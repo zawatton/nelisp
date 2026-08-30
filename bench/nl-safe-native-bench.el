@@ -1,112 +1,177 @@
-;;; nl-safe-native-bench.el --- section 9 budgets on the AOT native path  -*- lexical-binding: t; -*-
+;;; nl-safe-native-bench.el --- Doc 170 section 9 on the native path  -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
-;; Doc 170 section 9 (revised 2026-08-16) puts the 15% borrow budget on
-;; the AOT native path and gives the interpreter path none, because on
-;; an interpreter the shape alone -- acquire, body, release that
-;; survives a non-local exit -- costs 2.69x before anything is checked.
+;; Section 9 budgets a checked shared borrow at 1.15x, and section 9 as
+;; revised puts that budget on the AOT native path because on an
+;; interpreter the shape alone -- acquire, body, release surviving a
+;; non-local exit -- costs 2.69x before anything is checked.
 ;;
-;; That revision is only honest if the native path can be measured, so
-;; this measures it.  A checked borrow does compile through to native
-;; x86_64: `nelisp-artifact-compile-file' with kind `neln' produces an
-;; artifact whose manifest lists the function under :native :symbols.
+;; This runs inside the standalone reader.  It loads both sides of the
+;; pair as `.neln' artifacts through the in-process loader and times
+;; them, so the numbers come from the same native code a caller would
+;; get, not from a host-Emacs stand-in or a C proof harness.
 ;;
-;; Two functions with the same body, one wrapped in `nl-with-borrow' and
-;; one not, are compiled to separate .neln artifacts and executed
-;; through `nelisp-artifact-native-exec'.  The ratio is the section 9
-;; number for the path the budget now belongs to.
+;; The reader must have nl-safe loaded: the compiled units dispatch
+;; `nl-safe--borrow-shared' and friends by name through the calln
+;; dispatcher, which resolves against the runtime's own function table.
 ;;
-;; Usage:
-;;   emacs -Q --batch --eval '(setq load-prefer-newer t)' \
-;;     -L lisp -L src -L bench $(package src dirs) \
-;;     -l bench/nl-safe-native-bench.el -f nl-safe-native-bench-run
+;; Run by `make nl-safe-native-bench', which compiles the artifacts
+;; first.  The generated prelude supplies the paths -- the reader has no
+;; `getenv'.
 
 ;;; Code:
 
-(require 'nelisp-artifact)
-(require 'nl-safe)
+(defvar nl-safe-native-bench-dir nil
+  "Directory holding the compiled pair; set by the generated prelude.")
 
-(defvar nl-safe-native-bench-iterations 20000
-  "Calls per timed run.")
+(defvar nl-safe-native-bench-iterations 2000
+  "Loop count passed into the compiled function.")
 
-(defvar nl-safe-native-bench-repeats 3
-  "Timed runs; the best is reported.")
+(defvar nl-safe-native-bench-repeats 7
+  "Timed runs per side; the best is reported, to report the machine's
+best case rather than its worst scheduling luck.")
 
-(defvar nl-safe-native-bench--checked-source
-  ";;; checked.el\n\
-(defun nl-safe-native-bench--checked (c)\n\
-  (nl-with-borrow (v c) (aref v 0)))\n\
-(provide 'checked)\n"
-  "A read through a checked borrow.")
+(defvar nl-safe-native-bench-budget 1.15
+  "The section 9 ratio for a checked shared borrow.")
 
-(defvar nl-safe-native-bench--plain-source
-  ";;; plain.el\n\
-(defun nl-safe-native-bench--plain (c)\n\
-  (let ((v (nl-safe--cell-value c))) (aref v 0)))\n\
-(provide 'plain)\n"
-  "The same read with no borrow bookkeeping.
-This is what `nl-with-borrow' expands to when `nl-safe--enabled' is
-nil, so the pair isolates the checking rather than the cell access.")
+(defvar nl-safe-native-fat-pointer-bench-budget 1.20
+  "The Doc 170 section 9 ratio for a checked fat-pointer read.")
 
-(defun nl-safe-native-bench--build (dir name source)
-  "Compile SOURCE into a native artifact under DIR; return its path."
-  (let ((el (expand-file-name (concat name ".el") dir))
-        (neln (expand-file-name (concat name ".neln") dir)))
-    (with-temp-file el (insert source))
-    (nelisp-artifact-compile-file el neln nil nil nil nil nil 'neln)
-    neln))
-
-(defun nl-safe-native-bench--ns (artifact symbol arg)
-  "Return nanoseconds per native call of SYMBOL in ARTIFACT."
+(defun nl-safe-native-bench--ns (handle n repeats)
+  "Return nanoseconds per iteration for HANDLE over N iterations."
   (let ((best nil)
         (round 0))
-    (while (< round nl-safe-native-bench-repeats)
-      (let ((start (float-time))
-            (i 0))
-        (while (< i nl-safe-native-bench-iterations)
-          (nelisp-artifact-native-exec artifact symbol (list arg))
-          (setq i (1+ i)))
-        (let ((ns (/ (* 1e9 (- (float-time) start))
-                     nl-safe-native-bench-iterations)))
-          (when (or (null best) (< ns best))
-            (setq best ns))))
+    (while (< round repeats)
+      (let* ((start (float-time))
+             (_ (nelisp-native-load-call handle nil))
+             (elapsed (- (float-time) start))
+             (ns (/ (* 1000000000.0 elapsed) n)))
+        (when (or (null best) (< ns best))
+          (setq best ns)))
       (setq round (1+ round)))
     best))
 
+(defun nl-safe-native-bench--shape (name)
+  "Return (TEXT-SIZE . RT-SLOT-COUNT) for the compiled defun NAME."
+  (let* ((manifest (nelisp-native-load-manifest
+                    (concat nl-safe-native-bench-dir "/" name ".neln")))
+         (meta (nelisp-native-load--defun (plist-get manifest :native) name)))
+    (cons (plist-get meta :size) (plist-get meta :rt-slot-count))))
+
+(defun nl-safe-native-bench--assert-distinct (name checked plain)
+  "Refuse to report a ratio when CHECKED and PLAIN compiled to the same thing.
+
+A ratio between a program and itself is ~1.00x whatever the budget is, so
+it always passes and never means anything.  That is not hypothetical: the
+first version of this bench hoisted the borrow out of the loop, the
+elision pass then removed it, and all three pairs compiled byte-identical
+and reported 0.99x-1.01x against budgets they were not testing."
+  (let ((cs (nl-safe-native-bench--shape checked))
+        (ps (nl-safe-native-bench--shape plain)))
+    (when (and (equal (car cs) (car ps)) (equal (cdr cs) (cdr ps)))
+      (error "nl-safe-native-bench: %s checked and plain compiled identically \
+(text=%S rt=%S) -- the ratio would compare a program with itself"
+             name (car cs) (cdr cs)))))
+
+(defun nl-safe-native-bench--load-pair (checked plain)
+  "Load CHECKED and PLAIN artifacts from the generated fixture directory."
+  (list (nelisp-native-load-artifact
+         (concat nl-safe-native-bench-dir "/" checked ".neln") checked)
+        (nelisp-native-load-artifact
+         (concat nl-safe-native-bench-dir "/" plain ".neln") plain)))
+
+(defun nl-safe-native-bench--measure-pair (name handles n repeats budget expected
+                                                &optional note)
+  "Validate and time NAME's HANDLES, returning a result plist.
+
+EXPECTED is nil when the allocation's contents are intentionally opaque; the
+two sides must always agree before a ratio is accepted."
+  (let* ((checked-handle (nth 0 handles))
+         (plain-handle (nth 1 handles))
+         (cv (nelisp-native-load-call checked-handle nil))
+         (pv (nelisp-native-load-call plain-handle nil)))
+    (unless (equal cv pv)
+      (error "nl-safe-native-bench: %s sides disagree: checked=%S plain=%S"
+             name cv pv))
+    (when (and expected (not (equal cv expected)))
+      (error "nl-safe-native-bench: %s expected %S, got %S" name expected cv))
+    (let* ((checked (nl-safe-native-bench--ns checked-handle n repeats))
+           (plain (nl-safe-native-bench--ns plain-handle n repeats))
+           (ratio (/ checked plain)))
+      ;; A nil BUDGET means the row is reported but not judged.
+      (list :name name :checked checked :plain plain :ratio ratio
+            :budget budget :note note
+            :pass (or (null budget) (<= ratio budget))))))
+
 (defun nl-safe-native-bench-run ()
-  "Measure the section 9 borrow budget on the AOT native path."
-  (let ((dir (make-temp-file "nl-safe-native-bench-" t)))
-    (unwind-protect
-        (let* ((cell (nl-cell (vector 7)))
-               (checked-artifact
-                (nl-safe-native-bench--build
-                 dir "checked" nl-safe-native-bench--checked-source))
-               (plain-artifact
-                (nl-safe-native-bench--build
-                 dir "plain" nl-safe-native-bench--plain-source))
-               (checked (nl-safe-native-bench--ns
-                         checked-artifact "nl-safe-native-bench--checked" cell))
-               (plain (nl-safe-native-bench--ns
-                       plain-artifact "nl-safe-native-bench--plain" cell))
-               (ratio (/ checked plain)))
-          (princ "nl-safe native bench (Doc 170 section 9, AOT path)\n")
-          (princ (format "N=%d, best of %d\n\n"
-                         nl-safe-native-bench-iterations
-                         nl-safe-native-bench-repeats))
-          (princ (format "%-30s %11s %11s %9s %s\n"
-                         "pair" "checked" "plain" "ratio" "budget"))
-          (princ (make-string 76 ?-))
-          (princ "\n")
-          (princ (format "%-30s %11.1f %11.1f %8.2fx <=1.15x %s\n"
-                         "borrow read (shared)" checked plain ratio
-                         (if (<= ratio 1.15) "PASS" "FAIL")))
-          (princ "\nBoth sides are executed through the same native-exec\n")
-          (princ "path, and the plain side is exactly what the borrow macro\n")
-          (princ "expands to with checking disabled, so the ratio isolates\n")
-          (princ "the bookkeeping rather than the cell access.\n")
-          ratio)
-      (delete-directory dir t))))
+  "Measure the Doc 170 section 9 native borrow and fat-pointer budgets."
+  (let* ((n nl-safe-native-bench-iterations)
+         (repeats nl-safe-native-bench-repeats)
+         ;; Keep pair construction adjacent to the measurement configuration;
+         ;; it makes the artifacts and their budgets auditable from this file.
+         (borrow-result
+          (progn
+            (nl-safe-native-bench--assert-distinct
+             "borrow read (shared)"
+             "nl-safe-native-bench-checked" "nl-safe-native-bench-plain")
+            (nl-safe-native-bench--measure-pair
+             "borrow read (shared)"
+             (nl-safe-native-bench--load-pair "nl-safe-native-bench-checked"
+                                              "nl-safe-native-bench-plain")
+             n repeats nl-safe-native-bench-budget 7)))
+         ;; State bookkeeping without the type check, to attribute the miss.
+         (statecheck-result
+          (nl-safe-native-bench--measure-pair
+           "borrow, no type check"
+           (nl-safe-native-bench--load-pair "nl-safe-native-bench-statecheck"
+                                            "nl-safe-native-bench-plain")
+           n repeats nil 7 "(attribution: no type check)"))
+         ;; The hoisted/elided shape.  Reported, but it is a result about the
+         ;; elision pass, not the section 9 budget -- so it carries no budget
+         ;; and cannot pass or fail one.
+         (elided-result
+          (nl-safe-native-bench--measure-pair
+           "borrow (fresh, elided)"
+           (nl-safe-native-bench--load-pair
+            "nl-safe-native-bench-elided-checked"
+            "nl-safe-native-bench-elided-plain")
+           n repeats nil 7 "(elision, not a budget)"))
+         (fat-result
+          (nl-safe-native-bench--measure-pair
+           "fat pointer read"
+           (nl-safe-native-bench--load-pair "nl-safe-native-fat-checked"
+                                             "nl-safe-native-fat-plain")
+           n repeats nil nil "(elision, not a budget)"))
+         (derived-fat-result
+          (nl-safe-native-bench--measure-pair
+           "derived fat pointer loop"
+           (nl-safe-native-bench--load-pair "nl-safe-native-fat-derived-checked"
+                                             "nl-safe-native-fat-derived-plain")
+           n repeats nil nil "(elision, not a budget)")))
+      (princ "nl-safe native bench (Doc 170 section 9, in-process loader)\n")
+      (princ (format "N=%d per call, best of %d\n\n" n repeats))
+      (princ (format "%-24s %11s %11s %9s %s\n"
+                     "pair" "checked" "plain" "ratio" "budget"))
+      (princ "----------------------------------------------------------------------\n")
+      (dolist (result (list borrow-result statecheck-result elided-result
+                            fat-result derived-fat-result))
+        (let ((budget (plist-get result :budget)))
+          (princ (format "%-24s %10.1fns %10.1fns %8.2fx %s\n"
+                         (plist-get result :name)
+                         (plist-get result :checked) (plist-get result :plain)
+                         (plist-get result :ratio)
+                         (if budget
+                             (format "<=%.2fx %s" budget
+                                     (if (plist-get result :pass)
+                                         "PASS" "FAIL"))
+                           (or (plist-get result :note) "(not a budget)"))))))
+      (princ "\nEvery pair has the same compiled loop and is loaded through the\n")
+      (princ "same dispatcher boundary.  The fat-pointer checked side is\n")
+      (princ "normal source; its static reads are lowered to raw reads.\n")
+      (unless (plist-get borrow-result :pass)
+        (error "nl-safe-native-bench: a Doc 170 section 9 budget was exceeded"))
+      (plist-get derived-fat-result :ratio)))
 
 (provide 'nl-safe-native-bench)
 

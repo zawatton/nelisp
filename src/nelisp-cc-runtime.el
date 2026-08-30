@@ -82,8 +82,27 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'seq)
-(require 'pcase)
+;; Optional, same reading as the `subr-x' requires made optional in cd64c0bd7
+;; and `macroexp' in nelisp-aot-compiler.el: this file is loaded by the
+;; standalone runtime, which has no Emacs underneath it to load `seq' from.
+;; It does not need one -- `seq' appears in this file exactly once, on this
+;; line.  No `seq-' name, no `seqp', no `seq-let', no `seq-doseq' (grep,
+;; 2026-08-19).  A hard require asks for a file the code never reads from.
+;;
+;; This one blocked two things at once: `nelisp-integration' failed on it, and
+;; it was the next link after `macroexp' in the chain that left the native
+;; compiler undefined, so every hot defun compiled to bytecode and said
+;; `:reason "native compiler unavailable"'.
+(require 'seq nil t)
+;; Optional, same reading as `subr-x' (cd64c0bd7), `macroexp' and `seq': this
+;; file is loaded by the standalone runtime, which has no Emacs underneath it
+;; to load `pcase' from -- and does not need one.  The stdlib prelude defines
+;; the `pcase' macro (and `pcase-let' / `pcase-let*'), kept in sync with
+;; lisp/nelisp-pcase.el; measured 2026-08-19, `(fboundp 'pcase)' is t in the
+;; built reader while `(featurep 'pcase)' is nil, because nothing in this tree
+;; provides the FEATURE.  The require asks for the file; the code needs the
+;; macro.
+(require 'pcase nil t)
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
@@ -1250,6 +1269,43 @@ external configuration is required."
   (and (boundp 'module-file-suffix)
        module-file-suffix
        (fboundp 'module-load)))
+
+(defun nelisp-cc-runtime-host-x86-64-p ()
+  "Return non-nil when this host executes x86_64 machine code natively."
+  (and (stringp system-configuration)
+       (string-match-p "\\`\\(x86_64\\|amd64\\)-" system-configuration)
+       t))
+
+(defun nelisp-cc-runtime-in-process-exec-available-p ()
+  "Return non-nil when in-process native exec can actually run here.
+
+This is the predicate the ERT skip-gates want, and it is deliberately
+stricter than \"the module file exists\":
+
+- The module is only HALF the bootstrap contract.  `--ensure-module-
+  loaded\=' hands the sibling `libnelisp_runtime.so\=' to the module by
+  absolute path, and skips that step when the file is not there -- so a
+  module without its cdylib loads clean and then fails at the FIRST exec
+  with `dlopen failed\='.  A gate that stops at `file-readable-p\= MODULE\='
+  therefore lets the whole lane run and fail rather than skip.  Measured
+  2026-08-26: a four-month-old `nelisp-runtime-module.so\=' left in an
+  otherwise clean macOS checkout turned 36 skips into 36 failures, and
+  the same file on a machine that had never built the cdylib would do it
+  on any platform.
+
+- The callers that use this gate compile for `x86_64\=' explicitly, so an
+  aarch64 host cannot run what they produce even with a perfect module.
+  Executing those bytes is a SIGILL, not a Lisp error, which is the one
+  outcome a test suite cannot report."
+  (and (nelisp-cc-runtime--module-supported-p)
+       (nelisp-cc-runtime-host-x86-64-p)
+       (let ((path (ignore-errors (nelisp-cc-runtime--locate-runtime-module))))
+         (and path
+              (file-readable-p path)
+              (file-readable-p
+               (expand-file-name "libnelisp_runtime.so"
+                                 (file-name-directory path)))))
+       t))
 
 (defvar nelisp-cc-runtime--module-loaded-p nil
   "Non-nil when `nelisp-runtime-module.so' has been `module-load'-ed.

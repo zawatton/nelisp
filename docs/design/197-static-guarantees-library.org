@@ -1,0 +1,763 @@
+#+TITLE: Doc 197 — Static guarantees for NeLisp: what a macroexpansion-time library can honestly check, lifted from nl-safe's runtime borrow checks
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-24
+#+STATUS: PARTIAL — build-first =nl-total=, shared walker extraction,
+#+STATUS: =nl-borrow-scope=, and =nl-typed= implemented and measured on host
+#+STATUS: Emacs and =target/nelisp=.  The Tier 2/3 ceiling and CI gate/adoption
+#+STATUS: work remain explicitly outside this landing; see §10.
+#+VERIFIED-BY: compile parens-check
+
+* Status
+
+| item     | value                                                                |
+|----------+-----------------------------------------------------------------------|
+| Doc #    | 197                                                                   |
+| State    | PARTIAL — build-first Tier 1 annotation library implemented; deeper flow and CI/adoption work remain out of scope |
+| Parent   | Doc 168 (extension libraries: layer discipline §3.1, dynamic-before-static §3.2, non-invasiveness gate §6) |
+| Sibling  | Doc 169 (nl-prelude/nl-condition), Doc 170 (nl-safe/nl-contract/nl-check, Stage 5 gate), Doc 189 (nl-ns, advisory-static precedent), Doc 171 (AOT TCO blueprint, a different L2 proposal already gated behind L1 evidence) |
+| Reads    | =packages/nl-safe/src/nl-safe.el=, =packages/nl-safe/src/nl-resource.el=, =packages/nl-contract/src/nl-contract.el=, =packages/nl-prelude/src/nl-prelude.el=, =packages/nl-check/src/nl-check.el=, =packages/nl-check/README.org=, =packages/nl-ns/src/nl-ns.el= (via Doc 189), =lisp/nelisp-aot-compiler.el=, =scripts/nl-check-gate.el=, =scripts/nl-ns-gate.el=, =tools/ai/gates.expected=, =docs/design/168-extension-libraries.org=, =docs/design/170-nl-safe.org=, =docs/design/189-nl-ns-enforced-namespaces.org=, =AI.md=, =AGENTS.md= |
+| Probed   | Not applicable — read-only survey, no build, no =target/nelisp= run  |
+
+* 1. Scope and non-goals
+
+This doc asks one question: can an *opt-in library* lift some of
+=nl-safe='s runtime borrow/resource checks (Doc 170) to compile time,
+the way Doc 168 §3.2 already schedules for "later, once real-usage data
+exists"? It surveys what exists, states plainly what a library can and
+cannot check, and proposes an annotation surface and a phase order.
+
+Non-goals, inherited from Doc 168 §2 and restated because the framing
+("Rust-style static guarantees") invites scope creep past them:
+
+- *Not a new dialect.* No new reader syntax, no new =:*= keyword
+  arguments to core forms. Everything here is macros over plain Elisp,
+  same as every =nl-*= package that exists today.
+- *Not a whole-program borrow checker.* Rust's soundness comes from
+  the compiler owning every function's signature and tracking
+  ownership across every call edge in the crate. A library macro sees
+  the syntax of the one form it was invoked on (plus whatever a prior
+  declaration put in a global registry table) — nothing upstream of
+  its call site, nothing downstream once a value crosses a function
+  boundary the macro cannot see through. §4 below states exactly how
+  far that gets.
+- *Not a change to unannotated code's semantics or performance.*
+  Doc 168 §6's non-invasiveness gate applies unchanged: code that does
+  not =(require 'nl-static)= is byte-for-byte, behavior-for-behavior
+  identical, forever.
+- *Not the Doc 170 §8 "Stage 5 static linearity check."* That is a
+  different proposal already on record in this tree, and this doc
+  does not re-open it (§3.3 below explains why they do not compete).
+
+* 2. Ground survey: what already exists, with file:line
+
+Doc 197 was framed as "design the compile/expansion-time lift" of
+=nl-safe='s runtime checks, as if that lift had not started. Reading
+the tree says otherwise: two pieces of it already shipped, inside
+=nl-prelude= and =nl-safe= themselves, years (in tree-time) before this
+doc's number was assigned. The honest starting point is to name what
+is already there before proposing what is new.
+
+** 2.1 =nl-safe='s runtime borrow model (the thing being lifted)
+
+=packages/nl-safe/src/nl-safe.el= implements Doc 170 Stage 1: a borrow
+cell is a 3-slot vector =[nl--cell VALUE STATE]= where =STATE= is =0=
+(free), a positive integer (=N= concurrent shared borrows), or =-1=
+(one exclusive borrow) — line 98 (=nl-cell=) and the state-transition
+functions at lines 146–174 (=nl-safe--borrow-shared=,
+=nl-safe--borrow-mut=, their release counterparts). Acquisition and
+release are macro-expanded into an =unwind-protect= pair
+(=nl-with-borrow= at line 196, =nl-with-borrow-mut= at line 215), so a
+non-local exit still releases. A violation signals =nl-borrow-error=
+(defined line 57) at the moment the second, conflicting borrow is
+requested — this is a *runtime* check: the state that decides
+allowed/rejected lives in a mutable vector slot, is written by
+whichever branch happened to run, and cannot be read at macroexpansion
+time without running the program.
+
+Every checked macro in this file already carries a *disable flag*
+(=nl-safe--enabled=, line 67, default =t=) read at expansion time: when
+nil, =nl-with-borrow=/=nl-with-borrow-mut=/the =nl-ptr-*= accessors
+expand to the plain unchecked form with zero residue. Doc 170 §9
+requires — and =nl-safe-test.el= / =nl-resource-test.el= verify by ERT
+— that the disabled expansion is byte-identical to code that never
+required the checking layer at all. Any static-checking macro this doc
+proposes inherits that same discipline as a hard constraint, not a
+nice-to-have: a static check that adds one byte of overhead to the
+disabled path breaks the property every sibling package in this family
+already promises.
+
+A violation log (=nl-safe--violation-log=, line 81) exists *specifically*
+to feed "Doc 168 Phase 6 go/no-go gate" — its own docstring says so.
+That gate's actual 2026-08-16 verdict is the single most load-bearing
+fact for this doc and is quoted in full in §3.3.
+
+** 2.2 The buried precedent: macroexpansion-time checking already ships, in =nl-prelude=
+
+This is the fact that reframes the whole question. =nl-prelude.el= —
+not =nl-safe=, not a new package — already ships two independent
+instances of exactly the mechanism item 2 of this doc's brief asks for
+as a hypothetical: a macro that analyzes its own body's syntax and
+signals an *expansion-time* error when a rule is violated.
+
+*** =nl-strict= / =nl-ptr-make= — an unsafe-primitive gate (nl-safe.el:305)
+
+=nl-strict= (=nl-prelude.el:287=) sets a load/compile-unit-scoped flag,
+read back through =nl-strict-p= (line 293). =nl-ptr-make=
+(=nl-safe.el:305=) checks it directly in its macro body:
+
+#+begin_src elisp
+(defmacro nl-ptr-make (base len generation)
+  (if (nl-strict-p)
+      (error "nl-ptr-make: only allowed inside `nl-unsafe' under (nl-strict t)")
+    `(nl-safe--ptr-make ,base ,len ,generation)))
+#+end_src
+
+Under =(nl-strict t)=, calling =nl-ptr-make= outside an =nl-unsafe=
+block is a macroexpansion error — compilation stops, nothing is
+produced. =nl-unsafe= (=nl-safe.el:460=) rewrites =nl-ptr-make= calls
+in its body to the raw constructor *before* this gate can fire, which
+is exactly how the syntactic boundary is enforced: the check is "is
+this call lexically inside a form that rewrote it first," a purely
+syntactic question a macro can answer by looking at where it was
+expanded from.
+
+*** =nl-match= / =nl-defdata= — exhaustiveness and arity, unconditionally
+
+=nl-defdata= (=nl-prelude.el:390=) declares a closed variant set and
+registers it (=nl--data-register=, called from inside the macro
+expansion) in two hash tables: =nl--data-registry= (type → variant
+list) and =nl--data-variants= (variant → type + arity). =nl-match=
+(=nl-prelude.el:510=) calls =nl--match-check= (line 441) at its own
+macroexpansion time, which — when every clause head in the =nl-match=
+form is a registered variant — checks, all before any code runs:
+
+- every declared variant is covered, or there is a =_= wildcard clause
+  (missing-variant list named in the error, line 487–489)
+- every clause's field pattern arity matches the variant's declared
+  arity (line 472–475)
+- no clause head belongs to a different registered type than the
+  others (line 469–471)
+- a duplicate clause or dead code after =_= gets a warning (475–482,
+  routed through =byte-compile-warn= during compilation)
+
+This check is *not gated by =nl-strict=* — it always runs when the
+registry applies. =nl-strict= only changes what happens for an
+*unregistered* head (a typo, or a value from a variant set this file
+never declared): non-strict falls back silently to an unchecked
+runtime dispatch; strict makes an unregistered head itself an
+expansion error (line 454–456). This is precedent, already running
+today, for §5's =nl-total= proposal below — see §2.4 for why "already
+running" does not mean "already useful."
+
+** 2.3 =nl-check= — the batch/CI checker, and its own stated non-goal
+
+=packages/nl-check/src/nl-check.el= (Doc 170 §10, 638 lines) is a
+*separate* package: Doc 168 §4.1 fixes a one-way dependency — =nl-check=
+depends on =nl-prelude=/=nl-safe=/=nl-resource=, and =nothing= depends
+on =nl-check=. It runs =must-use= discard detection, resource-linearity
+(escape/consumption) analysis, and an unsafe-primitive-call inventory,
+all over *macroexpanded* forms (=nl-check-expand-forms=, which explains
+why: a macro that expands into a resource =let= hides the resource from
+a reader-level check completely, the same reason Rust checks borrows on
+MIR rather than surface syntax — the file's own commentary makes this
+comparison, not this doc).
+
+Its soundness stance is stated in its own README
+(=packages/nl-check/README.org:77-96=) more bluntly than most design
+docs allow themselves:
+
+#+begin_quote
+This is the honest part of the design. The moment a resource is
+captured by a lambda, or handed to a function this pass does not
+model, tracking is abandoned and the binding is reported as
+resource-untracked rather than quietly dropped from the analysis
+[...] So an empty resource-leak list means "no leak among the bindings
+I could follow", never "no leaks".
+#+end_quote
+
+And its non-goals section (=README.org:125-134=) says, first item:
+*"Not a type checker. No inference, no annotations."* That is precisely
+the gap this doc is asked to fill — =nl-check= disclaims it explicitly,
+by name, rather than half-doing it.
+
+=nl-check-gate.el= (=scripts/nl-check-gate.el=), the CI wiring for this
+package, is the single most important piece of architecture precedent
+for §3 below. Its own commentary (lines 10–16):
+
+#+begin_quote
+This runs them from `make compile', which is where a compile-time
+error belongs. It deliberately does NOT hook the byte-compiler itself:
+Doc 170 section 9 requires that with checking disabled the expansion
+be byte-identical to the plain version, and a separate reading pass
+cannot affect the emitted code at all, so that property holds by
+construction rather than by test.
+#+end_quote
+
+Read that twice: the deepest static-analysis tool that exists in this
+tree today *deliberately declines* to hook the compiler pipeline, even
+though hooking =byte-compile= would have been the more direct
+integration point, precisely to keep the "disabled = byte-identical"
+guarantee true by construction rather than by a test that could rot.
+It runs as a second, independent batch pass invoked from =make
+compile=, with a baseline+accepted-file ratchet (=nl-check-gate--key=
+groups findings by file/kind/subject so a comment-line shift does not
+reopen an accepted finding) — the exact shape §7 below proposes reusing
+for =nl-static=.
+
+** 2.4 =nl-contract= — the boundary mechanism this doc does not replace
+
+=packages/nl-contract/src/nl-contract.el= is Doc 170 Stage 4: Racket-
+style contracts wrapping a named function's cell (=fset=-based, at
+=nl-provide/contract=), checking each argument against a domain
+contract and the return against a range contract at *every call*, with
+blame assigned to caller or implementation. Its own commentary states
+the trade explicitly: *"Instead of static types, values crossing a
+boundary are checked at run time"* (lines 7-8). This is the mechanism
+Doc 168 §3.4 names for the general case — a strict compile unit cannot
+assume anything about a value that arrived from outside it, so the
+boundary gets a dynamic check no matter how strict the interior is.
+§6 below treats this as fixed background, not something this doc's
+proposal competes with or subsumes.
+
+** 2.5 =nl-ns= — the sibling that chose pure static analysis, and paid for it in scope
+
+Doc 189 (=nl-ns=, namespace collision detection) is cited in this
+doc's brief as "precedent for analyze without changing runtime
+behavior," and it is — its own README says (quoted in
+=docs/design/189-...org=): *"It does not rewrite code, and it adds
+nothing at run time. It reads files and reports where the boundaries
+that Elisp cannot enforce have actually been crossed,"* and, more
+bluntly, *"Nothing is enforced at run time. This package cannot
+prevent a collision, only report one."* It is wired as a CI gate
+(=scripts/nl-ns-gate.el=) with the identical baseline+accepted-list
+ratchet shape as =nl-check-gate.el=. Worth noting for §3: =nl-ns= is a
+whole-tree, file-reading batch tool, not a per-form macro — it can
+only report after the fact, in CI, never at the macroexpansion of the
+form that caused the problem. §3 explains why this doc recommends the
+macro shape over the =nl-ns= shape for the specific guarantees in
+scope here.
+
+** 2.6 The AOT compiler: what it actually is, which answers half of the crux by itself
+
+=lisp/nelisp-aot-compiler.el= (19,431 lines, 491 top-level =defun=s) is
+named in this doc's brief as a candidate hook point on the theory that
+"it's pure elisp, has type/IR information at compile time." Reading it
+says two things that matter:
+
+1. *It compiles a narrow Sexp DSL, not general Elisp.* Its own header
+   (lines 9-25) is explicit: a v1 grammar of =write=/=exit=/=seq=/=let=/
+   arithmetic/=defun=/=if=/=while=/=cond=/comparisons — "Anything else
+   signals =nelisp-aot-compiler-error= at parse time." Its own
+   commentary at line 1374 states why it does not run =macroexpand-all=
+   over a whole program the way =nl-check= does (§2.3): *"AOT parses a
+   DSL, not host elisp. Running =macroexpand-all= over a whole program
+   would rewrite DSL =defun= into host =defalias=, so macro expansion
+   is selective: preserve AOT structural forms, expand user macros in
+   value positions, then normalize the small host core forms"* — a
+   different, narrower posture than =nl-check-expand-forms= (§2.3),
+   which macroexpands everything precisely because it has no DSL
+   structural forms of its own to protect. Whatever walks this
+   compiler's input tree still has to recognize its own =defun=/=if=/
+   =while=/=cond= as structural forms first; closures, dynamic
+   variables, and the =unwind-protect=-shaped expansions =nl-safe='s
+   own macros produce (§2.1) are not in its grammar. Code written
+   against =nl-safe= today (ordinary Elisp using
+   =nl-cell=/=nl-with-borrow-mut=) is not a program this compiler
+   accepts as input at all, so a checking pass added to *this*
+   compiler would not see it.
+
+2. *Its "type" information is a register-class tag, not a type
+   system.* The IR node constructor (=nelisp-aot-compiler--make-ir=,
+   line 801) tags each argument node with =:cls= = =gp= or =f64=
+   (lines 745–782) purely to route it to an integer or float argument
+   register per the SysV/ARM64 calling convention. There is no
+   soundness claim attached to =:cls=, no inference beyond "is this
+   literal syntactically a float," and no error path for a type
+   mismatch that isn't already an ABI-arity error
+   (=:extern-call-too-many-gp-args=, lines 787-789). This is codegen
+   plumbing, not the "type/IR information" the brief hoped an opt-in
+   library could hook for checking.
+
+Separately, and this closes the AOT-hook question rather than merely
+weakening it: Doc 170 §8 measured (2026-08-16) that the AOT *native
+execution path itself* cannot currently run code shaped like
+=nl-safe='s API at all. A leaf function using only primitive integer
+arithmetic links and runs; a function calling one Elisp helper
+(=nl-safe--cell-value=) *fails to link*; anything passing an
+=nl-cell= fails outright, because the native-exec spike's docstring
+says plainly it is "the first native-execution spike... for the
+reloc-free leaf functions AOT emits today (plain C integer ABI, no
+boundary slots)" and the general boundary-ABI loader is still open
+work (Doc 142 §6.4). Hooking a static check into a compiler pass whose
+own execution path cannot yet run the values that check would be
+reasoning about is not a smaller version of the library option — it is
+currently not an executable design at all. §3.3 gives the full
+dependency chain Doc 170 §8 already wrote down for why this is not a
+near-term option, independent of this doc's own findings above.
+
+* 3. The crux: macroexpansion-time checking, or hooking the AOT pass
+
+** 3.1 The two options, stated plainly
+
+*Option A — macroexpansion-time macros* (=nl-typed=, =nl-borrow-scope=,
+=nl-total= — §5). A form wrapped in one of these macros is analyzed as
+Lisp *syntax* by the macro's own expander function, the same moment
+=nl-match= already analyzes its clause list or =nl-ptr-make= already
+checks =nl-strict-p=. A violation calls =(error ...)= from inside macro
+expansion, which halts compilation of that file — no different in kind
+from the two mechanisms already shipping in §2.2.
+
+*Option B — an AOT-pass hook*. A new analysis pass runs somewhere in
+=nelisp-aot-compiler.el='s parse→IR→emit pipeline (§2.6's "Architecture"
+comment: =parse -> IR -> collect strings -> collect defuns -> pass-1
+emit -> address resolution -> pass-2 emit -> ... -> ELF=), using
+whatever type/register-class information the IR carries by that point.
+
+** 3.2 Why Option A is the library-shaped one, on the evidence in §2
+
+- *It is what the tree already does, twice, and it works.* §2.2's two
+  examples are not sketches — they are shipped code with ERT coverage
+  (=nl-prelude-test.el=, 610 lines including the =nl-defdata=/=nl-match=
+  suite at line 302 onward). Option A is not a new integration
+  strategy for this codebase; it is doing one more thing the way two
+  things already work.
+- *It matches Doc 168 §3.1's LOCKED layer discipline exactly.* §3.1's
+  table puts "macro + function only" at L1 ("package-internal,"
+  cheapest to retract) and "AOT/JIT compiler pass" at L2 ("compilation-
+  unit-wide impact," costlier to retract), with the rule stated as
+  LOCKED: *"L2/L3 is only started once an equivalent L1 version has
+  shipped and real usage data exists."* A checking macro is L1 by the
+  table's own definition; an AOT-pass hook is explicitly, by name, the
+  L2 the discipline says to defer. Choosing Option A is not a judgment
+  call this doc is making — it is applying a rule this repository
+  already locked in on 2026-08-15, before this doc existed.
+- *It covers the code that actually exists to be checked; Option B
+  does not.* Per §2.6, the AOT compiler accepts a narrow Sexp DSL, not
+  general Elisp using =nl-safe=. A macro-based check runs at the
+  macroexpansion of *any* file that requires the library, whether or
+  not that file's functions are ever fed through the AOT pipeline.
+  Option B's reach is a strict subset of Option A's for exactly the
+  code this doc is about.
+- *Even where Option B's target exists, it is not executable yet.*
+  §2.6's second half: the AOT native-execution path link-fails on
+  anything beyond leaf integer-ABI functions. A checking pass with
+  nothing downstream that can run its subject is a pass with no
+  verifiable output — it could never clear this repo's own Definition
+  of Done ("against-the-bug evidence... run, not asserted," AI.md).
+- *=nl-check-gate.el= already made this exact choice, on the record,
+  for a harder version of this same question.* §2.3 quotes it: even
+  the batch checker with the deepest reach in this tree "deliberately
+  does NOT hook the byte-compiler itself" so that the disabled-path
+  byte-identity guarantee "holds by construction rather than by test."
+  Hooking the AOT pass would trade that same property away for a
+  hook point that, per the previous two bullets, cannot even see or
+  run the code in question today.
+
+*Recommendation:* Option A. Not "for now, pending more information" —
+the evidence in §2 (the layer-discipline lock, the two shipped
+precedents, the AOT compiler's actual grammar, the native-exec link
+failures, =nl-check-gate='s own stated reasoning) all point the same
+way at once. Option B is not merely less convenient; on today's tree
+it has no code left to check and no execution path to verify against.
+
+** 3.3 Why this is not Doc 170 §8's "Stage 5" reopened
+
+Doc 170 §8 already asked a related-sounding question — "should NeLisp
+build a static linearity checker for =nl-safe='s violations" — and
+already answered it, on 2026-08-16, with a documented gate result this
+doc is obligated to read before proposing anything adjacent:
+
+#+begin_quote
+Verdict: do not start. But the reason is not "below 50%." The
+population was empty. [...] the sole "1" reference is
+packages/nl-check/src/nl-check.el — the checker knows the name, not
+code that is holding a resource. Therefore "zero violations from real
+code" reads not as "real code is sound" but as "real code has never
+used nl-safe."
+#+end_quote
+
+with the causal chain it gives for *why* real code has never used
+=nl-safe=: the interpreter-path performance floor (measuring 12.77x on
+host Emacs and 5.00x on the standalone reader for the bare
+acquire/=unwind-protect=/release *shape*, before any check logic runs
+at all) makes adopting =nl-cell=/=nl-with-borrow-mut= on that path a
+non-starter, so nothing generates the violation data Stage 5 would
+need, so Stage 5's own gate cannot be evaluated — and Doc 170 §8 gives
+an explicit six-step order to fix that (in-process mmap+reloc loader →
+measurable native budget → an AOT check-elision pass → real =nl-safe=
+adoption → violation data → re-run the Stage 5 gate) before Stage 5 is
+revisited at all.
+
+Doc 170 §10 lists what Stage 5 is: extending =nl-check='s existing
+resource/borrow *linearity* analysis (§2.3's escape/consumption
+walker) into something sound enough to gate the whole tree — a deeper,
+whole-program version of a batch tool that already runs. That is a
+different shape of thing from this doc's §5 proposal, which is a set
+of *macros a caller opts into per call site*, checking only the syntax
+of the one annotated form. The two do not compete for the same gate,
+and this doc's Option A recommendation is not a backdoor into Stage 5.
+
+But the *reason* Stage 5 is blocked generalizes past its own specific
+mechanism, and §7's phase plan takes that seriously rather than
+treating "we chose macros, not a batch pass" as an exemption from it:
+a static check for violations nobody's code produces yet is a check
+built for a population of zero, regardless of whether it runs at
+macroexpansion or in a CI batch job. §7 applies that logic to
+sequence =nl-borrow-scope= and =nl-typed= (§5.2, §5.1) behind real
+=nl-cell=/=nl-resource= adoption, exactly as Doc 168 §3.2's LOCKED
+"dynamic checks first" principle already requires, and singles out
+=nl-total= (§5.3) as the one item that does not need to wait, because
+unlike the other two it is not proposing a new checking mechanism at
+all — see §5.3 and §7.1.
+
+* 4. The soundness ceiling: what a library macro can honestly claim
+
+Rust's guarantees come from the compiler owning every function
+signature in the crate and tracking ownership across every call edge,
+with =unsafe= as the sole, explicitly-marked escape hatch. A library
+macro in this family owns none of that: it sees the syntax tree of the
+one form it was invoked on (macroexpansion already runs "inside out,"
+so nested macro calls are visible after they in turn expand — but nl-
+check's own README already demonstrated the limit of that: a captured
+=lambda= or a call to an unmodeled function is where tracking gives up,
+§2.3), plus whatever a *prior*, syntactically-separate declaration
+(=nl-defdata=, a future =nl-typed= annotation) put in a global registry
+table. Nothing about a value once it crosses a function call this
+macro did not itself expand is visible to it. =eval= and runtime
+redefinition mean even a "checked" file's assumptions about a symbol
+someone else redefines afterward do not hold globally — Doc 168 §3.4
+states this as the reason soundness claims are scoped per compile
+unit, not per program, and this doc inherits that scoping unchanged.
+
+A three-tier ladder, ranked by what mechanism reaches it, grounded in
+what already ships or what the closest shipped analogue already does:
+
+| Tier | What                                                                 | Reachable by | Evidence |
+|------+------------------------------------------------------------------------+--------------+----------|
+| 1    | Exhaustiveness + field arity over a *registered, closed* variant set   | A macro, unconditionally, today | =nl-match=/=nl-defdata=, §2.2 — shipped, not proposed |
+| 1    | A syntactically-visible unsafe-primitive call outside its sanctioned wrapper | A macro, under an opt-in flag, today | =nl-ptr-make= under =nl-strict=, §2.2 — shipped |
+| 1    | Unbalanced acquire/release *literally nested* inside one annotated form (two exclusive borrows on the same lexical cell name, no intervening release, visible in the form's own syntax) | A macro walking its own body, same technique as nl-check's escape walker (§2.3) moved from batch pass to expansion time | Not shipped; proposed §5.2, same reach as nl-check's stated single-function limit |
+| 1    | A literal constant, or another =nl-typed=-declared binding, passed where an incompatible declared type is expected | A macro checking argument syntax against the registry, same technique as =nl-match= | Not shipped; proposed §5.1, explicitly *not* inference |
+| 2    | Whether a resource captured by a closure, or handed to an unmodeled function, is ever dropped | Needs a local, single-function flow/escape walk; the walk itself is honest about giving up the moment it loses sight | =nl-check='s =resource-untracked= class, §2.3 — this is the ceiling of what a *reading* pass (batch or macro) can do without whole-program information |
+| 3    | Whether a borrow acquired in one function outlives a value passed to a second function; general aliasing across call boundaries; anything whose safety depends on which runtime branch executed | Needs whole-program (or at minimum whole-call-graph) flow analysis with an owned type system — the thing Rust's compiler does and a Lisp macro fundamentally cannot, because a macro never sees the callee's body unless it inlines it | Genuinely unreachable by this library; falls through to =nl-safe='s runtime =nl-borrow-error= (§2.1), by design, forever |
+
+Tier 3 is not "not yet implemented" — it is the honest boundary. A
+program whose safety depends on tier-3 information was never going to
+be checked by an annotation macro, in this language or in any Lisp,
+without building the kind of whole-program analyzer that would itself
+be an L3-scale undertaking Doc 168 §3.1 already routes away from this
+doc's scope.
+
+* 5. Concrete annotation surface
+
+Each macro below follows the same contract every =nl-safe=/=nl-resource=/
+=nl-contract= macro already follows (§2.1): a disable flag read at
+expansion time, byte-identical disabled expansion (ERT-verified, the
+same way =nl-safe-test.el= verifies it today), and a scope limited to
+one =(nl-strict t)= compile unit (Doc 168 §3.4). None of these are
+sized here as full implementations — this doc is a survey, not a spec
+for a PR — but each is sized honestly against what §4 says it can
+reach.
+
+** 5.1 =(nl-typed (x integer) (y string) ...)= — declared argument shapes
+
+#+begin_src elisp
+(nl-defun frobnicate ((x integer) (y string))
+  (nl-typed ...))
+#+end_src
+
+What this can honestly be: a macro that (a) always emits a runtime
+=cl-check-type=-shaped assertion per declared binding — this part is
+not new, it is =cl-check-type= with better call-site ergonomics — and
+(b) *additionally*, at expansion time and only under =(nl-strict t)=,
+rejects a call site where an argument is a *literal constant* of the
+wrong shape (=(frobnicate 5 "s")= where =x= is declared =string=), or
+where the argument is itself another =nl-typed=-declared binding whose
+*declared* type visibly mismatches. That is the entire syntactic reach:
+no inference across an intervening =let=, no propagation through a
+=cond= branch, nothing that requires tracking a value's provenance
+past one hop. Calling this "type checking" over-promises; the honest
+description is "a compile-time-checked assertion for the subset of
+call sites where the argument's type is syntactically obvious," with
+every other call site still covered by the runtime assertion in (a).
+This is deliberately smaller than what "static types" usually implies,
+and §7 sequences it last (§7.1) because, per §3.3's generalized
+lesson, there is no adoption of even the runtime half of this pattern
+in real code yet to learn from.
+
+** 5.2 =(nl-borrow-scope ...)= — expansion-time-checked borrow nesting
+
+#+begin_src elisp
+(nl-borrow-scope
+  (nl-with-borrow-mut (v cell) ...)
+  ...)
+#+end_src
+
+Lifts exactly the tier-1 case from §4's ladder: within one
+=nl-borrow-scope= form, walk the body's syntax (reusing, not
+duplicating, the technique in =nl-check--escapes-p=/=nl-check--consumes=
+at =nl-check.el:258-355=, §2.3) looking for two =nl-with-borrow-mut=
+(or a =-mut= nested inside a =nl-with-borrow=) on the *same lexically
+named cell*, with no intervening scope exit, *purely from the form's
+own nesting* — the same restriction =nl-check='s resource walker
+already documents for itself. A conditional reacquire, a borrow held
+across an opaque function call, or anything whose legality depends on
+which branch of a runtime =if= executes, is invisible to this walk by
+construction, exactly as it is invisible to =nl-check= today, and
+falls through unchanged to =nl-safe='s runtime =nl-borrow-error= at
+=nl-safe.el:196-233=. This macro adds an earlier failure point for the
+subset of mistakes visible in the literal source; it changes nothing
+about what happens for everything else.
+
+*Dependency-direction constraint worth flagging now, not at
+implementation time:* Doc 168 §4.1 fixes =nl-check= as depended-on by
+nothing. If =nl-borrow-scope= wants to reuse =nl-check--escapes-p=-
+shaped logic, it cannot =(require 'nl-check)= without breaking that
+LOCKED rule. The clean fix is not to duplicate the walker inside a new
+package, nor to break the rule, but to extract the walker's shared,
+package-agnostic primitives (=nl-check--proper-list=,
+=nl-check--quoted-p=, =nl-check--backquote-p=, the generic tree-walk
+shape at =nl-check.el:96-141=) down into =nl-prelude= — a place both
+=nl-check= and a future =nl-static= can depend on without either
+depending on the other. This is a small, mechanical refactor of code
+that already exists and already has no external dependents of its own
+(these helpers do not reference anything =nl-safe=- or =nl-resource=-
+specific), so it does not reopen §2.3's soundness disclaimers; it only
+relocates the parts that were already general.
+
+** 5.3 =(nl-total defun NAME ARGLIST BODY...)= — exhaustiveness, named
+
+Per §2.2, the mechanism this item asks for already ships,
+unconditionally, inside =nl-match=/=nl-defdata= — this is not a new
+checking algorithm. The concrete proposal is narrower than the brief's
+phrasing suggests, and that narrowness is the point:
+
+- A thin macro (or a documented convention plus a one-line lint) that
+  makes the intent *explicit at the =defun= level*: "every =nl-match=
+  in this function's body must resolve against a registered type," so
+  a reviewer or a future =nl-check=-style batch pass can flag a
+  function that claims totality but contains an =nl-match= over an
+  unregistered head falling back to the unchecked runtime dispatch
+  (§2.2's non-strict fallback path, =nl-prelude.el:452-457=) — today
+  that fallback is silent unless the file separately declared
+  =(nl-strict t)=; =nl-total= would make that declaration implicit for
+  the wrapped =defun= without requiring it for the whole file.
+- *Extending the same registry mechanism to bare =pcase= (values with
+  no =nl-defdata= registration) is explicitly out of scope for this
+  item.* =nl-match='s exhaustiveness check works because =nl-defdata=
+  built a closed-world registry ahead of time (§2.2) — the same
+  structural precondition every closed-world exhaustiveness checker
+  needs, in any language. A =pcase= over plain symbols, structs, or
+  =cl-defstruct= values has no such registry, and inventing one is a
+  materially larger project (effectively re-deriving =nl-defdata= for
+  every existing Elisp data shape) that this doc does not size or
+  recommend starting now. If pursued later, it is its own doc, not a
+  sub-bullet of this one.
+
+* 6. Interop with =nl-safe='s runtime checks — a hybrid, honestly bounded
+
+None of §5's macros replace anything in §2.1. Every one of them
+expands, in the checked case, into the *same* =nl-safe=/=nl-resource=
+runtime primitives that exist today (=nl-with-borrow-mut=,
+=cl-check-type=-shaped assertions, =nl-drop=) — plus, only for the
+syntactically-visible subset §4 describes, an *earlier* failure point
+at macroexpansion. Concretely:
+
+- A violation §4's tier 1 covers: caught at macroexpansion, compilation
+  stops, before any code runs at all.
+- A violation only visible with runtime information (tier 2/3): the
+  static macro's own analysis finds nothing wrong (correctly — it is
+  not claiming to have checked what it cannot see), the code compiles,
+  and the *existing* =nl-safe= runtime check — the same
+  =nl-borrow-error=/=nl-resource-error= signal path that runs today
+  whether or not =nl-static= is loaded — catches it at the moment the
+  conflicting borrow or double-drop actually happens.
+- A value crossing a module boundary from a file that never declared
+  =(nl-strict t)=: =nl-contract='s boundary check (§2.4) is the
+  mechanism, unchanged, exactly as Doc 170 §7.1 already scopes it.
+
+The one new obligation this hybrid places on the design: none of
+§5's macros may claim, in an error message, a docstring, or a report,
+that a form "passed the static check" in any sense stronger than "no
+violation was found in the syntax this macro could see." §2.3's =nl-
+check= README already sets this precedent in words this doc reuses
+rather than restates: an empty finding list means "none found among
+what I could follow," never "none exist."
+
+* 7. Verification design (Definition of Done) and phase plan
+
+** 7.1 Against-the-bug, per this repository's own DoD (AI.md)
+
+- *A program that violates a rule inside an annotated form fails at
+  macroexpansion*, with an error naming the rule and the offending
+  form — the same failure shape =nl-ptr-make= already produces today
+  under =nl-strict= (§2.2), and =nl-match= already produces for a
+  non-exhaustive match (§2.2). No new error-reporting mechanism is
+  proposed; Emacs's own =error=/=signal= from inside a macro expander
+  already surfaces the file position through the standard byte-compile
+  warning path, the same way every existing =nl-*= macro's expansion-
+  time =error= call does.
+- *A correct, unannotated program is untouched* — Doc 168 §6's non-
+  invasiveness gate, unchanged: without =(require 'nl-static)=, nothing
+  about the existing ~3600+-case test-suite result changes. This is
+  the gate the design doc calls "the most important" for the whole
+  =nl-*= family (§6 of Doc 168, "非侵襲性ゲートが最重要"), and it
+  applies to this package with no exception.
+- *A correct, annotated program compiles clean and its disabled
+  expansion is byte-identical to the unannotated form* — verified by
+  ERT macroexpansion comparison, the same technique already used for
+  =nl-safe=/=nl-resource= (Doc 170 §9, "検査無効時に展開後コードが素の
+  版と同一であること").
+- *A violation only reachable with runtime information is never
+  falsely reported as statically clean and never falsely rejected* —
+  it compiles, and the existing =nl-safe= runtime path is what catches
+  it, per §6. The regression to watch for here is a static check that
+  either produces a false accept-and-forget (silently claims more than
+  §4's ladder supports) or a false reject on code the runtime checker
+  would have allowed (breaking a program §4 never claimed to cover) —
+  both are DoD failures, not just quality issues.
+
+** 7.2 Gate shape, reusing what already exists rather than inventing
+
+§2.3 already found the precedent to copy: a new =nl-static= package,
+its own =scripts/nl-static-gate.el= run from =make compile= (mirroring
+=nl-check-gate.el='s explicit choice *not* to hook the byte-compiler,
+§2.3), with the same baseline+accepted-file ratchet shape as both
+=nl-check-gate.el= and =nl-ns-gate.el= use today, wired into
+=tools/ai/gates.expected= per =AI.md='s "a gate that executed zero
+cases is not green" rule — meaning the gate ships with fixture forms
+that are known to violate each rule, so the gate can be shown red on
+the bug and then green on the fix, per AI.md's Definition of Done, not
+merely asserted to work. A standalone smoke test (no =ert=, run against
+=target/nelisp=, matching every sibling package's
+=*-standalone-smoke.el=) is required before any =nl-static= macro is
+called shipped, per this family's existing convention.
+
+** 7.3 Phase plan
+
+| Phase | Item                          | Gate to start                                              | Why this order |
+|-------+-------------------------------+--------------------------------------------------------------+-----------------|
+| 0     | This doc                      | none — survey only                                            | — |
+| 1     | =nl-total= (§5.3)             | none beyond ordinary review — reuses a mechanism that already ships and already runs unconditionally (§2.2); adds no new checking algorithm, only names and scopes an existing one | Lowest possible risk: the underlying exhaustiveness check has zero incremental soundness claim to defend, because it is not new |
+| 2     | =nl-borrow-scope= (§5.2)      | Real =nl-cell=/=nl-with-borrow-mut= usage outside =nl-safe='s own tests exists in the tree — the same precondition Doc 170 §7.2/§8 already required for Stage 5, applied here because §3.3 shows the underlying reason (a static check built for a population of zero) is independent of batch-vs-macro mechanism | Building a static lift of a runtime check nobody's code exercises repeats the exact mistake Doc 170 §8 already diagnosed and declined, just in macro form instead of batch-gate form |
+| 2     | Shared-walker extraction (§5.2) | Prerequisite for Phase 2, independent of adoption data — a mechanical refactor of already-general code, doable any time | Keeps Doc 168 §4.1's one-way dependency rule intact without duplicating =nl-check='s walker |
+| 3     | =nl-typed= (§5.1)             | Same adoption precondition as Phase 2, plus: at least one real call site where the syntactic (non-inferred) check in §5.1(b) would have caught something the runtime =cl-check-type= assertion in §5.1(a) only caught later | Smallest reach on §4's ladder (single-hop literal/declared-binding matching only) and the item this doc is least confident earns its keep; ships last and only with direct evidence it helps |
+
+* 8. Recommendation
+
+Build =nl-total= first, and build it small: it costs approximately
+zero new checking machinery (§2.2, §5.3), and the risk that sinks
+everything else on this ladder — a static checker built before any
+real code exercises the runtime behavior it is lifting, which is
+verbatim Doc 170 §8's own diagnosis for why Stage 5 could not be
+evaluated on 2026-08-16 — does not apply to it, because the mechanism
+it names is not new and not idle: it already runs, unconditionally, on
+every =nl-match= call in this tree today. =nl-borrow-scope= and
+=nl-typed= are real, honestly-bounded proposals (§4 tier 1, §5.2/§5.1)
+but should wait behind real =nl-safe= adoption, for the same reason
+Doc 168 §3.2's LOCKED "dynamic checks first" principle already gives
+and Doc 170 §8 already measured directly: a static checker is a
+design informed by violation data, and that data does not exist yet
+for anything this doc's Option A would check beyond exhaustiveness.
+
+The crux question this doc was asked to resolve — macroexpansion-time
+macro, or a hook into the AOT compiler pass — resolves to the former,
+on evidence rather than preference: it is what Doc 168 §3.1's LOCKED
+layer discipline already names as the correct layer for this kind of
+guarantee, it is what the two shipped precedents in this exact tree
+already do (§2.2), it is what the tree's own deepest existing static
+tool deliberately chose over hooking the compiler for a documented,
+still-valid reason (§2.3), and — independent of all of the above — the
+AOT compiler as it exists today neither accepts the kind of program
+this doc is about (§2.6) nor can execute one past a leaf integer-ABI
+function (§2.6, Doc 170 §8) as a compiled artifact to check the pass's
+own output against.
+
+* 9. Decision log
+
+| Date       | Decision                                                                 | State |
+|------------+----------------------------------------------------------------------------+-------|
+| 2026-08-24 | Crux resolved: macroexpansion-time library (Option A), not an AOT-pass hook (Option B) | IMPLEMENTED |
+| 2026-08-24 | =nl-total= identified as already ~shipped inside =nl-match=/=nl-defdata=; scoped as a thin naming/wrapper layer, not a new algorithm | IMPLEMENTED |
+| 2026-08-24 | =nl-borrow-scope= and =nl-typed= originally gated behind real =nl-safe= adoption; the explicit build-first request authorized their bounded Tier 1 implementations without changing the Stage 5 verdict | PARTIAL |
+| 2026-08-24 | Shared =nl-check= walker primitives extracted to =nl-prelude= before =nl-borrow-scope= implementation, keeping Doc 168 §4.1's one-way dependency rule intact | IMPLEMENTED |
+
+* 10. Build-first implementation and measurements (2026-08-24)
+
+** 10.1 What landed in the work tree
+
+=packages/nl-static/= is an opt-in, pure-Elisp package with no advice,
+compiler hook, or global reading pass.  Merely requiring it does not
+touch another form's expansion; checking begins only at the explicit
+=nl-total=, =nl-borrow-scope=, or =nl-typed= macro invocation.  Its
+=nl-static--enabled= expansion-time flag makes the disabled annotation
+expand to the corresponding plain =defun= or =progn= form.
+
+The phase order from §7.3 was followed:
+
+1. =nl-total= runs the already-shipped =nl-match= checker with strict
+   registry resolution while its own body expands, re-signalling any
+   failure as =nl-total-error= with the rule and offending form.  It
+   emits the ordinary =defun=; no runtime checking machinery was added.
+2. The package-agnostic proper-list, quote, backquote, and live-unquote
+   walker primitives formerly private to =nl-check= were extracted to
+   =nl-prelude=.  =nl-check= and =nl-static= now use the same functions,
+   so =nl-static= does not depend on =nl-check= and Doc 168 §4.1's
+   dependency direction remains intact.
+3. =nl-borrow-scope= rejects literally nested borrows of the same
+   lexical cell symbol when either borrow is mutable, signalling
+   =nl-borrow-scope-error= from the macro expander.  It respects
+   =let=/=let*= shadowing and emits only =(progn BODY...)=.
+4. =nl-typed= registers explicit function argument shapes, emits
+   runtime =cl-check-type= assertions, and under =nl-strict= rejects
+   provably incompatible visible literals or unshadowed/unmodified
+   declared arguments at expansion, signalling =nl-typed-error=.  It
+   performs no local inference and treats overlap/unknown as unchecked.
+
+The request for this build-first landing explicitly authorized phases
+2 and 3 after phase 1 was green, so they were exercised here despite
+§7.3's future real-adoption start gates.  That does not change the
+soundness claim or promote either checker into the whole-tree Stage 5
+linearity gate declined in §3.3.
+
+** 10.2 Expansion-time mechanism and reached tier
+
+All three failures are named conditions below =nl-static-error= and are
+signalled directly inside the annotation macro's expander.  No AOT pass
+or byte-compiler hook exists.  The reached ceiling is §4 Tier 1 only:
+literal syntax in the one annotated form.  Macro-produced borrows,
+aliases, opaque callees, and cross-function lifetime/ownership flow are
+not accepted as statically proved.  A measured opaque-callee fixture
+expands successfully and then signals the existing =nl-borrow-error=
+when run, which pins the intended Tier 3 fallthrough rather than merely
+documenting it.
+
+** 10.3 Verification evidence
+
+Measured in this work tree on 2026-08-24:
+
+| check | result |
+|-------+--------|
+| Focused =nl-static= ERT | 24/24 expected, 0 unexpected |
+| Existing =nl-check= ERT after walker extraction | 44/44 expected, 0 unexpected |
+| =make compile= | clean with =byte-compile-error-on-warn=; its =nl-check= gate reported =checked=3 findings=0= |
+| =make parens-check= | =GATE-COUNT checked=450 findings=0= |
+| =target/nelisp --load packages/nl-static/test/nl-static-standalone-smoke.el= | =GATE-COUNT checked=24 findings=0= |
+
+The against-the-bug corpus includes unregistered/non-exhaustive total
+matches, all conflicting shared/mutable nesting directions, literal and
+declared-binding shape mismatches, clean counterparts, disabled
+expansion identity, unannotated call sites, and the runtime-only opaque
+borrow case.
+
+** 10.4 Assumption corrected by source measurement
+
+§5.1's illustrative form puts =(x integer)= pairs directly in
+=nl-defun='s argument list.  The shipped =nl-defun= delegates that list
+unchanged to stock =defun= and has no typed-argument parser, so that
+surface is not executable as written.  The build-first API therefore
+uses the explicit wrapper =(nl-typed defun NAME ((ARG TYPE) ...) ...)=
+(also accepting =nl-defun= as the definition kind), strips the pairs to
+an ordinary argument list, and documents the restriction.  This keeps
+the feature opt-in without modifying =nl-defun= or the behavior of any
+unannotated function.

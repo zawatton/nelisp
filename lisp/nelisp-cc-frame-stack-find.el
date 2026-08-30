@@ -149,7 +149,8 @@
           0
         (if (= (sexp-tag name-ptr) 4)
             1
-          (if (= (sexp-tag name-ptr) 5) 1 0))))
+          (if (or (= (sexp-tag name-ptr) 5)
+                  (= (sexp-tag name-ptr) 14)) 1 0))))
     (defun nelisp_frame_stack_find (frames-ptr name-ptr)
       ;; frames-ptr: *const Sexp pointing at Env::frames_record (=
       ;;             Sexp::Record(`nelisp-lexframe-stack')).

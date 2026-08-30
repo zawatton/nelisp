@@ -5,7 +5,9 @@
 ;; provides the real thing on top of the standalone's OS primitives:
 ;;
 ;;   - a deadline-ordered timer queue (`run-at-time' / `cancel-timer'
-;;     become deferred; due timers fire when the loop or `sit-for' runs);
+;;     become deferred; due timers fire when the loop or `sit-for' runs) --
+;;     as of Doc 184 P0, this half lives in `nelisp-async-core.el' (no
+;;     actor/generator dependency) and is REQUIRED, not duplicated, here;
 ;;   - efficient waiting via the `nl-nanosleep' builtin (no busy-loop);
 ;;   - a cooperative driver, `nelisp-async-run', that fires due timers,
 ;;     drives the `nelisp-actor' scheduler, and sleeps until the next
@@ -13,140 +15,48 @@
 ;;     (see `nelisp-async-tty-*' in the input layer).
 ;;
 ;; Loading this file UPGRADES `run-at-time' / `cancel-timer' / `sit-for'
-;; from the prelude stubs to the real deferred implementations, so any
-;; timer-driven code (e.g. `nelisp-eventloop-schedule-timer') runs on a
-;; genuine clock.  Pure timekeeping uses `float-time' (wall clock); the
-;; reader has no `clock_gettime' monotonic helper yet (Doc note), which is
-;; adequate for cooperative scheduling.
+;; from the prelude stubs to the real deferred implementations (via
+;; `nelisp-async-core', which this file requires), so any timer-driven
+;; code (e.g. `nelisp-eventloop-schedule-timer') runs on a genuine clock.
+;; Pure timekeeping uses `float-time' (wall clock); the reader has no
+;; `clock_gettime' monotonic helper yet (Doc note), which is adequate for
+;; cooperative scheduling.
+;;
+;; This file itself still `(require 'nelisp-actor)', which unconditionally
+;; `(require 'generator)' -- a dependency this substrate cannot satisfy
+;; today (Doc 184 S1.4/S1.5: absent outright, or a macro-expansion-time
+;; failure even when a real generator.el is supplied).  So `nelisp-async-run'
+;; / `-run-tty' (the actor-driven functions below) remain unreachable
+;; standalone; only `nelisp-async-core.el''s timer queue is.  A caller that
+;; wants deferred timers WITHOUT the actor/TTY layer should
+;; `(require 'nelisp-async-core)' directly instead of this file -- that is
+;; exactly what `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
+;; (Doc 184 P1-P3) does.
 ;;
 ;;; Code:
 
 (require 'cl-lib)
 (require 'nelisp-actor)
 (require 'nelisp-eventloop)
+(require 'nelisp-async-core)
 (declare-function alloc-bytes "ext:nelisp-runtime" (nbytes align))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-read-u32 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u32 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-write-u64 "ext:nelisp-runtime" (ptr offset value))
-(declare-function nl-nanosleep "ext:nelisp-runtime" (timespec-ptr))
 (declare-function syscall-direct "ext:nelisp-runtime"
                   (nr a0 a1 a2 a3 a4 a5))
 
-;;; Clock + sleep -----------------------------------------------------
+;;; Compatibility aliases for the pre-split names --------------------
+;; `nelisp-async-reset-timers' is used by external callers (this package's
+;; own test suite resets the queue between cases); the others below are
+;; used only within this file, but keeping the alias avoids an
+;; incompatible rename for anything else that already spells them this
+;; way.  The real implementations now live in `nelisp-async-core.el'
+;; (Doc 184 P0); this is a cut, not a fork.
 
-(defun nelisp-async--now ()
-  "Current time in seconds as a float (wall clock)."
-  (float-time))
-
-(defun nelisp-async--nanosleep (secs)
-  "Sleep for SECS seconds (a float) using the `nl-nanosleep' builtin.
-Sub-second precision is honoured; a non-positive SECS is a no-op."
-  (when (and (numberp secs) (> secs 0))
-    (let* ((whole (truncate secs))
-           (nsec (truncate (* (- secs whole) 1000000000.0)))
-           (ts (alloc-bytes 16 8)))
-      (ptr-write-u64 ts 0 whole)
-      (ptr-write-u64 ts 8 nsec)
-      (nl-nanosleep ts))))
-
-;;; Timer queue -------------------------------------------------------
-;; A timer is a vector [DEADLINE REPEAT FN ARGS LIVE]:
-;;   0 DEADLINE  float-time at/after which FN runs
-;;   1 REPEAT    nil = one-shot; a number = re-arm REPEAT seconds later
-;;   2 FN        function to call
-;;   3 ARGS      argument list applied to FN
-;;   4 LIVE      t until fired (one-shot) or cancelled
-
-(defconst nelisp-async--t-deadline 0)
-(defconst nelisp-async--t-repeat 1)
-(defconst nelisp-async--t-fn 2)
-(defconst nelisp-async--t-args 3)
-(defconst nelisp-async--t-live 4)
-
-(defvar nelisp-async--timers nil
-  "List of live timer vectors, unordered.")
-
-(defun nelisp-async--secs (time)
-  "Coerce a `run-at-time' TIME argument to seconds-from-now (float).
-Accepts a number (seconds) or nil (0); list time specs are not modelled."
-  (cond ((null time) 0.0)
-        ((numberp time) (float time))
-        (t 0.0)))
-
-(defun nelisp-async-run-at-time (time repeat fn &rest args)
-  "Schedule FN to run after TIME seconds, then every REPEAT seconds.
-TIME is a number of seconds (or nil = now); REPEAT is nil (one-shot)
-or a number of seconds.  Returns the timer object for `cancel-timer'.
-Deferred: FN fires when `nelisp-async-run' or `sit-for' next runs."
-  (let ((tm (vector (+ (nelisp-async--now) (nelisp-async--secs time))
-                    (and (numberp repeat) repeat)
-                    fn args t)))
-    (setq nelisp-async--timers (cons tm nelisp-async--timers))
-    tm))
-
-(defun nelisp-async-cancel-timer (tm)
-  "Cancel timer TM so it never fires again."
-  (when (vectorp tm)
-    (aset tm nelisp-async--t-live nil))
-  nil)
-
-(defun nelisp-async--next-deadline ()
-  "Return the earliest live-timer deadline, or nil when none are armed."
-  (let ((best nil))
-    (dolist (tm nelisp-async--timers)
-      (when (aref tm nelisp-async--t-live)
-        (let ((d (aref tm nelisp-async--t-deadline)))
-          (when (or (null best) (< d best))
-            (setq best d)))))
-    best))
-
-(defun nelisp-async--fire-due (now)
-  "Fire every live timer whose deadline is <= NOW.
-Re-arm repeating timers; drop one-shot timers; prune dead entries.
-Returns the number of timers fired."
-  (let ((fired 0))
-    (dolist (tm nelisp-async--timers)
-      (when (and (aref tm nelisp-async--t-live)
-                 (<= (aref tm nelisp-async--t-deadline) now))
-        (setq fired (1+ fired))
-        (let ((repeat (aref tm nelisp-async--t-repeat)))
-          ;; Re-arm BEFORE running so a callback that cancels wins.
-          (if repeat
-              (aset tm nelisp-async--t-deadline (+ now repeat))
-            (aset tm nelisp-async--t-live nil))
-          (apply (aref tm nelisp-async--t-fn) (aref tm nelisp-async--t-args)))))
-    ;; Prune dead timers to bound the list.
-    (when (> fired 0)
-      (setq nelisp-async--timers
-            (let (keep)
-              (dolist (tm nelisp-async--timers)
-                (when (aref tm nelisp-async--t-live) (setq keep (cons tm keep))))
-              keep)))
-    fired))
-
-(defun nelisp-async-reset-timers ()
-  "Drop every armed timer.  Test hygiene only."
-  (setq nelisp-async--timers nil))
-
-;;; sit-for: wait while servicing timers --------------------------------
-
-(defun nelisp-async-sit-for (seconds &rest _)
-  "Wait up to SECONDS, firing any due timers along the way.
-Returns t (the headless reader has no input to interrupt on; the TTY
-input layer overrides this to return nil when a key arrives)."
-  (let ((end (+ (nelisp-async--now) (if (numberp seconds) seconds 0))))
-    (nelisp-async--fire-due (nelisp-async--now))
-    (let ((remain (- end (nelisp-async--now))))
-      (while (> remain 0)
-        (let* ((nd (nelisp-async--next-deadline))
-               (gap (if nd (min remain (max 0.0 (- nd (nelisp-async--now))))
-                      remain)))
-          (nelisp-async--nanosleep (if (> gap 0) gap remain))
-          (nelisp-async--fire-due (nelisp-async--now))
-          (setq remain (- end (nelisp-async--now)))))))
-  t)
+(defalias 'nelisp-async-reset-timers #'nelisp-async-core-reset-timers)
 
 ;;; Cooperative driver ------------------------------------------------
 
@@ -160,15 +70,15 @@ This is the timer-only core; the TTY input layer wraps it to also block
 on stdin via `poll(2)' between deadlines."
   (catch 'nelisp-async-done
     (while t
-      (nelisp-async--fire-due (nelisp-async--now))
+      (nelisp-async-core--fire-due (nelisp-async-core--now))
       (nelisp-actor-run-until-idle)
       (when (and main (memq (nelisp-actor-status main) '(:dead :crashed)))
         (throw 'nelisp-async-done (nelisp-actor-status main)))
-      (let ((nd (nelisp-async--next-deadline)))
+      (let ((nd (nelisp-async-core--next-deadline)))
         (if (null nd)
             (throw 'nelisp-async-done :idle)
-          (let ((gap (- nd (nelisp-async--now))))
-            (when (> gap 0) (nelisp-async--nanosleep gap))))))))
+          (let ((gap (- nd (nelisp-async-core--now))))
+            (when (> gap 0) (nelisp-async-core--nanosleep gap))))))))
 
 ;;; TTY input layer ---------------------------------------------------
 ;; Multiplexes keyboard input with the timer queue using poll(2): the driver
@@ -256,17 +166,17 @@ is idle-CPU-free.  Stops with MAIN's terminal status (`:dead'/`:crashed'),
   (let ((src (or fd nelisp-async-stdin-fd)))
     (catch 'nelisp-async-done
       (while t
-        (nelisp-async--fire-due (nelisp-async--now))
+        (nelisp-async-core--fire-due (nelisp-async-core--now))
         (nelisp-actor-run-until-idle)
         (when (memq (nelisp-actor-status main) '(:dead :crashed))
           (throw 'nelisp-async-done (nelisp-actor-status main)))
-        (let ((nd (nelisp-async--next-deadline)))
+        (let ((nd (nelisp-async-core--next-deadline)))
           (cond
            ;; Live input source: block in poll up to the next deadline.
            (src
             (let* ((timeout-ms (if nd
                                    (let ((ms (truncate
-                                              (* 1000.0 (- nd (nelisp-async--now))))))
+                                              (* 1000.0 (- nd (nelisp-async-core--now))))))
                                      (if (< ms 0) 0 ms))
                                  -1))
                    (ready (nelisp-async--poll-fd src timeout-ms)))
@@ -280,8 +190,8 @@ is idle-CPU-free.  Stops with MAIN's terminal status (`:dead'/`:crashed'),
                     (setq src nil)))))))
            ;; No input, but timers armed: sleep to the next deadline.
            (nd
-            (let ((gap (- nd (nelisp-async--now))))
-              (when (> gap 0) (nelisp-async--nanosleep gap))))
+            (let ((gap (- nd (nelisp-async-core--now))))
+              (when (> gap 0) (nelisp-async-core--nanosleep gap))))
            ;; Nothing to wait for.
            (t (throw 'nelisp-async-done :eof))))))))
 
@@ -293,11 +203,9 @@ is idle-CPU-free.  Stops with MAIN's terminal status (`:dead'/`:crashed'),
         (nelisp-async-run-tty main fd)
       (nelisp-async-tty-raw-off))))
 
-;;; Upgrade the prelude stubs to the real deferred implementations -----
-
-(defalias 'run-at-time #'nelisp-async-run-at-time)
-(defalias 'cancel-timer #'nelisp-async-cancel-timer)
-(defalias 'sit-for #'nelisp-async-sit-for)
+;;; `run-at-time' / `cancel-timer' / `sit-for' are already upgraded by
+;;; `(require 'nelisp-async-core)' above (Doc 184 P0) -- no separate
+;;; defalias block needed here.
 
 (provide 'nelisp-async)
 ;;; nelisp-async.el ends here

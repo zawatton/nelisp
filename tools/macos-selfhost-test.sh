@@ -703,7 +703,8 @@ build_run cons-clone '(seq
 # boxed data ops: cell-make/value/set/null, vector make/ref/ref-ptr/set,
 # record make/type-tag/slot-ref/slot-ref-ptr/set/count, and cons-cdr-raw.
 # The local helpers implement the minimal Vec/NlCell/NlRecord layouts the
-# aarch64 emitters read: NlVector data@+8 len@+16; NlRecord data@+40 len@+48.
+# aarch64 emitters read: NlVector data@+8 len@+16; NlRecord data@+40 len@+48;
+# NlCell value-WORD@+0 refcount@+8 (Doc 147 Phase 1 -- 16 bytes, align 8).
 build_run boxed '(seq
   (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun nl_sexp_clone_into (src dst)
@@ -713,17 +714,12 @@ build_run boxed '(seq
       (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
       (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
   (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
-  (defun nl_alloc_cell (valptr)
-    (let ((box (nl_alloc_bytes 16 8)))
-      (seq (nl_sexp_clone_into valptr box) box)))
-  (defun nl_cell_set_value (box valptr)
-    (nl_sexp_clone_into valptr box))
-  (defun nl_cell_get_value (cellptr out)
-    (nl_sexp_clone_into (ptr-read-u64 (ptr-read-u64 cellptr 8) 0) out))
   ;; Doc 147 Phase 0/2 keystone + slot-ptr stubs (compile-only): store a
   ;; 32B-slot SRC as an 8B WORD / load a WORD back into a 32B view, and
   ;; the vector/record slot-ptr materialisers, so the emitted bl targets
-  ;; resolve.  Container data buffers are now 8B-per-slot WORDS.
+  ;; resolve.  Container data buffers are now 8B-per-slot WORDS.  Defined
+  ;; ahead of the NlCell trio, which stores its value through the same
+  ;; keystone since Doc 147 Phase 1.
   (defun nl_val_clone_into (src dst)
     (if (= (logand src 1) 1)
         (ptr-write-u64 dst 0 src)
@@ -733,6 +729,25 @@ build_run boxed '(seq
   (defun nl_val_load (word scratch)
     (if (= (logand word 1) 0) word
       (seq (ptr-write-u64 scratch 0 word) scratch)))
+  ;; NlCell trio, mirroring lisp/nelisp-cc-nlcell-{alloc,set-value,get-value}.el
+  ;; under Doc 147 Phase 1: the value field is an 8-byte tagged WORD at
+  ;; box+0 and the refcount a u64 at box+8, so the box is written through
+  ;; `nl_val_clone_into` and read back as a WORD -- NOT as an inline 32B
+  ;; Sexp.  The pre-Phase-1 shape stored a 4xu64 Sexp copy at box+0, which
+  ;; both overran the 16-byte box and made `nl_cell_get_value` dereference
+  ;; a Sexp tag as if it were a pointer (SIGSEGV, exit 139).
+  (defun nl_alloc_cell (valptr)
+    (let ((box (nl_alloc_bytes 16 8)))
+      (seq (nl_val_clone_into valptr box)
+           (ptr-write-u64 box 8 1)
+           box)))
+  (defun nl_cell_set_value (box valptr)
+    (nl_val_clone_into valptr box))
+  (defun nl_cell_get_value (cellptr out)
+    (let ((word (ptr-read-u64 (ptr-read-u64 cellptr 8) 0)))
+      (if (= (logand word 1) 1)
+          (ptr-write-u64 out 0 word)
+        (nl_sexp_clone_into word out))))
   (defun nl_alloc_vector (cap)
     (let ((box (nl_alloc_bytes 32 8)))
       (seq

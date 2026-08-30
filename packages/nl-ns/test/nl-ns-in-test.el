@@ -155,6 +155,82 @@
   (nl-ns-in-test--reset)
   (should (equal (macroexpand '(nl-ns-in tns)) '(progn))))
 
+;;; Doc 189 §4 Phase 1: declaration-time collision refusal -------------
+;;
+;; `pcoll-' fixture namespaces (never `tns') so these tests never
+;; contend with `nl-ns-in-test--reset''s shared `tns' registration, and
+;; each test calls `nl-ns-clear-namespaces' itself rather than relying
+;; on that helper, since it also needs a clean `nl-ns--collision-owners'
+;; ledger before asserting about it.
+
+(ert-deftest nl-ns-in-collision-silently-wins-when-enforcement-is-off ()
+  "Against-the-bug: two namespaces sharing a qualified name, neither
+opted in, still let the later `nl-ns-in' definition silently win --
+Doc 189 Phase 1's default-off contract leaves this exactly as it was."
+  (nl-ns-clear-namespaces)
+  (should-not nl-ns-enforce-collisions)
+  (eval '(nl-ns-define pcoll-a :prefix "pcoll-" :members (wrap)) t)
+  (eval '(nl-ns-define pcoll-b :prefix "pcoll-" :members (wrap)) t)
+  (eval '(nl-ns-in pcoll-a (defun wrap () 'a)) t)
+  (eval '(nl-ns-in pcoll-b (defun wrap () 'b)) t)
+  (should (eq (funcall 'pcoll-wrap) 'b)))
+
+(ert-deftest nl-ns-in-define-refuses-cross-namespace-collision-when-enforced ()
+  (nl-ns-clear-namespaces)
+  (let ((nl-ns-enforce-collisions t))
+    (eval '(nl-ns-define pcoll-c :prefix "pcoll-" :members (wrap)) t)
+    (let ((err (should-error
+                (eval '(nl-ns-define pcoll-d :prefix "pcoll-" :members (wrap)) t)
+                :type 'nl-ns-collision-error)))
+      (should (memq 'pcoll-d (cdr err)))
+      (should (memq 'pcoll-c (cdr err)))
+      (should (memq 'pcoll-wrap (cdr err)))
+      (should (memq 'wrap (cdr err))))
+    ;; A refused declaration leaves no trace: `pcoll-d' never registered.
+    (should-error (nl-ns-member-list 'pcoll-d))
+    (should (equal (nl-ns-member-list 'pcoll-c) '(wrap)))))
+
+(ert-deftest nl-ns-in-define-own-namespace-redefinition-is-not-a-collision ()
+  (nl-ns-clear-namespaces)
+  (let ((nl-ns-enforce-collisions t))
+    (eval '(nl-ns-define pcoll-e :prefix "pcoll-" :members (wrap chunk)) t)
+    (eval '(nl-ns-define pcoll-e :prefix "pcoll-" :members (wrap helper)) t)
+    (should (equal (nl-ns-member-list 'pcoll-e) '(wrap helper)))
+    ;; `chunk' was released when `pcoll-e' stopped claiming it; a
+    ;; different namespace may now claim it without a collision.
+    (eval '(nl-ns-define pcoll-f :prefix "pcoll-" :members (chunk)) t)
+    (should (equal (nl-ns-member-list 'pcoll-f) '(chunk)))))
+
+(ert-deftest nl-ns-in-define-identical-redeclaration-is-not-a-collision ()
+  (nl-ns-clear-namespaces)
+  (let ((nl-ns-enforce-collisions t))
+    (eval '(nl-ns-define pcoll-g :prefix "pcoll-" :members (wrap)) t)
+    (eval '(nl-ns-define pcoll-g :prefix "pcoll-" :members (wrap)) t)
+    (should (equal (nl-ns-member-list 'pcoll-g) '(wrap)))))
+
+(ert-deftest nl-ns-in-define-per-namespace-enforce-t-overrides-global-off ()
+  (nl-ns-clear-namespaces)
+  (should-not nl-ns-enforce-collisions)
+  (eval '(nl-ns-define pcoll-h :prefix "pcoll-" :members (wrap) :enforce t) t)
+  (should-error
+   (eval '(nl-ns-define pcoll-i :prefix "pcoll-" :members (wrap) :enforce t) t)
+   :type 'nl-ns-collision-error))
+
+(ert-deftest nl-ns-in-define-per-namespace-enforce-nil-overrides-global-on ()
+  (nl-ns-clear-namespaces)
+  (let ((nl-ns-enforce-collisions t))
+    (eval '(nl-ns-define pcoll-j :prefix "pcoll-" :members (wrap) :enforce nil) t)
+    (eval '(nl-ns-define pcoll-k :prefix "pcoll-" :members (wrap) :enforce nil) t)
+    (should (equal (nl-ns-member-list 'pcoll-k) '(wrap)))))
+
+(ert-deftest nl-ns-in-define-enforce-property-accepts-t-and-nil-only ()
+  (should-error (macroexpand '(nl-ns-define pcoll-l :members (wrap) :enforce maybe))))
+
+(ert-deftest nl-ns-in-define-enforce-is-not-an-unknown-property ()
+  (nl-ns-clear-namespaces)
+  (should (eq (eval '(nl-ns-define pcoll-m :members (wrap) :enforce nil) t)
+              'pcoll-m)))
+
 (provide 'nl-ns-in-test)
 
 ;;; nl-ns-in-test.el ends here

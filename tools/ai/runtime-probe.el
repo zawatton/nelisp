@@ -39,6 +39,25 @@ probe in a lambda would have made the wrapper the thing measured."
   (princ (format "PROBE %-22s %-28s %s" name value note))
   (terpri))
 
+;;;; Diagnostics ---------------------------------------------------------
+
+;; First, because every other answer on this page is read through an error
+;; message when it goes wrong.  This one said "lost" until 2026-08-19: the
+;; runtime stashed the arguments AFTER the format string as the error data,
+;; so `(error "msg")' raised a bare `(error)' and `(error "fmt %s" x)' raised
+;; `(error x)'.  Every diagnostic the runtime produced arrived with its own
+;; message deleted, which is why `compile-runtime-image' failed for two
+;; sessions with nothing to say beyond a path.
+(let* ((raised (probe-safe (error "probe message %s" 42)))
+       (text (cdr raised))
+       (kept (and (eq (car raised) 'err)
+                  (stringp text)
+                  (string-match-p "probe message" text))))
+  (probe-report "error keeps its message" (if kept "kept" "lost")
+                (if kept
+                    "a failure can say what failed"
+                  "read no other probe until this one is fixed")))
+
 ;;;; Environment ---------------------------------------------------------
 
 (let* ((result (probe-safe (getenv "PATH")))
@@ -85,7 +104,71 @@ probe in a lambda would have made the wrapper the thing measured."
                          (fboundp 'probe-marker-after-error))
                   "continues"
                 "stops")
-              "a failed require inside a file does not stop the file")
+              ;; The note has to follow the value, or this table lies the way
+              ;; a hand-written one does -- this line read "does not stop the
+              ;; file" for a while after the value had started reading "stops".
+              (if (fboundp 'probe-marker-after-error)
+                  "a failed require inside a file does not stop the file"
+                "a failed require inside a file stops the file"))
+
+;; And does a form the reader cannot READ stop it?  Different question from
+;; the one above, and it had a different answer: the parser returned one code
+;; for "end of input" and for "I could not read this", so every top-level
+;; caller stopped on both and called both success.  `src/nelisp-cc-arm64.el'
+;; came back from `load' with t, two thirds of its definitions missing and its
+;; own `(provide ...)' never run -- after which `require' called the file
+;; missing and the native compiler was reported unavailable.
+(ignore-errors
+  (write-region
+   "(defun probe-marker-before-bad-read () 1)\n(defun probe-marker-after-bad-read () (list 1 2\n"
+   nil "target/ai/probe-bad-read-file.el"))
+(let* ((result (probe-safe (load "target/ai/probe-bad-read-file.el" nil t)))
+       (signalled (eq (car result) 'err)))
+  (probe-report "load past a bad read" (if signalled "signals" "silent")
+                (if signalled
+                    "a file the reader cannot finish is loud"
+                  "SILENT: `load' returns t for a file it abandoned")))
+
+;; Emacs binds `load-file-name' to the file it is loading, which is how a
+;; file finds out where it lives.  Undeclared here until 2026-08-19, so
+;; `(or load-file-name buffer-file-name)' raised `void-variable' and took
+;; `src/nelisp-cc-runtime.el' -- and the native compiler behind it -- down at
+;; load time.  Declared now; whether `load' also SETS it is the other half of
+;; the contract and this is the line that says which half this binary has.
+(ignore-errors
+  (write-region
+   "(setq probe-lfn-during-load (and (boundp 'load-file-name) load-file-name))\n"
+   nil "target/ai/probe-lfn-file.el"))
+(defvar probe-lfn-during-load :unset)
+(let* ((loaded (probe-safe (load "target/ai/probe-lfn-file.el" nil t)))
+       (seen probe-lfn-during-load))
+  (probe-report "load-file-name during load"
+                (cond ((eq (car loaded) 'err) "load signalled")
+                      ((eq seen :unset) "unbound")
+                      ((null seen) "nil")
+                      (t "set"))
+                (cond ((eq (car loaded) 'err) "could not measure it")
+                      ((eq seen :unset) "reading it is a void-variable")
+                      ((null seen)
+                       "a file cannot find its own path; `load' does not set it")
+                      (t "a file can find its own path"))))
+
+;; `provide' and `featurep' have to be talking about the same list.  They
+;; were not: `provide' writes the innermost dynamic binding of `features'
+;; while `featurep' read the global mirror, so inside any `let' over
+;; `features' one said yes and the other no -- and `require', which checks
+;; the way `featurep' does, raised `file-missing' for a file it had just
+;; loaded and whose `(provide ...)' had just run.  That is what left the
+;; native compiler unavailable and every hot defun on the bytecode path.
+(let* ((result (probe-safe
+                (let ((features (list 'probe-features-sentinel)))
+                  (provide 'probe-agreement)
+                  (featurep 'probe-agreement))))
+       (agree (and (eq (car result) 'ok) (cdr result))))
+  (probe-report "provide/featurep agree" (if agree "agree" "disagree")
+                (if agree
+                    "both read the binding `provide' wrote"
+                  "`provide' writes one list and `featurep' reads another")))
 
 ;;;; Files ---------------------------------------------------------------
 
@@ -101,9 +184,11 @@ probe in a lambda would have made the wrapper the thing measured."
                      (buffer-string))))))
   (probe-report "write-region multibyte"
                 (if (eq (car result) 'err) "signals" "ok")
-                (if (equal back "良\n")
-                    "the file is correct even when it signals"
-                  "the file differs from what was written")))
+                (cond ((not (equal back "良\n"))
+                       "the file differs from what was written")
+                      ((eq (car result) 'err)
+                       "the file is correct even when it signals")
+                      (t "written and read back unchanged"))))
 
 (let* ((result (probe-safe (file-exists-p "Makefile")))
        (value (cdr result)))

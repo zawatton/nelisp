@@ -239,6 +239,60 @@ DIRS defaults to src and lisp below ROOT."
               (cl-pushnew p features))))))
     features))
 
+(defun nelisp-pkg--require-noerror-p (form)
+  "Return non-nil when FORM is a `require\=' that tolerates a missing file.
+`(require \='X nil t)\=' is a question and answers nil where X is absent.
+`(require \='X)\=' is a demand, and a demand for a file the tree does not
+contain aborts the load of whatever names it."
+  (and (consp form) (eq (car form) 'require) (nth 3 form) t))
+
+(defun nelisp-pkg--sort-host-entries (entries)
+  "Sort (FEATURE . FILE) ENTRIES by feature, then file."
+  (sort entries
+        (lambda (a b)
+          (if (eq (car a) (car b))
+              (string< (cdr a) (cdr b))
+            (string< (symbol-name (car a)) (symbol-name (car b)))))))
+
+(defun nelisp-pkg-core-host-requires (packages &optional root dirs)
+  "Return what src/ and lisp/ require that nothing in the tree provides.
+Value is (:hard ((FEATURE . FILE) ...) :optional ((FEATURE . FILE) ...)).
+
+`packages/\=' has a manifest each and a gate over them; src/ and lisp/ have
+neither, and they are where every host-library dependency that broke the
+standalone runtime lived -- subr-x and url-parse first, then macroexp, seq
+and pcase (2026-08-19).  Each was found by bisecting a require by hand
+after something failed a long way from it: the last one left the native
+compiler unavailable and every hot defun on the bytecode path, and the
+manifest said only \"native compiler unavailable\".
+
+The split is the actionable half.  Off-host an optional require answers
+nil; a hard one stops the file, and everything that requires that file
+after it."
+  (let ((provided (nelisp-pkg-core-features root dirs))
+        (providers (nelisp-pkg-provider-table packages))
+        (hard nil)
+        (optional nil))
+    (dolist (dir (or dirs '("src" "lisp")))
+      (let ((full (expand-file-name dir (or root default-directory))))
+        (when (file-directory-p full)
+          (dolist (file (directory-files full t "\\.el\\'"))
+            (dolist (form (nelisp-pkg--read-forms file))
+              (nelisp-pkg--walk
+               form
+               (lambda (node)
+                 (let ((feature (nelisp-pkg--feature-arg node 'require)))
+                   (when (and feature
+                              (not (memq feature provided))
+                              (not (gethash feature providers)))
+                     (let ((entry (cons feature
+                                        (file-name-nondirectory file))))
+                       (if (nelisp-pkg--require-noerror-p node)
+                           (cl-pushnew entry optional :test #'equal)
+                         (cl-pushnew entry hard :test #'equal))))))))))))
+    (list :hard (nelisp-pkg--sort-host-entries hard)
+          :optional (nelisp-pkg--sort-host-entries optional))))
+
 ;;;; The graph -----------------------------------------------------------
 
 (defun nelisp-pkg-provider-table (packages)

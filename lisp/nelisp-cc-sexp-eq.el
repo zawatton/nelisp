@@ -57,6 +57,9 @@
              (if (= (sexp-tag a) 5)
                  ;; Str: byte-payload equality via str-eq.
                  (str-eq a b)
+               (if (= (sexp-tag a) 14)
+                   ;; UnibyteStr: immutable byte-payload equality.
+                   (str-eq a b)
                (if (= (sexp-tag a) 3)
                    ;; Float: compare raw bits (same layout as Int at offset 8).
                    (if (= (sexp-int-unwrap a) (sexp-int-unwrap b)) 1 0)
@@ -71,7 +74,7 @@
                      ;; Cell(11) and any unknown tag: same test (ptr or 0).
                      (if (= (sexp-payload-ptr a) (sexp-payload-ptr b))
                          1
-                       0)))))))
+                       0))))))))
        ;; Tags differ → not eq.
        0))
   "AOT source for `nl_sexp_eq'.

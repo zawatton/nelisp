@@ -1,0 +1,508 @@
+# Known-defect injections (tools/nelisp-gate-mutation.sh).
+#
+# Each row is: GATE | FILE | SED-EXPRESSION | WHAT IT BREAKS
+#
+# The row is applied with `sed -i', the gate is run, and the file is
+# restored.  The gate MUST fail.  A gate that stays green with a real defect
+# in front of it is not a gate, and on 2026-08-19 three of them were in
+# exactly that state while printing PASS.
+#
+# Keep the injections small and obviously wrong.  A subtle one that a gate
+# legitimately does not cover teaches nothing except to delete the row.
+#
+# ACCEPTANCE CRITERIA FOR A NEW ROW.  Three rows have shipped here without
+# meeting these, and each cost a full CI round to discover.  Prove the row with
+# `make gate-mutation-verify GATE=<gate-name>' BEFORE committing it -- that
+# target exists so the proof is cheap enough that skipping it is never worth
+# it.  The three failure modes, named so they can be recognised:
+#
+#   1. UNREACHABLE -- the injection sits on a path the gate never walks, so the
+#      gate stays green and reads as broken when it is fine.  A `garbage-
+#      collect' smoke was once used to police a chunk-return guard that only
+#      the mid-form collector reaches; the row was removed with its reason
+#      recorded rather than the gate being called weak.  ASK FIRST: does this
+#      gate's own execution actually go through the line I am mutating?
+#
+#   2. NON-LETHAL AFTER AN IMPROVEMENT -- the row was lethal when written, and
+#      a later change made the defect harmless.  Doc 199's park barrier did
+#      this to an inhibit-begin row.  That is the improvement WORKING; re-point
+#      or retire the row and say why.  It is not a regression.
+#
+#   3. ENVIRONMENT-SENSITIVE -- RED locally, green in CI.  A park-bypass row
+#      went RED 10 times out of 10 on the author's machine and green in CI, and
+#      was removed.  PREFER A ROW WHOSE RED-NESS IS STRUCTURAL: the check is
+#      gone, a constant is wrong, a name no longer resolves.  Avoid rows whose
+#      failure depends on timing, scheduling, load, or memory pressure -- those
+#      are the ones that pass locally and lie in CI.
+#
+# Record the evidence in the row's own comment: what you injected, what the
+# gate printed when RED, and what it prints when restored.
+emacs-parity|scripts/nelisp-stdlib-prelude.el|s/^(defun regexp-quote (s)/(defun regexp-quote (s) (setq s (concat s "@"))/|regexp-quote appends a stray character
+ns-gate|scripts/nelisp-stdlib-prelude.el|s/^(defun round (x \&optional div)/(defun round (x \&optional div) (setq x x)/|round diverges from its lisp/ mirror
+# The replacement is GLOBAL on purpose.  The first version changed one
+# occurrence of a name that appears ten times, so the name stayed covered and
+# the gate correctly stayed green -- a weak injection reads as a broken gate.
+# The injection has to remove a name the corpus mentions ONCE.  An earlier
+# version renamed `regexp-quote', which the corpus has grown many uses of --
+# the coverage count stayed above the baseline and the gate correctly stayed
+# green, which reads as a broken gate.  `nbutlast' is mentioned once.
+# The name has to be one the compat table LISTS and the corpus mentions
+# ONCE.  Two earlier versions failed that: `regexp-quote' is mentioned many
+# times (the count stayed above the floor), and `nbutlast' is not in the
+# generated table at all (so it was never counted, and removing it changed
+# nothing).  Both read as a broken gate when the gate was fine.
+parity-coverage|test/nelisp-shadow-differential-cases.el|s/generate-new-buffer/ignore-me-not-a-name/g|a covered name stops being mentioned
+prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun string-empty-p (s) (string-equal s ""))$/(defun string-empty-p (s) (string-equal s ""))\n  (nelisp--check-string s)/|a check lands outside a one-line defun
+# The sed expression cannot use `|' -- it is this file's field separator.
+prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|/^  (defun seq-length (seq) (length seq)))$/a\    (unless (sequencep seq) (signal (quote wrong-type-argument) (list (quote sequencep) seq)))|a check lands outside a one-line defun INSIDE an unless wrapper
+#
+# 2026-08-21 (this session): the five rows below cover the identity-pinning
+# added to unsafe-inventory, ns-inventory, fallback-inventory and pkg-graph,
+# plus generated-source-parse, which had no row at all.  Each is chosen so a
+# bare COUNT would not have moved: the pinned identity changes (a new one
+# appears, or an already-divergent pair's shape drifts) while the aggregate
+# stays where it was, which is exactly the blind spot `parity-coverage' and
+# `ns-gate' were caught in on 2026-08-21.
+unsafe-inventory|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun nl-check-inventory--gm-injected () (ptr-read-u64 nil 0))|a kernel file with no `pinned-kernel-call' line starts calling an unsafe primitive
+ns-inventory|lisp/nelisp-stdlib.el|s/^  (if (nelisp--num-lt2 x 0) (nelisp--sub2 0 x) x))$/  (progn (setq x x) (if (nelisp--num-lt2 x 0) (nelisp--sub2 0 x) x)))/|a pinned ns-collision-divergent pair's definition drifts to a new shape, subject and file list unchanged
+fallback-inventory|lisp/nelisp-artifact.el|s/^               (error nil)))$/               (error (progn nil))))/|a pinned bare-handler site's exact shape drifts while its file and toplevel stay the same
+pkg-graph|src/nelisp-file-notify.el|s/(require 'filenotify)/(require 'ert-x)/|a hard host require is swapped for a different unresolved one, count unchanged
+generated-source-parse|scripts/nelisp-standalone-build.el|s/"(defvar features nil)\\n"/"(defvar features nil\\n"/|drops a closing paren inside a generated string literal, invisible to parens-check
+# doc200-census proof (2026-08-26): changing the sole direct tag-5 test in
+# `nl_jit_length' to 50 made the live key vanish.  RED printed
+# `STALE-LEDGER-ROW ... tag-test-sexp-tag 0' and
+# `GATE-COUNT checked=630 findings=169'; restored GREEN printed PASS and the
+# same GATE-COUNT.  `make gate-mutation-verify GATE=doc200-census' exercised
+# the injection, observed RED, restored the file, and observed GREEN.
+doc200-census|lisp/nelisp-cc-jit-length.el|s/(= (sexp-tag arg) 5)/(= (sexp-tag arg) 50)/|the sole direct Str-tag test in nl_jit_length vanishes from the live census
+#
+# 2026-08-22 (this session): ert-full had never been mutation-proven --
+# `nelisp-ai.sh test' is not a raw `make' target, so it could not go
+# through this file's plain `make "$gate"' runner unmodified; fixed in
+# `tools/nelisp-gate-mutation.sh' with a small `ert-full'-specific branch
+# that calls `nelisp-ai.sh test' instead (see its comment for both rows'
+# routing and why each one's report is scratched to a throwaway
+# NELISP_GATE_DIR rather than overwriting the tree's real ert-full
+# report).  Two rows, the two cases named in the survey this session
+# closed gaps from:
+#
+#   the corrupted-helper row targets `nelisp-eval' (src/nelisp-eval.el),
+#   the single most widely-used repo-defined function in the whole test
+#   tree (the interpreter entry point nearly every `(should (equal
+#   (nelisp-eval FORM) ...))' assertion depends on) -- made to always
+#   return nil regardless of FORM.  Running the FULL suite to prove this
+#   costs about 75s per injection, too slow for `gate-mutation' inside
+#   `nelisp-ai.sh check''s fast lane; scoped via
+#   NELISP_GATE_MUTATION_TEST_FILES to `test/nelisp-eval-test.el' alone,
+#   which calls `nelisp-eval' directly and fails within a couple of
+#   seconds once corrupted -- the SAME `run_ert_gate' path `ert-full'
+#   uses for real, exercised on fewer files, not a different mechanism.
+#
+#   the empty-glob row targets `test_files()' itself
+#   (tools/ai/nelisp-ai.sh), the function `cmd_test' calls to build
+#   ert-full's file list -- corrupted so its output is filtered to
+#   nothing regardless of what matched, the same "glob defined no test"
+#   shape AI.md's rule 1 already documents.  This one must run UNSCOPED
+#   (no NELISP_GATE_MUTATION_TEST_FILES): scoping would skip the very
+#   line being tested.  `run_ert_gate' already had the guard that catches
+#   this -- an empty file list reports GATE-COUNT ran=0 failed=1 and
+#   exits 1 before spawning Emacs at all -- so this row is also the
+#   cheapest of the two, proving a pre-existing guard rather than
+#   exercising the interpreter.
+ert-full|src/nelisp-eval.el|s/^  (nelisp-eval-form form nil))$/  (progn (nelisp-eval-form form nil) nil))/|nelisp-eval always returns nil, corrupting every should that reads its value
+ert-full|tools/ai/nelisp-ai.sh|s/'nelisp-worker-soak-test\\\.el\$'/'.'/|test_files() output gets filtered to nothing regardless of what matched; "no test file matched" must still fail ert-full
+# Doc 200 P1 representation proof.  These rows are scoped by the mutation
+# harness to the hand-built tag-14/tag-15 executable test.  Each injection
+# removes one production consumer arm while leaving the raw layouts intact.
+# Verified 2026-08-26: all six rows printed `went red as it should'; the
+# restored targeted ERT printed `Ran 2 tests, 2 results as expected, 0
+# unexpected', and the complete ert-full mutation verification finished
+# `GATE-COUNT checked=12 findings=0'.  The first clone injection removed the
+# tag-14 fast path but stayed green because the generic rc path still copied
+# the same four words; it was replaced by the lethal tag-15 refcount row.
+ert-full|lisp/nelisp-aot-compiler.el|/(defun nelisp-aot-compiler--aot-direct-tag-predicate-form/,/(defconst nelisp-aot-compiler--aot-builtinn-delegation-symbols/s/(= (sexp-tag ,arg) ,nelisp-sexp-layout-tag-unibyte-str)/(= (sexp-tag ,arg) 140)/|the direct AOT stringp expansion stops accepting tag 14
+ert-full|scripts/nelisp-standalone-build.el|/(defun bf_arrayp_raw/,/(defun bf_wrong_type_hash_table/s/(= tg 14)/(= tg 140)/|arrayp stops accepting a hand-built tag-14 string
+ert-full|lisp/nelisp-cc-jit-type-of.el|/(defun nl_jit_type_of_tag/,/(defun nl_jit_type_of_inner/s/((= tag 14)/((= tag 140)/|type-of stops mapping tag 14 to string
+ert-full|scripts/nelisp-standalone-build.el|/(defun nl_gc_mark_slot/,/(defun nl_gc_poison_fill/s/(or (= tag 5) (= tag 14))/(or (= tag 5) (= tag 140))/|the precise GC marker stops marking a reachable tag-14 byte buffer
+ert-full|lisp/nelisp-cc-sexp-clone-into.el|/(defun nl_sci_bump/,/(defun nl_sci_rc/s/(or (= tag 6) (= tag 15))/(or (= tag 6) (= tag 150))/|the cloner stops refcounting the NlStr box of a hand-built tag-15 string
+ert-full|scripts/nelisp-standalone-build.el|/(defun nl_cli_value_to_buf/,/(defun nl_cli_write_value/s/((= tag 14)/((= tag 140)/|CLI value output stops rendering tag-14 bytes with raw octal escapes
+# Doc 200 P4 key-equality proof.  The range replacement restores the exact
+# outer tag-identity gate that rejected a tag-5/tag-14 ASCII pair before the
+# shared character-count/byte-count/bytes comparison could run.  The mutation
+# harness rebuilds target/nelisp for standalone-build-script ert-full rows so
+# the binary-backed alist/member ERT cannot accidentally exercise stale code.
+# Verified 2026-08-27: `make gate-mutation-verify GATE=ert-full' printed this
+# row's `went red as it should', then `GATE-COUNT checked=13 findings=0'; after
+# restoration the focused file printed `Ran 11 tests, 11 results as expected,
+# 0 unexpected'.
+ert-full|scripts/nelisp-standalone-build.el|/^                    (if (or (= ta tb)$/,/^                                 (= (m5_string_tag_p tb) 1)))$/c\                    (if (= ta tb)|wf_key_eq_depth again rejects equal ASCII string keys when one is tag 5 and the other tag 14
+#
+# 2026-08-22 (this session): doc-claims, added the same session as the
+# Definition of Done it enforces.  Case (i) of its own verification (a
+# SHIPPED doc with no #+VERIFIED-BY, not in the baseline) is the natural
+# injection: renaming a compliant doc's #+VERIFIED-BY: line to anything
+# else reproduces exactly that shape without inventing a synthetic file.
+# Doc 160 (docs/design/160-stdlib-breadth.org) is chosen for the single,
+# short #+VERIFIED-BY: line the sed can match unambiguously.
+doc-claims|docs/design/160-stdlib-breadth.org|s/^#+VERIFIED-BY: reader-surface-audit$/#+VERIFIED-BY-REMOVED: reader-surface-audit/|a compliant SHIPPED doc loses its #+VERIFIED-BY: line and is not in the baseline
+#
+# 2026-08-23 (this session): gate-selfcheck itself had no row -- fixed while
+# making it skip-aware (fix/gate-selfcheck-skip-aware), which changed how it
+# tells a reasoned `GATE-SKIP' apart from a gate that prints NEITHER a count
+# NOR a skip reason, i.e. the exact "PASS while seeing nothing" shape this
+# gate exists to catch.  `bootstrap-contract' is the injection target: its
+# GATE-COUNT print is a single line, so the sed match is unambiguous, and
+# dropping it (replaced with `nil', paren-balanced -- the form it replaces
+# opens and closes exactly two parens) leaves the rest of the gate's checks
+# running and printing "ok"/"PASS" as before -- a silent, fully-fake pass,
+# not a crash.  Confirmed by hand before this row was added: mutated,
+# `make bootstrap-contract' exits 0 with no GATE-COUNT line, and
+# `make gate-selfcheck' (real Emacs 30.x, no skip in play) correctly goes
+# red on it.
+gate-selfcheck|tools/nelisp-bootstrap-contract.el|s/^    (princ (format "GATE-COUNT checked=%d findings=%d.*missing))$/    nil/|bootstrap-contract fake-passes (prints ok/PASS, no GATE-COUNT line); gate-selfcheck must still flag it as a finding, not confuse it with a reasoned skip
+# 2026-08-26 (Doc 199 Tier 3a/3b mirror guard): confirmed by hand before
+# adding this row.  With a fresh binary, replacing the reached registry lookup
+# key with zero made nelisp-thread-mirror-guard-standalone-smoke exit nonzero:
+# "worker hit-path mirror write was not catchably refused".  Restored and
+# rebuilt clean immediately afterwards.  The mutation harness rebuild list
+# above includes this conditional-prerequisite standalone gate, so the row
+# cannot accidentally exercise a stale clean target/nelisp.
+nelisp-thread-mirror-guard-standalone-smoke|lisp/nelisp-cc-rootstack.el|s/(nl_thread_registry_find mirror-ptr)/(nl_thread_registry_find 0)/|worker registry lookup uses a non-worker key, so mirror/intern writes are admitted instead of raising the named condition
+#
+# 2026-08-23 (Doc 188 P1, buffer unification): standalone-reader-buffer-
+# smoke is new this session.  Confirmed by hand before this row was
+# added: mutated, `make standalone-reader' (forced -- the gate's own
+# conditional prerequisite only builds when target/nelisp is absent, so
+# a stale binary silently re-passes an already-mutated source the first
+# time), then `./target/nelisp --load test/nelisp-buffer-unification-
+# standalone-smoke.el' went from `6 passed, 0 failed' to `2 passed, 4
+# failed' (exit 1); reverted and rebuilt clean before committing.
+standalone-reader-buffer-smoke|scripts/nelisp-stdlib-prelude.el|s/(nelisp-insert s nelisp--current-buffer)/(ignore s nelisp--current-buffer)/|insert becomes a silent no-op again (Doc 188 §1.3's original bug shape); buffer-string never reflects it
+#
+# 2026-08-23 (Doc 188 P2, buffer unification): the smoke grew from 6 to
+# 15 cases (`current-buffer'/`set-buffer'/`buffer-substring'/
+# `erase-buffer', plus the nelisp-textprop-hook attach test).  This row
+# proves the grown smoke actually catches a P2-specific regression, not
+# only the pre-existing P1 `insert' row above.  Confirmed by hand before
+# this row was added: mutated, `make standalone-reader' (forced, same
+# reason as the P1 row's own note), then `./target/nelisp --load
+# test/nelisp-buffer-unification-standalone-smoke.el' went from `15
+# passed, 0 failed' to `14 passed, 1 failed' (exit 1) -- exactly
+# `nelisp-buffer/erase-buffer-clears-and-resets-point', the one test
+# whose assertions this call site backs; reverted and rebuilt clean
+# before committing.
+standalone-reader-buffer-smoke|scripts/nelisp-stdlib-prelude.el|s/(nelisp-erase-buffer nelisp--current-buffer)/(ignore nelisp--current-buffer)/|erase-buffer becomes a silent no-op; buffer-string/point never reflect the clear
+#
+# 2026-08-23 (docs/design/185-cl-generic-subset.org): the two rows below
+# cover this doc's own loud-failure discipline -- exercised through
+# `test/nelisp-cl-generic-test.el' (`nelisp-gate-mutation.sh' scopes
+# `ert-full' mutations on `lisp/nelisp-cl-macros.el' to that one file; see
+# the case in `run_gate' there).  Both confirmed by hand before landing:
+# each sed hits its target exactly once, and `NELISP_GATE_MUTATION_TEST_FILES=
+# test/nelisp-cl-generic-test.el tools/ai/nelisp-ai.sh test' goes red on the
+# corresponding test, clean on the unmutated file.
+ert-full|lisp/nelisp-cl-macros.el|s/(nelisp-cl-macros--struct-isa (nelisp--record-type val) type))/t)/|every struct instance matches every struct-type specializer regardless of ancestry, so struct-based dispatch order silently collapses (a dog instance would satisfy an unrelated struct's method too)
+ert-full|lisp/nelisp-cl-macros.el|s/(signal 'cl-no-applicable-method (cons name args))/nil/|an unmatched generic-function call silently returns nil instead of signaling cl-no-applicable-method
+# 2026-08-23 (this session, Doc 187 layer-1 fix): standalone-reader-test
+# now covers fixnum-overflow signalling for the native +/-/* dispatch
+# (wf_sum/wf_prod in scripts/nelisp-standalone-build.el, checks 11/13-18
+# of nelisp-standalone--reader-stdlib-completion-smoke) -- these two rows
+# prove the check itself, not just its presence.  Row 1 deletes the
+# positive-overflow half of wf_sum's sign check (unique substring: only
+# wf_sum's own literal-bound comparison shape has this exact text); row 2
+# deletes wf_prod's div-round-trip check (unique substring: `/' makes it
+# safe to use `#' as the sed delimiter instead of `/', since this file's
+# field separator is `|').  Both require `standalone-reader-test' to
+# rebuild target/nelisp (it does so inline, unlike emacs-parity, so no
+# `rebuild_checked' special-case is needed here).
+#
+# 2026-08-23 UPDATE (Doc 190 Phase B, feat/bignum-p2-arith): the SAME two
+# literal-bound/div-round-trip checks still exist verbatim in the rewritten
+# wf_sum/wf_prod (the detection logic is unchanged from Doc 187 -- only the
+# RESPONSE changed, signal -> promote), so both sed patterns below still
+# match exactly once and both rows still prove real defects -- deleting
+# either check now makes the overflow case wrap silently again instead of
+# PROMOTING to a bignum (not "instead of signalling", since signalling is
+# no longer this phase's correct behavior for these three ops; checks
+# 11/13-16 of the same smoke now assert the promoted value instead).
+standalone-reader-test|scripts/nelisp-standalone-build.el|s/(and (> v 0) (> acc (- 2305843009213693951 v)))/(and (> v 0) nil)/|wf_sum's positive-overflow half of the literal-bound check is deleted, (+ most-positive-fixnum 1) wraps silently again instead of promoting to a bignum
+standalone-reader-test|scripts/nelisp-standalone-build.el|s#(/= (/ prod acc) v)#nil#|wf_prod's div-round-trip overflow check is deleted, (* 100000000000 100000000000) wraps silently again instead of promoting to a bignum
+# 2026-08-26 (Doc 187 P4 continuous cost gate): the exact flag-controlled
+# guard call is made unconditional-false.  The gate compiles its one-add loop
+# twice from the same source; this mutation makes the checked and unchecked
+# native-object SHA-256 values identical, so it goes red before timing.  The
+# failure is structural and does not depend on runner speed or load.  Proved
+# manually while adding the row: injected => identical hashes,
+# `GATE-COUNT checked=1 findings=1', exit nonzero; restored => distinct hashes,
+# ratio below 1.15x, `GATE-COUNT checked=1 findings=0', exit zero.
+bench-aot-checked-arith|lisp/nelisp-aot-compiler.el|s/^  (when nelisp-aot-compiler--checked-arith$/  (when nil/|the --checked-arith guard call is disabled, making the opt-in flag emit the same native object as the default unchecked path
+# 2026-08-23 (this session): Doc 180 Phase 1 (form-located errors) row.
+# `(setq form_index (+ form_index 1))' appears twice in `nl_eval_source_all'
+# (the successful-parse branch and the reader-error branch); the sed has no
+# `/g' but matches the whole line so both occurrences (one per line) are
+# replaced -- FORM_INDEX is pinned to 1 everywhere, so an error in the
+# fixture's second top-level form is reported as "top-level form #1", not
+# "#2".  `standalone-reader-form-location-smoke''s "load form #2 signals"
+# row (`nelisp-standalone--reader-form-location-smoke') asserts the literal
+# substring "top-level form #2 (byte ...", so this must fail it.
+standalone-reader-form-location-smoke|scripts/nelisp-standalone-build.el|s/(setq form_index (+ form_index 1))/(setq form_index 1)/|every uncaught error reports "top-level form #1" regardless of which form actually failed
+# nl-actor-standalone-smoke: added 2026-08-23 (Doc 193 §4.4 Phase 1).
+# The injection reverts nelisp-actor.el's soft `(require 'generator nil
+# t)' back to the hard `(require 'generator)' it replaced -- i.e. it
+# reproduces, verbatim, the exact defect this whole phase fixed
+# (`nelisp: uncaught error: file-missing: generator', measured before
+# any change here and again with this exact injection applied).  Chosen
+# over mutating the generated CPS file or the scheduler/mailbox logic
+# after two of those (`(setf (nelisp-actor-status actor) actor)' and
+# `nelisp-actor--mailbox-pop' returning `(cdr box)' instead of `(car
+# box)') were tried by hand and BOTH hung target/nelisp instead of
+# failing cleanly (one grew to 15GB RSS before being killed) -- a
+# corrupted status or mailbox value defeats `nelisp-actor-run-until-
+# idle''s termination on this substrate rather than erroring the way
+# host Emacs does, which is a real, separate, un-investigated
+# divergence this row deliberately does not depend on.  This injection
+# fails at the very first `load' statement, before any scheduling code
+# runs, so it cannot hit that class of problem.
+nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'generator)/|nelisp-actor becomes unloadable standalone again (file-missing: generator), the exact pre-Doc-193-§4 defect
+# standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase A,
+# feat/bignum-p1).  The injection flips the tag byte `nl_bignum_write'
+# stamps into a freshly-constructed Bignum Sexp from 13 (Bignum) to 2
+# (Int) -- every bignum this session's reader/`nl--read-int' constructs
+# is thereafter mis-tagged as a plain Int whose "value" is actually the
+# sign word (0 or 1), so `bignump' answers nil, `prin1' prints "0"/"1"
+# instead of the real digits, and comparisons read garbage.  Caught by
+# this smoke's own fencepost/printing/GC-stress checks, not by any
+# pre-existing gate (no prior gate constructs a tag-13 Sexp at all).
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u8  result_slot 0  13)/(seq (ptr-write-u8  result_slot 0  2)/|a constructed bignum is mis-tagged as a plain Int (its sign word read back as the "value"), corrupting bignump/prin1/comparison for every bignum the reader produces
+
+# standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase B,
+# feat/bignum-p2-arith).  New correctness property this phase introduces:
+# an arithmetic result that re-fits the fixnum bound must DEMOTE back to
+# a plain Sexp::Int, not stay boxed as a Bignum that merely prints/
+# compares correctly (Doc 190 §2's contraction rule, §4's own "verified
+# by tag inspection, not just value equality" requirement).  The
+# injection forces `nl_bignum_finish''s bound check to always take the
+# box (Bignum) branch, so EVERY arithmetic result -- including ones that
+# obviously fit a fixnum, e.g. `(- (+ most-positive-fixnum 1) 1)' -- stays
+# a Bignum forever.  Caught by this smoke's own demotion-fencepost checks
+# (`(not (bignump r))'), which would flip to `t' (a Bignum) under this
+# mutation; not caught by any value-only check, since the mutated value
+# still prints/compares as the right number.
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (= (nl_bignum_mag_le_bound limb_ptr limb_count bound_hi bound_lo) 1)/(if 0/|an arithmetic result that should demote back to a fixnum stays boxed as a Bignum forever (right value, wrong tag) -- Doc 190 §2's contraction rule silently stops holding
+# nl-num build-first phases (Doc 196, 2026-08-24).  Phase 0's row changes
+# the doubling bound from inclusive to exclusive, so an exact divisor
+# multiple is omitted and divmod leaves remainder == denominator.  Phase 1's
+# row disables gcd reduction at the constructor choke point.  Both use the
+# ert-full mechanism scoped above to nl-num-test.el.  Phase 2 must run on the
+# standalone: host Emacs handles Bignum+Float natively, while target/nelisp's
+# float fold misreads tag 13's sign word; bypassing nl-num's safe promotion
+# therefore reproduces the measured silent wrong-value defect only there.
+ert-full|packages/nl-num/src/nl-num-core.el|s/(while (<= multiple numerator)/(while (< multiple numerator)/|nl-num doubling division omits an exact top multiple, leaving a remainder equal to the denominator instead of canonical Euclidean divmod
+ert-full|packages/nl-num/src/nl-num-rational.el|s/(divisor (nl-num--gcd numerator denominator))/(divisor 1)/|nl-rational stops reducing numerator and denominator by their gcd, violating the canonical lowest-terms invariant
+nl-num-standalone-smoke|packages/nl-num/src/nl-num-rational.el|s/(+ (nl-num--real-to-float a) (nl-num--real-to-float b))/(+ a b)/|nl-num mixed addition hands a Bignum and Float to the native standalone fold, which reads the bignum sign word as its magnitude
+# nelisp-thread-standalone-smoke: Doc 199 Tier 2's result-publication property.
+# The worker still bumps the done counter, so join completes normally, but the
+# distinct result slots remain zero and the interpreter-driven reduction is 0
+# instead of 42.  This isolates a missing/torn result publication from a lost
+# completion increment (which would correctly keep the join waiting).
+nelisp-thread-standalone-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 result 0 sum)/(ptr-write-u64 result 0 0)/|a GC-free worker signals completion without publishing its partial sum, so join returns but the interpreter observes 0 instead of 42
+# nelisp-thread-allocating-standalone-smoke: Doc 199's bounded-section active
+# publication.  Parked collection and both reclaim guards key off this bit;
+# forcing the unique begin store to zero makes the existing section-exit
+# assertion fail deterministically before a false-safe section can pass.
+# The old inhibit-begin mutation stopped going red once the park barrier
+# landed: with workers parked the collector marks their private roots
+# correctly, so disabling the inhibit no longer corrupts anything -- that is
+# the improvement working, not a weak gate.  The reachable defect now is
+# bypassing the park itself, which is pinned on the percpu-roots gate below.
+# Stage 4c/Tier 3a regression: bypass both inline worker-live checks while
+# leaving Linux empty-chunk reclaim enabled.  The ordinary unlimited smoke can
+# pass this defect; the same target's second `ulimit -v 4000000' run
+# deterministically exposes a worker-visible arena chunk being unmapped.
+# NOTE (2026-08-25): the historical release-guard mutation was removed before
+# Tier 3b because the then-inhibited smoke could not reach it.  Tier 3b still
+# leaves reclaim disabled under active workers; the real parked-collection
+# proof below deliberately exercises mark/sweep, not munmap.
+# nelisp-thread-percpu-roots-smoke: Doc 199 Tier 3b's real parked-collection
+# checkpoint.  The clean gate reaches the main-thread garbage-collect path,
+# parks all three workers, executes mark/sweep, and only then reads index 18.
+# Corrupting that exact reached observation to zero makes the mandatory
+# last-parked=3 assertion fail.  This is intentionally an observer-boundary
+# mutation: the native park path still executes, so no stale-binary rebuild can
+# accidentally turn an unreachable mutation into a false green result.
+nelisp-thread-percpu-roots-smoke|tools/nelisp-thread-percpu-roots-smoke.el|s/(nth 18 (nelisp--debug-switch 0))/0/|the reached post-mark/sweep diagnostic reports zero parked workers, so the mandatory last-parked=3 assertion fails
+# A second percpu row bypassing nl_thread_park_request_begin was tried and
+# REMOVED: it reproduces 10/10 locally but CI round 25 reported it as
+# 'STAYED GREEN with a real defect in front of it', i.e. the defect it injects
+# is environment-sensitive and the gate cannot be relied on to catch it there.
+# The remaining percpu row (forcing the parked-worker diagnostic to read 0) is
+# the one CI itself confirms goes 'red as it should', so park coverage rests on
+# that assertion rather than on a flaky second injection.
+# standalone-reader-frame-stack-pop-desync-smoke: added 2026-08-23 (Doc 180
+# Phase 2 item 1).  The injection reverts `nelisp_eval_call_recorded_done''s
+# pop back to unconditional -- the exact pre-fix defect -- by deleting the
+# `pushed' guard the fix added.  The identical substring appears a second
+# time in `nl_driver_eval_with_recorded_roots' (the same fix, same shape,
+# applied there too); the sed has no `/g' but matches the whole line so
+# both occurrences (one per line) are reverted.  Only the first matters for
+# this smoke (it goes through `nelisp_eval_call', not the driver-level
+# wrapper), and reverting the second is harmless here since nothing in this
+# smoke exercises it.  Measured RED with this exact injection applied:
+# depth=5 at the checkpoint (want 1024); GREEN with it removed.
+standalone-reader-frame-stack-pop-desync-smoke|scripts/nelisp-standalone-build.el|s/(if (= pushed 1) (nl_gc_ctx_pop) 0)/(nl_gc_ctx_pop)/|the recorded frame-stack depth counter under-counts during unwind past the ring's capacity (the pop/depth-cap desync this smoke exists to catch)
+# standalone-reader-bounded-backtrace-smoke: added 2026-08-23 (Doc 180
+# Phase 2 item 3).  The injection reverses `nl_bt_capture_frames_from''s
+# write index, so buffer slot 0 receives the INNERMOST ring frame instead
+# of the outermost one of the captured window -- the captured window's
+# names come out reversed (outermost-first: level-a, level-b, level-c,
+# error) instead of innermost-first.  Measured RED with this exact
+# injection applied: "nelisp-doc180-level-c" not found after "error"'s
+# position (the smoke's own ordered-position check); GREEN with it
+# removed.
+standalone-reader-bounded-backtrace-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 (+ (data-addr nl_bt_snapshot) (+ 16 (\* i 8))) 0/(ptr-write-u64 (+ (data-addr nl_bt_snapshot) (+ 16 (* (- count (+ i 1)) 8))) 0/|the bounded backtrace prints outermost-first instead of innermost-first (the capture write index is reversed)
+# standalone-midform-gc-bounded: Doc 152 Stage 4c/Stage 5's against-the-bug row.
+# Disabling the Linux-only capability leaves ordinary sweep sound but restores
+# the measured ~262 B/iteration RSS growth; the 500k->1M plateau and positive
+# reclaimed-chunk assertions must both go red.  Stage 5 removed the gate's
+# explicit debug-switch arm, so this row now reaches reclamation through the
+# production default boot state.  The mutation harness rebuilds the injected
+# and restored binaries because this row changes generated native code, not
+# the host-side checker.
+standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_empty_chunk_reclaim_p () 1)/(defun nl_os_empty_chunk_reclaim_p () 0)/|Linux sweep stops releasing proven-empty growth chunks, restoring linear default-loop RSS growth
+# precise-root-coverage: the row this gate was built around.  Deleting the
+# executing form's own root arm is the defect shape any change to the recorded
+# root set risks, and in the SHIPPED configuration it is invisible: measured
+# 2026-08-29, with the arm gone the reader-smoke suite (41 smokes) and the full
+# anvil module load are both still green, because the conservative native-stack
+# scan holds the form up.  With the scan off the same binary dies immediately.
+# RED prints: `precise_root_fail label=no-conservative-scan reason=nonzero-exit
+# rc=139' and `... label=no-conservative-scan-no-pool-walk ... rc=139', with
+# `label=shipped acc=1750000' still passing above them -- that contrast is the
+# point of the row.  GREEN prints three `precise_root_result' lines,
+# `acc=1750000 collections=6' each.  Structural, not timing-dependent: the arm
+# is gone, so the form has no precise root at all.
+precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/|the executing top-level form is no longer a precise root, so only the conservative stack scan keeps it alive
+# precise-root-coverage gained two `setq' cases when that construct was closed.
+# They carry NO row here, deliberately: the defect they cover is an ordering
+# inside one CPS chain (the cdr taken before the eval instead of after), which
+# no single `sed -i' expression restores, and a row that cannot be written
+# honestly is worse than none.  Their red-ness was still measured the same way
+# a row proves itself -- built at the parent commit and run:
+#   precise_root_fail label=setq-collects-in-value reason=nonzero-exit rc=1
+#   nelisp: form aborted without signal (rc=1)
+# and green after: `label=setq-collects-in-value marker=7'.  The row above
+# already holds the gate itself lethal.
+# standalone-reader-socket-smoke: added 2026-08-24 (socket primitives,
+# Doc 184 follow-on, feat/socket-primitives-p1).  The injection changes
+# accept4's raw syscall number from 288 (the real Linux x86_64 number)
+# to 289 (unused/EINVAL territory) in `nl_socket_accept_impl'.  Manually
+# verified before adding this row: RED with the injection applied
+# (`[standalone-reader] FAIL: socket smoke: socket smoke: round-trip
+# failed, stdout="ROUNDTRIP=ERR:(nelisp-socket-error -22)...'` --
+# `nelisp-socket-connect' + `nelisp-socket-accept' still run, but
+# accept4 now fails with EINVAL(-22) instead of returning the queued
+# connection), GREEN again with the injection reverted.  Chosen over
+# corrupting the sockaddr byte layout or the connect/listen syscall
+# numbers because those either segfault (wrong offsets) or fail at
+# `nelisp-socket-listen'/`-connect' before ever reaching accept, giving
+# a less specific signal than "this exact syscall number is what
+# matters, and this gate reads it, not just \"a socket call failed
+# somewhere\"".
+# Row text UPDATED 2026-08-24 (Doc 194 P3, feat/network-process-p345):
+# `nl_socket_accept_impl' gained a NOWAIT/`flags' argument (P3's own
+# arity extension, S3.3 item 1), changing the 5th `syscall-direct'
+# argument from a literal `0' to the `flags' variable -- the OLD row's
+# exact-text pattern went stale (matched nothing, caught by this exact
+# phase's own gate-mutation run) without this update.  Same defect,
+# same target, new surrounding text; re-verified RED-with-injection
+# (accept4 fails every connection with EINVAL) / GREEN-with-injection-
+# reverted before updating.
+standalone-reader-socket-smoke|scripts/nelisp-standalone-build.el|s/(cfd (syscall-direct 288 (wf_argval args 0) 0 0 flags 0 0)))/(cfd (syscall-direct 289 (wf_argval args 0) 0 0 flags 0 0)))/|accept4 issues the wrong raw syscall number, so nelisp-socket-accept fails on every connection instead of returning the queued one
+# Doc 194 P0 (feat/network-process-p0): manually verified RED-with-
+# injection / GREEN-with-injection-reverted before adding -- the
+# synchronous client's initial status flips from `open' to `closed' at
+# construction time -- `process-status' would read `closed' on a
+# connection that is, in fact, live, which is exactly the
+# "process-status reads open the instant make-network-process returns"
+# contract Doc 194 S1.3 measured against real Emacs 30.1 and this gate's
+# own `roundtrip' case checks.
+standalone-reader-network-process-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(proc (nelisp--make-network-process-object name 'open fd)))/(proc (nelisp--make-network-process-object name 'closed fd)))/|a freshly-connected client process reports status closed instead of open, breaking Doc 194 S1.3's measured "open the instant make-network-process returns" contract
+# Doc 194 P1 (feat/network-process-p0): manually verified RED-with-
+# injection / GREEN-with-injection-reverted before adding --
+# `nelisp--hosts-file-lookup' always answers nil, as if `/etc/hosts' (or
+# the fixture) were never consulted at all -- the P1 positive case (a
+# hostname resolved purely from the fixture, no DNS round trip) fails.
+standalone-reader-hosts-file-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(cdr (assoc name (nelisp--hosts-file-table file))))/(and nil (cdr (assoc name (nelisp--hosts-file-table file)))))/|/etc/hosts lookup always answers nil, as if the file (or its fixture) were never consulted
+# Doc 194 P2 (feat/network-process-p0): manually verified RED-with-
+# injection / GREEN-with-injection-reverted before adding --
+# `nelisp--dns-byte''s own out-of-bounds guard is disabled -- a
+# truncated/malformed DNS response no longer signals the catchable,
+# DNS-specific `nelisp-dns-error'; the parse instead falls through to the
+# raw, unguarded native `string-byte' primitive this parser is built on,
+# which (measured, Doc 194 P2) has NO bounds check of its own and
+# silently returns a wrong value with no error at all -- exactly the
+# length-prefix/RDATA parsing defect class Doc 194's own P2 exit
+# criterion asks this gate to catch.
+standalone-reader-dns-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(if (or (< i 0) (>= i (string-bytes buf)))/(if (or nil nil)/|the DNS response parser's own bounds check never fires, so a truncated/malformed response silently reads a wrong value from the unguarded native string-byte primitive instead of signalling the catchable nelisp-dns-error
+# Doc 194 P3 (feat/network-process-p345): manually verified RED-with-
+# injection / GREEN-with-injection-reverted before adding -- this is the
+# EXACT defect this phase's own implementation hit and fixed (see
+# `nl_socket_poll_impl''s own comment and this smoke's Makefile comment):
+# `230' is `clock_nanosleep' on the Linux x86_64 ABI, not `poll' (`7').
+# Re-injecting it reproduces the original silent-wrong-answer bug --
+# `nelisp-socket-poll' always answers not-ready, no hang, no signal --
+# measured RED at `connect-ok=(t t nil t 0) connect-refused=(t t nil t
+# t)' (the two `nil's are the `ready' checks, both wrongly false), GREEN
+# again with `7' restored.
+standalone-reader-nonblocking-socket-smoke|scripts/nelisp-standalone-build.el|s/(let\* ((rc (syscall-direct 7 pfd 1 timeout 0 0 0))/(let* ((rc (syscall-direct 230 pfd 1 timeout 0 0 0))/|nelisp-socket-poll issues clock_nanosleep(230) instead of poll(7), so it silently always answers not-ready regardless of true socket readiness
+# Doc 194 P4 (feat/network-process-p345): manually verified RED-with-
+# injection / GREEN-with-injection-reverted before adding -- the async
+# connect-completion status machine's own success/failure branch is
+# inverted (a real SO_ERROR=0 success is misread as errno 999, a value
+# `nelisp-socket-connect-error' can never actually return), so a
+# genuinely successful nonblocking connect fires the sentinel with
+# "failed with code 0\n" and transitions to `failed' instead of `open' --
+# measured RED at `mixed=(failed ("failed with code 0\n") nil
+# ("finished\n"))' (the "ok" case's own network status, expected `open').
+standalone-reader-network-process-nowait-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(if (= err 0)/(if (= err 999)/|a successful nonblocking connect (real SO_ERROR 0) is misclassified as failed, firing "failed with code 0\n" instead of transitioning to open
+# Doc 194 P5 (feat/network-process-p345): manually verified RED-with-
+# injection / GREEN-with-injection-reverted before adding -- an accepted
+# child's `:filter' is dropped (set to nil) instead of copied from the
+# listener, so a client's data never reaches its own filter and the
+# smoke's own `filters-shared'/`both-received' checks both flip false --
+# measured RED at `(listen 5 2 t nil nil t listen closed t)' (positions
+# 4 and 5, expected both `t'), GREEN again with the real copy restored.
+standalone-reader-network-process-server-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(process-put child :filter (process-get proc :filter))/(process-put child :filter nil)/|an auto-accepted child's filter is dropped instead of inherited from the :server t listener, so per-connection data never reaches the caller's filter
+# Doc 194 P7 (feat/socket-ipv6): manually verified RED-with-injection /
+# GREEN-with-injection-reverted before adding.  `nl_socket_build_
+# sockaddr6' writes sin6_family = AF_INET(2) instead of AF_INET6(10) --
+# the constructed 28-byte struct is used for a socket the caller already
+# created with `domain = AF_INET6' (`nl_socket_listen_impl'/-connect_impl
+# decide the syscall's own domain argument independently, upstream of
+# this call, so that part stays correct), but the struct's OWN family
+# field now disagrees with it, and the kernel rejects the mismatch --
+# measured RED: every IPv6-literal listen/connect in the smoke
+# (::1 loopback round trip, the bracketed/full-form check, `:family
+# 'ipv6'/open-network-stream over ::1) fails with `(nelisp-socket-error
+# -97)' (EAFNOSUPPORT), while the parts needing no live IPv6 socket
+# (the pure-elisp literal table, the AAAA DNS fixture, the /etc/hosts
+# typed lookup) still pass -- exactly the shape a sockaddr_in6 family-byte
+# defect should have, not a wholesale crash.  GREEN again with `10'
+# restored.
+standalone-reader-ipv6-socket-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u8 out_buf 0 10)/(ptr-write-u8 out_buf 0 2)/|nl_socket_build_sockaddr6 writes AF_INET(2) instead of AF_INET6(10) into sin6_family, so every real IPv6 socket call fails with EAFNOSUPPORT even though domain=AF_INET6 was still passed to socket(2) correctly
+# nl-clj-async repeated-resumption gate: manually injected before this
+# row was added.  Replacing the reached successful-take unwrap with a
+# sentinel made `make nl-clj-async-standalone-smoke' exit 2 through its
+# blocking result check instead of printing a green GATE-COUNT; restored,
+# the widened smoke reports `GATE-COUNT checked=10 findings=0'.
+nl-clj-async-standalone-smoke|packages/nl-clj/src/nl-clj-async.el|s/^  (if (eq (car v) :closed) nil (cadr v)))$/  (if (eq (car v) :closed) nil :gate-mutated))/|successful nl-clj-<! takes unwrap to a sentinel instead of their payload, so the repeated-take fixture and wrapper-based ping/pong cannot complete correctly
+# The version drift that took stage-d red on all four platforms on
+# 2026-08-26: the tarball was built as v1.0.1 and the installer, whose
+# default is a self-contained copy, still said v0.6.0.  Reproduce that
+# exact drift and require the gate to catch it.
+version-consistency|release/stage-d-v3.0/install-v3.sh|s/RELEASE_VERSION:-v[0-9][0-9.]*/RELEASE_VERSION:-v0.0.0/|installer default left behind at a stale release version
+# The Windows half of the same drift: install-v3.ps1 and the two tarball
+# scripts were self-consistent at v0.6.0 while the POSIX side had moved to
+# v1.0.1, so CI shipped v0.6.0-labelled tarballs for a v1.0.1 release and
+# nothing complained.  Found on 2026-08-26 by the macOS lane, not by CI.
+version-consistency|release/stage-d-v3.0/install-v3.ps1|s/\[string\]\$Version = "v[0-9][0-9.]*"/[string]$Version = "v0.0.0"/|windows installer default left behind at a stale release version

@@ -206,6 +206,60 @@ x86_64 Linux."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/native-exec-general-value-word-boundary ()
+  "A raw machine word never crosses a defun boundary in this lane.
+
+Runtime-entered defuns take their parameters as Sexp pointers and read
+them back with the immediate-aware unwrap, so an argument or a return
+that is a raw word gets dereferenced by the other side.  Every shape
+below did that: `(g 0)' loaded `[0+8]', `(g (str-len s))' loaded past a
+length, and `merge-bit' returning `(+ a b)' handed its caller an integer
+to follow as an address.
+
+Each case is checked against the same source interpreted by Emacs rather
+than a written-down constant, because the failure was as often a wrong
+answer as a crash -- the mask cases returned 0 for 10 while exiting 0,
+which an exit-status assertion calls a pass."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-vw-" t))
+         (source-path (expand-file-name "vw.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(defun nat-vw-ge (a b) (if (>= a b) 111 222))
+(defun nat-vw-lit (x) (nat-vw-ge 0 x))
+(defun nat-vw-arith (x) (nat-vw-ge (+ x 1) x))
+(defun nat-vw-branch-arg (x) (nat-vw-ge (if (= x 0) 7 3) x))
+(defun nat-vw-add (mask bit)
+  (if (= bit 0) mask (if (= (logand mask bit) 0) (+ mask bit) mask)))
+(defun nat-vw-merge (mask bits)
+  (nat-vw-add (nat-vw-add mask (if (= (logand bits 1) 0) 0 1))
+              (if (= (logand bits 2) 0) 0 2)))
+(provide 'nat-vw)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (load source-path nil t)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (dolist (probe '(("nat-vw-lit" (5))
+                           ("nat-vw-lit" (-1))
+                           ("nat-vw-arith" (5))
+                           ("nat-vw-branch-arg" (0))
+                           ("nat-vw-branch-arg" (4))
+                           ("nat-vw-add" (0 2))
+                           ("nat-vw-add" (2 2))
+                           ("nat-vw-merge" (0 3))
+                           ("nat-vw-merge" (4 1))))
+            (let ((name (car probe))
+                  (args (cadr probe)))
+              (should (equal (nelisp-artifact-native-exec-general
+                              artifact-path name args)
+                             (apply (intern name) args))))))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (provide 'nelisp-artifact-native-exec-test)
 
 ;;; nelisp-artifact-native-exec-test.el ends here

@@ -1,0 +1,884 @@
+#+TITLE: Doc 190 — Bignums: representation, contagion, and an honest cost ladder
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-22
+#+STATUS: PARTIAL — Phase A (comparison, printing, construction/reading)
+#+STATUS: SHIPPED and verified 2026-08-23 (see §6, Implementation report).
+#+STATUS: Phase B (arithmetic core) SHIPPED and verified 2026-08-23 (see
+#+STATUS: §7, Implementation report) on branch feat/bignum-p2-arith --
+#+STATUS: fixnum-boundary overflow at +/-/* now PROMOTES to an exact
+#+STATUS: Bignum instead of signalling overflow-error, superseding Phase
+#+STATUS: A's own §6.2 record and Doc 187's landed contract AT THESE
+#+STATUS: THREE OPS ONLY (history preserved in place, dated notes added,
+#+STATUS: not erased -- see §6.2's own updated text and §7.1).  /, mod, %
+#+STATUS: are UNCHANGED, still wrong-type-argument on a Bignum operand,
+#+STATUS: per Phase A's recorded scope gap (§6.2, §7.7).  Phase C (AOT
+#+STATUS: codegen) remains DRAFT, not started -- this doc's own §3
+#+STATUS: phasing, unchanged; native-compiled +/-/* still wraps silently
+#+STATUS: on overflow, only the INTERPRETED reader-dispatch path (which
+#+STATUS: the baked build shares) promotes.
+#+VERIFIED-BY: standalone-reader-bignum-smoke standalone-reader-smokes standalone-reader-test standalone-reader-checked-soak substrate-parity-smoke parens-check compile ert-full
+
+* Status
+
+| item     | value                                                             |
+|----------+--------------------------------------------------------------------|
+| Doc #    | 190                                                               |
+| State    | PARTIAL — Phase A SHIPPED 2026-08-23 (§6); Phase B SHIPPED 2026-08-23 (§7); Phase C DRAFT |
+| Parent   | Doc 169 §7 (names bignum as a Phase 8.x runtime-side gap)         |
+| Sibling  | Doc 187 (checked-arithmetic bridge — owns the overflow-signal path this doc's promotion rule fires from) |
+| Reads    | =lisp/nelisp-cc-nlstr-direct-ops.el= (Sexp layout), =lisp/nelisp-cc-bi-meta-dispatch-loop.el= (Sexp::Int), =lisp/nelisp-aot-compiler.el= (native arith codegen), =scripts/nelisp-stdlib-prelude.el= (=expt=), =lisp/nelisp-stdlib-misc.el= (fixnum mask), =README.org= (dependency stance) |
+
+* 1. Problem, measured
+
+** 1.1 Fixnum width, measured, not assumed
+
+=lisp/nelisp-stdlib-misc.el= (a =most-positive-fixnum=-adjacent helper)
+carries this comment verbatim, because getting the mask wrong the
+naive way breaks on the boundary itself:
+
+#+begin_quote
+The mask is written =(1- (ash 1 61))= because integers here are 62-bit
+and =(ash 1 61)= wraps negative — =most-positive-fixnum=
+#+end_quote
+
+That is the measured shape: a 62-bit two's-complement field, 61
+magnitude bits plus sign, matching real Emacs's own fixnum width on a
+64-bit build (Emacs reserves 3 tag bits out of 64; NeLisp's own tagged
+representation, per §1.3, reserves the width differently but lands on
+the same effective 61-bit magnitude). Every claim below about "beyond
+fixnum range" means beyond =2^61 - 1= / below =-2^61=.
+
+** 1.2 Overflow is already detected in one place, and silently absent in two others
+
+Three different arithmetic paths exist in this tree today, and they
+disagree about overflow, which is the actual problem this doc is
+scoped to fix — not "add bignums" in the abstract, but "make the three
+paths agree":
+
+1. *The interpreter-layer =expt=* (=scripts/nelisp-stdlib-prelude.el=)
+   already detects overflow, by hand, for the one operation where
+   Emacs's own documented behavior demands it: after each
+   multiplication step it checks =(/= b 0) (/= (/ next b) r)= — an
+   inverse-division overflow check — and signals =(signal
+   'overflow-error nil)= when it trips. This is the only place in the
+   tree that treats fixnum overflow as an error today, and it is
+   hand-rolled per call site rather than a general property of =+= /
+   =*=.
+2. *Native AOT =+=/=-=/=*= on both x86_64 and aarch64* emit raw machine
+   instructions with no overflow check at all
+   (=nelisp-aot-compiler--emit-arith=, =lisp/nelisp-aot-compiler.el=):
+   x86_64 emits =add rax, r10= / =imul rax, r10= directly;  aarch64
+   emits =add x0, x0, x9= / =mul x0, x0, x9= directly. Neither checks
+   the overflow flag the ISA sets on every one of those instructions
+   (=jo=/=into= on x86_64, no direct arm64 equivalent without an extra
+   compare) — the result wraps in two's complement silently.
+3. *Native wasm =+=/=*=* wraps the same way, and the wasm backend's own
+   =mod= emitter comment says so out loud, as a warning to itself about
+   a *different* bug it had to route around: "the intermediate =r + b=
+   can overflow near the i64 limits, and wasm =i64.add= wraps
+   silently" (=nelisp-aot-compiler--wasm-emit-arith-mod=,
+   =lisp/nelisp-aot-compiler.el=). The comment exists because a wasm
+   author already had to reason about this wrap once, for =mod=; it was
+   never generalized into a checked =+=/=*=.
+
+So "does arithmetic overflow signal an error" already has three
+different, uncoordinated answers in this codebase depending on which
+compiled path executes the =+= or =*=. Doc 187 (sibling) is the doc
+that unifies (2) and (3) behind a single checked-arithmetic bridge —
+this doc's scope starts *after* that bridge exists: once overflow is
+detected uniformly, what happens next is either "signal
+=overflow-error=" (today's only behavior, and Emacs's actual documented
+behavior for =*= on plain fixnums predates GNU Emacs's own bignum
+support) or "promote to a bignum" (real GNU Emacs's actual current
+behavior, since Emacs 27). This doc designs the promotion target; it
+takes the detection trigger as a fact Doc 187 supplies.
+
+** 1.3 The substrate this has to fit into
+
+Every =Sexp= value in this runtime is a fixed =32 bytes, align = 8=
+struct (measured directly, =lisp/nelisp-cc-nlstr-direct-ops.el=: "total
+= 32 bytes, align = 8", corroborated by the four =ptr-write-u64=
+calls at offsets 0/8/16/24 that every immediate-value writer in that
+file uses, nil/t canonicalization included). =Sexp::Int= today is
+*unboxed* inside that struct — the tag word plus the i64 payload,
+directly, no heap indirection, "no boxed payload so the clone is a flat
+byte copy; refcount overhead is zero"
+(=lisp/nelisp-cc-bi-meta-dispatch-loop.el=). Boxed variants that *do*
+need out-of-line storage already exist and follow one pattern:
+=Sexp::Str= (tag=5) and =Sexp::MutStr= (tag=6) hold a pointer + length
+into a heap region obtained through =alloc-bytes=, refcounted through
+the same =nl_sexp_clone_into= path the comment above contrasts
+=Sexp::Int= against. A bignum representation has exactly one existing
+shape to imitate: a new tag whose payload is (pointer, limb-count,
+sign) into an =alloc-bytes=-obtained limb array, following the
+Str/MutStr precedent rather than inventing a new boxing convention.
+
+** 1.4 The dependency stance, verified on this clone
+
+The obvious representation for anyone who has shipped a Lisp before is
+"link libgmp." This tree's own README states, as one of its two
+headline differentiators, that the JIT compiler is written in Elisp
+specifically as a contrast to Emacs's native-comp, which "depends on
+libgccjit (an external C library)" — named as the thing NeLisp does
+*not* do. There is no =Cargo.toml=, no =*.rs= file, and no external C
+library anywhere in this checkout (confirmed by direct search on this
+clone) — the whole runtime, including the allocator, GC, JIT and
+coding-system layer, is pure Elisp over =mmap=/=PROT_EXEC= and this
+tree's own =alloc-bytes=/=ptr-read-*=/=ptr-write-*= primitives. Pulling
+in GMP would be the first C library dependency in the entire substrate,
+directly contradicting the property the README chose to lead with.
+*GMP is out, not because bignums are unusual to want a C library for,
+but because this specific substrate has spent its whole existence
+proving it does not need one, and a bignum library is not important
+enough to spend that property on.* The only representation option
+consistent with the measured stance is a pure-Elisp limb
+implementation, built on the allocator this tree already has.
+
+* 2. Decided direction
+
+**A tagged bignum variant (new Sexp tag, following the Str/MutStr
+out-of-line-pointer precedent exactly) holding a sign flag and a limb
+array of 32-bit (or 64-bit-with-explicit-carry, see §3.2) unsigned
+words, allocated via the existing =alloc-bytes= allocator, implemented
+entirely in Elisp arithmetic over the existing =ptr-read-u32=/
+=ptr-write-u32=-class primitives. No GMP, no new C surface, no Rust.**
+
+Contagion rule, matching real GNU Emacs's own documented behavior
+exactly (this is not a novel design choice — it is "do what Emacs
+already does," which is the correct default for any Emacs-compatible
+substrate feature): a fixnum operation that would overflow =±2^61-1=
+promotes its result to a bignum rather than signaling, *once Doc 187's
+bridge exists to detect the overflow in the first place*. Until Doc 187
+ships, the fallback stays exactly what §1.2 measured today: the
+hand-rolled =expt= check signals =overflow-error=, and native +/* keep
+silently wrapping — this doc does not change that baseline on its own,
+because doing so without the checked-arithmetic bridge would mean
+re-deriving Doc 187's detection logic independently, which is exactly
+the duplication this doc's status line disclaims.
+
+A bignum, once created, contracts back to a fixnum whenever an
+operation's result re-fits the 61-bit magnitude (real Emacs does this
+too, e.g. after a subtraction or division) — cheap to check (compare
+limb-count and top-limb magnitude) and worth doing, because most
+generated bignums in real workloads are transient (one multiply
+overshoots, the next divide brings it back), and keeping them boxed
+needlessly defeats §1.3's "unboxed Sexp::Int is free" property for
+every downstream operation on a value that is numerically small again.
+
+* 3. Phased plan, costs stated honestly
+
+This is named explicitly as "a big one" in the design brief, and the
+honest cost is in the *arithmetic core* and *AOT codegen* phases, not
+the comparison/printing phase — the phasing below is ordered so the
+cheap, low-risk, immediately-useful phase ships first and the
+expensive, correctness-critical phase is not blocked on anything but
+itself.
+
+** Phase A — comparison and printing (cheapest, ships first)
+
+A bignum that can only be *constructed* by explicit means (an initial
+=nl-make-bignum=-class internal constructor, not yet reachable from
+ordinary arithmetic) still needs =equal=, =eql==/=eq= (identity-only,
+same as any boxed type today), ordering (=<= =>= etc.), and =prin1=/
+=princ= printing (decimal, matching Emacs's bignum print format) to be
+a usable *value* at all — this is required infrastructure before
+Phase B can produce one and have anything downstream work with it. Cost
+is bounded and well-precedented: decimal printing from a limb array is
+a solved, small algorithm (repeated divide-by-10^9-into-chunks,
+standard even for a from-scratch bignum), and comparison is a
+limb-count-then-limbwise-compare loop — both pure Elisp, no codegen
+touched, no interpreter-vs-native inconsistency risk because nothing
+compiled yet produces one.
+
+Verification: unit-level ERT covering construction-from-fixnum-string
+round-trip, ordering across the fixnum/bignum boundary (a bignum must
+compare correctly against a same-magnitude fixnum, not just against
+other bignums), and =prin1=/=read= round-trip — the same discipline
+Doc 160's stdlib-breadth work already applied per-symbol (guarded
+=(unless (fboundp ...))= additions, discovery-probe driven).
+
+** Phase B — arithmetic core (the expensive one)
+
+=+=, =-=, =*=, =/=, =mod=, =expt= over bignum operands and
+bignum-with-fixnum mixed operands, entirely in the interpreter-layer
+prelude first (matching where =expt='s existing overflow check already
+lives, §1.2) — *not* in native-compiled code yet. This is genuinely
+the costly phase: schoolbook multiplication is the honest default
+(Karatsuba is a later optimization, not a Phase B requirement — most
+real-world bignum operands in an Elisp workload are a handful of limbs
+past the fixnum boundary, not cryptographic-scale, so schoolbook's
+O(n^2) is the right complexity/cost trade for a first ship), division
+needs a real long-division-by-limb algorithm (the awkward one to get
+byte-exact, because Emacs's own =/= truncates toward zero and =mod=
+floors — both conventions have to be preserved exactly, the same class
+of "which predicate an error names" precision this repo's own git log
+(=fix(standalone)= commit series) shows costs real iteration when
+gotten wrong the first time), and every existing fixnum-returning
+primitive that a bignum can now flow into (=1+=, =1-=, =abs=,
+=logand=/=logior=/=logxor= — Emacs's bignums support bitwise ops too)
+needs its own contagion check.
+
+Cost driver worth naming honestly: this phase touches the *same*
+=expt=-class hand-rolled-overflow-check pattern §1.2 found already
+duplicated once; Phase B is where that pattern would either be
+generalized into one reusable "does this fixnum op overflow" helper
+that Doc 187's bridge and this doc's promotion path both call, or it
+proliferates a third and fourth hand-rolled copy. Coordinating that
+with Doc 187 rather than duplicating it is this phase's actual
+critical-path risk, not the limb arithmetic itself.
+
+** Phase C — AOT codegen (native compiled bignum arithmetic)
+
+The most expensive phase, and honestly likely not worth doing for a
+first ship: teaching =nelisp-aot-compiler--emit-arith= (§1.2) to emit a
+*runtime call* to the Phase B interpreter-layer bignum routines instead
+of the raw =add=/=imul= instruction sequence, gated on a *runtime* type
+check of both operands (a native comparison against the fixnum tag,
+inserted before the existing arithmetic emission) rather than a
+compile-time distinction the AOT compiler cannot make (whether a given
+=+= call site will ever see a bignum operand is a runtime property, not
+knowable from the IR). This is exactly the shape Doc 187's
+checked-arithmetic bridge already has to add for overflow *detection*
+in native code — Phase C's honest framing is "extend Doc 187's inserted
+runtime check to branch to the Phase B bignum path instead of only
+signaling," which means Phase C cannot start meaningfully before Doc
+187 ships *and* lands its native-code insertion point, and this doc
+should not attempt to design that insertion point independently.
+
+Given §1.4's "no GMP" constraint, the runtime call target for Phase C
+is the *same* pure-Elisp Phase B arithmetic — native code does not get
+a faster bignum path than interpreted code gets, only a faster
+*fixnum* path when the runtime check confirms no promotion is needed.
+That is a real, stated limitation: native bignum arithmetic in NeLisp
+will run at interpreter speed for the boxed case, forever, unless a
+future doc revisits the "no C dependency" stance specifically for this
+one hot path — which this doc does not recommend revisiting, because
+§1.4's evidence is that the substrate has never needed to for anything
+else, including the JIT itself.
+
+* 4. Verification design
+
+Per this repo's gate discipline (a gate that runs zero cases is not
+green; a measurement needs a valid, re-measured baseline; values come
+from files, not terminal output):
+
+- *Fixnum-boundary corpus*: a fixed set of forms straddling
+  =most-positive-fixnum=/=most-negative-fixnum= exactly (=N=,
+  =N+1=, =-N-1=, =N*N=, =(expt 2 61)=, etc.), run against real Emacs
+  and compared, the same differential-testing discipline the standalone
+  reader's whole parity-fixing history (this repo's own git log, the
+  long =fix(standalone)= series) already uses — added to
+  =tools/nelisp-substrate-parity-corpus.el= so this class of divergence
+  gets the same continuous protection every other measured divergence
+  in that corpus already has, rather than a one-off smoke that bit-rots.
+- *Phase A*: ERT round-trip (construct/print/read/compare) plus a
+  targeted =substrate-parity-smoke= addition for print format
+  specifically — Emacs's bignum =prin1= output has an exact,
+  documented decimal shape that is easy to get subtly wrong (leading
+  zeros, sign placement) the same way this repo's own float-printer
+  work (Doc 159) had to get exact.
+- *Phase B*: property-style ERT (not full randomized fuzzing — this
+  repo's own convention per the =parity-fuzz seed= gate is to run fixed
+  seeds, not open-ended random) checking =(+ a b)= /  =(- (+ a b) b)= =
+  a= across a fixnum/bignum-mixed operand matrix, division/mod exactness
+  against Emacs's truncate-toward-zero / floor conventions specifically
+  (not just "some sensible answer"), and the contraction rule (§2) —
+  a bignum-producing op followed by one that brings the magnitude back
+  under 2^61 must yield a =Sexp::Int=, verified by tag inspection, not
+  just value equality, since a bignum that never contracts is a
+  correctness bug even if every value it produces prints correctly.
+- *Phase C*: differential — same corpus as the fixnum-boundary corpus,
+  run once interpreted and once through AOT-compiled code generated
+  from the identical source, byte-identical results required (the
+  "byte-identity, not full ERT" discipline this repo's own perf-wave
+  work already uses for exactly this class of native-vs-interpreted
+  check) plus one wall-clock measurement (native fixnum-only path
+  before vs. after the Phase C runtime-check insertion) run through
+  =tools/ai/bench-compare.sh= specifically because a runtime type check
+  added to every native =+=/=*= call site is exactly the kind of
+  "innocent-looking check has a real, non-obvious cost" claim this
+  repo's own bench-compare tooling exists to keep honest rather than
+  quoted from a single unverified run.
+
+* 5. Open questions
+
+- Limb width: 32-bit limbs with 64-bit intermediate products (avoids
+  needing a carry-detect primitive beyond what native multiply already
+  gives for free) versus 64-bit limbs needing an explicit
+  add-with-carry / mul-widen sequence (denser, fewer limbs per bignum,
+  but every limb operation needs a carry-out the substrate does not
+  currently expose as a primitive). §3's phased plan does not commit to
+  one; Phase B's actual implementation should measure both on the
+  fixnum-boundary corpus before choosing, rather than guess.
+- Whether Phase B's division algorithm should special-case
+  division-by-small-fixnum (the overwhelmingly common real case —
+  dividing a bignum by a plain small number, e.g. in an average or a
+  hash computation) with a cheap limb-at-a-time pass, versus always
+  running the general bignum/bignum long-division path. This is a real
+  cost/complexity trade this doc leaves to Phase B's implementer to
+  measure rather than decide blind here.
+- Whether Doc 187's checked-arithmetic bridge, once it exists, should
+  expose the "did this overflow" check as a reusable primitive Phase
+  B/C can call directly, or whether this doc's promotion path needs its
+  own copy tuned differently (e.g. Phase C's runtime type-check, which
+  is "is either operand already a bignum," is a different question from
+  Doc 187's "did this fixnum operation's *result* overflow"). Not
+  resolvable without reading Doc 187's actual text, which was not
+  available on this branch at time of writing (siblings 180-188 had not
+  landed on =origin/feat/native-observability= as of this clone).
+- Whether real-world NeLisp workloads (the recipe corpus, Doc 165's
+  wasm-shipped bundles, the AI toolchain's own gate scripts) actually
+  produce bignums in practice, or whether this is speculative
+  completeness against Emacs compatibility with no measured demand yet
+  — this doc has not found a concrete NeLisp workload that currently
+  hits the fixnum boundary and needed a bignum (the =expt= overflow
+  check in §1.2 is defensive, not a reported bug from real usage). That
+  absence of demand is itself worth stating plainly rather than
+  implying urgency the evidence does not support; this doc's
+  justification is Emacs-compatibility completeness, not a fire to put
+  out.
+
+* 6. Implementation report (2026-08-23, branch =feat/bignum-p1=)
+
+Phase A only, per this doc's own §3 phasing: the bignum box type
+(allocation, GC integration), reading, printing, and comparison.  No
+arithmetic core (Phase B) and no AOT codegen (Phase C) — a bignum flowing
+into =+=/=-=/=*= still signals =overflow-error=, unchanged from Doc 187's
+landed contract (verified, not assumed — §6.2).
+
+** 6.1 The box, as landed
+
+A new Sexp tag, 13 (Bignum), following the Str/MutStr (tag 5/6)
+out-of-line-pointer precedent exactly, per this doc's own §2 decision —
+confirmed against the ACTUAL tag table this session
+(=lisp/nelisp-cc-sexp-clone-into.el=, tags 0-12 already enumerated there;
+this doc's own §1.3 estimate did not have that file's exact list, and 13
+is the correct next value, not a guess).
+
+Layout — mirrors Str's inline (cap/ptr/len) shape exactly, offset for
+offset:
+
+#+begin_example
+Sexp offset 0:  tag (u8) = 13
+Sexp offset 8:  sign        (u64 — 0 non-negative, 1 negative)
+Sexp offset 16: limb-ptr    (u64 — *const u32, little-endian limbs)
+Sexp offset 24: limb-count  (u64 — canonical: no leading zero limb,
+                except a single zero limb for the value 0)
+#+end_example
+
+32-bit limbs (§3's open question, resolved for Phase A): chosen over
+64-bit because every operation Phase A actually needs — decimal-token
+accumulation (multiply the limb array by the token's radix, add a
+digit), decimal printing (repeated divide-by-10), and magnitude
+comparison — is naturally expressed with a 64-bit intermediate per limb
+op (=(+ (* limb mul) carry)=, a plain safe i64 multiply-add, no
+carry-detect primitive needed), matching this doc's own §5 framing of
+the 32-bit choice exactly.  Phase B's implementer should still measure
+64-bit limbs against real workloads before committing further, per §5's
+own instruction not to guess.
+
+GC integration, following how boxed strings are traced (the task's own
+framing) — a Bignum is a LEAF from the tracing GC's point of view,
+exactly like Str/Symbol: its only child is a raw limb byte buffer, not
+another Sexp, so it is marked (not recursed) the same way
+(=nl_gc_mark_slot='s tag-13 arm calls =nl_gc_mark_buf= on the limb
+pointer, identical in shape to tag 5's arm).  Three integration points,
+all touched:
+
+- =nl_gc_mark_slot= (=nelisp-standalone--gc-source=): tag-13 arm added.
+- =nl_gc_conserv_word='s conservative-stack-scan tag bound
+  (=(< (ptr-read-u8 w 0) 13)=, "plausible Sexp tag 0..12") widened to 14
+  — measured as the ONE other site in the whole tree gating on this
+  specific bound (grepped, not assumed); missing this would have let
+  the conservative native-stack scanner refuse to keep a live bignum
+  reachable only via a C-stack word, a genuine use-after-free class.
+- =nl_sci_dispatch= (=lisp/nelisp-cc-sexp-clone-into.el=, the
+  =nl_sexp_clone_into= keystone every =record-slot-ref=/cons-cell-copy/
+  vector-element-read in the runtime goes through): tag-13 arm added,
+  always a shallow 32-byte bit-copy of the slot (pointer alias, no
+  refcount, no legacy-flag branch) — sound because a bignum is
+  immutable from construction (no in-place-mutation path the way MutStr
+  has one), the same reachability argument Doc 149 already established
+  for Str/Symbol's own flag=1 fast path.
+
+=eq=/=eql=/=equal= needed their own fix, found only by testing (not
+predicted by §2's design): the generic "compare offset 8" identity check
+every OTHER boxed tag uses (=wf_raw_eq=, =bf_eq2=) reads offset 8 as a
+per-object pointer for Cons/Vector/etc., but for Bignum offset 8 is the
+SIGN word (almost always 0) — unpatched, every two positive bignums
+would have compared =eq=.  Fixed by special-casing tag 13 in both
+=wf_raw_eq= and =bf_eq2= to compare offset 16 (the limb pointer, the
+actual per-allocation identity) instead.  =bf_equal2= additionally
+compares bignums by VALUE (delegating to the new =nl_bignum_cmp_bignum=),
+matching Emacs's =equal= on numbers (which behaves like =eql=, not raw
+=eq=) — required for =member=/=assoc= to work on bignums at all, and not
+something §2's design text named explicitly.
+
+** 6.2 The non-promotion boundary, verified (not assumed)
+
+Doc 187's contract for =+=/=-=/=*= (§3.1's =wf_sum=/=wf_prod=/
+=wf_subtail=/=wf_diff=) is: a Bignum operand is detected BEFORE the
+narrower fixnum-bound check runs (reading a Bignum's offset 8 as a
+value would silently read its SIGN word, not a magnitude — a corruption
+risk, not just a missed check) and immediately calls the SAME
+=bf_signal_overflow_error= the fixnum-boundary case already uses — so
+=(+ big 1)= signals =overflow-error=, the identical condition and code
+path Doc 187 already ships for =(+ most-positive-fixnum 1)=, not a new
+error class.  This required =+=/=-=/=*='s own dispatch entries to gate
+on a bignum-aware sibling of =wf_any_float=/=wf_first_non_number=
+(=wf_any_float_arith=/=wf_first_non_number_or_bignum=) so a Bignum
+operand reaches the checked fold at all, instead of being intercepted
+earlier as =wrong-type-argument number-or-marker-p= — =/=, =mod=, =%=,
+=1+=, =1-= are UNCHANGED and still report =wrong-type-argument= for a
+Bignum operand, a deliberate, narrower scope than =+=/=-=/=* (matching
+Doc 187's own P0-P4 scope, which never covered those either).
+
+Verified end-to-end on the built =target/nelisp= (=scripts/standalone-
+bignum-smoke.el=, PASS cases=37 mismatches=0):
+
+#+begin_example
+(+ 2305843009213693952 1)   => signals overflow-error
+(- 2305843009213693952 1)   => signals overflow-error
+(* 2305843009213693952 1)   => signals overflow-error
+(* 1 2305843009213693952)   => signals overflow-error
+Fencepost controls, same build:
+(+ (1- most-positive-fixnum) 1) => 2305843009213693951 (no false positive)
+(* most-positive-fixnum 1)      => 2305843009213693951
+(expt 2 61)                     => still signals overflow-error (Doc 187's
+                                    OWN pre-existing check, unmodified —
+                                    regression-checked, not just untouched)
+#+end_example
+
+#+begin_quote
+2026-08-23 UPDATE (Phase B, branch feat/bignum-p2-arith, §7): the four
+=(+ ...)=/=(- ...)=/=(* ...)=/=(* ...)= results directly above this quote
+block are SUPERSEDED — they now compute the correct bignum result instead
+of signalling, e.g. =(+ 2305843009213693952 1)= => =2305843009213693953=
+(exact, =bignump= t).  This paragraph is left in place, not deleted, as
+the historical record of what Phase A shipped and verified; §7.2 records
+the same fencepost forms' NEW behavior with the same "verified, not
+assumed" discipline.  The =expt= line is UNCHANGED and still accurate —
+=expt= stayed out of Phase B's scope (this doc's own §Open questions
+never resolved whether Doc 187's overflow-detection should become a
+reusable primitive =expt= also calls; Phase B's task brief was =+=/=-=/
+=*= only) and still signals =overflow-error=, now via an explicit
+=bignump= guard added to =expt='s own hand-rolled check rather than
+(coincidentally, pre-Phase-B) always being pre-empted by the native
+=*='s own signal before its result could be anything but a fixnum — see
+§7.1 for the regression this emergent interaction caused and how it was
+fixed.
+#+end_quote
+
+** 6.3 Against-the-bug: what today's reader did, measured
+
+Built a fresh, UNMODIFIED =target/nelisp= from this branch's own base
+(=origin/feat/native-observability= @ =670ddd885=, a separate scratch
+clone per this session's own probe discipline) and loaded a script
+containing the exact literals below — the reader's real =load= path
+(=lisp/nelisp-cc-reader-parser.el='s =nelisp_reader_p_leaf=, kind 20,
+via =nelisp_reader_p_atoi=/=_step=, which folds with RAW, UNCHECKED
+=+=/=*= — no fixnum-bound check at all, a DIFFERENT and *narrower* gap
+than =wf_sum=/=wf_prod= before Doc 187, which at least round-tripped
+through a tag; this reader path never checks anything):
+
+#+begin_example
+BEFORE (base 670ddd885, unmodified target/nelisp):
+  2305843009213693952       (= most-positive-fixnum + 1, i.e. 2^61)
+    => read as -2305843009213693952   (silently wraps to
+                                        most-negative-fixnum -- the exact
+                                        wrap doc 187 §1.1 measured for
+                                        (+ most-positive-fixnum 1), but
+                                        reached through READING a literal,
+                                        not through +)
+  123456789012345678901234567890
+    => read as 248789718555101906    (silently wraps to an unrelated,
+                                        meaningless value -- true 64-bit
+                                        overflow, not just past the
+                                        narrower fixnum bound)
+AFTER (this branch, fresh build):
+  2305843009213693952
+    => reads to a Bignum; (bignump _) => t; (prin1-to-string _)
+       => "2305843009213693952" (exact)
+  123456789012345678901234567890
+    => reads to a Bignum; (prin1-to-string _)
+       => "123456789012345678901234567890" (exact)
+#+end_example
+
+=read=/=read-from-string='s OWN numeric-token path
+(=scripts/nelisp-stdlib-prelude.el='s =nelisp--rd-one=, backing
+=read-from-string=) had a DIFFERENT baseline bug from =load='s: it
+routes through the interpreted =string-to-number=, whose own digit loop
+calls the CHECKED native =+=/=*= (Doc 187), so it already signalled
+=overflow-error= rather than wrapping — the exact "three separate
+arithmetic/reading implementations disagree" shape Doc 187 §1.2 named
+for =+=/=*= itself, now confirmed to extend to reading.  Both paths now
+construct a Bignum instead (=nelisp--rd-one= routes a plain
+decimal-integer token through the same native =nl--read-int=,
+guarded so floats/other radixes are untouched).
+
+=src/nelisp-read.el= (a THIRD reader implementation, tested under host
+Emacs via ERT, =test/nelisp-read-test.el=) turned out NOT to be live for
+the standalone binary's own =load=/=read= at all — measured this
+session by tracing =bf_load='s actual call chain
+(=bf_load_eval_loop= -> =nelisp_reader_parse_one= ->
+=lisp/nelisp-cc-reader-parser.el=), not assumed from the file's own
+Commentary, which claims the opposite ("this reader ... can port to
+NeLisp itself"). Given the same bignum-construction fix anyway (guarded
+by =(fboundp 'nl--read-int)=, so host Emacs — where it is never bound —
+is unaffected and keeps its own real bignum support via the unchanged
+=string-to-number= fallback) for whichever invocation path does turn out
+to use it, and because leaving it silently different from the two live
+paths would be its own latent inconsistency.  Two new host-side ERT
+cases (=test/nelisp-read-test.el=) pin the fallback specifically.
+
+** 6.4 Battery
+
+=make parens-check= (427 files, 0 findings), =make compile=
+(byte-compile-error-on-warn, clean), =make standalone-reader= (clean
+link, 109 units, both before and after every fix in this phase),
+=make standalone-reader-bignum-smoke= (new, PASS cases=37 mismatches=0
+— fencepost/printing/round-trip/comparison/eq-eql-equal/non-promotion/
+500-bignum GC-stress-round checks), =make standalone-reader-smokes= (the
+full ~30-smoke aggregate, including the new one, regression-checked),
+=make standalone-reader-test=, =make standalone-reader-checked-soak=
+(the general checked-allocator GC/redzone safety net — unchanged
+pass), =make substrate-parity-smoke= (two new host-comparable entries,
+43/44), host-Emacs =ert-full= (=test/nelisp-read-test.el=, 41/41, up
+from 39 — two new cases; no other suite touched). Reports/counts per
+gate at the paths =nelisp-ai.sh='s own gates write to, not restated
+from a terminal transcript (AI.md rule 4).
+
+** 6.5 Size ratchet
+
+=tools/nelisp-binary-size-baseline.txt=: =7247592 -> 7273216= bytes,
++25624 (+0.35%), inside the existing 2% slack — raised anyway per that
+file's own stated rule ("a legitimate feature that grows the binary is
+expected to raise =size= in the SAME commit that adds it"). A new box
+type growing the linked binary is exactly the shape of change that
+ratchet exists to make visible, not absorb silently; see that file's own
+2026-08-23 entry for the itemised source of the growth.
+
+** 6.6 Gate mutation
+
+=standalone-reader-bignum-smoke= is a NEW required gate (a new Makefile
+target, not an extension of an existing one), so per this repo's
+Definition of Done it needs a mutation row — added to
+=tools/gate-mutations.txt=: flips the tag byte =nl_bignum_write= stamps
+(13 -> 2), mis-tagging every constructed bignum as a plain Int whose
+"value" reads back as the sign word.  Proven to flip the gate red via
+=tools/nelisp-gate-mutation.sh='s existing protocol (inject, rebuild,
+run the gate, require failure, restore) before landing.
+
+** 6.7 §5's open questions, closed or left open
+
+- Limb width (§5): resolved for Phase A, 32-bit — see §6.1.  Phase B's
+  implementer should still re-measure against real workloads before
+  committing further.
+- Division-by-small-fixnum special-casing (§5): unchanged, still open —
+  Phase A has no division at all (no arithmetic core).
+- Whether Doc 187's overflow-detection should be a reusable primitive
+  Phase B/C call directly (§5): unchanged, still open — Phase A's own
+  non-promotion path (§6.2) calls =bf_signal_overflow_error= directly,
+  the same call sites Doc 187 §6.1 already named as "the exact places a
+  bignum-promotion call would go instead"; Phase B is where that call
+  would actually become a promotion rather than a signal.
+- Whether real NeLisp workloads produce bignums in practice (§5):
+  unchanged, still no concrete reported case — this phase's own
+  justification remains Emacs-compatibility completeness (reading a
+  literal past the fixnum boundary must not silently corrupt), not a
+  fire being put out.
+
+* 7. Implementation report, Phase B (2026-08-23, branch =feat/bignum-p2-arith=)
+
+Phase B only, per this doc's own §3 phasing: the arithmetic core for
+=+=/=-=/=*=.  =/=, =mod=, =%= are UNCHANGED — a Bignum operand to any of
+them still signals =wrong-type-argument number-or-marker-p=, exactly the
+gap §6.2 already recorded and this phase's own task brief scoped around.
+No AOT codegen (Phase C) — native-compiled =+=/=-=/=*= still wrap
+silently on overflow; only the interpreted reader-dispatch path (=wf_sum=/
+=wf_prod=/=wf_subtail=/=wf_diff=, shared by the baked and reader
+standalone builds alike) promotes.
+
+** 7.1 Limb arithmetic, as landed
+
+Same 32-bit limb choice Phase A already made (§6.1), same allocator
+(=alloc-bytes=), same little-endian layout.  Three new primitives, all
+added to =nelisp-standalone--applyfn-core-helpers= (not the reader-only
+=nelisp-standalone--applyfn-bignum-helpers= group Phase A's construction
+code lives in) — a promotion path reachable from =wf_sum=/=wf_prod=/
+=wf_diff= (core, shared by the baked-form eval build too, per that
+build's own "first 19 dispatch-table entries" comment) must itself be
+core, or the baked build fails to link.  =nl_bignum_write=/
+=nl_bignum_write_int= (Phase A, originally reader-only) moved to core for
+the same reason.
+
+- *Add/sub* (=nl_bignum_add_raw=/=nl_bignum_sub_raw=): ripple-carry (resp.
+  ripple-borrow) magnitude combine, LSB-first, one limb at a time.
+  Same-sign operands add directly; opposite-sign operands subtract the
+  smaller magnitude from the larger (=nl_bignum_mag_cmp=, Phase A's own
+  comparison primitive, picks which) — subtract reuses add by flipping
+  the subtrahend's sign (=A - B = A + (-B)=), so there is exactly one
+  magnitude-combine code path per operation shape, not two.  The result's
+  sign is threaded back through an 8-byte out-parameter (this DSL has no
+  multi-value return; the same "answer via ptr-write, flow-control via
+  return" idiom Phase A's own =nl_bignum_mulsmall_add_loop= already uses
+  for its carry).
+- *Multiply* (=nl_bignum_mul_raw=): schoolbook, =O(n^2)=, per this doc's
+  own §3 Phase B guidance ("most real-world bignum operands ... are a
+  handful of limbs past the fixnum boundary, not cryptographic-scale, so
+  schoolbook's O(n^2) is the right complexity/cost trade for a first
+  ship") — Karatsuba was not attempted.  Standard double loop: for each
+  limb of A, walk every limb of B, accumulate =A[i]*B[j] + carry + OUT[i+j]=
+  into the =(a_count+b_count)=-limb output, with a SEPARATE carry-
+  propagation pass (=nl_bignum_mul_carry_prop=) rippling any leftover
+  carry through however many already-nonzero limbs above it are needed —
+  a single limb of propagation is not always enough, since column
+  =OUT[i+j]= can already hold a previous row's carry-out.  Every
+  intermediate sum (=AV*BV= up to =(2^32-1)^2=, plus two more =<2^32=
+  terms) stays under =2^64= — verified: =(2^32-1)^2 + 2*(2^32-1) =
+  2^64-1=, the maximum representable u64, never wrapping.  This matters
+  because this DSL's comparisons compile to a SIGNED x86_64/arm64 =cmp=
+  (=nelisp-aot-compiler--emit-cmp=: "Emit signed comparison"), so a raw
+  intermediate whose bit 63 is set would compare as negative — the fix is
+  not a check, it is a proof that no comparison in this code path ever
+  touches such a value: every =<=/=>= here runs on tiny loop counters or
+  the =<2^32= carry, and the near-=2^64= sum itself is only ever read
+  through =shr=/=logand= (bit-pattern operations, sign-agnostic,
+  confirmed by =SHR='s own x86_64 mnemonic — logical, not arithmetic,
+  shift), the same reasoning =nl_bignum_divmod10_loop='s own Phase A
+  comment already applies to its =CUR= value.
+- *Canonicalization / demotion* (=nl_bignum_finish=): the single choke
+  point every arithmetic result funnels through.  Reuses Phase A's own
+  =nl_bignum_mag_le_bound= (the exact bound check =nl_read_int_or_bignum=
+  already trusts) to decide Int vs. Bignum, and =nl_bignum_write_int=/
+  =nl_bignum_write= to do the actual write.  Always returns 0 (a
+  =nl_bignum_write= call alone would return a nonzero pointer, which the
+  =rc 0 ok / 1 unknown= convention every dispatch arm in this file
+  depends on does not expect).
+
+=wf_sum=/=wf_prod=/=wf_subtail=/=wf_diff= gained an =out= parameter and
+now write their final answer directly (through =wf_write_int= on the
+fast fixnum-only path, unchanged, or through =nl_bignum_finish= once
+promoted) instead of returning a raw i64 for the =+=/=-=/=*= dispatch
+arms' own =wf_write_int_checked= wrapper to pack — that wrapper existed
+specifically to catch a signal raised mid-fold (Doc 187 §8.1.2's own
+fix for a stale-flag bug); since promotion means these three folds can no
+longer signal at all, the wrapper is no longer in their call path (still
+defined, still correct, simply unused by +/-/* now).  Three new
+continuation functions (=wf_sum_big=/=wf_prod_big=/=wf_subtail_big=)
+carry a promoted accumulator, as =(sign, limb-ptr, limb-count)= instead
+of a single fixnum, through the REST of the fold once either operand
+triggers promotion (a Bignum element, or a detected fixnum-fixnum
+overflow) — each subsequent element (fixnum or Bignum) combines against
+the running accumulator via the same =nl_bignum_add_raw=/=sub_raw=/
+=mul_raw= primitives the fast path used to trigger the switch, until the
+list is exhausted, at which point =nl_bignum_finish= writes the final
+answer.
+
+An emergent regression, found only by running the inherited Phase A
+fencepost smoke, not predicted by this design: =expt='s own hand-rolled
+overflow check (=scripts/nelisp-stdlib-prelude.el=, §1.2/§1.5) computes
+=next = (* r b)= then verifies =(/= (/ next b) r)= as an independent
+div-round-trip.  Before this phase, that check was live in name only —
+the native =*= itself always signalled =overflow-error= first, on every
+path that could reach the boundary, so =next= could never be anything
+but a plain, already-narrowed fixnum by the time the check ran.  Once
+=*= promotes instead of signalling, =next= can genuinely be a Bignum,
+and =/= does not support a Bignum operand (§6.2's own recorded, still-
+unchanged gap) — so the div-round-trip signalled the WRONG condition,
+=wrong-type-argument=, not =overflow-error=.  Fixed with an explicit
+=(bignump next)= guard ahead of the div check (=scripts/nelisp-stdlib-
+prelude.el=); =expt= remains out of Phase B's scope and still signals
+=overflow-error= exactly as before — verified against the fencepost
+smoke this regression was caught by, and against =(expt 2 100)= in
+=nelisp-standalone--reader-stdlib-completion-smoke='s own check12.
+
+** 7.2 Promotion/demotion semantics, host controls verbatim
+
+Every value below re-verified this session against real GNU Emacs 30.1
+(=emacs -Q --batch=), then confirmed byte-identical on the built
+=target/nelisp= (=scripts/standalone-bignum-smoke.el=):
+
+#+begin_example
+Against-the-bug (host-identical, exact):
+  (+ most-positive-fixnum 1)              => 2305843009213693952
+  (fixnump (+ most-positive-fixnum 1))    => nil
+  (bignump (+ most-positive-fixnum 1))    => t
+  (* 100000000000 100000000000)           => 10000000000000000000000
+  (* most-positive-fixnum 2)              => 4611686018427387902
+  (- most-negative-fixnum)                => 2305843009213693952
+  (- most-negative-fixnum 1)              => -2305843009213693953
+
+Bignum-bignum (genuine multi-limb — most-positive-fixnum squared needs
+3 32-bit limbs, exercising carry propagation across more than one limb):
+  (* most-positive-fixnum most-positive-fixnum)
+    => 5316911983139663487003542222693990401
+
+Demotion fencepost (host-identical, exact, AND tag-verified on NeLisp —
+Doc 190 §4's own "verified by tag inspection, not just value equality"):
+  (- (+ most-positive-fixnum 1) 1)        => 2305843009213693951
+  (fixnump (- (+ most-positive-fixnum 1) 1)) => t   (host)
+  (bignump  (- (+ most-positive-fixnum 1) 1)) => nil (NeLisp; no fixnump)
+
+Other demotion/contagion controls, host-identical:
+  (* -1 (+ most-positive-fixnum 1))       => -2305843009213693952 (= most-
+                                              negative-fixnum, a PLAIN
+                                              fixnum again, not a Bignum
+                                              that merely equals it)
+  (+ (+ most-positive-fixnum 1) (- (+ most-positive-fixnum 1))) => 0
+  (- (+ most-positive-fixnum 1) (+ most-positive-fixnum 1)) => 0
+  (+ 100000000000000000000000000 1)       => 100000000000000000000000001
+#+end_example
+
+=fixnump= is host-only (not in this runtime's predicate table — Phase
+A's own §6.1 scope, unchanged); every NeLisp-side demotion check instead
+uses =(and (integerp x) (not (bignump x)))=, matching what =bignump='s
+own Phase A doc comment already established as the tag-inspection
+idiom for this runtime.
+
+** 7.3 Documentation of the superseded contract, updated
+
+Per this phase's own task brief ("do not erase the history"), every
+place that previously documented "=+=/=-=/=*= on a Bignum operand (or a
+fixnum-fixnum overflow) signals =overflow-error=" as Phase A/Doc 187's
+contract got a DATED note recording that Phase B supersedes it at these
+three ops, with the original text left in place rather than deleted:
+
+- This doc's own §6.2 (=+=/=-=/=*= non-promotion boundary, Phase A's
+  landed record) and §Status header above.
+- =scripts/nelisp-standalone-build.el='s comments on the =+=/=-=/=*=
+  dispatch-table entries, =wf_first_non_number_or_bignum=,
+  =wf_any_float_arith=, and the =wf_sum=/=wf_prod=/=wf_subtail=/
+  =wf_diff= definitions themselves (each previously said "signals
+  =overflow-error=" for a Bignum operand or a detected overflow; each
+  now says so with a dated Phase B addendum explaining the supersession,
+  not a silent rewrite).
+- =nelisp-standalone--reader-stdlib-completion-smoke='s own docstring
+  (=scripts/nelisp-standalone-build.el=), which explicitly named checks
+  11/13-16 as asserting =overflow-error= — the docstring now records
+  that Phase B changed the RESPONSE these checks assert, not the
+  detection.
+- =scripts/standalone-bignum-smoke.el='s own file-level Commentary,
+  which explicitly said "no promotion in this phase."
+- =tools/gate-mutations.txt='s two =standalone-reader-test= rows for
+  the literal-bound/div-round-trip checks — the checks themselves are
+  UNCHANGED (still the same sed patterns, still real defects to prove),
+  only their description's phrase "wraps silently again instead of
+  signalling overflow-error" changed to "... instead of promoting to a
+  bignum," since promotion is now the correct behavior these checks
+  protect.
+
+Rows that ASSERTED the old contract (not just documented it) were
+changed, not just annotated — see §7.4/§7.5 below.
+
+** 7.4 Smoke growth: 37 -> 54 cases
+
+=scripts/standalone-bignum-smoke.el=: the four checks that asserted
+"=+=/=-=/=*= on a bignum operand signals =overflow-error=" now assert
+"works, exact" instead (same four forms, new expected values).  Net
+growth, all newly added:
+
+- 7 checks: fixnum-boundary overflow PROMOTES (the actual against-the-
+  bug case for this phase) — =+=, negation, n-ary =-=, true-64-bit-
+  overflow =*=, narrow-fixnum-boundary =*= (both argument orders).
+- 5 checks: bignum-bignum arithmetic — multi-limb =(* most-positive-
+  fixnum most-positive-fixnum)=, a bignum plus its own negation
+  demoting to 0, a bignum minus itself demoting to 0, a bignum times a
+  fixnum demoting back to a plain fixnum, and a READER-constructed
+  literal bignum (Phase A) feeding straight into Phase B arithmetic.
+- 2 checks: demotion/canonicality fencepost, tag-verified not just
+  value-verified (Doc 190 §4's own discipline).
+- 3 checks: a SECOND GC-stress round, over arithmetic-produced bignums
+  specifically (chained =+=/=*=, not read from a literal) — Phase A's
+  own stress round only ever exercised the reader's construction
+  allocation path, never =wf_sum_big=/=wf_prod_big=/=wf_subtail_big='s.
+
+=nelisp-standalone--reader-stdlib-completion-smoke= (part of
+=standalone-reader-test=): checks 11/13-16 changed from asserting
+=overflow-error= to asserting the exact promoted value plus =bignump=;
+one new check19 added (the demotion fencepost, tag-checked) — internal
+check count 18 -> 19 within this ONE smoke function; the OUTER
+=standalone-reader-test= gate's own =GATE-COUNT= (17 smokes + the exit-
+code check = 18) is unaffected, since this is one smoke's own internal
+assertion count growing, not a new smoke added to the dolist.
+
+=tools/nelisp-substrate-parity-corpus.el= gained three new =shared=
+entries (45/46/47): exact promoted sum, exact bignum*bignum (multi-limb),
+and the demotion fencepost by value (the NeLisp-only tag check stays in
+the smoke file, since =fixnump= is host-only).
+
+** 7.5 Mutation rows
+
+The two existing Doc 187 =standalone-reader-test= rows (deleting
+=wf_sum='s positive-overflow sign-check half; deleting =wf_prod='s div-
+round-trip check) still match their exact sed patterns unchanged — the
+DETECTION logic they prove is byte-identical in the rewritten
+=wf_sum=/=wf_prod=, only the response after detection changed — so both
+rows remain valid, real-defect-proving mutations; only their prose
+description was updated (§7.3).
+
+One new row added (=standalone-reader-bignum-smoke=): forces
+=nl_bignum_finish='s bound check to always take the box (Bignum) branch,
+so an arithmetic result that should demote back to a fixnum stays boxed
+forever — right value, wrong tag.  Caught by this phase's own demotion-
+fencepost checks (=(not (bignump r))=), not by any value-only check,
+since the mutated value still prints/compares as the correct number.
+Proven to flip the gate red via =tools/nelisp-gate-mutation.sh='s
+existing protocol before landing, matching this repo's Definition of
+Done.
+
+** 7.6 Battery
+
+=make parens-check= (431 files, 0 findings — grew from Phase A's 427 as
+the branch moved forward, unrelated to this phase), =make compile=
+(byte-compile-error-on-warn, clean), =make standalone-reader= (clean
+link, 109 units, unchanged from Phase A), =make standalone-reader-
+bignum-smoke= (BIGNUM-SMOKE cases=54 mismatches=0, up from cases=37),
+=make standalone-reader-test= (=GATE-COUNT checked=18 findings=0=,
+unchanged shape — the completion smoke's own internal checks grew 18 ->
+19 per §7.4, the outer dolist count did not), =make standalone-reader-
+smokes=, =make standalone-reader-checked-soak=, =make substrate-parity-
+smoke=, =make binary-size-ratchet=, host-Emacs =make ert-full= — see
+=tools/ai/= gate reports for exact counts per gate (AI.md rule 4: values
+come from files, not terminal output).
+
+** 7.7 Size ratchet
+
+=tools/nelisp-binary-size-baseline.txt=: =7240384 -> 7310768=, +70384
+bytes (+0.97%), inside the existing 2% slack — raised anyway per that
+file's own stated rule.  The bignum arithmetic core is exactly the shape
+of change that ratchet exists to make visible: new native code in
+=scripts/nelisp-standalone-build.el= (the schoolbook limb add/sub/mul
+primitives, the rewritten =wf_sum=/=wf_prod=/=wf_subtail=/=wf_diff=, and
+the three new =wf_*_big= fold continuations, all AOT-compiled into the
+linked binary), plus one small addition to the interpreted stdlib
+prelude (=expt='s new =bignump= guard, §7.1).  None of it dead weight —
+every new native function is exercised by =scripts/standalone-bignum-
+smoke.el=.
+
+** 7.8 §5's/§6.7's open questions, closed or left open
+
+- Limb width (§5, closed by Phase A §6.1): unchanged, 32-bit — Phase
+  B's own implementation did not revisit this; the schoolbook multiply
+  design (§7.1) works the same way regardless of limb width, and no
+  measurement in this phase's own battery flagged limb width as a cost
+  driver worth re-opening.
+- Division-by-small-fixnum special-casing (§5): still open — Phase B
+  has no division at all (=/=/=mod=/=%= unchanged, out of scope).
+- Whether Doc 187's overflow-detection should be a reusable primitive
+  Phase B/C call directly (§5, §6.7): PARTIALLY closed — Phase B's
+  =wf_sum=/=wf_prod=/=wf_subtail= reuse Doc 187's EXACT detection
+  checks (the literal-bound/div-round-trip comparisons, byte-identical
+  to what shipped for Doc 187), just no longer call
+  =bf_signal_overflow_error= when they trip; that function itself is
+  untouched and still used by =expt= (via §7.1's new guard) and would
+  still be the right target if =expt= is ever brought into a future
+  bignum-promoting phase. Phase C's own "is either operand already a
+  bignum" question (a different check from Doc 187's own) remains open,
+  since Phase C itself has not started.
+- Whether real NeLisp workloads produce bignums in practice (§5):
+  unchanged, still no concrete reported case beyond this doc's own
+  Emacs-compatibility-completeness justification — Phase B does not
+  change this answer, since it ships the SAME justification (a fixnum-
+  boundary arithmetic result must not silently wrap or type-error) one
+  layer deeper than Phase A's reader-only reach.

@@ -51,7 +51,8 @@
 ;;   DEPTH       — i64 recursion depth (= caller-provided; the safe
 ;;                 Rust wrapper passes 0).
 ;;
-;; Returns: i64.  1 = success, anything else (-1, 0) = error.  On
+;; Returns: i64.  1 = success, 2 = end of input (no form, not an
+;; error), anything else (-1, 0) = error.  On
 ;; error, `*RESULT-SLOT' is `Sexp::Nil'.
 ;;
 ;; The safe Rust wrapper allocates SLOT-POOL with enough capacity for
@@ -125,6 +126,87 @@
     (defun nelisp_reader_p_slot (base n) (+ base (* n 32)))
 
     ;; ===========================================================
+    ;; Reader depth guard.  Mirrors `nelisp_eval_call_stash_excessive_
+    ;; lisp_nesting' (scripts/nelisp-standalone-build.el, the eval-side
+    ;; `rec_max' guard) for the recursive-descent parser above: every
+    ;; nesting level costs 4 slots starting at (3 + d*4) in SLOT-POOL,
+    ;; and nothing checked that against the pool's actual allocation
+    ;; before this fix.  Past the bound, `nelisp_reader_p_slot' keeps
+    ;; computing addresses that walk off the caller's `alloc-bytes'
+    ;; region into whatever the flat arena placed next -- silently, the
+    ;; same way an unchecked C buffer overrun would.  Measured
+    ;; 2026-08-22 on the CLI driver's fixed 32768-slot pool (see
+    ;; `driver' in nelisp-standalone-build.el, register @268436448):
+    ;; well past the bound (depth 100k-200k) the corruption reads back
+    ;; as a plausible-looking value (print truncated to ~8192 opens/
+    ;; closes -- the printer is not at fault, see the CLI driver's own
+    ;; comment); far enough past it (~2,000,000) the walk finally
+    ;; leaves mapped memory and the process SIGSEGVs.  The bound is
+    ;; read from the SAME register every parse-loop entry point
+    ;; (`bf_load_readable' / `bf_eval_source_string' /
+    ;; `bf_read_all_from_string_native' / the CLI driver) already
+    ;; writes ITS pool's slot capacity into before running a parse loop
+    ;; and restores afterward, so this guard is exact for whichever
+    ;; pool is live instead of one fixed number that would be wrong
+    ;; for most callers (their pools range from 256 to 4,194,304
+    ;; slots).  The -8 margin below covers the widest per-depth slot
+    ;; offset (`spare_idx' = 6 + d*4) plus one word of slack.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_pool_cap () (ptr-read-u64 268436448 0))
+    (defun nelisp_reader_p_max_depth ()
+      (/ (- (nelisp_reader_p_pool_cap) 8) 4))
+    ;; Arity 2 (even, with a `_pad'), matching `nelisp_eval_call_stash_
+    ;; excessive_lisp_nesting''s `(_env rec_max)' shape (scripts/nelisp-
+    ;; standalone-build.el) rather than the natural single-argument shape --
+    ;; this codebase's other "arity N (even)" comments document a SysV
+    ;; AMD64 stack-alignment requirement at static-emit call sites, and
+    ;; kept even here for the same reason.  `(not ...)' is the actual
+    ;; primitive this DSL does not support (0 hits inside any AOT `(seq
+    ;; ...)' blob in the whole tree, vs. host-Emacs generator code where it
+    ;; is common) -- an earlier draft calling `(not (nelisp_reader_p_depth_
+    ;; ok_p depth))' segfaulted even with `depth_ok_p''s body hardcoded to
+    ;; return 1 unconditionally, which is why the call site below compares
+    ;; the result to 0 explicitly instead.
+    (defun nelisp_reader_p_depth_ok_p (d _pad)
+      (< d (nelisp_reader_p_max_depth)))
+    (defun nelisp_reader_p_stash_excessive_nesting (max-depth _pad)
+      (let* ((tag-buf (alloc-bytes 24 1)))
+        (seq
+         ;; "excessive-lisp-nesting" (22 bytes) -- the same condition
+         ;; symbol the eval-side guard raises, so both land in one
+         ;; `(condition-case e (...) (error ...))' clause.
+         (ptr-write-u64 tag-buf 0 8532477908489566309)
+         (ptr-write-u64 (+ tag-buf 8) 0 7939125359116299621)
+         (ptr-write-u64 (+ tag-buf 16) 0 113723913302885)
+         (nl_alloc_symbol tag-buf 22 268435480)
+         (ptr-write-u64 268435512 0 2)
+         (ptr-write-u64 (+ 268435512 8) 0 max-depth)
+         (ptr-write-u64 (+ 268435512 16) 0 0)
+         (ptr-write-u64 (+ 268435512 24) 0 0)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         -1)))
+
+    (defun nelisp_reader_p_stash_raw_byte_unrepresentable ()
+      (let* ((tag-buf (alloc-bytes 32 1)))
+        (seq
+         ;; "nelisp-raw-byte-unrepresentable" (31 bytes), the same condition
+         ;; used by concat/format/string-to-multibyte in the runtime.
+         (ptr-write-u64 tag-buf 0 8227355735268025710)
+         (ptr-write-u64 (+ tag-buf 8) 0 3271148769041545057)
+         (ptr-write-u64 (+ tag-buf 16) 0 8315178114073390709)
+         (ptr-write-u64 (+ tag-buf 24) 0 28548142445391461)
+         (nl_alloc_symbol tag-buf 31 268435480)
+         (ptr-write-u64 268435512 0 0)
+         (ptr-write-u64 (+ 268435512 8) 0 0)
+         (ptr-write-u64 (+ 268435512 16) 0 0)
+         (ptr-write-u64 (+ 268435512 24) 0 0)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         -1)))
+
+    ;; ===========================================================
     ;; ASCII digit predicate.
     ;; ===========================================================
 
@@ -188,10 +270,16 @@
        (ptr-read-u64 src-str-slot 24)))
 
     (defun nelisp_reader_p_copy_str (dest-slot src-str-slot)
-      (sexp-write-str
-       dest-slot
-       (ptr-read-u64 src-str-slot 16)
-       (ptr-read-u64 src-str-slot 24)))
+      (let* ((written
+              (sexp-write-str
+               dest-slot
+               (ptr-read-u64 src-str-slot 16)
+               (ptr-read-u64 src-str-slot 24))))
+        (if (= (ptr-read-u8 src-str-slot 0) 14)
+            (nelisp_reader_p_prog2
+             (ptr-write-u8 dest-slot 0 14)
+             written)
+          written)))
 
     ;; ===========================================================
     ;; Hex-digit decoder.  Returns 0..15 for `0'..`9'/`a'..`f'/`A'..`F',
@@ -412,11 +500,26 @@
 
     (defun nelisp_reader_p_leaf (kind result-slot payload-slot)
       (cond
-       ;; Int
+       ;; Int (kind 20): this is `load''s real path for every plain
+       ;; decimal-integer literal in a source file (Doc 190 Phase A).
+       ;; `nelisp_reader_p_atoi'/`_step' (above) accumulate with RAW,
+       ;; unchecked `+'/`*' -- no fixnum-boundary check at all, so a
+       ;; literal past `most-positive-fixnum'/`most-negative-fixnum'
+       ;; silently wrapped at the hardware 64-bit boundary (measured
+       ;; against-the-bug baseline: `scripts/standalone-bignum-smoke.el',
+       ;; `make standalone-reader-bignum-smoke').
+       ;; `nl_read_int_or_bignum' (`nelisp-standalone--applyfn-bignum-
+       ;; helpers', `scripts/nelisp-standalone-build.el') replaces it:
+       ;; same digit loop, but bound-checked against the literal fixnum
+       ;; constants (never itself overflowing, since it never
+       ;; reconstructs a magnitude wider than 2 limbs as a bare i64) and
+       ;; PROMOTES to a canonical Sexp::Bignum (tag 13) instead of
+       ;; wrapping.  Writes RESULT-SLOT directly (unlike `sexp-int-make'
+       ;; above, it can produce either an Int or a Bignum Sexp), so no
+       ;; `sexp-int-make' wrapper is used here.
        ((= kind 20)
         (nelisp_reader_p_prog2
-         (sexp-int-make result-slot
-                        (nelisp_reader_p_atoi payload-slot))
+         (nl_read_int_or_bignum payload-slot result-slot)
          1))
        ;; Str
        ((= kind 22)
@@ -587,6 +690,17 @@
     (defun nelisp_reader_p_dispatch
         (str-ptr cursor-slot result-slot slot-pool depth kind)
       (cond
+       ;; Depth guard FIRST, before `depth' is used to compute any
+       ;; slot-pool address at this level or deeper -- see the guard's
+       ;; definition above `nelisp_reader_p_slot' for why and how the
+       ;; bound is derived.  Every recursive path (list body, vector
+       ;; body, quote wrap) dispatches through here before touching a
+       ;; new depth level's slots, so one clause here covers all of them.
+       ((= (nelisp_reader_p_depth_ok_p depth 0) 0)
+        (nelisp_reader_p_stash_excessive_nesting
+         (nelisp_reader_p_max_depth) 0))
+       ((= kind -2)
+        (nelisp_reader_p_stash_raw_byte_unrepresentable))
        ;; LParen
        ((= kind 1)
         (nelisp_reader_p_parse_list_step
@@ -628,7 +742,16 @@
        ((>= kind 20)
         (nelisp_reader_p_leaf kind result-slot
                               (nelisp_reader_p_slot slot-pool 1)))
-       ;; Stray close / dot / EOF / error / record / byte-code → error.
+       ;; EOF: there is no form here, and that is not an error.  It used to
+       ;; share the `(t -1)' arm below with stray close, stray dot and the
+       ;; literals this reader does not support, so every top-level caller
+       ;; got ONE code for "nothing left to read" and "I could not read
+       ;; this" -- and each of them chose to believe the first.  A file that
+       ;; stopped at a token the lexer mis-classified was reported loaded,
+       ;; with the rest of it never evaluated.  2 rather than 0 because 0 is
+       ;; already an error return elsewhere in this parser.
+       ((= kind 0) 2)
+       ;; Stray close / dot / error / record / byte-code → error.
        (t -1)))
 
     ;; ===========================================================
@@ -707,6 +830,7 @@
        ;; EOF / stray RBracket / error: parse error.
        ((= kind 0) -1)
        ((= kind 4) -1)
+       ((= kind -2) (nelisp_reader_p_stash_raw_byte_unrepresentable))
        ((< kind 0) -1)
        (t
         (and (= (nelisp_reader_p_dispatch
@@ -771,6 +895,17 @@
             0)
         0))
 
+    (defun nelisp_reader_p_symbol_test_p (sym)
+      (if (= (ptr-read-u64 sym 0) 4)
+          (if (and (= (str-len sym) 4)
+                   (= (str-byte-at sym 0) 116)
+                   (= (str-byte-at sym 1) 101)
+                   (= (str-byte-at sym 2) 115)
+                   (= (str-byte-at sym 3) 116))
+              1
+            0)
+        0))
+
     (defun nelisp_reader_p_hash_table_body_p (body)
       (if (= (ptr-read-u64 body 0) 7)
           (nelisp_reader_p_symbol_hash_table_p
@@ -788,6 +923,30 @@
                    (nl_cons_cdr_ptr rest)))
               0))
         0))
+
+    ;; `#s(hash-table test equal data (...))' -- the TEST decides how gethash
+    ;; compares, so it has to reach the marker.  Reading it as `eql' made every
+    ;; string key in a generated literal unfindable.
+    (defun nelisp_reader_p_hash_plist_find_test (plist)
+      (if (= (ptr-read-u64 plist 0) 7)
+          (let* ((key (nl_cons_car_ptr plist))
+                 (rest (nl_cons_cdr_ptr plist)))
+            (if (= (ptr-read-u64 rest 0) 7)
+                (if (= (nelisp_reader_p_symbol_test_p key) 1)
+                    (nl_cons_car_ptr rest)
+                  (nelisp_reader_p_hash_plist_find_test
+                   (nl_cons_cdr_ptr rest)))
+              0))
+        0))
+
+    (defun nelisp_reader_p_hash_pair_count (data n)
+      (if (= (ptr-read-u64 data 0) 7)
+          (let* ((rest (nl_cons_cdr_ptr data)))
+            (if (= (ptr-read-u64 rest 0) 7)
+                (nelisp_reader_p_hash_pair_count
+                 (nl_cons_cdr_ptr rest) (+ n 1))
+              n))
+        n))
 
     (defun nelisp_reader_p_list_nth_ptr (node n)
       (if (= (ptr-read-u64 node 0) 7)
@@ -826,10 +985,37 @@
         (if (= data 0)
             (setq data (nelisp_reader_p_list_nth_ptr body 4))
           0)
-        (and (sexp-int-make
-              (nelisp_reader_p_slot slot-pool
-                              (nelisp_reader_p_head_idx depth))
-              0)
+        ;; The table is `(MARKER . ALIST)' and MARKER is a 3-slot vector
+        ;; [hash-table COUNT TEST] -- `bf_hash_table_p_raw' tests for exactly
+        ;; that, because the older shape (an Int count in the car) was
+        ;; indistinguishable from an ordinary list.  This builder was left on
+        ;; the old shape when the representation changed, so every generated
+        ;; `#s(hash-table ...)' literal read back as a list and
+        ;; `hash-table-count'/`gethash' rejected it.
+        (and (let* ((head (nelisp_reader_p_slot slot-pool
+                                           (nelisp_reader_p_head_idx depth)))
+                    (cnt (alloc-bytes 32 8))
+                    (test (nelisp_reader_p_hash_plist_find_test
+                           (nl_cons_cdr_ptr body))))
+               (seq
+                ;; Build the marker IN THE SLOT POOL, not in scratch memory:
+                ;; the parser reuses scratch for the next top-level form, so a
+                ;; marker built there read back as garbage the moment a second
+                ;; form was parsed -- every form passed alone and the file
+                ;; failed as a whole.
+                (vector-make 3 head)
+                ;; Slot 0 is the literal's OWN `hash-table' symbol.  A symbol
+                ;; allocated here would name bytes with the same scratch
+                ;; lifetime; the parsed one points into the source buffer,
+                ;; which is what every other symbol here already does.
+                (vector-slot-set head 0 (nl_cons_car_ptr body))
+                (sexp-int-make cnt (nelisp_reader_p_hash_pair_count data 0))
+                (vector-slot-set head 1 cnt)
+                ;; TEST is metadata: `wf_key_eq' compares structurally either
+                ;; way, so an absent one stays nil and only changes how the
+                ;; table prints.
+                (if (= test 0) 0 (vector-slot-set head 2 test))
+                1))
              (cons-make-with-clone
               (nelisp_reader_p_slot slot-pool
                               (nelisp_reader_p_head_idx depth))
@@ -929,6 +1115,7 @@
        ((= kind 0) -1)
        ((= kind 2) -1)
        ((= kind 10) -1)
+       ((= kind -2) (nelisp_reader_p_stash_raw_byte_unrepresentable))
        ((< kind 0) -1)
        ;; Otherwise parse one item into car[d], recurse for tail at
        ;; cdr[d], cons-make-with-clone into list-slot.

@@ -16,15 +16,34 @@ NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS="${NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS:-5000
 NELIX_LARGE_DIRECT_AUDIT_FORMAT_MAX_BYTES="${NELIX_LARGE_DIRECT_AUDIT_FORMAT_MAX_BYTES:-5100273664}"
 NELIX_LARGE_DIRECT_UPGRADE_PLAN_FORMAT_MAX_BYTES="${NELIX_LARGE_DIRECT_UPGRADE_PLAN_FORMAT_MAX_BYTES:-5100273664}"
 TMP_DIR="$(mktemp -d)"
+CHECKED=0
 
+# `nelisp-ai.sh gate' requires a `GATE-COUNT checked=<n> findings=<n>' line
+# on every path out of this script, success or failure -- its absence reads
+# as "did not report what it checked", not as a pass.  An EXIT trap is the
+# only place that covers every `exit' call below (including `run_timed's
+# on a failing labeled step) without repeating the line at each call site.
+# `$?' inside an EXIT trap is the status that triggered it, captured before
+# anything else in this handler can change it.
 cleanup() {
+  status=$?
+  findings=0
+  [ "$status" -eq 0 ] || findings=1
+  printf 'GATE-COUNT checked=%s findings=%s\n' "$CHECKED" "$findings"
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
+# Three outcomes, not two.  This used to exit 1 when the sibling checkout is
+# absent, which `nelisp-ai.sh gate' can only read as a failure -- so a gate
+# that cannot run here looked identical to one that ran and found something.
+# GATE-SKIP records it as a reasoned skip, which `verify' accepts for a
+# required gate.  "The repo is missing" and "the gate failed" are different
+# facts and now print differently.
 if [ ! -x "$NELIX_REPO/bin/nelix" ]; then
-  echo "nelix_gate_fail reason=missing-nelix-bin path=$NELIX_REPO/bin/nelix" >&2
-  exit 1
+  echo "GATE-SKIP nelix checkout absent (looked for $NELIX_REPO/bin/nelix)"
+  echo "nelix_gate_result label=nelix_command_gate rc=0 skipped=1"
+  exit 0
 fi
 
 if [ ! -x "$NELISP" ]; then
@@ -132,6 +151,7 @@ EOF
 chmod +x "$FAKE_NIX"
 
 run_timed() {
+  CHECKED=$((CHECKED + 1))
   local label="$1"; shift
   local out_file="$TMP_DIR/$label.out"
   local err_file="$TMP_DIR/$label.err"

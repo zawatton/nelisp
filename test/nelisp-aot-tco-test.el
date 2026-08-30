@@ -96,6 +96,71 @@ PARAMS is the lambda list.  `seq' is shimmed to `progn'."
     (should (equal (nelisp-aot-tco-test--run '(a b) body 48 18) 6))
     (should (equal (nelisp-aot-tco-test--run '(a b) body 1071 462) 21))))
 
+;; Doc 171 sec 11.1 route 2: a temporary is only load-bearing when a later
+;; argument still has to read the parameter it would overwrite.  The rest go
+;; direct, which is one less assignment per iteration for the G4 sum and two
+;; for a three-way rotation.
+(defun nelisp-aot-tco-test--back-edge-setq (body)
+  "Return the innermost back-edge `setq' inside BODY, or nil."
+  (cond
+   ((not (consp body)) nil)
+   ((and (eq (car body) 'setq)
+         (memq 1 (cdr body))
+         (let ((tail (cdr body)) (hit nil))
+           (while (consp tail)
+             (when (string-prefix-p "nelisp-tco-cont"
+                                    (format "%s" (car tail)))
+               (setq hit t))
+             (setq tail (cdr (cdr tail))))
+           hit))
+    body)
+   (t (let ((tail body) (found nil))
+        (while (and (consp tail) (not found))
+          (setq found (nelisp-aot-tco-test--back-edge-setq (car tail)))
+          (setq tail (cdr tail)))
+        found))))
+
+(ert-deftest nelisp-aot-tco-skips-the-temp-nothing-reads ()
+  "acc is not read by any later argument, so it is assigned in place."
+  (let* ((on (nelisp-aot-tco-test--pre
+              '(defun tco-sum (n acc)
+                 (if (= n 0) acc (tco-sum (- n 1) (+ acc n))))
+              t))
+         (edge (nelisp-aot-tco-test--back-edge-setq (nth 3 on))))
+    (should edge)
+    ;; n -> temp (the second argument still reads it), acc -> direct.
+    (should (memq 'acc (cdr edge)))
+    (should (= (/ (length (cdr edge)) 2) 4))))
+
+(ert-deftest nelisp-aot-tco-keeps-the-temp-a-later-argument-needs ()
+  "gcd's second argument reads a, so a cannot be assigned in place."
+  (let* ((on (nelisp-aot-tco-test--pre
+              '(defun tco-gcd2 (a b)
+                 (if (= b 0) a (tco-gcd2 b (% a b))))
+              t))
+         (edge (nelisp-aot-tco-test--back-edge-setq (nth 3 on)))
+         (targets (let ((tail (cdr edge)) (out nil))
+                    (while (consp tail)
+                      (push (car tail) out)
+                      (setq tail (cdr (cdr tail))))
+                    (nreverse out))))
+    (should edge)
+    ;; First write goes to a temp, not to a.
+    (should (string-prefix-p "nelisp-tco-a" (format "%s" (car targets))))
+    (should (equal (nelisp-aot-tco-test--run '(a b) (nth 3 on) 1071 462) 21))))
+
+(ert-deftest nelisp-aot-tco-three-way-rotation-is-correct ()
+  "x is read by the third argument; y and z are not read after their turn."
+  (let* ((on (nelisp-aot-tco-test--pre
+              '(defun tco-rot (x y z)
+                 (if (= x 0) z (tco-rot y z x)))
+              t))
+         (body (nth 3 on))
+         (edge (nelisp-aot-tco-test--back-edge-setq body)))
+    (should (= (/ (length (cdr edge)) 2) 5))
+    ;; 3 -> 1 -> 0 stops with z holding what x held two rotations back.
+    (should (equal (nelisp-aot-tco-test--run '(x y z) body 3 1 0) 1))))
+
 (ert-deftest nelisp-aot-tco-non-tail-recursion-untouched ()
   "fact's recursion is an argument of *, not a tail call."
   (let* ((off (nelisp-aot-tco-test--pre nelisp-aot-tco-test--fact-defun nil))

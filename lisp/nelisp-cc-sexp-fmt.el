@@ -107,11 +107,13 @@
       ;; Uses str-bytes-ptr for both Str and MutStr (handled by nl_str_bytes_ptr).
       ;; Length: Str uses str-len (inline String at offset 8), MutStr uses mut-str-len.
       (and (mut-str-push-byte buf 34)  ; opening "
-           (nl_fmt_sexp_write_quoted_bytes
-            (str-bytes-ptr s)
-            0
-            (if (= (sexp-tag s) 5) (str-len s) (mut-str-len s))
-            buf)
+           (if (or (= (sexp-tag s) 14) (= (sexp-tag s) 15))
+               (nl_fmt_sexp_write_unibyte_bytes
+                (str-bytes-ptr s) 0
+                (if (= (sexp-tag s) 14) (str-len s) (mut-str-len s)) buf)
+             (nl_fmt_sexp_write_quoted_bytes
+              (str-bytes-ptr s) 0
+              (if (= (sexp-tag s) 5) (str-len s) (mut-str-len s)) buf))
            (mut-str-push-byte buf 34)  ; closing "
            1))
 
@@ -301,6 +303,19 @@
            (mut-str-push-byte buf (+ 48 (logand (sar b 3) 7)))    ; tens 0-7
            (mut-str-push-byte buf (+ 48 (logand b 7)))))          ; ones 0-7
 
+    ;; Raw unibyte payloads must never be emitted as apparent UTF-8.  Preserve
+    ;; the legacy ASCII escapes and render every high byte as \NNN.
+    (defun nl_fmt_sexp_write_unibyte_byte (b buf)
+      (if (>= b 128)
+          (nl_fmt_sexp_write_octal_byte b buf)
+        (nl_fmt_sexp_write_quoted_byte b buf)))
+
+    (defun nl_fmt_sexp_write_unibyte_bytes (bytes-ptr i n buf)
+      (if (= i n)
+          0
+        (and (nl_fmt_sexp_write_unibyte_byte (ptr-read-u8 bytes-ptr i) buf)
+             (nl_fmt_sexp_write_unibyte_bytes bytes-ptr (+ i 1) n buf))))
+
     ;; Write one byte: octal-escape if control (<32), non-ASCII (>=127), " or \
     (defun nl_fmt_sexp_write_bool_byte (b buf)
       (if (or (< b 32) (>= b 127) (= b 34) (= b 92))
@@ -402,8 +417,9 @@
          ((= (sexp-tag s) 4)
           (nl_fmt_sexp_write_symbol_bytes
            (str-bytes-ptr s) 0 (str-len s) buf))
-         ;; Str (tag=5) or MutStr (tag=6) → "..." with escaping
-         ((or (= (sexp-tag s) 5) (= (sexp-tag s) 6))
+         ;; All four string representations → "..." with escaping.
+         ((or (= (sexp-tag s) 5) (= (sexp-tag s) 6)
+              (= (sexp-tag s) 14) (= (sexp-tag s) 15))
           (nl_fmt_sexp_write_quoted_str s buf))
          ;; Cons (tag=7) → (body)
          ((= (sexp-tag s) 7)

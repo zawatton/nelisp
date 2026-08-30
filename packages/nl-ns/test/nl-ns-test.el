@@ -16,6 +16,7 @@
 
 (require 'ert)
 (require 'nl-ns)
+(require 'nl-ns-in)
 
 ;;; Helpers ------------------------------------------------------------
 
@@ -216,6 +217,32 @@ assert nothing when the answer is no."
                                (defun eql (a b) (eq a b))))))))
     (should (= (length (nl-ns-findings-of-kind
                         findings 'ns-collision-divergent)) 1))))
+
+(ert-deftest nl-ns-collision-finding-matches-phase-1-declaration-refusal ()
+  "Doc 189 §4 Phase 1: whatever `nl-ns-define' refuses under
+enforcement must be exactly the scenario this file's own `ns-collision'
+finding already flags, read statically as ordinary source -- the
+advisory tool and the declaration-time refusal agree."
+  (let* ((file-a '((nl-ns-define pconsist-a :prefix "pconsist-" :members (wrap))
+                    (nl-ns-in pconsist-a (defun wrap () 1))))
+         (file-b '((nl-ns-define pconsist-b :prefix "pconsist-" :members (wrap))
+                    (nl-ns-in pconsist-b (defun wrap () 1))))
+         (findings (nl-ns-test--check (list (cons "a.el" file-a)
+                                             (cons "b.el" file-b))))
+         (collision (car (nl-ns-findings-of-kind findings 'ns-collision))))
+    (should collision)
+    (should (eq (plist-get collision :subject) 'pconsist-wrap))
+    (should (equal (plist-get collision :files) '("a.el" "b.el"))))
+  ;; The same two declarations, evaluated for real with enforcement on:
+  ;; the second signals instead of silently winning, exactly the
+  ;; collision `nl-ns-check' just flagged above.
+  (nl-ns-clear-namespaces)
+  (let ((nl-ns-enforce-collisions t))
+    (eval '(nl-ns-define pconsist-a :prefix "pconsist-" :members (wrap)) t)
+    (let ((err (should-error
+                (eval '(nl-ns-define pconsist-b :prefix "pconsist-" :members (wrap)) t)
+                :type 'nl-ns-collision-error)))
+      (should (memq 'pconsist-wrap (cdr err))))))
 
 ;;; Host shadow baseline findings --------------------------------------
 

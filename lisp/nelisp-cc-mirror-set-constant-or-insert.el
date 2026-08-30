@@ -50,7 +50,7 @@
                           (vector-ref-ptr scratch-vec-ptr 9)
                           (vector-ref-ptr scratch-vec-ptr 10)
                           entry-slot)
-             (extern-call nelisp_mirror_bucket_prepend
+             (extern-call nelisp_mirror_bucket_prepend_unchecked
                           mirror-ptr sym-ptr
                           entry-slot
                           scratch-vec-ptr)))
@@ -62,9 +62,12 @@
       ;; See `nelisp_mirror_set_value_or_insert' for ABI / scratch layout.
       ;; Hit-path writes slot 3 (= constant flag); slot 10 holds the
       ;; flag (Sexp::T / Sexp::Nil).
-      (nelisp_mirror_set_constant_or_insert_dispatch
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       mirror-ptr sym-ptr scratch-vec-ptr 0 0)))
+      (if (= (extern-call nl_thread_mirror_mutation_guard
+                          mirror-ptr sym-ptr) 1)
+          (- 0 4)
+        (nelisp_mirror_set_constant_or_insert_dispatch
+         (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+         mirror-ptr sym-ptr scratch-vec-ptr 0 0))))
   "AOT source for Doc 119 §119.A `mirror_set_constant_or_insert'.
 
 Slot-3 (constant flag) variant of `mirror_set_value_or_insert'.")

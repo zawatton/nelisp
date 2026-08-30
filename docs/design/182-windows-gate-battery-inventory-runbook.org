@@ -1,0 +1,366 @@
+#+TITLE: Doc 182 — Windows gate-battery inventory runbook
+#+AUTHOR: nelisp (design: Claude Fable 5 + zawatton)
+#+DATE: 2026-08-22
+#+STATUS: DRAFT — a runbook for the owner to execute ONCE on a real Windows
+#+STATUS: machine.  This doc contains no code changes; its output is a
+#+STATUS: findings file that later, separate commits act on.
+
+* §0 TL;DR
+
+=tools/ai/nelisp-ai.sh= — the "AI toolchain" gate battery AI.md documents
+as the pre-commit inner loop and =verify= verdict — has never been run on
+Windows. =.github/workflows/ci.yml= gates essentially all of it behind
+=if: runner.os == 'Linux'= (one step behind =if: runner.os == 'macOS'=).
+This is a *different* gap from the standalone native-build/run smoke
+layer, which already has a working, independent Windows path
+(=stage-d-v3.0-standalone.yml='s PowerShell job). This runbook is the
+one-time, owner-executed pass that finds out what happens when the
+*other* layer — the gate battery — is pointed at Windows for the first
+time, and how to tell a POSIX-tool artifact from a real logic gap when
+something goes red.
+
+* §1 Problem: precisely how Linux-gated the battery is
+
+Reading =.github/workflows/ci.yml='s =smoke= job (its only job) line by
+line: the matrix is =[ubuntu-latest, macos-latest, windows-latest] ×
+['29.4', '30.1']=. Unconditional on every OS: =make compile=, =make
+unsafe-inventory=, =make test= (+ =test-jit= + =test-nojit=). Everything
+else in the file carries an explicit OS guard:
+
+- =if: runner.os == 'Linux'= (the large majority): =ns-inventory=,
+  =parens-check=, =reader-surface-audit=, =pkg-graph=, =pkg-load-lists=,
+  =bench-aot-tco=, =standalone-reader-checked=,
+  =standalone-reader-checked-soak=, =standalone-reader-shadow-smoke=,
+  =emacs-parity=, =prelude-toplevel-check= + =partial-inventory= +
+  =parity-coverage= + =gate-selfcheck=, =bash tools/ai/nelisp-ai.sh
+  check=, =standalone-reader-test=, =binary-size-ratchet=,
+  =standalone-selfhost-test=, =bash tools/ai/nelisp-ai.sh
+  native-artifact|perf|smokes|extras=.
+- =if: runner.os == 'macOS'=: =macho-acceptance-test=.
+- =if: runner.os == 'Windows'=: exactly one gate-battery-adjacent step,
+  =make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64=
+  — a single Doc 170 checked-allocator smoke, cross-target-named but run
+  natively on the Windows runner.
+
+So the Windows leg of CI today runs: byte-compile, one inventory scan,
+one checked-allocator smoke, and the ERT suite three ways (default/JIT/
+no-JIT). *Nothing* under =tools/ai/nelisp-ai.sh= — not =check=, not
+=standalone=, not =native-artifact=/=perf=/=smokes=/=extras=, not
+=verify= — has ever run in that environment, in CI or (as far as this
+doc's grounding can show) anywhere else. =nelisp-ai.sh= itself is
+=#!/bin/sh= (its own shebang, line 1) — it has never even been asked
+"does a POSIX shell capable of running you exist here."
+
+** §1.1 The path this runbook does NOT duplicate
+
+=.github/workflows/stage-d-v3.0-standalone.yml='s =windows-x86_64= job
+already runs, on =windows-latest=, a *separate, working* native-parity
+pass via =scripts/verify-cross-platform.ps1= — pure PowerShell, no
+=tools/ai/=, no =sh=. Reading that script (136 lines): it drives
+=tools\windows-os-compat-test.ps1=, =tools\windows-selfhost-test.ps1=,
+=tools\build-standalone-parallel.ps1=, =tools\windows-standalone-eval-
+test.ps1=, =tools\windows-standalone-cache-identity-test.ps1=,
+=tools\windows-standalone-reader-test.ps1=, and (with
+=-IncludeTarball=) a tarball build/verify and a real installer smoke
+(=release\stage-d-v3.0\install-v3.ps1=, asserting the installed
+=nelisp.exe --eval "(+ 40 2)"= answers =42=). That is real, native,
+already-exercised Windows coverage of the standalone build-and-run
+surface. This runbook's scope is explicitly the *other* layer — the gate
+battery (=tools/ai/nelisp-ai.sh=, its ratchets, its mutation-proofs, its
+ERT-adjacent inventory checks) — which stage-d-v3.0 does not touch and
+was never meant to. Do not fold this runbook's findings into that
+workflow; they are answering a different question.
+
+* §2 What this runbook is
+
+A one-time, owner-executed inventory pass on a real Windows machine.
+Not a design for new code — its deliverable is a findings file (§5)
+that later, separate commits (§6) act on. It exists because static
+reading of =ci.yml= can enumerate *what never runs on Windows* but
+cannot say *why* each one would fail there, and guessing that from a
+Linux box risks exactly the kind of unverified claim this doc's own
+sibling docs were told to avoid.
+
+* §3 Preconditions: shell choice matters and should be recorded, not assumed
+
+=nelisp-ai.sh= is POSIX =sh=; it needs a real POSIX shell on Windows to
+run at all. Two candidates exist and they are not interchangeable:
+
+1. *Git for Windows' bundled bash* ("git-bash") — this is what
+   =ci.yml='s own =shell: bash= steps actually use on =windows-latest=
+   GitHub-hosted runners (GitHub's runner images ship it specifically
+   for this purpose). Running the inventory under git-bash is the
+   closest match to what CI itself would see.
+2. *WSL* (a real Linux kernel under WSL2, or the older translation layer
+   under WSL1) — closer to what the Linux CI lane's own =ubuntu-latest=
+   runners are, but *not* what =ci.yml='s Windows leg actually runs
+   under, since that leg uses git-bash, not WSL.
+
+Run the inventory under *both* if time allows, and record which shell
+produced which result for every row — a gate that passes under WSL but
+fails under git-bash (or vice versa) is itself a finding (a shell-
+environment dependency this repository does not currently know it has),
+not noise to average away.
+
+* §4 Exact commands, tier by tier
+
+Run each of these from a Windows checkout of this branch (or of
+whatever branch is actually being qualified), from the repo root, in the
+chosen shell.
+
+1. *Orientation* (always first):
+   #+begin_example
+   bash tools/ai/nelisp-ai.sh doctor
+   #+end_example
+   Record the raw output verbatim — repo/branch/head, worktree count,
+   Emacs version string, =make= version string, whether a
+   =target/nelisp[.exe]= was found and its identity, gate-report count.
+   This alone answers whether the toolchain resolves at all before
+   anything downstream is attempted.
+
+2. *Fast lane* (the ~18-gate battery AI.md calls the pre-commit inner
+   loop, mirroring what =ci.yml='s Linux lane runs as one step):
+   #+begin_example
+   bash tools/ai/nelisp-ai.sh check
+   #+end_example
+   Per =cmd_check='s own source (=tools/ai/nelisp-ai.sh= L116-140), this
+   is: =compile=, =parens-check=, =generated-source-parse=,
+   =prelude-toplevel-check=, =partial-inventory=, =gate-selfcheck=,
+   =gate-mutation=, =ns-gate=, =nl-check-gate=,
+   =fallback-inventory-selftest=, =fallback-inventory=,
+   =bootstrap-contract=, =wasm-dtw-skeleton-smoke=, =unsafe-inventory=,
+   =ns-inventory=, =reader-surface-audit=, =pkg-graph=,
+   =pkg-load-lists=, =parity-coverage=, =ns= — each its own step in the
+   output, each reporting its own GATE-COUNT.
+
+3. *Binary tier*, each gate individually (these build =target/nelisp=
+   and are deliberately excluded from =check= for exactly that reason —
+   AI.md: "minutes rather than seconds"):
+   #+begin_example
+   bash tools/ai/nelisp-ai.sh standalone       # standalone-reader-test, binary-size-ratchet, emacs-parity
+   bash tools/ai/nelisp-ai.sh native-artifact
+   bash tools/ai/nelisp-ai.sh perf
+   bash tools/ai/nelisp-ai.sh smokes
+   bash tools/ai/nelisp-ai.sh extras
+   bash tools/ai/nelisp-ai.sh test             # ert-full, the full ERT suite
+   #+end_example
+
+4. *The two commands AI.md itself flags as uncovered by any of the
+   above* ("several checks =nelisp-ai.sh= does not model at all"):
+   #+begin_example
+   make bench-aot-tco
+   make macho-acceptance-test
+   #+end_example
+   =bench-aot-tco= needs the =cc= + =objcopy= native-exec toolchain
+   =ci.yml= itself notes is Linux-only ("Linux is the only lane with the
+   cc + objcopy native-exec toolchain") — expect either a real attempt
+   (if MSVC/MinGW =cc=/=objcopy= are on PATH) or a clean failure to
+   invoke the toolchain at all; either way, record which.
+   =macho-acceptance-test= is *expected* to skip outright:
+   =scripts/macho-acceptance-check.sh= L16 GATE-SKIPs with "requires
+   macOS" on any non-Darwin =uname -s=. Record this as an *expected,
+   reasoned skip*, not a finding — running it is only worth doing to
+   confirm the skip message itself fires correctly rather than erroring.
+
+5. *Aggregate verdict*, after each tier above:
+   #+begin_example
+   bash tools/ai/nelisp-ai.sh verify
+   #+end_example
+   This is the one command whose exit code means something on its own
+   (AI.md: "the only command whose exit code answers 'is the tree
+   good'"); run it after each tier to see the gate-age table accumulate
+   rather than only once at the end, so a mid-run crash still leaves a
+   readable partial picture.
+
+* §5 What to record per failure: POSIX-tool reason vs. logic gap
+
+For every red or unexpectedly-skipped gate, work through this in order
+before writing the row:
+
+1. *Does the step invoke a specific tool this doc has reason to suspect?*
+   Grounded, not guessed — greps run on this clone found:
+
+   | tool | where used | suspicion, and why |
+   |------+-----------|---------------------|
+   | =ulimit -v= | Makefile L1169, L1192, L1223 (three =standalone-reader-intern-soft-*= smokes, each: ~"ulimit -v 4194304; timeout 30 ./target/nelisp ..."~) | HIGH. Git-bash ships a =ulimit= builtin, but =-v= (address-space) enforcement has no real Windows kernel equivalent behind it in that environment; WSL2 (a real Linux kernel) enforces it properly. These three smokes exist specifically to catch a runaway-allocation defect (Doc 163) by forcing an OOM inside a bounded address space and asserting the resulting =rc=88=. If =ulimit -v= silently doesn't constrain anything, the smoke would either hang, run to real completion, or exit some other way — record which, and whether =rc=88= ever fires. |
+   | =pgrep= | =tools/nelisp-nelix-command-gate.sh=, =tools/nelisp-nelix-native-hot-gate.sh= | MEDIUM, but likely moot: both gates GATE-SKIP first when the sibling =../nelix= checkout is absent (per =ci.yml='s own comment on =nelisp-nelix-native-hot-gate=), which is the expected state on a fresh Windows checkout regardless of =pgrep=. Only investigate =pgrep= itself if a =../nelix= checkout is actually present for this run. |
+   | =mkfifo= | none found (grep clean across Makefile and =tools/*.sh= on this tree) | Not currently a suspect — recorded here so a future =mkfifo=-related error is not misdiagnosed as "already known," and so this table stays honest about what was and was not actually searched. |
+   | GNU =timeout= | =tools/nelisp-nelix-native-hot-gate.sh=, =tools/nelisp-source-command-substrate-gate.sh=, =tools/parallel-compile-test.sh=, plus the same three Makefile lines as =ulimit= above | LOW. Git for Windows' bundled coreutils includes a real GNU =timeout=; still worth recording =timeout --version= once, since a different vendor's =timeout= (e.g. a stray BusyBox one earlier on PATH) can differ in flag support. |
+   | =sha256sum= | Used broadly: Makefile, =tools/ai/bench-compare.sh=, =tools/ai/nelisp-ai.sh= L68-69, =tools/build-*-tarball.sh=, =tools/verify-*-tarball.sh=, =tools/*cache-identity-test.sh=, =tools/nelisp-source-command-substrate-gate.sh= | LOW where guarded, but check each call site: =nelisp-ai.sh= itself already falls back with =command -v sha256sum= (and =tools/build-release-artifact.sh= L92-100 falls back further, to =shasum -a 256=). A caller with a *bare* =sha256sum= call and no such guard is itself a logic gap to fix (missing the fallback pattern this repo already knows how to write), not a Windows-environment gap — tell the two apart before filing anything. |
+
+2. *If the suspect tool is present, behaves per its documentation, and
+   the gate still fails or disagrees with the Linux-lane result* — record
+   it as a *logic gap*: a real code path assuming something Linux-
+   specific (a path separator, a line-ending / CRLF comparison, path
+   case-sensitivity, an ELF-only assumption in a check that should also
+   understand PE, a hard-coded =/tmp=, ...).
+
+3. *If a step is a genuine, permanent toolchain boundary* (=bench-
+   aot-tco='s =cc=+=objcopy= native-exec path; =macho-acceptance-test='s
+   Darwin-only scope) — record it as an *expected, reasoned skip*, not a
+   finding to fix.
+
+* §6 Findings file: format and location
+
+Write to =target/ai/windows-inventory-<YYYY-MM-DD>.md= — untracked,
+machine-local, mirroring =target/ai/STATUS.md='s own existing "generated,
+per machine, untracked" convention (AI.md, "Orient" section) rather than
+inventing a new tracked-vs-untracked precedent. One row per (gate ×
+shell) combination, so a WSL-vs-git-bash disagreement on the same gate is
+visible as two distinct rows rather than collapsed into one:
+
+| column | contents |
+|--------+----------|
+| gate | the exact gate/step name (=binary-size-ratchet=, =native-artifact=, ...) |
+| tier | fast-lane / binary-tier / uncovered (=bench-aot-tco=/=macho-acceptance-test=) |
+| shell | =wsl= or =git-bash= |
+| result | PASS / FAIL / SKIP / ERROR (ERROR = the harness itself could not run the step at all, distinct from a gate that ran and reported FAIL) |
+| category | =posix-tool= / =logic-gap= / =expected-skip= / =unknown= |
+| evidence | a short excerpt of the actual output, or a path to a saved full log under the same =target/ai/= directory |
+| suspect tool | filled only when category = =posix-tool=, naming which row of §5's table applies |
+
+Every gate =tools/ai/gates.expected= lists (minus the trailing =?=
+optional marker, which only changes whether absence counts against
+=verify=, not whether it belongs in this inventory) should end up with at
+least one row per shell attempted. A gate with *no* row after a run is
+the exact defect class AI.md's rule 1 exists to name ("a gate that
+executed zero cases is not green") — applied here to the inventory
+process itself, not to a single gate.
+
+* §7 From findings to fixes and skips
+
+- *=posix-tool= rows where one shell (WSL) passes and the other
+  (git-bash) does not, on the same gate*: candidate for either (a) fixing
+  the call site the same way =build-release-artifact.sh= already guards
+  =sha256sum= (swap the bare tool call for a =command -v=-guarded
+  fallback, or an explicit alternate implementation), or (b) if the
+  underlying capability genuinely does not exist under git-bash (e.g. a
+  real =ulimit -v= enforcement gap), a =gates.expected=-style conditional
+  skip using the same shape =nelisp-native-artifact-gate= and its
+  siblings already use via =target-runnable-on-host-p= — asked, not
+  assumed, the same discipline that predicate already follows for target
+  architecture.
+- *=logic-gap= rows*: filed as ordinary defects, each through this
+  repository's normal commit/PR workflow — this runbook produces the
+  finding, not the fix, and does not special-case any of them silently
+  inside itself.
+- *=expected-skip= rows*: recorded as such and left alone. A gate that is
+  genuinely, permanently bound to a Linux/macOS-only toolchain is not a
+  Windows gap to close.
+- Explicitly out of scope: modifying or duplicating
+  =stage-d-v3.0-standalone.yml= or =scripts/verify-cross-platform.ps1=.
+  This runbook's findings feed decisions about =ci.yml='s Windows leg and
+  =tools/ai/= itself only.
+
+* §8 Verification design (DoD)
+
+This doc's own "gate" is procedural, not code, so its DoD is procedural
+too: the run is complete when the findings file (§6) exists, has at
+least one row for every non-optional name in =tools/ai/gates.expected=
+(cross-checked by counting: =grep -v '^#' tools/ai/gates.expected | grep
+-v '^[[:space:]]*$' | wc -l= against the file's own row count for
+category != blank), and every row has a category assigned — no row left
+=unknown= without an explanation of why it could not be classified.
+"Mutation row" in the sense the sibling docs use it does not map onto a
+procedural runbook directly; the analogous proof here is that running
+this runbook and getting a categorized row for *every* listed gate *is*
+the red/green signal — a gate that silently produces no row on a real
+run is the same failure mode AI.md's rule 1 warns about, just applied to
+the inventory process rather than to a single check.
+
+* §9 Open questions
+
+1. Whether the owner's available Windows machine can run *both* WSL and
+   git-bash, or only one — if only one, this doc's §3 recommendation to
+   run both becomes aspirational, and the findings file should say
+   plainly which shell(s) were actually exercised.
+2. Whether =pgrep=-dependent gates should be tested with a real =../nelix=
+   sibling checkout present, to actually exercise that code path rather
+   than only observing the (expected) absent-checkout skip.
+3. Whether any Windows-specific =cc=/=objcopy= toolchain (MSVC's
+   =link.exe=, or a MinGW cross toolchain) is expected to be present for
+   =bench-aot-tco=, or whether that gate should simply be filed as an
+   =expected-skip= on Windows from the start rather than actually
+   attempted — this doc leans toward attempting it once, since "expected"
+   is not the same as "verified," but the owner may reasonably decide the
+   toolchain setup cost is not worth it for a single inventory pass.
+4. How to treat a gate that errors (category ERROR, harness could not
+   even invoke it) versus one that runs and fails — this doc's §6 table
+   already distinguishes them, but the fix/skip decision procedure in §7
+   does not yet say whether ERROR rows get the same posix-tool/logic-gap
+   split as FAIL rows, or whether every ERROR is provisionally a
+   posix-tool suspect until proven otherwise.
+
+* §10 2026-08-23: fixes landed for this inventory's findings — re-run needed
+
+This runbook produced =target/ai/windows-inventory-2026-08-23.md= (branch
+=feat/windows-gate-inventory=, qualified commit =eb4eb81f3=): 23 PASS, 16
+FAIL, 7 SKIP against the exact command battery (59 rows counting the 13
+optional/not-attempted gates). Branch =fix/windows-gate-conformance=
+(based on =feat/native-observability=, same tip) landed fixes for every
+FAIL row that could be fixed or usefully investigated from a Linux-only
+session; the classification below matches §7's fix/skip/investigate
+split. None of this has been re-verified on an actual Windows machine —
+that is the point of this note: the fixes are a hypothesis about what
+the next Windows run of this same runbook will show, not a substitute
+for running it.
+
+- *Nine =expected-skip= FAILs, now reasoned-skips*: =standalone-chunk-
+  growth-test=, =standalone-parallel-compile-test=, =standalone-
+  selfhost-mt-test=, =nelisp-nelix-native-hot-gate= (reordered so the
+  runnable-host check runs before its =missing-nelisp= check, not just
+  before the already-working =../nelix= absence check), =nl-condition-
+  standalone-smoke=, =nl-safe-standalone-smoke=, =nl-resource-
+  standalone-smoke=, =standalone-reader-buffer-smoke=, =nl-actor-
+  standalone-smoke=. All nine now ask
+  =nelisp-standalone--target-runnable-on-host-p= first and print a
+  =GATE-SKIP= line, the same convention =standalone-reader-test= already
+  used and the inventory itself credits as already correct.
+- *=standalone-reader-smokes= (aggregate =logic-gap=, 32 of 34 sub-smokes
+  failing)*: fixed at the aggregate level with the same runnable-host
+  check, asked once for the whole batch since every sub-smoke execs the
+  same binary; per-smoke logs moved from =/tmp= to a repo-local
+  =target/tmp/= to remove the MSYS2-=make=-vs-Git-Bash =/tmp=-namespace
+  disagreement §6's evidence column named.
+- *=nelisp-runtime-image-cache-gate= (=logic-gap=, bare =[ -x ]= test)*:
+  replaced with the same runnable-host predicate.
+- *=nelisp-source-command-substrate-gate= (=logic-gap=, Git-Bash
+  =mktemp= path opaque to native Windows Emacs)*: its temp directory is
+  now repo-local (=mktemp -d -p target=) instead of defaulting into
+  =/tmp=, so the paths it embeds in a separate Emacs =--eval= resolve
+  identically from both sides; its own =$NELISP=-executing step also
+  gained the runnable-host guard.
+- *=emacs-parity= (=logic-gap=, corrupted generated file, unmatched
+  =)))=)*: the three-shell-step file assembly (=printf >=, =cat >>=,
+  =printf >>=) was replaced with one Emacs =--batch= process doing one
+  =write-region= call, structurally immune to "some but not all of
+  several sequential writes landed" because there is only one write. The
+  exact Windows corruption mechanism was not reproduced on Linux and is
+  not confirmed.
+- *=gate-selfcheck= (=logic-gap=, emacs-parity band floor 1000 vs
+  measured 652)*: investigated, not changed — the evidence points at the
+  652 being a symptom of the emacs-parity corruption above, not a
+  legitimately smaller Windows corpus; see this file's own note in
+  =tools/ai/gates.expected= and =tools/gate-count-bands.txt= for the
+  reasoning. The band stays at 1000; a Windows re-run after the
+  emacs-parity fix should read close to this session's Linux measurement
+  of =checked=19949=.
+- *=ns-inventory=/=ns-gate= (=logic-gap=, 19-20 changed divergent-
+  collision fingerprints)*: investigated and NOT fixed — CRLF-vs-LF file
+  content and path-separator sort order were both tested/checked on
+  Linux and neither reproduces a fingerprint change; see
+  =packages/nl-ns/src/nl-ns.el='s =nl-ns--definition-shape= comment for
+  what was tried and what to capture on the actual Windows machine (the
+  =:heads= diff for the 19-20 moved symbols) to close this one.
+
+Every change above was verified on Linux only: the full relevant gate
+battery (compile, parens, gen-parse, scoped =check=, =standalone=,
+=smokes=, =extras=, =nelisp-ai.sh test=) stayed green, and each Class-A
+skip was additionally mock-verified by forcing
+=NELISP_STANDALONE_TARGET= to a target this Linux host cannot run
+(=windows-x86_64=) and confirming the =GATE-SKIP= line fires — the same
+seam =NELISP_EMACS_PARITY_HOST_VERSION= already established for the
+emacs-parity version guard. **None of this is Windows-verified.** The
+next action this doc calls for is exactly what §0-§9 always called for:
+run the runbook again, on the actual machine, and see whether these nine
++ five fixes actually turned red rows green there.

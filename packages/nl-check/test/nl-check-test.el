@@ -219,6 +219,55 @@
                    'unsafe-call)))
     (should (= (length findings) 2))))
 
+;; The scan used to walk only the cdr of a form, so anything sitting in
+;; car position went unseen.  A `let' binding list is (BINDING ...) with
+;; BINDING a cons, which put every first binding's initialiser in exactly
+;; that blind spot -- and allocating in the first `let*' binding is the
+;; house idiom of the standalone build.  Found 2026-08-19; the tree's
+;; gated count moved 369 -> 428 when it was fixed.
+(ert-deftest nl-check-unsafe-sees-a-let-binding ()
+  (should (equal (nl-check-test--kinds '(let ((x (alloc-bytes 1 1))) x))
+                 '(unsafe-call))))
+
+(ert-deftest nl-check-unsafe-sees-every-let*-binding ()
+  (should (= (length (nl-check-findings-of-kind
+                      (nl-check-form '(let* ((a (alloc-bytes 1 1))
+                                             (b (alloc-bytes 2 2)))
+                                        a))
+                      'unsafe-call))
+             2)))
+
+(ert-deftest nl-check-unsafe-sees-a-head-element ()
+  (should (= (length (nl-check-findings-of-kind
+                      (nl-check-form '((alloc-bytes 1 1) (alloc-bytes 2 2)))
+                      'unsafe-call))
+             2)))
+
+(ert-deftest nl-check-unsafe-block-still-covers-the-head ()
+  (should-not (nl-check-test--kinds
+               '(nl-unsafe (let ((x (alloc-bytes 1 1))) x)))))
+
+;; Quoted forms stay out of the gated count -- an opcode table entry like
+;; (ptr-read-u16 . 39) is data, not a call -- but they are counted apart
+;; so the exclusion is stated rather than silent.
+(ert-deftest nl-check-unsafe-skips-quoted-forms ()
+  (should-not (nl-check-test--kinds '(progn '(alloc-bytes 1 1)))))
+
+(ert-deftest nl-check-quoted-unsafe-counts-what-the-scan-skips ()
+  (let ((f (make-temp-file "nl-check-quoted-" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file f
+            (insert "(defconst gen--source '(seq (defun a () (alloc-bytes 1 1))))\n"
+                    "(defun live () (ptr-read-u8 p 0))\n"))
+          (should (= (length (nl-check-findings-of-kind
+                              (nl-check-file f) 'unsafe-call))
+                     1))
+          (should (= (length (nl-check-file-quoted-unsafe f)) 1))
+          (should (eq (plist-get (car (nl-check-file-quoted-unsafe f)) :kind)
+                      'unsafe-call-quoted)))
+      (delete-file f))))
+
 ;;; Entry points and reporting -----------------------------------------
 
 (ert-deftest nl-check-forms-concatenates ()

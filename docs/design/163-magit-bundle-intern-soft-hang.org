@@ -1,6 +1,7 @@
 #+TITLE: Doc 163 - Magit-bundle load hang at message.el: intern-soft never soft-fails (NOT a GC retention edge)
 #+DATE: 2026-07-06
 #+STATUS: Phase C SHIPPED on feat/gc-retention-edge-magit — `intern-soft' now has a real native soft-fail primitive (`nelisp--intern-lookup'); verified fixed at the nelisp level. The full nelisp-emacs-lib Magit-bundle repro still hangs rc=88 — traced to an INDEPENDENT, identically-buggy `intern-soft' polyfill in that OTHER repository (out of this doc's scope). See §8.
+#+VERIFIED-BY: standalone-reader-test standalone-chunk-growth-test
 
 * 1. Purpose
 

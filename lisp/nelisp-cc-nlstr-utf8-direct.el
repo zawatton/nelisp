@@ -94,7 +94,13 @@
     ;; str_ptr: *const Sexp — any string-y variant (Str/Symbol/MutStr).
     ;; Returns: codepoint count; 0 for non-string variant.
     (defun nl_str_char_count (str-ptr)
-      (if (= (sexp-tag str-ptr) 6)
+      (if (= (sexp-tag str-ptr) 15)
+          ;; UnibyteMutStr: character count is its boxed byte length.
+          (ptr-read-u64 (ptr-read-u64 str-ptr 8) 16)
+        (if (= (sexp-tag str-ptr) 14)
+            ;; UnibyteStr: character count is its inline byte length.
+            (ptr-read-u64 str-ptr 24)
+        (if (= (sexp-tag str-ptr) 6)
           ;; MutStr: hop through NlStr box
           (nl_str_char_count_mutstr (ptr-read-u64 str-ptr 8))
         (if (= (sexp-tag str-ptr) 5)
@@ -107,7 +113,7 @@
               (nl_str_char_count_str
                (ptr-read-u64 str-ptr 16)
                (ptr-read-u64 str-ptr 24))
-            0)))))
+            0)))))))
   "AOT direct-symbol source for `nl_str_char_count'.
 
 Exports `nl_str_char_count' (C-linkage) to replace the Rust
@@ -230,18 +236,41 @@ fields ptr@16, len@24.")
        (ptr-read-u64 (ptr-read-u64 sexp 8) 16)  ; NlStr*.String.len
        out-cp out-bw))
 
+    ;; Raw-byte variants: every byte is one character, including >= 128.
+    (defun nl_str_codepoint_at_unibyte_ptr (data byte-idx len out-cp out-bw)
+      (if (< byte-idx len)
+          (and (ptr-write-u64 out-cp 0 (ptr-read-u8 data byte-idx))
+               (ptr-write-u64 out-bw 0 1)
+               1)
+        0))
+
+    (defun nl_str_codepoint_at_unibyte_str (sexp byte-idx out-cp out-bw)
+      (nl_str_codepoint_at_unibyte_ptr
+       (ptr-read-u64 sexp 16) byte-idx (ptr-read-u64 sexp 24) out-cp out-bw))
+
+    (defun nl_str_codepoint_at_unibyte_mutstr (sexp byte-idx out-cp out-bw)
+      (nl_str_codepoint_at_unibyte_ptr
+       (ptr-read-u64 (ptr-read-u64 sexp 8) 8)
+       byte-idx
+       (ptr-read-u64 (ptr-read-u64 sexp 8) 16)
+       out-cp out-bw))
+
     ;; Public entry: nl_str_codepoint_at(str_ptr, byte_idx, out_codepoint, out_byte_width) -> i64.
     ;; Returns 1 on success, 0 on out-of-bounds / non-char-boundary / non-string.
     (defun nl_str_codepoint_at (str-ptr byte-idx out-cp out-bw)
       (if (< byte-idx 0)
           0
+        (if (= (sexp-tag str-ptr) 15)
+            (nl_str_codepoint_at_unibyte_mutstr str-ptr byte-idx out-cp out-bw)
+          (if (= (sexp-tag str-ptr) 14)
+              (nl_str_codepoint_at_unibyte_str str-ptr byte-idx out-cp out-bw)
         (if (= (sexp-tag str-ptr) 6)
             (nl_str_codepoint_at_mutstr str-ptr byte-idx out-cp out-bw)
           (if (= (sexp-tag str-ptr) 5)
               (nl_str_codepoint_at_str str-ptr byte-idx out-cp out-bw)
             (if (= (sexp-tag str-ptr) 4)
                 (nl_str_codepoint_at_str str-ptr byte-idx out-cp out-bw)
-              0))))))
+              0))))))))
   "AOT direct-symbol source for `nl_str_codepoint_at'.
 
 Exports `nl_str_codepoint_at' (C-linkage) to replace the Rust
@@ -363,18 +392,39 @@ runtime values as extra parameters.")
            (ptr-read-u64 (ptr-read-u64 sexp 8) 16)) ; NlStr*.String.len
         0))
 
+    ;; Unibyte variants treat the indexed raw byte as the character value;
+    ;; never feed a high byte into the UTF-8 decoder.
+    (defun nl_str_is_alnum_unibyte_ptr (data idx len)
+      (if (< idx len)
+          (extern-call nl_is_char_alphanumeric (ptr-read-u8 data idx))
+        0))
+
+    (defun nl_str_is_alnum_unibyte_str (sexp byte-idx)
+      (nl_str_is_alnum_unibyte_ptr
+       (ptr-read-u64 sexp 16) byte-idx (ptr-read-u64 sexp 24)))
+
+    (defun nl_str_is_alnum_unibyte_mutstr (sexp byte-idx)
+      (nl_str_is_alnum_unibyte_ptr
+       (ptr-read-u64 (ptr-read-u64 sexp 8) 8)
+       byte-idx
+       (ptr-read-u64 (ptr-read-u64 sexp 8) 16)))
+
     ;; Public entry: nl_str_is_alphanumeric_at(str_ptr, byte_idx) -> i64.
     ;; Returns 1 if alphanumeric, 0 otherwise.
     (defun nl_str_is_alphanumeric_at (str-ptr byte-idx)
       (if (< byte-idx 0)
           0
+        (if (= (sexp-tag str-ptr) 15)
+            (nl_str_is_alnum_unibyte_mutstr str-ptr byte-idx)
+          (if (= (sexp-tag str-ptr) 14)
+              (nl_str_is_alnum_unibyte_str str-ptr byte-idx)
         (if (= (sexp-tag str-ptr) 6)
             (nl_str_is_alnum_mutstr str-ptr byte-idx)
           (if (= (sexp-tag str-ptr) 5)
               (nl_str_is_alnum_str str-ptr byte-idx)
             (if (= (sexp-tag str-ptr) 4)
                 (nl_str_is_alnum_str str-ptr byte-idx)
-              0))))))
+              0))))))))
   "AOT direct-symbol source for `nl_str_is_alphanumeric_at'.
 
 Exports `nl_str_is_alphanumeric_at' (C-linkage) to replace the Rust

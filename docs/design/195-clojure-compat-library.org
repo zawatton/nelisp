@@ -1,0 +1,1438 @@
+#+TITLE: Doc 195 — A Clojure library for NeLisp: persistent data structures and coroutine-shaped concurrency, priced against what already ships
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-24
+#+STATUS: PARTIAL — build-first Tier 1 implemented 2026-08-24 as
+#+STATUS: =packages/nl-clj/= (=feat/nl-clj-foundation=, based on this
+#+STATUS: branch's own =eb4eb81f3=): §4.5 =atom=/=swap!=/=reset!=/
+#+STATUS: =compare-and-set!=, §4.1 persistent vector (32-way
+#+STATUS: bit-partitioned trie), §4.2 persistent hash-map/hash-set
+#+STATUS: (HAMT), and a minimal eager slice of §4.7's seq API generic
+#+STATUS: over all three plus plain Elisp lists — 6 source files, 121
+#+STATUS: ERT cases (host Emacs and, unchanged, =target/nelisp= itself
+#+STATUS: via =nl-clj-standalone-smoke=), =make compile=/=parens-
+#+STATUS: check= clean.
+#+STATUS:
+#+STATUS: §4.7's lazy half landed 2026-08-24 as =packages/nl-clj/src/
+#+STATUS: nl-clj-lazy.el= (=feat/nl-clj-lazy=, based on this branch's
+#+STATUS: own =3bab0fe88= on =origin/feat/native-observability=, which
+#+STATUS: already carries bignum Phase B — Doc 190 §7 — so an unbounded
+#+STATUS: =nl-clj-lazy-range= promotes past fixnum instead of
+#+STATUS: signalling =overflow-error=, closing §2.2's own measured gap
+#+STATUS: for exactly the case that gap matters most): =lazy-seq=/
+#+STATUS: =lazy-cons= (memoized, realize-once, reentrancy-signals-
+#+STATUS: loudly via =nl-safe='s =nl-cell= borrow fence, the SAME
+#+STATUS: mechanism §4.4's own transient design reuses for a different
+#+STATUS: purpose), =take=/=drop=/=take-while=/=drop-while=, a
+#+STATUS: lazy-aware =nl-clj-map=/=nl-clj-filter= wired into
+#+STATUS: =nl-clj-seq.el='s own generic dispatch (staying lazy over a
+#+STATUS: lazy COLL, unchanged-eager over an eager one), =range=
+#+STATUS: (bounded AND unbounded — =(take 5 (range))= terminates),
+#+STATUS: =iterate=/=repeat=/=cycle=, and =doall=/=dorun= to force back
+#+STATUS: to eager — 1 new source file, +42 ERT cases (163 total, host
+#+STATUS: Emacs and =target/nelisp= itself via the same
+#+STATUS: =nl-clj-standalone-smoke=, extended with an inline unbounded-
+#+STATUS: range-plus-take AND bignum-promoting-range proof against the
+#+STATUS: live binary), =make compile=/=parens-check= clean.  A
+#+STATUS: refinement of this section's own §4.7 text, named rather than
+#+STATUS: silently done differently: =nl-loop=/=nl-recur= are framed
+#+STATUS: there as load-bearing for the lazy walk; the actual
+#+STATUS: implementation needs neither (every driver is a plain
+#+STATUS: =while= loop, and every lazy producer returns an unforced
+#+STATUS: value immediately rather than actually recursing) — see
+#+STATUS: =nl-clj-lazy.el='s own Commentary for the full argument.
+#+STATUS:
+#+STATUS: §4.6 (channels and =go= blocks over =nelisp-actor=) landed
+#+STATUS: 2026-08-24 as =packages/nl-clj/src/nl-clj-async.el=
+#+STATUS: (=feat/nl-clj-async=): =nl-clj-chan=/=close!=/=>!=/=<!=
+#+STATUS: (parking, inside =go=)/=>!!=/=<!!= (blocking, any context)/
+#+STATUS: =go=/=alts!=, 29 ERT cases on host Emacs (Clojure's own
+#+STATUS: documented reference semantics as the control, per §4.6's
+#+STATUS: own framing — no host-Emacs analog for core.async exists to
+#+STATUS: differentially test against), =make compile=/=parens-check=
+#+STATUS: clean.  =alts!= reuses =nl-safe='s =nl-cell= as a claim-once
+#+STATUS: race adjudicator exactly as §4.6 designs, wrapped in a
+#+STATUS: =cl-defstruct= record (=nl-clj-async--alts-token=) because
+#+STATUS: =nelisp-send='s own Phase 4.3 shared-immutable message
+#+STATUS: policy deep-copies plain vectors — including =nl-cell= — and
+#+STATUS: the whole point of this cell is that two different channels'
+#+STATUS: mediators see the SAME one; measured directly, not assumed
+#+STATUS: (a raw =nl-cell= sent to two mediators arrived as two private
+#+STATUS: copies, both winning their own claim).  =nl-clj-go='s own
+#+STATUS: return channel is standalone-proven for a real, multi-round-
+#+STATUS: trip ping/pong exchange (=nl-clj-async-standalone-smoke=,
+#+STATUS: below) — against-the-bug, this took several real,
+#+STATUS: substrate-specific defects found and fixed in the same
+#+STATUS: session, each documented at its own fix site in nl-clj-
+#+STATUS: async.el's Commentary: (1) =nelisp-chan='s own struct
+#+STATUS: accessors were not covered by =nelisp-actor-cps-dump.el='s
+#+STATUS: reused struct-accessor-inlining suppression (that script only
+#+STATUS: ever covered =nelisp-actor='s own), baking real Emacs's
+#+STATUS: =aref=/=cl-struct-nelisp-chan-tags= inlining into the
+#+STATUS: generated file, which the standalone's differently-shaped
+#+STATUS: struct polyfill cannot read — silently misroutes messages
+#+STATUS: (a hang, not a crash); (2) a value derived from a form
+#+STATUS: containing a park point must never be nested as a =let=
+#+STATUS: binding's init-form OR a function-call argument when the
+#+STATUS: SAME park point is resumed 2+ times by an enclosing loop —
+#+STATUS: it must stay a literal top-level statement of the actor
+#+STATUS: body; found in =nl-clj-go='s own wrapper (fixed: only the
+#+STATUS: LAST body form is nested, into =nelisp-chan-send='s own
+#+STATUS: message argument, via =butlast=) and, separately, still
+#+STATUS: open in =nl-clj-<!=/=nl-clj->!= themselves under repeated
+#+STATUS: resumption specifically (root cause not fully isolated within
+#+STATUS: this session — see =nl-clj-async-standalone-smoke.el='s own
+#+STATUS: Commentary; the shipped standalone example therefore uses
+#+STATUS: =nelisp-chan-send=/=nelisp-chan-recv= directly, not =nl-clj-
+#+STATUS: <!=/=nl-clj->!=, an honestly named, narrower proof than the
+#+STATUS: doc's own headline "go/chan is standalone-proven" would
+#+STATUS: suggest at first read).  A third open, separately-named
+#+STATUS: item: a SECOND top-level call to the baked demo function in
+#+STATUS: the same process hangs (not a busy loop — low CPU across a
+#+STATUS: 60s wait), while a single call is correct and repeatable
+#+STATUS: across HOPS values every time this session tested it; the
+#+STATUS: standalone smoke therefore makes exactly one call.  §5.1
+#+STATUS: refs/STM and §5.2 multicore remain correctly UNBUILT per this
+#+STATUS: doc's own §5.2 recommendation ("do not schedule... as part of
+#+STATUS: this library's own roadmap at all"); §4.4 transients remains
+#+STATUS: =packages/nl-clj/README.org='s own named next phase, not
+#+STATUS: started.  Marked PARTIAL rather than SHIPPED, following Doc
+#+STATUS: 190's own precedent for a doc whose build-first ranking (§6)
+#+STATUS: has landed some items and deliberately not others, and
+#+STATUS: because §4.6 itself landed with the two open standalone gaps
+#+STATUS: just named, not fully clean.
+#+STATUS:
+#+STATUS: Every asset claim in §2 below was either read from a file at
+#+STATUS: a cited line or measured directly against a built
+#+STATUS: =target/nelisp= (sha256 =63bae678...9a490=, 7184888 bytes,
+#+STATUS: built 2026-08-23 19:56 from =eb4eb81f3=, which is also this
+#+STATUS: branch's own fetch point on
+#+STATUS: =origin/feat/native-observability= — probed from a
+#+STATUS: throwaway scratch directory, never writing into that
+#+STATUS: binary's own worktree, per AI.md rule 4/5's "read values out
+#+STATUS: of files, name the artifact a number came from" discipline).
+#+STATUS: The implementation's own claims (structural sharing by =eq=,
+#+STATUS: immutability, the standalone print/read round-trip a tagged
+#+STATUS: vector survives where §2.1 found =record= does not, and one
+#+STATUS: real substrate-specific defect the standalone smoke caught
+#+STATUS: and this implementation fixed — unmasked hash-mixing
+#+STATUS: arithmetic overflowing under §2.2's own "no bignum
+#+STATUS: promotion" finding) are each measured the identical way,
+#+STATUS: against a SEPARATE =target/nelisp= built 2026-08-24 from
+#+STATUS: this implementation's own tree — see
+#+STATUS: =packages/nl-clj/README.org='s Testing section for the exact
+#+STATUS: commands.  The lazy phase's own bignum-promotion claim is
+#+STATUS: measured the identical way, against a THIRD =target/nelisp=
+#+STATUS: built 2026-08-24 from the =feat/nl-clj-lazy= tree itself —
+#+STATUS: same Testing section, same commands.  §4.6's own claims (the
+#+STATUS: standalone defects above) were measured 2026-08-24 against
+#+STATUS: =target/nelisp= (sha256 =781be323...48c0d1=, 7784728 bytes,
+#+STATUS: built 2026-08-24 16:36 from this same branch's own
+#+STATUS: =feat/native-observability= fetch point, before this branch's
+#+STATUS: own elisp-only changes — §4.6 is pure Elisp loaded via
+#+STATUS: =--load=, not AOT-baked into the image, so the binary itself
+#+STATUS: is byte-identical to that fetch point; the size ratchet's own
+#+STATUS: base measurement is this exact file).
+#+VERIFIED-BY: compile parens-check ert-full nl-clj-standalone-smoke nl-clj-async-standalone-smoke
+
+* Status
+
+| item     | value                                                             |
+|----------+--------------------------------------------------------------------|
+| Doc #    | 195                                                                |
+| State    | PARTIAL — build-first Tier 1 (§4.1/§4.2/§4.5, §4.7 eager+lazy) SHIPPED 2026-08-24 as packages/nl-clj/; §4.6 (channels/go) landed same day with two open, honestly-named standalone gaps (nl-clj-<!/nl-clj->! under repeated resumption; a second top-level call to the baked demo) — see #+STATUS above; §4.4/§5 not started |
+| Parent   | Doc 168 (extension libraries, non-goals and layer discipline)     |
+| Sibling  | Doc 169 (nl-prelude/nl-condition), Doc 170 (nl-safe/nl-contract), Doc 189 (nl-ns), Doc 190 (bignums), Doc 193 (extension libraries publication), Doc 10 (nelisp-actor / Phase 4 actor runtime) |
+| Reads    | =packages/nelisp-actor/src/nelisp-actor.el=, =packages/nelisp-actor/README.org=, =packages/nl-safe/src/nl-safe.el=, =packages/nl-safe/README.org=, =packages/nl-prelude/src/nl-prelude.el=, =packages/nl-ns/src/nl-ns-in.el=, =packages/nl-ns/src/nl-ns-reader.el=, =packages/nelisp-json/README.org=, =packages/nelisp-secure-hash/README.org=, =docs/design/168/169/170/186/189/190/193=, =docs/design/39-phase9d-process-substrate.org=, =docs/design/146-low-memory-value-rep-and-gc.org=, =tools/selfhost-mt-test.sh=, =tools/gate-mutations.txt=, =tools/ai/gates.expected= |
+| Probed   | =target/nelisp --eval EXPR=, from a scratch cwd, against the binary identified above — every claim in §2 marked "measured" came from one of these calls, not from reading a doc's own claim about itself |
+
+* 1. Scope, and the non-goals this doc inherits without re-arguing them
+
+This is a survey for one new =packages/nl-clj/= library: persistent
+immutable vector/map/set/list, =atom=, channels and =go= blocks, a lazy
+sequence abstraction, and an honest look at refs/STM and real multicore
+— "usable as a library so users can write in a Clojure idiom," per the
+brief this doc answers.
+
+Doc 168 §2 already fixed three non-goals that bind everything below,
+and this doc does not reopen them:
+
+- *"素の Elisp の意味論を変更しない"* — code that never loads
+  =nl-clj= behaves exactly as it does today. §3.1 below exists
+  specifically because a Clojure-named API is the single easiest way to
+  violate this by accident (Elisp already has =assoc=, =get=, =pop=,
+  =atom=, =concat= — measured collisions, §2.6).
+- *"完全な Rust 借用検査器の再現 — 静的健全性は限定範囲でのみ主張する"*
+  — §4.4's reuse of =nl-safe='s dynamic borrow cells inherits this
+  scope exactly: a runtime check, not a static guarantee.
+- *"新方言の定義 — あくまで Elisp のライブラリであり、S 式の読み方は
+  変えない"* — this is the one that rules out real =\{...\}=/=#\{...\}=
+  reader literals (§3.3) and rules in favor of a private string parser
+  instead, following a precedent this repo already ships
+  (=packages/nelisp-json=, §2.3).
+
+Doc 168 §3.1's three-layer rule ("実装に必要な最も浅い層に配置する") is
+the other constraint every item below is checked against: everything in
+Tier 1 (§4) is designed to land as L1 (macros + functions inside the new
+package, zero reader/evaluator changes); nothing here proposes touching
+=src/nelisp-read.el= or the evaluator itself.
+
+* 2. What is actually true today, measured
+
+This section exists because three of the task brief's own framings
+turned out to be imprecise once checked directly, and a design built on
+the imprecise version would have been wrong in ways that only surface
+once someone tries to use it — the exact failure mode AI.md's "measured,
+not assumed" rules exist to catch.
+
+** 2.1 Records print like records but do not round-trip like records
+
+The brief flagged this as worth checking ("the char-table work found
+=make-record= returns cons in some builds"). Doc 186 §9.2 found, on a
+=target/nelisp= build predating this one, that =(type-of (make-record
+'foo 3 nil))= answers =cons=, and traced the cause: =target/nelisp='s
+actual dispatcher for the record family is a closed literal-name
+match table (=nelisp-standalone--applyfn-reader-table=,
+=scripts/nelisp-standalone-build.el=), a different code path from the
+AOT compiler's =record-make= grammar op the =type-of= story assumed.
+
+Measured independently this session, against the binary identified in
+Status, with results that sharpen Doc 186's own finding rather than
+just repeat it:
+
+#+begin_example
+(recordp (record 'bar 1 2))        => t      ; correct
+(consp (record 'bar 1 2))          => nil    ; correct
+(aref (record 'bar 1 2) 0)         => bar    ; correct
+(type-of (record 'bar 1 2))        => cons   ; WRONG (Doc 186's finding, reconfirmed)
+(cl-typep (make-pr-s2 :a 1) 'pr-s2) => nil   ; WRONG, a second instance of the same bug
+(pr-s2-p (make-pr-s2 :a 1))         => t     ; correct
+(pr-s2-a (make-pr-s2 :a 1))         => 1     ; correct
+#+end_example
+
+So =recordp=, the generated per-struct predicate, and the generated
+accessor are all *sound* — a =foo-s-p= predicate correctly returns =nil=
+for a =bar-s= instance, a plain list, and a mismatched cons (measured:
+=(foo-s-p (make-bar-s :a 1))=, =(foo-s-p (list 1 2))=, =(foo-s-p (cons
+'foo-s 1))= all =nil=, only =(foo-s-p (make-foo-s :a 1))= is =t=).  Only
+the *generic type-dispatch* primitives (=type-of=, =cl-typep=) are
+unreliable. This means =cl-defstruct= is safe to use for opaque handles
+whose callers only ever go through the generated predicate/accessor
+API (exactly how =nelisp-actor= already uses it in production — §2.4)
+— but unsafe for anything that needs =type-of=-based dispatch, and,
+found only by testing the actual round-trip rather than assuming print
+implies read:
+
+#+begin_example
+(prin1-to-string (make-pr-s :a 1 :b 2))   => "#s(pr-s 1 2)"   ; looks right
+(pr-s2-p (car (read-from-string "#s(pr-s2 7 9)")))
+                                            => nil             ; the read-back object is NOT a pr-s2
+(pr-s2-a (car (read-from-string "#s(pr-s2 7 9)")))
+                                            => signals (wrong-type-argument arrayp #s)
+#+end_example
+
+=prin1= emits real Emacs =#s(...)= record syntax, but the standalone
+reader's =#s(...)= handling does not reconstruct a working instance —
+this is a genuine print/read *asymmetry*, not merely "records are
+unreliable," and it is the direct answer to the brief's own ask
+("Printing (=prin1= round-trip of a persistent map)"): =cl-defstruct=/
+=record= cannot be the representation for anything this library needs
+to round-trip. Plain tagged vectors do not have this problem —
+measured the identical shape:
+
+#+begin_example
+(prin1-to-string (vector 'nl-clj--pvec 3 5 [1 2 3]))
+  => "[nl-clj--pvec 3 5 [1 2 3]]"
+(equal (vector 'nl-clj--pvec 3 5 [1 2 3])
+       (car (read-from-string (prin1-to-string ...))))
+  => t
+#+end_example
+
+§3.2 decides the representation on this evidence.
+
+** 2.2 The numeric tower: construction/printing shipped, arithmetic promotion did not
+
+The brief describes bignum as "tag 13, shipped PA/PB." Checked against
+Doc 190 directly: only *Phase A* is SHIPPED ("comparison, printing,
+construction/reading" — Doc 190 status header, 2026-08-23) — Phase B
+("arithmetic core," i.e. =+=/=-=/=*= auto-promoting past fixnum range)
+and Phase C (AOT codegen) are both still DRAFT, "not started," per Doc
+190's own status line and its §6 implementation report, which frames
+itself explicitly as "Phase A only... a bignum flowing into =+=/=-=/=*=
+still signals =overflow-error=, unchanged from Doc 187's landed
+contract."
+
+Measured directly, confirming Doc 190 §6.2's own claim rather than
+trusting the doc's self-report:
+
+#+begin_example
+99999999999999999999                    => 99999999999999999999   ; reads fine
+(bignump 99999999999999999999)           => t
+(< most-positive-fixnum 99999999999999999999) => t                 ; compares fine
+(+ most-positive-fixnum 1)               => signals overflow-error  ; does NOT promote
+#+end_example
+
+Clojure's own default numeric tower auto-promotes =+=/=*=/=inc= past
+=Long/MAX_VALUE= to =BigInteger= silently (unless a caller opts into
+=unchecked-add= for the old behavior). NeLisp cannot offer that yet — a
+=nl-clj= built today gets bignum *values* (reading, printing, comparing
+work — a persistent structure can legitimately hold one as an element,
+and =nl-clj-count= will never realistically approach fixnum's =2^61-1=
+ceiling) but not bignum *arithmetic*. §4 does not depend on Phase B for
+anything Tier 1 needs (indices, counts, hash codes are all far inside
+fixnum range); §5 notes it as a real, named gap for a general
+=nl-clj-+=/=nl-clj-*= that would want Clojure's own promoting behavior,
+deferred to Doc 190 Phase B rather than reimplemented here — reimplementing
+bignum arithmetic inside a persistent-data library would be exactly
+the "second implementation that silently disagrees with the real one"
+risk Doc 193 §4.3 names for the =eql=/stdlib-split precedent (Doc 189
+§1), applied to a different pair of divergent implementations.
+
+** 2.3 Hashing: =secure-hash= is absent, =sxhash-equal= is present and stable
+
+The brief flagged =secure-hash= availability as "spotty in standalone —
+measure." Measured:
+
+#+begin_example
+(fboundp 'secure-hash)   => nil    ; void-function, confirmed
+(fboundp 'sxhash)        => t
+(fboundp 'sxhash-equal)  => t
+(fboundp 'sxhash-eq)     => t
+(fboundp 'sxhash-eql)    => t
+(= (sxhash-equal (list 1 2 3)) (sxhash-equal (list 1 2 3)))   => t
+(= (sxhash-equal (vector 1 2 3)) (sxhash-equal (vector 1 2 3))) => t
+#+end_example
+
+=secure-hash= being absent is not actually spotty — it is fully absent
+(void-function), and there is a purpose-built replacement already
+shipped for exactly this gap, =packages/nelisp-secure-hash= ("pure
+Elisp MD5, SHA-1, and SHA-256 digest functions for the standalone path
+without depending on host Emacs =secure-hash=" — its own README), but
+it is irrelevant to this design: a HAMT needs a fast, well-distributed
+hash over Elisp values, not a cryptographic digest — this is the same
+choice Clojure itself makes (=hasheq=/=Object.hashCode=, not SHA-256).
+=sxhash-equal= is present, =fboundp=, and measured stable across two
+structurally-equal-but-=eq=-distinct compound values — exactly the
+property a HAMT bucket function needs. §3.2/§4.2 use it for leaf
+key/value hashing, with one sharp caveat spelled out there: it must
+NOT be used to hash or compare two =nl-clj= *collections* against each
+other (§3.2's "structural-identity is not logical-equality" trap).
+
+One more absence worth naming because it forecloses an option rather
+than opening one: =(fboundp 'define-hash-table-test)= is =nil= —
+measured. A plain =make-hash-table= cannot be given a custom =:test= on
+this substrate, so "just put =nl-clj= collections as keys in an
+ordinary Elisp hash-table" is not available even as an escape hatch; a
+HAMT node's own internal dispatch has to be hand-rolled (bitmap + packed
+child vector, addressed by manual bit arithmetic on the hash, §4.2) —
+which real HAMT implementations do anyway and were never going to route
+through =make-hash-table= internally, so this closes an option nobody
+needed, not one the design depended on.
+
+** 2.4 =nelisp-actor= is a shipped cooperative coroutine substrate, standalone-proven
+
+=packages/nelisp-actor/src/nelisp-actor.el= (762 lines) already ships
+exactly the primitive the task brief names: "a =go= block IS a
+CPS-transformed cooperative coroutine." =nelisp-actor-lambda=
+(=nelisp-actor.el:300-318=) expands to =(iter-lambda () ,@body)= — a
+generator built by real =generator.el='s macro-expansion (at build
+time under host Emacs, per Doc 193 §4.3, or the soft-required runtime
+when it is present) — and =nelisp-spawn= (=nelisp-actor.el:352-385=)
+funcalls that thunk once to obtain an iterator, enqueues the resulting
+actor, and lets =nelisp-actor-run-until-idle= (=nelisp-actor.el:466-479=)
+drive it via =iter-next= (=nelisp-actor.el:434-464=) until it blocks,
+yields, finishes, or crashes. =nelisp-receive= (=nelisp-actor.el:320-340=)
+and =nelisp-yield= (=nelisp-actor.el:342-348=) are exactly the suspend
+points a Clojure =go= block's =<!=/park would need.
+
+Channels are already shipped too, as sugar over a private
+"queue-mediator" actor (=nelisp-actor.el:617-748=):
+=nelisp-make-chan= (=nelisp-actor.el:628-700=) takes an optional buffer
+capacity (0 = unbuffered rendezvous, matching Go's — and core.async's
+own — channel model, per its own docstring), =nelisp-chan-send=/
+=nelisp-chan-recv= (=nelisp-actor.el:702-733=, macros, valid only
+inside an actor body) are parking put/take, and =nelisp-chan-close=
+(=nelisp-actor.el:735-748=) wakes pending receivers with a closed
+sentinel and fails pending senders. This is, function for function,
+core.async's =chan=/=>!=/=<!=/=close!=.
+
+Standalone status, not assumed: =nelisp-actor.el='s own README states
+the honest boundary as of 2026-08-23 — a build-time CPS transform
+(=packages/nelisp-actor/scripts/nelisp-actor-cps-dump.el=, decided
+in Doc 193 §4.3 over vendoring real =generator.el= verbatim, which hit
+an unreduced reader bug, and over hand-porting its CPS transform, which
+risks a second silently-divergent implementation) macroexpands actor
+thunks under host Emacs and bakes the generator-free result into a
+checked-in file; the standalone smoke =nl-actor-standalone-smoke=
+proves spawn/mailbox/send/receive/yield/run-until-idle all work on
+=target/nelisp= itself, byte-identical to host Emacs across four
+=hops= values. The one honest limit, stated by the README itself and
+worth repeating because §4.6 designs around it: *writing a NEW
+=nelisp-actor-lambda= form and expecting it to run standalone directly
+does not work yet* — only pre-transformed, checked-in thunks do. A
+=nl-clj-go= macro built directly on =nelisp-actor-lambda= inherits this
+exact limitation, not a new one — §4.6 treats it as a build-step
+requirement (regenerate a baked file, mirroring
+=make nelisp-actor-cps-baseline=), not a design blocker.
+
+** 2.5 =nl-safe= is a shipped aliasing-XOR-mutation enforcer, standalone-proven
+
+=packages/nl-safe/src/nl-safe.el= ships =nl-cell= (=nl-safe.el:98-100=:
+=(vector 'nl--cell value 0)=, a plain 3-slot vector — the exact
+representational idiom §3.2 below adopts for =nl-clj='s own types) with
+=nl-with-borrow=/=nl-with-borrow-mut= (=nl-safe.el:196-256=) enforcing
+"sharing XOR mutation" via a runtime state counter: 0 free, =n>0=
+shared borrows, =-1= exclusive (=nl-safe.el:121-125=). A violation signals
+=nl-borrow-error= and is optionally logged (=nl-safe.el:127-139=); the
+borrow is released via =unwind-protect= so it survives non-local exits.
+=nl-cell-set= (=nl-safe.el:175-187=) is the one write path, and it
+itself signals unless the exclusive borrow is currently held.
+
+Doc 170 §2 (the design doc behind this package) is explicit about why
+this is a runtime check and not a static one — "完全な借用検査器は
+Elisp では現実的でない...eval と実行時再定義がある環境では健全性が
+保証できない" — matching Doc 168 §2's non-goal exactly. This is the
+"mutation of an immutable violates loudly" partner the task brief
+names, and §4.4 below is precise about *where* it earns its place:
+not wrapping every steady-state persistent node (that would tax the
+one operation a persistent structure exists to make cheap — a read),
+but at the transient/persistent boundary Clojure itself defines.
+
+One measured limit, from the package's own README, not this doc's
+guess: "the =clone(2)= shared-address-space path needs atomic STATE
+updates (Doc 170 section 3.4) — *not wired yet*, see Follow-ups." Doc
+170 §3.4 names =atomic-fetch-add= as the intended mechanism but it is
+not implemented — =nl-cell= today is correct only under NeLisp's
+current single-thread execution model (§2.7), a fact §5.2 depends on.
+
+** 2.6 Two different =nl-ns= mechanisms exist, and only one is wired to ordinary file loading
+
+This matters directly for §3.1's naming decision, so it is measured
+here rather than assumed from the package's name alone. Two, not one:
+
+1. *=nl-ns-in.el='s macro-rewrite* (Doc 168-era, shipped, in production
+   use): =nl-ns-define= (=nl-ns-in.el:38-66=) declares a namespace's
+   =:prefix= and closed =:members= list; =nl-ns-in= (=nl-ns-in.el:236-243=)
+   walks its whole body — both definition heads AND ordinary call
+   sites, not just definitions, confirmed by reading =nl-ns-expand=
+   (=nl-ns-in.el:228-234=), which builds one rewrite map from
+   =nl-ns-member-list= and applies it via =nl-ns-in--rewrite-seq= over
+   the entire form — replacing every occurrence of a declared member
+   symbol with its qualified name (=nl-ns-qualify=, =nl-ns-in.el:76-78=,
+   plain string concatenation + =intern=) *at macro-expansion time*.
+   This runs through ordinary =require=/=load= today; it is the
+   mechanism =nelisp-actor= itself does not use but that is otherwise
+   production-ready.
+2. *=nl-ns-reader.el='s reader-time resolution* (Doc 189 Phase 0,
+   landed 2026-08-23): a genuinely different mechanism — resolves a
+   short name to its qualified symbol *before the reader interns it*,
+   so the short name is never even created as a symbol (=nl-ns-reader.el=
+   commentary, lines 14-21). But its own commentary says plainly:
+   "Wiring an opted-in file into the production loader
+   (=nelisp-load.el=, =require=) is explicitly out of scope for Phase 0"
+   (=nl-ns-reader.el:47-49=) — the only entry points are
+   =nl-ns-read-in=/=nl-ns-read-from-string-in=/=nl-ns-read-all-in=
+   (=nl-ns-reader.el:101-117=), which read a *string* with resolution
+   bound, not a file loaded the ordinary way. A =packages/nl-clj/src/
+   nl-clj-vector.el= loaded via plain =(require 'nl-clj-vector)= would
+   never pass through this mechanism at all.
+
+So "nl-ns namespaces just shipped P0/P1 — is that the vehicle?" (the
+task brief's own question) has a precise, two-part answer: the
+macro-rewrite half (1) is the vehicle *usable through ordinary
+=require= today*; the reader-time half (2) is real, shipped, and
+philosophically closer to what a "namespace" should feel like, but is
+not yet wired to the loading path a library's own source files would
+actually use. §3.1 decides on this basis.
+
+Measured collision data, over exactly the candidate short-name
+surface this design wants (=fboundp=/=boundp= against the identified
+binary):
+
+#+begin_example
+Collides with an existing global binding, different meaning:
+  assoc  (t — alist lookup)      get   (t — symbol-plist accessor)
+  pop    (t — destructive macro) atom  (t — "is this a non-cons value" predicate)
+  concat (t — string/seq concatenation, different arg contract)
+
+Free (unbound), safe as a bare short name today:
+  conj dissoc update into count seq first rest peek chan go
+  map reduce filter partition merge keys vals empty
+#+end_example
+
+=atom= is the sharpest case: Elisp's =atom= is a predicate ("not a
+cons"), Clojure's =atom= is a mutable-reference constructor — same
+name, unrelated meaning, and =backquote.el=/=pcase.el=-class code
+calls the real one internally. If a source file declared =atom= as an
+=nl-clj= member and wrote =(nl-ns-in nl-clj ... (some-check (atom x))
+...)=, =nl-ns-in--rewrite-seq='s whole-body walk (confirmed above) would
+silently rewrite that call site to =(nl-clj-atom x)= too — not just the
+=nl-clj-atom= constructor's own =defun= head. §3.1 treats this as a real,
+accepted cost of the sugar layer, not a hypothetical.
+
+** 2.7 The concurrency ceiling: single-thread MVP is a whole-tree decision, and the clone(2) proof is real but narrow
+
+=tools/selfhost-mt-test.sh= is real and does what its header says: the
+standalone NeLisp interpreter, running as a pure-Elisp AOT self-host
+compiler, compiles a Lisp program that spawns real OS threads via raw
+=clone(2)= (=CLONE_VM|CLONE_FS|CLONE_FILES=), each writing into a
+shared =mmap= region and bumping a shared counter with a =SeqCst
+atomic-fetch-add=, joined by the parent spin-waiting on that counter.
+This is a genuine, measured proof that *AOT-compiled native code* this
+compiler emits can do real shared-memory multicore work.
+
+What it is not: a callable primitive reachable from an ordinary running
+Elisp/NeLisp program. It exercises the AOT compiler's own code
+generation path (=lisp/nelisp-aot-compiler.el=, =nelisp-asm-x86_64.el=,
+=nelisp-elf-write.el=) to produce a *new, separate native binary* that
+is then run as its own process — not a =(nl-clj-future ...)= call a
+running interpreter session could make today.
+
+Two independent, directly-read facts bound how far this generalizes:
+
+- *The whole process substrate is scoped single-thread by design, not
+  by omission.* Doc 39 §6.5/§9.4: "本 phase も single-thread eventloop
+  で完結... multi-thread design は Phase 11+ で別 doc 起こす," reflecting
+  a decision (not an open question) recorded against Doc 29 v2 §2.9.
+  This is the process/event-loop layer, not the GC, but it establishes
+  that nothing in the currently-shipped tree expects concurrent
+  Lisp-level execution to be a thing that happens.
+- *The GC is a single-heap tracing collector with no thread-safety
+  story.* Doc 146 §2.1 describes the live mechanism directly: mark-only
+  sweep (=nl_gc_sweep_one=), a vestigial per-object refcount field that
+  is bumped with =atomic-fetch-add= on clone (=nelisp-cc-nlconsbox-clone.el:98=
+  cited there) but never consulted for freeing — "rc は死蔵" (rc is
+  vestigial). Nothing in that doc, or anywhere else this session's reads
+  touched, describes a stop-the-world handshake, a per-thread allocation
+  arena, or any synchronization for a second thread mutating the heap
+  while a mark pass runs. The =atomic-fetch-add= that exists today
+  protects one dead refcount field, not general heap mutation.
+
+§5.2 is built on exactly this pair of facts: the *mechanism* (real
+clone(2), real atomics, proven at the AOT-codegen level) exists; the
+*two things a =pmap=/=future= over shared persistent data would need*
+— (a) an ordinary-Elisp-callable thread-spawn primitive, and (b) a GC
+that tolerates concurrent mutation, or a design that keeps worker
+threads out of the GC's reach entirely — are both, independently,
+un-started work, not "difficult but designed" work.
+
+* 3. Decided direction: naming, representation, printing
+
+** 3.1 Naming-collision strategy: qualified prefix is the ground truth; =nl-ns-in= is opt-in sugar, not a new dialect
+
+Given §2.6's measured collisions (=assoc=, =get=, =pop=, =atom=,
+=concat=) and §2.6's finding that =nl-ns-in='s rewrite touches every
+occurrence of a member name in a block, not just definitions, the
+options actually on the table are narrower than the task brief's own
+three guesses ("nl-ns... vehicle? or a cljs- prefix? or a package with
+its own reader?"):
+
+- *A =cljs-= prefix is rejected outright*, for a reason outside this
+  codebase: ClojureScript already owns that name in the wider world,
+  and a NeLisp library that compiles nothing to JavaScript spelling
+  its persistent-vector constructor =cljs-vec= would mislead every
+  reader who has ever used real ClojureScript. Not a technical
+  objection, but a real one.
+- *"A package with its own reader" is rejected by Doc 168 §2's own
+  non-goal* ("あくまで Elisp のライブラリであり、S 式の読み方は変えない"),
+  independently confirmed by measurement: =\{= and =\}= have zero
+  special meaning to the standalone reader today — =(read-from-string
+  "\{:a 1\}")= reads the *symbol* =\{:a= (three ordinary constituent
+  characters), not a delimiter (measured). Claiming =\{...\}=/=#\{...\}=
+  as map/set literal syntax is exactly the class of risk Doc 189 §2.1
+  already worked through for CL's colon-package syntax: a character
+  that reads as "ordinary" today would silently change meaning for any
+  existing (rare, legal) symbol name using it.
+- *Global redefinition of the colliding short names* (shadowing the
+  real =atom=/=get=/=assoc=/=pop=/=concat=) is not even a candidate —
+  it is the direct violation of Doc 168 §2's first non-goal, and would
+  break =backquote.el=/=pcase.el=-class code that calls the real
+  =atom= internally, which nothing in this design gets to redefine out
+  from under.
+
+*Decided*: the public, =eq=-stable, debugger-visible ground truth is a
+qualified prefix — =nl-clj-conj=, =nl-clj-atom=, =nl-clj-chan=, matching
+Doc 168 §4.2's own convention table (public symbol = package prefix,
+internal = =--=) and this repo's existing =nl-= family naming (§3.4).
+=nl-ns-define=/=nl-ns-in= (§2.6 mechanism 1, already production-usable
+through ordinary =require=) is the *opt-in* ergonomic layer: a source
+file — either inside the library's own implementation or a consumer's
+application code — may write
+
+#+begin_src elisp
+(nl-ns-define nl-clj :prefix "nl-clj-"
+  :members (conj dissoc update into count seq first rest peek
+            swap! reset! compare-and-set! chan go close! >! <!))
+(nl-ns-in nl-clj
+  (defun demo (v) (conj v 1)))   ; expands to (defun nl-clj-conj-demo ...)
+                                   ; using conj, expands its body's (conj v 1)
+                                   ; to (nl-clj-conj v 1)
+#+end_src
+
+Deliberately *not* listed in =:members=: =assoc=, =get=, =pop=, =atom=,
+=concat= — the five measured collisions. =nl-clj= still exports
+=nl-clj-assoc=/=nl-clj-get=/=nl-clj-atom=/=nl-clj-concat= as qualified
+names (callable everywhere, sugar or not); a consumer who wants the
+short spelling for one of these five specific names inside their own
+=nl-ns-in= block accepts, explicitly, that they lose easy access to
+the real Elisp =atom=/=get=/=assoc=/=pop=/=concat= inside that same
+block (per §2.6's measured whole-body rewrite) — a real, named,
+narrow tradeoff, not a hidden one. =nl-clj-pop= (removing the last
+element for the persistent-vector sense) keeps its qualified name
+unconditionally rather than ever being offered as bare =pop= sugar,
+specifically because real Elisp =pop= is a common destructive-list
+macro whose collision risk (silently swallowing a plain list mutation
+inside a block that meant the persistent operation, or vice versa) is
+worse than =assoc=/=get='s — those are at least both read-only lookups
+with a similar shape; =pop= is destructive on one side and
+non-destructive on the other, the sharpest possible divergence.
+
+Doc 189 §1's own =eql= divergent-collision story (two definitions, one
+silently wins by load order) is the concrete lesson this decision is
+built to avoid: the qualified name is never ambiguous regardless of
+load order, and the sugar layer's collisions are scoped to exactly the
+files that opt in, by declared member list, checked at macro-expansion
+time — not discovered later by a separate audit tool the way Doc 189
+§1's 306 =ns-collision= findings were.
+
+Doc 189 Phase 0's reader-time mechanism (§2.6 mechanism 2) is
+explicitly *not* the vehicle for =nl-clj='s own source files today,
+because — per its own commentary, not a guess — it is not wired to
+=require=/=load= yet. It remains a candidate future upgrade path for
+=nl-clj= specifically (the member list =nl-ns-define= already declares
+is exactly the input =nl-ns-read--table= needs, per
+=nl-ns-reader.el:59-74=), noted here so a future doc does not have to
+re-derive the connection, but not designed further — Doc 189 §4 Phase 2
+already defers exactly this kind of "how does a real consumer actually
+use it" question to real adoption data, which does not exist yet.
+
+** 3.2 Representation: tagged plain vectors, not =cl-defstruct=/=record=, for anything that must round-trip
+
+§2.1's measurement is decisive: =cl-defstruct=/=record= print with
+real =#s(...)= syntax but do not read back into working instances on
+this substrate (a genuine, substrate-specific print/read asymmetry,
+not a general Elisp limitation), while tagged plain vectors —
+=nl-safe='s own =nl-cell= representation, =(vector 'nl--cell value 0)=
+at =nl-safe.el:100= — print with ordinary =[...]= syntax and round-trip
+through =read-from-string= correctly (measured, §2.1).
+
+*Decided*: every =nl-clj= collection is a plain Elisp vector whose slot
+0 is a distinguishing tag symbol, following =nl-cell='s own idiom
+exactly:
+
+#+begin_example
+persistent vector: [nl-clj--pvec COUNT SHIFT ROOT TAIL]
+persistent map/set (HAMT root): [nl-clj--pmap COUNT ROOT]  (set = a map whose values are all the sentinel `nl-clj--set-member')
+persistent list: ordinary cons cells, nil-terminated — ALREADY Clojure's
+  own representation choice for its own `list`, no wrapper needed; the
+  empty list is Elisp's own `nil`, matching Clojure's own `(empty? '())`
+  contract with zero new code
+transient (vector or map, mid-build): [nl-clj--transient CELL COUNT ...]
+  where CELL is an `nl-cell` (§4.4) wrapping the mutable staging array
+atom: [nl-clj--atom VALUE WATCHES]
+lazy-seq cell: [nl-clj--lazy CELL]  where CELL is an `nl-cell` wrapping
+  (THUNK . REALIZED-VALUE-OR-NIL) — reusing the same borrow-checked
+  realize-once fence transients use (§4.7)
+#+end_example
+
+Trie *internal* nodes (the 32-way branch arrays inside a persistent
+vector or a HAMT) are deliberately untagged, ordinary =make-vector=
+arrays — they are never handed to a caller directly (only the tagged
+envelope is a public value), so there is nothing to discriminate by
+type at that layer, and tagging every internal node would cost one
+slot and one =aref= per level on the single operation a persistent
+structure exists to make cheap: a read. =nelisp-chan=/=nelisp-actor=
+(§2.4) remain =cl-defstruct= exactly as shipped — this decision does
+not touch them, because neither is ever meant to =prin1=/round-trip
+(matching Clojure's own convention: an atom or a channel prints as an
+opaque, unreadable =#object[...]=, never something a reader
+reconstructs), so §2.1's asymmetry costs them nothing.
+
+One correctness trap this representation choice creates, named
+explicitly rather than left implicit: built-in =equal=/=sxhash-equal=
+walk a tagged vector *structurally* (comparing =ROOT=/=TAIL=/=SHIFT=
+element by element), which is NOT the same question as Clojure's own
+logical collection equality (comparing the *sequence of elements*, via
+=seq=, regardless of internal tree shape — two persistent vectors
+holding =[1 2 ... 33]= built by different call sequences are not
+guaranteed to share identical =ROOT=/=TAIL=/=SHIFT= layout even though
+they are logically the same vector). =nl-clj= therefore must define its
+own =nl-clj-equal= and =nl-clj-hash= that dispatch on the tag symbol
+and recurse via the =seq= protocol (§4.7) for its own collection types,
+while still using plain =equal=/=sxhash-equal= for the *leaf* keys and
+values a HAMT stores (ordinary Elisp values — numbers, strings,
+keywords, symbols, conses — where structural equality already is the
+right notion, §2.3). Passing an =nl-clj= collection as a key into a
+*plain* =(make-hash-table :test 'equal)= silently uses the wrong
+notion of equality (tree-shape instead of logical content) — no error,
+just a wrong answer for structurally-different-but-logically-equal
+collections; this is documented as a named, accepted footgun rather
+than solved, because =define-hash-table-test= being void-function
+(§2.3) closes the option of registering the right one as a real
+hash-table =:test= at all.
+
+** 3.3 Printing and reading: =pr-str= is cosmetic output; =nl-clj-read-string= is a private parser, never the reader
+
+Doc 168 §2's "not a new dialect" non-goal forecloses real =\{...\}=/
+=#\{...\}= *reader* literals (§3.1). But nothing stops =nl-clj-pr-str=
+from *emitting* genuine Clojure-shaped text — printing is one-directional
+string construction, not reader configuration, so =(nl-clj-pr-str m)=
+can produce =\"\{:a 1, :b 2\}\"= for a map and =\"#\{1 2 3\}\"= for a set
+purely by string concatenation, exactly the "Clojure feel" a REPL
+transcript wants, with zero reader involvement.
+
+Reading that text back is a genuinely separate function,
+=nl-clj-read-string=, a hand-written recursive-descent parser over an
+ordinary Elisp string — not =read=/=read-from-string=, not a hook into
+=src/nelisp-read.el=. This has a direct, already-shipped precedent in
+this exact repo: =packages/nelisp-json= is "the pure Lisp JSON parser
+and encoder... a =json.el=-compatible surface without depending on
+host Emacs =json.el=" (its own README), exposing
+=nelisp-json-parse-string=/=nelisp-json-read-from-string= as ordinary
+functions that never touch the Elisp reader at all. =nl-clj-read-string=
+is the same shape applied to EDN-flavored text instead of JSON — an L1
+function, not an L2/L3 change, per Doc 168 §3.1's own layer discipline.
+
+A sharp, named gotcha this design accepts rather than hides: because
+=\[1 2 3\]= is *already* valid Elisp reader syntax (a plain mutable
+vector — this is stock Elisp, not a NeLisp extension), =nl-clj-pr-str='s
+vector output is textually indistinguishable from what bare =read=
+would happily, silently, wrongly reconstruct as an ordinary Elisp
+vector instead of a persistent one. There is no crash to catch this —
+just the wrong type materializing downstream. The accepted mitigation
+is social/documentation, not mechanical: =nl-clj-pr-str= output is only
+ever a safe =read= input through =nl-clj-read-string=, never through
+bare =read=/=read-from-string=, and this doc records that constraint
+explicitly so a future implementer does not have to rediscover it by
+debugging a silent type mismatch.
+
+** 3.4 Package shape and dependency graph
+
+#+begin_example
+packages/
+├── nl-prelude/    ←── nl-clj/   (nl-loop/nl-recur: stack-safe iteration
+│                                 for reduce/seq walking, §4.7; Result/
+│                                 Option available, not required for Tier 1)
+├── nl-safe/       ←── nl-clj/   (nl-cell: transient/persistent fence, §4.4;
+│                                 lazy-seq realize-once fence, §4.7)
+├── nl-ns/         ←·· nl-clj/   (optional: nl-ns-define/nl-ns-in sugar
+│                                 layer, §3.1 — dotted because it is opt-in,
+│                                 not load-bearing for any Tier-1 function)
+└── nelisp-actor/  ←── nl-clj/   (nelisp-spawn/nelisp-make-chan: the
+                                  substrate for go/chan, §4.6)
+#+end_example
+
+=nl-clj= is a =nelisp-= *and* =nl-= family consumer at once — this is
+not a new pattern; =packages/nelisp-eventloop=,
+=packages/nelisp-process=, and =packages/nelisp-network= already
+depend on =nelisp-actor= the same way (per that package's own README
+Dependents section), and =packages/nl-ns/src/nl-ns-in.el= already
+depends on =nl-prelude= (=(require 'nl-prelude)= at its own line 20).
+Whether the package itself is named =nl-clj= (following the =nl-=
+extension-library family it depends on most directly for its dynamic
+checks) rather than =nelisp-clj= is the one naming call this doc makes
+without a forcing measurement behind it — a repo-owner judgment call
+in the same spirit as Doc 193 §7's own publication question, not
+re-litigated further here.
+
+* 4. Tier 1 — feasible on existing assets
+
+Each item: existing-asset mapping, new work, Clojure-fidelity vs.
+deliberate divergence, DoD-shaped verification (against-the-bug where
+a NeLisp bug is the risk; Clojure's own reference semantics as the
+control where — as is true for nearly everything below — there is no
+host-Emacs equivalent to differentially test against at all), and a
+phase/cost estimate anchored to this repo's own shipped precedents
+(Doc 168 §5's Phase 1 = "a few hundred lines, ERT 40+" is the
+calibration point used throughout).
+
+** 4.1 Persistent vector — bit-partitioned 32-way trie
+
+*Existing-asset mapping*: plain =vector=/=aref=/=aset=/=make-vector=,
+all measured type-correct (§2.1's =vector= baseline: =type-of= answers
+=vector=, not =cons=, unlike records) — the ONE data type in this
+codebase's own type-reporting story that is fully trustworthy, so it
+is the only primitive this node representation is built from.
+=nl-safe='s tagged-vector idiom (§3.2) supplies the envelope shape.
+
+*Design*: the standard Bagwell/Clojure array-mapped trie — 5 bits per
+level, 32-wide branch nodes, a =TAIL= array holding the last <=32
+elements uncommitted to the trie so =nl-clj-conj=/=nl-clj-peek= are
+O(1) amortized rather than always O(log32 N). =nl-clj-assoc= (index
+update) and =nl-clj-get=/=nth= walk =SHIFT= bits at a time; an update
+copies exactly the =SHIFT/5 + 1= nodes on the path from root to the
+changed leaf (structural sharing: every other subtree is shared by
+reference with the pre-update vector, unchanged, per Clojure's own
+guarantee — verified below, not merely claimed).
+
+*New work*: the trie walk/copy logic itself (path-copy assoc, tail
+overflow into the trie on the 33rd, 65th, ... element, tail underflow
+on pop) — genuinely new, no existing asset does bit-partitioned array
+tries. Estimated 300-500 lines, in line with Doc 168 §5 Phase 1's own
+"a few hundred lines" precedent for a first shipped unit of similar
+scope (nl-prelude v0.1 was "数百行," ERT 52).
+
+*Fidelity*: real structural sharing (not a copy-on-write illusion),
+O(log32 N) =assoc=/=get=, O(1) amortized =conj=/=peek=/=pop= — matches
+Clojure's own complexity/sharing contract exactly. Deliberate
+divergence: no =subvec= O(1) slicing in the first cut (Clojure's own
+=subvec= needs an offset/end-aware view type, real but separable new
+work — noted, not designed here); no transient-batch =into=
+optimization until §4.4 lands.
+
+*DoD-shaped verification*: no host-Emacs control exists (plain Emacs
+has no persistent vector at all — the "host-Emacs comparable" framing
+the task brief anticipated genuinely does not apply here; the control
+is Clojure's own documented semantics, checked by hand-written
+assertions, not differential testing). Against-the-bug shape: (1)
+sharing — =(let* ((v1 (nl-clj-vec 1 2 3)) (v2 (nl-clj-conj v1 4))) (eq
+(nl-clj--pvec-root v1) (nl-clj--pvec-root v2)))= must be =t= for the
+untouched root subtree and the ORIGINAL =v1='s own =nl-clj-get= results
+must be provably unchanged after building =v2= — a mutation bug here
+is exactly "silent wrong result," AI.md's own named failure class,
+so the check must read back =v1= after the fact, not just check =v2=;
+(2) boundary correctness at 32/33, 1024/1025 (tail-to-trie promotion
+edges) — the classic off-by-one class for this data structure; (3)
+=nl-clj-pop=/=nl-clj-peek= inverse-of-=conj= round-trip over a
+randomized operation sequence. Standalone smoke matching the shipped
+precedent shape (=nl-safe-standalone-smoke.el=,
+=nelisp-actor-standalone-smoke.el=): =nl-clj-pvec-standalone-smoke.el=.
+
+*Phase/cost*: one phase, ~1 week at this repo's own historical rate for
+a similarly-scoped L1 package (nl-prelude Phase 1 shipped same-day per
+its own decision log, but that was Result/Option, a much shallower
+data shape than a trie); trie correctness testing (property 1 above)
+is the dominant cost, not the walk code itself.
+
+** 4.2 Persistent hash-map / hash-set — HAMT
+
+*Existing-asset mapping*: =sxhash-equal= for leaf key hashing (§2.3,
+measured stable); the same untagged internal-vector-node idiom as
+§4.1 for trie branches; =equal= for leaf key comparison (ordinary
+Elisp values, where structural equality is correct — §3.2's caveat is
+about comparing two =nl-clj= collections to each other, not about
+comparing two plain keys stored inside one).
+
+*Design*: a HAMT proper — each node is a (bitmap . packed-vector) pair
+(the bitmap says which of 32 possible child slots are populated; the
+packed vector holds only the present ones, indexed by
+=(logcount (logand bitmap (1- (ash 1 idx))))=, the standard
+popcount-prefix trick) rather than a full 32-wide sparse array, so
+memory cost stays proportional to actual size instead of =32^depth=.
+=nl-clj-hash-set= is, per Clojure's own implementation choice, a
+=nl-clj-hash-map= whose values are all a private sentinel
+(=nl-clj--set-member=) — zero new trie code, only a thinner public API
+surface over the same map.
+
+*New work*: the bitmap/popcount node logic (genuinely new — §4.1's
+trie is dense/indexed-by-position, this one is sparse/indexed-by-hash,
+a different algorithm even though both are "32-way tries"), collision
+handling for two distinct keys whose 5-bit hash slices agree all the
+way down (a real, low-probability-but-certain-eventually case a
+correct HAMT must handle — a fallback bucket-list node at the point
+the trie would otherwise recurse past the hash's own bit-width).
+Estimated 400-600 lines — larger than §4.1 because of collision
+handling and the bitmap arithmetic, still in the "one library, one
+phase" size class this repo's own Phase 1 precedents work at.
+
+*Fidelity*: real structural sharing on =assoc=/=dissoc=, matching
+Clojure's HAMT exactly in complexity shape. Divergence: Clojure's real
+=PersistentHashMap= additionally special-cases small maps (<=8 entries)
+as a flat array-map for cache-friendliness before promoting to a true
+HAMT — a real, separable optimization, not designed here (first cut:
+always-HAMT, correct but not tuned for the small-map-dominated
+workloads that are extremely common in practice).
+
+*DoD-shaped verification*: no host-Emacs control (same reasoning as
+§4.1) — Clojure's own documented =assoc=/=dissoc=/=get= contract is
+the reference. Against-the-bug shape: (1) the collision-handling path
+specifically — construct two keys whose =sxhash-equal= values agree in
+every 5-bit slice down to the trie's max depth (buildable
+deterministically by hash-value construction, not left to chance) and
+assert both are independently retrievable and independently
+=dissoc=-able without disturbing the other; (2) sharing, same shape as
+§4.1's property (1); (3) =nl-clj-dissoc= of a nonexistent key is a
+no-op returning an =eq='-identical map (a real Clojure guarantee worth
+checking, and a cheap one — the HAMT literally has nothing to copy on a
+no-op path if implemented correctly, so this is also a performance
+assertion in disguise).
+
+*Phase/cost*: one phase following §4.1, ~1-1.5 weeks — the collision
+path is the part likely to eat the extra half-week, since it is the
+one piece of this whole doc's Tier 1 with no direct precedent
+anywhere else in this codebase to model the test corpus on.
+
+** 4.3 Persistent list
+
+*Existing-asset mapping*: ordinary Elisp cons cells and =nil= —
+already, exactly, Clojure's own =PersistentList= representation (a
+singly-linked, =nil=-terminated, structurally-shared cons chain).
+Nothing to build.
+
+*New work*: essentially none for the data structure itself — =cons=
+already gives free, correct structural sharing (prepending to any list
+shares its entire tail by construction, which is the whole of what a
+persistent list needs to guarantee). The only work is the *API
+surface*: =nl-clj-first=/=nl-clj-rest=/=nl-clj-cons=/=nl-clj-conj=
+(list =conj= prepends, unlike vector =conj= which appends — Clojure's
+own polymorphic =conj= behavior, dispatched on the tag symbol) as thin
+qualified wrappers over =car=/=cdr=/=cons=, maybe 30-50 lines total.
+
+*Fidelity*: exact — this is the one item in the whole doc where
+"Clojure-fidelity" and "what Elisp already does" are the literal same
+thing, not an approximation of it.
+
+*DoD-shaped verification*: trivial — wrapper-correctness tests only,
+no structural property to prove beyond what =cons= itself already
+guarantees. No dedicated standalone smoke needed; folded into the
+general =nl-clj= package smoke.
+
+*Phase/cost*: folded into §4.1's phase, effectively free — the only
+Tier-1 item genuinely this cheap.
+
+** 4.4 Transients: reusing =nl-safe='s borrow cell as the mutability fence
+
+*Existing-asset mapping*: =nl-cell=/=nl-with-borrow-mut=/=nl-cell-set=
+(§2.5) directly, with no new checking mechanism — this is the load-bearing
+reuse the task brief specifically asked this doc to ground.
+
+*Design*: =(nl-clj-transient v)= wraps a fresh, private mutable copy of
+=v='s tail/root arrays (Clojure's own transient semantics: mutation is
+allowed on the transient's own private structure, never observable
+through the original persistent value) in an =nl-cell=.
+=nl-clj-conj!=/=nl-clj-assoc!=/=nl-clj-dissoc!=/=nl-clj-pop!= all
+require =nl-with-borrow-mut= on that cell — ordinary, unmodified
+=nl-safe= behavior, nothing =nl-clj= adds. The interesting move is
+=nl-clj-persistent!=: it acquires the exclusive borrow via
+=nl-safe--borrow-mut= (=nl-safe.el:161-169=) *and never releases it* —
+the cell is left permanently reporting =-1= (exclusively held,
+forever). No new mechanism is needed for this to work: every future
+=nl-with-borrow=/=nl-with-borrow-mut=/=nl-cell-set= call against that
+same cell (i.e. any further =conj!=/=assoc!= attempt on an
+already-persisted transient) hits =nl-safe='s existing borrow-violation
+path (=nl-safe.el:127-139=) and signals =nl-borrow-error= — for free,
+by composition, not by writing a second "already persisted" flag and
+check.
+
+This is a precise structural match for what real Clojure does at
+runtime: its =TransientVector.ensureEditable()= throws
+=IllegalAccessError: Transient used after persistent! call= by
+checking an owner-thread field nulled out at =persistent!= time — the
+=nl-cell= "freeze by permanent exclusive hold" trick is the identical
+runtime contract, implemented by reusing an existing, already-shipped,
+already-gated primitive instead of inventing a parallel one.
+
+*New work*: the transient-specific mutation logic itself (in-place
+tail array growth without reallocating on every =conj!=, matching
+Clojure's own amortized-O(1) transient =conj!= promise) — real, but
+scoped and small relative to §4.1's persistent path, since it reuses
+§4.1's own node layout, just mutated in place instead of copied.
+
+*Fidelity*: the freeze-forever borrow trick reproduces Clojure's own
+"transient used after persistent!" runtime error exactly, using this
+repo's own existing mechanism rather than a bespoke one — a case where
+fidelity and asset reuse are the same design choice, not a tradeoff.
+
+*DoD-shaped verification*: against-the-bug, directly on the reused
+mechanism — the concrete case is "call =nl-clj-conj!= on a transient
+after calling =nl-clj-persistent!= on it; assert =nl-borrow-error=
+signals, not a silent mutation of the now-published persistent value."
+This is exactly the shape of nl-safe's own Doc 170 §3.3 violation-log
+discipline ("違反時のエラーには...情報量を惜しまないこと"), so the
+signal's payload (cell name, "existing: exclusive," "requested: write")
+falls out of =nl-safe--borrow-violation= unchanged, no new error
+formatting needed. A second case worth its own assertion: mutating
+through a transient must never be visible via a *reference to the
+original persistent value taken before the transient was created* —
+this is the property that would catch a bug where =nl-clj-transient=
+accidentally aliased the original's arrays instead of copying them.
+
+*Phase/cost*: small, ~2-3 days, following §4.1/§4.2 directly — the
+cost is almost entirely the in-place mutation logic; the safety fence
+is reused, not built.
+
+** 4.5 =atom= / =swap!= / =reset!= / =compare-and-set!=
+
+*Existing-asset mapping*: none needed beyond ordinary =vector=/=aref=/
+=aset= — and that absence is the point the task brief asked this doc
+to state plainly. §2.7 establishes that NeLisp's current execution
+model has exactly one thread of Lisp-level control; nothing preempts
+between an =aref= and the =aset= that follows it in the same function
+call. A real Clojure =swap!= needs a compare-and-set retry loop
+*because* the JVM is genuinely concurrent and another thread's =swap!=
+could interleave between its read and its write. NeLisp today cannot
+have that interleaving happen — there is no second thread of Lisp
+execution to interleave with (§2.7) — so the CAS loop's entire reason
+to exist is absent, and the single-assignment implementation is
+already, trivially, as correct as Clojure's retry loop, not an
+approximation of it:
+
+#+begin_src elisp
+(defun nl-clj-atom (v) (vector 'nl-clj--atom v nil))          ; [tag value watches]
+(defun nl-clj-deref (a) (aref a 1))
+(defun nl-clj-swap! (a f &rest args)
+  (let ((new (apply f (aref a 1) args))) (aset a 1 new) new))
+(defun nl-clj-reset! (a v) (aset a 1 v) v)
+(defun nl-clj-compare-and-set! (a old new)
+  (if (eq old (aref a 1)) (progn (aset a 1 new) t) nil))
+#+end_src
+
+*New work*: the above, plus watch/validator support (Clojure's
+=add-watch=/=set-validator!=) as a straightforward extension over the
+=WATCHES= slot — real but peripheral, not core to "feels like Clojure"
+per the task brief's own prioritization framing, so scoped as an
+optional follow-up rather than blocking the core four functions.
+
+*Fidelity*: functionally exact for everything =swap!=/=reset!=/
+=compare-and-set!= are observably supposed to do under NeLisp's actual
+execution model; the *implementation strategy* diverges from real
+Clojure's (no retry loop) for a reason that is itself the honest answer
+to "why," not a shortcut taken silently. This divergence is exactly
+where §5.2 picks back up: the day NeLisp gets real OS-thread-level Lisp
+concurrency, this implementation becomes wrong (a genuine race between
+two threads' =swap!= calls), and =nl-clj-compare-and-set!='s trivial
+=eq= check would need to become a real atomic compare-and-swap — which
+does not exist as an ordinary-Elisp-callable primitive today (§2.7's
+same gap), so a future upgrade of this one function is explicitly
+gated on the same frontier work §5.2 describes, not a separate problem.
+
+*DoD-shaped verification*: no host-Emacs control (Emacs has no
+=atom=). Against-the-bug shape: the interesting bug class for THIS
+implementation is not concurrency (there is none to get wrong yet) but
+=swap!='s own reentrancy — Clojure's real contract is "=f= may be
+called more than once if a real retry happens"; NeLisp's version calls
+=f= exactly once, always, which is a strictly *stronger* guarantee
+(worth asserting so a future concurrent-safe rewrite that reintroduces
+retries does not silently violate an assumption existing =nl-clj=
+callers came to depend on — an at-most-once contract some caller might
+lean on for side-effecting =f= arguments, which real Clojure's own
+=swap!= docstring explicitly warns against relying on, precisely
+because real Clojure cannot make that guarantee and NeLisp's current
+one, incidentally, can).
+
+*Phase/cost*: trivial, well under a day for the four core functions;
+this is the highest "Clojure feel per unit effort" item in the whole
+doc (§6).
+
+** 4.6 Channels and =go= blocks over =nelisp-actor='s scheduler
+
+*Existing-asset mapping*: direct, close to one-to-one, per §2.4 — this
+is the strongest existing-asset reuse in the whole doc.
+
+| core.async primitive | nelisp-actor primitive                              | reuse shape |
+|-----------------------+-------------------------------------------------------+-------------|
+| =chan=                | =nelisp-make-chan= (=nelisp-actor.el:628-700=)         | direct, renamed wrapper |
+| =close!=              | =nelisp-chan-close= (=nelisp-actor.el:735-748=)        | direct, renamed wrapper |
+| =go=                  | =nelisp-spawn= + =nelisp-actor-lambda= (=nelisp-actor.el:300-318=, =352-385=) | direct, thin wrapper — §4.6 new work below |
+| =>!=/=<!= (parking)   | =nelisp-chan-send=/=nelisp-chan-recv= (=nelisp-actor.el:702-733=) | direct, renamed wrapper; both already require actor context, matching core.async's own "only inside go" restriction |
+| =>!!=/=<!!= (blocking, any context) | *none* — =nelisp-chan-send=/=recv= require actor context | new plumbing, below |
+| =alts!=               | *none*                                                 | new plumbing, below |
+
+*New work, item by item*:
+
+- =nl-clj-go=: real core.async =go= returns a channel that will
+  receive the block's own return value; =nelisp-spawn= returns the
+  actor object, not a channel. New (thin) work: =nl-clj-go= spawns an
+  actor whose body runs the given forms and, on completion, sends the
+  result to a private result channel it creates and returns —
+  composing two already-shipped primitives (=nelisp-spawn=,
+  =nelisp-make-chan=), not a new scheduling mechanism.
+- =nl-clj->!!=/=nl-clj-<!!= (blocking variants, callable from ordinary
+  top-level or REPL code, not just inside a =go=): genuinely new,
+  because =nelisp-chan-send=/=recv='s macros read
+  =nelisp-actor--current= (=nelisp-actor.el:337=, =450=), which is =nil=
+  outside any actor body. New plumbing: wrap the call in a throwaway,
+  single-purpose actor that performs exactly one send or receive, then
+  drive it synchronously with =nelisp-actor-run-until-idle=
+  (=nelisp-actor.el:466-479=, already public) until it completes — built
+  entirely from existing, already-standalone-proven primitives, no new
+  scheduler behavior.
+- =nl-clj-alts!=: real new plumbing, because nothing in
+  =nelisp-actor.el= races multiple pending operations. The mediator
+  actor pattern (§2.4) already gives each channel its own
+  independent, cooperatively-scheduled process managing its own
+  pending-senders/pending-receivers list; =alts!= needs a coordinator
+  that registers one waiter with *every* channel in its operation set
+  and ensures exactly one of them wins. A natural, small reuse of
+  §2.5's =nl-cell= here: the =alts!= coordinator creates one
+  =nl-cell= holding =nil=; each channel's mediator, on becoming ready
+  to satisfy the shared waiter, must =nl-with-borrow-mut= that cell and
+  check-and-set it from =nil= to its own channel identity before
+  delivering — a losing mediator's own claim attempt finds the cell
+  already holding a non-nil value and backs off. The borrow itself is
+  not needed for correctness under today's strictly-serialized
+  scheduler (a plain value check would do, by the same triviality
+  argument as §4.5's =compare-and-set!=); it is adopted anyway because
+  it is free and gives a *future* concurrent backport of this same
+  code a defined, loud failure (=nl-borrow-error=) instead of an
+  undefined one (silent double delivery) the day two mediators really
+  could race. This is new protocol work on top of the existing
+  mediator message shapes
+  (=:send=/=:recv=/=:close=, =nelisp-actor.el:654-699=) — a new
+  =:recv-alt=/=:send-alt= message variant per channel, not a rewrite of
+  the mediator itself.
+
+*Fidelity*: the parking (=>!=/=<!=, inside =go=) half is a very close
+match — same rendezvous/buffered/close semantics (§2.4's own
+docstring already frames =nelisp-make-chan= against Go's channel
+model, which core.async's own semantics are themselves derived from).
+Divergence: real core.async also offers non-blocking =poll!=/timeout
+channels and priority in =alts!= (=:priority true=) — both real,
+separable extensions, not designed here. The bigger, honest divergence
+is §2.4's own standalone limit: a NEW =nl-clj-go= form written by an
+end user does not run on =target/nelisp= without the same
+build-time-CPS-transform step =nelisp-actor= itself requires — this is
+inherited, not introduced, but it means "write a =go= block and ship
+it standalone" is a two-step workflow (write, then bake via a
+=nl-clj=-specific analogue of =make nelisp-actor-cps-baseline=), not a
+plain =require= — a real cost to name honestly rather than gloss over,
+since it is the single largest gap between "feels like Clojure in a
+host-Emacs REPL" and "feels like Clojure in the standalone binary."
+
+*DoD-shaped verification*: host-Emacs *is* a valid control here,
+unusually for this doc — =nl-clj-chan=/=go=/=>!=/=<!= running under
+host Emacs (where real =generator.el= loads and nothing about the
+build-time transform is needed) is directly comparable to
+=nelisp-actor-cps-parity-test.el='s own host-vs-generated parity check
+(§2.4): the same operation sequence should produce byte-identical
+results on host Emacs and on the build-time-transformed standalone
+path, exactly mirroring that existing test's own shape rather than
+inventing a new verification style. Against-the-bug for =alts!=
+specifically: construct two channels each with a pending value and
+assert exactly one =alts!= call consumes exactly one of them, never
+both, never neither, over many randomized send-orderings.
+
+*Phase/cost*: =chan=/=close!=/=go=/=>!=/=<!= — under a week, since it
+is almost entirely thin wrapping over already-standalone-proven code,
+plus one standalone smoke; =>!!=/=<!!= — a few days, self-contained
+throwaway-actor plumbing; =alts!= — the most expensive item in this
+whole subsection, ~1-1.5 weeks, because it is the one piece with no
+existing protocol to wrap, only a pattern (the mediator actor) to
+extend.
+
+** 4.7 Sequence abstraction and laziness
+
+*Existing-asset mapping*: ordinary Elisp closures (proven throughout
+=nelisp-actor= itself, which is built entirely on them) for the delayed
+thunk; =nl-cell=/=nl-with-borrow-mut= (§2.5) for the realize-once
+fence, reused a second time in this doc for a different purpose than
+§4.4; =nl-loop=/=nl-recur= (=packages/nl-prelude/src/nl-prelude.el=,
+=defmacro nl-loop= at line 676, =nl-recur= at line 584) for
+stack-safe iteration — load-bearing, not optional: Doc 171 (the L2 AOT
+tail-call-optimization blueprint, sibling to Doc 169 §5's L1
+=nl-loop=/=nl-recur=) is itself only partially shipped ("G4 は実測
+FAIL → 5.3 ブロック," its own status line) and applies to AOT-compiled
+code, not the plain interpreter — an ordinary self-recursive Elisp
+function walking a long lazy sequence gets NO automatic TCO in the
+interpreter today, so =nl-clj-reduce=/=nl-clj-take=/etc. MUST be
+written on top of =nl-loop=/=nl-recur= (already stack-safe, already
+shipped, ERT-covered per Doc 168 §8's decision log) rather than as
+naive self-recursive functions, or a long =nl-clj-reduce= over a
+million-element lazy sequence would blow the interpreter's own call
+stack — a real, concretely-avoidable bug this design closes by
+construction rather than by later profiling.
+
+*Design*: =nl-clj-lazy-seq= wraps a zero-argument thunk in an
+=nl-cell= holding =(THUNK . nil)= (§3.2's =[nl-clj--lazy CELL]=
+envelope). =nl-clj-seq-first=/=nl-clj-seq-rest= force the cell exactly
+once — under =nl-with-borrow-mut= — replacing =(THUNK . nil)= with
+=(nil . REALIZED-CONS-OR-NIL)= and caching the result, matching real
+Clojure's own =LazySeq= memoization contract precisely (calling
+=first= twice never re-runs the generating expression).
+
+Reusing =nl-cell= here earns its place for a reason distinct from
+§4.4's transient-freeze trick, worth stating on its own: Clojure
+programmers genuinely do hit *reentrant* forcing bugs — a lazy
+sequence whose own generating thunk, directly or through a chain of
+calls, ends up calling =first=/=rest= on the SAME still-unrealized cell
+again before the outer force finishes (a real, documented Clojure
+footgun, not a hypothetical). Under =nl-with-borrow-mut=, that reentrant
+call finds the cell already exclusively held and signals
+=nl-borrow-error= immediately — turning what would otherwise be silent
+double-evaluation (or infinite recursion, depending on the exact shape
+of the bug) into the same loud, immediate signal §4.4 gets from the
+identical mechanism. This is the second, independent instance in this
+doc of "nl-safe = the mutation-of-an-immutable-violates-loudly
+partner" the task brief named, and it falls out of the same three-line
+primitive both times, not two different safety mechanisms.
+
+*New work*: the lazy-seq cell itself (~50 lines); =nl-clj-take=/
+=nl-clj-map=/=nl-clj-filter= as lazy producers (each returns a new
+=nl-clj-lazy-seq= wrapping a thunk that pulls from its source seq one
+element at a time — standard, well-understood construction, no novel
+algorithm); =nl-clj-reduce= as the one genuinely eager consumer,
+written directly on =nl-loop=/=nl-recur= over the =seq-first=/
+=seq-rest= protocol (not through the lazy producers above, since
+reduce's own job is to force them). Estimated 200-350 lines total —
+smaller than §4.1/§4.2 because the algorithmic content (memoized
+thunk + stack-safe walk) is genuinely simpler than a trie, even though
+the function-count surface (=take=/=map=/=filter=/=reduce=/=into=/
+=some=/=every?=/...) is larger.
+
+*Fidelity*: single-realization memoized laziness matches Clojure's own
+contract exactly, including the reentrancy-signals-loudly property
+above (which is, incidentally, MORE informative than real Clojure's
+own behavior on the same bug class — real Clojure's reentrant-forcing
+footgun typically manifests as a =StackOverflowError= or silent
+re-evaluation depending on shape, not a named, diagnosable error).
+Deliberate divergence: no chunked-seq (Clojure's real 32-wide batch
+realization for cache/throughput) in the first cut — a real, separable
+performance optimization, not a correctness gap.
+
+*DoD-shaped verification*: no host-Emacs control (Emacs has no lazy
+seq). Against-the-bug shape: (1) realize-once — a thunk with a
+side-effecting counter must show exactly one increment across
+multiple =seq-first= calls on the same lazy-seq value; (2) the
+reentrancy case specifically — a thunk that calls =nl-clj-seq-first=
+on its own outer lazy-seq before returning must signal
+=nl-borrow-error=, not recurse or double-evaluate (this is the
+single most important negative test in this whole subsection, and the
+one most likely to be skipped if verification is written casually,
+since positive-path laziness tests do not exercise it at all); (3)
+=nl-clj-reduce= over a =10^5=+-length lazy sequence must not exhaust
+the interpreter's own call stack — a direct, measurable
+against-the-bug check that =nl-loop=/=nl-recur= (not naive recursion)
+is actually what got used, catchable by literally trying the naive
+version first and watching it fail, per this repo's own "red on the
+defect, then green" discipline.
+
+*Phase/cost*: ~1 week, following §4.1/§4.2/§4.4 (needs =nl-cell=
+patterns already proven in §4.4 to move quickly); the reentrancy test
+case is cheap to write but easy to forget, so it is called out by name
+above specifically so a phase plan does not silently drop it.
+
+* 5. Tier 2 — frontier, scoped honestly
+
+** 5.1 refs + STM
+
+Single-threaded correctness is, again, trivial for the same reason
+§4.5's =atom= is: with one thread of Lisp execution (§2.7), a
+=nl-clj-dosync= block wrapping a sequence of =nl-clj-ref-set=/
+=nl-clj-alter= calls can simply run them in order and commit
+unconditionally — there is no concurrent transaction to conflict with,
+so "single-threaded transactional model first" (the task brief's own
+framing) is really "no transaction machinery at all, because nothing
+can violate one yet," the same honest deflation §4.5 already applies
+to =compare-and-set!=. This is buildable today, cheaply, but it is
+*not* meaningfully different work from §4.4's transient-boundary code
+or §4.5's atom — it would not teach this design anything new, and a
+=dosync= that is really just "run the forms" risks becoming an API
+promise ("transactional!") the implementation does not keep the moment
+real concurrency exists, which is a worse trap than not shipping it:
+Clojure's own STM value proposition (isolated reads, retry on
+conflict, coordinated multi-ref commits) has NO meaning without real
+concurrent writers to isolate FROM, and NeLisp has none (§2.7). *This
+doc's recommendation*: do not build a "single-threaded STM" as part of
+this library's first phases — it would be a facade, not infrastructure,
+and this repo's own culture (AI.md's Definition of Done, "against-the-
+bug evidence... not asserted") has no tolerance for a gate that would
+necessarily pass by construction because nothing could make it fail.
+Real MVCC-shaped STM is squarely blocked on the same substrate work
+§5.2 names (a real second thread of Lisp execution to actually race
+against), so it is listed here only to be explicit that it is
+deferred entirely to whatever unblocks §5.2, not designed in any
+partial form.
+
+** 5.2 True multicore: =pmap=, futures, and where it actually blocks
+
+§2.7 already separated the mechanism from the primitive: real
+=clone(2)= + real atomics are proven, at the AOT-codegen level, by
+=tools/selfhost-mt-test.sh=. What blocks =nl-clj-pmap=/=nl-clj-future=
+as ordinary library functions a running interpreter session could call
+is two independent, both-unstarted pieces of work, stated plainly
+rather than bundled into one vague "hard part":
+
+1. *An ordinary-Elisp-callable thread-spawn primitive does not exist.*
+   Today, doing real parallel work means round-tripping through the
+   entire AOT compiler pipeline to synthesize a brand-new native ELF
+   binary containing the =clone(2)= call — not a function a running
+   session calls, but a *build step* a running session could, at best,
+   invoke as a subprocess. A =(nl-clj-future (lambda () ...))= that
+   spawns a real thread mid-session and returns a handle to await would
+   need a genuinely new runtime primitive (interpreter- or JIT-level
+   =clone(2)= wrapper, callable like any other function) that nothing
+   in this codebase's reads surfaced any work toward.
+2. *Sharing GC-managed, persistent structures across threads has no
+   story, and the honest reason is concrete, not hand-wavy* (§2.7):
+   the tracing GC is a single mark-sweep pass with no synchronization
+   primitive protecting a mark pass from a concurrent mutator, and the
+   ONE atomic operation that already exists in this codebase near this
+   problem (=atomic-fetch-add= on a Cons/Vector/etc.'s refcount field,
+   =nelisp-cc-nlconsbox-clone.el:98=) protects a field the GC itself
+   admits is "死蔵" — vestigial, never consulted for freeing (Doc 146
+   §2.1.1). There is no atomic operation in this tree today that
+   protects anything a concurrent GC mark pass would actually race
+   against. Two shapes this could take, neither designed here because
+   neither has enough of a substrate to design against yet: (a) a
+   genuinely concurrent/parallel-safe GC (a large, cross-cutting
+   redesign, not a =nl-clj=-scoped one at all — this would be Doc
+   79-v7/145-150-class work, entirely outside this package's own
+   scope), or (b) keep worker threads out of the GC's reach
+   *entirely* — a =pmap= whose worker closures may only touch already-
+   realized, immutable, non-GC-participating flat byte buffers (the
+   same =nl-safe= fat-pointer/=nl-unsafe= boundary, Doc 170 §4, already
+   uses for raw memory), forcing every persistent structure a worker
+   needs to be flattened to bytes before the thread starts and
+   reconstructed after it joins — which would work today, in
+   principle, using =nl-safe='s existing unsafe boundary, but gives up
+   exactly the thing that makes a *persistent* data structure valuable
+   for this use case (structural sharing across the boundary) and
+   would need its own careful design, not a paragraph here.
+
+*Verification design, for whichever shape eventually gets built*: no
+against-the-bug case is possible to write today, because nothing is
+built to have a bug — the correct DoD-shaped verification when this
+work does start is exactly =tools/selfhost-mt-test.sh='s own shape,
+extended: N real threads, each writing into a distinct, checkable
+slot, joined by a real synchronization primitive (not a busy sleep),
+with an assertion whose value is wrong if any thread is skipped, any
+write is torn, or any atomic increment is lost — this repo's own
+=selfhost-mt-test.sh= header already states exactly why that shape of
+assertion matters ("A wrong result... would not be 42, so the
+assertion is meaningful"), and =nl-clj='s own eventual multicore gate
+should be held to the identical standard, not a weaker one just
+because the surface API is friendlier.
+
+*Recommendation*: do not schedule §5.1/§5.2 as part of this library's
+own roadmap at all. Both are real, named, and worth exactly the
+paragraph each got here — but building toward them belongs to whatever
+future doc takes on concurrent GC or a callable thread-spawn primitive
+as its own first-class subject, not to a persistent-data-structures
+library whose Tier 1 (§4) needs neither.
+
+* 6. Build-first ranking
+
+Ranked by "Clojure feel delivered per unit implementation effort,"
+per the task brief's own request, using §4's phase/cost estimates:
+
+1. *atom/swap!/reset!/compare-and-set!* (§4.5) — well under a day,
+   and immediately recognizable as "the" Clojure idiom to anyone who
+   has used it. Ship first, ship alone if nothing else lands this
+   cycle.
+2. *Persistent vector + a minimal seq API* (§4.1 + the =first=/=rest=/
+   =count=/=conj= slice of §4.3/§4.7, without the full lazy/=reduce=
+   machinery yet) — ~1-1.5 weeks, and this is where "feels like
+   Clojure" actually starts, because =conj=/=get=/=count= over an
+   immutable vector is the single most common Clojure idiom in
+   ordinary code, more common than maps in most real programs' hot
+   paths.
+3. *Persistent hash-map/hash-set* (§4.2) — ~1-1.5 weeks, second
+   because it is genuinely the more expensive of the two persistent
+   structures (collision handling) and because vector-only code
+   already demonstrates the core idiom from item 2.
+4. *Transients* (§4.4) — ~2-3 days, cheap specifically because it
+   rides on §4.1/§4.2 plus an already-shipped safety mechanism; ship
+   once 2-3 exist, not before (nothing to make transient yet).
+5. *Channels/go over nelisp-actor, parking half only* (§4.6's
+   =chan=/=close!=/=go=/=>!=/=<!=, deferring =>!!=/=<!!=/=alts!=) —
+   under a week, and reuses the most already-standalone-proven asset
+   in the whole doc (§2.4).
+6. *Lazy sequences + reduce* (§4.7) — ~1 week, ranked below channels
+   specifically because "feels like Clojure" from laziness alone is
+   weaker than from persistent collections + atom (most everyday
+   Clojure code is not visibly lazy-seq-dependent at the call site the
+   way =conj=/=assoc=/=swap!= are), even though the underlying work is
+   comparable in size.
+7. *=alts!= and =>!!=/=<!!=* (rest of §4.6) — the most expensive
+   single new-plumbing item in Tier 1; ship last within Tier 1,
+   because =go=/=chan=/=>!=/=<!= alone (item 5) already delivers most
+   of the observable "core.async feel."
+
+This matches, and sharpens with real cost numbers, the task brief's own
+prediction ("persistent map/vector + atom + a small seq API delivers
+the idiom fastest") — the one adjustment this ranking makes is putting
+persistent vector ahead of persistent map (both were bundled together
+in the brief's own guess), because §4.1 is measurably cheaper than
+§4.2 (no collision handling) and vector-shaped code is, in ordinary
+Clojure, at least as common as map-shaped code at the call site.
+
+* 7. Verification design, repo-wide
+
+Every phase above is written to this repo's own already-established
+discipline, not a bespoke one:
+
+- *Standalone smoke per shipped unit*, named
+  =nl-clj-<unit>-standalone-smoke.el=, matching
+  =nl-safe-standalone-smoke.el=/=nl-actor-standalone-smoke.el='s
+  existing shape and reusing =tools/ai/gates.expected='s row-per-gate
+  convention (§ "Where things are" table, AI.md) rather than inventing
+  a new reporting format.
+- *A gate-mutation row per new required gate*, per AI.md's own DoD
+  ("a mutation row in =tools/gate-mutations.txt=, when the change adds
+  a new required gate. A gate nobody has shown a real defect to is a
+  claim about a checker, not a checker") — §4's own against-the-bug
+  cases (structural sharing violated, transient-after-persistent! not
+  signaling, HAMT collision path silently dropping a key, reentrant
+  lazy-seq force not signaling) are each, directly, a candidate
+  injectable defect for exactly this file, in the same
+  =GATE|FILE|SED-EXPRESSION|WHAT-IT-BREAKS= shape =tools/gate-
+  mutations.txt= already uses.
+- *=#+VERIFIED-BY:= naming a real gate*, not asserted, the moment any
+  part of this moves past DRAFT to SHIPPED, per =make doc-claims='s
+  mechanical enforcement (AI.md, Definition of Done) — this doc itself
+  carries no such line because nothing here is built yet (Status
+  table, above).
+- *Host-Emacs parity where — and only where — a host comparison
+  actually means something*: §4.6 is the one Tier-1 item with a real
+  host-Emacs control (mirroring =nelisp-actor-cps-parity-test.el='s
+  existing host-vs-generated-standalone comparison); everything else
+  in §4 is checked against Clojure's own documented reference
+  semantics by hand-written assertion, because — stated once here
+  rather than repeated seven times above — plain Emacs simply does not
+  have persistent vectors, HAMTs, atoms, or lazy seqs to differentially
+  compare against, and pretending otherwise would produce a "control"
+  that is not actually controlling for anything.
+
+* 8. Open questions
+
+- Whether =nl-clj= should eventually adopt Doc 189 Phase 1's
+  declaration-time collision refusal (once it lands — currently
+  "recorded, not attempted," Doc 189's own status line) for its own
+  =nl-ns-define= block, so a future second library accidentally
+  declaring an overlapping =:members= list against =nl-clj='s own
+  namespace fails loudly at load time instead of silently. Not decided
+  here because Phase 1 itself is not built yet (§2.6).
+- Whether the small-map array-map optimization (§4.2's noted
+  divergence) is worth doing before or after shipping the full HAMT —
+  real Clojure's own choice to special-case small maps suggests it
+  matters for realistic workloads, but this doc has no measurement of
+  =nl-clj='s own likely map-size distribution to decide with, and Doc
+  168 §3.2's own "動的検査を先、静的検査を後" discipline argues for
+  shipping the simple, always-HAMT version first and letting real
+  usage data (the same discipline that shaped Doc 168's own Phase
+  2b/Phase 6 gating) decide whether the optimization pays for itself.
+- Whether =nl-clj-pr-str='s cosmetic =\{...\}=/=#\{...\}= output should
+  be gated behind an explicit opt-in flag (defaulting to plain
+  S-expression output, e.g. =(nl-clj-hash-map :a 1 :b 2)=, which IS a
+  safe =read=-able round-trip today with no parser needed at all) so a
+  caller who never intends to use =nl-clj-read-string= is not exposed
+  to §3.3's silent-=read=-mismatch footgun by default. This doc leans
+  toward "yes, default to the safe S-expression form, opt into the
+  cosmetic Clojure-text form by name" but does not commit, since it
+  changes nothing about feasibility, only a default worth a second
+  opinion before locking in.
+
+* 9. Reads
+
+=packages/nelisp-actor/src/nelisp-actor.el= (full, 762 lines),
+=packages/nelisp-actor/README.org=, =packages/nl-safe/src/nl-safe.el=
+(lines 1-260), =packages/nl-safe/README.org=,
+=packages/nl-prelude/src/nl-prelude.el= (top-level def list, full
+file not read line-by-line), =packages/nl-ns/src/nl-ns-in.el= (full,
+248 lines), =packages/nl-ns/src/nl-ns-reader.el= (full, 122 lines),
+=packages/nelisp-json/README.org=, =packages/nelisp-secure-hash/README.org=,
+=docs/design/168-extension-libraries.org= (full),
+=docs/design/169-nl-prelude.org= (§1-§2, function list),
+=docs/design/170-nl-safe.org= (§1-§4),
+=docs/design/186-char-tables.org= (§9.2-§9.3),
+=docs/design/189-nl-ns-enforced-namespaces.org= (full, 666 lines),
+=docs/design/190-bignums.org= (Status, §1, §6),
+=docs/design/193-extension-libraries-publication.org= (§1-§5),
+=docs/design/39-phase9d-process-substrate.org= (grep for
+=thread=/=clone(2)=), =docs/design/146-low-memory-value-rep-and-gc.org=
+(§1-§2.1.1), =tools/selfhost-mt-test.sh= (full),
+=tools/gate-mutations.txt= (header), =tools/ai/gates.expected=
+(header), =AI.md= (full), =AGENTS.md= (full, this clone's root).
+Probes: =target/nelisp --eval EXPR= against the binary identified in
+Status, from a throwaway scratch directory, one call per line quoted
+above in §2 — never against a modified copy, never writing into the
+probed binary's own worktree.

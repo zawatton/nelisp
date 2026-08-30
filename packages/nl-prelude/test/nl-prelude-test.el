@@ -474,6 +474,22 @@ dispatch on the variant tag at runtime."
                    (if (zerop n) acc (nl-recur (1- n) (1+ acc))))
                  100000)))
 
+(defun nl-prelude-test--naive-self-recursion (n acc)
+  "Count N recursive calls into ACC without `nl-recur'."
+  (if (zerop n)
+      acc
+    (nl-prelude-test--naive-self-recursion (1- n) (1+ acc))))
+
+(ert-deftest nl-prelude-naive-self-recursion-overflows-at-1e6 ()
+  "The against-the-bug control must exhaust the real evaluator stack."
+  (should-error (nl-prelude-test--naive-self-recursion 1000000 0)))
+
+(ert-deftest nl-prelude-loop-1e6-does-not-overflow ()
+  "The same count through `nl-recur' must complete in constant stack."
+  (should (equal (nl-loop ((n 1000000) (acc 0))
+                   (if (zerop n) acc (nl-recur (1- n) (1+ acc))))
+                 1000000)))
+
 (ert-deftest nl-prelude-loop-simultaneous-rebinding ()
   "nl-recur rebinds all variables from the pre-recur values."
   (should (equal (nl-loop ((a 0) (b 1) (i 0))
@@ -523,6 +539,46 @@ dispatch on the variant tag at runtime."
 (ert-deftest nl-prelude-loop-bad-binding-is-expansion-error ()
   (should-error (macroexpand '(nl-loop (a) a)))
   (should-error (macroexpand '(nl-loop ((a 1 2)) a))))
+
+;;; nl-trampoline / nl-bounce (Doc 198 Phase 2) ------------------------
+
+(defun nl-prelude-test--naive-even-p (n)
+  "Return whether N is even using unprotected mutual recursion."
+  (if (zerop n) t (nl-prelude-test--naive-odd-p (1- n))))
+
+(defun nl-prelude-test--naive-odd-p (n)
+  "Return whether N is odd using unprotected mutual recursion."
+  (if (zerop n) nil (nl-prelude-test--naive-even-p (1- n))))
+
+(defun nl-prelude-test--bouncing-even-p (n)
+  "Return whether N is even, bouncing to the odd predicate."
+  (if (zerop n)
+      t
+    (nl-bounce #'nl-prelude-test--bouncing-odd-p (1- n))))
+
+(defun nl-prelude-test--bouncing-odd-p (n)
+  "Return whether N is odd, bouncing to the even predicate."
+  (if (zerop n)
+      nil
+    (nl-bounce #'nl-prelude-test--bouncing-even-p (1- n))))
+
+(ert-deftest nl-prelude-naive-mutual-recursion-overflows-at-1e6 ()
+  "The mutual-recursion control must exhaust the evaluator stack."
+  (should-error (nl-prelude-test--naive-even-p 1000000)))
+
+(ert-deftest nl-prelude-trampoline-mutual-recursion-1e6 ()
+  "One million explicit bounces must complete in constant stack."
+  (should (eq (nl-trampoline #'nl-prelude-test--bouncing-even-p 1000000)
+              t))
+  (should (eq (nl-trampoline #'nl-prelude-test--bouncing-even-p 999999)
+              nil)))
+
+(ert-deftest nl-prelude-trampoline-returns-function-values-unchanged ()
+  "A genuine function result is not mistaken for a bounce sentinel."
+  (let* ((value (lambda () 'business-value))
+         (result (nl-trampoline (lambda () value))))
+    (should (eq result value))
+    (should (eq (funcall result) 'business-value))))
 
 (ert-deftest nl-prelude-strict-flag-roundtrip ()
   "The nl-strict macro sets and clears `nl--strict'."

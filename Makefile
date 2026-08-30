@@ -1,4 +1,4 @@
-.PHONY: unsafe-inventory nl-violation-corpus standalone-reader-recursion-guard-smoke test-jit test-nojit jit-unverified nl-safe-bench nl-check-gate ns-gate ns-inventory parens-check test test-fast test-parallel test-one wasm-smoke wasm-runtime-image-smoke wasm-dtw-skeleton-smoke wasm-dtw-transpile wasm-dtw-compile wasm-dtw-smoke wasm-dtw-site wasm-dtw-site-smoke compile clean all bench bench-aot-tco gc-bench actor-bench soak soak-1h soak-full soak-worker \
+.PHONY: version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -6,12 +6,22 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-checked standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-checked standalone-reader-fmt-smoke standalone-reader-prelude-equal-reload-smoke standalone-reader-declare-strip-smoke standalone-reader-nested-backquote-macro-smoke standalone-reader-derived-mode-shape-smoke standalone-reader-pcase-quote-literal-smoke standalone-reader-catch-throw-tag-smoke standalone-reader-cond-let-shape-smoke standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-reader-intern-soft-smoke standalone-reader-intern-soft-loop-smoke standalone-reader-number-token-smoke standalone-reader-getenv-smoke standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
         standalone-reader-mod-float-smoke standalone-reader-match-data-smoke standalone-reader-current-time-smoke standalone-reader-require-provide-smoke \
-        alloc-check-collect \
+        alloc-check-collect standalone-reader-checked-soak standalone-reader-shadow-smoke standalone-reader-elt-smoke \
         nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
         nelisp-nelix-operational-gate \
-        nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate
+        nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate \
+        nl-condition-standalone-smoke nl-safe-standalone-smoke nl-resource-standalone-smoke \
+        nl-ns-reader-standalone-smoke \
+        standalone-reader-buffer-smoke \
+        nl-actor-standalone-smoke nelisp-actor-cps-baseline nelisp-actor-cps-parity \
+        nl-clj-standalone-smoke nl-clj-async-standalone-smoke nl-clj-async-cps-baseline \
+        nl-clj-future-standalone-smoke \
+        nl-num-standalone-smoke nelisp-thread-standalone-smoke \
+        nelisp-thread-allocating-standalone-smoke \
+        nelisp-thread-mirror-guard-standalone-smoke \
+        nelisp-thread-percpu-roots-smoke
 
 EMACS ?= emacs
 
@@ -105,6 +115,13 @@ test-one:
 	  $(addprefix -l ,$(FILE)) \
 	  -f ert-run-tests-batch-and-exit
 
+# Automated development loop.  Detects touched AOT/loader files (or accepts
+# FILES explicitly), selects the focused gates, records output, and writes a
+# diagnostic handoff on either success or failure.
+#   make nl-dev-loop FILES="lisp/nelisp-aot-compiler.el lisp/nelisp-native-load.el"
+nl-dev-loop:
+	@./tools/nl-dev-loop.sh $(if $(FILES),--files "$(FILES)")
+
 wasm-smoke:
 	mkdir -p target/wasm-smoke
 	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
@@ -120,9 +137,56 @@ wasm-smoke:
 	       (defun g (y) (+ y 1)) \
 	       (defun f () (let ((x (+ (g 3) 4))) (g x)))) \
 	     \"target/wasm-smoke/f-locals.wasm\" \
+	     :arch 'wasm32 :format 'wasm) \
+	    (nelisp-aot-compile-to-object \
+	     '(defun arg-budget-sum8 (a b c d e f g h) \
+	        (extern-call nelisp_aot_wasm_arg_budget_sum8 \
+	                     a b c d e f g h)) \
+	     \"target/wasm-smoke/arg-budget-sum8.wasm\" \
+	     :arch 'wasm32 :format 'wasm) \
+	    (nelisp-aot-compile-to-object \
+	     '(defun symbol-lit-probe (dest) \
+	        (seq \
+	         (sexp-write-symbol-lit dest \"eq\") \
+	         (+ (* 40000000 (ptr-read-u8 dest 0)) \
+	            (+ (* 100000 (- (ptr-read-u64 dest 16) dest)) \
+	               (+ (* 10000 (ptr-read-u64 dest 24)) \
+	                  (+ (* 100 (ptr-read-u8 dest 32)) \
+	                     (ptr-read-u8 dest 33))))))) \
+	     \"target/wasm-smoke/symbol-lit-probe.wasm\" \
 	     :arch 'wasm32 :format 'wasm))"
 	node tools/wasm-driver.mjs target/wasm-smoke/f.wasm f 42
 	node tools/wasm-driver.mjs target/wasm-smoke/f-locals.wasm f 9
+	# Doc 192 §3 Phase A/B: an 8-GP-argument `extern-call' -- one more
+	# argument than `nelisp_aot_builtin_calln''s own six-argument fixed
+	# ABI prefix takes before a single user argument, Doc 192 §1.2's
+	# measured wall -- routed through a wasm `env' import and run under
+	# Node.  Before the Phase A fix to `--current-arg-regs'
+	# (`lisp/nelisp-aot-compiler.el'), the compile step above signals
+	# `:extern-call-too-many-gp-args' for this defun specifically; see
+	# `tools/wasm-arg-budget-env.mjs' for the full defect-class citation.
+	node tools/wasm-driver.mjs --env-module tools/wasm-arg-budget-env.mjs \
+	  target/wasm-smoke/arg-budget-sum8.wasm arg-budget-sum8 36 \
+	  1 2 3 4 5 6 7 8
+	# Doc 192 §3 Phase B: `sexp-write-symbol-lit' materializes a literal
+	# symbol into DEST's frame slot.  Before this phase's wasm boundary-
+	# slot fix, the compile step above signals `(:wasm-unsupported-ir
+	# sexp-write-symbol-lit)' verbatim (red-first-verified by reverting
+	# just the `--wasm-emit-value' tag-90/91 arms and the matching
+	# `nelisp-aot-compiler--wasm-emit-sexp-write-lit' helper in
+	# `lisp/nelisp-aot-compiler.el', then re-running `make wasm-smoke',
+	# which fails at the compile step, `Error 255', before Node ever
+	# runs -- the same discipline the arg-budget-sum8 pair above uses).
+	# After the fix: DEST self-allocates a 32-byte header + inline
+	# "eq" payload in linear memory (no `env' import -- see the tag-90/91
+	# comment at that helper for why none is needed) and the checksum
+	# below packs tag(4)*4e7 + (char-buf-ptr - dest)(32)*1e5 +
+	# len(2)*1e4 + byte0('e'=101)*100 + byte1('q'=113) = 163230213,
+	# verifying the header, the inline-payload offset convention, and
+	# both literal bytes in one return value.
+	node tools/wasm-driver.mjs \
+	  target/wasm-smoke/symbol-lit-probe.wasm symbol-lit-probe 163230213 0
+	@echo "GATE-COUNT checked=4 findings=0"
 
 wasm-runtime-image-smoke:
 	mkdir -p target/wasm-runtime-image
@@ -131,7 +195,7 @@ wasm-runtime-image-smoke:
 	  --eval "(progn \
 	    (require 'nelisp-artifact) \
 	    (compile-runtime-image \
-	     '(\"compile-runtime-image\" \"--kind\" \"neln\" \
+	     '(\"compile-runtime-image\" \"--kind\" \"wasm\" \
 	       \"--target\" \"wasm32-wasi\" \
 	       \"--input\" \"tools/wasm-runtime-image-p3c.nlri\" \
 	       \"--output\" \"target/wasm-runtime-image/runtime-image.wasm\")))"
@@ -140,15 +204,37 @@ wasm-runtime-image-smoke:
 	  echo "  Its message is above; it exits 0 either way, so without this"; \
 	  echo "  check the failure arrives as an ENOENT from node opening a"; \
 	  echo "  file nobody wrote."; \
+	  echo "GATE-COUNT checked=2 findings=1"; \
 	  exit 1; }
-	node tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3
+	@if node tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
+	  echo "GATE-COUNT checked=2 findings=0"; \
+	else \
+	  echo "GATE-COUNT checked=2 findings=1"; exit 1; \
+	fi
 
 wasm-dtw-skeleton-smoke:
-	node tools/wasm-proofs/p4-run-all.mjs
+	@if node tools/wasm-proofs/p4-run-all.mjs; then \
+	  echo "GATE-COUNT checked=1 findings=0"; \
+	else \
+	  echo "GATE-COUNT checked=1 findings=1"; exit 1; \
+	fi
+
+# The DTW slice transpiles a game-state file that lives in a SEPARATE checkout
+# (newDTW-nelisp), whose default path in transpile-slice.mjs is a Windows one.
+# Absent, this used to die inside node with an ENOENT -- a gate that cannot run
+# reported as a gate that failed.  DTW_GAME_ROOT points it at a checkout;
+# without one the chain says so and skips, which `verify' accepts for a
+# required gate.
+DTW_GAME_ROOT ?= $(CURDIR)/../newDTW-nelisp
 
 wasm-dtw-transpile:
-	mkdir -p target/wasm-dtw
-	node tools/wasm-dtw-p4b/transpile-slice.mjs
+	@if [ ! -f "$(DTW_GAME_ROOT)/nelisp_runtime/gamedata-state-dungeon.el" ]; then \
+	  echo "GATE-SKIP newDTW-nelisp checkout absent (looked for $(DTW_GAME_ROOT))"; \
+	  echo "[wasm-dtw] SKIP: no game data to transpile"; \
+	  exit 0; \
+	fi; \
+	mkdir -p target/wasm-dtw && \
+	node tools/wasm-dtw-p4b/transpile-slice.mjs "$(DTW_GAME_ROOT)"
 
 wasm-dtw-compile: wasm-dtw-transpile
 	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
@@ -156,19 +242,39 @@ wasm-dtw-compile: wasm-dtw-transpile
 	  --eval "(progn \
 	    (require 'nelisp-artifact) \
 	    (compile-runtime-image \
-	     '(\"compile-runtime-image\" \"--kind\" \"neln\" \
+	     '(\"compile-runtime-image\" \"--kind\" \"wasm\" \
 	       \"--target\" \"wasm32-wasi\" \
 	       \"--input\" \"target/wasm-dtw/dtw-p4b.nlri\" \
 	       \"--output\" \"target/wasm-dtw/dtw.wasm\")))"
 
 wasm-dtw-smoke: wasm-dtw-compile
-	node tools/wasm-dtw-p4b/smoke.mjs target/wasm-dtw/dtw.wasm
+	@if [ ! -s target/wasm-dtw/dtw.wasm ]; then \
+	  echo "GATE-SKIP no dtw.wasm (the transpile step skipped: see above)"; \
+	  exit 0; \
+	fi; \
+	if node tools/wasm-dtw-p4b/smoke.mjs target/wasm-dtw/dtw.wasm; then \
+	  echo "GATE-COUNT checked=1 findings=0"; \
+	else \
+	  echo "GATE-COUNT checked=1 findings=1"; exit 1; \
+	fi
 
 wasm-dtw-site: wasm-dtw-compile
+	@if [ ! -s target/wasm-dtw/dtw.wasm ]; then \
+	  echo "[wasm-dtw] SKIP: no dtw.wasm to build a site from"; \
+	  exit 0; \
+	fi; \
 	node tools/wasm-dtw-p4b/build-site.mjs
 
 wasm-dtw-site-smoke: wasm-dtw-site
-	node tools/wasm-dtw-p4b/site-smoke.mjs site/dtw
+	@if [ ! -d site/dtw ]; then \
+	  echo "GATE-SKIP no site/dtw (the transpile step skipped: see above)"; \
+	  exit 0; \
+	fi; \
+	if node tools/wasm-dtw-p4b/site-smoke.mjs site/dtw; then \
+	  echo "GATE-COUNT checked=1 findings=0"; \
+	else \
+	  echo "GATE-COUNT checked=1 findings=1"; exit 1; \
+	fi
 
 # nl-check owns the expansion-time checks (`nl-must-use', resource
 # tracking).  Until now nothing ran them as a gate: `unsafe-inventory'
@@ -200,6 +306,27 @@ nl-safe-bench:
 	  -L lisp -L src -L bench \
 	  -L packages/nl-prelude/src -L packages/nl-safe/src \
 	  -l bench/nl-safe-bench.el -f nl-safe-bench-run
+
+# Doc 170 section 9 on the path the budget belongs to.  `nl-safe-bench'
+# measures on host Emacs, where the borrow SHAPE alone costs 2.69x before
+# anything is checked, so it can only ever report "over budget".  This
+# compiles both sides to .neln with the dynamic-user-call lowering (which
+# is what closes their extern sets) and runs them through the in-process
+# loader inside the reader.
+nl-safe-native-bench: standalone-reader
+	@mkdir -p target/nl-safe-native-bench
+	NELISP_ARTIFACT_DIR=$(CURDIR)/target/nl-safe-native-bench \
+	  $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nl-safe-native-bench-fixtures \
+	  -f nl-safe-native-bench-fixtures-main
+	@prelude=target/nl-safe-native-bench/prelude.el; \
+	{ echo '(load "$(CURDIR)/lisp/nelisp-native-load.el")'; \
+	  echo '(defvar nl-safe-native-bench-dir "$(CURDIR)/target/nl-safe-native-bench")'; \
+	  echo '(load "$(CURDIR)/bench/nl-safe-native-bench.el")'; \
+	  echo '(nl-safe-native-bench-run)'; \
+	} > "$$prelude"; \
+	./target/nelisp --load "$$prelude"
 
 # Reports how many bodies reached the JIT, and how many of those carried
 # a finding.  The JIT is the one place code arrives that no build step
@@ -295,6 +422,380 @@ standalone-reader:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 
+# Doc 169/170 language-extension standalone reality.  `nl-condition' and
+# `nl-safe' both claim (README.org "Testing") to run unchanged on
+# target/nelisp; `make test'/`ert-full' only proves the host-Emacs half
+# of that.  These three run the exact ERT bodies (`packages/*/test/*
+# -standalone-smoke.el', a mini `ert-deftest'/`should' shim over the
+# same test files -- see nl-condition-standalone-smoke.el's Commentary)
+# on the binary itself, each package's own examples/ demo included.
+# Conditional prerequisite matches `binary-size-ratchet' above: build
+# only if neither target/nelisp nor target/nelisp.exe exists yet.
+# `[ -f "$$bin" ]' below only proves the build produced a file -- on a host
+# that cannot run the binary's target (e.g. a linux-x86_64 target/nelisp
+# under Windows), the file exists and this check alone would try to exec it
+# anyway (2026-08-23 Windows inventory: `Exec format error').  The runnable-
+# host predicate is asked FIRST, same convention as `standalone-reader-test'
+# (scripts/nelisp-standalone-build.el).
+nl-condition-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-condition/test/nl-condition-standalone-smoke.el
+
+nl-safe-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-safe/test/nl-safe-standalone-smoke.el
+
+# Doc 189 Phase 0 (reader-time namespace resolution): runs the exact
+# ERT bodies of `packages/nl-ns/test/nl-ns-reader-test.el' on
+# `target/nelisp' itself -- proving the `nelisp-read-namespace-resolve'
+# hook `src/nelisp-read.el' gained is real on the compiled substrate,
+# not only under the development host's own Emacs.  Same conditional-
+# build / shim pattern as `nl-condition-standalone-smoke' above.
+nl-ns-reader-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-ns/test/nl-ns-reader-standalone-smoke.el
+
+# Doc 198 Phases 2-3: the real standalone substrate runs the hygiene
+# against-the-bug ERT bodies and a one-million-hop mutual trampoline.
+# Declared beside the target to avoid expanding the conflict-prone global
+# .PHONY list (the package-target convention documented near pkg-graph).
+.PHONY: nl-hygiene-standalone-smoke
+nl-hygiene-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-hygiene/test/nl-hygiene-standalone-smoke.el
+
+# Runnable-host guard: see `nl-condition-standalone-smoke' above.
+nl-resource-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-safe/test/nl-resource-standalone-smoke.el
+
+# Doc 188 P1 (buffer unification): runs
+# test/nelisp-buffer-unification-standalone-smoke.el -- the same
+# assertions as test/nelisp-buffer-unification-test.el, but against
+# target/nelisp itself via scripts/nelisp-ert-shim.el, since a plain
+# host-Emacs ERT run of those forms cannot distinguish this tree's own
+# `insert'/`buffer-string' wiring from Emacs's (Doc 188 §1.8/§4.1).
+# Same conditional-build pattern as the nl-condition/nl-safe smokes
+# above.
+# Runnable-host guard: see `nl-condition-standalone-smoke' above.
+.PHONY: precise-root-coverage
+# Precise root coverage for the mid-form collector.  Runs with the
+# conservative native-stack scan off, which is the only configuration where a
+# missing precise root arm is observable at all -- see the script's header and
+# the `precise-root-coverage' rows in tools/gate-mutations.txt.
+#
+# The prerequisite is UNCONDITIONAL, matching standalone-midform-gc-bounded and
+# unlike the `$(wildcard target/nelisp ...)' smokes: this gate's mutation row
+# injects into scripts/nelisp-standalone-build.el, i.e. into the source the
+# binary is generated from, so a target that reuses an existing target/nelisp
+# tests the pre-injection build and reports GREEN with the defect in front of
+# it.  That is exactly the UNREACHABLE failure mode tools/gate-mutations.txt
+# warns about, and this target hit it on its first run.
+precise-root-coverage: standalone-reader
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  echo "GATE-COUNT checked=0 findings=0"; \
+	  exit 0; \
+	fi; \
+	if [ "$$host_rc" != 0 ]; then \
+	  echo "precise-root-coverage: target runnable predicate failed"; \
+	  exit "$$host_rc"; \
+	fi; \
+	bash tools/nelisp-precise-root-gate.sh
+
+standalone-reader-buffer-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load test/nelisp-buffer-unification-standalone-smoke.el
+
+# Doc 193 §4.4 Phase 1: nelisp-actor's own standalone reality --
+# `generator.el' is not vendored for the substrate, so nothing built
+# from `(nelisp-actor-lambda ...)' directly can run here (see
+# packages/nelisp-actor/README.org).  Unlike the three smokes above,
+# this does NOT replay nelisp-actor-test.el's ERT bodies (those spawn
+# actors via the macro and stay host-Emacs-only by design); it runs
+# packages/nelisp-actor/generated/two-actor-exchange-cps.el -- the
+# checked-in build-time CPS transform of the ping-pong demo
+# (regenerate with `make nelisp-actor-cps-baseline') -- proving spawn/
+# mailbox/send/receive/yield/run-until-idle all work on the binary
+# itself.  Same conditional-build shape as the three above.
+# Runnable-host guard: see `nl-condition-standalone-smoke' above.
+nl-actor-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nelisp-actor/test/nelisp-actor-standalone-smoke.el
+
+# Doc 195 (docs/design/195-clojure-compat-library.org) build-first Tier
+# 1: runs the exact ERT bodies of every nl-clj-*-test.el on
+# target/nelisp itself, plus a print/read round-trip check on a tagged
+# persistent vector -- the specific substrate risk this package's own
+# representation choice (nl-clj-core.el's Commentary) exists to avoid
+# (Doc 195 §2.1: cl-defstruct/record print but do not round-trip on
+# this substrate).  Same conditional-build shape as the smokes above.
+nl-clj-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-clj/test/nl-clj-standalone-smoke.el
+
+# Doc 199 Tier 1: cooperative pmap/future/pcalls on target/nelisp.  Needs no
+# generator (a future worker never parks), so it runs standalone directly.
+.PHONY: nl-clj-future-standalone-smoke
+nl-clj-future-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-clj/test/nl-clj-future-standalone-smoke.el
+
+# Doc 196 Phases 0-4: exact rational/complex reference-contract tests on the
+# standalone, plus tagged-vector print/read round trips for a bignum-backed
+# rational and a rational-component complex value.  Same explicit-load shim
+# pattern as nl-clj-standalone-smoke above.
+nl-num-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-num/test/nl-num-standalone-smoke.el
+
+# Doc 199 Tier 2: interpreter-callable clone(2) with fixed GC-free native
+# workers.  Mirrors nl-num-standalone-smoke's runnable-target guard, then loads
+# the smoke directly in target/nelisp (never through the self-host compiler).
+nelisp-thread-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load tools/nelisp-thread-standalone-smoke.el
+
+# Doc 199 Tier 3a feasibility spike: bounded ordinary allocating Lisp on
+# clone(2) workers.  Separate from Tier 2 so its GC-inhibit/private-env
+# contract and mutation proof have an independent gate report.  Run once at
+# the host's normal limit and again under the 4 GB virtual-memory ceiling that
+# made the Stage 4c empty-chunk-unmap regression deterministic in CI.
+nelisp-thread-allocating-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load tools/nelisp-thread-allocating-standalone-smoke.el && \
+	for i in 1 2 3 4 5; do \
+	  ( ulimit -v 4000000; "$$bin" --load tools/nelisp-thread-allocating-standalone-smoke.el ) \
+	    || { echo "[nelisp-thread-allocating-standalone-smoke] FAIL under ulimit -v 4000000 (attempt $$i)"; exit 1; }; \
+	done
+
+# Doc 199 Tier 3a/3b enforced read-only global-state ceiling.  Registered
+# workers may perform mirror lookups, but mirror/intern-table mutations must
+# signal `nelisp-worker-mirror-mutation' and leave shared state unchanged.
+nelisp-thread-mirror-guard-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load tools/nelisp-thread-mirror-guard-smoke.el
+
+# Doc 199 Tier 3b first step: enumerate all allocating workers' private root
+# reserves while three live-list frames are parked at a parent-controlled
+# barrier.  Keep Tier 3a's runnable-target guard and memory-pressure repeat:
+# Doc 152 sections 11.43.2-3 showed this defect class can be intermittent and
+# invisible without the 4 GB virtual-memory ceiling.
+nelisp-thread-percpu-roots-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load tools/nelisp-thread-percpu-roots-smoke.el && \
+	for i in 1 2 3 4 5; do \
+	  ( ulimit -v 4000000; "$$bin" --load tools/nelisp-thread-percpu-roots-smoke.el ) \
+	    || { echo "[nelisp-thread-percpu-roots-smoke] FAIL under ulimit -v 4000000 (attempt $$i)"; exit 1; }; \
+	done
+
+# Doc 195 §4.6 (channels/go over nelisp-actor).  Same shim/load-by-path
+# pattern as the smokes above, but loads packages/nl-clj/generated/
+# go-ping-pong-cps.el -- the build-time CPS transform of minimal
+# repeated-`<!'/`>!' fixtures plus a `nl-clj-go' ping/pong exchange
+# (regenerate with `make nl-clj-async-cps-baseline')
+# -- rather than replaying nl-clj-async-test.el's own ERT bodies, most
+# of which spawn actors via `nl-clj-go' directly and stay host-Emacs-
+# only by design (same reasoning as nl-actor-standalone-smoke above).
+# The smoke makes two calls into the baked wrapper-based demo in one
+# process and separately gates each wrapper's same-park-point second
+# resumption; see the smoke file's Commentary for the resolved gap.
+nl-clj-async-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=./target/nelisp; [ -f "$$bin" ] || bin=./target/nelisp.exe; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load packages/nl-clj/test/nl-clj-async-standalone-smoke.el
+
+# Regenerates packages/nl-clj/generated/go-ping-pong-cps.el from
+# nl-clj-async.el's own `nl-clj-async--make-chan-1'/`-blocking-take-1'/
+# `-blocking-put-1' plus examples/nl-clj-async/go-ping-pong.el's two
+# repeated-resumption fixtures and `nl-clj-async-demo-ping-pong', under
+# THIS host's real Emacs + generator.el (AI.md rule 7).  Run this after
+# editing any of those,
+# then re-run `nl-clj-async-standalone-smoke' to confirm the
+# regenerated file still runs correctly standalone before committing
+# it -- host-vs-generated parity is NOT checked by this target itself
+# (unlike `nelisp-actor-cps-parity' for the sibling package); compare
+# `nl-clj-async-demo-ping-pong'/`-standalone' by hand (see
+# packages/nl-clj/scripts/nl-clj-async-cps-dump.el's own Commentary).
+nl-clj-async-cps-baseline:
+	$(EMACS) --batch -Q -L src -L packages/nelisp-actor/src -L packages/nelisp-actor/scripts \
+	  -L packages/nl-prelude/src -L packages/nl-safe/src -L packages/nl-clj/src \
+	  -l packages/nelisp-actor/scripts/nelisp-actor-cps-dump.el \
+	  -l packages/nl-clj/scripts/nl-clj-async-cps-dump.el \
+	  --eval "(nl-clj-async-cps-dump-write)"
+
+# Regenerates packages/nelisp-actor/generated/two-actor-exchange-cps.el
+# from examples/nelisp-actor/two-actor-exchange.el's `nelisp-demo-ping-
+# pong', under THIS host's real Emacs + generator.el (AI.md rule 7: the
+# recipe lives next to the generator, not in a session transcript).  Run
+# this after editing either that example or nelisp-actor.el's struct/
+# macros, then re-run `nl-actor-standalone-smoke' and `nelisp-actor-cps-
+# parity' to confirm the regenerated file still matches host-Emacs
+# behavior before committing it.
+nelisp-actor-cps-baseline:
+	$(EMACS) --batch -Q -L src -L packages/nelisp-actor/src \
+	  -l packages/nelisp-actor/scripts/nelisp-actor-cps-dump.el \
+	  --eval "(nelisp-actor-cps-dump-write \
+	            \"examples/nelisp-actor/two-actor-exchange.el\" \
+	            'nelisp-demo-ping-pong \
+	            \"packages/nelisp-actor/generated/two-actor-exchange-cps.el\" \
+	            'nelisp-demo-ping-pong-standalone)"
+
+# Doc 193 §8's host-Emacs half of the §4 verification design: the
+# generated forms behave identically to what real generator.el would
+# have produced (not just "it runs").  Also covered by plain `make
+# test' (the file matches the `packages/*/test/nelisp*-test.el' glob);
+# this target is the fast, standalone-file way to run just this check.
+nelisp-actor-cps-parity:
+	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
+	  $(PACKAGE_SRC_LOADS) $(PACKAGE_TEST_LOADS) \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l ert -l packages/nelisp-actor/test/nelisp-actor-cps-parity-test.el \
+	  -f ert-run-tests-batch-and-exit
+
 # fboundp-liar audit: every name in the reader's builtin fboundp list must
 # have a dispatch arm (or be combiner-handled), so `fboundp' never lies the
 # way `nelisp--syscall-readdir' did (2026-06-10).
@@ -321,6 +822,88 @@ nl-violation-corpus:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l tools/nl-violation-corpus.el
 
+# Bootstrap contract.  The standalone has several bootstraps, each
+# assembling its own source, and nothing checked that they agree -- so a
+# fact added to one was absent from the others and the same code answered
+# differently per entry point.  Measured 2026-08-19 three times over
+# (load-path, string-match-p, install-core-macros).  Bootstraps are
+# discovered, not listed, so a new one is checked from the day it exists.
+.PHONY: bootstrap-contract
+bootstrap-contract:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  -l tools/nelisp-bootstrap-contract.el
+
+# Silent-degradation inventory.  Counts error handlers that neither
+# record nor re-raise, and fails when a kind exceeds
+# tools/fallback-inventory-baseline.txt.  Same ratchet rule as above.
+#
+# Measured 2026-08-19: a native compile fell back to bytecode inside a
+# `condition-case' and printed nothing, so a green compile said nothing
+# about whether anything had been compiled natively.  This gate does not
+# judge whether a fall is acceptable -- that is not mechanical -- it
+# keeps the count from growing quietly.
+# Which names would work on a stock Emacs.  Every name this tree defines is
+# classified: `nelisp-only' (Emacs does not have it -- code using it does not
+# run there), `shared-deferring' (both have it and this tree defers via
+# `(unless (fboundp ...))'), or `shared-shadowing' (both have it and this
+# tree defines it unconditionally, so its definition lands on top).
+#
+# The host answer is not a maintained list: the tool runs under `emacs -Q'
+# and READS the sources rather than loading them, so `fboundp' in that same
+# process IS stock Emacs's answer.
+#
+# Added 2026-08-19 because nobody -- developer or AI -- could tell which
+# definition was in effect at a call site, and three defects fixed that day
+# were exactly that.  The ratchet is on `shared-shadowing'; the full table is
+# generated into docs/emacs-compat-table.txt so it can be grepped without
+# running anything.
+.PHONY: prelude-toplevel-check
+.PHONY: generated-source-parse
+.PHONY: doc200-census
+.PHONY: partial-inventory
+.PHONY: gate-mutation
+.PHONY: gate-selfcheck
+.PHONY: parity-coverage
+.PHONY: parity-fuzz
+.PHONY: inner
+.PHONY: emacs-parity
+.PHONY: binary-size-ratchet
+.PHONY: emacs-compat
+emacs-compat:
+	$(EMACS) --batch -Q -l tools/nelisp-emacs-compat.el
+
+.PHONY: emacs-compat-table
+emacs-compat-table:
+	NELISP_EMACS_COMPAT_WRITE=1 $(EMACS) --batch -Q -l tools/nelisp-emacs-compat.el
+
+.PHONY: fallback-inventory
+fallback-inventory:
+	$(EMACS) --batch -Q -l tools/nelisp-fallback-inventory.el
+
+# Does the classifier answer correctly?  Six handlers with known answers in
+# tools/fallback-inventory-fixture/, which the scanner is pointed at instead
+# of the tree.  Added 2026-08-19 with the first review of the aggregate,
+# which had been wrong in both directions and unnoticed: 23 handlers that
+# re-raise or print to stderr counted as silent, 18 that mention a logger
+# writing only under a profiling flag counted as innocent.
+.PHONY: fallback-inventory-selftest
+fallback-inventory-selftest:
+	@out="$$(NELISP_FALLBACK_INVENTORY_ROOTS=tools/fallback-inventory-fixture \
+	         $(EMACS) --batch -Q -l tools/nelisp-fallback-inventory.el 2>&1)"; \
+	echo "$$out" | grep -E '^(silent-fallback|ignore-errors|bare-handler|dbg-note)'; \
+	ok=1; \
+	echo "$$out" | grep -qE '^silent-fallback +3 ' || { echo "  expected silent-fallback 3"; ok=0; }; \
+	echo "$$out" | grep -qE '^ignore-errors +1 ' || { echo "  expected ignore-errors 1"; ok=0; }; \
+	echo "$$out" | grep -qE '^bare-handler +1 ' || { echo "  expected bare-handler 1"; ok=0; }; \
+	echo "$$out" | grep -qE '^dbg-note +0 ' || { echo "  expected dbg-note 0"; ok=0; }; \
+	if [ "$$ok" = 1 ]; then \
+	  echo "GATE-COUNT checked=4 findings=0"; \
+	  echo "[fallback-inventory-selftest] PASS"; \
+	else \
+	  echo "GATE-COUNT checked=4 findings=1"; \
+	  echo "[fallback-inventory-selftest] FAIL"; exit 1; \
+	fi
+
 # Doc 169 defect #6: namespace boundaries, checked instead of enforced
 # by a reader extension.  Counts nl-ns cross-file collisions, stray
 # definitions, and references through another file's `--' private
@@ -335,6 +918,16 @@ ns-inventory:
 # in the .PHONY block at the top of this file: that list has produced a
 # merge conflict on every integration branch so far, and a one-line
 # .PHONY beside its target costs nothing.
+#
+# Also scans src/ and lisp/, which the package scan does not reach, and
+# reports what they require that nothing in the tree provides -- split into
+# hard and optional, and ratcheted on the hard count against
+# tools/pkg-host-requires-baseline.txt.  Measured 2026-08-19: every host
+# library that has stopped the standalone runtime lived in those two
+# directories and was invisible to this gate.  The last of them,
+# `(require 'seq)' in one file, took the native compiler down with it and
+# reported "native compiler unavailable"; finding it meant bisecting a
+# require by hand.
 .PHONY: pkg-graph
 pkg-graph:
 	$(EMACS) --batch -Q -L packages/nelisp-pkg/src \
@@ -367,6 +960,15 @@ pkg-load-order:
 	@$(EMACS) --batch -Q -L packages/nelisp-pkg/src \
 	  -l tools/nelisp-pkg-load-order.el
 
+# Every docs/design/*.org whose #+STATUS: line says SHIPPED must carry a
+# #+VERIFIED-BY: line naming a gate that exists (tools/nelisp-doc-claims.el).
+# Legacy SHIPPED docs predating the header are tolerated via
+# tools/nelisp-doc-claims-baseline.txt, the same pinned-baseline shape
+# unsafe-inventory/fallback-inventory/pkg-graph use.
+.PHONY: doc-claims
+doc-claims:
+	$(EMACS) --batch -Q -l tools/nelisp-doc-claims.el
+
 # Fails on a cross-file name collision that is not in the accepted set,
 # and on an accepted entry that no longer matches anything.  Reaching
 # zero findings is not the goal: the bootstrap prelude has to define
@@ -385,6 +987,103 @@ reader-surface-audit:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l reader-surface-audit -f nelisp-reader-surface-audit
+
+# ---- standalone-reader-smokes -------------------------------------------
+#
+# The individual reader smokes, run as one gate (28 -> 29 on
+# integration/wave3: fix/standalone-reader-input-hardening added
+# `standalone-reader-malformed-input-smoke'; 34 -> 35 on
+# fix/ffi-surface-availability: added `standalone-reader-ffi-unsupported-
+# smoke', which pins the DEFAULT static build's `nl-ffi-call' availability --
+# see that target's own comment).  The "29" in the prose below has drifted
+# from the list's actual length before this change too; unchanged here
+# rather than reworked without re-verifying its own history.
+#
+# `standalone-reader-test' runs 19 checks built into the build script (13
+# base + 1 initial exit-code assertion, +4 from an earlier integration: each
+# of fix/control-flow-wrong-values (`...-control-flow-smoke'),
+# fix/standalone-reader-input-hardening (`...-malformed-input-smoke'),
+# fix/elc-artifact-void-invocation-name (`...-elc-smoke'), and
+# feat/stdlib-hooks-map-fixnum (`...-stdlib-completion-smoke') added one to
+# the dolist, +1 from Doc 186 (`...-char-table-smoke') -- measured with
+# `GATE-COUNT checked=19 findings=0' on this branch.
+# These 29 are separate make targets testing separate things -- format
+# directives, getenv, TLS, processes, match-data, intern-soft, the FFI bridge
+# -- and until 2026-08-21 nothing ran them, which is how a `print-circle'
+# defect in the unit cache key and a wrong-signed `mod' both sat in the tree.
+#
+# One gate rather than 29 entries in gates.expected: 29 reports would demand 29
+# freshness checks for one build's worth of evidence, and a ledger nobody can
+# keep current is a ledger nobody reads.  The count is the signal -- 29 checked
+# is the claim, and a target that stops existing shows up as a smaller number.
+STANDALONE_READER_SMOKES = \
+  standalone-reader-async-core-smoke \
+  standalone-reader-bignum-smoke \
+  standalone-reader-catch-throw-tag-smoke \
+  standalone-reader-checked \
+  standalone-reader-checked-soak \
+  standalone-reader-cond-let-shape-smoke \
+  standalone-reader-current-time-smoke \
+  standalone-reader-declare-strip-smoke \
+  standalone-reader-derived-mode-shape-smoke \
+  standalone-reader-dns-smoke \
+  standalone-reader-elt-smoke \
+  standalone-reader-ffi-smoke \
+  standalone-reader-ffi-unsupported-smoke \
+  standalone-reader-fmt-smoke \
+  standalone-reader-getenv-smoke \
+  standalone-reader-hosts-file-smoke \
+  standalone-reader-intern-soft-loop-smoke \
+  standalone-reader-intern-soft-smoke \
+  standalone-reader-load-smoke \
+  standalone-reader-malformed-input-smoke \
+  standalone-reader-match-data-smoke \
+  standalone-reader-mod-float-smoke \
+  standalone-reader-nested-backquote-macro-smoke \
+  standalone-reader-network-process-nowait-smoke \
+  standalone-reader-network-process-server-smoke \
+  standalone-reader-network-process-smoke \
+  standalone-reader-nonblocking-socket-smoke \
+  standalone-reader-number-token-smoke \
+  standalone-reader-pcase-quote-literal-smoke \
+  standalone-reader-prelude-equal-reload-smoke \
+  standalone-reader-prelude-test \
+  standalone-reader-process-adapter-smoke \
+  standalone-reader-process-adapter-smoke-red \
+  standalone-reader-process-smoke \
+  standalone-reader-realrt-smoke \
+  standalone-reader-recursion-guard-smoke \
+  standalone-reader-repl-idle-pump-smoke \
+  standalone-reader-repl-smoke \
+  standalone-reader-require-provide-smoke \
+  standalone-reader-shadow-smoke \
+  standalone-reader-tls-smoke
+
+# Every one of the 34 sub-targets below ultimately execs the SAME
+# target/nelisp binary, so if this host cannot run its target none of them
+# can -- asked once here rather than 34 times.  2026-08-23 Windows
+# inventory: without this, the aggregate ran all 34, 32 hit `Exec format
+# error'/permission failures individually, and it reported a plain FAIL
+# instead of a reasoned skip.  Same predicate/convention as
+# `standalone-reader-test'.
+#
+# Per-smoke logs go under target/tmp/, not /tmp/: MSYS2 `make' and Git
+# Bash `tail' disagreed about where `/tmp' lives in that same run (`make'
+# wrote to C:\msys64\tmp, the shell's own `tail /tmp/...' looked
+# elsewhere), so the aggregate could not read or remove its own logs.
+# target/ is inside the repo checkout -- one namespace, not two.
+.PHONY: standalone-reader-smokes
+standalone-reader-smokes:
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  echo "[reader-smokes] SKIP: target cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	MAKE="$(MAKE)" tools/nelisp-reader-smokes.sh $(STANDALONE_READER_SMOKES)
 
 standalone-reader-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
@@ -410,6 +1109,45 @@ nelisp-runtime-image-cache-gate:
 
 nelisp-source-command-substrate-gate:
 	./tools/nelisp-source-command-substrate-gate.sh
+
+# One probe corpus (tools/nelisp-substrate-parity-corpus.el), every entry
+# point (bare-file, --load, runtime-image, compiled artifact, source-cache,
+# source-fallback, and host Emacs for the shared part), diffed line by line
+# against the bare-file baseline.  See tools/nelisp-substrate-parity.el's
+# header for why: this branch's costliest misdiagnosis was a primitive
+# probed in one substrate and generalized to another.
+.PHONY: substrate-parity-smoke
+substrate-parity-smoke:
+	./tools/nelisp-substrate-parity-smoke.sh
+
+# Task A (presence sweep): the definable-name surface (~354 names --
+# scripts/nelisp-stdlib-prelude.el's top-level functions union
+# nelisp--primitive-symbols in src/nelisp-eval.el, see
+# tools/nelisp-substrate-presence-gen.el), one `fboundp' probe per name,
+# through the exact same corpus/diff/ledger machinery as
+# substrate-parity-smoke above but as a second corpus and a second ledger
+# (tools/substrate-presence-accepted.el) so the two finding counts never
+# conflate.  Its own gate, not folded into `nelisp-ai.sh extras': ~2400
+# process launches, measured too slow for that tier's budget.
+.PHONY: substrate-presence-sweep
+substrate-presence-sweep:
+	./tools/nelisp-substrate-presence-sweep.sh
+
+# The corpus above is GENERATED and checked in; this is its drift check,
+# same shape as ns-inventory's checked-in baseline except an exact content
+# comparison rather than a ratcheted count, because the corpus is fully
+# deterministic.  Seconds, no binary -- lives in `check', unlike the sweep
+# itself.
+.PHONY: substrate-presence-corpus-check
+substrate-presence-corpus-check:
+	$(EMACS) --batch -Q -L packages/nl-prelude/src -L packages/nl-ns/src \
+	  -l tools/nelisp-substrate-presence-gen.el \
+	  --eval '(kill-emacs (nelisp-substrate-presence-gen-check))'
+
+.PHONY: substrate-presence-corpus-regen
+substrate-presence-corpus-regen:
+	NELISP_SUBSTRATE_PRESENCE_GEN_WRITE=1 $(EMACS) --batch -Q -L packages/nl-prelude/src -L packages/nl-ns/src \
+	  -l tools/nelisp-substrate-presence-gen.el
 
 # Fast focused loop for CLI load work.  Builds/relinks target/nelisp using the
 # incremental unit cache, then checks only `--load' output instead of running
@@ -448,9 +1186,15 @@ standalone-reader-require-provide-smoke: standalone-reader
 #      explicit garbage-collect, then assert via the report:
 #      enable=1, armed=1, generation/checked-allocs/verified-frees > 0,
 #      redzone violations = 0, alloc-site id round-trips.
-# The runtime env probe is wired on the Windows standalone target; on
-# targets without runtime env inheritance enable via
-# `(nelisp--debug-switch 19)' instead (stamping + poison, no verify).
+# The runtime env probe is wired on the Windows and Linux standalone
+# targets.  macOS has no boot env yet, so enable there via
+# `(nelisp--debug-switch 19)' instead -- and note that switch stamps and
+# poisons but deliberately does NOT arm the verifier (arming mid-run
+# false-positives on blocks allocated before it), so run 3's armed=1
+# assertion cannot pass that way.  That is why this whole target could
+# only ever run on Windows until the Linux boot probe landed
+# (2026-08-19); measured on linux-x86_64 the same day, run 3 reports
+# 269820 verified frees and 0 redzone violations.
 # NB: pass NELISP_STANDALONE_TARGET as a make VARIABLE (not just env) —
 # MSYS make drops it from recipe environments otherwise:
 #   make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64
@@ -494,6 +1238,422 @@ standalone-reader-checked: standalone-reader
 	  echo "[standalone-reader-checked] FAIL: $$rep"; \
 	  exit 1; \
 	fi
+
+# `elt' on an empty sequence used to SEGFAULT the process: no bounds check
+# on the vector arm, and an else-arm that fell through to `str-byte-at' and
+# dereferenced nil.  Both crash inputs are pinned here because a crash is
+# the one failure a value-comparing test cannot report -- there is no value
+# to compare, only an exit code.
+.PHONY: standalone-reader-elt-smoke
+standalone-reader-elt-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=./target/nelisp; \
+	case "$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET" in \
+	  windows*) bin=./target/nelisp.exe;; \
+	esac; \
+	fail=0; \
+	for expr in '(elt nil 0)' '(elt nil 5)' '(elt nil -1)' '(elt (list) 0)'; do \
+	  out="$$($$bin --eval "$$expr" 2>&1)"; rc=$$?; \
+	  if [ "$$rc" -ne 0 ]; then \
+	    echo "[elt-smoke] FAIL $$expr exited $$rc (139 = SIGSEGV)"; fail=1; \
+	  elif [ "$$out" != "nil" ]; then \
+	    echo "[elt-smoke] FAIL $$expr -> $$out, expected nil"; fail=1; \
+	  else \
+	    echo "[elt-smoke] ok   $$expr -> nil"; \
+	  fi; \
+	done; \
+	for pair in '(elt (list 1 2 3) 1)|2' '(elt [10 20 30] 2)|30' '(elt "abc" 1)|98' '(elt "あい" 0)|12354' '(elt (list 1 2) 5)|nil' \
+	  '(condition-case e (elt [] 0) (args-out-of-range (quote signalled)))|signalled' \
+	  '(condition-case e (elt [1 2 3] 5) (args-out-of-range (quote signalled)))|signalled'; do \
+	  expr="$${pair%%|*}"; want="$${pair##*|}"; \
+	  out="$$($$bin --eval "$$expr" 2>&1)"; rc=$$?; \
+	  if [ "$$rc" -ne 0 ] || [ "$$out" != "$$want" ]; then \
+	    echo "[elt-smoke] FAIL $$expr -> $$out (rc=$$rc), expected $$want"; fail=1; \
+	  else \
+	    echo "[elt-smoke] ok   $$expr -> $$out"; \
+	  fi; \
+	done; \
+	if [ "$$fail" -ne 0 ]; then exit 1; fi; \
+	echo "[elt-smoke] PASS"
+
+# A name the standalone provides natively AND the prelude redefines
+# unconditionally has two implementations, and which one runs depends on
+# whether the prelude was loaded.  This evaluates the same expressions both
+# ways and requires the same answers.  See the case file's commentary for
+# the three defects of this shape found by hand on 2026-08-19.
+.PHONY: standalone-reader-shadow-smoke
+# The shadow smoke compares the standalone against ITSELF (native builtins vs
+# the prelude's redefinitions).  That cannot see a case where both halves are
+# wrong the same way -- which is most of what an Emacs-compatibility runtime
+# gets wrong.  This target compares the same file against STOCK EMACS, printer
+# to printer, and requires the two to be byte-identical.
+#
+# Both sides print through `format "%S"' deliberately.  Reading the
+# standalone's own value echo instead compares Emacs's printer against a
+# DIFFERENT NeLisp printer (the native `nelisp--repr'), and the two differ on
+# backslash escaping inside a nested string -- an hour went into that mirage
+# on 2026-08-19.
+# The edit-check loop, measured rather than assumed on 2026-08-19: the
+# standalone rebuild is ~14s and the seven gates together are ~6s, while
+# `make test' alone is ~70s.  So the loop worth optimising was never the
+# build -- it was running the full ERT suite after every one-line change.
+# This target is what to run between edits; run `make test' before the
+# commit, not before each measurement.
+# `emacs-parity' checks a corpus I wrote; this SEARCHES for cases I did not
+# think to write.  It generates calls to the names both runtimes define,
+# from an argument pool weighted toward the shapes that actually broke
+# things (empty sequence, improper list, negative index, index past the end,
+# non-ASCII, wrong type entirely), prints both answers, and shrinks any
+# disagreement to a minimal call.
+#
+# Not wired into CI as a blocking gate: it reports where the two differ, not
+# which one is right, and that is a reading job.  Run it, read it, and turn
+# what it finds into `emacs-parity' cases -- those are the ones that stay.
+#
+#   NELISP_FUZZ_SEED=7 NELISP_FUZZ_CASES=4000 make parity-fuzz
+#   NELISP_FUZZ_ONLY='^string-' make parity-fuzz
+# "buffer ops / text properties / overlays / coding systems are not covered"
+# was an impression until this printed the number: 100 of 424 shared names,
+# 23%.  It counts MENTIONS, not exercise, so it is a floor to push up rather
+# than a score -- `parity-fuzz' is what searches the space.  Two numbers that
+# measure different things beat one that pretends to measure both.
+# Every gate says whether what it looked at was clean.  None of them said
+# whether they looked at anything -- and three were green while seeing
+# nothing on 2026-08-19.  This runs each gate and requires its `checked'
+# count inside a band.
+# `gate-selfcheck' asks whether each gate looked at anything.  This asks the
+# harder question: would it CATCH something.  Each row injects a known
+# defect, requires the gate to go red, and restores the file.
+# The worst defects fixed on 2026-08-19 were all one shape: a function that
+# takes an argument Emacs defines, ignores it, and ANSWERS.  The tell is
+# mechanical -- an `_'-prefixed parameter in a function stock Emacs also
+# defines -- so the list is visible now and every site has to be
+# acknowledged with what it does instead.
+# An argument check added to a ONE-LINE defun lands after its closing paren
+# and becomes a top-level form: it runs during the prelude load and fails
+# with `void-variable' on the parameter name, nowhere near the function.
+# That happened twice on 2026-08-20.
+prelude-toplevel-check:
+	@$(EMACS) --batch -Q -l tools/nelisp-prelude-toplevel-check.el
+
+# The standalone build emits several Elisp programs as string literals, so
+# their parens are invisible to `parens-check', which reads the .el file and
+# not the text it produces.  One dropped paren on 2026-08-19 nested the
+# artifact command dispatch inside an `unless' that never runs, and
+# `compile-elisp-artifact' silently did nothing for two days.
+generated-source-parse:
+	@$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l tools/nelisp-generated-source-parse.el \
+	  -f nelisp-generated-source-parse-run
+
+# Doc 200 option A cannot safely add string tags until every existing Str (5)
+# and MutStr (6) test/write has a stable audit row.  This source-only reader
+# regenerates the live (FILE, ENCLOSING, KIND, NTH) keys and compares only
+# those keys with the ledger, preserving its human STATUS and NOTE columns.
+doc200-census:
+	@$(EMACS) --batch -Q -l tools/nelisp-doc200-tag-census.el \
+	  -f nelisp-doc200-tag-census-run
+
+partial-inventory:
+	@$(EMACS) --batch -Q -l tools/nelisp-partial-inventory.el
+
+gate-mutation:
+	@tools/nelisp-gate-mutation.sh
+
+# Verify ONE gate's mutation row(s) without paying for the whole sweep.
+#
+#   make gate-mutation-verify GATE=standalone-midform-gc-bounded
+#
+# Authoring a row obliges you to prove it is REACHED -- inject, see RED,
+# restore, see GREEN.  Three rows in this repo's history shipped without that
+# proof and each cost a CI round: one aimed at a path its gate never walked,
+# one was quietly made non-lethal by a later improvement, and one was RED
+# locally on every attempt but green in CI.  A full `gate-mutation' sweep is
+# too slow to run per row, which is exactly why those proofs got skipped.
+.PHONY: gate-mutation-verify
+gate-mutation-verify:
+	@test -n "$(GATE)" || { echo "usage: make gate-mutation-verify GATE=<gate-name>"; exit 2; }
+	@NELISP_GATE_MUTATION_ONLY="$(GATE)" tools/nelisp-gate-mutation.sh
+
+version-consistency:
+	@bash tools/nelisp-version-consistency.sh
+
+gate-selfcheck:
+	@$(EMACS) --batch -Q -l tools/nelisp-gate-selfcheck.el
+
+parity-coverage:
+	@$(EMACS) --batch -Q -l tools/nelisp-parity-coverage.el
+
+parity-fuzz: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_REPO_ROOT=$(CURDIR) $(EMACS) --batch -Q -l tools/nelisp-parity-fuzz.el
+
+inner: standalone-reader emacs-parity
+	@$(MAKE) --no-print-directory standalone-reader-shadow-smoke
+	@$(MAKE) --no-print-directory standalone-reader-elt-smoke
+	@$(MAKE) --no-print-directory standalone-reader-prelude-test
+	@echo "[inner] build + parity + standalone smokes clean"
+
+# The reference side of this gate is whatever `$(EMACS)' answers LIVE, not
+# a frozen file -- so a host running a different Emacs major version is not
+# testing a NeLisp defect, it is testing whether stock Emacs agrees with
+# itself release to release.  The standalone's own answers were built and
+# read against Emacs 30.1 (`docs/emacs-compat-table.txt' header reads
+# "emacs 30.1, 7114 names", generated by `make emacs-compat-table' running
+# the development host's own Emacs; `packages/nl-ns/baseline/emacs-30.1.el'
+# is the same 30.1 pin for the separate namespace tooling), and CI runs an
+# Emacs 29.4 lane alongside 30.1 (.github/workflows/ci.yml matrix).
+# Measured on GitHub Actions run 32606582250 (2026-08-23): the 29.4 lane
+# failed this gate with a 1,844-line diff while the 30.1 lane, same commit,
+# same corpus, passed -- real Emacs 29.4 answers some of these expressions
+# differently than Emacs 30.x does, and NeLisp matches 30.x.  A host
+# outside the pinned major reports a reasoned GATE-SKIP instead of failing
+# on a version gap this gate cannot close by running harder.
+# `NELISP_EMACS_PARITY_HOST_VERSION' overrides the detected host version --
+# it exists so this guard can be exercised without a second Emacs install;
+# unset, it always reflects the real `$(EMACS) --version'.
+#
+# The wrapped-corpus file below (target/emacs-parity.el) used to be
+# assembled from three separate shell steps -- `printf ... >', `cat ...
+# >>', `printf ... >>' -- each its own process writing to the same path.
+# 2026-08-23 Windows inventory: on that host the generated file lacked its
+# opening `(princ (format "%S" (progn' wrapper entirely and ended with an
+# unmatched `)))', so Emacs read it as the corpus's own top-level forms
+# followed by a stray close-paren and failed with `invalid-read-syntax'.
+# That exact three-step shell sequence could not be reproduced failing on
+# Linux (a mock run with the same commands under bash still writes a
+# correct file here), so the precise MSYS2/Git-Bash/Windows-Emacs
+# mechanism -- interleaved writes, `\r'-corrupted line continuation, or
+# something else entirely -- is not confirmed from this host. Rather than
+# guess at that mechanism, generation now goes through ONE Emacs process
+# and ONE `write-region' call instead of three separate shell redirects
+# to the same file: this cannot exhibit "some but not all of three
+# sequential writes landed", because there is only one write. Not
+# Windows-verified; the owner's next runbook run on Windows is the actual
+# proof this holds there too.
+# `wc -c' is piped through `tr -d " "' below because BSD wc right-pads its
+# count.  Without that, the line reads `GATE-COUNT checked=   19900' and the
+# `checked=\([0-9]+\)' parsers in tools/nelisp-gate-selfcheck.el and
+# tools/ai/nelisp-ai.sh match nothing -- so a gate that had just compared
+# 19,900 bytes was reported as one that examined nothing, on macOS only.
+# `binary-size-ratchet' below already strips it; this target and the
+# checked-allocator soak did not.
+emacs-parity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@mkdir -p target; \
+	host_version="$${NELISP_EMACS_PARITY_HOST_VERSION:-$$($(EMACS) --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)}"; \
+	case "$$host_version" in \
+	  30.*) : ;; \
+	  *) echo "GATE-SKIP emacs-parity requires stock Emacs 30.x (host has $$host_version); the reference answers are version-pinned"; \
+	     echo "[emacs-parity] SKIP: host Emacs $$host_version is outside the pinned 30.x range"; \
+	     exit 0;; \
+	esac; \
+	$(EMACS) --batch -Q --eval '(with-temp-buffer (insert "(princ (format \"%S\" (progn\n") (goto-char (point-max)) (insert-file-contents "test/nelisp-shadow-differential-cases.el") (goto-char (point-max)) (insert ")))\n") (write-region (point-min) (point-max) "target/emacs-parity.el" nil (quote silent)))'; \
+	bin=./target/nelisp; \
+	case "$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET" in \
+	  windows*) bin=./target/nelisp.exe;; \
+	esac; \
+	$(EMACS) --batch -Q -l target/emacs-parity.el > target/emacs-parity-emacs.txt 2>/dev/null; \
+	$$bin --load target/emacs-parity.el > target/emacs-parity-nelisp.txt 2>/dev/null; \
+	if [ ! -s target/emacs-parity-emacs.txt ]; then \
+	  echo "[emacs-parity] FAIL: Emacs produced no output -- the cases file did not evaluate"; exit 1; \
+	fi; \
+	n=$$(wc -c < target/emacs-parity-emacs.txt | tr -d ' '); \
+	head -c $$n target/emacs-parity-nelisp.txt > target/emacs-parity-nelisp-head.txt; \
+	if cmp -s target/emacs-parity-emacs.txt target/emacs-parity-nelisp-head.txt; then findings=0; else findings=1; fi; \
+	echo "GATE-COUNT checked=$$n findings=$$findings"; \
+	if [ "$$findings" = 0 ]; then \
+	  echo "[emacs-parity] PASS: $$n bytes identical to stock Emacs"; \
+	else \
+	  echo "[emacs-parity] FAIL: the standalone answers differently from stock Emacs"; \
+	  fold -w100 target/emacs-parity-emacs.txt > target/emacs-parity-e.f; \
+	  fold -w100 target/emacs-parity-nelisp-head.txt > target/emacs-parity-n.f; \
+	  diff target/emacs-parity-e.f target/emacs-parity-n.f | head -40; \
+	  exit 1; \
+	fi
+
+# `binary_identity()' in tools/ai/nelisp-ai.sh has always computed
+# target/nelisp's size; nothing compared it to anything.  This is the
+# comparison, pinned against tools/nelisp-binary-size-baseline.txt the same
+# way unsafe-inventory/fallback-inventory/pkg-graph pin theirs -- raise
+# `size' in that file, in the commit that explains the growth.  Consumes
+# whichever binary is already in target/ (built here only if neither
+# target/nelisp nor target/nelisp.exe exists yet), the same conditional
+# prerequisite `emacs-parity' above uses, rather than forcing a fresh
+# build for a check that only needs to weigh what is already there.  The
+# baseline itself is Linux x86_64 only (like several other measured-here
+# gates); a differently-targeted build reports a reasoned GATE-SKIP
+# instead of comparing an ELF from a different linker against a number
+# that was never measured for it.
+binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@target="$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET"; \
+	if [ -n "$$target" ] && [ "$$target" != "linux-x86_64" ]; then \
+	  echo "GATE-SKIP baseline pinned to linux-x86_64 only, target=$$target"; \
+	  echo "[binary-size-ratchet] SKIP: not the pinned target"; \
+	  exit 0; \
+	fi; \
+	bin=./target/nelisp; \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-COUNT checked=0 findings=1"; \
+	  echo "[binary-size-ratchet] FAIL: $$bin not found"; \
+	  exit 1; \
+	fi; \
+	baseline=$$(awk '$$1=="size"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
+	slack=$$(awk '$$1=="slack-pct"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
+	if [ -z "$$baseline" ] || [ -z "$$slack" ]; then \
+	  echo "GATE-COUNT checked=0 findings=1"; \
+	  echo "[binary-size-ratchet] FAIL: tools/nelisp-binary-size-baseline.txt missing 'size' or 'slack-pct'"; \
+	  exit 1; \
+	fi; \
+	actual=$$(wc -c < "$$bin" | tr -d ' '); \
+	ceiling=$$(( baseline + baseline * slack / 100 )); \
+	if [ "$$actual" -le "$$ceiling" ]; then findings=0; else findings=1; fi; \
+	echo "GATE-COUNT checked=1 findings=$$findings"; \
+	if [ "$$findings" = 0 ]; then \
+	  echo "[binary-size-ratchet] PASS: $$bin is $$actual bytes (baseline $$baseline, ceiling $$ceiling, slack $$slack%)"; \
+	else \
+	  over=$$(( actual - baseline )); \
+	  echo "[binary-size-ratchet] FAIL: $$bin is $$actual bytes, $$over over baseline $$baseline -- exceeds ceiling $$ceiling ($$slack% slack).  If this growth is real and explained, raise 'size' in tools/nelisp-binary-size-baseline.txt in the same commit."; \
+	  exit 1; \
+	fi
+
+standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@mkdir -p target
+	@cp test/nelisp-shadow-differential-cases.el target/shadow-native.el
+	@printf '%s\n' '(load "scripts/nelisp-stdlib-prelude.el")' > target/shadow-prelude.el
+	@cat test/nelisp-shadow-differential-cases.el >> target/shadow-prelude.el
+	@bin=./target/nelisp; \
+	case "$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET" in \
+	  windows*) bin=./target/nelisp.exe;; \
+	esac; \
+	native="$$($$bin --load target/shadow-native.el 2>&1 | tail -n 1)"; \
+	prelude="$$($$bin --load target/shadow-prelude.el 2>&1 | tail -n 1)"; \
+	case "$$native" in \
+	  "("*) : ;; \
+	  *) echo "[shadow-smoke] FAIL: the native run produced no list -> $$native"; exit 1;; \
+	esac; \
+	case "$$prelude" in \
+	  "("*) : ;; \
+	  *) echo "[shadow-smoke] FAIL: the prelude run produced no list -> $$prelude"; exit 1;; \
+	esac; \
+	if [ "$$native" = "$$prelude" ]; then \
+	  echo "[shadow-smoke] PASS: native and prelude agree"; \
+	  echo "[shadow-smoke]   $$native"; \
+	else \
+	  echo "[shadow-smoke] FAIL: the prelude answers differently from the native builtins"; \
+	  echo "[shadow-smoke]   native  $$native"; \
+	  echo "[shadow-smoke]   prelude $$prelude"; \
+	  exit 1; \
+	fi
+
+# Doc 170 section 5.3: the soak, run with the verifying allocator armed,
+# with redzone corruption and leaks each a blocker.
+#
+# Section 5 rates this allocator the highest bug-detection-per-effort item
+# in that design, and until 2026-08-19 it could not be armed off Windows at
+# all -- `nl_os_environ_init' was a no-op, so NELISP_ALLOC_CHECK=1 never
+# reached the boot probe.  It reads envp off the Linux entry stack now, so
+# this lane exists.
+#
+# Two blockers, from `(nelisp--alloc-check-report)':
+#
+#   redzone   violations must be 0.  A guard word is stamped into every
+#             allocation's suffix and checked on free, so a write past the
+#             end of a block is caught at the free rather than wherever the
+#             corruption later surfaced.
+#
+#   leak      live-blocks must not grow across rounds.  Each round runs the
+#             same workload and ends with `garbage-collect', so what is
+#             still reachable afterwards is retention, not garbage.  A
+#             round-over-round rise means the runtime is holding something
+#             the previous round already finished with.
+#
+# ROUNDS defaults to 3 for a CI-shaped run; the release lane passes more.
+# Deliberately NOT the 1h wall-clock of `soak-1h': an hour of the same loop
+# adds confidence about time, and rounds add confidence about repetition,
+# which is what a leak test actually needs.
+#
+# The rounds run INSIDE one process.  A first cut ran each round as its own
+# `--load' and compared live-blocks across them, which cannot fail: a fresh
+# process starts with a fresh heap, so the numbers were identical by
+# construction and the leak blocker was decorative.
+#
+# The leak blocker allows a few blocks of slack, and the number comes from
+# measurement rather than taste.  A strict `>' comparison failed on this
+# workload: run to run the settled census wobbles by a single block out of
+# about 145000, so the gate went red carrying no information -- which is how
+# a gate stops being read.  Eight rounds showed the wobble is not retention:
+# 144839, then 145065 held flat for six more rounds, so the runtime settles
+# and stays settled.
+#
+# The slack sits between the two measured magnitudes.  Observed noise is 1
+# block; the known-answer leak -- 2000 conses held past the collect -- moves
+# it by 4000 per round (149866 154092 158092, measured 2026-08-19).  8 is
+# comfortably above the first and 500x below the second, so the blocker
+# still fires on anything that accumulates and ignores what does not.
+.PHONY: standalone-reader-checked-soak
+STANDALONE_CHECKED_SOAK_ROUNDS ?= 3
+STANDALONE_CHECKED_SOAK_SLACK ?= 8
+standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(load "scripts/nelisp-stdlib-prelude.el")' \
+	  '(defun checked-soak-round ()' \
+	  '  (let* ((i 0) (acc nil))' \
+	  '    (while (< i 4000) (setq acc (cons (make-string 48 66) acc)) (setq i (+ i 1))))' \
+	  '  (let* ((i 0) (acc nil))' \
+	  '    (while (< i 4000) (setq acc (cons (make-vector 12 i) acc)) (setq i (+ i 1))))' \
+	  '  (let* ((i 0) (acc nil))' \
+	  '    (while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))' \
+	  '  (garbage-collect)' \
+	  '  (princ (format "ROUND %S\n" (nelisp--alloc-check-report))))' \
+	  '(let ((r 0))' \
+	  '  (while (< r $(STANDALONE_CHECKED_SOAK_ROUNDS))' \
+	  '    (checked-soak-round)' \
+	  '    (setq r (+ r 1))))' \
+	  > target/checked-soak.el
+	@bin=./target/nelisp; \
+	case "$(NELISP_STANDALONE_TARGET)$$NELISP_STANDALONE_TARGET" in \
+	  windows*) bin=./target/nelisp.exe;; \
+	esac; \
+	rounds_file=target/checked-soak-rounds.txt; \
+	NELISP_ALLOC_CHECK=1 $$bin --load target/checked-soak.el 2>&1 \
+	  | grep '^ROUND ' > $$rounds_file || true; \
+	n=$$(wc -l < $$rounds_file | tr -d ' '); \
+	if [ "$$n" -ne "$(STANDALONE_CHECKED_SOAK_ROUNDS)" ]; then \
+	  echo "[checked-soak] FAIL: $$n of $(STANDALONE_CHECKED_SOAK_ROUNDS) round(s) reported -- the run died partway"; \
+	  exit 1; \
+	fi; \
+	i=0; settled=""; last=""; lives=""; \
+	while read -r _tag rest; do \
+	  i=$$(( i + 1 )); \
+	  set -- $$(echo "$$rest" | tr -d "()"); \
+	  echo "[checked-soak] round $$i/$(STANDALONE_CHECKED_SOAK_ROUNDS) armed=$$2 verified-frees=$$5 violations=$$6 live-blocks=$$9"; \
+	  if [ "$$1" != "1" ] || [ "$$2" != "1" ]; then \
+	    echo "[checked-soak] FAIL round $$i: allocator not enabled+armed (enable=$$1 armed=$$2) -- the boot env probe did not fire, so nothing below was checked"; \
+	    exit 1; \
+	  fi; \
+	  if [ "$${5:-0}" -le 0 ]; then \
+	    echo "[checked-soak] FAIL round $$i: 0 frees verified -- the workload never reached the verifier"; \
+	    exit 1; \
+	  fi; \
+	  if [ "$$6" != "0" ]; then \
+	    echo "[checked-soak] FAIL round $$i: $$6 redzone violation(s), first bad header $$7, alloc site $$8"; \
+	    exit 1; \
+	  fi; \
+	  lives="$$lives $$9"; \
+	  if [ "$$i" -eq 2 ]; then settled=$$9; fi; \
+	  last=$$9; \
+	done < $$rounds_file; \
+	rm -f $$rounds_file; \
+	echo "[checked-soak] live-blocks per round:$$lives"; \
+	if [ -z "$$settled" ]; then \
+	  echo "[checked-soak] PASS (fewer than 2 rounds: no leak comparison possible)"; \
+	  exit 0; \
+	fi; \
+	if [ "$$(( last - settled ))" -gt $(STANDALONE_CHECKED_SOAK_SLACK) ]; then \
+	  echo "[checked-soak] FAIL: live blocks grew $$settled -> $$last after the first round, past the $(STANDALONE_CHECKED_SOAK_SLACK)-block slack (each round ends with garbage-collect, so this is retention rather than garbage)"; \
+	  exit 1; \
+	fi; \
+	echo "[checked-soak] PASS"
 
 # Doc 168 Phase 6 gate data collection (Doc 170 sections 3.3 / 5).  Runs
 # the checked-allocator workloads with NELISP_ALLOC_CHECK=1 and appends
@@ -573,8 +1733,10 @@ alloc-check-collect: $(if $(wildcard target/nelisp target/nelisp.exe),,standalon
 # guard was always implemented, but rec_max sat above the real native
 # ceiling, so recursion past it was a silent exit 127 instead of a
 # catchable error (2026-08-16: measured ceiling ~136k rec levels
-# against a comment claiming ~404k).  This asserts the guard fires and
-# the process survives, so a future rec_max or frame-size change
+# against a comment claiming ~404k).  Doc 152 Stage 3's root frames add
+# a nearer fixed-region ceiling (this probe measures root-depth=3N+6),
+# so rec_max is now calibrated below both limits.  This asserts the guard
+# fires and the process survives, so a future rec_max or frame-size change
 # cannot quietly restore the silent death.
 standalone-reader-recursion-guard-smoke: standalone-reader
 	@bin=./target/nelisp; \
@@ -582,6 +1744,29 @@ standalone-reader-recursion-guard-smoke: standalone-reader
 	  windows*) bin=./target/nelisp.exe;; \
 	esac; \
 	timeout 180 $$bin --load tools/recursion-guard-smoke.el
+
+# The environment, read back through `getenv' from a child that was given
+# one.  Written on wip/uncommitted-2026-08-18 by whoever first noticed that
+# `getenv' answered nil, and brought over here with the fix rather than
+# rewritten -- a second smoke asking the same question would be a second
+# owner of the answer.
+#
+# It answered nil because nothing ever filled the list `getenv' reads: three
+# implementations of it in this tree, all reading an in-process alist, and no
+# startup step connecting that alist to the process.  Everything keyed on the
+# environment was therefore dead, the native-exec cache root among them --
+# it fell past XDG_CACHE_HOME and HOME to /tmp on every run.
+.PHONY: standalone-reader-getenv-smoke
+standalone-reader-getenv-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' '(list (getenv "HOME") (getenv "NELISP_ENV_SMOKE"))' > target/standalone-reader-getenv-smoke.el
+	@out="$$(HOME=/tmp/nelisp-getenv-smoke-home NELISP_ENV_SMOKE=nelisp-getenv-smoke ./target/nelisp --load target/standalone-reader-getenv-smoke.el)"; \
+	if [ "$$out" = '("/tmp/nelisp-getenv-smoke-home" "nelisp-getenv-smoke")' ]; then \
+	  echo "[standalone-reader-getenv-smoke] PASS: --load -> $$out"; \
+	else \
+	  echo "[standalone-reader-getenv-smoke] FAIL: --load -> $$out (expected (\"/tmp/nelisp-getenv-smoke-home\" \"nelisp-getenv-smoke\"))"; \
+	  exit 1; \
+	fi
 
 standalone-reader-intern-soft-smoke: standalone-reader
 	@mkdir -p target
@@ -594,6 +1779,49 @@ standalone-reader-intern-soft-smoke: standalone-reader
 	  echo "[standalone-reader-intern-soft-smoke] PASS: -> $$out"; \
 	else \
 	  echo "[standalone-reader-intern-soft-smoke] FAIL: -> $$out (expected (nil nelisp-doc163-fresh-a nil nil))"; \
+	  exit 1; \
+	fi
+
+# Reader number-token classification, against a table of what host Emacs
+# answers.  A token starting with a digit is a number only when it matches
+# integer or float syntax exactly; `7.1.4' is a symbol there.
+#
+# Measured 2026-08-19: the native lexer counted WHETHER a dot appeared, not
+# how many, so `7.1.4' lexed as a float, the parser gave up on it, and
+# `nelisp--read-all-from-string-native' returned the forms it already had --
+# indistinguishable from end of input.  `src/nelisp-cc-arm64.el' stopped
+# loading at its `:phase '7.1.4', `load' returned t, the file's `(provide ...)'
+# never ran, and the native compiler was reported unavailable.  The stdlib
+# prelude decides the same question separately and was wrong differently:
+# it called the token a number and `string-to-number' answered 7.  The smoke
+# checks both readers, because there are two of them.
+.PHONY: standalone-reader-number-token-smoke
+standalone-reader-number-token-smoke: standalone-reader
+	@out="$$(ulimit -v 4194304; timeout 30 ./target/nelisp --load scripts/standalone-number-token-smoke.el)"; \
+	echo "$$out"; \
+	if echo "$$out" | grep -q 'NUMBER-TOKEN-SMOKE cases=16 mismatches=0'; then \
+	  echo "[standalone-reader-number-token-smoke] PASS"; \
+	else \
+	  echo "[standalone-reader-number-token-smoke] FAIL"; \
+	  exit 1; \
+	fi
+
+# Doc 190 Phase A (bignums): reading (a literal past most-positive-fixnum/
+# most-negative-fixnum promotes to a Sexp tag-13 Bignum instead of
+# wrapping), printing (prin1/read round-trip), comparison (eql/=/</> across
+# bignum-bignum and bignum-fixnum), integerp/numberp/type-of, the
+# deliberate non-boundary (arithmetic still signals overflow-error, no
+# promotion), and a GC stress round.  ulimit mirrors the number-token
+# smoke's own bound -- generous for this workload (500 short-lived
+# bignums), tight enough to fail loudly on a real leak.
+.PHONY: standalone-reader-bignum-smoke
+standalone-reader-bignum-smoke: standalone-reader
+	@out="$$(ulimit -v 4194304; timeout 30 ./target/nelisp --load scripts/standalone-bignum-smoke.el)"; \
+	echo "$$out"; \
+	if echo "$$out" | grep -q 'BIGNUM-SMOKE cases=54 mismatches=0'; then \
+	  echo "[standalone-reader-bignum-smoke] PASS"; \
+	else \
+	  echo "[standalone-reader-bignum-smoke] FAIL"; \
 	  exit 1; \
 	fi
 
@@ -1014,6 +2242,92 @@ standalone-reader-ffi-smoke:
 	fi
 	@echo "[standalone-reader-ffi-smoke] PASS: libc + libm(f64) + GnuTLS(D1) + FreeType(F1/F2/F3/F4) via nl-ffi-call"
 
+# 2026-08-23: `standalone-reader-ffi-smoke' above force-rebuilds with
+# NELISP_READER_DYNAMIC=1, so it only ever tests that one opt-in variant --
+# never the plain `make standalone-reader' / `make standalone-reader-test' /
+# `tools/build-release-artifact.sh' binary end users and CI's own binary-tier
+# gates actually run.  The owner's 2026-08-23 real-machine probe (Windows PE
+# + a WSL Debian Linux ELF `target/nelisp', both built the ordinary way) found
+# `nl-ffi-call' void on both -- a true finding the smoke above could not have
+# caught, since it never builds what those binaries are.  This smoke pins the
+# OTHER side of the matrix: on a build with no dynamic FFI linkage, `nl-ffi-
+# call' must still be `fboundp' (not void) and must signal the catchable
+# `nelisp-unsupported-primitive' condition on every entry point a user can
+# reach it from -- bare FILE, --load, --eval, eval-elisp-source, the REPL,
+# and a compiled artifact -- not just the one or two paths a smoke happens to
+# exercise.  See `nelisp-standalone--applyfn-ffi-unsupported-form' in
+# scripts/nelisp-standalone-build.el (the always-installed fallback arm) and
+# docs/design/100-phase-47-dynamic-link-elisp.org section 7 (the
+# availability matrix) for the fix this pins.  The condition's DATA is the
+# symbol `nl-ffi-call' (a one-element list, Emacs `wrong-type-argument'
+# style), not a string -- deliberately: `nl-ffi-call' is itself a listed
+# `nl-safe-unsafe-primitives' name (packages/nl-safe/src/nl-safe.el), so its
+# construction lives in the one file `tools/unsafe-kernel.txt' allows to
+# mention it, built from packed symbol-name bytes rather than a string
+# literal (see that function's own commentary for why a first version of
+# this fix, which put a string-carrying `defun' in the prelude instead,
+# tripped `unsafe-inventory').
+standalone-reader-ffi-unsupported-smoke:
+	@mkdir -p target
+	@env -u NELISP_READER_DYNAMIC -u NELISP_STANDALONE_TARGET $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@chmod +x target/nelisp
+	@case "$$(file -b target/nelisp 2>/dev/null)" in \
+	  *"dynamically linked"*) echo "[ffi-unsupported-smoke] FAIL: target/nelisp is dynamically linked -- not the static default this smoke must test"; exit 1;; \
+	esac
+	@printf '%s\n' '(fboundp (quote nl-ffi-call))' > target/standalone-reader-ffi-unsupported-fboundp.el
+	@out="$$(./target/nelisp --load target/standalone-reader-ffi-unsupported-fboundp.el)"; \
+	if [ "$$out" = "t" ]; then \
+	  echo "[ffi-unsupported-smoke fboundp] PASS: (fboundp 'nl-ffi-call) -> t (static default build)"; \
+	else \
+	  echo "[ffi-unsupported-smoke fboundp] FAIL: -> $$out (expected t; nl-ffi-call must never be void)"; exit 1; \
+	fi
+	@caught='(condition-case e (nl-ffi-call "toupper" 97) (nelisp-unsupported-primitive (car (cdr e))))'; \
+	printf '%s\n' "$$caught" > target/standalone-reader-ffi-unsupported-load.el; \
+	out="$$(./target/nelisp --load target/standalone-reader-ffi-unsupported-load.el)"; \
+	if [ "$$out" = "nl-ffi-call" ]; then \
+	  echo "[ffi-unsupported-smoke --load] PASS: condition-case caught nelisp-unsupported-primitive"; \
+	else \
+	  echo "[ffi-unsupported-smoke --load] FAIL: -> $$out (expected nl-ffi-call)"; exit 1; \
+	fi; \
+	printf '%s\n' "(prin1 $$caught)" > target/standalone-reader-ffi-unsupported-bare.el; \
+	out="$$(./target/nelisp target/standalone-reader-ffi-unsupported-bare.el)"; \
+	if [ "$$out" = "nl-ffi-call" ]; then \
+	  echo "[ffi-unsupported-smoke bare-FILE] PASS: condition-case caught nelisp-unsupported-primitive"; \
+	else \
+	  echo "[ffi-unsupported-smoke bare-FILE] FAIL: -> $$out (expected nl-ffi-call)"; exit 1; \
+	fi; \
+	out="$$(./target/nelisp --eval "$$caught")"; \
+	if [ "$$out" = "nl-ffi-call" ]; then \
+	  echo "[ffi-unsupported-smoke --eval] PASS: condition-case caught nelisp-unsupported-primitive"; \
+	else \
+	  echo "[ffi-unsupported-smoke --eval] FAIL: -> $$out (expected nl-ffi-call)"; exit 1; \
+	fi; \
+	printf '%s\n' '(+ 1 2)' > target/standalone-reader-ffi-unsupported-src.el; \
+	out="$$(./target/nelisp eval-elisp-source target/standalone-reader-ffi-unsupported-src.el "$$caught")"; \
+	if [ "$$out" = "nl-ffi-call" ]; then \
+	  echo "[ffi-unsupported-smoke eval-elisp-source] PASS: condition-case caught nelisp-unsupported-primitive"; \
+	else \
+	  echo "[ffi-unsupported-smoke eval-elisp-source] FAIL: -> $$out (expected nl-ffi-call)"; exit 1; \
+	fi; \
+	out="$$(printf '%s\n' "$$caught" | ./target/nelisp --repl --no-prompt 2>&1)"; \
+	if [ "$$out" = "nl-ffi-call" ]; then \
+	  echo "[ffi-unsupported-smoke REPL] PASS: condition-case caught nelisp-unsupported-primitive"; \
+	else \
+	  echo "[ffi-unsupported-smoke REPL] FAIL: -> $$out (expected nl-ffi-call)"; exit 1; \
+	fi; \
+	./target/nelisp compile-elisp-artifact --kind nelc \
+	  --input target/standalone-reader-ffi-unsupported-load.el \
+	  --output target/standalone-reader-ffi-unsupported.nelc > /dev/null; \
+	out="$$(./target/nelisp eval-elisp-artifact target/standalone-reader-ffi-unsupported.nelc "$$caught")"; \
+	if [ "$$out" = "nl-ffi-call" ]; then \
+	  echo "[ffi-unsupported-smoke compiled-artifact] PASS: condition-case caught nelisp-unsupported-primitive"; \
+	else \
+	  echo "[ffi-unsupported-smoke compiled-artifact] FAIL: -> $$out (expected nl-ffi-call)"; exit 1; \
+	fi
+	@echo "[standalone-reader-ffi-unsupported-smoke] PASS: nl-ffi-call is fboundp and raises nelisp-unsupported-primitive (never void) on the static default build, across bare FILE / --load / --eval / eval-elisp-source / REPL / compiled artifact"
+
 # Phase 47.D D2: REAL TLS 1.3 handshake from the pure-elisp reader.  Opens a raw
 # TCP socket (syscall-direct socket/connect to 1.1.1.1:443), then drives a full
 # GnuTLS client handshake via nl-ffi-call: global_init -> allocate credentials ->
@@ -1065,6 +2379,572 @@ standalone-reader-process-smoke: standalone-reader
 	  exit 1; \
 	fi
 
+# Doc 184 P0: `packages/nelisp-eventloop/src/nelisp-async-core.el' is the
+# actor/generator-free half of the timer queue (`nelisp-async.el' pulls in
+# `nelisp-actor' -> `generator', which is unreachable standalone -- Doc 184
+# S1.4/S1.5).  This smoke is the doc's own P0 exit criterion: the file
+# loads standalone with no generator error, and a REPEAT timer re-arms and
+# fires more than once across two `--fire-due' calls, closing
+# `tools/partial-accepted.txt''s `run-at-time' entry for anything that
+# loads this module.
+standalone-reader-async-core-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(progn (fboundp (quote nelisp-async-core-run-at-time)))' \
+	  > target/standalone-reader-async-core-smoke-load.el
+	@printf '%s\n' \
+	  '(let ((n 0) (tm nil)) (setq tm (nelisp-async-core-run-at-time 0 0.01 (lambda () (setq n (1+ n))))) (nelisp-async-core--fire-due (+ (nelisp-async-core--now) 0.001)) (nelisp-async-core--nanosleep 0.02) (nelisp-async-core--fire-due (nelisp-async-core--now)) (> n 1))' \
+	  > target/standalone-reader-async-core-smoke-repeat.el
+	@load_out="$$(./target/nelisp --eval '(progn (load "packages/nelisp-eventloop/src/nelisp-async-core.el") (load "target/standalone-reader-async-core-smoke-load.el"))')"; \
+	repeat_out="$$(./target/nelisp --eval '(progn (load "packages/nelisp-eventloop/src/nelisp-async-core.el") (load "target/standalone-reader-async-core-smoke-repeat.el"))')"; \
+	if [ "$$load_out" = "t" ] && [ "$$repeat_out" = "t" ]; then \
+	  echo "[standalone-reader-async-core-smoke] PASS: loads standalone (no generator error), REPEAT re-arms and fires >1 across two fire-due calls -> load=$$load_out repeat=$$repeat_out"; \
+	else \
+	  echo "[standalone-reader-async-core-smoke] FAIL: load=$$load_out repeat=$$repeat_out"; \
+	  exit 1; \
+	fi
+
+# Doc 184 P1/P2: `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
+# closes the measured gaps in the prelude's own partial standard-name
+# adapter (Doc 184 S1.3): `:filter' silently dropped, no
+# process-filter/set-process-filter/process-sentinel/set-process-sentinel,
+# `accept-process-output' ignoring PROCESS/SECONDS/MILLISEC and draining
+# every pending process while collapsing every sentinel status to the
+# literal string "finished\n".  Against-the-bug: RED is `make-network-
+# process' being void-function and this same filter/REPEAT shape failing
+# with target/nelisp built from a tree WITHOUT this adapter loaded (see
+# `standalone-reader-process-adapter-smoke-red' below); GREEN is this
+# target, all against the SAME binary with only the `--eval' load list
+# differing -- the fix is a loadable upgrade layer, not a native/binary
+# change (Doc 184 S2's decided direction).
+# Doc 194 P0 note on the `netproc' probe two blocks below: `make-network-
+# process' is no longer the Doc 184 S1.7/P4 unconditional-refusal stub
+# this probe originally exercised.  `:name "x"' alone (no `:host'/
+# `:service') still signals -- now because `:service' is a required,
+# type-checked argument in the real implementation, not because every
+# call unconditionally refused -- so this probe's expected `(car e)'
+# changed from the literal symbol `error' to `wrong-type-argument'.  The
+# real positive-path proof (a loopback client actually connecting,
+# sending, and receiving bytes, including the against-the-bug RED of
+# `make-network-process' being void-function on the `feat/socket-
+# primitives-p1' base this doc builds on) lives in its own dedicated
+# `standalone-reader-network-process-smoke' below, per Doc 194 P0's own
+# exit criterion.
+NELISP_PROCESS_ADAPTER_LOAD_1 = (load "packages/nelisp-eventloop/src/nelisp-async-core.el")
+NELISP_PROCESS_ADAPTER_LOAD_2 = (load "packages/nelisp-process-adapter/src/nelisp-process-adapter.el")
+standalone-reader-process-adapter-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* (chunks (p (make-process :name "cat" :command (list "/bin/cat") :filter (lambda (_p c) (push c chunks))))) (nelisp-process-write p "first-") (accept-process-output p 0.3) (nelisp-process-write p "second") (accept-process-output p 0.3) (nelisp-process-close-stdin p) (delete-process p) (nreverse chunks))' \
+	  > target/standalone-reader-process-adapter-smoke-filter.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(list (let (msgs (p (make-process :name "ok" :command (list "/bin/sh" "-c" "exit 0") :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 1) (accept-process-output p 1) (car msgs)) (let (msgs (p (make-process :name "bad" :command (list "/bin/sh" "-c" "exit 7") :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 1) (accept-process-output p 1) (car msgs)) (let (msgs (p (make-process :name "sl" :command (list "/bin/sleep" "1") :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output p 0.2) (delete-process p) (car msgs)))' \
+	  > target/standalone-reader-process-adapter-smoke-sentinel.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* (fired2 (p1 (make-process :name "fast" :command (list "/bin/sh" "-c" "exit 0"))) (p2 (make-process :name "slow" :command (list "/bin/sleep" "1") :sentinel (lambda (_p m) (setq fired2 m))))) (accept-process-output p1 1) (let ((res (list fired2 (process-live-p p2)))) (delete-process p2) res))' \
+	  > target/standalone-reader-process-adapter-smoke-narrow.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(condition-case e (progn (make-network-process :name "x") (quote no-error)) (error (car e)))' \
+	  > target/standalone-reader-process-adapter-smoke-netproc.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let ((n 0)) (run-at-time 0 0.02 (lambda () (setq n (1+ n)))) (accept-process-output nil 0.3) (>= n 2))' \
+	  > target/standalone-reader-process-adapter-smoke-repeat.el
+	@filter_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-filter.el)"; \
+	sentinel_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-sentinel.el)"; \
+	narrow_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-narrow.el)"; \
+	netproc_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-netproc.el)"; \
+	repeat_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-repeat.el)"; \
+	if [ "$$filter_out" = '("first-" "second")' ] && \
+	   [ "$$sentinel_out" = "$$(printf '(\042finished\n\042 \042exited abnormally with code 7\n\042 \042terminated\n\042)')" ] && \
+	   [ "$$narrow_out" = "(nil t)" ] && \
+	   [ "$$netproc_out" = "wrong-type-argument" ] && \
+	   [ "$$repeat_out" = "t" ]; then \
+	  echo "[standalone-reader-process-adapter-smoke] PASS: filter=$$filter_out sentinel=$$sentinel_out narrow(fired2,proc2-live)=$$narrow_out make-network-process=$$netproc_out repeat-through-shared-loop=$$repeat_out"; \
+	else \
+	  echo "[standalone-reader-process-adapter-smoke] FAIL: filter=$$filter_out sentinel=$$sentinel_out narrow=$$narrow_out netproc=$$netproc_out repeat=$$repeat_out"; \
+	  exit 1; \
+	fi
+
+# Default-bootstrap regression guard for the two smokes above (retired
+# from its original job as of integration/wave6 phase 2A). Doc 184's fix
+# used to be an opt-in loadable upgrade layer -- this exact target used
+# to prove the PRE-fix defect shape still reproduced when neither new
+# file was `--load'ed, because the default binary never carried the
+# fix. Phase 2A wired `packages/nelisp-eventloop/src/nelisp-async-core.el'
+# and `packages/nelisp-process-adapter/src/nelisp-process-adapter.el''s
+# source directly into `nelisp-standalone--reader-repl-prelude-source'
+# (scripts/nelisp-standalone-build.el), so every standalone build now
+# carries the fix baked in -- the old RED assertion (filter=nil,
+# repeat=1) can no longer reproduce on ANY build, unfixed or not, and a
+# real run against this exact recipe confirmed that (filter=("hi\n")
+# repeat=0). This target now asserts the opposite claim, and is the
+# thing that actually matters going forward: the fix ships WITHOUT an
+# explicit `--load', so a future change to the prelude-source
+# concatenation cannot silently drop it back to opt-in-only without
+# this smoke catching it.
+standalone-reader-process-adapter-smoke-red: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(let (got) (make-process :name "t" :command (list "/bin/echo" "hi") :filter (lambda (_p chunk) (push chunk got))) (accept-process-output nil 1) got)' \
+	  > target/standalone-reader-process-adapter-smoke-red-filter.el
+	@printf '%s\n' \
+	  '(let ((n 0)) (run-at-time 0 0.02 (lambda () (setq n (1+ n)))) (accept-process-output nil 0.3) (>= n 2))' \
+	  > target/standalone-reader-process-adapter-smoke-red-repeat.el
+	@printf '%s\n' \
+	  '(fboundp (quote process-filter))' \
+	  > target/standalone-reader-process-adapter-smoke-red-fboundp.el
+	@filter_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-red-filter.el)"; \
+	repeat_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-red-repeat.el)"; \
+	fboundp_out="$$(./target/nelisp --load target/standalone-reader-process-adapter-smoke-red-fboundp.el)"; \
+	filter_expect="$$(printf '(\042hi\n\042)')"; \
+	if [ "$$filter_out" = "$$filter_expect" ] && [ "$$repeat_out" = "t" ] && [ "$$fboundp_out" = "t" ]; then \
+	  echo "[standalone-reader-process-adapter-smoke-red] PASS: default binary, NO --load of either new file -- process-filter fboundp=$$fboundp_out, filter fires=$$filter_out, REPEAT-through-shared-loop=$$repeat_out (Doc 184 P1/P2 ships in the default bootstrap, integration/wave6 phase 2A)"; \
+	else \
+	  echo "[standalone-reader-process-adapter-smoke-red] FAIL: expected the default-bootstrap FIXED shape (fboundp=t, filter=(\"hi\\n\"), repeat=t) without loading either new file, got fboundp=$$fboundp_out filter=$$filter_out repeat=$$repeat_out -- the default prelude no longer carries Doc 184 P1/P2"; \
+	  exit 1; \
+	fi
+
+# Doc 194 P0 exit criterion: `make-network-process'/`open-network-stream',
+# the synchronous CLIENT path over Phase 1's own `nelisp-socket-*'
+# primitives (feat/socket-primitives-p1).  Against-the-bug: RED is
+# `make-network-process' being void-function on that base with neither
+# new file loaded (reproduced verbatim below, same binary as GREEN);
+# GREEN is this target -- same shape as `standalone-reader-socket-smoke'
+# (Makefile:2096) but through the ELISP entry points instead of the raw
+# primitives directly, per Doc 194's own P0 exit criterion text: build a
+# real listener with `nelisp-socket-listen'/-accept (Phase 1's raw
+# primitives, used here ONLY as the test's own server harness -- P0 does
+# not build `:server t'), then `(open-network-stream ...)' against it,
+# assert `process-status' reads `open' IMMEDIATELY (no `accept-process-
+# output' call, matching Doc 194 S1.3's own measured timing against real
+# Emacs 30.1), send/receive a UTF-8 Japanese payload BOTH directions,
+# `delete-process' transitions status to `closed'.  A second case:
+# connect to a closed port, assert the `condition-case ((file-error)
+# ...)' idiom -- the one every existing `open-network-stream' caller
+# already uses -- catches it, not a bare `nelisp-socket-error' leaking
+# unmapped through the standard-name entry point.  A third case, UPDATED
+# by doc 194 P4 (feat/network-process-p345): `:nowait t' USED to signal
+# loudly here (P0-P2's own guard, "against-the-bug" for THIS phase per
+# doc 194's own P4 exit criterion is exactly this flip) -- now it returns
+# a real `network-process' immediately with `process-status' reading
+# `connect' \(measured against real Emacs 30.1 during P4's own
+# implementation: the identical status symbol\), never signalling; the
+# async completion / sentinel-firing positive proof lives in its own
+# dedicated `standalone-reader-network-process-nowait-smoke' below,
+# P4's own exit criterion.  `:server t' UPDATED the same way by doc 194
+# P5, same commit as this comment: it USED to signal loudly (P0-P2's own
+# guard) -- now it returns a real listening `network-process' with
+# `process-status' reading `listen' \(measured against real Emacs 30.1
+# during P5's own implementation: the identical status symbol\), never
+# signalling; the auto-accept / multi-client positive proof lives in its
+# own dedicated `standalone-reader-network-process-server-smoke' below,
+# P5's own exit criterion.  A fourth
+# case: an ordinary native subprocess and a `network-process' coexisting
+# in the SAME `nelisp-process-adapter--live' poll-set registry (Doc 194
+# S3.1's own design) do not interfere with each other -- the subprocess's
+# sentinel still fires normally and the network process is left
+# untouched (its own async wiring is Doc 194 P3/P4, not this pass; see
+# `nelisp-process-adapter--drain-and-fire''s network-process guard).
+standalone-reader-network-process-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(condition-case e (make-network-process :name "x" :host "127.0.0.1" :service 1) (error (quote (quote void-function-red))))' \
+	  > target/standalone-reader-network-process-smoke-red.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* ((lfd (nelisp-socket-listen "127.0.0.1" 55901)) (cli (open-network-stream "cli" nil "127.0.0.1" 55901)) (status-immediate (process-status cli)) (sfd (nelisp-socket-accept lfd))) (process-send-string cli "ping-\346\227\245\346\234\254\350\252\236") (let ((srv-got (nelisp-socket-recv sfd 4096))) (nelisp-socket-send sfd "pong-\343\201\223\343\202\223\343\201\253\343\201\241\343\201\257") (let ((cli-got (nelisp-socket-recv (aref cli 3) 4096))) (delete-process cli) (nelisp-socket-close sfd) (nelisp-socket-close lfd) (list status-immediate (equal srv-got "ping-\346\227\245\346\234\254\350\252\236") (equal cli-got "pong-\343\201\223\343\202\223\343\201\253\343\201\241\343\201\257") (process-status cli) (process-live-p cli) (processp cli)))))' \
+	  > target/standalone-reader-network-process-smoke-roundtrip.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(list (condition-case err (progn (open-network-stream "bad" nil "127.0.0.1" 1) (quote uncaught)) (file-error (car err))) (condition-case err (let ((p (make-network-process :name "x" :host "127.0.0.1" :service 80 :nowait t))) (prog1 (process-status p) (delete-process p))) (error (quote signalled))) (condition-case err (let ((p (make-network-process :name "x" :host "127.0.0.1" :service 55903 :server t))) (prog1 (process-status p) (delete-process p))) (error (quote signalled))))' \
+	  > target/standalone-reader-network-process-smoke-refused.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* ((lfd (nelisp-socket-listen "127.0.0.1" 55902)) (net (open-network-stream "netcli" nil "127.0.0.1" 55902)) (sfd (nelisp-socket-accept lfd)) msgs (sub (make-process :name "echo" :command (list "/bin/sh" "-c" "exit 0") :sentinel (lambda (_p m) (push m msgs))))) (accept-process-output nil 1) (accept-process-output nil 1) (let ((result (list (car msgs) (process-status net) (process-live-p sub)))) (delete-process net) (nelisp-socket-close sfd) (nelisp-socket-close lfd) result))' \
+	  > target/standalone-reader-network-process-smoke-mixed.el
+	@red_out="$$(./target/nelisp --load target/standalone-reader-network-process-smoke-red.el)"; \
+	roundtrip_out="$$(./target/nelisp --load target/standalone-reader-network-process-smoke-roundtrip.el)"; \
+	refused_out="$$(./target/nelisp --load target/standalone-reader-network-process-smoke-refused.el)"; \
+	mixed_out="$$(./target/nelisp --load target/standalone-reader-network-process-smoke-mixed.el)"; \
+	if [ "$$red_out" = "(quote void-function-red)" ] && \
+	   [ "$$roundtrip_out" = "(open t t closed nil t)" ] && \
+	   [ "$$refused_out" = "(file-error connect listen)" ] && \
+	   [ "$$mixed_out" = "$$(printf '(\042finished\n\042 open nil)')" ]; then \
+	  echo "[standalone-reader-network-process-smoke] PASS: red(void-fn-on-p1-base)=$$red_out roundtrip(status,srv-got,cli-got,closed,live-p,processp)=$$roundtrip_out refused(file-error,nowait,server)=$$refused_out mixed(sub-sentinel,net-status,sub-live)=$$mixed_out"; \
+	else \
+	  echo "[standalone-reader-network-process-smoke] FAIL: red=$$red_out roundtrip=$$roundtrip_out refused=$$refused_out mixed=$$mixed_out"; \
+	  exit 1; \
+	fi
+
+# Doc 194 P1 exit criterion: `/etc/hosts' resolution (`nelisp--hosts-
+# file-lookup', consulted by `nelisp--resolve-host' before DNS).  A
+# fixture `/etc/hosts'-shaped temp file maps a made-up hostname to a
+# loopback-reachable IP; `open-network-stream' against that HOSTNAME (not
+# an IP literal) succeeds through P0's own client path with no network
+# round trip at all -- `nelisp--etc-hosts-file' is let-bound to the
+# fixture so the real system table is never touched.  A hostname absent
+# from the fixture, with the P2 DNS resolver forced to a closed local
+# port (127.0.0.1:1, an immediate ECONNREFUSED -- deterministic and fast,
+# unlike pointing at a genuinely unreachable IP, which can hang for the
+# OS's own multi-second/minute connect timeout), falls through cleanly to
+# a caught `file-error' -- never a hang (wall-clock bounded well under
+# the smoke's own timeout), never a wrong-address connect.
+standalone-reader-hosts-file-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '127.0.0.1 nelisp-p1-fixture-host.invalid nelisp-p1-fixture-alias.invalid' \
+	  '# a comment line, and a blank line below' \
+	  '' \
+	  '203.0.113.9 nelisp-p1-unreachable.invalid' \
+	  > target/standalone-reader-hosts-file-smoke-fixture.txt
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(setq nelisp--etc-hosts-file "target/standalone-reader-hosts-file-smoke-fixture.txt")' \
+	  '(setq nelisp-dns-resolver-ip "127.0.0.1")' \
+	  '(setq nelisp-dns-resolver-port 1)' \
+	  '(let* ((lfd (nelisp-socket-listen "127.0.0.1" 55904)) (cli (open-network-stream "cli" nil "nelisp-p1-fixture-host.invalid" 55904)) (status (process-status cli)) (sfd (nelisp-socket-accept lfd))) (process-send-string cli "via-hosts-file") (let ((got (nelisp-socket-recv sfd 4096))) (delete-process cli) (nelisp-socket-close sfd) (nelisp-socket-close lfd) (list status (equal got "via-hosts-file") (nelisp--hosts-file-lookup "nelisp-p1-fixture-alias.invalid"))))' \
+	  > target/standalone-reader-hosts-file-smoke-positive.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(setq nelisp--etc-hosts-file "target/standalone-reader-hosts-file-smoke-fixture.txt")' \
+	  '(setq nelisp-dns-resolver-ip "127.0.0.1")' \
+	  '(setq nelisp-dns-resolver-port 1)' \
+	  '(condition-case err (progn (open-network-stream "cli" nil "nelisp-p1-no-such-fixture-entry.invalid" 80) (quote uncaught)) (file-error (quote caught-file-error)))' \
+	  > target/standalone-reader-hosts-file-smoke-fallthrough.el
+	@pos_out="$$(./target/nelisp --load target/standalone-reader-hosts-file-smoke-positive.el)"; \
+	start=$$(date +%s%N); \
+	fall_out="$$(timeout 10 ./target/nelisp --load target/standalone-reader-hosts-file-smoke-fallthrough.el)"; \
+	fall_rc=$$?; \
+	end=$$(date +%s%N); \
+	elapsed_ms=$$(( (end - start) / 1000000 )); \
+	if [ "$$pos_out" = "(open t \"127.0.0.1\")" ] && \
+	   [ "$$fall_rc" = "0" ] && [ "$$fall_out" = "caught-file-error" ] && \
+	   [ "$$elapsed_ms" -lt "5000" ]; then \
+	  echo "[standalone-reader-hosts-file-smoke] PASS: positive(status,roundtrip,alias-lookup)=$$pos_out fallthrough(caught,elapsed_ms)=$$fall_out,$${elapsed_ms}ms (never a hang)"; \
+	else \
+	  echo "[standalone-reader-hosts-file-smoke] FAIL: positive=$$pos_out fallthrough_rc=$$fall_rc fallthrough=$$fall_out elapsed_ms=$$elapsed_ms"; \
+	  exit 1; \
+	fi
+
+
+# Doc 194 P2 exit criterion: DNS-over-TCP/53 (RFC 7766), pure elisp on
+# Phase 1's own socket primitives.  Fixture bytes are written as RAW
+# binary files by this recipe's own `printf' calls (octal escapes),
+# never built via an elisp `(string ...)'/`unibyte-string' call -- Doc
+# 194 P2 measured both as broken for byte values >= 128 on this
+# substrate (`nelisp--dns-u16-be''s own comment): every elisp-level
+# string constructor treats its integer arguments as CODEPOINTS and
+# UTF-8-encodes them, so a "byte" >= 128 built that way becomes two raw
+# wire bytes, not one.  The test script reads each fixture back via
+# `insert-file-contents-literally' (byte-clean, like `nelisp-socket-
+# recv'), matching how a real response actually arrives.
+#
+# Against-the-bug (length-prefix/compression-pointer parsing
+# specifically, per Doc 194's own P2 exit criterion text): a truncated
+# response and an oversized RDLENGTH both signal the catchable,
+# DNS-specific `nelisp-dns-error' through the real guarded parser
+# (`nelisp--dns-parse-response'/`nelisp--dns-byte''s own bounds check on
+# every read), contrasted with the SAME truncated buffer read through
+# the raw, UNGUARDED native `string-byte' primitive this parser is built
+# on -- measured to have NO bounds check at all (unlike `aref', which at
+# least signals a generic `args-out-of-range'): `(string-byte buf 999)'
+# on a 29-byte buffer returns a plain value with no error whatsoever,
+# silently wrong rather than loudly wrong -- exactly the defect class a
+# missing bounds check in this parser would produce, and why
+# `nelisp--dns-byte' exists as the ONLY guard between a truncated
+# response and reading out of bounds.  Positive: if this
+# environment has TCP egress to the numeric resolver
+# (checked with `/dev/tcp' exactly like `standalone-reader-tls-smoke'
+# does for its own egress check, SKIPping gracefully rather than failing
+# when this sandbox has none), a REAL DNS-over-TCP A-record lookup for a
+# well-known hostname resolves to a plausible IPv4 literal and P0's own
+# client path connects to it.
+standalone-reader-dns-smoke: standalone-reader
+	@mkdir -p target
+	@printf '\022\064\201\200\000\001\000\001\000\000\000\000\007\145\170\141\155\160\154\145\003\143\157\155\000\000\001\000\001\300\014\000\001\000\001\000\000\001\054\000\004\135\270\330\042' \
+	  > target/standalone-reader-dns-smoke-full.bin
+	@printf '\022\064\201\200\000\001\000\001\000\000\000\000\007\145\170\141\155\160\154\145\003\143\157\155\000\000\001\000\001' \
+	  > target/standalone-reader-dns-smoke-truncated.bin
+	@printf '\022\064\201\200\000\001\000\001\000\000\000\000\007\145\170\141\155\160\154\145\003\143\157\155\000\000\001\000\001\300\014\000\001\000\001\000\000\001\054\377\377\135\270\330\042' \
+	  > target/standalone-reader-dns-smoke-badrdlen.bin
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (insert-file-contents-literally f) (buffer-string)))' \
+	  '(let* ((full (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-full.bin")) (truncated (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-truncated.bin")) (bad-rdlength (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-badrdlen.bin"))) (list (nelisp--dns-parse-response full) (condition-case e (nelisp--dns-parse-response truncated) (nelisp-dns-error (quote dns-error-caught))) (condition-case e (progn (string-byte truncated 999) (quote raw-unguarded-no-error)) (error (quote raw-unexpectedly-errored))) (condition-case e (nelisp--dns-byte truncated 999) (nelisp-dns-error (quote guarded-dns-error-caught))) (condition-case e (nelisp--dns-parse-response bad-rdlength) (nelisp-dns-error (quote dns-error-caught))) (nelisp--dns-skip-name full 12) (string-bytes (nelisp--dns-encode-query "example.com"))))' \
+	  > target/standalone-reader-dns-smoke-parse.el
+	@parse_out="$$(./target/nelisp --load target/standalone-reader-dns-smoke-parse.el)"; \
+	if [ "$$parse_out" != '("93.184.216.34" dns-error-caught raw-unguarded-no-error guarded-dns-error-caught dns-error-caught 25 31)' ]; then \
+	  echo "[standalone-reader-dns-smoke] FAIL: wire-format parse/against-the-bug -> $$parse_out"; \
+	  exit 1; \
+	fi; \
+	if ! timeout 6 bash -c 'exec 3<>/dev/tcp/1.1.1.1/53' 2>/dev/null; then \
+	  echo "[standalone-reader-dns-smoke] PASS (parse+against-the-bug only): parse=$$parse_out; SKIP live A-record lookup, no egress to 1.1.1.1:53 in this sandbox"; \
+	  exit 0; \
+	fi; \
+	printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(setq nelisp-dns-resolver-ip "1.1.1.1")' \
+	  '(let* ((ip (nelisp--dns-resolve-a "example.com")) (parts (split-string ip "\\.")) (nums (mapcar (lambda (s) (string-to-number s)) parts)) (plausible (and (= (length nums) 4) (not (memq nil (mapcar (lambda (n) (and (>= n 0) (<= n 255))) nums)))))) (let* ((cli (open-network-stream "web" nil ip 80))) (let ((status (process-status cli))) (delete-process cli) (list plausible status))))' \
+	  > target/standalone-reader-dns-smoke-live.el; \
+	live_out="$$(timeout 15 ./target/nelisp --load target/standalone-reader-dns-smoke-live.el)"; \
+	if [ "$$live_out" = "(t open)" ]; then \
+	  echo "[standalone-reader-dns-smoke] PASS: parse+against-the-bug=$$parse_out; live A-record lookup + connect=$$live_out"; \
+	else \
+	  echo "[standalone-reader-dns-smoke] FAIL: live A-record lookup + connect -> $$live_out"; \
+	  exit 1; \
+	fi
+
+
+# Doc 194 P3 exit criterion: the nonblocking primitives in isolation
+# (`nelisp-socket-connect'/-accept's NOWAIT argument, `nelisp-socket-poll',
+# `nelisp-socket-connect-error') -- no elisp-layer/poll-loop wiring yet
+# (that is P4/P5, their own smokes below).  Against-the-bug: implementing
+# this smoke is what FOUND the bug -- `nl_socket_poll_impl' was first
+# written parameterizing `nl_os_process_poll_readable''s own literal
+# `syscall-direct 230 ...' (this doc's own S3.3 item 2 text says to
+# parameterize that exact pattern), which measured, under `strace -f'
+# during this phase's implementation, to never reach a real `poll'
+# syscall at all -- `230' is `clock_nanosleep' on the Linux x86_64 ABI,
+# not `poll' (`7'); `nelisp-socket-poll' always answered nil (RED: a
+# connected, writable socket read back not-ready, wall-clock ~2ms, no
+# hang -- silently wrong rather than loudly wrong, worse than a hang for
+# a smoke to catch). Fixed to `syscall-direct 7 ...' (GREEN, this
+# target) -- `nl_socket_poll_impl''s own comment records the measurement;
+# not this phase's scope to fix the pre-existing, unrelated
+# `nl_os_process_poll_readable' bug this uncovered (the subprocess pipe-
+# poll path, never called by P4/P5's own wiring).
+#
+# Positive 1 (connect, real listener): a NOWAIT connect to a real
+# loopback listener returns a fd immediately (wall-clock bounded, no
+# `accept-process-output'-style blocking call in between); `nelisp-
+# socket-poll FD t TIMEOUT' later reports writable within the bound;
+# `nelisp-socket-connect-error' reads 0.
+# Positive 2 (connect, closed port): the SAME NOWAIT connect to a closed
+# local port (1, privileged/unbound) ALSO returns a fd immediately
+# (measured this phase: Linux's own nonblocking connect(2) to a closed
+# LOOPBACK port returns -EINPROGRESS, not a synchronous -ECONNREFUSED --
+# the refusal RST arrives asynchronously) -- `nelisp-socket-poll' reports
+# writable once the refusal lands, and `nelisp-socket-connect-error'
+# reads the real errno (111, ECONNREFUSED), never 0 and never hanging.
+# Positive 3 (accept): a NOWAIT accept against an EMPTY listen queue
+# returns the -1 sentinel immediately (not a hang, not a signal); the
+# SAME call once a connection is actually pending (an ordinary blocking
+# `nelisp-socket-connect' from THIS phase's own test harness) returns a
+# real fd.
+# Unsupported-primitive proof for the three new names ("or the existing
+# target-swap harness Phase 1's own gate uses", this doc's own P3 exit
+# text): `test/nelisp-standalone-target-test.el's
+# `nelisp-standalone-target-socket-dispatch-non-linux-x86-64-unsupported'
+# -- ERT, source-level (`nelisp-standalone--target' let-bound per
+# non-linux-x86_64 target, ONE process, no cross-arch binary build/exec
+# needed since a Windows PE or aarch64 ELF built on this x86_64 Linux
+# host could not run here anyway) -- covers this alongside Phase 1's own
+# six names, closing a gap that predates this phase (Phase 1 itself had
+# no such ERT-level proof for its own six).
+# Doc 194 P4 exit criterion: wiring P3's nonblocking primitives into the
+# process adapter's ONE poll loop, and real `:nowait' support in
+# `make-network-process'.  Against-the-bug: RED is the P0-P2 guard this
+# EXACT smoke's own "refused" case in `standalone-reader-network-process-
+# smoke' used to assert (`:nowait t' unconditionally `error's) -- that
+# smoke was updated alongside this one (same commit) to assert the
+# OPPOSITE, GREEN claim (`process-status' reads `connect', no signal);
+# this target is the dedicated positive proof P4's own exit criterion
+# asks for.
+#
+# Case 1 (success): `:nowait t' against a real loopback listener returns
+# BEFORE the connect completes (wall-clock bounded, no `accept-process-
+# output' call yet); `process-status' reads `connect' immediately;
+# `accept-process-output' later drives the SAME shared poll loop to fire
+# the sentinel with `open\n' -- measured against real GNU Emacs 30.1
+# during this phase's implementation (`(let* ((srv (make-network-process
+# :server t ...)) (cli (make-network-process :nowait t ...))) ...)',
+# this doc's own reproducible probe) -- and `process-status' reads
+# `open' afterward.
+# Case 2 (failure): the SAME against a closed port -- `process-status'
+# reads `connect' immediately, then `failed' after `accept-process-
+# output', with the sentinel fired EXACTLY `(format "failed with code
+# %d\n" ERRNO)' -- measured the SAME way against real Emacs 30.1: a bare
+# `failed\n' (doc 194's own S1.3/S3.3 prose) is NOT the real string; only
+# case 2's own errno differs run to run in general (this smoke pins it
+# to the deterministic ECONNREFUSED=111 a closed local port always
+# gives), so the smoke asserts the exact formatted string, not just a
+# prefix.
+# Case 3 (shared loop, two DIFFERENT process kinds, doc 184 P2's own
+# "does not drain the other's queue" contract extended across kinds):
+# a concurrent ordinary subprocess and a `:nowait' network connect,
+# polled through the SAME `accept-process-output' call, each become
+# ready independently -- the subprocess's sentinel fires with its own
+# real status and the network connect still completes to `open'.
+standalone-reader-network-process-nowait-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* (msgs (lfd (nelisp-socket-listen "127.0.0.1" 56010)) (cli (make-network-process :name "cli" :host "127.0.0.1" :service 56010 :nowait t :sentinel (lambda (_p m) (push m msgs)))) (status0 (process-status cli))) (accept-process-output cli 2) (let ((result (list status0 (process-status cli) (reverse msgs)))) (delete-process cli) (nelisp-socket-close lfd) result))' \
+	  > target/standalone-reader-network-process-nowait-smoke-ok.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* (msgs (cli (make-network-process :name "cli" :host "127.0.0.1" :service 1 :nowait t :sentinel (lambda (_p m) (push m msgs)))) (status0 (process-status cli))) (accept-process-output cli 2) (let ((result (list status0 (process-status cli) (reverse msgs)))) (ignore-errors (delete-process cli)) result))' \
+	  > target/standalone-reader-network-process-nowait-smoke-refused.el
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(let* (net-msgs sub-msgs (lfd (nelisp-socket-listen "127.0.0.1" 56011)) (net (make-network-process :name "net" :host "127.0.0.1" :service 56011 :nowait t :sentinel (lambda (_p m) (push m net-msgs)))) (sub (make-process :name "echo" :command (list "/bin/sh" "-c" "exit 0") :sentinel (lambda (_p m) (push m sub-msgs))))) (accept-process-output nil 2) (accept-process-output nil 2) (let ((result (list (process-status net) (reverse net-msgs) (process-live-p sub) (reverse sub-msgs)))) (delete-process net) (nelisp-socket-close lfd) result))' \
+	  > target/standalone-reader-network-process-nowait-smoke-mixed.el
+	@ok_out="$$(./target/nelisp --load target/standalone-reader-network-process-nowait-smoke-ok.el)"; \
+	refused_out="$$(./target/nelisp --load target/standalone-reader-network-process-nowait-smoke-refused.el)"; \
+	mixed_out="$$(./target/nelisp --load target/standalone-reader-network-process-nowait-smoke-mixed.el)"; \
+	ok_expect="$$(printf '(connect open ("open\n"))')"; \
+	refused_expect="$$(printf '(connect failed ("failed with code 111\n"))')"; \
+	mixed_expect="$$(printf '(open ("open\n") nil ("finished\n"))')"; \
+	if [ "$$ok_out" = "$$ok_expect" ] && \
+	   [ "$$refused_out" = "$$refused_expect" ] && \
+	   [ "$$mixed_out" = "$$mixed_expect" ]; then \
+	  echo "[standalone-reader-network-process-nowait-smoke] PASS: ok(status0,status1,sentinel)=$$ok_out refused(status0,status1,sentinel)=$$refused_out mixed(net-status,net-sentinel,sub-live,sub-sentinel)=$$mixed_out"; \
+	else \
+	  echo "[standalone-reader-network-process-nowait-smoke] FAIL: ok=$$ok_out (want $$ok_expect) refused=$$refused_out (want $$refused_expect) mixed=$$mixed_out (want $$mixed_expect)"; \
+	  exit 1; \
+	fi
+
+# Doc 194 P5 exit criterion: `:server t', auto-accept, `:log'.
+# Against-the-bug: RED is the P0-P2 guard `standalone-reader-network-
+# process-smoke''s own "refused" case used to assert for `:server t'
+# (unconditional `error') -- updated alongside this target (same
+# commit) to assert the OPPOSITE, GREEN claim (`process-status' reads
+# `listen', no signal); this target is the dedicated positive proof
+# P5's own exit criterion asks for.
+#
+# A real multi-client scenario: two clients connect to ONE `:server t'
+# listener in the same poll window (both `make-network-process' calls
+# happen before the FIRST `accept-process-output', so both connect
+# attempts are already in flight/queued when the poll loop first looks
+# -- the cooperative-concurrency case this doc's own P5 section flags:
+# this substrate's poll loop is single-thread/cooperative, so the two
+# accepts are serviced ONE PER POLL PASS, not literally simultaneously
+# -- `accept-process-output' is called twice below for exactly this
+# reason, and both children are confirmed live either way).  The live
+# poll-set registry (this runtime's own `process-list' equivalent, Doc
+# 194 S4 P5's own text) shows FIVE processes for two clients -- the
+# listener, each CLIENT-side connection (`c1'/`c2', synchronous
+# `make-network-process' calls, already `nelisp-process-adapter--live'
+# members in their own right, Doc 194 P0), and each SERVER-side
+# auto-accepted child (this phase's own addition) -- matching real Emacs
+# 30.1's measured `process-list' shape exactly (this doc's own
+# measurement while implementing this phase: `srv'/`c1'/`c2' plus one
+# `srv <HOST:PORT>' child per client, five entries for two clients too),
+# modulo the child NAME suffix (`<fd:N>', not `<HOST:PORT>' -- Phase 1's
+# `nelisp-socket-accept' requests no peer address at all, S1.1, a
+# substrate limitation this phase does not fix, recorded in
+# `nelisp-process-adapter--drain-and-fire-network''s
+# own comment).  Each child's `:filter' (inherited from the listener,
+# `eq'-identical to it, matching the SAME real-Emacs measurement) fires
+# independently as each client sends its OWN data -- proving the two
+# connections are not cross-wired.  `:log' is called `(SERVER CHILD
+# MESSAGE)' once per accept.  Deleting the SERVER transitions ONLY its
+# own status to `closed' -- the already-accepted children are
+# unaffected (measured against real Emacs 30.1: "connection procs
+# outlive it", this doc's own P5 exit criterion text, confirmed rather
+# than assumed) -- this smoke checks the children are still `open'
+# immediately after `delete-process' on the server, before cleaning
+# them up itself.
+standalone-reader-network-process-server-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
+	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
+	  '(defun nps-name (p) (aref p 1))' \
+	  '(let* (received log-calls (srv (make-network-process :name "srv" :server t :service 56020 :filter (lambda (p s) (push (cons (nps-name p) s) received)) :log (lambda (server client msg) (push (list (nps-name server) (nps-name client) msg) log-calls)))) (status0 (process-status srv)) (c1 (make-network-process :name "c1" :host "127.0.0.1" :service 56020)) (c2 (make-network-process :name "c2" :host "127.0.0.1" :service 56020))) (accept-process-output nil 1) (accept-process-output nil 1) (let* ((live (copy-sequence nelisp-process-adapter--live)) (children (seq-filter (lambda (p) (not (memq p (list c1 c2 srv)))) live)) (proc-count (length live))) (process-send-string c1 "hello-from-c1") (process-send-string c2 "hello-from-c2") (accept-process-output nil 1) (accept-process-output nil 1) (let* ((children-open (not (memq nil (mapcar (lambda (p) (eq (aref p 2) (quote open))) children)))) (filters-shared (not (memq nil (mapcar (lambda (p) (eq (process-get p :filter) (process-get srv :filter))) children)))) (recv-both (and (assoc-string "hello-from-c1" (mapcar (lambda (x) (cdr x)) received) t) (assoc-string "hello-from-c2" (mapcar (lambda (x) (cdr x)) received) t))) (server-status-before-delete (process-status srv))) (delete-process srv) (let* ((server-status-after (process-status srv)) (children-still-open (not (memq nil (mapcar (lambda (p) (eq (aref p 2) (quote open))) children))))) (delete-process c1) (delete-process c2) (list status0 proc-count (length children) children-open filters-shared (if recv-both t nil) (= (length log-calls) 2) server-status-before-delete server-status-after children-still-open)))))' \
+	  > target/standalone-reader-network-process-server-smoke.el
+	@out="$$(./target/nelisp --load target/standalone-reader-network-process-server-smoke.el)"; \
+	if [ "$$out" = "(listen 5 2 t t t t listen closed t)" ]; then \
+	  echo "[standalone-reader-network-process-server-smoke] PASS: (server-status0,live-count,child-count,children-open,filters-shared,both-received,log-calls==2,server-status-before-delete,server-status-after-delete,children-still-open-after-server-delete)=$$out"; \
+	else \
+	  echo "[standalone-reader-network-process-server-smoke] FAIL: $$out"; \
+	  exit 1; \
+	fi
+
+standalone-reader-nonblocking-socket-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(let* ((start (float-time)) (lfd (nelisp-socket-listen "127.0.0.1" 55990 t)) (cfd (nelisp-socket-connect "127.0.0.1" 55990 t)) (elapsed1 (- (float-time) start)) (ready (nelisp-socket-poll cfd t 3000)) (elapsed2 (- (float-time) start)) (cerr (nelisp-socket-connect-error cfd))) (nelisp-socket-close cfd) (nelisp-socket-close lfd) (list (< elapsed1 1.0) (integerp cfd) ready (< elapsed2 1.0) cerr))' \
+	  > target/standalone-reader-nonblocking-socket-smoke-connect-ok.el
+	@printf '%s\n' \
+	  '(let* ((start (float-time)) (cfd (nelisp-socket-connect "127.0.0.1" 1 t)) (elapsed1 (- (float-time) start)) (ready (nelisp-socket-poll cfd t 3000)) (elapsed2 (- (float-time) start)) (cerr (nelisp-socket-connect-error cfd))) (nelisp-socket-close cfd) (list (< elapsed1 1.0) (integerp cfd) ready (< elapsed2 1.0) (/= cerr 0)))' \
+	  > target/standalone-reader-nonblocking-socket-smoke-connect-refused.el
+	@printf '%s\n' \
+	  '(let* ((lfd (nelisp-socket-listen "127.0.0.1" 55991 t)) (empty (nelisp-socket-accept lfd t)) (cfd (nelisp-socket-connect "127.0.0.1" 55991)) (sfd (nelisp-socket-accept lfd t))) (nelisp-socket-close cfd) (nelisp-socket-close sfd) (nelisp-socket-close lfd) (list empty (integerp sfd) (>= sfd 0)))' \
+	  > target/standalone-reader-nonblocking-socket-smoke-accept.el
+	@ok_out="$$(./target/nelisp --load target/standalone-reader-nonblocking-socket-smoke-connect-ok.el)"; \
+	refused_out="$$(./target/nelisp --load target/standalone-reader-nonblocking-socket-smoke-connect-refused.el)"; \
+	accept_out="$$(./target/nelisp --load target/standalone-reader-nonblocking-socket-smoke-accept.el)"; \
+	if [ "$$ok_out" = "(t t t t 0)" ] && \
+	   [ "$$refused_out" = "(t t t t t)" ] && \
+	   [ "$$accept_out" = "(-1 t t)" ]; then \
+	  echo "[standalone-reader-nonblocking-socket-smoke] PASS: connect-ok(bounded,fd,writable,bounded,err0)=$$ok_out connect-refused(bounded,fd,writable,bounded,err!=0)=$$refused_out accept(empty=-1,fd,fd>=0)=$$accept_out"; \
+	else \
+	  echo "[standalone-reader-nonblocking-socket-smoke] FAIL: connect-ok=$$ok_out connect-refused=$$refused_out accept=$$accept_out"; \
+	  exit 1; \
+	fi
+
+# Doc 184 P3: the `--repl' blank-line idle pump. Retired from its
+# original RED/GREEN split as of integration/wave6 phase 2A: this smoke
+# used to prove `nelisp-async-core.el' ALONE left the baked-in no-op
+# `nelisp--repl-idle-pump' in effect (no TICK) while ALSO loading
+# nelisp-process-adapter.el upgraded it to a real bounded pump (TICK).
+# Phase 2A wired both files' source into the default prelude
+# (`nelisp-standalone--reader-repl-prelude-source'), so blank-Enter
+# pumps a due timer on every standalone build now, with NOTHING
+# `--load'ed -- the old RED case (no adapter loaded) now also prints
+# TICK, which is the fix working, not a failure (confirmed by a real
+# run: red_out=TICK). This target now asserts the default-bootstrap
+# claim directly: NO explicit load, blank-Enter pumps (TICK); a
+# `--load' batch run of the identical timer form still never reaches
+# `nl_repl_loop' at all, matching Emacs's own batch-mode contract of
+# not pumping outside an explicit wait -- that half is unaffected by
+# the wiring and stays the real regression guard.
+standalone-reader-repl-idle-pump-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' \
+	  '(run-at-time 0.05 nil (lambda () (princ "TICK")))' \
+	  '(quote batch-no-pump)' \
+	  > target/standalone-reader-repl-idle-pump-smoke-batch.el
+	@noload_out="$$(printf '(run-at-time 0.05 nil (lambda () (princ "TICK")))\n\n\n\n\n' | timeout 5 ./target/nelisp --repl --no-prompt --no-print 2>&1)"; \
+	batch_out="$$(./target/nelisp --load target/standalone-reader-repl-idle-pump-smoke-batch.el 2>&1)"; \
+	case "$$noload_out" in \
+	  *TICK*) noload_ok=1 ;; \
+	  *) noload_ok=0 ;; \
+	esac; \
+	case "$$batch_out" in \
+	  *TICK*) batch_ok=0 ;; \
+	  *) batch_ok=1 ;; \
+	esac; \
+	if [ "$$noload_ok" = 1 ] && [ "$$batch_ok" = 1 ]; then \
+	  echo "[standalone-reader-repl-idle-pump-smoke] PASS: default binary, NO --load of either new file -- REPL blank-Enter pumps a due timer (TICK), batch --eval of the same timer never reaches the pump at all -> noload=$$noload_out batch=$$batch_out (Doc 184 P3 ships in the default bootstrap, integration/wave6 phase 2A)"; \
+	else \
+	  echo "[standalone-reader-repl-idle-pump-smoke] FAIL: noload-repl-had-tick=$$([ $$noload_ok = 1 ] && echo YES || echo NO-BAD) batch-had-tick=$$([ $$batch_ok = 1 ] && echo no || echo YES-BAD)"; \
+	  echo "  noload_out=$$noload_out"; \
+	  echo "  batch_out=$$batch_out"; \
+	  exit 1; \
+	fi
+
 # Fast focused loop for Doc 142 gate-6 REAL-RUNTIME in-process native exec.
 # Builds/relinks target/nelisp, then runs the embedded `--neln-selftest'
 # loader path against the REAL reader-linked `nelisp_aot_builtin_call1`.
@@ -1084,6 +2964,69 @@ standalone-reader-realrt-smoke: standalone-reader
 	  exit 1; \
 	fi
 
+# Doc 142 section 6.4: the general in-process loader.  Where
+# `standalone-reader-realrt-smoke' runs ONE function whose bytes and extern
+# addresses were baked into the reader at build time, this compiles a set of
+# artifacts and has the reader read, map and call them at run time through
+# `lisp/nelisp-native-load.el' -- interpreted elisp, no linker, no cc, no
+# subprocess.  Covers both calling conventions, arity 0 through 6, and
+# non-integer values in and out.
+neln-loader-test: standalone-reader
+	@mkdir -p target/neln-loader
+	NELISP_ARTIFACT_DIR=$(CURDIR)/target/neln-loader \
+	  $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-native-load-fixtures \
+	  -f nelisp-native-load-fixtures-main
+	@prelude=target/neln-loader/prelude.el; \
+	{ echo '(load "$(CURDIR)/lisp/nelisp-native-load.el")'; \
+	  echo '(defvar nelisp-native-load-driver-dir "$(CURDIR)/target/neln-loader")'; \
+	  echo '(load "$(CURDIR)/test/nelisp-native-load-driver.el")'; \
+	} > "$$prelude"; \
+	./target/nelisp --load "$$prelude"
+
+# The loader driver states each expected answer, so it only catches
+# shapes someone thought of first.  This one computes the answer: the
+# same source runs through the interpreter and as native code inside one
+# reader process, and the two are compared.
+aot-differential: standalone-reader
+	@mkdir -p target/aot-differential
+	NELISP_DIFF_DIR=$(CURDIR)/target/aot-differential \
+	  $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-aot-differential-cases \
+	  -f nelisp-aot-differential-main
+	@echo '(princ "reader-ok\n")' > target/aot-differential/smoke.el; \
+	if ! ./target/nelisp --load target/aot-differential/smoke.el 2>&1 | grep -q reader-ok; then \
+	  echo "[diff] the reader does not run -- every case would 'crash' and say nothing about the cases"; \
+	  echo "[diff] a compiler change can build a binary that dies on startup; check that first"; \
+	  exit 1; \
+	fi
+	@count=$$(cat target/aot-differential/count.txt); size=1; \
+	chunks=$$(( ($$count + $$size - 1) / $$size )); failed=0; \
+	echo "[diff] $$count cases in $$chunks chunks of $$size"; \
+	for chunk in $$(seq 0 $$(($$chunks - 1))); do \
+	  prelude=target/aot-differential/prelude-$$chunk.el; \
+	  { echo '(load "$(CURDIR)/lisp/nelisp-native-load.el")'; \
+	    echo '(load "$(CURDIR)/target/aot-differential/cases.el")'; \
+	    echo '(defvar nelisp-aot-differential-dir "$(CURDIR)/target/aot-differential")'; \
+	    echo "(defvar nelisp-aot-differential-chunk $$chunk)"; \
+	    echo "(defvar nelisp-aot-differential-chunk-size $$size)"; \
+	    echo '(load "$(CURDIR)/test/nelisp-aot-differential-driver.el")'; \
+	  } > "$$prelude"; \
+	  out=$$(./target/nelisp --load "$$prelude" 2>&1); \
+	  printf '%s\n' "$$out"; \
+	  summary=$$(printf '%s\n' "$$out" | grep "^differential chunk $$chunk:"); \
+	  if [ -z "$$summary" ]; then \
+	    died=$$(printf '%s\n' "$$out" | grep '^RUN ' | tail -1); \
+	    echo "[diff] CRASH $${died#RUN } -- the reader died running it"; \
+	    failed=1; \
+	  else \
+	    case "$$summary" in *", 0 wrong,"*) : ;; *) failed=1 ;; esac; \
+	  fi; \
+	done; \
+	test $$failed -eq 0
+
 # Fast focused loop for REPL work.  Builds/relinks target/nelisp with the
 # incremental unit cache, then runs only the REPL smoke used by the full reader
 # test.
@@ -1091,6 +3034,65 @@ standalone-reader-repl-smoke:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-repl-test
+
+# Fast focused loop for the reader-completeness / missing-file-unification /
+# depth-guard defect class.  Builds/relinks target/nelisp with the
+# incremental unit cache, then runs only the table-driven malformed-input
+# smoke used by the full reader test.
+standalone-reader-malformed-input-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-malformed-input-test
+
+# Fast focused loop for Doc 180 Phase 1 (form-located errors): the
+# uncaught-error printer names FILE, top-level form #N and a byte/line
+# offset.  Builds/relinks target/nelisp with the incremental unit cache,
+# then runs only the against-the-bug smoke used by the full reader test.
+standalone-reader-form-location-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-form-location-test
+
+# Fast focused loop for Doc 180 Phase 2 item 1 (the gc-context frame stack's
+# pop/depth-cap desync).  Builds/relinks target/nelisp with the incremental
+# unit cache, then runs only the against-the-bug smoke used by the full
+# reader test.
+standalone-reader-frame-stack-pop-desync-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-frame-stack-pop-desync-test
+
+# Fast focused loop for Doc 180 Phase 2 item 3 (the bounded backtrace on an
+# uncaught error).  Builds/relinks target/nelisp with the incremental unit
+# cache, then runs only the against-the-bug smoke used by the full reader
+# test.
+standalone-reader-bounded-backtrace-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-bounded-backtrace-test
+# Fast focused loop for the socket primitives (Doc 184 follow-on) and Task A's
+# nelisp-unsupported-primitive fix.  Builds/relinks target/nelisp with the
+# incremental unit cache, then runs only the loopback round-trip + two
+# catchable-error negatives used by the full reader test.
+standalone-reader-socket-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-socket-test
+
+# Fast focused loop for the Doc 194 IPv6 phase (P7): AF_INET6 sockaddr_in6
+# construction, IPv6 literal parsing (native raw primitives AND the
+# separate pure-elisp parser), AAAA DNS resolution, and the
+# make-network-process/open-network-stream :family 'ipv6 path -- ALL
+# alongside a same-process IPv4 round trip proving the addition did not
+# disturb the unchanged IPv4 path.  Builds/relinks target/nelisp with the
+# incremental unit cache, then runs only this smoke.  Same shape as
+# `standalone-reader-socket-smoke' immediately above (Doc 194 IPv6 phase's
+# own precedent, not the shell-heredoc pattern the network-process-*
+# smokes further down this file use).
+standalone-reader-ipv6-socket-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-ipv6-socket-test
 
 # Prelude-load breadth test (Wave-1 (A)+(B)).  Builds the reader binary, then
 # runs it on  scripts/nelisp-stdlib-prelude.el  followed by a breadth test that
@@ -1109,7 +3111,7 @@ standalone-reader-prelude-test:
 #   make standalone-tarball PLATFORM=linux-x86_64
 #   make standalone-tarball PLATFORM=macos-aarch64
 #   make standalone-tarball-verify PLATFORM=linux-x86_64
-STANDALONE_VERSION ?= v0.6.0
+STANDALONE_VERSION ?= $(shell tr -d " \t\n\r" < $(CURDIR)/VERSION 2>/dev/null || echo v1.1.1)
 standalone-tarball:
 	@./tools/build-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM) --emacs "$(EMACS)"
 
@@ -1149,6 +3151,27 @@ standalone-parallel-compile-test:
 standalone-chunk-growth-test:
 	@EMACS="$(EMACS)" ./tools/chunk-growth-test.sh
 
+# Doc 152 Stage 4c/4d/5: the default-on mid-form collector must return wholly-
+# free growth chunks to Linux and reach a steady RSS plateau without an
+# explicit arm, while the checked poison-on-free run remains sound.  The
+# implementation under test is pure Elisp AOT DSL; Python is only the host
+# wait4(2)/ru_maxrss measurement driver.
+.PHONY: standalone-midform-gc-bounded
+standalone-midform-gc-bounded: standalone-reader
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	if [ "$$host_rc" != 0 ]; then \
+	  echo "standalone-midform-gc-bounded: target runnable predicate failed"; \
+	  exit "$$host_rc"; \
+	fi; \
+	PYTHONDONTWRITEBYTECODE=1 python3 tools/nelisp-midform-gc-bounded.py ./target/nelisp
+
 
 # Multi-process parallel compile (startup-bound for the current unit set:
 # usually SLOWER than serial `standalone-eval' -- see the script header).
@@ -1185,6 +3208,17 @@ bench-aot-tco:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-aot-tco-bench \
 	  -f nelisp-aot-tco-bench-batch
+
+# Doc 187 P4: continuously cap the cost of opt-in checked arithmetic on a
+# compiled tight `+' loop.  The harness also requires the checked and
+# unchecked native-object hashes to differ, so a no-op flag fails
+# structurally rather than depending on a timing delta.  Native AOT execution
+# is Linux x86_64-only; other hosts print the gate contract's reasoned skip.
+bench-aot-checked-arith:
+	$(EMACS) --batch -Q -L lisp -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-aot-checked-arith-bench \
+	  -f nelisp-aot-checked-arith-bench-batch
 
 # Phase 3c.6 GC mark-pass bench.  Advisory only — not gated.
 gc-bench: compile

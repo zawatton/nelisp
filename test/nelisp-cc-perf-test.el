@@ -52,13 +52,15 @@
 ;;; Helpers ---------------------------------------------------------
 
 (defun nelisp-cc-perf-test--module-available-p ()
-  "Return non-nil when the in-process FFI module is loadable."
-  (and (fboundp 'module-load)
-       (boundp 'module-file-suffix)
-       module-file-suffix
-       (ignore-errors
-         (file-readable-p
-          (nelisp-cc-runtime--locate-runtime-module)))))
+  "Return non-nil when the in-process FFI module is loadable.
+
+Delegates to `nelisp-cc-runtime-in-process-exec-available-p', which also
+requires the sibling cdylib and an x86_64 host -- this used to stop at
+`file-readable-p' on the module alone, so a stale module with no cdylib
+turned every test below from a skip into a `dlopen failed' failure, and
+an aarch64 host was not excluded at all even though these tests compile
+for `x86_64' explicitly."
+  (nelisp-cc-runtime-in-process-exec-available-p))
 
 (defun nelisp-cc-perf-test--bytes (form)
   "Compile FORM through the T96 pipeline and return the final byte vector."

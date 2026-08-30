@@ -198,6 +198,29 @@ safe — shifts one byte at a time."
       (setq i (1+ i)))
     (nelisp-asm-x86_64--byte-vec->string bytes)))
 
+(defsubst nelisp-asm-x86_64--byte-length (s)
+  "Return the number of BYTES in S.
+
+`length' answers characters.  On host Emacs the emitted chunks are unibyte
+strings, so the two agree, but the standalone runtime stores every string as
+UTF-8 and has no unibyte flag: `(unibyte-string 199 135)' is one character
+there and two bytes, so `length' answered 1 for a two-byte instruction.
+`string-bytes' answers bytes on both, which is what a byte offset means."
+  (string-bytes s))
+
+(defsubst nelisp-asm-x86_64--byte-at (s i)
+  "Return byte I of S, counting bytes rather than characters.
+
+`aref' answers a character, which on the standalone is the UTF-8 decode of
+whatever bytes it spans -- byte pair `C7 87', a real ModR/M sequence, read back
+as character 455 and failed the 0..255 range check on the way into a byte
+vector.  `string-byte' is the byte-level accessor added for byte-IO in Doc 161;
+host Emacs has no such function and does not need one, because `aref' on a
+unibyte string is already bytewise."
+  (if (fboundp 'string-byte)
+      (string-byte s i)
+    (aref s i)))
+
 (defun nelisp-asm-x86_64--byte-vec->string (vec)
   "Convert byte VEC into a unibyte-string without a large-arity `apply'.
 Standalone NeLisp currently mis-handles `(apply #'unibyte-string ...)'
@@ -433,7 +456,7 @@ bump the length slot, instead of `(concat old bs)' which was O(N²)
 for long buffers.  Wave 19: direct aref / aset on the flat-vector
 layout replaces the plist-get / plist-put roundtrip."
   (aset buf 0 (cons bs (aref buf 0)))
-  (aset buf 1 (+ (aref buf 1) (length bs)))
+  (aset buf 1 (+ (aref buf 1) (nelisp-asm-x86_64--byte-length bs)))
   buf)
 
 ;; ---- Wave 20 — hand-inline emit macros for hot prologue/epilogue path ----
@@ -837,12 +860,13 @@ subsequent `buffer-bytes' calls remain O(total-bytes))."
   (let* ((bytes  (apply #'concat (nreverse (copy-sequence (aref buf 0)))))
          (labels (aref buf 2))
          (fixups (aref buf 3))
-         ;; Build mutable vector so we can aset.
-         (n (length bytes))
+         ;; Build mutable vector so we can aset.  Counted and indexed in BYTES,
+         ;; not characters: see `nelisp-asm-x86_64--byte-length'.
+         (n (nelisp-asm-x86_64--byte-length bytes))
          (vec (make-vector n 0))
          (i 0))
     (while (< i n)
-      (aset vec i (aref bytes i))
+      (aset vec i (nelisp-asm-x86_64--byte-at bytes i))
       (setq i (1+ i)))
     (dolist (fix fixups)
       (let* ((slot (car fix))
@@ -1597,6 +1621,25 @@ Arithmetic-right shift; the count is implicit in CL and the sign
 bit replicates into the high bits."
   (nelisp-asm-x86_64--append-bytes
    buf (unibyte-string #x48 #xD3 #xF8)))
+
+(defun nelisp-asm-x86_64-sar-reg-imm8 (buf reg count)
+  "Emit `SAR REG, COUNT' = REX.W + C1 /7 + ModR/M + ib (4 bytes).
+REG is a 64-bit GP register symbol.  COUNT is the unsigned shift
+amount [0, 63] (arithmetic-right shift, sign bit replicates).  Same
+opcode group as `shl-reg-imm8' (0xC1), differing only in the /digit
+(SHL=/4, SAR=/7 per the x86_64 ISA reference) -- Doc 187 P4's
+fixnum-boundary overflow check (`SHL reg, 2' then `SAR reg, 2' is a
+round trip through this runtime's 62-significant-bit Int width; a
+value that does not survive it crossed the fixnum boundary)."
+  (unless (and (integerp count) (<= 0 count 63))
+    (signal 'nelisp-asm-x86_64-error
+            (list :sar-count-out-of-range count)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1 0 0 (nelisp-asm-x86_64--reg-ext reg)))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3 7 (nelisp-asm-x86_64--reg-low3 reg))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string rex #xC1 modrm (logand count #xFF)))))
 
 (defun nelisp-asm-x86_64-shr-rax-cl (buf)
   "Emit `SHR RAX, CL' = REX.W + D3 /5 + ModR/M=0xE8 (3 bytes).

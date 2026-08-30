@@ -21,6 +21,25 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 EMACS="${EMACS:-emacs}"
+
+# A gate whose only output is its own PASS lines is indistinguishable from one
+# that ran nothing.  CASES counts the checks that finished; the trap reports it
+# however the script exits, so a failure says how far it got.  Findings comes
+# from the exit status: this script stops at the first failure.
+CASES=0
+REPORT_COUNT=1
+
+selfhost_report_count() {
+  gate_rc=$?
+  if [ "$REPORT_COUNT" -eq 1 ]; then
+    if [ "$gate_rc" -eq 0 ]; then
+      printf 'GATE-COUNT checked=%s findings=0\n' "$CASES"
+    else
+      printf 'GATE-COUNT checked=%s findings=1\n' "$CASES"
+    fi
+  fi
+}
+trap selfhost_report_count EXIT
 OUT_DIR="$here/target/linux-smoke"
 EMIT_ONLY=0
 SELECTED_SMOKES=()
@@ -121,6 +140,30 @@ reader_needs_build() {
   return 1
 }
 
+# Needs a host that can run the configured target; the build script's own
+# predicate decides, not a uname table here.  Three outcomes, so that "could not
+# ask" cannot be mistaken for "reasoned skip".
+set +e
+"$EMACS" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+  >/dev/null 2>&1
+host_rc=$?
+set -e
+case "$host_rc" in
+  0) ;;
+  3)
+    REPORT_COUNT=0
+    printf 'GATE-SKIP target %s cannot run on host %s/%s\n' \
+      "${NELISP_STANDALONE_TARGET:-linux-x86_64}" "$(uname -s)" "$(uname -m)"
+    echo "[selfhost] SKIP: target cannot run on this host"
+    exit 0
+    ;;
+  *)
+    echo "[selfhost] FAIL: cannot ask host runnability (rc=$host_rc)" >&2
+    exit 1
+    ;;
+esac
+
 if reader_needs_build; then
   echo "[selfhost] building reader binary..."
   "$EMACS" --batch -Q -L lisp -L src -L scripts \
@@ -130,10 +173,17 @@ fi
 
 write_driver_prelude() {
   local driver="$1"
+  # Dependency order matters now that `require' signals on a missing file
+  # instead of silently succeeding.  `nelisp-aot-compiler.el' requires the two
+  # assemblers, the layout and the ELF writer, so their `provide' has to have
+  # run before its requires do -- which, in one concatenated file, means they
+  # come first.
   cat scripts/nelisp-stdlib-prelude.el \
-      lisp/nelisp-aot-compiler.el \
+      lisp/nelisp-asm-arm64.el \
       lisp/nelisp-asm-x86_64.el \
+      lisp/nelisp-sexp-layout.el \
       lisp/nelisp-elf-write.el \
+      lisp/nelisp-aot-compiler.el \
       lisp/nelisp-static-linker.el > "$driver"
 
   # Positional wrapper: standalone NeLisp does not yet bind cl-defun &key
@@ -195,14 +245,20 @@ run_fact_smoke() {
   "$RB" "$driver" >"$log" 2>&1
   compile_rc=$?
   set -e
-  if [ "$compile_rc" != "0" ]; then
-    echo "[selfhost] FAIL: $name driver returned $compile_rc (expected 0 = file load completed)"
+  # The driver's last form is 88 and a file run by the binary exits with the
+  # value of its last form, so 88 is what a completed load looks like.  The
+  # check read 0, which no successful run can produce; selfhost-mt-test.sh has
+  # always checked for 88 against a driver written the same way.
+  if [ "$compile_rc" != "88" ]; then
+    echo "[selfhost] FAIL: $name driver returned $compile_rc (expected 88 = file load completed)"
     tail -8 "$log" | sed 's/^/    /'
     exit 1
   fi
+  CASES=$((CASES + 1))
   if [ ! -s "$outbin" ]; then
     echo "[selfhost] FAIL: $name produced no ELF"; exit 1
   fi
+  CASES=$((CASES + 1))
   if [ "$EMIT_ONLY" = 1 ]; then
     echo "[selfhost] PASS: $name -> built"
     return
@@ -213,6 +269,7 @@ run_fact_smoke() {
   run_rc=$?
   set -e
   if [ "$run_rc" = "120" ]; then
+    CASES=$((CASES + 1))
     echo "[selfhost] PASS: $name -> exit 120 (5! = 120)"
   else
     echo "[selfhost] FAIL: $name produced binary exit $run_rc (expected 120)"; exit 1

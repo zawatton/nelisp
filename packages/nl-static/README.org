@@ -1,0 +1,140 @@
+#+TITLE: nl-static — opt-in macroexpansion-time guarantees
+
+* Contract
+
+=nl-static= is Doc 197's pure-Elisp, L1 static layer.  Loading it does
+not install advice, compiler hooks, or a reading pass.  Only explicit
+annotation macros check anything:
+
+#+begin_src elisp
+(require 'nl-static)
+
+(nl-total defun render (value)
+  (nl-match value
+    ((nothing) "")
+    ((text s) s)))
+
+(nl-borrow-scope
+  (nl-with-borrow-mut (buffer buffer-cell)
+    (aset buffer 0 1)))
+
+(nl-typed defun add-one ((value integer))
+  (1+ value))
+#+end_src
+
+Unannotated Elisp keeps stock expansion and runtime behaviour.  This
+package is entirely Elisp and adds no Rust source.  Set
+=nl-static--enabled= nil at macroexpansion time to make each annotation
+emit its plain counterpart with no checking residue.
+
+* Expansion-time errors
+
+Each rule has a named condition below =nl-static-error=:
+
+| annotation         | expansion condition        | rule |
+|--------------------+----------------------------+------|
+| =nl-total=         | =nl-total-error=           | every visible =nl-match= is registry-backed, exhaustive, and arity-correct |
+| =nl-borrow-scope=  | =nl-borrow-scope-error=    | literally nested borrows of the same lexical cell symbol cannot include a mutable borrow |
+| =nl-typed=         | =nl-typed-error=           | a visible literal or declared argument is provably incompatible with the callee's declared shape |
+
+The condition data names =:rule=, =:form=, and =:detail=.  The errors
+are signalled by the annotation macro itself while it expands; there is
+no AOT hook and no change to the byte compiler.
+
+* =nl-total=
+
+#+begin_src elisp
+(nl-defdata response
+  (response-ok value)
+  (response-error message))
+
+(nl-total defun response-text (response)
+  (nl-match response
+    ((response-ok value) value)
+    ((response-error message) message)))
+#+end_src
+
+This is deliberately a thin naming layer over =nl-match='s shipped
+=nl--match-check=.  =nl-total= temporarily applies strict registry
+resolution while checking its own body, then emits the ordinary
+=defun= unchanged.  It does not extend exhaustiveness checking to
+=pcase= or unregistered data shapes.
+
+* =nl-borrow-scope=
+
+#+begin_src elisp
+(nl-borrow-scope
+  (nl-with-borrow-mut (outer cell)
+    (nl-with-borrow-mut (inner cell) inner)))
+;; => nl-borrow-scope-error during macroexpansion
+#+end_src
+
+Shared/shared nesting is valid.  Sequential scopes are valid.  The
+walker compares only lexically visible cell symbols and respects
+ordinary =let=/=let*= shadowing.  Its quote, backquote, and improper-list
+handling is shared with =nl-check= through package-agnostic walker
+primitives in =nl-prelude=; =nl-static= does not depend on =nl-check=,
+preserving the locked one-way checker dependency.
+
+The emitted form is just =(progn BODY...)=.  An alias, a borrow produced
+by another macro, or a borrow hidden in an opaque callee is beyond this
+syntax.  Such code expands clean and =nl-safe= still signals
+=nl-borrow-error= if the conflict happens at runtime.
+
+* =nl-typed=
+
+The build-first surface is an explicit definition wrapper:
+
+#+begin_src elisp
+(nl-typed defun takes-text ((text string))
+  text)
+
+(nl-strict t)
+(nl-typed defun caller ((count integer))
+  (takes-text count))
+;; => nl-typed-error during expansion
+#+end_src
+
+=DEFINITION= may be =defun= or =nl-defun=.  Each declaration is
+=(ARG TYPE)=; optional/rest destructuring is outside this first phase.
+The expansion strips the types into a normal argument list and inserts
+=cl-check-type= assertions at function entry.  Signatures are registered
+for later annotated definitions in the same compile/load environment.
+
+Under =nl-strict=, the macro checks calls visible in its own body:
+
+- self-evaluating and quoted literals are checked against common
+  atomic shapes plus =or=/=and=/=not=/=member=/=eql= where decidable;
+- an unshadowed, directly unmodified argument declared by the current
+  =nl-typed= form is compared conservatively with the callee signature;
+- unknown type forms, overlapping declared shapes, local inferred
+  values, and directly reassigned arguments are left to runtime.
+
+This is declared-shape checking, not inference.  Static mismatches are
+only reported when disjointness is provable; an unknown answer is not
+an error.
+
+* Soundness ceiling
+
+The implemented reach is Doc 197 Tier 1: one annotation macro and the
+literal syntax it can see.  It is conceptually guided by Rust's
+exhaustiveness, aliasing, and declared-type guarantees, but it is not a
+Rust-equivalent whole-program checker.  Closure lifetime, general
+aliasing, runtime branches, opaque callees, =eval=, redefinition, and
+cross-function ownership flow are Tier 2/3.  In particular, a clean
+macroexpansion means only "no violation was found in visible syntax",
+never "this program is statically safe".
+
+* Testing
+
+Host ERT:
+
+#+begin_src sh
+make test-one FILE=packages/nl-static/test/nl-static-test.el
+#+end_src
+
+Standalone NeLisp, using the same test bodies through a small ERT shim:
+
+#+begin_src sh
+./target/nelisp --load packages/nl-static/test/nl-static-standalone-smoke.el
+#+end_src

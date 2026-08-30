@@ -36,9 +36,12 @@
       ;;
       ;; Returns: i64.  1 on hit (slot 1 set to unbound), 0 on miss.
       ;; Production callers (= `fmakunbound') ignore the return.
-      (nelisp_mirror_clear_function_apply
-       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-       unbound-ptr)))
+      (if (= (extern-call nl_thread_mirror_mutation_guard
+                          mirror-ptr sym-ptr) 1)
+          (- 0 4)
+        (nelisp_mirror_clear_function_apply
+         (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+         unbound-ptr))))
   "AOT source for Doc 111 §111.E #10 `mirror_clear_function'.
 
 Compose-on-8 with the unbound-marker pointer passed as the new slot

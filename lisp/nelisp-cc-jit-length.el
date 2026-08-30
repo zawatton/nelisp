@@ -33,7 +33,7 @@
          (and (sexp-int-make out 0) 0)
        (if (= (sexp-tag arg) 8)
            (and (sexp-int-make out (vector-len arg)) 0)
-         (if (= (sexp-tag arg) 5)
+         (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 14))
              (and (sexp-int-make out (str-char-count arg)) 0)
            1))))
   "AOT source for the §120.D `nl_jit_access_length' swap.

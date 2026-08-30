@@ -537,11 +537,64 @@
 ;; Cmp wrappers convert the JIT's i64 (1 / 0) result to T/Nil via
 ;; `nelisp--int-eq-zero'.
 
+;; Fixnum overflow, `+' / `*' (Doc: hooks/map.el/fixnum completions,
+;; 2026-08-22).  Host Emacs never overflows here -- `(+ most-positive-
+;; fixnum 1)' silently promotes to a bignum -- but this runtime has no
+;; bignums, so where Emacs would promote, the honest choices are a
+;; silent wrong answer or a loud one; `expt' (scripts/nelisp-stdlib-
+;; prelude.el) already made that call for multiplication via a
+;; division round-trip (`(/= (/ next b) r)' after `(* r b)'), so `*'
+;; reuses that exact technique here, and `+' gets the classic signed-
+;; overflow sign check.  This DIVERGES from Emacs's own `+'/`*', which
+;; never signal on plain fixnum overflow.
+;;
+;; MEASURED LIMIT (2026-08-22): the shipped `target/nelisp' standalone
+;; reader binary's top-level `+' and `*' are NATIVE subrs baked in by
+;; the assembler-emitted "applyfn" core unit -- `(symbol-function '+)'
+;; there is `#<subr +>', not this file's `defun', and that build does
+;; not even link lisp/nelisp-jit-strategy.el as one of its units (its
+;; `nelisp--add2'/`nelisp--mul2' resolve to the trivial `(+ a b)'/`(*
+;; a b)' fallback stubs in scripts/nelisp-stdlib-prelude.el instead,
+;; which are only reached because those two 2-arg names are NOT
+;; themselves native there).  So this fix does NOT make the actual
+;; `nelisp' binary's `(* 100000000000 100000000000)' or `(+ most-
+;; positive-fixnum 1)' signal -- both still wrap silently in every
+;; build verified against.  `mod' and `expt' DO come from the prelude's
+;; elisp in that same binary (confirmed: their `symbol-function' there
+;; is a lambda, not a subr), which is why `expt' overflow was already
+;; loud before this change and why this fix, applied at this layer,
+;; could not extend the same treatment to `*'/`+' themselves.
+;;
+;; Forcibly redefining the native `+'/`*' subrs (dropping their
+;; `unless (fboundp ...)' guard in the prelude) would work but pays for
+;; every fixnum add/multiply system-wide -- including the interpreter's
+;; own hot paths -- for a check that only matters within ~2 of the
+;; fixnum boundary; reaching the actual codegen that emits
+;; `nelisp_jit_mul2'/`nelisp_jit_add2's machine code (to check there,
+;; where `expt' cannot go) is a substantially bigger, riskier change
+;; than this completion's scope.  Silent wrap in the native `+'/`*'
+;; path is the recorded, accepted gap; this file's own
+;; `nelisp--add2'/`nelisp--mul2' are still fixed correctly for any
+;; caller that does reach them (this file is `require'd by several
+;; lisp/nelisp-cc-jit-*.el codegen units and lisp/nelisp-stdlib-equal.el
+;; / lisp/nelisp-stdlib-format.el, i.e. the AOT/codegen tooling side,
+;; not shipped runtime code for the reader binary).
 (fset 'nelisp--add2
       (lambda (a b)
         (if (nelisp--ref-eq (type-of a) 'integer)
             (if (nelisp--ref-eq (type-of b) 'integer)
-                (nl-jit-call-i64-i64 "nelisp_jit_add2" a b)
+                (let ((sum (nl-jit-call-i64-i64 "nelisp_jit_add2" a b)))
+                  ;; Two operands already in fixnum range can never
+                  ;; overflow a genuine 64-bit add (the true sum is
+                  ;; bounded by +-2^62, well inside +-2^63); the wrap
+                  ;; happens when SUM is re-packed into the narrower
+                  ;; fixnum range, and is detectable from the signs
+                  ;; alone: impossible unless A and B share a sign and
+                  ;; SUM's sign differs from theirs.
+                  (if (or (and (>= a 0) (>= b 0) (< sum 0))
+                          (and (< a 0) (< b 0) (>= sum 0)))
+                      (signal 'overflow-error nil)
+                    sum))
               (nelisp--add2-float a b))
           (nelisp--add2-float a b))))
 
@@ -557,7 +610,12 @@
       (lambda (a b)
         (if (nelisp--ref-eq (type-of a) 'integer)
             (if (nelisp--ref-eq (type-of b) 'integer)
-                (nl-jit-call-i64-i64 "nelisp_jit_mul2" a b)
+                (let ((prod (nl-jit-call-i64-i64 "nelisp_jit_mul2" a b)))
+                  ;; Same division round-trip `expt' already uses: a
+                  ;; wrapped product will not divide back out to A.
+                  (if (and (/= b 0) (/= (/ prod b) a))
+                      (signal 'overflow-error nil)
+                    prod))
               (nelisp--mul2-float a b))
           (nelisp--mul2-float a b))))
 

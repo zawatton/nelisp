@@ -175,11 +175,76 @@ poison のみで verify は arm しない (pre-enable block の偽陽性回避)�
 Linux/macOS の env 継承・自動 call-site 捕捉・exit 時 leak 自動出力は
 deferred。
 
+*実装ノート (2026-08-19) — Linux で arm 可能になった*: 上の deferred が
+本 Stage の価値をほぼ全部止めていた。§5 冒頭は本項目を「投入労力あたりの
+バグ検出数が全項目中で最大」と見積もっているが、arm できるのが Windows
+だけなら、開発の大半が起きる platform で検証は一度も走らない。実測
+(linux-x86_64, 2026-08-19、=NELISP_ALLOC_CHECK=1= を export し =getenv= が
+"1" を返す状態):
+
+: boot                            (enable 0 armed 0 …)
+: (nelisp--debug-switch 19) 後    (enable 1 armed 0 …)
+
+=armed= が 0 のまま = redzone 検証は一度も実行されていなかった。switch 19
+は設計どおり arm しないので、Linux には armed verifier への経路自体が
+無かった。
+
+修正は新プリミティブを必要としない。Linux の entry stack が既に環境を
+持っている: SP に argc / argv[0..] / NULL / envp[0..] / NULL が並ぶので
+envp[j] は slot =argc+2+j=。argv walk が使う =sp0= をそのまま渡し、
+=nl_posix_environ_walk= が =(NAME . VALUE)= alist を構築しながら
+=nl_alloc_check_env_probe_bytes= (Windows の UTF-16LE probe と同形の
+byte 版) を呼ぶ。=nl_os_environ_init= は per-target hook として arity を
+統一した。
+
+名前比較が u32×4 + u16 なのは、u64×2 だと先頭語が 4.71e18 となり
+=most-positive-fixnum= 2.31e18 を超えて bignum で code generator に届く
+ため (実測)。
+
+結果 (同日、=make standalone-reader-checked= を linux-x86_64 で):
+
+: run 1 (env 無し)  (0 0 …)                     既定 off を維持
+: run 2 (compute)   43 / 43                     checked suffix は挙動を変えない
+: run 3 (armed)     (1 1 370905 370905 269820 0 0 42 …)
+
+=armed=1=、verified-frees 269820、redzone violations 0、alloc-site 42 が
+round-trip。CI の checked smoke を Linux レーンにも配線した。
+
+prelude の =/proc/self/environ= 読み出しは残るが、boot walker が先に
+alist を埋めた場合は読まない fallback に降格した。/proc 経路は boot
+watermark 凍結後に走るので、arm 判断には原理的に間に合わない。
+
+macOS は no-op のまま。=nl_os_argv_init= が sysctl KERN_PROCARGS2 で argv
+を再構築する target であり、=sp= がこの walk の前提とする vector では
+ないため (当て推量で歩けば stack 上の任意の値を読む)。
+
 ** 5.3 CI ゲート
 
 既存の soak テスト（1h / RSS 増加 5MB 未満）を、
 検証アロケータ有効版でも実行する。redzone 破損・リーク検出を
 それぞれ blocker とする。
+
+*実装ノート (2026-08-19) — SHIPPED*: =make standalone-reader-checked-soak=。
+§5.2 の boot arming が Linux で効くようになって初めて意味を持つ項目。
+
+- **ラウンドは 1 プロセス内**で回す。最初の実装は各ラウンドを別 =--load= に
+  していたが、それでは live-blocks が構造上必ず一致し **leak blocker が
+  発火しえない**。検査にならない検査は無いより悪いので作り直した
+- blocker 2 つ: =violations != 0= (redzone)、および round 2 以降の
+  live-blocks 増加 (leak)。各ラウンドは =garbage-collect= で終わるので、
+  残っているものは garbage ではなく retention
+- round 1 を比較対象にしないのは prelude 読み込みの一回限りの確保があるため
+- 追加で「enable/armed が 1 でない」「verified-frees が 0」も FAIL にする。
+  どちらも「下の検査が実は何も見ていなかった」状態を素通りさせないため
+- known-answer で leak blocker の発火を確認: 2000 cons を GC 越しに保持すると
+  live-blocks が 153479 → 157705 → 161705 と増え、gate が FAIL する
+- 実測 (3 rounds): verified-frees 3122456 → 5811706 → 8501170 (同一プロセスで
+  累積)、violations 0、live-blocks 147619 → 147845 → 147845 で平坦
+- 1h 壁時計ではなくラウンド反復にした。時間はソークの確信を、反復はリークの
+  確信を与える。リーク検査に要るのは後者
+- 併せて =alloc-check-collect= に記録されていた欠陥 (prelude load 後の
+  =garbage-collect= が =NELISP_ALLOC_CHECK=1= で無言終了、2026-08-15 の binary)
+  の再現を試み、**現行 binary では解消**を確認 (5 回とも rc=0、同一レポート)
 
 * 6. Stage 3 — 資源と Drop
 
@@ -358,26 +423,72 @@ Java・Go・Rust で境界検査が実質無料なのは、検査が安いから
 BCE、LLVM の最適化）。15% は「検査を軽くする」目標ではなく *AOT コンパ
 イラに検査除去パスを実装する* 目標として保持する。
 
-現状 =lisp/nelisp-aot-compiler.el= に検査除去パスは存在しない。よって
-未達は「目標が不適切」ではなく「まだ実装されていない」と読む。
+fresh/non-escaping cell 向けの限定検査除去 pass は
+=lisp/nelisp-aot-compiler.el= に実装済みである。aliasing しうる cell は
+保守的に対象外へ残すため、未達時は「目標が不適切」ではなく「解析範囲が
+まだ不足している」と読む。
 
-*** この予算は現時点で測定できない（2026-08-16 実測）
+*** ネイティブ予算の実測（2026-08-16）
 
-ネイティブ経路に予算を置いた以上、測れないことを明記しておく。測れない
-予算を黙って掲げるのは、本節が今日まで陥っていた「予算も測定コードも
-あるが誰も走らせていない」状態の再生産である。
+=make nl-safe-native-bench= は in-process loader 上で checked/plain の
+=.neln= を実行する。=N=2000、best of 7:
 
-借用を含むコードは =.neln= へ *コンパイルは通る*。マニフェストに
-=:native (:symbols ("...") :arch "x86_64")= が載る。しかし実行できない:
+| 対                       |  checked |   plain |  比 | 予算    |
+|--------------------------+----------+---------+-----+---------|
+| borrow read (shared)     | 9653.4ns | 1519.0ns | 6.36x | <=1.15x *FAIL* |
+| borrow, no type check    | 2281.5ns | 1592.0ns | 1.43x | (内訳)  |
+| borrow (fresh, elided)   | 1384.0ns | 1444.0ns | 0.96x | (除去)  |
 
-| 関数                                         | ネイティブ実行 |
-|----------------------------------------------+----------------|
-| =(defun f (n) (+ n 1))= — プリミティブのみ   | 成功           |
-| =(defun f (c) (nl-safe--cell-value c))= — Elisp ヘルパ 1 呼び出し | *link failed* |
-| 借用あり                                     | *link failed*  |
+*予算は未達である。* 予算行は 1 行目だけで、残りは内訳と除去 pass の
+成果であり合否ではない。
 
-nl-safe 固有の問題ではない。原因は =nelisp-artifact-native-exec= の
-設計上の範囲で、その docstring が明言している:
+内訳が主因を示す。state の read/increment/decrement だけなら 1.43x で、
+型検査を足すと 6.36x になる。=vectorp= / =length= / =eq= にネイティブ
+lowering が無く、1 反復あたり 3 回のディスパッチャ往復が入るためである
+(plain 側の extern 集合にはディスパッチャが 1 つも無い)。*従って梃子は
+借用の設計ではなく =nl-cell-p= のネイティブ化である。*
+
+2026-08-16 に一度 *0.99x で予算を満たす* と記録したが、これは誤りだった。
+当時の fixture は借用をループの外に出しており、さらに除去 pass がその形を
+丸ごと消していたため、checked と plain が同一バイト数・同一スロット数に
+コンパイルされていた。*同一プログラム同士を比較していた。* 現在のベンチは
+比を出す前に両側が別物であることを検査し、一致していれば拒否する。
+
+除去 pass 自体にも健全性の欠陥があった。適格条件が =(vector ...)= で
+あることしか見ておらず、cell でないベクタへの借用まで消していた。
+=nl-with-borrow= は借用前に =nl-cell-p= を検査して非 cell なら
+=nl-type-error= を送出するので、除去はその検査ごと消していたことになる。
+現在は =(nl-cell V)= か =(vector 'nl--cell V 0)= かつ state リテラルが 0 の
+場合のみ適格とする。*検出器を消す最適化は、最適化対象の機能を否定する。*
+
+解析は除去しない理由も保持する。cell escape、state 観測、複数経路、
+非局所制御、ネスト借用、排他借用を検出したときは checked path を残す。
+fat pointer も fresh allocation・literal length/generation・全 read が literal
+in-range であることを証明した場合だけ raw read へ下げる。fat pointer の 2 対は
+現在も checked/plain が同一にコンパイルされるため、予算行ではなく除去の
+実証として報告する。動的 offset、範囲外、alias、escape は checked path に残す。
+
+nl-safe 固有の問題ではない。そして *本節が当初書いた「in-process ローダ
+が無い」も、次に書いた「統合が残っている」も、どちらも誤りだった*
+（2026-08-16 訂正）。実機で確かめた結果:
+
+: ./target/nelisp --neln-selftest   →  exit 42   （inc1(41) = 42）
+
+外部シンボルを持つ =.neln= のネイティブコードが、実リーダの中で
+in-process 実行されている。gate 6 は *統合済み* である。
+
+| 要素 | 状態 |
+|------+------|
+| mmap / PLT 風スタブ / plt32 再配置 / 境界スロット 17 個 / =call-ptr= | 実証済（3 テスト、x86_64 Linux） |
+| 実 =nelisp_aot_builtin_call1= へのブリッジ | =reader-neln-demo.o= としてリーダにリンク済み |
+| リーダ内での実行 | =--neln-selftest= が通る |
+
+=nl_neln_demo_call1_bridge= の "demo" はデモ *プログラム* の意味で、
+ブリッジ自体は =(extern-call nelisp_aot_builtin_call1 ...)= と実物を
+呼ぶ。名前から代替物と推測すると間違える。
+
+以下の =nelisp-artifact-native-exec= はこれとは *別物* で、docstring が
+設計上の範囲を明言している:
 
 #+begin_quote
 This is the first native-execution spike: it works for the reloc-free
@@ -400,15 +511,16 @@ case is the remaining §6.4 work.
 
 したがって着手順序はこうなる:
 
-1. Doc 142 §6.4 の in-process mmap+reloc ローダを実装する ← *ここが最初*
-2. ネイティブ経路で本節の予算を測定可能にする
-3. 検査除去パスを実装し 15% を目指す
+1. ~~Doc 142 §6.4 gate 6~~ — *統合済み*（=--neln-selftest= が通る）
+2. ~~ネイティブ経路のベンチをリーダ内 in-process ローダへ載せ替える~~ —
+   実装済み。=make nl-safe-native-bench= が checked/plain の .neln を測定する
+3. fresh/non-escaping cell の検査除去 pass は実装済み（現状 1.00x）。
+   次は通常の aliasing cell へ安全に拡張する
 4. nl-safe を実コードに導入する
 5. 違反データが集まり §8 のゲートが判定可能になる
 6. Stage 5 の可否を実データで決める
 
-=bench/nl-safe-native-bench.el= は 1 が済んだ時点で動く形で置いてある。
-現状では =native-exec= の整数 ABI 制約に当たって落ちる。
+=bench/nl-safe-native-bench.el= は現在 in-process loader を直接使う。
 
 ** 位置づけ
 

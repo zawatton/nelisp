@@ -127,7 +127,10 @@
            (cons-set-cdr scratch-outer-slot
                          (vector-ref-ptr buckets-ptr idx))
            (vector-slot-set buckets-ptr idx scratch-outer-slot)))
-    (defun nelisp_mirror_bucket_prepend
+    ;; Internal tail used only after the public mutation entry point has
+    ;; admitted the caller.  Keeping it separate prevents an `_or_insert'
+    ;; miss from paying the registry guard twice.
+    (defun nelisp_mirror_bucket_prepend_unchecked
         (mirror-ptr sym-ptr entry-ptr scratch-vec-ptr)
       ;; mirror-ptr:      *const Sexp pointing at Env::globals_record (=
       ;;                  Sexp::Record(`nelisp-env')).
@@ -228,7 +231,14 @@
                            1))
          (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
                           2
-                          count-slot)))))
+                          count-slot))))
+    (defun nelisp_mirror_bucket_prepend
+        (mirror-ptr sym-ptr entry-ptr scratch-vec-ptr)
+      (if (= (extern-call nl_thread_mirror_mutation_guard
+                          mirror-ptr sym-ptr) 1)
+          (- 0 4)
+        (nelisp_mirror_bucket_prepend_unchecked
+         mirror-ptr sym-ptr entry-ptr scratch-vec-ptr))))
   "AOT source for Doc 119 §119.A `mirror_bucket_prepend'.
 
 Pure-elisp port of `Env::mirror_prepend_to_bucket' (~45 LOC).

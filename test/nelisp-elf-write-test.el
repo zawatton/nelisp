@@ -1030,15 +1030,47 @@ the multibyte → write-region byte-doubling regression."
               (should (= (logand modes #o111) #o111)))))
       (ignore-errors (delete-file path)))))
 
+(defun nelisp-elf-write-test--best-emit-seconds (path kb attempts)
+  "Fastest of ATTEMPTS emits of a KB-kilobyte ELF to PATH, in seconds.
+
+These are perf ACCEPTANCE gates (Doc 91 §91.d): the claim is that the
+chunk-build path can emit this much.  A single sample was too fragile
+to support it -- the 1 MB gate failed at 7.57 sec on macos-latest/29.4
+on 2026-08-26 -- so take the best of ATTEMPTS instead: a bad sample
+needs every attempt to be bad, while a real regression slows all of
+them and still trips the bound.
+
+What the sample spread actually shows, measured across one CI run
+(32956362867) with this helper in place, per attempt:
+
+  macOS 30.1     ~0.0025 s     Windows 30.1   ~0.007 s
+  macOS 29.4     ~1.1-2.2 s
+
+That is a ~500x gap between Emacs 29.4 and 30.1 on the same runner
+image, the same commit, the same run -- reproducible, not a stall.  An
+earlier reading of this called the 7.57 sec a one-off runner hiccup and
+put the true cost at ~5 ms; the 29.4 lane disproves that.  The bound is
+therefore about 2.3x the real 29.4 cost, not the 1700x the fast lanes
+suggest, so keep the attempts: on that lane this gate has ordinary
+margin, not enormous margin.
+
+Why 29.4 is ~500x slower here is not established and is worth its own
+look; nothing in this file explains it."
+  (let ((best nil))
+    (dotimes (_ attempts)
+      (let ((elapsed (car (benchmark-run 1
+                            (nelisp-elf-benchmark-write-binary path kb)))))
+        (when (or (null best) (< elapsed best))
+          (setq best elapsed))))
+    best))
+
 (ert-deftest nelisp-elf-write-benchmark-100kb-under-2sec ()
   "100 KB ELF emit completes within 2 sec on the chunk-build path.
 Generous bound — actual is typically < 50 ms — to absorb GC /
 CI variance."
   (let ((path (make-temp-file "nelisp-elf-bench-100kb-")))
     (unwind-protect
-        (let ((elapsed (car (benchmark-run 1
-                              (nelisp-elf-benchmark-write-binary
-                               path 100)))))
+        (let ((elapsed (nelisp-elf-write-test--best-emit-seconds path 100 3)))
           (should (< elapsed 2.0)))
       (ignore-errors (delete-file path)))))
 
@@ -1047,9 +1079,7 @@ CI variance."
 (= Doc 91 §91.d perf acceptance gate)."
   (let ((path (make-temp-file "nelisp-elf-bench-1mb-")))
     (unwind-protect
-        (let ((elapsed (car (benchmark-run 1
-                              (nelisp-elf-benchmark-write-binary
-                               path 1000)))))
+        (let ((elapsed (nelisp-elf-write-test--best-emit-seconds path 1000 3)))
           (should (< elapsed 5.0)))
       (ignore-errors (delete-file path)))))
 

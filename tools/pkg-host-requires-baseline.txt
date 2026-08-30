@@ -1,0 +1,37 @@
+# How many HARD requires of a host library src/ and lisp/ are allowed to
+# carry.  One "KIND COUNT" line; `make pkg-graph' fails when the count is
+# above it.  Lower it whenever the gate says you can; raise it only in the
+# commit that adds the require, and say here why that file cannot load
+# without the host.
+#
+# `packages/' has a manifest each and a gate over them.  src/ and lisp/ have
+# neither, which is why this was never asked before -- `nelisp-pkg-scan'
+# walks `packages/' only, so its "assumed host" list has never contained a
+# name from the two directories where the whole standalone runtime lives.
+#
+# Measured 2026-08-19, the day this was added.  Four hard host requires in
+# those directories, each found by bisecting a require by hand after
+# something failed a long way from it:
+#
+#   subr-x, url-parse   made optional in cd64c0bd7
+#   macroexp, seq       made optional in ff5766a02; the tree uses no name
+#                       from either, so only the FILE was ever missing
+#   pcase               made optional in ff5766a02; the tree does use it,
+#                       and the stdlib prelude has had the macro all along
+#
+# The last of them cost native compilation outright: `nelisp-cc-runtime'
+# stopped at `(require 'seq)', `nelisp-aot-compiler' went with it, and every
+# hot defun compiled to bytecode reporting "native compiler unavailable".
+#
+# 1 is not a target.  `filenotify' in src/nelisp-file-notify.el is the last
+# one, and it should go to 0 once someone measures whether that file needs
+# the host library or only its name.
+
+hard-host-require 1
+
+# `pinned-host-require FEATURE FILE' pins the hard requires above by
+# identity.  Added 2026-08-21, same reason as the other 2026-08-21 pins: a
+# count of 1 cannot see `filenotify' traded for a DIFFERENT unresolved hard
+# require, net still 1.  Losing a pin is still green; a hard require that is
+# neither pinned nor already counted fails and names it.
+pinned-host-require filenotify nelisp-file-notify.el

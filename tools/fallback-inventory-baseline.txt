@@ -1,0 +1,403 @@
+# Silent-degradation baseline (tools/nelisp-fallback-inventory.el).
+# One "KIND COUNT" line per tracked kind.  Raise a number only in the
+# commit that introduces the handler, and say there why the fall does
+# not need recording.  Lower it whenever the ratchet notice says you can.
+#
+# Captured 2026-08-19 from lisp/ scripts/ tools/ (263 files).  These are
+# starting values, not a target: nothing here has been reviewed, and the
+# gate's job today is to stop the numbers growing while they are worked
+# down.
+#
+# Why this gate exists, measured the same day: `compile-elisp-artifact'
+# produced a 1391-byte .neln with an empty native section and printed no
+# error at all, because the native compile falls back to bytecode inside
+# a `condition-case'.  A green compile said nothing about whether
+# anything was compiled natively.  The underlying bug -- write-region
+# comparing bytes against characters -- was one symbol; finding it was
+# not, because nothing recorded the fall.
+#
+# silent-fallback is the actionable kind: an error becomes a quieter,
+# wrong answer.  ignore-errors is usually a deliberate probe and is
+# counted apart for that reason.  bare-handler means `condition-case'
+# discarded the error object before anyone could record it.
+
+# 91 -> 48 on 2026-08-19, by reviewing the number rather than lowering it.
+# 91 was never 91 silent degradations; it was 91 handlers the classifier
+# could not read, in both directions:
+#
+#   23 re-raised or reported and were counted anyway.  13 in
+#   nelisp-jit-strategy.el call `nelisp--signal-wrong-type' /
+#   `nelisp--signal-arith', which are two-line wrappers around `signal' --
+#   they raise a MORE specific error than the one they caught.  The rest
+#   call this tree's own stderr printers: `nelisp-artifact--print-error',
+#   `nelisp--cli-print-error', `nelisp-runtime-image--print-error'.  All
+#   five names were verified to reach `signal' or stderr before being added
+#   to the lists; none was taken on its name.
+#
+#   Going the other way, `nelisp-artifact--profile-log' was IN the recording
+#   list while writing only when `nelisp-artifact-profile-stages' is set,
+#   which it is not in a normal run -- so 18 handlers were being called
+#   innocent for mentioning a logger that says nothing.  And five names in
+#   that list (nl-safe-report, nl-safe-report-record, nelisp--log,
+#   nelisp-log, nelisp--warn) are not defined anywhere in this tree, so they
+#   could never have matched: an intention, not a measurement.
+#
+# What the remaining 48 are, having looked at every one:
+#
+#   ~30 are fast-path/slow-path falls where the slow path gives the same
+#   answer -- a faster reader falling back to `read', a manifest fast parse
+#   falling back to the full one, `find(1)' falling back to an elisp walk.
+#   They are silent about WHICH path ran, which is a real cost when the fast
+#   one is wrong, and no cost otherwise.
+#
+#   ~10 return nil as a documented contract: `--try-compile-defun' answers
+#   nil for "did not compile", `load-source-file' answers nil for an invalid
+#   or stale artifact so the caller reads source.  The nil IS the answer.
+#
+#   The rest are the actionable kind, and the founding case is among them:
+#   a native compile falling back to bytecode.  That one now records its
+#   reason (bare-handler 34 -> 32, same day) and the manifest carries it.
+#
+# Not covered: this scans lisp/ scripts/ tools/.  Adding src/ takes
+# silent-fallback to 80, ignore-errors to 45 and bare-handler to 34 --
+# measured, not estimated -- and most of those 32 build a
+# `(list :status 'fail :error ...)' the classifier cannot see either.  The
+# same review has to be done there before the roots can move, or the number
+# goes back to being one nobody has read.
+#
+# To read them rather than count them:
+#   NELISP_FALLBACK_INVENTORY_LIST=silent-fallback make fallback-inventory
+#
+# 48 -> 49, 32 -> 37, 32 -> 33 on 2026-08-21: this gate was measured red
+# against the checked-in numbers when the identity pins below were added --
+# the tree had drifted since 2026-08-19 and nothing had caught it, which is
+# a live demonstration of why a bare count is not enough on its own.
+# Caught up to today's measurement in the same commit that pins identities,
+# same as `tools/parity-coverage-baseline.txt' raising its floor to the
+# measurement rather than leaving it stale.
+# 49 -> 50 and 38 -> 40 on 2026-08-22: the substrate-parity gate's own
+# corpus and driver introduced four new sites, all reviewed and pinned
+# below (`nelisp-substrate-parity-corpus.el' / `nelisp-substrate-parity.el').
+# None hide a real fall: the corpus's `error' handler is quoted DATA a
+# probe form tests condition-case/throw interaction with, never executed by
+# this scanner's own tree walk, and the driver's two `ignore-errors' are
+# best-effort temp-file/temp-dir cleanup after a probe subprocess, where a
+# failed `delete-file'/`delete-directory' changes nothing about the gate's
+# verdict.
+# 40 -> 41 on 2026-08-22: one new site, reviewed and pinned below (the
+# defvaralias reader smoke's temp-file cleanup, the same best-effort
+# `(ignore-errors (delete-file tmp))' shape every sibling `reader-*-smoke'
+# already uses -- a failed cleanup changes nothing about the smoke's
+# verdict).
+# 41 -> 43 on 2026-08-22: two new sites, reviewed and pinned below --
+# `nelisp-standalone--reader-malformed-input-smoke-rm's own best-effort
+# `(ignore-errors (delete-file file))' (the same shape every sibling
+# `reader-*-smoke' cleanup already uses, factored into one defun instead
+# of one call per temp file so eight identical shapes did not each need
+# their own pin) and the malformed-input smoke's per-row stderr-file
+# cleanup, same reasoning.
+# 50 -> 53 on 2026-08-23: three new sites, reviewed and pinned below (Task
+# C's two unwind-protect corpus forms each wrap a deliberately-injected
+# test error and discard it after observing cleanup order, plus the
+# presence-sweep generator's end-of-file read-loop terminator).
+# silent-fallback 57 -> 60 on 2026-08-26 (Doc 199 Tier 3b mirror guard):
+# nl-thread-mirror-guard-smoke.el asserts that a worker's global write is
+# refused, so every such assertion must catch the signalled condition to
+# inspect it.  Each site is pinned individually below.
+silent-fallback        60
+# 41 -> 42 on 2026-08-23: one new site, reviewed and pinned below (the
+# presence-sweep auto-note's defensive shape-extraction for a report-only
+# string, falls back to "?" on a malformed corpus form -- never on a
+# correctness path).
+# 50 -> 52 on 2026-08-23 (Doc 180 Phase 1): two new sites in
+# `nelisp-standalone--reader-form-location-smoke', pinned below -- its
+# per-row stderr-file cleanup (identical shape to, and hashing the same
+# as, the malformed-input smoke's own already-pinned one) and its REPL
+# companion's stderr-file cleanup, both best-effort temp-file deletion
+# after the assertion they guard has already run, same reasoning as every
+# sibling smoke's cleanup in this file.
+#
+# 2026-08-23 (Doc 186 P0/P1, feat/char-table-elisp-layer): one new site,
+# reviewed and pinned below -- `nelisp-standalone--reader-char-table-
+# smoke''s temp-file cleanup, the same best-effort `(ignore-errors
+# (delete-file tmp))' shape every sibling `reader-*-smoke' already uses.
+#
+# integration/wave4 (this branch, merge 6/9): both raises above touch
+# disjoint smokes (form-location vs. char-table); their `pinned-site
+# ignore-errors' rows below are the textual union of both branches' rows
+# (50 unique rows: 47 shared, 2 form-location-only, 1 char-table-only).
+# Interim total is that union's row count plus the pre-existing +3
+# offset between pinned rows and this counter that both branches'
+# standalone counts already carried (49 pinned/52 total; 48 pinned/51
+# total): 50 + 3 = 53.  To be reconciled to the measured count in the
+# battery.
+#
+# 50 -> 51 on 2026-08-23: one new site, reviewed and pinned below (Doc 191
+# Phase 1's nelisp-standalone--reader-defun-redefine-epoch-smoke temp-file
+# cleanup -- same reasoning and same literal shape, `(ignore-errors
+# (delete-file tmp))', as the other standalone-reader smokes' pins right
+# below).
+#
+# integration/wave4 (this branch, merge 7/9): one more disjoint pinned
+# row (the redefine-epoch smoke's cleanup), confirmed unique against the
+# merge-6/9 union.  Interim total bumped by +1 row (+1 through the same
+# +3 pinned/counter offset): 53 + 1 = 54.
+#
+# integration/wave4 battery reconciliation (post merge 9/9, full tree):
+# `make fallback-inventory' measured ignore-errors=54 against this
+# file's then-duplicate 53/54 lines (the checker reads the first
+# matching line, which was still 53, hence the reported "+1 over
+# baseline"). This merge's interim arithmetic was exactly right; the
+# only defect was leaving a stale duplicate directive line in the file
+# instead of replacing it. Removed the duplicate; single line below now
+# matches the measured count.
+# 54 -> 59 on 2026-08-23 (Doc 180 Phase 2): five new sites, reviewed and
+# pinned below -- `nelisp-standalone--reader-frame-stack-pop-desync-
+# smoke''s temp load-file cleanup (one site, same best-effort shape every
+# sibling `reader-*-smoke' already uses) and
+# `nelisp-standalone--reader-bounded-backtrace-smoke''s four (its two
+# fixture-file cleanups, `dormant-file'/`armed-file', plus its two
+# per-run stderr-file cleanups -- textually identical to each other
+# since both reuse the local name `stderr-file', so they pin to the same
+# hash at count 2, not two separate hash rows).
+# 54 -> 55 on 2026-08-24 (socket primitives smoke, Doc 184 follow-on,
+# feat/socket-primitives-p1): `nelisp-standalone--reader-socket-smoke'
+# (scripts/nelisp-standalone-build.el) cleans up its temp script file
+# via `(ignore-errors (delete-file script))' in its `unwind-protect',
+# the same idiom every sibling `standalone-reader-*-smoke' already
+# uses (see `nelisp-standalone--reader-form-location-smoke' two smokes
+# up).  Not a new fallback shape, one more site of an already-accepted
+# one.
+# integration/wave6 (merge 6/9): the two raises above were measured on
+# non-overlapping trees (error-backtraces 54->59, socket-primitives-p1
+# 54->55, both off the same shared 54 base) and do not compose
+# additively as separate directive lines -- only the FIRST `ignore-
+# errors' line in file order is read by `assq' in
+# `nelisp-fallback-inventory--baseline'.  Interim pin: 54 + 5 + 1 = 60
+# (sum of the two disjoint site sets: this branch's five Doc 180 Phase
+# 2 cleanup sites, the socket branch's one Doc 184 follow-on cleanup
+# site), pending the RE-RUN of `fallback-inventory' on the fully
+# merged tree per the integration playbook.
+# ignore-errors 60 -> 61 on 2026-08-24 (wave8, IPv6 smoke).  socket-ipv6's
+# `nelisp-standalone--reader-ipv6-socket-smoke' ends with the same
+# best-effort `(ignore-errors (delete-file script))' temp-file cleanup
+# every sibling `reader-*-smoke' uses; pinned below.
+ignore-errors   61
+# 34 -> 32 on 2026-08-19: the two handlers in
+# `nelisp-artifact--ensure-native-compiler' now record the error instead of
+# discarding it.  Between them they had hidden a chain of six failures --
+# macroexp, seq, pcase, a reader defect, add-hook, load-file-name -- each of
+# which had to be found by bisecting a require by hand, while the manifest
+# said only "native compiler unavailable".
+# 33 -> 34 on 2026-08-22: one new site, reviewed and pinned below (the
+# substrate-parity corpus's quoted condition-case/throw probe form).
+# 34 -> 37 on 2026-08-23: three new sites, reviewed and pinned below (Task
+# C's two unwind-protect corpus forms' condition-case wrappers, plus the
+# presence-sweep generator's standard "read forms until end-of-file" loop).
+bare-handler    42
+
+# 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
+# a flag has to be turned off by whoever turned it on, and forgetting is
+# silent.  A leftover call is loud on stderr and fails here instead.
+dbg-note        0
+
+# `pinned-site KEY COUNT' pins every silent-fallback/ignore-errors/
+# bare-handler/dbg-note site by identity: kind, file, enclosing toplevel,
+# and a 12-hex digest of the handler's printed shape (see
+# `nelisp-fallback-inventory--pin-key').  COUNT, not just presence: two
+# structurally identical handlers in the same toplevel hash to the same
+# key, so a plain set would let a third identical one land unpinned.
+#
+# Added 2026-08-21, same reason as `tools/parity-coverage-baseline.txt' and
+# the other 2026-08-21 pins: any of the four counts above can miss one site
+# disappearing while a different one appears, net unchanged.  A key's count
+# falling is still green (the gate notes it as safe to lower); a key's
+# count rising past its pin, or a key with no pin at all, fails and names
+# the site.  Generated from a clean tree; do not hand-edit into drift.
+# 2026-08-23 batch-3 integration: the bignum smoke (doc 190 Phase A) wraps each
+# overflow-boundary probe in condition-case (overflow-error -> ok) -- a test
+# harness's deliberate handler, same class as the reader smokes' cleanup pins.
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	1c30e9372f35 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	51a73770028d 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	6db2a096b705 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	d03686d58780 1
+pinned-site bare-handler	standalone-bignum-smoke.el	bignum-smoke--check	cc33bff2a68e 1
+pinned-site silent-fallback	standalone-bignum-smoke.el	bignum-smoke--check	6c140c43eafd 5
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--artifact-kind	48f11c96651f 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--collect-el-files-with-find	606ea325a642 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--collect-neln-artifacts-with-find	e8bfdb4c0bee 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--make-temp-directory	21d2a979e6d6 1
+# Re-pinned 2026-08-26: 5723f5871964 -> 1c936c80e481, count unchanged at 1.
+# The handler itself was edited, which is exactly what a shape digest is for.
+# Doc 166's boxed-param value-word ABI is activated by binding
+# `nelisp-aot-compiler--runtime-entry-params' around the compile call, and
+# that `let' sits INSIDE this `condition-case', so the guarded form changed
+# shape while the guard's own behaviour did not.  Still one bare handler,
+# still swallowing the same compile failure; bare-handler overall stays 38
+# against a baseline of 42.
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--native-compile-fast-batch-section	1c936c80e481 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--read-manifest-for-audit	6d2fdb8cad42 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--read-manifest-for-load	7ad609d017ca 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--read-private-item	ad4ce7d9283c 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--read-top-level-forms	1d7e99bd1b73 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--read-top-level-forms-fallback	71d15e8c0768 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--read-top-level-forms-fallback	b873df99ad1f 2
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--try-compile-defun	ad0f8c0349d0 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-load-file	d9c246c1c754 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-load-or-compile-source-file	d391fab5bd29 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-load-source-file	0f32e67fc6ec 1
+pinned-site bare-handler	nelisp-fallback-inventory.el	defun nelisp-fallback-inventory--scan-file	c5cbaf427d4b 1
+pinned-site bare-handler	nelisp-generated-source-parse.el	defun nelisp-generated-source-parse--leftover	eb8d1be82b33 1
+pinned-site bare-handler	nelisp-jit-unverified.el	defun nelisp-jit-unverified--tally	2f002fcd8dee 1
+pinned-site bare-handler	nelisp-macos-build.el	defun nelisp-macos-build--emit-text	f5fb00a1c1c6 1
+pinned-site bare-handler	nelisp-runtime-image.el	defun nelisp-runtime-image--ensure-artifact-support	aaa92eb8b6e1 1
+pinned-site bare-handler	nelisp-runtime-image.el	defun nelisp-runtime-image--load-artifact-cache	c67d0d460e5e 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--artifact-runtime-cache-filter-source	6566fab980b1 1
+pinned-site bare-handler	nelisp-stdlib-os.el	defun nelisp-os--windows-fd-install	9f8e0d93a1ab 1
+pinned-site bare-handler	nelisp-stdlib-os.el	defun nelisp-os--windows-install-eventfd-fd	6480a7513af1 1
+pinned-site bare-handler	nelisp-stdlib-os.el	defun nelisp-os--windows-install-signalfd-fd	6480a7513af1 1
+pinned-site bare-handler	nelisp-stdlib-os.el	defun nelisp-os--windows-install-std-fd	6480a7513af1 1
+pinned-site bare-handler	nelisp-stdlib-os.el	defun nelisp-os--windows-install-std-fd	9f8e0d93a1ab 1
+pinned-site bare-handler	nelisp-stdlib-os.el	defun nelisp-os--windows-optional-std-handle	8d196dc75b36 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	8902848073d4 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	d03492c064ac 1
+pinned-site bare-handler	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	53af565a5502 1
+pinned-site bare-handler	nl-check-gate.el	defun nl-check-gate--accepted	eca4e7b3e0da 1
+pinned-site bare-handler	nl-check-gate.el	defun nl-check-gate--findings	4935c20a3ddd 1
+pinned-site ignore-errors	anvil-standalone-db.el	defun anvil-standalone-db-worklog-add	8ef977e61185 1
+pinned-site ignore-errors	nelisp-fallback-inventory.el	defun nelisp-fallback-inventory--classify	87aa892adb2e 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-asm-arm64-byte-identity-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-char-table-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	21ea7e6a6bbc 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	3a13a80d0ae2 2
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	43d4008267dc 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	57bc3a2cfa31 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	7a29dc9ee836 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-cli-smoke	cc69e60298bc 2
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-control-flow-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-elc-smoke	27b45feb09cb 2
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-elc-smoke	793804bcbd55 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-elc-smoke	b4f48acca8de 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-defvaralias-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-form-location-smoke	b58994cdbf57 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-form-location-smoke	3fb2f2281ec6 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-hash-table-literal-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-defun-redefine-epoch-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-stdlib-completion-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-intern-canonical-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-large-quoted-alist-mutation-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-malformed-input-smoke	b58994cdbf57 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-malformed-input-smoke--rm	dd8bb1462f63 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-frame-stack-pop-desync-smoke	4f1f2f39ef95 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-bounded-backtrace-smoke	7d6ddaad377d 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-bounded-backtrace-smoke	323d67589a84 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-bounded-backtrace-smoke	b58994cdbf57 2
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-repl-smoke	12ae73a754c4 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-repl-smoke	614d75952366 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-setcar-setcdr-type-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-name-uniqueness-smoke	7a85c44cdaf9 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-outside-cwd-smoke	099e9b232f57 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-outside-cwd-smoke	19517e7360e0 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-temp-outside-cwd-smoke	197c6f11cdc0 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-inotify-close-watch	b8984c25eed5 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-inotify-init	fec207317a17 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-open	fec207317a17 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socket	708842c44469 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-dgram	2fb54559c141 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-dgram	959ebd98010a 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-set-nonblock	0089694d0c6c 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-set-nonblock	f975ac8810dc 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-stream	29ac882e9291 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-stream	858c2f42cd58 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-socketpair-stream	8ff924ddb00d 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os--windows-timerfd-create	fec207317a17 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os-socket	fec207317a17 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os-socketpair	0089694d0c6c 1
+pinned-site ignore-errors	nelisp-stdlib-os.el	defun nelisp-os-socketpair	f975ac8810dc 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	unless	bf6af2a65684 1
+pinned-site ignore-errors	nelisp-substrate-parity.el	defun nelisp-substrate-parity--call	84d956268ccf 1
+pinned-site ignore-errors	nelisp-substrate-parity.el	defun nelisp-substrate-parity--run-all	099e9b232f57 1
+pinned-site silent-fallback	anvil-standalone-db.el	defun anvil-standalone-db-main	6cb9525e70b9 1
+pinned-site silent-fallback	compile-elisp-objects-meta.el	defun compile-elisp-objects-meta--compute-bitmask-chunks	de7bd2cc970f 1
+pinned-site silent-fallback	compile-elisp-objects-meta.el	defun compile-elisp-objects-meta--dispatch-loop-native	e3f2648caa3a 1
+pinned-site silent-fallback	compile-elisp-objects-meta.el	defun compile-elisp-objects-meta--should-rebuild	30bbfeb400ba 1
+pinned-site silent-fallback	nelisp-aot-compiler.el	defun nelisp-aot-compiler--emit-value-native-bytes	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--artifact-kind	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--audit-existing-neln	b461edc798d5 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--collect-el-files-with-find	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--collect-neln-artifacts-with-find	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--make-temp-directory	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--native-compile-fast-batch-section	f9084bb4fea9 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--native-compile-required-section	98437d5372d9 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--native-compile-section	2cf31b8ff2ad 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--read-manifest-for-audit	39971e1e5900 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--read-manifest-for-load	03e2fd425766 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--read-private-item	ad52f3f790c2 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--read-top-level-forms	fcb884d38bb8 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--read-top-level-forms-fallback	266858e83e6e 2
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--try-compile-defun	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-load-file	7de6ee2c5875 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-load-or-compile-source-file	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-load-source-file	7cbdc7443659 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-load-source-file	7f54f729f3d7 1
+pinned-site silent-fallback	nelisp-cli.el	defun nelisp--cli-batch-ensure-host	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-cli.el	defun nelisp--cli-read-file	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-fallback-inventory.el	defun nelisp-fallback-inventory--scan-file	2329cc908971 1
+pinned-site silent-fallback	nelisp-fallback-inventory.el	defun nelisp-fallback-inventory--scan-file	a2df81658875 1
+pinned-site silent-fallback	nelisp-generated-source-parse.el	defun nelisp-generated-source-parse--leftover	8de9c7626a54 1
+pinned-site silent-fallback	nelisp-jit-strategy.el	fset	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-jit-unverified.el	defun nelisp-jit-unverified--tally	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-macos-build.el	defun nelisp-macos-build--emit-text	890cf2168ecc 1
+pinned-site silent-fallback	nelisp-runtime-image.el	defun nelisp-runtime-image--ensure-artifact-support	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-runtime-image.el	defun nelisp-runtime-image--load-artifact-cache	c684c844f2c8 1
+pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--artifact-runtime-cache-filter-source	21b7a1837c4f 1
+pinned-site silent-fallback	nelisp-stdlib-misc.el	defun load	f371bf082e02 1
+pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-fd-install	3ab105d9b80f 1
+pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install-eventfd-fd	3ab105d9b80f 1
+pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install-signalfd-fd	3ab105d9b80f 1
+pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install-std-fd	3ab105d9b80f 2
+pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-optional-std-handle	3ab105d9b80f 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	f67d7d766899 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	ca691fe7a98a 1
+pinned-site silent-fallback	nl-check-gate.el	defun nl-check-gate--accepted	e3f2648caa3a 1
+pinned-site silent-fallback	nl-check-gate.el	defun nl-check-gate--findings	e3f2648caa3a 1
+pinned-site silent-fallback	recursion-guard-smoke.el	let	430eb4fc2af5 1
+
+# 2026-08-22/23, Task A/B/C (substrate-presence sweep + Task C unwind-
+# protect corpus forms): seven new sites, all deliberate probes/standard
+# idioms, none silencing a real error path.
+#   nelisp-substrate-parity-corpus.el, corpus forms 36 and 38 (Task C):
+#     each wraps a DELIBERATELY-injected test error in a `condition-case'
+#     to observe unwind-protect cleanup ordering, then discards the error
+#     object -- the same shape the pre-existing form-16 pin
+#     (ca691fe7a98a) already covers for condition-case-vs-throw; two more
+#     distinct handler shapes, same rationale.
+#   nelisp-substrate-presence-gen.el, `nlsp--primitive-symbols': the
+#     standard "read every form from a buffer, `end-of-file' means done"
+#     idiom -- the same pattern already used elsewhere in this tree.
+#   nelisp-substrate-parity.el, `nelisp-substrate-presence--name-for':
+#     defensive shape-extraction for a REPORT-ONLY note string (falls
+#     back to "?" in the message on a malformed corpus form) -- never on
+#     a correctness path.
+pinned-site bare-handler	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	1c4e9466c879 1
+pinned-site bare-handler	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	5a4d267b7460 1
+pinned-site bare-handler	nelisp-substrate-presence-gen.el	defun nlsp--primitive-symbols	b89877e993be 1
+pinned-site ignore-errors	nelisp-substrate-parity.el	defun nelisp-substrate-presence--name-for	4c1820b0e4f7 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	704c53a5d34a 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-substrate-presence-gen.el	defun nlsp--primitive-symbols	09db60440f5b 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-socket-smoke	c143a5fded43 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-ipv6-socket-smoke	c143a5fded43 1
+# 2026-08-25 (Doc 199 Tier 2): nl-thread-standalone-smoke.el's `nl-thread-smoke--should-unsupported' asserts a call signals `nelisp-unsupported-primitive'; its condition-case catches the error to inspect its car, an intentional test assertion, not a swallowed fall.
+pinned-site silent-fallback	nelisp-thread-standalone-smoke.el	defmacro nl-thread-smoke--should-unsupported	ba2b5f025f0f 1
+# 2026-08-25 (Doc 199 Tier 3a): nl-thread-allocating-standalone-smoke.el's `nl-thread-alloc-smoke--should-unsupported' asserts a call signals `nelisp-unsupported-primitive'; its condition-case catches the error to inspect its car -- an intentional test assertion, same shape as Tier 2's.
+pinned-site silent-fallback	nelisp-thread-allocating-standalone-smoke.el	defmacro nl-thread-alloc-smoke--should-unsupported	85196b856e10 1
+# 2026-08-25 (Doc 199 Tier 3b): nl-thread-percpu-roots-smoke.el's `nl-thread-roots-smoke--should-unsupported' asserts a call signals `nelisp-unsupported-primitive'; the condition-case inspects the error's car -- an intentional test assertion, same shape as Tier 2 and Tier 3a.
+pinned-site silent-fallback	nelisp-thread-percpu-roots-smoke.el	defmacro nl-thread-roots-smoke--should-unsupported	f7551c4bcafa 1
+# 2026-08-26 (Doc 199 Tier 3b mirror guard): nl-thread-mirror-guard-smoke.el proves that a worker's global write is REFUSED, so each assertion wraps the refused call in a condition-case to inspect the signalled condition -- intentional test assertions, same shape as the Tier 2 / 3a / 3b smokes.
+pinned-site silent-fallback	nelisp-thread-mirror-guard-smoke.el	defmacro nl-thread-mirror-guard--should-unsupported	4abd64a9479e 1
+pinned-site silent-fallback	nelisp-thread-mirror-guard-smoke.el	let	33fdb6550dec 1
+pinned-site silent-fallback	nelisp-thread-mirror-guard-smoke.el	let	0e7205a57114 1
+pinned-site silent-fallback	nelisp-thread-mirror-guard-smoke.el	let	0da415661074 1

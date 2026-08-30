@@ -1,5 +1,6 @@
 #+TITLE: Doc 160 — standalone reader stdlib breadth
 #+STATUS: SHIPPED
+#+VERIFIED-BY: reader-surface-audit
 
 * Goal
 

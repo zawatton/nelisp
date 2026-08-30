@@ -1,0 +1,911 @@
+#+TITLE: Doc 199 — True multicore parallelism for NeLisp: the library ceiling, and precisely where it breaks
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-24
+#+STATUS: SHIPPED — Tier 1, Tier 2, Tier 3a and Tier 3b all implemented and
+#+STATUS: CI-green (2026-08-26, run 32889146428, six lanes).  Tier 3b landed
+#+STATUS: together with Doc 152 Stage 5: unrestricted allocating Lisp on real
+#+STATUS: clone(2) threads, a park barrier that stops every mutator before
+#+STATUS: marking, per-thread precise roots via the thread registry, atomic
+#+STATUS: publish for the macro/function-value caches, and a hard refusal of
+#+STATUS: worker writes to the shared globals mirror.  See "Implementation
+#+STATUS: status" below for the per-tier record; §11.44 of Doc 152 records why
+#+STATUS: the park barrier makes a write barrier (that doc's Stage 6)
+#+STATUS: unnecessary.  This doc began as a read-only survey against
+#+STATUS: =origin/feat/native-observability= (=3bab0fe88=); every ground-truth
+#+STATUS: claim in the survey sections was read at the cited file:line from a
+#+STATUS: throwaway clone, never writing into that tree.  It is the "future
+#+STATUS: doc" Doc 195 §5.2 explicitly deferred to — its own words: "building
+#+STATUS: toward [refs/STM and true multicore] belongs to whatever future doc
+#+STATUS: takes on concurrent GC or a callable thread-spawn primitive as its
+#+STATUS: own first-class subject, not to a persistent-data-structures library
+#+STATUS: whose Tier 1 needs neither."
+#+VERIFIED-BY: compile emacs-parity ert-full nl-clj-future-standalone-smoke nelisp-thread-standalone-smoke nelisp-thread-allocating-standalone-smoke nelisp-thread-percpu-roots-smoke nelisp-thread-mirror-guard-standalone-smoke
+
+* Implementation status (Doc 199 program: Tier 1 + Tier 2 + Tier 3a + Tier 3b all shipped, CI-green 2026-08-26)
+
+#+VERIFIED-BY: compile parens-check emacs-parity ert-full nl-clj-future-standalone-smoke nelisp-thread-standalone-smoke nelisp-thread-allocating-standalone-smoke nelisp-thread-percpu-roots-smoke nelisp-thread-mirror-guard-standalone-smoke
+
+- *Tier 1 (cooperative pmap/future/pcalls): IMPLEMENTED 2026-08-25.*
+  packages/nl-clj/src/nl-clj-future.el + nl-clj-future-test.el (15 ERT,
+  incl. against-the-bug order + no-worker-dropped) + nl-clj-future-
+  standalone-smoke.el (PASS on target/nelisp, 15 tests + 10000-worker
+  drive).  Deviation from §3.1's sketch, deliberate and documented in the
+  source: a deferred run-queue replaces the nelisp-actor spawn, because a
+  future worker never parks and the actor/CPS path needs generator.el
+  (host-Emacs-only on standalone).  nl-clj-deref is made polymorphic over
+  atoms and futures; atom behaviour is byte-identical.  API §7 unchanged.
+- *Tier 2 (callable nl-thread-spawn, GC-free workers + publish protocol):
+  IMPLEMENTED 2026-08-25, CI-green.*  Five raw-SYSCALL primitives
+  (nelisp-thread-{shared-alloc,atomic-add,atomic-read,spawn,join}) as
+  nelisp_apply_function dispatch arms on linux-x86_64, the socket precedent;
+  a fixed GC-free worker registry; publication happens-after via join.
+  nelisp-thread-standalone-smoke: three clone(2) workers reduce to 42 on
+  target/nelisp (checked=6, mutation-proven); emacs-parity byte-identical.
+- *Tier 3a (region-per-task: bounded ORDINARY allocating Lisp on real
+  threads, no concurrent GC): IMPLEMENTED 2026-08-25.*  This is the
+  Doc-152-independent slice §4.3/§5 did not develop: because a bounded task
+  never needs the collector to run mid-task, inhibiting collection for the
+  whole parallel section (nl_gc_loop_ctx+24=1) lets multiple clone(2)
+  workers evaluate ordinary allocating Lisp (nelisp_eval_call, each with its
+  own private EvalCtx/root-reserve mmap) concurrently into the shared bump
+  arena -- safe because the cursor bump is already lock-free CAS (§6.2-1,
+  verified) and no mark/sweep runs to trip over another thread's in-flight
+  roots.  nelisp-thread-allocating-standalone-smoke: three workers reduce
+  arbitrary allocating forms to 23 (checked=8, 20 consecutive runs); the
+  GC-inhibit mutation hangs rather than answers wrong, proving the inhibit
+  is load-bearing; emacs-parity byte-identical; zero Rust.  Ceiling: bounded
+  tasks, read-only global state, worker mmap held to process exit, arena
+  must not grow mid-section.
+- *Tier 3b (UNRESTRICTED arbitrary Lisp -- mutable globals, unbounded
+  allocation, long-lived GC-ing threads): IMPLEMENTED 2026-08-26, CI-green
+  (run 32889146428, six lanes).*  The gate this bullet named -- "a
+  thread-local precise-root ABI" -- was discharged by Doc 152 Stage 3, and
+  Tier 3b builds the four pieces on top of it:
+  1. *Per-thread precise roots.*  =nl_thread_registry= (64 x 16B
+     ={env_addr, root_top}=) makes each worker's root top addressable from
+     the collector.  =nl_root_mark= / =nl_root_reserve= / =nl_root_release=
+     dispatch through =nl_thread_registry_find=, so a worker pushes and pops
+     its own roots while the main thread keeps using the global root stack.
+  2. *Park barrier.*  Rather than marking concurrently with running
+     mutators, =nl_gc_collect_recorded_parked= asks every registered worker
+     to park (=nl_thread_park_request_begin=), marks and sweeps with all
+     mutators stopped, then releases them.  This is what makes Doc 152's
+     Stage 6 (write barrier) unnecessary: the tri-color invariant holds by
+     construction because no mutator can create a black-to-white edge while
+     marking runs.  =nelisp-thread-percpu-roots-smoke= asserts the barrier
+     actually engaged rather than silently skipping, emitting
+     =PARK-DIAG parked=3 current=0 missed=0 collections=1= -- a real collect
+     with three live workers, not an empty-registry no-op.
+  3. *Atomic cache publish.*  =nl_mxcache_store= / =nl_fvcache_store= claim a
+     slot with a sentinel via =atomic-compare-exchange=, fill it, and publish
+     the key last, so a concurrent reader never observes a key whose payload
+     is still being written.
+  4. *Shared-mirror write refusal.*  A worker attempting to mutate the shared
+     globals mirror (=set-value= / =set-function= / =set-constant= / their
+     =-or-insert= forms / =clear-*= / =install-entry*= / =bucket-prepend=,
+     plus =nelisp-cc-env-set-value=) signals a catchable
+     =nelisp-worker-mirror-mutation= instead of corrupting it.  The read path
+     is untouched, so workers still resolve globals normally.
+     =nelisp-thread-mirror-guard-smoke= (checked=14) pins both halves,
+     including that a worker cannot insert a new name into the shared intern
+     table.
+  Ceiling reached: workers may now allocate without bound and trigger
+  collection; what remains outside this tier is per-task heap reclaim (a
+  worker's arena share is returned at process exit, not at task end) and
+  shared-mirror *writes* from workers, which are refused rather than
+  serialised.  Zero Rust.
+- *§7 lint (=nl-clj-future-with-lint=): IMPLEMENTED 2026-08-25.*  Dynamically
+  binds =nl-safe-log-violations= / =nl-safe--violation-log= around a future
+  body so borrow/cell violations are recorded rather than raised, with
+  =unwind-protect= preserving the records; outside the macro's scope the
+  future path is unchanged and un-instrumented.
+
+* §0 TL;DR
+
+The owner's decision stands: everything in NeLisp's parallelism story ships
+as an opt-in library, except this one piece. Concretely:
+
+- *What a pure library can ship today, correctly, and worth shipping*:
+  =pmap=/=future=/=pcalls= with real Clojure-shaped semantics, running on
+  =nelisp-actor='s already-shipped cooperative CPS scheduler
+  (=packages/nelisp-actor/src/nelisp-actor.el=, 762 lines, standalone-proven).
+  Single OS thread, zero speedup, *correct* — the same honest deflation
+  Doc 195 §4.5 already applied to =swap!=: with exactly one thread of Lisp
+  execution, "runs the forms in order" is not an approximation of the
+  concurrent contract, it *is* the concurrent contract, because nothing can
+  violate it yet. §3 designs this and its migration contract.
+- *The two things a pure library genuinely cannot deliver*, each scoped as
+  its own future project, neither built anywhere in this tree today:
+  (a) an ordinary-Elisp-*callable* thread-spawn primitive — real =clone(2)=
+  exists only as a source pattern the AOT compiler turns into a *new,
+  separate native ELF*, never a function a running interpreter session can
+  invoke (§4); (b) a GC that tolerates a second thread mutating the heap
+  while a mark pass runs — today's tracing collector has *no* synchronization
+  story for that, and the one =atomic-fetch-add= near this problem protects a
+  field the GC itself calls vestigial (§5).
+- *Immutable structures are half the parallelism story, for free*: =nl-clj='s
+  persistent vector/HAMT (=packages/nl-clj/=) are already safe to read from
+  two threads without a lock, by construction — no new work needed there.
+  The other half — a spawned OS thread being able to *see* the memory a
+  persistent structure lives in at all, and a protocol for handing one off
+  without racing the allocator — is arena/allocator work, scoped in §6.
+- *Design goal met*: §3's API (=nl-clj-pmap=/=nl-clj-future=/=nl-clj-deref=)
+  is written so that swapping =nelisp-spawn= (actor) for =nl-thread-spawn=
+  (real OS thread, once §4 exists) underneath is an implementation change,
+  not a signature change — §7 states the contract precisely, including the
+  one place user code has to hold up its end (worker bodies restricted to
+  data reachable through =nl-clj='s immutable structures and =nl-safe='s
+  borrow cells, never a raw shared mutable cons/vector) for that swap to stay
+  correct rather than merely compile.
+- *Ranked verdict* (§8): ship the cooperative API now (small, real, done in
+  days). Callable thread-spawn restricted to GC-free worker bodies is a
+  genuinely scoped *medium* project reusing almost every piece that already
+  exists. Thread-spawn for ordinary allocating Lisp bodies, and any of the
+  three concurrent-GC shapes surveyed in §5, are *large*, cross-cutting,
+  multi-session epics on the scale of Doc 152's own eval-ABI rewrite — not
+  designed here, only precisely scoped.
+
+* §1 What this doc is, and the constraint it does not re-argue
+
+The owner's four goals for NeLisp are stated elsewhere and not re-litigated
+here; this doc's only job is the honest scoping of the one goal — true
+multicore parallelism — that a pure opt-in library cannot fully deliver on
+its own, and precisely where the boundary sits. Everything else NeLisp ships
+stays an opt-in library; this doc does not propose changing that. It draws a
+line between:
+
+1. What is *entirely* library work: an API a running interpreter session can
+   =require= today, correct today, whose semantics do not change when the
+   runtime underneath it improves (§3, §7).
+2. What is *entirely* runtime work: two named, independently-scoped
+   projects, neither started, that a library cannot substitute for no matter
+   how it is written (§4, §5).
+3. What is a genuine hybrid: immutable data structures make the runtime work
+   *easier* once it exists (no locks needed for reads), but do not make the
+   runtime work *optional* — a =pmap= over persistent data still needs a real
+   second thread of execution and a heap that tolerates it (§6).
+
+* §2 Ground: what exists today, measured
+
+** §2.1 The =clone(2)= proof is real, and exactly this narrow
+
+=tools/selfhost-mt-test.sh= (172 lines, read in full) is not a mock. It
+drives the standalone NeLisp interpreter (=target/nelisp=, pure-Elisp
+AOT-AOT binary, zero Rust, zero Emacs) to load its own compiler toolchain as
+*source* and compile a genuinely multi-threaded Lisp program:
+
+#+begin_src elisp
+(defun worker (sh slot val)
+  (seq (ptr-write-u64 sh slot val)
+       (atomic-fetch-add (+ sh 64) 1)
+       (syscall-direct 60 0 0 0 0 0 0)))          ; exit(2)
+(defun run ()
+  (let ((shared (syscall-direct 9 0 65536 3 34 -1 0)))  ; mmap
+    ...
+    (seq
+     ;; clone(2): CLONE_VM|CLONE_FS|CLONE_FILES=1792
+     (if (= (syscall-direct 56 1792 (+ a 65536) 0 0 0 0) 0) (worker shared 0 14) 0)
+     (if (= (syscall-direct 56 1792 (+ b 65536) 0 0 0 0) 0) (worker shared 8 14) 0)
+     (if (= (syscall-direct 56 1792 (+ c 65536) 0 0 0 0) 0) (worker shared 16 14) 0)
+     (while (< (ptr-read-u64 (+ shared 64) 0) 3) 0)     ; join: spin on atomic counter
+     (+ (ptr-read-u64 shared 0) (+ (ptr-read-u64 shared 8) (ptr-read-u64 shared 16))))))
+#+end_src
+
+(=tools/selfhost-mt-test.sh:126-144=). This is compiled via
+=nelisp-selfhost-compile= (=:86-120=, calling into
+=lisp/nelisp-aot-compiler.el=/=nelisp-asm-x86_64.el=/=nelisp-elf-write.el=)
+into a *brand-new, standalone x86_64 ELF file*, then =exec='d as its own
+process five times, asserting exit code 42 every time (3 workers × 14) —
+"a wrong result (one thread not run / a torn write / a lost atomic) would
+not be 42, so the assertion is meaningful" (=:13-15=, the script's own
+header). Real OS threads, real shared memory (=CLONE_VM=), a real
+=SeqCst= atomic join. This is proof of *capability*, not of a reachable
+primitive.
+
+*What it is not, precisely*: a function a running Lisp session can call.
+=nelisp-selfhost-compile= takes a whole *program* (a =sexp=) and a
+*file path*, and produces a *new binary on disk* — every invocation is a
+build step, round-tripping through the entire AOT pipeline, then =exec=ing
+the result as a separate OS process. There is no path from "a running
+=target/nelisp= REPL evaluates =(nl-thread-spawn ...)=" to this mechanism
+today. Doc 195 §2.7 (which read the identical file first and reached the
+identical conclusion) frames this precisely: "the mechanism... exists; the
+two things a =pmap=/=future= over shared persistent data would need... are
+both, independently, un-started work, not 'difficult but designed' work."
+
+** §2.2 The interpreter's own primitive table is genuinely extensible — the socket precedent
+
+The clone(2) demo is not the only place this codebase turns a raw syscall
+into something higher-level. =scripts/nelisp-standalone-build.el= (23,159
+lines) is both the standalone interpreter's *own build script* and the
+place its builtin primitive dispatch table is assembled. Doc 194 (SHIPPED
+P0-P2, this branch's own most recent substantive commit, =3bab0fe88=,
+"Full-battery fixup: re-measure the 3 generated baselines after the
+network-process merge") shipped exactly the template this doc's §4 reuses:
+
+- Six *native units* written in the same restricted raw-op DSL as the
+  clone(2) worker above — =syscall-direct=/=ptr-read-u8=/=ptr-write-u64=/
+  =atomic-fetch-add=/=alloc-bytes= — each a plain =(defun nl_socket_*_impl
+  (args out) ...)= body (=nelisp-standalone--socket-forms=,
+  =:17700-17904=; e.g. =nl_socket_listen_impl= at =:17809=: =socket(41)= →
+  =setsockopt(54)= → =bind(49)= → =listen(50)=, closing the fd and signaling
+  a catchable =nelisp-socket-error= on any failure).
+- A *dispatch-arm registration* (=nelisp-standalone--socket-dispatch-arms=,
+  =:17903-17934=) that maps the literal string ="nelisp-socket-listen"= (etc.)
+  to a call into that native unit inside =nelisp_apply_function= — the
+  ordinary function-call path every interpreted NeLisp form already goes
+  through. On any target other than =linux-x86_64=, the same names resolve
+  to a *loud*, catchable =nelisp-unsupported-primitive= signal instead
+  (=:17930-17934=) — "the primitive names exist and are =fboundp=, calling
+  one just refuses loudly" (comment at =:17914-17919=), not a silent wrong
+  syscall number and not a link failure.
+- The result: =(nelisp-socket-listen "127.0.0.1" 9000)= is an *ordinary
+  function call* a running interpreted NeLisp program makes, indistinguishable
+  in calling convention from any other builtin, even though its body issues
+  a raw =SYSCALL= instruction with no libc, no FFI, no =dlopen=.
+
+This is the *general* mechanism this codebase already has for lifting a raw
+primitive from "the AOT compiler's own restricted DSL" to "an ordinary
+interpreter-callable function": write the native unit, register a dispatch
+arm, gate it per-target. §4 designs =nl-thread-spawn= as one more instance of
+exactly this same two-step move — the socket family is the load-bearing
+precedent the task brief asked this doc to follow, and it is real, shipped,
+on this branch's own HEAD.
+
+** §2.3 The tracing GC has no concurrent-mutation story — and single-thread root coverage is still an open problem in its own right
+
+Three independent documents, read directly, agree on this with no daylight
+between them:
+
+- *Doc 146* (=docs/design/146-low-memory-value-rep-and-gc.org=, still
+  =#+STATUS: DESIGN（実装前）=, i.e. never implemented) describes the live
+  sweep mechanism as mark-only (=nl_gc_sweep_one=): a per-object refcount
+  field exists, is bumped with =atomic-fetch-add= on clone
+  (=nelisp-cc-nlconsbox-clone.el:98=, cited at =146:§2.1=), but *is never
+  read for freeing* — "rc は死蔵" (the refcount is vestigial, dead weight).
+  The one atomic operation in the object-lifecycle path today protects a
+  field nothing consults.
+- *Doc 152* (=docs/design/152-sound-form-boundary-gc.org=, also
+  =#+STATUS: DESIGN=) is even more direct about single-thread state: as of
+  its own §0, the standalone reader "現状 GC を一切走らせていない" (runs GC
+  *zero times*) under ordinary operation — pure bump-allocate + chunk-growth,
+  measured at 2.4 GB with =COLL=0=. Its §11.37 root-cause finding (fusion
+  panel + Opus judge, 2026-06-16), after three failed attempts at
+  root-coverage patches, is that *enumerating* every in-flight GC root
+  precisely (not approximately) requires a structural evaluator-ABI change —
+  a handle-based root API / shadow-stack (option B), because "列挙不能な
+  in-flight root" (un-enumerable in-flight roots) is the actual disease, and
+  three separate attempts at enumerating harder (options A/C) each recorded
+  their own soundness regression instead of fixing it. This is *single*-
+  thread work, still not landed as of this doc's own reading.
+- A fresher, directly re-measured data point from *this same branch*, dated
+  today: Doc 181 (=docs/design/181-soak-and-runtime-ratchets.org:103-149=)
+  re-measured RSS over 8 rounds of a REPL churn workload each ending in an
+  *explicit* =(garbage-collect)= call, and found a bit-identical plateau at
+  128,620 kB from round 2 onward — so *form-boundary*, explicitly-triggered
+  collection does reclaim memory correctly today. What Doc 152 describes as
+  unsolved is specifically *automatic mid-form* collection (inside a running
+  loop, without the program calling =(garbage-collect)= itself) — gated on
+  the same root-enumeration work.
+- *Doc 162* (=docs/design/162-naming-audit.org=, =#+STATUS: IMPLEMENTED=) is
+  the sharpest possible confirmation that none of this is concurrency
+  machinery, because it exists specifically to correct the opposite
+  misreading: renaming =nl_safepoint_ctx=/=nl_gc_safepoint= (66 + 12 sites)
+  to =nl_gc_loop_ctx=/=nl_gc_midform_collect=, because a reasonable reader
+  had "hypothesized a *multithreading* mechanism (safepoints and
+  cross-thread publication are textbook concurrent-GC vocabulary — JVM/Go-
+  style stop-the-world safepoints)" when "the actual code is a
+  *single-thread*, mid-form GC: a context stack the collector reads back
+  from at a loop back-edge, inside one interpreter, one OS thread, no shared
+  memory between threads at all" (=162:§Motivation=). The doc explicitly
+  notes real concurrency machinery *does* exist a few files away (the
+  clone(2) test, actor runtime, fork(2) parallel build, hardware =SeqCst=
+  atomics for parallel builds) and names that proximity as exactly what
+  makes the misnaming dangerous. This doc uses the corrected names
+  throughout (=nl_gc_loop_ctx=, =nl_gc_midform_collect=,
+  =nl_gc_collect_from_recorded_roots=) for the same reason Doc 162 exists.
+
+Net: the *shipped* single-thread mark-sweep collector correctly reclaims
+memory at explicit/top-level boundaries; the *design* work still landing is
+precise root enumeration for automatic mid-form collection, entirely within
+one OS thread. Multithreading adds a qualitatively different, currently
+*unstarted* problem on top of whichever of these states is current when the
+work begins: not "can the collector find every root," but "can the collector
+find every root on N independently-executing native call stacks, and pause
+every mutator that might write during the pass" — §5 surveys this.
+
+** §2.4 =nelisp-actor=: a shipped cooperative CPS scheduler, single OS thread, standalone-proven — this is the library ceiling made concrete
+
+=packages/nelisp-actor/src/nelisp-actor.el= (762 lines) is real,
+standalone-proven infrastructure, and is what §3's cooperative API is built
+on rather than invented for this doc:
+
+| primitive | definition | role |
+|---+---+---|
+| =nelisp-actor-lambda= | =:300-318= | =(iter-lambda () ,@body)= — a CPS-transformed coroutine body |
+| =nelisp-receive= | =:320-340= | parks until the mailbox has a message, via =iter-yield= |
+| =nelisp-yield= | =:342-348= | voluntary yield, re-enqueued at the tail of the run queue |
+| =nelisp-spawn= | =:352-385= (=cl-defun=) | funcalls THUNK once to get an iterator, enqueues it =:runnable=, returns the actor object |
+| =nelisp-self= | =:387-389= | current actor, or nil outside any thunk |
+| =nelisp-send= | =:391-417= | delivers a *deep copy* of MSG (below), re-enqueues a =:blocked-receive= target |
+| =nelisp-actor-run-until-idle= | =:466-479= | drives the run queue until nothing is runnable; returns step count |
+| =nelisp-make-chan=/=nelisp-chan-send=/=-recv=/=-close= | =:628-748= | channels, buffered or 0-capacity rendezvous, sugar over a private "mediator" actor |
+
+All of it runs on exactly one OS thread. =nelisp-spawn= does not create an OS
+thread, a green thread with its own native stack, or anything the OS
+scheduler knows about — it funcalls a generator-producing closure and hands
+the generator to a plain run-queue loop that a single call stack drives via
+=iter-next=. This is Doc 195 §2.4's own characterization, verified again
+here at the same line numbers: "a shipped cooperative coroutine substrate,
+standalone-proven." Standalone status matters for §3's design: the package's
+own README states that a *newly written* =nelisp-actor-lambda= form does not
+run on =target/nelisp= directly — only pre-transformed, checked-in thunks do,
+because the build-time CPS transform (=packages/nelisp-actor/scripts/
+nelisp-actor-cps-dump.el=) macroexpands under host Emacs and bakes the
+generator-free result into a checked-in file (Doc 195 §2.4, §4.6 verified).
+§3 inherits this as a build-step requirement, not a design blocker, the same
+way Doc 195 §4.6 already scoped a =nl-clj-go= built on the identical
+substrate.
+
+One shipped detail with real consequences for §3 and §7: =nelisp-send=
+does not hand the receiver a reference to MSG. =nelisp-actor--copy-message=
+(=:250-296=) walks cons/vector/string/hash-table structure and produces a
+*deep copy*, using an =eq=-keyed visited table so cycles and shared
+substructure *within one message* are preserved, while shareable leaves
+(symbols, numbers, records, opaque host objects) pass by reference. This is
+correct and necessary for actor isolation in general, but it has a specific
+cost for =nl-clj='s persistent structures: Doc 195 §3.2 decided every
+=nl-clj= collection is a *plain tagged vector* (=[nl-clj--pvec COUNT SHIFT
+ROOT TAIL]= etc., not an opaque record), which is exactly the shape
+=nelisp-actor--copy-message-1= recurses into and copies. Routing a
+persistent structure through =nelisp-send= today means paying an =O(size)=
+structural copy on every handoff between actors — correct, but it throws
+away the one property that makes a *persistent* structure valuable for this
+use case (cheap, shared, structural-sharing reads). §3 designs around this
+by not routing a worker's *input* through the mailbox at all.
+
+** §2.5 =nl-safe=: aliasing-XOR-mutation enforcement, and its own stated concurrency gap
+
+=packages/nl-safe/src/nl-safe.el= ships =nl-cell= (=(vector 'nl--cell value
+0)=, =nl-safe.el:98-100=) with =nl-with-borrow=/=nl-with-borrow-mut=
+(=:196-256=) enforcing "sharing XOR mutation" via a plain (non-atomic)
+integer state counter: 0 free, =n>0= shared borrows, =-1= exclusive
+(=:121-125=), released by =unwind-protect= so it survives non-local exits.
+Doc 170 §2 is explicit that this is a *runtime* check, not a static one, by
+design ("完全な借用検査器は Elisp では現実的でない" — a complete borrow
+checker is not realistic in Elisp).
+
+The package's own README states its concurrency limit in one sentence, not
+this doc's inference: "the =clone(2)= shared-address-space path needs
+atomic STATE updates (Doc 170 section 3.4) — *not wired yet*, see
+Follow-ups" (=packages/nl-safe/README.org:47-49=, repeated in the Follow-ups
+list at =:333=). Doc 170 §3.4 (=docs/design/170-nl-safe.org:95-98=) names
+the intended mechanism precisely: "=clone(2)= 経路（共有アドレス空間）では
+STATE の更新に =atomic-fetch-add= を用いる" (the clone(2) path, being a
+shared address space, should update STATE with =atomic-fetch-add=) — but
+this is un-implemented; =nl-cell= today is correct *only* under NeLisp's
+current single-thread execution model. This is not a gap in atomic
+primitives (=atomic-compare-exchange= already exists — see §4.1) — it is a
+gap in *wiring* =nl-with-borrow-mut='s 0 → -1 state transition through it,
+left undone because nothing could race it yet, mirroring Doc 195 §4.5's
+identical observation about =swap!='s missing CAS retry loop. §5 and §7
+treat this as one of the concretely-scoped, small pieces of the larger
+concurrent-GC frontier, buildable independently of everything else in §5.
+
+** §2.6 Immutable persistent structures: real, shipped, and already lock-free-safe to read
+
+=packages/nl-clj/= (=feat/nl-clj-foundation=, this branch's own
+=eb4eb81f3=; PARTIAL per Doc 195's own status block) ships a 32-way
+bit-partitioned persistent vector, a HAMT persistent hash-map/set, and
+=nl-clj-atom=, all genuinely immutable after construction — every mutating-
+looking operation (=nl-clj-conj=, =nl-clj-assoc=, ...) returns a *new*
+top-level node sharing untouched subtrees with the original by =eq=
+(Doc 195 §2.1/§4.1/§4.2, and =packages/nl-clj/src/nl-clj-atom.el:9-34='s own
+commentary walks the identical single-thread argument §2.4 above already
+gave for =swap!=). This is genuinely half of what real multicore parallelism
+needs "for free": once two OS threads can both see the same memory, *reading*
+a persistent structure from either thread needs no lock, because nothing
+ever mutates a node after it is published — that is what "persistent" means.
+No new work is needed on the data-structure side of this for read-sharing to
+be correct; §6 is entirely about the *other* half — making that memory
+visible to a second thread with a well-defined "who may still write to it"
+boundary — and the current library work (Doc 195 §5.1) correctly declines to
+start refs/STM ahead of that, for the same reason: Clojure's own STM value
+proposition (isolated reads, retry on conflict) "has NO meaning without real
+concurrent writers to isolate FROM."
+
+** §2.7 A real process-level parallel path already ships today — and why it does not answer this doc's question
+
+One more real, shipped mechanism belongs in this ground survey precisely
+because it is easy to mistake for an answer: =make standalone-eval-j=
+(=Makefile:2619-2623=, wrapping =tools/build-standalone-parallel.sh=) and
+=make standalone-parallel-compile-test= (=Makefile:2605-2608=, wrapping
+=tools/parallel-compile-test.sh=) already compile N build units
+*concurrently*, using real =fork(2)= workers — "each running the full AOT
+compiler, COW-isolated so no shared-state race" — joined via a =MAP_SHARED=
+atomic counter (Makefile comment at =:2605-2607=). This is genuine,
+measured, working parallelism, on this machine, today. It sidesteps every
+problem §4 and §5 name, by construction: =fork(2)= gives each worker its
+*own, copy-on-write-isolated* address space and therefore its own,
+completely independent single-thread heap and GC — no thread ever observes
+another thread's mutation, so there is nothing for a concurrent GC to
+protect against. The cost is exactly what buys that safety: no shared
+mutable state *at all* between workers, coordination only through the
+filesystem/pipes/the one shared atomic counter, and each worker pays its own
+full process-startup cost (the Makefile's own comment on the sibling
+=standalone-eval-j= target admits this can be "usually SLOWER than serial"
+for the current, small unit set — startup-bound, not compute-bound).
+
+This is the honest "if you need real multicore speed today, and your
+workload is embarrassingly parallel batch work with cheap-to-serialize
+inputs/outputs" answer this codebase already has — at the *process*
+boundary, external shell-level orchestration, not something a running
+=(nl-clj-pmap ...)= call inside one session can give a caller. It is not
+designed further here because it is not a library primitive a session calls
+mid-run; it is named so that §8's ranked verdict does not have to leave a
+reader wondering whether *any* real parallelism exists in this codebase
+today (it does, at exactly this one boundary) while still being honest that
+it does not close the gap this doc scopes.
+
+* §3 What the library CAN deliver today: a cooperative =pmap=/=future=/=pcalls=
+
+** §3.1 Design
+
+Built entirely on §2.4's already-shipped, already-standalone-proven
+=nelisp-actor= primitives — no new scheduling mechanism, mirroring exactly
+how Doc 195 §4.6 built =nl-clj-go= over the same substrate:
+
+#+begin_src elisp
+;; nl-clj-future.el (new file; depends on nelisp-actor + nl-clj-core)
+
+(defun nl-clj-future (thunk)
+  "Spawn THUNK (a 0-arg function) as a cooperative worker.
+Returns a future handle immediately; THUNK has not necessarily run yet."
+  (let* ((result (vector 'nl-clj--future nil nil))   ; [tag value done-p]
+         (actor (nelisp-spawn
+                 (nelisp-actor-lambda
+                   (let ((v (funcall thunk)))
+                     (aset result 1 v)
+                     (aset result 2 t))))))
+    (aset result 0 (cons 'nl-clj--future actor))      ; keep the actor for deref
+    result))
+
+(defun nl-clj-future-done-p (f) (aref f 2))
+
+(defun nl-clj-deref (f)
+  "Block (cooperatively) until F's value is ready, then return it."
+  (while (not (aref f 2))
+    (nelisp-actor-run-until-idle))    ; drives ALL runnable actors, not just F's
+  (aref f 1))
+
+(defun nl-clj-pcalls (&rest thunks)
+  "Run each THUNK as a future; return their values as an ordinary list,
+in argument order, once every one has completed."
+  (mapcar #'nl-clj-deref (mapcar #'nl-clj-future thunks)))
+
+(defun nl-clj-pmap (f coll)
+  "Apply F to each element of COLL as a future; return results in order."
+  (apply #'nl-clj-pcalls
+         (mapcar (lambda (x) (lambda () (funcall f x))) (nl-clj-seq coll))))
+#+end_src
+
+Three design choices, each deliberate and each load-bearing for §7:
+
+1. *Inputs are captured by lexical closure, never sent through
+   =nelisp-send=.* §2.4 named the cost precisely: routing a persistent
+   structure through the actor mailbox pays an =O(size)= deep copy that
+   defeats structural sharing. A worker thunk that closes over its input
+   argument directly needs no message-passing at all for the handoff — under
+   *today's* strictly single-threaded cooperative scheduler this is trivially
+   safe (nothing can observe the closure mid-construction; the same
+   no-interleaving argument Doc 195 §4.5 uses for =swap!='s missing CAS).
+   §7 states exactly why this stays safe after §4/§5 land, and what changes.
+2. =nl-clj-deref= drives =nelisp-actor-run-until-idle=, which runs *every*
+   runnable actor to completion, not just the one being awaited — correct
+   (nothing is lost, no actor starves), matching the same "throwaway,
+   single-purpose actor... drive it synchronously" pattern Doc 195 §4.6
+   already used to build blocking =>!!=/=<!!= over the identical scheduler.
+3. The public shapes (=future=, =deref=, =pcalls=, =pmap=) are exactly
+   Clojure's own vocabulary and exactly the shapes named in the task brief.
+   Nothing about their *signatures* mentions actors, threads, or clone(2) —
+   that is the point; see §7.
+
+** §3.2 What this correctly is, and is not
+
+*Semantics*: correct today, for exactly the same reason Doc 195 §4.5's
+=swap!= is correct today — with one thread of Lisp execution, "spawn N
+cooperative coroutines and run them to completion, collecting results in
+argument order" behaves observably identically to "run N independent
+computations to completion and collect their results," because nothing can
+observe partial interleaving that would make the two differ. A caller who
+writes =(nl-clj-pmap #'expensive-fn big-coll)= gets the right answer.
+
+*Performance*: zero speedup, honestly. =nelisp-actor-run-until-idle= drives
+one call stack through =iter-next= for each actor in turn; wall-clock time is
+the *sum* of every thunk's CPU time, not the max. This is the entire "library
+ceiling" the owner's constraint predicts, made concrete and measurable rather
+than asserted: this API is real, ships as a library, and does not use a
+second core, because there is no second core reachable from a running
+session to use (§2.1, §2.3).
+
+*What is worth shipping about it anyway*: API stability and correctness now,
+speed later, exactly as the task brief frames it. A caller who adopts
+=nl-clj-pmap= today, follows §7's discipline for worker bodies, and later
+runs on a NeLisp build where §4+§5 have landed gets a real speedup with *no
+source change* — the same value proposition Clojure itself offers going from
+a single-core to a multi-core JVM, except here the "before" state is
+knowable and named rather than an implementation detail users never see.
+
+*Phase/cost*: small. Every primitive it is built from is already shipped and
+standalone-proven (§2.4); this is thin composition, on the same order as
+Doc 195 §4.6's =chan=/=go= wrapping (days, not weeks).
+
+* §4 Blocker (a): a callable thread-spawn primitive
+
+** §4.1 What "callable" has to mean, precisely, and the two different difficulties hiding inside it
+
+§2.1 established the current state precisely: real =clone(2)= exists only
+as a pattern the AOT compiler *emits into a new binary*. §2.2 established the
+general mechanism this codebase already has for turning a raw primitive into
+an ordinary interpreter-callable function (write a native unit in the same
+restricted DSL, register a dispatch arm). Naively, "lift clone(2) the same
+way" sounds like it reuses that mechanism directly. It does — for *spawning*
+the thread. It does not, for what the spawned thread is then allowed to *do*,
+and that distinction is the entire reason this is scoped as its own project
+rather than a one-line follow-up to Doc 194.
+
+Every socket primitive's native unit body (=nl_socket_listen_impl= etc.,
+§2.2) executes a bounded burst of raw syscalls *on the calling thread* and
+returns before the interpreter's dispatch loop resumes — even the one that
+allocates a Lisp value (=nl_socket_recv_impl= calls =nl_alloc_str= to wrap
+the received bytes) does so synchronously, serialized with everything else
+the calling thread does, because there is only ever one caller in flight. A
+thread-spawn primitive is different in kind: its entire purpose is for the
+*callee* — a new OS thread — to keep running *after* =nl-thread-spawn=
+returns, on its own call stack, potentially executing Lisp code that itself
+calls =nl_alloc_*=, at the same wall-clock instant the spawning thread (or a
+sibling spawned thread) is doing the same thing. A socket primitive borrows
+the calling thread's serialization for free; a thread-spawn primitive's
+entire job is to stop borrowing it. This is exactly why §2.1's "the GC
+interaction is the hard part" is not a vague warning — it names the one
+respect in which this primitive is not just "one more dispatch-table entry."
+
+This resolves into two genuinely different-difficulty slices, not one:
+
+** §4.2 The buildable slice: thread-spawn for GC-free worker bodies
+
+If the spawned thread's body is restricted to the *same* raw-op DSL the
+clone(2) demo and the socket units already use — =syscall-direct=/
+=ptr-read/write-u{8,64}=/=atomic-fetch-add=/=atomic-compare-exchange=, on a
+region the thread owns exclusively (its own =alloc-bytes= buffer, or its own
+slice of a pre-partitioned shared =mmap= region) — then the spawned thread
+*never touches the shared Lisp heap or its allocator's bump cursor at all*.
+Nothing in the GC's mark pass needs to know this thread exists, because it
+never allocates a tagged Lisp value. This is precisely Doc 195 §5.2's own
+option (b) ("keep worker threads out of the GC's reach entirely"), and it is
+concretely close to buildable, because almost every piece already exists:
+
+- The clone(2)/atomic mechanics: proven, =tools/selfhost-mt-test.sh=.
+- The dispatch-arm registration pattern for exposing a native unit as an
+  ordinary callable: shipped, Doc 194 (§2.2).
+- A structured, chunked allocator with per-chunk cursor/size/data-
+  start/limit/flags metadata already exists
+  (=nelisp-standalone--arena-chunk-*-offset= constants,
+  =scripts/nelisp-standalone-build.el:146-171=, =nl_arena_init= at =:1328=) —
+  giving a spawned thread its *own* private chunk-set (call
+  =nl_arena_init=-shaped setup against a fresh =mmap= region instead of the
+  shared one, before =clone(2)=) is a natural extension of a mechanism this
+  codebase already has (chunk *growth* under pressure, Doc 140/
+  =chunk-growth-test=), not a new concept.
+- The join protocol: proven, the same spin-on-shared-atomic-counter shape
+  =selfhost-mt-test.sh= already demonstrates, generalizable to a
+  =(nl-thread-join handle)= that spin-waits (or, better, blocks via
+  =futex(2)=, a small, separately-scoped refinement) on a per-thread done
+  flag.
+
+*What this actually delivers*: real, wall-clock multicore speedup, today-ish,
+for exactly the workload shape that never needs to allocate an ordinary Lisp
+value inside the worker — numeric kernels operating on pre-flattened byte
+buffers, essentially the same shape =nl-safe='s existing =nl-unsafe=
+fat-pointer boundary (Doc 170 §4) already exists to police. This is a
+genuinely scoped *medium* project: no GC changes, no allocator-sharing
+protocol, reuses every piece of infrastructure named above, and the honest
+cost is that "ordinary NeLisp Lisp code, allocating conses and strings
+freely" cannot run inside one of these workers — only the restricted
+native-unit DSL can, the same restriction clone(2)'s own demo already lives
+under.
+
+** §4.3 The harder slice: thread-spawn for ordinary allocating Lisp bodies
+
+A =(nl-clj-future (lambda () (mapcar #'1+ some-persistent-vector)))= running
+on a *real* second OS thread needs the closure's body — ordinary interpreted
+or AOT-compiled Lisp, allocating conses/vectors/strings/persistent-structure
+nodes freely — to be safe to run concurrently with whatever the spawning
+thread (or another worker) is doing to the *same* shared heap. This is not
+an extension of §4.2; it is squarely blocked on §5, and no amount of
+dispatch-table plumbing substitutes for it. §4.2's restricted-DSL slice is
+worth building *first and separately* precisely because it delivers real
+value without waiting on §5 at all; this slice cannot.
+
+* §5 Blocker (b): a concurrency-safe GC
+
+** §5.1 Why the difficulty is compounding, not merely additive
+
+§2.3 already established that *single-thread* precise root enumeration —
+knowing, with certainty, every live pointer into the heap at the moment a
+collection runs — is Doc 152's own still-open problem, with three prior
+attempts at "enumerate harder" each recording a soundness regression before
+the fusion-panel verdict concluded the evaluator ABI itself needs to change
+(handle-based roots / shadow-stack, option B). Multithreading does not
+replace this problem; it multiplies it. A concurrent collector needs to
+enumerate roots on *every* OS thread's own, independently-executing native
+call stack, not just the one the collector itself runs on — which means
+Doc 152's option B (a handle-based root API, where every heap-referencing
+value crossing an alloc/safepoint/eval-call boundary is required to live in
+a root slot rather than a bare native-stack local) stops being merely
+*recommended* infrastructure and becomes a hard *prerequisite* for any of
+the three shapes below: none of them can enumerate an unenumerable root, no
+matter how the cross-thread handshake is designed.
+
+** §5.2 Three shapes, surveyed against this GC's actual design
+
+*(A) Global stop-the-world across every OS thread.* Every thread, on
+reaching a checkpoint — a real, cross-thread extension of the *already-
+existing*, correctly single-thread-named =nl_gc_loop_ctx=/
+=nl_gc_midform_collect= (§2.3, Doc 162) — must publish that it has parked and
+wait for a signal to resume, while one thread runs a single global mark pass
+over the union of every thread's published roots (which requires §5.1's
+handle-based root API to exist first, per thread). *What this buys*: no
+change at all to the mental model of "there is one shared, mutable Lisp
+heap" — every existing persistent-structure or ordinary-cons operation stays
+exactly as-is, visible to every thread. *What it costs*: the heaviest
+engineering of the three — a real cross-thread handshake protocol (signal-
+based or polling-flag-based) layered on top of infrastructure (precise
+per-thread root enumeration) that does not yet exist even for one thread,
+plus pause-time cost that scales with thread count at every collection.
+
+*(B) Per-thread private heap, Erlang/BEAM-shaped, plus a shared arena for
+published-immutable values only.* Each OS thread owns its own arena (the
+same per-thread-chunk-set sketched in §4.2, generalized) and runs the
+*existing, unmodified* single-thread tracing collector against only its own
+heap — no cross-thread synchronization inside the collector at all, because
+no thread's mark pass ever needs to look at another thread's memory. Two
+threads communicate either by *copying* (this is, precisely, what
+=nelisp-actor--copy-message= already does today, §2.4 — this shape promotes
+that existing, working policy from "between cooperative actors on one OS
+thread" to "between real OS threads," unchanged in mechanism) or, for a
+value both sides need to *share* rather than copy, by *publishing* it into a
+dedicated shared arena that no per-thread collector ever traces or moves —
+structurally the same move as Doc 156's flat-arena image format (a region
+whose lifecycle is deliberately outside the ordinary bump-arena's own
+GC/growth path) and the same shape as =nl-safe='s own unsafe-boundary
+convention (Doc 170 §4.3: only a named, enumerable set of primitives may
+mint a raw pointer at all) — "may cross the shared-arena boundary" becomes
+the new unsafe boundary, and only =nl-clj='s already-immutable persistent
+structures (§2.6) are eligible, because publishing something that might
+still be mutated after crossing is exactly the write-barrier problem this
+shape exists to avoid. *What this buys*: the *existing* single-thread
+collector needs zero internal changes — genuinely the most infrastructure
+reuse of the three shapes. *What it costs*: cross-thread "sharing" of
+anything not deliberately published still degrades to a copy (the same
+tension §2.4 already named for actor messages), and "publish" needs its own
+discipline — a persistent structure, once published, must never again be
+mutated by its originating thread (true by construction for =nl-clj=, since
+nothing mutates a published node anyway — but the *arena itself*, and
+anything reachable from a structure built with =nl-safe= transients before
+being frozen, needs the boundary enforced, not merely assumed).
+
+*(C) Keep worker threads out of the GC-managed heap entirely.* This is not
+a third design so much as §4.2 restated at the GC layer: if a worker thread
+never allocates a tagged Lisp value, the tracing collector's mark pass never
+needs to know the thread exists, full stop — zero GC changes of any kind.
+Named here for completeness against Doc 195 §5.2's own option (b), which
+described it in identical terms ("forcing every persistent structure a
+worker needs to be flattened to bytes before the thread starts and
+reconstructed after it joins"). *What this buys*: nothing to design, nothing
+to build beyond §4.2 itself. *What it costs*: the worker cannot run ordinary
+Lisp at all — only the restricted native-unit DSL — which is why §4.2 is
+scoped as *the* buildable slice of the thread-spawn problem rather than a
+complete answer to "run arbitrary Lisp on another thread."
+
+** §5.3 Recommendation ordering, if and when this work starts
+
+(B) is recommended over (A) as the first target, on evidence rather than
+taste: it reuses the largest fraction of what this codebase already has
+working today (unmodified single-thread collector per thread; the actor
+copy-on-send policy promoted unchanged to a real thread boundary; the
+flat-arena image format's own "region outside the ordinary bump-arena's
+GC/growth path" shape reused for the published-shared arena; =nl-safe='s
+unsafe-boundary convention reused unchanged for "who may publish"), and its
+failure mode (an un-published structure costs a copy instead of a lock) is
+strictly safer to ship incrementally than (A)'s (a missed root during a
+global pause is a correctness bug, not a performance cost). (A) is not ruled
+out — a program that genuinely needs one shared, freely-mutable heap across
+threads has no substitute for it — but it should not be attempted before
+§5.1's root-enumeration prerequisite exists for even one thread, which is
+true of (B) as well, just less severely (a private per-thread heap's own
+single-thread collector needs the same precise roots (B) inherits (A)'s
+Doc 152 dependency, but never needs to fuse them across threads).
+
+* §6 Immutable-structure sharing: what the arena needs
+
+** §6.1 The good news, stated precisely: =clone(2)='s own guarantee does most of this for free
+
+It is tempting to reach for Doc 156's flat-arena *image* format (dump →
+relocate → install into a fresh base address, §2 of that doc) as the vehicle
+for "share a persistent structure across threads." It is the wrong tool,
+and naming why is itself useful ground-truth: Doc 156 solves a *different*
+problem — loading a previously-dumped heap into a *new process*, at a
+*different* virtual base address, which is why it needs a relocation table
+at all (=image[F] += newbase=, Doc 156 §2). A =clone(2)=-spawned thread
+(=CLONE_VM=, exactly the flag =selfhost-mt-test.sh= already uses, §2.1) does
+not get a new address space — it *shares the parent's, literally, at the
+same addresses*. A pointer into a persistent-vector node built by the
+spawning thread is already a valid pointer in the spawned thread's own view
+of memory, with no relocation step needed at all, the instant both threads
+exist in the same process. This is the one piece of §6 that needs no new
+mechanism whatsoever — it falls out of using =clone(2)= (as opposed to
+=fork(2)=, §2.7's already-shipped parallel-build mechanism, which
+deliberately does *not* share memory) rather than inventing anything.
+
+** §6.2 What is actually missing: allocator concurrency-safety, and a publish protocol
+
+Two distinct gaps, matching §5's shapes:
+
+1. *The allocator's own cursor/chunk-list state is not thread-safe.* The
+   chunk descriptor fields named in §4.2 (cursor, size, data-start, limit,
+   =scripts/nelisp-standalone-build.el:146-171=) are read-modify-written by
+   ordinary (non-atomic) =ptr-read-u64=/=ptr-write-u64= pairs today, because
+   nothing has ever needed them to be otherwise (§2.3: even the GC's own
+   collection is single-thread today). Two threads racing to bump the same
+   chunk's cursor is a straightforward lost-update bug, independent of
+   anything GC-specific — this is a smaller, more mechanical fix than §5's
+   collector work (convert the cursor bump to =atomic-fetch-add=, already a
+   real emitted primitive, §4.1) and is a genuine prerequisite for shape (A)
+   specifically; shape (B) sidesteps it entirely by giving each thread its
+   own chunk-set (§4.2), so this fix is *not* on shape (B)'s critical path.
+2. *A "publish" protocol, so a receiving thread knows a structure is safe to
+   read without racing its construction.* Building a persistent-vector node
+   is itself a multi-step write (allocate, fill slots, link into the parent)
+   — under (A) or (B), a second thread reading the *result pointer* before
+   every one of those writes has become visible needs either a memory
+   fence/release-acquire pairing around the handoff (cheap, standard, and
+   this codebase already has the primitive shape — =atomic-compare-exchange=
+   with =SeqCst= ordering, §4.1 — even though today's uses are all
+   same-thread) or, more simply, routing every cross-thread handoff through
+   an already-serializing primitive (a channel send/receive, or the join
+   itself) so "the thread that receives the handle necessarily happened-
+   after every write that produced it" is true by construction rather than
+   assumed. This is squarely nl-safe's own vocabulary (Doc 170 §3.4's named,
+   un-implemented atomic-STATE-update follow-up, §2.5 above) generalized
+   from "borrow-cell state" to "any cross-thread handoff" — the same
+   =atomic-fetch-add=/=atomic-compare-exchange= wiring gap, not a new kind of
+   problem.
+
+** §6.3 What this buys, once built
+
+Given §6.2's two pieces (an atomic chunk cursor for shape A, or per-thread
+arenas for shape B; and a publish protocol either way), a persistent
+=nl-clj= structure built on one thread becomes readable on another with
+*zero copying* — genuinely the point of choosing a persistent data structure
+for this use case in the first place, and genuinely unavailable to the
+already-shipped =nelisp-actor= message-copy path (§2.4) or to §2.7's
+fork(2)-based process parallelism (COW-isolated address spaces cannot share
+a live pointer across the fork boundary by definition — each side gets its
+own copy on the first touch, which is the entire mechanism that makes fork
+safe without a GC story of its own).
+
+* §7 The API-forward design: what stays fixed while the runtime catches up
+
+§3's signatures — =nl-clj-future=, =nl-clj-deref=, =nl-clj-pcalls=,
+=nl-clj-pmap= — are designed so the *implementation* underneath
+=nl-clj-future= is the only thing that changes across §2 (today, cooperative)
+→ §4.2 (restricted-DSL real threads) → §4.3+§5 (arbitrary Lisp on real
+threads):
+
+#+begin_src elisp
+;; TODAY (§3): nelisp-spawn + nelisp-actor-run-until-idle
+;; FUTURE (once §4/§5 land): nl-thread-spawn + nl-thread-join,
+;;   worker body restricted per §4.2/§4.3's own gate, result handed back
+;;   through §6's publish protocol instead of a copied actor message.
+;; Callers of nl-clj-future/-deref/-pcalls/-pmap see no signature change
+;; either way — only nl-clj-future.el's own internals swap.
+#+end_src
+
+This works *only* because of the one constraint stated already in §3.1 and
+made precise here: a worker thunk passed to =nl-clj-future=/=nl-clj-pmap=
+must not close over, or mutate, an ordinary shared mutable cons/vector/hash-
+table that another concurrently-running thunk (or the caller) might also
+touch. Under §3's cooperative implementation this constraint is *currently
+unenforced and currently harmless* — there is no real interleaving to expose
+a violation (§2.4's own argument). That is precisely the trap worth naming
+rather than leaving implicit, the same trap Doc 195 §5.1 already refused to
+paper over for =dosync=: an API that behaves correctly today for a reason
+(no real concurrency exists) that stops holding the moment §4/§5 ship is an
+API that silently breaks its own callers on a runtime upgrade, not a stable
+one. The concrete discipline this doc recommends, buildable and *checkable*
+today even though nothing yet depends on it for correctness:
+
+- Worker bodies should reach shared state only through =nl-clj='s immutable
+  persistent structures (safe to read from anywhere, §2.6/§6.1) or through
+  an explicit =nl-cell= borrow (§2.5) — never a bare, unguarded shared
+  cons/vector/hash-table.
+- =nl-safe='s existing, standalone-proven violation-logging machinery
+  (=nl-safe-log-violations=, =packages/nl-safe/README.org= "Violation log"
+  section) can be pointed at worker-thunk execution *today*, under §3's
+  cooperative scheduler, purely as a lint: it will not catch a real race
+  (there is none to catch, §2.4), but it *will* catch a worker thunk that
+  mutates a borrow cell without holding it, or holds one across a =nelisp-
+  yield=/actor-suspension point in a way that would be a real bug the day
+  a second OS thread exists — turning a §4/§5-era race into a §3-era, today-
+  reproducible, single-thread violation-log entry. This is the concrete
+  instance of "checkable today, load-bearing later" the task brief's API-
+  forward requirement asks for, and it costs nothing beyond wiring workers
+  through =nl-safe='s existing borrow discipline, which §3's own design
+  (closures over immutable inputs, never a shared mutable cell) already
+  does by default for the shapes shown in §3.1.
+- The day §4.2's restricted-DSL real threads exist, =nl-clj-pmap= gains a
+  *second*, narrower internal path for exactly the worker shape §4.2
+  supports (a function operating on flat byte buffers via =nl-safe='s
+  fat-pointer accessors) without any signature change — callers who already
+  wrote their worker bodies that way (because §7's discipline nudged them
+  to) get real speedup automatically; callers using ordinary Lisp data
+  structures stay on the cooperative path until §4.3+§5 land, correctly and
+  without a source change either way.
+
+* §8 Honest ranked verdict
+
+| tier | item | status today | why |
+|---+---+---+---|
+| *Ships as a library, now* | =nl-clj-pmap=/=-future=/=-pcalls= (§3), cooperative, on =nelisp-actor= | buildable in days; every dependency already shipped and standalone-proven | correct semantics today; zero speedup today; API-stable across every later tier (§7) |
+| *Ships as a library, now* | Routing worker-body state exclusively through =nl-clj=/=nl-safe= (§7's discipline) + pointing =nl-safe-log-violations= at worker execution as a lint | buildable alongside §3, no new primitives | costs nothing; converts a future-tier-3 race class into a today-reproducible lint finding |
+| *Medium runtime project* | Callable =nl-thread-spawn=, restricted to GC-free (§4.2) worker bodies; atomic chunk-cursor updates for shape (A) or per-thread arenas for shape (B) (§6.2 item 1) | not started; every supporting piece (clone(2) mechanics, dispatch-arm registration, chunked-arena metadata) already exists and is reused, not invented | scoped, bounded engineering: no GC-internals changes, no cross-thread root enumeration needed, because the worker never allocates a traced Lisp value |
+| *Medium runtime project* | Publish protocol for cross-thread handoff of an immutable =nl-clj= structure (§6.2 item 2) — atomic-fenced handoff or routing through an already-serializing primitive | not started; reuses =atomic-compare-exchange= (already a real emitted op, §4.1) and closes nl-safe's own named "not wired yet" gap (§2.5) | independently useful even before shape (A)/(B) fully exist; the smallest genuinely new piece of concurrency-correctness work in this whole doc |
+| *Large, cross-cutting runtime project* | Precise per-thread root enumeration (Doc 152's own still-open, single-thread handle-based-root-API prerequisite, §5.1), a hard dependency of GC shapes (A) and, to a lesser degree, (B) | not started even for one thread; three prior single-thread attempts each regressed soundness before the current recommended direction was reached | this is not new to concurrency — it is Doc 152's own unresolved multi-session epic, inherited rather than created by this doc |
+| *Large, cross-cutting runtime project* | A concurrency-safe GC shape: (A) global stop-the-world handshake across real OS threads, or (B) per-thread private heaps + shared published-immutable arena (§5.2, recommended relative ordering in §5.3) | not started; no design in this tree today attempts either shape | on the scale of Doc 152's own eval-ABI rewrite or larger; (B) recommended first on evidence of maximal reuse of what already ships, not started here |
+| *Large, cross-cutting runtime project* | Thread-spawn for arbitrary, ordinary-allocating Lisp worker bodies (§4.3) | blocked entirely on the GC-shape item above; no independent scope of its own | this is the item the task brief's framing correctly anticipated as the hard one — it is not a bigger version of §4.2, it is gated on §5 existing at all |
+
+The owner's constraint holds exactly as stated: every item that ships as a
+library today is real, correct, and worth shipping; every item that cannot
+is runtime work, named here as two independently-scoped projects (a callable
+thread-spawn primitive, and a concurrency-safe GC) rather than one vague
+"parallelism is hard," with a genuinely buildable medium-sized slice
+(§4.2 + §6.2) identified inside the thread-spawn project that does not wait
+on the GC project at all — and a design (§7) that lets §3's library ship
+today without needing to be rewritten, only re-implemented underneath, the
+day either runtime project lands.
+
+* §9 Reads
+
+Every file this doc's claims are grounded in, at the lines cited above:
+
+- =tools/selfhost-mt-test.sh= (full file, 172 lines) — §2.1, §4.1
+- =scripts/nelisp-standalone-build.el:17700-17934= (socket native units +
+  dispatch arms), =:146-171=/=:1328= (arena chunk metadata + =nl_arena_init=)
+  — §2.2, §4.2, §6.2
+- =docs/design/146-low-memory-value-rep-and-gc.org= §0/§2.1 — §2.3
+- =docs/design/152-sound-form-boundary-gc.org= §0, §11.37 — §2.3, §5.1
+- =docs/design/162-naming-audit.org= §Motivation, implementation status —
+  §2.3
+- =docs/design/181-soak-and-runtime-ratchets.org:103-149= — §2.3
+- =packages/nelisp-actor/src/nelisp-actor.el:159-762= — §2.4, §3.1
+- =packages/nelisp-actor/README.org= — §2.4
+- =packages/nl-safe/src/nl-safe.el:98-256=,
+  =packages/nl-safe/README.org:47-49,326-333= — §2.5, §6.2
+- =docs/design/170-nl-safe.org= §3.4, §4 — §2.5, §6.2
+- =packages/nl-clj/src/nl-clj-atom.el:1-60=,
+  =docs/design/195-clojure-compat-library.org= §2.4-§2.7, §3.2, §4.5, §4.6,
+  §5.1, §5.2 — §2.4-§2.7, §3, §5 (the direct predecessor of this doc; its
+  §5.2 explicitly deferred this doc's own subject to "whatever future doc
+  takes on concurrent GC or a callable thread-spawn primitive")
+- =docs/design/194-network-process-adapter.org= §0, §1.1 — §2.2
+- =docs/design/156-flat-arena-boot-install.org= §0-§3.2 — §6.1
+- =docs/design/39-phase9d-process-substrate.org:300-310,1255-1265= — §2.4
+  (single-thread event-loop, decision not omission)
+- =Makefile:2598-2623=, =tools/parallel-compile-test.sh=,
+  =tools/build-standalone-parallel.sh= — §2.7
+- =lisp/nelisp-cc-atomic-raw-mem.el:1-40=,
+  =lisp/nelisp-asm-x86_64.el:1868-1911= (=LOCK XADD=/=LOCK CMPXCHG=
+  encodings for =atomic-fetch-add=/=atomic-compare-exchange=) — §4.1, §6.2
+- =AI.md= (repository orientation, Definition of Done) — §1, this doc's own
+  =#+STATUS=/=#+VERIFIED-BY= framing

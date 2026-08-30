@@ -416,13 +416,13 @@
     (defun nl_jit_secure_hash (algo-ptr str-ptr out)
       (if (= (symbol-name-eq algo-ptr "sha1") 1)
           ;; SHA1 path: dispatch on str-ptr tag
-          (if (= (sexp-tag str-ptr) 6)
+          (if (or (= (sexp-tag str-ptr) 6) (= (sexp-tag str-ptr) 15))
               ;; MutStr (tag 6): use mut-str-len
               (nl_sha1_run str-ptr (mut-str-len str-ptr) out)
             (if (= (sexp-tag str-ptr) 4)
                 ;; Symbol (tag 4): use str-len
                 (nl_sha1_run str-ptr (str-len str-ptr) out)
-              (if (= (sexp-tag str-ptr) 5)
+              (if (or (= (sexp-tag str-ptr) 5) (= (sexp-tag str-ptr) 14))
                   ;; Str (tag 5): use str-len
                   (nl_sha1_run str-ptr (str-len str-ptr) out)
                 ;; Unsupported type

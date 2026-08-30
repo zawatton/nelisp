@@ -112,7 +112,8 @@
     ;; Tag 1 (T):   write literal "t".
     ;; Anything else: return 1 (TRAMPOLINE_ERR).
     (defun nl_jit_symbol_name (arg out)
-      (if (or (= (sexp-tag arg) 4) (= (sexp-tag arg) 5))
+      (if (or (= (sexp-tag arg) 4) (= (sexp-tag arg) 5)
+              (= (sexp-tag arg) 14))
           (and (sexp-write-str out (str-bytes-ptr arg) (str-len arg)) 0)
         (if (= (sexp-tag arg) 0)
             (nl_sym_name_write_nil out)

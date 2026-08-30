@@ -208,7 +208,9 @@
     (defun nl_jit_split_by_non_alnum (str-arg omit-arg out)
       (if (or (= (sexp-tag str-arg) 5)  ; Str
               (= (sexp-tag str-arg) 4)  ; Symbol
-              (= (sexp-tag str-arg) 6)) ; MutStr
+              (= (sexp-tag str-arg) 6)  ; MutStr
+              (= (sexp-tag str-arg) 14) ; UnibyteStr
+              (= (sexp-tag str-arg) 15)) ; UnibyteMutStr
           (nl_jit_split_alloc str-arg
                               (if (= (sexp-tag omit-arg) 0) 0 1)
                               out)

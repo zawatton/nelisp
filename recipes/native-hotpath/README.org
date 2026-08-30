@@ -18,8 +18,8 @@ them separately.
 
 | gate                         | claim                          | where                                    |
 |------------------------------+--------------------------------+------------------------------------------|
-| =recipe-native-hotpath=      | it compiles, and the manifest says which functions are native | *Windows only today* |
-| =recipe-native-hotpath-exec= | the compiled code runs         | linux-x86_64 only today                  |
+| =recipe-native-hotpath=      | it compiles, and the manifest says which functions are native | Windows and linux-x86_64 (fixed 2026-08-22; was Windows-only, see below) |
+| =recipe-native-hotpath-exec= | the compiled code runs, natively — proven by executing the compiled function and checking its answer | linux-x86_64 only today |
 
 The execution limit is not a guess: the repository's own tests gate on
 it (=skip-unless= a linux-x86_64 predicate throughout
@@ -55,6 +55,73 @@ Keeping them apart matters: folded into one gate, the compile half —
 which works, and which is the half you can act on today — would be
 hidden behind a permanent red on every non-Linux machine, and a gate
 that always fails is a gate everyone learns to ignore.
+
+** Fixed 2026-08-22: the write-region check was already fixed; two other bugs were not
+
+Re-running this recipe on 2026-08-22 (same shape, WSL Debian, updated
+tree) reproduced a *different* failure than the one above:
+=write-region= itself no longer signalled — its own byte-count check had
+already been corrected to compare against =string-bytes= rather than
+=length= — but the compiled function still fell back, and once it did
+not, the emitted =.neln='s embedded object decoded to an ELF file
+=objcopy= rejected: first as unrecognized, then, after the first fix
+below, as "a section extending past end of file".  The 2026-08-18 entry
+above was accurate for what it measured; the actual blocker had moved.
+
+Both remaining bugs were the same defect family as the =write-region=
+check — Doc 161's char-aware =aref=/=length= misreading a raw byte
+buffer — just at call sites that check had not covered:
+
+1. *=base64-encode-string=* (=scripts/nelisp-stdlib-prelude.el=), which
+   the compiler uses to embed the compiled object in the =.neln=, read
+   its input with =aref=/=length=.  Those decode UTF-8 characters, not
+   bytes, so any byte >= 128 in the object — ordinary in machine code —
+   was misread, corrupting the embedded payload while the base64
+   alphabet math still produced *some* answer, so nothing signalled.
+2. *The ELF writer's own section-size arithmetic*
+   (=lisp/nelisp-elf-write.el=, both =nelisp-elf--build-rich= and the
+   ET_REL sibling =nelisp-elf--build-rel=) sized =.text=/=.rodata=/=.data=
+   with plain =length= on buffers that can hold bytes >= 128, instead of
+   the module's own established =nelisp-elf--byte-length= (= =string-
+   bytes=) helper — the same fix already used elsewhere in the same file
+   for exactly this reason.  Every section offset built from an
+   undercounted =text-size= was then wrong.
+
+Both were fixed with the existing byte-clean pair, =string-byte= /
+=string-bytes= (Doc 161), not a new mechanism — reusing =nelisp-elf--
+byte-length= for #2, and the same idea (read the byte at a byte index,
+not the character at a char index) for #1.  One trap surfaced fixing #2:
+=nelisp-elf--build-rich='s =text=/=rodata=/=data= are *not* unibyte-
+coerced at binding time the way the ET_REL sibling's are, so on host
+Emacs (where the ERT suite runs) they can be genuinely multibyte, and
+=string-bytes= on an uncoerced multibyte buffer over-counts the same way
+=length= on a standalone-runtime raw-byte buffer under-counts.
+Coercing at binding time, matching =nelisp-elf--build-rel=, made the
+byte count agree with the actual write on both runtimes at once;
+=nelisp-elf-write-cbuf-large-rich-correct-bytes= catches a regression
+either way.
+
+Measured, both gates green on linux-x86_64:
+
+#+begin_example
+  ok   compiled to a .neln artifact
+  ok   both functions listed in the native section
+  ok   hot-sum-to reported as natively compiled
+  ok   sensitivity control: an absent symbol is not reported
+gate report: target/gates/recipe-native-hotpath.json (pass, ran 4, failed 0)
+  ok   native-exec hot-sum-to 10 -> 55
+gate report: target/gates/recipe-native-hotpath-exec.json (pass, ran 1, failed 0)
+#+end_example
+
+=hot-sum-to 10 -> 55= is native code actually running, not merely "no
+error": =native-exec-elisp-artifact= links the compiled object into a
+tiny C driver via =cc=/=objcopy= and executes it.  Two independent
+compiles of =hot.el= produce byte-identical =.neln= output (=sha256sum=
+equal).  The wider battery — =make compile=, =parens-check=,
+=generated-source-parse=, the full ERT suite, =standalone=, all 28
+reader smokes, =nelisp-native-artifact-gate= (9/9), =nelisp-performance-
+gate= (9/9), =emacs-parity=, and =binary-size-ratchet= — is green on the
+same tree with these fixes in place.
 
 * What the compile half is actually good for
 

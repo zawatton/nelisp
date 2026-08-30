@@ -50,7 +50,11 @@ if [ -z "$TARGET" ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
     case "$(uname -m)" in
       arm64) TARGET="macos-aarch64" ;;
-      x86_64) TARGET="macos-x86_64" ;;
+      # NOT macos-x86_64: it has no per-target orchestration in
+      # scripts/nelisp-standalone-build.el and errors out as an
+      # unsupported target.  An Intel host cross-builds aarch64, which is
+      # the only macOS target that exists.
+      x86_64) TARGET="macos-aarch64" ;;
       *) TARGET="macos-aarch64" ;;
     esac
   else

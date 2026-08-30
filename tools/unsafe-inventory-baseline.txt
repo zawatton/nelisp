@@ -1,1 +1,321 @@
-318
+# Unsafe-surface baseline (tools/nl-check-inventory.el, Doc 170 sec 4.3).
+# The count is calls to a `nl-safe-unsafe-primitives' name made outside an
+# `nl-unsafe' block, across lisp/ and scripts/.  Raise it only in the commit
+# that introduces the calls, and say here what they are.
+#
+# 318 -> 369 on 2026-08-19, and the two halves of that +51 are different
+# things, so they are recorded separately rather than as one number:
+#
+#   +10  new code.  `nelisp-standalone--reader-posix-env-forms' walks the
+#        Linux entry stack at boot to publish the process environment,
+#        which is what arms the Doc 170 sec 5 checked allocator -- see that
+#        section's 2026-08-19 note.  Raw loads are the whole point of the
+#        function: it reads argc, then a NULL-terminated envp vector, then
+#        NUL-terminated bytes, none of which exists as anything but memory
+#        at that moment.  Measured alone: 10 findings.
+#
+#   +41  code that was already there and that this gate could not see.  The
+#        two Linux arms of the per-target OS forms were quoted lists, and
+#        quoted forms are not scanned by design (the rule exists so the AOT
+#        grammar data is not mistaken for code).  Splicing the walker in
+#        turned them into backquotes, and 41 pre-existing calls -- 32 of
+#        them `syscall-direct' in nl_os_open_read and friends -- became
+#        visible.  Measured by taking the file at HEAD and changing nothing
+#        but those two quotes: 295 -> 336.
+#
+# The second half is the interesting one: this gate has been reporting the
+# per-target OS layer as clean because of how the layer is written, not
+# because of what it contains.
+#
+# 369 -> 531 on 2026-08-19, chasing that down.  Two causes, measured apart:
+#
+#   +59  a defect in the scanner, not new code.  `nl-check--unsafe-scan'
+#        walked only the cdr of a form, so anything in car position was
+#        never looked at.  A `let' binding list is (BINDING ...) with
+#        BINDING a cons, which put every first binding's initialiser in
+#        exactly that blind spot -- and allocating in the first `let*'
+#        binding is the house idiom of the standalone build.
+#        `(let ((x (alloc-bytes 1 1))) x)' scanned as clean.  Fixed, with
+#        four regression tests; the tree went 369 -> 428 with no code
+#        change at all.
+#
+#  +103  the per-target OS layer, now visible.  Five pcase arms across
+#        `nelisp-standalone--reader-os-base-forms' and
+#        `nelisp-standalone--os-syscall-xlat-forms' were quoted lists and
+#        so were skipped whole; their siblings were backquotes and so were
+#        counted.  Nothing but the quote character decided whether a
+#        target's syscall layer appeared in this number.  The five are
+#        backquotes now, which is value-identical when the template has no
+#        unquote -- checked structurally rather than assumed: 13
+#        quote/backquote nodes compared across both generators, all equal,
+#        none of the converted ones carrying an unquote.
+#
+# What is still excluded, and why the gate now says so out loud: this tree
+# writes its runtime as quoted generator bodies -- (defconst
+# nelisp-cc-...--source '(seq (defun ...) ...)) -- and the scan steps over
+# quoted forms by design.  That rule is right: it is what keeps opcode
+# tables like (ptr-read-u16 . 39) and name lists out of a count of calls.
+# But it also means 4607 unsafe-primitive calls across 85 files sit outside
+# this number, 2182 of them in the standalone build script alone.  The run
+# prints that tally and the files it falls in, so 531 is never read as the
+# unsafe surface -- it is the part of the surface written outside a quote.
+#
+# Gating the other 4607 is a policy question this file does not settle.
+# The two candidate rules were both measured: descending into every quoted
+# form counts 49 opcode-table and name-list entries in
+# lisp/nelisp-aot-compiler.el that are not calls, and restricting it to
+# quoted forms containing a `defun' drops 11 of those but loses 78 real
+# ones in the build script.  Neither is clean, which is the argument for
+# reporting the number rather than pretending a heuristic settles it.
+# 531 -> 538 on 2026-08-19: `nl_os_getcwd', the getcwd(2) wrapper that lets
+# `default-directory' be bound to the real working directory.  It was
+# unbound before, so every relative name resolved against nothing --
+# `(expand-file-name "a")' answered "/a".  Raw syscall and raw buffer are
+# the whole content of the function: it asks the kernel for a path and
+# copies bytes.  $PWD was available and deliberately not used; being right
+# only sometimes is the worst thing a path source can be.
+# 538 -> 562 on 2026-08-22: the standalone-reader input-hardening fix, all
+# in `scripts/nelisp-standalone-build.el'.  The reader-completeness fix in
+# `nl_eval_source_all', the `--eval'-EXPR pre-validation, the missing-file
+# unification for `--load'/bare FILE, and the 2^22 read-cap guard all read
+# and write the same low-level arena state (`ptr-read-u64'/`ptr-write-u64'
+# on the M6 error-stash slots and the reader's live pool-cap register,
+# `alloc-bytes' for their scratch buffers) every sibling error path here
+# already uses -- no new kind of unsafe call, more call sites of the kinds
+# already present.
+#
+# 562 -> 564 on 2026-08-23 (Doc 184 P3, feat/process-standard-names):
+# `scripts/nelisp-standalone-build.el' gained the `--repl' blank-Enter
+# idle-pump wiring (`nl_repl_pump_source', mirroring the existing
+# `nl_repl_make_source' right next to it) -- +1 `ptr-write-u8' call
+# writing the newline byte after the pumped literal source, +1
+# `ptr-read-u64' call reading the QUIT_FLAG word after evaluating the
+# pump form (the new blank-Enter branch of `nl_repl_loop' duplicates the
+# same post-eval QUIT_FLAG check the typed-line branch right below it
+# already has, so `(exit N)'/`(kill-emacs N)' from a pumped form -- or,
+# in practice, from whatever `nelisp--repl-idle-pump' fires -- still
+# works). Both are the same raw-pointer idiom every other `nl_repl_*'
+# helper in this file already uses; neither is new kind of unsafety.
+#
+# 562 -> 590 on 2026-08-23: Doc 180 Phase 1 (form-located errors), all in
+# `scripts/nelisp-standalone-build.el' (538 -> 566 for that file, measured
+# red/green against merge-base 71d5f17ef: `make unsafe-inventory' on the
+# unmodified tree reports 538/562 PASS, on this change 566/590).  The new
+# location-prefix renderer (`nelisp-standalone--eval-source-location-
+# prefix-forms') stashes three raw u64s (form-index/byte-offset/line) as
+# tagged Ints the same way the existing bare-abort printer already stashes
+# FORM_RC -- 12 `ptr-write-u64' across the three -- plus its own five
+# `alloc-bytes' scratch buffers and the new `nl_eval_source_all' cursor
+# snapshot/whitespace-skip/line-count helpers' `ptr-read-u8'/`ptr-read-u64'
+# reads of the reader's already-live cursor and source bytes.  Same shape
+# as the 538 -> 562 note above: no new kind of unsafe call, more sites of
+# the kinds already present, all on the same low-level arena/cursor state
+# every sibling diagnostic here already touches.
+# integration/wave4 (this branch, merge 5/9): both raises above touch
+# scripts/nelisp-standalone-build.el with disjoint new call sites (repl
+# idle-pump wiring vs. form-location diagnostics), so the interim total
+# is the arithmetic union against the shared 562 base: 562 + (564-562) +
+# (590-562) = 592.  To be reconciled to the measured count in the
+# battery.
+# 592 -> 593 on 2026-08-23 (Doc 180 Phase 2 item 3): one new site, in
+# `nl_eval_source_print_error''s own backquote generator (`nelisp-
+# standalone--eval-source-report-error-form') -- the one `ptr-read-u64'
+# gating whether to call `nl_bt_print_backtrace' after the location line.
+# Everything else Phase 2 added (the capture/render helpers themselves,
+# the desync fix, the new debug-switch codes) lives inside `nelisp-
+# standalone--shim-source''s plain-quoted block, so it falls in the
+# "inside quoted forms" bucket above, not this gated one -- same shape as
+# every other addition to that block already does.
+#
+# 592 -> 603 on 2026-08-24 (socket primitives, Doc 184 follow-on,
+# feat/socket-primitives-p1), all in scripts/nelisp-standalone-build.el
+# (568 -> 579 for that file).  Measured by the per-primitive breakdown
+# (`nl-check-file' filtered to :kind unsafe-call, subject tallied), diffed
+# against merge-base eb4eb81f3 with the working tree otherwise unchanged:
+# +7 `alloc-bytes', +2 `ptr-write-u64', +2 `ptr-read-u64', everything else
+# unchanged.  All seven `alloc-bytes' are small scratch buffers
+# (`nl_ipv4_is_localhost''s 9-byte "localhost" literal; the catchable-
+# signal helpers `nelisp-standalone--applyfn-unsupported-primitive-form'
+# and the new `nl_socket_signal_error' each build a TAG name buffer plus
+# two 32-byte Sexp slots) -- same shape as every other signal-stashing
+# helper already counted here (`bf_signal'/`bf_wrong_type_consp' et al.).
+# The `ptr-write-u64'/`ptr-read-u64' pairs are `nl_socket_build_sockaddr'
+# zeroing the 16-byte `sockaddr_in' struct before filling it, and
+# `nelisp-standalone--applyfn-unsupported-primitive-form' reading the
+# calling primitive's name bytes out of `name_ptr' (ptr@16/len@24, the
+# same accessor `nl_bi_strptr'/`nl_bi_strlen' already use) to put the
+# offending name in the signal's data.  No new KIND of unsafe call --
+# more sites of alloc-bytes/ptr-read-u64/ptr-write-u64, the same raw-
+# memory-inside-a-native-unit shape every sibling generator in this file
+# already has, all of it building either scratch Sexp boxes or a
+# sockaddr struct that never leaves this file's own native units (see
+# `nelisp-standalone--socket-forms''s banner comment: this is precisely
+# the "raw memory never crosses into user space" policy the whole change
+# is built around, not the pointer arithmetic the policy is written
+# against).  `syscall-direct' did NOT rise despite six new socket-syscall
+# call sites (socket/connect/accept4/bind/listen/setsockopt/shutdown,
+# `nl_socket_listen_impl'/`-accept_impl'/`-connect_impl'/`-close_impl')
+# because those four defuns are wrapped in a plain `quote', not a
+# backquote -- they need no build-time-computed value spliced in, unlike
+# the tag-byte-writing helpers above, so there was no reason to reach for
+# backquote at all.  `nl-check--quoted-p' (packages/nl-check/src/nl-
+# check.el) recognizes `quote'/`function' and skips them entirely; it
+# does NOT recognize backquote, which is why the tag-byte helpers above
+# (which DO need one, for the build-time byte-write-forms splice) show up
+# and these four do not -- the same asymmetry this file's own 2026-08-19
+# note above ("Splicing the walker in turned them into backquotes...")
+# already describes for `nl_os_open_read' and friends.  These six syscall
+# sites are real and are exactly what `unsafe-call-quoted' (reported, not
+# gated: 5142 -> more after this change, not separately measured here)
+# exists to make visible without lying about what the gated number covers.
+#
+# 592 -> 599 on 2026-08-23 (fix/ffi-surface-availability): all in
+# scripts/nelisp-standalone-build.el (568 -> 575 for that file).  The
+# owner's real-machine probe found `nl-ffi-call' void on a Windows PE
+# build and a WSL Debian Linux ELF build -- the default (non-`NELISP_
+# READER_DYNAMIC') standalone reader never installed the name at all.
+# The fix makes `nl-ffi-call' always `fboundp', raising the catchable
+# `nelisp-unsupported-primitive' condition on a build that cannot link
+# the real dispatcher instead.  A first version defined that fallback in
+# scripts/nelisp-stdlib-prelude.el as ordinary elisp -- `unsafe-inventory'
+# correctly rejected it, since `nl-ffi-call' is itself a listed
+# `nl-safe-unsafe-primitives' name and that file is not a kernel file
+# (see docs/design/100-phase-47-dynamic-link-elisp.org section 7).  The
+# shipped fix instead builds the condition natively in
+# `nelisp-standalone--applyfn-ffi-unsupported-form' (this file, already a
+# kernel file, already `nl-ffi-call''s real home), packing the two boxed
+# Symbols (`nelisp-unsupported-primitive', `nl-ffi-call') from name bytes
+# via `nelisp-standalone--name-words' the same way `nelisp-standalone--
+# reader-install-builtins-forms' already does for arbitrary-length
+# builtin names -- 2 `alloc-bytes' scratch buffers (name-byte packing +
+# the boxed data-list cons) plus 7 `ptr-write-u64' (packing "nelisp-
+# unsupported-primitive", 29 bytes = 4 words, and "nl-ffi-call", 11 bytes
+# = 2 words, plus the raise-flag write), same shape as every existing
+# `bf_wrong_type_*' helper in this file that raises a fixed condition
+# with fixed data -- no new kind of unsafe call, one more site of the
+# kind already present throughout this file.  Measured red/green: the
+# unmodified tree (this branch's own base, eb4eb81f3) reports 568/592
+# PASS; this change reports 575/599.
+# integration/wave6 (merges 6/9-7/9): the three raises above were
+# measured on non-overlapping trees (error-backtraces 592->593,
+# socket-primitives-p1 592->603, fix/ffi-surface-availability
+# 592->599, all off the shared 592 base) and do not compose
+# additively as separate directive lines -- only the FIRST
+# `unsafe-call' line in file order is read.  Interim total:
+# 592 + 1 + 11 + 7 = 611, pending the RE-RUN of `unsafe-inventory' on
+# the fully merged tree per the integration playbook.
+#
+# Raised 2026-08-24 (integration/wave6 full-battery run:
+# scripts/nelisp-standalone-build.el's standalone-eval-test fix),
+# 611 -> 632, +21. `nelisp-standalone--eval-bt-extra-unit-source'
+# (bounded-backtrace dependency copies: nl_os_write_stderr,
+# nl_bi_strptr/nl_bi_strlen, bf_eq2/bf_eq/bf_marker_vec_is) is new
+# raw-memory-inside-a-native-unit source, same shape as every sibling
+# generator already counted here -- no new KIND of unsafe call.
+# 632 -> 636 on 2026-08-26 (Doc 152 Stage 5): the four tag-9/tag-10
+# collector edge reads itemised with the per-file pin below.
+# 636 -> 693 on 2026-08-26 (Doc 142 section 6.4, the in-process `.neln'
+# loader).  Measured, not estimated: lisp/nelisp-native-load.el carries 40,
+# lisp/nelisp-cc-evalport-aot-builtin-calln.el 16, and
+# scripts/nelisp-standalone-build.el gains 17 for the two new runtime-address
+# builtins and the reader arms that install them -- 57, which is the whole
+# delta.  None of it is a new KIND of unsafe operation: mmapping a page,
+# writing machine code into it, patching relocations and entering it via
+# `ptr-call' is what a loader IS, and every call is the same shape as the
+# arena and syscall work already counted here.
+# 693 -> 694 on 2026-08-26 (macOS v1.0.1 verification, Doc 180 Phase 1
+# call-site fix).  ONE call: `alloc-bytes' for the `<repl>' source-name
+# buffer in the REPL's blank-Enter idle-pump branch.  Doc 180 Phase 1 grew
+# `nl_eval_source_all' to ten parameters and gave the typed-form branch a
+# freshly allocated name buffer, but left the idle-pump branch calling the
+# old eight-argument shape, so FILE_PTR/FILE_LEN read whatever the ninth
+# and tenth outgoing stack slots held.  This is the same buffer, allocated
+# the same way, for the sibling branch three lines below -- not a new kind
+# of unsafe operation.
+# 694 -> 702 on 2026-08-26 (macOS `default-directory').  EIGHT calls, all
+# in the Darwin arm of `nl_os_getcwd', which was a `wf_write_nil' stub:
+# three `syscall-direct' (open(".", O_DIRECTORY) / fcntl(fd, F_GETPATH,
+# buf) / close(fd) -- Darwin has no getcwd syscall, so F_GETPATH on a
+# descriptor for "." is the syscall-level answer), two `alloc-bytes' (the
+# 8-byte "." literal and the 4096-byte path buffer), one `ptr-write-u64'
+# (writing that literal), one `ptr-write-u8' (the trailing slash Emacs
+# keeps) and one `ptr-read-u8' (checking whether the path already ends in
+# one).  Every one of these has an exact counterpart in the POSIX
+# `nl_os_getcwd' body already counted here; nothing is a new KIND of
+# unsafe operation, and the Linux arm is untouched.
+# 702 -> 703 on 2026-08-30 (AOT value-word boundary).  ONE call: the
+# `(alloc-bytes 32 8)' in `--as-sexp-ptr-leaf''s emit template, holding the
+# Sexp a raw value is boxed into before it crosses a defun boundary in the
+# runtime-entered lane.  Byte-for-byte the template
+# `--aot-dispatcher-arg-form' already used for the calln dispatcher, reused
+# rather than written a second time; see the `pinned-kernel-call
+# lisp/nelisp-aot-compiler.el' note for why boxing is the only sound
+# conversion here.  Not a new kind of unsafe operation.
+unsafe-call 703
+
+# `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
+# count behind `total' above -- the three kernel files that actually carry
+# one today.  Added 2026-08-21, same reason as the `pinned' lines
+# tools/parity-coverage-baseline.txt carries: `total' is a sum, and a sum
+# cannot see one file's count fall while a different file's count rises by
+# the same amount.  A file's count falling below its pin is still green; a
+# file's count rising past its pin, or a kernel file with no pin gaining
+# its first call, fails and names the file with its old and new counts.
+# Regenerate from a clean tree; do not hand-edit into drift from the scan.
+pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
+# Doc 142 section 6.4's in-process `.neln' loader, pinned per-file the same
+# way the three kernel files above are.  28 unquoted calls: the mmap, the
+# per-byte writes that place machine code and patch relocations, the
+# `ptr-call' that enters it, and the pointer reads that decode a result Sexp.
+pinned-kernel-call lisp/nelisp-native-load.el 28
+# The AOT evalport's `calln' provider.  12 unquoted calls: reads and writes
+# of the boundary Sexp slots the compiled calling convention passes its
+# arguments and result through.
+pinned-kernel-call lisp/nelisp-cc-evalport-aot-builtin-calln.el 12
+# The AOT compiler's own share of the same work: emitting the artifact the
+# loader later maps.  18 unquoted calls -- `alloc-bytes' for the scratch the
+# emitter builds an object in, the sized pointer reads and writes that lay
+# out its sections, and `data-addr' for the runtime symbols it records.
+# 17 -> 18 on 2026-08-30: one more `(alloc-bytes 32 8)', the Sexp a value
+# crossing a defun boundary in the runtime-entered lane is boxed into.  It
+# is the same template `--aot-dispatcher-arg-form' already used for the
+# calln dispatcher, reused rather than written a second time, and it is
+# inside a quoted emit template like the others -- the scan counts it
+# because the template is a backquote, not because the compiler itself
+# reaches into memory here.  Boxing was the only sound conversion
+# available: unboxing would throw away a Sexp that is not an integer, and
+# low-bit-tagged immediates allocate nothing but nothing produces them yet
+# and the generated C harness does not decode them.
+pinned-kernel-call lisp/nelisp-aot-compiler.el 18
+pinned-kernel-call scripts/nelisp-flat-arena-probe.el 6
+# integration/wave4 (this branch, merge 5/9): 538 base + 2 (process-
+# standard-names repl idle-pump) + 28 (form-located-errors) = 568,
+# interim, both branches' additions to this file being disjoint call
+# sites; to be reconciled to the measured count in the battery.
+# 568 -> 569 on 2026-08-23 (Doc 180 Phase 2 item 3): the one new
+# unquoted call noted above.
+# 568 -> 579 on 2026-08-24 (socket primitives, see the `unsafe-call' note
+# above for the full +11 breakdown).  Measured via `make unsafe-inventory'
+# on this change: total=603 baseline=592 before this row's update.
+#
+# 568 -> 575 on 2026-08-23 (fix/ffi-surface-availability): see the
+# `unsafe-call' note above for the full explanation (`nl-ffi-call'
+# availability fix's native `nelisp-unsupported-primitive' signal
+# construction).
+# integration/wave6 (merges 6/9-7/9): same non-additive interim
+# caveat as the `unsafe-call' total above -- 568 + 1
+# (error-backtraces) + 11 (socket-primitives-p1) + 7
+# (fix/ffi-surface-availability) = 587, pending the RE-RUN of
+# `unsafe-inventory' on the fully merged tree.
+# integration/wave6 full-battery run (2026-08-24): 587 -> 608, +21,
+# same reason as the `unsafe-call' total above.
+# 608 -> 612 on 2026-08-26 (Doc 152 Stage 5): four raw reads in the
+# mid-form collector's tag-9/tag-10 child walkers.  Char tables now mark the
+# entries pointer, parent pointer, and extra-slots pointer; bool vectors mark
+# their raw data pointer.  These are the exact native heap edges needed before
+# enabling mid-form collection at boot, not a new kind of unsafe operation.
+# 612 -> 613 on 2026-08-26: the one `alloc-bytes' of the idle-pump name
+# buffer described at the `unsafe-call 694' note above.
+# 613 -> 621 on 2026-08-26: the eight Darwin `nl_os_getcwd' calls broken
+# out at the `unsafe-call 702' note above.
+pinned-kernel-call scripts/nelisp-standalone-build.el 621

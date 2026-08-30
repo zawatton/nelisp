@@ -50,3 +50,18 @@ target/
 /CLAUDE.md
 dist/
 /.nl-violations/
+
+# Temp files the artifact commands drop in the working directory.  Several
+# `nelisp-artifact--make-temp-path' call sites pass a constant name rather than
+# a path, so `file-name-directory' is nil and the name expands against
+# `default-directory': run `nelisp compile-elisp-artifacts' inside a checkout
+# and the object, probe and helper temps land beside the sources.  They are
+# deleted on the way out, so these lines are for the runs that do not get
+# there -- one such file reached a commit that way in 3213b82c7 and sat in the
+# tree until 2026-08-21.
+.nelisp-host-helper.log.*
+.nelisp-native-helper.*.*
+.nelisp-native-helper-arg.txt.*
+.nelisp-win-env.txt.*
+.neln-obj.o.*
+.neln-probe.o.*

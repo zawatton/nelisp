@@ -131,8 +131,30 @@ prevented.
   =cond= / =when= / =unless= / =let= / =let*= / =and= / =or=) is an
   expansion-time error, as are arity mismatches.
 - A nested =nl-loop= owns its own =nl-recur=.
-- =nl-trampoline= (mutual recursion) is deferred; the transparent AOT
-  TCO is Doc 168 Phase 5.
+
+** =nl-trampoline= / =nl-bounce= (Doc 198 Phase 2)
+
+For mutually recursive functions, return an explicit bounce instead of
+making the recursive call directly, then enter the cycle through
+=nl-trampoline=:
+
+#+begin_src elisp
+(defun even-bounce-p (n)
+  (if (zerop n) t (nl-bounce #'odd-bounce-p (1- n))))
+
+(defun odd-bounce-p (n)
+  (if (zerop n) nil (nl-bounce #'even-bounce-p (1- n))))
+
+(nl-trampoline #'even-bounce-p 1000000) ; => t, constant stack
+#+end_src
+
+A bounce is =(nl--bounce TARGET ARGS)=, a tagged sentinel that the
+driver checks and dispatches.  Unlike =nl-loop=/=nl-recur='s cost-zero
+compile-time rewrite, each bounce allocates its request and pays one
+dispatch plus =apply=.  Only explicitly rewritten =nl-bounce= hops are
+stack-safe; a direct recursive call still grows the stack, and calling a
+bounce-producing function without =nl-trampoline= returns the raw
+sentinel.
 
 ** =nl-strict=
 

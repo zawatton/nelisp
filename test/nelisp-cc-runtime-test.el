@@ -395,10 +395,20 @@ shift the default away from `simulator'."
   (and (boundp 'module-file-suffix) module-file-suffix (fboundp 'module-load)))
 
 (defun nelisp-cc-runtime-test--module-built-p ()
-  "Return non-nil when `nelisp-runtime-module.so' is on disk."
+  "Return non-nil when the module AND its sibling cdylib are on disk.
+
+`nelisp-cc-runtime--ensure-module-loaded' passes `libnelisp_runtime.so'
+to the module by absolute path and silently skips that step when the
+file is missing, so a module on its own loads and then fails at the
+first exec.  Checking only the module made that a failure instead of a
+skip."
   (and (nelisp-cc-runtime-test--module-supported-p)
        (ignore-errors
-         (file-readable-p (nelisp-cc-runtime--locate-runtime-module)))))
+         (let ((path (nelisp-cc-runtime--locate-runtime-module)))
+           (and (file-readable-p path)
+                (file-readable-p
+                 (expand-file-name "libnelisp_runtime.so"
+                                   (file-name-directory path))))))))
 
 (defun nelisp-cc-runtime-test--skip-unless-module-built ()
   "Skip the surrounding ERT unless the in-process FFI is available."

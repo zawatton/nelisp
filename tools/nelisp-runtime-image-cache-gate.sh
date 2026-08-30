@@ -7,6 +7,21 @@
 # widened to the evaluator substrate.
 set -euo pipefail
 
+# A gate whose only output is its own result lines cannot be told apart from a
+# gate that ran nothing.  CASES counts the checks that finished; the trap
+# reports it however the script exits, so a failure says how far it got.
+# Findings comes from the exit status: this script stops at the first failure.
+CASES=0
+gate_report_count() {
+  gate_rc=$?
+  if [ "$gate_rc" -eq 0 ]; then
+    printf 'GATE-COUNT checked=%s findings=0\n' "$CASES"
+  else
+    printf 'GATE-COUNT checked=%s findings=1\n' "$CASES"
+  fi
+}
+
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -15,6 +30,7 @@ NELISP="${NELISP:-$REPO_ROOT/target/nelisp}"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
+  gate_report_count
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
@@ -29,6 +45,32 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# Needs a host that can run the configured target; ask the build script's
+# own predicate rather than a bare `[ -x ]' test on $NELISP.  2026-08-23
+# Windows inventory: the build produced target/nelisp (a linux-x86_64 ELF),
+# but `[ -x ]' read false for it there, so this gate reported
+# "missing-nelisp" (GATE-COUNT checked=0) for what is really an unrunnable
+# target rather than a truly absent binary.  Same convention as
+# tools/selfhost-test.sh.
+set +e
+"${EMACS:-emacs}" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+  >/dev/null 2>&1
+host_rc=$?
+set -e
+case "$host_rc" in
+  0) ;;
+  3)
+    echo "GATE-SKIP target ${NELISP_STANDALONE_TARGET:-linux-x86_64} cannot run on host $(uname -s)/$(uname -m)"
+    echo "runtime_image_cache_gate_result label=runtime_image_cache_gate rc=0 skipped=1"
+    exit 0
+    ;;
+  *)
+    echo "runtime_image_cache_gate_fail reason=cannot-ask-host-runnability rc=$host_rc" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$BUILD" -eq 1 ]; then
   make standalone-reader
@@ -59,6 +101,7 @@ run_timed() {
     sed 's/^/runtime_image_cache_gate_stderr /' "$err_file" >&2
     exit "$rc"
   fi
+  CASES=$((CASES + 1))
 }
 
 expect_out() {
@@ -118,4 +161,5 @@ if ! grep -q ':runtime-image' "$IMAGE.nelc.manifest.el"; then
   exit 1
 fi
 
+CASES=$((CASES + 1))
 echo "runtime_image_cache_gate_result label=runtime_image_cache_gate rc=0"

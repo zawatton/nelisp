@@ -1,0 +1,757 @@
+#+TITLE: Doc 196 — nl-num: a rational + complex numeric tower as an opt-in library over bignum
+#+AUTHOR: Claude (design), zawatton (direction)
+#+DATE: 2026-08-24
+#+STATUS: PARTIAL — build-first Phases 0-4 implemented 2026-08-24 in
+#+STATUS: =packages/nl-num/=; Phase 5 reader work remains explicitly deferred.
+#+VERIFIED-BY: compile parens-check ert-focus nl-num-standalone-smoke gate-mutation ns-gate
+
+* Status
+
+| item     | value                                                              |
+|----------+----------------------------------------------------------------------|
+| Doc #    | 196                                                                |
+| State    | PARTIAL — build-first Phases 0-4 implemented; Phase 5 deferred   |
+| Parent   | Doc 190 (bignum, the substrate this tower builds on), Doc 195 §2.2/§3 (nl-clj's own numeric-tower note and naming/representation precedent), Doc 168-170 (the =nl-*= opt-in extension-library family this doc's package joins) |
+| Base     | =origin/feat/native-observability= @ =3bab0fe88= (this doc's own clone point) |
+| Reads    | =docs/design/190-bignums.org= (bignum contract), =packages/nl-safe/src/nl-safe.el=, =packages/nl-clj/src/nl-clj-core.el= (representation precedent), =packages/nl-contract/src/nl-contract.el= (the one real naming collision found), =packages/nl-ns/src/nl-ns-reader.el= (reader-hook boundary), =scripts/nelisp-standalone-build.el= (native arithmetic/comparison dispatch), =lisp/nelisp-cc-reader-parser.el= (numeric tokenizer), =packages/README.org=, =packages/nl-prelude/src/nl-prelude.el= |
+
+* 1. Scope and the non-goal this doc does not re-argue
+
+This is a survey for =packages/nl-num/=: rational numbers and complex
+numbers, built entirely in Elisp on top of the bignum support Doc 190
+already shipped, as an *opt-in library* — unannotated Elisp stays
+byte-identical to stock Emacs behavior, and only a file that
+=(require 'nl-num)= gets rationals, complex numbers, or the =nl-+=/
+=nl--=/=nl-*=/=nl-/=/~nl-num-<~ family this doc designs. This is the
+owner's decision, stated as the governing constraint for the whole
+design, and it is not re-argued here — it is inherited the same way
+Doc 195 §1 inherited its own non-goals from Doc 168 without re-arguing
+them.
+
+Two things this doc is explicitly *not*: it does not propose changing
+=+=, =-=, =*=, =/=, or any other core arithmetic primitive's behavior on
+plain numbers (Doc 190's bignum promotion already did the one thing
+that could have looked like "changing core arithmetic," and it did it
+inside the runtime, not as a library — §2.1 below). And it does not
+propose a new reader syntax for =1/3= or =#C(1 2)= literals — §2.8/§6.1
+measure, directly, why a pure-Elisp library cannot do that at all, not
+just why this design chooses not to.
+
+* 2. What is actually true today, measured
+
+** 2.1 Bignum: tag 13, Phase A + Phase B, confirmed present on this tip
+
+Doc 190 is the asset this whole design stands on. Measured directly on
+this clone (not assumed from the doc's own status line): its Phase B
+arithmetic-core primitives are compiled into
+=scripts/nelisp-standalone-build.el= on =3bab0fe88= —
+=nl_bignum_add_raw= (line 5330), =nl_bignum_mul_raw= (line 5384), and
+the canonicalizing choke point =nl_bignum_finish= (line 5280) all
+exist, so Doc 190 §7's "Phase B SHIPPED 2026-08-23" is not a stale
+claim on this branch, it is a fact this session grepped for itself.
+
+The representation this tower builds on (Doc 190 §6.1, lines 361-367):
+
+#+begin_example
+Sexp offset 0:  tag (u8) = 13
+Sexp offset 8:  sign        (u64 — 0 non-negative, 1 negative)
+Sexp offset 16: limb-ptr    (u64 — *const u32, little-endian limbs)
+Sexp offset 24: limb-count  (u64 — canonical, no leading zero limb)
+#+end_example
+
+And the exact scope boundary this design has to respect (Doc 190
+status header lines 8-14, and §7's own opening lines 594-596): *only*
+=+=/=-=/=*= promote a Bignum result instead of signalling.  =/=,
+=mod=, =%= are UNCHANGED and still =wrong-type-argument= on a Bignum
+operand.  §2.6 below measures how far that gap actually reaches,
+because a rational tower's single most load-bearing operation —
+reducing a fraction to lowest terms — is exactly a =gcd=, and a =gcd=
+is exactly a repeated =mod=.
+
+** 2.2 The crux: a library cannot add a native Sexp tag
+
+Bignum's own implementation report answers the question this doc's
+brief poses directly. Doc 190 §6.1 lists the tag's *three* required
+native integration points, none of which live in =packages/=:
+
+- =nl_gc_mark_slot= (the tracing GC's mark routine) needed a new tag-13
+  arm so a live bignum is not silently collected.
+- =nl_gc_conserv_word='s conservative-stack-scan tag bound
+  (=(< (ptr-read-u8 w 0) 13)=) had to be widened to 14, or a bignum
+  reachable only from a C-stack word is a use-after-free.
+- =nl_sci_dispatch= (=lisp/nelisp-cc-sexp-clone-into.el=, the keystone
+  every =record-slot-ref=/cons-copy/vector-element-read goes through)
+  needed a tag-13 clone arm.
+
+All three live in =scripts/nelisp-standalone-build.el= and
+=lisp/nelisp-cc-sexp-clone-into.el= — the AOT-compiled native core, not
+=packages/=. A =(require 'nl-num)= library runs *after* all of this is
+already linked into the binary; it has no mechanism to add a fourteenth
+arm to =nl_gc_mark_slot= or widen the conservative-scan bound again. So
+the answer to the brief's own question is unambiguous: *a pure-Elisp
+library cannot reach the native tag machinery at all — it can only
+compose the tags that already exist* (cons, vector, symbol, string, the
+existing Int/Bignum/Float numbers). Rational and complex values in
+=nl-num= are therefore ordinary Elisp values built from those, never a
+fifteenth Sexp tag. This is the one finding this whole design pivots
+on, so §3.2 states the concrete representation right after the naming
+decision.
+
+** 2.3 Representation precedent already exists, twice, and points the same direction
+
+=packages/nl-safe/src/nl-safe.el= (lines 16-19) already answers "how
+does an opt-in library represent a compound value with no native tag,"
+for a completely unrelated feature (borrow-checked cells and fat
+pointers), the same way:
+
+#+begin_example
+Cell:        [nl--cell VALUE STATE]
+Fat pointer: [nl--ptr BASE LEN GENERATION]
+#+end_example
+
+A plain Elisp vector whose slot 0 is a distinguishing tag *symbol*.
+=packages/nl-clj/src/nl-clj-core.el= (lines 6-18) independently arrived
+at the identical convention for persistent collections, and it
+recorded *why*, having tried the more obvious alternative first and
+measured it fail:
+
+#+begin_quote
+Doc 195 §2.1 measured, against a built =target/nelisp=, that records
+print with real Emacs =#s(...)= syntax but do not round-trip through
+=read-from-string= on this substrate (the standalone reader's
+=#s(...)= handler reconstructs a broken instance — a genuine print/read
+asymmetry, not merely "records are unreliable"), while a plain tagged
+vector round-trips correctly.
+#+end_quote
+
+That is a second, independently measured confirmation of §2.2's
+conclusion: not only is a native tag out of reach, =cl-defstruct=/
+=record= — the obvious *elisp-level* alternative to a raw tagged vector
+— is also unsafe on this substrate specifically, for anything that must
+survive a print/read round trip (which a rational or a complex number,
+printed into a log or a saved buffer, obviously must). =nl-num='s
+representation decision in §3.2 is not a new idea; it is the third
+package to independently land on the same one.
+
+** 2.4 The float+bignum arithmetic-fold gap (confirmed by execution)
+
+Doc 190 §7's own contagion work is careful and, per §2.5 below, got the
+comparison operators right.  Reading the *arithmetic* fold this design
+depends on for float contagion (§4.1) found a narrower asymmetry Doc
+190 does not mention and this doc's own brief did not predict.
+
+=+=/=-=/=*='s n-ary fold dispatches on =wf_any_float_arith=
+(=scripts/nelisp-standalone-build.el:5692=), whose own comment is
+explicit about its own scope:
+
+#+begin_quote
+=wf_has_float= itself needs no change: it only answers 1 for tag 3, so
+a Bignum (tag 13) correctly stays on the INTEGER fold path.
+#+end_quote
+
+That is correct *when every element is the same kind* — but the guard
+only decides *which fold runs*, and once a list contains at least one
+Float (tag 3) *and* at least one Bignum (tag 13) together, the float
+fold (=wf_fsum=/=wf_fprod=/=wf_fsubtail=) runs, and every element
+passes through =wf_elem_fbits= (line 5696):
+
+#+begin_src elisp
+(defun wf_elem_fbits (car_ptr scratch)
+  (if (= (ptr-read-u64 car_ptr 0) 3)
+      (ptr-read-u64 car_ptr 8)
+    (seq (sexp-write-float scratch (i64-to-f64 (ptr-read-u64 car_ptr 8)))
+         (ptr-read-u64 scratch 8))))
+#+end_src
+
+This special-cases tag 3 only; anything else falls to the =else=
+branch, which reads *offset 8* of the Sexp as a raw i64 and converts
+it to a float. For a plain Int (tag 2) that is correct — offset 8 *is*
+the value. For a Bignum (tag 13), offset 8 is the *sign word* (§2.1's
+layout: 0 or 1), not the magnitude. Read statically, =(+ 1.0 (expt 2
+100))= would not signal and would not compute the right answer — it
+would silently compute =1.0 + float(sign-word)=, i.e. =1.0= or =2.0=,
+for an operand many orders of magnitude larger. This is a *silent
+wrong-value* bug shape, sharper than a clean signal, and it sits
+exactly on the path this design's own §4.1 promotion table needs
+(float contagion touching a rational whose numerator or denominator is
+a bignum).
+
+Phase 0 confirmed this against the freshly built =target/nelisp=:
+=(+ 1.0 1267650600228229401496703205376)= printed =1.0=, while host
+Emacs and =nl-+= produce =1.2676506002282294e+30=.  This is therefore
+a reproduced silent-wrong-value defect, not only a static finding.
+The implementation never hands a Bignum and Float to the same native
+arithmetic call; §4.1 records the measured correction to the originally
+proposed conversion path.
+
+** 2.5 Comparison already got this right — the contrast is instructive
+
+Unlike §2.4's arithmetic fold, =wf_num_lt=/=wf_num_gt=/=wf_num_le=/
+=wf_num_ge= (=scripts/nelisp-standalone-build.el:4437= onward) check
+=(= ta 13) or (= tb 13)= *first*, before ever reaching the float
+branch, routing to the bignum-aware =nl_num_cmp= (line 4413) instead.
+And =nl_num_cmp='s own comment names the one gap that *does* remain,
+honestly, rather than silently mishandling it:
+
+#+begin_quote
+Doc 190 Phase A: tag 13 (Bignum) counts as numeric EXCEPT paired with a
+Float (tag 3) — that ONE combination is rejected (reported as "not a
+number", a known, narrow Phase A gap ...), so =wf_num_lt= and friends
+below never see a Bignum+Float pair to mis-handle.
+#+end_quote
+
+(=wf_num_tag_ok=/=wf_num_pairp=, same file, immediately above
+=wf_num_lt=.) So a Bignum compared against a Float today cleanly
+*signals*, it does not silently misread a sign word — the comparison
+family and the arithmetic-fold family diverged on exactly this one
+mixed pairing, in opposite directions (clean reject vs. silent
+misread). §5 below designs ~nl-num-<~/~nl-num-=~ on top of the
+*comparison* family specifically because it is the one already proven
+safe for every pairing this tower needs; §4.1's arithmetic promotion
+table is the one that has to work around §2.4 instead.
+
+** 2.6 No native division, mod, or bitwise op accepts a Bignum operand — measured, not just quoted
+
+Doc 190 §7 already states =/=/=mod=/=%= are unchanged (§2.1). This
+session additionally checked the bitwise family, because a =gcd= could
+plausibly be built from shifts and parity tests instead of =mod= (a
+binary/Stein's-algorithm =gcd=), which would sidestep the =mod= gap —
+measured whether that escape hatch exists.
+
+=ash= (=scripts/nelisp-standalone-build.el:10752=) gates on
+=(= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2)= (tag must be 2, plain
+Int) and signals =bf_wrong_type_integerp= otherwise — a Bignum operand
+is rejected. =logand=/=logior=/=logxor= (lines 10757/10760/10763) gate
+through =bf_first_non_integer= (line 5839), whose own body checks
+=(= (ptr-read-u64 a 0) 2)= per element — a Bignum (tag 13 ≠ 2) is
+correctly identified as "non-integer" and the dispatch falls to
+=bf_int_arg_error= (line 9600), which signals a real
+=wrong-type-argument=, not a silent misread — the same safe-reject
+shape §2.5 found for comparison, not §2.4's silent-misread shape. So
+the escape hatch does not exist either: *no native primitive this tree
+ships computes anything with a Bignum operand except* =+=/=-=/=*=
+*themselves*. A =gcd= over two large operands, and therefore every
+rational normalization this design needs, has no primitive to call —
+it has to be built from =+=/=-=/=*=/comparison alone. §6.3 states the
+resulting algorithm and its cost honestly.
+
+** 2.7 No =gcd=/=numerator=/=denominator= anywhere in this tree — and one real =nl-= collision
+
+#+begin_src sh
+grep -rn "defun gcd\|defun numerator\|defun denominator" scripts/ packages/ lisp/ src/
+#+end_src
+
+returns nothing except an unrelated example program in a different
+embedded language (=packages/nelisp-sys/examples/gcd.nl=, a =sys:defun=
+in that package's own typed IR, not Elisp). Real GNU Emacs has no
+=gcd=/=numerator=/=denominator= either (Common Lisp has all three
+built in; Elisp inherited neither the type nor the functions). So
+these three names are free in both the host and this tree — a genuine
+absence, not a narrow escape between two things that already exist.
+
+The naming search did find one real collision, in the =nl-= family
+itself, not against host Emacs:
+
+#+begin_src elisp
+;; packages/nl-contract/src/nl-contract.el:87
+(defun nl-> (&rest contracts)
+  "Build a function contract from CONTRACTS; the last one is the range.
+...")
+#+end_src
+
+=nl-contract='s =nl->= builds a function contract (domain types ->
+range type) — semantically unrelated to numeric "greater than," and
+already shipped. ~nl-<~, ~nl-<=~, ~nl->=~ and ~nl-=~ were checked the
+same way and are unclaimed. §3.1 decides the naming consequence.
+
+** 2.8 The reader's numeric tokenizer cannot be reached from a library
+
+=lisp/nelisp-cc-reader-parser.el= is the tree's real =load= path
+(Doc 190 §6.3 already traced this for the bignum-literal case).  Its
+numeric-token path is a plain ASCII-digit accumulator:
+
+#+begin_src elisp
+;; lines 194-220
+(defun nelisp_reader_p_is_digit (b) (if (>= b 48) (if (<= b 57) 1 0) 0))
+(defun nelisp_reader_p_atoi_step (str-ptr i n acc)
+  (if (>= i n) acc
+    (if (= (nelisp_reader_p_is_digit (str-byte-at str-ptr i)) 1)
+        (nelisp_reader_p_atoi_step str-ptr (+ i 1) n (+ (* acc 10) ...))
+      acc)))
+#+end_src
+
+No code path here recognizes =/=. The decision of *which* leaf =kind=
+a token gets (Int, kind 20; some other kind for Float/Symbol) happens
+upstream of =nelisp_reader_p_leaf= (line 477) — i.e. before a library
+ever sees a value to intercept. A token like =1/3= never reaches the
+digit accumulator as a number candidate at all; it tokenizes as an
+ordinary symbol constituent run, the same way real GNU Emacs's own
+documented "Read Syntax for Numbers" (digits, one optional leading
+sign, one optional =.=, one optional =e=/=E= exponent — no =/=) already
+treats it. This is a native/compiled tokenizer, not something
+=(require 'nl-num)= runs before or hooks into — confirming, at the
+lowest level this session could reach, the "no reader hook" limitation
+§6.1 names.
+
+** 2.9 =nl-ns-reader= exists, but resolves symbol names — it does not add literal syntax
+
+The brief names =nl-ns-reader= as a candidate escape hatch. Read
+directly (=packages/nl-ns/src/nl-ns-reader.el=, lines 1-20): it is a
+reader-time *short-name-to-qualified-symbol* resolver — reading =wrap=
+inside an active =nl-ns-read-with-resolution= block interns
+=text-wrap= directly, so a namespace's declared members never pollute
+the flat obarray under their short spelling. That is a real, shipped,
+opt-in mechanism — but it operates entirely on *symbol* tokens already
+classified as symbols by the same tokenizer §2.8 measured; it has no
+role in, and no access to, the numeric-token path at all. Opting a file
+into =nl-ns-reader= would not make =1/3= read as a rational any more
+than not opting in would — it solves a completely different problem
+(namespace collision on identifiers), and the brief's own phrasing
+("=nl-ns-reader= exists but is opt-in") is accurate about its
+existence and beside the point for literal syntax. §6.1 restates this
+plainly as a limit, not a workaround.
+
+** 2.10 Neither host Emacs nor this runtime has a rational or complex type
+
+Real GNU Emacs's number types are integer and float only (Common
+Lisp's =ratio= and =complex= were never part of Emacs Lisp). Grepping
+this tree's own 160+ design documents for "rational" turns up zero
+hits that mean the numeric type (every match is the unrelated English
+word "rationale"); grepping for "complex number"/=complexp=/
+=make-complex= across =src/=, =lisp/=, =scripts/nelisp-standalone-
+build.el= turns up nothing. So there is no host-Emacs analog to
+differentially test against for either type (Doc 190's bignum work had
+one — real Emacs 27+'s own bignums, and Doc 190 §7.2 uses "host
+controls verbatim" throughout) — the reference semantics for this
+design have to come from *outside* Emacs entirely: Common Lisp (CLHS),
+Scheme (R7RS's numeric tower), and Clojure, matching the brief's own
+framing and this doc's title.
+
+* 3. Decided direction: naming and representation
+
+** 3.1 Naming: bare =nl-= prefix for arithmetic, =nl-num-= for the one collision
+
+Following §2.3's precedent (=nl-safe= uses =nl-cell=/=nl-ptr-*=, not
+=nl-safe-cell=, because the domain word does not need repeating in
+every symbol) rather than =nl-clj='s own convention (=nl-clj-conj=,
+repeating the package name — a deliberate choice for a *collection*
+library sharing an obarray with plain Elisp =assoc=/=get=/=pop=, per
+Doc 195 §3.1's own measured-collision reasoning), =nl-num='s
+arithmetic surface uses the bare domain prefix the task brief itself
+specified: =nl-+=, =nl--=, =nl-*=, =nl-/=, =nl-rational=, =nl-complex=,
+=nl-numerator=, =nl-denominator=, =nl-realpart=, =nl-imagpart=,
+=nl-magnitude=, =nl-realp=, =nl-rationalp=, =nl-complexp=. §2.7's sweep
+found none of these claimed anywhere in this tree.
+
+§2.7 also found the one real exception: =nl->= is already
+=nl-contract='s function-contract constructor, unrelated to numeric
+ordering. Rather than special-case one operator while leaving ~nl-<~/
+~nl-=~ bare (an asymmetry a caller would have to remember), the
+*comparison family specifically* takes the =nl-num-= prefix instead:
+~nl-num-<~, ~nl-num-<=~, ~nl-num-=~, ~nl-num->~, ~nl-num->=~. This is
+a deliberate, cited deviation from the brief's own example spelling,
+made for the same reason Doc 195 §3.1 kept =nl-clj-pop= qualified
+unconditionally rather than ever offering bare =pop= sugar: a real,
+measured collision, in the same shared =nl-= obarray this library
+joins, is worth a consistent naming rule more than it is worth
+matching an example literally. Predicates and constructors keep the
+bare prefix because §2.7's sweep found no collision for any of them.
+
+** 3.2 Representation: tagged plain vectors, no new tag, per §2.2/§2.3
+
+#+begin_example
+rational: [nl--rational NUM DEN]
+  NUM : Int or Bignum (any sign)
+  DEN : Int or Bignum, ALWAYS > 0 (sign lives entirely in NUM,
+        matching Doc 190's own sign/magnitude split for Bignum itself)
+  Invariant: gcd(|NUM|, DEN) = 1, DEN != 1 (DEN = 1 demotes to NUM
+  directly at construction and after every arithmetic result — a
+  rational with DEN = 1 is a modeling bug, not a value, the same
+  "canonicalize at the one choke point" discipline Doc 190 §6.1's own
+  `nl_bignum_finish' uses for fixnum demotion)
+
+complex: [nl--complex RE IM]
+  RE, IM : any REAL value at the SAME contagion level (Int/Bignum,
+  Rational, or Float — never mixed levels between the two parts; §4.3
+  states the canonicalization rule this invariant follows from CL)
+  Invariant: IM is never an exact (Int/Bignum/Rational) zero — an
+  exact-zero-imagpart complex demotes to RE alone at construction,
+  per CLHS 12.1.5.3 (§4.3).  A FLOAT zero imagpart does NOT demote
+  (same CLHS rule) — `(nl-complex 1.0 0.0)' stays a complex.
+#+end_example
+
+No =cl-defstruct=, no =record= — §2.3 measured why, twice, before this
+doc existed. Tag symbols =nl--rational=/=nl--complex= are private
+(=--=, per this repo's own convention, matching =nl--cell=/=nl-clj--pvec=).
+
+** 3.3 Package shape
+
+=packages/nl-num/=, following =packages/README.org='s own layout rule
+and the =nl-*= extension family's own additional convention (never
+ships loaded; a =test/nl-num-standalone-smoke.el= runner executing the
+identical ERT bodies against =target/nelisp= through the shim pattern
+every existing =nl-*= package already uses):
+
+#+begin_example
+packages/nl-num/
+├── README.org
+├── manifest.el          -- (:name "nl-num" :requires ("nl-prelude"))
+├── src/
+│   ├── nl-num-core.el    -- §6.3's bignum-safe divmod/gcd; tag helpers
+│   ├── nl-num-rational.el
+│   ├── nl-num-complex.el
+│   └── nl-num.el         -- (require ...) + (provide 'nl-num)
+└── test/
+    ├── nl-num-test.el
+    └── nl-num-standalone-smoke.el
+#+end_example
+
+Errors derive from =nl-error= (=packages/nl-prelude/src/nl-prelude.el:50=,
+the same base condition =nl-safe=/=nl-clj= already use):
+=nl-num-error=, with =nl-num-division-by-zero-error= for an exact-zero
+rational denominator (CL signals =division-by-zero=; this tower signals
+its own condition in the =nl-error= hierarchy rather than colliding
+with the host's own =arith-error=/=division-by-zero=, the same
+"derive, do not shadow" discipline §3.1 already applies to functions).
+
+* 4. The contagion lattice
+
+** 4.1 Levels and the promotion table for =nl-+=/=nl--=/=nl-*=/=nl-/=
+
+#+begin_example
+integer (fixnum, transparently Bignum-promoted per Doc 190 Ph. B)
+   < rational
+   < float
+complex is ORTHOGONAL: wraps any one of the three levels above as its
+   RE/IM pair (§4.3), not a fourth rung above float.
+#+end_example
+
+| A \ B    | integer                 | rational | float                         | complex        |
+|----------+--------------------------+----------+--------------------------------+-----------------|
+| integer  | integer (native, Ph. B)  | rational | float (native, native-safe*)  | complex (RE/IM at B's level) |
+| rational | rational                 | rational | float                         | complex         |
+| float    | float                    | float    | float (native)                | complex (float-level) |
+| complex  | complex                  | complex  | complex                       | complex         |
+
+*"native-safe" for integer+float: safe exactly when the integer operand
+is a plain Int (tag 2). When it is a Bignum, §2.4's finding means
+=nl-num= must NOT hand the pair to a native =+=/=-=/=*= n-ary call
+directly.  The survey's proposed =number-to-string=/=string-to-number=
+bridge was corrected by Phase 0 measurement: standalone
+=string-to-number= reconstructs an exact integer/Bignum, not a Float,
+and standalone =(float BIGNUM)= itself traverses the bad mixed fold and
+returned =0.0= for =2^100=.  The shipped bridge instead uses §6.3's
+divmod to retain a correctly rounded 53-bit fixnum mantissa, then
+restores its exponent with float-only multiplication.  Every int+float
+and rational+float cell routes through that bridge, so the eventual
+native calls receive Float+Float only.
+
+Rational-vs-rational and rational-vs-integer arithmetic (the cells that
+matter for §7 Phase 1/2) reduce to plain bignum-safe integer add/
+multiply/gcd over NUM/DEN using =nl-+=/=nl-*=/§6.3's divmod — never the
+native =/=/=mod= directly on a value that might be a Bignum (§2.6).
+
+** 4.2 =/= on two integers produces an exact rational — decided, cited
+
+Common Lisp (=(/ 1 3) => 1/3=), Scheme/R7RS's numeric tower (=(/ 1 3)
+=> 1/3=), and Clojure (=(/ 1 3) => 1/3=) — the three reference
+languages this doc's own brief names — all agree: integer divided by
+integer with no evenly-dividing result stays *exact*, as a rational,
+never silently drops to a float. (Contrast Python 3's =/=, JavaScript's
+=/=, or C's integer division — none are the reference this design
+targets.) =nl-/= on two integer-level operands (or a rational and an
+integer) therefore always produces an exact rational, demoted to a
+plain integer at §3.2's DEN=1 choke point when it divides evenly —
+never a float, matching all three named references and diverging from
+"some languages" exactly as the brief asked this doc to name and
+justify. Division by an exact zero denominator signals
+=nl-num-division-by-zero-error= (§3.3) — never producing a rational
+with DEN=0, which would violate §3.2's own invariant.
+
+** 4.3 Complex canonicalization: CLHS's exact-zero rule, and float contagion between RE/IM
+
+Two canonicalization rules, both taken directly from CLHS 12.1.5.2-3
+(there is no host-Emacs analog to measure against, per §2.10, so the
+external spec IS the design here, exactly as the brief asked for):
+
+1. *Float contagion is bilateral within a complex's own two parts*, at
+   construction and after every arithmetic result: =(nl-complex 1
+   2.0)= immediately promotes RE to =1.0= — a complex never has one
+   float part and one exact part, matching CLHS's own complex-
+   canonicalization rule and keeping §3.2's representation invariant
+   ("RE and IM at the same contagion level") true by construction, not
+   by caller discipline.
+2. *An exact (Int/Bignum/Rational) zero imaginary part demotes the
+   whole value to the real part alone* — =(nl-complex 3 0) => 3=, not a
+   complex. A *float* zero imaginary part does *not* demote —
+   =(nl-complex 1.0 0.0)= stays complex, per the same CLHS rule (an
+   inexact zero is not "the same" as an exact zero for this purpose;
+   Scheme's own exact/inexact distinction makes the identical call).
+   This is the one place this design's canonicalization diverges from
+   "always collapse a zero," and it is a deliberate, cited choice, not
+   an oversight.
+
+Arithmetic: =(a+bi) + (c+di) = (a+c)+(b+d)i=; =(a+bi) * (c+di) =
+(ac-bd)+(ad+bc)i=; division via the conjugate,
+=(a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)=, each component computed
+with =nl-+=/=nl-*=/=nl-/= over whatever real level RE/IM are actually
+at (so a Gaussian-rational multiply is four rational multiplies and
+two rational adds, each already bignum-safe by construction because it
+routes through §4.1's table, not through a separate complex-specific
+bignum path).
+
+* 5. Equality and comparison across the tower
+
+~nl-num-=~ compares by *value*, across representations, matching CL/
+Scheme's own ~`=`~ (not =eql=): ~(nl-num-= 2 4/2)~ => =t=, ~(nl-num-=
+2 (nl-complex 2 0))~ => =t= (§4.3's own demotion rule already makes
+the right side plain =2=, so this reduces to ordinary equality, not a
+special case), ~(nl-num-= 2 2.0)~ => =t= even though =2= and =2.0= are
+not =eql=-shaped — the same "= is value equality, eql/eq are identity"
+split CL's own spec draws, and the same layering Doc 190 §6.1 already
+had to build for Bignum specifically (=eq=/=eql=/=equal= needed their
+own fixes there because a generic offset-8 identity check misreads a
+Bignum's sign word — §2.4 of this doc is the arithmetic-fold cousin of
+that exact same class of bug, one layer up).
+
+~nl-num-<~/~nl-num-<=~/~nl-num->~/~nl-num->=~ are defined only for
+*real* values (integer/bignum/rational/float) — a complex operand
+signals =nl-num-error= (CLHS: =<= on a complex is a type error;
+complex has no total order, and CL does not pretend otherwise).
+Real-vs-real ordering for the int/bignum/float and int/bignum/int
+pairings delegates directly to the native comparison family §2.5
+already found handles every one of those pairings safely (including
+the Bignum+Float pairing, which §2.5 found *signals cleanly* rather
+than silently misbehaving — so ~nl-num-<~ on that specific pairing can
+delegate to native comparison and let its existing, already-correct
+signal propagate, rather than needing its own workaround the way
+§4.1's arithmetic table does). Rational-vs-anything ordering
+cross-multiplies numerator/denominator pairs (=a/b < c/d= exactly when
+=a*d < b*c= for positive =b=, =d=, which §3.2's invariant guarantees)
+using §6.3's bignum-safe multiply, never native =/=.
+
+* 6. Library boundary honesty — what =nl-num= cannot do
+
+** 6.1 No reader literals, ever, from inside this library
+
+§2.8 measured this at the tokenizer, and §2.9 measured that the one
+existing opt-in reader hook (=nl-ns-reader=) solves a different problem
+(symbol resolution) and has no purchase on numeric-token
+classification. =1/3= will never read as a rational through
+=(require 'nl-num)= alone — a user writes =(nl-rational 1 3)=, or goes
+through a *cosmetic*, private parser/printer pair
+(=nl-num-read-string=/=nl-num-pr-str=, over plain strings, never
+=nelisp-read=), the identical pattern =nl-clj='s own =pr-str=/
+=nl-clj-read-string= already established for its own literals (Doc 195
+§3.3: "=pr-str= is cosmetic output; =nl-clj-read-string= is a private
+parser, never the reader"). True =1/3=-as-rational-literal support is
+a *core reader tokenizer* change — outside this design's reach by
+construction, and, per §2.2, outside any library's reach at all; it
+would need its own, separate design doc scoped to =lisp/nelisp-cc-
+reader-parser.el= itself, not folded into =nl-num=.
+
+** 6.2 Float↔rational conversion is lossy one way and genuinely hard the other
+
+Rational→float (=(float 1/3)=) is one native float divide once both
+sides are floats (§4.1's routing) — cheap, and lossy exactly the way
+CL's own =(float 1/3)= is lossy; not a gap, expected behavior. The
+reverse — float→exact-rational, CL's =rational=/=rationalize= — is a
+real algorithm (continued-fraction expansion of the IEEE double's own
+bit pattern, or the simpler-but-still-nontrivial "shortest rational in
+the double's ULP-neighborhood" =rationalize= variant), not a one-line
+wrapper around anything this tree already ships. §7 Phase 3 scopes it
+as its own, separately estimated unit of work rather than assuming it
+falls out of the rational type for free.
+
+** 6.3 A real performance ceiling: no native bignum divmod, ever, without a core change
+
+§2.6 measured that the ONLY native operations a Bignum operand
+survives are +/-/*; every rational reduction this library does (=gcd=,
+on construction and after every arithmetic result) needs a division,
+and none exists to call. The only implementable algorithm is one built
+from +/-/*/comparison alone — a binary-search "doubling" division
+(find =q= such that ~q*d <= n < (q+1)*d~ by repeated doubling of a
+trial quotient, each step one bignum multiply and one bignum
+compare) — =O(log(n/d))= bignum multiplies per division, run entirely
+in interpreted Elisp. This is materially slower than a native
+mod-based Euclidean =gcd= would be, and there is no way to close that
+gap from inside a library: it requires either Doc 190 Phase C's own
+native codegen extending to cover mod/div (explicitly scoped as "not
+started" and, per Doc 190 §3 Phase C's own framing, "not recommended
+to revisit... unless a future doc revisits the no-C-dependency stance
+specifically for this one hot path"), or the core exposing a native
+bignum divmod primitive nothing currently calls even internally (Doc
+190's own decimal-printing =nl_bignum_divmod10_loop= is a divide-by-10
+special case, not a general bignum/bignum divide). This ceiling is
+named here, not deferred to a surprise during Phase 1 implementation.
+
+** 6.4 No native tag means a runtime type-check tax on every single operation, permanently
+
+Every =nl-+=/=nl-num-<=/etc. call must =vectorp=-check and read slot 0
+before it can even know whether it is looking at a rational/complex
+value or a plain number — an Elisp-level branch native +/-- never pay,
+on every call, forever. This is the direct, permanent cost of §2.2's
+finding: a library composing existing tags can never make its own
+composite operations as fast as a tag the runtime itself dispatches on
+natively (the way Bignum's own tag-13 checks are single native
+=ptr-read-u64= comparisons inlined into the dispatch table, per §2.1).
+Not a defect to fix — a structural property of "library, not runtime,"
+worth stating because it bears on whether a hot numeric loop should
+ever choose =nl-num= types over plain fixnums, which it should not,
+for exactly this reason.
+
+** 6.5 NaN/Infinity interaction with rational and complex is open, not solved here
+
+Real =sqrt= of a negative number already returns a float NaN on this
+substrate, not a complex, natively — measured
+(=scripts/nelisp-stdlib-prelude.el:2119=, =((< xf 0) (/ 0.0 0.0))=), so
+=nl-num='s own =sqrt= (needed for =nl-magnitude= on a complex, §4.3)
+must decide independently whether =(nl-num-sqrt -4)= returns a complex
+=(nl-complex 0 2)= (CL/Scheme-conventional) or stays float-NaN
+(matching the host's own unmodified =sqrt=, which =nl-num= does not
+shadow, per §1). This design recommends the former (a numeric-tower
+library that returns NaN for =-4= is not offering much over plain
+=sqrt=) but does not resolve what a NaN or infinite *component* of an
+otherwise-exact complex or rational means (a rational with a NaN
+numerator has no CLHS analog — rationals are defined over exact
+integers only) — left an explicit open question, §8.
+
+* 7. Phase plan, DoD-shaped verification
+
+Per this repo's own Definition of Done (=AI.md=: against-the-bug
+evidence, a parity/reference corpus, a mutation row for any new
+required gate, =#+VERIFIED-BY=) — restated per phase, not asserted once
+for the whole doc, matching Doc 190/195's own per-phase discipline.
+
+** Phase 0 — Foundation: bignum-safe divmod, package skeleton (blocks everything)
+
+=packages/nl-num/src/nl-num-core.el=: §6.3's doubling-division
+algorithm, plus a =gcd= built on it, plus the tag-symbol vector
+helpers (§3.2). This is named as its own phase, first, because §6.3
+found it is the one new primitive every later phase depends on and the
+one place a subtle bug (an off-by-one in the doubling bound, a sign
+error on a negative operand) would silently corrupt every rational
+this library ever produces — the same "coordinate the shared primitive
+first" lesson Doc 190 §3 Phase B drew from =expt='s own hand-rolled
+overflow check. *Also* the first place to re-confirm §2.4's static
+finding against a real built =target/nelisp= (a single differential
+form, =(+ 1.0 (expt 2 100))=, run once against host Emacs and once
+against a fresh standalone build) — before Phase 2's arithmetic table
+commits to routing around it. DoD: ERT + standalone-smoke corpus of
+divmod cases spanning fixnum/fixnum, fixnum/bignum, bignum/bignum,
+negative operands, checking the standard divmod identity —
+=(* q d)= plus =r= reconstructs =n=, with ~0 <= r < d~ — for every
+case; a mutation row flipping the doubling bound's
+off-by-one, proven to flip the gate red before landing (=tools/gate-
+mutations.txt=, per this repo's own Definition of Done).
+
+** Phase 1 — Rational (cheapest applied value, ships next)
+
+=nl-rational=/=nl-rationalp=/=nl-numerator=/=nl-denominator=,
+normalization and DEN=1 demotion (§3.2), =nl-num-pr-str= cosmetic
+printing (§6.1) in both Clojure's and CL's identical =N/D= shape. No
+=nl-+=/float/complex yet — construction, normalization, and printing
+only, the same "cheapest, ships first, nothing downstream needs it yet
+but everything needs it to exist" ordering Doc 190 §3 Phase A used for
+bignum comparison/printing. DoD: a fixed corpus checked against CLHS's
+own worked reduction examples (no host-Emacs control exists, per
+§2.10 — the external spec is the oracle, stated plainly rather than
+implying a differential test this design cannot actually run);
+round-trip =(nl-rational (nl-numerator r) (nl-denominator r)) = r= for
+every corpus entry; a mutation row disabling the gcd-reduce step,
+proven to flip a "already in lowest terms" assertion red.
+
+** Phase 2 — Arithmetic core: =nl-+=/=nl--=/=nl-*=/=nl-/= across integer/bignum/rational/float
+
+§4.1's full promotion table, including the explicit Bignum-through-
+string-conversion routing §2.4 requires for every float-touching cell.
+DoD: property corpus per cell of §4.1's table (=(nl-+ a b)=,
+=(nl-- (nl-+ a b) b) = a=, the same round-trip shape Doc 190 §4 already
+used for its own bignum arithmetic verification); division-by-exact-
+zero signals =nl-num-division-by-zero-error= (not silently producing a
+malformed rational); a mutation row on the Bignum+Float routing itself
+— force a mixed Bignum/Float pair through the native fold instead of
+the safe conversion, and require the property corpus to catch the
+resulting wrong value (this is the gate that turns §2.4's finding into
+an enforced regression protection, not just a paragraph in this doc).
+
+** Phase 3 — Complex
+
+=nl-complex=/=nl-complexp=/=nl-realpart=/=nl-imagpart=/=nl-magnitude=,
+§4.3's canonicalization rules enforced at construction, arithmetic via
+the four component formulas in §4.3, =nl-num-sqrt='s complex-producing
+decision (§6.5) implemented and, separately, the float→exact-rational
+conversion §6.2 named as its own nontrivial algorithm (needed for
+=nl-magnitude= to stay exact when RE/IM are both rational, since
+=sqrt= of a sum of two rational squares is not generally rational
+itself — magnitude of a rational-component complex is therefore
+generally a FLOAT result even though RE/IM are exact, a contagion case
+worth stating explicitly rather than leaving implicit). DoD:
+CLHS-cited corpus for construction/canonicalization/arithmetic;
+against-the-bug case specifically for the exact-vs-float-zero-imagpart
+distinction (§4.3 point 2), since that is the one rule most likely to
+get silently "simplified away" by an implementer who has not read this
+section closely.
+
+** Phase 4 — Comparison across the whole tower
+
+~nl-num-<~/~nl-num-<=~/~nl-num-=~/~nl-num->~/~nl-num->=~, delegating
+to native comparison for every real/real pairing §2.5 found safe, and
+§5's cross-multiply for any pairing touching a rational. DoD: full
+5x5-type-pairing corpus (integer, bignum, rational, float, complex)
+including the negative case (ordering a complex signals, does not
+silently compare real parts).
+
+** Phase 5 — explicitly deferred, not committed by this doc
+
+A private cosmetic read/print round-trip through strings (§6.1) is the
+ceiling for "reader ergonomics" this design commits to. A true =1/3=
+core-reader literal is out of scope for =nl-num= entirely, per §6.1 —
+if ever pursued, it is a separate doc scoped to =lisp/nelisp-cc-reader-
+parser.el=, not a later phase of this one.
+
+* 8. Open questions
+
+- §6.5: what a NaN or infinite component of an otherwise-exact
+  rational or complex means, if anything — CLHS has no analog (its
+  rationals are exact-integer-only by definition); this doc does not
+  resolve it, only names that Phase 3 will hit it the first time a
+  complex wraps a float component that happens to be NaN.
+- §2.4 is now confirmed by execution.  The separate conversion-path
+  assumption was corrected by the same measurement: standalone
+  =string-to-number= does not create a Float, so Phase 0's divmod-backed
+  53-bit rounding bridge replaces the survey's proposed string bridge.
+- Whether =nl-num-sqrt= should shadow-avoid or actually alias the
+  host's own =sqrt= name for real, non-negative inputs (so
+  =(nl-num-sqrt 4)= and =(sqrt 4)= agree exactly) is left to Phase 3's
+  implementer to decide against real usage, the same "measure, do not
+  guess" deferral Doc 190 §5 used for its own limb-width question.
+- Whether =nl-num='s own bignum-safe divmod (§6.3/Phase 0) is worth
+  promoting into =nl-num-core= as a *general-purpose* bignum divmod
+  other future libraries could reuse (§2.6 found nothing else in this
+  tree can currently compute one) is a real question this doc raises
+  but does not decide — it depends on whether a second consumer ever
+  materializes, which, per Doc 190 §5's own "no concrete reported case"
+  precedent for bignums themselves, this doc does not currently have
+  evidence for either way.
+
+* 9. Implementation report — 2026-08-24 build-first landing
+
+Phases 0-4 now live under =packages/nl-num/=.  Phase 0 supplies signed
+Euclidean doubling divmod, gcd, tagged-vector helpers, and the measured
+bignum-to-float bridge.  Phase 1 supplies normalized rationals and
+cosmetic =N/D= printing.  Phase 2 supplies n-ary arithmetic across
+integer/rational/float contagion with exact integer division.  Phase 3
+supplies CLHS-canonical complex construction, component arithmetic,
+magnitude, and negative-real =nl-num-sqrt=.  Phase 4 supplies value
+equality and real ordering across the tower; complex equality is by
+components and complex ordering signals =nl-num-error=.
+
+The host reference corpus contains 51 ERT tests, including Phase 4's
+complete 5x5 type-pairing matrix.  The standalone smoke replays all 51
+bodies and additionally round-trips both a bignum-backed
+rational and a rational-component complex through =prin1-to-string=/
+=read-from-string=.  Three mutation rows prove the Phase 0 doubling
+bound, Phase 1 gcd normalization, and Phase 2 Bignum+Float route each
+turn their real gate red.  Phase 5 remains deferred exactly as §7 says;
+no core reader or native tag work is included.

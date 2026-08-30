@@ -44,6 +44,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nl-prelude-trampoline)
 
 ;;;; Errors -----------------------------------------------------------
 
@@ -105,6 +106,54 @@ when OBJECT is neither a Result nor an Option."
         ((nl-some-p object) 'some)
         ((nl-none-p object) 'none)
         (t (signal 'nl-type-error (list caller object)))))
+
+;;;; Shared syntax-walker primitives ---------------------------------
+
+(defun nl--walk-proper-list (tail)
+  "Return the proper-list prefix of TAIL, dropping a dotted terminator.
+Static walkers must tolerate dotted source forms rather than iterating
+them with `dolist', which signals `wrong-type-argument'."
+  (let ((out nil))
+    (while (consp tail)
+      (push (car tail) out)
+      (setq tail (cdr tail)))
+    (nreverse out)))
+
+(defun nl--walk-quoted-p (form)
+  "Return non-nil when FORM is quoted data a syntax walker must skip.
+`(function (lambda ...))' remains live code because walkers may need to
+inspect its body for captures or annotated calls."
+  (and (consp form) (memq (car form) '(quote function))
+       (not (and (eq (car form) 'function)
+                 (consp (car (cdr form)))
+                 (eq (car (car (cdr form))) 'lambda)))))
+
+(defun nl--walk-backquote-p (form)
+  "Return non-nil when FORM is a backquote template."
+  (and (consp form) (memq (car form) '(\` backquote))))
+
+(defun nl--walk-unquoted (template acc)
+  "Collect TEMPLATE's unquote-position forms onto ACC.
+A backquote template is data except where unquote and
+unquote-splicing introduce live code."
+  (cond
+   ((not (consp template)) acc)
+   ((memq (car template) '(\, \,@ unquote unquote-splicing))
+    (cons (car (cdr template)) acc))
+   (t
+    (let ((rest template))
+      (while (consp rest)
+        (setq acc (nl--walk-unquoted (car rest) acc))
+        (setq rest (cdr rest)))
+      acc))))
+
+(defun nl--walk-live-parts (form)
+  "Return the parts of FORM a syntax walker should treat as code.
+For a backquote template these are its unquote positions; otherwise
+the result is a one-element list containing FORM."
+  (if (nl--walk-backquote-p form)
+      (nreverse (nl--walk-unquoted (car (cdr form)) nil))
+    (list form)))
 
 ;;;; Extraction -------------------------------------------------------
 

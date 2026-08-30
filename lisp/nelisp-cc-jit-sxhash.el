@@ -158,6 +158,14 @@
        ((= tag 6)
         (nl_jit_sxhash_mix (nl_jit_sxhash_mix h 5)
                             (extern-call nelisp_fnv1a ptr)))
+       ;; Unibyte strings use the same discriminator as legacy strings so
+       ;; representation-independent ASCII hashes identically.
+       ((= tag 14)
+        (nl_jit_sxhash_mix (nl_jit_sxhash_mix h 5)
+                            (extern-call nelisp_fnv1a ptr)))
+       ((= tag 15)
+        (nl_jit_sxhash_mix (nl_jit_sxhash_mix h 5)
+                            (extern-call nelisp_fnv1a ptr)))
        ;; Cons (7): mix tag byte (6 = Rust encoding), then hash car, then cdr.
        ;; sexp-payload-ptr(cons) = *NlConsBox; car at +0, cdr at +32.
        ((= tag 7)
