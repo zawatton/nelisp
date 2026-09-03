@@ -403,8 +403,10 @@ Codegen wiring (nelisp-standalone-build.el):
     `eval-elisp-source', the REPL, and a compiled artifact -- presence is a
     property of the linked BINARY, not of how it is invoked, so no entry
     path was ever "narrower" than another on the same build.
-  + `NELISP_READER_DYNAMIC' itself only takes effect for the (implicit)
-    default target, i.e. linux-x86_64: `nelisp-standalone-build-reader''s
+  + Historical note (measured 2026-08-23; superseded by the 2026-09-03
+    correction below): `NELISP_READER_DYNAMIC' itself only took effect for
+    the (implicit) default target, i.e. linux-x86_64:
+    `nelisp-standalone-build-reader''s
     target `pcase' sends `windows-x86_64'/`windows-aarch64' to
     `nelisp-link-units-pe32' and `macos-aarch64'/`linux-aarch64' to their
     own static branches unconditionally, never consulting the flag.  Windows
@@ -413,9 +415,9 @@ Codegen wiring (nelisp-standalone-build.el):
     standalone-reader'): the extern-call units still carry unresolved
     references to e.g. `toupper', and `nelisp-link-units-pe32' has no
     PE import-table/GOT machinery to resolve them, so the build hard-fails
-    with `nelisp-link--unresolved-symbol'.  The PE writer would need real
-    Windows DLL import-table emission (a separate, unstarted project) before
-    a Windows `target/nelisp.exe' could ever route `nl-ffi-call' to a DLL
+    with `nelisp-link--unresolved-symbol'.  At that date the PE writer would
+    have needed real Windows DLL import-table emission before a Windows
+    `target/nelisp.exe' could route `nl-ffi-call' to a DLL
     the way the ELF path routes it to a `.so' -- unrelated to the
     ~examples/ffi-cairo/~ Windows path below, which sidesteps this entirely
     by compiling to a `.o'/COFF object and linking with an external `cc'/
@@ -500,3 +502,53 @@ Codegen wiring (nelisp-standalone-build.el):
   the first "Before" row's platform-equivalent cells -- both built the
   ordinary way, both correctly void by the old design, neither told apart
   from "this NeLisp is too old to know what FFI is" until now.
+
+** 7.1 Windows PE correction (2026-09-03, Stage D1)
+
+  Section 7's claim that the PE writer has no import-table machinery is no
+  longer current.  Doc 138's socket/process work added a real PE import
+  directory to `nelisp-link-units-pe32'; the Windows reader already resolves
+  ordinary `extern-call' references through KERNEL32/SHELL32/WS2_32 imports.
+  Stage D1 now routes the fixed `nl-ffi-call' libc/libm subset through that
+  same mechanism on windows-x86_64.
+
+  The declarative FFI rows retain their ELF SONAME as the stable library key.
+  `nelisp-standalone--windows-reader-extern-dll-map' maps supported keys to a
+  Windows DLL, and both the Windows dispatch subset and PE import list are
+  derived from the original row table plus that map.  This preserves the
+  linux-x86_64 dispatch bytes while allowing platform policy to omit libraries
+  that are not part of Windows.  `libc.so.6' and `libm.so.6' map to the in-box
+  Universal CRT, `ucrtbase.dll'; FreeType is deliberately unmapped.  GnuTLS is
+  deliberately unmapped on windows: the target-native TLS surface uses
+  Schannel instead.
+
+  `NELISP_READER_DYNAMIC' remains the opt-in switch for linux-x86_64 only.
+  Windows does not reinterpret an ELF-linkage flag: windows-x86_64 installs the
+  real UCRT-backed arm in both its ordinary and flag-set builds because PE DLL
+  imports are intrinsic to that target.  windows-aarch64, linux-aarch64 and
+  macos-aarch64 retain the catchable unsupported arm.
+
+  Win64 ABI details are part of this path, not assumed from integer-only WinAPI
+  calls: the generated `sqrt' arm is `extern-call-f64', puts its positional
+  double argument in XMM0 and reads the result from XMM0.  Existing compiler
+  tests cover positional/mixed Win64 XMM assignment and Stage D1 adds a test of
+  the generated `nl-ffi-call' arm itself.  The smoke verifies `sqrt(4.0)=2.0'.
+  C `int' returns are separately normalized from zero-extended EAX to signed
+  i64 before Lisp boxing; `toupper(EOF)=-1' is the regression case.
+
+  Current availability amendment:
+
+  | Build | Current F / C |
+  |-------+---------------|
+  | linux-x86_64, static default | t / `nelisp-unsupported-primitive' |
+  | linux-x86_64, `NELISP_READER_DYNAMIC=1' | t / full existing ELF table |
+  | windows-x86_64, flag unset or set | t / real UCRT libc+libm subset |
+  | windows-aarch64 / linux-aarch64 / macos-aarch64 | t / `nelisp-unsupported-primitive' |
+  | host Emacs | nil / `void-function' (unchanged) |
+
+  TLS on windows-x86_64 is a separate, target-native primitive family rather
+  than an `nl-ffi-call' library mapping: `nelisp-tls-connect',
+  `nelisp-tls-send', `nelisp-tls-recv', `nelisp-tls-close', and
+  `nelisp-tls-protocol' drive Schannel through the PE SECUR32 imports.  The
+  family covers handshake, encrypted record I/O, negotiated-protocol query,
+  and graceful close; it is live in the ordinary Windows reader build.

@@ -75,14 +75,14 @@
 ;; ─────────────────────────────────────────────────────────────────────
 ;;
 ;; Tier-A gate measurement は最低 1MB workload 必要 (= measurement noise
-;; を target ratio 以下に押さえる)。`make test' 既定で 64KB smoke を回し、
+;; を target ratio 以下に押さえる)。`make test' 既定で 16K-codepoint smoke を回し、
 ;; NELISP_HEAVY_TESTS=1 で 1MB / 10MB tier-A gate measurement に拡張する。
 ;; pure-Elisp 1MB UTF-8 round-trip は ~60-70s wall = `make test' 既定 budget
 ;; を破壊するため heavy 階層に分離。
 ;;
 ;; +6 ERT (本 file):
 ;;
-;;   1. bench-tier-a-utf8-ratio-smoke      — 64KB UTF-8 ratio probe (always-on)
+;;   1. bench-tier-a-utf8-ratio-smoke      — 16K-codepoint UTF-8 ratio probe (always-on)
 ;;   2. bench-tier-a-utf8-ratio            — 1MB UTF-8 ratio gate (heavy)
 ;;   3. bench-tier-a-shift-jis-ratio       — 1MB SJIS ratio gate (heavy)
 ;;   4. bench-tier-a-euc-jp-ratio          — 1MB EUC-JP ratio gate (heavy)
@@ -149,7 +149,7 @@ SEED is fed to `random' so the payload differs across ERT runs but is
 reproducible for a given seed.  Mix of 1/2/3/4-byte codepoints exercises
 every UTF-8 branch.  Returns a multibyte string."
   (random seed)
-  (let ((out (make-string n-chars #x1F300))
+  (let ((out (make-vector n-chars 0))
         (i 0))
     (while (< i n-chars)
       (let ((bucket (mod (+ i (random 7)) 20)))
@@ -160,14 +160,14 @@ every UTF-8 branch.  Returns a multibyte string."
                ((< bucket 19) (+ #x3040 (mod (+ i (random 11)) 96)))
                (t             (+ #x1F300 (mod (+ i (random 13)) 256))))))
       (setq i (1+ i)))
-    out))
+    (concat out)))
 
 (defun nelisp-coding-bench-tier-a--make-japanese-payload (n-chars seed)
   "Build a CJK payload of N-CHARS codepoints, seeded by SEED.
 Mix of ASCII / hiragana / katakana / common kanji chosen to round-trip
 cleanly under both Shift-JIS (CP932) and EUC-JP."
   (random seed)
-  (let ((out (make-string n-chars #x4E00))
+  (let ((out (make-vector n-chars 0))
         (i 0))
     (while (< i n-chars)
       (let ((bucket (mod (+ i (random 5)) 4)))
@@ -178,7 +178,7 @@ cleanly under both Shift-JIS (CP932) and EUC-JP."
                ((= bucket 2) (+ #x30A1 (mod (+ i (random 11)) 90)))
                (t            (+ #x4E00 (mod (+ i (random 13)) 64))))))
       (setq i (1+ i)))
-    out))
+    (concat out)))
 
 ;;;; ─────────────────────────────────────────────────────────────────────
 ;;;; Throughput measurement
@@ -357,12 +357,12 @@ Returns (NELISP-RT . BASELINE-RT)."
            baseline-enc-mbsec baseline-dec-mbsec))))
 
 ;;;; ─────────────────────────────────────────────────────────────────────
-;;;; 1. UTF-8 ratio smoke (always-on, 64KB)
+;;;; 1. UTF-8 ratio smoke (always-on, 16K codepoints)
 ;;;; ─────────────────────────────────────────────────────────────────────
 
 (ert-deftest nelisp-coding-bench-tier-a-utf8-ratio-smoke ()
   "Light-weight UTF-8 tier-A ratio probe.
-Always-on; runtime-built 64KB UTF-8 payload, measures NeLisp vs baseline
+Always-on; runtime-built 16384-codepoint UTF-8 payload, measures NeLisp vs baseline
 round-trip throughput, reports ratio.  No hard gate (probe shape only).
 
 K1 BCF safety: payload built via runtime `random' loop, encode/decode

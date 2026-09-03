@@ -728,8 +728,8 @@ Each init sees all previously introduced lex/dyn bindings."
 
 (defun nelisp-bc--compile-while (ctx test body)
   "Compile (while TEST BODY...) — always returns nil."
-  (let ((top-label (cl-gensym "bc-while-top-"))
-        (end-label (cl-gensym "bc-while-end-")))
+  (let ((top-label (gensym "bc-while-top-"))
+        (end-label (gensym "bc-while-end-")))
     (nelisp-bc--emit-label ctx top-label)
     (nelisp-bc--compile-form ctx test)
     (nelisp-bc--emit-jump ctx 'GOTO-IF-NIL end-label)
@@ -761,8 +761,8 @@ Each init sees all previously introduced lex/dyn bindings."
 
 (defun nelisp-bc--compile-if (ctx test then else-body)
   "Compile (if TEST THEN . ELSE-BODY) leaving one value on stack."
-  (let ((else-label (cl-gensym "bc-else-"))
-        (end-label  (cl-gensym "bc-endif-"))
+  (let ((else-label (gensym "bc-else-"))
+        (end-label  (gensym "bc-endif-"))
         (sp-before-branches nil))
     (nelisp-bc--compile-form ctx test)
     (nelisp-bc--emit-jump ctx 'GOTO-IF-NIL else-label)
@@ -815,7 +815,7 @@ Result = nil if any sub-form is nil, else last sub-form's value."
    ((null (cdr args))
     (nelisp-bc--compile-form ctx (car args)))
    (t
-    (let ((end-label (cl-gensym "bc-and-end-"))
+    (let ((end-label (gensym "bc-and-end-"))
           (sp-after-first nil))
       ;; Compile first arg, leave on stack
       (nelisp-bc--compile-form ctx (car args))
@@ -850,7 +850,7 @@ Result = first non-nil sub-form, or nil if all are nil."
    ((null (cdr args))
     (nelisp-bc--compile-form ctx (car args)))
    (t
-    (let ((end-label (cl-gensym "bc-or-end-"))
+    (let ((end-label (gensym "bc-or-end-"))
           (sp-after-first nil))
       (nelisp-bc--compile-form ctx (car args))
       (setq sp-after-first (nelisp-bc--ctx-sp ctx))
@@ -989,8 +989,8 @@ emitted."
 
 (defun nelisp-bc--compile-catch (ctx tag body)
   "Compile (catch TAG BODY...) — host-catch wrapped nested dispatch."
-  (let ((handler-label (cl-gensym "bc-catch-handler-"))
-        (end-label     (cl-gensym "bc-catch-end-")))
+  (let ((handler-label (gensym "bc-catch-handler-"))
+        (end-label     (gensym "bc-catch-end-")))
     (nelisp-bc--compile-form ctx tag)
     (nelisp-bc--emit-jump ctx 'PUSH-CATCH handler-label)
     ;; PUSH-CATCH pops TAG (sp -=1 conceptually) and re-enters dispatch;
@@ -1018,8 +1018,8 @@ emitted."
 
 (defun nelisp-bc--compile-unwind-protect (ctx bodyform cleanup-forms)
   "Compile (unwind-protect BODYFORM CLEANUP...) via host unwind-protect."
-  (let ((cleanup-label (cl-gensym "bc-unwind-cleanup-"))
-        (end-label     (cl-gensym "bc-unwind-end-")))
+  (let ((cleanup-label (gensym "bc-unwind-cleanup-"))
+        (end-label     (gensym "bc-unwind-end-")))
     (nelisp-bc--emit-jump ctx 'PUSH-UNWIND cleanup-label)
     (nelisp-bc--compile-form ctx bodyform)
     (nelisp-bc--emit ctx 'POP-HANDLER)
@@ -1060,9 +1060,9 @@ re-signal via a compiled `signal' call."
   (when (and var (or (eq var t) (keywordp var)))
     (signal 'nelisp-bc-error
             (list "condition-case VAR must be an ordinary symbol" var)))
-  (let ((handler-entry-label (cl-gensym "bc-cc-entry-"))
-        (end-label           (cl-gensym "bc-cc-end-"))
-        (re-raise-label      (cl-gensym "bc-cc-reraise-"))
+  (let ((handler-entry-label (gensym "bc-cc-entry-"))
+        (end-label           (gensym "bc-cc-end-"))
+        (re-raise-label      (gensym "bc-cc-reraise-"))
         (saved-outer-sp      (nelisp-bc--ctx-sp ctx)))
     (nelisp-bc--emit-jump ctx 'PUSH-CC handler-entry-label)
     (nelisp-bc--compile-form ctx bodyform)
@@ -1084,7 +1084,7 @@ re-signal via a compiled `signal' call."
     (dolist (handler handlers)
       (let ((conds (car handler))
             (hbody (cdr handler))
-            (next-label (cl-gensym "bc-cc-next-")))
+            (next-label (gensym "bc-cc-next-")))
         ;; stack: [... err]
         ;; Call (nelisp-bc--cc-match-p CONDS err) — leaves bool above err.
         (let ((idx (nelisp-bc--add-const ctx 'nelisp-bc--cc-match-p)))

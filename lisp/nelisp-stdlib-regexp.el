@@ -39,6 +39,8 @@
   "Number of compiled regexp cache misses.")
 (defvar nlre--string-match-calls 0
   "Number of calls to `nlre-string-match'.")
+(defvar nlre--leading-filter-calls 0
+  "Number of `nlre-string-match' calls that selected the leading filter.")
 (defvar nlre--string-match-counter-file nil
   "When non-nil, file path receiving periodic `nlre-string-match' call counts.")
 (defvar nlre--string-match-counter-interval 1000
@@ -464,6 +466,58 @@ Return end-pos or nil."
 
 ;; ---- public entry ----
 
+;; Doc 201 §5.4.  `nlre-string-match' retries at every start position, and
+;; each retry used to cost a fresh `make-vector' plus a walk into
+;; `nlre--match-list''s dispatch chain -- even where the pattern's very
+;; first node is a literal that the character at that position plainly is
+;; not.  Two changes, both confined to the scan loop:
+;;
+;;   1. the capture vector is allocated ONCE per call and cleared per
+;;      attempt, instead of once per attempt;
+;;   2. when the pattern must begin with one specific character, a position
+;;      whose character is not that one is skipped with a single `aref' and
+;;      `eq' rather than an attempt.
+;;
+;; The filter fires ONLY when the first node must match exactly one known
+;; character.  Anything optional (`:star'/`:opt' and the lazy forms),
+;; zero-width (`:bol', `:wordb', ...), structural (`:alt'/`:group'/`:seq')
+;; or multi-character (`:set'/`:any'/`:word'/`:space') answers nil and the
+;; loop runs exactly as it did: guessing wrong here would skip a real
+;; match, so the question is only asked where the answer is certain.
+;;
+;; Measured on the shape `skk-version.el' pays -- 42 `string-match' calls
+;; over ~43-character strings -- on this repo's windows-x86_64 standalone,
+;; 2026-08-30, three runs each side, interleaved in one stretch on an idle
+;; machine:
+;;
+;;   never-matching `ddskk-[0-9]+\.[0-9]+'  2.68-2.88s -> 0.47-0.52s  (5.5x)
+;;   matching       `package-[0-9]+/lisp'   1.91-2.00s -> 1.40-1.62s  (1.3x)
+;;   lead-less      `[0-9]+/lisp'           4.67-4.73s -> 4.84-5.42s  (0.95x)
+;;
+;; The last row is a real, small COST, not noise: a control build carrying
+;; the two new defuns below but never calling them measured 4.59-4.75s,
+;; i.e. code layout does not explain it, and splitting the scan into two
+;; loops (so the lead-less path executes no filter test at all) did not
+;; remove it either.  Counting interpreter calls says this path should have
+;; got marginally CHEAPER -- one `>' where there used to be a `make-vector'
+;; -- so the remaining explanation is allocation/collection behaviour
+;; rather than work done, and it is left measured but unexplained.  ~5% on
+;; patterns with no leading literal buys 5.5x on those that have one, which
+;; is nearly all of them.
+(defun nlre--leading-lit-char (nodes)
+  "Return the one character every match of NODES must start with, or nil."
+  (and (consp nodes)
+       (let ((nd (car nodes)))
+         (and (consp nd) (eq (car nd) :lit) (nth 1 nd)))))
+
+(defun nlre--caps-clear (v)
+  "Set every slot of vector V to nil.
+`fillarray' is not available on the standalone reader prelude."
+  (let ((k (length v)))
+    (while (> k 0)
+      (setq k (1- k))
+      (aset v k nil))))
+
 (defun nlre-string-match (regexp string &optional start)
   "Pure-elisp `string-match'.  Return match start index, or nil.
 Sets `nlre--match-data' (and host match-data when available via set-match-data)."
@@ -480,16 +534,50 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
          (n (length string))
          (i (or start 0))
          (ng (cdr compiled))
+         (lead (nlre--leading-lit-char top))
+         ;; Fold the required character the same way the matcher folds the
+         ;; one it is compared against, so `case-fold-search' does not make
+         ;; the filter reject a position the matcher would have accepted.
+         (lead (and lead (nlre--fold-char lead)))
+         ;; One scratch vector for the whole scan.  `:savestart'/`:saveend'
+         ;; put back whatever they overwrote when their continuation fails,
+         ;; so the only state a failed attempt can leave behind is a group
+         ;; that matched inside it; clearing covers that.  Patterns with no
+         ;; group (ng = 1) have nothing to clear -- slot 0 is written on
+         ;; success and read nowhere else.
+         (caps (make-vector ng nil))
          (hit nil))
-    (while (and (not hit) (<= i n))
-      (setq nlre--caps (make-vector ng nil))
-      (let ((e (nlre--match-list top string i n)))
-        (when e
-          (aset nlre--caps 0 (cons i e))
-          (setq hit i)))
-      (unless hit (setq i (1+ i))))
+    (setq nlre--caps caps)
+    (when lead
+      (setq nlre--leading-filter-calls (1+ nlre--leading-filter-calls)))
+    ;; Two loops rather than one with the filter test inside it.  The
+    ;; filter exists to make a rejected position cost almost nothing, and a
+    ;; `lead' test in a shared loop hands that cost straight back to every
+    ;; pattern that has no leading literal: measured at 4-7% on a
+    ;; `[0-9]+/lisp' sweep, with a control build (the two new defuns
+    ;; present but never called) ruling out code layout as the cause.
+    (if lead
+        ;; `(< i n)': a `:lit' cannot match where there is no character, so
+        ;; the i = n attempt the other loop still makes is dead here.
+        (while (and (not hit) (< i n))
+          (if (not (eq (nlre--fold-char (aref string i)) lead))
+              (setq i (1+ i))
+            (when (> ng 1) (nlre--caps-clear caps))
+            (let ((e (nlre--match-list top string i n)))
+              (if e
+                  (progn (aset caps 0 (cons i e)) (setq hit i))
+                (setq i (1+ i))))))
+      (while (and (not hit) (<= i n))
+        (when (> ng 1) (nlre--caps-clear caps))
+        (let ((e (nlre--match-list top string i n)))
+          (if e
+              (progn (aset caps 0 (cons i e)) (setq hit i))
+            (setq i (1+ i))))))
     (when hit
-      (setq nlre--last-caps nlre--caps)
+      ;; `caps' is this call's own vector -- the reuse above is within one
+      ;; scan, never across calls -- so handing it straight to
+      ;; `nlre--last-caps' is what the per-attempt `make-vector' did too.
+      (setq nlre--last-caps caps)
       hit)))
 
 (defvar nlre--last-caps nil "Capture vector of the last successful match.")
@@ -503,9 +591,51 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
 
 ;; ---- regexp-dependent string helpers (built on nlre-string-match) ----
 
+;; PERF (cold-start hand-off follow-up, 2026-08-30): a SEPARATORS of
+;; exactly one byte, none of them an Emacs-regexp metacharacter, can never
+;; behave differently split literally vs. through the regexp engine below
+;; -- there is nothing for `nlre-string-match' to buy over a plain
+;; byte-compare. Measured directly: splitting a real ~2.3KB, 59-entry
+;; Windows PATH on ";" cost 3.2-3.4s through the regexp engine vs 0.4s via
+;; `nelisp--split-on-char' (scripts/nelisp-stdlib-prelude.el) -- an 8x
+;; difference for identical output. `executable-find' was fixed to call
+;; `nelisp--split-on-char' directly (dev/nelisp commit 70cd5852); this
+;; extends the same fast path to every OTHER caller of `split-string'/
+;; `nlre-split-string' with a single-byte literal separator, since a
+;; caller other than `executable-find' hitting this same cost was flagged
+;; as a known follow-up in that commit and in docs/design/201 §5.2.
+(unless (fboundp 'nelisp--split-on-char)
+  ;; The standalone prelude normally supplies this helper.  Hosted users of
+  ;; this library do not load that prelude, so keep an identical fallback
+  ;; here rather than sending their literal separators through the regexp
+  ;; engine.
+  (defun nelisp--split-on-char (string char omit-empty)
+    (let ((start 0)
+          (idx 0)
+          (len (length string))
+          (parts nil))
+      (while (<= idx len)
+        (if (or (= idx len) (= (aref string idx) char))
+            (let ((part (substring string start idx)))
+              (unless (and omit-empty (= (length part) 0))
+                (setq parts (cons part parts)))
+              (setq start (1+ idx))))
+        (setq idx (1+ idx)))
+      (nreverse parts))))
+
+(defconst nlre--split-single-byte-metachars '(?. ?* ?+ ?\? ?\[ ?\] ?^ ?$ ?\\)
+  "Emacs-regexp metacharacters that make a would-be one-byte SEPARATOR to
+`nlre-split-string' unsafe to treat as a plain literal byte.")
+
 (defun nlre-split-string (string &optional separators omit-nulls)
   "Like `split-string'.  Default SEPARATORS = whitespace run, which also
 implies OMIT-NULLS and leading/trailing trim (matching GNU Emacs)."
+  (if (and separators (= (length separators) 1)
+           (not (memq (aref separators 0) nlre--split-single-byte-metachars)))
+      (nelisp--split-on-char string (aref separators 0) omit-nulls)
+    (nlre-split-string--regexp-path string separators omit-nulls)))
+
+(defun nlre-split-string--regexp-path (string separators omit-nulls)
   (let* ((default (null separators))
          (sep (or separators "[ \f\t\n\r\v]+"))
          (omit (if default t omit-nulls))

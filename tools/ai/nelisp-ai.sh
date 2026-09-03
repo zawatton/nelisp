@@ -378,8 +378,15 @@ cmd_compile() {
     # nl-* packages.  Keep the two in step: a glob that quietly stops
     # matching is the same failure this harness exists to catch, and it
     # is easiest to introduce right here.
-    srcs=$(ls src/nelisp*.el packages/*/src/nelisp*.el \
-              packages/*/src/nl-*.el 2>/dev/null || true)
+    # Keep core ahead of packages, as the Makefile does with its separate
+    # SRCS and PACKAGE_SRCS lists.  One `ls' over all three globs globally
+    # sorts packages/ before src/; package compilation can then `require'
+    # core sources before their lint pass and mask unknown-function errors.
+    core_srcs=$(ls src/nelisp*.el 2>/dev/null || true)
+    package_srcs=$(ls packages/*/src/nelisp*.el \
+                      packages/*/src/nl-*.el 2>/dev/null || true)
+    srcs="$core_srcs
+$package_srcs"
     if [ -z "$srcs" ]; then
         "$here/gate-report.sh" --name compile --kind lint --ran 0 --failed 1 \
             --reason "no source file matched" --command "nelisp-ai.sh compile"

@@ -304,14 +304,15 @@ streams fall back to stdout."
 ;; standalone runs; `make ns-gate' reports any drift.
 (defun nelisp--path-split (s)
   ;; Split S on / and drop empty components, so a// collapses like Emacs.
-  (let ((out nil) (cur "") (i 0) (n (length s)))
+  ;; One substring per component rather than one concat per character -- see
+  ;; the prelude copy's own comment (Doc 201 §6.8) for the measurement.
+  (let ((out nil) (start 0) (i 0) (n (length s)))
     (while (< i n)
-      (if (eq (aref s i) ?/)
-          (progn (when (> (length cur) 0) (setq out (cons cur out)))
-                 (setq cur ""))
-        (setq cur (concat cur (substring s i (1+ i)))))
+      (when (eq (aref s i) ?/)
+        (when (> i start) (setq out (cons (substring s start i) out)))
+        (setq start (1+ i)))
       (setq i (1+ i)))
-    (when (> (length cur) 0) (setq out (cons cur out)))
+    (when (> n start) (setq out (cons (substring s start n) out)))
     (nreverse out)))
 
 ;; This used to concatenate and stop -- no `.', no `..', no `~', no

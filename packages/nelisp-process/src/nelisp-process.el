@@ -86,8 +86,15 @@
 ;; process package self-sufficient for its own PATH lookup surface so
 ;; `nelisp-call-process' can run absolute and PATH-resolved programs even
 ;; when `nelisp-sys.el' was not actually loaded.
+;;
+;; Byte-identical to the scripts/nelisp-stdlib-prelude.el copy (see that
+;; file for why ":" alone is wrong on windows-nt: it shreds a real Windows
+;; PATH on every drive-letter colon).  `system-type' may be unbound when
+;; this package is loaded standalone (its own doc above), hence the
+;; `boundp' guard rather than a bare `eq'.
 (unless (boundp 'path-separator)
-  (defconst path-separator ":"))
+  (defconst path-separator
+    (if (and (boundp 'system-type) (eq system-type 'windows-nt)) ";" ":")))
 
 (unless (fboundp 'nelisp-sys-getenv)
   (defun nelisp-sys-getenv (name)

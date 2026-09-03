@@ -3917,6 +3917,30 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-aot-compiler/win64-dynalign-nine-arg-call-keeps-call-aligned ()
+  "Dynamic alignment keeps a 9-arg SSPI-shaped call 16-byte aligned.
+The nontrivial eighth argument forces the general spill path.  Once that path
+executes `and rsp,-16', temp-save parity is irrelevant: five outgoing stack
+arguments require 32 + 40 + 8 = 80 bytes before CALL."
+  (let ((path (make-temp-file "nelisp-win64-dynalign-9arg-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object
+           '(defun probe (ctx credentials expiry)
+              (extern-call AcquireCredentialsHandleW
+                           0 1 2 0 credentials 0 0 (+ ctx 8) expiry))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     text
+                     ;; and rsp,-16; sub rsp,80.  The crashing form emitted
+                     ;; sub rsp,72, entering SspiCli with rsp misaligned.
+                     (unibyte-string #x48 #x83 #xe4 #xf0
+                                     #x48 #x81 #xec #x50 #x00 #x00 #x00)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-aot-compiler/win64-internal-call-stack-gp-arg ()
   "Win64 internal calls place arg5 above shadow space instead of rejecting it."
   (let ((path (make-temp-file "nelisp-win64-call-stack-" nil ".obj")))

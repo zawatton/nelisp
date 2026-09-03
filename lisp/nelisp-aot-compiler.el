@@ -5598,13 +5598,112 @@ avoids treating arbitrary native pointers as tagged integers."
     ;; machine integer -- `str-len' is a field read, `str-byte-at' a
     ;; `movzbq' -- and none of them yields a Sexp slot.
     str-len str-byte-at str-eq str-char-count str-is-alphanumeric-at
-    mut-str-len)
+    mut-str-len
+    ;; Sentinels and predicates, per the emit comments each one carries:
+    ;; `mut-str-push-byte' / `mut-str-push-codepoint' return "rax = 1
+    ;; sentinel", `str-codepoint-at' "rax = 1 on success, 0 on invalid".
+    mut-str-push-byte mut-str-push-codepoint str-codepoint-at
+    ;; `and'/`or' now answer in the raw domain on every path: the arms are
+    ;; unwrapped for the zero test, and the form's value IS the arm that
+    ;; stopped it.  Boxing the whole form at the boundary is what keeps the
+    ;; test raw and the value a Sexp -- converting an arm instead would
+    ;; hand the short-circuit a pointer to test.
+    and or)
   "Grammar heads whose value is a raw machine integer, not a Sexp pointer.
 
 Consulted where a raw value would otherwise be handed to something that
 reads it back as a value word.  Kept as one list because the same answer
 is wanted in more than one place and a second hand-written copy is how
 these two representations drift apart again.")
+
+(defconst nelisp-aot-compiler--sexp-ptr-producing-heads
+  '(;; Both answer with the caller-owned SLOT they wrote into -- "Returns
+    ;; SLOT in rax" in their emit comments -- so the value already IS a
+    ;; Sexp pointer.  Boxing one would wrap a string in an integer.
+    mut-str-make-empty mut-str-finalize)
+  "Grammar heads whose value is already a Sexp pointer.
+
+The counterpart of `--raw-i64-producing-heads'.  A head in neither list is
+unclassified, and unclassified is a third answer here, not a synonym for
+either: it is why `--sexp-ptr-returning-p' declines rather than guesses.")
+
+(defvar nelisp-aot-compiler--sexp-ptr-returning-names nil
+  "Names whose normalised body answers with a Sexp pointer on every path.
+
+Both halves of the boundary rule key off this, and they have to agree: a
+`call' node may only DECLARE `sexp-ptr' for a callee whose return was
+actually normalised, or `--ir-as-raw-i64' unwraps a raw word through the
+pointer arm.  Measured: a helper whose whole body was
+`(mut-str-push-byte out 68)' -- raw 1, and at the time unclassified, so
+not boxed -- had its caller read 1 as a tagged immediate and answer
+`1 >> 2' = 0, turning the enclosing `and' false and the report into `0'.
+
+Declining is the safe answer, not a gap: an unclassified callee keeps the
+older lowering, where nothing unwraps a call result.")
+
+(defun nelisp-aot-compiler--tail-leaves (form)
+  "Return FORM's value-producing leaves, descending the same forms
+`--as-sexp-ptr-form' converts."
+  (cond
+   ((not (consp form)) (list form))
+   ((eq (car form) 'progn)
+    (if (cdr form) (nelisp-aot-compiler--tail-leaves (car (last form))) (list form)))
+   ((memq (car form) '(let let*))
+    (if (cddr form) (nelisp-aot-compiler--tail-leaves (car (last form))) (list form)))
+   ((eq (car form) 'if)
+    (append (nelisp-aot-compiler--tail-leaves (nth 2 form))
+            (apply #'append
+                   (mapcar #'nelisp-aot-compiler--tail-leaves (nthcdr 3 form)))))
+   ((eq (car form) 'cond)
+    (apply #'append
+           (mapcar (lambda (clause)
+                     (if (and (consp clause) (cdr clause))
+                         (nelisp-aot-compiler--tail-leaves (car (last clause)))
+                       (list clause)))
+                   (cdr form))))
+   (t (list form))))
+
+(defun nelisp-aot-compiler--sexp-ptr-returning-names (source called)
+  "Return the subset of CALLED whose body answers with a Sexp pointer.
+
+A greatest fixpoint over the call graph: start by assuming every candidate
+qualifies, then drop any whose body has a tail leaf nothing can place --
+neither a parameter, nor a form this file classifies, nor a call to
+another candidate still standing -- and repeat until nothing drops."
+  (let ((bodies nil))
+    (nelisp-aot-compiler--walk-source
+     source
+     (lambda (form)
+       (when (and (consp form) (eq (car form) 'defun) (symbolp (nth 1 form))
+                  (memq (nth 1 form) called))
+         (push (cons (nth 1 form)
+                     (cons (nth 2 form) (car (last form))))
+               bodies))))
+    (let ((ok (mapcar #'car bodies))
+          (changed t))
+      (while changed
+        (setq changed nil)
+        (dolist (entry bodies)
+          (when (memq (car entry) ok)
+            (let ((params (car (cdr entry)))
+                  (body (cdr (cdr entry))))
+              (unless (cl-every
+                       (lambda (leaf)
+                         (cond
+                          ((integerp leaf) t)
+                          ((and (symbolp leaf) (memq leaf params)) t)
+                          ((symbolp leaf) nil)
+                          ((not (consp leaf)) nil)
+                          ((memq (car leaf)
+                                 nelisp-aot-compiler--raw-i64-producing-heads) t)
+                          ((memq (car leaf)
+                                 nelisp-aot-compiler--sexp-ptr-producing-heads) t)
+                          ((memq (car leaf) ok) t)
+                          (t nil)))
+                       (nelisp-aot-compiler--tail-leaves body))
+                (setq ok (delq (car entry) ok))
+                (setq changed t))))))
+      ok)))
 
 (defun nelisp-aot-compiler--as-sexp-ptr-leaf (form fenv)
   "Return FORM in the representation this unit's defuns take arguments in.
@@ -9822,8 +9921,28 @@ functions `((NAME . ARITY) ...)'."
                           (let ((nelisp-aot-compiler--aot-test-position
                                  (and nelisp-aot-compiler--aot-test-position
                                       (nelisp-aot-compiler--aot-test-form-p e))))
-                            (nelisp-aot-compiler--parse-value
-                             e env fenv defuns)))
+                            ;; `--emit-logic' short-circuits on a zero test of
+                            ;; the machine word, and the arm that stops it is
+                            ;; also the form's value.  One register serving as
+                            ;; both is why an arm has to be raw: a Sexp pointer
+                            ;; is never zero, so a boxed false would read true
+                            ;; and the short-circuit would never fire.  Unwrap
+                            ;; instead of leaving the pointer -- that keeps
+                            ;; `0 is false' meaning the same thing whichever
+                            ;; representation the arm arrived in.
+                            ;;
+                            ;; Runtime-entered lane only.  The reader's own
+                            ;; sources are the other lane, and there a boxed
+                            ;; arm is a Sexp being tested for presence, not an
+                            ;; integer: unwrapping those built a binary whose
+                            ;; whole extras tier came apart while the host
+                            ;; suite stayed green, because the host suite does
+                            ;; not run what the compiler emitted.
+                            (let ((arm (nelisp-aot-compiler--parse-value
+                                        e env fenv defuns)))
+                              (if nelisp-aot-compiler--runtime-entry-params
+                                  (nelisp-aot-compiler--ir-as-raw-i64 arm)
+                                arm))))
                         args)))
              (entry-reprs (nelisp-aot-compiler--repr-snapshot fenv))
              (forms (funcall parse))
@@ -9834,6 +9953,7 @@ functions `((NAME . ARITY) ...)'."
             (nelisp-aot-compiler--make-ir 'logic
                   :op op
                   :id (nelisp-aot-compiler--gensym (symbol-name op))
+                  :repr (and nelisp-aot-compiler--runtime-entry-params 'raw-i64)
                   :forms forms)
           ;; The arms were parsed against the entry state, so once the
           ;; slot is boxed before the form their reads of it are stale.
@@ -9849,6 +9969,8 @@ functions `((NAME . ARITY) ...)'."
                  (node (nelisp-aot-compiler--make-ir 'logic
                              :op op
                              :id (nelisp-aot-compiler--gensym (symbol-name op))
+                             :repr (and nelisp-aot-compiler--runtime-entry-params
+                                        'raw-i64)
                              :forms (funcall parse))))
             (if (null coercions)
                 node
@@ -11525,7 +11647,7 @@ functions `((NAME . ARITY) ...)'."
               ;; to unwrap: `(+ (find-byte text 9 pos) 1)' then added 1 to a
               ;; pointer and the mask came out 0 instead of 10.
               :repr (and nelisp-aot-compiler--runtime-entry-params
-                        (memq name nelisp-aot-compiler--internally-called-names)
+                        (memq name nelisp-aot-compiler--sexp-ptr-returning-names)
                         'sexp-ptr)
                           :args (mapcar
                                  (lambda (a)
@@ -11552,7 +11674,7 @@ functions `((NAME . ARITY) ...)'."
               ;; to unwrap: `(+ (find-byte text 9 pos) 1)' then added 1 to a
               ;; pointer and the mask came out 0 instead of 10.
               :repr (and nelisp-aot-compiler--runtime-entry-params
-                        (memq name nelisp-aot-compiler--internally-called-names)
+                        (memq name nelisp-aot-compiler--sexp-ptr-returning-names)
                         'sexp-ptr)
               :args (mapcar (lambda (a)
                               (nelisp-aot-compiler--parse-value
@@ -12042,7 +12164,7 @@ Returns one of:
              ;; a raw word to dereference.
              (return-body (if (and param-repr
                                    (memq name
-                                         nelisp-aot-compiler--internally-called-names))
+                                         nelisp-aot-compiler--sexp-ptr-returning-names))
                               (nelisp-aot-compiler--as-sexp-ptr-form
                                body parse-fenv)
                             body))
@@ -14247,6 +14369,21 @@ this file, never a re-entrant dispatch back into `nl_eval_inner'.
 Consecutive extern calls each do their own save immediately before
 their own restore, so the slot is never live across another save.")
 
+(defconst nelisp-aot-compiler--win64-dynamic-align-names
+  '(CreateFileW ReadFile WriteFile CloseHandle
+    CreateProcessW WaitForSingleObject GetExitCodeProcess
+    VirtualAlloc VirtualFree CreatePipe SetHandleInformation PeekNamedPipe
+    GetLastError GetEnvironmentStringsW FreeEnvironmentStringsW
+    WSAStartup WSAGetLastError socket ioctlsocket setsockopt bind listen accept
+    connect send recv WSAPoll getsockopt closesocket
+    AcquireCredentialsHandleW InitializeSecurityContextW ApplyControlToken
+    CompleteAuthToken
+    QueryContextAttributesW EncryptMessage DecryptMessage
+    FreeContextBuffer DeleteSecurityContext
+    FreeCredentialsHandle
+    toupper tolower sqrt pow sin cos hypot ldexp)
+  "Win64 imports whose generated nested call sites realign rsp dynamically.")
+
 (defun nelisp-aot-compiler--emit-extern-call (node buf)
   "Emit a SysV AMD64 call to an extern symbol NODE.
 Doc 100 §100.A introduced the all-i64 form; Doc 122 §122.C extends
@@ -14424,11 +14561,18 @@ same branch and emit the same byte count."
           (if win64-p
               ;; Win64 extern calls dynamically align rsp immediately before
               ;; reserving the outgoing area below, so only the outgoing stack
-              ;; arguments disturb the aligned base.
-              (= (logand (+ nelisp-aot-compiler--rsp-temp-depth
-                             (length stack-args))
-                          1)
-                 1)
+              ;; arguments disturb the aligned base.  In particular, do NOT
+              ;; count the temporary argument saves here: `and rsp,-16'
+              ;; discards their parity.  AcquireCredentialsHandleW's nine-arg
+              ;; call (five stack args) exposed the old formula: it counted
+              ;; nine temp saves too, omitted the required pad, and entered
+              ;; SspiCli with rsp misaligned.
+              (if (memq name nelisp-aot-compiler--win64-dynamic-align-names)
+                  (= (logand (length stack-args) 1) 1)
+                (= (logand (+ nelisp-aot-compiler--rsp-temp-depth
+                                (length stack-args))
+                             1)
+                   1))
             (= (logand (+ nelisp-aot-compiler--rsp-temp-depth
                           (length stack-args))
                        1)
@@ -14441,23 +14585,17 @@ same branch and emit the same byte count."
          (spill-needs-align
           ;; Same invariant: count only the pushed temps + outgoing stack
           ;; args, not the enclosing arity (matches the win64 branch).
-          (= (logand (+ nelisp-aot-compiler--rsp-temp-depth
-                        (length stack-args)
-                        arg-count)
-                     1)
-             1))
+          (if (and win64-p
+                   (memq name nelisp-aot-compiler--win64-dynamic-align-names))
+              (= (logand (length stack-args) 1) 1)
+            (= (logand (+ nelisp-aot-compiler--rsp-temp-depth
+                           (length stack-args)
+                           arg-count)
+                        1)
+               1)))
          (win64-dynamic-align-p
-          (and win64-p (memq name '(CreateFileW ReadFile WriteFile CloseHandle
-                                     CreateProcessW WaitForSingleObject
-                                     GetExitCodeProcess VirtualAlloc VirtualFree
-                                     ;; fix/windows-env-inherit: startup
-                                     ;; `nl_os_environ_init' reaches these from a
-                                     ;; nested `let*' -- same corruption-risk
-                                     ;; depth as the CreateFileW/... entries
-                                     ;; above (see nelisp-standalone-build.el's
-                                     ;; windows os-base-forms comment).
-                                     GetEnvironmentStringsW
-                                     FreeEnvironmentStringsW))))
+          (and win64-p
+               (memq name nelisp-aot-compiler--win64-dynamic-align-names)))
          (call-temp-save-count 0)
          (call-needs-align needs-align))
     (when (and (not win64-p)
@@ -20613,6 +20751,10 @@ register budgeting while ELF/Mach-O keep SysV."
          (nelisp-aot-compiler--internally-called-names
           (and nelisp-aot-compiler--runtime-entry-params
                (nelisp-aot-compiler--internally-called-defun-names source)))
+         (nelisp-aot-compiler--sexp-ptr-returning-names
+          (and nelisp-aot-compiler--internally-called-names
+               (nelisp-aot-compiler--sexp-ptr-returning-names
+                source nelisp-aot-compiler--internally-called-names)))
          (ir (unless empty-source-p
                (nelisp-aot-compiler--parse source nil)))
          (collected (and ir (nelisp-aot-compiler--collect-strings ir)))

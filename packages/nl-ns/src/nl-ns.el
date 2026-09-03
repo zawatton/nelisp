@@ -1252,40 +1252,12 @@ BASELINE is nil, a baseline plist, or a path accepted by
 ;; new.  Removing a divergence is also visible -- the entry goes stale --
 ;; so the list cannot quietly grow stale in the other direction either.
 
-;; 2026-08-23 Windows gate-battery inventory (target/ai/windows-inventory-
-;; 2026-08-23.md on feat/windows-gate-inventory) measured 19-20 of the
-;; digests this function returns differing from the Linux-pinned baseline,
-;; with the underlying collision set itself apparently unchanged
-;; (ns-inventory/ns-gate found the same number of collisions, only the
-;; fingerprints moved) -- consistent with the same symbols producing a
-;; different %S print form of FORM on Windows.  Investigated on Linux and
-;; not confirmed:
-;;
-;;   * CRLF-vs-LF file content -- tested directly by reading a real
-;;     multi-line-docstring fixture through `nl-ns--read-file-entry' both
-;;     as written (LF) and as a byte-for-byte CRLF-converted copy: the
-;;     parsed :forms and their %S/sha1 were byte-identical between the
-;;     two.  Emacs's own `insert-file-contents' coding-system detection
-;;     strips a carriage return before `read' ever sees it, so one that
-;;     survives a Windows git checkout inside a docstring or string
-;;     literal does not reach FORM through this code path.  This rules
-;;     out the most obvious guess, not every possible one -- it does not
-;;     rule out that same character entering some OTHER way (a
-;;     coding-system that fails to auto-detect DOS EOL in some Windows
-;;     Emacs configuration, for instance).
-;;   * Path-separator-sensitive sort order -- both `nl-ns-gate--files'
-;;     (`directory-files-recursively') and `nl-ns-inventory--files'
-;;     (`file-expand-wildcards') are pure Elisp; both always return
-;;     `/'-separated paths on every `system-type', so the `sort files
-;;     #'string<' below should order identically on Windows.  Not
-;;     directly exercised on a Windows filesystem from here.
-;;
-;; Neither hypothesis reproduces the divergence, so the real mechanism is
-;; still open.  To narrow it on the actual machine: dump the :heads plist
-;; this function's caller attaches to each ns-collision-divergent finding
-;; (`nl-ns--check-collisions', above) for the 19-20 symbols that moved,
-;; and diff the exact FORM text Linux vs Windows -- which byte differs is
-;; the fastest way to also learn why.
+;; The 2026-08-23 Windows inventory saw 19-20 fingerprints move while the
+;; collision set stayed fixed.  Reproduced 2026-09-03: `secure-hash' encodes
+;; a multibyte string using the current buffer's file coding system.  An
+;; Emacs child of MSYS make selected `japanese-shift-jis-dos', while direct
+;; invocation selected UTF-8, so the same printed forms hashed differently.
+;; Encode explicitly below; the accepted key is about the form, not the host.
 (defun nl-ns--definition-shape (files analysis symbol)
   "Return a short digest of how SYMBOL is defined across FILES.
 
@@ -1297,7 +1269,9 @@ accepting a divergence should accept THAT divergence, not the name."
       (let* ((entry (nl-ns--analysis-file-entry analysis file))
              (form (nl-ns--entry-definition entry symbol)))
         (setq parts (cons (if form (format "%S" form) "-") parts))))
-    (secure-hash 'sha1 (mapconcat #'identity (nreverse parts) "\0"))))
+    (secure-hash 'sha1
+                 (encode-coding-string
+                  (mapconcat #'identity (nreverse parts) "\0") 'utf-8))))
 
 (defun nl-ns-finding-key (finding)
   "Return a stable string key for FINDING.

@@ -371,6 +371,13 @@ Returns (:tag SYM) / (:class STR) / (:id STR) / (:tag-class SYM STR) /
                  (dom-by-id dom (format "\\`%s\\'" (regexp-quote id)))))
     (_ nil)))
 
+(defun nelisp-http--dom-direct-text (node)
+  "Return text belonging directly to DOM NODE, excluding nested elements.
+Selector matches are arbitrary elements, not necessarily leaves.  This keeps
+the direct-child contract of the obsolete `dom-text'; `dom-inner-text' would
+also include text from descendant elements and change selector results."
+  (mapconcat #'identity (seq-filter #'stringp (dom-children node)) ""))
+
 (defun nelisp-http--select-html-libxml (html selector)
   "Return text from HTML matching SELECTOR via libxml + dom.el."
   (let ((parts (nelisp-http--parse-selector selector)))
@@ -383,7 +390,7 @@ Returns (:tag SYM) / (:class STR) / (:id STR) / (:tag-class SYM STR) /
           (let ((texts (delq nil
                              (mapcar (lambda (n)
                                        (let ((s (string-trim
-                                                 (or (dom-text n) ""))))
+                                                 (nelisp-http--dom-direct-text n))))
                                          (and (not (string-empty-p s)) s)))
                                      nodes))))
             (when texts (mapconcat #'identity texts "\n\n"))))))))

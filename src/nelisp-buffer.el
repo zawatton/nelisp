@@ -470,6 +470,96 @@ into the new one.  POS nil detaches the marker from its buffer."
   (setf (nelisp-marker-buffer marker) nil)
   nil)
 
+;;; Markers in arithmetic --------------------------------------------
+;;
+;; In Emacs a marker IS a valid argument to the arithmetic and comparison
+;; primitives -- that is what the predicate `number-or-marker-p' in their
+;; error message is naming.  Here a marker is an ordinary struct, so the
+;; native `<' cannot know about it and signals `wrong-type-argument
+;; number-or-marker-p'.  Real code hits this immediately: DDSKK's
+;; `skk-start-henkan' guards with `(< pos skk-henkan-start-point)' where
+;; the second operand is a marker set through `skk-set-marker', and the
+;; conversion path died there on every input (found 2026-08-31 behind a
+;; TSF-host E2E assertion that had been failing earlier for an unrelated
+;; reason, so nothing had ever reached it).
+;;
+;; The wrappers below are installed HERE, in the file that introduces
+;; markers, rather than in the prelude: a program that never loads buffer
+;; support keeps the bare primitives and pays nothing.
+;;
+;; Cost: these are the hottest primitives in the system, and this runtime
+;; charges roughly one basic operation per call, so a wrapper that merely
+;; forwards would make every comparison in every loop measurably slower.
+;; Hence the shape: the ordinary two-number case is decided by one
+;; `integerp' pair and goes straight to the native subr, and only an
+;; argument that is NOT a number reaches the coercion path.  Measure any
+;; change to this shape -- see docs/design/201's engine-load numbers for
+;; the harness.
+(defvar nelisp-marker--native-ops nil
+  "Alist of (SYMBOL . NATIVE-SUBR) captured before wrapping.")
+
+(defun nelisp-marker--num (x)
+  "Return X as a number, taking a marker's position."
+  (if (nelisp-marker-p x)
+      (or (nelisp-marker-position x)
+          (signal 'error (list "Marker does not point anywhere" x)))
+    x))
+
+(defmacro nelisp-marker--defarithn (name)
+  "Define NAME as a marker-tolerant wrapper around the native variadic NAME."
+  (let ((native (intern (concat "nelisp-marker--native-" (symbol-name name)))))
+    `(progn
+       (declare-function ,native nil)
+       (unless (assq ',name nelisp-marker--native-ops)
+         (defalias ',native (symbol-function ',name))
+         (push (cons ',name (symbol-function ',name)) nelisp-marker--native-ops)
+         (defun ,name (&rest args)
+           (apply #',native (mapcar #'nelisp-marker--num args)))))))
+
+(defmacro nelisp-marker--defarith1 (name)
+  "Define NAME as a marker-tolerant wrapper around the native 1-arg NAME."
+  (let ((native (intern (concat "nelisp-marker--native-" (symbol-name name)))))
+    `(progn
+       (declare-function ,native nil)
+       (unless (assq ',name nelisp-marker--native-ops)
+         (defalias ',native (symbol-function ',name))
+         (push (cons ',name (symbol-function ',name)) nelisp-marker--native-ops)
+         (defun ,name (a)
+           (if (numberp a) (,native a) (,native (nelisp-marker--num a))))))))
+
+(defmacro nelisp-marker--defarith2 (name)
+  "Define NAME as a marker-tolerant wrapper around the native NAME.
+Two-argument fast path first; anything else falls back to `apply'."
+  (let ((native (intern (concat "nelisp-marker--native-" (symbol-name name)))))
+    `(progn
+       (declare-function ,native nil)
+       (unless (assq ',name nelisp-marker--native-ops)
+         (defalias ',native (symbol-function ',name))
+         (push (cons ',name (symbol-function ',name)) nelisp-marker--native-ops)
+         (defun ,name (a b &rest more)
+           (if (and (null more) (numberp a) (numberp b))
+               (,native a b)
+             (apply #',native (nelisp-marker--num a) (nelisp-marker--num b)
+                    (mapcar #'nelisp-marker--num more))))))))
+
+(defun nelisp-marker-install-arithmetic ()
+  "Make the arithmetic and comparison primitives accept markers.
+Idempotent; returns the list of names wrapped."
+  ;; `<' is deliberately NOT wrapped.  Interleaved A/B on the DDSKK engine
+  ;; load, three pairs: wrapping it costs 1.30x, 1.41x, 1.42x.  It is the
+  ;; hottest primitive in the system and a wrapper cannot be cheaper than
+  ;; one extra call, which this runtime charges a full basic operation for
+  ;; (~262us, docs/design/201).  A caller that needs to compare a marker
+  ;; should not put one in front of `<' -- see `skk-set-marker' in
+  ;; nelisp-skk-ime's compat layer for how that is done there.  Wrapping
+  ;; `+'/`-'/`=' as well measured 2.8-3.6x and is out of the question.
+  (nelisp-marker--defarith1 1-)
+  (nelisp-marker--defarithn max)
+  (nelisp-marker--defarithn min)
+  (mapcar #'car nelisp-marker--native-ops))
+
+(nelisp-marker-install-arithmetic)
+
 ;;; Overlay API (Phase 5-B.2) -----------------------------------------
 
 (defun nelisp-overlayp (obj)

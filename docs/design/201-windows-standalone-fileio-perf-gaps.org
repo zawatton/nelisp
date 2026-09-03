@@ -1,0 +1,1657 @@
+#+TITLE: Doc 201 — Windows-native standalone: two silent fileio/PATH defects found chasing a v1.1.1 load-time slowdown, and where the remaining cost lives
+#+AUTHOR: Claude (investigation + fix), zawatton (direction)
+#+DATE: 2026-08-30
+#+STATUS: PARTIAL — every fix in §1, §2, §5 and §6 is landed and gated, and
+#+STATUS: §4's own list of open items is closed (see §6): §4 item 1 and
+#+STATUS: §5.3 became `standalone-reader-winpath-smoke' and
+#+STATUS: `standalone-reader-defvar-alloc-smoke', §4 item 2 became real
+#+STATUS: Win32 stat/readdir plus `standalone-reader-fileattrs-smoke', and
+#+STATUS: §5.4's regexp lead became a scan-loop fix plus
+#+STATUS: `standalone-reader-regexp-lead-filter-smoke'.  Writing those
+#+STATUS: gates found three further defects of the same silent shape, all
+#+STATUS: fixed here (§6.1, §6.3, §6.4), and five harness defects
+#+STATUS: besides (§6.6), one of which was making a gate report a proof it
+#+STATUS: had not performed.  Still PARTIAL, for the reasons
+#+STATUS: named in §6.9.  §6.7 gave all 46 `STANDALONE_READER_SMOKES' one
+#+STATUS: name for the binary and ran them on a windows-native build for the
+#+STATUS: first time: 29 pass, 17 fail.  Six of those seventeen were
+#+STATUS: defects in the GATES, each reporting a working thing as broken;
+#+STATUS: all six are fixed and the aggregate is now 35 pass, 11 fail, with
+#+STATUS: every remaining failure a subsystem never wired for that target.  §6.8 re-measured
+#+STATUS: the DDSKK engine load and RAN the TSF-host E2E harness, which was
+#+STATUS: red at engine_e2e_test.cpp:143.  The host's real entry point went
+#+STATUS: 23.87-24.14s to 12.39-12.49s, and then to 9.95-11.27s once
+#+STATUS: `skk-tankan.el' was deferred in the IME project (§6.8); a
+#+STATUS: pre-existing marker-coercion defect at line 188 was then fixed
+#+STATUS: (§6.8, runtime side in src/nelisp-buffer.el).  THE HARNESS NOW
+#+STATUS: PASSES, five runs out of five, through its crash-recovery and
+#+STATUS: four-client sections to a clean shutdown.  Precomputing the
+#+STATUS: romaji rule tree (§6.8) then took the entry to 4.75-5.89s, about
+#+STATUS: a 2x margin against the budget rather than the thin one that made
+#+STATUS: a loaded machine fail.
+#+STATUS: §3's own microbenchmark numbers stand as a separate, smaller,
+#+STATUS: still-unaddressed cost; §6.5 is the most concrete lead into them.
+#+VERIFIED-BY: standalone-reader-winpath-smoke §1/§2/§6.1/§6.6
+#+VERIFIED-BY: standalone-reader-defvar-alloc-smoke §5.1/§5.3
+#+VERIFIED-BY: standalone-reader-fileattrs-smoke §4 item 2/§6.3
+#+VERIFIED-BY: standalone-reader-regexp-lead-filter-smoke §5.4/§6.5
+#+VERIFIED-BY: standalone-reader-splitstring-perf-smoke §5.2
+
+* §0 Context
+
+nelisp-skk-ime (a Windows TSF IME whose engine process is `nelisp.exe
+--load engine/ddskk-engine-stdio.el`) was being migrated from NeLisp
+v1.1.0 to v1.1.1 to pick up the precise-root-marking fixes in that release
+(RELEASE.md: "the precise root surface now carries the whole standalone
+tier"), which closed a GC bug this project had spent several sessions
+diagnosing under v1.1.0 (a live Vector swept and its freed metadata later
+dereferenced — see this repo's own Doc-155-class marking-gap fixes,
+`gc: ...` commits between v1.1.0 and v1.1.1).
+
+v1.1.1 does fix that: the same repro (`vendor/ddskk/skk-vars.el`, 573
+top-level forms, loaded standalone) went from a deterministic 5/5 SIGSEGV
+under v1.1.0 to a clean 3/3 completion under v1.1.1. But the completion
+took 60-67 seconds, against this project's own measured v1.0.x cold-start
+baseline of 4.9s (`docs/windows-ime-architecture.md` in the nelisp-skk-ime
+tree). That gap sent this investigation looking for a v1.1.1 GC
+regression. There wasn't one (§3 shows the same interpreter is exactly as
+slow on v1.1.0 for primitives that have nothing to do with GC). What was
+actually found were two independent, pre-existing gaps in this repo's
+Windows-native standalone target, both silent (no error, no crash — just
+a wrong or absent answer), both apparently unexercised by any existing
+gate on this target.
+
+Reproduction (kept out of tree, safe to rebuild):
+`D:/Cowork/Notes/dev/nelisp-v11-ime-verify/repro-skkvars-real.el` loads
+`vendor/ddskk/skk-vars.el` standalone with no DDSKK engine, no TSF host,
+no C++ — `(load compat.el) (provide 'skk) (load skk-vars.el)`. Every
+timing number below is `time ./target/nelisp.exe --load
+repro-skkvars-real.el < /dev/null`, this repo's own `target/nelisp.exe`
+(`NELISP_STANDALONE_TARGET=windows-x86_64`), on the same Windows host,
+three runs each, GC noise excluded (all runs completed, none crashed).
+
+* §1 `path-separator` was ":" unconditionally, including on windows-nt (FIXED)
+
+`scripts/nelisp-stdlib-prelude.el` and its byte-identical
+`packages/nelisp-process/src/nelisp-process.el` copy (`make ns-gate`
+polices the two staying identical) both had:
+
+#+BEGIN_SRC elisp
+(unless (boundp 'path-separator)
+  (defconst path-separator ":"))
+#+END_SRC
+
+defined *before* `system-type` even existed in the prelude's load order
+(line 237 of a 22,000+-line file; `system-type` first becomes bound at
+line ~6900). On windows-nt, `getenv "PATH"` correctly answers a real
+Windows path list (`C:\Users\...;C:\Program Files\...;...`, verified
+directly: `(princ (getenv "PATH"))` under this runtime prints exactly
+that). `executable-find` (scripts/nelisp-stdlib-prelude.el) splits that
+string on `path-separator`. Splitting a drive-letter path list on ":"
+shreds every entry at its own drive-letter colon — "C:\Users\kuroz\bin"
+becomes "C" and "\Users\kuroz\bin;C" and so on — turning a 59-entry PATH
+into well over a hundred garbage fragments, most beginning with a bare
+"\..." that `file-exists-p` still dutifully checks.
+
+`vendor/ddskk/skk-vars.el` calls `executable-find` five times at load
+time (`python` once, `kakasi` twice, `look` twice, none of them installed
+on this host, so every one of the ~100+ garbage fragments per call was
+checked and missed).
+
+** Fix
+
+Moved the `defconst` to right after `system-type`'s own definition in
+`scripts/nelisp-stdlib-prelude.el`, and made both copies compute the same
+value defensively (`(and (boundp 'system-type) (eq system-type
+'windows-nt))`, safe even if `nelisp-process.el` is loaded standalone
+before `system-type` exists):
+
+#+BEGIN_SRC elisp
+(unless (boundp 'path-separator)
+  (defconst path-separator
+    (if (and (boundp 'system-type) (eq system-type 'windows-nt)) ";" ":")))
+#+END_SRC
+
+** Measured effect
+
+| | before | after |
+|---|---|---|
+| full `skk-vars.el` load, `time`, 3 runs | 60-67s (this fix only) | 18.7-19.0s |
+
+3.5x. `path-separator` reads `;` and `PATH` splits into the correct 59
+entries (verified directly post-fix).
+
+* §2 Every windows-native path-syscall builtin was an unconditional -ENOSYS stub (FIXED, narrow scope)
+
+`nelisp-standalone--os-syscall-xlat-forms` (Doc 151 §B, "macos/windows:
+return -ENOSYS(-38) stubs") deliberately stubs every path-syscall builtin
+(`nl_os_syscall_path[_int|2]`, `nl_os_stat_path`, `nl_os_lstat_path`,
+`nl_os_open_dir`, `nl_os_getdents64`, `nl_os_utimes_path`,
+`nl_os_statx_path`, `nl_os_nanosleep`) on windows-x86_64/windows-aarch64,
+because the shared fileio unit used to fire raw Linux x86_64 syscall
+numbers straight through, and misfiring an arbitrary Linux syscall number
+on Windows is worse than refusing. That decision was correct and Doc 151
+documents it as a known follow-up ("既知の残課題"), not an oversight —
+this doc is that follow-up, for the one call this migration actually
+needed.
+
+`file-exists-p` (scripts/nelisp-stdlib-prelude.el) does not go through
+`nl_os_stat_path` at all — it goes through
+`nelisp--syscall-stat`, which is itself a pure-elisp `access(2)`-trichotomy
+fallback over `nelisp--syscall-path-int` (NR=21) built specifically
+because the Rust `bi_syscall_stat` shim hangs on the standalone reader
+(see that function's own commentary). On windows-x86_64,
+`nelisp--syscall-path-int` reduces to `nl_os_syscall_path_int`, which was
+the `-ENOSYS` stub above. Directly verified before this fix:
+`(file-exists-p "C:\WINDOWS")` (a directory that unquestionably exists on
+every Windows host) answered `nil`. `executable-find` could therefore
+never find anything, on any target, ever — not slow, categorically
+incapable, silently.
+
+** Fix
+
+Added a `windows-x86_64`/`windows-aarch64` case to
+`nelisp-standalone--os-syscall-xlat-forms` that wires *only* NR=21
+(`access`, `F_OK`) through `GetFileAttributesW` (imported via
+`nelisp-standalone--windows-reader-imports`, alongside the other
+KERNEL32 calls already there), using the existing
+`nl_win_utf8_wcs_dup` UTF-8→UTF-16 helper
+(`nelisp-standalone--reader-os-base-forms`, appended into the same
+source list by `nelisp-standalone--reader-os-source-forms`, so it is
+already linked into every windows-native standalone build):
+
+#+BEGIN_SRC elisp
+(defun nl_os_win_access (cpath)
+  (let* ((wpath (nl_win_utf8_wcs_dup cpath))
+         (attrs (extern-call GetFileAttributesW wpath)))
+    (if (or (= attrs 4294967295) (= attrs -1)) (- 0 2) 0)))
+(defun nl_os_syscall_path_int (nr cpath iarg)
+  (if (= nr 21) (nl_os_win_access cpath) (- 0 38)))
+#+END_SRC
+
+Every other path syscall on this target is *unchanged* — still an
+`-ENOSYS` stub. This fix's scope is exactly `file-exists-p` /
+`file-directory-p` / `file-regular-p` / `file-readable-p` /
+`executable-find`, because that is what `nelisp--syscall-stat`'s
+`access`-only fallback reduces to. `file-attributes` (size/mtime, via
+`nelisp--syscall-stat-field` → `nl_os_stat_path`) and directory listing
+(`nelisp--syscall-readdir-names` → `nl_os_open_dir`/`nl_os_getdents64`)
+remain unimplemented on this target — a real `struct stat` shim (mode/
+size/mtime via `GetFileInformationByHandleEx` or similar) and a directory
+enumerator (`FindFirstFileW`/`FindNextFileW`) are natural, separate
+follow-ups; scoping this fix to the one builtin the migration actually
+needed keeps the diff reviewable.
+
+** Measured effect
+
+`(file-exists-p "C:\WINDOWS")` now answers `t`; `(file-exists-p
+"C:\NoSuchDir12345")` still answers `nil`. Wall-clock effect on the full
+`skk-vars.el` load was *not* measurable (18.7-19.0s before and after,
+within run-to-run noise) — `executable-find` was already fast when it
+was unconditionally wrong; making it correct did not make it faster. The
+value of this fix is correctness, not speed: `vendor/ddskk`'s
+`skk-use-kakasi`/`skk-annotation-python-program`/`skk-look-command`
+defcustoms can now actually detect an installed `kakasi`/`python`/`look`
+on a windows-native standalone build, instead of silently always
+answering "not installed" regardless of the host.
+
+* §3 What is left: per-primitive-call overhead in the interpreter itself (partly a false lead — see §5)
+
+After §1 and §2, `skk-vars.el` still takes ~18.9s to load. Breaking that
+down (`D:/Cowork/Notes/dev/nelisp/perf-scale-probe.el`, measuring wall
+time to load a K-form prefix of the real file for increasing K):
+
+| K (forms) | elapsed |
+|---|---|
+| 50-275 | ~1.1-1.5s (flat) |
+| 278 | 6.41s (jumps here) |
+| 280-420 | ~6.3-7.8s (flat) |
+| 425 | 14.68s (jumps here) |
+| 425-573 | ~14.5-19.0s (flat) |
+
+Both jumps land exactly on `executable-find` calls in
+`vendor/ddskk/skk-vars.el` (form #278 = line 2812,
+`skk-annotation-python-program`'s `(executable-find "python")`; the
+second jump spans the `kakasi` pair at lines 3859/3864). Each
+`executable-find` call costs several seconds *even with §1 and §2 both
+fixed and PATH correctly split into 59 real entries*. Isolated
+(`D:/Cowork/Notes/dev/nelisp/check-execfind-parts.el`, one cold call):
+
+| step | elapsed |
+|---|---|
+| `split-string` on the 59-entry PATH | 3.31s |
+| 59x `expand-file-name` | 1.27s |
+| 59x `expand-file-name` + `file-exists-p` | 2.40s |
+| `executable-find "python"` (whole call) | 4.73s |
+
+`file-exists-p` itself is fast in isolation (~0.4-0.7ms/call,
+`D:/Cowork/Notes/dev/nelisp/check-file-exists-perf.el`) and its cost does
+not depend on which byte offset is checked. The 3.3s inside
+`split-string` (`nelisp--split-on-char` in
+scripts/nelisp-stdlib-prelude.el: a plain `(aref string idx)` /
+`(substring string start idx)` scan, nothing algorithmically wrong with
+it) is the real puzzle: that is one call, walking a ~1500-2000 byte
+string once.
+
+Chased one level further with a battery of isolated microbenchmarks
+(`D:/Cowork/Notes/dev/nelisp/check-call-overhead.el`,
+`check-string-tag.el`, `check-string-tag2.el`, `check-loop-only.el`, all
+under `dev/nelisp/`, safe to delete or keep as future repro material):
+
+- `(aref string idx)` costs the *same* ~0.3-0.4ms whether `idx` is 0 or
+  1999 in a 2000-char string — ruling out an O(idx) UTF-8
+  codepoint-decode re-walk (the tag-5/tag-6 `aref` arm in
+  `scripts/nelisp-standalone-build.el`'s `bf_aref_checked` does re-walk
+  from byte 0 every call via `nl_u8_cidx_byte`, which *would* be O(idx),
+  but `getenv "PATH"` and `make-string` both come back
+  `multibyte-string-p` nil, and the flat-regardless-of-position timing
+  confirms they are not taking that arm).
+- Every basic primitive measured costs about the same, ~0.15-0.36ms per
+  call, regardless of which one: `(+ 1 1)`, `(aref VECTOR 0)`, `(aref
+  STRING 0)`, `(car CONS)`, a zero-arg user-defined function call, `(setq
+  x (1+ x))`. This is *not* a defect in any one of those primitives; it
+  reads as roughly constant per-call overhead in the evaluator itself.
+- **This overhead is identical on v1.1.0 and v1.1.1** — the same six
+  microbenchmarks were run against `dev/nelisp-v11-ime-verify/target/
+  nelisp.exe` (the v1.1.0 tag) and every number matched v1.1.1's to
+  three significant figures. v1.1.1's GC-correctness fixes did not slow
+  the interpreter down; v1.1.0 was never actually finishing this
+  workload (it SIGSEGV'd first), so there was never a valid "v1.1.0 was
+  faster" comparison to begin with. Framing this as a v1.1.1 regression
+  during the investigation was a wrong turn worth recording so the next
+  person doesn't re-walk it.
+- Sampling `nelisp.exe`'s main thread with gdb during a tight
+  `(dotimes (_ 200000) (+ 1 1))` loop
+  (`D:/Cowork/Notes/dev/nelisp/sample-profile2.sh`, gdb attach + `p/x
+  $pc` every ~0.3-3s, resolved against a captured symtab dump) found
+  roughly 40% of non-attach-noise samples inside allocation/GC machinery
+  — `nl_alloc_bytes_uncheck`, `nl_freelist_take`, `nl_hdr_bt`/
+  `nl_hdr_mark`/`nl_hdr_set_mark`, `nl_gc_sweep_step`, `nl_gc_free_block`,
+  `nl_gc_in_arena`, `nl_alloc_zero_fill` — for a loop body that never
+  allocates a boxed value at the Lisp level. A follow-up hit-counting run
+  (`D:/Cowork/Notes/dev/nelisp/gdb-count-allocs.gdb`) counted
+  `nl_alloc_bytes_uncheck` hits directly: **14,305 calls for 1,000
+  iterations of `(+ 1 1)`** — roughly 14 heap allocations per trivial
+  arithmetic operation.
+
+** Reading
+
+The interpreter appears to allocate fresh heap objects (32-byte Sexp
+slots, eval-context scratch, or both) on essentially every form
+evaluation, not just where a Lisp-level value is actually boxed. That
+allocation rate is what is driving both the flat ~0.2-0.4ms/call
+baseline (§3 opening table) and the GC sweep activity visible in the
+sampling profile — not a bug in any single builtin, but a property of
+how the evaluator itself is calling into the allocator. This is
+consistent with, and does not contradict, Doc 199's own framing of
+`nl_gc_loop_ctx`/precise-root work as being about *correctness* under
+collection, not about *reducing* how often collection has reason to run.
+
+** Why this is out of scope for this doc's fix
+
+Identifying which specific call in the evaluator's dispatch path
+(`nelisp_apply_function`, `nl_apply_special`, `nl_gc_eval_ctx_push`, the
+`wf_arg*`/`args`-packing convention that shows up throughout
+scripts/nelisp-standalone-build.el, or some combination) is responsible,
+and whether it can be removed or made conditional without touching the
+precise-root-marking correctness Doc 199/the v1.1.1 GC fixes depend on,
+is an interpreter-architecture question, not a one-function fix like §1
+or §2. It needs someone reading `nelisp_apply_function`'s dispatch loop
+and the `EvalCtx` construction path end to end, ideally with a real
+sampling profiler run over a much larger sample count than the ~60
+gdb-attach samples this investigation collected (each `gdb -p` attach/
+detach cycle costs ~0.3-3s of its own overhead here, dominating the
+sample budget for anything shorter than several dozen seconds of target
+runtime).
+
+* §4 Recommended next steps
+
+1. PARTLY DONE (dev/nelisp commit `7a331637`): added
+   `standalone-reader-splitstring-perf-smoke` (folded into
+   `STANDALONE_READER_SMOKES`) asserting the wall-clock bound the §5.2
+   regexp-engine `split-string` defect violated by ~8x, plus its
+   `tools/gate-mutations.txt` row. NOT done: promoting §1/§2's own
+   `path-separator`/`file-exists-p` repro, or the full
+   `repro-skkvars-real.el` load, to a gate -- that repro still lives
+   outside this repo (`dev/nelisp-v11-ime-verify/`) and was not ported
+   in this follow-up.
+2. If Windows-native standalone fileio is going to see more use (this
+   migration is not the only consumer plausible), give `nl_os_stat_path`/
+   `nl_os_open_dir`/`nl_os_getdents64` real `GetFileInformationByHandleEx`/
+   `FindFirstFileW` implementations rather than leaving them as `-ENOSYS`
+   stubs indefinently — §2 deliberately left them alone because this
+   migration did not need them, not because they are hard.
+3. UPDATE (§5): §3's per-call allocation rate was NOT the actual remaining
+   path to `skk-vars.el`'s slow load — see §5. `nelisp_apply_function`'s
+   dispatch path is still worth a closer look for the ~0.15-0.4ms/call
+   baseline §3 measured (a real, if smaller, cost every standalone
+   workload pays on every form), but it is no longer this file's headline
+   number.
+3a. DONE (dev/nelisp commit `2d433761`): `nlre-split-string` now takes a
+   `nelisp--split-on-char` fast path for any single-byte separator that
+   is not a regexp metacharacter, so every `split-string` caller
+   benefits, not just `executable-find`. Verified with an 11-case
+   correctness parity script against the old regexp-path output
+   (including confirming "." as a real regexp separator still matches
+   any char, not a literal dot). Measured 3.2-3.4s -> 0.42s for a plain
+   `split-string` call on the same PATH, independent of
+   `executable-find`'s own fix. No further `repro-skkvars-real.el`
+   wall-clock change (~9.5-10.8s before and after) since
+   `executable-find` was already the only `split-string` caller on this
+   file's load path.
+3b. RE-MEASURED, RESOLVED AS NOISE: a clean re-run of K=420-465 in
+   5-form steps (no other process running) showed the two
+   `executable-find` calls landing as expected around K=425/426 (3.5s ->
+   8.0s -> 8.7s) and then a flat ~7.9-9.9s all the way to K=573 — no
+   further jump. The earlier ~15s reading at K=500-573 was contention
+   from a concurrently running background task in this session, not a
+   real cost in the interpreter; no separate defect here.
+
+* §5 Two real fixes found and landed (2026-08-30 follow-up session)
+
+This session picked up the cold-start hand-off this doc's §3/§4 left
+behind. Both hunches in §4 turned out to be dead ends *for this file's
+number*; the actual dominant costs were two specific, ordinary bugs,
+found by direct instrumentation rather than gdb sampling (gdb
+breakpoint-hit counting turned out to be prohibitively slow on this
+Windows machine — one `(dotimes (_ 1000) nil)` run under a Python-callback
+breakpoint did not finish in 5+ minutes; abandoned in favor of the
+`nl_alloc_diag` counters already in the runtime, read directly via
+`(nelisp--debug-switch 24)` + `ptr-read-u64` at the counter's own symtab
+address — no gdb needed).
+
+** §5.1 `nl_sf_defvar` / `nl_sf_defconst`: AST synthesis on every call
+
+Every `(defvar NAME VALUE)` and `(defconst NAME VALUE)` was implemented
+by synthesising `(if (boundp (quote NAME)) nil (set (quote NAME) VALUE))`
+(defvar) or `(set (quote NAME) VALUE)` (defconst) as a FRESH cons tree on
+every single call — interning up to 5 new symbols (`if`/`boundp`/`set`/
+`quote` x2) and building up to 9 cons cells, then re-entering the
+interpreter via `nelisp_eval_call` on the synthetic form. Since
+`defcustom` is a plain macro expanding to `defvar`
+(`nelisp-stdlib-prelude.el`), every one of `skk-vars.el`'s 573 top-level
+forms paid this. Measured via `nl_alloc_diag`: 500 independent top-level
+`defvar` forms cost 814,379 `nl_alloc_bytes_uncheck` calls before the
+fix, 32,405 after (~25x fewer).
+
+Fixed (`dev/nelisp` commit `10db3d18`) by calling `nelisp_mirror_is_bound`
+/ `nl_env_set_value` directly — the same allocation-free primitives
+`bf_boundp` / `bf_set` already use — instead of building and evaluating a
+synthetic form.
+
+This fix is real, independently verified (boundp-gated single-eval
+semantics, defconst's unconditional overwrite, `nelisp-session-smoke.el`,
+3x `repro-skkvars-real.el` with no SIGSEGV), and worth keeping — but it
+turned out NOT to be this file's dominant cost. K-value scaling
+(`perf-scale-probe.el`) showed the "flat" K=50-275 region it speeds up
+was already ~1.0-1.1s total, of which ~0.9s is bare process-startup
+overhead (measured directly: `(princ "x")` alone costs ~0.9s on this
+machine) — there was little left in that region for this fix to remove
+from the *observed* wall-clock number, even though the allocation count
+it removes is real and large.
+
+** §5.2 `executable-find`'s PATH split runs the full regexp engine (the actual dominant cost)
+
+`executable-find` split `PATH` via `split-string`, which — contrary to
+this doc's own §1/§3 assumption that `split-string` resolves to the
+simple `nelisp--split-on-char` walk in `nelisp-stdlib-prelude.el` —
+actually resolves to `nlre-split-string`
+(`lisp/nelisp-stdlib-regexp.el`): a THIRD, unguarded `defun split-string`
+(`scripts/nelisp-standalone-build.el`, embedded as a code-generation
+string literal, loaded without an `(unless (fboundp ...))` guard) that
+runs the separator through the full regexp engine and retries a match at
+every position from the current split point. Confirmed by calling each
+candidate implementation directly on the real ~2.3KB, 59-entry Windows
+`PATH`:
+
+| implementation | elapsed |
+|---|---|
+| `nelisp--split-on-char` (prelude, direct call) | 0.42s |
+| my own copy of the same body, as a plain `defun` | 0.40s |
+| `split-string` (as actually bound = `nlre-split-string`) | 3.22-3.42s |
+
+PATH's separator is always a single literal byte (`;` or `:`), never a
+regexp — the regexp engine buys nothing here and costs ~8x. Three real
+`executable-find` calls occur loading `skk-vars.el`
+(`skk-annotation-python-program`, `skk-use-kakasi`,
+`skk-kakasi-command` — the "kakasi" one is actually TWO adjacent
+`defcustom` forms at vendor/ddskk/skk-vars.el lines 3859/3864, not one;
+§3's K-value table only caught the first as a single jump), each paying
+this cost once.
+
+Fixed (`dev/nelisp` commit `70cd5852`) by having `executable-find` call
+`nelisp--split-on-char` directly instead of `split-string`. Does NOT fix
+`split-string`/`nlre-split-string` generally — any other caller passing
+a literal separator on a large string still pays the regexp-engine cost;
+this is scoped to the one call site this hand-off's workload actually
+hits.
+
+** §5.3 Measured effect and verification
+
+`repro-skkvars-real.el` (`dev/nelisp-v11-ime-verify`, this doc's §5
+minimal repro): **22.5-23.5s -> 9.5-9.7s**, stable across repeated runs
+(~2.4x, meets the hand-off's "at least 2x" bar; short of the "low
+single digits" stretch goal). DDSKK's full engine load
+(`dev/nelisp-skk-ime/test/nelisp-session-smoke.el`, more files than
+`skk-vars.el` alone) still reports `ddskk-nelisp-session-smoke-ok`.
+`check-call-overhead.el`'s six basic-op microbenchmarks are unchanged
+(neither fix touches that path — confirms §5.1/§5.2 are targeted fixes,
+not accidental evaluator-wide changes). 3x repeated
+`repro-skkvars-real.el` with no SIGSEGV — v1.1.1's precise-root-marking
+GC fix (this doc's original motivation) is unaffected by either change.
+
+§5.2's fix now has a Makefile gate (`standalone-reader-splitstring-perf-
+smoke`, dev/nelisp commit `7a331637`, folded into
+`STANDALONE_READER_SMOKES`, `tools/gate-mutations.txt` row added and
+verified by hand). Not yet done: promoting §5.1's `defvar`/`defconst`
+fix, or §1/§2's own `path-separator`/`file-exists-p` repro (still
+outside this repo, `dev/nelisp-v11-ime-verify/`), to a gate.
+
+** §5.4 TSF-host E2E re-measurement: still red, and why
+
+Ran the real production path (`dev/nelisp-skk-ime`'s
+`windows/test/engine_e2e_test.cpp` via `ddskk-engine-e2e-test.exe`, named
+pipe to `ddskk-engine-host.exe`, real TSF client code, not a shortcut)
+against the fixed `target/nelisp.exe`. Still fails, now at `assert(state)`
+line 143 (the 10-second `client.SendKey(key, 10000)` budget itself
+elapses with no reply) rather than the `assert(elapsed <
+std::chrono::seconds(10))` at line 148 the original hand-off's repro
+command described — a different assert, same underlying cause, not a new
+defect: `SendKey`'s pipe request has a fixed 10s timeout, and the engine
+host's *first* `SendKey` has to finish loading the FULL DDSKK engine (not
+just `skk-vars.el`) before it can answer at all.
+
+This is the gap between what §5.1-§5.3 measured and what the E2E test
+needs: `nelisp-session-smoke.el` (DDSKK's full engine load — `skk-vars.el`
++ `skk-macs.el` + `skk-emacs.el` + `skk.el` + the rest, not `skk-vars.el`
+alone) still takes **~23-24s** end to end, well over the E2E harness's
+fixed 10s per-request budget. `skk-vars.el` alone dropping to ~9.5-9.7s
+(§5.3) was necessary but not sufficient — it is roughly 40% of the full
+load, not the whole of it. Reproduced twice, both crashing with the same
+assert; the first attempt additionally orphaned
+`ddskk-engine-host.exe`/`nelisp.exe` (killed manually, see §5's own repro
+warning about this exact trap) when the harness itself was interrupted
+rather than left to finish or assert on its own.
+
+A quick per-file breakdown (timing each `load` call in
+`nelisp-session-smoke.el`'s own sequence) found `skk.el` alone costs
+**~7.4-7.5s** — nearly as much as `skk-vars.el` — while `skk-macs.el` and
+`skk-emacs.el` are negligible (~0.02s each). `skk.el` has zero
+`defvar`/`defcustom` forms (§5.1 does not apply) and only one
+`executable-find` call (already covered by §5.2's fix). One specific
+hunch was checked and ruled out: `dev/nelisp-skk-ime`'s own
+`engine/skk-nelisp-compat.el` implements `define-key` as a plain
+`assoc`-scan alist keymap (`O(n)` per insert), which looked like a
+plausible `O(n^2)` culprit for a file that builds several minor-mode
+keymaps at load time — but instrumenting the real load counted only 290
+`define-key` calls total, far too few for that shape to be the ~7.4s
+cost.
+
+UPDATE: found via the same K-value-scaling method §3/§5 used on
+`skk-vars.el`, applied to `skk.el` (229 top-level forms, portable probe
+`perf-scale-probe-skkel.el`, paths derived from the probe's own location
+plus `NELISP_SKK_IME_DIR`, no machine-specific absolute path). The jump
+is NOT spread across `skk.el`'s 191 `defun`/`defmacro` bodies —
+K=10..191 is flat at ~17-19s. It lands entirely on ONE form, K=5, an
+`eval-and-compile` block (`skk.el` lines 73-99) requiring seven
+`vendor/ddskk` files not in `nelisp-session-smoke.el`'s own explicit
+`load` sequence: `skk-tankan`, `skk-cdb`, `skk-vars`/`skk-macs`/
+`skk-emacs` (no-ops here, already provided), `skk-cursor`, `skk-version`,
+`skk-cus`, `ccc`, `skk-comp`. Timing each individually:
+`skk-tankan.el` (3385 lines, a kanji-lookup data table, 6
+`defconst`/`defvar` forms) costs 3.3s; `ccc.el` (317 lines) costs 0.5s;
+the rest (`skk-cdb`, `skk-cursor`, `skk-cus`, `skk-comp`, all under 350
+lines) are negligible (0.006-0.016s each) — except `skk-version.el`,
+which is 72 lines and costs **1.9s**.
+
+`skk-version.el`'s entire cost is one form: `(dolist (p load-path)
+(string-match "ddskk-[0-9]+\\.[0-9]+" p))`, checking `load-path` (42
+entries here, 2146 chars total, an ordinary size) for a MELPA-style
+install path — never true on this standalone target, since `load-path`
+has no such entry, but every entry is still checked. Isolated: this
+42-call loop alone costs **2.47s**, ~59ms per `string-match` call on a
+~51-character average string against a small (`[0-9]+` twice) pattern.
+`nelisp-stdlib-regexp.el`'s own header describes it as "a backtracking
+matcher... implemented WITHOUT lexical closures" — i.e. a REGEXP ENGINE
+WRITTEN IN PLAIN INTERPRETED ELISP, not an AOT-compiled native dispatch
+path like the arithmetic/list primitives `nelisp_apply_function`
+handles. Doc 201 §3's original "~0.15-0.4ms per basic op" per-call
+overhead, paid many times over per character/position inside a
+backtracking match, is a highly plausible explanation for 59ms/call —
+consistent with, not contradicting, §3's own numbers. This was NOT
+fixed this session: it is a different class of cost from §5.1/§5.2 (an
+architectural one — the regexp engine's own implementation strategy —
+rather than one call site doing unnecessary work) and is left as this
+doc's most concrete lead yet on §3's still-open "per-primitive-call
+overhead" question. `skk-tankan.el`'s 3.3s was not broken down further
+this session; it may be legitimate data-table construction cost (six
+large `defconst`/`defvar` forms) rather than a defect, but was not
+distinguished from the same per-form overhead until checked.
+
+Per the original hand-off's own instruction: this is NOT "fixed by
+raising the timeout in the committed test" territory — a real fix needs
+either the full-engine load brought under the E2E harness's 10s budget
+(profile the other ~15s the same way §5 profiled `skk-vars.el`) or the
+harness's own budget re-examined as a product decision (separate from
+this doc's scope, flagged back per the original hand-off's §6 closing
+note).
+4. nelisp-skk-ime's own migration (compat-layer stubs for defvar/defcustom/
+   defface gaps between v1.1.1 and vendor/ddskk, unrelated to this doc)
+   is tracked separately in that project's own memory
+   (`project_nelisp_skk_ime_v110_migration_status`); this doc covers only
+   the NeLisp-core defects the migration's investigation surfaced.
+
+* §6 The four open items closed, and the defects found closing them (2026-08-30, second follow-up session)
+
+This session took the four things §4 and §5.3 name as NOT done and did
+them: the two gates §4 item 1 and §5.3 ask for, the Windows-fileio
+follow-up §4 item 2 describes, and §5.4's regexp-engine lead, which that
+section left open as "this doc's most concrete lead yet".  It then took
+the two items §6 itself had left open -- the reader smokes that had never
+run on this target (§6.7) and the TSF-host E2E budget (§6.8).
+
+Writing the first gate immediately found a THIRD defect in §1/§2's own
+family, and the fileio work found a fourth and a fifth.  All three are
+recorded with the reason the earlier verification could not have seen
+them, because that shape — a check whose expected answer is the same
+whether the code works or not — is the reusable part.
+
+Every measurement below is this repo's own `target/nelisp.exe`
+(`NELISP_STANDALONE_TARGET=windows-x86_64`) on the same Windows host as
+§1-§5, three runs per side, interleaved in one stretch on an otherwise
+idle machine.  The §5-era readings in this file were not taken that way;
+§6.5 says where that mattered.
+
+** §6.1 §4 item 1 — the gate, and the third defect it found (`expand-file-name`)
+
+§1 (`path-separator`) and §2 (`access(F_OK)` via `GetFileAttributesW`)
+shipped with no gate: their repro lived outside this repo
+(`dev/nelisp-v11-ime-verify/`) and was never ported.  The gate is
+`standalone-reader-winpath-smoke`, and it asserts, against a marker file
+it creates itself, that `path-separator` matches `system-type`, that
+`file-exists-p` answers `t` for a file that is there and `nil` for one
+that is not, that `expand-file-name` reproduces a known absolute name,
+that `default-directory` is absolute and slash-terminated and is actually
+what a relative name expands against, and that `executable-find` finds the
+marker through a `PATH` whose entries carry a drive letter.
+
+Two of those were red the moment they were written, on a tree where §1 and
+§2 were both already fixed.  `expand-file-name`
+(scripts/nelisp-stdlib-prelude.el) was POSIX-only: it treated a name as
+absolute only when it began with `/`, and unconditionally prefixed its
+result with `/`.  So `(expand-file-name "cmd.exe" "C:/Windows/System32")`
+answered `"/C:/Windows/System32/cmd.exe"` — a path no Windows API can
+open — and `executable-find` therefore still found NOTHING on a
+windows-native standalone, with §1 splitting `PATH` into the correct 59
+drive-letter directories and §2 answering existence correctly for every
+candidate it was handed.  The pipeline was fixed at both ends and broken
+in the middle.
+
+Why §2 could not see it is the part worth keeping.  §2's verification was
+`(file-exists-p "C:\WINDOWS")` answering `t`, plus the observation that
+`vendor/ddskk`'s `executable-find` calls got faster.  None of `python`,
+`kakasi` or `look` was installed on that host, so `nil` was the CORRECT
+answer from `executable-find` either way, and the end-to-end path was
+never once run against a program that is actually present.  A check whose
+expected answer is "not found" cannot tell "looked and did not find" from
+"could not look at all".  This gate creates the file it then looks for.
+
+Fixed by teaching `expand-file-name` and `file-name-absolute-p` about
+drive designators and backslash separators, gated on `(and (boundp
+'system-type) (eq system-type 'windows-nt))` — the same `boundp`-defensive
+idiom §1 used, because both are defined long before `system-type` becomes
+bound in that file.  On every other target the computation is unchanged.
+
+Verified: with `PATH` containing `C:/Windows/System32`, `(executable-find
+"cmd.exe")` answers `"C:/Windows/System32/cmd.exe"`; with `PATH`
+containing this checkout's own `target` directory, `(executable-find
+"nelisp.exe")` answers its absolute path.  Neither could return anything
+but `nil` before.
+
+** §6.2 §5.3 — a gate for §5.1's `defvar`/`defconst` fix
+
+`standalone-reader-defvar-alloc-smoke` loads 200 top-level `defvar` forms
+between `(nelisp--debug-switch 24)` (arm and zero the allocator counters)
+and `(nelisp--debug-switch 0)` (read bucket/linear/bump hits at list
+positions 10/11/12), and requires fewer than 200 allocations per form.
+Measured 65 after §5.1, against the ~1629 §5.1 recorded before it.  The
+counters are exact rather than timed, so this bound does not move with
+machine load the way §4's `split-string` wall-clock bound does.
+
+It also asserts the two semantics §5.1's rewrite had to re-implement by
+hand when it dropped the synthetic `(if (boundp ...) nil (set ...))` form:
+`defvar` must leave an already-bound value alone, `defconst` must
+overwrite it.  That is the half the mutation row proves — forcing the
+`nelisp_mirror_is_bound` branch to nil is a one-token structural injection
+that reads the same on every platform, where re-creating the 25x
+allocation regression would mean re-inserting the whole pre-§5.1 body,
+which this repo's `tools/gate-mutations.txt` header rules out.
+
+** §6.3 §4 item 2 — Windows `stat` and directory enumeration
+
+`nl_os_stat_path`, `nl_os_lstat_path`, `nl_os_open_dir` and
+`nl_os_getdents64` were unconditional `-ENOSYS` stubs on
+windows-x86_64/aarch64, so `file-attributes` answered a size of -38 and
+`directory-files` answered `nil` for every directory that exists.  Now:
+
+- `stat`/`lstat` via `GetFileAttributesExW`, whose
+  WIN32_FILE_ATTRIBUTE_DATA is rewritten into the *Linux x86_64* `struct
+  stat` offsets this repo's fileio builtins use as their portable
+  vocabulary.  `GetFileAttributesExW` rather than
+  `GetFileInformationByHandleEx` because it needs no open handle, so a
+  directory, a locked file and a read-protected one all answer the way
+  `access` already does here.  FILETIME becomes POSIX seconds; mode
+  reports S_IFDIR|0755, S_IFLNK|0777 (lstat, on a reparse point) or
+  S_IFREG|0644 (0444 with the read-only attribute).
+- directory enumeration via `FindFirstFileW`/`FindNextFileW`/`FindClose`.
+  `FindFirstFileW` hands back the first entry WITH the handle where
+  `getdents64` hands back only a handle, so the shim owns a small state
+  block (handle, "an entry is pending", the WIN32_FIND_DATAW, and a UTF-8
+  name scratch) and `nl_os_open_dir` returns its address — always a
+  positive heap pointer, which is what the caller's `(< fd 0)' failure
+  test reads.  The scratch lives inside that block deliberately:
+  converting each name into a freshly allocated buffer would allocate
+  inside `nl_os_getdents64`, which the caller runs in a loop while holding
+  two raw `alloc-bytes` buffers.
+- `nl_bi_syscall_readdir_names` now closes through a new `nl_os_close_dir`
+  instead of `nl_os_close_handle`, because a find handle needs
+  `FindClose`.  The other three target arms define it as
+  `nl_os_close_handle` and are otherwise untouched.
+
+Still `-ENOSYS`, deliberately: every MUTATING path syscall
+(unlink/rmdir/mkdir/rename/link/symlink/chmod/truncate/utimes) plus
+`readlink`/`statx`/`nanosleep`.  Reading a Windows filesystem wrongly
+costs a wrong answer; writing one wrongly costs the file, so those want
+their own change with their own gate.
+
+A FOURTH defect surfaced here, the same "silently wrong, never exercised"
+shape as §6.1.  `nelisp--syscall-stat`'s access(2) trichotomy decides
+"directory" by asking whether the path accepts a TRAILING SLASH — and
+Windows answers yes for an ordinary file.  So on a windows-native build
+every regular file read as a directory: `file-regular-p` answered `nil`
+for all of them and `file-directory-p` answered `t`.  `file-exists-p` is
+`(or file directory)` and was therefore RIGHT, which is exactly why §2's
+verification never touched it.  Now that this target has a real `stat` the
+classification reads st_mode; the `access(F_OK)` check stays FIRST
+(absence is still one syscall, which is the shape `executable-find` walks
+a whole `PATH` with) and the trichotomy stays as the fallback for macos,
+whose `stat` is still a stub.
+
+Gate: `standalone-reader-fileattrs-smoke`, against a fixture the recipe
+builds — a 10-byte file and a subdirectory — so every assertion has a
+known right answer.  Hand-verified against the host filesystem: size 1609
+and mtime 1788083667 for a file `stat(1)` reports as exactly that, and 448
+`directory-files` entries against `ls -a | wc -l` of 450 (this prelude's
+`directory-files` filters `.` and `..`).
+
+** §6.4 A fifth: `default-directory` was nil on windows only
+
+Probing for §6.1's gate turned up `(expand-file-name "target/tmp/x")`
+answering `"/target/tmp/x"`.  `nl_os_getcwd` was a `wf_write_nil` stub on
+the windows arm, so `default-directory` was nil and every relative name
+resolved against the filesystem root.  That is word for word the failure
+the POSIX arm of that same function carries a comment about having fixed
+with getcwd(2) in 2026-08, and the macos-aarch64 arm about having fixed
+with `fcntl(F_GETPATH)`; windows was the last target still carrying it,
+and nothing had noticed because nothing on that target had yet asked a
+relative path question and checked the answer.
+
+Fixed with `GetCurrentDirectoryW`, converting to the forward slashes the
+rest of this runtime uses and appending the trailing slash Emacs keeps —
+the same two rules the POSIX and macOS bodies apply.  `default-directory`
+now answers `"D:/Cowork/Notes/dev/nelisp/"` on this checkout, and the
+`dd` assertions in `standalone-reader-winpath-smoke` hold it there.
+
+** §6.5 §5.4 — the regexp engine's scan loop
+
+§5.4 measured `skk-version.el`'s `(dolist (p load-path) (string-match
+"ddskk-[0-9]+\\.[0-9]+" p))` at 2.47s for 42 calls, ~59ms per
+`string-match` against a ~51-character string, and named the cause: a
+backtracking matcher written in plain interpreted Elisp, paying §3's
+~0.15-0.4ms-per-call overhead many times over per position.
+
+That framing is right and this change does not contradict it — it removes
+work rather than making the interpreter faster.  `nlre-string-match`
+retries at every start position, and each retry did full work: a fresh
+`make-vector` for the capture slots plus a walk into `nlre--match-list`'s
+dispatch chain, even where the pattern's first node is a literal that the
+character at that position plainly is not.  Two changes, both inside the
+scan loop in `lisp/nelisp-stdlib-regexp.el`:
+
+1. the capture vector is allocated once per call and cleared per attempt
+   (and not even cleared when the pattern has no group), instead of
+   allocated once per attempt;
+2. when the pattern must begin with one specific character, a position
+   whose character is not that one is skipped with a single `aref` and
+   `eq`.
+
+The filter fires ONLY when the first node must match exactly one known
+character.  Anything optional (`:star`/`:opt` and the lazy forms),
+zero-width (`:bol`, `:wordb`, ...), structural (`:alt`/`:group`/`:seq`) or
+multi-character (`:set`/`:any`/`:word`/`:space`) answers nil and the scan
+runs exactly as it did.  That conservatism is the whole safety argument: a
+filter that guesses wrong here does not return a wrong answer, it SKIPS A
+REAL MATCH, and no timing assertion can see that.
+
+Measured, 42 `string-match` calls over ~43-character strings:
+
+| pattern | before | after | |
+|---|---|---|---|
+| `ddskk-[0-9]+\.[0-9]+` (leading literal, never matches) | 2.68-2.88s | 0.47-0.52s | 5.5x |
+| `package-[0-9]+/lisp` (leading literal, matches) | 1.91-2.00s | 1.40-1.62s | 1.3x |
+| `[0-9]+/lisp` (no leading literal, matches) | 4.67-4.73s | 4.84-5.42s | 0.95x |
+
+The third row is a real, small COST and is recorded as one rather than
+rounded away.  A control build carrying the two new helper defuns but
+never calling them measured 4.59-4.75s, so code layout does not explain
+it; splitting the scan into two loops, so the lead-less path executes no
+filter test at all, did not remove it either; and counting interpreter
+calls says that path should have got marginally CHEAPER (one `>` where a
+`make-vector` used to be).  The remaining explanation is
+allocation/collection behaviour rather than work done, and it is left
+measured and unexplained.  ~5% on patterns with no leading literal buys
+5.5x on those that have one.
+
+Gate: `standalone-reader-regexp-lead-filter-smoke`.  Its bound is a RATIO,
+not a wall clock — two sweeps back to back in one process over the same 42
+strings, one pattern with a leading literal and one without, neither
+matching — so a slow or loaded machine scales both halves.  Measured
+0.536-0.570 before and 0.076-0.078 after, threshold 0.25.  Thirteen
+correctness cases (anchored, case-folded, starred, grouped,
+empty-pattern, explicit START, and a group that matches inside a FAILED
+attempt before the successful one, which is the reused-vector case) sit
+beside it, and every expected value in them was read out of stock Emacs
+30.1 running the same expressions rather than asserted from the spec; the
+standalone matched all thirteen exactly.  Two mutation rows, one per half.
+
+This is also where §5's own measurement discipline slipped and is now
+corrected: the first before/after reading this session took was recorded
+while the smoke aggregate was running in the background, which is the
+invalid-baseline shape AI.md rule 3 names.  Every number above comes from
+a single interleaved A/B run on an idle machine.
+
+** §6.6 Five harness defects, all fixed
+
+1. FIXED.  `tools/nelisp-gate-mutation.sh` rebuilds the binary only for a
+   hardcoded list of gate names, and `standalone-reader-splitstring-perf-
+   smoke` — the gate §4 item 1 added — was not on it, while its row
+   mutates `lisp/nelisp-stdlib-regexp.el`, which
+   `nelisp-standalone--reader-prelude-source` reads with
+   `insert-file-contents` at BUILD time and bakes into the binary.  That
+   row could only ever have run the stale artifact and reported the gate
+   as having stayed green — precisely the failure that list exists to
+   prevent, and consistent with §4 item 1's own note that the row had
+   never completed a `gate-mutation-verify` run.  That gate and the four
+   new ones are all on the list now.
+2. FIXED, though the underlying host problem is not ours.
+   `standalone-reader-smokes` passed the target to its sub-makes through
+   the ENVIRONMENT.  On this host nothing crosses that boundary: `make` is
+   a CYGWIN build while its recipes run MSYS2's `/bin/sh`, so `FOO=bar
+   make` leaves FOO unset as a make variable AND in the recipe shell, and
+   even `export FOO` inside a recipe leaves `env` without it (measured
+   with a three-line makefile, not inferred).  Every gate then fell back
+   to `./target/nelisp` and the aggregate reported 41 failures of `Exec
+   format error` — which reads exactly like a real regression and named
+   nothing.  `tools/nelisp-reader-smokes.sh` now takes `--target NAME` as
+   an ARGUMENT and restates it on every sub-make as a command-line
+   variable, and prints one `[reader-smokes] target=... make=...` line so
+   the next person gets the answer instead of the symptom.
+3. FIXED, and this one is worse than it looks.
+   `tools/nelisp-gate-mutation.sh` rebuilt and ran every row with a bare
+   `make standalone-reader` / `make "$g"`, i.e. always the DEFAULT target.
+   On a host building for windows that rebuilds and runs the Linux binary,
+   so every gate fails with `Exec format error` — and this harness reads
+   "the gate failed" as "the row is lethal".  A full sweep there would
+   report every row proved without a single one having been exercised,
+   which is the same class of vacuous green as rule 1 in AI.md's own list.
+   It now restates `NELISP_STANDALONE_TARGET` on each `make` as a
+   command-line variable and prints the target it is using.  The five rows
+   this session's changes touch were then re-run through the real harness
+   with the target pinned, not only proved by hand.
+4. FOUND BY 3, RE-POINTED.  That first honest sweep immediately reported
+   `standalone-reader-splitstring-perf-smoke: STAYED GREEN with a real
+   defect in front of it`.  Not a weak gate — §6.5's own improvement,
+   which is failure mode 2 in `tools/gate-mutations.txt`'s header.  That
+   row disables `nlre-split-string`'s literal-separator fast path to force
+   `split-string` down the regexp path; a literal separator is exactly the
+   shape §6.5's leading-character filter helps most, so the forced path is
+   no longer slow enough to breach the gate's 1.0s bound.  Measured on the
+   gate's own 60-entry synthetic PATH: 0.375s as-is, 0.736s with the old
+   injection (under the bound), 3.525s with both defences removed.  A
+   self-baselined ratio bound was measured as the alternative and rejected
+   — `split-string` against `nelisp--split-on-char' on the same input in
+   the same process separates only 2.72-2.80 from 4.21-4.58, ~1.55x, which
+   is failure mode 3 territory.  The row now removes both defences, and
+   says in its own comment that its claim is weaker by exactly that much.
+5. FIXED.  The "does this row need the binary rebuilt around it" list in
+   `tools/nelisp-gate-mutation.sh` was written out THREE times — once for
+   the rebuild WITH the injection, once on the skip path, once for the
+   rebuild after RESTORING it — and item 1 above only updated the first.
+   The visible consequence was not a false PASS but a false FAILURE later:
+   a row rebuilt with its injection, restored the source, skipped the
+   second rebuild, and left the tree holding a binary built from injected
+   source, so the next unrelated run of that gate went red with nothing
+   wrong in the tree.  That happened here and cost a diagnosis.  There is
+   one list now, behind `gate_needs_rebuild`.
+
+   Related and NOT fixed, because it is inherent to the design this file
+   already documents: killing a sweep between the `sed -i` and the restore
+   leaves the injection in the tree.  That also happened here (a `check`
+   run was interrupted mid-row) and left `nl_sf_defvar`'s `boundp` gate
+   reading `(if (= 0 1)`.  The harness's own EXIT trap covers a signalled
+   exit but not a `SIGKILL`.  After any interrupted sweep, `git diff` the
+   mutated files before trusting anything — the final verification behind
+   §6 checks for exactly these six injection strings after every row, not
+   only at the end.
+
+** §6.7 The 36 gates that had never run on this target, and what they say now
+
+`STANDALONE_READER_SMOKES` had three ways of naming the binary and they
+disagreed: 10 gates picked `.exe` from a `case` on
+`NELISP_STANDALONE_TARGET`, 15 others picked "whichever file exists"
+(wrong when both do, which is normal on a machine that cross-builds), and
+the remaining 36 hardcoded `./target/nelisp` with no `.exe` case at all.
+So the aggregate had never once run against a windows-native build, and
+said nothing about that -- it simply reported `Exec format error` for 36 of
+its 46 checks whenever anyone tried.
+
+There is one name now, `STANDALONE_BIN`, derived from
+`STANDALONE_GATE_TARGET`; all 46 use it, and so do the 15 gates outside
+the list that carried the "whichever exists" spelling.  The 10 `case`
+blocks collapsed to one line each.
+
+*** What the first honest run said, and what it was actually saying
+
+46 checked, **17 findings**.  Six of those seventeen turned out to be
+defects in the GATES, not in the runtime -- which is the more useful half
+of this exercise, because each was reporting a working thing as broken.
+All six are fixed; the aggregate is now **46 checked, 11 findings**.
+
+| gate | what was actually wrong | fixed by |
+|---|---|---|
+| `bignum-smoke` | Two harness bugs stacked.  `ulimit -v 4194304` cannot be applied to the Win32 binary, which RESERVES far more address space than it commits, so the probe was killed before doing anything.  With that lifted it takes 31.8s solo on this target -- past the gate's own `timeout 30`, a bound picked against the Linux binary.  The probe itself is correct: `BIGNUM-SMOKE cases=54 mismatches=0`. | `STANDALONE_ULIMIT` (no address cap on windows; `timeout` still bounds it) and `STANDALONE_SMOKE_TIMEOUT` (180s there, 30s elsewhere) |
+| `realrt-smoke` | Hardcoded `exit 42`.  `nl_neln_demo_exec` is the real NeLN demo only on linux-x86_64; every other target gets a `125` placeholder, and the in-tree Emacs-side smoke has always encoded that distinction.  The Makefile gate did not. | the same rule, written the same way, in both places |
+| `ffi-unsupported-smoke` | `env -u NELISP_STANDALONE_TARGET` made its build fall back to linux-x86_64, so on a Windows host it cross-built an ELF into `target/nelisp` and then asserted against `target/nelisp.exe` -- a binary it had not built.  Its actual assertions hold on this target. | pass the target explicitly; only `NELISP_READER_DYNAMIC` is unset, which is the one thing the gate is about |
+| `prelude-test` | A parallel-rebuild collision (`Opening output file: Permission denied`).  `tools/nelisp-reader-smokes.sh` detects rebuilders by grepping a recipe for the literal `nelisp-standalone-build-reader`, and three of them reach the build through `-f nelisp-standalone-reader-{prelude,repl,malformed-input}-test` instead -- a guard with a false negative for exactly the targets it exists to catch. | widened the detection and added the three to `SERIAL_SMOKES` |
+| `process-smoke` | Reported `call-process exit=1` on a target where synchronous `call-process` WORKS.  `nelisp-standalone--fileio-process-call-forms` has a full W32 spawn arm (ArgvQuote-compatible command line, `STARTUPINFOW` with `STARTF_USESTDHANDLES`, `CreateProcessW`/`WaitForSingleObject`/`GetExitCodeProcess`); the gate hardcoded `/bin/sh`, which `CreateProcessW` cannot resolve, so the arm returned its "could not create" literal. | split the gate: `call-process` is asserted everywhere with a target-appropriate program (`cmd.exe /c` there), and the three ASYNC thirds -- which do need `fork` -- report a reasoned `GATE-SKIP` instead of a failure |
+| `malformed-input-smoke` | Never failed.  It was in this document's first draft of the list by mistake; the seventeenth failure was `prelude-test`. | the table above |
+
+Verified on windows-x86_64: `(nelisp-process-call-process
+"C:/Windows/System32/cmd.exe" nil nil nil "/c" "exit 7")` answers 7.  The
+Linux expansions of all six recipes are unchanged (`ulimit -v 4194304`,
+`timeout 30`, `want=42`, `/bin/sh`), checked with `make -n`.
+
+*** The 11 that remain, and who owns them
+
+None is a regression.  Each is a subsystem that was never wired for this
+target, plus one genuine behavioural difference.
+
+| group | gates | what is missing |
+|---|---|---|
+| sockets | `network-process-smoke`, `-server-`, `-nowait-`, `nonblocking-socket-smoke`, `hosts-file-smoke`, `dns-smoke` | `nelisp-standalone--socket-forms` is `nil` for every target but linux-x86_64, and the dispatch arms map all eight socket names to the unsupported-primitive form.  There is no `WS2_32.dll` entry in `nelisp-standalone--windows-reader-imports`.  Prior art exists on both sides: `lisp/nelisp-pe-write.el` already emits a `WS2_32.dll` import directory, and `lisp/nelisp-stdlib-os.el` carries the whole Winsock call sequence -- but only for the Rust runtime, through `nelisp-os--libc-call` |
+| async process | `process-adapter-smoke`, `process-adapter-smoke-red` | `nl_os_process_fork`/`_pipe`/`_dup2`/`_set_nonblock`/`_poll_readable` are literal `-1` stubs.  The SYNCHRONOUS half of the same subsystem is fully implemented (see `process-smoke` above), so this is an extension of a proven path -- `CreatePipe` + `CreateProcessW` + `PeekNamedPipe` + a zero-timeout `WaitForSingleObject` -- not a green field |
+| FFI | `ffi-smoke`, `tls-smoke` | `nelisp-standalone--reader-ffi-live-p` is true only for dynamic linux-x86_64; its own docstring says there is no PE/Mach-O import-table machinery for the others yet.  `tls-smoke` additionally hardcodes Linux syscall numbers 41/42 in its probe, so it needs the socket work too |
+| arena | `repl-smoke` | Reclassified.  Its crash WAS a harness defect and is fixed: the near-end probe wrote a compile-time `arena_base + 0` on every non-linux target, an address that stopped being chunk 0's bump cursor when Doc 140 made the arena multi-chunk, so the probe stamped over unrelated metadata and killed the reader (`exit=5`).  It now asks the runtime for the cursor on every target, the way linux already did, and the reader survives (`exit=0`).  What is left is real: the near-end read still answers `near-end-bad`, i.e. chunk growth at the end of chunk 0 behaves differently here.  That belongs with Doc 140's arena work, not with this document |
+
+Doc 138 is where the socket and spawn work belongs by lineage -- it already
+carries the Winsock design (`ws2_32!bind`/`connect`/`accept`/`WSAPoll`/
+`setsockopt`) and the `winsock-socket-exit-42` and
+`createprocess-wait-exit-42` PE de-risk specs.  Doc 100 §7 owns the FFI
+matrix.  Note for whoever picks these up: Docs 142, 184 and 194 each carry
+`#+VERIFIED-BY: standalone-reader-smokes`, and that gate is red on
+windows-x86_64 -- those claims are true of linux-x86_64 only, and say so
+nowhere.
+
+** §6.8 The TSF-host E2E budget, re-measured with a breakdown
+
+§5.4 left this open: either the full DDSKK engine load comes under the E2E
+harness's fixed 10s per-request budget, or that budget is re-examined as a
+product decision.  §5.4 measured the load at ~23-24s.
+
+Both halves are answered below, and they do not agree, because they are
+not the same program.  `nelisp-session-smoke.el` -- the DDSKK smoke this
+section profiles first -- is now **11.07-13.80s** wall, reporting
+`ddskk-nelisp-session-smoke-ok` every time.  The TSF host loads something
+larger; the harness was run against it and is still red.  See "The E2E
+harness itself" below before quoting any number here as the budget answer.
+
+Most of that came from one more defect of §6.1's family.  `executable-find`
+called `expand-file-name` ONCE PER PATH ENTRY -- 59 times per call, three
+calls while loading `skk-vars.el` -- and `expand-file-name` costs ~13ms
+here: three full-string scans (slashify NAME, slashify BASE, split the
+join) plus a component walk, all interpreted.  Two changes:
+
+- the sweep now probes with a plain `concat` and expands ONCE, on the entry
+  that answered yes.  `file-exists-p` hands the name to the OS, which
+  resolves `..`, doubled separators and mixed `\`/`/` exactly as it would
+  after expansion, and the value RETURNED is still the expanded one;
+- the PATH split is memoised on the PATH string itself, so a `setenv`
+  invalidates it by construction and three `executable-find` calls split
+  once instead of three times.
+
+`nelisp--path-split` was also rebuilt from one `concat` per CHARACTER to
+one `substring` per component (both copies -- the prelude's and
+`lisp/nelisp-stdlib-misc.el`'s, which `make ns-gate` holds in step).
+
+Measured: `executable-find` 1.383s -> 0.547s; `vendor/ddskk/skk-vars.el`
+**6.110s -> 0.638s**; `repro-skkvars-real.el` 9.5-9.7s (§5.3) -> **1.67-1.86s**.
+
+*** Where the remaining ~11s goes
+
+Three runs, each gated on a startup-floor control taken immediately before
+it (floor 854-881ms, spread under 3%) -- see the note on variance below.
+Times are one representative quiet run; the range across the three is
+given where it matters.
+
+| component | s | share |
+|---|---|---|
+| process startup + exit | 0.85 | 8% |
+| `vendor/ddskk/skk-tankan.el` | 3.48-4.02 | 33% |
+| `skk-compile-rule-list` (romaji rule tree) | 2.42-2.89 | 23% |
+| `vendor/ddskk/skk.el` | 1.36-1.56 | 13% |
+| `vendor/ddskk/skk-vars.el` | 0.63-0.71 | 6% |
+| `vendor/ddskk/skk-version.el` | 0.38-0.41 | 4% |
+| `vendor/ddskk/skk-cus.el` | 0.23-0.28 | 2% |
+| `src/nelisp-buffer.el` | 0.22-0.30 | 2% |
+| `skk-macs.el` + `skk-nelisp-compat.el` | ~0.30 | 3% |
+| the other seven vendor files | ~0.09 | <1% |
+| the smoke's 4 sessions + assertions | ~0.7-2.1 | 6-18% |
+
+What the E2E harness's first `SendKey` has to cover is everything except
+that last row -- startup + loads + rule tree -- which is **~10.4s** in the
+quietest run measured.  So the answer to §5.4's question is: the gap is now
+about 0.4s, not 13s, and the two things left are both "a lot of data
+through an interpreted runtime" rather than a defect:
+
+1. `skk-tankan.el` -- 3385 lines of literal kanji-lookup data in six
+   `defconst`/`defvar` forms;
+2. `skk-compile-rule-list` -- the romaji rule tree, built at runtime from
+   `skk-rom-kana-base-rule-list`.
+
+Both were broken down further, and the answer is that neither is this
+repository's to close:
+
+- `skk-tankan.el`'s cost is ONE of its ~28 top-level forms.  Loading the
+  file up to line 1836 costs 0.14s; the whole file costs ~3.5s.  The form
+  at `skk-tankan.el:1836`, `skk-tankan-name-radical-alist`, is 14 lines and
+  is all of it -- a double `mapc` over ~214 radicals doing a `split-string`
+  on a MULTIBYTE separator and a `format "%-16s (%03d) %s"` per yomi.  The
+  reader is not implicated: a synthetic 128KB string literal reads in
+  ~0.1s and scales linearly, measured at 4KB through 128KB.
+- `skk-compile-rule-list` splits, on the same 258 rules, into
+  `skk-add-rule` (~33%), `define-key` (~28%, the IME project's own
+  `assoc`-scan keymap in `engine/skk-nelisp-compat.el`), `string-match
+  "\\w"` (~13%, this repo) and `key-binding` (~1%).
+
+So of the ~10.4s the first `SendKey` must cover, the part that lives in
+THIS repository is `string-match` and the general per-operation cost §3
+measured; the rest is `vendor/ddskk` and the IME project's compat layer.
+Whether to close 0.4s or to raise the harness's budget is still the product
+decision §5.4 flagged, and it is still not taken here -- but it is no
+longer a decision about an unattributed number.
+
+*** The E2E harness itself: run, and still red
+
+§5.4 left the budget question open and this section first answered it from
+`nelisp-session-smoke.el` -- the engine load, not the harness.  That was
+the wrong number, and the correction is worth more than the number was.
+
+The real harness was run: `build/windows/Debug/ddskk-engine-e2e-test.exe`,
+started with the argument shape the project's own CTest registration
+records (host exe, engine binary, repo root), against the
+windows-x86_64 `target/nelisp.exe` built from this working tree.  It still
+fails, at the same place §5.4 reported:
+
+: E2E: starting host
+: ddskk-engine-host: loaded dictionary ...\behavior-jisyo.utf8 (3 entries, 0 ms)
+: E2E: host ready pid=2076
+: Assertion failed: state, file ...\windows\test\engine_e2e_test.cpp, line 143
+
+Line 143 is `assert(state)` after `client.SendKey(key, 10000)` -- the
+10-second request budget elapsing with no reply, not the
+`assert(elapsed < seconds(10))` on the line below it.  Harness wall clock
+12.18s: host start, then the 10s timeout, then abort.  (It orphaned
+`ddskk-engine-host.exe` and `nelisp.exe` on the way out, exactly as §5.4
+warns; the runner cleaned them up.)
+
+**Where this section was wrong.**  It reported the first `SendKey` as
+needing ~10.4s and therefore being ~0.4s short.  That figure came from
+`nelisp-session-smoke.el`'s load sequence, and the host does not load
+that: `windows/host/main.cpp` builds `"<engine>" --load
+engine/ddskk-engine-stdio.el`, which loads `engine/ddskk-engine.el` --
+`skk-user-jisyo.el` and the stdio runner on top of the smoke's set, plus
+the runner's own start-up work.  Measured end to end, that command costs
+**12.39-12.49s**.  The budget is short by ~2.4s, not ~0.4s.  A subset
+measured carefully is still a subset.
+
+**What this session did move it.**  Same command, three runs each side,
+interleaved in one stretch, only the four files that end up inside the
+binary swapped:
+
+| | HEAD | this working tree |
+|---|---|---|
+| `nelisp.exe --load engine/ddskk-engine-stdio.el` | 23.87-24.14s | 12.39-12.49s |
+
+1.93x, and it does not clear the bar.
+
+**The 12.4s, itemised** (in-process 10.36s of it; the rest is process
+start-up and the stdio runner's own work):
+
+| component | s | share of 12.4 |
+|---|---|---|
+| `vendor/ddskk/skk-tankan.el` | 3.75 | 30% |
+| `skk-compile-rule-list` | 2.83 | 23% |
+| `vendor/ddskk/skk.el` | 1.36 | 11% |
+| process start-up + exit | ~0.85 | 7% |
+| `vendor/ddskk/skk-vars.el` | 0.63 | 5% |
+| `vendor/ddskk/skk-version.el` | 0.38 | 3% |
+| `skk-cus.el`, `skk-macs.el`, `nelisp-buffer.el`, compat, the other six | ~0.80 | 6% |
+| `ddskk-engine.el`'s own body + the stdio runner + dictionary | ~1.8 | 15% |
+
+The two largest are the ones §6.8 already attributed, and the attribution
+is what decides who can act:
+
+- `skk-tankan.el`'s 3.75s is one 14-line form, `skk-tankan-name-radical-
+  alist` (`skk-tankan.el:1836`), in `vendor/ddskk`;
+- `skk-compile-rule-list`'s 2.83s is 33% `skk-add-rule` (vendor), 28%
+  `define-key` (the IME project's own `assoc`-scan keymap in
+  `engine/skk-nelisp-compat.el`), 13% `string-match` (this repository).
+
+So closing 2.4s from inside THIS repository means making the interpreter
+itself faster -- §3's per-operation cost -- because the specific call sites
+that were doing unnecessary work have now been fixed and what remains is
+ordinary work done many times.  The other two owners each have a
+cheaper-looking option in their own tree.  Neither of those is this
+document's to take, and the harness's own comment ("Cold DDSKK load varies
+between roughly 5 and 12 seconds on this machine") suggests its 10s figure
+was set against a different runtime than the one it now measures.  The
+product decision §5.4 flagged is therefore still open -- but it is now a
+decision with a measured gap, an itemised cost, and an owner per item.
+
+*** "Is it slow because the .el files are not compiled?"
+
+A good question, asked after §6.8, and worth the measurement it took: NeLisp
+does have an AOT path, the DDSKK engine does not use it, and the obvious
+inference -- that switching it on would close the gap -- is WRONG on this
+target today.  It would make things worse.
+
+**The compiler exists.**  `compile-elisp-artifact --kind nelc|neln|elc`,
+`compile-elisp-artifacts`, `eval-elisp-artifact`, `load-elisp-source
+[--auto-compile]` (Doc 142).  `vendor/ddskk/skk-tankan.el` compiles: 203KB
+of source to a 141KB `.nelc` in ~2.9s.
+
+**The engine does not use it.**  `engine/ddskk-engine.el` loads all fifteen
+of its files with plain `(load "...")`, and plain `load` does NOT consult
+an adjacent artifact.  Measured, with the dependencies properly loaded so
+both sides are real loads: `skk-tankan.el` costs 3.72s/3.78s with no
+artifact present and 3.41s/3.50s with `skk-tankan.el.nelc` sitting next to
+it -- not the difference compiled code would make.  The artifact-aware
+branch exists only inside the `load-elisp-source` CLI entry point
+(`<src>.neln` or `<src>.nelc` -> `nelisp-artifact-load-file`, else
+`nelisp-load-file`), and `nelisp-artifact-load-file` is not `fboundp` in an
+ordinary session, so the engine could not opt in from Lisp even if it
+wanted to.
+
+**Compiling makes it slower.**  Measured on two self-contained files --
+`skk-tankan.el` itself cannot answer this, because every attempt to load it
+through the artifact-aware entry point errored on `(require 'skk)`, which
+`--preload`, an explicit `(provide 'skk)` and `--load-path` all failed to
+satisfy.  (An earlier 9.1s-vs-2.0s reading from those attempts was two
+FAILURE paths timed against each other and is retracted.)  So: one file
+shaped like the form that actually costs skk-tankan's 3.4s -- a double loop
+over 214 entries doing a multibyte `split-string` and a padded `format` per
+item -- and one that is a large literal data table, the other thing that
+file is made of.  Both self-contained, both compile, so source-vs-artifact
+is a valid A/B:
+
+| file | plain `--load` (source) | `.nelc` | `.neln` |
+|---|---|---|---|
+| 144KB literal data table | 1.75s | >180s (timed out) | >180s (timed out) |
+| 214-entry split/format loop | 10.6s | 24.2s | 23.6s |
+
+Not a regression in the artifact machinery: `nelc` IS bytecode
+(`:artifact-class bytecode`, `:bytecode-backend "nelisp-bcl-vm"`) and this
+runtime's bytecode VM is itself interpreted elisp, so the artifact path
+adds a layer rather than removing one.  On a runtime whose basic operation
+costs ~262us (§6.8), an extra dispatch per operation is not a rounding
+error.
+
+**And the native kind is not native here.**  `--kind neln` produced a
+7382-byte artifact against `nelc`'s 7363, ran within noise of it, and its
+manifest says why: `:artifact-class native` but `:module-policy bytecode`,
+`:native-policy opportunistic`, **`:native-report nil`** -- no native
+section was emitted, and the compile degraded to bytecode without saying
+so.  `--native-policy required` does not force the issue either: the same
+source compiled with it still reports `:native-report nil`, having moved
+`:module-policy` to `eval` rather than failing.  That is the same missing
+PE machinery §6.7 inventoried for `ffi-smoke`
+(`nelisp-standalone--reader-ffi-live-p` is true only for dynamic
+linux-x86_64, and its docstring says there is no PE/Mach-O import-table
+machinery for the other targets yet).
+
+So the honest answer is that this avenue is CLOSED on windows-x86_64 until
+native AOT emission exists there, and it is the same gap that keeps
+`ffi-smoke` red -- which makes that gap worth more than its one gate
+suggests.  Whether `nelc` beats the interpreter on a target where the
+bytecode VM is not itself interpreted was not measured here.
+
+One operational note, because it cost an hour: an interrupted run of this
+experiment left a `nelisp.exe` compiling an artifact for 86 minutes at
+7.8 GB resident before it was noticed.  Bound these runs with `timeout` and
+check for strays afterwards -- the same discipline §6.6 records for the
+mutation harness, for the same reason.
+
+*** Improvement options, ranked by what the measurements support
+
+The floor is the interpreter: 262us per basic operation (§6.8), and the
+process is 98-99% CPU-bound, so every option is one of three things --
+do less work, do it earlier, or make each operation cheaper.  Two of the
+three largest items are not this repository's to change, so ownership is
+part of the ranking rather than a footnote.
+
+**1. Defer `skk-tankan.el` (IME project, ~1 line).  Saves 3.48-4.02s.**
+
+It is 30% of the cold start and it is 単漢字検索 -- lookup of a single
+kanji by radical and stroke count.  No keystroke needs it before the user
+asks for it; `skk.el' pulls it in from an `eval-and-compile' require.
+Checked directly: with `(provide 'skk-tankan)' as a stub before `skk.el'
+loads, the engine still loads and `skk-compile-rule-list' still builds the
+tree (`tankan-bound=nil rule-tree-ok=t').
+
+12.4s minus that is ~8.4-9.0s, i.e. under the harness's 10s budget with
+room.  NOTE the confidence level: that subtraction is arithmetic over
+components measured separately, NOT an end-to-end run.  It must be
+confirmed end to end before anyone relies on it -- this document has
+already been wrong once (§6.8) by trusting a number measured on a subset.
+The feature has to load on demand instead, which is the actual work.
+
+**2. Replace the compat layer's keymap (IME project).  Saves ~0.8s.**
+
+28% of `skk-compile-rule-list''s 2.83s is `define-key', which
+`engine/skk-nelisp-compat.el' implements as an `assoc'-scan alist -- O(n)
+per insert over 258 inserts.  A hash table is a local change in one file.
+
+**3. Precompute the romaji rule tree (IME or vendor).  Up to ~2.4s.**
+
+`skk-compile-rule-list' derives a tree from two constants on every start.
+The inputs never change between runs, so the result can be built once and
+shipped as data.  Larger change than 1 or 2, and it interacts with 2.
+
+**4. `string-match' in the rule loop (THIS repository).  Saves ~0.37s.**
+
+13% of the same 2.83s.  `(string-match "\w" key)' runs per rule on keys
+of 1-3 characters; `\w' has no leading literal, so §6.5's filter cannot
+fire.  Small, and the only item in the rule-tree cost that is ours.
+
+**5. Interpreter per-operation cost (THIS repository).  Open-ended.**
+
+§3's 262us is what everything above is a multiple of.  It is the only
+lever that helps every workload rather than one file, and the only one
+with no owner but us.  §6.5's unexplained ~5% and §6.8's allocation-shaped
+kernel time are the two concrete threads into it.
+
+**6. Native AOT on windows-x86_64.  Unknown payoff -- measure first.**
+
+§6.8 found that compiling makes these files SLOWER (bytecode run by a VM
+that is itself interpreted) and that `--kind neln' emits no native section
+on this target at all.  Fixing that is the same PE machinery that keeps
+`ffi-smoke' red, so it is a subsystem, and it should NOT be started on the
+assumption that native artifacts are fast here.
+
+The cheap way to decide: run the same source-vs-nelc-vs-neln comparison on
+linux-x86_64, where native emission IS available.  If `neln' is a large win
+there, the PE work is justified and it is the biggest structural fix
+available; if the workload is dominated by runtime primitives that stay
+interpreted either way, it is not.  That experiment is one afternoon and it
+decides a subsystem-sized investment.
+
+**7. Re-examine what the E2E measures (product).**
+
+Worth stating because the harness says it itself: "responsiveness is
+provided by the native frontend while it warms" (engine_e2e_test.cpp, the
+comment above the 10s assert).  If production starts the engine host
+before the first keystroke -- which that sentence implies it does -- then
+a 10s budget on the FIRST `SendKey' is measuring a cold path the product
+does not actually put a user in front of.  Either the test should model
+the warm-up it describes, or the budget should be set against the cold
+number deliberately.  Not this document's call, but it should be a
+decision rather than an inheritance.
+
+**Recommended order.**  1 and 2 first: together ~4.3-4.8s, both small,
+both in the IME project, and 1 alone plausibly clears the budget.  Then 6's
+one-afternoon experiment, because it decides whether the large structural
+option is real.  Then 5 as the standing work.  4 whenever the rule loop is
+next touched.  7 settled explicitly either way.
+
+*** Option 1 implemented: the E2E now clears the 10s budget
+
+`skk-tankan.el' is now deferred in the IME project's own engine
+(`engine/ddskk-engine.el', a SEPARATE repository -- that change is
+uncommitted there and is not part of this repository's diff).  Not a stub
+that drops the feature: `(provide 'skk-tankan)' plus hand-written lazy
+front ends for the two entry points anything outside the file reaches.
+`autoload' is void on standalone NeLisp, so each stub loads the file --
+which redefines it -- and re-dispatches.
+
+What makes it safe rather than merely faster is a property of DDSKK's own
+code: `skk-tankan-search', the only entry the DEFAULT
+`skk-search-prog-list' reaches, is a no-op unless the reading ends with
+`skk-tankan-search-key' (@), tested by its own `when' at
+skk-tankan.el:1950.  The stub tests the same condition from `skk-vars.el'
+data that is already loaded, so an ordinary conversion never touches the
+file.  The cost moves from every start to the first actual 単漢字 lookup.
+
+| | before | after |
+|---|---|---|
+| `nelisp.exe --load engine/ddskk-engine-stdio.el' | 12.39-12.49s | 9.9-11.2s |
+
+And the harness, run for real:
+
+**`assert(state)` at engine_e2e_test.cpp:143 -- the 10-second first-
+`SendKey` budget that §5.4 and §6.8 both stopped at -- now PASSES.**
+
+`test/nelisp-session-smoke.el` still reports
+`ddskk-nelisp-session-smoke-ok', and the deferral was confirmed to be in
+effect rather than merely fast (`skk-tankan-radical-name' unbound after a
+full engine load, the lazy flag still nil).
+
+Two honesty notes.  The engine entry now straddles the budget (9.9-11.2s
+against 10s) rather than clearing it comfortably, so on a loaded machine
+it will still miss; options 2 and 3 are what turn a pass into a margin.
+And the saving measured end to end (~1.9-2.5s) is smaller than the
+component arithmetic predicted (3.48-4.02s) -- the prediction was
+optimistic, exactly the risk flagged when it was made.
+
+*** What the E2E fails on now, and why it is not this change
+
+The harness now reaches `assert(state)` at engine_e2e_test.cpp:188 --
+`ConvertKeys(U"Kana")` -- and fails there with
+
+: ConvertKeys raw response: [ERR CONVERT-KEYS]
+
+Reproduced in-process with the engine's own `DDSKK_ENGINE_DEBUG' detail
+turned on, driving `ddskk-engine--dispatch-line-1' with the same request:
+
+: ERR CONVERT-KEYS wrong-type-argument number-or-marker-p ?
+
+It is PRE-EXISTING.  The identical request produces the identical error on
+the pristine engine with `skk-tankan.el' fully loaded
+(`tankan-loaded-before=t'), so the deferral neither causes nor masks it.
+It was unreachable before only because the run never got past line 143.
+
+(The first attempt at this repro was invalid and is worth recording:
+`ddskk-engine--decode-codepoints' separates codepoints with COMMAS, and a
+space-separated request returns nil from the decoder's own guard rather
+than reaching the conversion -- so both sides "failed identically" for a
+reason that had nothing to do with either.  The comparison above uses a
+valid request.)
+
+`wrong-type-argument number-or-marker-p' on the conversion path is the
+marker-coercion gap the engine's own comments already name ("DDSKK's
+henkan guards compare a marker with `point' arithmetically.  This runtime
+does not coerce a marker to its position").  That is a NeLisp runtime gap,
+i.e. ours -- but a functional one, unrelated to this document's subject,
+and it now sits between the harness and green.
+
+*** The marker defect at line 188: fixed, and what it cost to learn how
+
+The backtrace named it exactly: `(< pos skk-henkan-start-point)` in
+`skk-start-henkan` (skk.el:3152), with a marker as the second operand.  In
+GNU Emacs that is correct code -- `<` accepts a marker, which is what the
+`number-or-marker-p` in its own error message names.  Here a marker is an
+ordinary struct and the native `<` cannot know about it.
+
+The obvious fix is to make the arithmetic primitives marker-tolerant, and
+it was implemented and MEASURED before being believed.  It is unaffordable:
+
+| wrapped | cost on the DDSKK engine load |
+|---|---|
+| `+ - * = < > <= >= /= 1+ 1- max min` | 2.8-3.6x (9.65s -> 26.7-34.8s) |
+| `< 1- max min` | 1.30x, 1.41x, 1.42x (three interleaved pairs) |
+| `1- max min` (no `<`) | within noise |
+
+A wrapper cannot cost less than one extra call, and this runtime charges a
+basic operation for a call (~262us, §6.8).  `<` is the hottest primitive
+there is, so wrapping it taxes every loop in the system to fix one call
+site.  `1-`/`max`/`min` are rare enough to be free, and they ARE wrapped
+now (`nelisp-marker-install-arithmetic`, src/nelisp-buffer.el) -- markers
+reach them through `goto-char` and `buffer-substring-no-properties`.
+
+For `<` the marker is removed from the hot path instead: the IME project's
+engine overrides DDSKK's `skk-set-marker` macro to store a plain position.
+Its markers do not adjust on insertion on this runtime anyway, so for these
+variables a marker carries nothing an integer does not, and every henkan
+point is set through that one macro -- one override rather than one per
+comparison.  Two consequences had to be followed: `marker-position` now
+answers an integer handed to it, and `skk-ime-session.el`'s state builder
+gated on `markerp` and silently reported `composition-start` as -1 until it
+was taught to accept a number (caught because the E2E asserts
+`composition_start >= 0` two lines after the one that was failing).
+
+Verified in-process: the conversion that returned `ERR CONVERT-KEYS
+wrong-type-argument number-or-marker-p` now returns
+`STATE candidate 2 1 ...`, which is the mode and the non-negative
+composition start the harness asserts.  `nelisp-session-smoke.el` still
+reports ok, and `standalone-reader-buffer-smoke` passes (18 tests).
+
+*** Where the harness stands now
+
+Not green, and the reason is a margin rather than a defect.  The engine
+entry point measures **9.95-11.27s against a 10s budget** on a quiet
+machine (startup floor 766-790ms, checked in the same window because an
+earlier reading of 20-35s turned out to be transient load and would
+otherwise have been attributed to this change).  So line 143 passes or
+fails depending on where in that range a given run lands -- it passed
+before the marker work and failed after it, with the marker work measured
+free.
+
+What is left is therefore margin, not correctness: §6.8's option 2 (the
+compat layer's `assoc`-scan keymap, ~0.8s) and option 3 (precomputing the
+romaji rule tree, up to ~2.4s).  Option 3 is what turns a coin flip into a
+pass.
+
+*** The harness is green
+
+Five consecutive runs of `ddskk-engine-e2e-test.exe`, each preceded by a
+startup-floor check so a loaded machine could be told from a real failure:
+
+| run | floor | wall | exit | failed at |
+|---|---|---|---|---|
+| 1 | 514ms | 15.9s | 0 | -- |
+| 2 | 693ms | 17.2s | 0 | -- |
+| 3 | 651ms | 17.6s | 0 | -- |
+| 4 | 648ms | 17.2s | 0 | -- |
+| 5 | 651ms | 17.2s | 0 | -- |
+
+And it is the whole test, not an early exit -- its own progress markers, in
+order: host started and ready, **normal conversion complete**, child
+terminated and the transaction failed cleanly, old host exited, host
+restarted, **same client recovered**, clean shutdown requested and
+completed.  That covers the four-client cross-pipe section and the
+crash-recovery section this document had never seen run.
+
+**So the question §5.4 opened is answered: the TSF-host E2E passes.**
+
+*** Correcting this section: it was never a coin flip
+
+An earlier reading here said line 143 passes or fails depending on the run.
+That was wrong, and wrong in the way this document has been wrong twice
+before.  The failures that produced it came from a machine whose startup
+floor was 1.7-2.4s rather than the 514-790ms it reads when quiet; the
+engine entry measures 9.95-11.27s under those conditions and 12-35s under
+load, and the harness's budget does not move.  With the floor checked
+BEFORE each run, five runs out of five pass.
+
+The honest statement is: the E2E passes on an idle machine and fails on a
+loaded one, and the margin is thin enough that it is worth removing --
+§6.8's options 2 and 3 are still the way to do it.  But "thin margin" and
+"coin flip" are different claims and only one of them is supported.
+
+*** Regression check on the marker change
+
+`src/nelisp-buffer.el` gained the marker-tolerant `1-`/`max`/`min` after
+the last full gate run, so the aggregate was re-run against it:
+`standalone-reader-smokes` reports **46 checked, 11 findings** -- the same
+eleven, by name, as before the change (§6.7's socket/FFI/process/repl
+list).  No regression, and `standalone-reader-buffer-smoke`, the gate that
+owns that file, passes its 18 tests.
+
+*** Option 3 implemented: the romaji rule tree is built once, not per start
+
+With `skk-tankan.el' deferred, `skk-compile-rule-list' was the largest
+single item left on the path the first keystroke walks -- 2.15-2.48s of a
+~7s in-process total, deriving a tree from two constants on every engine
+start.
+
+It is now generated as data.  `engine/gen-rule-tree.el' (IME project)
+builds the tree and writes `engine/skk-rule-tree-cache.el`; the engine's
+`ddskk-engine--rule-tree' loads that instead of compiling.
+
+| | seconds |
+|---|---|
+| `skk-compile-rule-list' | 2.481 |
+| loading the generated cache | 0.021 |
+
+**118x, and the two trees compare `equal'** -- checked, not assumed, in the
+same process.
+
+*** Why this is a cache and not a hazard
+
+A generated artifact that silently goes stale is the `.elc' failure this
+repository already has scars from, so the cache is not trusted on sight.
+It carries `sxhash-equal' of BOTH input lists, and the loader recomputes
+unless both still match.  `skk-rom-kana-rule-list' is a `defcustom': "the
+inputs never change" is a claim about one configuration, not about the
+program, and the guard is what makes the difference safe rather than
+merely fast.
+
+Verified by perturbing an input: with one extra rule consed onto
+`skk-rom-kana-rule-list', the loader took 2.079s (i.e. recompiled) and
+produced a tree that differs from the cached one.  A stale cache therefore
+costs the time it was meant to save, never a wrong answer.  `sxhash-equal'
+over the 259-entry base list measures 15ms, so the guard itself is not a
+new cost worth avoiding.
+
+*** Where the budget stands
+
+| | engine entry | E2E harness wall |
+|---|---|---|
+| HEAD at the start of this work | 23.87-24.14s | (never reached its asserts) |
+| after §1-§6.5 | 12.39-12.49s | red at line 143 |
+| after deferring `skk-tankan.el' | 8.6-8.8s | green, 5/5 |
+| after the rule-tree cache | **4.75-5.89s** | green, 5/5, 12.4-13.2s |
+
+Against a 10s budget that is roughly a 2x margin, where before the cache
+the entry sat at 8.6-8.8s and before the deferral at 9.95-11.27s -- close
+enough that a loaded machine failed it, which is how this document briefly
+came to describe a machine problem as a coin flip.  The margin is now wide
+enough that the harness passing is a statement about the code rather than
+about how quiet the machine was.
+
+`nelisp-session-smoke.el` still reports ok, and the five harness runs each
+went through the crash-recovery and four-client sections to a clean
+shutdown.
+
+*** On measurement variance, and on Defender
+
+This host moves these numbers by 2-3x between runs: the same `(princ "x")`
+floor read 825ms and 1869ms twenty seconds apart, and the smoke read 12.7s
+and 33.3s in one pass.  Every number above therefore comes from a run whose
+floor control was under 950ms; contaminated pairs are discarded, not
+averaged, because an average over a contaminated sample is still
+contaminated.
+
+Windows Defender's real-time protection is on and this tree is not known to
+be excluded, so the obvious hypothesis is that it is scanning these files.
+Measured, and it is not:
+
+- `nelisp.exe` runs at **98-99% cpu/wall** across the whole engine load.  A
+  process that never waits is not stalling on a scanner.
+- A minifilter's time WOULD be charged to the caller's kernel time, and the
+  engine load does spend 25% there -- but a workload that reads NO FILES at
+  all, `(dotimes (i 300000) (+ 1 1))`, spends 20%.  The kernel time tracks
+  allocation, not file activity, which is what §3's ~14 heap allocations
+  per trivial operation predicts.
+- That same loop took 78.66s, i.e. **262µs per `(+ 1 1)`** -- §3's
+  0.15-0.4ms per basic operation, reproduced independently on today's
+  binary.
+
+So Defender is not why this is slow; the interpreter is.  Defender and the
+search indexer do explain the VARIANCE, which is why the floor control
+exists.  MsMpEng is a protected process and its own CPU time cannot be read
+without elevation, so this is inference from the workload side rather than
+direct attribution -- strong inference, since a scanning stall cannot hide
+inside a process that is 99% busy, nor explain kernel time in a run that
+opens no files.
+
+*** §6.9 item 5, worked: two readers, both wrong, and a fix not worth building
+
+The question was why `read-from-string` is slow. The answer is that it is
+a DIFFERENT READER: it resolves to `nelisp--rd-one', written in
+interpreted Elisp, while `load' has always used the native parser, which is
+also exposed to Lisp as `nelisp--read-all-from-string-native'.  That
+builtin's own comment says what it is for -- "a bulk reader without the
+per-form `read-from-string' / `nelisp--rd-one' compatibility path".
+
+| 9114 bytes of nested conses | seconds |
+|---|---|
+| `read-from-string' (Elisp) | 26.410 |
+| the native reader | 0.003 |
+
+Identical results, ~8800x apart.
+
+`read' is rerouted, exactly: it answers the first form and discards the
+position, which is the one part of `read-from-string''s contract the bulk
+reader cannot supply.  `read-from-string' is NOT: its `(FORM . END-INDEX)'
+is what callers iterate on, and an index guessed from the last
+non-whitespace character is wrong the moment a comment follows the form.
+A silently wrong index is worse than a slow correct one.
+
+**Two reader defects, found only by comparing them.**  Having both
+reachable from Lisp made the differential possible, and both were wrong,
+in opposite directions:
+
+| input | Emacs 30.1 | `nelisp--rd-one' | native parser |
+|---|---|---|---|
+| `?x` | 120 | symbol `?x` | 120 |
+| `? ` | 32 | 32 | symbol `?` |
+
+`nelisp--rd-one' had no `?' arm at all.  The native lexer sent `?' followed
+by whitespace to the atom lexer, and since `load' uses that lexer,
+`(setq x ? )' -- valid Elisp -- failed to load with `void-variable: (?)'.
+Both fixed; both now answer identically to stock Emacs on a 40-case corpus,
+diffed line for line against Emacs output.
+`standalone-reader-reader-parity-smoke' is the check whose absence let both
+survive, and it needs no Emacs to hand.
+
+**The "real fix" is not worth building, and that is the useful part.**
+The obvious follow-up is a native single-form builtin returning
+`(FORM . INDEX)' -- the parser side already exists, since
+`bf_read_all_from_string_native' drives `nelisp_reader_parse_one' with a
+cursor whose position sits at offset 8.  Before writing it, the question
+worth asking is who would take that path, and the answer on this target is
+nobody:
+
+- `load' uses the native driver (228KB of `skk-vars.el' in 0.414s).
+- `read' now uses the native parser.
+- `nelisp--load-eval-source-incremental'
+  (`lisp/nelisp-stdlib-misc.el'), which DOES read form-by-form through
+  `read-from-string' and says in its own comment why it cannot use the bulk
+  reader -- the whole AST "can overflow the standalone arena on
+  upstream-sized package files" -- is not in the standalone image at all.
+  That file is referenced only from comments in the build script, and
+  `nelisp--load-eval-source-incremental' is not `fboundp' on the binary.
+  Checked, not assumed.
+
+So the exposure is user code that calls `read-from-string` directly, plus
+that incremental loader if a program loads `nelisp-stdlib-misc.el' itself
+(two gates do).  Real, but nothing the runtime does by default.  Building
+the builtin now would be a native-unit change -- the highest-blast-radius
+component there is -- for a path nothing takes.  It is worth building the
+day something needs it, and the note above says exactly where it goes.
+
+** §6.9 What is still open
+
+Rewritten after §6.8's later rounds; three of its earlier items are simply
+done, and leaving them standing would have been the same kind of stale
+claim this document keeps finding elsewhere.
+
+1. **0 windows-native gate failures** (§6.7's table).  The last two stale
+   FFI/TLS entries are closed: `ffi-smoke` went green on the target-mapped
+   UCRT arm, and `tls-smoke` went green on Winsock -> Schannel handshake,
+   send, receive, graceful close, and an `HTTP` response assertion.  The TLS
+   smoke is network-gated on live reachability of 1.1.1.1:443 and is not part
+   of the hermetic set.
+   **No gate is waiting on socket, process, or arena work any more.**
+   `repl-smoke` left the list 2026-09-03; see item 2 for what it actually
+   was.
+   Was 11 on 2026-09-01.  Doc 138's socket work brief took it to 10 and
+   then 7, and the windows async-process arm took it to 3 on 2026-09-02.
+   Every number below was measured on this host rather than claimed:
+
+   - Slice 1 (`connect`/`send`/`recv`/`close` over WS2_32 plus one startup
+     `WSAStartup`) turned `standalone-reader-dns-smoke` green, `findings=11`
+     -> `10`, with the gate taking its LIVE lookup path (`(t open)`) rather
+     than the no-egress SKIP path that also exits 0.
+   - Slice 2 (`listen`/`accept`/`poll`/`connect-error`) turned
+     `hosts-file-smoke`, `nonblocking-socket-smoke` and
+     `network-process-server-smoke` green, `findings=10` -> `7`.
+
+   - The windows async-process arm then turned the remaining four green,
+     `findings=7` -> `3`: `make-process` answered nil on this target, so
+     `network-process-smoke` and `-nowait-`'s mixed cases and both
+     `process-adapter` gates died at `(processp nil)`.  Slice 1 gave it a
+     real `CreateProcessW` lifecycle, slice 2 the duplex stdin half, and
+     the gates got a child this platform actually has -- they had spawned
+     `/bin/sh`, `/bin/cat`, `/bin/echo` and `/bin/sleep` by absolute POSIX
+     path.  Worth knowing: at that point ALL fourteen `nelisp-process-*`
+     names dispatched unconditionally on windows and fell through to POSIX
+     stubs, so `start` returned nil rather than refusing and
+     `async-ready-p` answered `t`.  Availability there is per name now.
+
+   - Stage D1's PE/UCRT mapping then closed `ffi-smoke`; the Schannel slices
+     closed the TLS surface itself.  Slice 3 added the documented
+     `SCHANNEL_SHUTDOWN` close sequence and turned the final `tls-smoke`
+     green through its live path.  The windows aggregate now reports
+     `checked=47 findings=0`.
+
+   Doc 138's work brief opened by saying six gates waited on the socket arm
+   "and nothing else".  Measured, two of them also needed the async-process
+   arm; that sentence is corrected there.
+   None is a regression.  Doc 138 owns the socket and spawn work by
+   lineage, carries the design, and now carries a work brief for the
+   socket half written against the refactor in `nelisp-standalone--socket-impl-forms`
+   -- what already exists, the eight Linux/Windows differences that are
+   invisible from the Linux code, two independently verifiable slices, and
+   the verification traps this document collected the hard way; Doc 100 §7 owns the FFI matrix;
+   Doc 140 owns the arena.  Worth knowing when picking these up: this
+   document used to hand them to "Doc 151's `-ENOSYS` follow-up list", and
+   Doc 151 is marked SHIPPED and contains no such list -- it is
+   referenced, not written.
+2. **`repl-smoke`'s remaining half -- CLOSED, and the diagnosis here was
+   wrong.**  This item used to say the near-end probe's `near-end-bad`
+   meant "chunk growth at the end of chunk 0 behaves differently on this
+   target" and handed it to Doc 140.  Measured 2026-09-03 (`3c32741c`):
+   build-time arena size and runtime chunk-0 size are both 67108864, chunk
+   growth is fine, and `rdf` returned the fixture correctly.  The fixture
+   was 23 bytes, not 22 -- `with-temp-file` on Windows Emacs wrote CRLF --
+   and only the `(= (length ...) 22)` comparison failed.  The probe now
+   pins the fixture to `utf-8-unix`.  Recorded as the third CRLF in this
+   line of work (after `cmd.exe`'s echo output and the process gates'
+   fixture): on windows, a length off by one per line is a line ending
+   until proven otherwise, and a gate that collapses a value to
+   ok/bad should print the value before anyone theorises about it.
+3. **Native AOT emission on windows-x86_64.**  §6.8 measured that
+   compiling these files makes them SLOWER -- `nelc` is bytecode run by a
+   VM that is itself interpreted elisp, and `neln` silently emits no
+   native section on this target.  That is the same missing PE machinery
+   that keeps `ffi-smoke` red, which makes the FFI/PE gap worth more than
+   its one gate suggests: it is also the only route by which compiling the
+   DDSKK engine could ever help.
+4. **§3's ~0.15-0.4ms per basic interpreter call**, reproduced twice more
+   here: 262us for `(+ 1 1)`, and the unexplained ~5% on lead-less regexp
+   patterns (§6.5).  It is the multiplier under everything above, and the
+   only lever with no owner but us.  Two concrete threads into it: that
+   unexplained 5%, and the allocation-shaped kernel time §6.8 measured.
+5. **A native single-form reader builtin**, if anything ever needs one.
+   Worked in §6.8: `read-from-string` is ~8800x slower than the native
+   parser, `read` now takes the native path, and both readers' `?` defects
+   are fixed and gated.  The remaining builtin is deliberately NOT built,
+   because nothing on this target takes that path -- see that section for
+   the check.  Where it goes is recorded there.
+6. **The mutating Windows path syscalls** (§6.3) remain `-ENOSYS`:
+   unlink/rmdir/mkdir/rename/link/symlink/chmod/truncate/utimes, plus
+   `readlink`/`statx`/`nanosleep`.
+7. **The TSF-host budget as a product question.**  The harness passes with
+   roughly a 2x margin now, so this is no longer urgent, but it was never
+   decided: the test asserts a 10s budget on the FIRST `SendKey` while its
+   own comment says "responsiveness is provided by the native frontend
+   while it warms".  If production starts the host before the first
+   keystroke, the test is measuring a path no user waits on.  Worth
+   settling deliberately rather than by inheritance.
+
+CLOSED since the first draft of this section, recorded so nobody re-opens
+them: the E2E budget gap (§6.8 -- the harness passes 5/5, entry
+4.75-5.89s against 10s); the `bin=./target/nelisp; [ -f ...] ||` idiom
+(all 15 remaining sites now use `STANDALONE_BIN`, zero left); and the six
+gate-side defects §6.7 inventoried.

@@ -982,11 +982,18 @@
           ;; Bare `?' at EOF -> symbol `?'.
           (nelisp_reader_lex_atom
            str-ptr cursor n payload-slot cursor-out-slot scratch)
-        (if (= (nelisp_reader_is_ws (str-byte-at str-ptr (+ cursor 1))) 1)
-            (nelisp_reader_lex_atom
-             str-ptr cursor n payload-slot cursor-out-slot scratch)
-          (nelisp_reader_lex_char
-           str-ptr (+ cursor 1) n payload-slot cursor-out-slot scratch))))
+        ;; `?' followed by ANY character is that character, whitespace
+        ;; included: Emacs reads `? ' as 32 and `?' + newline as 10.  This
+        ;; used to send whitespace to the atom lexer instead, so `(setq x
+        ;; ? )' -- valid Elisp -- failed to `load' with `void-variable: (?)'
+        ;; while stock Emacs 30.1 answers 32.  Found by giving `read' the
+        ;; native path (Doc 201 §6.9 item 5) and then comparing the two
+        ;; readers against each other: on `?x' the native one was right and
+        ;; `nelisp--rd-one' had no `?' arm at all, and on `? ' it was the
+        ;; other way round.  `standalone-reader-reader-parity-smoke' is the
+        ;; check whose absence let both survive.
+        (nelisp_reader_lex_char
+         str-ptr (+ cursor 1) n payload-slot cursor-out-slot scratch)))
 
     (defun nelisp_reader_dispatch
         (str-ptr cursor n payload-slot cursor-out-slot scratch)

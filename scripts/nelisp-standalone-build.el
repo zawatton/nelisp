@@ -234,19 +234,18 @@ link-unit names, and build logs."
 The dynamically-linked reader (NELISP_READER_DYNAMIC) uses a SEPARATE `-dyn'
 cache so its env-dependent units — the applyfn carrying `nl-ffi-call'
 `extern-call's and the builtin-install driver — never collide with the static
-reader's same-named units.  The unit cache is keyed on name + dependency file
-mtimes (see `nelisp-standalone--cached-unit'), NOT on source content, so without
-this split a prior dynamic build's `applyfn-reader.o' (with unresolved extern
-symbols) would be reused by the static link and fail with
-`nelisp-link--unresolved-symbol'."
+reader's same-named units.  The unit cache is keyed on name plus source and
+toolchain content (see `nelisp-standalone--cached-unit'), but not on
+build-mode environment variables.  Keep modes in separate directories so an
+environment-only mode switch cannot reuse units compiled under another mode."
   (let* ((target (or target nelisp-standalone--target))
          (base (if (eq target 'windows-x86_64)
                    (format "windows-x86_64-arena-%x"
                            nelisp-standalone--windows-arena-base)
                  (symbol-name target)))
          (base (if (getenv "NELISP_READER_DYNAMIC") (concat base "-dyn") base))
-         ;; Doc 171 G2: the TCO pass changes unit bytes but the cache is
-         ;; keyed on mtimes only, so NELISP_TCO=1 builds get their own
+         ;; Doc 171 G2: the TCO pass changes unit bytes but the content key
+         ;; does not include this environment flag, so NELISP_TCO=1 gets its own
          ;; cache (same split rationale as `-dyn' above) -- otherwise a
          ;; flag flip silently links stale objects from the other mode.
          (base (if (equal (getenv "NELISP_TCO") "1") (concat base "-tco") base)))
@@ -612,8 +611,14 @@ storage — not an arena reservation."
    ;; nl_thread_registry.  +0 worker count, +8 reserved, then 64 fixed 16-byte
    ;; {private EvalCtx address, atomically-published private root top} entries.
    ;; BSS zero-fill gives an empty registry on process start.
-   (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040)))
-   (list (nelisp-link-symbol "nl_arena_base" 0
+   ;; Schannel slice 3: the windows-x86_64 image alone has one further u64,
+   ;; nl_tls_registry, holding the head of its live-context list.  Keeping
+   ;; provenance outside the VirtualAlloc blocks lets close reject a stale or
+   ;; never-issued pointer without dereferencing freed/unowned memory.
+   (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
+                       (if (eq nelisp-standalone--target 'windows-x86_64) 8 0))))
+   (append
+    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
                              :section 'bss :bind 'global :type 'object)
@@ -659,6 +664,10 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_thread_registry"
                              (+ 57616 4194304 96 176 64 56 40)
                              :section 'bss :bind 'global :type 'object))
+    (when (eq nelisp-standalone--target 'windows-x86_64)
+      (list (nelisp-link-symbol "nl_tls_registry"
+                                (+ 57616 4194304 96 176 64 56 40 1040)
+                                :section 'bss :bind 'global :type 'object))))
    nil))
 
 ;; ===================================================================
@@ -11512,8 +11521,59 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
 ;;   0 Nil  1 T  2 Int  3 Float  4 Symbol  5 Str  6 MutStr  7 Cons  8 Vector.
 ;; All are (:lit ...) because every name is matched by the full-length
 ;; `sexp-name-eq' op (some are <=8 bytes but :lit is always correct).
+(defconst nelisp-standalone--process-posix-dispatch-arms
+  '(((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
+    ((:lit "nelisp-process-start") . (nl_bi_process_start_process args out))
+    ((:lit "nelisp-process-start-process") . (nl_bi_process_start_process args out))
+    ((:lit "nelisp-process-object-p") . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
+    ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
+    ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_status_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-exit-status") . (wf_write_int out (nl_bi_process_exit_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-read-output") . (nl_bi_process_read_output args out))
+    ((:lit "nelisp-process-write") . (nl_bi_process_write args out))
+    ((:lit "nelisp-process-close-stdin") . (nl_bi_process_close_stdin args out))
+    ((:lit "nelisp-process-poll") . (nl_bi_process_poll args out))
+    ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_wait_object (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-delete") . (seq (nl_bi_process_delete_object (wf_arg_ptr args 0)) (wf_write_nil out))))
+  "The pre-existing process arms, unchanged for every POSIX target.")
+
+(defconst nelisp-standalone--process-windows-real-arms
+  '(((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
+    ((:lit "nelisp-process-start") . (nl_bi_process_windows_start args out))
+    ((:lit "nelisp-process-start-process") . (nl_bi_process_windows_start args out))
+    ((:lit "nelisp-process-object-p") . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
+    ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
+    ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_windows_status_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-exit-status") . (wf_write_int out (nl_bi_process_windows_exit_code (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-read-output") . (nl_bi_process_windows_read_output args out))
+    ((:lit "nelisp-process-write") . (nl_bi_process_windows_write args out))
+    ((:lit "nelisp-process-close-stdin") . (nl_bi_process_windows_close_stdin args out))
+    ((:lit "nelisp-process-poll") . (nl_bi_process_windows_poll args out))
+    ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_windows_wait_object (wf_arg_ptr args 0))))
+    ((:lit "nelisp-process-delete") . (seq (nl_bi_process_windows_delete_object (wf_arg_ptr args 0)) (wf_write_nil out))))
+  "Complete async-process lifecycle arms for windows-x86_64.")
+
+(defun nelisp-standalone--process-dispatch-arms ()
+  "Return per-name process arms, keeping unfinished Windows names unsupported."
+  (if (not (memq nelisp-standalone--target
+                 '(windows-x86_64 windows-aarch64)))
+      nelisp-standalone--process-posix-dispatch-arms
+    (let ((real (if (eq nelisp-standalone--target 'windows-x86_64)
+                    nelisp-standalone--process-windows-real-arms
+                  (list (car nelisp-standalone--process-windows-real-arms)
+                        (nth 3 nelisp-standalone--process-windows-real-arms))))
+          (unsupported (nelisp-standalone--applyfn-unsupported-primitive-form)))
+      (mapcar
+       (lambda (posix-arm)
+         (or (assoc (car posix-arm) real)
+             (cons (car posix-arm) unsupported)))
+       nelisp-standalone--process-posix-dispatch-arms))))
+
 (defconst nelisp-standalone--applyfn-bf-arms
-  '(;; --- predicates ---
+  (append
+   '(;; --- predicates ---
     ((:lit "consp")    . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) (wf_write_t out) (wf_write_nil out)))
     ((:lit "atom")     . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) (wf_write_nil out) (wf_write_t out)))
     ((:lit "stringp")  . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
@@ -11778,20 +11838,9 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
     ((:lit "garbage-collect") . (seq (nl_gc_collect_from_recorded_roots 0)
                                      (bf_arena_stats out)))
-    ((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
-    ((:lit "nelisp-process-start") . (nl_bi_process_start_process args out))
-    ((:lit "nelisp-process-start-process") . (nl_bi_process_start_process args out))
-    ((:lit "nelisp-process-object-p") . (if (= (nl_bi_process_object_p_raw (wf_arg_ptr args 0)) 1) (wf_write_t out) (wf_write_nil out)))
-    ((:lit "nelisp-process-async-ready-p") . (wf_write_t out))
-    ((:lit "nelisp-process-pid") . (wf_write_int out (nl_bi_process_get_int (wf_arg_ptr args 0) 1)))
-    ((:lit "nelisp-process-status") . (wf_write_int out (nl_bi_process_status_code (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-exit-status") . (wf_write_int out (nl_bi_process_exit_code (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-read-output") . (nl_bi_process_read_output args out))
-    ((:lit "nelisp-process-write") . (nl_bi_process_write args out))
-    ((:lit "nelisp-process-close-stdin") . (nl_bi_process_close_stdin args out))
-    ((:lit "nelisp-process-poll") . (nl_bi_process_poll args out))
-    ((:lit "nelisp-process-wait") . (wf_write_int out (nl_bi_process_wait_object (wf_arg_ptr args 0))))
-    ((:lit "nelisp-process-delete") . (seq (nl_bi_process_delete_object (wf_arg_ptr args 0)) (wf_write_nil out)))
+    )
+   nelisp-standalone--process-posix-dispatch-arms
+   '(
     ((:lit "nelisp-portable-syscall") . (wf_write_int out (nl_bi_portable_syscall args)))
     ;; ptr-call: forward FFI indirect call.  (ptr-call ADDR a0 a1 a2 a3 a4 a5)
     ;; -> calls the i64 code pointer ADDR with up to 6 i64 args (SysV ABI),
@@ -11809,7 +11858,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; to hardcode `gnu/linux'/"x86_64-pc-linux-gnu" for every target
     ;; including Windows.
     ((:lit "nelisp--target-os-code") . (wf_write_int out (nl_target_os_code)))
-    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code))))
+    ((:lit "nelisp--target-arch-code") . (wf_write_int out (nl_target_arch_code)))))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
 ash/logand/logior/logxor/lognot + string<.")
@@ -11842,14 +11891,14 @@ ash/logand/logior/logxor/lognot + string<.")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
-;; --- Phase 47.D Step C: dynamic-only external FFI (nl-ffi-call over PLT) ---
-;; These arms call shared-library symbols through the linker's PLT stubs (Step C):
+;; --- Phase 47.D Step C: fixed-table external FFI (nl-ffi-call) -------------
+;; On ELF these arms call shared-library symbols through the linker's PLT stubs:
 ;; an `extern-call SYM' to a bare import name resolves (pc32) to its in-binary PLT
 ;; stub, which jumps through the ld.so-filled GOT.  They are appended to the
 ;; reader dispatch table ONLY when NELISP_READER_DYNAMIC is set, because a
-;; static/freestanding reader has no PLT/GOT and the imports would be unresolved
-;; symbols at link time.  The SONAME/symbol set here MUST match the import list
-;; passed to `nelisp-link-units-dynamic' in `nelisp-standalone-build-reader'.
+;; static/freestanding ELF reader has no PLT/GOT.  Windows x86_64 instead routes
+;; the supported subset through the PE import directory unconditionally; its
+;; ordinary reader is already dynamically bound to Windows system DLLs.
 ;; The FFI surface is a declarative table: (SYMBOL SONAME ARITY).  Both the
 ;; import list (-> ld.so DT_NEEDED + PLT/GOT) and the `nl-ffi-call' dispatch
 ;; chain are derived from it, so adding a GnuTLS/FreeType call is one row.
@@ -11862,8 +11911,11 @@ ash/logand/logior/logxor/lognot + string<.")
 ;; marshalling emacs-tls-ffi.el / emacs-font-ffi.el need (D1/F1).
 (defconst nelisp-standalone--reader-extern-table
   '(;; libc — kept as the always-available FFI smoke / regression anchor.
-    ("toupper"              "libc.so.6"        1)
-    ("tolower"              "libc.so.6"        1)
+    ;; Win64 C `int' results arrive through EAX and therefore appear
+    ;; zero-extended in RAX.  :windows-ret s32 asks the generated dispatcher to
+    ;; restore the language-level signed value before boxing it.
+    ("toupper"              "libc.so.6"        1 (:windows-ret s32))
+    ("tolower"              "libc.so.6"        1 (:windows-ret s32))
     ;; --- D1 TLS (libgnutls): full client handshake surface. ---------------
     ;; Unversioned undefined refs bind to each symbol's default version
     ;; (@@GNUTLS_3_4) via ld.so.  Pointer-out-params (credentials/session
@@ -11930,10 +11982,30 @@ ash/logand/logior/logxor/lognot + string<.")
 `nelisp-standalone--reader-extern-imports' and
 `nelisp-standalone--applyfn-extern-arms'.  ARITY counts C arguments (max 4
 here).  Without SIG every argument and the return are i64 (ints + pointers);
-SIG = (:args (CLASS ...) :ret CLASS) with CLASS in {i64,f64} opts a call into
-double-precision XMM marshalling (see `nelisp-standalone--build-ffi-dispatch').")
+SIG = (:args (CLASS ...) :ret CLASS :windows-ret CLASS), with argument CLASS in
+{i64,f64}, return CLASS in {i64,f64,s32}, and :windows-ret overriding :ret only
+for Win64.  The s32 return class repairs EAX zero-extension before Lisp boxing.")
 
-(defun nelisp-standalone--build-ffi-dispatch (table)
+(defconst nelisp-standalone--windows-reader-extern-dll-map
+  '(("libc.so.6" . "ucrtbase.dll")
+    ("libm.so.6" . "ucrtbase.dll"))
+  "ELF SONAME to Windows system-DLL mapping for the supported FFI subset.
+
+The SONAME remains the table's stable library identity, so the existing Linux
+rows and generated dispatch stay unchanged.  A mapping opts every row for that
+library into both the Windows dispatcher and PE import list; absence means that
+library is unsupported on Windows.  This deliberately maps only libc/libm to
+the inbox Universal CRT.  GnuTLS and FreeType remain external-dependency policy
+decisions, not accidental loader requirements of every Windows reader.")
+
+(defun nelisp-standalone--windows-reader-extern-table ()
+  "Return TABLE rows whose SONAME has a Windows DLL mapping."
+  (seq-filter
+   (lambda (row)
+     (assoc (nth 1 row) nelisp-standalone--windows-reader-extern-dll-map))
+   nelisp-standalone--reader-extern-table))
+
+(defun nelisp-standalone--build-ffi-dispatch (table &optional target)
   "Build the `nl-ffi-call' dispatch IR (a nested-if over the NAME arg) from
 TABLE rows (SYMBOL SONAME ARITY &optional SIG).
 
@@ -11958,15 +12030,21 @@ into double-precision (f64) marshalling:
     grammar head), reinterprets it to i64 bits with `f64-bits', then boxes it
     back into a fresh Lisp float with `nl_sexp_write_float'.  Omitted -> i64.
 
-This is what lets the dynamic reader call libm (sqrt/pow/...) and any other
-`double'-ABI shared-library entry point directly from elisp."
+  * :windows-ret s32, when TARGET is `windows-x86_64', sign-extends the low
+    32 bits returned in EAX before boxing.  Other targets ignore this override.
+
+This is what lets the reader call libm/UCRT (sqrt/pow/...) and any other
+fixed-table shared-library entry point directly from elisp."
   (let ((chain '(seq (wf_write_nil out) 0)))
     (dolist (row (reverse table))
       (let* ((sym (nth 0 row))
              (arity (nth 2 row))
              (sig (nth 3 row))
              (arg-classes (or (plist-get sig :args) (make-list arity 'i64)))
-             (ret-class (or (plist-get sig :ret) 'i64))
+             (ret-class (or (and (eq target 'windows-x86_64)
+                                 (plist-get sig :windows-ret))
+                            (plist-get sig :ret)
+                            'i64))
              (f64-binds nil)
              (argforms
               (let (acc)
@@ -11990,7 +12068,13 @@ This is what lets the dynamic reader call libm (sqrt/pow/...) and any other
                   ;; cannot emit a `bits-to-f64' value arg; the grammar op can.)
                   `(let* ((frb (f64-bits (extern-call-f64 ,(intern sym) ,@argforms))))
                      (seq (sexp-write-float out (bits-to-f64 frb)) 0))
-                `(wf_write_int out (extern-call ,(intern sym) ,@argforms))))
+                (if (eq ret-class 's32)
+                    `(let* ((irv (extern-call ,(intern sym) ,@argforms)))
+                       (wf_write_int out
+                                     (if (> irv 2147483647)
+                                         (- irv 4294967296)
+                                       irv)))
+                  `(wf_write_int out (extern-call ,(intern sym) ,@argforms)))))
              (arm (if f64-binds
                       `(let* ,(nreverse f64-binds) ,body)
                     body)))
@@ -12013,9 +12097,16 @@ in `nelisp-standalone-build-reader'.")
   (list (cons '(:lit "nl-ffi-call")
               (nelisp-standalone--build-ffi-dispatch
                nelisp-standalone--reader-extern-table)))
-  "Dynamic-only `nl-ffi-call' dispatch arm (Step C / D1 / F1).  Appended to the
-reader table iff NELISP_READER_DYNAMIC is set; it dispatches by name to an
-`extern-call' on each imported symbol, routed through its PLT stub -> GOT.")
+  "Linux dynamic `nl-ffi-call' dispatch arm (Step C / D1 / F1).
+It dispatches by name to every table symbol through its PLT stub -> GOT.  The
+Windows subset is built separately from the same table plus its DLL map.")
+
+(defun nelisp-standalone--applyfn-windows-extern-arms ()
+  "Return the PE-import-backed Windows x86_64 `nl-ffi-call' dispatch arm."
+  (list (cons '(:lit "nl-ffi-call")
+              (nelisp-standalone--build-ffi-dispatch
+               (nelisp-standalone--windows-reader-extern-table)
+               'windows-x86_64))))
 
 (defun nelisp-standalone--reader-dynamic-p ()
   "Non-nil when building the dynamically-linked reader (NELISP_READER_DYNAMIC).
@@ -12025,29 +12116,20 @@ static answer into the .elc (breaking the dynamic build that loads it)."
   (and (getenv "NELISP_READER_DYNAMIC") t))
 
 (defun nelisp-standalone--reader-ffi-live-p ()
-  "Non-nil only where the real `nl-ffi-call' extern dispatcher can actually
-link: `nelisp-standalone--reader-dynamic-p' AND the linux-x86_64 target --
-`nelisp-standalone-build-reader''s target `pcase' sends every OTHER target
-(windows-x86_64/-aarch64 to `nelisp-link-units-pe32', macos-aarch64/
-linux-aarch64 to their own static branches) down a path that never
-consults NELISP_READER_DYNAMIC at all, so forcing the flag there used to
-still try to emit the extern-call units and fail the LINK with
-`nelisp-link--unresolved-symbol' (no PE/Mach-O import-table machinery for
-them yet -- confirmed 2026-08-23, see
-docs/design/100-phase-47-dynamic-link-elisp.org section 7).  This predicate
-is what `nelisp-standalone--applyfn-reader-table' below uses to choose the
-`nl-ffi-call' arm, so that combination now degrades to the
-`nelisp-unsupported-primitive' arm at BUILD time instead of failing the
-link -- `nelisp-standalone--reader-dynamic-p' itself is unchanged (it still
-drives the ELF PT_INTERP/PT_DYNAMIC path and the unit-cache split for the
-one target where dynamic linking is real)."
-  (and (nelisp-standalone--reader-dynamic-p)
-       (eq nelisp-standalone--target 'linux-x86_64)))
+  "Non-nil where the real `nl-ffi-call' dispatcher can link.
+
+Linux x86_64 keeps its existing opt-in NELISP_READER_DYNAMIC contract exactly.
+Windows x86_64 is always live for the subset mapped to system DLLs because the
+PE writer already emits an import directory; the ELF-only flag has no meaning
+on that target.  Other targets keep the catchable unsupported arm."
+  (or (eq nelisp-standalone--target 'windows-x86_64)
+      (and (nelisp-standalone--reader-dynamic-p)
+           (eq nelisp-standalone--target 'linux-x86_64))))
 
 (defun nelisp-standalone--applyfn-ffi-unsupported-form ()
   "Codegen IR for the `nl-ffi-call' dispatch arm when the real extern
 dispatcher is not linked in (`nelisp-standalone--reader-ffi-live-p' nil --
-the static default build, any non-linux-x86_64 target, or both): raises the
+the static Linux build or a target without native import support): raises the
 catchable `nelisp-unsupported-primitive' condition with data `(nl-ffi-call)'
 instead of falling through to an unhandled `void-function', so `fboundp'
 answers `t' uniformly and a caller can `condition-case' on WHY instead of
@@ -12172,8 +12254,8 @@ into whatever the index happened to select."
 `car'/`cdr'/`eq' arms REPLACED (nil-safe car/cdr + tag-aware eq) and `length'
 made vector-aware, then the B-foundation breadth arms APPENDED.  The Step C
 `nl-ffi-call' arm is ALWAYS appended now (2026-08-23 fix): the real
-PLT/GOT-backed dispatcher when `nelisp-standalone--reader-ffi-live-p' (the
-dynamic linux-x86_64 build), else the `nelisp-unsupported-primitive'-
+native-import dispatcher when `nelisp-standalone--reader-ffi-live-p' (dynamic
+linux-x86_64 or PE-import-backed windows-x86_64), else the unsupported-
 signalling arm -- never simply absent, so `fboundp' cannot go void again."
   (append
    (mapcar
@@ -12194,11 +12276,25 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
    ;; `nelisp-unsupported-primitive' signal was tried and reverted; see that
    ;; function's POLICY NOTE for the against-the-bug evidence of why (the
    ;; reader's own `--repl' bookkeeping depends on this exact reachability).
-   nelisp-standalone--applyfn-bf-arms
+   (if (memq nelisp-standalone--target '(windows-x86_64 windows-aarch64))
+       (seq-remove
+        (lambda (arm)
+          (assoc (car arm) nelisp-standalone--process-posix-dispatch-arms))
+        nelisp-standalone--applyfn-bf-arms)
+     nelisp-standalone--applyfn-bf-arms)
+   ;; Process availability is per name, like the socket family below.  Keep
+   ;; this as a late-built splice because unsupported arms require helpers
+   ;; defined after the breadth-arm constant is loaded.
+   (if (memq nelisp-standalone--target '(windows-x86_64 windows-aarch64))
+       (nelisp-standalone--process-dispatch-arms)
+     nil)
    ;; Socket primitives (Doc 184 follow-on): real on linux-x86_64, the
    ;; catchable `nelisp-unsupported-primitive' signal everywhere else -- see
    ;; `nelisp-standalone--socket-dispatch-arms''s docstring.
    (nelisp-standalone--socket-dispatch-arms)
+   ;; Schannel slices 1-3: handshake, protocol, record I/O and graceful close
+   ;; are real only on windows-x86_64.
+   (nelisp-standalone--tls-dispatch-arms)
    ;; Doc 199 Tier 2 Shape B: fixed-registry, GC-free native workers.  Real
    ;; clone(2) implementations on linux-x86_64, the same catchable unsupported
    ;; signal as the socket family everywhere else.
@@ -12213,10 +12309,12 @@ signalling arm -- never simply absent, so `fboundp' cannot go void again."
    ;; broader `reader-dynamic-p' (fix/ffi-surface-availability, merge 7/9):
    ;; dynamic-but-not-linux-x86_64 builds used to still try to emit the
    ;; extern-call units under plain `reader-dynamic-p' and fail the link
-   ;; with `nelisp-link--unresolved-symbol'; `reader-ffi-live-p' narrows to
-   ;; the target that can actually link them.
+   ;; with `nelisp-link--unresolved-symbol'.  The target-aware live predicate
+   ;; now selects either the full Linux table or the mapped Windows subset.
    (if (nelisp-standalone--reader-ffi-live-p)
-       nelisp-standalone--applyfn-extern-arms
+       (if (eq nelisp-standalone--target 'windows-x86_64)
+           (nelisp-standalone--applyfn-windows-extern-arms)
+         nelisp-standalone--applyfn-extern-arms)
      (nelisp-standalone--applyfn-extern-arms-unsupported))))
 
 (defun nelisp-standalone--applyfn-assemble (helper-groups table &optional default-form)
@@ -12976,9 +13074,10 @@ fork -> setup_child_fds -> execve -> wait4 body unchanged.  Windows targets
 GetExitCodeProcess -> CloseHandle spawn-model implementation instead, since
 Windows has no fork().  Both variants support the synchronous call shape
 `(call-process PROGRAM nil DESTINATION nil ARG...)' with DESTINATION = nil
-(discard), a plain string path, or `(:file LOGFILE)'; async start-process and
-stdin feeding stay POSIX-only / out of scope on Windows, matching the
-pre-existing `nl_os_process_fork' stub there."
+(discard), a plain string path, or `(:file LOGFILE)'.  The separate
+`nelisp-standalone--fileio-process-async-forms' supplies the complete
+CreatePipe/CreateProcessW lifecycle on windows-x86_64; windows-aarch64 keeps
+those async names unsupported."
   (pcase nelisp-standalone--target
     ((or 'windows-x86_64 'windows-aarch64)
      '(
@@ -13242,6 +13341,251 @@ pre-existing `nl_os_process_fork' stub there."
                   (wf_write_int out 1)
                 (wf_write_int out (nl_bi_process_wait_exit_code pid)))))))))))
 
+(defun nelisp-standalone--fileio-process-async-forms ()
+  "Return the windows-x86_64 output-only async-process slice.
+Other targets return nil, preserving their generated process source exactly."
+  (if (not (eq nelisp-standalone--target 'windows-x86_64))
+      nil
+    '(
+      ;; Follow the socket boundary convention: map common Win32 errors to
+      ;; POSIX errno and pass unfamiliar values through unchanged.  Slice 1's
+      ;; public result has no numeric error slot; polling uses this to identify
+      ;; ordinary ERROR_BROKEN_PIPE/EPIPE after child exit.
+      (defun nl_process_windows_map_errno (err)
+        (cond ((= err 2) 2) ((= err 3) 2) ((= err 5) 13)
+              ((= err 6) 9) ((= err 32) 13) ((= err 109) 32)
+              (t err)))
+      (defun nl_process_windows_last_error ()
+        (nl_process_windows_map_errno (extern-call GetLastError)))
+      ;; Slots 0..5 preserve the POSIX public layout.  Slot 5 owns the parent
+      ;; write end of the child's stdin pipe; slot 6 owns the process HANDLE;
+      ;; slot 1 remains the real DWORD pid returned to callers.
+      (defun nl_bi_process_windows_make_object (pid process_handle out_handle in_handle out)
+        (seq
+         (vector-make 7 out)
+         (nl_bi_process_set_int out 0 1886547811)
+         (nl_bi_process_set_int out 1 pid)
+         (nl_bi_process_set_int out 2 out_handle)
+         (nl_bi_process_set_int out 3 0)
+         (nl_bi_process_set_int out 4 -1)
+         (nl_bi_process_set_int out 5 in_handle)
+         (nl_bi_process_set_int out 6 process_handle)
+         0))
+      (defun nl_bi_process_windows_mark_exit (proc code)
+        (seq
+         (nl_bi_process_set_int proc 4 code)
+         (nl_bi_process_set_int proc 3 (if (>= code 128) 2 1))
+         code))
+      ;; WAIT is 0 for a poll and 1 for INFINITE.  WAIT_FAILED is a DWORD and
+      ;; arrives through this ABI as zero-extended #xffffffff, not -1.
+      (defun nl_bi_process_windows_refresh (proc wait)
+        (if (= (nl_bi_process_object_p_raw proc) 1)
+            (if (= (nl_bi_process_get_int proc 3) 0)
+                (let* ((process_handle (nl_bi_process_get_int proc 6))
+                       (timeout (if (= wait 1) 4294967295 0))
+                       (wait_rc (extern-call WaitForSingleObject
+                                             process_handle timeout)))
+                  (if (= wait_rc 258)
+                      0
+                    (if (= wait_rc 4294967295)
+                        (seq
+                         (extern-call CloseHandle process_handle)
+                         (nl_bi_process_set_int proc 6 -1)
+                         (nl_bi_process_windows_mark_exit proc -1))
+                      (let* ((code_slot (nl_win_valloc 8))
+                             (ok (extern-call GetExitCodeProcess
+                                              process_handle code_slot)))
+                        (if (= ok 0)
+                            (seq (extern-call VirtualFree code_slot 0 32768)
+                                 (extern-call CloseHandle process_handle)
+                                 (nl_bi_process_set_int proc 6 -1)
+                                 (nl_bi_process_windows_mark_exit proc -1))
+                          (let* ((code (ptr-read-u32 code_slot 0)))
+                            (seq (extern-call VirtualFree code_slot 0 32768)
+                                 (extern-call CloseHandle process_handle)
+                                 (nl_bi_process_set_int proc 6 -1)
+                                 (nl_bi_process_windows_mark_exit proc code))))))))
+              (nl_bi_process_get_int proc 4))
+          -1))
+      (defun nl_bi_process_windows_status_code (proc)
+        (seq (nl_bi_process_windows_refresh proc 0)
+             (nl_bi_process_get_int proc 3)))
+      (defun nl_bi_process_windows_exit_code (proc)
+        (seq (nl_bi_process_windows_refresh proc 0)
+             (nl_bi_process_get_int proc 4)))
+      (defun nl_bi_process_windows_wait_object (proc)
+        (if (= (nl_bi_process_object_p_raw proc) 1)
+            (if (= (nl_bi_process_get_int proc 3) 0)
+                (nl_bi_process_windows_refresh proc 1)
+              (nl_bi_process_get_int proc 4))
+          -1))
+      ;; Read only after PeekNamedPipe reports bytes, or for the adapter's one
+      ;; final post-exit drain.  EOF after exit closes the last owned pipe end,
+      ;; so normal-completion slice 1 does not leak HANDLEs even though
+      ;; explicit `nelisp-process-delete' belongs to slice 2.
+      (defun nl_bi_process_windows_read_output (args out)
+        (let* ((proc (wf_arg_ptr args 0))
+               (limit (wf_argval args 1)))
+          (if (= (nl_bi_process_object_p_raw proc) 1)
+              (let* ((pipe_handle (nl_bi_process_get_int proc 2))
+                     (buf (alloc-bytes limit 1))
+                     (n (nl_os_read_file_handle pipe_handle buf limit)))
+                (if (< n 1)
+                    (seq
+                     (if (= (nl_bi_process_windows_status_code proc) 0) 0
+                       (seq
+                        (if (>= pipe_handle 0)
+                            (extern-call CloseHandle pipe_handle) 0)
+                        (nl_bi_process_set_int proc 2 -1)))
+                     (wf_write_nil out)
+                     0)
+                  (nl_seq2 (nl_alloc_str buf n out) 0)))
+            (nl_seq2 (wf_write_nil out) 0))))
+      (defun nl_bi_process_windows_write (args out)
+        (let* ((proc (wf_arg_ptr args 0))
+               (str (wf_arg_ptr args 1)))
+          (if (= (nl_bi_process_object_p_raw proc) 1)
+              (let* ((handle (nl_bi_process_get_int proc 5))
+                     (n (if (>= handle 0)
+                            (nl_os_write_file_handle
+                             handle (nl_bi_strptr str) (nl_bi_strlen str))
+                          -1)))
+                (if (< n 0)
+                    (nl_seq2 (wf_write_nil out) 0)
+                  (nl_seq2 (wf_write_int out n) 0)))
+            (nl_seq2 (wf_write_nil out) 0))))
+      (defun nl_bi_process_windows_close_stdin (args out)
+        (let* ((proc (wf_arg_ptr args 0)))
+          (if (= (nl_bi_process_object_p_raw proc) 1)
+              (let* ((handle (nl_bi_process_get_int proc 5)))
+                (seq
+                 (if (>= handle 0) (extern-call CloseHandle handle) 0)
+                 (nl_bi_process_set_int proc 5 -1)
+                 (wf_write_t out)))
+            (wf_write_nil out))))
+      (defun nl_bi_process_windows_delete_object (proc)
+        (if (= (nl_bi_process_object_p_raw proc) 1)
+            (let* ((status (nl_bi_process_windows_status_code proc))
+                   (process_handle (nl_bi_process_get_int proc 6))
+                   (out_handle (nl_bi_process_get_int proc 2))
+                   (in_handle (nl_bi_process_get_int proc 5)))
+              (seq
+               ;; TerminateProcess is asynchronous.  Wait only after it
+               ;; succeeds, then let refresh collect the real exit code and
+               ;; close the process HANDLE.  A failed termination request is
+               ;; never converted into an infinite wait.
+               (if (and (= status 0) (>= process_handle 0))
+                   ;; Preserve the adapter's established cross-target delete
+                   ;; contract: 128+SIGTERM(15) formats as "terminated\n".
+                   (if (= (extern-call TerminateProcess process_handle 143) 0)
+                       0
+                     (nl_bi_process_windows_refresh proc 1))
+                 0)
+               ;; If refresh above did not own/close it, deletion still does.
+               (if (>= (nl_bi_process_get_int proc 6) 0)
+                   (extern-call CloseHandle (nl_bi_process_get_int proc 6)) 0)
+               (if (>= out_handle 0) (extern-call CloseHandle out_handle) 0)
+               (if (>= in_handle 0) (extern-call CloseHandle in_handle) 0)
+               (nl_bi_process_set_int proc 2 -1)
+               (nl_bi_process_set_int proc 5 -1)
+               (nl_bi_process_set_int proc 6 -1)
+               (nl_bi_process_set_int proc 3 3)
+               0))
+          0))
+      (defun nl_bi_process_windows_poll (args out)
+        (let* ((proc (wf_arg_ptr args 0))
+               (pipe_handle (nl_bi_process_get_int proc 2))
+               (available_slot (nl_win_valloc 8))
+               (peek_ok (if (>= pipe_handle 0)
+                            (extern-call PeekNamedPipe pipe_handle 0 0 0
+                                         available_slot 0)
+                          0))
+               (available (if (= peek_ok 0) 0
+                            (ptr-read-u32 available_slot 0)))
+               (mapped_errno (if (= peek_ok 0)
+                                 (nl_process_windows_last_error) 0))
+               (status (nl_bi_process_windows_status_code proc))
+               (exitcode (nl_bi_process_get_int proc 4))
+               (v0 (alloc-bytes 32 8)) (v1 (alloc-bytes 32 8))
+               (v2 (alloc-bytes 32 8)))
+          (seq
+           ;; Keep the mapped error read live.  EPIPE is ordinary EOF here;
+           ;; other failures also mean not-readable because the established
+           ;; three-element poll result has no error slot.
+           (if (= mapped_errno 32) 0 0)
+           (extern-call VirtualFree available_slot 0 32768)
+           (vector-make 3 out)
+           (wf_write_int v0 (if (> available 0) 1 0))
+           (vector-slot-set out 0 v0)
+           (wf_write_int v1 (if (= status 0) 0 1))
+           (vector-slot-set out 1 v1)
+           (wf_write_int v2 exitcode)
+           (vector-slot-set out 2 v2)
+           0)))
+      (defun nl_bi_process_windows_start (args out)
+        (let* ((program_sx (wf_arg_ptr args 0))
+               (arglst (nl_cons_cdr_ptr args))
+               (sa (nl_win_inheritable_sa))
+               (stdout_pipe (nl_win_valloc 16))
+               (stdin_pipe (nl_win_valloc 16))
+               (stdout_ok (extern-call CreatePipe
+                                       stdout_pipe (+ stdout_pipe 8) sa 0))
+               (stdin_ok (if (= stdout_ok 0) 0
+                           (extern-call CreatePipe
+                                        stdin_pipe (+ stdin_pipe 8) sa 0))))
+          (if (or (= stdout_ok 0) (= stdin_ok 0))
+              (seq
+               (if (= stdout_ok 0) 0
+                 (seq (extern-call CloseHandle (ptr-read-u64 stdout_pipe 0))
+                      (extern-call CloseHandle (ptr-read-u64 stdout_pipe 8))))
+               (extern-call VirtualFree stdout_pipe 0 32768)
+               (extern-call VirtualFree stdin_pipe 0 32768)
+               (extern-call VirtualFree sa 0 32768)
+               (wf_write_nil out))
+            (let* ((parent_stdout (ptr-read-u64 stdout_pipe 0))
+                   (child_stdout (ptr-read-u64 stdout_pipe 8))
+                   (child_stdin (ptr-read-u64 stdin_pipe 0))
+                   (parent_stdin (ptr-read-u64 stdin_pipe 8))
+                   (stdout_flags_ok (extern-call SetHandleInformation
+                                                 parent_stdout 1 0))
+                   (stdin_flags_ok (extern-call SetHandleInformation
+                                                parent_stdin 1 0))
+                   (cmdline (nl_win_cmdline_valloc
+                             (nl_win_utf8_wcs_dup
+                              (nl_win_build_cmdline program_sx arglst))))
+                   (si (nl_win_valloc 104)) (pi (nl_win_valloc 24))
+                   (created 0))
+              (seq
+               (extern-call VirtualFree stdout_pipe 0 32768)
+               (extern-call VirtualFree stdin_pipe 0 32768)
+               (extern-call VirtualFree sa 0 32768)
+               (if (or (= stdout_flags_ok 0) (= stdin_flags_ok 0)) 0
+                 (seq
+                  (ptr-write-u32 si 0 104)
+                  (ptr-write-u32 si 60 256) ; STARTF_USESTDHANDLES
+                  (ptr-write-u64 si 80 child_stdin)
+                  (ptr-write-u64 si 88 child_stdout)
+                  (ptr-write-u64 si 96 child_stdout)
+                  (setq created (extern-call CreateProcessW
+                                              0 cmdline 0 0 1 0 0 0 si pi))))
+               (extern-call VirtualFree cmdline 0 32768)
+               (extern-call VirtualFree si 0 32768)
+               (extern-call CloseHandle child_stdout)
+               (extern-call CloseHandle child_stdin)
+               (if (= created 0)
+                   (seq (extern-call CloseHandle parent_stdout)
+                        (extern-call CloseHandle parent_stdin)
+                        (extern-call VirtualFree pi 0 32768)
+                        (wf_write_nil out))
+                 (let* ((process_handle (ptr-read-u64 pi 0))
+                        (thread_handle (ptr-read-u64 pi 8))
+                        (pid (ptr-read-u32 pi 16)))
+                   (seq
+                    (extern-call CloseHandle thread_handle)
+                    (extern-call VirtualFree pi 0 32768)
+                    (nl_bi_process_windows_make_object
+                     pid process_handle parent_stdout parent_stdin out))))))))))))
+
 (defconst nelisp-standalone--fileio-forms-part3
   '(
 	    (defun nl_bi_name_ptr (sx)
@@ -13447,7 +13791,7 @@ pre-existing `nl_os_process_fork' stub there."
                                  0)
                                (setq pos (+ pos reclen))))))))
                   0)))
-             (nl_os_close_handle fd)
+             (nl_os_close_dir fd)
              (nl_seq2 (nl_alloc_str sbuf slen out) 0))))))
     ;; nelisp--syscall-utimes PATH ATIME MTIME: utimes(2) (syscall 235) -- set
     ;; the access + modification times to ATIME / MTIME (seconds; usec = 0).
@@ -13549,6 +13893,7 @@ before feat/windows-spawn; Windows targets get a CreateProcessW spawn-model
           (nelisp-standalone--fileio-process-setup-forms)
           nelisp-standalone--fileio-forms-part2
           (nelisp-standalone--fileio-process-call-forms)
+          (nelisp-standalone--fileio-process-async-forms)
           nelisp-standalone--fileio-forms-part3))
 
 ;; ===================================================================
@@ -13913,103 +14258,64 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
 
 (defconst nelisp-standalone--sf-defconst
   '(defun nl_sf_defconst (args env out _pad)
-     ;; (defconst NAME VALUE [DOC]) -> evaluate (set (quote NAME) VALUE), return NAME.
+     ;; (defconst NAME VALUE [DOC]) -> evaluate VALUE, set NAME to it
+     ;; unconditionally, return NAME.
+     ;;
+     ;; PERF (cold-start hand-off, 2026-08-30): same fix as `nl_sf_defvar'
+     ;; above -- the previous body synthesised `(set (quote NAME) VALUE)' as
+     ;; a fresh cons tree (2 interned symbols, 5 cons cells) and re-entered
+     ;; the interpreter on it for EVERY call.  `set' itself
+     ;; (`bf_set') is allocation-free, calling `nl_env_set_value' directly;
+     ;; this now does the same.
      (if (= (sexp-tag args) 7)
          (let* ((name_ptr (nl_cons_car_ptr args))
                 (rest_ptr (nl_cons_cdr_ptr args)))
            (if (= (sexp-tag rest_ptr) 7)
                (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
-                      (sbuf (alloc-bytes 8 1)) (set_sym (alloc-bytes 32 8))
-                      (qbuf (alloc-bytes 8 1)) (quote_sym (alloc-bytes 32 8))
-                      (name_clone (alloc-bytes 32 8))
-                      (val_clone (alloc-bytes 32 8))
-                      (nil1 (alloc-bytes 32 8)) (nil2 (alloc-bytes 32 8))
-                      (name_list (alloc-bytes 32 8))
-                      (quote_form (alloc-bytes 32 8))
-                      (val_list (alloc-bytes 32 8))
-                      (args_list (alloc-bytes 32 8))
-                      (form (alloc-bytes 32 8))
-                      (scratch (alloc-bytes 32 8)))
-                 (seq
-                  (ptr-write-u64 sbuf 0 7628147)      (nl_alloc_symbol sbuf 3 set_sym)
-                  (ptr-write-u64 qbuf 0 435745158513) (nl_alloc_symbol qbuf 5 quote_sym)
-                  (nl_sexp_clone_into name_ptr name_clone)
-                  (nl_sexp_clone_into val_ptr val_clone)
-                  (nl_cons_write_nil nil1) (nl_cons_write_nil nil2)
-                  ;; (quote NAME)
-                  (nelisp_cons_construct name_clone nil1 name_list)
-                  (nelisp_cons_construct quote_sym name_list quote_form)
-                  ;; (set (quote NAME) VALUE)
-                  (nelisp_cons_construct val_clone nil2 val_list)
-                  (nelisp_cons_construct quote_form val_list args_list)
-                  (nelisp_cons_construct set_sym args_list form)
-                  (let* ((rc (nelisp_eval_call form env scratch)))
-                    (if (= rc 0) (seq (nl_sexp_clone_into name_ptr out) 0) rc))))
+                      (val_slot (alloc-bytes 32 8))
+                      (rc (nelisp_eval_call val_ptr env val_slot)))
+                 (if (= rc 0)
+                     (seq (nl_env_set_value env name_ptr val_slot)
+                          (nl_sexp_clone_into name_ptr out) 0)
+                   rc))
              ;; no VALUE: just yield NAME
              (seq (nl_sexp_clone_into name_ptr out) 0)))
        1)))
 
 (defconst nelisp-standalone--sf-defvar
   '(defun nl_sf_defvar (args env out _pad)
-     ;; (defvar NAME [VALUE [DOC]]).  With VALUE: evaluate
-     ;; (if (boundp (quote NAME)) nil (set (quote NAME) VALUE)).  Without: declare
-     ;; only.  Either way return NAME.
+     ;; (defvar NAME [VALUE [DOC]]).  With VALUE: if NAME is already bound,
+     ;; yield NAME unchanged; otherwise evaluate VALUE and set NAME to it,
+     ;; then yield NAME.  Without VALUE: declare only, yield NAME.
+     ;;
+     ;; PERF (cold-start hand-off, 2026-08-30): the previous body synthesised
+     ;; `(if (boundp (quote NAME)) nil (set (quote NAME) VALUE))' as a fresh
+     ;; cons tree and re-entered the interpreter on it -- interning 5 new
+     ;; symbols (if/boundp/set/quote x2) and building 9 cons cells on EVERY
+     ;; call, since `defcustom' is a plain macro to `defvar'
+     ;; (nelisp-stdlib-prelude.el).  Measured directly via the nl_alloc_diag
+     ;; bucket/bump counters (`(nelisp--debug-switch 24)'): ~1600
+     ;; nl_alloc_bytes_uncheck calls per top-level `defvar' form on a
+     ;; synthetic 500-form load, dwarfing the ~14 calls/op measured for a
+     ;; bare `(+ 1 1)'.  `boundp'/`set' themselves are allocation-free
+     ;; (`bf_boundp'/`bf_set' above call `nelisp_mirror_is_bound'/
+     ;; `nl_env_set_value' directly) -- this now does the same, skipping the
+     ;; AST synthesis and recursive eval entirely.  Same observable
+     ;; semantics: VALUE is evaluated (and may itself allocate/signal)
+     ;; exactly when NAME was unbound, never otherwise.
      (if (= (sexp-tag args) 7)
          (let* ((name_ptr (nl_cons_car_ptr args))
                 (rest_ptr (nl_cons_cdr_ptr args)))
            (if (= (sexp-tag rest_ptr) 7)
-               (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
-                      (ibuf (alloc-bytes 8 1)) (if_sym (alloc-bytes 32 8))
-                      (bbuf (alloc-bytes 8 1)) (boundp_sym (alloc-bytes 32 8))
-                      (sbuf (alloc-bytes 8 1)) (set_sym (alloc-bytes 32 8))
-                      (qbuf1 (alloc-bytes 8 1)) (quote_sym1 (alloc-bytes 32 8))
-                      (qbuf2 (alloc-bytes 8 1)) (quote_sym2 (alloc-bytes 32 8))
-                      (name_clone1 (alloc-bytes 32 8))
-                      (name_clone2 (alloc-bytes 32 8))
-                      (val_clone (alloc-bytes 32 8))
-                      (niln1 (alloc-bytes 32 8)) (niln2 (alloc-bytes 32 8))
-                      (niln3 (alloc-bytes 32 8)) (niln4 (alloc-bytes 32 8))
-                      (nil_then (alloc-bytes 32 8))
-                      (qn1_inner (alloc-bytes 32 8)) (qn1 (alloc-bytes 32 8))
-                      (bp_inner (alloc-bytes 32 8)) (bp_form (alloc-bytes 32 8))
-                      (qn2_inner (alloc-bytes 32 8)) (qn2 (alloc-bytes 32 8))
-                      (val_list (alloc-bytes 32 8)) (set_args (alloc-bytes 32 8))
-                      (set_form (alloc-bytes 32 8))
-                      (e1 (alloc-bytes 32 8)) (e2 (alloc-bytes 32 8))
-                      (e3 (alloc-bytes 32 8)) (form (alloc-bytes 32 8))
-                      (scratch (alloc-bytes 32 8)))
-                 (seq
-                  (ptr-write-u64 ibuf 0 26217)          (nl_alloc_symbol ibuf 2 if_sym)
-                  (ptr-write-u64 bbuf 0 123576652230498) (nl_alloc_symbol bbuf 6 boundp_sym)
-                  (ptr-write-u64 sbuf 0 7628147)        (nl_alloc_symbol sbuf 3 set_sym)
-                  (ptr-write-u64 qbuf1 0 435745158513)  (nl_alloc_symbol qbuf1 5 quote_sym1)
-                  (ptr-write-u64 qbuf2 0 435745158513)  (nl_alloc_symbol qbuf2 5 quote_sym2)
-                  (nl_sexp_clone_into name_ptr name_clone1)
-                  (nl_sexp_clone_into name_ptr name_clone2)
-                  (nl_sexp_clone_into val_ptr val_clone)
-                  (nl_cons_write_nil niln1) (nl_cons_write_nil niln2)
-                  (nl_cons_write_nil niln3) (nl_cons_write_nil niln4)
-                  (nl_cons_write_nil nil_then)
-                  ;; (quote NAME) #1  -> for boundp
-                  (nelisp_cons_construct name_clone1 niln1 qn1_inner)
-                  (nelisp_cons_construct quote_sym1 qn1_inner qn1)
-                  ;; (boundp (quote NAME))
-                  (nelisp_cons_construct qn1 niln2 bp_inner)
-                  (nelisp_cons_construct boundp_sym bp_inner bp_form)
-                  ;; (quote NAME) #2  -> for set
-                  (nelisp_cons_construct name_clone2 niln3 qn2_inner)
-                  (nelisp_cons_construct quote_sym2 qn2_inner qn2)
-                  ;; (set (quote NAME) VALUE)
-                  (nelisp_cons_construct val_clone niln4 val_list)
-                  (nelisp_cons_construct qn2 val_list set_args)
-                  (nelisp_cons_construct set_sym set_args set_form)
-                  ;; (if (boundp (quote NAME)) nil (set (quote NAME) VALUE))
-                  (nelisp_cons_construct set_form niln1 e1)
-                  (nelisp_cons_construct nil_then e1 e2)
-                  (nelisp_cons_construct bp_form e2 e3)
-                  (nelisp_cons_construct if_sym e3 form)
-                  (let* ((rc (nelisp_eval_call form env scratch)))
-                    (if (= rc 0) (seq (nl_sexp_clone_into name_ptr out) 0) rc))))
+               (if (= (nelisp_mirror_is_bound (+ env 0) name_ptr (+ env 64)) 1)
+                   (seq (nl_sexp_clone_into name_ptr out) 0)
+                 (let* ((val_ptr (nl_cons_car_ptr rest_ptr))
+                        (val_slot (alloc-bytes 32 8))
+                        (rc (nelisp_eval_call val_ptr env val_slot)))
+                   (if (= rc 0)
+                       (seq (nl_env_set_value env name_ptr val_slot)
+                            (nl_sexp_clone_into name_ptr out) 0)
+                     rc)))
              ;; no VALUE: pure declaration -> yield NAME
              (seq (nl_sexp_clone_into name_ptr out) 0)))
        1)))
@@ -16381,19 +16687,70 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; the W32 spawn model -- see
                     ;; `nelisp-standalone--fileio-process-call-forms'.
                     "CreateProcessW" "WaitForSingleObject" "GetExitCodeProcess"
+                    ;; windows async-process slice 1: inheritable anonymous
+                    ;; pipes, parent-end inheritance clearing, and nonblocking
+                    ;; availability/error probes.
+                    "CreatePipe" "SetHandleInformation" "PeekNamedPipe"
+                    "TerminateProcess"
+                    "GetLastError"
                     ;; fix/windows-env-inherit: startup `nl_os_environ_init'
                     ;; env-block walk (see the windows os-base-forms comment).
                     "GetEnvironmentStringsW" "FreeEnvironmentStringsW"
                     ;; nl_os_float_time (raw hand-assembled unit, this file's
                     ;; own `nelisp-standalone--float-time-unit-windows-x86_64'):
                     ;; FILETIME source for `float-time'/`round'/etc.
-                    "GetSystemTimeAsFileTime"))
-        (cons "SHELL32.dll" (list "CommandLineToArgvW")))
+                    "GetSystemTimeAsFileTime"
+                    ;; `nl_os_win_access' (this file's
+                    ;; `nelisp-standalone--os-syscall-xlat-forms' windows
+                    ;; case): backs `nelisp--syscall-path-int' access(2)
+                    ;; F_OK checks, i.e. `file-exists-p' and friends.
+                    "GetFileAttributesW"
+                    ;; Doc 201 §4 item 2, same windows case:
+                    ;; `nl_os_stat_path'/`nl_os_lstat_path' (file-attributes)
+                    ;; and `nl_os_open_dir'/`nl_os_getdents64'/
+                    ;; `nl_os_close_dir' (directory-files).
+                    "GetFileAttributesExW"
+                    "FindFirstFileW" "FindNextFileW" "FindClose"
+                    ;; `nl_os_getcwd' (windows os-base-forms): backs
+                    ;; `default-directory', which was nil on this target.
+                    "GetCurrentDirectoryW"))
+        (cons "SHELL32.dll" (list "CommandLineToArgvW"))
+        ;; Doc 138 socket slices 1-2: Winsock startup plus the connected-client,
+        ;; listening, readiness and connect-status operations implemented by
+        ;; `nelisp-standalone--socket-impl-forms'.
+        (cons "WS2_32.dll"
+              (list "WSAStartup" "WSAGetLastError" "socket" "ioctlsocket"
+                    "setsockopt" "bind" "listen" "accept" "connect"
+                    "send" "recv" "WSAPoll" "getsockopt" "closesocket"))
+        ;; Schannel slices 1-3: credential acquisition, handshake, record and
+        ;; graceful-shutdown state machines, negotiated-context queries, and
+        ;; cleanup.
+        ;; Secur32 forwards these exports to Sspicli on current Windows; import
+        ;; the documented public DLL rather than the implementation detail.
+        (cons "SECUR32.dll"
+              (list "AcquireCredentialsHandleW" "InitializeSecurityContextW"
+                    "ApplyControlToken"
+                    "CompleteAuthToken" "QueryContextAttributesW"
+                    "EncryptMessage" "DecryptMessage"
+                    "FreeContextBuffer" "DeleteSecurityContext"
+                    "FreeCredentialsHandle")))
   "PE imports needed by the Windows-native standalone reader.")
 
 (defun nelisp-standalone--reader-pe-imports ()
   "Return PE imports for the current Windows-native standalone reader."
-  nelisp-standalone--windows-reader-imports)
+  (append
+   nelisp-standalone--windows-reader-imports
+   (when (eq nelisp-standalone--target 'windows-x86_64)
+     (let (groups)
+       (dolist (row (nelisp-standalone--windows-reader-extern-table))
+         (let* ((dll (cdr (assoc (nth 1 row)
+                                 nelisp-standalone--windows-reader-extern-dll-map)))
+                (group (assoc dll groups)))
+           (if group
+               (setcdr group (append (cdr group) (list (nth 0 row))))
+             (setq groups
+                   (append groups (list (cons dll (list (nth 0 row)))))))))
+       groups))))
 
 (defun nelisp-standalone--reader-tree-load-path ()
   "Return the tree directories `require' should search, newest build wins.
@@ -19036,8 +19393,9 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                  (setq w (1+ w)))
                (nreverse forms))
            (nl_install_one globals unbound b ,len builtin_sym)))))
-   ;; Base builtins + (dynamic builds only) the Step C external FFI name(s).
+   ;; Base builtins + target-specific TLS names + the Step C external FFI name.
    (append nelisp-standalone--reader-builtins
+           (nelisp-standalone--tls-builtin-names)
            (nelisp-standalone--reader-extern-builtin-names))))
 
 (defun nelisp-standalone--os-syscall-xlat-forms ()
@@ -19050,10 +19408,15 @@ boundary (Doc 151 Phase B):
 - linux-aarch64: arm64 Linux has no legacy syscalls — map to the *at
   family (faccessat/unlinkat/mkdirat/renameat/newfstatat/...) with
   AT_FDCWD, preserving each builtin's return contract.
-- macos / windows: return -ENOSYS(-38) stubs.  Previously the shared
-  fileio unit fired the raw x86 numbers on those targets, i.e. random
-  foreign syscalls — the stub is strictly safer (callers already
-  handle negative rc as failure)."
+- macos: return -ENOSYS(-38) stubs.  Previously the shared fileio unit
+  fired the raw x86 numbers on those targets, i.e. random foreign
+  syscalls — the stub is strictly safer (callers already handle
+  negative rc as failure).
+- windows: the read side is native Win32 — access(F_OK) via
+  GetFileAttributesW (Doc 201 §2), stat/lstat via
+  GetFileAttributesExW and directory enumeration via
+  FindFirstFileW/FindNextFileW (Doc 201 §4 item 2).  The mutating
+  path syscalls stay -ENOSYS stubs."
   (pcase nelisp-standalone--target
     ('linux-aarch64
      `((defun nl_os_syscall_path (nr cpath)
@@ -19099,6 +19462,7 @@ boundary (Doc 151 Phase B):
          (syscall-direct 56 (- 0 100) cpath 16384 0 0 0))               ; openat O_DIRECTORY=0x4000 on arm64
        (defun nl_os_getdents64 (fd dbuf cap)
          (syscall-direct 61 fd dbuf cap 0 0 0))
+       (defun nl_os_close_dir (fd) (nl_os_close_handle fd))
        (defun nl_os_utimes_path (cpath buf)
          (syscall-direct 88 (- 0 100) cpath buf 0 0 0))                 ; utimensat (timespec[2]; sec+0 compatible)
        (defun nl_os_statx_path (cpath flags buf)
@@ -19114,9 +19478,206 @@ boundary (Doc 151 Phase B):
        (defun nl_os_readlink_path (cpath buf cap) (syscall-direct 89 cpath buf cap 0 0 0))
        (defun nl_os_open_dir (cpath) (syscall-direct 257 (- 0 100) cpath 65536 0 0 0))
        (defun nl_os_getdents64 (fd dbuf cap) (syscall-direct 217 fd dbuf cap 0 0 0))
+       (defun nl_os_close_dir (fd) (nl_os_close_handle fd))
        (defun nl_os_utimes_path (cpath buf) (syscall-direct 235 cpath buf 0 0 0 0))
        (defun nl_os_statx_path (cpath flags buf) (syscall-direct 332 (- 0 100) cpath flags 4095 buf 0))
        (defun nl_os_nanosleep (ts) (syscall-direct 35 ts 0 0 0 0 0))))
+    ((or 'windows-x86_64 'windows-aarch64)
+     ;; windows: every path-syscall builtin was an unconditional -ENOSYS
+     ;; stub (Doc 151 §B) until Doc 201 §2 -- `nelisp--syscall-stat'
+     ;; (scripts/nelisp-stdlib-prelude.el) falls back to
+     ;; `nelisp--syscall-path-int' access(2)-style existence checks
+     ;; (NR=21, F_OK), so `file-exists-p'/`file-directory-p'/
+     ;; `file-regular-p'/`file-readable-p'/`executable-find' silently
+     ;; always answered "absent" on every windows-native standalone
+     ;; build.  Found chasing a v1.1.1 nelisp-skk-ime load-time
+     ;; regression: `executable-find' walked every PATH entry, `access'
+     ;; always failed, and the caller never learned the difference
+     ;; between "checked and missing" and "could not check at all".
+     ;; `GetFileAttributesW' (imported alongside the other KERNEL32
+     ;; calls, see `nelisp-standalone--windows-reader-imports') answers
+     ;; the same yes/no `access(F_OK)' answers this repo's fileio
+     ;; builtins already reduce every mode bit to.  `nl_win_utf8_wcs_dup'
+     ;; (this same target's `nelisp-standalone--reader-os-base-forms',
+     ;; appended into the same source list by
+     ;; `nelisp-standalone--reader-os-source-forms') builds the UTF-16
+     ;; path GetFileAttributesW requires.  Doc 201 §2 wired NR=21 (access,
+     ;; F_OK) only, and named the rest a follow-up; Doc 201 §4 item 2 is
+     ;; that follow-up and adds `stat'/`lstat' (GetFileAttributesExW) and
+     ;; directory enumeration (FindFirstFileW/FindNextFileW/FindClose), so
+     ;; `file-attributes' and `directory-files' work on this target at all.
+     ;; Still -ENOSYS, deliberately: the MUTATING path syscalls
+     ;; (unlink/rmdir/mkdir/rename/link/symlink/chmod/truncate/utimes) and
+     ;; `readlink'/`statx'/`nanosleep'.  Reading a Windows filesystem
+     ;; wrongly costs a wrong answer; writing one wrongly costs the file,
+     ;; so those want their own change with their own gate.
+     `((defun nl_os_win_access (cpath)
+         (let* ((wpath (nl_win_utf8_wcs_dup cpath))
+                (attrs (extern-call GetFileAttributesW wpath)))
+           (if (or (= attrs 4294967295) (= attrs -1)) (- 0 2) 0)))
+       (defun nl_os_syscall_path (_nr _cpath) (- 0 38))
+       (defun nl_os_syscall_path_int (nr cpath iarg)
+         (if (= nr 21) (nl_os_win_access cpath) (- 0 38)))
+       (defun nl_os_syscall_path2 (_nr _c1 _c2) (- 0 38))
+       ;; stat(2) shim.  `GetFileAttributesExW' (not
+       ;; `GetFileInformationByHandleEx') because it needs no open handle,
+       ;; so a directory, a locked file and a read-protected one all answer
+       ;; the same way `access' already does on this target.  Its
+       ;; WIN32_FILE_ATTRIBUTE_DATA is dwFileAttributes@0,
+       ;; ftCreationTime@4, ftLastAccessTime@12, ftLastWriteTime@20,
+       ;; nFileSizeHigh@28, nFileSizeLow@32 -- 36 bytes.  The fields are
+       ;; written back at the *Linux x86_64* `struct stat' offsets this
+       ;; repo's fileio builtins use as their portable vocabulary
+       ;; (`nl_bi_syscall_stat_field' names them), not at Windows ones.
+       (defun nl_win_filetime_unix (lo hi)
+         ;; FILETIME counts 100ns ticks from 1601-01-01; 116444736000000000
+         ;; of them separate that epoch from 1970-01-01.
+         (/ (- (+ lo (* hi 4294967296)) 116444736000000000) 10000000))
+       (defun nl_win_stat_zero (buf)
+         (let* ((i 0))
+           (seq
+            (while (< i 144)
+              (seq (ptr-write-u64 buf i 0) (setq i (+ i 8))))
+            0)))
+       (defun nl_win_stat_from_data (data buf nofollow)
+         (let* ((attrs (ptr-read-u32 data 0))
+                ;; FILE_ATTRIBUTE_DIRECTORY 0x10, _REPARSE_POINT 0x400,
+                ;; _READONLY 0x1.  Windows has no mode bits, so the shim
+                ;; reports the three shapes callers actually branch on:
+                ;; S_IFDIR|0755, S_IFLNK|0777, S_IFREG|0644 (0444 when the
+                ;; read-only attribute is set).
+                (mode (if (> (logand attrs 16) 0)
+                          16877
+                        (if (if (> nofollow 0) (> (logand attrs 1024) 0) 0)
+                            41471
+                          (if (> (logand attrs 1) 0) 33060 33188)))))
+           (seq
+            (nl_win_stat_zero buf)
+            (ptr-write-u64 buf 16 1)
+            (ptr-write-u32 buf 24 mode)
+            (ptr-write-u64 buf 48
+                           (+ (ptr-read-u32 data 32)
+                              (* (ptr-read-u32 data 28) 4294967296)))
+            (ptr-write-u64 buf 72
+                           (nl_win_filetime_unix (ptr-read-u32 data 12)
+                                                 (ptr-read-u32 data 16)))
+            (ptr-write-u64 buf 88
+                           (nl_win_filetime_unix (ptr-read-u32 data 20)
+                                                 (ptr-read-u32 data 24)))
+            (ptr-write-u64 buf 104
+                           (nl_win_filetime_unix (ptr-read-u32 data 4)
+                                                 (ptr-read-u32 data 8)))
+            0)))
+       (defun nl_win_stat_common (cpath buf nofollow)
+         (let* ((wpath (nl_win_utf8_wcs_dup cpath))
+                (data (alloc-bytes 40 8))
+                (ok (extern-call GetFileAttributesExW wpath 0 data)))
+           (if (= ok 0) (- 0 2) (nl_win_stat_from_data data buf nofollow))))
+       (defun nl_os_stat_path (cpath buf) (nl_win_stat_common cpath buf 0))
+       ;; `GetFileAttributesExW' does not follow a reparse point's target for
+       ;; the attribute word, so the same call serves both: `lstat' reports
+       ;; S_IFLNK when FILE_ATTRIBUTE_REPARSE_POINT is set and `stat' does
+       ;; not.  The size/time fields are the link's either way, which is
+       ;; where this shim stops being a real `stat' -- see
+       ;; `nl_os_readlink_path' below, still unimplemented.
+       (defun nl_os_lstat_path (cpath buf) (nl_win_stat_common cpath buf 1))
+       (defun nl_os_readlink_path (_cpath _buf _cap) (- 0 38))
+       ;; Directory enumeration.  `FindFirstFileW' takes a glob and hands
+       ;; back the FIRST entry with the handle, where `getdents64' hands
+       ;; back only a handle -- so the shim owns a small state block instead
+       ;; of a bare fd, and `nl_os_open_dir' returns its address (always a
+       ;; positive heap pointer, which is what the caller's `(< fd 0)'
+       ;; failure test reads).  Layout: FindFirstFile handle@0, "an entry is
+       ;; pending in the buffer"@8, WIN32_FIND_DATAW@16 (592 bytes,
+       ;; cFileName at its own +44, i.e. block +60), UTF-8 name scratch@608
+       ;; (1024 bytes: 260 UTF-16 units cannot exceed 780 UTF-8 bytes).
+       ;;
+       ;; The scratch lives IN the block deliberately.  Converting each name
+       ;; into a freshly allocated buffer would allocate inside
+       ;; `nl_os_getdents64', which the caller
+       ;; (`nl_bi_syscall_readdir_names') runs in a loop while holding two
+       ;; raw `alloc-bytes' buffers -- exactly the shape that makes a
+       ;; collection mid-loop able to invalidate them.  This way the whole
+       ;; enumeration allocates once, in `nl_os_open_dir', before the
+       ;; caller's own buffers exist.
+       (defun nl_win_cstr_len (p)
+         (let* ((n 0))
+           (seq (while (> (ptr-read-u8 p n) 0) (setq n (+ n 1))) n)))
+       (defun nl_win_dir_pattern (cpath)
+         ;; "<cpath>\\*", with any trailing separator dropped first so
+         ;; "C:/dir/" does not become "C:/dir/\\*".
+         (let* ((n (nl_win_cstr_len cpath))
+                (n (if (> n 0)
+                       (if (or (= (ptr-read-u8 cpath (- n 1)) 47)
+                               (= (ptr-read-u8 cpath (- n 1)) 92))
+                           (- n 1)
+                         n)
+                     n))
+                (dst (alloc-bytes (+ n 4) 1))
+                (i 0))
+           (seq
+            (while (< i n)
+              (seq (ptr-write-u8 dst i (ptr-read-u8 cpath i))
+                   (setq i (+ i 1))))
+            (ptr-write-u8 dst n 92)
+            (ptr-write-u8 dst (+ n 1) 42)
+            (ptr-write-u8 dst (+ n 2) 0)
+            dst)))
+       (defun nl_os_open_dir (cpath)
+         (let* ((wpat (nl_win_utf8_wcs_dup (nl_win_dir_pattern cpath)))
+                (st (alloc-bytes 1632 8))
+                (h (extern-call FindFirstFileW wpat (+ st 16))))
+           (if (or (= h 0) (or (= h (- 0 1)) (= h 4294967295)))
+               (- 0 2)
+             (seq (ptr-write-u64 st 0 h) (ptr-write-u64 st 8 1) st))))
+       (defun nl_win_dir_emit (st dbuf pos)
+         ;; One dirent64 record at DBUF+POS from the pending WIN32_FIND_DATAW,
+         ;; returning the new POS.  dirent64: d_ino@0 d_off@8 d_reclen(u16)@16
+         ;; d_type(u8)@18 d_name@19 (NUL-terminated) -- the layout
+         ;; `nl_bi_syscall_readdir_names' walks.  d_type stays DT_UNKNOWN(0):
+         ;; the caller reads names only, and a wrong type is worse than none.
+         (let* ((_n (extern-call WideCharToMultiByte 65001 0 (+ st 60) -1
+                                 (+ st 608) 1024 0 0))
+                (nlen (nl_win_cstr_len (+ st 608)))
+                (i 0))
+           (seq
+            (while (< i nlen)
+              (seq (ptr-write-u8 dbuf (+ pos (+ 19 i))
+                                 (ptr-read-u8 (+ st 608) i))
+                   (setq i (+ i 1))))
+            (ptr-write-u8 dbuf (+ pos (+ 19 nlen)) 0)
+            (ptr-write-u64 dbuf pos 1)
+            (ptr-write-u64 dbuf (+ pos 8) 0)
+            (ptr-write-u16 dbuf (+ pos 16) (+ 20 nlen))
+            (ptr-write-u8 dbuf (+ pos 18) 0)
+            (+ pos (+ 20 nlen)))))
+       (defun nl_os_getdents64 (st dbuf cap)
+         ;; Fills DBUF with as many records as fit and returns the byte
+         ;; count, 0 when the enumeration is done -- the same contract the
+         ;; caller's `(while (> n 0))' loop already relies on, so a name
+         ;; that does not fit is simply left pending for the next call.
+         ;; 800 = the largest record this can emit (20 + 780).
+         (if (< st 0)
+             0
+           (let* ((pos 0) (more 1))
+             (seq
+              (while (> more 0)
+                (if (= (ptr-read-u64 st 8) 1)
+                    (if (> (+ pos 800) cap)
+                        (setq more 0)
+                      (seq (setq pos (nl_win_dir_emit st dbuf pos))
+                           (ptr-write-u64 st 8 0)))
+                  (if (= (extern-call FindNextFileW (ptr-read-u64 st 0)
+                                      (+ st 16))
+                         0)
+                      (setq more 0)
+                    (ptr-write-u64 st 8 1))))
+              pos))))
+       (defun nl_os_close_dir (st)
+         (if (< st 0) 0 (nl_seq2 (extern-call FindClose (ptr-read-u64 st 0)) 0)))
+       (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
+       (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
+       (defun nl_os_nanosleep (_ts) (- 0 38))))
     (_
      `((defun nl_os_syscall_path (_nr _cpath) (- 0 38))
        (defun nl_os_syscall_path_int (_nr _cpath _iarg) (- 0 38))
@@ -19126,6 +19687,7 @@ boundary (Doc 151 Phase B):
        (defun nl_os_readlink_path (_cpath _buf _cap) (- 0 38))
        (defun nl_os_open_dir (_cpath) (- 0 38))
        (defun nl_os_getdents64 (_fd _dbuf _cap) (- 0 38))
+       (defun nl_os_close_dir (fd) (nl_os_close_handle fd))
        (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
        (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
        (defun nl_os_nanosleep (_ts) (- 0 38))))))
@@ -19213,10 +19775,12 @@ the prelude's source fixes both without a second change."
 ;; were.
 (defun nelisp-standalone--socket-forms ()
   "Return the native socket units for the CURRENT `nelisp-standalone--target'.
-Empty list on every target except `linux-x86_64' -- see this file's socket
-section banner comment just above for why, and
-`nelisp-standalone--socket-dispatch-arms' for the non-Linux-x86_64 gate."
-  (if (not (eq nelisp-standalone--target 'linux-x86_64))
+The target-independent address parsers/builders and argument/error helpers are
+emitted for `linux-x86_64' and `windows-x86_64'.  See this file's socket section
+banner comment just above for the raw-memory boundary, and
+`nelisp-standalone--socket-dispatch-arms' for per-name target availability."
+  (if (not (memq nelisp-standalone--target
+                 '(linux-x86_64 windows-x86_64)))
       nil
     (append
      (list
@@ -19490,7 +20054,11 @@ section banner comment just above for why, and
       ;; print+abort -- is what makes this catchable).  ERRNO is the raw
       ;; (negative) syscall return value, or the sentinel -9999 for "not an
       ;; OS errno at all, `nl_socket_build_sockaddr' rejected the host
-      ;; string" (DNS/malformed-address, out of scope).
+      ;; string" (DNS/malformed-address, out of scope).  Windows call sites
+      ;; preserve this contract by mapping the common WSAE* values to their
+      ;; POSIX equivalents at the target boundary, then negating the result.
+      ;; Unmapped Winsock values retain their real magnitude rather than being
+      ;; flattened to an incorrect POSIX errno.
       `(defun nl_socket_signal_error (errno)
          (let* ((tagbuf (alloc-bytes 24 1))
                 (nilslot (alloc-bytes 32 8))
@@ -19521,6 +20089,30 @@ section banner comment just above for why, and
          (if (= (bf_require_arg_present_p args n) 1)
              (if (= (ptr-read-u64 (wf_arg_ptr args n) 0) 0) 0 1)
            0))
+      )
+     (nelisp-standalone--socket-impl-forms)
+     nil)))
+
+(defun nelisp-standalone--socket-impl-forms ()
+  "Return the eight `nelisp-socket-*' implementations for this target.
+
+Split out from `nelisp-standalone--socket-forms' so the two halves can
+differ per target independently: everything that function still holds is
+pure computation -- dotted-quad and IPv6-literal parsing, sockaddr
+construction, the error signaller, optional-argument decoding -- and is
+identical wherever sockets exist at all.  Only what is below touches the
+OS, and only that needs a second implementation.
+
+linux-x86_64 implements all eight names through raw syscalls.
+windows-x86_64 implements all eight over WS2_32.  Its AF_INET6 value is 23;
+SOCKET is a handle closed by `closesocket'; NOWAIT uses
+`ioctlsocket(FIONBIO)' rather than a socket type flag; common WSAE* values are
+mapped to POSIX errno numbers at the Windows boundary before the shared
+signaller receives their negative form; and one reader-startup
+`WSAStartup(2.2)' call precedes user code.  See docs/design/138."
+  (pcase nelisp-standalone--target
+    ('linux-x86_64
+     (list
       ;; nelisp-socket-listen HOST PORT &optional NOWAIT -> listen-fd.
       ;; socket(2) -> setsockopt(2) SO_REUSEADDR (best-effort: a failure
       ;; here is not fatal, matching common practice) -> bind(2) ->
@@ -19806,37 +20398,871 @@ section banner comment just above for why, and
             (let* ((rc (syscall-direct 55 fd 1 4 optval optlen 0)))
               (if (< rc 0)
                   (nl_socket_signal_error rc)
-                (seq (wf_write_int out (ptr-read-u32 optval 0)) 0)))))))
-     nil)))
+                (seq (wf_write_int out (ptr-read-u32 optval 0)) 0))))))))
+    ('windows-x86_64
+     (list
+      ;; Winsock is initialized once from the reader driver's startup path,
+      ;; before any user form can reach a socket dispatch arm.  WSADATA is 408
+      ;; bytes on Win64.  Unlike other Winsock calls, WSAStartup returns its
+      ;; error code directly rather than requiring WSAGetLastError.
+      '(defun nl_socket_init ()
+         (let* ((wsa_data (alloc-bytes 408 8))
+                (rc (extern-call WSAStartup 514 wsa_data)))
+           (if (= rc 0) 0 (nl_socket_signal_error (- 0 rc)))))
+      ;; Translate only errors this socket surface can actually produce:
+      ;; WSAEADDRINUSE, WSAENETUNREACH, WSAECONNRESET, WSAETIMEDOUT,
+      ;; WSAECONNREFUSED, WSAEHOSTUNREACH, WSAEWOULDBLOCK, WSAEINPROGRESS and
+      ;; WSAEALREADY.  An unknown value passes through unchanged: retaining a
+      ;; real Winsock number is safer than inventing the wrong POSIX errno.
+      '(defun nl_socket_windows_map_errno (errno)
+         (if (= errno 10048) 98
+           (if (= errno 10051) 101
+             (if (= errno 10054) 104
+               (if (= errno 10060) 110
+                 (if (= errno 10061) 111
+                   (if (= errno 10065) 113
+                     (if (= errno 10035) 11
+                       (if (= errno 10036) 115
+                         (if (= errno 10037) 115 errno))))))))))
+      '(defun nl_socket_windows_raw_error ()
+         (extern-call WSAGetLastError))
+      '(defun nl_socket_windows_error ()
+         (- 0 (nl_socket_windows_map_errno (nl_socket_windows_raw_error))))
+      ;; Winsock's int-returning functions return SOCKET_ERROR, a signed
+      ;; 32-bit -1.  The standalone extern-call ABI exposes EAX zero-extended
+      ;; on Win64, so the observable value is #xffffffff; accept both forms.
+      '(defun nl_socket_windows_socket_error_p (rc)
+         (if (= rc (- 0 1)) 1 (if (= rc 4294967295) 1 0)))
+      '(defun nl_socket_windows_close_error (sock errno)
+         (seq (extern-call closesocket sock)
+              (nl_socket_signal_error errno)))
+      ;; NOWAIT is a real supported mode in slice 1.  FIONBIO is a u_long
+      ;; command (#x8004667e) whose argument points at a four-byte 0/1 value.
+      '(defun nl_socket_windows_set_nonblock (sock enabled)
+         (let* ((arg (alloc-bytes 4 4)))
+           (seq
+            (ptr-write-u32 arg 0 enabled)
+            (let* ((rc (extern-call ioctlsocket sock 2147772030 arg)))
+              (if (= (nl_socket_windows_socket_error_p rc) 1)
+                  (nl_socket_windows_error)
+                0)))))
+      ;; The listener's NOWAIT bit is what makes accept itself nonblocking on
+      ;; an empty queue.  Winsock accept has no flags argument; the accepted
+      ;; socket inherits the listener's blocking mode.  The accept primitive
+      ;; below additionally applies its own NOWAIT argument to a successfully
+      ;; returned socket, preserving the existing returned-socket contract
+      ;; when a blocking listener already has a connection queued.
+      '(defun nl_socket_listen_impl (args out)
+         (let* ((host_sx (wf_arg_ptr args 0))
+                (host_ptr (nl_bi_strptr host_sx))
+                (host_len (nl_bi_strlen host_sx))
+                (port (wf_argval args 1))
+                (nowait (nl_socket_bool_arg args 2))
+                (family (if (= (nl_ipv6_has_colon_walk host_ptr 0 host_len) 1) 23 2))
+                (sock (extern-call socket family 1 0)))
+           (if (= sock (- 0 1))
+               (nl_socket_signal_error (nl_socket_windows_error))
+             (let* ((optval (alloc-bytes 4 4))
+                    (addr (if (= family 23) (alloc-bytes 28 1) (alloc-bytes 16 1)))
+                    (abuild (if (= family 23)
+                                (nl_socket_build_sockaddr6 host_ptr host_len port addr)
+                              (nl_socket_build_sockaddr host_ptr host_len port addr)))
+                    (alen (if (= family 23) 28 16)))
+               (if (< abuild 0)
+                   (nl_socket_windows_close_error sock (- 0 9999))
+                 (seq
+                  (ptr-write-u32 optval 0 1)
+                  ;; Winsock constants, not the numerically different Linux
+                  ;; SOL_SOCKET=1/SO_REUSEADDR=2 pair.  Best-effort, matching
+                  ;; the Linux arm's existing reuse option contract.
+                  (extern-call setsockopt sock 65535 4 optval 4)
+                  (if (= family 23) (ptr-write-u8 addr 0 23) 0)
+                  (let* ((nb_err (if (= nowait 1)
+                                     (nl_socket_windows_set_nonblock sock 1)
+                                   0)))
+                    (if (< nb_err 0)
+                        (nl_socket_windows_close_error sock nb_err)
+                      (let* ((brc (extern-call bind sock addr alen)))
+                        (if (= (nl_socket_windows_socket_error_p brc) 1)
+                            (nl_socket_windows_close_error
+                             sock (nl_socket_windows_error))
+                          (let* ((lrc (extern-call listen sock 16)))
+                            (if (= (nl_socket_windows_socket_error_p lrc) 1)
+                                (nl_socket_windows_close_error
+                                 sock (nl_socket_windows_error))
+                              (seq (wf_write_int out sock) 0)))))))))))))
+      '(defun nl_socket_accept_impl (args out)
+         (let* ((nowait (nl_socket_bool_arg args 1))
+                (sock (extern-call accept (wf_argval args 0) 0 0)))
+           (if (= sock (- 0 1))
+               (let* ((wsa_errno (nl_socket_windows_raw_error)))
+                 ;; WSAEWOULDBLOCK is the empty-queue soft outcome only when
+                 ;; NOWAIT was requested.  Both this check and connect's
+                 ;; in-flight check deliberately use the raw WSA code; every
+                 ;; value exposed or signalled is mapped afterwards.
+                 (if (if (= nowait 1) (= wsa_errno 10035) 0)
+                     (seq (wf_write_int out (- 0 1)) 0)
+                   (nl_socket_signal_error
+                    (- 0 (nl_socket_windows_map_errno wsa_errno)))))
+             (let* ((nb_err (if (= nowait 1)
+                                (nl_socket_windows_set_nonblock sock 1)
+                              0)))
+               (if (< nb_err 0)
+                   (nl_socket_windows_close_error sock nb_err)
+                 (seq (wf_write_int out sock) 0))))))
+      ;; The shared sockaddr_in6 builder writes Linux AF_INET6=10.  Its layout
+      ;; is otherwise byte-identical, so overwrite only the native-endian
+      ;; family byte with Winsock AF_INET6=23 after a successful build.
+      '(defun nl_socket_connect_impl (args out)
+         (let* ((host_sx (wf_arg_ptr args 0))
+                (host_ptr (nl_bi_strptr host_sx))
+                (host_len (nl_bi_strlen host_sx))
+                (port (wf_argval args 1))
+                (nowait (nl_socket_bool_arg args 2))
+                (family (if (= (nl_ipv6_has_colon_walk host_ptr 0 host_len) 1) 23 2))
+                (sock (extern-call socket family 1 0)))
+           (if (= sock (- 0 1))
+               (nl_socket_signal_error (nl_socket_windows_error))
+             (let* ((addr (if (= family 23) (alloc-bytes 28 1) (alloc-bytes 16 1)))
+                    (abuild (if (= family 23)
+                                (nl_socket_build_sockaddr6 host_ptr host_len port addr)
+                              (nl_socket_build_sockaddr host_ptr host_len port addr)))
+                    (alen (if (= family 23) 28 16)))
+               (if (< abuild 0)
+                   (nl_socket_windows_close_error sock (- 0 9999))
+                 (seq
+                  (if (= family 23) (ptr-write-u8 addr 0 23) 0)
+                  (let* ((nb_err (if (= nowait 1)
+                                     (nl_socket_windows_set_nonblock sock 1)
+                                   0)))
+                    (if (< nb_err 0)
+                        (nl_socket_windows_close_error sock nb_err)
+                      (let* ((crc (extern-call connect sock addr alen)))
+                        (if (= (nl_socket_windows_socket_error_p crc) 1)
+                            (let* ((wsa_errno (nl_socket_windows_raw_error)))
+                              ;; Microsoft documents WSAEWOULDBLOCK (10035)
+                              ;; as the in-flight result for nonblocking connect.
+                              ;; Compare raw here, exactly as accept does, then
+                              ;; map only a real error crossing the boundary.
+                              (if (if (= nowait 1) (= wsa_errno 10035) 0)
+                                  (seq (wf_write_int out sock) 0)
+                                (nl_socket_windows_close_error
+                                 sock (- 0 (nl_socket_windows_map_errno
+                                             wsa_errno)))))
+                          (seq (wf_write_int out sock) 0)))))))))))
+      '(defun nl_socket_send_impl (args out)
+         (let* ((sock (wf_argval args 0))
+                (str_sx (wf_arg_ptr args 1))
+                (n (extern-call send sock (nl_bi_strptr str_sx)
+                                (nl_bi_strlen str_sx) 0)))
+           (if (= (nl_socket_windows_socket_error_p n) 1)
+               (nl_socket_signal_error (nl_socket_windows_error))
+             (seq (wf_write_int out n) 0))))
+      '(defun nl_socket_recv_impl (args out)
+         (let* ((sock (wf_argval args 0))
+                (maxbytes (wf_argval args 1))
+                (buf (alloc-bytes maxbytes 1))
+                (n (extern-call recv sock buf maxbytes 0)))
+           (if (= (nl_socket_windows_socket_error_p n) 1)
+               (nl_socket_signal_error (nl_socket_windows_error))
+             (seq (nl_alloc_unibyte_str buf n out) 0))))
+      ;; Measured on this Windows 11 host before choosing the implementation:
+      ;; a refused nonblocking loopback connect made WSAPoll return 1 with
+      ;; revents=#x13 (POLLWRNORM|POLLERR|POLLHUP), while select returned the
+      ;; same socket in exceptfds; both took about 2.0 seconds.  Thus WSAPoll
+      ;; does report failed connects here, contrary to Doc 138's warning, and
+      ;; select provides no timing advantage.  Its ABI is NOT Linux pollfd:
+      ;; Win64 WSAPOLLFD is 16 bytes (8-byte SOCKET, events at 8, revents at
+      ;; 10).  Its event numbers also differ: POLLIN=#x300, POLLOUT=#x10,
+      ;; POLLERR|POLLHUP|POLLNVAL=#x7.
+      '(defun nl_socket_poll_impl (args out)
+         (let* ((sock (wf_argval args 0))
+                (want_write (nl_socket_bool_arg args 1))
+                (timeout (wf_argval args 2))
+                (events (if (= want_write 1) 16 768))
+                (mask (if (= want_write 1) 23 775))
+                (pfd (alloc-bytes 16 8)))
+           (seq
+            (ptr-write-u64 pfd 0 sock)
+            (ptr-write-u32 pfd 8 events)
+            (let* ((rc (extern-call WSAPoll pfd 1 timeout))
+                   (revents (/ (ptr-read-u32 pfd 8) 65536)))
+              (if (= (nl_socket_windows_socket_error_p rc) 1)
+                  (nl_socket_signal_error (nl_socket_windows_error))
+                (if (if (> rc 0)
+                        (if (= (logand revents mask) 0) 0 1)
+                      0)
+                    (wf_write_t out)
+                  (wf_write_nil out)))))))
+      '(defun nl_socket_connect_error_impl (args out)
+         (let* ((sock (wf_argval args 0))
+                (optval (alloc-bytes 4 4))
+                (optlen (alloc-bytes 4 4)))
+           (seq
+            (ptr-write-u32 optlen 0 4)
+            ;; Winsock SOL_SOCKET=#xffff and SO_ERROR=#x1007.  Copying the
+            ;; Linux arm's numeric 1/4 pair queries different options.
+            (let* ((rc (extern-call getsockopt sock 65535 4103 optval optlen)))
+              (if (= (nl_socket_windows_socket_error_p rc) 1)
+                  (nl_socket_signal_error (nl_socket_windows_error))
+                (seq
+                 (wf_write_int out
+                               (nl_socket_windows_map_errno
+                                (ptr-read-u32 optval 0)))
+                 0))))))
+      ;; Preserve the Linux primitive's cleanup contract: close is best-effort
+      ;; and always returns nil.  A SOCKET must never reach CloseHandle/close.
+      '(defun nl_socket_close_impl (args out)
+         (seq (extern-call closesocket (wf_argval args 0))
+              (wf_write_nil out)
+              0))))
+    (_ nil)))
 
 (defun nelisp-standalone--socket-dispatch-arms ()
   "Return the eight `nelisp-socket-*' `nelisp_apply_function' dispatch
 arms (six Phase 1 primitives + two doc 194 P3 additions, `nelisp-socket-
-poll'/`nelisp-socket-connect-error').  Real raw-SYSCALL implementations
-(`nelisp-standalone--socket-forms') on `linux-x86_64'; on every other
-target, the SAME catchable `nelisp-unsupported-primitive' signal Task A's
-fix installs as the unknown-builtin default -- the primitive names exist
-and are `fboundp', calling one just refuses loudly instead of either
-issuing a wrong syscall number for a target this DSL has not been taught,
-or silently failing to link (`nl_socket_listen_impl' et al. are only
-DEFINED on `linux-x86_64', so these dispatch arms must not reference them
-at all on other targets)."
-  (let ((names '("nelisp-socket-listen" "nelisp-socket-accept"
-                 "nelisp-socket-connect" "nelisp-socket-send"
-                 "nelisp-socket-recv" "nelisp-socket-close"
-                 "nelisp-socket-poll" "nelisp-socket-connect-error")))
-    (if (eq nelisp-standalone--target 'linux-x86_64)
-        (list
-         `((:lit "nelisp-socket-listen") . (nl_socket_listen_impl args out))
-         `((:lit "nelisp-socket-accept") . (nl_socket_accept_impl args out))
-         `((:lit "nelisp-socket-connect") . (nl_socket_connect_impl args out))
-         `((:lit "nelisp-socket-send") . (nl_socket_send_impl args out))
-         `((:lit "nelisp-socket-recv") . (nl_socket_recv_impl args out))
-         `((:lit "nelisp-socket-close") . (nl_socket_close_impl args out))
-         `((:lit "nelisp-socket-poll") . (nl_socket_poll_impl args out))
-         `((:lit "nelisp-socket-connect-error") . (nl_socket_connect_error_impl args out)))
-      (let ((sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
-        (mapcar (lambda (nm) (cons (list :lit nm) sig)) names)))))
+poll'/`nelisp-socket-connect-error').  Availability is deliberately per name,
+not one all-or-nothing target boolean: linux-x86_64 and windows-x86_64 have
+all eight real arms.  Every absent name
+routes to the SAME catchable `nelisp-unsupported-primitive' form as the
+unknown-builtin default, so a partial target arm remains honestly unsupported
+instead of referencing an implementation that was never emitted."
+  (let ((entries
+         '(("nelisp-socket-listen" nl_socket_listen_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-accept" nl_socket_accept_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-connect" nl_socket_connect_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-send" nl_socket_send_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-recv" nl_socket_recv_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-close" nl_socket_close_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-poll" nl_socket_poll_impl linux-x86_64 windows-x86_64)
+           ("nelisp-socket-connect-error" nl_socket_connect_error_impl linux-x86_64 windows-x86_64)))
+        (sig (nelisp-standalone--applyfn-unsupported-primitive-form)))
+    (mapcar
+     (lambda (entry)
+       (cons (list :lit (car entry))
+             (if (memq nelisp-standalone--target (cddr entry))
+                 (list (cadr entry) 'args 'out)
+               sig)))
+     entries)))
+
+;; ===================================================================
+;; Schannel TLS client -- Windows x86_64, slices 1-3.
+;;
+;; The public boundary is deliberately above SSPI's raw structures:
+;;   (nelisp-tls-connect SOCKET SERVER-NAME) -> opaque native context
+;;   (nelisp-tls-send CONTEXT STRING)        -> plaintext bytes accepted
+;;   (nelisp-tls-recv CONTEXT MAX-BYTES)     -> unibyte plaintext / EOF ""
+;;   (nelisp-tls-close CONTEXT)              -> nil (does not close SOCKET)
+;;   (nelisp-tls-protocol CONTEXT)           -> "TLS1.2" / "TLS1.3"
+;; Encrypted input, plaintext overflow and the UTF-16 SNI target are all
+;; retained in the context's VirtualAlloc block because `alloc-bytes' storage
+;; does not survive the next top-level reader boundary.  SSPI's transient
+;; descriptors remain arena allocations because they never escape a call.
+;;
+;; Win64 layouts measured with MSVC 19.44 against Windows SDK 10.0.26100.0:
+;;   SecHandle: 16, dwLower@0 dwUpper@8
+;;   SecBuffer: 16, cbBuffer@0 BufferType@4 pvBuffer@8
+;;   SecBufferDesc: 16, ulVersion@0 cBuffers@4 pBuffers@8
+;;   SCH_CREDENTIALS: 72, fields @0,4,8,16,24,32,40,48,52,56,64
+;;   SecPkgContext_ConnectionInfo: 28, dwProtocol@0
+;;   SecPkgContext_StreamSizes: 20, fields @0,4,8,12,16 (slice 2)
+;; ===================================================================
+
+(defun nelisp-standalone--utf16-ascii-write-forms (buf-sym string)
+  "Return raw writes of ASCII STRING as a NUL-terminated Win32 WCHAR string."
+  (append
+   (cl-loop for c across string
+            for i from 0
+            append `((ptr-write-u8 ,buf-sym ,(* i 2) ,c)
+                     (ptr-write-u8 ,buf-sym ,(1+ (* i 2)) 0)))
+   `((ptr-write-u8 ,buf-sym ,(* (length string) 2) 0)
+     (ptr-write-u8 ,buf-sym ,(1+ (* (length string) 2)) 0))))
+
+(defun nelisp-standalone--tls-forms ()
+  "Return the Windows x86_64 Schannel TLS native units.
+`nelisp-tls-close' releases only the TLS context and its buffers; the socket
+belongs to the caller, just as `nelisp-tls-connect' does not open it."
+  (when (eq nelisp-standalone--target 'windows-x86_64)
+    (list
+     '(defun nl_tls_status_s32 (status)
+        (if (> status 2147483647) (- status 4294967296) status))
+     '(defun nl_tls_zero (ptr count)
+        (let* ((i 0))
+          (seq
+           (while (< i count)
+             (seq (ptr-write-u8 ptr i 0) (setq i (+ i 1))))
+           ptr)))
+     '(defun nl_tls_copy (dst src count)
+        (let* ((i 0))
+          (seq
+           (while (< i count)
+             (seq (ptr-write-u8 dst i (ptr-read-u8 src i))
+                  (setq i (+ i 1))))
+           count)))
+     ;; SERVER-NAME is intentionally ASCII at this low-level boundary.  DNS
+     ;; IDNA conversion belongs above it; every current smoke name is ASCII.
+     '(defun nl_tls_ascii_to_wide_at (src len dst)
+        (let* ((i 0))
+          (seq
+           (while (< i len)
+             (seq (ptr-write-u8 dst (* i 2) (ptr-read-u8 src i))
+                  (ptr-write-u8 dst (+ (* i 2) 1) 0)
+                  (setq i (+ i 1))))
+           (ptr-write-u8 dst (* len 2) 0)
+           (ptr-write-u8 dst (+ (* len 2) 1) 0)
+           dst)))
+     `(defun nl_tls_package_name ()
+        (let* ((buf (alloc-bytes 90 2)))
+          (seq
+           ,@(nelisp-standalone--utf16-ascii-write-forms
+              'buf "Microsoft Unified Security Protocol Provider")
+           buf)))
+     `(defun nl_tls_signal_error (status)
+        (let* ((tagbuf (alloc-bytes 16 1))
+               (nilslot (alloc-bytes 32 8))
+               (data (alloc-bytes 32 8)))
+          (seq
+           ,@(nelisp-standalone--byte-write-forms 'tagbuf "nelisp-tls-error")
+           (nl_alloc_symbol tagbuf 16 268435480)
+           (wf_write_nil nilslot)
+           (wf_cons_int status nilslot data)
+           (bf_sig_copy32 268435512 data)
+           (ptr-write-u64 268435472 0 1)
+           (atomic-fetch-add 268435544 1)
+           1)))
+     ;; SecBuffer and SecBufferDesc constructors.  Every field is written
+     ;; explicitly; the four-byte hole before each Win64 pointer is zeroed by
+     ;; the containing allocation's initialization below.
+     '(defun nl_tls_secbuf_set (buf type ptr len)
+        (seq (ptr-write-u32 buf 0 len)
+             (ptr-write-u32 buf 4 type)
+             (ptr-write-u64 buf 8 ptr)
+             0))
+     '(defun nl_tls_secdesc_set (desc buffers count)
+        (seq (ptr-write-u32 desc 0 0)
+             (ptr-write-u32 desc 4 count)
+             (ptr-write-u64 desc 8 buffers)
+             0))
+     '(defun nl_tls_output_reset (desc buffers)
+        (seq (nl_tls_zero buffers 32)
+             (nl_tls_secbuf_set buffers 2 0 0)
+             (nl_tls_secbuf_set (+ buffers 16) 17 0 0)
+             (nl_tls_secdesc_set desc buffers 2)
+             0))
+     '(defun nl_tls_input_reset (ctx desc buffers)
+        (seq (nl_tls_zero buffers 32)
+             (nl_tls_secbuf_set buffers 2
+                                (ptr-read-u64 ctx 48)
+                                (ptr-read-u64 ctx 56))
+             (nl_tls_secbuf_set (+ buffers 16) 0 0 0)
+             (nl_tls_secdesc_set desc buffers 2)
+             0))
+     '(defun nl_tls_record_input_reset (ctx desc buffers)
+        (seq (nl_tls_zero buffers 64)
+             (nl_tls_secbuf_set buffers 1
+                                (ptr-read-u64 ctx 48)
+                                (ptr-read-u64 ctx 56))
+             (nl_tls_secbuf_set (+ buffers 16) 0 0 0)
+             (nl_tls_secbuf_set (+ buffers 32) 0 0 0)
+             (nl_tls_secbuf_set (+ buffers 48) 0 0 0)
+             (nl_tls_secdesc_set desc buffers 4)
+             0))
+     '(defun nl_tls_send_all (sock ptr len sent)
+        (if (= sent len)
+            0
+          (let* ((n (extern-call send sock (+ ptr sent) (- len sent) 0)))
+            (if (= (nl_socket_windows_socket_error_p n) 1)
+                (nl_socket_windows_error)
+              (if (= n 0)
+                  (- 0 10001)
+                (nl_tls_send_all sock ptr len (+ sent n)))))))
+     '(defun nl_tls_send_secbuf (sock buf)
+        (let* ((len (ptr-read-u32 buf 0))
+               (ptr (ptr-read-u64 buf 8)))
+          (if (if (> len 0) (> ptr 0) 0)
+              (nl_tls_send_all sock ptr len 0)
+            0)))
+     ;; Send TOKEN and (when Schannel produced one) ALERT, then release both
+     ;; provider-owned buffers required by ISC_REQ_ALLOCATE_MEMORY.
+     '(defun nl_tls_output_finish (ctx buffers)
+        (let* ((sock (ptr-read-u64 ctx 0))
+               (token_ptr (ptr-read-u64 buffers 8))
+               (alert_ptr (ptr-read-u64 buffers 24))
+               (token_rc (nl_tls_send_secbuf sock buffers))
+               (alert_rc (nl_tls_send_secbuf sock (+ buffers 16))))
+          (seq
+           (if (> token_ptr 0) (extern-call FreeContextBuffer token_ptr) 0)
+           (if (> alert_ptr 0) (extern-call FreeContextBuffer alert_ptr) 0)
+           (if (< token_rc 0) token_rc alert_rc))))
+     '(defun nl_tls_read_more (ctx)
+        (let* ((len (ptr-read-u64 ctx 56))
+               (cap (ptr-read-u64 ctx 64)))
+          (if (>= len cap)
+              (- 0 10002)
+            (let* ((n (extern-call recv (ptr-read-u64 ctx 0)
+                                    (+ (ptr-read-u64 ctx 48) len)
+                                    (- cap len) 0)))
+              (if (= (nl_socket_windows_socket_error_p n) 1)
+                  (nl_socket_windows_error)
+                (if (= n 0)
+                    ;; EOF between records is an empty receive.  EOF with a
+                    ;; partial record buffered is truncation, never success.
+                    (if (= len 0) 1 (- 0 10001))
+                  (seq (ptr-write-u64 ctx 56 (+ len n)) 0)))))))
+     '(defun nl_tls_find_buffer_len (buffers count type i)
+        (if (= i count)
+            0
+          (if (= (ptr-read-u32 (+ buffers (* i 16)) 4) type)
+              (ptr-read-u32 (+ buffers (* i 16)) 0)
+            (nl_tls_find_buffer_len buffers count type (+ i 1)))))
+     '(defun nl_tls_find_buffer_ptr (buffers count type i)
+        (if (= i count)
+            0
+          (if (= (ptr-read-u32 (+ buffers (* i 16)) 4) type)
+              (ptr-read-u64 (+ buffers (* i 16)) 8)
+            (nl_tls_find_buffer_ptr buffers count type (+ i 1)))))
+     ;; EXTRA aliases the original input; compact its suffix only after any
+     ;; DATA output has been copied to the context's plaintext carry buffer.
+     '(defun nl_tls_preserve_extra_n (ctx input_buffers count)
+        (let* ((extra (nl_tls_find_buffer_len input_buffers count 5 0))
+               (oldlen (ptr-read-u64 ctx 56)))
+          (if (> extra 0)
+              (seq (nl_tls_copy (ptr-read-u64 ctx 48)
+                                (+ (ptr-read-u64 ctx 48) (- oldlen extra))
+                                extra)
+                   (ptr-write-u64 ctx 56 extra)
+                   extra)
+            (seq (ptr-write-u64 ctx 56 0) 0))))
+     '(defun nl_tls_preserve_extra (ctx input_buffers)
+        (nl_tls_preserve_extra_n ctx input_buffers 2))
+     ;; The link lives just past the retained state/buffer block.  Only live
+     ;; contexts are traversed, so a stale or arbitrary integer is compared
+     ;; as a value and never dereferenced.
+     '(defun nl_tls_registry_add (ctx)
+        (seq (ptr-write-u64 ctx 131744
+                            (ptr-read-u64 (data-addr nl_tls_registry) 0))
+             (ptr-write-u64 (data-addr nl_tls_registry) 0 ctx)
+             0))
+     '(defun nl_tls_registry_unlink (prev cur wanted)
+        (if (= cur 0)
+            0
+          (let* ((next (ptr-read-u64 cur 131744)))
+            (if (= cur wanted)
+                (seq
+                 (if (= prev 0)
+                     (ptr-write-u64 (data-addr nl_tls_registry) 0 next)
+                   (ptr-write-u64 prev 131744 next))
+                 1)
+              (nl_tls_registry_unlink cur next wanted)))))
+     '(defun nl_tls_registry_remove (ctx)
+        (if (= ctx 0) 0
+          (nl_tls_registry_unlink
+           0 (ptr-read-u64 (data-addr nl_tls_registry) 0) ctx)))
+     ;; Validate provenance before any primitive dereferences CTX.  Traversal
+     ;; dereferences only contexts reached from the live registry; CTX itself
+     ;; is compared as an integer until it is known-live.
+     '(defun nl_tls_require_live (ctx cur)
+        (if (= cur 0)
+            (nl_tls_signal_error (- 0 10005))
+          (if (= cur ctx)
+              0
+            (nl_tls_require_live ctx (ptr-read-u64 cur 131744)))))
+     '(defun nl_tls_cleanup_failed (ctx)
+        (seq
+         (if (= (ptr-read-u64 ctx 72) 1)
+             (extern-call DeleteSecurityContext (+ ctx 24)) 0)
+         (if (= (ptr-read-u64 ctx 80) 1)
+             (extern-call FreeCredentialsHandle (+ ctx 8)) 0)
+         (extern-call VirtualFree ctx 0 32768)
+         0))
+     '(defun nl_tls_fail (ctx status)
+        (seq (nl_tls_cleanup_failed ctx) (nl_tls_signal_error status)))
+     ;; Schannel normally needs no CompleteAuthToken step, but ISC documents
+     ;; both completion statuses.  Normalize them so the loop remains correct
+     ;; if a provider returns either one.
+     '(defun nl_tls_complete_status (ctx status output_desc)
+        (if (if (= status 590611) 1 (= status 590612))
+            (let* ((rc (nl_tls_status_s32
+                        (extern-call CompleteAuthToken (+ ctx 24) output_desc))))
+              (if (< rc 0) rc (if (= status 590612) 590610 0)))
+          (nl_tls_status_s32 status)))
+     '(defun nl_tls_finish_handshake (ctx out)
+        (let* ((info (alloc-bytes 28 4))
+               (rc (nl_tls_status_s32
+                    (extern-call QueryContextAttributesW (+ ctx 24) 90 info))))
+          (if (< rc 0)
+              (nl_tls_fail ctx rc)
+            (let* ((protocol (ptr-read-u32 info 0))
+                   (sizes (alloc-bytes 20 4))
+                   (sizes_rc (nl_tls_status_s32
+                              (extern-call QueryContextAttributesW
+                                           (+ ctx 24) 4 sizes))))
+              ;; System defaults may negotiate TLS 1.2 or 1.3.  Older protocol
+              ;; values are rejected even if local policy were to enable them.
+              (if (< sizes_rc 0)
+                  (nl_tls_fail ctx sizes_rc)
+                (if (if (= protocol 2048) 1 (= protocol 8192))
+                    (seq (ptr-write-u64 ctx 40 protocol)
+                         (ptr-write-u64 ctx 128 (ptr-read-u32 sizes 0))
+                         (ptr-write-u64 ctx 136 (ptr-read-u32 sizes 4))
+                         (ptr-write-u64 ctx 144 (ptr-read-u32 sizes 8))
+                         (nl_tls_registry_add ctx)
+                         (wf_write_int out ctx)
+                         0)
+                  (nl_tls_fail ctx (- 0 10003))))))))
+     '(defun nl_tls_handshake_loop
+          (ctx target input_desc input_buffers output_desc output_buffers attrs out)
+        (let* ((read_rc (if (= (ptr-read-u64 ctx 56) 0)
+                            (nl_tls_read_more ctx) 0)))
+          (if (not (= read_rc 0))
+              (nl_tls_fail ctx (if (> read_rc 0) (- 0 10001) read_rc))
+            (seq
+             (nl_tls_input_reset ctx input_desc input_buffers)
+             (nl_tls_output_reset output_desc output_buffers)
+             (let* ((raw_status
+                     (extern-call InitializeSecurityContextW
+                                  (+ ctx 8) (+ ctx 24) target 49436 0 0
+                                  input_desc 0 (+ ctx 24) output_desc attrs 0))
+                    (status (nl_tls_complete_status
+                             ctx raw_status output_desc))
+                    (send_rc (nl_tls_output_finish ctx output_buffers)))
+               (if (< send_rc 0)
+                   (nl_tls_fail ctx send_rc)
+                 (if (= raw_status 2148074264)
+                     ;; SEC_E_INCOMPLETE_MESSAGE retains the complete input
+                     ;; prefix and appends another socket read.
+                     (let* ((more_rc (nl_tls_read_more ctx)))
+                       (if (not (= more_rc 0))
+                           (nl_tls_fail ctx
+                                        (if (> more_rc 0)
+                                            (- 0 10001) more_rc))
+                         (nl_tls_handshake_loop
+                          ctx target input_desc input_buffers output_desc
+                          output_buffers attrs out)))
+                   (if (< status 0)
+                       (nl_tls_fail ctx status)
+                     (seq
+                      (nl_tls_preserve_extra ctx input_buffers)
+                      (if (= status 0)
+                          (nl_tls_finish_handshake ctx out)
+                        (if (= status 590610)
+                            (nl_tls_handshake_loop
+                             ctx target input_desc input_buffers output_desc
+                             output_buffers attrs out)
+                          (nl_tls_fail ctx status))))))))))))
+     '(defun nl_tls_connect_impl (args out)
+        (let* ((sock (wf_argval args 0))
+               (host_sx (wf_arg_ptr args 1))
+               (host_ptr (nl_bi_strptr host_sx))
+               (host_len (nl_bi_strlen host_sx))
+               ;; 160-byte state, 512-byte persistent target, then independent
+               ;; 64 KiB encrypted-input and plaintext carry buffers.
+               (ctx (if (> host_len 255) 0
+                      (extern-call VirtualAlloc 0 131752 12288 4))))
+          (if (= ctx 0)
+              (nl_tls_signal_error (if (> host_len 255) (- 0 10004) (- 0 12)))
+            (let* ((target (nl_tls_ascii_to_wide_at host_ptr host_len (+ ctx 160)))
+                   (credentials (alloc-bytes 72 8))
+                   (expiry (alloc-bytes 8 8))
+                   (input_desc (alloc-bytes 16 8))
+                   (input_buffers (alloc-bytes 32 8))
+                   (output_desc (alloc-bytes 16 8))
+                   (output_buffers (alloc-bytes 32 8))
+                   (attrs (alloc-bytes 4 4)))
+              (seq
+               (nl_tls_zero ctx 160)
+               (ptr-write-u64 ctx 0 sock)
+               (ptr-write-u64 ctx 48 (+ ctx 672))
+               (ptr-write-u64 ctx 56 0)
+               (ptr-write-u64 ctx 64 65536)
+               (ptr-write-u64 ctx 88 (+ ctx 66208))
+               (ptr-write-u64 ctx 96 0)
+               (ptr-write-u64 ctx 112 target)
+               (nl_tls_zero credentials 72)
+               ;; SCH_CREDENTIALS_VERSION=5; no client cert; automatic server
+               ;; validation remains enabled; strong system-default crypto.
+               (ptr-write-u32 credentials 0 5)
+               (ptr-write-u32 credentials 52 4194320)
+               (let* ((cred_rc
+                       (nl_tls_status_s32
+                        (extern-call AcquireCredentialsHandleW
+                                     0 (nl_tls_package_name) 2 0 credentials
+                                     0 0 (+ ctx 8) expiry))))
+                 (if (< cred_rc 0)
+                     (nl_tls_fail ctx cred_rc)
+                   (seq
+                    (ptr-write-u64 ctx 80 1)
+                    (nl_tls_output_reset output_desc output_buffers)
+                    (let* ((raw_status
+                            (extern-call InitializeSecurityContextW
+                                         (+ ctx 8) 0 target 49436 0 0 0 0
+                                         (+ ctx 24) output_desc attrs 0))
+                           (status (nl_tls_complete_status
+                                    ctx raw_status output_desc))
+                           (send_rc
+                            (seq (if (< (nl_tls_status_s32 raw_status) 0)
+                                     0 (ptr-write-u64 ctx 72 1))
+                                 (nl_tls_output_finish ctx output_buffers))))
+                      (if (< send_rc 0)
+                          (nl_tls_fail ctx send_rc)
+                        (if (< status 0)
+                            (nl_tls_fail ctx status)
+                          (if (= status 0)
+                              (nl_tls_finish_handshake ctx out)
+                            (if (= status 590610)
+                                (nl_tls_handshake_loop
+                                 ctx target input_desc input_buffers output_desc
+                                 output_buffers attrs out)
+                              (nl_tls_fail ctx status))))))))))))))
+     '(defun nl_tls_encrypt_all (ctx src len record desc buffers)
+        (let* ((pos 0)
+               (rc 0)
+               (header (ptr-read-u64 ctx 128))
+               (trailer (ptr-read-u64 ctx 136))
+               (maximum (ptr-read-u64 ctx 144)))
+          (seq
+           (while (if (< pos len) (if (= rc 0) 1 0) 0)
+             (let* ((left (- len pos))
+                    (chunk (if (> left maximum) maximum left)))
+               (seq
+                (nl_tls_copy (+ record header) (+ src pos) chunk)
+                (nl_tls_zero buffers 48)
+                (nl_tls_secbuf_set buffers 7 record header)
+                (nl_tls_secbuf_set (+ buffers 16) 1 (+ record header) chunk)
+                (nl_tls_secbuf_set (+ buffers 32) 6
+                                   (+ record header chunk) trailer)
+                (nl_tls_secdesc_set desc buffers 3)
+                (setq rc (nl_tls_status_s32
+                          (extern-call EncryptMessage (+ ctx 24) 0 desc 0)))
+                (if (not (= rc 0))
+                    0
+                  (seq
+                   (setq rc (nl_tls_send_secbuf (ptr-read-u64 ctx 0) buffers))
+                   (if (< rc 0) 0
+                     (setq rc (nl_tls_send_secbuf
+                               (ptr-read-u64 ctx 0) (+ buffers 16))))
+                   (if (< rc 0) 0
+                     (setq rc (nl_tls_send_secbuf
+                               (ptr-read-u64 ctx 0) (+ buffers 32))))
+                   (if (< rc 0) 0 (setq pos (+ pos chunk))))))))
+           rc)))
+     '(defun nl_tls_send_impl (args out)
+        (let* ((ctx (wf_argval args 0)))
+          (if (not (= (nl_tls_require_live
+                       ctx (ptr-read-u64 (data-addr nl_tls_registry) 0))
+                      0))
+              1
+            (let* ((str_sx (wf_arg_ptr args 1))
+                   (src (nl_bi_strptr str_sx))
+                   (len (nl_bi_strlen str_sx))
+                   (header (ptr-read-u64 ctx 128))
+                   (trailer (ptr-read-u64 ctx 136))
+                   (maximum (ptr-read-u64 ctx 144))
+                   (record (alloc-bytes (+ header maximum trailer) 8))
+                   (desc (alloc-bytes 16 8))
+                   (buffers (alloc-bytes 48 8))
+                   (rc (nl_tls_encrypt_all ctx src len record desc buffers)))
+              (if (not (= rc 0))
+                  (nl_tls_signal_error rc)
+                (seq (wf_write_int out len) 0))))))
+     '(defun nl_tls_plain_deliver (ctx maxbytes out)
+        (let* ((plain (ptr-read-u64 ctx 88))
+               (have (ptr-read-u64 ctx 96))
+               (take (if (> have maxbytes) maxbytes have))
+               (left (- have take)))
+          (seq
+           (nl_alloc_unibyte_str plain take out)
+           (if (> left 0) (nl_tls_copy plain (+ plain take) left) 0)
+           (ptr-write-u64 ctx 96 left)
+           0)))
+     '(defun nl_tls_post_handshake_loop
+          (ctx input_desc input_buffers output_desc output_buffers attrs)
+        (let* ((read_rc (if (= (ptr-read-u64 ctx 56) 0)
+                            (nl_tls_read_more ctx) 0)))
+          (if (not (= read_rc 0))
+              (if (> read_rc 0) (- 0 10001) read_rc)
+            (seq
+             (nl_tls_input_reset ctx input_desc input_buffers)
+             (nl_tls_output_reset output_desc output_buffers)
+             (let* ((raw_status
+                     (extern-call InitializeSecurityContextW
+                                  (+ ctx 8) (+ ctx 24) (ptr-read-u64 ctx 112)
+                                  49436 0 0 input_desc 0 (+ ctx 24)
+                                  output_desc attrs 0))
+                    (status (nl_tls_complete_status ctx raw_status output_desc))
+                    (send_rc (nl_tls_output_finish ctx output_buffers)))
+               (if (< send_rc 0)
+                   send_rc
+                 (if (= raw_status 2148074264)
+                     (let* ((more_rc (nl_tls_read_more ctx)))
+                       (if (not (= more_rc 0))
+                           (if (> more_rc 0) (- 0 10001) more_rc)
+                         (nl_tls_post_handshake_loop
+                          ctx input_desc input_buffers output_desc
+                          output_buffers attrs)))
+                   (if (< status 0)
+                       status
+                     (seq
+                      (nl_tls_preserve_extra ctx input_buffers)
+                      (if (= status 0)
+                          0
+                        (if (= status 590610)
+                            (nl_tls_post_handshake_loop
+                             ctx input_desc input_buffers output_desc
+                             output_buffers attrs)
+                          status)))))))))))
+     '(defun nl_tls_decrypt_loop (ctx maxbytes out)
+        (let* ((read_rc (if (= (ptr-read-u64 ctx 56) 0)
+                            (nl_tls_read_more ctx) 0)))
+          (if (> read_rc 0)
+              (seq (ptr-write-u64 ctx 152 1)
+                   (nl_alloc_unibyte_str (ptr-read-u64 ctx 88) 0 out)
+                   0)
+              (if (< read_rc 0)
+                  (nl_tls_signal_error read_rc)
+                (let* ((desc (alloc-bytes 16 8))
+                       (buffers (alloc-bytes 64 8))
+                       (qop (alloc-bytes 4 4)))
+                  (seq
+                   (nl_tls_record_input_reset ctx desc buffers)
+                   (let* ((raw_status
+                       (extern-call DecryptMessage (+ ctx 24) desc 0 qop))
+                      (status (nl_tls_status_s32 raw_status)))
+                 (if (= raw_status 2148074264)
+                     (let* ((more_rc (nl_tls_read_more ctx)))
+                       (if (not (= more_rc 0))
+                           (nl_tls_signal_error
+                            (if (> more_rc 0) (- 0 10001) more_rc))
+                         (nl_tls_decrypt_loop ctx maxbytes out)))
+                   (if (= status 0)
+                       (let* ((data_len
+                               (nl_tls_find_buffer_len buffers 4 1 0))
+                              (data_ptr
+                               (nl_tls_find_buffer_ptr buffers 4 1 0))
+                              (extra_len
+                               (nl_tls_find_buffer_len buffers 4 5 0)))
+                         (seq
+                          ;; Diagnostic counters are context-local too: probe
+                          ;; code can prove that a large response crossed real
+                          ;; records and exercised EXTRA, without global state.
+                          (ptr-write-u32 ctx 104 (+ (ptr-read-u32 ctx 104) 1))
+                          (if (> extra_len 0)
+                              (ptr-write-u32 ctx 108
+                                             (+ (ptr-read-u32 ctx 108) 1)) 0)
+                          (if (> data_len 0)
+                              (nl_tls_copy (ptr-read-u64 ctx 88)
+                                           data_ptr data_len) 0)
+                          (ptr-write-u64 ctx 96 data_len)
+                          (nl_tls_preserve_extra_n ctx buffers 4)
+                          (if (> data_len 0)
+                              (nl_tls_plain_deliver ctx maxbytes out)
+                            (nl_tls_decrypt_loop ctx maxbytes out))))
+                     (if (= status 590625)
+                         (let* ((input_desc (alloc-bytes 16 8))
+                                (input_buffers (alloc-bytes 32 8))
+                                (output_desc (alloc-bytes 16 8))
+                                (output_buffers (alloc-bytes 32 8))
+                                (attrs (alloc-bytes 4 4))
+                                (saved
+                                 (seq
+                                  (ptr-write-u64 ctx 120
+                                                 (+ (ptr-read-u64 ctx 120) 1))
+                                  (nl_tls_preserve_extra_n ctx buffers 4)))
+                                (reneg_rc
+                                 (nl_tls_post_handshake_loop
+                                  ctx input_desc input_buffers output_desc
+                                  output_buffers attrs)))
+                           (if (not (= reneg_rc 0))
+                               (nl_tls_signal_error reneg_rc)
+                             (nl_tls_decrypt_loop ctx maxbytes out)))
+                       (if (= status 590615)
+                           (seq (ptr-write-u64 ctx 56 0)
+                                (ptr-write-u64 ctx 152 1)
+                                (nl_alloc_unibyte_str
+                                 (ptr-read-u64 ctx 88) 0 out)
+                                0)
+                         (nl_tls_signal_error status))))))))))))
+     '(defun nl_tls_recv_impl (args out)
+        (let* ((ctx (wf_argval args 0)))
+          (if (not (= (nl_tls_require_live
+                       ctx (ptr-read-u64 (data-addr nl_tls_registry) 0))
+                      0))
+              1
+            (let* ((maxbytes (wf_argval args 1)))
+              (if (= maxbytes 0)
+                  (seq (nl_alloc_unibyte_str (ptr-read-u64 ctx 88) 0 out) 0)
+                (if (> (ptr-read-u64 ctx 96) 0)
+                    (nl_tls_plain_deliver ctx maxbytes out)
+                  (if (= (ptr-read-u64 ctx 152) 1)
+                      (seq
+                       (nl_alloc_unibyte_str (ptr-read-u64 ctx 88) 0 out) 0)
+                    (nl_tls_decrypt_loop ctx maxbytes out))))))))
+     '(defun nl_tls_close_impl (args out)
+        (let* ((ctx (wf_argval args 0)))
+          (if (not (= (nl_tls_require_live
+                       ctx (ptr-read-u64 (data-addr nl_tls_registry) 0))
+                      0))
+              1
+            (let* ((removed (nl_tls_registry_remove ctx))
+                   (shutdown (alloc-bytes 4 4))
+                   (desc (alloc-bytes 16 8))
+                   (buffers (alloc-bytes 32 8))
+                   (attrs (alloc-bytes 4 4)))
+              (seq
+               ;; SCHANNEL_SHUTDOWN is a DWORD token in a TOKEN SecBuffer.
+               (ptr-write-u32 shutdown 0 1)
+               (nl_tls_zero buffers 32)
+               (nl_tls_secbuf_set buffers 2 shutdown 4)
+               (nl_tls_secdesc_set desc buffers 1)
+               ;; Shutdown is best-effort once the context is known-live.  A
+               ;; peer close_notify or TCP EOF may make the final token send
+               ;; fail, but local ownership must still be released and close
+               ;; must succeed.  The socket remains caller-owned throughout.
+               (extern-call ApplyControlToken (+ ctx 24) desc)
+               (nl_tls_output_reset desc buffers)
+               (extern-call InitializeSecurityContextW
+                            (+ ctx 8) (+ ctx 24) (ptr-read-u64 ctx 112)
+                            49436 0 0 0 0 (+ ctx 24) desc attrs 0)
+               (nl_tls_output_finish ctx buffers)
+               (if (= (ptr-read-u64 ctx 72) 1)
+                   (extern-call DeleteSecurityContext (+ ctx 24)) 0)
+               (if (= (ptr-read-u64 ctx 80) 1)
+                   (extern-call FreeCredentialsHandle (+ ctx 8)) 0)
+               (extern-call VirtualFree ctx 0 32768)
+               (wf_write_nil out)
+               0)))))
+     '(defun nl_tls_protocol_impl (args out)
+        (let* ((ctx (wf_argval args 0)))
+          (if (not (= (nl_tls_require_live
+                       ctx (ptr-read-u64 (data-addr nl_tls_registry) 0))
+                      0))
+              1
+            (let* ((protocol (ptr-read-u64 ctx 40))
+                   (buf (alloc-bytes 6 1)))
+              (seq
+               (ptr-write-u8 buf 0 84) (ptr-write-u8 buf 1 76)
+               (ptr-write-u8 buf 2 83) (ptr-write-u8 buf 3 49)
+               (ptr-write-u8 buf 4 46)
+               (ptr-write-u8 buf 5 (if (= protocol 8192) 51 50))
+               (nl_alloc_str buf 6 out)
+               0))))))))
+
+(defun nelisp-standalone--tls-dispatch-arms ()
+  "Return the five TLS arms, all live on Win64."
+  (when (eq nelisp-standalone--target 'windows-x86_64)
+    (list
+     (cons '(:lit "nelisp-tls-connect") '(nl_tls_connect_impl args out))
+     (cons '(:lit "nelisp-tls-send") '(nl_tls_send_impl args out))
+     (cons '(:lit "nelisp-tls-recv") '(nl_tls_recv_impl args out))
+     (cons '(:lit "nelisp-tls-close") '(nl_tls_close_impl args out))
+     (cons '(:lit "nelisp-tls-protocol")
+           '(nl_tls_protocol_impl args out)))))
+
+(defun nelisp-standalone--tls-builtin-names ()
+  "Return target-visible TLS names; Schannel is windows-x86_64-only."
+  (when (eq nelisp-standalone--target 'windows-x86_64)
+    '("nelisp-tls-connect" "nelisp-tls-send" "nelisp-tls-recv"
+      "nelisp-tls-close" "nelisp-tls-protocol")))
 
 ;; ===================================================================
 ;; Doc 199 Tier 2 -- interpreter-callable Shape-B clone(2) workers.
@@ -20177,6 +21603,7 @@ target the same installed names signal catchable
    (nelisp-standalone--reader-os-base-forms)
    (nelisp-standalone--target-os-code-forms)
    (nelisp-standalone--socket-forms)
+   (nelisp-standalone--tls-forms)
    (nelisp-standalone--thread-forms)))
 
 (defun nelisp-standalone--reader-os-base-forms ()
@@ -20365,7 +21792,47 @@ target the same installed names signal catchable
               (nl_alloc_check_env_probe block off eqpos end)
               (nl_win_environ_walk block (+ end 1) rest)
               (nelisp_cons_construct pair rest result-slot)))))
-       (defun nl_os_getcwd (out) (wf_write_nil out))
+       ;; `default-directory' on windows-nt.  This was a `wf_write_nil'
+       ;; stub, so the symbol was bound to nil and `(expand-file-name "a")'
+       ;; answered "/a" -- a relative name resolved to the filesystem root.
+       ;; That is the identical failure the POSIX body's own comment records
+       ;; from before getcwd(2) was wired there, and the macos-aarch64 arm
+       ;; from before F_GETPATH was; windows was the last target still
+       ;; carrying it.  Found while writing Doc 201 §4 item 1's gate: the
+       ;; first probe of `(expand-file-name "target/tmp/...")' on this
+       ;; target came back "/target/tmp/...".
+       ;;
+       ;; `GetCurrentDirectoryW(len, buf)' answers the length in WCHARs
+       ;; written, NOT counting the NUL; when the buffer is too small it
+       ;; answers the REQUIRED length INCLUDING the NUL (so a result >= len
+       ;; means "did not fit"), and 0 on failure.  It returns backslashes
+       ;; and no trailing separator ("C:\dir"), so this converts to the
+       ;; forward slashes every other path in this runtime uses and appends
+       ;; the trailing slash Emacs keeps -- the same two rules the POSIX and
+       ;; macOS bodies apply.
+       (defun nl_os_getcwd (out)
+         (let* ((wbuf (alloc-bytes 2048 2))
+                (n (extern-call GetCurrentDirectoryW 1024 wbuf)))
+           (if (or (= n 0) (> n 1023))
+               (wf_write_nil out)
+             (let* ((cbuf (nl_win_wcs_utf8_dup wbuf))
+                    (len 0))
+               (seq
+                (while (> (ptr-read-u8 cbuf len) 0)
+                  (seq
+                   (if (= (ptr-read-u8 cbuf len) 92)
+                       (ptr-write-u8 cbuf len 47)
+                     0)
+                   (setq len (+ len 1))))
+                ;; `nl_win_wcs_utf8_dup' sizes the buffer to include the
+                ;; NUL, so index LEN is in bounds and is where the trailing
+                ;; slash goes.  A root path already ends in one.
+                (if (= len 0)
+                    (wf_write_nil out)
+                  (if (= (ptr-read-u8 cbuf (- len 1)) 47)
+                      (nl_alloc_str cbuf len out)
+                    (seq (ptr-write-u8 cbuf len 47)
+                         (nl_alloc_str cbuf (+ len 1) out)))))))))
        (defun nl_os_environ_init (_sp result-slot)
          (let* ((block (extern-call GetEnvironmentStringsW)))
            (seq
@@ -21746,6 +23213,13 @@ correctly."
         ;; runtime-image commands) and sidesteps the deep-nesting bug entirely.
         (nl_argv_list_from argc sp0 1 argv_list)
         (nl_env_set_value ctx argv_sym argv_list)
+        ;; Doc 138 socket slice 1: the Windows implementation requires one
+        ;; successful WSAStartup before any other WS2_32 call.  This splice is
+        ;; emitted only for windows-x86_64 and runs exactly once at process
+        ;; startup, at the same shallow depth as `nl_os_environ_init'.
+        ,@(if (eq nelisp-standalone--target 'windows-x86_64)
+              '((nl_socket_init))
+            nil)
         ;; fix/windows-env-inherit: `nl_os_environ_init' is the real
         ;; GetEnvironmentStringsW-backed populator on Windows and a
         ;; `wf_write_nil' no-op (POSIX unchanged) everywhere else -- same
@@ -23701,31 +25175,44 @@ loader when it is absent."
                  (nelisp-standalone--reader-src) code expected)
         (kill-emacs 1)))))
 
+(defun nelisp-standalone--run-focused-reader-test (label smoke)
+  "Build the native reader and run focused SMOKE, reported under LABEL.
+
+Focused entry points must use the exact path returned by the build.  On
+Windows, passing the extensionless Linux output path to `call-process' can
+resolve the sibling `.exe' instead, which made a cross-target build test a
+stale binary.  The full `nelisp-standalone-reader-test' already has both this
+binding and the runnable-host guard; keep focused gates under the same
+contract."
+  (if (not (nelisp-standalone--target-runnable-on-host-p))
+      (progn
+        (message "GATE-SKIP target %S cannot run on host %S"
+                 nelisp-standalone--target system-configuration)
+        (message "[standalone-reader] SKIP: target %S cannot run on host %S"
+                 nelisp-standalone--target system-configuration)
+        (kill-emacs 0))
+    (let ((out (nelisp-standalone-build-reader)))
+      (let ((nelisp-standalone--reader-out out))
+        (condition-case err
+            (progn
+              (funcall smoke)
+              (kill-emacs 0))
+          (error
+           (message "[standalone-reader] FAIL: %s smoke: %s"
+                    label (error-message-string err))
+           (kill-emacs 1)))))))
+
 ;;;###autoload
 (defun nelisp-standalone-reader-repl-test ()
   "Build the reader binary and run only the REPL smoke.  Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-repl-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: repl smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "repl" #'nelisp-standalone--reader-repl-smoke))
 
 ;;;###autoload
 (defun nelisp-standalone-reader-malformed-input-test ()
   "Build the reader binary and run only the malformed-input smoke.  Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-malformed-input-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: malformed-input smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "malformed-input" #'nelisp-standalone--reader-malformed-input-smoke))
 
 (defun nelisp-standalone--reader-doc200-mutation-smoke ()
   "Assert Doc 200 mutation, printing, presence, and reader literals."
@@ -25048,18 +26535,29 @@ not exist must fail (exit 1), not silently produce a usable image."
       (error "no-args repl exit=%S stdout=%S" no-args-rc no-args-out))
     (unwind-protect
         (progn
-          (with-temp-file near-end-file
-            (insert "(setq near-end-ok 42)\n"))
+          ;; The assertion below is byte-counted.  Native Windows Emacs writes
+          ;; the buffer's newline as CRLF unless the fixture pins Unix coding,
+          ;; turning the intended 22-byte file into a correct 23-byte read.
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file near-end-file
+              (insert "(setq near-end-ok 42)\n")))
           (with-temp-buffer
-            ;; Doc 140 Stage 8 (linux): the chunk-0 bump cursor is at the
-            ;; runtime mmap base + 0; runtime-parsed test code reaches it via
-            ;; `(car (nelisp--arena-stats))' rather than a fixed immediate.
-            (if (eq nelisp-standalone--target 'linux-x86_64)
-                (insert (format "(ptr-write-u64 (car (nelisp--arena-stats)) 0 %d)\n"
-                                near-end-bump))
-              (insert (format "(ptr-write-u64 %d 0 %d)\n"
-                              (nelisp-standalone--target-arena-metadata-address 0)
-                              near-end-bump)))
+            ;; Doc 140 Stage 8: the chunk-0 bump cursor.  `(car
+            ;; (nelisp--arena-stats))' asks the runtime where it is, on
+            ;; every target.
+            ;;
+            ;; This used to ask that way only on linux-x86_64 and write a
+            ;; COMPILE-TIME IMMEDIATE, `arena_base + 0', everywhere else --
+            ;; an address that stopped being the cursor when Doc 140 made
+            ;; the arena multi-chunk and moved chunk 0's cursor behind the
+            ;; metadata block.  So on every other target this probe stamped
+            ;; `near-end-bump' over an unrelated metadata word and killed
+            ;; the reader, and `standalone-reader-repl-smoke' reported
+            ;; `repl near-end rdf exit=5 stdout=""' as though the REPL were
+            ;; broken.  Asking the runtime cannot go stale the same way,
+            ;; and there is no longer a second answer to keep in step.
+            (insert (format "(ptr-write-u64 (car (nelisp--arena-stats)) 0 %d)\n"
+                            near-end-bump))
             (insert (format "(if (= (length (rdf %S)) 22) (nelisp--write-stdout-bytes \"near-end-ok\\n\") (nelisp--write-stdout-bytes \"near-end-bad\\n\"))\n"
                             near-end-file))
             (insert "(exit)\n")
@@ -25310,15 +26808,8 @@ the one line just read, not a running session count)."
 ;;;###autoload
 (defun nelisp-standalone-reader-form-location-test ()
   "Build the reader binary and run only the form-location smoke.  Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-form-location-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: form-location smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "form-location" #'nelisp-standalone--reader-form-location-smoke))
 
 (defun nelisp-standalone--reader-stage3-rootstack-smoke ()
   "Doc 152 Stage 3: collect/poison and non-local-exit proof for rooted GAPs.
@@ -25486,15 +26977,9 @@ matching push's own 1/0 return): DEPTH=1024."
 (defun nelisp-standalone-reader-frame-stack-pop-desync-test ()
   "Build the reader binary and run only the frame-stack pop-desync smoke.
 Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-frame-stack-pop-desync-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: frame-stack pop-desync smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "frame-stack pop-desync"
+   #'nelisp-standalone--reader-frame-stack-pop-desync-smoke))
 
 (defun nelisp-standalone--reader-bounded-backtrace-smoke ()
   "Doc 180 Phase 2 item 3: against-the-bug proof for the bounded backtrace.
@@ -25577,15 +27062,8 @@ pair, not just a positive assertion."
 (defun nelisp-standalone-reader-bounded-backtrace-test ()
   "Build the reader binary and run only the bounded-backtrace smoke.
 Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-bounded-backtrace-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: bounded-backtrace smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "bounded-backtrace" #'nelisp-standalone--reader-bounded-backtrace-smoke))
 
 (defun nelisp-standalone--reader-socket-smoke ()
   "Against-the-bug proof for the socket primitives (Doc 184 follow-on) AND
@@ -25689,15 +27167,8 @@ nelisp-unsupported-primitive, stdout=%S" out))
 ;;;###autoload
 (defun nelisp-standalone-reader-socket-test ()
   "Build the reader binary and run only the socket smoke.  Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-socket-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: socket smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "socket" #'nelisp-standalone--reader-socket-smoke))
 
 (defun nelisp-standalone--reader-ipv6-socket-smoke ()
   "Against-the-bug proof for the Doc 194 IPv6 phase (P7), exercised in ONE
@@ -25957,15 +27428,8 @@ stdout=%S" out))
 (defun nelisp-standalone-reader-ipv6-socket-test ()
   "Build the reader binary and run only the Doc 194 IPv6 phase (P7)
 smoke.  Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (condition-case err
-      (progn
-        (nelisp-standalone--reader-ipv6-socket-smoke)
-        (kill-emacs 0))
-    (error
-     (message "[standalone-reader] FAIL: ipv6 socket smoke: %s"
-              (error-message-string err))
-     (kill-emacs 1))))
+  (nelisp-standalone--run-focused-reader-test
+   "ipv6 socket" #'nelisp-standalone--reader-ipv6-socket-smoke))
 
 (defconst nelisp-standalone--prelude-file
   (expand-file-name "scripts/nelisp-stdlib-prelude.el"

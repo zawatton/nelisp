@@ -1,11 +1,22 @@
 # Known-defect injections (tools/nelisp-gate-mutation.sh).
 #
-# Each row is: GATE | FILE | SED-EXPRESSION | WHAT IT BREAKS
+# Each row is: GATE | FILE | SED-EXPRESSION | WHAT IT BREAKS [| TARGET]
 #
 # The row is applied with `sed -i', the gate is run, and the file is
 # restored.  The gate MUST fail.  A gate that stays green with a real defect
 # in front of it is not a gate, and on 2026-08-19 three of them were in
 # exactly that state while printing PASS.
+#
+# TARGET is optional and is one exact standalone target name (for example
+# `linux-x86_64').  With no fifth field the row applies to every target, which
+# preserves every row written before target scoping existed.  An out-of-scope
+# row is SKIPPED before its file is touched: it did not test its gate and is
+# therefore neither a pass nor a failure.  The harness reports passed, failed,
+# and skipped separately; counting a skipped row as checked would recreate the
+# same "green while seeing nothing" failure this table exists to prevent.
+# Malformed scopes and any field count other than four or five are errors, so
+# a typo cannot quietly widen or narrow a row.  As before, `|' cannot appear
+# inside SED-EXPRESSION or WHAT because it is the field separator.
 #
 # Keep the injections small and obviously wrong.  A subtle one that a gate
 # legitimately does not cover teaches nothing except to delete the row.
@@ -167,7 +178,7 @@ gate-selfcheck|tools/nelisp-bootstrap-contract.el|s/^    (princ (format "GATE-CO
 # rebuilt clean immediately afterwards.  The mutation harness rebuild list
 # above includes this conditional-prerequisite standalone gate, so the row
 # cannot accidentally exercise a stale clean target/nelisp.
-nelisp-thread-mirror-guard-standalone-smoke|lisp/nelisp-cc-rootstack.el|s/(nl_thread_registry_find mirror-ptr)/(nl_thread_registry_find 0)/|worker registry lookup uses a non-worker key, so mirror/intern writes are admitted instead of raising the named condition
+nelisp-thread-mirror-guard-standalone-smoke|lisp/nelisp-cc-rootstack.el|s/(nl_thread_registry_find mirror-ptr)/(nl_thread_registry_find 0)/|worker registry lookup uses a non-worker key, so mirror/intern writes are admitted instead of raising the named condition|linux-x86_64
 #
 # 2026-08-23 (Doc 188 P1, buffer unification): standalone-reader-buffer-
 # smoke is new this session.  Confirmed by hand before this row was
@@ -305,7 +316,7 @@ nl-num-standalone-smoke|packages/nl-num/src/nl-num-rational.el|s/(+ (nl-num--rea
 # distinct result slots remain zero and the interpreter-driven reduction is 0
 # instead of 42.  This isolates a missing/torn result publication from a lost
 # completion increment (which would correctly keep the join waiting).
-nelisp-thread-standalone-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 result 0 sum)/(ptr-write-u64 result 0 0)/|a GC-free worker signals completion without publishing its partial sum, so join returns but the interpreter observes 0 instead of 42
+nelisp-thread-standalone-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 result 0 sum)/(ptr-write-u64 result 0 0)/|a GC-free worker signals completion without publishing its partial sum, so join returns but the interpreter observes 0 instead of 42|linux-x86_64
 # nelisp-thread-allocating-standalone-smoke: Doc 199's bounded-section active
 # publication.  Parked collection and both reclaim guards key off this bit;
 # forcing the unique begin store to zero makes the existing section-exit
@@ -330,7 +341,7 @@ nelisp-thread-standalone-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u
 # last-parked=3 assertion fail.  This is intentionally an observer-boundary
 # mutation: the native park path still executes, so no stale-binary rebuild can
 # accidentally turn an unreachable mutation into a false green result.
-nelisp-thread-percpu-roots-smoke|tools/nelisp-thread-percpu-roots-smoke.el|s/(nth 18 (nelisp--debug-switch 0))/0/|the reached post-mark/sweep diagnostic reports zero parked workers, so the mandatory last-parked=3 assertion fails
+nelisp-thread-percpu-roots-smoke|tools/nelisp-thread-percpu-roots-smoke.el|s/(nth 18 (nelisp--debug-switch 0))/0/|the reached post-mark/sweep diagnostic reports zero parked workers, so the mandatory last-parked=3 assertion fails|linux-x86_64
 # A second percpu row bypassing nl_thread_park_request_begin was tried and
 # REMOVED: it reproduces 10/10 locally but CI round 25 reported it as
 # 'STAYED GREEN with a real defect in front of it', i.e. the defect it injects
@@ -368,7 +379,7 @@ standalone-reader-bounded-backtrace-smoke|scripts/nelisp-standalone-build.el|s/(
 # production default boot state.  The mutation harness rebuilds the injected
 # and restored binaries because this row changes generated native code, not
 # the host-side checker.
-standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_empty_chunk_reclaim_p () 1)/(defun nl_os_empty_chunk_reclaim_p () 0)/|Linux sweep stops releasing proven-empty growth chunks, restoring linear default-loop RSS growth
+standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_empty_chunk_reclaim_p () 1)/(defun nl_os_empty_chunk_reclaim_p () 0)/|Linux sweep stops releasing proven-empty growth chunks, restoring linear default-loop RSS growth|linux-x86_64
 # precise-root-coverage: the row this gate was built around.  Deleting the
 # executing form's own root arm is the defect shape any change to the recorded
 # root set risks, and in the SHIPPED configuration it is invisible: measured
@@ -417,7 +428,7 @@ precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_
 # same target, new surrounding text; re-verified RED-with-injection
 # (accept4 fails every connection with EINVAL) / GREEN-with-injection-
 # reverted before updating.
-standalone-reader-socket-smoke|scripts/nelisp-standalone-build.el|s/(cfd (syscall-direct 288 (wf_argval args 0) 0 0 flags 0 0)))/(cfd (syscall-direct 289 (wf_argval args 0) 0 0 flags 0 0)))/|accept4 issues the wrong raw syscall number, so nelisp-socket-accept fails on every connection instead of returning the queued one
+standalone-reader-socket-smoke|scripts/nelisp-standalone-build.el|s/(cfd (syscall-direct 288 (wf_argval args 0) 0 0 flags 0 0)))/(cfd (syscall-direct 289 (wf_argval args 0) 0 0 flags 0 0)))/|accept4 issues the wrong raw syscall number, so nelisp-socket-accept fails on every connection instead of returning the queued one|linux-x86_64
 # Doc 194 P0 (feat/network-process-p0): manually verified RED-with-
 # injection / GREEN-with-injection-reverted before adding -- the
 # synchronous client's initial status flips from `open' to `closed' at
@@ -454,7 +465,20 @@ standalone-reader-dns-smoke|packages/nelisp-process-adapter/src/nelisp-process-a
 # measured RED at `connect-ok=(t t nil t 0) connect-refused=(t t nil t
 # t)' (the two `nil's are the `ready' checks, both wrongly false), GREEN
 # again with `7' restored.
-standalone-reader-nonblocking-socket-smoke|scripts/nelisp-standalone-build.el|s/(let\* ((rc (syscall-direct 7 pfd 1 timeout 0 0 0))/(let* ((rc (syscall-direct 230 pfd 1 timeout 0 0 0))/|nelisp-socket-poll issues clock_nanosleep(230) instead of poll(7), so it silently always answers not-ready regardless of true socket readiness
+standalone-reader-nonblocking-socket-smoke|scripts/nelisp-standalone-build.el|s/(let\* ((rc (syscall-direct 7 pfd 1 timeout 0 0 0))/(let* ((rc (syscall-direct 230 pfd 1 timeout 0 0 0))/|nelisp-socket-poll issues clock_nanosleep(230) instead of poll(7), so it silently always answers not-ready regardless of true socket readiness|linux-x86_64
+# feat/windows-socket-arm: Windows-only refusal-bound proof from the gate's
+# Makefile comment.  `events' 0 makes WSAPoll wait out its full timeout.
+# Clean: PASS, elapsed2=2.040.  Injected: FAIL, elapsed2=5.009, beyond the
+# relaxed 3.0s refusal bound.  Restored: PASS again.
+standalone-reader-nonblocking-socket-smoke|scripts/nelisp-standalone-build.el|s/(events (if (= want_write 1) 16 768))/(events 0)/|the Windows WSAPoll arm requests no events, so refusal readiness waits the full 5s timeout and violates the deliberately relaxed 3s bound|windows-x86_64
+# Schannel slice 3: structural carry-over defect.  The first live Cloudflare
+# read enters SEC_I_RENEGOTIATE; throwing away its SECBUFFER_EXTRA suffix
+# removes the following application record, so the gate cannot observe HTTP.
+# This row rebuilds because the injected helper is baked into nelisp.exe.
+# Proved 2026-09-03 on windows-x86_64: the restricted harness printed "went
+# red as it should" for this row, restored/rebuilt, then reported
+# `checked=1 findings=0 passed=1 failed=0 skipped=0`.
+standalone-reader-tls-smoke|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 ctx 56 extra)/(ptr-write-u64 ctx 56 0)/|Schannel discards every SECBUFFER_EXTRA encrypted suffix instead of carrying it into the next decrypt, so the live HTTPS response loses the HTTP record|windows-x86_64
 # Doc 194 P4 (feat/network-process-p345): manually verified RED-with-
 # injection / GREEN-with-injection-reverted before adding -- the async
 # connect-completion status machine's own success/failure branch is
@@ -465,6 +489,16 @@ standalone-reader-nonblocking-socket-smoke|scripts/nelisp-standalone-build.el|s/
 # measured RED at `mixed=(failed ("failed with code 0\n") nil
 # ("finished\n"))' (the "ok" case's own network status, expected `open').
 standalone-reader-network-process-nowait-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(if (= err 0)/(if (= err 999)/|a successful nonblocking connect (real SO_ERROR 0) is misclassified as failed, firing "failed with code 0\n" instead of transitioning to open
+# windows-x86_64 async-process fixture bound: suppress the shared-loop pump
+# entirely, so the child can start and write but its output can never reach
+# the filter.  The first fixture-dependent accept-process-output must exhaust
+# its relaxed 3.0s bound and the gate must fail with filter=nil; this proves
+# that the bound still bites instead of masking a genuine delivery hang.
+# Measured 2026-09-02 on windows-x86_64: the restricted harness reported
+# "went red as it should" for this row (checked=1, failed=0); after its trap
+# restored the file, the clean gate passed with filter=("first-" "second")
+# and the live-child sentinel "terminated\n".
+standalone-reader-process-adapter-smoke|packages/nelisp-process-adapter/src/nelisp-process-adapter.el|s/(when (nelisp-process-adapter--drain-and-fire p)/(when (and nil (nelisp-process-adapter--drain-and-fire p))/|the shared process pump never fires, so fixture output cannot be delivered and the relaxed Windows wait must expire red|windows-x86_64
 # Doc 194 P5 (feat/network-process-p345): manually verified RED-with-
 # injection / GREEN-with-injection-reverted before adding -- an accepted
 # child's `:filter' is dropped (set to nil) instead of copied from the
@@ -506,3 +540,167 @@ version-consistency|release/stage-d-v3.0/install-v3.sh|s/RELEASE_VERSION:-v[0-9]
 # v1.0.1, so CI shipped v0.6.0-labelled tarballs for a v1.0.1 release and
 # nothing complained.  Found on 2026-08-26 by the macOS lane, not by CI.
 version-consistency|release/stage-d-v3.0/install-v3.ps1|s/\[string\]\$Version = "v[0-9][0-9.]*"/[string]$Version = "v0.0.0"/|windows installer default left behind at a stale release version
+# Doc 201 §5.2/§4 item 1 (cold-start hand-off, 2026-08-30): the
+# literal-separator fast path `nlre-split-string' added over the old
+# always-regexp-engine `split-string' behavior.  Disabling the fast-path
+# guard forces every split-string call back through `nlre-string-match',
+# which was measured at 3.2-3.4s for a single real PATH split vs 0.4s
+# fast-path -- the new `standalone-reader-splitstring-perf-smoke' gate
+# exists to catch exactly this regression.  Verified BY HAND (inject via
+# Edit, `make standalone-reader`, run the gate, restore, rebuild, run the
+# gate again): RED at elapsed=2.707s pass=nil with this injection, GREEN
+# at elapsed=0.369s pass=t restored.  NOT yet proven through `make
+# gate-mutation-verify GATE=standalone-reader-splitstring-perf-smoke'
+# itself -- that run did not respect NELISP_GATE_MUTATION_ONLY and swept
+# unrelated rows (one, standalone-midform-gc-bounded, was killed mid-row
+# and left its own injection in scripts/nelisp-standalone-build.el,
+# restored via `git checkout`), taking 20+ minutes before being aborted.
+# Root cause not diagnosed; re-run `gate-mutation-verify` on this row
+# before trusting it as the row's own proof.
+# RE-POINTED 2026-08-30 (Doc 201 §6.6 item 4).  The row used to disable the
+# literal-separator fast path alone, and that stopped being lethal -- the
+# harness reported "STAYED GREEN with a real defect in front of it" on the
+# first run after Doc 201 §6.5 landed.  Not a weak gate: the improvement
+# working, which is failure mode 2 in this file's header.  §6.5 gave
+# `nlre-string-match' a leading-character filter, and a literal separator is
+# exactly the shape that filter helps most, so the regexp path this row
+# forces `split-string' down is no longer slow enough to breach the gate's
+# bound.  Measured on the gate's own 60-entry synthetic PATH,
+# windows-x86_64:
+#
+#   as-is                                  0.375s
+#   literal fast path off (the old row)    0.736s   <- under the 1.0s bound
+#   both off (this row)                    3.525s
+#
+# A self-baselined ratio bound was measured as an alternative and rejected:
+# split-string against `nelisp--split-on-char' on the same input in the same
+# process gives 2.72-2.80 as-is and 4.21-4.58 with the old injection, a
+# separation of only ~1.55x -- failure mode 3 territory, not worth pinning a
+# CI gate to.
+#
+# So the row now removes BOTH of the defences that keep a literal separator
+# off the backtracking scan.  The claim it proves is weaker than the old
+# one by exactly that much, and is stated rather than implied: the gate
+# catches the loss of literal-separator splitting, but no longer the loss of
+# either single defence on its own.  The lead filter has its own gate and
+# its own two rows (standalone-reader-regexp-lead-filter-smoke).
+#
+# Evidence, windows-x86_64, 2026-08-30, through the real harness with the
+# target pinned: `NELISP_STANDALONE_TARGET=windows-x86_64
+# NELISP_GATE_MUTATION_ONLY=standalone-reader-splitstring-perf-smoke
+# tools/nelisp-gate-mutation.sh' -> "PASS (1 gates caught their injected
+# defect)".
+#
+# REPAIRED 2026-09-03 (failure mode 3).  The absolute 1.0s verdict disagreed
+# across hosts.  WSL Emacs 30.1 measured 0.043-0.045s clean and 0.596-0.653s
+# with this injection: ~14x slower, but still 0.347-0.404s inside the bound,
+# so the gate stayed green.  The smoke now prints elapsed time only as a
+# diagnostic and structurally requires `nlre--string-match-calls' to remain
+# zero.  This injection is therefore proved by entering the regexp engine,
+# independent of how quickly that host executes it.
+standalone-reader-splitstring-perf-smoke|lisp/nelisp-stdlib-regexp.el|s/(if (and separators/(if (and nil separators/; s/^(defun nlre--leading-lit-char (nodes)$/(defun nlre--leading-lit-char (nodes) (setq nodes nil)/|disables BOTH literal-separator defences (the split fast path and the leading-character filter), forcing every split-string call through the full backtracking scan
+# Doc 201 §4 item 1.  `standalone-reader-winpath-smoke' polices the three
+# windows-native path defects Doc 201 §1/§2 and its §4 follow-up fixed:
+# `path-separator' vs `system-type', `file-exists-p' answering yes/no at all,
+# and `expand-file-name' keeping a drive designator instead of anchoring it
+# onto "/".  The injection puts a bogus component into every expanded name,
+# which is structural (the constant is wrong; nothing depends on timing or
+# on which platform runs it) and lethal on Linux and Windows alike -- the
+# gate's `exp-ok' and `find-ok' assertions both fail.
+#
+# Evidence, windows-x86_64, 2026-08-30.  RED with the injection:
+#   [winpath-smoke] FAIL: sep=";" abs-ok=t exp-ok=nil yes-ok=t no-ok=t
+#     found=nil pass=nil
+# GREEN restored:
+#   [winpath-smoke] PASS: sep=";" abs-ok=t exp-ok=t yes-ok=t no-ok=t
+#     found=".../target/tmp/winpath-smoke/nelisp-doc201-marker" pass=t
+standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat (or drive "") "/" (mapconcat#(concat (or drive "") "/zz/" (mapconcat#|expand-file-name injects a bogus component into every name it expands
+# Doc 201 §5.3.  `standalone-reader-defvar-alloc-smoke' polices §5.1's
+# replacement of `nl_sf_defvar'/`nl_sf_defconst''s per-call AST synthesis
+# with direct primitives.  The row targets the half of that fix with a
+# structural failure mode: the `boundp' gate the synthetic
+# `(if (boundp ...) nil (set ...))' form used to carry had to be
+# re-implemented by hand, and losing it makes `defvar' clobber an
+# already-bound value.  Forcing that branch to nil is a wrong constant, not
+# a timing question, and reads the same on every platform.
+#
+# The row deliberately does NOT try to re-create the ~25x allocation
+# regression the gate's other assertion bounds: the pre-fix body was a
+# 12-line AST synthesis plus a recursive `nelisp_eval_call', which no small
+# `sed' expression reproduces, and this file's own header rules out subtle
+# injections.  That assertion is held by its own budget (200 allocations per
+# form, against 65 measured after the fix and ~1629 before it), read from
+# the allocator's exact counters rather than a clock.
+#
+# Evidence, windows-x86_64, 2026-08-30.  RED with the injection:
+#   [defvar-alloc-smoke] FAIL: per-form=63 budget=200 keep-ok=nil
+#     const-ok=t pass=nil
+# GREEN restored:
+#   [defvar-alloc-smoke] PASS: per-form=65 budget=200 keep-ok=t
+#     const-ok=t pass=t
+standalone-reader-defvar-alloc-smoke|scripts/nelisp-standalone-build.el|s/(if (= (nelisp_mirror_is_bound (+ env 0) name_ptr (+ env 64)) 1)/(if (= 0 1)/|defvar loses its boundp gate and overwrites an already-bound value
+# Doc 201 §4 item 2.  `standalone-reader-fileattrs-smoke' polices the
+# windows-native `stat'/`readdir' shims and the `nelisp--syscall-stat'
+# classification that moved onto st_mode with them.  The injection changes
+# the S_IFDIR constant the classifier compares against, so no directory is
+# ever recognised as one -- a wrong constant, lethal on every platform,
+# with no timing or load component.
+#
+# Evidence, windows-x86_64, 2026-08-30.  RED with the injection:
+#   [fileattrs-smoke] FAIL: size-ok=t mtime=1788083979 reg-ok=t dir-ok=nil
+#     names=("sub" "ten-bytes.txt") absent-ok=t pass=nil
+# GREEN restored:
+#   [fileattrs-smoke] PASS: size-ok=t mtime=1788084019 reg-ok=t dir-ok=t
+#     names=("sub" "ten-bytes.txt") absent-ok=t pass=t
+standalone-reader-fileattrs-smoke|scripts/nelisp-stdlib-prelude.el|s/(= (logand mode 61440) 16384)/(= (logand mode 61440) 16385)/|nelisp--syscall-stat compares st_mode's file-type bits against a wrong S_IFDIR, so no directory is recognised
+# Doc 201 §5.4, row 1 of 2 (the CORRECTNESS half).  A leading-character
+# filter that fires where it must not skips real matches, and no timing
+# assertion can see that -- so this row breaks the filter's own case
+# handling: it folds the required character with `nlre--flip-case' instead
+# of `nlre--fold-char', so the character a pattern demands is never the one
+# the string can offer and every leading-literal pattern stops matching.
+# A wrong function, not a wrong duration.
+#
+# Evidence, windows-x86_64, 2026-08-30.  RED with the injection (note the
+# first `got' element, `(string-match "abc" "xxabcyy")', turning nil):
+#   [regexp-lead-filter-smoke] FAIL: got=(nil nil 2 nil 2 0 nil 0 nil) ...
+#     ratio=0.041 pass=nil
+# GREEN restored:
+#   [regexp-lead-filter-smoke] PASS: got=(2 nil 2 nil 2 0 nil 0 nil) ...
+#     ratio=0.047 pass=t
+standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(lead (and lead (nlre--fold-char lead)))/(lead (and lead (nlre--flip-case lead)))/|the leading-character filter folds the required character the wrong way, so no leading-literal pattern matches at all
+# Doc 201 §5.4, row 2 of 2 (the PATH-SELECTION half).  Makes
+# `nlre--leading-lit-char' answer nil for every pattern, so the filter never
+# fires and the scan is exactly what it was before the fix.  Correctness is
+# untouched.  The smoke now counts calls that actually select the filter and
+# requires exactly 42 for its 42 leading-literal cases.
+#
+# The original verdict was a ratio of two sweeps run back to back in one
+# process on the same strings: measured 0.531 injected vs 0.048 restored
+# against a 0.25 threshold.  CI later disproved the assumption that this
+# self-baseline made the timing row portable; the replacement below is why
+# the row remains admissible now.
+#
+# Evidence, windows-x86_64, 2026-08-30.  RED with the injection:
+#   [regexp-lead-filter-smoke] FAIL: got=(2 nil 2 nil 2 0 nil 0 nil) ...
+#     lead=2.488 nolead=4.682 ratio=0.531 pass=nil
+# GREEN restored:
+#   [regexp-lead-filter-smoke] PASS: got=(2 nil 2 nil 2 0 nil 0 nil) ...
+#     lead=0.281 nolead=5.899 ratio=0.048 pass=t
+#
+# REPAIRED 2026-09-03 (failure mode 3).  Despite the same-process ratio, CI's
+# runner stayed green with this injection.  WSL Emacs 30.1 measured ratios
+# 0.065-0.071 clean against the <0.25 threshold and 0.272-0.301 injected --
+# only 0.022-0.051 across the threshold.  Ratio and times remain diagnostics,
+# but the verdict now uses the exact path-selection count: 42 clean, 0 when
+# this injection makes the filter unreachable.
+standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/^(defun nlre--leading-lit-char (nodes)$/(defun nlre--leading-lit-char (nodes) (setq nodes nil)/|the leading-character filter never fires, putting the scan back to full work at every start position
+# Stage D1 (2026-09-03).  The Windows-scoped FFI gate must execute the PE
+# import-backed arm, not merely find the builtin name.  Replacing the mapped
+# system DLL with a nonexistent name leaves the generated dispatch intact but
+# makes the PE loader reject the binary, a structural failure independent of
+# timing or installed developer tools.  Evidence, windows-x86_64, 2026-09-03:
+# the filtered harness reported "went red as it should" and
+# `GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0`; restored GREEN
+# is `[standalone-reader-ffi-smoke] PASS` with toupper, s32 and f64 checks green.
+standalone-reader-ffi-smoke|scripts/nelisp-standalone-build.el|s/("libm.so.6" . "ucrtbase.dll")/("libm.so.6" . "ucrtbase-broken.dll")/|the Windows libm mapping names a nonexistent DLL, so the PE-import-backed FFI binary cannot load|windows-x86_64

@@ -4,6 +4,11 @@
 
 * Status
 
+- 2026-09-03: Every windows-native reader smoke is green.  The socket,
+  process, FFI, and TLS arms all run their target-native paths, and
+  `standalone-reader-smokes NELISP_STANDALONE_TARGET=windows-x86_64` reports
+  `checked=47 findings=0`.
+
 - *State*: STAGE 151 Windows inotify native pump
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
@@ -2246,6 +2251,176 @@ largest uncertainty (B1 + B2) first.
    remain pending.
    Linux-only AF_UNIX fd-passing remains guarded; socketpair peercred now has
    synthetic same-process compatibility.
+
+* Work brief — the windows-native socket arm (written 2026-09-01)
+
+Six gates need this socket arm: =standalone-reader-dns-smoke=,
+=network-process-smoke=, =-server-=, =-nowait-=, =nonblocking-socket-smoke=,
+=hosts-file-smoke=.  The two mixed =network-process-*= cases also need the
+separately-owned Windows async-process arm: measured here, =make-process=
+returned nil and failed with =(processp nil)=.  (=tls-smoke= needs this AND PE
+dynamic linking, so it is not in scope here.)  Doc 201 §6.7 has the inventory.
+
+This section is written to be executed from, not read for background: the
+design above already covers the Winsock calls, and everything below is what
+someone picking this up needs that is NOT in the design.
+
+** What already exists, so you do not go looking
+
+- =nelisp-standalone--socket-forms= (scripts/nelisp-standalone-build.el)
+  holds the target-INDEPENDENT half and needs no work: dotted-quad parsing
+  (=nl_ipv4_parse_dotted=), IPv6 literal parsing (=nl_ipv6_parse_literal=),
+  sockaddr construction (=nl_socket_build_sockaddr= /
+  =nl_socket_build_sockaddr6=), the error signaller
+  (=nl_socket_signal_error=), and optional-argument decoding
+  (=nl_socket_bool_arg=).  The sockaddr layouts are byte-identical on
+  Windows, so those builders are used as-is.
+- =nelisp-standalone--socket-impl-forms= is where the work goes.  It was
+  split out of the above on 2026-09-01 (commit 40a94080) precisely so a
+  second arm could be added without touching the shared half.  It currently
+  returns the eight linux-x86_64 implementations, or nil.
+- =nelisp-standalone--socket-dispatch-arms= maps the eight
+  =nelisp-socket-*= names.  On any target without an implementation it
+  routes them to =nelisp-standalone--applyfn-unsupported-primitive-form=;
+  that gate opens by itself once =--socket-impl-forms= is non-empty, so
+  check it rather than assume.
+- The PE side is proven: =lisp/nelisp-pe-write.el= already emits a
+  =WS2_32.dll= import directory, and the =wsastartup-exit-42= and
+  =winsock-socket-exit-42= de-risk specs above both run.
+- =lisp/nelisp-stdlib-os.el= carries a COMPLETE Winsock call sequence
+  (=WSAStartup= :3230, =WSASocketW= :3258, =socket= :3264, =accept= :3273,
+  bind/connect/listen, =WSAPoll=, =setsockopt=/=getsockopt= :3648/:3667,
+  =shutdown=, =sendto=, the WSAE* errno table :373-402).  Read it as a
+  reference for argument shapes -- but it is NOT reusable code: every call
+  there goes through =nelisp-os--libc-call=, declared =ext:nelisp-runtime=,
+  i.e. a Rust-runtime primitive that does not exist on the standalone.
+
+** What differs from the Linux arm
+
+Each of these has bitten someone before; none is visible from the Linux code.
+
+| thing | Linux | Windows |
+|-------+-------+---------|
+| =AF_INET6= | 10 | *23* |
+| the socket value | an fd, closed with =close= | a HANDLE, closed with =closesocket= |
+| non-blocking | =SOCK_NONBLOCK= (2048) OR-ed into =socket(2)='s type | no such flag -- =ioctlsocket(s, FIONBIO, &1)= |
+| =accept= non-blocking | =accept4= flags argument | inherited from the listening socket only |
+| error reporting | negative errno as the return value | return =SOCKET_ERROR= (-1), then =WSAGetLastError()= |
+| error values | errno (=EAGAIN= 11) | WSAE* (=WSAEWOULDBLOCK= 10035) |
+| initialisation | none | =WSAStartup(0x0202, &wsadata)= must have run |
+| poll | =poll(2)= | =WSAPoll=, same =pollfd= layout |
+
+=nl_socket_signal_error= currently takes a negative errno and signals
+=nelisp-socket-error= with it.  Decide ONE of: map WSAE* down to the errno
+space at the call site, or widen the signaller.  Whichever you choose, say
+so in its docstring -- callers that pattern-match on the number exist.
+
+=WSAStartup= needs somewhere to run once.  The natural place is the same
+kind of one-shot the windows arm already uses for
+=nl_os_environ_init= (see =nelisp-standalone--reader-os-base-forms=), or a
+flag checked by the first socket call.  Do not put it in every call.
+
+** Slices, each independently verifiable
+
+1. =connect= / =send= / =recv= / =close= + =WSAStartup= + the WS2_32
+   imports.  Turns =standalone-reader-dns-smoke= green (its pure-elisp
+   wire-format half already passes; only the live lookup+connect fails).
+2. =listen= / =accept= / =poll= / =connect-error=.  Turns the four
+   =network-process-*= gates and =hosts-file-smoke= green.
+
+Do not start slice 2 before slice 1's gate is green.  A half-migrated
+socket layer is worse than none: a partial arm would make
+=nelisp-socket-listen= reachable and broken rather than honestly
+unsupported.
+
+*Slice 1 landed 2026-09-01.*  =standalone-reader-dns-smoke= is green on
+windows-x86_64 through its LIVE lookup path (=(t open)=, not the no-egress
+SKIP), the windows aggregate went =checked=47 findings=11= ->
+=checked=47 findings=10= with no other gate's state changed, and all four
+targets still link 111 units.  Two corrections to what this section said
+before it was executed from, both measured while doing it:
+
+- The hazard above was real but its mechanism was misdescribed.  Nothing
+  keyed off =--socket-impl-forms= being non-empty:
+  =nelisp-standalone--socket-dispatch-arms= and
+  =nelisp-standalone--socket-forms= both branched on
+  =(eq nelisp-standalone--target 'linux-x86_64)= directly.  The gate is now
+  a per-NAME availability table, so a target may implement any subset and
+  every absent name still routes to =nelisp-unsupported-primitive=.  That
+  is what keeps slice 2's four names honest today; verified by probe
+  (=(unsupported unsupported unsupported unsupported)=) rather than assumed.
+- The error-space question this section left open is decided: windows call
+  sites negate =WSAGetLastError='s positive WSAE* value and hand that to the
+  unchanged =nl_socket_signal_error=, so the signaller's
+  negative-number contract holds and no POSIX mapping is attempted.  The
+  user-visible magnitude on this target is therefore a Winsock number.
+  Recorded in that function's own comment.  Checked first: nothing in
+  =packages/nelisp-process-adapter/= pattern-matches a specific errno --
+  it negates the value into a sentinel string, and compares
+  =nelisp-socket-connect-error= against =0= only.
+
+Also worth knowing before slice 2: =nelisp-socket-connect='s NOWAIT
+argument IS implemented on windows (=ioctlsocket(FIONBIO)=), but
+=nelisp-socket-poll= / =nelisp-socket-connect-error= are not, so a NOWAIT
+connect currently yields a socket no caller can drive to completion.  That
+is not a regression -- =connect= itself was unsupported before -- but it
+does mean the =:nowait= adapter path now fails at a later point than it
+used to, which will look like a new defect to anyone who does not know.
+
+** How to verify, and the traps in doing so
+
+- Build all four targets after every change:
+  =make standalone-reader NELISP_STANDALONE_TARGET=$t= for linux-x86_64,
+  linux-aarch64, macos-aarch64, windows-x86_64.  The unit count must stay
+  111 unless you deliberately added a unit; a change in that number you did
+  not intend is the signal.
+- On a Windows host, =NELISP_STANDALONE_TARGET= only works as a make
+  COMMAND-LINE variable.  This host's Cygwin make runs MSYS2's =/bin/sh=
+  and no environment crosses that boundary -- =FOO=bar make= leaves FOO
+  unset both as a make variable and inside the recipe.  The smoke aggregate
+  takes =--target= as an argument for this reason (Doc 201 §6.6).
+- =make standalone-reader-smokes NELISP_STANDALONE_TARGET=windows-x86_64=
+  should report 47 checked and 11 findings before you start.  Any other
+  number means something moved that is not yours.
+- New gate ⇒ a row in =tools/gate-mutations.txt=, proved with
+  =NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_GATE_MUTATION_ONLY=<gate>
+  tools/nelisp-gate-mutation.sh=.  If the gate's row mutates a file that is
+  baked into the binary, add it to =gate_needs_rebuild= in that script.
+- After ANY interrupted mutation run, =git diff= the mutated files before
+  trusting anything.  The harness restores on a signalled exit but not on a
+  SIGKILL, and an injection left in the tree fails an unrelated gate later
+  and reads as a real defect.
+- Timing claims need a startup-floor control taken in the same window
+  (=nelisp.exe --load= a one-line file; ~510-790ms quiet on this host,
+  1.7-2.4s loaded).  Doc 201 twice attributed machine load to a code change
+  before adopting this.
+- Kill stray =nelisp.exe= after interrupting anything that spawns it.  One
+  ran for 86 minutes at 7.8 GB in this session's history before it was
+  noticed.
+
+** Definition of done for this work
+
+The six gates green on windows-x86_64, all four targets building, the
+mutation rows proved, and =nelisp-standalone--socket-impl-forms='s docstring
+updated to say that the windows arm exists and what it does NOT cover.
+Doc 201 §6.9 item 1 shrinks by six; update its count rather than leaving a
+stale one.
+
+*Met 2026-09-02.*  All six are green, all four targets link 111 units, the
+docstring is updated, and Doc 201 §6.9 item 1 is recounted (11 -> 3; the
+extra two beyond this work's six came from the async-process arm).  The
+mutation rows are proved with one honest exception recorded here rather than
+glossed: =standalone-reader-nonblocking-socket-smoke='s LINUX row cannot be
+shown RED on a windows host, because the code it injects into is not emitted
+into that binary.  Target scoping (=tools/gate-mutations.txt=, fifth field,
+added 2026-09-02) is what makes that a SKIP instead of a false "STAYED
+GREEN", and the windows half of that gate has its own scoped row which IS
+proved RED here.
+
+Two of the six needed more than sockets, which this section did not
+anticipate: =network-process-smoke= and =-nowait-= also required the windows
+async-process arm, and went green only once =make-process= worked.  Their
+socket halves passed before that.
 
 * One-line summary
 

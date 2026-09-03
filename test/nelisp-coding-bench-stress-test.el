@@ -24,8 +24,8 @@
 ;;
 ;;     NELISP_HEAVY_TESTS=1 make test
 ;;
-;; で全試験を実行。各 heavy test には軽量 smoke 兄弟 (64KB throughput
-;; probe / 500 iter chunk-stress) があり、`make test' default で
+;; で全試験を実行。各 heavy test には smoke 兄弟 (1MB throughput
+;; probe / 1000 iter chunk-stress) があり、`make test' default で
 ;; regression を確実に拾う。
 ;;
 ;; *Perf reality check (2026-04-26)*: pure-Elisp encode/decode の
@@ -52,7 +52,7 @@
 ;;
 ;; +8 ERT (本 file):
 ;;
-;;   1. bench-throughput-utf8-1mb-smoke           — light perf probe (always-on, 64KB)
+;;   1. bench-throughput-utf8-1mb-smoke           — light perf probe (always-on, 1MB)
 ;;   2. bench-throughput-tier-b-utf8-100mb        — Doc 31 §5.2 200MB/s gate
 ;;   3. bench-throughput-tier-b-latin1-100mb      — Doc 31 §5.2 300MB/s gate
 ;;   4. bench-throughput-tier-b-shift-jis-100mb   — Doc 31 §5.2 100MB/s gate
@@ -98,9 +98,9 @@ binding contract; otherwise the measurement is reported but not enforced."
 Mix of ASCII (50%) + 2-byte (20%) + 3-byte (25%) + 4-byte (5%) covers
 all UTF-8 sequence lengths so the codec exercises every branch.
 
-Initialised with a 4-byte placeholder so the underlying string is
-multibyte from the start (= aset accepts any codepoint in-place)."
-  (let ((out (make-string n-chars #x1F300))
+Built through a character vector first: Emacs 31 rejects `aset' when a
+replacement changes a multibyte string character's byte width."
+  (let ((out (make-vector n-chars 0))
         (i 0))
     (while (< i n-chars)
       (let ((bucket (mod i 20)))
@@ -111,28 +111,29 @@ multibyte from the start (= aset accepts any codepoint in-place)."
                ((< bucket 19) (+ #x3040 (mod i 96)))    ; 3-byte (hiragana)
                (t             (+ #x1F300 (mod i 256)))))) ; 4-byte (emoji)
       (setq i (1+ i)))
-    out))
+    (concat out)))
 
 (defun nelisp-coding-bench-stress-test--make-latin1-payload (n-chars)
   "Build a synthetic Latin-1 payload string of N-CHARS codepoints
 covering the full U+0000-U+00FF range.
 
-Initialised with U+00FF so the string is multibyte; aset of any value
-≤ U+00FF then succeeds without representation reshuffle."
-  (let ((out (make-string n-chars #x00FF))
+Built through a character vector so mixed-width characters do not require
+in-place mutation of a multibyte string."
+  (let ((out (make-vector n-chars 0))
         (i 0))
     (while (< i n-chars)
       (aset out i (mod i #x100))
       (setq i (1+ i)))
-    out))
+    (concat out)))
 
 (defun nelisp-coding-bench-stress-test--make-japanese-payload (n-chars)
   "Build a synthetic CJK payload string of N-CHARS codepoints biased to
 JIS X 0208 hiragana + katakana + common kanji that round-trip cleanly
 under Shift-JIS / EUC-JP.
 
-Initialised with U+4E00 so the string is multibyte from the start."
-  (let ((out (make-string n-chars #x4E00))
+Built through a character vector so mixed-width characters do not require
+in-place mutation of a multibyte string."
+  (let ((out (make-vector n-chars 0))
         (i 0))
     (while (< i n-chars)
       (let ((bucket (mod i 4)))
@@ -147,7 +148,7 @@ Initialised with U+4E00 so the string is multibyte from the start."
                ;; Common kanji subset (small range guaranteed in X 0208)
                (t             (+ #x4E00 (mod i 64))))))
       (setq i (1+ i)))
-    out))
+    (concat out)))
 
 (defun nelisp-coding-bench-stress-test--measure-mb-sec (work-fn n-bytes)
   "Run WORK-FN once, return throughput in MB/sec computed from N-BYTES.
@@ -188,31 +189,28 @@ the deviation is reported but not enforced (developer machines vary)."
 Always-on; only asserts that encode + decode complete and round-trip
 identity holds.  Logs measured MB/sec to stderr for trend tracking.
 
-Note on workload size: pure-Elisp encode/decode is O(N) but very slow
-in absolute terms (~0.3 MB/s decode on a typical dev box without the
-Phase 7.1 native baseline), so the smoke probe uses 64KB to keep
-`make test' under a 5-second budget.  The Doc 31 §5.2 100MB tier-B
-gate runs separately under NELISP_HEAVY_TESTS=1."
-  (let* ((target-bytes (* 64 1024))
-         ;; ~3.5 bytes/char average for our mixed payload.
-         (n-chars (/ target-bytes 4))
+The mixed payload repeats a 20-codepoint, 37-byte UTF-8 cycle.  Its
+566799 codepoints encode to exactly 1 MiB; assert that size so this
+smoke cannot silently stop measuring the workload named by the test."
+  (let* ((target-bytes (* 1024 1024))
+         (n-chars 566799)
          (s       (nelisp-coding-bench-stress-test--make-utf8-payload n-chars))
          (encoded-bytes nil)
          (encode-mbsec
           (nelisp-coding-bench-stress-test--measure-mb-sec
            (lambda () (setq encoded-bytes
                             (nelisp-coding-utf8-encode-string s)))
-           (length s)))
+           target-bytes))
          (decode-mbsec
           (nelisp-coding-bench-stress-test--measure-mb-sec
            (lambda () (nelisp-coding-utf8-decode encoded-bytes))
            (length encoded-bytes))))
     (should (stringp encoded-bytes))
-    (should (> (length encoded-bytes) 0))
+    (should (= (length encoded-bytes) target-bytes))
     (let* ((re-decoded (nelisp-coding-utf8-decode encoded-bytes))
            (got (plist-get re-decoded :string)))
       (should (equal got s)))
-    (message "[bench utf8-64kb-smoke] encode = %.2f MB/sec, decode = %.2f MB/sec"
+    (message "[bench utf8-1mb-smoke] encode = %.2f MB/sec, decode = %.2f MB/sec"
              encode-mbsec decode-mbsec)))
 
 ;;;; ─────────────────────────────────────────────────────────────────────
@@ -419,15 +417,15 @@ MAX-CHUNK bytes, and asserts streaming-decode == one-shot-decode."
     mismatches))
 
 (ert-deftest nelisp-coding-bench-chunk-boundary-stress-1k-iter-smoke ()
-  "Light-weight chunk-boundary stress (500 iter, 128B slices, ≤16B chunks).
+  "Light-weight chunk-boundary stress (1000 iter, 128B slices, ≤16B chunks).
 Always-on; mirrors the 100K-iter heavy gate for regression coverage at
 a budget that keeps `make test' under a second."
   ;; Deterministic seed so flakes are reproducible across re-runs.
   (random "nelisp-coding-stress-smoke")
   (let ((mismatches
          (nelisp-coding-bench-stress-test--run-chunk-boundary-stress
-          500 128 16)))
-    (message "[bench chunk-boundary-stress-smoke] mismatches = %d / 500"
+          1000 128 16)))
+    (message "[bench chunk-boundary-stress-smoke] mismatches = %d / 1000"
              mismatches)
     (should (= mismatches 0))))
 

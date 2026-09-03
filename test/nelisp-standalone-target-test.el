@@ -645,6 +645,46 @@ A dispatch arm nothing installs is dead code that still links."
     (should (memq 'MultiByteToWideChar source-tree))
     (should-not (memq 'CreateFileA source-tree))))
 
+(ert-deftest nelisp-standalone-target-windows-reader-ffi-uses-ucrt-imports ()
+  "Windows FFI derives its UCRT imports and typed dispatch from one table."
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (imports (cdr (assoc "ucrtbase.dll"
+                              (nelisp-standalone--reader-pe-imports))))
+         (dispatch (nelisp-standalone--applyfn-windows-extern-arms))
+         (printed (prin1-to-string dispatch)))
+    (should (nelisp-standalone--reader-ffi-live-p))
+    (should (equal imports
+                   '("toupper" "tolower" "sqrt" "pow" "sin" "cos"
+                     "hypot" "ldexp")))
+    (should-not (member "gnutls_global_init" imports))
+    ;; The table's sqrt signature must survive into this exact Win64 path;
+    ;; generic emitter-only XMM tests do not establish that wiring.
+    (should (string-match-p
+             "(extern-call-f64 sqrt (:f64 (bits-to-f64 fa1)))"
+             printed))
+    ;; toupper(EOF) returns a C int through zero-extending EAX.  Pin the
+    ;; generated signed repair as well as the end-to-end smoke's result.
+    (should (string-match-p
+             "(if (> irv 2147483647) (- irv 4294967296) irv)"
+             printed))))
+
+(ert-deftest nelisp-standalone-target-reader-ffi-availability-is-target-aware ()
+  "Windows PE FFI is unconditional; Linux dynamic FFI remains opt-in."
+  (let ((old (getenv "NELISP_READER_DYNAMIC")))
+    (unwind-protect
+        (progn
+          (setenv "NELISP_READER_DYNAMIC" nil)
+          (let ((nelisp-standalone--target 'windows-x86_64))
+            (should (nelisp-standalone--reader-ffi-live-p)))
+          (let ((nelisp-standalone--target 'linux-x86_64))
+            (should-not (nelisp-standalone--reader-ffi-live-p)))
+          (setenv "NELISP_READER_DYNAMIC" "1")
+          (let ((nelisp-standalone--target 'linux-x86_64))
+            (should (nelisp-standalone--reader-ffi-live-p)))
+          (let ((nelisp-standalone--target 'linux-aarch64))
+            (should-not (nelisp-standalone--reader-ffi-live-p))))
+      (setenv "NELISP_READER_DYNAMIC" old))))
+
 (ert-deftest nelisp-standalone-target-macos-reader-uses-darwin-syscalls ()
   "macOS reader file/stdin/stdout helpers use Darwin syscall numbers."
   (let ((nelisp-standalone--target 'macos-aarch64))
@@ -693,11 +733,11 @@ A dispatch arm nothing installs is dead code that still links."
     (should (tree-member-p
              '((:lit "nelisp-process-call-process") .
                (nl_bi_process_call_process args out))
-             nelisp-standalone--applyfn-bf-arms))
+             (nelisp-standalone--process-dispatch-arms)))
     (should (tree-member-p
              '((:lit "nelisp-process-start") .
                (nl_bi_process_start_process args out))
-             nelisp-standalone--applyfn-bf-arms))
+             (nelisp-standalone--process-dispatch-arms)))
     (should (tree-member-p
              '((:lit "nelisp-portable-syscall") .
                (wf_write_int out (nl_bi_portable_syscall args)))
@@ -739,6 +779,46 @@ A dispatch arm nothing installs is dead code that still links."
     (should (tree-member-p
              '(nl_bi_process_make_object pid readfd stdin_writefd out)
              (nelisp-standalone--fileio-source)))))
+
+(ert-deftest nelisp-standalone-target-windows-process-lifecycle-is-per-name ()
+  "Windows x86-64 exposes its complete async-process lifecycle per name."
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (arms (nelisp-standalone--process-dispatch-arms))
+         (arm (lambda (name) (assoc (list :lit name) arms))))
+    (should (equal (cdr (funcall arm "nelisp-process-call-process"))
+                   '(nl_bi_process_call_process args out)))
+    (should (equal (cdr (funcall arm "nelisp-process-start"))
+                   '(nl_bi_process_windows_start args out)))
+    (should (equal (cdr (funcall arm "nelisp-process-poll"))
+                   '(nl_bi_process_windows_poll args out)))
+    (should (equal (cdr (funcall arm "nelisp-process-status"))
+                   '(wf_write_int out
+                     (nl_bi_process_windows_status_code (wf_arg_ptr args 0)))))
+    (should (equal (cdr (funcall arm "nelisp-process-write"))
+                   '(nl_bi_process_windows_write args out)))
+    (should (equal (cdr (funcall arm "nelisp-process-close-stdin"))
+                   '(nl_bi_process_windows_close_stdin args out)))
+    (should (equal (cdr (funcall arm "nelisp-process-delete"))
+                   '(seq
+                     (nl_bi_process_windows_delete_object (wf_arg_ptr args 0))
+                     (wf_write_nil out))))
+    (let ((source (nelisp-standalone--fileio-source)))
+      (should (memq 'CreatePipe (flatten-tree source)))
+      (should (memq 'SetHandleInformation (flatten-tree source)))
+      (should (memq 'PeekNamedPipe (flatten-tree source)))
+      (should (memq 'TerminateProcess (flatten-tree source)))))
+  (let* ((nelisp-standalone--target 'windows-aarch64)
+         (arms (nelisp-standalone--process-dispatch-arms))
+         (start (assoc '(:lit "nelisp-process-start") arms)))
+    (should-not (equal (cdr start) '(nl_bi_process_start_process args out)))
+    (should-not (equal (cdr start) '(nl_bi_process_windows_start args out)))
+    ;; Slice 2 remains catchably unsupported on the unfinished aarch64 arm.
+    ;; Every unsupported entry in this one dispatch build shares the exact
+    ;; same signal form object; compare to START rather than constructing a
+    ;; fresh gensym-bearing form that cannot be `equal'.
+    (dolist (name '("nelisp-process-write" "nelisp-process-close-stdin"
+                    "nelisp-process-delete"))
+      (should (eq (cdr (assoc (list :lit name) arms)) (cdr start))))))
 
 (ert-deftest nelisp-standalone-target-reader-process-syscalls-are-targeted ()
   "Process helper syscall numbers stay target-specific."
@@ -1209,13 +1289,21 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
             (should sym)
             (should (equal (cdr expected) (plist-get sym :value)))
             (should (eq 'bss (plist-get sym :section)))))
+        (let ((tls-sym (cdr (assoc "nl_tls_registry" by-name))))
+          (if (eq target 'windows-x86_64)
+              (progn
+                (should tls-sym)
+                (should (equal (+ 57616 4194304 96 176 64 56 40 1040)
+                               (plist-get tls-sym :value))))
+            (should-not tls-sym)))
         ;; Doc 170 Stage 2: +96 bytes for the `nl_alloc_check' checked-
         ;; allocator control block appended after `nl_fvcache_*'.  Doc 180
         ;; Phase 2 item 3 (2026-08-23): +176 more bytes for `nl_bt_snapshot'
         ;; (the bounded backtrace capture buffer) appended after that.  Doc 199
         ;; Tier 3a/Tier 3b append 64 bytes of bounded section + park state. Tier 3b
         ;; appends the 1040-byte registry (16-byte header + 64*16 entries).
-        (should (equal (+ 57616 4194304 96 176 64 56 40 1040)
+        (should (equal (+ 57616 4194304 96 176 64 56 40 1040
+                          (if (eq target 'windows-x86_64) 8 0))
                        (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
@@ -1872,9 +1960,10 @@ deterministic against-the-bug gate for both emitted cache implementations."
 
 ;; Doc 194 S5.3/P3 exit criterion: the eight `nelisp-socket-*' names (six
 ;; Phase 1 primitives + `nelisp-socket-poll'/`nelisp-socket-connect-error',
-;; added this phase) must raise the catchable `nelisp-unsupported-
-;; primitive' form -- not compile a real (wrong) syscall, not silently fail
-;; to link -- on every target other than `linux-x86_64'.  This is "the
+;; added this phase) must carry real arms on `linux-x86_64' and
+;; `windows-x86_64'.  On the three remaining targets they must raise the
+;; catchable `nelisp-unsupported-primitive' form -- not compile a real
+;; (wrong-platform) call, not silently fail to link.  This is "the
 ;; existing target-swap harness Phase 1's own gate uses" the design doc
 ;; refers to: `nelisp-standalone--target' let-bound per case and the
 ;; GENERATED dispatch-arm forms inspected directly at the source level, no
@@ -1882,30 +1971,31 @@ deterministic against-the-bug gate for both emitted cache implementations."
 ;; built on this x86_64 Linux host could not run here anyway).  Phase 1
 ;; itself never had this ERT-level proof for its own six names (a
 ;; pre-existing gap, not this phase's own regression) -- verified before
-;; this test existed: `linux-x86_64' returns the six real `nl_socket_*_impl'
-;; call forms and `windows-x86_64'/`macos-aarch64'/`linux-aarch64' each
-;; returned the empty native-forms list (`nelisp-standalone--socket-forms')
-;; while STILL wiring six dispatch arms (`nelisp-standalone--socket-
-;; dispatch-arms' does not consult `-forms' at all for its non-linux-x86_64
-;; branch) -- so this test covers all eight names on every target in one
-;; pass, closing that gap for the family as a whole, not only its own two
-;; new members.
-(ert-deftest nelisp-standalone-target-socket-dispatch-linux-x86-64-real ()
-  "linux-x86_64 gets real native call forms for all eight socket primitives."
-  (let* ((nelisp-standalone--target 'linux-x86_64)
-         (arms (nelisp-standalone--socket-dispatch-arms))
-         (names (mapcar (lambda (a) (cadr (car a))) arms)))
-    (should (equal names '("nelisp-socket-listen" "nelisp-socket-accept"
-                            "nelisp-socket-connect" "nelisp-socket-send"
-                            "nelisp-socket-recv" "nelisp-socket-close"
-                            "nelisp-socket-poll" "nelisp-socket-connect-error")))
-    (should (equal (cdr (nth 6 arms)) '(nl_socket_poll_impl args out)))
-    (should (equal (cdr (nth 7 arms)) '(nl_socket_connect_error_impl args out)))))
+;; this test existed: `linux-x86_64' returned real call forms while the
+;; other targets wired the shared unsupported form.  The Windows socket arm
+;; later made availability per name and gave `windows-x86_64' all eight real
+;; implementations, so the tests below state both sides of that contract.
+(ert-deftest nelisp-standalone-target-socket-dispatch-supported-targets-real ()
+  "Both x86-64 targets get real call forms for all eight socket primitives."
+  (let ((expected
+         '(((:lit "nelisp-socket-listen") . (nl_socket_listen_impl args out))
+           ((:lit "nelisp-socket-accept") . (nl_socket_accept_impl args out))
+           ((:lit "nelisp-socket-connect") . (nl_socket_connect_impl args out))
+           ((:lit "nelisp-socket-send") . (nl_socket_send_impl args out))
+           ((:lit "nelisp-socket-recv") . (nl_socket_recv_impl args out))
+           ((:lit "nelisp-socket-close") . (nl_socket_close_impl args out))
+           ((:lit "nelisp-socket-poll") . (nl_socket_poll_impl args out))
+           ((:lit "nelisp-socket-connect-error") .
+            (nl_socket_connect_error_impl args out)))))
+    (dolist (target '(linux-x86_64 windows-x86_64))
+      (let ((nelisp-standalone--target target))
+        (should (equal (nelisp-standalone--socket-dispatch-arms)
+                       expected))))))
 
-(ert-deftest nelisp-standalone-target-socket-dispatch-non-linux-x86-64-unsupported ()
+(ert-deftest nelisp-standalone-target-socket-dispatch-unsupported-targets ()
   "Every socket primitive -- including the two P3 additions -- raises the
-catchable `nelisp-unsupported-primitive' signal form on every non-
-linux-x86_64 target, never a real (wrong-syscall) call form.
+catchable `nelisp-unsupported-primitive' signal form on linux-aarch64,
+macos-aarch64, and windows-aarch64, never a real call form.
 
 `nelisp-standalone--applyfn-unsupported-primitive-form' is NOT a pure
 function returning an `equal'-stable constant across separate calls (it
@@ -1928,7 +2018,7 @@ real) native call\"."
                            "nelisp-socket-connect" "nelisp-socket-send"
                            "nelisp-socket-recv" "nelisp-socket-close"
                            "nelisp-socket-poll" "nelisp-socket-connect-error")))
-    (dolist (target '(windows-x86_64 windows-aarch64 macos-aarch64 linux-aarch64))
+    (dolist (target '(linux-aarch64 macos-aarch64 windows-aarch64))
       (let* ((nelisp-standalone--target target)
              (arms (nelisp-standalone--socket-dispatch-arms))
              (names (mapcar (lambda (a) (cadr (car a))) arms))
@@ -1937,6 +2027,49 @@ real) native call\"."
         (dolist (arm arms)
           (should (eq (cdr arm) shared))
           (should-not (memq (car-safe (cdr arm)) real-impls)))))))
+
+(ert-deftest nelisp-standalone-target-tls-builtins-installed ()
+  "The complete TLS family is visible only in the Win64 reader."
+  (let ((nelisp-standalone--target 'windows-x86_64))
+    (should (equal (nelisp-standalone--tls-builtin-names)
+                   '("nelisp-tls-connect" "nelisp-tls-send"
+                     "nelisp-tls-recv" "nelisp-tls-close"
+                     "nelisp-tls-protocol"))))
+  (dolist (target '(linux-x86_64 linux-aarch64 macos-aarch64 windows-aarch64))
+    (let ((nelisp-standalone--target target))
+      (should-not (nelisp-standalone--tls-builtin-names)))))
+
+(ert-deftest nelisp-standalone-target-windows-tls-slice3-shape ()
+  "Win64 imports Schannel and exposes handshake, record I/O, and close."
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (imports (cdr (assoc "SECUR32.dll"
+                              nelisp-standalone--windows-reader-imports)))
+         (forms (flatten-tree (nelisp-standalone--tls-forms)))
+         (arms (nelisp-standalone--tls-dispatch-arms)))
+    (dolist (name '("AcquireCredentialsHandleW" "InitializeSecurityContextW"
+                    "ApplyControlToken" "CompleteAuthToken"
+                    "QueryContextAttributesW"
+                    "EncryptMessage" "DecryptMessage"
+                    "FreeContextBuffer" "DeleteSecurityContext"
+                    "FreeCredentialsHandle"))
+      (should (member name imports)))
+    (dolist (name '(AcquireCredentialsHandleW InitializeSecurityContextW
+                    ApplyControlToken QueryContextAttributesW EncryptMessage
+                    DecryptMessage nl_tls_registry_add nl_tls_registry_remove
+                    nl_tls_require_live))
+      (should (memq name forms)))
+    (should (equal (cdr (nth 0 arms)) '(nl_tls_connect_impl args out)))
+    (should (equal (cdr (nth 1 arms)) '(nl_tls_send_impl args out)))
+    (should (equal (cdr (nth 2 arms)) '(nl_tls_recv_impl args out)))
+    (should (equal (cdr (nth 3 arms)) '(nl_tls_close_impl args out)))
+    (should (equal (cdr (nth 4 arms)) '(nl_tls_protocol_impl args out)))))
+
+(ert-deftest nelisp-standalone-target-tls-non-win64-is-unsupported ()
+  "No non-Win64 target receives Schannel forms or dispatch changes."
+  (dolist (target '(linux-x86_64 linux-aarch64 macos-aarch64 windows-aarch64))
+    (let ((nelisp-standalone--target target))
+      (should-not (nelisp-standalone--tls-forms))
+      (should-not (nelisp-standalone--tls-dispatch-arms)))))
 
 (ert-deftest nelisp-standalone-target-thread-builtins-installed ()
   "All Doc 199 Tier-2 names are installed for uniform `fboundp' behavior."

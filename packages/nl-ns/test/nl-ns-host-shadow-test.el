@@ -19,6 +19,24 @@
 ;; twice)" and exits 127.  The helpers only have to exist when a test
 ;; BODY runs, and by then every file is loaded.
 
+(ert-deftest nl-ns-definition-shape-ignores-host-file-coding-system ()
+  "The same multibyte definition must hash identically in every host buffer."
+  (let* ((doc (concat "caf" (string #xe9)))
+         (analysis
+          (nl-ns-analyse
+           `(("a.el" . ((defun probe () ,doc t)))
+             ("b.el" . ((defun probe () ,doc nil))))))
+         utf8 shift-jis)
+    (with-temp-buffer
+      (set-buffer-file-coding-system 'utf-8)
+      (setq utf8 (nl-ns--definition-shape
+                  '("a.el" "b.el") analysis 'probe)))
+    (with-temp-buffer
+      (set-buffer-file-coding-system 'japanese-shift-jis-dos)
+      (setq shift-jis (nl-ns--definition-shape
+                       '("a.el" "b.el") analysis 'probe)))
+    (should (equal utf8 shift-jis))))
+
 (ert-deftest nl-ns-host-shadow-unsafe-fixture-fires-all-four-findings ()
   (let* ((baseline (nl-ns-test--baseline-file))
          (findings

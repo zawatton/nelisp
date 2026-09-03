@@ -1,5 +1,59 @@
 # NeLisp Release Notes
 
+## v1.2.0 — 2026-09-04
+
+Full notes: [`release/v1.2.0/RELEASE.md`](release/v1.2.0/RELEASE.md).
+
+Windows x86_64 is a full standalone target: all 47 reader smokes green,
+from 11 red, with the four missing subsystems implemented over what Windows
+ships -- no MSYS2, no bundled runtime.
+
+- **Sockets over Winsock 2**, all eight `nelisp-socket-*` names, with the
+  real differences written down (`AF_INET6` 23, `closesocket`, `ioctlsocket
+  FIONBIO`, a 16-byte `WSAPOLLFD`, `SOL_SOCKET` `#xffff`) and common
+  `WSAE*` codes mapped to POSIX errno at the boundary.
+- **Async processes over `CreateProcessW`** -- `make-process` had answered
+  nil on this target and `async-ready-p` had answered `t`.
+- **`nl-ffi-call` through the PE import table**, `libc`/`libm` mapped to
+  `ucrtbase.dll`, `f64` through the positional XMM path.
+- **TLS over Schannel**: TLS 1.3 to real servers, OS certificate
+  validation, `SECBUFFER_EXTRA` carry-over, post-handshake messages, and a
+  liveness registry so a dead handle is a signal rather than a crash.
+- **Gates that were saying something false, fixed**: a committed mutation
+  injection that had broken Linux `nelisp-socket-poll`; focused gates
+  running a binary they did not build; a local `compile` weaker than
+  CI's; namespace hashes taken in the host buffer's coding system; timing
+  rows replaced by structural ones; three CRLFs.
+
+Verified: CI green on every job including `verify`, `ert-full` 5535 with
+0 unexpected, 47/47 on windows-x86_64 and linux-x86_64.
+
+## v1.1.2 — 2026-08-30
+
+Full notes: [`release/v1.1.2/RELEASE.md`](release/v1.1.2/RELEASE.md).
+
+The other half of v1.1.1's value-word boundary: `and` and `or`.  v1.1.1
+left them unconverted and said so, reasoning that boxing one would make a
+false answer read as true.  That was right about boxing an *arm* and wrong
+about leaving the *form* alone -- `(g (and 1 3) 2)` answered 222 for 111,
+and `(g (and 1 (+ x 1)) 4)` took SIGSEGV.
+
+- **The connective now works in the raw domain, and the form is boxed at
+  the boundary.**  `--emit-logic` short-circuits on a zero test of the
+  machine word and the arm that stops it is also the value; one register
+  serving as both is why the arm must stay raw and the conversion must go
+  on the whole form.
+- **Scoped to the runtime-entered lane.**  Unscoped it reached the
+  reader's sources too, and the binary it built came apart across the
+  `extras` tier while `ert-full` stayed at 0 unexpected -- the host suite
+  does not run what the compiler emitted.
+- **The `call` node stopped declaring a representation it had not
+  established.**  It is now computed as a greatest fixpoint over the call
+  graph; a callee nothing can classify declines instead of guessing.
+- **The string grammar's returns are classified from their own emit
+  comments** -- sentinel-returning ops are boxed at a boundary,
+  slot-returning ops are not.
+
 ## v1.1.1 — 2026-08-30
 
 Full notes: [`release/v1.1.1/RELEASE.md`](release/v1.1.1/RELEASE.md).

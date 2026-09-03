@@ -251,7 +251,33 @@
 # rather than written a second time; see the `pinned-kernel-call
 # lisp/nelisp-aot-compiler.el' note for why boxing is the only sound
 # conversion here.  Not a new kind of unsafe operation.
-unsafe-call 703
+# 703 -> 750 on 2026-08-31 (Doc 201 Windows fileio/path completion,
+# 260710ab), all +47 in `scripts/nelisp-standalone-build.el'.  Reconstructed
+# after the introducing commit failed to raise this baseline: every relevant
+# file-changing commit measured 621 for that file from a08796ab through
+# 10db3d18, 260710ab measured 668, and HEAD still measures 668.
+#
+#   +17  the Windows `stat'/`lstat' shim: zero and populate the portable
+#        struct-stat buffer from WIN32_FILE_ATTRIBUTE_DATA (+1 `alloc-bytes',
+#        +9 `ptr-read-u32', +6 `ptr-write-u64', +1 `ptr-write-u32').
+#
+#   +24  Windows directory enumeration: build the FindFirstFileW pattern and
+#        persistent state block, copy names into dirent64 records, maintain
+#        the pending-entry flag, and close the find handle (+2 `alloc-bytes',
+#        +5 `ptr-read-u8', +3 `ptr-read-u64', +7 `ptr-write-u8',
+#        +6 `ptr-write-u64', +1 `ptr-write-u16').  The one allocation per
+#        enumeration is deliberately before the caller holds its raw buffers.
+#
+#    +6  Windows `nl_os_getcwd': allocate the UTF-16 buffer, scan and slashify
+#        the converted UTF-8 path, and append the trailing slash (+1
+#        `alloc-bytes', +3 `ptr-read-u8', +2 `ptr-write-u8').
+#
+# These are raw Win32 result buffers and the Linux-layout compatibility
+# records consumed by the existing fileio builtins: the same low-level arena
+# access this generator's OS layer already performs, not a new kind of unsafe
+# operation, and not calls that should be moved into an `nl-unsafe' block merely
+# to evade this inventory.
+unsafe-call 759
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the three kernel files that actually carry
@@ -318,4 +344,14 @@ pinned-kernel-call scripts/nelisp-flat-arena-probe.el 6
 # buffer described at the `unsafe-call 694' note above.
 # 613 -> 621 on 2026-08-26: the eight Darwin `nl_os_getcwd' calls broken
 # out at the `unsafe-call 702' note above.
-pinned-kernel-call scripts/nelisp-standalone-build.el 621
+# 621 -> 668 on 2026-08-31: the 47 Windows stat/directory/getcwd raw-buffer
+# sites from 260710ab, reconstructed and itemised at `unsafe-call 750' above.
+# 668 -> 677 on 2026-09-03: the Schannel TLS arm (ae71d015).  Two of its
+# units are backquoted because they splice compile-time byte constants --
+# `nl_tls_package_name' writes the UTF-16 "Microsoft Unified Security
+# Protocol Provider" package name into scratch for AcquireCredentialsHandleW,
+# and `nl_tls_signal_error' builds the nelisp-tls-error signal the way the
+# already-pinned `nl_socket_signal_error' does -- so their 9 raw writes are
+# visible to this gate where the rest of the arm's quoted units are not.
+# Same shape as the socket signaller entry above; nothing to wrap.
+pinned-kernel-call scripts/nelisp-standalone-build.el 677

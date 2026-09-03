@@ -42,13 +42,50 @@ if [ -z "$jobs" ]; then
 fi
 
 MAKE_BIN="${MAKE:-make}"
+
+# Which target the sub-makes must build and run.  It arrives as
+# `--target NAME' (an ARGUMENT, not an environment variable) and is
+# re-stated on every sub-make below as a COMMAND-LINE variable.
+#
+# Both halves of that are deliberate.  The aggregate used to rely on
+# `NELISP_STANDALONE_TARGET' reaching the sub-makes through the
+# environment, which is true only where the environment survives -- and on
+# at least one host this repository is developed on it does not.  There,
+# `make' is a CYGWIN build while its recipes run MSYS2's `/bin/sh', and
+# nothing crosses that boundary: `FOO=bar make' leaves FOO unset as a make
+# variable AND inside the recipe shell, and even `export FOO' within a
+# recipe leaves `env' without it.  Every gate then falls back to
+# `./target/nelisp' instead of `./target/nelisp.exe' and the aggregate
+# reports 41 failures of `Exec format error', which reads exactly like a
+# real regression and names nothing.  Arguments cross that boundary;
+# environment variables do not.
+#
+# NELISP_SMOKE_TARGET is still honoured as a fallback for a direct
+# invocation, where the environment does work.
+smoke_target="${NELISP_SMOKE_TARGET:-}"
+if [ "${1:-}" = "--target" ]; then
+  smoke_target="${2:-}"
+  shift 2
+fi
+MAKE_TARGET_ARG=""
+if [ -n "$smoke_target" ]; then
+  MAKE_TARGET_ARG="NELISP_STANDALONE_TARGET=$smoke_target"
+fi
+export MAKE_TARGET_ARG
+# Say which target every gate below is about to build and run.  When this
+# went wrong the aggregate reported 41 `Exec format error' failures and
+# nothing in its output named the cause.
+printf '[reader-smokes] target=%s make=%s\n' \
+  "${smoke_target:-<unset, gates fall back to their own default>}" \
+  "$MAKE_BIN"
+
 mkdir -p target/tmp
 status_dir="$(mktemp -d)"
 trap 'rm -rf "$status_dir"' EXIT
 
 run_one() {
   local t="$1" log="target/tmp/nelisp-smoke-$1.log"
-  if "$MAKE_BIN" --no-print-directory -o standalone-reader "$t" > "$log" 2>&1; then
+  if "$MAKE_BIN" --no-print-directory -o standalone-reader "$t" $MAKE_TARGET_ARG > "$log" 2>&1; then
     : > "$status_dir/$t.ok"
   else
     # Keep the tail with the marker: the aggregator prints it later, in
@@ -60,7 +97,7 @@ run_one() {
 export -f run_one
 export status_dir MAKE_BIN
 
-# Three of these targets do NOT just read the binary: they rebuild it
+# Six of these targets do NOT just read the binary: they rebuild it
 # themselves, each with a different configuration --
 # `standalone-reader-ffi-smoke' dynamic, `standalone-reader-tls-smoke'
 # dynamic, `standalone-reader-ffi-unsupported-smoke' explicitly static
@@ -70,7 +107,20 @@ export status_dir MAKE_BIN
 # were the only failures, `Text file busy' on the binary, while the other
 # 38 passed against the default build.  They run serially, after the
 # fan-out, so nobody is executing the binary while one of them replaces it.
-SERIAL_SMOKES="standalone-reader-ffi-smoke standalone-reader-ffi-unsupported-smoke standalone-reader-tls-smoke"
+#
+# The other three -- prelude-test, repl-smoke, malformed-input-smoke --
+# rebuild it too, and were NOT on this list because the guard below could
+# not see them.  They reach the build through
+# `-f nelisp-standalone-reader-{prelude,repl,malformed-input}-test', a
+# driver that builds the reader itself, so grepping their recipe for the
+# literal `nelisp-standalone-build-reader' finds nothing.  A guard with a
+# false negative by construction: it reported "all clear" for exactly the
+# targets it existed to catch.  On Windows the collision surfaces as
+# `Opening output file: Permission denied, .../target/nelisp.exe'
+# (`standalone-reader-prelude-test', 2026-08-30) rather than the
+# `Text file busy' this comment describes -- same race, different OS
+# wording.  The detection below now matches both spellings.
+SERIAL_SMOKES="standalone-reader-ffi-smoke standalone-reader-ffi-unsupported-smoke standalone-reader-tls-smoke standalone-reader-prelude-test standalone-reader-repl-smoke standalone-reader-malformed-input-smoke"
 
 # That list is a copy of a fact about the Makefile, so check it still
 # holds.  If a new smoke starts building the reader and is not listed, it
@@ -78,7 +128,8 @@ SERIAL_SMOKES="standalone-reader-ffi-smoke standalone-reader-ffi-unsupported-smo
 # exists to remove -- intermittently, which is the worst way to find out.
 detected=""
 for t in "$@"; do
-  if awk "/^$t:/,/^\$/" Makefile 2>/dev/null | grep -q 'nelisp-standalone-build-reader'; then
+  if awk "/^$t:/,/^\$/" Makefile 2>/dev/null \
+       | grep -qE 'nelisp-standalone-build-reader|-f nelisp-standalone-reader-[a-z-]*-test'; then
     detected="$detected $t"
   fi
 done
@@ -100,7 +151,7 @@ done
 
 # Build the binary once, before the fan-out.  A failure here is a build
 # error, not a smoke result, and must not be reported as 28 failing smokes.
-if ! "$MAKE_BIN" --no-print-directory standalone-reader > target/tmp/reader-build.log 2>&1; then
+if ! "$MAKE_BIN" --no-print-directory standalone-reader $MAKE_TARGET_ARG > target/tmp/reader-build.log 2>&1; then
   echo "[reader-smokes] FAIL: standalone-reader did not build"
   tail -5 target/tmp/reader-build.log | sed 's/^/    /'
   echo "GATE-COUNT checked=0 findings=1"
@@ -114,7 +165,7 @@ printf '%s\n' $par_list | xargs -P "$jobs" -I{} bash -c 'run_one "$@"' _ {}
 for t in $SERIAL_SMOKES; do
   case " $* " in *" $t "*) ;; *) continue ;; esac
   log="target/tmp/nelisp-smoke-$t.log"
-  if "$MAKE_BIN" --no-print-directory "$t" > "$log" 2>&1; then
+  if "$MAKE_BIN" --no-print-directory "$t" $MAKE_TARGET_ARG > "$log" 2>&1; then
     : > "$status_dir/$t.ok"
   else
     tail -3 "$log" > "$status_dir/$t.fail"

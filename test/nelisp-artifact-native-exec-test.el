@@ -260,6 +260,98 @@ which an exit-status assertion calls a pass."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/native-exec-general-connective-boundary ()
+  "`and'/`or' answer in the raw domain and are boxed at the boundary.
+
+`--emit-logic' short-circuits on a zero test of the machine word, and the
+arm that stops it is also the form's value -- one register serving as
+both.  That is why an arm has to stay raw (a Sexp pointer is never zero,
+so a boxed false would read true and the short-circuit would never fire)
+and why the conversion has to go on the whole form instead.
+
+Every shape below was wrong before: `(g (and 1 3) 2)' answered 222 for
+111, because 3 handed over raw read back as a tagged immediate is
+`3 >> 2' = 0, and `(g (and 1 (+ x 1)) 4)' took SIGSEGV.  The string case
+is the other side of the same rule: `mut-str-finalize' answers with a
+slot, so its `and' must NOT be boxed, and a helper whose whole body is a
+raw `mut-str-push-byte' must be -- getting that pair wrong turned the
+report into `0' while still exiting 0."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-ao-" t))
+         (source-path (expand-file-name "ao.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(defun nat-ao-cmp (a b) (if (>= a b) 111 222))
+(defun nat-ao-lit (x) (nat-ao-cmp (and 1 3) x))
+(defun nat-ao-arith (x) (nat-ao-cmp (and 1 (+ x 1)) 4))
+(defun nat-ao-last (x) (nat-ao-cmp (and 1 x) 4))
+(defun nat-ao-or (x) (nat-ao-cmp (or x 9) 4))
+(defun nat-ao-ret (x) (and 1 (+ x 1)))
+(defun nat-ao-use (x) (nat-ao-cmp (nat-ao-ret x) 4))
+(provide 'nat-ao)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (load source-path nil t)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (dolist (probe '(("nat-ao-lit" (5)) ("nat-ao-lit" (2))
+                           ("nat-ao-arith" (5)) ("nat-ao-last" (5))
+                           ("nat-ao-or" (9)) ("nat-ao-ret" (5))
+                           ("nat-ao-use" (5))))
+            (let ((name (car probe))
+                  (args (cadr probe)))
+              (should (equal (nelisp-artifact-native-exec-general
+                              artifact-path name args)
+                             (apply (intern name) args))))))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/native-exec-general-mut-str-and-chain ()
+  "A helper returning a raw sentinel is boxed; one returning a slot is not.
+
+The two halves have to agree.  `mut-str-push-byte' answers `rax = 1
+sentinel' and `mut-str-finalize' answers with the caller-owned slot, so
+one is boxed at a boundary and the other must be left alone.  Boxing the
+second wraps a string in an integer; not boxing the first has the caller
+read 1 as a tagged immediate and get 0, which turns the enclosing `and'
+false and the whole report into `0' -- while still exiting 0."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-ms-" t))
+         (source-path (expand-file-name "ms.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(declare-function mut-str-make-empty \"ext:nelisp-native\" (out capacity))
+(declare-function mut-str-push-byte \"ext:nelisp-native\" (out byte))
+(declare-function mut-str-finalize \"ext:nelisp-native\" (out dest))
+(defun nat-ms-bare (out) (mut-str-push-byte out 68))
+(defun nat-ms-one (out) (and (mut-str-push-byte out 65)))
+(defun nat-ms-two (out) (and (mut-str-push-byte out 66) (mut-str-push-byte out 67)))
+(defun nat-ms-r-bare (text out)
+  (and (mut-str-make-empty out 32) (nat-ms-bare out) (mut-str-finalize out out)))
+(defun nat-ms-r-one (text out)
+  (and (mut-str-make-empty out 32) (nat-ms-one out) (mut-str-finalize out out)))
+(defun nat-ms-r-two (text out)
+  (and (mut-str-make-empty out 32) (nat-ms-two out) (mut-str-finalize out out)))
+(provide 'nat-ms)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (dolist (probe '(("nat-ms-r-bare" "D")
+                           ("nat-ms-r-one" "A")
+                           ("nat-ms-r-two" "BC")))
+            (should (equal (nelisp-artifact-native-exec-general
+                            artifact-path (car probe) (list "x" ""))
+                           (cadr probe)))))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (provide 'nelisp-artifact-native-exec-test)
 
 ;;; nelisp-artifact-native-exec-test.el ends here
