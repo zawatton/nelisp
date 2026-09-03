@@ -132,6 +132,26 @@ supported by this polyfill (Phase 2.1)."
     (emacs-backquote--expand form)))
 
 
+;; Emacs preloads `backquote.el', so `backquote-backquote-symbol' /
+;; `backquote-unquote-symbol' / `backquote-splice-symbol' are always bound
+;; there, and vendored sources read them at load time -- `pp.el' builds
+;; `pp--quoting-syntaxes' from all three in a top-level `defvar'.  The
+;; NeLisp v1.2.0 reader has a native backquote (its reader emits the same
+;; `(\` ...)' / `(\, ...)' / `(\,@ ...)' forms as Emacs) but not the
+;; constants, so loading `pp' through `emacs-help' died with
+;; void-variable (measured 2026-09-04, windows-x86_64, anvil's MCP driver).
+;; Define them here, under the same names and values as Emacs, whenever the
+;; runtime left them unbound.
+(unless (boundp 'backquote-backquote-symbol)
+  (defconst backquote-backquote-symbol '\`
+    "Symbol used to represent a backquote or nested backquote."))
+(unless (boundp 'backquote-unquote-symbol)
+  (defconst backquote-unquote-symbol '\,
+    "Symbol used to represent an unquote inside a backquote."))
+(unless (boundp 'backquote-splice-symbol)
+  (defconst backquote-splice-symbol '\,@
+    "Symbol used to represent a splice inside a backquote."))
+
 (provide 'emacs-backquote)
 
 ;;; emacs-backquote.el ends here
