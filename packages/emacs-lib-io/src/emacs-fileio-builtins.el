@@ -92,6 +92,61 @@ leaving stub function cells in place."
            (symbol-function symbol)
          (error nil))))
 
+;;;; --- runtime predicates that already work stay in place ---------------
+;;
+;; NeLisp v1.2.0's reader binds stat-backed `file-exists-p' /
+;; `file-readable-p' / `file-directory-p' that are correct on every
+;; target, while two of the ports this file installs over them are not:
+;; `nelisp-ec-file-exists-p' answers t for a missing path on
+;; windows-x86_64, and `emacs-fileio-rdf-file-exists-p' answers t for
+;; every name because the reader's `rdf' returns "" for an unreadable
+;; file (its loader treats one as empty input).  Measured 2026-09-04:
+;; with either installed, Layer 2's `require' took the literal-path
+;; branch and every feature after this file failed with file-missing.
+;; So each predicate is verified once, BEFORE any override runs, against
+;; a name that cannot exist and this file's own path; one that passes is
+;; left alone by the three install sites below.  A reader whose predicate
+;; is missing or wrong (the legacy stat path that answered nil for
+;; everything) fails the probe and gets the ports exactly as before.
+
+(defconst emacs-fileio--probe-missing-name
+  "nelisp-emacs--no-such-file-probe-4f1c.el"
+  "A relative file name that no checkout contains.")
+
+(defun emacs-fileio--runtime-predicate-works-p (symbol)
+  "Return non-nil when the runtime's SYMBOL answers correctly.
+Correct means nil for `emacs-fileio--probe-missing-name' and non-nil
+for this library's own file (its directory for `file-directory-p').
+Nil when the file cannot be located, so an unverifiable runtime keeps
+the historical override behaviour."
+  (let ((self (and (fboundp 'locate-library)
+                   (condition-case nil
+                       (locate-library "emacs-fileio-builtins")
+                     (error nil)))))
+    (and (stringp self)
+         (fboundp symbol)
+         (condition-case nil
+             (let ((target (if (eq symbol 'file-directory-p)
+                               (let ((dir (file-name-directory self)))
+                                 (if (and (> (length dir) 1)
+                                          (eq (aref dir (1- (length dir))) ?/))
+                                     (substring dir 0 -1)
+                                   dir))
+                             self)))
+               (and (not (funcall symbol emacs-fileio--probe-missing-name))
+                    (funcall symbol target)
+                    t))
+           (error nil)))))
+
+(defconst emacs-fileio--verified-runtime-predicates
+  (let (ok)
+    (dolist (sym '(file-exists-p file-readable-p file-directory-p))
+      (when (emacs-fileio--runtime-predicate-works-p sym)
+        (push sym ok)))
+    ok)
+  "Predicates whose runtime definition passed
+`emacs-fileio--runtime-predicate-works-p' before any override ran.")
+
 ;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
 ;;
 ;; Pattern source: commit d3c17fa (emacs-stub-bulk Phase 11.D batch).  The
@@ -128,7 +183,8 @@ leaving stub function cells in place."
            rename-file
            ;; --- read / write
            insert-file-contents))
-  (when (emacs-fileio-builtins--install-function-p --name--)
+  (when (and (emacs-fileio-builtins--install-function-p --name--)
+             (not (memq --name-- emacs-fileio--verified-runtime-predicates)))
     (defalias --name--
       (intern (concat "nelisp-ec-" (symbol-name --name--))))))
 
@@ -143,8 +199,10 @@ leaving stub function cells in place."
 ;; predicates over whatever the runtime bound.  This block is inert under
 ;; host Emacs (no `nelisp--syscall-path-int'), so the C builtins stand.
 (when (fboundp 'nelisp--syscall-path-int)
-  (defalias 'file-exists-p #'nelisp-ec-file-exists-p)
-  (defalias 'file-readable-p #'nelisp-ec-file-readable-p)
+  (unless (memq 'file-exists-p emacs-fileio--verified-runtime-predicates)
+    (defalias 'file-exists-p #'nelisp-ec-file-exists-p))
+  (unless (memq 'file-readable-p emacs-fileio--verified-runtime-predicates)
+    (defalias 'file-readable-p #'nelisp-ec-file-readable-p))
   (defalias 'file-executable-p #'nelisp-ec-file-executable-p)
   ;; `executable-find' is in `--standalone-overrides' but, like the
   ;; predicates above, that clause does not fire on nemacs; an earlier
@@ -163,8 +221,10 @@ read-open route."
                   (error nil)))))
 
 (when (and (fboundp 'rdf) (not (fboundp 'nl-syscall-opendir)))
-  (defalias 'file-exists-p #'emacs-fileio-rdf-file-exists-p)
-  (defalias 'file-readable-p #'emacs-fileio-rdf-file-exists-p))
+  (unless (memq 'file-exists-p emacs-fileio--verified-runtime-predicates)
+    (defalias 'file-exists-p #'emacs-fileio-rdf-file-exists-p))
+  (unless (memq 'file-readable-p emacs-fileio--verified-runtime-predicates)
+    (defalias 'file-readable-p #'emacs-fileio-rdf-file-exists-p)))
 
 ;;;; --- file-name parsing ----------------------------------------------
 
@@ -223,7 +283,25 @@ Emacs API parity and ignored."
                   (throw 'done nil)))))))
       found)))
 
-(when (emacs-fileio-builtins--install-function-p 'locate-library)
+(defun emacs-fileio--runtime-locate-library-works-p ()
+  "Return non-nil when the runtime's own `locate-library' resolves a file.
+NeLisp v1.2.0 ships a `locate-file'-backed `locate-library' that is
+correct on every standalone target.  Replacing it with the
+directory-listing port above is only right on readers whose own
+implementation is missing or broken: on v1.2.0 the port's
+`emacs-fileio--safe-directory-probe-p' guard (keyed on the legacy
+`nl-syscall-opendir' name) answers nil, so the port returns nil for
+every library and the first `require' after this file loads dies with
+file-missing (measured 2026-09-04, windows-x86_64, `emacs-standalone').
+A functional probe on a file this bridge knows exists decides instead
+of a primitive's name."
+  (and (fboundp 'locate-library)
+       (condition-case nil
+           (stringp (locate-library "emacs-fileio-builtins"))
+         (error nil))))
+
+(when (and (emacs-fileio-builtins--install-function-p 'locate-library)
+           (not (emacs-fileio--runtime-locate-library-works-p)))
   (defalias 'locate-library #'emacs-fileio-locate-library))
 
 (when (emacs-fileio-builtins--install-function-p 'file-name-quoted-p)

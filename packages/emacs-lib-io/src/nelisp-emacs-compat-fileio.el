@@ -792,16 +792,23 @@ The text is encoded under `nelisp-coding-utf8-encode-string' (UTF-8,
 `replace' strategy).
 
 START / END — 1-based positions (matches `nelisp-ec' convention).
+              As in Emacs, START may instead be a STRING: that string
+              is written and END is ignored.  anvil-server's schema
+              cache and the reader's own prelude `write-region' both
+              rely on that form; before this the `integerp' check
+              rejected it (measured 2026-09-04, windows-x86_64).
 APPEND      — non-nil → open FILE in append mode.
 VISIT       — accepted for shape-compat; ignored in MVP.
 
 Returns the number of *bytes* written to disk."
-  (unless (and (integerp start) (integerp end))
-    (signal 'wrong-type-argument (list 'integerp start end)))
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (ignore visit)
-  (let* ((text (nelisp-ec-buffer-substring (min start end) (max start end)))
+  (let* ((text (if (stringp start)
+                   start
+                 (unless (and (integerp start) (integerp end))
+                   (signal 'wrong-type-argument (list 'integerp start end)))
+                 (nelisp-ec-buffer-substring (min start end) (max start end))))
          (unibyte (nelisp-coding-utf8-encode-string text)))
     (nelisp-ec--write-raw-bytes file unibyte append)
     (length unibyte)))
