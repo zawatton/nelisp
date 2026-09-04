@@ -36,6 +36,10 @@ final `.el' suffix with `.repl'.")
 (defvar nelisp-bootstrap-extra-files
   '("emacs-parity-core-vars.el"
     "cl-lib.el"
+    ;; Standalone runtime-speed and abbrev-table repairs.  Their prerequisites
+    ;; are available by the `emacs-cl-macros.el' insertion anchor.
+    "emacs-parity-addtolist.el"
+    "emacs-parity-abbrev.el"
     "seq.el"
     "map.el"
     "json.el"
@@ -49,11 +53,20 @@ final `.el' suffix with `.repl'.")
     ;; `nelisp-bootstrap--hoist-standalone-definers' performs that targeted
     ;; move after this completion list has made the files bundle members.
     "emacs-parity-setf-places.el"
-    "emacs-parity-macros2.el"
+    ;; General macro expansion must precede the macro consumers below.
+    "emacs-parity-macroexpand.el"
+    ;; Preserve the audit-tested clloop -> eieio -> evil sequence: eieio's
+    ;; class bootstrap registrations expect clloop immediately before it,
+    ;; while evil consumes the corrected destructuring helper afterward.
+    "emacs-parity-clloop.el"
     "emacs-parity-eieio.el"
+    "emacs-parity-evil.el"
+    "emacs-parity-macros2.el"
     "emacs-parity-flycheck.el"
     "emacs-parity-cc.el"
     "rx.el"
+    ;; Re-evaluate the corrected pcase-based translator only after rx helpers.
+    "emacs-parity-rx.el"
     "emacs-tui-backend.el"
     "emacs-redisplay-core.el"
     "emacs-tui-event.el")
@@ -1052,8 +1065,11 @@ Nested source-string evaluation is reserved for explicit diagnostics."
     "emacs-pcase.el"
     "emacs-cl-macros.el"
     "emacs-parity-setf-places.el"
-    "emacs-parity-macros2.el"
+    "emacs-parity-macroexpand.el"
+    "emacs-parity-clloop.el"
     "emacs-parity-eieio.el"
+    "emacs-parity-evil.el"
+    "emacs-parity-macros2.el"
     "emacs-parity-flycheck.el"
     "emacs-parity-cc.el")
   "Files `nelisp-bootstrap--hoist-standalone-definers' moves ahead of `generator.el'.

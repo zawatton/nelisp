@@ -57,10 +57,11 @@
 ;; `cl-destructuring-bind' as such a real macro, so the correct definition is
 ;; SKIPPED and the buggy prelude version wins.
 ;;
-;; FIX: unconditionally redefine `cl-destructuring-bind' with the correct,
-;; dotted-tail-aware expander (copied verbatim from `src/emacs-cl-macros.el'
-;; with the guard stripped), so it overrides the frozen prelude copy.  This is
-;; NOT a no-op: it emits real `let*' bindings -- positionals as `(nth I V)',
+;; FIX: on standalone NeLisp, redefine `cl-destructuring-bind' with the
+;; correct, dotted-tail-aware expander (copied verbatim from
+;; `src/emacs-cl-macros.el'), so it overrides the frozen prelude copy.  Host
+;; Emacs skips every replacement behind a NeLisp-only runtime marker.  This
+;; is NOT a no-op on standalone: it emits real `let*' bindings -- positionals as `(nth I V)',
 ;; the improper/`&rest' tail as `(nthcdr I V)', `&optional' with defaults and
 ;; `&key' scanning -- so `evil-define-command' expands and every evil command
 ;; is actually defined.  The helper `emacs-cl-macros--split-arglist' /
@@ -69,6 +70,8 @@
 ;; is self-contained regardless of load order.
 
 ;;; Code:
+
+(when (fboundp 'nelisp--write-stdout-bytes)
 
 ;;;; --- arglist helpers (correct, verbatim) ----------------------------
 
@@ -263,10 +266,9 @@ Supports &optional (with defaults), &rest/&body, &key (with defaults) and
 ;; (annalist.el:311).
 ;;
 ;; Like `emacs-parity-flycheck.el' this is a no-op outside the standalone
-;; runtime: the setter helpers are defined unconditionally (so the symbols are
-;; always resolvable) but the `cl-simple-setter' registrations are gated on
-;; `emacs-parity-evil--standalone-p', so host Emacs keeps its real gv-based
-;; `setf' and its own evil/annalist behaviour.
+;; runtime: both setter helpers and their `cl-simple-setter' registrations are
+;; inside the NeLisp-only gate, so host Emacs keeps its real gv-based `setf'
+;; and its own evil/annalist behaviour.
 
 (defvar emacs-parity-evil--standalone-p
   (fboundp 'nelisp--eval-source-string)
@@ -321,6 +323,8 @@ annalist.el."
        'emacs-parity-evil--command-properties-set)
   (put 'annalist--get-view-settings 'cl-simple-setter
        'emacs-parity-evil--annalist-view-settings-set))
+
+)
 
 (provide 'emacs-parity-evil)
 

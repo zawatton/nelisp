@@ -20,10 +20,11 @@
 ;; forever, consing without bound.  That is the 45+ minute audit hang.
 ;;
 ;; Because the buggy copy is inlined/frozen into `combined.repl', editing
-;; `src/emacs-cl-macros.el' does NOT take effect for the audit.  This file
-;; UNCONDITIONALLY redefines the cl-loop expander subsystem at runtime, and
+;; `src/emacs-cl-macros.el' does NOT take effect for the audit.  On standalone
+;; NeLisp this file redefines the cl-loop expander subsystem at runtime, and
 ;; is loaded by the compat-shim installer AFTER the frozen copy has been
-;; evaluated but BEFORE user init (hence before `evil').  We redefine:
+;; evaluated but BEFORE user init (hence before `evil').  Host Emacs skips
+;; every replacement behind a NeLisp-only runtime marker.  We redefine:
 ;;
 ;;   - emacs-cl-macros--loop-destructure-bindings
 ;;   - emacs-cl-macros--loop-wrap-body
@@ -44,9 +45,11 @@
 ;;
 ;; These bodies are copied verbatim from the current (correct) source of
 ;; `src/emacs-cl-macros.el', with the `unless fboundp' / `when' guards
-;; stripped so the redefinition is unconditional.
+;; stripped so the standalone redefinition replaces the frozen copy.
 
 ;;; Code:
+
+(when (fboundp 'nelisp--write-stdout-bytes)
 
 ;;;; --- loop helpers (correct) -----------------------------------------
 
@@ -445,6 +448,8 @@ The baked prelude version drops accumulators on the iterator-less
 (when (and (boundp 'nelisp--macros)
            (hash-table-p nelisp--macros))
   (puthash 'cl-loop (symbol-function 'cl-loop) nelisp--macros))
+
+)
 
 (provide 'emacs-parity-clloop)
 

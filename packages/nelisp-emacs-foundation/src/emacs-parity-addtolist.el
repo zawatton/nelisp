@@ -14,7 +14,8 @@
 ;; which is what broke theme / package `load-path' lookups in an earlier
 ;; version of this shim.  Uses the `equal' default; a caller-supplied
 ;; COMPARE-FN falls back to the original O(n) implementation.
-(when (fboundp 'add-to-list)
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (fboundp 'add-to-list))
   (defvar emacs-parity-addtolist--orig (symbol-function 'add-to-list))
   (defvar emacs-parity-addtolist--cache (make-hash-table :test 'eq)
     "Maps a list-var symbol to (MEMBER-HASH . LIST-VALUE-WE-LAST-SET).")
