@@ -1,0 +1,676 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=${NEMACS_NEXT_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd -P)}
+NELISP_BIN=${NELISP_BIN:-${NELISP:-}}
+BOOTSTRAP_REPL=${NEMACS_BOOTSTRAP_REPL:-$ROOT/build/nemacs-bootstrap.repl}
+WIDTH=${NEMACS_NEXT_TUI_WIDTH:-80}
+HEIGHT=${NEMACS_NEXT_TUI_HEIGHT:-24}
+DRAW=${NEMACS_NEXT_TUI_DRAW:-auto}
+
+if [ -z "$NELISP_BIN" ]; then
+  if [ -x "$ROOT/../nelisp/target/nelisp" ]; then
+    NELISP_BIN=$ROOT/../nelisp/target/nelisp
+  elif [ -x "$ROOT/vendor/nelisp/target/nelisp" ]; then
+    NELISP_BIN=$ROOT/vendor/nelisp/target/nelisp
+  else
+    NELISP_BIN=$ROOT/../nelisp/target/nelisp
+  fi
+fi
+
+if [ ! -x "$NELISP_BIN" ]; then
+  echo "nemacs-next-tui: nelisp binary is not executable: $NELISP_BIN" >&2
+  exit 1
+fi
+
+if [ ! -r "$BOOTSTRAP_REPL" ]; then
+  echo "nemacs-next-tui: bootstrap REPL is not readable: $BOOTSTRAP_REPL" >&2
+  echo "nemacs-next-tui: run make build-nelisp-bootstrap first" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "--no-draw" ]; then
+  DRAW=never
+  shift
+fi
+
+session_pid=
+old_stty=
+raw_enabled=0
+current_render=
+cursor_row=1
+cursor_col=1
+status_message=
+prompt_mode=0
+prompt_kind=file
+prompt_text=
+toolbar_focus=0
+toolbar_index=0
+toolbar_lines=1
+mb_lines=0
+mb_prompt=
+mb_input=
+mb_candidates_line=
+mb_depth=0
+quit_requested=0
+first_draw=1
+last_draw_actual_bytes=0
+last_draw_full_bytes=0
+last_draw_changed_lines=0
+
+declare -a current_lines=()
+declare -a current_runs=()
+declare -a rendered_lines=()
+declare -a drawn_lines=()
+declare -a toolbar_ids=(
+  toolbar.new-file
+  toolbar.open-file
+  toolbar.dired
+  toolbar.kill-buffer
+  toolbar.save-buffer
+  toolbar.undo
+  toolbar.cut
+  toolbar.copy
+  toolbar.paste
+  toolbar.search
+)
+
+cleanup() {
+  if [ "$raw_enabled" = 1 ]; then
+    stty "$old_stty" 2>/dev/null || true
+    printf '\033[?25h' || true
+  fi
+  if [ -n "$session_pid" ]; then
+    kill "$session_pid" 2>/dev/null || true
+    wait "$session_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+elisp_string() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/}
+  printf '"%s"' "$s"
+}
+
+message_expr() {
+  local kind=$1
+  local arg=${2-}
+  case "$kind" in
+    hello)
+      printf "'(:type hello)"
+      ;;
+    frame)
+      printf "'(:type command :name frame-snapshot :width %s :height %s)" "$WIDTH" "$HEIGHT"
+      ;;
+    text)
+      printf "(list :type 'input :event (list :text %s))" "$(elisp_string "$arg")"
+      ;;
+    key)
+      printf "(list :type 'input :event (list :key %s))" "$(elisp_string "$arg")"
+      ;;
+    command)
+      printf "'(:type command :name %s)" "$arg"
+      ;;
+    count-command)
+      printf "'(:type command :name %s :count 1)" "$arg"
+      ;;
+    find-file)
+      printf "(list :type 'command :name 'find-file :path %s)" "$(elisp_string "$arg")"
+      ;;
+    dired)
+      printf "(list :type 'command :name 'dired :directory %s)" "$(elisp_string "$arg")"
+      ;;
+    search)
+      printf "(list :type 'command :name 'isearch-forward :query %s)" "$(elisp_string "$arg")"
+      ;;
+    toolbar-invoke)
+      printf "(list :type 'command :name 'toolbar-invoke :id %s)" "$(elisp_string "$arg")"
+      ;;
+    *)
+      echo "nemacs-next-tui: unknown message kind: $kind" >&2
+      exit 2
+      ;;
+  esac
+}
+
+start_session() {
+  coproc NEMACS_NEXT_TUI_SESSION { "$NELISP_BIN" --repl --no-prompt --no-print; }
+  session_pid=$NEMACS_NEXT_TUI_SESSION_PID
+  cat "$BOOTSTRAP_REPL" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(setq load-path (list $(elisp_string "$ROOT/src") $(elisp_string "$ROOT/apps/nemacs-next/lisp")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(load $(elisp_string "$ROOT/src/emacs-special-buffers.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(load $(elisp_string "$ROOT/src/nemacs-loadup.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(unless nemacs-initialized (nemacs-init t))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(load $(elisp_string "$ROOT/apps/nemacs-next/lisp/nemacs-next-protocol.el"))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  printf '%s\n' "(nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_READY\n\")" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  local line
+  while IFS= read -r line <&"${NEMACS_NEXT_TUI_SESSION[0]}"; do
+    [ "$line" = "NEMACS_NEXT_TUI_READY" ] && return 0
+  done
+  echo "nemacs-next-tui: session exited during bootstrap" >&2
+  exit 1
+}
+
+read_render() {
+  current_render=
+  current_lines=()
+  current_runs=()
+  rendered_lines=()
+  cursor_row=1
+  cursor_col=1
+  status_message=
+  local line in_render=0
+  while IFS= read -r line <&"${NEMACS_NEXT_TUI_SESSION[0]}"; do
+    case "$line" in
+      NEMACS_NEXT_TUI_BEGIN)
+        ;;
+      NEMACS_NEXT_TUI_RENDER)
+        in_render=1
+        ;;
+      NEMACS_NEXT_TUI_END)
+        return 0
+        ;;
+      NEMACS_NEXT_TUI_CURSOR$'\t'*)
+        local rest=${line#*$'\t'}
+        cursor_row=${rest%%$'\t'*}
+        cursor_col=${rest##*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_STATUS$'\t'*)
+        status_message=${line#*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_FRAME_CONFIG$'\t'*)
+        local rest=${line#*$'\t'}
+        toolbar_lines=${rest%%$'\t'*}
+        mb_lines=${rest#*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_MINIBUFFER$'\t'*)
+        local rest=${line#*$'\t'}
+        mb_depth=${rest%%$'\t'*}
+        rest=${rest#*$'\t'}
+        mb_prompt=${rest%%$'\t'*}
+        rest=${rest#*$'\t'}
+        mb_input=${rest%%$'\t'*}
+        mb_candidates_line=${rest#*$'\t'}
+        ;;
+      NEMACS_NEXT_TUI_LINE$'\t'*)
+        local rest=${line#*$'\t'}
+        local row=${rest%%$'\t'*}
+        local text=${rest#*$'\t'}
+        current_lines[$row]=$text
+        ;;
+      NEMACS_NEXT_TUI_RUN$'\t'*)
+        local rest=${line#*$'\t'}
+        local row=${rest%%$'\t'*}
+        rest=${rest#*$'\t'}
+        current_runs[$row]+="${rest};"
+        ;;
+      *)
+        if [ "$in_render" = 1 ]; then
+          current_render+="$line"$'\n'
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+ansi_for_face() {
+  local face=$1 fg=${2-} bg=${3-} weight=${4-}
+  local sgr=
+  color_sgr() {
+    local color=$1 channel=$2
+    local prefix256=38 prefix24=38
+    if [ "$channel" = "bg" ]; then
+      prefix256=48
+      prefix24=48
+    fi
+    case "$color" in
+      \#??????)
+        local hex=${color#\#}
+        local r=$((16#${hex:0:2}))
+        local g=$((16#${hex:2:2}))
+        local b=$((16#${hex:4:2}))
+        if [ "${COLORTERM:-}" = "truecolor" ] || [ "${COLORTERM:-}" = "24bit" ]; then
+          printf '%s;2;%s;%s;%s' "$prefix24" "$r" "$g" "$b"
+        else
+          local ri=$(((r * 5 + 127) / 255))
+          local gi=$(((g * 5 + 127) / 255))
+          local bi=$(((b * 5 + 127) / 255))
+          printf '%s;5;%s' "$prefix256" "$((16 + 36 * ri + 6 * gi + bi))"
+        fi
+        ;;
+      green) [ "$channel" = "bg" ] && printf '%s' '48;5;34' || printf '%s' '38;5;34' ;;
+      blue) [ "$channel" = "bg" ] && printf '%s' '48;5;33' || printf '%s' '38;5;33' ;;
+      cyan) [ "$channel" = "bg" ] && printf '%s' '48;5;37' || printf '%s' '38;5;37' ;;
+      yellow) [ "$channel" = "bg" ] && printf '%s' '48;5;220' || printf '%s' '38;5;220' ;;
+      red) [ "$channel" = "bg" ] && printf '%s' '48;5;196' || printf '%s' '38;5;196' ;;
+      magenta|purple) [ "$channel" = "bg" ] && printf '%s' '48;5;127' || printf '%s' '38;5;127' ;;
+      white) [ "$channel" = "bg" ] && printf '%s' '47' || printf '%s' '37' ;;
+      black) [ "$channel" = "bg" ] && printf '%s' '40' || printf '%s' '30' ;;
+    esac
+  }
+  case "$face" in
+    org-level-1) sgr='1;38;5;33' ;;
+    org-level-2) sgr='1;38;5;39' ;;
+    org-level-3) sgr='1;38;5;70' ;;
+    org-level-4) sgr='1;38;5;178' ;;
+    bold) sgr='1' ;;
+    font-lock-comment-face) sgr='38;5;244' ;;
+    font-lock-string-face) sgr='38;5;35' ;;
+    default|'') sgr='0' ;;
+  esac
+  local fg_sgr bg_sgr
+  fg_sgr=$(color_sgr "$fg" fg)
+  bg_sgr=$(color_sgr "$bg" bg)
+  [ -n "$fg_sgr" ] && sgr=$fg_sgr
+  [ -n "$bg_sgr" ] && sgr="${sgr:+$sgr;}$bg_sgr"
+  if [ "$weight" = "bold" ] && [ "${sgr#*1}" = "$sgr" ]; then
+    sgr="${sgr:+$sgr;}1"
+  fi
+  printf '%s' "${sgr:-0}"
+}
+
+render_line_with_runs() {
+  local row=$1 text=${current_lines[$row]-} runs=${current_runs[$row]-}
+  local out= pos=0
+  local IFS=';'
+  for run in $runs; do
+    [ -n "$run" ] || continue
+    local rest=$run start end face fg bg weight
+    start=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    end=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    face=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    fg=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    bg=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+    weight=$rest
+    if [ "$start" -gt "$pos" ]; then
+      out+="${text:pos:start-pos}"
+    fi
+    out+="\033[$(ansi_for_face "$face" "$fg" "$bg" "$weight")m${text:start:end-start}\033[0m"
+    pos=$end
+  done
+  out+="${text:pos}"
+  printf '%b' "$out"
+}
+
+render_current_lines() {
+  current_render=
+  rendered_lines=()
+  local row=0
+  while [ "$row" -lt "$HEIGHT" ]; do
+    rendered_lines[$row]=$(render_line_with_runs "$row")
+    current_render+="${rendered_lines[$row]}"$'\n'
+    row=$((row + 1))
+  done
+}
+
+send_message() {
+  local expr
+  expr=$(message_expr "$@")
+  printf '%s\n' "(let* ((nemacs-next-tui-response (nemacs-next-session-handle-message $expr)) (nemacs-next-tui-type (plist-get nemacs-next-tui-response :type)) (nemacs-next-tui-status \"\")) (cond ((eq nemacs-next-tui-type 'error) (setq nemacs-next-tui-status (or (plist-get nemacs-next-tui-response :message) \"error\")) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :saved-file) (setq nemacs-next-tui-status (concat \"Wrote \" (plist-get nemacs-next-tui-response :saved-file))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :directory) (setq nemacs-next-tui-status (concat \"Directory \" (plist-get nemacs-next-tui-response :directory))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :search-query) (setq nemacs-next-tui-status (concat \"Search \" (plist-get nemacs-next-tui-response :search-query))) (setq nemacs-next-session-echo-message nemacs-next-tui-status)) ((plist-get nemacs-next-tui-response :file-name) (setq nemacs-next-tui-status (concat \"Opened \" (plist-get nemacs-next-tui-response :file-name))) (setq nemacs-next-session-echo-message nemacs-next-tui-status))) (let* ((nemacs-next-tui-frame-state (if (plist-get nemacs-next-tui-response :frame) nemacs-next-tui-response (nemacs-next-session-frame-snapshot $WIDTH $HEIGHT))) (nemacs-next-tui-frame (plist-get nemacs-next-tui-frame-state :frame)) (nemacs-next-tui-cursor (plist-get nemacs-next-tui-frame :cursor)) (nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-frame :tool-bar-lines) 0)) (nemacs-next-tui-minibuffer (plist-get nemacs-next-tui-frame :minibuffer)) (nemacs-next-tui-row 0)) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_BEGIN\n\") (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_FRAME_CONFIG\t\" (number-to-string nemacs-next-tui-toolbar-lines) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-frame :minibuffer-lines) 0)) \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_MINIBUFFER\t\" (number-to-string (or (plist-get nemacs-next-tui-minibuffer :depth) 0)) \"\t\" (or (plist-get nemacs-next-tui-minibuffer :prompt) \"\") \"\t\" (or (plist-get nemacs-next-tui-minibuffer :contents) \"\") \"\t\" (or (plist-get nemacs-next-tui-minibuffer :candidates-line) \"\") \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_STATUS\t\" nemacs-next-tui-status \"\n\")) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_CURSOR\t\" (number-to-string (+ 1 nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-cursor :row) 0))) \"\t\" (number-to-string (+ 1 (or (plist-get nemacs-next-tui-cursor :column) 0))) \"\n\")) (when (> nemacs-next-tui-toolbar-lines 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t0\t\" (nemacs-next-session-toolbar-render-line $toolbar_index (if (= $toolbar_focus 1) t nil) $WIDTH) \"\n\"))) (dolist (nemacs-next-tui-line (plist-get nemacs-next-tui-frame :viewport)) (let ((nemacs-next-tui-row (+ nemacs-next-tui-toolbar-lines (or (plist-get nemacs-next-tui-line :row) nemacs-next-tui-row)))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string nemacs-next-tui-row) \"\t\" (or (plist-get nemacs-next-tui-line :text) \"\") \"\n\")) (dolist (nemacs-next-tui-run (plist-get nemacs-next-tui-line :face-runs)) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_RUN\t\" (number-to-string nemacs-next-tui-row) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :start) 0)) \"\t\" (number-to-string (or (plist-get nemacs-next-tui-run :end) 0)) \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :face) 'default)) \"\t\" (or (plist-get nemacs-next-tui-run :foreground) \"\") \"\t\" (or (plist-get nemacs-next-tui-run :background) \"\") \"\t\" (symbol-name (or (plist-get nemacs-next-tui-run :weight) 'normal)) \"\n\"))))) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\t\" (or (plist-get nemacs-next-tui-frame :mode-line) \"\") \"\n\")) (when (> (length (or (plist-get nemacs-next-tui-frame :echo) \"\")) 0) (nelisp--write-stdout-bytes (concat \"NEMACS_NEXT_TUI_LINE\t\" (number-to-string (- (or (plist-get nemacs-next-tui-frame :height) $HEIGHT) 1)) \"\techo: \" (plist-get nemacs-next-tui-frame :echo) \"\n\"))) (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_RENDER\n\") (nelisp--write-stdout-bytes \"NEMACS_NEXT_TUI_END\n\")))" >&"${NEMACS_NEXT_TUI_SESSION[1]}"
+  read_render
+  render_current_lines
+}
+
+emit_draw_stats() {
+  if [ "${NEMACS_NEXT_TUI_DRAW_STATS:-0}" = 1 ]; then
+    printf '\nNEMACS_NEXT_TUI_DRAW_STATS\t%s\t%s\t%s\n' \
+      "$last_draw_actual_bytes" "$last_draw_full_bytes" \
+      "$last_draw_changed_lines" >&2
+  fi
+}
+
+draw() {
+  if [ "$DRAW" = "never" ] || { [ "$DRAW" = "auto" ] && [ ! -t 1 ]; }; then
+    printf '%s' "$current_render"
+    if [ "$prompt_mode" = 1 ]; then
+      case "$prompt_kind" in
+        directory) printf 'Dired directory: %s\n' "$prompt_text" ;;
+        search) printf 'Search: %s\n' "$prompt_text" ;;
+        *) printf 'Find file: %s\n' "$prompt_text" ;;
+      esac
+    fi
+    if [ "${mb_lines:-0}" -gt 0 ]; then
+      printf '%s%s\n' "$mb_prompt" "$mb_input"
+      if [ -n "$mb_candidates_line" ]; then
+        printf '%s\n' "$mb_candidates_line"
+      fi
+    fi
+    last_draw_actual_bytes=${#current_render}
+    last_draw_full_bytes=$last_draw_actual_bytes
+    last_draw_changed_lines=$HEIGHT
+    emit_draw_stats
+    return
+  fi
+  local bytes=0 full_bytes=0 changed=0 row=0 chunk=
+  full_bytes=$(( ${#current_render} + 16 ))
+  if [ "$first_draw" = 1 ]; then
+    chunk=$'\033[?25l\033[H\033[2J'
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    while [ "$row" -lt "$HEIGHT" ]; do
+      chunk="${rendered_lines[$row]-}"$'\n'
+      printf '%s' "$chunk"
+      bytes=$((bytes + ${#chunk}))
+      drawn_lines[$row]=${rendered_lines[$row]-}
+      changed=$((changed + 1))
+      row=$((row + 1))
+    done
+    first_draw=0
+  else
+    while [ "$row" -lt "$HEIGHT" ]; do
+      if [ "${drawn_lines[$row]-}" != "${rendered_lines[$row]-}" ]; then
+        chunk=$(printf '\033[%s;1H%s\033[K' "$((row + 1))" "${rendered_lines[$row]-}")
+        printf '%s' "$chunk"
+        bytes=$((bytes + ${#chunk}))
+        drawn_lines[$row]=${rendered_lines[$row]-}
+        changed=$((changed + 1))
+      fi
+      row=$((row + 1))
+    done
+  fi
+  if [ "$prompt_mode" = 1 ]; then
+    local prompt_label="Find file: "
+    case "$prompt_kind" in
+      directory) prompt_label="Dired directory: " ;;
+      search) prompt_label="Search: " ;;
+    esac
+    chunk=$(printf '\033[%s;1H%s%s\033[K' "$HEIGHT" "$prompt_label" "$prompt_text")
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    cursor_row=$HEIGHT
+    cursor_col=$((1 + ${#prompt_label} + ${#prompt_text}))
+  fi
+  if [ "${mb_lines:-0}" -gt 0 ]; then
+    local cand_row=$((HEIGHT - 1 - mb_lines))
+    local prompt_row=$((HEIGHT - 2))
+    chunk=$(printf '\033[%s;1H%s\033[K' "$((cand_row + 1))" "$mb_candidates_line")
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    chunk=$(printf '\033[%s;1H%s%s\033[K' "$((prompt_row + 1))" "$mb_prompt" "$mb_input")
+    printf '%s' "$chunk"
+    bytes=$((bytes + ${#chunk}))
+    cursor_row=$((prompt_row + 1))
+    cursor_col=$((1 + ${#mb_prompt} + ${#mb_input}))
+  fi
+  chunk=$(printf '\033[%s;%sH\033[?25h' "$cursor_row" "$cursor_col")
+  printf '%s' "$chunk"
+  bytes=$((bytes + ${#chunk}))
+  last_draw_actual_bytes=$bytes
+  last_draw_full_bytes=$full_bytes
+  last_draw_changed_lines=$changed
+  emit_draw_stats
+}
+
+byte_ord() {
+  local LC_ALL=C
+  printf '%d' "'$1"
+}
+
+read_byte() {
+  local __var=$1 byte=
+  local LC_ALL=C
+  if IFS= read -rsn1 byte; then
+    printf -v "$__var" '%s' "$byte"
+    return 0
+  fi
+  return 1
+}
+
+read_utf8_unit() {
+  local __var=$1 first= need=0 ord rest= unit=
+  if ! read_byte first; then
+    return 1
+  fi
+  ord=$(byte_ord "$first")
+  unit=$first
+  if [ "$ord" -ge 240 ]; then
+    need=3
+  elif [ "$ord" -ge 224 ]; then
+    need=2
+  elif [ "$ord" -ge 192 ]; then
+    need=1
+  fi
+  while [ "$need" -gt 0 ]; do
+    if read_byte rest; then
+      unit+=$rest
+      need=$((need - 1))
+    else
+      break
+    fi
+  done
+  printf -v "$__var" '%s' "$unit"
+  return 0
+}
+
+handle_byte() {
+  local ch=$1
+  if [ "$prompt_mode" = 1 ]; then
+    case "$ch" in
+      $'\r'|$'\n')
+        prompt_mode=0
+        case "$prompt_kind" in
+          directory) send_message dired "$prompt_text" ;;
+          search) send_message search "$prompt_text" ;;
+          *) send_message find-file "$prompt_text" ;;
+        esac
+        prompt_text=
+        prompt_kind=file
+        ;;
+      $'\177'|$'\b')
+        prompt_text=${prompt_text%?}
+        ;;
+      $'\003'|$'\007')
+        prompt_mode=0
+        prompt_text=
+        prompt_kind=file
+        status_message="Quit"
+        ;;
+      *)
+        prompt_text+="$ch"
+        ;;
+    esac
+    draw
+    return
+  fi
+
+  # Session-driven generic minibuffer prompt (M-x and its chained
+  # follow-ups, entered via Esc x below).  Unlike the local
+  # `prompt_mode' above, keystrokes here are sent one at a time so the
+  # session can offer live TAB completion and a candidate list; the
+  # session tracks input/candidates itself
+  # (`nemacs-next-session--minibuffer-active').  Tab and C-g need an
+  # explicit case here because their default handling below would
+  # otherwise self-insert a literal tab or fall through unhandled.
+  # Return/Backspace already send plain `key return'/`key backspace'
+  # messages further down, which the session routes to the minibuffer
+  # the same way.
+  if [ "${mb_lines:-0}" -gt 0 ]; then
+    case "$ch" in
+      $'\t')
+        send_message key tab
+        draw
+        return
+        ;;
+      $'\007')
+        send_message key C-g
+        draw
+        return
+        ;;
+    esac
+  fi
+
+  case "$ch" in
+    q)
+      if [ "${NEMACS_NEXT_TUI_Q_QUITS:-0}" = 1 ]; then
+        quit_requested=1
+      else
+        send_message text "$ch"
+        draw
+      fi
+      ;;
+    $'\003')
+      quit_requested=1
+      ;;
+    $'\030')
+      local next=
+      if read_utf8_unit next; then
+        case "$next" in
+          $'\003') quit_requested=1 ;;
+          $'\006') prompt_mode=1; prompt_text= ;;
+          $'\023') send_message command save-buffer ;;
+          *) status_message="Undefined C-x key" ;;
+        esac
+      else
+        quit_requested=1
+      fi
+      draw
+      ;;
+    $'\006')
+      send_message count-command forward-char
+      draw
+      ;;
+    $'\002')
+      send_message count-command backward-char
+      draw
+      ;;
+    $'\016')
+      send_message count-command next-line
+      draw
+      ;;
+    $'\020')
+      send_message count-command previous-line
+      draw
+      ;;
+    $'\037')
+      send_message command undo
+      draw
+      ;;
+    $'\r'|$'\n')
+      if [ "$toolbar_focus" = 1 ]; then
+        local id=${toolbar_ids[$toolbar_index]}
+        case "$id" in
+          toolbar.new-file|toolbar.open-file)
+            prompt_kind=file
+            prompt_mode=1
+            prompt_text=
+            send_message toolbar-invoke "$id"
+            ;;
+          toolbar.dired)
+            prompt_kind=directory
+            prompt_mode=1
+            prompt_text=.
+            send_message toolbar-invoke "$id"
+            ;;
+          toolbar.search)
+            prompt_kind=search
+            prompt_mode=1
+            prompt_text=
+            send_message toolbar-invoke "$id"
+            ;;
+          *)
+            send_message toolbar-invoke "$id"
+            ;;
+        esac
+      else
+        send_message key return
+      fi
+      draw
+      ;;
+    $'\177'|$'\b')
+      send_message key backspace
+      draw
+      ;;
+    $'\033')
+      local seq1= seq2=
+      if IFS= read -rsn1 -t 0.05 seq1 && [ "$seq1" = "[" ]; then
+        if IFS= read -rsn1 -t 0.05 seq2; then
+          case "$seq2" in
+            C)
+              if [ "$toolbar_focus" = 1 ]; then
+                toolbar_index=$(( (toolbar_index + 1) % ${#toolbar_ids[@]} ))
+                send_message frame
+              else
+                send_message count-command forward-char
+              fi
+              ;;
+            D)
+              if [ "$toolbar_focus" = 1 ]; then
+                toolbar_index=$(( (toolbar_index + ${#toolbar_ids[@]} - 1) % ${#toolbar_ids[@]} ))
+                send_message frame
+              else
+                send_message count-command backward-char
+              fi
+              ;;
+            B) send_message count-command next-line ;;
+            A) send_message count-command previous-line ;;
+            2)
+              local seq3= seq4=
+              if IFS= read -rsn1 -t 0.05 seq3 && [ "$seq3" = "1" ]; then
+                IFS= read -rsn1 -t 0.05 seq4 || true
+                toolbar_focus=1
+                send_message frame
+              fi
+              ;;
+          esac
+          draw
+        fi
+      elif [ "$seq1" = "\`" ]; then
+        if [ "$toolbar_focus" = 1 ]; then
+          toolbar_focus=0
+        else
+          toolbar_focus=1
+        fi
+        send_message frame
+        draw
+      elif [ "$seq1" = "x" ]; then
+        # Alt+x / Esc x -- M-x execute-extended-command.  Sent as a
+        # `command' message (not `input') so it reaches the session's
+        # dispatch cond directly, regardless of whether a session
+        # minibuffer prompt is already active (that is how recursive
+        # M-x nesting bumps the depth counter; see
+        # `nemacs-next-session--minibuffer-depth').
+        send_message command execute-extended-command
+        draw
+      else
+        if [ "${mb_lines:-0}" -gt 0 ]; then
+          send_message key escape
+          draw
+        elif [ "$toolbar_focus" = 1 ]; then
+          toolbar_focus=0
+          send_message frame
+          draw
+        fi
+      fi
+      ;;
+    *)
+      send_message text "$ch"
+      draw
+      ;;
+  esac
+}
+
+start_session
+send_message hello >/dev/null
+send_message frame
+
+if [ -t 0 ]; then
+  old_stty=$(stty -g)
+  stty raw -echo
+  raw_enabled=1
+fi
+
+draw
+
+while [ "$quit_requested" = 0 ]; do
+  ch=
+  if ! read_utf8_unit ch; then
+    break
+  fi
+  handle_byte "$ch"
+done
+
+exit 0

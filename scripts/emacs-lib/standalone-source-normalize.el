@@ -13,10 +13,18 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 123
+(defconst standalone-source-normalize-cache-version 133
   "Cache format version for normalized standalone source forms.
-123 adds a content digest to the cached file state, so entries written
-by 122 are discarded rather than trusted.")
+Bump this whenever normalization semantics change so stale cache entries
+self-invalidate; the cache key otherwise only covers the source file's
+truename/mtime/size, not the normalizer's own behavior (Doc 33 item 234:
+version 130 retains core regex builder bodies even when they exceed the
+generic large-defun replay threshold; 133 is the merge of that line with
+the branch that added a content digest to the cached file state, so
+entries written by either side are discarded rather than trusted).")
+
+(defvar standalone-source-normalize-read-max-lisp-eval-depth 10000
+  "Maximum Lisp nesting depth while reading vendor source for normalization.")
 
 (defvar standalone-source-normalize-large-defun-character-limit 3500
   "Maximum printed top-level defun size retained during standalone replay.
@@ -110,6 +118,26 @@ callability-only UI functions that appear after enough cumulative property
 traffic for even a stub function definition to exceed the standalone replay
 envelope.")
 
+(defvar standalone-source-normalize-retained-large-defun-symbols
+  '(nelisp-rx--build
+    ;; Task #17 M2: load-bearing functions in the Magit bridge bundle
+    ;; whose generic size-based elision silently corrupts the status
+    ;; buffer path rather than merely trimming optional UI:
+    ;; - `format-spec' returning nil makes every Magit buffer name nil
+    ;;   (magit-generate-buffer-name-default-function), aborting
+    ;;   `magit-generate-new-buffer' with wrong-type-argument.
+    ;; - `eieio-defclass-internal' returning nil makes every `defclass'
+    ;;   in the chain (magit-section's whole section class hierarchy)
+    ;;   a silent no-op.
+    ;; - `magit-diff-wash-diff' returning nil silently empties the
+    ;;   unstaged/staged diff sections a status buffer is asserted on.
+    format-spec
+    eieio-defclass-internal
+    magit-diff-wash-diff)
+  "Top-level defuns exempt from generic large-body replay elision.
+These symbols are core runtime substrate where replacing the body with a
+callable nil stub silently corrupts downstream semantics.")
+
 (defvar standalone-source-normalize-elided-defconst-symbols
   '(emoji--labels emoji--derived emoji--names)
   "Top-level defconsts whose large UI data is elided during replay.
@@ -183,7 +211,9 @@ These options appear late enough in large vendor loads that even a plain
 binding form can exceed the current standalone replay envelope.")
 
 (defvar standalone-source-normalize-lightweight-defcustom-symbols
-  '(org-link-doi-server-url)
+  '(org-link-doi-server-url
+    text-mode-hook
+    text-mode-ispell-word-completion)
   "Top-level defcustom symbols rewritten to plain bindings during replay.")
 
 (defvar standalone-source-normalize-dropped-defface-symbols
@@ -777,6 +807,18 @@ forms can still observe them without spending the final vendor form.")
 	              (concat "<a href=\"irc:" link "\">" desc "</a>")
 	            nil)))
 	      (provide 'ol-irc)))
+   ((equal standalone-source-normalize-current-file "org-fold-core.el")
+    '((defun org-fold-core-get-folding-spec-from-folding-prop (folding-prop)
+        "Return folding spec symbol used for folding property with name FOLDING-PROP."
+        (let ((prop-name (symbol-name folding-prop))
+              (specs (org-fold-core-folding-spec-list))
+              result)
+          (while (and specs (null result))
+            (let ((spec (car specs)))
+              (when (string-match-p (symbol-name spec) prop-name)
+                (setq result spec)))
+            (setq specs (cdr specs)))
+          result))))
 	   ((equal standalone-source-normalize-current-file "tempo.el")
 	    '((progn
         (defvar tempo-tags nil)
@@ -872,6 +914,26 @@ error surface is preserved."
    ((standalone-source-normalize--self-evaluating-p datum) datum)
    (t (list 'quote datum))))
 
+(defun standalone-source-normalize--reader-quote-form-p (form heads)
+  "Return non-nil when FORM is a genuine two-element reader quote form.
+
+The Lisp reader always emits backquote/comma/comma-at syntax as an exact
+`(HEAD DATUM)' pair -- `\\=`X' reads as `(backquote X)', `,X' reads as
+`(comma X)', and `,@X' reads as `(comma-at X)', each with exactly one
+trailing element.  A longer list whose CAR merely happens to `eq' one of
+HEADS is ordinary code, not reader-quoted data -- for example
+`(defmacro backquote (form) DOC BODY)' has `(backquote (form) DOC BODY)'
+as its cdr, which shares a head symbol with real backquote syntax but is
+not one.  Treating that shape as `(HEAD DATUM)' truncates DOC and BODY,
+silently hollowing the definition (Doc 33 item 225).  Requiring the exact
+two-element shape keeps the quote-form fast path from misfiring on code
+that merely defines or references something literally named `backquote',
+`comma', or `comma-at'."
+  (and (consp form)
+       (memq (car form) heads)
+       (consp (cdr form))
+       (null (cddr form))))
+
 (defun standalone-source-normalize--backquote-datum (datum)
   "Return DATUM rewritten for standalone evaluation inside backquote."
   (cond
@@ -881,11 +943,11 @@ error surface is preserved."
    ((consp datum)
     (let ((head (car datum)))
       (cond
-       ((or (eq head 'comma) (eq head '\,))
+       ((standalone-source-normalize--reader-quote-form-p datum '(comma \,))
         (list head (standalone-source-normalize-form (cadr datum))))
-       ((or (eq head 'comma-at) (eq head '\,@))
+       ((standalone-source-normalize--reader-quote-form-p datum '(comma-at \,@))
         (list head (standalone-source-normalize-form (cadr datum))))
-       ((or (eq head 'backquote) (eq head '\`))
+       ((standalone-source-normalize--reader-quote-form-p datum '(backquote \`))
         (list head
               (standalone-source-normalize--backquote-datum (cadr datum))))
        (t
@@ -900,7 +962,7 @@ Quoted data is preserved.  Code positions are walked recursively."
    ((consp form)
     (cond
      ((eq (car form) 'quote) form)
-     ((or (eq (car form) 'backquote) (eq (car form) '\`))
+     ((standalone-source-normalize--reader-quote-form-p form '(backquote \`))
       (list (car form)
             (standalone-source-normalize--backquote-datum (cadr form))))
      ((eq (car form) 'setq-local)
@@ -1010,6 +1072,39 @@ as many small `puthash' forms."
         (cadr form)
         (standalone-source-normalize-form (caddr form))))
 
+(defun standalone-source-normalize--keymap-defvar-let-p (form)
+  "Return non-nil when FORM is a split-safe keymap DEFVAR initializer."
+  (and (consp form)
+       (eq (car form) 'defvar)
+       (symbolp (cadr form))
+       (let ((value-form (caddr form)))
+         (and (consp value-form)
+              (eq (car value-form) 'let)
+              (equal (cadr value-form) '((map (make-sparse-keymap))))
+              (let ((body (cddr value-form)))
+                (and body
+                     (eq (car (last body)) 'map)
+                     (catch 'unsafe
+                       (dolist (entry (butlast body) t)
+                         (unless
+                             (and (consp entry)
+                                  (memq (car entry)
+                                        '(define-key set-keymap-parent))
+                                  (eq (cadr entry) 'map))
+                           (throw 'unsafe nil))))))))))
+
+(defun standalone-source-normalize--keymap-defvar-let-forms (form)
+  "Split top-level keymap DEFVAR FORM into smaller replay forms."
+  (let* ((name (cadr form))
+         (body (cddr (caddr form)))
+         (actions (butlast body)))
+    (cons (list 'defvar name '(make-sparse-keymap))
+          (mapcar
+           (lambda (entry)
+             (standalone-source-normalize-form
+              (cons (car entry) (cons name (cddr entry)))))
+           actions))))
+
 (defun standalone-source-normalize--org-set-tag-faces-form ()
   "Return a standalone-safe callable replacement for `org-set-tag-faces'."
   '(fset
@@ -1039,6 +1134,13 @@ as many small `puthash' forms."
        (eq (car form) 'quote)
        (symbolp (cadr form))
        (cadr form)))
+
+(defun standalone-source-normalize--def-edebug-elem-spec-form (form)
+  "Return FORM as a direct Edebug element-spec property installation."
+  (list 'put
+        (standalone-source-normalize-form (cadr form))
+        ''edebug-elem-spec
+        (standalone-source-normalize-form (caddr form))))
 
 (defun standalone-source-normalize--bundled-ignore-defalias-p (form)
   "Return non-nil when FORM aliases a symbol covered by an ignore bundle."
@@ -1099,6 +1201,8 @@ and the inline-only helper forms in BODY are not valid ordinary runtime code."
        (eq (car form) 'defun)
        (symbolp (cadr form))
        (listp (caddr form))
+       (not (memq (cadr form)
+                  standalone-source-normalize-retained-large-defun-symbols))
        (or (memq (cadr form)
                  standalone-source-normalize-unmarked-elided-defun-symbols)
            (memq (cadr form)
@@ -1243,6 +1347,11 @@ Handles the normal defun body shape with an optional docstring and
    ;; forms on large declaration runs in files such as org-cycle.el.
    ((and (consp form) (eq (car form) 'declare-function))
     nil)
+   ((and (consp form)
+         (eq (car form) 'def-edebug-elem-spec)
+         (consp (cdr form))
+         (consp (cddr form)))
+    (list (standalone-source-normalize--def-edebug-elem-spec-form form)))
    ;; Top-level `eval-when-compile' is for byte/compiler-time setup.  The
    ;; standalone loader has no byte compiler, so executing it at runtime only
    ;; adds load pressure and can pull in irrelevant compile-time dependencies.
@@ -1253,6 +1362,16 @@ Handles the normal defun body shape with an optional docstring and
    ;; add substantial load pressure in standalone replay.
    ((and (consp form)
          (memq (car form) '(org-defkey easy-menu-define)))
+    nil)
+   ((and (consp form)
+         (eq (car form) 'define-key)
+         (equal standalone-source-normalize-current-file "files.el")
+         (memq (cadr form) '(ctl-x-map ctl-x-4-map ctl-x-5-map esc-map)))
+    nil)
+   ((and (consp form)
+         (eq (car form) 'define-key)
+         (equal standalone-source-normalize-current-file "window.el")
+         (memq (cadr form) '(global-map ctl-x-map ctl-x-4-map)))
     nil)
    ((and (consp form)
          (eq (car form) 'org-cite-register-processor)
@@ -1273,6 +1392,9 @@ Handles the normal defun body shape with an optional docstring and
          (symbolp (cadr form))
          (null (cddr form)))
     nil)
+   ((and (equal standalone-source-normalize-current-file "xterm.el")
+         (standalone-source-normalize--keymap-defvar-let-p form))
+    (standalone-source-normalize--keymap-defvar-let-forms form))
    ;; Variable docstrings do not affect runtime callability and can tip large
    ;; replay prefixes over the standalone evaluator's current envelope.
    ((and (consp form)
@@ -1498,12 +1620,39 @@ Handles the normal defun body shape with an optional docstring and
    (t
     (list (standalone-source-normalize-form form)))))
 
+(defun standalone-source-normalize--apply-file-local-shorthands ()
+  "Activate the current buffer's file-local `read-symbol-shorthands', if any.
+
+Some vendor packages (notably Magit's own lisp files) rely on Emacs's
+read-symbol-shorthands feature: the file's trailing Local Variables
+block maps short names such as `and$'/`if-let*' onto this package-
+prefixed real symbols (`cond-let--and$'/`cond-let--if-let*'), and the
+READER performs that mapping, per buffer.  A plain `read' from a fresh
+temp buffer never sees the mapping, so every shorthand call site
+normalizes to the bare short symbol -- for names with no global
+definition (`and$'/`when$'/`thread$') that is a guaranteed
+void-function at runtime, and for names that do exist globally
+(`if-let*' etc.) it silently swaps in a different implementation than
+the file's author selected.  `hack-local-variables' applies the block
+to this (temp) buffer the same way `find-file' would;
+`enable-local-eval' stays nil so only variable settings apply, and
+errors are ignored so a file with no or malformed local variables
+normalizes exactly as before."
+  (let ((enable-local-variables :all)
+        (enable-local-eval nil)
+        (enable-dir-local-variables nil))
+    (ignore-errors (hack-local-variables))))
+
 (defun standalone-source-normalize-read-forms-from-file (file)
   "Return top-level forms from FILE, normalized for standalone NeLisp."
   (let ((standalone-source-normalize-current-file
-         (file-name-nondirectory file)))
+         (file-name-nondirectory file))
+        (max-lisp-eval-depth
+         (max max-lisp-eval-depth
+              standalone-source-normalize-read-max-lisp-eval-depth)))
     (with-temp-buffer
       (insert-file-contents file)
+      (standalone-source-normalize--apply-file-local-shorthands)
       (let (forms)
         (goto-char (point-min))
         (condition-case err
@@ -1575,22 +1724,28 @@ Handles the normal defun body shape with an optional docstring and
 
 (defun standalone-source-normalize-form-to-string (form)
   "Return normalized FORM as standalone-readable source text."
-  (with-temp-buffer
-    (let ((print-escape-newlines t)
-          ;; `nelisp--eval-source-string' does not yet read the `#'foo'
-          ;; abbreviation consistently.  Print `(function foo)' instead.
-          (print-quoted nil))
-      (prin1 (standalone-source-normalize-form form) (current-buffer)))
-    (buffer-string)))
+  (let ((max-lisp-eval-depth
+         (max max-lisp-eval-depth
+              standalone-source-normalize-read-max-lisp-eval-depth)))
+    (with-temp-buffer
+      (let ((print-escape-newlines t)
+            ;; `nelisp--eval-source-string' does not yet read the `#'foo'
+            ;; abbreviation consistently.  Print `(function foo)' instead.
+            (print-quoted nil))
+        (prin1 (standalone-source-normalize-form form) (current-buffer)))
+      (buffer-string))))
 
 (defun standalone-source-normalize-file-to-form-strings (file)
   "Return FILE as a list of normalized top-level source strings."
-  (or (standalone-source-normalize--cache-read file)
-      (let ((forms (mapcar #'standalone-source-normalize-form-to-string
-                           (standalone-source-normalize-read-forms-from-file
-                            file))))
-        (standalone-source-normalize--cache-write file forms)
-        forms)))
+  (let ((max-lisp-eval-depth
+         (max max-lisp-eval-depth
+              standalone-source-normalize-read-max-lisp-eval-depth)))
+    (or (standalone-source-normalize--cache-read file)
+        (let ((forms (mapcar #'standalone-source-normalize-form-to-string
+                             (standalone-source-normalize-read-forms-from-file
+                              file))))
+          (standalone-source-normalize--cache-write file forms)
+          forms))))
 
 (defun standalone-source-normalize-file-to-string (file)
   "Return FILE as normalized standalone-readable source text."

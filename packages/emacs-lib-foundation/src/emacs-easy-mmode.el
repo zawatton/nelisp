@@ -17,8 +17,18 @@
 (defvar emacs-easy-mmode--standalone-p
   (or (not (boundp 'emacs-version))
       (and (fboundp 'nelisp--eval-source-string)
-           (get 'define-minor-mode 'emacs-stub-bulk)))
-  "Non-nil when the standalone fallback should replace easy-mmode stubs.")
+           (or (not (fboundp 'define-minor-mode))
+               (get 'define-minor-mode 'emacs-stub-bulk))))
+  "Non-nil when the standalone fallback should replace easy-mmode stubs.
+
+The `(not (fboundp \\='define-minor-mode))' arm matters for load order
+(Doc 33 §8 item 221): the bootstrap bundle loads `emacs-stub-bulk' LAST
+(Doc 22 A19), so when this file loads, `define-minor-mode' carries no
+`emacs-stub-bulk' property yet -- it is simply undefined.  Without this
+arm the fallback never installed on the standalone reader, the stub-bulk
+no-op macro won and every vendor `define-minor-mode' call (for example
+`paragraph-indent-minor-mode' in text-mode.el) silently defined
+nothing.")
 
 (when emacs-easy-mmode--standalone-p
   (defun emacs-easy-mmode--keyword-tail (body)

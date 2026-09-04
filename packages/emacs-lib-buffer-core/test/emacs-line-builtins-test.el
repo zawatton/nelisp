@@ -69,7 +69,10 @@
                  forward-line line-number-at-pos))
     (should (fboundp sym)))
   (should (fboundp 'emacs-line--bol-pos))
-  (should (fboundp 'emacs-line--eol-pos)))
+  (should (fboundp 'emacs-line--eol-pos))
+  (should (fboundp 'emacs-line-forward-line-direct))
+  (should (fboundp 'emacs-line-next-line-direct))
+  (should (fboundp 'emacs-line-previous-line-direct)))
 
 ;;;; B. emacs-line--bol-pos / --eol-pos helper (= ungated, always runs L2 body)
 
@@ -155,6 +158,14 @@
       ;; (= move to EOB), so 4 remain.
       (should (= 4 (funcall fwd-impl 5)))
       (should (= 8 (nelisp-ec-point))))))
+
+(ert-deftest emacs-line-builtins-test/direct-line-motion-preserves-column ()
+  (emacs-line-builtins-test--with-fresh-buffer "abcDEF\n12\n34"
+    (nelisp-ec-goto-char 11)
+    (should (= 0 (emacs-line-forward-line-direct -1)))
+    (should (= 8 (nelisp-ec-point)))
+    (should (= 11 (emacs-line-next-line-direct 1)))
+    (should (= 8 (emacs-line-previous-line-direct 1)))))
 
 (ert-deftest emacs-line-builtins-test/synthetic-line-number-at-pos ()
   (emacs-line-builtins-test--with-fresh-buffer "alpha\nbeta\ngamma\ndelta"

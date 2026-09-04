@@ -1,0 +1,74 @@
+nemacs-next TUI frontend
+========================
+
+Launch from the repository root:
+
+  apps/nemacs-next/frontends/tui/nemacs-next-tui
+
+The launcher starts one persistent NeLisp session with the existing bootstrap
+REPL, switches an interactive terminal to raw mode, restores the terminal on
+exit, and exits cleanly on stdin EOF for scripted smokes.
+
+Key map
+-------
+
+  Printable characters   insert text
+  RET                    insert newline
+  DEL / Backspace        delete backward
+  Left / C-b             backward-char
+  Right / C-f            forward-char
+  Down / C-n             next-line
+  Up / C-p               previous-line
+  C-/                    undo
+  C-x C-f                find-file prompt
+  C-x C-s                save-buffer
+  F10 / M-`              focus toolbar
+  Toolbar Left / Right   move current toolbar item
+  Toolbar RET            invoke current toolbar item
+  Toolbar ESC            leave toolbar focus
+  C-x C-c                quit
+
+The toolbar is rendered on the top row from session protocol data.  The
+default item order follows vendor `tool-bar-setup`: New File, Open, Dired,
+Close, Save, Undo, Cut, Copy, Paste, Search, with separators preserved.
+Each button is prefixed with a glyph resolved by `emacs-toolbar.el''s icon
+registry (`emacs-toolbar-icon-glyph'): a single-column Unicode symbol in a
+UTF-8-capable locale (`LC_ALL'/`LC_CTYPE'/`LANG' containing "UTF-8"), or a
+short bracketed ASCII mnemonic otherwise (e.g. `[S]` for Save, `[K]`/`[W]`/
+`[Y]` for Cut/Copy/Paste).  An unrecognized icon name falls back to the
+label alone.
+
+The v2 renderer consumes the session frame snapshot directly. Viewport rows may
+include face runs sourced from buffer text properties, and the frontend maps the
+initial face set to ANSI colors:
+
+  org-level-1              bright blue, bold
+  org-level-2              bright cyan, bold
+  org-level-3              green, bold
+  org-level-4              yellow, bold
+  bold                     bold
+  font-lock-comment-face   gray
+  font-lock-string-face    green
+  default                  reset
+
+Resolved foreground names from the face registry override that table for the
+small named-color set currently supported by the TUI.
+
+Interactive draws compare rendered rows with the previous frame and rewrite
+only changed rows. Cursor-only movement emits only cursor positioning. In a
+terminal, IME composition remains owned by the terminal; the frontend reads a
+complete UTF-8 byte sequence before sending text input to the session.
+
+Smoke
+-----
+
+  apps/nemacs-next/frontends/tui/smoke.sh
+
+The smoke pipes deterministic byte sequences through the frontend. It keeps the
+find-file/edit/delete/quit path, invokes toolbar Save, invokes toolbar Open and
+asserts the prompt, checks that every default toolbar label rendered, adds
+Japanese UTF-8 insertion, asserts ANSI color output for an Org heading face run,
+checks that a cursor-only move is much smaller than a full-frame redraw, and
+launches the frontend under a forced `LC_ALL=C` and a forced `LC_ALL=C.UTF-8`
+environment to assert the toolbar row falls back to ASCII icon tags and
+renders Unicode icon glyphs respectively.

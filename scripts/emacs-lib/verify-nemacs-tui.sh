@@ -285,9 +285,14 @@ raw_seen = before.get("echo") and before.get("icanon") and (
     raw_observed or not mid.get("echo") or not mid.get("icanon")
 )
 restored = after.get("echo") and after.get("icanon")
+# Diagnosability: did the boot form reach the point right before the
+# raw-input handoff (bin/nemacs's NEMACS_TUI_TAIL_REACHED marker)? This is
+# unconditional in the interactive boot form, so its absence pinpoints a
+# hang/exit before that tail rather than in the TUI event loop itself.
+tail_reached = "NEMACS_TUI_TAIL_REACHED" in text
 
-print("PTY_RESULT mode=%s rc=%s exited=%s settled=%s raw_seen=%s restored=%s host_fallback=%s" %
-      (mode, proc.returncode, exited, settled, raw_seen, restored, host_fallback))
+print("PTY_RESULT mode=%s rc=%s exited=%s settled=%s raw_seen=%s restored=%s host_fallback=%s tail_reached=%s" %
+      (mode, proc.returncode, exited, settled, raw_seen, restored, host_fallback, tail_reached))
 sample = text.replace("\r", "\\r").replace("\n", "\\n")
 if len(sample) > 500:
     sample = sample[:500] + "..."
@@ -510,9 +515,11 @@ raw_seen = before.get("echo") and before.get("icanon") and (
 restored = after.get("echo") and after.get("icanon")
 saved = marker in file_text
 preserved = "seed\n" in file_text
+# See pty_probe: unconditional boot-form-tail marker, for diagnosability.
+tail_reached = "NEMACS_TUI_TAIL_REACHED" in text
 
-print("PTY_FILEIO_RESULT rc=%s exited=%s settled=%s raw_seen=%s restored=%s host_fallback=%s saved=%s" %
-      (proc.returncode, exited, settled, raw_seen, restored, host_fallback, saved))
+print("PTY_FILEIO_RESULT rc=%s exited=%s settled=%s raw_seen=%s restored=%s host_fallback=%s saved=%s tail_reached=%s" %
+      (proc.returncode, exited, settled, raw_seen, restored, host_fallback, saved, tail_reached))
 print("PTY_FILEIO_PRESERVED %s" % preserved)
 print("PTY_FILEIO_PROMPT_SEEN %s" % prompt_seen)
 sample = text.replace("\r", "\\r").replace("\n", "\\n")
@@ -769,9 +776,11 @@ restored = after.get("echo") and after.get("icanon")
 saved = (marker1 in f1) and (marker2 in f2)
 distinct = (marker2 not in f1) and (marker1 not in f2)
 preserved = ("seed-one\n" in f1) and ("seed-two\n" in f2)
+# See pty_probe: unconditional boot-form-tail marker, for diagnosability.
+tail_reached = "NEMACS_TUI_TAIL_REACHED" in text
 
-print("PTY_MBUF_RESULT rc=%s exited=%s raw_seen=%s restored=%s host_fallback=%s saved=%s distinct=%s preserved=%s" %
-      (proc.returncode, exited, raw_seen, restored, host_fallback, saved, distinct, preserved))
+print("PTY_MBUF_RESULT rc=%s exited=%s raw_seen=%s restored=%s host_fallback=%s saved=%s distinct=%s preserved=%s tail_reached=%s" %
+      (proc.returncode, exited, raw_seen, restored, host_fallback, saved, distinct, preserved, tail_reached))
 print("PTY_MBUF_FILE1 " + f1.replace("\n", "\\n"))
 print("PTY_MBUF_FILE2 " + f2.replace("\n", "\\n"))
 
@@ -990,9 +999,11 @@ raw_seen = before.get("echo") and before.get("icanon") and (
 )
 restored = after.get("echo") and after.get("icanon")
 replaced = ("BETA" in file_text) and ("alpha" not in file_text)
+# See pty_probe: unconditional boot-form-tail marker, for diagnosability.
+tail_reached = "NEMACS_TUI_TAIL_REACHED" in text
 
-print("PTY_REPLACE_RESULT rc=%s exited=%s raw_seen=%s restored=%s host_fallback=%s replaced=%s" %
-      (proc.returncode, exited, raw_seen, restored, host_fallback, replaced))
+print("PTY_REPLACE_RESULT rc=%s exited=%s raw_seen=%s restored=%s host_fallback=%s replaced=%s tail_reached=%s" %
+      (proc.returncode, exited, raw_seen, restored, host_fallback, replaced, tail_reached))
 print("PTY_REPLACE_FILE " + file_text.replace("\n", "\\n"))
 
 if not restored:
@@ -1214,9 +1225,11 @@ raw_seen = before.get("echo") and before.get("icanon") and (
     raw_observed or not mid.get("echo") or not mid.get("icanon")
 )
 restored = after.get("echo") and after.get("icanon")
+# See pty_probe: unconditional boot-form-tail marker, for diagnosability.
+tail_reached = "NEMACS_TUI_TAIL_REACHED" in text
 
-print("PTY_CMD_RESULT label=%s rc=%s exited=%s raw_seen=%s restored=%s host_fallback=%s found=%s" %
-      (label, proc.returncode, exited, raw_seen, restored, host_fallback, found))
+print("PTY_CMD_RESULT label=%s rc=%s exited=%s raw_seen=%s restored=%s host_fallback=%s found=%s tail_reached=%s" %
+      (label, proc.returncode, exited, raw_seen, restored, host_fallback, found, tail_reached))
 sample = text.replace("\r", "\\r").replace("\n", "\\n")
 if len(sample) > 400:
     sample = sample[:400] + "..."

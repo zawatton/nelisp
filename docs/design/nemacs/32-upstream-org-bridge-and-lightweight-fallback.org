@@ -1,0 +1,317 @@
+#+TITLE: nelisp-emacs Doc 32 -- Vendored Org bridge and substrate-first fallback policy
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-26
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 25 library consumer contract, Doc 31 nemacs-next editor product plan
+
+* 0. Purpose
+
+This document defines how =nelisp-emacs= should support Org mode while the
+project still prioritizes reusable Emacs-core libraries.
+
+The target is not to maintain an independent full Org implementation.  The
+target is:
+
+- use upstream Emacs Org source as the long-term compatibility source;
+- provide the missing Emacs substrate through reusable =nelisp-emacs=
+  libraries and explicit compatibility shims;
+- keep any repository-owned Org subset narrow, temporary, and visibly
+  subordinate to the vendored Org source;
+- let =nemacs-next= and future GUI/TUI products select the Org
+  implementation without moving Org semantics into frontend code.
+
+* 1. Decision
+
+Adopt a vendor-first Org strategy.
+
+| Track | Role | Source of truth |
+|-------+------+-----------------|
+| Upstream Org bridge | primary long-term package compatibility path | =vendor/emacs-lisp/org/= plus reusable compatibility substrate |
+| Repository-owned Org shims | temporary degraded editing / test harness only | explicit bridge shims, deleted as substrate matures |
+
+Repository-owned Org code must not become a forked Org implementation.
+Any behavior that exists in upstream Org should be enabled by bridge
+substrate work first.  In particular, =org-element= parser behavior is not
+owned here: failures to load vendored =org-element= are evidence of missing
+buffer, marker, regexp, text-property, menu, or load substrate.
+
+* 2. Current State
+
+The repository already contains:
+
+- =vendor/emacs-lisp/org/org.el= and related upstream Org files;
+- =src/org.el= as a lightweight compatibility entry for =(require 'org)=;
+- =src/emacs-org-outline.el=, =src/emacs-org-todo.el=, and
+  =src/emacs-org-table.el= as repository-owned lightweight subsets;
+- =textmodes-stub= package metadata that treats =org= and =emacs-org-*=
+  as lazy compatibility entries.
+
+The current =src/org.el= entry intentionally does not provide full
+upstream Org.  It exists so simple Org editing can resolve today while the
+runtime catches up.
+
+The known bridge direction is also already visible in the vendor migration
+work: upstream Org depends on a wide Emacs surface, including keymaps,
+Custom, easy-menu, text properties, overlays, folding, font-lock,
+autoloads, macros, links, tables, agenda, capture, files, time/date, and
+process-adjacent APIs.  Those dependencies should be closed in reusable
+library modules, not patched locally inside Org or GUI code.
+
+* 3. Ownership
+
+| Area | Owner |
+|------+-------|
+| Buffer mutation, point, markers, narrowing, text properties | =buffer-core= |
+| Undo and editing commands | =editing= |
+| Keymaps, =kbd=, command dispatch, prefix maps | =core= keymap / command-loop |
+| Hooks, modes, local variables, faces, font-lock | =core= mode / faces / font-lock lazy surface |
+| File and process behavior used by Org | =io= |
+| Upstream Org load policy and compatibility shims | reusable Org bridge package |
+| Lightweight outline/TODO/table fallback | =textmodes-stub= or future feature package |
+| GUI toolbar/menu actions | frontend protocol calling editor commands |
+
+Rule: if Org behavior changes text, buffer state, keymaps, hooks, faces, or
+variables in a way an Emacs package can observe, it belongs in the shared
+runtime library layer.  GUI code may present buttons and menus, but it must
+dispatch commands instead of editing Org text directly.
+
+* 4. Public Shape
+
+The long-term public shape should split the compatibility entry from the
+implementation choices:
+
+#+begin_src emacs-lisp
+(require 'nelisp-emacs)
+(setq nelisp-emacs-org-implementation 'auto)
+(require 'org)
+#+end_src
+
+Proposed implementation selector:
+
+| Value | Meaning |
+|-------+---------|
+| =lightweight= | load repository-owned outline/TODO/table subset only |
+| =upstream= | require upstream Org bridge; fail visibly if unsafe or incomplete |
+| =auto= | use upstream only when a recorded substrate probe says it is safe; otherwise load lightweight and report fallback |
+
+The default for the library contract should remain conservative until
+strict upstream smokes are green.  That means current consumers should not
+silently switch from lightweight Org to an unstable upstream bridge.
+=nemacs-next= may opt into =auto= or =upstream= as product policy.
+
+* 5. Load Architecture
+
+** 5.1 Compatibility entry
+
+=org.el= should eventually become a selector, not the implementation
+itself:
+
+#+begin_src text
+src/org.el
+  -> org implementation selector
+     -> lightweight path: emacs-org-outline / emacs-org-todo / emacs-org-table
+     -> upstream path: nelisp-emacs-org-upstream-bridge
+#+end_src
+
+This preserves the Emacs-compatible =(require 'org)= entry point while
+keeping the two implementations auditable.
+
+** 5.2 Upstream bridge module
+
+The bridge should be a reusable library module, for example:
+
+#+begin_src text
+src/nelisp-emacs-org-upstream-bridge.el
+#+end_src
+
+Its responsibilities:
+
+- prepare load paths for vendored upstream Org;
+- install only explicit compatibility shims needed by upstream Org;
+- expose bridge status and fallback reason APIs;
+- refuse unsafe loads in strict mode;
+- record missing substrate as data instead of hiding it behind silent
+  no-ops.
+
+It must not implement Org editing behavior itself.  If a missing primitive
+is general Emacs behavior, implement it in the owning reusable package.
+
+** 5.3 Normalized source cache
+
+A normalized upstream Org cache may be used as a temporary audit tool when
+the standalone reader/runtime cannot yet load raw upstream source.
+
+Allowed normalized-cache uses:
+
+- reader normalization for forms NeLisp cannot parse yet;
+- dropping compile-time-only forms that are irrelevant at runtime;
+- carrying explicit, manifest-backed temporary patches for crash isolation.
+
+Disallowed normalized-cache uses:
+
+- hand-maintaining a fork of Org behavior;
+- hiding runtime crashes without a manifest row;
+- treating patched Org source as the final compatibility surface.
+
+Every carry patch needs a generated manifest row with source file, form,
+reason, owner, and deletion condition.
+
+* 6. Repository-owned Org Shim Scope
+
+Repository-owned Org shims are allowed only with a narrow contract.
+
+Allowed scope:
+
+- outline visibility and heading navigation;
+- TODO keyword cycling;
+- basic table alignment/editing helpers;
+- enough =org-mode= activation for simple notes;
+- deterministic fixtures for GUI/menu/toolbar command dispatch.
+
+Non-goals:
+
+- Babel;
+- export;
+- =org-element= parser parity;
+- agenda parity;
+- capture/refile/archive/clock parity;
+- link ecosystem parity;
+- spreadsheet/table formula parity;
+- full Custom and face behavior.
+
+If a feature is large, fast-moving, or package-visible, prefer vendored Org
+bridge substrate work over expanding repository-owned Org.  Parser,
+agenda, capture, and export behavior should move only after the earlier
+text-mode, outline, Dired, and VC/Magit substrate lanes are healthy.
+
+* 7. Bridge Substrate Worklist
+
+The upstream bridge should reduce blockers in this order:
+
+1. Reader/runtime safety for upstream Org dependencies.
+2. Keymap and =kbd= compatibility for =org-keys=.
+3. Custom, =defcustom=, =defface=, and setter behavior needed by Org.
+4. easy-menu and menu-bar forms as no-crash semantic data.
+5. Hook, mode, and local-variable behavior used by =org-mode= activation.
+6. Text-property, overlay, invisible, and folding behavior used by
+   =org-fold= and =org-cycle=.
+7. Font-lock/syntax behavior for usable editing display.
+8. File/time/link primitives needed by agenda, capture, archive, and
+   refile.
+9. Process and shell surfaces needed by Babel and external integrations.
+
+This order favors loading and editing stability before advanced Org
+features.
+
+* 8. Product Integration
+
+=nemacs-next= should treat Org as editor-session behavior.
+
+Frontend responsibilities:
+
+- show toolbar/menu buttons for Org actions;
+- send command requests such as =org-todo=, =org-cycle=, or
+  =org-table-align= to the persistent session;
+- render snapshots, faces, folded regions, and echo messages returned by
+  the session.
+
+Frontend non-responsibilities:
+
+- parsing Org headings;
+- directly toggling TODO keywords;
+- directly aligning tables;
+- deciding fold visibility;
+- implementing agenda/capture/refile state.
+
+This keeps Tauri, native GTK4-like frontends, TUI, and future render
+libraries able to share the same Org behavior.
+
+* 9. Gates
+
+Focused gates should be added before claiming upstream Org compatibility.
+
+Minimum library gates:
+
+- host load smoke: =(require 'nelisp-emacs)= remains app/frontend-free;
+- lightweight smoke: =(require 'org)= loads the fallback entry and basic
+  outline/TODO/table fixtures;
+- upstream substrate audit: every required upstream Org dependency loads
+  in isolation without crash or timeout;
+- strict upstream smoke: =(require 'org)= with
+  =nelisp-emacs-org-implementation= set to =upstream= loads without
+  normalized source drops;
+- auto fallback smoke: =auto= does not attempt an unsafe in-process load
+  after a failed substrate probe;
+- package-path smoke: the bridge works from generated =packages/*/lisp=
+  paths without =src/= fallback once package extraction owns it.
+
+Minimum product gates:
+
+- =early-init.el= and =init.el= under =~/.nemacs.d/= load without crashing
+  when Org is configured;
+- =org-mode= opens a simple note and supports heading navigation, TODO
+  cycle, table alignment, and save;
+- toolbar/menu Org actions dispatch editor commands;
+- GUI/TUI code has no Org text mutation fallback.
+
+Full =make nemacs-library-gate= is required only when package manifests,
+stable APIs, or reusable package ownership change.  Focused Org bridge
+work should start with targeted smokes and then run the relevant package
+and consumer gates from Doc 12 and AGENTS.md.
+
+* 10. Milestones
+
+** M0 Document and classify
+
+- Keep this design as the policy source.
+- Document that lightweight Org is fallback, not upstream replacement.
+- Inventory current upstream Org load blockers as generated artifacts.
+
+** M1 Selector without behavior change
+
+- Add an implementation selector variable.
+- Keep default behavior equivalent to today's lightweight =src/org.el=.
+- Add fallback status reporting.
+
+** M2 Upstream substrate audit
+
+- Add crash-isolated upstream Org dependency audit.
+- Record missing primitives and unsafe forms.
+- Fix reusable substrate gaps before patching Org.
+
+** M3 Strict upstream load
+
+- Make strict upstream =(require 'org)= load without source drops.
+- Keep fallback disabled in strict mode so regressions are visible.
+
+** M4 Basic upstream editing smoke
+
+- Open an Org buffer.
+- Activate =org-mode=.
+- Execute heading navigation, TODO cycle, cycle visibility, table align,
+  and save through normal command dispatch.
+
+** M5 Product bridge
+
+- Wire =nemacs-next= toolbar/menu Org actions to editor commands.
+- Verify the frontend does not mutate Org text directly.
+- Keep the rendering API generic enough for Tauri, native GTK4-like, TUI,
+  or separate render-shell consumers.
+
+* 11. Exit Criteria
+
+The project may treat upstream Org as the primary Org path when all of the
+following are true:
+
+- strict upstream Org load passes without normalized source drops;
+- =auto= never risks crashing the main editor session;
+- lightweight fallback has a clear user-visible fallback reason;
+- package compatibility smokes cover at least one real Org-using package
+  or fixture beyond repository-owned tests;
+- GUI/TUI toolbar and menu actions dispatch shared editor commands;
+- Doc 25 is updated if the public contract changes;
+- package ownership and manifests stay green under the relevant library
+  gates.
+
+Until then, lightweight Org remains necessary as the safe fallback, but it
+should not grow into a parallel full Org fork.

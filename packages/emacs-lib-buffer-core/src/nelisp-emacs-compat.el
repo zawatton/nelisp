@@ -464,6 +464,8 @@ The new buffer is empty, has POINT = 1, and is registered in
                  :text-tick 0
                  :killed-p nil))))
     (push (cons unique buf) nelisp-ec--buffers)
+    (when (fboundp 'emacs-buffer--inherit-new-buffer)
+      (emacs-buffer--inherit-new-buffer buf))
     buf))
 
 ;;;###autoload
@@ -473,11 +475,39 @@ The new buffer is empty, has POINT = 1, and is registered in
 
 ;;;###autoload
 (defun nelisp-ec-set-buffer (buf)
-  "Make BUF the current buffer and return BUF."
+  "Make BUF the current buffer and return BUF.
+Routes through `emacs-buffer-switch-current-buffer' (Doc 33 §8 item 242
+swap engine) when that layer is loaded, so buffer-local variables'
+shared global cells stay consistent with the invariant \"the global
+cell always reflects the current buffer's value\".  Guarded by
+`fboundp' rather than a hard `require': `nelisp-emacs-compat' must stay
+loadable without `emacs-buffer' (the dependency runs the other way —
+`emacs-buffer' requires `nelisp-emacs-compat' — so a hard require here
+would be circular)."
   (unless (nelisp-ec-buffer-p buf)
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (nelisp-ec--check-live buf)
-  (setq nelisp-ec--current-buffer buf)
+  (let ((old nelisp-ec--current-buffer))
+    (setq nelisp-ec--current-buffer buf)
+    (when (fboundp 'emacs-buffer-switch-current-buffer)
+      (emacs-buffer-switch-current-buffer old buf)))
+  buf)
+
+(defun nelisp-ec--restore-current-buffer (buf)
+  "Restore BUF as the current buffer on unwind and return BUF.
+Used by the `save-current-buffer'/`with-current-buffer' unwind-protect
+cleanup forms instead of a direct `setq' so a non-local exit still
+routes through `emacs-buffer-switch-current-buffer' (Doc 33 §8 item
+242) exactly like `nelisp-ec-set-buffer' — otherwise every buffer-local
+global cell would keep reflecting whichever buffer BODY last selected,
+not the buffer being restored.  Unlike `nelisp-ec-set-buffer', this
+never signals on a killed BUF (restoring after `kill-buffer' ran inside
+the protected body is a normal occurrence) and accepts nil (no buffer
+selected)."
+  (let ((old nelisp-ec--current-buffer))
+    (setq nelisp-ec--current-buffer buf)
+    (when (fboundp 'emacs-buffer-switch-current-buffer)
+      (emacs-buffer-switch-current-buffer old buf)))
   buf)
 
 ;;;###autoload
@@ -485,23 +515,42 @@ The new buffer is empty, has POINT = 1, and is registered in
   "Execute BODY with BUF as the current buffer, restoring afterwards.
 Equivalent shape to Emacs `with-current-buffer'.  BUF is evaluated
 once.  The previous current buffer is restored on normal exit, error,
-or non-local exit (e.g. `throw')."
+or non-local exit (e.g. `throw').
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222, same defect isolated at item 221 for
+`define-derived-mode'): the standalone NeLisp reader's macro system does
+not correctly invoke a user-defined macro whose expansion-producing
+body is a backquote template.  Unlike the item 221 top-level-form case
+(where the invocation line is silently dropped), a nested invocation of
+a backquote-bodied macro like this one silently evaluates to nil
+instead of BODY's value, which is why `with-temp-buffer' (built
+backquote-free, calling this macro) lost its return value — and with it
+every buffer-local read that route through a fresh temp buffer,
+including `major-mode'.  This macro is on the standalone bootstrap
+path, so it must stay backquote-free even though host Emacs's own macro
+system has no such limitation."
   (declare (indent 1) (debug (form body)))
   (let ((saved (make-symbol "saved"))
         (newbuf (make-symbol "newbuf")))
-    `(let ((,saved nelisp-ec--current-buffer)
-           (,newbuf ,buf))
-       (unwind-protect
-           (progn
-             (nelisp-ec-set-buffer ,newbuf)
-             ,@body)
-         (setq nelisp-ec--current-buffer ,saved)))))
+    (list 'let (list (list saved 'nelisp-ec--current-buffer)
+                     (list newbuf buf))
+          (list 'unwind-protect
+                (append (list 'progn (list 'nelisp-ec-set-buffer newbuf))
+                        body)
+                (list 'nelisp-ec--restore-current-buffer saved)))))
 
 ;;;###autoload
 (defun nelisp-ec-kill-buffer (buf)
   "Kill BUF.  Returns t.
 The buffer is removed from the registry, marked killed, and if it was
-the current buffer the selection is cleared (set to nil)."
+the current buffer the selection is cleared (set to nil) — routed
+through `nelisp-ec--restore-current-buffer' like every other
+current-buffer transition, so a killed current buffer's last
+`setq'-mutated values are still captured before its state is dropped.
+Also forgets BUF's buffer-local variable state via
+`emacs-buffer--forget' (Doc 33 §8 item 242 swap engine), when that
+layer is loaded, so a killed buffer's extended state does not linger."
   (unless (nelisp-ec-buffer-p buf)
     (signal 'wrong-type-argument (list 'nelisp-ec-buffer-p buf)))
   (unless (nelisp-ec-buffer-killed-p buf)
@@ -510,7 +559,9 @@ the current buffer the selection is cleared (set to nil)."
             (assoc-delete-all name nelisp-ec--buffers)))
     (nelisp-ec--set-buffer-killed-p buf t)
     (when (eq buf nelisp-ec--current-buffer)
-      (setq nelisp-ec--current-buffer nil)))
+      (nelisp-ec--restore-current-buffer nil))
+    (when (fboundp 'emacs-buffer--forget)
+      (emacs-buffer--forget buf)))
   t)
 
 ;;; B. point + cursor control  (7 APIs)
@@ -538,16 +589,26 @@ the buffer length + 1 (= one past the last char)."
 
 ;;;###autoload
 (defun nelisp-ec-goto-char (pos)
-  "Set POINT to POS in the current buffer.  Return POS.
-POS must be a 1-based integer in [`point-min', `point-max'].  Out-of-
-range values signal `nelisp-ec-args-out-of-range'."
+  "Set POINT to POS in the current buffer.  Return the position moved to.
+POS is a 1-based integer (or a `nelisp-ec' marker).  Out-of-range
+values are CLAMPED to [`point-min', `point-max'], matching real
+Emacs's `goto-char': \"if the position is ... outside the accessible
+portion of the buffer, point goes to the beginning or end of the
+accessible portion\" — it never signals for an out-of-range integer.
+(Doc 33 item 244: Magit's diff washers rely on this while operating
+inside `save-restriction' narrowing; the previous signalling behavior
+aborted `magit-insert-unstaged-changes' with
+`nelisp-ec-args-out-of-range'.)"
+  (when (and (not (integerp pos))
+             (nelisp-ec-marker-p pos))
+    (setq pos (nelisp-ec-marker-position pos)))
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let ((buf (nelisp-ec--ensure-current))
         (lo (nelisp-ec-point-min))
         (hi (nelisp-ec-point-max)))
-    (when (or (< pos lo) (> pos hi))
-      (signal 'nelisp-ec-args-out-of-range (list pos lo hi)))
+    (cond ((< pos lo) (setq pos lo))
+          ((> pos hi) (setq pos hi)))
     (nelisp-ec--set-buffer-point buf pos)
     pos))
 
@@ -636,13 +697,26 @@ dynamically)."
                 (nelisp-ec--set-buffer-narrow-end buf (+ ne n-chars))))))))
     nil))
 
+(defun nelisp-ec--position-arg (pos)
+  "Coerce POS to an integer position, resolving `nelisp-ec' markers.
+Doc 33 item 244: real Emacs accepts markers everywhere a position is
+expected (`delete-region', `buffer-substring', `narrow-to-region',
+...); Magit passes section `start'/`end' slot markers into these
+directly.  Non-marker values pass through unchanged so each caller's
+own `integerp' check still signals faithfully."
+  (if (nelisp-ec-marker-p pos)
+      (nelisp-ec-marker-position pos)
+    pos))
+
 ;;;###autoload
 (defun nelisp-ec-delete-region (start end)
   "Delete the text between positions START and END.  Return nil.
-Both positions are 1-based; START <= END.  POINT is moved to MIN
-(START, END) if it lay inside the deleted range, or shifted left by
-the deleted char count if it lay after END.  Narrowing bounds are
-adjusted analogously."
+Both positions are 1-based integers or markers; START <= END.  POINT
+is moved to MIN (START, END) if it lay inside the deleted range, or
+shifted left by the deleted char count if it lay after END.  Narrowing
+bounds are adjusted analogously."
+  (setq start (nelisp-ec--position-arg start)
+        end (nelisp-ec--position-arg end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -699,7 +773,9 @@ modes; our MVP simply erases the visible region."
 
 ;;;###autoload
 (defun nelisp-ec-buffer-substring (start end)
-  "Return the text between positions START and END (1-based)."
+  "Return the text between positions START and END (1-based, markers OK)."
+  (setq start (nelisp-ec--position-arg start)
+        end (nelisp-ec--position-arg end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -719,65 +795,102 @@ modes; our MVP simply erases the visible region."
 ;;; D. save-* family  (3 macros)
 
 ;;;###autoload
+(defun nelisp-ec--save-excursion-form (body)
+  "Return expansion for `nelisp-ec-save-excursion' around BODY."
+  (let ((saved-buf (make-symbol "saved-buf"))
+        (saved-pt (make-symbol "saved-pt")))
+    (list 'let*
+          (list (list saved-buf 'nelisp-ec--current-buffer)
+                (list saved-pt (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-point saved-buf))))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'progn
+                      (list 'when (list 'and saved-buf
+                                        (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
+                            (list 'nelisp-ec--set-buffer-point saved-buf saved-pt))
+                      (list 'setq 'nelisp-ec--current-buffer saved-buf))))))
+
+;;;###autoload
 (defmacro nelisp-ec-save-excursion (&rest body)
   "Save POINT (and current buffer), evaluate BODY, restore both.
 The saved POINT is restored even on non-local exit.  POINT-restoration
 is byvalue, not by marker — so insertions before the saved position
 will leave the restored POINT pointing at a *different* character than
 when it was saved.  This matches the simple-marker-deferred policy of
-Phase 9a MVP; switch to a marker-backed restore in Phase 9b."
+Phase 9a MVP; switch to a marker-backed restore in Phase 9b.
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
+for the fuller note on why every macro in this save-* family must stay
+backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
+  (nelisp-ec--save-excursion-form body))
+
+;;;###autoload
+(defun nelisp-ec--save-restriction-form (body)
+  "Return expansion for `nelisp-ec-save-restriction' around BODY."
   (let ((saved-buf (make-symbol "saved-buf"))
-        (saved-pt (make-symbol "saved-pt")))
-    `(let* ((,saved-buf nelisp-ec--current-buffer)
-            (,saved-pt (and ,saved-buf
-                            (nelisp-ec-buffer-point ,saved-buf))))
-       (unwind-protect
-           (progn ,@body)
-         (when (and ,saved-buf
-                    (not (nelisp-ec-buffer-killed-p ,saved-buf)))
-           (nelisp-ec--set-buffer-point ,saved-buf ,saved-pt))
-         (setq nelisp-ec--current-buffer ,saved-buf)))))
+        (saved-lo (make-symbol "saved-lo"))
+        (saved-hi (make-symbol "saved-hi")))
+    (list 'let*
+          (list (list saved-buf 'nelisp-ec--current-buffer)
+                (list saved-lo (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-narrow-start saved-buf)))
+                (list saved-hi (list 'and saved-buf
+                                     (list 'nelisp-ec-buffer-narrow-end saved-buf))))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'progn
+                      (list 'when (list 'and saved-buf
+                                        (list 'not (list 'nelisp-ec-buffer-killed-p saved-buf)))
+                            (list 'nelisp-ec--set-buffer-narrow-start saved-buf saved-lo)
+                            (list 'nelisp-ec--set-buffer-narrow-end saved-buf saved-hi))
+                      (list 'setq 'nelisp-ec--current-buffer saved-buf))))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-restriction (&rest body)
   "Save the narrowing state of the current buffer, run BODY, restore.
 Restoration occurs even on non-local exit.  Like Emacs the restored
 narrowing follows the *buffer* that was current at save time, even if
-BODY changes the current buffer."
+BODY changes the current buffer.
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
+for the fuller note on why every macro in this save-* family must stay
+backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
-  (let ((saved-buf (make-symbol "saved-buf"))
-        (saved-lo (make-symbol "saved-lo"))
-        (saved-hi (make-symbol "saved-hi")))
-    `(let* ((,saved-buf nelisp-ec--current-buffer)
-            (,saved-lo (and ,saved-buf
-                            (nelisp-ec-buffer-narrow-start ,saved-buf)))
-            (,saved-hi (and ,saved-buf
-                            (nelisp-ec-buffer-narrow-end ,saved-buf))))
-       (unwind-protect
-           (progn ,@body)
-         (when (and ,saved-buf
-                    (not (nelisp-ec-buffer-killed-p ,saved-buf)))
-           (nelisp-ec--set-buffer-narrow-start ,saved-buf ,saved-lo)
-           (nelisp-ec--set-buffer-narrow-end ,saved-buf ,saved-hi))))))
+  (nelisp-ec--save-restriction-form body))
+
+;;;###autoload
+(defun nelisp-ec--save-current-buffer-form (body)
+  "Return expansion for `nelisp-ec-save-current-buffer' around BODY."
+  (let ((saved (make-symbol "saved")))
+    (list 'let (list (list saved 'nelisp-ec--current-buffer))
+          (list 'unwind-protect
+                (cons 'progn body)
+                (list 'nelisp-ec--restore-current-buffer saved)))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-current-buffer (&rest body)
-  "Save the current buffer selection, run BODY, restore on exit."
+  "Save the current buffer selection, run BODY, restore on exit.
+
+Built with explicit `list'/`cons' calls instead of a backquote template
+on purpose (Doc 33 §8 item 222): see `nelisp-ec-with-current-buffer'
+for the fuller note on why every macro in this save-* family must stay
+backquote-free on the standalone bootstrap path."
   (declare (indent 0) (debug (body)))
-  (let ((saved (make-symbol "saved")))
-    `(let ((,saved nelisp-ec--current-buffer))
-       (unwind-protect
-           (progn ,@body)
-         (setq nelisp-ec--current-buffer ,saved)))))
+  (nelisp-ec--save-current-buffer-form body))
 
 ;;; E. narrowing  (2 APIs)
 
 ;;;###autoload
 (defun nelisp-ec-narrow-to-region (start end)
   "Restrict POINT-MIN / POINT-MAX of the current buffer to [START, END).
-START / END are 1-based; START <= END.  POINT is clamped to the new
-range.  Returns nil."
+START / END are 1-based integers or markers; START <= END.  POINT is
+clamped to the new range.  Returns nil."
+  (setq start (nelisp-ec--position-arg start)
+        end (nelisp-ec--position-arg end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -829,6 +942,7 @@ affects where you can move POINT, not where a marker may sit."
     (nelisp-ec--set-marker-position marker nil)
     (nelisp-ec--set-marker-buffer marker nil))
    (t
+    (setq pos (nelisp-ec--position-arg pos))
     (unless (integerp pos)
       (signal 'wrong-type-argument (list 'integerp pos)))
     (let ((b (or buf (nelisp-ec--ensure-current))))
@@ -946,25 +1060,24 @@ non-nil, is the lower position bound (1-based)."
                 (list "Search failed" string))))))
 
 ;;;###autoload
-(defun nelisp-ec-looking-at-p (string)
-  "Return non-nil if text at POINT begins with literal STRING.
-STRING is interpreted *literally* (= as a fixed substring), not as a
-regular expression."
-  (unless (stringp string)
-    (signal 'wrong-type-argument (list 'stringp string)))
+(defun nelisp-ec-looking-at-p (regexp)
+  "Return t if REGEXP matches text starting exactly at POINT.
+Like `looking-at' (REGEXP is a regular expression, not a literal
+string) but, per Emacs `looking-at-p' semantics, do NOT modify the
+match data.
+
+The previous implementation compared a fixed substring with
+`string-equal', so any real regexp (e.g. \"^\\\\*+ \") never matched --
+that made `org-element--current-element' fail to recognize headlines
+and emit a zero-width section, recursing forever (exit 88)."
+  (unless (stringp regexp)
+    (signal 'wrong-type-argument (list 'stringp regexp)))
   (let* ((buf (nelisp-ec--ensure-current))
-         (point (nelisp-ec-buffer-point buf))
-         (slen (length string))
-         (hi (nelisp-ec-point-max)))
-    (cond
-     ((zerop slen) t)
-     ((> (+ point slen) hi) nil)
-     (t
-      (let ((substr (text-buffer-substring (nelisp-ec--text buf)
-                                           (1- point)
-                                           (+ (1- point) slen))))
-        (when (string-equal substr string)
-          (nelisp-ec--set-simple-match-data point (+ point slen))))))))
+         (region (nelisp-ec--search-region buf))
+         (text (nth 1 region))
+         (point-index (nth 2 region))
+         (match (nelisp-rx-string-match regexp text point-index)))
+    (and match (= (plist-get match :start) point-index) t)))
 
 ;;;###autoload
 (defun nelisp-ec-re-search-forward (regexp &optional bound noerror)

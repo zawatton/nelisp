@@ -38,14 +38,34 @@
 ;;   - `one-window-p' / `balance-windows'
 ;;   - `get-buffer-window' / `get-buffer-window-list'
 ;;   - `other-window' (polyfilled — `emacs-window.el' has no direct equivalent)
+;;   - `window-start' / `window-end' / `window-point' / `set-window-point'
+;;     / `set-window-start' / `window-height' / `window-width'
+;;     / `window-body-height' (Doc 33 §4 item 9 — line-based, see below)
+;;   - `recenter' / `scroll-up' / `scroll-down' / `scroll-up-command'
+;;     / `scroll-down-command' / `pos-visible-in-window-p' (Doc 33 §4
+;;     item 9 — real buffer-line-based semantics via
+;;     `emacs-window-recenter' / `emacs-window-scroll-up' /
+;;     `emacs-window-scroll-down' / `emacs-window-pos-visible-in-window-p',
+;;     replacing the nil no-op stubs that `emacs-stub-bulk.el' would
+;;     otherwise install for these names)
 ;;
 ;;; Code:
 
 (require 'emacs-window)
 
 (defun emacs-window-builtins--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed by this bridge."
+  "Return non-nil when SYMBOL should be installed by this bridge.
+
+`(boundp \\='emacs-version)' alone is not a reliable \"are we really
+inside host Emacs\" test: some NeLisp standalone-reader builds bind
+`emacs-version' to a non-string sentinel (so `boundp' is true but the
+value is not a version string) rather than leaving it unbound.  Also
+check `stringp' so the standalone reader is still detected correctly
+and this bridge overrides the unconditional `emacs-stub.el' nil-stub
+installs for names such as `windowp'/`window-list'/`window-buffer'
+that would otherwise win by loading first."
   (or (not (boundp 'emacs-version))
+      (not (stringp emacs-version))
       (not (fboundp symbol))))
 
 ;;;; --- predicates ------------------------------------------------------
@@ -91,10 +111,36 @@
 (when (emacs-window-builtins--install-function-p 'get-buffer-window-list)
   (defalias 'get-buffer-window-list #'emacs-window-get-buffer-window-list))
 
+(when (emacs-window-builtins--install-function-p 'window-height)
+  (defalias 'window-height #'emacs-window-window-height))
+
+(when (emacs-window-builtins--install-function-p 'window-width)
+  (defalias 'window-width #'emacs-window-window-width))
+
+(when (emacs-window-builtins--install-function-p 'window-body-height)
+  (defun window-body-height (&optional window _pixelwise)
+    "Phase 11 polyfill: body height, excluding the mode-line row."
+    (max 1 (1- (emacs-window-window-height window)))))
+
+(when (emacs-window-builtins--install-function-p 'window-start)
+  (defalias 'window-start #'emacs-window-window-start))
+
+(when (emacs-window-builtins--install-function-p 'window-end)
+  (defalias 'window-end #'emacs-window-window-end))
+
+(when (emacs-window-builtins--install-function-p 'window-point)
+  (defalias 'window-point #'emacs-window-window-point))
+
 ;;;; --- mutation --------------------------------------------------------
 
 (when (emacs-window-builtins--install-function-p 'set-window-buffer)
   (defalias 'set-window-buffer #'emacs-window-set-window-buffer))
+
+(when (emacs-window-builtins--install-function-p 'set-window-point)
+  (defalias 'set-window-point #'emacs-window-set-window-point))
+
+(when (emacs-window-builtins--install-function-p 'set-window-start)
+  (defalias 'set-window-start #'emacs-window-set-window-start))
 
 (when (emacs-window-builtins--install-function-p 'select-window)
   (defalias 'select-window #'emacs-window-select-window))
@@ -186,6 +232,44 @@ accepted for API parity and ignored (= single-frame Phase 1)."
 Bound to `q' in help/special-buffer keymaps."
     (interactive "P")
     (emacs-window-quit-window kill window)))
+
+;;;; --- scroll / recenter / visibility (Doc 33 §4 item 9) ----------------
+;;
+;; Real buffer-line-based implementations (see `emacs-window.el').
+;; These names are in `emacs-stub-bulk.el's nil-no-op list (or, for
+;; `pos-visible-in-window-p', void entirely); this file loads first in
+;; the standalone bootstrap, so the `(unless (fboundp ...))' guards
+;; there defer to the real definitions installed here.
+
+(when (emacs-window-builtins--install-function-p 'recenter)
+  (defun recenter (&optional arg _redisplay)
+    "Phase 11 polyfill: real line-based recenter.
+See `emacs-window-recenter'."
+    (interactive "P")
+    (emacs-window-recenter nil arg)))
+
+(when (emacs-window-builtins--install-function-p 'scroll-up)
+  (defun scroll-up (&optional n)
+    "Phase 11 polyfill: real line-based scroll-up.
+See `emacs-window-scroll-up'."
+    (interactive "P")
+    (emacs-window-scroll-up nil n)))
+
+(when (emacs-window-builtins--install-function-p 'scroll-down)
+  (defun scroll-down (&optional n)
+    "Phase 11 polyfill: real line-based scroll-down.
+See `emacs-window-scroll-down'."
+    (interactive "P")
+    (emacs-window-scroll-down nil n)))
+
+(when (emacs-window-builtins--install-function-p 'scroll-up-command)
+  (defalias 'scroll-up-command #'scroll-up))
+
+(when (emacs-window-builtins--install-function-p 'scroll-down-command)
+  (defalias 'scroll-down-command #'scroll-down))
+
+(when (emacs-window-builtins--install-function-p 'pos-visible-in-window-p)
+  (defalias 'pos-visible-in-window-p #'emacs-window-pos-visible-in-window-p))
 
 (provide 'emacs-window-builtins)
 

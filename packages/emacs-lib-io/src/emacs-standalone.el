@@ -91,8 +91,8 @@ Returns t when standalone, nil otherwise."
           ;; `make-process' in host Emacs cannot flip detection.
           ((and (not emacs-standalone--native-make-process-at-load)
                 (fboundp 'make-process)
-                (fboundp 'subrp)
-                (not (subrp (symbol-function 'make-process))))
+                (or (not (fboundp 'subrp))
+                    (not (subrp (symbol-function 'make-process)))))
            t)
           ((not (fboundp 'make-process)) t)
           (t nil))))

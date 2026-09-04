@@ -43,6 +43,7 @@
 (require 'emacs-special-buffers)
 (require 'emacs-command-loop)
 (require 'emacs-undo)
+(require 'nemacs-loadup)
 (require 'cl-lib)
 
 ;; Grid dimensions are now mutable defvars (Phase 2.I) — the GTK
@@ -2913,70 +2914,38 @@ Iterates from the end so positions stay valid mid-walk."
                     (plist-get edit :line-count)))))))
 
 
-;;;; --- init file loading (Phase 3.C — ~/.emacs.d/init.el / ~/.emacs) ----
+;;;; --- init file loading compatibility wrapper ---------------------------
 
 (defvar nemacs-gtk--init-file-loaded nil
-  "Phase 3.C — non-nil after `--load-user-init-file' has either
-loaded a user init file successfully or determined that no such
-file exists.  Prevents accidental double-load.")
+  "Non-nil after the session-owned init loader has run.")
 
 (defvar nemacs-gtk--init-file-error nil
-  "Phase 3.C — when an error occurred loading the user init file,
-this is the (FILE . ERROR-STRING) pair.  Otherwise nil.  Surfaced
-on the echo-area row + appended to `*Messages*' so the user can
-diagnose without leaving the GUI.")
+  "Session-owned init loader error mirrored for GTK status display.")
 
 (defun nemacs-gtk--candidate-init-files ()
-  "Return the list of paths the GUI checks for a user init file,
-in priority order.  Mirrors real Emacs's `user-init-file' search
-(= `~/.emacs.d/init.el', then `~/.emacs.el', then `~/.emacs')."
-  (let ((home (or (and (fboundp 'getenv) (getenv "HOME")) "~")))
-    (list (concat home "/.emacs.d/init.el")
-          (concat home "/.emacs.el")
-          (concat home "/.emacs"))))
+  "Compatibility wrapper for the session-owned init candidate list."
+  (nemacs-candidate-init-files))
 
 (defun nemacs-gtk--load-user-init-file ()
-  "Phase 3.C — find + load the user's init file.  Errors are caught
-+ recorded on `--init-file-error' so a broken init doesn't kill
-the boot; the GUI still comes up at the welcome buffer with an
-echo-line diagnostic.  No-op when `--init-file-loaded' is already t."
+  "Compatibility wrapper around session-owned init loading.
+Init-file discovery/loading now belongs to `nemacs-loadup'.  This wrapper is
+kept only for existing GTK menu/key bindings."
   (cond
    (nemacs-gtk--init-file-loaded
     (setq nemacs-gtk--last-key-text "init: already loaded"))
    (t
-    (let ((found nil))
-      (catch 'done
-        (dolist (path (nemacs-gtk--candidate-init-files))
-          (when (and (fboundp 'file-exists-p) (file-exists-p path))
-            (setq found path)
-            (throw 'done t))))
-      (cond
-       ((null found)
-        (setq nemacs-gtk--init-file-loaded t)
-        (setq nemacs-gtk--last-key-text "init: no user init file found"))
-       (t
-        (condition-case err
-            (progn
-              (load found)
-              (setq nemacs-gtk--init-file-loaded t)
-              (setq nemacs-gtk--last-key-text
-                    (format "Loaded %s" found)))
-          (error
-           (setq nemacs-gtk--init-file-loaded t)
-           (setq nemacs-gtk--init-file-error
-                 (cons found (error-message-string err)))
-           (setq nemacs-gtk--last-key-text
-                 (format "init error: %s — %s"
-                         found (error-message-string err)))
-           ;; Mirror to *Messages* so the user can pull it back later.
-           (when (fboundp 'get-buffer-create)
-             (with-current-buffer (get-buffer-create "*Messages*")
-               (when (fboundp 'goto-char)
-                 (goto-char (or (and (fboundp 'point-max) (point-max)) 0)))
-               (when (fboundp 'insert)
-                 (insert (format "init error: %s — %s\n"
-                                 found
-                                 (error-message-string err)))))))))))
+    (nemacs-load-user-init-files)
+    (setq nemacs-gtk--init-file-loaded t)
+    (setq nemacs-gtk--init-file-error nemacs-init-file-error)
+    (setq nemacs-gtk--last-key-text
+          (cond
+           (nemacs-init-file-error
+            (format "init error: %s - %s"
+                    (car nemacs-init-file-error)
+                    (cdr nemacs-init-file-error)))
+           (user-init-file
+            (format "Loaded %s" user-init-file))
+           (t "init: no user init file found")))
     nemacs-gtk--init-file-loaded)))
 
 (defun nemacs-gtk-load-user-init-file ()
@@ -4539,15 +4508,9 @@ the rest of the redraw can proceed."
         (setq nemacs-gtk--last-key-text msg)
         (when new
           (push key nemacs-gtk--guard-seen)
-          (when (and (fboundp 'get-buffer-create)
-                     (fboundp 'with-current-buffer))
+          (when (fboundp 'message)
             (condition-case _
-                (with-current-buffer (get-buffer-create "*Messages*")
-                  (when (fboundp 'goto-char)
-                    (goto-char
-                     (or (and (fboundp 'point-max) (point-max)) 1)))
-                  (when (fboundp 'insert)
-                    (insert msg "\n")))
+                (message "%s" msg)
               (error nil))))
         nil))))
 

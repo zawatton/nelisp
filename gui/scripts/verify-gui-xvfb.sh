@@ -95,12 +95,29 @@ line1(){ head -1 "$TD/nemacs-view" 2>/dev/null; }
 # noticeably longer than a cursor move -- so settle generously between keys.
 KEY_SETTLE=${NEMACS_XVFB_KEY_SETTLE:-1.5}
 key()  { DISPLAY="$DISP" xdotool key --window "$WID" --clearmodifiers "$1"; sleep "$KEY_SETTLE"; }
+click_xy() { DISPLAY="$DISP" xdotool mousemove --window "$WID" "$1" "$2" click 1; sleep "$KEY_SETTLE"; }
 
 # Initial state: point 0 = start of "* TODO first heading" (modeline L00001).
 echo "  initial modeline: $(ml)"
 # warm-up: the first keystroke can be absorbed by bridge-session start; send a
 # harmless C-a and let the round-trip settle before asserting.
 key ctrl+a; key ctrl+a
+
+# ---- check: toolbar dropdown and selected command route through bridge -----
+click_xy 20 10
+if grep -q "$(printf 'Find File\tC-x C-f')" "$TD/nemacs-toolbar-menu" 2>/dev/null; then
+  ok "toolbar top-level click opened the New dropdown"
+else
+  bad "toolbar top-level click did not open dropdown: [$(cat "$TD/nemacs-toolbar-menu" 2>/dev/null)]"
+fi
+click_xy 20 26
+if [ "$(cat "$TD/nemacs-minibuffer-active" 2>/dev/null)" = "1" ] &&
+   grep -q "Find file:" "$TD/nemacs-minibuffer-prompt" 2>/dev/null; then
+  ok "toolbar dropdown selection entered find-file minibuffer"
+else
+  bad "toolbar dropdown selection did not enter find-file (active=$(cat "$TD/nemacs-minibuffer-active" 2>/dev/null), prompt=$(cat "$TD/nemacs-minibuffer-prompt" 2>/dev/null))"
+fi
+key ctrl+g
 
 # ---- check: M-Right demotes the heading (THE arrow-keysym target) ----------
 # The GUI emits "M-<right>" for Meta+arrow (alt+keysym) through the key

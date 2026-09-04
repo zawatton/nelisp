@@ -13,6 +13,8 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-org-agenda)
+(require 'emacs-org-capture)
+(require 'emacs-org-todo)
 
 (defvar emacs-org-agenda-test--tmp-counter 0)
 
@@ -155,6 +157,25 @@ Each binding is (VAR SUFFIX CONTENT)."
             (should (= 1 (line-number-at-pos)))
             (should (looking-at "\\* TODO Morning run"))))))))
 
+(ert-deftest org-agenda-goto-accepts-nelisp-buffer-source ()
+  (emacs-org-agenda-test--with-fresh-world
+    (let ((source (nelisp-ec-generate-new-buffer "agenda-source.org")))
+      (unwind-protect
+          (progn
+            (nelisp-ec-with-current-buffer source
+              (insert "* TODO Mirror source\nBody\n")
+              (goto-char (point-min)))
+            (let ((result (org-agenda--goto-entry
+                           (list :file source :line 1))))
+              (should (eq source result))
+              (should (eq source (nelisp-ec-current-buffer)))
+              (should (equal 1
+                             (nelisp-ec-with-current-buffer source
+                               (nelisp-ec-point))))))
+        (when (and (fboundp 'nelisp-ec-kill-buffer)
+                   (nelisp-ec-buffer-p source))
+          (nelisp-ec-kill-buffer source))))))
+
 (ert-deftest org-agenda-q-quits ()
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
@@ -200,6 +221,59 @@ Each binding is (VAR SUFFIX CONTENT)."
         (org-agenda ?t)
         (should-not (string-match-p "One" (emacs-org-agenda-test--agenda-string)))
         (should (string-match-p "Two" (emacs-org-agenda-test--agenda-string)))))))
+
+(ert-deftest org-agenda-capture-todo-fixture-integration ()
+  (emacs-org-agenda-test--with-fresh-world
+    (emacs-org-agenda-test--with-temp-files
+        ((todo "todo-fixture.org" "* Inbox\n"))
+      (let ((org-capture-templates
+             `(("t" "Todo" entry
+                (file+headline ,todo "Inbox")
+                "* TODO Captured task\n:PROPERTIES:\n:Effort: 0:30\n:END:\nCaptured body %T"
+                :immediate-finish t)))
+            (org-agenda-files (list todo)))
+        (cl-letf (((symbol-function 'current-time)
+                   (lambda ()
+                     (encode-time 0 34 12 30 6 2026))))
+          (should (equal todo (org-capture "t"))))
+        (with-temp-buffer
+          (insert-file-contents todo)
+          (org-mode)
+          (goto-char (point-min))
+          (search-forward "Captured task")
+          (beginning-of-line)
+          (should (equal "Scheduled to <2026-07-06 Mon>"
+                         (org-schedule nil "2026-07-06")))
+          (write-region (point-min) (point-max) todo nil 'silent))
+        (let* ((scan (org-agenda--scan-file todo))
+               (agenda (plist-get scan :agenda))
+               (todos (plist-get scan :todos))
+               (tree (with-temp-buffer
+                       (insert-file-contents todo)
+                       (org-mode)
+                       (org-element-parse-buffer))))
+          (should (= 1 (length todos)))
+          (should (= 1 (length agenda)))
+          (should (equal "Captured task"
+                         (plist-get (car todos) :title)))
+          (should (equal 'scheduled
+                         (plist-get (car agenda) :kind)))
+          (should (equal '("Effort")
+                         (mapcar
+                          (lambda (property)
+                            (org-element-property :key property))
+                          (org-element-map tree 'node-property
+                            #'identity))))
+          (should (= 2
+                     (length (org-element-map tree 'timestamp
+                               #'identity)))))
+        (cl-letf (((symbol-function 'current-time)
+                   (lambda ()
+                     (encode-time 0 0 8 6 7 2026))))
+          (org-agenda ?a))
+        (let ((text (emacs-org-agenda-test--agenda-string)))
+          (should (string-match-p "Org Agenda: 2026-07-06 \\+6 days" text))
+          (should (string-match-p "TODO Captured task" text)))))))
 
 (ert-deftest org-agenda-a-sorts-same-day-items-by-time ()
   (emacs-org-agenda-test--with-fresh-world

@@ -19,6 +19,10 @@
 
 ;;; Code:
 
+(unless (boundp 'imenu-generic-expression)
+  (defvar imenu-generic-expression nil
+    "Mode-local generic imenu expression list."))
+
 (defvar emacs-imenu-elisp-definition-regexp
   "^[ \t]*\\((\\)\\(cl-def[a-z-]*\\|def[a-z-]*\\)[ \t\n]+'?\\([^ \t\n()'\"]+\\)"
   "Regexp matching a candidate top-level Elisp definition.

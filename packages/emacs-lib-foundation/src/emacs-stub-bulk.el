@@ -284,7 +284,20 @@ Forwarder to `forward-char' with negated count."
     with-temp-buffer-window)))
   (dolist (--s-- --stub-defmacros--)
     (unless (fboundp --s--)
-      (fset --s-- (cons 'macro (lambda (&rest _) nil)))
+      ;; Install through a constructed `defmacro' form, NOT a raw
+      ;; `(fset SYM (cons 'macro (lambda ...)))'.  The NeLisp standalone
+      ;; evaluator registers macros through the `defmacro' path; a macro
+      ;; whose function cell is a hand-built `(macro . CLOSURE)' cons is
+      ;; `fboundp' and `macrop' but *invoking* it aborts the enclosing
+      ;; top-level form flagless (bare rc=1, no error stash -- verified
+      ;; in isolation: `(fset 'x (cons 'macro (lambda (&rest _) nil)))'
+      ;; then `(x)' aborts, while the equivalent `defmacro' works).  Any
+      ;; vendor call site reaching one of these stubs (e.g. Magit/
+      ;; transient's `pcase-exhaustive' uses) previously killed its whole
+      ;; form silently instead of expanding to nil as intended.  Host
+      ;; Emacs accepts both shapes, so the constructed `defmacro' is
+      ;; strictly more portable.
+      (eval (list 'defmacro --s-- '(&rest _) nil) t)
       (put --s-- 'emacs-stub-bulk t))))
 
 (let ((--stub-defvars--
@@ -296,7 +309,7 @@ Forwarder to `forward-char' with negated count."
     history-length horizontal-scroll-bar inhibit-changing-match-data inhibit-field-text-motion inhibit-modification-hooks inhibit-nul-byte-detection inhibit-null-byte-detection inhibit-point-motion-hooks
     inhibit-read-only input-decode-map input-method-function jka-compr-load-suffixes keyboard-translate-table kill-buffer-hook kill-buffer-query-functions lexical-binding
     line-spacing load-dangerous-libraries load-file-name load-file-rep-suffixes load-history load-path load-suffixes macro-declarations-alist
-    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended max-lisp-eval-depth menu-prompting message-log-max
+    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended max-lisp-eval-depth menu-prompting
     messages-buffer-max-lines minibuffer-auto-raise minibuffer-default-prompt-format minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
     most-negative-fixnum most-positive-fixnum native-comp-deferred-compilation native-comp-enable-subr-trampolines native-comp-jit-compilation needed noninteractive obarray
     operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
@@ -306,7 +319,17 @@ Forwarder to `forward-char' with negated count."
     x-gtk-use-window-move yank-transform-functions)))
   (dolist (--s-- --stub-defvars--)
     (unless (boundp --s--)
-      (set --s-- nil))))
+      ;; Constructed `defvar', not `set': every name in this list is a
+      ;; real dynamic (special) variable in Emacs, and vendor code
+      ;; let-binds many of them expecting other functions to observe the
+      ;; binding dynamically.  A bare `set' only populates the global
+      ;; value cell without marking the symbol special, so under
+      ;; lexical-binding a later `(let ((inhibit-read-only t)) ...)'
+      ;; creates an invisible LEXICAL binding and the read-only check in
+      ;; `emacs-buffer--barf-if-read-only' still sees the global nil --
+      ;; exactly the `default-process-coding-system' defect class the
+      ;; magit bridge documented, recurring here for every name below.
+      (eval (list 'defvar --s-- nil) t))))
 
 (unless (fboundp 'define-abbrev-table)
   (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)
@@ -318,6 +341,21 @@ Forwarder to `forward-char' with negated count."
   (defun make-syntax-table (&optional _table)
     "Standalone load-time stub for syntax tables."
     (make-vector 256 nil)))
+
+(unless (fboundp 'syntax-table-p)
+  (defun syntax-table-p (object)
+    "Standalone load-time stub for syntax table predicate.
+Recognizes every syntax-table representation the substrate can
+produce: the `emacs-syntax-table.el' char-table (subtype
+`syntax-table') when `emacs-char-table-p' is available, the
+`emacs-stub.el' cons fallback `(syntax-table . PARENT)', and the
+plain 256-slot vectors produced by the `make-syntax-table' stub
+above."
+    (or (and (fboundp 'emacs-char-table-p)
+             (emacs-char-table-p object)
+             (eq (emacs-char-table-subtype object) 'syntax-table))
+        (eq (car-safe object) 'syntax-table)
+        (and (vectorp object) (= (length object) 256)))))
 
 (unless (fboundp 'modify-syntax-entry)
   (defun modify-syntax-entry (_char _syntax &optional _table)

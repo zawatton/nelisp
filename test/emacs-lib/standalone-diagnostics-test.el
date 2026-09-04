@@ -623,6 +623,45 @@
       (when (file-directory-p real-dir)
         (delete-directory real-dir)))))
 
+(ert-deftest standalone-diagnostics-test/vendor-repl-load-paths-include-external-magit-vendors ()
+  (let ((root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-repo-root)
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-repo-root root)
+          (dolist (dir '("src"
+                         "scripts"
+                         "vendor/compat"
+                         "vendor/cond-let"
+                         "vendor/llama"
+                         "vendor/transient/lisp"
+                         "vendor/dash.el"
+                         "vendor/with-editor/lisp"
+                         "vendor/magit/lisp"
+                         "vendor/emacs-lisp"
+                         "vendor/emacs-lisp/emacs-lisp"
+                         "vendor/emacs-lisp/vc"))
+            (make-directory (expand-file-name dir root) t))
+          (should
+           (equal
+            (vendor-repl-standalone--load-paths)
+            (mapcar (lambda (dir)
+                      (expand-file-name dir root))
+                    '("src"
+                      "scripts"
+                      "vendor/compat"
+                      "vendor/cond-let"
+                      "vendor/llama"
+                      "vendor/transient/lisp"
+                      "vendor/dash.el"
+                      "vendor/with-editor/lisp"
+                      "vendor/magit/lisp"
+                      "vendor/emacs-lisp"
+                      "vendor/emacs-lisp/emacs-lisp"
+                      "vendor/emacs-lisp/vc")))))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
 (ert-deftest standalone-diagnostics-test/vendor-repl-input-uses-persistent-bootstrap ()
   (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
         (prelude (make-temp-file "vendor-repl-prelude-" nil ".el"))
@@ -641,6 +680,8 @@
           (setq vendor-repl-standalone-repo-root root)
           (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
           (setq vendor-repl-standalone-prelude prelude)
+          (make-directory (expand-file-name "src" root) t)
+          (make-directory (expand-file-name "scripts" root) t)
           (make-directory (expand-file-name "vendor" root) t)
           (with-temp-file (expand-file-name "vendor/a.el" root)
             (insert "(defvar vendor-repl-a-loaded t)\n"))
@@ -729,23 +770,134 @@
                          "(nelisp--eval-source-string \"[^\"]*\n"
                          input))
             (should (string-match-p
-                     (regexp-quote
-                      "(setq vendor-repl-proof-error nil)")
+                     "^(setq vendor-repl-proof-value nil)$"
                      input))
             (should (string-match-p
-                     (regexp-quote
-                      "(setq vendor-repl-proof-value")
+                     "^(setq vendor-repl-proof-evaluated nil)$"
+                     input))
+            ;; The proof assignment and its ok/fail marker write must each be
+            ;; exactly one physical line: this reader's --repl loop evaluates
+            ;; one physical line at a time with no continuation, so a
+            ;; multi-line form (as `pp-to-string' would produce) is silently
+            ;; shredded into unrelated fragments (NeLisp Doc 156 section 7).
+            (should (string-match-p
+                     (concat "^(setq vendor-repl-proof-value "
+                             "(prog1 (boundp 'replay-proof) "
+                             "(setq vendor-repl-proof-evaluated t)))$")
                      input))
             (should (string-match-p
-                     (regexp-quote
-                      "(condition-case err")
+                     (concat "^(if vendor-repl-proof-value "
+                             "(nl-write-file \"/tmp/vendor-repl-sentinel\" "
+                             "\"VENDOR-REPL-STANDALONE=ok\") "
+                             "(nl-write-file \"/tmp/vendor-repl-sentinel\" "
+                             "(format \"VENDOR-REPL-STANDALONE=fail "
+                             "detail=%s evaluated=%s\" \"replay-proof=nil\" "
+                             "vendor-repl-proof-evaluated)))$")
                      input))
-            (should (string-match-p
-                     (regexp-quote
-                      "(boundp 'replay-proof)")
-                     input))
+            ;; This reader's `condition-case'/`ignore-errors' discards the
+            ;; protected body's return value unconditionally, even on
+            ;; success, so it must not be used to capture the proof value.
+            (should-not (string-match-p "condition-case" input))
+            (should-not (string-match-p "vendor-repl-proof-error" input))
             (should (string-match-p ",quit\n\\'" input))))
       (dolist (file (list bootstrap-repl prelude output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-proof-form-file-overrides-inline-form ()
+  (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
+        (proof-file (make-temp-file "vendor-repl-proof-" nil ".el"))
+        (output (make-temp-file "vendor-repl-input-" nil ".repl"))
+        (root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-repo-root
+        vendor-repl-standalone-bootstrap-repl
+        (vendor-repl-standalone-prelude nil)
+        (vendor-repl-standalone-proof-form "(error \"inline proof used\")")
+        vendor-repl-standalone-proof-form-file)
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-repo-root root)
+          (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
+          (setq vendor-repl-standalone-proof-form-file proof-file)
+          (make-directory (expand-file-name "vendor" root) t)
+          (with-temp-file bootstrap-repl
+            (insert "(setq bootstrap-repl-loaded t)\n"))
+          (with-temp-file proof-file
+            (insert "(progn\n")
+            (insert "  (defun vendor-repl-proof-with-doc nil\n")
+            (insert "    \"Docstring with newline\nand shell-sensitive `backquote'.\"\n")
+            (insert "    t)\n")
+            (insert "  (vendor-repl-proof-with-doc))\n"))
+          (with-temp-file (expand-file-name "vendor/a.el" root)
+            (insert "(defvar vendor-repl-a-loaded t)\n"))
+          (vendor-repl-standalone--write-input
+           (list (expand-file-name "vendor/a.el" root))
+           "/tmp/vendor-repl-sentinel"
+           output)
+          (let ((input (with-temp-buffer
+                         (insert-file-contents output)
+                         (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "vendor-repl-proof-with-doc")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "shell-sensitive `backquote'")
+                     input))
+            (should-not (string-match-p
+                         (regexp-quote "inline proof used")
+                         input))))
+      (dolist (file (list bootstrap-repl proof-file output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-proof-form-file-multi-form-captures-last ()
+  (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
+        (proof-file (make-temp-file "vendor-repl-proof-" nil ".el"))
+        (output (make-temp-file "vendor-repl-input-" nil ".repl"))
+        (root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-repo-root
+        vendor-repl-standalone-bootstrap-repl
+        (vendor-repl-standalone-prelude nil)
+        vendor-repl-standalone-proof-form-file)
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-repo-root root)
+          (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
+          (setq vendor-repl-standalone-proof-form-file proof-file)
+          (make-directory (expand-file-name "vendor" root) t)
+          (with-temp-file bootstrap-repl
+            (insert "(setq bootstrap-repl-loaded t)\n"))
+          (with-temp-file proof-file
+            (insert ";;; helper setup form, then the actual proof form\n")
+            (insert "(defvar vendor-repl-proof-helper 1)\n")
+            (insert "(= (setq vendor-repl-proof-helper\n")
+            (insert "         (1+ vendor-repl-proof-helper))\n")
+            (insert "   2)\n"))
+          (with-temp-file (expand-file-name "vendor/a.el" root)
+            (insert "(defvar vendor-repl-a-loaded t)\n"))
+          (vendor-repl-standalone--write-input
+           (list (expand-file-name "vendor/a.el" root))
+           "/tmp/vendor-repl-sentinel"
+           output)
+          (let ((input (with-temp-buffer
+                         (insert-file-contents output)
+                         (buffer-string))))
+            ;; The setup form runs as its own plain single-line statement...
+            (should (string-match-p
+                     "^(defvar vendor-repl-proof-helper 1)$"
+                     input))
+            ;; ...and only the FINAL form's value is captured as the proof.
+            (should (string-match-p
+                     (concat "^(setq vendor-repl-proof-value "
+                             "(prog1 (= (setq vendor-repl-proof-helper "
+                             "(1\\+ vendor-repl-proof-helper)) 2) "
+                             "(setq vendor-repl-proof-evaluated t)))$")
+                     input))))
+      (dolist (file (list bootstrap-repl proof-file output))
         (when (file-exists-p file)
           (delete-file file)))
       (when (file-directory-p root)
@@ -839,6 +991,57 @@
       (when (file-directory-p root)
         (delete-directory root t)))))
 
+(ert-deftest standalone-diagnostics-test/vendor-repl-can-coalesce-file-forms ()
+  (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
+        (output (make-temp-file "vendor-repl-input-" nil ".repl"))
+        (root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-repo-root
+        vendor-repl-standalone-bootstrap-repl
+        (vendor-repl-standalone-prelude nil)
+        (vendor-repl-standalone-direct-character-limit 0)
+        (vendor-repl-standalone-coalesce-file-forms t))
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-repo-root root)
+          (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
+          (make-directory (expand-file-name "vendor" root) t)
+          (with-temp-file bootstrap-repl
+            (insert "(setq bootstrap-repl-loaded t)\n"))
+          (with-temp-file (expand-file-name "vendor/a.el" root)
+            (insert "(defvar vendor-repl-a-loaded t)\n")
+            (insert "(defvar vendor-repl-b-loaded t)\n")
+            (insert "(provide 'vendor-repl-a)\n"))
+          (vendor-repl-standalone--write-input
+           (list (expand-file-name "vendor/a.el" root))
+           "/tmp/vendor-repl-sentinel"
+           output)
+          (let ((input (with-temp-buffer
+                         (insert-file-contents output)
+                         (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "(progn")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "(defvar vendor-repl-a-loaded t)")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "(defvar vendor-repl-b-loaded t)")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "(provide 'vendor-repl-a)")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "(provide 'vendor-repl-a)\n")
+                     input))
+            (should-not (string-match-p
+                         (regexp-quote "form-start:a.el")
+                         input))))
+      (dolist (file (list bootstrap-repl output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
 (ert-deftest standalone-diagnostics-test/vendor-load-inserts-org-macro-directly ()
   (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
         (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
@@ -899,6 +1102,8 @@
           (make-symbolic-link real-root link-root)
           (with-temp-file bootstrap-repl
             (insert "(setq bootstrap-repl-loaded t)\n"))
+          (make-directory (expand-file-name "src" real-root) t)
+          (make-directory (expand-file-name "scripts" real-root) t)
           (make-directory (expand-file-name "vendor" real-root) t)
           (with-temp-file (expand-file-name "vendor/a.el" real-root)
             (insert "(defvar vendor-repl-root-a-loaded t)\n"))
@@ -968,6 +1173,52 @@
                      (regexp-quote "form-ok:a.el:2:count=")
                      input))))
       (dolist (file (list bootstrap-repl output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-internal-timeout-keeps-diagnostics ()
+  (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
+        (reader (make-temp-file "vendor-repl-reader-"))
+        (root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-reader
+        vendor-repl-standalone-repo-root
+        vendor-repl-standalone-bootstrap-repl
+        (vendor-repl-standalone-prelude nil)
+        (vendor-repl-standalone-internal-timeout-seconds 0.2)
+        (vendor-repl-standalone-keep-temp nil)
+        (vendor-repl-standalone-keep-temp-on-timeout t))
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-reader reader)
+          (setq vendor-repl-standalone-repo-root root)
+          (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
+          (make-directory (expand-file-name "vendor" root) t)
+          (with-temp-file bootstrap-repl
+            (insert "(setq bootstrap-repl-loaded t)\n"))
+          (with-temp-file (expand-file-name "vendor/a.el" root)
+            (insert "(defvar vendor-repl-a-loaded t)\n"))
+          (with-temp-file reader
+            (insert "#!/bin/sh\n")
+            (insert "printf 'reader started\\n'\n")
+            (insert "sleep 5\n"))
+          (set-file-modes reader #o755)
+          (pcase-let ((`(,exit ,_elapsed ,output ,sentinel
+                         ,input ,out ,marker ,timed-out)
+                       (vendor-repl-standalone--run
+                        (list (expand-file-name "vendor/a.el" root)))))
+            (should (= exit 124))
+            (should timed-out)
+            (should (equal sentinel "reader:start"))
+            (should (string-match-p "reader started" output))
+            (should (file-exists-p input))
+            (should (file-exists-p out))
+            (should (file-exists-p marker))
+            (dolist (file (list input out marker))
+              (when (file-exists-p file)
+                (delete-file file)))))
+      (dolist (file (list bootstrap-repl reader))
         (when (file-exists-p file)
           (delete-file file)))
       (when (file-directory-p root)

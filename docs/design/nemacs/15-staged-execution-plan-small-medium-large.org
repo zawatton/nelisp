@@ -640,6 +640,23 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   standalone では no-op 妥当が多いが documentation/set-match-data/local-variable-p 等は要 review。
   根治案 = =emacs-stub-bulk= を最後に load。Doc 22 A19。
 
+- *Doc 16 breadth round 31 — reader-core gap 全解消の確認 + seq.el 駆動 (2026-06-23)*:
+  Doc 22 の reader-core gap を *全 21 項目 (A1–A20 + C1) FIXED* 完了 (vendor/nelisp origin/main 統合済、
+  A12 は並行 remote 作業と重複→remote 版採用)。これにより round 23 (generator/A12) / round 24 (struct/A14)
+  / round 26 (rx/A16) 等で block していた reader-core 起因の失敗は解消。
+  *確認 (bare reader = target/nelisp、prelude baked)*: =seq.el= を駆動。gap 修正だけで *seq の core が動作* —
+  =seq-map= →(2 3 4)、=seq-into 'vector= →[1 2 3] (A5 効)、=seq-uniq= →(1 2 3)、=seq-reduce= →10。
+  cl-generic.el を併 load すると =cl-defmethod= /=seq-contains-p= も動作。
+  *残 blocker = 標準 lib の transitive dep (reader-core gap でない)*: =seq-filter= は full =pcase.el=
+  (=pcase-let*= = prelude の minimal pcase に不在、full pcase 内部 =pcase--let*= /=pcase--memoize= 依存) →
+  さらに =macroexp-progn= (macroexp.el) と連鎖。この dep カスケードは実質 bundle 全体 = =cl-generic + pcase +
+  macroexp + …=。
+  *結論*: reader-core は実 package 駆動に *十分* になった。残るのは bundle-level の lib 完備性であり、
+  full package breadth は bundle (=./bin/nemacs --driver=nelisp=) が target。ただし *本 host では bundle が
+  cold-load 中に OOM-killed* (55GB free でも 66分→kill、feedback memory の既知事象)。off-peak / 高RAM 環境か
+  pre-baked runtime image (.nlri) での bundle 駆動が次の前提。bare reader で個別 dep を手動 cat するのは
+  bundle 再現に等しく diminishing returns のため、prelude への lib 逐次移植は行わない方針。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |

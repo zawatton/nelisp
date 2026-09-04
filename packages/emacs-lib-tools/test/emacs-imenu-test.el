@@ -33,6 +33,9 @@
 
 ;;;; --- scan / index -------------------------------------------------
 
+(ert-deftest emacs-imenu-test/standard-variable-bound ()
+  (should (boundp 'imenu-generic-expression)))
+
 (ert-deftest emacs-imenu-test/index-finds-all-defs-in-order ()
   (emacs-imenu-test--with-source
    (let ((index (emacs-imenu-create-index)))

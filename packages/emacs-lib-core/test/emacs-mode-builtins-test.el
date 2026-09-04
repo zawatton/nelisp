@@ -101,6 +101,36 @@
   ;; body: nothing.
   )
 
+(emacs-mode-define-derived-mode my-test-parent-derived-mode emacs-mode-text-mode
+  "MyParentDerived"
+  "Test-only parent derived mode for nested mode checks.")
+
+(emacs-mode-define-derived-mode my-test-nested-derived-mode
+  my-test-parent-derived-mode
+  "MyNestedDerived"
+  "Test-only nested derived mode for ERT."
+  (setq my-test-nested-derived-body-mode major-mode))
+
+(defvar my-test-derived-sequence-events nil
+  "Event list used by the derived-mode sequencing regression test.")
+
+(emacs-mode-define-derived-mode my-test-derived-sequence-mode
+  my-test-nested-derived-mode
+  "MyDerivedSequence"
+  "Test-only mode proving body forms survive after a nested parent."
+  (push 'body-a my-test-derived-sequence-events)
+  (push 'body-b my-test-derived-sequence-events))
+
+(defvar my-test-derived-reassert-hook-mode nil
+  "Mode observed by the derived-mode reassertion regression hook.")
+
+(emacs-mode-define-derived-mode my-test-derived-reassert-mode
+  emacs-mode-text-mode
+  "MyDerivedReassert"
+  "Test-only mode proving body-side mode drift is corrected before hooks."
+  (setq major-mode 'wrong-mode)
+  (setq emacs-mode--current-major-mode 'wrong-mode))
+
 (ert-deftest emacs-mode-builtins-test/define-derived-mode-registers ()
   (emacs-mode-builtins-test--with-fresh-mode
     ;; Activate the test-defined derived mode.
@@ -121,6 +151,38 @@
         (my-test-derived-mode)
         ;; Parent's hook fired (= because parent ran before body).
         (should (= 1 parent-fired))))))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-nested-finalizes-child ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (setq my-test-nested-derived-body-mode nil)
+    (my-test-nested-derived-mode)
+    (should (eq 'my-test-nested-derived-mode (emacs-mode-major-mode)))
+    (should (eq 'my-test-nested-derived-mode major-mode))
+    (should (eq 'my-test-nested-derived-mode
+                my-test-nested-derived-body-mode))))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-sequences-after-parent ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let ((my-test-derived-sequence-mode-hook
+           (list (lambda ()
+                   (push 'hook my-test-derived-sequence-events)))))
+      (setq my-test-derived-sequence-events nil)
+      (my-test-derived-sequence-mode)
+      (should (eq 'my-test-derived-sequence-mode (emacs-mode-major-mode)))
+      (should (equal '(hook body-b body-a)
+                     my-test-derived-sequence-events)))))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-reasserts-before-hooks ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let ((my-test-derived-reassert-mode-hook
+           (list (lambda ()
+                   (setq my-test-derived-reassert-hook-mode major-mode)))))
+      (setq my-test-derived-reassert-hook-mode nil)
+      (my-test-derived-reassert-mode)
+      (should (eq 'my-test-derived-reassert-mode major-mode))
+      (should (eq 'my-test-derived-reassert-mode (emacs-mode-major-mode)))
+      (should (eq 'my-test-derived-reassert-mode
+                  my-test-derived-reassert-hook-mode)))))
 
 ;;;; G. run-mode-hooks
 

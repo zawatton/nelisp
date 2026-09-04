@@ -29,6 +29,16 @@
 
 ;;; Code:
 
+(defconst emacs-stub--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the stub facade and its sibling features.")
+
+(defun emacs-stub--load-feature (feature)
+  "Load FEATURE from the stub facade directory."
+  (load (expand-file-name (concat (symbol-name feature) ".el")
+                          emacs-stub--load-directory)
+        nil t))
+
 ;;;; --- keymap.c -----------------------------------------------------------
 
 (unless (fboundp 'make-keymap)
@@ -233,6 +243,30 @@ single-frame backends (= some bare-minimum TUIs) ship."
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
 
+;; Doc 33 item 244 (M2 completion blocker): `char-displayable-p' is void
+;; in the standalone runtime, so a `defcustom'/`defvar' default value
+;; template that calls it at load time (e.g. `magit-section-visibility-
+;; indicators''s ellipsis-character default in `magit-section.el')
+;; aborts the whole form, leaving the variable unbound.  Real Emacs
+;; consults per-frame/per-terminal font and charset capability, which
+;; this runtime has no database for yet, so this follows
+;; `emacs-display-multi-frame-p''s own precedent: treat any live
+;; display backend (including 'tui, unlike `display-graphic-p', since a
+;; modern terminal is assumed UTF-8/Unicode-capable) as able to render
+;; CHAR, and a nil backend (batch / headless / pre-bootstrap, e.g.
+;; while a runtime image is being baked before any frontend attaches)
+;; conservatively as not.
+(defun emacs-display-char-displayable-p (char)
+  "MVP: assume any live display backend (`emacs-display-system' non-nil)
+can render CHAR; a nil backend (batch/headless) cannot.  See the note
+above for why this is a faithful-enough stand-in rather than a real
+font/charset capability query."
+  (ignore char)
+  (not (null emacs-display-system)))
+
+(when (emacs-stub--install-function-p 'char-displayable-p)
+  (defalias 'char-displayable-p #'emacs-display-char-displayable-p))
+
 
 ;;;; --- window.c -----------------------------------------------------------
 ;;;; --- window.c -----------------------------------------------------------
@@ -282,8 +316,14 @@ single-frame backends (= some bare-minimum TUIs) ship."
 
 (unless (fboundp 'set-advertised-calling-convention)
   (defun set-advertised-calling-convention (function arglist when)
-    "Stub: drop the metadata."
-    (ignore function arglist when) nil))
+    "Record advertised calling convention metadata for FUNCTION."
+    (put function 'advertised-calling-convention (list arglist when))
+    arglist))
+
+(unless (fboundp 'get-advertised-calling-convention)
+  (defun get-advertised-calling-convention (function)
+    "Return advertised calling convention metadata for FUNCTION."
+    (get function 'advertised-calling-convention)))
 
 (unless (fboundp 'byte-code-function-p)
   (defun byte-code-function-p (object) (ignore object) nil))
@@ -460,6 +500,125 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
     "Standalone fallback: evaluate BODY without buffer-change coalescing."
     (cons 'progn body)))
 
+(defun emacs-stub--advice-records (symbol)
+  "Return SYMBOL's advice records."
+  (get symbol 'emacs-stub--advice-records))
+
+(defun emacs-stub--advice-original (symbol)
+  "Return SYMBOL's original function."
+  (get symbol 'emacs-stub--advice-original))
+
+(defun emacs-stub--advice-call (original records args)
+  "Call ORIGINAL through advice RECORDS with ARGS."
+  (let ((override nil)
+        (befores nil)
+        (afters nil)
+        (arounds nil)
+        (filter-args nil)
+        (filter-return nil))
+    (dolist (record records)
+      (cond
+       ((eq (car record) :override) (setq override (cdr record)))
+       ((memq (car record) '(:before :before-until :before-while))
+        (push (cdr record) befores))
+       ((memq (car record) '(:after :after-until :after-while))
+        (push (cdr record) afters))
+       ((eq (car record) :around) (push (cdr record) arounds))
+       ((eq (car record) :filter-args) (push (cdr record) filter-args))
+       ((eq (car record) :filter-return) (push (cdr record) filter-return))))
+    (dolist (filter (nreverse filter-args))
+      (setq args (funcall filter args)))
+    (let ((result
+           (if override
+               (apply override args)
+             (dolist (before (nreverse befores))
+               (apply before args))
+             (let ((call (or original (lambda (&rest _args) nil))))
+               (dolist (advice (nreverse arounds))
+                 (let ((next call))
+                   (setq call
+                         (lambda (&rest call-args)
+                           (apply advice next call-args)))))
+               (prog1 (apply call args)
+                 (dolist (after (nreverse afters))
+                   (apply after args)))))))
+      (dolist (filter (nreverse filter-return))
+        (setq result (funcall filter result)))
+      result)))
+
+(defun emacs-stub--advice-rebuild (symbol)
+  "Rebuild SYMBOL's function cell from stored advice records."
+  (let ((original (emacs-stub--advice-original symbol))
+        (records (emacs-stub--advice-records symbol)))
+    (if records
+        (fset symbol
+              (lambda (&rest args)
+                (emacs-stub--advice-call original
+                                         (emacs-stub--advice-records symbol)
+                                         args)))
+      (when original
+        (fset symbol original)))
+    symbol))
+
+(defun emacs-stub--advice-drop-function (function records)
+  "Return RECORDS without entries whose function is FUNCTION."
+  (let ((out nil))
+    (while records
+      (unless (equal function (cdr (car records)))
+        (setq out (cons (car records) out)))
+      (setq records (cdr records)))
+    (nreverse out)))
+
+(defun emacs-stub--advice-add (symbol where function &optional _props)
+  "Add FUNCTION as advice to SYMBOL at WHERE."
+  (unless (emacs-stub--advice-original symbol)
+    (put symbol 'emacs-stub--advice-original
+         (and (fboundp symbol) (symbol-function symbol))))
+  (let ((records (emacs-stub--advice-records symbol))
+        (record (cons where function)))
+    (setq records (emacs-stub--advice-drop-function function records))
+    (put symbol 'emacs-stub--advice-records (append records (list record))))
+  (emacs-stub--advice-rebuild symbol)
+  function)
+
+(defun emacs-stub--advice-remove (symbol function)
+  "Remove FUNCTION advice from SYMBOL."
+  (let ((records (emacs-stub--advice-drop-function
+                  function (emacs-stub--advice-records symbol))))
+    (put symbol 'emacs-stub--advice-records records)
+    (emacs-stub--advice-rebuild symbol))
+  nil)
+
+(defun emacs-stub--advice-member-p (function symbol)
+  "Return non-nil when FUNCTION advises SYMBOL."
+  (let ((records (emacs-stub--advice-records symbol))
+        (found nil))
+    (while (and records (not found))
+      (when (equal function (cdr (car records)))
+        (setq found t))
+      (setq records (cdr records)))
+    found))
+
+(unless (fboundp 'advice-add)
+  (defun advice-add (symbol where function &optional props)
+    "Add FUNCTION as advice to SYMBOL at WHERE."
+    (emacs-stub--advice-add symbol where function props)))
+
+(unless (fboundp 'advice-remove)
+  (defun advice-remove (symbol function)
+    "Remove FUNCTION advice from SYMBOL."
+    (emacs-stub--advice-remove symbol function)))
+
+(unless (fboundp 'advice-member-p)
+  (defun advice-member-p (function symbol)
+    "Return non-nil when FUNCTION advises SYMBOL."
+    (emacs-stub--advice-member-p function symbol)))
+
+(unless (fboundp 'advice--p)
+  (defun advice--p (object)
+    "Return non-nil for standalone advice wrapper objects."
+    (and (symbolp object) (get object 'emacs-stub--advice-wrapper))))
+
 (unless (fboundp 'define-advice)
   (defmacro define-advice (symbol args &rest body)
     "Standalone fallback for `nadvice.el' `define-advice'.
@@ -567,23 +726,36 @@ nadvice, etc.; the runtime previously left it void."
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n) (ignore n) nil))
 
+;; These are degenerate placeholders (no-op / fixed position).  The REAL
+;; line-navigation primitives live in `emacs-line-builtins', which only
+;; overrides a binding it finds carrying the `emacs-stub-bulk' marker (see
+;; `emacs-line-builtins--install-function-p').  Mark each stub so the real
+;; implementation wins; without the marker the no-op stub shadowed it, e.g.
+;; `forward-line' never advanced and `line-end-position' returned point-min,
+;; corrupting `org-element-headline-parser' bounds into an infinite recursion.
 (unless (fboundp 'forward-line)
-  (defun forward-line (&optional n) (ignore n) 0))
+  (defun forward-line (&optional n) (ignore n) 0)
+  (put 'forward-line 'emacs-stub-bulk t))
 
 (unless (fboundp 'beginning-of-line)
-  (defun beginning-of-line (&optional n) (ignore n) nil))
+  (defun beginning-of-line (&optional n) (ignore n) nil)
+  (put 'beginning-of-line 'emacs-stub-bulk t))
 
 (unless (fboundp 'end-of-line)
-  (defun end-of-line (&optional n) (ignore n) nil))
+  (defun end-of-line (&optional n) (ignore n) nil)
+  (put 'end-of-line 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-beginning-position)
-  (defun line-beginning-position (&optional n) (ignore n) 1))
+  (defun line-beginning-position (&optional n) (ignore n) 1)
+  (put 'line-beginning-position 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-end-position)
-  (defun line-end-position (&optional n) (ignore n) 1))
+  (defun line-end-position (&optional n) (ignore n) 1)
+  (put 'line-end-position 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-number-at-pos)
-  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1))
+  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1)
+  (put 'line-number-at-pos 'emacs-stub-bulk t))
 
 (unless (fboundp 'line-number-display-width)
   (defun line-number-display-width (&optional pixelwise)
@@ -606,17 +778,23 @@ when no real redisplay window is available."
 (unless (boundp 'display-line-numbers-current-absolute)
   (defvar display-line-numbers-current-absolute t))
 
+;; Degenerate placeholders (always-at-boundary); real versions in
+;; `emacs-line-builtins' override these via the `emacs-stub-bulk' marker.
 (unless (fboundp 'eobp)
-  (defun eobp () t))
+  (defun eobp () t)
+  (put 'eobp 'emacs-stub-bulk t))
 
 (unless (fboundp 'bobp)
-  (defun bobp () t))
+  (defun bobp () t)
+  (put 'bobp 'emacs-stub-bulk t))
 
 (unless (fboundp 'eolp)
-  (defun eolp () t))
+  (defun eolp () t)
+  (put 'eolp 'emacs-stub-bulk t))
 
 (unless (fboundp 'bolp)
-  (defun bolp () t))
+  (defun bolp () t)
+  (put 'bolp 'emacs-stub-bulk t))
 
 ;; Buffer text manipulation
 (unless (fboundp 'insert)
@@ -893,21 +1071,113 @@ when no real redisplay window is available."
 
 ;;;; --- minor-mode helpers -------------------------------------------------
 
+(defun emacs-stub--hook-entry-function (entry)
+  "Return ENTRY's hook function."
+  (if (and (consp entry) (numberp (car entry)))
+      (cdr entry)
+    entry))
+
+(defun emacs-stub--hook-entry-depth (entry)
+  "Return ENTRY's ordering depth."
+  (if (and (consp entry) (numberp (car entry)))
+      (car entry)
+    0))
+
+(defun emacs-stub--hook-normalize (value)
+  "Normalize hook VALUE to a list of hook entries."
+  (cond
+   ((null value) nil)
+   ((listp value) value)
+   (t (list value))))
+
+(defun emacs-stub--hook-entry (function depth)
+  "Return hook entry for FUNCTION at DEPTH."
+  (if (and (numberp depth) (not (= depth 0)))
+      (cons depth function)
+    function))
+
+(defun emacs-stub--add-hook (hook function &optional depth _local)
+  "Add FUNCTION to HOOK and return HOOK's new value.
+This is a minimal standalone implementation of Emacs hook variables.  DEPTH
+nil prepends, t appends, and numeric depths sort low-to-high."
+  (let* ((current (emacs-stub--hook-normalize
+                   (and (boundp hook) (symbol-value hook))))
+         (entry (emacs-stub--hook-entry function depth))
+         (filtered nil)
+         (tail current))
+    (while tail
+      (unless (equal function (emacs-stub--hook-entry-function (car tail)))
+        (setq filtered (cons (car tail) filtered)))
+      (setq tail (cdr tail)))
+    (setq filtered (nreverse filtered))
+    (let ((new (cond
+                ((eq depth t) (append filtered (list entry)))
+                ((numberp depth)
+                 (let ((out nil)
+                       (rest filtered)
+                       (inserted nil)
+                       (entry-depth (emacs-stub--hook-entry-depth entry)))
+                   (while rest
+                     (when (and (not inserted)
+                                (< entry-depth
+                                   (emacs-stub--hook-entry-depth (car rest))))
+                       (setq out (cons entry out))
+                       (setq inserted t))
+                     (setq out (cons (car rest) out))
+                     (setq rest (cdr rest)))
+                   (unless inserted
+                     (setq out (cons entry out)))
+                   (nreverse out)))
+                (t (cons entry filtered)))))
+      (set hook new)
+      new)))
+
+(defun emacs-stub--remove-hook (hook function &optional _local)
+  "Remove FUNCTION from HOOK and return HOOK's new value."
+  (let ((current (emacs-stub--hook-normalize
+                  (and (boundp hook) (symbol-value hook))))
+        (new nil))
+    (while current
+      (unless (equal function (emacs-stub--hook-entry-function (car current)))
+        (setq new (cons (car current) new)))
+      (setq current (cdr current)))
+    (setq new (nreverse new))
+    (set hook new)
+    new))
+
+(defun emacs-stub--run-hook (hook args)
+  "Run HOOK with ARGS and return nil."
+  (let ((entries (emacs-stub--hook-normalize
+                  (and (boundp hook) (symbol-value hook)))))
+    (while entries
+      (let ((fn (emacs-stub--hook-entry-function (car entries))))
+        (unless (eq fn t)
+          (apply fn args)))
+      (setq entries (cdr entries))))
+  nil)
+
 (unless (fboundp 'add-hook)
   (defun add-hook (hook function &optional depth local)
-    "Stub: no-op (NeLisp standalone has no hook dispatch)."
-    (ignore hook function depth local)
-    nil))
+    "Add FUNCTION to HOOK."
+    (emacs-stub--add-hook hook function depth local)))
 
 (unless (fboundp 'remove-hook)
   (defun remove-hook (hook function &optional local)
-    (ignore hook function local) nil))
+    "Remove FUNCTION from HOOK."
+    (emacs-stub--remove-hook hook function local)))
 
 (unless (fboundp 'run-hooks)
-  (defun run-hooks (&rest hooks) (ignore hooks) nil))
+  (defun run-hooks (&rest hooks)
+    "Run each normal hook in HOOKS."
+    (while hooks
+      (emacs-stub--run-hook (car hooks) nil)
+      (setq hooks (cdr hooks)))
+    nil))
 
 (unless (fboundp 'run-hook-with-args)
-  (defun run-hook-with-args (hook &rest args) (ignore hook args) nil))
+  (defun run-hook-with-args (hook &rest args)
+    "Run HOOK as an abnormal hook with ARGS."
+    (emacs-stub--run-hook hook args)))
 
 
 ;;;; --- list helpers ------------------------------------------------------
@@ -1020,11 +1290,113 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
 ;; require the bulk file is an orphan and `macroexp-warn-and-return' /
 ;; other vendored-Emacs prerequisites stay void at standalone load
 ;; time, breaking `(require 'json)' / cl-lib / friends.
-(require 'emacs-stub-bulk)
+(emacs-stub--load-feature 'emacs-stub-bulk)
 
 ;;;; --- load-time machinery + misc (vendor-coverage 2026-06-06 batch) -------
 ;; Surfaced by bin/vendor-coverage as truly-missing top-level / load-time
 ;; callers across vendor/emacs-lisp.  No-ops / minimal degraded impls.
+
+(defun emacs-stub--advice-wrapper (original records)
+  "Return a callable wrapper around ORIGINAL using advice RECORDS."
+  (let ((wrapper (make-symbol "emacs-stub-advice-wrapper")))
+    (fset wrapper
+          (list 'lambda '(&rest args)
+                (list 'emacs-stub--advice-call
+                      (list 'get (list 'quote wrapper)
+                            (list 'quote 'emacs-stub--advice-original))
+                      (list 'get (list 'quote wrapper)
+                            (list 'quote 'emacs-stub--advice-records))
+                      'args)))
+    (put wrapper 'emacs-stub--advice-wrapper t)
+    (put wrapper 'emacs-stub--advice-original original)
+    (put wrapper 'emacs-stub--advice-records records)
+    wrapper))
+
+(defun emacs-stub--advice-wrapper-original (function)
+  "Return FUNCTION's unwrapped original when FUNCTION is our wrapper."
+  (if (and (symbolp function)
+           (get function 'emacs-stub--advice-wrapper))
+      (get function 'emacs-stub--advice-original)
+    function))
+
+(defun emacs-stub--advice-wrapper-records (function)
+  "Return FUNCTION's wrapper advice records."
+  (and (symbolp function)
+       (get function 'emacs-stub--advice-wrapper)
+       (get function 'emacs-stub--advice-records)))
+
+(defun emacs-stub--add-function-value (how old function &optional _props)
+  "Return OLD with FUNCTION advice added at HOW."
+  (let* ((original (emacs-stub--advice-wrapper-original old))
+         (records (emacs-stub--advice-drop-function
+                   function (emacs-stub--advice-wrapper-records old))))
+    (emacs-stub--advice-wrapper original (append records (list (cons how function))))))
+
+(defun emacs-stub--remove-function-value (old function)
+  "Return OLD with FUNCTION advice removed."
+  (let* ((original (emacs-stub--advice-wrapper-original old))
+         (records (emacs-stub--advice-drop-function
+                   function (emacs-stub--advice-wrapper-records old))))
+    (if records
+        (emacs-stub--advice-wrapper original records)
+      original)))
+
+(defun emacs-stub--add-function-symbol (how symbol function &optional props local)
+  "Add FUNCTION advice to function variable SYMBOL."
+  (if local
+      ;; Avoid retaining activation-local vendor closures in the dumped cold
+      ;; image.  The current Org gate needs the form to execute, not the local
+      ;; filter behavior.
+      function
+    (let* ((old (and (boundp symbol) (symbol-value symbol)))
+           (new (emacs-stub--add-function-value how old function props)))
+      (set symbol new)
+      function)))
+
+(defun emacs-stub--remove-function-symbol (symbol function &optional local)
+  "Remove FUNCTION advice from function variable SYMBOL."
+  (unless local
+    (let* ((old (and (boundp symbol) (symbol-value symbol)))
+           (new (emacs-stub--remove-function-value old function)))
+      (set symbol new)))
+  nil)
+
+(when (or (not (boundp 'emacs-version))
+          (get 'add-function 'emacs-stub-bulk))
+  (defmacro add-function (how place function &optional props)
+    "Standalone subset of `nadvice.el' `add-function'.
+Supports symbol variables and `(local 'SYMBOL)' function variables."
+    (cond
+     ((and (consp place)
+           (eq (car place) 'local)
+           (eq (car-safe (cadr place)) 'quote))
+      (list 'emacs-stub--add-function-symbol how (cadr place) function props t))
+     ((and (consp place)
+           (eq (car place) 'var))
+      (list 'setq (cadr place)
+            (list 'emacs-stub--add-function-value
+                  how (cadr place) function props)))
+     ((symbolp place)
+      (list 'emacs-stub--add-function-symbol
+            how (list 'quote place) function props nil))
+     (t nil))))
+
+(when (or (not (boundp 'emacs-version))
+          (get 'remove-function 'emacs-stub-bulk))
+  (defmacro remove-function (place function)
+    "Standalone subset of `nadvice.el' `remove-function'."
+    (cond
+     ((and (consp place)
+           (eq (car place) 'local)
+           (eq (car-safe (cadr place)) 'quote))
+      (list 'emacs-stub--remove-function-symbol (cadr place) function t))
+     ((and (consp place)
+           (eq (car place) 'var))
+      (list 'setq (cadr place)
+            (list 'emacs-stub--remove-function-value (cadr place) function)))
+     ((symbolp place)
+      (list 'emacs-stub--remove-function-symbol (list 'quote place) function nil))
+     (t nil))))
 
 (unless (fboundp 'register-definition-prefixes)
   (defun register-definition-prefixes (file prefixes)
@@ -1078,9 +1450,27 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
             ": ")))
 
 (unless (fboundp 'derived-mode-p)
-  (defun derived-mode-p (&rest modes)
-    "Stub: standalone has no major-mode hierarchy; always nil."
-    (ignore modes) nil))
+  (defun derived-mode-p (&optional modes &rest old-modes)
+    "Return non-nil if the current `major-mode' is derived from one of MODES.
+MODES is a mode symbol or a list of mode symbols.  Walk the
+`derived-mode-parent' chain (as recorded by `define-derived-mode') starting
+from `major-mode'; return the first member of MODES that matches.
+
+Also supports the deprecated (derived-mode-p &rest MODES) calling
+convention.  This faithful (pre-Emacs-30) parent-chain walk replaces the
+old always-nil stub, which silently disabled every `(derived-mode-p
+\\='org-mode)' guard -- notably the one wrapping the whole body of
+`org-set-regexps-and-options', leaving `org-complex-heading-regexp' and
+friends nil so that `org-element-parse-buffer' returned nil."
+    (let ((modes (cond (old-modes (cons modes old-modes))
+                       ((listp modes) modes)
+                       (t (list modes))))
+          (mode (and (boundp 'major-mode) major-mode))
+          (found nil))
+      (while (and mode (not found))
+        (when (memq mode modes) (setq found mode))
+        (setq mode (get mode 'derived-mode-parent)))
+      found)))
 
 (unless (fboundp 'widget-get)
   (defun widget-get (widget property)
@@ -1323,16 +1713,32 @@ degrades to 1 (no pow primitive in the standalone reader)."
    (t (mapcar #'emacs-stub--inline-uncomma form))))
 
 (defun emacs-stub--inline-lower (form)
-  "Lower one inline DSL FORM (`inline-quote' / `inline-letevals') to code."
+  "Lower one inline DSL FORM to runtime code (function / funcall path).
+Handles `inline-quote', `inline-letevals', `inline-const-p',
+`inline-const-val' and `inline-error', and recurses through ordinary
+sub-forms so DSL operators nested inside `if' / `cond' / `let' (as used
+by org-element's accessors) are lowered too -- the previous default
+left them intact, yielding `void-function inline-const-val' at runtime."
   (cond
    ((not (consp form)) form)
    ((eq (car form) 'inline-quote) (emacs-stub--inline-uncomma (cadr form)))
    ((eq (car form) 'inline-letevals)
+    ;; vars are already-evaluated args -> drop the binding spec, keep body
+    ;; (cf. inline--dont-leteval for the symbol case = macroexp-progn body).
     (let ((body (cddr form)))
       (if (cdr body)
           (cons 'progn (mapcar #'emacs-stub--inline-lower body))
         (emacs-stub--inline-lower (car body)))))
-   (t form)))
+   ;; funcall path: `inline-const-p' is always true and `inline-const-val'
+   ;; is the value itself (cf. inline--alwaysconst-p / inline--alwaysconst-val
+   ;; in inline.el): in the function version the args already hold values.
+   ((eq (car form) 'inline-const-p) t)
+   ((eq (car form) 'inline-const-val) (emacs-stub--inline-lower (cadr form)))
+   ((eq (car form) 'inline-error)
+    (cons 'error (mapcar #'emacs-stub--inline-lower (cdr form))))
+   ;; never descend into quoted data
+   ((eq (car form) 'quote) form)
+   (t (mapcar #'emacs-stub--inline-lower form))))
 
 (defun emacs-stub--define-inline (name args body)
   "Build the `defun' form for a runtime `define-inline' (function version)."
@@ -1348,6 +1754,26 @@ degrades to 1 (no pow primitive in the standalone reader)."
     "Runtime `define-inline': define NAME as a plain function (no inlining).
 The inline DSL in BODY is lowered against the runtime backquote."
     (emacs-stub--define-inline name args body)))
+
+;; Pre-provide `inline' so a later `(require 'inline)' is inert.  On the
+;; standalone, `inline.el' is not on the load-path, so `require' silent-succeeds
+;; (sets featurep) AND leaves the runtime `define-inline' above a no-op -- every
+;; subsequent `define-inline' form then fails (observed: org-element-ast.el,
+;; which does `(require 'inline)' before defining many inline accessors, crashed
+;; the whole load).  Providing the feature here keeps the working macro.
+(when (fboundp 'rdf)
+  (provide 'inline))
+
+;; `buffer-base-buffer' (C primitive, buffer.c) returns the base buffer of an
+;; indirect buffer, or nil for a normal buffer.  It is only registered under
+;; the `emacs-buffer-buffer-base-buffer' name (nelisp-emacs.el) and never
+;; aliased to the standard name, so it is void at runtime -- org-element-at-point
+;; and other callers then fail with `void-function buffer-base-buffer'.  The
+;; standalone has no indirect buffers, so nil is always the correct answer.
+(unless (fboundp 'buffer-base-buffer)
+  (defun buffer-base-buffer (&optional _buffer)
+    "Return the base buffer of an indirect buffer (always nil here)."
+    nil))
 
 ;;;; --- Doc 16 breadth: foundational subr builtins (were void) ---------
 ;; `xor' (subr.el), `ntake' (Emacs 30 fns.c) and `char-uppercase-p'
@@ -1504,6 +1930,28 @@ E is V itself when V is self-quoting, otherwise (quote V)."
         v
       (list 'quote v))))
 
+;; Doc 33 item 244: `macroexp-const-p' must be REAL, not the bulk no-op
+;; (`emacs-stub-bulk' installs an always-nil lambda for it).  EIEIO's
+;; `eieio-defclass-internal' asks it whether a slot's :initform is
+;; already a constant expression; with the always-nil stub every quoted
+;; initform (e.g. magit-file-section's `(quote magit-file-section-map)')
+;; got wrapped by `macroexp-quote' a SECOND time, so `eieio-oref-default''s
+;; single `eval' unwrapped only one layer and every constructed object
+;; carried `(quote SYM)' in the slot instead of SYM — downstream,
+;; magit-section's `(symbol-value keymap)' on that cons aborted the whole
+;; enclosing form flagless.  Semantics copied from macroexp.el.
+(when (or (not (fboundp 'macroexp-const-p))
+          (get 'macroexp-const-p 'emacs-stub-bulk))
+  (defun macroexp-const-p (exp)
+    "Return non-nil if EXP will always evaluate to the same value."
+    (cond ((consp exp) (or (eq (car exp) 'quote)
+                           (and (eq (car exp) 'function)
+                                (symbolp (cadr exp)))))
+          ((symbolp exp) (or (memq exp '(nil t))
+                             (keywordp exp)))
+          (t t)))
+  (put 'macroexp-const-p 'emacs-stub-bulk nil))
+
 ;;;; --- Doc 16 breadth round 15: copy-hash-table (was void) -------------
 ;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The
 ;; runtime does not expose `hash-table-test', so the copy uses the default
@@ -1544,8 +1992,23 @@ The copy uses the default hash test, since the runtime does not expose
 
 (unless (fboundp 'gv-letplace)
   (defmacro gv-letplace (vars place &rest body)
-    "Stub: just eval BODY (= no real getter/setter binding)."
-    (ignore vars place) (cons 'progn body)))
+    "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
+
+Binds VARS' first symbol (GETTER) to the PLACE expression itself and
+its second symbol (SETTER) to a function that, given a value
+expression V, returns `(setf PLACE V)' -- the standard macro-writer
+contract real gv.el provides, minus the no-multiple-evaluation
+guarantee (PLACE's subforms may be evaluated more than once by the
+built form, same trade-off as this file's `with-memoization' shim).
+The previous stub here expanded to a bare `(progn BODY...)' with VARS
+completely unbound, so every real user of the contract (e.g. Compat
+31's `incf'/`decf', which Magit's `magit--with-refresh-cache' relies
+on) hit `void-variable' on the setter symbol at first invocation."
+    (let ((getter (nth 0 vars))
+          (setter (nth 1 vars)))
+      `(let* ((,getter ,place)
+              (,setter (lambda (v) (list 'setf ,getter v))))
+         ,@body))))
 
 (unless (fboundp 'gv-get)
   (defun gv-get (place do)
@@ -1636,8 +2099,11 @@ to let-bind in the case body when matched."
          ;; (or P1 P2 ...)
          ((eq head 'or)
           (emacs-stub--pcase-or rest value-form))
-         ;; (backquote ...) - destructure cons / atom shape
-         ((eq head 'backquote)
+         ;; (backquote ...) - destructure cons / atom shape.  Accept both
+         ;; the NeLisp reader's normalized `backquote' head and host
+         ;; Emacs's `\\=`' symbol (host-normalized bundles print patterns
+         ;; as `(\\=` ...)', Doc 33 item 243).
+         ((or (eq head 'backquote) (eq head '\`))
           (emacs-stub--pcase-backquote (car rest) value-form))
          ;; Unknown — treat as opaque catch-all (= permissive).
          (t (cons t nil)))))
@@ -1681,15 +2147,16 @@ Walks PAT recursively; `(comma SYM)' binds SYM to corresponding
 position; literal cons recurses with `car'/`cdr' index forms; atom
 does `equal' check."
     (cond
-     ;; (comma SYM) — bind SYM to value-form, always match.
-     ((and (consp pat) (eq (car pat) 'comma))
+     ;; (comma SYM) — bind SYM to value-form, always match.  `\\=,' is
+     ;; host Emacs's comma symbol (host-normalized bundles, item 243).
+     ((and (consp pat) (or (eq (car pat) 'comma) (eq (car pat) '\,)))
       (let ((sym (car (cdr pat))))
         (cond
          ((eq sym '_) (cons t nil))
          ((symbolp sym) (cons t (list (list sym value-form))))
          (t (emacs-stub--pcase-test sym value-form)))))
      ;; (comma-at SYM) — bind SYM to remaining list (= value-form is tail).
-     ((and (consp pat) (eq (car pat) 'comma-at))
+     ((and (consp pat) (or (eq (car pat) 'comma-at) (eq (car pat) '\,@)))
       (let ((sym (car (cdr pat))))
         (cons t (list (list sym value-form)))))
      ;; Cons cell — recursively destructure car / cdr.
@@ -1743,7 +2210,20 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
-    "Minimal `pcase-let' supporting the local pcase pattern subset."
+    "Minimal `pcase-let' supporting the local pcase pattern subset.
+Faithful to Emacs semantics: the patterns are ASSUMED to match, so the
+bindings destructure unconditionally instead of gating BODY behind a
+match test (Emacs: \"BINDINGS are treated as if they always match\").
+A too-short list therefore binds the missing positions to nil -- e.g.
+`(pcase-let ((\\=`(,a ,b ,c) \\='(1))) ...)' binds a=1, b=nil, c=nil,
+because the binding value-forms are plain `car'/`cdr' chains and
+`(car nil)' is nil.  Doc 33 item 243: the previous strict `(when TEST
+...)' gating silently evaluated the whole form to nil whenever the
+value was shorter than the pattern -- vendor code like magit's
+`magit-insert-section' macro (pattern `((,class ,value ,hide . ,args)
+. ,body)' against the common short form `((status) BODY...)') relies
+on the real, lenient destructuring, and the strict variant made that
+macro expand to nil, so no status section was ever inserted."
     (let ((forms body)
           (rev-bindings nil))
       (dolist (binding bindings)
@@ -1751,14 +2231,12 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
       (dolist (binding rev-bindings)
         (let* ((built (emacs-stub--pcase-let-binding binding))
                (temp-binding (car built))
-               (test (car (cdr built)))
                (pattern-bindings (car (cdr (cdr built)))))
           (setq forms
                 (list (list 'let (list temp-binding)
                             (if pattern-bindings
-                                (list 'when test
-                                      (cons 'let (cons pattern-bindings forms)))
-                              (cons 'when (cons test forms))))))))
+                                (cons 'let (cons pattern-bindings forms))
+                              (cons 'progn forms)))))))
       (if bindings (car forms) (cons 'progn body)))))
 
 (unless (fboundp 'pcase-let*)
@@ -1771,19 +2249,20 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 
 (unless (fboundp 'pcase-dolist)
   (defmacro pcase-dolist (spec &rest body)
-    "Minimal `pcase-dolist' supporting the local pcase pattern subset."
+    "Minimal `pcase-dolist' supporting the local pcase pattern subset.
+Like `pcase-let' (see there), Emacs treats PATTERN as if it always
+matches, so each element destructures unconditionally -- no per-element
+match filtering (Doc 33 item 243, same lenient-destructure fix)."
     (let* ((pattern (car spec))
            (list-form (car (cdr spec)))
            (result-form (car (cdr (cdr spec))))
            (value-sym (make-symbol "--pcase-dolist-value--"))
            (built (emacs-stub--pcase-test pattern value-sym))
-           (test (car built))
            (pattern-bindings (cdr built)))
       (list 'dolist (list value-sym list-form result-form)
             (if pattern-bindings
-                (list 'when test
-                      (cons 'let (cons pattern-bindings body)))
-              (cons 'when (cons test body)))))))
+                (cons 'let (cons pattern-bindings body))
+              (cons 'progn body))))))
 
 (unless (featurep 'pcase) (provide 'pcase))
 
@@ -2182,8 +2661,29 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
 
 (unless (fboundp 'cl-pushnew)
   (defmacro cl-pushnew (item place &rest _keys)
+    ;; Same generalized-place handling as `push' below: a non-symbol
+    ;; PLACE goes through the substrate's `setf' polyfill instead of an
+    ;; invalid `(setq (cdr ...) ...)' expansion.
     (list 'unless (list 'member item place)
-          (list 'setq place (list 'cons item place)))))
+          (if (symbolp place)
+              (list 'setq place (list 'cons item place))
+            (list 'setf place (list 'cons item place))))))
+
+(when (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (not (boundp 'emacs-version))
+          (get 'push 'emacs-stub-bulk))
+  (defmacro push (item place)
+    "Compatibility macro: cons ITEM onto PLACE.
+PLACE may be a symbol (expands to `setq', as before) or a generalized
+place handled by this substrate's `setf' polyfill, e.g. `(cdr CELL)' --
+real Emacs `push' accepts any gv place, and vendor code relies on that
+(Magit's `magit--with-refresh-cache' pushes onto
+`(cdr magit--refresh-cache)'; the old symbol-only expansion produced
+`(setq (cdr ...) ...)', which this evaluator aborts on flagless)."
+    (if (symbolp place)
+        (list 'setq place (list 'cons item place))
+      (list 'setf place (list 'cons item place)))))
 
 (unless (fboundp 'cl-letf)
   (defmacro cl-letf (bindings &rest body)
@@ -2391,28 +2891,117 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
 (unless (fboundp 'open-termscript) (defun open-termscript (&rest _) nil))
 (unless (fboundp 'set-input-method) (defun set-input-method (&rest _) nil))
 
-;;;; --- timers no-op stubs (= no scheduler in NeLisp standalone yet) ---
+;;;; --- timers ------------------------------------------------------------
+
+(unless (boundp 'timer-list)
+  (defvar timer-list nil))
+
+(unless (boundp 'timer-idle-list)
+  (defvar timer-idle-list nil))
+
+(defun emacs-stub--timer-now ()
+  "Return current time as a float, or 0 when unavailable."
+  (if (fboundp 'float-time) (float-time) 0))
+
+(defun emacs-stub--timer-make (trigger repeat function args idle-delay)
+  "Return a lightweight timer object."
+  (vector 'emacs-timer trigger repeat function args idle-delay nil))
+
+(defun emacs-stub--timer-p (object)
+  "Return non-nil when OBJECT is a lightweight timer."
+  (and (vectorp object)
+       (> (length object) 0)
+       (eq (aref object 0) 'emacs-timer)))
+
+(defun emacs-stub--run-with-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds."
+  (let ((timer (emacs-stub--timer-make
+                (+ (emacs-stub--timer-now) (or secs 0))
+                repeat function args nil)))
+    (setq timer-list (cons timer timer-list))
+    timer))
+
+(defun emacs-stub--run-with-idle-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds of idle time."
+  (let ((timer (emacs-stub--timer-make nil repeat function args (or secs 0))))
+    (setq timer-idle-list (cons timer timer-idle-list))
+    timer))
+
+(defun emacs-stub--cancel-timer (timer)
+  "Cancel TIMER."
+  (setq timer-list (delq timer timer-list)
+        timer-idle-list (delq timer timer-idle-list))
+  nil)
 
 (unless (fboundp 'run-at-time)
-  (defun run-at-time (&rest _) nil))
+  (defun run-at-time (time repeat function &rest args)
+    "Schedule FUNCTION at TIME with REPEAT."
+    (apply #'emacs-stub--run-with-timer
+           (if (numberp time) time 0) repeat function args))
+  (put 'run-at-time 'emacs-stub-bulk t))
+
 (unless (fboundp 'run-with-timer)
-  (defun run-with-timer (&rest _) nil))
+  (defun run-with-timer (secs repeat function &rest args)
+    "Schedule FUNCTION after SECS seconds."
+    (apply #'emacs-stub--run-with-timer secs repeat function args))
+  (put 'run-with-timer 'emacs-stub-bulk t))
+
 (unless (fboundp 'run-with-idle-timer)
-  (defun run-with-idle-timer (&rest _) nil))
+  (defun run-with-idle-timer (secs repeat function &rest args)
+    "Schedule FUNCTION after SECS seconds of idle time."
+    (apply #'emacs-stub--run-with-idle-timer secs repeat function args))
+  (put 'run-with-idle-timer 'emacs-stub-bulk t))
+
 (unless (fboundp 'cancel-timer)
-  (defun cancel-timer (&rest _) nil))
+  (defun cancel-timer (timer)
+    "Cancel TIMER."
+    (emacs-stub--cancel-timer timer))
+  (put 'cancel-timer 'emacs-stub-bulk t))
+
 (unless (fboundp 'cancel-function-timers)
-  (defun cancel-function-timers (&rest _) nil))
+  (defun cancel-function-timers (function)
+    "Cancel timers whose callback is FUNCTION."
+    (let ((timers (append timer-list timer-idle-list)))
+      (while timers
+        (when (and (emacs-stub--timer-p (car timers))
+                   (equal (aref (car timers) 3) function))
+          (emacs-stub--cancel-timer (car timers)))
+        (setq timers (cdr timers))))
+    nil))
+
 (unless (fboundp 'timerp)
-  (defun timerp (_) nil))
+  (defun timerp (object)
+    "Return non-nil when OBJECT is a timer."
+    (emacs-stub--timer-p object))
+  (put 'timerp 'emacs-stub-bulk t))
+
 (unless (fboundp 'timer-create)
-  (defun timer-create (&rest _) nil))
+  (defun timer-create ()
+    "Create an inactive lightweight timer."
+    (emacs-stub--timer-make nil nil nil nil nil)))
+
 (unless (fboundp 'timer-set-time)
-  (defun timer-set-time (&rest _) nil))
+  (defun timer-set-time (timer time &optional repeat)
+    "Set TIMER's TIME and REPEAT."
+    (when (emacs-stub--timer-p timer)
+      (aset timer 1 (if (numberp time) (+ (emacs-stub--timer-now) time) 0))
+      (aset timer 2 repeat))
+    timer))
+
 (unless (fboundp 'timer-set-function)
-  (defun timer-set-function (&rest _) nil))
+  (defun timer-set-function (timer function &optional args)
+    "Set TIMER's FUNCTION and ARGS."
+    (when (emacs-stub--timer-p timer)
+      (aset timer 3 function)
+      (aset timer 4 args))
+    timer))
+
 (unless (fboundp 'timer-activate)
-  (defun timer-activate (&rest _) nil))
+  (defun timer-activate (timer &optional _triggered)
+    "Activate TIMER."
+    (when (emacs-stub--timer-p timer)
+      (setq timer-list (cons timer timer-list)))
+    timer))
 (unless (fboundp 'sit-for)
   (defun sit-for (&rest _) nil))
 (unless (fboundp 'sleep-for)
@@ -2456,6 +3045,24 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
        (put ',symbol 'standard-value (list ',standard))
        (put ',symbol 'custom-args ',args)
        ',symbol)))
+
+(unless (fboundp 'custom-declare-variable)
+  (defun custom-declare-variable (symbol default doc &rest args)
+    "Standalone load-time fallback for evaluated Custom variables."
+    (unless (boundp symbol)
+      (set symbol default))
+    (put symbol 'standard-value (list default))
+    (put symbol 'variable-documentation doc)
+    (put symbol 'custom-args args)
+    symbol))
+
+(unless (fboundp 'custom-declare-face)
+  (defun custom-declare-face (face spec doc &rest args)
+    "Standalone load-time fallback for evaluated Custom faces."
+    (put face 'face-defface-spec spec)
+    (put face 'face-documentation doc)
+    (put face 'custom-args args)
+    face))
 
 (unless (fboundp 'convert-standard-filename)
   (defun convert-standard-filename (filename)

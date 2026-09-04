@@ -15,6 +15,12 @@
 #   nemacs --batch --load-image FILE legacy: restore Lisp-visible .nli state
 #   nemacs --batch --eval FORM      batch + eval FORM
 #   nemacs --batch -l a -l b --eval '(...)'
+#   nemacs -q                       skip user init.el/early-init.el (like Emacs -q)
+#   nemacs --no-init-file           same as -q
+#   nemacs -Q                       -q + suppress the startup splash (like Emacs -Q)
+#   nemacs --quick                  same as -Q
+#   nemacs --no-splash              suppress the startup splash screen only
+#   nemacs --no-site-file           accepted for Emacs CLI compatibility (no-op)
 #   nemacs --driver=nelisp ...      use NeLisp as driver
 #   nemacs --driver=host ...        force host emacs driver (= default)
 #   nemacs --print-paths            dump the resolved load-path / vendor root
@@ -95,7 +101,7 @@ fi
 NEMACS_VERSION="0.1.0-mvp"
 
 usage() {
-  sed -n '2,30p' "$0"
+  sed -n '2,36p' "$0"
 }
 
 print_paths() {
@@ -269,6 +275,8 @@ run_doctor() {
 
 BATCH=0
 NO_BANNER=0
+NO_INIT=0
+NO_SPLASH=0
 DOCTOR=0
 LOAD_FILES=()
 LOAD_PATHS=()
@@ -286,7 +294,10 @@ while (( $# > 0 )); do
       exit 0 ;;
     --print-paths) print_paths; exit 0 ;;
     --doctor) DOCTOR=1; shift ;;
-    -Q|--quick) shift ;;
+    -q|--no-init-file) NO_INIT=1; shift ;;
+    -Q|--quick) NO_INIT=1; NO_SPLASH=1; shift ;;
+    --no-splash) NO_SPLASH=1; shift ;;
+    --no-site-file) shift ;;
     -nw|--no-window-system)
       HOST_EARLY_ARGS+=("$1"); shift ;;
     --batch) BATCH=1; shift ;;
@@ -329,6 +340,36 @@ done
 if (( DOCTOR )); then
   run_doctor
   exit $?
+fi
+
+# --- macro-less driver pre-pass: wrap user init ahead of time (Phase 3) --
+#
+# Loader reconcile Phase 3.  The nelisp/standalone driver's reader cannot
+# reliably macro-expand every user init construct (Doc reconcile plan
+# §1), so ahead of dispatch we run the same host-side `nemacs-wrap-init'
+# generator the GUI launcher uses (scripts/nemacs-wrap-init.el), writing
+# its output under `nemacs-resolve-user-emacs-directory' (src/nemacs-
+# loadup.el) -- the single source every driver now defers to -- so
+# `nemacs-loadup''s Phase 2 consumer (`nemacs--load-user-init-via-
+# transport') picks it up automatically once `nemacs-init' runs below.
+#
+# Skipped entirely for the host driver (host Emacs macro-expands every
+# construct itself, Phase 1's raw `load' is always sufficient there) and
+# under -q/-Q (`NO_INIT'; the loadup init gate skips loading either way --
+# double closure, nothing to wrap).  Host Emacs unavailable, or the
+# generator failing, is a silent degrade to the Phase 1 raw-load lane
+# (unchanged pre-Phase-3 behavior).
+if [[ "$NEMACS_DRIVER" == "nelisp" && "$NO_INIT" != 1 ]] \
+   && command -v "$NEMACS_EMACS" >/dev/null 2>&1; then
+  "$NEMACS_EMACS" -Q --batch -L "$NEMACS_HOME/src" \
+    -l nemacs-loadup -l "$NEMACS_HOME/scripts/nemacs-wrap-init.el" \
+    --eval "(let ((dir (nemacs-resolve-user-emacs-directory)))
+              (when (or (file-readable-p (concat dir \"early-init.el\"))
+                        (file-readable-p (concat dir \"init.el\")))
+                (nemacs-wrap-init (concat dir \"nemacs-init-wrapped\")
+                                   (concat dir \"early-init.el\")
+                                   (concat dir \"init.el\"))))" \
+    >/dev/null 2>&1 || true
 fi
 
 # --- bootstrap form ------------------------------------------------
@@ -480,7 +521,7 @@ if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
   if (( BATCH )); then
     BOOT_ENTRY_FORM="$(cat <<'EOF'
   (when (fboundp 'install-sigint-handler) (install-sigint-handler))
-  (unless nemacs-initialized (nemacs-init t))
+  (unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init t))
   (nemacs-main--apply-options)
   (unless (nemacs-main-option :no-banner)
     (when (fboundp 'message)
@@ -492,7 +533,7 @@ EOF
   (when (fboundp 'install-sigint-handler) (install-sigint-handler))
   (when (fboundp 'install-winsize-handler) (install-winsize-handler))
   (when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))
-  (unless nemacs-initialized (nemacs-init))
+  (unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init))
   (nemacs-main--apply-options)
   (setq nemacs-main--repl-tui-ok (nemacs-main--realise-tui))
   (if nemacs-main--repl-tui-ok
@@ -529,6 +570,8 @@ $BOOT_NELISP_SOURCE_REFRESH
         (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
               :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
               :driver '$NEMACS_DRIVER
+              :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+              :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
               :images (list$IMAGE_LIST)
               :load-path (list$LOAD_PATH_LIST)
               :load (list$LOAD_LIST)
@@ -586,6 +629,8 @@ case "$NEMACS_DRIVER" in
       (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
             :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
             :driver '$NEMACS_DRIVER
+            :init-file-user $([ "$NO_INIT" = "1" ] && echo nil || echo '""')
+            :inhibit-startup-screen $([ "$NO_SPLASH" = "1" ] && echo t || echo nil)
             :images (list$IMAGE_LIST)
             :load-path (list$LOAD_PATH_LIST)
             :load (list$LOAD_LIST)
@@ -600,23 +645,29 @@ EOF
           # nil when one closure calls another.  Keep batch CLI processing at
           # top level so -L/-l/--eval/-f see the plist installed above.
           printf '%s\n' "(when (fboundp 'install-sigint-handler) (install-sigint-handler))" >> "$tmp"
-          printf '%s\n' "(unless nemacs-initialized (nemacs-init t))" >> "$tmp"
+          printf '%s\n' "(unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init t))" >> "$tmp"
           printf '%s\n' "(nemacs-main--apply-options)" >> "$tmp"
           printf '%s\n' "(unless (nemacs-main-option :no-banner) (when (fboundp 'message) (message \"%s\" (nemacs-main-status-banner))))" >> "$tmp"
         else
           printf '%s\n' "(when (fboundp 'install-sigint-handler) (install-sigint-handler))" >> "$tmp"
           printf '%s\n' "(when (fboundp 'install-winsize-handler) (install-winsize-handler))" >> "$tmp"
           printf '%s\n' "(when (fboundp 'install-jobctrl-handlers) (install-jobctrl-handlers))" >> "$tmp"
-          printf '%s\n' "(unless nemacs-initialized (nemacs-init))" >> "$tmp"
+          printf '%s\n' "(unless nemacs-initialized (nemacs-main--apply-startup-gate) (nemacs-init))" >> "$tmp"
           printf '%s\n' "(nemacs-main--apply-options)" >> "$tmp"
           printf '%s\n' "(setq nemacs-main--repl-tui-ok (nemacs-main--realise-tui))" >> "$tmp"
           if (( ! NO_BANNER )); then
             printf '%s\n' "(when (and nemacs-main--repl-tui-ok (fboundp 'message)) (message \"%s\" (nemacs-main-status-banner)))" >> "$tmp"
           fi
           if [[ "$NEMACS_DRIVER" == "host" ]]; then
-            printf '%s\n' "(if (and nemacs-main--repl-tui-ok (boundp 'noninteractive) (not noninteractive)) (nemacs-main--install-keymap-host) (when nemacs-main--repl-tui-ok (unwind-protect (progn (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input))))" >> "$tmp"
+            printf '%s\n' "(if (and nemacs-main--repl-tui-ok (boundp 'noninteractive) (not noninteractive)) (nemacs-main--install-keymap-host) (when nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input))))" >> "$tmp"
           else
-            printf '%s\n' "(if nemacs-main--repl-tui-ok (unwind-protect (progn (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input)) (progn (when (fboundp 'message) (message \"nemacs: TUI not available, running batch-style\")) (nemacs-main--apply-options)))" >> "$tmp"
+            # Cheap unconditional diagnosability marker: emitted just before the
+            # raw-input handoff so pty smoke probes can tell "boot form reached
+            # the interactive tail" apart from "boot form never got this far"
+            # even when the rest of the TUI never becomes observable. Batch mode
+            # never reaches this branch, so the marker cannot leak into scripted
+            # --batch output.
+            printf '%s\n' "(if nemacs-main--repl-tui-ok (unwind-protect (progn (princ \"NEMACS_TUI_TAIL_REACHED\\n\") (nemacs-main--enable-tty-raw-input) (nemacs-main--enter-fullscreen) (nemacs-main--initial-paint) (nemacs-main--event-loop)) (nemacs-main--disable-tty-raw-input)) (progn (when (fboundp 'message) (message \"nemacs: TUI not available, running batch-style\")) (nemacs-main--apply-options)))" >> "$tmp"
           fi
         fi
         printf '%s\n' ",quit" >> "$tmp"

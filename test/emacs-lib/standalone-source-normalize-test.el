@@ -22,6 +22,48 @@
      '(quote (setq-local foo 1)))
     '(quote (setq-local foo 1)))))
 
+(ert-deftest standalone-source-normalize-test/normalizes-genuine-backquote-data ()
+  "A real reader-emitted `(backquote DATUM)' still normalizes its datum."
+  (should
+   (equal
+    (standalone-source-normalize-form
+     (read "`(a ,b ,@c)"))
+    (read "`(a ,b ,@c)"))))
+
+(ert-deftest standalone-source-normalize-test/preserves-defmacro-named-backquote ()
+  "Doc 33 item 225 regression: a definition literally named `backquote'
+must not be mistaken for reader-emitted backquote syntax and truncated
+to its name + arglist.  `(defmacro backquote (form) DOC BODY)' has
+`(backquote (form) DOC BODY)' as its cdr -- same head symbol as genuine
+`(backquote DATUM)' syntax, but a 4-element list, not 2.  The full
+docstring and body must survive normalization."
+  (should
+   (equal
+    (standalone-source-normalize-form
+     '(defmacro backquote (form)
+        "Polyfill: expand FORM under backquote semantics."
+        (emacs-backquote--expand form)))
+    '(defmacro backquote (form)
+       "Polyfill: expand FORM under backquote semantics."
+       (emacs-backquote--expand form)))))
+
+(ert-deftest standalone-source-normalize-test/preserves-defun-named-backquote-in-guard ()
+  "Same collision, wrapped in the `unless (fboundp ...)' polyfill-guard
+shape used across src/*.el; the guard form's cdr also is not itself a
+top-level defmacro, so this exercises the generic-cons recursion path
+that walks down into the guarded definition."
+  (should
+   (equal
+    (standalone-source-normalize-form
+     '(unless (fboundp 'backquote)
+        (defmacro backquote (form)
+          "doc"
+          (emacs-backquote--expand form))))
+    '(unless (fboundp 'backquote)
+       (defmacro backquote (form)
+         "doc"
+         (emacs-backquote--expand form))))))
+
 (ert-deftest standalone-source-normalize-test/rewrites-inside-defun-body ()
   (should
    (equal
@@ -2204,6 +2246,33 @@
      '(gv-define-setter org-element-property (value property node)
         `(org-element-put-property ,node ,property ,value))))))
 
+(ert-deftest standalone-source-normalize-test/drops-files-top-level-key-wiring ()
+  (let ((standalone-source-normalize-current-file "files.el"))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key ctl-x-map "i" 'insert-file)))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key esc-map "~" 'not-modified)))
+    (should
+     (standalone-source-normalize-top-level-forms
+      '(define-key unrelated-map "i" 'insert-file)))))
+
+(ert-deftest standalone-source-normalize-test/drops-window-top-level-key-wiring ()
+  (let ((standalone-source-normalize-current-file "window.el"))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key global-map [?\C-l] 'recenter-top-bottom)))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key ctl-x-map "2" 'split-window-below)))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(define-key ctl-x-4-map "0" 'kill-buffer-and-window)))
+    (should
+     (standalone-source-normalize-top-level-forms
+      '(define-key unrelated-map "2" 'split-window-below)))))
+
 (ert-deftest standalone-source-normalize-test/drops-uninitialized-top-level-defvar ()
   (should
    (null
@@ -2326,6 +2395,21 @@
         (put 'org-modules 'standard-value (list ''(ol-doi ol-w3m)))
         (put 'org-modules 'custom-args t)
         'org-modules)))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-text-mode-defcustoms-to-bindings ()
+  (dolist (form '((defcustom text-mode-hook '(text-mode-hook-identify)
+                    "Documentation."
+                    :type 'hook
+                    :options '(turn-on-auto-fill turn-on-flyspell)
+                    :group 'text)
+                  (defcustom text-mode-ispell-word-completion 'completion-at-point
+                    "Documentation."
+                    :type '(choice symbol function)
+                    :group 'text)))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms form)
+      (list (list 'defvar (cadr form) (caddr form)))))))
 
 (ert-deftest standalone-source-normalize-test/drops-ol-doi-defcustom-after-synthetic-binding ()
   (let ((standalone-source-normalize-current-file "ol-doi.el"))
@@ -2485,6 +2569,21 @@
           (defun demo-large (&optional arg) nil)
           (put 'demo-large 'standalone-source-elided-body t)
           'demo-large))))))
+
+(ert-deftest standalone-source-normalize-test/retains-listed-large-core-defun-body ()
+  (let ((standalone-source-normalize-large-defun-character-limit 20)
+        (standalone-source-normalize-retained-large-defun-symbols '(demo-large)))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun demo-large (&optional arg)
+          (let ((value arg))
+            (setq value (cons value value))
+            value)))
+      '((defun demo-large (&optional arg)
+          (let ((value arg))
+            (setq value (cons value value))
+            value)))))))
 
 (ert-deftest standalone-source-normalize-test/elides-listed-top-level-defun-body ()
   (let ((standalone-source-normalize-large-defun-character-limit 10000)

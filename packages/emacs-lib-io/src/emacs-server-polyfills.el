@@ -112,7 +112,14 @@ libffi primitive is available).")
   (unless (fboundp 'emacs-pid)        (defun emacs-pid () 0))
   (unless (fboundp 'daemonp)          (defun daemonp () nil))
   (unless (fboundp 'frame-list)       (defun frame-list () '(t)))
-  (unless (fboundp 'selected-frame)   (defun selected-frame () t)))
+  (unless (fboundp 'selected-frame)   (defun selected-frame () t))
+  (unless (and (fboundp 'user-login-name)
+               (not (get 'user-login-name 'emacs-stub-bulk)))
+    (defun user-login-name (&optional _uid)
+      "Return the user's login name from the environment (standalone bridge)."
+      (or (and (fboundp 'getenv) (or (getenv "LOGNAME") (getenv "USER")))
+          "standalone"))
+    (put 'user-login-name 'emacs-stub-bulk nil)))
 
 
 ;;;; --- featurep override for `:family local' -------------------------

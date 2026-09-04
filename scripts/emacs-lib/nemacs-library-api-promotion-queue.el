@@ -34,6 +34,13 @@
   '("public-prefixed" "compat-global")
   "Package API classes that need consumer-surface promotion review.")
 
+(defconst nemacs-library-api-promotion-queue--open-statuses
+  '("needs-review" "needs-doc" "needs-test"
+    "compat-shim-review"
+    "compat-shim-helper-review"
+    "validation-helper-review")
+  "Promotion statuses that still require package-owner action.")
+
 (defconst nemacs-library-api-promotion-queue--symbol-char-re
   "[:alnum:]_!$%&*+./:<=>?@^|~-"
   "Character class fragment treated as symbol-name characters.")
@@ -315,6 +322,10 @@ facade stable package API manifest symbol list."
   "Increment TABLE count for KEY."
   (puthash key (1+ (or (gethash key table) 0)) table))
 
+(defun nemacs-library-api-promotion-queue--open-row-p (row)
+  "Return non-nil when ROW still needs promotion review work."
+  (member (nth 10 row) nemacs-library-api-promotion-queue--open-statuses))
+
 (defun nemacs-library-api-promotion-queue--sorted-counts (table)
   "Return TABLE counts sorted by key."
   (let (items)
@@ -353,15 +364,24 @@ facade stable package API manifest symbol list."
 (defun nemacs-library-api-promotion-queue--write-summary (rows output)
   "Write promotion queue ROWS summary to Org OUTPUT."
   (let ((by-status (make-hash-table :test 'equal))
-        (by-package-status (make-hash-table :test 'equal)))
+        (by-package-status (make-hash-table :test 'equal))
+        (by-open-package-status (make-hash-table :test 'equal))
+        (open-count 0))
     (dolist (row rows)
       (nemacs-library-api-promotion-queue--inc by-status (nth 10 row))
       (nemacs-library-api-promotion-queue--inc
-       by-package-status (format "%s/%s" (nth 0 row) (nth 10 row))))
+       by-package-status (format "%s/%s" (nth 0 row) (nth 10 row)))
+      (when (nemacs-library-api-promotion-queue--open-row-p row)
+        (setq open-count (1+ open-count))
+        (nemacs-library-api-promotion-queue--inc
+         by-open-package-status (format "%s/%s" (nth 0 row) (nth 10 row)))))
     (make-directory (file-name-directory output) t)
     (with-temp-file output
       (insert "#+TITLE: nemacs library API promotion queue\n\n")
-      (insert (format "* Summary\n\n- rows: %d\n\n" (length rows)))
+      (insert (format "* Summary\n\n- rows: %d\n" (length rows)))
+      (insert (format "- open review rows: %d\n" open-count))
+      (insert (format "- classified rows: %d\n\n"
+                      (- (length rows) open-count)))
       (insert "* Counts by status\n\n")
       (insert "| Status | Count |\n|--------+-------|\n")
       (dolist (item (nemacs-library-api-promotion-queue--sorted-counts
@@ -372,15 +392,16 @@ facade stable package API manifest symbol list."
       (dolist (item (nemacs-library-api-promotion-queue--sorted-counts
                      by-package-status))
         (insert (format "| %s | %d |\n" (car item) (cdr item))))
+      (insert "\n* Open counts by package/status\n\n")
+      (insert "| Package/Status | Count |\n|----------------+-------|\n")
+      (dolist (item (nemacs-library-api-promotion-queue--sorted-counts
+                     by-open-package-status))
+        (insert (format "| %s | %d |\n" (car item) (cdr item))))
       (insert "\n* Review queue\n\n")
       (insert "| Package | Status | Symbol | Reason |\n")
       (insert "|---------+--------+--------+--------|\n")
       (dolist (row rows)
-        (when (member (nth 10 row)
-                      '("needs-review" "needs-doc" "needs-test"
-                        "compat-shim-review"
-                        "compat-shim-helper-review"
-                        "validation-helper-review"))
+        (when (nemacs-library-api-promotion-queue--open-row-p row)
           (insert (format "| %s | %s | =%s= | %s |\n"
                           (nth 0 row)
                           (nth 10 row)
@@ -390,6 +411,7 @@ facade stable package API manifest symbol list."
       (insert "- This queue is generated from package-scoped API rows and evidence references in =test/=, =README.org=, =AGENTS.md=, =CLAUDE.md=, and =docs/design/=.\n")
       (insert "- =promote-ready= means the candidate has both test and doc references; package owners still decide stability.\n")
       (insert "- =stable-contract= means the symbol is listed in the facade stable package API manifest or stable lazy package API manifest.\n")
+      (insert "- =open review rows= counts only statuses that still need package-owner action; =classified rows= are stable, internal, covered, loader-manifest, or promote-ready rows.\n")
       (insert "- =needs-doc= and =needs-test= identify the next concrete work before relying on a symbol externally.\n")
       (insert "- =needs-review= has no test/doc evidence yet and should not be treated as a consumer contract.\n")
       (insert "- =compat-shim-*= rows are Emacs-compatible shim names, not preferred new integration APIs.\n")

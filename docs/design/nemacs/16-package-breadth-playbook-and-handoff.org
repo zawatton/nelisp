@@ -2,6 +2,11 @@
 #+AUTHOR: nelisp-emacs
 #+DATE: 2026-06-20
 #+STATUS: DRAFT
+#+MILESTONE: 2026-06-23 — Doc 22 reader-core gap を *全 21 項目 (A1–A20 + C1) FIXED* し vendor/nelisp
+#+MILESTONE:   origin/main へ統合。breadth loop の reader-core 起因 blocker は解消 (round 31, Doc 15 §3.5)。
+#+MILESTONE:   seq.el の core 動作確認済。残るは bundle-level の lib 完備性で、full package breadth は
+#+MILESTONE:   bundle (=./bin/nemacs --driver=nelisp=) が target だが本 host では cold-load OOM
+#+MILESTONE:   (off-peak / 高RAM / pre-baked .nlri が次の前提)。
 #+DEPENDS_ON: Doc 11/14 (stale, Doc 15 §3 で訂正), Doc 15 段階実行プラン
 
 * 0. Purpose

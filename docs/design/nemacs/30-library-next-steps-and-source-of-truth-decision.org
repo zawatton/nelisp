@@ -1,0 +1,181 @@
+#+TITLE: nelisp-emacs Doc 30 -- Library next steps and source-of-truth decision
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-22
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 25 library consumer contract, Doc 26 residual API audit, Doc 27 package extraction readiness, Doc 28 compatibility global API policy, Doc 29 release signing workflow
+
+* 0. Purpose
+
+This document turns the current library-first evidence into a concrete
+follow-up plan.
+
+The repository is already usable as an Elisp library, but it is not yet
+finished as a package-first codebase.  The remaining work is not "more
+features"; it is to decide what becomes the long-term source of truth,
+close the last review rows, and make the release path predictable.
+
+* 1. Current State
+
+The current generated evidence says:
+
+| Area | Current state |
+|------+---------------|
+| Package split | 8 reusable packages |
+| Physical layout | 88 file mappings |
+| Dependency graph | 71 dependency rows, migration candidates 0 |
+| Boundary report | rows 0 |
+| Public contract | stable API rows 965, failures 0 |
+| API review queue | rows 1281, open review rows 0, promote-ready 133 |
+| Package-path smoke | green |
+| Consumer smoke | green |
+| Package verify | checks 48, failures 0 |
+| Publication policy | checks 35, failures 0 |
+| Release publication policy | checks 32, ok 29, pending 3, failures 0 |
+| Release bundle smoke | green after clean bundle root regeneration |
+
+The practical conclusion is:
+
+- the reusable library surface is real;
+- the package scaffold is coherent;
+- the remaining work is mostly policy, documentation, and migration
+  governance;
+- a one-shot removal of =src/= is still the wrong move.
+
+* 2. What Is Still Left
+
+** 2.1 Close the process API review queue
+
+The last process API review rows have been promoted.  The 8
+=nelisp-emacs-io= process APIs are now documented and tested:
+
+- =emacs-process-process-filter=
+- =emacs-process-process-sentinel=
+- =emacs-process-set-process-buffer=
+- =emacs-process-process-plist=
+- =emacs-process-set-process-plist=
+- =emacs-process-process-query-on-exit-flag=
+- =emacs-process-set-process-query-on-exit-flag=
+- =emacs-process-process-send-region=
+
+These rows are not a packaging problem.  They are a contract-definition
+problem.  The project must decide whether they are:
+
+- stable reusable process primitives;
+- compatibility-only wrappers;
+- or internal implementation helpers that should stay out of the facade.
+
+The current implementation now has direct test coverage for the accessor
+and mutator path in =test/emacs-process-builtins-test.el=, and consumer
+documentation in =README.org=.
+
+The remaining decision is not discovery; it is whether each symbol
+eventually becomes stable facade surface or remains compatibility-only.
+
+** 2.2 Make release bundle regeneration operationally clean
+
+The release-bundle pipeline works, but it is not yet friction-free.
+When the bundle root already exists, regeneration can fail with a stale
+directory removal error.  A clean bundle root makes the draft bundle and
+bundle smoke pass again.
+
+This means the design should require one of the following:
+
+- explicit cleanup before bundle regeneration;
+- or an idempotent bundle-root reset step inside the target itself.
+
+The safer design is to make the target self-cleaning, because release
+automation should not depend on hidden build-dir state.
+
+** 2.3 Decide the source-of-truth model
+
+There are two possible long-term modes:
+
+| Model | Meaning |
+|-------+---------|
+| =src-primary= | edit in =src/= and generate/copy package trees |
+| =packages-primary= | move real sources under =packages/= and keep =src/= as compatibility forwarders |
+
+The current evidence supports =src-primary= for now.
+
+Reason:
+
+- tests and scripts still carry =src/= assumptions in a few places;
+- package README files still describe the scaffold as generated from =src/=;
+- the release tooling and package tooling are ready, but the human
+  migration model is not yet settled;
+- the package path gates are green, but source-of-truth migration is a
+  broader maintenance decision than a smoke test.
+
+The recommended decision is:
+
+- keep =src-primary= until the remaining API review rows are resolved;
+- then switch the docs and scaffold wording to a staged
+  =packages-primary= migration;
+- only after that, consider moving real editable sources under
+  =packages/= and leaving =src/= as compatibility forwarders.
+
+** 2.4 Reduce compatibility wording drift in generated scaffolds
+
+Several generated package READMEs still say:
+
+- "Do not edit this copy as the source of truth; edit =src/= and regenerate."
+
+That is correct for the current mode, but it becomes misleading once the
+repo starts treating package trees as the editable surface.
+
+This wording should be centralized and made mode-dependent so the docs do
+not lag behind the chosen source-of-truth model.
+
+** 2.5 Keep release publication separate from normal development
+
+The release workflow is correctly fenced off from =make nemacs-library-gate=.
+That boundary should remain.
+
+What is still missing is not the gate itself, but real release material:
+
+- real release public key material;
+- real detached signatures;
+- real publication runbooks;
+- and a final publish-from-config rehearsal in the intended deployment
+  environment.
+
+* 3. Recommended Order
+
+1. Make release bundle regeneration idempotent or explicitly self-cleaning.
+2. Update scaffold and package README wording so the source-of-truth mode
+   is explicit.
+3. Keep =src-primary= until the above are done.
+4. Revisit the =packages-primary= move only after the package-path gates
+   remain green under the revised docs and contract decisions.
+
+* 4. Exit Criteria for a Source-of-Truth Switch
+
+A switch toward =packages-primary= should not happen until all of the
+following are true:
+
+- open API review rows are zero;
+- package-path smoke remains green;
+- consumer smoke remains green;
+- release bundle regeneration works from a clean tree and from an already
+  populated tree;
+- generated README text no longer misstates the active source-of-truth
+  model;
+- the team agrees that source edits belong in =packages/= rather than
+  =src/=.
+
+* 5. Design Decision
+
+The next implementation phase should be a controlled stabilization pass,
+not a broad move.
+
+The project is ready to be treated as a reusable library with staged
+package extraction.  It is not yet ready to discard =src/= or to claim
+that =packages/= is the sole editable source tree.
+
+That is the right tradeoff for the current state of the repository:
+
+- reuse value is already high;
+- package split is already useful;
+- the remaining work is mostly governance and migration policy;
+- the risk of a premature tree move is still higher than the value it
+  would create right now.

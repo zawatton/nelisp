@@ -6,11 +6,18 @@
 
 * 0. Purpose
 
-This document defines the release-only workflow for creating detached
-signatures for generated package archive artifacts.
+This document defines the release-only workflow for publishing explicit public
+key material and creating detached signatures for generated package archive
+artifacts.
 
 Normal library development keeps package archives unsigned.  Public release
-publication requires detached signatures for:
+publication requires:
+
+- an explicit release public key file:
+  =docs/release/nemacs-library-release-public-key.asc=
+- a configured 40-hex OpenPGP fingerprint:
+  =NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT=
+- detached signatures for:
 
 - =build/nemacs-library-package-archives/archive-contents=
 - every =build/nemacs-library-package-archives/*.tar= package archive
@@ -24,7 +31,76 @@ make nemacs-library-package-signature-policy
 Current draft policy coverage is 9 artifacts: one =archive-contents= file
 and 8 package tarballs.
 
-* 1. Signing
+* 1. Release Key
+
+Normal development records the public release key policy without requiring key
+material:
+
+#+begin_src sh
+make nemacs-library-package-release-key-policy
+#+end_src
+
+The key policy target writes:
+
+- =build/nemacs-library-package-release-key-policy.tsv=
+- =build/nemacs-library-package-release-key-policy.org=
+
+Current draft key policy coverage is 4 checks: expected fingerprint, public
+key file, public key import, and fingerprint match.  With no release key
+configured, draft mode records 4 pending checks and 0 failures.
+
+Strict public release verification requires:
+
+#+begin_src sh
+make nemacs-library-package-release-key-policy \
+  NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
+  NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE=docs/release/nemacs-library-release-public-key.asc \
+  NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567
+#+end_src
+
+Strict mode imports the public key file into a temporary GnuPG home and verifies
+that the imported key material contains the configured fingerprint.  Without
+the public key file and fingerprint, strict mode fails closed with 4 failures.
+
+Real release key access should be configured through a local make include, not
+through committed repository state.  Copy:
+
+#+begin_src sh
+cp docs/release/nemacs-library-release.local.mk.example \
+  docs/release/nemacs-library-release.local.mk
+#+end_src
+
+Then set:
+
+- =NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE= to the release public key file;
+- =NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT= to the full 40-hex
+  OpenPGP fingerprint;
+- =NEMACS_LIBRARY_RELEASE_GNUPGHOME= to the private release keyring.
+
+The local config file is ignored by git.  Alternatively, set
+=NEMACS_LIBRARY_RELEASE_CONFIG=/absolute/path/to/release.local.mk= to keep the
+config outside the repository.
+
+Before signing with a real key, run:
+
+#+begin_src sh
+make nemacs-library-package-release-ready
+#+end_src
+
+This writes:
+
+- =build/nemacs-library-package-release-config-check.tsv=
+- =build/nemacs-library-package-release-config-check.org=
+- =build/nemacs-library-package-release-key-policy.tsv=
+- =build/nemacs-library-package-release-key-policy.org=
+
+The config check fails unless the local release config is readable, any
+repository-local config path is ignored by git, the public key is readable, the
+fingerprint is a full OpenPGP fingerprint, =gpg= is available, the configured
+=GNUPGHOME= is outside the repository and private, and the configured secret
+key exists in that keyring.
+
+* 2. Signing
 
 Release signing is explicit and not part of =make nemacs-library-gate=:
 
@@ -49,12 +125,13 @@ Set =NEMACS_LIBRARY_RELEASE_SIGNATURE_ARMOR= to =1= if a release process
 requires armored detached signatures while keeping the configured suffix.
 Set =NEMACS_LIBRARY_RELEASE_GPG_PROGRAM= to use a non-default GnuPG binary.
 
-* 2. Verification
+* 3. Verification
 
 After signing, verify with:
 
 #+begin_src sh
 make nemacs-library-package-signature-release-verify \
+  NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE=docs/release/nemacs-library-release-public-key.asc \
   NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567
 #+end_src
 
@@ -67,8 +144,11 @@ It requires:
 
 - =NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT= to be a 40-hex OpenPGP
   fingerprint;
+- =NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE= to be readable and importable by
+  GnuPG;
 - every expected detached signature file to exist;
-- =gpg --verify SIGNATURE ARTIFACT= to succeed;
+- =gpg --verify SIGNATURE ARTIFACT= to succeed in a temporary GnuPG home
+  containing only the explicit release public key;
 - the =VALIDSIG= fingerprint emitted by GnuPG to match the configured
   fingerprint.
 
@@ -76,12 +156,13 @@ The combined release workflow is:
 
 #+begin_src sh
 make nemacs-library-package-signature-release \
+  NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE=docs/release/nemacs-library-release-public-key.asc \
   NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567
 #+end_src
 
 This runs release signing and strict verification in order.
 
-* 3. Release Bundle
+* 4. Release Bundle
 
 Normal development can retain a draft bundle and manifest without private key
 access:
@@ -97,39 +178,139 @@ This writes:
 - =build/nemacs-library-package-release-bundle-manifest.org=
 
 Draft mode copies =archive-contents=, package tarballs, and publication
-evidence, then records missing signatures and release-only evidence as pending.
+evidence, including release public key policy evidence, then records missing
+public key material, signatures, and release-only evidence as pending.  Current
+draft bundle coverage is 35 rows: 21 retained files, 14 pending release-only
+files, and 0 failures.
+
+The retained draft bundle can be consumed through the normal package archive
+flow with:
+
+#+begin_src sh
+make nemacs-library-package-release-bundle-smoke
+#+end_src
+
+This verifies retained manifest byte counts and SHA-256 digests before using
+=build/nemacs-library-package-release-bundle/archives/= as a local
+=package-archives= entry.  Current draft coverage installs all 8 reusable
+packages, reports 8 ok and 0 failures, and verifies 9 retained archive
+artifacts from the bundle manifest.  The smoke also verifies that the manifest
+currently records 21 retained files and 14 pending files.
+
+Before treating a retained bundle as publishable, verify the bundle publication
+contract:
+
+#+begin_src sh
+make nemacs-library-package-release-publication-policy
+#+end_src
+
+This writes:
+
+- =build/nemacs-library-package-release-publication-policy.tsv=
+- =build/nemacs-library-package-release-publication-policy.org=
+
+Draft mode verifies that all retained manifest rows still match byte count and
+SHA-256, all 8 package install smokes passed, and every file in the bundle root
+is retained by the manifest.  It also rejects duplicate retained bundle paths,
+so two evidence subjects cannot silently publish the same file.  It records the
+expected release-only pending state for detached signatures and strict release
+evidence.  Current draft coverage is 32 checks: 29 ok, 3 pending, and 0
+failures.
+
+Strict release mode fails unless the manifest has no pending rows, all 9
+detached signatures are retained, all 5 release evidence files are retained,
+the bundle root has no duplicate or manifest-external files, and the bundle
+smoke has 8 ok and 0 failures.
 
 For a public release, create the strict signed bundle with:
 
 #+begin_src sh
-make nemacs-library-package-release-bundle \
-  NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567
+make nemacs-library-package-release-from-config
 #+end_src
 
-This target runs release signing, strict signature verification, and strict
-bundle retention in order.  Missing signatures or release verification
-evidence fail the target.
+This target first runs =nemacs-library-package-release-ready=, then runs release
+signing, strict signature verification, strict bundle retention, strict bundle
+smoke, and strict publication-policy verification in order.  Missing public key
+material, missing signatures, missing release verification evidence, missing
+private-key access, a manifest-external bundle file, or a bundle install/load
+failure fail the target.
 
-* 4. Current State
+* 5. Release Rehearsal
+
+The strict release mechanics can be tested without a real public release key:
+
+#+begin_src sh
+make nemacs-library-package-release-rehearsal
+#+end_src
+
+The rehearsal target writes its artifacts under:
+
+- =build/nemacs-library-package-release-rehearsal/release-rehearsal-key.org=
+- =build/nemacs-library-package-release-rehearsal/release-key-policy.org=
+- =build/nemacs-library-package-release-rehearsal/signature-release-sign.org=
+- =build/nemacs-library-package-release-rehearsal/signature-release.org=
+- =build/nemacs-library-package-release-rehearsal/release-bundle-manifest.org=
+- =build/nemacs-library-package-release-rehearsal/release-bundle-smoke.org=
+- =build/nemacs-library-package-release-rehearsal/release-publication-policy.org=
+- =build/nemacs-library-package-release-rehearsal/release-rehearsal.org=
+
+It generates a throwaway unprotected GnuPG signing key under
+=build/nemacs-library-package-release-rehearsal/gnupg=, exports its public key,
+builds rehearsal-local package archives, signs =archive-contents= and all 8
+tarballs, verifies the detached signatures through the strict public-key
+verifier, retains a strict signed bundle, installs all packages from the
+retained signed bundle, and verifies that the retained bundle has no
+duplicate or manifest-external files through the strict publication policy.
+
+Current rehearsal evidence reports:
+
+- release key policy ok: 4
+- signing failures: 0
+- signature verification failures: 0
+- verified signatures: 9
+- bundle retained files: 35
+- bundle pending files: 0
+- bundle failures: 0
+- publication policy failures: 0
+- bundle smoke ok: 8
+- bundle smoke failures: 0
+
+The rehearsal key is not a public trust anchor.  It proves the strict release
+workflow shape and keeps its signed archives separate from the normal draft
+archive root.
+
+* 6. Current State
 
 The repository currently verifies the workflow shape but does not contain
-release private key material or committed release signatures.  Running
-=make nemacs-library-package-signature-release-sign= without a configured
-fingerprint fails with 9 signing failures.  Running strict verification
-without the signature files fails with 9 verification failures.
+release public key material, release private key material, or committed release
+signatures.  Running =make nemacs-library-package-release-key-policy= in
+strict mode without a public key file and configured fingerprint fails with 4
+key policy failures.  Running =make
+nemacs-library-package-signature-release-sign= without a configured fingerprint
+fails with 9 signing failures.  Running strict signature verification without
+the public key and signature files fails closed.  Running =make
+nemacs-library-package-release-rehearsal= succeeds with a throwaway key and
+proves the strict signing/verification/bundle/smoke mechanics.
 
 This is intentional: release signing requires explicit key access and must not
 happen as part of normal local development or the reusable-library gate.
 
-* 5. Release Checklist
+* 7. Release Checklist
 
 For a real public release:
 
 - run =make nemacs-library-gate= first;
-- run =make nemacs-library-package-release-bundle= with the release key
-  fingerprint;
+- optionally run =make nemacs-library-package-release-rehearsal= to prove the
+  local strict release mechanics before touching the real key;
+- add or select the release public key file, record its 40-hex OpenPGP
+  fingerprint, and set =NEMACS_LIBRARY_RELEASE_GNUPGHOME= in the local release
+  config;
+- run =make nemacs-library-package-release-ready=;
+- run =make nemacs-library-package-release-from-config=;
 - retain =build/nemacs-library-package-release-bundle/=,
   =build/nemacs-library-package-release-bundle-manifest.tsv=, and
   =build/nemacs-library-package-release-bundle-manifest.org= together;
 - publish only if strict signature verification reports 9 verified signatures
-  and 0 failures, and strict bundle retention reports 0 failures.
+  and 0 failures, strict key policy reports 4 ok and 0 failures, strict bundle
+  retention reports 0 failures, and strict release publication policy reports
+  0 failures and 0 pending rows.

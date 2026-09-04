@@ -244,6 +244,76 @@ flush diff savings."
                        full-time diff-time ratio)
               (should (>= ratio 5.0)))))))))
 
+;;;; F. line-wrap / continuation rows (Doc 06 E1)
+
+(ert-deftest emacs-redisplay-builtins-test/line-wrap-continuation-rows ()
+  "Doc 06 E1: with `emacs-redisplay-truncate-lines' nil a logical line wider
+than the window wraps into continuation rows in the built matrix."
+  (emacs-redisplay-builtins-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "rdb-wrap"))
+           (h (emacs-redisplay-init))
+           (w (emacs-window-selected-window)))
+      (let ((nelisp-ec--current-buffer b))
+        (nelisp-ec-insert (make-string 200 ?x)))
+      (emacs-window-set-window-buffer w b)
+      (let ((emacs-redisplay-truncate-lines nil))
+        (emacs-redisplay-redisplay-window h w))
+      (let* ((m (emacs-redisplay-glyph-matrix h w))
+             (rows (emacs-redisplay-glyph-matrix-rows m))
+             (n (length rows))
+             (any-cont nil))
+        ;; The first visual row starts the logical line (not a continuation).
+        (should-not (emacs-redisplay-glyph-row-continuation-p (aref rows 0)))
+        ;; At least one later row continues it.
+        (dotimes (i n)
+          (when (emacs-redisplay-glyph-row-continuation-p (aref rows i))
+            (setq any-cont t)))
+        (should any-cont)))))
+
+;;;; G. header-line occupies matrix row 0 (Doc 06 E6)
+
+(ert-deftest emacs-redisplay-builtins-test/header-line-occupies-row-0 ()
+  "Doc 06 E6: a buffer with `header-line-format' renders the header into matrix
+row 0 (as window chrome, no buffer position) and pushes content below it."
+  (emacs-redisplay-builtins-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "rdb-hdr"))
+           (h (emacs-redisplay-init))
+           (w (emacs-window-selected-window)))
+      (let ((nelisp-ec--current-buffer b)) (nelisp-ec-insert "body"))
+      (emacs-buffer-set-buffer-local-value 'header-line-format b "HDR")
+      (emacs-window-set-window-buffer w b)
+      (emacs-redisplay-redisplay-window h w)
+      (let* ((m (emacs-redisplay-glyph-matrix h w))
+             (rows (emacs-redisplay-glyph-matrix-rows m)))
+        (when (> (length rows) 2)        ; header only reserved when room exists
+          (let* ((r0 (aref rows 0))
+                 (g0 (aref (emacs-redisplay-glyph-row-glyphs r0) 0)))
+            (should (= ?H (emacs-redisplay-glyph-char g0)))
+            (should (eq 'header-line (emacs-redisplay-glyph-face g0)))
+            ;; Header is chrome: no buffer position on the row.
+            (should-not (emacs-redisplay-glyph-row-start-pos r0))))))))
+
+;;;; H. truncation indicator (Doc 06 E6)
+
+(ert-deftest emacs-redisplay-builtins-test/truncation-indicator ()
+  "Doc 06 E6: a line clipped under `truncate-lines' shows a `$' marker in the
+window's last column."
+  (emacs-redisplay-builtins-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "rdb-trunc"))
+           (h (emacs-redisplay-init))
+           (w (emacs-window-selected-window)))
+      (let ((nelisp-ec--current-buffer b))
+        (nelisp-ec-insert (make-string 500 ?x)))
+      (emacs-window-set-window-buffer w b)
+      (let ((emacs-redisplay-truncate-lines t))
+        (emacs-redisplay-redisplay-window h w))
+      (let* ((m (emacs-redisplay-glyph-matrix h w))
+             (rows (emacs-redisplay-glyph-matrix-rows m))
+             (r0 (aref rows 0))
+             (vec (emacs-redisplay-glyph-row-glyphs r0))
+             (last (aref vec (1- (length vec)))))
+        (should (= ?$ (emacs-redisplay-glyph-char last)))))))
+
 (provide 'emacs-redisplay-builtins-test)
 
 ;;; emacs-redisplay-builtins-test.el ends here

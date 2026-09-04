@@ -78,6 +78,33 @@
          (emacs-redisplay-test--captured ""))
      ,@body))
 
+(ert-deftest emacs-redisplay-test/core-initial-paint-produces-output ()
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hello"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window))
+             (frame (emacs-tui-backend-init)))
+        (emacs-window-set-window-buffer w b)
+        (emacs-redisplay-test--with-capture
+          (should (emacs-redisplay-core-initial-paint h frame))
+          (should (> (length emacs-redisplay-test--captured) 0)))))))
+
+(ert-deftest emacs-redisplay-test/core-matrix-accessors-expose-cache-state ()
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window))
+             (m nil))
+        (should emacs-redisplay-paint-mode-line-p)
+        (emacs-window-set-window-buffer w b)
+        (setq m (emacs-redisplay-redisplay-window h w))
+        (should (eq w (emacs-redisplay-glyph-matrix-window m)))
+        (should (vectorp (emacs-redisplay-glyph-matrix-rows m)))
+        (should (vectorp (emacs-redisplay-glyph-matrix-dirty-rows m)))
+        (should (equal m (emacs-redisplay-glyph-matrix h w)))
+        (should (consp (emacs-redisplay-handle-window-cache h)))
+        (should (equal m (cdr (car (emacs-redisplay-handle-window-cache h)))))))))
+
 ;;; A. driver lifecycle (4 tests)
 
 (ert-deftest emacs-redisplay-test-init-returns-handle ()

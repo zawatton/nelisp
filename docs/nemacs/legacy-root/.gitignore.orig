@@ -9,6 +9,10 @@ target/
 *.elc.disabled-*
 docs/worklog/*~
 
+# Local release signing configuration.  Public key material may be committed
+# separately, but machine-specific keyring paths and fingerprints stay local.
+docs/release/*.local.mk
+
 # Claude Code session ephemera — never commit
 .claude/
 
@@ -34,3 +38,16 @@ docs/worklog/*~
 # build artifacts both live there; we don't want to track either —
 # `make nelisp' is the source of truth.
 vendor/nelisp/
+
+# Upstream package clones for the Magit-ladder vendor gates (Doc 33).
+# These are plain `git clone` checkouts (own .git); re-clone from upstream
+# (magit/magit, magit/transient, magnars/dash.el, emacs-compat/compat,
+#  tarsius/llama, tarsius/cond-let, magit/with-editor) into vendor/.
+vendor/compat/
+vendor/cond-let/
+vendor/dash.el/
+vendor/llama/
+vendor/magit/
+vendor/transient/
+vendor/with-editor/
+.serena/

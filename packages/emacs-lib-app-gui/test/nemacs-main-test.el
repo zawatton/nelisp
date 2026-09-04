@@ -54,7 +54,9 @@
                  nemacs-main-list-buffers-interactive
                  nemacs-main-kill-buffer-interactive
                  nemacs-main-execute-extended-command
-                 nemacs-main--apply-options nemacs-main--quit))
+                 nemacs-main--apply-options nemacs-main--quit
+                 nemacs-main--startup-gate-option
+                 nemacs-main--apply-startup-gate))
     (should (fboundp sym))))
 
 ;;;; B. nemacs-main-option
@@ -70,6 +72,46 @@
     (should (eq t (nemacs-main-option :batch)))
     (should (eq 'host (nemacs-main-option :driver)))
     (should (null (nemacs-main-option :load)))))
+
+;;;; B2. UX #18 Session A — startup gate (-q/-Q wiring)
+
+(ert-deftest nemacs-main-test/startup-gate-option-absent-key-returns-nil ()
+  "A key that was never passed in `nemacs-main-options' must be
+distinguishable from a key explicitly mapped to nil."
+  (nemacs-main-test--with-options '(:batch t)
+    (should-not (nemacs-main--startup-gate-option :init-file-user))
+    (should-not (nemacs-main--startup-gate-option :inhibit-startup-screen))))
+
+(ert-deftest nemacs-main-test/startup-gate-option-present-nil-value-is-detected ()
+  "An explicit nil VALUE for a present key must still read back as present."
+  (nemacs-main-test--with-options '(:init-file-user nil)
+    (let ((cell (nemacs-main--startup-gate-option :init-file-user)))
+      (should cell)
+      (should-not (car cell)))))
+
+(ert-deftest nemacs-main-test/apply-startup-gate-absent-keys-leave-globals-untouched ()
+  "Callers that never pass the new keys (most existing tests and direct
+`nemacs-init' callers) must not have `init-file-user' /
+`inhibit-startup-screen' clobbered."
+  (let ((init-file-user "unchanged")
+        (inhibit-startup-screen 'unchanged))
+    (nemacs-main-test--with-options '(:batch t)
+      (nemacs-main--apply-startup-gate))
+    (should (equal "unchanged" init-file-user))
+    (should (eq 'unchanged inhibit-startup-screen))))
+
+(ert-deftest nemacs-main-test/apply-startup-gate-nil-init-file-user-disables-init ()
+  "-Q equivalent: explicit :init-file-user nil must flip the global to nil."
+  (let ((init-file-user "not yet nil"))
+    (nemacs-main-test--with-options '(:init-file-user nil)
+      (nemacs-main--apply-startup-gate))
+    (should-not init-file-user)))
+
+(ert-deftest nemacs-main-test/apply-startup-gate-sets-inhibit-startup-screen ()
+  (let ((inhibit-startup-screen nil))
+    (nemacs-main-test--with-options '(:inhibit-startup-screen t)
+      (nemacs-main--apply-startup-gate))
+    (should (eq t inhibit-startup-screen))))
 
 ;;;; C. Status banner shape
 
@@ -516,6 +558,56 @@
                                  "--eval"
                                  "(princ (format \"BATCH=%S\\n\" t))")))))
       (should (string-match-p "BATCH=t" out)))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-q-and-quick-skip-fixture-init ()
+  "UX #18 session A end-to-end: a normal run loads a fixture init.el; `-q'
+skips loading it (leaving `inhibit-startup-screen' at its nil default); `-Q'
+also skips it and sets `inhibit-startup-screen' non-nil.  Mirrors real
+Emacs's `-q'/`-Q' contract."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let ((dir (file-name-as-directory
+                (make-temp-file "nemacs-main-test-fixture-" t))))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "init.el" dir)
+              (insert "(princ \"FIXTURE-INIT-LOADED\\n\")\n"))
+            (let ((process-environment
+                   (cons (format "NEMACS_USER_EMACS_DIRECTORY=%s" dir)
+                         process-environment))
+                  (gate-eval
+                   (concat
+                    "(princ (format \"init-file-user=%S "
+                    "inhibit-startup-screen=%S\\n\" "
+                    "init-file-user inhibit-startup-screen))")))
+              (let ((normal-out
+                     (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process nemacs-main-test--bin nil t nil
+                                       "--driver=host" "--batch" "--no-banner"
+                                       "--eval" gate-eval)))))
+                (should (string-match-p "FIXTURE-INIT-LOADED" normal-out))
+                (should (string-match-p "init-file-user=\"\"" normal-out))
+                (should (string-match-p "inhibit-startup-screen=nil" normal-out)))
+              (let ((q-out
+                     (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process nemacs-main-test--bin nil t nil
+                                       "--driver=host" "--batch" "--no-banner"
+                                       "-q" "--eval" gate-eval)))))
+                (should-not (string-match-p "FIXTURE-INIT-LOADED" q-out))
+                (should (string-match-p "init-file-user=nil" q-out))
+                (should (string-match-p "inhibit-startup-screen=nil" q-out)))
+              (let ((quick-out
+                     (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process nemacs-main-test--bin nil t nil
+                                       "--driver=host" "--batch" "--no-banner"
+                                       "-Q" "--eval" gate-eval)))))
+                (should-not (string-match-p "FIXTURE-INIT-LOADED" quick-out))
+                (should (string-match-p "init-file-user=nil" quick-out))
+                (should (string-match-p "inhibit-startup-screen=t" quick-out)))))
+        (when (file-directory-p dir)
+          (delete-directory dir t))))))
 
 (ert-deftest nemacs-main-test/shell-wrapper-host-batch-uses-clean-emacs ()
   "The host batch driver should not load user init or site-start files."

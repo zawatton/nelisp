@@ -133,6 +133,61 @@
         (when (file-directory-p sock-dir)
           (ignore-errors (delete-directory sock-dir t)))))))
 
+(ert-deftest emacs-server-client-test/standalone-l5-fileio-roundtrip ()
+  "L5: emacsclient -e drives a real find-file + insert + save-buffer
+round-trip through the persistent nemacs runtime (not the M14/M17
+find-file-via-signal-file shortcut)."
+  (let ((reader (emacs-server-client-test--reader))
+        (client (emacs-server-client-test--emacsclient))
+        (target "/tmp/nemacs-l5-roundtrip"))
+    (unless (and reader client)
+      (ert-skip "standalone reader or emacsclient not available"))
+    (when (file-exists-p target) (ignore-errors (delete-file target)))
+    (let* ((sock-dir (make-temp-file "nemacs-server-test" t))
+           (sock (expand-file-name "l5test" sock-dir))
+           (proc nil))
+      ;; isolate from any wrapped user init left in /tmp by other lanes
+      ;; (a heavy package init can crash the bare reader server)
+      (dolist (f '("/tmp/nemacs-init-wrapped"
+                   "/tmp/nemacs-init-wrapped-packages"
+                   "/tmp/nemacs-init-wrapped-pkgs-lowered"))
+        (when (file-exists-p f) (ignore-errors (delete-file f))))
+      (unwind-protect
+          (progn
+            (setq proc
+                  (start-process
+                   "nemacs-server-test-l5" nil
+                   (expand-file-name "bin/nemacs-server"
+                                     emacs-server-client-test--root)
+                   "l5test" sock-dir))
+            ;; The reader boots the whole stack from source; give the
+            ;; socket time to appear.
+            (let ((deadline (+ (float-time) 60)))
+              (while (and (not (file-exists-p sock))
+                          (process-live-p proc)
+                          (< (float-time) deadline))
+                (sleep-for 0.2)))
+            (should (file-exists-p sock))
+            (let* ((expr "(progn (emacs-fileio-visit-file-direct \"/tmp/nemacs-l5-roundtrip\") (insert \"hello-l5\") (save-buffer) (buffer-string))")
+                   (status
+                    (with-temp-buffer
+                      (call-process client nil t nil "-s" sock "-e" expr))))
+              (should (equal 0 status)))
+            ;; assert from the HOST side: the file the server wrote is
+            ;; readable outside the server process and carries the text
+            (should (file-exists-p target))
+            (with-temp-buffer
+              (insert-file-contents target)
+              (should (string-match-p "hello-l5" (buffer-string)))))
+        (when (and proc (process-live-p proc))
+          (kill-process proc))
+        (when (file-exists-p sock)
+          (ignore-errors (delete-file sock)))
+        (when (file-directory-p sock-dir)
+          (ignore-errors (delete-directory sock-dir t)))
+        (when (file-exists-p target)
+          (ignore-errors (delete-file target)))))))
+
 (provide 'emacs-server-client-test)
 
 ;;; emacs-server-client-test.el ends here

@@ -1,0 +1,340 @@
+#+TITLE: nemacs-next protocol V0
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-25
+#+STATUS: DRAFT
+
+* Goal
+
+Protocol V0 is a persistent message protocol between a modern GUI frontend
+and an editor session that owns Emacs-observable state.
+
+The first transport can be newline-delimited JSON for inspection.  The
+semantic contract should not depend on JSON specifically.
+
+The current app scaffold provides a minimal encoder in
+=apps/nemacs-next/lisp/nemacs-next-protocol.el=.  It exists only to prove
+the persistent session can return =hello= and =snapshot= messages; a richer
+transport can replace it without moving editor semantics into the GUI.
+
+* Client Messages
+
+| Type | Required fields | Meaning |
+|------+-----------------+---------|
+| =hello= | =protocol=, =capabilities= | negotiate version and frontend capabilities |
+| =input= | =event= | keyboard, mouse, or IME event after raw frontend decoding |
+| =command= | =name=, =args= | command request from menu, toolbar, palette, or native action |
+| =resize= | =frame=, =width=, =height= | viewport or frame dimensions changed |
+| =open= | =path= | OS file-open request |
+| =clipboard= | =request-id=, =payload= | clipboard response or pushed clipboard data |
+| =shutdown= | =reason= | graceful shutdown request |
+
+* Session Messages
+
+| Type | Required fields | Meaning |
+|------+-----------------+---------|
+| =hello= | =protocol=, =capabilities= | accepted session capabilities |
+| =frame-config= | =tool-bar-lines= | startup frame configuration derived after early/init files |
+| =snapshot= | =frame=, =buffers= | complete state needed to paint a frame |
+| =delta= | =frame=, =changes= | incremental state update |
+| =minibuffer= | =active=, =prompt=, =contents= | minibuffer state and optional candidates |
+| =echo= | =message= | echo-area update |
+| =menu= | =items= | menu, toolbar, or tab model |
+| =request= | =request-id=, =op= | frontend OS integration request |
+| =error= | =code=, =message= | structured command/session error |
+
+* M1 Command Subset
+
+The current proof supports a deliberately tiny command subset:
+
+| Name | Meaning |
+|------+---------|
+| =create-buffer= | allocate and select a buffer through =nelisp-ec-generate-new-buffer= |
+| =insert-text= | insert a string through reusable buffer APIs |
+| =snapshot= | return the current buffer snapshot; kept out of process smoke until repeated post-edit snapshot is stable in NeLisp REPL |
+
+This subset exists to prove the persistent process boundary.  Full keymap
+lookup and command-loop dispatch still belong in =nelisp-emacs= core.
+
+* M2 Movement and Delete Subset
+
+The next slice of the M2 editing loop adds point movement and character
+deletion through the same reusable buffer APIs used by =insert-text=:
+
+| Name | Meaning |
+|------+---------|
+| =forward-char= | move point forward by optional :count (default 1) through =nelisp-ec-forward-char= |
+| =backward-char= | move point backward by optional :count (default 1) through a negated =nelisp-ec-forward-char= delta |
+| =goto-char= | move point to an absolute :position through =nelisp-ec-goto-char= |
+| =delete-char= | delete :count characters (default 1; negative = backward) through =nelisp-ec-delete-char= |
+
+Each of these commands returns a buffer snapshot on success, same as
+=insert-text=.  Movement or deletion that would leave the buffer (or
+narrowed region) bounds returns a structured =out-of-range= protocol
+=error= payload instead of raising an uncaught signal in the persistent
+session -- an editing loop must be able to reject an out-of-bounds request
+and keep running.
+
+* M2 Newline, Undo, Kill, and Yank Subset
+
+The remaining M2 editing-loop slice adds newline handling, single-step
+undo, and a kill-ring round trip, closing the milestone:
+
+| Name | Meaning |
+|------+---------|
+| =newline= | insert optional :count newline characters (default 1) at point |
+| =undo= | undo one edit group on the current buffer |
+| =kill-region= | kill the text between required :start and :end through the kill ring |
+| =kill-line= | kill from point to end of line (or the trailing newline at EOL) through the kill ring |
+| =yank= | insert the current kill-ring head at point |
+
+Implementation notes:
+
+- =newline= inserts through =nelisp-ec-insert=, the same reusable
+  primitive =insert-text= uses -- not through the unprefixed
+  Emacs-compatible =newline= command.  A literal =\n= in =insert-text='s
+  =:text= already takes this same path and was already valid before this
+  slice; =newline= exists as a named convenience for frontend Enter-key
+  handling.  This distinction matters because =emacs-edit-builtins= only
+  installs its unprefixed polyfills (=newline=, =kill-region=,
+  =kill-line=, =yank=, =kill-new=) when host Emacs does not already
+  provide that name; under the host-Emacs smoke path
+  (=scripts/smoke.sh=) those unprefixed names resolve to the *host's*
+  own buffer, not the =nelisp-ec= session buffer, so the session layer
+  only calls the =nelisp-ec-*= primitives and the prefixed
+  =emacs-edit-*-direct= / =emacs-undo-*= APIs, never the bare
+  Emacs-compatible command names.
+- =undo= is a real substrate feature, not a session-layer fake: it
+  delegates to =emacs-undo-undo-direct= (Doc 51 Track E.2, already
+  shipped in =packages/nelisp-emacs-editing/lisp/emacs-undo.el= /
+  =src/emacs-undo.el=), which tracks a per-buffer undo list independent
+  of host Emacs's native =buffer-undo-list=.  Because =insert-text= and
+  =delete-char= mutate the buffer through the raw =nelisp-ec-insert= /
+  =nelisp-ec-delete-char= primitives (bypassing the automatic recording
+  built into unprefixed commands like =self-insert-command=), the
+  session layer explicitly calls =emacs-undo-record-insert= /
+  =emacs-undo-record-delete= around those two commands so their edits
+  are not silently invisible to undo.  Every buffer-mutating command
+  (=insert-text=, =delete-char=, =newline=, =kill-region=, =kill-line=,
+  =yank=) closes its own undo group with =emacs-undo-undo-boundary=
+  after it completes, so one =undo= command reverts exactly the edit
+  made by the single most recent mutating command.
+- =kill-region=, =kill-line=, and =yank= delegate to
+  =emacs-edit-kill-region-direct=, =emacs-edit-kill-line-direct=, and
+  =emacs-edit-yank-direct= (Track E, already shipped in
+  =emacs-edit-builtins.el=), which read/write the shared =kill-ring=
+  list.  =yank= with an empty kill ring does not silently no-op insert
+  nothing; it returns a structured =empty-kill-ring= protocol error.
+  =kill-region= without integer =:start=/=:end= returns a structured
+  =bad-command= error; out-of-buffer-bounds =:start=/=:end= returns
+  =out-of-range=, matching the existing =goto-char=/=delete-char= error
+  shape.
+- =undo= with no further undo information (a fresh buffer, or a buffer
+  whose undo history has already been fully consumed) returns a
+  structured =no-further-undo-information= protocol error instead of an
+  uncaught signal; the session stays alive and can keep handling
+  commands afterward, same as the =out-of-range= movement/delete errors.
+
+* M3 Minibuffer/File Loop
+
+M3 adds the file and buffer loop named in Doc 31 Section 7:
+
+| Name | Meaning |
+|------+---------|
+| =find-file= | visit required =:path= through reusable file I/O APIs and return a snapshot |
+| =save-buffer= | save the current visited buffer through reusable file I/O APIs and return a snapshot with =:saved-file= |
+| =switch-to-buffer= | select required =:buffer-name= through reusable buffer APIs and return a snapshot |
+| =kill-buffer= | kill =:buffer-name= or the current buffer through reusable buffer APIs and return the next snapshot |
+| =complete= / =completion= | return a =minibuffer= payload with candidate strings for =:purpose= / =:input= |
+
+The protocol-level =open= message is treated as an OS file-open request
+and delegates to the same =find-file= path.
+
+Implementation notes:
+
+- The app session calls =emacs-fileio-visit-file-direct= and
+  =emacs-fileio-save-buffer-direct= when available, falling back only to
+  reusable Emacs-compatible file commands if the direct helpers are not
+  loaded.  GUI/frontend code does not read files, write files, or decide
+  visited-file state.
+- =switch-to-buffer= and =kill-buffer= use the reusable buffer registry
+  and =nelisp-ec-set-buffer= / =nelisp-ec-kill-buffer= path.  A missing
+  kill target returns a structured =no-such-buffer= protocol =error= and
+  the session stays alive.
+- Completion responses have =:type minibuffer=, =:active t=,
+  =:purpose=, =:prompt=, =:contents=, =:completion=, and =:candidates=.
+  Buffer completion derives candidates from the reusable buffer list.
+  File completion derives candidates from the reusable directory/file-name
+  APIs when available.  Tests also cover an explicit =:collection= list
+  so frontend completion refresh can be validated without file-system
+  dependence.
+- Successful file and buffer commands return full buffer snapshots.  The
+  snapshot now includes =:file-name= and =:modified= so a frontend can
+  render visited-file and dirty-state indicators without owning the
+  semantics.
+
+* M4 Modern GUI Shell
+
+M4 adds the protocol shell needed by a modern frontend without moving
+editor semantics into GUI code:
+
+| Name/message | Meaning |
+|--------------+---------|
+| =hello= | advertises =:gui-shell-capabilities= for native window, renderer, keyboard input, IME, clipboard, viewport/modeline, menu, and toolbar ownership |
+| =frame-snapshot= | returns a =snapshot= with =:frame= viewport rows, per-row face runs, cursor row/column, modeline, and echo area plus the underlying buffer snapshot |
+| =frame-config= | returns toolbar-lines / width / height / font after startup init files have applied =default-frame-alist= and =initial-frame-alist= |
+| =render-frame-text= | returns the same frame snapshot with =:rendered-text= for smoke/demo inspection |
+| =resize= | updates frame width/height and returns a =delta= with the new frame payload |
+| =input= | accepts frontend-decoded keyboard text, Enter, Backspace, or IME commit text and delegates mutation to existing session commands; terminal frontends must send complete UTF-8 text units, not partial bytes |
+| =clipboard= | with a string payload, treats the payload as committed paste input; without payload, returns a clipboard read =request= |
+| =clipboard-read= / =clipboard-write= | return frontend OS-integration =request= payloads |
+| =menu= / =toolbar= | return a =menu= payload whose items name protocol commands and whose =:default-toolbar= carries the vendor default toolbar inventory |
+| =toolbar-invoke= | invokes a default toolbar item by =:id=, using the same session command semantics as direct protocol commands |
+
+The frame payload is intentionally character-cell based for V0:
+
+#+begin_src emacs-lisp
+(:type snapshot
+ :frame (:id "main"
+         :width 80
+         :height 24
+         :cursor (:row 0 :column 0)
+         :viewport ((:row 0
+                      :text "* Heading"
+                      :face-runs ((:start 0
+                                   :end 9
+                                   :face org-level-1
+                                   :foreground "blue"
+                                   :weight bold)))
+                    ...)
+         :mode-line " --  buffer  file  point:1 "
+         :echo "")
+ :buffers ((:type snapshot ...)))
+#+end_src
+
+Each viewport row may carry =:face-runs=.  Run coordinates are zero-based
+character columns within that row and use a half-open =:start= / =:end=
+range.  =:face= is the substrate face symbol selected from =face= or
+=font-lock-face= text properties.  =:foreground=, =:background=, and
+=:weight= are optional resolved face attributes when the face substrate can
+answer them.  Rows without styling omit =:face-runs=.
+
+The TUI frontend maps the initial face set to ANSI colors:
+=org-level-1= bright blue bold, =org-level-2= bright cyan bold,
+=org-level-3= green bold, =org-level-4= yellow bold, =bold= bold,
+=font-lock-comment-face= gray, =font-lock-string-face= green, and
+=default= reset.  Resolved foreground names from the face registry override
+that table for the small named-color set currently supported by the TUI.
+
+When full font-lock state is not active, the session still exposes useful
+Org heading runs for visible lines beginning with stars, mapping levels 1
+through 4 to =org-level-1= through =org-level-4=.  This keeps the fallback in
+the session snapshot rather than in frontend command semantics.
+
+This gives a human-visible terminal-renderable demo hook and a stable
+renderer input shape.  It does not claim that this repository now owns a
+real OS-native GUI window; native window creation, compositor rendering,
+font discovery, raw platform input, IME integration, and clipboard device
+access remain frontend-owned surfaces.  The session owns the protocol
+messages that describe editor state and route decoded frontend events back
+to shared command/file/minibuffer APIs.
+
+Menus and toolbar entries deliberately carry command names and arguments
+for the protocol path.  Frontends should call those commands instead of
+copying file, buffer, undo, or minibuffer behavior locally.
+
+Startup frame configuration is a separate session message emitted before a
+frontend requests or paints the first frame snapshot:
+
+#+begin_src emacs-lisp
+(:type frame-config
+ :tool-bar-lines 0
+ :width 125
+ :height 45
+ :font "Fira Code-14"
+ :notes ((:field width :note "TUI treats width as terminal-constrained")
+         (:field height :note "TUI treats height as terminal-constrained")
+         (:field font :note "TUI ignores font; GUI frontends may consume it")))
+#+end_src
+
+=tool-bar-lines= is consumed by the TUI as a toolbar row count; =0= hides the
+toolbar row and moves buffer viewport row 0 to terminal row 0.  =width= and
+=height= are startup hints only in the TUI because the real terminal size and
+later resize events win.  =font= is a TUI no-op and is included for GUI
+frontends.
+
+The default toolbar inventory is taken from
+=vendor/emacs-lisp/tool-bar.el=, =tool-bar-setup=, in this exact order:
+
+| id | icon | command | enabled in V0 | fidelity |
+|----+------+---------+---------------+----------|
+| =toolbar.new-file= | =new= | =find-file= | t | file prompt; creates a new visited buffer for a new path |
+| =toolbar.open-file= | =open= | =find-file= (=menu-find-file-existing= in vendor) | t | file prompt on the existing file command path |
+| =toolbar.dired= | =diropen= | =dired= | t | directory-listing buffer v1, not full Dired |
+| =toolbar.kill-buffer= | =close= | =kill-buffer= (=kill-this-buffer= in vendor) | current buffer | current-buffer kill |
+| =toolbar.save-buffer= | =save= | =save-buffer= | current buffer | real reusable file-I/O save |
+| =separator-1= | separator | n/a | n/a | separator |
+| =toolbar.undo= | =undo= | =undo= | current buffer | one edit-group undo |
+| =separator-2= | separator | n/a | n/a | separator |
+| =toolbar.cut= | =cut= | =kill-region= | region args supplied | requires =:start= and =:end= in V0 |
+| =toolbar.copy= | =copy= | =copy-region-as-kill= | region args supplied | requires =:start= and =:end= in V0 |
+| =toolbar.paste= | =paste= | =yank= | kill ring non-empty | real session kill-ring yank |
+| =separator-3= | separator | n/a | n/a | separator |
+| =toolbar.search= | =search= | =isearch-forward= | current buffer | search-prompt v1: literal next-match move, no incremental overlay |
+
+Invoking =toolbar.new-file= or =toolbar.open-file= without =:path=
+returns a =minibuffer= prompt with =:purpose file=.  Invoking
+=toolbar.dired= without =:directory= returns =:purpose directory=.
+Invoking =toolbar.search= without =:query= returns =:purpose search=.
+Supplying the argument executes the mapped command.  Cut/copy require
+explicit region endpoints because protocol V0 has no independent GUI
+selection state.
+
+* M5 Package Smoke
+
+M5 closes the Doc 31 Section 7 ladder with package-compatibility evidence,
+not a new user command.  The smoke loads selected pure-Elisp package
+fixtures from =apps/nemacs-next/fixtures/m5-package/=:
+
+| Fixture feature | Purpose |
+|-----------------+---------|
+| =nemacs-next-m5-fixture= | defines a package-shaped mode, mode hook, keymap, face, and edit command |
+| =nemacs-next-m5-fixture-extra= | companion feature proving multi-feature package loading |
+
+The fixture report uses the same protocol encoder on the host path and
+returns a diagnostic =package-smoke= payload:
+
+#+begin_src emacs-lisp
+(:type package-smoke
+ :milestone m5
+ :fixture "nemacs-next-m5-fixture"
+ :status "ok"
+ :mode nemacs-next-m5-fixture-mode
+ :mode-name "M5-Fixture"
+ :hook-count 1
+ :key-binding "nemacs-next-m5-fixture-insert-stamp"
+ :face-foreground "green"
+ :text-property nemacs-next-m5-fixture-face
+ :text "M5 fixture edit"
+ :companion-loaded t
+ :package-compat-debt ((:api "byte-compile-file" ...)
+                       (:api "autoload-cookie-generation" ...)))
+#+end_src
+
+The host half is the authoritative surface assertion for mode activation,
+local keymaps, hooks, faces, and buffer edits.  The standalone half uses
+the existing bootstrap REPL pattern as a lighter fixture load sanity check;
+the existing session/process smokes remain the reader/session command
+coverage for protocol V0.
+
+Current package-compat debt tracked by the fixture:
+
+| API | Status | Owner | Reason |
+|-----+--------+-------+--------|
+| =byte-compile-file= | unsupported | =package-compat= | M5 loads source fixtures only; byte/native compilation remains outside protocol V0. |
+| =autoload-cookie-generation= | unsupported | =package-compat= | M5 requires explicit fixture loading; package autoload generation is future package-compat work. |
+
+* Rule
+
+Protocol messages may carry editor state, but they must not move editor
+semantics into the GUI.  If an Emacs package can observe a state change,
+the persistent session and reusable libraries own it.

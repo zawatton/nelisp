@@ -41,6 +41,7 @@
 (defun emacs-line-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
+      (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (defun emacs-line--bol-pos (&optional pos)
@@ -158,6 +159,43 @@ Returns the new point.  Bound to C-e."
 
 ;;;; --- forward-line ----------------------------------------------------
 
+(defun emacs-line-forward-line-direct (&optional n)
+  "Move point forward N lines using the buffer substrate.
+N defaults to 1.  Return the count of lines not moved."
+  (let ((count (or n 1)))
+    (cond
+     ((= count 0)
+      (nelisp-ec-goto-char (emacs-line--bol-pos))
+      0)
+     ((> count 0)
+      (let ((c count) (done nil))
+        (while (and (> c 0) (not done))
+          (let ((em (nelisp-ec-point-max)))
+            (if (= (nelisp-ec-point) em)
+                (setq done t)
+              (let ((eol (emacs-line--eol-pos)))
+                (cond
+                 ((< eol em)
+                  (nelisp-ec-goto-char (+ eol 1))
+                  (setq c (- c 1)))
+                 (t
+                  (nelisp-ec-goto-char em)
+                  (setq c (- c 1))))))))
+        c))
+     (t
+      (let ((c (- count)) (remaining 0))
+        (nelisp-ec-goto-char (emacs-line--bol-pos))
+        (while (> c 0)
+          (cond
+           ((= (nelisp-ec-point) (nelisp-ec-point-min))
+            (setq remaining (- c))
+            (setq c 0))
+           (t
+            (nelisp-ec-goto-char (- (nelisp-ec-point) 1))
+            (nelisp-ec-goto-char (emacs-line--bol-pos))
+            (setq c (- c 1)))))
+        remaining)))))
+
 (when (emacs-line-builtins--install-function-p 'forward-line)
   (defun forward-line (&optional n)
     "Phase J polyfill: move point forward N lines (= -N backward).
@@ -166,39 +204,7 @@ success, positive when hitting EOB, negative when hitting BOB.
 Matches Emacs C semantics where moving past the last `\\n' onto the
 final line (or to point-max from a line with no trailing newline)
 counts as 1 line consumed."
-    (let ((count (or n 1)))
-      (cond
-       ((= count 0)
-        (nelisp-ec-goto-char (emacs-line--bol-pos))
-        0)
-       ((> count 0)
-        (let ((c count) (done nil))
-          (while (and (> c 0) (not done))
-            (let ((em (nelisp-ec-point-max)))
-              (if (= (nelisp-ec-point) em)
-                  (setq done t)
-                (let ((eol (emacs-line--eol-pos)))
-                  (cond
-                   ((< eol em)
-                    (nelisp-ec-goto-char (+ eol 1))
-                    (setq c (- c 1)))
-                   (t
-                    (nelisp-ec-goto-char em)
-                    (setq c (- c 1))))))))
-          c))
-       (t
-        (let ((c (- count)) (remaining 0))
-          (nelisp-ec-goto-char (emacs-line--bol-pos))
-          (while (> c 0)
-            (cond
-             ((= (nelisp-ec-point) (nelisp-ec-point-min))
-              (setq remaining (- c))
-              (setq c 0))
-             (t
-              (nelisp-ec-goto-char (- (nelisp-ec-point) 1))
-              (nelisp-ec-goto-char (emacs-line--bol-pos))
-              (setq c (- c 1)))))
-          remaining))))))
+    (emacs-line-forward-line-direct n)))
 
 ;;;; --- line-number-at-pos ---------------------------------------------
 
@@ -224,6 +230,22 @@ no narrowing-aware absolute-vs-relative distinction."
 
 ;;;; --- next-line / previous-line (Doc 51 Track B) ---------------------------
 
+(defun emacs-line-next-line-direct (&optional n)
+  "Move point N lines down, preserving the current column where possible.
+N defaults to 1; negative N moves up.  Return the new point."
+  (let* ((n (or n 1))
+         (col (- (nelisp-ec-point) (emacs-line--bol-pos))))
+    (emacs-line-forward-line-direct n)
+    (let* ((bol (emacs-line--bol-pos))
+           (eol (emacs-line--eol-pos))
+           (target (+ bol col)))
+      (nelisp-ec-goto-char (min target eol)))))
+
+(defun emacs-line-previous-line-direct (&optional n)
+  "Move point N lines up, preserving the current column where possible.
+N defaults to 1.  Return the new point."
+  (emacs-line-next-line-direct (- (or n 1))))
+
 (when (emacs-line-builtins--install-function-p 'next-line)
   (defun next-line (&optional n _try-vscroll)
     "Doc 51 Track B (2026-05-04) MVP `next-line'.
@@ -231,20 +253,14 @@ Move point N lines down, preserving the current column where
 possible (= clamps to end-of-line on shorter targets).  N
 defaults to 1; negative N moves up.  Bound to C-n / <down>."
     (interactive "p")
-    (let* ((n (or n 1))
-           (col (- (nelisp-ec-point) (emacs-line--bol-pos))))
-      (forward-line n)
-      (let* ((bol (emacs-line--bol-pos))
-             (eol (emacs-line--eol-pos))
-             (target (+ bol col)))
-        (nelisp-ec-goto-char (min target eol))))))
+    (emacs-line-next-line-direct n)))
 
 (when (emacs-line-builtins--install-function-p 'previous-line)
   (defun previous-line (&optional n _try-vscroll)
     "Doc 51 Track B (2026-05-04) MVP `previous-line'.
 Forwarder to `next-line' with negated count.  Bound to C-p / <up>."
     (interactive "p")
-    (next-line (- (or n 1)))))
+    (emacs-line-previous-line-direct n)))
 
 (provide 'emacs-line-builtins)
 

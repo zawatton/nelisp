@@ -47,6 +47,16 @@
       (should (eq buf (emacs-buffer-ui-find-buffer "alpha")))
       (should-not (emacs-buffer-ui-find-buffer "missing")))))
 
+(ert-deftest buffer-ui-current-and-create-helpers-work ()
+  (emacs-buffer-ui-test--with-fresh-world
+    (let ((alpha (nelisp-ec-generate-new-buffer "alpha")))
+      (nelisp-ec-set-buffer alpha)
+      (should (equal "alpha" (emacs-buffer-ui-current-buffer-name)))
+      (should (eq alpha (emacs-buffer-ui-get-or-create-text-buffer "alpha")))
+      (let ((beta (emacs-buffer-ui-get-or-create-text-buffer "beta")))
+        (should (equal "beta" (nelisp-ec-buffer-name beta)))
+        (should (eq beta (emacs-buffer-ui-find-buffer "beta")))))))
+
 (ert-deftest switch-to-buffer-plan-reports-statuses ()
   (emacs-buffer-ui-test--with-fresh-world
     (should (equal 'empty
@@ -253,6 +263,20 @@
           (should (eq t (kill-buffer-interactive a))))
         (should (string-match-p "modified; kill anyway" prompt))))))
 
+(ert-deftest emacs-buffer-ui-kill-buffer-interactive-works ()
+  (emacs-buffer-ui-test--with-fresh-world
+    (let ((a (nelisp-ec-generate-new-buffer "alpha"))
+          prompts)
+      (emacs-window-set-window-buffer (emacs-window-selected-window) a)
+      (nelisp-ec-set-buffer a)
+      (emacs-buffer-set-buffer-modified-p t a)
+      (cl-letf (((symbol-function 'emacs-minibuffer-yes-or-no-p)
+                 (lambda (message)
+                   (setq prompts (cons message prompts))
+                   t)))
+        (should (eq t (emacs-buffer-ui-kill-buffer-interactive a))))
+      (should (equal '("Buffer alpha modified; kill anyway? ") prompts)))))
+
 (ert-deftest list-buffers-renders-four-columns ()
   (emacs-buffer-ui-test--with-fresh-world
     (let ((a (nelisp-ec-generate-new-buffer "alpha"))
@@ -262,18 +286,20 @@
         (emacs-buffer-set-buffer-local-value 'major-mode a 'text-mode))
       (nelisp-ec-with-current-buffer b
         (emacs-buffer-set-buffer-local-value 'major-mode b 'emacs-lisp-mode))
-      (setq emacs-fileio--buffer-files (list (cons b "/tmp/beta.txt")))
-      (let ((buf (emacs-buffer-ui-list-buffers)))
-        (should (equal "*Buffer List*" (nelisp-ec-buffer-name buf)))
-        (let ((text (nelisp-ec-with-current-buffer buf
-                      (nelisp-ec-buffer-string))))
-          (should (string-match-p "^name[[:space:]]+size[[:space:]]+mode[[:space:]]+file$" text))
-          (should (string-match-p "^alpha[[:space:]]+5[[:space:]]+text-mode[[:space:]]*$" text))
-          (should (string-match-p "^beta[[:space:]]+0[[:space:]]+emacs-lisp-mode[[:space:]]+/tmp/beta.txt$" text)))
-        (should (= (nelisp-ec-with-current-buffer buf
-                     (nelisp-ec-point))
-                   (nelisp-ec-with-current-buffer buf
-                     (nelisp-ec-point-min))))))))
+      (cl-letf (((symbol-function 'buffer-file-name)
+                 (lambda (buffer)
+                   (and (eq buffer b) "/tmp/beta.txt"))))
+        (let ((buf (emacs-buffer-ui-list-buffers)))
+          (should (equal "*Buffer List*" (nelisp-ec-buffer-name buf)))
+          (let ((text (nelisp-ec-with-current-buffer buf
+                        (nelisp-ec-buffer-string))))
+            (should (string-match-p "^name[[:space:]]+size[[:space:]]+mode[[:space:]]+file$" text))
+            (should (string-match-p "^alpha[[:space:]]+5[[:space:]]+text-mode[[:space:]]*$" text))
+            (should (string-match-p "^beta[[:space:]]+0[[:space:]]+emacs-lisp-mode[[:space:]]+/tmp/beta.txt$" text)))
+          (should (= (nelisp-ec-with-current-buffer buf
+                       (nelisp-ec-point))
+                     (nelisp-ec-with-current-buffer buf
+                       (nelisp-ec-point-min)))))))))
 
 (ert-deftest move-to-buffer-start-reports-display-position ()
   (emacs-buffer-ui-test--with-fresh-world
@@ -337,7 +363,7 @@
 (ert-deftest list-buffers-renders-files-standalone-visited-file ()
   (emacs-buffer-ui-test--with-fresh-world
     (let ((buf (nelisp-ec-generate-new-buffer "standalone.txt")))
-      (cl-letf (((symbol-function 'files--buffer-file-name)
+      (cl-letf (((symbol-function 'buffer-file-name)
                  (lambda (buffer)
                    (and (eq buffer buf) "/tmp/standalone.txt"))))
         (let ((out (emacs-buffer-ui-list-buffers)))

@@ -15,14 +15,21 @@
 ;;; Fresh-world fixture (resets every global in both modules)
 
 (defmacro emacs-buffer-test--with-fresh-world (&rest body)
-  "Run BODY with clean nelisp-ec + emacs-buffer state."
+  "Run BODY with clean nelisp-ec + emacs-buffer state.
+Also resets the Doc 33 §8 item 242 swap-engine globals
+(`emacs-buffer--per-buffer-symbols' / `emacs-buffer--swapped-in') so a
+test that calls `emacs-buffer-make-variable-buffer-local' (which now
+also registers the symbol for swap tracking) cannot leak that
+registration into a later test in the same batch Emacs process."
   (declare (indent 0) (debug (body)))
   `(let ((nelisp-ec--buffers nil)
          (nelisp-ec--current-buffer nil)
          (emacs-buffer--state (make-hash-table :test 'eq))
          (emacs-buffer--variable-buffer-local nil)
          (emacs-buffer--default-values (make-hash-table :test 'eq))
-         (emacs-buffer--overlay-counter 0))
+         (emacs-buffer--overlay-counter 0)
+         (emacs-buffer--per-buffer-symbols nil)
+         (emacs-buffer--swapped-in (make-hash-table :test 'eq)))
      ,@body))
 
 ;;;; A. buffer registry/local variables (11 tests)
@@ -100,7 +107,15 @@
       (emacs-buffer-make-local-variable 'a)
       (emacs-buffer-make-local-variable 'b)
       (let ((alist (emacs-buffer-buffer-local-variables b)))
-        (should (= 2 (length alist)))
+        ;; Doc 33 §8 item 242: every freshly-created buffer now also
+        ;; carries an explicit `default-directory' local cell, seeded
+        ;; by `emacs-buffer--inherit-new-buffer' at
+        ;; `nelisp-ec-generate-new-buffer' time (matching real Emacs,
+        ;; where `default-directory' is unconditionally buffer-local in
+        ;; every buffer) — so the alist length is 3, not 2, and the
+        ;; assertion checks membership rather than an exact count that
+        ;; predates that fix.
+        (should (assq 'default-directory alist))
         (should (assq 'a alist))
         (should (assq 'b alist))))))
 
@@ -216,12 +231,16 @@
       (should (equal '((1 3 (face category-face)))
                      (emacs-buffer-text-property-view 1 3 '(face) b))))))
 
-(ert-deftest emacs-buffer-put-text-property-rejects-empty-range ()
+(ert-deftest emacs-buffer-put-text-property-empty-range-noop-reversed-signals ()
+  ;; Doc 33 item 244: real Emacs treats an empty [START, END) range as a
+  ;; no-op for text-property mutation (Magit washers routinely call
+  ;; START == END); only a reversed range (START > END) signals.
   (emacs-buffer-test--with-fresh-world
     (let ((b (nelisp-ec-generate-new-buffer "tp")))
       (nelisp-ec-set-buffer b)
       (nelisp-ec-insert "x")
-      (should-error (emacs-buffer-put-text-property 1 1 'face 'bold)
+      (should (null (emacs-buffer-put-text-property 1 1 'face 'bold)))
+      (should-error (emacs-buffer-put-text-property 2 1 'face 'bold)
                     :type 'nelisp-ec-args-out-of-range))))
 
 ;;;; B'. text-property advanced (14 tests)
@@ -723,6 +742,36 @@
       (should-not (emacs-buffer-delete-all-overlays b))
       (should-not (emacs-buffer-overlays-in 1 20 b))
       (should-not (emacs-buffer-overlays-at 2 b)))))
+
+(ert-deftest emacs-buffer-remove-overlays-filters-by-property ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (red (emacs-buffer-make-overlay 2 4 b))
+           (blue (emacs-buffer-make-overlay 4 6 b))
+           (other (emacs-buffer-make-overlay 1 2 b)))
+      (emacs-buffer-overlay-put red 'face 'red)
+      (emacs-buffer-overlay-put blue 'face 'blue)
+      (emacs-buffer-overlay-put other 'other t)
+      (should-not (emacs-buffer-remove-overlays 1 5 'face 'red b))
+      (should-not (emacs-buffer-overlay-buffer red))
+      (should (eq b (emacs-buffer-overlay-buffer blue)))
+      (should (eq b (emacs-buffer-overlay-buffer other)))
+      (should-not (emacs-buffer-remove-overlays 1 7 nil nil b))
+      (should-not (emacs-buffer-overlays-in 1 7 b)))))
+
+(ert-deftest emacs-buffer-overlay-change-boundaries ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "x")))
+      (nelisp-ec-with-current-buffer b
+        (nelisp-ec-insert "abc")
+        (emacs-buffer-make-overlay 1 2 b)
+        (emacs-buffer-make-overlay 3 4 b)
+        (should (= 2 (emacs-buffer-next-overlay-change 1 b)))
+        (should (= 3 (emacs-buffer-next-overlay-change 2 b)))
+        (should (= 4 (emacs-buffer-next-overlay-change 4 b)))
+        (should (= 3 (emacs-buffer-previous-overlay-change 4 b)))
+        (should (= 2 (emacs-buffer-previous-overlay-change 3 b)))
+        (should (= 1 (emacs-buffer-previous-overlay-change 1 b)))))))
 
 (ert-deftest emacs-buffer-copy-overlay-is-independent ()
   (emacs-buffer-test--with-fresh-world

@@ -51,9 +51,14 @@
   (defvar fundamental-mode-hook nil
     "Track H bridge: hook run when entering `fundamental-mode'."))
 
-(unless (boundp 'text-mode-hook)
-  (defvar text-mode-hook nil
-    "Track H bridge: hook run when entering `text-mode'."))
+;; NOTE (Doc 33 §8 item 221): do NOT pre-defvar `text-mode-hook' here.
+;; Vendor text-mode.el owns it (as a defcustom whose standalone replay
+;; becomes a plain `defvar' with the default
+;; \\='(text-mode-hook-identify)); pre-binding it to nil made that
+;; vendor `defvar' a no-op, leaving the hook empty on the standalone
+;; reader.  `emacs-mode-text-mode' already guards its reference with
+;; `boundp', so leaving the variable undefined until vendor text-mode.el
+;; loads is safe.
 
 (unless (boundp 'emacs-lisp-mode-hook)
   (defvar emacs-lisp-mode-hook nil
@@ -99,9 +104,14 @@ parent mode is initialised but before the user hooks fire."))
 
 (when (emacs-mode-builtins--install-function-p 'define-derived-mode)
   (defmacro define-derived-mode (child parent name &optional doc &rest body)
-    "Track H bridge: delegates to `emacs-mode-define-derived-mode'."
-    `(emacs-mode-define-derived-mode
-      ,child ,parent ,name ,doc ,@body)))
+    "Track H bridge: delegates to `emacs-mode-define-derived-mode'.
+
+Built without backquote syntax on purpose (Doc 33 §8 item 221): the
+standalone NeLisp reader's macro system does not correctly invoke a
+user-defined macro whose expansion-producing body is a backquote
+template.  See `emacs-mode-define-derived-mode' for the fuller note."
+    (append (list 'emacs-mode-define-derived-mode child parent name doc)
+            body)))
 
 (provide 'emacs-mode-builtins)
 

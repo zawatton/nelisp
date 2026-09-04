@@ -71,6 +71,9 @@ EVENTS are fed to the minibuffer key reader."
                 "foo" 'return)))
       (should (= 4 (emacs-isearch-test--point buf))))))
 
+(ert-deftest isearch-highlight-face-is-exposed ()
+  (should (eq 'isearch emacs-isearch-highlight-face)))
+
 (ert-deftest isearch-forward-cycles-to-next-match ()
   (emacs-isearch-test--with-fresh-world
     (let ((buf (emacs-isearch-test--run

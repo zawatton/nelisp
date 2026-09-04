@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'nelisp-emacs)
 (require 'emacs-foundation)
 
 (ert-deftest emacs-foundation-test/provides-foundation-feature-set ()
@@ -30,9 +31,27 @@
     (should (featurep feature))))
 
 (ert-deftest emacs-foundation-test/nelisp-emacs-uses-foundation-entry ()
-  (require 'nelisp-emacs)
-  (should (memq 'emacs-foundation nelisp-emacs-library-features))
-  (should (featurep 'emacs-foundation)))
+  (let ((file (locate-library "nelisp-emacs")))
+    (should file)
+    (should (eq (car nelisp-emacs-library-features) 'emacs-foundation))
+    (should (memq 'emacs-foundation nelisp-emacs-library-features))
+    (with-temp-buffer
+      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
+                                (substring file 0 -1)
+                              file))
+      (should (search-forward "nelisp-emacs-library-features" nil t))
+      (should (search-forward "emacs-foundation" nil t))
+      (dolist (feature '(emacs-foundation
+                         emacs-text-core
+                         emacs-buffer-core
+                         emacs-editing
+                         emacs-io
+                         emacs-special-buffers
+                         emacs-core
+                         emacs-textmodes-stub))
+        (goto-char (point-min))
+        (should-not
+         (search-forward (format "(require '%s)" feature) nil t))))))
 
 (provide 'emacs-foundation-test)
 
