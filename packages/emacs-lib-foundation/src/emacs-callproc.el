@@ -62,22 +62,27 @@ the value is never this file's own override.")
   "Return VARIABLE from a NeLisp getenv primitive, or nil if unavailable."
   (unless emacs-callproc--sys-getenv-active
     (let ((emacs-callproc--sys-getenv-active t))
-      (catch 'done
-        (dolist (fn emacs-callproc--sys-getenv-functions)
-          (when (fboundp fn)
-            (let ((value (condition-case nil
-                             (funcall fn variable)
-                           (error nil))))
-              (when (stringp value)
-                (throw 'done value)))))
-        ;; Last: the runtime's own `getenv' (see the defvar above).
-        (when (functionp emacs-callproc--runtime-getenv)
-          (let ((value (condition-case nil
-                           (funcall emacs-callproc--runtime-getenv variable)
-                         (error nil))))
-            (when (stringp value)
-              (throw 'done value))))
-        nil))))
+      (or (catch 'done
+            (dolist (fn emacs-callproc--sys-getenv-functions)
+              (when (fboundp fn)
+                (let ((value (condition-case nil
+                                 (funcall fn variable)
+                               (error nil))))
+                  (when (stringp value)
+                    (throw 'done value)))))
+            nil)
+          ;; Last: the runtime's own `getenv' (see the defvar above).
+          ;; Deliberately throw-free: inside a network-process filter
+          ;; driven by nelisp's process adapter, a `throw' out of this
+          ;; function surfaced as an unrelated stale `wrong-type-argument
+          ;; processp' error and took the daemon down (measured 2026-09-04
+          ;; on the v1.2.0 reader, Linux and Windows; see anvil's
+          ;; server-loop).
+          (and (functionp emacs-callproc--runtime-getenv)
+               (let ((value (condition-case nil
+                                (funcall emacs-callproc--runtime-getenv variable)
+                              (error nil))))
+                 (and (stringp value) value)))))))
 
 (defun emacs-callproc-getenv (variable &optional frame)
   "Look VARIABLE up in the elisp overlay, then the NeLisp runtime env."
