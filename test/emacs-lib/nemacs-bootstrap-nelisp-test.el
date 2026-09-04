@@ -658,6 +658,20 @@ and mutates the index, without going through any Magit code."
              (should (string-match-p (regexp-quote "STATUS=M  tracked.txt") out))))
        (delete-directory repo t)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/cl-dolist-return-through-process-path-p ()
+  "`cl-return' from `cl-dolist' must retain its anonymous block catch."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(nelisp--write-stdout-bytes"
+                " (format \"CL-DOLIST-PROCESS=%S\\n\""
+                "  (cl-dolist (program (list \"C:\"))"
+                "    (cl-return"
+                "     (emacs-process--program-name-absolute-p program)))))"))))
+     (should (string-match-p "CL-DOLIST-PROCESS=t" out)))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/vc-workflow-callable ()
   "Reader-side VC workflow runs through real git state transitions.
 Starts from a repo with one modified tracked file, proves the shared VC
