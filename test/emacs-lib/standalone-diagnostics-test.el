@@ -58,6 +58,23 @@
       (should (equal forms
                      nelisp-bootstrap--feature-registry-prologue-forms)))))
 
+(ert-deftest standalone-diagnostics-test/bootstrap-clears-load-file-name-first ()
+  "Keep the concatenated bundle's sibling-resolution contract explicit."
+  (let ((output (make-temp-file "nemacs-bootstrap-contract-" nil ".el")))
+    (unwind-protect
+        (progn
+          (nelisp-bootstrap--write-bundle nil output)
+          (with-temp-buffer
+            (insert-file-contents output)
+            (should (search-forward
+                     "Bundled members locate siblings through their `src/' probes."
+                     nil t))
+            (goto-char (point-min))
+            (should (equal (read (current-buffer))
+                           '(setq load-file-name nil)))))
+      (when (file-exists-p output)
+        (delete-file output)))))
+
 (defun standalone-diagnostics-test--read-guarded-definition (file symbol)
   "Read SYMBOL's top-level guarded definition from source FILE."
   (with-temp-buffer
