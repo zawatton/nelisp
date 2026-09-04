@@ -82,6 +82,10 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
   (defvar emulation-mode-map-alists
     emacs-keymap-emulation-mode-map-alists))
 
+(unless (boundp 'prefix-help-command)
+  (defvar prefix-help-command 'describe-prefix-bindings
+    "Command used to describe the bindings following a prefix key."))
+
 ;;;; --- constructors ----------------------------------------------------
 
 (when (emacs-keymap-builtins--install-function-p 'make-keymap)

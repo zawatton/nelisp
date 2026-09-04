@@ -450,6 +450,28 @@ Quote / function(#') templates are left untouched."
                         (mapcar (lambda (s) (nelisp-iter--walk s acc n)) body))
                   (list 'nelisp-iter--make (list 'nreverse acc))))))
 
+  ;; The bootstrap intentionally hoists this file ahead of `generator.el' so
+  ;; the latter can be read.  Save the eager cells here: the full GNU file is
+  ;; evaluated afterward and replaces them, while a naturally late parity
+  ;; module restores them before user init.
+  (defvar emacs-parity-macros2--iter-defun-shim
+    (symbol-function 'iter-defun))
+  (defvar emacs-parity-macros2--iter-lambda-shim
+    (symbol-function 'iter-lambda))
+  (defvar emacs-parity-macros2--iter-next-shim
+    (symbol-function 'iter-next))
+  (defvar emacs-parity-macros2--iter-close-shim
+    (symbol-function 'iter-close))
+
+  (defun emacs-parity-macros2--restore-iter-shims ()
+    "Restore eager iterator cells after bundled `generator.el' overwrites them."
+    (fset 'iter-defun emacs-parity-macros2--iter-defun-shim)
+    (fset 'iter-lambda emacs-parity-macros2--iter-lambda-shim)
+    (fset 'iter-next emacs-parity-macros2--iter-next-shim)
+    (fset 'iter-close emacs-parity-macros2--iter-close-shim)
+    (emacs-parity-macros2--register-macro 'iter-defun)
+    (emacs-parity-macros2--register-macro 'iter-lambda))
+
   (unless (get 'iter-end-of-sequence 'error-conditions)
     (put 'iter-end-of-sequence 'error-conditions '(iter-end-of-sequence error))
     (put 'iter-end-of-sequence 'error-message "iteration terminated"))

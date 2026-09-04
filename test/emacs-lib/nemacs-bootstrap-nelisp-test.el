@@ -165,6 +165,48 @@ current ERT test with status/stdout/stderr diagnostics."
                 "    (princ \"BOOT=nil\\n\")))"))))
      (should (string-match-p "BOOT=t" out)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/real-init-residual-parity ()
+  "The prefix-help, headless cursor, and finite-generator residuals stay fixed."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out
+          (nemacs-bootstrap-nelisp-test--run
+           "--batch" "--no-banner"
+           "--eval"
+           (concat
+            "(condition-case err"
+            "    (progn"
+            "      (blink-cursor-mode 0)"
+            "      (setq residual-blink-0 blink-cursor-mode)"
+            "      (blink-cursor-mode 1)"
+            "      (setq residual-blink-1 blink-cursor-mode)"
+            "      (blink-cursor-mode -1)"
+            "      (setq residual-blink-minus-1 blink-cursor-mode)"
+            "      (blink-cursor-mode nil)"
+            "      (setq residual-blink-nil blink-cursor-mode)"
+            "      (blink-cursor-mode 'toggle)"
+            "      (setq residual-blink-toggle blink-cursor-mode)"
+            "      (iter-defun residual-iterator (items)"
+            "        (let ((rest items))"
+            "          (while rest"
+            "            (iter-yield (car rest))"
+            "            (setq rest (cdr rest)))))"
+            "      (let ((iterator (residual-iterator '(alpha beta))))"
+            "        (nelisp--write-stdout-bytes"
+            "         (format \"RESIDUAL prefix=%S helper=%S blink=%S iter=%S\\n\""
+            "                 prefix-help-command"
+            "                 (fboundp 'describe-prefix-bindings)"
+            "                 (list residual-blink-0 residual-blink-1"
+            "                       residual-blink-minus-1 residual-blink-nil"
+            "                       residual-blink-toggle)"
+            "                 (list (iter-next iterator)"
+            "                       (iter-next iterator))))))"
+            "  (error"
+            "   (nelisp--write-stdout-bytes (format \"RESIDUAL ERROR %S\\n\" err))))"))))
+     (should (string-match-p
+              (regexp-quote
+               "RESIDUAL prefix=describe-prefix-bindings helper=t blink=(nil t nil t nil) iter=(alpha beta)")
+              out)))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/generated-bootstrap-preserves-features ()
   "Direct bootstrap bundle loads must preserve the provided feature set."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
