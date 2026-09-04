@@ -852,7 +852,9 @@ processed."
                           ?\)))
             (error "invalid %S in %s" keyword path))
           (setq pos (1+ pos))
-          (setq pos (emacs-load--artifact-source-skip-ws-comments source pos))
+          (setq pos (min end
+                         (emacs-load--artifact-source-skip-ws-comments
+                          source pos)))
           (when (> pos end)
             (error "invalid %S in %s" keyword path))
           (unless (= pos end)

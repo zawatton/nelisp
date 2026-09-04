@@ -1213,6 +1213,19 @@
            (should err)
            (should (equal (error-message-string err) expected))))))))
 
+(ert-deftest emacs-load-artifact-compiler-test/artifact-source-iterate-form-nil-or-list-value-stops-at-range-before-trailing-field ()
+  (let* ((path "/tmp/emacs-load-artifact-compiler-test-module-init-field.neln")
+         (source "((alpha) (beta)) :features (feature)")
+         (end (string-match " :features" source))
+         (seen nil))
+    (emacs-load-artifact-compiler-test--without-native-read-all
+     (should (= (emacs-load--artifact-source-iterate-form-nil-or-list-value
+                 source (cons 0 end) path :module-init
+                 (lambda (item)
+                   (push item seen)))
+                2))
+     (should (equal (nreverse seen) '((alpha) (beta)))))))
+
 (ert-deftest emacs-load-artifact-compiler-test/artifact-source-iterate-form-nil-or-list-value-summary-count-matches-replayed-items ()
   (let* ((path "/tmp/emacs-load-artifact-compiler-test-module-init-summary.neln")
          (source "((alpha) (beta))")
