@@ -31,7 +31,7 @@
 ;; DEFERRED here (implemented in NEITHER file -- see triage handoff): package
 ;; bodies (`comment-*' -> newcomment.el, `kill-compilation'/
 ;; `define-compilation-mode' -> compile.el, `queue-create' -> queue ELPA,
-;; `blink-cursor-mode' -> frame.el timer machinery, `global-visual-line-mode'
+;; `global-visual-line-mode'
 ;; -> simple.el minor-mode family, org/transient/plz/gnus/ediff/diff/eldoc/
 ;; markdown symbols) and pure C redisplay/thread/char-table primitives
 ;; (`force-window-update', `make-mutex', `unicode-property-table-internal',

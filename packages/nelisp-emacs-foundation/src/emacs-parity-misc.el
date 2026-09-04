@@ -29,7 +29,6 @@
 ;;   `markdown-code-block-at-point-p'   (markdown-mode syntax machinery)
 ;;   `visual-line-mode' / `global-visual-line-mode'  (define-minor-mode + remap
 ;;                                       keymap `visual-line-mode-map')
-;;   `blink-cursor-mode'                (global minor mode: frame cursor + timer)
 ;;   `list-keyboard-macros'             (kmacro ring + tabulated-list-mode)
 ;;   `kill-compilation' / `define-compilation-mode'  (compile.el subsystem)
 ;;   `comment-indent' / `comment-kill' / `comment-set-column' /
@@ -571,6 +570,39 @@ Return a reordered plist."
         (setq connection-local-criteria-alist
               (cons (cons criteria (delete-dups profiles))
                     connection-local-criteria-alist))))))
+
+;;;; --- frame.el: headless blink-cursor-mode ---------------------------
+
+;; A standalone NeLisp process has no cursor renderer or timer to manage, but
+;; packages legitimately disable this global mode during init.  Preserve the
+;; GNU global-minor-mode calling convention and state variable while making
+;; the display side effect explicitly empty.  The standalone marker is
+;; required in addition to fboundp gating so host Emacs is never replaced.
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (not (fboundp 'blink-cursor-mode)))
+  (defvar blink-cursor-mode nil
+    "Non-nil when cursor blinking is enabled.")
+  (defun blink-cursor-mode (&optional arg)
+    "Toggle cursor blinking state in the headless standalone runtime.
+With optional ARG, enable the mode if ARG is nil or positive, and disable it
+if ARG is zero or negative.  The interactive no-prefix sentinel `toggle'
+toggles the current state."
+    (interactive
+     (list (if current-prefix-arg
+               (prefix-numeric-value current-prefix-arg)
+             'toggle)))
+    (setq blink-cursor-mode
+          (cond
+           ((eq arg 'toggle) (not blink-cursor-mode))
+           ((and (numberp arg) (< arg 1)) nil)
+           (t t)))))
+
+;; `emacs-parity-macros2.el' is hoisted before `generator.el' for bootstrap
+;; parsing, while this miscellaneous parity layer naturally follows it.  Put
+;; the saved finite-generator shim back after GNU generator has overwritten it.
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (fboundp 'emacs-parity-macros2--restore-iter-shims))
+  (emacs-parity-macros2--restore-iter-shims))
 
 ;;;; --- native compilation (explicit "unavailable" graceful no-op) ----
 

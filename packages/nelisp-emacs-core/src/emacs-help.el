@@ -34,6 +34,22 @@
 (defvar describe-symbol-backends nil
   "Backends consulted by callers that extend `describe-symbol'.")
 
+(unless (fboundp 'describe-prefix-bindings)
+  (defun describe-prefix-bindings ()
+    "Describe the bindings of the prefix used to reach this command."
+    (interactive)
+    (let* ((key (this-command-keys))
+           (prefix
+            (if (stringp key)
+                (substring key 0 (1- (length key)))
+              (let ((prefix (make-vector (1- (length key)) nil))
+                    (i 0))
+                (while (< i (length prefix))
+                  (aset prefix i (aref key i))
+                  (setq i (1+ i)))
+                prefix))))
+      (describe-bindings prefix))))
+
 (setq help-mode-map
       (let ((map (emacs-keymap-make-sparse-keymap)))
         (emacs-keymap-define-key map (kbd "q") #'emacs-help-quit-window)
