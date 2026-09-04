@@ -156,10 +156,31 @@ re-load after a wrapper leak keeps the original subr capture.")
   (and (fboundp 'nelisp-process-object-p)
        (ignore-errors (nelisp-process-object-p object))))
 
+(defconst emacs-process--network-tag 'network-process
+  "Head symbol of a `nelisp-process-adapter' network-process vector.")
+
+(defun emacs-process--network-process-p (object)
+  "Return non-nil when OBJECT is a network-process vector.
+`packages/nelisp-process-adapter' (nelisp Doc 194) represents a network
+process as `[network-process NAME STATUS FD PROPS]', a third shape
+beside the fallback and native ones.  In Emacs a network process IS a
+process, and the reader's own prelude `processp' says so -- but this
+file's commentary defers network processes, and
+`emacs-process-builtins' force-installs `emacs-process-processp' over
+the prelude's on the standalone reader.  Without this arm that swap
+made `processp' answer nil for a listener, so the prelude's
+`process-put' / `process-get' signalled `wrong-type-argument processp'
+and anvil's socket daemon died the moment it bound one (measured
+2026-09-04, Linux and Windows)."
+  (and (vectorp object)
+       (> (length object) 0)
+       (eq (aref object 0) emacs-process--network-tag)))
+
 (defun emacs-process--process-object-p (object)
   "Return non-nil when OBJECT is a process object owned here."
   (or (emacs-process--fallback-process-p object)
-      (emacs-process--native-process-p object)))
+      (emacs-process--native-process-p object)
+      (emacs-process--network-process-p object)))
 
 (defun emacs-process--native-start-available-p ()
   "Return non-nil when native NeLisp async process start exists."
@@ -548,6 +569,7 @@ unavailable and proceeds, rather than aborting the whole load."
   (cond
    ((emacs-process--fallback-process-p object) t)
    ((emacs-process--native-process-p object) t)
+   ((emacs-process--network-process-p object) t)
    ((and (not (emacs-standalone-mode-p))
          (emacs-process--delegate-p 'processp))
     (funcall (indirect-function 'processp) object))
