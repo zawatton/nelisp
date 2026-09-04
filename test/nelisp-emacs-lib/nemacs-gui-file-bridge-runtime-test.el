@@ -48,11 +48,17 @@
    "src/emacs-help-gui.el"
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
+(defconst nemacs-gui-file-bridge-runtime-test--magit-bridge
+  (expand-file-name
+   "src/nelisp-emacs-magit-bridge.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root))
+
 (defconst nemacs-gui-file-bridge-runtime-test--image-sources
   `(("fileio-gui" . ,nemacs-gui-file-bridge-runtime-test--fileio-gui)
     ("dired-gui" . ,nemacs-gui-file-bridge-runtime-test--dired-gui)
     ("info-gui" . ,nemacs-gui-file-bridge-runtime-test--info-gui)
     ("help-gui" . ,nemacs-gui-file-bridge-runtime-test--help-gui)
+    ("magit-bridge" . ,nemacs-gui-file-bridge-runtime-test--magit-bridge)
     ("bridge-runtime" . ,nemacs-gui-file-bridge-runtime-test--source))
   "Source files included in generated GUI bridge runtime images.")
 
@@ -236,6 +242,9 @@ and app copies for staged app/frontend glue; otherwise return SOURCE."
         (start (float-time)))
     (with-temp-file image
       (insert ";;; nelisp-runtime-image source-v1\n(progn\n")
+      (insert
+       (format "(setq files--magit-bridge-repo-root %S)\n"
+               nemacs-gui-file-bridge-runtime-test--repo-root))
       (when (file-readable-p nemacs-gui-file-bridge-runtime-test--prelude)
         (insert-file-contents nemacs-gui-file-bridge-runtime-test--prelude)
         (goto-char (point-max)))
@@ -247,6 +256,8 @@ and app copies for staged app/frontend glue; otherwise return SOURCE."
        nemacs-gui-file-bridge-runtime-test--info-gui)
       (nemacs-gui-file-bridge-runtime-test--insert-image-source
        nemacs-gui-file-bridge-runtime-test--help-gui)
+      (nemacs-gui-file-bridge-runtime-test--insert-image-source
+       nemacs-gui-file-bridge-runtime-test--magit-bridge)
       (nemacs-gui-file-bridge-runtime-test--insert-image-source
        nemacs-gui-file-bridge-runtime-test--source)
       (insert "\n)\n"))
@@ -1689,11 +1700,13 @@ When INTERVAL is nil, poll every 0.1s."
           (dolist (needle '(";;; emacs-fileio-gui.el --- GUI bridge file/buffer adapter"
                             ";;; emacs-dired-min-gui.el --- GUI bridge Dired adapter"
                             ";;; emacs-info.el --- Minimal Info runtime"
+                            ";;; nelisp-emacs-magit-bridge.el --- load the real vendor Magit chain into a live session"
                             ";;; emacs-help-gui.el --- GUI bridge Help adapter"))
             (should (string-match-p (regexp-quote needle) text)))
           (dolist (needle '("(defun emacs-fileio-gui-register-backend"
                             "(defun emacs-dired-min-gui-register-backend"
                             "(defun emacs-info-gui-register-backend"
+                            "(defun nelisp-emacs-magit-bridge-load"
                             "(defun emacs-help-gui-register-backend"))
             (should (< (string-match (regexp-quote needle) text)
                        bridge-pos))))
@@ -12378,9 +12391,12 @@ the transport write stubbed, then asserts the resolved spans and the
 fontset decision for an elisp buffer and a CJK buffer."
   (let ((forms (nemacs-gui-file-bridge-runtime-test--face-span-forms))
         (out (make-hash-table :test 'equal)))
-    (should (= 11 (length forms)))
+    (should (= 12 (length forms)))
     (cl-letf (((symbol-function 'nl-write-file)
-               (lambda (path text) (puthash path text out))))
+               (lambda (path text) (puthash path text out)))
+              ((symbol-function 'files--string-slice-safe)
+               (lambda (text start &optional end)
+                 (substring text start end))))
       (defvar files--current-file-name)
       (defvar files--window-start)
       (defvar files--face-span-cap)
@@ -12399,9 +12415,12 @@ fontset decision for an elisp buffer and a CJK buffer."
       (defvar files--face-theme-loaded)
       (defvar files--font-file)
       (defvar files--buffer-string)
+      (defvar files--buffer-has-unicode)
+      (defvar files--view-cap)
       (setq files--current-file-name "/tmp/nemacs-face-demo.el"
             files--window-start 0
             files--face-span-cap 2048
+            files--view-cap 8192
             files--face-spans ""
             files--face-comment-color "#b22222"
             files--face-string-color "#8b2252"
@@ -12419,6 +12438,7 @@ fontset decision for an elisp buffer and a CJK buffer."
             files--font-script ""
             files--face-spans-file "spans"
             files--font-file "font"
+            files--buffer-has-unicode nil
             files--buffer-string
             "(defun foo ()\n  \"a \\\"str\\\"\" ; comment here\n  (setq x 1))\n")
       (dolist (form forms) (eval form nil))
@@ -12435,6 +12455,7 @@ fontset decision for an elisp buffer and a CJK buffer."
         (should (string-match-p "^script\tlatin$" font)))
       ;; CJK buffer with a non-elisp name: no spans, cjk fontset pick.
       (setq files--current-file-name "/tmp/nemacs-face-demo.txt"
+            files--buffer-has-unicode t
             files--buffer-string "日本語テキスト\n")
       (files--write-face-spans-state)
       (should (equal "" (gethash "spans" out)))

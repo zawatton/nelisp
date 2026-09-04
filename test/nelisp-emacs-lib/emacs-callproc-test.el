@@ -65,6 +65,84 @@
           (fset 'nelisp-sys-getenv before)
         (fmakunbound 'nelisp-sys-getenv)))))
 
+(ert-deftest emacs-callproc-test/getenv-falls-through-to-core-environment ()
+  (let ((process-environment nil)
+        (had-sys (fboundp 'nelisp-sys-getenv))
+        (before-sys (and (fboundp 'nelisp-sys-getenv)
+                         (symbol-function 'nelisp-sys-getenv)))
+        (had-core (boundp 'nelisp--environment))
+        (before-core (and (boundp 'nelisp--environment)
+                          (symbol-value 'nelisp--environment))))
+    (unwind-protect
+        (progn
+          (setq nelisp--environment '(("CORE_HOME" . "/core/home")
+                                     ("OTHER" . "unused")))
+          (when had-sys (fmakunbound 'nelisp-sys-getenv))
+          (should (equal (emacs-callproc-getenv "CORE_HOME") "/core/home")))
+      (if had-core
+          (setq nelisp--environment before-core)
+        (makunbound 'nelisp--environment))
+      (if had-sys
+          (fset 'nelisp-sys-getenv before-sys)
+        (fmakunbound 'nelisp-sys-getenv)))))
+
+(ert-deftest emacs-callproc-test/process-environment-overrides-core-environment ()
+  (let ((process-environment '("CORE_HOME=overlay-value"))
+        (had-sys (fboundp 'nelisp-sys-getenv))
+        (before-sys (and (fboundp 'nelisp-sys-getenv)
+                         (symbol-function 'nelisp-sys-getenv)))
+        (had-core (boundp 'nelisp--environment))
+        (before-core (and (boundp 'nelisp--environment)
+                          (symbol-value 'nelisp--environment))))
+    (unwind-protect
+        (progn
+          (setq nelisp--environment '(("CORE_HOME" . "/core/home")))
+          (when had-sys (fmakunbound 'nelisp-sys-getenv))
+          (should (equal (emacs-callproc-getenv "CORE_HOME") "overlay-value")))
+      (if had-core
+          (setq nelisp--environment before-core)
+        (makunbound 'nelisp--environment))
+      (if had-sys
+          (fset 'nelisp-sys-getenv before-sys)
+        (fmakunbound 'nelisp-sys-getenv)))))
+
+(ert-deftest emacs-callproc-test/core-environment-malformed-entries-are-ignored ()
+  (let ((process-environment nil)
+        (had-core (boundp 'nelisp--environment))
+        (before-core (and (boundp 'nelisp--environment)
+                          (symbol-value 'nelisp--environment))))
+    (unwind-protect
+        (progn
+          (setq nelisp--environment
+                '((1 . "bad-key-type")
+                  ("CORE_HOME" . 123)
+                  ("CORE_HOME" . "/core/home")
+                  (bogus-entry)))
+          (should (equal (emacs-callproc-getenv "CORE_HOME") "/core/home")))
+      (if had-core
+          (setq nelisp--environment before-core)
+        (makunbound 'nelisp--environment)))))
+
+(ert-deftest emacs-callproc-test/core-environment-falls-through-to-sys-last ()
+  (let ((process-environment nil)
+        (had-sys (fboundp 'nelisp-sys-getenv))
+        (before-sys (and (fboundp 'nelisp-sys-getenv)
+                         (symbol-function 'nelisp-sys-getenv)))
+        (had-core (boundp 'nelisp--environment))
+        (before-core (and (boundp 'nelisp--environment)
+                          (symbol-value 'nelisp--environment))))
+    (unwind-protect
+        (progn
+          (setq nelisp--environment '(("CORE_HOME" . "/core/home")))
+          (fset 'nelisp-sys-getenv (lambda (_variable) "system-home"))
+          (should (equal (emacs-callproc-getenv "CORE_HOME") "/core/home")))
+      (if had-core
+          (setq nelisp--environment before-core)
+        (makunbound 'nelisp--environment))
+      (if had-sys
+          (fset 'nelisp-sys-getenv before-sys)
+        (fmakunbound 'nelisp-sys-getenv)))))
+
 (ert-deftest emacs-callproc-test/sys-getenv-recursion-guard ()
   (let ((process-environment nil)
         (had (fboundp 'nelisp-sys-getenv))

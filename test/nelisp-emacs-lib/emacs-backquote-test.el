@@ -23,6 +23,46 @@
 ;; can resolve them.
 (defvar emacs-backquote-test--x nil)
 (defvar emacs-backquote-test--xs nil)
+(defvar emacs-backquote-test--v nil)
+(defvar emacs-backquote-test--w nil)
+
+(defconst emacs-backquote-test--repo-root
+  (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name)))
+  "Repository root for locating read-only stdlib mirrors in tests.")
+
+(defun emacs-backquote-test--ensure-runtime-backquote ()
+  "Load stdlib backquote support, then replay the local override."
+  (unless (fboundp 'nelisp--bq-expand)
+    (load (expand-file-name "vendor/nelisp/lisp/nelisp-cl-macros.el"
+                            emacs-backquote-test--repo-root)
+          nil t))
+  (load (expand-file-name "src/emacs-backquote.el"
+                          emacs-backquote-test--repo-root)
+        nil t))
+
+(defun emacs-backquote-test--runtime-expand (form)
+  "Evaluate FORM through the runtime `nelisp--bq-expand' path."
+  (emacs-backquote-test--ensure-runtime-backquote)
+  (eval (nelisp--bq-expand form) nil))
+
+(defun emacs-backquote-test--contains-form-p (tree wanted)
+  "Return non-nil when TREE contains a subtree equal to WANTED."
+  (or (equal tree wanted)
+      (and (consp tree)
+           (or (emacs-backquote-test--contains-form-p (car tree) wanted)
+               (emacs-backquote-test--contains-form-p (cdr tree) wanted)))))
+
+(defun emacs-backquote-test--contains-unquoted-symbol-p (tree symbol)
+  "Return non-nil when TREE evaluates SYMBOL outside a quoted subtree."
+  (cond
+   ((eq tree symbol) t)
+   ((atom tree) nil)
+   ((eq (car tree) 'quote) nil)
+   (t
+    (or (emacs-backquote-test--contains-unquoted-symbol-p
+         (car tree) symbol)
+        (emacs-backquote-test--contains-unquoted-symbol-p
+         (cdr tree) symbol)))))
 
 
 ;;;; --- atomic + literal list -----------------------------------------------
@@ -89,6 +129,27 @@
                          nil)
                    '(a c)))))
 
+(ert-deftest emacs-backquote-test/vector-comma ()
+  (let ((emacs-backquote-test--x 42))
+    (should (equal (emacs-backquote-test--runtime-expand
+                    [a (comma emacs-backquote-test--x) b])
+                   [a 42 b]))))
+
+(ert-deftest emacs-backquote-test/vector-comma-at ()
+  (let ((emacs-backquote-test--xs '(1 2 3)))
+    (should (equal (emacs-backquote-test--runtime-expand
+                    [a (comma-at emacs-backquote-test--xs) b])
+                   [a 1 2 3 b]))))
+
+(ert-deftest emacs-backquote-test/vector-treemacs-shape ()
+  (let ((emacs-backquote-test--v "left")
+        (emacs-backquote-test--w "right"))
+    (should (equal (emacs-backquote-test--runtime-expand
+                    (list
+                     [(comma (format "x-%s" emacs-backquote-test--v)) sym1]
+                     [(comma (format "y-%s" emacs-backquote-test--w)) sym2]))
+                   '(["x-left" sym1] ["y-right" sym2])))))
+
 
 ;;;; --- mixed comma + comma-at ---------------------------------------------
 
@@ -114,6 +175,50 @@
 
 (ert-deftest emacs-backquote-test/top-level-comma-at-errors ()
   (should-error (emacs-backquote--expand '(comma-at xs))))
+
+(ert-deftest emacs-backquote-test/non-vector-regression-nested-and-dotted ()
+  (let ((emacs-backquote-test--x 9))
+    (should (equal (emacs-backquote-test--runtime-expand
+                    '(p (comma emacs-backquote-test--x)
+                        (nested (comma emacs-backquote-test--x))
+                        . tailsym))
+                   '(p 9 (nested 9) . tailsym)))))
+
+(ert-deftest emacs-backquote-test/runtime-punctuation-nested-generator-shape ()
+  "Outer expansion preserves generator-style inner punctuation backquote."
+  (emacs-backquote-test--ensure-runtime-backquote)
+  (let* ((outer
+          (read
+           "`(outer (cl-macrolet ((iter-yield (value) `(cps-internal-yield ,value))) (iter-yield 7)))"))
+         (inner (read "`(cps-internal-yield ,value)"))
+         (expansion (nelisp--bq-expand (cadr outer))))
+    (should
+     (emacs-backquote-test--contains-form-p
+      expansion (list 'quote inner)))
+    (should-not
+     (emacs-backquote-test--contains-unquoted-symbol-p expansion 'value))))
+
+(ert-deftest emacs-backquote-test/runtime-convenience-nested-marker-regression ()
+  "NeLisp convenience backquote/comma markers remain preserved when nested."
+  (emacs-backquote-test--ensure-runtime-backquote)
+  (let ((inner '(backquote (cps-internal-yield (comma value)))))
+    (should (equal (nelisp--bq-expand inner)
+                   (list 'quote inner)))))
+
+(ert-deftest emacs-backquote-test/package-mirror-matches-source ()
+  "The extracted foundation package keeps the backquote source in sync."
+  (let ((source (expand-file-name "src/emacs-backquote.el"
+                                  emacs-backquote-test--repo-root))
+        (mirror
+         (expand-file-name
+          "packages/nelisp-emacs-foundation/lisp/emacs-backquote.el"
+          emacs-backquote-test--repo-root)))
+    (should (equal (with-temp-buffer
+                     (insert-file-contents source)
+                     (buffer-string))
+                   (with-temp-buffer
+                     (insert-file-contents mirror)
+                     (buffer-string))))))
 
 
 (provide 'emacs-backquote-test)

@@ -60,6 +60,16 @@ registration into a later test in the same batch Emacs process."
       (emacs-buffer-make-local-variable 'foo)
       (should (= 99 (emacs-buffer-buffer-local-value 'foo b))))))
 
+(ert-deftest emacs-buffer-make-local-variable-unbound-starts-at-nil ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "x"))
+          (sym (make-symbol "emacs-buffer-test-unbound")))
+      (nelisp-ec-set-buffer b)
+      (should-not (boundp sym))
+      (emacs-buffer-make-local-variable sym)
+      (should (emacs-buffer-local-variable-p sym b))
+      (should (null (emacs-buffer-buffer-local-value sym b))))))
+
 (ert-deftest emacs-buffer-buffer-local-value-falls-back-to-default ()
   (emacs-buffer-test--with-fresh-world
     (let ((b (nelisp-ec-generate-new-buffer "x")))

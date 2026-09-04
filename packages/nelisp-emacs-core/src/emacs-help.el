@@ -27,7 +27,6 @@
 (require 'emacs-command-loop-builtins)
 (require 'emacs-keymap)
 (require 'emacs-mode)
-(require 'pp)
 
 (defvar help-mode-map nil
   "Keymap for `help-mode'.")
@@ -501,8 +500,15 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
    (lambda ()
      (insert (format "%s is a variable.\n\n" symbol))
      (emacs-help--insert-section "Value:"
-                                 (pp-to-string (symbol-value symbol)))
+                                 (emacs-help--pp-to-string
+                                  (symbol-value symbol)))
      (insert (emacs-help--docstring symbol 'variable) "\n"))))
+
+(defun emacs-help--pp-to-string (object)
+  "Pretty-print OBJECT for Help output without hard bootstrap coupling."
+  (if (fboundp 'pp-to-string)
+      (pp-to-string object)
+    (prin1-to-string object)))
 
 (defun emacs-help--render-key (key)
   "Render key help for KEY into `*Help*'."

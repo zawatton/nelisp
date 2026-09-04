@@ -205,6 +205,9 @@ t (frame default) or nil (no cursor) — matching Emacs `cursor-type'."
   :type 'sexp
   :group 'emacs-redisplay)
 
+(defvar emacs-redisplay-paint-mode-line-p t
+  "Non-nil means reserve the last row of each window for a mode line.")
+
 ;;; Glyph / glyph-row / glyph-matrix struct (Doc 43 §2.3)
 
 (cl-defstruct (emacs-redisplay-glyph
@@ -264,6 +267,10 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (backend     nil)                ;; emacs-tui-backend handle (nil OK)
   (window-cache nil)               ;; alist (window-id . glyph-matrix)
   (text-cache  nil))               ;; Phase 3.B.7 buffer-string LRU
+
+(defun emacs-redisplay-glyph-matrix-dirty-rows (matrix)
+  "Backward-compatible alias for MATRIX's dirty row bitvector."
+  (vconcat (emacs-redisplay-glyph-matrix-dirty-set matrix)))
 
 ;;; Module-private id counter
 
@@ -1434,9 +1441,8 @@ exceeds) WIDTH it is returned unchanged."
   "Return BUFFER's mode-line format or the Phase 3 MVP fallback."
   (cond
    ((and buffer (nelisp-ec-buffer-p buffer))
-    (condition-case nil
-        (emacs-buffer-buffer-local-value 'mode-line-format buffer)
-      (void-variable emacs-redisplay-default-mode-line-format)))
+    (emacs-redisplay--ml-local
+     'mode-line-format buffer emacs-redisplay-default-mode-line-format))
    (t emacs-redisplay-default-mode-line-format)))
 
 (defun emacs-redisplay--header-line-format (buffer)
@@ -1444,9 +1450,8 @@ exceeds) WIDTH it is returned unchanged."
 Doc 06 E6 — header lines reuse the mode-line %-spec machinery."
   (cond
    ((and buffer (nelisp-ec-buffer-p buffer))
-    (condition-case nil
-        (emacs-buffer-buffer-local-value 'header-line-format buffer)
-      (void-variable emacs-redisplay-default-header-line-format)))
+    (emacs-redisplay--ml-local
+     'header-line-format buffer emacs-redisplay-default-header-line-format))
    (t emacs-redisplay-default-header-line-format)))
 
 (defun emacs-redisplay--header-line-format-to-string (format buffer)
@@ -1463,9 +1468,8 @@ line, Doc 06 E6)."
   "Return BUFFER's `cursor-type', or the default shape (Doc 06 E6)."
   (cond
    ((and buffer (nelisp-ec-buffer-p buffer))
-    (condition-case nil
-        (emacs-buffer-buffer-local-value 'cursor-type buffer)
-      (void-variable emacs-redisplay-default-cursor-type)))
+    (emacs-redisplay--ml-local
+     'cursor-type buffer emacs-redisplay-default-cursor-type))
    (t emacs-redisplay-default-cursor-type)))
 
 (defun emacs-redisplay--ml-text-before-point (buffer)
@@ -1923,6 +1927,21 @@ the overlay anchor position."
                     (setq col (emacs-redisplay--emit-before-strings
                                overlays pos used col width)))))))))))
         (setq i (1+ i))))
+    ;; Doc 06 E6: under `truncate-lines', a clipped line shows `$' in
+    ;; the window's last column (Emacs terminal convention).  Gated on
+    ;; the variable so continuation-mode rows are not stamped.
+    (when (and overflow emacs-redisplay-truncate-lines (> width 0))
+      (while (< col (1- width))
+        (aset used col (emacs-redisplay--make-glyph
+                        :char ?\s :face nil :face-id 0
+                        :width 1 :buf-pos nil))
+        (setq col (1+ col)))
+      (aset used (1- width) (emacs-redisplay--make-glyph
+                             :char ?$ :face 'escape-glyph
+                             :realized-face (emacs-redisplay-realize-face
+                                             'escape-glyph)
+                             :face-id 0 :width 1 :buf-pos nil))
+      (setq col width))
     (cons (let ((trimmed (make-vector col nil)))
             (dotimes (k col) (aset trimmed k (aref used k)))
             trimmed)
@@ -1945,21 +1964,6 @@ Updates ROW's used / hash / start-pos / end-pos and resets pos-delta."
           (emacs-redisplay-glyph-row-pos-delta row) 0
           (emacs-redisplay-glyph-row-hash row)
           (emacs-redisplay--row-hash vec))))
-
-(defun emacs-redisplay--set-truncation-glyph (row width)
-  "Place a `$' truncation indicator in ROW's last column (Doc 06 E6).
-Mirrors the TTY marker Emacs shows at the right edge of a clipped line when
-`truncate-lines' is non-nil and no fringe is available.  Re-hashes ROW so the
-change propagates through the diff."
-  (when (> width 0)
-    (let ((vec (emacs-redisplay-glyph-row-glyphs row)))
-      (aset vec (1- width)
-            (emacs-redisplay--make-glyph
-             :char ?$ :face 'escape-glyph
-             :realized-face (emacs-redisplay-realize-face 'escape-glyph)
-             :face-id 0 :width 1 :buf-pos nil))
-      (setf (emacs-redisplay-glyph-row-hash row)
-            (emacs-redisplay--row-hash vec)))))
 
 (defun emacs-redisplay--clear-row (row)
   "Reset ROW to empty (all spaces, used = 0)."
@@ -2304,11 +2308,6 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
             (setf (emacs-redisplay-glyph-row-direction row) dir)
-            ;; E6: when truncate-lines clipped this logical line (lay-out
-            ;; consumed fewer chars than the line holds), show the `$' marker.
-            (when (and emacs-redisplay-truncate-lines
-                       (< (cdr laid) line-end-pos))
-              (emacs-redisplay--set-truncation-glyph row width))
             (aset cache (+ header-rows row-idx)
                   (cons line (cons ovly-fp tp-fp))))))
         ;; E1: mark visual rows that continue the previous logical line so the
@@ -2640,6 +2639,30 @@ clear the whole flush-hash cache.  Returns nil."
       (remhash matrix emacs-redisplay--flush-hash-cache)
     (clrhash emacs-redisplay--flush-hash-cache))
   nil)
+
+(defun emacs-redisplay-core-initial-paint (handle frame)
+  "Compatibility wrapper for the lightweight core initial-paint API.
+The full redisplay engine satisfies the same contract by rendering the
+selected window once and emitting one observable row write."
+  (let* ((window (emacs-window-selected-window))
+         (matrix (and window (emacs-redisplay-redisplay-window handle window)))
+         (edges (and window (emacs-window-window-edges window)))
+         (height (and window (emacs-window-window-height window)))
+         (rows (and matrix (emacs-redisplay-glyph-matrix-rows matrix)))
+         (row-idx (and height rows (max 0 (1- (min height (length rows))))))
+         (row (and row-idx rows (aref rows row-idx)))
+         (text (and row (emacs-redisplay-glyph-row-text row))))
+    (when (and text
+               edges
+               (fboundp 'emacs-tui-backend--emit)
+               (fboundp 'emacs-tui-backend--cup))
+      (emacs-tui-backend--emit
+       (concat (emacs-tui-backend--cup
+                (+ (nth 1 edges) row-idx)
+                (nth 0 edges))
+               text))))
+  (emacs-redisplay-flush-frame handle frame)
+  t)
 
 (provide 'emacs-redisplay)
 

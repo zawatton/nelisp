@@ -10,7 +10,14 @@
   '(case-table cdl backquote (lisp-float-type . "emacs-lisp/float-sup")
     hex-util lisp map-ynp range regi
     charprop charscript emoji-labels iso-transl cp51932 eucjp-ms
-    fontset idna-mapping ja-dic-utl)
+    fontset idna-mapping ja-dic-utl
+    dos-vars dos-w32 editorconfig-core-handle radix-tree cedet-files
+    cal-iso cal-julian cal-mayan cal-move cal-x iso8601
+    srecode erc-lang em-banner esh-module ezimage eieio-speedbar
+    calc-arith calc-bin calc-comb calc-cplx calc-fin calc-forms
+    calc-frac calc-funcs calc-graph calc-incom calc-keypd calc-lang
+    calc-math calc-menu calc-mode calc-mtx calc-nlfit calc-rules
+    calc-sel calc-stat calc-stuff calc-trail calcsel2)
   "Class-A vendor modules from the generated Doc 03 inventory.
 
 The first smoke lane intentionally starts with files that have no
@@ -18,7 +25,7 @@ static `(require ...)' edges in `docs/design/03-vendor-inventory.csv'.
 Broader user-facing candidates such as `files' and `dired' depend on
 Class-C/D bootstrap features and belong in later strict gates.")
 
-(defvar vendor-class-a-smoke-default-limit 18
+(defvar vendor-class-a-smoke-default-limit 58
   "Default number of modules to smoke when no environment override exists.")
 
 (defvar vendor-class-a-smoke-strict nil
@@ -43,7 +50,7 @@ Class-C/D bootstrap features and belong in later strict gates.")
 
 (defun vendor-class-a-smoke--selected-modules ()
   "Return modules to smoke based on VENDOR_CLASS_A_LIMIT.
-A limit of 0 means the full candidate list.  The default is 18 so
+ A limit of 0 means the full candidate list.  The default is 58 so
 `make verify-vendor' stays usable while the cold-load path is still
 slow."
   (let ((limit (vendor-class-a-smoke--env-number

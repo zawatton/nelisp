@@ -1885,13 +1885,27 @@ $(NEMACS_BOOTSTRAP_ARTIFACT): $(NEMACS_BOOTSTRAP_BUNDLE)
 		--kind neln \
 		--input "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))" \
 		--output "$(abspath $(NEMACS_BOOTSTRAP_ARTIFACT))" \
-		--rewrite-defalias-late \
 		--native-policy opportunistic \
 		--load-path "$(abspath src)" \
 		--load-path "$(abspath vendor/emacs-lisp)" \
 		--load-path "$(abspath vendor/emacs-lisp/emacs-lisp)"
 
+# The flat-artifact-cache route needs `compile-runtime-image
+# --flat-artifact-cache --runtime', which turns a .neln bootstrap artifact into
+# a flat .nlri cold image.  No released NeLisp has it: the flags exist only on
+# the abandoned local branch `local/pre-v1.1.0-sync-20260828', and the shipped
+# `compile-runtime-image' goes the other way (.nlri in, .nelc/.neln out).  Left
+# unguarded this target dies with `unknown flag --flat-artifact-cache'.  The
+# source route (`bin/nemacs' -> `build_cold_image_from_source', which uses only
+# shipped CLI) is the supported way to build the cold image.  Set
+# NEMACS_FLAT_ARTIFACT_CACHE=1 to run it anyway against a NeLisp build that does
+# carry the flags.
 prepare-nelisp-bootstrap-cold-cache: compile-nelisp-bootstrap-artifact
+	@test "$(NEMACS_FLAT_ARTIFACT_CACHE)" = 1 || { \
+		echo "prepare-nelisp-bootstrap-cold-cache: needs compile-runtime-image --flat-artifact-cache, which no released NeLisp provides"; \
+		echo "  use the source route (bin/nemacs cold cache), or set NEMACS_FLAT_ARTIFACT_CACHE=1 for a NeLisp build that has it"; \
+		exit 1; \
+	}
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_BOOTSTRAP_COLD_IMAGE))"
 	"$(NELISP_BIN)" compile-runtime-image \

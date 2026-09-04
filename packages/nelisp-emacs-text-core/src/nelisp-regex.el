@@ -396,29 +396,30 @@ explicitly numbered groups in addition to plain capturing groups.
                   (progn
                     (nelisp-rx--advance)            ; consume `-'
                     (let ((hi (nelisp-rx--class-char)))
-                      (when (> lo hi)
-                        (signal 'nelisp-rx-syntax-error
-                                (list (format "inverted range %c-%c" lo hi))))
-                      (push (cons lo hi) ranges)))
+                      ;; GNU Emacs accepts inverted character ranges as an
+                      ;; empty range.  `rx.el' intentionally emits `[^z-a]'
+                      ;; for `anychar', so rejecting this shape breaks vendor
+                      ;; regexps generated through `rx-to-string'.
+                      (unless (> lo hi)
+                        (push (cons lo hi) ranges))))
                 (push (cons lo lo) ranges))))))))
     (nelisp-rx--make-class positive (nreverse ranges))))
 
 (defun nelisp-rx--class-char ()
-  "Read one character (or short-class escape) inside `[...]'.
-Returns an integer for normal chars; for `\\w'/`\\W' the simulator picks them
-up via the keyword forms but inside a character class we treat `\\w' as `w'
-literally to keep MVP semantics simple -- this matches GNU Emacs's behaviour."
+  "Read one literal character inside `[...]'.
+In GNU Emacs regexp syntax backslash is an ORDINARY literal character
+inside a character class -- it does NOT introduce an escape.  So `[^\\]'
+means \"not backslash\" (its `]' closes the class), `[\\]' matches a
+backslash, and `[\\w]' matches a literal `\\' or `w'.  The previous
+implementation consumed the `\\' and returned the following character,
+i.e. treated `\\' as a PCRE-style escape; that mis-parsed `[^\\]' as an
+unterminated class (the `]' was swallowed as an escaped literal) and broke
+every Emacs regexp with a backslash inside a bracket expression (cc-mode's
+`noncontinued-line-end' and many others).  Return the character verbatim."
   (let ((c (nelisp-rx--peek)))
     (cond
      ((null c)
       (signal 'nelisp-rx-syntax-error '("unterminated class")))
-     ((eq c ?\\)
-      (nelisp-rx--advance)
-      (let ((n (nelisp-rx--peek)))
-        (unless n
-          (signal 'nelisp-rx-syntax-error '("trailing backslash in class")))
-        (nelisp-rx--advance)
-        n))
      (t (nelisp-rx--advance) c))))
 
 (define-error 'nelisp-rx-syntax-error "Invalid regex syntax")
@@ -1056,6 +1057,40 @@ from N below M' isn't a NeLisp built-in)."
           (setq i (1+ i)))))
     (list :start anchor :end end :groups (nreverse lst))))
 
+(defun nelisp-rx--literal-suffix-of (pattern)
+  "Return the literal suffix for PATTERN of the shape LITERAL\\\\', else nil.
+The only regexp operator accepted is the trailing string-end anchor.
+Escaped regexp punctuation counts as literal text; escaped word classes,
+groups, backrefs, and other regexp constructs reject the fast path."
+  (let ((n (length pattern))
+        (i 0)
+        (chars nil)
+        (ok t))
+    (if (or (< n 2)
+            (not (eq (aref pattern (- n 2)) ?\\))
+            (not (eq (aref pattern (- n 1)) ?')))
+        nil
+      (setq n (- n 2))
+      (while (and ok (< i n))
+        (let ((c (aref pattern i)))
+          (cond
+           ((eq c ?\\)
+            (if (>= (1+ i) n)
+                (setq ok nil)
+              (let ((e (aref pattern (1+ i))))
+                (if (memq e '(?. ?* ?+ ?? ?\[ ?\] ?^ ?$ ?\\ ?\( ?\) ?\{ ?\} ?|))
+                    (progn
+                      (push e chars)
+                      (setq i (+ i 2)))
+                  (setq ok nil)))))
+           ((memq c '(?. ?* ?+ ?? ?\[ ?\] ?^ ?$))
+            (setq ok nil))
+           (t
+            (push c chars)
+            (setq i (1+ i))))))
+      (when ok
+        (apply #'string (nreverse chars))))))
+
 (defvar nelisp-rx--compile-cache (make-hash-table :test 'equal)
   "Cache mapping a regex STRING to its compiled `nelisp-rx-pattern'.
 Compiling re-parses the regex and allocates a fresh NFA every time.
@@ -1074,8 +1109,22 @@ first use).  See `nelisp-rx--compile-cache'."
   (if (nelisp-rx-pattern-p pattern)
       pattern
     (or (gethash pattern nelisp-rx--compile-cache)
-        (puthash pattern (nelisp-rx-compile pattern)
+        (puthash pattern (or (and (stringp pattern)
+                                  (let ((suffix (nelisp-rx--literal-suffix-of pattern)))
+                                    (and suffix (cons :rx-suffix suffix))))
+                             (nelisp-rx-compile pattern))
                  nelisp-rx--compile-cache))))
+
+(defun nelisp-rx--suffix-string-match (literal string start)
+  "Match LITERAL followed by end-of-string against STRING from START.
+Return the public match-data plist on success, or nil on failure."
+  (let* ((slen (length string))
+         (llen (length literal))
+         (anchor (- slen llen)))
+    (and (<= 0 anchor)
+         (<= (or start 0) anchor)
+         (equal literal (substring string anchor slen))
+         (nelisp-rx--make-match-data anchor slen nil))))
 
 ;;;###autoload
 (defun nelisp-rx-string-match (pattern string &optional start)
@@ -1084,10 +1133,12 @@ Return a match-data plist with keys :start :end :groups, or nil if
 no match.  PATTERN can be a string (compiled + cached on the fly) or a
 pre-compiled `nelisp-rx-pattern' object."
   (let* ((pat (nelisp-rx--compile-cached pattern))
-         (s   (or start 0))
-         (hit (nelisp-rx--scan pat string s)))
-    (and hit
-         (nelisp-rx--make-match-data (nth 0 hit) (nth 1 hit) (nth 2 hit)))))
+         (s   (or start 0)))
+    (if (and (consp pat) (eq (car pat) :rx-suffix))
+        (nelisp-rx--suffix-string-match (cdr pat) string s)
+      (let ((hit (nelisp-rx--scan pat string s)))
+        (and hit
+             (nelisp-rx--make-match-data (nth 0 hit) (nth 1 hit) (nth 2 hit)))))))
 
 ;;;###autoload
 (defun nelisp-rx-string-match-all (pattern string &optional start)
@@ -1096,19 +1147,22 @@ Return a list of match-data plists in left-to-right order."
   (let* ((pat (nelisp-rx--compile-cached pattern))
          (s   (or start 0))
          (acc nil))
-    (while
-        (let ((m (nelisp-rx--scan pat string s)))
-          (when m
-            (push (nelisp-rx--make-match-data (nth 0 m) (nth 1 m) (nth 2 m))
-                  acc)
-            ;; Advance: if the match consumed nothing, step by 1 to avoid
-            ;; infinite loop on patterns like "a*".
-            (let ((next (if (= (nth 0 m) (nth 1 m))
-                            (1+ (nth 1 m))
-                          (nth 1 m))))
-              (and (<= next (length string))
-                   (setq s next))))))
-    (nreverse acc)))
+    (if (and (consp pat) (eq (car pat) :rx-suffix))
+        (let ((m (nelisp-rx--suffix-string-match (cdr pat) string s)))
+          (if m (list m) nil))
+      (while
+          (let ((m (nelisp-rx--scan pat string s)))
+            (when m
+              (push (nelisp-rx--make-match-data (nth 0 m) (nth 1 m) (nth 2 m))
+                    acc)
+              ;; Advance: if the match consumed nothing, step by 1 to avoid
+              ;; infinite loop on patterns like "a*".
+              (let ((next (if (= (nth 0 m) (nth 1 m))
+                              (1+ (nth 1 m))
+                            (nth 1 m))))
+                (and (<= next (length string))
+                     (setq s next))))))
+      (nreverse acc))))
 
 ;;;###autoload
 (defun nelisp-rx-replace (pattern string replacement)

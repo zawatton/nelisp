@@ -40,6 +40,34 @@
     (defun emacs-eval-test--forward-target () 42)
     (should (= (funcall sym) 42))))
 
+(ert-deftest emacs-eval-test/nelisp-defalias-late-binds-forward-symbol ()
+  (let ((alias (make-symbol "emacs-eval-test--late-alias"))
+        (target (make-symbol "emacs-eval-test--late-target")))
+    (unwind-protect
+        (progn
+          (fmakunbound alias)
+          (fmakunbound target)
+          (should (eq (nelisp--defalias-late alias target) alias))
+          (fset target (lambda () 'late-bound))
+          (should (eq 'late-bound (funcall alias))))
+      (fmakunbound alias)
+      (fmakunbound target))))
+
+(ert-deftest emacs-eval-test/nelisp-defalias-late-preserves-fbound-target ()
+  (defmacro emacs-eval-test--late-macro-target (x)
+    `(+ ,x 1))
+  (let ((alias (make-symbol "emacs-eval-test--late-macro-alias")))
+    (unwind-protect
+        (progn
+          (fmakunbound alias)
+          (should (eq (nelisp--defalias-late
+                       alias 'emacs-eval-test--late-macro-target)
+                      alias))
+          (should (equal '(+ 41 1) (macroexpand (list alias 41))))
+          (should (= 42 (eval (list alias 41)))))
+      (fmakunbound alias)
+      (fmakunbound 'emacs-eval-test--late-macro-target))))
+
 
 ;;;; --- declare-function ---------------------------------------------------
 
@@ -64,6 +92,22 @@
     (should (= 8 (funcall old 7)))
     (should (equal '(emacs-eval-test--obsolete-new nil "30.1")
                    (get old 'byte-obsolete-info)))))
+
+(ert-deftest emacs-eval-test/obsolete-function-alias-follows-late-bound-target ()
+  (let ((alias (make-symbol "emacs-eval-test--obsolete-forward"))
+        (target (make-symbol "emacs-eval-test--obsolete-forward-target")))
+    (fmakunbound alias)
+    (fmakunbound target)
+    (unwind-protect
+        (progn
+          (should (eq alias (define-obsolete-function-alias
+                              alias target "30.1" "late bound")))
+          (defalias target (lambda () 'first))
+          (should (eq 'first (funcall alias)))
+          (defalias target (lambda () 'second))
+          (should (eq 'second (funcall alias))))
+      (fmakunbound alias)
+      (fmakunbound target))))
 
 (ert-deftest emacs-eval-test/obsolete-variable-alias-records-byte-metadata ()
   (defvar emacs-eval-test--obsolete-current 42)
@@ -141,6 +185,38 @@
            'emacs-eval-test--al-load-fn)
           (should (eq 'loaded (emacs-eval-test--al-load-fn))))
       (fmakunbound 'emacs-eval-test--al-load-fn)
+      (when (file-directory-p dir) (delete-directory dir t)))))
+
+(ert-deftest emacs-eval-test/autoload-errors-loudly-when-load-defines-nothing ()
+  (let* ((dir (make-temp-file "nemacs-al-empty-" t))
+         (file (expand-file-name "empty.el" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert ";; intentionally empty\n"))
+          (fmakunbound 'emacs-eval-test--al-empty)
+          (autoload 'emacs-eval-test--al-empty file)
+          (should-error (emacs-eval-test--al-empty)
+                        :type 'error))
+      (fmakunbound 'emacs-eval-test--al-empty)
+      (when (file-directory-p dir) (delete-directory dir t)))))
+
+(ert-deftest emacs-eval-test/autoload-clears-thunk-property-after-definition ()
+  (let* ((dir (make-temp-file "nemacs-al-prop-" t))
+         (file (expand-file-name "prop.el" dir)))
+    (unwind-protect
+        (progn
+          (skip-unless (not (subrp (symbol-function 'autoload))))
+          (with-temp-file file
+            (insert "(defun emacs-eval-test--al-prop () 'ok)\n"))
+          (fmakunbound 'emacs-eval-test--al-prop)
+          (autoload 'emacs-eval-test--al-prop file)
+          (should (get 'emacs-eval-test--al-prop
+                       'emacs-eval--autoload-thunk-object))
+          (should (eq 'ok (emacs-eval-test--al-prop)))
+          (should-not (get 'emacs-eval-test--al-prop
+                           'emacs-eval--autoload-thunk-object)))
+      (fmakunbound 'emacs-eval-test--al-prop)
       (when (file-directory-p dir) (delete-directory dir t)))))
 
 (provide 'emacs-eval-test)

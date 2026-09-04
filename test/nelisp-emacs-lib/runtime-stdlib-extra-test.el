@@ -41,7 +41,8 @@
     (check-parens))
   (let ((source (runtime-stdlib-extra-test--slurp
                  runtime-stdlib-extra-test--source)))
-    (dolist (needle '("(unless (fboundp 'mapcan)"
+    (dolist (needle '("(unless (fboundp 'split-string)"
+                      "(unless (fboundp 'mapcan)"
                       "(unless (fboundp 'assoc-default)"
                       "(unless (fboundp 'cl-reduce)"
                       ;; A5: cl-reduce :from-end handling (Doc 15 wave A).
@@ -133,6 +134,7 @@ suite, whose persistent IME learning file leaks on disk)."
           (let ((out (runtime-stdlib-extra-test--run
                       reader image
                       "(progn (princ (concat
+  \"split=\" (format \"%S\" (split-string \"a,b,,c\" \",\" t)) \"\\n\"
   \"mapcan=\" (format \"%S\" (mapcan (lambda (x) (list x x)) '(1 2 3))) \"\\n\"
   \"assoc=\" (format \"%S\" (assoc-default 'b '((a . 1) (b . 2)))) \"\\n\"
   \"reduce=\" (format \"%S\" (cl-reduce '+ '(1 2 3 4))) \"\\n\"
@@ -142,6 +144,7 @@ suite, whose persistent IME learning file leaks on disk)."
   \"wl-miss=\" (format \"%S\" (when-let ((a 5) (b nil)) (+ a 1))) \"\\n\"
   \"il-else=\" (format \"%S\" (if-let ((a nil)) 'then 'else)) \"\\n\"
   \"wl-single=\" (format \"%S\" (when-let (x 42) (* x 2))) \"\\n\")))")))
+            (should (string-match-p "split=(\"a\" \"b\" \"c\")" out))
             (should (string-match-p "mapcan=(1 1 2 2 3 3)" out))
             (should (string-match-p "assoc=2" out))
             (should (string-match-p "reduce=10" out))

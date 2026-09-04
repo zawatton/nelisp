@@ -686,6 +686,16 @@ WINDOW may be nil = selected window.  BUFFER-OR-NAME must be a
                        (list 'nelisp-ec-buffer-p buffer-or-name))))))
     (emacs-window--check-leaf w)
     (nelisp-ec-check-live b)
+    (let ((old (emacs-window-buffer w)))
+      (when (and (nelisp-ec-buffer-p old)
+                 (not (eq old b)))
+        (emacs-window-set-window-prev-buffers
+         w
+         (cons (cons old
+                     (list (emacs-window-start w)
+                           (emacs-window-point w)))
+               (assq-delete-all old (emacs-window-window-prev-buffers w))))
+        (emacs-window-set-window-next-buffers w nil)))
     (setf (emacs-window-buffer w) b
           (emacs-window-point  w) (nelisp-ec-buffer-point b)
           (emacs-window-start  w) 1)
@@ -870,6 +880,25 @@ non-goals)."
     (setf (alist-get parameter alist) value)
     (setf (emacs-window-parameters w) alist)
     value))
+
+(defun emacs-window-window-prev-buffers (&optional window)
+  "Return WINDOW's previous-buffer history list.
+
+The list format is compatible with Emacs: each entry is
+\(BUFFER WINDOW-START WINDOW-POINT)."
+  (emacs-window-window-parameter window 'prev-buffers))
+
+(defun emacs-window-set-window-prev-buffers (window value)
+  "Set WINDOW's previous-buffer history list to VALUE."
+  (emacs-window-set-window-parameter window 'prev-buffers value))
+
+(defun emacs-window-window-next-buffers (&optional window)
+  "Return WINDOW's next-buffer history list."
+  (emacs-window-window-parameter window 'next-buffers))
+
+(defun emacs-window-set-window-next-buffers (window value)
+  "Set WINDOW's next-buffer history list to VALUE."
+  (emacs-window-set-window-parameter window 'next-buffers value))
 
 ;;; D'. window-configuration
 

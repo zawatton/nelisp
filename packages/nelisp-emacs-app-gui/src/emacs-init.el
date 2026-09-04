@@ -21,22 +21,45 @@
 ;; local Layer-2 shims/bridges.  v2 standalone NeLisp must let `src/'
 ;; win for compatibility shims such as `cl-lib' and `keymap'; vendored
 ;; upstream fills the long tail only after those local overrides.
-;; Caller must set `nelisp-emacs-vendor-root' before loading this file
-;; (= the directory containing `vendor/emacs-lisp/'); we append the
-;; standard subdirectories that the Emacs build adds to load-path.
-(when (and (boundp 'nelisp-emacs-vendor-root) nelisp-emacs-vendor-root)
-  (let ((root (concat nelisp-emacs-vendor-root "/emacs-lisp")))
-    (dolist (sub '("" "/emacs-lisp" "/international" "/textmodes"
-                   "/progmodes" "/net" "/url" "/vc" "/calc"
-                   "/calendar" "/eshell" "/mail" "/cedet"
-                   "/leim" "/term" "/erc" "/org" "/gnus"))
-      (let ((path (concat root sub)))
-        ;; Avoid filesystem probes here: standalone diagnostics provide an
-        ;; explicit load-path and missing entries are harmless until required.
-        (unless (and (boundp 'load-path) (member path load-path))
-          (setq load-path
-                (append (and (boundp 'load-path) load-path)
-                        (list path))))))))
+;; Keep host Emacs untouched; standalone derives the vendor root from this
+;; file when callers do not seed it explicitly.
+(defconst emacs-init--vendor-load-path-subdirs
+  '("" "emacs-lisp" "international" "textmodes" "progmodes"
+    "net" "url" "vc" "calc" "calendar" "eshell" "mail"
+    "cedet" "leim" "term" "erc" "org" "gnus")
+  "Standard vendor `lisp/' subdirectories appended to `load-path'.")
+
+(defun emacs-init--standalone-runtime-p ()
+  "Return non-nil when `emacs-init' is running on standalone NeLisp."
+  (or (not (boundp 'emacs-version))
+      (fboundp 'nl-write-file)
+      (fboundp 'nl-syscall-write-file)
+      (fboundp 'nelisp--eval-source-string)))
+
+(defun emacs-init--derived-vendor-root ()
+  "Return the repo-local vendor root derived from this file, or nil."
+  (let ((here (or (and (boundp 'load-file-name) load-file-name)
+                  (and (boundp 'buffer-file-name) buffer-file-name))))
+    (when here
+      (expand-file-name "../vendor" (file-name-directory here)))))
+
+(when (emacs-init--standalone-runtime-p)
+  (unless (boundp 'load-path)
+    (defvar load-path nil))
+  (unless (and (boundp 'nelisp-emacs-vendor-root)
+               (stringp nelisp-emacs-vendor-root)
+               (> (length nelisp-emacs-vendor-root) 0))
+    (setq nelisp-emacs-vendor-root (emacs-init--derived-vendor-root)))
+  (let ((root (and (stringp nelisp-emacs-vendor-root)
+                   (expand-file-name "emacs-lisp" nelisp-emacs-vendor-root))))
+    (when root
+      (dolist (sub emacs-init--vendor-load-path-subdirs)
+        (let ((path (if (= (length sub) 0)
+                        root
+                      (expand-file-name sub root))))
+          (when (and (file-directory-p path)
+                     (not (member path load-path)))
+            (setq load-path (append load-path (list path)))))))))
 
 ;; Doc 33 item 224 -- lean `org-modules' default (drop `ol-gnus').
 ;; Doc 33 item 234 -- also drop `ol-bibtex' while its optional module

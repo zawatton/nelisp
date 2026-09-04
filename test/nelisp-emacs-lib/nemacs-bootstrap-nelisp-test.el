@@ -165,6 +165,87 @@ current ERT test with status/stdout/stderr diagnostics."
                 "    (princ \"BOOT=nil\\n\")))"))))
      (should (string-match-p "BOOT=t" out)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/generated-bootstrap-preserves-features ()
+  "Direct bootstrap bundle loads must preserve the provided feature set."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let* ((bootstrap
+           (expand-file-name "build/nemacs-bootstrap.el"
+                             nemacs-bootstrap-nelisp-test--repo-root))
+          (out (nemacs-bootstrap-nelisp-test--run
+                "--batch" "--no-banner"
+                "--load" bootstrap
+                "--eval"
+                (concat
+                 "(nelisp--write-stdout-bytes"
+                 " (concat \"FEATURE-NEMACS-MAIN=\""
+                 "         (if (featurep 'nemacs-main) \"t\" \"nil\")"
+                 "         \"\\n\"))"
+                 "(nelisp--write-stdout-bytes"
+                 " (concat \"FEATURE-EMACS-SHELL=\""
+                 "         (if (featurep 'emacs-shell) \"t\" \"nil\")"
+                 "         \"\\n\"))"
+                 "(nelisp--write-stdout-bytes"
+                 " (concat \"FEATURE-COUNT=\""
+                 "         (number-to-string (length features))"
+                 "         \"\\n\"))"))))
+     (should (string-match-p "FEATURE-NEMACS-MAIN=t" out))
+     (should (string-match-p "FEATURE-EMACS-SHELL=t" out))
+     (let ((m (string-match "FEATURE-COUNT=\\([0-9]+\\)" out)))
+       (should m)
+       (should (>= (string-to-number (match-string 1 out)) 45))))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/generated-bootstrap-includes-org-version-before-tail ()
+  "The generated bundle should carry `org-version.el' once and before the tail."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((bootstrap
+          (expand-file-name "build/nemacs-bootstrap.el"
+                            nemacs-bootstrap-nelisp-test--repo-root)))
+     (with-temp-buffer
+       (insert-file-contents bootstrap)
+       (let ((org-marker "\n;;; >>> vendor/emacs-lisp/org/org-version.el\n")
+             (tail-marker "\n;;; >>> src/emacs-load.el\n"))
+         (should (= 1 (count-matches (regexp-quote org-marker)
+                                     (point-min) (point-max))))
+         (should (= 1 (count-matches (regexp-quote tail-marker)
+                                     (point-min) (point-max))))
+         (goto-char (point-min))
+         (let ((org-pos (search-forward org-marker nil t))
+               (tail-pos (search-forward tail-marker nil t)))
+           (should org-pos)
+           (should tail-pos)
+           (should (< org-pos tail-pos))))))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/bootstrap-loads-org-version-api ()
+  "Loading the generated bootstrap should expose real Org version helpers."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let* ((bootstrap
+           (expand-file-name "build/nemacs-bootstrap.el"
+                             nemacs-bootstrap-nelisp-test--repo-root))
+          (out (nemacs-bootstrap-nelisp-test--run
+                "--batch" "--no-banner"
+                "--load" bootstrap
+                "--eval"
+                (concat
+                 "(progn"
+                 "  (require 'org-macs)"
+                 "  (org-assert-version)"
+                 "  (nelisp--write-stdout-bytes"
+                 "   (concat \"FEATURE-ORG-VERSION=\""
+                 "           (if (featurep 'org-version) \"t\" \"nil\")"
+                 "           \"\\nFB-ORG-RELEASE=\""
+                 "           (if (fboundp 'org-release) \"t\" \"nil\")"
+                 "           \"\\nFB-ORG-GIT-VERSION=\""
+                 "           (if (fboundp 'org-git-version) \"t\" \"nil\")"
+                 "           \"\\nORG-RELEASE=\" (org-release)"
+                 "           \"\\nORG-GIT-VERSION=\" (org-git-version)"
+                 "           \"\\n\"))"
+                 ")"))))
+     (should (string-match-p "FEATURE-ORG-VERSION=t" out))
+     (should (string-match-p "FB-ORG-RELEASE=t" out))
+     (should (string-match-p "FB-ORG-GIT-VERSION=t" out))
+     (should (string-match-p "ORG-RELEASE=9\\.7\\.11" out))
+     (should (string-match-p "ORG-GIT-VERSION=release_9\\.7\\.11" out)))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/loadup-feature-count ()
   "Batch loadup under nelisp driver should pull in the core feature set.
 Optional font-lock/redisplay/TUI modules load later when an interactive
@@ -529,6 +610,141 @@ resolves to an absolute path (the reader has no PATH lookup), and
              (should (string-match-p (regexp-quote "VC-ENTRY=??|fresh.txt") out))))
        (delete-directory repo t)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/process-file-git-add-callable ()
+  "Standalone `process-file' should run `git add' in `default-directory'.
+This is the narrow substrate gate underneath Magit's stage workflow:
+prove that the reader's sync process wrapper both chdirs into the repo
+and mutates the index, without going through any Magit code."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (executable-find "git"))
+   (let ((repo (make-temp-file "nemacs-process-file-git-add-" t)))
+     (unwind-protect
+         (progn
+           (let ((default-directory (file-name-as-directory repo)))
+             (call-process "git" nil nil nil "init" "-q")
+             (call-process "git" nil nil nil "config" "user.email" "t@example.com")
+             (call-process "git" nil nil nil "config" "user.name" "t")
+             (with-temp-file (expand-file-name "tracked.txt" repo) (insert "v1\n"))
+             (call-process "git" nil nil nil "add" "tracked.txt")
+             (call-process "git" nil nil nil "commit" "-q" "-m" "init")
+             (with-temp-file (expand-file-name "tracked.txt" repo) (insert "v2\n")))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(let ((default-directory \""
+                        (file-name-as-directory repo)
+                        "\"))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"ADD-RC=\""
+                        "           (number-to-string"
+                        "            (process-file \"git\" nil nil nil \"add\" \"tracked.txt\"))"
+                        "           \"\\n\"))"
+                        "  (with-temp-buffer"
+                        "    (process-file \"git\" nil t nil \"diff\" \"--name-only\")"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"UNSTAGED=\" (buffer-string) \"\\n\")))"
+                        "  (with-temp-buffer"
+                        "    (process-file \"git\" nil t nil \"diff\" \"--cached\" \"--name-only\")"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"STAGED=\" (buffer-string) \"\\n\")))"
+                        "  (with-temp-buffer"
+                        "    (process-file \"git\" nil t nil \"status\" \"--short\")"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"STATUS=\" (buffer-string) \"\\n\"))))"))))
+             (should (string-match-p "ADD-RC=0" out))
+             (should (string-match-p "UNSTAGED=\n" out))
+             (should (string-match-p (regexp-quote "STAGED=tracked.txt\n") out))
+             (should (string-match-p (regexp-quote "STATUS=M  tracked.txt") out))))
+       (delete-directory repo t)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/vc-workflow-callable ()
+  "Reader-side VC workflow runs through real git state transitions.
+Starts from a repo with one modified tracked file, proves the shared VC
+facade can render status/diff/log/annotate buffers, then stages the file
+through `process-file' and confirms the VC status view reflects the new
+index/worktree state."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (executable-find "git"))
+   (let ((repo (make-temp-file "nemacs-vc-workflow-" t)))
+     (unwind-protect
+         (progn
+           (let ((default-directory (file-name-as-directory repo)))
+             (call-process "git" nil nil nil "init" "-q")
+             (call-process "git" nil nil nil "config" "user.email" "t@example.com")
+             (call-process "git" nil nil nil "config" "user.name" "t")
+             (with-temp-file (expand-file-name "tracked.txt" repo) (insert "v1\n"))
+             (call-process "git" nil nil nil "add" "tracked.txt")
+             (call-process "git" nil nil nil "commit" "-q" "-m" "init")
+             (with-temp-file (expand-file-name "tracked.txt" repo) (insert "v1\nv2\n")))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(let ((default-directory \""
+                        (file-name-as-directory repo)
+                        "\"))"
+                        "  (let ((entries (emacs-vc-status)))"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"VCW-COUNT1=\" (number-to-string (length entries)) \"\\n\"))"
+                        "    (dolist (e entries)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"VCW-ENTRY1=\" (car e) \"|\" (cdr e) \"\\n\"))))"
+                        "  (let ((buf (vc-dir)))"
+                        "    (with-current-buffer buf"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"VCW-DIR=\""
+                        "               (if (string-match-p \"tracked.txt\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))))"
+                        "  (let ((buf (vc-diff)))"
+                        "    (with-current-buffer buf"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"VCW-DIFF=\""
+                        "               (if (string-match-p (regexp-quote \"+v2\") (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))))"
+                        "  (let ((buf (vc-print-log)))"
+                        "    (with-current-buffer buf"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"VCW-LOG=\""
+                        "               (if (string-match-p \"init\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))))"
+                        "  (let ((buf (emacs-vc-annotate \"tracked.txt\")))"
+                        "    (with-current-buffer buf"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"VCW-ANN=\""
+                        "               (if (string-match-p \"Not Committed Yet\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"VCW-ADD=\""
+                        "           (number-to-string"
+                        "            (process-file \"git\" nil nil nil \"add\" \"tracked.txt\"))"
+                        "           \"\\n\"))"
+                        "  (let ((entries (emacs-vc-status)))"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"VCW-COUNT2=\" (number-to-string (length entries)) \"\\n\"))"
+                        "    (dolist (e entries)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"VCW-ENTRY2=\" (car e) \"|\" (cdr e) \"\\n\"))))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"FB-VC-WORKFLOW=\""
+                        "           (if (and (fboundp 'vc-dir)"
+                        "                    (fboundp 'vc-diff)"
+                        "                    (fboundp 'vc-print-log)"
+                        "                    (fboundp 'vc-annotate))"
+                        "               \"t\" \"nil\")"
+                        "           \"\\n\")))"))))
+             (should (string-match-p "FB-VC-WORKFLOW=t" out))
+             (should (string-match-p "VCW-COUNT1=1" out))
+             (should (string-match-p (regexp-quote "VCW-ENTRY1= M|tracked.txt") out))
+             (should (string-match-p "VCW-DIR=t" out))
+             (should (string-match-p "VCW-DIFF=t" out))
+             (should (string-match-p "VCW-LOG=t" out))
+             (should (string-match-p "VCW-ANN=t" out))
+             (should (string-match-p "VCW-ADD=0" out))
+             (should (string-match-p "VCW-COUNT2=1" out))
+             (should (string-match-p (regexp-quote "VCW-ENTRY2=M |tracked.txt") out))))
+       (delete-directory repo t)))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/comint-callable ()
   "comint machinery (output mark, input ring, send-input) works on the reader.
 Proves the `comint' facade installs and the buffer/ring machinery runs.
@@ -849,6 +1065,296 @@ the absent `file-relative-name' are handled by the reader fallbacks)."
              (should (string-match-p (regexp-quote "lib/b.el") out))
              (should-not (string-match-p (regexp-quote "/.git/") out))))
        (delete-directory repo t)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/help-callable ()
+  "The shared Help buffer workflow runs on the reader.
+Exercises `describe-function' and `describe-variable' against the
+standalone runtime, then uses `help-go-back' / `help-go-forward' to
+prove the navigation history stays live inside one reader process."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (describe-function 'find-file)"
+                "  (let ((buf (get-buffer \"*Help*\")))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"HELP-BUF1=\" (if (buffer-live-p buf) \"t\" \"nil\") \"\\n\"))"
+                "    (with-current-buffer buf"
+                "      (nelisp--write-stdout-bytes"
+                "       (concat \"HELP-MODE1=\""
+                "               (if (eq major-mode 'help-mode) \"t\" \"nil\")"
+                "               \"\\n\"))"
+                "      (nelisp--write-stdout-bytes"
+                "       (concat \"HELP-FUNC=\""
+                "               (if (string-match-p \"find-file is a function\" (buffer-string)) \"t\" \"nil\")"
+                "               \"\\n\"))))"
+                "  (describe-variable 'load-path)"
+                "  (let ((buf (get-buffer \"*Help*\")))"
+                "    (with-current-buffer buf"
+                "      (nelisp--write-stdout-bytes"
+                "       (concat \"HELP-VAR=\""
+                "               (if (string-match-p \"load-path is a variable\" (buffer-string)) \"t\" \"nil\")"
+                "               \"\\n\"))))"
+                "  (help-go-back)"
+                "  (with-current-buffer (get-buffer \"*Help*\")"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"HELP-BACK=\""
+                "             (if (string-match-p \"find-file is a function\" (buffer-string)) \"t\" \"nil\")"
+                "             \"\\n\")))"
+                "  (help-go-forward)"
+                "  (with-current-buffer (get-buffer \"*Help*\")"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"HELP-FWD=\""
+                "             (if (string-match-p \"load-path is a variable\" (buffer-string)) \"t\" \"nil\")"
+                "             \"\\n\")))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-HELP=\""
+                "           (if (and (fboundp 'describe-function)"
+                "                    (fboundp 'describe-variable)"
+                "                    (fboundp 'help-go-back)"
+                "                    (fboundp 'help-go-forward))"
+                "               \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     (should (string-match-p "FB-HELP=t" out))
+     (should (string-match-p "HELP-BUF1=t" out))
+     (should (string-match-p "HELP-MODE1=t" out))
+     (should (string-match-p "HELP-FUNC=t" out))
+     (should (string-match-p "HELP-VAR=t" out))
+     (should (string-match-p "HELP-BACK=t" out))
+     (should (string-match-p "HELP-FWD=t" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/dired-workflow-callable ()
+  "Standalone Dired workflow runs through the shared directory facade.
+Proves the reader can render a listing, enter a subdirectory, return to
+the parent, refresh after on-disk mutation, and run mark/copy/delete
+operations through the real Dired commands."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((root (make-temp-file "nemacs-dired-workflow-" t)))
+     (unwind-protect
+         (let* ((subdir (expand-file-name "subdir" root))
+                (alpha (expand-file-name "alpha.txt" root))
+                (nested (expand-file-name "nested.txt" subdir))
+                (gamma (expand-file-name "gamma.txt" root))
+                (alpha-copy (expand-file-name "alpha-copy.txt" root)))
+           (make-directory subdir)
+           (with-temp-file alpha
+             (insert "alpha"))
+           (with-temp-file nested
+             (insert "nested"))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(let ((root " (prin1-to-string (file-name-as-directory root)) ")"
+                        "      (gamma " (prin1-to-string gamma) ")"
+                        "      (alpha-copy " (prin1-to-string alpha-copy) "))"
+                        "  (let ((buf (dired root)))"
+                        "    (with-current-buffer buf"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-LIST=\""
+                        "               (if (and (string-match-p \"alpha.txt\" (buffer-string))"
+                        "                        (string-match-p \"subdir\" (buffer-string)))"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-min))"
+                        "      (search-forward \"subdir\\t\")"
+                        "      (beginning-of-line)"
+                        "      (setq buf (dired-find-file))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-ENTER=\""
+                        "               (if (and (string-match-p \"nested.txt\" (buffer-string))"
+                        "                        (not (string-match-p \"alpha.txt\" (buffer-string))))"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (setq buf (dired-up-directory))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-UP=\""
+                        "               (if (string-match-p \"alpha.txt\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (with-temp-file gamma (insert \"gamma!\"))"
+                        "      (emacs-dired-min-revert-buffer)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-REFRESH=\""
+                        "               (if (string-match-p \"gamma.txt\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-min))"
+                        "      (search-forward \"alpha.txt\\t\")"
+                        "      (beginning-of-line)"
+                        "      (dired-mark)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-MARK=\""
+                        "               (if (eq (cdr (assoc \"alpha.txt\""
+                        "                                  (plist-get (emacs-dired-min--current-state) :marks)))"
+                        "                       ?*)"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-min))"
+                        "      (search-forward \"alpha.txt\\t\")"
+                        "      (beginning-of-line)"
+                        "      (dired-unmark)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-UNMARK=\""
+                        "               (if (not (assoc \"alpha.txt\""
+                        "                              (plist-get (emacs-dired-min--current-state) :marks)))"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (cl-letf (((symbol-function (quote read-file-name))"
+                        "                 (lambda (&rest _) alpha-copy)))"
+                        "        (dired-do-copy))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-COPY=\""
+                        "               (if (and (file-exists-p alpha-copy)"
+                        "                        (string-match-p \"alpha-copy.txt\" (buffer-string)))"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-min))"
+                        "      (search-forward \"gamma.txt\\t\")"
+                        "      (beginning-of-line)"
+                        "      (dired-flag-file-deletion)"
+                        "      (let ((deleted (dired-do-flagged-delete)))"
+                        "        (nelisp--write-stdout-bytes"
+                        "         (concat \"DW-DELETE-COUNT=\" (number-to-string deleted) \"\\n\")))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"DW-DELETE=\""
+                        "               (if (and (not (file-exists-p gamma))"
+                        "                        (not (string-match-p \"gamma.txt\" (buffer-string))))"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"FB-DIRED-WORKFLOW=\""
+                        "               (if (and (fboundp (quote dired))"
+                        "                        (fboundp (quote dired-find-file))"
+                        "                        (fboundp (quote dired-up-directory))"
+                        "                        (fboundp (quote dired-mark))"
+                        "                        (fboundp (quote dired-unmark))"
+                        "                        (fboundp (quote dired-do-copy))"
+                        "                        (fboundp (quote dired-flag-file-deletion))"
+                        "                        (fboundp (quote dired-do-flagged-delete)))"
+                        "                   \"t\" \"nil\")"
+                        "               \"\\n\")))))"))))
+             (should (string-match-p "FB-DIRED-WORKFLOW=t" out))
+             (should (string-match-p "DW-LIST=t" out))
+             (should (string-match-p "DW-ENTER=t" out))
+             (should (string-match-p "DW-UP=t" out))
+             (should (string-match-p "DW-REFRESH=t" out))
+             (should (string-match-p "DW-MARK=t" out))
+             (should (string-match-p "DW-UNMARK=t" out))
+             (should (string-match-p "DW-COPY=t" out))
+             (should (string-match-p "DW-DELETE-COUNT=1" out))
+             (should (string-match-p "DW-DELETE=t" out))))
+       (delete-directory root t)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/minibuffer-callable ()
+  "Minibuffer completion/history/cancel workflow runs on the reader.
+Combines prompt/initial-input visibility, history push semantics,
+require-match completion, abort unwind, and the `*Completions*' UI
+selection path inside one standalone reader process."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (require 'emacs-minibuffer-builtins)"
+                "  (require 'emacs-completion-ui)"
+                "  (setq nemacs-bootstrap-minibuffer-history nil)"
+                "  (setq emacs-bootstrap-minibuffer-seen-prompt nil)"
+                "  (setq emacs-bootstrap-minibuffer-seen-contents nil)"
+                "  (setq emacs-minibuffer--read-fn"
+                "        (lambda (_p _i _d _h _k _r)"
+                "          (setq emacs-bootstrap-minibuffer-seen-prompt"
+                "                (emacs-minibuffer-minibuffer-prompt))"
+                "          (setq emacs-bootstrap-minibuffer-seen-contents"
+                "                (emacs-minibuffer-minibuffer-contents))"
+                "          \"typed\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"MB-READ=\" (read-from-minibuffer \"Prompt: \" \"seed\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"MB-PROMPT=\""
+                "           (if (equal emacs-bootstrap-minibuffer-seen-prompt \"Prompt: \") \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"MB-CONTENTS=\""
+                "           (if (equal emacs-bootstrap-minibuffer-seen-contents \"seed\") \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (setq emacs-minibuffer--read-fn nil)"
+                "  (emacs-minibuffer-feed-input \"alpha\" \"beta\" \"\")"
+                "  (read-from-minibuffer \"P: \" nil nil nil 'nemacs-bootstrap-minibuffer-history)"
+                "  (read-from-minibuffer \"P: \" nil nil nil 'nemacs-bootstrap-minibuffer-history)"
+                "  (read-from-minibuffer \"P: \" nil nil nil 'nemacs-bootstrap-minibuffer-history)"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"MB-HIST=\""
+                "           (mapconcat 'identity nemacs-bootstrap-minibuffer-history \",\")"
+                "           \"\\n\"))"
+                "  (emacs-minibuffer-feed-input :abort)"
+                "  (let ((caught nil))"
+                "    (condition-case _err"
+                "        (read-from-minibuffer \"P: \")"
+                "      (quit (setq caught t)))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MB-ABORT=\" (if caught \"t\" \"nil\") \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MB-DEPTH=\" (number-to-string emacs-minibuffer--depth) \"\\n\")))"
+                "  (emacs-minibuffer-feed-input \"apple\")"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"MB-CR=\""
+                "           (completing-read \"Pick: \" '(\"apple\" \"banana\") nil t)"
+                "           \"\\n\"))"
+                "  (emacs-minibuffer-feed-input \"durian\")"
+                "  (let ((caught nil))"
+                "    (condition-case _err"
+                "        (completing-read \"Pick: \" '(\"apple\" \"banana\") nil t)"
+                "      (emacs-minibuffer-error (setq caught t)))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MB-REQ=\" (if caught \"t\" \"nil\") \"\\n\")))"
+                "  (let ((before (and (fboundp 'emacs-minibuffer-exit-minibuffer)"
+                "                     (symbol-function 'emacs-minibuffer-exit-minibuffer)))"
+                "        (done nil)"
+                "        (shown nil)"
+                "        (selected nil))"
+                "    (fset 'emacs-minibuffer-exit-minibuffer"
+                "          (lambda () (setq done t) nil))"
+                "    (emacs-minibuffer--with-frame"
+                "     \"Pick: \" \"fo\""
+                "     (lambda ()"
+                "       (setq minibuffer-completion-table '(\"foobar\" \"food\"))"
+                "       (minibuffer-complete)"
+                "       (setq shown (not (null (plist-get emacs-completion-ui--completion-state :buffer))))"
+                "       (switch-to-completions)"
+                "       (next-completion)"
+                "       (setq selected (choose-completion))))"
+                "    (if before"
+                "        (fset 'emacs-minibuffer-exit-minibuffer before)"
+                "      nil)"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MB-COMP-BUF=\" (if shown \"t\" \"nil\") \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MB-COMP-EXIT=\" (if done \"t\" \"nil\") \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MB-COMP-CHOICE=\" selected \"\\n\")))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-MB=\""
+                "           (if (and (fboundp 'read-from-minibuffer)"
+                "                    (fboundp 'completing-read)"
+                "                    (fboundp 'yes-or-no-p)"
+                "                    (fboundp 'minibuffer-complete)"
+                "                    (fboundp 'minibuffer-complete-and-exit))"
+                "               \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     (should (string-match-p "FB-MB=t" out))
+     (should (string-match-p "MB-READ=typed" out))
+     (should (string-match-p "MB-PROMPT=t" out))
+     (should (string-match-p "MB-CONTENTS=t" out))
+     (should (string-match-p "MB-HIST=beta,alpha" out))
+     (should (string-match-p "MB-ABORT=t" out))
+     (should (string-match-p "MB-DEPTH=0" out))
+     (should (string-match-p "MB-CR=apple" out))
+     (should (string-match-p "MB-REQ=t" out))
+     (should (string-match-p "MB-COMP-BUF=t" out))
+     (should (string-match-p "MB-COMP-EXIT=t" out))
+     (should (string-match-p "MB-COMP-CHOICE=food" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/shell-callable ()
   "The comint-based shell runs commands on the reader.

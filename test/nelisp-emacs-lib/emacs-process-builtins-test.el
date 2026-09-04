@@ -556,6 +556,13 @@
                   '((:file "/tmp/stdout") nil))
                  "/tmp/stdout")))
 
+(ert-deftest emacs-process-builtins-test/call-process-stderr-destination ()
+  (should (null (emacs-process--call-process-stderr-destination nil)))
+  (should (null (emacs-process--call-process-stderr-destination t)))
+  (should (null (emacs-process--call-process-stderr-destination '(t nil))))
+  (should (equal (emacs-process--call-process-stderr-destination '(t "errs"))
+                 "errs")))
+
 (ert-deftest emacs-process-builtins-test/standalone-call-process-captures-stdout ()
   "stdout is drained chunk-by-chunk (to the nil EOF marker) into DESTINATION."
   (let ((chunks (list "hello " "world\n"))
@@ -571,6 +578,63 @@
           (should (eq rc 0))
           (should waited)
           (should (equal (buffer-string) "hello world\n")))))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-discards-stderr ()
+  "A (STDOUT nil) destination asks the shell wrapper to discard stderr."
+  (let ((chunks (list "stdout\n"))
+        (command nil))
+    (cl-letf (((symbol-function 'nelisp-process-start)
+               (lambda (&rest args) (setq command args) 'proc))
+              ((symbol-function 'nelisp-process-read-output)
+               (lambda (_proc _n) (pop chunks)))
+              ((symbol-function 'nelisp-process-wait)
+               (lambda (_proc) 0)))
+      (with-temp-buffer
+        (let ((rc (emacs-process--standalone-call-process
+                   "/bin/tool" nil (list t nil) '("arg"))))
+          (should (eq rc 0))
+          (should (member "exec \"$@\" 2>/dev/null" command))
+          (should (member "/bin/tool" command))
+          (should (equal (buffer-string) "stdout\n")))))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-merges-stderr-for-plain-t ()
+  "A plain t DESTINATION merges stderr onto stdout."
+  (let ((chunks (list "stdout+stderr\n"))
+        (command nil))
+    (cl-letf (((symbol-function 'nelisp-process-start)
+               (lambda (&rest args) (setq command args) 'proc))
+              ((symbol-function 'nelisp-process-read-output)
+               (lambda (_proc _n) (pop chunks)))
+              ((symbol-function 'nelisp-process-wait)
+               (lambda (_proc) 0)))
+      (with-temp-buffer
+        (let ((rc (emacs-process--standalone-call-process
+                   "/bin/tool" nil t '("arg"))))
+          (should (eq rc 0))
+          (should (member "exec \"$@\" 2>&1" command))
+          (should (equal (buffer-string) "stdout+stderr\n")))))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-routes-stderr-to-file ()
+  "A (STDOUT STDERR-FILE) destination expands stderr redirection."
+  (let ((chunks (list "stdout\n"))
+        (command nil)
+        (stderr-file "stderr.log"))
+    (cl-letf (((symbol-function 'nelisp-process-start)
+               (lambda (&rest args) (setq command args) 'proc))
+              ((symbol-function 'nelisp-process-read-output)
+               (lambda (_proc _n) (pop chunks)))
+              ((symbol-function 'nelisp-process-wait)
+               (lambda (_proc) 0)))
+      (with-temp-buffer
+        (let ((rc (emacs-process--standalone-call-process
+                   "/bin/tool" nil (list t stderr-file) '("arg"))))
+          (should (eq rc 0))
+          (should
+           (member
+            (concat "exec \"$@\" 2>"
+                    (shell-quote-argument (expand-file-name stderr-file)))
+            command))
+          (should (equal (buffer-string) "stdout\n")))))))
 
 (ert-deftest emacs-process-builtins-test/standalone-call-process-discards-and-keeps-rc ()
   "nil DESTINATION discards stdout but the non-zero exit code survives."

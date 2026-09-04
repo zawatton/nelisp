@@ -589,6 +589,7 @@
                     (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
                                   (format "NEMACS_TEST_CAPTURE=%s" capture)
                                   (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                                  "NEMACS_DISABLE_COLD_CACHE=1"
                                   "NEMACS_BOOTSTRAP_BUNDLE=none"
                                   "NELISP_HOME=/tmp/nemacs-test-nelisp")
                             process-environment))
@@ -658,6 +659,7 @@
             (let* ((process-environment
                     (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
                                   (format "NEMACS_TEST_CAPTURE=%s" capture)
+                                  "NEMACS_DISABLE_COLD_CACHE=1"
                                   "NEMACS_BOOTSTRAP_BUNDLE=none"
                                   "NELISP_HOME=/tmp/nemacs-test-nelisp")
                             process-environment))
@@ -689,6 +691,522 @@
         (when (file-exists-p capture)
           (delete-file capture))))))
 
+(ert-deftest nemacs-main-test/shell-wrapper-default-cold-cache-aot-then-hits ()
+  "The default XDG cache should AOT once and reuse the flat image thereafter."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-default-cold-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" root))
+           (bootstrap (expand-file-name "nemacs-bootstrap.el" root))
+           (bootstrap-repl (expand-file-name "nemacs-bootstrap.repl" root))
+           (capture (expand-file-name "capture" root))
+           (cache-root (expand-file-name "nemacs" root))
+           (artifact (expand-file-name "nemacs-bootstrap.neln" cache-root))
+           (image (expand-file-name "nemacs-bootstrap.flat.nlri" cache-root))
+           (compile-args (concat capture ".compile"))
+           (prepare-args (concat capture ".prepare"))
+           (launch-args (concat capture ".launch")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "case \"$1\" in\n")
+              (insert "  compile-elisp-artifact)\n")
+              (insert "    printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.compile\"\n")
+              (insert "    output=\n")
+              (insert "    while [ \"$#\" -gt 0 ]; do\n")
+              (insert "      if [ \"$1\" = --output ]; then output=$2; shift 2; else shift; fi\n")
+              (insert "    done\n")
+              (insert "    printf 'artifact\\n' > \"$output\"\n")
+              (insert "    printf 'manifest\\n' > \"$output.manifest.el\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "  compile-runtime-image)\n")
+              (insert "    printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.prepare\"\n")
+              (insert "    printf 'flat-image-cache=hit\\n'\n")
+              (insert "    exit 0 ;;\n")
+              (insert "  *)\n")
+              (insert "    printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.launch\"\n")
+              (insert "    cat > \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "esac\n"))
+            (with-temp-file bootstrap
+              (insert "(defun nemacs-main-test--aot-fixture () 42)\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; default-cold-bootstrap-must-not-replay\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let ((process-environment
+                   (append
+                    (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                          (format "NEMACS_TEST_CAPTURE=%s" capture)
+                          (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
+                          (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                          (format "XDG_CACHE_HOME=%s" root)
+                          "NEMACS_COLD_ARTIFACT="
+                          "NEMACS_COLD_IMAGE="
+                          "NEMACS_DISABLE_COLD_CACHE="
+                          "NEMACS_FLAT_ARTIFACT_CACHE=1"
+                          "NEMACS_COLD_LOCK_TIMEOUT=1"
+                          "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                    process-environment)))
+              (should (= 0
+                         (call-process nemacs-main-test--bin nil nil nil
+                                       "--driver=nelisp"
+                                       "--batch" "--no-banner")))
+              (should (file-readable-p compile-args))
+              (with-temp-buffer
+                (insert-file-contents compile-args)
+                (let ((args (buffer-string)))
+                  (should (string-match-p "\\`compile-elisp-artifact\n" args))
+                  (should (string-match-p (regexp-quote bootstrap) args))
+                  (should (string-match-p (regexp-quote artifact) args))
+                  (should (string-match-p "--native-policy\nopportunistic\n"
+                                          args))))
+              (with-temp-buffer
+                (insert-file-contents prepare-args)
+                (let ((args (buffer-string)))
+                  (should (string-match-p "\\`compile-runtime-image\n" args))
+                  (should (string-match-p (regexp-quote artifact) args))
+                  (should (string-match-p (regexp-quote image) args))))
+              (with-temp-buffer
+                (insert-file-contents launch-args)
+                (should (string-match-p
+                         (concat "\\`--cold-load-from\n"
+                                 (regexp-quote image)
+                                 "\n--no-prompt\n--no-print\n")
+                         (buffer-string))))
+              (delete-file compile-args)
+              (should (= 0
+                         (call-process nemacs-main-test--bin nil nil nil
+                                       "--driver=nelisp"
+                                       "--batch" "--no-banner")))
+              (should-not (file-exists-p compile-args))))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-cold-cache-can-be-disabled ()
+  "The explicit disable switch should preserve the normal REPL bootstrap."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-disable-cold-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" root))
+           (bootstrap-repl (expand-file-name "nemacs-bootstrap.repl" root))
+           (capture (expand-file-name "capture" root))
+           (args-path (concat capture ".args")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.args\"\n")
+              (insert "cat > \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "exit 0\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; disabled-cold-normal-bootstrap\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let ((process-environment
+                   (append
+                    (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                          (format "NEMACS_TEST_CAPTURE=%s" capture)
+                          (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                          (format "XDG_CACHE_HOME=%s" root)
+                          "NEMACS_BOOTSTRAP_BUNDLE=none"
+                          "NEMACS_COLD_ARTIFACT="
+                          "NEMACS_COLD_IMAGE="
+                          "NEMACS_DISABLE_COLD_CACHE=1"
+                          "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                    process-environment)))
+              (should (= 0
+                         (call-process nemacs-main-test--bin nil nil nil
+                                       "--driver=nelisp"
+                                       "--batch" "--no-banner"))))
+            (with-temp-buffer
+              (insert-file-contents args-path)
+              (should (string-match-p "\\`--repl\n--no-prompt\n--no-print\n"
+                                      (buffer-string))))
+            (with-temp-buffer
+              (insert-file-contents capture)
+              (should (string-match-p "disabled-cold-normal-bootstrap"
+                                      (buffer-string))))
+            (should-not (file-directory-p (expand-file-name "nemacs" root))))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-stale-artifact-is-recompiled-once ()
+  "A validator miss should rebuild the bootstrap artifact, then retry flat prepare."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-stale-cold-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" root))
+           (bootstrap (expand-file-name "nemacs-bootstrap.el" root))
+           (bootstrap-repl (expand-file-name "nemacs-bootstrap.repl" root))
+           (artifact (expand-file-name "stale.neln" root))
+           (manifest (concat artifact ".manifest.el"))
+           (image (expand-file-name "stale.flat.nlri" root))
+           (capture (expand-file-name "capture" root))
+           (compile-marker (concat capture ".compiled"))
+           (prepare-log (concat capture ".prepare")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "case \"$1\" in\n")
+              (insert "  compile-runtime-image)\n")
+              (insert "    printf 'prepare\\n' >> \"$NEMACS_TEST_CAPTURE.prepare\"\n")
+              (insert "    test -f \"$NEMACS_TEST_CAPTURE.compiled\" || exit 44\n")
+              (insert "    printf 'flat-image-cache=rebuilt\\n'; exit 0 ;;\n")
+              (insert "  compile-elisp-artifact)\n")
+              (insert "    : > \"$NEMACS_TEST_CAPTURE.compiled\"\n")
+              (insert "    output=\n")
+              (insert "    while [ \"$#\" -gt 0 ]; do\n")
+              (insert "      if [ \"$1\" = --output ]; then output=$2; shift 2; else shift; fi\n")
+              (insert "    done\n")
+              (insert "    printf 'fresh-artifact\\n' > \"$output\"\n")
+              (insert "    printf 'fresh-manifest\\n' > \"$output.manifest.el\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "  *) cat > \"$NEMACS_TEST_CAPTURE\"; exit 0 ;;\n")
+              (insert "esac\n"))
+            (with-temp-file bootstrap
+              (insert "(defun nemacs-main-test--stale-fixture () 42)\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; stale fallback marker\n"))
+            (with-temp-file artifact
+              (insert "stale-artifact\n"))
+            (with-temp-file manifest
+              (insert "stale-manifest\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let ((process-environment
+                   (append
+                    (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                          (format "NEMACS_TEST_CAPTURE=%s" capture)
+                          (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
+                          (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                          (format "NEMACS_COLD_ARTIFACT=%s" artifact)
+                          (format "NEMACS_COLD_IMAGE=%s" image)
+                          "NEMACS_DISABLE_COLD_CACHE="
+                          "NEMACS_FLAT_ARTIFACT_CACHE=1"
+                          "NEMACS_COLD_LOCK_TIMEOUT=1"
+                          "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                    process-environment)))
+              (should (= 0
+                         (call-process nemacs-main-test--bin nil nil nil
+                                       "--driver=nelisp"
+                                       "--batch" "--no-banner"))))
+            (should (file-readable-p compile-marker))
+            (with-temp-buffer
+              (insert-file-contents prepare-log)
+              (should (= 2 (count-lines (point-min) (point-max)))))
+            (with-temp-buffer
+              (insert-file-contents artifact)
+              (should (equal (buffer-string) "fresh-artifact\n"))))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+;; Rejecting a damaged artifact depends on `compile-runtime-image' exiting
+;; non-zero.  It returned 0 on failure until 2026-07-26, so a corrupt cache
+;; would have been treated as ready and launched; nothing covered that.
+(ert-deftest nemacs-main-test/shell-wrapper-corrupt-cached-artifact-is-rebuilt ()
+  "A corrupt cached artifact should be rejected and rebuilt, not launched as-is."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-corrupt-cold-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" root))
+           (bootstrap (expand-file-name "nemacs-bootstrap.el" root))
+           (bootstrap-repl (expand-file-name "nemacs-bootstrap.repl" root))
+           (capture (expand-file-name "capture" root))
+           (cache-root (expand-file-name "nemacs" root))
+           (artifact (expand-file-name "nemacs-bootstrap.neln" cache-root))
+           (image (expand-file-name "nemacs-bootstrap.flat.nlri" cache-root))
+           (compile-args (concat capture ".compile"))
+           (prepare-args (concat capture ".prepare"))
+           (launch-args (concat capture ".launch")))
+      (unwind-protect
+          (progn
+            (make-directory cache-root t)
+            (with-temp-file artifact
+              (insert "corrupt\n"))
+            (with-temp-file (concat artifact ".manifest.el")
+              (insert "manifest\n"))
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "case \"$1\" in\n")
+              (insert "  compile-elisp-artifact)\n")
+              (insert "    printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.compile\"\n")
+              (insert "    output=\n")
+              (insert "    while [ \"$#\" -gt 0 ]; do\n")
+              (insert "      if [ \"$1\" = --output ]; then output=$2; shift 2; else shift; fi\n")
+              (insert "    done\n")
+              (insert "    printf 'artifact\\n' > \"$output\"\n")
+              (insert "    printf 'manifest\\n' > \"$output.manifest.el\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "  compile-runtime-image)\n")
+              (insert "    printf '%s\\n' \"$@\" >> \"$NEMACS_TEST_CAPTURE.prepare\"\n")
+              (insert "    input=\n")
+              (insert "    while [ \"$#\" -gt 0 ]; do\n")
+              (insert "      if [ \"$1\" = --input ]; then input=$2; shift 2; else shift; fi\n")
+              (insert "    done\n")
+              (insert "    if grep -q corrupt \"$input\"; then\n")
+              (insert "      exit 1\n")
+              (insert "    else\n")
+              (insert "      printf 'flat-image-cache=rebuilt\\n'\n")
+              (insert "      exit 0\n")
+              (insert "    fi ;;\n")
+              (insert "  *)\n")
+              (insert "    printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.launch\"\n")
+              (insert "    cat > \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "esac\n"))
+            (with-temp-file bootstrap
+              (insert "(defun nemacs-main-test--corrupt-fixture () 42)\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; corrupt-cold-bootstrap-must-not-replay\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let ((process-environment
+                   (append
+                    (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                          (format "NEMACS_TEST_CAPTURE=%s" capture)
+                          (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
+                          (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                          (format "XDG_CACHE_HOME=%s" root)
+                          "NEMACS_COLD_ARTIFACT="
+                          "NEMACS_COLD_IMAGE="
+                          "NEMACS_DISABLE_COLD_CACHE="
+                          "NEMACS_FLAT_ARTIFACT_CACHE=1"
+                          "NEMACS_COLD_LOCK_TIMEOUT=1"
+                          "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                    process-environment)))
+              (should (= 0
+                         (call-process nemacs-main-test--bin nil nil nil
+                                       "--driver=nelisp"
+                                       "--batch" "--no-banner")))
+              (should (file-readable-p compile-args))
+              (with-temp-buffer
+                (insert-file-contents prepare-args)
+                (goto-char (point-min))
+                (let ((count 0))
+                  (while (search-forward "compile-runtime-image" nil t)
+                    (setq count (1+ count)))
+                  (should (= 2 count))))
+              (with-temp-buffer
+                (insert-file-contents launch-args)
+                (should (string-match-p
+                         (concat "\\`--cold-load-from\n" (regexp-quote image) "\n")
+                         (buffer-string))))
+              (with-temp-buffer
+                (insert-file-contents artifact)
+                (should-not (string-match-p "corrupt" (buffer-string))))))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+;; `acquire_cold_cache_lock' takes the lock with `mkdir', records the owning
+;; pid, reclaims a dead owner's directory and releases on EXIT/INT/TERM/HUP.
+;; None of that was exercised: this is the only test that starts two
+;; launchers at once.
+(ert-deftest nemacs-main-test/shell-wrapper-concurrent-first-run-compiles-once ()
+  "Two concurrent first runs should compile exactly once under the cold-cache lock."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-concurrent-cold-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" root))
+           (bootstrap (expand-file-name "nemacs-bootstrap.el" root))
+           (bootstrap-repl (expand-file-name "nemacs-bootstrap.repl" root))
+           (capture (expand-file-name "capture" root))
+           (artifact (expand-file-name "nemacs-bootstrap.neln" root))
+           (image (expand-file-name "nemacs-bootstrap.flat.nlri" root))
+           (lock-dir (concat image ".lock"))
+           (compile-args (concat capture ".compile")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "case \"$1\" in\n")
+              (insert "  compile-elisp-artifact)\n")
+              (insert "    printf 'compiled\\n' >> \"$NEMACS_TEST_CAPTURE.compile\"\n")
+              (insert "    sleep 2\n")
+              (insert "    output=\n")
+              (insert "    while [ \"$#\" -gt 0 ]; do\n")
+              (insert "      if [ \"$1\" = --output ]; then output=$2; shift 2; else shift; fi\n")
+              (insert "    done\n")
+              (insert "    printf 'artifact\\n' > \"$output\"\n")
+              (insert "    printf 'manifest\\n' > \"$output.manifest.el\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "  compile-runtime-image)\n")
+              (insert "    printf 'prepare\\n' >> \"$NEMACS_TEST_CAPTURE.prepare\"\n")
+              (insert "    printf 'flat-image-cache=hit\\n'\n")
+              (insert "    exit 0 ;;\n")
+              (insert "  *)\n")
+              (insert "    printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.launch\"\n")
+              (insert "    cat > \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "    exit 0 ;;\n")
+              (insert "esac\n"))
+            (with-temp-file bootstrap
+              (insert "(defun nemacs-main-test--concurrent-fixture () 42)\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; concurrent-cold-bootstrap-must-not-replay\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append
+                     (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                           (format "NEMACS_TEST_CAPTURE=%s" capture)
+                           (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
+                           (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                           (format "NEMACS_COLD_ARTIFACT=%s" artifact)
+                           (format "NEMACS_COLD_IMAGE=%s" image)
+                           "NEMACS_DISABLE_COLD_CACHE="
+                           "NEMACS_FLAT_ARTIFACT_CACHE=1"
+                           "NEMACS_COLD_LOCK_TIMEOUT=30"
+                           "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                     process-environment))
+                   (proc-a (start-process "nemacs-main-test-concurrent-a" nil
+                                          nemacs-main-test--bin
+                                          "--driver=nelisp" "--batch" "--no-banner"))
+                   (proc-b (start-process "nemacs-main-test-concurrent-b" nil
+                                          nemacs-main-test--bin
+                                          "--driver=nelisp" "--batch" "--no-banner"))
+                   (deadline (+ (float-time) 60)))
+              (while (and (< (float-time) deadline)
+                          (or (process-live-p proc-a) (process-live-p proc-b)))
+                (accept-process-output nil 0.2))
+              (when (or (process-live-p proc-a) (process-live-p proc-b))
+                (ert-fail "concurrent nemacs launches did not finish within 60 seconds"))
+              (should (= 0 (process-exit-status proc-a)))
+              (should (= 0 (process-exit-status proc-b))))
+            (should (file-readable-p compile-args))
+            (with-temp-buffer
+              (insert-file-contents compile-args)
+              (should (= 1 (count-lines (point-min) (point-max)))))
+            (should-not (file-directory-p lock-dir)))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-prefers-validated-cold-image ()
+  "A validated flat image should start without replaying the bootstrap."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
+           (artifact (make-temp-file "nemacs-main-test-cold-" nil ".neln"))
+           (manifest (concat artifact ".manifest.el"))
+           (image (concat artifact ".flat.nlri"))
+           (bootstrap-repl (make-temp-file "nemacs-main-test-bootstrap-" nil ".repl"))
+           (capture (make-temp-file "nemacs-main-test-cold-boot-" nil ".el"))
+           (prepare-args (concat capture ".prepare"))
+           (launch-args (concat capture ".launch")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "if [ \"$1\" = compile-runtime-image ]; then\n")
+              (insert "  printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.prepare\"\n")
+              (insert "  printf 'flat-image-cache=hit image=%s\\n' \"$NEMACS_COLD_IMAGE\"\n")
+              (insert "  exit 0\n")
+              (insert "fi\n")
+              (insert "printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.launch\"\n")
+              (insert "cat > \"$NEMACS_TEST_CAPTURE\"\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; bootstrap-must-not-be-replayed\n"))
+            (with-temp-file manifest
+              (insert "(:format fixture)\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                                  (format "NEMACS_TEST_CAPTURE=%s" capture)
+                                  (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                                  (format "NEMACS_COLD_ARTIFACT=%s" artifact)
+                                  (format "NEMACS_COLD_IMAGE=%s" image)
+                                  "NEMACS_DISABLE_COLD_CACHE="
+                                  "NEMACS_FLAT_ARTIFACT_CACHE=1"
+                                  "NEMACS_BOOTSTRAP_BUNDLE=none"
+                                  "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                            process-environment))
+                   (status
+                    (call-process nemacs-main-test--bin nil nil nil
+                                  "--driver=nelisp" "--batch" "--no-banner"
+                                  "--eval" "(setq cold-session-option 42)")))
+              (should (= 0 status)))
+            (with-temp-buffer
+              (insert-file-contents prepare-args)
+              (should
+               (equal
+                (buffer-string)
+                (mapconcat
+                 #'identity
+                 (list "compile-runtime-image"
+                       "--flat-artifact-cache"
+                       "--runtime" nelisp-stub
+                       "--input" artifact
+                       "--output" image "")
+                 "\n"))))
+            (with-temp-buffer
+              (insert-file-contents launch-args)
+              (should
+               (equal
+                (buffer-string)
+                (mapconcat
+                 #'identity
+                 (list "--cold-load-from" image
+                       "--no-prompt" "--no-print" "")
+                 "\n"))))
+            (with-temp-buffer
+              (insert-file-contents capture)
+              (let ((boot (buffer-string)))
+                (should-not (string-match-p "bootstrap-must-not-be-replayed" boot))
+                (should-not (string-match-p "BOOTSTRAP_REPL" boot))
+                (should (string-match-p "setq default-directory" boot))
+                (should (string-match-p "cold-session-option 42" boot)))))
+        (dolist (path (list nelisp-stub artifact manifest bootstrap-repl capture
+                            prepare-args launch-args))
+          (when (file-exists-p path)
+            (delete-file path)))
+        (when (file-directory-p nelisp-dir)
+          (delete-directory nelisp-dir))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-cold-prepare-falls-back ()
+  "A failed cold prepare must use the normal bootstrap, not a stale image."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
+           (artifact (make-temp-file "nemacs-main-test-cold-" nil ".neln"))
+           (manifest (concat artifact ".manifest.el"))
+           (image (concat artifact ".flat.nlri"))
+           (bootstrap-repl (make-temp-file "nemacs-main-test-bootstrap-" nil ".repl"))
+           (capture (make-temp-file "nemacs-main-test-cold-fallback-" nil ".el"))
+           (launch-args (concat capture ".launch")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "if [ \"$1\" = compile-runtime-image ]; then exit 44; fi\n")
+              (insert "printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.launch\"\n")
+              (insert "cat > \"$NEMACS_TEST_CAPTURE\"\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; fallback-bootstrap-marker\n"))
+            (with-temp-file manifest
+              (insert "(:format fixture)\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                                  (format "NEMACS_TEST_CAPTURE=%s" capture)
+                                  (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                                  (format "NEMACS_COLD_ARTIFACT=%s" artifact)
+                                  (format "NEMACS_COLD_IMAGE=%s" image)
+                                  "NEMACS_DISABLE_COLD_CACHE="
+                                  "NEMACS_FLAT_ARTIFACT_CACHE=1"
+                                  "NEMACS_BOOTSTRAP_BUNDLE=none"
+                                  "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                            process-environment))
+                   (status
+                    (call-process nemacs-main-test--bin nil nil nil
+                                  "--driver=nelisp" "--batch" "--no-banner")))
+              (should (= 0 status)))
+            (with-temp-buffer
+              (insert-file-contents launch-args)
+              (should
+               (string-match-p "\\`--repl\n--no-prompt\n--no-print\n"
+                               (buffer-string))))
+            (with-temp-buffer
+              (insert-file-contents capture)
+              (should (string-match-p "fallback-bootstrap-marker"
+                                      (buffer-string)))))
+        (dolist (path (list nelisp-stub artifact manifest bootstrap-repl capture
+                            launch-args))
+          (when (file-exists-p path)
+            (delete-file path)))
+        (when (file-directory-p nelisp-dir)
+          (delete-directory nelisp-dir))))))
+
 (ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-cleans-temp-on-nonzero ()
   "The REPL standalone-reader path should remove its boot input on failure."
   (when (file-executable-p nemacs-main-test--bin)
@@ -710,6 +1228,7 @@
                     (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
                                   (format "NEMACS_TEST_SEEN_PATH=%s" seen-path)
                                   (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
+                                  "NEMACS_DISABLE_COLD_CACHE=1"
                                   "NEMACS_BOOTSTRAP_BUNDLE=none"
                                   "NELISP_HOME=/tmp/nemacs-test-nelisp")
                             process-environment))

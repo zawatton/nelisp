@@ -1,0 +1,209 @@
+#+TITLE: nelisp-emacs Doc 39 -- Practical Emacs replacement verification checklist
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-07-08
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 12 development gates, Doc 34 Emacs replacement development rules, Doc 38 practical Emacs replacement execution plan
+
+* 0. Purpose
+
+This document is the live verification companion to Doc 38.
+
+It exists to answer four questions at any point in time:
+
+1. what lane is currently active;
+2. what has actually been proven;
+3. what still blocks the practical replacement claim;
+4. which checks must be re-run after each shared substrate change.
+
+This file is intentionally operational.  Update it as work lands.
+
+* 1. Status vocabulary
+
+Use only these status values:
+
+| Status | Meaning |
+|--------+---------|
+| TODO | not started or not yet proven |
+| IN-PROGRESS | active lane, current failure under investigation |
+| BLOCKED | known blocker exists, but not enough evidence for closure |
+| PROVEN | the stated level is currently supported by evidence |
+| REGRESSION | previously proven, currently failing or untrusted |
+
+Proof level uses the Doc 34 ladder:
+
+- L0 readable
+- L1 loadable
+- L2 surface
+- L3 representative execution
+- L4 dependency chain
+- L5 workflow
+- L6 product path
+
+* 2. Replacement milestone board
+
+| Area | Target level for replacement claim | Current status | Current proven level | Primary evidence / gate | Notes |
+|------+------------------------------------+----------------+----------------------+-------------------------+-------|
+| Replay/runtime safety | L4 | PROVEN | L4 standalone replay/runtime gate | =make verify-nelisp-standalone= PASS | Bootstrap replay now seeds =load-path= / =nelisp-emacs-vendor-root= before generated REPL playback, so bootstrap-time =require= checks are real and noise-free; keep this gate as the runtime/replay sentinel |
+| Core language/compiler substrate | L3-L4 | PROVEN | L3-L4 scoped language/compiler family | combined core/macro ERT + language-family standalone REPL + byte-compiler form-walk | cl-lib, pcase, macroexp, byte-run, bytecomp, byte-opt, unsafep, numeric/subr/advice/custom/normalization gates are green; this proves the scoped language/compiler substrate lane, not native byte compilation parity |
+| Editor-state substrate | L3-L4 | PROVEN | L3-L4 scoped | buffer/text-property/redisplay/mode/keymap/face-run proofs + combined editor-state ERT | Shared blocker class for Org, Magit, Help; buffer, text-property, redisplay, mode, keymap precedence, easy-mmode, face, and vendor-first mode gates are green |
+| Files/processes/timers | L4-L5 | PROVEN | L4-L5 scoped process/file/timer workflows | proc-async/proc sync/bidi process, Tramp stub, VC/shell/eshell runtime, Magit status, timer ERT + timer-list replay | Sync and async process substrate, Tramp stub remote path, VC/shell/eshell runtime image workflows, Magit git/status integration, and timer substrate + timer-list vendor replay are green; this proves the scoped Lane 4 substrate, not full Tramp/network/process parity |
+| Minibuffer/completion/project | L5 | PROVEN | L4-L5 scoped workflows | =make test-nelisp-project-smoke test-nelisp-minibuffer-smoke test-nelisp-xref-imenu-smoke= PASS | Project, minibuffer/completion, xref, and imenu daily-driver reader gates are green |
+| Built-in workflows | L5 | PROVEN | L4-L5 scoped workflows | =make test-nelisp-help-smoke test-nelisp-dired-workflow-smoke test-nelisp-compile-smoke test-nelisp-vc-workflow-smoke test-nelisp-shell-smoke test-nelisp-eshell-smoke= PASS | Help, Dired, compile, VC, shell, and eshell workflow gates are green; this is scoped built-in workflow proof, not a full Emacs surface claim |
+| Magit | L5-L6 | PROVEN | L5 scoped workflows | =make magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke= PASS | Vendor-first bundle load, status buffer, staging command, git subprocess, section navigation, and transient dispatch are green; this proves the scoped Magit workflow lane, not full Magit command-surface parity |
+| Org | L5-L6 | PROVEN | L5 scoped mode and scoped workflow | =make org-mode-smoke= PASS; =make org-workflow-smoke= PASS | Org mode activation and fixed file capture-to-agenda workflow are green; bridge fast-paths plain immediate file captures while complex templates still fall back to vendor Org |
+| Persistent product path | L6 | IN-PROGRESS | L6 scoped persistent session + real user init + visible GUI/runtime health gate | =scripts/user-init-org-smoke.sh= PASS; =scripts/editor-session-smoke.sh= PASS; =NEMACS_LOAD_USER_INIT=1 scripts/editor-session-smoke.sh= PASS; =NEMACS_SNAPSHOT_TEXT=visible scripts/editor-session-smoke.sh= PASS; =NEMACS_GUI_MIN_UPTIME_SECONDS=120 scripts/gui-runtime-health-smoke.sh= PASS; running Tauri dev process env checked | Tauri dev launcher now defaults to real user init and visible-range snapshots; automated sustained runtime health is covered, while final replacement claim still needs accepted sustained manual GUI editing |
+
+* 3. Lane tracker
+
+** 3.1 Lane 1 -- Replay and runtime safety
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| Vendor probe infrastructure can separate true fail from =loaded-no-provide= | PROVEN | L1 diagnostic | probe TSV output shape + REPL-based form-walk failure reports | yes | Discovery tool, not replacement proof by itself |
+| Class A inventory sweep | PROVEN | L1 diagnostic + standalone gate | probe summary + =make verify-vendor= | only if harness changes | Current standalone gate is green after the bootstrap REPL prologue/runtime-order fixes; no gate-side noise allowlist remains |
+| Class B inventory sweep | PROVEN | L1 diagnostic | probe summary | only if harness changes | Same interpretation as class A |
+| Class C inventory sweep | PROVEN | L1 diagnostic | =build/vendor-class-c-probe-0-130.tsv= + =130-100= + =230-100= + =330-20= summaries | yes | =total=338 pass=5 loaded-no-provide=333 fail=0 segfault=0 unknown=0= |
+| Class D inventory sweep | PROVEN | L1 diagnostic | =build/vendor-class-d-probe-0-80.tsv= + =80-120= + =200-160= + =360-200= + =560-200= + =760-194= summaries | yes | =total=954 pass=33 loaded-no-provide=921 fail=0 segfault=0 unknown=0= |
+| Class E inventory sweep | PROVEN | L1 diagnostic | =build/vendor-class-e-probe-0-45.tsv= summary | yes | =total=45 pass=2 loaded-no-provide=43 fail=0 segfault=0 unknown=0= |
+| Byte-compiler heavy-file crash set is stably reduced | PROVEN | L3 scoped | =diagnose-vendor-form-walk-fast= final-form proofs + 4-file REPL replay | yes | Prior fail was old =--load + nemacs-bootstrap.el= harness noise, not vendor failure |
+
+** 3.2 Lane 2 -- Core language and compiler substrate
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| =macroexp.el= | PROVEN | L3 | representative vendor proof | only if macro substrate changes | Existing evidence documented elsewhere |
+| =pcase.el= | PROVEN | L3-L4 scoped | combined core/macro ERT + language-family standalone REPL | only if macro substrate changes | Local pcase helper contract now has broad ERT coverage, including structural quote matching and binding-aware =and= tests |
+| =cl-lib.el= | PROVEN | L3-L4 scoped | combined core/macro ERT + language-family standalone REPL | yes | Combined proof covers cl macros, cl-lib feature surface, and standalone REPL load with cl-extra |
+| =cl-extra.el= | PROVEN | L3-L4 scoped | combined core/macro ERT + language-family standalone REPL | yes | Combined proof covers cl-extra feature load and representative callable surface such as =cl-subseq= |
+| =byte-run.el= | PROVEN | L3 | representative vendor proof | only if byte runtime changes | Shared language lane |
+| =bytecomp.el= | PROVEN | L3 scoped | =diagnose-vendor-form-walk-fast VENDOR_FORM_WALK_FILE=vendor/emacs-lisp/emacs-lisp/bytecomp.el VENDOR_FORM_WALK_START_INDEX=640 VENDOR_FORM_WALK_LIMIT=1= | yes | Entire 640-form prefix passes under REPL bootstrap form-walk |
+| =byte-opt.el= | PROVEN | L3 scoped | =diagnose-vendor-form-walk-fast VENDOR_FORM_WALK_FILE=vendor/emacs-lisp/emacs-lisp/byte-opt.el VENDOR_FORM_WALK_START_INDEX=134 VENDOR_FORM_WALK_LIMIT=1= | yes | Entire 134-form prefix passes under REPL bootstrap form-walk |
+| =unsafep.el= | PROVEN | L3 scoped | =diagnose-vendor-form-walk-fast VENDOR_FORM_WALK_FILE=vendor/emacs-lisp/emacs-lisp/unsafep.el VENDOR_FORM_WALK_START_INDEX=11 VENDOR_FORM_WALK_LIMIT=1= | yes | Entire 11-form prefix passes under REPL bootstrap form-walk |
+
+** 3.3 Lane 3 -- Editor-state substrate
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| Buffer / point / marker core | PROVEN | L3-L4 scoped | =emacs --batch -Q -L src -L test -l test/emacs-buffer-test.el -f ert-run-tests-batch-and-exit= | yes | Focused substrate proof is green; broader workflow evidence still comes from dependent lanes |
+| Text properties / overlays / invisibility | PROVEN | L3-L4 scoped | =emacs --batch -Q -L src -L test -l test/emacs-buffer-test.el -f ert-run-tests-batch-and-exit= + =emacs --batch -Q -L src -L test -l test/emacs-redisplay-test.el -f ert-run-tests-batch-and-exit= | yes | Org and Magit dependent family now has direct substrate proof |
+| Keymaps / hooks / modes / faces | PROVEN | L3-L4 scoped | =make nemacs-gui-keymap-coverage= PASS; combined editor-state ERT 120/120 PASS | yes | GUI keymap coverage reports implemented=492, different=0, command-missing=0, missing=0; combined ERT covers keymap precedence, minor/emulation maps, easy-mmode fallback, major-mode hooks, faces, and vendor-first core modes |
+| Redisplay-facing metadata | PROVEN | L3-L4 scoped | =emacs --batch -Q -L src -L test -l test/emacs-redisplay-test.el -f ert-run-tests-batch-and-exit= | yes | Mode-line/truncation/narrowing/core-compat regressions now covered directly |
+
+** 3.4 Lane 4 -- Files, processes, timers, async I/O
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| Process substrate smoke | PROVEN | L4 | process/comint smoke | yes | Shared sentinel |
+| VC / vc-git path | PROVEN | L4-L5 | existing vendor proof/smoke | yes | Recheck after process/file changes |
+| Tramp ssh lane | PROVEN | L5 scoped | tramp lane proof | yes | Scoped lane, not full Tramp completion |
+| File-name-handler substrate | PROVEN | L4 scoped | tests + Tramp proof | yes | Shared dependency lane |
+| Magit process/file integration smoke | PROVEN | L5 smoke | magit-status smoke | yes | Keep as integration sentinel |
+| Timer substrate | PROVEN | L3-L4 scoped | =emacs-time-test= + =timer-list.el= standalone replay | only if timer core or replay normalization changes | Shared infrastructure; timer core ERT and list-timers callable/provide surface replay are green |
+
+** 3.5 Lane 5 -- Minibuffer, completion, project, navigation
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| Completion substrate | PROVEN | L4-L5 scoped | =make test-nelisp-minibuffer-smoke= | yes | Standalone reader completes through shared minibuffer readers, enforces require-match, and drives the =*Completions*= selection path |
+| Project root/file substrate | PROVEN | L4 scoped | =make test-nelisp-project-smoke= | yes | Standalone reader detects git project roots from nested directories and lists project-relative files |
+| xref / imenu | PROVEN | L4-L5 scoped | =make test-nelisp-xref-imenu-smoke= | yes | Standalone reader builds an Elisp definition index, jumps to a definition, and returns via the xref marker stack |
+| History / prompt / cancel semantics | PROVEN | L4-L5 scoped | =make test-nelisp-minibuffer-smoke= | yes | Standalone reader preserves initial-input/prompt visibility, pushes minibuffer history correctly, and unwinds cleanly on abort |
+
+** 3.6 Lane 6 -- Built-in workflows
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| Help workflow | PROVEN | L4-L5 scoped | =make test-nelisp-help-smoke= | yes | Standalone reader renders shared Help buffers and preserves in-process help history via =help-go-back= / =help-go-forward= |
+| Dired workflow | PROVEN | L4-L5 scoped | =make test-nelisp-dired-workflow-smoke= | yes | Standalone reader renders Dired listings, enters/leaves subdirectories, refreshes after on-disk mutation, and executes mark/copy/delete through shared Dired commands |
+| VC workflow | PROVEN | L4-L5 scoped | =make test-nelisp-vc-workflow-smoke= | yes | Standalone reader renders VC status/diff/log/annotate buffers and reflects staged-vs-unstaged git state transitions through the shared facade |
+| shell / comint workflows | PROVEN | L4-L5 scoped | =make test-nelisp-shell-smoke= + existing comint proof | yes | Standalone reader runs comint-backed shell commands and preserves input-history / cwd tracking |
+| eshell workflow | PROVEN | L4-L5 scoped | =make test-nelisp-eshell-smoke= | yes | Standalone reader runs hybrid eshell dispatch (Lisp eval + external commands + cd/ls flow) |
+| compile workflow | PROVEN | L4-L5 scoped | =make test-nelisp-compile-smoke= | yes | Standalone reader captures compiler-style diagnostics through the shared compile facade and advances them with =next-error= |
+
+** 3.7 Lane 7 -- External package workflows
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| Magit bundle load sentinel | PROVEN | L4-L5 scoped | =make magit-bundle-diagnose= | yes | Lower-level diagnostic gate: proves all generated Magit bundle parts load in order before runtime shims/workflow assertions |
+| Magit status smoke | PROVEN | L5 smoke | =make magit-status-smoke= | yes | Current leading external-package gate |
+| Magit command/section workflow | PROVEN | L5 scoped | =make magit-stage-workflow-smoke= + =nemacs-gui-file-bridge-runtime-test/standalone-vendor-vc-magit= | yes | Stage workflow is currently proven; broader command surface remains follow-up |
+| Transient workflow | PROVEN | L4-L5 smoke | =make magit-transient-workflow-smoke= PASS; =make magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke= PASS (8m16s) | yes | Magit dispatch transient now initializes and opens through the vendor-first bridge path; the transient probe now exits explicitly after PASS so the gate no longer waits for timeout |
+| Org workflow | PROVEN | L5 scoped mode and scoped workflow | =make org-mode-smoke= PASS; =make org-workflow-smoke= PASS | yes | =time-convert= / current-time repair restores org-mode activation; bridge fast-paths plain =:immediate-finish= file captures so the workflow reaches agenda output with the captured scheduled entry |
+
+** 3.8 Lane 8 -- Persistent product path
+
+| Item | Status | Level | Verification | Recheck after shared changes | Notes |
+|------+--------+-------+--------------+------------------------------+-------|
+| server/emacsclient roundtrip | PROVEN | L5 scoped product path | =make test-nemacs-server-client= | yes | Real =emacsclient -s SOCK -e= round-trips and L5 file I/O save path pass against =bin/nemacs-server= |
+| Init-file loading | PROVEN | L6 scoped loader/session gate | =scripts/user-init-org-smoke.sh= PASS; =NEMACS_LOAD_USER_INIT=1 scripts/editor-session-smoke.sh= PASS; =emacs --batch -Q -L src -L test -l test/nemacs-loadup-test.el -f ert-run-tests-batch-and-exit= PASS | yes | Real =~/.emacs.d/early-init.el= and =~/.emacs.d/init.el= load in the persistent session path; batch still keeps init disabled |
+| Persistent session/editor product | IN-PROGRESS | L6 scoped persistent session | =scripts/gui-l6-smoke.sh= PASS; =NEMACS_GUI_RUNTIME_SMOKE=1 scripts/gui-l6-smoke.sh= PASS; =NEMACS_GUI_RUNTIME_SMOKE=1 NEMACS_GUI_RUNTIME_HEALTH_SMOKE=1 NEMACS_GUI_PID=637800 NEMACS_EXPECT_OPEN_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org NEMACS_EXPECT_INPUT_TRACE=/tmp/nemacs-next-input-trace.log NEMACS_GUI_MIN_UPTIME_SECONDS=5 ./scripts/gui-l6-smoke.sh= PASS with isolated =CARGO_TARGET_DIR=; =NEMACS_GUI_RUNTIME_SMOKE=1 NEMACS_GUI_RUNTIME_HEALTH_SMOKE=1 NEMACS_GUI_PID=585535 NEMACS_EXPECT_OPEN_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org NEMACS_GUI_MIN_UPTIME_SECONDS=120 ./scripts/gui-l6-smoke.sh= PASS; =NEMACS_GUI_MIN_UPTIME_SECONDS=120 scripts/gui-runtime-health-smoke.sh= PASS; =NEMACS_EXPECT_INPUT_TRACE=/tmp/nemacs-next-input-trace.log scripts/gui-runtime-env-smoke.sh= PASS; =scripts/gui-input-trace-smoke.sh --self-test= PASS; =scripts/gui-latency-trace-smoke.sh --self-test= PASS; =scripts/gui-manual-acceptance-smoke.sh --self-test= PASS; =scripts/gui-manual-acceptance-smoke.sh= short timeout restores =capture/todo.org= without =NEMACS_GUI_INPUT_TRACE=; =scripts/gui-restart-smoke.sh /home/madblack-21/Cowork/Notes/capture/todo.org= PASS; =NEMACS_GUI_RESTORE_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org scripts/gui-real-input-smoke.sh= PASS (=gui-latency-trace-smoke=: echo max 0.0ms, render max 3.0ms, backend max 157.0ms, send max 27.0ms, read max 27.0ms, session max 12.7ms); =scripts/gui-sustained-edit-smoke.sh= PASS after 8ms flush (=gui-latency-trace-smoke=: echo max 1.0ms, render max 2.0ms, backend max 152.0ms, send max 50.7ms, read max 50.7ms, session max 12.2ms); =scripts/gui-org-file-workflow-smoke.sh= PASS with Org-specific backend wall gate and session gate (=gui-latency-trace-smoke=: echo max 1.0ms, render max 2.0ms, backend max 1036.0ms, session max 12.1ms; Org first-newline/read warm-up is isolated from session edit time); =scripts/gui-daily-driver-smoke.sh /home/madblack-21/Cowork/Notes/capture/todo.org= PASS (real input + Japanese input + sustained edit/delete + Org edit/save/restart + restored =capture/todo.org= runtime health); =cargo test --manifest-path src-tauri/Cargo.toml persistent_editor_find_org_file_enables_org_mode -- --nocapture= PASS; =cargo test --manifest-path src-tauri/Cargo.toml persistent_editor_org_ack_latency_probe -- --nocapture= PASS (session-manager org heading/newline/body stays around 15-17ms send); =scripts/editor-session-smoke.sh= PASS (357.31s; latest run manually interrupted after =buffer-list ok= while diagnosing latency); =NEMACS_LOAD_USER_INIT=1 scripts/editor-session-smoke.sh= PASS; =NEMACS_SNAPSHOT_TEXT=visible scripts/editor-session-smoke.sh= PASS; =scripts/frontend-input-smoke.sh= PASS; =scripts/frontend-view-smoke.sh= PASS; =scripts/frontend-dist-smoke.sh= PASS; =scripts/face-runs-smoke.sh= PASS; =. ./.tauri-sysroot.env && cargo test --manifest-path src-tauri/Cargo.toml persistent_editor_org_tab_cycle -- --nocapture= PASS | yes | Persistent editor session now reaches replace/move/search/org/completion/buffer/window/file lifecycle with real user init enabled, visible-range GUI snapshots, selected-window reuse of the top-level visible text, startup file opening via =NEMACS_OPEN_FILE=, hidden-textarea IME input proxy tracking the rendered cursor, visible native composition text, and optimistic insert/delete/newline echo backed by lightweight session ack instead of full snapshots on every edit, 8ms normal input/delete backend flush, post-newline insert flush guard, one-shot Org first-newline backend settle to avoid the measured REPL read stall, frame-coalesced input-proxy positioning and plain-node-reusing render-only DOM, OS clipboard paste/copy/cut, click-to-point, drag-to-region, prefix-aware keyboard-quit, =C-x u= undo routing, =M-%= replace routing, minibuffer candidate selection/history recall, isearch accept/cancel/repeat split, =TAB= / =S-TAB= routed through the session, Org outline =TAB= / =S-TAB= plus Org table-context =TAB= with persistent-session proof, =.org= find-file auto-enabling =org-mode= with real-window edit/save/restart proof, non-Org TAB falling back to =indent-for-tab-command= / =tab-to-tab-stop=, and wheel-to-session-scroll including multi-window pane ids, native close guarding through save-buffers-kill-terminal, plus face-run payload; automated sustained runtime health now covers uptime/process-tree/dev-server/log gates, L6 cargo proof is isolated from the running =tauri dev= target dir, and =scripts/gui-manual-acceptance-smoke.sh= wraps the remaining manual GUI gate with environment-gated =NEMACS_GUI_INPUT_TRACE= plus trace validation for browser-delivered insert/delete/IME/save-key evidence, then restores the daily-driver file without tracing by default so diagnostic mode does not reintroduce input latency. =scripts/gui-daily-driver-smoke.sh= now passes as the strongest non-interactive L6 daily-driver gate, composing real-window insert/delete/save, Japanese input/delete/save, sustained edit/delete, Org edit/save/restart, and restored daily file health. =scripts/gui-real-input-smoke.sh= passes as an automated real-window insert/delete/save gate using =xdotool type= for printable text, =scripts/gui-sustained-edit-smoke.sh= covers longer real-window bursts, repeated Backspace, save, trace evidence, and standard latency thresholds, and =scripts/gui-org-file-workflow-smoke.sh= covers Org file editing through save and restart while waiting for WebKit Return delivery in the smoke harness; accepted sustained manual GUI editing remains the final daily-driver gate. Org first-body-edit GUI transport / WebKit / Tauri invoke warm-up has been isolated to Rust stdout =read-ms= after the first Org newline and is absorbed by the one-shot backend settle while preserving immediate optimistic local echo |
+| User configuration envelope | PROVEN | L6 scoped Org/user-init subset | =scripts/user-init-org-smoke.sh= PASS; =README.org= Current GUI editing scope note | yes | Real user init reaches =org-mode= with known decorative Org hook packages shimmed when unavailable; README now documents the supported init/theme/IME/visible snapshot envelope and current protocol limits |
+
+Latest L6 input-latency recheck (2026-07-11): =scripts/gui-sustained-edit-smoke.sh= PASS after shortening normal input/delete backend flush to 8ms and batching diagnostic trace writes; =gui-latency-trace-smoke= reported echo max 1.0ms, render max 2.0ms, backend max 152.0ms, send/read max 50.7ms, session max 12.2ms.
+
+Latest L6 input/delete responsiveness recheck (2026-07-11): =scripts/frontend-input-smoke.sh= PASS, =scripts/frontend-view-smoke.sh= PASS, =scripts/frontend-dist-smoke.sh= PASS, =NEMACS_GUI_RESTORE_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org scripts/gui-sustained-edit-smoke.sh= PASS, =NEMACS_GUI_RESTORE_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org scripts/gui-japanese-input-smoke.sh= PASS, and =scripts/gui-daily-driver-smoke.sh /home/madblack-21/Cowork/Notes/capture/todo.org= PASS after restoring the normal input/delete backend flush window to 8ms, deferring non-forced backend flush while an input ack is already in flight, and making the hidden textarea input proxy follow every optimistic insert/delete render.  The sustained-edit trace reported echo max 0.0ms, render max 4.0ms, backend max 223.0ms, send/read max 217.2ms, and session max 11.2ms; the remaining high backend number is transport-side wait, while visible echo/render and session edit time remain under the daily-driver threshold.
+
+Latest L6 manual-acceptance harness recheck (2026-07-11): =sh -n scripts/gui-manual-acceptance-smoke.sh= PASS, =scripts/gui-manual-acceptance-smoke.sh --self-test= PASS, =NEMACS_GUI_LATENCY_SMOKE=1 scripts/gui-manual-acceptance-smoke.sh --check /tmp/nemacs-next-gui-sustained-edit-trace.log= PASS, =NEMACS_GUI_LATENCY_SMOKE=1 scripts/gui-manual-acceptance-smoke.sh --prepare /home/madblack-21/Cowork/Notes/capture/todo.org= PASS with runtime health ok, =NEMACS_GUI_LATENCY_SMOKE=1 scripts/gui-manual-acceptance-smoke.sh --status /tmp/nemacs-next-gui-sustained-edit-trace.log= reports =status=ready-for-check=, and the current prepared trace =/tmp/nemacs-next-input-trace.log= reports =status=waiting-for-manual-input= with insert/delete/IME/save-key evidence still missing.  The manual gate can now be split into =--prepare=, which launches and leaves a trace-enabled real GUI session for sustained operator editing, =--status TRACE_FILE=, which reports missing evidence without restarting the GUI, and =--check TRACE_FILE=, which validates the captured input/delete/IME/save evidence afterward; this reduces the remaining L6 gate to actual accepted manual use rather than harness mechanics.
+
+Latest L6 Japanese input/delete recheck (2026-07-11): =NEMACS_GUI_RESTORE_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org scripts/gui-japanese-input-smoke.sh= PASS.  The real Tauri window accepted Japanese UTF-8 paste via the hidden textarea, Backspace deleted the trailing ASCII sentinel through the session command path, =C-x C-s= saved the file, and trace gates recorded paste/delete/save-key evidence with backend latency below the standard threshold.  The fix keeps standalone text-buffer point/delete positions character-based while tracking UTF-8 byte-count separately, routes standalone delete through logical string replacement to avoid NUL gap corruption, and writes direct save text through the existing UTF-8 raw-write substrate instead of passing decoded multibyte text directly to =nl-write-file=.
+
+Latest L6 file I/O substrate recheck (2026-07-11): =emacs -Q --batch -L src -L test -l test/emacs-fileio-builtins-test.el -f ert-run-tests-batch-and-exit= PASS (53/53) after fixing the remaining =file-exists-p= rdf fallback and sentinel temp-directory cases.  =emacs-buffer-builtins-test= also remained PASS (45/45), and =make build-nelisp-bootstrap= regenerated =build/nemacs-bootstrap.el= / =build/nemacs-bootstrap.repl= successfully.  The file existence contract now treats access rc 0 as proven existence, Linux ENOENT rc 2 or -2 as a conclusive miss, and other incomplete standalone access failures as eligible for the verified =rdf= fallback.  =make-temp-file= now has a sentinel-safe wrapper that delegates to the host implementation under normal host temp vars and falls back to the standalone shim when temp vars contain =nelisp--unbound-marker=.
+
+Latest L5 Magit/runtime-image recheck (2026-07-11): =make build-nelisp-bootstrap bake-runtime-image= PASS and =vendor/nelisp/target/nelisp exec-runtime-image build/nemacs-runtime.nlri '(nelisp--write-stdout-bytes "HI\n")'= printed =HI=.  =make magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke= PASS after correcting standalone =file-exists-p= ENOENT handling.  The prior =emacs-symbol= runtime-image failure was caused by =require= resolving through a false-positive missing =emacs-symbol.el= path when access returned -2 and the fallback treated empty =rdf= reads as existence.
+
+Latest L6 daily-driver recheck (2026-07-11): =scripts/gui-daily-driver-smoke.sh /home/madblack-21/Cowork/Notes/capture/todo.org= PASS after the 8ms input/delete flush change, trace batching, Japanese UTF-8 input/delete/save gate, and Org Return-delivery smoke guard.  The gate composes real-input, Japanese input, sustained-edit/delete, Org workflow, and restored daily-file health.  Component echo/render/session latency gates remained below threshold; Org workflow uses a wider wall-clock backend threshold only for the known WebKit/Tauri first-newline/read warm-up while preserving the session-ms gate.  The restored GUI env showed =NEMACS_LOAD_USER_INIT=1=, =NEMACS_OPEN_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org=, =NEMACS_SNAPSHOT_TEXT=visible=, and no =NEMACS_GUI_INPUT_TRACE=.
+
+Latest L6 freeze follow-up (2026-07-11): user manual run froze with the NeLisp REPL at 100% CPU before useful input evidence.  Product-side mitigation now bounds lightweight insert/newline/delete ack waits at 2500ms, bounds startup file open at 10000ms, bounds session bootstrap ready-marker wait at 15000ms, kills timed-out child sessions, and retries once without user init when real =~/.emacs.d/early-init.el= / =init.el= bootstrap does not reach ready.  =scripts/stop-tauri-local.sh= now also stops repo-local NeLisp REPL and esbuild children to avoid stale CPU-bound sessions.  =scripts/gui-runtime-health-smoke.sh= now supports =NEMACS_GUI_MAX_NELISP_CPU=, and =scripts/gui-daily-driver-smoke.sh= restores the daily file with a default 30s uptime / 25% NeLisp CPU health gate.  Recheck: =. ./.tauri-sysroot.env && cargo test --manifest-path src-tauri/Cargo.toml persistent_editor_org_ack_latency_probe -- --nocapture= PASS with insert/newline around 16-18ms and delete returning under the bounded gate; =scripts/frontend-input-smoke.sh= PASS; =scripts/frontend-view-smoke.sh= PASS; =scripts/gui-real-input-smoke.sh= PASS with real-window insert/delete/IME/save evidence and delete backend around 25ms; =NEMACS_GUI_PID=2155652 NEMACS_EXPECT_OPEN_FILE=/home/madblack-21/Cowork/Notes/capture/todo.org NEMACS_GUI_MIN_UPTIME_SECONDS=30 NEMACS_GUI_MAX_NELISP_CPU=10 scripts/gui-runtime-health-smoke.sh= PASS with =nelisp-cpu=0.3%=.  Manual acceptance evidence was captured from the trace-enabled =todo.org= session at =/tmp/nemacs-next-input-trace.log=: =NEMACS_GUI_LATENCY_SMOKE=1 scripts/gui-manual-acceptance-smoke.sh --check /tmp/nemacs-next-input-trace.log= PASS with insert=2, delete=1, compositionend=1, save-key=1, latency=7; =gui-latency-trace-smoke= reported echo max 0.0ms, render max 2.0ms, backend max 24.0ms, send/read max 21.1ms, session max 10.1ms.  The =capture/todo.org= SHA-256 stayed =c795883515200870f982edfcfd3c905444ee8df0541c074ea9c6bb326696044a= before and after the synthetic manual-evidence sequence.
+
+Latest L6 short GUI soak recheck (2026-07-11): =scripts/gui-soak-smoke.sh= PASS against the existing =todo.org= GUI for 60 seconds with unchanged root/app/NeLisp PIDs.  App RSS was initial/peak/final =193116/193120/193120KB= (peak growth 4KB), and NeLisp RSS was =684440/684440/684440KB= (peak growth 0KB), under explicit absolute RSS, growth, and CPU thresholds.  The repo-external TSV evidence is =/tmp/nemacs-next-gui-soak-60s.tsv=.
+
+Latest L6 one-hour idle/warm GUI soak recheck (2026-07-11): scoped PASS with the existing =todo.org= persistent session and no GUI restart or active input.  The held-PTY runner and soak child both exited 0; independent TSV verification found 121 samples, one summary, elapsed 3600 seconds, monotonic timestamps/elapsed, and a 30-second maximum sample gap.  Root/app/NeLisp PIDs stayed =2155652/2156286/2160662=, and the =todo.org= SHA-256 stayed =c795883515200870f982edfcfd3c905444ee8df0541c074ea9c6bb326696044a=.  App RSS initial/peak/final was =193200/193476/193476KB= (peak growth 276KB, maximum CPU 0.3%), and NeLisp RSS was =684440/684440/684440KB= (peak growth 0KB, maximum CPU 0.0%).  Evidence is =/tmp/nemacs-next-gui-soak-1h-20260711T153749+0900.tsv=.  Persistent product path remains =IN-PROGRESS=; the eight-hour and active-workload soak gates remain incomplete.
+
+Latest L4-L5 file/process/timer recheck (2026-07-11): =make proc-async-smoke= PASS (2/2), =make proc-smoke= PASS, =make test-nemacs-process-bidi-smoke= PASS, =make tramp-stub-smoke= PASS (5/5), =make test-nelisp-vc-workflow-smoke test-nelisp-shell-smoke test-nelisp-eshell-smoke magit-status-smoke= PASS, =emacs --batch -Q -L src -L test -l test/emacs-time-test.el -f ert-run-tests-batch-and-exit= PASS (15/15), and standalone =timer-list.el= replay PASS after keeping the timer-list callable/provide surface in =standalone-source-normalize=.  The scoped proof covers sync process, native async/poll, bidi process filters/sentinels, Tramp stub file/process-file roundtrip, runtime image VC/shell/eshell, Magit status/git subprocess, and timer/list-timers surfaces; it is still not a claim of full Tramp/network/process parity.
+
+Latest L4 standalone replay/runtime recheck (2026-07-11): =make verify-nelisp-standalone= PASS after moving replay =load-path= and =nelisp-emacs-vendor-root= setup before =build/nemacs-bootstrap.repl= playback in the standalone/vendor REPL harnesses.  The gate now reaches =NEMACS-STANDALONE-BOOT=ok= without bootstrap =uncaught error= noise, bakes and executes =build/nemacs-runtime.nlri= with =BOOT=t=, passes vendor class A 58/58, and passes vendor core 32/32 under strict mode.
+
+Latest L3-L4 editor-state recheck (2026-07-11): =make nemacs-gui-keymap-coverage= PASS with implemented=492, different=0, command-missing=0, missing=0, runtime-only=3.  The combined editor-state ERT command =emacs --batch -Q -L src -L test -l test/emacs-keymap-test.el -l test/emacs-keymap-builtins-test.el -l test/emacs-mode-builtins-test.el -l test/emacs-easy-mmode-test.el -l test/emacs-faces-builtins-test.el -l test/vendor-first-core-modes-test.el -f ert-run-tests-batch-and-exit= PASS (120/120).  The recheck fixed standalone easy-mmode fallback selection when host Emacs has native =define-minor-mode= available but the simulated standalone runtime has no string =emacs-version=, and fixed keymap chain resolution so prefixed substrate variables participate correctly alongside unprefixed Emacs compatibility variables.
+
+Latest L3-L4 core/compiler recheck (2026-07-11): combined core/macro ERT command =emacs --batch -Q -L src -L test -L scripts -l test/emacs-cl-macros-test.el -l test/emacs-pcase-test.el -l test/emacs-foundation-test.el -l test/emacs-stub-residuals-test.el -l test/emacs-numeric-test.el -l test/emacs-subr-extras-test.el -l test/standalone-source-normalize-test.el -f ert-run-tests-batch-and-exit= PASS (267/267).  The pcase helper tests were updated to match the current runtime contract: quoted patterns use structural =equal=, and =and= tests with bindings are wrapped in =let*= so sibling guards/lets can see bound variables.  Language-family standalone REPL replay PASS for =macroexp.el=, =src/emacs-pcase.el=, =src/cl-lib.el=, =cl-extra.el=, and =byte-run.el=, proving =macroexpand-all=, =cl-subseq=, =byte-run--set-speed=, and =byte-compile-info=.  Byte-compiler adjacent form-walk gates also PASS: =bytecomp.el= final prefix 640, =byte-opt.el= final prefix 134, and =unsafep.el= final prefix 11.
+
+* 4. Recheck rules
+
+After any shared substrate change, re-run the smallest affected checks first.
+
+Suggested order:
+
+1. direct narrow test or vendor proof for the edited owner;
+2. nearest lane sentinel;
+3. the strongest currently passing workflow smoke that depends on that owner.
+
+In practice:
+
+- language/macro changes: recheck the focused proof, then a representative
+  package load using those facilities;
+- buffer/text-property changes: recheck focused tests, then Magit/Org-adjacent
+  sentinels if relevant;
+- file/process changes: recheck process smoke, VC/Tramp/Magit sentinels;
+- replay/bootstrap changes: recheck probe harness and the current heavy-file
+  repro.
+
+* 5. Current operator policy
+
+When choosing the next implementation task:
+
+1. prefer a TODO or BLOCKED item in the highest-leverage lane;
+2. prefer a change that unlocks multiple later rows;
+3. keep Magit smoke green, but do not treat one green smoke as completion of
+   the replacement goal;
+4. do not mark an item PROVEN above the level actually evidenced.
+
+* 6. Update procedure
+
+When a task lands:
+
+1. update the affected row status;
+2. record the newly proven level;
+3. replace placeholder verification text with the actual gate when useful;
+4. note whether a larger dependent lane should be rechecked next.
+
+This document should remain short enough to operate as a live board.

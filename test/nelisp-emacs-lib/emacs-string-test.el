@@ -132,6 +132,14 @@ string-collate-lessp / string-collate-equalp / string-to-vector."
   ;; string-to-vector
   (should (equal [97 98 99] (string-to-vector "abc"))))
 
+(ert-deftest emacs-string-test/compare-strings-contract ()
+  (should (eq t (compare-strings "abc" nil nil "abc" 0 3)))
+  (should (= -3 (compare-strings "abc" 0 3 "abd" 0 3)))
+  (should (= 3 (compare-strings "abd" 0 3 "abc" 0 3)))
+  (should (= -3 (compare-strings "ab" 0 2 "abc" 0 3)))
+  (should (= 3 (compare-strings "abc" 0 3 "ab" 0 2)))
+  (should (eq t (compare-strings "ABC" 0 3 "abc" 0 3 t))))
+
 (ert-deftest emacs-string-test/doc16-round12-subr-string-utils ()
   "Doc 16 round 12: subst-char-in-string / combine-and-quote-strings /
 split-string-and-unquote."

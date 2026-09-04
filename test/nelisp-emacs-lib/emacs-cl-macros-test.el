@@ -39,10 +39,25 @@
                   '(a &optional b &rest rest &key (k1 1) k2))
                  '((a) (b) rest ((:k1 k1 1) (:k2 k2 nil))))))
 
+(ert-deftest emacs-cl-macros-test/split-arglist-dotted-tail ()
+  (should (equal (emacs-cl-macros--split-arglist '(form . attrs))
+                 '((form) nil attrs nil))))
+
 (ert-deftest emacs-cl-macros-test/key-bindings-shape-is-correct ()
   (should (equal (emacs-cl-macros--key-bindings '((:k1 k1 1) (:k2 k2 nil)) 'rest)
                  '((k1 (or (car (cdr (memq ':k1 rest))) 1))
                    (k2 (or (car (cdr (memq ':k2 rest))) nil))))))
+
+(ert-deftest emacs-cl-macros-test/cl-letf-symbol-function-place-parser ()
+  (should (eq 'split-string
+              (emacs-cl-macros--cl-letf-symbol-function-place-symbol
+               '(symbol-function 'split-string))))
+  (should (eq 'split-string
+              (emacs-cl-macros--cl-letf-symbol-function-place-symbol
+               '(symbol-function #'split-string))))
+  (should-not
+   (emacs-cl-macros--cl-letf-symbol-function-place-symbol
+    '(symbol-value 'split-string))))
 
 ;;;; Sequence predicates
 
@@ -82,6 +97,31 @@
   (should (= 6 (cl-loop for x in '(1 2 3) sum x)))
   (should (= 1 (cl-loop for x in '(1 0 2) count (> x 1)))))
 
+(ert-deftest emacs-cl-macros-test/cl-loop-shim-thereis-roundtrip ()
+  (should
+   (equal '("a" 1)
+          (eval
+           (emacs-cl-macros--loop-build
+            '(for x in '(("z" 0) ("a" 1) ("a" 2))
+                  thereis (and (equal (car x) "a") x)))))))
+
+(ert-deftest emacs-cl-macros-test/cl-loop-shim-on-by-roundtrip ()
+  (should
+   (equal '((a 1) (b 2))
+          (eval
+           (emacs-cl-macros--loop-build
+            '(for (key val) on '(a 1 b 2) by #'cddr
+                  collect (list key val)))))))
+
+(ert-deftest emacs-cl-macros-test/cl-loop-shim-while-multiple-collect ()
+  (should
+   (equal '(:a 1 :b 2)
+          (eval
+           (emacs-cl-macros--loop-build
+            '(with body = '(:a 1 :b 2 stop)
+              while (keywordp (car body))
+              collect (pop body) collect (pop body)))))))
+
 (ert-deftest emacs-cl-macros-test/cl-incf-cl-decf-and-cl-pushnew-contract ()
   (let ((n 1)
         (xs '(b a)))
@@ -89,6 +129,18 @@
     (should (= 1 (cl-decf n 3)))
     (should (equal (progn (cl-pushnew 'a xs) xs) '(b a)))
     (should (equal (progn (cl-pushnew 'c xs) xs) '(c b a)))))
+
+(ert-deftest emacs-cl-macros-test/cl-dolist-cl-return-returns-value ()
+  (should
+   (equal 'hit
+          (cl-dolist (item '(1 2 3))
+            (when (= item 2)
+              (cl-return 'hit))))))
+
+(ert-deftest emacs-cl-macros-test/cl-dolist-without-cl-return-returns-nil ()
+  (should-not
+   (cl-dolist (item '(1 2 3))
+     item)))
 
 (ert-deftest emacs-cl-macros-test/letrec-and-cl-progv-load-time-contract ()
   (letrec ((countdown (lambda (n)
@@ -263,9 +315,9 @@ cl-etypecase / cl-ecase."
     (should (string-prefix-p "R17" (symbol-name s)))))
 
 (ert-deftest emacs-cl-macros-test/doc16-round18-destructuring-bind ()
-  "Doc 16 round 18: cl-destructuring-bind over flat lambda-lists.
+  "Doc 16 round 18: cl-destructuring-bind over CL lambda-lists.
 The batch host runs the real macro, pinning the contract the NeLisp
-runtime shim must reproduce (nested patterns are out of scope)."
+runtime shim must reproduce."
   (should (equal '(1 2 3) (cl-destructuring-bind (a b c) '(1 2 3) (list a b c))))
   (should (equal '(1 (2 3 4)) (cl-destructuring-bind (a &rest r) '(1 2 3 4) (list a r))))
   (should (equal '(1 (2 3)) (cl-destructuring-bind (a &body r) '(1 2 3) (list a r))))
@@ -278,6 +330,16 @@ runtime shim must reproduce (nested patterns are out of scope)."
   (should (equal '(1 nil 5) (cl-destructuring-bind (a &key x y) '(1 :y 5) (list a x y))))
   (should (equal '(1 2 (3 4)) (cl-destructuring-bind (a &optional b &rest r) '(1 2 3 4) (list a b r))))
   (should (= 6 (cl-destructuring-bind (a b) '(2 4) (ignore a) (+ a b)))))
+
+(ert-deftest emacs-cl-macros-test/destructuring-bind-nested-and-dotted ()
+  (should
+   (equal '(1 2 3 4)
+          (cl-destructuring-bind (a (b (c)) . rest) '(1 (2 (3)) 4)
+            (list a b c (car rest)))))
+  (should
+   (equal '(x (y z))
+          (cl-destructuring-bind (form . attrs) '(x y z)
+            (list form attrs)))))
 
 (ert-deftest emacs-cl-macros-test/doc16-round18-multiple-value ()
   "Doc 16 round 18: cl-multiple-value-bind / cl-multiple-value-setq."

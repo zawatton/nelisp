@@ -43,37 +43,176 @@
 (unless (boundp 'features)
   (defvar features nil))
 
+(defvar emacs-fns--standalone-feature-index nil
+  "Internal eq-hash index used for standalone `featurep' lookups.
+Keyed by feature symbols in `features'.")
+(defvar emacs-fns--standalone-feature-index-source nil
+  "Snapshot of the `features' list used to build the index.
+If `features' is rebound, index is rebuilt lazily.")
+(defvar emacs-fns--standalone-feature-index-build-count 0
+  "Number of times the standalone feature index has been rebuilt.")
+
+(defun emacs-fns--standalone-feature-index-build ()
+  "Rebuild standalone feature index from current `features`.
+Returns the rebuilt hash table.
+
+This is a lazy cache that is rebuilt when `features' is rebound.
+Destructive mutation of the same `features' list object is not tracked
+and may make the index stale; callers can call this function
+explicitly after such mutation."
+  (let ((table (make-hash-table :test 'eq))
+        (current features))
+    (setq emacs-fns--standalone-feature-index-build-count
+          (1+ emacs-fns--standalone-feature-index-build-count))
+    (setq emacs-fns--standalone-feature-index table)
+    (setq emacs-fns--standalone-feature-index-source current)
+    (while (consp current)
+      (puthash (car current) t table)
+      (setq current (cdr current)))
+    table))
+
+(defun emacs-fns--standalone-feature-index-reset ()
+  "Reset standalone feature index state (tests only)."
+  (setq emacs-fns--standalone-feature-index nil
+        emacs-fns--standalone-feature-index-source nil
+        emacs-fns--standalone-feature-index-build-count 0))
+
+(defun emacs-fns--standalone-feature-index-ensure ()
+  "Ensure standalone feature index is synced with current `features'."
+  (unless (and emacs-fns--standalone-feature-index
+               (eq emacs-fns--standalone-feature-index-source features))
+    (emacs-fns--standalone-feature-index-build)))
+
+(defun emacs-fns--standalone-featurep (feature &optional _subfeature)
+  "Pure-Elisp fallback for `featurep' used by standalone runtimes.
+
+`features' remains authoritative; this function mirrors `featurep'
+semantics with an O(1) hot-path using the eq-hash index."
+  (emacs-fns--standalone-feature-index-ensure)
+  (and (gethash feature emacs-fns--standalone-feature-index) t))
+
+(defun emacs-fns--standalone-provide (feature &optional _subfeatures)
+  "Pure-Elisp fallback for `provide' used by standalone runtimes.
+
+Adds FEATURE once to `features' and returns FEATURE."
+  (unless (emacs-fns--standalone-featurep feature)
+    (setq features (cons feature features))
+    (puthash feature t emacs-fns--standalone-feature-index)
+    (setq emacs-fns--standalone-feature-index-source features))
+  feature)
+
+(defun emacs-fns--load-and-check-required-feature (feature path noerror)
+  "Load PATH and enforce the `require' contract for FEATURE.
+NOERROR permits a nil result; otherwise a load that returns without
+providing FEATURE signals an error, even when the loader returns nil."
+  (emacs-fns--load-required-file path noerror)
+  (cond
+   ((featurep feature) feature)
+   (noerror nil)
+   (t (error "Required feature was not provided: %S" feature))))
+
 ;; NeLisp v2's bootstrap stdlib used to expose a one-argument `provide',
 ;; so vendor `require' could load a file and still report "feature not
 ;; provided" after arity failure.  Host Emacs keeps its native primitive;
 ;; the polyfill is only installed on the standalone NeLisp path, before
 ;; `emacs-version' exists.
 (when (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (fboundp 'nelisp--eval-source-string)
+          (fboundp 'rdf)
+          (fboundp 'wrf)
           (not (boundp 'emacs-version))
           (not (stringp emacs-version)))
   (defun provide (feature &optional _subfeatures)
     "Mark FEATURE as available and return FEATURE.
 Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
-    (unless (memq feature features)
-      (setq features (cons feature features)))
-    feature)
+    (emacs-fns--standalone-provide feature _subfeatures))
 
   (defun featurep (feature &optional _subfeature)
     "Return non-nil if FEATURE has been provided.
 Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
-    (if (memq feature features) t nil))
+    (emacs-fns--standalone-featurep feature _subfeature))
+
+  ;; `require' is one of the hottest standalone startup paths.  Walking a
+  ;; package-expanded `load-path' for every library makes startup quadratic in
+  ;; the package count, so retain the first regular-file occurrence of every
+  ;; directory entry.  Exact filenames are indexed (rather than just library
+  ;; basenames): `locate-file' can therefore compare the earliest directory
+  ;; for each requested suffix and preserve its directory-first, suffix-second
+  ;; resolution order.
+  (defvar emacs-fns--load-path-index (make-hash-table :test 'equal))
+  (defvar emacs-fns--load-path-index-path nil)
+  (defvar emacs-fns--load-path-index-length -1)
+
+  (defun emacs-fns--load-path-index-build (path)
+    "Rebuild the regular-file index for PATH and return the new table."
+    (let ((table (make-hash-table :test 'equal))
+          (scanned (make-hash-table :test 'equal))
+          (dirs path)
+          (directory-index 0))
+      (while dirs
+        (let ((dir (car dirs)))
+          (when (and (stringp dir)
+                     (> (length dir) 0)
+                     (not (gethash dir scanned)))
+            (puthash dir t scanned)
+            (let ((files (condition-case nil
+                             (directory-files dir)
+                           (error nil))))
+              (while files
+                (let* ((name (car files))
+                       (absolute (expand-file-name name dir)))
+                  (when (and (not (gethash name table))
+                             (emacs-fns--regular-file-p absolute))
+                    (puthash name
+                             (cons directory-index absolute)
+                             table)))
+                (setq files (cdr files))))))
+        (setq directory-index (1+ directory-index))
+        (setq dirs (cdr dirs)))
+      (setq emacs-fns--load-path-index table)
+      (setq emacs-fns--load-path-index-path path)
+      (setq emacs-fns--load-path-index-length (length path))
+      table))
+
+  (defun emacs-fns--load-path-index-current-p (path)
+    "Return non-nil when the index snapshot still describes PATH."
+    (and (eq path emacs-fns--load-path-index-path)
+         (= (length path) emacs-fns--load-path-index-length)))
+
+  (defun emacs-fns--load-path-index-lookup (filename suffixes)
+    "Return indexed FILENAME resolution for SUFFIXES, or nil on a miss."
+    (unless (emacs-fns--load-path-index-current-p load-path)
+      (emacs-fns--load-path-index-build load-path))
+    (let ((tail suffixes)
+          (best nil))
+      (while tail
+        (let ((entry (gethash (concat filename (car tail))
+                              emacs-fns--load-path-index)))
+          (when (and entry
+                     (or (null best) (< (car entry) (car best))))
+            (setq best entry)))
+        (setq tail (cdr tail)))
+      (cdr best)))
 
   (defun locate-file (filename path &optional suffixes predicate)
     "Find FILENAME in PATH using optional SUFFIXES and PREDICATE.
 This standalone implementation covers the `require' and batch-test
 lookup path: PATH is a list of directories, SUFFIXES may be nil, a
 string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
-    (let ((suffix-list (cond
-                        ((null suffixes) (list ""))
-                        ((stringp suffixes) (list suffixes))
-                        (t suffixes)))
-          (dirs path)
-          (found nil))
+    (let* ((suffix-list (cond
+                         ((null suffixes) (list ""))
+                         ((stringp suffixes) (list suffixes))
+                         (t suffixes)))
+           (indexed (and (boundp 'load-path)
+                         (eq path load-path)
+                         (eq predicate #'emacs-fns--regular-file-p)
+                         (emacs-fns--load-path-index-lookup
+                          filename suffix-list)))
+           (dirs path)
+           (found (and indexed
+                       (funcall predicate indexed)
+                       indexed)))
       (while (and dirs (not found))
         (let ((suffixes-left suffix-list))
           (while (and suffixes-left (not found))
@@ -89,6 +228,41 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
         (setq dirs (cdr dirs)))
       found))
 
+  (defun emacs-fns--regular-file-p (candidate)
+    "Return non-nil when CANDIDATE names an existing non-directory file."
+    (and (file-exists-p candidate)
+         (not (file-directory-p candidate))))
+
+  (defun emacs-fns--load-required-file (path noerror)
+    "Load exact PATH for `require', honoring NOERROR for open failures only.
+
+Three loaders, in descending preference.  `nelisp--load-resolved-file' and
+`load-file' both come from `emacs-load.el', which the bootstrap bundle
+emits about 73000 lines AFTER this file -- so between `emacs-fns''s own
+`provide' and that point neither exists on the standalone runtime, and the
+earlier two-branch version fell through to a void `load-file'.  That took
+out the calendar vendor preload and left the baked image incomplete.  The
+third branch uses the core `load' primitive, which the standalone runtime
+provides before any bundle form runs.  A host Emacs still takes the second
+branch, `load-file' being a builtin there."
+    (cond
+     ((fboundp 'nelisp--load-resolved-file)
+      (nelisp--load-resolved-file path noerror))
+     ((fboundp 'load-file)
+      (condition-case err
+          (load-file path)
+        (file-error
+         (if noerror nil
+           (signal (car err) (cdr err))))))
+     (t
+      ;; The core `load' ignores NOSUFFIX/MUST-SUFFIX, so expand PATH here
+      ;; to keep `load-file''s exact-file semantics.
+      (condition-case err
+          (load (expand-file-name path) noerror t t t)
+        (file-error
+         (if noerror nil
+           (signal (car err) (cdr err))))))))
+
   (defun require (feature &optional filename noerror)
     "Load FEATURE through `load-path' unless it is already provided.
 FILENAME and NOERROR follow the common Emacs `require' surface used by
@@ -97,17 +271,18 @@ batch tests and local runtime modules."
         feature
       (let* ((base (or filename (symbol-name feature)))
              (path (or (and (stringp base)
-                            (file-exists-p base)
+                            (emacs-fns--regular-file-p base)
                             base)
                        (and (boundp 'load-path)
-                            (locate-file base load-path (list ".el" ""))))))
+                            (locate-file
+                             base
+                             load-path
+                             (list ".el" "")
+                             #'emacs-fns--regular-file-p)))))
         (cond
          (path
-          (load path nil 'no-message)
-          (cond
-           ((featurep feature) feature)
-           (noerror nil)
-           (t (error "Required feature was not provided: %S" feature))))
+          (emacs-fns--load-and-check-required-feature
+           feature path noerror))
          (noerror nil)
          (t (error "Cannot open load file: %S" feature)))))))
 
@@ -327,37 +502,45 @@ on identity should re-bind the variable holding PLIST."
 ;;;; --- coding-system polyfill (Doc 51 Track B Phase 2) ----------------
 ;;
 ;; Under host Emacs `encode-coding-string' / `decode-coding-string' /
-;; `multibyte-string-p' are C builtins.  Under the nelisp driver strings
-;; are internally valid UTF-8, so
-;; for `'utf-8' / `'utf-8-emacs' / `nil' (= no conversion) the encode/
-;; decode operations are identity.  We provide minimal polyfills here
-;; because `nelisp-text-buffer.el' calls them at runtime and we are
-;; loaded before that file's functions are first invoked.
+;; `multibyte-string-p' are C builtins.  NeLisp v1.1.0 (Doc 200) also
+;; supplies these string-representation primitives.  Measured on v1.1.0+1,
+;; all five names below were already bound and loading this file left every
+;; function cell `eq' to its prior value; the runtime also returned nil for
+;; `(multibyte-string-p (unibyte-string 200))' and `(227 129 130)' for
+;; `(append (string-as-unibyte "あ") nil)'.  Pure Elisp cannot reproduce
+;; that representation distinction or byte conversion from character values,
+;; so a runtime missing one of these required primitives must fail explicitly
+;; instead of silently returning a wrong string.
+
+(defun emacs-fns--missing-string-representation-primitive (primitive)
+  "Signal that required string representation PRIMITIVE is unavailable."
+  (error "NeLisp runtime lacks required Doc 200 string primitive: %S"
+         primitive))
 
 (unless (fboundp 'encode-coding-string)
-  (defun encode-coding-string (string _coding-system &optional _nocopy &rest _)
-    (if (stringp string) string "")))
+  (defun encode-coding-string (_string _coding-system &optional _nocopy &rest _)
+    (emacs-fns--missing-string-representation-primitive
+     'encode-coding-string)))
 
 (unless (fboundp 'decode-coding-string)
-  (defun decode-coding-string (string _coding-system &optional _nocopy &rest _)
-    (if (stringp string) string "")))
+  (defun decode-coding-string (_string _coding-system &optional _nocopy &rest _)
+    (emacs-fns--missing-string-representation-primitive
+     'decode-coding-string)))
 
 (unless (fboundp 'multibyte-string-p)
-  (defun multibyte-string-p (string)
-    (when (stringp string)
-      (let ((i 0) (n (length string)) found)
-        (while (and (not found) (< i n))
-          (when (>= (aref string i) 128) (setq found t))
-          (setq i (1+ i)))
-        found))))
+  (defun multibyte-string-p (_string)
+    (emacs-fns--missing-string-representation-primitive
+     'multibyte-string-p)))
 
 (unless (fboundp 'string-as-multibyte)
-  (defun string-as-multibyte (string)
-    (if (stringp string) string "")))
+  (defun string-as-multibyte (_string)
+    (emacs-fns--missing-string-representation-primitive
+     'string-as-multibyte)))
 
 (unless (fboundp 'string-as-unibyte)
-  (defun string-as-unibyte (string)
-    (if (stringp string) string "")))
+  (defun string-as-unibyte (_string)
+    (emacs-fns--missing-string-representation-primitive
+     'string-as-unibyte)))
 
 (unless (fboundp 'string-make-multibyte)
   (defalias 'string-make-multibyte 'string-as-multibyte))

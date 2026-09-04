@@ -94,11 +94,11 @@ KEYS = list of (KEYWORD-NAME PARAM-SYM DEFAULT-FORM) triples."
         (keys nil)
         (mode 'positional)
         (cur arglist))
-    (while cur
+    (while (consp cur)
       (let ((tok (car cur)))
         (cond
          ((eq tok '&optional) (setq mode 'optional))
-         ((eq tok '&rest)     (setq mode 'rest))
+         ((memq tok '(&rest &body)) (setq mode 'rest))
          ((eq tok '&key)      (setq mode 'key))
          ((eq tok '&aux)      (setq mode 'aux))
          (t
@@ -118,6 +118,10 @@ KEYS = list of (KEYWORD-NAME PARAM-SYM DEFAULT-FORM) triples."
            ;; &aux: drop (= local lets, rarely critical for stubs)
            ((eq mode 'aux) nil)))))
       (setq cur (cdr cur)))
+    ;; An improper lambda-list tail is the rest pattern.  In particular,
+    ;; `(form . attrs)' is equivalent to `(form &rest attrs)'.
+    (when cur
+      (setq restsym cur))
     (let ((rev-positional nil) (rev-optionals nil) (rev-keys nil)
           (p positional) (o optionals) (k keys))
       (while p (setq rev-positional (cons (car p) rev-positional)) (setq p (cdr p)))
@@ -184,6 +188,27 @@ DEFAULT application so it observes the raw argument, not the default."
                           (cadr spec)))
               bindings)))
     (nreverse bindings)))
+
+(defun emacs-cl-macros--cl-letf-symbol-function-place-symbol (place)
+  "Return the symbol addressed by `(symbol-function ...)' PLACE, or nil.
+Accept both real-Emacs-compatible `(symbol-function 'foo)' and
+`(symbol-function #'foo)' shapes."
+  (when (and (consp place)
+             (eq (car place) 'symbol-function)
+             (consp (cdr place)))
+    (let ((target (cadr place)))
+      (cond
+       ((and (consp target)
+             (eq (car target) 'quote)
+             (consp (cdr target))
+             (symbolp (cadr target)))
+        (cadr target))
+       ((and (consp target)
+             (eq (car target) 'function)
+             (consp (cdr target))
+             (symbolp (cadr target)))
+        (cadr target))
+       (t nil)))))
 
 ;;;; --- cl-defun ---------------------------------------------------------
 
@@ -279,16 +304,18 @@ DEFAULT application so it observes the raw argument, not the default."
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-dotimes))
   (defmacro cl-dotimes (spec &rest body)
-    "Stub: like `dotimes'.  SPEC is (VAR COUNT [RESULT]).
-Does not establish a `cl-block' nil, so `cl-return' is unsupported."
-    (cons 'dotimes (cons spec body))))
+    "Like `dotimes', with a `cl-block' nil catch for `cl-return'."
+    (list 'catch ''cl-block-anon
+          (cons 'dotimes
+                (cons spec body)))))
 
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-dolist))
   (defmacro cl-dolist (spec &rest body)
-    "Stub: like `dolist'.  SPEC is (VAR LIST [RESULT]).
-Does not establish a `cl-block' nil, so `cl-return' is unsupported."
-    (cons 'dolist (cons spec body))))
+    "Like `dolist', with a `cl-block' nil catch for `cl-return'."
+    (list 'catch ''cl-block-anon
+          (cons 'dolist
+                (cons spec body)))))
 
 ;;;; --- cl numeric predicates (Doc 15 B4 breadth) ---------------------
 ;; cl-evenp / cl-oddp / cl-plusp / cl-minusp were void; many packages and
@@ -531,19 +558,29 @@ range.  Works on both lists and arrays."
 
 (unless (fboundp 'emacs-cl-macros--loop-destructure-bindings)
   (defun emacs-cl-macros--loop-destructure-bindings (pattern source)
-    "Return `let' bindings destructuring PATTERN from SOURCE."
-    (let ((bindings nil)
-          (cur pattern)
-          (access source))
-      (while (consp cur)
-        (when (car cur)
-          (setq bindings
-                (cons (list (car cur) (list 'car access)) bindings)))
-        (setq access (list 'cdr access))
-        (setq cur (cdr cur)))
-      (when cur
-        (setq bindings (cons (list cur access) bindings)))
-      (nreverse bindings))))
+    "Return ordered `let*' bindings destructuring PATTERN from SOURCE.
+Nested list patterns receive fresh temporaries, and an improper symbol tail
+is bound to the unconsumed cdr.  This helper is shared by `cl-loop',
+`cl-defmacro', and `cl-destructuring-bind'."
+    (if (consp pattern)
+        (let* ((item (car pattern))
+               (tail (cdr pattern))
+               (item-bindings
+                (cond
+                 ((null item) nil)
+                 ((symbolp item)
+                  (list (list item (list 'car source))))
+                 (t
+                  (let ((value (make-symbol "--cl-destructure--")))
+                    (cons
+                     (list value (list 'car source))
+                     (emacs-cl-macros--loop-destructure-bindings
+                      item value)))))))
+          (append
+           item-bindings
+           (emacs-cl-macros--loop-destructure-bindings
+            tail (list 'cdr source))))
+      (if pattern (list (list pattern source)) nil))))
 
 (unless (fboundp 'emacs-cl-macros--loop-wrap-body)
   (defun emacs-cl-macros--loop-wrap-body (pattern item forms)
@@ -577,11 +614,27 @@ For patterns this stub does not recognise, returns nil."
 (unless (fboundp 'emacs-cl-macros--loop-iterate)
   (defun emacs-cl-macros--loop-iterate (iters body)
     "Generate iteration over ITERS running BODY (a list of forms).
-ITERS is a list of (VAR LIST-FORM); multiple entries iterate in PARALLEL
-(lockstep, stopping at the shortest list).  VAR may be a destructuring
-pattern.  With no iterators the body does not run."
+ITERS is a list of (VAR LIST-FORM [MODE STEP]); MODE `on' binds VAR to
+successive list tails advanced by STEP.  Other entries iterate over list
+elements.  Multiple element entries iterate in parallel (lockstep, stopping
+at the shortest list).  VAR may be a destructuring pattern.  With no
+iterators the body does not run."
     (cond
      ((null iters) (list 'progn))
+     ((and (null (cdr iters)) (eq (nth 2 (car iters)) 'on))
+      (let* ((it (car iters)) (var (car it)) (lf (nth 1 it))
+             (step (or (nth 3 it) 'cdr))
+             (lv (make-symbol "--loop-tail--"))
+             (bindings
+              (if (symbolp var)
+                  (list (list var lv))
+                (emacs-cl-macros--loop-destructure-bindings var lv))))
+        (list 'let (list (list lv lf))
+              (cons 'while
+                    (cons lv
+                          (append
+                           (list (cons 'let (cons bindings body)))
+                           (list (list 'setq lv (list 'funcall step lv)))))))))
      ((null (cdr iters))
       (let* ((it (car iters)) (var (car it)) (lf (car (cdr it)))
              (lv (if (symbolp var) var (make-symbol "--loop-item--"))))
@@ -611,13 +664,16 @@ pattern.  With no iterators the body does not run."
 
 Recognised shapes:
   for VAR in LIST                      iterator
+  for VAR on LIST [by FUNCTION]        successive list-tail iterator
   for VAR from N to M                  numeric iterator (Phase 4 B)
   for VAR from N below M               numeric iterator (Phase 4 B)
   with VAR = VAL                       binding
+  while COND / until COND              pre-test condition
   do FORM …                            unconditional side-effect
   collect FORM                         accumulate into list
   sum FORM                             accumulate sum
   count FORM                           count truthy
+  thereis FORM                         first non-nil result
   when COND return FORM                early-exit with FORM
   when COND do FORM                    conditional side-effect
   when COND collect FORM               conditional accumulate
@@ -633,6 +689,8 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
           (actions nil)          ; ordered list of (do FORM COND) / (acc KIND INTO FORM COND)
           (finally-forms nil) (finally-ret nil) (has-finally-ret nil)
           (when-return-cond nil) (when-return-form nil)
+          (loop-cond nil) (has-loop-cond nil)
+          (thereis-saw nil)
           (bodyless-forms nil)
           (cur clauses) (recognised t))
       (when (and clauses
@@ -640,7 +698,7 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                             '(for with do doing collect collecting append appending
                                   nconc nconcing sum summing count counting
                                   maximize maximizing minimize minimizing
-                                  when unless if while until repeat finally return
+                                  thereis when unless if while until repeat finally return
                                   named))))
         (setq bodyless-forms clauses cur nil))
       (while (and cur recognised)
@@ -652,6 +710,14 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                ((eq k2 'in)
                 (setq iters (append iters (list (list v (car (cdr (cdr (cdr cur)))))))
                       cur (cdr (cdr (cdr (cdr cur))))))
+               ((eq k2 'on)
+                (let* ((list-form (car (cdr (cdr (cdr cur)))))
+                       (r (cdr (cdr (cdr (cdr cur)))))
+                       (step (if (eq (car r) 'by) (car (cdr r)) 'cdr)))
+                  (when (eq (car r) 'by)
+                    (setq r (cdr (cdr r))))
+                  (setq iters (append iters (list (list v list-form 'on step)))
+                        cur r)))
                ;; `for VAR being [the|each] {hash-keys|hash-values} of H'.
                ((eq k2 'being)
                 (let* ((r (cdr (cdr (cdr cur))))
@@ -686,6 +752,12 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                       (append with-bindings (list (list (car (cdr cur)) (car (cdr (cdr (cdr cur)))))))
                       cur (cdr (cdr (cdr (cdr cur)))))
               (setq recognised nil)))
+           ((memq kw '(while until))
+            (setq has-loop-cond t
+                  loop-cond (if (eq kw 'until)
+                                (list 'not (car (cdr cur)))
+                              (car (cdr cur)))
+                  cur (cdr (cdr cur))))
            ((memq kw '(do doing))
             (setq actions (append actions (list (list 'do (car (cdr cur)) nil)))
                   cur (cdr (cdr cur))))
@@ -694,6 +766,10 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                    (form (car (cdr cur))) (r (cdr (cdr cur))) (into nil))
               (when (eq (car r) 'into) (setq into (car (cdr r)) r (cdr (cdr r))))
               (setq actions (append actions (list (list 'acc kind into form nil))) cur r)))
+           ((eq kw 'thereis)
+            (setq thereis-saw t
+                  actions (append actions (list (list 'thereis (car (cdr cur)))))
+                  cur (cdr (cdr cur))))
            ;; `when/if/unless COND ACTION [and ACTION ...]' — each ACTION (do /
            ;; accumulator / return) runs under COND (unless = negated).
            ((memq kw '(when if unless))
@@ -765,14 +841,35 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
               (acc-reg nil)          ; alist accvar -> (init . reverse-p)
               (uses-default nil)
               (body nil)
-              (result-sym (and when-return-cond (make-symbol "--loop-r--")))
-              (tag-sym (and when-return-cond (make-symbol "--loop-tag--"))))
+              (early-saw (or when-return-cond thereis-saw))
+              (result-sym (and (or when-return-cond thereis-saw)
+                               (make-symbol "--loop-r--")))
+              (tag-sym (and (or when-return-cond thereis-saw)
+                            (make-symbol "--loop-tag--"))))
           (dolist (act actions)
-            (if (eq (car act) 'do)
-                (let ((form (nth 1 act)) (cnd (nth 2 act)))
-                  (setq body (append body (list (if cnd (list 'when cnd form) form)))))
+            (cond
+             ((eq (car act) 'do)
+              (let ((form (nth 1 act)) (cnd (nth 2 act)))
+                (setq body
+                      (append body
+                              (list (if cnd (list 'when cnd form) form))))))
+             ((eq (car act) 'thereis)
+              (let ((value-sym (make-symbol "--loop-value--")))
+                (setq body
+                      (append
+                       body
+                       (list
+                        (list 'let (list (list value-sym (nth 1 act)))
+                              (list 'when value-sym
+                                    (list 'setq result-sym value-sym)
+                                    (list 'throw (list 'quote tag-sym)
+                                          nil))))))))
+             (t
               ;; accumulator
-              (let* ((kind (nth 1 act)) (into (nth 2 act)) (form (nth 3 act)) (cnd (nth 4 act))
+              (let* ((kind (nth 1 act))
+                     (into (nth 2 act))
+                     (form (nth 3 act))
+                     (cnd (nth 4 act))
                      (av (or into default-acc))
                      (init (if (memq kind '(sum count)) 0 nil))
                      (revp (eq kind 'collect))
@@ -788,20 +885,26 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                 (unless into (setq uses-default t))
                 (unless (assq av acc-reg)
                   (setq acc-reg (append acc-reg (list (cons av (cons init revp))))))
-                (setq body (append body (list (if cnd (list 'when cnd acc-form) acc-form)))))))
+                (setq body
+                      (append body
+                              (list (if cnd
+                                        (list 'when cnd acc-form)
+                                      acc-form))))))))
           (when when-return-cond
             (setq body (append body
                                (list (list 'when when-return-cond
                                            (list 'setq result-sym when-return-form)
                                            (list 'throw (list 'quote tag-sym) nil))))))
-          (let ((skel (emacs-cl-macros--loop-iterate iters body))
+          (let ((skel (if has-loop-cond
+                          (cons 'while (cons loop-cond body))
+                        (emacs-cl-macros--loop-iterate iters body)))
                 (post nil))
             (dolist (e acc-reg)
               (when (cdr (cdr e))        ; reverse-p: collect accs built backwards
                 (setq post (append post (list (list 'setq (car e) (list 'nreverse (car e))))))))
             (let ((result
                    (cond
-                    (when-return-cond result-sym)
+                    (early-saw result-sym)
                     (has-finally-ret finally-ret)
                     (finally-forms
                      (cons 'progn (append finally-forms (list (if uses-default default-acc nil)))))
@@ -810,9 +913,9 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                   (let-binds
                    (append
                     (mapcar (lambda (e) (list (car e) (car (cdr e)))) acc-reg)
-                    (when when-return-cond (list (list result-sym nil)))
+                    (when early-saw (list (list result-sym nil)))
                     with-bindings))
-                  (core (if when-return-cond
+                  (core (if early-saw
                             (list 'catch (list 'quote tag-sym) skel)
                           skel)))
               (cons 'let (cons let-binds (append (list core) post (list result))))))))))))
@@ -1324,11 +1427,9 @@ bindings."
           (cond
            ((symbolp place)
             (push binding let-bindings))
-           ((and (consp place)
-                 (eq (car place) 'symbol-function)
-                 (consp (cdr place))
-                 (eq (caadr place) 'quote))
-            (let* ((symbol (cadadr place))
+           ((emacs-cl-macros--cl-letf-symbol-function-place-symbol place)
+            (let* ((symbol (emacs-cl-macros--cl-letf-symbol-function-place-symbol
+                            place))
                    (had (make-symbol "cl-letf-had-function"))
                    (old (make-symbol "cl-letf-old-function")))
               (push (list had (list 'fboundp (list 'quote symbol)))
@@ -1507,16 +1608,47 @@ defining `emit-before-strings' / `emit-after-strings')."
 (unless (fboundp 'cl-rest)
   (defalias 'cl-rest 'cdr))
 
-;; cl-defmacro: minimal stub that aliases plain `defmacro'.  Common Lisp
-;; arglist features (&key / &whole etc. on macro arglists) are not used
-;; by the Phase 1e nelisp-actor / nelisp-process call sites, so the
-;; thin alias is sufficient.  If a future caller needs CL arglist
-;; semantics inside macros, swap this for the same expansion logic
-;; `cl-defun' uses above.
+;; cl-defmacro: flatten positional destructuring patterns before handing the
+;; arglist to plain `defmacro'.  The generated let* handles the nested &key
+;; patterns used by ibuffer and flat list destructuring used by generator.el.
 (unless (fboundp 'cl-defmacro)
   (defmacro cl-defmacro (name arglist &rest body)
-    "Phase 1e stub: forwards to plain `defmacro'."
-    (cons 'defmacro (cons name (cons arglist body)))))
+    "Define NAME as a macro, supporting positional destructuring patterns."
+    (let ((flat-arglist nil)
+          (bindings nil)
+          (mode 'positional)
+          (cur arglist))
+      (while cur
+        (let ((arg (car cur)))
+          (cond
+           ((memq arg '(&optional &rest &body &key &aux))
+            (setq mode arg)
+            (setq flat-arglist (cons arg flat-arglist)))
+           ((and (eq mode 'positional) (consp arg))
+            (let* ((value (make-symbol "--cl-destructure--"))
+                   (parts (emacs-cl-macros--split-arglist arg))
+                   (positional (car parts))
+                   (keys (car (cdr (cdr (cdr parts))))))
+              (setq flat-arglist (cons value flat-arglist))
+              (setq bindings
+                    (append bindings
+                            (emacs-cl-macros--loop-destructure-bindings
+                             positional value)
+                            (emacs-cl-macros--key-bindings keys value)))))
+           (t
+            (setq flat-arglist (cons arg flat-arglist)))))
+        (setq cur (cdr cur)))
+      (if (null bindings)
+          (cons 'defmacro (cons name (cons arglist body)))
+        (let ((real-body
+               (list (cons 'let* (cons bindings body)))))
+          (when (stringp (car body))
+            (setq real-body
+                  (cons (car body)
+                        (list (cons 'let*
+                                    (cons bindings (cdr body)))))))
+          (cons 'defmacro
+                (cons name (cons (nreverse flat-arglist) real-body))))))))
 
 ;; List helpers commonly used by upstream packages.  caar / cadr / cddr
 ;; are already defined by `emacs-list.el'; cdar is missing.
@@ -2110,17 +2242,18 @@ A TYPE of t or `otherwise' is the default clause."
 ;;;; --- Doc 16 breadth round 18: cl binding macros -----------------------
 ;; cl-destructuring-bind / cl-multiple-value-bind / cl-multiple-value-setq,
 ;; all void on the runtime.  cl-destructuring-bind reuses the existing
-;; `emacs-cl-macros--split-arglist' / `--key-bindings' helpers (the same
-;; ones backing `cl-defun'); the multiple-value macros are thin layers on
-;; top.  Nested destructuring patterns are not supported (matches the
-;; cl-defun shim's scope).  Hygienic temporaries via `make-symbol'.  Same
-;; `unless (fboundp ...)' gating: host Emacs keeps its real cl-lib versions.
+;; `emacs-cl-macros--split-arglist' / `--key-bindings' helpers and the
+;; recursive destructuring machinery shared with `cl-defmacro'; the
+;; multiple-value macros are thin layers on top.  Hygienic temporaries via
+;; `make-symbol'.  The standalone-aware gate replaces the earlier flat-only
+;; prelude stub while host Emacs keeps its real cl-lib version.
 
-(unless (fboundp 'cl-destructuring-bind)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-destructuring-bind))
   (defmacro cl-destructuring-bind (arglist expr &rest body)
     "Bind the variables in ARGLIST to successive elements of the list EXPR.
 Supports &optional (with defaults), &rest/&body, &key (with defaults) and
-&aux.  Nested destructuring patterns are not supported by this shim."
+&aux, nested list patterns, and dotted tails."
     (let* ((parts (emacs-cl-macros--split-arglist arglist))
            (positional (nth 0 parts))
            (optionals (nth 1 parts))
@@ -2133,7 +2266,15 @@ Supports &optional (with defaults), &rest/&body, &key (with defaults) and
            (bindings (list (list vsym expr))))
       ;; positionals: (POS (nth IDX V))
       (dolist (p positional)
-        (setq bindings (cons (list p (list 'nth idx vsym)) bindings))
+        (if (symbolp p)
+            ;; Preserve the flat-pattern expansion exactly.
+            (setq bindings (cons (list p (list 'nth idx vsym)) bindings))
+          (let ((value (make-symbol "--cl-destructure--")))
+            (setq bindings
+                  (cons (list value (list 'nth idx vsym)) bindings))
+            (dolist (binding
+                     (emacs-cl-macros--loop-destructure-bindings p value))
+              (setq bindings (cons binding bindings)))))
         (setq idx (1+ idx)))
       ;; optionals: token is VAR or (VAR DEFAULT); present iff the cons exists
       (dolist (o optionals)

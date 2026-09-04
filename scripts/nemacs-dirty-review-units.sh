@@ -7,35 +7,35 @@ mkdir -p "$(dirname "$output")"
 unit_for_path() {
   local path="$1"
   case "$path" in
-    bin/nemacs|src/nemacs-main.el|src/emacs-fns.el|scripts/verify-nemacs-tui.sh)
-      printf '%s' "production-launcher-tui"
+    scripts/nemacs-dirty-review-units.sh)
+      printf '%s' "banking-tooling"
       ;;
-    src/emacs-fileio-gui.el|src/emacs-dired-min-gui.el|src/emacs-help-gui.el|src/emacs-info.el|src/emacs-special-buffers.el|src/emacs-toolbar.el|src/nemacs-gtk-view-menu.el|src/nemacs-gui-file-bridge-runtime.el)
-      printf '%s' "shared-gui-runtime-adapters"
+    packages/nelisp-emacs-*|scripts/nemacs-library-app-scaffold.el)
+      printf '%s' "package-scaffold"
       ;;
-    src/cl-lib.el|src/emacs-command-loop.el|src/emacs-dired-min.el|src/emacs-eventloop.el|src/emacs-fileio.el|src/emacs-help.el|src/emacs-init.el|src/emacs-minibuffer.el|src/emacs-project.el|src/emacs-shell-command.el|src/emacs-stub.el|src/ert.el|src/files-standalone-buffer.el|src/generator.el|src/help-mode.el|src/image-loader.el|src/info.el|src/let-alist.el|src/subr-x.el|src/thunk.el|src/emacs-server-polyfills.el|src/emacs-server-client-polyfills.el|src/emacs-pty-ffi.el|src/emacs-network-syscall-shim.el|src/emacs-network-ffi-inet6.el|src/emacs-process-events.el|src/emacs-pipe-process.el|src/emacs-weak-table.el|src/emacs-tls-ffi.el|src/emacs-font-ffi.el)
-      printf '%s' "shared-runtime-substrate"
+    src/cl-lib.el|src/emacs-backquote.el|src/emacs-buffer-builtins.el|src/emacs-buffer-ui.el|src/emacs-buffer.el|src/emacs-cl-macros.el|src/emacs-easy-mmode.el|src/emacs-edit-builtins.el|src/emacs-eval.el|src/emacs-fns.el|src/emacs-foundation.el|src/emacs-keymap-builtins.el|src/emacs-keymap.el|src/emacs-minibuffer-builtins.el|src/emacs-mode-builtins.el|src/emacs-pcase.el|src/emacs-redisplay.el|src/emacs-stub.el|src/emacs-vars.el|src/emacs-window-builtins.el|src/emacs-window.el|src/nelisp-emacs-compat.el|src/nelisp-regex.el|src/nelisp-text-buffer.el|src/nemacs-gui-file-bridge-runtime.el|src/nemacs-ime-romaji.tsv|src/pp.el|src/subr-x.el|test/emacs-buffer-builtins-test.el|test/emacs-buffer-test.el|test/emacs-cl-macros-test.el|test/emacs-edit-builtins-test.el|test/emacs-minibuffer-builtins-test.el|test/emacs-mode-builtins-test.el|test/emacs-pcase-test.el|test/emacs-window-builtins-test.el|test/nelisp-regex-test.el|test/nemacs-gui-file-bridge-runtime-test.el|docs/design/38-emacs-replacement-execution-plan.org|docs/design/39-emacs-replacement-verification-checklist.org)
+      printf '%s' "runtime-editor-substrate"
       ;;
-    src/emacs-bookmark-ui.el|src/emacs-buffer-core.el|src/emacs-buffer-ui.el|src/emacs-buffer.el|src/emacs-cl-macros.el|src/emacs-core.el|src/emacs-edit-builtins.el|src/emacs-editing.el|src/emacs-elisp-eval.el|src/emacs-elisp-mode.el|src/emacs-fileio-builtins.el|src/emacs-font-lock.el|src/emacs-foundation.el|src/emacs-ielm.el|src/emacs-io.el|src/emacs-isearch.el|src/emacs-keymap.el|src/emacs-line-builtins.el|src/emacs-process-builtins.el|src/emacs-process.el|src/emacs-redisplay.el|src/emacs-replace.el|src/emacs-string.el|src/emacs-text-core.el|src/emacs-tui-backend.el|src/emacs-tui-event.el|src/emacs-undo.el|src/emacs-undo-ui.el|src/emacs-window.el|src/files-runtime.el|src/files.el|src/nelisp-emacs-compat-fileio.el|src/nelisp-emacs-compat.el|src/nelisp-emacs.el|src/nemacs-gtk-frontend.el|src/emacs-list.el|src/emacs-time.el|src/emacs-numeric.el|src/emacs-syntax-table.el|src/emacs-command-loop-builtins.el|src/emacs-vars.el|src/emacs-subr-extras.el)
-      printf '%s' "library-boundary-api"
+    bin/nemacs-server|src/comint.el|src/emacs-fileio-builtins.el|src/emacs-process.el|src/emacs-server-client-polyfills.el|src/emacs-time.el|src/files-standalone-buffer.el|src/nelisp-emacs-compat-fileio.el|test/emacs-fileio-builtins-test.el|test/emacs-process-builtins-test.el|test/emacs-time-test.el)
+      printf '%s' "file-process-timer"
       ;;
-    .gitignore|AGENTS.md|CLAUDE.md|Makefile|docs/design/*.org|docs/release/*.example|scripts/bootstrap-step-walk.el|scripts/build-nelisp-bootstrap.el|scripts/nemacs-dirty-review-units.sh|scripts/nemacs-gui-bridge-runtime-inventory.el|scripts/nemacs-gui-keymap-coverage-summary.el|scripts/nemacs-library-api-promotion-queue.el|scripts/nemacs-library-app-boundary.el|scripts/nemacs-library-app-scaffold.el|scripts/nemacs-library-boundary-report.el|scripts/nemacs-library-compat-api-policy.el|scripts/nemacs-library-contract.el|scripts/nemacs-library-package-api.el|scripts/nemacs-library-package-app-require-guard.el|scripts/nemacs-library-package-archive.el|scripts/nemacs-library-package-archive-checksum.el|scripts/nemacs-library-package-archive-index.el|scripts/nemacs-library-package-archive-smoke.el|scripts/nemacs-library-package-catalog.el|scripts/nemacs-library-package-dependency-publication-policy.el|scripts/nemacs-library-package-deps.el|scripts/nemacs-library-package-descriptors.el|scripts/nemacs-library-package-guide.el|scripts/nemacs-library-package-index-smoke.el|scripts/nemacs-library-package-install-smoke.el|scripts/nemacs-library-package-layout.el|scripts/nemacs-library-package-lazy-metadata.el|scripts/nemacs-library-package-load-path.sh|scripts/nemacs-library-package-manifest.el|scripts/nemacs-library-package-metadata.el|scripts/nemacs-library-package-publication-policy.el|scripts/nemacs-library-package-release-bundle-manifest.el|scripts/nemacs-library-package-release-bundle-smoke.el|scripts/nemacs-library-package-release-config-check.sh|scripts/nemacs-library-package-release-key-policy.el|scripts/nemacs-library-package-release-publication-policy.el|scripts/nemacs-library-package-release-rehearsal-key.sh|scripts/nemacs-library-package-scaffold.el|scripts/nemacs-library-package-signature-policy.el|scripts/nemacs-library-package-signature-release-sign.el|scripts/nemacs-library-package-smoke.el|scripts/nemacs-library-package-vendor-lock.el|scripts/nemacs-library-package-verify.el|scripts/nemacs-ownership-coverage.el|scripts/nemacs-public-api-inventory.el|scripts/nemacs-runtime-image-input-inventory.el|scripts/nemacs-runtime-image-preload.el|scripts/nemacs-stub-fallback-skip-inventory.el|scripts/verify-production-runtime-path.el)
-      printf '%s' "gate-tooling-docs"
+    Makefile|bin/nemacs|scripts/build-nelisp-bootstrap.el|scripts/nemacs-runtime-image-preload.el|scripts/nemacs-runtime-process-preload.el|scripts/probe-vendor-class-a-standalone.py|scripts/probe-vendor-class-a-standalone.sh|scripts/standalone-source-normalize.el|scripts/vendor-class-a-smoke.el|scripts/vendor-core-smoke.el|scripts/vendor-form-standalone-walk.el|scripts/verify-nemacs-standalone-batch-repl.sh|scripts/verify-vendor-class-a-repl.sh|scripts/verify-vendor-core-repl.sh|src/nemacs-runtime-stdlib-extra.el|test/nemacs-bootstrap-nelisp-test.el|test/nemacs-loadup-test.el|test/runtime-stdlib-extra-test.el|test/standalone-source-normalize-test.el)
+      printf '%s' "bootstrap-runtime-image-replay"
       ;;
-    packages/nelisp-emacs-*)
-      printf '%s' "package-extraction-scaffold"
+    src/calendar.el|src/compile.el|src/emacs-dired-min-gui.el|src/emacs-dired-min.el|src/emacs-help.el|src/emacs-project.el|src/eshell.el|src/help-fns.el|src/help-mode.el|src/ielm.el|src/imenu.el|src/isearch.el|src/lisp-mode.el|src/man.el|src/minibuffer.el|src/project.el|src/replace.el|src/shell.el|src/simple.el|src/woman.el|src/xref.el)
+      printf '%s' "built-in-workflow"
       ;;
-    gui/*)
-      printf '%s' "gui-consumer-import"
+    scripts/build-nelisp-emacs-org-bridge-bundle.el|scripts/nemacs-org-mode-smoke-probe.el|scripts/nemacs-org-step-probe.el|scripts/nemacs-org-workflow-probe.el|src/emacs-org-agenda.el|src/emacs-org-outline.el|src/emacs-org-table.el|src/emacs-textmodes-stub.el|src/nelisp-emacs-org-bridge.el|test/nelisp-emacs-org-bridge-test.el)
+      printf '%s' "org-bridge-workflow"
       ;;
-    README.org)
-      printf '%s' "project-docs"
+    scripts/build-nelisp-emacs-magit-bridge-bundle.el|scripts/nemacs-magit-bundle-diagnose-probe.el|scripts/nemacs-magit-fixture.sh|scripts/nemacs-magit-stage-workflow-probe.el|scripts/nemacs-magit-status-diagnose-probe.el|scripts/nemacs-magit-status-line-probe.el|scripts/nemacs-magit-status-live-diagnose-probe.el|scripts/nemacs-magit-status-live-smoke-probe.el|scripts/nemacs-magit-status-smoke-probe.el|scripts/nemacs-magit-transient-workflow-probe.el|src/nelisp-emacs-magit-bridge.el|test/nelisp-emacs-magit-bridge-test.el)
+      printf '%s' "magit-bridge-workflow"
       ;;
-    test/*)
-      printf '%s' "tests"
+    README.org|docs/install/01-new-machine-setup.org)
+      printf '%s' "install-docs"
       ;;
-    target/*|tmp-diag/*|src/*.elc.disabled-*|docs/worklog/*~)
-      printf '%s' "generated-or-local-artifact"
+    scripts/__pycache__/probe-vendor-class-a-standalone.cpython-313.pyc)
+      printf '%s' "generated-local-artifact"
       ;;
     *)
       printf '%s' "UNCLASSIFIED"

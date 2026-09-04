@@ -119,6 +119,9 @@ Doc 02 v0.1 modules contribute several hundred more across
 =emacs-shell-command-test.el= / =emacs-completion-ui-test.el= /
 =emacs-project-test.el= plus the =nemacs-gtk-*= frontend tests.
 
+For new-machine setup instructions separate from this README, see
+=docs/install/01-new-machine-setup.org=.
+
 If you are looking for a working pure-Elisp Emacs binary today, this
 repository is not that product.  Track =nemacs-next= for the runnable
 editor direction once extraction begins.
@@ -1135,6 +1138,8 @@ make test            # run the host-Emacs ERT suite (1560 tests)
 make test-redisplay-core-smoke # isolated lightweight redisplay core smoke
 make doctor          # check host/NeLisp driver readiness
 make build-nelisp-bootstrap # generate build/nemacs-bootstrap.el
+make compile-nelisp-bootstrap-artifact # AOT compile bootstrap to .neln
+make prepare-nelisp-bootstrap-cold-cache # validate/build flat cold cache
 make bake-image      # legacy .nli state image via emacs-dump
 make bake-runtime-image # generate build/nemacs-runtime.nlri via standalone reader
 make bake-interactive-runtime-image # include editor/TUI features
@@ -1164,9 +1169,15 @@ this fails before =nemacs-main= is entered, the next fix belongs in the
 driver/runtime layer rather than the editor bootstrap.
 =make build-nelisp-bootstrap=
 creates a plain Elisp preload bundle at =build/nemacs-bootstrap.el=;
-=bin/nemacs --driver=nelisp= uses it automatically when present.  This is
-a source preload bundle, not a pdump/AST image.  Set
-=NEMACS_BOOTSTRAP_BUNDLE=none= to force source-by-source cold loading.
+=bin/nemacs --driver=nelisp= uses it as the source for an automatic
+first-run =.neln= AOT artifact and flat-arena cold image.  The default
+cache is =${XDG_CACHE_HOME:-$HOME/.cache}/nemacs/=.  Later starts validate
+the artifact, runtime executable, source inputs, and flat image through
+NeLisp's artifact manifest contract and cold-load the cached arena without
+replaying the bootstrap.  =NEMACS_COLD_ARTIFACT= and =NEMACS_COLD_IMAGE=
+override the two cache paths.  Set =NEMACS_DISABLE_COLD_CACHE=1= to retain
+the normal bootstrap path for recovery or diagnosis.  A failed AOT/flat
+prepare also falls back to normal bootstrap rather than using a stale image.
 
 =make verify-nelisp-standalone= is the current pure standalone-reader
 gate.  It runs =make doctor=, =make test-nelisp=,

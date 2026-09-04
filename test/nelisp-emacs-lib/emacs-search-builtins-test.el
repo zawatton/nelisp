@@ -116,7 +116,28 @@
   (let ((source "alpha beta gamma"))
     (should (= 6 (string-match "b\\(et\\)a" source)))
     (should (equal "et" (match-string 1 source)))
-    (should (equal "beta" (match-string 0 source)))))
+    (should (equal "beta" (match-string 0 source)))
+    (should (= 6 (string-match "\\.png\\'" "icons/.png")))
+    (should (equal "png"
+                   (match-string 1
+                                 (progn
+                                   (string-match "\\.\\(png\\)\\'"
+                                                 "icons/image.png")
+                                   "icons/image.png"))))
+    (should (equal "trim"
+                   (replace-regexp-in-string "[ \t\n]+\\'" "" "trim   ")))
+    (emacs-search-builtins-test--with-fresh-world
+      (let ((buf (nelisp-ec-generate-new-buffer "result-parse")))
+        (nelisp-ec-with-current-buffer buf
+          (nelisp-ec-insert "__RESULT__: PASS")
+          (nelisp-ec-goto-char (nelisp-ec-point-min))
+          (should (= 17
+                     (nelisp-ec-re-search-forward
+                      "^__RESULT__: \\([A-Z]+\\)\\'")))
+          (should (equal "PASS"
+                         (nelisp-ec-buffer-substring
+                          (nelisp-ec-match-beginning 1)
+                          (nelisp-ec-match-end 1)))))))))
 
 ;;;; G. Host builtin re-search-forward remains bound and numeric
 

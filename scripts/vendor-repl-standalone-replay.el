@@ -148,7 +148,8 @@ to be safe in every standalone-reader evaluator path."
 (defun vendor-repl-standalone--source-provided-features (source)
   "Return feature symbols provided by normalized SOURCE."
   (condition-case _err
-      (vendor-repl-standalone--form-provided-features (read source))
+      (vendor-repl-standalone--form-provided-features
+       (standalone-source-normalize-read-source-form source))
     (error nil)))
 
 (defun vendor-repl-standalone--sync-provided-features-form (sources)
@@ -177,14 +178,20 @@ to be safe in every standalone-reader evaluator path."
 (defun vendor-repl-standalone--eval-source-form (source &optional marker file-name index)
   "Return a standalone form that evaluates SOURCE through NeLisp's reader."
   (let* ((print-escape-newlines t)
+         ;; SOURCE is one normalized form.  Re-read and print it through the
+         ;; same one-line serializer used by proof forms before choosing the
+         ;; direct or nested transport.  In particular, a large direct form
+         ;; must not copy raw CR/TAB/control bytes into the REPL stream.
+         (safe-source
+          (let ((print-quoted nil))
+            (vendor-repl-standalone--form-line
+             (standalone-source-normalize-read-source-form source))))
          (direct-form (and (> (length source)
                               vendor-repl-standalone-direct-character-limit)
-                           (concat source
-                                   (unless (string-suffix-p "\n" source)
-                                     "\n"))))
+                           (concat safe-source "\n")))
          (eval-form (or direct-form
                         (format "(nelisp--eval-source-string %s)\n"
-                                (prin1-to-string source)))))
+                                (prin1-to-string safe-source)))))
     (if (and vendor-repl-standalone-trace-forms
              marker file-name index)
         (concat
@@ -236,7 +243,7 @@ to be safe in every standalone-reader evaluator path."
 (defun vendor-repl-standalone--pretty-form (source)
   "Return SOURCE as a multi-line form string when it is readable."
   (condition-case _err
-      (pp-to-string (read source))
+      (pp-to-string (standalone-source-normalize-read-source-form source))
     (error source)))
 
 (defun vendor-repl-standalone--proof-form-source ()
@@ -253,15 +260,7 @@ Unlike a single `read', this walks the whole string so a
 `vendor-repl-standalone-proof-form-file' with more than one top-level form
 (for example a helper `defvar' followed by the actual proof expression) is
 not silently truncated to its first form."
-  (with-temp-buffer
-    (insert source)
-    (goto-char (point-min))
-    (let (forms)
-      (while (not (eobp))
-        (condition-case _err
-            (push (read (current-buffer)) forms)
-          (end-of-file (goto-char (point-max)))))
-      (nreverse forms))))
+  (standalone-source-normalize-read-source-forms source))
 
 (defun vendor-repl-standalone--proof-forms ()
   "Return the configured proof source as a list of top-level forms."
@@ -282,11 +281,16 @@ unrelated fragments (see NeLisp Doc 156 section 7).  `prin1-to-string' (unlike
 `pp-to-string') never inserts formatting newlines on its own; binding
 `print-escape-newlines' also forces any newline that appears *inside* a
 printed string literal to come out as the two-character escape \"\\n\" rather
-than a literal line break.  The final `replace-regexp-in-string' is a
-defensive backstop only: with the bindings above there should be no raw
-newline left to strip."
+than a literal line break.  `print-escape-control-characters' likewise makes
+GNU Emacs print CR, TAB, C-c, and meta bytes as reader-compatible octal
+escapes instead of embedding raw control bytes.  The final
+`replace-regexp-in-string' is a defensive backstop only: with the bindings
+above there should be no raw newline left to strip."
   (let* ((print-escape-newlines t)
-         (printed (prin1-to-string form)))
+         (print-escape-control-characters t)
+         (printed
+          (standalone-source-normalize-escape-printed-controls
+           (prin1-to-string form))))
     (replace-regexp-in-string "[\n\r]" " " printed)))
 
 (defun vendor-repl-standalone--proof-scaffold (marker)

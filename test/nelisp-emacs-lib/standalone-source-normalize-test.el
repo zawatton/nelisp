@@ -973,12 +973,6 @@ that walks down into the guarded definition."
                    ((defconst rfc2368-mailto-regexp "mailto:")
                     (defun rfc2368-parse-mailto-url (mailto-url) mailto-url)
                     (provide 'rfc2368)))
-                  ("timer-list.el"
-                   ((defun list-timers (&optional _ignore-auto _nonconfirm)
-                      nil)
-                    (define-derived-mode timer-list-mode tabulated-list-mode
-                      "Timer-List")
-                    (provide 'timer-list)))
                   ("master.el"
                    ((defvar master-of nil)
                     (define-minor-mode master-mode
@@ -1541,6 +1535,31 @@ that walks down into the guarded definition."
          (null
           (standalone-source-normalize-top-level-forms form)))))))
 
+(ert-deftest standalone-source-normalize-test/keeps-timer-list-callable-surface ()
+  (let ((standalone-source-normalize-current-file "timer-list.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun list-timers (&optional _ignore-auto _nonconfirm)
+          "List all timers in a buffer."
+          (interactive)
+          (pop-to-buffer-same-window (get-buffer-create "*timer-list*"))))
+      '((defun list-timers (&optional _ignore-auto _nonconfirm)
+          (interactive)
+          (pop-to-buffer-same-window (get-buffer-create "*timer-list*"))))))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(define-derived-mode timer-list-mode tabulated-list-mode
+          "Timer-List"))
+      '((define-derived-mode timer-list-mode tabulated-list-mode
+          "Timer-List"))))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(provide 'timer-list))
+      '((provide 'timer-list))))))
+
 (ert-deftest standalone-source-normalize-test/drops-org-inlinetask-load-only-forms ()
   (let ((standalone-source-normalize-current-file "org-inlinetask.el"))
     (dolist (form '((defgroup org-inlinetask nil
@@ -1973,6 +1992,15 @@ that walks down into the guarded definition."
        '(provide 'org-element-ast))
       '((provide 'org-element-ast))))))
 
+(ert-deftest standalone-source-normalize-test/drops-vendor-derived-define-derived-mode-macro ()
+  (let ((standalone-source-normalize-current-file "derived.el"))
+    (should
+     (null
+      (standalone-source-normalize-top-level-forms
+       '(defmacro define-derived-mode
+          (child parent name &optional docstring &rest body)
+          `(list ,child ,parent ,name ,docstring ,@body)))))))
+
 (ert-deftest standalone-source-normalize-test/drops-org-footnote-top-level-provide ()
   (let ((standalone-source-normalize-current-file "org-footnote.el"))
     (should
@@ -2245,6 +2273,22 @@ that walks down into the guarded definition."
     (standalone-source-normalize-top-level-forms
      '(gv-define-setter org-element-property (value property node)
         `(org-element-put-property ,node ,property ,value))))))
+
+(ert-deftest standalone-source-normalize-test/cal-menu-keeps-popup-symbols-bound ()
+  "Dropped cal-menu UI wiring still leaves variables used by calendar.el."
+  (let ((standalone-source-normalize-current-file "cal-menu.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(easy-menu-define cal-menu-context-mouse-menu nil
+          "Context menu." '("Calendar")))
+      '((defvar cal-menu-context-mouse-menu nil))))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(easy-menu-define cal-menu-global-mouse-menu nil
+          "Global menu." '("Calendar")))
+      '((defvar cal-menu-global-mouse-menu nil))))))
 
 (ert-deftest standalone-source-normalize-test/drops-files-top-level-key-wiring ()
   (let ((standalone-source-normalize-current-file "files.el"))
@@ -2535,6 +2579,73 @@ that walks down into the guarded definition."
      '(defalias 'org-force-cycle-archived #'org-cycle-force-archived))
     '((defalias 'org-force-cycle-archived 'org-cycle-force-archived)))))
 
+(ert-deftest standalone-source-normalize-test/rewrites-forward-defalias-to-trampoline ()
+  (let ((standalone-source-normalize-current-file "org-macs.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defalias 'org-save-outline-visibility #'org-fold-save-outline-visibility))
+      '((defun org-save-outline-visibility (&rest args)
+          (apply 'org-fold-save-outline-visibility args)))))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-quoted-forward-defalias-to-trampoline ()
+  (let ((standalone-source-normalize-current-file "advice.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defalias 'ad-activate-internal 'ad-activate))
+      '((defun ad-activate-internal (&rest args)
+          (apply 'ad-activate args)))))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-advice-around-replacer-without-closure ()
+  (let ((standalone-source-normalize-current-file "advice.el"))
+    (should
+     (equal
+      (standalone-source-normalize-form
+       '(ad-substitute-tree
+         (lambda (form) (eq form 'ad-do-it))
+         (lambda (_form) around-form)
+         (macroexp-progn (ad-body-forms (ad-advice-definition advice)))))
+      '(ad-substitute-tree
+        (lambda (form) (eq form 'ad-do-it))
+        around-form
+        (macroexp-progn (ad-body-forms (ad-advice-definition advice))))))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-advice-substitute-tree-for-direct-values ()
+  (let ((standalone-source-normalize-current-file "advice.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun ad-substitute-tree (sUbTrEe-TeSt fUnCtIoN tReE)
+          (cond ((consp tReE)
+                 (cons (if (funcall sUbTrEe-TeSt (car tReE))
+                           (funcall fUnCtIoN (car tReE))
+                         (if (consp (car tReE))
+                             (ad-substitute-tree sUbTrEe-TeSt fUnCtIoN (car tReE))
+                           (car tReE)))
+                       (ad-substitute-tree sUbTrEe-TeSt fUnCtIoN (cdr tReE))))
+                ((funcall sUbTrEe-TeSt tReE)
+                 (funcall fUnCtIoN tReE))
+                (t tReE))))
+      (list
+       (standalone-source-normalize--advice-substitute-tree-form))))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-defadvice-to-list-built-advice-body ()
+  (let ((standalone-source-normalize-current-file "advice.el"))
+    (should
+     (equal
+     (standalone-source-normalize-top-level-forms
+       '(defmacro defadvice (function args &rest body)
+          (let* ((advice (ad-make-advice
+                          name (memq 'protect flags)
+                          (not (memq 'disable flags))
+                          `(advice lambda ,arglist ,@body))))
+            `(progn
+               (ad-add-advice ',function ',advice ',class ',position)
+               ',function))))
+      (list
+       (standalone-source-normalize--advice-defadvice-form))))))
+
 (ert-deftest standalone-source-normalize-test/preserves-defalias-function-lambda ()
   (should
    (equal
@@ -2561,14 +2672,52 @@ that walks down into the guarded definition."
     (should
      (equal
       (standalone-source-normalize-top-level-forms
-       '(defun demo-large (&optional arg)
-          (let ((value arg))
-            (setq value (cons value value))
-            value)))
+      '(defun demo-large (&optional arg)
+         (let ((value arg))
+           (setq value (cons value value))
+           value)))
       '((progn
-          (defun demo-large (&optional arg) nil)
+          (if (fboundp 'demo-large)
+              'demo-large
+            (defun demo-large (&optional arg)
+              (error "Standalone source body elided: demo-large")))
           (put 'demo-large 'standalone-source-elided-body t)
           'demo-large))))))
+
+(ert-deftest standalone-source-normalize-test/elided-defun-preserves-existing-implementation ()
+  (let ((symbol 'standalone-source-normalize-test--existing-large))
+    (unwind-protect
+        (progn
+          (fset symbol (lambda (_arg) 'existing-result))
+          (let ((standalone-source-normalize-large-defun-character-limit 20))
+            (eval
+             (car
+              (standalone-source-normalize-top-level-forms
+               `(defun ,symbol (arg)
+                  (let ((value arg))
+                    (setq value (cons value value))
+                    value))))))
+          (should (eq 'existing-result (funcall symbol nil)))
+          (should (get symbol 'standalone-source-elided-body)))
+      (fmakunbound symbol)
+      (put symbol 'standalone-source-elided-body nil))))
+
+(ert-deftest standalone-source-normalize-test/elided-defun-placeholder-signals ()
+  (let ((symbol 'standalone-source-normalize-test--missing-large))
+    (unwind-protect
+        (progn
+          (fmakunbound symbol)
+          (let ((standalone-source-normalize-large-defun-character-limit 20))
+            (eval
+             (car
+              (standalone-source-normalize-top-level-forms
+               `(defun ,symbol (arg)
+                  (let ((value arg))
+                    (setq value (cons value value))
+                    value))))))
+          (should-error (funcall symbol nil) :type 'error))
+      (fmakunbound symbol)
+      (put symbol 'standalone-source-elided-body nil))))
 
 (ert-deftest standalone-source-normalize-test/retains-listed-large-core-defun-body ()
   (let ((standalone-source-normalize-large-defun-character-limit 20)
@@ -2585,16 +2734,73 @@ that walks down into the guarded definition."
             (setq value (cons value value))
             value)))))))
 
+(ert-deftest standalone-source-normalize-test/replaces-large-macroexp-expand-all-body ()
+  (let ((standalone-source-normalize-current-file "macroexp.el")
+        (standalone-source-normalize-large-defun-character-limit 20))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun macroexp--expand-all (form)
+          (let ((expanded (macroexpand form)))
+            (if (eq expanded form)
+                form
+              (macroexp--expand-all expanded)))))
+      '((defun macroexp--expand-all (form)
+          (macroexpand-all form macroexpand-all-environment)))))))
+
+(ert-deftest standalone-source-normalize-test/guards-vendor-macroexpand-all-owner ()
+  (let ((standalone-source-normalize-current-file "macroexp.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun macroexpand-all (form &optional environment)
+          "Vendor documentation."
+          (macroexp--expand-all form)))
+      '((if (fboundp 'macroexpand-all)
+            'macroexpand-all
+          (defun macroexpand-all (form &optional environment)
+            (macroexp--expand-all form))))))))
+
+(ert-deftest standalone-source-normalize-test/drops-vendor-eager-macroexpand-hook ()
+  (let ((standalone-source-normalize-current-file "macroexp.el"))
+    (should-not
+     (standalone-source-normalize-top-level-forms
+      '(defun internal-macroexpand-for-load (form full-p)
+         (if full-p (macroexpand-all form) (macroexpand form))))))
+  (let ((standalone-source-normalize-current-file "other.el"))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun internal-macroexpand-for-load (form full-p)
+          (if full-p (macroexpand-all form) (macroexpand form))))
+      '((defun internal-macroexpand-for-load (form full-p)
+          (if full-p (macroexpand-all form) (macroexpand form))))))))
+
+(ert-deftest standalone-source-normalize-test/retains-large-nelisp-rx-match-from-body ()
+  (let ((standalone-source-normalize-large-defun-character-limit 20))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms
+       '(defun nelisp-rx--match-from (pat str start)
+          (let ((hit (list pat str start)))
+            hit)))
+      '((defun nelisp-rx--match-from (pat str start)
+          (let ((hit (list pat str start)))
+            hit)))))))
+
 (ert-deftest standalone-source-normalize-test/elides-listed-top-level-defun-body ()
   (let ((standalone-source-normalize-large-defun-character-limit 10000)
         (standalone-source-normalize-elided-defun-symbols '(demo-listed)))
     (should
      (equal
       (standalone-source-normalize-top-level-forms
-       '(defun demo-listed (arg)
-          (cons arg arg)))
+      '(defun demo-listed (arg)
+         (cons arg arg)))
       '((progn
-          (defun demo-listed (arg) nil)
+          (if (fboundp 'demo-listed)
+              'demo-listed
+            (defun demo-listed (arg)
+              (error "Standalone source body elided: demo-listed")))
           (put 'demo-listed 'standalone-source-elided-body t)
           'demo-listed))))))
 
@@ -2610,7 +2816,11 @@ that walks down into the guarded definition."
           (interactive "P")
           (message "%S" arg)))
       '((progn
-          (defun demo-command (&optional arg) (interactive "P") nil)
+          (if (fboundp 'demo-command)
+              'demo-command
+            (defun demo-command (&optional arg)
+              (interactive "P")
+              (error "Standalone source body elided: demo-command")))
           (put 'demo-command 'standalone-source-elided-body t)
           'demo-command))))))
 
@@ -2648,7 +2858,11 @@ that walks down into the guarded definition."
      '(defun help-fns--analyze-function (function)
         (symbol-function function)))
     '((progn
-        (defun help-fns--analyze-function (function) nil)
+        (if (fboundp 'help-fns--analyze-function)
+            'help-fns--analyze-function
+          (defun help-fns--analyze-function (function)
+            (error
+             "Standalone source body elided: help-fns--analyze-function")))
         (put 'help-fns--analyze-function 'standalone-source-elided-body t)
         'help-fns--analyze-function)))))
 
@@ -2660,7 +2874,11 @@ that walks down into the guarded definition."
         (with-current-buffer buffer
           (goto-char marker))))
     '((progn
-        (defun org-offer-links-in-entry (buffer marker) nil)
+        (if (fboundp 'org-offer-links-in-entry)
+            'org-offer-links-in-entry
+          (defun org-offer-links-in-entry (buffer marker)
+            (error
+             "Standalone source body elided: org-offer-links-in-entry")))
         (put 'org-offer-links-in-entry 'standalone-source-elided-body t)
         'org-offer-links-in-entry)))))
 
@@ -2672,7 +2890,11 @@ that walks down into the guarded definition."
         (interactive "p")
         (goto-char n)))
     '((progn
-        (defun org-mark-ring-goto (&optional n) (interactive "p") nil)
+        (if (fboundp 'org-mark-ring-goto)
+            'org-mark-ring-goto
+          (defun org-mark-ring-goto (&optional n)
+            (interactive "p")
+            (error "Standalone source body elided: org-mark-ring-goto")))
         (put 'org-mark-ring-goto 'standalone-source-elided-body t)
         'org-mark-ring-goto)))))
 

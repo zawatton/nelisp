@@ -1,0 +1,354 @@
+#+TITLE: nelisp-emacs Doc 38 -- Practical Emacs replacement execution plan
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-07-08
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 03 vendor migration, Doc 11 remaining work roadmap, Doc 12 development gates, Doc 15 staged execution plan, Doc 16 package breadth playbook, Doc 17 library-first reuse strategy, Doc 28 compatibility global API policy, Doc 31 nemacs-next editor product plan, Doc 33 Emacs C-core substrate priority plan, Doc 34 Emacs replacement development rules, Doc 37 tramp ssh lane
+
+* 0. Purpose
+
+This document defines the most efficient execution order for turning
+=nelisp-emacs= into a practical Emacs replacement.
+
+Efficiency here does not mean "the shortest path to a demo".  It means:
+
+1. prioritize substrate work that unlocks many real upstream files at once;
+2. keep vendor source authoritative;
+3. prove progress through repeatable gates;
+4. delay broad workflow claims until the required lower layers are stable.
+
+This plan is the execution companion to Doc 34.  Doc 34 states the rules.
+This document states the order of work.
+
+* 1. Replacement target
+
+The target is a daily-usable editor stack where:
+
+1. real upstream Emacs Lisp from =vendor/emacs-lisp/= and external packages
+   under =vendor/= can be loaded and executed without patching those vendor
+   trees as a normal technique;
+2. the reusable substrate, not app-specific glue, owns package-visible Emacs
+   behavior;
+3. a persistent editor product can expose that behavior for real user work;
+4. high-value workflows such as init loading, file editing, completion,
+   process interaction, Help, Dired, VC, Org, Tramp, and Magit work through
+   their real source.
+
+* 2. Execution principles
+
+** 2.1 Optimize for shared unlocks
+
+When two tasks are available, prefer the task that improves more vendor files:
+
+- replay/load-path/=require=/=provide= integrity;
+- symbol/property/macro/byte-compiler substrate;
+- buffers, markers, text properties, overlays, narrowing;
+- files, directories, processes, timers;
+- minibuffer/completion/keymaps/hooks/modes;
+- window/frame abstractions needed by package code.
+
+** 2.2 Use large packages as integration gates, not as the default work unit
+
+Magit, Org, Tramp, and other large applications stay important, but the
+default unit of change should still be the smallest real upstream or vendor
+surface that explains the failure.
+
+Use a large package when:
+
+- it exposes a missing shared substrate;
+- the smaller prerequisite lane is already reasonably covered;
+- or the milestone explicitly claims a workflow in that package.
+
+** 2.3 Keep proof levels explicit
+
+Use the Doc 34 ladder:
+
+- L0 readable
+- L1 loadable
+- L2 surface
+- L3 representative execution
+- L4 dependency chain
+- L5 workflow
+- L6 product path
+
+Do not claim replacement progress above the level actually proven.
+
+* 3. Current strategic reading
+
+As of this document:
+
+- real vendor breadth has expanded significantly;
+- Magit status smoke has been demonstrated;
+- vendor probe infrastructure exists to separate true failures from
+  =loaded-no-provide= cases;
+- the remaining bottleneck is no longer "can any package load?" but
+  "which substrate families still block broad, repeatable, workflow-grade
+  execution?"
+
+That shifts the efficient plan away from one-off app spikes and toward
+systematic closure of the remaining shared lanes.
+
+* 4. Ordered development lanes
+
+The lanes below are ordered by expected leverage.
+
+** Lane 1 -- Replay and runtime safety foundation
+
+Goal: make "load the real source" reliable enough that later failures are
+real substrate gaps, not harness noise.
+
+Scope:
+
+- standalone replay stability;
+- =require=/=provide= correctness;
+- load-path consistency;
+- runtime image/bootstrap coherence;
+- large-form replay granularity boundaries;
+- crash/segfault isolation in byte-compiler and similar heavy files.
+
+Why first:
+
+- every later lane depends on trustable vendor load results;
+- false negatives here waste time across all later application work.
+
+Exit criteria:
+
+1. vendor probe runs can classify files without frequent harness-only noise;
+2. heavy-file failures are reduced to a small named set with stable repro;
+3. replay-mode differences are documented where still unresolved.
+
+** Lane 2 -- Core language and compiler substrate
+
+Goal: close the language/runtime gaps that block broad Elisp execution.
+
+Scope:
+
+- macro expansion;
+- advice and generic function support;
+- symbol/property/function metadata;
+- =cl-lib= / =cl-extra= / =pcase= / =macroexp= / =nadvice= / =byte-run= breadth;
+- byte-compiler-adjacent files (=bytecomp.el=, =byte-opt.el=, =unsafep.el=)
+  and the evaluator/runtime crashes they expose.
+
+Why second:
+
+- these lanes unlock package breadth far beyond any single app;
+- they directly affect init loading, package loading, autoload expansion, and
+  command surfaces.
+
+Exit criteria:
+
+1. representative language-family vendor files reach at least L3;
+2. byte-compiler lane has either L1/L2 progress with stable failure class, or
+   full L3 proof where possible;
+3. package failures caused by missing macro/runtime facilities drop
+   materially.
+
+** Lane 3 -- Editor-state substrate
+
+Goal: make package-visible editing semantics dependable.
+
+Scope:
+
+- buffers, point, markers, overlays, text properties, invisibility;
+- narrowing/widening;
+- undo-affecting editing primitives;
+- mode state, hooks, locals, keymaps, faces;
+- redisplay-facing metadata required by package code.
+
+Why third:
+
+- Help, Dired, Org, Magit, completion UIs, and minibuffer-adjacent packages all
+  lean on this lane;
+- large app workflows become expensive to debug if this lane is weak.
+
+Exit criteria:
+
+1. representative upstream editing-mode files reach L3/L4;
+2. product-visible buffer semantics stop being a frequent blocker in app lanes;
+3. existing redisplay-related failure set is either reduced or isolated.
+
+** Lane 4 -- Files, processes, timers, and async I/O
+
+Goal: make package interaction with the outside world dependable.
+
+Scope:
+
+- file I/O and file-name handlers;
+- process creation, filters, sentinels, sync waits;
+- timer behavior;
+- comint and shell-adjacent process workflows;
+- Tramp/remote file substrate prerequisites;
+- Magit and VC process usage.
+
+Why fourth:
+
+- daily-driver workflows need process and file correctness more than broad app
+  coverage claims;
+- Magit, VC, shell, compile, and Tramp all build on this lane.
+
+Exit criteria:
+
+1. comint/process proofs remain green under current runtime images;
+2. VC/Tramp/Magit process and file paths are stable enough for repeated smoke
+   runs;
+3. file-name-handler and remote-file behavior are owned by substrate rather
+   than product glue.
+
+** Lane 5 -- Minibuffer, completion, project, and navigation
+
+Goal: make real editor driving efficient enough for daily use.
+
+Scope:
+
+- minibuffer semantics;
+- completion tables, CAPF, history;
+- project/xref/imenu/search surfaces;
+- command dispatch, prompting, selection, and cancellation behavior.
+
+Why fifth:
+
+- this is where "loads code" turns into "can actually operate the editor";
+- it affects every later app workflow.
+
+Exit criteria:
+
+1. representative completion/project files reach L3/L4;
+2. interactive command flows through minibuffer state become repeatable;
+3. major user workflows stop needing manual scaffolding.
+
+** Lane 6 -- High-value built-in workflows
+
+Goal: stabilize built-in user-facing workflows before broad external package
+claims.
+
+Priority order:
+
+1. Help
+2. Dired
+3. VC / vc-git
+4. compile / grep / xref / project
+5. shell / comint-based tools
+6. bookmarks / recentf / savehist / saveplace
+
+Why before Org/Magit completion claims:
+
+- these built-ins cover more daily-driver surface per unit of substrate work;
+- they expose missing editor contracts in smaller, more diagnosable shapes.
+
+Exit criteria:
+
+1. each selected built-in workflow reaches at least L5 in a repeatable smoke;
+2. failures in external packages can be traced to narrower remaining gaps.
+
+** Lane 7 -- External package workflows
+
+Goal: complete the large-package editor workflows that justify the replacement
+claim.
+
+Priority order:
+
+1. Magit
+2. Org
+3. Transient
+4. any other user-critical external package lanes
+
+Interpretation:
+
+- Magit is the leading integration gate for process, sections, buffers,
+  keymaps, and transient-driven command flows;
+- Org is the leading integration gate for text properties, narrowing,
+  overlays, folding, fontification metadata, and editing workflows;
+- Transient is both a dependency lane and a user interaction lane.
+
+Exit criteria:
+
+1. package load path uses real vendor source;
+2. at least one real workflow per package reaches L5;
+3. the persistent product path can expose the workflow at L6.
+
+** Lane 8 -- Persistent product path
+
+Goal: make the substrate usable as the user's actual editor environment.
+
+Scope:
+
+- startup and init loading;
+- package initialization order;
+- persistent session product wiring;
+- UI transport/frontend adaptation without owning semantics;
+- configuration, package enablement, and operational ergonomics.
+
+Why last in order but continuous in observation:
+
+- product work should validate substrate progress continuously;
+- but moving product glue ahead of substrate closure usually hides the real
+  missing behavior.
+
+Exit criteria:
+
+1. user init/config can be loaded with a documented support envelope;
+2. target workflows are available through the persistent editor product;
+3. product glue remains thin and substrate-owned semantics stay central.
+
+* 5. Working cadence
+
+Use this repeating cycle.
+
+1. Select one lane and one concrete real vendor target.
+2. State the claimed proof level.
+3. Reproduce the failure with the existing harness.
+4. Classify it as runtime, bootstrap, substrate, replay, or product path.
+5. Implement the smallest reusable fix outside =vendor/=.
+6. Re-run the narrow proof.
+7. Re-run the nearest larger smoke if the change touches shared behavior.
+8. Record the result in the relevant design doc and the verification tracker.
+
+This cadence is intentionally narrow.  Broad sweeps without a current proof
+surface are allowed for discovery, but not as the default implementation mode.
+
+* 6. What to measure
+
+Track progress with these indicators:
+
+| Indicator | Meaning |
+|-----------+---------|
+| named true-failure set | unresolved files with stable repro, excluding harness noise |
+| vendor probe coverage | how much inventory is classified without crash ambiguity |
+| workflow-grade smokes | count of L5/L6 workflows that pass repeatedly |
+| substrate-family closure | shared lanes where new package failures stop clustering |
+| vendor-patch count | should remain effectively zero outside explicit temporary debt |
+
+The desired trend is:
+
+- fewer ambiguous failures;
+- more shared-lane proofs;
+- fewer app-specific emergency shims;
+- more repeatable workflow smokes.
+
+* 7. Immediate next execution order
+
+The most efficient near-term order from the current state is:
+
+1. continue vendor probe classification until the true failure set is small
+   and explicit;
+2. attack the byte-compiler/runtime crash lane because it blocks an important
+   shared language family and likely explains several high-class failures;
+3. keep Magit smoke green as an integration sentinel, but do not pivot into
+   broad Magit feature work unless a remaining failure clearly lives there;
+4. close the highest-leverage editor-state or process/file substrate gaps
+   exposed by the probe;
+5. after those closures, deepen Magit from smoke toward workflow-grade section
+   and command execution;
+6. in parallel, prepare the Org and init-file lanes only where they reuse the
+   same shared substrate.
+
+This is the shortest path toward a real replacement claim instead of a larger
+collection of isolated proofs.
+
+* 8. Coordination with the verification document
+
+Doc 39 is the operational verification companion to this plan.
+
+Use this document to decide *what to do next*.
+Use Doc 39 to record *what is finished, what level is proven, and what remains
+to recheck*.

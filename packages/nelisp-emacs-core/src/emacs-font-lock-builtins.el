@@ -49,11 +49,20 @@
 
 ;;;; --- function bridges -----------------------------------------------
 
+(defun emacs-font-lock-builtins--function-cell-live-p (symbol)
+  "Return non-nil when SYMBOL has a usable function cell."
+  (and (fboundp symbol)
+       (let ((function (condition-case nil
+                           (symbol-function symbol)
+                         (error nil))))
+         (and function
+              (not (eq function 'nelisp--unbound-marker))))))
+
 (defun emacs-font-lock-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
-      (not (fboundp symbol))))
+      (not (emacs-font-lock-builtins--function-cell-live-p symbol))))
 
 (when (emacs-font-lock-builtins--install-function-p 'font-lock-mode)
   (defalias 'font-lock-mode #'emacs-font-lock-mode))
@@ -165,6 +174,13 @@ when it is loaded without the full font-lock implementation."
   (defvar font-lock-warning-face 'font-lock-warning-face))
 (unless (boundp 'font-lock-doc-face)
   (defvar font-lock-doc-face 'font-lock-doc-face))
+
+(unless (boundp 'global-font-lock-mode)
+  (defvar global-font-lock-mode nil
+    "Headless no-op global font-lock toggle state."))
+
+(when (emacs-font-lock-builtins--install-function-p 'global-font-lock-mode)
+  (defalias 'global-font-lock-mode #'ignore))
 
 (provide 'emacs-font-lock-builtins)
 

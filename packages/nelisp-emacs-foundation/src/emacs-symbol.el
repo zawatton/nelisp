@@ -50,6 +50,13 @@ the underlying NeLisp runtime has no native property-cell.")
     (puthash symbol new-plist emacs-symbol--plist-table)
     new-plist))
 
+(unless (fboundp 'obarray-make)
+  (defun obarray-make (&optional size)
+    "Return a new obarray with SIZE slots.
+SIZE defaults to 59.  NeLisp's `intern', `unintern', and `mapatoms'
+surface accepts the same zero-filled vector representation as Emacs."
+    (make-vector (or size 59) 0)))
+
 
 (unless (fboundp 'intern-soft)
   (defun intern-soft (name &optional _obarray)

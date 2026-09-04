@@ -82,14 +82,15 @@ cat >"$PRE" <<EOF
               (and (boundp 'load-path) load-path)))
 (load "$ROOT/src/emacs-fns.el" nil t)
 ;; save-buffer / write-file (installed below by nemacs-main.el's
-;; emacs-fileio-builtins chain) declare themselves with `(interactive
-;; ...)'.  That form is only a no-op polyfill under src/emacs-eval.el
-;; (real Emacs has a native Finteractive primitive; the standalone
-;; reader does not), and emacs-eval.el is not on nemacs-loadup's
-;; require graph.  Load it here, flat top-level, so `interactive' is
-;; bound before any client calls a command that declares it -- doing
-;; this load lazily from inside a request handler instead hits the
-;; same nested-load risk class as the M18 finding above.
+;; emacs-fileio-builtins chain) declare themselves with an
+;; interactive form.  That form is only a no-op polyfill under
+;; src/emacs-eval.el (real Emacs has a native Finteractive primitive;
+;; the standalone reader does not), and emacs-eval.el is not on
+;; nemacs-loadup's require graph.  Load it here, flat top-level, so
+;; interactive is bound before any client calls a command that
+;; declares it -- doing this load lazily from inside a request handler
+;; instead hits the same nested-load risk class as the M18 finding
+;; above.
 (load "$ROOT/src/emacs-eval.el" nil t)
 (load "$ROOT/src/nemacs-main.el" nil t)
 (nemacs-init t)

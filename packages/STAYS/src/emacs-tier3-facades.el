@@ -67,8 +67,6 @@
     "Tier 3 facade: no-op widget setup."
     nil))
 
-(provide 'widget)
-
 ;;;; calc
 
 (unless (fboundp 'calc)
@@ -315,8 +313,6 @@
   (defun url-type (&rest _args)
     "Tier 3 facade: no URL type is available."
     nil))
-
-(provide 'url)
 
 ;;;; vc
 

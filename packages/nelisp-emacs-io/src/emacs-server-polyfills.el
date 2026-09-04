@@ -231,12 +231,6 @@ under standalone IPC."
     (list 'defvar name nil)))
 
 
-;;;; --- misc small stubs ---------------------------------------------
-
-(unless (fboundp 'substitute-command-keys)
-  (defun substitute-command-keys (s) s))
-
-
 (provide 'emacs-server-polyfills)
 
 ;;; emacs-server-polyfills.el ends here

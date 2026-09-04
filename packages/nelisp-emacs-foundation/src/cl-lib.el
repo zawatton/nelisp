@@ -29,7 +29,20 @@
 ;;; Code:
 
 (defconst cl-lib--load-directory
-  (file-name-directory (or load-file-name buffer-file-name))
+  (let ((source-file
+         (or (and (boundp 'load-file-name) load-file-name)
+             (and (boundp 'buffer-file-name) buffer-file-name))))
+    (cond
+     (source-file
+      (file-name-directory source-file))
+     ((and (boundp 'default-directory)
+           (stringp default-directory))
+      (let ((src (expand-file-name "src/" default-directory)))
+        (if (and (fboundp 'file-directory-p)
+                 (file-directory-p src))
+            src
+          default-directory)))
+     (t nil)))
   "Directory that contains the cl-lib shim and its sibling features.")
 
 (defun cl-lib--load-feature (feature)
@@ -48,7 +61,7 @@
 ;; cl-defstruct / cl-letf / cl-flet / cl-block / cl-some / cl-every /
 ;; cl-position / cl-find / cl-remove-if{,-not} / cl-delete-* /
 ;; cl-union / cl-intersection / cl-sort / cl-case / cl-pushnew / etc.)
-(cl-lib--load-feature 'emacs-cl-macros)
+ (cl-lib--load-feature 'emacs-cl-macros)
 
 ;;;; --- helpers not in emacs-cl-macros --------------------------------
 
@@ -318,11 +331,21 @@ For unrecognised places, signals an error at expansion time."
                  ;; call to a non-existent setter.
                  (list 'setf (macroexpand-1 place) value))
                 ((symbolp fn)
-                 (let ((simple-setter (get fn 'cl-simple-setter)))
-                   (if simple-setter
-                       (cons 'funcall
-                             (cons (list 'quote simple-setter)
-                                   (append args (list value))))
+                 (let ((gv-setter (get fn 'cl-gv-setter))
+                       (simple-setter (get fn 'cl-simple-setter)))
+                   (cond
+                    (gv-setter
+                     ;; `gv-define-setter' keeps the upstream writer arglist:
+                     ;; STORE first, followed by the generalized-place args.
+                     ;; Emit a direct macro call so its returned setter form is
+                     ;; evaluated, instead of funcalling the macro as a
+                     ;; runtime function and merely returning source data.
+                     (cons gv-setter (cons value args)))
+                    (simple-setter
+                     (cons 'funcall
+                           (cons (list 'quote simple-setter)
+                                 (append args (list value)))))
+                    (t
                      (list 'funcall
                            (list 'or
                                  (list 'get (list 'quote fn)
@@ -330,7 +353,7 @@ For unrecognised places, signals an error at expansion time."
                                  (list 'quote
                                        (intern (concat (symbol-name fn)
                                                        "--setter"))))
-                           (car args) value))))
+                           (car args) value)))))
                 (t (error "setf: unsupported place form: %S" place))))))
            forms)))
       (cons 'progn (nreverse forms)))))
@@ -449,6 +472,39 @@ SPEC is either ((VAR EXPR) ...) or (VAR EXPR) for a single binding."
 
 (defconst cl-lib-version "1.0-nemacs-shim"
   "Version of the nelisp-emacs cl-lib shim (= NOT upstream cl-lib).")
+
+;;;; --- obsolete cl.el compatibility -----------------------------------
+
+;; Old packages still use `(require 'cl)' together with the pre-cl-lib names.
+;; The vendored obsolete cl.el depends on substantially more macroexp/gv
+;; machinery than the standalone bootstrap needs.  Install only aliases whose
+;; prefixed owners are already present, and keep host Emacs untouched.
+(when (not (stringp (and (boundp 'emacs-version) emacs-version)))
+  (dolist (pair '((defstruct . cl-defstruct)
+                  (defun* . cl-defun)
+                  (defsubst* . cl-defsubst)
+                  (defmacro* . cl-defmacro)
+                  (function* . cl-function)
+                  (case . cl-case)
+                  (ecase . cl-ecase)
+                  (typecase . cl-typecase)
+                  (etypecase . cl-etypecase)
+                  (loop . cl-loop)
+                  (destructuring-bind . cl-destructuring-bind)
+                  (multiple-value-bind . cl-multiple-value-bind)
+                  (block . cl-block)
+                  (return . cl-return)
+                  (return-from . cl-return-from)
+                  (incf . cl-incf)
+                  (decf . cl-decf)
+                  (pushnew . cl-pushnew)
+                  (rotatef . cl-rotatef)
+                  (shiftf . cl-shiftf)))
+    (when (and (not (fboundp (car pair)))
+               (fboundp (cdr pair)))
+      (defalias (car pair) (cdr pair))))
+  (unless (featurep 'cl)
+    (provide 'cl)))
 
 (provide 'cl-lib)
 

@@ -44,8 +44,22 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
                  font-lock-remove-keywords font-lock-set-defaults
                  font-lock-unfontify-region font-lock-unfontify-buffer
                  font-lock-default-fontify-region font-lock-specified-p
+                 global-font-lock-mode
                  jit-lock-register jit-lock-unregister))
     (should (fboundp sym))))
+
+(ert-deftest emacs-font-lock-builtins-test/global-font-lock-mode-is-headless-noop ()
+  (let* ((file (locate-library "emacs-font-lock-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward
+               "(defalias 'global-font-lock-mode #'ignore)"
+               nil t)))))
 
 (ert-deftest emacs-font-lock-builtins-test/require-is-idempotent ()
   (let ((before-mode (symbol-function 'font-lock-mode))

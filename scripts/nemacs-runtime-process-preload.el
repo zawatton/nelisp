@@ -699,6 +699,14 @@
                nil)
            nil)))
 
+(fset 'emacs-process--call-process-stderr-destination
+      '(lambda (destination)
+         (if (consp destination)
+             (if (eq (car destination) :file)
+                 nil
+               (car (cdr destination)))
+           nil)))
+
 (fset 'emacs-process-call-process
       '(lambda (program &optional infile destination display &rest args)
          (let ((cwd (emacs-process--call-process-cwd)))
@@ -709,6 +717,18 @@
                              (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
                                    (cons "emacs-process-call-process-cwd"
                                          (cons cwd (cons program args))))))
+                 (setq program "/bin/sh"))
+             nil)
+           (if (if (consp destination)
+                   (null (emacs-process--call-process-stderr-destination
+                          destination))
+                 nil)
+               (progn
+                 (setq args
+                       (cons "-c"
+                             (cons "exec \"$@\" 2>/dev/null"
+                                   (cons "emacs-process-call-process-stderr"
+                                         (cons program args)))))
                  (setq program "/bin/sh"))
              nil)
            (if (fboundp 'nelisp-process-call-process)

@@ -51,3 +51,6 @@ vendor/magit/
 vendor/transient/
 vendor/with-editor/
 .serena/
+
+# Python bytecode caches from scripts/*.py
+__pycache__/

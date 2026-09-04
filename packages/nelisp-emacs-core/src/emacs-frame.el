@@ -1021,6 +1021,48 @@ Returns t."
   "Return the live terminfo detection plist, or nil in stub mode."
   emacs-frame--tui-terminfo)
 
+;; Fringe bitmap registry.  `define-fringe-bitmap' and its companions are C
+;; primitives in stock Emacs (fringe.c) and were missing entirely here.  The
+;; standalone runtime has no fringe to draw into, but vendor code registers
+;; bitmaps at top level -- magit-section.el defines four -- and then uses the
+;; returned symbol as a `display' property value.  So register the symbol and
+;; return it: callers get the value they need, and `fringe-bitmap-p' answers
+;; from the registry instead of guessing.  Drawing remains a backend concern.
+(defvar emacs-frame--fringe-bitmaps (make-hash-table :test 'eq)
+  "Registry of fringe bitmaps defined through `define-fringe-bitmap'.
+Maps the bitmap symbol to a plist of its declared geometry.")
+
+(unless (fboundp 'define-fringe-bitmap)
+  (defun define-fringe-bitmap (bitmap bits &optional height width align)
+    "Register BITMAP as a fringe bitmap built from BITS and return BITMAP.
+HEIGHT, WIDTH and ALIGN are recorded for the display backend."
+    (puthash bitmap
+             (list :bits bits :height height :width width :align align)
+             emacs-frame--fringe-bitmaps)
+    bitmap))
+
+(unless (fboundp 'destroy-fringe-bitmap)
+  (defun destroy-fringe-bitmap (bitmap)
+    "Forget the fringe bitmap BITMAP."
+    (remhash bitmap emacs-frame--fringe-bitmaps)
+    nil))
+
+(unless (fboundp 'fringe-bitmap-p)
+  (defun fringe-bitmap-p (object)
+    "Return non-nil when OBJECT names a registered fringe bitmap."
+    (and (symbolp object)
+         (gethash object emacs-frame--fringe-bitmaps)
+         t)))
+
+(unless (fboundp 'set-fringe-bitmap-face)
+  (defun set-fringe-bitmap-face (bitmap &optional face)
+    "Record FACE as the face used to draw the fringe bitmap BITMAP."
+    (let ((entry (gethash bitmap emacs-frame--fringe-bitmaps)))
+      (when entry
+        (puthash bitmap (plist-put entry :face face)
+                 emacs-frame--fringe-bitmaps)))
+    nil))
+
 (provide 'emacs-frame)
 
 ;;; emacs-frame.el ends here

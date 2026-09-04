@@ -119,6 +119,12 @@ Populated lazily by `emacs-buffer--ensure-ext'.  We keep strong refs
 explicit `kill-buffer' callers should remove the entry via
 `emacs-buffer--forget'.")
 
+(defvar emacs-buffer--indirect-base-by-name (make-hash-table :test 'equal)
+  "Hash indirect buffer name -> base buffer.
+This complements `emacs-buffer--state' for runtimes where the current buffer
+object returned later is not `eq' to the object originally used as the state
+key.")
+
 (defvar emacs-buffer--variable-buffer-local nil
   "List of symbols globally declared `make-variable-buffer-local'.
 
@@ -190,7 +196,9 @@ at all."
   (let* ((b (or buf (emacs-buffer--current)))
          (ext (emacs-buffer--ensure-ext b)))
     (unless (assq sym (emacs-buffer--ext-locals ext))
-      (push (cons sym (emacs-buffer-default-value sym))
+      (push (cons sym (if (emacs-buffer-default-boundp sym)
+                          (emacs-buffer-default-value sym)
+                        nil))
             (emacs-buffer--ext-locals ext)))
     sym))
 
@@ -280,7 +288,9 @@ this helper (or `make-local-variable' + global `setq')."
          (cell (assq sym (emacs-buffer--ext-locals ext))))
     (if cell
         (setcdr cell value)
-      (push (cons sym value) (emacs-buffer--ext-locals ext)))
+      (setf (emacs-buffer--ext-locals ext)
+            (cons (cons sym value)
+                  (emacs-buffer--ext-locals ext))))
     value))
 
 ;;;###autoload
@@ -846,19 +856,18 @@ PROP are overwritten on this range; other properties are preserved."
         end (emacs-buffer--pos-number end))
   (unless (and (integerp start) (integerp end))
     (signal 'wrong-type-argument (list 'integerp start end)))
-  ;; Doc 33 item 244: real Emacs treats an empty [START, END) range as
-  ;; a no-op for text-property mutation (Magit's washers routinely make
-  ;; START == END calls); only a reversed range signals.
-  (when (> start end)
+  ;; Shared substrate policy: reject empty and reversed ranges so
+  ;; text-property bugs surface at the owner layer.  Callers that
+  ;; intentionally tolerate empty spans must guard before dispatch.
+  (when (>= start end)
     (signal 'nelisp-ec-args-out-of-range (list start end)))
-  (unless (= start end)
-    (let* ((b (or buf (emacs-buffer--current)))
-           (ext (emacs-buffer--ensure-ext b)))
-      (setf (emacs-buffer--ext-text-props ext)
-            (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
-                                  start end (list prop value)))
-      (cl-incf (emacs-buffer--ext-modified-tick ext))
-      nil)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (emacs-buffer--ensure-ext b)))
+    (setf (emacs-buffer--ext-text-props ext)
+          (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
+                                start end (list prop value)))
+    (cl-incf (emacs-buffer--ext-modified-tick ext))
+    nil))
 
 ;;;###autoload
 (defun emacs-buffer-get-text-property (pos prop &optional buf)
@@ -1102,6 +1111,30 @@ START/END may be markers."
         (while (< scan end)
           (unless (emacs-buffer--tp-prop-eq
                    (emacs-buffer-get-text-property scan prop buf) value)
+            (throw 'done scan))
+          (setq scan (emacs-buffer-next-single-property-change
+                      scan prop buf end)))
+        nil))))
+
+;;;###autoload
+(defun emacs-buffer-text-property-any (start end prop value &optional buf)
+  "Return the first position in [START, END) of BUF where PROP is VALUE.
+Comparison uses `eq', matching real `text-property-any' semantics and
+the rest of the standalone text-property scan helpers.  Return nil when
+no position in the half-open range has PROP `eq' to VALUE.  BUF may be a
+live `nelisp-ec' buffer, nil for the current buffer, or a plain string.
+START/END may be markers."
+  (setq start (emacs-buffer--pos-number start)
+        end (emacs-buffer--pos-number end))
+  (unless (and (integerp start) (integerp end))
+    (signal 'wrong-type-argument (list 'integerp start end)))
+  (if (>= start end)
+      nil
+    (let ((scan start))
+      (catch 'done
+        (while (< scan end)
+          (when (emacs-buffer--tp-prop-eq
+                 (emacs-buffer-get-text-property scan prop buf) value)
             (throw 'done scan))
           (setq scan (emacs-buffer-next-single-property-change
                       scan prop buf end)))
@@ -1464,14 +1497,29 @@ does it.  Returns the clone."
     ;; Share the underlying text storage (= same nelisp-text-buffer).
     (setf (nelisp-ec-buffer-text clone) (nelisp-ec-buffer-text base))
     (setf (emacs-buffer--ext-base-buffer ext) base)
+    (puthash (nelisp-ec-buffer-name clone)
+             base
+             emacs-buffer--indirect-base-by-name)
     clone))
 
 ;;;###autoload
 (defun emacs-buffer-buffer-base-buffer (&optional buf)
   "Return the base buffer of BUF if it is an indirect clone, else nil."
   (let* ((b (or buf (emacs-buffer--current)))
-         (ext (gethash b emacs-buffer--state)))
-    (and ext (emacs-buffer--ext-base-buffer ext))))
+         (ext (or (gethash b emacs-buffer--state)
+                  (let ((name (nelisp-ec-buffer-name b))
+                        (found nil))
+                    (maphash
+                     (lambda (candidate candidate-ext)
+                       (when (and (not found)
+                                  (equal name
+                                         (nelisp-ec-buffer-name candidate)))
+                         (setq found candidate-ext)))
+                     emacs-buffer--state)
+                    found))))
+    (or (and ext (emacs-buffer--ext-base-buffer ext))
+        (gethash (nelisp-ec-buffer-name b)
+                 emacs-buffer--indirect-base-by-name))))
 
 ;;;###autoload
 (defun emacs-buffer-buffer-list ()

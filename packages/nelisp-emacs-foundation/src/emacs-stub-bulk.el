@@ -200,7 +200,7 @@ Forwarder to `forward-char' with negated count."
     cl--generic-method-call-con cl--generic-method-function cl--generic-method-qualifiers cl--generic-method-specializers cl--generic-method-table cl--generic-name cl--generic-options cl-method-qualifiers
     cl-no-applicable-method cl-no-next-method cl-no-primary-method cl-old-struct-compat-mode cl-prin1-to-string cl--slot-descriptor-initform cl--slot-descriptor-name cl--slot-descriptor-props
     cl--slot-descriptor-type cl--struct-class-named cl--struct-class-p cl--struct-class-print cl--struct-class-slots cl--struct-class-type cl-struct-define cl--struct-get-class
-    cl--struct-name-p cl-type-of c-mode combine-after-change-execute commandp command-remapping compare-strings compare-window-configurations
+    cl--struct-name-p cl-type-of c-mode combine-after-change-execute commandp command-remapping compare-window-configurations
     comp-el-to-eln-rel-filename compile completing-read compose-mail concat cons consp copy-keymap
     copy-marker copy-sequence ctl-x-4-prefix ctl-x-5-prefix current-buffer current-case-table current-column current-global-map
     current-input-mode current-local-map current-message current-window-configuration cursor-intangible-mode cursor-sensor-mode debug defalias

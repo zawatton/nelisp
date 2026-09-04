@@ -40,6 +40,70 @@
   "Regexp matching an Org heading line.
 Group 1 is the raw star prefix, whose length is the heading level.")
 
+(defconst org-comment-regexp "^[ \t]*#\\(?: \\|$\\)"
+  "Regexp matching an Org comment line.
+This follows GNU Org semantics: optional indentation, `#', then either a
+single space or end of line.")
+
+(defgroup org-properties nil
+  "Options concerning properties in Org mode."
+  :tag "Org Properties"
+  :group 'org)
+
+(defconst org-property-start-re "^[ \t]*:PROPERTIES:[ \t]*$"
+  "Regular expression matching the first line of a property drawer.")
+
+(defconst org-property-end-re "^[ \t]*:END:[ \t]*$"
+  "Regular expression matching the last line of a property drawer.")
+
+(defconst org-property-drawer-re
+  (concat "^[ \t]*:PROPERTIES:[ \t]*\n"
+          "\\(?:[ \t]*:\\S-+:\\(?:[ \t].*\\)?[ \t]*\n\\)*?"
+          "[ \t]*:END:[ \t]*$")
+  "Matches an entire property drawer.")
+
+(defcustom org-property-format "%-10s %s"
+  "How property key/value pairs should be formatted by `indent-line'.
+When `indent-line' hits a property definition, it formats the line with
+this pattern so values line up with each other."
+  :group 'org-properties
+  :type 'string)
+
+(defsubst org-re-property (property &optional literal allow-null value)
+  "Return a regexp matching a PROPERTY line.
+
+When optional argument LITERAL is non-nil, do not quote PROPERTY.
+This is useful when PROPERTY is a regexp.  When ALLOW-NULL is
+non-nil, match properties even without a value.
+
+Match group 3 is set to the value when it exists.  If there is no
+value and ALLOW-NULL is non-nil, it is set to the empty string.
+
+With optional argument VALUE, match only property lines with
+that value; in this case, ALLOW-NULL is ignored.  VALUE is quoted
+unless LITERAL is non-nil."
+  (concat
+   "^\\(?4:[ \t]*\\)"
+   (format "\\(?1::\\(?2:%s\\):\\)"
+           (if literal property (regexp-quote property)))
+   (cond (value
+          (format "[ \t]+\\(?3:%s\\)\\(?5:[ \t]*\\)$"
+                  (if literal value (regexp-quote value))))
+         (allow-null
+          "\\(?:\\(?3:$\\)\\|[ \t]+\\(?3:.*?\\)\\)\\(?5:[ \t]*\\)$")
+         (t
+          "[ \t]+\\(?3:[^ \r\t\n]+.*?\\)\\(?5:[ \t]*\\)$"))))
+
+(defconst org-property-re
+  (org-re-property "\\S-+" 'literal t)
+  "Regular expression matching a property line.
+There are four matching groups:
+1: :PROPKEY: including the leading and trailing colon,
+2: PROPKEY without the leading and trailing colon,
+3: PROPVAL without leading or trailing spaces,
+4: the indentation of the current line,
+5: trailing whitespace.")
+
 (defconst org-outline--invisible-spec 'org-outline
   "Value stored in the `invisible' text property for folded Org text.")
 
@@ -293,10 +357,22 @@ The caller should use `match-string' immediately when this returns
 non-nil."
   (string-match org-outline--heading-regexp (org-outline--line-string)))
 
+(defun org-outline--heading-level-from-line (line)
+  "Return Org heading level for LINE, or nil when LINE is not a heading."
+  (cond
+   ((string-prefix-p "******** " line) 8)
+   ((string-prefix-p "******* " line) 7)
+   ((string-prefix-p "****** " line) 6)
+   ((string-prefix-p "***** " line) 5)
+   ((string-prefix-p "**** " line) 4)
+   ((string-prefix-p "*** " line) 3)
+   ((string-prefix-p "** " line) 2)
+   ((string-prefix-p "* " line) 1)
+   (t nil)))
+
 (defun org-outline--heading-level-at-point ()
   "Return the current line's heading level, or nil when not at a heading."
-  (when (org-outline--match-heading-on-line)
-    (length (match-string 1 (org-outline--line-string)))))
+  (org-outline--heading-level-from-line (org-outline--line-string)))
 
 (defun org-outline--heading-at-point-p ()
   "Return non-nil when point is on a heading line."
@@ -972,6 +1048,14 @@ lightweight subset."
   (org-outline--heading-at-point-p))
 
 ;;;###autoload
+(defun org-at-comment-p ()
+  "Return non-nil when point is on an Org comment line."
+  (save-excursion
+    (save-match-data
+      (forward-line 0)
+      (looking-at org-comment-regexp))))
+
+;;;###autoload
 (defun org-back-to-heading (&optional _invisible-ok)
   "Move to the heading that owns point and return point.
 `_INVISIBLE-OK' is accepted for compatibility and currently ignored."
@@ -1303,6 +1387,7 @@ level 1."
   (use-local-map org-mode-map)
   (org-outline--ensure-visibility-spec)
   (setq-local org-outline--global-cycle-state 'overview))
+(put 'org-mode 'emacs-org-outline-mode t)
 
 ;;;###autoload
 (defun org-cycle ()

@@ -19,7 +19,7 @@
 
 (let* ((fixture (file-name-as-directory (getenv "NEMACS_MAGIT_FIXTURE_DIR"))))
   (let ((default-directory fixture))
-    (magit-status-setup-buffer default-directory))
+    (magit-status-setup-buffer fixture))
   (let ((buf (magit-get-mode-buffer 'magit-status-mode)))
     (if (bufferp buf)
         (with-current-buffer buf

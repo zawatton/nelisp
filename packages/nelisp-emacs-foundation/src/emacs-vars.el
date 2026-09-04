@@ -53,6 +53,13 @@ Unix-like systems do not need additional suffixes."))
   (defvar file-name-handler-alist nil
     "Polyfill: file-name handler registry."))
 
+(unless (boundp 'load-in-progress)
+  (defvar load-in-progress nil
+    "Non-nil while Emacs is loading a Lisp file.
+The standalone loader does not yet dynamically bind this C-core variable;
+the nil default lets source-only packages distinguish loading from byte
+compilation without signaling `void-variable'."))
+
 (unless (boundp 'inhibit-file-name-handlers)
   (defvar inhibit-file-name-handlers nil
     "Polyfill: dynamically inhibited file-name handlers."))
@@ -73,6 +80,11 @@ vendor simple.el can replace it with its Elisp dispatcher."))
 Standalone has no GUI drag-and-drop source; Org/Dired may still append local
 handlers during mode activation."))
 
+(unless (boundp 'menu-bar-final-items)
+  (defvar menu-bar-final-items nil
+    "Polyfill: menu-bar keys that should appear after ordinary menu items.
+Emacs preloads this variable; standalone NeLisp starts with no final items."))
+
 (unless (boundp 'gc-cons-threshold)
   (defvar gc-cons-threshold 800000
     "Bytes of consing between garbage collections (Doc 06 A2 compat default).
@@ -82,6 +94,14 @@ boundaries."))
 (unless (boundp 'gc-cons-percentage)
   (defvar gc-cons-percentage 0.1
     "Portion of heap growth that triggers a GC (Doc 06 A2 compat default)."))
+
+(unless (boundp 'most-positive-fixnum)
+  (defvar most-positive-fixnum 2305843009213693951
+    "Largest fixnum value exposed to Elisp compatibility code."))
+
+(unless (boundp 'most-negative-fixnum)
+  (defvar most-negative-fixnum -2305843009213693952
+    "Smallest fixnum value exposed to Elisp compatibility code."))
 
 (provide 'emacs-vars)
 

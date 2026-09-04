@@ -115,6 +115,42 @@
       (should (boundp (car cell)))
       (should (equal (default-value (car cell)) (cdr cell)))))
 
+(ert-deftest emacs-textmodes-test/outline-defaults-are-available-in-isolated-load ()
+  "The outline defaults from the stub match Emacs core in isolation."
+  (let* ((file (locate-library "emacs-textmodes-stub"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file))
+         (emacs (or (executable-find "emacs") invocation-name))
+         (expr (format
+                "(with-temp-buffer
+                   (fundamental-mode)
+                   (dolist (sym '(outline-regexp
+                                  outline-heading-end-regexp
+                                  outline-search-function
+                                  outline-level))
+                     (makunbound sym))
+                   (load %S nil 'nomessage)
+                   (prin1 (list (cons 'outline-regexp outline-regexp)
+                                (cons 'outline-heading-end-regexp
+                                      outline-heading-end-regexp)
+                                (cons 'outline-search-function
+                                      outline-search-function)
+                                (cons 'outline-level outline-level))))"
+                file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (should (= 0 (call-process emacs nil t nil "-Q" "--batch" "-L" "src"
+                                 "--eval" expr)))
+      (goto-char (point-min))
+      (should (search-forward "((outline-regexp" nil t))
+      (backward-char (length "((outline-regexp"))
+      (should (equal (read (current-buffer))
+                     '((outline-regexp . "[*\f]+")
+                       (outline-heading-end-regexp . "\n")
+                       (outline-search-function)
+                       (outline-level . outline-level)))))))
+
 (ert-deftest emacs-textmodes-test/filter-buffer-substring-defaults ()
   "The bootstrap textmodes substrate exposes simple.el substring filtering."
   (should (boundp 'filter-buffer-substring-function))
@@ -138,10 +174,34 @@
       (insert-file-contents file)
       (dolist (needle '("(defvar paragraph-start"
                         "(defvar paragraph-separate"
+                        "(defvar outline-regexp"
+                        "(defvar outline-heading-end-regexp"
+                        "(defvar outline-search-function"
+                        "(defvar outline-level"
                         "(make-variable-buffer-local sym)"
                         "tab-width fill-column indent-tabs-mode"
                         "paragraph-start"
-                        "paragraph-separate"))
+                        "paragraph-separate"
+                        "outline-regexp"
+                        "outline-heading-end-regexp"
+                        "outline-search-function"
+                        "outline-level"))
+        (goto-char (point-min))
+        (should (search-forward needle nil t))))))
+
+(ert-deftest emacs-textmodes-test/outline-defaults-register-locality-in-source ()
+  (let* ((file (locate-library "emacs-textmodes-stub"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (needle '("(defvar outline-regexp \"[*\\f]+\""
+                        "(defvar outline-heading-end-regexp \"\\n\""
+                        "(defvar outline-search-function nil"
+                        "(defvar outline-level 'outline-level"
+                        "outline.el' and `org.el' rely on these core outline variables"))
         (goto-char (point-min))
         (should (search-forward needle nil t))))))
 

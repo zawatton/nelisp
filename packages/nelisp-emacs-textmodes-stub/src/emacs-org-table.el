@@ -52,7 +52,7 @@ If the current line is the last line without a trailing newline, return
 (defun org-table--table-line-p-string (line)
   "Return non-nil when LINE is a table line."
   (and line
-       (string-match org-table--line-regexp line)))
+       (string-prefix-p "|" (string-trim-left line))))
 
 ;;;###autoload
 (defun org-table-p (&optional point-or-nil)
@@ -121,28 +121,40 @@ BODY should be the table text between the outermost delimiters."
   (let* ((count (max 1 (org-table--column-count rows)))
          (widths (make-vector count 0)))
     (dolist (row rows widths)
-      (cl-loop for cell in (plist-get row :cells)
-               for idx from 0
-               do (aset widths idx (max (aref widths idx) (length cell)))))))
+      (let ((cells (plist-get row :cells))
+            (idx 0))
+        (while (and cells (< idx count))
+          (aset widths idx (max (aref widths idx) (length (car cells))))
+          (setq cells (cdr cells))
+          (setq idx (1+ idx)))))))
 
 (defun org-table--format-row (row widths)
   "Return ROW rendered with column WIDTHS."
-  (let ((pieces nil))
-    (cl-loop for cell in (plist-get row :cells)
-             for idx from 0
-             for width = (aref widths idx)
-             do (push (format (format " %%-%ds |" width) cell) pieces))
+  (let ((pieces nil)
+        (cells (plist-get row :cells))
+        (idx 0))
+    (while cells
+      (let ((width (aref widths idx))
+            (cell (car cells)))
+        (push (format (format " %%-%ds |" width) cell) pieces))
+      (setq cells (cdr cells))
+      (setq idx (1+ idx)))
     (concat (plist-get row :indent) "|" (apply #'concat (nreverse pieces)))))
+
+(defun org-table--bar-at-p (line index)
+  "Return non-nil when LINE has a table bar at INDEX."
+  (and (< index (length line))
+       (string= (substring line index (1+ index)) "|")))
 
 (defun org-table--line-column-index (line point-offset)
   "Return the zero-based column index in LINE at POINT-OFFSET."
   (let ((bars 0)
-        (start 0))
-    (while (and (< start (length line))
-                (string-match "|" line start)
-                (< (match-beginning 0) point-offset))
-      (setq bars (1+ bars))
-      (setq start (1+ (match-beginning 0))))
+        (idx 0)
+        (limit (min point-offset (length line))))
+    (while (< idx limit)
+      (when (org-table--bar-at-p line idx)
+        (setq bars (1+ bars)))
+      (setq idx (1+ idx)))
     (max 0 (1- bars))))
 
 (defun org-table--current-column-index (rows)
@@ -165,7 +177,8 @@ The result contains `:start', `:end', `:rows', `:row-index',
         end
         rows
         (row-index 0)
-        trailing-newline)
+        trailing-newline
+        done)
     (save-excursion
       (beginning-of-line)
       (while (and (> (line-beginning-position) (point-min))
@@ -176,14 +189,14 @@ The result contains `:start', `:end', `:rows', `:row-index',
       (setq start (line-beginning-position))
       (goto-char start)
       (setq rows nil)
-      (while (org-table-p)
+      (while (and (not done) (org-table-p))
         (when (= (line-beginning-position) origin-line)
           (setq row-index (length rows)))
         (push (org-table--parse-line (org-table--line-string)) rows)
         (let ((line-end (org-table--line-end-with-newline)))
-          (goto-char line-end)
-          (when (>= (point) (point-max))
-            (goto-char (point-max)))))
+          (if (>= line-end (point-max))
+              (setq done t)
+            (goto-char line-end))))
       (setq rows (nreverse rows))
       (if (and (> (point) start) (not (org-table-p)))
           (forward-line -1))
@@ -216,17 +229,20 @@ TRAILING-NEWLINE controls whether the last line ends with a newline."
   "Return (START . END) for COLUMN-INDEX on the current line."
   (let* ((line (org-table--line-string))
          (line-begin (line-beginning-position))
-         (search-start 0)
+         (line-length (length line))
          (left-bar nil)
          (right-bar nil)
+         (cell-index -1)
          (idx 0))
-    (while (and (string-match "|" line search-start)
-                (<= idx column-index))
-      (setq left-bar (match-beginning 0))
-      (setq search-start (1+ left-bar))
-      (if (not (string-match "|" line search-start))
-          (setq right-bar left-bar)
-        (setq right-bar (match-beginning 0)))
+    (while (< idx line-length)
+      (when (org-table--bar-at-p line idx)
+        (setq cell-index (1+ cell-index))
+        (cond
+         ((= cell-index column-index)
+          (setq left-bar idx))
+         ((and left-bar (not right-bar))
+          (setq right-bar idx)
+          (setq idx line-length))))
       (setq idx (1+ idx)))
     (unless (and left-bar right-bar (> right-bar left-bar))
       (user-error "Invalid table cell"))
@@ -246,6 +262,17 @@ TRAILING-NEWLINE controls whether the last line ends with a newline."
   (forward-line row-index)
   (goto-char (car (org-table--find-cell-bounds-on-line column-index))))
 
+(defun org-table--replace-region (start end text)
+  "Replace buffer text from START to END with TEXT."
+  (goto-char start)
+  (if (and (fboundp 'nelisp-ec-delete-region)
+           (fboundp 'nelisp-ec-insert))
+      (progn
+        (nelisp-ec-delete-region start end)
+        (nelisp-ec-insert text))
+    (delete-region start end)
+    (insert text)))
+
 (defun org-table--replace-table (info rows target-row target-column)
   "Replace the current table described by INFO with ROWS.
 After replacement, move point to TARGET-ROW and TARGET-COLUMN when
@@ -255,9 +282,7 @@ TARGET-ROW is non-nil.  Return non-nil."
         (table-string (org-table--table-string
                        rows
                        (plist-get info :trailing-newline))))
-    (goto-char start)
-    (delete-region start end)
-    (insert table-string)
+    (org-table--replace-region start end table-string)
     (when target-row
       (org-table--goto-cell start target-row target-column))
     t))

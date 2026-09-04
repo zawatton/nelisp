@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'emacs-time)
 
 (defconst emacs-time-test--module-file
@@ -37,7 +38,9 @@
   (should (featurep 'emacs-time))
   (should (fboundp 'float-time))
   (should (fboundp 'current-time))
-  (should (fboundp 'truncate)))
+  (should (fboundp 'truncate))
+  (should (fboundp 'set-time-zone-rule))
+  (should (fboundp 'display-time-mode)))
 
 (ert-deftest emacs-time-test/guard-keeps-an-already-correct-truncate ()
   (let ((original (symbol-function 'truncate)))
@@ -102,6 +105,41 @@
        (should (= (float-time) (car now)))
        (should (equal now (list (float-time) 0 0 0)))))))
 
+(ert-deftest emacs-time-test/parse-zone-offset ()
+  (should (= 32400 (emacs-time--parse-zone-offset "+0900")))
+  (should (= -19800 (emacs-time--parse-zone-offset "-0530")))
+  (should-not (emacs-time--parse-zone-offset "JST"))
+  (should-not (emacs-time--parse-zone-offset "+09")))
+
+(ert-deftest emacs-time-test/current-time-zone-uses-date-and-caches ()
+  (emacs-time-test--with-reloaded-module
+   '(current-time-zone emacs-time--current-time-zone-cache)
+   (lambda ()
+     (let ((calls nil)
+           (emacs-time--current-time-zone-cache nil))
+       (cl-letf (((symbol-function 'call-process)
+                  (lambda (program _infile destination _display &rest args)
+                    (should (equal "date" program))
+                    (should destination)
+                    (let ((format (car args)))
+                      (setq calls (cons format calls))
+                      (insert (if (equal format "+%z")
+                                  "+0900\n"
+                                "JST\n"))
+                      0))))
+         (should (equal '(32400 "JST") (current-time-zone)))
+         (should (equal '(32400 "JST") (current-time-zone)))
+         (should (equal '("+%z" "+%Z") (nreverse calls))))))))
+
+(ert-deftest emacs-time-test/current-time-zone-falls-back-to-utc ()
+  (emacs-time-test--with-reloaded-module
+   '(current-time-zone emacs-time--current-time-zone-cache)
+   (lambda ()
+     (let ((emacs-time--current-time-zone-cache nil))
+       (cl-letf (((symbol-function 'call-process)
+                  (lambda (&rest _args) 1)))
+         (should (equal '(0 "UTC") (current-time-zone))))))))
+
 (ert-deftest emacs-time-test/truncate-integer-and-positive-float ()
   (emacs-time-test--with-reloaded-module
    '(truncate float-time current-time nl-current-unix-time)
@@ -122,9 +160,33 @@
      (should (= 3 (truncate 7 2)))
      (should (= 0 (truncate nil))))))
 
-(provide 'emacs-time-test)
+(ert-deftest emacs-time-test/display-time-mode-and-time-zone-rule-stubs ()
+  (emacs-time-test--with-reloaded-module
+   '(display-time-mode set-time-zone-rule)
+   (lambda ()
+     (let ((display-time-mode nil)
+           (emacs-time--time-zone-rule nil)
+           (emacs-time--current-time-zone-cache '(1 "X")))
+       (should-not (display-time-mode 1))
+       (should (equal "UTC0" (set-time-zone-rule "UTC0")))
+       (should (equal "UTC0" emacs-time--time-zone-rule))
+       (should-not emacs-time--current-time-zone-cache)))))
 
-;;; emacs-time-test.el ends here
+(ert-deftest emacs-time-test/calendar-absolute-days-match-emacs ()
+  "Calendar helpers use Emacs absolute days, not Unix-epoch day offsets."
+  (emacs-time-test--with-reloaded-module
+   '(truncate float-time current-time nl-current-unix-time
+              time-to-days days-to-time encode-time decode-time
+              calendar-absolute-from-gregorian
+              calendar-gregorian-from-absolute)
+   (lambda ()
+     (should (= 719163 (calendar-absolute-from-gregorian '(1 1 1970))))
+     (should (= 739807 (calendar-absolute-from-gregorian '(7 10 2026))))
+     (should (equal '(7 10 2026)
+                    (calendar-gregorian-from-absolute 739807)))
+     (should (= 739807 (time-to-days (encode-time 0 0 0 10 7 2026))))
+     (should (equal '(0 0 0 10 7 2026 5 nil 0)
+                    (decode-time (days-to-time 739807)))))))
 
 (ert-deftest emacs-time-test/to-number-converts-time-forms ()
   "emacs-time--to-number converts all Emacs time-value shapes to seconds."
@@ -132,7 +194,21 @@
   (should (= 1.5 (emacs-time--to-number 1.5)))
   (should (= 65536.0 (emacs-time--to-number '(1 0))))
   (should (= 5.0 (emacs-time--to-number '(5000 . 1000))))
-  (should (= 65536.5 (emacs-time--to-number '(1 0 500000)))))
+  (should (= 65536.5 (emacs-time--to-number '(1 0 500000))))
+  (should (= 1783641600 (emacs-time--to-number '(1783641600 0 0 0)))))
+
+(ert-deftest emacs-time-test/time-convert-polyfill ()
+  "time-convert covers integer, float, list, and tick-rate forms."
+  (emacs-time-test--with-reloaded-module
+   '(truncate float-time current-time nl-current-unix-time time-convert)
+   (lambda ()
+     (put 'time-convert 'emacs-stub-bulk t)
+     (load emacs-time-test--module-file t t)
+     (should (= 12 (time-convert 12.9 'integer)))
+     (should (= 12.5 (time-convert 12.5 'float)))
+     (should (equal '(12 0 0 0) (time-convert 12.5 'list)))
+     (should (equal '(5 . 2) (time-convert 2.5 2)))
+     (should (equal '(12000 . 1000) (time-convert 12 1000))))))
 
 (ert-deftest emacs-time-test/time-less-p-orders-time-values ()
   "time-less-p orders integers, floats, (HIGH LOW) and (TICKS . HZ) values."
@@ -167,3 +243,7 @@
       (emacs-timer-cancel tm)
       (should-not (memq tm timer-list)))
     (should (emacs-timer-p (emacs-timer-run-with-timer 1 nil #'ignore)))))
+
+(provide 'emacs-time-test)
+
+;;; emacs-time-test.el ends here

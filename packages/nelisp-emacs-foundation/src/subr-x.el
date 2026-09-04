@@ -14,7 +14,23 @@
 ;;; Code:
 
 (defconst subr-x--load-directory
-  (file-name-directory (or load-file-name buffer-file-name))
+  ;; `load-file-name' is nil inside the concatenated bootstrap bundle, and the
+  ;; bare `default-directory' fallback then resolved siblings to <repo>/X.el
+  ;; instead of <repo>/src/X.el.  Same shape as `cl-lib--load-directory'.
+  (let ((source-file
+         (or (and (boundp 'load-file-name) load-file-name)
+             (and (boundp 'buffer-file-name) buffer-file-name))))
+    (cond
+     (source-file
+      (file-name-directory source-file))
+     ((and (boundp 'default-directory)
+           (stringp default-directory))
+      (let ((src (expand-file-name "src/" default-directory)))
+        (if (and (fboundp 'file-directory-p)
+                 (file-directory-p src))
+            src
+          default-directory)))
+     (t nil)))
   "Directory that contains the subr-x facade and its sibling features.")
 
 (defun subr-x--load-feature (feature)

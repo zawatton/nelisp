@@ -153,7 +153,165 @@
 (ert-deftest emacs-subr-extras-when-let-alias ()
   (should (= (when-let ((a 8)) a) 8)))
 
+;;;; derived-mode-add-parents
+
+(ert-deftest emacs-subr-extras-derived-mode-add-parents-stores-extra-parents ()
+  (let* ((mode (make-symbol "emacs-subr-extras-test-derived-mode"))
+         (parents '(foo-mode bar-mode)))
+    (derived-mode-add-parents mode parents)
+    (should (eq (derived-mode-add-parents mode parents) nil))
+    (should (eq (get mode 'derived-mode-extra-parents) parents))))
+
+(ert-deftest emacs-subr-extras-derived-mode-add-parents-recursive-flush ()
+  (let* ((root (make-symbol "emacs-subr-extras-test-root-mode"))
+         (child-a (make-symbol "emacs-subr-extras-test-child-a-mode"))
+         (child-b (make-symbol "emacs-subr-extras-test-child-b-mode"))
+         (grandchild (make-symbol "emacs-subr-extras-test-grandchild-mode")))
+    (put root 'derived-mode--followers (list child-a child-b))
+    (put child-a 'derived-mode--followers (list grandchild))
+    (put root 'derived-mode--all-parents 'stale-root)
+    (put child-a 'derived-mode--all-parents 'stale-child-a)
+    (put child-b 'derived-mode--all-parents 'stale-child-b)
+    (put grandchild 'derived-mode--all-parents 'stale-grandchild)
+    (derived-mode-add-parents root '(base-root-mode))
+    (should-not (get root 'derived-mode--all-parents))
+    (should-not (get child-a 'derived-mode--all-parents))
+    (should-not (get child-b 'derived-mode--all-parents))
+    (should-not (get grandchild 'derived-mode--all-parents))
+    (should-not (get root 'derived-mode--followers))
+    (should-not (get child-a 'derived-mode--followers))
+    (should-not (get child-b 'derived-mode--followers))))
+
+(ert-deftest emacs-subr-extras-derived-mode-add-parents-with-no-followers ()
+  (let ((mode (make-symbol "emacs-subr-extras-test-no-followers-mode")))
+    (put mode 'derived-mode--followers nil)
+    (put mode 'derived-mode--all-parents 'stale)
+    (derived-mode-add-parents mode '(base-mode))
+    (should-not (get mode 'derived-mode--followers))
+    (should (equal (get mode 'derived-mode-extra-parents) '(base-mode)))
+    (should-not (get mode 'derived-mode--all-parents))))
+
 (provide 'emacs-subr-extras-test)
+
+(ert-deftest emacs-subr-extras-treesit-error-hierarchy ()
+  (should (equal (get 'treesit-error 'error-conditions)
+                 '(treesit-error error)))
+  (should (equal (get 'treesit-font-lock-error 'error-conditions)
+                 '(treesit-font-lock-error treesit-error error))))
+
+;;;; treesit-font-lock-rules
+
+(defmacro emacs-subr-extras-test--with-temporary-function (name fn &rest body)
+  `(let ((old (and (fboundp ',name) (symbol-function ',name))))
+     (unwind-protect
+       (progn
+         (fset ',name ,fn)
+         ,@body)
+       (if old
+           (fset ',name old)
+         (fmakunbound ',name)))))
+
+(ert-deftest emacs-subr-extras-treesit-font-lock-rules-unavailable ()
+  (emacs-subr-extras-test--with-temporary-function
+   treesit-available-p (lambda () nil)
+   (emacs-subr-extras-test--with-temporary-function
+    treesit-query-p (lambda (_token) (error "should not be called"))
+    (emacs-subr-extras-test--with-temporary-function
+     treesit-compiled-query-p (lambda (_token) (error "should not be called"))
+     (emacs-subr-extras-test--with-temporary-function
+      treesit-query-compile (lambda (_language _token) (error "should not be called"))
+      (should-not
+       (treesit-font-lock-rules
+        :language 'foo
+        :feature 'bar
+        "query")))))))
+
+(ert-deftest emacs-subr-extras-treesit-font-lock-rules-compile-shape ()
+  (let ((seen nil))
+    (emacs-subr-extras-test--with-temporary-function
+     treesit-available-p (lambda () t)
+     (emacs-subr-extras-test--with-temporary-function
+      treesit-query-p (lambda (token) (stringp token))
+      (emacs-subr-extras-test--with-temporary-function
+       treesit-compiled-query-p (lambda (_token) nil)
+       (emacs-subr-extras-test--with-temporary-function
+        treesit-query-compile
+        (lambda (lang token)
+          (push (cons lang token) seen)
+          (cond
+           ((equal token "one") 'compiled-one)
+           ((equal token "two") 'compiled-two)
+           ((equal token "three") 'compiled-three)
+           (t (make-symbol (concat "compiled-" token)))))
+        (let ((default-language 'default-language)
+              (primary-language 'primary-language)
+              (primary-feature 'primary-feature)
+              (secondary-feature 'secondary-feature)
+              (tertiary-language 'tertiary-language)
+              (tertiary-feature 'tertiary-feature))
+          (should
+           (equal
+            (treesit-font-lock-rules
+             :default-language default-language
+             :language primary-language
+             :feature primary-feature
+             :override 'append
+             "one"
+             :feature secondary-feature
+             "two"
+             :language tertiary-language
+             :feature tertiary-feature
+             "three")
+            '((compiled-one t primary-feature append)
+              (compiled-two t secondary-feature nil)
+              (compiled-three t tertiary-feature nil))))
+          (should (equal (nreverse seen)
+                         (list (cons default-language "one")
+                               (cons default-language "two")
+                               (cons default-language "three")))))))))))
+
+(ert-deftest emacs-subr-extras-treesit-font-lock-rules-compiled-query-shape ()
+  (emacs-subr-extras-test--with-temporary-function
+   treesit-available-p (lambda () t)
+   (emacs-subr-extras-test--with-temporary-function
+    treesit-query-p (lambda (token) (eq token 'compiled-token))
+    (emacs-subr-extras-test--with-temporary-function
+     treesit-compiled-query-p (lambda (token) (eq token 'compiled-token))
+     (emacs-subr-extras-test--with-temporary-function
+      treesit-query-compile
+      (lambda (_language _token) (error "should not be called"))
+      (should
+       (equal (treesit-font-lock-rules
+               :default-language 'default-language
+               :feature 'compiled-feature
+               'compiled-token)
+              (list (list 'default-language 'token)))))))))
+
+(ert-deftest emacs-subr-extras-treesit-font-lock-rules-validation ()
+  (emacs-subr-extras-test--with-temporary-function
+   treesit-available-p (lambda () t)
+   (emacs-subr-extras-test--with-temporary-function
+    treesit-query-p (lambda (token) (stringp token))
+     (emacs-subr-extras-test--with-temporary-function
+     treesit-compiled-query-p (lambda (_token) nil)
+     (emacs-subr-extras-test--with-temporary-function
+      treesit-query-compile (lambda (_language _token) 'compiled-fallback)
+      (should-error (treesit-font-lock-rules :feature 'feat "query")
+                    :type 'treesit-font-lock-error)
+      (should-error (treesit-font-lock-rules :language 'lang "query")
+                    :type 'treesit-font-lock-error)
+      (should-error (treesit-font-lock-rules :default-language 'lang :feature 'feat
+                                            "query" :bogus 1)
+                    :type 'treesit-font-lock-error)
+      (should-error (treesit-font-lock-rules :language 'lang :feature 'feat
+                                            :override 'invalid "query")
+                    :type 'treesit-font-lock-error)
+      (should-error (treesit-font-lock-rules :language 'lang :feature t "query")
+                    :type 'treesit-font-lock-error)
+      (should-error (treesit-font-lock-rules :language 'lang :default-language nil
+                                            :feature 'feat "query")
+                    :type 'treesit-font-lock-error))))))
+
 ;;; emacs-subr-extras-test.el ends here
 
 (ert-deftest emacs-subr-extras-test/gc-stats-api-shape ()

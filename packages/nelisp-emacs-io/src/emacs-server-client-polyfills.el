@@ -75,6 +75,7 @@
     (prin1-to-string object))
   (defun pp-to-string (object)
     (prin1-to-string object))
+  (provide 'pp)
   (defun command-line-normalize-file-name (file) file)
   (defun substitute-key-definition (&rest _ignored) nil)
   (defun format-network-address (_address &optional _omit-port) "")
@@ -214,6 +215,65 @@
           (setq i (1+ i))))
       (nreverse out)))
 
+  (defvar emacs-server-client-polyfills--network-functions
+    (let ((names '(processp process-list process-status process-id
+                   process-buffer process-name process-filter
+                   process-sentinel process-plist process-send-string
+                   delete-process process-query-on-exit-flag
+                   set-process-query-on-exit-flag
+                   accept-process-output)))
+      (let ((out nil))
+        (dolist (name names)
+          (when (fboundp name)
+            (push (cons name (symbol-function name)) out)))
+        out))
+    "Network process functions captured before subprocess bridges load.")
+
+  (defun emacs-server-client-polyfills--restore-network-functions ()
+    "Restore network process/eventloop functions for server.el.
+The full nemacs runtime loads subprocess bridges later; those bridges
+are useful for shell/process-file, but their unprefixed process
+aliases do not understand the network process vectors used by
+server.el."
+    (dolist (entry emacs-server-client-polyfills--network-functions)
+      (fset (car entry) (cdr entry))))
+
+  (defun nemacs-server-start ()
+    "M14 standalone server bring-up.
+Vendor `server-start' still trips reader gaps inside its prologue;
+this mirrors its socket setup exactly (safe dir, listener with the
+authenticated plist, `server-process' bookkeeping) and relies on the
+M14 filter override for the protocol."
+    (let ((server-file (server--file-name)))
+      ;; The launcher pre-creates the socket directory with mode 0700.
+      ;; Calling vendor `server-ensure-safe-dir' from this standalone
+      ;; function currently triggers a reader control-flow bug where
+      ;; the rest of the function body is skipped without a catchable
+      ;; error, leaving a false "listening" message and no socket.
+      (emacs-server-client-polyfills--restore-network-functions)
+      (setq server-process
+            (apply #'make-network-process
+                   :name server-name
+                   :server t
+                   :noquery t
+                   :sentinel #'server-sentinel
+                   :filter #'server-process-filter
+                   :use-external-socket t
+                   :coding (cons 'raw-text-unix locale-coding-system)
+                   (list :family 'local
+                         :service server-file
+                         :plist '(:authenticated t))))
+      (unless (and (processp server-process)
+                   (eq (process-status server-process) 'listen))
+        (error "nemacs-server-start: listener creation failed: %S"
+               server-process))
+      (unless (file-exists-p server-file)
+        (error "nemacs-server-start: listener did not create socket: %s"
+               server-file))
+      (process-put server-process :server-file server-file)
+      (setq server-mode t)
+      server-process))
+
   ;; --- post-vendor-load overrides ----------------------------------------
   (defun emacs-server-client-polyfills-install ()
     "Install the M14 minimal `-eval' protocol overrides.
@@ -292,28 +352,6 @@ commands are out of scope and simply ignored)."
                 (server-eval-and-print (car exprs) proc)
                 (setq exprs (cdr exprs)))
               (delete-process proc))))))
-    (defun nemacs-server-start ()
-      "M14 standalone server bring-up.
-Vendor `server-start' still trips reader gaps inside its prologue;
-this mirrors its socket setup exactly (safe dir, listener with the
-authenticated plist, `server-process' bookkeeping) and relies on the
-M14 filter override for the protocol."
-      (server-ensure-safe-dir (file-name-directory (server--file-name)))
-      (setq server-process
-            (apply #'make-network-process
-                   :name server-name
-                   :server t
-                   :noquery t
-                   :sentinel #'server-sentinel
-                   :filter #'server-process-filter
-                   :use-external-socket t
-                   :coding (cons 'raw-text-unix locale-coding-system)
-                   (list :family 'local
-                         :service (server--file-name)
-                         :plist '(:authenticated t))))
-      (process-put server-process :server-file (server--file-name))
-      (setq server-mode t)
-      server-process)
     t))
 
 (provide 'emacs-server-client-polyfills)

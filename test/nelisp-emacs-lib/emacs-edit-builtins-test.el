@@ -57,6 +57,14 @@ Also resets kill-ring + kill-ring-yank-pointer."
   (should (boundp 'line-move-ignore-invisible))
   (should (boundp 'auto-fill-inhibit-regexp)))
 
+(ert-deftest emacs-edit-builtins-test/install-function-accepts-stub-bulk-marker ()
+  (let ((original-marker (get 'newline 'emacs-stub-bulk)))
+    (unwind-protect
+        (progn
+          (put 'newline 'emacs-stub-bulk t)
+          (should (emacs-edit-builtins--install-function-p 'newline)))
+      (put 'newline 'emacs-stub-bulk original-marker))))
+
 ;;;; B. self-insert-command body — inserts char N times
 
 (defun emacs-edit-builtins-test--self-insert (char &optional n)

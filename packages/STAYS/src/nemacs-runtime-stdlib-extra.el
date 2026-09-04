@@ -27,16 +27,24 @@
 
 ;;; Code:
 
-(unless (fboundp 'string-match)
-  (when (fboundp 'nlre-string-match)
-    (defun string-match (re s &optional start) (nlre-string-match re s start))
-    (defun string-match-p (re s &optional start) (nlre-string-match re s start))
-    (defun match-beginning (n) (nlre-match-beginning n))
-    (defun match-end (n) (nlre-match-end n))
+(when (fboundp 'nlre-string-match)
+  (unless (fboundp 'string-match)
+    (defun string-match (re s &optional start) (nlre-string-match re s start)))
+  (unless (fboundp 'string-match-p)
+    (defun string-match-p (re s &optional start) (nlre-string-match re s start)))
+  (unless (fboundp 'match-beginning)
+    (defun match-beginning (n) (nlre-match-beginning n)))
+  (unless (fboundp 'match-end)
+    (defun match-end (n) (nlre-match-end n)))
+  (unless (fboundp 'match-string)
     (defun match-string (n &optional str)
       (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))
-        (if (and str b e) (substring str b e) nil)))
-    (defun split-string (s &optional sep omit trim) (nlre-split-string s sep omit))
+        (if (and str b e) (substring str b e) nil))))
+  ;; Keep this gate independent from `string-match': the runtime image may
+  ;; already carry regexp entry points while still lacking `split-string'.
+  (unless (fboundp 'split-string)
+    (defun split-string (s &optional sep omit trim) (nlre-split-string s sep omit)))
+  (unless (fboundp 'replace-regexp-in-string)
     (defun replace-regexp-in-string (re rep s &optional fc lit subexp start)
       (nlre-replace-regexp-in-string re rep s))))
 

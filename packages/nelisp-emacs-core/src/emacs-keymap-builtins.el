@@ -38,6 +38,8 @@
 ;;   - `keymap-set' / `keymap-lookup' / `keymap-unset'
 ;;   - `keymap-global-set' / `keymap-local-set'
 ;;   - `keymap-global-unset' / `keymap-local-unset'
+;;   - `global-set-key' / `local-set-key'
+;;   - `global-unset-key' / `local-unset-key'
 ;;   - `key-parse' / `key-valid-p'
 ;;   - batch-compatible `easymenu.el' menu keymap construction and mutation
 ;;
@@ -61,6 +63,24 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
       (get symbol 'emacs-stub-bulk)
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
+
+(unless (boundp 'overriding-local-map)
+  (defvar overriding-local-map emacs-keymap-overriding-local-map))
+
+(unless (boundp 'overriding-terminal-local-map)
+  (defvar overriding-terminal-local-map
+    emacs-keymap-overriding-terminal-local-map))
+
+(unless (boundp 'minor-mode-overriding-map-alist)
+  (defvar minor-mode-overriding-map-alist
+    emacs-keymap-minor-mode-overriding-map-alist))
+
+(unless (boundp 'minor-mode-map-alist)
+  (defvar minor-mode-map-alist emacs-keymap-minor-mode-map-alist))
+
+(unless (boundp 'emulation-mode-map-alists)
+  (defvar emulation-mode-map-alists
+    emacs-keymap-emulation-mode-map-alists))
 
 ;;;; --- constructors ----------------------------------------------------
 
@@ -86,6 +106,18 @@ through."
 
 (when (emacs-keymap-builtins--install-function-p 'define-key-after)
   (defalias 'define-key-after #'emacs-keymap-define-key-after))
+
+(when (emacs-keymap-builtins--install-function-p 'define-prefix-command)
+  (defun define-prefix-command (command &optional mapvar name)
+    "Define COMMAND as a prefix command backed by a sparse keymap.
+When MAPVAR is non-nil, also store the keymap there.  NAME becomes the
+prompt carried by the created keymap."
+    (let ((map (emacs-keymap-make-sparse-keymap name)))
+      (fset command map)
+      (set command map)
+      (when mapvar
+        (set mapvar map))
+      command)))
 
 (when (emacs-keymap-builtins--install-function-p 'suppress-keymap)
   (defun suppress-keymap (keymap &optional nodigits)
@@ -165,6 +197,14 @@ the conventional shape expected by `defvar-keymap :suppress'."
   (defvar menu-bar-separator '(menu-item "--")
     "Standard menu separator item for standalone menu keymaps."))
 
+(unless (boundp 'menu-bar-options-menu)
+  (defvar menu-bar-options-menu
+    (let ((map (emacs-keymap-make-sparse-keymap "Options")))
+      (emacs-keymap-define-key map [line-wrapping]
+                               (emacs-keymap-make-sparse-keymap "Line Wrapping"))
+      map)
+    "Standalone `Options' menu keymap used by batch menu mutators."))
+
 (unless (boundp 'ctl-x-map)
   (defvar ctl-x-map (emacs-keymap-make-sparse-keymap)
     "Standard C-x prefix keymap for standalone NeLisp."))
@@ -210,6 +250,37 @@ the conventional shape expected by `defvar-keymap :suppress'."
 
 (when (emacs-keymap-builtins--install-function-p 'use-local-map)
   (defalias 'use-local-map #'emacs-keymap-use-local-map))
+
+(when (emacs-keymap-builtins--install-function-p 'global-set-key)
+  (defun global-set-key (key command)
+    "Bind KEY to COMMAND in the current global map."
+    (emacs-keymap-define-key (emacs-keymap-current-global-map) key command)))
+
+(when (emacs-keymap-builtins--install-function-p 'global-key-binding)
+  (defun global-key-binding (keys &optional accept-default)
+    "Return the binding for KEYS in the current global map."
+    (emacs-keymap-lookup-key (emacs-keymap-current-global-map)
+                             keys accept-default)))
+
+(when (emacs-keymap-builtins--install-function-p 'local-set-key)
+  (defun local-set-key (key command)
+    "Bind KEY to COMMAND in the current local map."
+    (let ((map (or (emacs-keymap-current-local-map)
+                   (emacs-keymap-make-sparse-keymap))))
+      (emacs-keymap-use-local-map map)
+      (emacs-keymap-define-key map key command))))
+
+(when (emacs-keymap-builtins--install-function-p 'global-unset-key)
+  (defun global-unset-key (key)
+    "Remove KEY from the current global map."
+    (emacs-keymap-define-key (emacs-keymap-current-global-map) key nil)))
+
+(when (emacs-keymap-builtins--install-function-p 'local-unset-key)
+  (defun local-unset-key (key)
+    "Remove KEY from the current local map."
+    (let ((map (emacs-keymap-current-local-map)))
+      (when map
+        (emacs-keymap-define-key map key nil)))))
 
 ;;;; --- reverse lookup --------------------------------------------------
 

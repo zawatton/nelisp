@@ -62,6 +62,52 @@ vendor-core candidate set.")
 (defvar vendor-core-smoke-strict t
   "Non-nil means signal an error when any core smoke fails.")
 
+(defvar vendor-core-smoke--layer2-ready nil
+  "Non-nil once the local Layer 2 substrate has been explicitly primed.")
+
+(defun vendor-core-smoke--provide-when-present (feature present-p)
+  "Provide FEATURE when PRESENT-P is non-nil and FEATURE is not yet provided."
+  (when (and present-p (not (featurep feature)))
+    (provide feature)))
+
+(defun vendor-core-smoke--stabilize-bootstrap-features ()
+  "Mark half-loaded bootstrap owners as provided when their public surface exists."
+  (vendor-core-smoke--provide-when-present
+   'seq (or (featurep 'seq) (fboundp 'seq-map)))
+  (vendor-core-smoke--provide-when-present
+   'files-runtime
+   (or (featurep 'files-runtime) (fboundp 'files-standalone-runtime-p)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-window
+   (or (featurep 'emacs-window) (fboundp 'emacs-window-selected-window)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-keymap
+   (or (featurep 'emacs-keymap) (fboundp 'emacs-keymap-make-sparse-keymap)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-faces
+   (or (featurep 'emacs-faces) (fboundp 'emacs-faces-facep)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-minibuffer
+   (or (featurep 'emacs-minibuffer) (fboundp 'emacs-minibuffer-read-buffer)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-process
+   (or (featurep 'emacs-process) (fboundp 'emacs-process-process-list)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-mode
+   (or (featurep 'emacs-mode) (fboundp 'emacs-mode-fundamental-mode)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-frame
+   (or (featurep 'emacs-frame) (fboundp 'emacs-frame-selected-frame)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-command-loop
+   (or (featurep 'emacs-command-loop) (fboundp 'emacs-command-loop-read-event)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-vars
+   (or (featurep 'emacs-vars) (boundp 'user-emacs-directory)))
+  (vendor-core-smoke--provide-when-present
+   'emacs-init
+   (or (featurep 'emacs-init) (fboundp 'emacs-init-load-editor-features))))
+
 (defun vendor-core-smoke--env-flag-p (name)
   "Return non-nil when env var NAME is set to 1, t, true, or yes."
   (let ((value (and (fboundp 'getenv) (getenv name))))
@@ -124,6 +170,58 @@ vendor-core candidate set.")
   "Signal MESSAGE unless CONDITION is non-nil."
   (unless condition
     (error "%s" message)))
+
+(defun vendor-core-smoke--ensure-layer2 ()
+  "Explicitly prime the local Layer 2 substrate for vendor-core smoke.
+The standalone bootstrap bundle contains the local owners, but this smoke
+needs their install/init paths to have run before vendor files are required."
+  (unless vendor-core-smoke--layer2-ready
+    (vendor-core-smoke--stabilize-bootstrap-features)
+    (dolist (module '("emacs-window"
+                      "emacs-keymap"
+                      "emacs-faces"
+                      "files-runtime"
+                      "emacs-frame"
+                      "emacs-command-loop"
+                      "emacs-minibuffer"
+                      "emacs-process"
+                      "emacs-mode"
+                      "emacs-init"))
+      (when (fboundp 'load)
+        (ignore-errors (load module t t))))
+    (vendor-core-smoke--stabilize-bootstrap-features)
+    (require 'emacs-init)
+    (when (fboundp 'emacs-init-load-editor-features)
+      (emacs-init-load-editor-features))
+    ;; Daily-driver vendor modules touch these local facades indirectly
+    ;; during top-level initialization, so load them eagerly here instead
+    ;; of relying on scattered autoload/install side effects.
+    (dolist (feature '(emacs-vars
+                       files-runtime
+                       files-standalone-buffer
+                       emacs-help
+                       emacs-help-gui
+                       emacs-calc
+                       emacs-man
+                       emacs-shell
+                       emacs-ielm
+                       emacs-isearch
+                       emacs-project
+                       emacs-replace
+                       emacs-comint
+                       emacs-vc
+                       emacs-compile
+                       emacs-xref
+                       emacs-imenu
+                       emacs-faces
+                       emacs-window
+                       emacs-frame
+                       emacs-keymap
+                       emacs-minibuffer
+                       emacs-process
+                       emacs-mode))
+      (require feature))
+    (setq vendor-core-smoke--layer2-ready t)))
 
 (defun vendor-core-smoke--check-fbound (symbols)
   "Assert that every symbol in SYMBOLS has a function binding."
@@ -575,6 +673,7 @@ vendor-core candidate set.")
   (let ((failures 0)
         (modules (vendor-core-smoke--selected-modules))
         results)
+    (vendor-core-smoke--ensure-layer2)
     (dolist (entry modules)
       (princ (format "vendor-core module=%S status=start detail=\n"
                      (car entry)))
