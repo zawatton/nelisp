@@ -60,8 +60,11 @@ fi
 # Doc 40's audit is intentionally machine-solo.  Refuse every existing
 # same-user NeLisp process: the audit child is not distinguishable by argv
 # after bin/nemacs execs the standalone reader, and two full heaps do not fit.
+# NEMACS_REAL_INIT_ALLOW_CONCURRENT=1 skips the refusal on hosts with enough
+# RAM for several heaps (peak RSS is still sampled from this audit's own
+# child, so the measurement itself is unaffected).
 existing_nelisp="$(pgrep -u "$(id -u)" -x nelisp || true)"
-if [[ -n "$existing_nelisp" ]]; then
+if [[ -n "$existing_nelisp" && "${NEMACS_REAL_INIT_ALLOW_CONCURRENT:-0}" != "1" ]]; then
   echo "real-init-audit: refusing to start while NeLisp is already running" >&2
   pgrep -u "$(id -u)" -a -x nelisp >&2 || true
   exit 1
