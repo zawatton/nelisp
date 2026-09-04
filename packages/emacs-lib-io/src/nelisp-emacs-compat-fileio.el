@@ -777,9 +777,16 @@ file size."
          ;; already returns a decoded Lisp string.  Re-decoding that text
          ;; through the self-hosted byte codec is both redundant and, at
          ;; current bootstrap speed, too slow for ordinary find-file.
-         (decoded (if (fboundp 'nelisp--syscall-read-file)
-                      raw
-                    (plist-get (nelisp-coding-utf8-decode raw) :string))))
+         ;; On the v1.2.0 reader `rdf' hands back the raw UTF-8 bytes as a
+         ;; unibyte string, and `string-as-multibyte' is the native decode;
+         ;; the self-hosted codec below took 17 s per 50 KB there.
+         (decoded (cond
+                   ((and (fboundp 'rdf) (fboundp 'string-as-multibyte))
+                    (funcall 'string-as-multibyte raw))
+                   ((fboundp 'nelisp--syscall-read-file)
+                    raw)
+                   (t
+                    (plist-get (nelisp-coding-utf8-decode raw) :string)))))
     (when replace
       (nelisp-ec-erase-buffer))
     (nelisp-ec-insert decoded)
@@ -809,7 +816,13 @@ Returns the number of *bytes* written to disk."
                  (unless (and (integerp start) (integerp end))
                    (signal 'wrong-type-argument (list 'integerp start end)))
                  (nelisp-ec-buffer-substring (min start end) (max start end))))
-         (unibyte (nelisp-coding-utf8-encode-string text)))
+         ;; Same reader shortcut for the encode direction: the string's
+         ;; internal bytes are already UTF-8 and `string-as-unibyte' is
+         ;; native there, where the self-hosted encoder needed 80 s per
+         ;; 50 KB -- most of anvil-server's schema-cache write time.
+         (unibyte (if (and (fboundp 'rdf) (fboundp 'string-as-unibyte))
+                      (funcall 'string-as-unibyte text)
+                    (nelisp-coding-utf8-encode-string text))))
     (nelisp-ec--write-raw-bytes file unibyte append)
     (length unibyte)))
 

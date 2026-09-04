@@ -29,6 +29,17 @@
 (defvar emacs-callproc--sys-getenv-active nil
   "Non-nil while `emacs-callproc--sys-getenv' is inside a backend call.")
 
+(defvar emacs-callproc--runtime-getenv
+  (and (fboundp 'getenv) (symbol-function 'getenv))
+  "The runtime's own `getenv', captured before this file overrides it.
+The NeLisp v1.2.0 reader binds a native `getenv' under the Emacs name
+and has neither `nelisp-sys-getenv' nor `nl-syscall-getenv', so without
+this capture the override below answered nil for every real variable
+once Layer 2 was up: anvil's ANVIL_TOOL_MODULES / ANVIL_WORKLOG_DB
+never reached the modules that read them (measured 2026-09-04,
+windows-x86_64).  `defvar' keeps the first capture across reloads, so
+the value is never this file's own override.")
+
 (defun emacs-callproc--lookup-process-environment (variable)
   "Return VARIABLE from `process-environment', or nil when absent."
   (let ((cur process-environment)
@@ -59,6 +70,13 @@
                            (error nil))))
               (when (stringp value)
                 (throw 'done value)))))
+        ;; Last: the runtime's own `getenv' (see the defvar above).
+        (when (functionp emacs-callproc--runtime-getenv)
+          (let ((value (condition-case nil
+                           (funcall emacs-callproc--runtime-getenv variable)
+                         (error nil))))
+            (when (stringp value)
+              (throw 'done value))))
         nil))))
 
 (defun emacs-callproc-getenv (variable &optional frame)
