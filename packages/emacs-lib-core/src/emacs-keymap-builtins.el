@@ -433,11 +433,20 @@ display filtering is preserved as properties but not invoked here."
            (setq props (plist-put props :label arg)))
           (:help
            (setq props (plist-put props :help arg)))))
-      (dolist (item menu-items)
-        (let ((converted (easy-menu-convert-item item)))
-          (when (cdr converted)
-            (define-key-after menu (vector (car converted)) (cdr converted)))))
+      (if (plist-get props :filter)
+          ;; GNU easymenu leaves filtered menu items unconverted so the
+          ;; filter receives their source form when the menu is displayed.
+          (setq menu menu-items)
+        (dolist (item menu-items)
+          (let ((converted (easy-menu-convert-item item)))
+            (when (cdr converted)
+              (define-key-after menu (vector (car converted)) (cdr converted))))))
       (when props
+        ;; Properties belong to the private function symbol, not to the
+        ;; keymap/list itself (`put' only accepts symbols).
+        (let ((menu-symbol (make-symbol "menu-function")))
+          (fset menu-symbol menu)
+          (setq menu menu-symbol))
         (put menu 'menu-prop props))
       menu)))
 
@@ -448,7 +457,7 @@ Standalone/batch sessions keep the keymap structure; popup display is UI
 adapter responsibility."
     (let ((props (and (symbolp menu) (get menu 'menu-prop))))
       (when (symbolp menu)
-        (setq menu (symbol-value menu)))
+        (setq menu (symbol-function menu)))
       (append (list 'menu-item
                     (or item-name
                         (and (keymapp menu) (keymap-prompt menu))
