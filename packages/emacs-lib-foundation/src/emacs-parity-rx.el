@@ -15,7 +15,8 @@
 ;; `rx--normalise-char-pattern', `rx--translate-syntax', etc. -- are already
 ;; defined by the baked `rx.el').  Standalone only: guarded on a baked rx
 ;; helper so host Emacs (real C-free rx) is untouched.
-(when (fboundp 'rx--translate-syntax)
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (fboundp 'rx--translate-syntax))
   (defun rx--translate-not (negated body)
     "Translate a (not ...) construct.  Return (REGEXP . PRECEDENCE).
 If NEGATED, negate the sense (thus making it positive)."

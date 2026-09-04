@@ -28,8 +28,11 @@
 ;;      The earlier shim only passed the env as an argument, so `:rx-locals'
 ;;      was invisible and local rx names were undefined.
 ;;
-;; Override unconditionally: a broken builtin beats a guarded src defun via
-;; fboundp-gating, so we must clobber rather than `(unless (fboundp ...))'.
+;; Override on standalone NeLisp: a broken builtin beats a guarded src defun
+;; via fboundp-gating, so the standalone path must clobber rather than use
+;; `(unless (fboundp ...))'.  Host Emacs skips the definitions themselves.
+
+(when (fboundp 'nelisp--write-stdout-bytes)
 
 (defvar macroexpand-all-environment nil
   "Environment threaded through `macroexpand-all' (macrolet / rx-let locals).")
@@ -108,6 +111,8 @@ that consult it (e.g. `rx' via `:rx-locals') see the local definitions."
     (while (and (symbolp fn) fn (fboundp fn))
       (setq fn (symbol-function fn)))
     (and (consp fn) (eq (car fn) 'macro) t)))
+
+)
 
 (provide 'emacs-parity-macroexpand)
 ;;; emacs-parity-macroexpand.el ends here

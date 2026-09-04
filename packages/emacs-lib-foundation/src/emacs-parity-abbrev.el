@@ -12,7 +12,9 @@
 ;; table-aware `intern' / `intern-soft', so we implement the real thing over
 ;; those primitives -- a genuine abbrev table, not a stub.
 
-(when (and (fboundp 'obarray-make) (fboundp 'intern))
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (fboundp 'obarray-make)
+           (fboundp 'intern))
 
   (defun define-abbrev (table name expansion &optional hook &rest props)
     "Define abbrev NAME in TABLE, expanding into EXPANSION and calling HOOK.
