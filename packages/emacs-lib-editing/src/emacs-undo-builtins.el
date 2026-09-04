@@ -19,9 +19,10 @@
 ;;
 ;;   - Functions: undo / undo-boundary / primitive-undo /
 ;;     buffer-disable-undo / buffer-enable-undo
-;;   - Variable: buffer-undo-list (= MVP global, real Emacs has
+;;   - Variables: buffer-undo-list (= MVP global, real Emacs has
 ;;     this buffer-local; under standalone NeLisp the per-buffer
-;;     state lives in `emacs-undo--lists' alist regardless)
+;;     state lives in `emacs-undo--lists' alist regardless), plus
+;;     the C-owned undo history limits used by packages such as undo-tree
 ;;
 ;; Deferred: undo-only / undo-redo / `(apply ...)' record support /
 ;; marker records / text-property records.
@@ -69,6 +70,24 @@ undo list.  Real Emacs makes this buffer-local automatically; our
 substrate stores per-buffer state in `emacs-undo--lists' and
 exposes the current buffer's slot through the prefixed accessors.
 This defvar is provided for `(boundp 'buffer-undo-list)' parity."))
+
+;; GNU Emacs defines these in undo.c.  Keep the definitions here beside the
+;; `buffer-undo-list' compatibility surface, and leave every host value intact.
+(unless (boundp 'undo-limit)
+  (defvar undo-limit 160000
+    "Soft size limit for undo information in the current buffer."))
+
+(unless (boundp 'undo-strong-limit)
+  (defvar undo-strong-limit 240000
+    "Size beyond which undo information is discarded aggressively."))
+
+(unless (boundp 'undo-outer-limit)
+  (defvar undo-outer-limit 24000000
+    "Maximum size for a single undo command's information."))
+
+(unless (boundp 'undo-ask-before-discard)
+  (defvar undo-ask-before-discard nil
+    "Non-nil means ask before discarding undo data over the outer limit."))
 
 (provide 'emacs-undo-builtins)
 

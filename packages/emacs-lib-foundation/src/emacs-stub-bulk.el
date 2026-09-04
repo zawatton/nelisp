@@ -58,7 +58,8 @@ Forwarder to `forward-char' with negated count."
     (when (fboundp 'forward-char)
       (forward-char (- (or n 1))))))
 
-;; buffer-undo-list moved to emacs-undo-builtins (Track E.2).
+;; buffer-undo-list and the undo limit variables moved to
+;; emacs-undo-builtins (Track E.2).
 
 ;; call-interactively moved to emacs-command-loop-builtins (Phase B.3).
 ;; call-process / call-process-region moved to emacs-process-builtins (Track I).
@@ -315,7 +316,7 @@ Forwarder to `forward-char' with negated count."
     operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
     print-gensym print-quoted print-unreadable-function purify-flag query-replace-map redisplay-dont-pause s set-variable-value-history
     shell-file-name standard-output sym symbols-with-pos-enabled syntax-propertize-function system-type temp-buffer-show-function text-conversion-style
-    translation-table-for-input undo-in-progress undo-limit undo-outer-limit undo-strong-limit use-dialog-box values vertical-scroll-bar
+    translation-table-for-input undo-in-progress use-dialog-box values vertical-scroll-bar
     x-gtk-use-window-move yank-transform-functions)))
   (dolist (--s-- --stub-defvars--)
     (unless (boundp --s--)

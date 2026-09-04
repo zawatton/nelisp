@@ -207,6 +207,58 @@ current ERT test with status/stdout/stderr diagnostics."
                "RESIDUAL prefix=describe-prefix-bindings helper=t blink=(nil t nil t nil) iter=(alpha beta)")
               out)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/undo-tree-limits-residual-parity ()
+  "GNU undo limits let the real undo-tree package enable on the reader."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let* ((home (or (getenv "HOME") ""))
+          (undo-tree-dir
+           (expand-file-name ".emacs.d/external-packages/undo-tree" home))
+          (queue-dir
+           (expand-file-name ".emacs.d/external-packages/queue" home)))
+     (unless (and (file-readable-p
+                   (expand-file-name "undo-tree.el" undo-tree-dir))
+                  (file-readable-p (expand-file-name "queue.el" queue-dir)))
+       (ert-skip "undo-tree and queue external package sources are unavailable"))
+     (let ((out
+            (nemacs-bootstrap-nelisp-test--run
+             "--batch" "--no-banner"
+             "--eval"
+             (concat
+              "(condition-case err"
+              "    (progn"
+              "      (setq emacs-load-auto-native-compile nil)"
+              "      (add-to-list 'load-path"
+              "                   (expand-file-name \".emacs.d/external-packages/undo-tree\""
+              "                                     (getenv \"HOME\")))"
+              "      (add-to-list 'load-path"
+              "                   (expand-file-name \".emacs.d/external-packages/queue\""
+              "                                     (getenv \"HOME\")))"
+              "      (require 'undo-tree)"
+              "      (let ((defaults"
+              "             (mapcar #'symbol-value"
+              "                     '(undo-limit undo-strong-limit"
+              "                       undo-outer-limit undo-ask-before-discard)))"
+              "            (fresh (generate-new-buffer \" *undo-tree-residual*\")))"
+              "        (unwind-protect"
+              "            (progn"
+              "              (with-current-buffer fresh"
+              "                (fundamental-mode)"
+              "                (let ((result (global-undo-tree-mode 1)))"
+              "                  (nelisp--write-stdout-bytes"
+              "                   (format"
+              "                    \"UNDO-TREE defaults=%S result=%S global=%S fresh=%S\\n\""
+              "                    defaults result global-undo-tree-mode"
+              "                    undo-tree-mode)))))"
+              "          (when (buffer-live-p fresh) (kill-buffer fresh)))))"
+              "  (error"
+              "   (nelisp--write-stdout-bytes"
+              "    (format \"UNDO-TREE ERROR %S\\n\" err))))"))))
+       (should (string-match-p
+                (regexp-quote
+                 "UNDO-TREE defaults=(160000 240000 24000000 nil) result=t global=t fresh=t")
+                out))
+       (should-not (string-match-p "UNDO-TREE ERROR" out))))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/generated-bootstrap-preserves-features ()
   "Direct bootstrap bundle loads must preserve the provided feature set."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
