@@ -207,3 +207,14 @@ When a task lands:
 4. note whether a larger dependent lane should be rechecked next.
 
 This document should remain short enough to operate as a live board.
+
+* 7. Recheck log
+
+- 2026-09-05: real-init audit rounds 1-3 (Doc 40 §0) -- init-phase errors
+  70 -> 10 -> 4 within the reached prefix; the persistent product path stays
+  IN-PROGRESS because no round reached =AUDIT_DONE= (round 2: 8 GiB
+  address-space cap at form 237; round 3: 12000 s timeout at form 203).
+  The seven workflow smokes are green on NeLisp 9369e4d77 after the
+  v1.2.1 follow-ups (bundle =load-file-name= contract, process preload
+  guard); vendor sync a9ad34d7b -> 9369e4d77 audited with
+  =nelisp-vendor-sync= (15 added, 0 removed, baseline help smoke identical).

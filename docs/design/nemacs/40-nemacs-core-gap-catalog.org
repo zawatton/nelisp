@@ -2,7 +2,67 @@
 #+DATE: 2026-07-19
 #+STATUS: DRAFT (root causes confirmed statically; per-item impl pending binary verification)
 
-* 0. Progress and results (2026-07-19)
+* 0. Progress and results (2026-09-05)
+
+Three real-init audit rounds were run with the repeatable harness
+(=make real-init-audit=, added 2026-09-04) against the user's 930-form
+=init.el= under NeLisp v1.2.0/v1.2.1, integrating fixes between rounds.
+Numbers are from the audit logs; nothing below is estimated.
+
+| round | tree | reached | init-phase errors | how it ended |
+|-------+------+---------+-------------------+--------------|
+| 1 | f82998e6 | form 815 of 930 (post-walk =no-catch=) | 70 | =no-catch: (cl-block-anon t)= escaped the walker |
+| 2 | 9cb3163d | form 237 | 10 (14 gone, 4 remaining, 6 new vs round 1 prefix) | exit 88 at 6.3 GiB RSS |
+| 3 | fb12664f | form 203 | 4 (nelix x2, exec-path-from-shell, undo-tree limits) | 12000 s timeout, 7.7 GiB RSS |
+
+** Fixes landed (verified on the standalone, integrated 2026-09-04..05)
+| fix | mechanism | effect |
+|-----+-----------+--------|
+| 16 parity shims wired | all =src/emacs-parity-*.el= are bundle members (148 -> 154 files); the six that mutated host cells are gated on =nelisp--write-stdout-bytes= | evil/eieio/clloop/rx/abbrev/macroexpand parity active during init; host Emacs untouched (before/after =symbol-function= probes) |
+| =cl-dolist= / =cl-dotimes= catch | lib guard keyed on =rdf=; upstream prelude now expands to =(cl-block nil ...)= (nelisp ca25486f1) | =no-catch (cl-block-anon ...)= gone |
+| AOT artifact cache validity | sidecar record = salted source sha + compiler identity (path+size+mtime); bad hit -> invalidate -> recompile once | stale 2026-08-07 artifacts no longer poison =require= on old checkouts |
+| =prefix-help-command=, =describe-prefix-bindings= | defined in the keymap/help builtins | which-key setup loads |
+| =blink-cursor-mode= | headless global minor mode in =emacs-parity-misc.el= | =(blink-cursor-mode 0)= returns |
+| finite =iter-defun= kept | =emacs-parity-macros2.el= saves the four iterator cells, =emacs-parity-misc.el= restores them after the bundled =generator.el= | =(require 'undo-tree)= completes (was =void-variable bindings=) |
+| undo limits | =undo-limit= / =undo-strong-limit= / =undo-outer-limit= / =undo-ask-before-discard= in =emacs-undo-builtins.el= | =(global-undo-tree-mode 1)= enables |
+| NeLisp v1.2.1 follow-up | bundle starts with =(setq load-file-name nil)= by contract; the process preload no longer reloads over the capturing =call-process= | vc/shell workflow smokes green on the v1.2.1 line |
+| upstream NeLisp | =read-from-string= decodes the GNU string-escape table (=\0= was the digit 0); =random= stays in the fixnum range (every large AOT compile died at the 24th temp name); large free blocks are split on reuse | exec-path-from-shell sentinel parses; =compile-elisp-artifact= of an 11 KB source completes in 124 s; -20% arena on repeated loads |
+
+** Key discovery: the audit is now time- and memory-bound, not error-bound
+- The real-init replay runs inside ONE top-level form, and the standalone
+  allocator serves blocks larger than 472 bytes by exact fit only (no
+  coalescing, compaction off by policy).  Each package load strands the
+  memory it freed; round 2 hit =bin/nemacs='s 8 GiB address-space cap
+  (=NEMACS_NELISP_MEMORY=) and exited 88 -- that is =nl_os_alloc_fail=, not
+  OOM and not a GC failure (the mid-form collector fires; live bytes stay
+  flat).  The split-on-reuse fix removes a constant, not the slope; bounding
+  it needs free-block coalescing, which in turn needs the root-coverage work
+  Doc 152 §11.18-20 records (a coalescing prototype reshaped the heap
+  correctly and then aliased a stale reference on the first package load).
+- Every cold =require= of a =src/= file was paying a ~3 min *failed* AOT
+  compile before falling back to source (the =random= defect above).  With
+  that fixed the compile succeeds, but the loader still does not keep the
+  artifact (open item, codex/artifact-cache-populate); until it does, a full
+  replay is ~3-4 h per 200 forms.
+- =round 3= shows the residual error surface is small: the two =nelix= rows
+  are the user's environment (=nelix.el= is not on =load-path= under GNU
+  either), the exec-path-from-shell row is fixed upstream, and the undo-tree
+  limits row is fixed.  The evil rows (form 206+) are not yet reached.
+
+** Operational rules learned this round
+- A fresh worktree must start with =find src packages scripts test -name
+  '*.elc' -delete=: stale =.elc= reorder the bundle (foundation members sink
+  from position 1 to 33) and boot dies with =void-function load-file=.
+- =make test-nelisp= does not run the bootstrap ERT cases; they need
+  =make test-nelisp-ert= or =NEMACS_RUN_NELISP_BOOTSTRAP=1= with the same
+  environment.
+- The smoke recipes override =NELISP_HOME= / =NEMACS_NELISP= from
+  =NELISP_ROOT= / =NELISP_BIN=; compare binaries with
+  =make NELISP_ROOT=... NELISP_BIN=...=, never via the environment.
+- The audit refuses to start while another NeLisp process runs;
+  =NEMACS_REAL_INIT_ALLOW_CONCURRENT=1= lifts that on hosts with enough RAM.
+
+* 0.9 Progress and results (2026-07-19, previous)
 
 Starting caught-error count on the real-init audit: *238*.  After this
 session's fixes: *~89* (-63%; makunbound alone cleared 17 after the earlier
