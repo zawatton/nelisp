@@ -711,9 +711,10 @@ unchanged to `emacs-fileio-builtins--local-write-region'."
   "Return a unique, currently-nonexistent file name built from PREFIX.
 PREFIX already includes any directory.  Standalone counterpart to
 Emacs' `make-temp-name'; it does NOT create the file."
-  (let ((pid (if (fboundp 'emacs-pid) (emacs-pid) 0))
-        (name nil)
-        (n 0))
+  (let* ((pid-value (and (fboundp 'emacs-pid) (emacs-pid)))
+         (pid (if (integerp pid-value) pid-value 0))
+         (name nil)
+         (n 0))
     (while (and (or (null name)
                     (nelisp-ec-file-exists-p name))
                 (< n 100000))

@@ -49,8 +49,11 @@
 ;;;; --- core readers ----------------------------------------------------
 
 (defun emacs-minibuffer-builtins--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (not (boundp 'emacs-version))
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
+The NeLisp reader binds `emacs-version', so use its private stdout
+primitive to distinguish standalone execution from host Emacs."
+  (or (fboundp 'nelisp--write-stdout-bytes)
+      (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (when (emacs-minibuffer-builtins--install-function-p 'read-from-minibuffer)
