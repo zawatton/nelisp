@@ -181,8 +181,7 @@
     files--native-point
     files--native-goto-char
     files--native-buffer-modified-p
-    files--native-set-buffer-modified-p
-    buffer-read-only)
+    files--native-set-buffer-modified-p)
   "Variables supplied by the lightweight files shim.")
 
 (defmacro files-test--with-shim-functions (&rest body)

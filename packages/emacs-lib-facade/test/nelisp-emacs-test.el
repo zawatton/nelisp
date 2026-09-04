@@ -36,8 +36,9 @@
 
 (defun nelisp-emacs-test--lazy-feature-loaded-p (feature)
   "Return non-nil when lazy FEATURE was loaded by the facade."
-  (if (eq feature 'lisp-mode)
-      (nelisp-emacs-test--loaded-file-p "lisp-mode.el")
+  (if (memq feature '(lisp-mode org))
+      (nelisp-emacs-test--loaded-file-p
+       (concat (symbol-name feature) ".el"))
     (featurep feature)))
 
 (defconst nelisp-emacs-test--expected-stable-foundation-api
@@ -1364,7 +1365,8 @@
                    emacs-search-builtins
                    emacs-line-builtins)))
   (should (equal emacs-io-features
-                 '(emacs-sqlite
+                 '(emacs-ffi
+                   emacs-sqlite
                    nelisp-emacs-compat-fileio
                    files-runtime
                    emacs-fileio-builtins

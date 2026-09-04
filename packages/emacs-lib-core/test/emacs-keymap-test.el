@@ -479,12 +479,15 @@ value cells become the keymap) is exercised by the standalone boot."
                       (with-temp-buffer (insert-file-contents src)
                                         (buffer-string)))))
     (should source)
-    (dolist (needle '("(defmacro defvar-keymap"
+    (dolist (needle '("(defun emacs-keymap--defvar-keymap-build"
+                      "(defmacro defvar-keymap"
                       "((eq keyword :doc) (setq doc (pop defs)))"
                       "((eq keyword :parent) (setq parent (pop defs)))"
                       "((eq keyword :suppress) (setq suppress (pop defs)))"
-                      "(or keymap"
-                      "(list 'list (list 'quote 'keymap))"))
+                      "(let ((map (or base (emacs-keymap-make-sparse-keymap))))"
+                      "(keymap-set map key def)"
+                      "(list 'emacs-keymap--defvar-keymap-build"
+                      "(cons 'list defs)"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 (ert-deftest emacs-keymap-keymap-set-invalid-syntax-signals ()
