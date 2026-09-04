@@ -323,6 +323,38 @@ P2 can verify the command-surface keymap behavior directly."
       (when previous
         (fset 'easy-menu-convert-item previous)))))
 
+(ert-deftest emacs-keymap-builtins-test/filtered-menu-uses-function-symbol ()
+  "Filtered menus keep properties on a symbol and source items in its function."
+  (let* ((file (locate-library "emacs-keymap-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file))
+         (symbols '(easy-menu-create-menu easy-menu-binding))
+         (previous
+          (mapcar (lambda (symbol)
+                    (cons symbol (and (fboundp symbol)
+                                      (symbol-function symbol))))
+                  symbols)))
+    (unwind-protect
+        (progn
+          (dolist (symbol symbols)
+            (fmakunbound symbol))
+          ;; Reload with the host easymenu functions cleared so this covers
+          ;; the standalone substrate without replacing unrelated host APIs.
+          (load file nil t)
+          (let* ((items '(["Open" find-file t]))
+                 (menu (easy-menu-create-menu
+                        "Dynamic" (cons :filter (cons 'identity items)))))
+            (should (symbolp menu))
+            (should (equal (symbol-function menu) items))
+            (should (equal (get menu 'menu-prop) '(:filter identity)))
+            (should (equal (easy-menu-binding menu)
+                           (list 'menu-item "" items :filter 'identity)))))
+      (dolist (entry previous)
+        (if (cdr entry)
+            (fset (car entry) (cdr entry))
+          (fmakunbound (car entry)))))))
+
 ;;;; H. Idempotence
 
 (ert-deftest emacs-keymap-builtins-test/require-is-idempotent ()
