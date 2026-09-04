@@ -707,67 +707,74 @@
                (car (cdr destination)))
            nil)))
 
-(fset 'emacs-process-call-process
-      '(lambda (program &optional infile destination display &rest args)
-         (let ((cwd (emacs-process--call-process-cwd)))
-           (if cwd
-               (progn
-                 (setq args
-                       (cons "-c"
-                             (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
-                                   (cons "emacs-process-call-process-cwd"
-                                         (cons cwd (cons program args))))))
-                 (setq program "/bin/sh"))
-             nil)
-           (if (if (consp destination)
-                   (null (emacs-process--call-process-stderr-destination
-                          destination))
-                 nil)
-               (progn
-                 (setq args
-                       (cons "-c"
-                             (cons "exec \"$@\" 2>/dev/null"
-                                   (cons "emacs-process-call-process-stderr"
-                                         (cons program args)))))
-                 (setq program "/bin/sh"))
-             nil)
-           (if (fboundp 'nelisp-process-call-process)
-               (apply 'nelisp-process-call-process
-                      program infile destination display args)
-             (if (fboundp 'nelisp-call-process)
-                 (apply 'nelisp-call-process
+;; The preload can run once before and once after the bootstrap bundle.
+;; Preserve the bundle's capture-capable implementation on the second load;
+;; this exit-code-only facade is only the pre-bootstrap fallback.
+(if (fboundp 'emacs-process-call-process)
+    nil
+  (fset 'emacs-process-call-process
+        '(lambda (program &optional infile destination display &rest args)
+           (let ((cwd (emacs-process--call-process-cwd)))
+             (if cwd
+                 (progn
+                   (setq args
+                         (cons "-c"
+                               (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
+                                     (cons "emacs-process-call-process-cwd"
+                                           (cons cwd (cons program args))))))
+                   (setq program "/bin/sh"))
+               nil)
+             (if (if (consp destination)
+                     (null (emacs-process--call-process-stderr-destination
+                            destination))
+                   nil)
+                 (progn
+                   (setq args
+                         (cons "-c"
+                               (cons "exec \"$@\" 2>/dev/null"
+                                     (cons "emacs-process-call-process-stderr"
+                                           (cons program args)))))
+                   (setq program "/bin/sh"))
+               nil)
+             (if (fboundp 'nelisp-process-call-process)
+                 (apply 'nelisp-process-call-process
                         program infile destination display args)
-               1)))))
+               (if (fboundp 'nelisp-call-process)
+                   (apply 'nelisp-call-process
+                          program infile destination display args)
+                 1))))))
 
 (fset 'call-process
       '(lambda (&rest args)
          (apply 'emacs-process-call-process args)))
 
-(fset 'emacs-process-call-process-region
-      '(lambda (start end program &optional delete destination display &rest args)
-         (if (fboundp 'nelisp-process-call-process-region)
-             (apply 'nelisp-process-call-process-region
-                    start end program delete destination display args)
-           (if (fboundp 'nelisp-call-process-region)
-               (apply 'nelisp-call-process-region
+(if (fboundp 'emacs-process-call-process-region)
+    nil
+  (fset 'emacs-process-call-process-region
+        '(lambda (start end program &optional delete destination display &rest args)
+           (if (fboundp 'nelisp-process-call-process-region)
+               (apply 'nelisp-process-call-process-region
                       start end program delete destination display args)
-             (if (if (fboundp 'buffer-substring-no-properties)
-                     (fboundp 'nl-write-file)
-                   nil)
-                 (progn
-                   (nl-write-file
-                    emacs-process-call-process-region-input-file
-                    (buffer-substring-no-properties start end))
-                   (if (if delete (fboundp 'delete-region) nil)
-                       (delete-region start end)
-                     0)
-                   (apply 'call-process
-                          program
-                          emacs-process-call-process-region-input-file
-                          destination
-                          display
-                          args))
-               1)))))
+             (if (fboundp 'nelisp-call-process-region)
+                 (apply 'nelisp-call-process-region
+                        start end program delete destination display args)
+               (if (if (fboundp 'buffer-substring-no-properties)
+                       (fboundp 'nl-write-file)
+                     nil)
+                   (progn
+                     (nl-write-file
+                      emacs-process-call-process-region-input-file
+                      (buffer-substring-no-properties start end))
+                     (if (if delete (fboundp 'delete-region) nil)
+                         (delete-region start end)
+                       0)
+                     (apply 'call-process
+                            program
+                            emacs-process-call-process-region-input-file
+                            destination
+                            display
+                            args))
+                 1))))))
 
 (fset 'call-process-region
       '(lambda (&rest args)

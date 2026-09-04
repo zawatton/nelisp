@@ -454,19 +454,20 @@ Keep this surface as data lambdas so runtime images expose the
 bound.  When `nelisp-process-*' or legacy `nelisp-*' delegates exist they are
 used; otherwise synchronous calls return a failure status instead of aborting
 image startup."
-  (let* ((base (cond
-                ((boundp 'nemacs-runtime-image-preload--script-directory)
-                 nemacs-runtime-image-preload--script-directory)
-                ((or (and (boundp 'load-file-name) load-file-name)
-                     (and (boundp 'buffer-file-name) buffer-file-name))
-                 (file-name-directory
-                  (or (and (boundp 'load-file-name) load-file-name)
-                      (and (boundp 'buffer-file-name) buffer-file-name))))
-                (t nil)))
+  (let* ((base (and (boundp
+                     'nemacs-runtime-image-preload--script-directory)
+                    nemacs-runtime-image-preload--script-directory))
          (preload (and base
                        (expand-file-name
                         "nemacs-runtime-process-preload.el" base))))
     (when (and preload (file-readable-p preload)
+               ;; The bootstrap bundle's implementation captures process
+               ;; output through the async NeLisp primitives.  Do not replay
+               ;; the weaker pre-bootstrap fallback over that surface.
+               (not (and (fboundp 'emacs-process-call-process)
+                         (fboundp 'emacs-process-call-process-region)
+                         (fboundp
+                          'emacs-process--standalone-call-process)))
                ;; In host Emacs the native subr `make-process' already
                ;; exists; loading the source-v1 preload would clobber it
                ;; (and the other unprefixed process primitives) with wrapper

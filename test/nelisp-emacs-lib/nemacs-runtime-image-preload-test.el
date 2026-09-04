@@ -891,6 +891,76 @@
             (should (equal captured '("/bin/tool" nil t nil "arg"))))
         (fmakunbound 'nelisp-process-call-process)))))
 
+(ert-deftest nemacs-runtime-image-preload-test/process-preload-keeps-capturing-definitions ()
+  "Loading the process preload again must preserve capturing definitions."
+  (let* ((preload
+          (expand-file-name
+           "scripts/nemacs-runtime-process-preload.el"
+           nemacs-runtime-image-preload-test--repo-root))
+         (emacs (expand-file-name invocation-name invocation-directory))
+         (form
+          (format
+           (concat
+            "(progn "
+            "(setq native-comp-enable-subr-trampolines nil) "
+            "(load %S nil t) "
+            "(fset 'emacs-process-call-process "
+            "       '(lambda (&rest _args) 'capturing-call-process)) "
+            "(fset 'emacs-process-call-process-region "
+            "       '(lambda (&rest _args) 'capturing-call-process-region)) "
+            "(let ((call-definition "
+            "       (symbol-function 'emacs-process-call-process)) "
+            "      (region-definition "
+            "       (symbol-function 'emacs-process-call-process-region))) "
+            "  (load %S nil t) "
+            "  (if (and (eq call-definition "
+            "               (symbol-function 'emacs-process-call-process)) "
+            "           (eq region-definition "
+            "               (symbol-function "
+            "                'emacs-process-call-process-region))) "
+            "      (princ \"PROCESS-PRELOAD-PRESERVED\\n\") "
+            "    (kill-emacs 2))))")
+           preload preload)))
+    (with-temp-buffer
+      (let ((status (call-process emacs nil t nil
+                                  "-Q" "--batch" "--eval" form)))
+        (should (equal (list status (buffer-string))
+                       '(0 "PROCESS-PRELOAD-PRESERVED\n")))))))
+
+(ert-deftest nemacs-runtime-image-preload-test/process-core-keeps-bundle-surface ()
+  "Process core must not reload fallbacks over a capturing bundle surface."
+  (let ((loads nil)
+        (features features)
+        (nemacs-runtime-image-preload--script-directory
+         (expand-file-name "scripts/"
+                           nemacs-runtime-image-preload-test--repo-root)))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (_) t))
+              ((symbol-function 'file-readable-p)
+               (lambda (_) t))
+              ((symbol-function 'load)
+               (lambda (file &rest _)
+                 (push file loads))))
+      (should (nemacs-runtime-image-preload--install-process-core))
+      (should-not loads))))
+
+(ert-deftest nemacs-runtime-image-preload-test/process-core-does-not-use-current-load-file ()
+  "Process core resolves its preload only from the recorded script directory."
+  (let ((loads nil)
+        (features features)
+        (load-file-name "/unrelated/nemacs-runtime-image-preload.el")
+        (buffer-file-name "/unrelated/nemacs-runtime-image-preload.el")
+        (nemacs-runtime-image-preload--script-directory nil))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (_) t))
+              ((symbol-function 'file-readable-p)
+               (lambda (_) t))
+              ((symbol-function 'load)
+               (lambda (file &rest _)
+                 (push file loads))))
+      (should (nemacs-runtime-image-preload--install-process-core))
+      (should-not loads))))
+
 (ert-deftest nemacs-runtime-image-preload-test/process-core-region-and-async-surface ()
   "Runtime process core should expose region and async shell command facades."
   (nemacs-runtime-image-preload-test--with-clean-direct-install
