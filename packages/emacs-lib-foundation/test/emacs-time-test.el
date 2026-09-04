@@ -32,6 +32,28 @@
             (fset (car cell) (cdr cell))
           (fmakunbound (car cell)))))))
 
+(defun emacs-time-test--with-standalone-time-primitives (thunk)
+  "Install the time shim over standalone-shaped primitives, then call THUNK.
+The stand-in `float-time' deliberately ignores its argument, matching the
+NeLisp v1.2.0 builtin that the compatibility shim must replace."
+  (let ((saved-float-time (symbol-function 'float-time))
+        (saved-standalone-float-time
+         (and (fboundp 'emacs-time--standalone-float-time)
+              (symbol-function 'emacs-time--standalone-float-time))))
+    (unwind-protect
+        (progn
+          (fmakunbound 'emacs-time--standalone-float-time)
+          (fset 'float-time (lambda (&optional _time-value) 1000000.0))
+          (cl-letf (((symbol-function 'emacs-time--standalone-runtime-p)
+                     (lambda () t)))
+            (emacs-time--install-float-time))
+          (funcall thunk))
+      (fset 'float-time saved-float-time)
+      (if saved-standalone-float-time
+          (fset 'emacs-time--standalone-float-time
+                saved-standalone-float-time)
+        (fmakunbound 'emacs-time--standalone-float-time)))))
+
 ;;;; Load / feature contract
 
 (ert-deftest emacs-time-test/require-loads-cleanly ()
@@ -218,6 +240,36 @@
   (should (time-less-p '(1 0) '(2 0)))
   (should (time-less-p '(5000 . 1000) '(6000 . 1000)))
   (should (time-less-p 100 '(1 0))))
+
+(ert-deftest emacs-time-test/standalone-subtract-current-times-is-small ()
+  "Converting a difference must not discard it and reread wall-clock time."
+  (emacs-time-test--with-standalone-time-primitives
+   (lambda ()
+     (let ((elapsed
+            (float-time (time-subtract (current-time) (current-time)))))
+       (should (< (abs elapsed) 1.0))))))
+
+(ert-deftest emacs-time-test/standalone-add-then-subtract-is-five-seconds ()
+  "Adding five seconds and subtracting now yields approximately five."
+  (emacs-time-test--with-standalone-time-primitives
+   (lambda ()
+     (let ((elapsed
+            (time-subtract (time-add (current-time) 5) (current-time))))
+       (should (< (abs (- (emacs-time--to-number elapsed) 5.0)) 0.01))))))
+
+(ert-deftest emacs-time-test/standalone-time-less-p-orders-current-time ()
+  "Current time is earlier than current time plus one second."
+  (emacs-time-test--with-standalone-time-primitives
+   (lambda ()
+     (should (time-less-p (current-time) (time-add (current-time) 1))))))
+
+(ert-deftest emacs-time-test/standalone-time-since-current-time-is-small ()
+  "Converting `time-since' must preserve its near-zero difference."
+  (emacs-time-test--with-standalone-time-primitives
+   (lambda ()
+     (let ((elapsed (float-time (time-since (current-time)))))
+       (should (>= elapsed 0.0))
+       (should (< elapsed 1.0))))))
 
 (ert-deftest emacs-time-test/timers ()
   "run-with-timer / run-with-idle-timer / cancel-timer fire and cancel (B2)."
