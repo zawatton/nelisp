@@ -12,6 +12,7 @@ NEMACS_NELISP_ERT_TIMEOUT ?= 420s
 NELISP_BOOT_PROFILE_TIMEOUT ?= 1200s
 NELISP_BOOT_PROFILE_LIMIT ?= nil
 NELISP_VENDOR_CORE_TIMEOUT ?= 900s
+NEMACS_REAL_INIT_TIMEOUT ?= 4000
 NEMACS_RUNTIME_BAKE_TIMEOUT ?= 900s
 NEMACS_VENDOR_CORE_RUNTIME_BAKE_TIMEOUT ?= 900s
 # 1800s, not 900s: measured 2026-08-12, the magit bundle load takes 1188 s, so
@@ -1859,6 +1860,13 @@ doctor:
 		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		./bin/nemacs --doctor
+
+.PHONY: real-init-audit
+real-init-audit: build-nelisp-bootstrap
+	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
+		NEMACS_REAL_INIT_TIMEOUT="$(NEMACS_REAL_INIT_TIMEOUT)" \
+		./scripts/real-init-audit.sh
 
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
