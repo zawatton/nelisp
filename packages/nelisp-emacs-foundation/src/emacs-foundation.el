@@ -64,7 +64,6 @@
     emacs-os-detect
     emacs-easy-mmode
     emacs-time
-    calendar
     emacs-numeric
     emacs-subr-extras
     emacs-edebug-stubs)
