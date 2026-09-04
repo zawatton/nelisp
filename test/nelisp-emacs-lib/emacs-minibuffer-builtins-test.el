@@ -186,6 +186,13 @@
                          sym)
                  nil t))))))
 
+(ert-deftest emacs-minibuffer-builtins-test/standalone-p-keys-off-reader-primitive ()
+  "The NeLisp-only stdout primitive activates the unprefixed bridge."
+  (should-not (emacs-minibuffer-builtins--install-function-p 'read-string))
+  (cl-letf (((symbol-function 'nelisp--write-stdout-bytes)
+             (lambda (&rest _) nil)))
+    (should (emacs-minibuffer-builtins--install-function-p 'read-string))))
+
 (provide 'emacs-minibuffer-builtins-test)
 
 ;;; emacs-minibuffer-builtins-test.el ends here

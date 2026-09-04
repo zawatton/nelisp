@@ -1143,6 +1143,15 @@ touch `directory-files'."
 
 ;;;; make-temp-file polyfill (standalone reader; host keeps its C builtin)
 
+(ert-deftest emacs-fileio-builtins-test/make-temp-name-tolerates-stub-emacs-pid ()
+  "A callable standalone `emacs-pid' stub may still return nil."
+  (let ((emacs-fileio--temp-counter 0))
+    (cl-letf (((symbol-function 'emacs-pid) (lambda () nil))
+              ((symbol-function 'nelisp-ec-file-exists-p)
+               (lambda (_file) nil)))
+      (should (equal (emacs-fileio-make-temp-name "/tmp/ap-ert-")
+                     "/tmp/ap-ert-0-1")))))
+
 (ert-deftest emacs-fileio-builtins-test/make-temp-file-creates-unique ()
   (let ((f1 (emacs-fileio-make-temp-file "ap-ert-" nil ".json"))
         (f2 (emacs-fileio-make-temp-file "ap-ert-" nil ".json")))
