@@ -25,14 +25,27 @@
   '(:path "/tmp/fake-nelisp" :size 42 :mtime (1 2 3 4)))
 
 (defun emacs-load-artifact-cache-test--write-sidecar
-    (path source-hash &optional compiler-identity)
+    (path source-hash &optional compiler-identity record-version)
   "Write a current cache record for SOURCE-HASH to PATH."
   (with-temp-file path
-    (prin1 (list :cache-record-version 1
+    (prin1 (list :cache-record-version (or record-version 2)
                  :source-sha256 source-hash
                  :compiler
                  (or compiler-identity
                      emacs-load-artifact-cache-test--compiler-identity))
+           (current-buffer))))
+
+(defun emacs-load-artifact-cache-test--write-negative-sidecar
+    (path source-hash error-text &optional compiler-identity)
+  "Write an unreplayable cache record for SOURCE-HASH to PATH."
+  (with-temp-file path
+    (prin1 (list :cache-record-version 2
+                 :source-sha256 source-hash
+                 :compiler
+                 (or compiler-identity
+                     emacs-load-artifact-cache-test--compiler-identity)
+                 :unreplayable t
+                 :error error-text)
            (current-buffer))))
 
 (defun emacs-load-artifact-cache-test--write-manifest
@@ -222,6 +235,138 @@
       (should (= compile-count 1))
       (should (= replay-count 2)))))
 
+(ert-deftest emacs-load-artifact-cache-test/fresh-replay-failure-falls-back ()
+  (emacs-load-artifact-cache-test--with-cache
+      "(defun emacs-load-artifact-cache-test--fresh-failure () t)\n"
+    (let ((compile-count 0)
+          (replay-count 0))
+      (cl-letf (((symbol-function 'emacs-load--artifact-cache-paths)
+                 (lambda (_resolved) (list artifact sidecar)))
+                ((symbol-function 'emacs-load--artifact-compiler)
+                 (lambda () compiler-path))
+                ((symbol-function 'emacs-load--artifact-compiler-identity)
+                 (lambda (_compiler) compiler-identity))
+                ((symbol-function 'call-process)
+                 (lambda (&rest _args)
+                   (setq compile-count (1+ compile-count))
+                   (emacs-load-artifact-cache-test--write-valid-artifact artifact)
+                   0))
+                ((symbol-function 'emacs-load--artifact-replay-file)
+                 (lambda (_path)
+                   (setq replay-count (1+ replay-count))
+                   (error "fresh replay failed"))))
+        (let ((emacs-load-auto-native-compile t))
+          (should-not (emacs-load--artifact-load-or-compile resolved source))))
+      (should (= compile-count 1))
+      (should (= replay-count 1))
+      (should-not (file-exists-p artifact))
+      (should-not (file-exists-p (concat artifact ".manifest.el")))
+      (should
+       (equal (emacs-load--artifact-cache-read-plist sidecar)
+              (list :cache-record-version 2
+                    :source-sha256 source-hash
+                    :compiler compiler-identity
+                    :unreplayable t
+                    :error "fresh replay failed")))
+      (should
+       (eq (plist-get emacs-load--artifact-compile-diagnostic-report :status)
+           'artifact-replay-failed))
+      (should
+       (equal (plist-get emacs-load--artifact-compile-diagnostic-report :error)
+              "fresh replay failed")))))
+
+(ert-deftest emacs-load-artifact-cache-test/negative-record-skips-compile ()
+  (emacs-load-artifact-cache-test--with-cache
+      "(defun emacs-load-artifact-cache-test--negative () t)\n"
+    (let ((compile-count 0)
+          (replay-count 0))
+      (emacs-load-artifact-cache-test--write-negative-sidecar
+       sidecar source-hash "known unreplayable")
+      (cl-letf (((symbol-function 'emacs-load--artifact-cache-paths)
+                 (lambda (_resolved) (list artifact sidecar)))
+                ((symbol-function 'emacs-load--artifact-compiler)
+                 (lambda () compiler-path))
+                ((symbol-function 'emacs-load--artifact-compiler-identity)
+                 (lambda (_compiler) compiler-identity))
+                ((symbol-function 'call-process)
+                 (lambda (&rest _args)
+                   (setq compile-count (1+ compile-count))
+                   0))
+                ((symbol-function 'emacs-load--artifact-replay-file)
+                 (lambda (_path)
+                   (setq replay-count (1+ replay-count))
+                   t)))
+        (let ((emacs-load-auto-native-compile t))
+          (should-not (emacs-load--artifact-load-or-compile resolved source))))
+      (should (= compile-count 0))
+      (should (= replay-count 0))
+      (should (file-readable-p sidecar)))))
+
+(ert-deftest emacs-load-artifact-cache-test/negative-record-compiler-change-recompiles ()
+  (emacs-load-artifact-cache-test--with-cache
+      "(defun emacs-load-artifact-cache-test--negative-stale () t)\n"
+    (let ((compile-count 0)
+          (replay-count 0))
+      (emacs-load-artifact-cache-test--write-negative-sidecar
+       sidecar source-hash "known unreplayable"
+       '(:path "/tmp/fake-nelisp" :size 43 :mtime (1 2 3 5)))
+      (cl-letf (((symbol-function 'emacs-load--artifact-cache-paths)
+                 (lambda (_resolved) (list artifact sidecar)))
+                ((symbol-function 'emacs-load--artifact-compiler)
+                 (lambda () compiler-path))
+                ((symbol-function 'emacs-load--artifact-compiler-identity)
+                 (lambda (_compiler) compiler-identity))
+                ((symbol-function 'call-process)
+                 (lambda (&rest _args)
+                   (setq compile-count (1+ compile-count))
+                   (emacs-load-artifact-cache-test--write-valid-artifact artifact)
+                   0))
+                ((symbol-function 'emacs-load--artifact-replay-file)
+                 (lambda (_path)
+                   (setq replay-count (1+ replay-count))
+                   t)))
+        (let ((emacs-load-auto-native-compile t))
+          (should (eq (emacs-load--artifact-load-or-compile resolved source) t))))
+      (should (= compile-count 1))
+      (should (= replay-count 1))
+      (should
+       (equal (emacs-load--artifact-cache-read-plist sidecar)
+              (list :cache-record-version 2
+                    :source-sha256 source-hash
+                    :compiler compiler-identity))))))
+
+(ert-deftest emacs-load-artifact-cache-test/corrupt-hit-second-replay-falls-back ()
+  (emacs-load-artifact-cache-test--with-cache
+      "(defun emacs-load-artifact-cache-test--corrupt-twice () t)\n"
+    (let ((compile-count 0)
+          (replay-count 0))
+      (emacs-load-artifact-cache-test--write-valid-artifact artifact)
+      (emacs-load-artifact-cache-test--write-sidecar sidecar source-hash)
+      (cl-letf (((symbol-function 'emacs-load--artifact-cache-paths)
+                 (lambda (_resolved) (list artifact sidecar)))
+                ((symbol-function 'emacs-load--artifact-compiler)
+                 (lambda () compiler-path))
+                ((symbol-function 'emacs-load--artifact-compiler-identity)
+                 (lambda (_compiler) compiler-identity))
+                ((symbol-function 'call-process)
+                 (lambda (&rest _args)
+                   (setq compile-count (1+ compile-count))
+                   (emacs-load-artifact-cache-test--write-valid-artifact artifact)
+                   0))
+                ((symbol-function 'emacs-load--artifact-replay-file)
+                 (lambda (_path)
+                   (setq replay-count (1+ replay-count))
+                   (error "still unreplayable"))))
+        (let ((emacs-load-auto-native-compile t))
+          (should-not (emacs-load--artifact-load-or-compile resolved source))))
+      (should (= compile-count 1))
+      (should (= replay-count 2))
+      (should-not (file-exists-p artifact))
+      (should-not (file-exists-p (concat artifact ".manifest.el")))
+      (should
+       (equal (plist-get (emacs-load--artifact-cache-read-plist sidecar) :error)
+              "still unreplayable")))))
+
 (ert-deftest emacs-load-artifact-cache-test/matching-record-is-a-hit ()
   (emacs-load-artifact-cache-test--with-cache
       "(defun emacs-load-artifact-cache-test--matching () t)\n"
@@ -229,6 +374,33 @@
           (replay-count 0))
       (emacs-load-artifact-cache-test--write-valid-artifact artifact)
       (emacs-load-artifact-cache-test--write-sidecar sidecar source-hash)
+      (cl-letf (((symbol-function 'emacs-load--artifact-cache-paths)
+                 (lambda (_resolved) (list artifact sidecar)))
+                ((symbol-function 'emacs-load--artifact-compiler)
+                 (lambda () compiler-path))
+                ((symbol-function 'emacs-load--artifact-compiler-identity)
+                 (lambda (_compiler) compiler-identity))
+                ((symbol-function 'call-process)
+                 (lambda (&rest _args)
+                   (setq compile-count (1+ compile-count))
+                   0))
+                ((symbol-function 'emacs-load--artifact-replay-file)
+                 (lambda (_path)
+                   (setq replay-count (1+ replay-count))
+                   t)))
+        (let ((emacs-load-auto-native-compile t))
+          (should (eq (emacs-load--artifact-load-or-compile resolved source) t))))
+      (should (= compile-count 0))
+      (should (= replay-count 1)))))
+
+(ert-deftest emacs-load-artifact-cache-test/version-1-positive-record-is-a-hit ()
+  (emacs-load-artifact-cache-test--with-cache
+      "(defun emacs-load-artifact-cache-test--version-1 () t)\n"
+    (let ((compile-count 0)
+          (replay-count 0))
+      (emacs-load-artifact-cache-test--write-valid-artifact artifact)
+      (emacs-load-artifact-cache-test--write-sidecar
+       sidecar source-hash nil 1)
       (cl-letf (((symbol-function 'emacs-load--artifact-cache-paths)
                  (lambda (_resolved) (list artifact sidecar)))
                 ((symbol-function 'emacs-load--artifact-compiler)

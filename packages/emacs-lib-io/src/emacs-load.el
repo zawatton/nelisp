@@ -1254,22 +1254,46 @@ non-nil when DIRECTORY exists."
       (error nil)))
 
   (defun emacs-load--artifact-cache-record
-      (source-hash compiler-identity)
+      (source-hash compiler-identity &optional unreplayable error-text)
     "Return a cache record for SOURCE-HASH and COMPILER-IDENTITY."
-    (list :cache-record-version 1
-          :source-sha256 source-hash
-          :compiler compiler-identity))
+    (append (list :cache-record-version 2
+                  :source-sha256 source-hash
+                  :compiler compiler-identity)
+            (and unreplayable
+                 (list :unreplayable t :error error-text))))
 
-  (defun emacs-load--artifact-cache-hit-p
+  (defun emacs-load--artifact-cache-state
       (artifact sidecar source-hash compiler-identity)
-    "Return non-nil when the cached ARTIFACT triple is safe to replay."
-    (and compiler-identity
-         (file-readable-p artifact)
-         (file-readable-p sidecar)
-         (file-readable-p (concat artifact ".manifest.el"))
-         (equal (emacs-load--artifact-cache-read-plist sidecar)
-                (emacs-load--artifact-cache-record
-                 source-hash compiler-identity))))
+    "Return `positive' or `negative' for a matching cache record, else nil."
+    (when (and compiler-identity (file-readable-p sidecar))
+      (let* ((record (emacs-load--artifact-cache-read-plist sidecar))
+             (version (and record
+                           (plist-get record :cache-record-version)))
+             (matching
+              (and (memq version '(1 2))
+                   (equal (plist-get record :source-sha256) source-hash)
+                   (equal (plist-get record :compiler) compiler-identity))))
+        (cond
+         ((and matching
+               (= version 2)
+               (eq (plist-get record :unreplayable) t)
+               (stringp (plist-get record :error)))
+          'negative)
+         ((and matching
+               (file-readable-p artifact)
+               (file-readable-p (concat artifact ".manifest.el"))
+               (or (equal record
+                          (list :cache-record-version 1
+                                :source-sha256 source-hash
+                                :compiler compiler-identity))
+                   (equal record
+                          (emacs-load--artifact-cache-record
+                           source-hash compiler-identity))))
+          'positive)))))
+
+  (defun emacs-load--artifact-cache-write-record (sidecar record)
+    "Write RECORD to the cache SIDECAR."
+    (write-region (prin1-to-string record) nil sidecar nil 'silent))
 
   (defun emacs-load--artifact-cache-invalidate (artifact sidecar)
     "Delete the cache triple belonging to ARTIFACT and SIDECAR."
@@ -1313,30 +1337,38 @@ non-nil when DIRECTORY exists."
                            (error-message-string cached-error) status)
                   nil))
                (t
-                (condition-case caught
-                    (progn
+                (let ((replay-error nil))
+                  (condition-case caught
                       (emacs-load--artifact-replay-file artifact)
-                      (write-region
-                       (prin1-to-string
-                        (emacs-load--artifact-cache-record
-                         source-hash compiler-identity))
-                       nil sidecar nil 'silent)
-                      (setq emacs-load--artifact-compile-diagnostic-report nil)
-                      t)
-                  (error
-                   (setq emacs-load--artifact-compile-diagnostic-report
-                         (list :resolved resolved
-                               :compiler compiler
-                               :compiler-identity compiler-identity
-                               :status 'artifact-replay-failed
-                               :artifact artifact
-                               :sidecar sidecar
-                               :source-hash source-hash
-                               :temp temp
-                               :command command
-                               :error (error-message-string caught)))
-                   (emacs-load--artifact-cache-invalidate artifact sidecar)
-                   (signal (car caught) (cdr caught))))))))
+                    (error (setq replay-error caught)))
+                  (if (not replay-error)
+                      (progn
+                        (emacs-load--artifact-cache-write-record
+                         sidecar
+                         (emacs-load--artifact-cache-record
+                          source-hash compiler-identity))
+                        (setq emacs-load--artifact-compile-diagnostic-report nil)
+                        t)
+                    (let ((error-text (error-message-string replay-error)))
+                      (setq emacs-load--artifact-compile-diagnostic-report
+                            (list :resolved resolved
+                                  :compiler compiler
+                                  :compiler-identity compiler-identity
+                                  :status 'artifact-replay-failed
+                                  :artifact artifact
+                                  :sidecar sidecar
+                                  :source-hash source-hash
+                                  :temp temp
+                                  :command command
+                                  :error error-text))
+                      (emacs-load--artifact-cache-invalidate artifact sidecar)
+                      (condition-case nil
+                          (emacs-load--artifact-cache-write-record
+                           sidecar
+                           (emacs-load--artifact-cache-record
+                            source-hash compiler-identity t error-text))
+                        (error nil))
+                      nil)))))))
         (when (file-exists-p temp)
           (delete-file temp)))))
 
@@ -1350,23 +1382,28 @@ non-nil when DIRECTORY exists."
                  (artifact (car paths))
                  (sidecar (cadr paths))
                  (compiler-identity
-                  (emacs-load--artifact-compiler-identity compiler)))
-            (if (emacs-load--artifact-cache-hit-p
-                 artifact sidecar source-hash compiler-identity)
-                (condition-case cached-error
-                    (progn
-                      (setq emacs-load--artifact-compile-diagnostic-report nil)
-                      (emacs-load--artifact-replay-file artifact)
-                      t)
-                  (error
-                   (emacs-load--artifact-cache-invalidate artifact sidecar)
-                   (emacs-load--artifact-compile-and-replay
-                    resolved source source-hash compiler compiler-identity
-                    artifact sidecar cached-error)))
+                  (emacs-load--artifact-compiler-identity compiler))
+                 (cache-state
+                  (emacs-load--artifact-cache-state
+                   artifact sidecar source-hash compiler-identity)))
+            (cond
+             ((eq cache-state 'negative) nil)
+             ((eq cache-state 'positive)
+              (condition-case cached-error
+                  (progn
+                    (setq emacs-load--artifact-compile-diagnostic-report nil)
+                    (emacs-load--artifact-replay-file artifact)
+                    t)
+                (error
+                 (emacs-load--artifact-cache-invalidate artifact sidecar)
+                 (emacs-load--artifact-compile-and-replay
+                  resolved source source-hash compiler compiler-identity
+                  artifact sidecar cached-error))))
+             (t
               (emacs-load--artifact-cache-invalidate artifact sidecar)
               (emacs-load--artifact-compile-and-replay
                resolved source source-hash compiler compiler-identity
-               artifact sidecar)))))))
+               artifact sidecar))))))))
 
   (defconst emacs-load--artifact-native-section-version 5
     "Current compact native section wire version supported by the loader.")
