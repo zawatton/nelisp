@@ -16,6 +16,8 @@
 ;;; Code:
 
 (declare-function nelisp--syscall-stat-field "nelisp-runtime" (path offset))
+(declare-function nelisp--syscall-path-int "nelisp-runtime"
+                  (number path integer))
 
 (when (or (fboundp 'rdf)
           (fboundp 'nelisp--eval-source-string)
@@ -1202,6 +1204,28 @@ processed."
     (emacs-load--sha256
      (concat emacs-load--artifact-cache-source-digest-salt "\0" source)))
 
+  (defun emacs-load--artifact-cache-create-directory (directory)
+    "Create DIRECTORY and its parents for the standalone artifact cache.
+The early standalone file shim installs a no-op `make-directory' when its
+mkdir substrate is not yet loaded.  Fall back to NeLisp's raw mkdir syscall
+one path component at a time when that shim leaves DIRECTORY absent.  Return
+non-nil when DIRECTORY exists."
+    (unless (file-directory-p directory)
+      (make-directory directory t))
+    (when (and (not (file-directory-p directory))
+               (fboundp 'nelisp--syscall-path-int))
+      (let* ((path (directory-file-name (expand-file-name directory)))
+             (parent (file-name-directory path)))
+        (when (and (stringp parent)
+                   (not (string= parent path))
+                   (not (file-directory-p parent)))
+          (emacs-load--artifact-cache-create-directory parent))
+        (unless (file-directory-p path)
+          (condition-case nil
+              (nelisp--syscall-path-int 83 path #o700)
+            (error nil)))))
+    (file-directory-p directory))
+
   (defun emacs-load--artifact-cache-paths (resolved)
     "Return cache artifact and sidecar paths for RESOLVED."
     (let* ((cache-directory (emacs-load--artifact-cache-directory))
@@ -1215,7 +1239,7 @@ processed."
              (concat suffix "-" base ".neln")
              artifact-dir))
            (sidecar (concat artifact ".source-sha256")))
-      (make-directory artifact-dir t)
+      (emacs-load--artifact-cache-create-directory artifact-dir)
       (list artifact sidecar)))
 
   (defun emacs-load--artifact-cache-read-plist (path)
