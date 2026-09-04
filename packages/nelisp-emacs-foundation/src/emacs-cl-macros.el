@@ -301,7 +301,10 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
           (list 'setq place value)
         (list 'setf place value)))))
 
+;; NeLisp prebinds bare iteration shims after setting `emacs-version', so
+;; `rdf' must force the catch-preserving replacements below.
 (when (or (not (boundp 'emacs-version))
+          (fboundp 'rdf)
           (emacs-cl-macros--define-p 'cl-dotimes))
   (defmacro cl-dotimes (spec &rest body)
     "Like `dotimes', with a `cl-block' nil catch for `cl-return'."
@@ -310,6 +313,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
                 (cons spec body)))))
 
 (when (or (not (boundp 'emacs-version))
+          (fboundp 'rdf)
           (emacs-cl-macros--define-p 'cl-dolist))
   (defmacro cl-dolist (spec &rest body)
     "Like `dolist', with a `cl-block' nil catch for `cl-return'."
