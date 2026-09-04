@@ -35,6 +35,12 @@
   (and (boundp 'emacs-version)
        (stringp emacs-version)))
 
+(defun emacs-time--standalone-runtime-p ()
+  "Return non-nil when NeLisp standalone runtime markers are available."
+  (or (fboundp 'nl-current-unix-time)
+      (fboundp 'nelisp--syscall)
+      (fboundp 'nelisp--load-resolved-file)))
+
 (defun emacs-time--function-cell-live-p (symbol)
   "Return non-nil when SYMBOL has a usable function cell."
   (and (fboundp symbol)
@@ -110,23 +116,38 @@
                       '(0 "UTC")))
                 '(0 "UTC"))))))
 
-;; Live-replace gate — same pattern as `truncate' below.  We only
-;; override `float-time' / `current-time' when the host's binding is
-;; missing or is the no-op bulk stub (`emacs-stub-bulk.el' returns nil).
-;; Under regular Emacs the host's correct implementations are kept
-;; intact so `accept-process-output' and other timing-sensitive code
-;; paths continue to work during ERT runs.
+;; Live-replace gate — same pattern as `truncate' below.  NeLisp v1.2.0's
+;; native `float-time' reads the clock but ignores its optional argument, so
+;; preserve it as the no-argument clock source and wrap value conversion here.
+;; Under regular Emacs the host's correct implementation is kept intact.
 
-(unless (and (fboundp 'float-time)
-             (let ((ft (ignore-errors (float-time))))
-               (and (numberp ft) (> ft 0))))
-  (defun float-time (&optional time-value)
-    "Return seconds since the Unix epoch.
-TIME-VALUE is accepted for API compatibility but only a nil value
-is supported (= read current time)."
-    (if time-value
-        (emacs-time--to-number time-value)
+(defun emacs-time--install-float-time-p ()
+  "Return non-nil when the compatibility `float-time' should be installed."
+  (or (emacs-time--standalone-runtime-p)
+      (not (emacs-time--host-runtime-p))
+      (not (and (fboundp 'float-time)
+                (let ((ft (ignore-errors (float-time))))
+                  (and (numberp ft) (> ft 0)))))))
+
+(defun emacs-time--float-time (&optional time-value)
+  "Return current time, or convert TIME-VALUE to seconds since the epoch."
+  (if time-value
+      (emacs-time--to-number time-value)
+    (if (fboundp 'emacs-time--standalone-float-time)
+        (emacs-time--standalone-float-time)
       (or (emacs-time--standalone-unix-time) 0))))
+
+(defun emacs-time--install-float-time ()
+  "Install the compatibility `float-time' implementation."
+  (when (and (emacs-time--standalone-runtime-p)
+             (emacs-time--function-cell-live-p 'float-time)
+             (not (fboundp 'emacs-time--standalone-float-time)))
+    (defalias 'emacs-time--standalone-float-time
+      (symbol-function 'float-time)))
+  (defalias 'float-time #'emacs-time--float-time))
+
+(when (emacs-time--install-float-time-p)
+  (emacs-time--install-float-time))
 
 (unless (and (fboundp 'current-time)
              (let ((ct (ignore-errors (current-time))))
