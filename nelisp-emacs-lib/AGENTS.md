@@ -16,7 +16,26 @@ Read first:
 - `docs/design/25-library-consumer-contract.org`
 - `docs/design/26-library-residual-api-audit.org`
 - `docs/design/27-package-extraction-readiness.org`
+- `docs/design/29-release-signing-workflow.org`
 - `docs/design/12-development-gates.org`
+
+## Current Progress Snapshot
+
+As of 2026-06-22, treat reusable-library completion as roughly 82% by
+engineering scope and by the latest post-release-publication-policy
+`make nemacs-library-gate` verification.  Doc 27 is the authoritative handoff snapshot:
+`docs/design/27-package-extraction-readiness.org`, section
+`0.1 Progress Snapshot for AI Handoff`.
+
+The project is past the initial exploration phase.  The current work is
+hardening and migration:
+
+- keep the generated 8-package scaffold and release bundle gates coherent;
+- reduce the stable API promotion queue open rows before declaring the API frozen;
+- move toward a real `packages/` source-of-truth layout with `src/`
+  compatibility forwarders or an equivalent bridge;
+- keep real release signing outside normal development and use Doc 29 for
+  release-key, rehearsal, and bundle-publication rules.
 
 ## Core Rule
 

@@ -31,3 +31,12 @@
 (provide 'emacs-vars-test)
 
 ;;; emacs-vars-test.el ends here
+
+(ert-deftest emacs-vars-test/gc-cons-vars-present-and-settable ()
+  "gc-cons-threshold / gc-cons-percentage exist with numeric defaults and are
+settable (Doc 06 A2)."
+  (should (boundp 'gc-cons-threshold))
+  (should (integerp gc-cons-threshold))
+  (should (boundp 'gc-cons-percentage))
+  (should (numberp gc-cons-percentage))
+  (should (let ((gc-cons-threshold 123456)) (= 123456 gc-cons-threshold))))

@@ -23,7 +23,6 @@
 
 (require 'cl-lib)
 (require 'emacs-faces-builtins)
-(require 'emacs-font-lock-builtins)
 (require 'emacs-minibuffer-builtins)
 (require 'emacs-org-outline)
 
@@ -48,6 +47,30 @@ nil disables logging.  The symbol `time' inserts a lightweight
 `CLOSED: [timestamp]' line."
   :type '(choice (const :tag "Disabled" nil)
                  (const :tag "Timestamp" time))
+  :group 'org)
+
+(defcustom org-highest-priority ?A
+  "Highest priority cookie supported by `org-priority'."
+  :type 'character
+  :group 'org)
+
+(defcustom org-lowest-priority ?C
+  "Lowest priority cookie supported by `org-priority'."
+  :type 'character
+  :group 'org)
+
+(defcustom org-default-priority ?B
+  "Default priority used by compatibility callers.
+The lightweight `org-priority' cycle starts at `org-highest-priority' to
+match the existing nemacs bridge behavior."
+  :type 'character
+  :group 'org)
+
+(defcustom org-priority-faces nil
+  "Face alist for priority cookies.
+The lightweight Org subset exposes this variable for compatibility; full
+font-lock face application is intentionally minimal."
+  :type 'sexp
   :group 'org)
 
 ;;;; Faces
@@ -197,6 +220,92 @@ with `:old-keyword' and `:new-keyword'."
     (list :old-keyword old-keyword
           :new-keyword keyword)))
 
+(defun org-todo--priority-chars ()
+  "Return the configured priority character cycle."
+  (let ((chars nil)
+        (current org-highest-priority))
+    (while (<= current org-lowest-priority)
+      (push current chars)
+      (setq current (1+ current)))
+    (nreverse chars)))
+
+(defun org-todo--split-priority (text)
+  "Return plist for priority cookie and title in TEXT.
+The result contains `:priority' as a character or nil and `:title' with
+the leading priority cookie removed."
+  (if (string-match "\\`[ \t]*\\[#\\(.\\)\\][ \t]*" text)
+      (list :priority (aref (match-string 1 text) 0)
+            :title (substring text (match-end 0)))
+    (list :priority nil
+          :title (org-todo--trim-left-space text))))
+
+(defun org-todo--normalize-priority-action (action)
+  "Return priority character requested by ACTION, or nil to clear it."
+  (cond
+   ((null action) nil)
+   ((memq action '(none reset remove clear))
+    nil)
+   ((and (integerp action)
+         (or (= action ?\s) (= action ?0)))
+    nil)
+   ((integerp action)
+    action)
+   ((and (stringp action) (= (length action) 0))
+    nil)
+   ((and (stringp action) (= (length action) 1))
+    (aref action 0))
+   ((symbolp action)
+    (let ((name (symbol-name action)))
+      (if (= (length name) 1)
+          (aref name 0)
+        (user-error "Invalid Org priority action: %S" action))))
+   (t
+    (user-error "Invalid Org priority action: %S" action))))
+
+(defun org-todo--next-priority (priority)
+  "Return the next priority after PRIORITY, or nil after the last one."
+  (let ((cycle (org-todo--priority-chars)))
+    (if priority
+        (cadr (memq priority cycle))
+      (car cycle))))
+
+(defun org-todo--priority-cookie (priority)
+  "Return Org priority cookie for PRIORITY, or an empty string."
+  (if priority
+      (format "[#%c]" priority)
+    ""))
+
+(defun org-todo--priority-rest (priority title)
+  "Return heading rest containing PRIORITY cookie and TITLE."
+  (let ((cookie (org-todo--priority-cookie priority)))
+    (cond
+     ((and (> (length cookie) 0) (> (length title) 0))
+      (concat cookie " " title))
+     ((> (length cookie) 0)
+      cookie)
+     (t
+      title))))
+
+(defun org-todo--replace-priority (priority)
+  "Replace current heading priority with PRIORITY.
+PRIORITY is a character or nil.  Return PRIORITY."
+  (let* ((cycle (org-todo--priority-chars))
+         (parts (org-todo--heading-components))
+         (split (org-todo--split-priority (plist-get parts :rest)))
+         (title (plist-get split :title))
+         (line-start (plist-get parts :line-start))
+         (line-end (plist-get parts :line-end)))
+    (when (and priority (not (memq priority cycle)))
+      (user-error "Priority %c is outside Org priority range" priority))
+    (delete-region line-start line-end)
+    (goto-char line-start)
+    (insert
+     (org-todo--heading-string
+      (plist-get parts :prefix)
+      (plist-get parts :keyword)
+      (org-todo--priority-rest priority title)))
+    priority))
+
 (defun org-todo--next-keyword (keyword)
   "Return the next keyword in the configured cycle after KEYWORD."
   (let ((cycle (append (list nil) (org-todo--all-keywords) (list nil))))
@@ -228,6 +337,108 @@ host it renders as a Japanese day name, which no Org timestamp reader
 expects."
   (let ((system-time-locale "C"))
     (format-time-string "[%Y-%m-%d %a %H:%M]")))
+
+(defun org-todo--planning-timestamp-string (&optional time)
+  "Return a lightweight active Org planning timestamp for TIME."
+  (format-time-string "<%Y-%m-%d %a>" time))
+
+(defun org-todo--normalize-planning-time (time)
+  "Return an Emacs time value for TIME.
+TIME may be nil, an Emacs time value, or a string accepted as YYYY-MM-DD
+or an Org timestamp."
+  (cond
+   ((null time)
+    (current-time))
+   ((stringp time)
+    (let ((clean time))
+      (when (string-match "\\`[<[]\\([^]>]+\\)[]>]\\'" clean)
+        (setq clean (match-string 1 clean)))
+      (date-to-time clean)))
+   (t
+    time)))
+
+(defun org-todo--planning-timestamp-from-input (&optional time)
+  "Return an active Org planning timestamp for TIME."
+  (org-todo--planning-timestamp-string
+   (org-todo--normalize-planning-time time)))
+
+(defun org-todo--planning-line-range ()
+  "Return (START . END) for the direct planning line after heading."
+  (save-excursion
+    (org-outline--require-heading)
+    (forward-line 1)
+    (when (looking-at
+           "\\(?:DEADLINE:\\|SCHEDULED:\\)[ \t]*<[^>\n]+>")
+      (cons (line-beginning-position)
+            (org-outline--line-end-with-newline)))))
+
+(defun org-todo--planning-line-components (&optional line)
+  "Return planning plist parsed from LINE or the current planning line."
+  (let ((text (or line
+                  (buffer-substring-no-properties
+                   (line-beginning-position)
+                   (line-end-position))))
+        deadline
+        scheduled)
+    (when (string-match "DEADLINE:[ \t]*\\(<[^>\n]+>\\)" text)
+      (setq deadline (match-string 1 text)))
+    (when (string-match "SCHEDULED:[ \t]*\\(<[^>\n]+>\\)" text)
+      (setq scheduled (match-string 1 text)))
+    (list :deadline deadline :scheduled scheduled)))
+
+(defun org-todo--planning-line-string (components)
+  "Return a normalized planning line string from COMPONENTS."
+  (let ((deadline (plist-get components :deadline))
+        (scheduled (plist-get components :scheduled))
+        parts)
+    (when deadline
+      (push (concat "DEADLINE: " deadline) parts))
+    (when scheduled
+      (push (concat "SCHEDULED: " scheduled) parts))
+    (mapconcat #'identity (nreverse parts) " ")))
+
+(defun org-todo--set-planning (keyword time)
+  "Set planning KEYWORD to TIME on the current heading."
+  (org-outline--require-heading)
+  (let* ((timestamp (org-todo--planning-timestamp-from-input time))
+         (range (org-todo--planning-line-range))
+         (components
+          (if range
+              (org-todo--planning-line-components
+               (buffer-substring-no-properties (car range) (cdr range)))
+            (list :deadline nil :scheduled nil)))
+         (message-prefix (if (equal keyword "SCHEDULED")
+                             "Scheduled to"
+                           "Deadline on"))
+         line)
+    (cond
+     ((equal keyword "SCHEDULED")
+      (setq components (plist-put components :scheduled timestamp)))
+     ((equal keyword "DEADLINE")
+      (setq components (plist-put components :deadline timestamp)))
+     (t
+      (user-error "Unsupported planning keyword: %s" keyword)))
+    (setq line (concat (org-todo--planning-line-string components) "\n"))
+    (save-excursion
+      (if range
+          (progn
+            (delete-region (car range) (cdr range))
+            (goto-char (car range)))
+        (goto-char (org-outline--line-end-with-newline)))
+      (insert line))
+    (message "%s %s" message-prefix timestamp)))
+
+(defun org-todo--get-planning-time (keyword)
+  "Return the Emacs time value for planning KEYWORD at current heading."
+  (org-outline--require-heading)
+  (let ((range (org-todo--planning-line-range)))
+    (when range
+      (let* ((components
+              (org-todo--planning-line-components
+               (buffer-substring-no-properties (car range) (cdr range))))
+             (timestamp (plist-get components keyword)))
+        (when timestamp
+          (org-todo--normalize-planning-time timestamp))))))
 
 (defun org-todo--direct-logbook-range ()
   "Return plist describing an immediate LOGBOOK drawer, or nil.
@@ -347,16 +558,21 @@ END is exclusive.  Return non-nil when a change was made."
 
 (defun org-todo-refresh-font-lock (&optional buf)
   "Install or refresh Org TODO font-lock rules on BUF."
-  (let ((buffer (or buf (current-buffer))))
-    (with-current-buffer buffer
-      (setq org-todo--font-lock-keywords (org-todo--font-lock-keywords))
-      (setq-local font-lock-defaults '(nil))
-      (font-lock-add-keywords nil org-todo--font-lock-keywords 'set)
-      (font-lock-mode 1))))
+  (when (and (fboundp 'font-lock-add-keywords)
+             (fboundp 'font-lock-mode))
+    (let ((buffer (or buf (current-buffer))))
+      (with-current-buffer buffer
+        (setq org-todo--font-lock-keywords (org-todo--font-lock-keywords))
+        (setq-local font-lock-defaults '(nil))
+        (font-lock-add-keywords nil org-todo--font-lock-keywords 'set)
+        (font-lock-mode 1)))))
 
 (defun org-todo--refontify-line ()
   "Re-fontify the current line when font-lock is active."
-  (when (and (boundp 'font-lock-mode) font-lock-mode)
+  (when (and (boundp 'font-lock-mode)
+             font-lock-mode
+             (fboundp 'font-lock-unfontify-region)
+             (fboundp 'font-lock-fontify-region))
     (let ((start (line-beginning-position))
           (end (org-outline--line-end-with-newline)))
       (font-lock-unfontify-region start end)
@@ -374,6 +590,9 @@ END is exclusive.  Return non-nil when a change was made."
 
 (define-key org-mode-map (kbd "C-c C-t") #'org-todo)
 (define-key org-mode-map (kbd "C-c C-c") #'org-toggle-todo)
+(define-key org-mode-map (kbd "C-c ,") #'org-priority)
+(define-key org-mode-map (kbd "C-c C-s") #'org-schedule)
+(define-key org-mode-map (kbd "C-c C-d") #'org-deadline)
 
 ;;;; Public commands
 
@@ -412,6 +631,45 @@ toggles `[ ]' and `[X]'."
     (org-todo--refontify-line))
    (t
     (user-error "Nothing to toggle"))))
+
+;;;###autoload
+(defun org-priority (&optional action)
+  "Cycle or set the priority cookie on the current Org heading.
+Without ACTION, cycle priority as none -> A -> B -> C -> none by default.
+When ACTION is a priority character or one-character string, set that
+priority.  ACTION values `none', `reset', `remove', `clear', SPC, or 0
+remove the priority cookie."
+  (interactive)
+  (org-outline--require-heading)
+  (let* ((parts (org-todo--heading-components))
+         (split (org-todo--split-priority (plist-get parts :rest)))
+         (target (if action
+                     (org-todo--normalize-priority-action action)
+                   (org-todo--next-priority (plist-get split :priority)))))
+    (save-excursion
+      (org-todo--replace-priority target)
+      (org-todo--refontify-line))
+    target))
+
+;;;###autoload
+(defun org-schedule (&optional _arg time)
+  "Set the SCHEDULED planning timestamp on the current Org heading."
+  (interactive)
+  (org-todo--set-planning "SCHEDULED" time))
+
+;;;###autoload
+(defun org-deadline (&optional _arg time)
+  "Set the DEADLINE planning timestamp on the current Org heading."
+  (interactive)
+  (org-todo--set-planning "DEADLINE" time))
+
+(defun org-get-scheduled-time (&optional _pom)
+  "Return the scheduled time for the current Org heading."
+  (org-todo--get-planning-time :scheduled))
+
+(defun org-get-deadline-time (&optional _pom)
+  "Return the deadline time for the current Org heading."
+  (org-todo--get-planning-time :deadline))
 
 (provide 'emacs-org-todo)
 

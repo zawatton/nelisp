@@ -14,9 +14,22 @@
 
 ;;; Code:
 
+(defconst emacs-project--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the project shim and its sibling features.")
+
+(defun emacs-project--load-feature (feature)
+  "Load FEATURE from the project shim directory."
+  (or (require feature nil t)
+      (let ((file (expand-file-name (concat (symbol-name feature) ".el")
+                                    emacs-project--load-directory)))
+        (and (file-readable-p file)
+             (load file nil t)))
+      (require feature)))
+
 (require 'cl-lib)
-(require 'emacs-fileio-builtins)
-(require 'emacs-minibuffer-builtins)
+(emacs-project--load-feature 'emacs-fileio-builtins)
+(emacs-project--load-feature 'emacs-minibuffer-builtins)
 
 (defcustom project-list-file
   (expand-file-name "projects" user-emacs-directory)

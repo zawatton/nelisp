@@ -59,6 +59,11 @@
   (or (getenv "NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT") "")
   "Expected release signing key fingerprint.")
 
+(defvar nemacs-library-package-signature-policy-public-key-file
+  (expand-file-name "docs/release/nemacs-library-release-public-key.asc"
+                    nemacs-library-package-signature-policy-repo-root)
+  "Release public key file used for strict signature verification.")
+
 (defvar nemacs-library-package-signature-policy-signature-suffix ".sig"
   "Detached signature file suffix.")
 
@@ -146,6 +151,9 @@ Return a cons cell (STATUS . DETAILS)."
          (nemacs-library-package-signature-policy--absolute artifact))
         (signature-path
          (nemacs-library-package-signature-policy--absolute signature))
+        (public-key-path
+         (nemacs-library-package-signature-policy--absolute
+          nemacs-library-package-signature-policy-public-key-file))
         (expected
          (nemacs-library-package-signature-policy--normalize-fingerprint
           fingerprint)))
@@ -153,6 +161,8 @@ Return a cons cell (STATUS . DETAILS)."
      ((not (nemacs-library-package-signature-policy--fingerprint-valid-p
             fingerprint))
       (cons "fail" "release signing key fingerprint must be a 40-hex OpenPGP fingerprint"))
+     ((not (file-readable-p public-key-path))
+      (cons "fail" "release public key file is not readable"))
      ((not (file-readable-p artifact-path))
       (cons "fail" "artifact file is not readable"))
      ((not (file-readable-p signature-path))
@@ -161,27 +171,57 @@ Return a cons cell (STATUS . DETAILS)."
             nemacs-library-package-signature-policy-gpg-program))
       (cons "fail" "gpg executable is not available"))
      (t
-      (with-temp-buffer
-        (let ((exit-code
-               (call-process
-                nemacs-library-package-signature-policy-gpg-program
-                nil t nil
-                "--batch" "--status-fd" "1"
-                "--verify" signature-path artifact-path))
-              (validsig nil))
-          (goto-char (point-min))
-          (while (re-search-forward
-                  "^\\[GNUPG:\\] VALIDSIG \\([[:xdigit:]]+\\)" nil t)
-            (setq validsig (upcase (match-string 1))))
-          (if (and (eq exit-code 0)
-                   validsig
-                   (string= validsig expected))
-              (cons "ok" "detached signature verified")
-            (cons
-             "fail"
-             (format "gpg verification failed or signer mismatch: exit=%s signer=%s"
-                     exit-code
-                     (or validsig ""))))))))))
+      (let ((home (make-temp-file "nemacs-signature-verify-gnupg-" t))
+            (old-home (getenv "GNUPGHOME"))
+            result)
+        (unwind-protect
+            (progn
+              (set-file-modes home #o700)
+              (setenv "GNUPGHOME" home)
+              (with-temp-buffer
+                (let ((exit-code
+                       (call-process
+                        nemacs-library-package-signature-policy-gpg-program
+                        nil t nil
+                        "--batch" "--import" public-key-path)))
+                  (if (eq exit-code 0)
+                      (with-temp-buffer
+                        (let ((verify-exit-code
+                               (call-process
+                                nemacs-library-package-signature-policy-gpg-program
+                                nil t nil
+                                "--batch" "--status-fd" "1"
+                                "--verify" signature-path artifact-path))
+                              (validsig nil))
+                          (goto-char (point-min))
+                          (while (re-search-forward
+                                  "^\\[GNUPG:\\] VALIDSIG \\([[:xdigit:]]+\\)"
+                                  nil t)
+                            (setq validsig (upcase (match-string 1))))
+                          (setq
+                           result
+                           (if (and (eq verify-exit-code 0)
+                                    validsig
+                                    (string= validsig expected))
+                               (cons "ok" "detached signature verified")
+                             (cons
+                              "fail"
+                              (format
+                               "gpg verification failed or signer mismatch: exit=%s signer=%s"
+                               verify-exit-code
+                               (or validsig "")))))))
+                    (setq
+                     result
+                     (cons
+                      "fail"
+                      (format "gpg public key import failed: exit=%s output=%s"
+                              exit-code
+                              (string-trim
+                               (buffer-substring-no-properties
+                                (point-min) (point-max))))))))))
+          (setenv "GNUPGHOME" old-home)
+          (delete-directory home t))
+        result)))))
 
 (defun nemacs-library-package-signature-policy--draft-status
     (artifact signature)

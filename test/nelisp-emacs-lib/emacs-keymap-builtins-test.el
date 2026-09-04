@@ -26,7 +26,13 @@
                  set-keymap-parent keymap-parent
                  current-global-map current-local-map
                  use-global-map use-local-map
-                 where-is-internal))
+                 where-is-internal
+                 key-parse key-valid-p
+                 keymap-set keymap-lookup keymap-unset
+                 keymap-global-set keymap-local-set
+                 keymap-global-unset keymap-local-unset
+                 easy-menu-change easy-menu-create-menu
+                 easy-menu-add-item easy-menu-remove-item))
     (should (fboundp sym))))
 
 ;;;; B. Substrate-direct: prefixed make-* + keymapp shape
@@ -138,6 +144,157 @@
   (let ((map (emacs-keymap-make-sparse-keymap)))
     (emacs-keymap-define-key map "\C-y" 'yank)
     (should (listp (emacs-keymap-where-is-internal 'yank map)))))
+
+;;;; G2. Substrate-direct: kbd-style keymap API
+
+(ert-deftest emacs-keymap-builtins-test/keymap-set-lookup-unset-via-prefixed ()
+  (let ((map (emacs-keymap-make-sparse-keymap)))
+    (should (eq 'next-line
+                (emacs-keymap-keymap-set map "C-n" 'next-line)))
+    (should (eq 'next-line
+                (emacs-keymap-keymap-lookup map "C-n")))
+    (emacs-keymap-keymap-unset map "C-n")
+    (should-not (emacs-keymap-keymap-lookup map "C-n"))))
+
+(ert-deftest emacs-keymap-builtins-test/vendor-files-window-key-wiring-via-prefixed ()
+  "Exercise the upstream files.el/window.el top-level key wiring shapes.
+The standalone load proof separates these forms from vendor loading so
+P2 can verify the command-surface keymap behavior directly."
+  (let ((global (emacs-keymap-make-sparse-keymap))
+        (ctl-x (emacs-keymap-make-sparse-keymap))
+        (ctl-x-4 (emacs-keymap-make-sparse-keymap))
+        (ctl-x-5 (emacs-keymap-make-sparse-keymap))
+        (esc (emacs-keymap-make-sparse-keymap))
+        (window-prefix (emacs-keymap-make-sparse-keymap)))
+    (dolist (binding `((,ctl-x ,(vector ?\C-f) find-file)
+                       (,ctl-x ,(vector ?\C-r) find-file-read-only)
+                       (,ctl-x ,(vector ?\C-v) find-alternate-file)
+                       (,ctl-x ,(vector ?\C-s) save-buffer)
+                       (,ctl-x ,(vector ?s) save-some-buffers)
+                       (,ctl-x ,(vector ?\C-w) write-file)
+                       (,ctl-x ,(vector ?i) insert-file)
+                       (,esc ,(vector ?~) not-modified)
+                       (,ctl-x ,(vector ?\C-d) list-directory)
+                       (,ctl-x ,(vector ?\C-c) save-buffers-kill-terminal)
+                       (,ctl-x ,(vector ?\C-q) read-only-mode)
+                       (,ctl-x-4 ,(vector ?f) find-file-other-window)
+                       (,ctl-x-4 ,(vector ?r) find-file-read-only-other-window)
+                       (,ctl-x-4 ,(vector ?\C-f) find-file-other-window)
+                       (,ctl-x-4 ,(vector ?b) switch-to-buffer-other-window)
+                       (,ctl-x-4 ,(vector ?\C-o) display-buffer)
+                       (,ctl-x-5 ,(vector ?b) switch-to-buffer-other-frame)
+                       (,ctl-x-5 ,(vector ?f) find-file-other-frame)
+                       (,ctl-x-5 ,(vector ?\C-f) find-file-other-frame)
+                       (,ctl-x-5 ,(vector ?r) find-file-read-only-other-frame)
+                       (,ctl-x-5 ,(vector ?\C-o) display-buffer-other-frame)
+                       (,global [?\C-l] recenter-top-bottom)
+                       (,global [?\S-\M-\C-l] recenter-other-window)
+                       (,global [?\M-r] move-to-window-line-top-bottom)
+                       (,ctl-x ,(vector ?0) delete-window)
+                       (,ctl-x ,(vector ?1) delete-other-windows)
+                       (,ctl-x ,(vector ?2) split-window-below)
+                       (,ctl-x ,(vector ?3) split-window-right)
+                       (,ctl-x ,(vector ?o) other-window)
+                       (,ctl-x ,(vector ?^) enlarge-window)
+                       (,ctl-x ,(vector ?}) enlarge-window-horizontally)
+                       (,ctl-x ,(vector ?{) shrink-window-horizontally)
+                       (,ctl-x ,(vector ?-) shrink-window-if-larger-than-buffer)
+                       (,ctl-x ,(vector ?+) balance-windows)
+                       (,ctl-x-4 ,(vector ?0) kill-buffer-and-window)
+                       (,ctl-x-4 ,(vector ?1) same-window-prefix)
+                       (,ctl-x-4 ,(vector ?4) other-window-prefix)))
+      (emacs-keymap-define-key (nth 0 binding) (nth 1 binding) (nth 2 binding)))
+    (emacs-keymap-define-key ctl-x (vector ?w) window-prefix)
+    (should (eq 'find-file (emacs-keymap-lookup-key ctl-x (vector ?\C-f))))
+    (should (eq 'not-modified (emacs-keymap-lookup-key esc (vector ?~))))
+    (should (eq 'display-buffer (emacs-keymap-lookup-key ctl-x-4 (vector ?\C-o))))
+    (should (eq 'display-buffer-other-frame
+                (emacs-keymap-lookup-key ctl-x-5 (vector ?\C-o))))
+    (should (eq 'move-to-window-line-top-bottom
+                (emacs-keymap-lookup-key global [?\M-r])))
+    (should (eq 'split-window-below (emacs-keymap-lookup-key ctl-x (vector ?2))))
+    (should (eq 'other-window-prefix (emacs-keymap-lookup-key ctl-x-4 (vector ?4))))
+    (should (eq window-prefix (emacs-keymap-lookup-key ctl-x (vector ?w))))))
+
+(ert-deftest emacs-keymap-builtins-test/keymap-builtins-bridge-source-exposes-kbd-style-api ()
+  (let* ((file (locate-library "emacs-keymap-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (snippet '("(defalias 'keymap-set #'emacs-keymap-keymap-set"
+                         "(defalias 'keymap-lookup #'emacs-keymap-keymap-lookup"
+                         "(defalias 'keymap-unset #'emacs-keymap-keymap-unset"
+                         "(defalias 'key-parse #'emacs-keymap-key-parse"
+                         "(defalias 'key-valid-p #'emacs-keymap-key-valid-p"))
+        (goto-char (point-min))
+        (should (search-forward snippet nil t))))))
+
+;;;; G3. Easymenu batch/keymap substrate
+
+(ert-deftest emacs-keymap-builtins-test/easy-menu-change-mutates-submenu-keymap ()
+  (let ((map (emacs-keymap-make-sparse-keymap)))
+    (easy-menu-add-item map nil (easy-menu-create-menu "Agenda" nil))
+    (easy-menu-change
+     '("Agenda") "Agenda Files"
+     (list ["Edit File List" org-edit-agenda-file-list t]
+           "--"
+           ["one.org" find-file t])
+     nil map)
+    (let* ((agenda-binding
+            (emacs-keymap-lookup-key map (vector (easy-menu-intern "Agenda"))))
+           (agenda-map (nth 2 agenda-binding))
+           (files-binding
+            (emacs-keymap-lookup-key agenda-map
+                                     (vector (easy-menu-intern "Agenda Files"))))
+           (files-map (nth 2 files-binding)))
+      (should (eq 'menu-item (car-safe agenda-binding)))
+      (should (eq 'menu-item (car-safe files-binding)))
+      (should (keymapp files-map))
+      (should (equal (emacs-keymap-keymap-prompt files-map) "Agenda Files"))
+      (should (eq 'org-edit-agenda-file-list
+                  (nth 2 (emacs-keymap-lookup-key
+                          files-map
+                          (vector (easy-menu-intern "Edit File List"))))))
+      (should (eq 'find-file
+                  (nth 2 (emacs-keymap-lookup-key
+                          files-map
+                          (vector (easy-menu-intern "one.org")))))))))
+
+(ert-deftest emacs-keymap-builtins-test/easy-menu-add-item-accepts-keymap-item ()
+  (let ((map (emacs-keymap-make-sparse-keymap))
+        (submenu (easy-menu-create-menu "Agenda" nil)))
+    (easy-menu-add-item map nil submenu)
+    (should (keymapp (nth 2 (emacs-keymap-lookup-key
+                             map (vector (easy-menu-intern "Agenda"))))))))
+
+(ert-deftest emacs-keymap-builtins-test/easy-menu-convert-item-cache-returns-fresh-conses ()
+  (let* ((file (locate-library "emacs-keymap-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file))
+         (previous (and (fboundp 'easy-menu-convert-item)
+                        (symbol-function 'easy-menu-convert-item))))
+    (unwind-protect
+        (let ((easy-menu-converted-items-table (make-hash-table :test 'equal))
+              (item ["Open" find-file t :help "Open a file"]))
+          (fmakunbound 'easy-menu-convert-item)
+          ;; Re-load this bridge source with the host easymenu binding cleared
+          ;; so the test covers the standalone substrate implementation.
+          (load file nil t)
+          (let ((first (easy-menu-convert-item item)))
+            (setcar (cdr first) 'mutated-menu-item)
+            (setcdr first '(mutated-tail))
+            (let ((second (easy-menu-convert-item item)))
+              (should-not (eq first second))
+              (should-not (eq (cdr first) (cdr second)))
+              (should (equal second
+                             '(Open menu-item "Open" find-file
+                                    :help "Open a file"))))))
+      (when previous
+        (fset 'easy-menu-convert-item previous)))))
 
 ;;;; H. Idempotence
 

@@ -49,6 +49,7 @@
 (require 'emacs-command-loop)
 (require 'emacs-fileio-builtins)
 (require 'emacs-keymap)
+(require 'emacs-startup-screen)
 
 (declare-function emacs-buffer-ui-confirm-kill-buffer "emacs-buffer-ui"
                   (buffer name read-confirmation-function))
@@ -206,6 +207,10 @@ state such as raw mode or terminal resize has been touched."
         (when (and (fboundp 'emacs-tui-event-init)
                    (not (nemacs-main--event-live-p nemacs-main--event-handle)))
           (setq nemacs-main--event-handle (emacs-tui-event-init)))
+        ;; Doc 06 A1: route Elisp `read-event' through live TUI stdin.
+        (when (boundp 'emacs-command-loop-input-poll-function)
+          (setq emacs-command-loop-input-poll-function
+                #'nemacs-main--poll-input-event))
         (setq nemacs-main--tui-state-prepared-p t)
         nemacs-main--redisplay))))
 
@@ -1707,6 +1712,10 @@ Returns non-nil when a repaint was attempted.  The event loop calls
           (error nil)))))
     t))
 
+(defvar nemacs-main--idle-since nil
+  "float-time when the current idle period began, or nil when not idle
+(Doc 06 B2).")
+
 (defun nemacs-main--event-loop-tick (budget-ms)
   "Run one interactive loop tick.
 Returns non-nil when input, SIGWINCH, or SIGCONT activity occurred.
@@ -1723,8 +1732,20 @@ not typing."
       (setq activity t))
     (when (nemacs-main--drain-input-burst budget-ms)
       (setq activity t))
-    (when activity
-      (nemacs-main--repaint-tui))
+    ;; Doc 06 B2: fire due regular timers every tick.
+    (when (fboundp 'emacs-timer-run-pending)
+      (emacs-timer-run-pending))
+    (if activity
+        (progn
+          ;; input resets the idle clock + idle-timer fired flags.
+          (setq nemacs-main--idle-since nil)
+          (when (fboundp 'emacs-timer-reset-idle) (emacs-timer-reset-idle))
+          (nemacs-main--repaint-tui))
+      ;; Doc 06 B2: idle — fire idle timers based on elapsed idle time.
+      (when (and (fboundp 'emacs-timer-run-idle) (fboundp 'float-time))
+        (let ((now (float-time)))
+          (unless nemacs-main--idle-since (setq nemacs-main--idle-since now))
+          (emacs-timer-run-idle (- now nemacs-main--idle-since)))))
     activity))
 
 (defun nemacs-main--event-loop ()
@@ -1864,6 +1885,53 @@ options makes `-L src -l test/foo.el' behave like Emacs batch loading."
 
 ;;;; --- entry points -------------------------------------------------
 
+(defun nemacs-main--startup-gate-option (key)
+  "Return (VALUE . t) when KEY is explicitly present in `nemacs-main-options'.
+Return nil when KEY is absent.  Distinguishing an explicit nil VALUE from an
+absent key is what lets `nemacs-main--apply-startup-gate' leave the global
+compat variable untouched for callers that never pass these keys, instead of
+clobbering it via `nemacs-main-option''s default-on-missing behaviour (that
+helper cannot tell \"key maps to nil\" apart from \"key is absent\")."
+  (let* ((plist (and (boundp 'nemacs-main-options)
+                     (symbol-value 'nemacs-main-options)))
+         (cell (plist-member plist key)))
+    (when cell (cons (cadr cell) t))))
+
+(defun nemacs-main--apply-startup-gate ()
+  "Reflect `nemacs-main-options' startup-gate keys onto their globals.
+Call before `nemacs-init' so the gate is in effect for the whole bootstrap.
+
+Recognised keys:
+  :init-file-user          Emacs `-q'/`-Q' semantics.  Nil makes
+                            `nemacs-load-user-init-files' skip early-init.el,
+                            package activation, and init.el
+                            (src/nemacs-loadup.el).
+  :inhibit-startup-screen  Consulted by the splash-screen owner
+                            (`emacs-startup-screen-use-p'); nil is the
+                            default (show splash), non-nil suppresses it.
+  :args                    CLI file arguments.  Reflected onto
+                            `emacs-startup-screen-file-arguments' so the
+                            splash gate can suppress the splash when the
+                            session starts on visited files.
+
+All keys are optional; a key absent from `nemacs-main-options' leaves the
+corresponding global untouched, so callers that never pass these options
+(most existing tests and direct `nemacs-init' callers) keep today's
+behaviour.  Centralising the reflection here — rather than injecting the
+globals from more than one call site across `bin/nemacs' and
+`nemacs-loadup' — is what avoids a double-injection ordering bug."
+  (let ((init-file-user-cell
+         (nemacs-main--startup-gate-option :init-file-user))
+        (inhibit-startup-screen-cell
+         (nemacs-main--startup-gate-option :inhibit-startup-screen))
+        (args-cell (nemacs-main--startup-gate-option :args)))
+    (when init-file-user-cell
+      (setq init-file-user (car init-file-user-cell)))
+    (when (and inhibit-startup-screen-cell (boundp 'inhibit-startup-screen))
+      (setq inhibit-startup-screen (car inhibit-startup-screen-cell)))
+    (when (and args-cell (boundp 'emacs-startup-screen-file-arguments))
+      (setq emacs-startup-screen-file-arguments (car args-cell)))))
+
 (defun nemacs-batch-main ()
   "--batch entry: bootstrap, run -l / --eval, exit.
 Returns the exit-code symbol (= `ok' on success)."
@@ -1873,6 +1941,7 @@ Returns the exit-code symbol (= `ok' on success)."
   (when (fboundp 'install-sigint-handler)
     (install-sigint-handler))
   (unless nemacs-initialized
+    (nemacs-main--apply-startup-gate)
     (nemacs-init t))
   (nemacs-main--apply-options)
   (unless (nemacs-main-option :no-banner)
@@ -1912,6 +1981,7 @@ takes over and dispatches TUI events directly."
     (nemacs-batch-main))
    (t
     (unless nemacs-initialized
+      (nemacs-main--apply-startup-gate)
       (nemacs-init))
     (nemacs-main--apply-options)
     (nemacs-main--init-keymap)
@@ -1965,6 +2035,33 @@ takes over and dispatches TUI events directly."
         (when (or (nemacs-main-option :batch)
                   (and (boundp 'noninteractive) noninteractive))
           (nemacs-main--shutdown-tui)))))))
+
+(defun nemacs-main--event->key (ev)
+  "Convert a tui-event key plist EV into an Emacs event (char or symbol).
+Control on an ASCII letter and the Meta bit (2^27) are encoded; modifiers on
+non-ASCII / special keys are dropped (refinement pending)."
+  (let ((name (plist-get ev :name))
+        (mods (plist-get ev :modifiers)))
+    (cond
+     ((null mods) name)
+     ((and (memq 'control mods) (integerp name) (>= name ?a) (<= name ?z))
+      (let ((base (- name 96)))
+        (if (memq 'meta mods) (logior base 134217728) base)))
+     ((and (memq 'meta mods) (integerp name))
+      (logior name 134217728))
+     (t name))))
+
+(defun nemacs-main--poll-input-event (timeout-ms)
+  "Poll one input event for the standard command loop (Doc 06 A1).
+Return a character / key symbol, or nil when no input is available."
+  (when (and nemacs-main--event-handle (fboundp 'emacs-tui-event-poll))
+    (let ((b (and (fboundp 'emacs-tui-event-poll-printable-byte)
+                  (emacs-tui-event-poll-printable-byte nemacs-main--event-handle))))
+      (if (integerp b)
+          b
+        (let ((ev (emacs-tui-event-poll nemacs-main--event-handle timeout-ms)))
+          (and (consp ev) (eq (plist-get ev :type) 'key)
+               (nemacs-main--event->key ev)))))))
 
 (provide 'nemacs-main)
 

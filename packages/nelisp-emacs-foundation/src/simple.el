@@ -21,6 +21,40 @@
   (defvar indent-line-function nil
     "Function called by `indent-for-tab-command' to indent the current line."))
 
+(unless (boundp 'filter-buffer-substring-functions)
+  (defvar filter-buffer-substring-functions nil
+    "Obsolete wrapper hook around `buffer-substring--filter'."))
+
+(unless (boundp 'filter-buffer-substring-function)
+  (defvar filter-buffer-substring-function #'buffer-substring--filter
+    "Function used by `filter-buffer-substring' to filter copied text."))
+
+(unless (fboundp 'delete-and-extract-region)
+  (defun delete-and-extract-region (beg end)
+    "Delete text between BEG and END and return it."
+    (let ((text (buffer-substring beg end)))
+      (delete-region beg end)
+      text)))
+
+(unless (fboundp 'buffer-substring--filter)
+  (defun buffer-substring--filter (beg end &optional delete)
+    "Default function for `filter-buffer-substring-function'."
+    (let ((text (if delete
+                    (delete-and-extract-region beg end)
+                  (buffer-substring beg end))))
+      (if filter-buffer-substring-functions
+          (let ((value text))
+            (dolist (fn filter-buffer-substring-functions)
+              (setq value (funcall fn value beg end delete)))
+            value)
+        text))))
+
+(unless (fboundp 'filter-buffer-substring)
+  (defun filter-buffer-substring (beg end &optional delete)
+    "Return filtered buffer text between BEG and END.
+When DELETE is non-nil, delete the source text after copying."
+    (funcall filter-buffer-substring-function beg end delete)))
+
 (unless (fboundp 'open-line)
   (defun open-line (&optional n)
     "Insert N newlines after point, leaving point before them."

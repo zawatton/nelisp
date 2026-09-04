@@ -8,26 +8,26 @@
 
 ;;; Code:
 
-(defconst nemacs-runtime-image-preload--script-directory
-  (file-name-directory (or load-file-name buffer-file-name ""))
-  "Directory containing runtime-image preload helper scripts.")
+;; Source-v1 runtime image replay preserves top-level `setq' more reliably
+;; than `defconst', while functions below need these variables after boot.
+(setq nemacs-runtime-image-preload--script-directory
+      (file-name-directory (or load-file-name buffer-file-name "")))
 
-(defconst nemacs-runtime-image-package-load-paths
-  '("packages/nelisp-emacs-buffer-core/lazy"
-    "packages/nelisp-emacs-buffer-core/lisp"
-    "packages/nelisp-emacs-core/lazy"
-    "packages/nelisp-emacs-core/lisp"
-    "packages/nelisp-emacs-editing/lisp"
-    "packages/nelisp-emacs-facade/lisp"
-    "packages/nelisp-emacs-foundation/lisp"
-    "packages/nelisp-emacs-io/lazy"
-    "packages/nelisp-emacs-io/lisp"
-    "packages/nelisp-emacs-special-buffers/lisp"
-    "packages/nelisp-emacs-text-core/lazy"
-    "packages/nelisp-emacs-text-core/lisp"
-    "packages/nelisp-emacs-textmodes-stub/lisp"
-    "packages/nelisp-emacs-app-gui/lisp")
-  "Package/app scaffold load-paths used by runtime-image bakes.")
+(setq nemacs-runtime-image-package-load-paths
+      '("packages/nelisp-emacs-buffer-core/lazy"
+        "packages/nelisp-emacs-buffer-core/lisp"
+        "packages/nelisp-emacs-core/lazy"
+        "packages/nelisp-emacs-core/lisp"
+        "packages/nelisp-emacs-editing/lisp"
+        "packages/nelisp-emacs-facade/lisp"
+        "packages/nelisp-emacs-foundation/lisp"
+        "packages/nelisp-emacs-io/lazy"
+        "packages/nelisp-emacs-io/lisp"
+        "packages/nelisp-emacs-special-buffers/lisp"
+        "packages/nelisp-emacs-text-core/lazy"
+        "packages/nelisp-emacs-text-core/lisp"
+        "packages/nelisp-emacs-textmodes-stub/lisp"
+        "packages/nelisp-emacs-app-gui/lisp"))
 
 (defun nemacs-runtime-image-setup-paths (repo-root)
   "Install REPO-ROOT's package/app scaffold and vendor paths for a bake."
@@ -39,7 +39,15 @@
                         nemacs-runtime-image-package-load-paths)
                 (list (concat repo-root "/vendor/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/emacs-lisp")
-                      (concat repo-root "/vendor/emacs-lisp/vc"))
+                      (concat repo-root "/vendor/emacs-lisp/vc")
+                      ;; Doc 37 (task #16): vendor Tramp's own
+                      ;; directory plus `parse-time''s home under
+                      ;; calendar/.  Path-only -- nothing here `require's
+                      ;; Tramp into the baked image (Doc 37 risk #10);
+                      ;; `nemacs-tramp-setup' calls `require' dynamically
+                      ;; after session start.
+                      (concat repo-root "/vendor/emacs-lisp/net")
+                      (concat repo-root "/vendor/emacs-lisp/calendar"))
                 load-path))
   t)
 
@@ -307,7 +315,12 @@ Keep this surface as data lambdas so runtime images expose the
 bound.  When `nelisp-process-*' or legacy `nelisp-*' delegates exist they are
 used; otherwise synchronous calls return a failure status instead of aborting
 image startup."
-  (let* ((base nemacs-runtime-image-preload--script-directory)
+  (let* ((base (cond
+                ((boundp 'nemacs-runtime-image-preload--script-directory)
+                 nemacs-runtime-image-preload--script-directory)
+                ((or load-file-name buffer-file-name)
+                 (file-name-directory (or load-file-name buffer-file-name)))
+                (t nil)))
          (preload (and base
                        (expand-file-name
                         "nemacs-runtime-process-preload.el" base))))
@@ -409,15 +422,43 @@ image startup."
                             (emacs-process--fallback-sentinel-event status))
                  nil)
                process))))
+  ;; Mirrors nemacs-runtime-process-preload.el: real Emacs `call-process'
+  ;; runs the child in `default-directory'; the native primitive spawns in
+  ;; the parent's cwd, so wrap with a `cd' shell prefix for local absolute
+  ;; directories (exit 127 = shell cannot-execute convention).
+  (unless (fboundp 'emacs-process--call-process-cwd)
+    (fset 'emacs-process--call-process-cwd
+          '(lambda ()
+             (if (boundp 'default-directory)
+                 (if (stringp default-directory)
+                     (if (> (length default-directory) 0)
+                         (if (= (aref default-directory 0) ?/)
+                             default-directory
+                           nil)
+                       nil)
+                   nil)
+               nil))))
   (unless (fboundp 'emacs-process-call-process)
     (fset 'emacs-process-call-process
-          '(lambda (&rest args)
-             (cond
-              ((fboundp 'nelisp-process-call-process)
-               (apply 'nelisp-process-call-process args))
-              ((fboundp 'nelisp-call-process)
-               (apply 'nelisp-call-process args))
-              (t 1)))))
+          '(lambda (program &optional infile destination display &rest args)
+             (let ((cwd (emacs-process--call-process-cwd)))
+               (if cwd
+                   (progn
+                     (setq args
+                           (cons "-c"
+                                 (cons "cd \"$1\" || exit 127; shift; exec \"$@\""
+                                       (cons "emacs-process-call-process-cwd"
+                                             (cons cwd (cons program args))))))
+                     (setq program "/bin/sh"))
+                 nil)
+               (cond
+                ((fboundp 'nelisp-process-call-process)
+                 (apply 'nelisp-process-call-process
+                        program infile destination display args))
+                ((fboundp 'nelisp-call-process)
+                 (apply 'nelisp-call-process
+                        program infile destination display args))
+                (t 1))))))
   (unless (fboundp 'call-process)
     (fset 'call-process
           '(lambda (&rest args)
@@ -3212,6 +3253,23 @@ image startup."
 
 (when (fboundp 'nelisp--write-stdout-bytes)
   (nemacs-runtime-image-preload--force-install-frame-tab-core))
+
+;; Task #17 (M1) — Magit bridge extension.  Mirrors
+;; `nemacs-runtime-image-preload-vendor-core-extension' above: a thin
+;; dispatcher that hands off to the real logic owned by
+;; `src/nelisp-emacs-magit-bridge.el' (per CLAUDE.md/AGENTS.md, session/image
+;; wiring stays thin; the reusable "bring the real vendor Magit chain into a
+;; NeLisp session" behavior belongs in a `src/' module, not here).
+(defun nemacs-runtime-image-preload-magit-extension (repo-root)
+  "Extend an already-baked base runtime image with the real vendor Magit chain.
+REPO-ROOT is the repository root (matches the other preload entry points'
+REPO-ROOT convention); the Magit bridge bundle and its own preconditions
+are resolved relative to it."
+  (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo-root)
+        nil 'no-message t t)
+  (setq nelisp-emacs-magit-bridge-repo-root repo-root)
+  (nelisp-emacs-magit-bridge-load)
+  t)
 
 (provide 'nemacs-runtime-image-preload)
 

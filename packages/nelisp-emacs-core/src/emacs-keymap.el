@@ -388,33 +388,56 @@ KEYMAP when installed, otherwise nil."
       (emacs-char-table-set slot k def)
     (aset (cdr slot) k def)))
 
+(defun emacs-keymap--key-equal-p (a b)
+  "Return non-nil when key events A and B should be treated as equal."
+  (if (or (integerp a) (symbolp a))
+      (eq a b)
+    (equal a b)))
+
+(defun emacs-keymap--tail-state (keymap k)
+  "Return (SLOT . BINDING-CELL) for KEYMAP tail and event K.
+SLOT is the full-keymap slot object when present.  BINDING-CELL is the
+sparse binding cons cell whose car matches K, or nil."
+  (let ((tail (cdr keymap))
+        slot
+        binding)
+    (while (and tail (or (not slot) (not binding)))
+      (let ((entry (car tail)))
+        (cond
+         ((and (not slot) (emacs-keymap--slot-p entry))
+          (setq slot entry))
+         ((and (not binding)
+               (consp entry)
+               (not (eq (car entry) t))
+               (emacs-keymap--key-equal-p (car entry) k))
+          (setq binding entry))))
+      (setq tail (cdr tail)))
+    (cons slot binding)))
+
 (defun emacs-keymap--set-binding (keymap k def)
   "Install K -> DEF in KEYMAP, replacing any existing binding."
-  (let ((slot (emacs-keymap--full-slot keymap)))
+  (let ((state (emacs-keymap--tail-state keymap k)))
+    (let ((slot (car state))
+          (existing (cdr state)))
     (if (and slot (emacs-keymap--slot-char-p k))
         ;; full-keymap slot path
         (emacs-keymap--slot-set slot k def)
-      ;; sparse path: search existing pair, then mutate or prepend
-      (let ((existing (cl-loop for e in (cdr keymap)
-                               when (and (consp e)
-                                         (not (eq (car e) t))
-                                         (equal (car e) k))
-                               return e)))
-        (cond
-         (existing
-          (if def
-              (setcdr existing def)
-            ;; nil = remove
-            (setcdr keymap (delq existing (cdr keymap)))))
-         (def
-          ;; Insert AFTER the full slot (char-table or legacy cons) if any,
-          ;; so the slot stays at `(nth 1 keymap)' and the prompt string
-          ;; stays at the very tail.
-          (let ((slot-cell (cl-member-if #'emacs-keymap--slot-p
-                                         (cdr keymap))))
-            (if slot-cell
-                (setcdr slot-cell (cons (cons k def) (cdr slot-cell)))
-              (setcdr keymap (cons (cons k def) (cdr keymap)))))))))))
+      (cond
+       (existing
+        (if def
+            (setcdr existing def)
+          ;; nil = remove
+          (setcdr keymap (delq existing (cdr keymap)))))
+       (def
+        ;; Insert AFTER the full slot (char-table or legacy cons) if any,
+        ;; so the slot stays at `(nth 1 keymap)' and the prompt string
+        ;; stays at the very tail.
+        (if slot
+            (let ((slot-cell (memq slot (cdr keymap))))
+              (if slot-cell
+                  (setcdr slot-cell (cons (cons k def) (cdr slot-cell)))
+                (setcdr keymap (cons (cons k def) (cdr keymap)))))
+          (setcdr keymap (cons (cons k def) (cdr keymap))))))))))
 
 (defun emacs-keymap--binding-entry-p (entry)
   "Return non-nil when ENTRY is a sparse key binding cell."
@@ -492,14 +515,12 @@ Returns DEF."
   "Return KEYMAP's binding for K, or nil.
 Walks the keymap *without* parent inheritance — that is the caller's
 job (see `emacs-keymap--lookup-with-parent')."
-  (let ((slot (emacs-keymap--full-slot keymap)))
+  (let* ((state (emacs-keymap--tail-state keymap k))
+         (slot (car state))
+         (binding (cdr state)))
     (or (and slot (emacs-keymap--slot-char-p k)
              (emacs-keymap--slot-ref slot k))
-        (cl-loop for e in (cdr keymap)
-                 when (and (consp e)
-                           (not (eq (car e) t))
-                           (equal (car e) k))
-                 return (cdr e)))))
+        (and binding (cdr binding)))))
 
 (defun emacs-keymap--lookup-with-parent (keymap k)
   "Return KEYMAP's binding for K, walking parent inheritance.
@@ -1036,6 +1057,7 @@ to plug into a real event source."
   ;; shared keymap substrate with a small kbd parser.
   (defalias 'key-parse #'emacs-keymap--standalone-key-parse)
   (defalias 'key-valid-p #'emacs-keymap--standalone-key-valid-p)
+  (defalias 'kbd #'emacs-keymap--standalone-key-parse)
   (defun keymap-set (keymap key definition)
     "Standalone NeLisp fallback for GNU `keymap-set'."
     (let ((parsed (emacs-keymap--standalone-key-parse key))
@@ -1165,14 +1187,30 @@ to plug into a real event source."
 ;;;###autoload
 (defun emacs-keymap-key-parse (keys)
   "Convert KEYS, a kbd-style string, to an internal key vector.
-Thin delegate to upstream `key-parse'."
-  (key-parse keys))
+Thin delegate to upstream `key-parse' under host Emacs.  Standalone
+NeLisp calls the local `emacs-keymap--standalone-key-parse' fallback
+directly instead of going through the unprefixed `key-parse' symbol,
+because `emacs-keymap-builtins.el' may (re)install `key-parse' as an
+alias to this very function; delegating through that symbol would
+make the call recurse into itself forever."
+  (if (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (not (boundp 'emacs-version)))
+      (emacs-keymap--standalone-key-parse keys)
+    (key-parse keys)))
 
 ;;;###autoload
 (defun emacs-keymap-key-valid-p (keys)
   "Return non-nil iff KEYS is a valid kbd-style key description.
-Thin delegate to upstream `key-valid-p'."
-  (key-valid-p keys))
+Thin delegate to upstream `key-valid-p' under host Emacs.  See
+`emacs-keymap-key-parse' for why standalone NeLisp calls the local
+`emacs-keymap--standalone-key-valid-p' fallback directly instead of
+delegating through the unprefixed `key-valid-p' symbol."
+  (if (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (not (boundp 'emacs-version)))
+      (emacs-keymap--standalone-key-valid-p keys)
+    (key-valid-p keys)))
 
 ;;;###autoload
 (defun emacs-keymap-keymap-set (keymap key def)

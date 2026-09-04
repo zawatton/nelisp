@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'rx)
 (require 'nelisp-regex)
 
 ;;;; --- helpers ---------------------------------------------------------------
@@ -30,6 +31,29 @@
     (should (= 2 (length (nelisp-rx-string-match-all "foo" "foo foo"))))
     (should (equal "bar foo" (nelisp-rx-replace "foo" "foo foo" "bar")))
     (should (equal "bar bar" (nelisp-rx-replace-all "foo" "foo foo" "bar")))))
+
+(ert-deftest nelisp-regex-test/literal-nonmatch-does-not-return-empty-match ()
+  "A failed literal match must return nil, not a zero-width match at 0."
+  (should-not (nelisp-rx-string-match "org-fold-visible"
+                                      "org-fold-outline"))
+  (should-not (string-match-p "org-fold-visible"
+                              "org-fold-outline")))
+
+(ert-deftest nelisp-regex-test/rx-compatibility-surface-stays-working ()
+  (let ((rx-constituents
+         '((legacy (lambda (_form) "abc") 0 0 nil)))
+        (saved (get 'nelisp-regex-test--rx-sample 'rx-definition)))
+    (unwind-protect
+        (progn
+          (rx-define nelisp-regex-test--rx-sample "def")
+          (should (equal "abc" (rx-to-string '(legacy) t)))
+          (should (equal "def" (rx-to-string 'nelisp-regex-test--rx-sample t)))
+          (should (equal "ghi" (rx-let-eval '((local "ghi"))
+                                 (rx-to-string 'local t))))
+          (should (string-match-p "jkl" (rx-let ((local "jkl"))
+                                          (rx local))))
+          (should (equal "def" (rx-to-string 'nelisp-regex-test--rx-sample t))))
+      (put 'nelisp-regex-test--rx-sample 'rx-definition saved))))
 
 ;;;; --- \< (word start) -------------------------------------------------------
 

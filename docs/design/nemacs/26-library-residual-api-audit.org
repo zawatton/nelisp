@@ -62,6 +62,20 @@ may be useful when a consumer wants a compatibility layer, but they are not
 the preferred new integration surface.  New consumers should use prefixed
 stable APIs from the owning package whenever possible.
 
+The current compat-global rows include =dired-mode-map= and
+=inferior-emacs-lisp-mode-map=.  These are the canonical keymaps for the
+legacy =dired= and =ielm= entry points.  They remain compatibility globals
+so existing callers can keep using the established command names, but new
+reusable integrations should treat them as compatibility-only and prefer
+the prefixed package APIs from Doc 25.
+
+The text-core compat-global rows =rx-constituents=, =rx-to-string=,
+=rx-let-eval=, =rx-let=, and =rx-define= are legacy rx compatibility
+entry points.  They preserve the historical rx extension surface for code
+that still defines or expands the old forms, but new reusable consumers
+should prefer the namespaced regex APIs from =nelisp-regex= and treat the
+legacy rx forms as compatibility-only syntax support.
+
 These rows stay outside the stable package API unless the project decides
 that a specific global name is safe and valuable as a versioned
 compatibility promise.  That decision must include:
@@ -132,6 +146,11 @@ The only residual row is =emacs-text-core-features=.  Text-core has no
 compatibility globals or shim helper residuals after the current promotion
 pass.
 
+The legacy rx compatibility forms are listed in the generated compat-global
+inventory rather than the stable text-core API.  They are kept for source
+compatibility with older rx syntax, not as the preferred reusable regex
+surface.
+
 ** 3.3 =nelisp-emacs-buffer-core=
 
 Buffer-core residuals are one compatibility variable, builtins shim
@@ -142,6 +161,12 @@ Do not promote the =emacs-buffer-builtins-*= helper names directly just
 because they have test evidence.  The stable consumer path is the
 =nelisp-ec-*=, =emacs-buffer-*=, and =text-buffer-*= API already listed in
 Doc 25.  =nelisp-ec-check-live= remains internal validation surface.
+
+The =dired-mode-map= global is kept as the compatibility keymap for the
+legacy =dired= entry point.  It is useful for code that already knows the
+classic keymap name, but new reusable consumers should prefer the
+prefixed =emacs-dired-min= helpers and treat the raw map as compatibility
+surface only.
 
 ** 3.4 =nelisp-emacs-editing=
 
@@ -175,6 +200,12 @@ shutdown contract.
 Use the stable =emacs-window-*=, =emacs-help-*=, =emacs-info-*=,
 =emacs-minibuffer-*=, and =emacs-command-loop-*= APIs for new reusable
 integrations.
+
+The =inferior-emacs-lisp-mode-map= global is intentionally retained as the
+compatibility keymap behind =ielm=.  External consumers that want the
+editor-independent REPL behavior should depend on the prefixed
+=emacs-ielm= entry points and helper functions rather than the raw map
+variable.
 
 ** 3.7 =nelisp-emacs-special-buffers=
 

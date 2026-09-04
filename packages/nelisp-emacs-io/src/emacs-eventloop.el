@@ -154,6 +154,10 @@ children become observable."
            (fds (emacs-process-events--all-fds))
            (events (emacs-eventloop--poll fds timeout-ms))
            (any nil))
+      ;; C2: reap any exited children (SIGCHLD polling fallback) and count a
+      ;; fired sentinel as activity.
+      (when (fboundp 'emacs-process-events--reap-children)
+        (when (emacs-process-events--reap-children) (setq any t)))
       (dolist (entry events)
         (let* ((fd (car entry))
                (proc (emacs-process-events--lookup-by-fd fd)))
@@ -166,7 +170,8 @@ children become observable."
                   (setq child
                         (emacs-process-events--accept-child proc))
                   (when child (setq any t)))))
-             ((eq (emacs-process-events--get proc 3) 'network-connection)
+             ((memq (emacs-process-events--get proc 3)
+                    '(network-connection pipe-process))
               (when (emacs-process-events--read-and-dispatch proc)
                 (setq any t)))))))
       (when (and (not any) process)

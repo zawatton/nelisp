@@ -22,7 +22,7 @@
 ;;   - Functions: read-event / read-char / read-command /
 ;;     this-command-keys / this-command-keys-vector /
 ;;     this-single-command-keys / this-single-command-raw-keys /
-;;     clear-this-command-keys
+;;     clear-this-command-keys / recent-keys
 ;;
 ;;   - Variables: this-command / last-command / real-this-command /
 ;;     last-command-event / last-input-event / last-nonmenu-event /
@@ -99,6 +99,9 @@ an `emacs-stub-bulk' placeholder."
 (when (emacs-command-loop-builtins--install-function-p 'clear-this-command-keys)
   (defalias 'clear-this-command-keys
     #'emacs-command-loop-clear-this-command-keys))
+
+(when (emacs-command-loop-builtins--install-function-p 'recent-keys)
+  (defalias 'recent-keys #'emacs-command-loop-recent-keys))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-key-sequence)
   (defalias 'read-key-sequence
@@ -263,6 +266,18 @@ secondary source after `emacs-command-loop--unread-events' is empty."))
 (unless (boundp 'post-command-hook)
   (defvar post-command-hook nil
     "Phase B.4 bridge: hook run after each command-loop dispatch."))
+
+(when (emacs-command-loop-builtins--install-function-p 'prefix-numeric-value)
+  (defun prefix-numeric-value (arg)
+    "Return the numeric value of raw prefix argument ARG.
+nil -> 1; the symbol `-' -> -1; an integer -> itself; a list (as produced
+by `C-u') -> its car; anything else -> 1."
+    (cond
+     ((null arg) 1)
+     ((eq arg '-) -1)
+     ((integerp arg) arg)
+     ((consp arg) (car arg))
+     (t 1))))
 
 (provide 'emacs-command-loop-builtins)
 

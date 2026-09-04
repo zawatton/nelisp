@@ -34,6 +34,9 @@ font-lock setup, then evaluate BODY with `b' bound to the buffer."
   "Convenience accessor."
   (emacs-buffer-get-text-property pos 'face buf))
 
+(ert-deftest emacs-elisp-mode-test/font-lock-keywords-available ()
+  (should (consp emacs-elisp-mode-font-lock-keywords)))
+
 ;;;; --- defun -----------------------------------------------------------------
 
 (ert-deftest emacs-elisp-mode-test/defun-keyword ()

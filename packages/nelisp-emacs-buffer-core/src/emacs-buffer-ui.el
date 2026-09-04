@@ -18,14 +18,22 @@
 
 ;;; Code:
 
+(defconst emacs-buffer-ui--load-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory that contains the buffer-ui shim and its sibling features.")
+
+(defun emacs-buffer-ui--load-feature (feature)
+  "Load FEATURE from the buffer-ui shim directory."
+  (let ((file (expand-file-name (concat (symbol-name feature) ".el")
+                                emacs-buffer-ui--load-directory)))
+    (unless (load file nil t)
+      (require feature))))
+
 (require 'cl-lib)
 (require 'emacs-buffer)
-(require 'emacs-fileio-builtins)
+(emacs-buffer-ui--load-feature 'emacs-fileio-builtins)
 (require 'emacs-minibuffer)
 (require 'emacs-window)
-
-(declare-function files--buffer-file-name "files-standalone-buffer"
-                  (&optional buffer))
 
 (defconst emacs-buffer-ui--list-buffer-name "*Buffer List*"
   "Buffer name used by `emacs-buffer-ui-list-buffers'.")
@@ -146,11 +154,10 @@ accessors."
 
 (defun emacs-buffer-ui--buffer-file-name (buf)
   "Return BUF's visited file path, or nil."
-  (or (cdr (assq buf emacs-fileio--buffer-files))
-      (and (fboundp 'files--buffer-file-name)
-           (condition-case nil
-               (files--buffer-file-name buf)
-             (error nil)))))
+  (condition-case nil
+      (and (fboundp 'buffer-file-name)
+           (buffer-file-name buf))
+    (error nil)))
 
 (defun emacs-buffer-ui-current-buffer-name ()
   "Return the current NeLisp buffer name, or nil when unavailable."

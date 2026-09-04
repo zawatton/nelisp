@@ -27,6 +27,21 @@
                     nemacs-library-package-release-bundle-manifest-repo-root)
   "Signature policy Org summary.")
 
+(defvar nemacs-library-package-release-bundle-manifest-release-key-policy
+  (expand-file-name "build/nemacs-library-package-release-key-policy.tsv"
+                    nemacs-library-package-release-bundle-manifest-repo-root)
+  "Release public key policy TSV.")
+
+(defvar nemacs-library-package-release-bundle-manifest-release-key-policy-summary
+  (expand-file-name "build/nemacs-library-package-release-key-policy.org"
+                    nemacs-library-package-release-bundle-manifest-repo-root)
+  "Release public key policy Org summary.")
+
+(defvar nemacs-library-package-release-bundle-manifest-release-public-key-file
+  (expand-file-name "docs/release/nemacs-library-release-public-key.asc"
+                    nemacs-library-package-release-bundle-manifest-repo-root)
+  "Release public key file.")
+
 (defvar nemacs-library-package-release-bundle-manifest-archive-checksum
   (expand-file-name "build/nemacs-library-package-archive-checksum.tsv"
                     nemacs-library-package-release-bundle-manifest-repo-root)
@@ -233,6 +248,10 @@ policy.  MISSING-OK allows draft-mode pending rows instead of failures."
          nemacs-library-package-release-bundle-manifest-publication-policy)
    (list "publication-policy-summary"
          nemacs-library-package-release-bundle-manifest-publication-policy-summary)
+   (list "release-key-policy"
+         nemacs-library-package-release-bundle-manifest-release-key-policy)
+   (list "release-key-policy-summary"
+         nemacs-library-package-release-bundle-manifest-release-key-policy-summary)
    (list "signature-policy"
          nemacs-library-package-release-bundle-manifest-signature-policy)
    (list "signature-policy-summary"
@@ -245,6 +264,8 @@ policy.  MISSING-OK allows draft-mode pending rows instead of failures."
 (defun nemacs-library-package-release-bundle-manifest--release-evidence ()
   "Return strict-release evidence file descriptors."
   (list
+   (list "release-public-key"
+         nemacs-library-package-release-bundle-manifest-release-public-key-file)
    (list "signature-release-sign"
          nemacs-library-package-release-bundle-manifest-release-sign)
    (list "signature-release-sign-summary"
@@ -266,7 +287,13 @@ policy.  MISSING-OK allows draft-mode pending rows instead of failures."
                  (not (string= root repo)))
       (error "refusing unsafe release bundle root: %s" root))
     (when (file-directory-p root)
-      (delete-directory root t))
+      (dolist (entry (directory-files root t directory-files-no-dot-files-regexp))
+        (cond
+         ((file-directory-p entry)
+          (delete-directory entry t))
+         ((file-exists-p entry)
+          (delete-file entry))))
+      (ignore-errors (delete-directory root)))
     (make-directory root t)))
 
 (defun nemacs-library-package-release-bundle-manifest--build-rows ()

@@ -523,6 +523,40 @@
     (setq mark-active (or activate mark-active))
     nil))
 
+;; Doc 33 item 244: `region-active-p'/`use-region-p' (simple.el, preloaded
+;; in real Emacs so absent from vendor bundles) are read by Magit's
+;; section-highlight machinery on every status refresh
+;; (`magit-section--refresh-region' path) — void without this.  Built on
+;; the same fallback mark this file already owns; there is no
+;; `transient-mark-mode' toggle in the standalone substrate, so an active
+;; fallback mark is the whole truth.
+
+(when (lisp--install-function-p 'region-active-p)
+  (defun region-active-p ()
+    "Return non-nil when the fallback mark is active."
+    (and mark-active lisp--mark t)))
+
+(when (lisp--install-function-p 'use-region-p)
+  (defun use-region-p ()
+    "Return non-nil when the active fallback region should be used."
+    (region-active-p)))
+
+(when (lisp--install-function-p 'region-beginning)
+  (defun region-beginning ()
+    "Return the smaller of point and the fallback mark."
+    (min (point) (or lisp--mark (point)))))
+
+(when (lisp--install-function-p 'region-end)
+  (defun region-end ()
+    "Return the larger of point and the fallback mark."
+    (max (point) (or lisp--mark (point)))))
+
+(when (lisp--install-function-p 'deactivate-mark)
+  (defun deactivate-mark (&optional _force)
+    "Deactivate the fallback mark."
+    (setq mark-active nil)
+    nil))
+
 (when (lisp--install-function-p 'mark-sexp)
   (defun mark-sexp (&optional arg allow-extend)
     "Set mark ARG sexps from point."

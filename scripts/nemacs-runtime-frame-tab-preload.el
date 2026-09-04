@@ -23,11 +23,42 @@
              (setq i (- i 1)))
            (car tail))))
 
+;; Variadic `append': earlier args are copied, the final arg is the tail
+;; (used as-is).  The previous 2-arg form silently dropped every argument
+;; past the second, which broke backquote splicing `(a ,x ,@b)' -> the macro
+;; expander emits `(append (list 'a) (list x) b)' (3 args), so `,@b' vanished;
+;; that in turn broke `with-current-buffer' (its `(progn (set-buffer ..) ,@body)'
+;; lost its body) and any cl-macro built on backquote.
 (fset 'append
-      '(lambda (left right)
-         (if left
-             (cons (car left) (append (cdr left) right))
-           right)))
+      '(lambda (&rest lists)
+         (cond
+          ((null lists) nil)
+          ((null (cdr lists)) (car lists))
+          (t
+           (let* ((rev (reverse lists))
+                  (result (car rev))    ; last list = tail, used as-is
+                  (earlier (cdr rev)))  ; remaining lists, last-to-first
+             (while earlier
+               ;; Collect this arg's elements (reversed) into ACC.  Non-final
+               ;; args may be a list, vector, or string -- match the core
+               ;; `append', which converts any sequence (this is why
+               ;; `(append VECTOR nil)' / `vconcat' work).
+               (let ((acc nil) (cur (car earlier)))
+                 (cond
+                  ((consp cur)
+                   (while (consp cur)
+                     (setq acc (cons (car cur) acc))
+                     (setq cur (cdr cur))))
+                  ((or (vectorp cur) (stringp cur))
+                   (let ((i 0) (n (length cur)))
+                     (while (< i n)
+                       (setq acc (cons (aref cur i) acc))
+                       (setq i (1+ i))))))
+                 (while acc
+                   (setq result (cons (car acc) result))
+                   (setq acc (cdr acc))))
+               (setq earlier (cdr earlier)))
+             result)))))
 
 (setq emacs-frame--runtime-id-counter 0)
 (setq emacs-frame--runtime-registry nil)

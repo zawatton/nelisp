@@ -16,8 +16,8 @@
 ;; special variables win.
 ;;
 ;; Bridged today:
-;;   - call-process / call-process-region
-;;   - start-process / make-process
+;;   - call-process / call-process-region / process-file
+;;   - start-process / start-file-process / make-process
 ;;   - processp / process-list / process-status /
 ;;     process-exit-status / process-buffer / process-name
 ;;   - process-send-string / process-send-eof / delete-process
@@ -37,7 +37,9 @@
 
 (defun emacs-process-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (not (boundp 'emacs-version))
+  (or (and (fboundp 'emacs-standalone-mode-p)
+           (emacs-standalone-mode-p))
+      (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 
 (when (emacs-process-builtins--install-function-p 'call-process)
@@ -46,8 +48,14 @@
 (when (emacs-process-builtins--install-function-p 'call-process-region)
   (defalias 'call-process-region #'emacs-process-call-process-region))
 
+(when (emacs-process-builtins--install-function-p 'process-file)
+  (defalias 'process-file #'emacs-process-process-file))
+
 (when (emacs-process-builtins--install-function-p 'start-process)
   (defalias 'start-process #'emacs-process-start-process))
+
+(when (emacs-process-builtins--install-function-p 'start-file-process)
+  (defalias 'start-file-process #'emacs-process-start-file-process))
 
 (when (emacs-process-builtins--install-function-p 'make-process)
   (defalias 'make-process #'emacs-process-make-process))
