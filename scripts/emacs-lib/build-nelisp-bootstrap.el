@@ -45,6 +45,14 @@ final `.el' suffix with `.repl'.")
     "emacs-network-ffi.el"
     "emacs-server-client-polyfills.el"
     "generator.el"
+    ;; Macro parity has to precede generator.el during standalone replay.
+    ;; `nelisp-bootstrap--hoist-standalone-definers' performs that targeted
+    ;; move after this completion list has made the files bundle members.
+    "emacs-parity-setf-places.el"
+    "emacs-parity-macros2.el"
+    "emacs-parity-eieio.el"
+    "emacs-parity-flycheck.el"
+    "emacs-parity-cc.el"
     "rx.el"
     "emacs-tui-backend.el"
     "emacs-redisplay-core.el"
@@ -116,7 +124,14 @@ final `.el' suffix with `.repl'.")
     ;; transient.el's top-level `cl-pushnew' onto it.  Keep vars2 ahead of
     ;; vars3: vars3 fills only what shims/vars2/core-vars did not.
     "emacs-parity-vars2.el"
-    "emacs-parity-vars3.el")
+    "emacs-parity-vars3.el"
+    ;; Runtime primitive repairs belong late: their dependencies have loaded,
+    ;; while package/user-init consumers have not run yet.
+    "emacs-parity-regex-charclass.el"
+    "emacs-parity-makunbound.el"
+    "emacs-parity-clmacros.el"
+    "emacs-parity-skk.el"
+    "emacs-parity-subdirs.el")
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-vendor-extra-files
@@ -1033,11 +1048,18 @@ Nested source-string evaluation is reserved for explicit diagnostics."
                      output repl-output (length files))))))
 
 (defconst nelisp-bootstrap--standalone-definer-files
-  '("emacs-eval.el" "emacs-pcase.el" "emacs-cl-macros.el")
+  '("emacs-eval.el"
+    "emacs-pcase.el"
+    "emacs-cl-macros.el"
+    "emacs-parity-setf-places.el"
+    "emacs-parity-macros2.el"
+    "emacs-parity-eieio.el"
+    "emacs-parity-flycheck.el"
+    "emacs-parity-cc.el")
   "Files `nelisp-bootstrap--hoist-standalone-definers' moves ahead of `generator.el'.
-They are placed in this order.  None has a top-level `require', and each gates
-every definition on the symbol not already being installed, so hoisting them is
-inert under host Emacs.")
+They are placed in this order.  The core definers retain their existing
+symbol-presence guards; the parity files activate only behind standalone
+NeLisp markers, so hoisting remains inert under host Emacs.")
 
 (defun nelisp-bootstrap--hoist-standalone-definers (files)
   "Return FILES with the standalone's macro definers moved ahead of `generator.el'.
