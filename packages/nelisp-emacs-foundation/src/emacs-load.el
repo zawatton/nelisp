@@ -15,6 +15,8 @@
 
 ;;; Code:
 
+(declare-function nelisp--syscall-stat-field "nelisp-runtime" (path offset))
+
 (when (or (fboundp 'rdf)
           (fboundp 'nelisp--eval-source-string)
           (not (boundp 'emacs-version))
@@ -364,6 +366,36 @@ that threshold is disabled."
                      (file-executable-p candidate))
             (setq found candidate))))
       found))
+
+  (defun emacs-load--artifact-compiler-identity (compiler)
+    "Return a cheap stable identity for COMPILER, or nil if unavailable."
+    (let* ((path (expand-file-name compiler))
+           (attributes
+            (and (not (fboundp 'nelisp--syscall-stat-field))
+                 (fboundp 'file-attributes)
+                 (file-attributes path 'integer)))
+           (size
+            (if (fboundp 'nelisp--syscall-stat-field)
+                (nelisp--syscall-stat-field path 48)
+              (and attributes (nth 7 attributes))))
+           (mtime-seconds
+            (if (fboundp 'nelisp--syscall-stat-field)
+                (nelisp--syscall-stat-field path 88)
+              (and attributes (nth 5 attributes))))
+           (mtime-nanoseconds
+            (and (fboundp 'nelisp--syscall-stat-field)
+                 (nelisp--syscall-stat-field path 96)))
+           (mtime (if mtime-nanoseconds
+                      (list mtime-seconds mtime-nanoseconds)
+                    mtime-seconds)))
+      (and (integerp size)
+           (> size 0)
+           (or (and (integerp mtime-seconds)
+                    (>= mtime-seconds 0)
+                    (integerp mtime-nanoseconds)
+                    (>= mtime-nanoseconds 0))
+               (and attributes mtime))
+           (list :path path :size size :mtime mtime))))
 
   (defun emacs-load--read-file-string (path)
     "Return PATH contents as a string, or nil when unreadable."
@@ -1186,6 +1218,104 @@ processed."
       (make-directory artifact-dir t)
       (list artifact sidecar)))
 
+  (defun emacs-load--artifact-cache-read-plist (path)
+    "Read one plist from PATH, returning nil for an invalid cache record."
+    (condition-case nil
+        (let ((text (emacs-load--read-file-string path)))
+          (and (stringp text)
+               (let ((read (read-from-string text)))
+                 (and (consp read)
+                      (listp (car read))
+                      (car read)))))
+      (error nil)))
+
+  (defun emacs-load--artifact-cache-record
+      (source-hash compiler-identity)
+    "Return a cache record for SOURCE-HASH and COMPILER-IDENTITY."
+    (list :cache-record-version 1
+          :source-sha256 source-hash
+          :compiler compiler-identity))
+
+  (defun emacs-load--artifact-cache-hit-p
+      (artifact sidecar source-hash compiler-identity)
+    "Return non-nil when the cached ARTIFACT triple is safe to replay."
+    (and compiler-identity
+         (file-readable-p artifact)
+         (file-readable-p sidecar)
+         (file-readable-p (concat artifact ".manifest.el"))
+         (equal (emacs-load--artifact-cache-read-plist sidecar)
+                (emacs-load--artifact-cache-record
+                 source-hash compiler-identity))))
+
+  (defun emacs-load--artifact-cache-invalidate (artifact sidecar)
+    "Delete the cache triple belonging to ARTIFACT and SIDECAR."
+    (dolist (path (list artifact (concat artifact ".manifest.el") sidecar))
+      (when (file-exists-p path)
+        (delete-file path))))
+
+  (defun emacs-load--artifact-compile-and-replay
+      (resolved source source-hash compiler compiler-identity artifact sidecar
+                &optional cached-error)
+    "Compile and replay RESOLVED once, optionally recovering from CACHED-ERROR."
+    (let ((temp (make-temp-file "emacs-load-artifact-" nil ".el")))
+      (unwind-protect
+          (progn
+            (emacs-load--artifact-write-raw-source source temp)
+            ;; No `--rewrite-defalias-late': the flag is not in any released
+            ;; NeLisp CLI, and passing it makes compilation exit unsuccessfully.
+            (let* ((command (list "compile-elisp-artifact"
+                                  "--kind" "neln"
+                                  "--input" temp
+                                  "--output" artifact
+                                  "--native-policy" "opportunistic"))
+                   (command (append command
+                                    (emacs-load--artifact-load-path-cli-args)))
+                   (status (apply #'call-process compiler nil nil nil command)))
+              (cond
+               ((not (and (integerp status) (= status 0)))
+                (setq emacs-load--artifact-compile-diagnostic-report
+                      (list :resolved resolved
+                            :compiler compiler
+                            :compiler-identity compiler-identity
+                            :status status
+                            :artifact artifact
+                            :sidecar sidecar
+                            :source-hash source-hash
+                            :temp temp
+                            :command command))
+                (emacs-load--artifact-cache-invalidate artifact sidecar)
+                (if cached-error
+                    (error "cached artifact failed (%s); recompilation failed with status %S"
+                           (error-message-string cached-error) status)
+                  nil))
+               (t
+                (condition-case caught
+                    (progn
+                      (emacs-load--artifact-replay-file artifact)
+                      (write-region
+                       (prin1-to-string
+                        (emacs-load--artifact-cache-record
+                         source-hash compiler-identity))
+                       nil sidecar nil 'silent)
+                      (setq emacs-load--artifact-compile-diagnostic-report nil)
+                      t)
+                  (error
+                   (setq emacs-load--artifact-compile-diagnostic-report
+                         (list :resolved resolved
+                               :compiler compiler
+                               :compiler-identity compiler-identity
+                               :status 'artifact-replay-failed
+                               :artifact artifact
+                               :sidecar sidecar
+                               :source-hash source-hash
+                               :temp temp
+                               :command command
+                               :error (error-message-string caught)))
+                   (emacs-load--artifact-cache-invalidate artifact sidecar)
+                   (signal (car caught) (cdr caught))))))))
+        (when (file-exists-p temp)
+          (delete-file temp)))))
+
   (defun emacs-load--artifact-load-or-compile (resolved source)
     "Replay or compile a standalone artifact for RESOLVED and SOURCE."
     (when emacs-load-auto-native-compile
@@ -1195,62 +1325,24 @@ processed."
                  (paths (emacs-load--artifact-cache-paths resolved))
                  (artifact (car paths))
                  (sidecar (cadr paths))
-                 (sidecar-hash
-                  (and (file-readable-p artifact)
-                       (file-readable-p sidecar)
-                       (let ((text (emacs-load--read-file-string sidecar)))
-                         (and (stringp text)
-                              (if (fboundp 'string-trim)
-                                  (string-trim text)
-                                (replace-regexp-in-string
-                                 "\\`[ \t\n\r]+\\|[ \t\n\r]+\\'" "" text)))))))
-            (cond
-             ((and sidecar-hash (string= sidecar-hash source-hash))
-              (setq emacs-load--artifact-compile-diagnostic-report nil)
-              (emacs-load--artifact-replay-file artifact)
-              t)
-             (t
-              (let ((temp (make-temp-file "emacs-load-artifact-" nil ".el")))
-                (unwind-protect
+                 (compiler-identity
+                  (emacs-load--artifact-compiler-identity compiler)))
+            (if (emacs-load--artifact-cache-hit-p
+                 artifact sidecar source-hash compiler-identity)
+                (condition-case cached-error
                     (progn
-                      (emacs-load--artifact-write-raw-source source temp)
-                      ;; No `--rewrite-defalias-late': the flag is not in any
-                      ;; released NeLisp CLI (only on the abandoned local branch
-                      ;; `local/pre-v1.1.0-sync-20260828'), and passing it makes
-                      ;; `compile-elisp-artifact' exit with `unknown flag'.
-                      (let* ((command (list "compile-elisp-artifact"
-                                            "--kind" "neln"
-                                            "--input" temp
-                                            "--output" artifact
-                                            "--native-policy"
-                                            "opportunistic"))
-                             (command (append command
-                                              (emacs-load--artifact-load-path-cli-args)))
-                             (status (apply #'call-process
-                                            compiler nil nil nil
-                                            command)))
-                        (if (and (integerp status) (= status 0))
-                            (progn
-                              (write-region source-hash nil sidecar nil 'silent)
-                              (setq emacs-load--artifact-compile-diagnostic-report nil)
-                              (emacs-load--artifact-replay-file artifact)
-                              t)
-                          (setq emacs-load--artifact-compile-diagnostic-report
-                                (list :resolved resolved
-                                      :compiler compiler
-                                      :status status
-                                      :artifact artifact
-                                      :sidecar sidecar
-                                      :source-hash source-hash
-                                      :temp temp
-                                      :command command))
-                          (when (file-exists-p artifact)
-                            (delete-file artifact))
-                          (when (file-exists-p sidecar)
-                            (delete-file sidecar))
-                          nil)))
-                  (when (file-exists-p temp)
-                    (delete-file temp)))))))))))
+                      (setq emacs-load--artifact-compile-diagnostic-report nil)
+                      (emacs-load--artifact-replay-file artifact)
+                      t)
+                  (error
+                   (emacs-load--artifact-cache-invalidate artifact sidecar)
+                   (emacs-load--artifact-compile-and-replay
+                    resolved source source-hash compiler compiler-identity
+                    artifact sidecar cached-error)))
+              (emacs-load--artifact-cache-invalidate artifact sidecar)
+              (emacs-load--artifact-compile-and-replay
+               resolved source source-hash compiler compiler-identity
+               artifact sidecar)))))))
 
   (defconst emacs-load--artifact-native-section-version 5
     "Current compact native section wire version supported by the loader.")
