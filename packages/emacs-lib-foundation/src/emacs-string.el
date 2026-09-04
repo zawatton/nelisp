@@ -16,6 +16,24 @@
 
 ;;; Code:
 
+(unless (boundp 'regexp-unmatchable)
+  (defconst regexp-unmatchable "\\`a\\`"
+    "Standard regexp guaranteed not to match any string at all."))
+
+(unless (fboundp 'subregexp-context-p)
+  (defun subregexp-context-p (regexp pos &optional start)
+    "Return non-nil if POS is in a normal subregexp context in REGEXP.
+A subregexp context is one where a sub-regexp can appear.  START, when
+non-nil, is an earlier position known to be in a subregexp context."
+    (condition-case err
+        (progn
+          (string-match (substring regexp (or start 0) pos) "")
+          t)
+      (invalid-regexp
+       (not (member (cadr err) '("Unmatched [ or [^"
+                                 "Unmatched \\{"
+                                 "Trailing backslash")))))))
+
 (require 'emacs-char-table)
 
 (unless (fboundp 'string-empty-p)
@@ -169,6 +187,34 @@ CASE-FOLD non-nil compares via `downcase'."
 (unless (fboundp 'string-lessp) (defun string-lessp (a b) (string< a b)))
 (unless (fboundp 'string-greaterp) (defun string-greaterp (a b) (string< b a)))
 (unless (fboundp 'string>) (defun string> (a b) (string< b a)))
+(unless (fboundp 'compare-strings)
+  (defun compare-strings (string1 start1 end1 string2 start2 end2
+                                  &optional ignore-case)
+    "Compare the selected parts of STRING1 and STRING2.
+Return t when they are equal.  Otherwise return a signed one-based mismatch
+position: positive when STRING1's part sorts after STRING2's part, negative
+when it sorts before it.  IGNORE-CASE non-nil compares folded strings."
+    (let ((part1 (substring string1 (or start1 0) end1))
+          (part2 (substring string2 (or start2 0) end2)))
+      (when ignore-case
+        (setq part1 (downcase part1)
+              part2 (downcase part2)))
+      (let ((i 0)
+            (len1 (length part1))
+            (len2 (length part2))
+            result)
+        (while (and (not result) (< i len1) (< i len2))
+          (let ((char1 (aref part1 i))
+                (char2 (aref part2 i)))
+            (cond
+             ((< char1 char2) (setq result (- (1+ i))))
+             ((> char1 char2) (setq result (1+ i)))))
+          (setq i (1+ i)))
+        (or result
+            (cond
+             ((< len1 len2) (- (1+ i)))
+             ((> len1 len2) (1+ i))
+             (t t)))))))
 (unless (fboundp 'substring-no-properties)
   (defun substring-no-properties (s &optional from to)
     (substring s (or from 0) (or to (length s)))))

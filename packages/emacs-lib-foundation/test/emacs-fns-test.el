@@ -98,6 +98,65 @@
     (should (equal (plist-get result :a) 1))
     (should (equal (plist-get result :b) 2))))
 
+;;;; --- standalone feature registry -----------------------------------------
+
+(ert-deftest emacs-fns-test/standalone-feature-index-initializes-from-features ()
+  (let ((saved-features features))
+    (setq features '(a b c))
+    (emacs-fns--standalone-feature-index-reset)
+    (unwind-protect
+        (progn
+          (should (= emacs-fns--standalone-feature-index-build-count 0))
+          (should (eq (emacs-fns--standalone-featurep 'a) t))
+          (should (eq (emacs-fns--standalone-featurep 'nope) nil))
+          (should (= emacs-fns--standalone-feature-index-build-count 1)))
+      (setq features saved-features)
+      (emacs-fns--standalone-feature-index-reset))))
+
+(ert-deftest emacs-fns-test/standalone-feature-index-fast-path-hits-and-misses ()
+  (let ((saved-features features))
+    (setq features '(alpha beta gamma))
+    (emacs-fns--standalone-feature-index-reset)
+    (unwind-protect
+        (progn
+          (dotimes (_ 32)
+            (should (eq (emacs-fns--standalone-featurep 'alpha) t))
+            (should (eq (emacs-fns--standalone-featurep 'missing) nil)))
+          (should (= emacs-fns--standalone-feature-index-build-count 1)))
+      (setq features saved-features)
+      (emacs-fns--standalone-feature-index-reset))))
+
+(ert-deftest emacs-fns-test/standalone-provide-like-insertion-is-idempotent ()
+  (let ((saved-features features))
+    (setq features '(existing))
+    (emacs-fns--standalone-feature-index-reset)
+    (unwind-protect
+        (progn
+          (should (eq (emacs-fns--standalone-provide 'added) 'added))
+          (should (equal features '(added existing)))
+          (should (= emacs-fns--standalone-feature-index-build-count 1))
+          (should (eq (emacs-fns--standalone-provide 'added) 'added))
+          (should (equal features '(added existing)))
+          (should (eq (emacs-fns--standalone-featurep 'added) t))
+          (should (= emacs-fns--standalone-feature-index-build-count 1)))
+      (setq features saved-features)
+      (emacs-fns--standalone-feature-index-reset))))
+
+(ert-deftest emacs-fns-test/standalone-feature-index-rebind-invalidation ()
+  (let ((saved-features features))
+    (setq features '(first))
+    (emacs-fns--standalone-feature-index-reset)
+    (unwind-protect
+        (progn
+          (should (eq (emacs-fns--standalone-featurep 'second) nil))
+          (should (= emacs-fns--standalone-feature-index-build-count 1))
+          (setq features '(second third))
+          (should (eq (emacs-fns--standalone-featurep 'second) t))
+          (should (= emacs-fns--standalone-feature-index-build-count 2))
+          (should (equal features '(second third))))
+      (setq features saved-features)
+      (emacs-fns--standalone-feature-index-reset))))
+
 
 ;;;; --- provide ------------------------------------------------------------
 
@@ -107,6 +166,31 @@
                          '(remote-wildcards))
                 'emacs-fns-test-provide-subfeatures))
     (should (featurep 'emacs-fns-test-provide-subfeatures))))
+
+(ert-deftest emacs-fns-test/standalone-require-rejects-nil-loader-result ()
+  "A nil loader result must not bypass the required-feature check."
+  (let ((missing-feature (make-symbol "emacs-fns-test-missing-feature")))
+    (cl-letf (((symbol-function 'emacs-fns--load-required-file)
+               (lambda (_path _noerror) nil)))
+      (should-error
+       (emacs-fns--load-and-check-required-feature
+        missing-feature "/tmp/emacs-fns-test-missing.el" nil)
+       :type 'error)
+      (should-not
+       (emacs-fns--load-and-check-required-feature
+        missing-feature "/tmp/emacs-fns-test-missing.el" t)))))
+
+
+;;;; --- Doc 200 string primitive requirement -----------------------------
+
+(ert-deftest emacs-fns-test/missing-string-representation-primitive-signals ()
+  "Missing Doc 200 string primitives must not return plausible wrong values."
+  (dolist (primitive '(encode-coding-string decode-coding-string
+                       multibyte-string-p string-as-multibyte
+                       string-as-unibyte))
+    (should-error
+     (emacs-fns--missing-string-representation-primitive primitive)
+     :type 'error)))
 
 
 (provide 'emacs-fns-test)

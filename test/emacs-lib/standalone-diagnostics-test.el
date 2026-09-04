@@ -29,6 +29,48 @@
        (file-name-directory (or load-file-name buffer-file-name)))
       nil t)
 
+(defconst standalone-diagnostics-test--repo-root
+  (expand-file-name ".."
+                    (file-name-directory (or load-file-name buffer-file-name))))
+
+(defun standalone-diagnostics-test--src-file (name)
+  (expand-file-name (concat "src/" name)
+                    standalone-diagnostics-test--repo-root))
+
+(defun standalone-diagnostics-test--position (item list)
+  (cl-position item list :test #'equal))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-feature-prologue-is-two-balanced-forms ()
+  "Keep the source bundle prologue structurally aligned with its form variant."
+  (with-temp-buffer
+    (insert nelisp-bootstrap--feature-registry-prologue)
+    (check-parens)
+    (goto-char (point-min))
+    (let (forms)
+      (condition-case nil
+          (while t
+            (push (read (current-buffer)) forms))
+        (end-of-file nil))
+      (setq forms (nreverse forms))
+      (should (= (length forms) 2))
+      (should (eq (car (car forms)) 'unless))
+      (should (eq (car (cadr forms)) 'when))
+      (should (equal forms
+                     nelisp-bootstrap--feature-registry-prologue-forms)))))
+
+(defun standalone-diagnostics-test--read-guarded-definition (file symbol)
+  "Read SYMBOL's top-level guarded definition from source FILE."
+  (with-temp-buffer
+    (insert-file-contents (standalone-diagnostics-test--src-file file))
+    (goto-char (point-min))
+    (unless (re-search-forward
+             (regexp-quote
+              (format "(unless (fboundp '%s)" symbol))
+             nil t)
+      (error "Missing guarded definition for %s in %s" symbol file))
+    (goto-char (match-beginning 0))
+    (read (current-buffer))))
+
 (ert-deftest standalone-diagnostics-test/profile-splits-bootstrap-sections ()
   (let ((sections
          (standalone-bootstrap-profile--sections
@@ -182,6 +224,214 @@
       (when (file-directory-p root)
         (delete-directory root t)))))
 
+(ert-deftest standalone-diagnostics-test/bootstrap-complete-file-list-orders-providers-before-consumers ()
+  (let* ((files (nelisp-bootstrap--complete-file-list
+                 (list (standalone-diagnostics-test--src-file
+                        "nelisp-emacs-compat.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-parity-core-vars.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-vars.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-keymap-builtins.el")
+                       (standalone-diagnostics-test--src-file
+                        "nelisp-regex.el")
+                       (standalone-diagnostics-test--src-file
+                        "nelisp-text-buffer.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-redisplay-core.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-window.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-fileio.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-fileio-gui.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-mode.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-mode-builtins.el")
+                       (standalone-diagnostics-test--src-file
+                        "emacs-load.el"))))
+         (core-vars-pos (standalone-diagnostics-test--position
+                         (standalone-diagnostics-test--src-file
+                          "emacs-parity-core-vars.el")
+                         files))
+         (vars-pos (standalone-diagnostics-test--position
+                    (standalone-diagnostics-test--src-file
+                     "emacs-vars.el")
+                    files))
+         (compat-pos (standalone-diagnostics-test--position
+                      (standalone-diagnostics-test--src-file
+                       "nelisp-emacs-compat.el")
+                      files))
+         (regex-pos (standalone-diagnostics-test--position
+                     (standalone-diagnostics-test--src-file
+                      "nelisp-regex.el")
+                     files))
+         (text-buffer-pos (standalone-diagnostics-test--position
+                           (standalone-diagnostics-test--src-file
+                            "nelisp-text-buffer.el")
+                           files))
+         (redisplay-pos (standalone-diagnostics-test--position
+                         (standalone-diagnostics-test--src-file
+                          "emacs-redisplay-core.el")
+                         files))
+         (window-pos (standalone-diagnostics-test--position
+                      (standalone-diagnostics-test--src-file
+                       "emacs-window.el")
+                      files))
+         (fileio-pos (standalone-diagnostics-test--position
+                      (standalone-diagnostics-test--src-file
+                       "emacs-fileio.el")
+                      files))
+         (fileio-gui-pos (standalone-diagnostics-test--position
+                          (standalone-diagnostics-test--src-file
+                           "emacs-fileio-gui.el")
+                          files))
+         (mode-pos (standalone-diagnostics-test--position
+                    (standalone-diagnostics-test--src-file
+                     "emacs-mode.el")
+                    files))
+         (keymap-builtins-pos (standalone-diagnostics-test--position
+                               (standalone-diagnostics-test--src-file
+                                "emacs-keymap-builtins.el")
+                               files))
+         (mode-builtins-pos (standalone-diagnostics-test--position
+                             (standalone-diagnostics-test--src-file
+                              "emacs-mode-builtins.el")
+                             files))
+         (parity-org-pos (standalone-diagnostics-test--position
+                          (standalone-diagnostics-test--src-file
+                           "emacs-parity-org.el")
+                          files))
+         (parity-shims-pos (standalone-diagnostics-test--position
+                            (standalone-diagnostics-test--src-file
+                             "emacs-parity-shims.el")
+                            files))
+         (parity-misc-pos (standalone-diagnostics-test--position
+                           (standalone-diagnostics-test--src-file
+                            "emacs-parity-misc.el")
+                           files))
+         (parity-fns2-pos (standalone-diagnostics-test--position
+                           (standalone-diagnostics-test--src-file
+                            "emacs-parity-fns2.el")
+                           files))
+         (emacs-load-pos (standalone-diagnostics-test--position
+                          (standalone-diagnostics-test--src-file
+                           "emacs-load.el")
+                          files)))
+    (should compat-pos)
+    (should core-vars-pos)
+    (should vars-pos)
+    (should regex-pos)
+    (should text-buffer-pos)
+    (should redisplay-pos)
+    (should window-pos)
+    (should fileio-pos)
+    (should fileio-gui-pos)
+    (should mode-pos)
+    (should keymap-builtins-pos)
+    (should mode-builtins-pos)
+    (should parity-misc-pos)
+    (should parity-fns2-pos)
+    (should parity-org-pos)
+    (should emacs-load-pos)
+    (should (< core-vars-pos vars-pos))
+    (should (< regex-pos compat-pos))
+    (should (< text-buffer-pos compat-pos))
+    (should (< compat-pos window-pos))
+    (should (< window-pos redisplay-pos))
+    (should (< fileio-gui-pos fileio-pos))
+    (should (< mode-pos mode-builtins-pos))
+    (should (< keymap-builtins-pos parity-org-pos))
+    (should (< mode-builtins-pos parity-org-pos))
+    (should parity-shims-pos)
+    (should (< mode-builtins-pos parity-misc-pos))
+    (should (< parity-shims-pos parity-misc-pos))
+    (should (< parity-misc-pos parity-fns2-pos))
+    (should (< parity-fns2-pos parity-org-pos))
+    (should (< parity-org-pos emacs-load-pos))
+    (should (< mode-builtins-pos fileio-pos))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-define-skeleton-creates-command ()
+  "The bootstrap shim must make sh-script skeleton definitions executable."
+  (let* ((command 'standalone-diagnostics-test--sample-skeleton)
+         (symbols (list 'define-skeleton 'skeleton-proxy-new command))
+         (saved
+          (mapcar (lambda (symbol)
+                    (list symbol (fboundp symbol)
+                          (and (fboundp symbol) (symbol-function symbol))))
+                  symbols))
+         (saved-property (get command 'no-self-insert))
+         called)
+    (unwind-protect
+        (progn
+          (fmakunbound 'define-skeleton)
+          (eval (standalone-diagnostics-test--read-guarded-definition
+                 "emacs-parity-shims.el" 'define-skeleton))
+          (fset 'skeleton-proxy-new
+                (lambda (skeleton str arg)
+                  (setq called (list skeleton str arg))
+                  'inserted))
+          (eval `(define-skeleton ,command "Sample skeleton."
+                   ("value: " str _)))
+          (should (fboundp command))
+          (should (get command 'no-self-insert))
+          (should (eq 'inserted (funcall command "VALUE" 3)))
+          (should
+           (equal called
+                  '((("value: " str _)) "VALUE" 3))))
+      (dolist (entry saved)
+        (if (cadr entry)
+            (fset (car entry) (caddr entry))
+          (fmakunbound (car entry))))
+      (put command 'no-self-insert saved-property))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-parity-owners-are-real ()
+  "The bootstrapped parity modules provide the three real vendor dependencies."
+  (let* ((symbols '(replace-buffer-contents
+                    pcomplete-uniquify-list
+                    pcomplete-uniqify-list
+                    newline-and-indent))
+         (saved
+          (mapcar (lambda (symbol)
+                    (list symbol (fboundp symbol)
+                          (and (fboundp symbol) (symbol-function symbol))))
+                  symbols))
+         (source-buffer (generate-new-buffer " *parity-source*"))
+         (target-buffer (generate-new-buffer " *parity-target*")))
+    (unwind-protect
+        (progn
+          (dolist (symbol symbols)
+            (fmakunbound symbol))
+          (eval (standalone-diagnostics-test--read-guarded-definition
+                 "emacs-parity-fns2.el" 'replace-buffer-contents))
+          (eval (standalone-diagnostics-test--read-guarded-definition
+                 "emacs-parity-fns2.el" 'newline-and-indent))
+          (eval (standalone-diagnostics-test--read-guarded-definition
+                 "emacs-parity-misc.el" 'pcomplete-uniquify-list))
+          (eval (standalone-diagnostics-test--read-guarded-definition
+                 "emacs-parity-misc.el" 'pcomplete-uniqify-list))
+          (with-current-buffer source-buffer
+            (insert "replacement αβ\n"))
+          (with-current-buffer target-buffer
+            (insert "old text")
+            (should (replace-buffer-contents source-buffer))
+            (should (equal (buffer-string) "replacement αβ\n")))
+          (should (equal (pcomplete-uniqify-list '("b" "a" "b"))
+                         '("a" "b")))
+          (with-temp-buffer
+            (setq-local indent-line-function (lambda () (indent-to 2)))
+            (insert "line   ")
+            (newline-and-indent)
+            (should (equal (buffer-string) "line\n  "))))
+      (dolist (entry saved)
+        (if (cadr entry)
+            (fset (car entry) (caddr entry))
+          (fmakunbound (car entry))))
+      (kill-buffer source-buffer)
+      (kill-buffer target-buffer))))
+
 (ert-deftest standalone-diagnostics-test/vendor-float-normalize-is-opt-in ()
   (let ((forms (list (list :index 1 :pos 0 :end 26 :head 'defun
                            :text "(defun sample () (> x 1.0))"))))
@@ -243,25 +493,120 @@
     (should-not (member "Large struct docstring that is metadata only."
                         normalized))))
 
+(ert-deftest standalone-diagnostics-test/calendar-binds-elided-popup-menus-before-load ()
+  "The standalone calendar wrapper supplies variables elided from cal-menu."
+  (with-temp-buffer
+    (insert-file-contents
+     (standalone-diagnostics-test--src-file "calendar.el"))
+    (let* ((context (search-forward
+                     "(defvar cal-menu-context-mouse-menu nil)" nil t))
+           (global (search-forward
+                    "(defvar cal-menu-global-mouse-menu nil)" nil t))
+           (vendor-load (search-forward "(load file nil t)" nil t)))
+      (should (integerp context))
+      (should (integerp global))
+      (should (integerp vendor-load))
+      (should (< context global))
+      (should (< global vendor-load)))))
+
+(ert-deftest standalone-diagnostics-test/calendar-package-mirror-matches-source ()
+  "The foundation package keeps the calendar wrapper byte-identical."
+  (let ((source (standalone-diagnostics-test--src-file "calendar.el"))
+        (mirror
+         (expand-file-name
+          "packages/nelisp-emacs-foundation/lisp/calendar.el"
+          standalone-diagnostics-test--repo-root)))
+    (should
+     (equal
+      (with-temp-buffer
+        (insert-file-contents source)
+        (buffer-string))
+      (with-temp-buffer
+        (insert-file-contents mirror)
+        (buffer-string))))))
+
 (ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-cl-defstruct-directly ()
-  (should (nelisp-bootstrap--direct-repl-form-p
-           "src/nelisp-coding.el"
-           '(cl-defstruct (sample-state (:constructor sample-state-make))
-              (slot-a nil))))
-  (should-not (nelisp-bootstrap--direct-repl-form-p
-               "src/nelisp-coding.el"
-               '(defun sample-state-make nil nil))))
+  (let ((nelisp-bootstrap-repl-nested-eval-source t))
+    (should (nelisp-bootstrap--direct-repl-form-p
+             "src/nelisp-coding.el"
+             '(cl-defstruct (sample-state (:constructor sample-state-make))
+                (slot-a nil))))
+    (should-not (nelisp-bootstrap--direct-repl-form-p
+                 "src/nelisp-coding.el"
+                 '(defun sample-state-make nil nil)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-large-forms-directly ()
-  (let ((nelisp-bootstrap-repl-direct-character-limit 24))
+  (let ((nelisp-bootstrap-repl-nested-eval-source t)
+        (nelisp-bootstrap-repl-direct-character-limit 24))
     (should (nelisp-bootstrap--direct-repl-form-p
              "src/nelisp-coding.el"
              '(defun sample-large nil nil)
              "(defun sample-large nil nil)"))
     (should-not (nelisp-bootstrap--direct-repl-form-p
                  "src/nelisp-coding.el"
-                 '(defun x nil nil)
-                 "(defun x nil nil)"))))
+             '(defun x nil nil)
+             "(defun x nil nil)"))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-repl-defaults-every-form-direct ()
+  (let ((nelisp-bootstrap-repl-nested-eval-source nil))
+    (should (nelisp-bootstrap--direct-repl-form-p
+             "src/ordinary.el" '(setq ordinary t) "(setq ordinary t)"))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-repl-bundle-is-direct-readable-and-safe ()
+  "Generated bootstrap forms avoid nested reads and preserve normalized forms."
+  (let ((source (make-temp-file "nelisp-bootstrap-direct-" nil ".el"))
+        (output (make-temp-file "nelisp-bootstrap-direct-" nil ".repl"))
+        (nelisp-bootstrap-repl-nested-eval-source nil)
+        (payload (concat "\r\t\C-c\M-a"))
+        forms)
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (prin1 '(defun direct-arglist (function table)
+                      (funcall function table))
+                   (current-buffer))
+            (insert "\n")
+            (prin1 (list 'setq 'direct-control payload) (current-buffer))
+            (insert "\n(provide 'direct-fixture)\n"))
+          (nelisp-bootstrap--write-repl-bundle (list source) output)
+          (with-temp-buffer
+            (insert-file-contents output)
+            (goto-char (point-min))
+            (while (not (eobp))
+              (unless (or (looking-at-p "[[:space:]]*\\(?:;\\|$\\)")
+                          (looking-at-p "[[:space:]]*$"))
+                (let ((outer (read (current-buffer))))
+                  (should (eq (car outer) 'progn))
+                  (should (null (car (last outer))))
+                  (push (cadr outer) forms)))
+              (forward-line 1))
+            (should-not
+             (string-match-p
+              (regexp-quote "(progn (nelisp--eval-source-string ")
+              (buffer-string))))
+          (setq forms (nreverse forms))
+          (should
+           (member '(defun direct-arglist (function table)
+                      (funcall function table))
+                   forms))
+          (should (member (list 'setq 'direct-control payload) forms))
+          (should (member '(provide 'direct-fixture) forms)))
+      (dolist (file (list source output))
+        (when (file-exists-p file)
+          (delete-file file))))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-repl-escapes-control-characters ()
+  "Bootstrap source and its outer literal remain one-line and readable."
+  (let* ((payload (unibyte-string 13 9 3 225))
+         (form (list 'setq 'nelisp-bootstrap-test-key payload))
+         (inner (nelisp-bootstrap--repl-form-string form))
+         (outer (nelisp-bootstrap--one-line-string-literal inner)))
+    (should (equal inner
+                   "(setq nelisp-bootstrap-test-key \"\\15\\11\\3\\341\")"))
+    (should-not (string-match-p "[\n\r\t\C-c]" inner))
+    (should-not (string-match-p "[\n\r\t\C-c]" outer))
+    (should (equal (standalone-source-normalize-read-source-form inner) form))
+    (should (equal (read outer) inner))))
 
 (ert-deftest standalone-diagnostics-test/vendor-load-files-splits-string ()
   (let ((vendor-load-standalone-files "/repo/a.el /repo/b.el"))
@@ -556,6 +901,16 @@
   (let ((vendor-repl-standalone-files "/repo/a.el /repo/b.el"))
     (should (equal (vendor-repl-standalone--files)
                    '("/repo/a.el" "/repo/b.el")))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-form-line-escapes-control-characters ()
+  "Replay serialization keeps key control bytes on one physical line."
+  (let* ((payload (unibyte-string 13 9 3 225))
+         (form (list 'setq 'vendor-repl-test-key payload))
+         (line (vendor-repl-standalone--form-line form)))
+    (should (equal line
+                   "(setq vendor-repl-test-key \"\\15\\11\\3\\341\")"))
+    (should-not (string-match-p "[\n\r\t\C-c]" line))
+    (should (equal (standalone-source-normalize-read-source-form line) form))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-canonicalize-symlinks ()
   (let* ((real-dir (make-temp-file "vendor-repl-real-" t))
@@ -945,6 +1300,39 @@
           (delete-file file)))
       (when (file-directory-p root)
         (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-large-direct-escapes-control-characters ()
+  "Large direct forms are reserialized before entering the REPL stream."
+  (let* ((payload (concat "\r\t\C-c" (make-string 64 ?x)))
+         (form (list 'setq 'vendor-repl-direct-key payload))
+         (source (concat "(setq vendor-repl-direct-key \"" payload "\")"))
+         (vendor-repl-standalone-direct-character-limit 16)
+         (output (vendor-repl-standalone--eval-source-form source)))
+    (should (equal output
+                   (concat
+                    "(setq vendor-repl-direct-key "
+                    "\"\\15\\11\\3"
+                    (make-string 64 ?x)
+                    "\")\n")))
+    (should-not (string-match-p "[\r\t\C-c]" output))
+    (should (= 1 (cl-count ?\n output)))
+    (should (equal (standalone-source-normalize-read-source-form output) form))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-small-nested-escapes-control-characters ()
+  "Small nested forms preserve the safe inner source through outer quoting."
+  (let* ((payload (concat "\r\t\C-c"))
+         (form (list 'setq 'vendor-repl-nested-key payload))
+         (source (concat "(setq vendor-repl-nested-key \"" payload "\")"))
+         (vendor-repl-standalone-direct-character-limit most-positive-fixnum)
+         (output (vendor-repl-standalone--eval-source-form source))
+         (outer (read output))
+         (inner (cadr outer)))
+    (should (eq (car outer) 'nelisp--eval-source-string))
+    (should (equal inner
+                   "(setq vendor-repl-nested-key \"\\15\\11\\3\")"))
+    (should-not (string-match-p "[\r\t\C-c]" output))
+    (should (= 1 (cl-count ?\n output)))
+    (should (equal (standalone-source-normalize-read-source-form inner) form))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-can-coalesce-file-forms ()
   (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))

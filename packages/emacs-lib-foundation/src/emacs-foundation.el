@@ -17,7 +17,20 @@
 ;; feature files are not guaranteed to be on `load-path' yet.  Load them from
 ;; the same directory as this loader so package activation stays robust.
 (defconst emacs-foundation--load-directory
-  (file-name-directory (or load-file-name buffer-file-name))
+  (let ((source-file
+         (or (and (boundp 'load-file-name) load-file-name)
+             (and (boundp 'buffer-file-name) buffer-file-name))))
+    (cond
+     (source-file
+      (file-name-directory source-file))
+     ((and (boundp 'default-directory)
+           (stringp default-directory))
+      (let ((src (expand-file-name "src/" default-directory)))
+        (if (and (fboundp 'file-directory-p)
+                 (file-directory-p src))
+            src
+          default-directory)))
+     (t nil)))
   "Directory that contains the foundation feature files.")
 
 (defun emacs-foundation--load-feature (feature)
@@ -51,6 +64,7 @@
     emacs-os-detect
     emacs-easy-mmode
     emacs-time
+    calendar
     emacs-numeric
     emacs-subr-extras
     emacs-edebug-stubs)

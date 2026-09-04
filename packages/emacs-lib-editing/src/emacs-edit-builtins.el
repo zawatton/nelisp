@@ -41,12 +41,15 @@
 
 (defun emacs-edit-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
-  (if (not (boundp 'emacs-version))
-      ;; Standalone NeLisp loads `emacs-stub-bulk' first, so many of
-      ;; these names are already `fboundp' as nil-returning shims.  The
-      ;; edit bridge owns these command names in that environment.
-      t
-    (not (fboundp symbol))))
+  ;; Standalone NeLisp loads `emacs-stub-bulk' first, so many of these names
+  ;; are already `fboundp' as nil-returning shims.  The NeLisp bootstrap now
+  ;; also binds `emacs-version', so do not use that alone as the host/standalone
+  ;; discriminator.
+  (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (get symbol 'emacs-stub-bulk)
+      (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
 
 ;;;; --- last-command-event placeholder ---------------------------------
 
@@ -2920,6 +2923,48 @@ past LIM.  Return the (non-positive) distance traveled."
       (when (eq (plist-get edit :status) 'scan-error)
         (signal 'scan-error '("Unbalanced parentheses")))
       (plist-get edit :point))))
+
+(defun emacs-edit--scan-property-list-forward (from)
+  "Return the end of the property-delimited list at FROM, or nil.
+This covers `syntax-table' character properties used by CC Mode for
+template brackets while the general sexp scanner remains syntax-table-light."
+  (let ((pos from)
+        (limit (point-max))
+        (depth 0)
+        started
+        done)
+    (while (and (< pos limit) (not done))
+      (let* ((property (get-char-property pos 'syntax-table))
+             (code (and (consp property) (car property)))
+             (char (char-after pos)))
+        (cond
+         ((or (eq code 4) (memq char '(?\( ?\[ ?\{)))
+          (setq depth (1+ depth)
+                started t))
+         ((or (eq code 5) (memq char '(?\) ?\] ?\})))
+          (setq depth (1- depth))
+          (when (and started (= depth 0))
+            (setq done (1+ pos))))))
+      (setq pos (1+ pos)))
+    done))
+
+(when (emacs-edit-builtins--install-function-p 'scan-sexps)
+  (defun scan-sexps (from count)
+    "Return the position COUNT balanced expressions away from FROM.
+Signal `scan-error' when the requested motion cannot be completed."
+    (save-excursion
+      (goto-char from)
+      (if (< count 0)
+          (backward-sexp (- count))
+        (while (> count 0)
+          (let ((property-end
+                 (and (get-char-property (point) 'syntax-table)
+                      (emacs-edit--scan-property-list-forward (point)))))
+            (if property-end
+                (goto-char property-end)
+              (forward-sexp 1)))
+          (setq count (1- count))))
+      (point))))
 
 (when (emacs-edit-builtins--install-function-p 'kill-sexp)
   (defun kill-sexp (&optional arg)

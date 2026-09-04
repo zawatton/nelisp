@@ -343,11 +343,19 @@ symbols with function bindings and (closure ...) / (lambda ...) forms."
      ((symbolp f) (fboundp f))
      ((consp f) (if (memq (car f) '(lambda closure builtin)) t nil))
      (t nil)))
-  (defun string-bytes (s)
-    "Byte length of S (reader polyfill: strings are raw byte arrays,
-so `length' already counts bytes).  `string-bytes' is a phantom
-builtin on the standalone reader — fboundp t, calling errors."
-    (length s))
+  ;; NeLisp v1.1.0 (Doc 200) ships a real `string-bytes' that counts
+  ;; encoded bytes, so the polyfill below would now under-count every
+  ;; multibyte string it is asked about: a three-character Japanese
+  ;; string is 9 bytes to the builtin and 3 to the polyfill.  Older
+  ;; readers ship `string-bytes' as a PHANTOM builtin -- fboundp is t
+  ;; yet calling it errors -- which is why this cannot be fboundp-gated.
+  ;; Call it: keep the polyfill only for a reader that does not answer.
+  (unless (condition-case nil (progn (string-bytes "a") t) (error nil))
+    (defun string-bytes (s)
+      "Byte length of S (reader polyfill for readers whose `string-bytes'
+is a phantom builtin — fboundp t, calling errors).  Strings are raw
+byte arrays there, so `length' already counts bytes."
+      (length s)))
   (defun truncate (x &optional divisor)
     "Integer truncation toward zero (reader polyfill)."
     (when divisor (setq x (/ x divisor)))

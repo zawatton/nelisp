@@ -431,6 +431,26 @@ not do (it returns only an exit code and leaks stdout to the parent)."
       (car destination)
     destination))
 
+(defun emacs-process--call-process-stderr-destination (destination)
+  "Return the stderr destination part of call-process DESTINATION, if any."
+  (and (consp destination)
+       (not (eq (car destination) :file))
+       (cadr destination)))
+
+(defun emacs-process--standalone-call-process-stderr-wrapper (destination stderr)
+  "Return a shell wrapper fragment for standalone stderr DESTINATION.
+STDERR is the stderr component returned by
+`emacs-process--call-process-stderr-destination'."
+  (cond
+   ((and (consp destination) (null stderr))
+    "exec \"$@\" 2>/dev/null")
+   ((stringp stderr)
+    (concat "exec \"$@\" 2>"
+            (shell-quote-argument (expand-file-name stderr))))
+   ((eq destination t)
+    "exec \"$@\" 2>&1")
+   (t nil)))
+
 (defun emacs-process--call-process-target-buffer (destination)
   "Resolve the stdout buffer for call-process DESTINATION, or nil to discard.
 Covers nil / 0 discard; t = current buffer; a buffer name string; a buffer
@@ -575,8 +595,19 @@ reader primitive surface has no direct child-stdin redirection parameter.
 
 Caveat: draining after exit assumes the child's total stdout fits the
 reader's stdout buffer; multi-megabyte streaming output is out of scope
-for this synchronous path."
+  for this synchronous path."
   (let* ((command (emacs-process--call-process-command program infile args))
+         (stderr (emacs-process--call-process-stderr-destination destination))
+         (stderr-wrapper
+          (emacs-process--standalone-call-process-stderr-wrapper
+           destination stderr))
+         (command (if stderr-wrapper
+                      (append (list emacs-process-shell-file-name
+                                    emacs-process-shell-command-switch
+                                    stderr-wrapper
+                                    "emacs-process-call-process-stderr")
+                              command)
+                    command))
          (proc (apply #'nelisp-process-start command))
          (rc (nelisp-process-wait proc))
          (out "")

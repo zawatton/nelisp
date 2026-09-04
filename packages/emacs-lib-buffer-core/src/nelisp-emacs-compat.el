@@ -463,9 +463,11 @@ The new buffer is empty, has POINT = 1, and is registered in
                  :modified-p nil
                  :text-tick 0
                  :killed-p nil))))
-    (push (cons unique buf) nelisp-ec--buffers)
+    (setq nelisp-ec--buffers (cons (cons unique buf) nelisp-ec--buffers))
     (when (fboundp 'emacs-buffer--inherit-new-buffer)
-      (emacs-buffer--inherit-new-buffer buf))
+      (condition-case nil
+          (emacs-buffer--inherit-new-buffer buf)
+        (error nil)))
     buf))
 
 ;;;###autoload
@@ -684,9 +686,9 @@ dynamically)."
         (let ((text (if (integerp s) (string s) s)))
           (unless (string-empty-p text)
             (let* ((insert-point (nelisp-ec-buffer-point buf))
-                 (n-chars (length text))
-                 (new-point (+ insert-point n-chars))
-                 (ne (nelisp-ec-buffer-narrow-end buf)))
+                   (n-chars (length text))
+                   (new-point (+ insert-point n-chars))
+                   (ne (nelisp-ec-buffer-narrow-end buf)))
               (nelisp-ec--sync-cursor buf)
               (text-buffer-insert (nelisp-ec--text buf) text)
               (nelisp-ec--set-buffer-point buf new-point)

@@ -225,6 +225,26 @@ When DELETE is non-nil, delete the source text after copying."
   (defvar page-delimiter "^\014"
     "Regexp describing line beginnings that separate pages."))
 
+;; -- outline defaults --------------------------------------------------
+;; Vendor `outline.el' and `org.el' rely on these core outline variables
+;; being present before their activation code runs in a temporary buffer.
+
+(unless (boundp 'outline-regexp)
+  (defvar outline-regexp "[*\f]+"
+    "Regexp that matches outline headings at the beginning of a line."))
+
+(unless (boundp 'outline-heading-end-regexp)
+  (defvar outline-heading-end-regexp "\n"
+    "Regexp that matches the end of an outline heading line."))
+
+(unless (boundp 'outline-search-function)
+  (defvar outline-search-function nil
+    "Optional search function used by outline navigation commands."))
+
+(unless (boundp 'outline-level)
+  (defvar outline-level 'outline-level
+    "Function used to compute the current outline level."))
+
 (unless (boundp 'paragraph-ignore-fill-prefix)
   (defvar paragraph-ignore-fill-prefix nil
     "Non-nil means paragraph commands ignore `fill-prefix'."))
@@ -427,6 +447,9 @@ Mirrors the non-interactive contract of `lisp/replace.el's
 
 (unless (fboundp 'count-matches)
   (defalias 'count-matches #'emacs-textmodes-count-matches))
+
+(unless (featurep 'org)
+  (provide 'org))
 
 (provide 'emacs-textmodes-stub)
 

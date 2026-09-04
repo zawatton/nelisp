@@ -10,8 +10,9 @@
 ;;
 ;; Ports `getenv' / `setenv' / `process-environment' from Emacs C
 ;; core's `callproc.c'.  The bridge first honors the elisp
-;; `process-environment' overlay, then falls through to a NeLisp
-;; syscall/runtime getenv primitive when one is bound.
+;; `process-environment' overlay, then falls through to NeLisp core
+;; environment data (`nelisp--environment'), and finally to NeLisp
+;; syscall/runtime getenv backends.
 
 ;;; Code:
 
@@ -37,14 +38,35 @@
         (found nil)
         (result nil))
     (setq prefix-len (length prefix))
-    (while (and cur (not found))
-      (let ((entry (car cur)))
-        (if (and (stringp entry)
+      (while (and cur (not found))
+        (let ((entry (car cur)))
+          (if (and (stringp entry)
                  (>= (length entry) prefix-len)
                  (equal (substring entry 0 prefix-len) prefix))
             (progn (setq result (substring entry prefix-len))
                    (setq found t))))
       (setq cur (cdr cur)))
+    result))
+
+(defun emacs-callproc--lookup-core-environment (variable)
+  "Return VARIABLE from `nelisp--environment', or nil when absent.
+Non-alist members and non-string keys/values are ignored."
+  (let ((env (and (boundp 'nelisp--environment)
+                  (symbol-value 'nelisp--environment)))
+        (result nil)
+        (found nil)
+        (cur nil))
+    (when (listp env)
+      (setq cur env)
+      (while (and cur (not found))
+        (let ((entry (car cur)))
+          (when (and (consp entry)
+                     (stringp (car entry))
+                     (stringp (cdr entry))
+                     (string= (car entry) variable))
+            (setq result (cdr entry))
+            (setq found t)))
+        (setq cur (cdr cur))))
     result))
 
 (defun emacs-callproc--sys-getenv (variable)
@@ -62,9 +84,10 @@
         nil))))
 
 (defun emacs-callproc-getenv (variable &optional frame)
-  "Look VARIABLE up in the elisp overlay, then the NeLisp runtime env."
+  "Look VARIABLE up in the elisp overlay, core env, then the runtime env."
   (ignore frame)
   (or (emacs-callproc--lookup-process-environment variable)
+      (emacs-callproc--lookup-core-environment variable)
       (emacs-callproc--sys-getenv variable)))
 
 ;; On the standalone reader the prelude already defines a `getenv' that
@@ -114,11 +137,11 @@ parity and ignored (= no `$VAR' interpolation in the polyfill)."
 
 ;;;; --- standalone-reader environment seeding --------------------------
 ;;
-;; On nemacs `process-environment' starts empty and there is no native
-;; getenv backend wired (`nelisp-sys-getenv' / `nl-syscall-getenv' are
-;; unbound, and nothing captures the startup envp), so `getenv' --
-;; hence `executable-find's PATH walk -- would always see an empty
-;; environment.  The reader does expose a working file reader (`rdf'),
+;; On nemacs `process-environment' may be empty while startup env is carried
+;; by `nelisp--environment', and some getenv backends may be unavailable.
+;; The reader does expose a working file reader (`rdf'), so `getenv' --
+;; hence `executable-find's PATH walk -- still has overlay fallback through
+;; `process-environment' on Linux `/proc/self/environ' entries when empty.
 ;; so we seed `process-environment' once from Linux `/proc/self/environ'
 ;; (NUL-separated `KEY=VALUE' entries).  Inert on host Emacs, where
 ;; `process-environment' is already populated and `rdf' is unbound.

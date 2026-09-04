@@ -455,6 +455,24 @@ When the buffer is unmodified, emit a message and do nothing."
 
 (emacs-fileio--ensure-global-bindings)
 
+;; Stock `files.el' surface.  The only other copy in this tree lives in
+;; `src/package.el', which the bootstrap bundle does not carry, so the
+;; standalone image had no `locate-user-emacs-file' at all -- magit-git.el
+;; and transient.el both call it during load.  `user-emacs-directory' is
+;; already provided elsewhere in the bundle, so only the function is added.
+(unless (fboundp 'locate-user-emacs-file)
+  (defun locate-user-emacs-file (new-name &optional old-name)
+    "Return an absolute per-user Emacs-specific file name for NEW-NAME.
+NEW-NAME is resolved under `user-emacs-directory'.  OLD-NAME, when given,
+names the pre-`user-emacs-directory' location under \"~\"; it is returned
+only when it exists and the `user-emacs-directory' candidate does not,
+which is the stock migration behaviour."
+    (let ((bestname (expand-file-name new-name user-emacs-directory)))
+      (if (and old-name (not (file-readable-p bestname)))
+          (let ((oldname (expand-file-name old-name "~")))
+            (if (file-readable-p oldname) oldname bestname))
+        bestname))))
+
 (provide 'emacs-fileio)
 
 ;;; emacs-fileio.el ends here

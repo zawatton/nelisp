@@ -796,9 +796,13 @@ not a symlink / on error / when the reader provides no
   (defun file-symlink-p (filename)
     "Return the target of symbolic link FILENAME (a string), or nil when
 FILENAME is not a symbolic link (via readlink(2))."
-    (if files--native-file-symlink-p
+    (if (and files--native-file-symlink-p
+             (not files--standalone-runtime-p))
         (funcall files--native-file-symlink-p filename)
       (files--readlink filename))))
+
+(defvar files--truename-prefix-cache nil
+  "Dynamically bound cache for resolved absolute truename prefixes.")
 
 (defun files--truename-walk (path depth)
   "Resolve symbolic links in absolute PATH component by component.
@@ -809,16 +813,25 @@ the directory built so far."
     (let ((true ""))
       (dolist (comp (split-string path "/" t))
         (let* ((cand (concat true "/" comp))
-               (link (files--readlink cand)))
+               (cached (and files--truename-prefix-cache
+                            (gethash cand files--truename-prefix-cache))))
           (setq true
-                (if link
-                    (files--truename-walk
-                     (files--expand-file-name
-                      (if (and (> (length link) 0) (eq (aref link 0) ?/))
-                          link
-                        (concat true "/" link)))
-                     (1+ depth))
-                  cand))))
+                (if cached
+                    cached
+                  (let* ((link (files--readlink cand))
+                         (resolved
+                          (if link
+                              (files--truename-walk
+                               (files--expand-file-name
+                                (if (and (> (length link) 0)
+                                         (eq (aref link 0) ?/))
+                                    link
+                                  (concat true "/" link)))
+                               (1+ depth))
+                            cand)))
+                    (when files--truename-prefix-cache
+                      (puthash cand resolved files--truename-prefix-cache))
+                    resolved)))))
       (if (= (length true) 0) "/" true))))
 
 (when (files--install-fallback-function-p 'file-truename)
@@ -827,7 +840,8 @@ the directory built so far."
 readlink(2), component by component (interior links included).  COUNTER and
 PREV-DIRS are accepted for call compatibility and ignored.  `..' is only
 collapsed as far as the reader's `expand-file-name' does."
-    (if files--native-file-truename
+    (if (and files--native-file-truename
+             (not files--standalone-runtime-p))
         (funcall files--native-file-truename filename counter prev-dirs)
       (files--truename-walk (files--expand-file-name filename) 0))))
 

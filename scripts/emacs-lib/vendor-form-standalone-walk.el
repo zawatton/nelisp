@@ -9,7 +9,7 @@
   "Path to target/nelisp or a compatible standalone reader binary.")
 
 (defvar vendor-form-standalone-bootstrap nil
-  "Path to the generated nemacs bootstrap bundle.")
+  "Path to the generated nemacs bootstrap REPL input.")
 
 (defvar vendor-form-standalone-prelude nil
   "Path to the standalone reader stdlib prelude, or nil.")
@@ -48,6 +48,10 @@ default nil path evaluates the raw vendor source.")
   (expand-file-name ".." (file-name-directory
                           (or load-file-name buffer-file-name)))
   "Repository root.")
+
+(defconst vendor-form-standalone--success
+  "VENDOR-FORM-STANDALONE=ok"
+  "Marker-file sentinel written by a successful form-walk replay.")
 
 (defun vendor-form-standalone--read-file (file)
   "Return FILE contents as a string."
@@ -169,8 +173,8 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                           vendor-form-standalone-repo-root)))
 
 (defun vendor-form-standalone--write-program
-    (bootstrap vendor-file forms upto output &optional preload-files)
-  "Write standalone-reader program for FORMS through one-based UPTO."
+    (bootstrap vendor-file forms upto output marker &optional preload-files)
+  "Write standalone-reader REPL input for FORMS through one-based UPTO."
   (let ((coding-system-for-write 'utf-8-unix))
     (with-temp-file output
       (insert ";;; standalone vendor form walk probe -*- lexical-binding: t; -*-\n")
@@ -183,7 +187,8 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                          vendor-form-standalone-prelude))
           (insert (vendor-form-standalone--eval-source-form source))))
       (insert (vendor-form-standalone--read-file bootstrap))
-      (insert "\n")
+      (unless (bolp)
+        (insert "\n"))
       (dolist (file preload-files)
         (insert (vendor-form-standalone--load-form file)))
       (let ((runtime-file (vendor-form-standalone--runtime-file-name
@@ -201,29 +206,57 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                 (unless (string-empty-p text)
                   (insert text)
                   (insert "\n")))))))
-      ;; The standalone reader currently reports Lisp errors as exit 0.
-      ;; A successful probe must therefore reach this explicit sentinel.
-      (insert "\n(exit 42)\n"))))
+      ;; The standalone reader's REPL swallows line errors and exits 0.
+      ;; A successful probe must therefore write an explicit marker.
+      (insert (format "(nl-write-file %S %S)\n"
+                      marker
+                      vendor-form-standalone--success))
+      (insert ",quit\n"))))
+
+(defun vendor-form-standalone--read-if-exists (file)
+  "Return FILE contents, or nil when FILE does not exist."
+  (when (file-exists-p file)
+    (vendor-form-standalone--read-file file)))
+
+(defun vendor-form-standalone--output-snippet (text)
+  "Return a short single-line diagnostic snippet from TEXT."
+  (let* ((trimmed (or text ""))
+         (line (car (split-string trimmed "\n" t))))
+    (if (and line (> (length line) 300))
+        (concat (substring line 0 300) "...")
+      (or line ""))))
 
 (defun vendor-form-standalone--run-prefix (forms upto)
   "Run standalone reader on FORMS through one-based UPTO."
-  (let ((tmp (make-temp-file "nemacs-vendor-form-standalone-" nil ".el"))
+  (let ((tmp (make-temp-file "nemacs-vendor-form-standalone-" nil ".repl"))
+        (out (make-temp-file "nemacs-vendor-form-standalone-" nil ".out"))
+        (marker (make-temp-file "nemacs-vendor-form-standalone-" nil ".sentinel"))
         (start (float-time))
-        exit elapsed)
+        exit elapsed output sentinel)
     (unwind-protect
         (progn
           (vendor-form-standalone--write-program
            vendor-form-standalone-bootstrap
            vendor-form-standalone-file
-           forms upto tmp
+           forms upto tmp marker
            (vendor-form-standalone--preload-files))
           (setq exit
-                (call-process vendor-form-standalone-reader nil nil nil
-                              "--load" tmp))
+                (call-process
+                 "/bin/sh" nil (list out t) nil
+                 "-c" "exec \"$1\" --repl --no-prompt --no-print < \"$2\" 2>&1"
+                 "vendor-form-standalone"
+                 vendor-form-standalone-reader
+                 tmp))
           (setq elapsed (- (float-time) start))
-          (list exit elapsed))
+          (setq output (vendor-form-standalone--read-if-exists out))
+          (setq sentinel (vendor-form-standalone--read-if-exists marker))
+          (list exit elapsed output sentinel out marker tmp))
       (when (file-exists-p tmp)
-        (delete-file tmp)))))
+        (delete-file tmp))
+      (when (file-exists-p out)
+        (delete-file out))
+      (when (file-exists-p marker)
+        (delete-file marker)))))
 
 (defun vendor-form-standalone-batch ()
   "Evaluate vendor forms through standalone-reader using host-side diagnostics."
@@ -269,10 +302,10 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                                      (plist-get form :pos)
                                      (plist-get form :end)
                                      (plist-get form :head))))
-             and do (pcase-let ((`(,exit ,elapsed)
+             and do (pcase-let ((`(,exit ,elapsed ,output ,sentinel ,out-file ,marker-file ,input-file)
                                   (vendor-form-standalone--run-prefix
                                    forms index)))
-                      (if (and (numberp exit) (= exit 42))
+                      (if (equal sentinel vendor-form-standalone--success)
                           (progn
                             (setq evaluated (1+ evaluated))
                             (when (vendor-form-standalone--print-p reported)
@@ -282,11 +315,17 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                                              (plist-get form :head)
                                              elapsed exit))))
                         (setq failed t)
-                        (princ (format "vendor-form-standalone index=%d status=fail pos=%d head=%S elapsed=%S exit=%S expected=42\n"
+                        (princ (format "vendor-form-standalone index=%d status=fail pos=%d head=%S elapsed=%S exit=%S sentinel=%S snippet=%S input=%S output=%S marker=%S\n"
                                        index
                                        (plist-get form :pos)
                                        (plist-get form :head)
-                                       elapsed exit)))))
+                                       elapsed
+                                       exit
+                                       sentinel
+                                       (vendor-form-standalone--output-snippet output)
+                                       input-file
+                                       out-file
+                                       marker-file)))))
     (princ (format "vendor-form-standalone-summary file=%S forms=%d evaluated=%d status=%s\n"
                    vendor-form-standalone-file
                    (length forms)

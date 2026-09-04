@@ -1825,12 +1825,18 @@ path, are loaded as files relative to `default-directory'."
 Some bootstrap images carry an old permissive `require'.  Refreshing
 `emacs-fns.el' from the current `load-path' before handling user `-l'
 options makes `-L src -l test/foo.el' behave like Emacs batch loading."
-  (when (or (fboundp 'nl-write-file)
-            (and (boundp 'emacs-version)
-                 (not (stringp emacs-version))))
+  (cond
+   ((and (featurep 'emacs-fns)
+         (fboundp 'locate-library)
+         (fboundp 'nelisp--load-resolved-file)
+         (fboundp 'nelisp--load-eval-source-hybrid))
+    nil)
+   ((or (fboundp 'nl-write-file)
+        (and (boundp 'emacs-version)
+             (not (stringp emacs-version))))
     (let ((path (nemacs-main--load-path-file "emacs-fns.el")))
       (when path
-        (load path nil 'no-message)))))
+        (load path nil 'no-message))))))
 
 (defun nemacs-main--apply-options ()
   "Honour `nemacs-main-options' (= -L dirs + -l files + --eval/-f forms)."

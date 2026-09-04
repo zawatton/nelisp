@@ -33,6 +33,16 @@
                  window-buffer set-window-buffer))
     (should (fboundp sym))))
 
+(ert-deftest emacs-window-builtins-test/install-p-uses-function-cell ()
+  "Standalone gates must not trust `fboundp' when the function cell is empty."
+  (let ((original-fboundp (symbol-function 'fboundp)))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (symbol)
+                 (or (eq symbol 'emacs-window-builtins-test--missing)
+                     (funcall original-fboundp symbol)))))
+      (should (emacs-window-builtins--install-function-p
+               'emacs-window-builtins-test--missing)))))
+
 ;;;; B. Substrate-direct: selected-window is windowp
 
 (ert-deftest emacs-window-builtins-test/prefixed-selected-window-is-windowp ()
@@ -102,6 +112,11 @@
   (should (fboundp 'emacs-window-window-buffer))
   (should (fboundp 'emacs-window-set-window-buffer))
   (should (fboundp 'emacs-window-selected-window)))
+
+(ert-deftest emacs-window-builtins-test/window-configuration-bridges ()
+  (should (fboundp 'emacs-window-configuration-p))
+  (should (fboundp 'emacs-window-current-window-configuration))
+  (should (fboundp 'emacs-window-set-window-configuration)))
 
 ;;;; G. Idempotence
 

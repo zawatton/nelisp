@@ -57,7 +57,7 @@
   (emacs-pcase-test--with-reloaded-module
    '(pcase)
    (lambda ()
-     (should (equal (emacs-pcase--test '(quote q) 'v) '((eq v 'q))))
+     (should (equal (emacs-pcase--test '(quote q) 'v) '((equal v 'q))))
      (should (equal (emacs-pcase--test '(pred symbolp) 'v) '((funcall #'symbolp v))))
      (should (equal (emacs-pcase--test '(foo . bar) 'v) '(t))))))
 
@@ -66,9 +66,9 @@
    '(pcase)
    (lambda ()
      (should (equal (emacs-pcase--and '(sym (quote :a)) 'v)
-                    '((and t (eq v ':a)) (sym v))))
+                    '((let* ((sym v)) (and t (equal v ':a))) (sym v))))
      (should (equal (emacs-pcase--or '((quote :a) (quote :b)) 'v)
-                    '((or (eq v ':a) (eq v ':b))))))))
+                    '((or (equal v ':a) (equal v ':b))))))))
 
 (ert-deftest emacs-pcase-test/test-helper-covers-cons-and-not-pred ()
   (emacs-pcase-test--with-reloaded-module
@@ -78,6 +78,28 @@
                     '((and (consp v) t t) (a (car v)) (b (cdr v)))))
      (should (equal (emacs-pcase--test '(pred (not consp)) 'v)
                     '((not (funcall #'consp v))))))))
+
+(ert-deftest emacs-pcase-test/pred-call-form-injects-value ()
+  "Support `(pred (fn extra...))' by appending the matched value.
+Org's `org-mks' uses `(pred (string-match re))', which must become
+`(string-match re VALUE)' rather than `#'(string-match re)'."
+  (emacs-pcase-test--with-reloaded-module
+   '(pcase)
+   (lambda ()
+     (should (equal (emacs-pcase--pred-form '(string-match re) 'v)
+                    '(string-match re v)))
+     (should (equal (emacs-pcase--pred-form '(memq _ keys) 'v)
+                    '(memq v keys))))))
+
+(ert-deftest emacs-pcase-test/install-p-uses-nonstring-emacs-version ()
+  "Standalone/nemacs binds `emacs-version' to a non-string sentinel."
+  (let ((emacs-version 'nelisp--unbound-marker))
+    (unwind-protect
+        (progn
+          (fset 'emacs-pcase-test--installed-sentinel #'ignore)
+          (should (emacs-pcase--install-function-p
+                   'emacs-pcase-test--installed-sentinel)))
+      (fmakunbound 'emacs-pcase-test--installed-sentinel))))
 
 (ert-deftest emacs-pcase-test/test-helper-covers-backquote-comma-and-comma-at ()
   (emacs-pcase-test--with-reloaded-module
@@ -103,6 +125,25 @@
                                           (null (cdr (cdr (cdr (cdr v)))))))))
                       (x (car (cdr v)))
                       (rest (car (cdr (cdr v))))))))))
+
+(ert-deftest emacs-pcase-test/legacy-reader-dotted-backquote-pattern-works ()
+  "Old pcase reader syntax for `` `(,a . ,b) '' must destructure as a cons.
+The host reader represents this pattern as `((\\, a) \\, b)`, not a literal
+dotted pair datum.  Standalone loads see that exact object shape in normalized
+vendor forms, so the local pcase polyfill must accept it."
+  (emacs-pcase-test--with-reloaded-module
+   '(pcase pcase-let)
+   (lambda ()
+     (let* ((pattern (cadr (car (read-from-string "`(,a . ,b)"))))
+            (built (emacs-pcase--backquote pattern 'v)))
+       (should (equal built '((and (consp v) t t)
+                              (a (car v))
+                              (b (cdr v)))))
+       (should (equal (eval (car (read-from-string
+                                  "(pcase-let ((`(,a . ,b) '(1 . 2)))
+                                     (list a b))"))
+                            t)
+                      '(1 2)))))))
 
 (ert-deftest emacs-pcase-test/pattern-aware-let-and-dolist-evaluate ()
   (emacs-pcase-test--with-reloaded-module

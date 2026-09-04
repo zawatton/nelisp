@@ -38,6 +38,7 @@
 (defun emacs-faces-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
+      (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (when (emacs-faces-builtins--install-function-p 'facep)
@@ -97,12 +98,8 @@
 
 (when (emacs-faces-builtins--install-function-p 'defface)
   (defmacro defface (name spec doc &rest opts)
-    "Track F bridge: delegate to `emacs-faces-defface'."
-    (if (boundp 'nelisp-emacs-vendor-root)
-        `(progn
-           (emacs-faces-make-face ',name)
-           ',name)
-      `(emacs-faces-defface ,name ,spec ,doc ,@opts))))
+    "Track F bridge: delegate to `custom-declare-face'."
+    `(custom-declare-face ',name ,spec ,doc ,@opts)))
 
 (when (emacs-faces-builtins--install-function-p 'deftheme)
   (defmacro deftheme (theme &optional doc &rest properties)

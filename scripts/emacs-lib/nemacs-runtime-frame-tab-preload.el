@@ -2,6 +2,61 @@
 
 ;;; Code:
 
+(dolist (symbol '(defface suppress-keymap make-mode-line-mouse-map
+                          define-derived-mode easy-menu-binding
+                          substitute-command-keys))
+  (put symbol 'emacs-stub-bulk t))
+
+(unless (fboundp 'defface)
+  (defmacro defface (name spec doc &rest opts)
+    "Early runtime-image fallback for top-level face declarations."
+    `(progn
+       (if (fboundp 'custom-declare-face)
+           (custom-declare-face ',name ,spec ,doc ,@opts)
+         (put ',name 'face-defface-spec ,spec))
+       ',name)))
+
+(unless (fboundp 'suppress-keymap)
+  (fset 'suppress-keymap
+        '(lambda (keymap &optional _nodigits)
+           keymap)))
+
+(unless (fboundp 'make-mode-line-mouse-map)
+  (fset 'make-mode-line-mouse-map
+        '(lambda (mouse function)
+           (let ((map (if (fboundp 'make-sparse-keymap)
+                          (make-sparse-keymap)
+                        (list 'keymap))))
+             (if (fboundp 'define-key)
+                 (define-key map (vector 'mode-line mouse) function)
+               (setcdr map (cons (cons (vector 'mode-line mouse) function)
+                                 (cdr map))))
+             map))))
+
+(unless (fboundp 'define-derived-mode)
+  (defmacro define-derived-mode (child parent name &optional doc &rest body)
+    "Early runtime-image fallback for calendar/text-mode top-level modes."
+    (if (fboundp 'emacs-mode-define-derived-mode)
+        (append (list 'emacs-mode-define-derived-mode child parent name doc)
+                body)
+      `(progn
+         (defun ,child ()
+           ,doc
+           (interactive)
+           ,@body)
+         (put ',child 'derived-mode-parent ',parent)
+         ',child))))
+
+(unless (fboundp 'easy-menu-binding)
+  (defmacro easy-menu-binding (&rest _maps)
+    "Early runtime-image fallback for menu probes."
+    nil))
+
+(unless (fboundp 'substitute-command-keys)
+  (fset 'substitute-command-keys
+        '(lambda (string &optional _no-face)
+           string)))
+
 (fset 'assq
       '(lambda (key alist)
          (let ((tail alist)

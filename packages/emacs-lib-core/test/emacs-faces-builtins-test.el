@@ -114,6 +114,16 @@
     (should (equal "green" (emacs-faces-attribute 'my-defface :foreground)))
     (should (eq 'bold      (emacs-faces-attribute 'my-defface :weight)))))
 
+(ert-deftest emacs-faces-builtins-test/defface-bridge-macro-expands-to-face-registration ()
+  (let ((expanded (macroexpand '(defface bridge-face
+                                '((t :foreground "green"))
+                                "Doc"))))
+    (should (equal '(custom-declare-face
+                     'bridge-face
+                     '((t :foreground "green"))
+                     "Doc")
+                   expanded))))
+
 ;;;; F2. defface macro — nested attrs entry
 
 (ert-deftest emacs-faces-builtins-test/defface-nested-attrs-entry ()

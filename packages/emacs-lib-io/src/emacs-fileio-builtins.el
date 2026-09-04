@@ -48,10 +48,14 @@
 
 (defconst emacs-fileio-builtins--standalone-overrides
   '(insert-file-contents
+    load-file
+    normal-top-level-add-subdirs-to-load-path
+    add-to-load-path
     write-region
     file-name-quoted-p
     file-name-quote
     file-name-unquote
+    expand-file-name
     buffer-file-name
     set-visited-file-name
     locate-library
@@ -68,8 +72,29 @@
     file-attributes)
   "Functions this bridge may overwrite under standalone NeLisp.
 Path parsing, predicates, and directory/syscall primitives are left to
-the runtime when they already exist because `load' / `require' depend
-on those semantics during bootstrap.")
+the runtime when they already exist because `load' / `require' depend on
+those semantics during bootstrap. `expand-file-name' is explicitly on this
+override list so standalone readers always get the pure helper (including
+`~' expansion) even when bootstrap stubs are present.")
+
+(defvar emacs-fileio-builtins--host-write-region
+  (and (not (files-standalone-runtime-p))
+       (fboundp 'write-region)
+       (subrp (symbol-function 'write-region))
+       (symbol-function 'write-region))
+  "Host `write-region' subr captured before any standalone override logic.")
+
+(defun emacs-fileio-builtins--host-emacs-p ()
+  "Return non-nil only for real host Emacs, never for standalone images."
+  (and (boundp 'emacs-version)
+       (not (eq emacs-version 'nelisp--unbound-marker))
+       (not (files-standalone-runtime-p))))
+
+(defvar emacs-fileio-builtins--host-make-temp-file
+  (and (emacs-fileio-builtins--host-emacs-p)
+       (fboundp 'make-temp-file)
+       (symbol-function 'make-temp-file))
+  "Host `make-temp-file' captured before sentinel-safe wrapper install.")
 
 (defun emacs-fileio-builtins--standalone-p ()
   "Return non-nil when running on the standalone NeLisp reader.
@@ -89,9 +114,11 @@ leaving stub function cells in place."
 (defun emacs-fileio-builtins--function-cell-live-p (symbol)
   "Return non-nil when SYMBOL has a usable function cell."
   (and (fboundp symbol)
-       (condition-case nil
-           (symbol-function symbol)
-         (error nil))))
+       (let ((function (condition-case nil
+                           (symbol-function symbol)
+                         (error nil))))
+         (and function
+              (not (eq function 'nelisp--unbound-marker))))))
 
 ;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
 ;;
@@ -194,18 +221,112 @@ excludes cross-host operations, so only FILE is dispatched here.")
   ;; `emacs-stub' stub otherwise shadows the working `nelisp-ec' PATH walk.
   (defalias 'executable-find #'nelisp-ec-executable-find))
 
+(when (emacs-fileio-builtins--install-function-p 'file-accessible-directory-p)
+  (defun file-accessible-directory-p (filename)
+    "Return non-nil if FILENAME is a searchable directory."
+    (and (file-directory-p filename)
+         (file-executable-p filename))))
+
+(unless (boundp 'auto-save-visited-mode)
+  (defvar auto-save-visited-mode nil
+    "Headless no-op compatibility toggle for `auto-save-visited-mode'."))
+
+(unless (boundp 'global-auto-revert-mode)
+  (defvar global-auto-revert-mode nil
+    "Headless no-op compatibility toggle for `global-auto-revert-mode'."))
+
+(unless (boundp 'current-language-environment)
+  (defvar current-language-environment "English"
+    "Standalone language environment marker for the UTF-8-only substrate."))
+
+(unless (boundp 'language-environment-history)
+  (defvar language-environment-history nil
+    "History list for `set-language-environment' prompts."))
+
+(unless (boundp 'buffer-file-coding-system)
+  (defvar buffer-file-coding-system 'utf-8-unix
+    "Standalone default buffer-file coding system."))
+
+(unless (boundp 'default-buffer-file-coding-system)
+  (defvar default-buffer-file-coding-system 'utf-8-unix
+    "Standalone default coding system for visited files."))
+
+(unless (boundp 'default-process-coding-system)
+  (defvar default-process-coding-system '(utf-8-unix . utf-8-unix)
+    "Standalone default coding systems for subprocess I/O."))
+
+(unless (boundp 'terminal-coding-system)
+  (defvar terminal-coding-system 'utf-8-unix
+    "Standalone default terminal coding system."))
+
+(unless (boundp 'image-file-name-extensions)
+  (defvar image-file-name-extensions
+    '("png" "jpg" "jpeg" "gif" "svg" "webp")
+    "Standalone image filename extensions seen by init compatibility code."))
+
+(unless (boundp 'large-file-warning-threshold)
+  (defvar large-file-warning-threshold nil
+    "Standalone large-file warning threshold compatibility variable."))
+
+(defun emacs-fileio-builtins--noop-toggle (symbol arg)
+  "Update SYMBOL from ARG using minor-mode toggle rules."
+  (set symbol
+       (if (null arg)
+           (not (and (boundp symbol) (symbol-value symbol)))
+         (not (or (eq arg 0)
+                  (eq arg -1)
+                  (and (numberp arg) (<= arg 0))))))
+  nil)
+
+(when (emacs-fileio-builtins--install-function-p 'auto-save-visited-mode)
+  (defalias 'auto-save-visited-mode #'ignore))
+
+(when (emacs-fileio-builtins--install-function-p 'global-auto-revert-mode)
+  (defalias 'global-auto-revert-mode #'ignore))
+
+(when (emacs-fileio-builtins--install-function-p 'set-language-environment)
+  (defun set-language-environment (environment)
+    "Record ENVIRONMENT in the UTF-8-only standalone substrate."
+    (setq current-language-environment
+          (if (and (stringp environment) (> (length environment) 0))
+              environment
+            "English"))
+    (setq language-environment-history
+          (cons current-language-environment
+                (delete current-language-environment
+                        language-environment-history)))
+    current-language-environment))
+
+(when (emacs-fileio-builtins--install-function-p 'prefer-coding-system)
+  (defun prefer-coding-system (coding-system)
+    "Record CODING-SYSTEM as the preferred UTF-8-only coding choice."
+    (setq buffer-file-coding-system coding-system
+          default-buffer-file-coding-system coding-system
+          default-process-coding-system (cons coding-system coding-system))
+    coding-system))
+
+(when (emacs-fileio-builtins--install-function-p 'set-terminal-coding-system)
+  (defun set-terminal-coding-system (coding-system)
+    "Record CODING-SYSTEM as the standalone terminal coding choice."
+    (setq terminal-coding-system coding-system)
+    coding-system))
+
 (defun emacs-fileio-rdf-file-exists-p (filename)
   "Return non-nil when standalone `rdf' can open FILENAME.
 This is a standalone fallback for runtimes where the stat/access
 compatibility paths can report ENOSYS while `rdf' is the verified
 read-open route."
-  (and (stringp filename)
-       (fboundp 'rdf)
-       (stringp (condition-case nil
-                    (rdf filename)
-                  (error nil)))))
+  (let ((text (and (stringp filename)
+                   (fboundp 'rdf)
+                   (condition-case nil
+                       (rdf filename)
+                     (error nil)))))
+    (and (stringp text)
+         (> (length text) 0))))
 
-(when (and (fboundp 'rdf) (not (fboundp 'nl-syscall-opendir)))
+(when (and (fboundp 'rdf)
+           (not (fboundp 'nelisp--syscall-path-int))
+           (not (fboundp 'nl-syscall-opendir)))
   (defalias 'file-exists-p #'emacs-fileio-rdf-file-exists-p)
   (defalias 'file-readable-p #'emacs-fileio-rdf-file-exists-p))
 
@@ -227,8 +348,9 @@ The legacy standalone `nelisp--syscall-readdir' / stat predicates can
 stop the evaluator on some failure paths.  Until the newer opendir API
 is present, standalone `locate-library' must prefer a safe nil result
 over probing the filesystem."
-  (or (not (fboundp 'nl-write-file))
-      (fboundp 'nl-syscall-opendir)))
+  (if (files-standalone-runtime-p)
+      (fboundp 'nl-syscall-opendir)
+    t))
 
 (defun emacs-fileio--locate-library-candidate (base name)
   "Return absolute path for NAME under BASE when the directory lists it."
@@ -241,30 +363,48 @@ over probing the filesystem."
     (and (member leaf entries)
          (expand-file-name name base))))
 
+(defun emacs-fileio--regular-file-p (candidate)
+  "Return non-nil when CANDIDATE names an existing non-directory file."
+  (and (nelisp-ec-file-exists-p candidate)
+       (not (nelisp-ec-file-directory-p candidate))))
+
 (defun emacs-fileio-locate-library (library &optional nosuffix path interactive-call)
   "Return the absolute path of LIBRARY found on PATH or `load-path'.
-This standalone implementation searches plain LIBRARY first, then
-LIBRARY.el unless NOSUFFIX is non-nil.  INTERACTIVE-CALL is accepted for
-Emacs API parity and ignored."
+This implementation probes exact candidates without requiring opendir.
+INTERACTIVE-CALL is accepted for Emacs API parity and ignored."
   (ignore interactive-call)
-  (when (emacs-fileio--safe-directory-probe-p)
-    (let ((dirs (or path load-path))
-          (names (if nosuffix
-                     (list library)
-                   (list library (concat library ".el"))))
-          found)
-      (catch 'done
-        (dolist (dir dirs)
-          (let ((base (if dir
-                          (file-name-as-directory dir)
-                        (or (and (boundp 'default-directory) default-directory)
-                            ""))))
-            (dolist (name names)
-              (let ((candidate (emacs-fileio--locate-library-candidate base name)))
-                (when candidate
-                  (setq found candidate)
-                  (throw 'done nil)))))))
-      found)))
+  (let* ((absolute (and (> (length library) 0)
+                        (eq (aref library 0) ?/)))
+         (has-el (string-suffix-p ".el" library))
+         (names (cond
+                 (nosuffix (list library))
+                 ;; An explicit `.el' name is the caller's decision and must
+                 ;; win over a sibling `.elc': probing "c" first resolved
+                 ;; FILE.el to a stale host byte-compiled FILE.elc, whose
+                 ;; `#@NNN' dynamic-docstring markers read as symbols on the
+                 ;; text load path (measured: `void-variable: (#@187)' while
+                 ;; loading the magit bridge).  Bare names keep the
+                 ;; `.elc'-first fast path below.
+                 (has-el (list library (concat library "c")))
+                 (t (list (concat library ".elc")
+                          (concat library ".el")
+                          library))))
+         (dirs (if absolute
+                   (list "")
+                 (cons (and (boundp 'default-directory) default-directory)
+                       (or path load-path))))
+         found)
+    (catch 'done
+      (dolist (dir dirs)
+        (when (or absolute (and (stringp dir) (> (length dir) 0)))
+          (dolist (name names)
+            (let ((candidate (if absolute
+                                 name
+                               (nelisp-ec-expand-file-name name dir))))
+              (when (emacs-fileio--regular-file-p candidate)
+                (setq found candidate)
+                (throw 'done nil)))))))
+    found))
 
 (when (emacs-fileio-builtins--install-function-p 'locate-library)
   (defalias 'locate-library #'emacs-fileio-locate-library))
@@ -305,27 +445,234 @@ Emacs API parity and ignored."
 
 ;; insert-file-contents batched into the dolist near the top.
 
+(defun emacs-fileio-builtins-load-file (file)
+  "Load exactly FILE, propagating read and evaluation errors."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (let ((absolute (nelisp-ec-expand-file-name file)))
+    (unless (nelisp-ec-file-exists-p absolute)
+      (signal 'file-error (list "Cannot open load file" absolute)))
+    (if (emacs-fileio-builtins--standalone-p)
+        (let ((source (rdf absolute)))
+          (unless (stringp source)
+            (signal 'file-error (list "Cannot open load file" absolute)))
+          (let ((prior-name (and (boundp 'load-file-name) load-file-name))
+                (prior-directory
+                 (and (boundp 'default-directory) default-directory)))
+            (setq load-file-name absolute)
+            (setq default-directory
+                  (or (nelisp-ec-file-name-directory absolute) "/"))
+            (unwind-protect
+                (nelisp--eval-source-string source)
+              (setq load-file-name prior-name)
+              (setq default-directory prior-directory)))
+          t)
+      (load absolute nil nil t nil))))
+
+(when (emacs-fileio-builtins--install-function-p 'load-file)
+  (defalias 'load-file #'emacs-fileio-builtins-load-file))
+
+(defconst emacs-fileio-builtins--load-path-excluded-directories
+  '("RCS" "CVS" "SCCS")
+  "Directory basenames excluded from recursive load-path discovery.")
+
+(defun emacs-fileio-builtins--load-path-directory-name-p (name)
+  "Return non-nil when NAME starts with an ASCII alphanumeric character."
+  (and (stringp name)
+       (> (length name) 0)
+       (let ((char (aref name 0)))
+         (or (and (>= char ?A) (<= char ?Z))
+             (and (>= char ?a) (<= char ?z))
+             (and (>= char ?0) (<= char ?9))))
+       (not (member name emacs-fileio-builtins--load-path-excluded-directories))))
+
+(defvar emacs-fileio-builtins--canonical-directory-cache nil
+  "Dynamically bound cache for directory canonical identities.")
+
+(defvar files--truename-prefix-cache nil
+  "Dynamically bound cache for standalone truename prefix resolution.")
+
+(defun emacs-fileio-builtins--canonical-directory (directory)
+  "Return a stable canonical identity for DIRECTORY."
+  (let* ((absolute (nelisp-ec-expand-file-name directory))
+         (cached (and emacs-fileio-builtins--canonical-directory-cache
+                      (gethash absolute
+                               emacs-fileio-builtins--canonical-directory-cache))))
+    (if cached
+        cached
+      (let* ((symlink-target (and (fboundp 'file-symlink-p)
+                                  (file-symlink-p absolute)))
+             (canonical
+              (cond
+               ((not symlink-target)
+                (directory-file-name absolute))
+               ((and (emacs-fileio-builtins--standalone-p)
+                     (fboundp 'files--truename-walk))
+                (directory-file-name (files--truename-walk absolute 0)))
+               ((emacs-fileio-builtins--host-emacs-p)
+                (condition-case nil
+                    (directory-file-name (file-truename absolute))
+                  (error (directory-file-name absolute))))
+               (t (directory-file-name absolute)))))
+        (when emacs-fileio-builtins--canonical-directory-cache
+          (puthash absolute canonical
+                   emacs-fileio-builtins--canonical-directory-cache))
+        canonical))))
+
+(defun emacs-fileio-builtins--canonical-member-p (directory directories)
+  "Return non-nil when DIRECTORY's canonical identity occurs in DIRECTORIES."
+  (let ((identity (emacs-fileio-builtins--canonical-directory directory))
+        (tail directories)
+        found)
+    (while (and tail (not found))
+      (when (and (stringp (car tail))
+                 (string-equal
+                  identity
+                  (emacs-fileio-builtins--canonical-directory (car tail))))
+        (setq found t))
+      (setq tail (cdr tail)))
+    found))
+
+(defun emacs-fileio-builtins--discover-load-path-subdirs (root)
+  "Return eligible subdirectories below ROOT in stable breadth-first order."
+  (let* ((root-id (emacs-fileio-builtins--canonical-directory root))
+         (level (list root-id))
+         (visited (make-hash-table :test 'equal))
+         (result nil))
+    (puthash root-id t visited)
+    (while level
+      (let ((next nil))
+        (dolist (directory level)
+          (let ((directory-name (file-name-as-directory directory)))
+            ;; `directory-files' already returns `string-lessp'-sorted names.
+            ;; Request basenames so that its internal sort avoids comparing
+            ;; repeated absolute-path prefixes for every sibling pair.
+            (dolist (name (directory-files directory nil nil nil))
+              (unless (or (string-equal name ".")
+                          (string-equal name ".."))
+                (let ((child (concat directory-name name)))
+                  (when (and (emacs-fileio-builtins--load-path-directory-name-p name)
+                         (file-directory-p child)
+                         (not (file-exists-p
+                               (nelisp-ec-expand-file-name ".nosearch" child))))
+                    (let ((child-id
+                           (if (and (fboundp 'file-symlink-p)
+                                    (file-symlink-p child))
+                               (emacs-fileio-builtins--canonical-directory child)
+                             (directory-file-name child))))
+                      (unless (gethash child-id visited)
+                        (puthash child-id t visited)
+                        (setq result (cons child-id result))
+                        (setq next (cons child-id next))))))))))
+        (setq level (nreverse next))))
+    (nreverse result)))
+
+(defun emacs-fileio-builtins-add-load-path-tree (root)
+  "Add ROOT's eligible directory tree to `load-path' without duplicates."
+  (let ((emacs-fileio-builtins--canonical-directory-cache
+         (make-hash-table :test 'equal))
+        (files--truename-prefix-cache
+         (make-hash-table :test 'equal)))
+    (let* ((root (nelisp-ec-expand-file-name root))
+           (root-id (emacs-fileio-builtins--canonical-directory root))
+           (subdirs (emacs-fileio-builtins--discover-load-path-subdirs root))
+           (subdir-ids (make-hash-table :test 'equal))
+           (old load-path)
+           (out nil)
+           inserted)
+      (dolist (subdir subdirs)
+        (puthash subdir t subdir-ids))
+      (while old
+        (let ((entry (car old)))
+          (if (stringp entry)
+              (let ((entry-id (emacs-fileio-builtins--canonical-directory entry)))
+                (if (string-equal root-id entry-id)
+                    (unless inserted
+                      (push entry out)
+                      (dolist (subdir subdirs)
+                        (push subdir out))
+                      (setq inserted t))
+                  (unless (gethash entry-id subdir-ids)
+                    (push entry out))))
+            (push entry out)))
+        (setq old (cdr old)))
+      (unless inserted
+        (push root out)
+        (dolist (subdir subdirs)
+          (push subdir out)))
+      (setq load-path (nreverse out)))))
+
+(defun emacs-fileio-builtins-normal-top-level-add-subdirs-to-load-path ()
+  "Add eligible directories below `default-directory' to `load-path'."
+  (emacs-fileio-builtins-add-load-path-tree default-directory))
+
+(defun emacs-fileio-builtins-add-to-load-path (&rest directories)
+  "Add each of DIRECTORIES and its eligible descendants to `load-path'."
+  (dolist (directory directories)
+    (emacs-fileio-builtins-add-load-path-tree directory))
+  load-path)
+
+(when (emacs-fileio-builtins--install-function-p
+       'normal-top-level-add-subdirs-to-load-path)
+  (defalias 'normal-top-level-add-subdirs-to-load-path
+    #'emacs-fileio-builtins-normal-top-level-add-subdirs-to-load-path))
+
+(when (emacs-fileio-builtins--install-function-p 'add-to-load-path)
+  (defalias 'add-to-load-path #'emacs-fileio-builtins-add-to-load-path))
+
 (defun emacs-fileio-builtins--local-write-region
     (start end filename &optional append visit _lockname _mustbenew)
   "Local `write-region' body: forward to `nelisp-ec-write-region'.
 LOCKNAME / MUSTBENEW are accepted for API parity but ignored -- the
 substrate has no file-locking subsystem yet."
-  (nelisp-ec-write-region start end filename append visit))
+  (cond
+   ((and (stringp start) (null end))
+    (cond
+     ((and (not (emacs-fileio-builtins--standalone-p))
+           emacs-fileio-builtins--host-write-region)
+      (funcall emacs-fileio-builtins--host-write-region
+               start nil filename append visit))
+     ((and append (fboundp 'nl-append-file))
+      (nl-append-file filename start)
+      (length start))
+     ((and (fboundp 'nl-write-file) (not append))
+      (nl-write-file filename start)
+      (length start))
+     (t
+      ;; One behaviour, one owner: `nelisp-ec-write-region' now handles
+      ;; string START itself (and reaches the captured host writer through
+      ;; `nelisp-ec--write-raw-bytes'), so the former dead-end signal is
+      ;; replaced by the same path every other case takes.
+      (nelisp-ec-write-region start nil filename append visit))))
+   ;; Buffer-sourced writes (nil or integer START) must read from the
+   ;; buffer substrate that owns the current buffer.  When no nelisp-ec
+   ;; buffer is selected, the current buffer is a real host buffer
+   ;; (e.g. host `with-temp-file' expanding to `write-region nil nil');
+   ;; the captured pre-wrap host writer implements the nil/integer
+   ;; START contract natively, VISIT and coding included.  On the
+   ;; standalone reader the capture is nil, so this arm never fires
+   ;; there.
+   ((and (not (bound-and-true-p nelisp-ec--current-buffer))
+         emacs-fileio-builtins--host-write-region)
+    (funcall emacs-fileio-builtins--host-write-region
+             start end filename append visit))
+   (t
+    (nelisp-ec-write-region start end filename append visit))))
 
-(when (emacs-fileio-builtins--install-function-p 'write-region)
-  (defun write-region (start end filename &optional append visit lockname mustbenew)
-    "Phase D polyfill: forward to `nelisp-ec-write-region', with dispatch.
+(defun emacs-fileio-builtins-write-region
+    (start end filename &optional append visit lockname mustbenew)
+  "Phase D polyfill: forward to `nelisp-ec-write-region', with dispatch.
 Doc 37: FILENAME (the third argument, not the first -- unlike the
 generic `emacs-fnh-dispatch' convention) is checked against
 `file-name-handler-alist' first, so a magic file name (e.g. a Tramp
 `/ssh:' path) reaches its handler; a local FILENAME falls through
 unchanged to `emacs-fileio-builtins--local-write-region'."
-    (let ((handler (emacs-fnh-find-file-name-handler filename 'write-region)))
-      (if handler
-          (funcall handler 'write-region
-                   start end filename append visit lockname mustbenew)
-        (emacs-fileio-builtins--local-write-region
-         start end filename append visit lockname mustbenew)))))
+  (let ((handler (emacs-fnh-find-file-name-handler filename 'write-region)))
+    (if handler
+        (funcall handler 'write-region
+                 start end filename append visit lockname mustbenew)
+      (emacs-fileio-builtins--local-write-region
+       start end filename append visit lockname mustbenew))))
 
 ;;;; --- temp files -----------------------------------------------------
 ;; `make-temp-file' is absent on the standalone reader (nemacs), and a
@@ -340,6 +687,26 @@ unchanged to `emacs-fileio-builtins--local-write-region'."
 (defvar emacs-fileio--temp-counter 0
   "Monotonic counter feeding `emacs-fileio-make-temp-name' uniqueness.")
 
+(unless (boundp 'temp-directory)
+  (defvar temp-directory nil
+    "Compatibility fallback for runtimes that do not bind temp-directory."))
+
+(defun emacs-fileio-builtins--usable-temp-dir-value (symbol)
+  "Return SYMBOL's usable temp-directory value, or nil."
+  (when (boundp symbol)
+    (let ((value (symbol-value symbol)))
+      (and (stringp value)
+           (> (length value) 0)
+           (not (eq value 'nelisp--unbound-marker))
+           value))))
+
+(defun emacs-fileio-builtins--host-temp-vars-usable-p ()
+  "Return non-nil when host `make-temp-file' can safely read temp vars."
+  (or (emacs-fileio-builtins--usable-temp-dir-value
+       'temporary-file-directory)
+      (emacs-fileio-builtins--usable-temp-dir-value
+       'temp-directory)))
+
 (defun emacs-fileio-make-temp-name (prefix)
   "Return a unique, currently-nonexistent file name built from PREFIX.
 PREFIX already includes any directory.  Standalone counterpart to
@@ -348,12 +715,28 @@ Emacs' `make-temp-name'; it does NOT create the file."
         (name nil)
         (n 0))
     (while (and (or (null name)
-                    (and (fboundp 'file-exists-p) (file-exists-p name)))
+                    (nelisp-ec-file-exists-p name))
                 (< n 100000))
       (setq emacs-fileio--temp-counter (1+ emacs-fileio--temp-counter)
             n (1+ n)
             name (concat prefix (format "%d-%d" pid emacs-fileio--temp-counter))))
     name))
+
+(defun emacs-fileio-builtins--usable-temp-dir ()
+  "Return a usable temp directory string from runtime defaults."
+  (let ((candidates (list (emacs-fileio-builtins--usable-temp-dir-value
+                           'temporary-file-directory)
+                          (emacs-fileio-builtins--usable-temp-dir-value
+                           'temp-directory)
+                          "/tmp/"))
+        (found nil))
+    (while (and candidates (not found))
+      (let ((candidate (car candidates)))
+        (when (and (stringp candidate)
+                   (> (length candidate) 0))
+          (setq found candidate)))
+      (setq candidates (cdr candidates)))
+    (or found "/tmp/")))
 
 (defun emacs-fileio-make-temp-file (prefix &optional dir-flag suffix text)
   "Standalone `make-temp-file': create a unique temp file, return its name.
@@ -361,14 +744,12 @@ PREFIX is taken relative to `temporary-file-directory'.  SUFFIX, when a
 string, is appended.  TEXT, when a string, is written as the initial
 contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
   (let* ((dir (file-name-as-directory
-               (if (boundp 'temporary-file-directory)
-                   temporary-file-directory
-                 "/tmp/")))
+               (emacs-fileio-builtins--usable-temp-dir)))
          (name (emacs-fileio-make-temp-name (concat dir prefix))))
     ;; A suffix can re-introduce a collision; bump until the full name is free.
     (when (stringp suffix)
       (setq name (concat name suffix))
-      (while (and (fboundp 'file-exists-p) (file-exists-p name))
+      (while (nelisp-ec-file-exists-p name)
         (setq name (concat (emacs-fileio-make-temp-name (concat dir prefix))
                            suffix))))
     (cond
@@ -381,10 +762,34 @@ contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
       (write-region (if (stringp text) text "") nil name)
       name))))
 
+(defun emacs-fileio-builtins-make-temp-file (prefix &optional dir-flag suffix text)
+  "Sentinel-safe wrapper for `make-temp-file'."
+  (if (and emacs-fileio-builtins--host-make-temp-file
+           (emacs-fileio-builtins--host-temp-vars-usable-p))
+      (funcall emacs-fileio-builtins--host-make-temp-file
+               prefix dir-flag suffix text)
+    (emacs-fileio-make-temp-file prefix dir-flag suffix text)))
+
 (unless (fboundp 'make-temp-name)
   (defalias 'make-temp-name #'emacs-fileio-make-temp-name))
-(unless (fboundp 'make-temp-file)
-  (defalias 'make-temp-file #'emacs-fileio-make-temp-file))
+(defalias 'make-temp-file #'emacs-fileio-builtins-make-temp-file)
+
+(defun emacs-fileio-builtins-install-standalone-temp-shims ()
+  "Reinstall standalone temp-name/temp-file shims when vendor code overrides them.
+On host Emacs keep the native implementation untouched.  On the standalone
+reader some vendor loads replace `make-temp-file' with upstream Lisp that
+expects C primitives the reader does not provide."
+  (when (emacs-fileio-builtins--standalone-p)
+    (defalias 'make-temp-name #'emacs-fileio-make-temp-name)
+    (defalias 'make-temp-file #'emacs-fileio-make-temp-file))
+  t)
+
+(defun emacs-fileio-builtins-reinstall-standalone-overrides ()
+  "Reinstall standalone file I/O entry points after vendor override loads."
+  (when (emacs-fileio-builtins--standalone-p)
+    (defalias 'write-region #'emacs-fileio-builtins-write-region)
+    (emacs-fileio-builtins-install-standalone-temp-shims))
+  t)
 
 ;;;; --- standalone-reader band-aid fills -------------------------------
 ;; Functions the anvil-pkg test suite calls that are absent on the
@@ -476,7 +881,10 @@ Returns nil when the buffer is not visiting a file."
     (let ((b (or buffer (nelisp-ec-current-buffer))))
       (when (and b (nelisp-ec-buffer-p b)
                  (not (nelisp-ec-buffer-killed-p b)))
-        (cdr (assq b emacs-fileio--buffer-files))))))
+        (or (cdr (assq b emacs-fileio--buffer-files))
+            (let ((base (and (fboundp 'buffer-base-buffer)
+                             (buffer-base-buffer b))))
+              (and base (buffer-file-name base))))))))
 
 (when (emacs-fileio-builtins--install-function-p 'set-visited-file-name)
   (defun set-visited-file-name (filename &optional no-query along-with-file)
@@ -491,16 +899,43 @@ the substrate has no rename-on-visit / lockfile interaction yet."
                     (assq-delete-all b emacs-fileio--buffer-files)))
         filename))))
 
+(when (emacs-fileio-builtins--install-function-p 'get-file-buffer)
+  (defun get-file-buffer (filename)
+    "Return a live buffer already visiting FILENAME, or nil."
+    (let ((abs (and (stringp filename)
+                    (if (fboundp 'expand-file-name)
+                        (expand-file-name filename)
+                      filename)))
+          (found nil))
+      (cond
+       ((and abs (fboundp 'find-buffer-visiting))
+        (setq found (find-buffer-visiting abs)))
+       ((and abs (fboundp 'buffer-list))
+        (catch 'done
+          (dolist (buffer (buffer-list))
+            (let ((visited (emacs-fileio--direct-buffer-file-name buffer)))
+              (when (and (stringp visited)
+                         (equal (if (fboundp 'expand-file-name)
+                                    (expand-file-name visited)
+                                  visited)
+                                abs))
+                (setq found buffer)
+                (throw 'done found)))))))
+      found)))
+
 ;;;; --- find-file / save-buffer / write-file / revert-buffer ----------
 
 (defun emacs-fileio--direct-buffer-file-name (buffer)
   "Return BUFFER's visited file name, or nil."
   (and buffer
        (condition-case nil
-           (if (fboundp 'buffer-file-name)
-               (buffer-file-name buffer)
-             (and (boundp 'emacs-fileio--buffer-files)
-                  (cdr (assq buffer emacs-fileio--buffer-files))))
+           (let ((registered (and (boundp 'emacs-fileio--buffer-files)
+                                  (cdr (assq buffer emacs-fileio--buffer-files)))))
+             (or registered
+                 (and (not (and (fboundp 'nelisp-ec-buffer-p)
+                                (nelisp-ec-buffer-p buffer)))
+                      (fboundp 'buffer-file-name)
+                      (buffer-file-name buffer))))
          (error
           (and (boundp 'emacs-fileio--buffer-files)
                (cdr (assq buffer emacs-fileio--buffer-files)))))))
@@ -526,8 +961,10 @@ the substrate has no rename-on-visit / lockfile interaction yet."
 (defun emacs-fileio--write-file-text-direct (path text)
   "Write TEXT to PATH using the best available runtime primitive."
   (cond
-   ((fboundp 'nl-write-file)
-    (nl-write-file path text))
+   ((and (fboundp 'nelisp-ec--write-raw-bytes)
+         (fboundp 'nelisp-coding-utf8-encode-string))
+    (nelisp-ec--write-raw-bytes
+     path (nelisp-coding-utf8-encode-string text) nil))
    ((fboundp 'write-region)
     (write-region text nil path nil 'silent))
    (t
@@ -584,29 +1021,69 @@ the substrate has no rename-on-visit / lockfile interaction yet."
                       (nelisp-ec-current-buffer))
                  (and (fboundp 'current-buffer)
                       (current-buffer)))))
-    (or (and buf
-             (boundp 'buffer-file-name)
-             (fboundp 'buffer-local-value)
-             (condition-case nil
-                 (buffer-local-value 'buffer-file-name buf)
-               (error nil)))
-        (and (fboundp 'buffer-file-name)
-             (condition-case nil
-                 (if buf
-                     (with-current-buffer buf
-                       (buffer-file-name))
-                   (buffer-file-name))
-               (error nil)))
-        (and (boundp 'emacs-fileio--buffer-files)
-             (cdr (assq buf emacs-fileio--buffer-files))))))
+    (cond
+     ((and (boundp 'emacs-fileio--buffer-files)
+           (cdr (assq buf emacs-fileio--buffer-files))))
+     ((and (fboundp 'nelisp-ec-buffer-p)
+           (nelisp-ec-buffer-p buf))
+      nil)
+     (t
+      (or (and buf
+               (boundp 'buffer-file-name)
+               (fboundp 'buffer-local-value)
+               (condition-case nil
+                   (buffer-local-value 'buffer-file-name buf)
+                 (error nil)))
+          (and (fboundp 'buffer-file-name)
+               (condition-case nil
+                   (if buf
+                       (with-current-buffer buf
+                         (buffer-file-name))
+                     (buffer-file-name))
+                 (error nil)))
+          nil)))))
+
+(defun emacs-fileio--expand-direct-path (path &optional default-directory)
+  "Expand PATH for direct file visits using the owned NeLisp substrate.
+The unprefixed runtime builtin is only a fallback because some runtime-image
+shapes leave leading `~/' paths literal instead of expanding `$HOME'."
+  (cond
+   ((fboundp 'nelisp-ec-expand-file-name)
+    (nelisp-ec-expand-file-name path default-directory))
+   ((fboundp 'expand-file-name)
+    (expand-file-name path default-directory))
+   (t path)))
+
+(defun emacs-fileio--replace-direct-buffer-text (buffer text)
+  "Replace BUFFER contents with TEXT through the owned buffer substrate."
+  (cond
+   ((and (fboundp 'nelisp-text-buffer--standalone-p)
+         (nelisp-text-buffer--standalone-p)
+         (fboundp 'nelisp-ec--text)
+         (fboundp 'nelisp-text-buffer--standalone-replace-logical))
+    (let ((chars (length text)))
+      (nelisp-text-buffer--standalone-replace-logical
+       (nelisp-ec--text buffer) text chars)
+      (when (fboundp 'nelisp-ec--set-buffer-point)
+        (nelisp-ec--set-buffer-point buffer (1+ chars)))
+      (when (fboundp 'nelisp-ec--set-buffer-narrow-start)
+        (nelisp-ec--set-buffer-narrow-start buffer nil))
+      (when (fboundp 'nelisp-ec--set-buffer-narrow-end)
+        (nelisp-ec--set-buffer-narrow-end buffer nil))
+      (when (fboundp 'nelisp-ec--bump-buffer-text-tick)
+        (nelisp-ec--bump-buffer-text-tick buffer))))
+   (t
+    (when (fboundp 'nelisp-ec-erase-buffer)
+      (nelisp-ec-erase-buffer))
+    (when (and (> (length text) 0)
+               (fboundp 'nelisp-ec-insert))
+      (nelisp-ec-insert text)))))
 
 (defun emacs-fileio-visit-file-direct (path)
   "Visit PATH using direct NeLisp buffers and return the buffer.
 This path is intended for frontends that need a small file visit surface
 before the full interactive file I/O runtime is available."
-  (let* ((abs (if (fboundp 'expand-file-name)
-                  (expand-file-name path)
-                path))
+  (let* ((abs (emacs-fileio--expand-direct-path path))
          (existing nil))
     (when (boundp 'emacs-fileio--buffer-files)
       (catch 'found
@@ -623,14 +1100,16 @@ before the full interactive file I/O runtime is available."
       (when (and (not existing)
                  (fboundp 'nelisp-ec-with-current-buffer))
         (nelisp-ec-with-current-buffer buffer
-          (when (fboundp 'nelisp-ec-erase-buffer)
-            (nelisp-ec-erase-buffer))
           (let ((text (emacs-fileio-read-file-text-direct abs)))
-            (when (and (stringp text) (> (length text) 0)
-                       (fboundp 'nelisp-ec-insert))
-              (nelisp-ec-insert text)))
-          (when (fboundp 'set-buffer-modified-p)
-            (set-buffer-modified-p nil))))
+            (when (stringp text)
+              (emacs-fileio--replace-direct-buffer-text buffer text)))
+          (cond
+           ((fboundp 'nelisp-ec--set-buffer-modified-p)
+            (nelisp-ec--set-buffer-modified-p buffer nil))
+           ((fboundp 'emacs-buffer-set-buffer-modified-p)
+            (emacs-buffer-set-buffer-modified-p nil buffer))
+           ((fboundp 'set-buffer-modified-p)
+            (set-buffer-modified-p nil)))))
       (emacs-fileio-record-buffer-file buffer abs)
       (when (fboundp 'nelisp-ec-set-buffer)
         (nelisp-ec-set-buffer buffer))

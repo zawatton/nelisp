@@ -44,22 +44,6 @@ value cell is unbound but function cell is fine)."
                 (list 'apply (list 'quote function) 'args)))
     function))
 
-(unless (fboundp 'defalias)
-  (defun defalias (symbol definition &optional docstring)
-    "Polyfill: alias SYMBOL to DEFINITION.
-DOCSTRING is accepted for arglist parity and currently ignored
-(= the polyfill does not yet wire docstrings into the function cell)."
-    (ignore docstring)
-    (if (and (symbolp definition)
-             (not (fboundp definition)))
-        ;; NeLisp's native `fset' resolves symbol functions eagerly.
-        ;; Generate a late-bound forwarder for `#'foo' before `foo' is
-        ;; defined, as seen in vendor easy-mmode.el.
-        (eval (list 'defun symbol '(&rest args)
-                    (list 'apply (list 'quote definition) 'args)))
-      (fset symbol definition))
-    symbol))
-
 (unless (and (fboundp 'purecopy)
              (not (get 'purecopy 'emacs-stub-bulk)))
   (defun purecopy (object)
@@ -111,6 +95,34 @@ substitution."
             (message ,format msg))
           nil))))
   (put 'with-demoted-errors 'emacs-stub-bulk nil))
+
+(unless (boundp 'after-load-alist)
+  (defvar after-load-alist nil
+    "Pending `eval-after-load' registrations keyed by feature/file."))
+
+(unless (and (fboundp 'eval-after-load)
+             (not (get 'eval-after-load 'emacs-stub-bulk)))
+  (defun eval-after-load (file form)
+    "Standalone polyfill: defer FORM until FILE loads.
+This early bootstrap variant records the request in `after-load-alist'.
+When FILE is already present in `features' the FORM runs immediately."
+    (if (and (symbolp file) (featurep file))
+        (eval form)
+      (let ((cell (assoc file after-load-alist)))
+        (if cell
+            (setcdr cell (cons form (cdr cell)))
+          (setq after-load-alist
+                (cons (cons file (list form)) after-load-alist)))))
+    form)
+  (put 'eval-after-load 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'with-eval-after-load)
+             (not (get 'with-eval-after-load 'emacs-stub-bulk)))
+  (defmacro with-eval-after-load (file &rest body)
+    "Standalone polyfill: register BODY to run after FILE loads."
+    (declare (indent 1) (debug (form body)))
+    (list 'eval-after-load file (list 'quote (cons 'progn body))))
+  (put 'with-eval-after-load 'emacs-stub-bulk nil))
 
 ;; `interactive' — Emacs special form marking a defun as interactively
 ;; callable + parsing arg-spec for `M-x'.  Under NeLisp standalone there
@@ -189,9 +201,17 @@ inspecting a literal lambda / closure body."
 (defun emacs-eval--autoload-load (function file)
   "Load FILE for autoloaded FUNCTION and return its function cell."
   (load file)
-  (let ((definition (and (symbolp function) (symbol-function function))))
-    (when (and definition (emacs-eval--autoload-thunk-p definition))
-      (error "Autoloading `%s' from %s did not define it" function file))
+  (let* ((thunk (and (symbolp function)
+                     (get function 'emacs-eval--autoload-thunk-object)))
+         (definition (and (symbolp function) (symbol-function function))))
+    (when (and thunk (eq definition thunk))
+      (signal 'error
+              (list (format "Autoloading `%s' from %s did not define it"
+                            function file))))
+    (when (and (symbolp function)
+               definition
+               (not (eq definition thunk)))
+      (put function 'emacs-eval--autoload-thunk-object nil))
     definition))
 
 (unless (fboundp 'autoload)
@@ -221,6 +241,7 @@ and only paid for when a workflow actually calls them."
               (lambda (&rest args)
                 (emacs-eval--autoload-load function file)
                 (apply function args)))
+        (put function 'emacs-eval--autoload-thunk-object thunk)
         (fset function thunk)))
     function))
 
@@ -248,6 +269,16 @@ and only paid for when a workflow actually calls them."
           (emacs-eval--autoload-load fn file))))
      (t autoload))))
 
+(defun nelisp--defalias-late (symbol definition &optional docstring)
+  "Install SYMBOL as a late-bound alias for DEFINITION."
+  (ignore docstring)
+  (if (and (symbolp definition)
+           (not (fboundp definition)))
+      (eval (list 'defun symbol '(&rest args)
+                  (list 'apply (list 'quote definition) 'args)))
+    (fset symbol definition))
+  symbol)
+
 ;; Obsoletion-tracking aliases.  Vendor Emacs Lisp consults the same symbol
 ;; properties the byte-compiler uses, so keep the metadata even when warning
 ;; emission itself is not implemented.
@@ -255,7 +286,7 @@ and only paid for when a workflow actually calls them."
   (defun define-obsolete-function-alias
       (obsolete-name current-name &optional when docstring)
     "Polyfill: route through `defalias' and record obsoletion metadata."
-    (defalias obsolete-name current-name docstring)
+    (nelisp--defalias-late obsolete-name current-name docstring)
     (put obsolete-name 'byte-obsolete-info
          (list (if (and (consp current-name) (eq (car current-name) 'function))
                    (cadr current-name)

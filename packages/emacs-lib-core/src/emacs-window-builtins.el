@@ -40,7 +40,8 @@
 ;;   - `other-window' (polyfilled — `emacs-window.el' has no direct equivalent)
 ;;   - `window-start' / `window-end' / `window-point' / `set-window-point'
 ;;     / `set-window-start' / `window-height' / `window-width'
-;;     / `window-body-height' (Doc 33 §4 item 9 — line-based, see below)
+;;     / `window-body-height' / `window-body-width'
+;;     / `window-max-chars-per-line' (Doc 33 §4 item 9 — line-based, see below)
 ;;   - `recenter' / `scroll-up' / `scroll-down' / `scroll-up-command'
 ;;     / `scroll-down-command' / `pos-visible-in-window-p' (Doc 33 §4
 ;;     item 9 — real buffer-line-based semantics via
@@ -52,6 +53,13 @@
 ;;; Code:
 
 (require 'emacs-window)
+
+(defun emacs-window-builtins--function-cell-live-p (symbol)
+  "Return non-nil when SYMBOL has a usable function cell."
+  (and (fboundp symbol)
+       (condition-case nil
+           (symbol-function symbol)
+         (error nil))))
 
 (defun emacs-window-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge.
@@ -66,7 +74,7 @@ installs for names such as `windowp'/`window-list'/`window-buffer'
 that would otherwise win by loading first."
   (or (not (boundp 'emacs-version))
       (not (stringp emacs-version))
-      (not (fboundp symbol))))
+      (not (emacs-window-builtins--function-cell-live-p symbol))))
 
 ;;;; --- predicates ------------------------------------------------------
 
@@ -122,6 +130,19 @@ that would otherwise win by loading first."
     "Phase 11 polyfill: body height, excluding the mode-line row."
     (max 1 (1- (emacs-window-window-height window)))))
 
+(when (emacs-window-builtins--install-function-p 'window-body-width)
+  (defun window-body-width (&optional window pixelwise)
+    "Phase 11 polyfill: body width in columns or pseudo pixels."
+    (let ((cols (emacs-window-window-width window)))
+      (if pixelwise
+          (* cols emacs-window--pixel-col-px)
+        cols))))
+
+(when (emacs-window-builtins--install-function-p 'window-max-chars-per-line)
+  (defun window-max-chars-per-line (&optional window _face)
+    "Phase 11 polyfill: maximum display columns for WINDOW."
+    (max 1 (window-body-width window))))
+
 (when (emacs-window-builtins--install-function-p 'window-start)
   (defalias 'window-start #'emacs-window-window-start))
 
@@ -130,6 +151,15 @@ that would otherwise win by loading first."
 
 (when (emacs-window-builtins--install-function-p 'window-point)
   (defalias 'window-point #'emacs-window-window-point))
+
+(when (emacs-window-builtins--install-function-p 'window-parameter)
+  (defalias 'window-parameter #'emacs-window-window-parameter))
+
+(when (emacs-window-builtins--install-function-p 'window-prev-buffers)
+  (defalias 'window-prev-buffers #'emacs-window-window-prev-buffers))
+
+(when (emacs-window-builtins--install-function-p 'window-next-buffers)
+  (defalias 'window-next-buffers #'emacs-window-window-next-buffers))
 
 ;;;; --- mutation --------------------------------------------------------
 
@@ -141,6 +171,26 @@ that would otherwise win by loading first."
 
 (when (emacs-window-builtins--install-function-p 'set-window-start)
   (defalias 'set-window-start #'emacs-window-set-window-start))
+
+(when (emacs-window-builtins--install-function-p 'set-window-parameter)
+  (defalias 'set-window-parameter #'emacs-window-set-window-parameter))
+
+(when (emacs-window-builtins--install-function-p 'window-configuration-p)
+  (defalias 'window-configuration-p #'emacs-window-configuration-p))
+
+(when (emacs-window-builtins--install-function-p 'current-window-configuration)
+  (defalias 'current-window-configuration
+    #'emacs-window-current-window-configuration))
+
+(when (emacs-window-builtins--install-function-p 'set-window-configuration)
+  (defalias 'set-window-configuration
+    #'emacs-window-set-window-configuration))
+
+(when (emacs-window-builtins--install-function-p 'set-window-prev-buffers)
+  (defalias 'set-window-prev-buffers #'emacs-window-set-window-prev-buffers))
+
+(when (emacs-window-builtins--install-function-p 'set-window-next-buffers)
+  (defalias 'set-window-next-buffers #'emacs-window-set-window-next-buffers))
 
 (when (emacs-window-builtins--install-function-p 'select-window)
   (defalias 'select-window #'emacs-window-select-window))
@@ -225,6 +275,12 @@ accepted for API parity and ignored (= single-frame Phase 1)."
 
 (when (emacs-window-builtins--install-function-p 'pop-to-buffer)
   (defalias 'pop-to-buffer #'emacs-window-pop-to-buffer))
+
+(when (emacs-window-builtins--install-function-p 'pop-to-buffer-same-window)
+  (defalias 'pop-to-buffer-same-window #'emacs-window-pop-to-buffer))
+
+(when (emacs-window-builtins--install-function-p 'switch-to-buffer-other-window)
+  (defalias 'switch-to-buffer-other-window #'emacs-window-pop-to-buffer))
 
 (when (emacs-window-builtins--install-function-p 'quit-window)
   (defun quit-window (&optional kill window)

@@ -77,8 +77,39 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
 
 (defun emacs-buffer-builtins--call-emacs-buffer (function args)
   "Lazy-load `emacs-buffer' and call FUNCTION with ARGS."
-  (require 'emacs-buffer)
+  (unless (fboundp function)
+    (require 'emacs-buffer))
   (apply function args))
+
+(defun emacs-buffer-builtins--sxhash-string (string)
+  "Return a deterministic integer hash for STRING."
+  (let ((hash 5381)
+        (i 0)
+        (len (length string)))
+    (while (< i len)
+      (setq hash (logand #x7FFFFFFF
+                         (+ (* hash 33) (aref string i))))
+      (setq i (1+ i)))
+    hash))
+
+(defun emacs-buffer-builtins--sxhash-object (object)
+  "Return a deterministic session-stable integer hash for OBJECT."
+  (emacs-buffer-builtins--sxhash-string (prin1-to-string object)))
+
+(when (emacs-buffer-builtins--install-function-p 'sxhash)
+  (defun sxhash (object)
+    "Return a deterministic integer hash for OBJECT."
+    (emacs-buffer-builtins--sxhash-object object)))
+
+(when (emacs-buffer-builtins--install-function-p 'sxhash-equal)
+  (defun sxhash-equal (object)
+    "Return a deterministic integer hash for OBJECT using equal semantics."
+    (emacs-buffer-builtins--sxhash-object object)))
+
+(when (emacs-buffer-builtins--install-function-p 'sxhash-eq)
+  (defun sxhash-eq (object)
+    "Return a deterministic integer hash for OBJECT using eq-style identity."
+    (emacs-buffer-builtins--sxhash-object object)))
 
 ;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
 ;;
@@ -134,6 +165,17 @@ replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
 
 (require 'emacs-buffer)
 
+(when (emacs-buffer-builtins--standalone-p)
+  (defun buffer-base-buffer (&optional buffer)
+    "Return the base buffer of BUFFER when it is an indirect clone."
+    (emacs-buffer-buffer-base-buffer buffer))
+
+  (defun make-indirect-buffer (base-buffer name &optional clone)
+    "Create an indirect buffer named NAME from BASE-BUFFER.
+CLONE is accepted for API compatibility."
+    (ignore clone)
+    (emacs-buffer-clone-indirect-buffer name base-buffer)))
+
 (let ((--local-aliases--
        '((make-local-variable       . emacs-buffer-make-local-variable)
          (make-variable-buffer-local . emacs-buffer-make-variable-buffer-local)
@@ -188,10 +230,32 @@ nil MARKER-OR-INTEGER returns a detached marker, matching Emacs."
 (when (emacs-buffer-builtins--install-function-p 'copy-marker)
   (defalias 'copy-marker #'emacs-buffer-builtins-copy-marker))
 
+(when (emacs-buffer-builtins--install-function-p 'point-min-marker)
+  (defun point-min-marker ()
+    "Return a marker at `point-min' in the current buffer."
+    (copy-marker (point-min))))
+
+(when (emacs-buffer-builtins--install-function-p 'point-max-marker)
+  (defun point-max-marker ()
+    "Return a marker at `point-max' in the current buffer."
+    (copy-marker (point-max))))
+
 (defun emacs-buffer-builtins--text-property-object (object)
-  "Return OBJECT when it is a buffer, or nil for current buffer/string MVP."
+  "Return a standalone buffer object, or :string-or-unsupported.
+
+When OBJECT is nil and the standalone runtime already has a current buffer,
+resolve that buffer eagerly instead of letting the lower `emacs-buffer' owner
+re-discover it indirectly.  The implicit current-buffer path has proven brittle
+under the live Magit bridge even when the actual current buffer is valid."
   (cond
-   ((null object) nil)
+   ((null object)
+    (let ((buf (and (fboundp 'current-buffer)
+                    (ignore-errors (current-buffer)))))
+      (if (and buf
+               (fboundp 'nelisp-ec-buffer-p)
+               (nelisp-ec-buffer-p buf))
+          buf
+        nil)))
    ((and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)) object)
    (t :string-or-unsupported)))
 
@@ -463,6 +527,15 @@ a buffer, nil for the current buffer, or a string."
      'emacs-buffer-text-property-not-all
      (list start end prop value object))))
 
+(when (emacs-buffer-builtins--install-function-p 'text-property-any)
+  (defun text-property-any (start end prop value &optional object)
+    "Return the position in [START, END) of OBJECT where PROP first
+matches VALUE via `eq', or nil if it never does.  OBJECT may be a
+buffer, nil for the current buffer, or a string."
+    (emacs-buffer-builtins--call-emacs-buffer
+     'emacs-buffer-text-property-any
+     (list start end prop value object))))
+
 (defun emacs-buffer-builtins-ensure-initial-buffer (&optional name)
   "Ensure standalone NeLisp has a selected initial buffer.
 NAME defaults to \"*scratch*\".  If a current buffer already exists,
@@ -476,7 +549,7 @@ select it, and return it."
       (nelisp-ec-set-buffer buf))
     buf))
 
-(when (and (not (boundp 'emacs-version))
+(when (and (emacs-buffer-builtins--standalone-p)
            (not (nelisp-ec-current-buffer)))
   (emacs-buffer-builtins-ensure-initial-buffer))
 
@@ -545,15 +618,24 @@ select it, and return it."
       (nelisp-ec-buffer-name buffer))
      (t nil))))
 
-;; NeLisp strings are always Unicode internally — there is no parallel
-;; unibyte representation, so the multibyte flag is a no-op.  We honour
-;; the API surface (= return FLAG so callers that read the result still
-;; see something sensible) without otherwise altering buffer state.
+;; Doc 200 adds a distinct unibyte representation for strings, but this
+;; compatibility bridge does not implement Emacs's in-place buffer storage
+;; conversion.  Measured on NeLisp v1.1.0+1 after loading this bridge, a fresh
+;; `nelisp-ec' buffer produced `(t nil t t t)' for (MODE-BEFORE RETURN-NIL
+;; MODE-AFTER-NIL RETURN-T MODE-AFTER-T).  Preserve that buffer-layer behavior:
+;; return FLAG without changing the underlying `nelisp-text-buffer' mode.
 (when (emacs-buffer-builtins--install-function-p 'set-buffer-multibyte)
   (defun set-buffer-multibyte (flag)
     flag))
 
-(when (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
+;; NeLisp v1.1.0 (Doc 200) gave unibyte strings their own representation,
+;; so the runtime's own `multibyte-string-p' answers as Emacs does: nil for
+;; a pure-ASCII string and nil for a unibyte one.  Installing the bridge
+;; stub over it would report every string as multibyte again.  Ask the
+;; runtime about a pure-ASCII string and keep the stub only for a reader
+;; that predates Doc 200 (or has no `multibyte-string-p' at all).
+(when (and (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
+           (condition-case nil (multibyte-string-p "a") (error t)))
   (defun multibyte-string-p (object)
     (stringp object)))
 

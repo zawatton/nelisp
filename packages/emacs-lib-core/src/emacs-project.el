@@ -15,7 +15,23 @@
 ;;; Code:
 
 (defconst emacs-project--load-directory
-  (file-name-directory (or load-file-name buffer-file-name))
+  ;; `load-file-name' is nil inside the concatenated bootstrap bundle, and the
+  ;; bare `default-directory' fallback then resolved siblings to <repo>/X.el
+  ;; instead of <repo>/src/X.el.  Same shape as `cl-lib--load-directory'.
+  (let ((source-file
+         (or (and (boundp 'load-file-name) load-file-name)
+             (and (boundp 'buffer-file-name) buffer-file-name))))
+    (cond
+     (source-file
+      (file-name-directory source-file))
+     ((and (boundp 'default-directory)
+           (stringp default-directory))
+      (let ((src (expand-file-name "src/" default-directory)))
+        (if (and (fboundp 'file-directory-p)
+                 (file-directory-p src))
+            src
+          default-directory)))
+     (t nil)))
   "Directory that contains the project shim and its sibling features.")
 
 (defun emacs-project--load-feature (feature)
@@ -31,12 +47,21 @@
 (emacs-project--load-feature 'emacs-fileio-builtins)
 (emacs-project--load-feature 'emacs-minibuffer-builtins)
 
+(unless (boundp 'user-emacs-directory)
+  (defvar user-emacs-directory "~/.emacs.d/"
+    "Fallback user configuration directory for standalone NeLisp."))
+
 (defcustom project-list-file
   (expand-file-name "projects" user-emacs-directory)
   "Flat file used to persist known project roots.
 Each line stores one absolute project root."
   :type 'file
   :group 'convenience)
+
+(unless (boundp 'project-list-file)
+  (defvar project-list-file
+    (expand-file-name "projects" user-emacs-directory)
+    "Flat file used to persist known project roots."))
 
 (defvar project--list nil
   "Cached list of known project roots.")

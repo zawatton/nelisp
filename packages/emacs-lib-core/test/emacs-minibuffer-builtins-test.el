@@ -45,8 +45,18 @@
     (should (fboundp sym)))
   (dolist (sym '(minibuffer-history command-history file-name-history
                  read-string-history buffer-name-history
-                 regexp-history extended-command-history))
+                 regexp-history extended-command-history
+                 minibuffer-visible-completions
+                 minibuffer-visible-completions--always-bind
+                 minibuffer-completion-predicate
+                 completion-list-insert-choice-function
+                 minibuffer-visible-completions-map))
     (should (boundp sym))))
+
+(ert-deftest emacs-minibuffer-builtins-test/completion-compat-vars-have-safe-defaults ()
+  (should-not minibuffer-visible-completions)
+  (should-not minibuffer-visible-completions--always-bind)
+  (should (keymapp minibuffer-visible-completions-map)))
 
 ;;;; B. emacs-minibuffer-feed-input + read-string roundtrip
 

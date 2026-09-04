@@ -109,6 +109,7 @@
 (declare-function nelisp--syscall-readdir "nelisp-runtime")
 (declare-function nelisp--syscall-read-file "nelisp-runtime")
 (declare-function nl-write-file "nelisp-runtime")
+(declare-function nl-append-file "nelisp-runtime")
 
 (defun nelisp-ec--syscall-available-p (sym)
   "Return non-nil if standalone syscall SYM is wired (T76 SHIPPED)."
@@ -339,17 +340,45 @@ returns `.bashrc').  No extension → NAME returned unchanged."
       name
     (concat name "/")))
 
-(defun nelisp-ec--collapse-segments (segments)
-  "Collapse `.' / `..' / empty SEGMENTS in a POSIX-style path list.
-Returns the simplified list (does NOT touch leading `/')."
-  (let ((acc nil))
-    (dolist (seg segments)
+(defun nelisp-ec--normalize-posix-path (path)
+  "Lexically normalize absolute POSIX PATH without filesystem access."
+  (let ((parts nil)
+        (start 0)
+        (idx 0)
+        (len (length path))
+        (trailing (and (> (length path) 1)
+                       (eq (aref path (1- (length path))) ?/))))
+    (while (<= idx len)
+      (when (or (= idx len) (eq (aref path idx) ?/))
+        (let ((part (substring path start idx)))
+          (cond
+           ((or (= (length part) 0) (string-equal part ".")) nil)
+           ((string-equal part "..")
+            (when parts (setq parts (cdr parts))))
+           (t (setq parts (cons part parts)))))
+        (setq start (1+ idx)))
+      (setq idx (1+ idx)))
+    (let ((out "")
+          (tail (nreverse parts)))
+      (while tail
+        (setq out (concat out "/" (car tail)))
+        (setq tail (cdr tail)))
+      (when (= (length out) 0) (setq out "/"))
+      (if (and trailing (not (string-equal out "/")))
+          (concat out "/")
+        out))))
+
+(defun nelisp-ec--expand-home-prefix (path)
+  "Expand PATH's `~' or `~/' prefix and reject unsupported `~user'."
+  (if (or (= (length path) 0) (not (eq (aref path 0) ?~)))
+      path
+    (let ((home (getenv "HOME")))
+      (unless (and (stringp home) (> (length home) 0))
+        (signal 'error (list "HOME is not set")))
       (cond
-	       ((or (= (length seg) 0) (string-equal seg ".")) nil)
-       ((string-equal seg "..")
-        (when acc (pop acc)))
-       (t (push seg acc))))
-    (nreverse acc)))
+       ((= (length path) 1) home)
+       ((eq (aref path 1) ?/) (concat home (substring path 1)))
+       (t (signal 'error (list "~user expansion is unsupported" path)))))))
 
 ;;;###autoload
 (defun nelisp-ec-expand-file-name (name &optional default-dir)
@@ -364,27 +393,21 @@ This helper is *pure NeLisp string surgery* — no host syscall is
 invoked beyond reading `default-directory' for the seed CWD."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
-  (let* ((dd (or default-dir
-                 (and (boundp 'default-directory) default-directory)
-                 "/"))
-         (dd (if (eq (aref dd 0) ?/) dd (concat "/" dd)))
-         (seed (cond
-                ;; NAME absolute → seed = NAME, ignore dd
-                ((nelisp-ec-file-name-absolute-p name) name)
-                (t (concat (nelisp-ec-file-name-as-directory dd) name))))
-         ;; Tilde at very start of seed → expand to $HOME (host getenv).
-         (seed (cond
-                ((and (> (length seed) 0) (eq (aref seed 0) ?~))
-                 (let ((home (or (getenv "HOME") "/")))
-                   (cond
-                    ((or (= (length seed) 1) (eq (aref seed 1) ?/))
-                     (concat home (substring seed 1)))
-                    (t seed)))) ;; ~user/ unsupported — leave verbatim
-                (t seed)))
-         (segments (nelisp-ec--split-string-char seed ?/ t))
-         (collapsed (nelisp-ec--collapse-segments segments))
-         (joined (mapconcat #'identity collapsed "/")))
-    (concat "/" joined)))
+  (let ((expanded (nelisp-ec--expand-home-prefix name)))
+    (if (and (> (length name) 0) (eq (aref name 0) ?~))
+        (nelisp-ec--normalize-posix-path expanded)
+      (if (and (> (length expanded) 0) (eq (aref expanded 0) ?/))
+          (nelisp-ec--normalize-posix-path expanded)
+        (let* ((anchor (or default-dir
+                           (and (boundp 'default-directory) default-directory)
+                           "/"))
+               (anchor (nelisp-ec--expand-home-prefix anchor))
+               (anchor (if (and (> (length anchor) 0)
+                                (eq (aref anchor 0) ?/))
+                           anchor
+                         (concat "/" anchor))))
+          (nelisp-ec--normalize-posix-path
+           (concat (nelisp-ec-file-name-as-directory anchor) expanded)))))))
 
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; §2. Stat-backed predicates
@@ -406,12 +429,17 @@ invoked beyond reading `default-directory' for the seed CWD."
    ;; Emacs (no `nelisp--syscall-path-int') keeps the stat path below.
    ((fboundp 'nelisp--syscall-path-int)
     (let ((rc (nelisp-ec--access file 0))) ;; F_OK = 0
-      (if (and (integerp rc) (zerop rc))
-          t
+      (cond
+       ((and (integerp rc) (zerop rc)) t)
+       ;; Linux ENOENT is a conclusive miss.  Other failures can come from
+       ;; incomplete standalone syscall shims, so allow the verified reader
+       ;; fallback below to prove existence.
+       ((and (integerp rc) (or (= rc 2) (= rc -2))) nil)
+       (t
         (and (fboundp 'rdf)
              (stringp (condition-case nil
                           (rdf file)
-                        (error nil)))))))
+                        (error nil))))))))
    ;; Standalone fallback: when the stat/access surface is not available
    ;; yet, `rdf' is the verified file-open path.  Treat a successful read
    ;; as existence for regular files; directories remain out of scope.
@@ -629,14 +657,25 @@ Returns a unibyte string of raw bytes.  Phase 7.5 will swap this to
   "Write UNIBYTE bytes to FILE.  When APPEND non-nil, append.
 Phase 7.5 will swap this to `nl-syscall-write-file' once T76 lands."
   (cond
+   ((and append (fboundp 'nl-append-file))
+    (nl-append-file file unibyte)
+    (length unibyte))
    ((and (fboundp 'nl-write-file) (not append))
     (nl-write-file file unibyte)
     (length unibyte))
    (t
     (let ((coding-system-for-write 'no-conversion)
           (write-region-annotate-functions nil)
-          (write-region-post-annotation-function nil))
-      (write-region unibyte nil file append 'silent)
+          (write-region-post-annotation-function nil)
+          ;; The fileio bridge may have replaced `write-region' with its
+          ;; dispatch wrapper; calling the symbol here would re-enter the
+          ;; wrapper (measured: "write-region string input has no
+          ;; standalone writer" under the host test harness).  Use the
+          ;; pre-wrap capture when the bridge is loaded.
+          (writer (or (and (boundp 'emacs-fileio-builtins--host-write-region)
+                           emacs-fileio-builtins--host-write-region)
+                      #'write-region)))
+      (funcall writer unibyte nil file append 'silent)
       (length unibyte)))))
 
 ;;;###autoload
@@ -681,17 +720,31 @@ file size."
 The text is encoded under `nelisp-coding-utf8-encode-string' (UTF-8,
 `replace' strategy).
 
-START / END — 1-based positions (matches `nelisp-ec' convention).
+START / END — 1-based positions (matches `nelisp-ec' convention),
+              matching Emacs's `write-region' START/END contract:
+              - START a string: that string is the text to write and
+                END is ignored.
+              - START nil: the whole buffer is written and END is
+                ignored (the standard `save-buffer' path calls
+                `write-region' as `(write-region nil nil FILE)').
+              - START and END both integers: the buffer text between
+                them (order-independent) is written.
 APPEND      — non-nil → open FILE in append mode.
 VISIT       — accepted for shape-compat; ignored in MVP.
 
 Returns the number of *bytes* written to disk."
-  (unless (and (integerp start) (integerp end))
-    (signal 'wrong-type-argument (list 'integerp start end)))
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (ignore visit)
-  (let* ((text (nelisp-ec-buffer-substring (min start end) (max start end)))
+  (let* ((text (cond
+                ;; Emacs: a string START is the text itself; END is ignored.
+                ((stringp start) start)
+                ;; Emacs: nil START means the whole buffer.
+                ((null start)
+                 (nelisp-ec-buffer-substring 1 (1+ (nelisp-ec-buffer-size))))
+                ((and (integerp start) (integerp end))
+                 (nelisp-ec-buffer-substring (min start end) (max start end)))
+                (t (signal 'wrong-type-argument (list 'integerp start end)))))
          (unibyte (nelisp-coding-utf8-encode-string text)))
     (nelisp-ec--write-raw-bytes file unibyte append)
     (length unibyte)))

@@ -11,7 +11,10 @@
 ;; Source-v1 runtime image replay preserves top-level `setq' more reliably
 ;; than `defconst', while functions below need these variables after boot.
 (setq nemacs-runtime-image-preload--script-directory
-      (file-name-directory (or load-file-name buffer-file-name "")))
+      (file-name-directory
+       (or (and (boundp 'load-file-name) load-file-name)
+           (and (boundp 'buffer-file-name) buffer-file-name)
+           "")))
 
 (setq nemacs-runtime-image-package-load-paths
       '("packages/nelisp-emacs-buffer-core/lazy"
@@ -37,6 +40,10 @@
   (setq load-path
         (append (mapcar (lambda (path) (concat repo-root "/" path))
                         nemacs-runtime-image-package-load-paths)
+                ;; Package paths stay first.  This exposes src-only facades
+                ;; such as `emacs-imenu' and `emacs-xref' to runtime-image
+                ;; lazy wrappers until they are promoted into packages.
+                (list (concat repo-root "/src"))
                 (list (concat repo-root "/vendor/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/emacs-lisp")
                       (concat repo-root "/vendor/emacs-lisp/vc")
@@ -51,21 +58,50 @@
                 load-path))
   t)
 
-(defun nemacs-runtime-image-load-bootstrap (bootstrap-file)
-  "Load BOOTSTRAP-FILE when it is non-empty."
+(defun nemacs-runtime-image--core-source-file (repo-root name)
+  "Return REPO-ROOT/src/NAME."
+  (concat repo-root "/src/" name))
+
+(defun nemacs-runtime-image-preload--load-source-file (file)
+  "Load FILE robustly on both host Emacs and standalone runtime images."
+  (load file nil 'no-message t t))
+
+(defun nemacs-runtime-image--ensure-core-after-bootstrap (repo-root)
+  "Make the batch entry visible after a bootstrap load.
+
+The runtime-image replay path does not currently preserve every side-effect
+that the standalone bootstrap bundle relies on, especially feature-registry
+updates from fallback forms.  If the bundle load returns with `nemacs-main'
+still missing, load the source entry files directly and fail loudly if the
+batch entry is still unavailable."
+  (unless (featurep 'nemacs-main)
+    (load (nemacs-runtime-image--core-source-file repo-root "emacs-fns.el")
+          nil 'no-message t t)
+    (load (nemacs-runtime-image--core-source-file repo-root "nemacs-main.el")
+          nil 'no-message t t))
+  (unless (featurep 'nemacs-main)
+    (error "runtime bootstrap did not provide nemacs-main"))
+  (unless (fboundp 'nemacs-batch-main)
+    (error "runtime bootstrap did not define nemacs-batch-main"))
+  t)
+
+(defun nemacs-runtime-image-load-bootstrap (repo-root bootstrap-file)
+  "Load BOOTSTRAP-FILE for REPO-ROOT when it is non-empty."
   (when (and bootstrap-file
              (not (string= bootstrap-file "")))
     (load bootstrap-file nil 'no-message t t))
+  (nemacs-runtime-image--ensure-core-after-bootstrap repo-root)
   t)
 
 (defun nemacs-runtime-image-preload-batch (repo-root bootstrap-file)
   "Preload the batch nemacs entry into the current NeLisp image."
   (nemacs-runtime-image-setup-paths repo-root)
-  (nemacs-runtime-image-load-bootstrap bootstrap-file)
+  (nemacs-runtime-image-load-bootstrap repo-root bootstrap-file)
   (nemacs-runtime-image-preload--install-process-core)
   (require 'nemacs-main)
   (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")
         nil 'no-message t t)
+  (nemacs-runtime-image-preload--install-daily-driver-core)
   t)
 
 (defun nemacs-runtime-image-preload-interactive (repo-root bootstrap-file)
@@ -90,6 +126,10 @@ the default batch image while the vendor surface is still expanding."
 
 (defun nemacs-runtime-image-preload-vendor-core-extension ()
   "Extend an already-baked base runtime image with vendor core modules."
+  (nemacs-runtime-image-preload--install-daily-driver-core))
+
+(defun nemacs-runtime-image-preload--install-daily-driver-core ()
+  "Install daily-driver feature facades into the current runtime image."
   (nemacs-runtime-image-preload--install-files-core)
   (nemacs-runtime-image-preload--install-simple-core)
   (nemacs-runtime-image-preload--install-dired-core)
@@ -99,6 +139,8 @@ the default batch image while the vendor surface is still expanding."
   (nemacs-runtime-image-preload--install-isearch-core)
   (nemacs-runtime-image-preload--install-minibuffer-core)
   (nemacs-runtime-image-preload--install-project-core)
+  (nemacs-runtime-image-preload--install-dev-nav-core)
+  (nemacs-runtime-image-preload--install-shell-core)
   (nemacs-runtime-image-preload--install-process-core)
   (nemacs-runtime-image-preload--install-frame-core)
   (nemacs-runtime-image-preload--install-tab-core)
@@ -305,6 +347,103 @@ replay it in runtimes with minimal closure support."
     (provide 'project))
   t)
 
+(defun nemacs-runtime-image-preload--install-dev-nav-core ()
+  "Install minimal imenu/xref/compile/VC daily-driver navigation facades."
+  (unless (featurep 'imenu)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-imenu-create-index 'emacs-imenu 'emacs-imenu-create-index)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-imenu 'emacs-imenu 'emacs-imenu)
+    (nemacs-runtime-image-preload--install-module-command
+     'imenu 'emacs-imenu 'emacs-imenu)
+    (provide 'imenu))
+  (unless (featurep 'xref)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-xref-find-definitions
+     'emacs-xref
+     'emacs-xref-find-definitions)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-xref-pop-marker-stack
+     'emacs-xref
+     'emacs-xref-pop-marker-stack)
+    (nemacs-runtime-image-preload--install-module-command
+     'xref-find-definitions
+     'emacs-xref
+     'emacs-xref-find-definitions)
+    (nemacs-runtime-image-preload--install-module-command
+     'xref-pop-marker-stack
+     'emacs-xref
+     'emacs-xref-pop-marker-stack)
+    (provide 'xref))
+  (unless (featurep 'compile)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-compile-run 'emacs-compile 'emacs-compile-run)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-compile-errors 'emacs-compile 'emacs-compile-errors)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-compile-next-error 'emacs-compile 'emacs-compile-next-error)
+    (nemacs-runtime-image-preload--install-module-command
+     'compile 'emacs-compile 'emacs-compile-run)
+    (nemacs-runtime-image-preload--install-module-command
+     'grep 'emacs-compile 'emacs-compile-run)
+    (nemacs-runtime-image-preload--install-module-command
+     'next-error 'emacs-compile 'emacs-compile-next-error)
+    (nemacs-runtime-image-preload--install-module-command
+     'previous-error 'emacs-compile 'emacs-compile-previous-error)
+    (provide 'compile))
+  (unless (featurep 'vc)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-vc-status 'emacs-vc 'emacs-vc-status)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-vc-diff 'emacs-vc 'emacs-vc-diff)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-vc-print-log 'emacs-vc 'emacs-vc-print-log)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-vc-dir 'emacs-vc 'emacs-vc-dir)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-vc-annotate 'emacs-vc 'emacs-vc-annotate)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-vc-revision-diff 'emacs-vc 'emacs-vc-revision-diff)
+    (nemacs-runtime-image-preload--install-module-command
+     'vc-diff 'emacs-vc 'emacs-vc-diff)
+    (nemacs-runtime-image-preload--install-module-command
+     'vc-print-log 'emacs-vc 'emacs-vc-print-log)
+    (nemacs-runtime-image-preload--install-module-command
+     'vc-dir 'emacs-vc 'emacs-vc-dir)
+    (nemacs-runtime-image-preload--install-module-command
+     'vc-annotate 'emacs-vc 'emacs-vc-annotate)
+    (provide 'vc))
+  t)
+
+(defun nemacs-runtime-image-preload--install-shell-core ()
+  "Install minimal shell/eshell daily-driver facades."
+  (require 'emacs-symbol)
+  (unless (featurep 'shell)
+    (unless (boundp 'emacs-shell-buffer-name)
+      (defvar emacs-shell-buffer-name "*shell*"))
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-shell 'emacs-shell 'emacs-shell)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-shell-mode 'emacs-shell 'emacs-shell-mode)
+    (nemacs-runtime-image-preload--install-module-command
+     'emacs-shell-send-input 'emacs-shell 'emacs-shell-send-input)
+    (nemacs-runtime-image-preload--install-module-command
+     'shell 'emacs-shell 'emacs-shell)
+    (nemacs-runtime-image-preload--install-module-command
+     'shell-mode 'emacs-shell 'emacs-shell-mode)
+    (provide 'shell))
+  (unless (featurep 'eshell)
+    (unless (boundp 'eshell-buffer-name)
+      (defvar eshell-buffer-name "*eshell*"))
+    (nemacs-runtime-image-preload--install-module-command
+     'eshell 'emacs-eshell 'eshell)
+    (nemacs-runtime-image-preload--install-module-command
+     'eshell-mode 'emacs-eshell 'eshell-mode)
+    (nemacs-runtime-image-preload--install-module-command
+     'eshell-send-input 'emacs-eshell 'eshell-send-input)
+    (provide 'eshell))
+  t)
+
 (defun nemacs-runtime-image-preload--install-process-core ()
   "Install process API facades without source `load'.
 
@@ -318,8 +457,11 @@ image startup."
   (let* ((base (cond
                 ((boundp 'nemacs-runtime-image-preload--script-directory)
                  nemacs-runtime-image-preload--script-directory)
-                ((or load-file-name buffer-file-name)
-                 (file-name-directory (or load-file-name buffer-file-name)))
+                ((or (and (boundp 'load-file-name) load-file-name)
+                     (and (boundp 'buffer-file-name) buffer-file-name))
+                 (file-name-directory
+                  (or (and (boundp 'load-file-name) load-file-name)
+                      (and (boundp 'buffer-file-name) buffer-file-name))))
                 (t nil)))
          (preload (and base
                        (expand-file-name
@@ -2923,6 +3065,7 @@ image startup."
   (nemacs-runtime-image-preload--install-seq-core)
   (nemacs-runtime-image-preload--install-map-core)
   (nemacs-runtime-image-preload--install-lisp-core)
+  (require 'emacs-symbol)
   (nemacs-runtime-image-preload--install-case-table-core)
   (nemacs-runtime-image-preload--install-cdl-core)
   (nemacs-runtime-image-preload--install-range-core)
@@ -3265,8 +3408,8 @@ image startup."
 REPO-ROOT is the repository root (matches the other preload entry points'
 REPO-ROOT convention); the Magit bridge bundle and its own preconditions
 are resolved relative to it."
-  (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo-root)
-        nil 'no-message t t)
+  (nemacs-runtime-image-preload--load-source-file
+   (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo-root))
   (setq nelisp-emacs-magit-bridge-repo-root repo-root)
   (nelisp-emacs-magit-bridge-load)
   t)

@@ -30,13 +30,18 @@
   "Run BODY with clean help/buffer/keymap state."
   (declare (indent 0) (debug (body)))
   `(let ((major-mode 'fundamental-mode)
-         (mode-name "Fundamental"))
+         (mode-name "Fundamental")
+         ;; `emacs-help-test--fresh-help-state' swaps in a bare global
+         ;; map for the help bindings; restore the original map so
+         ;; later suites keep the standard global bindings.
+         (emacs-help-test--saved-global-map (current-global-map)))
      (unwind-protect
          (progn
            (when (fboundp 'emacs-mode-reset)
              (emacs-mode-reset))
            (emacs-help-test--fresh-help-state)
            ,@body)
+       (use-global-map emacs-help-test--saved-global-map)
        (when (get-buffer emacs-help--buffer-name)
          (kill-buffer emacs-help--buffer-name))
        (when (fboundp 'emacs-mode-reset)

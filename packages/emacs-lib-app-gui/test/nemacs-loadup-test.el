@@ -10,7 +10,10 @@
 
 (require 'ert)
 (require 'nemacs-loadup)
+(require 'emacs-load)
 (require 'cl-lib)
+
+(defvar nemacs-loadup-test-order nil)
 
 (defmacro nemacs-loadup-test--with-fresh-bootstrap (&rest body)
   "Run BODY with a clean bootstrap state."
@@ -47,7 +50,7 @@
   (nemacs-loadup-test--with-fresh-bootstrap
     (should-not nemacs-initialized)
     (let ((r (nemacs-init t)))
-      (should (eq 'ready r)))
+    (should (eq 'ready r)))
     (should nemacs-initialized)))
 
 ;;;; D. nemacs-init twice signals
@@ -132,6 +135,64 @@
                     emacs-mode-builtins
                     emacs-process-builtins))
       (should (featurep feat)))))
+
+;;;; K. User init loading
+
+(ert-deftest nemacs-loadup-test/user-init-loads-early-then-init ()
+  (nemacs-loadup-test--with-fresh-bootstrap
+    (let* ((dir (file-name-as-directory
+                 (make-temp-file "nemacs-loadup-init-" t)))
+           (process-environment (copy-sequence process-environment))
+           (init-file-user "")
+           (package-enable-at-startup nil)
+           (nemacs-loadup-test-order nil))
+      (unwind-protect
+          (progn
+            (setenv "NEMACS_USER_EMACS_DIRECTORY" dir)
+            (write-region
+             "(setq nemacs-loadup-test-order (append nemacs-loadup-test-order '(early)))\n"
+             nil (expand-file-name "early-init.el" dir))
+            (write-region
+             "(setq nemacs-loadup-test-order (append nemacs-loadup-test-order '(init)))\n"
+             nil (expand-file-name "init.el" dir))
+            (nemacs-load-user-init-files)
+            (should (equal nemacs-loadup-test-order '(early init)))
+            (should (equal early-init-file
+                           (expand-file-name "early-init.el" dir)))
+            (should (equal user-init-file
+                           (expand-file-name "init.el" dir)))
+            (should (equal user-emacs-directory dir))
+            (should nemacs-init-file-loaded)
+            (should-not init-file-had-error)
+            (should-not nemacs-init-file-error))
+        (delete-directory dir t)))))
+
+(ert-deftest nemacs-loadup-test/user-init-error-is-recorded ()
+  (nemacs-loadup-test--with-fresh-bootstrap
+    (let* ((dir (file-name-as-directory
+                 (make-temp-file "nemacs-loadup-init-error-" t)))
+           (process-environment (copy-sequence process-environment))
+           (init-file-user "")
+           (package-enable-at-startup nil))
+      (unwind-protect
+          (progn
+            (setenv "NEMACS_USER_EMACS_DIRECTORY" dir)
+            (write-region "(setq nemacs-loadup-test-early-ok t)\n"
+                          nil (expand-file-name "early-init.el" dir))
+            (write-region "(error \"fixture boom\")\n"
+                          nil (expand-file-name "init.el" dir))
+            (nemacs-load-user-init-files)
+            (should (equal early-init-file
+                           (expand-file-name "early-init.el" dir)))
+            (should-not user-init-file)
+            (should nemacs-init-file-loaded)
+            (should init-file-had-error)
+            (should (consp nemacs-init-file-error))
+            (should (equal (car nemacs-init-file-error)
+                           (expand-file-name "init.el" dir)))
+            (should (string-match-p "fixture boom"
+                                    (cdr nemacs-init-file-error))))
+        (delete-directory dir t)))))
 
 (provide 'nemacs-loadup-test)
 

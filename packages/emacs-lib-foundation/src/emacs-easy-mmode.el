@@ -14,11 +14,29 @@
 
 ;;; Code:
 
-(defvar emacs-easy-mmode--standalone-p
+(defun emacs-easy-mmode--standalone-runtime-p ()
+  "Return non-nil when running under the standalone NeLisp runtime."
   (or (not (boundp 'emacs-version))
-      (and (fboundp 'nelisp--eval-source-string)
-           (or (not (fboundp 'define-minor-mode))
-               (get 'define-minor-mode 'emacs-stub-bulk))))
+      (not (stringp emacs-version))
+      (fboundp 'nelisp--eval-source-string)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (fboundp 'nelisp-process-start)))
+
+(defun emacs-easy-mmode--define-minor-mode-needs-fallback-p ()
+  "Return non-nil when `define-minor-mode' should be replaced."
+  (or (not (fboundp 'define-minor-mode))
+      (eq (symbol-function 'define-minor-mode)
+          'nelisp--unbound-marker)
+      (get 'define-minor-mode 'emacs-stub-bulk)))
+
+(defun emacs-easy-mmode--ensure-var (symbol value)
+  "Set SYMBOL to VALUE when it is missing or carries the NeLisp unbound marker."
+  (when (or (not (boundp symbol))
+            (eq (symbol-value symbol) 'nelisp--unbound-marker))
+    (set symbol value)))
+
+(defvar emacs-easy-mmode--standalone-p
+  (emacs-easy-mmode--standalone-runtime-p)
   "Non-nil when the standalone fallback should replace easy-mmode stubs.
 
 The `(not (fboundp \\='define-minor-mode))' arm matters for load order
@@ -30,7 +48,14 @@ no-op macro won and every vendor `define-minor-mode' call (for example
 `paragraph-indent-minor-mode' in text-mode.el) silently defined
 nothing.")
 
+(setq emacs-easy-mmode--standalone-p
+      (emacs-easy-mmode--standalone-runtime-p))
+
 (when emacs-easy-mmode--standalone-p
+  (emacs-easy-mmode--ensure-var 'minor-mode-alist nil)
+  (emacs-easy-mmode--ensure-var 'minor-mode-map-alist nil)
+  (emacs-easy-mmode--ensure-var 'global-minor-modes nil)
+
   (defun emacs-easy-mmode--keyword-tail (body)
     "Return BODY with leading keyword/value pairs removed."
     (while (and (consp body)

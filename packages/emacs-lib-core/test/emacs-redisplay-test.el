@@ -215,7 +215,7 @@
                             (emacs-redisplay-glyph-row m 2)))))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-truncates-long-line ()
-  "Lines wider than the window width are clipped (truncate-lines = t)."
+  "Lines wider than the window width are clipped, ending in `$' (truncate-lines = t)."
   (emacs-redisplay-test--with-fresh-world
     (emacs-redisplay-test--with-buffer b (make-string 200 ?x)
       (let* ((h (emacs-redisplay-init))
@@ -225,7 +225,9 @@
         (let* ((m (emacs-redisplay-redisplay-window h w))
                (row (emacs-redisplay-glyph-row m 0)))
           (should (<= (emacs-redisplay-glyph-row-used row) width))
-          (should (string-match-p "^x+\\'"
+          ;; Doc 06 E6: a clipped line ends in the `$' truncation marker
+          ;; (Emacs TTY convention under `truncate-lines').
+          (should (string-match-p "^x+\\$\\'"
                                   (emacs-redisplay-glyph-row-text row))))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-tab-expands ()
@@ -244,7 +246,7 @@
           (should (string-match-p "^a +b$" text)))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-window-narrow-region ()
-  "Smaller window width forces narrower row (truncation)."
+  "Smaller window width forces narrower row, truncated with a `$' marker."
   (emacs-redisplay-test--with-fresh-world
     (emacs-redisplay-test--with-buffer b "abcdef"
       (let* ((h (emacs-redisplay-init))
@@ -256,7 +258,8 @@
                (row (emacs-redisplay-glyph-row m 0)))
           (should (= 4 (emacs-redisplay-glyph-matrix-width m)))
           (should (<= (emacs-redisplay-glyph-row-used row) 4))
-          (should (string= "abcd"
+          ;; "abcdef" clipped to a 4-cell window: 3 chars + `$' marker.
+          (should (string= "abc$"
                            (emacs-redisplay-glyph-row-text row))))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-window-start-offsets-display ()

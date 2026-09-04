@@ -15,14 +15,18 @@ set -eu
 
 DIR=${1:?"usage: nemacs-magit-fixture.sh DIR [NUM_COMMITS]"}
 NUM_COMMITS=${2:-15}
+GITDIR="${DIR}.git"
 
 rm -rf "$DIR"
+rm -rf "$GITDIR"
 mkdir -p "$DIR"
+git init -q -b main --separate-git-dir "$GITDIR" "$DIR"
 cd "$DIR"
-
-git init -q -b main
 git config user.name "NeLisp Magit Fixture"
 git config user.email "nelisp-magit-fixture@example.invalid"
+# Keep the fixture deterministic even when the developer environment has
+# global commit hooks or a shared hooksPath configured.
+git config core.hooksPath /dev/null
 
 i=1
 while [ "$i" -le "$NUM_COMMITS" ]; do

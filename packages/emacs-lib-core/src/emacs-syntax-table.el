@@ -416,6 +416,42 @@ syntax flag bits are not modeled; the INTERNAL slot is nil."
     "Return a new syntax char-table inheriting from PARENT or the standard."
     (emacs-syntax-table-make parent)))
 
+(when (emacs-syntax-table--install-function-p 'copy-syntax-table)
+  (defun copy-syntax-table (&optional table)
+    "Return a copy of TABLE, or of the standard syntax table."
+    (emacs-char-table-copy
+     (or table (emacs-syntax-table-standard)))))
+
+(unless (boundp 'emacs-lisp-mode-syntax-table)
+  ;; Approximation sufficient for url.el consumers until a vendored
+  ;; elisp-mode syntax table is baked into the standalone runtime.
+  (defvar emacs-lisp-mode-syntax-table
+    (let ((table (make-syntax-table)))
+      (modify-syntax-entry ?- "_" table)
+      (modify-syntax-entry ?+ "_" table)
+      (modify-syntax-entry ?* "_" table)
+      (modify-syntax-entry ?/ "_" table)
+      (modify-syntax-entry ?_ "_" table)
+      (modify-syntax-entry ?~ "_" table)
+      (modify-syntax-entry ?! "_" table)
+      (modify-syntax-entry ?$ "_" table)
+      (modify-syntax-entry ?% "_" table)
+      (modify-syntax-entry ?^ "_" table)
+      (modify-syntax-entry ?& "_" table)
+      (modify-syntax-entry ?= "_" table)
+      (modify-syntax-entry ?< "_" table)
+      (modify-syntax-entry ?> "_" table)
+      (modify-syntax-entry ?? "_" table)
+      (modify-syntax-entry ?@ "_" table)
+      (modify-syntax-entry ?\; "<" table)
+      (modify-syntax-entry ?\n ">" table)
+      (modify-syntax-entry ?` "'" table)
+      (modify-syntax-entry ?' "'" table)
+      (modify-syntax-entry ?, "'" table)
+      (modify-syntax-entry ?# "'" table)
+      table)
+    "Approximate syntax table for Emacs Lisp mode in standalone runtime."))
+
 (when (emacs-syntax-table--install-function-p 'string-to-syntax)
   (defun string-to-syntax (descriptor)
     "Parse DESCRIPTOR into a raw (CLASS-CODE . MATCH) syntax cons."

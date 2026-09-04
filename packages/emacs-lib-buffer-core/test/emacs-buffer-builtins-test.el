@@ -209,8 +209,25 @@
                       6 buf nil)))
         (should (= 5 (emacs-buffer-builtins-previous-single-property-change
                       5 'face buf nil)))
-        (should (= 9 (emacs-buffer-builtins-next-single-property-change
+      (should (= 9 (emacs-buffer-builtins-next-single-property-change
                       1 'face "string-object" 9)))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-property-any-uses-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "props-any")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (emacs-buffer-put-text-property 3 5 'face 'bold buf)
+        (should (= 3 (emacs-buffer-text-property-any
+                      1 6 'face 'bold buf)))
+        (should (= 3 (emacs-buffer-text-property-any
+                      3 5 'face 'bold buf)))
+        (should-not (emacs-buffer-text-property-any
+                     1 3 'face 'bold buf))
+        (should-not (emacs-buffer-text-property-any
+                     1 6 'face 'italic buf))
+        (should-not (emacs-buffer-text-property-any
+                     1 6 'face 'bold "string-object"))))))
 
 (ert-deftest emacs-buffer-builtins-test/ensure-initial-buffer-creates-current ()
   (emacs-buffer-builtins-test--with-fresh-world
@@ -226,6 +243,16 @@
       (should (eq existing (emacs-buffer-builtins-ensure-initial-buffer)))
       (should (eq existing (nelisp-ec-current-buffer)))
       (should-not (cdr (assoc "*scratch*<2>" nelisp-ec--buffers))))))
+
+(ert-deftest emacs-buffer-builtins-test/sxhash-fallback-is-deterministic ()
+  (let ((a (emacs-buffer-builtins--sxhash-object '(foo 1 "bar")))
+        (b (emacs-buffer-builtins--sxhash-object '(foo 1 "bar")))
+        (c (emacs-buffer-builtins--sxhash-object '(foo 2 "bar"))))
+    (should (integerp a))
+    (should (= a b))
+    (should-not (= a c))
+    (should (= a (emacs-buffer-builtins--sxhash-string
+                  (prin1-to-string '(foo 1 "bar")))))))
 
 ;;;; B. Temp-buffer style roundtrip via nelisp-ec-*
 

@@ -30,7 +30,20 @@
 ;;; Code:
 
 (defconst emacs-stub--load-directory
-  (file-name-directory (or load-file-name buffer-file-name))
+  (let ((source-file
+         (or (and (boundp 'load-file-name) load-file-name)
+             (and (boundp 'buffer-file-name) buffer-file-name))))
+    (cond
+     (source-file
+      (file-name-directory source-file))
+     ((and (boundp 'default-directory)
+           (stringp default-directory))
+      (let ((src (expand-file-name "src/" default-directory)))
+        (if (and (fboundp 'file-directory-p)
+                 (file-directory-p src))
+            src
+          default-directory)))
+     (t nil)))
   "Directory that contains the stub facade and its sibling features.")
 
 (defun emacs-stub--load-feature (feature)
@@ -200,6 +213,72 @@ reads it to detect GUI mode without round-tripping `(window-system)')."))
 (unless (boundp 'user-full-name)
   (defvar user-full-name nil))
 
+(unless (boundp 'dired-buffers)
+  (defvar dired-buffers nil
+    "Dired buffer registry alist.
+
+Vendor code such as `org-capture' inspects this opportunistically even when
+Dired itself is not active, so the compatibility surface must at least expose
+the variable."))
+
+(unless (boundp 'internal--daemon-sockname)
+  (defvar internal--daemon-sockname nil
+    "Standalone compatibility scalar for daemon socket path probes."))
+
+(unless (boundp 'internal--daemon-mode)
+  (defvar internal--daemon-mode nil
+    "Standalone compatibility scalar for daemon mode probes."))
+
+(unless (boundp 'face-remapping-alist)
+  (defvar face-remapping-alist nil
+    "Buffer-local face remapping metadata.
+
+Vendor packages may bind or inspect this even on non-graphical runtime
+paths.  The compatibility surface only needs the variable to exist."))
+
+(unless (boundp 'font-lock-global-modes)
+  (defvar font-lock-global-modes t
+    "Compatibility binding for vendor font-lock consumers."))
+
+(unless (boundp 'line-move-visual)
+  (defvar line-move-visual t
+    "Compatibility binding for vendor line-motion consumers."))
+
+(unless (boundp 'exec-directory)
+  (defvar exec-directory
+    (let* ((nelisp-bin (and (fboundp 'getenv) (getenv "NELISP_BIN")))
+           (nelisp-bin-directory
+            (and (stringp nelisp-bin)
+                 (> (length nelisp-bin) 0)
+                 (if (= (aref nelisp-bin (1- (length nelisp-bin))) ?/)
+                     nelisp-bin
+                   (file-name-directory nelisp-bin))))
+           ;; Host Emacs 30.1 reports this exact directory on the current
+           ;; build machine.  Reuse it when present because it matches the
+           ;; canonical "directory of auxiliary Emacs executables" shape.
+           (host-emacs-exec-directory
+            "/usr/libexec/emacs/30.1/x86_64-linux-gnu/"))
+      (cond
+       ((stringp nelisp-bin-directory)
+        nelisp-bin-directory)
+       ((and (fboundp 'file-directory-p)
+             (file-directory-p host-emacs-exec-directory))
+        host-emacs-exec-directory)
+       ((and (stringp emacs-stub--load-directory)
+             (fboundp 'file-directory-p)
+             (file-directory-p emacs-stub--load-directory))
+        emacs-stub--load-directory)
+       (t "/tmp/")))
+    "Compatibility binding for the directory of Emacs helper executables.
+
+Standalone NeLisp does not ship the host Emacs auxiliary binaries, so this
+shim prefers the directory that contains `NELISP_BIN' when available.  When
+that is absent, it falls back to the current host Emacs 30.1 oracle path
+(`emacs -Q --batch --eval (prin1 exec-directory)` => the existing
+`/usr/libexec/emacs/30.1/x86_64-linux-gnu/` directory on this machine), then
+to `emacs-stub--load-directory', and finally `/tmp/' as an existing
+last-resort directory."))
+
 (defun emacs-display-window-system (&optional frame)
   "Return the active window-system symbol (= `emacs-display-system'),
 ignoring FRAME (= future per-frame override slot)."
@@ -266,6 +345,39 @@ font/charset capability query."
 
 (when (emacs-stub--install-function-p 'char-displayable-p)
   (defalias 'char-displayable-p #'emacs-display-char-displayable-p))
+
+(unless (fboundp 'find-buffer-visiting)
+  (defun find-buffer-visiting (filename)
+    "Return a live buffer visiting FILENAME, or nil."
+    (catch 'found
+      (dolist (buffer (buffer-list))
+        (with-current-buffer buffer
+          (when (and (boundp 'buffer-file-name)
+                     (stringp buffer-file-name)
+                     (equal (expand-file-name buffer-file-name)
+                            (expand-file-name filename)))
+            (throw 'found buffer))))
+      nil)))
+
+(unless (fboundp 'save-window-excursion)
+  (defmacro save-window-excursion (&rest body)
+    "Evaluate BODY and restore the prior window configuration."
+    `(let ((emacs-stub--saved-window-config
+            (and (fboundp 'current-window-configuration)
+                 (current-window-configuration))))
+       (unwind-protect
+           (progn ,@body)
+         (when (and emacs-stub--saved-window-config
+                    (fboundp 'set-window-configuration))
+           (set-window-configuration emacs-stub--saved-window-config))))))
+
+(unless (fboundp 'untabify)
+  (defun untabify (start end &optional _arg)
+    "Replace tab characters with spaces between START and END."
+    (save-excursion
+      (goto-char start)
+      (while (search-forward "\t" end t)
+        (replace-match "        " t t)))))
 
 
 ;;;; --- window.c -----------------------------------------------------------
@@ -357,6 +469,23 @@ font/charset capability query."
     (set symbol value)))
 
 (when (or (not (boundp 'emacs-version))
+          (not (fboundp 'set-default-toplevel-value)))
+  (defalias 'set-default-toplevel-value #'set-default))
+
+(when (or (not (boundp 'emacs-version))
+          (not (fboundp 'default-toplevel-value)))
+  (defalias 'default-toplevel-value #'default-value))
+
+(when (or (not (boundp 'emacs-version))
+          (not (fboundp 'internal--define-uninitialized-variable)))
+  (defun internal--define-uninitialized-variable (symbol &optional doc)
+    "Mark SYMBOL as declared without assigning it a value."
+    (when doc
+      (put symbol 'variable-documentation doc))
+    (put symbol 'custom--uninitialized t)
+    symbol))
+
+(when (or (not (boundp 'emacs-version))
           (get 'make-variable-buffer-local 'emacs-stub-bulk)
           (not (fboundp 'make-variable-buffer-local)))
   (defun make-variable-buffer-local (variable)
@@ -396,10 +525,95 @@ set nil or another constant symbol in standalone NeLisp."
 (unless (fboundp 'kbd)
   (defun kbd (keys) (ignore) keys))
 
+(defun emacs-stub--human-readable-format (size prefix flavor space unit)
+  "Format SIZE with PREFIX according to FLAVOR, SPACE, and UNIT."
+  (let ((prefixed-unit (if (eq flavor 'iec)
+                           (concat
+                            (if (string= prefix "k") "K" prefix)
+                            (if (string= prefix "") "" "i")
+                            (or unit "B"))
+                         (concat prefix unit))))
+    (format (if (and (< size 10) (not (string= prefix ""))) "%.1f%s%s" "%.0f%s%s")
+            size
+            (or space "")
+            prefixed-unit)))
+
+(defun emacs-stub--file-size-human-readable (file-size &optional flavor space unit)
+  "Produce a human-readable size string for FILE-SIZE."
+  (let ((power (if (or (null flavor) (eq flavor 'iec)) 1024.0 1000.0))
+        (prefixes '("" "k" "M" "G" "T" "P" "E" "Z" "Y" "R" "Q")))
+    (while (and (>= file-size power) (cdr prefixes))
+      (setq file-size (/ file-size power)
+            prefixes (cdr prefixes)))
+    (emacs-stub--human-readable-format
+     file-size (car prefixes) flavor space unit)))
+
+(unless (fboundp 'file-size-human-readable)
+  (defalias 'file-size-human-readable #'emacs-stub--file-size-human-readable))
+
+(defun emacs-stub--substitute-env-vars (name)
+  "Substitute `$VAR' and `${VAR}' sequences in NAME."
+  (if (fboundp 'substitute-env-vars)
+      (substitute-env-vars name)
+    (let ((result name)
+          (start 0))
+      (while (string-match "\\$\\(?:{\\([[:alnum:]_]+\\)}\\|\\([[:alnum:]_]+\\)\\)" result start)
+        (let* ((match (match-string 0 result))
+               (var (or (match-string 1 result) (match-string 2 result)))
+               (value (getenv var))
+               (replacement (or value match))
+               (begin (match-beginning 0)))
+          (setq result (replace-match replacement t t result)
+                start (+ begin (length replacement)))))
+      result)))
+
+(defun emacs-stub--parse-colon-path-entry (entry double-slash-special-p)
+  "Normalize one parse-colon-path ENTRY.
+DOUBLE-SLASH-SPECIAL-P mirrors `files.el' host handling."
+  (if (equal "" entry) nil
+    (let ((dir (file-name-as-directory entry)))
+      (if (string-match "\\`//+" dir)
+          (substring dir (- (match-end 0)
+                            (if double-slash-special-p 2 1)))
+        dir))))
+
+(unless (fboundp 'parse-colon-path)
+  (defun parse-colon-path (search-path)
+    "Explode SEARCH-PATH into normalized directory names.
+Empty elements become nil, meaning `default-directory'."
+    (when (stringp search-path)
+      (let ((spath (emacs-stub--substitute-env-vars search-path))
+            (double-slash-special-p
+             (memq system-type '(windows-nt cygwin ms-dos))))
+        (mapcar (lambda (entry)
+                  (emacs-stub--parse-colon-path-entry
+                   entry double-slash-special-p))
+                (split-string spath path-separator))))))
+
 (unless (fboundp 'defvaralias)
+  ;; Known limits: a plain `defvar' that runs after `defvaralias' does not
+  ;; resync because `defvar' is a special form and cannot be hooked here;
+  ;; bake-time normalization is the future path.  Aliases are also not live:
+  ;; later `setq' on the target can diverge from the copied alias value.
+  (defvar nelisp--defvaralias-registry nil
+    "Alist of standalone `defvaralias' fallback registrations.")
+
+  (defun nelisp--defvaralias-resync (target)
+    "Copy TARGET's current value into standalone fallback aliases."
+    (let ((current nelisp--defvaralias-registry))
+      (while current
+        (let ((pair (car current)))
+          (when (and (eq (cdr pair) target)
+                     (boundp target))
+            (set (car pair) (symbol-value target))))
+        (setq current (cdr current)))))
+
   (defun defvaralias (new-alias base-variable &optional docstring)
-    "Stub: copy current value (no live aliasing)."
+    "Stub: register a copy-only alias for BASE-VARIABLE."
     (ignore docstring)
+    (setq nelisp--defvaralias-registry
+          (cons (cons new-alias base-variable)
+                nelisp--defvaralias-registry))
     (when (boundp base-variable)
       (set new-alias (symbol-value base-variable)))
     new-alias))
@@ -436,54 +650,113 @@ set nil or another constant symbol in standalone NeLisp."
 
 ;;;; --- version helpers -----------------------------------------------------
 
-(defun emacs-stub--version-skip-nondigits (string index)
-  "Return first digit position in STRING at or after INDEX."
-  (let ((len (length string)))
-    (while (and (< index len)
-                (let ((char (aref string index)))
-                  (or (< char ?0) (> char ?9))))
-      (setq index (1+ index)))
-    index))
+(unless (boundp 'version-separator)
+  (defvar version-separator "."
+    "String separating numeric version components."))
 
-(defun emacs-stub--version-read-component (string index)
-  "Read one numeric version component from STRING at INDEX.
-Return (VALUE . NEXT-INDEX), where VALUE is nil when no component remains."
-  (let ((len (length string))
-        (value 0)
-        (seen nil))
-    (setq index (emacs-stub--version-skip-nondigits string index))
-    (while (and (< index len)
-                (let ((char (aref string index)))
-                  (and (>= char ?0) (<= char ?9))))
-      (setq value (+ (* value 10) (- (aref string index) ?0)))
-      (setq seen t)
-      (setq index (1+ index)))
-    (cons (and seen value) index)))
+(unless (boundp 'version-regexp-alist)
+  (defvar version-regexp-alist
+    '(("^[-._+]$"                                           . -4)
+      ("^[-._+ ]?\\(cvs\\|git\\|bzr\\|svn\\|hg\\|darcs\\)$" . -4)
+      ("^[-._+ ]?unknown$"                                  . -4)
+      ("^[-._+ ]?alpha$"                                    . -3)
+      ("^[-._+ ]?beta$"                                     . -2)
+      ("^[-._+ ]?\\(pre\\|rc\\)$"                           . -1))
+    "Association between non-numeric version fragments and priorities."))
+
+(unless (fboundp 'version-list-not-zero)
+  (defun version-list-not-zero (list)
+    "Return the first non-zero element of LIST, or 0 when none remains."
+    (while (and list (zerop (car list)))
+      (setq list (cdr list)))
+    (or (car list) 0)))
+
+(unless (fboundp 'version-to-list)
+  (defun version-to-list (ver)
+    "Convert version string VER into a list of integers."
+    (unless (stringp ver)
+      (error "Version must be a string"))
+    (if (and (>= (length ver) (length version-separator))
+             (string-equal (substring ver 0 (length version-separator))
+                           version-separator))
+        (setq ver (concat "0" ver)))
+    (unless (string-match-p "^[0-9]" ver)
+      (error "Invalid version syntax: `%s' (must start with a number)" ver))
+    (save-match-data
+      (let ((i 0)
+            (case-fold-search t)
+            lst s al)
+        (while (and (setq s (string-match "[0-9]+" ver i))
+                    (= s i))
+          (setq lst (cons (string-to-number
+                           (substring ver i (match-end 0)))
+                          lst)
+                i (match-end 0))
+          (when (and (setq s (string-match "[^0-9]+" ver i))
+                     (= s i))
+            (setq s (substring ver i (match-end 0))
+                  i (match-end 0))
+            (unless (string= s version-separator)
+              (setq al version-regexp-alist)
+              (while (and al (not (string-match (caar al) s)))
+                (setq al (cdr al)))
+              (cond
+               (al
+                (push (cdar al) lst))
+               ((and (string-match "^[-._+ ]?\\([a-zA-Z]\\)$" s)
+                     (= i (length ver)))
+                (push (- (aref (downcase (match-string 1 s)) 0)
+                         ?a -1)
+                      lst))
+               (t
+                (error "Invalid version syntax: `%s'" ver))))))
+        (nreverse lst)))))
+
+(unless (fboundp 'version-list-<)
+  (defun version-list-< (l1 l2)
+    "Return non-nil when version list L1 is lower than L2."
+    (while (and l1 l2 (= (car l1) (car l2)))
+      (setq l1 (cdr l1)
+            l2 (cdr l2)))
+    (cond
+     ((and l1 l2) (< (car l1) (car l2)))
+     ((and (null l1) (null l2)) nil)
+     (l1 (< (version-list-not-zero l1) 0))
+     (t (< 0 (version-list-not-zero l2))))))
+
+(unless (fboundp 'version-list-=)
+  (defun version-list-= (l1 l2)
+    "Return non-nil when version list L1 is equal to L2."
+    (while (and l1 l2 (= (car l1) (car l2)))
+      (setq l1 (cdr l1)
+            l2 (cdr l2)))
+    (cond
+     ((and l1 l2) nil)
+     ((and (null l1) (null l2)))
+     (l1 (zerop (version-list-not-zero l1)))
+     (t (zerop (version-list-not-zero l2))))))
+
+(unless (fboundp 'version-list-<=)
+  (defun version-list-<= (l1 l2)
+    "Return non-nil when version list L1 is lower than or equal to L2."
+    (while (and l1 l2 (= (car l1) (car l2)))
+      (setq l1 (cdr l1)
+            l2 (cdr l2)))
+    (cond
+     ((and l1 l2) (< (car l1) (car l2)))
+     ((and (null l1) (null l2)))
+     (l1 (<= (version-list-not-zero l1) 0))
+     (t (<= 0 (version-list-not-zero l2))))))
 
 (defun emacs-stub--version-compare (v1 v2)
-  "Compare V1 and V2 as dotted numeric version strings.
+  "Compare V1 and V2 using Emacs version ordering.
 Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
-  (let ((s1 (if (stringp v1) v1 (format "%s" v1)))
-        (s2 (if (stringp v2) v2 (format "%s" v2)))
-        (i1 0)
-        (i2 0)
-        (result 0)
-        (done nil))
-    (while (not done)
-      (setq i1 (emacs-stub--version-skip-nondigits s1 i1))
-      (setq i2 (emacs-stub--version-skip-nondigits s2 i2))
-      (if (and (>= i1 (length s1)) (>= i2 (length s2)))
-          (setq done t)
-        (let* ((c1 (emacs-stub--version-read-component s1 i1))
-               (c2 (emacs-stub--version-read-component s2 i2))
-               (n1 (or (car c1) 0))
-               (n2 (or (car c2) 0)))
-          (setq i1 (cdr c1))
-          (setq i2 (cdr c2))
-          (cond
-           ((< n1 n2) (setq result -1 done t))
-           ((> n1 n2) (setq result 1 done t))))))
-    result))
+  (let ((l1 (version-to-list (if (stringp v1) v1 (format "%s" v1))))
+        (l2 (version-to-list (if (stringp v2) v2 (format "%s" v2)))))
+    (cond
+     ((version-list-< l1 l2) -1)
+     ((version-list-= l1 l2) 0)
+     (t 1))))
 
 (unless (fboundp 'version<)
   (defun version< (v1 v2)
@@ -494,6 +767,56 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
   (defun version<= (v1 v2)
     "Return non-nil when version string V1 is not newer than V2."
     (not (version< v2 v1))))
+
+(defvar emacs-stub--buttonize-state nil
+  "State for the lazy `buttonize' loader.
+nil means not tried yet, `loaded' means vendor button.el won, and `fallback'
+means the reduced headless shim stays active.")
+
+(defun emacs-stub--buttonize-fallback (string _callback &optional _data _help-echo)
+  "Return STRING unchanged for headless button fallbacks."
+  string)
+
+(defun emacs-stub--ensure-buttonize ()
+  "Load vendor button.el when available, otherwise keep the fallback shim."
+  (unless emacs-stub--buttonize-state
+    (setq emacs-stub--buttonize-state 'loading)
+    (setq emacs-stub--buttonize-state
+          (if (ignore-errors (require 'button nil t))
+              (if (and (featurep 'button)
+                       (not (eq (symbol-function 'buttonize)
+                                #'buttonize)))
+                  'loaded
+                'fallback)
+            'fallback))))
+
+(unless (fboundp 'buttonize)
+  (defun buttonize (string callback &optional data help-echo)
+    "Make STRING into a button when button.el is available.
+When vendor button.el is unavailable, return STRING unchanged."
+    (emacs-stub--ensure-buttonize)
+    (if (eq emacs-stub--buttonize-state 'loaded)
+        (funcall (symbol-function 'buttonize) string callback data help-echo)
+      (emacs-stub--buttonize-fallback string callback data help-echo))))
+
+(unless (fboundp 'buttonize-region)
+  (defun buttonize-region (start end callback &optional data help-echo)
+    "Make region START..END into a button when button.el is available.
+When vendor button.el is unavailable, leave the region unchanged."
+    (emacs-stub--ensure-buttonize)
+    (when (eq emacs-stub--buttonize-state 'loaded)
+      (funcall (symbol-function 'buttonize-region)
+               start end callback data help-echo))))
+
+(unless (fboundp 'set-keyboard-coding-system)
+  (defun set-keyboard-coding-system (_coding-system &optional _terminal)
+    "Headless standalone fallback: accept the request and do nothing."
+    nil))
+
+(unless (fboundp 'terminal-init-xterm)
+  (defun terminal-init-xterm ()
+    "Headless standalone fallback for xterm terminal initialization."
+    nil))
 
 (unless (fboundp 'combine-change-calls)
   (defmacro combine-change-calls (_beg _end &rest body)
@@ -552,10 +875,9 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
         (records (emacs-stub--advice-records symbol)))
     (if records
         (fset symbol
-              (lambda (&rest args)
-                (emacs-stub--advice-call original
-                                         (emacs-stub--advice-records symbol)
-                                         args)))
+              (emacs-stub--advice-wrapper
+               original
+               (emacs-stub--advice-records symbol)))
       (when original
         (fset symbol original)))
     symbol))
@@ -613,6 +935,42 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
   (defun advice-member-p (function symbol)
     "Return non-nil when FUNCTION advises SYMBOL."
     (emacs-stub--advice-member-p function symbol)))
+
+(unless (fboundp 'advice--strip-macro)
+  (defun advice--strip-macro (x)
+    "Return X with a leading `macro' marker removed."
+    (if (eq 'macro (car-safe x)) (cdr x) x)))
+
+(unless (fboundp 'advice--cd*r)
+  (defun advice--cd*r (f)
+    "Return F unchanged in the standalone advice substrate."
+    f))
+
+(when (or (not (boundp 'emacs-version))
+          (emacs-stub--install-function-p 'help-function-arglist)
+          (get 'help-function-arglist 'emacs-stub-placeholder))
+  (defun help-function-arglist (def &optional _preserve-names)
+    "Return DEF's arglist for the standalone advice/help substrate."
+    (let ((f (cond ((symbolp def)
+                    (and (fboundp def) (symbol-function def)))
+                   (t def))))
+      (cond ((null f) nil)
+            ((and (consp f) (eq (car f) 'lambda)) (cadr f))
+            ((and (consp f) (eq (car f) 'closure)) (caddr f))
+            ((and (consp f) (eq (car f) 'macro))
+             (help-function-arglist (cdr f)))
+            (t nil)))))
+
+(when (or (not (boundp 'emacs-version))
+          (emacs-stub--install-function-p 'indirect-function))
+  (defun indirect-function (object)
+    "Return OBJECT's ultimate function definition."
+    (while (and (symbolp object) (fboundp object))
+      (let ((next (symbol-function object)))
+        (if (eq next object)
+            (setq object nil)
+          (setq object next))))
+    object))
 
 (unless (fboundp 'advice--p)
   (defun advice--p (object)
@@ -1269,7 +1627,7 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
 (unless (fboundp 'cc-provide)
   (defmacro cc-provide (feature)
     "Standalone load-time fallback: provide FEATURE for CC Mode fragments."
-    `(provide ,feature)))
+    (list 'provide feature)))
 
 (unless (boundp 'c-style-alist)
   (defvar c-style-alist nil))
@@ -1410,6 +1768,84 @@ Supports symbol variables and `(local 'SYMBOL)' function variables."
       (unless (member load loads)
         (put symbol 'custom-loads (cons load loads))))))
 
+(unless (boundp 'custom-current-group-alist)
+  (defvar custom-current-group-alist nil
+    "Alist mapping `load-file-name' values to custom groups.
+Each element is (FILE . GROUP)."))
+
+(unless (fboundp 'custom-current-group)
+  (defun custom-current-group ()
+    "Return the custom group of the file currently being loaded, or nil."
+    (and (boundp 'custom-current-group-alist)
+         (cdr (assoc load-file-name custom-current-group-alist)))))
+
+(unless (fboundp 'custom-add-to-group)
+  (defun custom-add-to-group (group option widget)
+    "Add OPTION/WIDGET to GROUP's `custom-group' metadata.
+Preserve existing entries, append new ones, and keep the full
+`(OPTION WIDGET)' pair unique so the same OPTION may appear with
+different widgets."
+    (let ((entry (list option widget))
+          (members (get group 'custom-group)))
+      (unless (member entry members)
+        (put group 'custom-group (append members (list entry)))))))
+
+(unless (fboundp 'custom-add-version)
+  (defun custom-add-version (symbol version)
+    "Record VERSION as SYMBOL's `custom-version' metadata."
+    (put symbol 'custom-version version)))
+
+(unless (fboundp 'custom-add-package-version)
+  (defun custom-add-package-version (symbol version)
+    "Record VERSION as SYMBOL's `custom-package-version' metadata."
+    (put symbol 'custom-package-version version)))
+
+(unless (fboundp 'custom-add-link)
+  (defun custom-add-link (symbol widget)
+    "Add WIDGET to SYMBOL's `custom-links' metadata.
+Keep the widget list unique and prepend new entries."
+    (let ((links (get symbol 'custom-links)))
+      (unless (member widget links)
+        (put symbol 'custom-links (cons widget links))))))
+
+(unless (fboundp 'custom-add-dependencies)
+  (defun custom-add-dependencies (symbol dependencies)
+    "Add DEPENDENCIES to SYMBOL's `custom-dependencies' metadata.
+Preserve existing entries and prepend any unseen dependency."
+    (let ((deps (get symbol 'custom-dependencies)))
+      (while dependencies
+        (unless (member (car dependencies) deps)
+          (setq deps (cons (car dependencies) deps)))
+        (setq dependencies (cdr dependencies)))
+      (put symbol 'custom-dependencies deps))))
+
+(unless (fboundp 'custom-handle-keyword)
+  (defun custom-handle-keyword (symbol keyword value type)
+    "Handle one Custom KEYWORD/VALUE pair for SYMBOL of TYPE."
+    (cond ((eq keyword :group) (custom-add-to-group value symbol type))
+          ((eq keyword :version) (custom-add-version symbol value))
+          ((eq keyword :package-version)
+           (custom-add-package-version symbol value))
+          ((eq keyword :link) (custom-add-link symbol value))
+          ((eq keyword :load) (custom-add-load symbol value))
+          ((eq keyword :tag) (put symbol 'custom-tag value))
+          ((eq keyword :set-after) (custom-add-dependencies symbol value))
+          (t (error "Unknown keyword %S" keyword)))))
+
+(unless (fboundp 'custom-handle-all-keywords)
+  (defun custom-handle-all-keywords (symbol keywords type)
+    "Handle all Custom KEYWORDS for SYMBOL of TYPE."
+    (while keywords
+      (let ((keyword (car keywords)))
+        (setq keywords (cdr keywords))
+        (unless (symbolp keyword)
+          (error "Junk in args %S" keywords))
+        (unless keywords
+          (error "Keyword %s is missing an argument" keyword))
+        (let ((value (car keywords)))
+          (setq keywords (cdr keywords))
+          (custom-handle-keyword symbol keyword value type))))))
+
 (unless (fboundp 'custom--add-custom-loads)
   (defun custom--add-custom-loads (symbol loads)
     "Set SYMBOL's `custom-loads' metadata, preserving existing loads."
@@ -1470,6 +1906,15 @@ friends nil so that `org-element-parse-buffer' returned nil."
       (while (and mode (not found))
         (when (memq mode modes) (setq found mode))
         (setq mode (get mode 'derived-mode-parent)))
+      (when (and (not found)
+                 (memq 'org-mode modes)
+                 (or (not (fboundp 'buffer-base-buffer))
+                     (not (ignore-errors (buffer-base-buffer))))
+                 (fboundp 'buffer-file-name)
+                 (let ((file (ignore-errors (buffer-file-name))))
+                   (and (stringp file)
+                        (string-match-p "\\.org\\'" file))))
+        (setq found 'org-mode))
       found)))
 
 (unless (fboundp 'widget-get)
@@ -1708,8 +2153,16 @@ degrades to 1 (no pow primitive in the standalone reader)."
   "Lower runtime backquote unquotes in FORM: (comma X) -> X, recursively."
   (cond
    ((not (consp form)) form)
-   ((eq (car form) 'comma) (emacs-stub--inline-lower (cadr form)))
-   ((eq (car form) 'comma-at) (emacs-stub--inline-lower (cadr form)))
+   ((let ((head (car form)))
+      (or (eq head 'comma)
+          (and (symbolp head)
+               (string= (symbol-name head) ","))))
+    (emacs-stub--inline-lower (cadr form)))
+   ((let ((head (car form)))
+      (or (eq head 'comma-at)
+          (and (symbolp head)
+               (string= (symbol-name head) ",@"))))
+    (emacs-stub--inline-lower (cadr form)))
    (t (mapcar #'emacs-stub--inline-uncomma form))))
 
 (defun emacs-stub--inline-lower (form)
@@ -1771,9 +2224,23 @@ The inline DSL in BODY is lowered against the runtime backquote."
 ;; and other callers then fail with `void-function buffer-base-buffer'.  The
 ;; standalone has no indirect buffers, so nil is always the correct answer.
 (unless (fboundp 'buffer-base-buffer)
-  (defun buffer-base-buffer (&optional _buffer)
-    "Return the base buffer of an indirect buffer (always nil here)."
-    nil))
+  (defun buffer-base-buffer (&optional buffer)
+    "Return the base buffer of BUFFER when available."
+    (if (fboundp 'emacs-buffer-buffer-base-buffer)
+        (emacs-buffer-buffer-base-buffer buffer)
+      nil)))
+
+(unless (fboundp 'make-indirect-buffer)
+  (defun make-indirect-buffer (base-buffer name &optional clone)
+    "Create an indirect buffer named NAME from BASE-BUFFER.
+CLONE is accepted for API compatibility."
+    (ignore clone)
+    (when (and (not (fboundp 'emacs-buffer-clone-indirect-buffer))
+               (fboundp 'emacs-stub--load-feature))
+      (ignore-errors (emacs-stub--load-feature 'emacs-buffer)))
+    (if (fboundp 'emacs-buffer-clone-indirect-buffer)
+        (emacs-buffer-clone-indirect-buffer name base-buffer)
+      (get-buffer-create name))))
 
 ;;;; --- Doc 16 breadth: foundational subr builtins (were void) ---------
 ;; `xor' (subr.el), `ntake' (Emacs 30 fns.c) and `char-uppercase-p'
@@ -1979,8 +2446,21 @@ The copy uses the default hash test, since the runtime does not expose
 
 (unless (fboundp 'gv-define-setter)
   (defmacro gv-define-setter (name arglist &rest body)
-    "Stub: no-op."
-    (ignore name arglist body) nil))
+    "Define NAME's standalone generalized-variable setter.
+
+The full `gv' implementation records an expander closure.  The standalone
+`setf' shim instead expands through a named helper macro, NAME--setter.  Keep
+the original GV ARGLIST order (store value first, followed by place
+arguments), so fixed, optional, and rest argument setters all retain their
+normal macro-writing contract."
+    (let ((setter (intern (concat (symbol-name name) "--setter"))))
+      (list 'progn
+            (cons 'defmacro
+                  (cons setter
+                        (cons arglist body)))
+            (list 'put (list 'quote name)
+                  (list 'quote 'cl-gv-setter)
+                  (list 'quote setter))))))
 
 (unless (fboundp 'gv-define-simple-setter)
   (defmacro gv-define-simple-setter (name setter &optional fix)
@@ -2006,9 +2486,17 @@ completely unbound, so every real user of the contract (e.g. Compat
 on) hit `void-variable' on the setter symbol at first invocation."
     (let ((getter (nth 0 vars))
           (setter (nth 1 vars)))
-      `(let* ((,getter ,place)
-              (,setter (lambda (v) (list 'setf ,getter v))))
-         ,@body))))
+      (cons 'let*
+            (cons
+             (list
+              (list getter place)
+              (list setter
+                    (list 'lambda '(v)
+                          (list 'list
+                                (list 'quote 'setf)
+                                (list 'quote getter)
+                                'v))))
+             body)))))
 
 (unless (fboundp 'gv-get)
   (defun gv-get (place do)
@@ -3011,6 +3499,19 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
 
 ;;;; --- Custom metadata helpers (= preloaded in real Emacs) ---
 
+(unless (boundp 'customize-package-emacs-version-alist)
+  (defvar customize-package-emacs-version-alist nil
+    "Alist mapping package versions to Emacs versions.
+We use this for packages that keep :package-version metadata.
+
+Each entry looks like:
+
+  (PACKAGE (PVERSION . EVERSION)...)
+
+PACKAGE is a package symbol.  PVERSION and EVERSION are strings, where
+PVERSION identifies a package version and EVERSION is the first Emacs
+release that package version targets."))
+
 (unless (fboundp 'custom-add-option)
   (defun custom-add-option (symbol option)
     "Polyfill: add OPTION to SYMBOL's `custom-options' metadata."
@@ -3037,14 +3538,14 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
        (put ',name 'custom-args ',args)
        ',name)))
 
-(unless (fboundp 'defcustom)
+(when (or (not (boundp 'emacs-version))
+          (not (macrop 'defcustom)))
   (defmacro defcustom (symbol standard doc &rest args)
     "Standalone load-time fallback for Custom variable declarations."
-    `(progn
-       (defvar ,symbol ,standard ,doc)
-       (put ',symbol 'standard-value (list ',standard))
-       (put ',symbol 'custom-args ',args)
-       ',symbol)))
+    `(prog1
+         (custom-declare-variable ',symbol ,standard ,doc ,@args)
+       (when (fboundp 'nelisp--defvaralias-resync)
+         (nelisp--defvaralias-resync ',symbol)))))
 
 (unless (fboundp 'custom-declare-variable)
   (defun custom-declare-variable (symbol default doc &rest args)
@@ -3054,15 +3555,316 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
     (put symbol 'standard-value (list default))
     (put symbol 'variable-documentation doc)
     (put symbol 'custom-args args)
+    (when (fboundp 'nelisp--defvaralias-resync)
+      (nelisp--defvaralias-resync symbol))
     symbol))
 
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)
     "Standalone load-time fallback for evaluated Custom faces."
+    (when (fboundp 'emacs-faces-defface)
+      (emacs-faces-defface face spec doc))
     (put face 'face-defface-spec spec)
     (put face 'face-documentation doc)
     (put face 'custom-args args)
     face))
+
+(unless (boundp 'custom-face-attributes)
+  (defconst custom-face-attributes
+    `((:family
+       (string :tag "Font Family"
+	       :help-echo "Font family or fontset alias name."))
+
+      (:foundry
+       (string :tag "Font Foundry"
+	       :help-echo "Font foundry name."))
+
+      ;; The width, weight, and slant should be in sync with font.c.
+      (:width
+       (choice :tag "Width"
+	       :help-echo "Font width."
+	       :value normal
+	       (const :tag "compressed" condensed)
+	       (const :tag "condensed" condensed)
+	       (const :tag "demiexpanded" semi-expanded)
+	       (const :tag "expanded" expanded)
+	       (const :tag "extracondensed" extra-condensed)
+	       (const :tag "extra-condensed" extra-condensed)
+	       (const :tag "extraexpanded" extra-expanded)
+	       (const :tag "extra-expanded" extra-expanded)
+	       (const :tag "narrow" condensed)
+	       (const :tag "normal" normal)
+	       (const :tag "medium" normal)
+	       (const :tag "regular" normal)
+	       (const :tag "semicondensed" semi-condensed)
+	       (const :tag "demicondensed" semi-condensed)
+	       (const :tag "semi-condensed" semi-condensed)
+	       (const :tag "semiexpanded" semi-expanded)
+	       (const :tag "ultracondensed" ultra-condensed)
+	       (const :tag "ultra-condensed" ultra-condensed)
+	       (const :tag "ultraexpanded" ultra-expanded)
+	       (const :tag "ultra-expanded" ultra-expanded)
+	       (const :tag "wide" extra-expanded)))
+
+      (:height
+       (choice :tag "Height"
+               :help-echo "Face's font size."
+	       :value 1.0
+               (integer :tag "Font size in 1/10 pt")
+               (number :tag "Scale" 1.0)))
+
+      (:weight
+       (choice :tag "Weight"
+	       :help-echo "Font weight."
+	       :value normal
+	       (const :tag "thin" thin)
+	       (const :tag "ultralight" ultra-light)
+	       (const :tag "ultra-light" ultra-light)
+	       (const :tag "extralight" ultra-light)
+	       (const :tag "extra-light" ultra-light)
+	       (const :tag "light" light)
+	       (const :tag "semilight" semi-light)
+	       (const :tag "semi-light" semi-light)
+	       (const :tag "demilight" semi-light)
+	       (const :tag "normal" normal)
+	       (const :tag "regular" regular)
+	       (const :tag "book" normal)
+	       (const :tag "medium" medium)
+	       (const :tag "semibold" semi-bold)
+	       (const :tag "semi-bold" semi-bold)
+	       (const :tag "demibold" semi-bold)
+	       (const :tag "demi-bold" semi-bold)
+	       (const :tag "bold" bold)
+	       (const :tag "extrabold" extra-bold)
+	       (const :tag "extra-bold" extra-bold)
+	       (const :tag "ultrabold" extra-bold)
+	       (const :tag "ultra-bold" extra-bold)
+	       (const :tag "heavy" heavy)
+	       (const :tag "black" heavy)
+               (const :tag "ultra-heavy" ultra-heavy)
+               (const :tag "ultraheavy" ultra-heavy)))
+
+      (:slant
+       (choice :tag "Slant"
+	       :help-echo "Font slant."
+	       :value normal
+	       (const :tag "italic" italic)
+	       (const :tag "oblique" oblique)
+	       (const :tag "normal" normal)
+	       (const :tag "roman" roman)))
+
+      (:underline
+       (choice :tag "Underline"
+	       :help-echo "Control text underlining."
+	       (const :tag "Off" nil)
+	       (list :tag "On"
+		     :value (:color foreground-color :style line :position nil)
+		     (const :format "" :value :color)
+		     (choice :tag "Color"
+			     (const :tag "Foreground Color" foreground-color)
+			     color)
+		     (const :format "" :value :style)
+		     (choice :tag "Style"
+			     (const :tag "Line" line)
+			     (const :tag "Double line" double-line)
+			     (const :tag "Wave" wave)
+			     (const :tag "Dots" dots)
+			     (const :tag "Dashes" dashes))
+                     (const :format "" :value :position)
+                     (choice :tag "Position"
+                             (const :tag "At Default Position" nil)
+                             (const :tag "At Bottom Of Text" t)
+                             (integer :tag "Pixels Above Bottom Of Text"))))
+       ;; filter to make value suitable for customize
+       ,(lambda (real-value)
+	  (and real-value
+	       (let ((color
+		      (or (and (consp real-value) (plist-get real-value :color))
+		          (and (stringp real-value) real-value)
+		          'foreground-color))
+		     (style
+		      (or (and (consp real-value) (plist-get real-value :style))
+		          'line))
+                     (position (and (consp real-value)
+                                    (plist-get real-value :position))))
+		 (list :color color :style style :position position))))
+       ;; filter to make customized-value suitable for storing
+       ,(lambda (cus-value)
+	  (and cus-value
+	       (let ((color (plist-get cus-value :color))
+		     (style (plist-get cus-value :style))
+                     (position (plist-get cus-value :position)))
+		 (cond ((and (eq style 'line) (not position))
+			;; Use simple value for default style
+			(if (eq color 'foreground-color) t color))
+		       (t
+			`(:color ,color :style ,style :position ,position)))))))
+
+      (:overline
+       (choice :tag "Overline"
+	       :help-echo "Control text overlining."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)
+	       (color :tag "Colored")))
+
+      (:strike-through
+       (choice :tag "Strike-through"
+	       :help-echo "Control text strike-through."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)
+	       (color :tag "Colored")))
+
+      (:box
+       ;; Fixme: this can probably be done better.
+       (choice :tag "Box around text"
+	       :help-echo "Control box around text."
+	       (const :tag "Off" nil)
+	       (list :tag "Box"
+                     :value (:line-width (2 . 2) :color "grey75" :style released-button)
+                     (const :format "" :value :line-width)
+                     (cons :tag "Width" :extra-offset 2
+                           (integer :tag "Vertical")
+                           (integer :tag "Horizontal"))
+		   (const :format "" :value :color)
+		   (choice :tag "Color" (const :tag "*" nil) color)
+		   (const :format "" :value :style)
+		   (choice :tag "Style"
+			   (const :tag "Raised" released-button)
+			   (const :tag "Sunken" pressed-button)
+			   (const :tag "Flat"   flat-button)
+			   (const :tag "None" nil))))
+       ;; filter to make value suitable for customize
+       ,(lambda (real-value)
+	  (and real-value
+	       (let ((lwidth
+		      (or (and (consp real-value)
+                               (if (listp (cdr real-value))
+                                   (plist-get real-value :line-width)
+                                 real-value))
+		          (and (integerp real-value) real-value)
+		          '(1 . 1)))
+		     (color
+		      (or (and (consp real-value) (plist-get real-value :color))
+		          (and (stringp real-value) real-value)
+		          nil))
+		     (style
+		      (and (consp real-value) (plist-get real-value :style))))
+                 (if (integerp lwidth)
+                     (setq lwidth (cons (abs lwidth) lwidth)))
+		 (list :line-width lwidth :color color :style style))))
+       ;; filter to make customized-value suitable for storing
+       ,(lambda (cus-value)
+	  (and cus-value
+	       (let ((lwidth (plist-get cus-value :line-width))
+		     (color (plist-get cus-value :color))
+		     (style (plist-get cus-value :style)))
+		 (cond ((and (null color) (null style))
+			lwidth)
+		       ((and (null lwidth) (null style))
+			;; actually can't happen, because LWIDTH is always an int
+			color)
+		       (t
+			;; Keep as a plist, but remove null entries
+			(nconc (and lwidth `(:line-width ,lwidth))
+			       (and color  `(:color ,color))
+			       (and style  `(:style ,style)))))))))
+
+      (:inverse-video
+       (choice :tag "Inverse-video"
+	       :help-echo "Control whether text should be in inverse-video."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)))
+
+      (:foreground
+       (color :tag "Foreground"
+	      :help-echo "Set foreground color (name or #RRGGBB hex spec)."))
+
+      (:distant-foreground
+       (color :tag "Distant Foreground"
+	      :help-echo "Set distant foreground color (name or #RRGGBB hex spec)."))
+
+      (:background
+       (color :tag "Background"
+	      :help-echo "Set background color (name or #RRGGBB hex spec)."))
+
+      (:stipple
+       (choice :tag "Stipple"
+	       :help-echo "Background bit-mask"
+	       (const :tag "None" nil)
+	       (file :tag "File"
+		     :help-echo "Name of bitmap file."
+		     :must-match t)))
+      (:extend
+       (choice :tag "Extend"
+	       :help-echo "Control whether attributes should be extended after EOL."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)))
+      (:inherit
+       (repeat :tag "Inherit"
+	       :help-echo "List of faces to inherit attributes from."
+	       (face :Tag "Face" default))
+       ;; filter to make value suitable for customize
+       ,(lambda (real-value)
+	  (cond ((or (null real-value) (eq real-value 'unspecified))
+		 nil)
+	        ((symbolp real-value)
+		 (list real-value))
+	        (t
+		 real-value)))
+       ;; filter to make customized-value suitable for storing
+       ,(lambda (cus-value)
+	  (if (and (consp cus-value) (null (cdr cus-value)))
+	      (car cus-value)
+	    cus-value))))
+
+    "Alist of face attributes.
+
+The elements are of the form (KEY TYPE PRE-FILTER POST-FILTER),
+where KEY is the name of the attribute, TYPE is a widget type for
+editing the attribute, PRE-FILTER is a function to make the attribute's
+value suitable for the customization widget, and POST-FILTER is a
+function to make the customized value suitable for storing.  PRE-FILTER
+and POST-FILTER are optional.
+
+The PRE-FILTER should take a single argument, the attribute value as
+stored, and should return a value for customization (using the
+customization type TYPE).
+
+The POST-FILTER should also take a single argument, the value after
+being customized, and should return a value suitable for setting the
+given face attribute."))
+
+(unless (fboundp 'custom-face-attributes-get)
+  (defun custom-face-attributes-get (face frame)
+    "For FACE on FRAME, return an alternating list describing its attributes.
+The list has the form (KEYWORD VALUE KEYWORD VALUE...).
+Each keyword should be listed in `custom-face-attributes'.
+
+If FRAME is nil, use the global defaults for FACE."
+    (let ((attrs custom-face-attributes)
+	  plist)
+      (while attrs
+	(let* ((attribute (car (car attrs)))
+	       (value (face-attribute face attribute frame)))
+	  (setq attrs (cdr attrs))
+	  (unless (or (eq value 'unspecified)
+		      (and (null value) (memq attribute '(:inherit))))
+	    (setq plist (cons attribute (cons value plist))))))
+      plist)))
+
+(unless (fboundp 'custom-declare-group)
+  (defun custom-declare-group (symbol members doc &rest args)
+    "Standalone load-time fallback for evaluated Custom groups."
+    (put symbol 'custom-group members)
+    (put symbol 'group-documentation doc)
+    (put symbol 'custom-args args)
+    symbol))
+
+(unless (fboundp 'cl-declaim)
+  (defmacro cl-declaim (&rest _specs) nil))
+
+(unless (fboundp 'cl-proclaim)
+  (defun cl-proclaim (_spec) nil))
 
 (unless (fboundp 'convert-standard-filename)
   (defun convert-standard-filename (filename)
@@ -3214,6 +4016,49 @@ is required."
                 help-text
                 helped-map
                 buffer-name))))
+
+(defvar emacs-stub--selection-storage nil
+  "Alist mapping selection symbols to stored headless clipboard values.")
+
+(defun emacs-stub--selection-type (type)
+  "Return normalized selection TYPE."
+  (or type 'PRIMARY))
+
+(defun emacs-stub--set-selection (type value)
+  "Store VALUE for selection TYPE in the headless clipboard fallback."
+  (let* ((selection-type (emacs-stub--selection-type type))
+         (cell (assoc selection-type emacs-stub--selection-storage)))
+    (if cell
+        (setcdr cell value)
+      (setq emacs-stub--selection-storage
+            (cons (cons selection-type value)
+                  emacs-stub--selection-storage)))
+    value))
+
+(defun emacs-stub--get-selection (type)
+  "Return the stored headless clipboard value for selection TYPE."
+  (cdr (assoc (emacs-stub--selection-type type)
+              emacs-stub--selection-storage)))
+
+(unless (fboundp 'gui-set-selection)
+  (defun gui-set-selection (type data)
+    "Headless clipboard fallback for GUI selection writes."
+    (emacs-stub--set-selection type data)))
+
+(unless (fboundp 'x-set-selection)
+  (defun x-set-selection (type data)
+    "Headless clipboard fallback for X selection writes."
+    (emacs-stub--set-selection type data)))
+
+(unless (fboundp 'gui-get-selection)
+  (defun gui-get-selection (&optional type _data-type)
+    "Headless clipboard fallback for GUI selection reads."
+    (emacs-stub--get-selection type)))
+
+(unless (fboundp 'x-get-selection)
+  (defun x-get-selection (&optional type _data-type)
+    "Headless clipboard fallback for X selection reads."
+    (emacs-stub--get-selection type)))
 
 (unless (featurep 'help-macro)
   (provide 'help-macro))

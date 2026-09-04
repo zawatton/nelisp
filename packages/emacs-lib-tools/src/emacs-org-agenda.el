@@ -473,6 +473,23 @@ Each value is a plist with keys:
   (puthash buffer state org-agenda--state)
   state)
 
+(defun org-agenda--ensure-mode-state ()
+  "Persist `org-agenda-mode' state in the current agenda buffer.
+The standalone buffer-local swap layer cannot intercept every plain
+`setq' performed by a derived mode body.  Write the mode variables into
+the explicit buffer-local store as well, so later buffer switches restore
+the agenda buffer as `org-agenda-mode'."
+  (setq major-mode 'org-agenda-mode
+        mode-name "Org Agenda")
+  (when (and (fboundp 'current-buffer)
+             (fboundp 'nelisp-ec-buffer-p)
+             (fboundp 'emacs-buffer-set-buffer-local-value)
+             (nelisp-ec-buffer-p (current-buffer)))
+    (emacs-buffer-set-buffer-local-value
+     'major-mode (current-buffer) 'org-agenda-mode)
+    (emacs-buffer-set-buffer-local-value
+     'mode-name (current-buffer) "Org Agenda")))
+
 (defun org-agenda--current-state ()
   "Return render state for the current agenda buffer."
   (let* ((buffer (current-buffer))
@@ -487,6 +504,7 @@ Each value is a plist with keys:
       (let ((inhibit-read-only t))
         (erase-buffer)
         (org-agenda-mode)
+        (org-agenda--ensure-mode-state)
         (setq-local revert-buffer-function #'org-agenda-redo)
         (pcase (plist-get state :view)
           ('agenda

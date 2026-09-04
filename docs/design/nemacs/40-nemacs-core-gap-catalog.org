@@ -1,0 +1,436 @@
+#+TITLE: Doc 40 — nemacs Core-Gap Catalog and Implementation Plan
+#+DATE: 2026-07-19
+#+STATUS: DRAFT (root causes confirmed statically; per-item impl pending binary verification)
+
+* 0. Progress and results (2026-07-19)
+
+Starting caught-error count on the real-init audit: *238*.  After this
+session's fixes: *~89* (-63%; makunbound alone cleared 17 after the earlier
+112 measurement).  All fixes are pure Elisp (no Rust), real implementations
+(no no-op stubs or error swallows), each verified on the binary via a
+bootstrap "mini-harness" (loads in minutes, unlike the 36–90 min full audit).
+
+** Fixes landed (verified)
+| fix | mechanism | effect |
+|-----+-----------+--------|
+| EIEIO class bootstrap | =emacs-parity-eieio.el=: register the struct-accessor setf places (=nelisp-cl-macros--accessor-info=) the prelude =cl-defstruct= omits, + early =cl--find-class= =cl-simple-setter= | "Given parent class" 42→1, =transient-*= constructors 17→0 |
+| Loader truncation | =nemacs-next--load-forms-file=: form-by-form =read-from-string= loader replacing the substrate =load= that silently truncated =emacs-parity-org.el= after form 1 | all parity files load fully (verified: every =emacs-parity-*= feature reaches its =provide='); org-* voids ~12→1 |
+| Obsolete-alias hooks | =emacs-parity-org.el=: =emacs-stub--run-hook= made obsolete/defvaralias-alias-aware (reads the canonical variable) | =org-export-before-parsing-hook= void-function 30→0 |
+| ddskk real load | bypass removed, =emacs-parity-skk.el= | featurep skk/ddskk=t, all submodules |
+| comment-* | wire vendored =newcomment.el= through the form-by-form loader | =comment-indent/kill/set-column/indent-new-line= real |
+
+** Key discovery: the substrate =load= truncates files
+The custom incremental =load= (=src/emacs-load.el=
+=nelisp--load-eval-source-incremental=) silently stops after the first
+top-level form on =emacs-parity-org.el= (returns "ok"), dropping ~19 forms.
+=read-from-string= itself is correct (START / comments / =#'= all verified);
+the defect is in the loader's loop, not the reader.  Root of task #26
+("normalizer premature-EOF silent 0-form").  Worked around by loading parity
+files form-by-form with =read-from-string=.  *Operational note*: a
+"mini-harness" (bake =build/nemacs-bootstrap.repl= + a small test tail, runs
+in minutes) is far faster and more reliable for loader/shim verification than
+the full ~36–90 min audit, which is reap/timeout/segfault-flaky.
+
+** Remaining 112, by tractability
+- *makunbound (17) — SOLVED in pure Elisp* (=src/emacs-parity-makunbound.el=).
+  Earlier ruled "runtime-blocked" because =clear-value= only clears the
+  compiler mirror; but the mirror (=nelisp--env-globals-op 'is-bound=) is
+  bit-for-bit consistent with real =boundp= for every binding form (defvar /
+  set / let-lexical / let-shadowed-special / existing / undefined — all
+  verified), and it *does* support clearing.  So route =boundp= through the
+  mirror and implement =makunbound= as the mirror clear: a real, observable
+  unbind (=(makunbound 'x)= ⇒ =(boundp 'x)= nil; re-=set= ⇒ t).  Verified not
+  to perturb full init (all parity =featurep= stay t under the override).
+  *Lesson: dig for a pure-Elisp path before declaring "substrate-blocked".*
+- *Runtime-primitive blocked (~3, low value)* — =add-variable-watcher= (2),
+  =force-window-update= (1); would need a global =set=/redisplay hook, high
+  risk for little return.
+- *Completion speed — SOLVED in pure Elisp; it was NOT the GC.*  With org
+  fully loaded the audit did not finish init within 90 min, which was wrongly
+  attributed to the O(heap) GC.  Per-form profiling of =init.el= showed the
+  cost is a handful of forms taking tens of seconds each (load-path setup 33s,
+  package activation 80s, requires 88s), not a uniform GC crawl.  A
+  micro-benchmark isolated the cause: an O(n^2) =member= dedup while building
+  =load-path= from thousands of package subdirs (3000-item dedup = *73 s*;
+  2000 =file-attributes= = 0.44 s, i.e. not the syscalls -- this substrate's
+  =equal= is ~16 us/op).  Two O(1) hash fixes
+  (=src/emacs-parity-addtolist.el= for =add-to-list=,
+  =src/emacs-parity-subdirs.el= for
+  =normal-top-level-add-subdirs-to-load-path=) drop those forms from ~33-88 s
+  to <3 s and *the audit now reaches AUDIT_DONE with a full-org init in ~4.3
+  min* (=:loaded 1 :startup-hooks-run 1=).  Lesson (again): profile before
+  blaming the substrate.  [The =add-to-list= cache needs
+  external-mutation invalidation, else it drops a =load-path= entry a =setq=
+  removed and theme/package lookup fails -- fixed by keying the cache on the
+  value we last stored.]
+- *Portable but non-critical (~30)* — deep-init package/mode surface exposed
+  once org-babel/python load: =define-abbrev= (7; needs a real abbrev-table
+  obarray subsystem, current =define-abbrev-table= is itself a stub),
+  =ctbl:*= (5), =python-font-lock-keywords-*=, vc/grep/diff/isearch keymap
+  vars.  Portable by wiring the vendored source or porting, at the cost of
+  more init time.
+- *Core-elisp small (~a dozen)* — =current-input-method=, a few keymap vars,
+  =rx (not (syntax ...))= (rx-internal, not a pcase bug — pcase verified
+  correct), residual =setf= places (=cl-getf=/=if=).
+
+* 1. Purpose
+
+The self-hosted NeLisp standalone interpreter (binary =b1k21-v48=, md5
+=3def003a=) runs the user's real Emacs =init.el= (~930 forms:
+evil / treemacs / org / ddskk / doom-dracula / flycheck / transient /
+centaur-tabs). The startup audit already completes at *4/4*
+(=loaded=1 / startup-hooks-run=1 / error=nil / doom-dracula theme
+reflected=), but the clean run (=/tmp/err-c9=, 2026-07-19) still emits
+*238 caught errors*.
+
+The completion criterion for "Emacs replacement complete" is:
+
+: caught-error 0  +  ddskk really loads  +  4/4
+
+with the hard constraint that every remaining error be driven to zero by
+implementing the *missing core function / feature in real Elisp* — no-op
+stubs and error-swallowing are forbidden.
+
+This document catalogs, from the current audit, *which core capabilities
+are actually missing* and lays out the implementation order. The guiding
+finding: the long tail is *not* "package incompleteness" — it is a small
+number of *core substrate defects* whose downstream blast radius is large.
+Fix the core, and most of the tail collapses.
+
+* 2. Baseline (=/tmp/err-c9=, clean AUDIT_DONE, 4/4)
+
+238 caught errors, by class:
+
+| class                        | count |
+|------------------------------+-------|
+| void-function                |    69 |
+| error                        |    65 |
+| nelisp-bare-abort            |    56 |
+| void-variable                |    24 |
+| wrong-number-of-arguments    |     6 |
+| emacs-keymap-bad-key         |     6 |
+| nelisp-rx-syntax-error       |     4 |
+| wrong-type-argument          |     2 |
+| no-catch                     |     2 |
+| emacs-keymap-not-keymap      |     2 |
+| file-error                   |     1 |
+| excessive-lisp-nesting       |     1 |
+
+* 2.5 Structural finding: "missing" vs "written-but-unwired"
+
+An exhaustive per-symbol classification of all 238 rows (see the companion
+catalog =scratchpad/core-gap-catalog.md=, which sums to 238) yields a
+category breakdown and, crucially, a *status* distinction:
+
+| category                  | count | note |
+|---------------------------+-------+------|
+| EIEIO (root + downstream) |    64 | one core defect (§3.1) |
+| PACKAGE-DOWNSTREAM        |    63 | 2nd-order; clears when upstream core/library is fixed |
+| CORE-ELISP (fn/var/keymap)|    37 | core libs / parity shims not loaded |
+| MACRO/READER             |    33 | cl-macrolet, rx, with-eval-after-load, keymap-key, ... |
+| CORE-PRIMITIVE           |    15 | 10 C-primitive voids + cc-syntax(3) + jisx0201(2) |
+| WIRING (load/require)     |    13 | module require resolution + missing term.el |
+| GV-SETF                   |     3 | cl-getf(2), if(1) |
+| HARNESS (meta)            |     3 | driver wrappers aborting on inner failure |
+
+The load-bearing insight: *most of the tail is not un-implemented core — it is
+core that is written but not on the audit's load path.* Only *three* symbols
+are truly =MISSING= C primitives with no definition anywhere in =src/= or
+=vendor/=: =add-variable-watcher=, =make-mutex=, =force-window-update=.
+Everything else is one of:
+- =IMPL-EXISTS-NOT-WIRED= — a real port already lives in
+  =src/emacs-parity-*.el= / =src/charprop.el= but was not in the runtime
+  dolist (e.g. =custom-current-group=, =unicode-property-table-internal=).
+  Fixed by *wiring*, not writing. (=fns2=/=vars3=/=core-vars= were wired in
+  after =err-c9=; =charprop.el= added 2026-07-19.)
+- =VENDOR-NOT-BAKED= — stock Emacs Lisp in =vendor/emacs-lisp/*= not on the
+  image path (=newcomment.el=, =compile.el= entry points, =kmacro.el=).
+- =CORE-ELISP-MISSING= — genuinely needs a small real port (=cl-macrolet=,
+  =and$=, =cl-getf=/=if= setf places, =blink-cursor-mode=, a few core vars).
+- =CORE-SYNTAX= — =parse-partial-sexp= width + =syntax-table=/=category=
+  text-property fidelity (the cc-mode gate; large).
+
+* 3. Root-cause analysis
+
+** 3.1 [DOMINANT] EIEIO class system collapse — one core defect, ~60–70 errors
+
+*** Symptom
+=error: ("Given parent class %S is not a class" X)= for X in
+=eieio-default-superclass= (repeated), =treemacs-scope=,
+=emacsql-connection=, =emacsql--sqlite-base=, =plz-media-type= (+ its
+subclasses), =plz-event-source=, and the entire =transient-*= class
+family (=transient-suffix=, =transient-group=, =transient-argument=,
+=transient-option=, =transient-object=, =transient-infix=,
+=transient-child=, =transient-variable=, =transient-information=).
+Plus the downstream =void-function transient-suffix= (17), and other
+=void-function= constructors whose =defclass= never completed.
+
+*** Confirmed root cause (static, decisive)
+The *chronologically first* eieio error in =err-c9= is line 36:
+
+: error: ("setf: unsupported place" eieio--class-parents)
+
+*before* the first "Given parent class" at line 37. The causal chain:
+
+1. =eieio.el:685= runs =(defclass eieio-default-superclass nil ... :abstract t)=
+   → =eieio-defclass-internal= (=eieio-core.el:278=).
+2. =eieio-defclass-internal= performs =(setf (eieio--class-parents newc) ...)=
+   (and siblings: =eieio--class-slots=, =eieio--class-initarg-tuples=,
+   =eieio--class-class-slots=, =eieio--class-children=; and the inherited
+   =cl--class-parents=).
+3. =eieio--class-parents= is a =cl-defstruct= slot accessor that has *no
+   setf-setter registered*, so =setf= raises "unsupported place".
+4. The root-class construction aborts → =eieio-default-superclass= is never
+   registered as a valid =cl--class= (=(setq eieio-default-superclass
+   (cl--find-class 'eieio-default-superclass))= at =eieio.el:690= yields a
+   non-class).
+5. Every later =(defclass foo () ...)= defaults its parent to
+   =eieio-default-superclass=, calls =(cl--find-class 'eieio-default-superclass)=,
+   finds it is not =eieio--class-p= → "Given parent class ... is not a class".
+
+*** Why the accessor has no setter — the exact core defect
+The *active* =cl-defstruct= is the *prelude* version
+(=vendor/nelisp/lisp/nelisp-cl-macros.el:472=), baked into the standalone
+binary. (The correct =src/emacs-cl-macros.el= version, which handles setf, is
+=fboundp=-gated and therefore *skipped* — the recurring "prelude macro beats
+the correct src version" meta-pattern.)
+
+The prelude =setf= is record-aware and *does* have a struct-accessor
+resolution path: at =nelisp-cl-macros.el:1174= it looks the accessor up in the
+alist =nelisp-cl-macros--accessor-info= (accessor → slot index) and expands
+=(setf (ACC REC) V)= into =(nelisp--record-set REC IDX V)=. The record
+mutator =nelisp--record-set= exists (baked). So the setf machinery is fine.
+
+*The defect is that the prelude =cl-defstruct='s main accessor-generation
+loop does NOT populate =nelisp-cl-macros--accessor-info=.* At
+=nelisp-cl-macros.el:638–644= it emits, for each slot in
+=slot-names = (append parent-slot-names own-slot-names)=:
+
+: (defun ACC (rec) (nelisp--record-ref rec I))
+
+positionally indexed =I=, but never pushes =(ACC . I)= onto
+=nelisp-cl-macros--accessor-info=. (A *separate*, older helper at lines
+443–451 does register accessor-info, but the main =cl-defstruct= body does
+not use it.) Consequently *every* struct accessor generated by the active
+=cl-defstruct= — including all =eieio--class-*= and the bootstrap-defined
+=cl--class-*= accessors — is invisible to =setf=, and any
+=(setf (ACC rec) v)= falls through to the "unsupported place" error.
+
+eieio is the first casualty because =eieio-defclass-internal= is the earliest
+code path that mutates a struct slot via =setf=. This is a *generic* struct
+defect that also hurts =ctbl:= and any other =cl-defstruct='d package type.
+
+The bootstrap =cl--class= stand-in (=nemacs-bootstrap.repl:1021=,
+slots =name docstring parents slots index-table=) is likewise defined by this
+setter-less path, so =cl--class-parents= (used at =eieio-core.el:220=) is also
+unregistered.
+
+*** Slot-index inventory (record positions, 0-based; accessor index ==
+=nelisp--record-ref= index, so no type-tag offset adjustment is needed —
+accessor and setter use the same I)
+
+=eieio--class= = =(:include cl--class)= + own slots:
+
+| index | slot                       | accessor                              |
+|-------+----------------------------+---------------------------------------|
+|     0 | name (cl--class)           | eieio--class-name / cl--class-name    |
+|     1 | docstring (cl--class)      | eieio--class-docstring                |
+|     2 | parents (cl--class)        | eieio--class-parents / cl--class-parents |
+|     3 | slots (cl--class)          | eieio--class-slots                    |
+|     4 | index-table (cl--class)    | eieio--class-index-table              |
+|     5 | children                   | eieio--class-children                 |
+|     6 | initarg-tuples             | eieio--class-initarg-tuples           |
+|     7 | class-slots                | eieio--class-class-slots              |
+|     8 | class-allocation-values    | eieio--class-class-allocation-values  |
+|     9 | default-object-cache       | eieio--class-default-object-cache     |
+|    10 | options                    | eieio--class-options                  |
+
+All 11 =eieio--class-*= setf sites in =eieio-core.el= (lines 220, 307–310,
+316, 341, 347, 461, 476, 488, 493, 508, 521, 649) target this set.
+
+*** Fix (core)
+Ship =src/emacs-parity-eieio.el=, loaded *first* in the
+=nemacs-next-session.el= dolist (before any package =require='s eieio at
+runtime), that:
+
+1. *Unconditionally* installs the setf-integrating =cl-defstruct= (the
+   =emacs-cl-macros.el= generator, with =cl-struct-setter= registration and
+   =:include= support) as the active =cl-defstruct=, overriding the prelude —
+   the established unconditional-override pattern (cf. =emacs-parity-clloop.el=,
+   =emacs-parity-clmacros.el=). This makes the *runtime* =eieio--class= /
+   =eieio--slot= defstructs register setters.
+2. Re-registers =cl-struct-setter= for the *bootstrap-defined* =cl--class=
+   accessors (=cl--class-parents= etc., indices 0–4 accounting for the
+   record type-tag offset), since those were already expanded by the
+   setter-less prelude before any shim can load.
+
+*** Verification (binary; machine-solo)
+- =(setf (eieio--class-parents (eieio--class-make 'x)) '(a))= succeeds.
+- =(eieio--class-p (cl--find-class 'eieio-default-superclass))= ⇒ =t= after a
+  bare =(require 'eieio)=.
+- Full audit: the ~60–70 "Given parent class" + =void-function transient-suffix=
+  (17) family goes to 0; 4/4 maintained.
+
+CAUTION: host =macroexpand= verification is necessary but *not sufficient*
+(macros2 lesson). Confirm on the actual binary's source-eval path.
+
+** 3.2 gv / setf residual places (core, small)
+After the eieio fix, the remaining =setf: unsupported place= data are:
+=cl-getf= (2), =if= (1), =eieio--class-parents= (already covered),
+=eieio--class-parents=. These are generic =gv= places the prelude setf does
+not expand:
+- =(setf (cl-getf PLIST KEY) V)= — needs the =cl-getf= gv-expander
+  (=plist-put= based).
+- =(setf (if C A B) V)= — needs the =if= gv-expander (setf into whichever
+  branch place is selected).
+
+Fix: extend the disk-shim =setf=/=gv= layer with these two expanders (real
+semantics, per =gv.el=). Not =cl-simple-setter= candidates — they are
+compound places.
+
+** 3.3 nemacs-internal module load failures (core packaging, 4 + downstream)
+=error: ("Cannot open load file: %S" X)= for X in =emacs-window=,
+=emacs-keymap-builtins=, =emacs-fileio-gui=, =emacs-mode-builtins= (the very
+first errors in the run), plus =file-error ("Cannot open load file" "term")=
+and =("Cannot open load file: %S" emacs-window)=. These are *nemacs's own*
+=emacs-*= substrate libraries that are =require='d but not on the standalone
+=load-path=. Downstream: =void-variable window-system= (2),
+=void-function force-window-update=, =set-window-margins=, etc. may be
+partially attributable.
+
+Fix: ensure these substrate libs are either inlined in the bootstrap or
+present on the runtime =load-path= (packaging), OR provide the specific
+symbols they export as real definitions. Requires a per-file decision:
+inline vs. load-path vs. targeted symbol provision.
+
+** 3.4 CORE-PRIMITIVE gaps (C primitives in real Emacs; implement in Elisp/host)
+| symbol                              | count | real Emacs                     | note |
+|-------------------------------------+-------+--------------------------------+------|
+| add-variable-watcher                |     2 | C (data.c)                     | maintain per-symbol watcher list; call on set |
+| unicode-property-table-internal     |     1 | C (chartab/character)          | char-table of unicode props; needs char-table core |
+| make-mutex                          |     1 | C (thread.c)                   | single-thread stand-in object acceptable (real API shape) |
+| force-window-update                 |     1 | C (window.c)                   | redisplay hint; safe minimal impl (mark for redisplay) |
+| set-cursor-color                    | (theme)| C (xfaces/frame)              | headless: record frame param; already surfaces as theme-err |
+| set-window-margins / window-margins |   1+1 | C (window.c)                   | already drafted in emacs-parity-fns2.el (side table) |
+| make-char (charset latin-jisx0201)  |     2 | C (character/charset)          | needs charset registration for jisx variants |
+
+These are genuine core primitives. Each needs a *real* (not no-op)
+implementation honoring the Emacs contract. =make-mutex= / =force-window-update=
+admit minimal but correct stand-ins on a single-thread headless substrate;
+=add-variable-watcher= and =unicode-property-table-internal= need real data
+structures.
+
+** 3.5 MACRO / READER gaps (core)
+| symptom                              | count | root |
+|--------------------------------------+-------+------|
+| void-function =and$=                 |     3 | threading/anaphoric macro not defined (which lib?) — investigate |
+| =add-to-list= on special-var         |     4 | bare-abort: =(add-to-list 'desktop-buffer-mode-handlers ...)= etc. — add-to-list on an unbound/special var aborts |
+| =define-minor-mode= (font-lock-mode, ibuffer-auto-mode) | 2 | redefining an existing minor mode via the macro aborts |
+| =cl-macrolet= downstream             |     4 | local-macro expansion (define-inline / cl-loop downstream) |
+| =with-eval-after-load= body errors   |     5 | the body form itself errors (consult-customize, org-draw-encrypt, company) — mostly second-order |
+
+=add-to-list= and =define-minor-mode= are the actionable core items here;
+=cl-macrolet= and =with-eval-after-load= bodies are largely downstream.
+
+** 3.6 CORE-ELISP library gaps
+- =newcomment.el= family: =comment-indent=, =comment-kill=,
+  =comment-set-column=, =comment-indent-new-line= (4 =void-function=). The
+  library is a built-in; either not loaded or partially loaded. Ensure
+  =newcomment= loads / provides these.
+- =custom-current-group= (8) — already implemented in =emacs-parity-fns2.el=;
+  needs the fns2 shim re-wired into the dolist.
+- =newline-and-indent=, =coding-system-list=, =replace-buffer-contents=,
+  =defined-colors= — implemented in fns2 (re-wire).
+- =vc-mode=, =lisp-imenu-generic-expression=,
+  =treemacs-header-projects-button= (void-variable) — implemented in vars3
+  (re-wire).
+
+** 3.7 rx-syntax (4)
+=nelisp-rx-syntax-error= / =("Illegal argument to rx `not': %S" (syntax
+whitespace))= — the =rx= =(not (syntax whitespace))= form is not supported
+by the standalone =rx= expander. Implement the missing =rx= =not=/=syntax=
+handling.
+
+** 3.8 PACKAGE-DOWNSTREAM (resolved by upstream core fixes)
+- =void-function transient-*= (17+): resolved by §3.1 (eieio).
+- =cc-fonts= =pike-font-lock-keywords-1/2/3= defconst bare-aborts (~19):
+  second-order to =c-lang-const= evaluation; tracked under the cc-mode
+  frontier (Doc 49). Re-measure after eieio + gv fixes.
+- =ctbl:= (make-ctbl:cmodel, ctbl:popup-table-buffer-easy): package needs
+  its =cl-defstruct='d types with working setf — should improve after §3.1.
+- =plz= / =gnus= (nnheader-parse-nov) / =org-element-*= / =ob-async= /
+  =markdown-*= / =ediff-*= / =diff-*=: re-triage after core fixes; many are
+  =defclass= victims (eieio) or need the specific library fully loaded.
+
+* 4. Implementation order (by leverage — count × unblock)
+
+1. *EIEIO root* (§3.1) — clears *64*. =src/emacs-parity-eieio.el= (done,
+   wired 2026-07-19; pending binary verification). Unblocks
+   transient/plz/emacsql/treemacs class trees. [core]
+2. *Wire the parity layer + charprop* — real impls already written; a
+   load-path change, not new code. Clears ~30: =custom-current-group=(8),
+   =with-eval-after-load=(6), =window-system=(2), =unicode-property-table-internal=,
+   =set-window-margins=, =replace-buffer-contents=, =coding-system-list=,
+   =defined-colors=, =newline-and-indent=, =outline-up-heading=, leaked
+   =var=/=num=/=it=(3), =define-minor-mode=(2). (fns2/vars3/core-vars wired
+   post-=err-c9=; =charprop.el= added 2026-07-19 — verify in next audit.)
+   Highest ROI. [wiring]
+3. *CC-mode syntax fidelity* — =parse-partial-sexp= ≥10-element PPSS +
+   =syntax-table=/=category= text-property honored by =forward-sexp=. Clears
+   the =c-emacs-features=/=c-use-category=/"CC Mode incompatible" gate (3) and
+   ~14 downstream =c-lang-const= font-lock defconsts. ~17 total. [core, large]
+4. *Baked-module require resolution* (§3.3) — =emacs-window=,
+   =emacs-keymap-builtins=, =emacs-fileio-gui=, =emacs-mode-builtins= (provide
+   under the required feature name); cascades into keymap-key(8). Cheap. [wiring]
+5. *cl-macrolet* — 4 direct (treemacs/anki) + treemacs downstream; shares the
+   "=macroexpand-all= honors its ENV arg" gap with iter-defun. [core]
+6. *newcomment.el bake* — 4 =comment-*= voids as one module. [vendor]
+7. *rx / regex reader corner cases* (§3.7) — =rx not (syntax ...)=(1) +
+   char-class =]=/=\[= parsing(4) = 5. [core-elisp]
+8. *GV-SETF places* (§3.2) — =cl-getf=(2) + =if=(1) = 3; small gv expanders. [core]
+9. *compile.el completion* — =define-compilation-mode= + =kill-compilation= +
+   =compilation-minor-mode-map= (3). [vendor]
+10. *Truly-missing C primitives* — =make-mutex= (cooperative single-thread
+    record, S), =add-variable-watcher= (write-hook table, M),
+    =force-window-update= (redisplay flag, L). Small count, genuinely absent.
+    [core]
+
+Then re-measure and re-triage the PACKAGE-DOWNSTREAM tail (63) — much clears
+once 1/2/3/5 land. Each step: implement in real Elisp, verify on the binary
+(machine-solo, one run at a time), confirm 4/4 maintained and the target error
+class → 0, never regressing prior fixes.
+
+* 5. Verification protocol (operational constraints)
+
+- *machine-solo*: exactly one =nelisp-gc-b1k21-v48= run at a time;
+  =pgrep= before launching.
+- Full audit ≈ 36 min (gcmh pins =gc-cons-threshold= to
+  =most-positive-fixnum= → GC never runs → 28 GB heap → allocation crawl).
+  Background runs can be reaped ~30 min; prefer foreground =timeout 4000= or
+  fast isolation probes for a single fix, full audit only to confirm the
+  aggregate.
+- Conclude only from *exited* output files. Host =macroexpand= is necessary
+  but not sufficient — probe the standalone source-eval path.
+- Regen dependency: editing disk shims (=src/emacs-parity-*.el=) is
+  regen-independent; editing inlined bootstrap src requires
+  =make build-nelisp-bootstrap= then re-splice =audit-tail.repl=.
+
+* 6. Current shim wiring (=nemacs-next-session.el= dolist, as of 2026-07-19)
+
+clloop / *eieio* / evil(+setter) / macros2 / clmacros / cc / flycheck / shims /
+org / misc / vars2 / fns2 / vars3 / core-vars / *charprop* / skk  +
+hooks-phase fix (org-draw safe no-op, =timer--time= cl-simple-setter).
+
+Added 2026-07-19: =emacs-parity-eieio.el= (§3.1 accessor-info fix, loads right
+after clloop, before any runtime =(require 'eieio)=) and =src/charprop.el=
+(=unicode-property-table-internal=). ddskk: =emacs-parity-skk.el= (bypass
+removed, real ddskk loads; skk-derived caught-error 115→15 in isolation).
+
+Fast verification aid: =/tmp/eieio-mechanism-probe.repl= exercises the
+accessor-info → =nelisp--record-set= path for =eieio--class-*= /
+=cl--class-parents= in seconds (de-risks the index-0..10 layout before paying
+the ~36 min full audit).
+
+Planned next: =gv= place extensions (§3.2 cl-getf/if), baked-module require
+resolution (§3.3), cl-macrolet (§3.5), newcomment/rx (§3.6/§3.7), the three
+missing C primitives (§3.4).

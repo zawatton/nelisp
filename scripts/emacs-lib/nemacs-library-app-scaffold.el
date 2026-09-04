@@ -165,7 +165,8 @@
 ;;;###autoload
 (defun nemacs-library-app-scaffold-batch ()
   "Generate the experimental app/frontend scaffold."
-  (let (rows)
+  (let ((create-lockfiles nil)
+        rows)
     (nemacs-library-app-scaffold--delete-obsolete-targets)
     (dolist (entry nemacs-library-app-scaffold--entries)
       (push (nemacs-library-app-scaffold--copy-entry entry) rows))

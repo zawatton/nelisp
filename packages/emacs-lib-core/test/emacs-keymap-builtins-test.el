@@ -18,10 +18,10 @@
 
 (ert-deftest emacs-keymap-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-keymap-builtins))
-  (should (featurep 'emacs-keymap))
-  (dolist (sym '(make-keymap make-sparse-keymap keymapp
-                 define-key define-key-after suppress-keymap
-                 lookup-key key-binding
+    (should (featurep 'emacs-keymap))
+    (dolist (sym '(make-keymap make-sparse-keymap keymapp
+                 define-key define-key-after define-prefix-command suppress-keymap
+                 lookup-key key-binding global-key-binding
                  key-description
                  set-keymap-parent keymap-parent
                  current-global-map current-local-map
@@ -34,6 +34,14 @@
                  easy-menu-change easy-menu-create-menu
                  easy-menu-add-item easy-menu-remove-item))
     (should (fboundp sym))))
+
+(ert-deftest emacs-keymap-builtins-test/global-key-binding-bridge-body ()
+  (let ((map (emacs-keymap-make-sparse-keymap)))
+    (emacs-keymap-define-key map [mouse-1] 'mouse-set-point)
+    (cl-letf (((symbol-function 'emacs-keymap-current-global-map)
+               (lambda () map)))
+      (should (eq 'mouse-set-point
+                  (global-key-binding [mouse-1]))))))
 
 ;;;; B. Substrate-direct: prefixed make-* + keymapp shape
 
@@ -87,6 +95,22 @@
         (should (eq 'cmd (funcall wrapper 'KM 'KEY 'cmd t))))
       (should (equal '(KM KEY cmd) received)))))
 
+(ert-deftest emacs-keymap-builtins-test/define-prefix-command-creates-map ()
+  (let ((cmd-sym (make-symbol "ekt-prefix"))
+        (map-sym (make-symbol "ekt-prefix-map")))
+    (let ((wrapper
+           (lambda (command &optional mapvar name)
+             (let ((map (emacs-keymap-make-sparse-keymap name)))
+               (fset command map)
+               (set command map)
+               (when mapvar
+                 (set mapvar map))
+               command))))
+      (should (eq cmd-sym (funcall wrapper cmd-sym map-sym "Prefix")))
+      (should (keymapp (symbol-value cmd-sym)))
+      (should (eq (symbol-value cmd-sym) (symbol-function cmd-sym)))
+      (should (eq (symbol-value cmd-sym) (symbol-value map-sym))))))
+
 ;;;; E2. Substrate-direct: suppress-keymap body shape
 
 (ert-deftest emacs-keymap-builtins-test/suppress-keymap-body-shape ()
@@ -136,7 +160,10 @@
   (dolist (sym '(global-map ctl-x-map ctl-x-4-map ctl-x-5-map esc-map help-map))
     (should (boundp sym))
     (should (keymapp (symbol-value sym))))
-  (should (boundp 'menu-bar-separator)))
+  (should (boundp 'menu-bar-separator))
+  (should (boundp 'menu-bar-options-menu))
+  (should (keymapp menu-bar-options-menu))
+  (should (keymapp (lookup-key menu-bar-options-menu [line-wrapping]))))
 
 ;;;; G. Substrate-direct: where-is-internal returns a list
 

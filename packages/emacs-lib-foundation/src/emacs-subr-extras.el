@@ -285,6 +285,26 @@ not supported in this minimal port)."))
   (defalias 'when-let 'when-let*
     "Compatibility alias for `when-let*'."))
 
+;; ---- derived mode parent cache helpers ----
+;;
+;; Runtime mode inheritance metadata is cached; when additional parents are
+;; injected we need to clear cached parent lists and recurse through followers.
+
+(unless (fboundp 'derived-mode--flush)
+  (defun derived-mode--flush (mode)
+    "Flush the cached parent list of MODE and its followers."
+    (put mode 'derived-mode--all-parents nil)
+    (let ((followers (get mode 'derived-mode--followers)))
+      (when followers
+        (put mode 'derived-mode--followers nil)
+        (mapc #'derived-mode--flush followers)))))
+
+(unless (fboundp 'derived-mode-add-parents)
+  (defun derived-mode-add-parents (mode extra-parents)
+    "Add EXTRA-PARENTS (list of symbols) to the parents of MODE."
+    (put mode 'derived-mode-extra-parents extra-parents)
+    (derived-mode--flush mode)))
+
 ;; ---- interactive-context primitives ----
 ;;
 ;; Standalone NeLisp has no Emacs UI, so `called-interactively-p'
@@ -491,4 +511,92 @@ Per-type totals are not exposed by the standalone runtime:
     (list 0 0 0 0 0 0 0)))
 
 (provide 'emacs-subr-extras)
+
+;; ---- tree-sitter error symbols (errors are normal symbols, not core funcs) ----
+
+(unless (and (fboundp 'treesit-error)
+             (get 'treesit-error 'error-conditions))
+  (define-error 'treesit-error "Generic tree-sitter error" 'error))
+
+(unless (and (fboundp 'treesit-font-lock-error)
+             (get 'treesit-font-lock-error 'error-conditions))
+  (define-error 'treesit-font-lock-error
+    "Generic tree-sitter font-lock error" 'treesit-error))
+
+;;;; --- tree-sitter font-lock rules (treesit.el) ----------------------
+
+;; When tree-sitter is not compiled into the runtime, `treesit-available-p'
+;; returns nil and `treesit-font-lock-rules' short-circuits to nil -- which is
+;; exactly stock behaviour (font-lock rules are only meaningful with a live
+;; tree-sitter parser).
+(unless (fboundp 'treesit-available-p)
+  (defun treesit-available-p ()
+    "Return non-nil if tree-sitter support is built and available.
+This runtime is not built with tree-sitter, so this returns nil."
+    nil))
+
+(unless (fboundp 'treesit-font-lock-rules)
+  (defun treesit-font-lock-rules (&rest query-specs)
+    "Return a value suitable for `treesit-font-lock-settings'.
+QUERY-SPECS is a series of QUERY-SPECs; each QUERY is preceded by pairs of
+:KEYWORD VALUE (notably :language and :feature).  See the stock docstring."
+    ;; This is usually called inside a `defvar', which runs regardless of
+    ;; whether tree-sitter is enabled, so we guard on availability.
+    (when (treesit-available-p)
+      (let (current-language current-override
+            current-feature
+            default-language
+            (result nil))
+        (while query-specs
+          (let ((token (pop query-specs)))
+            (pcase token
+              (:default-language
+               (let ((lang (pop query-specs)))
+                 (when (or (not (symbolp lang)) (null lang))
+                   (signal 'treesit-font-lock-error
+                           `("Value of :default-language should be a symbol"
+                             ,lang)))
+                 (setq default-language lang)))
+              (:language
+               (let ((lang (pop query-specs)))
+                 (when (or (not (symbolp lang)) (null lang))
+                   (signal 'treesit-font-lock-error
+                           `("Value of :language should be a symbol" ,lang)))
+                 (setq current-language lang)))
+              (:override
+               (let ((flag (pop query-specs)))
+                 (when (not (memq flag '(t nil append prepend keep)))
+                   (signal 'treesit-font-lock-error
+                           `("Value of :override should be one of t, nil, append, prepend, keep"
+                             ,flag))
+                   (signal 'wrong-type-argument
+                           `((or t nil append prepend keep) ,flag)))
+                 (setq current-override flag)))
+              (:feature
+               (let ((var (pop query-specs)))
+                 (when (or (not (symbolp var)) (memq var '(t nil)))
+                   (signal 'treesit-font-lock-error
+                           `("Value of :feature should be a symbol" ,var)))
+                 (setq current-feature var)))
+              ((pred treesit-query-p)
+               (let ((lang (or default-language current-language)))
+                 (when (null lang)
+                   (signal 'treesit-font-lock-error
+                           `("Language unspecified, use :language keyword or :default-language to specify a language for this query" ,token)))
+                 (when (null current-feature)
+                   (signal 'treesit-font-lock-error
+                           `("Feature unspecified, use :feature keyword to specify the feature name for this query" ,token)))
+                 (if (treesit-compiled-query-p token)
+                     (push `(,lang token) result)
+                   (push `(,(treesit-query-compile lang token)
+                           t
+                           ,current-feature
+                           ,current-override)
+                         result))
+                 (setq current-language nil
+                       current-override nil
+                       current-feature nil)))
+              (_ (signal 'treesit-font-lock-error
+                         `("Unexpected value" ,token))))))
+        (nreverse result)))))
 ;;; emacs-subr-extras.el ends here

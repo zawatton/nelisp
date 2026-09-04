@@ -14,18 +14,16 @@
   (file-name-directory emacs-tier3-facades-test--source))
 
 (defconst emacs-tier3-facades-test--features
-  '(emacs-tier3-facades widget calc gnus info treesit nxml nxml-mode url vc)
+  '(emacs-tier3-facades calc gnus info treesit nxml nxml-mode vc)
   "Features provided by the Tier 3 facade file.")
 
 (defconst emacs-tier3-facades-test--loaders
-  '((widget . "widget")
-    (calc . "calc")
+  '((calc . "calc")
     (gnus . "gnus")
     (info . "info")
     (treesit . "treesit")
     (nxml . "nxml")
     (nxml-mode . "nxml-mode")
-    (url . "url")
     (vc . "vc"))
   "Tier 3 facade feature loaders.")
 
@@ -134,6 +132,14 @@ several temp parents and keep only one that the facade reports as no VC."
         (should (fboundp 'nxml-mode))
         (should (fboundp 'url-retrieve))
         (should (fboundp 'vc-next-action))))))
+
+(ert-deftest emacs-tier3-facades-test/does-not-claim-widget-or-url-features ()
+  (with-temp-buffer
+    (insert-file-contents emacs-tier3-facades-test--source)
+    (goto-char (point-min))
+    (should-not (search-forward "(provide 'widget)" nil t))
+    (goto-char (point-min))
+    (should-not (search-forward "(provide 'url)" nil t))))
 
 (ert-deftest emacs-tier3-facades-test/provides-tier3-features ()
   (emacs-tier3-facades-test--with-clean-facade

@@ -63,6 +63,76 @@
       (setq file (concat (substring file 0 (- (length file) 1)))))
     file))
 
+(defun emacs-stub-residuals-test--with-reloaded-custom-fallbacks (thunk)
+  "Run THUNK after reloading `emacs-stub' with Custom host subrs unbound.
+Restore the original host definitions afterwards."
+  (let* ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
+         (symbols '(custom-add-to-group
+                    custom-add-version
+                    custom-add-package-version
+                    custom-add-link
+                    custom-add-dependencies
+                    custom-handle-keyword
+                    custom-handle-all-keywords
+                    custom-current-group))
+         (saved (mapcar (lambda (sym)
+                          (cons sym (and (fboundp sym)
+                                         (symbol-function sym))))
+                        symbols)))
+    (unwind-protect
+        (progn
+          (dolist (sym symbols)
+            (fmakunbound sym))
+          (load-file source)
+          (funcall thunk))
+      (dolist (entry saved)
+        (let ((sym (car entry))
+              (fn (cdr entry)))
+          (if fn
+              (fset sym fn)
+            (fmakunbound sym)))))))
+
+(defun emacs-stub-residuals-test--with-reloaded-custom-face-metadata (thunk)
+  "Run THUNK after reloading `emacs-stub' with face metadata unbound.
+Restore the original host bindings afterwards."
+  (let* ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
+         (symbol 'custom-face-attributes)
+         (was-bound (boundp symbol))
+         (saved-value (and was-bound (symbol-value symbol)))
+         (saved-get (and (fboundp 'custom-face-attributes-get)
+                         (symbol-function 'custom-face-attributes-get))))
+    (unwind-protect
+        (progn
+          (makunbound symbol)
+          (fmakunbound 'custom-face-attributes-get)
+          (load-file source)
+          (funcall thunk))
+      (if was-bound
+          (set symbol saved-value)
+        (makunbound symbol))
+      (if saved-get
+          (fset 'custom-face-attributes-get saved-get)
+        (fmakunbound 'custom-face-attributes-get)))))
+
+(defun emacs-stub-residuals-test--read-first-form-matching (file predicate)
+  "Return the first top-level form in FILE matching PREDICATE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (catch 'found
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (funcall predicate form)
+                (throw 'found form))))
+        (end-of-file nil)))))
+
+(defun emacs-stub-residuals-test--error-message (thunk)
+  "Return the error message from THUNK, or nil when THUNK succeeds."
+  (condition-case err
+      (progn (funcall thunk) nil)
+    (error (cadr err))))
+
 ;;;; A. Load cleanly + fboundp parity
 
 (ert-deftest emacs-stub-residuals-test/feature-and-fboundp ()
@@ -75,6 +145,8 @@
                   window-live-p frame-selected-window
                   custom-add-option custom-add-frequent-value
                   custom-variable-p defgroup defcustom
+                  custom-current-group
+                  file-size-human-readable
                   set-advertised-calling-convention
                   get-advertised-calling-convention
                   convert-standard-filename string-to-list
@@ -94,6 +166,7 @@
                   emacs-stub--cancel-timer
                   line-number-display-width
                   syntax-propertize-rules cc-require cc-provide
+                  version-to-list version-list-< version-list-<=
                   version< version<= combine-change-calls define-advice
                   c-add-style
                   android-read-build-system android-read-build-time
@@ -105,12 +178,15 @@
                   emacs-repository-branch-git
                   emacs-repository-get-branch
                   emacs-bzr-get-version
+                  gui-set-selection x-set-selection
+                  gui-get-selection x-get-selection
                   make-help-screen help--help-screen))
     (should (fboundp sym)))
   (should (featurep 'help-macro))
   (should (boundp 'emacs-display-system))
   (should (boundp 'emacs-basic-display))
   (should (boundp 'initial-window-system))
+  (should (boundp 'custom-current-group-alist))
   (should (boundp 'user-mail-address))
   (should (boundp 'user-full-name))
   (should (boundp 'display-line-numbers))
@@ -123,6 +199,10 @@
   (should (integerp emacs-minor-version))
   (should (boundp 'three-step-help))
   (should (boundp 'help-for-help-use-variable-pitch)))
+
+(ert-deftest emacs-stub-residuals-test/custom-current-group-alist-and-fn-availability ()
+  (should (boundp 'custom-current-group-alist))
+  (should (fboundp 'custom-current-group)))
 
 (ert-deftest emacs-stub-residuals-test/advertised-calling-convention-metadata ()
   (let ((sym (make-symbol "emacs-stub-test--advertised")))
@@ -286,6 +366,81 @@ The helper is unconditional; the macro itself is reader-gated."
   (should (equal '(defun h (x) x)
                  (emacs-stub--define-inline
                   'h '(x) '("doc" (inline-quote (comma x)))))))
+
+(ert-deftest emacs-stub-residuals-test/define-inline-lowers-artifact-comma-symbol-heads ()
+  "Doc 15 B4: runtime define-inline lowers the inline DSL against the
+artifact-reader comma symbols to a plain defun.
+The helper is unconditional; the macro itself is reader-gated."
+  (let ((comma (intern ",")))
+    (should (equal '(defun org-element-type-p (node types)
+                      (if (listp types)
+                          (memq (org-element-type node t) types)
+                        (eq (org-element-type node t) types)))
+                   (emacs-stub--define-inline
+                    'org-element-type-p '(node types)
+                    (list (list 'inline-letevals '(node types)
+                                (list 'if
+                                      (list 'listp
+                                            (list 'inline-const-val 'types))
+                                      (list 'inline-quote
+                                            (list 'memq
+                                                  (list 'org-element-type
+                                                        (list comma 'node)
+                                                        t)
+                                                  (list comma 'types)))
+                                      (list 'inline-quote
+                                            (list 'eq
+                                                  (list 'org-element-type
+                                                        (list comma 'node)
+                                                        t)
+                                                  (list comma 'types)))))))))
+    (cl-labels ((comma-call-head-p (form)
+                  (cond
+                   ((not (consp form)) nil)
+                   ((let ((head (car form)))
+                      (and (symbolp head)
+                           (member (symbol-name head) '("," ",@"))))
+                    t)
+                   (t (or (comma-call-head-p (car form))
+                          (comma-call-head-p (cdr form)))))))
+      (should-not (comma-call-head-p
+                   (emacs-stub--define-inline
+                    'org-element-type-p '(node types)
+                    (list (list 'inline-letevals '(node types)
+                                (list 'if
+                                      (list 'listp
+                                            (list 'inline-const-val 'types))
+                                      (list 'inline-quote
+                                            (list 'memq
+                                                  (list 'org-element-type
+                                                        (list comma 'node)
+                                                        t)
+                                                  (list comma 'types)))
+                                      (list 'inline-quote
+                                            (list 'eq
+                                                  (list 'org-element-type
+                                                        (list comma 'node)
+                                                        t)
+                                                  (list comma 'types))))))))))))
+
+(ert-deftest emacs-stub-residuals-test/define-inline-generated-function-runs ()
+  (let* ((comma (intern ","))
+         (comma-at (intern ",@"))
+         (generated
+          (emacs-stub--define-inline
+           'emacs-stub-test--inline '(table key)
+           (list (list 'inline-letevals '(table key)
+                       (list 'inline-quote
+                             (list 'gethash
+                                   (list comma 'key)
+                                   (list comma-at 'table))))))))
+    (eval generated t)
+    (unwind-protect
+        (let ((table (let ((ht (make-hash-table :test 'equal)))
+                       (puthash "k" "v" ht)
+                       ht)))
+          (should (equal "v" (emacs-stub-test--inline table "k"))))
+      (fmakunbound 'emacs-stub-test--inline))))
 
 (ert-deftest emacs-stub-residuals-test/display-line-number-core-defaults ()
   (should (integerp (line-number-display-width)))
@@ -511,6 +666,176 @@ must be able to overwrite early bootstrap stubs with real substrates."
       (should (equal "face doc" (get face 'face-documentation)))
       (should (equal '(:group faces) (get face 'custom-args))))))
 
+(ert-deftest emacs-stub-residuals-test/custom-face-attributes-fallback-registers-supported-keys ()
+  (emacs-stub-residuals-test--with-reloaded-custom-face-metadata
+   (lambda ()
+     (should (boundp 'custom-face-attributes))
+     (should (equal (mapcar #'car custom-face-attributes)
+                    '(:family :foundry :width :height :weight :slant
+                      :underline :overline :strike-through :box
+                      :inverse-video :foreground :distant-foreground
+                      :background :stipple :extend :inherit)))
+     (should (assq :inherit custom-face-attributes)))))
+
+(ert-deftest emacs-stub-residuals-test/org-latex-and-related-uses-inherit-underline ()
+  (emacs-stub-residuals-test--with-reloaded-custom-face-metadata
+   (lambda ()
+     (let* ((stub-source (emacs-stub-residuals-test--source-file "emacs-stub"))
+            (org-faces-file
+             (expand-file-name "../vendor/emacs-lisp/org/org-faces.el"
+                               (file-name-directory stub-source)))
+            (captured-spec nil)
+            (form (emacs-stub-residuals-test--read-first-form-matching
+                   org-faces-file
+                   (lambda (candidate)
+                     (and (consp candidate)
+                          (eq (car candidate) 'defface)
+                          (eq (cadr candidate) 'org-latex-and-related))))))
+       (should form)
+       (cl-letf (((symbol-function 'custom-declare-face)
+                  (lambda (_face spec _doc &rest _args)
+                    (setq captured-spec spec)
+                    nil)))
+         (eval form))
+       (should captured-spec)
+       (should (equal '(:inherit underline)
+                      (cadr (assq 't captured-spec))))))))
+
+(ert-deftest emacs-stub-residuals-test/custom-metadata-fallback-semantics ()
+  (emacs-stub-residuals-test--with-reloaded-custom-fallbacks
+   (lambda ()
+     (let ((group (make-symbol "nelisp-emacs-custom-group"))
+           (option (make-symbol "nelisp-emacs-custom-option"))
+           (symbol (make-symbol "nelisp-emacs-custom-symbol")))
+       (should (not (subrp (symbol-function 'custom-add-to-group))))
+       (custom-add-to-group group option 'wid)
+       (custom-add-to-group group option 'wid)
+       (custom-add-to-group group option 'wid2)
+       (should (equal (get group 'custom-group)
+                      (list (list option 'wid)
+                            (list option 'wid2))))
+       (custom-add-link symbol 'wid)
+       (custom-add-link symbol 'wid2)
+       (custom-add-link symbol 'wid)
+       (should (equal (get symbol 'custom-links) '(wid2 wid)))
+       (custom-add-version symbol 'old)
+       (custom-add-version symbol 'new)
+       (should (equal (get symbol 'custom-version) 'new))
+       (custom-add-package-version symbol 'old)
+       (custom-add-package-version symbol 'new)
+       (should (equal (get symbol 'custom-package-version) 'new))
+       (put symbol 'custom-dependencies '(a b))
+       (custom-add-dependencies symbol '(b c a d))
+       (should (equal (get symbol 'custom-dependencies) '(d c a b)))
+       (custom-add-load symbol 'load-a)
+       (custom-add-load symbol 'load-a)
+       (custom-add-load symbol 'load-b)
+       (should (equal (get symbol 'custom-loads) '(load-b load-a)))))))
+
+(ert-deftest emacs-stub-residuals-test/customize-package-emacs-version-alist-local-add-to-list ()
+  (should (boundp 'customize-package-emacs-version-alist))
+  (should (listp customize-package-emacs-version-alist))
+  (let ((host-value (copy-tree (symbol-value 'customize-package-emacs-version-alist)))
+        (entry '(so-long ("33" . "30.1"))))
+    (let ((customize-package-emacs-version-alist nil))
+      (add-to-list 'customize-package-emacs-version-alist entry)
+      (add-to-list 'customize-package-emacs-version-alist entry)
+      (should (equal customize-package-emacs-version-alist (list entry))))
+    (should (equal (symbol-value 'customize-package-emacs-version-alist) host-value))))
+
+(ert-deftest emacs-stub-residuals-test/custom-current-group-fallback-semantics ()
+  (emacs-stub-residuals-test--with-reloaded-custom-fallbacks
+   (lambda ()
+      (let ((custom-current-group-alist '(("/tmp/custom.el" . group-one)
+                                        ("/tmp/custom.el.bak" . group-two)))
+           (load-file-name-was-bound (boundp 'load-file-name))
+           (saved-load-file-name (and (boundp 'load-file-name)
+                                     load-file-name)))
+       (unwind-protect
+           (progn
+             (setq load-file-name "/tmp/custom.el")
+             (should (eq (custom-current-group) 'group-one))
+             (setq load-file-name "/tmp/custom.el.bak")
+             (should (eq (custom-current-group) 'group-two))
+             (setq load-file-name "/tmp/custom.el~")
+             (should (null (custom-current-group)))
+             (setq load-file-name nil)
+             (should (null (custom-current-group))))
+         (if load-file-name-was-bound
+             (setq load-file-name saved-load-file-name)
+           (makunbound 'load-file-name)))))))
+
+(ert-deftest emacs-stub-residuals-test/custom-current-group-restores-host-binding ()
+  (let* ((custom-current-group-was-bound (fboundp 'custom-current-group))
+         (custom-current-group-host-fn (and custom-current-group-was-bound
+                                           (symbol-function 'custom-current-group)))
+         (custom-current-group-host-subr (and custom-current-group-host-fn
+                                            (subrp custom-current-group-host-fn))))
+    (emacs-stub-residuals-test--with-reloaded-custom-fallbacks
+     (lambda ()
+       (let ((custom-current-group-alist '(("/tmp/custom.el" . group-one)))
+             (load-file-name-was-bound (boundp 'load-file-name))
+             (saved-load-file-name (and (boundp 'load-file-name)
+                                       load-file-name)))
+         (unwind-protect
+             (progn
+               (setq load-file-name "/tmp/custom.el")
+               (should (not (subrp (symbol-function 'custom-current-group))))
+               (should (eq (custom-current-group) 'group-one))
+               (setq load-file-name nil)
+               (should (null (custom-current-group))))
+           (if load-file-name-was-bound
+               (setq load-file-name saved-load-file-name)
+             (makunbound 'load-file-name))))))
+    (when custom-current-group-was-bound
+      (should (eq custom-current-group-host-fn (symbol-function 'custom-current-group)))
+      (when custom-current-group-host-subr
+        (should (subrp (symbol-function 'custom-current-group))))
+      (should (fboundp 'custom-current-group)))))
+
+(ert-deftest emacs-stub-residuals-test/custom-handle-keyword-fallback-validation ()
+  (emacs-stub-residuals-test--with-reloaded-custom-fallbacks
+   (lambda ()
+     (let ((symbol (make-symbol "nelisp-emacs-custom-keyword"))
+           (group (make-symbol "nelisp-emacs-custom-keyword-group")))
+       (should (not (subrp (symbol-function 'custom-handle-keyword))))
+       (should (equal (custom-handle-keyword symbol :load 'load-a 'custom-variable)
+                      '(load-a)))
+       (should (equal (get symbol 'custom-loads) '(load-a)))
+       (should (equal (custom-handle-keyword symbol :group group 'custom-variable)
+                      (list (list symbol 'custom-variable))))
+       (should (equal (get group 'custom-group)
+                      (list (list symbol 'custom-variable))))
+       (should (equal (custom-handle-keyword symbol :version '1 'custom-variable)
+                      1))
+       (should (equal (get symbol 'custom-version) 1))
+       (should (equal (custom-handle-keyword symbol :package-version '2 'custom-variable)
+                      2))
+       (should (equal (get symbol 'custom-package-version) 2))
+       (should (equal (custom-handle-keyword symbol :link 'widget 'custom-variable)
+                      '(widget)))
+       (should (equal (get symbol 'custom-links) '(widget)))
+       (should (equal (custom-handle-keyword symbol :set-after '(dep-a dep-b) 'custom-variable)
+                      '(dep-b dep-a)))
+       (should (equal (get symbol 'custom-dependencies) '(dep-b dep-a)))
+       (should (equal (custom-handle-keyword symbol :tag 'tagged 'custom-variable)
+                      'tagged))
+       (should (equal (get symbol 'custom-tag) 'tagged))
+       (should (equal (emacs-stub-residuals-test--error-message
+                       (lambda ()
+                         (custom-handle-keyword symbol :bogus 'v 'custom-variable)))
+                      "Unknown keyword :bogus"))
+       (should (equal (emacs-stub-residuals-test--error-message
+                       (lambda ()
+                         (custom-handle-all-keywords
+                          symbol '(:load load-a :group) 'custom-variable)))
+                      "Keyword :group is missing an argument"))
+       (should (equal (emacs-stub-residuals-test--error-message
+                       (lambda ()
+                         (custom-handle-all-keywords
+                          symbol '(:load load-a 42 y) 'custom-variable)))
+                      "Junk in args (y)"))))))
+
 (ert-deftest emacs-stub-residuals-test/custom-declarations-have-standalone-fallbacks ()
   (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
     (should (and file (file-exists-p file)))
@@ -523,6 +848,42 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (should (string-match-p "defun custom-declare-face" source))
         (should (string-match-p "standard-value" source))
         (should (string-match-p "custom-args" source))))))
+
+(ert-deftest emacs-stub-residuals-test/defcustom-resync-is-version-skew-guarded ()
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((source (buffer-string)))
+        (should (string-match-p
+                 "when (fboundp 'nelisp--defvaralias-resync)"
+                 source))))))
+
+(ert-deftest emacs-stub-residuals-test/headless-selection-storage-roundtrip ()
+  (let ((emacs-stub--selection-storage nil))
+    (should (equal "clip"
+                   (emacs-stub--set-selection 'CLIPBOARD "clip")))
+    (should (equal "clip"
+                   (emacs-stub--get-selection 'CLIPBOARD)))
+    (should (equal "primary"
+                   (emacs-stub--set-selection nil "primary")))
+    (should (equal "primary"
+                   (emacs-stub--get-selection 'PRIMARY)))
+    (should (equal "clip-2"
+                   (emacs-stub--set-selection 'CLIPBOARD "clip-2")))
+    (should (equal "clip-2"
+                   (emacs-stub--get-selection 'CLIPBOARD)))))
+
+(ert-deftest emacs-stub-residuals-test/file-size-human-readable-kilobytes ()
+  (should (equal "10k" (file-size-human-readable 10240))))
+
+(ert-deftest emacs-stub-residuals-test/parse-colon-path-oracle-cases ()
+  (should (equal '("/usr/bin/" "/home/x/bin/")
+                 (parse-colon-path "/usr/bin:/home/x/bin")))
+  (should (equal '(nil)
+                 (parse-colon-path "")))
+  (should (equal '("/usr/bin/" nil "/home/x/bin/")
+                 (parse-colon-path "/usr/bin::/home/x/bin"))))
 
 (ert-deftest emacs-stub-residuals-test/convert-standard-filename-identity ()
   (should (equal "~/.notes" (convert-standard-filename "~/.notes"))))
@@ -576,6 +937,43 @@ must be able to overwrite early bootstrap stubs with real substrates."
   (should (= 0 (emacs-stub--version-compare "29" "29.0")))
   (should (= 1 (emacs-stub--version-compare "30.1" "29.99")))
   (should (= -1 (emacs-stub--version-compare "29.0.50" "29.1"))))
+
+(ert-deftest emacs-stub-residuals-test/version-to-list-matches-host-oracle ()
+  (dolist (version '(".5"
+                     "0.9 alpha"
+                     "0.9AlphA1"
+                     "0.9snapshot"
+                     "1.0-git"
+                     "1.0.7.5"
+                     "1.0.cvs"
+                     "1.0PRE2"
+                     "1.0pre2"
+                     "22.8 Beta3"
+                     "22.8beta3"))
+    (should (equal (version-to-list version)
+                   (funcall (symbol-function 'version-to-list) version)))))
+
+(ert-deftest emacs-stub-residuals-test/version-list-ordering-semantics ()
+  (should (version-list-< '(1 -1) '(1 0)))
+  (should (version-list-< '(1 0 9) '(1 1)))
+  (should (version-list-<= '(1 0) '(1)))
+  (should (version-list-<= '(1 -2) '(1 -1)))
+  (should-not (version-list-< '(1 0) '(1 0 0))))
+
+(ert-deftest emacs-stub-residuals-test/buttonize-headless-fallback-shape ()
+  (let ((emacs-stub--buttonize-state 'fallback))
+    (should (equal "plain"
+                   (buttonize "plain" #'ignore nil "help")))))
+
+(ert-deftest emacs-stub-residuals-test/keyboard-and-xterm-shims-are-noops ()
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((source (buffer-string)))
+        (should (string-match-p "defun set-keyboard-coding-system" source))
+        (should (string-match-p "defun terminal-init-xterm" source))
+        (should (string-match-p "Headless standalone fallback" source))))))
 
 ;;;; H. Idempotence — re-loading emacs-stub leaves bindings unchanged
 

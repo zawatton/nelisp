@@ -196,9 +196,11 @@
                   files-test--shim-functions))
          (original-values
           (mapcar (lambda (symbol)
+                    ;; Wrap the value in a list so a bound-but-nil original is
+                    ;; distinguishable from an originally unbound symbol on restore.
                     (cons symbol
                           (and (boundp symbol)
-                               (symbol-value symbol))))
+                               (list (symbol-value symbol)))))
                   files-test--shim-variables))
          (original-features features)
          (original-boundp (symbol-function 'boundp))
@@ -224,8 +226,8 @@
              (fset (car cell) (cdr cell))
            (fmakunbound (car cell))))
        (dolist (cell original-values)
-         (if (cdr cell)
-             (set (car cell) (cdr cell))
+         (if (consp (cdr cell))
+             (set (car cell) (cadr cell))
            (makunbound (car cell)))))))
 
 (ert-deftest files-test/provides-daily-driver-surface ()
@@ -246,9 +248,11 @@
                  files-test--shim-functions))
         (original-values
          (mapcar (lambda (symbol)
+                   ;; Wrap the value in a list so a bound-but-nil original is
+                   ;; distinguishable from an originally unbound symbol on restore.
                    (cons symbol
                          (and (boundp symbol)
-                              (symbol-value symbol))))
+                              (list (symbol-value symbol)))))
                  files-test--shim-variables))
         (original-features features)
         (original-nl-write-file (and (fboundp 'nl-write-file)
@@ -276,8 +280,8 @@
             (fset (car cell) (cdr cell))
           (fmakunbound (car cell))))
       (dolist (cell original-values)
-        (if (cdr cell)
-            (set (car cell) (cdr cell))
+        (if (consp (cdr cell))
+            (set (car cell) (cadr cell))
           (makunbound (car cell))))
       (if original-nl-write-file
           (fset 'nl-write-file original-nl-write-file)
@@ -699,7 +703,7 @@
             (fset (car cell) (cdr cell))
           (fmakunbound (car cell))))
       (dolist (cell value-cells)
-        (if (cdr cell)
+        (if (consp (cdr cell))
             (set (car cell) (cadr cell))
           (makunbound (car cell)))))))
 

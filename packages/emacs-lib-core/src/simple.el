@@ -29,6 +29,22 @@
   (defvar filter-buffer-substring-function #'buffer-substring--filter
     "Function used by `filter-buffer-substring' to filter copied text."))
 
+(unless (boundp 'text-scale-mode)
+  (defvar text-scale-mode nil
+    "Non-nil when the lightweight text scaling minor mode is active."))
+
+(unless (boundp 'text-scale-mode-amount)
+  (defvar text-scale-mode-amount 0
+    "Current text scale delta in lightweight simple/face-remap shims."))
+
+(unless (boundp 'text-scale-mode-lighter)
+  (defvar text-scale-mode-lighter "+0"
+    "Mode line lighter used by lightweight `text-scale-mode' shims."))
+
+(unless (boundp 'face-remapping-alist)
+  (defvar face-remapping-alist nil
+    "Buffer-local face remapping alist for lightweight simple shims."))
+
 (unless (fboundp 'delete-and-extract-region)
   (defun delete-and-extract-region (beg end)
     "Delete text between BEG and END and return it."

@@ -25,12 +25,39 @@
   (let ((m (nelisp-rx-string-match pat str)))
     (and m (plist-get m :start))))
 
+(defun nelisp-regex-test--equivalent-match-p (pattern string &optional start)
+  "Assert string and compiled PATTERN paths match identically on STRING.
+START is passed through to both implementations."
+  (should (equal (nelisp-rx-string-match pattern string start)
+                 (nelisp-rx-string-match (nelisp-rx-compile pattern)
+                                         string
+                                         start))))
+
 (ert-deftest nelisp-regex-test/public-api-smoke ()
   (let ((pattern (nelisp-rx-compile "\\<foo\\>")))
     (should (nelisp-rx-string-match pattern "say foo"))
     (should (= 2 (length (nelisp-rx-string-match-all "foo" "foo foo"))))
     (should (equal "bar foo" (nelisp-rx-replace "foo" "foo foo" "bar")))
-    (should (equal "bar bar" (nelisp-rx-replace-all "foo" "foo foo" "bar")))))
+    (should (equal "bar bar" (nelisp-rx-replace-all "foo" "foo foo" "bar")))
+    (dolist (case '(("foo\\'" "foo" nil)
+                    ("foo\\'" "prefixfoo" nil)
+                    ("foo\\'" "foox" nil)
+                    ("foo\\'" "foo" 1)
+                    ("foo\\'" "prefixfoo" 7)
+                    ("foo\\'" "prefixfoo" 8)
+                    ("\\.png\\'" "image.png" nil)
+                    ("\\.png\\'" "image.png~" nil)
+                    ("foo\\ bar\\'" "xfoo bar" nil)
+                    ("\\\\tmp\\'" "path\\tmp" nil)
+                    ("\\'" "" nil)
+                    ("\\'" "abc" 3)
+                    ("\\'" "abc" 4)))
+      (apply #'nelisp-regex-test--equivalent-match-p case))
+    (let ((m (nelisp-rx-string-match "\\.png\\'" "icons/image.png")))
+      (should (equal '(:start 11 :end 15 :groups nil) m))
+      (should (equal (list m)
+                     (nelisp-rx-string-match-all "\\.png\\'"
+                                                 "icons/image.png"))))))
 
 (ert-deftest nelisp-regex-test/literal-nonmatch-does-not-return-empty-match ()
   "A failed literal match must return nil, not a zero-width match at 0."
@@ -54,6 +81,22 @@
                                           (rx local))))
           (should (equal "def" (rx-to-string 'nelisp-regex-test--rx-sample t))))
       (put 'nelisp-regex-test--rx-sample 'rx-definition saved))))
+
+;;;; --- character classes -----------------------------------------------------
+
+(ert-deftest nelisp-regex-test/inverted-class-range-is-empty ()
+  "GNU Emacs accepts inverted ranges in classes as empty ranges."
+  (should-not (nelisp-rx-string-match "[z-a]" "a"))
+  (should-not (nelisp-rx-string-match "[z-a]" "z"))
+  (should-not (nelisp-rx-string-match "[z-a]" "-"))
+  (should-not (nelisp-rx-string-match "[z-a]" "\n")))
+
+(ert-deftest nelisp-regex-test/negated-inverted-class-range-is-anychar ()
+  "`rx.el' emits `[^z-a]' for `anychar', so it must compile and match."
+  (should (nelisp-rx-string-match "[^z-a]" "a"))
+  (should (nelisp-rx-string-match "[^z-a]" "z"))
+  (should (nelisp-rx-string-match "[^z-a]" "-"))
+  (should (nelisp-rx-string-match "[^z-a]" "\n")))
 
 ;;;; --- \< (word start) -------------------------------------------------------
 

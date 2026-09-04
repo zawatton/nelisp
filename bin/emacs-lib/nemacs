@@ -239,13 +239,15 @@ compile_bootstrap_artifact() {
     --kind neln \
     --input "$NEMACS_BOOTSTRAP_BUNDLE" \
     --output "$NEMACS_COLD_ARTIFACT" \
-    --rewrite-defalias-late \
     --native-policy opportunistic \
     --load-path "$NEMACS_HOME/src" \
     --load-path "$NEMACS_HOME/vendor/emacs-lisp" \
     --load-path "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"
 }
 
+# Reached only when the artifact route is enabled -- see
+# `cold_artifact_route_available_p' below for why it is off by default.
+#
 # `compile-runtime-image --flat-artifact-cache' cannot look at the freshness
 # sidecar until its artifact runtime is up, and in the standalone reader that
 # bootstrap is a fixed cost paid on every start.  Measured 2026-08-10 against a
@@ -353,6 +355,20 @@ build_cold_image_from_source() {
   cold_source_fingerprint > "$NEMACS_COLD_SIDECAR" || return 1
   printf 'flat-image-cache=rebuilt route=source image=%s (%s B)\n' \
     "$NEMACS_COLD_IMAGE" "$(stat -Lc%s "$NEMACS_COLD_IMAGE" 2>/dev/null || echo '?')"
+}
+
+# The artifact route needs `compile-runtime-image --flat-artifact-cache
+# --runtime', which turns the .neln bootstrap artifact into a flat .nlri cold
+# image.  No released NeLisp has those flags -- they exist only on the abandoned
+# local branch `local/pre-v1.1.0-sync-20260828', and the shipped
+# `compile-runtime-image' goes the other way (.nlri in, .nelc/.neln out).  So
+# the route is off by default: without this gate every cold start printed
+# `nelisp: compile-runtime-image: unknown flag --flat-artifact-cache', then paid
+# for a full bootstrap AOT compile, then failed the same way again.  The source
+# route above uses only shipped CLI and is the supported path.  Set
+# NEMACS_FLAT_ARTIFACT_CACHE=1 for a NeLisp build that does carry the flags.
+cold_artifact_route_available_p() {
+  [[ "${NEMACS_FLAT_ARTIFACT_CACHE:-0}" == "1" ]]
 }
 
 prepare_cold_cache() {
@@ -884,12 +900,16 @@ case "$NEMACS_DRIVER" in
             echo "nemacs: building cold image from source (~2 min)" >&2
             if cold_prepare_status="$(build_cold_image_from_source)"; then
               cold_image_ready=1
-            else
+            elif cold_artifact_route_available_p; then
               echo "nemacs: source-route image build failed; trying the artifact route" >&2
+            else
+              echo "nemacs: source-route image build failed; no cold image this start" >&2
             fi
           fi
         fi
         if (( cold_image_ready )); then
+          :
+        elif ! cold_artifact_route_available_p; then
           :
         elif [[ -r "$NEMACS_COLD_ARTIFACT" &&
                 -r "$NEMACS_COLD_ARTIFACT.manifest.el" ]]; then

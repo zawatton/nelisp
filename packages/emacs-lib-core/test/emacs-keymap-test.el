@@ -567,11 +567,22 @@ value cells become the keymap) is exercised by the standalone boot."
 (ert-deftest emacs-keymap-standalone-key-parser-common-keys ()
   (should (equal [113] (emacs-keymap--standalone-key-parse "q")))
   (should (equal [24 6] (emacs-keymap--standalone-key-parse "C-x C-f")))
+  (should (equal [?/ ?s] (emacs-keymap--standalone-key-parse "/ s")))
+  (should (equal [?/ ?s]
+                 (emacs-keymap--standalone-key-parse "  /   s  ")))
+  (cl-letf (((symbol-function 'split-string)
+             (lambda (&rest _args)
+               (error "standalone parser must not call split-string"))))
+    (should (equal [?/ ?h]
+                   (emacs-keymap--standalone-key-parse "/ h"))))
   (should (equal [32] (emacs-keymap--standalone-key-parse "SPC")))
   (should (equal [127] (emacs-keymap--standalone-key-parse "DEL")))
   (should (equal [left] (emacs-keymap--standalone-key-parse "<left>")))
+  (should (equal [f10] (emacs-keymap--standalone-key-parse "f10")))
+  (should (equal (emacs-keymap--standalone-key-parse "f10")
+                 (emacs-keymap--standalone-key-parse "<f10>")))
   (should (emacs-keymap--standalone-key-valid-p "S-SPC"))
-  (should-not (emacs-keymap--standalone-key-valid-p "not a kbd")))
+  (should-not (emacs-keymap--standalone-key-valid-p "9bad-token")))
 
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here

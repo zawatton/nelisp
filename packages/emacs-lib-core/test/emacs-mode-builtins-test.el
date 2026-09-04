@@ -34,6 +34,7 @@
   (should (featurep 'emacs-mode))
   (dolist (sym '(fundamental-mode text-mode emacs-lisp-mode
                  run-mode-hooks kill-all-local-variables
+                 make-mode-line-mouse-map substitute-command-keys
                  set-auto-mode define-derived-mode))
     (should (fboundp sym)))
   (dolist (sym '(major-mode mode-name auto-mode-alist
@@ -42,6 +43,14 @@
                  change-major-mode-after-body-hook
                  after-change-major-mode-hook))
     (should (boundp sym))))
+
+(ert-deftest emacs-mode-builtins-test/install-p-uses-function-cell ()
+  (cl-letf (((symbol-function 'fboundp)
+             (lambda (symbol)
+               (or (eq symbol 'emacs-mode-builtins-test--missing)
+                   (fboundp symbol)))))
+    (should (emacs-mode-builtins--install-function-p
+             'emacs-mode-builtins-test--missing))))
 
 ;;;; B. fundamental-mode
 
@@ -283,6 +292,42 @@
           (should (emacs-mode-builtins--install-function-p
                    'define-derived-mode)))
       (put 'define-derived-mode 'emacs-stub-bulk original))))
+
+(ert-deftest emacs-mode-builtins-test/make-mode-line-mouse-map-binds-mode-line-event ()
+  (let* ((map (emacs-mode-builtins--make-mode-line-mouse-map
+               'mouse-1
+               'calendar-scroll-right))
+         (binding (lookup-key map (vector 'mode-line 'mouse-1))))
+    (should (keymapp map))
+    (should (eq binding 'calendar-scroll-right))))
+
+(ert-deftest emacs-mode-builtins-test/substitute-command-keys-reduced-removes-map-and-expands-command ()
+  (should
+   (equal
+    (emacs-mode-builtins--substitute-command-keys-reduced
+     "\\<calendar-mode-map>\\[calendar-scroll-right] previous month")
+    "M-x calendar-scroll-right previous month")))
+
+(ert-deftest emacs-mode-builtins-test/substitute-command-keys-reduced-unescapes-quoted-forms ()
+  (should
+   (equal
+    (emacs-mode-builtins--substitute-command-keys-reduced
+     "literal \\=\\= and \\=\\[calendar-other-month]")
+    "literal = and M-x calendar-other-month")))
+
+(ert-deftest emacs-mode-builtins-test/headless-noop-modes-alias-ignore-in-source ()
+  (let* ((file (locate-library "emacs-mode-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(global-hl-line-mode global-so-long-mode show-paren-mode))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(defalias ',name #'ignore)")
+                 nil t))))))
 
 (provide 'emacs-mode-builtins-test)
 

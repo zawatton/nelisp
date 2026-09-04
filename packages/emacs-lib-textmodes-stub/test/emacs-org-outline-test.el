@@ -440,6 +440,39 @@
   (should (eq (lookup-key org-mode-map (kbd "C-c >"))
               #'org-demote-subtree)))
 
+(ert-deftest org-property-regex-constants-match-drawer-shape ()
+  (let ((drawer ":PROPERTIES:\n:ID: abc\n:EMPTY:\n:END:"))
+    (should (string-match org-property-drawer-re drawer))
+    (should (= 0 (match-beginning 0)))
+    (should (= (length drawer) (match-end 0)))
+    (should (equal (length ":PROPERTIES:\n:ID: abc\n:EMPTY:\n:END:")
+                   (match-end 0)))))
+
+(ert-deftest org-property-regex-constants-reject-malformed-drawers ()
+  (dolist (drawer '("* Parent\n:PROPERTIES:\n:ID: abc\nbody\n"
+                    "* Parent\n:PROPERTIES:\n:ID: abc\n:EMPTY:\nbody\n"))
+    (should-not (string-match org-property-drawer-re drawer))))
+
+(ert-deftest org-property-re-matches-indented-properties-with-groups ()
+  (let ((line "  :ID: abc"))
+    (should (string-match org-property-re line))
+    (should (equal "  " (match-string 4 line)))
+    (should (equal ":ID:" (match-string 1 line)))
+    (should (equal "ID" (match-string 2 line)))
+    (should (equal "abc" (match-string 3 line)))
+    (should (equal "" (match-string 5 line)))))
+
+(ert-deftest org-property-re-allow-null-accepts-empty-values ()
+  (let ((line ":EMPTY:"))
+    (should (string-match org-property-re line))
+    (should (equal "" (match-string 3 line)))
+    (should (equal "" (match-string 5 line)))))
+
+(ert-deftest org-re-property-specific-value-matches-only-that-value ()
+  (let ((re (org-re-property "STATE" 'literal nil "done")))
+    (should (string-match re "  :STATE: done"))
+    (should-not (string-match re "  :STATE: todo"))))
+
 (ert-deftest org-property-drawer-put-get-and-update-work ()
   (emacs-org-outline-test--with-org-buffer
       "* Parent\nbody\n"
@@ -873,6 +906,31 @@
     (should (equal (org-get-heading t) "INBOX [#A] Parent heading"))
     (should (equal (org-get-heading t t) "[#A] Parent heading"))
     (should (equal (org-get-heading t t t) "Parent heading"))))
+
+(ert-deftest org-comment-query-recognizes-comment-lines ()
+  (with-temp-buffer
+    (insert "# comment\n  # indented comment\n#\n#not comment\n")
+    (goto-char (point-min))
+    (should (org-at-comment-p))
+    (forward-line 1)
+    (goto-char (+ (line-beginning-position) 3))
+    (should (org-at-comment-p))
+    (forward-line 1)
+    (should (org-at-comment-p))
+    (forward-line 1)
+    (should-not (org-at-comment-p))))
+
+(ert-deftest org-comment-query-preserves-point-and-match-data ()
+  (with-temp-buffer
+    (insert "  # comment\n")
+    (goto-char (point-min))
+    (forward-char 5)
+    (let ((origin (point)))
+      (string-match "prefix" "prefix")
+      (let ((before-match-data (match-data)))
+        (should (org-at-comment-p))
+        (should (= origin (point)))
+        (should (equal before-match-data (match-data)))))))
 
 (ert-deftest org-heading-navigation-outline-alias-works ()
   (emacs-org-outline-test--with-org-buffer

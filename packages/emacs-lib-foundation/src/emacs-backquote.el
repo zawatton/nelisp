@@ -43,6 +43,59 @@
 
 ;;; Code:
 
+(unless (boundp 'backquote-backquote-symbol)
+  (defconst backquote-backquote-symbol '\`
+    "Symbol used to represent a backquote or nested backquote."))
+
+(unless (boundp 'backquote-unquote-symbol)
+  (defconst backquote-unquote-symbol '\,
+    "Symbol used to represent an unquote inside a backquote."))
+
+(unless (boundp 'backquote-splice-symbol)
+  (defconst backquote-splice-symbol '\,@
+    "Symbol used to represent a splice inside a backquote."))
+
+;; Emacs's `backquote-process' rebuilds vector templates by expanding their
+;; elements under list semantics and wrapping the result in `vconcat'.
+(unless (fboundp 'nelisp--bq-tag-p)
+  (defun nelisp--bq-tag-p (form tag punct)
+    "Non-nil when FORM starts with convenience TAG or punctuation PUNCT."
+    (and (consp form)
+         (let ((head (car form)))
+           (or (eq head tag) (eq head (intern punct)))))))
+
+(when (and (fboundp 'nelisp--bq-expand) (fboundp 'nelisp--bq-expand-list))
+  ;; Measured on NeLisp v1.1.0+1, `nelisp--bq-expand' accepts
+  ;; (FORM &optional LEVEL) and `nelisp--bq-expand-list' accepts (FORM LEVEL).
+  ;; Older preludes exposed the list helper with one argument, so retain that
+  ;; load-path compatibility while passing LEVEL whenever the runtime accepts it.
+  (defun emacs-backquote--runtime-expand-list (form level)
+    "Expand runtime backquote list FORM at nesting LEVEL."
+    (condition-case nil
+        (nelisp--bq-expand-list form level)
+      (wrong-number-of-arguments
+       (nelisp--bq-expand-list form))))
+
+  (defun nelisp--bq-expand (form &optional level)
+    "Return the expansion of FORM under `backquote'."
+    (let ((level (or level 1)))
+      (cond
+       ((vectorp form)
+        (list 'vconcat
+              (emacs-backquote--runtime-expand-list
+               (append form nil) level)))
+       ((not (consp form))
+        (list 'quote form))
+       ((nelisp--bq-tag-p form 'comma ",") (cadr form))
+       ((nelisp--bq-tag-p form 'comma-at ",@")
+        (signal 'error (list "nelisp-bq: top-level ,@ not allowed")))
+       ((nelisp--bq-tag-p form 'backquote "`")
+        ;; Preserve nested backquote forms for the inner macro expansion
+        ;; pass.  This is enough for local macros such as generator.el's
+        ;; `(cl-macrolet ... `(cps-internal-yield ,value))' body.
+        (list 'quote form))
+       (t (emacs-backquote--runtime-expand-list form level))))))
+
 (defun emacs-backquote--expand (form)
   "Return an elisp form that, when evaluated, reproduces FORM with
 backquote semantics.  Used by the `backquote' macro below; exposed
@@ -131,7 +184,7 @@ surrounding list).  Single-level only; nested backquotes are not
 supported by this polyfill (Phase 2.1)."
     (emacs-backquote--expand form)))
 
-
 (provide 'emacs-backquote)
+(provide 'backquote)
 
 ;;; emacs-backquote.el ends here

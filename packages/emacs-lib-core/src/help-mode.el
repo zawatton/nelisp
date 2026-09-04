@@ -20,8 +20,9 @@
   "Load host Emacs's standard help-mode library."
   (let ((shim-dir (file-truename
                    (file-name-as-directory
-                    (file-name-directory (or load-file-name
-                                             buffer-file-name)))))
+                    (file-name-directory (or (and (boundp 'load-file-name) load-file-name)
+                         (and (boundp 'buffer-file-name) buffer-file-name)
+                         default-directory)))))
         filtered)
     (dolist (dir load-path)
       (unless (equal (file-truename (file-name-as-directory dir))
