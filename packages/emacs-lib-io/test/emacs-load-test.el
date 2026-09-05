@@ -2225,7 +2225,8 @@
                        (with-temp-buffer
                          (insert-file-contents path)
                          (buffer-string)))))
-            (let ((emacs-load-auto-native-compile t))
+            (let ((emacs-load-auto-native-compile t)
+                  (emacs-load-artifact-max-source-size nil))
               (should (eq (emacs-load--artifact-load-or-compile resolved source) t))
               (should (eq (emacs-load--artifact-load-or-compile resolved source) t))))
           (should (= cache-path-calls 2))
