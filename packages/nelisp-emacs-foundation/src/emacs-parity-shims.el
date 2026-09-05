@@ -174,6 +174,39 @@
              (and (memq object nemacs-parity--known-coding-systems) t))
          t)))
 
+;; T88: verified (real Emacs 30.1/31.1, `emacs -Q --batch') subset of
+;; `nemacs-parity--known-coding-systems' whose `:ascii-compatible-p'
+;; property is NIL on stock Emacs.  Every other member of the known list
+;; is ASCII-compatible on stock Emacs -- confirmed member-by-member, not
+;; assumed.  `coding-system-get' (`emacs-parity-fns2.el') consults this to
+;; answer `:ascii-compatible-p' honestly instead of the pre-T88 hardcoded
+;; nil that made `set-file-name-coding-system' reject every non-nil
+;; coding system, including `utf-8-unix' (T88 gap: real init `(when
+;; *is-unix* ... (set-file-name-coding-system (quote utf-8-unix)))'
+;; signaled "utf-8-unix is not suitable for file names", which stock
+;; Emacs never signals for that call).
+(defvar nemacs-parity--ascii-incompatible-coding-systems
+  '(prefer-utf-8 utf-16 utf-16le utf-16be utf-7 iso-2022-jp)
+  "Members of `nemacs-parity--known-coding-systems' that are NOT
+ASCII-compatible on stock GNU Emacs (verified via `coding-system-get' with
+`:ascii-compatible-p' on Emacs 30.1/31.1).")
+
+(unless (fboundp 'check-coding-system)
+  (defun check-coding-system (coding-system)
+    "Check validity of CODING-SYSTEM.
+If valid, return CODING-SYSTEM, else signal a `coding-system-error' error.
+It is valid if it is nil or a symbol this runtime recognizes as a coding
+system via `coding-system-p'.
+
+Verbatim port of the stock Emacs 30.1/31.1 C primitive's contract
+(`Fcheck_coding_system' in coding.c: \"if valid return CODING-SYSTEM, else
+signal a `coding-system-error'\"), minus the `define-coding-system'
+autoload-on-first-use step that primitive also performs -- this runtime
+has no lazy `define-coding-system' registry to trigger."
+    (if (coding-system-p coding-system)
+        coding-system
+      (signal 'coding-system-error (list coding-system)))))
+
 ;;;; --- faces / custom ------------------------------------------------
 
 (unless (fboundp 'define-obsolete-face-alias)

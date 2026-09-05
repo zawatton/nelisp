@@ -120,16 +120,47 @@ If optional BASE-ONLY is non-nil, only base coding systems are listed."
 ;; which left it void on the default boot path -- the load matrix showed
 ;; `(void-function coding-system-get)' for 4 features that are not magit at
 ;; all (message, webkit, webkit-ace, webkit-dark).  Same documented
-;; rationale carries over unchanged: this substrate has no coding-system
-;; attribute table at all, so every property is honestly unknown (nil), not
-;; a lazy stub -- callers in the vendor chain only use this for optional
-;; decoration (eol/BOM display) and take their fallback branch on nil.
+;; rationale carries over unchanged: this substrate has no general
+;; coding-system attribute table, so every property outside the two below
+;; is honestly unknown (nil), not a lazy stub -- callers in the vendor
+;; chain only use this for optional decoration (eol/BOM display) and take
+;; their fallback branch on nil.
+;;
+;; T88: `:ascii-compatible-p' is no longer unconditionally nil.  The
+;; blanket nil made `set-file-name-coding-system' (`emacs-parity-shims.el')
+;; reject every non-nil coding system -- including plain `utf-8-unix' from
+;; the real init's `(when *is-unix* ...)' block, which stock Emacs
+;; accepts -- because that function's verbatim-ported validity check reads
+;; as "not ascii-compatible AND not suitable-for-file-name -> error", and
+;; `:ascii-compatible-p' was always answering nil (never t).  Fixed by
+;; consulting `nemacs-parity--ascii-incompatible-coding-systems': nil is
+;; ASCII-compatible (matches stock Emacs), anything in the known registry
+;; and not in that incompatible list is ASCII-compatible (true for the
+;; overwhelming majority there, verified per-symbol against stock Emacs
+;; 30.1/31.1), anything explicitly listed there is not, and anything
+;; outside the known registry stays honestly nil (unknown) -- no
+;; fabricated answer for coding systems this runtime cannot classify.
+;; `:suitable-for-file-name' stays nil unconditionally: verified against
+;; stock Emacs that it is nil for every member of the known registry (the
+;; handful of real coding systems where it is t -- Vietnamese
+;; vscii/tcvn/viscii -- are outside the known registry and irrelevant to
+;; any init form this runtime has seen), so honest-nil already matches
+;; stock Emacs there and needs no lookup.
 (unless (fboundp 'coding-system-get)
-  (defun coding-system-get (_coding-system _prop)
-    "Return nil: the substrate has no coding-system attribute table.
-See the commentary above this definition for why nil is the honest
-answer rather than a fabricated property value."
-    nil))
+  (defun coding-system-get (coding-system prop)
+    "Return CODING-SYSTEM's PROP, or nil when this runtime cannot classify it.
+See the commentary above this definition: `:ascii-compatible-p' is backed
+by a small verified lookup, every other property (including
+`:suitable-for-file-name', always nil in practice here) stays honestly nil
+rather than a fabricated value."
+    (and (eq prop :ascii-compatible-p)
+         (or (null coding-system)
+             (and (boundp 'nemacs-parity--known-coding-systems)
+                  (memq coding-system nemacs-parity--known-coding-systems)
+                  (not (and (boundp 'nemacs-parity--ascii-incompatible-coding-systems)
+                            (memq coding-system
+                                  nemacs-parity--ascii-incompatible-coding-systems)))))
+         t)))
 
 ;;;; --- mule.el: define-translation-table (loader wiring) --------------
 ;; T62: `define-translation-table' -- and its companions
