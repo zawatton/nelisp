@@ -203,11 +203,28 @@ matchers (= e.g. a keyword that should only fire in code)."
 (defvar emacs-syntax-table--current nil
   "Dynamic current syntax char-table; nil means use the standard table.")
 
+(defun emacs-syntax-table--standalone-p ()
+  "Return non-nil under standalone NeLisp.
+The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
+`(not (boundp 'emacs-version))' test misfires there.  Detect the
+standalone path by a NeLisp-only primitive (`nl-write-file'), matching
+`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
+
 (defun emacs-syntax-table--install-function-p (symbol)
   "Return non-nil when SYMBOL's unprefixed shim should be installed.
-Always installs under standalone NeLisp (overriding nil stubs); under host
-Emacs only when SYMBOL is not already bound (host C builtin wins)."
-  (if (not (boundp 'emacs-version))
+Always installs under standalone NeLisp — overriding both the
+`emacs-stub-bulk.el' nil-stubs and the (also-standalone) plain-list/
+plain-vector `emacs-stub.el' / `emacs-stub-bulk.el' syntax-table
+fallbacks, which load earlier in the bootstrap bundle and would
+otherwise stay `fboundp' and shadow this module's real char-table-backed
+implementations for the rest of the session (Doc 51 defect: callers of
+e.g. `(make-syntax-table)' got back the stub's `(syntax-table nil)'
+list, and any later `aref' on it signalled `wrong-type-argument
+arrayp').  Under host Emacs, only installs when SYMBOL is not already
+bound (host C builtin wins)."
+  (if (emacs-syntax-table--standalone-p)
       t
     (not (fboundp symbol))))
 
