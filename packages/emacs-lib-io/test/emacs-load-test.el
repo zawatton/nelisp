@@ -778,6 +778,279 @@ vendor NeLisp per T105) already reads `#(...)' correctly."
       (when (fboundp fn) (fmakunbound fn))
       (delete-directory temp-dir t))))
 
+(ert-deftest emacs-load-test/rewrite-labeled-object-references-resolves-atoms-and-preserves-compound ()
+  "T103 regression: `#N=OBJECT' / `#N#' labeled/shared-structure read
+syntax is resolved to plain repeated text only when OBJECT is a simple
+atom (symbol, number, or string); a compound OBJECT (list/vector) and any
+`#N#' referencing a label this function did not record are left
+untouched; SOURCE is returned unchanged (same object) when `#' does not
+occur at all."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  ;; The real evil-commands.el shape: a label attached to a symbol.
+  (should (equal (emacs-load--rewrite-labeled-object-references
+                  "(list '(#1=upper-left mid #1#))")
+                 "(list '(upper-left mid upper-left))"))
+  ;; A label attached to a string.
+  (should (equal (emacs-load--rewrite-labeled-object-references
+                  "(list #2=\"hi\" other #2#)")
+                 "(list \"hi\" other \"hi\")"))
+  ;; A label attached to a list (true shared structure): left untouched.
+  (should (equal (emacs-load--rewrite-labeled-object-references
+                  "(list #3=(a b c) #3#)")
+                 "(list #3=(a b c) #3#)"))
+  ;; `#(' inside a string is untouched by this function (that is
+  ;; `emacs-load--rewrite-propertized-string-literals''s job).
+  (should (equal (emacs-load--rewrite-labeled-object-references
+                  "(defvar x \"contains #1=foo #1# literally\")")
+                 "(defvar x \"contains #1=foo #1# literally\")"))
+  ;; A `#N#' preceding its own label's `#N=' (a serializer-only shape, never
+  ;; produced by hand-written source) leaves the reference untouched but
+  ;; still resolves the later, otherwise-unreadable `#N=' definition.
+  (should (equal (emacs-load--rewrite-labeled-object-references
+                  "(list #4# #4=bar)")
+                 "(list #4# bar)"))
+  (let ((source "(defvar x 1)"))
+    (should (eq (emacs-load--rewrite-labeled-object-references source)
+                source))))
+
+(ert-deftest emacs-load-test/source-incremental-labeled-object-reference-followed-by-defalias ()
+  "T103 regression: `evil-commands.el' defines `evil-visual-rotate' with
+`(let ((corners \\='(#1=upper-left upper-right lower-right lower-left
+#1#))) ...)' in its `interactive' spec.  Like the propertized-string case
+\(`emacs-load-test/source-incremental-propertized-string-literal-followed-by-defalias'),
+none of `nelisp--read-all-from-string-native' (declines), `read-from-string'
+\(silently mis-tokenizes `#1=upper-left' as one bare symbol), or
+`nelisp--eval-source-string' (signals `invalid-read-syntax') can read this
+construct, and T78's escape hatch turns the decline into a whole-file load
+failure once a later `defalias' triggers the reparse-and-reserialize path.
+This must load the whole file's forms and must resolve `corners' to the
+same list `#1=upper-left ... #1#' denotes."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((fn 'emacs-load-test--rotate-like)
+         (alias 'emacs-load-test--rotate-like-alias)
+         (marker 'emacs-load-test--rotate-like-marker)
+         (temp-dir (make-temp-file "emacs-load-test-labeled-" t))
+         (resolved (expand-file-name "labeled.el" temp-dir))
+         (source (concat
+                  "(defun emacs-load-test--rotate-like (which)\n"
+                  "  (let ((corners '(#1=upper-left upper-right"
+                  " lower-right lower-left #1#)))\n"
+                  "    (cadr (memq which corners))))\n"
+                  "(defalias 'emacs-load-test--rotate-like-alias"
+                  " 'emacs-load-test--rotate-like)\n"
+                  "(setq emacs-load-test--rotate-like-marker 'reached-end)\n")))
+    (fmakunbound fn)
+    (fmakunbound alias)
+    (makunbound marker)
+    (unwind-protect
+        (progn
+          (with-temp-file resolved
+            (insert source))
+          (cl-letf (((symbol-function 'nelisp--defalias-late)
+                     (lambda (symbol definition &optional docstring)
+                       (ignore docstring)
+                       (if (and (symbolp definition) (not (fboundp definition)))
+                           (fset symbol (lambda (&rest args)
+                                          (apply definition args)))
+                         (fset symbol definition))
+                       symbol)))
+            (let ((emacs-load-auto-native-compile nil))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))))
+          (should (fboundp fn))
+          (should (fboundp alias))
+          (should (eq (symbol-value marker) 'reached-end))
+          ;; `upper-left' is both the first and the (via `#1#') last
+          ;; corner: rotating past `lower-left' must reach it again.
+          (should (eq (funcall fn 'lower-left) 'upper-left))
+          (should (eq (funcall fn 'upper-left) 'upper-right)))
+      (when (fboundp fn) (fmakunbound fn))
+      (when (fboundp alias) (fmakunbound alias))
+      (when (boundp marker) (makunbound marker))
+      (delete-directory temp-dir t))))
+
+(ert-deftest emacs-load-test/rewrite-labeled-object-references-gated-by-native-reader-probe ()
+  "T103: `nelisp--load-resolved-file' only calls
+`emacs-load--rewrite-labeled-object-references' when
+`emacs-load--labeled-object-reader-native-p' is nil -- the shim is interim
+and self-disabling once a reader (host Emacs today; a future vendor
+NeLisp per T105) already reads `#N='/`#N#' correctly."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((fn 'emacs-load-test--label-gate-fn)
+         (temp-dir (make-temp-file "emacs-load-test-labeled-gate-" t))
+         (resolved (expand-file-name "gate.el" temp-dir))
+         (source (concat
+                  "(defun emacs-load-test--label-gate-fn ()\n"
+                  "  '(#1=x y #1#))\n")))
+    (fmakunbound fn)
+    (unwind-protect
+        (progn
+          (with-temp-file resolved
+            (insert source))
+          (let ((emacs-load-auto-native-compile nil)
+                (emacs-load--labeled-object-reader-native-p t))
+            (cl-letf (((symbol-function 'emacs-load--rewrite-labeled-object-references)
+                       (lambda (&rest _args)
+                         (error "rewrite must not run when the probe is true"))))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))
+              (should (fboundp fn))
+              (should (equal (funcall fn) '(x y x)))))
+          (fmakunbound fn)
+          (let ((emacs-load-auto-native-compile nil)
+                (emacs-load--labeled-object-reader-native-p nil)
+                (rewrite-calls 0)
+                (original (symbol-function 'emacs-load--rewrite-labeled-object-references)))
+            (cl-letf (((symbol-function 'emacs-load--rewrite-labeled-object-references)
+                       (lambda (&rest args)
+                         (setq rewrite-calls (1+ rewrite-calls))
+                         (apply original args))))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))
+              (should (= rewrite-calls 1))
+              (should (fboundp fn))
+              (should (equal (funcall fn) '(x y x))))))
+      (when (fboundp fn) (fmakunbound fn))
+      (delete-directory temp-dir t))))
+
+(ert-deftest emacs-load-test/rewrite-escaped-modifier-char-literals-computes-correct-values ()
+  "T103 regression: a Control/Meta-modified character literal whose base is
+itself a backslash escape (e.g. `?\\C-\\[') is rewritten to its correct
+decimal value; a bare (unescaped) modified literal, a literal with no
+modifier, and any occurrence inside a string are left untouched."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  ;; The real evil-commands.el shape (`evil-ex-substitute'): Control on the
+  ;; escaped `\[' must give ESC (27), not 28.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(list ?\\C-\\[)")
+                 "(list 27)"))
+  ;; Control on an escaped base outside the maskable range sets the
+  ;; Control modifier bit instead of masking.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(list ?\\C-\\()")
+                 (format "(list %d)" (logior ?\( #x4000000))))
+  ;; Meta always sets the Meta modifier bit.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(list ?\\M-\\[)")
+                 (format "(list %d)" (logior ?\[ #x8000000))))
+  ;; Control on an escaped backslash: the backslash byte itself (#x5C) is
+  ;; in the maskable range, giving 28 -- distinct from `?\C-\[' above.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(list ?\\C-\\\\)")
+                 "(list 28)"))
+  ;; A bare (unescaped-base) modified literal already reads correctly
+  ;; everywhere (T103 verified `?\C-e' and `?\C-?' both already compute
+  ;; the right value) and is left untouched.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(list ?\\C-e)")
+                 "(list ?\\C-e)"))
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(list ?\\C-?)")
+                 "(list ?\\C-?)"))
+  ;; No modifier prefix at all: left untouched.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals "(list ?a)")
+                 "(list ?a)"))
+  ;; Occurring inside a string literal: left untouched.
+  (should (equal (emacs-load--rewrite-escaped-modifier-char-literals
+                  "(defvar x \"?\\\\C-\\\\[ literally\")")
+                 "(defvar x \"?\\\\C-\\\\[ literally\")"))
+  (let ((source "(defvar x 1)"))
+    (should (eq (emacs-load--rewrite-escaped-modifier-char-literals source)
+                source))))
+
+(ert-deftest emacs-load-test/source-incremental-escaped-modifier-char-literal-followed-by-defalias ()
+  "T103 regression: `evil-commands.el' defines `evil-ex-substitute' with a
+`(cond ((memq c (list ?q ?l ?\\C-\\[)) ...))' inside a nested
+`unwind-protect'/`catch'.  Like the propertized-string and labeled-object
+cases, `nelisp--eval-source-string' signals `invalid-read-syntax' on
+`?\\C-\\[' (T103's finding: this runtime's readers compute the WRONG
+value, 28 instead of 27, for the escaped-base case, and
+`nelisp--eval-source-string' additionally refuses to read it at all), and
+once a big/complex enough containing form makes the native per-form
+reader decline, T78's escape hatch turns this into a whole-file load
+failure once a later `defalias' triggers the reparse-and-reserialize
+path.  This must load the whole file's forms and the rewritten literal
+must equal ESC (27), matching an actual `C-[' keypress."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((fn 'emacs-load-test--substitute-like)
+         (alias 'emacs-load-test--substitute-like-alias)
+         (marker 'emacs-load-test--substitute-like-marker)
+         (temp-dir (make-temp-file "emacs-load-test-modchar-" t))
+         (resolved (expand-file-name "modchar.el" temp-dir))
+         (source (concat
+                  "(defun emacs-load-test--substitute-like (c)\n"
+                  "  (cond ((memq c (list ?q ?l ?\\C-\\[)) 'quit)\n"
+                  "        (t 'other)))\n"
+                  "(defalias 'emacs-load-test--substitute-like-alias"
+                  " 'emacs-load-test--substitute-like)\n"
+                  "(setq emacs-load-test--substitute-like-marker 'reached-end)\n")))
+    (fmakunbound fn)
+    (fmakunbound alias)
+    (makunbound marker)
+    (unwind-protect
+        (progn
+          (with-temp-file resolved
+            (insert source))
+          (cl-letf (((symbol-function 'nelisp--defalias-late)
+                     (lambda (symbol definition &optional docstring)
+                       (ignore docstring)
+                       (if (and (symbolp definition) (not (fboundp definition)))
+                           (fset symbol (lambda (&rest args)
+                                          (apply definition args)))
+                         (fset symbol definition))
+                       symbol)))
+            (let ((emacs-load-auto-native-compile nil))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))))
+          (should (fboundp fn))
+          (should (fboundp alias))
+          (should (eq (symbol-value marker) 'reached-end))
+          (should (eq (funcall fn 27) 'quit))
+          (should (eq (funcall fn ?q) 'quit))
+          (should (eq (funcall fn ?x) 'other)))
+      (when (fboundp fn) (fmakunbound fn))
+      (when (fboundp alias) (fmakunbound alias))
+      (when (boundp marker) (makunbound marker))
+      (delete-directory temp-dir t))))
+
+(ert-deftest emacs-load-test/rewrite-escaped-modifier-char-literals-gated-by-native-reader-probe ()
+  "T103: `nelisp--load-resolved-file' only calls
+`emacs-load--rewrite-escaped-modifier-char-literals' when
+`emacs-load--escaped-modifier-char-literal-reader-native-p' is nil -- the
+shim is interim and self-disabling once a reader (host Emacs today; a
+future vendor NeLisp per T105) already computes the correct value."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((fn 'emacs-load-test--modchar-gate-fn)
+         (temp-dir (make-temp-file "emacs-load-test-modchar-gate-" t))
+         (resolved (expand-file-name "gate.el" temp-dir))
+         (source (concat
+                  "(defun emacs-load-test--modchar-gate-fn ()\n"
+                  "  ?\\C-\\[)\n")))
+    (fmakunbound fn)
+    (unwind-protect
+        (progn
+          (with-temp-file resolved
+            (insert source))
+          (let ((emacs-load-auto-native-compile nil)
+                (emacs-load--escaped-modifier-char-literal-reader-native-p t))
+            (cl-letf (((symbol-function 'emacs-load--rewrite-escaped-modifier-char-literals)
+                       (lambda (&rest _args)
+                         (error "rewrite must not run when the probe is true"))))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))
+              (should (fboundp fn))
+              (should (= (funcall fn) 27))))
+          (fmakunbound fn)
+          (let ((emacs-load-auto-native-compile nil)
+                (emacs-load--escaped-modifier-char-literal-reader-native-p nil)
+                (rewrite-calls 0)
+                (original (symbol-function 'emacs-load--rewrite-escaped-modifier-char-literals)))
+            (cl-letf (((symbol-function 'emacs-load--rewrite-escaped-modifier-char-literals)
+                       (lambda (&rest args)
+                         (setq rewrite-calls (1+ rewrite-calls))
+                         (apply original args))))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))
+              (should (= rewrite-calls 1))
+              (should (fboundp fn))
+              (should (= (funcall fn) 27)))))
+      (when (fboundp fn) (fmakunbound fn))
+      (delete-directory temp-dir t))))
+
 (ert-deftest emacs-load-test/propertized-string-literal-reconstructs-value ()
   "T103: `nelisp-emacs--propertized-string-literal' reconstructs the string
 value `#(STR RANGES...)' would have produced, applying each START END
