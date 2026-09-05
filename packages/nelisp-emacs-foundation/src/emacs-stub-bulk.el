@@ -51,6 +51,81 @@
     "Alias of `number-to-string' (same nil no-op hazard as `identity')."
     (number-to-string n)))
 
+;; `subr-arity' (T51, 2026-09-05): real Emacs requires SUBR to be a true
+;; built-in (a C primitive) and signals `wrong-type-argument' otherwise;
+;; this runtime never represents any function as a true subr (`subrp' is
+;; always nil here -- every "primitive" this runtime has is an ordinary
+;; interpreted function, per the pure-Elisp runtime architecture), so a
+;; literal port of that contract would make `subr-arity' unconditionally
+;; signal for every caller.  Real callers invoke it on exactly the kind
+;; of object this runtime DOES have: `org-compat.el' does
+;; `(subr-arity (symbol-function (quote get-buffer-create)))' purely to
+;; detect the Emacs<28 vs 28+ calling convention, and `ob'/`ob-*'/
+;; `org-agenda'/`org-id'/`ox-*'/`anki-editor'/`ddskk' all transitively
+;; require `org-compat' at load time.  Falling into the blanket
+;; nil-returning bulk stub below (as this did until 2026-09-05) makes
+;; `(cdr (subr-arity ...))' nil, and the very next form,
+;; `(= 2 (cdr (subr-arity ...)))', then signals `wrong-type-argument
+;; number-or-marker-p' -- not a graceful "unsupported" signal, an
+;; opaque crash at `require' time for every one of those 17 features.
+;; Same nil-no-op hazard as `identity'/`float' above: promoted out of
+;; the bulk list.  Delegates to `help-function-arglist', which already
+;; knows how to read this runtime's `#[(ARGS) (BODY) nil]' function
+;; representation, then counts required/optional/rest params the same
+;; way real Emacs's `func-arity' does for a lambda/closure.
+;; `frame-char-width' / `frame-char-height' (T51, 2026-09-05): the same
+;; "pure value-passing function must never fall into the nil no-op
+;; bulk" hazard as `subr-arity' above, hit by the SAME 17-feature
+;; `wrong-type-argument number-or-marker-p' regression class from a
+;; second, independent root cause: `skk-vars.el' (loaded transitively
+;; by `ddskk') has `(defcustom skk-tooltip-x-offset (/ (1+
+;; (frame-char-height)) 2) ...)' at its own load time, and a nil
+;; `(frame-char-height)' makes `1+' signal immediately.  A real,
+;; frame-aware implementation already exists at
+;; `emacs-frame-frame-char-width'/`emacs-frame-frame-char-height'
+;; (src/emacs-frame.el, Doc 34 Sec 2.11 LOCKED invariant: 8x16
+;; pseudo-pixel default cell), and `emacs-frame-builtins.el' aliases
+;; these names to it -- but that alias only installs when `(unless
+;; (fboundp SYM) ...)', so if this bulk list's dolist below runs first
+;; (load order between the two files is not guaranteed), the nil stub
+;; wins the race permanently and the real implementation never gets a
+;; chance to install.  Delegate to the real implementation when the
+;; frame module has loaded; fall back to the same LOCKED-invariant
+;; constants otherwise, so this is never a silent nil regardless of
+;; what has (or has not) loaded yet.
+(unless (fboundp 'frame-char-width)
+  (defun frame-char-width (&optional frame)
+    (if (fboundp 'emacs-frame-frame-char-width)
+        (emacs-frame-frame-char-width frame)
+      8)))
+(unless (fboundp 'frame-char-height)
+  (defun frame-char-height (&optional frame)
+    (if (fboundp 'emacs-frame-frame-char-height)
+        (emacs-frame-frame-char-height frame)
+      16)))
+
+(unless (fboundp 'subr-arity)
+  (defun subr-arity (subr)
+    "Return minimum and maximum number of args allowed for SUBR.
+The returned value is a pair (MIN . MAX).  MAX is the symbol `many'
+for a function with `&rest' args.  Unlike real Emacs, SUBR need not be
+a true built-in subr on this runtime -- see the commentary above."
+    (unless (or (functionp subr) (symbolp subr))
+      (signal 'wrong-type-argument (list 'subrp subr)))
+    (let ((arglist (help-function-arglist subr t))
+          (min 0) (max 0) (state 'req))
+      (if (not (listp arglist))
+          (cons 0 'many)
+        (progn
+          (dolist (arg arglist)
+            (cond
+             ((eq arg '&optional) (setq state 'opt))
+             ((eq arg '&rest) (setq state 'rest))
+             ((eq state 'req) (setq min (1+ min) max (1+ max)))
+             ((eq state 'opt) (setq max (1+ max)))
+             ((eq state 'rest) (setq max 'many))))
+          (cons min max))))))
+
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n)
     "Doc 51 Track B (2026-05-04) MVP `backward-char'.
@@ -214,8 +289,8 @@ Forwarder to `forward-char' with negated count."
     execute-extended-command-for-buffer exit-minibuffer exp expand-file-name face-background-pixmap face-font face-stipple face-underline-p
     fboundp featurep fetch-bytecode field-beginning field-end file-exists-p file-modes file-name-extension file-name-nondirectory file-name-sans-extension file-newer-than-file-p fillarray find-function-search-for-symbol
     find-lisp-object-file-name flatten-list floatp float-time fmakunbound format
-    format-message format-spec forward-char forward-line forward-sexp forward-word frame-char-height
-    frame-char-width frame-height frame-live-p framep frame-parameter frame-parameters frame-selected-window frame-toggle-on-screen-keyboard
+    format-message format-spec forward-char forward-line forward-sexp forward-word
+    frame-height frame-live-p framep frame-parameter frame-parameters frame-selected-window frame-toggle-on-screen-keyboard
     frame-visible-p frame-width fset funcall funcall-with-delayed-message function-documentation functionp function-put
     garbage-collect generate-new-buffer-name get get-advertised-calling-convention get-buffer get-buffer-create get-buffer-process get-char-property
     getenv gethash get-load-suffixes get-register get-text-property gnus goto-char grep
@@ -263,7 +338,7 @@ Forwarder to `forward-char' with negated count."
     signal single-key-description skip-chars-backward skip-chars-forward skip-syntax-backward skip-syntax-forward sleep-for sort
     special-variable-p standard-case-table standard-syntax-table start-file-process store-match-data string string-as-multibyte string-as-unibyte
     string-equal string-lessp string-make-multibyte string-make-unibyte string-match stringp string-search string-split
-    string-to-multibyte string-to-number string-to-unibyte string-width subr-arity subr-native-comp-unit substitute-quotes substring substring-no-properties suspend-emacs switch-to-buffer sxhash sxhash-equal symbol-function
+    string-to-multibyte string-to-number string-to-unibyte string-width subr-native-comp-unit substitute-quotes substring substring-no-properties suspend-emacs switch-to-buffer sxhash sxhash-equal symbol-function
     symbol-name symbolp symbol-plist symbol-value syntax-ppss-flush-cache syntax-propertize syntax-table take
     temp-buffer-resize-mode temporary-file-directory terminal-parameter terpri text-properties-at time-convert time-less-p truncate
     tty-top-frame type-of undo-amalgamate-change-group undo-auto-amalgamate undo-more unhandled-file-name-directory unintern upcase
