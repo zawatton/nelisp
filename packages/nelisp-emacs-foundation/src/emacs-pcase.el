@@ -323,6 +323,76 @@ See `emacs-pcase--test' for supported pattern shapes."
 ;; backquote / let) directly — no override hack needed here.
 ;; Under host driver, host emacs's C-native pcase is left intact.
 
+;; T61: `nelisp-pcase--or' (nelisp core's own helper, vendor/nelisp
+;; lisp/nelisp-pcase.el) deliberately drops ALL bindings when an `or'
+;; pattern occurs NESTED inside another pattern (its own comment: "An
+;; `or' nested inside another pattern still goes through the
+;; binding-less builder; that case fails loudly with `void-variable'
+;; rather than answering wrongly").  Only a TOP-LEVEL `(or P1 P2)'
+;; clause pattern keeps its bindings, by being split into one `pcase'
+;; clause per arm before `nelisp-pcase--test' ever sees the `or' head
+;; (`nelisp-pcase--distribute-or', called from the `pcase' macro
+;; itself, once, on the outermost clause pattern only).
+;;
+;; Real Emacs's `pcase' supports bindings on a NESTED `or' too --- it
+;; requires (and guarantees, by its own contract) that every arm binds
+;; the SAME variable names.  `macroexp-let2*' (vendor/emacs-lisp
+;; emacs-lisp/macroexp.el, loaded verbatim) relies on exactly this: its
+;; pattern
+;;   `(,(or `(,var ,exp) (and (pred symbolp) var (let exp var))) . ,tl)
+;; nests an `or' inside a backquote comma position, and both arms bind
+;; `var'/`exp'.  `(require 'evil)' on the standalone reaches this exact
+;; form via `evil-keybindings.el' -> `evil-add-hjkl-bindings' ->
+;; `evil-define-key' -> `evil-with-delay' -> `macroexp-let2*', and
+;; `var' comes out as a literal, unbound template symbol in the
+;; generated code: `(void-variable var)'.  Reproduced directly with
+;; `pcase-exhaustive' on the same pattern shape, no evil involved.
+;;
+;; Fix (redefines the CORE helper by name -- the same shim idiom this
+;; file already uses for `pcase' / `pcase-let' / etc. -- rather than
+;; editing vendor/nelisp; a no-op under the host driver, which never
+;; defines `nelisp-pcase--or'): for each variable name bound by ANY
+;; arm, build one value-form that answers "whichever arm matched,
+;; gives THAT arm's value for this name":
+;;   (if ARM-1-TEST ARM-1-VALUE (if ARM-2-TEST ARM-2-VALUE ... nil))
+;; in the arms' own left-to-right order, mirroring the short-circuit
+;; order the combined `(or TEST-1 TEST-2 ...)' test-form already uses.
+;; Each ARM-i-VALUE is exactly the accessor `nelisp-pcase--test'
+;; already built for that arm (e.g. `(car value-form)'); it is a pure,
+;; side-effect-free function of `value-form', so re-checking ARM-i-TEST
+;; here (a second time; the first is the combined test that gated
+;; entry into the case body) is safe -- the same double-evaluation
+;; trade-off `nelisp-pcase--and' already makes for a sibling `guard'.
+(when (and (fboundp 'nelisp-pcase--or) (fboundp 'nelisp-pcase--test))
+  (defun nelisp-pcase--or (patterns value-form)
+    "Build (TEST . BINDINGS) for an `or' pattern, nested or top-level.
+Every element of PATTERNS is matched against VALUE-FORM via
+`nelisp-pcase--test'.  The combined TEST is `(or ARM-TEST...)'; each
+variable name bound by any arm resolves in BINDINGS to that arm's own
+value-form, gated on that arm's own test, in the arms' original order."
+    (let* ((arm-builds (mapcar (lambda (p) (nelisp-pcase--test p value-form))
+                                patterns))
+           (names nil))
+      (dolist (build arm-builds)
+        (dolist (kv (cdr build))
+          (unless (memq (car kv) names)
+            (setq names (cons (car kv) names)))))
+      (setq names (nreverse names))
+      (let ((bindings
+             (mapcar
+              (lambda (name)
+                (list name
+                      (let ((form nil)
+                            (rev-builds (reverse arm-builds)))
+                        (dolist (build rev-builds form)
+                          (let ((kv (assq name (cdr build))))
+                            (when kv
+                              (setq form (list 'if (car build)
+                                                (cadr kv) form))))))))
+              names)))
+        (cons (cons 'or (mapcar #'car arm-builds))
+              bindings)))))
+
 (when (emacs-pcase--install-function-p 'pcase-defmacro)
   (defmacro pcase-defmacro (name args &rest body)
     "Define NAME as a lightweight pcase pattern expander."
