@@ -60,6 +60,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 |------+----------------+-----------------+-------------------|
 | =cl-lib.el= | FND | cl-lib compatibility entry | keep host-safe shim |
 | =emacs-backquote.el= | FND | backquote implementation | keep independent |
+| =emacs-button-builtins.el= | FND | minimal GNU button compatibility surface | keep host-safe shim |
 | =emacs-callproc.el= | FND/IO | process env and callproc basics; split later if needed | audit boundary with IO |
 | =emacs-char-table.el= | FND/TXT | char-table primitive model | keep reusable |
 | =emacs-cl-macros.el= | FND | cl macro/function compatibility | keep reusable; avoid app deps |

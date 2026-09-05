@@ -768,46 +768,6 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
     "Return non-nil when version string V1 is not newer than V2."
     (not (version< v2 v1))))
 
-(defvar emacs-stub--buttonize-state nil
-  "State for the lazy `buttonize' loader.
-nil means not tried yet, `loaded' means vendor button.el won, and `fallback'
-means the reduced headless shim stays active.")
-
-(defun emacs-stub--buttonize-fallback (string _callback &optional _data _help-echo)
-  "Return STRING unchanged for headless button fallbacks."
-  string)
-
-(defun emacs-stub--ensure-buttonize ()
-  "Load vendor button.el when available, otherwise keep the fallback shim."
-  (unless emacs-stub--buttonize-state
-    (setq emacs-stub--buttonize-state 'loading)
-    (setq emacs-stub--buttonize-state
-          (if (ignore-errors (require 'button nil t))
-              (if (and (featurep 'button)
-                       (not (eq (symbol-function 'buttonize)
-                                #'buttonize)))
-                  'loaded
-                'fallback)
-            'fallback))))
-
-(unless (fboundp 'buttonize)
-  (defun buttonize (string callback &optional data help-echo)
-    "Make STRING into a button when button.el is available.
-When vendor button.el is unavailable, return STRING unchanged."
-    (emacs-stub--ensure-buttonize)
-    (if (eq emacs-stub--buttonize-state 'loaded)
-        (funcall (symbol-function 'buttonize) string callback data help-echo)
-      (emacs-stub--buttonize-fallback string callback data help-echo))))
-
-(unless (fboundp 'buttonize-region)
-  (defun buttonize-region (start end callback &optional data help-echo)
-    "Make region START..END into a button when button.el is available.
-When vendor button.el is unavailable, leave the region unchanged."
-    (emacs-stub--ensure-buttonize)
-    (when (eq emacs-stub--buttonize-state 'loaded)
-      (funcall (symbol-function 'buttonize-region)
-               start end callback data help-echo))))
-
 (unless (fboundp 'set-keyboard-coding-system)
   (defun set-keyboard-coding-system (_coding-system &optional _terminal)
     "Headless standalone fallback: accept the request and do nothing."

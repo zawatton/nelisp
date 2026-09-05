@@ -448,9 +448,6 @@ Mirrors the non-interactive contract of `lisp/replace.el's
 (unless (fboundp 'count-matches)
   (defalias 'count-matches #'emacs-textmodes-count-matches))
 
-(unless (featurep 'org)
-  (provide 'org))
-
 (provide 'emacs-textmodes-stub)
 
 ;;; emacs-textmodes-stub.el ends here

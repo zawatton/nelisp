@@ -982,11 +982,6 @@ must be able to overwrite early bootstrap stubs with real substrates."
   (should (version-list-<= '(1 -2) '(1 -1)))
   (should-not (version-list-< '(1 0) '(1 0 0))))
 
-(ert-deftest emacs-stub-residuals-test/buttonize-headless-fallback-shape ()
-  (let ((emacs-stub--buttonize-state 'fallback))
-    (should (equal "plain"
-                   (buttonize "plain" #'ignore nil "help")))))
-
 (ert-deftest emacs-stub-residuals-test/keyboard-and-xterm-shims-are-noops ()
   (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
     (should (and file (file-exists-p file)))
