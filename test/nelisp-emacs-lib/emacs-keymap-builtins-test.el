@@ -366,6 +366,52 @@ P2 can verify the command-surface keymap behavior directly."
     (should (eq before-keymapp     (symbol-function 'keymapp)))
     (should (eq before-lookup-key  (symbol-function 'lookup-key)))))
 
+;;;; I. T92 — translation-map keymaps are never nil
+
+(ert-deftest emacs-keymap-builtins-test/translation-maps-recover-from-nil ()
+  "T92: on the standalone, `input-decode-map' / `function-key-map' /
+`key-translation-map' are declared `(defvar SYM nil)' by
+`emacs-stub-bulk.el' whenever nothing else has bound them yet, and
+nothing on the boot path replaced that nil with a real keymap, even
+though `emacs-command-loop.el' already shipped the fix
+\(`emacs-command-loop--ensure-translation-maps', Doc 06 A3\) -- it was
+simply never called.  Evil's `evil-init-esc' (invoked unconditionally
+from `(evil-mode 1)') calls `(define-key input-decode-map [?\\e] ...)',
+and `define-key' signals `emacs-keymap-not-keymap' on a nil keymap
+argument, so `evil-mode' never returned on this runtime.
+
+`emacs-keymap-builtins.el' now calls the ensure-helper once it is
+loaded (the first point where `make-sparse-keymap' is guaranteed
+fboundp).  Simulate the standalone's \"declared nil\" starting state and
+confirm the call fixes it up to a real, parentless sparse keymap,
+matching host Emacs (verified separately via `emacs -Q --batch':
+`(keymapp input-decode-map)' => t, no parent) -- and that a real,
+pre-existing keymap is left untouched rather than replaced."
+  (require 'emacs-command-loop)
+  (should (fboundp 'emacs-command-loop--ensure-translation-maps))
+  (let ((syms '(input-decode-map function-key-map key-translation-map))
+        (saved nil))
+    (dolist (sym syms)
+      (push (cons sym (and (boundp sym) (symbol-value sym))) saved))
+    (unwind-protect
+        (progn
+          ;; nil-declared state, as `emacs-stub-bulk.el' leaves it absent
+          ;; any earlier real binding.
+          (dolist (sym syms) (set sym nil))
+          (emacs-command-loop--ensure-translation-maps)
+          (dolist (sym syms)
+            (should (keymapp (symbol-value sym)))
+            (should (null (keymap-parent (symbol-value sym)))))
+          ;; idempotent / non-destructive: a real keymap already in place
+          ;; (the host's own, or a previous call's) is not replaced.
+          (let ((preexisting (make-sparse-keymap)))
+            (define-key preexisting "x" 'self-insert-command)
+            (set (car syms) preexisting)
+            (emacs-command-loop--ensure-translation-maps)
+            (should (eq preexisting (symbol-value (car syms))))))
+      (dolist (entry saved)
+        (set (car entry) (cdr entry))))))
+
 (provide 'emacs-keymap-builtins-test)
 
 ;;; emacs-keymap-builtins-test.el ends here

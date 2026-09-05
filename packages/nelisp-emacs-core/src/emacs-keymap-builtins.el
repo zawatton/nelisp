@@ -640,6 +640,30 @@ interactive command because no GUI menu adapter is active here."
 (when (emacs-keymap-builtins--easy-menu-install-p 'easy-menu-add)
   (defalias 'easy-menu-add #'ignore))
 
+;; T92: `input-decode-map' / `function-key-map' / `key-translation-map'
+;; are real, always-bound sparse keymaps on host Emacs (`keyboard.c' /
+;; `startup.el'), but `src/emacs-stub-bulk.el''s batched var-stub dolist
+;; declares them `(defvar SYM nil)' when nothing else has bound them
+;; yet, and nothing on the standalone boot path ever replaces that nil
+;; with a real keymap.  `emacs-command-loop.el' already ships the exact
+;; fix (`emacs-command-loop--ensure-translation-maps', Doc 06 A3) but no
+;; caller ever invoked it, so the three variables stayed nil in
+;; practice.  Evil's `evil-init-esc' (`evil-core.el') calls
+;; `(define-key input-decode-map [?\e] ...)' unconditionally from
+;; `evil-mode', and `define-key' signals `emacs-keymap-not-keymap' on a
+;; nil keymap argument -- confirmed by instrumenting every
+;; `emacs-keymap-not-keymap' call site in `emacs-keymap.el' and
+;; observing only the `emacs-keymap-define-key' guard fire.
+;;
+;; `make-sparse-keymap' only becomes fboundp once this file's own
+;; installer above runs (`emacs-command-loop.el' loads earlier in the
+;; bootstrap bundle and cannot see it yet), so this is the first safe
+;; point to call the existing ensure-helper; it is idempotent and
+;; already a no-op wherever a real keymap is already bound (including
+;; on host Emacs, where all three are always real).
+(when (fboundp 'emacs-command-loop--ensure-translation-maps)
+  (emacs-command-loop--ensure-translation-maps))
+
 (provide 'emacs-keymap-builtins)
 
 ;;; emacs-keymap-builtins.el ends here
