@@ -59,8 +59,20 @@
               (not (eq function 'nelisp--unbound-marker))))))
 
 (defun emacs-font-lock-builtins--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (not (boundp 'emacs-version))
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
+`(not (boundp \\='emacs-version))' alone is not a reliable standalone
+signal (the NeLisp reader binds `emacs-version' too), and `(get symbol
+\\='emacs-stub-bulk)' only catches names `emacs-stub-bulk.el''s own
+dolist tagged -- it misses names such as `font-lock-mode'/
+`font-lock-fontify-buffer' that `emacs-stub.el' defines individually
+and untagged, which load first and would otherwise permanently look
+\"live\" to `emacs-font-lock-builtins--function-cell-live-p' and win
+over this bridge.  Force install unconditionally on standalone via a
+NeLisp-only primitive, matching `emacs-char-table--standalone-p' in
+`emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
       (not (emacs-font-lock-builtins--function-cell-live-p symbol))))
 

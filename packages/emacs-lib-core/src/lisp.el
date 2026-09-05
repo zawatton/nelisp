@@ -18,8 +18,13 @@
 (require 'emacs-edit-builtins)
 
 (defun lisp--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed by this facade."
-  (if (not (boundp 'emacs-version))
+  "Return non-nil when SYMBOL should be installed by this facade.
+Standalone NeLisp binds `emacs-version' too (for vendor compatibility),
+so a bare `(not (boundp 'emacs-version))' test misfires there; detect the
+standalone path by a NeLisp-only primitive instead, matching
+`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+  (if (or (fboundp 'nl-write-file)
+          (not (boundp 'emacs-version)))
       t
     (not (fboundp symbol))))
 

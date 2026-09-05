@@ -21,7 +21,14 @@
 
 ;;; Code:
 
-(when (not (boundp 'emacs-version))
+;; NOTE: standalone NeLisp binds `emacs-version' too (a real string, for
+;; vendor compatibility), so a bare `(not (boundp 'emacs-version))' test
+;; misfires there and this whole shim would never activate on the
+;; standalone runtime it exists for.  Detect the standalone path by a
+;; NeLisp-only primitive instead, matching
+;; `emacs-char-table--standalone-p' in `emacs-char-table.el'.
+(when (or (fboundp 'nl-write-file)
+          (not (boundp 'emacs-version)))
 
   ;; --- class object structs -------------------------------------------------
   ;; cl--class: abstract base.  oclosure.el's `(cl-defstruct (oclosure--class

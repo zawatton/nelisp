@@ -30,16 +30,21 @@
 (defvar emacs-time--current-time-zone-cache nil
   "Cached `(SECONDS NAME)' result for `current-time-zone'.")
 
-(defun emacs-time--host-runtime-p ()
-  "Return non-nil when running under regular host Emacs."
-  (and (boundp 'emacs-version)
-       (stringp emacs-version)))
-
 (defun emacs-time--standalone-runtime-p ()
   "Return non-nil when NeLisp standalone runtime markers are available."
   (or (fboundp 'nl-current-unix-time)
       (fboundp 'nelisp--syscall)
       (fboundp 'nelisp--load-resolved-file)))
+
+(defun emacs-time--host-runtime-p ()
+  "Return non-nil when running under regular host Emacs.
+Standalone NeLisp also binds `emacs-version' to a real string (for vendor
+compatibility), so `(and (boundp ...) (stringp ...))' alone misfires
+there; exclude standalone explicitly via
+`emacs-time--standalone-runtime-p'."
+  (and (boundp 'emacs-version)
+       (stringp emacs-version)
+       (not (emacs-time--standalone-runtime-p))))
 
 (defun emacs-time--function-cell-live-p (symbol)
   "Return non-nil when SYMBOL has a usable function cell."
