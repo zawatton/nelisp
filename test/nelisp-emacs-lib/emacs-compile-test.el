@@ -117,6 +117,36 @@
                      (buffer-substring-no-properties (point-min) (point-max))))))
       (kill-buffer buf))))
 
+;;;; --- compilation-error-regexp-alist (T62) ---------------------------
+
+;; Was void anywhere in src/ (`src/compile.el' deliberately installs this
+;; file's much smaller `emacs-compile' engine instead of the full real
+;; `progmodes/compile.el' -- see that file's own commentary); the load
+;; matrix hit `(void-variable compilation-error-regexp-alist)' for
+;; `powershell', which does `(setq compilation-error-regexp-alist (cons
+;; NEW-ENTRY compilation-error-regexp-alist))' at top level.  This is a
+;; reduced value (one real entry: this substrate's own next-error
+;; pattern, not the full ~66-entry GNU catalogue -- see the defvar
+;; commentary), so the test asserts "kind, not content" (Doc 51 T52
+;; precedent) plus that the one real entry actually matches this
+;; substrate's own diagnostic format, and that `powershell.el''s own
+;; `cons'-onto-the-front usage pattern works without error.
+(ert-deftest emacs-compile-test/compilation-error-regexp-alist-is-a-real-alist ()
+  (should (boundp 'compilation-error-regexp-alist))
+  (should (consp compilation-error-regexp-alist))
+  (let ((entry (car compilation-error-regexp-alist)))
+    (should (equal emacs-compile-error-regexp (car entry)))
+    (should (string-match (car entry) "foo.c:12:3: error"))
+    (should (equal "foo.c" (match-string 1 "foo.c:12:3: error")))
+    (should (equal "12" (match-string 2 "foo.c:12:3: error")))))
+
+(ert-deftest emacs-compile-test/compilation-error-regexp-alist-supports-cons-onto-front ()
+  "Exercises `powershell.el''s own top-level usage pattern verbatim."
+  (let* ((before (length compilation-error-regexp-alist))
+         (extended (cons '("At \\(.*\\):\\([0-9]+\\) char:\\([0-9]+\\)" 1 2)
+                          compilation-error-regexp-alist)))
+    (should (= (1+ before) (length extended)))))
+
 (provide 'emacs-compile-test)
 
 ;;; emacs-compile-test.el ends here

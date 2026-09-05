@@ -39,6 +39,36 @@ substrate's honest-nil standalone answer."
                                (coding-system-get 'utf-8 prop)
                              (error 'ERR)))))))
 
+;; T62: `define-translation-table' had a real implementation in
+;; `emacs-translation-table.el' (its own behavior is covered by
+;; `emacs-translation-table-test.el') that nothing on the default boot
+;; path required, so it was void for `cp5022x'.  This test covers the
+;; *wiring*: requiring `emacs-parity-fns2' (already on the default boot
+;; path, per the file commentary) must transitively provide it.
+(ert-deftest emacs-parity-fns2-test/define-translation-table-wired-transitively ()
+  (should (featurep 'emacs-translation-table))
+  (should (fboundp 'define-translation-table))
+  (should (equal '(1 . many) (func-arity (symbol-function 'define-translation-table)))))
+
+;; T62: `vc-directory-exclusion-list' is a real defcustom in the vendored
+;; `vc-hooks.el' that nothing on the default boot path required, so it
+;; was void for `projectile', `magit-todos', `consult-projectile'.  This
+;; test covers the wiring: requiring `emacs-parity-fns2' must
+;; transitively provide `vc-hooks' and bind the real value.  Verified
+;; against host Emacs 31.1: `vc-directory-exclusion-list' is a non-empty
+;; list of strings that includes at least the classic VCS directory
+;; names common to every Emacs version this vendored `vc-hooks.el' could
+;; plausibly be (this vendored copy predates `.repo'/`.jj' support, so
+;; the list is a real, if older, GNU value rather than a fabricated one).
+(ert-deftest emacs-parity-fns2-test/vc-directory-exclusion-list-wired-transitively ()
+  (should (featurep 'vc-hooks))
+  (should (boundp 'vc-directory-exclusion-list))
+  (should (listp vc-directory-exclusion-list))
+  (dolist (entry vc-directory-exclusion-list)
+    (should (stringp entry)))
+  (dolist (classic '("CVS" "RCS" ".git" ".svn" ".hg" ".bzr"))
+    (should (member classic vc-directory-exclusion-list))))
+
 (provide 'emacs-parity-fns2-test)
 
 ;;; emacs-parity-fns2-test.el ends here

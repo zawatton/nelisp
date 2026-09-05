@@ -139,9 +139,11 @@ Restore the original host bindings afterwards."
   (should (featurep 'emacs-stub))
   (dolist (sym '(function-get define-key-after
                   display-graphic-p display-color-p display-multi-frame-p
+                  display-mouse-p
                   window-system
                   emacs-display-window-system emacs-display-graphic-p
                   emacs-display-color-p emacs-display-multi-frame-p
+                  emacs-display-mouse-p
                   window-live-p frame-selected-window
                   custom-add-option custom-add-frequent-value
                   custom-variable-p defgroup defcustom
@@ -502,31 +504,41 @@ The helper is unconditional; the macro itself is reader-gated."
 (ert-deftest emacs-stub-residuals-test/display-probes-default-nil ()
   ;; With no backend set, all probes return nil — the same behaviour
   ;; the old hard-coded stubs had, preserved as the default path.
+  ;; T62: `display-mouse-p' joins this matrix -- host Emacs 31.1's own
+  ;; `(display-mouse-p)' under `emacs -Q --batch' (no window-system, no
+  ;; xterm-mouse-mode/gpm-mouse-mode) is nil, matching the no-backend row.
   (let ((emacs-display-system nil))
     (should-not (emacs-display-window-system))
     (should-not (emacs-display-graphic-p))
     (should-not (emacs-display-color-p))
-    (should-not (emacs-display-multi-frame-p))))
+    (should-not (emacs-display-multi-frame-p))
+    (should-not (emacs-display-mouse-p))))
 
 (ert-deftest emacs-stub-residuals-test/display-probes-graphic-backend ()
   ;; A graphic backend (= 'gtk / 'x / 'pgtk / 'w32 / 'ns) flips
   ;; window-system + display-graphic-p + display-color-p +
-  ;; display-multi-frame-p all to truthy.
+  ;; display-multi-frame-p + display-mouse-p all to truthy (T62: real
+  ;; Emacs unconditionally reports a mouse for every graphic frame type).
   (let ((emacs-display-system 'gtk))
     (should (eq 'gtk (emacs-display-window-system)))
     (should (emacs-display-graphic-p))
     (should (emacs-display-color-p))
-    (should (emacs-display-multi-frame-p))))
+    (should (emacs-display-multi-frame-p))
+    (should (emacs-display-mouse-p))))
 
 (ert-deftest emacs-stub-residuals-test/display-probes-tui-backend ()
   ;; A TUI backend (= 'tui) sets window-system + display-multi-frame-p
   ;; non-nil but display-graphic-p stays nil — that's how callers
   ;; distinguish "have a display" from "have a graphical display".
+  ;; T62: `display-mouse-p' stays nil for 'tui too -- this runtime has
+  ;; no `xterm-mouse-mode'/`gpm-mouse-mode' tracking-mode equivalent, so
+  ;; it conservatively matches real Emacs's own tty default (no mouse).
   (let ((emacs-display-system 'tui))
     (should (eq 'tui (emacs-display-window-system)))
     (should-not (emacs-display-graphic-p))
     (should-not (emacs-display-color-p))
-    (should (emacs-display-multi-frame-p))))
+    (should (emacs-display-multi-frame-p))
+    (should-not (emacs-display-mouse-p))))
 
 (ert-deftest emacs-stub-residuals-test/display-probe-install-overwrites-standalone-stubs ()
   ;; The display map lives in `emacs-stub.el' itself, after the old
@@ -542,7 +554,7 @@ The helper is unconditional; the macro itself is reader-gated."
     (with-temp-buffer
       (insert-file-contents file)
       (dolist (sym '(window-system display-graphic-p display-color-p
-                                   display-multi-frame-p))
+                                   display-multi-frame-p display-mouse-p))
         (goto-char (point-min))
         (should (search-forward
                  (format "(when (emacs-stub--install-function-p '%s)" sym)
@@ -1009,12 +1021,14 @@ spelling of it."
   (let ((before-define-key-after     (symbol-function 'define-key-after))
         (before-window-live-p        (symbol-function 'window-live-p))
         (before-frame-selected-win   (symbol-function 'frame-selected-window))
-        (before-display-graphic-p    (symbol-function 'display-graphic-p)))
+        (before-display-graphic-p    (symbol-function 'display-graphic-p))
+        (before-display-mouse-p      (symbol-function 'display-mouse-p)))
     (require 'emacs-stub)
     (should (eq before-define-key-after   (symbol-function 'define-key-after)))
     (should (eq before-window-live-p      (symbol-function 'window-live-p)))
     (should (eq before-frame-selected-win (symbol-function 'frame-selected-window)))
-    (should (eq before-display-graphic-p  (symbol-function 'display-graphic-p)))))
+    (should (eq before-display-graphic-p  (symbol-function 'display-graphic-p)))
+    (should (eq before-display-mouse-p    (symbol-function 'display-mouse-p)))))
 
 ;;;; I. Doc 16 breadth — foundational subr builtins (xor / ntake / char-uppercase-p)
 

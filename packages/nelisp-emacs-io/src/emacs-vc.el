@@ -25,6 +25,16 @@
 
 (require 'emacs-process-builtins)
 
+;; T62: `vc-directory-exclusion-list' was void on the default boot path;
+;; the real fix (force-loading the vendored `vc-hooks.el') lives in
+;; `src/emacs-parity-fns2.el' instead of here -- see that file's
+;; commentary for why: `vc-hooks.el' itself needs
+;; `locate-dominating-stop-dir-regexp' (defined by
+;; `src/emacs-parity-shims.el'), and this module is positioned earlier
+;; than `emacs-parity-shims.el' in the bootstrap bundle, so triggering
+;; the load from here hit a second, later void-variable instead of
+;; fixing the first one.
+
 (defvar emacs-vc-git-program "git"
   "Program used for the git VC backend.")
 

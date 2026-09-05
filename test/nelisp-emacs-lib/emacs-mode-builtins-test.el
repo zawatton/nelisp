@@ -395,6 +395,58 @@ once, after the mode hook."
                  (format "(defalias ',name #'ignore)")
                  nil t))))))
 
+;;;; I. mode-line-major-mode-keymap / mode-line-minor-mode-keymap (T62)
+
+;; Both were void anywhere in src/ (load matrix: `minions' hit
+;; `(void-variable mode-line-major-mode-keymap)', then, once fixed, the
+;; sibling `(void-variable mode-line-minor-mode-keymap)').  These are
+;; reduced values (real Emacs also binds a minor-modes/major-mode mouse
+;; menu with no headless equivalent -- see the defvar commentary), so
+;; tests assert "kind, not content" (Doc 51 T52 precedent) plus the one
+;; real binding each keeps.
+(ert-deftest emacs-mode-builtins-test/mode-line-major-mode-keymap-is-a-keymap ()
+  (should (boundp 'mode-line-major-mode-keymap))
+  (should (keymapp mode-line-major-mode-keymap))
+  (should (eq 'describe-mode
+              (lookup-key mode-line-major-mode-keymap [mode-line mouse-2]))))
+
+(ert-deftest emacs-mode-builtins-test/mode-line-minor-mode-keymap-is-a-keymap ()
+  (should (boundp 'mode-line-minor-mode-keymap))
+  (should (keymapp mode-line-minor-mode-keymap))
+  (should (eq 'mode-line-minor-mode-help
+              (lookup-key mode-line-minor-mode-keymap [mode-line mouse-2])))
+  (should (eq 'mouse-minor-mode-menu
+              (lookup-key mode-line-minor-mode-keymap [mode-line down-mouse-1]))))
+
+;;;; J. special-mode / special-mode-map (T62)
+
+;; Both were void anywhere in src/ (load matrix: `diff-hl' hit
+;; `(void-variable special-mode-map)' via real Emacs `vc-dir'/`log-view',
+;; which derive their own major modes from `special-mode').  Real
+;; Emacs's own `special-mode-map' bindings are copied verbatim (see the
+;; defvar commentary in `emacs-mode-builtins.el'), so these assertions
+;; hold against BOTH host Emacs's real `special-mode'/`special-mode-map'
+;; (the `unless'/`when' install guards leave host's own C-preloaded
+;; values untouched) and this substrate's ported values -- verified
+;; against host Emacs 31.1's actual `special-mode-map' bindings.
+(ert-deftest emacs-mode-builtins-test/special-mode-is-defined-special ()
+  (should (fboundp 'special-mode))
+  (should (eq 'special (get 'special-mode 'mode-class))))
+
+(ert-deftest emacs-mode-builtins-test/special-mode-map-is-a-keymap ()
+  (should (boundp 'special-mode-map))
+  (should (keymapp special-mode-map)))
+
+(ert-deftest emacs-mode-builtins-test/special-mode-map-bindings-match-gnu-simple ()
+  (should (eq 'quit-window          (lookup-key special-mode-map "q")))
+  (should (eq 'scroll-up-command    (lookup-key special-mode-map " ")))
+  (should (eq 'scroll-down-command  (lookup-key special-mode-map "\d")))
+  (should (eq 'describe-mode        (lookup-key special-mode-map "?")))
+  (should (eq 'describe-mode        (lookup-key special-mode-map "h")))
+  (should (eq 'end-of-buffer        (lookup-key special-mode-map ">")))
+  (should (eq 'beginning-of-buffer  (lookup-key special-mode-map "<")))
+  (should (eq 'revert-buffer        (lookup-key special-mode-map "g"))))
+
 (provide 'emacs-mode-builtins-test)
 
 ;;; emacs-mode-builtins-test.el ends here

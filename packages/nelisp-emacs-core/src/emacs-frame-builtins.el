@@ -42,6 +42,35 @@
 
 (require 'emacs-frame)
 
+;; T62: `tool-bar-local-item' had an fboundp-guarded on-demand loader
+;; (`nelisp-emacs-magit-bridge--ensure-tool-bar-runtime') only inside
+;; `src/nelisp-emacs-magit-bridge.el', which is not on the default boot
+;; path.  The load matrix hit `(void-function tool-bar-local-item)' for
+;; `geiser-guile', which is not magit at all.  The vendored
+;; `vendor/emacs-lisp/tool-bar.el' loads cleanly on the standalone
+;; runtime and defines `tool-bar-local-item' with no further unresolved
+;; dependency, so force-load the real vendor module here instead of
+;; duplicating its logic as a local stub -- this file is already loaded
+;; ahead of every vendor/user package, same reasoning as
+;; `coding-system-get' / `button-buffer-map' (T52).
+;;
+;; A plain `(require 'tool-bar)' fails here with "Cannot open load
+;; file" specifically because this form runs while the concatenated
+;; bootstrap bundle itself is being replayed, and the bundle's own
+;; contract deliberately sets `load-file-name' to nil throughout (see
+;; `build/nemacs-bootstrap.el''s header comment) -- `default-directory'
+;; (set to the repo root by `bin/nemacs' before the bundle loads) is the
+;; bundle-safe way to resolve a sibling path, the same fallback
+;; `emacs-stub--load-directory' already relies on.  Loading the vendor
+;; file directly by that absolute path, bypassing `require''s
+;; `load-path' search, is robust to the bundle-replay context; a bare
+;; `(require 'tool-bar)' after the bundle has fully loaded (i.e. once
+;; `load-path' driven lookups are safe again) works fine too, but this
+;; form runs before that point.
+(unless (featurep 'tool-bar)
+  (load (expand-file-name "vendor/emacs-lisp/tool-bar.el" default-directory)
+        nil 'no-message t t))
+
 (defun emacs-frame-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
   (or (not (boundp 'emacs-version))
