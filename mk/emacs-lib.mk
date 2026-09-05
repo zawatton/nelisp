@@ -775,6 +775,7 @@ TEST_FAST_FILES = \
 	test/emacs-keymap-builtins-test.el \
 	test/emacs-keymap-test.el \
 	test/emacs-parity-core-vars-test.el \
+	test/emacs-parity-shims-test.el \
 	test/emacs-minibuffer-builtins-test.el \
 	test/emacs-minibuffer-test.el \
 	test/emacs-command-loop-builtins-test.el \

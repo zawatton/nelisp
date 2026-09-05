@@ -328,6 +328,68 @@ has no lazy `define-coding-system' registry to trigger."
                         (list 'when (list 'window-live-p wsym)
                               (list 'select-window wsym ''norecord))))))))
 
+;; T87: `save-selected-window' (GNU `subr.el') was entirely absent
+;; from `src/' -- `with-selected-window' just above exists, but the
+;; plain "just restore whatever was selected" form did not, and evil
+;; (and much of the wider Emacs base -- `window.el', `help.el',
+;; `minibuffer.el', ...) reaches for it directly.  Host Emacs 27+
+;; implements this via two C internals,
+;; `internal--before-save-selected-window' /
+;; `internal--after-save-selected-window', which additionally
+;; remember *each frame's* selected window (multi-frame parity).
+;; This runtime's single-frame model has exactly one selected window
+;; ever (`frame-selected-window' always delegates to the one global
+;; `emacs-window-selected-window' regardless of the FRAME argument --
+;; see `emacs-window-frame-selected-window'), so saving/restoring
+;; that one global selection is a faithful adaptation: same shape as
+;; `with-selected-window' above, minus the pre-selection step.
+(unless (fboundp 'save-selected-window)
+  (defmacro save-selected-window (&rest body)
+    "Execute BODY, then select the previously selected window.
+The value returned is the value of the last form in BODY."
+    (declare (indent 0) (debug t))
+    (let ((wsym (make-symbol "save-win")))
+      (list 'let (list (list wsym '(selected-window)))
+            (list 'save-current-buffer
+                  (list 'unwind-protect
+                        (cons 'progn body)
+                        (list 'when (list 'window-live-p wsym)
+                              (list 'select-window wsym ''norecord))))))))
+
+;; T87: `with-current-buffer-window' (GNU `window.el') was entirely
+;; absent from `src/' (`with-temp-buffer-window', its sibling, is
+;; installed as a nil no-op by `emacs-stub-bulk.el' -- a pre-existing,
+;; separately-owned gap left untouched here since nothing on the
+;; evil-mode path calls it).  Macro body ported verbatim from host
+;; `window.el' (confirmed via `macroexpand-1' against a clean
+;; `emacs -Q --batch', Emacs 31.1; `macroexp-let2*' already exists on
+;; this runtime).  Delegates the actual buffer setup/display work to
+;; `temp-buffer-window-setup' / `temp-buffer-window-show', ported with
+;; a documented single-frame-model simplification in
+;; `emacs-window-builtins.el'.
+(unless (fboundp 'with-current-buffer-window)
+  (defmacro with-current-buffer-window (buffer-or-name action quit-function &rest body)
+    "Evaluate BODY with a buffer BUFFER-OR-NAME current and show that buffer.
+This construct is like `with-temp-buffer-window' but unlike that,
+makes the buffer specified by BUFFER-OR-NAME current for running
+BODY."
+    (declare (debug t) (indent 3))
+    (let ((buffer (make-symbol "buffer"))
+          (window (make-symbol "window"))
+          (value (make-symbol "value")))
+      (macroexp-let2* nil ((vbuffer-or-name buffer-or-name)
+                           (vaction action)
+                           (vquit-function quit-function))
+        `(let* ((,buffer (temp-buffer-window-setup ,vbuffer-or-name))
+                (standard-output ,buffer)
+                ,window ,value)
+           (with-current-buffer ,buffer
+             (setq ,value (progn ,@body))
+             (setq ,window (temp-buffer-window-show ,buffer ,vaction)))
+           (if (functionp ,vquit-function)
+               (funcall ,vquit-function ,window ,value)
+             ,value))))))
+
 (unless (fboundp 'define-mail-user-agent)
   (defun define-mail-user-agent (symbol composefunc sendfunc
                                         &optional abortfunc hookvar)
