@@ -187,7 +187,7 @@
     (with-temp-buffer
       (insert-file-contents file)
       (goto-char (point-min))
-      (should (search-forward "(nelisp-ec--normalize-posix-path expanded)" nil t))
+      (should (search-forward "(nelisp-ec--normalize-posix-path-fast expanded)" nil t))
       (goto-char (point-min))
       (should-not (search-forward "~user/ unsupported — leave verbatim" nil t)))))
 
@@ -210,6 +210,25 @@
           (should-error (nelisp-ec-expand-file-name "~other/pkg" "/base")))
       (setenv "HOME" old-home))))
 
+(ert-deftest emacs-fileio-builtins-test/posix-path-clean-p-fast-path-matrix ()
+  "T47: `nelisp-ec--posix-path-clean-p' must accept only paths whose
+`nelisp-ec--normalize-posix-path' output is byte-identical to the input,
+so `nelisp-ec--normalize-posix-path-fast' never changes behaviour -- it
+only skips the split/rebuild pass when it would be a no-op."
+  (dolist (clean '("/" "/etc" "/etc/" "/etc/hostname"
+                   "/a/b/c" "/home/user/.bashrc" "/a/..b" "/a/b..c"
+                   "/tmp/foo.bar.baz"))
+    (should (nelisp-ec--posix-path-clean-p clean))
+    (should (equal clean (nelisp-ec--normalize-posix-path clean))))
+  (dolist (dirty '("relative" "" "/a//b" "/a/./b" "/a/../b"
+                   "/a/." "/a/.." "/a/b/." "/a/b/.." "//" "/./"))
+    (should-not (nelisp-ec--posix-path-clean-p dirty)))
+  ;; The fast wrapper always matches the slow one, clean or dirty.
+  (dolist (path '("/" "/etc" "/etc/hostname" "/a//b" "/a/./b" "/a/../b"
+                  "/a/.." "/home/user/.bashrc"))
+    (should (equal (nelisp-ec--normalize-posix-path path)
+                   (nelisp-ec--normalize-posix-path-fast path)))))
+
 (ert-deftest emacs-fileio-builtins-test/substitute-in-file-name-minimal ()
   (let ((process-environment
          (cons "NELISP_EMACS_FILEIO_TEST=/tmp/nelisp-fileio"
@@ -226,6 +245,25 @@
     (should (equal "/shadow"
                    (nelisp-ec-substitute-in-file-name
                     "/tmp//shadow")))))
+
+(ert-deftest emacs-fileio-builtins-test/string-has-char-p-and-dollar-free-fast-path ()
+  "T47: `nelisp-ec--string-has-char-p' is a plain membership test, and
+`nelisp-ec-substitute-in-file-name' must return a `$'-free NAME unchanged
+without invoking `nelisp-ec--substitute-env-vars' (the O(n^2) concat-per-
+character path) at all."
+  (should-not (nelisp-ec--string-has-char-p "" ?$))
+  (should-not (nelisp-ec--string-has-char-p "/etc/hostname" ?$))
+  (should (nelisp-ec--string-has-char-p "$HOME" ?$))
+  (should (nelisp-ec--string-has-char-p "a$" ?$))
+  (should (equal "/etc/hostname"
+                 (nelisp-ec-substitute-in-file-name "/etc/hostname")))
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'nelisp-ec--substitute-env-vars)
+               (lambda (name) (setq calls (1+ calls)) name)))
+      (nelisp-ec-substitute-in-file-name "/etc/hostname")
+      (should (= calls 0))
+      (nelisp-ec-substitute-in-file-name "$HOME/etc")
+      (should (= calls 1)))))
 
 (ert-deftest emacs-fileio-builtins-test/pure-file-name-helper-contracts ()
   (should (nelisp-ec-file-name-absolute-p "/tmp/a"))
@@ -460,6 +498,62 @@ nonexistent temp candidates under the runtime image."
           (should (nelisp-ec-delete-file dst)))
       (when (file-directory-p root)
         (delete-directory root t)))))
+
+(ert-deftest emacs-fileio-builtins-test/directory-files-uses-readdir-names-backend-when-available ()
+  "T47: when the standalone reader exposes `nelisp--syscall-readdir-names'
++ `nelisp--readdir-scan-raw' (its shipped backend) but not the never-landed
+`nl-syscall-opendir', `nelisp-ec-directory-files' must call the former
+directly -- not recurse into the public `directory-files' alias -- while
+still honouring FULL / MATCH / NOSORT / COUNT exactly as before."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp--syscall-readdir-names)
+               (lambda (dir) (push dir calls) "c.txt\n.\n..\na.txt\nb.txt\n"))
+              ((symbol-function 'nelisp--readdir-scan-raw)
+               (lambda (raw skip-dotdot)
+                 (should (equal raw "c.txt\n.\n..\na.txt\nb.txt\n"))
+                 (should skip-dotdot)
+                 (list "c.txt" "a.txt" "b.txt"))))
+      (should-not (fboundp 'nl-syscall-opendir))
+      ;; Default: sorted, bare names.
+      (should (equal '("a.txt" "b.txt" "c.txt")
+                     (nelisp-ec-directory-files "/some/dir")))
+      ;; NOSORT: readdir order preserved.
+      (should (equal '("c.txt" "a.txt" "b.txt")
+                     (nelisp-ec-directory-files "/some/dir" nil nil t)))
+      ;; MATCH: filter applied before sort.
+      (should (equal '("a.txt")
+                     (nelisp-ec-directory-files "/some/dir" nil "\\`a\\." nil nil)))
+      ;; COUNT: capped after sort.
+      (should (equal '("a.txt" "b.txt")
+                     (nelisp-ec-directory-files "/some/dir" nil nil nil 2)))
+      ;; FULL: absolute paths.
+      (should (equal '("/some/dir/a.txt" "/some/dir/b.txt" "/some/dir/c.txt")
+                     (nelisp-ec-directory-files "/some/dir" t)))
+      (should (member "/some/dir" calls)))))
+
+(ert-deftest emacs-fileio-builtins-test/directory-files-readdir-names-empty-dir-is-nil ()
+  "A directory the backend reports as empty (nil raw) yields nil entries,
+not an error, through the T47 direct backend branch."
+  (cl-letf (((symbol-function 'nelisp--syscall-readdir-names) (lambda (_dir) nil))
+            ((symbol-function 'nelisp--readdir-scan-raw)
+             (lambda (_raw _skip) (error "must not be called on nil raw"))))
+    (should (null (nelisp-ec-directory-files "/empty/dir")))))
+
+(ert-deftest emacs-fileio-builtins-test/file-exists-p-dangling-symlink-is-nil ()
+  "T47 acceptance item: `file-exists-p' follows the link and reports a
+dangling symlink as absent; `file-symlink-p' still reports the target."
+  (let* ((root (make-temp-file "nelisp-dangling-" t))
+         (target (expand-file-name "gone" root))
+         (link (expand-file-name "link" root)))
+    (unwind-protect
+        (progn
+          (make-symbolic-link target link)
+          (should-not (file-exists-p target))
+          (should-not (nelisp-ec-file-exists-p link))
+          (should-not (nelisp-ec-file-readable-p link))
+          (should-not (nelisp-ec-file-directory-p link))
+          (should (equal target (file-symlink-p link))))
+      (delete-directory root t))))
 
 (ert-deftest emacs-fileio-builtins-test/make-temp-file-ignores-unbound-marker-temp-vars ()
   (let ((path nil))

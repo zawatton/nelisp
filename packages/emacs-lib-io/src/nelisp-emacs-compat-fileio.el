@@ -107,6 +107,8 @@
 (declare-function nelisp-sys-access    "nelisp-sys")
 (declare-function nelisp--syscall-stat "nelisp-runtime")
 (declare-function nelisp--syscall-readdir "nelisp-runtime")
+(declare-function nelisp--syscall-readdir-names "nelisp-runtime")
+(declare-function nelisp--readdir-scan-raw "nelisp-runtime" (raw skip-dotdot))
 (declare-function nelisp--syscall-read-file "nelisp-runtime")
 (declare-function nl-write-file "nelisp-runtime")
 (declare-function nl-append-file "nelisp-runtime")
@@ -189,6 +191,18 @@ helper does NOT touch the filesystem."
       (when (eq (aref string i) char)
         (setq found i))
       (setq i (1- i)))
+    found))
+
+(defun nelisp-ec--string-has-char-p (string char)
+  "Return non-nil if STRING contains CHAR.
+A single `aref' scan with no `substring'/`concat' allocation, used to
+skip `nelisp-ec--substitute-env-vars' entirely when NAME has no `$' to
+substitute (the common case for already-expanded absolute paths)."
+  (let ((i 0) (len (length string)) (found nil))
+    (while (and (not found) (< i len))
+      (when (eq (aref string i) char)
+        (setq found t))
+      (setq i (1+ i)))
     found))
 
 (defun nelisp-ec--split-string-char (string delimiter &optional omit-empty)
@@ -293,7 +307,9 @@ the path prefix before `//'."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
   (nelisp-ec--discard-before-double-slash
-   (nelisp-ec--substitute-env-vars name)))
+   (if (nelisp-ec--string-has-char-p name ?$)
+       (nelisp-ec--substitute-env-vars name)
+     name)))
 
 ;;;###autoload
 (defun nelisp-ec-file-name-directory (name)
@@ -368,6 +384,44 @@ returns `.bashrc').  No extension → NAME returned unchanged."
           (concat out "/")
         out))))
 
+(defun nelisp-ec--posix-path-clean-p (path)
+  "Return non-nil when PATH needs no work from `nelisp-ec--normalize-posix-path'.
+PATH must already be absolute (start with `/') and contain no `//', `/./',
+or `/../' component, and must not end in a bare `.' or `..' component --
+i.e. `(nelisp-ec--normalize-posix-path path)' is guaranteed to return PATH
+unchanged.  This is a single linear scan using only `aref'/`eq' (no
+`substring'/`concat' allocation), so it is cheap enough to run before every
+`nelisp-ec-expand-file-name' call and skip the split-and-rebuild pass for
+the overwhelmingly common already-normalized absolute path (T47: that
+split/rebuild pass, run unconditionally, was the dominant cost of every
+file predicate that touches `expand-file-name')."
+  (and (> (length path) 0)
+       (eq (aref path 0) ?/)
+       (let ((len (length path))
+             (i 0)
+             (ok t))
+         (while (and ok (< i len))
+           (when (eq (aref path i) ?/)
+             (let ((c1 (and (< (1+ i) len) (aref path (1+ i))))
+                   (c2 (and (< (+ i 2) len) (aref path (+ i 2)))))
+               (cond
+                ((eq c1 ?/) (setq ok nil))
+                ((and (eq c1 ?.) (or (null c2) (eq c2 ?/)))
+                 (setq ok nil))
+                ((and (eq c1 ?.) (eq c2 ?.)
+                      (let ((c3 (and (< (+ i 3) len) (aref path (+ i 3)))))
+                        (or (null c3) (eq c3 ?/))))
+                 (setq ok nil)))))
+           (setq i (1+ i)))
+         ok)))
+
+(defun nelisp-ec--normalize-posix-path-fast (path)
+  "Normalize PATH, skipping the split/rebuild pass when it is unnecessary.
+See `nelisp-ec--posix-path-clean-p'."
+  (if (nelisp-ec--posix-path-clean-p path)
+      path
+    (nelisp-ec--normalize-posix-path path)))
+
 (defun nelisp-ec--expand-home-prefix (path)
   "Expand PATH's `~' or `~/' prefix and reject unsupported `~user'."
   (if (or (= (length path) 0) (not (eq (aref path 0) ?~)))
@@ -395,9 +449,9 @@ invoked beyond reading `default-directory' for the seed CWD."
     (signal 'wrong-type-argument (list 'stringp name)))
   (let ((expanded (nelisp-ec--expand-home-prefix name)))
     (if (and (> (length name) 0) (eq (aref name 0) ?~))
-        (nelisp-ec--normalize-posix-path expanded)
+        (nelisp-ec--normalize-posix-path-fast expanded)
       (if (and (> (length expanded) 0) (eq (aref expanded 0) ?/))
-          (nelisp-ec--normalize-posix-path expanded)
+          (nelisp-ec--normalize-posix-path-fast expanded)
         (let* ((anchor (or default-dir
                            (and (boundp 'default-directory) default-directory)
                            "/"))
@@ -406,7 +460,7 @@ invoked beyond reading `default-directory' for the seed CWD."
                                 (eq (aref anchor 0) ?/))
                            anchor
                          (concat "/" anchor))))
-          (nelisp-ec--normalize-posix-path
+          (nelisp-ec--normalize-posix-path-fast
            (concat (nelisp-ec-file-name-as-directory anchor) expanded)))))))
 
 ;;; ──────────────────────────────────────────────────────────────────────
@@ -509,13 +563,27 @@ COUNT non-nil → return at most COUNT entries (post-filter, post-sort)."
           ;; `nelisp--syscall-readdir' is fbound on the reader but hard-aborts
           ;; unless the low-level `nl-syscall-opendir' it relies on is present;
           ;; gate on that primitive so a reader without it falls through to the
-          ;; portable `directory-files' path below.
+          ;; `nelisp--syscall-readdir-names' path below.  `nl-syscall-opendir'
+          ;; never shipped (T76 sister task), so this branch is currently
+          ;; always dead on the standalone reader; kept for forward
+          ;; compatibility if it lands.
           ((and (fboundp 'nelisp--syscall-readdir)
                 (fboundp 'nl-syscall-opendir))
            (cdr (nelisp--syscall-readdir dir)))
+          ;; T47: this is the real backend the standalone reader ships today
+          ;; (the same primitive vendor's own `directory-files' is built on --
+          ;; see vendor/nelisp/scripts/nelisp-stdlib-prelude.el).  Call it
+          ;; directly instead of recursing into the public `directory-files'
+          ;; alias: that hop is both wasted work and, should this module ever
+          ;; itself win the `directory-files' alias, a self-reference.
+          ((and (fboundp 'nelisp--syscall-readdir-names)
+                (fboundp 'nelisp--readdir-scan-raw))
+           (let ((raw (nelisp--syscall-readdir-names dir)))
+             (and raw (nelisp--readdir-scan-raw raw t))))
           (t
-           ;; Simulator: host directory-files but without sort here so
-           ;; the NOSORT semantics flow through one code path.
+           ;; Simulator (host Emacs, or a reader with neither backend above):
+           ;; host directory-files but without sort here so the NOSORT
+           ;; semantics flow through one code path.
            (directory-files dir nil nil t)))))
     (when match
       (setq entries (cl-remove-if-not (lambda (n) (string-match-p match n))
