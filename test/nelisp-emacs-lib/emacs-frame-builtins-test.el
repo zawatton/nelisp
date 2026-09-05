@@ -38,7 +38,8 @@
                  set-frame-parameter modify-frame-parameters
                  frame-visible-p make-frame-visible make-frame-invisible
                  raise-frame lower-frame select-frame frame-focus
-                 frame-windows display-pixel-width display-pixel-height))
+                 frame-windows display-pixel-width display-pixel-height
+                 with-selected-frame))
     (should (fboundp sym))))
 
 ;;;; B. Substrate-direct: make-frame produces a framep object
@@ -130,11 +131,86 @@
                      selected-frame window-frame delete-frame
                      delete-other-frames frame-width frame-height
                      set-frame-size frame-visible-p select-frame
-                     frame-windows display-pixel-width display-pixel-height))
+                     frame-windows display-pixel-width display-pixel-height
+                     with-selected-frame))
         (goto-char (point-min))
         (should (search-forward
                  (format "(when (emacs-frame-builtins--install-function-p '%s)" sym)
                  nil t))))))
+
+;;;; J. `with-selected-frame' (T87) -- macro shape parity with host `subr.el'
+;;
+;; Under host Emacs `with-selected-frame' is already a real C-adjacent
+;; `subr.el' macro, so the `unless'-style install guard in
+;; `emacs-frame-builtins.el' never lets our port install under host
+;; ERT -- there is nothing to shadow.  To still exercise the actual
+;; ported code (not host's own definition), read the `(defmacro
+;; with-selected-frame ...)' form straight out of the source file,
+;; `eval' it under a private test-only name, and compare its
+;; macroexpansion against the known-good shape (verified against a
+;; clean `emacs -Q --batch', Emacs 31.1, during T87).
+
+(defun emacs-frame-builtins-test--extract-defmacro (file name)
+  "Read the `(defmacro NAME ...)' form out of FILE, renamed to a gensym.
+Returns (RENAMED-SYMBOL . FORM)."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (should (re-search-forward (format "(defmacro %s " (regexp-quote name)) nil t))
+    (goto-char (match-beginning 0))
+    (let* ((start (point))
+           (end (progn (forward-sexp) (point)))
+           (form (read (buffer-substring-no-properties start end)))
+           (renamed (make-symbol (format "emacs-frame-builtins-test--%s" name))))
+      (setcar (cdr form) renamed)
+      (cons renamed form))))
+
+(ert-deftest emacs-frame-builtins-test/with-selected-frame-macroexpansion-matches-host-shape ()
+  (let* ((file (locate-library "emacs-frame-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (let* ((extracted (emacs-frame-builtins-test--extract-defmacro
+                       file "with-selected-frame"))
+           (sym (car extracted))
+           (form (cdr extracted)))
+      (eval form t)
+      (let* ((expansion (macroexpand-1 (list sym 'my-frame '(foo) '(bar))))
+             ;; Structural shape: (let ((OLDF (selected-frame)) (OLDB
+             ;; (current-buffer))) (unwind-protect (progn (select-frame
+             ;; my-frame 'norecord) (foo) (bar)) (when (frame-live-p OLDF)
+             ;; (select-frame OLDF 'norecord)) (when (buffer-live-p OLDB)
+             ;; (set-buffer OLDB))) -- verified against host Emacs 31.1's
+             ;; own `(macroexpand-1 '(with-selected-frame my-frame (foo)
+             ;; (bar)))'.
+             (let-bindings (cadr expansion))
+             (body (cddr expansion)))
+        (should (eq 'let (car expansion)))
+        (should (= 2 (length let-bindings)))
+        (should (equal '(selected-frame) (cadr (nth 0 let-bindings))))
+        (should (equal '(current-buffer) (cadr (nth 1 let-bindings))))
+        (should (= 1 (length body)))
+        (let ((up (car body)))
+          (should (eq 'unwind-protect (car up)))
+          (should (equal '(progn (select-frame my-frame 'norecord) (foo) (bar))
+                         (nth 1 up)))
+          (should (equal (list 'when (list 'frame-live-p (nth 0 (nth 0 let-bindings)))
+                               (list 'select-frame (nth 0 (nth 0 let-bindings)) ''norecord))
+                         (nth 2 up)))
+          (should (equal (list 'when (list 'buffer-live-p (nth 0 (nth 1 let-bindings)))
+                               (list 'set-buffer (nth 0 (nth 1 let-bindings))))
+                         (nth 3 up))))
+        ;; Behavior: BODY runs with FRAME selected, restores after.  The
+        ;; frame object is spliced in as literal quoted data (not a
+        ;; free variable reference) so a fresh top-level `eval' -- with
+        ;; no access to this `let*''s lexical scope -- can still see it.
+        (let* ((f0 (selected-frame))
+               (probe (eval `(lambda ()
+                               (,sym ',f0 (cons (eq (selected-frame) ',f0) 42)))
+                            t)))
+          (should (equal '(t . 42) (funcall probe)))
+          (should (eq f0 (selected-frame))))))))
 
 ;;;; H. Idempotence
 

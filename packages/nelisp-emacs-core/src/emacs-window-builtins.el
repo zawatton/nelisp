@@ -289,6 +289,85 @@ Bound to `q' in help/special-buffer keymaps."
     (interactive "P")
     (emacs-window-quit-window kill window)))
 
+;;;; --- temp-buffer-window setup/show (T87) ------------------------------
+;;
+;; Supporting functions for `with-current-buffer-window' /
+;; `with-temp-buffer-window' (macro bodies live in
+;; `emacs-parity-shims.el', ported verbatim from host `window.el').
+;; Ported from host `window.el' (Emacs 31.1) with two documented
+;; single-frame-model simplifications:
+;;
+;;   1. `temp-buffer-window-setup' skips `(delete-all-overlays)' --
+;;      that primitive does not exist anywhere on this runtime yet
+;;      (neither `fboundp' nor `boundp'), and overlay lifecycle is
+;;      outside this file's ownership; buffers this helper targets are
+;;      freshly `get-buffer-create'd or reused temp buffers, so a
+;;      leftover overlay is a cosmetic edge case, not a correctness
+;;      blocker for the callers this closes the gap for.
+;;   2. `temp-buffer-window-show' skips the `window-combination-limit'
+;;      let-binding trick and the `temp-buffer-resize-mode' resize
+;;      step -- both read variables that `emacs-stub-bulk.el' installs
+;;      as nil-returning *functions*, not special variables (so
+;;      referencing them as variables would signal `void-variable');
+;;      the trick and the resize step are opt-in discretionary
+;;      behavior that defaults off in real Emacs too, so omitting them
+;;      changes nothing for the default configuration this runtime
+;;      targets.
+;;
+;; Both hooks below are real (`run-hooks' is called with them), just
+;; empty by default like host Emacs.
+
+(unless (boundp 'temp-buffer-window-setup-hook)
+  (defvar temp-buffer-window-setup-hook nil
+    "Normal hook run by `with-temp-buffer-window' before buffer display.
+This hook is run by `with-temp-buffer-window' with the buffer to be
+displayed current."))
+
+(unless (boundp 'temp-buffer-window-show-hook)
+  (defvar temp-buffer-window-show-hook nil
+    "Normal hook run by `with-temp-buffer-window' after buffer display.
+This hook is run by `with-temp-buffer-window' with the buffer
+displayed and current and its window selected."))
+
+(when (emacs-window-builtins--install-function-p 'temp-buffer-window-setup)
+  (defun temp-buffer-window-setup (buffer-or-name)
+    "Set up temporary buffer specified by BUFFER-OR-NAME.
+Return the buffer.  (Single-frame-model port -- see file commentary
+for the `delete-all-overlays' simplification.)"
+    (let ((old-dir default-directory)
+          (buffer (get-buffer-create buffer-or-name)))
+      (with-current-buffer buffer
+        (kill-all-local-variables)
+        (setq default-directory old-dir)
+        (setq buffer-read-only nil)
+        (setq buffer-file-name nil)
+        (setq buffer-undo-list t)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t))
+          (erase-buffer)
+          (run-hooks 'temp-buffer-window-setup-hook))
+        buffer))))
+
+(when (emacs-window-builtins--install-function-p 'temp-buffer-window-show)
+  (defun temp-buffer-window-show (buffer &optional action)
+    "Show temporary buffer BUFFER in a window.
+Return the window showing BUFFER.  Pass ACTION as action argument to
+`display-buffer'.  (Single-frame-model port -- see file commentary
+for the `window-combination-limit' / `temp-buffer-resize-mode'
+simplification.)"
+    (let (window)
+      (with-current-buffer buffer
+        (set-buffer-modified-p nil)
+        (setq buffer-read-only t)
+        (goto-char (point-min))
+        (setq window (display-buffer buffer action))
+        (when window
+          (setq minibuffer-scroll-window window)
+          (set-window-hscroll window 0)
+          (with-selected-window window
+            (run-hooks 'temp-buffer-window-show-hook))))
+      window)))
+
 ;;;; --- scroll / recenter / visibility (Doc 33 §4 item 9) ----------------
 ;;
 ;; Real buffer-line-based implementations (see `emacs-window.el').

@@ -238,6 +238,81 @@ prefix-arg paths (`C-u 10 C-x 2' etc) silently dropped their arg."
                            (concat " \"" (nth 2 spec) "\")")))
                  s))))))
 
+;;;; T87 -- temp-buffer-window-setup / temp-buffer-window-show
+;;
+;; Supporting functions for `with-current-buffer-window' /
+;; `with-temp-buffer-window' (see `emacs-parity-shims-test.el' for the
+;; macros themselves).  Under host Emacs these names are already real
+;; `window.el' functions, so -- same reasoning as the macro tests --
+;; each test extracts the actual `(defun NAME ...)' body out of the
+;; source file under a private name and exercises that directly.
+
+(ert-deftest emacs-window-builtins-test/temp-buffer-window-setup-show-guards-present ()
+  (let* ((file (locate-library "emacs-window-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 (- (length file) 1))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(temp-buffer-window-setup temp-buffer-window-show))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-window-builtins--install-function-p '%s)" sym)
+                 nil t))))))
+
+(defun emacs-window-builtins-test--extract-defun (name)
+  "Read the `(defun NAME ...)' form out of emacs-window-builtins.el,
+renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
+  (let* ((file (locate-library "emacs-window-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 (- (length file) 1))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (re-search-forward (format "(defun %s " (regexp-quote name)) nil t))
+      (goto-char (match-beginning 0))
+      (let* ((start (point))
+             (end (progn (forward-sexp) (point)))
+             (form (read (buffer-substring-no-properties start end)))
+             (renamed (make-symbol (format "emacs-window-builtins-test--%s" name))))
+        (setcar (cdr form) renamed)
+        (cons renamed form)))))
+
+(ert-deftest emacs-window-builtins-test/temp-buffer-window-setup-behavior ()
+  (let* ((extracted (emacs-window-builtins-test--extract-defun "temp-buffer-window-setup"))
+         (sym (car extracted)))
+    (eval (cdr extracted) t)
+    (unwind-protect
+        (progn
+          (with-current-buffer (get-buffer-create "*t87-tbws*")
+            (insert "stale content")
+            (setq buffer-read-only t))
+          (let ((buf (funcall sym "*t87-tbws*")))
+            (should (bufferp buf))
+            (should (eq buf (get-buffer "*t87-tbws*")))
+            (with-current-buffer buf
+              (should (= (point-min) (point-max))) ; erased
+              (should-not buffer-read-only))))
+      (when (get-buffer "*t87-tbws*") (kill-buffer "*t87-tbws*")))))
+
+(ert-deftest emacs-window-builtins-test/temp-buffer-window-show-behavior ()
+  (let* ((extracted (emacs-window-builtins-test--extract-defun "temp-buffer-window-show"))
+         (sym (car extracted)))
+    (eval (cdr extracted) t)
+    (unwind-protect
+        (let ((buf (get-buffer-create "*t87-tbwshow*")))
+          (with-current-buffer buf (insert "content"))
+          (let ((window (funcall sym buf nil)))
+            (should (windowp window))
+            (should (eq buf (window-buffer window)))
+            (with-current-buffer buf
+              (should buffer-read-only)
+              (should-not (buffer-modified-p)))))
+      (when (get-buffer "*t87-tbwshow*") (kill-buffer "*t87-tbwshow*")))))
+
 (provide 'emacs-window-builtins-test)
 
 ;;; emacs-window-builtins-test.el ends here

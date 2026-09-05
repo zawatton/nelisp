@@ -170,6 +170,43 @@
 (when (emacs-frame-builtins--install-function-p 'frame-focus)
   (defalias 'frame-focus #'emacs-frame-frame-focus))
 
+;; T87: `with-selected-frame' (GNU `subr.el') was entirely absent from
+;; `src/' -- `(fboundp 'with-selected-frame)' was nil, not merely a
+;; nil no-op stub -- so `(evil-mode 1)' hit `(void-function
+;; with-selected-frame)' via `evil-core.el's `evil-init-esc' /
+;; `evil-deinit-esc' (called by `evil-esc-mode', which `evil-mode'
+;; enables/disables unconditionally).  Ported verbatim from host
+;; `subr.el' (confirmed against a clean `emacs -Q --batch', Emacs
+;; 31.1): saves and restores the selected frame (`select-frame' /
+;; `frame-live-p', both installed above) and the current buffer
+;; (`current-buffer' / `buffer-live-p' / `set-buffer'), then
+;; evaluates BODY with FRAME selected.  This runtime's single-frame
+;; model (one implicit frame; see `emacs-frame--ensure-initial') does
+;; not change the macro shape at all -- `select-frame' and
+;; `frame-live-p' already behave correctly for that one frame, so the
+;; macroexpansion matches host exactly (verified: identical to
+;; `(macroexpand-1 '(with-selected-frame F BODY...))' on host Emacs).
+(when (emacs-frame-builtins--install-function-p 'with-selected-frame)
+  (defmacro with-selected-frame (frame &rest body)
+    "Execute the forms in BODY with FRAME as the selected frame.
+The value returned is the value of the last form in BODY.
+
+This macro saves and restores the selected frame, and changes the
+order of neither the recently selected windows nor the buffers in
+the buffer list."
+    (declare (indent 1) (debug t))
+    (let ((old-frame (make-symbol "old-frame"))
+          (old-buffer (make-symbol "old-buffer")))
+      `(let ((,old-frame (selected-frame))
+             (,old-buffer (current-buffer)))
+         (unwind-protect
+             (progn (select-frame ,frame 'norecord)
+                    ,@body)
+           (when (frame-live-p ,old-frame)
+             (select-frame ,old-frame 'norecord))
+           (when (buffer-live-p ,old-buffer)
+             (set-buffer ,old-buffer)))))))
+
 ;;;; --- frame->windows + display ---------------------------------------
 
 (when (emacs-frame-builtins--install-function-p 'frame-windows)
