@@ -2410,6 +2410,18 @@
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest emacs-load-test/hybrid-evaluator-emits-one-top-level-progn ()
+  "Small-source native evaluation must not expose a truncatable form stream."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((source "(setq emacs-load-test--first 1)\n(provide 'loader-tail)\n")
+         (one-shot (nelisp--load-one-shot-source source))
+         (read-result (read-from-string one-shot)))
+    (should (= (cdr read-result) (length one-shot)))
+    (should (equal (car read-result)
+                   '(progn
+                      (setq emacs-load-test--first 1)
+                      (provide 'loader-tail))))))
+
 (provide 'emacs-load-test)
 
 ;;; emacs-load-test.el ends here
