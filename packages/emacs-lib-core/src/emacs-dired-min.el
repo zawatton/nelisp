@@ -62,12 +62,23 @@
 
 (defun emacs-dired-min--ensure-mode-map ()
   "Build and return `dired-mode-map', constructing it on first use.
-The standalone NeLisp reader aborts an eager top-level keymap
-initializer at bundle-load time (a keymap primitive such as `kbd' is
-not yet in its final binding while the bundle is still loading),
-leaving the variable unbound.  Building the map lazily on the first
-`dired-mode' entry sidesteps that load-order fragility — by then every
-keymap primitive is fully installed."
+An earlier revision of this file deferred this construction to the
+first `dired-mode' entry, believing the standalone NeLisp reader
+would abort an eager top-level keymap initializer at bundle-load
+time because a keymap primitive such as `kbd' was not yet in its
+final binding.  That is no longer true by the time this form runs:
+`emacs-dired-min--load-feature' already required `emacs-keymap' above
+\(the sole provider of `kbd', `emacs-keymap-make-sparse-keymap', and
+`emacs-keymap-define-key'), so every primitive this function calls is
+fully installed.  T65: GNU's real `dired.el' builds `dired-mode-map'
+eagerly at load time too, and `(require \\='dired)' on the standalone
+must match that -- otherwise code that keys off `(featurep \\='dired)'
+\(such as evil's `(eval-after-load \\='dired ...)' in
+evil-keybindings.el, which fires immediately once dired is already
+loaded) observes a nil `dired-mode-map' and `evil-make-overriding-map'
+signals `(emacs-keymap-not-keymap nil)'.  This function stays
+idempotent \(and is still called lazily as a defensive fallback from
+`dired-mode') so a second call after the eager one below is a no-op."
   (unless dired-mode-map
     (let ((map (emacs-keymap-make-sparse-keymap)))
       (emacs-keymap-define-key map (kbd "RET") #'dired-find-file)
@@ -84,6 +95,13 @@ keymap primitive is fully installed."
       (emacs-keymap-define-key map (kbd "C") #'dired-do-copy)
       (setq dired-mode-map map)))
   dired-mode-map)
+
+;; Build the map now (rather than only on the first `dired-mode' entry)
+;; so `dired-mode-map' is already a real keymap by the time `dired.el'
+;; runs `(provide \\='dired)' immediately after this file loads.  See
+;; the docstring above for why the historical lazy-only approach is no
+;; longer required.
+(emacs-dired-min--ensure-mode-map)
 
 (defvar emacs-dired-min--state (make-hash-table :test 'eq :weakness nil)
   "Hash table mapping dired buffers to listing metadata.
