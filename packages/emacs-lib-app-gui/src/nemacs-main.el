@@ -1863,8 +1863,18 @@ options makes `-L src -l test/foo.el' behave like Emacs batch loading."
       (condition-case err
           (nemacs-main--load-option-path path)
         (error
-         (when (fboundp 'message)
-           (message "nemacs: load %S failed: %S" path err))))))
+         (if (nemacs-main--standalone-batch-p)
+             (progn
+               (when (fboundp 'message)
+                 (message "nemacs: --load failed: %s file=%s"
+                          (error-message-string err) path))
+               ;; Match GNU Emacs's uncaught batch-error status for `-l'/
+               ;; `--load'.  A successful user `(kill-emacs N)' inside the
+               ;; loaded file exits from there and never reaches this
+               ;; handler, so its requested status is preserved.
+               (kill-emacs 255))
+           (when (fboundp 'message)
+             (message "nemacs: load %S failed: %S" path err)))))))
   (dolist (form (nemacs-main-option :eval-forms))
     (condition-case err
         (nemacs-main--eval-option-form form)

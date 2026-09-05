@@ -135,6 +135,73 @@
                    reported))
     (should-not nemacs-main-test--ran)))
 
+(ert-deftest nemacs-main-test/apply-load-form-error-tolerated ()
+  (defvar nemacs-main-test--load-ran nil)
+  (setq nemacs-main-test--load-ran nil)
+  (nemacs-main-test--with-options
+      (list :load '("bad-path" "good-path"))
+    (cl-letf (((symbol-function 'nemacs-main--load-option-path)
+               (lambda (path)
+                 (if (equal path "bad-path")
+                     (error "boom")
+                   (setq nemacs-main-test--load-ran t)))))
+      (nemacs-main--apply-options)))
+  ;; Both paths are tried; the error loading the first does not block the
+  ;; second.
+  (should nemacs-main-test--load-ran))
+
+(ert-deftest nemacs-main-test/standalone-batch-load-error-is-fatal ()
+  "A standalone batch `-l'/`--load' error is reported and exits with
+status 255, mirroring `--eval'."
+  (let ((noninteractive t)
+        (reported nil)
+        (nemacs-main-test--load-ran nil)
+        (nemacs-main-options
+         '(:batch t
+           :load ("bad-path" "good-path"))))
+    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore)
+              ((symbol-function 'nemacs-main--load-option-path)
+               (lambda (path)
+                 (if (equal path "bad-path")
+                     (error "boom")
+                   (setq nemacs-main-test--load-ran t))))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (setq reported (apply #'format format-string args))))
+              ((symbol-function 'kill-emacs)
+               (lambda (status) (throw 'nemacs-main-test--exit status))))
+      (should (= 255
+                 (catch 'nemacs-main-test--exit
+                   (nemacs-main--apply-options)
+                   nil))))
+    (should (equal "nemacs: --load failed: boom file=bad-path"
+                   reported))
+    (should-not nemacs-main-test--load-ran)))
+
+(ert-deftest nemacs-main-test/standalone-batch-load-kill-emacs-passthrough ()
+  "A `kill-emacs' call inside a loaded file exits with its own status,
+not the fatal `-l' error handler's 255."
+  (let ((noninteractive t)
+        (reported nil)
+        (exit-status nil)
+        (nemacs-main-options
+         '(:batch t
+           :load ("kills-emacs"))))
+    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore)
+              ((symbol-function 'nemacs-main--load-option-path)
+               (lambda (_path) (kill-emacs 7)))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (setq reported (apply #'format format-string args))))
+              ((symbol-function 'kill-emacs)
+               (lambda (status) (throw 'nemacs-main-test--exit status))))
+      (setq exit-status
+            (catch 'nemacs-main-test--exit
+              (nemacs-main--apply-options)
+              nil)))
+    (should (= 7 exit-status))
+    (should-not reported)))
+
 (ert-deftest nemacs-main-test/apply-eval-source-string-uses-nelisp-eval ()
   "Standalone NeLisp can pass --eval source without requiring `read'."
   (let ((seen nil)
