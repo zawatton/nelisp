@@ -17,6 +17,11 @@
 (require 'ert)
 (require 'emacs-fns)
 
+(defconst emacs-fns-test--source-file
+  (expand-file-name
+   "../src/emacs-fns.el"
+   (file-name-directory (or load-file-name buffer-file-name))))
+
 ;;;; --- mapcar -------------------------------------------------------------
 
 (ert-deftest emacs-fns-test/mapcar-basic ()
@@ -179,6 +184,47 @@
       (should-not
        (emacs-fns--load-and-check-required-feature
         missing-feature "/tmp/emacs-fns-test-missing.el" t)))))
+
+(ert-deftest emacs-fns-test/standalone-bare-require-does-not-list-directories ()
+  "Standalone bare-name `require' probes candidates without directory scans."
+  (let* ((feature 'emacs-fns-test-bare-require-probe)
+         (directory (make-temp-file "emacs-fns-require-" t))
+         (file (expand-file-name (concat (symbol-name feature) ".el")
+                                 directory))
+         (host-load (symbol-function 'load))
+         (host-require (symbol-function 'require))
+         (host-provide (symbol-function 'provide))
+         (host-featurep (symbol-function 'featurep))
+         (host-locate-file (symbol-function 'locate-file))
+         (saved-features features)
+         (native-comp-enable-subr-trampolines nil)
+         (directory-files-calls 0))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "(provide 'emacs-fns-test-bare-require-probe)\n"))
+          ;; Re-evaluate the source under its standalone guard, then exercise
+          ;; the installed `require' while retaining host file execution.
+          (let ((emacs-version nil))
+            (funcall host-load emacs-fns-test--source-file nil t t))
+          (let ((load-path (list directory)))
+            (cl-letf (((symbol-function 'directory-files)
+                       (lambda (&rest _args)
+                         (setq directory-files-calls
+                               (1+ directory-files-calls))
+                         nil))
+                      ((symbol-function 'emacs-fns--load-required-file)
+                       (lambda (path noerror)
+                         (funcall host-load path noerror t t t))))
+              (should (eq (require feature) feature))
+              (should (= directory-files-calls 0)))))
+      (fset 'require host-require)
+      (fset 'provide host-provide)
+      (fset 'featurep host-featurep)
+      (fset 'locate-file host-locate-file)
+      (setq features saved-features)
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
 
 
 ;;;; --- Doc 200 string primitive requirement -----------------------------

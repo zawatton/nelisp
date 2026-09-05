@@ -133,67 +133,57 @@ Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
 Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
     (emacs-fns--standalone-featurep feature _subfeature))
 
-  ;; `require' is one of the hottest standalone startup paths.  Walking a
-  ;; package-expanded `load-path' for every library makes startup quadratic in
-  ;; the package count, so retain the first regular-file occurrence of every
-  ;; directory entry.  Exact filenames are indexed (rather than just library
-  ;; basenames): `locate-file' can therefore compare the earliest directory
-  ;; for each requested suffix and preserve its directory-first, suffix-second
-  ;; resolution order.
-  (defvar emacs-fns--load-path-index (make-hash-table :test 'equal))
-  (defvar emacs-fns--load-path-index-path nil)
-  (defvar emacs-fns--load-path-index-length -1)
+  (defun emacs-fns--file-name-has-directory-p (filename)
+    "Return non-nil when FILENAME contains a directory separator."
+    (let ((index 0)
+          (length (length filename))
+          found)
+      (while (and (< index length) (not found))
+        (when (= (aref filename index) ?/)
+          (setq found t))
+        (setq index (1+ index)))
+      found))
 
-  (defun emacs-fns--load-path-index-build (path)
-    "Rebuild the regular-file index for PATH and return the new table."
-    (let ((table (make-hash-table :test 'equal))
-          (scanned (make-hash-table :test 'equal))
-          (dirs path)
-          (directory-index 0))
-      (while dirs
-        (let ((dir (car dirs)))
-          (when (and (stringp dir)
-                     (> (length dir) 0)
-                     (not (gethash dir scanned)))
-            (puthash dir t scanned)
-            (let ((files (condition-case nil
-                             (directory-files dir)
-                           (error nil))))
-              (while files
-                (let* ((name (car files))
-                       (absolute (expand-file-name name dir)))
-                  (when (and (not (gethash name table))
-                             (emacs-fns--regular-file-p absolute))
-                    (puthash name
-                             (cons directory-index absolute)
-                             table)))
-                (setq files (cdr files))))))
-        (setq directory-index (1+ directory-index))
-        (setq dirs (cdr dirs)))
-      (setq emacs-fns--load-path-index table)
-      (setq emacs-fns--load-path-index-path path)
-      (setq emacs-fns--load-path-index-length (length path))
-      table))
+  (defun emacs-fns--string-suffix-p (suffix string)
+    "Return non-nil when SUFFIX is a suffix of STRING."
+    (let ((suffix-length (length suffix))
+          (string-length (length string)))
+      (and (<= suffix-length string-length)
+           (equal suffix
+                  (substring string (- string-length suffix-length))))))
 
-  (defun emacs-fns--load-path-index-current-p (path)
-    "Return non-nil when the index snapshot still describes PATH."
-    (and (eq path emacs-fns--load-path-index-path)
-         (= (length path) emacs-fns--load-path-index-length)))
-
-  (defun emacs-fns--load-path-index-lookup (filename suffixes)
-    "Return indexed FILENAME resolution for SUFFIXES, or nil on a miss."
-    (unless (emacs-fns--load-path-index-current-p load-path)
-      (emacs-fns--load-path-index-build load-path))
-    (let ((tail suffixes)
-          (best nil))
-      (while tail
-        (let ((entry (gethash (concat filename (car tail))
-                              emacs-fns--load-path-index)))
-          (when (and entry
-                     (or (null best) (< (car entry) (car best))))
-            (setq best entry)))
-        (setq tail (cdr tail)))
-      (cdr best)))
+  (defun emacs-fns--load-candidate-suffixes
+      (file &optional nosuffix must-suffix)
+    "Return ordered suffixes used to resolve FILE for `load'.
+NOSUFFIX permits only FILE itself.  MUST-SUFFIX omits the bare
+representation unless FILE already has a load suffix or contains a
+directory component."
+    (if nosuffix
+        (list "")
+      (let ((load-tail (if (and (boundp 'load-suffixes)
+                                (consp load-suffixes))
+                           load-suffixes
+                         (list ".elc" ".el")))
+            (representations
+             (if (and (boundp 'load-file-rep-suffixes)
+                      (consp load-file-rep-suffixes))
+                 load-file-rep-suffixes
+               (list "")))
+            (suffixes nil)
+            (qualified (emacs-fns--file-name-has-directory-p file)))
+        (while load-tail
+          (let ((rep-tail representations))
+            (while rep-tail
+              (let ((suffix (concat (car load-tail) (car rep-tail))))
+                (setq suffixes (cons suffix suffixes))
+                (when (emacs-fns--string-suffix-p suffix file)
+                  (setq qualified t)))
+              (setq rep-tail (cdr rep-tail))))
+          (setq load-tail (cdr load-tail)))
+        (setq suffixes (nreverse suffixes))
+        (if (and must-suffix (not qualified))
+            suffixes
+          (append suffixes representations)))))
 
   (defun locate-file (filename path &optional suffixes predicate)
     "Find FILENAME in PATH using optional SUFFIXES and PREDICATE.
@@ -204,15 +194,12 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
                          ((null suffixes) (list ""))
                          ((stringp suffixes) (list suffixes))
                          (t suffixes)))
-           (indexed (and (boundp 'load-path)
-                         (eq path load-path)
-                         (eq predicate #'emacs-fns--regular-file-p)
-                         (emacs-fns--load-path-index-lookup
-                          filename suffix-list)))
-           (dirs path)
-           (found (and indexed
-                       (funcall predicate indexed)
-                       indexed)))
+           ;; A name containing a directory component is resolved relative to
+           ;; `default-directory' and does not walk `load-path'.
+           (dirs (if (emacs-fns--file-name-has-directory-p filename)
+                     (list nil)
+                   path))
+           found)
       (while (and dirs (not found))
         (let ((suffixes-left suffix-list))
           (while (and suffixes-left (not found))
@@ -270,15 +257,14 @@ batch tests and local runtime modules."
     (if (featurep feature)
         feature
       (let* ((base (or filename (symbol-name feature)))
-             (path (or (and (stringp base)
-                            (emacs-fns--regular-file-p base)
-                            base)
-                       (and (boundp 'load-path)
-                            (locate-file
-                             base
-                             load-path
-                             (list ".el" "")
-                             #'emacs-fns--regular-file-p)))))
+             (path (if (fboundp 'emacs-load--resolve-file)
+                       (emacs-load--resolve-file base nil (not filename))
+                     (locate-file
+                      base
+                      (and (boundp 'load-path) load-path)
+                      (emacs-fns--load-candidate-suffixes
+                       base nil (not filename))
+                      #'emacs-fns--regular-file-p))))
         (cond
          (path
           (emacs-fns--load-and-check-required-feature

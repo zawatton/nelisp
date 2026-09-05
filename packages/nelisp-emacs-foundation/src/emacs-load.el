@@ -2731,7 +2731,15 @@ optimization candidate; keep the normal load path on the fast reader."
                 (setq load-file-name prior-lfn)
                 (setq default-directory prior-dd))))))))))
 
-  (defun load (file &optional noerror _nomessage _nosuffix _must-suffix)
+  (defun emacs-load--resolve-file (file nosuffix must-suffix)
+    "Resolve FILE once using `load' suffix and search-path semantics."
+    (locate-file file
+                 (and (boundp 'load-path) load-path)
+                 (emacs-fns--load-candidate-suffixes
+                  file nosuffix must-suffix)
+                 #'emacs-fns--regular-file-p))
+
+  (defun load (file &optional noerror _nomessage nosuffix must-suffix)
     "Resolve FILE through `load-path' and execute it."
     (let* ((absolute-p
             (and (stringp file)
@@ -2739,7 +2747,7 @@ optimization candidate; keep the normal load path on the fast reader."
                  (or (and (fboundp 'file-name-absolute-p)
                           (file-name-absolute-p file))
                      (= (aref file 0) ?/))))
-           (resolved (locate-library file)))
+           (resolved (emacs-load--resolve-file file nosuffix must-suffix)))
       (cond
        (resolved
         (nelisp--load-resolved-file resolved noerror))
