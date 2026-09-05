@@ -555,34 +555,43 @@ any defined sequence, return the integer count of unused trailing
 elements (= matches Emacs `lookup-key' partial-match contract).
 
 ACCEPT-DEFAULT, when non-nil, also returns bindings of `t` (= the
-default-binding fallback inside any one keymap)."
-  (unless (emacs-keymap-keymapp keymap)
+default-binding fallback inside any one keymap).
+
+GNU's own `lookup-key' is lenient for a nil KEYMAP specifically —
+empirically confirmed against host Emacs 31.1: `(lookup-key nil \"a\")'
+=> nil, no error, while any other non-keymap value (a string, a plain
+symbol, an integer) still signals wrong-type-argument.  This matters
+for T74: Evil's `evil-auxiliary-keymap-p' passes whatever a prior
+`lookup-key' call returned (nil for an unbound key) straight through,
+without a `keymapp' guard, exactly as it would on real Emacs."
+  (unless (or (null keymap) (emacs-keymap-keymapp keymap))
     (signal 'emacs-keymap-not-keymap (list keymap)))
-  (let* ((keys (emacs-keymap--key-seq->list key))
-         (current keymap)
-         (consumed 0)
-         (total (length keys))
-         binding)
-    (catch 'done
-      (while keys
-        (let* ((k (car keys))
-               (b (emacs-keymap--lookup-with-parent current k)))
-          (when (and (null b) accept-default)
-            (setq b (emacs-keymap--lookup-with-parent current t)))
-          (cond
-           ((null b)
-            (setq binding nil)
-            (throw 'done nil))
-           ((and (cdr keys) (emacs-keymap-keymapp b))
-            (setq current b consumed (1+ consumed) keys (cdr keys)))
-           ((cdr keys)
-            ;; non-keymap binding before the sequence ends:
-            ;; trailing keys are unused — Emacs returns the count.
-            (setq binding (- total consumed 1))
-            (throw 'done nil))
-           (t
-            (setq binding b consumed (1+ consumed) keys nil))))))
-    binding))
+  (when keymap
+    (let* ((keys (emacs-keymap--key-seq->list key))
+           (current keymap)
+           (consumed 0)
+           (total (length keys))
+           binding)
+      (catch 'done
+        (while keys
+          (let* ((k (car keys))
+                 (b (emacs-keymap--lookup-with-parent current k)))
+            (when (and (null b) accept-default)
+              (setq b (emacs-keymap--lookup-with-parent current t)))
+            (cond
+             ((null b)
+              (setq binding nil)
+              (throw 'done nil))
+             ((and (cdr keys) (emacs-keymap-keymapp b))
+              (setq current b consumed (1+ consumed) keys (cdr keys)))
+             ((cdr keys)
+              ;; non-keymap binding before the sequence ends:
+              ;; trailing keys are unused — Emacs returns the count.
+              (setq binding (- total consumed 1))
+              (throw 'done nil))
+             (t
+              (setq binding b consumed (1+ consumed) keys nil))))))
+      binding)))
 
 ;; Parent-keymap storage convention for this module:
 ;; the parent is held as a cons (:emacs-keymap-parent . KEYMAP) at
@@ -626,11 +635,17 @@ signals `emacs-keymap-error'."
 ;;;###autoload
 (defun emacs-keymap-keymap-prompt (keymap)
   "Return the prompt string of KEYMAP, or nil.
-The prompt is the first standalone string element in KEYMAP's tail."
-  (unless (emacs-keymap-keymapp keymap)
-    (signal 'emacs-keymap-not-keymap (list keymap)))
-  (cl-loop for e in (cdr keymap)
-           when (stringp e) return e))
+The prompt is the first standalone string element in KEYMAP's tail.
+Unlike most `emacs-keymap-*' accessors, a non-keymap KEYMAP (including
+nil) is not an error here: it returns nil, exactly like GNU's own
+`keymap-prompt' (`Fkeymap_prompt' calls `get_keymap' with its ERROR
+argument false).  This matters in practice: callers such as Evil's
+`evil-auxiliary-keymap-p' pass whatever `lookup-key' returned — which
+is nil for an unbound key, per T74 — straight into `keymap-prompt'
+without a `keymapp' guard, exactly as they would on real Emacs."
+  (and (emacs-keymap-keymapp keymap)
+       (cl-loop for e in (cdr keymap)
+                when (stringp e) return e)))
 
 ;;; C. global / local / overriding maps  +  Doc 41 chain provider
 
@@ -685,12 +700,56 @@ MAP is active when the symbol-value of VAR is non-nil.")
   (setq emacs-keymap-local-map keymap)
   nil)
 
+(defun emacs-keymap--get-keymap (object)
+  "Resolve OBJECT to a keymap, or return nil if it does not denote one.
+Mirrors GNU `get_keymap': OBJECT is returned as-is when it is already
+a keymap; when it is a symbol, its function cell is followed
+(`indirect-function'-style, so a keymap can be named by a symbol whose
+function definition is the keymap, or a chain of such aliases) until a
+non-symbol or an unbound symbol is reached.  Anything that does not
+bottom out at a keymap yields nil, i.e. is skipped by callers rather
+than signaled as an error."
+  (let ((obj object)
+        (steps 0))
+    ;; Cap the chase so a malformed alias cycle cannot loop forever;
+    ;; real alias chains are always short.
+    (while (and (symbolp obj) obj (< steps 100))
+      (setq obj (and (fboundp obj) (symbol-function obj)))
+      (setq steps (1+ steps)))
+    (and (emacs-keymap-keymapp obj) obj)))
+
 (defun emacs-keymap--active-minor-mode-maps (alist)
-  "Return list of keymaps in ALIST whose VAR symbol-value is non-nil."
-  (cl-loop for (var . map) in alist
-           when (and (boundp var) (symbol-value var)
-                     (emacs-keymap-keymapp map))
-           collect map))
+  "Return list of keymaps in ALIST whose VAR symbol-value is non-nil.
+ALIST is a list of (VAR . MAP) entries, as in `minor-mode-map-alist'
+(GNU `current_minor_maps' semantics).  A malformed entry (not a cons)
+is skipped rather than signaled, and so is a non-list ALIST (this
+lets callers pass an unresolved/absent `emulation-mode-map-alists'
+element straight through).  MAP is resolved through
+`emacs-keymap--get-keymap', so a MAP given indirectly as a
+keymap-valued symbol works exactly as it would for GNU Emacs; an
+entry whose MAP does not resolve to a keymap is skipped."
+  (and (listp alist)
+       (let (maps)
+         (dolist (entry alist)
+           (when (consp entry)
+             (let ((var (car entry))
+                   (map (emacs-keymap--get-keymap (cdr entry))))
+               (when (and map (boundp var) (symbol-value var))
+                 (push map maps)))))
+         (nreverse maps))))
+
+(defun emacs-keymap--resolve-emulation-alist (element)
+  "Resolve one ELEMENT of `emulation-mode-map-alists' to an alist.
+Per GNU semantics (keymap.c `current_minor_maps'), each element is
+either an alist directly, or a symbol whose variable value is such an
+alist; an unbound or nil-valued symbol contributes nothing and is
+skipped rather than signaled — this is what makes pushing a bare
+symbol such as Evil's `evil-mode-map-alist' onto
+`emulation-mode-map-alists' work, instead of the walker trying to
+iterate the symbol itself as a sequence."
+  (if (symbolp element)
+      (and (boundp element) (symbol-value element))
+    element))
 
 (defun emacs-keymap--var-value (prefixed unprefixed)
   "Return active value for PREFIXED / UNPREFIXED compatibility variables.
@@ -744,13 +803,21 @@ the current buffer; it is only consulted when the 9 段 flag is on."
         (push overriding-terminal chain))
       (when overriding-local
         (push overriding-local chain))
+      ;; `emulation-mode-map-alists' is checked *before*
+      ;; `minor-mode-overriding-map-alist' / `minor-mode-map-alist' —
+      ;; this is GNU's own documented and empirically-verified
+      ;; precedence (confirmed against host Emacs 31.1
+      ;; `current-active-maps'), and is the entire reason the
+      ;; variable exists: it lets an emulation package such as Evil
+      ;; take precedence over ordinary minor-mode bindings.
+      (dolist (alist emulation-maps)
+        (dolist (m (emacs-keymap--active-minor-mode-maps
+                    (emacs-keymap--resolve-emulation-alist alist)))
+          (push m chain)))
       (dolist (m (emacs-keymap--active-minor-mode-maps minor-overriding))
         (push m chain))
       (dolist (m (emacs-keymap--active-minor-mode-maps minor-maps))
-        (push m chain))
-      (dolist (alist emulation-maps)
-        (dolist (m (emacs-keymap--active-minor-mode-maps alist))
-          (push m chain))))
+        (push m chain)))
     ;; --- Doc 41 §2.5 opt-in slots 6 (overlay) & 7 (text-property) ---
     (when emacs-keymap-chain-with-textprop
       (let ((pt (or point
