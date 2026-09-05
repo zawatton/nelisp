@@ -168,13 +168,60 @@ evaluating any forms here."
            text)))
       (mapconcat #'identity (nreverse forms) "\n")))
 
+  (defun nelisp--load-rewrite-target-present-p (source)
+    "Return non-nil when SOURCE may contain a `defalias' rewrite target.
+The ordinary spelling uses the runtime's native substring search.  The
+fallback scan recognizes reader escapes within the symbol spelling so a form
+such as `(d\\efalias ...)' still takes the structural normalization path.
+False positives are harmless: they only retain the existing slow path."
+    (or (emacs-load--artifact-string-search "defalias" source 0)
+        (and (emacs-load--artifact-string-search "\\" source 0)
+             (let ((needle "defalias")
+                   (source-len (length source))
+                   (needle-len 8)
+                   (start 0)
+                   (found nil))
+               (while (and (not found) (< start source-len))
+                 (let ((candidate
+                        (emacs-load--artifact-string-search
+                         "d" source start)))
+                   (if (null candidate)
+                       (setq start source-len)
+                     (let ((source-pos candidate)
+                           (needle-pos 0)
+                           (escaped nil)
+                           (matching t))
+                       (while (and matching
+                                   (< needle-pos needle-len)
+                                   (< source-pos source-len))
+                         (when (= (aref source source-pos) ?\\)
+                           (setq escaped t)
+                           (setq source-pos (+ source-pos 1))
+                           (when (>= source-pos source-len)
+                             (setq matching nil)))
+                         (when matching
+                           (if (= (aref source source-pos)
+                                  (aref needle needle-pos))
+                               (progn
+                                 (setq source-pos (+ source-pos 1))
+                                 (setq needle-pos (+ needle-pos 1)))
+                             (setq matching nil))))
+                       (when (and matching escaped (= needle-pos needle-len))
+                         (setq found t)))
+                     (setq start (+ candidate 1)))))
+               found))))
+
   (defun nelisp--load-one-shot-source (source)
     "Return normalized SOURCE enclosed in one top-level evaluation form.
 The standalone substrate may return after an early top-level form when given
 a form stream.  One outer `progn' makes the complete file a single unit while
-leaving artifact normalization's form-stream contract unchanged."
+leaving artifact normalization's form-stream contract unchanged.  Sources
+without a possible rewrite target retain their original body and avoid the
+otherwise redundant per-form read, tree walk, and serialization pass."
     (concat "(progn\n"
-            (nelisp--load-normalize-source-rewriting source)
+            (if (nelisp--load-rewrite-target-present-p source)
+                (nelisp--load-normalize-source-rewriting source)
+              source)
             "\n)"))
 
   (defun emacs-load--artifact-write-normalized-source (source path)

@@ -2407,6 +2407,46 @@
                       (setq emacs-load-test--first 1)
                       (provide 'loader-tail))))))
 
+(ert-deftest emacs-load-test/hybrid-skips-normalization-without-rewrite-target ()
+  "One-shot loading preserves forms without rereading rewrite-free source."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((source (concat ";; keep this source body\n"
+                         "(defun emacs-load-test--fast-path () \"a\\nb\")\n"
+                         "(provide 'emacs-load-fast-path)\n"))
+         (normalize-calls 0)
+         (one-shot
+          (cl-letf (((symbol-function 'nelisp--load-normalize-source-rewriting)
+                     (lambda (&rest _args)
+                       (setq normalize-calls (+ normalize-calls 1))
+                       (error "rewrite-free source must skip normalization"))))
+            (nelisp--load-one-shot-source source)))
+         (read-result (read-from-string one-shot)))
+    (should (= normalize-calls 0))
+    (should (string-match-p (regexp-quote source) one-shot))
+    (should (= (cdr read-result) (length one-shot)))
+    (should (equal (car read-result)
+                   '(progn
+                      (defun emacs-load-test--fast-path () "a\nb")
+                      (provide 'emacs-load-fast-path))))))
+
+(ert-deftest emacs-load-test/hybrid-normalizes-escaped-defalias-target ()
+  "Reader-escaped `defalias' spellings must not bypass normalization."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((source "(d\\efalias 'emacs-load-test--alias 'ignore)\n")
+         (normalized
+          "(nelisp--defalias-late 'emacs-load-test--alias 'ignore)")
+         (normalize-calls 0)
+         (one-shot
+          (cl-letf (((symbol-function 'nelisp--load-normalize-source-rewriting)
+                     (lambda (input)
+                       (should (equal input source))
+                       (setq normalize-calls (+ normalize-calls 1))
+                       normalized)))
+            (nelisp--load-one-shot-source source))))
+    (should (eq (car (car (read-from-string source))) 'defalias))
+    (should (= normalize-calls 1))
+    (should (equal one-shot (concat "(progn\n" normalized "\n)")))))
+
 (provide 'emacs-load-test)
 
 ;;; emacs-load-test.el ends here
