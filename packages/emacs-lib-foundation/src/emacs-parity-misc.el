@@ -604,6 +604,50 @@ toggles the current state."
            (fboundp 'emacs-parity-macros2--restore-iter-shims))
   (emacs-parity-macros2--restore-iter-shims))
 
+;;;; --- term.el: lightweight package load surface ---------------------
+
+;; The stock 192 KiB term.el is a full process/display implementation and
+;; does not finish loading within the standalone package-load budget.  Eat
+;; requires the `term' feature unconditionally, but on Emacs 28+ it uses the
+;; ansi-color faces and loads term/xterm separately; it does not call Term's
+;; process or mode implementation while loading.  Preserve the small shared
+;; configuration surface that packages legitimately customize, including the
+;; pre-Emacs-28 color-face fallback, without claiming `term-mode' support.
+(when (and (fboundp 'nelisp--write-stdout-bytes)
+           (not (featurep 'term)))
+  (defgroup term nil
+    "General command interpreter in a window."
+    :group 'processes)
+
+  (defcustom term-mode-hook nil
+    "Hook run after entering Term mode."
+    :type 'hook
+    :group 'term)
+
+  (defcustom term-exec-hook nil
+    "Hook run after starting a process in a Term buffer."
+    :type 'hook
+    :group 'term)
+
+  (defface term-color-black '((t :inherit ansi-color-black))
+    "Face used to render black terminal text." :group 'term)
+  (defface term-color-red '((t :inherit ansi-color-red))
+    "Face used to render red terminal text." :group 'term)
+  (defface term-color-green '((t :inherit ansi-color-green))
+    "Face used to render green terminal text." :group 'term)
+  (defface term-color-yellow '((t :inherit ansi-color-yellow))
+    "Face used to render yellow terminal text." :group 'term)
+  (defface term-color-blue '((t :inherit ansi-color-blue))
+    "Face used to render blue terminal text." :group 'term)
+  (defface term-color-magenta '((t :inherit ansi-color-magenta))
+    "Face used to render magenta terminal text." :group 'term)
+  (defface term-color-cyan '((t :inherit ansi-color-cyan))
+    "Face used to render cyan terminal text." :group 'term)
+  (defface term-color-white '((t :inherit ansi-color-white))
+    "Face used to render white terminal text." :group 'term)
+
+  (provide 'term))
+
 ;;;; --- native compilation (explicit "unavailable" graceful no-op) ----
 
 ;; This runtime has no native compiler.  Rather than leave `native-compile-async'

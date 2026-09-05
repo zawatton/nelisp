@@ -259,6 +259,65 @@ current ERT test with status/stdout/stderr diagnostics."
                 out))
        (should-not (string-match-p "UNDO-TREE ERROR" out))))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/evil-types-loader-envelope ()
+  "The one-shot loader presents all evil-types forms as one outer form."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((evil-types
+          (expand-file-name ".emacs.d/external-packages/evil/evil-types.el"
+                            (or (getenv "HOME") ""))))
+     (unless (file-readable-p evil-types)
+       (ert-skip "evil-types external package source is unavailable"))
+     (let ((out
+            (nemacs-bootstrap-nelisp-test--run
+             "--batch" "--no-banner"
+             "--eval"
+             (format
+              (concat
+               "(condition-case err"
+               "    (let* ((source (nl-syscall-read-file %S 0 nil))"
+               "           (normalized (nelisp--load-one-shot-source source))"
+               "           (read-result (read-from-string normalized))"
+               "           (form (car read-result))"
+               "           (body (cdr form)))"
+               "      (nelisp--write-stdout-bytes"
+               "       (format \"EVIL-TYPES-LOADER head=%%S forms=%%S tail=%%S consumed=%%S\\n\""
+               "               (car form) (length body) (car (last body))"
+               "               (= (cdr read-result) (length normalized)))))"
+               "  (error"
+               "   (nelisp--write-stdout-bytes"
+               "    (format \"EVIL-TYPES-LOADER ERROR %%S\\n\" err))))")
+              evil-types))))
+       (should (string-match-p
+                (regexp-quote
+                 "EVIL-TYPES-LOADER head=progn forms=38 tail=(provide 'evil-types) consumed=t")
+                out))
+       (should-not (string-match-p "EVIL-TYPES-LOADER ERROR" out))))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/eat-term-load-surface ()
+  "Eat's lightweight Term dependency and remote error parent are available."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out
+          (nemacs-bootstrap-nelisp-test--run
+           "--batch" "--no-banner"
+           "--eval"
+           (concat
+            "(condition-case err"
+            "    (progn"
+            "      (require 'term)"
+            "      (nelisp--write-stdout-bytes"
+            "       (format \"EAT-TERM feature=%S mode-hook=%S exec-hook=%S face=%S remote=%S\\n\""
+            "               (featurep 'term) (boundp 'term-mode-hook)"
+            "               (boundp 'term-exec-hook) (facep 'term-color-black)"
+            "               (get 'remote-file-error 'error-conditions))))"
+            "  (error"
+            "   (nelisp--write-stdout-bytes"
+            "    (format \"EAT-TERM ERROR %S\\n\" err))))"))))
+     (should (string-match-p
+              (regexp-quote
+               "EAT-TERM feature=t mode-hook=t exec-hook=t face=term-color-black remote=(remote-file-error file-error error)")
+              out))
+     (should-not (string-match-p "EAT-TERM ERROR" out)))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/generated-bootstrap-preserves-features ()
   "Direct bootstrap bundle loads must preserve the provided feature set."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
