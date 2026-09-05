@@ -971,23 +971,54 @@ CONFIG must be a value returned by
         value
       (prefix-numeric-value value))))
 
+(defun emacs-window--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be (re)defined by this file.
+
+This file defines five unprefixed, Emacs-compatible command names
+directly (`split-window-below', `split-window-right', `other-window',
+`delete-window', `delete-other-windows') rather than through the
+`emacs-window-builtins.el' bridge.  Before this guard existed they were
+bare top-level `defun's with no host check at all, so the very first
+`(require \\='emacs-window)' under host Emacs -- which
+`emacs-window-builtins.el' itself does at its own top -- silently
+replaced the host's real subr/Lisp definitions of these five names
+with this file's Phase-1 single-frame-model versions.
+
+`(not (boundp \\='emacs-version))' alone is not a reliable \"are we
+really inside host Emacs\" test: some NeLisp standalone-reader builds
+bind `emacs-version' to a non-string sentinel (so `boundp' is true but
+the value is not a version string) rather than leaving it unbound.
+Check the NeLisp-only markers `nl-write-file' / `nelisp--write-stdout-bytes'
+first, matching `emacs-window-builtins--install-function-p' /
+`emacs-char-table--standalone-p', so standalone always installs these
+five names regardless of load order, while host Emacs -- where SYMBOL
+is already bound to a real subr or dumped Lisp function from
+`window.el' -- never has that definition replaced."
+  (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (not (boundp 'emacs-version))
+      (not (stringp emacs-version))
+      (not (fboundp symbol))))
+
 ;;;###autoload
-(defun split-window-below (&optional size)
-  "Split the selected window into two stacked windows and return the new window.
+(when (emacs-window--install-function-p 'split-window-below)
+  (defun split-window-below (&optional size)
+    "Split the selected window into two stacked windows and return the new window.
 
 SIZE, when non-nil, is the size of the new window."
-  (interactive
-   (list (emacs-window--normalize-prefix-number current-prefix-arg)))
-  (emacs-window-split-window-vertically size))
+    (interactive
+     (list (emacs-window--normalize-prefix-number current-prefix-arg)))
+    (emacs-window-split-window-vertically size)))
 
 ;;;###autoload
-(defun split-window-right (&optional size)
-  "Split the selected window side-by-side and return the new window.
+(when (emacs-window--install-function-p 'split-window-right)
+  (defun split-window-right (&optional size)
+    "Split the selected window side-by-side and return the new window.
 
 SIZE, when non-nil, is the size of the new window."
-  (interactive
-   (list (emacs-window--normalize-prefix-number current-prefix-arg)))
-  (emacs-window-split-window-horizontally size))
+    (interactive
+     (list (emacs-window--normalize-prefix-number current-prefix-arg)))
+    (emacs-window-split-window-horizontally size)))
 
 (defun emacs-window-other-window-impl (&optional count all-frames)
   "Select the COUNTth next window and return it.
@@ -1006,25 +1037,28 @@ accepted for API compatibility and ignored in Phase 1."
     target))
 
 ;;;###autoload
-(defun other-window (&optional n all-frames)
-  "Select the Nth next window.
+(when (emacs-window--install-function-p 'other-window)
+  (defun other-window (&optional n all-frames)
+    "Select the Nth next window.
 
 N defaults to 1.  Negative N cycles backward.  ALL-FRAMES is accepted
 for API compatibility and ignored in Phase 1."
-  (interactive "p")
-  (emacs-window-other-window-impl n all-frames))
+    (interactive "p")
+    (emacs-window-other-window-impl n all-frames)))
 
 ;;;###autoload
-(defun delete-window (&optional window)
-  "Delete WINDOW, or the selected window if WINDOW is nil."
-  (interactive)
-  (emacs-window-delete-window window))
+(when (emacs-window--install-function-p 'delete-window)
+  (defun delete-window (&optional window)
+    "Delete WINDOW, or the selected window if WINDOW is nil."
+    (interactive)
+    (emacs-window-delete-window window)))
 
 ;;;###autoload
-(defun delete-other-windows (&optional window)
-  "Delete every window except WINDOW, or the selected window if WINDOW is nil."
-  (interactive)
-  (emacs-window-delete-other-windows window))
+(when (emacs-window--install-function-p 'delete-other-windows)
+  (defun delete-other-windows (&optional window)
+    "Delete every window except WINDOW, or the selected window if WINDOW is nil."
+    (interactive)
+    (emacs-window-delete-other-windows window)))
 
 ;;; E. selection
 
