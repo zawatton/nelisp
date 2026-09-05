@@ -59,6 +59,17 @@
 ;;      `vendor/emacs-lisp/keymap.el' (= `key-parse' / `key-valid-p').
 ;;      The actual binding state lives in our own `emacs-keymap-*'
 ;;      structures via `emacs-keymap-define-key' / -lookup-key.
+;;      `kbd' and the older `read-kbd-macro' both route through the
+;;      same standalone fallback parser (Doc 49 T49): a vendor/host
+;;      keymap.el reachable via `key-parse'/`kbd' does NOT imply
+;;      `read-kbd-macro' is also reachable there -- `emacs-stub-bulk.el'
+;;      installs a permanently-nil `read-kbd-macro' stub whenever the
+;;      symbol is not already fboundp at bulk-stub load time, and
+;;      nothing previously reclaimed it here.  Any vendor code that
+;;      calls `(read-kbd-macro STRING)' directly (evil-maps.el's
+;;      `evil-toggle-key' bindings, for one) got a silent nil key and
+;;      `(define-key MAP nil DEF)' signalled `emacs-keymap-bad-key'
+;;      with no clue that the culprit was `read-kbd-macro', not `kbd'.
 ;;
 ;; Non-goals (deferred per task spec):
 ;;   - keyboard input event 解釈 (= emacs-minibuffer.el / event handler)
@@ -1021,8 +1032,18 @@ to plug into a real event source."
     ok))
 
 (defun emacs-keymap--standalone-key-token (token)
-  "Parse one kbd-style TOKEN for the standalone NeLisp fallback."
+  "Parse one kbd-style TOKEN for the standalone NeLisp fallback.
+Symbolic results (angle-bracket names and bare function-key names)
+reuse the exact modifier prefix text consumed below, in the order it
+was written, instead of rebuilding it from the `bits' sum -- GNU does
+not canonicalize modifier order for these event symbols (`kbd \"M-C-<f1>\"'
+and `kbd \"C-M-<f1>\"' are two distinct symbols, `M-C-f1' and `C-M-f1'),
+and collapsing a combined prefix like \"C-M-\" down to a single bit
+silently dropped every modifier but one (found via Doc 49 T49 host-vs-
+standalone `key-parse' parity sweep: `kbd \"C-M-<up>\"' returned `[up]'
+instead of `[C-M-up]')."
   (let ((bits 0)
+        (prefix "")
         (ctrl nil)
         (done nil))
     (while (not done)
@@ -1030,42 +1051,40 @@ to plug into a real event source."
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "A-"))
         (setq bits (+ bits ?\A-\0)
+              prefix (concat prefix "A-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "C-"))
         (setq bits (+ bits ?\C-\0)
               ctrl t
+              prefix (concat prefix "C-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "H-"))
         (setq bits (+ bits ?\H-\0)
+              prefix (concat prefix "H-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "M-"))
         (setq bits (+ bits ?\M-\0)
+              prefix (concat prefix "M-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "S-"))
         (setq bits (+ bits ?\S-\0)
+              prefix (concat prefix "S-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "s-"))
         (setq bits (+ bits ?\s-\0)
+              prefix (concat prefix "s-")
               token (substring token 2)))
        (t (setq done t))))
     (cond
      ((and (> (length token) 2)
            (equal (substring token 0 1) "<")
            (equal (substring token (- (length token) 1)) ">"))
-      (let ((name (substring token 1 (- (length token) 1))))
-        (intern (if (= bits 0)
-                    name
-                  (concat (cond
-                           ((= bits ?\S-\0) "S-")
-                           ((= bits ?\C-\0) "C-")
-                           ((= bits ?\M-\0) "M-")
-                           (t ""))
-                          name)))))
+      (intern (concat prefix (substring token 1 (- (length token) 1)))))
      ((equal token "NUL") (+ bits 0))
      ((equal token "RET") (+ bits ?\r))
      ((equal token "LFD") (+ bits ?\n))
@@ -1075,14 +1094,7 @@ to plug into a real event source."
      ((equal token "DEL") (+ bits 127))
      ((and (> (length token) 1)
            (emacs-keymap--standalone-bare-function-key-p token))
-      (intern (if (= bits 0)
-                  token
-                (concat (cond
-                         ((= bits ?\S-\0) "S-")
-                         ((= bits ?\C-\0) "C-")
-                         ((= bits ?\M-\0) "M-")
-                         (t ""))
-                        token))))
+      (intern (concat prefix token)))
      ((= (length token) 1)
       (let ((ch (aref token 0)))
         (if ctrl
@@ -1172,6 +1184,13 @@ motivation for dropping."
   (defalias 'key-parse #'emacs-keymap--standalone-key-parse)
   (defalias 'key-valid-p #'emacs-keymap--standalone-key-valid-p)
   (defalias 'kbd #'emacs-keymap--standalone-key-parse)
+  ;; `read-kbd-macro' is the pre-`kbd' Emacs API for the exact same
+  ;; kbd-syntax parsing (vendor callers like evil-maps.el still call it
+  ;; directly).  Reclaim it from `emacs-stub-bulk.el's nil stub the
+  ;; same way `kbd' is reclaimed just above -- see Doc 49 T49 note
+  ;; below `key-parse (= delegate)' in the header comment for why this
+  ;; symbol needed its own alias instead of following `kbd' for free.
+  (defalias 'read-kbd-macro #'emacs-keymap--standalone-key-parse)
   (defun keymap-set (keymap key definition)
     "Standalone NeLisp fallback for GNU `keymap-set'."
     (let ((parsed (emacs-keymap--standalone-key-parse key))

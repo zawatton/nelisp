@@ -11,8 +11,8 @@
 ;;   D. lookup helpers                              (6 tests)
 ;;   E. minimal command-loop scaffolding            (3 tests)
 ;;   F. Doc 41 §2.5 chain inject opt-in             (3 tests)
-;;   G. newer kbd-style API (Phase 1 §4.4)          (15 tests)
-;; Total: 50 tests
+;;   G. newer kbd-style API (Phase 1 §4.4)          (17 tests)
+;; Total: 52 tests
 
 (require 'ert)
 (require 'emacs-keymap)
@@ -436,7 +436,7 @@
   (should (= 1 emacs-keymap-contract-version))
   (should (= 1 emacs-keymap-chain-inject-contract-version)))
 
-;;;; G. newer kbd-style API (Phase 1 §4.4, 14 tests)
+;;;; G. newer kbd-style API (Phase 1 §4.4, 16 tests)
 
 (ert-deftest emacs-keymap-keymap-set-roundtrip-single-key ()
   (let ((m (emacs-keymap-make-sparse-keymap)))
@@ -586,6 +586,62 @@ value cells become the keymap) is exercised by the standalone boot."
                  (emacs-keymap--standalone-key-parse "<f10>")))
   (should (emacs-keymap--standalone-key-valid-p "S-SPC"))
   (should-not (emacs-keymap--standalone-key-valid-p "9bad-token")))
+
+(ert-deftest emacs-keymap-read-kbd-macro-source-reclaimed-from-stub ()
+  "Regression pin for Doc 49 T49 (real-init audit round 6, form 206,
+symptom: `(require 'evil)' signalled `emacs-keymap-bad-key: (nil)').
+
+Root cause: `read-kbd-macro' is in `emacs-stub-bulk.el's bulk stub list,
+which installs a permanently nil-returning function for any symbol not
+already `fboundp' when the bulk stubs load.  `kbd' and `key-parse' are
+reclaimed from that same stub set a few lines below in this file, but
+`read-kbd-macro' previously was not, so callers going through the older
+`read-kbd-macro' name directly (e.g. evil-maps.el's three
+`(read-kbd-macro evil-toggle-key)' bindings) got nil back instead of a
+parsed key, and `(define-key MAP nil DEF)' signalled
+`emacs-keymap-bad-key' with data `(nil)' -- indistinguishable at the
+call site from a genuinely nil KEY argument.
+
+The live standalone behaviour (evil now loads past this point) is
+exercised by the require-evil boot smoke, not host ERT: the `defalias'
+below is gated behind `(fboundp 'nl-write-file)' and so never fires
+under host Emacs.  This test pins the source shape instead."
+  (let* ((lib (locate-library "emacs-keymap"))
+         (src (and lib (concat (file-name-sans-extension lib) ".el")))
+         (source (and src (file-readable-p src)
+                      (with-temp-buffer (insert-file-contents src)
+                                        (buffer-string)))))
+    (should source)
+    (should (string-match-p
+             (regexp-quote
+              "(defalias 'read-kbd-macro #'emacs-keymap--standalone-key-parse)")
+             source))))
+
+(ert-deftest emacs-keymap-standalone-key-parser-matches-host-key-parse ()
+  "Parity sweep (Doc 49 T49): the standalone kbd-style fallback parser
+must produce the exact same key sequence as GNU's real `key-parse' for
+every description class vendored packages actually write: plain
+printing characters, multi-token sequences, the named control-char
+words (SPC/TAB/RET/DEL/ESC/LFD/NUL), Control/Meta/Shift/Super/Hyper/Alt
+modifiers on a plain character, angle-bracket function/event names
+without a modifier, and angle-bracket names with one or many combined
+modifiers.
+
+The all-six-modifier and swapped-order cases pin a real bug found via
+this exact sweep: GNU does not canonicalize modifier order for these
+event symbols (`kbd \"M-C-<f1>\"' and `kbd \"C-M-<f1>\"' are the two
+distinct symbols `M-C-f1' and `C-M-f1', not the same key), so the
+standalone parser must preserve the written prefix order verbatim
+rather than rebuild a prefix from a bitmask -- collapsing e.g. \"C-M-\"
+down to a single recognized bit previously returned the bare `up'
+symbol for `(kbd \"C-M-<up>\")', silently dropping both modifiers."
+  (dolist (d '("q" "C-x C-f" "M-x" "C-M-f" "C-S-a" "s-x" "H-x" "A-x"
+               "C-c C-c" "z RET" "C-." "M-." "C-=" "C-^" "C-6" "C-z"
+               "TAB" "RET" "SPC" "DEL" "ESC" "LFD" "NUL"
+               "<escape>" "<f5>" "<mouse-1>"
+               "S-<f5>" "M-<return>" "C-M-<up>" "M-C-<up>"
+               "C-S-<f1>" "A-C-M-H-S-s-<f1>" "s-S-H-M-C-A-<f1>"))
+    (should (equal (key-parse d) (emacs-keymap--standalone-key-parse d)))))
 
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here
