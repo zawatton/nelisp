@@ -218,3 +218,57 @@ This document should remain short enough to operate as a live board.
   v1.2.1 follow-ups (bundle =load-file-name= contract, process preload
   guard); vendor sync a9ad34d7b -> 9369e4d77 audited with
   =nelisp-vendor-sync= (15 added, 0 removed, baseline help smoke identical).
+
+- 2026-09-05 (continued): real-init audit rounds 4-6 and a load/AOT
+  performance pass, plus a host-suite fix (full detail: Doc 40 §0, this
+  session's =sonnet-S11-design-docs= brief).  Load/AOT chain, each step
+  measured on the same shape of probe (=(require 'emacs-completion-ui)=,
+  dependencies preloaded): bare =require= 38.5 s -> 8.0 s
+  (=2d6fa6be=, T29, byte-indexed unibyte source/artifact scan) -> 7.241 s
+  (=4305de17=, T35, resolve a bare name by probing =load-path= entries
+  directly instead of cold-indexing all of them) -> ~1.5 s
+  (=7b9932a7=, T40, skip structural =defalias= normalization when a
+  conservative source scan finds no rewrite target) -- about 25x
+  end to end.  =7a8b7bb0= (T43) stopped the standalone resolver from ever
+  selecting a =.elc= (it cannot execute GNU byte-code), which is what round
+  5 below had been tripping on.  =8125e48e= (T32) keys the default cold
+  image-cache directory on a SHA-256 of the NeLisp binary's identity
+  (path+size+mtime) so a copied/touched binary misses once instead of
+  silently replaying a stale image.  =8f2ba4e6= (T37) routes standalone
+  =message= to stderr and reports an escaped =--eval= error with
+  =exit 255= instead of silence.  An audit-harness-only defect
+  (=5eeee757=, guarding =scripts/real-init-audit.sh='s per-form flattening
+  loop against embedded =;;= comments, root-caused to =3e0f6559=) cost
+  round 5 two failed bootstrap-phase attempts before it was found; round 5
+  then reached 195 progress lines with exactly 2 init-phase errors, both
+  traced to the =.elc= defect T43 later fixed. Round 6 (on T43's fix) was
+  IN PROGRESS as of this entry, last observed at form 207 of 930 (line
+  1539), with errors so far limited to the same two =nelix= rows carried
+  since round 3 -- confirmed host-identical: an independent per-form
+  replay of the same =init.el= forms under stock GNU Emacs 31.1, and the
+  user's own long-running daily daemon's =*Messages*= buffer, both abort
+  identically at line 44 with the same =file-missing= error
+  (=s7/S7-REPORT.md=), so this is the user's =~/.emacs.d= state, not a
+  NeLisp gap.  Open (in flight, none merged): T45 (a second, distinct GC
+  conservative-pin defect masking a live pointer word as a plausible block
+  header and corrupting a lexframe hash table -- guard applied, 24-boot
+  verification still running); T39 (native =read-from-string=/=read=,
+  175x/113x faster, but the local warm binary grew +58 KB, 26 KB over the
+  8,550,096-byte =binary-size-ratchet= ceiling -- pushed to CI for the
+  authoritative reading, since local and CI ratchet measurements are known
+  to differ by ~57 KB); T48 (=string-match= diagnosed at a ~180 ms fixed
+  per-call overhead regardless of pattern complexity -- 186 ms for a
+  5-char literal -- not yet fixed); T47 (standalone =directory-files= at
+  35 ms/call and =file-exists-p=/=file-readable-p= misses at 24 ms/call,
+  diagnosed but the dispatched session errored out before a fix landed).
+  Separately, nelisp =d145e3c02= is a landed GC fix, not to be confused
+  with T45 above: =nl_gc_conserv_word='s plausible-tag bound moved from
+  =< 14= to =< 16= to cover Doc 200's tags 14/15 (unibyte strings), which
+  were never recognised as roots and so were swept and corrupted under
+  concurrent load.
+  =f18b045d= makes the full host =make test= ERT suite runnable end to end
+  for the first time (previously a test-file =load=/=load-file= leak
+  killed the 186-file run partway through with a =void-function=): final
+  run =Ran 3542 tests, 2927 results as expected, 387 unexpected, 228
+  skipped= (=sonnet-S5-report.md=; full triage of the 387 rows in
+  =sonnet-S5-unexpected.tsv=, sitting alongside that report).

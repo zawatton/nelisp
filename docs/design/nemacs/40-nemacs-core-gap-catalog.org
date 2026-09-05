@@ -15,6 +15,132 @@ Numbers are from the audit logs; nothing below is estimated.
 | 2 | 9cb3163d | form 237 | 10 (14 gone, 4 remaining, 6 new vs round 1 prefix) | exit 88 at 6.3 GiB RSS |
 | 3 | fb12664f | form 203 | 4 (nelix x2, exec-path-from-shell, undo-tree limits) | 12000 s timeout, 7.7 GiB RSS |
 | 4 | 767deb4f + vendor 9369e4d77 | past form 243 (harness printed errors only; progress lines added after) | 4 (nelix x2, evil-types not provided, term not found) | 30000 s timeout, 9.6 GiB RSS |
+| 5 | 5eeee757 + vendor d145e3c02 | 195 =NEMACS_REAL_INIT_FORM= progress lines emitted (highest index 193, line 1449 of 930-form =init.el=) | 2, both traced to the same root cause: form 4/line 44 =void-variable: (#@51)=, form 6/line 55 =end-of-file: ("rewrite load reader made no progress" 4533)= -- the standalone resolver was handing the loader a =.elc= (dash/async/buttercup/package-lint), which the loader cannot execute (fixed by T43, see below) | 1908 s timeout (exit 143), =AUDIT_DONE: no=, 2.6 GiB peak RSS (=audit-r5-partial-init.log=, =audit-r5-attempt1.log=) |
+| 6 | 7a8b7bb0 + vendor d145e3c02 | IN PROGRESS as of this entry -- last observed checkpoint form 207 of 930, line 1539 (started 18:45; by 19:08 was at form 170/line 1114 with 0 non-nelix errors; by 20:06 at form 207/line 1539, the =(require 'undo-tree)= chain alone costing ~25 min, attributed to the still-native Elisp reader and expected to collapse once T39 lands) | 2, unchanged since round 4/5's =nelix= rows and confirmed host-identical (see below) | not yet concluded |
+
+Round 5's two errors are gone from round 6 because T43 (=7a8b7bb0=, below) stopped the
+standalone resolver from ever selecting a =.elc=; round 6 is the first round run
+against that fix.
+
+** The round-5 audit-harness semicolon incident (and its guard)
+
+Both of round 5's first two attempts (=round5.log=, =round5.log.prev=,
+=audit-r5-attempt1-saved.log=) died in the *bootstrap* phase with
+=invalid-read-syntax= on the entire flattened per-form-progress helper, and
+were briefly misread as a third face of the GC corruption under
+investigation elsewhere.  The actual cause: =3e0f6559= ("print a progress
+line per init form") added two =;;= comment lines to the Elisp helper that
+=scripts/real-init-audit.sh= flattens into one line with =printf '%s '= for
+the line-oriented bootstrap REPL -- the shell comment directly above that
+block already said not to do this.  Flattened, the first =;;= commented out
+the rest of the loader, the form never balanced, and the same
+deterministic error reproduced identically on old and new =target/nelisp=
+binaries alike (restoring the exact 3314-byte, zero-newline tail and
+brute-forcing it against three binaries settled this in about ten minutes).
+Fix, =5eeee757=: drop the two comment lines and make the flattening loop
+refuse any helper line containing a semicolon, so a recurrence is an
+immediate, named error instead of an unreadable form.  Round 5 restarted
+clean under this fix and reached the results in the table above.
+
+** Round 6's =nelix= rows are confirmed host-identical, not a NeLisp gap
+
+Round 6's only two errors, form 4 (line 44) and form 6 (line 55), are both
+=(file-missing "Cannot open load file" "No such file or directory" "nelix")=.
+An independent per-form replay of the user's real =~/.emacs.d/early-init.el=
+and =init.el= forms 1-6 under stock GNU Emacs 31.1 (=emacs -Q --batch=,
+=s7/S7-REPORT.md=) reproduces the identical error, on the identical forms,
+with =(locate-library "nelix")= =nil= at every checkpoint before and after --
+and the same warning shows up in the =*Messages*= buffer of the user's own
+long-running daily daemon (=/usr/local/bin/emacs --fg-daemon=, PID 1400, up
+since 2026-09-02) queried live via =emacsclient=.  Root cause is entirely on
+the =~/.emacs.d= side (=nelix.el= itself is not reachable from any of the
+three directories =custom-lisp/load-path.el= scans, on either runtime) and is
+therefore excluded from the NeLisp core-gap count, same treatment as round
+3/4's =nelix x2= rows.
+
+** The GC root-coverage fix (landed, nelisp =d145e3c02=)
+
+=nl_gc_conserv_word='s conservative stack scan treated an in-arena word as a
+possible root only when the slot it pointed at carried a Sexp tag below 14.
+Doc 200 (v1.1.0) added tag 14 (=UnibyteStr=) and tag 15 (=UnibyteMutStr=) and
+taught the marker about both, but left this bound at 13 -- so a native-stack
+word pointing at a slot holding a unibyte string was never pinned as a root,
+the sweep freed the block under it, the free-list link overwrote the tag
+byte, and the next clone of that block read stale bytes as a vector box
+pointer and faulted in =nelisp_nlvector_clone=.  Named from five identical
+core dumps (rejected stack word = a 40-byte block, tag 14/15, mark 0); the
+fault rate rose from ~1/8 to 5/6 boots once the lib's loader started turning
+every source file into a unibyte string (=2d6fa6be=), which is what made it
+reproducible enough to isolate.  Fix (=d145e3c02=, nelisp repo): raise the
+plausible-tag bound from =< 14= to =< 16=, the current Sexp tag universe; the
+marker already handles both tags, so this only lets the scan retain more,
+introducing no new dereference shape.
+
+This is a *different* GC defect from the item below (T45); do not conflate
+them.
+
+** Open items (2026-09-05, none yet merged to =main= -- mark as in flight)
+
+- *T45 -- GC conservative-pin header-mask guard* (worktree
+  =nelisp.wt-aotfix=, branch =claude/aot-literal-operand= off nelisp =main=,
+  dispatched to a Claude subagent).  A second, unrelated GC defect in
+  =nl_gc_conserv_owner=: Phase E's =nl_hdr_bt= 32-bit header mask makes a
+  live 64-bit pointer word occupying slot W-8 look, after masking, like a
+  "plausible block total"; the two-stage next-header check also passes on
+  the masked value, so conservative pin overwrites a live lexframe
+  hash-table's =slots[1]= (buckets pointer) with mark byte 4.  An initial
+  hypothesis (S3: an AOT-compiler push/pop imbalance in
+  =nelisp_frame_stack_find_in_frame=) was investigated and then *overturned*
+  by T45's own interim report, which found the push/pop byte-identical
+  (13/13) across =main=, the =E.8= core, and a fixed build -- S3 had
+  miscounted the disassembly window by hand (memory:
+  =feedback_verify_load_bearing_subagent_claims=).  T45's guard (two checks
+  in =nl_gc_conserv_owner=: the raw header word and raw next-header word
+  must both have zero high 32 bits, since a real header never sets a bit
+  above 31) is applied and binary size is unchanged (8,534,920 bytes), but
+  the 24-boot before/after verification and gates were still running as of
+  this entry -- *not yet landed on nelisp =main=, not yet vendor-synced*.
+  Round 6 above is running on =d145e3c02= (mask present, guard absent) and
+  has stayed up for over an hour without hitting this fault.
+  *Update, later on 2026-09-05:* landed on nelisp =main= as =e240485bb=
+  ("gc: never pin through a header word whose high half is a pointer").
+  Plain boots main 1/48 faults -> fixed 0/48; gdb-instrumented ASLR-enabled
+  counts: main 10 pointer-word pins in 4 of 48 boots, exactly those 4
+  SIGSEGV; fixed 0 pointer-word pins, 48/48 boot.  Gates 24/24, smokes
+  50/50, ratchet 8,534,920 (no growth), ert-full 5,555/0.  Not yet in
+  the consumer's vendor clone (next vendor sync).
+- *T39 -- native =read-from-string=/=read=* (branch =codex/read-native=).
+  Functionally verified and fast (11 KB file: 2.30 s -> 0.013 s, 175x; 285 KB
+  file: >600 s -> 5.28 s, >113x), but *not acceptance-complete*: the local
+  warm =target/nelisp= grew to 8,576,336 bytes, +58 KB against the local
+  warm baseline and 26,240 bytes (~25.6 KB) over the fixed 8,550,096-byte
+  =binary-size-ratchet= ceiling.  Per policy the baseline was not edited and
+  =make test= was not run in that state; the branch was instead rebased
+  clean onto nelisp =main= (=d145e3c02=), committed, and pushed so CI's
+  ratchet reading -- which this project's own memory records as differing
+  from local warm measurements by roughly 57 KB -- can give the binding
+  verdict.  CI run 33962197772 was still in progress as of this entry.
+- *T48 -- regex compiled-pattern cache and matcher hot path* (worktree
+  =nelisp.wt-regex=, branch =codex/regex-perf=, dispatched, no report yet).
+  Diagnosed but not fixed: on the consumer's real init, a 5-character
+  literal =string-match= costs ~186 ms/call, a =load-history-regexp=-shaped
+  pattern ~232 ms, and a 40-alternative =regexp-opt= pattern ~787 ms, while
+  =regexp-opt= construction itself is only ~40 ms and =with-eval-after-load=
+  only ~0.7 ms -- i.e. the cost is a ~180 ms *fixed per-call overhead*
+  (recompile / string conversion / table construction, not pattern
+  complexity), which is why one =auto-mode-alist=-shaped lookup
+  (~400 patterns) costs on the order of 74 s under load.
+- *T47 -- standalone file primitives* (worktree =nelisp-emacs-lib.wt-t47=,
+  branch =codex/file-primitive-perf=).  Diagnosed but not fixed: init form 2's
+  6,298-directory =external-packages= walk pays =directory-files= at
+  35 ms/call (843 calls) and =file-directory-p= at 2.4 ms/call (8,261
+  calls); every bare =require='s per-directory resolver scan pays
+  =file-exists-p=/=file-readable-p= misses at 24 ms/call (864 misses,
+  ~20 s added once =load-path= is long -- enough to erode the T35 gain).
+  The dispatched session errored out ("Selected model is at capacity")
+  after dumping per-symbol diagnostics but before isolating the lib-wrapper
+  vs. syscall-primitive layer or writing a fix; no =CODEX-REPORT.md= exists.
+  Task remains open.
 
 ** Fixes landed (verified on the standalone, integrated 2026-09-04..05)
 | fix | mechanism | effect |
@@ -28,6 +154,12 @@ Numbers are from the audit logs; nothing below is estimated.
 | undo limits | =undo-limit= / =undo-strong-limit= / =undo-outer-limit= / =undo-ask-before-discard= in =emacs-undo-builtins.el= | =(global-undo-tree-mode 1)= enables |
 | NeLisp v1.2.1 follow-up | bundle starts with =(setq load-file-name nil)= by contract; the process preload no longer reloads over the capturing =call-process= | vc/shell workflow smokes green on the v1.2.1 line |
 | upstream NeLisp | =read-from-string= decodes the GNU string-escape table (=\0= was the digit 0); =random= stays in the fixnum range (every large AOT compile died at the 24th temp name); large free blocks are split on reuse | exec-path-from-shell sentinel parses; =compile-elisp-artifact= of an 11 KB source completes in 124 s; -20% arena on repeated loads |
+| Bare =require= cost, step 1 (=2d6fa6be=, T29) | standalone loader scans source/artifact as unibyte and reads only isolated, boundary-scanned slices instead of the whole buffer | exact-file =(require 'emacs-completion-ui "/abs/...")=: 36.6 s -> 8.0 s |
+| Bare =require= cost, step 2 (=4305de17=, T35) | =(require 'emacs-completion-ui)= (bare name) cost 38.5 s where the same file by absolute path cost 9.0 s; the standalone =locate-file= was cold-building a full directory index of every =load-path= entry (20 =directory-files= + 1,439 file probes = 35.7 s) to answer one known feature.  Resolve one file directly instead: probe =<dir>/<name><suffix>= with =file-readable-p= in =load-path=/suffix order | bare =(require 'emacs-completion-ui)=: 38.5 s -> 7.241 s (vs. 7.256-7.318 s for the explicit-path forms -- the bare-name penalty is gone) |
+| Bare =require= cost, step 3 (=7b9932a7=, T40) | the one-shot loader was reading + structurally rewriting + re-serializing every top-level form even though the only rewrite it ever performs is the =defalias= -> =nelisp--defalias-late= substitution; a conservative source pre-scan now skips normalization entirely when no rewrite target is present | production one-shot normalization: 7.6 s -> 0.047 s (162x); exact =require=: 8.9 s -> ~1.5 s (median 1.525694 s, 82.9% reduction) -- cumulative from baseline: bare =require= 38.5 s -> 1.5 s, ~25x |
+| Standalone resolver never selects =.elc= (=7a8b7bb0=, T43) | standalone-only resolver advertises =load-suffixes= as =(".el")=, resolves source before any suffix-less exact file, and rejects =.elc= (incl. =.elc.gz=) even if a caller's suffix list names it explicitly -- the standalone evaluator cannot execute GNU byte-code | removes the round-5 =void-variable: (#@51)= / reader-no-progress pair caused by resolving =dash=/=async=/=buttercup=/=package-lint= to their =.elc= |
+| Cold image-cache identity keying (=8125e48e=, T32) | =bin/nemacs='s default cold-cache directory is now keyed by SHA-256 of the NeLisp binary's normalized path+size+mtime (=NEMACS_COLD_CACHE_ROOT= still honoured); sidecar format v1 -> v2 | a copied/touched binary misses once and rebuilds instead of silently replaying another binary's stale image; the original binary keeps its own distinct cache key |
+| Standalone batch stderr routing (=8f2ba4e6=, T37) | standalone =message= now writes to stderr (matching GNU) instead of being silently swallowed under =noninteractive=; an error escaping a =--eval= form now writes =nemacs: --eval failed: ...= to stderr and exits 255 | =princ=-based =NEMACS_REAL_INIT_*= diagnostic output stays on stdout; genuine =--eval= failures are now visible and distinguishable from normal output |
 
 ** Key discovery: the audit is now time- and memory-bound, not error-bound
 - The real-init replay runs inside ONE top-level form, and the standalone
