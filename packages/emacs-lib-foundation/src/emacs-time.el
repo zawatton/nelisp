@@ -465,10 +465,16 @@ This compatibility runtime uses a numeric seconds representation."
 
 (defun emacs-timer-run-pending (&optional now)
   "Fire due regular timers (TRIGGER <= NOW); reschedule repeating ones.
-Return the number fired."
+Return the number fired.
+`timer-list' is shared with the host when running under real Emacs
+\(the `unless (boundp ...)' guard above only installs our own private
+variable when the host has not already bound one), so a host timer of
+the host's own vector shape can be present alongside ours; skip
+anything that is not one of our `emacs-timer-p' vectors instead of
+misreading its slots."
   (let ((now (or now (emacs-timer--now))) (fired 0))
     (dolist (tm (copy-sequence timer-list))
-      (when (and (aref tm 1) (<= (aref tm 1) now))
+      (when (and (emacs-timer-p tm) (aref tm 1) (<= (aref tm 1) now))
         (setq fired (1+ fired))
         (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))
         (if (aref tm 2)
@@ -478,10 +484,14 @@ Return the number fired."
 
 (defun emacs-timer-run-idle (idle-seconds)
   "Fire idle timers whose delay <= IDLE-SECONDS and not already fired this
-idle period.  Return the number fired."
+idle period.  Return the number fired.
+See `emacs-timer-run-pending' for why non-`emacs-timer-p' entries (e.g.
+a host Emacs's own pre-registered idle timers such as
+`show-paren-function', which share `timer-idle-list' with us) must be
+skipped rather than indexed with our private vector layout."
   (let ((fired 0))
     (dolist (tm (copy-sequence timer-idle-list))
-      (when (and (not (aref tm 6)) (<= (aref tm 5) idle-seconds))
+      (when (and (emacs-timer-p tm) (not (aref tm 6)) (<= (aref tm 5) idle-seconds))
         (aset tm 6 t)
         (setq fired (1+ fired))
         (condition-case _ (apply (aref tm 3) (aref tm 4)) (error nil))
@@ -491,7 +501,7 @@ idle period.  Return the number fired."
 
 (defun emacs-timer-reset-idle ()
   "Clear the per-idle-period fired flag (call when input resets idle time)."
-  (dolist (tm timer-idle-list) (aset tm 6 nil)))
+  (dolist (tm timer-idle-list) (when (emacs-timer-p tm) (aset tm 6 nil))))
 
 (unless (and (fboundp 'timerp)
              (not (get 'timerp 'emacs-stub-bulk)))

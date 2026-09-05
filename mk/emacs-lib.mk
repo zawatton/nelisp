@@ -727,12 +727,40 @@ TEST_FILES = $(wildcard test/*.el)
 # Heavy integration ERTs spawn subprocesses and need NEMACS_NELISP_ROOT + a
 # built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
 # and must stay out of the umbrella `make test'.
+#
+# The four `*-binary-verify.el' scripts are not ERT suites at all: each is a
+# `--load'-only probe (see their own header comments) meant to run under the
+# *built standalone* `vendor/nelisp/target/nelisp' binary, never under host
+# Emacs (host has no `nl-ffi-call').  Each unconditionally `load's
+# `src/emacs-network-syscall-shim.el' etc. via a relative "src/" prefix at
+# top level (no `ert-deftest' guard), so under host Emacs this is not a test
+# failure but a hard load-time error for the whole `-l ...' chain: Emacs
+# abbreviates `default-directory' under `$HOME' (see `command-line-1' in
+# `startup.el') to a literal "~/..." string, and `load' -- unlike
+# `file-exists-p' -- does not expand that "~" for a relative, slash-bearing
+# filename, so `(load "src/...")' signals `file-missing' even though the
+# file exists.  They belong with the other subprocess-only integration
+# suites above, out of the umbrella host-Emacs `make test'.
+#
+# `nemacs-process-sync-smoke.el' and `nemacs-process-bidi-smoke.el' are the
+# same shape: each says so in its own header ("Run on the NeLisp standalone
+# reader ... NOT host Emacs"), each has a dedicated target (`proc-smoke',
+# `test-nemacs-process-bidi-smoke') that runs it via `$(NELISP_BIN) --load',
+# and each does unconditional top-level `load's of `src/...el'/
+# `scripts/...el' by relative path that hit the exact same host-Emacs
+# `default-directory' abbreviation trap under the umbrella `make test'.
 TEST_INTEGRATION_FILES = \
 	test/nelisp-emacs-artifact-gate5-test.el \
 	test/nelisp-emacs-artifact-gate6-test.el \
 	test/emacs-server-client-test.el \
 	test/nemacs-vendor-cache-test.el \
-	test/nemacs-vendor-cache-set-test.el
+	test/nemacs-vendor-cache-set-test.el \
+	test/emacs-network-ffi-inet6-binary-verify.el \
+	test/emacs-pipe-process-binary-verify.el \
+	test/emacs-pty-ffi-binary-verify.el \
+	test/emacs-sigchld-reap-binary-verify.el \
+	test/nemacs-process-sync-smoke.el \
+	test/nemacs-process-bidi-smoke.el
 TEST_UNIT_FILES = $(filter-out $(TEST_INTEGRATION_FILES),$(TEST_FILES))
 TEST_FAST_FILES = \
 	test/emacs-standalone-test.el \
