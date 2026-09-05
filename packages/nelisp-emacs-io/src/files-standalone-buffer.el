@@ -129,11 +129,54 @@
        (symbol-function 'set-buffer-modified-p))
   "Native `set-buffer-modified-p' captured before this fallback overrides it.")
 
+(defun files--absolute-clean-p (path)
+  "Return non-nil when PATH is an absolute POSIX path with no `//', `/./',
+or `/../' component and does not end in a bare `.'/`..' component -- i.e.
+`expand-file-name' is guaranteed to return PATH unchanged.  A single
+linear scan using only `aref'/`eq' (no `substring'/`concat' allocation),
+so it is cheap enough to run before every syscall-backed predicate below."
+  (and (stringp path)
+       (> (length path) 0)
+       (eq (aref path 0) ?/)
+       (let ((len (length path))
+             (i 0)
+             (ok t))
+         (while (and ok (< i len))
+           (when (eq (aref path i) ?/)
+             (let ((c1 (and (< (1+ i) len) (aref path (1+ i))))
+                   (c2 (and (< (+ i 2) len) (aref path (+ i 2)))))
+               (cond
+                ((eq c1 ?/) (setq ok nil))
+                ((and (eq c1 ?.) (or (null c2) (eq c2 ?/)))
+                 (setq ok nil))
+                ((and (eq c1 ?.) (eq c2 ?.)
+                      (let ((c3 (and (< (+ i 3) len) (aref path (+ i 3)))))
+                        (or (null c3) (eq c3 ?/))))
+                 (setq ok nil)))))
+           (setq i (1+ i)))
+         ok)))
+
+(defun files--file-name-handler-alist-active-p ()
+  "Return non-nil when `file-name-handler-alist' has any entry to match."
+  (and (boundp 'file-name-handler-alist) file-name-handler-alist))
+
 (defun files--expand-file-name (filename)
-  "Expand FILENAME when the runtime supplies `expand-file-name'."
-  (if (fboundp 'expand-file-name)
-      (expand-file-name filename)
-    filename))
+  "Expand FILENAME when the runtime supplies `expand-file-name'.
+T47: skips the full (handler-dispatching) `expand-file-name' round-trip
+when `file-name-handler-alist' is nil/empty -- so there is nothing a
+magic file name could match -- and FILENAME is already an absolute,
+normalized path.  This was the dominant per-call cost of every predicate
+below (`file-exists-p', `file-readable-p', `file-directory-p',
+`file-truename', ...), all of which call this helper at least once.
+Falls through to the real `expand-file-name' (still handler-dispatched)
+whenever a handler could plausibly apply, or FILENAME needs real work
+done (relative, `~', or containing `.'/`..'/`//')."
+  (if (and (not (files--file-name-handler-alist-active-p))
+           (files--absolute-clean-p filename))
+      filename
+    (if (fboundp 'expand-file-name)
+        (expand-file-name filename)
+      filename)))
 
 (defun files--buffer-key (&optional buffer)
   "Return BUFFER or the current buffer when buffer primitives exist."
