@@ -123,6 +123,11 @@ providing FEATURE signals an error, even when the loader returns nil."
           (fboundp 'wrf)
           (not (boundp 'emacs-version))
           (not (stringp emacs-version)))
+  ;; The standalone source evaluator cannot execute GNU Emacs byte-code.
+  ;; Keep the advertised default aligned with the resolver instead of
+  ;; selecting an `.elc' that will later be misread as source text.
+  (setq load-suffixes (list ".el"))
+
   (defun provide (feature &optional _subfeatures)
     "Mark FEATURE as available and return FEATURE.
 Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
@@ -152,6 +157,26 @@ Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
            (equal suffix
                   (substring string (- string-length suffix-length))))))
 
+  (defun emacs-fns--byte-code-file-p (filename)
+    "Return non-nil when FILENAME names an Emacs byte-code representation.
+This recognizes `.elc' and represented forms such as `.elc.gz'."
+    (let ((cursor 0)
+          (index 0)
+          (length (length filename))
+          found)
+      ;; Ignore `.elc' text in directory components.
+      (while (< cursor length)
+        (when (= (aref filename cursor) ?/)
+          (setq index (1+ cursor)))
+        (setq cursor (1+ cursor)))
+      (while (and (<= (+ index 4) length) (not found))
+        (when (and (equal (substring filename index (+ index 4)) ".elc")
+                   (or (= (+ index 4) length)
+                       (= (aref filename (+ index 4)) ?.)))
+          (setq found t))
+        (setq index (1+ index)))
+      found))
+
   (defun emacs-fns--load-candidate-suffixes
       (file &optional nosuffix must-suffix)
     "Return ordered suffixes used to resolve FILE for `load'.
@@ -163,7 +188,7 @@ directory component."
       (let ((load-tail (if (and (boundp 'load-suffixes)
                                 (consp load-suffixes))
                            load-suffixes
-                         (list ".elc" ".el")))
+                         (list ".el")))
             (representations
              (if (and (boundp 'load-file-rep-suffixes)
                       (consp load-file-rep-suffixes))
@@ -207,9 +232,10 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
                    (expand-file-name
                     (concat filename (car suffixes-left))
                     (car dirs))))
-              (when (if predicate
-                        (funcall predicate candidate)
-                      (file-exists-p candidate))
+              (when (and (not (emacs-fns--byte-code-file-p candidate))
+                         (if predicate
+                             (funcall predicate candidate)
+                           (file-exists-p candidate)))
                 (setq found candidate)))
             (setq suffixes-left (cdr suffixes-left))))
         (setq dirs (cdr dirs)))
