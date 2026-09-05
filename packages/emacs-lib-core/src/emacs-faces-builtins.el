@@ -21,7 +21,8 @@
 ;;     set-face-attribute / face-foreground / face-background /
 ;;     set-face-foreground / set-face-background / face-list /
 ;;     load-theme / enable-theme / disable-theme / provide-theme /
-;;     custom-theme-set-faces / custom-theme-set-variables
+;;     custom-theme-set-faces / custom-theme-set-variables /
+;;     custom-theme-enabled-p
 ;;   - Macros: defface / deftheme
 ;;
 ;; Deferred to later γ phases:
@@ -78,6 +79,7 @@
                 (custom-make-theme-feature . custom-make-theme-feature)
                 (custom-declare-theme . custom-declare-theme)
                 (custom-theme-p . custom-theme-p)
+                (custom-theme-enabled-p . custom-theme-enabled-p)
                 (custom-check-theme . custom-check-theme)
                 (provide-theme . provide-theme)
                 (custom-theme--load-path . custom-theme--load-path)

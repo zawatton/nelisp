@@ -40,7 +40,8 @@
                  face-foreground face-background
                  set-face-foreground set-face-background
                  face-list load-theme enable-theme disable-theme
-                 provide-theme custom-theme-set-faces deftheme defface))
+                 provide-theme custom-theme-set-faces deftheme defface
+                 custom-theme-enabled-p))
     (should (fboundp sym))))
 
 ;;;; B. make-face + facep
@@ -113,6 +114,59 @@
     (should (eq 'my-defface (emacs-faces-facep 'my-defface)))
     (should (equal "green" (emacs-faces-attribute 'my-defface :foreground)))
     (should (eq 'bold      (emacs-faces-attribute 'my-defface :weight)))))
+
+(ert-deftest emacs-faces-builtins-test/defface-odd-length-attribute-list-is-tolerated ()
+  "T102: pins the fix for the load-matrix `embark' blocker.  embark.el's
+own `embark-collect-group-separator' face has a real upstream typo --
+`(t :inherit shadow :strike-through t italic)' is missing a `:slant'
+keyword before `italic', leaving a trailing atom with no value.  GNU
+Emacs's `defface' path (`custom-declare-face' -> `face-spec-set' ->
+`face-spec-set-2') tolerates this: `face-spec-set-2' filters the spec's
+attrs through the known `face-x-resources' keys via `cddr' stepping,
+so the unrecognized \"attribute\" `italic' (and its absent value) is
+silently dropped before ever reaching `set-face-attribute' -- verified
+byte-for-byte against host Emacs 31.1 in the T102 report (`(defface
+... (:inherit shadow :strike-through t italic))' then `(face-attribute
+FACE :slant nil t)' => `unspecified' on both host and this fix).
+
+Before this fix, `emacs-faces-defface' routed straight into
+`emacs-faces-set-attribute', whose own `(unless (zerop (mod (length
+props) 2)) (signal ...))' guard rejected the odd-length spec outright
+-- `emacs-faces-error odd-length-attribute-list', which is what the
+S1 load matrix originally caught for `embark'."
+  (emacs-faces-builtins-test--with-fresh-registry
+    (emacs-faces-defface embark-collect-group-separator
+      '((t :inherit shadow :strike-through t italic))
+      "Face for group titles in Embark Collect buffers.")
+    (should (eq 'embark-collect-group-separator
+                (emacs-faces-facep 'embark-collect-group-separator)))
+    (should (eq 'shadow
+                (emacs-faces-attribute
+                 'embark-collect-group-separator :inherit)))
+    (should (eq t (emacs-faces-attribute
+                   'embark-collect-group-separator :strike-through)))
+    ;; The dropped `italic' atom must not leak in under its own name,
+    ;; nor silently set `:slant' (the keyword the upstream typo omitted).
+    (should (eq 'unspecified
+                (emacs-faces-attribute
+                 'embark-collect-group-separator :slant)))
+    (should-not (plist-member
+                 (gethash 'embark-collect-group-separator
+                          emacs-redisplay--face-registry)
+                 'italic))))
+
+(ert-deftest emacs-faces-builtins-test/spec-set-2-drops-unrecognized-attrs-generally ()
+  "`emacs-faces--spec-set-2' (the `face-spec-set-2' port) must drop any
+pair whose key is not a real face attribute, not just the exact embark
+typo -- e.g. an even-length spec whose second-to-last key is bogus."
+  (emacs-faces-builtins-test--with-fresh-registry
+    (emacs-faces--spec-set-2 'bogus-attr-face nil
+                             '(:foreground "red" :bogus-key 1 :weight bold))
+    (should (equal "red" (emacs-faces-attribute 'bogus-attr-face :foreground)))
+    (should (eq 'bold (emacs-faces-attribute 'bogus-attr-face :weight)))
+    (should-not (plist-member
+                 (gethash 'bogus-attr-face emacs-redisplay--face-registry)
+                 :bogus-key))))
 
 (ert-deftest emacs-faces-builtins-test/defface-bridge-macro-expands-to-face-registration ()
   (let ((expanded (macroexpand '(defface bridge-face
@@ -253,6 +307,29 @@
         (put 'older-theme 'theme-settings nil)
         (put 'newer-theme 'theme-settings nil)
         (put 'multi-themed-face 'theme-face nil)))))
+
+(ert-deftest emacs-faces-builtins-test/custom-theme-enabled-p ()
+  "T102: pins the fix for the load-matrix `solaire-mode' blocker
+-- `(void-function custom-theme-enabled-p)'.  Ports GNU Emacs 31.1's
+`custom-theme-enabled-p' (custom.el, a `defsubst' over
+`custom-enabled-themes'; verified against the host source directly)."
+  (emacs-faces-builtins-test--with-fresh-registry
+    (let ((saved-known custom-known-themes)
+          (saved-enabled custom-enabled-themes))
+      (unwind-protect
+          (progn
+            (setq custom-known-themes '(user)
+                  custom-enabled-themes nil)
+            (custom-declare-theme 'cte-theme 'cte-theme-theme "doc")
+            (should-not (custom-theme-enabled-p 'cte-theme))
+            (enable-theme 'cte-theme)
+            (should (custom-theme-enabled-p 'cte-theme))
+            (should-not (custom-theme-enabled-p 'some-other-theme))
+            (disable-theme 'cte-theme)
+            (should-not (custom-theme-enabled-p 'cte-theme)))
+        (setq custom-known-themes saved-known
+              custom-enabled-themes saved-enabled)
+        (put 'cte-theme 'theme-settings nil)))))
 
 ;;;; J. Idempotent require
 

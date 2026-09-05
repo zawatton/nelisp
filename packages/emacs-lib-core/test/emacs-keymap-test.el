@@ -874,5 +874,99 @@ symbol for `(kbd \"C-M-<up>\")', silently dropping both modifiers."
                "C-S-<f1>" "A-C-M-H-S-s-<f1>" "s-S-H-M-C-A-<f1>"))
     (should (equal (key-parse d) (emacs-keymap--standalone-key-parse d)))))
 
+(ert-deftest emacs-keymap-modifier-bit-constants-match-host ()
+  "T102: `emacs-keymap--standalone-key-token' used to accumulate each
+modifier's contribution with a char-literal constant (`?\\A-\\0' etc.)
+written directly in `emacs-keymap.el's own source.  Under host Emacs
+those six char literals read correctly, so this exact bug is invisible
+to host ERT -- it only manifests when the *same source text* is parsed
+by the standalone NeLisp reader, whose character-literal decoder only
+special-cases the `\\C-'/`\\M-' prefixes: `\\A-'/`\\H-'/`\\S-'/`\\s-'
+silently fall through to its plain-escape table (where bare `\\s' means
+SPC, matching GNU's *unprefixed* `?\\s'), corrupting the constant.
+Confirmed byte-for-byte on the standalone runtime (T102 report): before
+this fix, standalone `(kbd \"s-a\")' / `(kbd \"H-a\")' / `(kbd \"A-a\")'
+/ `(kbd \"S-a\")' returned `[129]' / `[169]' / `[162]' / `[180]' instead
+of host's `[8388705]' / `[16777313]' / `[4194401]' / `[33554529]'.
+
+This test pins the six replacement `defconst's against GNU Emacs's own
+char-literal values so a future edit cannot silently drift back to a
+value the standalone reader mis-parses; the standalone
+`(kbd \"s-a\")'-etc. live behaviour is exercised by the T102 boot smoke
+in the report, not host ERT (per this file's own
+`emacs-keymap-read-kbd-macro-source-reclaimed-from-stub' precedent for
+bugs a host-only test cannot observe)."
+  (should (= emacs-keymap--alt-modifier-bit ?\A-\0))
+  (should (= emacs-keymap--super-modifier-bit ?\s-\0))
+  (should (= emacs-keymap--hyper-modifier-bit ?\H-\0))
+  (should (= emacs-keymap--shift-modifier-bit ?\S-\0))
+  (should (= emacs-keymap--control-modifier-bit #x4000000))
+  (should (= emacs-keymap--meta-modifier-bit ?\M-\0))
+  ;; GNU's `?\C-\0' folds Control into the low bits for this specific
+  ;; NUL target (`(= ?\C-\0 0)' under host, per ASCII control folding),
+  ;; which is not the standalone parser's own internal sentinel meaning
+  ;; ("the Control modifier's bit contribution before ASCII folding") --
+  ;; assert the real GNU Control-modifier-bit value directly instead.
+  (should (= emacs-keymap--control-modifier-bit (ash 1 26))))
+
+(ert-deftest emacs-keymap-modifier-bit-constants-not-char-literals-in-source ()
+  "Source-shape pin (see the previous test's docstring for why a host
+ERT value-check cannot observe the standalone-only bug this guards
+against): `emacs-keymap--standalone-key-token' must accumulate `bits'
+via the six named `emacs-keymap--*-modifier-bit' constants, never via
+a raw `?X-\\0'-style char literal, so this file's own correctness does
+not depend on the standalone reader's character-literal modifier gap
+it works around for user-supplied key strings."
+  (let* ((lib (locate-library "emacs-keymap"))
+         (src (and lib (concat (file-name-sans-extension lib) ".el")))
+         (source (and src (file-readable-p src)
+                      (with-temp-buffer (insert-file-contents src)
+                                        (buffer-string)))))
+    (should source)
+    (should (string-match-p
+             (regexp-quote "(+ bits emacs-keymap--alt-modifier-bit)")
+             source))
+    (should (string-match-p
+             (regexp-quote "(+ bits emacs-keymap--super-modifier-bit)")
+             source))
+    (should (string-match-p
+             (regexp-quote "(+ bits emacs-keymap--hyper-modifier-bit)")
+             source))
+    (should (string-match-p
+             (regexp-quote "(+ bits emacs-keymap--shift-modifier-bit)")
+             source))
+    (should (string-match-p
+             (regexp-quote "(+ bits emacs-keymap--control-modifier-bit)")
+             source))
+    (should (string-match-p
+             (regexp-quote "(+ bits emacs-keymap--meta-modifier-bit)")
+             source))
+    ;; The corrupting char-literal syntax must be gone from the
+    ;; *accumulation loop* itself.  (This deliberately does not scan the
+    ;; whole file: this test's own docstring above, a few lines up,
+    ;; quotes that exact syntax as part of explaining the bug it pins.)
+    (let ((loop-start (string-match
+                        (regexp-quote "(defun emacs-keymap--standalone-key-token")
+                        source)))
+      (should loop-start)
+      (should-not
+       (string-match-p "[?]\\\\[ACHMSs]-\\\\0"
+                        (substring source loop-start (+ loop-start 2000)))))))
+
+(ert-deftest emacs-keymap-standalone-key-parser-single-modifier-parity-table ()
+  "T102 20-string host-parity table (task-requested): every one of
+these strings must parse to the exact same key sequence as GNU's
+`key-parse' under host Emacs.  Six of them (`s-a', `H-a', `A-a',
+`S-a', plus the two stacked-order pairs) previously exercised the
+modifier-bit-constant corruption pinned by the two tests above; the
+rest are the common key-string shapes vendored packages actually
+write (named control words, multi-token sequences, function keys with
+one and several modifiers)."
+  (dolist (d '("C-a" "M-x" "s-a" "H-a" "A-a" "S-a"
+               "C-M-x" "M-C-x" "C-M-<return>" "M-S-<f1>"
+               "H-<left>" "TAB" "RET" "SPC" "ESC" "DEL"
+               "C-c C-c" "M-RET" "C-x (" "C-M-<up>"))
+    (should (equal (key-parse d) (emacs-keymap--standalone-key-parse d)))))
+
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here

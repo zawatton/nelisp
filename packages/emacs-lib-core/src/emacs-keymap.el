@@ -1098,6 +1098,44 @@ to plug into a real event source."
       (setq index (1+ index)))
     ok))
 
+;; T102: `emacs-keymap--standalone-key-token' used to accumulate each
+;; modifier's contribution to `bits' with a char-literal constant --
+;; `?\A-\0', `?\C-\0', `?\H-\0', `?\M-\0', `?\S-\0', `?\s-\0' -- written
+;; directly in this file's own source.  The standalone NeLisp reader's
+;; character-literal decoder only special-cases the `\C-'/`\M-' modifier
+;; prefixes; `\A-'/`\H-'/`\S-'/`\s-' fall through to its plain-escape
+;; table (`\s' there means SPC, matching GNU's *unprefixed* `?\s'), so
+;; NeLisp silently misread this file's own constants: `?\A-\0' came back
+;; as plain `?A' (65), `?\H-\0' as `?H' (72), `?\S-\0' as `?S' (83),
+;; `?\s-\0' as SPC (32), and even `?\C-\0'/`?\M-\0' (whose prefixes NeLisp
+;; does special-case) came back wrong -- 28 and 134217776 (`(+ (expt 2 27)
+;; ?0)', i.e. `\0' misread as the digit \"0\" instead of NUL) instead of
+;; GNU's 67108864 / 134217728.  That corruption, not a logic bug in the
+;; bit-accumulation algorithm below, is why `(kbd "s-a")' / `(kbd "H-a")'
+;; / `(kbd "A-a")' / `(kbd "S-a")' returned wrong vectors while `(kbd
+;; "C-a")' happened to work.  Fix: name the six modifier-bit values GNU
+;; Emacs 31.1 actually uses (`src/dispnew.c'/`lisp.h' `CHAR_ALT' etc.,
+;; confirmed against host `(logand ?\A-\0 ...)' byte-for-byte) as plain
+;; decimal `defconst's instead of char literals, so this file's own
+;; correctness no longer depends on the very reader gap it works around
+;; for user key strings.
+(defconst emacs-keymap--alt-modifier-bit #x0400000
+  "GNU Emacs's Alt (`A-') modifier bit -- `(lsh 1 22)', 4194304.")
+(defconst emacs-keymap--super-modifier-bit #x0800000
+  "GNU Emacs's Super (`s-') modifier bit -- `(lsh 1 23)', 8388608.")
+(defconst emacs-keymap--hyper-modifier-bit #x1000000
+  "GNU Emacs's Hyper (`H-') modifier bit -- `(lsh 1 24)', 16777216.")
+(defconst emacs-keymap--shift-modifier-bit #x2000000
+  "GNU Emacs's Shift (`S-') modifier bit -- `(lsh 1 25)', 33554432.")
+(defconst emacs-keymap--control-modifier-bit #x4000000
+  "GNU Emacs's Control (`C-') modifier bit -- `(lsh 1 26)', 67108864.
+Only used for control chars this substrate's ASCII-range folding below
+does not cover (e.g. combined with another modifier, or a function-key
+symbol); a bare `C-<ascii-letter>'/`C-@'..`C-_' folds into the low bits
+instead, matching GNU.")
+(defconst emacs-keymap--meta-modifier-bit #x8000000
+  "GNU Emacs's Meta (`M-') modifier bit -- `(lsh 1 27)', 134217728.")
+
 (defun emacs-keymap--standalone-key-token (token)
   "Parse one kbd-style TOKEN for the standalone NeLisp fallback.
 Symbolic results (angle-bracket names and bare function-key names)
@@ -1117,33 +1155,33 @@ instead of `[C-M-up]')."
       (cond
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "A-"))
-        (setq bits (+ bits ?\A-\0)
+        (setq bits (+ bits emacs-keymap--alt-modifier-bit)
               prefix (concat prefix "A-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "C-"))
-        (setq bits (+ bits ?\C-\0)
+        (setq bits (+ bits emacs-keymap--control-modifier-bit)
               ctrl t
               prefix (concat prefix "C-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "H-"))
-        (setq bits (+ bits ?\H-\0)
+        (setq bits (+ bits emacs-keymap--hyper-modifier-bit)
               prefix (concat prefix "H-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "M-"))
-        (setq bits (+ bits ?\M-\0)
+        (setq bits (+ bits emacs-keymap--meta-modifier-bit)
               prefix (concat prefix "M-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "S-"))
-        (setq bits (+ bits ?\S-\0)
+        (setq bits (+ bits emacs-keymap--shift-modifier-bit)
               prefix (concat prefix "S-")
               token (substring token 2)))
        ((and (>= (length token) 2)
              (equal (substring token 0 2) "s-"))
-        (setq bits (+ bits ?\s-\0)
+        (setq bits (+ bits emacs-keymap--super-modifier-bit)
               prefix (concat prefix "s-")
               token (substring token 2)))
        (t (setq done t))))
@@ -1167,9 +1205,9 @@ instead of `[C-M-up]')."
         (if ctrl
             (cond
              ((and (>= ch ?a) (<= ch ?z))
-              (+ (- bits ?\C-\0) (- ch ?a -1)))
+              (+ (- bits emacs-keymap--control-modifier-bit) (- ch ?a -1)))
              ((and (>= ch ?@) (<= ch ?_))
-              (+ (- bits ?\C-\0) (- ch ?@)))
+              (+ (- bits emacs-keymap--control-modifier-bit) (- ch ?@)))
              (t (+ bits ch)))
           (+ bits ch))))
      (t

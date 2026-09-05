@@ -193,6 +193,111 @@ See the comment above this defvar for why this holds one real entry
 (this substrate's own next-error pattern) instead of the full GNU
 catalogue."))
 
+;;;; --- keymaps other packages bind into -------------------------------
+
+;; T102: `compilation-minor-mode-map' (compile.el) was void anywhere in
+;; src/ -- the load matrix hit `(void-variable compilation-minor-mode-map)'
+;; for `magit-todos' (whose dependency `grep.el' does `(set-keymap-parent
+;; map compilation-minor-mode-map)' at top level while building
+;; `grep-mode-map').  `src/compile.el' provides the `compile' feature
+;; directly on the standalone runtime (see its own commentary) without
+;; ever loading real Emacs's `vendor/emacs-lisp/progmodes/compile.el', so
+;; that vendor file's `compilation-minor-mode-map' defvar never runs.
+;;
+;; This substrate does not implement `compilation-mode'/
+;; `define-compilation-mode' (the reduced `emacs-compile' engine above
+;; intentionally does not replicate that machinery -- see the
+;; `compilation-error-regexp-alist' comment above for the same
+;; "reduced, honest substrate" precedent), but the KEYMAP data other
+;; packages bind into at top level is cheap, static, and faithfully
+;; portable.  Bindings and parentage below are copied verbatim from
+;; real Emacs's `progmodes/compile.el' `compilation-menu-map' and
+;; `compilation-minor-mode-map' (`special-mode-map' parentage matches;
+;; see `emacs-mode-builtins.el' for this substrate's `special-mode-map').
+;;
+;; The bare forward `defvar' below only marks `compilation-menu-map'
+;; special for this file's byte-compilation (it gives no value); the
+;; conditional block right after gives the real value exactly once.
+(defvar compilation-menu-map)
+
+(unless (boundp 'compilation-menu-map)
+  (defvar compilation-menu-map
+    (let ((map (make-sparse-keymap "Errors"))
+          (opt-map (make-sparse-keymap "Skip")))
+      (define-key map [stop-subjob]
+        '(menu-item "Stop Compilation" kill-compilation
+                    :help "Kill the process made by the M-x compile or M-x grep commands"))
+      (define-key map [compilation-mode-separator3]
+        '("----" . nil))
+      (define-key map [compilation-next-error-follow-minor-mode]
+        '(menu-item
+          "Auto Error Display" next-error-follow-minor-mode
+          :help "Display the error under cursor when moving the cursor"
+          :button (:toggle . next-error-follow-minor-mode)))
+      (define-key map [compilation-skip]
+        (cons "Skip Less Important Messages" opt-map))
+      (define-key opt-map [compilation-skip-none]
+        '(menu-item "Don't Skip Any Messages"
+                    (lambda ()
+                      (interactive)
+                      (customize-set-variable 'compilation-skip-threshold 0))
+                    :help "Do not skip any type of messages"
+                    :button (:radio . (eq compilation-skip-threshold 0))))
+      (define-key opt-map [compilation-skip-info]
+        '(menu-item "Skip Info"
+                    (lambda ()
+                      (interactive)
+                      (customize-set-variable 'compilation-skip-threshold 1))
+                    :help "Skip anything less than warning"
+                    :button (:radio . (eq compilation-skip-threshold 1))))
+      (define-key opt-map [compilation-skip-warning-and-info]
+        '(menu-item "Skip Warnings and Info"
+                    (lambda ()
+                      (interactive)
+                      (customize-set-variable 'compilation-skip-threshold 2))
+                    :help "Skip over Warnings and Info, stop for errors"
+                    :button (:radio . (eq compilation-skip-threshold 2))))
+      (define-key map [compilation-mode-separator2]
+        '("----" . nil))
+      (define-key map [compilation-first-error]
+        '(menu-item "First Error" first-error
+                    :help "Restart at the first error, visit corresponding source code"))
+      (define-key map [compilation-previous-error]
+        '(menu-item "Previous Error" previous-error
+                    :help "Visit previous `next-error' message and corresponding source code"))
+      (define-key map [compilation-next-error]
+        '(menu-item "Next Error" next-error
+                    :help "Visit next `next-error' message and corresponding source code"))
+      map)
+    "Keymap for `compilation-mode'/`compilation-minor-mode' error menus.
+Ported from real Emacs `progmodes/compile.el' -- see the comment above
+this block."))
+
+(unless (boundp 'compilation-minor-mode-map)
+  (defvar compilation-minor-mode-map
+    (let ((map (make-sparse-keymap)))
+      (set-keymap-parent map special-mode-map)
+      (define-key map [mouse-2] 'compile-goto-error)
+      (define-key map [follow-link] 'mouse-face)
+      (define-key map "\C-c\C-c" 'compile-goto-error)
+      (define-key map "\C-m" 'compile-goto-error)
+      (define-key map "\C-o" 'compilation-display-error)
+      (define-key map "\C-c\C-k" 'kill-compilation)
+      (define-key map "\M-n" 'compilation-next-error)
+      (define-key map "\M-p" 'compilation-previous-error)
+      (define-key map "\M-{" 'compilation-previous-file)
+      (define-key map "\M-}" 'compilation-next-file)
+      (define-key map "n" 'next-error-no-select)
+      (define-key map "p" 'previous-error-no-select)
+      (define-key map "l" 'recenter-current-error)
+      (define-key map "g" 'recompile)
+      (define-key map [menu-bar compilation]
+        (cons "Errors" compilation-menu-map))
+      map)
+    "Keymap for `compilation-minor-mode'.
+Ported from real Emacs `progmodes/compile.el' -- see the comment above
+this block."))
+
 (provide 'emacs-compile)
 
 ;;; emacs-compile.el ends here
