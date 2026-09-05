@@ -770,18 +770,18 @@ Use ordinary `read-from-string' on the slice and reject trailing input."
            (pos (emacs-load--artifact-source-skip-ws-comments source start)))
       (if (emacs-load--artifact-native-reader-within-threshold-p
            source start end)
-          (condition-case caught
-              (let* ((forms (nelisp--read-all-from-string-native
-                             (emacs-load--reader-slice source start end))))
-                (unless (and (consp forms) (null (cdr forms)))
-                  (error "invalid %S in %s" keyword path))
-                (let ((value (car forms)))
-                  (unless (proper-list-p value)
-                    (error "invalid %S in %s" keyword path))
-                  value))
-            (error
-             (emacs-load--artifact-signal-invalid-read
-              keyword path caught)))
+          (let ((forms (condition-case caught
+                           (nelisp--read-all-from-string-native
+                            (emacs-load--reader-slice source start end))
+                         (error
+                          (emacs-load--artifact-signal-invalid-read
+                           keyword path caught)))))
+            (unless (and (consp forms) (null (cdr forms)))
+              (error "invalid %S in %s" keyword path))
+            (let ((value (car forms)))
+              (unless (proper-list-p value)
+                (error "invalid %S in %s" keyword path))
+              value))
         (cond
          ((>= pos end)
           (error "invalid %S in %s" keyword path))
@@ -1641,9 +1641,47 @@ non-nil when DIRECTORY exists."
   (defun emacs-load--artifact-native-section-preflight-from-ranges
       (source ranges path)
     "Return non-nil when RANGES describe a cheap-eligible native section."
-    (emacs-load--artifact-native-prefix-eligible-p
-     (emacs-load--artifact-native-section-from-ranges
-      source ranges path)))
+    (let ((version-range (assq :native-section-version ranges))
+          (runtime-prefix-range (assq :runtime-prefix ranges)))
+      (if (or version-range runtime-prefix-range)
+          (progn
+            (unless (and version-range runtime-prefix-range
+                         (= (or (emacs-load--artifact-source-read-single-form-value
+                                 source (cdr version-range) path
+                                 :native-section-version)
+                                0)
+                            emacs-load--artifact-native-section-version))
+              (error "invalid native section in %s" path))
+            t)
+        (let ((arch-range (assq :arch ranges))
+              (text-range (assq :text-base64 ranges))
+              (relocs-range (assq :relocs ranges))
+              (externs-range (assq :extern-symbols ranges))
+              (defuns-range (assq :defuns ranges)))
+          (unless (and arch-range text-range relocs-range externs-range defuns-range
+                       (eq (emacs-load--artifact-native-form-kind-from-range
+                            source (cdr arch-range) path :arch)
+                           :string)
+                       (eq (emacs-load--artifact-native-form-kind-from-range
+                            source (cdr text-range) path :text-base64)
+                           :string)
+                       (memq (emacs-load--artifact-native-form-kind-from-range
+                              source (cdr relocs-range) path :relocs)
+                             '(:nil :list))
+                       (memq (emacs-load--artifact-native-form-kind-from-range
+                              source (cdr externs-range) path :extern-symbols)
+                             '(:nil :list))
+                       (memq (emacs-load--artifact-native-form-kind-from-range
+                              source (cdr defuns-range) path :defuns)
+                             '(:nil :list)))
+            (error "invalid native section in %s" path))
+          (emacs-load--artifact-native-prefix-eligible-p
+           (list :arch
+                 (emacs-load--artifact-source-read-form-value
+                  source (cdr arch-range) path :arch)
+                 :extern-symbols
+                 (emacs-load--artifact-source-read-form-nil-or-list-value
+                  source (cdr externs-range) path :extern-symbols)))))))
 
   (defun emacs-load--artifact-native-decode-text (text &optional path quiet)
     "Return decoded bytes for base64 TEXT.
@@ -1909,7 +1947,7 @@ non-nil return values instead of retaining the original section objects."
           (setq value (car forms))
           (unless (proper-list-p value)
             (error "invalid native sections in %s" path))
-          (dolist (section value (nreverse sections))
+          (dolist (section value)
             (let ((canonical
                    (emacs-load--artifact-native-section-canonicalize
                     section path)))
