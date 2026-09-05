@@ -70,6 +70,57 @@
       (should (eq #'dired-find-file (lookup-key map (kbd "RET"))))
       (should (eq #'emacs-dired-min-quit-window (lookup-key map (kbd "q")))))))
 
+(ert-deftest dired-mode-map-is-built-eagerly-at-load-time ()
+  "T65: `dired-mode-map' must already be a real keymap as soon as
+`emacs-dired-min' has been loaded, without any explicit call to
+`emacs-dired-min--ensure-mode-map'.
+
+Before this fix the map was built lazily, only on the first
+`dired-mode' entry.  On the standalone, `(require 'dired)' (the
+`dired.el' facade, `require'd above) provides the `dired' feature
+immediately at load time, so a consumer whose code runs the moment
+`dired' becomes available -- e.g. evil-keybindings.el's
+`(eval-after-load 'dired (evil-make-overriding-map dired-mode-map
+'normal) ...)' -- observed `dired-mode-map' still nil and
+`evil-make-overriding-map' (-> `define-key') signaled
+`(emacs-keymap-not-keymap nil)'.  GNU's own `dired.el' builds
+`dired-mode-map' eagerly at its own top level for the same reason;
+this test pins that the standalone shim now matches."
+  (should (featurep 'emacs-dired-min))
+  (should (keymapp dired-mode-map))
+  (should (eq #'dired-find-file (lookup-key dired-mode-map (kbd "RET"))))
+  (should (eq #'dired-next-line (lookup-key dired-mode-map (kbd "n"))))
+  (should (eq #'dired-previous-line (lookup-key dired-mode-map (kbd "p"))))
+  (should (eq #'emacs-dired-min-quit-window (lookup-key dired-mode-map (kbd "q"))))
+  (should (eq #'emacs-dired-min-revert-buffer (lookup-key dired-mode-map (kbd "g"))))
+  (should (eq #'dired-up-directory (lookup-key dired-mode-map (kbd "^"))))
+  (should (eq #'dired-mark (lookup-key dired-mode-map (kbd "m"))))
+  (should (eq #'dired-unmark (lookup-key dired-mode-map (kbd "u"))))
+  (should (eq #'dired-flag-file-deletion (lookup-key dired-mode-map (kbd "d"))))
+  (should (eq #'dired-do-flagged-delete (lookup-key dired-mode-map (kbd "x"))))
+  (should (eq #'dired-do-rename (lookup-key dired-mode-map (kbd "R"))))
+  (should (eq #'dired-do-copy (lookup-key dired-mode-map (kbd "C")))))
+
+(ert-deftest dired-feature-eval-after-load-runs-immediately-with-real-keymap ()
+  "T65: exercise the exact shape evil-keybindings.el relies on --
+`(require 'dired)' (the standalone's lightweight `dired.el' facade)
+followed by an `eval-after-load'/`with-eval-after-load' body gated on
+`'dired' -- and confirm two things at once: (1) since `dired' is
+already `featurep' by the time the `with-eval-after-load' form runs,
+Emacs's own semantics fire the body immediately rather than deferring
+it forever, and (2) the body observes a real keymap in
+`dired-mode-map', not nil, so a `(evil-make-overriding-map
+dired-mode-map 'normal)'-shaped call inside it would not signal
+`emacs-keymap-not-keymap'."
+  (require 'dired)
+  (should (featurep 'dired))
+  (let (ran seen-keymap)
+    (with-eval-after-load 'dired
+      (setq ran t)
+      (setq seen-keymap (keymapp dired-mode-map)))
+    (should ran)
+    (should seen-keymap)))
+
 (defun emacs-dired-min-test--goto-entry (name)
   "Move point to the dired entry named NAME in the current buffer."
   (let* ((state (gethash (nelisp-ec-current-buffer) emacs-dired-min--state))
