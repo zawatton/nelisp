@@ -43,6 +43,8 @@
 #                    (default: ${XDG_CACHE_HOME:-$HOME/.cache}/nemacs/)
 #   NEMACS_COLD_ARTIFACT bootstrap .neln cache path
 #                    (default: beside NEMACS_COLD_IMAGE)
+#   NEMACS_COLD_CACHE_ROOT root for binary-keyed cold cache entries
+#                    (default: ${XDG_CACHE_HOME:-$HOME/.cache}/nemacs)
 #   NEMACS_DISABLE_COLD_CACHE set to 1/t/true/yes to use normal bootstrap
 #   NEMACS_COLD_LOCK_TIMEOUT seconds to wait for another cache builder
 #                    (default: 120)
@@ -97,9 +99,34 @@ NEMACS_NELISP_MEMORY="${NEMACS_NELISP_MEMORY:-8388608}"
 NEMACS_BOOTSTRAP_BUNDLE="${NEMACS_BOOTSTRAP_BUNDLE:-$NEMACS_HOME/build/nemacs-bootstrap.el}"
 NEMACS_BOOTSTRAP_REPL="${NEMACS_BOOTSTRAP_REPL:-$NEMACS_HOME/build/nemacs-bootstrap.repl}"
 NEMACS_RUNTIME_IMAGE="${NEMACS_RUNTIME_IMAGE:-}"
-NEMACS_COLD_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/nemacs"
-NEMACS_COLD_ARTIFACT="${NEMACS_COLD_ARTIFACT:-$NEMACS_COLD_CACHE_ROOT/nemacs-bootstrap.neln}"
-NEMACS_COLD_IMAGE="${NEMACS_COLD_IMAGE:-$NEMACS_COLD_CACHE_ROOT/nemacs-bootstrap.flat.nlri}"
+
+# A flat arena is tied to the exact NeLisp executable that wrote it.  Content
+# hashing alone is insufficient: an unchanged copy at a different path, or a
+# binary replaced with bytes that retain the same digest but different file
+# metadata, is a distinct runtime identity for cache-validity purposes.  Keep
+# the record human-readable in the source sidecar and hash it only for the
+# default cache directory name.  The shipped standalone reader has no
+# successful `--version' command, so do not start it merely to add a version
+# string; its path and stat identity are available without runtime startup.
+NEMACS_NELISP_IDENTITY_PATH="$NEMACS_NELISP"
+identity_dir="$(dirname -- "$NEMACS_NELISP")"
+if identity_dir="$(cd "$identity_dir" 2>/dev/null && pwd -P)"; then
+  NEMACS_NELISP_IDENTITY_PATH="$identity_dir/$(basename -- "$NEMACS_NELISP")"
+elif [[ "$NEMACS_NELISP" != /* ]]; then
+  NEMACS_NELISP_IDENTITY_PATH="$(pwd -P)/$NEMACS_NELISP"
+fi
+NEMACS_NELISP_IDENTITY_SIZE="$(stat -Lc '%s' -- "$NEMACS_NELISP" 2>/dev/null || printf 'unavailable')"
+NEMACS_NELISP_IDENTITY_MTIME="$(stat -Lc '%Y:%y' -- "$NEMACS_NELISP" 2>/dev/null || printf 'unavailable')"
+NEMACS_NELISP_IDENTITY="$(printf 'v1\npath=%s\nsize=%s\nmtime=%s\n' \
+  "$NEMACS_NELISP_IDENTITY_PATH" \
+  "$NEMACS_NELISP_IDENTITY_SIZE" \
+  "$NEMACS_NELISP_IDENTITY_MTIME")"
+NEMACS_COLD_CACHE_KEY="$(printf '%s\n' "$NEMACS_NELISP_IDENTITY" |
+  sha256sum | awk '{print $1}')"
+NEMACS_COLD_CACHE_ROOT="${NEMACS_COLD_CACHE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/nemacs}"
+NEMACS_COLD_CACHE_DIR="$NEMACS_COLD_CACHE_ROOT/$NEMACS_COLD_CACHE_KEY"
+NEMACS_COLD_ARTIFACT="${NEMACS_COLD_ARTIFACT:-$NEMACS_COLD_CACHE_DIR/nemacs-bootstrap.neln}"
+NEMACS_COLD_IMAGE="${NEMACS_COLD_IMAGE:-$NEMACS_COLD_CACHE_DIR/nemacs-bootstrap.flat.nlri}"
 NEMACS_DISABLE_COLD_CACHE="${NEMACS_DISABLE_COLD_CACHE:-}"
 # Set to 0 to always ask `compile-runtime-image' itself whether the cached
 # image is current, instead of the cheap sidecar probe (see `cold_cache_probe_hit').
@@ -152,8 +179,13 @@ nemacs paths:
   NEMACS_BOOTSTRAP_BUNDLE = ${NEMACS_BOOTSTRAP_BUNDLE:-<disabled>}
   NEMACS_BOOTSTRAP_REPL = ${NEMACS_BOOTSTRAP_REPL:-<disabled>}
   NEMACS_RUNTIME_IMAGE = ${NEMACS_RUNTIME_IMAGE:-<disabled>}
+  NEMACS_COLD_CACHE_ROOT = $NEMACS_COLD_CACHE_ROOT
+  NEMACS_COLD_CACHE_KEY = $NEMACS_COLD_CACHE_KEY
   NEMACS_COLD_IMAGE = $NEMACS_COLD_IMAGE
   NEMACS_COLD_ARTIFACT = $NEMACS_COLD_ARTIFACT
+  NEMACS_NELISP_IDENTITY_PATH = $NEMACS_NELISP_IDENTITY_PATH
+  NEMACS_NELISP_IDENTITY_SIZE = $NEMACS_NELISP_IDENTITY_SIZE
+  NEMACS_NELISP_IDENTITY_MTIME = $NEMACS_NELISP_IDENTITY_MTIME
   NEMACS_DISABLE_COLD_CACHE = ${NEMACS_DISABLE_COLD_CACHE:-<disabled>}
   NEMACS_COLD_CACHE_PROBE = $NEMACS_COLD_CACHE_PROBE
   NEMACS_COLD_SOURCE_ROUTE = $NEMACS_COLD_SOURCE_ROUTE
@@ -282,13 +314,13 @@ cold_cache_probe_hit() {
 
 # --- cold image, source route ------------------------------------------
 #
-# The image is a pure function of these five files.  Freshness is therefore
-# decided in the shell with five sha256sums (~30 ms) instead of by starting the
-# runtime: the artifact route had to boot its own artifact runtime before it
-# could read a 1,874-byte sidecar, and that bootstrap alone cost 531 s.
+# The image is a pure function of these four source files plus the NeLisp
+# executable identity recorded above.  Freshness is therefore decided in the
+# shell with four sha256sums plus stat metadata (~30 ms) instead of by starting
+# the runtime: the artifact route had to boot its own artifact runtime before
+# it could read a 1,874-byte sidecar, and that bootstrap alone cost 531 s.
 cold_source_inputs() {
   printf '%s\n' \
-    "$NEMACS_NELISP" \
     "$NEMACS_BOOTSTRAP_BUNDLE" \
     "$NEMACS_HOME/scripts/nemacs-runtime-process-preload.el" \
     "$NEMACS_HOME/scripts/nemacs-runtime-frame-tab-preload.el" \
@@ -299,6 +331,7 @@ cold_source_route_available_p() {
   [[ "$NEMACS_COLD_SOURCE_ROUTE" != "0" ]] || return 1
   [[ -n "$NEMACS_BOOTSTRAP_BUNDLE" ]] || return 1
   [[ "$(nelisp_driver_kind)" == "standalone-reader" ]] || return 1
+  [[ -r "$NEMACS_NELISP" ]] || return 1
   local f
   while read -r f; do
     [[ -r "$f" ]] || return 1
@@ -306,15 +339,16 @@ cold_source_route_available_p() {
   return 0
 }
 
-# Inputs' hashes plus the image's own size.  The size catches a truncated or
-# half-written image without hashing 82 MB on every start.
+# Binary identity, inputs' hashes, and the image's own size.  The size catches
+# a truncated or half-written image without hashing 82 MB on every start.
 cold_source_fingerprint() {
   local sums size
   sums="$(cold_source_inputs | tr '\n' '\0' | xargs -0 sha256sum 2>/dev/null |
           awk '{printf "%s ", $1}')" || return 1
   [[ -n "$sums" ]] || return 1
   size="$(stat -Lc%s "$NEMACS_COLD_IMAGE" 2>/dev/null || echo 0)"
-  printf 'v1 %simage-size=%s\n' "$sums" "$size"
+  printf 'v2\nnelisp-cache-key=%s\n%s\nsource-sha256=%s\nimage-size=%s\n' \
+    "$NEMACS_COLD_CACHE_KEY" "$NEMACS_NELISP_IDENTITY" "$sums" "$size"
 }
 
 cold_source_cache_hit_p() {
@@ -323,8 +357,14 @@ cold_source_cache_hit_p() {
   [[ "$(cat "$NEMACS_COLD_SIDECAR" 2>/dev/null)" == "$(cold_source_fingerprint)" ]]
 }
 
+invalidate_cold_source_cache() {
+  rm -f -- "$NEMACS_COLD_IMAGE" "$NEMACS_COLD_SIDECAR" \
+    "$NEMACS_COLD_IMAGE.manifest.el"
+}
+
 build_cold_image_from_source() {
-  local tmp="$NEMACS_COLD_IMAGE.tmp.$$" drv rc=0
+  local tmp="$NEMACS_COLD_IMAGE.tmp.$$" sidecar_tmp="$NEMACS_COLD_SIDECAR.tmp.$$"
+  local drv rc=0
   drv="$(mktemp "${TMPDIR:-/tmp}/nemacs-cold-src.XXXXXX.el")" || return 1
   {
     printf '(progn '
@@ -352,7 +392,11 @@ build_cold_image_from_source() {
   # Left in place it would let `cold_cache_probe_hit' approve this image on a
   # later fallback run, on evidence about a different file.
   rm -f "$NEMACS_COLD_IMAGE.manifest.el"
-  cold_source_fingerprint > "$NEMACS_COLD_SIDECAR" || return 1
+  if ! cold_source_fingerprint > "$sidecar_tmp" ||
+     ! mv -f "$sidecar_tmp" "$NEMACS_COLD_SIDECAR"; then
+    rm -f "$sidecar_tmp" "$NEMACS_COLD_IMAGE"
+    return 1
+  fi
   printf 'flat-image-cache=rebuilt route=source image=%s (%s B)\n' \
     "$NEMACS_COLD_IMAGE" "$(stat -Lc%s "$NEMACS_COLD_IMAGE" 2>/dev/null || echo '?')"
 }
@@ -894,16 +938,22 @@ case "$NEMACS_DRIVER" in
             cold_prepare_status="flat-image-cache=hit route=source image=$NEMACS_COLD_IMAGE"
             cold_image_ready=1
           else
-            # 131 s measured.  Say so before the wait rather than after: the
-            # artifact route's equivalent silence lasted 85 minutes and read as
-            # a hang.
-            echo "nemacs: building cold image from source (~2 min)" >&2
-            if cold_prepare_status="$(build_cold_image_from_source)"; then
-              cold_image_ready=1
-            elif cold_artifact_route_available_p; then
-              echo "nemacs: source-route image build failed; trying the artifact route" >&2
+            # Never leave a known-stale image available to a fallback or later
+            # launch.  This also rejects legacy v1 sidecars on first use.
+            if ! invalidate_cold_source_cache; then
+              echo "nemacs: cannot remove stale cold image; no cold image this start" >&2
             else
-              echo "nemacs: source-route image build failed; no cold image this start" >&2
+              # 131 s measured.  Say so before the wait rather than after: the
+              # artifact route's equivalent silence lasted 85 minutes and read as
+              # a hang.
+              echo "nemacs: building cold image from source (~2 min)" >&2
+              if cold_prepare_status="$(build_cold_image_from_source)"; then
+                cold_image_ready=1
+              elif cold_artifact_route_available_p; then
+                echo "nemacs: source-route image build failed; trying the artifact route" >&2
+              else
+                echo "nemacs: source-route image build failed; no cold image this start" >&2
+              fi
             fi
           fi
         fi

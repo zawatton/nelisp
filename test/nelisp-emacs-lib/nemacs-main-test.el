@@ -476,6 +476,22 @@
    (file-name-directory (or load-file-name buffer-file-name)))
   "Path to bin/nemacs from the test file.")
 
+(defun nemacs-main-test--write-cold-source-stub (path)
+  "Write a source-route standalone-reader test double to PATH."
+  (with-temp-file path
+    (insert "#!/usr/bin/env sh\n")
+    (insert "case \"$1\" in\n")
+    (insert "  --load)\n")
+    (insert "    image=$(sed -n 's/.*nelisp--arena-dump-image-stream \"\\([^\"]*\\)\").*/\\1/p' \"$2\")\n")
+    (insert "    if [ -e \"$image\" ]; then printf 'stale-present:%s\\n' \"$0\" >> \"$NEMACS_TEST_BUILD_LOG\"; fi\n")
+    (insert "    printf 'build:%s\\n' \"$0\" >> \"$NEMACS_TEST_BUILD_LOG\"\n")
+    (insert "    printf 'flat-image\\n' > \"$image\"\n")
+    (insert "    exit 0 ;;\n")
+    (insert "  --cold-load-from) cat >/dev/null; exit 0 ;;\n")
+    (insert "  *) exit 2 ;;\n")
+    (insert "esac\n"))
+  (set-file-modes path #o755))
+
 (ert-deftest nemacs-main-test/shell-wrapper-version ()
   (when (file-executable-p nemacs-main-test--bin)
     (let ((out (with-output-to-string
@@ -492,6 +508,9 @@
                                  "--print-paths")))))
       (should (string-match-p "NEMACS_HOME" out))
       (should (string-match-p "NEMACS_DRIVER" out))
+      (should (string-match-p "NEMACS_COLD_CACHE_ROOT" out))
+      (should (string-match-p "NEMACS_COLD_CACHE_KEY" out))
+      (should (string-match-p "NEMACS_NELISP_IDENTITY_PATH" out))
       (should (string-match-p "NEMACS_BATCH_RUNTIME_IMAGE" out))
       (should (string-match-p "NEMACS_INTERACTIVE_RUNTIME_IMAGE" out))
       (should (string-match-p "NEMACS_VENDOR_CORE_RUNTIME_IMAGE" out)))))
@@ -700,8 +719,6 @@
            (bootstrap-repl (expand-file-name "nemacs-bootstrap.repl" root))
            (capture (expand-file-name "capture" root))
            (cache-root (expand-file-name "nemacs" root))
-           (artifact (expand-file-name "nemacs-bootstrap.neln" cache-root))
-           (image (expand-file-name "nemacs-bootstrap.flat.nlri" cache-root))
            (compile-args (concat capture ".compile"))
            (prepare-args (concat capture ".prepare"))
            (launch-args (concat capture ".launch")))
@@ -740,9 +757,11 @@
                           (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
                           (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
                           (format "XDG_CACHE_HOME=%s" root)
+                          "NEMACS_COLD_CACHE_ROOT="
                           "NEMACS_COLD_ARTIFACT="
                           "NEMACS_COLD_IMAGE="
                           "NEMACS_DISABLE_COLD_CACHE="
+                          "NEMACS_COLD_SOURCE_ROUTE=0"
                           "NEMACS_FLAT_ARTIFACT_CACHE=1"
                           "NEMACS_COLD_LOCK_TIMEOUT=1"
                           "NELISP_HOME=/tmp/nemacs-test-nelisp")
@@ -751,34 +770,188 @@
                          (call-process nemacs-main-test--bin nil nil nil
                                        "--driver=nelisp"
                                        "--batch" "--no-banner")))
-              (should (file-readable-p compile-args))
-              (with-temp-buffer
-                (insert-file-contents compile-args)
-                (let ((args (buffer-string)))
-                  (should (string-match-p "\\`compile-elisp-artifact\n" args))
-                  (should (string-match-p (regexp-quote bootstrap) args))
-                  (should (string-match-p (regexp-quote artifact) args))
-                  (should (string-match-p "--native-policy\nopportunistic\n"
-                                          args))))
-              (with-temp-buffer
-                (insert-file-contents prepare-args)
-                (let ((args (buffer-string)))
-                  (should (string-match-p "\\`compile-runtime-image\n" args))
-                  (should (string-match-p (regexp-quote artifact) args))
-                  (should (string-match-p (regexp-quote image) args))))
-              (with-temp-buffer
-                (insert-file-contents launch-args)
-                (should (string-match-p
-                         (concat "\\`--cold-load-from\n"
-                                 (regexp-quote image)
-                                 "\n--no-prompt\n--no-print\n")
-                         (buffer-string))))
-              (delete-file compile-args)
-              (should (= 0
-                         (call-process nemacs-main-test--bin nil nil nil
-                                       "--driver=nelisp"
-                                       "--batch" "--no-banner")))
-              (should-not (file-exists-p compile-args))))
+              (let* ((entries (directory-files cache-root t "\\`[^.]"))
+                     (cache-entry (car entries))
+                     (artifact (expand-file-name "nemacs-bootstrap.neln"
+                                                 cache-entry))
+                     (image (expand-file-name "nemacs-bootstrap.flat.nlri"
+                                              cache-entry)))
+                (should (= 1 (length entries)))
+                (should (file-readable-p compile-args))
+                (with-temp-buffer
+                  (insert-file-contents compile-args)
+                  (let ((args (buffer-string)))
+                    (should (string-match-p "\\`compile-elisp-artifact\n" args))
+                    (should (string-match-p (regexp-quote bootstrap) args))
+                    (should (string-match-p (regexp-quote artifact) args))
+                    (should (string-match-p "--native-policy\nopportunistic\n"
+                                            args))))
+                (with-temp-buffer
+                  (insert-file-contents prepare-args)
+                  (let ((args (buffer-string)))
+                    (should (string-match-p "\\`compile-runtime-image\n" args))
+                    (should (string-match-p (regexp-quote artifact) args))
+                    (should (string-match-p (regexp-quote image) args))))
+                (with-temp-buffer
+                  (insert-file-contents launch-args)
+                  (should (string-match-p
+                           (concat "\\`--cold-load-from\n"
+                                   (regexp-quote image)
+                                   "\n--no-prompt\n--no-print\n")
+                           (buffer-string))))
+                (delete-file compile-args)
+                (should (= 0
+                           (call-process nemacs-main-test--bin nil nil nil
+                                         "--driver=nelisp"
+                                         "--batch" "--no-banner")))
+                (should-not (file-exists-p compile-args)))))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-cold-cache-keys-binary-identity ()
+  "Cold images should be keyed by binary identity under the configured root."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-identity-cold-" t))
+           (bin-a-dir (expand-file-name "bin-a" root))
+           (bin-b-dir (expand-file-name "bin-b" root))
+           (bin-a (expand-file-name "nelisp" bin-a-dir))
+           (bin-b (expand-file-name "nelisp" bin-b-dir))
+           (bootstrap (expand-file-name "nemacs-bootstrap.el" root))
+           (cache-root (expand-file-name "configured-cache" root))
+           (build-log (expand-file-name "builds" root)))
+      (unwind-protect
+          (progn
+            (make-directory bin-a-dir t)
+            (make-directory bin-b-dir t)
+            (nemacs-main-test--write-cold-source-stub bin-a)
+            (copy-file bin-a bin-b t)
+            (set-file-modes bin-b #o755)
+            (set-file-times bin-a (seconds-to-time 1000000000))
+            (set-file-times bin-b (seconds-to-time 1000000002))
+            (with-temp-file bootstrap
+              (insert "(defun nemacs-main-test--identity-fixture () 42)\n"))
+            (let ((base-env
+                   (list (format "NEMACS_TEST_BUILD_LOG=%s" build-log)
+                         (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
+                         (format "NEMACS_COLD_CACHE_ROOT=%s" cache-root)
+                         "NEMACS_COLD_ARTIFACT="
+                         "NEMACS_COLD_IMAGE="
+                         "NEMACS_COLD_SIDECAR="
+                         "NEMACS_DISABLE_COLD_CACHE="
+                         "NEMACS_FLAT_ARTIFACT_CACHE=0"
+                         "NEMACS_COLD_LOCK_TIMEOUT=1"
+                         "NELISP_HOME=/tmp/nemacs-test-nelisp")))
+              (let (runs)
+                (dolist (binary (list bin-a bin-a bin-b bin-b))
+                  (let ((process-environment
+                         (append (cons (format "NEMACS_NELISP=%s" binary)
+                                       base-env)
+                                 process-environment))
+                        (stderr (make-temp-file "nemacs-main-test-cold-stderr-")))
+                    (unwind-protect
+                        (let ((status
+                               (call-process nemacs-main-test--bin nil
+                                             (list nil stderr) nil
+                                             "--driver=nelisp"
+                                             "--batch" "--no-banner")))
+                          (with-temp-buffer
+                            (insert-file-contents stderr)
+                            (push (cons status (buffer-string)) runs)))
+                      (when (file-exists-p stderr)
+                        (delete-file stderr)))))
+                (setq runs (nreverse runs))
+                (dolist (run runs)
+                  (should (= 0 (car run))))
+                (should (string-match-p "flat-image-cache=rebuilt"
+                                        (cdr (nth 0 runs))))
+                (should (string-match-p "flat-image-cache=hit"
+                                        (cdr (nth 1 runs))))
+                (should (string-match-p "flat-image-cache=rebuilt"
+                                        (cdr (nth 2 runs))))
+                (should (string-match-p "flat-image-cache=hit"
+                                        (cdr (nth 3 runs))))))
+            (let ((entries (directory-files cache-root t "\\`[^.]")))
+              (should (= 2 (length entries)))
+              (dolist (entry entries)
+                (let ((image (expand-file-name
+                              "nemacs-bootstrap.flat.nlri" entry))
+                      (sidecar (expand-file-name
+                                "nemacs-bootstrap.flat.nlri.srcinputs" entry)))
+                  (should (file-readable-p image))
+                  (should (file-readable-p sidecar))
+                  (with-temp-buffer
+                    (insert-file-contents sidecar)
+                    (should (string-match-p "\\`v2\nnelisp-cache-key="
+                                            (buffer-string)))
+                    (should (string-match-p "\npath=" (buffer-string)))
+                    (should (string-match-p "\nsize=" (buffer-string)))
+                    (should (string-match-p "\nmtime=" (buffer-string)))))))
+            (with-temp-buffer
+              (insert-file-contents build-log)
+              (should (= 2 (count-lines (point-min) (point-max))))
+              (should-not (string-match-p "stale-present:" (buffer-string)))
+              (should (string-match-p (regexp-quote (concat "build:" bin-a))
+                                      (buffer-string)))
+              (should (string-match-p (regexp-quote (concat "build:" bin-b))
+                                      (buffer-string)))))
+        (when (file-directory-p root)
+          (delete-directory root t))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-cold-cache-removes-stale-image-on-miss ()
+  "An identity miss on explicit cache paths should remove the old image first."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((root (make-temp-file "nemacs-main-test-stale-image-" t))
+           (bin-a-dir (expand-file-name "bin-a" root))
+           (bin-b-dir (expand-file-name "bin-b" root))
+           (bin-a (expand-file-name "nelisp" bin-a-dir))
+           (bin-b (expand-file-name "nelisp" bin-b-dir))
+           (bootstrap (expand-file-name "nemacs-bootstrap.el" root))
+           (artifact (expand-file-name "shared.neln" root))
+           (image (expand-file-name "shared.flat.nlri" root))
+           (sidecar (concat image ".srcinputs"))
+           (build-log (expand-file-name "builds" root)))
+      (unwind-protect
+          (progn
+            (make-directory bin-a-dir t)
+            (make-directory bin-b-dir t)
+            (nemacs-main-test--write-cold-source-stub bin-a)
+            (copy-file bin-a bin-b t)
+            (set-file-modes bin-b #o755)
+            (set-file-times bin-a (seconds-to-time 1000000000))
+            (set-file-times bin-b (seconds-to-time 1000000002))
+            (with-temp-file bootstrap
+              (insert "(defun nemacs-main-test--stale-image-fixture () 42)\n"))
+            (let ((base-env
+                   (list (format "NEMACS_TEST_BUILD_LOG=%s" build-log)
+                         (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
+                         (format "NEMACS_COLD_CACHE_ROOT=%s"
+                                 (expand-file-name "unused-cache" root))
+                         (format "NEMACS_COLD_ARTIFACT=%s" artifact)
+                         (format "NEMACS_COLD_IMAGE=%s" image)
+                         (format "NEMACS_COLD_SIDECAR=%s" sidecar)
+                         "NEMACS_DISABLE_COLD_CACHE="
+                         "NEMACS_FLAT_ARTIFACT_CACHE=0"
+                         "NEMACS_COLD_LOCK_TIMEOUT=1"
+                         "NELISP_HOME=/tmp/nemacs-test-nelisp")))
+              (dolist (binary (list bin-a bin-b bin-b))
+                (let ((process-environment
+                       (append (cons (format "NEMACS_NELISP=%s" binary)
+                                     base-env)
+                               process-environment)))
+                  (should (= 0
+                             (call-process nemacs-main-test--bin nil nil nil
+                                           "--driver=nelisp"
+                                           "--batch" "--no-banner"))))))
+            (with-temp-buffer
+              (insert-file-contents build-log)
+              (should (= 2 (count-lines (point-min) (point-max))))
+              (should-not (string-match-p "stale-present:" (buffer-string)))
+              (should (string-match-p (regexp-quote (concat "build:" bin-a))
+                                      (buffer-string)))
+              (should (string-match-p (regexp-quote (concat "build:" bin-b))
+                                      (buffer-string))))
+            (should (file-readable-p image))
+            (should (file-readable-p sidecar)))
         (when (file-directory-p root)
           (delete-directory root t))))))
 
@@ -879,6 +1052,7 @@
                           (format "NEMACS_COLD_ARTIFACT=%s" artifact)
                           (format "NEMACS_COLD_IMAGE=%s" image)
                           "NEMACS_DISABLE_COLD_CACHE="
+                          "NEMACS_COLD_SOURCE_ROUTE=0"
                           "NEMACS_FLAT_ARTIFACT_CACHE=1"
                           "NEMACS_COLD_LOCK_TIMEOUT=1"
                           "NELISP_HOME=/tmp/nemacs-test-nelisp")
@@ -962,9 +1136,10 @@
                           (format "NEMACS_BOOTSTRAP_BUNDLE=%s" bootstrap)
                           (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
                           (format "XDG_CACHE_HOME=%s" root)
-                          "NEMACS_COLD_ARTIFACT="
-                          "NEMACS_COLD_IMAGE="
+                          (format "NEMACS_COLD_ARTIFACT=%s" artifact)
+                          (format "NEMACS_COLD_IMAGE=%s" image)
                           "NEMACS_DISABLE_COLD_CACHE="
+                          "NEMACS_COLD_SOURCE_ROUTE=0"
                           "NEMACS_FLAT_ARTIFACT_CACHE=1"
                           "NEMACS_COLD_LOCK_TIMEOUT=1"
                           "NELISP_HOME=/tmp/nemacs-test-nelisp")
@@ -1046,6 +1221,7 @@
                            (format "NEMACS_COLD_ARTIFACT=%s" artifact)
                            (format "NEMACS_COLD_IMAGE=%s" image)
                            "NEMACS_DISABLE_COLD_CACHE="
+                           "NEMACS_COLD_SOURCE_ROUTE=0"
                            "NEMACS_FLAT_ARTIFACT_CACHE=1"
                            "NEMACS_COLD_LOCK_TIMEOUT=30"
                            "NELISP_HOME=/tmp/nemacs-test-nelisp")
