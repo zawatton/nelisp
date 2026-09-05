@@ -2995,13 +2995,27 @@ CONTENTS, matching the non-mutating fallback shape."
           (expand-file-name "vendor/emacs-lisp/mail" root))))
 
 (defun emacs-org-outline--try-vendor-org-element ()
-  "Try loading the vendored GNU Org element parser.
-This module must not replace `org-element-parse-buffer' with an independent
-parser.  A failure here identifies missing Emacs C-core-compatible substrate
-that should be fixed in `src/' or the runtime."
+  "Try loading an Org element parser (`org-element').
+Only the NeLisp standalone reader, which has no built-in Org, needs the
+vendored copy; host Emacs already ships its own working `org-element' on
+its normal `load-path'.  Prepending the vendored copy's load-path there
+too is not just redundant, it is actively harmful: it drags in vendored
+copies of core Emacs Lisp files (`vendor/emacs-lisp/{,emacs-lisp,org}')
+alongside the host's own already-loaded core, and on Emacs 31.1 that
+mixture trips the host's load-cycle guard (an eager macro-expansion cycle
+through `cl-lib.el'/`bytecomp.el'/`comint.el'/`subr-x.el'/`comp-run.el'),
+leaving `org-element-deferred-create' void and every `org-mode' test that
+touches it failing.  Distinguish standalone from host Emacs the same way
+`emacs-minibuffer-builtins.el' does: key on the private stdout primitive
+`nelisp--write-stdout-bytes', never on the presence/absence of a generic
+Emacs name.  This module must not replace `org-element-parse-buffer' with
+an independent parser.  A failure here identifies missing Emacs
+C-core-compatible substrate that should be fixed in `src/' or the runtime."
   (unless (featurep 'org-element)
-    (let ((load-path (append (emacs-org-outline--vendor-org-load-paths)
-                             load-path)))
+    (let ((load-path (if (fboundp 'nelisp--write-stdout-bytes)
+                         (append (emacs-org-outline--vendor-org-load-paths)
+                                 load-path)
+                       load-path)))
       (condition-case err
           (require 'org-element)
         (error
