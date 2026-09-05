@@ -45,6 +45,7 @@
          (sidecar (concat artifact ".source-sha256"))
          (temp-input (expand-file-name "compile-input.el" temp-dir))
          (source "(defun emacs-load-v5-wire-test () 1)\n")
+         (emacs-load-artifact-max-source-size nil)
          (compiler-path "/tmp/fake-nelisp")
          (call-process-args nil))
     (unwind-protect

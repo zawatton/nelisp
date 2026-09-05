@@ -257,6 +257,7 @@
                        t)))
             (let ((default-directory root)
                   (emacs-load-auto-native-compile t)
+                  (emacs-load-artifact-max-source-size nil)
                   (load-path (list dir-a
                                    nil
                                    ""

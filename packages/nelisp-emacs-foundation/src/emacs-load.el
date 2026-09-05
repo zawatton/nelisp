@@ -192,6 +192,15 @@ work belong elsewhere."
     "When non-nil, allow standalone loads to compile and replay artifacts.
 Bootstrap completes before `bin/nemacs' enables this.")
 
+  (defcustom emacs-load-artifact-max-source-size 0
+    "Maximum source byte size eligible for standalone artifact loading.
+Sources larger than this go directly through the source loader, without
+artifact compilation, replay, cache shard creation, or cache record writes.
+Nil removes the size limit; a non-positive integer disables the artifact
+route.  This setting does not affect host Emacs loading."
+    :type '(choice (const :tag "No size limit" nil) integer)
+    :group 'lisp)
+
   (defvar emacs-load-artifact-replay-streaming-threshold 65536
     "Byte threshold above which artifact replay uses the streaming reader.
 Nil or a non-positive value disables the size-based streaming path and
@@ -1376,7 +1385,13 @@ non-nil when DIRECTORY exists."
 
   (defun emacs-load--artifact-load-or-compile (resolved source)
     "Replay or compile a standalone artifact for RESOLVED and SOURCE."
-    (when emacs-load-auto-native-compile
+    (when (and emacs-load-auto-native-compile
+               (let ((maximum emacs-load-artifact-max-source-size))
+                 (or (null maximum)
+                     (and (integerp maximum)
+                          (> maximum 0)
+                          (<= (emacs-load--artifact-byte-length source)
+                              maximum)))))
       (let ((compiler (emacs-load--artifact-compiler)))
         (when compiler
           (let* ((source-hash (emacs-load--artifact-cache-source-digest source))
