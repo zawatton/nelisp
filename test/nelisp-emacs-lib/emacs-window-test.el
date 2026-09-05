@@ -198,9 +198,13 @@ item 9 helpers in `emacs-window.el')."
                     :type 'emacs-window-only))))
 
 (ert-deftest split-window-below-creates-second-window ()
+  "Exercises the prefixed entry point, not the unprefixed
+`split-window-below': since T100, the unprefixed name is host-guarded
+by `emacs-window--install-function-p' and resolves to real Emacs's own
+`split-window-below' under host ERT, not this Phase-1 model."
   (emacs-window-test--with-fresh-world
     (let ((w1 (emacs-window-selected-window)))
-      (let ((w2 (split-window-below)))
+      (let ((w2 (emacs-window-split-window-below)))
         (should (= 2 (length (emacs-window-window-list))))
         (should (eq w1 (emacs-window-selected-window)))
         (should (= 12 (emacs-window-window-height w1)))
@@ -209,9 +213,11 @@ item 9 helpers in `emacs-window.el')."
                     (emacs-window-direction (emacs-window-parent w2))))))))
 
 (ert-deftest split-window-right-creates-second-window ()
+  "See `split-window-below-creates-second-window' -- prefixed entry
+point, since the unprefixed name is host-guarded since T100."
   (emacs-window-test--with-fresh-world
     (let ((w1 (emacs-window-selected-window)))
-      (let ((w2 (split-window-right)))
+      (let ((w2 (emacs-window-split-window-right)))
         (should (= 2 (length (emacs-window-window-list))))
         (should (eq w1 (emacs-window-selected-window)))
         (should (= 40 (emacs-window-window-width w1)))
@@ -220,28 +226,32 @@ item 9 helpers in `emacs-window.el')."
                     (emacs-window-direction (emacs-window-parent w2))))))))
 
 (ert-deftest other-window-cycles-forward ()
+  "See `split-window-below-creates-second-window' -- prefixed entry
+points, since the unprefixed names are host-guarded since T100."
   (emacs-window-test--with-fresh-world
     (let* ((w1 (emacs-window-selected-window))
-           (w2 (split-window-below)))
+           (w2 (emacs-window-split-window-below)))
       (should (eq w1 (emacs-window-selected-window)))
-      (should (eq w2 (other-window)))
+      (should (eq w2 (emacs-window-other-window-impl)))
       (should (eq w2 (emacs-window-selected-window)))
-      (should (eq w1 (other-window 1)))
+      (should (eq w1 (emacs-window-other-window-impl 1)))
       (should (eq w1 (emacs-window-selected-window))))))
 
 (ert-deftest other-window-with-negative-cycles-back ()
+  "See `split-window-below-creates-second-window' -- prefixed entry
+points, since the unprefixed names are host-guarded since T100."
   (emacs-window-test--with-fresh-world
     (let* ((w1 (emacs-window-selected-window))
-           (w2 (split-window-below))
-           (w3 (split-window-right)))
+           (w2 (emacs-window-split-window-below))
+           (w3 (emacs-window-split-window-right)))
       ;; tree order = (w1 w3 w2); selected = w1
-      (should (eq w2 (other-window -1)))
+      (should (eq w2 (emacs-window-other-window-impl -1)))
       (should (eq w2 (emacs-window-selected-window)))
-      (should (eq w3 (other-window -1)))
+      (should (eq w3 (emacs-window-other-window-impl -1)))
       ;; from w3, +1 step forward in (w1 w3 w2) → w2
-      (should (eq w2 (other-window 1)))
+      (should (eq w2 (emacs-window-other-window-impl 1)))
       ;; from w2, +1 step forward → w1 (wrap)
-      (should (eq w1 (other-window 1))))))
+      (should (eq w1 (emacs-window-other-window-impl 1))))))
 
 (ert-deftest emacs-window-delete-other-windows ()
   (emacs-window-test--with-fresh-world
@@ -254,34 +264,40 @@ item 9 helpers in `emacs-window.el')."
       (should (eq w (emacs-window-selected-window))))))
 
 (ert-deftest delete-window-leaves-one ()
+  "See `split-window-below-creates-second-window' -- prefixed entry
+points, since the unprefixed names are host-guarded since T100."
   (emacs-window-test--with-fresh-world
     (let ((w1 (emacs-window-selected-window)))
-      (let ((w2 (split-window-below)))
-        (delete-window)
+      (let ((w2 (emacs-window-split-window-below)))
+        (emacs-window-delete-window)
         (should (= 1 (length (emacs-window-window-list))))
         (should (eq w2 (emacs-window-selected-window)))
         (should-not (emacs-window-windowp w1))
         (should (= 24 (emacs-window-window-height w2)))))))
 
 (ert-deftest delete-other-windows-leaves-one ()
+  "See `split-window-below-creates-second-window' -- prefixed entry
+points, since the unprefixed names are host-guarded since T100."
   (emacs-window-test--with-fresh-world
     (let ((w1 (emacs-window-selected-window)))
-      (split-window-below)
-      (other-window)
-      (split-window-right)
-      (other-window -1)
-      (delete-other-windows)
+      (emacs-window-split-window-below)
+      (emacs-window-other-window-impl)
+      (emacs-window-split-window-right)
+      (emacs-window-other-window-impl -1)
+      (emacs-window-delete-other-windows)
       (should (= 1 (length (emacs-window-window-list))))
       (should (eq w1 (emacs-window-selected-window)))
       (should (= 80 (emacs-window-window-width w1)))
       (should (= 24 (emacs-window-window-height w1))))))
 
 (ert-deftest split-window-then-delete-window-restores-single-window ()
+  "See `split-window-below-creates-second-window' -- prefixed entry
+points, since the unprefixed names are host-guarded since T100."
   (emacs-window-test--with-fresh-world
     (let ((w1 (emacs-window-selected-window)))
-      (split-window-right)
-      (other-window)
-      (delete-window)
+      (emacs-window-split-window-right)
+      (emacs-window-other-window-impl)
+      (emacs-window-delete-window)
       (should (= 1 (length (emacs-window-window-list))))
       (should (eq w1 (emacs-window-selected-window)))
       (should (= 80 (emacs-window-window-width w1)))
@@ -839,6 +855,66 @@ character."
         (setf (emacs-window-total-lines w) 12)
         (emacs-window-set-window-start w 1)
         (should (emacs-window-pos-visible-in-window-p pmax w))))))
+
+;;;; G. host-guard regression (T100 out-of-scope-from-T96 fix)
+;;
+;; `split-window-below', `split-window-right', `other-window',
+;; `delete-window', and `delete-other-windows' used to be unconditional
+;; top-level `defun's in this file with no host check at all, so the
+;; very first `(require 'emacs-window)' under host Emacs -- which
+;; `emacs-window-builtins.el' itself does at its own top -- silently
+;; replaced the host's real subr/Lisp definitions of these five names.
+;; `emacs-window--install-function-p' is the fix.
+
+(ert-deftest emacs-window-test/install-p-respects-host-fboundp-and-standalone-marker ()
+  "Pin `emacs-window--install-function-p' in isolation.
+Reloading the whole file inside this same test process would only
+observe the post-fix, already-gated state (the file's own top-level
+`(require 'emacs-window)' already ran once when this test file itself
+was loaded), so this exercises the predicate directly against a
+throwaway symbol instead."
+  (fset 'emacs-window-test--already-live-stub (lambda (&rest _) 'stub))
+  (unwind-protect
+      (let ((original-fboundp (symbol-function 'fboundp)))
+        ;; Host-shaped: no standalone marker present -> never overwrite
+        ;; an already-`fboundp' name (matches real host Emacs).
+        (should-not (emacs-window--install-function-p
+                     'emacs-window-test--already-live-stub))
+        ;; Standalone-shaped: `nl-write-file' present -> always
+        ;; install, even over an already-`fboundp' cell (matches the
+        ;; standalone bootstrap-stub-clobber requirement).
+        (cl-letf (((symbol-function 'fboundp)
+                   (lambda (symbol)
+                     (or (eq symbol 'nl-write-file)
+                         (funcall original-fboundp symbol)))))
+          (should (emacs-window--install-function-p
+                   'emacs-window-test--already-live-stub))))
+    (fmakunbound 'emacs-window-test--already-live-stub)))
+
+(ert-deftest emacs-window-test/unprefixed-commands-are-gated-in-source ()
+  "Every unprefixed Emacs-compatible command this file defines directly
+must be wrapped by `emacs-window--install-function-p' in the source, so
+a load under host Emacs never clobbers the real subr/Lisp definition."
+  (should (fboundp 'emacs-window--install-function-p))
+  (let* ((file (locate-library "emacs-window"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 (- (length file) 1))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward "(defun emacs-window--install-function-p" nil t))
+      (goto-char (point-min))
+      (should (search-forward "(fboundp 'nl-write-file)" nil t))
+      (goto-char (point-min))
+      (should (search-forward "(fboundp 'nelisp--write-stdout-bytes)" nil t))
+      (dolist (sym '(split-window-below split-window-right other-window
+                     delete-window delete-other-windows))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-window--install-function-p '%s)" sym)
+                 nil t))))))
 
 (provide 'emacs-window-test)
 
