@@ -666,6 +666,208 @@ the remainder once the native reader declines on one form."
         (when (boundp 'emacs-load-test--t78-big-lit)
           (makunbound 'emacs-load-test--t78-big-lit))))))
 
+(ert-deftest emacs-load-test/rewrite-propertized-string-literals-outside-strings-and-comments ()
+  "T103 regression: `#(...)' propertized-string read syntax is rewritten to
+plain call syntax only outside string literals and comments, and SOURCE is
+returned unchanged (same object) when `#(' does not occur at all."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo #(\"a\" 0 1 (p t)))")
+                 "(foo (nelisp-emacs--propertized-string-literal \"a\" 0 1 (p t)))"))
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(defvar x \"literal #( text\")")
+                 "(defvar x \"literal #( text\")"))
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(defvar x 1) ;; a comment with #( in it\n(defvar y 2)")
+                 "(defvar x 1) ;; a comment with #( in it\n(defvar y 2)"))
+  ;; `#'(...)' (function-quote applied to a list) is a different construct
+  ;; and must not be mistaken for `#(...)'.
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo #'(lambda () 1))")
+                 "(foo #'(lambda () 1))"))
+  (let ((source "(defvar x 1)"))
+    (should (eq (emacs-load--rewrite-propertized-string-literals source)
+                source))))
+
+(ert-deftest emacs-load-test/rewrite-propertized-string-literals-other-sharp-syntax-untouched ()
+  "T103 regression: only a plain, unescaped, in-code `#(' is rewritten.
+Every other `#...' reader construct, a character literal for `#' followed
+by a new list, and an escaped `#' or `(' outside a string are all left
+untouched."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  ;; `#s(...)' (record/hash-table constructor), not a propertized string.
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo #s(hash-table data (a 1)))")
+                 "(foo #s(hash-table data (a 1)))"))
+  ;; `#[...]' (byte-code object literal).
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo #[0 \"\" [] 0])")
+                 "(foo #[0 \"\" [] 0])"))
+  ;; `#x...'/`#o...'/`#b...' (radix integer literals).
+  (should (equal (emacs-load--rewrite-propertized-string-literals "(foo #x1F)")
+                 "(foo #x1F)"))
+  ;; `#&N"BITS"' (bool-vector literal).
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo #&3\"\\7\")")
+                 "(foo #&3\"\\7\")"))
+  ;; `?#(' is the character literal for `#' immediately followed by a new
+  ;; list -- not `#(...)' syntax -- and must not be rewritten.
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(cond ((eq c ?#(foo)) t))")
+                 "(cond ((eq c ?#(foo)) t))"))
+  ;; `?\#(' (backslash-escaped `#' character literal) followed by a list.
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(cond ((eq c ?\\#(foo)) t))")
+                 "(cond ((eq c ?\\#(foo)) t))"))
+  ;; A backslash-escaped `#(' outside a string (an unusual but legal
+  ;; symbol spelling) is left untouched -- the escape protects it.
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo bar\\#(baz))")
+                 "(foo bar\\#(baz))"))
+  ;; A real `#(...)' literal still rewrites even right after a character
+  ;; literal for an unrelated character, proving the `?X' guard does not
+  ;; over-protect.
+  (should (equal (emacs-load--rewrite-propertized-string-literals
+                  "(foo ?a #(\"x\" 0 1 (p t)))")
+                 "(foo ?a (nelisp-emacs--propertized-string-literal \"x\" 0 1 (p t)))")))
+
+(ert-deftest emacs-load-test/rewrite-propertized-string-literals-gated-by-native-reader-probe ()
+  "T103: `nelisp--load-resolved-file' only calls
+`emacs-load--rewrite-propertized-string-literals' when
+`emacs-load--propertized-string-reader-native-p' is nil -- the shim is
+interim and self-disabling once a reader (host Emacs today; a future
+vendor NeLisp per T105) already reads `#(...)' correctly."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((fn 'emacs-load-test--gate-fn)
+         (temp-dir (make-temp-file "emacs-load-test-propertized-gate-" t))
+         (resolved (expand-file-name "gate.el" temp-dir))
+         (source (concat
+                  "(defun emacs-load-test--gate-fn ()\n"
+                  "  #(\"x\" 0 1 (p t)))\n")))
+    (fmakunbound fn)
+    (unwind-protect
+        (progn
+          (with-temp-file resolved
+            (insert source))
+          ;; Probe true (as on host Emacs, which reads `#(...)' natively):
+          ;; the rewrite must not run, and the file still loads correctly
+          ;; because the underlying reader needs no help.
+          (let ((emacs-load-auto-native-compile nil)
+                (emacs-load--propertized-string-reader-native-p t))
+            (cl-letf (((symbol-function 'emacs-load--rewrite-propertized-string-literals)
+                       (lambda (&rest _args)
+                         (error "rewrite must not run when the probe is true"))))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))
+              (should (fboundp fn))
+              (should (equal (funcall fn) "x"))))
+          (fmakunbound fn)
+          ;; Probe false (as on this runtime today): the rewrite must run,
+          ;; and the file loads correctly through it.
+          (let ((emacs-load-auto-native-compile nil)
+                (emacs-load--propertized-string-reader-native-p nil)
+                (rewrite-calls 0)
+                (original (symbol-function 'emacs-load--rewrite-propertized-string-literals)))
+            (cl-letf (((symbol-function 'emacs-load--rewrite-propertized-string-literals)
+                       (lambda (&rest args)
+                         (setq rewrite-calls (1+ rewrite-calls))
+                         (apply original args))))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))
+              (should (= rewrite-calls 1))
+              (should (fboundp fn))
+              (should (equal (funcall fn) "x")))))
+      (when (fboundp fn) (fmakunbound fn))
+      (delete-directory temp-dir t))))
+
+(ert-deftest emacs-load-test/propertized-string-literal-reconstructs-value ()
+  "T103: `nelisp-emacs--propertized-string-literal' reconstructs the string
+value `#(STR RANGES...)' would have produced, applying each START END
+PLIST triple in order so a later triple overrides an earlier one for
+positions both cover.  It is a macro (mirroring `#(...)' itself being a
+literal, not code to evaluate): called here exactly the way
+`emacs-load--rewrite-propertized-string-literals' invokes it, with a bare
+\(unquoted) PLIST -- `(face bold)' as data, not a call to a function named
+`face'."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (should (equal (nelisp-emacs--propertized-string-literal "?" 0 1 (face bold))
+                 "?"))
+  (should (equal (get-text-property
+                  0 'face (nelisp-emacs--propertized-string-literal
+                           "?" 0 1 (face bold)))
+                 'bold))
+  (let ((s (nelisp-emacs--propertized-string-literal
+            "abc" 0 3 (p 1) 1 2 (p 2))))
+    (should (equal s "abc"))
+    (should (equal (get-text-property 0 'p s) 1))
+    (should (equal (get-text-property 1 'p s) 2))
+    (should (equal (get-text-property 2 'p s) 1))))
+
+(ert-deftest emacs-load-test/source-incremental-propertized-string-literal-followed-by-defalias ()
+  "T103 regression: `evil-common.el' defines
+`evil-read-digraph-char-with-overlay' with a `#(\"?\" 0 1 (face
+minibuffer-prompt cursor 1))' propertized-string literal in its body.
+Neither `nelisp--read-all-from-string-native' (declines outright, unrelated
+to size/element budget -- this defun is under 1KB), `read-from-string''s
+interpreted fallback (silently mis-tokenizes `#(' as the bare symbol `#'
+followed by a separate list, corrupting the parse without erroring), nor
+`nelisp--eval-source-string' (signals `invalid-read-syntax') can read this
+construct.  Before the fix, a form the native per-form reader declines on
+for this reason -- not because it is a big literal, T78's own case -- hits
+`nelisp--load-eval-source-tail', and once a `defalias' also appears later
+in the tail (as it always does somewhere in a real package this size),
+`nelisp--load-normalize-source-rewriting' reparses and reserializes the
+corrupted form, which then fails to read back as `invalid-read-syntax' (or
+a `wrong-type-argument' deeper in the runtime, per the real-init audit's
+report of the same failure through `(require \\='evil)').  This must load
+the whole file's forms -- including the one after the propertized-string
+defun and the one after the defalias -- and must not corrupt the string's
+own character content."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((fn 'emacs-load-test--digraph-like)
+         (alias 'emacs-load-test--digraph-like-alias)
+         (marker 'emacs-load-test--digraph-like-marker)
+         (temp-dir (make-temp-file "emacs-load-test-propertized-" t))
+         (resolved (expand-file-name "digraph.el" temp-dir))
+         (source (concat
+                  "(defun emacs-load-test--digraph-like (overlay)\n"
+                  "  (overlay-put overlay 'after-string\n"
+                  "               #(\"?\" 0 1 (face minibuffer-prompt cursor 1)))\n"
+                  "  'ran)\n"
+                  "(defalias 'emacs-load-test--digraph-like-alias"
+                  " 'emacs-load-test--digraph-like)\n"
+                  "(setq emacs-load-test--digraph-like-marker 'reached-end)\n")))
+    (fmakunbound fn)
+    (fmakunbound alias)
+    (makunbound marker)
+    (unwind-protect
+        (progn
+          (with-temp-file resolved
+            (insert source))
+          (cl-letf (((symbol-function 'nelisp--defalias-late)
+                     (lambda (symbol definition &optional docstring)
+                       (ignore docstring)
+                       (if (and (symbolp definition) (not (fboundp definition)))
+                           (fset symbol (lambda (&rest args)
+                                          (apply definition args)))
+                         (fset symbol definition))
+                       symbol)))
+            (let ((emacs-load-auto-native-compile nil))
+              (should (eq (nelisp--load-resolved-file resolved nil) t))))
+          (should (fboundp fn))
+          (should (fboundp alias))
+          (should (eq (symbol-value marker) 'reached-end))
+          (let ((overlay (make-overlay (point-min) (point-min))))
+            (unwind-protect
+                (progn
+                  (should (eq (funcall fn overlay) 'ran))
+                  (should (equal (substring-no-properties
+                                  (overlay-get overlay 'after-string))
+                                 "?")))
+              (delete-overlay overlay))))
+      (when (fboundp fn) (fmakunbound fn))
+      (when (fboundp alias) (fmakunbound alias))
+      (when (boundp marker) (makunbound marker))
+      (delete-directory temp-dir t))))
+
 (ert-deftest emacs-load-test/source-unibyte-skip-position-keeps-newline-count ()
   (skip-unless (emacs-load-test--standalone-active-p))
   (let* ((source "; 日本語一行目\n  ; 二行目\n(setq answer \"日本語\")")
