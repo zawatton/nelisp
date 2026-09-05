@@ -149,6 +149,17 @@
     (should (eq before-frame-parameter (symbol-function 'frame-parameter)))
     (should (eq before-frame-width     (symbol-function 'frame-width)))))
 
+;;;; I. tool-bar.el wiring (T62)
+
+;; `tool-bar-local-item' had an fboundp-guarded on-demand loader only
+;; inside `src/nelisp-emacs-magit-bridge.el' (not on the default boot
+;; path), so it was void for `geiser-guile'.  This covers the wiring:
+;; requiring `emacs-frame-builtins' (already on the default boot path)
+;; must force-load the vendored `tool-bar.el' and provide it.
+(ert-deftest emacs-frame-builtins-test/tool-bar-wired-transitively ()
+  (should (featurep 'tool-bar))
+  (should (fboundp 'tool-bar-local-item)))
+
 (provide 'emacs-frame-builtins-test)
 
 ;;; emacs-frame-builtins-test.el ends here

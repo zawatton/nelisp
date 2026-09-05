@@ -167,6 +167,32 @@ command names to the `emacs-compile-*' implementations.  Not run on
 
 (emacs-compile--install-bindings)
 
+;; T62: `compilation-error-regexp-alist' (compile.el) was void anywhere in
+;; src/ -- the load matrix hit `(void-variable compilation-error-regexp-alist)'
+;; for `powershell' (which does `(setq compilation-error-regexp-alist (cons
+;; NEW-ENTRY compilation-error-regexp-alist))' at top level).  Real Emacs's
+;; own default is the ~66-entry `compilation-error-regexp-alist-alist'
+;; catalogue (gcc/gnu/msft/... regexps) from the full `progmodes/compile.el',
+;; which `src/compile.el' deliberately does NOT load on the standalone
+;; runtime (see its own commentary: this substrate installs the much
+;; smaller `emacs-compile' read-only engine instead).  Replicating the full
+;; real catalogue here would be fabricating fidelity this substrate's
+;; next-error engine cannot back up, so -- matching `coding-system-list' /
+;; `defined-colors''s own precedent in `emacs-parity-fns2.el' ("a real
+;; answer, not a fabricated success") -- this binds one real, honest entry:
+;; the exact `FILE:LINE[:COL]:' pattern `emacs-compile--parse-errors' itself
+;; actually parses, in the real `(REGEXP FILE LINE COLUMN)' shape.  That is
+;; enough for `(cons NEW-ENTRY compilation-error-regexp-alist)'-style
+;; top-level `setq' forms to succeed, matching `button-buffer-map''s "kind,
+;; not content" precedent (Doc 51 T52) for a reduced value.
+(unless (boundp 'compilation-error-regexp-alist)
+  (defvar compilation-error-regexp-alist
+    (list (list emacs-compile-error-regexp 1 2 4))
+    "Reduced `compilation-error-regexp-alist'.
+See the comment above this defvar for why this holds one real entry
+(this substrate's own next-error pattern) instead of the full GNU
+catalogue."))
+
 (provide 'emacs-compile)
 
 ;;; emacs-compile.el ends here

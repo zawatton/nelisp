@@ -77,6 +77,44 @@ parent mode is initialised but before the user hooks fire."))
   (defvar after-change-major-mode-hook nil
     "Track H bridge: ran after every major-mode switch completes."))
 
+;; T62: `mode-line-major-mode-keymap' (bindings.el) was void anywhere in
+;; src/ -- the load matrix hit `(void-variable mode-line-major-mode-keymap)'
+;; for `minions'.  Real Emacs's own value also binds a `down-mouse-3'
+;; minor-modes menu (a GUI mouse-menu of every minor mode's toggle,
+;; filtered through `bindings--sort-menu-keymap') and a `down-mouse-1'
+;; major-mode menu (`mouse-menu-major-mode-map'); both are pure menu-bar
+;; affordances with no headless/batch equivalent yet in this runtime.
+;; Following `button-buffer-map''s own precedent (Doc 51 T52: match the
+;; real variable "in kind (a keymap), if not in content"), this keeps
+;; only the one binding that has a real, testable, non-menu meaning --
+;; `mouse-2' -> `describe-mode' -- rather than fabricate the minor-modes
+;; submenu's content.
+(unless (boundp 'mode-line-major-mode-keymap)
+  (defvar mode-line-major-mode-keymap
+    (let ((map (make-sparse-keymap)))
+      (define-key map [mode-line mouse-2] 'describe-mode)
+      map)
+    "Track H bridge: reduced `mode-line-major-mode-keymap' (bindings.el).
+See the comment above this defvar for why the minor-modes/major-mode
+mouse menus are omitted."))
+
+;; T62 (re-run discovery): re-running `minions' past the
+;; `mode-line-major-mode-keymap' fix above hit a sibling gap,
+;; `(void-variable mode-line-minor-mode-keymap)' -- same bindings.el
+;; family, same reduction rationale (real Emacs binds a `down-mouse-3'
+;; minor-modes menu on both the `mode-line' and `header-line' event
+;; types; this keeps only the two non-menu bindings: `mouse-2' ->
+;; `mode-line-minor-mode-help', `down-mouse-1' -> `mouse-minor-mode-menu').
+(unless (boundp 'mode-line-minor-mode-keymap)
+  (defvar mode-line-minor-mode-keymap
+    (let ((map (make-sparse-keymap)))
+      (define-key map [mode-line mouse-2] 'mode-line-minor-mode-help)
+      (define-key map [mode-line down-mouse-1] 'mouse-minor-mode-menu)
+      map)
+    "Track H bridge: reduced `mode-line-minor-mode-keymap' (bindings.el).
+See the comment above this defvar for why the minor-modes mouse menu
+is omitted."))
+
 ;;;; --- function bridges ----------------------------------------------
 
 (defun emacs-mode-builtins--function-cell-live-p (symbol)
@@ -226,6 +264,47 @@ user-defined macro whose expansion-producing body is a backquote
 template.  See `emacs-mode-define-derived-mode' for the fuller note."
     (append (list 'emacs-mode-define-derived-mode child parent name doc)
             body)))
+
+;;;; --- simple.el: special-mode / special-mode-map ----------------------
+
+;; T62: `special-mode'/`special-mode-map' had only an fboundp/boundp-guarded
+;; on-demand definition (`nelisp-emacs-magit-bridge--ensure-special-mode')
+;; inside `src/nelisp-emacs-magit-bridge.el', which is not on the default
+;; boot path.  The load matrix hit `(void-variable special-mode-map)' for
+;; `diff-hl' (which requires real Emacs `vc-dir'/`log-view', both of which
+;; derive their own major modes from `special-mode').  This block ports
+;; the same real Emacs `simple.el' parent mode to the default boot path:
+;; keymap bindings and `mode-class' property copied verbatim from
+;; `vendor/emacs-lisp/simple.el' (real Emacs binds these via
+;; `defvar-keymap', which this substrate's Track H bridge lacks -- plain
+;; `define-key' calls bind the same keys to the same commands).
+;; `special-mode-map' is declared *before* calling the bridged
+;; `define-derived-mode' so the macro's own `(unless (boundp 'special-mode-map)
+;; ...)' auto-declaration sees a real value already bound and leaves it
+;; alone, matching real Emacs's own "existing value wins" contract.
+(when (emacs-mode-builtins--install-function-p 'special-mode)
+  (unless (boundp 'special-mode-map)
+    (defvar special-mode-map
+      (let ((map (make-sparse-keymap)))
+        (when (fboundp 'suppress-keymap) (suppress-keymap map))
+        (define-key map "q" 'quit-window)
+        (define-key map " " 'scroll-up-command)
+        (define-key map "\d" 'scroll-down-command)
+        (define-key map "?" 'describe-mode)
+        (define-key map "h" 'describe-mode)
+        (define-key map ">" 'end-of-buffer)
+        (define-key map "<" 'beginning-of-buffer)
+        (define-key map "g" 'revert-buffer)
+        map)
+      "Keymap for `special-mode'.
+Ported from real Emacs `simple.el' -- see the comment above this block."))
+  (put 'special-mode 'mode-class 'special)
+  (define-derived-mode special-mode nil "Special"
+    "Parent major mode from which special major modes should inherit.
+
+A special major mode is intended to view specially formatted data
+rather than files.  These modes usually use read-only buffers."
+    (setq buffer-read-only t)))
 
 (provide 'emacs-mode-builtins)
 

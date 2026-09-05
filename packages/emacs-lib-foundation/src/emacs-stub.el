@@ -305,6 +305,26 @@ single-frame backends (= some bare-minimum TUIs) ship."
   (ignore display)
   (not (null emacs-display-system)))
 
+;; T62: `display-mouse-p' was void anywhere in src/ (real init load-matrix
+;; hit `(void-function display-mouse-p)' for dashboard, embark and
+;; embark-consult).  Real Emacs's own `display-mouse-p' (frame.el)
+;; unconditionally reports a mouse for graphic frame types (x/pgtk/w32/ns/
+;; haiku) and, for a text terminal, only when a live `xterm-mouse-mode' /
+;; `gpm-mouse-mode' tracking mode is active -- which this runtime does not
+;; yet model.  Following `emacs-display-graphic-p''s own precedent (a `tui'
+;; backend is not a graphic one), this MVP reports non-nil only for a real
+;; graphic backend and nil otherwise (batch/headless/pre-bootstrap and
+;; `tui'), matching stock Emacs's own default (no mouse) until a tracking
+;; mode is turned on -- verified against host Emacs 31.1's batch value
+;; (nil, since no window-system and no xterm-mouse-mode/gpm-mouse-mode).
+(defun emacs-display-mouse-p (&optional display)
+  "MVP: report a mouse only for a live graphic backend.
+See the comment above this function for why a `tui' backend
+conservatively reports nil, matching stock Emacs's own tty default."
+  (ignore display)
+  (and emacs-display-system
+       (not (eq emacs-display-system 'tui))))
+
 (defun emacs-stub--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this shim layer."
   (or (not (boundp 'emacs-version))
@@ -321,6 +341,9 @@ single-frame backends (= some bare-minimum TUIs) ship."
 
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
+
+(when (emacs-stub--install-function-p 'display-mouse-p)
+  (defalias 'display-mouse-p #'emacs-display-mouse-p))
 
 ;; Doc 33 item 244 (M2 completion blocker): `char-displayable-p' is void
 ;; in the standalone runtime, so a `defcustom'/`defvar' default value

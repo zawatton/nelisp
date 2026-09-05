@@ -19,7 +19,6 @@
 ;; DEFERRED (need core/interpreter support or a whole third-party subsystem --
 ;; NOT stubbed here; see the report accompanying this change):
 ;;   `unicode-property-table-internal'  (needs C char-table / charprop data)
-;;   `add-variable-watcher'             (needs a core set/makunbound hook)
 ;;   `plz-media-type:application/json'  (plz.el media-type object, package data)
 ;;   `nnheader-parse-nov'               (gnus overview subsystem: mail-header
 ;;                                       cl-defstruct + 5 nov reader macros +
@@ -37,6 +36,13 @@
 ;;   `defined-colors'                   (tty/x color subsystem)
 ;;   `if--setter'                       (unknown provenance; cannot source real
 ;;                                       semantics)
+;; `add-variable-watcher' / `remove-variable-watcher' / `get-variable-watchers'
+;; (T62 + T63) are provided below as an explicit, graceful store-only port:
+;; registration/query/removal match stock Emacs's data shape and order
+;; exactly, but no core `set'/`setq'/`let' hook exists in this runtime to
+;; ever invoke a registered watch function -- see the dedicated comment
+;; ahead of the definitions for the full rationale.
+;;
 ;; `native-compile-async' is provided below as an explicit, graceful "native
 ;; compilation unavailable" no-op that returns nil (it is not a placeholder for
 ;; missing behaviour -- there simply is no native compiler in this runtime).
@@ -659,6 +665,78 @@ toggles the current state."
 Accepts the stock signature FILES &optional RECURSIVELY LOAD SELECTOR and
 returns nil (no asynchronous compilation is scheduled)."
     nil))
+
+;;;; --- data.c: add-variable-watcher / remove-variable-watcher /
+;;;;             get-variable-watchers (T62 + T63) -------------------
+
+;; Was DEFERRED (see the Commentary list above and the matching notes in
+;; `emacs-parity-shims.el' / `emacs-parity-fns2.el'): real Emacs fires every
+;; registered watch function -- called as (WATCH-FUNCTION SYMBOL NEWVAL
+;; OPERATION WHERE) -- from inside the core `set'/`setq'/`let'-binding/
+;; `makunbound' primitives, and this runtime's `set' has no such hook, so a
+;; firing port is not possible without interpreter-core changes (out of
+;; this consumer repo's scope).  The real init load-matrix hit
+;; `(void-function add-variable-watcher)' for `mixed-pitch', `whitespace'
+;; and `solaire-mode' -- all three call it unconditionally at top level
+;; (e.g. `whitespace.el': `(dolist (var ...) (add-variable-watcher var
+;; #'whitespace--variable-watcher))'), so the failure being fixed here is
+;; `void-function' during `require', not missing reactive behaviour: a
+;; store-only port (registration / query / removal match stock Emacs's own
+;; data shape and order exactly; the stored function is simply never
+;; invoked) is enough for those `require's to succeed.  Verified against
+;; host Emacs 31.1: `add-variable-watcher' returns nil; re-adding a
+;; function already registered for SYMBOL is a no-op (not moved, not
+;; duplicated); `get-variable-watchers' returns the registered functions
+;; most-recently-added-first; `remove-variable-watcher' deletes by `equal'
+;; and also returns nil; an unset SYMBOL reports an empty list.
+
+(unless (boundp 'emacs-parity-misc--variable-watchers)
+  (defvar emacs-parity-misc--variable-watchers (make-hash-table :test 'eq)
+    "SYMBOL -> registered watch functions, most-recently-added-first.
+Store-only bookkeeping for `add-variable-watcher' et al.; see the comment
+above -- no core `set'/`setq'/`let' hook actually invokes these."))
+
+(defun emacs-parity-misc--remove-equal (item list)
+  "Return LIST with every element `equal' to ITEM removed, order preserved."
+  (let (out)
+    (dolist (x list) (unless (equal x item) (push x out)))
+    (nreverse out)))
+
+(unless (fboundp 'add-variable-watcher)
+  (defun add-variable-watcher (symbol watch-function)
+    "Store-only compatibility port of `add-variable-watcher'.
+Registers WATCH-FUNCTION for SYMBOL with the same data shape and
+insertion-order semantics as stock Emacs (a function already registered
+for SYMBOL is left in place, not moved or duplicated) so
+`get-variable-watchers' and `remove-variable-watcher' behave identically
+to the real primitive.  WATCH-FUNCTION is never actually invoked: see the
+file commentary above for why no faithful firing port exists in this
+runtime.  Returns nil, like the real primitive."
+    (let ((existing (gethash symbol emacs-parity-misc--variable-watchers)))
+      (unless (member watch-function existing)
+        (puthash symbol (cons watch-function existing)
+                 emacs-parity-misc--variable-watchers)))
+    nil))
+
+(unless (fboundp 'remove-variable-watcher)
+  (defun remove-variable-watcher (symbol watch-function)
+    "Store-only compatibility port of `remove-variable-watcher'.
+Removes WATCH-FUNCTION (compared with `equal', matching stock Emacs) from
+SYMBOL's registered watchers.  Returns nil, like the real primitive."
+    (puthash symbol
+             (emacs-parity-misc--remove-equal
+              watch-function
+              (gethash symbol emacs-parity-misc--variable-watchers))
+             emacs-parity-misc--variable-watchers)
+    nil))
+
+(unless (fboundp 'get-variable-watchers)
+  (defun get-variable-watchers (symbol)
+    "Store-only compatibility port of `get-variable-watchers'.
+Returns SYMBOL's registered watch functions, most-recently-added-first
+(nil for a SYMBOL with none registered), matching stock Emacs's data
+shape exactly."
+    (gethash symbol emacs-parity-misc--variable-watchers)))
 
 (provide 'emacs-parity-misc)
 

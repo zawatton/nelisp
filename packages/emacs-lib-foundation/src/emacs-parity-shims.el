@@ -13,9 +13,10 @@
 ;; from `nemacs-next-session.el'.
 ;;
 ;; Deferred (need core/interpreter support or a third-party package -- NOT
-;; stubbed here): `add-variable-watcher' (needs a core set/makunbound hook),
-;; `transient-font-lock-keywords' (transient.el data), general-charset
-;; `make-char' (mule tables), `make-mail-user-agent' (not a real Emacs fn).
+;; stubbed here): `transient-font-lock-keywords' (transient.el data),
+;; general-charset `make-char' (mule tables), `make-mail-user-agent' (not a
+;; real Emacs fn).  `add-variable-watcher' (T62 + T63) is no longer deferred
+;; -- see the store-only port in `emacs-parity-misc.el'.
 
 ;;; Code:
 

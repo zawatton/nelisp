@@ -34,9 +34,11 @@
 ;; `global-visual-line-mode'
 ;; -> simple.el minor-mode family, org/transient/plz/gnus/ediff/diff/eldoc/
 ;; markdown symbols) and pure C redisplay/thread/char-table primitives
-;; (`force-window-update', `make-mutex', `unicode-property-table-internal',
-;; `add-variable-watcher') for which no faithful non-no-op elisp port exists in
-;; a headless substrate.
+;; (`force-window-update', `make-mutex', `unicode-property-table-internal')
+;; for which no faithful non-no-op elisp port exists in a headless substrate.
+;; `add-variable-watcher' (T62 + T63) is no longer deferred -- a store-only
+;; port (registration/query/removal, never firing) lives in
+;; `emacs-parity-misc.el'.
 
 ;;; Code:
 
@@ -128,6 +130,61 @@ If optional BASE-ONLY is non-nil, only base coding systems are listed."
 See the commentary above this definition for why nil is the honest
 answer rather than a fabricated property value."
     nil))
+
+;;;; --- mule.el: define-translation-table (loader wiring) --------------
+;; T62: `define-translation-table' -- and its companions
+;; `make-translation-table' / `make-translation-table-from-alist' --
+;; already have a real, faithful implementation in
+;; `emacs-translation-table.el' (written for the `cp51932'/`eucjp-ms'
+;; lightweight coding-system facades), but nothing on the default boot
+;; path ever requires that file: `cp51932.el'/`eucjp-ms.el' are the only
+;; other requirers, and neither is part of the bundle either.  The load
+;; matrix hit `(void-function define-translation-table)' for `cp5022x'
+;; (a user ELPA package outside this repo, not vendored here, that calls
+;; `define-translation-table' at top level).  `emacs-parity-fns2.el' is
+;; already ahead of every vendor/user package in the bundle order (same
+;; reasoning as `coding-system-get' above), so requiring the real owner
+;; module from here -- rather than duplicating its logic -- makes the
+;; whole translation-table surface available before any coding-system
+;; package can reference it.
+(require 'emacs-translation-table)
+
+;;;; --- vc-hooks.el: vc-directory-exclusion-list (loader wiring) -------
+;; T62: `vc-directory-exclusion-list' -- a real, faithful defcustom in the
+;; vendored `vendor/emacs-lisp/vc/vc-hooks.el' -- was void on the default
+;; boot path even though `vendor/emacs-lisp/vc/vc.el' text is part of the
+;; bundle and itself starts with `(require 'vc-hooks)': that require call
+;; is only *text* inside the concatenated bundle, and the bundle
+;; generator does not follow vc.el's own runtime requires when
+;; assembling the static file list, so vc-hooks.el's content never
+;; actually joined the bundle.  The load matrix hit
+;; `(void-variable vc-directory-exclusion-list)' for `projectile',
+;; `magit-todos' and `consult-projectile' -- none of which touch
+;; `emacs-vc.el''s own API, but all of which transitively require real
+;; Emacs `vc'/`vc-hooks'.
+;;
+;; This fix lives here rather than in `emacs-vc.el' (which is positioned
+;; earlier in the bundle) because `vc-hooks.el' itself needs
+;; `locate-dominating-stop-dir-regexp', defined by `emacs-parity-shims.el'
+;; a few thousand lines above this file in the bundle -- triggering the
+;; load from `emacs-vc.el' hit that second, later void-variable instead.
+;; `emacs-parity-fns2.el' is already ahead of every vendor/user package
+;; (same reasoning as `coding-system-get' / `button-buffer-map', T52).
+;;
+;; A plain `(require 'vc-hooks)' still fails here with "Cannot open
+;; load file", because this form runs while the concatenated bootstrap
+;; bundle itself is being replayed, and the bundle's own contract
+;; deliberately sets `load-file-name' to nil throughout (see
+;; `build/nemacs-bootstrap.el''s header comment) -- `default-directory'
+;; (set to the repo root by `bin/nemacs' before the bundle loads) is the
+;; bundle-safe way to resolve a sibling path, the same fallback
+;; `emacs-stub--load-directory' already relies on.  Loading the vendor
+;; file directly by that absolute path, bypassing `require''s
+;; `load-path' search, is robust to the bundle-replay context (see the
+;; identical `tool-bar.el' fix in `emacs-frame-builtins.el', T62).
+(unless (featurep 'vc-hooks)
+  (load (expand-file-name "vendor/emacs-lisp/vc/vc-hooks.el" default-directory)
+        nil 'no-message t t))
 
 ;;;; --- editfns.c: replace-buffer-contents (behavioral port) ----------
 ;; The C primitive minimizes the edit set; a headless substrate has no such
