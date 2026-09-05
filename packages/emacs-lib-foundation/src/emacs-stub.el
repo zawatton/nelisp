@@ -679,7 +679,8 @@ Empty elements become nil, meaning `default-directory'."
 
 (unless (boundp 'version-regexp-alist)
   (defvar version-regexp-alist
-    '(("^[-._+]$"                                           . -4)
+    '(("^[-._+ ]?snapshot$"                                 . -4)
+      ("^[-._+]$"                                           . -4)
       ("^[-._+ ]?\\(cvs\\|git\\|bzr\\|svn\\|hg\\|darcs\\)$" . -4)
       ("^[-._+ ]?unknown$"                                  . -4)
       ("^[-._+ ]?alpha$"                                    . -3)
@@ -790,6 +791,11 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
   (defun version<= (v1 v2)
     "Return non-nil when version string V1 is not newer than V2."
     (not (version< v2 v1))))
+
+(unless (fboundp 'version=)
+  (defun version= (v1 v2)
+    "Return non-nil when version string V1 is equal to V2."
+    (version-list-= (version-to-list v1) (version-to-list v2))))
 
 (unless (fboundp 'set-keyboard-coding-system)
   (defun set-keyboard-coding-system (_coding-system &optional _terminal)
