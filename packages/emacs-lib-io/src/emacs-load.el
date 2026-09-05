@@ -49,6 +49,35 @@ A cc-*.el file may `require' another (e.g. cc-fonts -> cc-langs); the head
 splice pushes the enclosing marker here and the tail splice pops it back so
 the outer file's identity is restored after the nested load returns.")
 
+  (defun emacs-load--byte-indexed-runtime-p ()
+    "Return non-nil when the standalone loader should scan byte offsets."
+    (or (fboundp 'rdf)
+        (fboundp 'nelisp--eval-source-string)
+        (not (boundp 'emacs-version))
+        (not (stringp (and (boundp 'emacs-version) emacs-version)))))
+
+  (defun emacs-load--byte-indexed-source (source)
+    "Return SOURCE in the representation preferred by standalone scanners.
+Standalone NeLisp indexes unibyte strings directly by byte.  Host Emacs keeps
+its normal multibyte representation because its character indexing is already
+constant time."
+    (if (and (emacs-load--byte-indexed-runtime-p)
+             (fboundp 'multibyte-string-p)
+             (multibyte-string-p source))
+        (string-as-unibyte source)
+      source))
+
+  (defun emacs-load--reader-slice (source start end)
+    "Return SOURCE between byte positions START and END for an Elisp reader.
+Byte-indexed standalone sources are converted back to multibyte only after the
+slice has been isolated."
+    (let ((slice (substring source start end)))
+      (if (and (emacs-load--byte-indexed-runtime-p)
+               (fboundp 'multibyte-string-p)
+               (not (multibyte-string-p slice)))
+          (string-as-multibyte slice)
+        slice)))
+
   (defun nelisp--load-skip-space-and-comments (source pos)
     "Return first non-whitespace/comment position in SOURCE at or after POS."
     (let ((len (length source))
@@ -71,6 +100,7 @@ The reader uses the same whitespace/comment skipping and closing-paren
 compatibility as the standalone normalizer so large forms still advance
 correctly when `read-from-string' stops on a trailing close paren.
 Return the last CALLBACK result."
+    (setq source (emacs-load--byte-indexed-source source))
     (let ((pos 0)
           (len (length source))
           (last nil)
@@ -79,19 +109,26 @@ Return the last CALLBACK result."
       (while (progn
                (setq pos (nelisp--load-skip-space-and-comments source pos))
                (< pos len))
-        (setq read (read-from-string source pos))
-        (let ((next (cdr read)))
-          (when (and (> next pos)
-                     (< next len)
-                     (= (aref source next) ?\)))
-            (setq next (+ next 1)))
-          (when (or (not (consp read)) (<= next pos))
-            (signal 'end-of-file
-                    (list "rewrite load reader made no progress" pos)))
-          (setq last
-                (funcall callback
-                         (nelisp--load-rewrite-defalias-form (car read))))
-          (setq pos next)
+        (let* ((form-end (emacs-load--artifact-source-form-end source pos))
+               (slice (emacs-load--reader-slice source pos form-end))
+               (slice-len (length slice)))
+          (setq read (read-from-string slice 0 slice-len))
+          (let ((next (and (consp read) (cdr read))))
+            (when (and (integerp next)
+                       (> next 0)
+                       (< next slice-len)
+                       (= (aref slice next) ?\)))
+              (setq next (+ next 1)))
+            (when (or (not (consp read))
+                      (not (integerp next))
+                      (<= next 0)
+                      (/= next slice-len))
+              (signal 'end-of-file
+                      (list "rewrite load reader made no progress" pos)))
+            (setq last
+                  (funcall callback
+                           (nelisp--load-rewrite-defalias-form (car read))))
+            (setq pos form-end))
           (setq count (+ count 1))
           (when (and load-garbage-collect-interval
                      (> load-garbage-collect-interval 0)
@@ -419,14 +456,16 @@ that threshold is disabled."
 
   (defun emacs-load--read-file-string (path)
     "Return PATH contents as a string, or nil when unreadable."
-    (cond
-     ((fboundp 'nelisp--syscall-read-file)
-      (nelisp--syscall-read-file path))
-     ((file-readable-p path)
-      (with-temp-buffer
-        (insert-file-contents path)
-        (buffer-string)))
-     (t nil)))
+    (let ((source
+           (cond
+            ((fboundp 'nelisp--syscall-read-file)
+             (nelisp--syscall-read-file path))
+            ((file-readable-p path)
+             (with-temp-buffer
+               (insert-file-contents path)
+               (buffer-string)))
+            (t nil))))
+      (and source (emacs-load--byte-indexed-source source))))
 
   (defun emacs-load--artifact-load-path-present-p (path seen)
     "Return non-nil when PATH already appears in SEEN."
@@ -475,7 +514,7 @@ fall back to host `string-search' otherwise."
       (aref string index))))
 
   (defun emacs-load--artifact-source-char-at (string index)
-    "Return character at INDEX from SOURCE string STRING."
+    "Return byte-indexed character at INDEX from SOURCE string STRING."
     (aref string index))
 
   (defun emacs-load--artifact-source-skip-ws-comments (source pos)
@@ -483,14 +522,13 @@ fall back to host `string-search' otherwise."
     (let ((len (length source))
           (done nil))
       (while (and (< pos len) (not done))
-        (let ((ch (emacs-load--artifact-source-char-at source pos)))
+        (let ((ch (aref source pos)))
           (cond
            ((or (= ch ?\s) (= ch ?\t) (= ch ?\n) (= ch ?\r) (= ch ?\f))
             (setq pos (1+ pos)))
            ((= ch ?\;)
             (while (and (< pos len)
-                        (not (= (emacs-load--artifact-source-char-at source pos)
-                                ?\n)))
+                        (not (= (aref source pos) ?\n)))
               (setq pos (1+ pos))))
            (t
             (setq done t)))))
@@ -500,7 +538,7 @@ fall back to host `string-search' otherwise."
     "Return last non-whitespace position in SOURCE at or before POS."
     (let ((done nil))
       (while (and (>= pos 0) (not done))
-        (let ((ch (emacs-load--artifact-source-char-at source pos)))
+        (let ((ch (aref source pos)))
           (if (or (= ch ?\s) (= ch ?\t) (= ch ?\n) (= ch ?\r) (= ch ?\f))
               (setq pos (1- pos))
             (setq done t))))
@@ -521,7 +559,7 @@ fall back to host `string-search' otherwise."
               (escaped nil)
               (done nil))
           (while (and (< i len) (not done))
-            (let ((ch (emacs-load--artifact-source-char-at source i)))
+            (let ((ch (aref source i)))
               (cond
                (escaped
                 (setq escaped nil))
@@ -552,7 +590,7 @@ fall back to host `string-search' otherwise."
             (escaped nil)
             (done nil))
         (while (and (< i len) (not done))
-          (let ((ch (emacs-load--artifact-source-char-at source i)))
+          (let ((ch (aref source i)))
             (cond
              (in-string
               (cond
@@ -570,8 +608,7 @@ fall back to host `string-search' otherwise."
               (setq in-string t))
              ((= ch ?\;)
               (while (and (< i len)
-                          (not (= (emacs-load--artifact-source-char-at source i)
-                                  ?\n)))
+                          (not (= (aref source i) ?\n)))
                 (setq i (1+ i))))
              ((or (= ch ?\() (= ch ?\[))
               (setq depth (1+ depth)))
@@ -590,7 +627,7 @@ fall back to host `string-search' otherwise."
           (i pos)
           (done nil))
       (while (and (< i len) (not done))
-        (let ((ch (emacs-load--artifact-source-char-at source i)))
+        (let ((ch (aref source i)))
           (if (or (= ch ?\s) (= ch ?\t) (= ch ?\n) (= ch ?\r)
                   (= ch ?\f) (= ch ?\;) (= ch ?\() (= ch ?\))
                   (= ch ?\[) (= ch ?\]))
@@ -659,14 +696,16 @@ prefix space."
 
   (defun emacs-load--artifact-source-read-form (source pos &optional end)
     "Read one form from SOURCE at POS and return it with the new position."
-    (let ((read (if end
-                    (read-from-string source pos end)
-                  (read-from-string source pos))))
+    (let* ((form-end (or end
+                         (emacs-load--artifact-source-form-end source pos)))
+           (slice (emacs-load--reader-slice source pos form-end))
+           (read (read-from-string slice 0 (length slice))))
       (unless (consp read)
         (error "invalid artifact form at %S" pos))
-      (when (<= (cdr read) pos)
+      (when (or (<= (cdr read) 0)
+                (/= (cdr read) (length slice)))
         (error "invalid artifact form at %S" pos))
-      (cons (car read) (cdr read))))
+      (cons (car read) form-end)))
 
   (defun emacs-load--artifact-source-read-form-value (source range path keyword)
     "Read VALUE from SOURCE at RANGE for KEYWORD in PATH."
@@ -690,7 +729,7 @@ prefix space."
       (error "missing %S in %s" keyword path))
     (let* ((start (car range))
            (end (cdr range))
-           (slice (substring source start end)))
+           (slice (emacs-load--reader-slice source start end)))
       (if (fboundp 'nelisp--read-all-from-string-native)
           (let ((forms (condition-case caught
                            (nelisp--read-all-from-string-native slice)
@@ -714,7 +753,7 @@ Use ordinary `read-from-string' on the slice and reject trailing input."
       (error "missing %S in %s" keyword path))
     (let* ((start (car range))
            (end (cdr range))
-           (slice (substring source start end))
+           (slice (emacs-load--reader-slice source start end))
            (read (read-from-string slice 0 (length slice))))
       (unless (and (consp read)
                    (= (cdr read) (length slice)))
@@ -733,7 +772,7 @@ Use ordinary `read-from-string' on the slice and reject trailing input."
            source start end)
           (condition-case caught
               (let* ((forms (nelisp--read-all-from-string-native
-                             (substring source start end))))
+                             (emacs-load--reader-slice source start end))))
                 (unless (and (consp forms) (null (cdr forms)))
                   (error "invalid %S in %s" keyword path))
                 (let ((value (car forms)))
@@ -927,7 +966,8 @@ processed."
                         :expected-items slice-form-count
                         :error (error-message-string caught)))
             (error "invalid %S in %s" keyword path)))
-         (let* ((slice (substring source slice-start slice-end))
+         (let* ((slice (emacs-load--reader-slice
+                        source slice-start slice-end))
                 (slice-byte-length
                  (emacs-load--artifact-byte-length slice))
                 (vector-response-p
@@ -1859,7 +1899,7 @@ non-nil return values instead of retaining the original section objects."
        ((emacs-load--artifact-native-sections-use-native-reader-p source start end)
         (let* ((forms (condition-case nil
                           (nelisp--read-all-from-string-native
-                           (substring source start end))
+                           (emacs-load--reader-slice source start end))
                         (error
                          (error "invalid native sections in %s" path))))
                (value nil))
@@ -2346,6 +2386,28 @@ Return a list of the matching native section, base address, and metadata."
            item path section base))))
     payload)
 
+  (defun emacs-load--artifact-read-payload (content path prefix-end)
+    "Read one complete artifact payload from CONTENT after PREFIX-END.
+The byte-indexed CONTENT is scanned first, then only the isolated payload is
+converted for `read-from-string'.  Reject any non-comment trailing input."
+    (let* ((content-length (length content))
+           (payload-start (emacs-load--artifact-source-skip-ws-comments
+                           content prefix-end))
+           (payload-end (emacs-load--artifact-source-form-end
+                         content payload-start))
+           (trailing (emacs-load--artifact-source-skip-ws-comments
+                      content payload-end))
+           (slice (emacs-load--reader-slice
+                   content payload-start payload-end))
+           (read (read-from-string slice 0 (length slice))))
+      (unless (= trailing content-length)
+        (error "invalid trailing data in %s" path))
+      (unless (and (consp read)
+                   (= (cdr read) (length slice))
+                   (listp (car read)))
+        (error "invalid artifact payload in %s" path))
+      (car read)))
+
   (defun emacs-load--artifact-replay-payload-streaming (content path prefix-end)
     "Replay a large artifact CONTENT without materializing the full payload."
     (let* ((byte-length (emacs-load--artifact-byte-length content))
@@ -2372,11 +2434,13 @@ Return a list of the matching native section, base address, and metadata."
            (module-pos nil)
            (module-end nil))
       (unless (and (< payload-start content-length)
-                   (= (aref content payload-start) ?\())
+                   (= (emacs-load--artifact-source-char-at
+                       content payload-start) ?\())
         (error "invalid artifact payload in %s" path))
       (unless (and (<= 0 payload-close)
                    (< payload-close content-length)
-                   (= (aref content payload-close) ?\)))
+                   (= (emacs-load--artifact-source-char-at
+                       content payload-close) ?\)))
         (error "unterminated artifact payload in %s" path))
       (setq field-names
             (let ((entries nil))
@@ -2508,13 +2572,10 @@ Return a list of the matching native section, base address, and metadata."
                                 emacs-load-artifact-replay-streaming-threshold))
                         (emacs-load--artifact-replay-payload-streaming
                          content path (length prefix))
-                      (let ((read (read-from-string content (length prefix))))
-                        (unless (and (consp read) (>= (cdr read) (length prefix)))
-                          (error "invalid artifact payload in %s" path))
-                        (let ((payload (car read)))
-                          (unless (listp payload)
-                            (error "invalid artifact payload in %s" path))
-                          (emacs-load--artifact-replay-payload-small payload path))))))
+                      (emacs-load--artifact-replay-payload-small
+                       (emacs-load--artifact-read-payload
+                        content path (length prefix))
+                       path))))
             (emacs-load--artifact-replay-pressure-maybe-gc)
             result))
       (let ((emacs-load--artifact-replay-depth (1+ emacs-load--artifact-replay-depth)))
@@ -2531,14 +2592,10 @@ Return a list of the matching native section, base address, and metadata."
                       emacs-load-artifact-replay-streaming-threshold))
               (emacs-load--artifact-replay-payload-streaming
                content path (length prefix))
-            (let ((read (read-from-string content (length prefix)))
-                  (result nil))
-              (unless (and (consp read) (>= (cdr read) (length prefix)))
-                (error "invalid artifact payload in %s" path))
-              (let ((payload (car read)))
-                (unless (listp payload)
-                  (error "invalid artifact payload in %s" path))
-                (emacs-load--artifact-replay-payload-small payload path)))))))))
+            (emacs-load--artifact-replay-payload-small
+             (emacs-load--artifact-read-payload
+              content path (length prefix))
+             path)))))))
 
   ;; NOTE (2026-07-12): a retry-with-rewrite fallback (rewriting top-level
   ;; `defalias' to `nelisp--defalias-late' on load failure) was attempted
@@ -2583,37 +2640,7 @@ subtrees are left untouched."
     "Retry loader for SOURCE with top-level `defalias' rewritten late.
 This interpreted fallback is intentionally slow and is a future native
 optimization candidate; keep the normal load path on the fast reader."
-    (let ((nelisp--load-rw-pos 0)
-          (nelisp--load-rw-len (length source))
-          (nelisp--load-rw-last nil)
-          (nelisp--load-rw-count 0)
-          (nelisp--load-rw-read nil))
-      (while (progn
-               (setq nelisp--load-rw-pos
-                     (nelisp--load-skip-space-and-comments
-                      source nelisp--load-rw-pos))
-               (< nelisp--load-rw-pos nelisp--load-rw-len))
-        (setq nelisp--load-rw-read
-              (read-from-string source nelisp--load-rw-pos))
-        (when (or (not (consp nelisp--load-rw-read))
-                  (<= (cdr nelisp--load-rw-read) nelisp--load-rw-pos))
-            (signal 'end-of-file
-                    (list "rewrite load reader made no progress"
-                          nelisp--load-rw-pos)))
-        (setq nelisp--load-rw-last
-              (eval
-               (nelisp--load-rewrite-defalias-form
-                (car nelisp--load-rw-read))))
-        (setq nelisp--load-rw-pos (cdr nelisp--load-rw-read))
-        (setq nelisp--load-rw-count (+ nelisp--load-rw-count 1))
-        (when (and load-garbage-collect-interval
-                   (> load-garbage-collect-interval 0)
-                   (= (% nelisp--load-rw-count
-                         load-garbage-collect-interval)
-                      0)
-                   (fboundp 'garbage-collect))
-          (garbage-collect)))
-      nelisp--load-rw-last))
+    (nelisp--load-map-source-forms source #'eval))
 
   (defun emacs-load--regular-file-p (resolved)
     "Return non-nil when RESOLVED names an existing non-directory file."
