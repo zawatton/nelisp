@@ -43,6 +43,88 @@
       (should (emacs-window-builtins--install-function-p
                'emacs-window-builtins-test--missing)))))
 
+;;;; T96 -- bridge must override a stub that already looks "live"
+;;
+;; T87/T89 found that `emacs-stub.el' installs several window.c names
+;; (`selected-window', `windowp', `window-live-p', `window-list',
+;; `frame-selected-window', `set-window-buffer', `window-buffer') as
+;; individual, untagged `(unless (fboundp ...))' stubs, and
+;; `emacs-stub-bulk.el''s bulk dolist installs many more (`next-window',
+;; `window-height', `window-start', `select-window', `display-buffer',
+;; `recenter', `scroll-up' etc) -- both load before this file in the
+;; standalone bootstrap.  The old gate only asked
+;; `emacs-window-builtins--function-cell-live-p', which is true for any
+;; already-fboundp, non-erroring function -- true for those stubs too --
+;; so it silently kept the stub instead of installing the real bridge.
+;; `install-p-uses-function-cell' above only proves the gate installs
+;; when the cell is genuinely empty; it does not reproduce the actual
+;; defect, which requires the cell to already look live.  This test
+;; reproduces that exact shape and pins the fix: on standalone
+;; (`nl-write-file' fboundp), the gate must return non-nil even when the
+;; target symbol already has a perfectly callable function cell.
+
+(ert-deftest emacs-window-builtins-test/install-p-overrides-already-live-stub-on-standalone ()
+  "On standalone, the bridge must win even over an already-`fboundp',
+non-erroring stub (the actual `emacs-stub.el'/`emacs-stub-bulk.el' shape)."
+  (fset 'emacs-window-builtins-test--already-live-stub (lambda (&rest _) nil))
+  (unwind-protect
+      (let ((original-fboundp (symbol-function 'fboundp)))
+        ;; Sanity: without the standalone marker, an already-live cell
+        ;; is left alone (matches real host behavior and the
+        ;; pre-T96-fix standalone behavior this test guards against).
+        (should-not (emacs-window-builtins--install-function-p
+                     'emacs-window-builtins-test--already-live-stub))
+        (cl-letf (((symbol-function 'fboundp)
+                   (lambda (symbol)
+                     (or (eq symbol 'nl-write-file)
+                         (funcall original-fboundp symbol)))))
+          (should (emacs-window-builtins--install-function-p
+                   'emacs-window-builtins-test--already-live-stub))))
+    (fmakunbound 'emacs-window-builtins-test--already-live-stub)))
+
+(ert-deftest emacs-window-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  "Every window.c bridge name is gated by `--install-function-p', and the
+gate itself carries the NeLisp-only standalone marker so a name already
+claimed by an `emacs-stub.el'/`emacs-stub-bulk.el' stub still gets
+overridden on standalone (see the override test above)."
+  (should (fboundp 'emacs-window-builtins--install-function-p))
+  (let* ((file (locate-library "emacs-window-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 (- (length file) 1))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward "(defun emacs-window-builtins--install-function-p" nil t))
+      (goto-char (point-min))
+      (should (search-forward "(fboundp 'nl-write-file)" nil t))
+      (goto-char (point-min))
+      (should (search-forward "(fboundp 'nelisp--write-stdout-bytes)" nil t))
+      (dolist (sym '(balance-windows current-window-configuration delete-other-windows
+                     delete-window delete-windows-on display-buffer
+                     frame-selected-window get-buffer-window get-buffer-window-list
+                     next-window one-window-p other-window
+                     pop-to-buffer pop-to-buffer-same-window pos-visible-in-window-p
+                     previous-window quit-window recenter
+                     scroll-down scroll-down-command scroll-up
+                     scroll-up-command selected-window select-window
+                     set-window-buffer set-window-configuration set-window-next-buffers
+                     set-window-parameter set-window-point set-window-prev-buffers
+                     set-window-start split-window split-window-below
+                     split-window-horizontally split-window-right split-window-vertically
+                     switch-to-buffer-other-window temp-buffer-window-setup temp-buffer-window-show
+                     window-body-height window-body-width window-buffer
+                     window-configuration-p window-end window-height
+                     window-list window-list-1 window-live-p
+                     window-max-chars-per-line window-next-buffers windowp
+                     window-parameter window-point window-prev-buffers
+                     window-start window-valid-p window-width))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-window-builtins--install-function-p '%s)" sym)
+                 nil t))))))
+
 ;;;; B. Substrate-direct: selected-window is windowp
 
 (ert-deftest emacs-window-builtins-test/prefixed-selected-window-is-windowp ()
