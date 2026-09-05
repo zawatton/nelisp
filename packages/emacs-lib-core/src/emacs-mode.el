@@ -163,17 +163,34 @@ mode-tracking vars.  Returns nil."
 
 (defmacro emacs-mode-define-derived-mode
     (child parent name &optional doc &rest body)
-  "Track H MVP `define-derived-mode'.
+  "Track H `define-derived-mode', GNU-semantics MVP.
 
 CHILD = symbol naming the new mode.
 PARENT = symbol naming the parent mode (= called as a function before
-the body runs).  Pass nil to derive from `fundamental-mode'.
+the body runs).  Pass nil, or `fundamental-mode' (normalized to nil
+the same way GNU's `define-derived-mode' does — neither has a
+MODE-map/-syntax-table of its own to chain from), to derive from no
+particular parent.
 NAME = display string (= written to `mode-name').
 DOC = docstring (= optional).
-BODY = forms run AFTER the parent + before the hook fires.
+BODY = optional leading KEYWORD VALUE pairs (`:group', `:syntax-table',
+`:abbrev-table', `:after-hook', `:interactive' — the same keywords
+GNU's macro accepts), followed by forms run AFTER the parent + before
+the hook fires.
 
-The derived mode function is registered under CHILD's function-cell
-and a `CHILD-hook' defvar is created.
+Beyond registering the derived mode function and a `CHILD-hook'
+defvar, this also defines `CHILD-map' (a sparse keymap whose parent is
+chained from the parent mode's active local map the first time CHILD
+runs), `CHILD-syntax-table' (inheriting from the parent's active
+syntax table the first time CHILD runs, unless `:syntax-table' names
+an existing table or nil), and `CHILD-abbrev-table' (when the abbrev
+primitives are available) — matching real Emacs's `derived.el',
+including preserving an existing value across a reload (`unless
+(boundp ...)'). The keymap-parent / syntax-table-parent / abbrev-table
+:parents linkage steps are only emitted as `fboundp'-guarded runtime
+checks, so the same macro degrades gracefully (skips the linkage, but
+still creates the variable) before those substrate pieces are loaded,
+instead of signalling.
 
 Built with explicit `list'/`append' calls instead of a backquote
 template on purpose (Doc 33 §8 item 221): the standalone NeLisp
@@ -187,79 +204,206 @@ backquote-free even though host Emacs's own macro system has no such
 limitation.  See the minimal repro under tmp-diag/ (gitignored) for
 the isolation that pinned this down to backquote specifically, not
 `declare' clauses, docstring size, or nesting depth."
-  (let* ((parent-call (cond
-                       ((null parent) '(emacs-mode-fundamental-mode))
-                       (t (list parent))))
-         (hook-var (intern (format "%s-hook" child)))
-         (e-hook-var (intern (format "emacs-mode-%s-hook" child)))
-         ;; When DOC was omitted, BODY shifts left by one slot.
+  ;; GNU normalizes an explicit `fundamental-mode' parent to nil.
+  (when (eq parent 'fundamental-mode) (setq parent nil))
+  (let* (;; When DOC was omitted, it may really be the first BODY form (a
+         ;; keyword or an ordinary form) — shift it back onto BODY, same as
+         ;; GNU's own `(push docstring body)' fallback.
          (real-doc (if (stringp doc) doc nil))
          (real-body (if (stringp doc) body (cons doc body)))
-         (hook-doc (format "Hook run when entering `%s'." child))
-         (e-hook-doc (format "Substrate-internal hook run when entering `%s'."
-                              child))
-         (fn-doc (or real-doc (format "Major mode %s." child)))
-         (register-form
-          (list 'push
-                (list 'cons (list 'quote child)
-                      (list 'list :parent (list 'quote parent)
-                            :name name
-                            :doc real-doc
-                            :hook (list 'quote hook-var)))
-                'emacs-mode--registered))
-         ;; Record the parent so `derived-mode-p' can walk the major-mode
-         ;; hierarchy (e.g. org-mode -> outline-mode -> text-mode).  Faithful
-         ;; to real `define-derived-mode', which sets this symbol property.
-         (parent-property-forms
-          (when parent
-            (list (list 'put (list 'quote child)
-                        ''derived-mode-parent (list 'quote parent)))))
-         (parent-complete (make-symbol "parent-complete"))
-         ;; Keep the body/hooks outside cleanup.  The parent call still needs
-         ;; this small wrapper on the standalone cold-image path, where nested
-         ;; derived-mode parent calls can otherwise drop following forms.
-         (parent-form
-          (list 'let (list (list parent-complete nil))
-                (list 'unwind-protect
-                      (list 'progn parent-call
-                            (list 'setq parent-complete t))
+         (group nil)
+         (declare-syntax t)
+         (declare-abbrev t)
+         (interactive-flag t)
+         (after-hook-form nil)
+         (map-var (intern (format "%s-map" child)))
+         (syntax-var (intern (format "%s-syntax-table" child)))
+         (abbrev-var (intern (format "%s-abbrev-table" child))))
+    ;; Consume leading KEYWORD VALUE pairs (mirrors GNU's `(pcase (pop body)
+    ;; ...)' keyword-args loop: an unrecognized keyword still consumes one
+    ;; value and is otherwise ignored).
+    (while (keywordp (car real-body))
+      (let ((kw (car real-body)))
+        (setq real-body (cdr real-body))
+        (cond
+         ((eq kw :group) (setq group (car real-body)))
+         ((eq kw :syntax-table)
+          (setq syntax-var (car real-body) declare-syntax nil))
+         ((eq kw :abbrev-table)
+          (setq abbrev-var (car real-body) declare-abbrev nil))
+         ((eq kw :after-hook) (setq after-hook-form (car real-body)))
+         ((eq kw :interactive) (setq interactive-flag (car real-body))))
+        (setq real-body (cdr real-body))))
+    (let* ((parent-call (cond
+                         ((null parent) '(emacs-mode-fundamental-mode))
+                         (t (list parent))))
+           (hook-var (intern (format "%s-hook" child)))
+           (e-hook-var (intern (format "emacs-mode-%s-hook" child)))
+           (hook-doc (format "Hook run when entering `%s'." child))
+           (e-hook-doc (format "Substrate-internal hook run when entering `%s'."
+                                child))
+           (fn-doc (or real-doc (format "Major mode %s." child)))
+           (register-form
+            (list 'push
+                  (list 'cons (list 'quote child)
+                        (list 'list :parent (list 'quote parent)
+                              :name name
+                              :doc real-doc
+                              :hook (list 'quote hook-var)))
+                  'emacs-mode--registered))
+           ;; Record the parent so `derived-mode-p' can walk the major-mode
+           ;; hierarchy (e.g. org-mode -> outline-mode -> text-mode).  Faithful
+           ;; to real `define-derived-mode', which sets this symbol property.
+           (parent-property-forms
+            (when parent
+              (list (list 'put (list 'quote child)
+                          ''derived-mode-parent (list 'quote parent)))))
+           (group-forms
+            (when group
+              (list (list 'put (list 'quote child)
+                          ''custom-mode-group group))))
+           ;; `CHILD-map' always gets declared (GNU has no keyword to opt
+           ;; out of it); `fboundp'-guard the constructor since
+           ;; `make-sparse-keymap' may not be installed yet this early in a
+           ;; from-scratch standalone boot.
+           (map-defvar-form
+            (list 'unless (list 'boundp (list 'quote map-var))
+                  (list 'defvar map-var
+                        (list 'if (list 'fboundp (list 'quote 'make-sparse-keymap))
+                              '(make-sparse-keymap)
+                              nil)
+                        (format "Keymap for `%s'." child))))
+           (syntax-defvar-form
+            (when declare-syntax
+              (list 'unless (list 'boundp (list 'quote syntax-var))
+                    (list 'defvar syntax-var
+                          (list 'if (list 'fboundp (list 'quote 'make-syntax-table))
+                                '(make-syntax-table)
+                                nil)
+                          (format "Syntax table for `%s'." child)))))
+           (abbrev-defvar-form
+            (when declare-abbrev
+              (list 'unless (list 'boundp (list 'quote abbrev-var))
+                    (list 'progn
+                          (list 'defvar abbrev-var nil
+                                (format "Abbrev table for `%s'." child))
+                          (list 'when (list 'fboundp (list 'quote 'define-abbrev-table))
+                                (list 'define-abbrev-table
+                                      (list 'quote abbrev-var) nil))))))
+           ;; Runtime (inside the mode function), only when PARENT is
+           ;; non-nil: chain CHILD's map/syntax-table onto whatever the
+           ;; parent left active, the first time CHILD runs (an existing,
+           ;; user-set parent is left alone — same `unless' guard GNU uses).
+           (mode-class-fixup-form
+            (list 'when (list 'get (list 'quote parent) ''mode-class)
+                  (list 'put (list 'quote child) ''mode-class
+                        (list 'get (list 'quote parent) ''mode-class))))
+           (map-parent-fixup-form
+            (list 'when (list 'fboundp (list 'quote 'set-keymap-parent))
+                  (list 'unless
+                        (list 'and (list 'fboundp (list 'quote 'keymap-parent))
+                              (list 'keymap-parent map-var))
+                        (list 'when (list 'fboundp (list 'quote 'current-local-map))
+                              (list 'set-keymap-parent map-var
+                                    (list 'current-local-map))))))
+           (syntax-parent-fixup-form
+            (when declare-syntax
+              (list 'when (list 'and (list 'fboundp (list 'quote 'char-table-parent))
+                                (list 'fboundp (list 'quote 'set-char-table-parent))
+                                (list 'fboundp (list 'quote 'standard-syntax-table))
+                                (list 'fboundp (list 'quote 'syntax-table)))
+                    (list 'let (list (list 'emacs-mode--dd-parent-syntax
+                                            (list 'char-table-parent syntax-var)))
+                          (list 'unless
+                                (list 'and 'emacs-mode--dd-parent-syntax
+                                      (list 'not
+                                            (list 'eq 'emacs-mode--dd-parent-syntax
+                                                  (list 'standard-syntax-table))))
+                                (list 'set-char-table-parent syntax-var
+                                      (list 'syntax-table)))))))
+           (abbrev-parent-fixup-form
+            (when declare-abbrev
+              (list 'when (list 'and (list 'fboundp (list 'quote 'abbrev-table-get))
+                                (list 'fboundp (list 'quote 'abbrev-table-put))
+                                (list 'boundp (list 'quote 'local-abbrev-table)))
+                    (list 'unless
+                          (list 'or (list 'abbrev-table-get abbrev-var :parents)
+                                (list 'eq abbrev-var 'local-abbrev-table))
+                          (list 'abbrev-table-put abbrev-var :parents
+                                (list 'list 'local-abbrev-table))))))
+           (parent-fixup-block
+            (cons 'progn
+                  (delq nil (list mode-class-fixup-form
+                                  map-parent-fixup-form
+                                  syntax-parent-fixup-form
+                                  abbrev-parent-fixup-form))))
+           (use-local-map-form
+            (list 'when (list 'fboundp (list 'quote 'use-local-map))
+                  (list 'use-local-map map-var)))
+           (set-syntax-table-form
+            (when syntax-var
+              (list 'when (list 'fboundp (list 'quote 'set-syntax-table))
+                    (list 'set-syntax-table syntax-var))))
+           (set-local-abbrev-table-form
+            (when abbrev-var
+              (list 'when (list 'boundp (list 'quote 'local-abbrev-table))
+                    (list 'setq 'local-abbrev-table abbrev-var))))
+           (parent-complete (make-symbol "parent-complete"))
+           ;; Keep the body/hooks outside cleanup.  The parent call still needs
+           ;; this small wrapper on the standalone cold-image path, where nested
+           ;; derived-mode parent calls can otherwise drop following forms.
+           (parent-form
+            (list 'let (list (list parent-complete nil))
+                  (list 'unwind-protect
+                        (list 'progn parent-call
+                              (list 'setq parent-complete t))
+                        nil)
+                  (list 'unless parent-complete
+                        (list 'signal ''emacs-mode-error
+                              (list 'list
+                                    "Parent mode did not complete"
+                                    (list 'quote parent))))))
+           (defun-form
+            (append (list 'defun child '() fn-doc)
+                    (if interactive-flag (list '(interactive)) nil)
+                    (list parent-form)
+                    (if parent (list parent-fixup-block) nil)
+                    (list use-local-map-form)
+                    (if set-syntax-table-form (list set-syntax-table-form) nil)
+                    (if set-local-abbrev-table-form
+                        (list set-local-abbrev-table-form)
                       nil)
-                (list 'unless parent-complete
-                      (list 'signal ''emacs-mode-error
-                            (list 'list
-                                  "Parent mode did not complete"
-                                  (list 'quote parent))))))
-         (defun-form
-          (append (list 'defun child '()
-                        fn-doc
-                        '(interactive)
-                        parent-form
-                        (list 'emacs-mode-set-major-mode
-                              (list 'quote child) name))
-                  real-body
-                  ;; Some vendor mode bodies still exercise incomplete
-                  ;; buffer-local substrate paths.  Reassert the child mode
-                  ;; before hooks so hook observers see the derived mode that
-                  ;; `define-derived-mode' promised.  Keep this to direct
-                  ;; assignments: after a large vendor body the standalone
-                  ;; cold-image path has exposed crashes through an additional
-                  ;; full setter call.
-                  (list (list 'setq 'emacs-mode--current-major-mode
-                              (list 'quote child))
-                        (list 'when (list 'boundp ''major-mode)
-                              (list 'setq 'major-mode
-                                    (list 'quote child))))
-                  (list (list 'emacs-mode-run-mode-hooks
-                              (list 'quote e-hook-var)
-                              (list 'quote hook-var))
-                        nil))))
-    (append
-     (list 'progn
-           (list 'defvar hook-var nil hook-doc)
-           (list 'defvar e-hook-var nil e-hook-doc)
-           register-form)
-     parent-property-forms
-     (list defun-form (list 'quote child)))))
+                    (list (list 'emacs-mode-set-major-mode
+                                (list 'quote child) name))
+                    real-body
+                    ;; Some vendor mode bodies still exercise incomplete
+                    ;; buffer-local substrate paths.  Reassert the child mode
+                    ;; before hooks so hook observers see the derived mode that
+                    ;; `define-derived-mode' promised.  Keep this to direct
+                    ;; assignments: after a large vendor body the standalone
+                    ;; cold-image path has exposed crashes through an additional
+                    ;; full setter call.
+                    (list (list 'setq 'emacs-mode--current-major-mode
+                                (list 'quote child))
+                          (list 'when (list 'boundp ''major-mode)
+                                (list 'setq 'major-mode
+                                      (list 'quote child))))
+                    (list (list 'emacs-mode-run-mode-hooks
+                                (list 'quote e-hook-var)
+                                (list 'quote hook-var)))
+                    (if after-hook-form (list after-hook-form) nil)
+                    (list nil))))
+      (append
+       (list 'progn
+             (list 'defvar hook-var nil hook-doc)
+             (list 'defvar e-hook-var nil e-hook-doc)
+             register-form
+             map-defvar-form)
+       (if syntax-defvar-form (list syntax-defvar-form) nil)
+       (if abbrev-defvar-form (list abbrev-defvar-form) nil)
+       parent-property-forms
+       group-forms
+       (list defun-form (list 'quote child))))))
 
 ;;;; --- auto-mode-alist + set-auto-mode -------------------------------
 
