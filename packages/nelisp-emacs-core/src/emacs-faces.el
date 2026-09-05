@@ -233,6 +233,38 @@ Returns a flat plist or nil."
     (let ((entry (or default-entry t-entry first-entry)))
       (and entry (emacs-faces--entry-attrs entry)))))
 
+(defconst emacs-faces--x-resource-attrs
+  '(:family :foundry :width :height :weight :slant :foreground
+    :distant-foreground :background :overline :strike-through :box
+    :underline :inverse-video :extend :stipple :bold :italic :font
+    :inherit)
+  "Recognized `defface'/theme attribute keywords.
+Mirrors the keys of GNU Emacs's `face-x-resources' (faces.el).  Used by
+`emacs-faces--spec-set-2' to filter a raw face spec attribute plist the
+same way `face-spec-set-2' does.")
+
+(defun emacs-faces--spec-set-2 (face frame face-attrs)
+  "Apply FACE-ATTRS (a raw, possibly-malformed plist) to FACE on FRAME.
+Ports GNU Emacs's `face-spec-set-2' (faces.el): walk FACE-ATTRS two
+cells at a time, keeping only the pairs whose key is a recognized
+face attribute, then hand the filtered, well-formed plist to
+`emacs-faces-set-attribute'.
+
+Host `face-spec-set-2' advances by `cddr' regardless of whether the
+current pair is recognized, so a spec with a stray unpaired trailing
+token — e.g. embark.el's `(:inherit shadow :strike-through t italic)',
+which is missing a `:slant' keyword before `italic' — never signals:
+the unrecognized \"attribute\" `italic' (and its absent value) is
+silently dropped instead of reaching `set-face-attribute'."
+  (let (attrs)
+    (while face-attrs
+      (when (memq (car face-attrs) emacs-faces--x-resource-attrs)
+        (push (car face-attrs) attrs)
+        (push (cadr face-attrs) attrs))
+      (setq face-attrs (cddr face-attrs)))
+    (when attrs
+      (apply #'emacs-faces-set-attribute face frame (nreverse attrs)))))
+
 (defmacro emacs-faces-defface (name spec _doc &rest _opts)
   "Register face NAME with the SPEC's catch-all attributes.
 DOC and OPTS (= :group / :version / :package-version) are
@@ -241,8 +273,7 @@ accepted for API parity but ignored in the MVP."
     `(progn
        (emacs-faces-make-face ',name)
        ,@(when attrs
-           `((apply #'emacs-faces-set-attribute
-                    ',name nil ',attrs)))
+           `((emacs-faces--spec-set-2 ',name nil ',attrs)))
 	 ',name)))
 
 ;;;; --- Custom theme subset -----------------------------------------------
@@ -306,6 +337,12 @@ should pass NO-CONFIRM to `load-theme' from init.el or set this to t.")
 (defun custom-theme-p (theme)
   "Return non-nil when THEME has been declared."
   (and (symbolp theme) (memq theme custom-known-themes)))
+
+(defun custom-theme-enabled-p (theme)
+  "Return non-nil if THEME is enabled.
+Ports GNU Emacs's `custom-theme-enabled-p' (custom.el), a `defsubst'
+over `custom-enabled-themes'."
+  (memq theme custom-enabled-themes))
 
 (defun custom-check-theme (theme)
   "Signal unless THEME has been declared."
@@ -428,7 +465,7 @@ settings for already-bound variables."
 
 (defun disable-theme (theme)
   "Disable THEME and expose lower-precedence theme or defface defaults."
-  (when (memq theme custom-enabled-themes)
+  (when (custom-theme-enabled-p theme)
     (dolist (setting (get theme 'theme-settings))
       (let ((prop (nth 0 setting))
             (symbol (nth 1 setting)))

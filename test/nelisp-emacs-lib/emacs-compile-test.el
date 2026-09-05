@@ -147,6 +147,58 @@
                           compilation-error-regexp-alist)))
     (should (= (1+ before) (length extended)))))
 
+;;;; --- compilation-minor-mode-map (T102) ------------------------------
+
+;; Was void anywhere in src/ for the same reason as
+;; `compilation-error-regexp-alist' above: `src/compile.el' installs this
+;; file's reduced `emacs-compile' engine on the standalone runtime
+;; instead of loading the full real `progmodes/compile.el', so that
+;; vendor file's `compilation-minor-mode-map' defvar never runs.  The
+;; load matrix hit `(void-variable compilation-minor-mode-map)' for
+;; `magit-todos', whose dependency `grep.el' does `(set-keymap-parent
+;; map compilation-minor-mode-map)' at top level while building
+;; `grep-mode-map'.  Unlike `compilation-error-regexp-alist' (a
+;; deliberately reduced value -- see that defvar's own commentary), the
+;; keymap DATA other packages bind into is cheap, static, and can be
+;; ported at full fidelity: bindings and parentage are copied verbatim
+;; from real Emacs's `progmodes/compile.el' (verified against GNU Emacs
+;; 31.1's own source in the T102 report).
+(ert-deftest emacs-compile-test/compilation-minor-mode-map-is-a-real-keymap ()
+  (should (boundp 'compilation-minor-mode-map))
+  (should (keymapp compilation-minor-mode-map))
+  (should (boundp 'compilation-menu-map))
+  (should (keymapp compilation-menu-map)))
+
+(ert-deftest emacs-compile-test/compilation-minor-mode-map-parents-special-mode-map ()
+  "Ported verbatim from real Emacs `progmodes/compile.el':
+`(set-keymap-parent map special-mode-map)'."
+  (should (eq special-mode-map (keymap-parent compilation-minor-mode-map))))
+
+(ert-deftest emacs-compile-test/compilation-minor-mode-map-bindings-match-host ()
+  "Spot-check bindings copied verbatim from real Emacs's
+`progmodes/compile.el' `compilation-minor-mode-map'."
+  (should (eq 'compile-goto-error (lookup-key compilation-minor-mode-map "\C-m")))
+  (should (eq 'compile-goto-error (lookup-key compilation-minor-mode-map "\C-c\C-c")))
+  (should (eq 'kill-compilation (lookup-key compilation-minor-mode-map "\C-c\C-k")))
+  (should (eq 'compilation-next-error (lookup-key compilation-minor-mode-map "\M-n")))
+  (should (eq 'compilation-previous-error (lookup-key compilation-minor-mode-map "\M-p")))
+  (should (eq 'next-error-no-select (lookup-key compilation-minor-mode-map "n")))
+  (should (eq 'previous-error-no-select (lookup-key compilation-minor-mode-map "p")))
+  (should (eq 'recenter-current-error (lookup-key compilation-minor-mode-map "l")))
+  (should (eq 'recompile (lookup-key compilation-minor-mode-map "g")))
+  (should (eq 'compile-goto-error (lookup-key compilation-minor-mode-map [mouse-2]))))
+
+(ert-deftest emacs-compile-test/compilation-minor-mode-map-supports-grep-el-usage ()
+  "Exercises `progmodes/grep.el''s own top-level usage pattern verbatim:
+`(set-keymap-parent map compilation-minor-mode-map)' while building
+`grep-mode-map'."
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map compilation-minor-mode-map)
+    (should (eq compilation-minor-mode-map (keymap-parent map)))
+    ;; A binding compilation-minor-mode-map itself has (not one grep.el
+    ;; sets directly) must be reachable through the parent chain.
+    (should (eq 'compile-goto-error (lookup-key map "\C-m")))))
+
 (provide 'emacs-compile-test)
 
 ;;; emacs-compile-test.el ends here
