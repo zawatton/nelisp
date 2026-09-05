@@ -680,6 +680,88 @@ the remainder once the native reader declines on one form."
     (should (= newlines 2))
     (should (= (aref bytes pos) ?\())))
 
+(defun emacs-load-test--reference-skip-space-and-comments (source pos)
+  "Verbatim copy of `nelisp--load-skip-space-and-comments', kept here only
+as an equivalence oracle for
+`emacs-load-test/skip-space-and-comments-matches-reference-on-edge-cases'.
+T94 left that function's algorithm unchanged (see its docstring for why:
+a `string-match'-based rewrite measured 20-50x slower on this runtime,
+and converting SOURCE to unibyte inside the function corrupts POS on
+any call after the first once SOURCE has a non-ASCII byte before POS).
+What T94 did change is `emacs-load--artifact-source-skip-ws-comments',
+a pre-existing duplicate of this exact scan, to delegate here instead
+of keeping its own copy -- this test proves that delegation is
+behavior-preserving.  Do not fix bugs in this copy; it exists to prove
+equivalence, not to be a second implementation to maintain."
+  (let ((len (length source))
+        (done nil))
+    (while (and (< pos len) (not done))
+      (let ((c (aref source pos)))
+        (cond
+         ((or (= c ?\s) (= c ?\t) (= c ?\n) (= c ?\r) (= c ?\f))
+          (setq pos (+ pos 1)))
+         ((= c ?\;)
+          (while (and (< pos len) (not (= (aref source pos) ?\n)))
+            (setq pos (+ pos 1))))
+         (t
+          (setq done t)))))
+    pos))
+
+(ert-deftest emacs-load-test/skip-space-and-comments-matches-reference-on-edge-cases ()
+  "T94 regression: `nelisp--load-skip-space-and-comments' and its
+now-delegating former duplicate `emacs-load--artifact-source-skip-ws-
+comments' must return byte-identical positions to the reference
+implementation (`emacs-load-test--reference-skip-space-and-comments')
+on every edge case below, each tried at POS 0, at a mid-string POS, and
+in both multibyte and unibyte form (mirroring how real callers convert
+SOURCE with `emacs-load--byte-indexed-source' before calling in)."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let ((cases
+         (list ""
+               "   \t\n\r\f  "
+               ";; one\n;; two\n;; three, no trailing newline"
+               "(form)\n;; trailing comment, no newline at EOF"
+               ";; comment\r\n  \r\n(form)"
+               "(setq x 1)"
+               ";; héllo wörld café \n(form)"
+               ";; comment\n\"a ; not a comment, not this function's concern\"")))
+    (dolist (source cases)
+      (dolist (rep (list source (string-as-unibyte source)))
+        (dolist (pos (list 0 (/ (length rep) 2)))
+          (should (= (nelisp--load-skip-space-and-comments rep pos)
+                     (emacs-load-test--reference-skip-space-and-comments
+                      rep pos)))
+          (should (= (emacs-load--artifact-source-skip-ws-comments rep pos)
+                     (emacs-load-test--reference-skip-space-and-comments
+                      rep pos))))))
+    ;; POS >= length returns POS unchanged, for every case including the
+    ;; empty string (POS = 0 = length there).
+    (dolist (source cases)
+      (let ((end (length source)))
+        (should (= (nelisp--load-skip-space-and-comments source end) end))
+        (should (= (emacs-load--artifact-source-skip-ws-comments source end)
+                   end))))))
+
+(ert-deftest emacs-load-test/skip-space-and-comments-100kb-header-fast ()
+  "T94 regression: a 100KB whitespace/comment run resolves quickly under
+host Emacs, where character indexing is already O(1) regardless of
+SOURCE's multibyte/unibyte state (unlike the standalone runtime this
+function also runs on -- see its docstring for the quadratic case T94
+found there, on a raw multibyte SOURCE with a non-ASCII byte before
+POS, and why T94 left the algorithm unchanged rather than risk
+corrupting POS with an in-function conversion).  This host-side bound
+is coarse and mostly guards against a future per-character-cost
+regression being reintroduced, not against the standalone-specific
+pathology itself, which host Emacs cannot reproduce."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((line ";; some boilerplate header filler wörds café \n")
+         (reps (1+ (/ 100000 (length line))))
+         (header (apply #'concat (make-list reps line)))
+         (source (concat header "(setq emacs-load-test--t94-marker t)\n"))
+         (t0 (float-time)))
+    (should (= (nelisp--load-skip-space-and-comments source 0) (length header)))
+    (should (< (- (float-time) t0) 1.0))))
+
 (ert-deftest emacs-load-test/artifact-unibyte-reader-uses-multibyte-isolated-slice ()
   (skip-unless (emacs-load-test--standalone-active-p))
   (let* ((prefix "xx")
