@@ -1261,13 +1261,38 @@ when no real redisplay window is available."
     "Stub: route through plain `format' (= no curly-quote substitution)."
     (apply #'format string objects)))
 
-(unless (fboundp 'message)
-  (defun message (format-string &rest args)
-    "Stub: print to stderr via `princ' (NeLisp standalone has no echo area)."
-    (let ((s (apply #'format format-string args)))
-      (princ s)
-      (princ "\n")
-      s)))
+(defun emacs-stub--standalone-batch-message-p ()
+  "Return non-nil when `message' should use standalone batch stdio."
+  (and (boundp 'noninteractive)
+       noninteractive
+       (fboundp 'nelisp--write-stdout-bytes)))
+
+(defun emacs-stub--message (format-string &rest args)
+  "Format and emit a compatibility message, returning the formatted text.
+In standalone batch mode write to stderr with
+`nelisp--write-stderr-line'.  The stdout fallback is for runtimes that expose
+only `nelisp--write-stdout-bytes'; its prefix keeps diagnostics distinct from
+machine-readable stdout."
+  (if (null format-string)
+      nil
+    (let ((text (apply #'format format-string args)))
+      (cond
+       ((and (emacs-stub--standalone-batch-message-p)
+             (fboundp 'nelisp--write-stderr-line))
+        (nelisp--write-stderr-line text))
+       ((emacs-stub--standalone-batch-message-p)
+        (nelisp--write-stdout-bytes (concat "nemacs: " text "\n")))
+       (t
+        (princ text)
+        (princ "\n")))
+      text)))
+
+;; The standalone runtime may already expose a silent `message' binding.
+;; Replace that binding in noninteractive standalone sessions; host Emacs keeps
+;; its native echo-area/batch-stderr implementation.
+(when (or (emacs-stub--standalone-batch-message-p)
+          (not (fboundp 'message)))
+  (defalias 'message #'emacs-stub--message))
 
 (unless (fboundp 'error)
   (defun error (format-string &rest args)

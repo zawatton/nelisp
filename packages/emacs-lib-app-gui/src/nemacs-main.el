@@ -144,10 +144,16 @@ pumps `emacs-tui-event-input-fn' (= our
        (or (not (fboundp 'emacs-tui-event-handle-alive-p))
            (emacs-tui-event-handle-alive-p handle))))
 
+(defun nemacs-main--standalone-batch-p ()
+  "Return non-nil in a noninteractive standalone NeLisp batch process."
+  (and (boundp 'noninteractive)
+       noninteractive
+       (nemacs-main-option :batch)
+       (fboundp 'nelisp--write-stdout-bytes)))
+
 (defun nemacs-main--standalone-batch-tui-fallback-p ()
   "Return non-nil when batch tests should use lightweight TUI state."
-  (and (nemacs-main-option :batch)
-       (fboundp 'nelisp--write-stdout-bytes)))
+  (nemacs-main--standalone-batch-p))
 
 (defun nemacs-main--prepare-standalone-batch-tui-state ()
   "Prepare lightweight in-memory TUI state for standalone batch gates.
@@ -1863,8 +1869,17 @@ options makes `-L src -l test/foo.el' behave like Emacs batch loading."
     (condition-case err
         (nemacs-main--eval-option-form form)
       (error
-       (when (fboundp 'message)
-         (message "nemacs: --eval failed: %S form=%S" err form)))))
+       (if (nemacs-main--standalone-batch-p)
+           (progn
+             (when (fboundp 'message)
+               (message "nemacs: --eval failed: %s form=%S"
+                        (error-message-string err) form))
+             ;; Match GNU Emacs's uncaught batch-error status.  A successful
+             ;; user `(kill-emacs N)' exits from the eval itself and never
+             ;; reaches this handler, so its requested status is preserved.
+             (kill-emacs 255))
+         (when (fboundp 'message)
+           (message "nemacs: --eval failed: %S form=%S" err form))))))
   (dolist (fn (nemacs-main-option :funcall))
     (condition-case err
         (funcall fn)
