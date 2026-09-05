@@ -137,20 +137,187 @@ Return the last CALLBACK result."
             (garbage-collect))))
       last))
 
+  (defun nelisp--load-eval-one-form (form)
+    "Evaluate FORM, treating a top-level `cc-provide' as `provide'.
+NeLisp's source evaluator bare-aborts on the CC Mode compile-time
+marker even when `cc-provide' is callable.  At interpreted load time
+its semantics are exactly `provide'."
+    (when (and (consp form) (eq (car form) 'cc-provide))
+      (setcar form 'provide))
+    (eval form))
+
+  (defconst emacs-load--native-read-probe-window-sizes '(512 2048 8192 32768)
+    "Progressively larger byte windows `emacs-load--native-read-one' tries
+before giving up on the native per-form reader for one form.  Starting
+small keeps the common case (an ordinary small-to-medium form) to one
+cheap multibyte conversion of a few hundred bytes; the geometric growth
+bounds the total conversion work for a form that needs a bigger window
+to roughly twice its final window size, never to the size of the file
+already read so far.")
+
+  (defun emacs-load--native-read-one (source pos len)
+    "Try to read exactly one form from SOURCE at POS using the runtime's
+native reader.  Return (FORM . END-POS) on success, or nil when the
+form starting at POS cannot be read this way (see
+`nelisp--load-eval-source-incremental' for why that happens and what
+callers should do about it).
+
+SOURCE is `emacs-load--byte-indexed-source'-normalized (unibyte on the
+standalone runtime).  `nelisp--read-all-from-string-native' does not
+reliably terminate when given that representation directly -- T78
+measured every call hang regardless of the requested window size, even
+a 64-byte one, when handed a real file's unibyte content straight from
+`emacs-load--read-file-string' -- it needs the same multibyte conversion
+`emacs-load--reader-slice' has always applied before handing a slice to
+`read-from-string'.  Converting only a small, geometrically-growing
+WINDOW under POS instead of the whole remainder of SOURCE keeps that
+conversion a bounded per-form cost instead of one that grows with how
+much of the file is already behind POS.
+
+The native reader reports END-POS as a character offset into the
+(possibly multibyte-converted) slice, not a byte offset into SOURCE.
+For any content with a non-ASCII byte before the form's own end within
+the window, those disagree -- multibyte conversion can collapse a
+multi-byte UTF-8 sequence into one character -- and returning the raw
+character offset as though it were POS's byte-space position corrupts
+every later position in SOURCE (T78: this broke standalone boot on
+`macroexp.el', which has one somewhere in its 2000+ lines).  Convert
+back to a byte count by round-tripping the consumed prefix through
+`string-as-unibyte', which recovers SOURCE's original bytes exactly
+since it was produced by `string-as-multibyte' in the first place."
+    (catch 'emacs-load--native-read-one
+      (dolist (window emacs-load--native-read-probe-window-sizes)
+        (let* ((window-end (min len (+ pos window)))
+               (slice (emacs-load--reader-slice source pos window-end))
+               (slice-len (length slice))
+               (probe (and (> slice-len 0)
+                           (nelisp--read-all-from-string-native slice 0 slice-len))))
+          (when (and (consp probe) (integerp (cdr probe)) (> (cdr probe) 0))
+            (let ((end (cdr probe)))
+              ;; A read that consumes the entire (possibly truncated)
+              ;; window is ambiguous unless the window already covered the
+              ;; rest of SOURCE: it may have been cut short mid-form.  Only
+              ;; trust it when the reader stopped short of the window edge,
+              ;; or there was no more SOURCE left to possibly continue
+              ;; into.
+              (when (or (< end slice-len) (>= window-end len))
+                (let ((byte-end
+                       (if (= end slice-len)
+                           (- window-end pos)
+                         (length (string-as-unibyte (substring slice 0 end))))))
+                  (throw 'emacs-load--native-read-one
+                         (cons (car probe) (+ pos byte-end)))))))))
+      nil))
+
+  (defun nelisp--load-eval-source-tail (source pos len)
+    "Evaluate the remainder of SOURCE from POS to LEN as one native unit.
+Escape hatch for `nelisp--load-eval-source-incremental': used only when
+the native per-form reader has just declined to read the form starting
+at POS.  Applies the same defalias/cc-provide rewrites the per-form
+loop would have applied, over the whole remaining chunk at once, then
+hands it to `nelisp--eval-source-string' -- which has no per-element
+budget and evaluates content like one huge literal data table in
+milliseconds instead of the minutes the per-character fallback path
+would take (see Doc T78).
+
+Deliberately does NOT call `nelisp--load-one-shot-source' /
+`nelisp--load-rewrite-target-present-p': that helper's escaped-spelling
+fallback scan (guarding against a hand-obfuscated `(d\\efalias ...)')
+re-scans from every `d' in SOURCE and is itself O(source length) per
+`d', which is fine for an ordinary file but becomes another multi-second
+tax on exactly the content that reaches this function -- one huge
+literal data table, typically full of hex-escaped strings (`\\x...')
+whose names are riddled with the letter `d'.  A form large enough to
+make the native reader decline is architecturally a literal, not
+handwritten code trying to dodge `defalias' detection, so only the
+plain substring check is applied here."
+    (let ((tail (emacs-load--reader-slice source pos len)))
+      (when (emacs-load--artifact-string-search "cc-provide" tail 0)
+        (setq tail (string-replace "cc-provide" "provide" tail)))
+      (nelisp--eval-source-string
+       (concat "(progn\n"
+               (if (emacs-load--artifact-string-search "defalias" tail 0)
+                   (nelisp--load-normalize-source-rewriting tail)
+                 tail)
+               "\n)"))))
+
   (defun nelisp--load-eval-source-incremental (source)
     "Read and eval SOURCE top-level forms one at a time.
 Return the value of the last form.  This deliberately avoids
 `nelisp--read-all-from-string', which materializes the whole AST and can
-overflow the standalone arena on upstream-sized package files."
-    (nelisp--load-map-source-forms
-     source
-     (lambda (form)
-       ;; NeLisp's source evaluator bare-aborts on the CC Mode
-       ;; compile-time marker even when `cc-provide' is callable.
-       ;; At interpreted load time its semantics are exactly `provide'.
-       (when (and (consp form) (eq (car form) 'cc-provide))
-         (setcar form 'provide))
-       (eval form))))
+overflow the standalone arena on upstream-sized package files.
+
+Each form is read via a direct probe of the runtime's native reader
+first (`emacs-load--native-read-one'): fast, and it avoids both our own
+per-character form-boundary scan (`emacs-load--artifact-source-form-end')
+and `read-from-string''s elisp fallback reader for the common case of an
+ordinary, moderately-sized form.  If the native reader declines for the
+form starting at the current position -- in practice this only happens
+when that one form's own content (typically a single huge literal
+list/vector, e.g. an icon-name-to-codepoint data table) exceeds the
+native reader's internal element budget -- both of those fallbacks are
+O(form length) with a per-character constant high enough to turn one
+big literal into a multi-minute-or-worse stall: T78 measured the
+per-character elisp scan and the `read-from-string' elisp fallback
+together costing ~195s to read a single ~50KB/1600-element literal that
+`nelisp--eval-source-string' reads and evaluates in ~0.01s.  Escape to
+`nelisp--load-eval-source-tail' for the remainder of SOURCE instead of
+paying that cost; this is safe on runtimes that lack the native probe
+primitive too, since that case falls through to the original per-form
+scan unchanged."
+    (setq source (emacs-load--byte-indexed-source source))
+    (let ((pos 0)
+          (len (length source))
+          (last nil)
+          (count 0)
+          (native-probe-available (fboundp 'nelisp--read-all-from-string-native)))
+      (while (progn
+               (setq pos (nelisp--load-skip-space-and-comments source pos))
+               (< pos len))
+        (let ((probe (and native-probe-available
+                           (emacs-load--native-read-one source pos len))))
+          (cond
+           (probe
+            (setq last
+                  (nelisp--load-eval-one-form
+                   (nelisp--load-rewrite-defalias-form (car probe))))
+            (setq pos (cdr probe)))
+           (native-probe-available
+            ;; The native reader is present but declined for the form
+            ;; starting at POS -- see the docstring above.
+            (setq last (nelisp--load-eval-source-tail source pos len))
+            (setq pos len))
+           (t
+            ;; No native probe primitive on this runtime at all: keep the
+            ;; original per-form scan + `read-from-string' path exactly
+            ;; as it worked before this fast path existed.
+            (let* ((form-end (emacs-load--artifact-source-form-end source pos))
+                   (slice (emacs-load--reader-slice source pos form-end))
+                   (slice-len (length slice))
+                   (read (read-from-string slice 0 slice-len))
+                   (next (and (consp read) (cdr read))))
+              (when (and (integerp next)
+                         (> next 0)
+                         (< next slice-len)
+                         (= (aref slice next) ?\)))
+                (setq next (+ next 1)))
+              (when (or (not (consp read))
+                        (not (integerp next))
+                        (<= next 0)
+                        (/= next slice-len))
+                (signal 'end-of-file
+                        (list "rewrite load reader made no progress" pos)))
+              (setq last
+                    (nelisp--load-eval-one-form
+                     (nelisp--load-rewrite-defalias-form (car read))))
+              (setq pos form-end))))
+          (setq count (+ count 1))
+          (when (and load-garbage-collect-interval
+                     (> load-garbage-collect-interval 0)
+                     (= (% count load-garbage-collect-interval) 0)
+                     (fboundp 'garbage-collect))
+            (garbage-collect))))
+      last))
 
   (defun nelisp--load-normalize-source-rewriting (source)
     "Return SOURCE normalized for native one-shot evaluation.
