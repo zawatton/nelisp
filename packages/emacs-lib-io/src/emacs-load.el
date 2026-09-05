@@ -112,6 +112,32 @@ once available, this probe goes true there too, and
 site) -- the shim is interim and self-disabling, not a permanent fork of
 reader behavior.")
 
+  (defvar emacs-load--labeled-object-reader-native-p
+    (let ((probe "(#1=upper-left lower-left #1#)"))
+      (condition-case nil
+          (let ((read (read-from-string probe 0 (length probe))))
+            (and (consp read)
+                 (integerp (cdr read))
+                 (= (cdr read) (length probe))
+                 (listp (car read))
+                 (= (length (car read)) 3)
+                 (eq (nth 0 (car read)) 'upper-left)
+                 (eq (nth 2 (car read)) 'upper-left)))
+        (error nil)))
+    "Non-nil when this runtime's `read-from-string' already reads Emacs's
+`#N=OBJECT' / `#N#' labeled/shared-structure syntax correctly, computed
+once at load time the same way and for the same reason as
+`emacs-load--propertized-string-reader-native-p' (see its docstring):
+checking that the read result has the right VALUE, not merely that
+reading raised no error, since T103's finding here too was a silent
+mis-tokenization (`#1=upper-left' read as one bare symbol literally named
+`#1=upper-left', not as a label attached to the symbol `upper-left').
+True on host Emacs.  T105 is expected to add real `#N='/`#N#' support to
+the vendor NeLisp reader; once available, this probe goes true there too,
+and `nelisp--load-resolved-file' skips
+`emacs-load--rewrite-labeled-object-references' entirely (see its call
+site).")
+
   (defun emacs-load--rewrite-propertized-string-literals (source)
     "Rewrite `#(...)' propertized-string read syntax in SOURCE to plain calls.
 T103: when `emacs-load--propertized-string-reader-native-p' is nil, none of
@@ -188,6 +214,284 @@ occur at all, which is the common case for most files."
               (push emacs-load--propertized-string-literal-marker out)
               (setq i (1+ i))
               (setq start (1+ i)))))
+          (setq i (1+ i)))
+        (push (substring source start len) out)
+        (apply #'concat (nreverse out)))))
+
+  (defun emacs-load--rewrite-labeled-object-references (source)
+    "Rewrite `#N=OBJECT' / `#N#' labeled/shared-structure read syntax in
+SOURCE, for the case where OBJECT is a single atom (symbol, number,
+`nil'/`t', or a double-quoted string), into plain repeated text the same
+readers `emacs-load--rewrite-propertized-string-literals' targets can
+already parse.  T103: real code uses this syntax not to build a genuinely
+circular data structure but as a readability idiom for \"this is the same
+value as label N\" -- e.g. `evil-commands.el''s `evil-visual-rotate':
+`(let ((corners \\='(#1=upper-left upper-right lower-right lower-left
+#1#))) ...)'.  Since `upper-left' is a symbol, and symbols are already
+`eq' wherever the same name is written, `#1=upper-left ... #1#' has the
+exact same value as writing `upper-left ... upper-left' twice; rewriting
+the label away this way is a value-preserving text substitution, not an
+approximation.
+
+Like `#(...)', none of this runtime's readers reachable from `load'
+implement `#N='/`#N#' at all: `nelisp--read-all-from-string-native'
+declines, `nelisp--eval-source-string' signals `invalid-read-syntax', and
+`read-from-string''s interpreted fallback silently mis-tokenizes
+`#1=upper-left' as one bare symbol whose own name happens to start with
+the four characters `#1=' (and `#1#' as another bare symbol named `#1#')
+-- wrong regardless (a `memq' for the real `upper-left' symbol against a
+list that never actually contains it), though unlike `#(...)' this
+mis-tokenization alone does not produce a load-time error; the load-time
+error T103 tracked down (`(require \\='evil)' dying on this exact form)
+comes from the *other* two readers, reached whenever a big/complex enough
+form containing this syntax makes the native per-form reader in
+`emacs-load--native-read-one' decline (see
+`emacs-load--rewrite-propertized-string-literals' for that escape-hatch
+mechanism -- identical here, just a different unsupported construct
+tripping the same decline).
+
+`#N=' applied to a list or vector -- true shared/circular compound
+structure, which cannot be expressed as an equivalent flat rewrite the way
+a duplicated atom can -- is deliberately left untouched, and so is any
+later `#N#' for a label this function did not record.  This is a known,
+documented limitation, not silently wrong: every `#N='/`#N#' use is
+already unreadable by every reader this file uses, so leaving the
+compound case alone changes nothing for it.  A label reused for a second,
+unrelated `#N=...#N#' pair elsewhere in the same file works correctly as
+long as each pair's own definition textually precedes its own reference
+(the universal convention in hand-written source, and the shape T103's
+regression test and the real evil-commands.el both use); a `#N#' that
+precedes its own file-wide-unique `#N=' (a genuine forward reference, only
+ever produced by a serializer, never by a human) is left untouched like
+the compound case.  Returns SOURCE unchanged (the same string object, no
+copy) when `#' does not occur at all, which is the common case for most
+files."
+    (if (not (emacs-load--artifact-string-search "#" source 0))
+        source
+      (let ((len (length source))
+            (out nil)
+            (start 0)
+            (i 0)
+            (in-string nil)
+            (atom-escaped nil)
+            (escaped nil)
+            (labels (make-hash-table :test 'eql)))
+        (while (< i len)
+          (let ((ch (aref source i)))
+            (cond
+             (in-string
+              (cond
+               (escaped (setq escaped nil))
+               ((= ch ?\\) (setq escaped t))
+               ((= ch ?\") (setq in-string nil))))
+             (atom-escaped (setq atom-escaped nil))
+             ((= ch ?\\) (setq atom-escaped t))
+             ((= ch ??)
+              (setq i (1+ i))
+              (when (and (< i len) (= (aref source i) ?\\))
+                (setq i (1+ i))))
+             ((= ch ?\;)
+              (while (and (< i len) (not (= (aref source i) ?\n)))
+                (setq i (1+ i))))
+             ((= ch ?\") (setq in-string t))
+             ((and (= ch ?#) (< (1+ i) len)
+                   (<= ?0 (aref source (1+ i)) ?9))
+              (let ((digit-start (1+ i))
+                    (digit-end nil))
+                (setq digit-end digit-start)
+                (while (and (< digit-end len)
+                            (<= ?0 (aref source digit-end) ?9))
+                  (setq digit-end (1+ digit-end)))
+                (cond
+                 ;; `#N=OBJECT'
+                 ((and (< digit-end len) (= (aref source digit-end) ?=))
+                  (let* ((label (string-to-number
+                                 (substring source digit-start digit-end)))
+                         (obj-start (1+ digit-end))
+                         (obj-ch (and (< obj-start len)
+                                      (aref source obj-start))))
+                    (unless (memq obj-ch '(?\( ?\[ nil))
+                      (let ((obj-end
+                             (if (= obj-ch ?\")
+                                 (emacs-load--artifact-source-string-end
+                                  source obj-start)
+                               (emacs-load--artifact-source-atom-end
+                                source obj-start))))
+                        (puthash label
+                                 (substring source obj-start obj-end)
+                                 labels)
+                        (push (substring source start i) out)
+                        (setq start obj-start)
+                        (setq i (1- obj-start))))))
+                 ;; `#N#'
+                 ((and (< digit-end len) (= (aref source digit-end) ?#))
+                  (let* ((label (string-to-number
+                                 (substring source digit-start digit-end)))
+                         (replacement (gethash label labels)))
+                    (when replacement
+                      (push (substring source start i) out)
+                      (push replacement out)
+                      (setq start (1+ digit-end))
+                      (setq i digit-end)))))))))
+          (setq i (1+ i)))
+        (push (substring source start len) out)
+        (apply #'concat (nreverse out)))))
+
+  (defvar emacs-load--escaped-modifier-char-literal-reader-native-p
+    (let ((probe "?\\C-\\["))
+      (condition-case nil
+          (= (car (read-from-string probe 0 (length probe))) 27)
+        (error nil)))
+    "Non-nil when this runtime's `read-from-string' already reads a
+modifier-prefixed character literal whose base character is itself a
+backslash escape (e.g. `?\\C-\\[', Control applied to the escaped
+character `\\[') to the correct value, computed once at load time the
+same way and for the same reason as
+`emacs-load--propertized-string-reader-native-p' (see its docstring).
+T103's finding here is a wrong VALUE, not a read failure or a
+mis-tokenization: `?\\C-\\[' is read as 28 on this runtime instead of the
+correct 27, because the reader applies the Control mask to the literal
+backslash byte instead of first resolving `\\[' to `[' and masking that
+-- so the probe checks the computed VALUE, exactly like
+`emacs-load--propertized-string-reader-native-p' checks the propertized
+string's VALUE rather than merely that reading did not signal.  True on
+host Emacs.  T105 is expected to fix the vendor NeLisp reader's escape
+resolution; once it does, this probe goes true there too, and
+`nelisp--load-resolved-file' skips
+`emacs-load--rewrite-escaped-modifier-char-literals' entirely (see its
+call site).")
+
+  (defun emacs-load--char-literal-escaped-base (source pos)
+    "Return (BASE . NEXT-POS) for the escaped character at POS in SOURCE,
+POS pointing at a backslash, resolving the small set of named escapes
+`(elisp) Character Type' documents (\\n \\t \\r \\e \\d \\a \\b \\f \\v)
+plus the general rule that a backslash followed by any other single
+character means that character literally (covers `\\[', `\\]', `\\(',
+`\\)', `\\\"', `\\;', `\\\\', `\\ ', etc.).  Return nil -- meaning \"not
+resolved, leave untouched\" -- for a numeric or Unicode escape (`\\NNN'
+octal, `\\xNN' hex, `\\N{...}' named/Unicode) or when POS is out of
+range; those are unambiguously read correctly by every reader this file
+targets today (T103 verified `?\\C-e', `?\\C-?', and plain octal/hex
+character escapes all already compute the right value), so there is
+nothing to fix and no reason to take on the extra parsing risk."
+    (let ((len (length source)))
+      (when (and (< pos len) (= (aref source pos) ?\\) (< (1+ pos) len))
+        (let ((c (aref source (1+ pos))))
+          (cond
+           ((or (<= ?0 c ?7) (memq c '(?x ?N))) nil)
+           ((= c ?n) (cons ?\n (+ pos 2)))
+           ((= c ?t) (cons ?\t (+ pos 2)))
+           ((= c ?r) (cons ?\r (+ pos 2)))
+           ((= c ?e) (cons 27 (+ pos 2)))
+           ((= c ?d) (cons 127 (+ pos 2)))
+           ((= c ?a) (cons 7 (+ pos 2)))
+           ((= c ?b) (cons 8 (+ pos 2)))
+           ((= c ?f) (cons 12 (+ pos 2)))
+           ((= c ?v) (cons 11 (+ pos 2)))
+           (t (cons c (+ pos 2))))))))
+
+  (defun emacs-load--char-literal-modifier-prefixes (source pos)
+    "Return (MODIFIERS . NEXT-POS) for zero or more `\\C-'/`\\M-' Control/Meta
+modifier prefixes starting at POS in SOURCE.  MODIFIERS is a list of
+`control'/`meta' symbols, one per prefix matched, in source order."
+    (let ((len (length source))
+          (mods nil))
+      (while (and (<= (+ pos 3) len)
+                  (= (aref source pos) ?\\)
+                  (memq (aref source (1+ pos)) '(?C ?M))
+                  (= (aref source (+ pos 2)) ?-))
+        (push (if (= (aref source (1+ pos)) ?C) 'control 'meta) mods)
+        (setq pos (+ pos 3)))
+      (cons (nreverse mods) pos)))
+
+  (defun emacs-load--rewrite-escaped-modifier-char-literals (source)
+    "Rewrite a `\\C-'/`\\M-'-prefixed character literal whose base is itself
+a backslash escape (e.g. `?\\C-\\[') to its correct decimal integer value
+in SOURCE, computed with the same rules Emacs's reader documents ((info
+\"(elisp) Character Type\")): Control on a base in the `[?@,?_]' or
+`[?a,?z]' range masks the low 5 bits (Control-`?' is the single documented
+exception, giving DEL/127); Control on any other base instead sets the
+Control modifier bit (`#x4000000'); Meta always sets the Meta modifier bit
+(`#x8000000'), combinable with either Control outcome.  T103: this
+runtime's readers get this arithmetic wrong for exactly this shape --
+`?\\C-\\[' reads as 28 instead of 27, because the Control mask is applied
+to the literal backslash byte instead of to `[' (see
+`emacs-load--escaped-modifier-char-literal-reader-native-p' and
+`emacs-load--char-literal-escaped-base') -- and `nelisp--eval-source-string'
+signals `invalid-read-syntax' on most such literals outright (`?\\C-e' and
+`?\\C-?', an unescaped base, read correctly everywhere and are left alone
+here).  Real files carry this syntax (e.g. `evil-commands.el''s
+`evil-ex-substitute': `(cond ((memq c (list ?q ?l ?\\C-\\[)) ...))'), and
+when it sits inside a form the native per-form reader in
+`emacs-load--native-read-one' declines to read, T78's escape hatch hands
+that form to `nelisp--eval-source-string', turning this into a whole-file
+load failure the same way `emacs-load--rewrite-propertized-string-literals'
+and `emacs-load--rewrite-labeled-object-references' document for their own
+unsupported constructs.
+
+Only a modifier-prefixed ESCAPED base is rewritten; a bare `?\\C-e' is
+already read correctly everywhere and is skipped over, not touched (see
+`emacs-load--char-literal-modifier-prefixes' and
+`emacs-load--char-literal-escaped-base' for what counts as \"escaped\" and
+which escapes are resolved).  Returns SOURCE unchanged (the same string
+object, no copy) when neither `?' followed eventually by `\\C-'/`\\M-'
+occurs at all -- checked cheaply by requiring at least one `?\\' pair
+first, which is necessary but not sufficient, so a real per-character scan
+still runs whenever SOURCE has any character literal escape at all; this
+is the common case for most files and still cheap (T103 measured this
+scan at a small fraction of a normal file's overall load time)."
+    (if (not (emacs-load--artifact-string-search "?\\" source 0))
+        source
+      (let ((len (length source))
+            (out nil)
+            (start 0)
+            (i 0)
+            (in-string nil)
+            (atom-escaped nil)
+            (escaped nil))
+        (while (< i len)
+          (let ((ch (aref source i)))
+            (cond
+             (in-string
+              (cond
+               (escaped (setq escaped nil))
+               ((= ch ?\\) (setq escaped t))
+               ((= ch ?\") (setq in-string nil))))
+             (atom-escaped (setq atom-escaped nil))
+             ((= ch ?\\) (setq atom-escaped t))
+             ((= ch ?\;)
+              (while (and (< i len) (not (= (aref source i) ?\n)))
+                (setq i (1+ i))))
+             ((= ch ?\") (setq in-string t))
+             ((= ch ??)
+              (let* ((mod-result
+                      (emacs-load--char-literal-modifier-prefixes
+                       source (1+ i)))
+                     (mods (car mod-result))
+                     (base-pos (cdr mod-result)))
+                (if (null mods)
+                    (progn
+                      (setq i (1+ i))
+                      (when (and (< i len) (= (aref source i) ?\\))
+                        (setq i (1+ i))))
+                  (let ((escape (emacs-load--char-literal-escaped-base
+                                 source base-pos)))
+                    (if (not escape)
+                        (setq i (1- base-pos))
+                      (let* ((end (cdr escape))
+                             (value (car escape)))
+                        (when (memq 'control mods)
+                          (cond
+                           ((= value ??) (setq value 127))
+                           ((or (<= ?@ value ?_) (<= ?a value ?z))
+                            (setq value (logand value #x1f)))
+                           (t (setq value (logior value #x4000000)))))
+                        (when (memq 'meta mods)
+                          (setq value (logior value #x8000000)))
+                        (push (substring source start i) out)
+                        (push (number-to-string value) out)
+                        (setq start end)
+                        (setq i (1- end))))))))))
           (setq i (1+ i)))
         (push (substring source start len) out)
         (apply #'concat (nreverse out)))))
@@ -3107,6 +3411,16 @@ optimization candidate; keep the normal load path on the fast reader."
              (source (if (and (stringp source)
                                (not emacs-load--propertized-string-reader-native-p))
                          (emacs-load--rewrite-propertized-string-literals
+                          source)
+                       source))
+             (source (if (and (stringp source)
+                               (not emacs-load--labeled-object-reader-native-p))
+                         (emacs-load--rewrite-labeled-object-references
+                          source)
+                       source))
+             (source (if (and (stringp source)
+                               (not emacs-load--escaped-modifier-char-literal-reader-native-p))
+                         (emacs-load--rewrite-escaped-modifier-char-literals
                           source)
                        source))
              (artifact (and emacs-load-auto-native-compile
