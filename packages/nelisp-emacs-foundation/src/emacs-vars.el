@@ -23,6 +23,12 @@
   (defvar user-emacs-directory "~/.emacs.d/"
     "Polyfill: NeLisp standalone fallback for Emacs' user-emacs-directory."))
 
+(unless (boundp 'site-run-file)
+  (defvar site-run-file "site-start"
+    "File containing site-wide run-time initializations (GNU lread.c default).
+Tramp's persistent-cache setting reads `(or init-file-user site-run-file)'
+at load time, so the variable must exist before net/tramp-cache.el loads."))
+
 (unless (boundp 'temporary-file-directory)
   (defvar temporary-file-directory "/tmp/"
     "Polyfill: NeLisp standalone fallback for Emacs' temporary-file-directory."))
