@@ -188,14 +188,22 @@
 (ert-deftest emacs-fns-test/standalone-bare-require-does-not-list-directories ()
   "Standalone bare-name `require' probes candidates without directory scans."
   (let* ((feature 'emacs-fns-test-bare-require-probe)
+         (compiled-only-feature
+          'emacs-fns-test-compiled-only-require-probe)
          (directory (make-temp-file "emacs-fns-require-" t))
          (file (expand-file-name (concat (symbol-name feature) ".el")
                                  directory))
+         (compiled-file (concat file "c"))
+         (compiled-only-file
+          (expand-file-name
+           (concat (symbol-name compiled-only-feature) ".elc")
+           directory))
          (host-load (symbol-function 'load))
          (host-require (symbol-function 'require))
          (host-provide (symbol-function 'provide))
          (host-featurep (symbol-function 'featurep))
          (host-locate-file (symbol-function 'locate-file))
+         (saved-load-suffixes load-suffixes)
          (saved-features features)
          (native-comp-enable-subr-trampolines nil)
          (directory-files-calls 0))
@@ -203,11 +211,26 @@
         (progn
           (with-temp-file file
             (insert "(provide 'emacs-fns-test-bare-require-probe)\n"))
+          (with-temp-file compiled-file
+            (insert "not executable byte-code\n"))
+          (with-temp-file compiled-only-file
+            (insert "not executable byte-code\n"))
           ;; Re-evaluate the source under its standalone guard, then exercise
           ;; the installed `require' while retaining host file execution.
           (let ((emacs-version nil))
             (funcall host-load emacs-fns-test--source-file nil t t))
           (let ((load-path (list directory)))
+            (should (equal load-suffixes '(".el")))
+            (should
+             (equal
+              (locate-file (symbol-name feature) load-path
+                           '(".elc" ".el" "")
+                           #'emacs-fns--regular-file-p)
+              file))
+            (should-not
+             (locate-file (symbol-name compiled-only-feature) load-path
+                          '(".elc" ".el" "")
+                          #'emacs-fns--regular-file-p))
             (cl-letf (((symbol-function 'directory-files)
                        (lambda (&rest _args)
                          (setq directory-files-calls
@@ -222,6 +245,7 @@
       (fset 'provide host-provide)
       (fset 'featurep host-featurep)
       (fset 'locate-file host-locate-file)
+      (setq load-suffixes saved-load-suffixes)
       (setq features saved-features)
       (when (file-directory-p directory)
         (delete-directory directory t)))))
