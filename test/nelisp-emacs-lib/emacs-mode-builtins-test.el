@@ -193,6 +193,72 @@
       (should (eq 'my-test-derived-reassert-mode
                   my-test-derived-reassert-hook-mode)))))
 
+;;;; F2. define-derived-mode host parity — MODE-map / -syntax-table /
+;;;;     -abbrev-table / -hook, keyword args, and existing-value
+;;;;     preservation, matching real Emacs's `derived.el'.
+
+(define-derived-mode t58-parity-host-mode special-mode "T58Host"
+  "Host-macro fixture for the T58 `define-derived-mode' parity test.")
+
+(emacs-mode-define-derived-mode t58-parity-standalone-mode special-mode
+  "T58Standalone"
+  "Standalone-macro fixture for the T58 `define-derived-mode' parity test.")
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-matches-host-derived-symbols ()
+  "`emacs-mode-define-derived-mode' must define the same kind of
+MODE-map / MODE-syntax-table / MODE-abbrev-table / MODE-hook symbols,
+with the same parent-chaining behaviour, as host Emacs's own
+`define-derived-mode' produces for an equivalent form (both derived
+from `special-mode', so both inherit a real, populated parent map)."
+  (with-temp-buffer (t58-parity-host-mode))
+  (with-temp-buffer (t58-parity-standalone-mode))
+  (should (boundp 't58-parity-host-mode-hook))
+  (should (boundp 't58-parity-standalone-mode-hook))
+  (should (keymapp t58-parity-host-mode-map))
+  (should (keymapp t58-parity-standalone-mode-map))
+  (should (eq (keymap-parent t58-parity-host-mode-map) special-mode-map))
+  (should (eq (keymap-parent t58-parity-standalone-mode-map) special-mode-map))
+  (should (char-table-p t58-parity-host-mode-syntax-table))
+  (should (char-table-p t58-parity-standalone-mode-syntax-table))
+  (should (eq (char-table-subtype t58-parity-host-mode-syntax-table)
+              'syntax-table))
+  (should (eq (char-table-subtype t58-parity-standalone-mode-syntax-table)
+              'syntax-table))
+  (should (abbrev-table-p t58-parity-host-mode-abbrev-table))
+  (should (abbrev-table-p t58-parity-standalone-mode-abbrev-table))
+  (should (eq (get 't58-parity-host-mode 'derived-mode-parent) 'special-mode))
+  (should (eq (get 't58-parity-standalone-mode 'derived-mode-parent)
+              'special-mode)))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-preserves-existing-map ()
+  "A second expansion for the same CHILD must not clobber a MODE-map the
+first expansion (or the user) already populated — mirrors GNU's `unless
+(boundp ...)' guard around the MODE-map / MODE-syntax-table /
+MODE-abbrev-table defvars."
+  (emacs-mode-define-derived-mode t58-parity-reload-mode nil "T58Reload"
+    "Reload fixture for the T58 existing-value-preservation test.")
+  (define-key t58-parity-reload-mode-map (kbd "C-c C-c") 'ignore)
+  ;; Re-expand, the same way reloading the defining file would, and
+  ;; confirm the user's binding survived.
+  (emacs-mode-define-derived-mode t58-parity-reload-mode nil "T58Reload"
+    "Reload fixture for the T58 existing-value-preservation test.")
+  (should (eq (lookup-key t58-parity-reload-mode-map (kbd "C-c C-c")) 'ignore)))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-keyword-args ()
+  "`:interactive nil' must omit `(interactive)'; `:after-hook' must run
+once, after the mode hook."
+  (let (events)
+    (emacs-mode-define-derived-mode t58-parity-keyword-mode nil "T58Keyword"
+      "Keyword-args fixture for the T58 parity test."
+      :interactive nil
+      :after-hook (push 'after-hook events)
+      (push 'body events))
+    (let ((t58-parity-keyword-mode-hook
+           (list (lambda () (push 'hook events)))))
+      (should-not (commandp 't58-parity-keyword-mode))
+      (t58-parity-keyword-mode)
+      (should (equal '(after-hook hook body) events)))))
+
 ;;;; G. run-mode-hooks
 
 (ert-deftest emacs-mode-builtins-test/run-mode-hooks-fires-each ()
