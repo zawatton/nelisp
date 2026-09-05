@@ -1930,7 +1930,7 @@ bake-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
 
 bake-runtime-image: $(NEMACS_RUNTIME_IMAGE)
 
-$(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) nemacs-library-package-scaffold nemacs-library-app-scaffold
+$(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) | nemacs-library-package-scaffold nemacs-library-app-scaffold
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
