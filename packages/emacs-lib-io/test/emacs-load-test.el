@@ -281,9 +281,6 @@
                        (substring source (car range) (cdr range))))))))
 
 (ert-deftest emacs-load-test/artifact-source-read-form-nil-or-list-value-rejects-native-multiple-and-improper-results ()
-  ;; Known loader defect (native-section preflight / nested error text),
-  ;; recorded 2026-09-05 when this file was restored; see the T30 report.
-  :expected-result :failed
   (skip-unless (emacs-load-test--standalone-active-p))
   (let ((load-garbage-collect-interval nil)
         (path "/tmp/emacs-load-test-read-form-native.neln")
@@ -333,9 +330,6 @@
                             (error-message-string err)))))
 
 (ert-deftest emacs-load-test/artifact-native-sections-from-source-uses-native-reader-once-and-canonicalizes-order ()
-  ;; Known loader defect (native-section preflight / nested error text),
-  ;; recorded 2026-09-05 when this file was restored; see the T30 report.
-  :expected-result :failed
   (skip-unless (emacs-load-test--standalone-active-p))
   (let* ((source-prefix "xx")
          (source-suffix "yy")
@@ -1703,9 +1697,6 @@
         (delete-directory temp-dir t)))))
 
 (ert-deftest emacs-load-test/artifact-replay-native-legacy-section-keeps-bcl-fallback ()
-  ;; Known loader defect (native-section preflight / nested error text),
-  ;; recorded 2026-09-05 when this file was restored; see the T30 report.
-  :expected-result :failed
   (skip-unless (emacs-load-test--standalone-active-p))
   (emacs-load-test--with-fresh-native-cache
    (let* ((temp-dir (make-temp-file "emacs-load-test-native-legacy-" t))
@@ -1821,9 +1812,6 @@
          (delete-directory temp-dir t)))))
 
 (ert-deftest emacs-load-test/artifact-streaming-ineligible-native-falls-back-to-source-defun ()
-  ;; Known loader defect (native-section preflight / nested error text),
-  ;; recorded 2026-09-05 when this file was restored; see the T30 report.
-  :expected-result :failed
   (skip-unless (emacs-load-test--standalone-active-p))
   (emacs-load-test--with-fresh-native-cache
    (let* ((temp-dir (make-temp-file "emacs-load-test-stream-ineligible-" t))
@@ -1911,9 +1899,6 @@
          (delete-directory temp-dir t)))))
 
 (ert-deftest emacs-load-test/artifact-streaming-missing-native-fields-error-before-materialization ()
-  ;; Known loader defect (native-section preflight / nested error text),
-  ;; recorded 2026-09-05 when this file was restored; see the T30 report.
-  :expected-result :failed
   (skip-unless (emacs-load-test--standalone-active-p))
   (emacs-load-test--with-fresh-native-cache
    (let* ((temp-dir (make-temp-file "emacs-load-test-stream-missing-" t))
