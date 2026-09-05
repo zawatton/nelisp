@@ -262,3 +262,112 @@ The internal 11th state slot is ignored (compared via `butlast')."
       (should (= ?_ (let ((emacs-syntax-table--current
                            (emacs-syntax-table-standard)))
                       (emacs-syntax-table-char-syntax ?-)))))))
+
+;;;; --- Doc 51 T53 regression: install-gate must beat earlier bootstrap stubs
+
+;; Bug pinned down by the T53 package-load-matrix sweep: `emacs-stub.el'
+;; installs early-bootstrap-order fallbacks for `make-syntax-table' /
+;; `standard-syntax-table' / `syntax-table' / `set-syntax-table' /
+;; `modify-syntax-entry', and `emacs-stub-bulk.el' installs a blanket
+;; nil-returning stub for `char-syntax' (its "trivial stubs" dolist) --
+;; both load before this file in the standalone bootstrap order (see
+;; `nelisp-bootstrap--enforce-bootstrap-order' in
+;; scripts/build-nelisp-bootstrap.el).  `emacs-syntax-table--install-function-p'
+;; used to test standalone-ness with a bare
+;; `(not (boundp \='emacs-version))', which misfires under standalone NeLisp
+;; (the NeLisp reader also binds `emacs-version'), so it took the host
+;; branch `(not (fboundp symbol))' -- which is false for these
+;; already-stubbed names, so the real char-table-backed implementations here
+;; never installed.  Vendor code (org-download, org-caldav, org-draw, elfeed,
+;; elfeed-summarize in the T53 sweep) that called the bare, un-overridden
+;; `(make-syntax-table)' got back the stub's `(syntax-table nil)' list, and
+;; any later `aref' on it signalled `(wrong-type-argument arrayp (syntax-table
+;; nil))'.  The fix mirrors `emacs-char-table--standalone-p' in
+;; `emacs-char-table.el': detect standalone via the NeLisp-only
+;; `nl-write-file' primitive first.
+
+(ert-deftest emacs-syntax-table-test/standalone-p-false-under-host ()
+  "Sanity: without a NeLisp-only primitive present, this is host Emacs."
+  (should-not (fboundp 'nl-write-file))
+  (should-not (emacs-syntax-table--standalone-p)))
+
+(ert-deftest emacs-syntax-table-test/install-gate-overrides-preexisting-stub-when-standalone ()
+  "Regression: simulated-standalone install-gate must win even when the
+unprefixed name is already `fboundp' from an earlier bootstrap-order stub."
+  (let ((probe (make-symbol "emacs-syntax-table-test--stub-probe"))
+        (had-nl-write-file (fboundp 'nl-write-file)))
+    ;; Mimic the emacs-stub.el shape: a pre-existing, already-`fboundp'
+    ;; broken stand-in for e.g. `make-syntax-table'.
+    (fset probe (lambda (&rest _) (list 'syntax-table nil)))
+    (unwind-protect
+        (progn
+          (should (fboundp probe))
+          ;; Off the standalone marker: host behavior is preserved, an
+          ;; already-`fboundp' name is left alone.
+          (should-not (emacs-syntax-table--install-function-p probe))
+          ;; Flip on the standalone marker (`nl-write-file' fboundp) without
+          ;; a real standalone runtime, and the gate must now say "override"
+          ;; despite PROBE already being `fboundp' -- this is the exact
+          ;; condition the defect got wrong.
+          (fset 'nl-write-file (lambda (&rest _) nil))
+          (should (emacs-syntax-table--standalone-p))
+          (should (emacs-syntax-table--install-function-p probe)))
+      (fmakunbound probe)
+      (unless had-nl-write-file (fmakunbound 'nl-write-file)))))
+
+;;;; --- Doc 51 T53: char-table-p / syntax-table-p / char-table-range contract
+
+(ert-deftest emacs-syntax-table-test/tables-are-real-char-tables ()
+  "`make-syntax-table', `standard-syntax-table' and a copy must all satisfy
+`emacs-char-table-p' with subtype `syntax-table' -- not the broken
+`(syntax-table . PARENT)' list / bare 256-vector legacy stand-ins."
+  (dolist (tbl (list (emacs-syntax-table-make)
+                     (emacs-syntax-table-standard)
+                     (emacs-char-table-copy (emacs-syntax-table-standard))))
+    (should (emacs-char-table-p tbl))
+    (should (eq 'syntax-table (emacs-char-table-subtype tbl)))))
+
+(ert-deftest emacs-syntax-table-test/char-table-range-nil-char-cons ()
+  "The prefixed `emacs-char-table-range' on a syntax char-table for nil / a
+char / a cons matches host `char-table-range' semantics for the
+corresponding table.  Host Emacs' own unprefixed `char-table-range' is a
+real C primitive that requires a real host char-table, so the standalone
+representation is exercised through the prefixed API here, matching the
+rest of this file's upstream-compatible-layer tests."
+  (let ((mine (emacs-syntax-table-make))
+        (host-default (char-table-range (standard-syntax-table) nil)))
+    ;; nil = the table's default value (host default for the standard
+    ;; syntax table happens to be the punctuation descriptor).
+    (should (equal host-default (char-table-range (standard-syntax-table) nil)))
+    (should (equal nil (emacs-char-table-range mine nil)))
+    ;; a plain character samples that slot.
+    (emacs-char-table-set mine ?a '(2 . nil))
+    (should (equal '(2 . nil) (emacs-char-table-range mine ?a)))
+    ;; a (FROM . TO) cons samples its CAR, mirroring host `char-table-range'
+    ;; called with a range cons.
+    (should (equal '(2 . nil) (emacs-char-table-range mine (cons ?a ?a))))))
+
+(ert-deftest emacs-syntax-table-test/modify-syntax-entry-cons-range-matches-host ()
+  "modify-syntax-entry with a (FROM . TO) cons range matches host for every
+character the range covers."
+  (let ((host (make-syntax-table))
+        (mine (emacs-syntax-table-make)))
+    (modify-syntax-entry (cons ?0 ?9) "_" host)
+    (emacs-syntax-table-modify-entry (cons ?0 ?9) "_" mine)
+    (dolist (c (number-sequence ?0 ?9))
+      (should (= (with-syntax-table host (char-syntax c))
+                 (emacs-syntax-table-char-syntax c mine))))
+    ;; outside the range, both keep the standard word class.
+    (should (= (with-syntax-table host (char-syntax ?a))
+               (emacs-syntax-table-char-syntax ?a mine)))))
+
+(ert-deftest emacs-syntax-table-test/copy-syntax-table-independent-of-source ()
+  "A copy is `equal'-shaped to its source at copy time but independent of
+later mutation, matching host `copy-syntax-table' behavior."
+  (let* ((mine (emacs-syntax-table-make))
+         (copy (emacs-char-table-copy mine)))
+    (should (= (emacs-syntax-table-char-syntax ?a mine)
+               (emacs-syntax-table-char-syntax ?a copy)))
+    (emacs-syntax-table-modify-entry ?a "_" mine)
+    (should (= ?_ (emacs-syntax-table-char-syntax ?a mine)))
+    (should (= ?w (emacs-syntax-table-char-syntax ?a copy)))))
