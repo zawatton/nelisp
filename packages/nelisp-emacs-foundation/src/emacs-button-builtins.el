@@ -14,6 +14,27 @@
 
 ;;; Code:
 
+;; T52: moved here from `src/nelisp-emacs-magit-bridge.el' (originally
+;; `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals', reached only
+;; when the magit bundle loads), which left it void on the default boot
+;; path -- the load matrix showed `(void-variable button-buffer-map)' for 3
+;; features that are not magit at all (consult, flycheck,
+;; flycheck-posframe).  Real `button.el' defines `button-buffer-map' before
+;; `button-map' and parents the latter to it (mode-specific keymaps use
+;; `button-buffer-map' as their parent for the `forward-button' /
+;; `backward-button' navigation bindings); this reduced compatibility layer
+;; does not implement that navigation, so the keymap here stays empty like
+;; `button-map' below it -- callers that only need a live keymap object to
+;; hang off of (the failure class this addresses) still get one.
+(unless (boundp 'button-buffer-map)
+  (defvar button-buffer-map
+    (if (fboundp 'make-sparse-keymap)
+        (make-sparse-keymap)
+      '(keymap))
+    "Keymap useful for buffers containing buttons.
+Mode-specific keymaps may want to use this as their parent keymap.  See
+the commentary above for what the reduced compatibility layer omits."))
+
 (unless (boundp 'button-map)
   (defvar button-map
     (if (fboundp 'make-sparse-keymap)

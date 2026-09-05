@@ -111,6 +111,24 @@ If optional BASE-ONLY is non-nil, only base coding systems are listed."
           '(no-conversion undecided prefer-utf-8 raw-text utf-8 utf-8-unix
             utf-8-dos utf-8-mac ascii latin-1 iso-8859-1 binary emacs-mule))))))
 
+;;;; --- mule.el: coding-system-get --------------------------------------
+;; T52: moved here from `src/nelisp-emacs-magit-bridge.el' (originally
+;; `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals', a
+;; fboundp-guarded shim reached only when the magit bundle itself loads),
+;; which left it void on the default boot path -- the load matrix showed
+;; `(void-function coding-system-get)' for 4 features that are not magit at
+;; all (message, webkit, webkit-ace, webkit-dark).  Same documented
+;; rationale carries over unchanged: this substrate has no coding-system
+;; attribute table at all, so every property is honestly unknown (nil), not
+;; a lazy stub -- callers in the vendor chain only use this for optional
+;; decoration (eol/BOM display) and take their fallback branch on nil.
+(unless (fboundp 'coding-system-get)
+  (defun coding-system-get (_coding-system _prop)
+    "Return nil: the substrate has no coding-system attribute table.
+See the commentary above this definition for why nil is the honest
+answer rather than a fabricated property value."
+    nil))
+
 ;;;; --- editfns.c: replace-buffer-contents (behavioral port) ----------
 ;; The C primitive minimizes the edit set; a headless substrate has no such
 ;; optimizer, so this port produces the identical RESULT (SOURCE's contents
