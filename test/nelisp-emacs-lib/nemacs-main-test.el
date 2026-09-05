@@ -54,6 +54,7 @@
                  nemacs-main-list-buffers-interactive
                  nemacs-main-kill-buffer-interactive
                  nemacs-main-execute-extended-command
+                 nemacs-main--standalone-batch-p
                  nemacs-main--apply-options nemacs-main--quit))
     (should (fboundp sym))))
 
@@ -110,6 +111,29 @@
   ;; Both forms are tried; the error in the first does not block the
   ;; second.
   (should nemacs-main-test--ran))
+
+(ert-deftest nemacs-main-test/standalone-batch-eval-error-is-fatal ()
+  "A standalone batch eval error is reported and exits with status 255."
+  (let ((noninteractive t)
+        (reported nil)
+        (nemacs-main-test--ran nil)
+        (nemacs-main-options
+         '(:batch t
+           :eval-forms ((error "boom")
+                        (setq nemacs-main-test--ran t)))))
+    (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore)
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (setq reported (apply #'format format-string args))))
+              ((symbol-function 'kill-emacs)
+               (lambda (status) (throw 'nemacs-main-test--exit status))))
+      (should (= 255
+                 (catch 'nemacs-main-test--exit
+                   (nemacs-main--apply-options)
+                   nil))))
+    (should (equal "nemacs: --eval failed: boom form=(error \"boom\")"
+                   reported))
+    (should-not nemacs-main-test--ran)))
 
 (ert-deftest nemacs-main-test/apply-eval-source-string-uses-nelisp-eval ()
   "Standalone NeLisp can pass --eval source without requiring `read'."

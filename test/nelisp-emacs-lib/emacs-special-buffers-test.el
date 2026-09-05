@@ -85,6 +85,22 @@
       (should (string-match-p "Warning \\[nemacs\\]: careful" messages))
       (should (string-match-p "Warning \\[nemacs\\]: careful" warnings)))))
 
+(ert-deftest emacs-special-buffers-test/message-routes-to-standalone-stderr ()
+  "Standalone batch messages keep stdout clean and write one stderr line."
+  (let ((noninteractive t)
+        (message-log-max nil)
+        (stdout nil)
+        (stderr nil))
+    (cl-letf (((symbol-function 'nl-write-file) #'ignore)
+              ((symbol-function 'nelisp--write-stdout-bytes)
+               (lambda (text) (setq stdout (concat stdout text))))
+              ((symbol-function 'nelisp--write-stderr-line)
+               (lambda (text) (setq stderr (concat stderr text "\n")))))
+      (should (equal "PROBE-MSG 1"
+                     (emacs-special-buffers-message "PROBE-MSG %d" 1)))
+      (should (null stdout))
+      (should (equal "PROBE-MSG 1\n" stderr)))))
+
 (ert-deftest emacs-special-buffers-test/message-log-max-truncates-old-lines ()
   (emacs-special-buffers-test--with-fresh-world
     (let ((message-log-max 2))

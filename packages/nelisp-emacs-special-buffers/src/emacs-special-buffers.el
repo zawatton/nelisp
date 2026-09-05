@@ -259,6 +259,10 @@ Nil FORMAT-STRING clears the echo area and does not log."
          messages-buffer-name
          (concat text "\n"))
         (emacs-special-buffers--trim-message-log))
+      (when (emacs-special-buffers--standalone-batch-p)
+        (if (fboundp 'nelisp--write-stderr-line)
+            (nelisp--write-stderr-line text)
+          (nelisp--write-stdout-bytes (concat "nemacs: " text "\n"))))
       text)))
 
 (defun emacs-special-buffers-display-warning
@@ -315,6 +319,13 @@ Nil FORMAT-STRING clears the echo area and does not log."
   "Return non-nil when running under the standalone NeLisp reader."
   (or (fboundp 'nl-write-file)
       (not (boundp 'emacs-version))))
+
+(defun emacs-special-buffers--standalone-batch-p ()
+  "Return non-nil when standalone batch messages should use stdio."
+  (and (boundp 'noninteractive)
+       noninteractive
+       (emacs-special-buffers--standalone-p)
+       (fboundp 'nelisp--write-stdout-bytes)))
 
 (when (emacs-special-buffers--standalone-p)
   (fset 'message #'emacs-special-buffers-message)
