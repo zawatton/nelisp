@@ -78,6 +78,161 @@ slice has been isolated."
           (string-as-multibyte slice)
         slice)))
 
+  (defconst emacs-load--propertized-string-literal-marker
+    "(nelisp-emacs--propertized-string-literal "
+    "Replacement text for the two characters `#(' (see
+`emacs-load--rewrite-propertized-string-literals').  One open paren, same
+nesting depth as the `(' it replaces, so every paren-depth-based scanner in
+this file (form-boundary, container-end, comment/whitespace skipping) keeps
+working unmodified on the rewritten text.")
+
+  (defvar emacs-load--propertized-string-reader-native-p
+    (let ((probe "#(\"a\" 0 1 (p t))"))
+      (condition-case nil
+          (let ((read (read-from-string probe 0 (length probe))))
+            (and (consp read)
+                 (integerp (cdr read))
+                 (= (cdr read) (length probe))
+                 (stringp (car read))
+                 (equal (car read) "a")))
+        (error nil)))
+    "Non-nil when this runtime's `read-from-string' already reads Emacs's
+`#(STR START END PLIST ...)' propertized-string syntax correctly, computed
+once at load time by actually reading a small `#(...)' literal and
+checking BOTH that reading raised no error AND that the result is the
+right STRING value at the right end position -- not merely that no error
+was signaled, since T103's finding was that this runtime's interpreted
+fallback reader silently mis-parses `#(' as the bare symbol `#' followed
+by a separate list without ever signaling anything, so an error-only probe
+would not have caught it.  True on host Emacs (native `#(...)' support).
+T105 is expected to add real `#(...)' support to the vendor NeLisp reader;
+once available, this probe goes true there too, and
+`nelisp--load-resolved-file' skips
+`emacs-load--rewrite-propertized-string-literals' entirely (see its call
+site) -- the shim is interim and self-disabling, not a permanent fork of
+reader behavior.")
+
+  (defun emacs-load--rewrite-propertized-string-literals (source)
+    "Rewrite `#(...)' propertized-string read syntax in SOURCE to plain calls.
+T103: when `emacs-load--propertized-string-reader-native-p' is nil, none of
+this runtime's readers reachable from `load' implement Emacs's `#(STR
+START END PLIST ...)' read syntax for a propertized string literal.
+`read-from-string''s interpreted fallback silently mis-tokenizes it as the
+bare symbol `#' immediately followed by an ordinary list -- STR and PLIST
+become extra, wrongly-shaped arguments to whatever form contains the
+literal, corrupting the parse without signaling anything -- while both the
+native whole-string reader (`nelisp--read-all-from-string-native') and
+`nelisp--eval-source-string' signal `invalid-read-syntax' on it outright.
+Real files carry this syntax (e.g. `evil-common.el': `(overlay-put overlay
+\\='after-string #(\"?\" 0 1 (face minibuffer-prompt cursor 1)))'), and
+when the literal sits inside a form big or complex enough that the native
+per-form reader in `emacs-load--native-read-one' declines to read it,
+T78's escape hatch `nelisp--load-eval-source-tail' hands that form whole to
+`nelisp--eval-source-string' (or, when the escaped remainder also contains
+a `defalias', through `nelisp--load-normalize-source-rewriting''s
+`read-from-string'-based reparse first) -- either way turning a
+load-bearing but previously silent gap into a whole-file load failure.
+
+Replacing the two-character sequence `#(' with
+`emacs-load--propertized-string-literal-marker' turns the construct into
+ordinary, fully-supported function-call syntax before any reader ever
+sees it: `#(\"?\" 0 1 (face ...))' becomes
+`(nelisp-emacs--propertized-string-literal \"?\" 0 1 (face ...))'.
+`nelisp-emacs--propertized-string-literal' (below) reconstructs the
+equivalent propertized string at eval time.
+
+Ineligible bytes are left untouched: inside a string literal or a comment;
+inside a `?X' or `?\\X' character literal (so `?#(' -- the character `#'
+followed by a new list, not the start of `#(...)' -- is not mistaken for
+propertized-string syntax); and immediately after a backslash outside a
+string (an escaped `#' or `(' in a symbol's spelling).  Only a plain,
+unescaped, in-code `#(' is rewritten.  This function itself always applies
+the transform when asked, regardless of
+`emacs-load--propertized-string-reader-native-p' -- callers decide whether
+calling it is needed at all (see `nelisp--load-resolved-file').  Returns
+SOURCE unchanged (the same string object, no copy) when `#(' does not
+occur at all, which is the common case for most files."
+    (if (not (emacs-load--artifact-string-search "#(" source 0))
+        source
+      (let ((len (length source))
+            (out nil)
+            (start 0)
+            (i 0)
+            (in-string nil)
+            (atom-escaped nil)
+            (escaped nil))
+        (while (< i len)
+          (let ((ch (aref source i)))
+            (cond
+             (in-string
+              (cond
+               (escaped (setq escaped nil))
+               ((= ch ?\\) (setq escaped t))
+               ((= ch ?\") (setq in-string nil))))
+             (atom-escaped (setq atom-escaped nil))
+             ((= ch ?\\) (setq atom-escaped t))
+             ((= ch ??)
+              ;; Character literal `?X' or `?\X...': skip the literal
+              ;; character (and one more when it is a backslash escape) so
+              ;; it is never re-examined as the start of `#(' syntax.
+              (setq i (1+ i))
+              (when (and (< i len) (= (aref source i) ?\\))
+                (setq i (1+ i))))
+             ((= ch ?\;)
+              (while (and (< i len) (not (= (aref source i) ?\n)))
+                (setq i (1+ i))))
+             ((= ch ?\") (setq in-string t))
+             ((and (= ch ?#) (< (1+ i) len)
+                   (= (aref source (1+ i)) ?\())
+              (push (substring source start i) out)
+              (push emacs-load--propertized-string-literal-marker out)
+              (setq i (1+ i))
+              (setq start (1+ i)))))
+          (setq i (1+ i)))
+        (push (substring source start len) out)
+        (apply #'concat (nreverse out)))))
+
+  (defmacro nelisp-emacs--propertized-string-literal (str &rest ranges)
+    "Expand to the string value `#(STR RANGES...)' would have read as.
+STR and RANGES are exactly Emacs's `#(...)' read syntax after `#(': STR a
+string literal, RANGES a flat list of START END PLIST triples.  Like
+`#(...)' itself, none of these are forms to evaluate -- PLIST is a literal
+property list, not code (`#(\"?\" 0 1 (face bold))' means \"apply property
+list (face bold)\", it does not call a function named `face') -- so this
+is a macro, not a function: STR and RANGES arrive as raw, unevaluated data,
+exactly as `quote''s argument would, and the propertized string is built
+once, at macroexpansion time, then wrapped in `quote' -- mirroring how
+`#(...)' itself produces one literal object at read time rather than
+re-building it on every evaluation.  Only
+`emacs-load--rewrite-propertized-string-literals' ever introduces a call
+to this macro (replacing the source text `#(' with a call to it, at the
+same nesting depth, before any reader sees the construct); it is not
+meant to be written by hand.  Each RANGES triple sets PLIST as STR's only
+text properties over [START, END) via `set-text-properties', unconditionally
+-- a later triple overrides an earlier one for positions both cover,
+matching the documented `#(...)' read semantics (Info node `(elisp) Basic
+Char Syntax').  This never branches on `propertize'/`add-text-properties'
+being fboundp instead: on a runtime where string text properties are not
+implemented (a separate, pre-existing gap -- confirmed directly: T103
+found `propertize', `put-text-property', and `set-text-properties' all
+already silently drop properties on plain strings on this substrate,
+independent of this rewrite), `set-text-properties' is a no-op and the
+result is a plain string with the right character content and no visible
+properties, exactly as any other string constructed on that runtime would
+be; `(get-text-property POS PROP STR)' on it then correctly returns nil,
+consistent with its documented contract for a string with no properties
+at POS.  There is no more-capable primitive to prefer here -- switching
+would not change this outcome -- so fixing that gap, if ever wanted, is
+core/runtime work, not something this rewrite can or should paper over."
+    (let ((result (copy-sequence str))
+          (remaining ranges))
+      (while remaining
+        (let ((start (pop remaining))
+              (end (pop remaining))
+              (plist (pop remaining)))
+          (set-text-properties start end plist result)))
+      (list 'quote result)))
+
   (defun nelisp--load-skip-space-and-comments (source pos)
     "Return first non-whitespace/comment position in SOURCE at or after POS.
 Whitespace is space, tab, newline, CR, or formfeed.  A comment runs from
@@ -2949,6 +3104,11 @@ optimization candidate; keep the normal load path on the fast reader."
      (t
       (let* ((base (file-name-nondirectory resolved))
              (source (emacs-load--read-file-string resolved))
+             (source (if (and (stringp source)
+                               (not emacs-load--propertized-string-reader-native-p))
+                         (emacs-load--rewrite-propertized-string-literals
+                          source)
+                       source))
              (artifact (and emacs-load-auto-native-compile
                             (not (string-prefix-p "cc-" base))
                             (stringp source)
