@@ -37,6 +37,44 @@
          (emacs-keymap--read-event-fn nil))
      ,@body))
 
+;;; T74 fixture: real host Emacs' own keymap machinery, for
+;;; host-vs-substrate parity ERT below (Doc 34 §4.3 slot 5 /
+;;; `emulation-mode-map-alists' symbol-dereference bug).
+
+(defmacro emacs-keymap-test--with-host-fresh-world (&rest body)
+  "Run BODY with *host* Emacs' own keymap globals swapped to a
+throwaway global map and no local/overriding/minor/emulation maps,
+restoring the previous global map afterwards.  Unlike
+`emacs-keymap-test--with-fresh-world' (which exercises this file's
+own `emacs-keymap-*' substrate state), this drives real Emacs
+`current-active-maps' / `minor-mode-map-alist' /
+`emulation-mode-map-alists', so results can be compared directly
+against the substrate for the same scenario."
+  (declare (indent 0) (debug (body)))
+  `(let ((emacs-keymap-test--host-old-global (current-global-map)))
+     (unwind-protect
+         (with-temp-buffer
+           (use-global-map (make-sparse-keymap))
+           (use-local-map nil)
+           (let ((overriding-local-map nil)
+                 (overriding-terminal-local-map nil)
+                 (minor-mode-overriding-map-alist nil)
+                 (minor-mode-map-alist nil)
+                 (emulation-mode-map-alists nil))
+             ,@body))
+       (use-global-map emacs-keymap-test--host-old-global))))
+
+(defun emacs-keymap-test--host-binding (key)
+  "Look up KEY through real Emacs' own `current-active-maps', the same
+priority-ordered walk `emacs-keymap-key-binding' does for the
+substrate."
+  (catch 'found
+    (dolist (km (current-active-maps))
+      (let ((b (lookup-key km key)))
+        (when (and b (not (integerp b)))
+          (throw 'found b))))
+    nil))
+
 ;;;; A. constructors / predicates / copy (4 tests)
 
 (ert-deftest emacs-keymap-make-sparse-keymap-basic ()
@@ -204,6 +242,18 @@
   (let ((m (emacs-keymap-make-sparse-keymap)))
     (should (null (emacs-keymap-keymap-prompt m)))))
 
+(ert-deftest emacs-keymap-keymap-prompt-non-keymap-returns-nil-not-error ()
+  "T74: matches GNU `keymap-prompt', which is lenient for ANY
+non-keymap argument (nil, a symbol, a string, an integer) — confirmed
+against host Emacs 31.1, none of these signal.  Evil's
+`evil-auxiliary-keymap-p' relies on exactly this: it calls
+`keymap-prompt' on whatever `lookup-key' returned, without a `keymapp'
+guard."
+  (should (null (emacs-keymap-keymap-prompt nil)))
+  (should (null (emacs-keymap-keymap-prompt 'not-a-keymap)))
+  (should (null (emacs-keymap-keymap-prompt "not a keymap")))
+  (should (null (emacs-keymap-keymap-prompt 42))))
+
 ;;;; C. global / local / overriding + chain (8 tests)
 
 (ert-deftest emacs-keymap-use-global-map-and-current ()
@@ -296,6 +346,167 @@
              (list (list (cons 'emacs-keymap-test--em-flag em)))))
         (should (eq 'em (emacs-keymap-key-binding "k")))))))
 
+;;;; T74: `emulation-mode-map-alists' elements may be symbols
+;;;; (GNU keymap.c `current_minor_maps' -> `find_symbol_value'), and
+;;;; alist MAP cells may be keymaps given indirectly through a
+;;;; symbol's function cell (`get_keymap').  8 tests + 2 helpers.
+
+(ert-deftest emacs-keymap-emulation-mode-map-alists-symbol-element-active ()
+  "Evil's own idiom: `(push (quote evil-mode-map-alist)
+emulation-mode-map-alists)' pushes the *symbol*, not its value.  The
+walker must dereference it via `symbol-value', matching GNU's
+`find_symbol_value' in `current_minor_maps' — this is the exact
+Wrong-type-argument sequencep repro from the standalone bug report."
+  (emacs-keymap-test--with-fresh-world
+    (let ((g (emacs-keymap-make-sparse-keymap))
+          (em (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key g "k" 'global)
+      (emacs-keymap-define-key em "k" 'emulation)
+      (emacs-keymap-use-global-map g)
+      (defvar emacs-keymap-test--sym-flag t)
+      (defvar emacs-keymap-test--sym-alist
+        (list (cons 'emacs-keymap-test--sym-flag em)))
+      (let ((emacs-keymap-emulation-mode-map-alists
+             (list 'emacs-keymap-test--sym-alist)))
+        (should (eq 'emulation (emacs-keymap-key-binding "k")))))))
+
+(ert-deftest emacs-keymap-emulation-mode-map-alists-unbound-symbol-skipped ()
+  "An unbound symbol element must be skipped silently (not signaled),
+matching GNU: `find_symbol_value' on an unbound symbol yields Qunbound
+and contributes nothing to the walk."
+  (emacs-keymap-test--with-fresh-world
+    (let ((g (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key g "k" 'global)
+      (emacs-keymap-use-global-map g)
+      (should (not (boundp 'emacs-keymap-test--never-bound-alist)))
+      (let ((emacs-keymap-emulation-mode-map-alists
+             (list 'emacs-keymap-test--never-bound-alist)))
+        (should (eq 'global (emacs-keymap-key-binding "k")))))))
+
+(ert-deftest emacs-keymap-emulation-mode-map-alists-nil-valued-symbol-skipped ()
+  "A bound symbol element whose value is nil (no alist yet, e.g. a
+mode not turned on) must be skipped silently, same as an empty alist
+would be."
+  (emacs-keymap-test--with-fresh-world
+    (let ((g (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key g "k" 'global)
+      (emacs-keymap-use-global-map g)
+      (defvar emacs-keymap-test--nil-alist nil)
+      (let ((emacs-keymap-emulation-mode-map-alists
+             (list 'emacs-keymap-test--nil-alist)))
+        (should (eq 'global (emacs-keymap-key-binding "k")))))))
+
+(ert-deftest emacs-keymap-minor-mode-map-alist-map-as-symbol-indirection ()
+  "A (VAR . MAP) entry's MAP may itself be a symbol whose *function*
+cell holds the keymap (GNU `get_keymap' indirection, e.g. `fset' on a
+mode-map symbol).  Must resolve exactly like a direct keymap MAP."
+  (emacs-keymap-test--with-fresh-world
+    (let ((g (emacs-keymap-make-sparse-keymap))
+          (mm (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key g "k" 'global)
+      (emacs-keymap-define-key mm "k" 'minor)
+      (emacs-keymap-use-global-map g)
+      (defvar emacs-keymap-test--mm-flag2 t)
+      (fset 'emacs-keymap-test--mm-symbolic-map mm)
+      (unwind-protect
+          (let ((emacs-keymap-minor-mode-map-alist
+                 (list (cons 'emacs-keymap-test--mm-flag2
+                             'emacs-keymap-test--mm-symbolic-map))))
+            (should (eq 'minor (emacs-keymap-key-binding "k"))))
+        (fmakunbound 'emacs-keymap-test--mm-symbolic-map)))))
+
+(ert-deftest emacs-keymap-active-minor-mode-maps-skips-malformed-entries ()
+  "A malformed ALIST element (not a cons) or a non-list ALIST
+(e.g. an unresolved emulation element passed straight through) must be
+skipped, not signaled."
+  (should (null (emacs-keymap--active-minor-mode-maps '(not-a-cons))))
+  (should (null (emacs-keymap--active-minor-mode-maps 'not-a-list-at-all))))
+
+(ert-deftest emacs-keymap-emulation-mode-map-alists-symbol-element-beats-global-and-minor ()
+  "Full repro shape: emulation (via a symbol element) still outranks
+minor-mode-map-alist and the global map, matching GNU precedence."
+  (emacs-keymap-test--with-fresh-world
+    (let ((g (emacs-keymap-make-sparse-keymap))
+          (mm (emacs-keymap-make-sparse-keymap))
+          (em (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key g "k" 'global)
+      (emacs-keymap-define-key mm "k" 'minor)
+      (emacs-keymap-define-key em "k" 'emulation)
+      (emacs-keymap-use-global-map g)
+      (defvar emacs-keymap-test--mm-flag3 t)
+      (defvar emacs-keymap-test--em-flag2 t)
+      (defvar emacs-keymap-test--em-symbolic-alist
+        (list (cons 'emacs-keymap-test--em-flag2 em)))
+      (let ((emacs-keymap-minor-mode-map-alist
+             (list (cons 'emacs-keymap-test--mm-flag3 mm)))
+            (emacs-keymap-emulation-mode-map-alists
+             (list 'emacs-keymap-test--em-symbolic-alist)))
+        (should (eq 'emulation (emacs-keymap-key-binding "k")))))))
+
+;;;; T74: host-vs-substrate parity table.  Each pair below proves the
+;;;; substrate's `emacs-keymap-chain-at' resolves a key exactly like
+;;;; real Emacs' own `current-active-maps' for the identical scenario.
+
+(ert-deftest emacs-keymap-host-emulation-mode-map-alists-plain-alist ()
+  (emacs-keymap-test--with-host-fresh-world
+    (let ((em (make-sparse-keymap)))
+      (define-key em "k" 'emulation)
+      (defvar emacs-keymap-test--host-flag-plain t)
+      (setq emulation-mode-map-alists
+            (list (list (cons 'emacs-keymap-test--host-flag-plain em))))
+      (should (eq 'emulation (emacs-keymap-test--host-binding "k"))))))
+
+(ert-deftest emacs-keymap-host-emulation-mode-map-alists-symbol-element ()
+  (emacs-keymap-test--with-host-fresh-world
+    (let ((em (make-sparse-keymap)))
+      (define-key em "k" 'emulation)
+      (defvar emacs-keymap-test--host-flag-sym t)
+      (defvar emacs-keymap-test--host-sym-alist
+        (list (cons 'emacs-keymap-test--host-flag-sym em)))
+      (setq emulation-mode-map-alists (list 'emacs-keymap-test--host-sym-alist))
+      (should (eq 'emulation (emacs-keymap-test--host-binding "k"))))))
+
+(ert-deftest emacs-keymap-host-emulation-mode-map-alists-unbound-symbol ()
+  (emacs-keymap-test--with-host-fresh-world
+    (should (not (boundp 'emacs-keymap-test--host-never-bound-alist)))
+    (setq emulation-mode-map-alists
+          (list 'emacs-keymap-test--host-never-bound-alist))
+    (should (null (emacs-keymap-test--host-binding "k")))))
+
+(ert-deftest emacs-keymap-host-emulation-mode-map-alists-nil-valued-symbol ()
+  (emacs-keymap-test--with-host-fresh-world
+    (defvar emacs-keymap-test--host-nil-alist nil)
+    (setq emulation-mode-map-alists (list 'emacs-keymap-test--host-nil-alist))
+    (should (null (emacs-keymap-test--host-binding "k")))))
+
+(ert-deftest emacs-keymap-host-minor-mode-map-map-as-symbol ()
+  (emacs-keymap-test--with-host-fresh-world
+    (let ((mm (make-sparse-keymap)))
+      (define-key mm "k" 'minor)
+      (defvar emacs-keymap-test--host-mm-flag t)
+      (fset 'emacs-keymap-test--host-mm-symbolic-map mm)
+      (unwind-protect
+          (progn
+            (setq minor-mode-map-alist
+                  (list (cons 'emacs-keymap-test--host-mm-flag
+                              'emacs-keymap-test--host-mm-symbolic-map)))
+            (should (eq 'minor (emacs-keymap-test--host-binding "k"))))
+        (fmakunbound 'emacs-keymap-test--host-mm-symbolic-map)))))
+
+(ert-deftest emacs-keymap-host-minor-mode-overriding-map-alist-precedence ()
+  (emacs-keymap-test--with-host-fresh-world
+    (let ((mm (make-sparse-keymap))
+          (mmo (make-sparse-keymap)))
+      (define-key mm "k" 'minor)
+      (define-key mmo "k" 'minor-overriding)
+      (defvar emacs-keymap-test--host-flag-mm t)
+      (defvar emacs-keymap-test--host-flag-mmo t)
+      (setq minor-mode-map-alist
+            (list (cons 'emacs-keymap-test--host-flag-mm mm)))
+      (setq minor-mode-overriding-map-alist
+            (list (cons 'emacs-keymap-test--host-flag-mmo mmo)))
+      (should (eq 'minor-overriding (emacs-keymap-test--host-binding "k"))))))
+
 (ert-deftest emacs-keymap-chain-at-7-stage-default ()
   (emacs-keymap-test--with-fresh-world
     (let ((g (emacs-keymap-make-sparse-keymap)))
@@ -313,6 +524,26 @@
       (emacs-keymap-define-key g "z" 'cmd-z)
       (emacs-keymap-use-global-map g)
       (should (eq 'cmd-z (emacs-keymap-key-binding "z"))))))
+
+(ert-deftest emacs-keymap-lookup-key-nil-keymap-returns-nil-not-error ()
+  "T74: GNU `lookup-key' is lenient for a nil KEYMAP specifically
+\(confirmed against host Emacs 31.1: `(lookup-key nil \"a\")' => nil,
+no error), unlike any other non-keymap value.  Evil's
+`evil-get-auxiliary-keymap' relies on this via `(keymap-parent map)'
+being nil for a top-level keymap, feeding straight into a further
+`lookup-key'-adjacent check without a nil guard."
+  (should (null (emacs-keymap-lookup-key nil "a"))))
+
+(ert-deftest emacs-keymap-lookup-key-non-keymap-non-nil-still-signals ()
+  "The nil leniency above is a narrow, specific carve-out — GNU still
+signals for any other non-keymap KEYMAP (a plain symbol, a string, an
+integer), confirmed against host Emacs 31.1."
+  (should-error (emacs-keymap-lookup-key 'not-a-keymap "a")
+                :type 'emacs-keymap-not-keymap)
+  (should-error (emacs-keymap-lookup-key "not a keymap" "a")
+                :type 'emacs-keymap-not-keymap)
+  (should-error (emacs-keymap-lookup-key 42 "a")
+                :type 'emacs-keymap-not-keymap))
 
 (ert-deftest emacs-keymap-map-keymap-visits-every-binding ()
   (let ((m (emacs-keymap-make-sparse-keymap))
