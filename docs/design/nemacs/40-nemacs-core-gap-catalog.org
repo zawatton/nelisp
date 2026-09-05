@@ -14,6 +14,7 @@ Numbers are from the audit logs; nothing below is estimated.
 | 1 | f82998e6 | form 815 of 930 (post-walk =no-catch=) | 70 | =no-catch: (cl-block-anon t)= escaped the walker |
 | 2 | 9cb3163d | form 237 | 10 (14 gone, 4 remaining, 6 new vs round 1 prefix) | exit 88 at 6.3 GiB RSS |
 | 3 | fb12664f | form 203 | 4 (nelix x2, exec-path-from-shell, undo-tree limits) | 12000 s timeout, 7.7 GiB RSS |
+| 4 | 767deb4f + vendor 9369e4d77 | past form 243 (harness printed errors only; progress lines added after) | 4 (nelix x2, evil-types not provided, term not found) | 30000 s timeout, 9.6 GiB RSS |
 
 ** Fixes landed (verified on the standalone, integrated 2026-09-04..05)
 | fix | mechanism | effect |
