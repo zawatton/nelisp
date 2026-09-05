@@ -4097,3 +4097,100 @@ is required."
   (defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
     "Identity stub — return STRING unchanged."
     string))
+
+;; T75 (2026-09) — `fboundp' / `macrop' / `commandp' / `indirect-function'
+;; all incorrectly signal `(wrong-type-argument symbolp nil)' when called on
+;; the literal symbol `nil', even though `(symbolp nil)' is t (nil *is* a
+;; symbol) and host GNU Emacs simply answers "no" for all four — nil's
+;; function cell is void by default, so `(fboundp nil)' => nil,
+;; `(macrop nil)' => nil, `(commandp nil)' => nil and
+;; `(indirect-function nil)' => nil, with no error.  These four are native
+;; NeLisp primitives (subrp); the bug is in their argument validation, not
+;; reachable from Lisp, so it is worked around here rather than in
+;; vendor/nelisp.
+;;
+;; This exact input class is what broke `json-mode' and `omnisharp' in the
+;; T63 real-init sweep: both transitively `(require 'cc-mode)' (`json-mode'
+;; via `js.el' at cc-defs.el load time), and cc-defs.el/cc-engine.el each
+;; define an XEmacs-compat shim shaped
+;;   (defalias 'SYM (cc-eval-when-compile
+;;                     (unless (or c-use-extents (cc-bytecomp-boundp V))
+;;                       (byte-compile (lambda ...)))))
+;; `emacs-parity-cc--byte-compile' (see emacs-parity-cc.el) guards its
+;; native-symbol special case with `(and (symbolp form) (fboundp form))';
+;; when the `unless' body above is skipped (COND true) `form' is nil, and
+;; merely evaluating `(fboundp nil)' to decide the answer aborted the whole
+;; require chain before `cc-mode' finished loading — for any package that
+;; pulls in `cc-mode' at all, not just these two.  `emacs-process.el's
+;; `emacs-process--native-primitives' capture (`(subrp (indirect-function
+;; sym))' for several process primitives) hits the identical nil-mid-chain
+;; case whenever one of those symbols' alias chain bottoms out at nil, so
+;; any fix here must not merely relocate the crash there.
+;;
+;; Placement note: this must NOT live at `emacs-symbol.el's early
+;; bootstrap position.  Measured 2026-09: at that point `fboundp' is
+;; already the real native subr (capturable via `symbol-function'), but
+;; `macrop' / `commandp' / `indirect-function' are not yet installed as
+;; anything Lisp-visible -- `(symbol-function 'macrop)' there is nil, so a
+;; wrapper built on a capture taken that early silently degrades every
+;; *non*-nil call into `(funcall nil ...)' i.e. `void-function' -- a worse
+;; regression than the bug being fixed.  By this point in `emacs-stub.el'
+;; (after its own `(unless (fboundp 'macrop) ...)' / `(unless (fboundp
+;; 'subrp) ...)' guards above have already observed all four as genuinely
+;; native), the capture is safe.  Wrap each: special-case nil to match the
+;; host, delegate to the native primitive for every other input so real
+;; symbols keep native behaviour.
+;;
+;; Guarded to the standalone NeLisp runtime only (`(fboundp
+;; 'nelisp--eval-source-string)', the same marker `emacs-parity-cc.el' uses
+;; as `emacs-parity-cc--standalone-p' -- NOT `(not (boundp 'emacs-version))':
+;; standalone NeLisp binds `emacs-version' too, to "30.1", for host-version
+;; compatibility probes elsewhere in this file, so that check alone does not
+;; distinguish standalone from host here): host Emacs's own `fboundp' /
+;; `macrop' / `commandp' / `indirect-function' do not have this bug, so this
+;; must stay a no-op there rather than adding an elisp indirection to four
+;; extremely hot primitives (dev/nelisp-emacs-lib CLAUDE.md: "Host Emacs
+;; should remain safe to load. Avoid global overrides except in guarded
+;; compatibility layers.").
+(when (fboundp 'nelisp--eval-source-string)
+  (defvar emacs-stub--native-fboundp (symbol-function 'fboundp)
+    "The native `fboundp' primitive, before the nil-input parity wrap below.")
+  (defvar emacs-stub--native-macrop (symbol-function 'macrop)
+    "The native `macrop' primitive, before the nil-input parity wrap below.")
+  (defvar emacs-stub--native-commandp (symbol-function 'commandp)
+    "The native `commandp' primitive, before the nil-input parity wrap below.")
+  (defvar emacs-stub--native-indirect-function (symbol-function 'indirect-function)
+    "The native `indirect-function' primitive, before the nil-input parity
+wrap below.")
+
+  (when (and (functionp emacs-stub--native-fboundp)
+             (functionp emacs-stub--native-macrop)
+             (functionp emacs-stub--native-commandp)
+             (functionp emacs-stub--native-indirect-function))
+
+    (defun fboundp (symbol)
+      "Return non-nil if SYMBOL's function definition is not void.
+Matches host Emacs for SYMBOL = nil (nil's function cell is void, so this
+is nil, not an error); delegates to the native primitive otherwise."
+      (if (null symbol) nil (funcall emacs-stub--native-fboundp symbol)))
+
+    (defun macrop (object)
+      "Return non-nil if OBJECT is a macro.
+Matches host Emacs for OBJECT = nil (nil is not a macro); delegates to the
+native primitive otherwise."
+      (if (null object) nil (funcall emacs-stub--native-macrop object)))
+
+    (defun commandp (function &optional for-call-interactively)
+      "Return non-nil if FUNCTION is a command.
+Matches host Emacs for FUNCTION = nil (nil is not a command); delegates to
+the native primitive otherwise."
+      (if (null function)
+          nil
+        (funcall emacs-stub--native-commandp function for-call-interactively)))
+
+    (defun indirect-function (object)
+      "Return the function OBJECT ultimately refers to, following aliases.
+Matches host Emacs for OBJECT = nil (nil is unbound as a function, so the
+alias chain terminates immediately at nil); delegates to the native
+primitive otherwise."
+      (if (null object) nil (funcall emacs-stub--native-indirect-function object)))))
