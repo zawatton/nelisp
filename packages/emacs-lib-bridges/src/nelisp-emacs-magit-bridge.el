@@ -26,6 +26,20 @@
 
 ;;; Code:
 
+;; T52: `button-buffer-map' and `coding-system-get' used to be defined
+;; inline below (guarded `unless boundp'/`unless fboundp' shims inside
+;; `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'), which left
+;; both void on the default nemacs boot path -- this bridge module only
+;; loads when the magit-specific bundle mechanism runs, not for a plain
+;; `(require 'consult)' / `(require 'message)' etc.  Both now live on the
+;; always-loaded boot path (`emacs-button-builtins.el' for
+;; `button-buffer-map', `emacs-parity-fns2.el' for `coding-system-get');
+;; `require' them here so this bridge keeps working standalone too (e.g. a
+;; live REPL session that loads this bundle without the full
+;; `emacs-foundation'/`nemacs-main' boot chain first).
+(require 'emacs-button-builtins)
+(require 'emacs-parity-fns2)
+
 (defvar nelisp-emacs-magit-bridge-repo-root nil
   "Repository root used to resolve the generated bundle path.
 When nil, `nelisp-emacs-magit-bridge-load' derives it from
@@ -4637,11 +4651,10 @@ Functions:
 - `process-lines-ignore-status' (subr.el): real implementation via
   `call-process' -- NOT a stub; magit's vc/git probes call it for real
   output and a nil stub would silently break them downstream.
-- `coding-system-get' (mule.el): the substrate has no coding-system
-  attribute table at all, so every property is honestly \"unknown\" =
-  nil.  This is a documented substrate gap, not a lazy stub: callers
-  in the vendor chain only use it for optional decoration (eol/BOM
-  display), and nil takes their fallback branch."
+- `button-buffer-map' and `coding-system-get' moved (T52) to
+  `emacs-button-builtins.el' / `emacs-parity-fns2.el' on the default boot
+  path; this function no longer defines them, `require' above is
+  sufficient."
   (unless (boundp 'desktop-buffer-mode-handlers)
     (defvar desktop-buffer-mode-handlers nil))
   (unless (boundp 'vc-git-log-view-mode-map)
@@ -4674,8 +4687,9 @@ Functions:
     (defvar isearch-mode-map (make-sparse-keymap)))
   (unless (boundp 'button-map)
     (defvar button-map (make-sparse-keymap)))
-  (unless (boundp 'button-buffer-map)
-    (defvar button-buffer-map (make-sparse-keymap)))
+  ;; `button-buffer-map' itself: T52 moved the definition to
+  ;; `emacs-button-builtins.el' (the `require' near the top of this file
+  ;; ensures it), so this batch no longer needs its own shim for it.
   ;; REMOVED from the batch (measured 2026-08-15): pre-binding
   ;; `tool-bar-map' turned bundle part 16's load into a deterministic
   ;; SIGSEGV (isolated by leave-one-out + an inert same-shape filler
@@ -4745,11 +4759,9 @@ Ignore the exit status of PROGRAM (unlike `process-lines')."
                               lines))
             (forward-line 1))
           (nreverse lines)))))
-  (unless (fboundp 'coding-system-get)
-    (defun coding-system-get (_coding-system _prop)
-      "Return nil: the substrate has no coding-system attribute table.
-See `nelisp-emacs-magit-bridge--ensure-vendor-preload-globals'."
-      nil))
+  ;; `coding-system-get' itself: T52 moved the definition to
+  ;; `emacs-parity-fns2.el' (the `require' near the top of this file
+  ;; ensures it), so this batch no longer needs its own shim for it.
   ;; menu-bar.el is never loaded either; log-edit's tool-bar defvar (part 15
   ;; line 582 in the bundle) reads `menu-bar-edit-menu' at load time via
   ;; (lookup-key menu-bar-edit-menu [cut]) -- an empty keymap makes that a

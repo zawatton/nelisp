@@ -16,6 +16,20 @@
   (should (fboundp 'buttonize))
   (should (fboundp 'buttonize-region)))
 
+(ert-deftest emacs-button-builtins-test/button-buffer-map-is-a-live-keymap ()
+  "T52: button-buffer-map was void anywhere in src/ except a
+magit-bridge-only shim not on the default boot path (load matrix hit
+`(void-variable button-buffer-map)' for consult, flycheck,
+flycheck-posframe -- none of which are magit).  Any `(require 'button)'
+must leave a real, live keymap object bound, matching host Emacs's own
+`button-buffer-map' in kind (a keymap), if not in content (the reduced
+compatibility layer does not install `forward-button'/`backward-button')."
+  (should (boundp 'button-buffer-map))
+  (should (keymapp button-buffer-map))
+  ;; distinct object from `button-map' -- real button.el keeps them separate
+  ;; (button-map's parent, not button-map itself)
+  (should (not (eq button-buffer-map button-map))))
+
 (ert-deftest emacs-button-builtins-test/property-contract ()
   (let* ((callback #'ignore)
          (data '(payload))

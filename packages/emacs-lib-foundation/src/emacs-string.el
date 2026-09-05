@@ -331,6 +331,57 @@ TAB resolves to `tab-width' (matching host `char-width')."
     (emacs-string--char-width char))
   (put 'char-width 'emacs-stub-bulk nil))
 
+;;;; --- character.c: unibyte-char-to-multibyte / multibyte-char-to-unibyte
+;; Real Emacs C primitives (character.c), void anywhere in src/ (T52, load
+;; matrix hit `(void-function unibyte-char-to-multibyte)' for 10 features:
+;; dash, emojify, magit, magit-delta, magit-section, markdown-mode,
+;; math-preview, ob-async, org-roam, treemacs -- rx.el:519 is the shared
+;; callsite, `rx--string-to-intervals' decoding an interval boundary byte).
+;;
+;; GNU semantics verified against host Emacs 31.1: ASCII (< 128) passes
+;; through unchanged; a raw byte 128..255 maps to the "eight-bit" character
+;; range base + BYTE (#x3FFF00 + byte, i.e. #x3FFF80..#x3FFFFF); anything
+;; else that is a valid character (per `characterp') is "not a unibyte
+;; character" (a plain `error', not a signal); anything that is not even a
+;; valid character signals `wrong-type-argument' via `characterp'.
+;;
+;; Doc 200 (`docs/design/200-unibyte-string-representation.org' section
+;; 8.3) explicitly does NOT give NeLisp a live representation for the
+;; eight-bit character range -- mixing one into an actual multibyte string
+;; signals `nelisp-raw-byte-unrepresentable'.  That is a distinct, already
+;; SHIPPED decision about *string* construction; it does not block these
+;; two functions, which only compute and return a plain integer (rx.el's
+;; caller uses the result solely for numeric interval-boundary comparison,
+;; never re-embeds it into a string).
+(defconst emacs-string--raw-byte-char-base #x3FFF00
+  "Base added to a raw byte 128..255 to form its \"eight-bit\" character.
+Matches Emacs's `RAW_BYTE_CHAR_BASE' (character.h): the eight-bit range is
+this base plus BYTE, i.e. #x3FFF80..#x3FFFFF for BYTE in 128..255.")
+
+(unless (fboundp 'unibyte-char-to-multibyte)
+  (defun unibyte-char-to-multibyte (ch)
+    "Convert the byte CH to multibyte character."
+    (unless (characterp ch)
+      (signal 'wrong-type-argument (list 'characterp ch)))
+    (when (>= ch #x100)
+      (error "Not a unibyte character: %d" ch))
+    (if (< ch 128)
+        ch
+      (+ ch emacs-string--raw-byte-char-base))))
+
+(unless (fboundp 'multibyte-char-to-unibyte)
+  (defun multibyte-char-to-unibyte (ch)
+    "Convert the multibyte character CH to a byte.
+If the multibyte character does not represent a byte, return -1."
+    (unless (characterp ch)
+      (signal 'wrong-type-argument (list 'characterp ch)))
+    (cond
+     ((< ch 256) ch)
+     ((and (>= ch (+ emacs-string--raw-byte-char-base 128))
+           (<= ch (+ emacs-string--raw-byte-char-base 255)))
+      (- ch emacs-string--raw-byte-char-base))
+     (t -1))))
+
 ;;;; --- Doc 16 breadth: subr-x / subr string builtins (were void) -------
 ;; `string-equal-ignore-case' / `string-clean-whitespace' (subr-x.el) and
 ;; `string-split' (subr.el alias) were void in the standalone runtime.

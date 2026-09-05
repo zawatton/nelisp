@@ -173,3 +173,50 @@ exercised directly and compared to host."
   (should (string= "abc" (propertize "abc" 'face 'bold)))
   (should (stringp (propertize "x")))
   (should (string= "" (propertize ""))))
+
+;; T52: unibyte-char-to-multibyte / multibyte-char-to-unibyte.  Both are
+;; gated `unless (fboundp ...)', so under host Emacs these tests exercise
+;; the host's own C primitive; the expected values below are a verbatim
+;; truth table measured directly against host Emacs 31.1 (character.c),
+;; which the polyfill above was written to match bit-for-bit.  Under
+;; standalone NeLisp (where the fboundp gate is open) the same table
+;; exercises the polyfill instead.
+
+(ert-deftest emacs-string-test/unibyte-char-to-multibyte-matches-host ()
+  (should (fboundp 'unibyte-char-to-multibyte))
+  (dolist (case '((0 . 0) (65 . 65) (127 . 127)
+                  (128 . 4194176) (200 . 4194248) (255 . 4194303)))
+    (should (= (cdr case) (unibyte-char-to-multibyte (car case))))))
+
+(ert-deftest emacs-string-test/unibyte-char-to-multibyte-not-a-unibyte-char ()
+  (should-error (unibyte-char-to-multibyte 256) :type 'error)
+  (should-error (unibyte-char-to-multibyte 3000000) :type 'error)
+  ;; both are plain `error', not `wrong-type-argument'
+  (should (equal (cadr (should-error (unibyte-char-to-multibyte 256)))
+                 "Not a unibyte character: 256")))
+
+(ert-deftest emacs-string-test/unibyte-char-to-multibyte-wrong-type ()
+  (should-error (unibyte-char-to-multibyte -1) :type 'wrong-type-argument)
+  (should-error (unibyte-char-to-multibyte nil) :type 'wrong-type-argument)
+  (should-error (unibyte-char-to-multibyte 1.5) :type 'wrong-type-argument))
+
+(ert-deftest emacs-string-test/multibyte-char-to-unibyte-matches-host ()
+  (should (fboundp 'multibyte-char-to-unibyte))
+  (dolist (case '((0 . 0) (65 . 65) (127 . 127) (128 . 128) (200 . 200)
+                  (255 . 255) (256 . -1) (500 . -1) (1000 . -1)
+                  (4194175 . -1) (4194176 . 128) (4194248 . 200)
+                  (4194303 . 255) (12354 . -1)))
+    (should (= (cdr case) (multibyte-char-to-unibyte (car case))))))
+
+(ert-deftest emacs-string-test/multibyte-char-to-unibyte-wrong-type ()
+  (should-error (multibyte-char-to-unibyte -1) :type 'wrong-type-argument)
+  (should-error (multibyte-char-to-unibyte nil) :type 'wrong-type-argument)
+  (should-error (multibyte-char-to-unibyte 5000000) :type 'wrong-type-argument))
+
+(ert-deftest emacs-string-test/unibyte-multibyte-round-trip ()
+  "Round-trip every raw byte 128..255 through both conversions."
+  (let ((byte 128))
+    (while (<= byte 255)
+      (should (= byte (multibyte-char-to-unibyte
+                        (unibyte-char-to-multibyte byte))))
+      (setq byte (1+ byte)))))
