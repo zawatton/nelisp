@@ -149,15 +149,25 @@ cp "$bootstrap_repl" "$audit_repl"
           (signal 'end-of-file
                   (list "real init audit reader made no progress" position)))
         (setq index (+ index 1))
-        (condition-case caught
-            (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
-                      (nelisp--load-rewrite-defalias-form form)
-                    form)
-                  t)
-          (error
-           (setq init-file-had-error t
-                 nemacs-init-file-error (cons path caught))
-           (real-init-audit--print-error path index form-line caught)))
+        (let ((form-start (float-time)))
+          (condition-case caught
+              (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
+                        (nelisp--load-rewrite-defalias-form form)
+                      form)
+                    t)
+            (error
+             (setq init-file-had-error t
+                   nemacs-init-file-error (cons path caught))
+             (real-init-audit--print-error path index form-line caught)))
+          ;; Progress line per form: the audit is time-bound, and the raw log
+          ;; must show how far it got and which forms cost minutes.
+          (princ "NEMACS_REAL_INIT_FORM ")
+          (prin1 index)
+          (princ " line=")
+          (prin1 form-line)
+          (princ " secs=")
+          (prin1 (/ (round (* 10 (- (float-time) form-start))) 10.0))
+          (princ "\n"))
         (setq line (+ line
                       (real-init-audit--count-newlines
                        source position next)))
