@@ -1347,6 +1347,7 @@
                    emacs-cl-macros
                    emacs-stub-bulk
                    emacs-stub
+                   emacs-button-builtins
                    emacs-os-detect
                    emacs-easy-mmode
                    emacs-time
@@ -1369,6 +1370,7 @@
                    emacs-sqlite
                    nelisp-emacs-compat-fileio
                    files-runtime
+                   emacs-file-name-handler
                    emacs-fileio-builtins
                    emacs-standalone
                    emacs-process

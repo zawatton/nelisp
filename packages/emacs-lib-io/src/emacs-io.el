@@ -21,6 +21,7 @@
     emacs-sqlite
     nelisp-emacs-compat-fileio
     files-runtime
+    emacs-file-name-handler
     emacs-fileio-builtins
     emacs-standalone
     emacs-process

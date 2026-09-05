@@ -61,6 +61,7 @@
     emacs-cl-macros
     emacs-stub-bulk
     emacs-stub
+    emacs-button-builtins
     emacs-os-detect
     emacs-easy-mmode
     emacs-time
