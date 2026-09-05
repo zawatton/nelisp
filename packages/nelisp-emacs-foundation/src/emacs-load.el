@@ -79,7 +79,55 @@ slice has been isolated."
         slice)))
 
   (defun nelisp--load-skip-space-and-comments (source pos)
-    "Return first non-whitespace/comment position in SOURCE at or after POS."
+    "Return first non-whitespace/comment position in SOURCE at or after POS.
+Whitespace is space, tab, newline, CR, or formfeed.  A comment runs from
+`;' through end of line, exclusive of the newline itself (the following
+iteration of the whitespace/comment run consumes that newline as
+ordinary whitespace).
+
+SOURCE and POS must already share one coordinate space: this function
+does not (and must not) convert SOURCE itself, because POS may already
+be a position produced by earlier calls in the same scan, and this
+runtime's byte-indexed (unibyte) and multibyte representations of the
+same text do not share offsets once any non-ASCII byte precedes POS
+-- converting mid-scan would silently reinterpret an old, still-valid
+POS in the wrong coordinate space.  All real callers already establish
+this invariant once, up front: `nelisp--load-map-source-forms' and
+`nelisp--load-eval-source-incremental' both call
+`emacs-load--byte-indexed-source' on SOURCE before their per-form loop
+ever calls this function, and `emacs-load--read-file-string' does the
+same to whatever `load' reads from disk.
+
+T94 investigated a real, reproducible superlinear cost in this loop
+(bisected on an isolated, unconverted copy of ange-ftp.el's ~30KB GNU
+comment header: 1000 bytes 0.04s, 25000 bytes 11.4s) caused by `aref'
+recomputing a multibyte string's character-to-byte offset from scratch
+on every call.  Two fixes were measured and both rejected:
+
+- Replacing the loop with one `string-match' call over the whole run:
+  on this runtime `string-match' is not a fast native primitive for
+  this pattern -- it measured 20-50x SLOWER than this loop at every
+  size tried, on both multibyte and already-unibyte SOURCE (75.9s vs
+  13.2s at 25000 multibyte bytes; 43.5s vs 0.78s at 25000 unibyte
+  bytes).
+- Converting SOURCE to unibyte inside this function on every call:
+  this removes the quadratic cost when POS is 0, but corrupts POS for
+  any later call in the same scan once SOURCE contains a non-ASCII
+  byte before POS, exactly the class of character-index-vs-byte-offset
+  bug documented on `emacs-load--native-read-one' above -- caught by
+  this task's own equivalence test before it shipped.
+
+The loop is unchanged from before T94.  What T94 confirmed instead is
+that the quadratic case, while real in isolation, is not reachable
+through `load' or any other real caller today, because SOURCE always
+already arrives byte-indexed (measured flat/linear on unibyte SOURCE:
+1000 bytes 0.05s, 25000 bytes 0.78-1.34s, 100000 bytes 4.0s -- the
+remaining ~40us/byte here is ordinary interpreted-loop overhead, not
+the quadratic defect, and neither rejected fix above improves on it).
+See the T94 report for the full measurement, including why
+`emacs-load--artifact-source-skip-ws-comments' below -- a pre-existing
+duplicate of this exact scan -- now delegates here instead of keeping
+its own separate (but equally already-safe) copy."
     (let ((len (length source))
           (done nil))
       (while (and (< pos len) (not done))
@@ -90,7 +138,7 @@ slice has been isolated."
            ((= c ?\;)
             (while (and (< pos len) (not (= (aref source pos) ?\n)))
               (setq pos (+ pos 1))))
-          (t
+           (t
             (setq done t)))))
       pos))
 
@@ -732,21 +780,12 @@ fall back to host `string-search' otherwise."
     (aref string index))
 
   (defun emacs-load--artifact-source-skip-ws-comments (source pos)
-    "Return first non-whitespace/comment position in SOURCE at or after POS."
-    (let ((len (length source))
-          (done nil))
-      (while (and (< pos len) (not done))
-        (let ((ch (aref source pos)))
-          (cond
-           ((or (= ch ?\s) (= ch ?\t) (= ch ?\n) (= ch ?\r) (= ch ?\f))
-            (setq pos (1+ pos)))
-           ((= ch ?\;)
-            (while (and (< pos len)
-                        (not (= (aref source pos) ?\n)))
-              (setq pos (1+ pos))))
-           (t
-            (setq done t)))))
-      pos))
+    "Return first non-whitespace/comment position in SOURCE at or after POS.
+Same rule as `nelisp--load-skip-space-and-comments' (this was a duplicate
+character-by-character implementation of the identical scan, sharing the
+same T94 superlinear-`aref' and per-iteration-interpreter-overhead cost;
+delegate instead of maintaining two copies of the fix)."
+    (nelisp--load-skip-space-and-comments source pos))
 
   (defun emacs-load--artifact-source-rskip-ws (source pos)
     "Return last non-whitespace position in SOURCE at or before POS."
