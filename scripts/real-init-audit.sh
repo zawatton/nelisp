@@ -90,6 +90,14 @@ cp "$bootstrap_repl" "$audit_repl"
   # emitted inside the init loader because the outer batch startup resets
   # user-init-file after the loader returns.
   while IFS= read -r helper_line; do
+    case "$helper_line" in
+      *\;*)
+        # A semicolon anywhere would comment out the rest of the flattened
+        # form (this bit us once: two ;; lines swallowed the loader and the
+        # audit died with invalid-read-syntax on every run).
+        echo "real-init-audit: semicolon in the flattened helper: $helper_line" >&2
+        exit 2 ;;
+    esac
     printf '%s ' "$helper_line"
   done <<'ELISP'
 
@@ -159,8 +167,6 @@ cp "$bootstrap_repl" "$audit_repl"
              (setq init-file-had-error t
                    nemacs-init-file-error (cons path caught))
              (real-init-audit--print-error path index form-line caught)))
-          ;; Progress line per form: the audit is time-bound, and the raw log
-          ;; must show how far it got and which forms cost minutes.
           (princ "NEMACS_REAL_INIT_FORM ")
           (prin1 index)
           (princ " line=")
