@@ -64,15 +64,35 @@
 (defun emacs-window-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge.
 
-`(boundp \\='emacs-version)' alone is not a reliable \"are we really
-inside host Emacs\" test: some NeLisp standalone-reader builds bind
-`emacs-version' to a non-string sentinel (so `boundp' is true but the
-value is not a version string) rather than leaving it unbound.  Also
-check `stringp' so the standalone reader is still detected correctly
-and this bridge overrides the unconditional `emacs-stub.el' nil-stub
-installs for names such as `windowp'/`window-list'/`window-buffer'
-that would otherwise win by loading first."
-  (or (not (boundp 'emacs-version))
+`(not (boundp \\='emacs-version))' (with or without the `stringp'
+refinement) is not a reliable standalone signal: the NeLisp reader
+binds `emacs-version' too, to the real string \"30.1\", so both
+disjuncts evaluate to nil there and this gate silently fell through to
+`--function-cell-live-p' alone.  That check only asks whether the
+*current* binding looks callable, and several names this bridge owns
+(`selected-window', `windowp', `window-live-p', `window-list',
+`frame-selected-window', `set-window-buffer', `window-buffer' via
+`emacs-stub.el''s individually-defined, untagged window.c stubs; also
+`next-window', `window-height', `window-width', `window-start',
+`window-end', `window-point', `window-parameter', `set-window-point',
+`set-window-start', `set-window-parameter',
+`current-window-configuration', `set-window-configuration',
+`select-window', `display-buffer', `recenter', `scroll-up',
+`scroll-down', `scroll-up-command', `scroll-down-command' via
+`emacs-stub-bulk.el''s bulk dolist -- tagged with `emacs-stub-bulk' but
+this gate never checked the tag) already look \"live\" by the time this
+file loads, so the bridge silently declined to override them.  Net
+effect verified empirically: `(selected-window)' returned a fresh,
+non-`eq'-stable stub object on every call, `(window-live-p ...)' and
+`(window-list)' never delegated to the real window model, and
+`save-selected-window''s restore half was a no-op.  Force install
+unconditionally on standalone via a NeLisp-only primitive, matching
+`emacs-char-table--standalone-p' in `emacs-char-table.el' and the same
+fix already applied to `emacs-font-lock-builtins.el' /
+`emacs-redisplay-builtins.el' for the identical defect class."
+  (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (not (boundp 'emacs-version))
       (not (stringp emacs-version))
       (not (emacs-window-builtins--function-cell-live-p symbol))))
 
