@@ -587,6 +587,85 @@
       (when (boundp value)
         (makunbound value)))))
 
+(ert-deftest emacs-load-test/source-incremental-per-form-cost-does-not-grow ()
+  "T78 regression: per-form incremental load time must not grow with
+position in the file.  Guards the loader's own per-form bookkeeping
+(`emacs-load--native-read-one', `nelisp--load-eval-source-tail') against
+reintroducing O(n) or worse per-form cost, independent of whether any
+one form is individually large enough to trip the T78 escape hatch (see
+`emacs-load-test/source-incremental-large-literal-list-fast' for that
+case)."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((n 300)
+         (forms nil))
+    (dotimes (i n)
+      (push (format
+             "(defcustom emacs-load-test--t78-var-%d nil \"doc %d\" :group 'emacs-load-test--t78-group)"
+             i i)
+            forms))
+    (let* ((source (concat
+                    "(defgroup emacs-load-test--t78-group nil \"t78\" :group 'emacs)\n"
+                    (mapconcat #'identity (nreverse forms) "\n")
+                    "\n"))
+           (times nil)
+           (original (symbol-function 'nelisp--load-eval-one-form)))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'nelisp--load-eval-one-form)
+                       (lambda (form)
+                         (let ((t0 (float-time)))
+                           (prog1 (funcall original form)
+                             (push (- (float-time) t0) times))))))
+              (nelisp--load-eval-source-incremental source))
+            (setq times (nreverse times))
+            (should (= (length times) (1+ n)))
+            (let* ((first-10 (cl-subseq times 0 10))
+                   (last-10 (last times 10))
+                   (first-avg (/ (apply #'+ first-10) (float (length first-10))))
+                   (last-avg (/ (apply #'+ last-10) (float (length last-10)))))
+              ;; The 0.01s floor absorbs scheduler/measurement noise on an
+              ;; extremely fast run where FIRST-AVG rounds near zero.
+              (should (<= last-avg (max (* 2.0 first-avg) 0.01)))))
+        (dotimes (i n)
+          (let ((sym (intern (format "emacs-load-test--t78-var-%d" i))))
+            (when (boundp sym) (makunbound sym))))))))
+
+(ert-deftest emacs-load-test/source-incremental-large-literal-list-fast ()
+  "T78 regression: a single top-level form whose own content is a large
+literal list/alist (past the native reader's per-form element budget,
+~500-600 elements as measured for this task) must not fall into the
+catastrophic per-character `emacs-load--artifact-source-form-end' /
+`read-from-string' fallback path.  Before the T78 fix, this class of
+file -- e.g. nerd-icons-data-mdicon.el's ~6900-entry icon table, or
+ange-ftp.el-adjacent large data tables -- took minutes to hours; T63
+measured ~195s for a single ~1600-element/50KB literal, of which
+`nelisp--eval-source-string' alone (the fix's escape-hatch target) took
+~0.01s for the same content.  The fix keeps the whole file in the
+low single-digit seconds by escaping to `nelisp--eval-source-string' for
+the remainder once the native reader declines on one form."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (skip-unless (fboundp 'nelisp--read-all-from-string-native))
+  (let* ((n 800)
+         (entries nil))
+    (dotimes (i n)
+      (push (format "(\"item-%d\" . %d)" i i) entries))
+    (let* ((source (concat "(defvar emacs-load-test--t78-big-lit '("
+                            (mapconcat #'identity (nreverse entries) " ")
+                            "))\n"))
+           (t0 (float-time)))
+      (unwind-protect
+          (progn
+            (nelisp--load-eval-source-incremental source)
+            (should (boundp 'emacs-load-test--t78-big-lit))
+            (should (= (length (symbol-value 'emacs-load-test--t78-big-lit)) n))
+            ;; Generous bound: measured "after" times were single-digit
+            ;; seconds even for the full ~6900-element nerd-icons file
+            ;; (245KB); this only needs to catch a return of the
+            ;; catastrophic (100s+ for 1/9th the data) per-character path.
+            (should (< (- (float-time) t0) 20.0)))
+        (when (boundp 'emacs-load-test--t78-big-lit)
+          (makunbound 'emacs-load-test--t78-big-lit))))))
+
 (ert-deftest emacs-load-test/source-unibyte-skip-position-keeps-newline-count ()
   (skip-unless (emacs-load-test--standalone-active-p))
   (let* ((source "; 日本語一行目\n  ; 二行目\n(setq answer \"日本語\")")
