@@ -14,8 +14,26 @@
   (expand-file-name "src/emacs-load.el"
                     emacs-load-artifact-read-form-test--root))
 
-(let ((emacs-version 1))
-  (load-file emacs-load-artifact-read-form-test--source-file))
+;; `src/emacs-load.el' only installs its standalone `load'/`load-file'
+;; override while its own top-level gate reads standalone (see its
+;; `(when (or ... (not (stringp emacs-version))) ...)'); the `let' below
+;; fakes that for this one nested `load-file' call so the internal
+;; artifact-cache helpers below become available.  `defun' mutates the
+;; global function cell, so it is not undone merely by `emacs-version'
+;; unwinding — without explicitly restoring `load'/`load-file' to the
+;; host originals captured here, they stay overridden with the
+;; standalone implementation for the rest of this Emacs process, which
+;; then crashes any later `require'/`load' of a feature not yet
+;; provided (its `emacs-load--resolve-file' calls
+;; `emacs-fns--load-candidate-suffixes', a helper `src/emacs-fns.el'
+;; only installs under the same standalone gate, so it is void here).
+(let ((host-load (symbol-function 'load))
+      (host-load-file (symbol-function 'load-file)))
+  (let ((emacs-version 1)
+        (native-comp-enable-subr-trampolines nil))
+    (funcall host-load-file emacs-load-artifact-read-form-test--source-file))
+  (fset 'load host-load)
+  (fset 'load-file host-load-file))
 
 (defun emacs-load-artifact-read-form-test--standalone-active-p ()
   "Non-nil when the standalone emacs-load override is active."

@@ -553,7 +553,15 @@ The helper is unconditional; the macro itself is reader-gated."
 
 This is a coarse regression guard for the old `(unless (fboundp ...))'
 pattern: host Emacs should keep its builtins, but standalone NeLisp
-must be able to overwrite early bootstrap stubs with real substrates."
+must be able to overwrite early bootstrap stubs with real substrates.
+
+Most bridges spell that awareness as `(boundp 'emacs-version)' (host
+Emacs binds it, so its absence means standalone), but the NeLisp reader
+now binds `emacs-version' too (see `emacs-minibuffer-builtins.el''s
+`--install-function-p'), so that particular bridge instead keys on the
+NeLisp-only primitive `nelisp--write-stdout-bytes'.  Accept either: the
+invariant under test is host-vs-standalone awareness, not one exact
+spelling of it."
   (dolist (library emacs-stub-residuals-test--builtin-bridge-libraries)
     (let* ((gate (format "%s--install-function-p" library))
            (file (emacs-stub-residuals-test--source-file library)))
@@ -563,7 +571,10 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (goto-char (point-min))
         (should (search-forward (concat "(defun " gate) nil t))
         (goto-char (point-min))
-        (should (search-forward "(boundp 'emacs-version)" nil t))))))
+        (should (or (search-forward "(boundp 'emacs-version)" nil t)
+                    (progn
+                      (goto-char (point-min))
+                      (search-forward "nelisp--write-stdout-bytes" nil t))))))))
 
 ;;;; D. buffer-local variable stubs preserve setq-local's contract
 

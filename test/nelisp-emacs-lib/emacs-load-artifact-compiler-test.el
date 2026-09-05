@@ -13,8 +13,22 @@
 
 ;; Load the source implementation directly so the tests do not depend on a
 ;; potentially stale compiled .elc.
-(let ((emacs-version 1))
-  (load-file emacs-load-artifact-compiler-test--source-file))
+;;
+;; See `test/emacs-load-artifact-read-form-test.el' for why `load'/
+;; `load-file' must be captured and restored around this: faking
+;; `emacs-version' only trips `src/emacs-load.el''s standalone gate for
+;; this nested `load-file' call, but `defun' mutates the global
+;; function cell, so an unrestored override survives the `let'
+;; unwinding and crashes any later `require'/`load' of a feature not
+;; yet provided (its `emacs-load--resolve-file' calls the
+;; standalone-only `emacs-fns--load-candidate-suffixes', void here).
+(let ((host-load (symbol-function 'load))
+      (host-load-file (symbol-function 'load-file)))
+  (let ((emacs-version 1)
+        (native-comp-enable-subr-trampolines nil))
+    (funcall host-load-file emacs-load-artifact-compiler-test--source-file))
+  (fset 'load host-load)
+  (fset 'load-file host-load-file))
 
 (defmacro emacs-load-artifact-compiler-test--without-native-read-all (&rest body)
   "Run BODY without `nelisp--read-all-from-string-native' if it exists."

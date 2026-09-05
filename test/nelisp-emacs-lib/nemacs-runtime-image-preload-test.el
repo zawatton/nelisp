@@ -444,7 +444,19 @@
            (dolist (symbol nemacs-runtime-image-preload-test--direct-install-functions)
              (fmakunbound symbol))
            (dolist (symbol nemacs-runtime-image-preload-test--direct-install-variables)
-             (makunbound symbol))
+             ;; A handful of these (e.g. `shell-file-name') are C-level
+             ;; "always bound" specials on this Emacs: `makunbound' signals
+             ;; "Built-in variable may not be unbound" instead of silently
+             ;; no-oping.  That is new host behavior this helper predates,
+             ;; and an unhandled signal here aborts the `dolist' immediately
+             ;; -- every later variable stays bound too, and `,@body' below
+             ;; never runs at all, failing the test before it exercises any
+             ;; real assertion.  Skip only the protected symbol and continue
+             ;; unbinding the rest; the paired restore loop already tolerates
+             ;; a symbol that was never unbound (its `value-cells' capture
+             ;; runs first, above, so the original value is still restored
+             ;; correctly regardless).
+             (ignore-errors (makunbound symbol)))
            ,@body)
        (setq features original-features)
        (dolist (cell function-cells)

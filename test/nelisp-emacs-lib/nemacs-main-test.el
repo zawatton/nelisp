@@ -1256,12 +1256,21 @@
                    (proc-b (start-process "nemacs-main-test-concurrent-b" nil
                                           nemacs-main-test--bin
                                           "--driver=nelisp" "--batch" "--no-banner"))
-                   (deadline (+ (float-time) 60)))
+                   ;; The fixture's mocked `compile-elisp-artifact' step
+                   ;; sleeps 2s, so both launches together should clear
+                   ;; well inside a fraction of a minute; 60s left no
+                   ;; slack for scheduling variance on a loaded machine
+                   ;; and made this the flakiest test in the suite.  300s
+                   ;; keeps proving the same thing (one compile for two
+                   ;; concurrent first runs) with room for that variance.
+                   (wait-budget-seconds 300)
+                   (deadline (+ (float-time) wait-budget-seconds)))
               (while (and (< (float-time) deadline)
                           (or (process-live-p proc-a) (process-live-p proc-b)))
                 (accept-process-output nil 0.2))
               (when (or (process-live-p proc-a) (process-live-p proc-b))
-                (ert-fail "concurrent nemacs launches did not finish within 60 seconds"))
+                (ert-fail (format "concurrent nemacs launches did not finish within %s seconds"
+                                  wait-budget-seconds)))
               (should (= 0 (process-exit-status proc-a)))
               (should (= 0 (process-exit-status proc-b))))
             (should (file-readable-p compile-args))
