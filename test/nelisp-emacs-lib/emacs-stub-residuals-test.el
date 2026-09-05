@@ -37,6 +37,13 @@
 (require 'cl-lib)
 (require 'emacs-stub)
 
+(defconst emacs-stub-residuals-test--this-file
+  (or load-file-name buffer-file-name)
+  "This test file's own path, captured at load time.
+`load-file-name'/`buffer-file-name' are both nil by the time an ERT test
+BODY runs under `emacs --batch', so any test that needs to locate a
+sibling directory (e.g. `src/') must capture this at top level instead.")
+
 (defconst emacs-stub-residuals-test--builtin-bridge-libraries
   '("emacs-buffer-builtins"
     "emacs-fileio-builtins"
@@ -587,6 +594,143 @@ spelling of it."
                     (progn
                       (goto-char (point-min))
                       (search-forward "nelisp--write-stdout-bytes" nil t))))))))
+
+(defconst emacs-stub-residuals-test--standalone-gate-name-regexp
+  (rx (or "standalone-p" "standalone-runtime-p" "host-runtime-p"
+          "host-emacs-p" "install-function-p" "function-cell-live-p")
+      string-end)
+  "Suffixes this codebase uses to name a host-vs-standalone detection gate.
+T89 audit (2026-09): every confirmed `(not (boundp 'emacs-version))'-alone
+defect in this codebase (`emacs-syntax-table--standalone-p' before its T53
+fix; `case-table--standalone-p' / `charprop--standalone-p' /
+`charscript--standalone-p' / `lisp--install-function-p' /
+`regi--install-function-p' / `emacs-time--host-runtime-p' before their T89
+fix) was a `defun'/`defvar'/`defconst' whose own name carries one of these
+suffixes.  Dash count varies across families (`files-standalone-runtime-p'
+vs `emacs-time--standalone-runtime-p'), so this matches on suffix alone.
+`function-cell-live-p' (`emacs-font-lock-builtins.el' et al.) is included
+because it consults the same kind of already-installed-live-state signal
+`(fboundp SYMBOL)' does, just under a different name.")
+
+(defun emacs-stub-residuals-test--sexp-boundp-emacs-version-p (form)
+  "Return non-nil when FORM is literally `(boundp (quote emacs-version))'."
+  (and (consp form)
+       (eq (car form) 'boundp)
+       (equal (car-safe (cdr form)) '(quote emacs-version))))
+
+(defun emacs-stub-residuals-test--sexp-compensating-check-p (form)
+  "Return non-nil when FORM is a standalone-aware compensating check.
+Accepts any `(fboundp X)' call (the NeLisp-marker-primitive idiom this
+codebase's already-fixed families use, e.g. `(fboundp \\='nl-write-file)'
+in `emacs-char-table--standalone-p'; also covers the `emacs-stub.el'-style
+`(not (fboundp SYMBOL))' reduction, which callers deliberately keep) or a
+call to another symbol whose name is itself one of the standalone/host
+gate-naming suffixes (reusing a sibling `--standalone-p' helper, as
+`emacs-time--host-runtime-p' does for `emacs-time--standalone-runtime-p'
+post-T89-fix)."
+  (and (consp form)
+       (symbolp (car form))
+       (or (memq (car form) '(fboundp macrop commandp))
+           (and (eq (car form) 'get)
+                (equal (car-safe (nthcdr 2 form)) '(quote emacs-stub-bulk)))
+           (string-match-p emacs-stub-residuals-test--standalone-gate-name-regexp
+                            (symbol-name (car form))))))
+
+(defun emacs-stub-residuals-test--sexp-walk-collect (form predicate)
+  "Collect every subform of FORM (including FORM) satisfying PREDICATE."
+  (let (hits)
+    (letrec ((walk (lambda (f)
+                      (when (funcall predicate f) (push f hits))
+                      (when (consp f)
+                        (funcall walk (car f))
+                        (funcall walk (cdr f))))))
+      (funcall walk form))
+    hits))
+
+(defun emacs-stub-residuals-test--sexp-defines-emacs-version-p (form)
+  "Return non-nil when FORM itself binds/sets the `emacs-version' sentinel.
+Excludes the legitimate bootstrap idiom `(unless (boundp \\='emacs-version)
+(defvar emacs-version ...))' (`emacs-parity-core-vars.el') and its `setq'
+sibling (`nelisp-emacs-magit-bridge.el'): those guard defining the very
+sentinel this whole audit is about, so naming it is not a host/standalone
+install decision for some OTHER feature."
+  (emacs-stub-residuals-test--sexp-walk-collect
+   form
+   (lambda (f)
+     (and (consp f)
+          (memq (car f) '(defvar defconst setq))
+          (memq 'emacs-version (if (eq (car f) 'setq) f (list (cadr f))))))))
+
+(defun emacs-stub-residuals-test--read-all-forms (file)
+  "Read every top-level form in FILE, returning a list."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (let (forms)
+      (while (condition-case nil
+                 (progn (push (read (current-buffer)) forms) t)
+               (end-of-file nil))
+        )
+      (nreverse forms))))
+
+(defun emacs-stub-residuals-test--gate-scope (form)
+  "Return the sub-expression of top-level FORM that is its detection guard.
+Nil when FORM is not a recognised gate-defining shape (this test only
+judges forms it recognises; it does not attempt full data-flow analysis)."
+  (pcase form
+    (`(,(or 'defun 'defsubst) ,name ,_args . ,body)
+     (when (string-match-p emacs-stub-residuals-test--standalone-gate-name-regexp
+                            (symbol-name name))
+       (cons name body)))
+    (`(,(or 'defvar 'defconst) ,name ,value . ,_doc)
+     (when (string-match-p emacs-stub-residuals-test--standalone-gate-name-regexp
+                            (symbol-name name))
+       (cons name (list value))))
+    (`(,(or 'when 'unless 'if) ,cond . ,_rest)
+     (unless (emacs-stub-residuals-test--sexp-defines-emacs-version-p form)
+       (cons (car form) (list cond))))
+    (_ nil)))
+
+(ert-deftest emacs-stub-residuals-test/standalone-gates-reject-naive-boundp-alone ()
+  "A `(boundp \\='emacs-version)'-alone test must never gate standalone install.
+T89 audit (2026-09) follow-up to T53 (`emacs-syntax-table.el'): the NeLisp
+reader binds `emacs-version' too (see `emacs-char-table--standalone-p'
+commentary), so a bare `(not (boundp \\='emacs-version))' -- with no
+compensating `(fboundp \\='nl-write-file)'-style check or reused sibling
+`--standalone-p' helper alongside it -- always misdetects standalone as
+host and silently skips the install it guards.  This walks every real
+sexp in every `src/*.el' file (plus the generated-bootstrap prelude
+string forms in `scripts/build-nelisp-bootstrap.el' would need string
+scanning, not sexp reads, so those are covered by the existing
+`emacs-stub-residuals-test/builtin-bridges-have-standalone-install-gates'
+substring check instead) and flags any recognised host/standalone gate
+shape whose only signal is the naive test."
+  (let* ((src-dir (expand-file-name
+                    "../src"
+                    (file-name-directory emacs-stub-residuals-test--this-file)))
+         (files (directory-files src-dir t "\\.el\\'"))
+         violations)
+    (should (> (length files) 50))
+    (dolist (file files)
+      (dolist (form (emacs-stub-residuals-test--read-all-forms file))
+        (let ((scope (emacs-stub-residuals-test--gate-scope form)))
+          (when scope
+            (let* ((name (car scope))
+                   (body (cdr scope))
+                   (has-naive
+                    (seq-some (lambda (f)
+                                (emacs-stub-residuals-test--sexp-walk-collect
+                                 f #'emacs-stub-residuals-test--sexp-boundp-emacs-version-p))
+                              body))
+                   (has-compensating
+                    (seq-some (lambda (f)
+                                (emacs-stub-residuals-test--sexp-walk-collect
+                                 f #'emacs-stub-residuals-test--sexp-compensating-check-p))
+                              body)))
+              (when (and has-naive (not has-compensating))
+                (push (format "%s: %s" (file-name-nondirectory file) name)
+                      violations)))))))
+    (should (equal nil (nreverse violations)))))
 
 ;;;; D. buffer-local variable stubs preserve setq-local's contract
 

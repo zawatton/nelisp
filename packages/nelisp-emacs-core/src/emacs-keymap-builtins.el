@@ -229,7 +229,9 @@ the conventional shape expected by `defvar-keymap :suppress'."
   (defvar help-map (emacs-keymap-make-sparse-keymap)
     "Standard help prefix keymap for standalone NeLisp."))
 
-(when (and (not (boundp 'emacs-version))
+(when (and (or (fboundp 'nl-write-file)
+               (fboundp 'nelisp--write-stdout-bytes)
+               (not (boundp 'emacs-version)))
            (emacs-keymap-keymapp global-map))
   (setq emacs-keymap-global-map global-map)
   (emacs-keymap-define-key global-map "\C-x" ctl-x-map)

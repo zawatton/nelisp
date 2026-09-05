@@ -22,8 +22,13 @@
   "Script names exposed by the lightweight charscript facade.")
 
 (defun charscript--standalone-p ()
-  "Return non-nil under standalone NeLisp."
-  (not (boundp 'emacs-version)))
+  "Return non-nil under standalone NeLisp.
+The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
+`(not (boundp 'emacs-version))' test misfires there.  Detect the
+standalone path by a NeLisp-only primitive, matching
+`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
 
 (defun charscript--make-table ()
   "Return a lightweight script table for common daily-driver characters."

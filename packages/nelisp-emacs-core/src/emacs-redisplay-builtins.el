@@ -180,8 +180,19 @@ avoid clobbering the existing substrate `emacs-redisplay-redisplay'."
 ;;;; --- function bridges (gated) --------------------------------------
 
 (defun emacs-redisplay-builtins--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (not (boundp 'emacs-version))
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
+`(not (boundp \\='emacs-version))' alone is not a reliable standalone
+signal (the NeLisp reader binds `emacs-version' too), and this gate had
+no other compensating check at all: `force-mode-line-update'/
+`redisplay'/`redraw-display' are all defined individually (and
+untagged) in `emacs-stub.el', which loads first and would otherwise
+permanently win over this bridge via the `(not (fboundp symbol))'
+fallback.  Force install unconditionally on standalone via a NeLisp-only
+primitive, matching `emacs-char-table--standalone-p' in
+`emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 
 (when (emacs-redisplay-builtins--install-function-p 'force-mode-line-update)

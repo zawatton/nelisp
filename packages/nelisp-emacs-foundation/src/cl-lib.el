@@ -217,7 +217,16 @@ this for sibling-list immutability)."
 ;; では gv.el の `setf' を使う。autoload を local stub で上書きしない
 ;; よう、この polyfill は standalone 専用にする。
 
-(unless (boundp 'emacs-version)
+(defun cl-lib--standalone-p ()
+  "Return non-nil under standalone NeLisp.
+The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
+`(not (boundp 'emacs-version))' test misfires there.  Detect the
+standalone path by a NeLisp-only primitive, matching
+`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
+
+(when (cl-lib--standalone-p)
   (defmacro setf (&rest pairs)
     "Minimal setf — handles common places.
 Supported PLACE forms:
@@ -368,10 +377,12 @@ For unrecognised places, signals an error at expansion time."
 ;; left out because `plist-put' may return a fresh list without updating
 ;; the place, which a simple setter cannot reassign.
 ;; Host Emacs uses gv.el and ignores `cl-simple-setter', so this is gated
-;; to the standalone runtime (emacs-version is a sentinel there, not a
-;; version string).
+;; to the standalone runtime via `cl-lib--standalone-p' (NOT the naive
+;; `(not (stringp (and (boundp 'emacs-version) emacs-version)))' test:
+;; standalone NeLisp binds `emacs-version' to the real string "30.1" too,
+;; for vendor compatibility, so that test never fires there).
 
-(when (not (stringp (and (boundp 'emacs-version) emacs-version)))
+(when (cl-lib--standalone-p)
   (unless (fboundp 'nelisp-place--set-gethash)
     (defun nelisp-place--set-gethash (key table value)
       "`setf' setter for (gethash KEY TABLE); reorders args for `puthash'."
@@ -479,7 +490,7 @@ SPEC is either ((VAR EXPR) ...) or (VAR EXPR) for a single binding."
 ;; The vendored obsolete cl.el depends on substantially more macroexp/gv
 ;; machinery than the standalone bootstrap needs.  Install only aliases whose
 ;; prefixed owners are already present, and keep host Emacs untouched.
-(when (not (stringp (and (boundp 'emacs-version) emacs-version)))
+(when (cl-lib--standalone-p)
   (dolist (pair '((defstruct . cl-defstruct)
                   (defun* . cl-defun)
                   (defsubst* . cl-defsubst)

@@ -48,6 +48,19 @@ would otherwise prevent the shim from defining the requested macro."
            (autoloadp (symbol-function symbol)))
       (get symbol 'emacs-stub-placeholder)))
 
+(defun emacs-cl-macros--standalone-p ()
+  "Return non-nil under standalone NeLisp.
+The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
+`(not (boundp 'emacs-version))' test misfires there -- it never forces
+this shim's macros to override the frozen `nelisp-stdlib-prelude.el'
+copies on standalone, which is why `emacs-parity-evil.el' needed its own
+separate NeLisp-only-marker override for `cl-destructuring-bind' instead
+of this shim's guard doing so directly.  Detect the standalone path by a
+NeLisp-only primitive instead, matching `emacs-char-table--standalone-p'
+in `emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
+
 (defun emacs-cl-macros--defstruct-ctor-parts (arglist)
   "Return (FORMALS AUX-BINDINGS VALUE-SYMS) for constructor ARGLIST.
 `cl-defstruct' constructor lambda lists can mention non-slot helper
@@ -212,7 +225,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
 
 ;;;; --- cl-defun ---------------------------------------------------------
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-defun))
   ;; cl-defun supporting &optional, &rest, &key (= adequate for
   ;; anvil-memory / anvil-state arglists).
@@ -284,7 +297,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
 
 ;;;; --- cl-incf / cl-decf ------------------------------------------------
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-incf))
   (defmacro cl-incf (place &optional delta)
     "Stub: increment PLACE by DELTA, defaulting to 1."
@@ -293,7 +306,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
           (list 'setq place value)
         (list 'setf place value)))))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-decf))
   (defmacro cl-decf (place &optional delta)
     (let ((value (list '- place (or delta 1))))
@@ -303,7 +316,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
 
 ;; NeLisp prebinds bare iteration shims after setting `emacs-version', so
 ;; `rdf' must force the catch-preserving replacements below.
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (fboundp 'rdf)
           (emacs-cl-macros--define-p 'cl-dotimes))
   (defmacro cl-dotimes (spec &rest body)
@@ -312,7 +325,7 @@ Accept both real-Emacs-compatible `(symbol-function 'foo)' and
           (cons 'dotimes
                 (cons spec body)))))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (fboundp 'rdf)
           (emacs-cl-macros--define-p 'cl-dolist))
   (defmacro cl-dolist (spec &rest body)
@@ -595,7 +608,7 @@ is bound to the unconsumed cdr.  This helper is shared by `cl-loop',
             (cons (emacs-cl-macros--loop-destructure-bindings pattern item)
                   forms)))))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-loop))
   ;; cl-loop is incredibly complex; provide a minimal version that
   ;; handles the patterns anvil-memory uses (= for X in LIST do/collect).
@@ -926,7 +939,7 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
 
 ;;;; --- cl-defgeneric / cl-defmethod / cl-defstruct -------------------
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-deftype))
   (defmacro cl-deftype (name arglist &rest body)
     "Standalone load-time fallback: ignore CL type declarations."
@@ -973,7 +986,7 @@ cycles."
              (setq guard (1+ guard))))
          hit)))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-defstruct))
   (defmacro cl-defstruct (name &rest slots)
     "Stub: defstruct → minimal alist/vector-backed accessors.
@@ -1327,7 +1340,7 @@ descriptor."
         (list 'let (list (list value-sym expr))
               (cons 'cond rev))))))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-pushnew))
   (defmacro cl-pushnew (item place &rest _keys)
     "Cons ITEM onto PLACE unless it is already `member' of PLACE.
@@ -1415,7 +1428,7 @@ macro-time constants, then restore previously bound values."
                                     (list 'set (list 'car cell) nil))
                               (list 'setq saved (list 'cdr saved)))))))))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-letf))
   (defmacro cl-letf (bindings &rest body)
     "Minimal `cl-letf' for variable and function-cell bindings.
@@ -1459,7 +1472,7 @@ bindings."
                         (append (nreverse setup-forms) body))
                   (cons 'progn cleanup-forms))))))
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-letf*))
   (defalias 'cl-letf* 'cl-letf))
 
@@ -2252,7 +2265,7 @@ A TYPE of t or `otherwise' is the default clause."
 ;; `make-symbol'.  The standalone-aware gate replaces the earlier flat-only
 ;; prelude stub while host Emacs keeps its real cl-lib version.
 
-(when (or (not (boundp 'emacs-version))
+(when (or (emacs-cl-macros--standalone-p)
           (emacs-cl-macros--define-p 'cl-destructuring-bind))
   (defmacro cl-destructuring-bind (arglist expr &rest body)
     "Bind the variables in ARGLIST to successive elements of the list EXPR.

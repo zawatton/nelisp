@@ -20,8 +20,13 @@
   "Number of extra slots carried by a lightweight char-table.")
 
 (defun case-table--standalone-p ()
-  "Return non-nil under standalone NeLisp."
-  (not (boundp 'emacs-version)))
+  "Return non-nil under standalone NeLisp.
+The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
+`(not (boundp 'emacs-version))' test misfires there.  Detect the
+standalone path by a NeLisp-only primitive, matching
+`emacs-char-table--standalone-p' in `emacs-char-table.el'."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
 
 (defun case-table--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this facade."
