@@ -48,6 +48,12 @@ Equivalent to `error' under NeLisp standalone."
       (put name 'error-message message))
     name))
 
+;; `remote-file-error' is a core condition in GNU Emacs.  Libraries such as
+;; ange-ftp derive their own conditions from it during macro expansion, before
+;; the heavier remote-file stack is loaded.
+(unless (get 'remote-file-error 'error-conditions)
+  (define-error 'remote-file-error "Remote file error" 'file-error))
+
 ;; `ignore-errors' polyfill — must be defined before any later emacs-*
 ;; module evaluates a top-level form that uses it.  `emacs-time.el'
 ;; gates its `float-time' / `current-time' polyfills with

@@ -97,6 +97,18 @@
   (skip-unless (emacs-load-test--standalone-active-p))
   (should (= emacs-load-large-source-threshold 32768)))
 
+(ert-deftest emacs-load-test/hybrid-evaluator-emits-one-top-level-progn ()
+  "Small-source native evaluation must not expose a truncatable form stream."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let* ((source "(setq emacs-load-test--first 1)\n(provide 'loader-tail)\n")
+         (one-shot (nelisp--load-one-shot-source source))
+         (read-result (read-from-string one-shot)))
+    (should (= (cdr read-result) (length one-shot)))
+    (should (equal (car read-result)
+                   '(progn
+                      (setq emacs-load-test--first 1)
+                      (provide 'loader-tail))))))
+
 (ert-deftest emacs-load-test/artifact-streaming-threshold-default-is-65536 ()
   (skip-unless (emacs-load-test--standalone-active-p))
   (should (= emacs-load-artifact-replay-streaming-threshold 65536)))

@@ -131,6 +131,15 @@ evaluating any forms here."
            text)))
       (mapconcat #'identity (nreverse forms) "\n")))
 
+  (defun nelisp--load-one-shot-source (source)
+    "Return normalized SOURCE enclosed in one top-level evaluation form.
+The standalone substrate may return after an early top-level form when given
+a form stream.  One outer `progn' makes the complete file a single unit while
+leaving artifact normalization's form-stream contract unchanged."
+    (concat "(progn\n"
+            (nelisp--load-normalize-source-rewriting source)
+            "\n)"))
+
   (defun emacs-load--artifact-write-normalized-source (source path)
     "Write SOURCE normalized for artifact compilation to PATH incrementally."
     (with-temp-file path
@@ -151,11 +160,11 @@ standard harmless artifact staging comment."
       (insert source)))
 
   (defun nelisp--load-eval-source-hybrid (source)
-    "Evaluate SOURCE once after normalizing top-level defalias rewrites.
+    "Evaluate SOURCE as one form after normalizing top-level defalias rewrites.
 This is the correctness-first standalone load path; cache and throughput
 work belong elsewhere."
     (nelisp--eval-source-string
-     (nelisp--load-normalize-source-rewriting source)))
+     (nelisp--load-one-shot-source source)))
 
   (defun nelisp--load-source-large-p (source)
     "Return non-nil when SOURCE should use incremental loading."

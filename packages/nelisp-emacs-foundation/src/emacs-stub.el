@@ -3562,8 +3562,16 @@ release that package version targets."))
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)
     "Standalone load-time fallback for evaluated Custom faces."
-    (when (fboundp 'emacs-faces-defface)
-      (emacs-faces-defface face spec doc))
+    ;; `emacs-faces-defface' is a macro whose NAME and SPEC parameters are
+    ;; compile-time forms.  Calling it here with the local variable names
+    ;; would register the literal symbol `face', not FACE's value.  Use the
+    ;; substrate functions for this dynamic Custom API instead.
+    (when (fboundp 'emacs-faces-make-face)
+      (emacs-faces-make-face face)
+      (let ((attrs (and (fboundp 'emacs-faces--default-attrs-from-spec)
+                        (emacs-faces--default-attrs-from-spec spec))))
+        (when (and attrs (fboundp 'emacs-faces-set-attribute))
+          (apply #'emacs-faces-set-attribute face nil attrs))))
     (put face 'face-defface-spec spec)
     (put face 'face-documentation doc)
     (put face 'custom-args args)
