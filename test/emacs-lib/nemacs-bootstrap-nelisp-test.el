@@ -293,6 +293,53 @@ current ERT test with status/stdout/stderr diagnostics."
                 out))
        (should-not (string-match-p "EVIL-TYPES-LOADER ERROR" out))))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/multibyte-reader-shim-load-stays-fast ()
+  "Reader shims must not scan a multibyte source through character `aref'.
+
+T103 originally walked the raw source once per shim.  On NeLisp, resolving
+each character index back to a UTF-8 byte offset made a Japanese source file
+quadratic.  Keep this as a real standalone subprocess test: host Emacs has
+constant-time multibyte string indexing and cannot reproduce the regression."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((fixture (make-temp-file "nemacs-t103-multibyte-" nil ".el"))
+         (marker 'nemacs-bootstrap-nelisp-test--t103-marker))
+     (unwind-protect
+         (progn
+           (with-temp-file fixture
+             (insert ";; ")
+             (while (< (position-bytes (point-max)) 50000)
+               (insert "日本語コメント: reader shim は byte index で走査する "))
+             (insert "\n")
+             ;; The trigger is deliberately after the non-ASCII prefix so
+             ;; the pre-fix scanner has to cross the entire fixture.
+             (insert "(setq nemacs-bootstrap-nelisp-test--t103-marker "
+                     "#(\"ok\" 0 2 (face bold)))\n"))
+           (let* ((out
+                   (nemacs-bootstrap-nelisp-test--run
+                    "--batch" "--no-banner"
+                    "--eval"
+                    (format
+                     (concat
+                      "(progn"
+                      "  (setq emacs-load-auto-native-compile nil)"
+                      "  (let ((started (float-time)))"
+                      "    (load %S nil nil t)"
+                      "    (nelisp--write-stdout-bytes"
+                      "     (format \"T103-MULTIBYTE elapsed=%%.6f value=%%S\\n\""
+                      "             (- (float-time) started)"
+                      "             %S))))")
+                     fixture marker)))
+                  (match (string-match
+                          "T103-MULTIBYTE elapsed=\\([0-9.]+\\) value=\\\"ok\\\""
+                          out))
+                  (elapsed (and match
+                                (string-to-number (match-string 1 out)))))
+             (should match)
+             (message "T103 multibyte fixture load: %.6fs" elapsed)
+             (should (< elapsed 2.0))))
+       (when (file-exists-p fixture)
+         (delete-file fixture))))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/eat-term-load-surface ()
   "Eat's lightweight Term dependency and remote error parent are available."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
