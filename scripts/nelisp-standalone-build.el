@@ -12123,6 +12123,124 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_equal (args out)
       (if (= (bf_equal2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
           (wf_write_t out) (wf_write_nil out)))
+    ;; --- plist-get / plist-member native fast path (T109) ----------------
+    ;;
+    ;; The prelude's `plist-get'/`plist-member'/`plist-put' are a plain
+    ;; interpreted walk, one `while' turn (a `consp', an `eq' or `funcall',
+    ;; two `cdr's, a `setq') per key visited -- `nelisp-ime' calls
+    ;; `plist-get' 1384 times per conversion, and the cost is proportional
+    ;; to the key's position (7-23x a `car', measured on this tree before
+    ;; this change).  Same shape as `nl--nthcdr' (docs/design/201 §6.12):
+    ;; a native arm for the COMMON case, ELIGIBILITY decided cheaply in the
+    ;; elisp wrapper (not here) so this code never has to parse an
+    ;; optional-argument tail, and everything the wrapper does not route
+    ;; here falls through to the unchanged interpreted walk.
+    ;;
+    ;; Eligibility (decided by the elisp `plist-get'/`plist-member'
+    ;; wrapper, `scripts/nelisp-stdlib-prelude.el', BEFORE calling in):
+    ;; PREDICATE is absent, nil, or the symbol `eq' (`#'eq' reads as that
+    ;; same symbol -- Elisp `(function eq)' for a plain symbol naming a
+    ;; subr evaluates to the symbol itself, checked on host Emacs 31.1;
+    ;; `(eq (function eq) 'eq)' => t).  Anything else -- `equal', a
+    ;; lambda, a number, an unbound symbol -- declines: funcalling an
+    ;; arbitrary predicate from inside this native leaf would mean
+    ;; re-entering the interpreter, which is exactly the cost doc 201
+    ;; §6.12 found wrappers paying for calling elisp from native code, so
+    ;; it is not attempted here.
+    ;;
+    ;; Key comparison is `bf_eq2', unchanged from what `eq' itself uses --
+    ;; NOT a re-implementation.  `bf_eq2' compared strings by content
+    ;; before docs/design/201 §6.17 / T108 corrected it to identity; this
+    ;; arm inherits whichever `bf_eq2' does, automatically, with nothing
+    ;; here to keep in sync.
+    ;;
+    ;; Structural cases, matched against a host-Emacs differential table
+    ;; (48 cases; see test/nelisp-plist-get-arm-test.el), NOT guessed at:
+    ;;   - `plist-get' on ANY malformed shape (non-list PLIST, an odd
+    ;;     final key, a dotted tail) answers nil in Emacs -- never signals
+    ;;     for structure.  This arm reaches the same nil for the same
+    ;;     reason the interpreted walk did: it just stops.
+    ;;   - `plist-member' SIGNALS `(wrong-type-argument plistp PLIST)' --
+    ;;     naming the WHOLE original plist, never the position the walk
+    ;;     stopped at -- when the head is not a cons/nil, or the walk
+    ;;     stops on a non-nil non-cons tail with an unmatched key still
+    ;;     pending (`(plist-member '(a 1 . b) 'c)').  Running off a CLEAN
+    ;;     nil (an even- OR odd-length proper list with no match) answers
+    ;;     nil, no signal -- `(plist-member '(1) 100)' is nil, not an
+    ;;     error, checked on host.
+    ;;
+    ;; Known gap, NOT introduced or widened here: neither this arm nor the
+    ;; interpreted walk it replaces detects a circular plist.  Real Emacs
+    ;; does (`(plist-get' on a 4-cons circular plist looking for a key
+    ;; that IS present answers it; looking for one that is not answers
+    ;; nil; `plist-member'/`plist-put' on the same circular plist SIGNAL
+    ;; `circular-list' -- all checked on host Emacs 31.1).  This tree's
+    ;; interpreted `plist-get'/`plist-member' already hang forever on a
+    ;; circular plist (measured: `timeout 8s' killed both before this
+    ;; change existed) -- this arm walks exactly the same unbounded
+    ;; structure the interpreted version did and hangs identically, not
+    ;; worse.  Fixing that needs the same cycle-detection Emacs's real
+    ;; `plist_get'/`plist_member' use, which is out of this task's scope
+    ;; (not one of the shapes asked for) and left for later.
+    (defun bf_plist_get_walk (plist key out)
+      (let* ((cur plist) (stop 0) (found 0))
+        (seq
+         (while (= stop 0)
+           (if (= (ptr-read-u64 cur 0) 7)
+               (let* ((rest (nl_cons_cdr_ptr cur)))
+                 (if (= (ptr-read-u64 rest 0) 7)
+                     (if (= (bf_eq2 (nl_cons_car_ptr cur) key) 1)
+                         (seq (wf_copy32 out (nl_cons_car_ptr rest))
+                              (setq found 1) (setq stop 1))
+                       (setq cur (nl_cons_cdr_ptr rest)))
+                   ;; rest is nil (odd-length proper list, no value slot)
+                   ;; or a dangling improper tail -- Emacs answers nil for
+                   ;; either, no signal; so does the interpreted walk.
+                   (setq stop 1)))
+             ;; cur is nil (clean end) or an atom (malformed PLIST from the
+             ;; very start, e.g. `(plist-get 5 'a)') -- both answer nil.
+             (setq stop 1)))
+         (if (= found 0) (seq (wf_write_nil out) 0) 0))))
+    (defun bf_plist_get (args out)
+      (bf_plist_get_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out))
+    ;; "plistp" packed little-endian, one u64 word (6 bytes): matches the
+    ;; convention `bf_wrong_type_listp'/`bf_wrong_type_numberp' above use --
+    ;; byte i of the name in bits [8i, 8i+8) of the word.
+    (defun bf_wrong_type_plistp (offender)
+      (bf_wrong_type_named offender 123645454806128 0 0 6))
+    (defun bf_plist_member_walk (cur key out orig)
+      (let* ((c cur) (stop 0) (result 0) (sig 0))
+        (seq
+         (while (= stop 0)
+           (if (= (ptr-read-u64 c 0) 0)
+               ;; Clean end: proper list, key never matched, no signal.
+               (setq stop 1)
+             (if (= (ptr-read-u64 c 0) 7)
+                 (if (= (bf_eq2 (nl_cons_car_ptr c) key) 1)
+                     (seq (setq result c) (setq stop 1))
+                   (let* ((cd (nl_cons_cdr_ptr c)))
+                     (if (= (ptr-read-u64 cd 0) 0)
+                         ;; Odd-length proper list, no value slot for the
+                         ;; last key -- Emacs answers nil here too, not an
+                         ;; error: `(plist-member '(1) 100)' is nil.
+                         (setq stop 1)
+                       (if (= (ptr-read-u64 cd 0) 7)
+                           (setq c (nl_cons_cdr_ptr cd))
+                         ;; cd is a dangling non-nil non-cons tail where a
+                         ;; VALUE was expected: signal, naming the WHOLE
+                         ;; original plist.
+                         (seq (setq sig 1) (setq stop 1))))))
+               ;; c itself is not a cons and not nil: either the original
+               ;; PLIST was never a list, or the walk stepped onto an
+               ;; improper KEY position -- signal either way.
+               (seq (setq sig 1) (setq stop 1)))))
+         (if (= sig 1)
+             (bf_wrong_type_plistp orig)
+           (if (= result 0) (seq (wf_write_nil out) 0)
+             (seq (wf_copy32 out result) 0))))))
+    (defun bf_plist_member (args out)
+      (bf_plist_member_walk (wf_arg_ptr args 0) (wf_arg_ptr args 1) out
+                             (wf_arg_ptr args 0)))
     ;; nil-safe car/cdr.  The stock arms call nl_cons_car_ptr/cdr_ptr which
     ;; return 0 for a non-cons, then wf_copy32 derefs address 0 -> SIGSEGV.
     ;; Real elisp: (car nil)=(cdr nil)=nil.  Guard on tag==7.
