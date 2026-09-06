@@ -9308,6 +9308,37 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (seq (mut-str-push-byte ms 34)
            (m5_prin1_unibyte_string_bytes ms vptr 0 (m5_strlen vptr))
            (mut-str-push-byte ms 34)))
+    ;; BoolVector(10) `#&N"BYTES"' external representation.  Deliberately
+    ;; NOT `m5_prin1_unibyte_byte': that routes <128 bytes through
+    ;; `m5_prin1_string_byte', which escapes \\n/\\r/\\t as `\\n'/`\\r'/
+    ;; `\\t' -- measured against host Emacs 31.1, `prin1'/`format "%S"'
+    ;; print an embedded tab/newline/CR VERBATIM by default (only `"' and
+    ;; `\\' are escaped), so that path would already print a plain
+    ;; control-byte STRING wrong; this printer does not inherit it.  This
+    ;; byte rule (34/92 escaped, >=128 octal, else verbatim) is exactly
+    ;; `nelisp--prn-string-escaped''s rule (scripts/nelisp-stdlib-prelude.el),
+    ;; which backs `prin1-to-string''s own `nelisp--prn-bool-vector' --
+    ;; the two printers agree.
+    (defun m5_prin1_bv_byte (ms b)
+      (cond
+       ((= b 34) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 34)))
+       ((= b 92) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 92)))
+       ((>= b 128) (m5_prin1_octal_byte ms b))
+       (t (mut-str-push-byte ms b))))
+    (defun m5_prin1_bv_bytes (ms data i bytelen)
+      (if (>= i bytelen)
+          1
+        (seq (m5_prin1_bv_byte ms (ptr-read-u8 data i))
+             (m5_prin1_bv_bytes ms data (+ i 1) bytelen))))
+    (defun m5_prin1_bool_vector (ms vptr)
+      (let* ((box (ptr-read-u64 vptr 8)))
+        (seq
+         (mut-str-push-byte ms 35)              ; #
+         (mut-str-push-byte ms 38)               ; &
+         (m5_push_dec ms (ptr-read-u64 box 0))   ; N
+         (mut-str-push-byte ms 34)               ; "
+         (m5_prin1_bv_bytes ms (ptr-read-u64 box 8) 0 (ptr-read-u64 box 16))
+         (mut-str-push-byte ms 34))))            ; "
     (defun m5_prin1_list_tail (ms node first)
       (let* ((tag (ptr-read-u64 node 0)))
         (if (= tag 7)
@@ -9441,6 +9472,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; bignum `prin1' shape exactly (both are plain decimal, no
          ;; exponent form for integers).
          ((= tag 13) (m5_push_bignum ms vptr))
+         ((= tag 10) (m5_prin1_bool_vector ms vptr))
          (t (m5_push_lit_object ms)))))
     (defun m5_emit_value (ms vptr)
       (let* ((tag (ptr-read-u64 vptr 0)))
@@ -10316,6 +10348,40 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (bf_unibyte_fill ms args)
              (mut-str-finalize ms out)
              0)))
+    ;; make-bool-vector LENGTH INIT -> BoolVector(tag10), backed by
+    ;; `nl_alloc_bool_vector' (lisp/nelisp-cc-nlboolvector-alloc.el).
+    ;; LENGTH must be a non-negative fixnum; Emacs signals `(wrong-type-
+    ;; argument wholenump LENGTH)' otherwise (both non-integer and
+    ;; negative-integer share that same predicate name).
+    (defun bf_make_bool_vector (args out)
+      (let* ((len_ptr (wf_arg_ptr args 0)) (init_ptr (wf_arg_ptr args 1)))
+        (if (= (ptr-read-u64 len_ptr 0) 2)
+            (if (< (ptr-read-u64 len_ptr 8) 0)
+                (bf_wrong_type_wholenump len_ptr)
+              (seq (nl_alloc_bool_vector
+                    (ptr-read-u64 len_ptr 8)
+                    (if (= (ptr-read-u64 init_ptr 0) 0) 0 1)
+                    out)
+                   0))
+          (bf_wrong_type_wholenump len_ptr))))
+    ;; bool-vector &rest ARGS -> BoolVector(tag10), each ARG's truthiness
+    ;; (nil -> 0, anything else -> 1) becomes one bit, in argument order.
+    (defun nl_bv_fill_from_args (data i node)
+      (if (= (ptr-read-u64 node 0) 7)
+          (seq (nl_bv_bit_set data i
+                              (if (= (ptr-read-u64 (nl_cons_car_ptr node) 0) 0)
+                                  0 1))
+               (nl_bv_fill_from_args data (+ i 1) (nl_cons_cdr_ptr node)))
+        1))
+    (defun bf_bool_vector (args out)
+      (let* ((n (bf_vec_count args 0)))
+        (seq (nl_alloc_bool_vector n 0 out)
+             (nl_bv_fill_from_args (ptr-read-u64 (ptr-read-u64 out 8) 8) 0 args)
+             0)))
+    (defun bf_bool_vector_p (args out)
+      (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 10)
+          (wf_write_t out)
+        (wf_write_nil out)))
     ;; aref ARR IDX: vector -> copy slot[idx]; string -> int byte at idx.
     ;; Out-of-range now signals `(args-out-of-range ARRAY INDEX)' as Emacs
     ;; does.  It used to answer nil, which is indistinguishable from a slot
@@ -10373,8 +10439,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (bf_args_out_of_range arr (wf_arg_ptr args 1))
                     (wf_write_int out
                       (nl_u8_decode arr (nl_u8_cidx_byte arr 0 (m5_strlen arr) 0 idx))))
+              ;; BoolVector(10): bounds-check against the box's own N
+              ;; (offset 0 of the box at arr+8), then read bit IDX out of
+              ;; the packed byte buffer at box+8 as nil/t.
+              (if (= tg 10)
+                  (let* ((box (ptr-read-u64 arr 8)))
+                    (if (if (< idx 0) 1 (if (< idx (ptr-read-u64 box 0)) 0 1))
+                        (bf_args_out_of_range arr (wf_arg_ptr args 1))
+                      (if (= (nl_bv_bit_get (ptr-read-u64 box 8) idx) 0)
+                          (seq (wf_write_nil out) 0)
+                        (seq (wf_write_t out) 0))))
                 ;; Not an array at all: Emacs signals `arrayp' here.
-                (bf_wrong_type_arrayp arr))))))))
+                (bf_wrong_type_arrayp arr)))))))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -10654,7 +10730,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 ;; like `vector-slot-set'/`record-slot-set'.
                 (if (= (ptr-read-u64 arr 0) 9)
                     (seq (wf_dirty) (nl_char_table_set_raw arr idx val out) 0)
-                  (seq (wf_copy32 out val) 0))))))))
+                  ;; BoolVector(10): flip bit IDX to non-nil/nil, bounds-
+                  ;; checked against the box's own N (offset 0 of the box
+                  ;; at arr+8; see lisp/nelisp-cc-nlboolvector-alloc.el).
+                  ;; A growing-in-place mutation like Vector/Record/
+                  ;; CharTable above, so `wf_dirty' bumps the epoch too.
+                  (if (= (ptr-read-u64 arr 0) 10)
+                      (bf_aset_bool_vector arr idx (wf_arg_ptr args 1) val out)
+                    (seq (wf_copy32 out val) 0)))))))))
+    (defun bf_aset_bool_vector (arr idx idx-slot val out)
+      (let* ((box (ptr-read-u64 arr 8)))
+        (if (if (< idx 0) 1 (if (< idx (ptr-read-u64 box 0)) 0 1))
+            (bf_args_out_of_range arr idx-slot)
+          (seq (wf_dirty)
+               (nl_bv_bit_set (ptr-read-u64 box 8) idx
+                              (if (= (ptr-read-u64 val 0) 0) 0 1))
+               (wf_copy32 out val)
+               0))))
     ;; signal/error: NON-CRASHING.  Stash (sym . data) into the catch/throw
     ;; region + set the throw flag, then return rc=1 so the rc!=0 propagation
     ;; unwinds the native stack like an error.
@@ -10941,6 +11033,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (bf_wrong_type_named offender 8102650174351109737 0 0 8))
     (defun bf_wrong_type_characterp (offender)
       (bf_wrong_type_named offender 7310577365311121507 28786 0 10))
+    ;; `make-bool-vector's LENGTH argument: Emacs signals `(wrong-type-
+    ;; argument wholenump N)' for a negative or non-integer length.
+    (defun bf_wrong_type_wholenump (offender)
+      (bf_wrong_type_named offender 7887331704299284599 112 0 9))
     ;; ONE walk, in argument order: each byte is type-checked and then
     ;; range-checked before the next is looked at, because Emacs reports
     ;; whichever fails FIRST -- (unibyte-string -1 'sym) names -1, not the
@@ -11184,6 +11280,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq (wf_write_int out (m5_strlen p)) 0))
          ((= tag 12)
           (seq (wf_write_int out (+ (record-slot-count p) 1)) 0))
+         ;; BoolVector(10): N lives at offset 0 of the box at p+8 (see
+         ;; lisp/nelisp-cc-nlboolvector-alloc.el).
+         ((= tag 10)
+          (seq (wf_write_int out (ptr-read-u64 (ptr-read-u64 p 8) 0)) 0))
          (t (bf_wrong_type_sequencep p)))))
     ;; fboundp/boundp: look up in the env mirror.  env+0 = mirror, env+64 = unbound.
     ;; nelisp_env_lookup_function(mirror, unbound, sym, out_slot) returns 0 if found.
@@ -12128,6 +12228,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   (bf_equal2 (nl_cons_cdr_ptr a) (nl_cons_cdr_ptr b))
                 0))
              ((= ta 13) (if (= (nl_bignum_cmp_bignum a b) 0) 1 0))
+             ;; BoolVector(10): value-compare (same N + same packed
+             ;; bytes), not the generic else-arm's box-pointer identity --
+             ;; two separately-`make-bool-vector'd equal vectors must
+             ;; answer `equal' even though they are not `eq'.
+             ((= ta 10) (bf_bv_equal a b))
              (t (bf_eq2 a b)))
             0))))
     (defun bf_equal (args out)
@@ -12466,6 +12571,10 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; --- vector ops ---
     ((:lit "make-vector") . (bf_make_vector args out))
     ((:lit "vector")      . (bf_vector args out))
+    ;; --- bool-vector ops (BoolVector, Sexp tag 10) ---
+    ((:lit "make-bool-vector") . (bf_make_bool_vector args out))
+    ((:lit "bool-vector")      . (bf_bool_vector args out))
+    ((:lit "bool-vector-p")    . (bf_bool_vector_p args out))
     ((:lit "record")      . (bf_record args out))
     ((:lit "make-record") . (bf_make_record args out))
     ((:lit "recordp")     . (bf_recordp args out))
@@ -12658,6 +12767,10 @@ ash/logand/logior/logxor/lognot + string<.")
     "symbol-name" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
     "make-vector" "vector" "aref" "elt" "aset" "record" "recordp" "make-record"
+    ;; Real tag-10 BoolVector constructors/predicate (reader `#&' literal
+    ;; support); `aref'/`aset'/`equal'/`length' above already gained tag-10
+    ;; arms rather than new names.
+    "make-bool-vector" "bool-vector" "bool-vector-p"
     ;; Doc 186 P0/P1/P2: char-table constructor/accessor layer.
     "char-table-p" "make-char-table" "char-table-subtype"
     "char-table-parent" "set-char-table-parent"
@@ -16838,6 +16951,10 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ("cell-clone.o"       nelisp-cc-nlcell-clone                  nelisp-cc-nlcell-clone--source)
     ("chartable-clone.o"  nelisp-cc-nlchartable-clone             nelisp-cc-nlchartable-clone--source)
     ("boolvec-clone.o"    nelisp-cc-nlboolvector-clone            nelisp-cc-nlboolvector-clone--source)
+    ;; Real tag-10 BoolVector producer (reader `#&' literal + `make-bool-
+    ;; vector'/`bool-vector' native builtins below); see that file's own
+    ;; Commentary for why "boolvec-clone.o" above was dormant until now.
+    ("boolvec-alloc.o"    nelisp-cc-nlboolvector-alloc            nelisp-cc-nlboolvector-alloc--source)
     ("record-alloc.o"     nelisp-cc-nlrecord-alloc                nelisp-cc-nlrecord-alloc--source)
     ("record-clone.o"     nelisp-cc-nlrecord-clone                nelisp-cc-nlrecord-clone--source)
     ("record-set.o"       nelisp-cc-nlrecord-set-slot             nelisp-cc-nlrecord-set-slot--source)
@@ -17574,6 +17691,10 @@ value (matches the binary's M8 read+eval-loop driver)."
     "symbol-name" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
     "make-vector" "vector" "aref" "elt" "aset" "record" "recordp" "make-record"
+    ;; Real tag-10 BoolVector constructors/predicate (reader `#&' literal
+    ;; support); `aref'/`aset'/`equal'/`length' above already gained tag-10
+    ;; arms rather than new names.
+    "make-bool-vector" "bool-vector" "bool-vector-p"
     ;; Doc 186 P0/P1/P2: char-table constructor/accessor layer.
     "char-table-p" "make-char-table" "char-table-subtype"
     "char-table-parent" "set-char-table-parent"

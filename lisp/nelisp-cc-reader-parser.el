@@ -756,6 +756,13 @@
        ((= kind 12)
         (nelisp_reader_p_parse_vector
          str-ptr cursor-slot result-slot slot-pool depth 0))
+       ;; `#&LENGTH"BYTES"' bool-vector literals (GNU Emacs lread.c).  The
+       ;; lexer's kind-13 token covers only the 2-byte `#&' marker itself;
+       ;; LENGTH and BYTES are each parsed here as ordinary recursive
+       ;; forms (an Int token, then a Str token).
+       ((= kind 13)
+        (nelisp_reader_p_parse_bool_vector
+         str-ptr cursor-slot result-slot slot-pool depth))
        ;; Leaf payloads.
        ((>= kind 20)
         (nelisp_reader_p_leaf kind result-slot
@@ -1112,6 +1119,82 @@
                (nelisp_reader_p_build_record body result-slot)))))
 
     ;; ===========================================================
+    ;; `#&LENGTH"BYTES"' bool-vector literals (GNU Emacs lread.c): each
+    ;; byte holds 8 bits low-bit-first, trailing bits of the last byte
+    ;; are 0.  Builds a real BoolVector (Sexp tag 10) via `nl_alloc_
+    ;; bool_vector_from_bytes' (lisp/nelisp-cc-nlboolvector-alloc.el).
+    ;;
+    ;; LENGTH is parsed as an ordinary Int form, BYTES as an ordinary Str
+    ;; form -- reusing car_idx(d)/cdr_idx(d) as two independent scratch
+    ;; slots (they are not built into an actual cons here, just borrowed
+    ;; the way `nelisp_reader_p_wrap' borrows car_idx(d) for its single
+    ;; wrapped form).
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_bv_string_tag_p (tag)
+      (if (= tag 5) 1 (if (= tag 6) 1 (if (= tag 14) 1 (if (= tag 15) 1 0)))))
+
+    ;; Byte-pointer/byte-length accessors covering all four string-like
+    ;; tags: 5/14 are inline (ptr@+16, len@+24); 6/15 are boxed via an
+    ;; NlStr (box-ptr@+8, then box+8 = ptr, box+16 = len -- see
+    ;; `nelisp-cc-nlstr-direct-ops.el's `nl_alloc_mut_str_write').
+    (defun nelisp_reader_p_bv_str_ptr (s)
+      (if (if (= (ptr-read-u64 s 0) 6) 1 (if (= (ptr-read-u64 s 0) 15) 1 0))
+          (ptr-read-u64 (ptr-read-u64 s 8) 8)
+        (ptr-read-u64 s 16)))
+
+    (defun nelisp_reader_p_bv_str_len (s)
+      (if (if (= (ptr-read-u64 s 0) 6) 1 (if (= (ptr-read-u64 s 0) 15) 1 0))
+          (ptr-read-u64 (ptr-read-u64 s 8) 16)
+        (ptr-read-u64 s 24)))
+
+    ;; N-SLOT and STR-SLOT hold the two already-parsed forms.  A malformed
+    ;; literal (LENGTH not an integer, LENGTH negative, BYTES not a
+    ;; string, or BYTES too short for ceil(N/8) bytes -- matching host
+    ;; Emacs, which signals `invalid-read-syntax' rather than zero-
+    ;; padding a short literal) returns -1, the same "could not read
+    ;; this" code every other malformed-literal path in this parser uses.
+    (defun nelisp_reader_p_build_bool_vector (n-slot str-slot result-slot)
+      (if (= (ptr-read-u64 n-slot 0) 2)
+          (let* ((n (ptr-read-u64 n-slot 8)))
+            (if (< n 0)
+                -1
+              (if (= (nelisp_reader_p_bv_string_tag_p
+                      (ptr-read-u64 str-slot 0))
+                     1)
+                  (if (>= (nelisp_reader_p_bv_str_len str-slot)
+                          (nl_bv_bytelen n))
+                      (seq (nl_alloc_bool_vector_from_bytes
+                            n (nelisp_reader_p_bv_str_ptr str-slot)
+                            result-slot)
+                           1)
+                    -1)
+                -1)))
+        -1))
+
+    (defun nelisp_reader_p_parse_bool_vector
+        (str-ptr cursor-slot result-slot slot-pool depth)
+      (and (= (nelisp_reader_p_parse_at
+               str-ptr cursor-slot
+               (nelisp_reader_p_slot slot-pool
+                               (nelisp_reader_p_car_idx depth))
+               slot-pool (+ depth 1))
+              1)
+           (= (nelisp_reader_p_parse_at
+               str-ptr cursor-slot
+               (nelisp_reader_p_slot slot-pool
+                               (nelisp_reader_p_cdr_idx depth))
+               slot-pool (+ depth 1))
+              1)
+           (= (nelisp_reader_p_build_bool_vector
+               (nelisp_reader_p_slot slot-pool
+                               (nelisp_reader_p_car_idx depth))
+               (nelisp_reader_p_slot slot-pool
+                               (nelisp_reader_p_cdr_idx depth))
+               result-slot)
+              1)))
+
+    ;; ===========================================================
     ;; Vector body parser (= mirror of `parse_list_step' but with
     ;; RBracket (kind 4) as terminator instead of RParen (kind 2)).
     ;; Produces a cons-list at LIST-SLOT terminating in Nil.  Dot
@@ -1267,8 +1350,8 @@ Sexp values via the §101 / §111 / §122 grammar primitives.
 
 Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 5 Quote,
 6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 11
-SharpsParen, 12 CharTableBracket, 20 Int, 21 Float, 22 Str, 23 Sym,
-24 Char, 25 RadixInt.
+SharpsParen, 12 CharTableBracket, 13 BoolVectorSharp, 20 Int, 21
+Float, 22 Str, 23 Sym, 24 Char, 25 RadixInt.
 Kind 3 LBracket drives the vector parser (Doc 116 §116.B+ —
 `parse_vector_step' + `parse_vector' + `fill_vec' +
 `cons_list_len_walk').  Kind 11 materialises Emacs hash-table reader
@@ -1277,6 +1360,10 @@ vendor data files; other record literals still surface as parse errors.
 Kind 12 preserves `#^[...]' / `#^^[...]' char-table printer literals as
 plain vectors until the standalone runtime grows a dedicated char-table
 representation.
+Kind 13 `#&LENGTH\"BYTES\"' (`nelisp_reader_p_parse_bool_vector') builds
+a real BoolVector (Sexp tag 10) via two ordinary recursive `parse_at'
+calls (LENGTH as an Int form, BYTES as a Str form) plus `nl_alloc_
+bool_vector_from_bytes' (lisp/nelisp-cc-nlboolvector-alloc.el).
 Doc 122 §122.G unlocks kind 21 Float by routing the payload bytes
 through the `nl_str_to_float' extern (= `str::parse::<f64>()' with
 direct `Sexp::Float' write into RESULT-SLOT).

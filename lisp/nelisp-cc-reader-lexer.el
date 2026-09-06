@@ -61,8 +61,8 @@
 ;;   - Lexer ONLY.  Parser is §116.B.  Top-level wrapper is §116.C.
 ;;   - Token kinds covered: lparen / rparen / lbracket / rbracket /
 ;;     quote / backquote / comma / comma-at / function-quote / dot /
-;;     sharps-paren / char-table bracket / int / float / str / sym / char /
-;;     radix-int / eof.
+;;     sharps-paren / char-table bracket / bool-vector-sharp / int / float /
+;;     str / sym / char / radix-int / eof.
 ;;   - String escapes: \\n, \\t, \\r, \\f, \\v, \\e, \\a, \\b, \\d,
 ;;     \\s, \\\\, \\\"; line continuation `\\<SP>' / `\\<LF>';
 ;;     any other `\\X' drops the backslash + pushes X (= Doc 51
@@ -951,6 +951,16 @@
            (mut-str-push-byte scratch 98)
            (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
                                     payload-slot cursor-out-slot scratch)))
+         ;; `#&' -> BoolVectorSharp (kind 13), 2-byte token.  GNU Emacs's
+         ;; `#&LENGTH"BYTES"' bool-vector literal (lread.c) has no closing
+         ;; delimiter of its own -- unlike `#s(' / `#^[' above, the LENGTH
+         ;; integer and the BYTES string are each just an ordinary token
+         ;; the reader already knows how to lex.  So this arm only marks
+         ;; that `#&' was seen; the parser's `nelisp_reader_p_parse_bool_
+         ;; vector' (lisp/nelisp-cc-reader-parser.el) does the rest via two
+         ;; plain recursive `parse_at' calls.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 38)
+          (nelisp_reader_emit_double cursor-out-slot cursor 13))
          (t
           (nelisp_reader_emit_error cursor-out-slot (+ cursor 1))))))
 
@@ -1053,8 +1063,8 @@ Sexp::Cons that the §116.B parser will consume.
 
 Kinds: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 4 RBracket, 5 Quote,
 6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot,
-11 SharpsParen, 12 CharTableBracket, 20 Int, 21 Float, 22 Str,
-23 Sym, 24 Char, 25 RadixInt, -1 Error.")
+11 SharpsParen, 12 CharTableBracket, 13 BoolVectorSharp, 20 Int,
+21 Float, 22 Str, 23 Sym, 24 Char, 25 RadixInt, -1 Error.")
 
 (provide 'nelisp-cc-reader-lexer)
 

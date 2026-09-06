@@ -181,6 +181,13 @@
   (defun buffer-file-name (&optional buffer)
     (when buffer (signal 'wrong-type-argument (list 'bufferp buffer)))
     nil))
+;; `make-bool-vector'/`bool-vector'/`bool-vector-p' below are the
+;; Rust-min-era ("Doc 22", 2026-05-06 batch 5b) plain-vector fallback: the
+;; standalone now installs real tag-10 BoolVector natives for all three
+;; names (nelisp-standalone--reader-builtins /
+;; lisp/nelisp-cc-nlboolvector-alloc.el), so `unless (fboundp ...)' already
+;; skips these bodies there.  Left in place, unchanged, as the fallback for
+;; any build configuration that does not install those three names.
 (unless (fboundp 'make-bool-vector)
   (defun make-bool-vector (length init)
     (unless (and (integerp length) (>= length 0))
@@ -240,6 +247,96 @@ a negative, and signalling there turned a limit into a failure."
   (defun bool-vector-p (_x)
     "Always nil: bool vectors are plain vectors here (Doc 22)."
     nil))
+
+;; GNU Emacs's higher-level bool-vector ops (data.c): plain Elisp over
+;; `aref'/`aset'/`length'/`bool-vector-p' -- no new native primitive
+;; needed, since these never touch the packed byte representation
+;; directly.  Not guarded by `unless (fboundp ...)': unlike `make-bool-
+;; vector'/`bool-vector'/`bool-vector-p' above, these have no Rust-min-era
+;; predecessor and nothing else in this tree defines them.
+(defun bool-vector-count-population (a)
+  "Return the number of elements of bool-vector A that are t."
+  (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
+  (let ((n (length a)) (i 0) (c 0))
+    (while (< i n)
+      (when (aref a i) (setq c (1+ c)))
+      (setq i (1+ i)))
+    c))
+
+(defun bool-vector-count-consecutive (a b i)
+  "Return the number of consecutive elements of A, starting at I,
+that are `eq' to (and B t).  I may equal A's length (answering 0);
+a larger I signals `args-out-of-range'."
+  (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
+  (unless (and (integerp i) (>= i 0))
+    (signal 'wrong-type-argument (list 'wholenump i)))
+  (let ((n (length a)))
+    (when (> i n) (signal 'args-out-of-range (list a i)))
+    (let ((want (and b t)) (k i) (c 0))
+      (while (and (< k n) (eq (and (aref a k) t) want))
+        (setq c (1+ c))
+        (setq k (1+ k)))
+      c)))
+
+(defun bool-vector-subsetp (a b)
+  "Return t if every t element of bool-vector A is also t in B.
+A and B must have the same length."
+  (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
+  (unless (bool-vector-p b) (signal 'wrong-type-argument (list 'bool-vector-p b)))
+  (unless (= (length a) (length b))
+    (signal 'wrong-length-argument (list (length a) (length b))))
+  (let ((n (length a)) (i 0) (ok t))
+    (while (and ok (< i n))
+      (when (and (aref a i) (not (aref b i))) (setq ok nil))
+      (setq i (1+ i)))
+    ok))
+
+(defun nelisp--bool-vector-binop (a b c op)
+  "Shared body for `bool-vector-union'/`-intersection'/`-set-difference'/
+`-exclusive-or'.  OP receives two t/nil elements and returns t/nil.
+Writes into C when given (and returns it), else a fresh bool-vector."
+  (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
+  (unless (bool-vector-p b) (signal 'wrong-type-argument (list 'bool-vector-p b)))
+  (unless (= (length a) (length b))
+    (signal 'wrong-length-argument (list (length a) (length b))))
+  (when c
+    (unless (bool-vector-p c) (signal 'wrong-type-argument (list 'bool-vector-p c)))
+    (unless (= (length c) (length a))
+      (signal 'wrong-length-argument (list (length a) (length b) (length c)))))
+  (let* ((n (length a)) (out (or c (make-bool-vector n nil))) (i 0))
+    (while (< i n)
+      (aset out i (funcall op (aref a i) (aref b i)))
+      (setq i (1+ i)))
+    out))
+
+(defun bool-vector-union (a b &optional c)
+  "Set C (or a fresh bool-vector) to the union (bitwise OR) of A and B."
+  (nelisp--bool-vector-binop a b c (lambda (x y) (or x y))))
+
+(defun bool-vector-intersection (a b &optional c)
+  "Set C (or a fresh bool-vector) to the intersection (bitwise AND) of A and B."
+  (nelisp--bool-vector-binop a b c (lambda (x y) (and x y))))
+
+(defun bool-vector-set-difference (a b &optional c)
+  "Set C (or a fresh bool-vector) to the set difference (A AND NOT B)."
+  (nelisp--bool-vector-binop a b c (lambda (x y) (and x (not y)))))
+
+(defun bool-vector-exclusive-or (a b &optional c)
+  "Set C (or a fresh bool-vector) to the exclusive-or (bitwise XOR) of A and B."
+  (nelisp--bool-vector-binop a b c (lambda (x y) (and (or x y) (not (and x y))))))
+
+(defun bool-vector-not (a &optional b)
+  "Set B (or a fresh bool-vector) to the complement of A."
+  (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
+  (when b
+    (unless (bool-vector-p b) (signal 'wrong-type-argument (list 'bool-vector-p b)))
+    (unless (= (length b) (length a))
+      (signal 'wrong-length-argument (list (length a) (length b)))))
+  (let* ((n (length a)) (out (or b (make-bool-vector n nil))) (i 0))
+    (while (< i n)
+      (aset out i (not (aref a i)))
+      (setq i (1+ i)))
+    out))
 ;; `point-min'/`point-max' used to be hardcoded here (`(defun point-min ()
 ;; 1)', unconditionally, regardless of buffer state -- Doc 188 §1.3).  The
 ;; real, buffer-backed definitions now live in the Doc 188 P1 buffer
@@ -406,8 +503,9 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
       hit)))
 (unless (fboundp 'sequencep)
   (defun sequencep (x)
-    "Return t if X is a sequence (= nil, cons, string, or vector)."
-    (or (null x) (consp x) (stringp x) (vectorp x))))
+    "Return t if X is a sequence (= nil, cons, string, vector, or bool-vector)."
+    (or (null x) (consp x) (stringp x) (vectorp x)
+        (and (fboundp 'bool-vector-p) (bool-vector-p x)))))
 (unless (fboundp 'string-search)
   (defun string-search (needle haystack &optional start)
     (nelisp--check-string needle)
@@ -3138,6 +3236,11 @@ path, which asks for a NUMBER first and only then for an integer."
 	   (while (< i n)
 	     (setq acc (cons (aref seq i) acc)) (setq i (1+ i)))
 	   acc))
+	((and (fboundp 'bool-vector-p) (bool-vector-p seq))
+	 (let ((i 0) (n (length seq)))
+	   (while (< i n)
+	     (setq acc (cons (aref seq i) acc)) (setq i (1+ i)))
+	   acc))
 	(t (signal 'wrong-type-argument (list 'sequencep seq)))))
 
 (defun nelisp--doc200-raw-high-string-p (string)
@@ -3266,6 +3369,14 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
    ((vectorp seq)
     (let* ((n (length seq))
            (copy (make-vector n nil))
+           (i 0))
+      (while (< i n)
+        (aset copy i (aref seq i))
+        (setq i (1+ i)))
+      copy))
+   ((and (fboundp 'bool-vector-p) (bool-vector-p seq))
+    (let* ((n (length seq))
+           (copy (make-bool-vector n nil))
            (i 0))
       (while (< i n)
         (aset copy i (aref seq i))
@@ -8539,6 +8650,36 @@ gone rather than merely made faster."
     (nelisp--prn-chunks-add chunks "]")
     (nelisp--prn-chunks-string chunks)))
 
+;; `#&N"BYTES"' external representation (GNU Emacs lread.c/print.c): N is
+;; the bit count, BYTES is N's bits packed low-bit-first into ceil(N/8)
+;; bytes.  Reconstructing the packed bytes here (rather than exposing a
+;; new native byte-accessor) keeps this a plain elisp reader over
+;; `aref'/`length', matching how `bool-vector-union' &co. below are also
+;; "plain Elisp over the representation".
+(defun nelisp--prn-bool-vector-bytes (bv)
+  "Return the packed bytes of bool-vector BV as a list, low-bit-first."
+  (let* ((n (length bv)) (bytelen (/ (+ n 7) 8)) (bytes nil) (bi 0))
+    (while (< bi bytelen)
+      (let ((byte 0) (k 0) (base (* bi 8)))
+        (while (and (< k 8) (< (+ base k) n))
+          (when (aref bv (+ base k)) (setq byte (logior byte (ash 1 k))))
+          (setq k (1+ k)))
+        (push byte bytes))
+      (setq bi (1+ bi)))
+    (nreverse bytes)))
+
+(defun nelisp--prn-bool-vector (bv)
+  "Print BV's `#&N\"BYTES\"' external representation.
+Builds a temporary unibyte string from the packed bytes and reuses
+`nelisp--prn-string-escaped', whose Doc 200 raw-byte awareness (octal-
+escape every byte >= 128, pass 0..127 through verbatim) is exactly the
+rule `#&' literals also use -- confirmed byte-identical against host
+Emacs 31.1 for N spanning 0, 1, 7, 8, 9, 64, 65."
+  (concat "#&" (number-to-string (length bv)) "\""
+          (nelisp--prn-string-escaped
+           (apply #'unibyte-string (nelisp--prn-bool-vector-bytes bv)))
+          "\""))
+
 (defun nelisp--prn-record (rec escape)
   (let ((tag (nelisp--record-type rec)) (n (nelisp--record-length rec))
         (chunks (cons nil nil)))
@@ -8649,6 +8790,8 @@ claimed to match, only the shape."
    ((and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p obj))
     (concat "#<buffer " (nelisp-buffer-name obj) ">"))
    ((vectorp obj) (nelisp--prn-vector obj escape (1+ depth)))
+   ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
+    (nelisp--prn-bool-vector obj))
    ((recordp obj) (nelisp--prn-record obj escape))
    ;; NOT (format "#<unprintable %S>" obj): `%S' re-enters this function on
    ;; the same object, and for a lexical binding CELL -- which is what a
@@ -9061,6 +9204,38 @@ are numbers; `1.' is the integer 1."
           ;; exactly two characters even when another atom follows.
           ((and (< (1+ i) n) (= (aref s (1+ i)) 35))
            (cons (intern "") (+ i 2)))
+          ;; `#&LENGTH"BYTES"' bool-vector literal (GNU Emacs lread.c):
+          ;; each byte holds 8 bits low-bit-first, trailing bits of the
+          ;; last byte are 0.  BYTES is read through `nelisp--rd-unescape'
+          ;; (above), already raw-byte-aware for octal/`\\x' escapes, so
+          ;; `aref' on the result gives the actual byte values.  A literal
+          ;; whose string is shorter than ceil(LENGTH/8) bytes signals
+          ;; `invalid-read-syntax', matching host Emacs.
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 38))
+           (let ((j (+ i 2)))
+             (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))
+               (setq j (1+ j)))
+             (when (= j (+ i 2))
+               (signal 'invalid-read-syntax (list "#&")))
+             (let ((bitn (string-to-number (substring s (+ i 2) j))))
+               (setq j (nelisp--rd-skip-ws s j n))
+               (unless (and (< j n) (= (aref s j) 34))
+                 (signal 'invalid-read-syntax (list "#&")))
+               (let ((k (1+ j)) (started (1+ j)))
+                 (while (and (< k n) (not (= (aref s k) 34)))
+                   (if (= (aref s k) 92) (setq k (+ k 2)) (setq k (1+ k))))
+                 (let* ((bytes (nelisp--rd-unescape (substring s started k)))
+                        (need (/ (+ bitn 7) 8))
+                        (bv (make-bool-vector bitn nil))
+                        (bi 0))
+                   (when (< (length bytes) need)
+                     (signal 'invalid-read-syntax (list "#&")))
+                   (while (< bi bitn)
+                     (let* ((byte (aref bytes (/ bi 8)))
+                            (boff (mod bi 8)))
+                       (aset bv bi (/= (logand (ash byte (- boff)) 1) 0)))
+                     (setq bi (1+ bi)))
+                   (cons bv (1+ k)))))))
           (t
            (let ((j (1+ i)))
              (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))
@@ -10344,8 +10519,10 @@ Windows drive path keeps `C:', and a relative path stays relative."
 ;; A10: `arrayp' is VOID on the bare reader (silently returns nil).
 (unless (fboundp 'arrayp)
   (defun arrayp (x)
-    "Return t if X is an array (= a string or a vector)."
-    (if (or (vectorp x) (stringp x)) t nil)))
+    "Return t if X is an array (= a string, a vector, or a bool-vector)."
+    (if (or (vectorp x) (stringp x)
+            (and (fboundp 'bool-vector-p) (bool-vector-p x)))
+        t nil)))
 
 ;; Idempotent capture rule (applies to every `nelisp--native-X' save below):
 ;; this prelude is baked into the standalone image AND re-loaded at runtime.
@@ -10899,6 +11076,7 @@ native predicates."
      ((integerp x) 'integer)
      ((floatp x) 'float)
      ((vectorp x) 'vector)
+     ((and (fboundp 'bool-vector-p) (bool-vector-p x)) 'bool-vector)
      (t 'cons))))
 
 ;; native `fboundp' rejects `nil' and `t' with `(wrong-type-argument
