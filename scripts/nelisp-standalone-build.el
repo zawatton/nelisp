@@ -615,8 +615,17 @@ storage — not an arena reservation."
    ;; nl_tls_registry, holding the head of its live-context list.  Keeping
    ;; provenance outside the VirtualAlloc blocks lets close reject a stale or
    ;; never-issued pointer without dereferencing freed/unowned memory.
+   ;; Doc 201 §6.14 follow-up: +64 after the registry (and after the windows
+   ;; tls word) = nl_gc_stats, the allocation-debt collector trigger.  +0
+   ;; bytes allocated since the last collection (every `nl_alloc_bytes'
+   ;; adds its BLOCK_TOTAL, reuse and bump alike); +8 the debt threshold the
+   ;; last collection armed; +16 live bytes the last sweep counted; +24
+   ;; collections run; +32 bytes allocated over the whole process; +40 floor
+   ;; and +48 percent overrides (0 = default 16 MiB / 300 %).  Zero-init
+   ;; means "no threshold yet"; the reader driver arms one at boot end.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
-                       (if (eq nelisp-standalone--target 'windows-x86_64) 8 0))))
+                       (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
+                       64)))
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
@@ -1731,6 +1740,20 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; Body is byte-for-byte the historical allocator.
     (defun nl_alloc_bytes_uncheck (size align)
       (let ((want (nl_block_total size)))
+        ;; Doc 201 §6.14 follow-up: ALLOCATION DEBT.  Every block handed out,
+        ;; reused or bumped, adds its BLOCK_TOTAL to nl_gc_stats+0; the
+        ;; collector zeroes it and re-arms nl_gc_stats+8 after each sweep
+        ;; (`nl_gc_debt_rearm').  This is what lets `nl_gc_boundary_due' and
+        ;; the mid-form gate fire on bytes ALLOCATED rather than only on
+        ;; chunk growth: the growth-only trigger could never fire while the
+        ;; free lists were satisfying requests, so it collected exactly once
+        ;; per 64 MiB chunk mapped and the heap grew by one chunk per cycle
+        ;; for the life of the process (Doc 201 §6.13-6.14).  Two loads, an
+        ;; add and a store on the hot path; plain (not atomic) on purpose --
+        ;; a lost update under Doc 199 workers only delays a trigger.
+        (nl_seq2
+         (ptr-write-u64 (data-addr nl_gc_stats) 0
+                        (+ (ptr-read-u64 (data-addr nl_gc_stats) 0) want))
         ;; 1) try exact-fit free-list reuse (sweep populates the list).
         ;;    DEBUG: slot 268435624 == 1 disables reuse (always bump).
         (let ((reused (if (= (ptr-read-u64 268435624 0) 1) 0
@@ -1750,7 +1773,7 @@ directory tracks the tree rather than accumulating every key ever built."
                         (nl_alloc_diag_bump
                          (nl_chunk_try_alloc new_chunk want))))
                   (nl_alloc_diag_bump obj)))
-            reused))))
+            reused)))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     ;; Doc 146 §3.0: immediates-only tagged-word value helpers (foundation,
     ;; stage 1 -- additive; no caller yet, so the runtime is unchanged).  A
@@ -2650,17 +2673,27 @@ arm64 Linux has no legacy x86 numbering)."
     ;; reuse-correctness fix is the payload zeroing in `nl_alloc_zero_fill';
     ;; this watermark guard is not required for the gates to pass but makes the
     ;; permanent generation explicit and robust.)
+    ;; Doc 201 §6.14 follow-up: the sweep adds every surviving block's
+    ;; BLOCK_TOTAL to nl_gc_stats+16 so `nl_gc_debt_rearm' can size the next
+    ;; allocation-debt threshold from the live set it just measured.  Boot
+    ;; blocks count too: they are marked and walked every cycle like any
+    ;; other live block, so they are part of what the next mark will cost.
+    (defun nl_gc_live_add (bt)
+      (nl_seq2 (ptr-write-u64 (data-addr nl_gc_stats) 16
+                              (+ (ptr-read-u64 (data-addr nl_gc_stats) 16) bt))
+               bt))
     (defun nl_gc_sweep_one (hdr)
       (if (= (nl_gc_is_boot hdr) 1)
           (nl_seq2 (nl_hdr_set_mark hdr 0)                ; boot block: keep live, reset mark
-                   (nl_hdr_bt hdr))
+                   (nl_gc_live_add (nl_hdr_bt hdr)))
       (let* ((m (nl_hdr_mark hdr)) (bt (nl_hdr_bt hdr)))
         ;; Doc155 §8.12: m==1 (recursed-live) OR m==4 (conserv-PINNED, a live
         ;; in-flight root never precisely recursed) both SURVIVE and reset to 0
         ;; for the next cycle.
         (if (if (= m 1) 1 (if (= m 4) 1 0))
             (nl_seq2 (nl_hdr_set_mark hdr 0)              ; survive: clear mark
-             (nl_seq2 (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) 1)) bt))
+             (nl_seq2 (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) 1))
+                      (nl_gc_live_add bt)))
           (if (= m 0)
               (if (= (ptr-read-u64 268435584 0) 1)
                   bt                                       ; DEBUG mark-only
@@ -2862,14 +2895,75 @@ arm64 Linux has no legacy x86 numbering)."
             (nl_gc_reclaim_empty_one
              prev chunk (ptr-read-u64 (+ chunk 48) 0)
              (ptr-read-u64 chunk 0) (ptr-read-u64 (+ chunk 8) 0))))))
+    ;; ===== Doc 201 §6.14 follow-up: allocation-debt trigger =====
+    ;; The collector used to run only when `chunk-bytes-reserved' (268436184)
+    ;; crossed a watermark re-armed at reserved+16 MiB -- i.e. once per 64 MiB
+    ;; growth chunk mapped, because that counter moves in whole chunks.  A
+    ;; collection therefore came only AFTER the free lists had run dry and a
+    ;; chunk had been added, so every cycle grew the heap by one chunk and the
+    ;; sweep (which costs the whole heap) grew with it: 1.2 s -> 2.4 s over
+    ;; six collections in Doc 201 §6.13 with a live set that never moved.
+    ;; The debt trigger fires on bytes allocated since the last collection
+    ;; (nl_gc_stats+0, counted in `nl_alloc_bytes_uncheck') crossing a
+    ;; threshold armed from the live bytes the last sweep counted:
+    ;;     threshold = max(FLOOR, live * PCT / 100)
+    ;; with FLOOR 16 MiB and PCT 300 unless nl_gc_stats+40/+48 override them
+    ;; (`nelisp--debug-switch' 30/31).  300 % is the ratio the form-boundary
+    ;; re-arm has always written as `live*3 + 1 MiB'; it never took effect
+    ;; because `live' was advisory 0.  With the debt due before the free
+    ;; lists run dry, a steady live set reuses its own garbage and the heap
+    ;; stops at live + threshold + fragmentation slack instead of growing.
+    ;; A threshold of 0 means "not armed" (the reader driver arms it after
+    ;; the boot watermark is frozen), so other entry points keep the old
+    ;; growth-only behaviour exactly.  The growth trigger itself is kept:
+    ;; every collection that used to happen still happens.
+    (defun nl_gc_debt_floor ()
+      (if (= (ptr-read-u64 (data-addr nl_gc_stats) 40) 0) 16777216
+        (ptr-read-u64 (data-addr nl_gc_stats) 40)))
+    (defun nl_gc_debt_pct ()
+      (if (= (ptr-read-u64 (data-addr nl_gc_stats) 48) 0) 300
+        (ptr-read-u64 (data-addr nl_gc_stats) 48)))
+    ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
+    ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
+    ;; fold the debt into the process total (+32) and zero it.
+    (defun nl_gc_debt_rearm_for (live)
+      (let* ((fl (nl_gc_debt_floor))
+             (scaled (/ (* live (nl_gc_debt_pct)) 100)))
+        (seq
+         (ptr-write-u64 268435576 0 live)
+         (ptr-write-u64 (data-addr nl_gc_stats) 8 (if (< scaled fl) fl scaled))
+         (ptr-write-u64 (data-addr nl_gc_stats) 32
+                        (+ (ptr-read-u64 (data-addr nl_gc_stats) 32)
+                           (ptr-read-u64 (data-addr nl_gc_stats) 0)))
+         (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+         0)))
+    (defun nl_gc_debt_rearm ()
+      (seq
+       (ptr-write-u64 (data-addr nl_gc_stats) 24
+                      (+ (ptr-read-u64 (data-addr nl_gc_stats) 24) 1))
+       (nl_gc_debt_rearm_for (ptr-read-u64 (data-addr nl_gc_stats) 16))))
+    ;; 1 when the debt trigger is armed and the debt has reached it.
+    (defun nl_gc_debt_due ()
+      (if (= (ptr-read-u64 (data-addr nl_gc_stats) 8) 0) 0
+        (if (< (ptr-read-u64 (data-addr nl_gc_stats) 0)
+               (ptr-read-u64 (data-addr nl_gc_stats) 8))
+            0 1)))
+    ;; The form-boundary test: growth watermark (unchanged) OR debt.
+    (defun nl_gc_boundary_due ()
+      (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0))
+          (nl_gc_debt_due)
+        1))
     (defun nl_gc_sweep ()
-      (nl_seq2
+      (seq
+       (ptr-write-u64 (data-addr nl_gc_stats) 16 0)
        (nl_gc_sweep_chunks (ptr-read-u64 268436160 0))
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_empty_chunks
             (ptr-read-u64 268436160 0)
             (ptr-read-u64 (+ (ptr-read-u64 268436160 0) 48) 0))
-         0)))
+         0)
+       (nl_gc_debt_rearm)
+       0))
     ;; Full collection at the form boundary.  CTX = the env (mirror@+0,
     ;; frames@+32, unbound@+64).  The remaining args are the live driver
     ;; Sexp slots that must survive.  Mark all roots, then sweep.
@@ -4027,8 +4121,12 @@ arm64 Linux has no legacy x86 numbering)."
     ;; never compaction.
     (defun nl_gc_midform_collect ()
       (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
-          (if (< (ptr-read-u64 268436184 0)
-                 (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
+          ;; Doc 201 §6.14 follow-up: fire on the growth watermark OR on the
+          ;; allocation debt (`nl_gc_debt_due'), see `nl_gc_sweep'.
+          (if (if (< (ptr-read-u64 268436184 0)
+                     (ptr-read-u64 (data-addr nl_gc_loop_ctx) 40))
+                  (if (= (nl_gc_debt_due) 0) 1 0)
+                0)
               0
              (nl_seq2 (nl_gc_collect_from_recorded_roots 0)
              ;; Recorded collection holds ctx+24 while it marks/sweeps, so its
@@ -4080,7 +4178,10 @@ arm64 Linux has no legacy x86 numbering)."
              (if (= (ptr-read-u64 268435592 0) 1) 0 ; DEBUG: skip-mark
                (nl_gc_mark_roots ctx result out pool src cursor bsym))
              (if (= (ptr-read-u64 268435608 0) 1) ; Doc146 §5: compact
-                 (nl_gc_compact ctx result out pool src cursor bsym)
+                 ;; The debug compaction path does not sweep; re-arm the debt
+                 ;; trigger here so it cannot fire at every later boundary.
+                 (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
+                          (nl_gc_debt_rearm))
                (nl_gc_sweep)))))))
     ;; Form-boundary collections run after a top-level form has finished
     ;; evaluating.  The RAW reader parse pool allocation itself must remain
@@ -11748,9 +11849,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                   ;; had all failed still came back loaded, `featurep' t, its
                   ;; functions half-defined.  `bf_load' already tests this loop
                   ;; for 2: the receiving end was written and nothing sent it.
+                  ;; Doc 201 §6.14 follow-up: `nl_gc_boundary_due' is that same
+                  ;; reserved-vs-trigger test OR the allocation debt.
                   (if (= rc 0)
-                      (if (< (ptr-read-u64 268436184 0)
-                             (ptr-read-u64 268435560 0))
+                      (if (= (nl_gc_boundary_due) 0)
                           0
                         (let* ((live (nl_gc_collect_form_boundary env result out pool src cursor bsym))
                                (bump (ptr-read-u64 268436184 0))
@@ -18651,8 +18753,9 @@ no-catch tail above, not this defensive path."
                                  (nl_eval_source_print_error file_ptr file_len form_index this_start line_no))))))
                        (nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
                        ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
-                       ;; not the chunk-0 bump offset.  See `bf_load_eval_loop'.
-                       (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0))
+                       ;; not the chunk-0 bump offset, OR on the allocation
+                       ;; debt (Doc 201 §6.14 follow-up).  See `bf_load_eval_loop'.
+                       (if (= (nl_gc_boundary_due) 0)
                            0
                          (let* ((live (nl_gc_collect_form_boundary ctx result out pool src cursor builtin_sym))
                                 (bump (ptr-read-u64 268436184 0))
