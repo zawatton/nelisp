@@ -985,6 +985,149 @@ Ignores narrowing (hashes the whole buffer)."
           (setq i (1+ i)))
         (number-to-string h)))))
 
+;; Consumer `nelisp-ec' buffers and markers are also valid print/read
+;; streams.  The standalone reader's native stream helpers only know its
+;; own buffer representation, so bridge these objects at the helper level.
+(defvar emacs-buffer-builtins--native-valid-print-stream-p nil)
+(defvar emacs-buffer-builtins--native-emit-to-stream nil)
+(defvar emacs-buffer-builtins--native-read-dispatch nil)
+(defvar emacs-buffer-builtins--native-prn-to-string nil)
+
+(defun emacs-buffer-builtins-valid-print-stream-p (stream)
+  "Return non-nil when STREAM is a supported print stream."
+  (or (nelisp-ec-buffer-p stream)
+      (nelisp-ec-marker-p stream)
+      (and emacs-buffer-builtins--native-valid-print-stream-p
+           (funcall emacs-buffer-builtins--native-valid-print-stream-p stream))))
+
+(defun emacs-buffer-builtins--emit-to-ec-marker (str marker)
+  "Emit STR at MARKER while preserving the marker's buffer and point."
+  (let ((mbuf (nelisp-ec-marker-buffer marker)))
+    (unless mbuf
+      (signal 'error (list "Marker does not point anywhere")))
+    (let ((saved-buffer nelisp-ec--current-buffer))
+      (unwind-protect
+          (let ((nelisp-ec--current-buffer mbuf))
+             (let* ((orig-point (nelisp-ec-point))
+                   (ins-pos (nelisp-ec-marker-position marker))
+                   (n (length str))
+                   (completed nil))
+              (when (or (< ins-pos (nelisp-ec-point-min))
+                        (> ins-pos (nelisp-ec-point-max)))
+                (signal 'error
+                        (list "Marker is outside the accessible part of the buffer"
+                              marker)))
+              (unwind-protect
+                  (progn
+                    (nelisp-ec-goto-char ins-pos)
+                    (nelisp-ec-insert str)
+                    (nelisp-ec-goto-char (if (>= orig-point ins-pos)
+                                              (+ orig-point n) orig-point))
+                    (nelisp-ec-set-marker marker (+ ins-pos n) mbuf)
+                    (setq completed t))
+                (when (and (not completed)
+                           (nelisp-ec-buffer-p mbuf)
+                           (not (nelisp-ec-buffer-killed-p mbuf)))
+                  (nelisp-ec-goto-char orig-point)))))
+        (setq nelisp-ec--current-buffer saved-buffer)))))
+
+(defun emacs-buffer-builtins-emit-to-stream (str stream)
+  "Emit STR to an EC buffer/marker or delegate to the native helper."
+  (cond
+   ((nelisp-ec-buffer-p stream)
+    (let ((saved nelisp-ec--current-buffer))
+      (unwind-protect
+          (let ((nelisp-ec--current-buffer stream)) (nelisp-ec-insert str))
+        (setq nelisp-ec--current-buffer saved))))
+   ((nelisp-ec-marker-p stream)
+    (emacs-buffer-builtins--emit-to-ec-marker str stream))
+   (emacs-buffer-builtins--native-emit-to-stream
+    (funcall emacs-buffer-builtins--native-emit-to-stream str stream))
+   (t (princ str))))
+
+(defun emacs-buffer-builtins-read-dispatch (stream)
+  "Read one form from an EC buffer/marker or delegate natively."
+  (cond
+   ((nelisp-ec-buffer-p stream)
+    (let ((saved nelisp-ec--current-buffer))
+      (unwind-protect
+          (let ((nelisp-ec--current-buffer stream))
+            (let* ((base (1- (nelisp-ec-point-min)))
+                   (start (- (1- (nelisp-ec-point)) base))
+                   (full (nelisp-ec-buffer-string))
+                   (r (condition-case nil
+                          (read-from-string full start)
+                        (end-of-file (signal 'end-of-file (list stream))))))
+              (nelisp-ec-goto-char (+ (nelisp-ec-point-min) (cdr r)))
+              (car r)))
+        (setq nelisp-ec--current-buffer saved))))
+   ((nelisp-ec-marker-p stream)
+    (let ((mbuf (nelisp-ec-marker-buffer stream)))
+      (unless mbuf (signal 'error (list "Marker does not point anywhere")))
+      (let ((saved nelisp-ec--current-buffer))
+        (unwind-protect
+            (let ((nelisp-ec--current-buffer mbuf))
+              ;; Marker streams ignore narrowing on GNU Emacs.  Read the
+              ;; complete buffer, then restore both restriction and point.
+              (let* ((orig-point (nelisp-ec-point))
+                     (saved-lo (nelisp-ec-buffer-narrow-start mbuf))
+                     (saved-hi (nelisp-ec-buffer-narrow-end mbuf)))
+                (unwind-protect
+                    (progn
+                      (nelisp-ec-widen)
+                      (let* ((full (nelisp-ec-buffer-string))
+                             (start (1- (nelisp-ec-marker-position stream)))
+                             (r (read-from-string full start)))
+                        (nelisp-ec-set-marker stream (1+ (cdr r)) mbuf)
+                        (car r)))
+                  (nelisp-ec--set-buffer-narrow-start mbuf saved-lo)
+                  (nelisp-ec--set-buffer-narrow-end mbuf saved-hi)
+                  (nelisp-ec-goto-char orig-point))))
+          (setq nelisp-ec--current-buffer saved)))))
+   (emacs-buffer-builtins--native-read-dispatch
+    (funcall emacs-buffer-builtins--native-read-dispatch stream))
+   (t (signal (if (symbolp stream) 'void-function 'invalid-function)
+              (list stream)))))
+
+
+(defun emacs-buffer-builtins-prn-to-string (obj escape &optional depth)
+  "Print EC buffers/markers in Emacs's opaque object notation."
+  (cond
+   ((nelisp-ec-buffer-p obj)
+    (if (nelisp-ec-buffer-killed-p obj) "#<killed buffer>"
+      (format "#<buffer %s>" (nelisp-ec-buffer-name obj))))
+   ((nelisp-ec-marker-p obj)
+    (let ((buf (nelisp-ec-marker-buffer obj)))
+      (if buf (format "#<marker at %d in %s>"
+                      (nelisp-ec-marker-position obj)
+                      (nelisp-ec-buffer-name buf))
+        "#<marker in no buffer>")))
+   (emacs-buffer-builtins--native-prn-to-string
+    (funcall emacs-buffer-builtins--native-prn-to-string obj escape depth))
+   (t (format "#<unprintable %S>" obj))))
+
+(when (emacs-buffer-builtins--standalone-p)
+  (when (and (fboundp 'nelisp--valid-print-stream-p)
+             (not emacs-buffer-builtins--native-valid-print-stream-p))
+    (setq emacs-buffer-builtins--native-valid-print-stream-p
+          (symbol-function 'nelisp--valid-print-stream-p))
+    (fset 'nelisp--valid-print-stream-p #'emacs-buffer-builtins-valid-print-stream-p))
+  (when (and (fboundp 'nelisp--emit-to-stream)
+             (not emacs-buffer-builtins--native-emit-to-stream))
+    (setq emacs-buffer-builtins--native-emit-to-stream
+          (symbol-function 'nelisp--emit-to-stream))
+    (fset 'nelisp--emit-to-stream #'emacs-buffer-builtins-emit-to-stream))
+  (when (and (fboundp 'nelisp--read-dispatch)
+             (not emacs-buffer-builtins--native-read-dispatch))
+    (setq emacs-buffer-builtins--native-read-dispatch
+          (symbol-function 'nelisp--read-dispatch))
+    (fset 'nelisp--read-dispatch #'emacs-buffer-builtins-read-dispatch))
+  (when (and (fboundp 'nelisp--prn-to-string)
+             (not emacs-buffer-builtins--native-prn-to-string))
+    (setq emacs-buffer-builtins--native-prn-to-string
+          (symbol-function 'nelisp--prn-to-string))
+    (fset 'nelisp--prn-to-string #'emacs-buffer-builtins-prn-to-string)))
+
 (provide 'emacs-buffer-builtins)
 
 ;;; emacs-buffer-builtins.el ends here

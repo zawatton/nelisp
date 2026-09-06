@@ -795,8 +795,11 @@ START / END — 1-based positions (matches `nelisp-ec' convention),
               - START nil: the whole buffer is written and END is
                 ignored (the standard `save-buffer' path calls
                 `write-region' as `(write-region nil nil FILE)').
-              - START and END both integers: the buffer text between
-                them (order-independent) is written.
+              - START and END both integers and/or `nelisp-ec' markers
+                (either order): the buffer text between them (order-
+                independent) is written.  Marker arguments contribute
+                their numeric positions; text comes from the current
+                buffer.
 APPEND      — non-nil → open FILE in append mode.
 VISIT       — accepted for shape-compat; ignored in MVP.
 
@@ -810,9 +813,13 @@ Returns the number of *bytes* written to disk."
                 ;; Emacs: nil START means the whole buffer.
                 ((null start)
                  (nelisp-ec-buffer-substring 1 (1+ (nelisp-ec-buffer-size))))
-                ((and (integerp start) (integerp end))
-                 (nelisp-ec-buffer-substring (min start end) (max start end)))
-                (t (signal 'wrong-type-argument (list 'integerp start end)))))
+                (t
+                 (let ((s (nelisp-ec--position-arg start))
+                       (e (nelisp-ec--position-arg end)))
+                   (unless (and (integerp s) (integerp e))
+                     (signal 'wrong-type-argument
+                             (list 'integer-or-marker-p start end)))
+                   (nelisp-ec-buffer-substring (min s e) (max s e))))))
          (unibyte (nelisp-coding-utf8-encode-string text)))
     (nelisp-ec--write-raw-bytes file unibyte append)
     (length unibyte)))
