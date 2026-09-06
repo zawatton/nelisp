@@ -86,6 +86,60 @@ nesting depth as the `(' it replaces, so every paren-depth-based scanner in
 this file (form-boundary, container-end, comment/whitespace skipping) keeps
 working unmodified on the rewritten text.")
 
+  (defun emacs-load--marker-search-state (source start markers)
+    "Return mutable next-position state for MARKERS in SOURCE after START."
+    (let ((state nil))
+      (dolist (marker markers)
+        (push (cons marker
+                    (emacs-load--artifact-string-search marker source start))
+              state))
+      state))
+
+  (defun emacs-load--next-marker-position (source i len state)
+    "Return the smallest cached marker position >= I in SOURCE, or LEN.
+STATE comes from `emacs-load--marker-search-state'.  Only marker positions
+that I has passed are searched again, so skipping one comment line normally
+costs one native search rather than one search for every marker kind.
+
+T103: `aref' on a string costs on the order of 100 microseconds per
+call on this runtime (measured directly; not merely a multibyte-offset
+artifact -- confirmed the same order of magnitude on an already-unibyte,
+byte-indexed string), so a hand-written scanner that visits every
+character of a large file with `aref' is prohibitively slow (tens of
+seconds to minutes for a real package file) even though the algorithm
+itself is linear.  `emacs-load--artifact-string-search' (native substring
+search) costs microseconds regardless of string length (measured:
+~3ms for a 200KB haystack). The three `emacs-load--rewrite-*' scanners in
+this file use this helper to jump directly between the rare characters
+that can start something meaningful to them (a string quote, a comment
+semicolon, a backslash escape, and their own specific trigger byte) and
+copy every ordinary byte in between through in bulk via `substring',
+instead of visiting it one `aref' call at a time."
+    (let ((best len))
+      (dolist (entry state)
+        (let ((pos (cdr entry)))
+          (when (and pos (< pos i))
+            (setq pos
+                  (emacs-load--artifact-string-search (car entry) source i))
+            (setcdr entry pos))
+          (when (and pos (< pos best))
+            (setq best pos))))
+      best))
+
+  (defun emacs-load--labeled-object-trigger-p (source)
+    "Return non-nil when SOURCE contains a possible `#N=' or `#N#' token.
+Checking the ten digit prefixes with native substring search is much cheaper
+than entering the Elisp scanner for ordinary `#'', `#(', or hash text in a
+comment.  The syntax-aware scanner still decides whether a candidate is code."
+    (let ((digit 0)
+          (found nil))
+      (while (and (< digit 10) (not found))
+        (setq found
+              (emacs-load--artifact-string-search
+               (concat "#" (number-to-string digit)) source 0))
+        (setq digit (1+ digit)))
+      found))
+
   (defvar emacs-load--propertized-string-reader-native-p
     (let ((probe "#(\"a\" 0 1 (p t))"))
       (condition-case nil
@@ -177,7 +231,17 @@ the transform when asked, regardless of
 `emacs-load--propertized-string-reader-native-p' -- callers decide whether
 calling it is needed at all (see `nelisp--load-resolved-file').  Returns
 SOURCE unchanged (the same string object, no copy) when `#(' does not
-occur at all, which is the common case for most files."
+occur at all, which is the common case for most files.  Forces SOURCE to
+`emacs-load--byte-indexed-source' first (a no-op when already
+byte-indexed, which every real `load' caller already is): this function's
+own `aref'-based scan must never run on a still-multibyte string, since on
+this runtime that means each `aref' recomputes the character's byte offset
+by walking from the start of the string -- quadratic in file length, and
+the one class of bug this file's other scanners are already documented
+\(`nelisp--load-skip-space-and-comments') and tested
+\(`emacs-load-test/source-incremental-byte-indexed-source-with-non-ascii-comments-is-fast')
+to avoid."
+    (setq source (emacs-load--byte-indexed-source source))
     (if (not (emacs-load--artifact-string-search "#(" source 0))
         source
       (let ((len (length source))
@@ -185,36 +249,50 @@ occur at all, which is the common case for most files."
             (start 0)
             (i 0)
             (in-string nil)
-            (atom-escaped nil)
-            (escaped nil))
+            (escaped nil)
+            (marker-state
+             (emacs-load--marker-search-state
+              source 0 '("\"" ";" "\\" "?" "#"))))
         (while (< i len)
-          (let ((ch (aref source i)))
-            (cond
-             (in-string
-              (cond
-               (escaped (setq escaped nil))
-               ((= ch ?\\) (setq escaped t))
-               ((= ch ?\") (setq in-string nil))))
-             (atom-escaped (setq atom-escaped nil))
-             ((= ch ?\\) (setq atom-escaped t))
-             ((= ch ??)
-              ;; Character literal `?X' or `?\X...': skip the literal
-              ;; character (and one more when it is a backslash escape) so
-              ;; it is never re-examined as the start of `#(' syntax.
-              (setq i (1+ i))
-              (when (and (< i len) (= (aref source i) ?\\))
-                (setq i (1+ i))))
-             ((= ch ?\;)
-              (while (and (< i len) (not (= (aref source i) ?\n)))
-                (setq i (1+ i))))
-             ((= ch ?\") (setq in-string t))
-             ((and (= ch ?#) (< (1+ i) len)
-                   (= (aref source (1+ i)) ?\())
-              (push (substring source start i) out)
-              (push emacs-load--propertized-string-literal-marker out)
-              (setq i (1+ i))
-              (setq start (1+ i)))))
-          (setq i (1+ i)))
+          (if in-string
+              (progn
+                (let ((ch (aref source i)))
+                  (cond
+                   (escaped (setq escaped nil))
+                   ((= ch ?\\) (setq escaped t))
+                   ((= ch ?\") (setq in-string nil))))
+                (setq i (1+ i)))
+            (setq i (emacs-load--next-marker-position source i len marker-state))
+            (when (< i len)
+              (let ((ch (aref source i)))
+                (cond
+                 ((= ch ?\\)
+                  ;; A backslash outside a string escapes the next
+                  ;; character (e.g. an unusual symbol spelling): skip both,
+                  ;; unconditionally, so that next character is never
+                  ;; re-examined for special meaning.
+                  (setq i (min len (+ i 2))))
+                 ((= ch ??)
+                  ;; Character literal `?X' or `?\X...': skip `?', then the
+                  ;; literal character (one more when it is itself a
+                  ;; backslash escape), then the base character -- so the
+                  ;; whole literal is never re-examined as the start of
+                  ;; `#(' syntax.
+                  (setq i (1+ i))
+                  (when (and (< i len) (= (aref source i) ?\\))
+                    (setq i (1+ i)))
+                  (setq i (min len (1+ i))))
+                 ((= ch ?\;)
+                  (let ((nl (emacs-load--artifact-string-search "\n" source i)))
+                    (setq i (if nl (1+ nl) len))))
+                 ((= ch ?\") (setq in-string t) (setq i (1+ i)))
+                 ((and (= ch ?#) (< (1+ i) len)
+                       (= (aref source (1+ i)) ?\())
+                  (push (substring source start i) out)
+                  (push emacs-load--propertized-string-literal-marker out)
+                  (setq i (+ i 2))
+                  (setq start i))
+                 (t (setq i (1+ i))))))))
         (push (substring source start len) out)
         (apply #'concat (nreverse out)))))
 
@@ -265,75 +343,90 @@ precedes its own file-wide-unique `#N=' (a genuine forward reference, only
 ever produced by a serializer, never by a human) is left untouched like
 the compound case.  Returns SOURCE unchanged (the same string object, no
 copy) when `#' does not occur at all, which is the common case for most
-files."
-    (if (not (emacs-load--artifact-string-search "#" source 0))
+files.  Forces SOURCE to `emacs-load--byte-indexed-source' first (a no-op
+when already byte-indexed): see
+`emacs-load--rewrite-propertized-string-literals''s docstring for why an
+`aref'-based scanner must never run on a still-multibyte string on this
+runtime."
+    (setq source (emacs-load--byte-indexed-source source))
+    (if (not (emacs-load--labeled-object-trigger-p source))
         source
       (let ((len (length source))
             (out nil)
             (start 0)
             (i 0)
             (in-string nil)
-            (atom-escaped nil)
             (escaped nil)
-            (labels (make-hash-table :test 'eql)))
+            (labels (make-hash-table :test 'eql))
+            (marker-state
+             (emacs-load--marker-search-state
+              source 0 '("\"" ";" "\\" "?" "#"))))
         (while (< i len)
-          (let ((ch (aref source i)))
-            (cond
-             (in-string
-              (cond
-               (escaped (setq escaped nil))
-               ((= ch ?\\) (setq escaped t))
-               ((= ch ?\") (setq in-string nil))))
-             (atom-escaped (setq atom-escaped nil))
-             ((= ch ?\\) (setq atom-escaped t))
-             ((= ch ??)
-              (setq i (1+ i))
-              (when (and (< i len) (= (aref source i) ?\\))
-                (setq i (1+ i))))
-             ((= ch ?\;)
-              (while (and (< i len) (not (= (aref source i) ?\n)))
-                (setq i (1+ i))))
-             ((= ch ?\") (setq in-string t))
-             ((and (= ch ?#) (< (1+ i) len)
-                   (<= ?0 (aref source (1+ i)) ?9))
-              (let ((digit-start (1+ i))
-                    (digit-end nil))
-                (setq digit-end digit-start)
-                (while (and (< digit-end len)
-                            (<= ?0 (aref source digit-end) ?9))
-                  (setq digit-end (1+ digit-end)))
+          (if in-string
+              (progn
+                (let ((ch (aref source i)))
+                  (cond
+                   (escaped (setq escaped nil))
+                   ((= ch ?\\) (setq escaped t))
+                   ((= ch ?\") (setq in-string nil))))
+                (setq i (1+ i)))
+            (setq i (emacs-load--next-marker-position source i len marker-state))
+            (when (< i len)
+              (let ((ch (aref source i)))
                 (cond
-                 ;; `#N=OBJECT'
-                 ((and (< digit-end len) (= (aref source digit-end) ?=))
-                  (let* ((label (string-to-number
-                                 (substring source digit-start digit-end)))
-                         (obj-start (1+ digit-end))
-                         (obj-ch (and (< obj-start len)
-                                      (aref source obj-start))))
-                    (unless (memq obj-ch '(?\( ?\[ nil))
-                      (let ((obj-end
-                             (if (= obj-ch ?\")
-                                 (emacs-load--artifact-source-string-end
-                                  source obj-start)
-                               (emacs-load--artifact-source-atom-end
-                                source obj-start))))
-                        (puthash label
-                                 (substring source obj-start obj-end)
-                                 labels)
-                        (push (substring source start i) out)
-                        (setq start obj-start)
-                        (setq i (1- obj-start))))))
-                 ;; `#N#'
-                 ((and (< digit-end len) (= (aref source digit-end) ?#))
-                  (let* ((label (string-to-number
-                                 (substring source digit-start digit-end)))
-                         (replacement (gethash label labels)))
-                    (when replacement
-                      (push (substring source start i) out)
-                      (push replacement out)
-                      (setq start (1+ digit-end))
-                      (setq i digit-end)))))))))
-          (setq i (1+ i)))
+                 ((= ch ?\\) (setq i (min len (+ i 2))))
+                 ((= ch ??)
+                  (setq i (1+ i))
+                  (when (and (< i len) (= (aref source i) ?\\))
+                    (setq i (1+ i)))
+                  (setq i (min len (1+ i))))
+                 ((= ch ?\;)
+                  (let ((nl (emacs-load--artifact-string-search "\n" source i)))
+                    (setq i (if nl (1+ nl) len))))
+                 ((= ch ?\") (setq in-string t) (setq i (1+ i)))
+                 ((and (= ch ?#) (< (1+ i) len)
+                       (<= ?0 (aref source (1+ i)) ?9))
+                  (let ((digit-start (1+ i))
+                        (digit-end nil))
+                    (setq digit-end digit-start)
+                    (while (and (< digit-end len)
+                                (<= ?0 (aref source digit-end) ?9))
+                      (setq digit-end (1+ digit-end)))
+                    (cond
+                     ;; `#N=OBJECT'
+                     ((and (< digit-end len) (= (aref source digit-end) ?=))
+                      (let* ((label (string-to-number
+                                     (substring source digit-start digit-end)))
+                             (obj-start (1+ digit-end))
+                             (obj-ch (and (< obj-start len)
+                                          (aref source obj-start))))
+                        (if (memq obj-ch '(?\( ?\[ nil))
+                            (setq i (1+ digit-end))
+                          (let ((obj-end
+                                 (if (= obj-ch ?\")
+                                     (emacs-load--artifact-source-string-end
+                                      source obj-start)
+                                   (emacs-load--artifact-source-atom-end
+                                    source obj-start))))
+                            (puthash label
+                                     (substring source obj-start obj-end)
+                                     labels)
+                            (push (substring source start i) out)
+                            (setq start obj-start)
+                            (setq i obj-start)))))
+                     ;; `#N#'
+                     ((and (< digit-end len) (= (aref source digit-end) ?#))
+                      (let* ((label (string-to-number
+                                     (substring source digit-start digit-end)))
+                             (replacement (gethash label labels)))
+                        (if (not replacement)
+                            (setq i (1+ digit-end))
+                          (push (substring source start i) out)
+                          (push replacement out)
+                          (setq start (1+ digit-end))
+                          (setq i (1+ digit-end)))))
+                     (t (setq i digit-end)))))
+                 (t (setq i (1+ i))))))))
         (push (substring source start len) out)
         (apply #'concat (nreverse out)))))
 
@@ -434,12 +527,20 @@ already read correctly everywhere and is skipped over, not touched (see
 `emacs-load--char-literal-modifier-prefixes' and
 `emacs-load--char-literal-escaped-base' for what counts as \"escaped\" and
 which escapes are resolved).  Returns SOURCE unchanged (the same string
-object, no copy) when neither `?' followed eventually by `\\C-'/`\\M-'
-occurs at all -- checked cheaply by requiring at least one `?\\' pair
-first, which is necessary but not sufficient, so a real per-character scan
-still runs whenever SOURCE has any character literal escape at all; this
-is the common case for most files and still cheap (T103 measured this
-scan at a small fraction of a normal file's overall load time)."
+object, no copy) when `?\\' does not occur at all, which is the common
+case for most files.  When it does occur, the scan jumps directly between
+the rare marker characters that can start something meaningful (see
+`emacs-load--next-marker-position') rather than visiting every byte, so a
+file with many `?\\'-shaped escapes but no actual Control/Meta modifier
+still finishes in a small fraction of a normal file's overall load time
+\(T103 first shipped a naive per-character version of this scan that took
+10+ seconds on a real ~40KB file for exactly this reason, before this
+fix).  Forces SOURCE to `emacs-load--byte-indexed-source' first (a no-op
+when already byte-indexed): see
+`emacs-load--rewrite-propertized-string-literals''s docstring for why an
+`aref'-based scanner must never run on a still-multibyte string on this
+runtime."
+    (setq source (emacs-load--byte-indexed-source source))
     (if (not (emacs-load--artifact-string-search "?\\" source 0))
         source
       (let ((len (length source))
@@ -447,52 +548,59 @@ scan at a small fraction of a normal file's overall load time)."
             (start 0)
             (i 0)
             (in-string nil)
-            (atom-escaped nil)
-            (escaped nil))
+            (escaped nil)
+            (marker-state
+             (emacs-load--marker-search-state
+              source 0 '("\"" ";" "\\" "?"))))
         (while (< i len)
-          (let ((ch (aref source i)))
-            (cond
-             (in-string
-              (cond
-               (escaped (setq escaped nil))
-               ((= ch ?\\) (setq escaped t))
-               ((= ch ?\") (setq in-string nil))))
-             (atom-escaped (setq atom-escaped nil))
-             ((= ch ?\\) (setq atom-escaped t))
-             ((= ch ?\;)
-              (while (and (< i len) (not (= (aref source i) ?\n)))
-                (setq i (1+ i))))
-             ((= ch ?\") (setq in-string t))
-             ((= ch ??)
-              (let* ((mod-result
-                      (emacs-load--char-literal-modifier-prefixes
-                       source (1+ i)))
-                     (mods (car mod-result))
-                     (base-pos (cdr mod-result)))
-                (if (null mods)
-                    (progn
-                      (setq i (1+ i))
-                      (when (and (< i len) (= (aref source i) ?\\))
-                        (setq i (1+ i))))
-                  (let ((escape (emacs-load--char-literal-escaped-base
-                                 source base-pos)))
-                    (if (not escape)
-                        (setq i (1- base-pos))
-                      (let* ((end (cdr escape))
-                             (value (car escape)))
-                        (when (memq 'control mods)
-                          (cond
-                           ((= value ??) (setq value 127))
-                           ((or (<= ?@ value ?_) (<= ?a value ?z))
-                            (setq value (logand value #x1f)))
-                           (t (setq value (logior value #x4000000)))))
-                        (when (memq 'meta mods)
-                          (setq value (logior value #x8000000)))
-                        (push (substring source start i) out)
-                        (push (number-to-string value) out)
-                        (setq start end)
-                        (setq i (1- end))))))))))
-          (setq i (1+ i)))
+          (if in-string
+              (progn
+                (let ((ch (aref source i)))
+                  (cond
+                   (escaped (setq escaped nil))
+                   ((= ch ?\\) (setq escaped t))
+                   ((= ch ?\") (setq in-string nil))))
+                (setq i (1+ i)))
+            (setq i (emacs-load--next-marker-position source i len marker-state))
+            (when (< i len)
+              (let ((ch (aref source i)))
+                (cond
+                 ((= ch ?\\) (setq i (min len (+ i 2))))
+                 ((= ch ?\;)
+                  (let ((nl (emacs-load--artifact-string-search "\n" source i)))
+                    (setq i (if nl (1+ nl) len))))
+                 ((= ch ?\") (setq in-string t) (setq i (1+ i)))
+                 ((= ch ??)
+                  (let* ((mod-result
+                          (emacs-load--char-literal-modifier-prefixes
+                           source (1+ i)))
+                         (mods (car mod-result))
+                         (base-pos (cdr mod-result)))
+                    (if (null mods)
+                        (progn
+                          (setq i (1+ i))
+                          (when (and (< i len) (= (aref source i) ?\\))
+                            (setq i (1+ i)))
+                          (setq i (min len (1+ i))))
+                      (let ((escape (emacs-load--char-literal-escaped-base
+                                     source base-pos)))
+                        (if (not escape)
+                            (setq i base-pos)
+                          (let* ((end (cdr escape))
+                                 (value (car escape)))
+                            (when (memq 'control mods)
+                              (cond
+                               ((= value ??) (setq value 127))
+                               ((or (<= ?@ value ?_) (<= ?a value ?z))
+                                (setq value (logand value #x1f)))
+                               (t (setq value (logior value #x4000000)))))
+                            (when (memq 'meta mods)
+                              (setq value (logior value #x8000000)))
+                            (push (substring source start i) out)
+                            (push (number-to-string value) out)
+                            (setq start end)
+                            (setq i end)))))))
+                 (t (setq i (1+ i))))))))
         (push (substring source start len) out)
         (apply #'concat (nreverse out)))))
 
