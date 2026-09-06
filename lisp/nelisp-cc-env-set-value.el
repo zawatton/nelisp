@@ -97,6 +97,37 @@
                     mirror-ptr name-ptr scratch-ptr 0)
        0))
 
+    ;; perf/call-overhead: mirror path that builds the 11-slot scratch
+    ;; vector ITSELF (via env-leaves-bind's `nl_env_build_scratch'), so the
+    ;; caller does not have to allocate it up front on every `setq'.  The
+    ;; scratch is only consumed by `nelisp_mirror_set_value_or_insert' on
+    ;; this frame-miss path; a lexical (frame-hit) `setq' never needed it.
+    ;; Arity 4 (even) ✓.
+    (defun nelisp_env_setv_mirror_lazy (mirror-ptr name-ptr val-ptr unbound-ptr)
+      (let ((scratch (alloc-bytes 32 8)))
+        (and (extern-call nl_env_build_scratch val-ptr unbound-ptr scratch)
+             (nelisp_env_setv_mirror mirror-ptr name-ptr scratch 0))))
+
+    ;; perf/call-overhead: `nelisp_env_set_value' minus the pre-built
+    ;; scratch argument.  Same guard order and same results as
+    ;; `nelisp_env_set_value' below (name check -> constant refusal ->
+    ;; frame hit writes the cell -> frame miss writes the mirror); the only
+    ;; difference is WHEN the mirror scratch vector is allocated: lazily,
+    ;; on the miss path, instead of by every caller before the lookups.
+    ;; `nl_env_set_value' (env-leaves-bind) delegates here; the reader
+    ;; build injects the same mutation-epoch bump into both entries.
+    ;; Arity 6 (even) ✓.
+    (defun nelisp_env_set_value_lazy
+        (mirror-ptr frames-ptr name-ptr val-ptr unbound-ptr _pad)
+      (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
+          1
+        (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
+            1
+          (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+            (if (= cell-ptr 0)
+                (nelisp_env_setv_mirror_lazy mirror-ptr name-ptr val-ptr unbound-ptr)
+              (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))
+
     ;; nelisp_env_set_value
     ;;
     ;; Main entry: constant guard → frame check → mirror write.

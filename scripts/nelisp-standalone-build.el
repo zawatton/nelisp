@@ -5030,28 +5030,78 @@ signal needs (`nl_alloc_symbol' / `nelisp_cons_construct' / `bf_signal''s
 reserved-arena convention) -- the baked eval applyfn passes `1' because its
 arithmetic/list-only manifest omits them, so emitting the real signal would
 leave symbols unresolved at link time."
-  (let (;; Unknown-builtin default: 2026-08-23 real-machine probe found this
-        ;; arm previously wrote the symbol name to stderr and returned rc=1
-        ;; WITHOUT the signal/unwind stash -- a bare, uncatchable top-level
-        ;; abort (see `nelisp-standalone--applyfn-unsupported-primitive-form'
-        ;; for the against-the-bug writeup).  Signal instead of print.
-        (dispatch (or default-form
-                      (nelisp-standalone--applyfn-unsupported-primitive-form))))
-    (dolist (entry (reverse (or table nelisp-standalone--applyfn-dispatch-table)))
+  (let* (;; Unknown-builtin default: 2026-08-23 real-machine probe found this
+         ;; arm previously wrote the symbol name to stderr and returned rc=1
+         ;; WITHOUT the signal/unwind stash -- a bare, uncatchable top-level
+         ;; abort (see `nelisp-standalone--applyfn-unsupported-primitive-form'
+         ;; for the against-the-bug writeup).  Signal instead of print.
+         ;; The unknown-builtin signal is a ~700-byte IR form; the bucketed
+         ;; tree below terminates each bucket's chain with the default, so
+         ;; emitting it inline would duplicate it once per bucket (~25x).
+         ;; Route the signal through the one-line `nl_applyfn_unsupported'
+         ;; helper defun that `nelisp-standalone--applyfn-assemble' adds to
+         ;; the unit whenever DEFAULT-FORM is nil; a caller-supplied
+         ;; DEFAULT-FORM (the baked build's bare `1') is used as is.
+         (dispatch-default (or default-form '(nl_applyfn_unsupported name_ptr)))
+         (entries (or table nelisp-standalone--applyfn-dispatch-table))
+         ;; perf/call-overhead: bucket the arms by NAME byte length.  The
+         ;; former shape was one flat first-match chain over every arm
+         ;; (~200 `sexp-name-eq' blocks in the reader table), so a builtin
+         ;; near the end of the table paid ~200 tag+length compares on
+         ;; EVERY call.  `sexp-name-eq' itself already rejects on the
+         ;; length word at NAME_PTR+24 (the same word for Symbol / Str /
+         ;; UnibyteStr, see `nelisp-aot-compiler--emit-sexp-name-eq'), so
+         ;; reading that word once and dispatching on it first is exactly
+         ;; equivalent: an arm can only match inside its own length bucket,
+         ;; and within a bucket the arms keep their original relative order,
+         ;; so first-match semantics (including any duplicate name, whose
+         ;; copies necessarily share a bucket) are unchanged.  A name_ptr
+         ;; whose tag is not 4/5/14 gets length -1, matches no bucket, and
+         ;; falls to DEFAULT-FORM -- also exactly what the flat chain did.
+         (buckets nil))
+    (dolist (entry entries)
       (let* ((match (car entry))
-             (impl (cdr entry))
-             (cond-form (pcase (car match)
-                          ;; Both arms use the alloc-free `sexp-name-eq' grammar
-                          ;; op.  The former `:u8' path went through
-                          ;; `wf_name_is'/`wf_sym_eq', which allocated a fresh
-                          ;; symbol (via `nl_alloc_symbol') plus scratch slots on
-                          ;; EVERY comparison; a builtin call walking K dispatch
-                          ;; arms then churned ~K symbol allocations, dominating
-                          ;; eval time and GC pressure on hot ops (`+', `<', ...).
-                          (:u8  `(= (sexp-name-eq name_ptr ,(cadr match)) 1))
-                          (:lit `(= (sexp-name-eq name_ptr ,(cadr match)) 1)))))
-        (setq dispatch `(if ,cond-form ,impl ,dispatch))))
-    dispatch))
+             (len (pcase (car match)
+                    ;; Both arms use the alloc-free `sexp-name-eq' grammar
+                    ;; op.  The former `:u8' path went through
+                    ;; `wf_name_is'/`wf_sym_eq', which allocated a fresh
+                    ;; symbol (via `nl_alloc_symbol') plus scratch slots on
+                    ;; EVERY comparison; a builtin call walking K dispatch
+                    ;; arms then churned ~K symbol allocations, dominating
+                    ;; eval time and GC pressure on hot ops (`+', `<', ...).
+                    ((or :u8 :lit)
+                     (length (encode-coding-string (cadr match) 'utf-8 t)))
+                    (_ (error "applyfn dispatch: unknown match kind %S" match))))
+             (cell (assq len buckets)))
+        ;; Bucket lists are built in REVERSE original order on purpose: the
+        ;; per-bucket fold below wraps the last original arm innermost, the
+        ;; same fold the flat chain used (`(reverse table)').
+        (if cell
+            (setcdr cell (cons entry (cdr cell)))
+          (push (cons len (list entry)) buckets))))
+    (if (getenv "NELISP_T104_FLAT_DISPATCH")
+        ;; measurement-only: the pre-bucketing flat chain, for A/B builds.
+        (let ((dispatch dispatch-default))
+          (dolist (entry (reverse entries))
+            (setq dispatch `(if (= (sexp-name-eq name_ptr ,(cadr (car entry))) 1)
+                                ,(cdr entry) ,dispatch)))
+          dispatch)
+    (let ((tree dispatch-default))
+      ;; Longest bucket wrapped first => shortest names tested first (the
+      ;; hot 1-3 byte operators `+' `<' `car' `eq' ...).
+      (dolist (bucket (sort buckets (lambda (a b) (> (car a) (car b)))))
+        (let ((chain dispatch-default))
+          (dolist (entry (cdr bucket))
+            (setq chain `(if (= (sexp-name-eq name_ptr ,(cadr (car entry))) 1)
+                             ,(cdr entry)
+                           ,chain)))
+          (setq tree `(if (= nl_name_len ,(car bucket)) ,chain ,tree))))
+      `(let* ((nl_name_len
+               (if (= (sexp-tag name_ptr) 4) (ptr-read-u64 name_ptr 24)
+                 (if (= (sexp-tag name_ptr) 5) (ptr-read-u64 name_ptr 24)
+                   (if (= (sexp-tag name_ptr) 14) (ptr-read-u64 name_ptr 24)
+                     -1)))))
+         ,tree)))))
 
 ;; Core wf_* helpers (arithmetic / list / write-int-t-nil / name-match).  Shared
 ;; by BOTH the baked and the reader applyfn -- they reference only cons/symbol
@@ -13144,6 +13194,12 @@ set, which lacks the reader-only `nl_os_write_stderr')."
     (append
      '(seq)
      (apply #'append helper-groups)
+     ;; Shared unknown-builtin terminator for the bucketed dispatch tree
+     ;; (see `nelisp-standalone--applyfn-build-dispatch'); only the reader
+     ;; link set (DEFAULT-FORM nil) carries the units the signal needs.
+     (unless default-form
+       (list `(defun nl_applyfn_unsupported (name_ptr)
+                ,(nelisp-standalone--applyfn-unsupported-primitive-form))))
      (list `(defun nelisp_apply_function (func_ptr args env out)
               (let* ((name_ptr (nl_cons_car_ptr (nl_cons_cdr_ptr func_ptr))))
                 ,dispatch))))))
@@ -16406,6 +16462,7 @@ and `nl_eval_inner_cons' swapped for the cache-aware/rooted versions above."
     (defun nl_env_lookup_val (_f _e _o) 1) (defun nl_cell_get_value (_c _o) 1)
     (defun nl_apply_lambda_inner (_cap _f _b _a _e _o) 1)
     (defun nelisp_frame_push (_f _s) 1) (defun nelisp_frame_pop (_f _s) 1)
+    (defun nelisp_frame_push_direct (_f _a _b _c) 1)
     (defun nelisp_env_bind_local (_m _f _n _v _vec _flag) 1)
     (defun nelisp_env_shim_op (_op _m _s _u _o _p) 0)
     (defun nelisp_env_shim_set_op (_op _m _s _sc _o _z) 0)
@@ -25137,15 +25194,14 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 (defconst nelisp-standalone--reader-bind-rest-fixed
   '(defun nl_bf_bind_rest (env name_ptr args_ptr idx)
      (let* ((tail_ptr (nl_bf_bind_rest_tail args_ptr idx))
-            (tail_slot (alloc-bytes 32 8))
-            (mirror_ptr (+ env 0))
-            (frames_ptr (+ env 32))
-            (unbound_ptr (+ env 64))
-            (out_vec_slot (alloc-bytes 32 8)))
+            (tail_slot (alloc-bytes 32 8)))
        (seq
         (nl_sexp_clone_into tail_ptr tail_slot)
-        (nl_env_build_scratch tail_slot unbound_ptr out_vec_slot)
-        (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr tail_slot out_vec_slot 0))))
+        ;; perf/call-overhead: `nl_bf_bind_sym' is exactly the former
+        ;; tail of this body (`nl_env_build_scratch' + `nelisp_env_bind_
+        ;; local') when no lexical frame is active, and the scratch-free
+        ;; `nl_bind_frame_fast' otherwise -- see env-leaves-bind.
+        (nl_bf_bind_sym env name_ptr tail_slot))))
   "Standalone reader fix for required-plus-&rest formal binding.")
 
 (defconst nelisp-standalone--reader-env-stash-signal-fixed
@@ -25842,7 +25898,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                              ;; the same way).  Mirrors the growth/setq fix exactly.
                              ("frame-push.o"
                               (nelisp-standalone--reader-extra-unit-epoch
-                               entry '(nelisp_frame_push)))
+                               entry '(nelisp_frame_push nelisp_frame_push_direct)))
                              ;; FIX (2026-07-03): companion to the push fix above --
                              ;; `nelisp_frame_pop_inner' is the leaf that actually writes
                              ;; Nil into backing[new-depth] and the new depth Int into the
@@ -25861,7 +25917,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                        (locate-library "nelisp-cc-evalport-env-leaves-bind")))))
                              ("sf-env-set-value2.o"
                               (nelisp-standalone--reader-extra-unit-epoch
-                               entry '(nelisp_env_set_value)))
+                               entry '(nelisp_env_set_value nelisp_env_set_value_lazy)))
                              (_ (nelisp-standalone--reader-extra-unit entry))))
                          nelisp-standalone--reader-real-sf-manifest)))
          ;; WAVE-2 PATCH 4: sf-condition-case with nl_sf_cc_after_match rewritten
