@@ -1906,19 +1906,6 @@ letters for RADIX > 10."
             (t nil))))
     (if (and v (< v radix)) v nil)))
 
-(defun nelisp--pow10 (k)
-  "10^K as a double, for 0 <= K <= 22 -- every one of those is exact."
-  (let ((acc 1.0) (i 0))
-    (while (< i k) (setq acc (* acc 10.0)) (setq i (1+ i)))
-    acc))
-(defun nelisp--scale10 (m e)
-  "M times 10^E, in steps of at most 22 so each step is an exact power."
-  (let ((v m) (k (abs e)))
-    (while (> k 0)
-      (let ((step (if (> k 22) 22 k)))
-        (setq v (if (< e 0) (/ v (nelisp--pow10 step)) (* v (nelisp--pow10 step))))
-        (setq k (- k step))))
-    v))
 (defun string-to-number (s &optional radix)
   "Parse a number from the leading portion of S.
 RADIX (default 10) selects the integer base.  Float syntax (`.',
@@ -2009,7 +1996,8 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                 (frac-digits 0)
                 (exp-sign 1)
                 (exp-val 0)
-                (has-exp nil))
+                (has-exp nil)
+                (infnan-suffix nil))
             ;; Optional fractional part.
             (when (and (< i n) (eq (aref s i) ?.))
               (setq i (1+ i))
@@ -2026,7 +2014,13 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                       (setq frac-digits (1+ frac-digits))
                       (setq i (1+ i)))
                      (t (setq continue nil)))))))
-            ;; Optional exponent.
+            ;; Optional exponent, OR the special `e+INF' / `e+NaN'
+            ;; infinity/NaN spelling `prin1'/`read' use (Doc 159 §12) --
+            ;; not digits at all, so the digit loop below would see
+            ;; none, leave HAS-EXP nil, and silently drop the whole
+            ;; suffix, turning "1.0e+INF" into plain 1.0.  Host Emacs's
+            ;; `string-to-number' returns real infinity/NaN for this
+            ;; spelling (checked directly), so this walk must too.
             (when (and (< i n)
                        (or (eq (aref s i) ?e) (eq (aref s i) ?E)))
               (setq i (1+ i))
@@ -2036,31 +2030,73 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                 (setq i (1+ i)))
                ((and (< i n) (eq (aref s i) ?+))
                 (setq i (1+ i))))
-              (let ((continue t))
-                (while (and continue (< i n))
-                  (let ((d (nelisp-stdlib--digit-value (aref s i) 10)))
-                    (cond
-                     (d
-                      (setq exp-val (+ (* exp-val 10) d))
-                      (setq i (1+ i))
-                      (setq has-exp t))
-                     (t (setq continue nil)))))))
+              (cond
+               ((and (<= (+ i 3) n) (string= (substring s i (+ i 3)) "INF"))
+                (setq i (+ i 3))
+                (setq infnan-suffix 'inf))
+               ((and (<= (+ i 3) n) (string= (substring s i (+ i 3)) "NaN"))
+                (setq i (+ i 3))
+                (setq infnan-suffix 'nan))
+               (t
+                (let ((continue t))
+                  (while (and continue (< i n))
+                    (let ((d (nelisp-stdlib--digit-value (aref s i) 10)))
+                      (cond
+                       (d
+                        (setq exp-val (+ (* exp-val 10) d))
+                        (setq i (1+ i))
+                        (setq has-exp t))
+                       (t (setq continue nil)))))))))
             ;; Compute value: (sign * (int-part + frac-num/frac-denom)) * 10^exp.
             ;; A trailing `.' with nothing after it does NOT make a float:
             ;; Emacs reads "1." as the integer 1 and "-2." as -2.  Entering
             ;; the float branch on the `.' alone returned 1.0, which is a
             ;; different type flowing into whatever the caller does next.
-            (if (and (= frac-digits 0) (not has-exp))
+            (if infnan-suffix
+                ;; Built directly via arithmetic, not `(read ...)': the
+                ;; reader's own lexer has a PRE-EXISTING, separate bug
+                ;; (present before and independent of this fix) where
+                ;; `(read "1.0e+INF")' does not tokenize as a float at
+                ;; all -- it comes back as the SYMBOL `1.0e+INF', which
+                ;; happens to print identically to the real float, so a
+                ;; printed-string comparison alone cannot see it.  This
+                ;; branch would inherit exactly that bug if it called
+                ;; `read' here; computing the value directly sidesteps
+                ;; it (and, since `string-to-number' is documented to
+                ;; always return a number, is the only choice that
+                ;; keeps that contract regardless of the separate bug's
+                ;; own fate).
+                (cond
+                 ((eq infnan-suffix 'nan) (/ 0.0 0.0))
+                 ((< sign 0) (/ -1.0 0.0))
+                 (t (/ 1.0 0.0)))
+              (if (and (= frac-digits 0) (not has-exp))
                 int-part
-              ;; Scaling by repeated multiplication by 10.0 or 0.1 drifted --
-              ;; 0.1 is not representable, so "1e300" came back
-              ;; 1.0000000000000002e+300.  Powers of ten up to 1e22 ARE exact,
-              ;; so the scale is applied in one step where it fits and in
-              ;; chunks of 22 where it does not.
-              (let ((val (nelisp--scale10
-                          (float mant)
-                          (+ dexp (if has-exp (* exp-sign exp-val) 0)))))
-                (if (< sign 0) (- 0.0 val) val)))))
+              ;; Route the float conversion through the native reader
+              ;; (`read', which goes through `nl_str_to_float') instead
+              ;; of computing it here: MANT/DEXP already encode the
+              ;; value as an integer mantissa times a power of ten
+              ;; (this walk's own comment above explains why -- digits
+              ;; past the 17th cannot change a double, so they fold
+              ;; into DEXP rather than MANT), so re-synthesizing that
+              ;; exact "<mant>e<exp>" form and reading it back gives
+              ;; the SAME correctly-rounded conversion `read' uses for
+              ;; float literals, at native speed, instead of this
+              ;; walk's former `nelisp--scale10' -- a repeated-
+              ;; multiply-by-an-at-most-22-exact-power scheme that
+              ;; double-rounds for many mantissa/exponent combinations
+              ;; (measured: wrong in the last bit for both very large
+              ;; and very ordinary values alike) and, being pure
+              ;; interpreted Elisp, was also ~25x slower than `read'
+              ;; per call.  The sign is passed through as a literal
+              ;; `-' in the string, not by negating MANT, so that a
+              ;; zero mantissa still yields -0.0 when S was negative
+              ;; (nl_str_to_float takes the sign from the leading
+              ;; character, same as the reader's own lexer).
+              (read (format "%s%de%d"
+                            (if (< sign 0) "-" "")
+                            mant
+                            (+ dexp (if has-exp (* exp-sign exp-val) 0))))))))
          ;; Pure integer.  INT-PART already carries the sign (see the
          ;; digit-loop comment above); re-multiplying by SIGN here would
          ;; double-apply it.
