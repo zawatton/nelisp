@@ -144,6 +144,27 @@ cp "$bootstrap_repl" "$audit_repl"
     (prin1 data)
     (princ "\n")))
 
+(defun real-init-audit--trace
+    (stage label-a value-a label-b value-b label-c value-c)
+  (when (equal (getenv "NEMACS_REAL_INIT_TRACE") "1")
+    (princ "NEMACS_REAL_INIT_TRACE ")
+    (princ stage)
+    (princ " ")
+    (princ label-a)
+    (princ "=")
+    (prin1 value-a)
+    (when label-b
+      (princ " ")
+      (princ label-b)
+      (princ "=")
+      (prin1 value-b))
+    (when label-c
+      (princ " ")
+      (princ label-c)
+      (princ "=")
+      (prin1 value-c))
+    (princ "\n")))
+
 (defun real-init-audit--load-forms-file (path kind)
   (let* ((source (if (fboundp 'nl-syscall-read-file)
                      (nl-syscall-read-file path 0 nil)
@@ -157,6 +178,8 @@ cp "$bootstrap_repl" "$audit_repl"
     (unless (stringp source)
       (signal 'file-error (list "Cannot read init file" path)))
     (while (progn
+             (real-init-audit--trace
+              "SKIP_BEGIN" "next-index" (+ index 1) "position" position nil nil)
              (let ((next (nelisp--load-skip-space-and-comments
                           source position)))
                (setq line (+ line
@@ -164,39 +187,44 @@ cp "$bootstrap_repl" "$audit_repl"
                               source position next)))
                (setq position next))
              (< position source-length))
-      (let* ((form-line line)
-             (read-result (read-from-string source position))
-             (next (cdr read-result))
-             (form (car read-result)))
-        (when (and (> next position)
-                   (< next source-length)
-                   (= (aref source next) ?\)))
-          (setq next (+ next 1)))
-        (when (or (not (consp read-result)) (<= next position))
-          (signal 'end-of-file
-                  (list "real init audit reader made no progress" position)))
-        (setq index (+ index 1))
-        (let ((form-start (float-time)))
-          (condition-case caught
-              (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
-                        (nelisp--load-rewrite-defalias-form form)
-                      form)
-                    t)
-            (error
-             (setq init-file-had-error t
-                   nemacs-init-file-error (cons path caught))
-             (real-init-audit--print-error path index form-line caught)))
-          (princ "NEMACS_REAL_INIT_FORM ")
-          (prin1 index)
-          (princ " line=")
-          (prin1 form-line)
-          (princ " secs=")
-          (prin1 (/ (round (* 10 (- (float-time) form-start))) 10.0))
-          (princ "\n"))
-        (setq line (+ line
-                      (real-init-audit--count-newlines
-                       source position next)))
-        (setq position next)))
+      (let ((form-line line))
+        (real-init-audit--trace
+         "READ_BEGIN" "next-index" (+ index 1) "position" position
+         "line" form-line)
+        (let* ((read-result (read-from-string source position))
+               (next (cdr read-result))
+               (form (car read-result)))
+          (when (and (> next position)
+                     (< next source-length)
+                     (= (aref source next) ?\)))
+            (setq next (+ next 1)))
+          (when (or (not (consp read-result)) (<= next position))
+            (signal 'end-of-file
+                    (list "real init audit reader made no progress" position)))
+          (setq index (+ index 1))
+          (let ((form-start (float-time)))
+            (real-init-audit--trace
+             "EVAL_BEGIN" "index" index "line" form-line nil nil)
+            (condition-case caught
+                (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
+                          (nelisp--load-rewrite-defalias-form form)
+                        form)
+                      t)
+              (error
+               (setq init-file-had-error t
+                     nemacs-init-file-error (cons path caught))
+               (real-init-audit--print-error path index form-line caught)))
+            (princ "NEMACS_REAL_INIT_FORM ")
+            (prin1 index)
+            (princ " line=")
+            (prin1 form-line)
+            (princ " secs=")
+            (prin1 (/ (round (* 10 (- (float-time) form-start))) 10.0))
+            (princ "\n"))
+          (setq line (+ line
+                        (real-init-audit--count-newlines
+                         source position next)))
+          (setq position next))))
     (cond
      ((eq kind 'early-init) (setq early-init-file path))
      ((eq kind 'init)
