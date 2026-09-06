@@ -399,12 +399,19 @@ done (relative, `~', or containing `.'/`..'/`//')."
      ((> pos max) max)
      (t pos))))
 
+(defun files--position-value (pos)
+  "Resolve POS to a plain integer, following a marker if needed."
+  (if (and (fboundp 'markerp) (markerp pos))
+      (marker-position pos)
+    pos))
+
 (defun files--buffer-substring (start end)
-  "Return fallback buffer text from START to END using Emacs positions."
-  (let* ((from (1- (files--clip-point start)))
-         (to (1- (files--clip-point end)))
+  "Return fallback buffer text from START to END using Emacs positions.
+START and END may be integers or markers and are order-independent."
+  (let* ((from (1- (files--clip-point (files--position-value start))))
+         (to (1- (files--clip-point (files--position-value end))))
          (text (files--buffer-string-value)))
-    (substring text from to)))
+    (substring text (min from to) (max from to))))
 
 (defun files--install-fallback-function-p (symbol)
   "Return non-nil when fallback SYMBOL should be installed."
