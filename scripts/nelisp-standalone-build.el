@@ -44,6 +44,7 @@
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
 (require 'nelisp-mach-o-write)
+(require 'nelisp-cc-nlboolvector-alloc)
 
 (defconst nelisp-standalone--this-file
   (or load-file-name buffer-file-name)
@@ -9482,6 +9483,30 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (seq (mut-str-push-byte ms 34)
            (m5_prin1_unibyte_string_bytes ms vptr 0 (m5_strlen vptr))
            (mut-str-push-byte ms 34)))
+    ;; BoolVector(10) external representation: #&N"BYTES".  The payload
+    ;; is a boxed packed-byte buffer; bytes escape only quote/backslash and
+    ;; use octal for values >= 128, matching the reader's byte literal.
+    (defun m5_prin1_bv_byte (ms b)
+      (cond
+       ((= b 34) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 34)))
+       ((= b 92) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 92)))
+       ((>= b 128) (m5_prin1_octal_byte ms b))
+       (t (mut-str-push-byte ms b))))
+    (defun m5_prin1_bv_bytes (ms data i bytelen)
+      (if (>= i bytelen)
+          1
+        (seq (m5_prin1_bv_byte ms (ptr-read-u8 data i))
+             (m5_prin1_bv_bytes ms data (+ i 1) bytelen))))
+    (defun m5_prin1_bool_vector (ms vptr)
+      (let* ((box (ptr-read-u64 vptr 8)))
+        (seq
+         (mut-str-push-byte ms 35)
+         (mut-str-push-byte ms 38)
+         (m5_push_dec ms (ptr-read-u64 box 0))
+         (mut-str-push-byte ms 34)
+         (m5_prin1_bv_bytes ms (ptr-read-u64 box 8) 0
+                            (ptr-read-u64 box 16))
+         (mut-str-push-byte ms 34))))
     (defun m5_prin1_list_tail (ms node first)
       (let* ((tag (ptr-read-u64 node 0)))
         (if (= tag 7)
@@ -9610,6 +9635,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                         (m5_prin1_buffer ms vptr)
                       (seq (mut-str-push-byte ms 91)
                            (m5_prin1_vector_loop ms vptr 0 (vector-len vptr)))))
+         ((= tag 10) (m5_prin1_bool_vector ms vptr))
          ;; Doc 190 Phase A: Bignum decimal printing -- optional leading
          ;; '-' then digits, no leading zeros, matching Emacs's own
          ;; bignum `prin1' shape exactly (both are plain decimal, no
@@ -10588,8 +10614,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (bf_args_out_of_range arr (wf_arg_ptr args 1))
                     (wf_write_int out
                       (nl_u8_decode arr (nl_u8_cidx_byte arr 0 (m5_strlen arr) 0 idx))))
+                ;; BoolVector(10): bounds-check against the box's own N
+                ;; (offset 0 of the box at arr+8), then read bit IDX out of
+                ;; the packed byte buffer at box+8 as nil/t.
+                (if (= tg 10)
+                    (let* ((box (ptr-read-u64 arr 8)))
+                      (if (if (< idx 0) 1 (if (< idx (ptr-read-u64 box 0)) 0 1))
+                          (bf_args_out_of_range arr (wf_arg_ptr args 1))
+                        (if (= (nl_bv_bit_get (ptr-read-u64 box 8) idx) 0)
+                            (seq (wf_write_nil out) 0)
+                          (seq (wf_write_t out) 0))))
                 ;; Not an array at all: Emacs signals `arrayp' here.
-                (bf_wrong_type_arrayp arr))))))))
+                (bf_wrong_type_arrayp arr)))))))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -10763,7 +10799,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; wrong argument.
     (defun bf_elt (args out)
       (let* ((seqp (wf_arg_ptr args 0)) (tg (ptr-read-u64 seqp 0)))
-        (if (if (= tg 0) 1 (if (= tg 7) 1 (if (= tg 8) 1 (if (= tg 12) 1 (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))))))
+        (if (if (= tg 0) 1 (if (= tg 7) 1 (if (= tg 8) 1 (if (= tg 10) 1 (if (= tg 12) 1 (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0)))))))))
             (if (= (ptr-read-u64 (wf_arg_ptr args 1) 0) 2)
                 (bf_elt_checked args out)
               (if (if (= tg 0) 1 (if (= tg 7) 1 0))
@@ -10786,7 +10822,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
               ;; `elt' takes a SEQUENCE, so a non-sequence is `sequencep' --
               ;; delegating to `bf_aref' named `arrayp', which is the
               ;; predicate for the array-only `aref' and a different claim.
-              (if (if (= tg 8) 1 (if (= tg 12) 1 (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))))
+              (if (if (= tg 8) 1 (if (= tg 10) 1 (if (= tg 12) 1 (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0)))))))
                   (bf_aref args out)
                 (bf_wrong_type_sequencep seqp)))))))
     ;; Doc 200 P3: string mutation is fixed-width.  Resolve the payload through
@@ -10869,7 +10905,21 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 ;; like `vector-slot-set'/`record-slot-set'.
                 (if (= (ptr-read-u64 arr 0) 9)
                     (seq (wf_dirty) (nl_char_table_set_raw arr idx val out) 0)
-                  (seq (wf_copy32 out val) 0))))))))
+                  ;; BoolVector(10): flip bit IDX to non-nil/nil, bounds-
+                  ;; checked against the box's own N (offset 0 of the box
+                  ;; at arr+8; see lisp/nelisp-cc-nlboolvector-alloc.el).
+                  (if (= (ptr-read-u64 arr 0) 10)
+                      (bf_aset_bool_vector arr idx (wf_arg_ptr args 1) val out)
+                    (seq (wf_copy32 out val) 0)))))))))
+    (defun bf_aset_bool_vector (arr idx idx-slot val out)
+      (let* ((box (ptr-read-u64 arr 8)))
+        (if (if (< idx 0) 1 (if (< idx (ptr-read-u64 box 0)) 0 1))
+            (bf_args_out_of_range arr idx-slot)
+          (seq (wf_dirty)
+               (nl_bv_bit_set (ptr-read-u64 box 8) idx
+                              (if (= (ptr-read-u64 val 0) 0) 0 1))
+               (wf_copy32 out val)
+               0))))
     ;; signal/error: NON-CRASHING.  Stash (sym . data) into the catch/throw
     ;; region + set the throw flag, then return rc=1 so the rc!=0 propagation
     ;; unwinds the native stack like an error.
@@ -11452,6 +11502,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (seq (wf_write_int out (m5_strlen p)) 0))
          ((= tag 12)
           (seq (wf_write_int out (+ (record-slot-count p) 1)) 0))
+         ;; BoolVector(10): N lives at offset 0 of the box at p+8.
+         ((= tag 10)
+          (seq (wf_write_int out (ptr-read-u64 (ptr-read-u64 p 8) 0)) 0))
          (t (bf_wrong_type_sequencep p)))))
     ;; fboundp/boundp: look up in the env mirror.  env+0 = mirror, env+64 = unbound.
     ;; nelisp_env_lookup_function(mirror, unbound, sym, out_slot) returns 0 if found.
@@ -12811,6 +12864,9 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; --- vector ops ---
     ((:lit "make-vector") . (bf_make_vector args out))
     ((:lit "vector")      . (bf_vector args out))
+    ((:lit "make-bool-vector") . (bf_make_bool_vector args out))
+    ((:lit "bool-vector")      . (bf_bool_vector args out))
+    ((:lit "bool-vector-p")    . (bf_bool_vector_p args out))
     ((:lit "record")      . (bf_record args out))
     ((:lit "make-record") . (bf_make_record args out))
     ((:lit "recordp")     . (bf_recordp args out))
@@ -13002,7 +13058,8 @@ ash/logand/logior/logxor/lognot + string<.")
     "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
-    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp" "make-record"
+    "make-vector" "vector" "make-bool-vector" "bool-vector" "bool-vector-p"
+    "aref" "elt" "aset" "record" "recordp" "make-record"
     ;; Doc 186 P0/P1/P2: char-table constructor/accessor layer.
     "char-table-p" "make-char-table" "char-table-subtype"
     "char-table-parent" "set-char-table-parent"
@@ -17194,6 +17251,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ("str-clone.o"        nelisp-cc-nlstr-clone                   nelisp-cc-nlstr-clone--source)
     ("cell-clone.o"       nelisp-cc-nlcell-clone                  nelisp-cc-nlcell-clone--source)
     ("chartable-clone.o"  nelisp-cc-nlchartable-clone             nelisp-cc-nlchartable-clone--source)
+    ("boolvec-alloc.o"    nelisp-cc-nlboolvector-alloc            nelisp-cc-nlboolvector-alloc--source)
     ("boolvec-clone.o"    nelisp-cc-nlboolvector-clone            nelisp-cc-nlboolvector-clone--source)
     ("record-alloc.o"     nelisp-cc-nlrecord-alloc                nelisp-cc-nlrecord-alloc--source)
     ("record-clone.o"     nelisp-cc-nlrecord-clone                nelisp-cc-nlrecord-clone--source)
@@ -17944,7 +18002,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "vectorp" "listp" "zerop" "set" "symbol-value" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "intern-soft" "make-symbol" "nelisp--intern-lookup"
     "nelisp--format-simple" "unibyte-string"
-    "make-vector" "vector" "aref" "elt" "aset" "record" "recordp" "make-record"
+    "make-vector" "vector" "make-bool-vector" "bool-vector" "bool-vector-p"
+    "aref" "elt" "aset" "record" "recordp" "make-record"
     ;; Doc 186 P0/P1/P2: char-table constructor/accessor layer.
     "char-table-p" "make-char-table" "char-table-subtype"
     "char-table-parent" "set-char-table-parent"
