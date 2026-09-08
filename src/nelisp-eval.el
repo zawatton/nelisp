@@ -768,8 +768,11 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; host when NeLisp source is evaluated inside an Emacs session
     ;; that has already loaded the same feature (self-host + cycle)
     featurep
-    ;; I/O (side-effect, but used for NeLisp-internal diagnostics)
-    message
+    ;; I/O (side-effect, but used for NeLisp-internal diagnostics).  The
+    ;; standalone prelude supplies an early `load-file' bridge before the
+    ;; generated bundle reaches `emacs-load.el'; hosted `nelisp-load.el'
+    ;; replaces these entries with its NeLisp-owned loaders when loaded.
+    message load load-file
     ;; Terminal & frame metrics (Phase 5-B.0 — redisplay/eventloop 下地)
     send-string-to-terminal frame-width frame-height
     ;; Timer scheduling (Phase 5-B.0 — eventloop fallback と diagnostics)

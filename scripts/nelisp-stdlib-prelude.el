@@ -5901,6 +5901,17 @@ Minimal: PLACE is evaluated twice (cl-generic's places are side-effect free)."
 ;; reports which of the two answers this binary gives.
 (defvar load-file-name nil)
 (defvar buffer-file-name nil)
+;; The generated application bootstrap installs its feature registry before
+;; the later `emacs-fns.el' / `emacs-load.el' members define the full
+;; `load-file'.  Keep the early `require' path live by adapting the native
+;; `load' primitive to the exact-file shape it needs.  This shim belongs in
+;; the standalone prelude because host `nelisp-load.el' owns the hosted
+;; loader and refreshes its own dispatch entry after it loads.  The guard
+;; leaves host Emacs's implementation untouched, while standalone REPL
+;; evaluation gets the bridge before any nested bootstrap require runs.
+(unless (fboundp 'load-file)
+  (defun load-file (file)
+    (load file nil nil t t)))
 (unless (fboundp 'closurep)
   ;; The reader represents a closure as a `(closure ENV ARGS BODY)' list.
   (defun closurep (object) (eq (car-safe object) 'closure)))
