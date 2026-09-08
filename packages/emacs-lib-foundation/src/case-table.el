@@ -72,7 +72,9 @@ standalone path by a NeLisp-only primitive, matching
 (defun case-table--make-char-table (&optional _subtype init)
   "Make a lightweight char-table filled with INIT or identity mappings."
   (if (case-table--sparse-api-p)
-      (emacs-char-table-make _subtype init)
+      (if init
+          (emacs-char-table-make _subtype init)
+        (case-table--identity-table))
     (if init
         (make-vector (+ case-table--size case-table--extra-slots) init)
       (case-table--identity-table))))
@@ -113,11 +115,15 @@ standalone path by a NeLisp-only primitive, matching
 
 (defun case-table--char-table-extra-slot (table slot)
   "Return extra SLOT from TABLE."
-  (aref table (case-table--extra-index slot)))
+  (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
+      (emacs-char-table-extra-slot table slot)
+    (aref table (case-table--extra-index slot))))
 
 (defun case-table--set-char-table-extra-slot (table slot value)
   "Set extra SLOT in TABLE to VALUE."
-  (aset table (case-table--extra-index slot) value))
+  (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
+      (emacs-char-table-set-extra-slot table slot value)
+    (aset table (case-table--extra-index slot) value)))
 
 (defun case-table--get-extra-slot (table slot)
   "Return extra SLOT from TABLE, lightweight or host."
@@ -278,11 +284,11 @@ standalone path by a NeLisp-only primitive, matching
     (let ((up (case-table--identity-table))
           (i 0))
       (while (< i case-table--size)
-        (let ((down (aref case-table i)))
+        (let ((down (case-table--char-table-range case-table i)))
           (when (and (integerp down)
                      (>= down 0)
                      (< down case-table--size))
-            (aset up down i)))
+            (case-table--set-char-table-range up down i)))
         (setq i (1+ i)))
       (case-table--put-extra-slot case-table 0 up)))
   (unless (case-table--get-extra-slot case-table 1)
@@ -322,27 +328,33 @@ TABLE can be `down', `up', `eqv', or `canon'."
 
 (defun copy-case-table (case-table)
   "Return a shallow copy of CASE-TABLE with derived slots invalidated."
-  (let ((copy (if (case-table--standalone-p)
-                  (case-table--copy-vector case-table)
-                (copy-sequence case-table)))
+  (let ((copy (cond
+               ((and (case-table--sparse-api-p)
+                     (emacs-char-table-p case-table))
+                (emacs-char-table-copy case-table))
+               ((case-table--standalone-p)
+                (case-table--copy-vector case-table))
+               (t (copy-sequence case-table))))
         (up (case-table--get-extra-slot case-table 0)))
     (when up
       (case-table--put-extra-slot
        copy 0
-       (if (case-table--standalone-p)
+       (if (and (case-table--sparse-api-p) (emacs-char-table-p up))
+           (emacs-char-table-copy up)
+         (if (case-table--standalone-p)
            (case-table--copy-vector up)
-         (copy-sequence up))))
+           (copy-sequence up)))))
     (case-table--put-extra-slot copy 1 nil)
     (case-table--put-extra-slot copy 2 nil)
     copy))
 
 (defun set-case-syntax-delims (l r table)
   "Make L and R non-case-converting delimiters in TABLE."
-  (aset table l l)
-  (aset table r r)
+  (case-table--set-char-table-range table l l)
+  (case-table--set-char-table-range table r r)
   (let ((up (case-table-get-table table 'up)))
-    (aset up l l)
-    (aset up r r))
+    (case-table--set-char-table-range up l l)
+    (case-table--set-char-table-range up r r))
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
   (modify-syntax-entry l (concat "(" (char-to-string r) "  ")
@@ -352,11 +364,11 @@ TABLE can be `down', `up', `eqv', or `canon'."
 
 (defun set-case-syntax-pair (uc lc table)
   "Make UC and LC an inter-case-converting pair in TABLE."
-  (aset table uc lc)
-  (aset table lc lc)
+  (case-table--set-char-table-range table uc lc)
+  (case-table--set-char-table-range table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (aset up uc uc)
-    (aset up lc uc))
+    (case-table--set-char-table-range up uc uc)
+    (case-table--set-char-table-range up lc uc))
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
   (modify-syntax-entry lc "w   " (standard-syntax-table))
@@ -364,10 +376,10 @@ TABLE can be `down', `up', `eqv', or `canon'."
 
 (defun set-upcase-syntax (uc lc table)
   "Make UC an upcase character for LC in TABLE."
-  (aset table lc lc)
+  (case-table--set-char-table-range table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (aset up uc uc)
-    (aset up lc uc))
+    (case-table--set-char-table-range up uc uc)
+    (case-table--set-char-table-range up lc uc))
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
   (modify-syntax-entry lc "w   " (standard-syntax-table))
@@ -375,10 +387,10 @@ TABLE can be `down', `up', `eqv', or `canon'."
 
 (defun set-downcase-syntax (uc lc table)
   "Make LC a downcase character for UC in TABLE."
-  (aset table uc lc)
-  (aset table lc lc)
+  (case-table--set-char-table-range table uc lc)
+  (case-table--set-char-table-range table lc lc)
   (let ((up (case-table-get-table table 'up)))
-    (aset up uc uc))
+    (case-table--set-char-table-range up uc uc))
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
   (modify-syntax-entry lc "w   " (standard-syntax-table))
@@ -386,9 +398,9 @@ TABLE can be `down', `up', `eqv', or `canon'."
 
 (defun set-case-syntax (c syntax table)
   "Make C case-invariant with SYNTAX in TABLE."
-  (aset table c c)
+  (case-table--set-char-table-range table c c)
   (let ((up (case-table-get-table table 'up)))
-    (aset up c c))
+    (case-table--set-char-table-range up c c))
   (case-table--put-extra-slot table 1 nil)
   (case-table--put-extra-slot table 2 nil)
   (modify-syntax-entry c syntax (standard-syntax-table)))
