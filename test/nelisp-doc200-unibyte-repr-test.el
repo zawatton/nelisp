@@ -89,6 +89,25 @@
   (nelisp-doc200-unibyte-repr-test--defun
    name nelisp-standalone--applyfn-m5-helpers))
 
+(defun nelisp-doc200-unibyte-repr-test--localize-cache-addresses
+    (form base)
+  "Bind production cache data references to the probe's mapped page.
+The standalone reader owns these symbols in driver BSS, while
+`nelisp-aot-compile-sexp' emits a self-contained executable with no
+cross-unit BSS.  Keep the production cache/walker bodies in this probe and
+replace only their external data addresses with two zeroed scratch records
+inside BASE's mapped page."
+  (cond
+   ((equal form '(data-addr nl_aref_cache_table)) (+ base 600))
+   ((equal form '(data-addr nl_thread_parallel_ctx)) (+ base 800))
+   ((consp form)
+    (cons
+     (nelisp-doc200-unibyte-repr-test--localize-cache-addresses
+      (car form) base)
+     (nelisp-doc200-unibyte-repr-test--localize-cache-addresses
+      (cdr form) base)))
+   (t form)))
+
 (defun nelisp-doc200-unibyte-repr-test--bf-defun (name)
   "Return production standalone builtin helper defun NAME."
   (nelisp-doc200-unibyte-repr-test--defun
@@ -151,8 +170,16 @@
           (mapcar #'nelisp-doc200-unibyte-repr-test--bf-defun
                   '(bf_str_ptr bf_str_len)))
          (m5-forms
-          (mapcar #'nelisp-doc200-unibyte-repr-test--m5-defun
-                  '(nl_u8_clen_at nl_str_charlen nl_u8_cidx_byte)))
+          (mapcar (lambda (name)
+                    (nelisp-doc200-unibyte-repr-test--localize-cache-addresses
+                     (nelisp-doc200-unibyte-repr-test--m5-defun name)
+                     base))
+                  '(nl_u8_clen_at nl_str_charlen nl_u8_cidx_byte
+                    nl_u8_back_one nl_u8_walk_back
+                    nl_u8_cidx_byte_bounded
+                    nl_aref_cache_slot nl_aref_cache_lookup
+                    nl_aref_cache_store nl_str_aref_commit
+                    nl_str_aref_byte_off)))
          (bf-aset-forms
           (mapcar #'nelisp-doc200-unibyte-repr-test--bf-defun
                   '(bf_aset_string_write bf_aset_unibyte_string
