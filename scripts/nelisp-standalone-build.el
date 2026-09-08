@@ -626,7 +626,7 @@ storage — not an arena reservation."
    ;; means "no threshold yet"; the reader driver arms one at boot end.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
-                       64)))
+                       64 192)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -675,16 +675,21 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_thread_registry"
                              (+ 57616 4194304 96 176 64 56 40)
                              :section 'bss :bind 'global :type 'object))
-    (append
-     (when (eq nelisp-standalone--target 'windows-x86_64)
-       (list (nelisp-link-symbol "nl_tls_registry"
-                                 (+ 57616 4194304 96 176 64 56 40 1040)
-                                 :section 'bss :bind 'global :type 'object)))
-     (list (nelisp-link-symbol "nl_gc_stats"
-                               (+ 57616 4194304 96 176 64 56 40 1040
-                                  (if (eq nelisp-standalone--target 'windows-x86_64)
-                                      8 0))
-                               :section 'bss :bind 'global :type 'object))))
+    (when (eq nelisp-standalone--target 'windows-x86_64)
+      (list (nelisp-link-symbol "nl_tls_registry"
+                                (+ 57616 4194304 96 176 64 56 40 1040)
+                                :section 'bss :bind 'global :type 'object)))
+    (list (nelisp-link-symbol "nl_gc_stats"
+                              (+ 57616 4194304 96 176 64 56 40 1040
+                                 (if (eq nelisp-standalone--target 'windows-x86_64)
+                                     8 0))
+                              :section 'bss :bind 'global :type 'object)
+          (nelisp-link-symbol "nl_aref_cache_table"
+                              (+ 57616 4194304 96 176 64 56 40 1040
+                                 (if (eq nelisp-standalone--target 'windows-x86_64)
+                                     8 0)
+                                 64)
+                              :section 'bss :bind 'global :type 'object)))
    nil))
 
 ;; ===================================================================
@@ -10914,7 +10919,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                             (seq (wf_write_nil out) 0)
                           (seq (wf_write_t out) 0))))
                 ;; Not an array at all: Emacs signals `arrayp' here.
-                (bf_wrong_type_arrayp arr)))))))))
+                (bf_wrong_type_arrayp arr))))))))))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
