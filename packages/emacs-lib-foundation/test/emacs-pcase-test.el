@@ -53,13 +53,14 @@
      (should (equal (emacs-pcase--test 7 'v) '((equal v 7))))
      (should (equal (emacs-pcase--test "x" 'v) '((equal v "x")))))))
 
-(ert-deftest emacs-pcase-test/test-helper-covers-quote-pred-and-bare-cons ()
+(ert-deftest emacs-pcase-test/test-helper-covers-quote-pred-and-unknown-cons ()
   (emacs-pcase-test--with-reloaded-module
    '(pcase)
    (lambda ()
      (should (equal (emacs-pcase--test '(quote q) 'v) '((equal v 'q))))
      (should (equal (emacs-pcase--test '(pred symbolp) 'v) '((funcall #'symbolp v))))
-     (should (equal (emacs-pcase--test '(foo . bar) 'v) '(t))))))
+     (should-error (emacs-pcase--test '(foo . bar) 'v)
+                   :type 'error))))
 
 (ert-deftest emacs-pcase-test/test-helper-covers-and-and-or ()
   (emacs-pcase-test--with-reloaded-module
@@ -69,6 +70,28 @@
                     '((let* ((sym v)) (and t (equal v ':a))) (sym v))))
      (should (equal (emacs-pcase--or '((quote :a) (quote :b)) 'v)
                     '((or (equal v ':a) (equal v ':b))))))))
+
+(ert-deftest emacs-pcase-test/or-dontcare-retains-safe-bindings ()
+  "A `pcase--dontcare' fallback keeps structural arm bindings.
+
+This is the shape used by vendor `macroexp.el': the structural arm binds
+variables, while the fallback must leave their safe projections nil rather
+than turning `pcase--dontcare' into a variable binding."
+  (emacs-pcase-test--with-reloaded-module
+   '(pcase)
+   (lambda ()
+     (should (equal (emacs-pcase--test 'pcase--dontcare 'value)
+                    '(t)))
+     (let* ((built
+             (emacs-pcase--or
+              '((backquote ((comma value) nil)) pcase--dontcare)
+              'value))
+            (bindings (cdr built))
+            (value-binding (assq 'value bindings)))
+       (should value-binding)
+       (should-not (assq 'pcase--dontcare bindings))
+       (should (memq 'car-safe (flatten-tree (cdr value-binding))))
+       (should (memq 'cdr-safe (flatten-tree (car built))))))))
 
 (ert-deftest emacs-pcase-test/test-helper-covers-cons-and-not-pred ()
   (emacs-pcase-test--with-reloaded-module
@@ -115,16 +138,16 @@ Org's `org-mks' uses `(pred (string-match re))', which must become
      (should (equal (emacs-pcase--backquote 'foo 'v) '((equal v 'foo))))
      (should (equal (emacs-pcase--backquote '(a (comma x) (comma-at rest) nil) 'v)
                     '((and (consp v)
-                           (equal (car v) 'a)
-                           (and (consp (cdr v))
+                           (equal (car-safe v) 'a)
+                           (and (consp (cdr-safe v))
                                 t
-                                (and (consp (cdr (cdr v)))
+                                (and (consp (cdr-safe (cdr-safe v)))
                                      t
-                                     (and (consp (cdr (cdr (cdr v))))
-                                          (null (car (cdr (cdr (cdr v)))))
-                                          (null (cdr (cdr (cdr (cdr v)))))))))
-                      (x (car (cdr v)))
-                      (rest (car (cdr (cdr v))))))))))
+                                     (and (consp (cdr-safe (cdr-safe (cdr-safe v))))
+                                          (null (car-safe (cdr-safe (cdr-safe (cdr-safe v)))))
+                                          (null (cdr-safe (cdr-safe (cdr-safe (cdr-safe v)))))))))
+                      (x (car-safe (cdr-safe v)))
+                      (rest (car-safe (cdr-safe (cdr-safe v))))))))))
 
 (ert-deftest emacs-pcase-test/legacy-reader-dotted-backquote-pattern-works ()
   "Old pcase reader syntax for `` `(,a . ,b) '' must destructure as a cons.
@@ -137,8 +160,8 @@ vendor forms, so the local pcase polyfill must accept it."
      (let* ((pattern (cadr (car (read-from-string "`(,a . ,b)"))))
             (built (emacs-pcase--backquote pattern 'v)))
        (should (equal built '((and (consp v) t t)
-                              (a (car v))
-                              (b (cdr v)))))
+                              (a (car-safe v))
+                              (b (cdr-safe v)))))
        (should (equal (eval (car (read-from-string
                                   "(pcase-let ((`(,a . ,b) '(1 . 2)))
                                      (list a b))"))

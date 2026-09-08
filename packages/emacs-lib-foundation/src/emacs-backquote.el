@@ -64,17 +64,22 @@
          (let ((head (car form)))
            (or (eq head tag) (eq head (intern punct)))))))
 
-(when (and (fboundp 'nelisp--bq-expand) (fboundp 'nelisp--bq-expand-list))
+(when (and (fboundp 'nelisp--bq-expand) (fboundp 'nelisp--bq-expand-list)
+           ;; The standalone parity shim is the canonical final definition
+           ;; in the bootstrap bundle.  Do not replace it when this file is
+           ;; loaded later than `emacs-parity-macros2.el'.
+           (not (boundp 'emacs-parity-macros2--depth-aware-backquote)))
   ;; Measured on NeLisp v1.1.0+1, `nelisp--bq-expand' accepts
   ;; (FORM &optional LEVEL) and `nelisp--bq-expand-list' accepts (FORM LEVEL).
   ;; Older preludes exposed the list helper with one argument, so retain that
   ;; load-path compatibility while passing LEVEL whenever the runtime accepts it.
   (defun emacs-backquote--runtime-expand-list (form level)
     "Expand runtime backquote list FORM at nesting LEVEL."
-    (condition-case nil
-        (nelisp--bq-expand-list form level)
-      (wrong-number-of-arguments
-       (nelisp--bq-expand-list form))))
+    (let ((level (or level 1)))
+      (condition-case nil
+          (nelisp--bq-expand-list form level)
+        (wrong-number-of-arguments
+         (nelisp--bq-expand-list form)))))
 
   (defun nelisp--bq-expand (form &optional level)
     "Return the expansion of FORM under `backquote'."
