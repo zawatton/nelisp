@@ -748,7 +748,9 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; String / format
     stringp concat substring string= string-to-number number-to-string
     upcase downcase format prin1-to-string string make-string
-    aref aset string-match-p string-match string-empty-p
+    aref aset nelisp--raw-aref nelisp--raw-aset
+    nelisp--char-table-vector-bridge-p
+    string-match-p string-match string-empty-p
     char-or-string-p
     ;; String search / split (Phase 5-B.0)
     string-search split-string

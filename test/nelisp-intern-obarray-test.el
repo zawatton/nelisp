@@ -213,7 +213,13 @@ would crash the process rather than signal."
     (let ((wrapped (format "(format \"%%S\" (condition-case e %s (error e)))"
                            expression)))
       (should (equal (nelisp-intern-obarray-test--host wrapped)
-                     (nelisp-intern-obarray-test--run wrapped))))))
+                   (nelisp-intern-obarray-test--run wrapped))))))
+
+(ert-deftest nelisp-intern-obarray/vector-obarray-is-accepted ()
+  "Vendor libraries may pass a vector obarray to `intern'."
+  (should (equal "nl-t90-vector-obarray"
+                 (nelisp-intern-obarray-test--run
+                  "(symbol-name (intern \"nl-t90-vector-obarray\" (make-vector 151 0)))"))))
 
 (ert-deftest nelisp-intern-obarray/format-simple-accepts-and-declines ()
   "The arm itself: a string for the shapes it owns, nil for every shape the

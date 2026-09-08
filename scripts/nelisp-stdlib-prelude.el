@@ -3497,7 +3497,10 @@ Doc 22 A6: arrays are iterated by index."
   ;; signals `plistp' naming the WHOLE plist when it runs off the end, and
   ;; says nothing at all when the key is found before it gets there --
   ;; (plist-member '(1 2 . 3) 1) answers (1 2 . 3).
-  (let ((cur plist) (found nil) (done nil))
+  (if (and (fboundp 'nelisp--plist-member-eq)
+           (or (null predicate) (eq predicate 'eq)))
+      (nelisp--plist-member-eq plist key)
+    (let ((cur plist) (found nil) (done nil))
     (while (and (not found) (not done))
       (cond
        ((null cur) (setq done t))
@@ -3507,7 +3510,7 @@ Doc 22 A6: arrays are iterated by index."
        ((null (cdr cur)) (setq done t))
        ((not (consp (cdr cur))) (signal 'wrong-type-argument (list 'plistp plist)))
        (t (setq cur (cdr (cdr cur))))))
-    found))
+      found)))
 
 (defun plist-get (plist key &optional predicate)
   ;; Emacs's `plist-get' ANSWERS NIL for a malformed plist, while
@@ -3516,8 +3519,12 @@ Doc 22 A6: arrays are iterated by index."
   ;; Emacs.  The early return is needed because the walk calls `car', and
   ;; `car' signals `listp' now -- so leniency has to be explicit rather than
   ;; inherited from a primitive that used to answer nil for anything.
-  (unless (listp plist) (setq plist nil))
-  (let ((cur plist) (found nil) (value nil))
+  (if (and (fboundp 'nelisp--plist-get-eq)
+           (or (null predicate) (eq predicate 'eq)))
+      (nelisp--plist-get-eq plist key)
+    (progn
+      (unless (listp plist) (setq plist nil))
+      (let ((cur plist) (found nil) (value nil))
     (if predicate
         (while (and (consp cur) (consp (cdr cur)) (not found))
           (if (funcall predicate (car cur) key)
@@ -3527,7 +3534,7 @@ Doc 22 A6: arrays are iterated by index."
         (if (eq (car cur) key)
             (progn (setq found t) (setq value (car (cdr cur))))
           (setq cur (cdr (cdr cur))))))
-    value))
+        value))))
 
 (defun plist-put (plist key value &optional predicate)
   ;; `plist-put' signals `plistp' for a non-list -- EXCEPT that Emacs

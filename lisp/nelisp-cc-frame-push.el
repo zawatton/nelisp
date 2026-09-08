@@ -166,13 +166,32 @@
      ;;   which was likewise never decremented.  Step-6 (`int-slot') holds
      ;;   only `Sexp::Int' immediates (no box, no rc).  No new owner, no
      ;;   leak, no double-free; invariant preserved.
-     (let* ((ht-slot (alloc-bytes 32 8))
-            (buckets-slot (alloc-bytes 32 8))
-            (frame-slot (alloc-bytes 32 8))
-            (int-slot (alloc-bytes 32 8)))
+     (nelisp_frame_push_direct frames-ptr
+                               (vector-ref-ptr scratch-vec-ptr 0)  ; lex-sym
+                               (vector-ref-ptr scratch-vec-ptr 1)  ; ht-sym
+                               (vector-ref-ptr scratch-vec-ptr 2))) ; cap scratch
+    ;; perf/call-overhead: the same push with the two type-tag Symbol
+    ;; pointers and the ensure-capacity scratch slot passed DIRECTLY, so a
+    ;; caller holding the boot-populated `nl_frame_push_sym0/1' boxes does
+    ;; not have to allocate a 7-slot scratch Vector (box + data + two
+    ;; `nl_val_clone_into' reboxes = 4 arena allocations) per push just to
+    ;; carry them.  `nelisp_frame_push' above is now a thin wrapper that
+    ;; extracts the three pointers from its scratch vector and delegates
+    ;; here, so the old calling convention is unchanged.  The four staging
+    ;; slots are one 128-byte block (4 x 32B, 8-aligned) instead of four
+    ;; 32-byte allocations: they hold Record/Vector/Int Sexps only (word
+    ;; +24 of each is 0), every publish op below COPIES out of them
+    ;; (`record-slot-set' / `vector-slot-set' go through
+    ;; `nl_val_clone_into', which reboxes), and nothing keeps a pointer
+    ;; into the block after this function returns.  Arity 4 (even).
+    (defun nelisp_frame_push_direct (frames-ptr lex-sym-ptr ht-sym-ptr cap-scratch-ptr)
+     (let* ((ht-slot (alloc-bytes 128 8))
+            (buckets-slot (+ ht-slot 32))
+            (frame-slot (+ ht-slot 64))
+            (int-slot (+ ht-slot 96)))
        (and
         ;; Step 1: allocate fresh fast-hash-table record (3 slots).
-        (record-make (vector-ref-ptr scratch-vec-ptr 1) ; ht-sym
+        (record-make ht-sym-ptr
                      3
                      ht-slot)
         ;; Step 2: allocate 16-bucket Sexp::Vector.
@@ -192,7 +211,7 @@
                          2
                          int-slot)
         ;; Step 6: allocate fresh nelisp-lexframe record (1 slot).
-        (record-make (vector-ref-ptr scratch-vec-ptr 0) ; lex-sym
+        (record-make lex-sym-ptr
                      1
                      frame-slot)
         ;; Step 7: install fast-hash-table into frame.slot 0.
@@ -204,7 +223,7 @@
         ;; `needed' local is trusted here.
         (nelisp_frame_push_ensure_now
          frames-ptr
-         (vector-ref-ptr scratch-vec-ptr 2))
+         cap-scratch-ptr)
         ;; Step 9: install fresh frame into backing[old depth].  The helper
         ;; re-reads backing/depth at the write point.
         (nelisp_frame_push_install_now frames-ptr frame-slot)

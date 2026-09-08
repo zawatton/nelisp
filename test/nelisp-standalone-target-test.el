@@ -175,22 +175,27 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                                   0)))
                              wait)))
 
-    ;; 3b/3c/3d: the reserved slot address and saved top are threaded only as
-    ;; helper arguments.  No generated helper introduces a runtime let local.
-    (let ((rooted-forms
-           (append
-            (mapcar (lambda (name)
-                      (defun-form name nelisp-standalone--arglist-source))
-                    '(nl_eval_arg_list_after_rest nl_eval_arg_list_recurse
-                      nl_eval_arg_list_after_eval nl_eval_arg_list_with_slot
-                      nl_eval_arg_list_with_mark nl_eval_arg_list_dispatch
-                      nl_eval_arg_list_walk))
-            nelisp-standalone--mxcache-eval-inner-cons-rooted
-            nelisp-standalone--reader-do-apply-rooted)))
-      (should (tree-symbol-p 'nl_root_reserve rooted-forms))
-      (should (tree-symbol-p 'nl_root_release rooted-forms))
-      (should-not (tree-symbol-p 'let rooted-forms))
-      (should-not (tree-symbol-p 'let* rooted-forms)))
+    ;; 3b/3c/3d: argument evaluation is a host loop.  The current cons is
+    ;; copied into a root slot before an evaluator call, and no body call
+    ;; refers back to the walker, so argument count does not consume native
+    ;; stack.  The saved mark precedes all reserves and is released on both
+    ;; status paths.
+    (let* ((walk (defun-form 'nl_eval_arg_list_walk
+                                 nelisp-standalone--arglist-source))
+           (drive (defun-form 'nl_eval_arg_list_drive
+                                  nelisp-standalone--arglist-source))
+           (body (cdddr walk))
+           (drive-body (cdddr drive)))
+      (should walk)
+      (should drive)
+      (should (equal (length (caddr drive)) 4))
+      (should (tree-symbol-p 'while drive-body))
+      (should (tree-symbol-p 'nl_root_mark body))
+      (should (tree-symbol-p 'nl_root_reserve body))
+      (should (tree-symbol-p 'nl_root_release drive-body))
+      (should (tree-symbol-p 'nl_sexp_clone_into drive-body))
+      (should (tree-symbol-p 'nl_eval_arg_list_copy32 drive-body))
+      (should-not (tree-symbol-p 'nl_eval_arg_list_walk drive-body)))
 
     ;; The two former comparator GAPs are eliminated rather than rooted:
     ;; compare symbol bytes in place, and use immediate-word predicates.

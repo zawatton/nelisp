@@ -71,6 +71,7 @@ gate_needs_rebuild() {
     standalone-reader-fileattrs-smoke) return 0 ;;
     standalone-reader-splitstring-perf-smoke) return 0 ;;
     standalone-reader-regexp-lead-filter-smoke) return 0 ;;
+    standalone-reader-print-large-sexp-smoke) return 0 ;;
     nelisp-thread-standalone-smoke) return 0 ;;
     nelisp-thread-allocating-standalone-smoke) return 0 ;;
     nelisp-thread-mirror-guard-standalone-smoke) return 0 ;;

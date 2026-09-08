@@ -54,6 +54,7 @@
              (result2 (+ shared 32))
              (barrier (+ shared 40))
              (done (+ shared 48))
+             (string-done (+ shared 56))
              (single-form
               '(let ((xs (list 1 2 3 4 5)))
                  (garbage-collect)
@@ -81,6 +82,64 @@
                   (unless (= answer 5)
                     (error "single allocating worker returned %S, expected 5"
                            answer))))
+            (when section-active
+              (nelisp-thread-gc-inhibit 0))))
+        (setq checked (+ checked 1))
+
+        ;; Checkpoint 3: same-byte-length strings with different UTF-8 boundary
+        ;; layouts are indexed concurrently.  The T95 pointer cache is shared
+        ;; process state, so parallel sections must bypass it rather than read
+        ;; a torn three-word row from another worker.
+        (let* ((string-form0
+                '(let ((s "あabcd") (i 0) (ok t))
+                   (while (< i 1000)
+                     (unless (and (= (aref s 0) 12354) (= (aref s 1) 97)
+                                  (= (aref s 4) 100))
+                       (setq ok nil))
+                     (setq i (1+ i)))
+                   (if ok 1 0)))
+               (string-form1
+                '(let ((s "aあbcd") (i 0) (ok t))
+                   (while (< i 1000)
+                     (unless (and (= (aref s 0) 97) (= (aref s 1) 12354)
+                                  (= (aref s 4) 100))
+                       (setq ok nil))
+                     (setq i (1+ i)))
+                   (if ok 1 0)))
+               (string-form2
+                '(let ((s "abあcd") (i 0) (ok t))
+                   (while (< i 1000)
+                     (unless (and (= (aref s 0) 97) (= (aref s 2) 12354)
+                                  (= (aref s 4) 100))
+                       (setq ok nil))
+                     (setq i (1+ i)))
+                   (if ok 1 0)))
+               (section-active nil))
+          (unwind-protect
+              (progn
+                (unless (= (nelisp-thread-gc-inhibit 1) 1)
+                  (error "string-cache parallel section did not begin"))
+                (setq section-active t)
+                (let ((tid0 (nelisp-thread-spawn
+                             2 0 string-form0 result0 string-done))
+                      (tid1 (nelisp-thread-spawn
+                             2 0 string-form1 result1 string-done))
+                      (tid2 (nelisp-thread-spawn
+                             2 0 string-form2 result2 string-done)))
+                  (unless (and (> tid0 0) (> tid1 0) (> tid2 0))
+                    (error "string-cache worker spawns failed: %S %S %S"
+                           tid0 tid1 tid2)))
+                (unless (= (nelisp-thread-join string-done 3) 3)
+                  (error "string-cache workers did not all publish"))
+                (let ((sum (+ (nelisp-thread-atomic-read result0)
+                              (+ (nelisp-thread-atomic-read result1)
+                                 (nelisp-thread-atomic-read result2)))))
+                  (unless (= (nelisp-thread-gc-inhibit 0) 1)
+                    (error "string-cache section grew the arena"))
+                  (setq section-active nil)
+                  (unless (= sum 3)
+                    (error "string-cache worker result was %S, expected 3"
+                           sum))))
             (when section-active
               (nelisp-thread-gc-inhibit 0))))
         (setq checked (+ checked 1))

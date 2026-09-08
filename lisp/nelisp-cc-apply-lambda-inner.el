@@ -481,32 +481,65 @@
     ;; body is the real CONS box and is already kept alive by the form.
     ;; eval-rc!=0 → finish with error (pop both frames as needed).
     ;; Arity 6 (even).
-    (defun nl_ali_body_step (eval-rc body env out cap-flag _p6)
+    (defun nl_ali_body_after_clone
+        (_clone-rc state-slot env out cap-flag root-mark)
+      (nl_ali_body_drive state-slot env out cap-flag root-mark 0))
+
+    (defun nl_ali_body_after_cdr
+        (cdr-ptr state-slot env out cap-flag root-mark)
+      (nl_ali_body_after_clone
+       (extern-call nl_sexp_clone_into cdr-ptr state-slot)
+       state-slot env out cap-flag root-mark))
+
+    (defun nl_ali_body_step (eval-rc state-slot env out cap-flag root-mark)
       (if (= eval-rc 0)
-          (nl_ali_body
-           (extern-call nl_cons_cdr_ptr body)
-           env out cap-flag 0 0)
-        (nl_ali_finish 1 env out cap-flag 0 0)))
+          (nl_ali_body_after_cdr
+           (extern-call nl_cons_cdr_ptr state-slot)
+           state-slot env out cap-flag root-mark)
+        (seq
+         (nl_root_release env root-mark)
+         (nl_ali_finish 1 env out cap-flag 0 0))))
 
     ;; car-ptr = nl_cons_car_ptr(body) fetched as first arg.
     ;; Eval this form (extern-call FIRST ✓), carrying the rooted body CONS
     ;; rather than a possibly materialised cdr view.
     ;; Arity 6 (even).
-    (defun nl_ali_body_eval (car-ptr body env out cap-flag _p6)
+    (defun nl_ali_body_eval
+        (car-ptr state-slot env out cap-flag root-mark)
       (nl_ali_body_step
        (extern-call nelisp_eval_call car-ptr env out)
-       body env out cap-flag 0))
+       state-slot env out cap-flag root-mark))
 
     ;; Recursive body-eval entry.
     ;; sexp-tag 0 = Nil → body done, finish with 0.
     ;; Else: fetch car(body) FIRST ✓.
     ;; Arity 6 (even).
-    (defun nl_ali_body (body env out cap-flag _p5 _p6)
-      (if (= (sexp-tag body) 0)
-          (nl_ali_finish 0 env out cap-flag 0 0)
+    (defun nl_ali_body_drive (state-slot env out cap-flag root-mark _pad)
+      (if (= (sexp-tag state-slot) 0)
+          (seq
+           (nl_root_release env root-mark)
+           (nl_ali_finish 0 env out cap-flag 0 0))
         (nl_ali_body_eval
-         (extern-call nl_cons_car_ptr body)
-         body env out cap-flag 0)))
+         (extern-call nl_cons_car_ptr state-slot)
+         state-slot env out cap-flag root-mark)))
+
+    (defun nl_ali_body_start
+        (_clone-rc state-slot env out cap-flag root-mark)
+      (nl_ali_body_drive state-slot env out cap-flag root-mark 0))
+
+    (defun nl_ali_body_slot
+        (state-slot body env out cap-flag root-mark)
+      (nl_ali_body_start
+       (extern-call nl_sexp_clone_into body state-slot)
+       state-slot env out cap-flag root-mark))
+
+    (defun nl_ali_body_mark (root-mark body env out cap-flag _pad)
+      (nl_ali_body_slot
+       (nl_root_reserve env) body env out cap-flag root-mark))
+
+    (defun nl_ali_body (body env out cap-flag _p5 _p6)
+      (nl_ali_body_mark
+       (nl_root_mark env) body env out cap-flag 0))
 
     ;; After nl_push_and_bind: start body eval or finish cleanup on error.
     ;; nl_push_and_bind: 0=Ok (frame pushed, formals bound),

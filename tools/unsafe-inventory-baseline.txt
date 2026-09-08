@@ -287,7 +287,9 @@
 # buffer pointer and length.  The fallback for the other immediate variants
 # keeps the former raw-word comparison.  These reads inspect the same 32-byte
 # Sexp layout this generator's adjacent predicate arms already consume.
-unsafe-call 767
+# 767 -> 770 on 2026-09-08 (T104): three generated sexp-tag guards for
+# Symbol/Str/UnibyteStr length dispatch.
+unsafe-call 770
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the three kernel files that actually carry
@@ -324,9 +326,6 @@ pinned-kernel-call lisp/nelisp-cc-evalport-aot-builtin-calln.el 12
 # and the generated C harness does not decode them.
 pinned-kernel-call lisp/nelisp-aot-compiler.el 18
 pinned-kernel-call scripts/nelisp-flat-arena-probe.el 6
-# T110 GC pause-growth measurement reads allocator counters via two raw
-# pointer calls; these reads are the evidence surface for collection timing.
-pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # integration/wave4 (this branch, merge 5/9): 538 base + 2 (process-
 # standard-names repl idle-pump) + 28 (form-located-errors) = 568,
 # interim, both branches' additions to this file being disjoint call
@@ -378,8 +377,6 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # `make-directory' silently created nothing.
 # 680 -> 685 on 2026-09-06 (Doc 201 section 6.17): the five `wf_raw_eq'
 # string-layout reads itemised at the `unsafe-call 767' note above.
-pinned-kernel-call scripts/nelisp-standalone-build.el 685
-# 685 -> 687 on 2026-09-08: T110 allocation-debt reads/writes use the raw
-# arena metadata pointer for GC accounting; this is the documented kernel
-# responsibility of the standalone runtime generator.
-pinned-kernel-call scripts/nelisp-standalone-build.el 687
+# 685 -> 688 on 2026-09-08 (T104): three generated sexp-tag checks guard
+# Symbol/Str/UnibyteStr byte-length reads at offset 24 in length dispatch.
+pinned-kernel-call scripts/nelisp-standalone-build.el 688

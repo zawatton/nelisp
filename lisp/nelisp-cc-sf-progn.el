@@ -71,9 +71,15 @@
     ;; Calls nelisp_eval_call(car-ptr, env, out) — extern-call FIRST arg ✓.
     ;; Arity 4 (even): car-ptr, cdr, env, out.
     (defun nl_sf_progn_body_step (car-ptr cdr env out)
-      (nl_sf_progn_eval_step
+      (nl_sf_progn_after
        (extern-call nelisp_eval_call car-ptr env out)
        cdr env out))
+
+    (defun nl_sf_progn_after (eval-rc cur env out)
+      (if (= eval-rc 0)
+          (let ((tail (extern-call nl_cons_cdr_ptr cur)))
+            (if (= (sexp-tag tail) 0) 0 tail))
+        -1))
 
     ;; Recursive step.  cdr is the remaining tail cons list.
     ;; If cdr is Nil (tag 0) the last value is already in *out → return 0.
@@ -96,13 +102,13 @@
     ;; Empty progn (args is Nil, tag 0) → out stays Nil, returns 0.
     ;; Arity 4 (even): no prologue sub rsp → no needs-align double-sub.
     (defun nl_sf_progn (args env out _pad)
-      (if (= (sexp-tag args) 0)
-          ;; Empty progn → return nil.
-          0
-        ;; Non-empty: fetch car (extern-call FIRST) and eval it.
-        (nl_sf_progn_body_step
-         (extern-call nl_cons_car_ptr args)
-         args env out))))
+      (let ((state (if (= (sexp-tag args) 0) 0 args)))
+        (while (> state 0)
+          (setq state
+                (nl_sf_progn_body_step
+                 (extern-call nl_cons_car_ptr state)
+                 state env out)))
+        (if (= state -1) 1 0))))
   "AOT source for `nl_sf_progn' (eval/special_forms.rs sf_progn → elisp).
 
 Four defuns (seq form):

@@ -527,5 +527,8 @@
 # The integrator should re-measure and re-pin against the CI cold
 # number when landing, per this file's own rule -- the 7601096 above is
 # this session's own cold worktree build, not a CI run.
-size 6909696
+size 7052064
+# 6909696 -> 7052064 on 2026-09-08: T104 direct frame/scratch lowering plus
+# char-table-vector bridge and iterative progn/lambda helpers are linked into
+# the standalone reader; measured after a fresh standalone build.
 slack-pct 2

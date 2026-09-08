@@ -319,6 +319,19 @@
                      (setq ok 0))
                    (setq i (1+ i)))
                  ok))
+    ;; -- Native eq-only plist walk and interpreted predicate fallback.
+    (49 shared (if (null (plist-get (list (copy-sequence "k") 1)
+                                    (copy-sequence "k"))) 1 0))
+    (51 shared (if (null (plist-get '(a 1 . tail) 'z)) 1 0))
+    (52 shared (if (= (plist-get '("KEY" 7) "key" 'string-equal-ignore-case) 7) 1 0))
+    (53 standalone-only
+        (let ((table (make-vector 3 nil)))
+          (nelisp--raw-aset table 0 'old)
+          (if (and (nelisp--char-table-vector-bridge-p)
+                   (eq (nelisp--raw-aref table 0) 'old)
+                   (eq (nelisp--raw-aset table 2 'new) 'new)
+                   (eq (nelisp--raw-aref table 2) 'new))
+              1 0)))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

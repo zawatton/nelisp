@@ -99,6 +99,22 @@
  ;; substring, including the negative and empty edges
  (substring "abcdef" 1 3) (substring "abcdef" -2) (substring "abc" 0 0)
  (substring "abcdef" 2) (substring "abcdef" 0 -3)
+ ;; T95: substring accepts the one-past-end cursor, while aref/aset must
+ ;; still reject that same cached char index.  Mix traversal directions and
+ ;; copy/alias mutation so both native and prelude paths keep the distinction.
+ (let* ((s "aあbいc")
+        (alias s)
+        (copy (copy-sequence s))
+        (end (length s)))
+   (substring s end end)
+   (aset alias 0 ?z)
+   (aset copy 2 ?x)
+   (list (mapcar (lambda (i) (aref s i)) '(0 1 4 2 3))
+         (aref alias 0) (aref copy 0) (aref copy 2) (aref s 2)
+         (condition-case nil (progn (aref s end) 'missed)
+           (args-out-of-range 'signalled))
+         (condition-case nil (progn (aset s end ?q) 'missed)
+           (args-out-of-range 'signalled))))
  ;; string=
  (string= "a" "a") (string= "a" "b") (string= "" "")
  ;; the rounding family: sign matters, and each rounds a different way
@@ -1495,6 +1511,11 @@
  (plist-get (list "s" 1) "s")
  (plist-put (list "s" 1) (copy-sequence "s") 2)
  (plist-member (list "s" 1) (copy-sequence "s"))
+ (plist-get '(a 1 b nil) 'b)
+ (plist-member '(a 1 b nil) 'b)
+ (plist-get '(a 1 . tail) 'z)
+ (condition-case e (plist-member '(a 1 . tail) 'z) (error (car e)))
+ (plist-get '("KEY" 7) "key" 'string-equal-ignore-case)
  (let ((h (make-hash-table :test 'eq)) (k (copy-sequence "k")))
    (puthash k 1 h)
    (list (gethash (copy-sequence "k") h) (gethash k h) (hash-table-count h)))
