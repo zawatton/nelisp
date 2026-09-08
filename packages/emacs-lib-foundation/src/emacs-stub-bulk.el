@@ -385,7 +385,7 @@ Forwarder to `forward-char' with negated count."
     history-length horizontal-scroll-bar inhibit-changing-match-data inhibit-field-text-motion inhibit-modification-hooks inhibit-nul-byte-detection inhibit-null-byte-detection inhibit-point-motion-hooks
     inhibit-read-only input-decode-map input-method-function jka-compr-load-suffixes keyboard-translate-table kill-buffer-hook kill-buffer-query-functions lexical-binding
     line-spacing load-dangerous-libraries load-file-name load-file-rep-suffixes load-history load-path load-suffixes macro-declarations-alist
-    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended max-lisp-eval-depth menu-prompting
+    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended menu-prompting
     messages-buffer-max-lines minibuffer-auto-raise minibuffer-default-prompt-format minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
     most-negative-fixnum most-positive-fixnum native-comp-deferred-compilation native-comp-enable-subr-trampolines native-comp-jit-compilation needed noninteractive obarray
     operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
@@ -406,6 +406,12 @@ Forwarder to `forward-char' with negated count."
       ;; exactly the `default-process-coding-system' defect class the
       ;; magit bridge documented, recurring here for every name below.
       (eval (list 'defvar --s-- nil) t))))
+
+;; These runtime limits are read arithmetically by vendored libraries such as
+;; cc-defs.el.  They need real Emacs defaults rather than the nil placeholder
+;; used for ordinary presence-only variables above.
+(defvar max-lisp-eval-depth 1600)
+(defvar max-specpdl-size 2500)
 
 (unless (fboundp 'define-abbrev-table)
   (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)

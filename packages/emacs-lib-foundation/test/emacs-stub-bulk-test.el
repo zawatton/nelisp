@@ -156,5 +156,25 @@ future edit could reintroduce a nil re-stub ordering hazard."
         (goto-char list-start)
         (should-not (re-search-forward "\\_<frame-char-height\\_>" list-end t))))))
 
+(ert-deftest emacs-stub-bulk-test/runtime-limits-have-emacs-defaults ()
+  "Runtime recursion limits must not be installed as nil stubs.
+
+`cc-defs.el' computes temporary limits with `max', so these values must
+match the Emacs 30 defaults when the standalone compatibility layer loads."
+  (should (= max-lisp-eval-depth 1600))
+  (should (= max-specpdl-size 2500))
+  (let ((source (emacs-stub-bulk-test--source-file "emacs-stub-bulk")))
+    (with-temp-buffer
+      (insert-file-contents source)
+      (goto-char (point-min))
+      (should (re-search-forward "--stub-defvars--" nil t))
+      (let ((list-start (point))
+            (list-end (progn (re-search-forward "(dolist (--s-- --stub-defvars--)" nil t)
+                              (point))))
+        (goto-char list-start)
+        (should-not (re-search-forward "\\_<max-lisp-eval-depth\\_>" list-end t))
+        (goto-char list-start)
+        (should-not (re-search-forward "\\_<max-specpdl-size\\_>" list-end t))))))
+
 (provide 'emacs-stub-bulk-test)
 ;;; emacs-stub-bulk-test.el ends here
