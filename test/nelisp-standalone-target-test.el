@@ -439,16 +439,21 @@ non-local-exit behaviour are covered by the standalone reader smoke."
     (should (eq (car driver-let) 'let*))
     (should (eq (car driver-seq) 'seq))
     (should watermark-pos)
-    ;; These must remain adjacent and after the watermark: enabling earlier
-    ;; permits a while backedge to collect boot objects before the permanent
-    ;; generation is frozen.  The trigger reads the live reserved-byte counter;
-    ;; a zero BSS trigger would otherwise collect on every backedge.
+    ;; The debt counters are reset after the watermark and before arming
+    ;; mid-form collection.  These writes must stay in this order: enabling
+    ;; earlier permits a while backedge to collect boot objects before the
+    ;; permanent generation is frozen, while a zero trigger would collect on
+    ;; every backedge.
     (should (equal (nth (+ watermark-pos 1) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)))
+                   '(ptr-write-u64 (data-addr nl_gc_stats) 0 0)))
     (should (equal (nth (+ watermark-pos 2) body)
+                   '(ptr-write-u64 (data-addr nl_gc_stats) 8 0)))
+    (should (equal (nth (+ watermark-pos 3) body)
+                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)))
+    (should (equal (nth (+ watermark-pos 4) body)
                    '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
                                    (+ (ptr-read-u64 268436184 0) 16777216))))
-    (should (equal (nth (+ watermark-pos 3) body)
+    (should (equal (nth (+ watermark-pos 5) body)
                    '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)))))
 
 (ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
@@ -1327,7 +1332,8 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
         ;; Tier 3a/Tier 3b append 64 bytes of bounded section + park state. Tier 3b
         ;; appends the 1040-byte registry (16-byte header + 64*16 entries).
         (should (equal (+ 57616 4194304 96 176 64 56 40 1040
-                          (if (eq target 'windows-x86_64) 8 0))
+                          (if (eq target 'windows-x86_64) 8 0)
+                          64 192)
                        (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()

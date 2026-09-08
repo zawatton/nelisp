@@ -8,11 +8,21 @@
                                 nelisp-lambda-body-loop-test--root))
          (text (with-temp-buffer (insert-file-contents file) (buffer-string)))
          (start (string-match "(defun nl_ali_body (body env out cap-flag" text))
-         (end (and start (string-match "\n    ;; After nl_push_and_bind" text start))))
+         (end (and start (string-match "\n    ;; After nl_push_and_bind" text start)))
+         (drive-start (string-match "(defun nl_ali_body_drive " text))
+         (drive-end (and drive-start (string-match "\n    (defun " text drive-start))))
     (should start) (should end)
-    (let ((body (substring text start end)))
-      (should (string-match-p "(while (> state 0)" body))
-      (should-not (string-match-p "(nl_ali_body " body)))))
+    (should drive-start) (should drive-end)
+    (let ((body (substring text start end))
+          (drive (substring text drive-start drive-end)))
+      ;; Body setup delegates through the root-marking trampoline.  The
+      ;; evaluator loop lives in that trampoline's CPS driver, so inspect
+      ;; both pieces rather than requiring the loop in the setup wrapper.
+      (should (string-match-p "(nl_ali_body_mark" body))
+      (should-not (string-match-p "(nl_ali_body " body))
+      (should (string-match-p "(if (= (sexp-tag state-slot) 0)" drive))
+      (should (string-match-p "(nl_ali_body_eval" drive))
+      (should-not (string-match-p "(nl_ali_body " drive)))))
 (ert-deftest nelisp-lambda-body-loop/2500-forms ()
   (let ((binary (expand-file-name "target/nelisp" nelisp-lambda-body-loop-test--root)))
     (unless (file-executable-p binary) (ert-skip "target/nelisp is not built"))
@@ -37,4 +47,3 @@
                                  "(progn (setq outer 41 seen nil) (condition-case _ ((lambda () (setq inner 1) (error \"x\"))) (error (setq seen t))) (list outer seen))")))
       (should (string-match-p "(41 t)" (buffer-string))))))
 (provide 'nelisp-lambda-body-loop-test)
-
