@@ -21,6 +21,9 @@
 # to be acknowledged, even though the pattern already covered the name.
 lisp/nelisp-cc-*.el
 lisp/nelisp-aot-compiler.el
+# Measurement driver reads allocator counters through ptr-read-u64 to report
+# collection timing and fragmentation; it does not retain or mutate pointers.
+scripts/nelisp-gc-pause-growth.el
 # Doc 142 section 6.4's in-process `.neln' loader.  A kernel member by
 # construction rather than by exception: its whole job is to mmap a page,
 # write machine code into it with `ptr-write-u8', patch relocations and
@@ -37,9 +40,9 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 92
+kernel-files 93
 
-# `pinned-kernel-touch NAME' pins the 92 kernel files that actually touch
+# `pinned-kernel-touch NAME' pins the 93 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
 # generated from the clean tree.  Added 2026-08-21 alongside the same fix
 # to ns-gate and parity-coverage: `kernel-files' above is a COUNT, and a
@@ -150,6 +153,10 @@ pinned-kernel-touch lisp/nelisp-native-load.el
 pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-calln.el
 pinned-kernel-touch lisp/nelisp-stdlib-os-int-helpers.el
 pinned-kernel-touch scripts/nelisp-flat-arena-probe.el
+# GC pause-growth workload reads allocator counters and arena metadata through
+# raw pointers solely to report collection timing and fragmentation; it does
+# not retain or mutate those addresses.
+pinned-kernel-touch scripts/nelisp-gc-pause-growth.el
 pinned-kernel-touch scripts/nelisp-macho-acceptance.el
 pinned-kernel-touch scripts/nelisp-macos-build.el
 pinned-kernel-touch scripts/nelisp-standalone-build.el

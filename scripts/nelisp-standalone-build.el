@@ -673,10 +673,16 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_thread_registry"
                              (+ 57616 4194304 96 176 64 56 40)
                              :section 'bss :bind 'global :type 'object))
-    (when (eq nelisp-standalone--target 'windows-x86_64)
-      (list (nelisp-link-symbol "nl_tls_registry"
-                                (+ 57616 4194304 96 176 64 56 40 1040)
-                                :section 'bss :bind 'global :type 'object))))
+    (append
+     (when (eq nelisp-standalone--target 'windows-x86_64)
+       (list (nelisp-link-symbol "nl_tls_registry"
+                                 (+ 57616 4194304 96 176 64 56 40 1040)
+                                 :section 'bss :bind 'global :type 'object)))
+     (list (nelisp-link-symbol "nl_gc_stats"
+                               (+ 57616 4194304 96 176 64 56 40 1040
+                                  (if (eq nelisp-standalone--target 'windows-x86_64)
+                                      8 0))
+                               :section 'bss :bind 'global :type 'object))))
    nil))
 
 ;; ===================================================================
@@ -2944,10 +2950,11 @@ arm64 Linux has no legacy x86 numbering)."
        (nl_gc_debt_rearm_for (ptr-read-u64 (data-addr nl_gc_stats) 16))))
     ;; 1 when the debt trigger is armed and the debt has reached it.
     (defun nl_gc_debt_due ()
-      (if (= (ptr-read-u64 (data-addr nl_gc_stats) 8) 0) 0
+      (if (if (< (ptr-read-u64 (data-addr nl_gc_stats) 24) 2) 1 0) 0
+        (if (= (ptr-read-u64 (data-addr nl_gc_stats) 8) 0) 0
         (if (< (ptr-read-u64 (data-addr nl_gc_stats) 0)
                (ptr-read-u64 (data-addr nl_gc_stats) 8))
-            0 1)))
+            0 1))))
     ;; The form-boundary test: growth watermark (unchanged) OR debt.
     (defun nl_gc_boundary_due ()
       (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0))
@@ -24959,6 +24966,13 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
+        ;; Allocation-debt accounting starts after the boot image is frozen.
+        ;; Boot allocations are permanent and must not consume the first
+        ;; post-boot debt budget or make the first diagnostic form collect
+        ;; before its forced arena growth.  A later sweep arms the threshold
+        ;; from its measured live set.
+        (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
         ;; Doc 152 Stage 5: mid-form collection is ON by default, but only
         ;; after the permanent-generation watermark above has made collection
         ;; sound.  `nl_arena_init' seeded chunk-bytes-reserved@268436184 and
@@ -24986,6 +25000,10 @@ correctly."
         ;; (SIGKILL) in BOTH cold and normal -- a pre-existing single-form limit
         ;; (no mid-form collection for one deeply-recursive top-level form), not
         ;; a cold-load regression.
+        ;; Final boot boundary: discard debt accumulated while installing
+        ;; the driver itself; user forms start with an unarmed budget.
+        (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+        (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
         (if (= argv_shifted_p 1)
             (seq
              (ptr-write-u64 sp0 40 slot3)
