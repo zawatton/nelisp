@@ -28,9 +28,17 @@ standalone path by a NeLisp-only primitive, matching
   (or (fboundp 'nl-write-file)
       (not (boundp 'emacs-version))))
 
+(defun case-table--sparse-api-p ()
+  "Return non-nil when the reusable sparse char-table substrate is loaded."
+  (and (fboundp 'emacs-char-table-make)
+       (fboundp 'emacs-char-table-p)
+       (fboundp 'emacs-char-table-ref)
+       (fboundp 'emacs-char-table-set)))
+
 (defun case-table--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this facade."
-  (if (case-table--standalone-p)
+  (if (and (case-table--standalone-p)
+           (not (case-table--sparse-api-p)))
       t
     (not (fboundp symbol))))
 
@@ -40,10 +48,14 @@ standalone path by a NeLisp-only primitive, matching
 
 (defun case-table--identity-table ()
   "Return a fresh lightweight char-table with identity entries."
-  (let ((table (make-vector (+ case-table--size case-table--extra-slots) nil))
+  (let ((table (if (case-table--sparse-api-p)
+                   (emacs-char-table-make 'case-table)
+                 (make-vector (+ case-table--size case-table--extra-slots) nil)))
         (i 0))
     (while (< i case-table--size)
-      (aset table i i)
+      (if (case-table--sparse-api-p)
+          (emacs-char-table-set table i i)
+        (aset table i i))
       (setq i (1+ i)))
     table))
 
@@ -59,33 +71,41 @@ standalone path by a NeLisp-only primitive, matching
 
 (defun case-table--make-char-table (&optional _subtype init)
   "Make a lightweight char-table filled with INIT or identity mappings."
-  (if init
-      (make-vector (+ case-table--size case-table--extra-slots) init)
-    (case-table--identity-table)))
+  (if (case-table--sparse-api-p)
+      (emacs-char-table-make _subtype init)
+    (if init
+        (make-vector (+ case-table--size case-table--extra-slots) init)
+      (case-table--identity-table))))
 
 (defun case-table--char-table-p (object)
   "Return non-nil when OBJECT is a lightweight char-table."
-  (and (vectorp object)
-       (= (length object) (+ case-table--size case-table--extra-slots))))
+  (or (and (case-table--sparse-api-p) (emacs-char-table-p object))
+      (and (vectorp object)
+           (= (length object) (+ case-table--size case-table--extra-slots)))))
 
 (defun case-table--char-table-range (table range)
   "Return TABLE entry at RANGE."
   (cond
-   ((integerp range) (aref table range))
+   ((integerp range)
+    (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
+        (emacs-char-table-ref table range)
+      (aref table range)))
    ((eq range t) nil)
-   ((consp range) (aref table (car range)))
+   ((consp range) (case-table--char-table-range table (car range)))
    (t nil)))
 
 (defun case-table--set-char-table-range (table range value)
   "Set TABLE RANGE to VALUE."
   (cond
    ((integerp range)
-    (aset table range value))
+    (if (and (case-table--sparse-api-p) (emacs-char-table-p table))
+        (emacs-char-table-set table range value)
+      (aset table range value)))
    ((consp range)
     (let ((i (car range))
           (end (cdr range)))
       (while (<= i end)
-        (aset table i value)
+        (case-table--set-char-table-range table i value)
         (setq i (1+ i)))))
    ((eq range t)
     nil))
@@ -101,26 +121,33 @@ standalone path by a NeLisp-only primitive, matching
 
 (defun case-table--get-extra-slot (table slot)
   "Return extra SLOT from TABLE, lightweight or host."
-  (if (case-table--char-table-p table)
-      (case-table--char-table-extra-slot table slot)
-    (char-table-extra-slot table slot)))
+  (cond
+   ((and (case-table--sparse-api-p) (emacs-char-table-p table))
+    (emacs-char-table-extra-slot table slot))
+   ((case-table--char-table-p table)
+    (case-table--char-table-extra-slot table slot))
+   (t (char-table-extra-slot table slot))))
 
 (defun case-table--put-extra-slot (table slot value)
   "Set extra SLOT in TABLE, lightweight or host, to VALUE."
-  (if (case-table--char-table-p table)
-      (case-table--set-char-table-extra-slot table slot value)
-    (set-char-table-extra-slot table slot value)))
+  (cond
+   ((and (case-table--sparse-api-p) (emacs-char-table-p table))
+    (emacs-char-table-set-extra-slot table slot value))
+   ((case-table--char-table-p table)
+    (case-table--set-char-table-extra-slot table slot value))
+   (t (set-char-table-extra-slot table slot value))))
 
 (defun case-table--map-char-table (function table)
   "Call FUNCTION for every non-nil character entry in TABLE."
   (let ((i 0))
     (while (< i case-table--size)
-      (let ((value (aref table i)))
+      (let ((value (case-table--char-table-range table i)))
         (when value
           (funcall function i value)))
       (setq i (1+ i)))))
 
-(when (case-table--standalone-p)
+(when (and (case-table--standalone-p)
+           (not (case-table--sparse-api-p)))
   (fset 'make-char-table #'case-table--make-char-table)
   (fset 'char-table-p #'case-table--char-table-p)
   (fset 'char-table-range #'case-table--char-table-range)
@@ -160,7 +187,38 @@ standalone path by a NeLisp-only primitive, matching
 (defvar case-table--standard-syntax-table (case-table--identity-table)
   "Placeholder syntax table for case-table mutation helpers.")
 
-(when (case-table--standalone-p)
+;; Keep these definitions in the generated standalone bundle as well as in a
+;; hosted load.  The bootstrap generator evaluates top-level conditionals on
+;; the host, where the sparse API is already present; placing the definitions
+;; under this true branch ensures they are emitted while still avoiding any
+;; host primitive override.
+(when (case-table--sparse-api-p)
+  (defun standard-case-table ()
+    "Return the standard sparse case table."
+    case-table--standard)
+  (defun current-case-table ()
+    "Return the current sparse case table."
+    case-table--current)
+  (defun set-standard-case-table (table)
+    "Set the standard sparse case table to TABLE."
+    (setq case-table--standard table
+          case-table--current table)
+    (case-table--ensure-extra-slots table)
+    table)
+  (defun set-case-table (table)
+    "Set the current sparse case table to TABLE."
+    (setq case-table--current table)
+    (case-table--ensure-extra-slots table)
+    table)
+  (defun standard-syntax-table ()
+    "Return the sparse standard syntax table placeholder."
+    case-table--standard-syntax-table)
+  (defun modify-syntax-entry (_char _newentry &optional _table)
+    "Accept syntax mutations for compatibility."
+    nil))
+
+(when (and (case-table--standalone-p)
+           (not (case-table--sparse-api-p)))
   (fset 'standard-case-table (lambda () case-table--standard))
   (fset 'current-case-table (lambda () case-table--current))
   (fset 'set-standard-case-table
