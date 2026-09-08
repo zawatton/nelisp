@@ -6717,6 +6717,10 @@ bindings provide.  &rest is honoured."
   "Build (TEST-FORM . BINDINGS) for matching PATTERN against VALUE-FORM."
   (cond
    ((eq pattern '_) (cons t nil))
+   ;; `pcase--dontcare' is an internal wildcard used by vendor pcase
+   ;; patterns.  It must never become a variable binding named
+   ;; `pcase--dontcare'.
+   ((eq pattern 'pcase--dontcare) (cons t nil))
    ((keywordp pattern)
     (cons (list 'eq value-form pattern) nil))
    ((or (null pattern) (eq pattern t))
@@ -6832,29 +6836,53 @@ bindings provide.  &rest is honoured."
       (cons (if bindings (list 'let bindings joined) joined)
             bindings))))
 
-;; Bindings inside an `or' arm are dropped, so a clause that relies on one
-;; answers void-variable rather than matching.  Emacs compiles each arm to
-;; its own branch and binds from whichever matched; doing that here means
-;; either re-evaluating the arm tests to pick the branch, or restructuring
-;; the (TEST . BINDINGS) protocol these builders share.  Left alone on
-;; measurement rather than on guess: across scripts/, lisp/ and src/ no
-;; `or' arm binds anything -- all 32 uses are quoted-symbol or literal
-;; alternatives -- so nothing in the tree needs it today.
 (defun nelisp-pcase--or (patterns value-form)
-  "Build (TEST . BINDINGS) for an `or' pattern (no bindings)."
+  "Build (TEST . BINDINGS) for an `or' pattern.
+
+`pcase--dontcare' is special: Emacs uses it as the fallback arm while
+retaining the bindings from the structural arm.  The fallback therefore
+needs those bindings too (with safe destructuring yielding nil).  For a
+general nested `or', retaining bindings would require branch-local code;
+silently choosing one arm's values is worse than rejecting that shape, so
+only arms with one unambiguous binding set are accepted here."
   (let ((tests nil)
+        (binding-sets nil)
+        (has-dontcare nil)
         (cur patterns))
     (while cur
-      (let* ((built (nelisp-pcase--test (car cur) value-form))
+      (let* ((pattern (car cur))
+             (dontcare (eq pattern 'pcase--dontcare))
+             (built (if dontcare
+                        (cons t nil)
+                      (nelisp-pcase--test pattern value-form)))
              (t1 (car built)))
-        (setq tests (cons t1 tests)))
+        (setq tests (cons t1 tests))
+        (if dontcare
+            (setq has-dontcare t)
+          (when (cdr built)
+            (setq binding-sets (cons (cdr built) binding-sets)))))
       (setq cur (cdr cur)))
-    (cons (cons 'or (let ((rev nil))
-                      (while tests
-                        (setq rev (cons (car tests) rev))
-                        (setq tests (cdr tests)))
-                      rev))
-          nil)))
+    (let ((test (cons 'or (let ((rev nil))
+                            (while tests
+                              (setq rev (cons (car tests) rev))
+                              (setq tests (cdr tests)))
+                            rev))))
+      (cond
+       ((null binding-sets)
+        (cons test nil))
+       ((and has-dontcare (= (length binding-sets) 1))
+        (cons test (car binding-sets)))
+       ((let ((first (car binding-sets))
+              (rest (cdr binding-sets))
+              (same t))
+          (while rest
+            (unless (equal first (car rest))
+              (setq same nil))
+            (setq rest (cdr rest)))
+          same)
+        (cons test (car binding-sets)))
+       (t
+        (error "pcase or pattern has branch-local bindings: %S" patterns))))))
 
 (defun nelisp-pcase--cons (rest value-form)
   "Build (TEST . BINDINGS) for a `(cons P1 P2)' pattern."
@@ -6891,9 +6919,9 @@ bindings provide.  &rest is honoured."
       (cons t (list (list sym value-form)))))
    ((consp pat)
     (let* ((head-build (nelisp-pcase--backquote
-                        (car pat) (list 'car value-form)))
+                        (car pat) (list 'car-safe value-form)))
            (tail-build (nelisp-pcase--backquote
-                        (cdr pat) (list 'cdr value-form))))
+                        (cdr pat) (list 'cdr-safe value-form))))
       (cons (list 'and
                   (list 'consp value-form)
                   (car head-build)

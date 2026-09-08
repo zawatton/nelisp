@@ -523,6 +523,13 @@
  (list (pcase 5 ((or (and (pred integerp) n) n) n))
        (pcase 3 ((or 1 2 n) n))
        (pcase "s" ((or (pred integerp) (pred stringp)) 'ok)))
+ ;; Nested `or' patterns with a `pcase--dontcare' fallback are used by
+ ;; vendor `macroexp--expand-all' to destructure `let' forms.  Emacs keeps
+ ;; the structural bindings and gives the fallback safe nil projections.
+ (list (pcase (cons 1 nil)
+         ((cons (or `(,a . ,b) pcase--dontcare) _) (list a b)))
+       (pcase (cons (cons 1 2) nil)
+         ((cons (or `(,a . ,b) pcase--dontcare) _) (list a b))))
  (list (key-description (kbd "C-x")) (key-description (kbd "C-x C-f"))
        (key-description (kbd "M-x")) (key-description (kbd "SPC"))
        (key-description (kbd "a b")))
