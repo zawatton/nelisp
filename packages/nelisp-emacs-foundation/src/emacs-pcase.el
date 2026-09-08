@@ -97,6 +97,9 @@ to let-bind in the case body when matched."
     (cond
      ;; `_' wildcard.
      ((eq pattern '_) (cons t nil))
+     ;; `pcase--dontcare' is the internal wildcard used by vendor pcase
+     ;; patterns.  It must not become a variable binding with that name.
+     ((eq pattern 'pcase--dontcare) (cons t nil))
      ;; Self-evaluating keyword (= `:foo'): match by `eq'.  Without
      ;; this guard the bare-symbol clause below would bind the
      ;; keyword as a variable, making every keyword `pcase' branch
@@ -229,18 +232,52 @@ to let-bind in the case body when matched."
               bindings))))
 
   (defun emacs-pcase--or (patterns value-form)
-    "Build (TEST . BINDINGS) for an `or' pattern.  No bindings (= ambiguous)."
+    "Build (TEST . BINDINGS) for an `or' pattern.
+
+`pcase--dontcare' is the fallback arm used by vendor pcase patterns.
+When that arm is present, retain bindings from the structural arm so the
+body sees safe projections on fallback.  Arms with identical bindings are
+also safe to share; genuinely branch-local bindings are rejected rather
+than silently producing an incorrect value."
     (let ((tests nil)
+          (binding-sets nil)
+          (has-dontcare nil)
           (cur patterns))
       (while cur
-        (let* ((built (emacs-pcase--test (car cur) value-form))
+        (let* ((pattern (car cur))
+               (dontcare (eq pattern 'pcase--dontcare))
+               (built (if dontcare
+                          (cons t nil)
+                        (emacs-pcase--test pattern value-form)))
                (t1 (car built)))
-          (setq tests (cons t1 tests)))
+          (setq tests (cons t1 tests))
+          (if dontcare
+              (setq has-dontcare t)
+            (when (cdr built)
+              (setq binding-sets (cons (cdr built) binding-sets)))))
         (setq cur (cdr cur)))
-      (cons (cons 'or (let ((rev nil))
-                        (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
-                        rev))
-            nil)))
+      (let ((test (cons 'or (let ((rev nil))
+                              (while tests
+                                (setq rev (cons (car tests) rev))
+                                (setq tests (cdr tests)))
+                              rev))))
+        (cond
+         ((null binding-sets)
+          (cons test nil))
+         ((and has-dontcare (= (length binding-sets) 1))
+          (cons test (car binding-sets)))
+         ((let ((first (car binding-sets))
+                (rest (cdr binding-sets))
+                (same t))
+            (while rest
+              (unless (equal first (car rest))
+                (setq same nil))
+              (setq rest (cdr rest)))
+            same)
+          (cons test (car binding-sets)))
+         (t
+          (error "pcase or pattern has branch-local bindings: %S"
+                 patterns))))))
 
   (defun emacs-pcase--cons (patterns value-form)
     "Build (TEST . BINDINGS) for a `(cons P1 P2)' pattern."
@@ -276,9 +313,9 @@ does `equal' check."
      ;; Cons cell — recursively destructure car / cdr.
      ((consp pat)
       (let* ((head-build (emacs-pcase--backquote
-                          (car pat) (list 'car value-form)))
+                          (car pat) (list 'car-safe value-form)))
              (tail-build (emacs-pcase--backquote
-                          (cdr pat) (list 'cdr value-form))))
+                          (cdr pat) (list 'cdr-safe value-form))))
         (cons (list 'and
                     (list 'consp value-form)
                     (car head-build)

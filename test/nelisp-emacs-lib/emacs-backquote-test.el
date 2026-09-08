@@ -213,6 +213,16 @@ the load so host Emacs keeps its own definitions; only used from
                         . tailsym))
                    '(p 9 (nested 9) . tailsym)))))
 
+(ert-deftest emacs-backquote-test/runtime-list-nil-level-means-outermost ()
+  "The compatibility wrapper treats a nil depth as the outer level."
+  (emacs-backquote-test--ensure-runtime-backquote)
+  (let ((emacs-backquote-test--x 9))
+    (should (equal
+             (eval (emacs-backquote--runtime-expand-list
+                    '(p (comma emacs-backquote-test--x)) nil)
+                   nil)
+             '(p 9)))))
+
 (ert-deftest emacs-backquote-test/runtime-punctuation-nested-generator-shape ()
   "Outer expansion preserves generator-style inner punctuation backquote."
   (emacs-backquote-test--ensure-runtime-backquote)

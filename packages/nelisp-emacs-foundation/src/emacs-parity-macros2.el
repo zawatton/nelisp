@@ -75,12 +75,10 @@ evaluator, which consults the hashtable rather than the function cell."
   ;; A local cl-macrolet macro whose body is such a template aborts at
   ;; macroexpansion -> the whole enclosing top-level form bare-aborts.
   ;;
-  ;; FIX: redefine the backquote expander subsystem so a vector template
-  ;; expands element-wise and is rebuilt with `vconcat' (unquote `,X' and
-  ;; splice `,@X' inside a vector work through the list expansion).  The
-  ;; three helpers are copied verbatim from the prelude with only the new
-  ;; vector arm added, so the shim is load-order independent (mirrors the
-  ;; `emacs-cl-macros--loop-*' verbatim copies in emacs-parity-clloop.el).
+  ;; FIX: retain the prelude's depth-aware backquote expander while adding
+  ;; vector templates.  This block is loaded after the prelude, so its helper
+  ;; signatures and nested-depth semantics must remain identical to the
+  ;; canonical implementation.
 
   (unless (fboundp 'nelisp--bq-tag-p)
     (defun nelisp--bq-tag-p (form tag punct)
@@ -90,28 +88,35 @@ the real Emacs-style symbol named the literal punctuation string PUNCT."
            (let ((head (car form)))
              (or (eq head tag) (eq head (intern punct)))))))
 
-  (defun nelisp--bq-expand (form)
-    "Return the expansion of FORM under `backquote' (vector-aware)."
-    (cond
-     ((vectorp form)
-      ;; NEW: `[...]' template -> (vconcat LIST-EXPANSION).  vconcat accepts
-      ;; the list/cons/append form produced for the vector's elements, so
-      ;; interior `,X' and `,@X' compose exactly as in list position.
-      (list 'vconcat (nelisp--bq-expand-list (append form nil))))
-     ((not (consp form))
-      (list 'quote form))
-     ((nelisp--bq-tag-p form 'comma ",") (cadr form))
-     ((nelisp--bq-tag-p form 'comma-at ",@")
-      (signal 'error (list "nelisp-bq: top-level ,@ not allowed")))
-     ((nelisp--bq-tag-p form 'backquote "`")
-      (list 'quote form))
-     (t (nelisp--bq-expand-list form))))
+  (defun nelisp--bq-expand (form &optional level)
+    "Return the expansion of FORM under `backquote' at nesting LEVEL.
+LEVEL defaults to 1 (directly inside one backquote)."
+    (let ((level (or level 1)))
+      (cond
+       ((vectorp form)
+        ;; Vector templates use the same list walker as list templates.
+        (list 'vconcat (nelisp--bq-expand-list (append form nil) level)))
+       ((not (consp form))
+        (list 'quote form))
+       ((nelisp--bq-tag-p form 'comma ",")
+        (if (= level 1)
+            (cadr form)
+          (list 'list (list 'quote 'comma)
+                (nelisp--bq-expand (cadr form) (1- level)))))
+       ((nelisp--bq-tag-p form 'comma-at ",@")
+        (if (= level 1)
+            (signal 'error (list "nelisp-bq: top-level ,@ not allowed"))
+          (list 'list (list 'quote 'comma-at)
+                (nelisp--bq-expand (cadr form) (1- level)))))
+       ((nelisp--bq-tag-p form 'backquote "`")
+        (list 'list (list 'quote 'backquote)
+              (nelisp--bq-expand (cadr form) (1+ level))))
+       (t (nelisp--bq-expand-list form level)))))
 
-  (defun nelisp--bq-expand-list (form)
-    "Walk list FORM, producing the expansion.
-Recognises both (... ,X ...) interior unquote and (... . ,X) dotted
-unquote / (... . ,@X) dotted splice patterns."
-    (let ((parts nil)
+  (defun nelisp--bq-expand-list (form level)
+    "Walk list FORM at nesting LEVEL, producing the expansion."
+    (let ((level (or level 1))
+          (parts nil)
           (cur form)
           (tail-expr nil)
           (done nil)
@@ -120,24 +125,42 @@ unquote / (... . ,@X) dotted splice patterns."
         (let ((head (car cur)))
           (cond
            ((or (eq head 'comma) (eq head (intern ",")))
-            (setq tail-expr (cadr cur))
+            (if (= level 1)
+                (setq tail-expr (cadr cur))
+              (setq tail-expr (list 'list (list 'quote 'comma)
+                                    (nelisp--bq-expand (cadr cur) (1- level)))))
             (setq done t))
            ((or (eq head 'comma-at) (eq head (intern ",@")))
-            (setq tail-expr (cadr cur))
-            (setq has-splice t)
+            (if (= level 1)
+                (progn (setq tail-expr (cadr cur)) (setq has-splice t))
+              (setq tail-expr (list 'list (list 'quote 'comma-at)
+                                    (nelisp--bq-expand (cadr cur) (1- level)))))
             (setq done t))
            (t
             (let ((elem head))
               (cond
                ((and (consp elem)
-                     (or (eq (car elem) 'comma-at) (eq (car elem) (intern ",@"))))
-                (setq has-splice t)
-                (push (cons 'splice (cadr elem)) parts))
+                     (or (eq (car elem) 'comma-at)
+                         (eq (car elem) (intern ",@"))))
+                (if (= level 1)
+                    (progn
+                      (setq has-splice t)
+                      (push (cons 'splice (cadr elem)) parts))
+                  (push (cons 'list
+                              (list 'list (list 'quote 'comma-at)
+                                    (nelisp--bq-expand (cadr elem) (1- level))))
+                        parts)))
                ((and (consp elem)
-                     (or (eq (car elem) 'comma) (eq (car elem) (intern ","))))
-                (push (cons 'list (cadr elem)) parts))
+                     (or (eq (car elem) 'comma)
+                         (eq (car elem) (intern ","))))
+                (if (= level 1)
+                    (push (cons 'list (cadr elem)) parts)
+                  (push (cons 'list
+                              (list 'list (list 'quote 'comma)
+                                    (nelisp--bq-expand (cadr elem) (1- level))))
+                        parts)))
                (t
-                (push (cons 'list (nelisp--bq-expand elem)) parts))))
+                (push (cons 'list (nelisp--bq-expand elem level)) parts))))
             (setq cur (cdr cur))))))
       (when (and (not done) (not (null cur)) (not (consp cur)))
         (setq tail-expr (list 'quote cur)))
@@ -168,6 +191,12 @@ unquote / (... . ,@X) dotted splice patterns."
         (setq args (nreverse args))
         (when tail (setq args (append args (list tail))))
         (cons 'append args)))))
+
+  ;; `emacs-backquote.el' is inserted after this file in the generated
+  ;; bootstrap bundle.  Mark the canonical depth-aware implementation so
+  ;; that its compatibility wrapper does not replace these helpers with a
+  ;; second generation of the same functions.
+  (defvar emacs-parity-macros2--depth-aware-backquote t)
 
   ;; Re-route the backquote macros through the corrected expander.  `defmacro'
   ;; re-runs the runtime's macro registration; both the reader's convenience
