@@ -289,10 +289,10 @@
 # Sexp layout this generator's adjacent predicate arms already consume.
 # 767 -> 770 on 2026-09-08 (T104): three generated sexp-tag guards for
 # Symbol/Str/UnibyteStr length dispatch.
-unsafe-call 770
+unsafe-call 774
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
-# count behind `total' above -- the three kernel files that actually carry
+# count behind `total' above -- the kernel files that actually carry
 # one today.  Added 2026-08-21, same reason as the `pinned' lines
 # tools/parity-coverage-baseline.txt carries: `total' is a sum, and a sum
 # cannot see one file's count fall while a different file's count rises by
@@ -310,6 +310,11 @@ pinned-kernel-call lisp/nelisp-native-load.el 28
 # of the boundary Sexp slots the compiled calling convention passes its
 # arguments and result through.
 pinned-kernel-call lisp/nelisp-cc-evalport-aot-builtin-calln.el 12
+# r11 iterative argument/lambda evaluation adds four raw-memory operations
+# to the lazy mirror setter: the scratch box allocation and its Sexp slot
+# access.  This is the same generated runtime boundary used by the existing
+# env-set-value path, now allocated only on the mirror miss branch.
+pinned-kernel-call lisp/nelisp-cc-env-set-value.el 4
 # The AOT compiler's own share of the same work: emitting the artifact the
 # loader later maps.  18 unquoted calls -- `alloc-bytes' for the scratch the
 # emitter builds an object in, the sized pointer reads and writes that lay
@@ -326,6 +331,9 @@ pinned-kernel-call lisp/nelisp-cc-evalport-aot-builtin-calln.el 12
 # and the generated C harness does not decode them.
 pinned-kernel-call lisp/nelisp-aot-compiler.el 18
 pinned-kernel-call scripts/nelisp-flat-arena-probe.el 6
+# T110's pause-growth probe reads the collector's raw counters through two
+# u64 accesses; keep its per-file call pin explicit with the other probes.
+pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # integration/wave4 (this branch, merge 5/9): 538 base + 2 (process-
 # standard-names repl idle-pump) + 28 (form-located-errors) = 568,
 # interim, both branches' additions to this file being disjoint call
@@ -379,4 +387,7 @@ pinned-kernel-call scripts/nelisp-flat-arena-probe.el 6
 # string-layout reads itemised at the `unsafe-call 767' note above.
 # 685 -> 688 on 2026-09-08 (T104): three generated sexp-tag checks guard
 # Symbol/Str/UnibyteStr byte-length reads at offset 24 in length dispatch.
-pinned-kernel-call scripts/nelisp-standalone-build.el 688
+# 688 -> 690 on r11 iterative arglist/lambda integration: two additional
+# raw accesses support the reentrant rooted evaluation path in the generated
+# standalone reader.
+pinned-kernel-call scripts/nelisp-standalone-build.el 690

@@ -40,9 +40,9 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 93
+kernel-files 95
 
-# `pinned-kernel-touch NAME' pins the 93 kernel files that actually touch
+# `pinned-kernel-touch NAME' pins the 95 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
 # generated from the clean tree.  Added 2026-08-21 alongside the same fix
 # to ns-gate and parity-coverage: `kernel-files' above is a COUNT, and a
@@ -151,6 +151,9 @@ pinned-kernel-touch lisp/nelisp-native-load.el
 # The AOT evalport's `calln' provider: reads and writes the boundary Sexp
 # slots the compiled call convention passes arguments and results through.
 pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-calln.el
+# r11 lazy mirror setter allocates and accesses its scratch Sexp box through
+# raw memory on the frame-miss path.
+pinned-kernel-touch lisp/nelisp-cc-env-set-value.el
 pinned-kernel-touch lisp/nelisp-stdlib-os-int-helpers.el
 pinned-kernel-touch scripts/nelisp-flat-arena-probe.el
 # GC pause-growth workload reads allocator counters and arena metadata through
