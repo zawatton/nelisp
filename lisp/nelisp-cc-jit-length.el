@@ -33,9 +33,13 @@
          (and (sexp-int-make out 0) 0)
        (if (= (sexp-tag arg) 8)
            (and (sexp-int-make out (vector-len arg)) 0)
-         (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 14))
+       (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 14))
              (and (sexp-int-make out (str-char-count arg)) 0)
-           1))))
+           (if (= (sexp-tag arg) 10)
+               (and (sexp-int-make
+                     out (ptr-read-u64 (ptr-read-u64 arg 8) 0))
+                    0)
+             1)))))
   "AOT source for the §120.D `nl_jit_access_length' swap.
 
 Three guard arms: (1) Nil → write Int(0) inline, (2) Vector →

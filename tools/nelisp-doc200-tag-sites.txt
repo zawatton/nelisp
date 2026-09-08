@@ -177,3 +177,15 @@ tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unre
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	1	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
 tools/nelisp-thread-allocating-standalone-smoke.el	-	unresolved-numeric	0	n-a	This asserts the expected five-element worker result list, not a Sexp tag.
 tools/nelisp-thread-percpu-roots-smoke.el	-	unresolved-numeric	0	n-a	This asserts the expected worker result integer 5, not a Sexp tag.
+# T101 bool-vector helper numeric constants are bit offsets, and parser string
+# offsets are representation fields; these rows keep the census ledger explicit.
+lisp/nelisp-cc-jit-access-aref-bool-vector-inner.el	nl_jit_access_aref_bv_bitval	unresolved-numeric	0	n-a	This compares bit offsets 0/1 in a lookup table, not Sexp tags.
+lisp/nelisp-cc-jit-access-aref-bool-vector-inner.el	nl_jit_access_aref_bv_bitval	unresolved-numeric	1	n-a	This compares bit offsets 0/1 in a lookup table, not Sexp tags.
+lisp/nelisp-cc-jit-access-aset-bool-vector-inner.el	nl_jit_access_aset_bv_bitval	unresolved-numeric	0	n-a	This compares bit offsets 0/1 in a lookup table, not Sexp tags.
+lisp/nelisp-cc-jit-access-aset-bool-vector-inner.el	nl_jit_access_aset_bv_bitval	unresolved-numeric	1	n-a	This compares bit offsets 0/1 in a lookup table, not Sexp tags.
+lisp/nelisp-cc-nlboolvector-alloc.el	nl_bv_bitval	unresolved-numeric	0	n-a	This compares packed bit offsets 0/1 in a lookup table, not Sexp tags.
+lisp/nelisp-cc-nlboolvector-alloc.el	nl_bv_bitval	unresolved-numeric	1	n-a	This compares packed bit offsets 0/1 in a lookup table, not Sexp tags.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_str_len	tag-test-read-u64	0	walked	Reads string length at representation offsets, not a Sexp tag.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_str_ptr	tag-test-read-u64	0	walked	Reads string data pointer at representation offsets, not a Sexp tag.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_string_tag_p	unresolved-numeric	0	walked	Recognizes string tag 5 for bool-vector literal payloads, not a new Sexp tag.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_string_tag_p	unresolved-numeric	1	walked	Recognizes string tag 6/14/15 for bool-vector literal payloads, not a new Sexp tag.

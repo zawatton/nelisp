@@ -55,11 +55,11 @@
      ;; Returns: i64 = 0 on OK, 1 on ERR.
      ;;
      ;; ABI: Sexp payload at offset 8 = NlBoolVector*.
-     ;;      NlBoolVector.value.length at NlBoolVector* + 16.
+     ;;      Pure-Elisp BoolVector bit length at NlBoolVector* + 0.
      ;;      Use ptr-read-u64 twice: first to dereference the box
-     ;;      pointer, second to load Vec<bool>.length.
+     ;;      pointer, second to load the exact bit count.
      (if (= (sexp-tag arg) 10)
-         (and (sexp-int-make out (ptr-read-u64 (ptr-read-u64 arg 8) 16)) 0)
+         (and (sexp-int-make out (ptr-read-u64 (ptr-read-u64 arg 8) 0)) 0)
        1))
   "AOT source for the §120.B `nl_jit_bool_vector_len' swap.
 

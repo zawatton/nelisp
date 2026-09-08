@@ -9288,6 +9288,41 @@ line-continuation escapes, which generate nothing)."
                   (t (let ((r2 (nelisp--rd-one s k n)))
                        (setq k (cdr r2))))))
                (cons str k))))
+          ;; `#&LENGTH"BYTES"' bool-vector literal (GNU Emacs lread.c):
+          ;; each byte holds 8 bits low-bit-first, trailing bits of the
+          ;; last byte are 0.  BYTES is read through `nelisp--rd-unescape'
+          ;; (above), already raw-byte-aware for octal/`\\x' escapes, so
+          ;; `aref' on the result gives the actual byte values.  A literal
+          ;; whose string is shorter than ceil(LENGTH/8) bytes signals
+          ;; `invalid-read-syntax', matching host Emacs.
+          ((and (< (1+ i) n) (= (aref s (1+ i)) 38))
+           (let ((j (+ i 2)))
+             ;; `#&' is a compact reader prefix.  Do not let the general
+             ;; whitespace/sign tolerant integer parser turn `#& 7' or
+             ;; `#&+7' into a valid literal; GNU Emacs rejects both.
+             (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))
+               (setq j (1+ j)))
+             (when (or (= j (+ i 2))
+                       (not (and (< j n) (= (aref s j) 34))))
+               (signal 'invalid-read-syntax (list "#&")))
+             (let ((bitn (string-to-number (substring s (+ i 2) j))))
+               (let ((k (1+ j)) (started (1+ j)))
+                 (while (and (< k n) (not (= (aref s k) 34)))
+                   (if (= (aref s k) 92) (setq k (+ k 2)) (setq k (1+ k))))
+                 (unless (< k n)
+                   (signal 'invalid-read-syntax (list "#&")))
+                 (let* ((bytes (nelisp--rd-unescape (substring s started k)))
+                        (need (/ (+ bitn 7) 8))
+                        (bv (make-bool-vector bitn nil))
+                        (bi 0))
+                   (when (< (length bytes) need)
+                     (signal 'invalid-read-syntax (list "#&")))
+                   (while (< bi bitn)
+                     (let* ((byte (aref bytes (/ bi 8)))
+                            (boff (mod bi 8)))
+                       (aset bv bi (/= (logand (ash byte (- boff)) 1) 0)))
+                     (setq bi (1+ bi)))
+                   (cons bv (1+ k)))))))
           (t
            (let ((j (1+ i)))
              (while (and (< j n) (>= (aref s j) 48) (<= (aref s j) 57))

@@ -293,6 +293,13 @@ ns-collision 257
 # the host that the hosted copy does not have -- the improper-list tail, the
 # sign-dependent COUNT predicate, the odd-length plist, and `file-missing'
 # with its three fields.  Notes in scripts/nl-ns-accepted.el.
+# 126 -> 128 on 2026-09-08 (T101 bool-vector): the prelude copies of
+# `arrayp', `sequencep', `copy-sequence', `nelisp--append-collect' and
+# `nelisp--prn-to-string' now recognize the packed bool-vector representation
+# and its printer/sequence behavior during standalone bootstrap.  Their
+# hosted counterparts remain substrate-specific; each divergence is pinned
+# below by its exact definition digest and is covered by the T101 focused and
+# Emacs parity cases.  Do not replace these with a count-only baseline.
 # 115 -> 122 on 2026-08-20: `append', `assoc', `file-truename',
 # `macroexp-parse-body', `mod', `plist-get' and the `boundp' shim.  Each
 # prelude copy carries a rule measured against the host that the hosted copy
@@ -738,7 +745,12 @@ ns-prefix-violation 945
 # every other entry already in this ledger for it (lisp/nelisp-env.el,
 # lisp/nelisp-lexframe.el, lisp/nelisp-artifact.el, the two mirror-*
 # modules, several test files) -- not a boundary crossed by accident.
-ns-private-escape 725
+# 725 -> 726 on 2026-09-08: reconciled to the measured tree while closing
+# T101.  This one inherited private escape is present in the 9c4fb8fce base
+# as well as the T101 tree; the bool-vector additions do not introduce a new
+# private cross-file reference.  It remains count-only conceded debt under
+# the policy documented above.
+ns-private-escape 726
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent
@@ -843,7 +855,6 @@ pinned-collision ns-collision	locate-library	lisp/nelisp-stdlib-misc.el scripts/
 pinned-collision ns-collision	make-bool-vector	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	member	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	memq	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp--append-collect	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--bq-build	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--check-list	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--check-number	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el
@@ -915,7 +926,7 @@ pinned-collision ns-collision	prog1	lisp/nelisp-stdlib-eval-special.el scripts/n
 pinned-collision ns-collision	prog2	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	push	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	reverse	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	sequencep	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	sequencep	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	cbe42a12e245
 pinned-collision ns-collision	set-buffer-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	setq-default	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	setq-local	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
@@ -930,7 +941,8 @@ pinned-collision ns-collision-divergent	accept-process-output	packages/nelisp-pr
 pinned-collision ns-collision-divergent	add-to-list	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	2e959e15e953
 pinned-collision ns-collision-divergent	alist-get	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	7f1faf26747a
 pinned-collision ns-collision-divergent	append	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	2277910d2ecd
-pinned-collision ns-collision-divergent	arrayp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	79c6a8dba449
+pinned-collision ns-collision-divergent	nelisp--append-collect	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	6c2a38cade77
+pinned-collision ns-collision-divergent	arrayp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	bf5a41e8a132
 pinned-collision ns-collision-divergent	assoc	lisp/nelisp-stdlib-search.el scripts/nelisp-stdlib-prelude.el	1c6f31b6324b
 pinned-collision ns-collision-divergent	butlast	lisp/nelisp-stdlib-list.el scripts/nelisp-stdlib-prelude.el	7d0524ad6c34
 pinned-collision ns-collision-divergent	byte-compile-file	scripts/nelisp-stdlib-prelude.el src/nelisp-bytecode.el	fd60f8468dac
@@ -942,7 +954,7 @@ pinned-collision ns-collision-divergent	cl-defun	lisp/nelisp-stdlib-eval-special
 pinned-collision ns-collision-divergent	cl-remove-if-not	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	6fc2ba48ca8d
 pinned-collision ns-collision-divergent	clrhash	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	28724fb94126
 pinned-collision ns-collision-divergent	cond	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	8f47ca1817eb
-pinned-collision ns-collision-divergent	copy-sequence	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	b517c003fc8a
+pinned-collision ns-collision-divergent	copy-sequence	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	851201960e78
 pinned-collision ns-collision-divergent	copy-tree	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	d3ea48d63d91
 pinned-collision ns-collision-divergent	define-error	lisp/nelisp-stdlib-error.el scripts/nelisp-stdlib-prelude.el	23dfe8f3d73f
 pinned-collision ns-collision-divergent	defun	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	91d01aa6ff27
@@ -993,7 +1005,7 @@ pinned-collision ns-collision-divergent	nelisp--bq-expand-list	lisp/nelisp-cl-ma
 pinned-collision ns-collision-divergent	nelisp--emit-to-stream	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	6259062234bd
 pinned-collision ns-collision-divergent	nelisp--make-record	lisp/nelisp-heap-image.el scripts/nelisp-stdlib-prelude.el	8dafd3358494
 pinned-collision ns-collision-divergent	nelisp--prn-record	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	4cf6166f2172
-pinned-collision ns-collision-divergent	nelisp--prn-to-string	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	efe6abf25e00
+pinned-collision ns-collision-divergent	nelisp--prn-to-string	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	02bc23dcf2b1
 pinned-collision ns-collision-divergent	nelisp--record-length	lisp/nelisp-heap-image.el scripts/nelisp-stdlib-prelude.el	6436a2c11458
 pinned-collision ns-collision-divergent	nelisp--record-ref	lisp/nelisp-heap-image.el scripts/nelisp-stdlib-prelude.el	da50f1639220
 pinned-collision ns-collision-divergent	nelisp--record-set	lisp/nelisp-heap-image.el scripts/nelisp-stdlib-prelude.el	cd137b492fcd
@@ -1135,7 +1147,6 @@ pinned-collision ns-collision	nelisp-cl-generic--current-name	lisp/nelisp-cl-mac
 pinned-collision ns-collision	nelisp-cl-generic--dispatch-table	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--ensure	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--ensure-conditions	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-cl-generic--eql-match	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--invoke	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--make-dispatcher	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--next-methods	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el

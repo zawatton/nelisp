@@ -36,6 +36,7 @@
 ;;   11  SharpsParen `#s('
 ;;   12  CharTableBracket `#^[' / `#^^['
 ;;   13  PropertizedString `#('
+;;   14  BoolVectorSharp `#&'
 ;;   20  Int                   payload = Sexp::Str of digit text
 ;;   21  Float                 payload = Sexp::Str of text
 ;;   22  Str                   payload = Sexp::Str of resolved body
@@ -984,7 +985,7 @@
 
     ;; ===========================================================
     ;; Sharpsign dispatch: `#'' / `##' / `#(' / `#N='/`#N#' / `#s(' /
-    ;; `#^[' / `#^^[' / `#x..' / `#o..' / `#b..' / fail.
+    ;; `#^[' / `#^^[' / `#&' / `#x..' / `#o..' / `#b..' / fail.
     ;; ===========================================================
 
     (defun nelisp_reader_lex_sharpsign
@@ -1000,6 +1001,10 @@
          ;; storage yet, so the remaining range/plist items are discarded.
          ((= (str-byte-at str-ptr (+ cursor 1)) 40)
           (nelisp_reader_emit_double cursor-out-slot cursor 13))
+         ;; `#&' -> BoolVectorSharp (kind 14).  The parser consumes the
+         ;; following decimal length and byte string as ordinary forms.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 38)
+          (nelisp_reader_emit_double cursor-out-slot cursor 14))
          ;; `##' is a complete 2-byte token on its own, exactly like real
          ;; Emacs: `#' immediately followed by a second `#' reads as the
          ;; empty-name symbol (printed back as `##'), consuming only

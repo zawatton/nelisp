@@ -37,9 +37,9 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 91
+kernel-files 92
 
-# `pinned-kernel-touch NAME' pins the 88 kernel files that actually touch
+# `pinned-kernel-touch NAME' pins the 92 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
 # generated from the clean tree.  Added 2026-08-21 alongside the same fix
 # to ns-gate and parity-coverage: `kernel-files' above is a COUNT, and a
@@ -87,6 +87,9 @@ pinned-kernel-touch lisp/nelisp-cc-frame-ensure-capacity.el
 pinned-kernel-touch lisp/nelisp-cc-frame-push.el
 pinned-kernel-touch lisp/nelisp-cc-jit-access-aref-bool-vector-inner.el
 pinned-kernel-touch lisp/nelisp-cc-jit-access-aset-bool-vector-inner.el
+# T101: packed BoolVector length reads the tag-10 box and writes the result
+# slot through raw-memory primitives.
+pinned-kernel-touch lisp/nelisp-cc-jit-length.el
 pinned-kernel-touch lisp/nelisp-cc-jit-alias.el
 pinned-kernel-touch lisp/nelisp-cc-jit-bool-vector-len.el
 pinned-kernel-touch lisp/nelisp-cc-jit-cons-car-ptr.el
@@ -125,6 +128,9 @@ pinned-kernel-touch lisp/nelisp-cc-rc-kind.el
 pinned-kernel-touch lisp/nelisp-cc-rc-payload-ptr.el
 pinned-kernel-touch lisp/nelisp-cc-rc-strong-count.el
 pinned-kernel-touch lisp/nelisp-cc-reader-parser.el
+# T101: tag-10 BoolVector allocation, packed-byte bit access, and clone-safe
+# box/data layout use raw-memory primitives by construction.
+pinned-kernel-touch lisp/nelisp-cc-nlboolvector-alloc.el
 pinned-kernel-touch lisp/nelisp-cc-rootstack.el
 pinned-kernel-touch lisp/nelisp-cc-sexp-clone-into.el
 # Doc 201 section 6.17's `eq' implementation: reads inline string buffer

@@ -1035,6 +1035,11 @@
        ((= kind 13)
         (nelisp_reader_p_parse_propertized_string
          str-ptr cursor-slot result-slot slot-pool depth))
+       ;; `#&LENGTH"BYTES"' bool-vector literals.  Kind 14 is reserved
+       ;; here because kind 13 is the existing propertized-string token.
+       ((= kind 14)
+        (nelisp_reader_p_parse_bool_vector
+         str-ptr cursor-slot result-slot slot-pool depth))
        ;; Read labels are handled before the generic >=20 leaf arm.
        ((= kind 26)
         (nelisp_reader_p_parse_label_def
@@ -1072,7 +1077,86 @@
                        (nl_sexp_clone_into first result-slot) 1)
                     -1))
               -1)
-          -1)))
+              -1)))
+
+    ;; `#&LENGTH"BYTES"' bool-vector literals.  The prefix is validated
+    ;; before recursive parsing so whitespace and signs cannot be accepted
+    ;; between `#&' and LENGTH, or between LENGTH and the opening quote.
+    (defun nelisp_reader_p_bv_string_tag_p (tag)
+      (if (= tag 5) 1 (if (= tag 6) 1 (if (= tag 14) 1 (if (= tag 15) 1 0)))))
+
+    (defun nelisp_reader_p_bv_str_ptr (s)
+      (if (if (= (ptr-read-u64 s 0) 6) 1 (if (= (ptr-read-u64 s 0) 15) 1 0))
+          (ptr-read-u64 (ptr-read-u64 s 8) 8)
+        (ptr-read-u64 s 16)))
+
+    (defun nelisp_reader_p_bv_str_len (s)
+      (if (if (= (ptr-read-u64 s 0) 6) 1 (if (= (ptr-read-u64 s 0) 15) 1 0))
+          (ptr-read-u64 (ptr-read-u64 s 8) 16)
+        (ptr-read-u64 s 24)))
+
+    (defun nelisp_reader_p_build_bool_vector (n-slot str-slot result-slot)
+      (if (= (ptr-read-u64 n-slot 0) 2)
+          (let* ((n (ptr-read-u64 n-slot 8)))
+            (if (< n 0)
+                -1
+              (if (= (nelisp_reader_p_bv_string_tag_p
+                      (ptr-read-u64 str-slot 0))
+                     1)
+                  (if (>= (nelisp_reader_p_bv_str_len str-slot)
+                          (nl_bv_bytelen n))
+                      (seq (nl_alloc_bool_vector_from_bytes
+                            n (nelisp_reader_p_bv_str_ptr str-slot)
+                            result-slot)
+                           1)
+                    -1)
+                -1)))
+        -1))
+
+    (defun nelisp_reader_p_bool_vector_prefix_p (str-ptr cursor-slot)
+      (let* ((cursor (sexp-int-unwrap cursor-slot)))
+        (if (< cursor (str-len str-ptr))
+            (nelisp_reader_p_is_digit (str-byte-at str-ptr cursor))
+          0)))
+
+    (defun nelisp_reader_p_bool_vector_digits_end (str-ptr i)
+      (if (and (< i (str-len str-ptr))
+               (= (nelisp_reader_p_is_digit (str-byte-at str-ptr i)) 1))
+          (nelisp_reader_p_bool_vector_digits_end str-ptr (+ i 1))
+        i))
+
+    (defun nelisp_reader_p_parse_bool_vector
+        (str-ptr cursor-slot result-slot slot-pool depth)
+      (if (= (nelisp_reader_p_bool_vector_prefix_p str-ptr cursor-slot) 0)
+          -1
+        (let* ((digits-end (nelisp_reader_p_bool_vector_digits_end
+                            str-ptr (sexp-int-unwrap cursor-slot))))
+          (if (and (< digits-end (str-len str-ptr))
+                   (= (str-byte-at str-ptr digits-end) 34))
+              (if (= (nelisp_reader_p_parse_at
+                      str-ptr cursor-slot
+                      (nelisp_reader_p_slot slot-pool
+                                      (nelisp_reader_p_car_idx depth))
+                      slot-pool (+ depth 1))
+                     1)
+                (if (= (nelisp_reader_p_parse_at
+                        str-ptr cursor-slot
+                        (nelisp_reader_p_slot slot-pool
+                                        (nelisp_reader_p_cdr_idx depth))
+                        slot-pool (+ depth 1))
+                       1)
+                    (if (= (nelisp_reader_p_build_bool_vector
+                            (nelisp_reader_p_slot slot-pool
+                                            (nelisp_reader_p_car_idx depth))
+                            (nelisp_reader_p_slot slot-pool
+                                            (nelisp_reader_p_cdr_idx depth))
+                            result-slot)
+                           1)
+                        1
+                      -1)
+                    -1)
+                -1)
+            -1))))
 
     ;; ===========================================================
     ;; Build a (HEAD INNER) quote wrapper at the current depth.

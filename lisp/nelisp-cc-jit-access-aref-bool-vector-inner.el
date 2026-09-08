@@ -56,12 +56,18 @@
 
 (defconst nelisp-cc-jit-access-aref-bool-vector-inner--source
   '(seq
+    (defun nl_jit_access_aref_bv_bitval (off)
+      (cond ((= off 0) 1) ((= off 1) 2) ((= off 2) 4) ((= off 3) 8)
+            ((= off 4) 16) ((= off 5) 32) ((= off 6) 64) (t 128)))
     (defun nl_jit_access_aref_bv_do (payload idx out)
       ;; payload: NlBoolVector* (raw i64).  idx: i64.  out: *mut Sexp.
-      ;; NlBoolVector.value.length at offset 16.
-      ;; NlBoolVector.value.ptr    at offset 8.
-      (if (< idx (ptr-read-u64 payload 16))
-          (if (= (ptr-read-u8 (ptr-read-u64 payload 8) idx) 0)
+      ;; Pure-Elisp box bit length is at offset 0 and packed data at +8.
+      (if (< idx (ptr-read-u64 payload 0))
+          (if (= (logand
+                  (/ (ptr-read-u8 (ptr-read-u64 payload 8) (/ idx 8))
+                     (nl_jit_access_aref_bv_bitval (mod idx 8)))
+                  1)
+                 0)
               (and (sexp-write-nil out) 0)
             (and (sexp-write-t out) 0))
         1))

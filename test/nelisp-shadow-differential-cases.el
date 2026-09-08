@@ -107,6 +107,34 @@
  ;; equal: structure, not identity, and 1 is not 1.0
  (equal '(1 (2 3)) '(1 (2 3))) (equal "a" "a") (equal [1 2] [1 2]) (equal 1 1.0)
  (equal nil nil) (equal '(1 . 2) '(1 . 2))
+ ;; Bool-vectors: packed literals use low-bit-first bytes, constructors are
+ ;; mutable, and the type survives the sequence/printer surface.  These
+ ;; values are intentionally derived through ordinary operations so the
+ ;; corpus catches a representation mismatch as well as a reader mismatch.
+ (let ((v #&9"\001\002"))
+   (list (bool-vector-p v) (length v)
+         (aref v 0) (aref v 1) (aref v 8)
+         (progn (aset v 8 t) (aref v 8))
+         (arrayp v) (sequencep v)
+         (equal v #&9"\001\003")))
+ (let ((v (make-bool-vector 7 t)))
+   (list (bool-vector-p v) (length v) (aref v 6)
+         (progn (aset v 3 nil) (aref v 3))
+         (equal v #&7"\177")))
+ (format "%S" #&0"")
+ (format "%S" #&7"\377")
+ (format "%S" (bool-vector nil 0 t "x"))
+ (list (condition-case e (make-bool-vector t nil) (error (list (car e) (cadr e))))
+       (condition-case e (make-bool-vector 1.0 nil) (error (list (car e) (cadr e))))
+       (condition-case e (aref #&7"x" t) (error (list (car e) (cadr e))))
+       (condition-case e (aset #&7"x" 7 t) (error (list (car e) (cadr e)))))
+ (condition-case e (read-from-string "#&7 \"x\"")
+   (error (list (car e) (cadr e))))
+ (condition-case e (read-from-string "#&+7\"x\"")
+   (error (list (car e) (cadr e))))
+ (list (condition-case e (make-bool-vector) (error (list (car e) (cadr e))))
+       (condition-case e (bool-vector-p) (error (list (car e) (cadr e))))
+       (condition-case e (aref #&7"x" 7) (error (list (car e) (cadr e)))))
  ;; natnump
  (natnump 3) (natnump 0) (natnump -1) (natnump "x")
  ;; A leading string is a docstring only when something follows it.  When it
@@ -726,9 +754,6 @@
  ;; `remove' is type-preserving: answering a list of character codes for a
  ;; string is a different TYPE flowing into whatever the caller does next.
  ;; `string-lessp' takes a string OR a symbol, like `string='.
- ;; NOTE: `bool-vector' is NOT compared here -- Emacs prints #&3"" for a
- ;; distinct object type this runtime does not have (recorded in
- ;; tools/partial-accepted.txt); the values agree under `aref' and `length'.
  (list (condition-case e (string-lessp 1 "a") (error e))
        (string-lessp 'a "b") (string-lessp "a" "b")
        (condition-case e (string-greaterp 1 "a") (error e)) (string-greaterp "b" "a")

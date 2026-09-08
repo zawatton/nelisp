@@ -2262,8 +2262,9 @@ arm64 Linux has no legacy x86 numbering)."
 ;;                   {i64 key,32-byte Sexp} rows, parent box ptr@+88,
 ;;                   extra {ptr@+96,cap@+104,len@+112} of 32-byte Sexps,
 ;;                   rc@+120.
-;;   BoolVector (tag 10): box+8 data_ptr, box+16 len, box+24 rc;
-;;                   data_ptr -> raw byte buffer (no Sexp kids).
+  ;;   BoolVector (tag 10): box+0 bit_len, box+8 data_ptr,
+  ;;                   box+16 byte_len, box+24 rc; data_ptr -> packed
+  ;;                   low-bit-first byte buffer (no Sexp kids).
 ;;   Bignum (tag 13, Doc 190 Phase A): sign@sp+8 (0/1), limb-ptr@sp+16,
 ;;                   limb-count@sp+24 -- inline pointer+len, same shape as
 ;;                   Str above (no boxed refcounted structure); limb-ptr ->
@@ -10381,6 +10382,47 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (bf_unibyte_fill ms args)
              (mut-str-finalize ms out)
              0)))
+    ;; make-bool-vector LENGTH INIT -> BoolVector(tag10), backed by
+    ;; `nl_alloc_bool_vector' (lisp/nelisp-cc-nlboolvector-alloc.el).
+    ;; LENGTH must be a non-negative fixnum; Emacs signals `(wrong-type-
+    ;; argument wholenump LENGTH)' otherwise (both non-integer and
+    ;; negative-integer share that same predicate name).
+    (defun bf_make_bool_vector (args out)
+      (let* ((argc (bf_vec_count args 0)))
+        (if (= argc 2)
+            (let* ((len_ptr (wf_arg_ptr args 0))
+                   (init_ptr (wf_arg_ptr args 1)))
+              (if (= (ptr-read-u64 len_ptr 0) 2)
+                  (if (< (ptr-read-u64 len_ptr 8) 0)
+                      (bf_wrong_type_wholenump len_ptr)
+                    (seq (nl_alloc_bool_vector
+                          (ptr-read-u64 len_ptr 8)
+                          (if (= (ptr-read-u64 init_ptr 0) 0) 0 1)
+                          out)
+                         0))
+                (bf_wrong_type_wholenump len_ptr)))
+          (bf_wrong_number_of_args_bool_vector argc))))
+    ;; bool-vector &rest ARGS -> BoolVector(tag10), each ARG's truthiness
+    ;; (nil -> 0, anything else -> 1) becomes one bit, in argument order.
+    (defun nl_bv_fill_from_args (data i node)
+      (if (= (ptr-read-u64 node 0) 7)
+          (seq (nl_bv_bit_set data i
+                              (if (= (ptr-read-u64 (nl_cons_car_ptr node) 0) 0)
+                                  0 1))
+               (nl_bv_fill_from_args data (+ i 1) (nl_cons_cdr_ptr node)))
+        1))
+    (defun bf_bool_vector (args out)
+      (let* ((n (bf_vec_count args 0)))
+        (seq (nl_alloc_bool_vector n 0 out)
+             (nl_bv_fill_from_args (ptr-read-u64 (ptr-read-u64 out 8) 8) 0 args)
+             0)))
+    (defun bf_bool_vector_p (args out)
+      (let* ((argc (bf_vec_count args 0)))
+        (if (= argc 1)
+            (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 10)
+                (wf_write_t out)
+              (wf_write_nil out))
+          (bf_wrong_number_of_args_bool_vector_p argc))))
     ;; aref ARR IDX: vector -> copy slot[idx]; string -> int byte at idx.
     ;; Out-of-range now signals `(args-out-of-range ARRAY INDEX)' as Emacs
     ;; does.  It used to answer nil, which is indistinguishable from a slot
@@ -11006,6 +11048,59 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (bf_wrong_type_named offender 8102650174351109737 0 0 8))
     (defun bf_wrong_type_characterp (offender)
       (bf_wrong_type_named offender 7310577365311121507 28786 0 10))
+    ;; `make-bool-vector's LENGTH argument: Emacs signals `(wrong-type-
+    ;; argument wholenump N)' for a negative or non-integer length.
+    (defun bf_wrong_type_wholenump (offender)
+      (bf_wrong_type_named offender 7887331704299284599 112 0 9))
+    ;; New native bool-vector entry points must report arity errors before
+    ;; dereferencing an argument slot.  Keep the condition data in the same
+    ;; shape as the other standalone errors: (FUNCTION ARGCOUNT).
+    (defun bf_wrong_number_of_args_bool_vector (argc)
+      (let* ((wbuf (alloc-bytes 32 1))
+             (fbuf (alloc-bytes 16 1))
+             (fsym (alloc-bytes 32 8))
+             (count (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8))
+             (data-tail (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 wbuf 0 8461750672133419639)
+         (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
+         (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
+         (ptr-write-u64 (+ wbuf 24) 0 115)
+         (nl_alloc_symbol wbuf 25 268435480)
+         (ptr-write-u64 fbuf 0 8029744607739470189)
+         (ptr-write-u64 (+ fbuf 8) 0 8245937412991495532)
+         (nl_alloc_symbol fbuf 16 fsym)
+         (wf_write_int count argc)
+         (wf_write_nil nil-slot)
+         (nelisp_cons_construct count nil-slot data-tail)
+         (nelisp_cons_construct fsym data-tail 268435512)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         1)))
+    (defun bf_wrong_number_of_args_bool_vector_p (argc)
+      (let* ((wbuf (alloc-bytes 32 1))
+             (fbuf (alloc-bytes 16 1))
+             (fsym (alloc-bytes 32 8))
+             (count (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8))
+             (data-tail (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 wbuf 0 8461750672133419639)
+         (ptr-write-u64 (+ wbuf 8) 0 3271424420314702445)
+         (ptr-write-u64 (+ wbuf 16) 0 8389754676633367137)
+         (ptr-write-u64 (+ wbuf 24) 0 115)
+         (nl_alloc_symbol wbuf 25 268435480)
+         (ptr-write-u64 fbuf 0 7162260719867490146)
+         (ptr-write-u64 (+ fbuf 8) 0 481798811508)
+         (nl_alloc_symbol fbuf 13 fsym)
+         (wf_write_int count argc)
+         (wf_write_nil nil-slot)
+         (nelisp_cons_construct count nil-slot data-tail)
+         (nelisp_cons_construct fsym data-tail 268435512)
+         (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
+         1)))
     ;; ONE walk, in argument order: each byte is type-checked and then
     ;; range-checked before the next is looked at, because Emacs reports
     ;; whichever fails FIRST -- (unibyte-string -1 'sym) names -1, not the
@@ -11164,7 +11259,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     (defun bf_arrayp_raw (p)
       (let* ((tg (ptr-read-u64 p 0)))
         (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1
-          (if (= tg 15) 1 (if (= tg 8) 1 0)))))))
+          (if (= tg 15) 1 (if (= tg 8) 1 (if (= tg 10) 1 0))))))))
     (defun bf_wrong_type_hash_table (offender)
       (let* ((wbuf (alloc-bytes 24 1))
              (cbuf (alloc-bytes 16 1))
