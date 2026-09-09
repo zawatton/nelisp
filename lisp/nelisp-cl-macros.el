@@ -1685,12 +1685,17 @@ is unspecialized (§2.1/§3.1).  The method body can call
            (kind (plist-get spec :kind))
            (type-name (plist-get spec :type-name))
            (value-form (and (eq kind 'eql) (plist-get spec :value-form)))
+           ;; A bare symbol in an EQL specializer is data (e.g. `markdown'),
+           ;; while compound forms remain evaluated at method definition time.
+           (value-expr (if (symbolp value-form)
+                           (list 'quote value-form)
+                         value-form))
            (head-value (and (eq kind 'head) (plist-get spec :head-value))))
       `(prog1 ',name
          (nelisp-cl-generic--ensure ',name)
          (nelisp-cl-generic--register-method
           ',name
-          (list :kind ',kind :type-name ',type-name :value ,value-form
+          (list :kind ',kind :type-name ',type-name :value ,value-expr
                 :head-value ',head-value
                 :subclass-name ',(plist-get spec :subclass-name)
                 :specializers
@@ -1703,7 +1708,10 @@ is unspecialized (§2.1/§3.1).  The method body can call
                         `(cons ,pos
                                (list :kind ',skind
                                      :type-name ',(plist-get sp :type-name)
-                                     :value ,(plist-get sp :value-form)
+                                     :value ,(let ((v (plist-get sp :value-form)))
+                                               (if (symbolp v)
+                                                   (list 'quote v)
+                                                 v))
                                      :head-value ',(plist-get sp :head-value)
                                      :subclass-name ',(plist-get sp :subclass-name)))))
                     specializers))

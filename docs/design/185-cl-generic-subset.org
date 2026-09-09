@@ -777,7 +777,7 @@ failure to cite alongside it.
 | unspecialized (bare arg, implicit =t=) | yes | always matches, lowest specificity |
 | =(ARG TYPE)=, TYPE a =cl-typep= builtin (integer/string/...) | yes | =cl-typep= unchanged (§2.1a) |
 | =(ARG TYPE)=, TYPE a =cl-defstruct= name | yes | =nelisp--record-type= + =nelisp-cl-macros--struct-isa= (§2.1a) |
-| =(ARG (eql VALUE))= | yes | =eql= comparison, highest specificity |
+| =(ARG (eql VALUE))= | yes | =eql= comparison, highest specificity; bare symbol VALUE is literal data, while compound VALUE forms are evaluated at definition time |
 | =(ARG (head VALUE))= | yes (T59 addendum, see Addendum 2 above) | cons whose =car= is =eql= to VALUE; priority between =eql= and any type match |
 | =(ARG (subclass CLASS))= | yes (T102 addendum) | class designator or =(subclass CLASS)= data form equal to CLASS or one of its known parents; priority below =head= and above ordinary types |
 | list-head grammar beyond plain =(head VALUE)=, e.g. multiple VALUEs | *no* | loud error if written (§3.5) -- a deliberate, documented stricter-than-real-Emacs choice (Addendum 2) |

@@ -272,6 +272,16 @@ exactly like docs/design/185-cl-generic-subset.org §5.1's own example."
   (should (eq 'special-form (cgt-render 'special)))
   (should (eq 'fallback (cgt-render 'anything-else))))
 
+(nelisp-cl-generic-deftest nelisp-cl-generic/eql-symbol-literal-and-expression ()
+  "EQL symbol literals are descriptor data, while compound values retain
+definition-time evaluation.  This matches real `cl-defmethod' and covers
+the unbound symbol form used by `llm.el' (`markdown')."
+  (cl-defgeneric cgt-eql-literal (x))
+  (cl-defmethod cgt-eql-literal ((x (eql markdown))) 'markdown-literal)
+  (cl-defmethod cgt-eql-literal ((x (eql (+ 3 4)))) 'seven-expression)
+  (should (eq 'markdown-literal (cgt-eql-literal 'markdown)))
+  (should (eq 'seven-expression (cgt-eql-literal 7))))
+
 (nelisp-cl-generic-deftest nelisp-cl-generic/eql-specializer-outranks-type-specializer ()
   (cl-defgeneric cgt-eql-vs-type (x))
   (cl-defmethod cgt-eql-vs-type ((x integer)) 'as-integer)
