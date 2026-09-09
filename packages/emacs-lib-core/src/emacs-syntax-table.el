@@ -318,12 +318,9 @@ trailing flag characters are ignored."
 CHAR may be a single character or a (MIN . MAX) range cons.  Returns nil."
   (let ((tbl (or table (emacs-syntax-table-current)))
         (syn (emacs-syntax-table-string-to-syntax descriptor)))
-    (if (consp char)
-        (let ((c (car char)) (hi (cdr char)))
-          (while (<= c hi)
-            (emacs-char-table-set tbl c syn)
-            (setq c (1+ c))))
-      (emacs-char-table-set tbl char syn))
+    ;; Keep supra-ASCII ranges sparse.  Expanding XML's #x10000..#xEFFFF
+    ;; range one codepoint at a time made loading `xml.el' effectively hang.
+    (emacs-char-table-set-range tbl char syn)
     nil))
 
 (defun emacs-syntax-table-char-syntax (char &optional table)
