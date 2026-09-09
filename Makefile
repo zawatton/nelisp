@@ -3855,6 +3855,12 @@ standalone-reader-prelude-test:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-prelude-test
 
+.PHONY: standalone-reader-func-arity-test
+standalone-reader-func-arity-test:
+	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-func-arity-test
+
 # Zero-Rust standalone reader distribution.  Builds a short `bin/nelisp`
 # (`bin/nelisp.exe` for windows-x86_64) tarball for the requested platform.
 #   make standalone-tarball PLATFORM=linux-x86_64

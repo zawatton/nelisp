@@ -27266,6 +27266,7 @@ loader when it is absent."
                                  nelisp-standalone--reader-repl-smoke
                                  nelisp-standalone--reader-control-flow-smoke
                                  nelisp-standalone--reader-malformed-input-smoke
+                                 nelisp-standalone--reader-func-arity-smoke
                                  nelisp-standalone--reader-form-location-smoke
                                  nelisp-standalone--reader-stage3-rootstack-smoke
                                  nelisp-standalone--reader-frame-stack-pop-desync-smoke
@@ -29781,6 +29782,39 @@ smoke.  Exits 0/1."
   "Loadable stdlib prelude (defmacro bootstrap + core macros + list/search/hof/
 plist/backquote lib).  The binary loads it via file-load before user code; see
 its header for the `cat PRELUDE yourfile.el | binary' usage.")
+
+(defun nelisp-standalone--reader-func-arity-smoke ()
+  "Exercise `func-arity' for native, lambda, closure, and macro values."
+  (let* ((script (make-temp-file "nelisp-func-arity-smoke-" nil ".el"))
+         (src (concat
+               "(defun nelisp-fa-required (a b) (+ a b))\n"
+               "(let ((checks (list (equal (func-arity 'car) '(1 . 1))\n"
+               "                    (equal (func-arity '+) '(0 . many))\n"
+               "                    (equal (func-arity 'list) '(0 . many))\n"
+               "                    (equal (func-arity 'nelisp-fa-required) '(2 . 2))\n"
+               "                    (equal (func-arity '(lambda (a &optional b) a)) '(1 . 2))\n"
+               "                    (equal (func-arity '(lambda (a &rest b) a)) '(1 . many))\n"
+               "                    (equal (func-arity 'when) '(1 . many)))))\n"
+               "  (if (equal checks '(t t t t t t t))\n"
+               "      0 (error \"func-arity smoke mismatch: %S\" checks)))\n"))
+         (out nil) (rc nil))
+    (unwind-protect
+        (progn
+          (with-temp-file script (insert src))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "--load" script))
+            (setq out (buffer-string)))
+          (unless (= rc 0)
+            (error "func-arity smoke: exit=%S stdout=%S" rc out))
+          (message "[standalone-reader] func-arity smoke PASS"))
+      (ignore-errors (delete-file script)))))
+
+;;;###autoload
+(defun nelisp-standalone-reader-func-arity-test ()
+  "Build the reader binary and run only the `func-arity' smoke.  Exits 0/1."
+  (nelisp-standalone--run-focused-reader-test
+   "func-arity" #'nelisp-standalone--reader-func-arity-smoke))
 
 (defun nelisp-standalone--prelude-breadth-test-src ()
   "Breadth test exercising the Wave-1 (B) primitives + the prelude macros.

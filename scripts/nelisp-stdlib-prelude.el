@@ -11646,6 +11646,84 @@ any other -- to find the final function binding and return it."
     (let ((def (indirect-function object)))
       (and (consp def) (eq (car def) 'macro) t))))
 
+;; `func-arity' is a core introspection primitive in GNU Emacs, but the
+;; standalone reader has no function metadata beyond its callable shape.
+;; Recover the exact range for lambdas/closures by walking their formal list;
+;; native `(builtin NAME)' values use the small fixed-arity table below.  The
+;; open range is deliberately represented by `many', matching Emacs.
+(unless (fboundp 'func-arity)
+  (defun nelisp--func-arity-formals (formals)
+    "Return the (MIN . MAX) arity range described by FORMALS."
+    (let ((cur formals) (min 0) (max 0) (mode 'required))
+      (while (consp cur)
+        (let ((arg (car cur)))
+          (cond
+           ((eq arg '&optional) (setq mode 'optional))
+           ((eq arg '&rest) (setq mode 'rest max 'many))
+           ((eq mode 'required) (setq min (1+ min) max (1+ max)))
+           ((eq mode 'optional)
+            (unless (eq max 'many) (setq max (1+ max))))
+           ;; A malformed tail is reported below after the loop.  Lists in
+           ;; a cl-defun optional slot still count as one argument.
+           ((eq mode 'rest) nil)
+           (t (signal 'wrong-type-argument (list 'symbolp arg)))))
+        (setq cur (cdr cur)))
+      (when cur
+        (signal 'wrong-type-argument (list 'listp cur)))
+      (cons min max)))
+
+  (defun nelisp--func-arity-builtin (name)
+    "Return the arity range for standalone native builtin NAME.
+Unknown native helpers are intentionally treated as variadic: they remain
+callable, and this is the only metadata the reader can provide for an
+unlisted OS-specific entry point."
+    (cond
+     ((memq name '(car cdr car-safe atom consp listp null not stringp
+                       symbolp integerp bignump natnump numberp floatp
+                       vectorp functionp length symbol-name symbol-value
+                       fboundp boundp featurep intern-soft make-symbol
+                       type-of identity ignore abs 1+ 1- floor truncate
+                       ceiling float-time prin1-to-string number-to-string
+                       string-bytes string-byte string-match-p
+                       char-to-string string-to-char))
+      '(1 . 1))
+     ((memq name '(cons eq eql equal setcar setcdr nth nthcdr elt aref
+                       aset rassoc string= string< string-search
+                       make-vector make-string fset signal string-match))
+      '(2 . 2))
+     ((memq name '(+ * max min append list concat vector))
+      '(0 . many))
+     ((memq name '(- /)) '(1 . many))
+     ((memq name '(format)) '(1 . many))
+     ((memq name '(message princ terpri error)) '(0 . many))
+     ((memq name '(require provide)) '(1 . 2))
+     ((memq name '(gethash)) '(2 . 3))
+     ((memq name '(puthash)) '(3 . 3))
+     ((memq name '(remhash)) '(2 . 2))
+     ((memq name '(mod % /= < <= > >= = ash logand logior logxor lognot))
+      '(2 . many))
+     (t '(0 . many))))
+
+  (defun func-arity (function)
+    "Return (MIN . MAX), the number of arguments accepted by FUNCTION."
+    (let ((fn (if (symbolp function)
+                  (indirect-function function)
+                function)))
+      (cond
+       ((and (consp fn) (eq (car fn) 'macro))
+        (let ((inner (cdr fn)))
+          (when (and (consp inner)
+                     (not (memq (car inner) '(closure lambda))))
+            (setq inner (car inner)))
+          (func-arity inner)))
+       ((and (consp fn) (eq (car fn) 'builtin))
+        (nelisp--func-arity-builtin (car (cdr fn))))
+       ((and (consp fn) (eq (car fn) 'closure))
+        (nelisp--func-arity-formals (car (cdr (cdr fn)))))
+       ((and (consp fn) (eq (car fn) 'lambda))
+        (nelisp--func-arity-formals (car (cdr fn))))
+       (t (signal 'invalid-function (list fn)))))))
+
 (unless (fboundp 'commandp)
   (defun commandp (function &optional for-call-interactively)
     "Non-nil if FUNCTION makes provisions for interactive calling.
