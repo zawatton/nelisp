@@ -638,7 +638,15 @@ ns-collision-divergent 127
 # not a drift.
 # 945 -> 946 on r11 integration: one additional internal helper reference;
 # this count-only debt remains covered by the existing namespace policy.
-ns-prefix-violation 946
+# 946 -> 947 on 2026-09-10 (func-arity focused reader smoke):
+# `nelisp-standalone-reader-func-arity-test' is the public autoloaded entry
+# point for that focused smoke in `scripts/nelisp-standalone-build.el'.  The
+# file's inferred namespace is `nelisp-standalone--', so its deliberate
+# single-dash public name contributes one count-only prefix finding.  The
+# compatibility `func-arity' definition is in the mixed, deliberately global
+# `scripts/nelisp-stdlib-prelude.el' (namespace inference returns nil), and
+# is not the new finding.
+ns-prefix-violation 947
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file

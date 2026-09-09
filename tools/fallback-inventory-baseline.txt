@@ -196,7 +196,7 @@ silent-fallback        62
 # `nelisp-standalone--reader-ipv6-socket-smoke' ends with the same
 # best-effort `(ignore-errors (delete-file script))' temp-file cleanup
 # every sibling `reader-*-smoke' uses; pinned below.
-ignore-errors   73
+ignore-errors   74
 # 34 -> 32 on 2026-08-19: the two handlers in
 # `nelisp-artifact--ensure-native-compiler' now record the error instead of
 # discarding it.  Between them they had hidden a chain of six failures --
@@ -429,6 +429,13 @@ pinned-site silent-fallback	nelisp-thread-mirror-guard-smoke.el	let	0da415661074
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--read-dispatch	09db60440f5b 1
 pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--read-dispatch	b8f010e02ef9 1
 pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--read-dispatch	25164537bb15 1
+# 2026-09-10 (func-arity focused reader smoke): the smoke's
+# `unwind-protect' uses best-effort `(ignore-errors (delete-file script))'
+# cleanup, the same temp-file cleanup idiom used by every sibling
+# `reader-*-smoke'.  A failed deletion cannot change the already-checked
+# subprocess result, so this is a legitimate pinned site rather than a
+# silent fallback on a correctness path.
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--reader-func-arity-smoke	c143a5fded43 1
 # 2026-09-09 (v1.2.2): subclass dispatch probes deliberately tolerate
 # unavailable EIEIO class helpers.  The hosted cl-macros implementation and
 # its standalone prelude mirror each contain the same six `ignore-errors'
