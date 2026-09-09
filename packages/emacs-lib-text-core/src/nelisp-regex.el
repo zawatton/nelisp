@@ -422,7 +422,7 @@ every Emacs regexp with a backslash inside a bracket expression (cc-mode's
       (signal 'nelisp-rx-syntax-error '("unterminated class")))
      (t (nelisp-rx--advance) c))))
 
-(define-error 'nelisp-rx-syntax-error "Invalid regex syntax")
+(define-error 'nelisp-rx-syntax-error "Invalid regex syntax" 'invalid-regexp)
 
 ;;; --------------------------------------------------------------------------
 ;;; NFA construction (Thompson)

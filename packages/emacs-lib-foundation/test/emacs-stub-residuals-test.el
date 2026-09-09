@@ -174,7 +174,9 @@ Restore the original host bindings afterwards."
                   emacs-stub--run-with-idle-timer
                   emacs-stub--cancel-timer
                   line-number-display-width
-                  syntax-propertize-rules cc-require cc-provide
+                  syntax-propertize-rules cc-require cc-require-when-compile
+                  cc-external-require cc-bytecomp-defvar cc-bytecomp-defun
+                  cc-provide
                   version-to-list version-list-< version-list-<=
                   version< version<= combine-change-calls define-advice
                   c-add-style
@@ -1100,6 +1102,10 @@ shape whose only signal is the naive test."
         (should (string-match-p "defmacro syntax-propertize-rules" source))
         (should (string-match-p "defun make-syntax-table" source))
         (should (string-match-p "defmacro cc-require" source))
+        (should (string-match-p "defmacro cc-require-when-compile" source))
+        (should (string-match-p "defmacro cc-external-require" source))
+        (should (string-match-p "defmacro cc-bytecomp-defvar" source))
+        (should (string-match-p "defmacro cc-bytecomp-defun" source))
         (should (string-match-p "defmacro cc-provide" source))
         (should (string-match-p "defun version<" source))
         (should (string-match-p "defun version<=" source))
@@ -1107,6 +1113,34 @@ shape whose only signal is the naive test."
         (should (string-match-p "defmacro define-advice" source))
         (should (string-match-p "defun c-add-style" source))
         (should (string-match-p "cpp-font-lock-keywords" source))))))
+
+(ert-deftest emacs-stub-residuals-test/cc-fallback-macros-preserve-runtime-shape ()
+  "CC fallback wrappers require dependencies while bytecomp declarations vanish."
+  (let* ((symbols '(cc-require cc-require-when-compile cc-external-require
+                    cc-bytecomp-defvar cc-bytecomp-defun))
+         (saved (mapcar (lambda (symbol)
+                          (cons symbol (and (fboundp symbol)
+                                            (symbol-function symbol))))
+                        symbols)))
+    (unwind-protect
+        (progn
+          ;; The repository may contain an older .elc; exercise the source
+          ;; mirror that standalone loading uses for this surface.
+          (dolist (symbol symbols)
+            (fmakunbound symbol))
+          (load-file (emacs-stub-residuals-test--source-file "emacs-stub"))
+          (should (equal (macroexpand-1 '(cc-require 'cc-defs))
+                         '(require 'cc-defs)))
+          (should (equal (macroexpand-1 '(cc-require-when-compile feature))
+                         '(require feature)))
+          (should (equal (macroexpand-1 '(cc-external-require feature))
+                         '(require feature)))
+          (should (null (macroexpand-1 '(cc-bytecomp-defvar feature))))
+          (should (null (macroexpand-1 '(cc-bytecomp-defun feature)))))
+      (dolist (entry saved)
+        (if (cdr entry)
+            (fset (car entry) (cdr entry))
+          (fmakunbound (car entry)))))))
 
 (ert-deftest emacs-stub-residuals-test/help-macro-shims-present ()
   (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))

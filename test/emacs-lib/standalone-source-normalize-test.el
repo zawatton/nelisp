@@ -101,6 +101,78 @@ that walks down into the guarded definition."
     (standalone-source-normalize-top-level-forms
      '(eval-when-compile (require 'gnus-sum))))))
 
+(ert-deftest standalone-source-normalize-test/retains-cc-bytecomp-bootstrap ()
+  "CC Mode's compile-time loader is needed by its runtime macros."
+  (let ((form '(eval-when-compile
+                 (let ((load-path (cons "same-dir" load-path)))
+                   (load "cc-bytecomp" nil t)))))
+    (should
+     (equal
+      (standalone-source-normalize-top-level-forms form)
+      '((let ((load-path (cons "same-dir" load-path)))
+          (load "cc-bytecomp" nil t)))))))
+
+(ert-deftest standalone-source-normalize-test/drops-unrelated-compile-bootstrap ()
+  "Only the CC bytecomp loader bypasses the compile-only elision."
+  (should
+   (null
+    (standalone-source-normalize-top-level-forms
+     '(eval-when-compile (load "other-compiler-helper" nil t)))))
+  (should
+   (null
+    (standalone-source-normalize-top-level-forms
+     '(eval-when-compile (require 'gnus-sum))))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-cc-require-when-compile ()
+  "CC Mode's compile-only wrapper becomes a direct runtime dependency."
+  (should
+   (equal
+    (standalone-source-normalize-top-level-forms
+     '(cc-require-when-compile 'cc-langs))
+    '((require 'cc-langs)))))
+
+(ert-deftest standalone-source-normalize-test/rewrites-cc-require-wrappers ()
+  (should
+   (equal
+    (standalone-source-normalize-top-level-forms '(cc-require 'cc-defs))
+    '((require 'cc-defs))))
+  (should
+   (equal
+    (standalone-source-normalize-top-level-forms
+     '(cc-external-require c--cl-library))
+    '((require c--cl-library))))
+  (should
+   (equal
+    (standalone-source-normalize-top-level-forms
+     '(cc-require (if enabled 'cc-defs 'cc-vars)))
+    '((require (if enabled 'cc-defs 'cc-vars)))))
+  (should
+   (null
+    (standalone-source-normalize-top-level-forms
+     '(cc-require 'cc-defs extra)))))
+
+(ert-deftest standalone-source-normalize-test/preserves-conditional-cc-require ()
+  "A conditional wrapper remains conditional during top-level normalization."
+  (should
+   (equal
+    (standalone-source-normalize-top-level-forms
+     '(if enabled
+          (cc-require 'cc-defs)
+        (cc-require 'cc-vars)))
+    '((if enabled
+        (cc-require 'cc-defs)
+        (cc-require 'cc-vars))))))
+
+(ert-deftest standalone-source-normalize-test/drops-cc-bytecomp-declarations ()
+  (should
+   (null
+    (standalone-source-normalize-top-level-forms
+     '(cc-bytecomp-defvar adaptive-fill-first-line-regexp))))
+  (should
+   (null
+    (standalone-source-normalize-top-level-forms
+     '(cc-bytecomp-defun run-mode-hooks)))))
+
 (ert-deftest standalone-source-normalize-test/drops-top-level-org-version-assertion ()
   (should
    (null

@@ -856,6 +856,31 @@ plain substring check is applied here."
                  tail)
                "\n)"))))
 
+  (defun nelisp--load-eval-source-declined-form (source pos form-end)
+    "Evaluate one form whose native read was declined.
+Return a cons of the evaluated value and the byte position immediately after
+the form.  The caller has already bounded the form with the structural
+scanner, so a reader limitation on one form does not send all remaining
+SOURCE through the slow fallback or lose the following forms.  Reuse the tail
+evaluator for the isolated range so its existing `cc-provide' and `defalias'
+normalization remains identical to the large-form path."
+    (cons (nelisp--load-eval-source-tail source pos form-end)
+          form-end))
+
+  (defun emacs-load--artifact-source-decline-boundary (reader source pos)
+    "Call READER for a declined form boundary, returning nil on scan failure.
+Generic scanner errors are converted to nil; non-generic condition classes
+retain their original signal.  This lets the incremental loader fall back to
+its large-source evaluator, which then reports malformed input in the same way
+as the old path."
+    (condition-case caught
+        (funcall reader source pos)
+      (end-of-file nil)
+      (error
+       (if (and (consp caught) (eq (car caught) 'error))
+           nil
+         (signal (car caught) (cdr caught))))))
+
   (defun nelisp--load-eval-source-incremental (source)
     "Read and eval SOURCE top-level forms one at a time.
 Return the value of the last form.  This deliberately avoids
@@ -867,18 +892,14 @@ first (`emacs-load--native-read-one'): fast, and it avoids both our own
 per-character form-boundary scan (`emacs-load--artifact-source-form-end')
 and `read-from-string''s elisp fallback reader for the common case of an
 ordinary, moderately-sized form.  If the native reader declines for the
-form starting at the current position -- in practice this only happens
-when that one form's own content (typically a single huge literal
-list/vector, e.g. an icon-name-to-codepoint data table) exceeds the
-native reader's internal element budget -- both of those fallbacks are
-O(form length) with a per-character constant high enough to turn one
-big literal into a multi-minute-or-worse stall: T78 measured the
-per-character elisp scan and the `read-from-string' elisp fallback
-together costing ~195s to read a single ~50KB/1600-element literal that
-`nelisp--eval-source-string' reads and evaluates in ~0.01s.  Escape to
-`nelisp--load-eval-source-tail' for the remainder of SOURCE instead of
-paying that cost; this is safe on runtimes that lack the native probe
-primitive too, since that case falls through to the original per-form
+form starting at the current position, the loader scans its boundary with
+`emacs-load--artifact-source-form-end' against the full SOURCE.  A form with
+a valid boundary is evaluated alone and native probing resumes at the next
+form.  If boundary scanning fails, the loader escapes to
+`nelisp--load-eval-source-tail' for the remainder of SOURCE.  This retains
+the T78 fast path for malformed or otherwise unscannable source while
+avoiding a whole-tail fallback for one large container.
+Runtimes without the native probe continue through the original per-form
 scan unchanged."
     (setq source (emacs-load--byte-indexed-source source))
     (let ((pos 0)
@@ -898,10 +919,22 @@ scan unchanged."
                    (nelisp--load-rewrite-defalias-form (car probe))))
             (setq pos (cdr probe)))
            (native-probe-available
-            ;; The native reader is present but declined for the form
-            ;; starting at POS -- see the docstring above.
-            (setq last (nelisp--load-eval-source-tail source pos len))
-            (setq pos len))
+            ;; The native reader declined the form starting at POS.  Scan its
+            ;; boundary against the full source so a large container can be
+            ;; isolated without sending the following forms through tail.
+            (let ((form-end
+                   (emacs-load--artifact-source-decline-boundary
+                    #'emacs-load--artifact-source-form-end source pos)))
+              (if (and (integerp form-end)
+                       (> form-end pos)
+                       (<= form-end len))
+                  (let ((fallback
+                         (nelisp--load-eval-source-declined-form
+                          source pos form-end)))
+                    (setq last (car fallback)
+                          pos (cdr fallback)))
+                (setq last (nelisp--load-eval-source-tail source pos len)
+                      pos len))))
            (t
             ;; No native probe primitive on this runtime at all: keep the
             ;; original per-form scan + `read-from-string' path exactly

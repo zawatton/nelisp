@@ -13,7 +13,7 @@
   "Directory for cached normalized top-level source forms.
 When nil, source normalization always reads the source file directly.")
 
-(defconst standalone-source-normalize-cache-version 141
+(defconst standalone-source-normalize-cache-version 144
   "Cache format version for normalized standalone source forms.
 Bump this whenever normalization semantics change so stale cache entries
 self-invalidate; the cache key otherwise only covers the source file's
@@ -1534,6 +1534,34 @@ placeholder that reports the missing body instead of silently returning nil."
        (member standalone-source-normalize-current-file
                standalone-source-normalize-inline-callable-files)))
 
+(defun standalone-source-normalize--cc-bytecomp-load-p (form)
+  "Return non-nil when FORM contains a runtime CC bytecomp load.
+The upstream CC Mode files wrap their initial `(load \"cc-bytecomp\" nil t)'
+in `eval-when-compile', but standalone replay still needs that macro
+definition before the following `cc-require-when-compile' form."
+  (cond
+   ((not (consp form)) nil)
+   ((memq (car form) '(quote function)) nil)
+   ((and (eq (car form) 'load)
+         (stringp (cadr form))
+         (string= (cadr form) "cc-bytecomp"))
+    t)
+   (t
+    (or (standalone-source-normalize--cc-bytecomp-load-p (car form))
+        (standalone-source-normalize--cc-bytecomp-load-p (cdr form))))))
+
+(defun standalone-source-normalize--cc-require-form (form)
+  "Return a direct REQUIRE form for a narrow CC dependency wrapper.
+Only the wrapper head and its single argument are recognized; the argument
+itself remains an expression so dynamic CC feature selection keeps its
+runtime meaning."
+  (and (consp form)
+       (memq (car form) '(cc-require cc-require-when-compile
+                          cc-external-require))
+       (consp (cdr form))
+       (null (cddr form))
+       (list 'require (standalone-source-normalize-form (cadr form)))))
+
 (defun standalone-source-normalize-top-level-forms (form)
   "Return normalized standalone top-level forms for FORM."
   (cond
@@ -1552,6 +1580,18 @@ placeholder that reports the missing body instead of silently returning nil."
     nil)
    ((standalone-source-normalize--elided-provide-p form)
     nil)
+   ;; CC Mode's wrappers add compiler-only setup around a runtime dependency.
+   ;; Preserve the dependency itself while removing that setup.
+   ((and (consp form)
+         (memq (car form) '(cc-require cc-require-when-compile
+                            cc-external-require)))
+    (let ((require-form (standalone-source-normalize--cc-require-form form)))
+      (and require-form (list require-form))))
+   ;; These declarations only silence the byte compiler and have no
+   ;; standalone runtime effect.
+   ((and (consp form)
+         (memq (car form) '(cc-bytecomp-defvar cc-bytecomp-defun)))
+    nil)
    ;; Org version assertions are load-time guards.  Standalone replay loads
    ;; the vendored files in a fixed order and does not need to spend runtime
    ;; forms checking the package version at every Org subsystem boundary.
@@ -1569,9 +1609,16 @@ placeholder that reports the missing body instead of silently returning nil."
          (consp (cdr form))
          (consp (cddr form)))
     (list (standalone-source-normalize--def-edebug-elem-spec-form form)))
-   ;; Top-level `eval-when-compile' is for byte/compiler-time setup.  The
-   ;; standalone loader has no byte compiler, so executing it at runtime only
-   ;; adds load pressure and can pull in irrelevant compile-time dependencies.
+   ;; CC Mode's compile-time bootstrap is also required by the interpreted
+   ;; runtime: it defines `cc-require-when-compile' used immediately after
+   ;; the wrapper.  Retain only that narrow load-bearing shape, unwrapped.
+   ((and (consp form)
+         (eq (car form) 'eval-when-compile)
+         (standalone-source-normalize--cc-bytecomp-load-p (cdr form)))
+    (mapcar #'standalone-source-normalize-form (cdr form)))
+   ;; Other top-level `eval-when-compile' forms are byte/compiler-only.  The
+   ;; standalone loader has no byte compiler, so dropping them avoids pulling
+   ;; in irrelevant compile-time dependencies.
    ((and (consp form) (eq (car form) 'eval-when-compile))
     nil)
    ;; `calendar.el' later passes the two popup menu variables defined by

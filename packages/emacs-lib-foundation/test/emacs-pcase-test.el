@@ -443,6 +443,56 @@ identical pattern and input."
       (should (equal (emacs-pcase-test--t61-eval '((foo (bar baz)) qux))
                      host-answer)))))
 
+(defun emacs-pcase-test--local-t61-eval (input &optional pattern)
+  "Evaluate the T61 pattern through this file's standalone `pcase'."
+  (emacs-pcase-test--with-reloaded-module
+   '(pcase pcase-exhaustive)
+   (lambda ()
+     (eval (list 'pcase-exhaustive
+                 (list 'quote input)
+                 (list (or pattern emacs-pcase-test--t61-pattern)
+                       (list 'list 'var 'exp 'tl)))
+           t))))
+
+(ert-deftest emacs-pcase-test/t61-local-or-selects-first-arm ()
+  "The exact macroexp pattern selects VAR and EXP from its list arm."
+  (should (equal (emacs-pcase-test--local-t61-eval
+                  '((foo (bar baz)) qux))
+                 '(foo (bar baz) (qux)))))
+
+(ert-deftest emacs-pcase-test/t61-local-or-selects-second-arm ()
+  "The exact macroexp pattern selects both dependent bindings from symbol arm."
+  (should (equal (emacs-pcase-test--local-t61-eval '(foo . qux))
+                 '(foo foo qux))))
+
+(defvar emacs-pcase-test--predicate-count 0)
+
+(defun emacs-pcase-test--counted-symbolp (value)
+  "Count predicate calls while preserving `symbolp' semantics."
+  (setq emacs-pcase-test--predicate-count
+        (1+ emacs-pcase-test--predicate-count))
+  (symbolp value))
+
+(defun emacs-pcase-test--replace-symbol (new old tree)
+  "Recursively replace OLD with NEW in TREE, including dotted tails."
+  (cond
+   ((eq tree old) new)
+   ((consp tree)
+    (cons (emacs-pcase-test--replace-symbol new old (car tree))
+          (emacs-pcase-test--replace-symbol new old (cdr tree))))
+   (t tree)))
+
+(ert-deftest emacs-pcase-test/t61-local-or-evaluates-arm-once ()
+  "Cached OR selection evaluates a side-effecting arm predicate once."
+  (let ((emacs-pcase-test--predicate-count 0)
+        (pattern (emacs-pcase-test--replace-symbol
+                  'emacs-pcase-test--counted-symbolp
+                  'symbolp
+                  emacs-pcase-test--t61-pattern)))
+    (should (equal (emacs-pcase-test--local-t61-eval '(foo . qux) pattern)
+                   '(foo foo qux)))
+    (should (= emacs-pcase-test--predicate-count 1))))
+
 (provide 'emacs-pcase-test)
 
 ;;; emacs-pcase-test.el ends here

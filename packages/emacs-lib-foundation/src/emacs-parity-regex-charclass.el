@@ -43,5 +43,38 @@ not introduce an escape.  Return the character as an integer."
         (signal 'nelisp-rx-syntax-error '("unterminated class")))
        (t (nelisp-rx--advance) c)))))
 
+;; GNU Emacs' `subregexp-context-p' deliberately treats malformed prefixes
+;; as a context check result: errors for an unfinished class/group are caught,
+;; while other syntax errors are re-signalled.  The standalone regexp reader
+;; uses its own condition name, so the vendor `subr.el' implementation must
+;; be replaced after it loads.
+(defun emacs-parity-regex-charclass--prefix-p (prefix string)
+  "Return non-nil when STRING starts with PREFIX without using regexps."
+  (and (stringp string)
+       (>= (length string) (length prefix))
+       (equal prefix (substring string 0 (length prefix)))))
+
+(when (fboundp 'nelisp-rx--parse)
+  (defun subregexp-context-p (regexp pos &optional start)
+    "Return non-nil when POS is in a normal subregexp context in REGEXP."
+    (condition-case err
+        (progn
+          (string-match (substring regexp (or start 0) pos) "")
+          t)
+      (nelisp-rx-syntax-error
+       (let ((message (cadr err)))
+         (not (or (emacs-parity-regex-charclass--prefix-p
+                   "unterminated character class" message)
+                  (emacs-parity-regex-charclass--prefix-p
+                   "unterminated class" message)
+                  (emacs-parity-regex-charclass--prefix-p
+                   "unterminated \\{...\\}" message)
+                  (emacs-parity-regex-charclass--prefix-p
+                   "trailing backslash" message)))))
+      (invalid-regexp
+       (not (member (cadr err) '("Unmatched [ or [^"
+                                  "Unmatched \\{"
+                                  "Trailing backslash")))))))
+
 (provide 'emacs-parity-regex-charclass)
 ;;; emacs-parity-regex-charclass.el ends here

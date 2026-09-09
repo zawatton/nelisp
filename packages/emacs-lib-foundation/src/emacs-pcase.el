@@ -231,53 +231,83 @@ to let-bind in the case body when matched."
         (cons (if bindings (list 'let* bindings and-test) and-test)
               bindings))))
 
+(defvar emacs-pcase--or-cache nil
+  "Dynamic cache used while evaluating one local `pcase' expression.")
+
+  (defun emacs-pcase--or-cache-get (key thunk)
+    "Return cached KEY value, computing it once with THUNK when absent."
+    (let ((entry (assq key emacs-pcase--or-cache)))
+      (if entry
+          (cdr entry)
+        (let ((value (funcall thunk)))
+          (push (cons key value) emacs-pcase--or-cache)
+          value))))
+
+  (defun emacs-pcase--or-arm-values (arm)
+    "Build an expression returning ARM's marker and binding values."
+    (list 'let* (cdr arm)
+          (cons 'list
+                (cons t
+                      (mapcar (lambda (binding)
+                                (list 'cons
+                                      (list 'quote (car binding))
+                                      (cadr binding)))
+                              (cdr arm))))))
+
+  (defun emacs-pcase--or-binding-value (key name selector)
+    "Build a cached lookup expression for NAME under OR cache KEY."
+    (list 'cdr
+          (list 'assq (list 'quote name)
+                (list 'emacs-pcase--or-cache-get (list 'quote key)
+                      selector))))
+
   (defun emacs-pcase--or (patterns value-form)
     "Build (TEST . BINDINGS) for an `or' pattern.
 
 `pcase--dontcare' is the fallback arm used by vendor pcase patterns.
-When that arm is present, retain bindings from the structural arm so the
-body sees safe projections on fallback.  Arms with identical bindings are
-also safe to share; genuinely branch-local bindings are rejected rather
-than silently producing an incorrect value."
-    (let ((tests nil)
-          (binding-sets nil)
-          (has-dontcare nil)
+When an arm binds a variable, bind that variable to the value produced by
+the first matching arm.  This is needed for nested `or' patterns: the arms
+may bind the same names through different projections (or through a
+dependent `let' binding), and a single shared binding would either select
+the wrong projection or evaluate a dependent binding out of scope.  Arm
+tests and values are memoized together so each arm is evaluated at most
+once for this OR pattern."
+    (let ((arm-builds nil)
+          (names nil)
           (cur patterns))
       (while cur
         (let* ((pattern (car cur))
-               (dontcare (eq pattern 'pcase--dontcare))
-               (built (if dontcare
+               (built (if (eq pattern 'pcase--dontcare)
                           (cons t nil)
-                        (emacs-pcase--test pattern value-form)))
-               (t1 (car built)))
-          (setq tests (cons t1 tests))
-          (if dontcare
-              (setq has-dontcare t)
-            (when (cdr built)
-              (setq binding-sets (cons (cdr built) binding-sets)))))
+                        (emacs-pcase--test pattern value-form))))
+          (push built arm-builds)
+          (dolist (binding (cdr built))
+            (unless (memq (car binding) names)
+              (push (car binding) names))))
         (setq cur (cdr cur)))
-      (let ((test (cons 'or (let ((rev nil))
-                              (while tests
-                                (setq rev (cons (car tests) rev))
-                                (setq tests (cdr tests)))
-                              rev))))
-        (cond
-         ((null binding-sets)
-          (cons test nil))
-         ((and has-dontcare (= (length binding-sets) 1))
-          (cons test (car binding-sets)))
-         ((let ((first (car binding-sets))
-                (rest (cdr binding-sets))
-                (same t))
-            (while rest
-              (unless (equal first (car rest))
-                (setq same nil))
-              (setq rest (cdr rest)))
-            same)
-          (cons test (car binding-sets)))
-         (t
-          (error "pcase or pattern has branch-local bindings: %S"
-                 patterns))))))
+      (setq arm-builds (nreverse arm-builds)
+            names (nreverse names))
+      (if (null names)
+          (cons (cons 'or (mapcar #'car arm-builds)) nil)
+        (let* ((key (make-symbol "--pcase-or-key--"))
+               (selector
+                (list 'emacs-pcase--or-cache-get (list 'quote key)
+                      (list 'function
+                            (list 'lambda nil
+                                  (cons 'cond
+                                        (mapcar
+                                         (lambda (arm)
+                                           (list (car arm)
+                                                 (emacs-pcase--or-arm-values
+                                                  arm)))
+                                         arm-builds))))))
+               (bindings
+                (mapcar (lambda (name)
+                          (list name
+                                (emacs-pcase--or-binding-value
+                                 key name selector)))
+                        names)))
+          (cons selector bindings)))))
 
   (defun emacs-pcase--cons (patterns value-form)
     "Build (TEST . BINDINGS) for a `(cons P1 P2)' pattern."
@@ -350,8 +380,9 @@ See `emacs-pcase--test' for supported pattern shapes."
         (while cond-clauses
           (setq forward (cons (car cond-clauses) forward))
           (setq cond-clauses (cdr cond-clauses)))
-        (list 'let (list (list value-sym expr))
-              (cons 'cond forward))))))
+        (list 'let (list (list 'emacs-pcase--or-cache nil))
+              (list 'let (list (list value-sym expr))
+                    (cons 'cond forward)))))))
 
 ;; NeLisp upstream now ships the pcase macro as Elisp under
 ;; `lisp/nelisp-pcase.el', loaded as part of the standalone stdlib
