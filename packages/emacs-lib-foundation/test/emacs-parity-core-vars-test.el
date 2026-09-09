@@ -46,6 +46,14 @@
                  describe-current-input-method-function))
     (should (boundp sym))))
 
+(ert-deftest emacs-parity-core-vars-test/password-word-equivalents-default ()
+  "Password prompt consumers see GNU's stock multilingual default."
+  (should (listp password-word-equivalents))
+  (should (member "password" password-word-equivalents))
+  (should (member "passphrase" password-word-equivalents))
+  (should (member "パスワード" password-word-equivalents))
+  (should (member "密码" password-word-equivalents)))
+
 (ert-deftest emacs-parity-core-vars-test/input-method-fns-bound ()
   (dolist (fn '(activate-input-method deactivate-input-method set-input-method))
     (should (fboundp fn))))
