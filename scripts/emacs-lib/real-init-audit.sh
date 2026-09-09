@@ -120,6 +120,8 @@ cp "$bootstrap_repl" "$audit_repl"
     printf '%s ' "$helper_line"
   done <<'ELISP'
 
+(defvar load-garbage-collect-interval 64)
+
 (defun real-init-audit--count-newlines (source start end)
   (let ((cursor start)
         (count 0))
@@ -243,7 +245,12 @@ cp "$bootstrap_repl" "$audit_repl"
           (setq line (+ line
                         (real-init-audit--count-newlines
                          source position next)))
-          (setq position next))))
+          (setq position next)
+          (when (and load-garbage-collect-interval
+                     (> load-garbage-collect-interval 0)
+                     (= (% index load-garbage-collect-interval) 0)
+                     (fboundp 'garbage-collect))
+            (garbage-collect)))))
     (cond
      ((eq kind 'early-init) (setq early-init-file path))
      ((eq kind 'init)
