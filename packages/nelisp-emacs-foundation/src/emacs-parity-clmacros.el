@@ -94,7 +94,44 @@ Guards activation so host Emacs is left untouched (real `cl-letf', real
 minor modes).")
 
 ;; ---------------------------------------------------------------------------
-;; A. cl-letf: generalized-place support via `setf' (fixes the ELSE bare-abort)
+;; A. cl-set-difference: the prelude's two-argument fallback is too narrow
+;; ---------------------------------------------------------------------------
+;; CC Mode uses the Common Lisp `:test' keyword at runtime.  The standalone
+;; prelude carries a small two-argument implementation, but its fixed arity
+;; turns that use into `(lambda 4)'.
+(defun emacs-parity-clmacros--install-cl-set-difference ()
+  "Install a keyword-aware standalone `cl-set-difference'."
+  (defun cl-set-difference (list1 list2 &rest keys)
+    "Return LIST1 elements absent from LIST2, honoring common CL keywords."
+    (let ((test #'eql)
+          (test-not nil)
+          (key #'identity)
+          (rest keys))
+      (while rest
+        (let ((keyword (car rest)))
+          (setq rest (cdr rest))
+          (when rest
+            (let ((value (car rest)))
+              (setq rest (cdr rest))
+              (cond
+               ((eq keyword :test) (setq test value test-not nil))
+               ((eq keyword :test-not) (setq test-not value))
+               ((eq keyword :key)
+                (setq key (if value value #'identity))))))))
+      (let (result)
+        (dolist (item list1 (nreverse result))
+          (let ((item-key (funcall key item))
+                (found nil))
+            (dolist (other list2)
+              (let ((other-key (funcall key other)))
+                (when (if test-not
+                          (not (funcall test-not item-key other-key))
+                        (funcall test item-key other-key))
+                  (setq found t))))
+            (unless found
+              (push item result))))))))
+
+;; B. cl-letf: generalized-place support via `setf' (fixes the ELSE bare-abort)
 ;; ---------------------------------------------------------------------------
 (defun emacs-parity-clmacros--install-cl-letf ()
   "Force-install a `cl-letf' whose generalized places route through `setf'.
@@ -178,11 +215,15 @@ polyfill supports (car/cdr/aref/nth/get/gethash/alist-get/...)."
 ;; Activation
 ;; ---------------------------------------------------------------------------
 
-;; A. cl-letf generalized-place fix.
+;; A. cl-set-difference keyword support.
+(when emacs-parity-clmacros--standalone-p
+  (emacs-parity-clmacros--install-cl-set-difference))
+
+;; B. cl-letf generalized-place fix.
 (when emacs-parity-clmacros--standalone-p
   (emacs-parity-clmacros--install-cl-letf))
 
-;; B. Bootstrap-baked broken minor-mode closures -> closure-free replacements.
+;; C. Bootstrap-baked broken minor-mode closures -> closure-free replacements.
 (when emacs-parity-clmacros--standalone-p
   (defvar show-paren-mode nil)
   (defun show-paren-mode (&optional arg)

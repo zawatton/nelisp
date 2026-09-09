@@ -1634,8 +1634,28 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
     `(lambda (&rest _args) nil)))
 
 (unless (fboundp 'cc-require)
-  (defmacro cc-require (&rest _features)
-    "Standalone load-time fallback: ignore CC Mode compile-time requires."
+  (defmacro cc-require (feature)
+    "Standalone fallback: preserve CC Mode's runtime REQUIRE dependency."
+    `(require ,feature)))
+
+(unless (fboundp 'cc-require-when-compile)
+  (defmacro cc-require-when-compile (feature)
+    "Standalone fallback: load FEATURE when no compiler is present."
+    `(require ,feature)))
+
+(unless (fboundp 'cc-external-require)
+  (defmacro cc-external-require (feature)
+    "Standalone fallback: preserve CC Mode's external REQUIRE dependency."
+    `(require ,feature)))
+
+(unless (fboundp 'cc-bytecomp-defvar)
+  (defmacro cc-bytecomp-defvar (&rest _args)
+    "Standalone fallback: ignore compiler-only variable declarations."
+    nil))
+
+(unless (fboundp 'cc-bytecomp-defun)
+  (defmacro cc-bytecomp-defun (&rest _args)
+    "Standalone fallback: ignore compiler-only function declarations."
     nil))
 
 (unless (fboundp 'cc-provide)

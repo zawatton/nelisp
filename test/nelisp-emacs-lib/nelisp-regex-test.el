@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(setq load-prefer-newer t)
 (require 'rx)
 (require 'nelisp-regex)
 
@@ -99,6 +100,55 @@ START is passed through to both implementations."
   (should (nelisp-rx-string-match "[^z-a]" "\n")))
 
 ;;;; --- \< (word start) -------------------------------------------------------
+
+(ert-deftest nelisp-regex-test/backslash-is-literal-in-class ()
+  "GNU Emacs closes `[^\\]' at the bracket after the literal backslash."
+  (should (nelisp-rx-string-match "[^\\]" "a"))
+  (should-not (nelisp-rx-string-match "[^\\]" "\\")))
+
+(ert-deftest nelisp-regex-test/backslash-class-keeps-following-character ()
+  "A backslash in a class is literal and does not escape the next character."
+  (should (nelisp-rx-string-match "[\\w]" "\\"))
+  (should (nelisp-rx-string-match "[\\w]" "w"))
+  (should-not (nelisp-rx-string-match "[\\w]" "x")))
+
+(ert-deftest nelisp-regex-test/syntax-errors-inherit-invalid-regexp ()
+  "Substring validation can catch parser errors like GNU Emacs does."
+  (dolist (regexp '("[abc" "\\("))
+    (should
+     (condition-case nil
+         (progn (nelisp-rx-compile regexp) nil)
+       (invalid-regexp t)))))
+
+(ert-deftest nelisp-regex-test/subregexp-context-catches-standalone-syntax-errors ()
+  "The standalone context probe catches only incomplete-prefix errors."
+  (require 'emacs-string)
+  (let* ((context-function (and (fboundp 'subregexp-context-p)
+                                (symbol-function 'subregexp-context-p)))
+         (match-function (and (fboundp 'string-match)
+                              (symbol-function 'string-match)))
+         (parity-file (locate-library "emacs-parity-regex-charclass")))
+    (unwind-protect
+        (progn
+          (when (and parity-file (string-suffix-p ".elc" parity-file))
+            (setq parity-file (substring parity-file 0 -1)))
+          (load-file parity-file)
+          (fset 'string-match
+                (lambda (&rest _args)
+                  (signal 'nelisp-rx-syntax-error
+                          '("unterminated class"))))
+          (should-not (subregexp-context-p "[abc" 4))
+          (fset 'string-match
+                (lambda (&rest _args)
+                  (signal 'nelisp-rx-syntax-error
+                          '("unexpected char"))))
+          (should (subregexp-context-p "[abc" 4)))
+      (if context-function
+          (fset 'subregexp-context-p context-function)
+        (fmakunbound 'subregexp-context-p))
+      (if match-function
+          (fset 'string-match match-function)
+        (fmakunbound 'string-match)))))
 
 (ert-deftest nelisp-regex-test/wbs-matches-at-start-of-line ()
   "`\\\\<foo' matches at BOS when followed by a word char."

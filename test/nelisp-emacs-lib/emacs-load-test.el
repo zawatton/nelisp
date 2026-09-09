@@ -666,6 +666,107 @@ the remainder once the native reader declines on one form."
         (when (boundp 'emacs-load-test--t78-big-lit)
           (makunbound 'emacs-load-test--t78-big-lit))))))
 
+(ert-deftest emacs-load-test/source-incremental-small-native-decline-resumes-native-probe ()
+  "A small declined form is isolated, then loading resumes native probing.
+This protects against routing the entire remaining source tail through the
+slow fallback when a reader limitation affects only one form."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (skip-unless (fboundp 'nelisp--read-all-from-string-native))
+  (let* ((first 'emacs-load-test--declined-first)
+         (second 'emacs-load-test--declined-second)
+         (source (format "(setq %S 'first)\n(setq %S 'second)\n"
+                         first second))
+         (native (symbol-function 'emacs-load--native-read-one))
+         (tail (symbol-function 'nelisp--load-eval-source-tail))
+         (native-calls 0)
+         (tail-calls nil))
+    (makunbound first)
+    (makunbound second)
+    (unwind-protect
+        (cl-letf (((symbol-function 'emacs-load--native-read-one)
+                   (lambda (text pos len)
+                     (setq native-calls (1+ native-calls))
+                     (if (= native-calls 1)
+                         nil
+                       (funcall native text pos len))))
+                  ((symbol-function 'nelisp--load-eval-source-tail)
+                   (lambda (text pos end)
+                     (push (list pos end) tail-calls)
+                     (funcall tail text pos end))))
+          (should (eq (nelisp--load-eval-source-incremental source)
+                      'second))
+          (should (equal (symbol-value first) 'first))
+          (should (equal (symbol-value second) 'second))
+          (should (= native-calls 2))
+          (should (= (length tail-calls) 1))
+          (should (< (cadar tail-calls)
+                     (string-match
+                      "(setq emacs-load-test--declined-second"
+                      source))))
+      (when (boundp first) (makunbound first))
+      (when (boundp second) (makunbound second)))))
+
+(ert-deftest emacs-load-test/source-incremental-declined-form-full-source-boundary-resumes-native-probe ()
+  "A declined container is bounded against full SOURCE and resumed.
+The structural scanner receives full SOURCE, while the tail evaluator receives
+only the first form before native probing resumes."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (skip-unless (fboundp 'nelisp--read-all-from-string-native))
+  (let* ((first 'emacs-load-test--declined-large)
+         (second 'emacs-load-test--declined-large-second)
+         (source (format "(setq %S [%s])\n(setq %S 'second)\n"
+                         first
+                         (make-string 40 ?\s)
+                         second))
+         (native (symbol-function 'emacs-load--native-read-one))
+         (native-calls 0)
+         (scan-source-length nil)
+         (tail-range nil)
+         (first-end (string-match "\n(setq emacs-load-test--declined-large-second"
+                                  source)))
+    (makunbound first)
+    (makunbound second)
+    (unwind-protect
+        (cl-letf (((symbol-function 'emacs-load--native-read-one)
+                   (lambda (text pos len)
+                     (setq native-calls (1+ native-calls))
+                     (if (= native-calls 1)
+                         nil
+                       (funcall native text pos len))))
+                  ((symbol-function 'emacs-load--artifact-source-form-end)
+                   (lambda (text _pos)
+                     (setq scan-source-length (length text))
+                     first-end))
+                  ((symbol-function 'nelisp--load-eval-source-tail)
+                   (lambda (_text pos end)
+                     (setq tail-range (cons pos end))
+                     'first)))
+          (should (eq (nelisp--load-eval-source-incremental source)
+                      'second))
+          (should (equal (symbol-value second) 'second))
+          (should (= native-calls 2))
+          (should (= scan-source-length (length source)))
+          (should (equal tail-range (cons 0 first-end))))
+      (when (boundp first) (makunbound first))
+      (when (boundp second) (makunbound second)))))
+
+(ert-deftest emacs-load-test/source-incremental-declined-boundary-failure-uses-remainder-tail ()
+  "A native-reader decline with no structural boundary keeps the tail path."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (skip-unless (fboundp 'nelisp--read-all-from-string-native))
+  (let* ((source (make-string 64 ?x))
+         (tail-range nil))
+    (cl-letf (((symbol-function 'emacs-load--native-read-one)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'emacs-load--artifact-source-form-end)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'nelisp--load-eval-source-tail)
+               (lambda (_text pos end)
+                 (setq tail-range (cons pos end))
+                 'tail)))
+      (should (eq (nelisp--load-eval-source-incremental source) 'tail))
+      (should (equal tail-range (cons 0 (length source)))))))
+
 (ert-deftest emacs-load-test/rewrite-propertized-string-literals-outside-strings-and-comments ()
   "T103 regression: `#(...)' propertized-string read syntax is rewritten to
 plain call syntax only outside string literals and comments, and SOURCE is
