@@ -54,6 +54,8 @@
   (emacs-calc-install)
   (should (fboundp 'calc))
   (should (fboundp 'calc-eval))
+  (should (boundp 'calc-mode-map))
+  (should (keymapp calc-mode-map))
   (should (= 5 (calc-eval "2 3 +"))))
 
 (provide 'emacs-calc-test)
