@@ -361,6 +361,16 @@ character the range covers."
     (should (= (with-syntax-table host (char-syntax ?a))
                (emacs-syntax-table-char-syntax ?a mine)))))
 
+(ert-deftest emacs-syntax-table-test/modify-syntax-entry-large-range-is-sparse ()
+  "A large Unicode syntax range completes without materialising each codepoint."
+  (let ((mine (emacs-syntax-table-make)))
+    (emacs-syntax-table-modify-entry (cons #x10000 #xEFFFF) "w" mine)
+    (should (= ?w (emacs-syntax-table-char-syntax #x10000 mine)))
+    (should (= ?w (emacs-syntax-table-char-syntax #x65e5 mine)))
+    (should (= ?w (emacs-syntax-table-char-syntax #xEFFFF mine)))
+    ;; The range starts above ASCII, so the inherited ASCII entry remains.
+    (should (= ?. (emacs-syntax-table-char-syntax ?. mine)))))
+
 (ert-deftest emacs-syntax-table-test/copy-syntax-table-independent-of-source ()
   "A copy is `equal'-shaped to its source at copy time but independent of
 later mutation, matching host `copy-syntax-table' behavior."
