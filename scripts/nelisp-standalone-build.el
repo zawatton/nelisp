@@ -29784,19 +29784,67 @@ plist/backquote lib).  The binary loads it via file-load before user code; see
 its header for the `cat PRELUDE yourfile.el | binary' usage.")
 
 (defun nelisp-standalone--reader-func-arity-smoke ()
-  "Exercise `func-arity' for native, lambda, closure, and macro values."
+  "Exercise `func-arity' for every native-table row plus callable shapes."
   (let* ((script (make-temp-file "nelisp-func-arity-smoke-" nil ".el"))
-         (src (concat
-               "(defun nelisp-fa-required (a b) (+ a b))\n"
-               "(let ((checks (list (equal (func-arity 'car) '(1 . 1))\n"
-               "                    (equal (func-arity '+) '(0 . many))\n"
-               "                    (equal (func-arity 'list) '(0 . many))\n"
-               "                    (equal (func-arity 'nelisp-fa-required) '(2 . 2))\n"
-               "                    (equal (func-arity '(lambda (a &optional b) a)) '(1 . 2))\n"
-               "                    (equal (func-arity '(lambda (a &rest b) a)) '(1 . many))\n"
-               "                    (equal (func-arity 'when) '(1 . many)))))\n"
-               "  (if (equal checks '(t t t t t t t))\n"
-               "      0 (error \"func-arity smoke mismatch: %S\" checks)))\n"))
+         ;; These are measured with GNU Emacs 31.1's `func-arity'.  The
+         ;; standalone table is exercised through explicit `(builtin NAME)'
+         ;; values so later elisp wrappers cannot hide a stale native row.
+         (cases '((car (1 . 1)) (cdr (1 . 1)) (car-safe (1 . 1))
+                  (atom (1 . 1)) (consp (1 . 1)) (listp (1 . 1))
+                  (null (1 . 1)) (not (1 . 1)) (stringp (1 . 1))
+                  (symbolp (1 . 1)) (integerp (1 . 1)) (bignump (1 . 1))
+                  (natnump (1 . 1)) (numberp (1 . 1)) (floatp (1 . 1))
+                  (vectorp (1 . 1)) (functionp (1 . 1)) (length (1 . 1))
+                  (symbol-name (1 . 1)) (symbol-value (1 . 1))
+                  (symbol-function (1 . 1)) (fboundp (1 . 1))
+                  (boundp (1 . 1)) (make-symbol (1 . 1)) (type-of (1 . 1))
+                  (identity (1 . 1)) (abs (1 . 1)) (1+ (1 . 1))
+                  (1- (1 . 1)) (number-to-string (1 . 1))
+                  (string-bytes (1 . 1)) (char-to-string (1 . 1))
+                  (string-to-char (1 . 1)) (lognot (1 . 1))
+                  (cons (2 . 2)) (eq (2 . 2)) (eql (2 . 2))
+                  (equal (2 . 2)) (setcar (2 . 2)) (setcdr (2 . 2))
+                  (nth (2 . 2)) (nthcdr (2 . 2)) (elt (2 . 2))
+                  (aref (2 . 2)) (rassoc (2 . 2)) (string= (2 . 2))
+                  (string< (2 . 2)) (make-vector (2 . 2)) (fset (2 . 2))
+                  (aset (3 . 3)) (featurep (1 . 2))
+                  (intern-soft (1 . 2)) (floor (1 . 2))
+                  (truncate (1 . 2)) (ceiling (1 . 2))
+                  (float-time (0 . 1)) (prin1-to-string (1 . 3))
+                  (string-match-p (2 . 3)) (string-search (2 . 3))
+                  (string-match (2 . 4)) (substring (2 . 4))
+                  (make-string (2 . 3)) (signal (1 . 2))
+                  (+ (0 . many)) (* (0 . many)) (append (0 . many))
+                  (list (0 . many)) (concat (0 . many))
+                  (vector (0 . many)) (ignore (0 . many))
+                  (logand (0 . many)) (logior (0 . many))
+                  (logxor (0 . many)) (- (0 . many))
+                  (/ (1 . many)) (< (1 . many)) (<= (1 . many))
+                  (> (1 . many)) (>= (1 . many)) (= (1 . many))
+                  (max (1 . many)) (min (1 . many)) (format (1 . many))
+                  (message (1 . many)) (error (1 . many))
+                  (princ (1 . 2)) (terpri (0 . 2)) (require (1 . 3))
+                  (provide (1 . 2)) (gethash (2 . 3)) (puthash (3 . 3))
+                  (remhash (2 . 2)) (mod (2 . 2)) (% (2 . 2))
+                  (/= (2 . 2)) (ash (2 . 2))))
+         (src (format
+               (concat
+                "(defun nelisp-fa-required (a b) (+ a b))\n"
+                "(let ((bad nil))\n"
+                "  (dolist (row '%S)\n"
+                "    (unless (equal (func-arity (list 'builtin (car row)))\n"
+                "                   (car (cdr row)))\n"
+                "      (setq bad (cons row bad))))\n"
+                "  (unless (equal (func-arity 'nelisp-fa-required) '(2 . 2))\n"
+                "    (setq bad (cons 'defun bad)))\n"
+                "  (unless (equal (func-arity '(lambda (a &optional b) a)) '(1 . 2))\n"
+                "    (setq bad (cons 'optional bad)))\n"
+                "  (unless (equal (func-arity '(lambda (a &rest b) a)) '(1 . many))\n"
+                "    (setq bad (cons 'rest bad)))\n"
+                "  (unless (equal (func-arity 'when) '(1 . many))\n"
+                "    (setq bad (cons 'macro bad)))\n"
+                "  (if (null bad) 0 (error \"func-arity smoke mismatch\")))\n")
+               cases))
          (out nil) (rc nil))
     (unwind-protect
         (progn

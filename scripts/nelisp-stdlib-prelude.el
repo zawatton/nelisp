@@ -11681,27 +11681,39 @@ unlisted OS-specific entry point."
      ((memq name '(car cdr car-safe atom consp listp null not stringp
                        symbolp integerp bignump natnump numberp floatp
                        vectorp functionp length symbol-name symbol-value
-                       fboundp boundp featurep intern-soft make-symbol
-                       type-of identity ignore abs 1+ 1- floor truncate
-                       ceiling float-time prin1-to-string number-to-string
-                       string-bytes string-byte string-match-p
-                       char-to-string string-to-char))
+                       symbol-function fboundp boundp make-symbol type-of identity abs 1+
+                       1- number-to-string string-bytes char-to-string
+                       string-to-char lognot))
       '(1 . 1))
      ((memq name '(cons eq eql equal setcar setcdr nth nthcdr elt aref
-                       aset rassoc string= string< string-search
-                       make-vector make-string fset signal string-match))
+                       rassoc string= string< make-vector fset))
       '(2 . 2))
-     ((memq name '(+ * max min append list concat vector))
+     ((memq name '(aset)) '(3 . 3))
+     ((memq name '(featurep intern-soft)) '(1 . 2))
+     ((memq name '(floor truncate ceiling)) '(1 . 2))
+     ((memq name '(float-time)) '(0 . 1))
+     ((memq name '(prin1-to-string)) '(1 . 3))
+     ((memq name '(string-match-p string-search)) '(2 . 3))
+     ((memq name '(string-match)) '(2 . 4))
+     ((memq name '(substring)) '(2 . 4))
+     ((memq name '(make-string)) '(2 . 3))
+     ((memq name '(signal)) '(1 . 2))
+     ((memq name '(+ * append list concat vector ignore logand logior logxor))
       '(0 . many))
-     ((memq name '(- /)) '(1 . many))
+     ((memq name '(-)) '(0 . many))
+     ((memq name '(/ < <= > >= =)) '(1 . many))
+     ((memq name '(max min)) '(1 . many))
      ((memq name '(format)) '(1 . many))
-     ((memq name '(message princ terpri error)) '(0 . many))
-     ((memq name '(require provide)) '(1 . 2))
+     ((memq name '(message error)) '(1 . many))
+     ((memq name '(princ)) '(1 . 2))
+     ((memq name '(terpri)) '(0 . 2))
+     ((memq name '(require)) '(1 . 3))
+     ((memq name '(provide)) '(1 . 2))
      ((memq name '(gethash)) '(2 . 3))
      ((memq name '(puthash)) '(3 . 3))
      ((memq name '(remhash)) '(2 . 2))
-     ((memq name '(mod % /= < <= > >= = ash logand logior logxor lognot))
-      '(2 . many))
+     ((memq name '(mod % /=)) '(2 . 2))
+     ((memq name '(ash)) '(2 . 2))
      (t '(0 . many))))
 
   (defun func-arity (function)
