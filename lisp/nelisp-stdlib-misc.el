@@ -105,6 +105,16 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
         (signal 'wrong-type-argument (list 'list seq)))
       (nreverse acc)))
    ((stringp seq) (concat seq))
+   ;; Records are sequences in host Emacs.  The standalone record length
+   ;; includes the type tag, while `nelisp--record-ref' indexes payload
+   ;; slots, so copy only the length minus that tag.
+   ((and (fboundp 'recordp) (recordp seq))
+    (let ((i 0) (n (1- (nelisp--record-length seq))) (slots nil))
+      (while (< i n)
+        (setq slots (cons (nelisp--record-ref seq i) slots)
+              i (1+ i)))
+      (apply #'nelisp--make-record
+             (cons (nelisp--record-type seq) (nreverse slots)))))
    ((vectorp seq)
     (let* ((n (length seq))
            (copy (make-vector n nil))
