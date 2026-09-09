@@ -107,6 +107,106 @@ When DELETE is non-nil, delete the source text after copying."
       (self-insert-command 1 9)))
     nil))
 
+;; GNU simple.el's visual-line family is part of the standard mode surface,
+;; but loading the full 9k-line file is outside the headless bootstrap budget.
+;; Keep the mode state and wrapping variables usable for packages such as
+;; visual-fill-column; the redisplay backend remains responsible for rendering
+;; the resulting soft-wrap request.
+(unless (boundp 'visual-line-mode-map)
+  (defvar visual-line-mode-map (make-sparse-keymap)
+    "Keymap used while `visual-line-mode' is active."))
+
+(unless (boundp 'visual-line-mode)
+  (defvar visual-line-mode nil
+    "Non-nil when visual line wrapping is active in the current buffer."))
+
+(unless (boundp 'visual-line-mode--saved-values)
+  (defvar visual-line-mode--saved-values nil
+    "Values of `truncate-lines' and `word-wrap' before visual line mode."))
+
+(make-variable-buffer-local 'visual-line-mode--saved-values)
+
+(unless (fboundp 'visual-line-mode--apply-wrap)
+  (defun visual-line-mode--apply-wrap (enabled)
+    "Set visual line wrapping state."
+    (if enabled
+        (progn
+          (unless visual-line-mode--saved-values
+            (setq visual-line-mode--saved-values
+                  (list truncate-lines word-wrap)))
+          (setq truncate-lines nil word-wrap t))
+      (if visual-line-mode--saved-values
+          (setq truncate-lines (car visual-line-mode--saved-values)
+                word-wrap (car (cdr visual-line-mode--saved-values)))
+        (setq truncate-lines nil word-wrap nil))
+      (setq visual-line-mode--saved-values nil))))
+
+(unless (fboundp 'visual-line-mode)
+  (defun visual-line-mode (&optional arg)
+    "Toggle visual line wrapping in the current buffer.
+With positive ARG enable it; with zero or negative ARG disable it."
+    (interactive "P")
+    (make-variable-buffer-local 'visual-line-mode)
+    (setq visual-line-mode
+          (if (null arg)
+              (not visual-line-mode)
+            (> (if (numberp arg) arg 1) 0)))
+    (visual-line-mode--apply-wrap visual-line-mode)
+    visual-line-mode))
+
+(unless (fboundp 'turn-on-visual-line-mode)
+  (defun turn-on-visual-line-mode ()
+    "Enable `visual-line-mode' in the current buffer."
+    (visual-line-mode 1)))
+
+(unless (boundp 'global-visual-line-mode)
+  (defvar global-visual-line-mode nil
+    "Non-nil when visual line wrapping is enabled globally."))
+
+(unless (boundp 'global-minor-modes)
+  (defvar global-minor-modes nil
+    "Minor modes enabled globally by lightweight mode shims."))
+
+(unless (fboundp 'global-visual-line-mode--enable-in-buffer)
+  (defun global-visual-line-mode--enable-in-buffer ()
+    "Enable `visual-line-mode' in the current buffer for global mode."
+    (when global-visual-line-mode
+      (visual-line-mode 1))))
+
+(unless (fboundp 'global-visual-line-mode--set-hook)
+  (defun global-visual-line-mode--set-hook (enabled)
+    "Install or remove the global visual line mode major-mode hook."
+    (if enabled
+        (when (fboundp 'add-hook)
+          (add-hook 'after-change-major-mode-hook
+                    #'global-visual-line-mode--enable-in-buffer))
+      (when (fboundp 'remove-hook)
+        (remove-hook 'after-change-major-mode-hook
+                     #'global-visual-line-mode--enable-in-buffer)))))
+
+(unless (fboundp 'global-visual-line-mode--set-state)
+  (defun global-visual-line-mode--set-state (enabled)
+    "Update the global minor mode registry for visual line mode."
+    (if enabled
+        (add-to-list 'global-minor-modes 'global-visual-line-mode)
+      (setq global-minor-modes
+            (delq 'global-visual-line-mode global-minor-modes)))))
+
+(unless (fboundp 'global-visual-line-mode)
+  (defun global-visual-line-mode (&optional arg)
+    "Toggle visual line wrapping in buffers visited after enabling.
+With positive ARG enable it; with zero or negative ARG disable it."
+    (interactive "P")
+    (setq global-visual-line-mode
+          (if (null arg)
+              (not global-visual-line-mode)
+            (> (if (numberp arg) arg 1) 0)))
+    (global-visual-line-mode--set-state global-visual-line-mode)
+    (global-visual-line-mode--set-hook global-visual-line-mode)
+    (when global-visual-line-mode
+      (turn-on-visual-line-mode))
+    global-visual-line-mode))
+
 (provide 'simple)
 
 ;;; simple.el ends here

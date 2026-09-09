@@ -212,6 +212,106 @@ polyfill supports (car/cdr/aref/nth/get/gethash/alist-get/...)."
 ;; only requirement is that the CALL return instead of aborting.
 
 ;; ---------------------------------------------------------------------------
+;; C. cl-defmacro keyword lambda lists
+;; ---------------------------------------------------------------------------
+;; The lightweight bootstrap definition accepts only an ordinary defmacro
+;; lambda list.  Packages which use the Common Lisp form
+;;
+;;   (cl-defmacro NAME (&key (option default) ...))
+;;
+;; then leave the keyword defaults in the generated lambda list; the first
+;; expansion fails while parsing `(fallback " ")' (treemacs) and the same
+;; broken binding prevents doom-modeline's environment macros from loading.
+;; Keep the small bootstrap implementation, but lower the common CL argument
+;; forms to a regular `&rest' macro and bind the arguments at expansion time.
+
+(defun emacs-parity-clmacros--macro-bindings (arglist args)
+    "Return LET* bindings for a small CL macro ARGLIST."
+    (let ((mode 'positional)
+          (bindings nil))
+      (dolist (arg arglist)
+        (cond
+         ((memq arg '(&optional &rest &body &key &aux &allow-other-keys))
+          (setq mode arg))
+         ((eq mode '&allow-other-keys)
+          ;; This is a terminating marker, not a variable in the arglist.
+          nil)
+         ((memq mode '(&rest &body))
+          (setq bindings (append bindings (list (list arg args))))
+          (setq mode '&aux))
+         ((eq mode '&key)
+          (let* ((pair (if (consp arg) (car arg) arg))
+                 (var (if (consp pair) (car (cdr pair)) pair))
+                 (key (if (and (consp pair) (car pair))
+                          (car pair)
+                        (intern (concat ":" (symbol-name var)))))
+                 (default (and (consp arg) (car (cdr arg))))
+                 (supplied (and (consp arg)
+                               (car (cdr (cdr arg)))))
+                 (cell (make-symbol "--cl-key-cell--")))
+            (setq bindings
+                  (append bindings
+                          (list (list cell
+                                      (list 'memq (list 'quote key) args))
+                                (list var
+                                      (list 'if cell
+                                            (list 'car (list 'cdr cell))
+                                            default)))
+                          (when supplied
+                            (list (list supplied
+                                        (list 'if cell t nil))))))))
+         ((eq mode '&optional)
+          (let ((var (if (consp arg) (car arg) arg))
+                (default (and (consp arg) (car (cdr arg))))
+                (supplied (and (consp arg)
+                               (car (cdr (cdr arg))))))
+            (setq bindings
+                  (append bindings
+                          (list (list var
+                                      (list 'if args
+                                            (list 'prog1 (list 'car args)
+                                                  (list 'setq args
+                                                        (list 'cdr args)))
+                                            default)))
+                          (when supplied
+                            (list (list supplied
+                                        (list 'if args t nil))))))))
+         ((eq mode '&aux)
+          (let ((var (if (consp arg) (car arg) arg))
+                (default (and (consp arg) (car (cdr arg)))))
+            (setq bindings (append bindings (list (list var default))))))
+         (t
+          (setq bindings
+                (append bindings
+                        (list (list arg
+                                    (list 'prog1 (list 'car args)
+                                          (list 'setq args (list 'cdr args))))))))))
+      bindings))
+
+(when emacs-parity-clmacros--standalone-p
+  (defmacro cl-defmacro (name arglist &rest body)
+    "Define NAME as a macro with common CL argument-list forms."
+    (let ((args (make-symbol "--cl-macro-args--"))
+          (doc (when (and (consp body) (stringp (car body)))
+                 (prog1 (car body) (setq body (cdr body)))))
+          (decls nil))
+      (while (and (consp body)
+                  (consp (car body))
+                  (eq (car (car body)) 'declare))
+        (setq decls (append decls (list (car body)))
+              body (cdr body)))
+      (append (list 'defmacro name (list '&rest args))
+              (when doc (list doc)) decls
+              (list (cons 'let* (cons
+                                 (emacs-parity-clmacros--macro-bindings
+                                 arglist args)
+                                 body))))))
+  ;; The standalone source evaluator consults this macro table before the
+  ;; symbol's function cell, so replace the bootstrap entry as well.
+  (when (fboundp 'emacs-parity-macros2--register-macro)
+    (emacs-parity-macros2--register-macro 'cl-defmacro)))
+
+;; ---------------------------------------------------------------------------
 ;; Activation
 ;; ---------------------------------------------------------------------------
 

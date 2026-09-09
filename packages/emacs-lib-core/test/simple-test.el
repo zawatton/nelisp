@@ -143,6 +143,16 @@
         (indent-for-tab-command))
       (should (equal "\t" (buffer-string))))))
 
+(ert-deftest simple-test/visual-line-mode-preserves-wrap-settings ()
+  "Enabling visual line mode changes wrapping and disabling restores it."
+  (with-temp-buffer
+    (setq truncate-lines t
+          word-wrap nil)
+    (visual-line-mode--apply-wrap t)
+    (should (and (null truncate-lines) word-wrap))
+    (visual-line-mode--apply-wrap nil)
+    (should (and truncate-lines (null word-wrap)))))
+
 (provide 'simple-test)
 
 ;;; simple-test.el ends here
