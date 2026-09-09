@@ -63,5 +63,21 @@
                             (let* ,bindings
                               (list first first-p second second-p rest))))))))
 
+(ert-deftest emacs-parity-clmacros-test/cl-defmacro-optional-exact-arity-supplied-p ()
+  "Optional supplied-p stays true when the final optional is present."
+  (let* ((args (make-symbol "args"))
+         (bindings
+          (emacs-parity-clmacros--macro-bindings
+           '(&optional (first 1 first-p) (second 2 second-p) &rest rest)
+           args)))
+    (should (equal '(a t 2 nil nil)
+                   (eval `(let ((,args '(a)))
+                            (let* ,bindings
+                              (list first first-p second second-p rest))))))
+    (should (equal '(a t b t nil)
+                   (eval `(let ((,args '(a b)))
+                            (let* ,bindings
+                              (list first first-p second second-p rest))))))))
+
 (provide 'emacs-parity-clmacros-test)
 ;;; emacs-parity-clmacros-test.el ends here

@@ -264,18 +264,20 @@ polyfill supports (car/cdr/aref/nth/get/gethash/alist-get/...)."
           (let ((var (if (consp arg) (car arg) arg))
                 (default (and (consp arg) (car (cdr arg))))
                 (supplied (and (consp arg)
-                               (car (cdr (cdr arg))))))
+                               (car (cdr (cdr arg)))))
+                (cell (make-symbol "--cl-optional-cell--")))
             (setq bindings
                   (append bindings
-                          (list (list var
-                                      (list 'if args
+                          (list (list cell args)
+                                (list var
+                                      (list 'if cell
                                             (list 'prog1 (list 'car args)
                                                   (list 'setq args
                                                         (list 'cdr args)))
                                             default)))
                           (when supplied
                             (list (list supplied
-                                        (list 'if args t nil))))))))
+                                        (list 'if cell t nil))))))))
          ((eq mode '&aux)
           (let ((var (if (consp arg) (car arg) arg))
                 (default (and (consp arg) (car (cdr arg)))))
