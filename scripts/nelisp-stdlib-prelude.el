@@ -5335,11 +5335,29 @@ The fallback keeps method entries created by older expansions readable."
         (when (> (car entry) 0)
           (setq found t))))))
 
+(defun nelisp-cl-generic--argument-precedence-order (name args)
+  "Return NAME's dispatch positions in argument-precedence order."
+  (or (get name 'nelisp-cl-generic--argument-precedence-order)
+      (let ((positions nil) (i 0) (cur args))
+        (while cur
+          (push i positions)
+          (setq i (1+ i) cur (cdr cur)))
+        (nreverse positions))))
+
+(defun nelisp-cl-generic--method-specializer-rank-at (method position)
+  "Return METHOD's specificity rank at argument POSITION."
+  (let ((entry (assq position
+                     (nelisp-cl-generic--method-specializers method))))
+    (if entry
+        (nelisp-cl-generic--dispatch-specializer-rank (cdr entry))
+      0)))
+
 (defun nelisp-cl-generic--multi-applicable-methods (name args)
   "Return methods applicable to all their dispatch arguments.
 Methods are ordered lexicographically by argument-precedence priority, with
 total priority and method-table order breaking exact ties."
-  (let ((indexed nil) (index 0))
+  (let ((indexed nil) (index 0)
+        (precedence (nelisp-cl-generic--argument-precedence-order name args)))
     (dolist (method (get name 'nelisp-cl-generic--methods))
       (let ((score 0) (matches t))
         (dolist (entry (nelisp-cl-generic--method-specializers method))
@@ -5353,14 +5371,29 @@ total priority and method-table order breaking exact ties."
                                 specializer)))
               (setq matches nil))))
         (when matches
-          (push (list score index method) indexed)))
+          (let ((ranks nil) (order precedence))
+            (while order
+              (setq ranks
+                    (cons (nelisp-cl-generic--method-specializer-rank-at
+                           method (car order)) ranks)
+                    order (cdr order)))
+            (push (list score index method (nreverse ranks)) indexed))))
       (setq index (1+ index)))
     (mapcar #'caddr
             (sort indexed
-                  (lambda (a b)
-                    (or (> (car a) (car b))
-                        (and (= (car a) (car b))
-                             (< (cadr a) (cadr b)))))))))
+              (lambda (a b)
+                (let ((ar (nth 3 a)) (br (nth 3 b)) (different nil)
+                      (greater nil))
+                  (while (and ar br (not different))
+                    (unless (= (car ar) (car br))
+                      (setq different t
+                            greater (> (car ar) (car br))))
+                    (setq ar (cdr ar) br (cdr br)))
+                  (or (and different greater)
+                      (and (not different)
+                           (or (> (car a) (car b))
+                               (and (= (car a) (car b))
+                                    (< (cadr a) (cadr b))))))))))))
 
 (defun nelisp-cl-generic--applicable-methods (name args)
   "NAME's methods applicable to ARGS, most specific first: an `eql'

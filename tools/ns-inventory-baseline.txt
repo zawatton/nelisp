@@ -249,7 +249,13 @@
 # was `(defalias 'eql 'equal)' -- wrong for strings and conses -- and is now
 # the same guarded definition the prelude carries, so its pin moved from
 # ns-collision-divergent (below) to ns-collision.  Net collisions unchanged.
-ns-collision 257
+# 257 -> 266 on 2026-09-09 (v1.2.2): the subclass/multi-argument cl-generic
+# mirror added nine net collision findings.  The identity ledger below pins
+# twelve same-definition helper pairs: the nine previously unpinned pairs,
+# plus the two helpers needed to synchronize argument-precedence dispatch and
+# the formerly divergent multi-applicable-methods pair.  The aggregate rises
+# by nine because the divergent pair was already counted in the prior total.
+ns-collision 266
 # 97 -> 96 on 2026-08-19: `string-equal' no longer differs between the two
 # files -- the prelude's now signals for a non-string instead of falling
 # through to `equal', and the lisp copy was brought with it.  Ratcheted down
@@ -755,7 +761,13 @@ ns-prefix-violation 946
 # as well as the T101 tree; the bool-vector additions do not introduce a new
 # private cross-file reference.  It remains count-only conceded debt under
 # the policy documented above.
-ns-private-escape 726
+# 726 -> 727 on 2026-09-09 (v1.2.2): the new subclass mirror adds one
+# intentional private cross-file reference, `cl--find-class' from
+# lisp/nelisp-cl-macros.el as owned by scripts/nelisp-stdlib-prelude.el.
+# The mirror synchronization removes the old cross-file escape for
+# `nelisp-cl-generic--argument-precedence-order' from the prelude, leaving
+# the measured net at 727; this remains count-only conceded debt.
+ns-private-escape 727
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent
@@ -1174,3 +1186,20 @@ pinned-collision ns-collision	nelisp-cl-generic--eql-matches	lisp/nelisp-cl-macr
 pinned-collision ns-collision	nelisp-cl-generic--invoke-combined	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--head-matches	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--parse-defgeneric-methods	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+# 2026-09-09 (v1.2.2): subclass and multi-argument dispatch helpers are
+# intentionally mirrored in the hosted cl-macros layer and standalone
+# prelude.  Their definitions are synchronized, including the
+# argument-precedence-order tie-break.  These twelve same-definition collisions
+# are expected mirror pairs.
+pinned-collision ns-collision	nelisp-cl-generic--dispatch-specializer-match-p	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--dispatch-specializer-rank	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--method-specializers	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--multi-dispatch-p	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--parse-argument-precedence-order	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--subclass-match-p	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--subclass-matches	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--subclass-name-equal-p	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--subclass-parents	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--argument-precedence-order	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--method-specializer-rank-at	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-cl-generic--multi-applicable-methods	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el

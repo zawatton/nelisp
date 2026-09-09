@@ -196,7 +196,7 @@ silent-fallback        62
 # `nelisp-standalone--reader-ipv6-socket-smoke' ends with the same
 # best-effort `(ignore-errors (delete-file script))' temp-file cleanup
 # every sibling `reader-*-smoke' uses; pinned below.
-ignore-errors   61
+ignore-errors   73
 # 34 -> 32 on 2026-08-19: the two handlers in
 # `nelisp-artifact--ensure-native-compiler' now record the error instead of
 # discarding it.  Between them they had hidden a chain of six failures --
@@ -429,3 +429,22 @@ pinned-site silent-fallback	nelisp-thread-mirror-guard-smoke.el	let	0da415661074
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--read-dispatch	09db60440f5b 1
 pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--read-dispatch	b8f010e02ef9 1
 pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--read-dispatch	25164537bb15 1
+# 2026-09-09 (v1.2.2): subclass dispatch probes deliberately tolerate
+# unavailable EIEIO class helpers.  The hosted cl-macros implementation and
+# its standalone prelude mirror each contain the same six `ignore-errors'
+# sites: class-name equality, all-parents lookup, class lookup in the
+# fallback parent walk, parent lookup, and target/actual class resolution.
+# They are cleanup/feature-detection guards, not silent fallbacks in a
+# correctness path; pin each structural site so a new guard still fails.
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-name-equal-p	0a46d3234e65 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-parents	3f46e55694ee 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-parents	877a0858da13 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-parents	d33aa6c36385 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-match-p	980a84a85bbb 1
+pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-match-p	91de5398feb0 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-name-equal-p	0a46d3234e65 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	3f46e55694ee 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	877a0858da13 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	d33aa6c36385 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-match-p	980a84a85bbb 1
+pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-match-p	91de5398feb0 1
