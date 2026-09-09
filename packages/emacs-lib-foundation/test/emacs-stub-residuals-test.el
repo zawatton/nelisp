@@ -842,6 +842,25 @@ shape whose only signal is the naive test."
       (should (equal "doc" (get symbol 'variable-documentation)))
       (should (equal '(:type integer) (get symbol 'custom-args))))))
 
+(ert-deftest emacs-stub-residuals-test/custom-declare-variable-preserves-type ()
+  "The standalone Custom fallback records the declared option type."
+  (let* ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
+         (saved (and (fboundp 'custom-declare-variable)
+                     (symbol-function 'custom-declare-variable)))
+         (symbol (make-symbol "nelisp-emacs-custom-type")))
+    (unwind-protect
+        (progn
+          (fmakunbound 'custom-declare-variable)
+          (load-file source)
+          (custom-declare-variable symbol 'default "doc"
+                                    :type '(choice (const default)
+                                                   (const alternate)))
+          (should (equal '(choice (const default) (const alternate))
+                         (get symbol 'custom-type))))
+      (if saved
+          (fset 'custom-declare-variable saved)
+        (fmakunbound 'custom-declare-variable)))))
+
 (ert-deftest emacs-stub-residuals-test/custom-declare-face-metadata-shape ()
   (let ((face (make-symbol "nelisp-emacs-custom-declare-face"))
         (spec '((t :inherit bold))))
