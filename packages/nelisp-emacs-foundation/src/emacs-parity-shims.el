@@ -14,8 +14,9 @@
 ;;
 ;; Deferred (need core/interpreter support or a third-party package -- NOT
 ;; stubbed here): `transient-font-lock-keywords' (transient.el data),
-;; general-charset `make-char' (mule tables), `make-mail-user-agent' (not a
-;; real Emacs fn).  `add-variable-watcher' (T62 + T63) is no longer deferred
+;; general-charset `make-char' (mule tables; the latin-jisx0201 ASCII subset
+;; is implemented below), `make-mail-user-agent' (not a real Emacs fn).
+;; `add-variable-watcher' (T62 + T63) is no longer deferred
 ;; -- see the store-only port in `emacs-parity-misc.el'.
 
 ;;; Code:
@@ -413,7 +414,7 @@ BODY."
            (list (list 'when (list 'fboundp ''skeleton-proxy-new)
                        (list 'skeleton-proxy-new (list 'quote skeleton) 'str 'arg)))))))
 
-;;;; --- make-char (ascii/unicode/8-bit/latin-1; errors otherwise) -----
+;;;; --- make-char (ascii/unicode/8-bit/latin-1/JIS Roman subset) -----
 
 (unless (fboundp 'make-char)
   (defun make-char (charset &optional c1 _c2)
@@ -424,6 +425,21 @@ BODY."
      ((memq charset '(unicode ucs iso-10646-1)) (or c1 0))
      ((memq charset '(eight-bit eight-bit-graphic eight-bit-control))
       (+ #x3fff00 (logand (or c1 0) #xff)))
+     ;; Emacs's latin-jisx0201 charset accepts the printable JIS Roman
+     ;; range only.  Its two differing positions map to the Unicode yen
+     ;; sign and overline; C2 is ignored because this charset is one-byte.
+     ((eq charset 'latin-jisx0201)
+      (let ((code (or c1 #x21)))
+        (cond
+         ((not (integerp code))
+          (signal 'wrong-type-argument (list 'wholenump code)))
+         ((< code 0)
+          (signal 'wrong-type-argument (list 'wholenump code)))
+         ((or (< code #x21) (> code #x7e))
+          (error "Invalid code(s)"))
+         ((= code #x5c) #xa5)
+         ((= code #x7e) #x203e)
+         (t code))))
      ((memq charset '(latin-iso8859-1 iso-8859-1 iso-latin-1))
       (+ #x80 (logand (or c1 0) #x7f)))
      (t (error "make-char: unsupported charset %S in shim" charset)))))

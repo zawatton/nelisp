@@ -44,6 +44,21 @@ renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
       (setcar (cdr form) renamed)
       (cons renamed form))))
 
+(defun emacs-parity-shims-test--extract-defun (name)
+  "Read the `(defun NAME ...)' form out of emacs-parity-shims.el,
+renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
+  (with-temp-buffer
+    (insert-file-contents (emacs-parity-shims-test--file))
+    (goto-char (point-min))
+    (should (re-search-forward (format "(defun %s " (regexp-quote name)) nil t))
+    (goto-char (match-beginning 0))
+    (let* ((start (point))
+           (end (progn (forward-sexp) (point)))
+           (form (read (buffer-substring-no-properties start end)))
+           (renamed (make-symbol (format "emacs-parity-shims-test--%s" name))))
+      (setcar (cdr form) renamed)
+      (cons renamed form))))
+
 ;;;; A. static presence -- both guards exist in source
 
 (ert-deftest emacs-parity-shims-test/t87-guards-present-in-source ()
@@ -55,7 +70,26 @@ renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
                (format "(unless (fboundp '%s)" sym)
                nil t)))))
 
-;;;; B. `save-selected-window' -- macroexpansion shape parity with host
+;;;; B. `make-char' -- latin-jisx0201 printable JIS Roman subset
+
+(ert-deftest emacs-parity-shims-test/make-char-latin-jisx0201-parity ()
+  "Match host Emacs's printable JIS Roman mapping.
+The range is ASCII 0x21..0x7e, except yen at 0x5c and overline at 0x7e;
+the optional second byte is ignored for this one-byte charset."
+  (let* ((extracted (emacs-parity-shims-test--extract-defun "make-char"))
+         (sym (car extracted)))
+    (eval (cdr extracted) t)
+    (dolist (code (number-sequence #x21 #x7e))
+      (let ((expected (cond ((= code #x5c) #xa5)
+                            ((= code #x7e) #x203e)
+                            (t code))))
+        (should (= expected (funcall sym 'latin-jisx0201 code)))))
+    (should (= #x21 (funcall sym 'latin-jisx0201)))
+    (should (= #x21 (funcall sym 'latin-jisx0201 #x21 #x7f)))
+    (dolist (code '(0 #x20 #x7f #x80 -1 "A"))
+      (should-error (funcall sym 'latin-jisx0201 code)))))
+
+;;;; C. `save-selected-window' -- macroexpansion shape parity with host
 
 (ert-deftest emacs-parity-shims-test/save-selected-window-macroexpansion-shape ()
   (let* ((extracted (emacs-parity-shims-test--extract-defmacro "save-selected-window"))
@@ -79,7 +113,7 @@ renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
                                (list 'select-window w ''norecord))
                          (nth 2 up))))))))
 
-;;;; C. `save-selected-window' -- behavior: restores selection + return value
+;;;; D. `save-selected-window' -- behavior: restores selection + return value
 
 (ert-deftest emacs-parity-shims-test/save-selected-window-restores-and-returns ()
   (let* ((extracted (emacs-parity-shims-test--extract-defmacro "save-selected-window"))
@@ -95,7 +129,7 @@ renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
         (should (eq 'probe-value (funcall probe)))
         (should (eq w0 (selected-window)))))))
 
-;;;; D. `with-current-buffer-window' -- macroexpansion shape parity with host
+;;;; E. `with-current-buffer-window' -- macroexpansion shape parity with host
 
 (ert-deftest emacs-parity-shims-test/with-current-buffer-window-macroexpansion-shape ()
   (let* ((extracted (emacs-parity-shims-test--extract-defmacro "with-current-buffer-window"))
@@ -129,7 +163,7 @@ renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
                              value-sym)
                        (nth 1 body)))))))
 
-;;;; E. `with-current-buffer-window' -- behavior: runs BODY in buffer,
+;;;; F. `with-current-buffer-window' -- behavior: runs BODY in buffer,
 ;;;;    returns its value, buffer holds inserted content.
 
 (ert-deftest emacs-parity-shims-test/with-current-buffer-window-behavior ()
