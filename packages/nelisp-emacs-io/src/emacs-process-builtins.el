@@ -131,6 +131,10 @@
   (defvar shell-command-switch "-c"
     "Track I bridge: the shell flag that invokes a single command."))
 
+(unless (boundp 'explicit-shell-file-name)
+  (defvar explicit-shell-file-name nil
+    "The explicitly requested inferior shell, or nil for the default shell."))
+
 
 ;;;; --- A19 follow-up: filter/sentinel getters + plist/buffer/query/region --
 (when (emacs-process-builtins--install-function-p 'process-filter)
