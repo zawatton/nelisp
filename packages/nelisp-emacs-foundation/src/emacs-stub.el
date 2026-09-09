@@ -3573,7 +3573,11 @@ release that package version targets."))
        ',name)))
 
 (when (or (not (boundp 'emacs-version))
-          (not (macrop 'defcustom)))
+          (not (macrop 'defcustom))
+          ;; NeLisp's bootstrap macro only expands DEFCUSTOM to DEfVAR.
+          ;; Install the metadata-aware fallback whenever Custom's declaration
+          ;; function is absent, even though that macro is already present.
+          (not (fboundp 'custom-declare-variable)))
   (defmacro defcustom (symbol standard doc &rest args)
     "Standalone load-time fallback for Custom variable declarations."
     `(prog1
@@ -3589,6 +3593,12 @@ release that package version targets."))
     (put symbol 'standard-value (list default))
     (put symbol 'variable-documentation doc)
     (put symbol 'custom-args args)
+    ;; Custom consumers such as Tramp inspect this metadata directly when
+    ;; deriving the accepted values of a user option.  The standalone
+    ;; fallback used to retain the raw keyword arguments only, leaving
+    ;; `custom-type' unset even when `:type' was declared.
+    (when (plist-member args :type)
+      (put symbol 'custom-type (plist-get args :type)))
     (when (fboundp 'nelisp--defvaralias-resync)
       (nelisp--defvaralias-resync symbol))
     symbol))

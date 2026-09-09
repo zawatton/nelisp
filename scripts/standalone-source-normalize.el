@@ -1069,21 +1069,27 @@ as many small `puthash' forms."
 
 (defun standalone-source-normalize--defcustom-form (form)
   "Return a lightweight standalone form for top-level DEFCUSTOM FORM."
-  (let ((symbol (cadr form))
-        (standard (standalone-source-normalize-form (caddr form))))
-    (list
-     'progn
-     ;; Custom documentation is UI/help metadata.  Keep the binding while
-     ;; avoiding large docstrings in files such as org.el.
-     (list 'defvar symbol standard nil)
-     (list 'put
-           (list 'quote symbol)
-           ''standard-value
-           (list 'list (list 'quote standard)))
-     ;; Keep a small marker that this came from Custom while dropping large
-     ;; :type/:options metadata that standalone replay does not inspect.
-     (list 'put (list 'quote symbol) ''custom-args t)
-     (list 'quote symbol))))
+  (let* ((symbol (cadr form))
+         (standard (standalone-source-normalize-form (caddr form)))
+         ;; Keep the declared type: a few vendor consumers (notably Tramp)
+         ;; query `custom-type' at runtime to derive accepted values.  The
+         ;; rest of the Custom UI metadata remains elided to keep bootstrap
+         ;; replay bounded.
+         (type (plist-get (nthcdr 4 form) :type)))
+    (append
+     (list
+      'progn
+      ;; Custom documentation is UI/help metadata.  Keep the binding while
+      ;; avoiding large docstrings in files such as org.el.
+      (list 'defvar symbol standard nil)
+      (list 'put
+            (list 'quote symbol)
+            ''standard-value
+            (list 'list (list 'quote standard)))
+      (list 'put (list 'quote symbol) ''custom-args t))
+     (when type
+       (list (list 'put (list 'quote symbol) ''custom-type type)))
+     (list (list 'quote symbol)))))
 
 (defun standalone-source-normalize--defgroup-form (form)
   "Return a lightweight standalone form for top-level DEFGROUP FORM."

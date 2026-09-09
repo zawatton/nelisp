@@ -2510,6 +2510,9 @@ that walks down into the guarded definition."
           nil)
         (put 'org-modules 'standard-value (list ''(ol-doi ol-w3m)))
         (put 'org-modules 'custom-args t)
+        (put 'org-modules 'custom-type
+             '(set (const :tag "DOI links" ol-doi)
+                   (const :tag "W3M links" ol-w3m)))
         'org-modules)))))
 
 (ert-deftest standalone-source-normalize-test/rewrites-text-mode-defcustoms-to-bindings ()
