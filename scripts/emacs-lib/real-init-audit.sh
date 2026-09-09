@@ -169,6 +169,9 @@ cp "$bootstrap_repl" "$audit_repl"
   (let* ((source (if (fboundp 'nl-syscall-read-file)
                      (nl-syscall-read-file path 0 nil)
                    (emacs-load--read-file-string path)))
+         (source (if (fboundp 'emacs-load--byte-indexed-source)
+                     (emacs-load--byte-indexed-source source)
+                   source))
          (source-length (and (stringp source) (length source)))
          (position 0)
          (line 1)
@@ -191,14 +194,17 @@ cp "$bootstrap_repl" "$audit_repl"
         (real-init-audit--trace
          "READ_BEGIN" "next-index" (+ index 1) "position" position
          "line" form-line)
-        (let* ((read-result (read-from-string source position))
-               (next (cdr read-result))
-               (form (car read-result)))
-          (when (and (> next position)
-                     (< next source-length)
-                     (= (aref source next) ?\)))
-            (setq next (+ next 1)))
-          (when (or (not (consp read-result)) (<= next position))
+        (let* ((native-read (and (fboundp 'nelisp--read-all-from-string-native)
+                                 (fboundp 'emacs-load--native-read-one)
+                                 (emacs-load--native-read-one
+                                  source position source-length)))
+               (form-end (and (null native-read)
+                              (emacs-load--artifact-source-form-end
+                               source position)))
+               (next (if native-read
+                         (cdr native-read)
+                       form-end)))
+          (when (or (not (integerp next)) (<= next position))
             (signal 'end-of-file
                     (list "real init audit reader made no progress" position)))
           (setq index (+ index 1))
@@ -206,10 +212,23 @@ cp "$bootstrap_repl" "$audit_repl"
             (real-init-audit--trace
              "EVAL_BEGIN" "index" index "line" form-line nil nil)
             (condition-case caught
-                (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
-                          (nelisp--load-rewrite-defalias-form form)
-                        form)
-                      t)
+                (if native-read
+                    (let ((form (car native-read)))
+                      (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
+                                (nelisp--load-rewrite-defalias-form form)
+                              form)
+                            t))
+                  (if (and (fboundp 'nelisp--load-eval-source-declined-form)
+                           (fboundp 'nelisp--eval-source-string))
+                      (nelisp--load-eval-source-declined-form
+                       source position form-end)
+                    (let* ((slice (emacs-load--reader-slice
+                                   source position form-end))
+                           (read (read-from-string slice 0 (length slice))))
+                      (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
+                                (nelisp--load-rewrite-defalias-form (car read))
+                              (car read))
+                            t))))
               (error
                (setq init-file-had-error t
                      nemacs-init-file-error (cons path caught))
