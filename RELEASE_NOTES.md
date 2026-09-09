@@ -1,5 +1,30 @@
 # NeLisp Release Notes
 
+## v1.2.2 — 2026-09-09 (Draft)
+
+Full draft: [`release/v1.2.2/RELEASE.md`](release/v1.2.2/RELEASE.md).
+
+This draft covers the implementation currently ahead of `origin/main` and
+records the remaining release-candidate work without treating unverified
+results as complete.
+
+- **Exact binary64 decimal literals** now use the compiler's exact IEEE 754
+  conversion path, backed by limb arithmetic and an oracle test.
+- **Emacs-compatible bool-vectors** are integrated through the reader,
+  standalone allocation, length, `aref`, and `aset` paths.
+- **GC debt and fragmentation work** arms debt after standalone boot and adds
+  pause-growth/fragmentation measurement tooling; final qualification is TBD.
+- **Iterative argument, lambda-body, and `progn` evaluation** preserves order
+  and live values without the previous recursive evaluation shape.
+- **Standalone bootstrap** provides `load-file` before nested `require` calls.
+- **pcase fallback bindings** now support the branch-local binding forms used
+  by macroexpansion, with standalone regression coverage.
+
+Planned additions remain explicitly unverified: multi-argument and `subclass`
+`cl-defmethod` support, plus a macOS-safe NaN printer assertion that compares
+the passthrough with host `number-to-string` output.  Release qualification
+values are TBD; see the full draft for the checklist.
+
 ## v1.2.1 — 2026-09-04
 
 Full notes: [`release/v1.2.1/RELEASE.md`](release/v1.2.1/RELEASE.md).
