@@ -17512,13 +17512,15 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
           (nl_sexp_clone_into globals (+ ctx 0))
           (nl_sexp_clone_into frames (+ ctx 32))
           (nl_sexp_clone_into unbound (+ ctx 64))
-          ;; rec_max 100000, retained after Doc 152 Stage 3: rooting adds root-depth 3N+6 per non-tail recursion, so the root region was enlarged 1 MiB -> 4 MiB (131072 entries) rather than lowering the recursion budget.  Measured 2026-08-25:
+          ;; rec_max 16000: Doc 152 Stage 3 rooting adds root-depth 3N+6 per
+          ;; non-tail recursion.  The 4 MiB region has 131072 entries, so the
+          ;; guard fires near N=8000/root-depth=24006 with 107066 entries free.
 ;; the non-tail recursion-guard probe holds three root entries per open call
-;; (root-depth=3N+6: N=10000 succeeds at 30006; N=15000 overruns the fixed
-;; 32768-entry Stage-2 region).  At the previously measured ~2 rec increments
-;; per user call, 16000 fires near N=8000/root-depth=24006 and leaves ~8700
-;; entries of margin.  The previous rec_max 100000 and the first 50000
-;; recalibration both fired after the root-region ceiling.
+;; Root-depth=3N+6 means N=10000 uses 30006 entries and N=15000 uses
+;; 45006 entries, both below the current 131072-entry region.  At the
+;; previously measured ~2 rec increments per user call, 16000 fires near
+;; N=8000/root-depth=24006.  The previous rec_max 100000 and the first 50000
+;; recalibration both allowed the native/root ceilings to be reached first.
 ;; This also remains below the 1 GiB native stack ceiling measured 2026-08-16:
 ;; mmap'd native stack is ~136k rec levels, not the ~404k this comment used to
 ;; claim -- a self-recursive elisp function survives depth 65000 and SIGSEGVs by
@@ -17526,7 +17528,7 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
 ;; ceiling, so deep recursion died as a silent exit 127 instead of signalling
 ;; `excessive-lisp-nesting': the guard could never fire.  The budget remains
 ;; best-effort: re-measure both root and native stack use when eval frames grow.
-(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 100000)
+(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 16000)
           (nl_alloc_symbol opbuf 1 op_sym)
           (ptr-write-u64 int1 0 2) (ptr-write-u64 int1 8 ,a) (ptr-write-u64 int1 16 0) (ptr-write-u64 int1 24 0)
           (ptr-write-u64 int2 0 2) (ptr-write-u64 int2 8 ,b) (ptr-write-u64 int2 16 0) (ptr-write-u64 int2 24 0)
@@ -25287,13 +25289,15 @@ correctly."
         ;; getcwd(2) answers it here, with the trailing slash Emacs keeps.
         (nl_os_getcwd dd_value)
         (nl_env_set_value ctx dd_sym dd_value)
-        ;; rec_max 100000, retained after Doc 152 Stage 3: rooting adds root-depth 3N+6 per non-tail recursion, so the root region was enlarged 1 MiB -> 4 MiB (131072 entries) rather than lowering the recursion budget.  Measured 2026-08-25:
+        ;; rec_max 16000: Doc 152 Stage 3 rooting adds root-depth 3N+6 per
+        ;; non-tail recursion.  The 4 MiB region has 131072 entries, so the
+        ;; guard fires near N=8000/root-depth=24006 with 107066 entries free.
 ;; the non-tail recursion-guard probe holds three root entries per open call
-;; (root-depth=3N+6: N=10000 succeeds at 30006; N=15000 overruns the fixed
-;; 32768-entry Stage-2 region).  At the previously measured ~2 rec increments
-;; per user call, 16000 fires near N=8000/root-depth=24006 and leaves ~8700
-;; entries of margin.  The previous rec_max 100000 and the first 50000
-;; recalibration both fired after the root-region ceiling.
+;; Root-depth=3N+6 means N=10000 uses 30006 entries and N=15000 uses
+;; 45006 entries, both below the current 131072-entry region.  At the
+;; previously measured ~2 rec increments per user call, 16000 fires near
+;; N=8000/root-depth=24006.  The previous rec_max 100000 and the first 50000
+;; recalibration both allowed the native/root ceilings to be reached first.
 ;; This also remains below the 1 GiB native stack ceiling measured 2026-08-16:
 ;; mmap'd native stack is ~136k rec levels, not the ~404k this comment used to
 ;; claim -- a self-recursive elisp function survives depth 65000 and SIGSEGVs by
@@ -25301,7 +25305,7 @@ correctly."
 ;; ceiling, so deep recursion died as a silent exit 127 instead of signalling
 ;; `excessive-lisp-nesting': the guard could never fire.  The budget remains
 ;; best-effort: re-measure both root and native stack use when eval frames grow.
-(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 100000)
+(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 16000)
         ;; M11 env inherit: stash the initial-stack envp (= sp0 + (argc+2)*8,
         ;; the char** right after argv's NULL) in arena slot +144 (268435600)
         ;; so the process substrate's execve passes the parent environment to

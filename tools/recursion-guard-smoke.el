@@ -15,8 +15,10 @@
 ;; 65000 and SIGSEGVed by 72000 -- against a comment claiming ~404k.
 ;; Doc 152 Stage 3 roots eval transients, so this non-tail probe now also
 ;; holds root-depth=3N+6.  The root region was enlarged 1 MiB -> 4 MiB
-;; (32768 -> 131072 entries) so that budget stays well clear of rec_max;
-;; rec_max stays 100000, ~74% of the measured native-stack ceiling.
+;; (32768 -> 131072 entries) so that the calibrated rec_max 16000 stays well
+;; clear of both the root and measured native-stack ceilings.  With
+;; root-depth=3N+6 and ~2 rec increments per user call, the guard fires near
+;; N=8000/root-depth=24006, leaving 107066 root entries available.
 ;;
 ;; This runs on the standalone binary and asserts both halves:
 ;;   1. recursion inside the budget still returns normally, and
