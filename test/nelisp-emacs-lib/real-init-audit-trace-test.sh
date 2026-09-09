@@ -25,6 +25,10 @@ if rg -n ';' "$helper_body"; then
   echo "real-init-audit-trace-test: generated helper contains a semicolon" >&2
   exit 1
 fi
+if rg -n '\(read-from-string source position\)' "$helper_body"; then
+  echo "real-init-audit-trace-test: helper still uses unbounded source reader" >&2
+  exit 1
+fi
 
 {
   printf '%s' '(progn '
@@ -33,6 +37,9 @@ fi
   done < "$helper_body"
   printf '%s\n' ' )'
   printf '%s\n' '(defun nl-syscall-read-file (path _start _end) (with-temp-buffer (insert-file-contents path) (buffer-string)))'
+  printf '%s\n' '(defun emacs-load--byte-indexed-source (source) source)'
+  printf '%s\n' '(defun emacs-load--artifact-source-form-end (source position) (cdr (read-from-string source position)))'
+  printf '%s\n' '(defun emacs-load--reader-slice (source start end) (substring source start end))'
   printf '%s\n' '(defun nelisp--load-skip-space-and-comments (source position) (while (and (< position (length source)) (memq (aref source position) (list 32 9 10 13))) (setq position (+ position 1))) position)'
   printf '%s\n' '(setq init-file-had-error nil nemacs-init-file-error nil)'
   printf '%s\n' '(real-init-audit--load-forms-file (getenv "REAL_INIT_AUDIT_TEST_INIT") (quote init))'
