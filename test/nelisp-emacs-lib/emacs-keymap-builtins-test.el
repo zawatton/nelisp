@@ -189,6 +189,17 @@ the bulk stub returned nil before this bridge was installed, so its next
   (should (keymapp menu-bar-options-menu))
   (should (keymapp (lookup-key menu-bar-options-menu [line-wrapping]))))
 
+(ert-deftest emacs-keymap-builtins-test/minibuffer-local-map-is-a-keymap ()
+  "The preloaded minibuffer base map must be usable by package loaders.
+
+The standalone stub binds this variable to nil.  `evil-surround' copies it
+  while loading from a real init, before the late vendor preload bridge runs."
+  (should (boundp 'minibuffer-local-map))
+  (should (keymapp minibuffer-local-map))
+  (let ((map (copy-keymap minibuffer-local-map)))
+    (define-key map ">" 'evil-surround-read-tag)
+    (should (eq 'evil-surround-read-tag (lookup-key map ">")))))
+
 ;;;; G. Substrate-direct: where-is-internal returns a list
 
 (ert-deftest emacs-keymap-builtins-test/where-is-internal-via-prefixed-returns-list ()

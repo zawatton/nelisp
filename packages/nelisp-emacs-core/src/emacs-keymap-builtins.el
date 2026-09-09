@@ -232,6 +232,17 @@ the conventional shape expected by `defvar-keymap :suppress'."
   (defvar help-map (emacs-keymap-make-sparse-keymap)
     "Standard help prefix keymap for standalone NeLisp."))
 
+;; `minibuffer-local-map' is normally supplied by the preloaded GNU
+;; minibuffer implementation.  The standalone bootstrap has only the
+;; nil-valued stub, while packages loaded from user init (notably
+;; `evil-surround') copy this map before the late vendor-preload bridge runs.
+;; Keep the existing real map when one is present, but turn the standalone
+;; nil placeholder into the empty keymap that the preloaded runtime promises.
+(defvar minibuffer-local-map nil
+  "Base keymap for active minibuffer input.")
+(unless (emacs-keymap-keymapp minibuffer-local-map)
+  (setq minibuffer-local-map (emacs-keymap-make-sparse-keymap)))
+
 (when (and (or (fboundp 'nl-write-file)
                (fboundp 'nelisp--write-stdout-bytes)
                (not (boundp 'emacs-version)))
