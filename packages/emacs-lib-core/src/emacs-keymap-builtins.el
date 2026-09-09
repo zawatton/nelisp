@@ -26,7 +26,7 @@
 ;;
 ;; Bridgeable today (= covered by `emacs-keymap.el'):
 ;;
-;;   - `make-keymap' / `make-sparse-keymap' / `keymapp'
+;;   - `make-keymap' / `make-sparse-keymap' / `keymapp' / `copy-keymap'
 ;;   - `define-key' (3-arg + ignored REMOVE)
 ;;   - `define-key-after'
 ;;   - `suppress-keymap'
@@ -96,6 +96,9 @@ keymap builtins (`make-keymap', `define-key', ...) silently stay as the
 
 (when (emacs-keymap-builtins--install-function-p 'keymapp)
   (defalias 'keymapp #'emacs-keymap-keymapp))
+
+(when (emacs-keymap-builtins--install-function-p 'copy-keymap)
+  (defalias 'copy-keymap #'emacs-keymap-copy-keymap))
 
 ;;;; --- mutation --------------------------------------------------------
 
