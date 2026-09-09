@@ -122,6 +122,16 @@ cp "$bootstrap_repl" "$audit_repl"
 
 (defvar load-garbage-collect-interval 64)
 
+(defun real-init-audit--require-form-p (form)
+  (and (consp form) (eq (car form) 'require)))
+
+(defun real-init-audit--source-require-form-p (source start end)
+  (condition-case nil
+      (real-init-audit--require-form-p
+       (car (read-from-string
+             (emacs-load--reader-slice source start end))))
+    (error nil)))
+
 (defun real-init-audit--count-newlines (source start end)
   (let ((cursor start)
         (count 0))
@@ -210,6 +220,14 @@ cp "$bootstrap_repl" "$audit_repl"
             (signal 'end-of-file
                     (list "real init audit reader made no progress" position)))
           (setq index (+ index 1))
+          (when (and (fboundp 'garbage-collect)
+                     (or (and native-read
+                              (real-init-audit--require-form-p
+                               (car native-read)))
+                         (and (null native-read)
+                              (real-init-audit--source-require-form-p
+                               source position form-end))))
+            (garbage-collect))
           (let ((form-start (float-time)))
             (real-init-audit--trace
              "EVAL_BEGIN" "index" index "line" form-line nil nil)

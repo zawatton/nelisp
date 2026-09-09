@@ -45,6 +45,7 @@ fi
   printf '%s\n' '(fset (quote garbage-collect) (lambda (&optional _full) (setq real-init-audit-test-gc-count (+ real-init-audit-test-gc-count 1))))'
   printf '%s\n' '(setq init-file-had-error nil nemacs-init-file-error nil)'
   printf '%s\n' '(real-init-audit--load-forms-file (getenv "REAL_INIT_AUDIT_TEST_INIT") (quote init))'
+  printf '%s\n' '(unless (and (real-init-audit--require-form-p (quote (require trace-test-feature))) (not (real-init-audit--require-form-p (quote (setq trace-test-feature t))))) (error "require form detector regression"))'
   printf '%s\n' '(princ (format "GC_COUNT %d\n" real-init-audit-test-gc-count))'
 } > "$helper_file"
 
@@ -134,10 +135,11 @@ gc_init="$test_dir/gc-init.el"
 for i in $(seq 1 128); do
   printf '(setq real-init-audit-test-value %d)\n' "$i" >> "$gc_init"
 done
+printf '%s\n' '(require (quote trace-test-feature) nil t)' >> "$gc_init"
 REAL_INIT_AUDIT_TEST_INIT="$gc_init" emacs -Q --batch -l "$helper_file" \
   > "$test_dir/gc.log" 2>&1
-if ! rg -q '^GC_COUNT 2$' "$test_dir/gc.log"; then
-  echo "real-init-audit-trace-test: expected two periodic collections" >&2
+if ! rg -q '^GC_COUNT 3$' "$test_dir/gc.log"; then
+  echo "real-init-audit-trace-test: expected two periodic and one require collection" >&2
   cat "$test_dir/gc.log" >&2
   exit 1
 fi
