@@ -90,6 +90,14 @@ Callers should bind `case-fold-search' to t when matching these words."))
     "Characters equivalent to a trailing colon in password prompts.
 This is the stock GNU Emacs default used by Comint and Tramp."))
 
+;; `non-essential' is a dynamic guard used by Tramp and other file/network
+;; consumers to suppress prompts and connection attempts during background
+;; probes.  It is normally defined by `simple.el', which headless startup
+;; loads lazily.
+(unless (boundp 'non-essential)
+  (defvar non-essential nil
+    "Non-nil means an operation is optional and must avoid prompting."))
+
 ;; --- minor-mode state vars (read before their define-minor-mode sets them) ---
 (unless (boundp 'evil-mode) (defvar evil-mode nil))
 (unless (boundp 'mouse-wheel-mode) (defvar mouse-wheel-mode nil))

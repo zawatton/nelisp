@@ -54,6 +54,11 @@
   (should (member "パスワード" password-word-equivalents))
   (should (member "密码" password-word-equivalents)))
 
+(ert-deftest emacs-parity-core-vars-test/non-essential-default ()
+  "Optional background operations start with the GNU nil default."
+  (should (boundp 'non-essential))
+  (should (null non-essential)))
+
 (ert-deftest emacs-parity-core-vars-test/input-method-fns-bound ()
   (dolist (fn '(activate-input-method deactivate-input-method set-input-method))
     (should (fboundp fn))))
