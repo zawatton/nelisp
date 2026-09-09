@@ -390,12 +390,23 @@ still signals, exactly as `(head ...)' itself used to before T59."
    (nelisp-cl-generic-test--eval (cl-defmethod cgt-usf ((x (satisfies cgt-usf-pred))) 'nope))
    :type 'error))
 
-(nelisp-cl-generic-deftest nelisp-cl-generic/specializer-on-position-gt-0-signals ()
-  (cl-defstruct cgt-pgt0-dog name)
+(nelisp-cl-generic-deftest nelisp-cl-generic/specializer-on-position-gt-0-dispatches ()
+  "Required-argument specializers may occur after position 0, matching
+real `cl-defmethod' and the all-the-icons-completion call shape."
   (cl-defgeneric cgt-pgt0 (x y))
-  (should-error
-   (nelisp-cl-generic-test--eval (cl-defmethod cgt-pgt0 (x (y cgt-pgt0-dog)) 'nope))
-   :type 'error))
+  (cl-defmethod cgt-pgt0 (x y) 'fallback)
+  (cl-defmethod cgt-pgt0 (x (y (eql 'dog))) (list 'dog x y))
+  (should (equal '(dog left dog) (cgt-pgt0 'left 'dog)))
+  (should (eq 'fallback (cgt-pgt0 'left 'cat))))
+
+(nelisp-cl-generic-deftest nelisp-cl-generic/subclass-specializer-dispatches ()
+  "`(subclass CLASS)' is a class-designator specializer.  The equality
+case is useful during EIEIO bootstrap, before class ancestry is available."
+  (cl-defgeneric cgt-subclass (x))
+  (cl-defmethod cgt-subclass (x) 'fallback)
+  (cl-defmethod cgt-subclass ((x (subclass cgt-root))) 'subclass)
+  (should (eq 'subclass (cgt-subclass '(subclass cgt-root))))
+  (should (eq 'fallback (cgt-subclass '(subclass cgt-other)))))
 
 (nelisp-cl-generic-deftest nelisp-cl-generic/unsupported-lambda-list-keyword-signals ()
   (cl-defgeneric cgt-ctx (x))
@@ -886,14 +897,21 @@ extended to this grammar) -- never silently collected and ignored."
     (cl-defgeneric cgt-dbo-badopt (x) (:something-else 1 2) (list 'd x)))
    :type 'error))
 
-(nelisp-cl-generic-deftest nelisp-cl-generic/argument-precedence-order-accepted-and-ignored ()
-  "`(:argument-precedence-order ...)' is accepted and ignored: Doc 185
-§3.1 supports a single dispatch argument (position 0) only, so there is
-never more than one specializer to reorder."
+(nelisp-cl-generic-deftest nelisp-cl-generic/argument-precedence-order-controls-dispatch ()
+  "`(:argument-precedence-order ...)' controls the lexicographic priority
+of multiple dispatch positions, matching real `cl-generic'."
   (cl-defgeneric cgt-dbo-apo (x y)
     (:argument-precedence-order y x)
     (list 'apo-default x y))
-  (should (equal '(apo-default 1 2) (cgt-dbo-apo 1 2))))
+  (cl-defmethod cgt-dbo-apo ((x integer) y) 'x-first)
+  (cl-defmethod cgt-dbo-apo (x (y integer)) 'y-second)
+  (should (eq 'y-second (cgt-dbo-apo 1 2)))
+  (cl-defgeneric cgt-dbo-apo-default (x y)
+    (:argument-precedence-order x y)
+    (list 'apo-default x y))
+  (cl-defmethod cgt-dbo-apo-default ((x integer) y) 'x-first)
+  (cl-defmethod cgt-dbo-apo-default (x (y integer)) 'y-second)
+  (should (eq 'x-first (cgt-dbo-apo-default 1 2))))
 
 (provide 'nelisp-cl-generic-test)
 ;;; nelisp-cl-generic-test.el ends here

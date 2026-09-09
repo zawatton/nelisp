@@ -836,9 +836,9 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 ;; also combine with exactly one of `:before'/`:after'/`:around', per
 ;; real Emacs's own grammar.  A bare `:before'/`:after'/`:around' (no
 ;; `:extra') remains out of scope.  Every other unsupported form -- an
-;; unsupported qualifier shape, a specializer kind other than
-;; type/eql/head/unspecialized, a specializer on an argument position
-;; other than 0 -- is a loud `error' at `cl-defmethod' macroexpansion
+;; unsupported qualifier shape, or a specializer kind other than
+;; type/eql/head/subclass/unspecialized -- is a loud `error' at
+;; `cl-defmethod' macroexpansion
 ;; time, never a silent no-dispatch (§3.5).  T59 addendum: `(head VALUE)'
 ;; specializers are now supported too (real Emacs generalizer priority
 ;; 80 -- between `eql' (100) and any type match (10); matches when the
@@ -851,8 +851,8 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 ;; entry), `(:method ...)' forms expand to ordinary `cl-defmethod'
 ;; calls, `(declare ...)'/`(:documentation ...)'/
 ;; `(:argument-precedence-order ...)' are accepted (the first two
-;; syntactically only, with no side effect; the third is a no-op since
-;; §3.1 supports only a single dispatch argument) -- needed by
+;; syntactically only, with no side effect; the third records the
+;; precedence of multiple required dispatch arguments) -- needed by
 ;; `eieio.el' itself, whose very first `cl-defgeneric' call
 ;; (`eieio-object-name-string') uses exactly the default-body shape.
 ;;
@@ -912,15 +912,16 @@ ordering question entirely in both copies."
     (put 'cl-no-primary-method 'error-message "No primary method")))
 
 (defun nelisp-cl-generic--parse-specializer (arg-form)
-  "Parse one position-0 arglist entry of a `cl-defmethod' form.
+  "Parse one specialized arglist entry of a `cl-defmethod' form.
 Return a plist: `(:kind unspecialized)' for a bare symbol,
 `(:kind type :type-name TYPE)' for `(VAR TYPE)',
-`(:kind eql :value-form FORM)' for `(VAR (eql FORM))', or
-`(:kind head :head-value VALUE)' for `(VAR (head VALUE))' (T59
+`(:kind eql :value-form FORM)' for `(VAR (eql FORM))',
+`(:kind head :head-value VALUE)' for `(VAR (head VALUE))', or
+`(:kind subclass :subclass-name CLASS)' for `(VAR (subclass CLASS))'. (T59
 addendum -- VALUE is taken literally, never evaluated, matching real
 Emacs's own `(cadr specializer)').  Signals a loud `error' for any other
-shape -- `&context', list-head grammar beyond plain `head', or anything
-else Doc 185 §2.1 does not support."
+shape -- `&context', list-head grammar beyond plain `head' or `subclass',
+or anything else Doc 185 §2.1 does not support."
   (cond
    ((symbolp arg-form) (list :kind 'unspecialized))
    ((and (consp arg-form) (symbolp (car arg-form))
@@ -933,27 +934,33 @@ else Doc 185 §2.1 does not support."
        ((and (consp spec) (eq (car spec) 'head)
              (consp (cdr spec)) (null (cddr spec)))
         (list :kind 'head :head-value (car (cdr spec))))
+       ((and (consp spec) (eq (car spec) 'subclass)
+             (consp (cdr spec)) (null (cddr spec)))
+        (list :kind 'subclass :subclass-name (car (cdr spec))))
        ((symbolp spec) (list :kind 'type :type-name spec))
        (t (error "cl-defmethod: unsupported specializer form %S (Doc 185 \
-§2.1 -- type name, (eql VALUE), or (head VALUE) only)"
+§2.1 -- type name, (eql VALUE), (head VALUE), or (subclass CLASS) only)"
                  arg-form)))))
    (t (error "cl-defmethod: unsupported specializer form %S (Doc 185 §2.1 \
--- type name, (eql VALUE), or (head VALUE) only)"
+-- type name, (eql VALUE), (head VALUE), or (subclass CLASS) only)"
              arg-form))))
 
 (defun nelisp-cl-generic--parse-arglist (arglist name)
   "Split a `cl-defmethod' ARGLIST into (PLAIN-ARGLIST . SPEC-PLIST).
-SPEC-PLIST (from `nelisp-cl-generic--parse-specializer') describes
-position 0 only -- Doc 185 §3.1 supports a single dispatch argument.  A
-non-bare-symbol specializer at any later position, or any unrecognised
-`&FOO' lambda-list keyword (e.g. `&context'), is a loud `error' naming
+SPEC-PLIST contains `:specializers', an alist of required argument
+positions and the parsed specializer at each position.  The old position-0
+keys remain in the returned plist for compatibility with callers that only
+need the first dispatch argument.  A non-bare-symbol specializer is allowed
+on every required argument, matching real `cl-defmethod'; an unrecognised
+`&FOO' lambda-list keyword (e.g. `&context') is still a loud `error' naming
 NAME and the position."
-  (let ((plain nil) (spec nil) (i 0) (in-required t) (cur arglist))
+  (let ((plain nil) (spec nil) (specializers nil) (i 0)
+        (in-required t) (cur arglist))
     (while cur
       (let ((item (car cur)))
         (cond
          ((memq item '(&optional &rest &key &aux))
-          (setq in-required nil)
+         (setq in-required nil)
           (push item plain))
          ((and (symbolp item) (> (length (symbol-name item)) 0)
                (eq (aref (symbol-name item) 0) ?&))
@@ -965,18 +972,23 @@ NAME and the position."
          ((= i 0)
           (let ((parsed (nelisp-cl-generic--parse-specializer item)))
             (setq spec parsed)
+            (when (consp item)
+              (setq specializers
+                    (cons (cons i parsed) specializers)))
             (push (if (consp item) (car item) item) plain))
           (setq i (1+ i)))
          (t
-          (unless (symbolp item)
-            (error "cl-defmethod %s: specializer on argument position %d \
-not supported (Doc 185 §3.1 -- position 0 only)"
-                   name i))
-          (push item plain)
+          (if (symbolp item)
+              (push item plain)
+            (let ((parsed (nelisp-cl-generic--parse-specializer item)))
+              (setq specializers
+                    (cons (cons i parsed) specializers))
+              (push (car item) plain)))
           (setq i (1+ i)))))
       (setq cur (cdr cur)))
-    (cons (nreverse plain)
-          (or spec (list :kind 'unspecialized)))))
+    (let ((out (or spec (list :kind 'unspecialized))))
+      (setq out (plist-put out :specializers (nreverse specializers)))
+      (cons (nreverse plain) out))))
 
 (defun nelisp-cl-generic--builtin-type-p (type-name)
   "Non-nil iff TYPE-NAME is one of `cl-typep''s ten frozen builtins
@@ -1047,6 +1059,8 @@ instead of replacing each other (Doc 185 §2.2's `:extra' extension:
        (eq (plist-get a :type-name) (plist-get b :type-name))
        (eql (plist-get a :value) (plist-get b :value))
        (eql (plist-get a :head-value) (plist-get b :head-value))
+       (eq (plist-get a :subclass-name) (plist-get b :subclass-name))
+       (equal (plist-get a :specializers) (plist-get b :specializers))
        (equal (plist-get a :extra) (plist-get b :extra))
        (eq (plist-get a :combinator) (plist-get b :combinator))))
 
@@ -1075,8 +1089,64 @@ the next call rebuilds it."
            (cons entry methods)))
     (put name 'nelisp-cl-generic--dispatch-cache nil)))
 
+(defun nelisp-cl-generic--subclass-name-equal-p (a b)
+  "Return non-nil when class designators A and B denote the same class."
+  (or (eq a b)
+      (and (fboundp 'eieio-class-name)
+           (ignore-errors
+             (equal (eieio-class-name a) (eieio-class-name b))))))
+
+(defun nelisp-cl-generic--subclass-parents (class)
+  "Return CLASS and its known parents, without requiring EIEIO helpers."
+  (cond
+   ((fboundp 'cl--class-allparents)
+    (ignore-errors (cl--class-allparents class)))
+   ((fboundp 'cl--class-parents)
+    (let ((todo (list class)) (seen nil) (out nil))
+      (while todo
+        (let ((cur (car todo)))
+          (setq todo (cdr todo))
+          (unless (memq cur seen)
+            (push cur seen)
+            (push cur out)
+            (let ((obj (if (and (symbolp cur) (fboundp 'cl--find-class))
+                           (ignore-errors (cl--find-class cur))
+                         cur)))
+              (setq todo
+                    (append (ignore-errors (cl--class-parents obj)) todo))))))
+      (nreverse out)))
+   (t (list class))))
+
+(defun nelisp-cl-generic--subclass-match-p (value target)
+  "Return non-nil when VALUE denotes TARGET or one of its subclasses.
+VALUE may be a class name/object, or the `(subclass CLASS)' data form used
+by `cl-generic-generalizers'."
+  (let* ((actual (if (and (consp value) (eq (car value) 'subclass))
+                     (car (cdr value))
+                   value))
+         (target-object (if (and (symbolp target) (fboundp 'cl--find-class))
+                            (or (ignore-errors (cl--find-class target)) target)
+                          target))
+         (actual-object (if (and (symbolp actual) (fboundp 'cl--find-class))
+                            (or (ignore-errors (cl--find-class actual)) actual)
+                          actual))
+         (parents (nelisp-cl-generic--subclass-parents actual-object))
+         (hit (nelisp-cl-generic--subclass-name-equal-p actual target)))
+    (dolist (parent parents hit)
+      (when (nelisp-cl-generic--subclass-name-equal-p parent target-object)
+        (setq hit t)))))
+
+(defun nelisp-cl-generic--subclass-matches (methods value)
+  "Return subclass-specializer METHODS applicable to VALUE."
+  (let (hits)
+    (dolist (e methods)
+      (when (nelisp-cl-generic--subclass-match-p
+             value (plist-get e :subclass-name))
+        (push e hits)))
+    (nreverse hits)))
+
 (defun nelisp-cl-generic--build-dispatch-table (name)
-  "Partition NAME's registered methods into the three static specializer
+  "Partition NAME's registered methods into the four static specializer
 tiers (Doc 185 §3.3) and cache the result on NAME's plist (§3.4).  Struct
 vs. builtin `:type' matching stays a per-call decision
 (`nelisp-cl-generic--type-match') since a struct named by a specializer
@@ -1087,16 +1157,19 @@ reverses that per bucket while partitioning, so each bucket is
 `nreverse'd back afterwards -- several `:extra' methods sharing one
 specializer must stay ordered newest-first within their tier (Doc 185
 §2.2 extension), matching real Emacs."
-  (let (eql-methods head-methods type-methods unspecialized-methods)
+  (let (eql-methods head-methods subclass-methods type-methods
+        unspecialized-methods)
     (dolist (e (get name 'nelisp-cl-generic--methods))
       (let ((k (plist-get e :kind)))
         (cond
          ((eq k 'eql) (push e eql-methods))
          ((eq k 'head) (push e head-methods))
+         ((eq k 'subclass) (push e subclass-methods))
          ((eq k 'type) (push e type-methods))
          (t (push e unspecialized-methods)))))
     (let ((table (list :eql (nreverse eql-methods)
                         :head (nreverse head-methods)
+                        :subclass (nreverse subclass-methods)
                         :type (nreverse type-methods)
                         :unspecialized (nreverse unspecialized-methods))))
       (put name 'nelisp-cl-generic--dispatch-cache table)
@@ -1185,20 +1258,126 @@ all match %S"
                     (sort struct-hits (lambda (a b) (< (car a) (car b))))))
      (and builtin-groups (cdr (car builtin-groups))))))
 
-(defun nelisp-cl-generic--applicable-methods (name value)
-  "NAME's methods applicable to VALUE, most specific first: an `eql'
-match (if any) outranks a `head' match (T59 addendum), which outranks
-every type match, which outranks the unspecialized fallback (if any) --
-Doc 185 §3.3, matching real Emacs's own generalizer priorities (eql 100 >
-head 80 > type 10 > t 0).  Within one specificity tier, several `:extra'
-variants (Doc 185 §2.2 extension) are newest-defined-first, matching
-real Emacs."
-  (let ((table (nelisp-cl-generic--dispatch-table name)))
-    (append
-     (nelisp-cl-generic--eql-matches (plist-get table :eql) value)
-     (nelisp-cl-generic--head-matches (plist-get table :head) value)
-     (nelisp-cl-generic--ordered-type-matches (plist-get table :type) value)
-     (plist-get table :unspecialized))))
+(defun nelisp-cl-generic--method-specializers (method)
+  "Return METHOD's dispatch specializers as a position alist.
+The fallback keeps method entries created by older expansions readable."
+  (or (plist-get method :specializers)
+      (and (not (eq (plist-get method :kind) 'unspecialized))
+           (list (cons 0 (list :kind (plist-get method :kind)
+                               :type-name (plist-get method :type-name)
+                               :value (plist-get method :value)
+                               :head-value (plist-get method :head-value)
+                               :subclass-name
+                               (plist-get method :subclass-name)))))))
+
+(defun nelisp-cl-generic--dispatch-specializer-match-p (specializer value)
+  "Return non-nil when SPECIALIZER applies to VALUE."
+  (pcase (plist-get specializer :kind)
+    ('eql (eql (plist-get specializer :value) value))
+    ('head (and (consp value)
+                (eql (plist-get specializer :head-value) (car value))))
+    ('subclass (nelisp-cl-generic--subclass-match-p
+                value (plist-get specializer :subclass-name)))
+    ('type (nelisp-cl-generic--type-match
+            value (plist-get specializer :type-name)))
+    (_ t)))
+
+(defun nelisp-cl-generic--dispatch-specializer-rank (specializer)
+  "Return the generalizer priority represented by SPECIALIZER."
+  (pcase (plist-get specializer :kind)
+    ('eql 100)
+    ('head 80)
+    ('subclass 60)
+    ('type 10)
+    (_ 0)))
+
+(defun nelisp-cl-generic--multi-dispatch-p (name)
+  "Return non-nil when NAME has a dispatch position other than zero."
+  (let ((found nil))
+    (dolist (method (get name 'nelisp-cl-generic--methods) found)
+      (dolist (entry (nelisp-cl-generic--method-specializers method))
+        (when (> (car entry) 0)
+          (setq found t))))))
+
+(defun nelisp-cl-generic--argument-precedence-order (name args)
+  "Return NAME's dispatch positions in argument-precedence order."
+  (or (get name 'nelisp-cl-generic--argument-precedence-order)
+      (let ((positions nil) (i 0) (cur args))
+        (while cur
+          (push i positions)
+          (setq i (1+ i) cur (cdr cur)))
+        (nreverse positions))))
+
+(defun nelisp-cl-generic--method-specializer-rank-at (method position)
+  "Return METHOD's specificity rank at argument POSITION."
+  (let ((entry (assq position
+                     (nelisp-cl-generic--method-specializers method))))
+    (if entry
+        (nelisp-cl-generic--dispatch-specializer-rank (cdr entry))
+      0)))
+
+(defun nelisp-cl-generic--multi-applicable-methods (name args)
+  "Return methods applicable to all their dispatch arguments.
+Methods are ordered lexicographically by argument-precedence priority, with
+total priority and method-table order breaking exact ties."
+  (let ((indexed nil) (index 0)
+        (precedence (nelisp-cl-generic--argument-precedence-order name args)))
+    (dolist (method (get name 'nelisp-cl-generic--methods))
+      (let ((score 0) (matches t))
+        (dolist (entry (nelisp-cl-generic--method-specializers method))
+          (let ((position (car entry))
+                (specializer (cdr entry)))
+            (if (and (< position (length args))
+                     (nelisp-cl-generic--dispatch-specializer-match-p
+                      specializer (nth position args)))
+                (setq score (+ score
+                               (nelisp-cl-generic--dispatch-specializer-rank
+                                specializer)))
+              (setq matches nil))))
+        (when matches
+          (let ((ranks nil) (order precedence))
+            (while order
+              (setq ranks
+                    (cons (nelisp-cl-generic--method-specializer-rank-at
+                           method (car order)) ranks)
+                    order (cdr order)))
+            (push (list score index method (nreverse ranks)) indexed))))
+      (setq index (1+ index)))
+    (mapcar #'caddr
+            (sort indexed
+                  (lambda (a b)
+                    (let ((ar (nth 3 a)) (br (nth 3 b)) (different nil)
+                          (greater nil))
+                      (while (and ar br (not different))
+                        (unless (= (car ar) (car br))
+                          (setq different t
+                                greater (> (car ar) (car br))))
+                        (setq ar (cdr ar) br (cdr br)))
+                      (or (and different greater)
+                          (and (not different)
+                               (or (> (car a) (car b))
+                                   (and (= (car a) (car b))
+                                        (< (cadr a) (cadr b))))))))))))
+
+(defun nelisp-cl-generic--applicable-methods (name args)
+  "NAME's methods applicable to ARGS, most specific first: an `eql'
+match (if any) outranks a `head' match (T59 addendum), which outranks a
+`subclass' match, which outranks every type match, which outranks the
+unspecialized fallback (if any) -- Doc 185 §3.3, matching real Emacs's
+generalizer priorities (eql 100 > head 80 > subclass 60 > type 10 > t 0).
+Within one specificity tier, several `:extra' variants (Doc 185 §2.2
+extension) are newest-defined-first, matching real Emacs."
+  (let ((value (car args)))
+    (if (nelisp-cl-generic--multi-dispatch-p name)
+        (nelisp-cl-generic--multi-applicable-methods name args)
+      (let ((table (nelisp-cl-generic--dispatch-table name)))
+      (append
+       (nelisp-cl-generic--eql-matches (plist-get table :eql) value)
+       (nelisp-cl-generic--head-matches (plist-get table :head) value)
+       (nelisp-cl-generic--subclass-matches
+        (plist-get table :subclass) value)
+       (nelisp-cl-generic--ordered-type-matches (plist-get table :type) value)
+       (plist-get table :unspecialized))))))
 
 (defun nelisp-cl-generic--invoke-combined (name args before after around primary)
   "Run one generic-function call once `nelisp-cl-generic--invoke' has
@@ -1262,7 +1441,7 @@ combinator), and run them via `nelisp-cl-generic--invoke-combined'.
 Signals `cl-no-applicable-method' when nothing at all matches, or
 `cl-no-primary-method' when something matches but none of it is a
 primary (or `:extra'-primary) method."
-  (let* ((applicable (nelisp-cl-generic--applicable-methods name (car args)))
+  (let* ((applicable (nelisp-cl-generic--applicable-methods name args))
          before after around primary)
     (dolist (e applicable)
       (let ((c (plist-get e :combinator)))
@@ -1371,9 +1550,8 @@ documentation (unchanged from before this addendum).  Giving a doc
 string twice, or `declare' twice, is a loud `error' -- real Emacs
 signals `Multiple doc strings for %S'/`Multiple \\=`declare\\=' for %S'
 for the same two cases, measured this session.
-`(:argument-precedence-order ...)' is accepted and ignored: Doc 185
-§3.1 supports a single dispatch argument (position 0) only, so there is
-never more than one specializer to reorder.  Any OTHER keyword-headed
+`(:argument-precedence-order ...)' is accepted and controls the lexicographic
+ordering of multiple dispatch positions, as in real `cl-generic'.  Any OTHER keyword-headed
 form is a loud macroexpansion-time `error' naming it -- Doc 185 §3.5's
 loud-failure discipline extended to this grammar, never a silently-
 dropped option."
@@ -1413,6 +1591,30 @@ subset: (:documentation STRING), (declare ...), (:method ...), \
       (push (cons arglist body) methods))
     (nreverse methods)))
 
+(defun nelisp-cl-generic--parse-argument-precedence-order (arglist body)
+  "Return the required argument positions named by BODY's APO option.
+An absent option returns nil, which means the normal left-to-right order."
+  (let ((cur body) (names nil) (mandatory nil) (i 0) (found nil))
+    (while (and cur (not found))
+      (let ((form (car cur)))
+        (when (and (consp form)
+                   (eq (car form) :argument-precedence-order))
+          (setq names (cdr form) found t)))
+      (setq cur (cdr cur)))
+    (when found
+      (let ((in-required t))
+        (dolist (arg arglist)
+          (if (memq arg '(&optional &rest &key &aux))
+              (setq in-required nil)
+            (when in-required
+              (push (cons (if (consp arg) (car arg) arg) i) mandatory)
+              (setq i (1+ i))))))
+      (let ((positions nil))
+        (dolist (name names)
+          (let ((cell (assq name mandatory)))
+            (when cell (push (cdr cell) positions))))
+        (nreverse positions)))))
+
 (defmacro cl-defgeneric (name arglist &rest body)
   "Declare NAME as a generic function over ARGLIST (Doc 185 §3.1,
 extended by the T81 addendum: default-method bodies and OPTIONS-AND-
@@ -1425,10 +1627,14 @@ function's docstring for the full per-option grammar (`(declare ...)',
 cases (a doc string or `declare' given twice).  A non-docstring,
 non-option BODY form used to be an unconditional loud `error' before
 this addendum; it is now the start of the default method body instead."
-  `(prog1 ',name
-     (nelisp-cl-generic--ensure ',name)
-     ,@(mapcar (lambda (m) `(cl-defmethod ,name ,@m))
-               (nelisp-cl-generic--parse-defgeneric-methods name arglist body))))
+  (let ((precedence
+         (nelisp-cl-generic--parse-argument-precedence-order arglist body)))
+    `(prog1 ',name
+       (nelisp-cl-generic--ensure ',name)
+       (put ',name 'nelisp-cl-generic--argument-precedence-order
+            ',precedence)
+       ,@(mapcar (lambda (m) `(cl-defmethod ,name ,@m))
+                 (nelisp-cl-generic--parse-defgeneric-methods name arglist body)))))
 
 (defmacro cl-defmethod (name &rest args)
   "Define a method on generic NAME (Doc 185's subset of real
@@ -1452,11 +1658,12 @@ still does not implement unscoped method combination, only `:extra' and
 its GNU-mandated combination with a single before/after/around
 qualifier.  Any other leading non-list token is a loud `error' naming it.
 
-Exactly one specializer, on argument position 0 only: a type name
-\(builtin `cl-typep' symbol or `cl-defstruct' name), an `(eql VALUE)'
-form, a `(head VALUE)' form (T59 addendum -- matches a cons whose `car'
-is `eql' to VALUE), or a bare (unspecialized) symbol (§2.1/§3.1).  The
-method body can call `cl-call-next-method'/`cl-next-method-p' (§2.2)."
+Required arguments may carry a type name (builtin `cl-typep' symbol or
+`cl-defstruct' name), an `(eql VALUE)' form, a `(head VALUE)' form (T59
+addendum), or a `(subclass CLASS)' form.  Specializers at more than one
+argument position are supported and are jointly applicable; a bare symbol
+is unspecialized (§2.1/§3.1).  The method body can call
+`cl-call-next-method'/`cl-next-method-p' (§2.2)."
   (let (extra combinator)
     (when (and args (eq (car args) :extra))
       (unless (and (cdr args) (stringp (cadr args)))
@@ -1475,6 +1682,7 @@ combined with one of :before/:after/:around)"
            (parsed (nelisp-cl-generic--parse-arglist arglist name))
            (plain-arglist (car parsed))
            (spec (cdr parsed))
+           (specializers (plist-get spec :specializers))
            (kind (plist-get spec :kind))
            (type-name (plist-get spec :type-name))
            (value-form (and (eq kind 'eql) (plist-get spec :value-form)))
@@ -1485,6 +1693,21 @@ combined with one of :before/:after/:around)"
           ',name
           (list :kind ',kind :type-name ',type-name :value ,value-form
                 :head-value ',head-value
+                :subclass-name ',(plist-get spec :subclass-name)
+                :specializers
+                (list
+                 ,@(mapcar
+                    (lambda (entry)
+                      (let* ((pos (car entry))
+                             (sp (cdr entry))
+                             (skind (plist-get sp :kind)))
+                        `(cons ,pos
+                               (list :kind ',skind
+                                     :type-name ',(plist-get sp :type-name)
+                                     :value ,(plist-get sp :value-form)
+                                     :head-value ',(plist-get sp :head-value)
+                                     :subclass-name ',(plist-get sp :subclass-name)))))
+                    specializers))
                 :extra ,extra :combinator ',combinator
                 :fn (lambda ,plain-arglist ,@body)))))))
 

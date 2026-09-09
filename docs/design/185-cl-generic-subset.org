@@ -170,9 +170,9 @@ session, not just internally-consistent assertions:
 
 ** Implementation, reusing Addendum 1's own machinery (no parallel code paths)
 
-Landed as a fourth specializer *kind* (=:kind 'head=, alongside
-=unspecialized=/=type=/=eql=) plumbed through every place those three
-already flow, adding nothing structurally new:
+Landed as a dispatch specializer *kind* (=:kind 'head=, alongside
+=unspecialized=/=type=/=eql=/=subclass=) plumbed through every place the
+other kinds already flow, adding nothing structurally new:
 =nelisp-cl-generic--parse-specializer= (new =(head VALUE)= clause,
 value stored unevaluated, quoted through =cl-defmethod='s expansion
 exactly like =:type-name=), =nelisp-cl-generic--same-specializer-p= (one
@@ -184,7 +184,7 @@ like =:eql=/=:type=), a new =nelisp-cl-generic--head-matches= (one
 — structurally identical to the existing =--eql-matches=, not a new
 matching strategy), and =nelisp-cl-generic--applicable-methods='s
 =append= chain gaining one more term between the =eql= and *type*
-calls, matching the measured priority order (eql > head > type >
+calls, matching the measured priority order (eql > head > subclass > type >
 unspecialized).  =cl-call-next-method=/=cl-next-method-p=,
 =cl-no-applicable-method=/=cl-no-primary-method=, and the =:extra=
 qualifier grammar are all untouched — a =head= method is just another
@@ -317,9 +317,9 @@ a generic's docstring anywhere (true before this addendum too). Only the
 is not rejected merely for having it -- the same "accept the form,
 don't apply the content" choice this doc already made for other purely-
 cosmetic real-Emacs constructs. =(:argument-precedence-order ...)= is
-likewise accepted and ignored outright: §3.1 supports a single dispatch
-argument (position 0) only, so there is never more than one specializer
-to reorder in the first place.
+accepted and records the named required-argument order; multiple dispatch
+positions are compared lexicographically in that order, defaulting to
+source order, as in real =cl-generic=.
 
 ** Implementation: the default body is an ordinary method, not new machinery
 
@@ -381,7 +381,7 @@ per-file cross-referencing style). Diff numstat equal in both files
 (=nelisp-cl-generic/default-body-*=, =declare-*=, =inline-method-*=,
 =multiple-doc-strings-signals=, =multiple-declare-forms-signals=,
 =unsupported-defgeneric-option-signals=,
-=argument-precedence-order-accepted-and-ignored=), several of them
+=argument-precedence-order-controls-dispatch=), several of them
 parity forms with an exact real-Emacs-31.1 transcript in their own
 docstring/commentary, measured this session per the table above. One
 pre-existing case,
@@ -760,6 +760,7 @@ failure to cite alongside it.
 | =(ARG TYPE)=, TYPE a =cl-defstruct= name | yes | =nelisp--record-type= + =nelisp-cl-macros--struct-isa= (§2.1a) |
 | =(ARG (eql VALUE))= | yes | =eql= comparison, highest specificity |
 | =(ARG (head VALUE))= | yes (T59 addendum, see Addendum 2 above) | cons whose =car= is =eql= to VALUE; priority between =eql= and any type match |
+| =(ARG (subclass CLASS))= | yes (T102 addendum) | class designator or =(subclass CLASS)= data form equal to CLASS or one of its known parents; priority below =head= and above ordinary types |
 | list-head grammar beyond plain =(head VALUE)=, e.g. multiple VALUEs | *no* | loud error if written (§3.5) -- a deliberate, documented stricter-than-real-Emacs choice (Addendum 2) |
 | =&context=, custom specializer forms | *no* | same |
 
@@ -828,12 +829,12 @@ paid when that specific generic is actually used.
 (cl-defmethod render (obj) ...)           ; unspecialized fallback
 #+end_src
 
-Single dispatch argument only (position 0) for v1 — real =cl-generic=
-supports specializers on any/multiple arguments; §1.3 found no evidence
-this is needed, and multi-argument dispatch multiplies the effective-
-method-table construction cost §2.3 is trying to keep small. A
-=cl-defmethod= specializing a non-first argument is a loud error (§3.5),
-not silently treated as unspecialized.
+Required arguments may carry specializers at any position.  When multiple
+positions are specialized, applicable methods are ordered lexicographically
+by their specializer priority in =:argument-precedence-order= (defaulting to
+source argument order), matching real =cl-generic=.  This subset keeps the
+dispatch table lazy and scans only the methods of a generic that uses a
+nonzero dispatch position.
 
 ** §3.2 =nelisp-cl-generic--type-match=
 
@@ -885,8 +886,8 @@ cheap — only the next actual call pays the rebuild.
 |---|---|
 | unsupported qualifier (bare, non-=:extra= =:before=/=:after=/=:around=, or any other shape) | =error= at =cl-defmethod= macroexpansion time, names the qualifier |
 | =:extra= not followed by a string | =error= at =cl-defmethod= macroexpansion time (addendum, 2026-09-05) |
-| unsupported specializer form (not a type name, not =(eql V)=, not =(head V)= (Addendum 2), not a bare unspecialized arg) | =error= at macroexpansion time, names the form |
-| specializer on argument position > 0 | =error= at macroexpansion time |
+| unsupported specializer form (not a type name, not =(eql V)=, not =(head V)= (Addendum 2), not =(subclass CLASS)= (T102), not a bare unspecialized arg) | =error= at macroexpansion time, names the form |
+| specializer on an optional/non-required argument | =error= at macroexpansion time or ordinary optional-argument parsing |
 | call with no applicable method | =signal 'cl-no-applicable-method (list generic-name args)= — same symbol real Emacs uses, a genuine parity point (§6.2) |
 | two applicable primary methods, neither strictly more specific (§3.3) | =error= naming both, at *call* time (this one cannot be caught earlier — it depends on the runtime argument, not the =cl-defmethod= form alone) |
 | several methods at one specificity tier differing only by =:extra= string | *not* ambiguous — coexist, newest-defined-first, chained via =cl-call-next-method= (addendum, 2026-09-05) |
