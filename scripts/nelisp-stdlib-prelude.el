@@ -10343,6 +10343,8 @@ Prefers the real process id; falls back to the clock, marked with a leading
 (unless (fboundp 'directory-files-and-attributes)
   (defun directory-files-and-attributes
       (directory &optional full match nosort id-format count)
+    (when (and count (or (not (integerp count)) (< count 0)))
+      (signal 'wrong-type-argument (list 'wholenump count)))
     (let ((names (directory-files directory full match nosort))
           (remaining count)
           (out nil))

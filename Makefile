@@ -1439,6 +1439,17 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (empty (concat dir "/empty"))' \
 	  '       (many (concat dir "/many"))' \
 	  '       (attrs (file-attributes f))' \
+	  '       (dfa-relative (directory-files-and-attributes dir))' \
+	  '       (dfa-full (directory-files-and-attributes dir t))' \
+	  '       (dfa-match (directory-files-and-attributes dir nil "ten-bytes\\.txt"))' \
+	  '       (dfa-count (directory-files-and-attributes dir nil nil nil nil 1))' \
+	  '       (relative-attrs-ok (let ((row (assoc "ten-bytes.txt" dfa-relative)))' \
+	  '                            (and row (= (file-attribute-size (cdr row)) 10))))' \
+	  '       (full-attrs-ok (let ((row (assoc f dfa-full)))' \
+	  '                        (and row (= (file-attribute-size (cdr row)) 10))))' \
+	  '       (match-ok (and (= (length dfa-match) 1)' \
+	  '                    (equal (caar dfa-match) "ten-bytes.txt")))' \
+	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
 	  '       (mtime-ok (and (integerp mtime) (> mtime 1700000000)))' \
@@ -1485,10 +1496,11 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '                     (equal many-names many-decoded)))' \
 	  '       (absent-ok (and (null (file-attributes (concat dir "/nope")))' \
 	  '                       (null (directory-files (concat dir "/nope"))))))' \
-	  '  (princ (format "size-ok=%S mtime=%S reg-ok=%S dir-ok=%S names-ok=%S dot-ok=%S empty-ok=%S many=%d order-ok=%S perf=%.2fx absent-ok=%S pass=%S\n"' \
-	  '                 size-ok mtime reg-ok dir-ok names-ok dot-ok empty-ok' \
+	  '  (princ (format "size-ok=%S mtime=%S reg-ok=%S dir-ok=%S attrs-relative=%S attrs-full=%S match=%S count=%S names-ok=%S dot-ok=%S empty-ok=%S many=%d order-ok=%S perf=%.2fx absent-ok=%S pass=%S\n"' \
+	  '                 size-ok mtime reg-ok dir-ok relative-attrs-ok full-attrs-ok match-ok count-ok names-ok dot-ok empty-ok' \
 	  '                 (length many-names) (equal many-names many-decoded) perf-ratio absent-ok' \
-	  '                 (and size-ok mtime-ok reg-ok dir-ok names-ok dot-ok empty-ok many-ok perf-ok absent-ok))))' \
+	  '                 (and size-ok mtime-ok reg-ok dir-ok relative-attrs-ok full-attrs-ok match-ok count-ok' \
+	  '                      names-ok dot-ok empty-ok many-ok perf-ok absent-ok))))' \
 	  > target/standalone-reader-fileattrs-smoke.el; \
 	out="$$($$bin --load target/standalone-reader-fileattrs-smoke.el 2>&1)"; \
 	case "$$out" in \
