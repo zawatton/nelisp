@@ -62,6 +62,17 @@
 Real Emacs derives this from each subtype's `char-table-extra-slots'
 property (0..10); we allocate the maximum so any subtype fits.")
 
+(defconst emacs-char-table--category-set-size 128
+  "Number of category slots in a character's category set.")
+
+(defvar emacs-char-table--standard-category-table nil
+  "Standalone standard category table.")
+
+(defvar emacs-char-table--current-category-table nil
+  "Standalone current-buffer category table.
+The lightweight runtime has no native per-buffer category-table slot yet;
+the shared table still gives vendor libraries real mutation semantics.")
+
 (defconst emacs-char-table--max-char #x3FFFFF
   "Largest character code (Doc 05: UTF-8 / Unicode range).")
 
@@ -189,6 +200,102 @@ character (defaults to nil)."
      (cons (cons (cons char char) value)
            (emacs-char-table--raw-ref ct emacs-char-table--i-ranges))))
   value)
+
+;;;; --- category-table integration ------------------------------------
+
+(defun emacs-char-table-make-category-table ()
+  "Construct an empty standalone category table.
+Each character maps to a 128-slot category set, matching the index space
+of host Emacs's bool-vector returned by `char-category-set'."
+  (emacs-char-table-make 'category-table
+                         (make-vector emacs-char-table--category-set-size nil)))
+
+(defun emacs-char-table-category-table-p (object)
+  "Return non-nil when OBJECT is a standalone category table."
+  (and (emacs-char-table-p object)
+       (eq (emacs-char-table-subtype object) 'category-table)))
+
+(defun emacs-char-table-standard-category-table ()
+  "Return the standalone standard category table."
+  (or emacs-char-table--standard-category-table
+      (setq emacs-char-table--standard-category-table
+            (emacs-char-table-make-category-table))))
+
+(defun emacs-char-table-category-table ()
+  "Return the standalone current category table."
+  (or emacs-char-table--current-category-table
+      (setq emacs-char-table--current-category-table
+            (emacs-char-table-standard-category-table))))
+
+(defun emacs-char-table-set-category-table (table)
+  "Use category TABLE for the standalone current buffer and return TABLE."
+  (unless (emacs-char-table-category-table-p table)
+    (signal 'wrong-type-argument (list 'category-table-p table)))
+  (setq emacs-char-table--current-category-table table))
+
+(defun emacs-char-table-copy-category-table (&optional table)
+  "Return a copy of category TABLE, defaulting to the standard table."
+  (let* ((source (or table (emacs-char-table-standard-category-table)))
+         (copy (emacs-char-table-copy
+                source
+                (lambda (value)
+                  ;; Category sets are vectors stored as char-table values.
+                  ;; Keep copied tables independent, as
+                  ;; `copy-category-table' does on the host.
+                  (if (vectorp value) (copy-sequence value) value)))))
+    ;; The default value is not visited by `emacs-char-table-copy's VALFN.
+    ;; Copy it separately so direct `char-category-set' mutation in the copy
+    ;; cannot alter the source table's default set.
+    (emacs-char-table--raw-set
+     copy emacs-char-table--i-default
+     (copy-sequence
+      (emacs-char-table--raw-ref copy emacs-char-table--i-default)))
+    copy))
+
+(defun emacs-char-table--category-set (table character)
+  "Return TABLE's category set for CHARACTER, creating a valid default."
+  (unless (and (integerp character)
+               (>= character 0)
+               (<= character emacs-char-table--max-char))
+    (signal 'wrong-type-argument (list 'characterp character)))
+  (let ((set (emacs-char-table-ref table character)))
+    (if (and (vectorp set)
+             (= (length set) emacs-char-table--category-set-size))
+        set
+      (let ((new (make-vector emacs-char-table--category-set-size nil)))
+        (emacs-char-table-set table character new)
+        new))))
+
+(defun emacs-char-table-char-category-set (character)
+  "Return CHARACTER's 128-slot standalone category set."
+  (emacs-char-table--category-set (emacs-char-table-category-table) character))
+
+(defun emacs-char-table-modify-category-entry
+    (character category &optional table reset)
+  "Add CATEGORY to CHARACTER's category set in TABLE.
+CHARACTER may be one character or an inclusive (FROM . TO) range;
+RESET removes CATEGORY.  This is the subset needed by vendor Kinsoku."
+  (let ((table (or table (emacs-char-table-category-table))))
+    (unless (emacs-char-table-category-table-p table)
+      (signal 'wrong-type-argument (list 'category-table-p table)))
+    (unless (and (integerp category) (>= category #x20) (<= category #x7e))
+      (signal 'wrong-type-argument (list 'characterp category)))
+    (let ((from (if (consp character) (car character) character))
+          (to (if (consp character) (cdr character) character)))
+      (unless (and (integerp from) (integerp to)
+                   (<= 0 from) (<= from to)
+                   (<= to emacs-char-table--max-char))
+        (signal 'wrong-type-argument (list 'characterp character)))
+      (while (<= from to)
+        ;; The default category set is shared by untouched characters.  Copy
+        ;; it before changing one character, matching the host's copy-on-write
+        ;; behavior for `modify-category-entry'.
+        (let ((set (copy-sequence
+                    (emacs-char-table--category-set table from))))
+          (aset set category (not reset))
+          (emacs-char-table-set table from set))
+        (setq from (1+ from))))
+    nil))
 
 ;;;; --- range access ---------------------------------------------------
 
@@ -365,7 +472,15 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (fset 'char-table-extra-slot #'emacs-char-table-extra-slot)
   (fset 'set-char-table-extra-slot #'emacs-char-table-set-extra-slot)
   (fset 'map-char-table #'emacs-char-table-map)
-  (fset 'max-char #'emacs-char-table-max-char))
+  (fset 'max-char #'emacs-char-table-max-char)
+  (fset 'make-category-table #'emacs-char-table-make-category-table)
+  (fset 'category-table-p #'emacs-char-table-category-table-p)
+  (fset 'category-table #'emacs-char-table-category-table)
+  (fset 'standard-category-table #'emacs-char-table-standard-category-table)
+  (fset 'set-category-table #'emacs-char-table-set-category-table)
+  (fset 'copy-category-table #'emacs-char-table-copy-category-table)
+  (fset 'char-category-set #'emacs-char-table-char-category-set)
+  (fset 'modify-category-entry #'emacs-char-table-modify-category-entry))
 
 (when (emacs-char-table--install-function-p 'char-table-p)
   (defalias 'char-table-p #'emacs-char-table-p))
@@ -389,6 +504,22 @@ When VALFN is non-nil it transforms each non-nil value (used by
   (defalias 'map-char-table #'emacs-char-table-map))
 (when (emacs-char-table--install-function-p 'max-char)
   (defalias 'max-char #'emacs-char-table-max-char))
+(when (emacs-char-table--install-function-p 'make-category-table)
+  (defalias 'make-category-table #'emacs-char-table-make-category-table))
+(when (emacs-char-table--install-function-p 'category-table-p)
+  (defalias 'category-table-p #'emacs-char-table-category-table-p))
+(when (emacs-char-table--install-function-p 'category-table)
+  (defalias 'category-table #'emacs-char-table-category-table))
+(when (emacs-char-table--install-function-p 'standard-category-table)
+  (defalias 'standard-category-table #'emacs-char-table-standard-category-table))
+(when (emacs-char-table--install-function-p 'set-category-table)
+  (defalias 'set-category-table #'emacs-char-table-set-category-table))
+(when (emacs-char-table--install-function-p 'copy-category-table)
+  (defalias 'copy-category-table #'emacs-char-table-copy-category-table))
+(when (emacs-char-table--install-function-p 'char-category-set)
+  (defalias 'char-category-set #'emacs-char-table-char-category-set))
+(when (emacs-char-table--install-function-p 'modify-category-entry)
+  (defalias 'modify-category-entry #'emacs-char-table-modify-category-entry))
 
 (provide 'emacs-char-table)
 

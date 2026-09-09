@@ -114,6 +114,37 @@
     (should (eq 'meta2 (emacs-char-table-extra-slot ct 2)))
     (should (null (emacs-char-table-extra-slot ct 1)))))
 
+;;;; --- category table integration ------------------------------------
+
+(ert-deftest emacs-char-table-test/category-entry-mutation-and-copy ()
+  "Category entries use the same sparse char-table representation.
+Mutation changes only the selected category bit, and copying keeps the
+source table independent."
+  (let* ((table (emacs-char-table-make-category-table))
+         (copy nil))
+    (let ((emacs-char-table--current-category-table table))
+      (should (emacs-char-table-category-table-p table))
+      (should (= 128 (length (emacs-char-table-char-category-set ?!))))
+      (should (eq (emacs-char-table-char-category-set ?a)
+                  (emacs-char-table-char-category-set ?b)))
+      (should-not (aref (emacs-char-table-char-category-set ?!) ?>))
+      (emacs-char-table-modify-category-entry ?! ?> table)
+      (should (aref (emacs-char-table-char-category-set ?!) ?>))
+      (should-not (aref (emacs-char-table-char-category-set ?a) ?>))
+      (emacs-char-table-modify-category-entry '(?a . ?c) ?< table)
+      (should (aref (emacs-char-table--category-set table ?b) ?<))
+      (setq copy (emacs-char-table-copy-category-table table))
+      (emacs-char-table-modify-category-entry ?! ?> copy t)
+      (should (aref (emacs-char-table-char-category-set ?!) ?>))
+      (should-not (aref (emacs-char-table--category-set copy ?!) ?>))
+      (should (aref (emacs-char-table--category-set copy ?b) ?<))
+      ;; A direct accessor mutation in the copied table must not leak through
+      ;; its independently copied default category set.
+      (let ((emacs-char-table--current-category-table copy))
+        (aset (emacs-char-table-char-category-set ?z) ?> t))
+      (should-not (aref (emacs-char-table--category-set table ?z) ?>))
+      (should (emacs-char-table-category-table-p copy)))))
+
 ;;;; --- map ------------------------------------------------------------
 
 (ert-deftest emacs-char-table-test/map-visits-set-entries ()
