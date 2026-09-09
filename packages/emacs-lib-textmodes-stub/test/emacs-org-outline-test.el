@@ -11,6 +11,15 @@
 (require 'emacs-fileio)
 (require 'emacs-org-outline)
 
+(ert-deftest org-element-deferred-constructor-is-available ()
+  "The Org parser's deferred AST constructor must be available to callers."
+  (unless (fboundp 'org-element-deferred-create)
+    (ert-skip "Org parser is not loaded in this host test lane"))
+  (should (fboundp 'org-element-deferred-create))
+  (let ((value (org-element-deferred-create nil #'identity 'ok)))
+    (should (org-element-deferred-p value))
+    (should (equal '(ok) (org-element-deferred-args value)))))
+
 (defvar emacs-org-outline-test--tmp-counter 0)
 
 (defun emacs-org-outline-test--tmp-path (suffix)

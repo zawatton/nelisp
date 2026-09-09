@@ -3034,6 +3034,20 @@ C-core-compatible substrate that should be fixed in `src/' or the runtime."
           (saved (mapcar (lambda (sym)
                            (cons sym (and (fboundp sym) (symbol-function sym))))
                          emacs-org-outline--vendor-dired-shadow-symbols)))
+      ;; This shim provides `org-element-ast' so the lightweight API can be
+      ;; used before the full parser is available.  The real vendor parser's
+      ;; `(require 'org-element-ast)' then becomes a no-op, which would leave
+      ;; its deferred-value constructors (notably
+      ;; `org-element-deferred-create') undefined.  Load the vendor AST
+      ;; explicitly on standalone before asking for `org-element'.
+      (when (and (fboundp 'nelisp--write-stdout-bytes)
+                 (not (fboundp 'org-element-deferred-create)))
+        (let* ((root (emacs-org-outline--repo-root))
+               (ast-file (expand-file-name
+                          "vendor/emacs-lisp/org/org-element-ast.el"
+                          root)))
+          (when (file-readable-p ast-file)
+            (load ast-file nil 'no-message t t))))
       (condition-case err
           (require 'org-element)
         (error
