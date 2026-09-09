@@ -535,5 +535,14 @@
 # build measures 7249152 (+82088, +1.14%).  The growth is the AOT-linked
 # dispatch implementation and its 8744-byte prelude source addition; release
 # metadata does not enter the binary.
-size 7249152
+# Raised 2026-09-09 for 376b22765 plus the release cl-generic qualifier fixes
+# (3915cb038, d0c6773c5): the current build measures 7634232 bytes, up
+# 385080 bytes (+5.31%) from the previous pin.  The increase is the async
+# core and process-adapter source now embedded in both artifact command
+# runtime producers, which makes artifact/source-cache process APIs agree
+# with the reader prelude and closes the substrate-presence regression; the
+# release cl-generic changes add their corresponding prelude implementation.
+# This is a deliberate feature-size increase, measured after the reader
+# 31/31 standalone checks passed, rather than linker or metadata noise.
+size 7634232
 slack-pct 2
