@@ -219,11 +219,9 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
                          ((null suffixes) (list ""))
                          ((stringp suffixes) (list suffixes))
                          (t suffixes)))
-           ;; A name containing a directory component is resolved relative to
-           ;; `default-directory' and does not walk `load-path'.
-           (dirs (if (emacs-fns--file-name-has-directory-p filename)
-                     (list nil)
-                   path))
+           ;; `locate-file' searches every PATH directory even when FILENAME
+           ;; contains a subdirectory (for example, "term/xterm").
+           (dirs path)
            found)
       (while (and dirs (not found))
         (let ((suffixes-left suffix-list))
