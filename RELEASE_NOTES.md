@@ -1,44 +1,51 @@
 # NeLisp Release Notes
 
-## v1.2.2 — 2026-09-09
+## v1.2.2 — 2026-09-10
 
 Full notes: [`release/v1.2.2/RELEASE.md`](release/v1.2.2/RELEASE.md).
 
-This release carries the completed implementation and recorded qualification
-results. The full presence sweep remains in progress.
+This release expands macro and loop coverage, hardens the reader and GC
+boundaries, and completes the zero-Rust semver workflow. The recorded
+qualification results are complete for the v1.2.2 candidate.
 
-- **Exact binary64 decimal literals** now use the compiler's exact IEEE 754
-  conversion path, backed by limb arithmetic and an oracle test.
-- **Emacs-compatible bool-vectors** are integrated through the reader,
-  standalone allocation, length, `aref`, and `aset` paths.
-- **GC safety and measurement** cover the rootstack bound, the 16,000-level
-  guard, mid-form collection coverage (6/6), and T110's 99% ratio over six
-  collections.
-- **Iterative argument, lambda-body, and `progn` evaluation** preserves order
-  and live values without the previous recursive evaluation shape.
-- **Standalone bootstrap** provides `load-file` before nested `require` calls.
-- **pcase fallback bindings** now support the branch-local binding forms used
-  by macroexpansion, with standalone regression coverage.
-- **`cl-defmethod` dispatch** supports `subclass` and multi-argument methods,
-  bare `:before`, `:after`, and `:around` qualifiers, and literal symbols in
-  EQL specializers.
-- **Process substrate parity** embeds the async core and process adapter in
-  artifact runtimes; the presence corpus contains 852 names.
-- **Standalone record copying** makes `copy-sequence` preserve record type
-  and payload slots in the standalone runtime.
+- **Macro expansion and `cl-loop`** now expand before the bytecode lane,
+  preserve branch-local `pcase` bindings, cover parallel stepping and the
+  supported `unless`/`downto`/`on`/`across` forms, and reject unsupported loop
+  shapes clearly.
+- **Reader and standalone runtime** add native string-reader dispatch, GNU
+  escapes, modifier chains, read labels, safe empty hash-table literals,
+  Emacs-compatible bool-vectors, and record-preserving `copy-sequence`.
+- **Function surface** adds standalone `func-arity` and completes the
+  `fboundp`/`indirect-function`/`macrop`/`commandp` family.
+- **Numbers and printing** add exact binary64 decimal conversion, bounded
+  extreme `exp`/`expt`, fixnum-safe `random`, `float-time` argument handling,
+  and the direct float printer path.
+- **`cl-generic`** adds default and `:method` forms, extra/head specializers,
+  qualifier support, subclass and multi-argument dispatch, and correct EQL
+  literal handling.
+- **Regexp and performance paths** add compiled-pattern caching and literal
+  fast paths, cheaper LRU/plan operations, direct string/list paths, and bulk
+  directory decoding with `directory-files-and-attributes` compatibility and
+  count validation.
+- **GC and runtime safety** cover GC debt at standalone boot, the root-stack
+  and recursion bounds, unibyte roots, header-word safety, and allocator
+  free-block reuse.
+- **Release workflow** is zero-Rust and semver-tag driven. The presence corpus
+  is 856 names: 571 shared and 285 standalone-only.
 
-Recorded qualification includes check tier 23/23 PASS, standalone reader
-31/31 PASS, full ERT 5,673 total with 5,514 pass, 159 skip, and 0 fail, JIT
-and no-JIT suites exiting 0, and a binary-size ratchet PASS with the final
-main-path build pending (ceiling 7,786,916 bytes).
-Native-artifact is 9/9,
-selfhost is 3/3, performance is 9/9 with checked arithmetic at 1.014x
-(ceiling 1.15), smokes are 51/51, all 21 extras gates pass, and gate-mutation
-is 64 pass with 5 platform skips.
+Recorded qualification: version consistency 9/9 PASS; check tier 23/23 PASS
+with mutation coverage; full ERT 5,673 total / 5,514 pass / 159 skip / 0
+fail; gate-mutation 64 PASS + 5 platform skips; native-artifact 9/9;
+selfhost 3/3; performance 9/9 with checked arithmetic at 1.014x (ceiling
+1.15); smokes 51/51; and all 21 extras PASS. The no-JIT and JIT suites both
+exit 0. The full presence sweep checked 4,851 entries, found 0 findings, and
+recorded 685 accepted divergences. The standalone reader is 32/32 PASS. The
+main-path `target/nelisp` binary is exactly 7,683,496 bytes, and the binary
+size ratchet passes against its 7,786,916-byte ceiling.
 
-The full presence sweep is pending while it runs and has no release PASS
-result yet. The macOS NaN assertion is host-relative; release CI is tracked by
-GitHub Actions and macOS hardware validation remains pending.
+Before the GitHub Release, semver tag CI will gate `linux-x86_64`,
+`macos-aarch64`, `linux-aarch64`, and the Linux 1-hour soak. macOS has not
+been recorded as passed here.
 
 ## v1.2.1 — 2026-09-04
 
