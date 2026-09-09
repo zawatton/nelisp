@@ -128,6 +128,10 @@ final `.el' suffix with `.repl'.")
     "emacs-parity-misc.el"
     "emacs-parity-fns2.el"
     "emacs-parity-org.el"
+    ;; Lightweight standard simple.el shim.  Its visual-line mode family is
+    ;; needed before user init reaches visual-fill-column's global command;
+    ;; the full vendor simple.el remains intentionally out of the bundle.
+    "simple.el"
     ;; Stock variable fills that no other wired file provides.  Both are
     ;; purely additive -- every top-level form is
     ;; `(unless (boundp 'X) (defvar X ...))' -- so a real preload still wins.

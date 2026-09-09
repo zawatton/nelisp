@@ -53,6 +53,19 @@
 
 (unless (fboundp 'purecopy) (defalias 'purecopy 'identity))
 
+;;;; --- load-order keymap variables -----------------------------------
+
+;; The headless bootstrap has no menu-bar/text-mode loader at this point, while
+;; diff-hl and consult read these stock variables during their require chains.
+;; An empty sparse map is the genuine safe pre-load value; the guarded forms
+;; let a later vendor definition replace it without shadowing an existing map.
+(unless (boundp 'menu-bar-edit-menu)
+  (defvar menu-bar-edit-menu (make-sparse-keymap)
+    "Edit menu keymap, initialized before the menu-bar package loads."))
+(unless (boundp 'text-mode-map)
+  (defvar text-mode-map (make-sparse-keymap)
+    "Base keymap inherited by text modes, initialized before text-mode loads."))
+
 ;;;; --- url: url-file-directory / url-default-expander (url-*.el) ------
 
 ;; url-util.el
