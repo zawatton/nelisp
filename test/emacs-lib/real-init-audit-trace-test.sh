@@ -221,7 +221,7 @@ if ! rg -q '^AUDIT_DONE$' "$test_dir/wrapper-run.log"; then
   cat "$test_dir/wrapper-run.log" >&2
   exit 1
 fi
-if ! rg -q '^WRAPPER_STATE early=1 multi=2 continued=3 before=4 after=5 char=9472 gc=1 initialized=t$' "$test_dir/wrapper-run.log"; then
+if ! rg -q '^WRAPPER_STATE early=1 multi=2 continued=3 before=4 after=5 char=9472 gc=0 initialized=t$' "$test_dir/wrapper-run.log"; then
   echo "real-init-audit-trace-test: wrapper state/error continuation/GC mismatch" >&2
   cat "$test_dir/wrapper-run.log" >&2
   exit 1

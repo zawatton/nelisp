@@ -196,10 +196,6 @@ must not retain a form result across the boundary."
     (princ " line=")
     (prin1 form-line)
     (princ "\n")
-    (when (and (fboundp 'garbage-collect)
-               (real-init-audit--source-require-form-p
-                source 0 source-length))
-      (garbage-collect))
     (real-init-audit--trace
      "EVAL_BEGIN" "index" index "line" form-line "kind" kind)
     (let (condition-data)
