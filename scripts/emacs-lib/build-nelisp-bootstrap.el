@@ -698,6 +698,13 @@ concatenated bootstrap bundle must make the order explicit."
    "            (setq suffixes-left (cdr suffixes-left))))\n"
    "        (setq dirs (cdr dirs)))\n"
    "      found))\n"
+   "  ;; The registry is installed before emacs-load.el, so provide the\n"
+   "  ;; exact-file loader that early `require' needs from native `load'.\n"
+   "  ;; This keeps nested loads such as elfeed -> xml from seeing a void\n"
+   "  ;; `load-file' before the full loader is emitted later in the bundle.\n"
+   "  (unless (fboundp 'load-file)\n"
+   "    (defun load-file (file)\n"
+   "      (load file nil nil t t)))\n"
    "  (defun require (feature &optional filename noerror)\n"
    "    (if (featurep feature)\n"
    "        feature\n"
@@ -750,6 +757,11 @@ concatenated bootstrap bundle must make the order explicit."
                 (setq suffixes-left (cdr suffixes-left))))
             (setq dirs (cdr dirs)))
           found))
+      ;; Keep the early feature-registry require path usable before the full
+      ;; `emacs-load.el' loader is emitted later in the bundle.
+      (unless (fboundp 'load-file)
+        (defun load-file (file)
+          (load file nil nil t t)))
       (defun require (feature &optional filename noerror)
         (if (featurep feature)
             feature
