@@ -41,8 +41,11 @@ fi
   printf '%s\n' '(defun emacs-load--artifact-source-form-end (source position) (cdr (read-from-string source position)))'
   printf '%s\n' '(defun emacs-load--reader-slice (source start end) (substring source start end))'
   printf '%s\n' '(defun nelisp--load-skip-space-and-comments (source position) (while (and (< position (length source)) (memq (aref source position) (list 32 9 10 13))) (setq position (+ position 1))) position)'
+  printf '%s\n' '(setq load-garbage-collect-interval 64 real-init-audit-test-gc-count 0)'
+  printf '%s\n' '(fset (quote garbage-collect) (lambda (&optional _full) (setq real-init-audit-test-gc-count (+ real-init-audit-test-gc-count 1))))'
   printf '%s\n' '(setq init-file-had-error nil nemacs-init-file-error nil)'
   printf '%s\n' '(real-init-audit--load-forms-file (getenv "REAL_INIT_AUDIT_TEST_INIT") (quote init))'
+  printf '%s\n' '(princ (format "GC_COUNT %d\n" real-init-audit-test-gc-count))'
 } > "$helper_file"
 
 printf '%s\n' '(setq real-init-audit-test-one 1)' > "$dummy_init"
@@ -123,6 +126,19 @@ if [[ "$(wc -l < "$test_dir/forms-on.log")" -ne 3 ]]; then
 fi
 if [[ "$(rg -c '^NEMACS_REAL_INIT_ERROR ' "$test_dir/trace-on.log")" -ne 1 ]]; then
   echo "real-init-audit-trace-test: expected one handled dummy error" >&2
+  exit 1
+fi
+
+gc_init="$test_dir/gc-init.el"
+: > "$gc_init"
+for i in $(seq 1 128); do
+  printf '(setq real-init-audit-test-value %d)\n' "$i" >> "$gc_init"
+done
+REAL_INIT_AUDIT_TEST_INIT="$gc_init" emacs -Q --batch -l "$helper_file" \
+  > "$test_dir/gc.log" 2>&1
+if ! rg -q '^GC_COUNT 2$' "$test_dir/gc.log"; then
+  echo "real-init-audit-trace-test: expected two periodic collections" >&2
+  cat "$test_dir/gc.log" >&2
   exit 1
 fi
 
