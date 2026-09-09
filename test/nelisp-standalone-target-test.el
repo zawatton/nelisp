@@ -2412,6 +2412,23 @@ unstripped size again."
                                 (nelisp-standalone--elisp-strip-comments raw))))
     (should (< embedded-bytes (string-bytes raw)))))
 
+(ert-deftest nelisp-standalone-target-artifact-runtimes-include-process-adapter ()
+  "Artifact command substrates expose the same process API as the REPL.
+The artifact and source-command cache builders are separate producers; a
+change to the reader prelude must not silently leave either command path
+without the async core and process adapter that define the standard names."
+  (dolist (source (list (nelisp-standalone--artifact-command-runtime-src t)
+                        (nelisp-standalone--artifact-source-command-cache-src t)))
+    (let ((async (string-match "nelisp-async-core-run-at-time" source))
+          (adapter (string-match "(defun set-process-filter" source))
+          (network (string-match "(defun make-network-process" source))
+          (send (string-match "(defun process-send-string" source)))
+      (should async)
+      (should adapter)
+      (should network)
+      (should send)
+      (should (< async adapter)))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

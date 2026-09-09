@@ -19655,6 +19655,12 @@ runtime cache does not replay source file loads on every command invocation."
     "src/nelisp-load.el" inline)
    (nelisp-standalone--artifact-runtime-file-src
     "src/nelisp-bytecode.el" inline)
+   ;; Artifact commands use this runtime directly, so include the same
+   ;; asynchronous process substrate as the reader REPL prelude.
+   (nelisp-standalone--artifact-runtime-file-src
+    "packages/nelisp-eventloop/src/nelisp-async-core.el" inline)
+   (nelisp-standalone--artifact-runtime-file-src
+    "packages/nelisp-process-adapter/src/nelisp-process-adapter.el" inline)
    "(defvar features nil)\n"
    ;; Only when the runtime does not already have them.  These fsets used to
    ;; be unconditional, and they landed on top of working builtins: `provide'
@@ -20285,6 +20291,11 @@ artifact before wiring that artifact into the marker command path."
       "src/nelisp-load.el" t)
      (nelisp-standalone--artifact-runtime-file-src
       "src/nelisp-bytecode.el" t)
+     ;; Keep source-command cache runtimes aligned with the reader prelude.
+     (nelisp-standalone--artifact-runtime-file-src
+      "packages/nelisp-eventloop/src/nelisp-async-core.el" t)
+     (nelisp-standalone--artifact-runtime-file-src
+      "packages/nelisp-process-adapter/src/nelisp-process-adapter.el" t)
      "(defvar features nil)\n"
      ;; Gated for the same reason as the copies in
      ;; `--artifact-command-runtime-src' and `--artifact-command-cache-src':
