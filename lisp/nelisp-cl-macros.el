@@ -819,7 +819,7 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 
 ;;;; --- cl-generic subset (Doc 185) ----------------------------------------
 ;;
-;; `cl-defgeneric'/`cl-defmethod' subset: type + eql specializers only
+;; `cl-defgeneric'/`cl-defmethod' subset: type + eql specializers plus
 ;; (struct dispatch via the already-working `nelisp-cl-macros--struct-isa'
 ;; ancestry walker above, NOT `cl-typep', which knows nothing about
 ;; `cl-defstruct'-generated types -- docs/design/185-cl-generic-subset.org
@@ -834,8 +834,9 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 ;; newest-defined-first (matching real Emacs, verified against host
 ;; Emacs 31.1 -- see the `cl-defmethod' docstring below); `:extra' may
 ;; also combine with exactly one of `:before'/`:after'/`:around', per
-;; real Emacs's own grammar.  A bare `:before'/`:after'/`:around' (no
-;; `:extra') remains out of scope.  Every other unsupported form -- an
+;; real Emacs's own grammar.  Bare `:before'/`:after'/`:around' methods
+;; are supported with the same standard combination.  Every other unsupported
+;; form -- an
 ;; unsupported qualifier shape, or a specializer kind other than
 ;; type/eql/head/subclass/unspecialized -- is a loud `error' at
 ;; `cl-defmethod' macroexpansion
@@ -1383,9 +1384,8 @@ extension) are newest-defined-first, matching real Emacs."
   "Run one generic-function call once `nelisp-cl-generic--invoke' has
 partitioned its applicable methods into BEFORE/AFTER/AROUND/PRIMARY
 lists (each most-specific/most-recently-defined first; Doc 185 §2.2's
-`:extra' extension -- only reachable via `:extra STRING :before'/
-`:after'/`:around', §3.5's table still rejects a bare, non-`:extra'
-before/after/around).  Mirrors real Emacs's own
+`:extra' extension -- reachable via bare `:before'/`:after'/`:around'
+or `:extra STRING' plus one of them).  Mirrors real Emacs's own
 `cl--generic-standard-method-combination' exactly: every BEFORE method
 runs first, most-specific first, for effect only; then the PRIMARY chain
 runs (walkable via `cl-call-next-method'/`cl-next-method-p' exactly as
@@ -1435,9 +1435,8 @@ needed here."
   "Dispatch a call to generic NAME with ARGS (Doc 185 §3-§3.5, extended
 by §2.2's `:extra' combination): find the applicable methods for
 `(car ARGS)', most specific first, partition them by combinator
-(`:before'/`:after'/`:around'/primary -- only reachable via `:extra
-STRING' plus one of the three, §3.5's table still rejects a bare
-combinator), and run them via `nelisp-cl-generic--invoke-combined'.
+(`:before'/`:after'/`:around'/primary -- bare or `:extra STRING' plus one
+of the three), and run them via `nelisp-cl-generic--invoke-combined'.
 Signals `cl-no-applicable-method' when nothing at all matches, or
 `cl-no-primary-method' when something matches but none of it is a
 primary (or `:extra'-primary) method."
@@ -1524,8 +1523,8 @@ it.  Returns a list of method forms, each ready to splice as
 *defined* (source order): every `(:method QUALIFIERS ARGS BODY...)'
 form's `(QUALIFIERS ARGS BODY...)' cdr verbatim -- QUALIFIERS/ARGS/BODY
 go through `cl-defmethod''s own parsing and loud-failure matrix
-unchanged, so e.g. a bare `:around' with no `:extra' is still rejected
-there exactly as it would be at a top-level `cl-defmethod' call -- then,
+unchanged, so standard bare qualifiers are accepted there exactly as they
+would be at a top-level `cl-defmethod' call -- then,
 if anything remains once that run ends, one final method
 `(ARGLIST . REMAINING-BODY)': NAME's own ARGLIST, verbatim, with no
 specializers at all, i.e. an ordinary unspecialized primary method (T81's
@@ -1652,11 +1651,11 @@ specializer coexist (rather than one replacing another) and chain via
 \(non-`:extra') primary method if any -- redefining an `:extra' method
 with the SAME string replaces it in place, not accumulating a duplicate
 and not reordering its siblings (`nelisp-cl-generic--register-method').
-A bare `:before'/`:after'/`:around' (no `:extra') remains unsupported and
-loudly rejected exactly as before this extension (§3.5) -- this subset
-still does not implement unscoped method combination, only `:extra' and
-its GNU-mandated combination with a single before/after/around
-qualifier.  Any other leading non-list token is a loud `error' naming it.
+Bare `:before'/`:after'/`:around' methods use the standard method
+combination directly; the same qualifiers may also follow `:extra STRING'.
+This remains a small standard-combination subset and does not implement
+arbitrary `define-method-combination'.  Any other leading non-list token is
+a loud `error' naming it.
 
 Required arguments may carry a type name (builtin `cl-typep' symbol or
 `cl-defstruct' name), an `(eql VALUE)' form, a `(head VALUE)' form (T59
@@ -1671,10 +1670,10 @@ is unspecialized (§2.1/§3.1).  The method body can call
       (setq extra (cadr args) args (cddr args)))
     (when (and args (not (listp (car args))))
       (let ((q (car args)))
-        (unless (and extra (memq q '(:before :after :around)))
+        (unless (memq q '(:before :after :around))
           (error "cl-defmethod %s: unsupported method-combination qualifier \
-%S (Doc 185 subset: primary methods only, or `:extra STRING' optionally \
-combined with one of :before/:after/:around)"
+%S (Doc 185 subset: primary methods, bare :before/:after/:around, or \
+`:extra STRING' optionally combined with one of those qualifiers)"
                  name q))
         (setq combinator q args (cdr args))))
     (let* ((arglist (car args))

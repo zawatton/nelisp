@@ -20,8 +20,8 @@
 ;;; Commentary:
 
 ;; docs/design/185-cl-generic-subset.org's `cl-defgeneric'/`cl-defmethod'
-;; subset: type + eql specializers, primary methods only plus
-;; `cl-call-next-method'/`cl-next-method-p', a lazily-built per-generic
+;; subset: type + eql specializers, primary and standard before/after/around
+;; methods plus `cl-call-next-method'/`cl-next-method-p', a lazily-built per-generic
 ;; dispatch table, and a loud macroexpansion-time `error' for every
 ;; unsupported form.
 ;;
@@ -50,8 +50,8 @@
 ;; unmodified Emacs 30.1's own `cl-generic' (`(require 'cl-lib)', no
 ;; `nelisp-cl-macros' loaded) in a throwaway batch process -- confirming
 ;; both that the parity-comparable cases genuinely agree with real Emacs
-;; (not just internally consistent) and, for `:around', that real Emacs
-;; accepts what this subset deliberately, loudly rejects.
+;; (not just internally consistent), including the standard qualifier
+;; ordering and `:around' call-next behavior.
 
 ;;; Code:
 
@@ -237,7 +237,7 @@ exactly like docs/design/185-cl-generic-subset.org §5.1's own example."
   (cl-defstruct cgt-uq-animal name)
   (cl-defgeneric cgt-uq-speak (x))
   (should-error
-   (eval '(cl-defmethod cgt-uq-speak :around ((x cgt-uq-animal)) (cl-call-next-method)) t)
+   (eval '(cl-defmethod cgt-uq-speak :static ((x cgt-uq-animal)) 'nope) t)
    :type 'error))
 
 (nelisp-cl-generic-deftest nelisp-cl-generic/no-applicable-method-signals ()
@@ -415,15 +415,44 @@ case is useful during EIEIO bootstrap, before class ancestry is available."
     (cl-defmethod cgt-ctx (x &context (major-mode c-mode)) 'nope))
    :type 'error))
 
-(nelisp-cl-generic-deftest nelisp-cl-generic/before-after-qualifiers-also-signal ()
-  (cl-defstruct cgt-ba-animal name)
-  (cl-defgeneric cgt-ba (x))
-  (should-error
-   (nelisp-cl-generic-test--eval (cl-defmethod cgt-ba :before ((x cgt-ba-animal)) 'nope))
-   :type 'error)
-  (should-error
-   (nelisp-cl-generic-test--eval (cl-defmethod cgt-ba :after ((x cgt-ba-animal)) 'nope))
-   :type 'error))
+(nelisp-cl-generic-deftest nelisp-cl-generic/bare-before-after-order-and-result ()
+  "Bare standard qualifiers run around the primary chain, with before
+methods most-specific first and after methods least-specific first, matching
+host `cl-generic'.  Auxiliary return values do not replace the primary result."
+  (let (order)
+    (cl-defgeneric cgt-ba (x))
+    (cl-defmethod cgt-ba (x)
+      (push 'primary order)
+      'primary-result)
+    (cl-defmethod cgt-ba :before ((x integer)) (push 'before-int order))
+    (cl-defmethod cgt-ba :before (x) (push 'before-any order))
+    (cl-defmethod cgt-ba :after ((x integer)) (push 'after-int order))
+    (cl-defmethod cgt-ba :after (x) (push 'after-any order))
+    (should (eq 'primary-result (cgt-ba 7)))
+    (should (equal (reverse order)
+                   '(before-int before-any primary after-any after-int)))))
+
+(nelisp-cl-generic-deftest nelisp-cl-generic/bare-around-call-next-and-result ()
+  "A bare `:around' method wraps the before/primary/after combination and
+can reach it through `cl-call-next-method'."
+  (let (order)
+    (cl-defgeneric cgt-around (x))
+    (cl-defmethod cgt-around ((x integer))
+      (push 'primary order)
+      'primary-result)
+    (cl-defmethod cgt-around :around ((x integer))
+      (push (if (cl-next-method-p) 'around-has-next 'around-no-next) order)
+      (prog1 (cl-call-next-method)
+        (push 'around-leave order)))
+    (should (eq 'primary-result (cgt-around 7)))
+    (should (equal (reverse order) '(around-has-next primary around-leave)))))
+
+(nelisp-cl-generic-deftest nelisp-cl-generic/bare-qualifier-without-primary-signals ()
+  "Applicable auxiliary methods without a primary signal the host-compatible
+`cl-no-primary-method' condition."
+  (cl-defgeneric cgt-no-bare-primary (x))
+  (cl-defmethod cgt-no-bare-primary :before ((x integer)) (ignore x))
+  (should-error (cgt-no-bare-primary 7) :type 'cl-no-primary-method))
 
 (nelisp-cl-generic-deftest nelisp-cl-generic/default-method-body-defines-unspecialized-method ()
   "T81 addendum: this used to prove a `cl-defgeneric' default-method body
@@ -842,22 +871,24 @@ alongside a trailing default body: `(inline-int 3)'/`(inline-string
   (should (equal '(inline-string "hi") (cgt-dbo-inline "hi")))
   (should (equal '(inline-default sym) (cgt-dbo-inline 'sym))))
 
-(nelisp-cl-generic-deftest nelisp-cl-generic/inline-method-bare-around-still-signals ()
-  "A `(:method :around ...)' form expands to an ordinary `(cl-defmethod
-NAME :around ...)' call -- QUALIFIERS go through `cl-defmethod''s own,
-UNCHANGED grammar, so a bare (non-`:extra') `:around' is still rejected
-there exactly as it would be at a top-level `cl-defmethod' call (Doc 185
-§2.2's documented divergence from real Emacs, which accepts it)."
-  (should-error
-   (nelisp-cl-generic-test--eval
+(nelisp-cl-generic-deftest nelisp-cl-generic/inline-method-bare-around-works ()
+  "A `(:method :around ...)' form expands to a working bare standard
+combination method, just as it does in host `cl-generic'."
+  (let (order)
     (cl-defgeneric cgt-dbo-inline-around (x)
-      (:method :around ((x integer)) (cl-call-next-method))))
-   :type 'error))
+      (:method :around ((x integer))
+       (push 'around order)
+       (cl-call-next-method))
+      (:method ((x integer))
+       (push 'primary order)
+       'done))
+    (should (eq 'done (cgt-dbo-inline-around 7)))
+    (should (equal (reverse order) '(around primary)))))
 
 (nelisp-cl-generic-deftest nelisp-cl-generic/inline-method-extra-around-combination-works ()
   "`(:method :extra STRING :around ...)' reaches `cl-defmethod''s own
 ALREADY-supported `:extra'+combinator grammar unchanged (Doc 185 §2.2's
-`:extra' extension) -- only a BARE `:around' (no `:extra') is rejected."
+`:extra' extension); bare standard qualifiers are supported too."
   (let (order)
     (cl-defgeneric cgt-dbo-inline-extra-around (x)
       (:method :extra "wrap" :around ((x integer))

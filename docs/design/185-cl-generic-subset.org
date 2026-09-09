@@ -4,7 +4,7 @@
 #+STATUS: SHIPPED (2026-08-23, branch feat/cl-generic-subset) — P0-P3 all
 landed: type+eql specializers, struct dispatch via
 =nelisp-cl-macros--struct-isa= (not =cl-typep=, per §2.1a), primary
-methods + =cl-call-next-method=/=cl-next-method-p=,
+primary and standard before/after/around methods + =cl-call-next-method=/=cl-next-method-p=,
 =cl-no-applicable-method=/=cl-no-next-method= signals, ambiguous-dispatch
 detection for same-tier builtin-type matches, and the full §3.5
 loud-failure matrix, all in =lisp/nelisp-cl-macros.el= (host-ERT-loadable)
@@ -59,12 +59,9 @@ grammar requires `:extra STRING' to come FIRST when combined with a
 combinator (confirmed this session: real Emacs itself rejects the
 reverse order, `:around :extra "x"'); this subset now implements the
 same before/primary/after/around combination real Emacs's
-`cl--generic-standard-method-combination' does, but ONLY reachable via
-`:extra' plus a combinator — a bare, non-`:extra'
-`:before'/`:after'/`:around' remains out of scope and loudly rejected,
-exactly as originally SHIPPED (§2.2/§3.5 below are otherwise unchanged
-and still describe the P0-P3 baseline correctly; read them together with
-this addendum, not as superseded).  A new `cl-no-primary-method' signal
+`cl--generic-standard-method-combination' does, reachable via `:extra'
+plus a combinator or via a bare standard qualifier.  A new
+`cl-no-primary-method' signal
 (real Emacs's own condition name/message) covers the one new edge case
 this makes reachable: applicable methods that are entirely
 before/after/around, none of them primary.
@@ -462,6 +459,28 @@ the sibling tasks' own, separate growth. =make binary-size-ratchet=
 (baseline 7,728,528, ceiling 7,883,098) PASSES at 7,835,440 bytes,
 ~1.9% ratchet slack remaining; baseline untouched.
 
+* Addendum 4 (2026-09-09): bare standard method qualifiers are supported
+
+The real-init audit reached =llm.el='s =llm-chat= definition and exposed a
+practical gap in the previous boundary: =:before= at =llm.el:404= and
+=:around= at =llm.el:409= are bare standard qualifiers, not =:extra=
+extensions.  The parser now accepts a bare =:before=/=:after=/:around=
+after the generic name and records the qualifier as the method's
+=:combinator=.  The existing combined dispatcher already implements the
+standard ordering and =cl-call-next-method= chain, so no second dispatcher
+or eager table path is needed.  The same parser continues to accept
+=:extra STRING= followed by one standard qualifier and rejects unknown,
+duplicate, or reversed qualifier shapes loudly.
+
+The two standalone mirror sources remain synchronized:
+=lisp/nelisp-cl-macros.el= and =scripts/nelisp-stdlib-prelude.el=.  Focused
+coverage in =test/nelisp-cl-generic-test.el= now includes bare before/after
+ordering and primary return-value preservation, bare around with
+=cl-call-next-method=, no-primary signaling, and an inline
+=(:method :around ...)= form, while retaining the existing =:extra=
+combination cases.  A real-LLM load smoke should qualify the end-to-end
+consumer path after the next standalone reader/audit run.
+
 * §0 TL;DR
 
 =cl-defgeneric=/=cl-defmethod= (and EIEIO's =defclass=, which is built on
@@ -785,25 +804,27 @@ is far less useful — the common shape a class hierarchy actually needs is
 "child method does its own thing, then calls into parent behavior," which
 is exactly what =cl-call-next-method= is for.
 
-*Out of scope, loudly rejected*: bare (non-=:extra=) =:before=/=:after=/
-=:around= qualifiers, any method combination beyond primary/next-method
-and the =:extra= extension below. §1.3 found zero in-repo evidence either
-way; this doc chooses the smaller, honestly-named subset rather than
-guessing at qualifier semantics with nothing to check them against. A
-=cl-defmethod= form using a qualifier this subset does not implement
-signals a loud, macroexpansion-time error (§3.5) — never a silently-
-ignored qualifier, which would be indistinguishable from a correctly-
-scoped primary method until something depended on the ignored behavior
-and broke.
+*In scope*: standard bare =:before=/=:after=/:around= qualifiers use the
+same before/primary/after/around combination as real Emacs.  Before methods
+run most-specific first, after methods least-specific first, and around
+methods wrap the whole combination through =cl-call-next-method=.  Auxiliary
+return values do not replace the primary result; an applicable set without a
+primary signals =cl-no-primary-method=.
+
+*Out of scope, loudly rejected*: any method combination beyond the standard
+primary/next-method combination and these three standard qualifiers (with or
+without the =:extra= extension below).  A =cl-defmethod= form using a
+qualifier this subset does not implement signals a loud, macroexpansion-time
+error (§3.5) — never a silently-ignored qualifier.
 
 *Addendum (2026-09-05), see the top-of-doc note*: the =:extra STRING=
 qualifier — real Emacs's own name for "another method on the same
 specializer, distinguished by STRING" — turned out to be needed for real
 (real Emacs's own =cl-lib.el= uses it on =cl-generic-generalizers=, hit
 transitively by =(require 'cl-lib)=) and is now implemented, including
-its combination with exactly one of =:before=/=:after=/=:around=. The
-"out of scope" line above is otherwise still accurate: a bare, non-
-=:extra= =:before=/=:after=/=:around= remains rejected.
+its combination with exactly one of =:before=/=:after=/=:around=. Bare
+=:before=/=:after=/=:around= is now supported directly as well; arbitrary
+method combinations remain out of scope.
 
 ** §2.3 Dispatch-table construction: per-generic, at define-time — not Doc 157's wall
 
@@ -884,14 +905,14 @@ cheap — only the next actual call pays the rebuild.
 
 | condition | contract |
 |---|---|
-| unsupported qualifier (bare, non-=:extra= =:before=/=:after=/=:around=, or any other shape) | =error= at =cl-defmethod= macroexpansion time, names the qualifier |
+| unsupported qualifier (unknown qualifier, duplicate/invalid shape, or any method-combination form beyond bare or =:extra STRING= + one standard qualifier) | =error= at =cl-defmethod= macroexpansion time, names the qualifier |
 | =:extra= not followed by a string | =error= at =cl-defmethod= macroexpansion time (addendum, 2026-09-05) |
 | unsupported specializer form (not a type name, not =(eql V)=, not =(head V)= (Addendum 2), not =(subclass CLASS)= (T102), not a bare unspecialized arg) | =error= at macroexpansion time, names the form |
 | specializer on an optional/non-required argument | =error= at macroexpansion time or ordinary optional-argument parsing |
 | call with no applicable method | =signal 'cl-no-applicable-method (list generic-name args)= — same symbol real Emacs uses, a genuine parity point (§6.2) |
 | two applicable primary methods, neither strictly more specific (§3.3) | =error= naming both, at *call* time (this one cannot be caught earlier — it depends on the runtime argument, not the =cl-defmethod= form alone) |
 | several methods at one specificity tier differing only by =:extra= string | *not* ambiguous — coexist, newest-defined-first, chained via =cl-call-next-method= (addendum, 2026-09-05) |
-| applicable methods exist but none is primary (only =:extra=+before/after/around) | =signal 'cl-no-primary-method= — same symbol/message real Emacs uses (addendum, 2026-09-05) |
+| applicable methods exist but none is primary (only bare or =:extra=+before/after/around) | =signal 'cl-no-primary-method= — same symbol/message real Emacs uses (addendum, 2026-09-05) |
 | =cl-call-next-method= called with no next method | =signal 'cl-no-next-method= (mirrors real Emacs's own error symbol) |
 
 Every one of these is a real, catchable Lisp signal — never a bare
@@ -988,10 +1009,10 @@ already covered by ordinary host-ERT cases in the existing suite.
 
 ** §5.2 Parity forms
 
-Where a real Emacs comparison exists at all (specializer dispatch order
-and the two named error signals have direct Emacs equivalents; the bare
-=:before=/=:after=/=:around= qualifier rejection is a deliberate,
-documented *divergence* from Emacs, which supports them — same shape as
+Where a real Emacs comparison exists at all (specializer dispatch order,
+standard method-combination order, and the two named error signals have
+direct Emacs equivalents; arbitrary method combinations remain a deliberate,
+documented *divergence* from Emacs — same shape as
 Doc 187's =overflow-error= divergence, §6.2 there.  The =(head VALUE)=
 specializer rejection this line used to describe alongside the
 qualifiers is no longer accurate as of Addendum 2 above — =(head VALUE)=
@@ -1001,7 +1022,7 @@ is now supported, with real-Emacs-parity semantics, not a divergence):
 |---|---|---|
 | struct-inheritance dispatch order (§5.1's =cgt-dog=/=cgt-animal= case) | most-specific (=cgt-dog=) wins | same |
 | =cl-call-next-method= chain order, 3-level hierarchy | grandparent-then-parent-then-child call order matches Emacs's own C3-ish linearization for single inheritance | same (single =:include= chain only, so linearization is trivial — no MRO ambiguity possible) |
-| =(cl-defmethod f :around (...) ...)= | defines a method | *documented divergence*: signals an error naming =:around= as unsupported |
+| =(cl-defmethod f :around (...) ...)= | defines a method | same |
 | call with no applicable method, no fallback | =cl-no-applicable-method= | same symbol, same shape |
 
 ** §5.3 Mutation rows for new gates
@@ -1070,7 +1091,7 @@ Parity forms measured against real, unmodified Emacs 30.1 this session
 |---|---|---|
 | 3-level =:include= chain, =cl-call-next-method= call order | =(child parent grandparent)= | same |
 | =cl-no-applicable-method= signal data shape | =(cons generic-name args)=, flat | same (§+STATUS correction 1) |
-| =(cl-defmethod f :around (...) ...)= | defines a method | documented divergence: loud =error= naming =:around= |
+| =(cl-defmethod f :around (...) ...)= | defines a method | same |
 
 A third, host-Emacs-internals hazard was found and fixed as part of
 getting the ERT suite itself trustworthy, documented in full in
