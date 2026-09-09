@@ -2744,6 +2744,88 @@ arm64 Linux has no legacy x86 numbering)."
           0
         (nl_seq2 (nl_gc_sweep_chunk chunk)
                  (nl_gc_sweep_chunks (ptr-read-u64 (+ chunk 48) 0)))))
+    ;; Coalesce adjacent dead blocks after the sweep has finished.  The
+    ;; sweep's one-node-at-a-time links deliberately remain simple, but a
+    ;; long run of dead blocks otherwise leaves millions of tiny free-list
+    ;; nodes behind.  This pass never moves an object: it only extends the
+    ;; BLOCK_TOTAL in the first header of a consecutive mark==2 run.  It is
+    ;; deferred until after the complete sweep so no sweep step can skip a
+    ;; header whose size is being changed.
+    (defun nl_gc_coalesce_chunk (chunk)
+      (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
+             (end (nl_gc_chunk_end chunk))
+             (run 0)
+             (runbt 0)
+             (bt 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               (setq hdr end)
+             (seq
+              (if (= (nl_hdr_mark hdr) 2)
+                  (if (= run 0)
+                      (seq (setq run hdr) (setq runbt bt))
+                    (seq
+                     (setq runbt (+ runbt bt))
+                     ;; The later header remains unreachable after the
+                     ;; merged walk skips over this whole run.
+                     (ptr-write-u64 run 0 (+ runbt 2))))
+                (seq (setq run 0) (setq runbt 0)))
+              (setq hdr (+ hdr bt)))))
+         0)))
+    (defun nl_gc_coalesce_chunks (chunk)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (nl_gc_coalesce_chunk chunk)
+                 (nl_gc_coalesce_chunks (ptr-read-u64 (+ chunk 48) 0)))))
+    ;; The sweep links every dead block before coalescing.  Rebuild the lists
+    ;; from the post-coalesce header walk so stale links to the interior of a
+    ;; merged run cannot be popped later.  This relink path intentionally
+    ;; does not call `nl_gc_free_block_link': that helper verifies/poisons an
+    ;; allocated block, while these blocks were already verified and the
+    ;; merged endpoint has no single allocation redzone until it is reused.
+    (defun nl_gc_clear_freelist_buckets (n)
+      (if (> n 57)
+          (ptr-write-u64 268435552 0 0)
+        (nl_seq2
+         (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
+         (nl_gc_clear_freelist_buckets (+ n 1)))))
+    (defun nl_gc_relink_free_one (hdr)
+      (let* ((bt (nl_hdr_bt hdr))
+             (head (if (< bt 16) 268435552
+                     (if (< 472 bt) 268435552
+                       (+ 268435696 (- bt 16))))))
+        (seq
+         (ptr-write-u64 (+ hdr 8) 0 (ptr-read-u64 head 0))
+         (ptr-write-u64 head 0 (+ hdr 8))
+         0)))
+    (defun nl_gc_relink_free_chunk (chunk)
+      (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
+             (end (nl_gc_chunk_end chunk))
+             (bt 0))
+        (seq
+         (while (and (> hdr 0) (< hdr end))
+           (setq bt (nl_hdr_bt hdr))
+           (if (= (nl_gc_bt_ok hdr bt end) 0)
+               (setq hdr end)
+             (seq
+              (if (= (nl_hdr_mark hdr) 2)
+                  (nl_gc_relink_free_one hdr)
+                0)
+              (setq hdr (+ hdr bt)))))
+         0)))
+    (defun nl_gc_relink_free_chunks (chunk)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (nl_gc_relink_free_chunk chunk)
+                 (nl_gc_relink_free_chunks (ptr-read-u64 (+ chunk 48) 0)))))
+    (defun nl_gc_coalesce_and_rebuild_freelist ()
+      (seq
+       (nl_gc_coalesce_chunks (ptr-read-u64 268436160 0))
+       (nl_gc_clear_freelist_buckets 0)
+       (nl_gc_relink_free_chunks (ptr-read-u64 268436160 0))
+       0))
     ;; Doc 152 Stage 4c-1: prove a swept chunk contains only FREE blocks.
     ;; STATUS is the sole across-call loop local; END is threaded as an arg.
     ;; Reaching END exactly is required, so a malformed block walk retains the
@@ -2982,6 +3064,7 @@ arm64 Linux has no legacy x86 numbering)."
       (seq
        (ptr-write-u64 (data-addr nl_gc_stats) 16 0)
        (nl_gc_sweep_chunks (ptr-read-u64 268436160 0))
+       (nl_gc_coalesce_and_rebuild_freelist)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_empty_chunks
             (ptr-read-u64 268436160 0)
