@@ -1796,9 +1796,30 @@ standalone MCP fast handshake completed before this change, 20/20 after."
       (should (tree-member-p '(nl_thread_park_request_begin) full-parked))
       (should (tree-member-p '(nl_thread_park_request_end) full-parked))
       (should (tree-member-p '(nl_thread_park_safepoint env) eval-call))
+      (should (tree-member-p '(nl_rootstack_init) eval-call))
       (should (tree-member-p '(nl_thread_park_safepoint env) eval-done))
       (should (tree-member-p '(nl_thread_park_safepoint env)
-                             eval-recorded-done)))))
+                             eval-recorded-done))
+      ;; Doc 201's debt policy exposes explicit diagnostic overrides so the
+      ;; gate can exercise both the normal reuse path and the legacy growth /
+      ;; empty-chunk reclaim path without changing production defaults.
+      (let ((debt-refresh (defun-form 'nl_gc_debt_refresh_limit
+                                      nelisp-standalone--gc-source))
+            (switch-ext2 (defun-form 'bf_debug_switch_ext2
+                                     nelisp-standalone--applyfn-core-helpers)))
+        (should debt-refresh)
+        (should switch-ext2)
+        (should (tree-member-p 'nl_gc_debt_floor debt-refresh))
+        (should (tree-member-p 'nl_gc_debt_pct debt-refresh))
+        (should (tree-member-p
+                 '(ptr-write-u64 (data-addr nl_gc_stats) 40
+                                 (if (< value 0) 0 value))
+                 switch-ext2))
+        (should (tree-member-p
+                 '(ptr-write-u64 (data-addr nl_gc_stats) 48
+                                 (if (< value 0) 0 value))
+                 switch-ext2))
+        (should (tree-member-p 'nl_gc_debt_refresh_limit switch-ext2))))))
 
 (ert-deftest nelisp-standalone-target-pointer-cache-slots-publish-atomically ()
   "Shared pointer-cache rows use an emitted CAS claim/publish protocol.

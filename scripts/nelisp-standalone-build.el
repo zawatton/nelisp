@@ -2936,6 +2936,17 @@ arm64 Linux has no legacy x86 numbering)."
     (defun nl_gc_debt_pct ()
       (if (= (ptr-read-u64 (data-addr nl_gc_stats) 48) 0) 300
         (ptr-read-u64 (data-addr nl_gc_stats) 48)))
+    ;; Recompute the armed limit after a diagnostic override.  The override
+    ;; switches are used by the GC gate to separate the normal debt/reuse
+    ;; path from the legacy growth/reclaim path; waiting for the next sweep
+    ;; would leave the old limit active for the whole probe.
+    (defun nl_gc_debt_refresh_limit ()
+      (let* ((fl (nl_gc_debt_floor))
+             (scaled (/ (* (ptr-read-u64 (data-addr nl_gc_stats) 16)
+                           (nl_gc_debt_pct))
+                        100)))
+        (ptr-write-u64 (data-addr nl_gc_stats) 8
+                       (if (< scaled fl) fl scaled))))
     ;; Arm the next threshold from LIVE bytes, publish LIVE at 268435576
     ;; (`nelisp--arena-stats' live-bytes-after-last-gc, never written before),
     ;; fold the debt into the process total (+32) and zero it.
@@ -4505,6 +4516,11 @@ argument (reachability + in-arena bounds checks).")
              1)))
         (defun nelisp_eval_call (form_ptr env out)
           (seq
+           ;; The iterative argument walker takes its marker before the first
+           ;; reserve.  Arm the process root stack at the public evaluator
+           ;; boundary so a fresh standalone context never treats marker 0 as
+           ;; a writable slot.
+           (nl_rootstack_init)
            ;; Doc 199 Tier 3b: every ordinary evaluator recursion boundary is
            ;; a worker park safepoint.  FORM_PTR/ENV/OUT are parameters, not
            ;; runtime let-bound values surviving the call.  Main-thread envs
@@ -5732,6 +5748,8 @@ leave symbols unresolved at link time."
     ;;   23 = disarm (ctx+48=0).
     ;;   24 = enable and reset allocation/reclamation counters.
     ;;   25 = disable allocation/reclamation counters.
+    ;;   30 = set allocation-debt floor from ARG1 (0 = default).
+    ;;   31 = set allocation-debt percentage from ARG1 (0 = default).
     ;; Unknown codes return 0 (same as the historical default arm).
     (defun bf_debug_switch_ext (args)
       (if (= (wf_argval args 0) 22)
@@ -5795,7 +5813,25 @@ leave symbols unresolved at link time."
                         (nl_seq2 (ptr-write-u64 268436464 0 0) 0)
                       (if (= (wf_argval args 0) 29)
                           (nl_seq2 (ptr-write-u64 268436464 0 1) 0)
-                        0))))))))))
+                        ;; 30/31 override the allocation-debt floor/percent
+                        ;; and refresh the currently armed limit immediately.
+                        ;; Zero restores the documented default for either
+                        ;; field; negative diagnostic values are clamped.
+                        (if (= (wf_argval args 0) 30)
+                            (let ((value (wf_argval args 1)))
+                              (nl_seq2
+                               (ptr-write-u64
+                                (data-addr nl_gc_stats) 40
+                                (if (< value 0) 0 value))
+                               (nl_seq2 (nl_gc_debt_refresh_limit) 0)))
+                          (if (= (wf_argval args 0) 31)
+                              (let ((value (wf_argval args 1)))
+                                (nl_seq2
+                                 (ptr-write-u64
+                                  (data-addr nl_gc_stats) 48
+                                  (if (< value 0) 0 value))
+                                 (nl_seq2 (nl_gc_debt_refresh_limit) 0)))
+                            0))))))))))))
     (defun bf_debug_switch (args out)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)

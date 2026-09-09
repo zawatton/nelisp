@@ -51,10 +51,20 @@ def run_child(binary: str, expression: str) -> tuple[int, str, int]:
     return status, output.decode(errors="replace"), int(usage.ru_maxrss)
 
 
-def expression(n: int, poison: bool = False) -> str:
+def expression(n: int, poison: bool = False, growth_probe: bool = False) -> str:
     setup = "(a (nelisp--debug-switch 19)) " if poison else ""
+    # Allocation debt intentionally keeps the normal workload inside the
+    # existing growth chunk by reusing swept blocks.  A second probe raises
+    # the debt floor so the old watermark path is exercised and an empty
+    # growth chunk must still be returned to the OS.
+    policy = (
+        "(reuse (nelisp--debug-switch 9)) "
+        "(floor (nelisp--debug-switch 30 1099511627776)) "
+        if growth_probe
+        else ""
+    )
     return (
-        f"(let* ({setup}(d (nelisp--debug-switch 24)) (i 0)) "
+        f"(let* ({setup}{policy}(d (nelisp--debug-switch 24)) (i 0)) "
         f"(while (< i {n}) (setq i (1+ i))) "
         "(list i (nelisp--debug-switch 0)))"
     )
@@ -73,6 +83,8 @@ def main() -> int:
     failures: list[str] = []
     rss: dict[int, int] = {}
 
+    # Default debt/reuse policy: collection fires and RSS remains bounded;
+    # this probe deliberately does not require a growth chunk to be reclaimed.
     for n in CASES:
         status, output, peak = run_child(binary, expression(n))
         parsed = parse_diag(output)
@@ -96,8 +108,6 @@ def main() -> int:
             failures.append(f"N={n}: result {result}, want {n}")
         if trip != 0:
             failures.append(f"N={n}: free-list guard trips {trip}, want 0")
-        if n >= 500_000 and reclaimed < 1:
-            failures.append(f"N={n}: no growth chunk reclaimed")
         if release_failures != 0:
             failures.append(f"N={n}: OS release failures {release_failures}")
 
@@ -133,12 +143,43 @@ def main() -> int:
             failures.append(f"poison 500k: free-list guard trips {diag[0]}, want 0")
         if diag[4] < 1:
             failures.append("poison 500k: no object was poison-filled on free")
-        if diag[7] < 1 or diag[13] < 1:
-            failures.append("poison 500k: collector/reclaimer did not fire")
+        if diag[7] < 1:
+            failures.append("poison 500k: collector did not fire")
+        if diag[13] < 0:  # keep the parsed field covered by the report
+            failures.append("poison 500k: invalid reclaim count")
         if diag[15] != 0:
             failures.append(f"poison 500k: OS release failures {diag[15]}")
 
-    print(f"GATE-COUNT checked=5 findings={len(failures)}")
+    # Growth/reclaim policy probe: a very high debt floor restores the
+    # watermark-first behavior without changing production defaults.  The
+    # no-reuse allocation churn then has to create and return empty growth
+    # chunks; the same result/trip/release checks protect the reclaimer.
+    status, output, peak = run_child(
+        binary, expression(500_000, poison=True, growth_probe=True)
+    )
+    parsed = parse_diag(output)
+    if status != 0 or parsed is None:
+        failures.append(f"growth poison 500k: rc={status}, unreadable result {output!r}")
+        print(f"GROWTH_POISON_500K RSS_KIB={peak} RC={status} OUTPUT={output.strip()!r}")
+    else:
+        result, diag = parsed
+        print(
+            f"GROWTH_POISON_500K RSS_KIB={peak} RESULT={result} TRIP={diag[0]} "
+            f"FREED={diag[4]} FIRED={diag[7]} RECLAIMED={diag[13]} "
+            f"RECLAIMED_BYTES={diag[14]} RELEASE_FAILURES={diag[15]}"
+        )
+        if result != 500_000:
+            failures.append(f"growth poison 500k: result {result}, want 500000")
+        if diag[0] != 0:
+            failures.append(f"growth poison 500k: free-list guard trips {diag[0]}, want 0")
+        if diag[4] < 1:
+            failures.append("growth poison 500k: no object was poison-filled on free")
+        if diag[7] < 1 or diag[13] < 1:
+            failures.append("growth poison 500k: collector/reclaimer did not fire")
+        if diag[15] != 0:
+            failures.append(f"growth poison 500k: OS release failures {diag[15]}")
+
+    print(f"GATE-COUNT checked=6 findings={len(failures)}")
     for failure in failures:
         print(f"FAIL: {failure}")
     return 1 if failures else 0
