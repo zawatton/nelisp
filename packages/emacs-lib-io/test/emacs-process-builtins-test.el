@@ -40,7 +40,7 @@
                  process-send-string process-send-eof delete-process
                  shell-command shell-command-to-string))
     (should (fboundp sym)))
-  (dolist (sym '(shell-file-name shell-command-switch))
+  (dolist (sym '(shell-file-name shell-command-switch explicit-shell-file-name))
     (should (boundp sym))))
 
 ;;;; B. delegate-p detects host bindings
@@ -487,7 +487,8 @@
 
 (ert-deftest emacs-process-builtins-test/shell-vars-non-empty ()
   (should (stringp (or shell-file-name "/bin/sh")))
-  (should (stringp (or shell-command-switch "-c"))))
+  (should (stringp (or shell-command-switch "-c")))
+  (should (null explicit-shell-file-name)))
 
 ;;;; J. Idempotent require
 
