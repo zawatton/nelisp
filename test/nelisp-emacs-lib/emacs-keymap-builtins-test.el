@@ -19,7 +19,7 @@
 (ert-deftest emacs-keymap-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-keymap-builtins))
     (should (featurep 'emacs-keymap))
-    (dolist (sym '(make-keymap make-sparse-keymap keymapp
+    (dolist (sym '(make-keymap make-sparse-keymap keymapp copy-keymap
                  define-key define-key-after define-prefix-command suppress-keymap
                  lookup-key key-binding global-key-binding
                  key-description
@@ -50,6 +50,30 @@
         (km (emacs-keymap-make-keymap)))
     (should (emacs-keymap-keymapp sk))
     (should (emacs-keymap-keymapp km))))
+
+(ert-deftest emacs-keymap-builtins-test/copy-keymap-preserves-bindings ()
+  "The standalone `copy-keymap' bridge must delegate to the substrate.
+
+Evil-surround copies `minibuffer-local-map' while defining its tag reader;
+the bulk stub returned nil before this bridge was installed, so its next
+`define-key' raised `emacs-keymap-not-keymap'."
+  (let ((source (emacs-keymap-make-sparse-keymap))
+        (original (symbol-function 'copy-keymap))
+        (file (locate-library "emacs-keymap-builtins")))
+    (emacs-keymap-define-key source ">" 'source-command)
+    (unwind-protect
+        (progn
+          ;; Force only this bridge's standalone installation gate while
+          ;; leaving the host's other C builtins untouched.
+          (cl-letf (((symbol-function 'emacs-keymap-builtins--install-function-p)
+                     (lambda (symbol) (eq symbol 'copy-keymap))))
+            (load file nil nil t))
+          (let ((copy (copy-keymap source)))
+            (should (emacs-keymap-keymapp copy))
+            (should (eq 'source-command
+                        (emacs-keymap-lookup-key copy ">")))
+            (should-not (eq source copy))))
+      (fset 'copy-keymap original))))
 
 ;;;; C. Substrate-direct: define-key + lookup-key roundtrip
 
@@ -254,6 +278,7 @@ P2 can verify the command-surface keymap behavior directly."
       (dolist (snippet '("(defalias 'keymap-set #'emacs-keymap-keymap-set"
                          "(defalias 'keymap-lookup #'emacs-keymap-keymap-lookup"
                          "(defalias 'keymap-unset #'emacs-keymap-keymap-unset"
+                         "(defalias 'copy-keymap #'emacs-keymap-copy-keymap"
                          "(defalias 'key-parse #'emacs-keymap-key-parse"
                          "(defalias 'key-valid-p #'emacs-keymap-key-valid-p"))
         (goto-char (point-min))
