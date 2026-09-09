@@ -78,4 +78,3 @@
 
 (provide 'nelisp-applyfn-length-dispatch-test)
 ;;; nelisp-applyfn-length-dispatch-test.el ends here
-

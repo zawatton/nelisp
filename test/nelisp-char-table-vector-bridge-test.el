@@ -46,4 +46,3 @@
 (provide 'nelisp-char-table-vector-bridge-test)
 
 ;;; nelisp-char-table-vector-bridge-test.el ends here
-

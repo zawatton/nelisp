@@ -710,8 +710,8 @@ shaped like it) coming back."
                         (eval form t)))
                   (end-of-file
                    (setq done t))))))
-          ;; Exact Emacs spellings `number-to-string' must keep producing
-          ;; for this passthrough to stay correct.
+          ;; These are the stable Emacs spellings `number-to-string' must
+          ;; keep producing for this passthrough to stay correct.
           (should (equal (nelisp--prn-float 5.0) "5.0"))
           (should (equal (nelisp--prn-float 1.23) "1.23"))
           (should (equal (nelisp--prn-float -0.0) "-0.0"))
@@ -720,7 +720,10 @@ shaped like it) coming back."
           (should (equal (nelisp--prn-float 1e-20) "1e-20"))
           (should (equal (nelisp--prn-float (/ 1.0 0.0)) "1.0e+INF"))
           (should (equal (nelisp--prn-float (/ -1.0 0.0)) "-1.0e+INF"))
-          (should (equal (nelisp--prn-float (/ 0.0 0.0)) "-0.0e+NaN"))
+          ;; The sign bit of NaN is host/platform-specific (for example,
+          ;; Linux prints `-0.0e+NaN' while macOS prints `0.0e+NaN').
+          (should (equal (nelisp--prn-float (/ 0.0 0.0))
+                         (number-to-string (/ 0.0 0.0))))
           ;; `nelisp--prn-float' is exactly `number-to-string' now -- no
           ;; second interpreted pass over the result.
           (should (equal (nelisp--prn-float 3.0)
