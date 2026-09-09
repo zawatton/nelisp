@@ -250,6 +250,41 @@
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 
+(ert-deftest emacs-fns-test/standalone-locate-file-searches-subdirectories ()
+  "Standalone `locate-file' searches PATH for names containing a slash."
+  (let* ((source emacs-fns-test--source-file)
+         (host-locate (and (fboundp 'locate-file)
+                           (symbol-function 'locate-file)))
+         (host-byte-code-p (and (fboundp 'emacs-fns--byte-code-file-p)
+                                (symbol-function 'emacs-fns--byte-code-file-p)))
+         (directory (make-temp-file "emacs-fns-locate-" t))
+         (nested (expand-file-name "term/xterm.el" directory)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory nested) t)
+          (with-temp-file nested
+            (insert "placeholder\n"))
+          ;; Evaluate only the standalone implementation so host primitives
+          ;; used by the test runner remain available while it is installed.
+          (with-temp-buffer
+            (insert-file-contents source)
+            (search-forward "(defun locate-file")
+            (backward-char (length "(defun locate-file"))
+            (eval (read (current-buffer))))
+          (unless (fboundp 'emacs-fns--byte-code-file-p)
+            (defalias 'emacs-fns--byte-code-file-p (lambda (_filename) nil)))
+          (should (equal (locate-file "term/xterm" (list directory)
+                                     '(".el") #'file-readable-p)
+                         nested)))
+      (if host-locate
+          (fset 'locate-file host-locate)
+        (fmakunbound 'locate-file))
+      (if host-byte-code-p
+          (fset 'emacs-fns--byte-code-file-p host-byte-code-p)
+        (fmakunbound 'emacs-fns--byte-code-file-p))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
 
 ;;;; --- Doc 200 string primitive requirement -----------------------------
 
