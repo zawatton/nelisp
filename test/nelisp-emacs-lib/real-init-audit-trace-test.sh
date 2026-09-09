@@ -144,4 +144,87 @@ if ! rg -q '^GC_COUNT 3$' "$test_dir/gc.log"; then
   exit 1
 fi
 
+# The production audit feeds one exact source slice through one physical REPL
+# wrapper per form.  Exercise that generator and evaluator together with a
+# host-only evaluator shim: this checks wrapper count/metadata, multiline
+# source preservation, per-wrapper error continuation, and require GC without
+# requiring a full standalone build.
+fixture_user_dir="$test_dir/user"
+mkdir -p "$fixture_user_dir"
+cat > "$fixture_user_dir/early-init.el" <<'EOF'
+  ; ignored header with leading whitespace
+#| outer comment
+   #| nested comment |#
+|#
+(setq real-init-audit-wrapper-early 1) ; trailing comment
+(progn
+ (setq real-init-audit-wrapper-multi 2)
+ (setq real-init-audit-wrapper-multi-continued 3))
+EOF
+cat > "$fixture_user_dir/init.el" <<'EOF'
+(setq real-init-audit-wrapper-before-error 4)
+(error "wrapper error is recorded")
+(require (quote wrapper-test-feature) nil t)
+(setq real-init-audit-wrapper-after-error 5)
+(setq real-init-audit-wrapper-char ?─)
+EOF
+wrapper_file="$test_dir/wrappers.repl"
+emacs -Q --batch -l "$repo_root/scripts/real-init-audit-generate.el" -- \
+  "$fixture_user_dir" "$wrapper_file" > "$test_dir/generate.log" 2>&1
+wrapper_count="$(rg -c '^\(real-init-audit--eval-one ' "$wrapper_file")"
+if [[ "$wrapper_count" -ne 7 ]]; then
+  echo "real-init-audit-trace-test: expected seven independent wrappers, got $wrapper_count" >&2
+  cat "$wrapper_file" >&2
+  exit 1
+fi
+if ! rg -q "early-init\.el\" 'early-init 2 6 \"\(progn\\\\n" "$wrapper_file"; then
+  echo "real-init-audit-trace-test: multiline exact source slice was not preserved" >&2
+  cat "$wrapper_file" >&2
+  exit 1
+fi
+if [[ "$(wc -l < "$wrapper_file")" -ne 16 ]]; then
+  echo "real-init-audit-trace-test: wrapper crossed a physical line boundary" >&2
+  cat "$wrapper_file" >&2
+  exit 1
+fi
+
+wrapper_runner="$test_dir/wrapper-runner.el"
+{
+  printf '%s' '(progn '
+  while IFS= read -r helper_line; do
+    printf '%s ' "$helper_line"
+  done < "$helper_body"
+  printf '%s\n' ')'
+  printf '%s\n' '(defun emacs-load--byte-indexed-source (source) source)'
+  printf '%s\n' '(defun emacs-load--reader-slice (source start end) (substring source start end))'
+  printf '%s\n' '(defun emacs-load--native-read-one (source position _length) (cons (car (read-from-string source position)) (length source)))'
+  printf '%s\n' '(defun nelisp--load-rewrite-defalias-form (form) form)'
+  printf '%s\n' '(provide (quote nemacs-main))'
+  printf '%s\n' '(setq init-file-had-error nil nemacs-init-file-error nil real-init-audit-wrapper-gc-count 0)'
+  printf '%s\n' '(fset (quote garbage-collect) (lambda (&optional _full) (setq real-init-audit-wrapper-gc-count (+ real-init-audit-wrapper-gc-count 1))))'
+  cat "$wrapper_file"
+  printf '%s\n' '(princ (format "WRAPPER_STATE early=%S multi=%S continued=%S before=%S after=%S char=%S gc=%S initialized=%S\n" real-init-audit-wrapper-early real-init-audit-wrapper-multi real-init-audit-wrapper-multi-continued real-init-audit-wrapper-before-error real-init-audit-wrapper-after-error real-init-audit-wrapper-char real-init-audit-wrapper-gc-count nemacs-initialized))'
+} > "$wrapper_runner"
+emacs -Q --batch -l "$wrapper_runner" > "$test_dir/wrapper-run.log" 2>&1
+if [[ "$(rg -c '^NEMACS_REAL_INIT_BOUNDARY ' "$test_dir/wrapper-run.log")" -ne 7 ]]; then
+  echo "real-init-audit-trace-test: boundary metadata count mismatch" >&2
+  cat "$test_dir/wrapper-run.log" >&2
+  exit 1
+fi
+if [[ "$(rg -c '^NEMACS_REAL_INIT_ERROR ' "$test_dir/wrapper-run.log")" -ne 1 ]]; then
+  echo "real-init-audit-trace-test: wrapper error was not recorded exactly once" >&2
+  cat "$test_dir/wrapper-run.log" >&2
+  exit 1
+fi
+if ! rg -q '^AUDIT_DONE$' "$test_dir/wrapper-run.log"; then
+  echo "real-init-audit-trace-test: finish wrapper did not emit AUDIT_DONE" >&2
+  cat "$test_dir/wrapper-run.log" >&2
+  exit 1
+fi
+if ! rg -q '^WRAPPER_STATE early=1 multi=2 continued=3 before=4 after=5 char=9472 gc=1 initialized=t$' "$test_dir/wrapper-run.log"; then
+  echo "real-init-audit-trace-test: wrapper state/error continuation/GC mismatch" >&2
+  cat "$test_dir/wrapper-run.log" >&2
+  exit 1
+fi
+
 echo "real-init-audit-trace-test: PASS"

@@ -177,6 +177,68 @@ cp "$bootstrap_repl" "$audit_repl"
       (prin1 value-c))
     (princ "\n")))
 
+(defun real-init-audit--eval-one (path kind index form-line source)
+  "Evaluate one exact init SOURCE slice at a standalone REPL boundary.
+PATH, KIND, INDEX, and FORM-LINE are audit metadata supplied by the host-side
+wrapper generator.  Keep this function's return value nil: the REPL driver
+must not retain a form result across the boundary."
+  (let* ((source (emacs-load--byte-indexed-source source))
+         (source-length (length source))
+         (load-file-name path)
+         (buffer-file-name path)
+         (form-start (float-time)))
+    (princ "NEMACS_REAL_INIT_BOUNDARY file=")
+    (prin1 path)
+    (princ " kind=")
+    (prin1 kind)
+    (princ " form=")
+    (prin1 index)
+    (princ " line=")
+    (prin1 form-line)
+    (princ "\n")
+    (when (and (fboundp 'garbage-collect)
+               (real-init-audit--source-require-form-p
+                source 0 source-length))
+      (garbage-collect))
+    (real-init-audit--trace
+     "EVAL_BEGIN" "index" index "line" form-line "kind" kind)
+    (let (condition-data)
+      (condition-case condition-data
+          (let ((native-read
+               (and (fboundp 'nelisp--read-all-from-string-native)
+                    (fboundp 'emacs-load--native-read-one)
+                    (emacs-load--native-read-one
+                     source 0 source-length))))
+          (if native-read
+              (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
+                        (nelisp--load-rewrite-defalias-form
+                         (car native-read))
+                      (car native-read))
+                    t)
+            (if (and (fboundp 'nelisp--load-eval-source-declined-form)
+                     (fboundp 'nelisp--eval-source-string))
+                (nelisp--load-eval-source-declined-form
+                 source 0 source-length)
+              (let* ((slice (emacs-load--reader-slice
+                             source 0 source-length))
+                     (read (read-from-string slice 0 (length slice))))
+                (eval (if (fboundp 'nelisp--load-rewrite-defalias-form)
+                          (nelisp--load-rewrite-defalias-form (car read))
+                        (car read))
+                        t)))))
+        (error
+         (setq init-file-had-error t
+               nemacs-init-file-error (cons path condition-data))
+         (real-init-audit--print-error path index form-line condition-data))))
+    (princ "NEMACS_REAL_INIT_FORM ")
+    (prin1 index)
+    (princ " line=")
+    (prin1 form-line)
+    (princ " secs=")
+    (prin1 (/ (round (* 10 (- (float-time) form-start))) 10.0))
+    (princ "\n")
+    nil))
+
 (defun real-init-audit--load-forms-file (path kind)
   (let* ((source (if (fboundp 'nl-syscall-read-file)
                      (nl-syscall-read-file path 0 nil)
@@ -289,6 +351,17 @@ ELISP
   printf '%s\n' '(setq package-enable-at-startup t)'
 } >> "$audit_repl"
 
+# Generate one physical REPL line per exact top-level init form.  The host
+# Emacs reader supplies source slices and metadata; the standalone process
+# evaluates them through real-init-audit--eval-one, returning to the REPL
+# driver's top-level reclamation boundary before the next form.
+audit_wrapper_file="$build_dir/real-init-audit-wrappers.repl"
+"$host_emacs_bin" -Q --batch \
+  -l "$script_dir/real-init-audit-generate.el" -- \
+  "$user_emacs_dir" "$audit_wrapper_file" \
+  > "$build_dir/real-init-audit-generate.log" 2>&1
+cat "$audit_wrapper_file" >> "$audit_repl"
+
 audit_tail="(progn (dolist (feature '($parity_feature_list)) (when (featurep feature) (princ (format \"NEMACS_REAL_INIT_PARITY_AFTER=%S\\n\" feature)))) (princ (format \"NEMACS_REAL_INIT_STATE user-init-file=%S init-file-had-error=%S init-file-error=%S initialized=%S\\n\" user-init-file init-file-had-error nemacs-init-file-error nemacs-initialized)))"
 
 descendant_pids() {
@@ -345,6 +418,7 @@ timeout --signal=TERM --kill-after=30s "$timeout_spec" \
       NEMACS_RUNTIME_IMAGE= \
       NEMACS_BOOTSTRAP_REPL="$audit_repl" \
       "$repo_root/bin/nemacs" --driver=nelisp --batch --no-banner \
+      --no-init-file \
       --eval "$audit_tail" \
       > "$raw_output" 2>&1 &
 audit_controller_pid=$!
