@@ -129,6 +129,11 @@ working stack (nil for an empty expression)."
 (defun emacs-calc-install ()
   "Bind the standard Calc command names to the `emacs-calc' implementations.
 Not run on `require' (keeps a bare load from touching shared symbols)."
+  ;; GNU Calc initializes this public map while loading `calc'.  Packages
+  ;; such as evil-collection inspect and extend it during their own load, so
+  ;; the standalone facade must provide the same load-time contract.
+  (defvar calc-mode-map (make-sparse-keymap)
+    "The keymap for Calc.")
   (defalias 'calc #'emacs-calc)
   (defalias 'calc-mode #'emacs-calc-mode)
   (defalias 'calc-eval #'emacs-calc-eval))
