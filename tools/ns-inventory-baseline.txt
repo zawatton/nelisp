@@ -971,7 +971,7 @@ pinned-collision ns-collision-divergent	cl-defun	lisp/nelisp-stdlib-eval-special
 pinned-collision ns-collision-divergent	cl-remove-if-not	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	6fc2ba48ca8d
 pinned-collision ns-collision-divergent	clrhash	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	28724fb94126
 pinned-collision ns-collision-divergent	cond	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	8f47ca1817eb
-pinned-collision ns-collision-divergent	copy-sequence	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	851201960e78
+pinned-collision ns-collision-divergent	copy-sequence	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	071cd24a6c04
 pinned-collision ns-collision-divergent	copy-tree	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	d3ea48d63d91
 pinned-collision ns-collision-divergent	define-error	lisp/nelisp-stdlib-error.el scripts/nelisp-stdlib-prelude.el	23dfe8f3d73f
 pinned-collision ns-collision-divergent	defun	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	91d01aa6ff27
