@@ -8900,8 +8900,10 @@ path:
    proof confirms =kinsoku= feature registration, default =kinsoku-limit=,
    =kinsoku= / =kinsoku-longer= / =kinsoku-shorter= helper availability, and
    representative ASCII category entries for beginning-of-line and end-of-line
-   prohibition characters.  This is still vendor =kinsoku.el= execution, not a
-   local Kinsoku implementation.
+   prohibition characters.  The standalone substrate now supplies the real
+   category-table construction, copying, accessor, and mutation path used by
+   this load, while live line-breaking movement remains deferred.  This is
+   still vendor =kinsoku.el= execution, not a local Kinsoku implementation.
 75. Keep =international/latexenc.el= as a P4/P7 coding-system discovery
    substrate gate.  It succeeds with =VENDOR_REPL_TIMEOUT=180s= /
    =VENDOR_REPL_INTERNAL_TIMEOUT_SECONDS=150= and the representative proof

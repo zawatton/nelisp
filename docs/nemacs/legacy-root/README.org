@@ -3250,10 +3250,11 @@ persistent REPL lists; default true-load remains a 319/319 count-only pass.
 Accumulated true-load detail that touches =kinsoku= still segfaults after
 =ok:font-core.el=, while accumulated persistent REPL proves the same
 feature/variable/function surface and disabled call path at 253/253.
-Standalone category-entry probes for =char-category-set= are not promoted yet,
-so category table mutation semantics, live =kinsoku-longer= /
-=kinsoku-shorter= movement, fill-column interaction, and real line-break
-adjustment remain deferred.
+The standalone substrate now provides real category-table construction,
+copying, =char-category-set= access, and =modify-category-entry= mutation;
+the isolated =kinsoku.el= load consequently runs without a category-entry
+stub.  Live =kinsoku-longer= / =kinsoku-shorter= movement, fill-column
+interaction, and real line-break adjustment remain deferred.
 The current =latexenc.el= recheck covers the LaTeX inputenc/coding-system
 helper surface.  The file has no direct =require= and reaches 8/8 standalone
 form-walk forms.  Native Emacs loads =latexenc= with
