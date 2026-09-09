@@ -527,8 +527,13 @@
 # The integrator should re-measure and re-pin against the CI cold
 # number when landing, per this file's own rule -- the 7601096 above is
 # this session's own cold worktree build, not a CI run.
-size 7052064
 # 6909696 -> 7052064 on 2026-09-08: T104 direct frame/scratch lowering plus
 # char-table-vector bridge and iterative progn/lambda helpers are linked into
 # the standalone reader; measured after a fresh standalone build.
+# Raised 2026-09-09 for bca8bdc05 (cl-generic subclass and multi-argument
+# dispatch): a fresh d81d81933 build measured 7167064 bytes and the current
+# build measures 7249152 (+82088, +1.14%).  The growth is the AOT-linked
+# dispatch implementation and its 8744-byte prelude source addition; release
+# metadata does not enter the binary.
+size 7249152
 slack-pct 2
