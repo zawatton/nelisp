@@ -1,29 +1,44 @@
 # NeLisp Release Notes
 
-## v1.2.2 — 2026-09-09 (Draft)
+## v1.2.2 — 2026-09-09
 
-Full draft: [`release/v1.2.2/RELEASE.md`](release/v1.2.2/RELEASE.md).
+Full notes: [`release/v1.2.2/RELEASE.md`](release/v1.2.2/RELEASE.md).
 
-This draft covers the implementation currently ahead of `origin/main` and
-records the remaining release-candidate work without treating unverified
-results as complete.
+This release carries the completed implementation and recorded qualification
+results. The full presence sweep remains in progress.
 
 - **Exact binary64 decimal literals** now use the compiler's exact IEEE 754
   conversion path, backed by limb arithmetic and an oracle test.
 - **Emacs-compatible bool-vectors** are integrated through the reader,
   standalone allocation, length, `aref`, and `aset` paths.
-- **GC debt and fragmentation work** arms debt after standalone boot and adds
-  pause-growth/fragmentation measurement tooling; final qualification is TBD.
+- **GC safety and measurement** cover the rootstack bound, the 16,000-level
+  guard, mid-form collection coverage (6/6), and T110's 99% ratio over six
+  collections.
 - **Iterative argument, lambda-body, and `progn` evaluation** preserves order
   and live values without the previous recursive evaluation shape.
 - **Standalone bootstrap** provides `load-file` before nested `require` calls.
 - **pcase fallback bindings** now support the branch-local binding forms used
   by macroexpansion, with standalone regression coverage.
+- **`cl-defmethod` dispatch** supports `subclass` and multi-argument methods,
+  bare `:before`, `:after`, and `:around` qualifiers, and literal symbols in
+  EQL specializers.
+- **Process substrate parity** embeds the async core and process adapter in
+  artifact runtimes; the presence corpus contains 852 names.
+- **Standalone record copying** makes `copy-sequence` preserve record type
+  and payload slots in the standalone runtime.
 
-Planned additions remain explicitly unverified: multi-argument and `subclass`
-`cl-defmethod` support, plus a macOS-safe NaN printer assertion that compares
-the passthrough with host `number-to-string` output.  Release qualification
-values are TBD; see the full draft for the checklist.
+Recorded qualification includes check tier 23/23 PASS, standalone reader
+31/31 PASS, full ERT 5,673 total with 5,514 pass, 159 skip, and 0 fail, JIT
+and no-JIT suites exiting 0, and a binary-size ratchet PASS with the final
+main-path build pending (ceiling 7,786,916 bytes).
+Native-artifact is 9/9,
+selfhost is 3/3, performance is 9/9 with checked arithmetic at 1.014x
+(ceiling 1.15), smokes are 51/51, all 21 extras gates pass, and gate-mutation
+is 64 pass with 5 platform skips.
+
+The full presence sweep is pending while it runs and has no release PASS
+result yet. The macOS NaN assertion is host-relative; release CI is tracked by
+GitHub Actions and macOS hardware validation remains pending.
 
 ## v1.2.1 — 2026-09-04
 
