@@ -10333,6 +10333,27 @@ Prefers the real process id; falls back to the clock, marked with a leading
       (let ((size (nelisp--syscall-stat-field filename 48))
             (mtime (nelisp--syscall-stat-field filename 88)))
         (list nil 1 0 0 0 mtime 0 size "" nil nil nil)))))
+;; Emacs 28 added COUNT to `directory-files-and-attributes'.  Tramp probes
+;; its arity while loading `tramp-compat.el', so the name must be callable
+;; before that package's compatibility aliases are installed.  The reader
+;; already has the two pieces needed here: `directory-files' supplies names
+;; and `file-attributes' supplies the standard attribute list.  Keep the
+;; public name relative when FULL is nil, while stat'ing the corresponding
+;; path so relative directory listings still get real attributes.
+(unless (fboundp 'directory-files-and-attributes)
+  (defun directory-files-and-attributes
+      (directory &optional full match nosort id-format count)
+    (let ((names (directory-files directory full match nosort))
+          (remaining count)
+          (out nil))
+      (while (and names
+                  (or (null remaining) (> remaining 0)))
+        (let* ((name (car names))
+               (path (if full name (expand-file-name name directory))))
+          (setq out (cons (cons name (file-attributes path id-format)) out)))
+        (setq names (cdr names))
+        (when remaining (setq remaining (1- remaining))))
+      (nreverse out))))
 (unless (fboundp 'file-attribute-size)
   (defun nelisp--file-attribute-nth (attrs i)
     "ATTRS element I, naming the TAIL of an improper list as `listp'.
