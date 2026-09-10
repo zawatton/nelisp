@@ -230,6 +230,7 @@ avoiding broad renames, mass moves, or formatting-only changes.
 | File | Future package | Ownership notes | Extraction action |
 |------+----------------+-----------------+-------------------|
 | =calc.el= | FEAT | calc compatibility entry | keep feature package |
+| =calc-ext.el= | FEAT | calc extension compatibility entry | keep feature package |
 | =comint.el= | FEAT/IO | comint compatibility entry | keep shared |
 | =compile.el= | FEAT/IO | compile compatibility entry | keep shared |
 | =dired.el= | FEAT/IO | dired compatibility entry | keep shared |

@@ -789,6 +789,7 @@ TEST_FAST_FILES = \
 	test/emacs-redisplay-builtins-test.el \
 	test/emacs-redisplay-test.el \
 	test/emacs-calc-test.el \
+	test/calc-ext-test.el \
 	test/emacs-shell-test.el \
 	test/emacs-ielm-test.el \
 	test/emacs-vc-test.el \
