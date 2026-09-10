@@ -335,6 +335,19 @@ mouse-1: Previous buffer\nmouse-3: Next buffer")
 
 ;;;; --- pcomplete (pcomplete.el) --------------------------------------
 
+(let ((current (and (fboundp 'pcomplete-uniquify-list)
+                    (symbol-function 'pcomplete-uniquify-list)))
+      (target (and (fboundp 'pcomplete-uniqify-list)
+                   (symbol-function 'pcomplete-uniqify-list))))
+  ;; Org's compatibility layer can install the new spelling as an alias to
+  ;; the obsolete spelling before either function exists.  `fboundp' regards
+  ;; that unresolved alias as bound, so the old unconditional reverse alias
+  ;; below would create an indirect-function cycle.  Drop only that broken
+  ;; alias and keep any real implementation supplied by the host.
+  (when (and (eq current 'pcomplete-uniqify-list)
+             (not (functionp target)))
+    (fmakunbound 'pcomplete-uniquify-list)))
+
 (unless (fboundp 'pcomplete-uniquify-list)
   (defun pcomplete-uniquify-list (sequence)
     "Sort and remove multiples in SEQUENCE.
