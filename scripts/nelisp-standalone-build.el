@@ -2449,9 +2449,19 @@ arm64 Linux has no legacy x86 numbering)."
       ;; recursed/free -> skip (return 0).  This DECOUPLES "alive" (pinned) from
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
       (if (= (nl_gc_in_arena obj) 0) 0
-        (let ((m (nl_hdr_mark (- obj 8))))
-          (if (if (= m 0) 1 (if (= m 4) 1 0))
-              (nl_seq2 (nl_hdr_set_mark (- obj 8) 1) 1)
+        (let* ((hdr (- obj 8))
+               (raw (ptr-read-u64 hdr 0)))
+          ;; A precise Sexp edge must name the block's object start.  The
+          ;; range check alone also accepts an interior pointer, including
+          ;; the checked allocator's guard+8 address.  Treating that address
+          ;; as OBJ makes `nl_hdr_set_mark' overwrite the guard word as if it
+          ;; were a block header.  Real BLOCK_TOTAL headers are < 2^32, so a
+          ;; nonzero signed high half proves that HDR is payload, not header.
+          (if (= (sar raw 32) 0)
+              (let ((m (nl_hdr_mark hdr)))
+                (if (if (= m 0) 1 (if (= m 4) 1 0))
+                    (nl_seq2 (nl_hdr_set_mark hdr 1) 1)
+                  0))
             0))))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
@@ -4069,9 +4079,17 @@ arm64 Linux has no legacy x86 numbering)."
                    (nl_os_free_chunk base size)
                    (nl_compact_munmap_growth next tospace)))))))
     (defun nl_compact_clear_fl (n)
-      (if (> n 57) (ptr-write-u64 268435552 0 0)
+      (if (> n 57)
+          (seq
+           (ptr-write-u64 268435552 0 0)
+           (nl_compact_clear_large_fl 0))
         (nl_seq2 (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
                  (nl_compact_clear_fl (+ n 1)))))
+    (defun nl_compact_clear_large_fl (n)
+      (if (> n 7) 0
+        (nl_seq2
+         (ptr-write-u64 (nl_freelist_large_head n) 0 0)
+         (nl_compact_clear_large_fl (+ n 1)))))
     ;; Orchestrate phases 2-6.  Takes the 7 roots (for phase 3 rewrite).
     (defun nl_gc_compact (ctx result out pool src cursor bsym)
       (seq
@@ -18901,6 +18919,19 @@ suffix, which is why only `--repl' crashed)."
                (nl_boundary_reset_tail_chunks next (+ reclaimed used))))))))
     (defun nl_boundary_immediate_result_p (out)
       (if (<= (ptr-read-u64 out 0) 3) 1 0))
+    (defun nl_boundary_clear_large_fl (n)
+      (if (> n 7) 0
+        (nl_seq2
+         (ptr-write-u64 (nl_freelist_large_head n) 0 0)
+         (nl_boundary_clear_large_fl (+ n 1)))))
+    (defun nl_boundary_clear_fl (n)
+      (if (> n 57)
+          (seq
+           (ptr-write-u64 268435552 0 0)
+           (nl_boundary_clear_large_fl 0))
+        (nl_seq2
+         (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
+         (nl_boundary_clear_fl (+ n 1)))))
     (defun nl_boundary_reclaim (mark_chunk mark_cursor)
       (let* ((cursor-addr (nl_chunk_cursor_addr mark_chunk))
              (cursor (ptr-read-u64 cursor-addr 0))
@@ -18913,7 +18944,7 @@ suffix, which is why only `--repl' crashed)."
          (nl_aref_cache_clear)
          (ptr-write-u64 cursor-addr 0 mark_cursor)
          (ptr-write-u64 268436168 0 mark_chunk)
-         (ptr-write-u64 268435552 0 0)
+         (nl_boundary_clear_fl 0)
          (ptr-write-u64 268436200 0
                         (+ (ptr-read-u64 268436200 0)
                            (+ head-reclaimed tail-reclaimed)))
