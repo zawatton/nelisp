@@ -150,23 +150,46 @@
 
 (defun nelisp-float-exp-range-test--eval-timed (expression timeout-seconds)
   "Return (VALUE . SECONDS) for EXPRESSION, failing past TIMEOUT-SECONDS.
-Uses the system `timeout' utility rather than trusting the process to
-return promptly on its own -- a real hang must fail the test, not block
-the ERT run."
-  (let ((binary (nelisp-float-exp-range-test--binary))
-        (start (float-time)))
-    (with-temp-buffer
-      (let ((rc (call-process "timeout" nil t nil
-                              (number-to-string timeout-seconds)
-                              binary "--eval" expression)))
-        (let ((elapsed (- (float-time) start)))
-          (when (= rc 124)
-            (ert-fail (format "standalone %s did not answer within %ss (hang)"
-                              expression timeout-seconds)))
-          (unless (= rc 0)
-            (ert-fail (format "standalone %s failed: rc=%S out=%S"
-                              expression rc (buffer-string))))
-          (cons (string-trim (buffer-string)) elapsed))))))
+The timeout is enforced by the host Emacs process API, so this test has the
+same behavior on systems that do not ship the GNU `timeout' command.  A real
+hang must fail the test, not block the ERT run."
+  (let* ((binary (nelisp-float-exp-range-test--binary))
+         (start (float-time))
+         (buffer (generate-new-buffer " *nelisp-float-exp-range-output*"))
+         process)
+    (unwind-protect
+        (progn
+          (setq process
+                (make-process
+                 :name "nelisp-float-exp-range"
+                 :buffer buffer
+                 :command (list binary "--eval" expression)
+                 :sentinel (lambda (_process _event) nil)
+                 :noquery t))
+          (let ((deadline (+ start timeout-seconds)))
+            (while (and (process-live-p process)
+                        (< (float-time) deadline))
+              (accept-process-output
+               process
+               (max 0.01 (min 0.1 (- deadline (float-time))))))
+            (let ((elapsed (- (float-time) start)))
+              (if (process-live-p process)
+                  (progn
+                    (delete-process process)
+                    (ert-fail
+                     (format "standalone %s did not answer within %ss (hang)"
+                             expression timeout-seconds)))
+                (let ((rc (process-exit-status process))
+                      (output (with-current-buffer buffer
+                                (buffer-string))))
+                  (unless (= rc 0)
+                    (ert-fail (format "standalone %s failed: rc=%S out=%S"
+                                      expression rc output)))
+                  (cons (string-trim output) elapsed))))))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest nelisp-float-exp-range/host-emacs-pins-the-oracle ()
   "The expected column above is re-derived from a live host Emacs.

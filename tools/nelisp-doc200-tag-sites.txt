@@ -23,6 +23,7 @@ lisp/nelisp-cc-evalport-combiner-apply.el	nl_apply_builtin	tag-test-bound-sym	0	
 lisp/nelisp-cc-evalport-combiner-arglist.el	nl_eval_arg_list_drive	unresolved-numeric	0	n-a	This compares argument-list walker status codes, not Sexp tags.
 lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el	nl_mut_str_set_codepoint_raw	tag-test-bound-sym	0	walked	Read the fixed-width mutation lower: tag 15 resolves its boxed NlStr and writes one byte in 0..255; tag 6 writes only when both old and new characters are ASCII, preserving tag and byte length.
 lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_valid_key	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_word_name_p	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-alias.el	nl_jit_alias	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
