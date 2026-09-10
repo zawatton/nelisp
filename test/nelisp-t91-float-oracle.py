@@ -29,19 +29,15 @@ class TargetNotRunnable(RuntimeError):
     """The selected standalone target cannot execute on this host."""
 
 
-def target_execution_error(exc: OSError) -> bool:
-    """Return whether EXC means the selected image cannot run here."""
-    return exc.errno in {errno.ENOENT, errno.ENOEXEC, errno.EACCES} or getattr(
+def target_image_execution_error(exc: OSError) -> bool:
+    """Return whether EXC means an image has the wrong execution format."""
+    return exc.errno in {errno.ENOEXEC, errno.EACCES} or getattr(
         exc, "winerror", None
     ) == 193  # ERROR_BAD_EXE_FORMAT
 
 
-def host_default_target() -> str:
+def detected_host_target() -> str:
     """Return the native standalone target for the current host."""
-    explicit = os.environ.get("NELISP_STANDALONE_TARGET")
-    if explicit:
-        return explicit
-
     system = platform.system().lower()
     machine = platform.machine().lower()
     if machine in {"aarch64", "arm64"}:
@@ -63,6 +59,11 @@ def host_default_target() -> str:
     raise SystemExit(
         f"T91 oracle: unsupported host platform {platform.system()}/{platform.machine()}"
     )
+
+
+def host_default_target() -> str:
+    """Return the explicit target, or the native target when unset."""
+    return os.environ.get("NELISP_STANDALONE_TARGET") or detected_host_target()
 
 
 def binary_for_target(target: str) -> Path:
@@ -126,7 +127,7 @@ def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str
     return result.stdout.strip()
 
 
-def run_target(binary: Path, probe: Path, *, env: dict[str, str]) -> str:
+def run_target(binary: Path, probe: Path, *, env: dict[str, str], skip_image_error: bool) -> str:
     """Run the selected reader, classifying host execution failures as skips."""
     try:
         result = subprocess.run(
@@ -138,11 +139,13 @@ def run_target(binary: Path, probe: Path, *, env: dict[str, str]) -> str:
             stderr=subprocess.PIPE,
         )
     except OSError as exc:
-        if target_execution_error(exc):
+        if skip_image_error and target_image_execution_error(exc):
             raise TargetNotRunnable(
                 f"target {binary} is not executable on this host: {exc.strerror}"
             ) from exc
-        raise
+        raise SystemExit(
+            f"target {binary} could not be executed: {exc.strerror}"
+        ) from exc
     if result.returncode:
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
@@ -186,6 +189,8 @@ def parse_words(output: str, count: int) -> list[int]:
 def main() -> int:
     values = corpus()
     target = host_default_target()
+    native_target = detected_host_target()
+    skip_image_error = target != native_target
     binary = binary_for_target(target)
     TARGET.mkdir(parents=True, exist_ok=True)
     PROBE.write_text("(list " + " ".join(values) + ")\n", encoding="utf-8")
@@ -200,7 +205,8 @@ def main() -> int:
             env["NELISP_STANDALONE_TARGET"] = target
             run_checked(common, env=env)
             outputs[word] = parse_words(
-                run_target(binary, PROBE, env=env),
+                run_target(binary, PROBE, env=env,
+                           skip_image_error=skip_image_error),
                 len(values),
             )
         actual = list(zip(outputs["hi"], outputs["lo"]))
@@ -220,11 +226,13 @@ def main() -> int:
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
         except OSError as exc:
-            if target_execution_error(exc):
+            if skip_image_error and target_image_execution_error(exc):
                 raise TargetNotRunnable(
                     f"target {binary} is not executable on this host: {exc.strerror}"
                 ) from exc
-            raise
+            raise SystemExit(
+                f"target {binary} could not be executed: {exc.strerror}"
+            ) from exc
         if malformed.returncode == 0:
             print("MISMATCH malformed literals were accepted", file=sys.stderr)
             return 1
