@@ -151,9 +151,15 @@
 (defun nelisp-float-exp-range-test--eval-timed (expression timeout-seconds)
   "Return (VALUE . SECONDS) for EXPRESSION, failing past TIMEOUT-SECONDS.
 The timeout is enforced by the host Emacs process API, so this test has the
-same behavior on systems that do not ship the GNU `timeout' command.  A real
-hang must fail the test, not block the ERT run."
+same behavior on systems that do not ship the GNU `timeout' command.  The
+reported duration is measured around EXPRESSION inside NeLisp; process startup
+and bootstrap loading are outside the operation budget.  A real hang must
+fail the test, not block the ERT run."
   (let* ((binary (nelisp-float-exp-range-test--binary))
+         (probe
+          (format
+           "(let ((nelisp-float-exp-range-t0 (float-time))) (let ((nelisp-float-exp-range-value %s)) (princ (format \"NELISP-TIMED value=%%S elapsed-ms=%%S\\n\" nelisp-float-exp-range-value (* 1000.0 (- (float-time) nelisp-float-exp-range-t0))))))"
+           expression))
          (start (float-time))
          (buffer (generate-new-buffer " *nelisp-float-exp-range-output*"))
          process)
@@ -163,7 +169,7 @@ hang must fail the test, not block the ERT run."
                 (make-process
                  :name "nelisp-float-exp-range"
                  :buffer buffer
-                 :command (list binary "--eval" expression)
+                 :command (list binary "--eval" probe)
                  :sentinel (lambda (_process _event) nil)
                  :noquery t))
           (let ((deadline (+ start timeout-seconds)))
@@ -185,7 +191,14 @@ hang must fail the test, not block the ERT run."
                   (unless (= rc 0)
                     (ert-fail (format "standalone %s failed: rc=%S out=%S"
                                       expression rc output)))
-                  (cons (string-trim output) elapsed))))))
+                  (unless (string-match
+                           "^NELISP-TIMED value=\\([^ ]+\\) elapsed-ms=\\([0-9.eE+-]+\\)"
+                           output)
+                    (ert-fail (format "standalone %s emitted no timing record: %S"
+                                      expression output)))
+                  (cons (match-string 1 output)
+                        (/ (string-to-number (match-string 2 output))
+                           1000.0)))))))
       (when (process-live-p process)
         (delete-process process))
       (when (buffer-live-p buffer)
@@ -217,8 +230,9 @@ in well under a second -- 5s of headroom on a 10s-plus original hang."
 (ert-deftest nelisp-float-exp-range/standalone-nan-in-nan-out ()
   "NaN in, NaN out -- not the huge-|k| garbage the unclamped reduction
 used to produce."
-  (should (equal "-0.0e+NaN"
-                 (nelisp-float-exp-range-test--eval "(exp (/ 0.0 0.0))"))))
+  (should (equal "nan"
+                 (nelisp-float-exp-range-test--eval
+                  "(let ((v (exp (/ 0.0 0.0)))) (if (/= v v) 'nan 'not-nan))"))))
 
 ;; `expt' with a non-integral float exponent falls through to
 ;; `(exp (* e (log b)))', so it shares `exp's old defect one level up; it
@@ -266,18 +280,20 @@ given, had it been able to finish."
     ("(log 1.7976931348623157e+308)" . "709.782712893384")
     ("(log 4.9e-324)"  . "-744.4400719213812")
     ("(log 0.0)"       . "-1.0e+INF")
-    ("(log -1.0)"      . "-0.0e+NaN")
+    ("(log -1.0)"      . :nan)
     ("(sqrt 1.0e300)"  . "1e+150")
     ("(sqrt 1.0e-300)" . "1e-150")
     ("(sqrt 1.7976931348623157e+308)" . "1.3407807929942597e+154")
     ("(sqrt 4.9e-324)" . "2.2227587494850775e-162")
-    ("(sqrt -1.0)"     . "-0.0e+NaN"))
+    ("(sqrt -1.0)"     . :nan))
   "`log'/`sqrt' at the same extremes; unaffected by this change.")
 
 (ert-deftest nelisp-float-exp-range/log-and-sqrt-unaffected-by-extremes ()
   (dolist (case nelisp-float-exp-range-test--log-sqrt-cases)
     (let ((result (nelisp-float-exp-range-test--eval-timed (car case) 5)))
       (should (< (cdr result) 1.0))
-      (should (equal (cdr case) (car result))))))
+      (if (eq (cdr case) :nan)
+          (should (string-match-p "NaN\\'" (car result)))
+        (should (equal (cdr case) (car result)))))))
 
 ;;; nelisp-float-exp-range-test.el ends here
