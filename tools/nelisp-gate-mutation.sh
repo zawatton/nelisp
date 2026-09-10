@@ -40,6 +40,21 @@ fi
 MUTATION_TARGET_ARG="NELISP_STANDALONE_TARGET=$MUTATION_TARGET"
 printf 'gate-mutation: target %s\n' "$MUTATION_TARGET"
 
+# The nl-num mutation is bounded below the harness's hard 90-second ceiling.
+# A shorter value is useful for exercising the timeout classification without
+# waiting for the full diagnostic budget; values above the ceiling are
+# rejected so a caller cannot accidentally reintroduce an unbounded sweep.
+nl_num_mutation_timeout=${NELISP_GATE_MUTATION_TIMEOUT:-90}
+case "$nl_num_mutation_timeout" in
+  ''|*[!0-9]*)
+    echo "gate-mutation: FAIL (NELISP_GATE_MUTATION_TIMEOUT must be an integer in 1..90)"
+    exit 1 ;;
+esac
+if [ "$nl_num_mutation_timeout" -lt 1 ] || [ "$nl_num_mutation_timeout" -gt 90 ]; then
+  echo "gate-mutation: FAIL (NELISP_GATE_MUTATION_TIMEOUT must be an integer in 1..90)"
+  exit 1
+fi
+
 rebuild_checked() {
   make standalone-reader $MUTATION_TARGET_ARG >/dev/null 2>&1 && return 0
   sleep 2
@@ -166,6 +181,15 @@ run_gate() {
     # an intentionally red hang, so bound the mutation run; the clean smoke
     # completes in well under one second on the same binary.
     timeout 30 make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1
+  elif [ "$g" = "nl-num-standalone-smoke" ]; then
+    # A malformed nl-num implementation can enter an unbounded numeric loop
+    # while the mutation is present.  Keep this diagnostic row bounded, but
+    # let the caller distinguish the timeout (124) from an ordinary red gate.
+    # The clean baseline is run separately before and after the mutation; a
+    # timeout alone is never accepted as proof that the gate went red.
+    # This harness is non-interactive.  Let timeout manage the subprocess
+    # tree and force-kill anything that ignores TERM after five seconds.
+    timeout --kill-after=5s "$nl_num_mutation_timeout" make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1
   else
     make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1
   fi
@@ -328,6 +352,31 @@ while IFS='|' read -r gate file expr what scope; do
     skipped=$((skipped+1))
     continue
   fi
+  # nl-num is the one mutation row known to have produced a runaway smoke.
+  # Establish a clean PASS before touching the source.  This prevents a
+  # timeout or other non-zero result from being treated as the baseline when
+  # the gate was already broken for an unrelated reason.
+  if [ "$gate" = "nl-num-standalone-smoke" ]; then
+    # The Makefile invokes the smoke binary with `--load
+    # packages/nl-num/test/nl-num-standalone-smoke.el'; that test loads the
+    # package source at runtime.  The mutation therefore changes the source
+    # seen by this gate directly and does not require a rebuilt target binary.
+    baseline_before_log="$(mktemp)"
+    run_gate "$gate" "$file" "$baseline_before_log"
+    baseline_before_rc=$?
+    baseline_before_skip=$(grep -E '^GATE-SKIP ' "$baseline_before_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+    rm -f "$baseline_before_log"
+    if [ -n "$baseline_before_skip" ]; then
+      echo "  $gate: SKIP (clean baseline is not runnable: $baseline_before_skip)"
+      skipped=$((skipped+1))
+      continue
+    fi
+    if [ "$baseline_before_rc" -ne 0 ]; then
+      echo "  $gate: HARNESS ERROR (clean baseline before mutation failed rc=$baseline_before_rc; timeout is not a mutation verdict)"
+      failed=$((failed+1))
+      continue
+    fi
+  fi
   backup="$(mktemp)"
   cp "$file" "$backup" || { echo "gate-mutation: FAIL (cannot back up $file)"; exit 1; }
   # Arm the interrupt-restore for this row before the file is touched.
@@ -392,6 +441,46 @@ while IFS='|' read -r gate file expr what scope; do
   run_gate "$gate" "$file" "$gate_log"
   gate_rc=$?
   gate_ok=0; [ "$gate_rc" -eq 0 ] && gate_ok=1
+  if [ "$gate" = "nl-num-standalone-smoke" ]; then
+    # Restore before judging a timeout.  Then rerun the same clean gate and
+    # require PASS, proving both that the source returned byte-for-byte and
+    # that the timeout belongs to the injected defect rather than to a broken
+    # baseline or a contaminated binary.
+    cp "$backup" "$file"
+    if ! cmp -s "$file" "$backup"; then
+      echo "  $gate: HARNESS ERROR (source was not restored after mutation)"
+      failed=$((failed+1))
+      rm -f "$backup"
+      mutation_active_file=""; mutation_active_backup=""
+      rm -f "$gate_log"
+      continue
+    fi
+    baseline_after_log="$(mktemp)"
+    run_gate "$gate" "$file" "$baseline_after_log"
+    baseline_after_rc=$?
+    baseline_after_skip=$(grep -E '^GATE-SKIP ' "$baseline_after_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+    rm -f "$baseline_after_log"
+    rm -f "$gate_log"
+    rm -f "$backup"
+    mutation_active_file=""; mutation_active_backup=""
+    if [ -n "$baseline_after_skip" ]; then
+      echo "  $gate: HARNESS ERROR (clean baseline became non-runnable after restore: $baseline_after_skip; source restoration was not a clean PASS)"
+      failed=$((failed+1))
+    elif [ "$baseline_after_rc" -ne 0 ]; then
+      echo "  $gate: HARNESS ERROR (clean baseline after restore failed rc=$baseline_after_rc; source restoration was not a clean PASS)"
+      failed=$((failed+1))
+    elif [ "$gate_rc" -eq 0 ]; then
+      echo "  $gate: STAYED GREEN with a real defect in front of it (clean baseline before/after PASS; source restored byte-for-byte; $what)"
+      failed=$((failed+1))
+    elif [ "$gate_rc" -eq 124 ]; then
+      echo "  $gate: went red by timeout (rc=124 after ${nl_num_mutation_timeout}s; clean baseline before/after PASS; source restored byte-for-byte; $what)"
+      passed=$((passed+1))
+    else
+      echo "  $gate: went red (rc=$gate_rc; clean baseline before/after PASS; source restored byte-for-byte; $what)"
+      passed=$((passed+1))
+    fi
+    continue
+  fi
   # Same precedence `tools/ai/nelisp-ai.sh cmd_gate' and `gate-selfcheck'
   # (tools/nelisp-gate-selfcheck.el) use for these two lines: a reasoned
   # `GATE-SKIP REASON' is checked before anything else, because a gate that
