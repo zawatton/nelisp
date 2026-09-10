@@ -178,27 +178,33 @@ fail the test, not block the ERT run."
               (accept-process-output
                process
                (max 0.01 (min 0.1 (- deadline (float-time))))))
-            (let ((elapsed (- (float-time) start)))
-              (if (process-live-p process)
-                  (progn
-                    (delete-process process)
+            (if (process-live-p process)
+                (progn
+                  (delete-process process)
+                  (ert-fail
+                   (format "standalone %s did not answer within %ss (hang)"
+                           expression timeout-seconds)))
+              (let ((rc (process-exit-status process))
+                    (output (with-current-buffer buffer
+                              (buffer-string))))
+                (unless (= rc 0)
+                  (ert-fail (format "standalone %s failed: rc=%S out=%S"
+                                    expression rc output)))
+                (unless (string-match
+                         "^NELISP-TIMED value=\\([^ \t\n]+\\) elapsed-ms=\\([0-9]+\\(?:\\.[0-9]+\\)?\\(?:[eE][+-]?[0-9]+\\)?\\)[ \t]*\n"
+                         output)
+                  (ert-fail (format "standalone %s emitted no timing record: %S"
+                                    expression output)))
+                (let ((seconds
+                       (/ (string-to-number (match-string 2 output))
+                          1000.0)))
+                  (unless (and (>= seconds 0.0)
+                               (= seconds seconds)
+                               (< seconds 1.0e+308))
                     (ert-fail
-                     (format "standalone %s did not answer within %ss (hang)"
-                             expression timeout-seconds)))
-                (let ((rc (process-exit-status process))
-                      (output (with-current-buffer buffer
-                                (buffer-string))))
-                  (unless (= rc 0)
-                    (ert-fail (format "standalone %s failed: rc=%S out=%S"
-                                      expression rc output)))
-                  (unless (string-match
-                           "^NELISP-TIMED value=\\([^ ]+\\) elapsed-ms=\\([0-9.eE+-]+\\)"
-                           output)
-                    (ert-fail (format "standalone %s emitted no timing record: %S"
-                                      expression output)))
-                  (cons (match-string 1 output)
-                        (/ (string-to-number (match-string 2 output))
-                           1000.0)))))))
+                     (format "standalone %s emitted invalid elapsed-ms: %S"
+                             expression (match-string 2 output))))
+                  (cons (match-string 1 output) seconds))))))
       (when (process-live-p process)
         (delete-process process))
       (when (buffer-live-p buffer)
@@ -293,7 +299,7 @@ given, had it been able to finish."
     (let ((result (nelisp-float-exp-range-test--eval-timed (car case) 5)))
       (should (< (cdr result) 1.0))
       (if (eq (cdr case) :nan)
-          (should (string-match-p "NaN\\'" (car result)))
+          (should (string-match-p "\\`-?0\\.0e\\+NaN\\'" (car result)))
         (should (equal (cdr case) (car result)))))))
 
 ;;; nelisp-float-exp-range-test.el ends here
