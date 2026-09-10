@@ -18,8 +18,20 @@
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (defun emacs-time-test--with-reloaded-module (symbols thunk)
-  "Reload `emacs-time' with SYMBOLS temporarily unbound, then call THUNK."
-  (let ((saved nil))
+  "Reload `emacs-time' with SYMBOLS temporarily unbound, then call THUNK.
+
+The standalone loader may have captured the host `float-time' function in
+`emacs-time--standalone-float-time' before this test file is reached.  That
+private alias is part of the module's reload state, so isolate it along with
+the public primitives; otherwise a later polyfill fixture silently calls the
+captured host clock instead of its `nl-current-unix-time' or syscall stub."
+  (let ((saved nil)
+        ;; A previous standalone load can leave the private capture alias
+        ;; bound.  Unbind and restore it with the requested public symbols so
+        ;; a new fixture cannot capture an old wrapper recursively.
+        (symbols (if (memq 'emacs-time--standalone-float-time symbols)
+                     symbols
+                   (cons 'emacs-time--standalone-float-time symbols))))
     (unwind-protect
         (progn
           (dolist (sym symbols)
@@ -75,6 +87,11 @@ NeLisp v1.2.0 builtin that the compatibility shim must replace."
 (ert-deftest emacs-time-test/guard-replaces-marked-bulk-truncate-without-calling-it ()
   (let ((original (and (fboundp 'truncate) (symbol-function 'truncate)))
         (original-marker (get 'truncate 'emacs-stub-bulk))
+        (original-float-time (and (fboundp 'float-time)
+                                  (symbol-function 'float-time)))
+        (original-standalone-float-time
+         (and (fboundp 'emacs-time--standalone-float-time)
+              (symbol-function 'emacs-time--standalone-float-time)))
         (called nil))
     (unwind-protect
         (progn
@@ -90,7 +107,14 @@ NeLisp v1.2.0 builtin that the compatibility shim must replace."
       (if original
           (fset 'truncate original)
         (fmakunbound 'truncate))
-      (put 'truncate 'emacs-stub-bulk original-marker))))
+      (put 'truncate 'emacs-stub-bulk original-marker)
+      (if original-float-time
+          (fset 'float-time original-float-time)
+        (fmakunbound 'float-time))
+      (if original-standalone-float-time
+          (fset 'emacs-time--standalone-float-time
+                original-standalone-float-time)
+        (fmakunbound 'emacs-time--standalone-float-time)))))
 
 ;;;; Polyfill path
 
