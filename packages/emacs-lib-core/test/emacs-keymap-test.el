@@ -818,6 +818,15 @@ value cells become the keymap) is exercised by the standalone boot."
   (should (emacs-keymap--standalone-key-valid-p "S-SPC"))
   (should-not (emacs-keymap--standalone-key-valid-p "9bad-token")))
 
+(ert-deftest emacs-keymap-standalone-key-parser-literal-runs-and-invalid-modifiers ()
+  "Parse adjacent literal events while rejecting malformed modifiers."
+  (should (equal [93 93]
+                 (emacs-keymap--standalone-key-parse "]]")))
+  (should (emacs-keymap--standalone-key-valid-p "]]"))
+  (should-error (emacs-keymap--standalone-key-parse "C-]]")
+                :type 'emacs-keymap-bad-key)
+  (should-not (emacs-keymap--standalone-key-valid-p "C-]]")))
+
 (ert-deftest emacs-keymap-read-kbd-macro-source-reclaimed-from-stub ()
   "Regression pin for Doc 49 T49 (real-init audit round 6, form 206,
 symptom: `(require 'evil)' signalled `emacs-keymap-bad-key: (nil)').

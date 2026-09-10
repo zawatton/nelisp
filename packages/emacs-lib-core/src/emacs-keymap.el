@@ -1210,6 +1210,23 @@ instead of `[C-M-up]')."
               (+ (- bits emacs-keymap--control-modifier-bit) (- ch ?@)))
              (t (+ bits ch)))
           (+ bits ch))))
+     ;; A token without modifiers may contain several literal characters.
+     ;; Keep named function keys above as one event, while expanding runs
+     ;; such as "]]" into the sequence expected by `key-parse'.
+     ((and (= bits 0)
+           (equal prefix "")
+           (> (length token) 1)
+           (let ((first (aref token 0)))
+             (not (or (and (>= first ?A) (<= first ?Z))
+                      (and (>= first ?a) (<= first ?z))
+                      (and (>= first ?0) (<= first ?9))
+                      (= first ?-)))))
+      (let ((index 0)
+            (events nil))
+        (while (< index (length token))
+          (setq events (cons (aref token index) events)
+                index (1+ index)))
+        (nreverse events)))
      (t
      (signal 'emacs-keymap-bad-key (list token))))))
 
@@ -1243,7 +1260,11 @@ separators in Emacs key syntax, not key events."
     (unless tokens
       (signal 'emacs-keymap-bad-key (list keys)))
     (dolist (token tokens)
-      (push (emacs-keymap--standalone-key-token token) events))
+      (let ((parsed (emacs-keymap--standalone-key-token token)))
+        (if (listp parsed)
+            (dolist (event parsed)
+              (push event events))
+          (push parsed events))))
     (vconcat (nreverse events))))
 
 (defun emacs-keymap--standalone-key-valid-p (keys)
