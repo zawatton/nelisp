@@ -22,16 +22,17 @@
 
 The standalone loader may have captured the host `float-time' function in
 `emacs-time--standalone-float-time' before this test file is reached.  That
-private alias is part of the module's reload state, so isolate it along with
-the public primitives; otherwise a later polyfill fixture silently calls the
-captured host clock instead of its `nl-current-unix-time' or syscall stub."
-  (let ((saved nil)
-        ;; A previous standalone load can leave the private capture alias
-        ;; bound.  Unbind and restore it with the requested public symbols so
-        ;; a new fixture cannot capture an old wrapper recursively.
-        (symbols (if (memq 'emacs-time--standalone-float-time symbols)
-                     symbols
-                   (cons 'emacs-time--standalone-float-time symbols))))
+private alias and the public function cell are part of the module's reload
+state, so isolate both even when a caller only names another primitive;
+otherwise a later fixture can leave the public wrapper pointing at a stale
+capture."
+  (let* ((symbols (if (memq 'float-time symbols)
+                      symbols
+                    (cons 'float-time symbols)))
+         (symbols (if (memq 'emacs-time--standalone-float-time symbols)
+                      symbols
+                    (cons 'emacs-time--standalone-float-time symbols)))
+         (saved nil))
     (unwind-protect
         (progn
           (dolist (sym symbols)
@@ -60,6 +61,45 @@ NeLisp v1.2.0 builtin that the compatibility shim must replace."
                      (lambda () t)))
             (emacs-time--install-float-time))
           (funcall thunk))
+      (fset 'float-time saved-float-time)
+      (if saved-standalone-float-time
+          (fset 'emacs-time--standalone-float-time
+                saved-standalone-float-time)
+        (fmakunbound 'emacs-time--standalone-float-time)))))
+
+(ert-deftest emacs-time-test/reload-helper-restores-clock-function-cells ()
+  "A reload fixture leaves both clock function cells as it found them.
+
+This covers a fixture that reloads the module for an unrelated primitive:
+the next timeout consumer must still see the caller's original `float-time'
+function rather than a wrapper that captured a previous test's state.  An
+explicitly unbound clock cell remains unbound after the same reload."
+  (let* ((sentinel (lambda (&optional _time-value) 1000000.0))
+         (saved-float-time (symbol-function 'float-time))
+         (saved-standalone-float-time
+          (and (fboundp 'emacs-time--standalone-float-time)
+               (symbol-function 'emacs-time--standalone-float-time))))
+    (unwind-protect
+        (progn
+          (fset 'float-time sentinel)
+          (fset 'emacs-time--standalone-float-time sentinel)
+          (cl-letf (((symbol-function 'emacs-time--standalone-runtime-p)
+                     (lambda () t)))
+            (emacs-time-test--with-reloaded-module
+             '(current-time)
+             (lambda () nil)))
+          (should (eq sentinel (symbol-function 'float-time)))
+          (should (eq sentinel
+                      (symbol-function 'emacs-time--standalone-float-time)))
+          (fmakunbound 'float-time)
+          (fmakunbound 'emacs-time--standalone-float-time)
+          (cl-letf (((symbol-function 'emacs-time--standalone-runtime-p)
+                     (lambda () t)))
+            (emacs-time-test--with-reloaded-module
+             '(float-time)
+             (lambda () nil)))
+          (should-not (fboundp 'float-time))
+          (should-not (fboundp 'emacs-time--standalone-float-time)))
       (fset 'float-time saved-float-time)
       (if saved-standalone-float-time
           (fset 'emacs-time--standalone-float-time
