@@ -2272,18 +2272,25 @@ standalone-reader-host-parity-smoke: standalone-reader
 	  echo "[host-parity]       expected $$expected"; \
 	  exit 1; \
 	fi
-	@start_ns=$$(date +%s%N); \
-	out="$$(timeout 5 $(STANDALONE_BIN) --eval '(exp -1.0e6)')"; rc=$$?; \
-	end_ns=$$(date +%s%N); \
-	elapsed_ms=$$(( (end_ns - start_ns) / 1000000 )); \
+	@printf '%s\n' \
+	  '(setq exp-t0 (float-time))' \
+	  '(setq exp-result (exp -1.0e6))' \
+	  '(setq exp-eval-ms (round (* 1000.0 (- (float-time) exp-t0))))' \
+	  '(progn (princ (format "exp-result=%S exp-eval-ms=%d\n" exp-result exp-eval-ms)) nil)' \
+	  > target/standalone-reader-host-parity-exp-timed.el; \
+	out="$$(timeout 5 $(STANDALONE_BIN) --load target/standalone-reader-host-parity-exp-timed.el)"; rc=$$?; \
+	exp_result="$$(printf '%s\n' "$$out" | sed -n 's/^exp-result=\([^ ]*\) exp-eval-ms=\([0-9][0-9]*\)$$/\1/p')"; \
+	elapsed_ms="$$(printf '%s\n' "$$out" | sed -n 's/^exp-result=\([^ ]*\) exp-eval-ms=\([0-9][0-9]*\)$$/\2/p')"; \
 	if [ "$$rc" = "124" ]; then \
 	  echo "[host-parity] FAIL: (exp -1.0e6) did not answer within 5s (hang)"; exit 1; \
-	elif [ "$$out" != "0.0" ]; then \
-	  echo "[host-parity] FAIL: (exp -1.0e6) -> $$out (expected 0.0)"; exit 1; \
+	elif [ "$$rc" != "0" ]; then \
+	  echo "[host-parity] FAIL: (exp -1.0e6) process exited with status $$rc -> $$out"; exit 1; \
+	elif [ "$$exp_result" != "0.0" ] || [ -z "$$elapsed_ms" ]; then \
+	  echo "[host-parity] FAIL: (exp -1.0e6) -> $$out (expected result 0.0 and an in-process timing record)"; exit 1; \
 	elif [ "$$elapsed_ms" -ge 1000 ]; then \
-	  echo "[host-parity] FAIL: (exp -1.0e6) took $${elapsed_ms}ms (expected well under 1000ms; this row alone used to run over 10s)"; exit 1; \
+	  echo "[host-parity] FAIL: (exp -1.0e6) evaluation took $${elapsed_ms}ms (expected well under 1000ms; this row alone used to run over 10s)"; exit 1; \
 	else \
-	  echo "[host-parity] PASS: (exp -1.0e6) answered 0.0 in $${elapsed_ms}ms (< 1000ms; was a >10s hang)"; \
+	  echo "[host-parity] PASS: (exp -1.0e6) answered 0.0; evaluation took $${elapsed_ms}ms (< 1000ms; was a >10s hang)"; \
 	fi
 	@# Consumer bug report (dev/BUG-nelisp-standalone-exp-streams-sigsegv-2026-09-05.md
 	@# §2): `prin1'/`princ'/`read' rejected a buffer PRINTCHARFUN/STREAM outright
