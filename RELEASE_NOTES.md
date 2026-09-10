@@ -5,8 +5,9 @@
 Full notes: [`release/v1.2.2/RELEASE.md`](release/v1.2.2/RELEASE.md).
 
 This release expands macro and loop coverage, hardens the reader and GC
-boundaries, and completes the zero-Rust semver workflow. The recorded
-qualification results are complete for the v1.2.2 candidate.
+boundaries, and completes the zero-Rust semver workflow. The latest local
+qualification is partial; the current results and remaining release gates are
+recorded below.
 
 - **Macro expansion and `cl-loop`** now expand before the bytecode lane,
   preserve branch-local `pcase` bindings, cover parallel stepping and the
@@ -33,19 +34,30 @@ qualification results are complete for the v1.2.2 candidate.
 - **Release workflow** is zero-Rust and semver-tag driven. The presence corpus
   is 856 names: 571 shared and 285 standalone-only.
 
-Recorded qualification: version consistency 9/9 PASS; check tier 23/23 PASS
-with mutation coverage; full ERT 5,673 total / 5,514 pass / 159 skip / 0
-fail; gate-mutation 64 PASS + 5 platform skips; native-artifact 9/9;
-selfhost 3/3; performance 9/9 with checked arithmetic at 1.014x (ceiling
-1.15); smokes 51/51; and all 21 extras PASS. The no-JIT and JIT suites both
-exit 0. The full presence sweep checked 4,851 entries, found 0 findings, and
-recorded 685 accepted divergences. The standalone reader is 32/32 PASS. The
-main-path `target/nelisp` binary is exactly 7,683,496 bytes, and the binary
-size ratchet passes against its 7,786,916-byte ceiling.
+Current qualification after the arena coalescing change: the standalone
+reader is 32/32 PASS; smokes are 51/51 PASS; latest source bootstrap is 8/8
+PASS; focused `nl-num` mutation is 1/1 PASS; and the main-path
+`target/nelisp` binary is 7,683,840 bytes against the 7,786,916-byte ceiling.
+These results describe the current tree only.
 
-Before the GitHub Release, semver tag CI will gate `linux-x86_64`,
-`macos-aarch64`, `linux-aarch64`, and the Linux 1-hour soak. macOS has not
-been recorded as passed here.
+The broader numbers recorded by the previous candidate are historical
+evidence, not qualification of the current post-GC tree: version consistency
+9/9; check tier 23/23 with mutation coverage; full ERT 5,673 total / 5,514
+pass / 159 skip / 0 fail; gate-mutation 64 PASS + 5 platform skips;
+native-artifact 9/9; selfhost 3/3; performance 9/9 at 1.014x (ceiling 1.15);
+all 21 extras; no-JIT and JIT exit 0; and a full presence sweep of 4,851
+entries with 0 findings and 685 accepted divergences.
+
+The prior full real-init audit stopped at form 206 with exit 139 and peak RSS
+of 1,063,968 KiB; its scope is 930 init forms plus startup hooks. A Luna
+memory-fix candidate reduced checked allocator violations from 2 to 0 under
+pressure, but that change is not integrated and has not completed the full
+audit.
+
+Remaining qualification gates are a rerun of the integrated memory fix and
+full real-init audit, semver tag CI on `linux-x86_64`, `macos-aarch64`, and
+`linux-aarch64`, and the Linux 1-hour soak. v1.2.2 is not qualification
+complete or ready for publication until those gates pass.
 
 ## v1.2.1 — 2026-09-04
 

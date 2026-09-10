@@ -82,9 +82,31 @@ Release implementation and qualification notes, prepared 2026-09-10.
   **571 shared** and **285 standalone-only**. This corpus count is separate
   from the full runtime presence sweep below.
 
-## Qualification evidence
+## Current qualification status
 
 | Check | Result |
+|---|---|
+| Standalone reader | 32/32 PASS |
+| Smokes | 51/51 PASS |
+| Main-path binary size | `target/nelisp`: 7,683,840 bytes; ratchet ceiling 7,786,916; PASS |
+| Latest source bootstrap | 8/8 PASS |
+| Focused `nl-num` mutation | 1/1 PASS |
+| Full real-init audit | NOT COMPLETE; prior run stopped at form 206 with exit 139 and peak RSS 1,063,968 KiB; scope is 930 init forms plus startup hooks |
+| Luna memory-fix candidate | Checked allocator violations 2 → 0 under pressure; not integrated and not qualified |
+| 3-architecture semver tag CI | Pending |
+| Linux 1-hour soak | Pending |
+
+The current results above are from the post-coalescing tree. They do not
+represent a completed release qualification while the real-init audit and
+release gates remain pending.
+
+## Prior candidate evidence (historical)
+
+The following results belong to a prior candidate before the current GC and
+coalescing changes. They are retained for traceability and are not current
+qualification results.
+
+| Check | Prior candidate result |
 |---|---|
 | Version consistency | 9/9 PASS |
 | Check tier | 23/23 PASS with mutation coverage |
@@ -93,19 +115,18 @@ Release implementation and qualification notes, prepared 2026-09-10.
 | Native-artifact | 9/9 PASS |
 | Selfhost | 3/3 PASS |
 | Performance | 9/9 PASS; checked arithmetic 1.014x; ceiling 1.15 |
-| Smokes | 51/51 PASS |
 | Extras | all 21 PASS |
 | Presence corpus | 856 names; 571 shared / 285 standalone-only |
 | Full presence sweep | 4,851 checked; 0 findings; 685 accepted divergences |
-| Standalone reader | 32/32 PASS |
-| Main-path binary size | `target/nelisp`: 7,683,496 bytes; ratchet ceiling 7,786,916; PASS |
 | No-JIT suite | exit 0 |
 | JIT suite | exit 0 |
 | `git diff --check` | PASS |
 
 ## Remaining release qualification
 
-The local v1.2.2 qualification evidence above is complete. Before publishing
-the GitHub Release, semver tag CI will gate `linux-x86_64`, `macos-aarch64`,
-`linux-aarch64`, and the Linux 1-hour soak. macOS is not recorded as passed by
-this document; its tag-CI result remains a release blocker.
+The release is not qualification complete. Remaining blockers are:
+
+1. Integrate and requalify the memory fix, then complete the full real-init
+   audit across all 930 init forms and startup hooks.
+2. Pass semver tag CI on `linux-x86_64`, `macos-aarch64`, and `linux-aarch64`.
+3. Pass the Linux 1-hour soak.
