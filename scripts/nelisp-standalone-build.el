@@ -624,9 +624,15 @@ storage — not an arena reservation."
    ;; collections run; +32 bytes allocated over the whole process; +40 floor
    ;; and +48 percent overrides (0 = default 16 MiB / 300 %).  Zero-init
    ;; means "no threshold yet"; the reader driver arms one at boot end.
+   ;; Eight additional heads partition large free blocks by size.  The
+   ;; original fallback head remains at arena+96 for compatibility with the
+   ;; telemetry/debug probes, while allocations use these BSS heads so a
+   ;; request does not have to search a mixed list dominated by blocks that
+   ;; are too small (or too large) to split.  BSS is outside the arena image
+   ;; and is zero-filled at process start.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
-                       64 192)))
+                       64 192 64)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -689,6 +695,12 @@ storage — not an arena reservation."
                                  (if (eq nelisp-standalone--target 'windows-x86_64)
                                      8 0)
                                  64)
+                              :section 'bss :bind 'global :type 'object)
+          (nelisp-link-symbol "nl_freelist_large_bins"
+                              (+ 57616 4194304 96 176 64 56 40 1040
+                                 (if (eq nelisp-standalone--target 'windows-x86_64)
+                                     8 0)
+                                 64 192)
                               :section 'bss :bind 'global :type 'object)))
    nil))
 
@@ -1469,11 +1481,24 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; the `nelisp--arena-stats' + `(list (ptr-read ...))' diagnostic probe
     ;; (r-prog) hit; the real vendor load does not.  It is a pre-existing GC
     ;; root-coverage gap that the single list's near-zero reuse merely masked.
-    (defun nl_freelist_scan_drop_tail (prev cur bt want)
+    ;; Large free blocks use eight coarse size classes.  The classes keep
+    ;; metadata bounded while placing each request near suitably sized blocks;
+    ;; the existing bounded scan then rarely inspects impossible candidates.
+    (defun nl_freelist_large_bin (bt)
+      (if (< bt 1025) 0
+        (if (< bt 4097) 1
+          (if (< bt 16385) 2
+            (if (< bt 65537) 3
+              (if (< bt 262145) 4
+                (if (< bt 1048577) 5
+                  (if (< bt 4194305) 6 7))))))))
+    (defun nl_freelist_large_head (bin)
+      (+ (data-addr nl_freelist_large_bins) (* bin 8)))
+    (defun nl_freelist_scan_drop_tail (prev cur bt want head)
       (nl_seq2
        (nl_fl_record_trip cur bt want)
        (if (= prev 0)
-           (ptr-write-u64 268435552 0 0)
+           (ptr-write-u64 head 0 0)
          (ptr-write-u64 prev 0 0))))
     ;; PERF (2026-07-03): iterative + step-bounded (128) fallback scan.
     ;; The old exact-fit recursion walked the whole mixed-size legacy list
@@ -1488,7 +1513,7 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; native recursion depth.  All setqs stay in the single outer let
     ;; scope (AOT nested-let+outer-setq pitfall).
     ;; SPLIT-ON-REUSE (large-block fallback list).  Blocks with BLOCK_TOTAL
-    ;; > 472 all share ONE mixed LIFO list, and `nl_freelist_scan' used to
+    ;; > 472 used to share ONE mixed LIFO list, and `nl_freelist_scan' used to
     ;; serve them by EXACT fit only, so a freed 31 KiB block could never
     ;; answer an 8 KiB request.  Measured on this tree (repeat-loading one
     ;; 118 KiB package source four times through `bin/nemacs
@@ -1516,14 +1541,16 @@ directory tracks the tree rather than accumulating every key ever built."
     (defun nl_freelist_split_tail (hdr bt want)
       (let* ((rem (+ hdr want))
              (rembt (- bt want))
-             (head (if (< 472 rembt) 268435552 (+ 268435696 (- rembt 16)))))
+             (head (if (< 472 rembt)
+                       (nl_freelist_large_head (nl_freelist_large_bin rembt))
+                     (+ 268435696 (- rembt 16)))))
         (seq
          (ptr-write-u64 hdr 0 want)          ; head: BT = want, mark 0 (live)
          (ptr-write-u64 rem 0 (+ rembt 2))   ; tail: BT = rembt, mark 2 (FREE)
          (ptr-write-u64 (+ rem 8) 0 (ptr-read-u64 head 0))
          (ptr-write-u64 head 0 (+ rem 8))
          0)))
-    (defun nl_freelist_scan (prev cur want)
+    (defun nl_freelist_scan_head (prev cur want head)
       (let* ((p prev)
              (c cur)
              (steps 0)
@@ -1542,7 +1569,7 @@ directory tracks the tree rather than accumulating every key ever built."
                ;; when a stale next-link had been overwritten by live string
                ;; bytes.  Drop the corrupt tail and continue by bump allocation.
                (if (= (nl_gc_in_arena c) 0)
-                   (nl_seq2 (nl_freelist_scan_drop_tail p c 0 want)
+                   (nl_seq2 (nl_freelist_scan_drop_tail p c 0 want head)
                             (setq done 1))
                  (if (= (logand c 7) 0)
                      (if (= (nl_hdr_mark (- c 8)) 2)
@@ -1551,7 +1578,7 @@ directory tracks the tree rather than accumulating every key ever built."
                           (if (= bt want)
                               (seq
                                (if (= p 0)
-                                   (ptr-write-u64 268435552 0 (ptr-read-u64 c 0))
+                                   (ptr-write-u64 head 0 (ptr-read-u64 c 0))
                                  (ptr-write-u64 p 0 (ptr-read-u64 c 0)))
                                (nl_hdr_set_mark (- c 8) 0)
                                (setq res (nl_alloc_diag_linear c))
@@ -1562,7 +1589,7 @@ directory tracks the tree rather than accumulating every key ever built."
                             (if (< (+ want 15) bt)
                                 (seq
                                  (if (= p 0)
-                                     (ptr-write-u64 268435552 0 (ptr-read-u64 c 0))
+                                     (ptr-write-u64 head 0 (ptr-read-u64 c 0))
                                    (ptr-write-u64 p 0 (ptr-read-u64 c 0)))
                                  (nl_freelist_split_tail (- c 8) bt want)
                                  (setq res (nl_alloc_diag_linear c))
@@ -1571,11 +1598,26 @@ directory tracks the tree rather than accumulating every key ever built."
                                (setq p c)
                                (setq c (ptr-read-u64 c 0))
                                (setq steps (+ steps 1))))))
-                       (nl_seq2 (nl_freelist_scan_drop_tail p c (nl_hdr_bt (- c 8)) want)
+                       (nl_seq2 (nl_freelist_scan_drop_tail p c (nl_hdr_bt (- c 8)) want head)
                                 (setq done 1)))
-                   (nl_seq2 (nl_freelist_scan_drop_tail p c 0 want)
+                   (nl_seq2 (nl_freelist_scan_drop_tail p c 0 want head)
                             (setq done 1)))))))
          res)))
+    (defun nl_freelist_scan (prev cur want)
+      (nl_freelist_scan_head prev cur want 268435552))
+    ;; Search the request's class and progressively larger classes.  Each
+    ;; class retains the existing 128-node integrity-bounded scan, so a
+    ;; malformed chain or an adversarial free-list length cannot turn an
+    ;; allocation into an unbounded walk.
+    (defun nl_freelist_scan_large_from (bin want)
+      (if (> bin 7) 0
+        (let* ((head (nl_freelist_large_head bin))
+               (res (nl_freelist_scan_head 0 (ptr-read-u64 head 0) want head)))
+          (if (= res 0)
+              (nl_freelist_scan_large_from (+ bin 1) want)
+            res))))
+    (defun nl_freelist_scan_large (want)
+      (nl_freelist_scan_large_from (nl_freelist_large_bin want) want))
     ;; Doc 152 §11.39 Stage 3a: permanent guard-trip counter.  Records into the
     ;; nl_gc_diag bss block whenever the integrity guard drops a corrupt chain
     ;; (= a double-link event).  +0 count, +8/16/24 first-bad cur/bt/want.  Only
@@ -1656,13 +1698,13 @@ directory tracks the tree rather than accumulating every key ever built."
       (if (< want 16)
           (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
         (if (< 472 want)
-            (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
+            (nl_freelist_scan_large want)
           (let* ((cur (nl_freelist_bucket_pop want want)))
             (if (= cur 0)
                 (if (= (ptr-read-u64 268435632 0) 0) 0
                   (let* ((r (nl_freelist_bucket_split want)))
                     (if (= r 0)
-                        (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
+                        (nl_freelist_scan_large want)
                       (nl_alloc_diag_bucket r))))
               (nl_seq2 (nl_hdr_set_mark (- cur 8) 0)
                        (nl_alloc_diag_bucket cur)))))))
@@ -2665,7 +2707,9 @@ arm64 Linux has no legacy x86 numbering)."
       (if (= (nl_gc_is_boot hdr) 1) 0   ; HARD: never free a chunk-0 boot block
        (nl_gc_free_block_link hdr
         (if (< (nl_hdr_bt hdr) 16) 268435552
-          (if (< 472 (nl_hdr_bt hdr)) 268435552
+          (if (< 472 (nl_hdr_bt hdr))
+              (nl_freelist_large_head
+               (nl_freelist_large_bin (nl_hdr_bt hdr)))
             (+ 268435696 (- (nl_hdr_bt hdr) 16)))))))
     ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
     ;; skip); returns the block's live byte contribution (bt if live, else
@@ -2787,14 +2831,22 @@ arm64 Linux has no legacy x86 numbering)."
     ;; merged endpoint has no single allocation redzone until it is reused.
     (defun nl_gc_clear_freelist_buckets (n)
       (if (> n 57)
-          (ptr-write-u64 268435552 0 0)
+          (seq
+           (ptr-write-u64 268435552 0 0)
+           (nl_gc_clear_freelist_large_bins 0))
         (nl_seq2
          (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
          (nl_gc_clear_freelist_buckets (+ n 1)))))
+    (defun nl_gc_clear_freelist_large_bins (n)
+      (if (> n 7) 0
+        (nl_seq2
+         (ptr-write-u64 (nl_freelist_large_head n) 0 0)
+         (nl_gc_clear_freelist_large_bins (+ n 1)))))
     (defun nl_gc_relink_free_one (hdr)
       (let* ((bt (nl_hdr_bt hdr))
              (head (if (< bt 16) 268435552
-                     (if (< 472 bt) 268435552
+                     (if (< 472 bt)
+                         (nl_freelist_large_head (nl_freelist_large_bin bt))
                        (+ 268435696 (- bt 16))))))
         (seq
          (ptr-write-u64 (+ hdr 8) 0 (ptr-read-u64 head 0))
@@ -2931,11 +2983,19 @@ arm64 Linux has no legacy x86 numbering)."
        0))
     (defun nl_gc_freelist_purge_buckets (n base size)
       (if (> n 57)
-          (nl_gc_freelist_purge_chain 268435552 base size 0)
+          (seq
+           (nl_gc_freelist_purge_chain 268435552 base size 0)
+           (nl_gc_freelist_purge_large_bins 0 base size))
         (nl_seq2
          (nl_gc_freelist_purge_chain
           (+ 268435696 (* n 8)) base size (+ 16 (* n 8)))
          (nl_gc_freelist_purge_buckets (+ n 1) base size))))
+    (defun nl_gc_freelist_purge_large_bins (n base size)
+      (if (> n 7) 0
+        (nl_seq2
+         (nl_gc_freelist_purge_chain
+          (nl_freelist_large_head n) base size 0)
+         (nl_gc_freelist_purge_large_bins (+ n 1) base size))))
     (defun nl_gc_freelist_purge_chunk (base size)
       (nl_gc_freelist_purge_buckets 0 base size))
     ;; The chunk descriptor lives inside its own mapping, so NEXT/BASE/SIZE
