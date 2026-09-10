@@ -1,5 +1,17 @@
 # tools/ai — gate reports and the status snapshot
 
+## Start developing in a REPL
+
+Run `make standalone-reader`, then `tools/ai/nelisp-ai.sh repl` from the
+repository root. The command loads the full artifact runtime into a live
+standalone session, so `nelisp-artifact-reload-source-file` can rebuild and
+replace supported definitions without restarting it.
+
+Follow the [REPL development guide](../../docs/repl-development.md) for a
+complete error → edit → reload example, first-session setup, limitations,
+and the smoke command. `tools/ai/nelisp-ai.sh repl --help` is the short
+command reference. Interactive results complement the gates below.
+
 ## Why counts instead of exit codes
 
 An exit code has two states.  A check has three: it passed, it failed, or

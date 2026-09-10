@@ -416,6 +416,140 @@ deliberately thin: per §3's decided direction, it is process-external
 engineering on top of a verified primitive, not new runtime mechanism,
 and should not be started before Phase 1's experiment actually runs.
 
+** Development priority update — 2026-09-11 (planned, not shipped)
+
+The user's current requirement makes REPL development and fault localization
+the primary development interface.  The earlier decision to defer new reload
+machinery until it is needed is superseded by this explicit requirement.
+Existing Phase 1/2 verification still describes only the mechanisms above;
+it does not establish the workflow specified here.
+
+The acceptance scenario is a single long-lived process: load a file, invoke
+a function and encounter an error, identify the failing operation, edit that
+file, rebuild it, publish the replacement definitions, and invoke the same
+entry point successfully while preserving unrelated session state.
+
+*** Diagnostic contract
+
+Human-readable errors and machine-readable records must describe the same
+failure.  A versioned record should carry:
+
+- condition and bounded printed data; error identity and session identity;
+- failing function, definition source span, and failing expression/call-site
+  span when known; distinguish these from the top-level load position;
+- the innermost-first call chain, execution kind, and truncation status;
+- source digest, artifact digest/build identity, and definition generation;
+- reloadability and a concrete reason when an update cannot reach a caller.
+
+Unknown source positions remain explicitly unknown.  A top-level form line
+must never be presented as the exact failing expression.  Old closures and
+active frames retain their original generation and source identity, even
+after the file on disk changes.  Error reporting must be bounded and usable
+when the error is itself an allocation failure; it must not require another
+large traversal of the failing heap.
+
+Start by exposing the information already held by form-location threading,
+the bounded frame snapshot, and artifact manifests.  Definition/call-site
+source maps and provenance for standalone compile units are separate
+increments requiring their own executable evidence.  Lisp conditions,
+compiler failures, and native faults have distinct diagnostic paths; a
+SIGSEGV is not an ordinary recoverable REPL condition.
+
+*** Rebuild and publication contract
+
+1. Inspect the file and report the affected definitions and known callers.
+   Identify interpreter/bytecode functions, native wrappers, and standalone
+   runtime functions separately.  The existing hosted
+   =nelisp-artifact-reloadable-p= is not evidence about standalone symbols.
+2. Build and validate a new generation before changing active bindings.
+   Syntax errors, compile failures, stale manifests, and incompatible
+   artifacts must leave the old generation callable.  Do not overwrite the
+   only working artifact while compiling its replacement.
+3. Publish supported definitions through the existing function-cell/epoch
+   path.  Report which definitions changed, the new generation, and which
+   callers still refer to an old generation.  Clear or invalidate dependent
+   dispatch/macro caches through their actual ownership APIs.
+4. Preserve unrelated variables, buffers, and session identity.  Ordinary
+   file loading can execute arbitrary top-level side effects; do not promise
+   rollback for those effects.  A definition-only transaction must reject
+   unsupported forms before publication, while ordinary reload must report
+   partial application precisely if evaluation fails.
+5. Retain executable old code while active frames/closures can reference it.
+   Development builds can route native calls through replaceable entries;
+   existing direct calls instead require the relevant caller units to be
+   rebuilt.  Unknown dependencies cannot be reported as a complete update.
+
+Manual inspect/build/reload is the first interface.  Automatic file watching
+is optional orchestration after that path works; a watcher alone does not
+make code replacement safe.  File deletion/renaming, macro changes and
+dependent callers, and recursive or mutually recursive functions require
+explicit handling rather than assuming that reloading one defun is enough.
+
+*** First increment: strict source reload (under verification)
+
+=nelisp-artifact-reload-source-file= rebuilds a file containing only
+top-level =defun= forms into a private bytecode artifact, validates it, and
+publishes its definitions in the existing NeLisp runtime.  In an
+already initialized development session with the full artifact command
+runtime loaded, the call is:
+
+#+begin_src elisp
+(nelisp-artifact-reload-source-file "module.el" "optional-build-identity")
+(nelisp-eval '(module-entry))
+#+end_src
+
+The first call returns a =nelisp-artifact-reload-v1= plist.  Check =:status=
+and =:phase= before rerunning the entry point.  =:published= contains the
+completed installs.  A =partial= result also identifies the uncertain
+install in =:attempted= and reserves a distinct generation; it is not a
+rollback.  Source/artifact digests and definition spans identify the
+candidate.  These spans describe definitions, not the exact expression
+that later signals an error.  Reloadability is scoped to calls by name.
+
+This increment rejects =defvar=, =provide=, arbitrary top-level evaluation,
+and known native-installed definitions.  It does not replace native direct
+callers or remove functions deleted from a source file.  Hosted tests have
+demonstrated an existing caller changing from 10 to 20 while unrelated
+state stays 7, and syntax/compile failures preserving the old definition.
+A standalone REPL smoke also kept its caller outside the reloaded file:
+the caller returned 17, ordinary same-path loading left it at 17, and
+explicitly rebuilding only the target changed it to 27.  Session state
+remained 7, and a subsequent invalid source left the caller returning 27.
+This verifies by-name replacement through the full artifact command
+runtime; the lightweight artifact runtime cache alone lacks the required
+compile/eval helpers.  =tools/ai/nelisp-ai.sh repl= prepares that full
+runtime on each launch; it reports bootstrap failures and cleans up its
+temporary files and input producer when the session ends.  The
+[[file:../repl-development.md][REPL development guide]] is the maintained entry point, linked from
+=README.org=, =AI.md=, and =tools/ai/README.md=. Its checked-in broken/fixed
+examples were replayed in two independent fresh processes. Broader gates
+for the combined change are still under verification.
+
+The launcher smoke extends this to an actual failing invocation.  Its
+pre-existing caller reaches a target that signals =bug-v1= for argument 1;
+stderr identifies =error=, the target, and the caller in that order.  The
+REPL accepts the next form.  After rebuilding only the target, the same
+caller with argument 1 returns 28, while unrelated state remains 7.  This
+is executable evidence for the bounded call chain and repair loop, not yet
+for the exact source position of the failing expression.
+
+*** Required end-to-end evidence
+
+| scenario | observable result |
+|----------+-------------------|
+| error in a nested function from a loaded file | condition, correct function/call order, source identity; no invented exact line |
+| edit/rebuild/reload in the same REPL | same session and unrelated state, existing caller observes new behavior |
+| malformed source or failed compilation | old function still works; no partial published generation |
+| failed top-level side effect | explicit partial-load result; no claim of transactional rollback |
+| closure captured before replacement | old/new generation semantics and provenance are accurate |
+| native direct caller | updated behavior after supported publication, or explicit dependency/restart requirement |
+| repeated reload with GC between generations | bounded retained memory and no dangling code/source pointers |
+| non-ASCII source and shifted lines after editing | diagnostic points to the generation actually executing |
+
+Implement these in bounded increments.  Keep the running GC correctness
+audit separate from development-interface changes so source/artifact
+identity and memory measurements remain attributable.
+
 * 5. Verification design
 
 - *Phase 1* (DONE): the experiment described above, run against a fresh

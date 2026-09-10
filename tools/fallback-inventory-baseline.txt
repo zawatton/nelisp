@@ -118,7 +118,17 @@
 # 2026-09-06: +1 for `nelisp--read-dispatch''s stdin arm (see the
 # `pinned-site' entry near the end of this file for why the bare handler
 # there is not swallowing anything reportable).
-silent-fallback        62
+# 62 -> 65 on 2026-09-11 (Doc 191 strict source reload): three new
+# diagnostics-only handlers in `lisp/nelisp-artifact.el' are intentionally
+# silent at this scanner boundary.  `nelisp-artifact--reload-error-string'
+# falls back to `prin1-to-string' when the normal formatter itself
+# fails; `nelisp-artifact--source-form-spans' returns unknown spans when its
+# best-effort diagnostic reader cannot parse an extension; and
+# `nelisp-artifact-reload-source-file' ignores staging-directory cleanup
+# failure after the result has already been determined.  Each shape is pinned
+# below so a different handler cannot replace it while the aggregate stays
+# unchanged.
+silent-fallback        65
 # 41 -> 42 on 2026-08-23: one new site, reviewed and pinned below (the
 # presence-sweep auto-note's defensive shape-extraction for a report-only
 # string, falls back to "?" on a malformed corpus form -- never on a
@@ -208,7 +218,12 @@ ignore-errors   74
 # 34 -> 37 on 2026-08-23: three new sites, reviewed and pinned below (Task
 # C's two unwind-protect corpus forms' condition-case wrappers, plus the
 # presence-sweep generator's standard "read forms until end-of-file" loop).
-bare-handler    42
+# Observed 41 -> 44 on 2026-09-11 (Doc 191 strict source reload; the prior
+# checked-in ceiling was 42): the same three diagnostic/cleanup handlers use
+# a nil condition variable because their fallback values do not inspect the
+# caught condition.  They are pinned individually below; this raises the
+# ceiling only for these reviewed additions.
+bare-handler    44
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
 # a flag has to be turned off by whoever turned it on, and forgetting is
@@ -455,3 +470,14 @@ pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subc
 pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	d33aa6c36385 1
 pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-match-p	980a84a85bbb 1
 pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-match-p	91de5398feb0 1
+# 2026-09-11 (Doc 191 strict source reload): the three handlers described
+# above are pinned by exact shape.  The formatter fallback and source-span
+# scanner are diagnostics, while the reload cleanup handler protects
+# the publish result from a cleanup-only exception; none is a correctness
+# fallback that changes the active definition.
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--reload-error-string	dde9d6707095 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--reload-error-string	5cde71b66128 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--source-form-spans	31cf076daf9d 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--source-form-spans	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-reload-source-file	02e7e4104a95 1
+pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-reload-source-file	e3f2648caa3a 1

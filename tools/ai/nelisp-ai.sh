@@ -95,6 +95,7 @@ usage: tools/ai/nelisp-ai.sh <command> [args]
   compile             byte-compile with error-on-warn as gate "compile"
   ns [FILE...]        namespace check (defaults to the recipe skeletons)
   recipes             run every recipe smoke against the standalone binary
+  repl [OPTIONS]      start a live REPL with the full artifact runtime loaded
   runtime-probe       report what the standalone binary can actually do
   gate NAME -- CMD    run CMD and report it, reading its GATE-COUNT line
   probe EXPR          evaluate EXPR in the standalone runtime, output to files
@@ -593,6 +594,144 @@ cmd_probe() {
     printf '%s\n' "$dir"
 }
 
+cmd_repl_cleanup() {
+    # The full artifact runtime is generated for this session only.  Keep it
+    # out of target/ (which may belong to another build) and remove it on
+    # normal exit as well as an interrupted interactive session.
+    if [ -n "${repl_tmp_dir:-}" ]; then
+        rm -rf "$repl_tmp_dir"
+    fi
+}
+
+cmd_repl_signal() {
+    # Kill and reap both sides explicitly before leaving the shell.  The
+    # bootstrap is streamed through a named pipe by a tracked shell producer;
+    # leaving it behind would let it keep reading the caller's terminal.
+    repl_signal_status=$1
+    if [ -n "${repl_generator_pid:-}" ]; then
+        kill "$repl_generator_pid" 2>/dev/null || true
+    fi
+    if [ -n "${repl_pid:-}" ]; then
+        kill "$repl_pid" 2>/dev/null || true
+    fi
+    if [ -n "${repl_producer_pid:-}" ]; then
+        kill "$repl_producer_pid" 2>/dev/null || true
+    fi
+    if [ -n "${repl_pid:-}" ]; then
+        wait "$repl_pid" 2>/dev/null || true
+    fi
+    if [ -n "${repl_generator_pid:-}" ]; then
+        wait "$repl_generator_pid" 2>/dev/null || true
+    fi
+    if [ -n "${repl_producer_pid:-}" ]; then
+        wait "$repl_producer_pid" 2>/dev/null || true
+    fi
+    cmd_repl_cleanup
+    trap - EXIT HUP INT TERM
+    exit "$repl_signal_status"
+}
+
+cmd_repl() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+        cat <<'EOF'
+usage: tools/ai/nelisp-ai.sh repl [--no-prompt] [--no-print]
+
+Start the standalone REPL after loading the full artifact-command runtime in
+the same live session.  This makes `nelisp-artifact-reload-source-file'
+available to an interactive development session.  The command uses an
+existing target binary; build it first with `make standalone-reader`, or set
+NELISP_BIN to a host-runnable binary.
+EOF
+        return 0
+    fi
+
+    repl_bin=$(nelisp_binary 2>/dev/null || true)
+    if [ -z "$repl_bin" ] || [ ! -f "$repl_bin" ]; then
+        cat >&2 <<'EOF'
+nelisp-ai.sh repl: no standalone binary was found.
+Build one with:
+  make standalone-reader
+or set NELISP_BIN to a host-runnable target/nelisp binary.
+EOF
+        return 1
+    fi
+
+    repl_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/nelisp-ai-repl.XXXXXX") || {
+        echo 'nelisp-ai.sh repl: cannot create a temporary runtime directory' >&2
+        return 1
+    }
+    trap 'cmd_repl_cleanup' EXIT
+    trap 'cmd_repl_signal 129' HUP
+    trap 'cmd_repl_signal 130' INT
+    trap 'cmd_repl_signal 143' TERM
+    repl_runtime="$repl_tmp_dir/runtime.el"
+    repl_bootstrap="$repl_tmp_dir/bootstrap.el"
+    repl_generator_pid=
+
+    # Generate through the same source producer used by the standalone
+    # artifact command.  Passing the output path through an environment
+    # variable keeps shell quoting out of the Elisp form, including when
+    # TMPDIR contains spaces or quote characters.
+    set +e
+    NELISP_AI_REPL_RUNTIME="$repl_runtime" \
+        "$EMACS" --batch -Q -L lisp -L src -L scripts \
+        --eval '(setq load-prefer-newer t)' \
+        --eval '(require (quote nelisp-standalone-build))' \
+        --eval '(with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
+                  (insert (nelisp-standalone--artifact-command-runtime-src t)))' &
+    repl_generator_pid=$!
+    wait "$repl_generator_pid"
+    repl_generation_status=$?
+    repl_generator_pid=
+    set -e
+    if [ "$repl_generation_status" -ne 0 ]; then
+        echo "nelisp-ai.sh repl: failed to generate $repl_runtime" >&2
+        return 1
+    fi
+
+    # The path is read from the environment inside NeLisp rather than
+    # interpolated into source.  A tracked shell producer writes exactly one
+    # bootstrap form and then copies the caller's input into a named pipe.
+    # Keeping its PID lets normal exit and signal paths reap it along with the
+    # native child, including when stdin remains open after `(exit)'.
+    printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp '\''nelisp-artifact-reload-source-file) (error "artifact runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
+    repl_input_fifo="$repl_tmp_dir/input.fifo"
+    if ! mkfifo "$repl_input_fifo"; then
+        echo "nelisp-ai.sh repl: cannot create $repl_input_fifo" >&2
+        return 1
+    fi
+    # POSIX shells commonly give an asynchronous command /dev/null as its
+    # stdin.  Duplicate the caller's descriptor before starting the producer
+    # so its explicit FD3 remains the live pipe or terminal input.
+    exec 3<&0
+    set +e
+    (
+        # These are shell builtins, so killing this producer cannot leave a
+        # second `cat' process consuming the terminal after the REPL exits.
+        while IFS= read -r repl_bootstrap_line || [ -n "$repl_bootstrap_line" ]; do
+            printf '%s\n' "$repl_bootstrap_line"
+        done < "$repl_bootstrap"
+        while IFS= read -r repl_input_line || [ -n "$repl_input_line" ]; do
+            printf '%s\n' "$repl_input_line"
+        done <&3
+    ) > "$repl_input_fifo" &
+    repl_producer_pid=$!
+    NELISP_AI_REPL_RUNTIME="$repl_runtime" \
+        "$repl_bin" --repl "$@" < "$repl_input_fifo" &
+    repl_pid=$!
+    exec 3<&-
+    wait "$repl_pid"
+    repl_status=$?
+    set -e
+    kill "$repl_producer_pid" 2>/dev/null || true
+    wait "$repl_producer_pid" 2>/dev/null || true
+    repl_pid=
+    repl_producer_pid=
+    trap - EXIT HUP INT TERM
+    cmd_repl_cleanup
+    return "$repl_status"
+}
+
 cmd_build_probe() {
     # Build, then measure -- and refuse to measure when the build failed.
     #
@@ -689,6 +828,7 @@ case "$command" in
     recipes)        cmd_recipes ;;
     runtime-probe)  cmd_runtime_probe ;;
     probe)          cmd_probe "$@" ;;
+    repl)            cmd_repl "$@" ;;
     build-probe)    cmd_build_probe "$@" ;;
     doctor)         cmd_doctor ;;
     gates-clean)    cmd_gates_clean ;;

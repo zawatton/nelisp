@@ -152,6 +152,20 @@ only the needed values, falling back to full plist parsing on unexpected input."
 (defvar nelisp-artifact--last-native-compile-report nil
   "Most recent `.neln' native compile coverage report.")
 
+(defvar nelisp-artifact-build-id nil
+  "Optional build identity recorded in newly compiled artifact manifests.
+
+The hot-reload API binds this to its caller-supplied build identifier.  It is
+deliberately separate from `nelisp--cli-version': a runtime version describes
+the loader, while a build identifier describes the executable/source tree that
+produced the generation being inspected.")
+
+(defvar nelisp-artifact--reload-generation 0
+  "Generation number of the most recently started publish attempt.
+Preflight and staging failures do not advance it; a partial publication still
+gets its own generation so it cannot be mistaken for an earlier definition
+set.")
+
 (defvar nelisp-artifact--native-installed-symbols (make-hash-table :test 'eq)
   "Symbols whose function was ever installed as a native wrapper by
 `nelisp-artifact--install-native-functions'.  Doc 191 (hot code reload)
@@ -817,6 +831,42 @@ profiling needs source positions or when the native reader is unavailable."
         (push (substring source pos end) slices)
         (setq pos end)))
     (nreverse slices)))
+
+(defun nelisp-artifact--source-line-column (source pos)
+  "Return the 1-based line and column containing POS in SOURCE.
+The result is a cons cell `(LINE . COLUMN)'.  This helper is deliberately
+only diagnostic: callers must tolerate an unavailable or approximate source
+span and must never use it to decide whether SOURCE is valid."
+  (let ((line 1)
+        (column 1)
+        (i 0))
+    (while (< i pos)
+      (if (= (aref source i) ?\n)
+          (setq line (1+ line)
+                column 1)
+        (setq column (1+ column)))
+      (setq i (1+ i)))
+    (cons line column)))
+
+(defun nelisp-artifact--source-form-spans (source)
+  "Return best-effort top-level source spans for SOURCE.
+Each item is `(START END LINE COLUMN)'.  The source reader remains the
+authority for compilation; this scanner is used only for diagnostics, so an
+unrecognised reader extension returns nil instead of rejecting a valid file."
+  (condition-case nil
+      (let ((pos 0)
+            (len (length source))
+            (spans nil))
+        (while (progn
+                 (setq pos (nelisp-artifact--source-skip-ws-comments source pos))
+                 (< pos len))
+          (let* ((start pos)
+                 (end (nelisp-artifact--source-form-end source pos))
+                 (lc (nelisp-artifact--source-line-column source start)))
+            (push (list start end (car lc) (cdr lc)) spans)
+            (setq pos end)))
+        (nreverse spans))
+    (error nil)))
 
 (defun nelisp-artifact--read-all-from-string (source)
   "Read every form from SOURCE with host `read'."
@@ -2025,6 +2075,7 @@ ABI, and NATIVE metadata (object hash, symbols, arch) is recorded."
          :nelisp-version (if (boundp 'nelisp--cli-version)
                              nelisp--cli-version
                            "unknown")
+         :build-id nelisp-artifact-build-id
          :target (or target
                      (and (boundp 'system-configuration) system-configuration)
                      "unknown")
@@ -2915,6 +2966,302 @@ replay their bytecode module onto the NeLisp runtime."
                                                  total-start
                                                  '(:path full-parse))
               last))))))))
+
+(defun nelisp-artifact--reload-error-string (condition)
+  "Return a printable message for reload CONDITION."
+  (condition-case nil
+      (if (fboundp 'error-message-string)
+          (error-message-string condition)
+        (prin1-to-string condition))
+    (error (prin1-to-string condition))))
+
+(defun nelisp-artifact--reload-result (status phase source build-id generation
+                                              &rest fields)
+  "Build the versioned result plist returned by strict source reload."
+  (append (list :format 'nelisp-artifact-reload-v1
+                :status status
+                :phase phase
+                :source source
+                :build-id (or build-id "unknown")
+                :generation generation)
+          fields))
+
+(defun nelisp-artifact--reload-defun-p (form)
+  "Return non-nil when FORM is a well-shaped top-level `defun'.
+This predicate intentionally describes the first hot-reload increment's
+supported source surface.  It does not macroexpand or execute FORM."
+  (and (consp form)
+       (eq (car form) 'defun)
+       (symbolp (nth 1 form))
+       (listp (nth 2 form))))
+
+(defun nelisp-artifact--reload-definition-records (source source-path forms)
+  "Return diagnostic records for strict DEFS in SOURCE.
+The source scanner is best-effort and is never part of the validity gate;
+unknown spans are represented by nil."
+  (let ((spans (nelisp-artifact--source-form-spans source))
+        (index 0)
+        (records nil))
+    (dolist (form forms (nreverse records))
+      (let* ((span (nth index spans))
+             (record (list :name (nth 1 form)
+                           :form-index index
+                           :source source-path
+                           :source-span nil)))
+        (when span
+          (setq record
+                (plist-put
+                 record :source-span
+                 (list :start (nth 0 span)
+                       :end (nth 1 span)
+                       :line (nth 2 span)
+                       :column (nth 3 span)
+                       :offset-unit 'characters))))
+        (push record records)
+        (setq index (1+ index))))))
+
+(defun nelisp-artifact--reload-module-item-name (item)
+  "Return the strict source definition name represented by ITEM, or nil."
+  (cond
+   ((and (consp item)
+         (eq (car item) :fn)
+         (symbolp (nth 1 item)))
+    (nth 1 item))
+   ((and (consp item)
+         (eq (car item) :eval)
+         (nelisp-artifact--reload-defun-p (nth 1 item)))
+    (nth 1 (nth 1 item)))
+   (t nil)))
+
+(defun nelisp-artifact--reload-failure
+    (status phase source build-id generation condition &optional reason)
+  "Return a structured reload failure for CONDITION and REASON."
+  (nelisp-artifact--reload-result
+   status phase source build-id generation
+   :published nil
+   :condition (and (consp condition) (car condition))
+   :error (nelisp-artifact--reload-error-string condition)
+   :reason reason))
+
+;;;###autoload
+(defun nelisp-artifact-reload-source-file (source-path &optional build-id)
+  "Strictly rebuild and publish top-level `defun' forms from SOURCE-PATH.
+
+The source is read and compiled into a private staging `.nelc' first.  Every
+top-level form must be a well-shaped `defun', and a symbol that has ever had a
+native wrapper installed is rejected before compilation and checked again
+before publication.  A successful call replays only the validated module into
+the current NeLisp runtime, preserving globals, existing callers, and the
+current runtime session; it never changes `nelisp-artifact--loaded'.
+
+The return value is a versioned plist with `:status' `ok', `rejected',
+`error', or `partial'; `:phase' identifies read, preflight, compile, validate,
+prepublish, or publish.  It includes source/artifact hashes, BUILD-ID (or
+\"unknown\"), generation, published names, and definition spans when the
+scanner can establish them.  Source positions and callers that are not known
+are omitted or represented by nil; this API does not invent them.
+
+Compilation and validation happen before any definition is installed.  The
+module replay path is intentionally sequential and has no general transaction
+mechanism.  Publication reserves a new generation even if it fails.  A partial
+result names completed installs in `:published' and the uncertain, potentially
+modified definition in `:attempted', together with the candidate's provenance."
+  (let ((source-file (and (stringp source-path)
+                          (expand-file-name source-path)))
+        (generation nelisp-artifact--reload-generation))
+    (if (null source-file)
+        (nelisp-artifact--reload-failure
+         'rejected 'preflight source-path build-id generation
+         '(wrong-type-argument stringp) 'source-path-not-string)
+      (catch 'nelisp-artifact-reload-done
+        (let ((source nil)
+              (source-sha256 nil)
+              (forms nil)
+              (definitions nil)
+              (staging-dir nil)
+              (artifact-path nil)
+              (manifest-path nil)
+              (manifest nil)
+              (artifact-content nil)
+              (payload nil)
+              (module nil)
+              (published nil)
+              (attempted nil)
+              (attempt-generation nil))
+          ;; Read and preflight before creating a staging artifact.  Strict
+          ;; reload intentionally rejects all load-time effects (including
+          ;; `defvar', `provide', and arbitrary eval forms) in this increment.
+          (condition-case err
+              (progn
+                (setq source (nelisp-artifact--read-file-as-string source-file))
+                (setq source-sha256 (secure-hash 'sha256 source))
+                (setq forms
+                      (nelisp-artifact--read-top-level-forms
+                       source source-file))
+                (setq definitions
+                      (nelisp-artifact--reload-definition-records
+                       source source-file forms))
+                (dolist (form forms)
+                  (unless (nelisp-artifact--reload-defun-p form)
+                    (throw
+                     'nelisp-artifact-reload-done
+                     (nelisp-artifact--reload-failure
+                      'rejected 'preflight source-file build-id generation
+                      nil (list :unsupported-top-level
+                                (car-safe form))))))
+                (dolist (form forms)
+                  (let ((name (nth 1 form)))
+                    (unless (nelisp-artifact-reloadable-p name)
+                      (throw
+                       'nelisp-artifact-reload-done
+                       (nelisp-artifact--reload-failure
+                        'rejected 'preflight source-file build-id generation
+                        nil (list :native-installed name)))))))
+            (error
+             (throw
+              'nelisp-artifact-reload-done
+              (nelisp-artifact--reload-failure
+               'error 'read source-file build-id generation err))))
+          (condition-case err
+              (setq staging-dir (nelisp-artifact--make-temp-directory
+                                 "nelisp-artifact-reload-"))
+            (error
+             (throw
+              'nelisp-artifact-reload-done
+              (nelisp-artifact--reload-failure
+               'error 'staging source-file build-id generation err))))
+          (unless (and (stringp staging-dir)
+                       (file-directory-p staging-dir))
+            (throw
+             'nelisp-artifact-reload-done
+             (nelisp-artifact--reload-failure
+              'error 'staging source-file build-id generation
+              nil 'staging-directory-unavailable)))
+          (setq artifact-path (expand-file-name "generation.nelc" staging-dir)
+                manifest-path (nelisp-artifact--sibling-manifest-path
+                               artifact-path))
+          (unwind-protect
+              (progn
+                (condition-case err
+                    (let ((nelisp-artifact-build-id build-id))
+                      ;; No preloads, requested feature, or native lane are
+                      ;; permitted here: staging must not execute source side
+                      ;; effects and native direct callers must be refused.
+                      (setq manifest
+                            (nelisp-artifact-compile-file
+                             source-file artifact-path manifest-path nil nil nil
+                             nil 'nelc nil 'bytecode)))
+                  (error
+                   (throw
+                    'nelisp-artifact-reload-done
+                    (nelisp-artifact--reload-failure
+                     'error 'compile source-file build-id generation err))))
+                (condition-case err
+                    (progn
+                      (setq artifact-content
+                            (nelisp-artifact--read-file-as-string artifact-path))
+                      ;; Validate the staged pair before inspecting or
+                      ;; replaying its module.  This repeats the native gate
+                      ;; after compilation in case another loader installed a
+                      ;; wrapper during the staging operation.
+                      (setq manifest
+                            (nelisp-artifact--validate
+                             artifact-path artifact-content))
+                      ;; Compilation rereads SOURCE-PATH.  Refuse to publish
+                      ;; diagnostics for a different editor snapshot.
+                      (unless (equal source-sha256
+                                     (plist-get
+                                      (plist-get manifest :source) :sha256))
+                        (throw
+                         'nelisp-artifact-reload-done
+                         (nelisp-artifact--reload-failure
+                          'error 'prepublish source-file build-id generation
+                          nil 'source-changed-during-compile)))
+                      (setq payload
+                            (nelisp-artifact--parse-payload
+                             artifact-content artifact-path))
+                      (setq module (plist-get payload :module-init))
+                      (dolist (form forms)
+                        (unless (nelisp-artifact-reloadable-p (nth 1 form))
+                          (throw
+                           'nelisp-artifact-reload-done
+                           (nelisp-artifact--reload-failure
+                            'rejected 'prepublish source-file build-id
+                            generation nil
+                            (list :native-installed (nth 1 form))))))
+                      (unless (= (length module) (length forms))
+                        (throw
+                         'nelisp-artifact-reload-done
+                         (nelisp-artifact--reload-failure
+                          'rejected 'prepublish source-file build-id generation
+                          nil (list :module-count-mismatch
+                                    (length forms) (length module)))))
+                      (let ((expected (mapcar (lambda (form) (nth 1 form)) forms))
+                            (actual (mapcar
+                                     #'nelisp-artifact--reload-module-item-name
+                                     module)))
+                        (unless (and (not (memq nil actual))
+                                     (equal expected actual))
+                          (throw
+                           'nelisp-artifact-reload-done
+                           (nelisp-artifact--reload-failure
+                            'rejected 'prepublish source-file build-id generation
+                            nil (list :module-definition-mismatch
+                                      :expected expected :actual actual))))))
+                  (error
+                   (throw
+                    'nelisp-artifact-reload-done
+                    (nelisp-artifact--reload-failure
+                     'error 'validate source-file build-id generation err))))
+                ;; Publication is the only section allowed to mutate the
+                ;; current runtime.  Keep the already-published names visible
+                ;; if a later replay fails; no false rollback is claimed.
+                (setq attempt-generation (1+ generation)
+                      nelisp-artifact--reload-generation attempt-generation)
+                (condition-case err
+                    (progn
+                      (dolist (item module)
+                        (let ((name (nelisp-artifact--reload-module-item-name
+                                     item)))
+                          (setq attempted name)
+                          (nelisp-artifact--replay-module-item item)
+                          (setq published (cons name published)
+                                attempted nil)))
+                      (setq published (nreverse published))
+                      (throw
+                       'nelisp-artifact-reload-done
+                       (nelisp-artifact--reload-result
+                        'ok 'publish source-file build-id
+                        nelisp-artifact--reload-generation
+                        :source-sha256
+                        (plist-get (plist-get manifest :source) :sha256)
+                        :artifact-sha256 (plist-get manifest :artifact-sha256)
+                        :published published
+                        :definitions definitions
+                        :callers nil
+                        :reloadability
+                        (mapcar (lambda (name)
+                                  (list :name name :reloadable t
+                                        :scope 'by-name))
+                                published))))
+                  (error
+                   (throw
+                    'nelisp-artifact-reload-done
+                    (nelisp-artifact--reload-result
+                     'partial 'publish source-file build-id attempt-generation
+                     :published (nreverse published)
+                     :attempted attempted
+                     :source-sha256
+                     (plist-get (plist-get manifest :source) :sha256)
+                     :artifact-sha256 (plist-get manifest :artifact-sha256)
+                     :definitions definitions
+                     :condition (and (consp err) (car err))
+                     :error (nelisp-artifact--reload-error-string err)
+                     :reason 'publish-not-transactional))))
+            (when (and staging-dir (file-directory-p staging-dir))
+              (condition-case nil
+                  (delete-directory staging-dir t)
+                (error nil))))))))))
 
 (defun nelisp-artifact-read-manifest (artifact-path)
   "Read the sibling manifest for ARTIFACT-PATH."

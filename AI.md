@@ -20,6 +20,24 @@ report.  A hand-written "1549 tests, 0 failures" in a sibling repository
 stood unchallenged for months while the suite, once it could actually
 run, reported 2859 tests and 127 unexpected results.
 
+## Develop in a persistent REPL
+
+For runtime behavior changes, start with the reproducible
+[REPL development guide](docs/repl-development.md). It covers first setup,
+an intentional error, its call chain, editing one file, and replacing its
+definitions without restarting the process. Use
+`tools/ai/nelisp-ai.sh repl`; plain `target/nelisp --repl` does not preload
+the full artifact compilation runtime needed for source reload.
+
+Keep one REPL process alive across the failing call and the repaired call.
+Record the input, condition/call chain, reload result, and preserved state.
+Inspect `:status`, `:phase`, and `:published` before rerunning. Definition
+spans are not exact failing-expression locations; do not claim that native
+direct callers were replaced. A new agent session can follow the guide
+without prior conversation or local memory. A new REPL process starts with
+fresh Lisp state; replay the setup instead of assuming the old state exists.
+Run focused tests and the normal gates after the interactive repair.
+
 ## Inner loop
 
 ```sh

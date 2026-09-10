@@ -1435,6 +1435,250 @@ above."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/reload-source-file-preserves-session-and-publishes ()
+  "The explicit reload API refreshes a loaded caller in the same session.
+An ordinary `nelisp-load-file' call keeps the old value because its adjacent
+artifact is already marked loaded; the explicit API then stages the changed
+source, publishes both definitions, and preserves an unrelated global."
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-reload-" t))
+         (source-path (expand-file-name "reload.el" temp-dir))
+         (artifact-path (concat source-path ".nelc"))
+         (caller 'nelisp-artifact-reload-test--caller)
+         (target 'nelisp-artifact-reload-test--target)
+         (state 'nelisp-artifact-reload-test--state)
+         (old-loaded nelisp-artifact--loaded)
+         (old-generation nelisp-artifact--reload-generation))
+    (unwind-protect
+        (progn
+          (write-region
+           (concat
+            "(defun nelisp-artifact-reload-test--target (x) (+ x 10))\n"
+            "(defun nelisp-artifact-reload-test--caller (x)\n"
+            "  (+ (nelisp-artifact-reload-test--target x) 1))\n")
+           nil source-path nil 'silent)
+          (nelisp-artifact-compile-file source-path artifact-path)
+          (nelisp--reset)
+          (setq nelisp-artifact--loaded nil)
+          (nelisp-load-file source-path)
+          (puthash state 7 nelisp--globals)
+          (should (= (nelisp-eval (list caller 0)) 11))
+          ;; Rebuild the same adjacent artifact and ask the normal loader to
+          ;; load the source again.  Its process-lifetime loaded guard makes
+          ;; this a no-op, which is the reason the explicit API exists.
+          (write-region
+           (concat
+            "(defun nelisp-artifact-reload-test--target (x) (+ x 20))\n"
+            "(defun nelisp-artifact-reload-test--caller (x)\n"
+            "  (+ (nelisp-artifact-reload-test--target x) 1))\n")
+           nil source-path nil 'silent)
+          (nelisp-artifact-compile-file source-path artifact-path)
+          (nelisp-load-file source-path)
+          (should (= (nelisp-eval (list caller 0)) 11))
+          (let ((result
+                 (nelisp-artifact-reload-source-file source-path
+                                                      "reload-test-build")))
+            (should (eq (plist-get result :format)
+                        'nelisp-artifact-reload-v1))
+            (should (eq (plist-get result :status) 'ok))
+            (should (eq (plist-get result :phase) 'publish))
+            (should (equal (plist-get result :build-id) "reload-test-build"))
+            (should (= (plist-get result :generation) (1+ old-generation)))
+            (should (stringp (plist-get result :source-sha256)))
+            (should (stringp (plist-get result :artifact-sha256)))
+            (should (equal (plist-get result :published) (list target caller)))
+            (let ((span (plist-get (car (plist-get result :definitions))
+                                   :source-span)))
+              (should (eq (plist-get span :offset-unit) 'characters))))
+          (should (= (nelisp-eval (list caller 0)) 21))
+          (should (= (gethash state nelisp--globals) 7)))
+      (nelisp--reset)
+      (setq nelisp-artifact--loaded old-loaded
+            nelisp-artifact--reload-generation old-generation)
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/reload-source-file-rejects-before-publish ()
+  "Strict reload failures preserve the old definition and report a phase."
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-reload-fail-" t))
+         (source-path (expand-file-name "reload.el" temp-dir))
+         (target 'nelisp-artifact-reload-failure-test--target)
+         (old-loaded nelisp-artifact--loaded)
+         (old-generation nelisp-artifact--reload-generation))
+    (unwind-protect
+        (progn
+          (write-region
+           "(defun nelisp-artifact-reload-failure-test--target (x) (+ x 3))\n"
+           nil source-path nil 'silent)
+          (nelisp--reset)
+          (setq nelisp-artifact--loaded nil)
+          (should (eq (plist-get
+                       (nelisp-artifact-reload-source-file source-path "good")
+                       :status)
+                      'ok))
+          (should (= (nelisp-eval (list target 1)) 4))
+          ;; A source reader error occurs before staging or publication.
+          (write-region
+           "(defun nelisp-artifact-reload-failure-test--target (x) (+ x 999)"
+           nil source-path nil 'silent)
+          (let ((result (nelisp-artifact-reload-source-file source-path "bad")))
+            (should (eq (plist-get result :status) 'error))
+            (should (eq (plist-get result :phase) 'read))
+            (should-not (plist-get result :published)))
+          (should (= (nelisp-eval (list target 1)) 4))
+          ;; Unsupported load-time forms are rejected before compile too.
+          (write-region
+           (concat "(defvar nelisp-artifact-reload-failure-test--state 9)\n"
+                   "(defun nelisp-artifact-reload-failure-test--target (x) (+ x 8))\n")
+           nil source-path nil 'silent)
+          (let ((result (nelisp-artifact-reload-source-file source-path "bad-form")))
+            (should (eq (plist-get result :status) 'rejected))
+            (should (eq (plist-get result :phase) 'preflight))
+            (should (equal (car (plist-get result :reason))
+                           :unsupported-top-level)))
+          (should (= (nelisp-eval (list target 1)) 4))
+          ;; A compiler failure is also before publication and must retain the
+          ;; previously callable function.
+          (cl-letf (((symbol-function 'nelisp-artifact-compile-file)
+                     (lambda (&rest _args)
+                       (error "reload test compile failure"))))
+            (write-region
+             "(defun nelisp-artifact-reload-failure-test--target (x) (+ x 8))\n"
+             nil source-path nil 'silent)
+            (let ((result (nelisp-artifact-reload-source-file
+                           source-path "compile-failure")))
+              (should (eq (plist-get result :status) 'error))
+              (should (eq (plist-get result :phase) 'compile))
+              (should-not (plist-get result :published))))
+          (should (= (nelisp-eval (list target 1)) 4)))
+      (nelisp--reset)
+      (setq nelisp-artifact--loaded old-loaded
+            nelisp-artifact--reload-generation old-generation)
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/reload-source-file-rejects-native-and-source-race ()
+  "Native-installed names and changed staging input are rejected safely."
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-reload-gate-" t))
+         (source-path (expand-file-name "reload.el" temp-dir))
+         (native-name 'nelisp-artifact-reload-test--native)
+         (old-loaded nelisp-artifact--loaded)
+         (old-generation nelisp-artifact--reload-generation)
+         (original-compile (symbol-function 'nelisp-artifact-compile-file)))
+    (unwind-protect
+        (progn
+          (write-region
+           "(defun nelisp-artifact-reload-test--native (x) (+ x 1))\n"
+           nil source-path nil 'silent)
+          (nelisp--reset)
+          (setq nelisp-artifact--loaded nil)
+          ;; This is the same process-lifetime table consulted by the real
+          ;; native wrapper install path; use a unique name and restore it.
+          (puthash native-name t nelisp-artifact--native-installed-symbols)
+          (let ((result (nelisp-artifact-reload-source-file source-path "native")))
+            (should (eq (plist-get result :status) 'rejected))
+            (should (eq (plist-get result :phase) 'preflight))
+            (should (equal (car (plist-get result :reason)) :native-installed)))
+          (remhash native-name nelisp-artifact--native-installed-symbols)
+          ;; Change the file between the preflight snapshot and compile.  The
+          ;; API must report the race before module replay.
+          (write-region
+           "(defun nelisp-artifact-reload-test--native (x) (+ x 2))\n"
+           nil source-path nil 'silent)
+          (cl-letf (((symbol-function 'nelisp-artifact-compile-file)
+                     (lambda (&rest args)
+                       (write-region
+                        "(defun nelisp-artifact-reload-test--native (x) (+ x 3))\n"
+                        nil source-path nil 'silent)
+                       (apply original-compile args))))
+            (let ((result (nelisp-artifact-reload-source-file source-path "race")))
+              (should (eq (plist-get result :status) 'error))
+              (should (eq (plist-get result :phase) 'prepublish))
+              (should (eq (plist-get result :reason)
+                          'source-changed-during-compile)))))
+          (should-not (gethash native-name nelisp--functions))
+      (remhash native-name nelisp-artifact--native-installed-symbols)
+      (nelisp--reset)
+      (setq nelisp-artifact--loaded old-loaded
+            nelisp-artifact--reload-generation old-generation)
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/reload-source-file-reports-partial-generation ()
+  "A publish exception reports the installed prefix with a new generation."
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-reload-partial-" t))
+         (source-path (expand-file-name "reload.el" temp-dir))
+         (first 'nelisp-artifact-reload-partial-test--first)
+         (second 'nelisp-artifact-reload-partial-test--second)
+         (old-loaded nelisp-artifact--loaded)
+         (old-generation nelisp-artifact--reload-generation)
+         (original-replay (symbol-function 'nelisp-artifact--replay-module-item))
+         (calls 0))
+    (unwind-protect
+        (progn
+          (write-region
+           (concat
+            "(defun nelisp-artifact-reload-partial-test--first () 1)\n"
+            "(defun nelisp-artifact-reload-partial-test--second () 2)\n")
+           nil source-path nil 'silent)
+          (nelisp--reset)
+          (setq nelisp-artifact--loaded nil)
+          (cl-letf (((symbol-function 'nelisp-artifact--replay-module-item)
+                     (lambda (item)
+                       (setq calls (1+ calls))
+                       (if (= calls 2)
+                           (error "reload test publish failure")
+                         (funcall original-replay item)))))
+            (let ((result (nelisp-artifact-reload-source-file
+                           source-path "partial-build")))
+              (should (eq (plist-get result :status) 'partial))
+              (should (eq (plist-get result :phase) 'publish))
+              (should (= (plist-get result :generation) (1+ old-generation)))
+              (should (equal (plist-get result :published) (list first)))
+              (should (eq (plist-get result :reason)
+                          'publish-not-transactional))))
+          (should (= (nelisp-eval (list first)) 1))
+          (should (= nelisp-artifact--reload-generation (1+ old-generation)))
+          ;; The failed second install is not reported as published.
+          (should-not (gethash second nelisp--functions)))
+      (nelisp--reset)
+      (setq nelisp-artifact--loaded old-loaded
+            nelisp-artifact--reload-generation old-generation)
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/reload-source-file-identifies-incomplete-install ()
+  "A failing installer can already have changed the function it was installing."
+  (let* ((source (make-temp-file "nelisp-reload-incomplete-" nil ".el"))
+         (name 'nelisp-artifact-test--incomplete-install)
+         (old-function (and (fboundp name) (symbol-function name)))
+         (old-generation nelisp-artifact--reload-generation)
+         (installer (symbol-function 'nelisp-artifact--install-function)))
+    (unwind-protect
+        (progn
+          (write-region (format "(defun %s () 42)\n" name) nil source nil 'silent)
+          (nelisp--reset)
+          (cl-letf (((symbol-function 'nelisp-artifact--install-function)
+                     (lambda (symbol definition)
+                       (prog1 (funcall installer symbol definition)
+                         (when (eq symbol name)
+                           (error "injected failure after installing"))))))
+            (let ((result (nelisp-artifact-reload-source-file source "partial")))
+              (should (eq (plist-get result :status) 'partial))
+              (should-not (plist-get result :published))
+              (should (eq (plist-get result :attempted) name))
+              (should (equal (plist-get result :source-sha256)
+                             (plist-get (nelisp-artifact--file-record source) :sha256)))
+              (should (stringp (plist-get result :artifact-sha256)))
+              (should (eq (plist-get (car (plist-get result :definitions)) :name)
+                          name))))
+          ;; The result must identify this uncertain install even though it
+          ;; did not return normally and is absent from the completed prefix.
+          (should (= (nelisp-eval (list name)) 42)))
+      (nelisp--reset)
+      (setq nelisp-artifact--reload-generation old-generation)
+      (if old-function (fset name old-function) (fmakunbound name))
+      (delete-file source))))
+
 (ert-deftest nelisp-artifact/nelisp-load-file-auto-recompiles-stale-neln ()
   "`nelisp-load-file' can refresh a missing/stale adjacent `.neln' generically."
   (let* ((temp-dir (make-temp-file "nelisp-artifact-load-refresh-" t))

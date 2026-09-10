@@ -1,6 +1,6 @@
-#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v1.0.1)
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM
 #+AUTHOR: zawatton
-#+DATE: 2026-08-26
+#+DATE: 2026-09-11
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -18,6 +18,25 @@ pure-Elisp migration — the Rust =build-tool/= tree no longer exists in
 this repository.  Read such paths as a record of what was migrated, not
 as live source files.
 #+end_quote
+
+* Start developing: REPL → error → edit → reload
+
+For a source checkout, start with the
+[[file:docs/repl-development.md][REPL development guide]]. It includes first-time setup and a runnable
+example that finds an error, rebuilds one file, and calls its replacement
+in the same process while keeping session state.
+
+#+begin_src sh
+make standalone-reader
+tools/ai/nelisp-ai.sh repl
+#+end_src
+
+This development command preloads the full artifact runtime required by
+=nelisp-artifact-reload-source-file=. The guide describes the supported
+=defun=-only source files and the limits of native-code replacement.
+It works as the starting point for a new human or AI session; prior chat
+history and private workspace configuration are not required. AI agents
+should also read [[file:AI.md][AI.md]] for the repository workflow and verification rules.
 
 * TL;DR
 
@@ -44,10 +63,12 @@ way: standalone file I/O, stdout/stderr, process exit, raw memory,
 syscall surface used by the standalone reader are expressed from Elisp
 via AOT codegen and =syscall-direct=.
 
-Current stable release: *v1.0.1* (2026-08-26).  This release keeps the
-project versioned by SemVer git tags, in the same style as =anvil.el=:
-pin users to =v1.0.1=, let =main= carry active development, and use
-release notes for the exact gate status.
+Latest published GitHub release:
+[[https://github.com/zawatton/nelisp/releases/tag/v1.2.0][v1.2.0]] (2026-09-03 UTC).
+Use tagged release notes for the released feature and gate status; source
+checkout instructions, including the development launcher above, may
+describe changes not yet in a published release. The v1.0.1 overview below
+is retained as a historical snapshot.
 
 v1.0.1 ships:
 - *Pure-Elisp runtime implementation* — evaluator, reader, special
@@ -91,9 +112,9 @@ v1.0.1 ships:
 Use cases: running Elisp on machines without Emacs, and as a
 substrate for Lisp Machine / new-dialect experiments.
 
-* Current Release Highlights
+* Earlier Release Highlights (v1.0.1)
 
-v1.0.1 is the current stable tag.  What made the 1.0 line a 1.0 rather than
+v1.0.1 was the stable tag for this snapshot.  What made the 1.0 line a 1.0 rather than
 another point release: the runtime collects garbage by default, and ordinary
 allocating Elisp runs on real OS threads.  Before it, a long-running loop grew
 without bound unless a debug switch was flipped, and "parallelism" meant
@@ -218,6 +239,12 @@ drive =nelisp-standalone-compile-chunk= and then link once serially, using
 Emacs and pure elisp only.
 
 ** REPL-driven runtime development
+
+For the file rebuild/reload workflow, use
+=tools/ai/nelisp-ai.sh repl= and the
+[[file:docs/repl-development.md][REPL development guide]]. The lower-level examples below describe the
+standalone reader itself; starting that reader alone does not load the
+full artifact compilation runtime.
 
 The standalone reader is also the development REPL for NeLisp itself.
 The REPL runs in the AOT standalone interpreter and evaluates forms
@@ -514,19 +541,21 @@ as the primary user surface, and adds cross-platform native emit across
 
 Two paths.
 
-*** Stable tag — =v1.0.1= (recommended)
+*** Published release source — =v1.2.0=
 
-For source users, pin the current stable tag:
+For reproducible released source, pin the latest published release tag.
+For the new REPL development launcher, use =main= as described above:
 
 #+begin_src shell
 git clone https://github.com/zawatton/nelisp ~/nelisp
 cd ~/nelisp
-git checkout v1.0.1
+git checkout v1.2.0
 make standalone-reader
 make standalone-reader-test
 #+end_src
 
-For release artifacts, v1.0.1 tarballs use:
+The v1.2.0 GitHub release has no attached binary assets (checked
+2026-09-11). Build from source. Historical v1.0.1 tarballs used these names:
 
 #+begin_src text
 anvil-v1.0.1-linux-x86_64.tar.gz
@@ -535,7 +564,7 @@ anvil-v1.0.1-windows-x86_64.tar.gz
 #+end_src
 
 =main= is the development branch.  Use it when hacking on NeLisp
-itself; pin =v1.0.1= when you want reproducible runtime behavior.
+itself; pin a release tag when you want reproducible runtime behavior.
 
 *** Prerequisites by platform
 
@@ -600,24 +629,15 @@ make standalone-reader-test
 Build outputs land under =target/=, with
 =target/nelisp= as the primary no-Emacs runtime.
 
-*** Pre-built standalone tarball — single-binary deployment
+*** Historical standalone tarball deployment
 
-For users who want NeLisp without cloning / building.  No Emacs install
-required at runtime:
+These are the earlier v1.0.1 packaging conventions. Neither the v1.0.1
+nor the v1.2.0 GitHub release lists installer assets (checked 2026-09-11);
+use the source build above. The runbook below also covers locally built
+tarballs.
 
-#+begin_src shell
-curl -fsSL https://github.com/zawatton/nelisp/releases/latest/download/install-v3.sh | bash
-#+end_src
-
-On Windows PowerShell:
-
-#+begin_src powershell
-iwr https://github.com/zawatton/nelisp/releases/latest/download/install-v3.ps1 -OutFile install-v3.ps1
-.\install-v3.ps1
-#+end_src
-
-Default install root: =$HOME/.local/share/anvil-v1.0.1/=.
-On Windows the default root is under =$env:LOCALAPPDATA\anvil-v1.0.1=.
+Historical default install root: =$HOME/.local/share/anvil-v1.0.1/=.
+On Windows it was under =$env:LOCALAPPDATA\anvil-v1.0.1=.
 (The =anvil-= prefix is historical packaging — the tarball *is* the
 NeLisp runtime; use =bin/nelisp= or =bin/nelisp.exe= directly.)
 Full install-to-run runbook for Linux x86_64, macOS arm64, and Windows x86_64

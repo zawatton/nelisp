@@ -646,7 +646,15 @@ ns-collision-divergent 127
 # compatibility `func-arity' definition is in the mixed, deliberately global
 # `scripts/nelisp-stdlib-prelude.el' (namespace inference returns nil), and
 # is not the new finding.
-ns-prefix-violation 947
+# 947 -> 949 on 2026-09-11 (Doc 191 strict source reload):
+# `nelisp-artifact-reload-source-file' is the public REPL entry point and
+# intentionally keeps the package's single-dash public naming convention.
+# `nelisp-artifact-build-id' is the public manifest provenance context used
+# by ordinary artifact compilation as well as the reload API's dynamic
+# binding; changing it to a private name would make build identity unavailable
+# to existing compile callers.  Both are deliberate public-surface findings
+# in the same family as the already-baselined artifact command/API names.
+ns-prefix-violation 949
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
