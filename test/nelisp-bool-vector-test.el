@@ -20,11 +20,13 @@
   "Checkout root containing target/nelisp.")
 
 (defun nelisp-bool-vector-test--binary ()
-  (let ((binary (expand-file-name "target/nelisp"
-                                  nelisp-bool-vector-test--root)))
-    (unless (file-executable-p binary)
-      (ert-skip "target/nelisp is not built; standalone-reader-test owns it"))
-    binary))
+  (let* ((name (if (eq system-type 'windows-nt)
+                   "target/nelisp.exe"
+                 "target/nelisp"))
+         (binary (expand-file-name name nelisp-bool-vector-test--root)))
+    (or (and (file-executable-p binary) binary)
+        (ert-skip (format "%s is not built; standalone-reader-test owns it"
+                         name)))))
 
 (defun nelisp-bool-vector-test--eval (source)
   (with-temp-buffer
@@ -43,11 +45,11 @@
   (should (equal
            "(t 9 t nil nil t t t t)"
            (nelisp-bool-vector-test--eval
-            "(let ((v #&9\"\\001\\002\")) (list (bool-vector-p v) (length v) (aref v 0) (aref v 1) (aref v 8) (progn (aset v 8 t) (aref v 8)) (arrayp v) (sequencep v) (equal v #&9\"\\001\\003\")))"))))
+            "(let ((v #&9\"\\001\\002\")) (list (bool-vector-p v) (length v) (aref v 0) (aref v 1) (aref v 8) (progn (aset v 8 t) (aref v 8)) (arrayp v) (sequencep v) (equal v #&9\"\\001\\003\")))")))
   (should (equal
            "(#&7\"w\" t nil #&7\"w\")"
             (nelisp-bool-vector-test--eval
-            "(let ((v (make-bool-vector 7 t))) (list v (aref v 0) (progn (aset v 3 nil) (aref v 3)) v))")))
+            "(let ((v (make-bool-vector 7 t))) (list v (aref v 0) (progn (aset v 3 nil) (aref v 3)) v))"))))
 
 (ert-deftest nelisp-bool-vector/variadic-and-mutability ()
   (should (equal "(4 nil t t t)"
@@ -85,7 +87,7 @@
   (should (string-match-p
            "args-out-of-range"
            (nelisp-bool-vector-test--eval
-            "(condition-case e (aref #&7\"x\" 7) (error e))"))))
+            "(condition-case e (aref #&7\"x\" 7) (error e))")))
   (should (equal "(wrong-type-argument wholenump -1)"
                  (nelisp-bool-vector-test--eval
                   "(condition-case e (make-bool-vector -1 nil) (error e))")))
@@ -97,7 +99,7 @@
              "wrong-type-argument"
              (nelisp-bool-vector-test--eval
               (format "(condition-case e %s (error e) )"
-                      case)))))
+                      case))))))
 
 (ert-deftest nelisp-bool-vector/malformed-literals-error ()
   (dolist (source '("#&7 \"x\"" "#& 7\"x\"" "#&+7\"x\""
