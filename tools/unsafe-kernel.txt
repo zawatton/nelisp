@@ -42,7 +42,7 @@ scripts/nelisp-macos-build.el
 # memory.  Lower it whenever the ratchet notice says you can.
 kernel-files 96
 
-# `pinned-kernel-touch NAME' pins the 95 kernel files that actually touch
+# `pinned-kernel-touch NAME' pins the 96 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
 # generated from the clean tree.  Added 2026-08-21 alongside the same fix
 # to ns-gate and parity-coverage: `kernel-files' above is a COUNT, and a
