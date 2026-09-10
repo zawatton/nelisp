@@ -40,7 +40,7 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 95
+kernel-files 96
 
 # `pinned-kernel-touch NAME' pins the 95 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
@@ -86,6 +86,10 @@ pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-char-table.el
 pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-mut-str-push.el
 pinned-kernel-touch lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el
 pinned-kernel-touch lisp/nelisp-cc-evalport-str-to-float.el
+# Doc 115 §115.6's frame lookup hot path reads tagged words from the live
+# frames-record/table/vector/cons owners and returns a borrowed Cell slot;
+# it performs no allocation and retains no raw pointer beyond that call.
+pinned-kernel-touch lisp/nelisp-cc-frame-stack-find.el
 pinned-kernel-touch lisp/nelisp-cc-frame-ensure-capacity.el
 pinned-kernel-touch lisp/nelisp-cc-frame-push.el
 pinned-kernel-touch lisp/nelisp-cc-jit-access-aref-bool-vector-inner.el
