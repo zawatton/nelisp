@@ -265,19 +265,12 @@ TRAILING-NEWLINE controls whether the last line ends with a newline."
 (defun org-table--replace-region (start end text)
   "Replace buffer text from START to END with TEXT."
   (goto-char start)
-  ;; The `nelisp-ec-*' functions remain fbound under host Emacs because the
-  ;; buffer substrate installs its advice for standalone callers.  They own
-  ;; only the standalone buffer model, though: selecting them in a real host
-  ;; buffer loses the host buffer and signals `nelisp-ec-no-current-buffer'.
-  ;; Ask the buffer bridge which substrate owns the current process instead of
-  ;; using function availability as a driver test.
-  (if (and (fboundp 'emacs-buffer-builtins--standalone-p)
-           (emacs-buffer-builtins--standalone-p))
-      (progn
-        (nelisp-ec-delete-region start end)
-        (nelisp-ec-insert text))
-    (delete-region start end)
-    (insert text)))
+  ;; `delete-region' and `insert' are the public buffer bridge.  The bridge
+  ;; installs their standalone implementations when running under NeLisp and
+  ;; leaves the host primitives in place under Emacs, so this operation must
+  ;; not inspect or call the private `nelisp-ec-*' substrate directly.
+  (delete-region start end)
+  (insert text))
 
 (defun org-table--replace-table (info rows target-row target-column)
   "Replace the current table described by INFO with ROWS.
