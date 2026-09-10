@@ -26,6 +26,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-cc-jit-arith)
+(require 'nelisp-cc-frame-stack-find)
 (require 'nelisp-aot-compiler)
 
 ;; ---- §T.0 helpers ----
@@ -4592,6 +4593,52 @@ when the matching `pop r10\' recovers that same literal."
       (ignore-errors (delete-file probe-path))
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
+
+(ert-deftest nelisp-aot-compiler/frame-stack-find-uses-borrowed-words ()
+  "Pin the frame lookup's allocation-free direct-word boundary.
+
+The frame/table/cons owners keep their boxed children live for the duration
+of this private borrow.  The lookup may therefore read tagged words directly;
+falling back to the generic slot/cons pointer helpers would materialise an
+immediate bucket-count or terminal Nil view on every lookup.  The test also
+compiles the complete object so the source contract covers the actual AOT
+grammar rather than comments alone."
+  (cl-labels
+      ((contains-p (tree symbol)
+         (cond
+          ((eq tree symbol) t)
+          ((consp tree)
+           (or (contains-p (car tree) symbol)
+               (contains-p (cdr tree) symbol)))))
+       (defun-form (name)
+         (cl-find-if
+          (lambda (form)
+            (and (consp form)
+                 (eq (car form) 'defun)
+                 (eq (cadr form) name)))
+          (cdr nelisp-cc-frame-stack-find--source))))
+    (let ((walk (defun-form 'nelisp_frame_stack_find_walk_bucket))
+          (in-frame (defun-form 'nelisp_frame_stack_find_in_frame))
+          (object (make-temp-file "nelisp-frame-stack-find-" nil ".o")))
+      (unwind-protect
+          (progn
+            (should walk)
+            (should in-frame)
+            (dolist (form (list walk in-frame))
+              (dolist (forbidden
+                       '(record-slot-ref-ptr vector-ref-ptr
+                         nl_cons_car_ptr nl_cons_cdr_ptr alloc-bytes
+                         nl_gc_in_arena))
+                (should-not (contains-p form forbidden))))
+            (should (contains-p in-frame 'ptr-read-u64))
+            (should (contains-p in-frame 'sar))
+            (should (contains-p in-frame 'nelisp_frame_stack_find_word_tag_p))
+            (should (contains-p walk 'str-eq))
+            (nelisp-aot-compile-to-object
+             nelisp-cc-frame-stack-find--source object
+             :arch 'x86_64 :format 'elf)
+            (should (> (file-attribute-size (file-attributes object)) 0)))
+        (ignore-errors (delete-file object))))))
 
 (provide 'nelisp-aot-compiler-test)
 

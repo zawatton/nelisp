@@ -30,16 +30,19 @@
 ;;
 ;; Per-frame lookup is structurally identical to
 ;; `mirror_lookup_entry' (= §111.E #1) — same `(KEY . VALUE)' bucket
-;; cons-pair shape — except one extra `record-slot-ref-ptr' hop
-;; through the outer `nelisp-lexframe' record to reach the inner
-;; `fast-hash-table'.  We reuse the same bucket-walk primitive shape;
-;; here it walks the frame's bucket and returns `(+ box-ptr 32)' on
-;; hit (= the cdr slot of the (NAME . CELL) inner pair, holding the
-;; `Sexp::Cell').
+;; cons-pair shape — except one extra record hop through the outer
+;; `nelisp-lexframe' record to reach the inner `fast-hash-table'.  The
+;; hot private path reads the known 8-byte tagged words in those records,
+;; vectors, and cons boxes directly.  It returns the value word itself on a
+;; hit, which is the live Sexp::Cell box required by the frame lookup ABI.
+;; It never materialises an immediate Nil/count view and never allocates or
+;; runs GC while borrowing the owner-held Cell pointer.
 ;;
-;; ABI deps satisfied:
-;;   §111.B  `record-slot-ref-ptr'  — frame.slots[0] → ht_rec, ht_rec.slots[0/1].
-;;   §111.C  `vector-ref-ptr'       — backing[i], buckets[idx].
+;; ABI deps satisfied by the complete object (the outer stack walk still
+;; uses the generic pointer accessors; the private frame lookup uses the
+;; direct word reads below):
+;;   §111.B  `record-slot-ref-ptr'  — outer frames-record / backing walk.
+;;   §111.C  `vector-ref-ptr'       — outer backing walk.
 ;;   §101.B  `cons-walk' primitives — `sexp-payload-ptr' + `cons-cdr-raw-from-box'.
 ;;   §101.C  `str-eq'               — byte-payload equality on bucket KEY.
 ;;   §100.A  `extern-call'          — `nelisp_fnv1a' (Doc 115 §115.7
@@ -51,63 +54,126 @@
 
 (defconst nelisp-cc-frame-stack-find--source
   '(seq
+    (defun nelisp_frame_stack_find_word_tag_p (word tag)
+      ;; WORD is a tagged container slot value.  Immediate words cannot be
+      ;; heap objects; only a pointer with the expected Sexp tag is read.
+      ;; The caller has obtained WORD from a live frame/table/cons owner, so
+      ;; the tag check is enough here.  In particular, do not call
+      ;; `nl_gc_in_arena' for every edge: that predicate walks the chunk list
+      ;; and would put the old allocator cost back into this hot path.
+      (if (= word 0)
+          0
+        (if (= (logand word 1) 1)
+          0
+          (if (= (sexp-tag word) tag) 1 0))))
+
+    (defun nelisp_frame_stack_find_word_name_p (word)
+      ;; `str-eq' reads a string-shaped Sexp inline.  Reject malformed or
+      ;; immediate bucket keys before it can read their payload.
+      (if (= word 0)
+          0
+        (if (= (logand word 1) 1)
+          0
+          (if (= (sexp-tag word) 4)
+              1
+            (if (= (sexp-tag word) 5)
+                1
+              (if (= (sexp-tag word) 14) 1 0))))))
+
     (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
-      ;; Tail-recursive walk over one bucket's cons chain.
-      ;; Identical in shape to `nelisp_mirror_walk_bucket' (§111.E #1);
-      ;; duplicated here so this object stands alone for AOT
-      ;; compile (= each helper module owns its tight loop).
-      ;;
-      ;; Doc 147 Phase 3 — the NlConsBox car / cdr are now 8-byte tagged
-      ;; WORDS (not 32B inline Sexps), so the walk carries the bucket
-      ;; cell's 32B-slot Sexp VIEW and uses the materialising accessors
-      ;; `nl_cons_car_ptr' / `nl_cons_cdr_ptr':
-      ;;
-      ;;   cell-ptr: `*const Sexp' — a Cons (tag 7) bucket cell whose CAR
-      ;;             is the inner (KEY . CELL) PAIR, CDR is the next
-      ;;             bucket cell (or Nil).  0 / non-Cons = end-of-bucket.
-      ;;   name-ptr: `*const Sexp' for the Sexp::Symbol / Sexp::Str key.
-      ;;
-      ;; Returns: i64.  On hit, the `*const Sexp' 32B-slot view of the
-      ;; matching CELL (= the PAIR's cdr).  On miss, 0.
-      ;;
-      ;;   pair-view = nl_cons_car_ptr(cell)   // the (KEY . CELL) PAIR
-      ;;   key-view  = nl_cons_car_ptr(pair)   // KEY -> str-eq vs name
-      ;;   hit       -> nl_cons_cdr_ptr(pair)  // CELL view (live box)
-      ;;   miss      -> recurse nl_cons_cdr_ptr(cell)  // next bucket cell
+      ;; Walk bucket and pair NlConsBox words directly.  No accessor
+      ;; materialises a temporary Sexp view, and the owner of the frame/table
+      ;; keeps the returned Cell slot live for this borrow-only call.
       (if (= cell-ptr 0)
           0
-        (if (= (sexp-tag cell-ptr) 7)
-            (let* ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
-              (if (= (str-eq (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
-                  (extern-call nl_cons_cdr_ptr pair-view)
-                (nelisp_frame_stack_find_walk_bucket
-                 (extern-call nl_cons_cdr_ptr cell-ptr)
-                 name-ptr)))
-          0)))
+        (if (= (nelisp_frame_stack_find_word_tag_p cell-ptr 7) 0)
+            0
+          (let* ((cell-box (ptr-read-u64 cell-ptr 8)))
+            (let* ((pair-word (ptr-read-u64 cell-box 0))
+                   (next-word (ptr-read-u64 cell-box 8)))
+              (if (= (nelisp_frame_stack_find_word_tag_p pair-word 7) 0)
+                  0
+                (let* ((pair-box (ptr-read-u64 pair-word 8)))
+                  (let* ((key-word (ptr-read-u64 pair-box 0))
+                         (value-word (ptr-read-u64 pair-box 8)))
+                    (if (= (nelisp_frame_stack_find_word_name_p key-word) 0)
+                        0
+                      (if (= (str-eq key-word name-ptr) 1)
+                          (if (= (nelisp_frame_stack_find_word_tag_p
+                                  value-word 11)
+                                 1)
+                              value-word
+                            0)
+                        (if (= (logand next-word 1) 1)
+                            0
+                          (nelisp_frame_stack_find_walk_bucket
+                           next-word name-ptr))))))))))))
+
     (defun nelisp_frame_stack_find_in_frame (frame-ptr name-ptr)
-      ;; Look up NAME in a single frame's hash table.  frame-ptr
-      ;; points at the outer `Sexp::Record(`nelisp-lexframe')'; its
-      ;; slot 0 is the `Sexp::Record(`fast-hash-table')' whose
-      ;; slots[0]/[1] are bucket-count/buckets-vector.
-      ;;
-      ;; Returns: i64 — `*const Sexp' of the matching CELL slot, or
-      ;; 0 on miss.
-      ;;
-      ;; Bucket-count is assumed power-of-2 (= `nl_frame_push'
-      ;; allocates 16 buckets, no resize), so the index mask is the
-      ;; cheap `(h & (count - 1))' fast path matching the Rust impl.
-      ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW
-      ;; (`vector-ref-ptr'), NOT the raw `sexp-payload-ptr' box — the
-      ;; walker reads car/cdr WORDS via the materialising accessors.
-      (nelisp_frame_stack_find_walk_bucket
-       (vector-ref-ptr
-        (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 1)
-        (logand
-         (extern-call nelisp_fnv1a name-ptr)
-         (- (sexp-int-unwrap
-             (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 0))
-            1)))
-       name-ptr))
+      ;; Read one known lexframe/table layout through tagged words.  This
+      ;; preserves the ABI and borrowed Cell-pointer result while avoiding
+      ;; record/vector/immediate materialisation in this hot lookup only.
+      ;; Record data pointers are at NlRecord+32.  NlVector's pinned runtime
+      ;; layout has data at +8 and length at +16; both are read after the
+      ;; Sexp tags have been checked.  bucket-count is Int((n << 2) | 1),
+      ;; positive, power of two, and bounded by bucket length.  The private
+      ;; caller's frame/table words are owned by the live frames record, so no
+      ;; GC can move them in this allocation-free routine.
+      (if (= (nelisp_frame_stack_find_word_name_p name-ptr) 0)
+          0
+        (if (= (nelisp_frame_stack_find_word_tag_p frame-ptr 12) 0)
+            0
+          (let* ((frame-box (ptr-read-u64 frame-ptr 8)))
+            (if (/= (sexp-tag frame-box) 4)
+                0
+              (let* ((frame-data (ptr-read-u64 frame-box 32)))
+                (let* ((ht-word (ptr-read-u64 frame-data 0)))
+                  (if (= (nelisp_frame_stack_find_word_tag_p ht-word 12) 0)
+                      0
+                    (let* ((ht-box (ptr-read-u64 ht-word 8)))
+                      (if (/= (sexp-tag ht-box) 4)
+                          0
+                        (let* ((ht-data (ptr-read-u64 ht-box 32)))
+                          (let* ((count-word (ptr-read-u64 ht-data 0))
+                                 (buckets-word (ptr-read-u64 ht-data 8)))
+                            (if (/= (logand count-word 3) 1)
+                                0
+                              (let* ((bucket-count (sar count-word 2)))
+                                (if (<= bucket-count 0)
+                                    0
+                                  ;; The mask below is sound only for
+                                  ;; the power-of-two tables produced by
+                                  ;; frame-push.  Reject malformed counts
+                                  ;; instead of indexing an unrelated bucket.
+                                  (if (/= (logand bucket-count
+                                                  (- bucket-count 1))
+                                          0)
+                                      0
+                                    (if (= (nelisp_frame_stack_find_word_tag_p
+                                            buckets-word 8)
+                                           0)
+                                        0
+                                      (let* ((buckets-box
+                                              (ptr-read-u64 buckets-word 8)))
+                                        (let* ((buckets-data
+                                                (ptr-read-u64 buckets-box 8))
+                                               (bucket-len
+                                                (ptr-read-u64 buckets-box 16)))
+                                          (if (> bucket-count bucket-len)
+                                              0
+                                            (let* ((idx
+                                                    (logand
+                                                     (extern-call
+                                                      nelisp_fnv1a name-ptr)
+                                                     (- bucket-count 1)))
+                                                   (head-word
+                                                    (ptr-read-u64
+                                                     (+ buckets-data (* idx 8))
+                                                     0)))
+                                              (if (= (logand head-word 1) 1)
+                                                  0
+                                                (nelisp_frame_stack_find_walk_bucket
+                                                 head-word name-ptr)))))))))))))))))))))))
     (defun nelisp_frame_stack_find_descend (backing-ptr i name-ptr)
       ;; Innermost-first walk: descend from i = depth-1 down to 0.
       ;; Returns the first non-zero hit's cell pointer, or 0 if every
