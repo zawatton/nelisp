@@ -136,7 +136,15 @@ Not run on `require' (keeps a bare load from touching shared symbols)."
     "The keymap for Calc.")
   (defalias 'calc #'emacs-calc)
   (defalias 'calc-mode #'emacs-calc-mode)
-  (defalias 'calc-eval #'emacs-calc-eval))
+  (defalias 'calc-eval #'emacs-calc-eval)
+  ;; Names used by Calc consumers and by evil-collection's Calc map.  The
+  ;; minimal calculator owns these scalar operations, so the compatibility
+  ;; bindings remain useful even though the full GNU Calc object system is not
+  ;; part of this layer.
+  (defalias 'calc-plus #'emacs-calc-plus)
+  (defalias 'calc-minus #'emacs-calc-minus)
+  (defalias 'calc-times #'emacs-calc-times)
+  (defalias 'calc-divide #'emacs-calc-divide))
 
 (provide 'emacs-calc)
 
