@@ -632,7 +632,7 @@ storage — not an arena reservation."
    ;; and is zero-filled at process start.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
-                       64 192 64)))
+                       64 192 64 40)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -701,6 +701,14 @@ storage — not an arena reservation."
                                  (if (eq nelisp-standalone--target 'windows-x86_64)
                                      8 0)
                                  64 192)
+                              :section 'bss :bind 'global :type 'object)
+          ;; Collector-only external mapping: base, capacity, active, count,
+          ;; cached entry.  Never serialized in an arena image.
+          (nelisp-link-symbol "nl_gc_start_index"
+                              (+ 57616 4194304 96 176 64 56 40 1040
+                                 (if (eq nelisp-standalone--target 'windows-x86_64)
+                                     8 0)
+                                 64 192 64)
                               :section 'bss :bind 'global :type 'object)))
    nil))
 
@@ -2437,6 +2445,125 @@ arm64 Linux has no legacy x86 numbering)."
     (defun nl_gc_is_boot (addr)
       (if (< addr (ptr-read-u64 (ptr-read-u64 268436160 0) 0)) 0
         (if (< addr (ptr-read-u64 268435664 0)) 1 0)))
+    ;; Exact starts, indexed only while the stopped heap is being marked.
+    ;; Entries are {data-start, end, bitmap}; one bit per eight arena bytes.
+    ;; Build from the header chain, never from a candidate's preceding word.
+    ;; Disabling before sweep/compaction means allocation, splitting, reset,
+    ;; unmap and image restore need no index maintenance or persisted pointers.
+    (defun nl_gc_index_end ()
+      (ptr-write-u64 (data-addr nl_gc_start_index) 16 0))
+    (defun nl_gc_index_bytes (start end)
+      (nl_align_up (/ (+ (- end start) 63) 64) 8))
+    (defun nl_gc_index_fill (entry)
+      (let* ((start (ptr-read-u64 entry 0))
+             (end (ptr-read-u64 entry 8))
+             (bits (ptr-read-u64 entry 16))
+             (hdr start)
+             (ok 1))
+        (seq
+         (while (and (= ok 1) (< hdr end))
+           (let ((bt (nl_hdr_bt hdr)))
+             (if (= (nl_gc_bt_ok hdr bt end) 0)
+                 (setq ok 0)
+               (let* ((slot (/ (- (+ hdr 8) start) 8))
+                      (byte (+ bits (/ slot 8))))
+                 (seq
+                  (ptr-write-u8 byte 0
+                                (logior (ptr-read-u8 byte 0)
+                                        (shl 1 (logand slot 7))))
+                  (setq hdr (+ hdr bt)))))))
+         ok)))
+    (defun nl_gc_index_prepare ()
+      (let* ((ctx (data-addr nl_gc_start_index))
+             (chunk (ptr-read-u64 268436160 0))
+             (count 0) (need 0) (ok 1))
+        (seq
+         (nl_gc_index_end)
+         (ptr-write-u64 ctx 32 0)
+         (while (> chunk 0)
+           (seq
+            (setq need (+ need (+ 24 (nl_gc_index_bytes
+                                      (ptr-read-u64 chunk 24)
+                                      (nl_gc_chunk_end chunk)))))
+            (setq count (+ count 1))
+            (setq chunk (ptr-read-u64 chunk 48))))
+         (setq need (nl_align_up (+ need 8) 65536))
+         (if (< (ptr-read-u64 ctx 8) need)
+             (let ((mapping (nl_os_alloc_chunk need)))
+               (if (= mapping 0) (setq ok 0)
+                 ;; Windows reserves the range but commits only its first page.
+                 ;; Keep the previous mapping intact if committing fails.
+                 (if (= (nl_os_commit_range mapping 0 need) 0)
+                     (seq (nl_os_free_chunk mapping need) (setq ok 0))
+                   (seq
+                    (if (= (ptr-read-u64 ctx 0) 0) 0
+                      (nl_os_free_chunk (ptr-read-u64 ctx 0)
+                                        (ptr-read-u64 ctx 8)))
+                    (ptr-write-u64 ctx 0 mapping)
+                    (ptr-write-u64 ctx 8 need)))))
+           0)
+         (if (= ok 0) 0
+           (let* ((entry (ptr-read-u64 ctx 0))
+                  (bits (+ entry (* count 24))))
+             (seq
+              (nl_alloc_zero_fill entry 0 need)
+              (ptr-write-u64 ctx 24 count)
+              (setq chunk (ptr-read-u64 268436160 0))
+              (while (and (= ok 1) (> chunk 0))
+                (seq
+                 (ptr-write-u64 entry 0 (ptr-read-u64 chunk 24))
+                 (ptr-write-u64 entry 8 (nl_gc_chunk_end chunk))
+                 (ptr-write-u64 entry 16 bits)
+                 (setq ok (nl_gc_index_fill entry))
+                 (setq bits (+ bits (nl_gc_index_bytes
+                                    (ptr-read-u64 entry 0)
+                                    (ptr-read-u64 entry 8))))
+                 (setq entry (+ entry 24))
+                 (setq chunk (ptr-read-u64 chunk 48))))
+              (ptr-write-u64 ctx 16 ok)
+              ok))))))
+    (defun nl_gc_index_contains (entry obj)
+      (if (= entry 0) 0
+        (if (< obj (+ (ptr-read-u64 entry 0) 8)) 0
+          (if (< obj (ptr-read-u64 entry 8)) 1 0))))
+    (defun nl_gc_index_test (entry obj)
+      (let ((slot (/ (- obj (ptr-read-u64 entry 0)) 8)))
+        (if (= (logand (ptr-read-u8 (ptr-read-u64 entry 16) (/ slot 8))
+                      (shl 1 (logand slot 7))) 0) 0 1)))
+    (defun nl_gc_object_start_p (obj)
+      (if (= (logand obj 7) 0)
+          (let ((ctx (data-addr nl_gc_start_index)))
+            (if (= (ptr-read-u64 ctx 16) 1)
+                (let* ((entry (ptr-read-u64 ctx 32))
+                       (i 0) (found 0))
+                  (if (= (nl_gc_index_contains entry obj) 1)
+                      (nl_gc_index_test entry obj)
+                    (seq
+                     (setq entry (ptr-read-u64 ctx 0))
+                     (while (and (= found 0) (< i (ptr-read-u64 ctx 24)))
+                       (if (= (nl_gc_index_contains entry obj) 1)
+                           (seq (setq found 1) (ptr-write-u64 ctx 32 entry))
+                         (seq (setq entry (+ entry 24)) (setq i (+ i 1)))))
+                     (if (= found 1) (nl_gc_index_test entry obj) 0))))
+              ;; Direct diagnostic callers outside a collection use an exact
+              ;; header walk, without retaining an index across heap mutation.
+              (let* ((chunk (ptr-read-u64 268436160 0)) (found 0))
+                (seq
+                 (while (and (= found 0) (> chunk 0))
+                   (if (= (nl_gc_chunk_contains chunk obj) 0)
+                       (setq chunk (ptr-read-u64 chunk 48))
+                     (let* ((hdr (ptr-read-u64 chunk 24))
+                            (end (nl_gc_chunk_end chunk)) (ok 1))
+                       (seq
+                        (while (and (= ok 1) (< hdr obj))
+                          (let ((bt (nl_hdr_bt hdr)))
+                            (if (= (nl_gc_bt_ok hdr bt end) 0) (setq ok 0)
+                              (if (= (+ hdr 8) obj)
+                                  (seq (setq found 1) (setq ok 0))
+                                (setq hdr (+ hdr bt))))))
+                        (setq chunk 0)))))
+                 found))))
+        0))
     ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     (defun nl_gc_mark_block (obj)
@@ -2448,7 +2575,7 @@ arm64 Linux has no legacy x86 numbering)."
       ;; (upgrade 4->1, return 1 = "recurse").  mark 1/2/3/5 -> already
       ;; recursed/free -> skip (return 0).  This DECOUPLES "alive" (pinned) from
       ;; "recursed" and closes the lexframe-child collection bug (Doc 155).
-      (if (= (nl_gc_in_arena obj) 0) 0
+      (if (= (nl_gc_object_start_p obj) 0) 0
         (let* ((hdr (- obj 8))
                (raw (ptr-read-u64 hdr 0)))
           ;; A precise Sexp edge must name the block's object start.  The
@@ -3201,7 +3328,7 @@ arm64 Linux has no legacy x86 numbering)."
     ;;       pointer failed (b) by itself; this restores that rejection.
     (defun nl_gc_conserv_owner (w)
       (let ((hdr (- w 8)))
-        (if (= (nl_gc_in_arena hdr) 0) 0
+        (if (= (nl_gc_object_start_p w) 0) 0
           (if (= (nl_gc_is_boot hdr) 1) 0
             (if (= (sar (ptr-read-u64 hdr 0) 32) 0)
                 (let ((bt (nl_hdr_bt hdr)))
@@ -4258,7 +4385,7 @@ arm64 Linux has no legacy x86 numbering)."
     ;; evaluator ctx frames above provide the intended precise surface; the
     ;; native-stack scan remains as belt-and-braces for call-adjacent temporaries
     ;; that are not yet expressible in the 7-slot frame.
-    (defun nl_gc_collect_recorded_mark_sweep (mode)
+    (defun nl_gc_collect_recorded_mark_sweep_body (mode)
       (nl_seq2 (nl_aref_cache_clear)
        (nl_seq2 (nl_gc_mark_recorded_contexts)
        (nl_seq2 (nl_gc_mark_rootstack)
@@ -4272,7 +4399,12 @@ arm64 Linux has no legacy x86 numbering)."
            ;; cache value with no other root would be freed between iterations.
            (nl_seq2 (nl_mxcache_mark_all)
             (nl_seq2 (nl_fvcache_mark_all)
-                     (nl_gc_sweep))))))))))
+                     (nl_seq2 (nl_gc_index_end) (nl_gc_sweep)))))))))))
+    (defun nl_gc_collect_recorded_mark_sweep (mode)
+      ;; On allocation failure or a broken header chain, leave the heap
+      ;; untouched: sweeping a partially indexed/marked heap is unsafe.
+      (if (= (nl_gc_index_prepare) 0) 0
+        (nl_gc_collect_recorded_mark_sweep_body mode)))
     (defun nl_gc_collect_recorded_parked (mode)
       (if (= (nl_thread_park_request_begin) 1)
           (nl_seq2
@@ -4331,16 +4463,23 @@ arm64 Linux has no legacy x86 numbering)."
                        (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                                       (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1))))))
         0))
+    (defun nl_gc_index_mark_roots (ctx result out pool src cursor bsym)
+      (if (= (nl_gc_index_prepare) 0) 0
+        (seq
+         (if (= (ptr-read-u64 268435592 0) 1) 0
+           (nl_gc_mark_roots ctx result out pool src cursor bsym))
+         (nl_gc_index_end)
+         1)))
     (defun nl_gc_collect_parked_mark_sweep
         (ctx result out pool src cursor bsym)
       (seq
        (nl_aref_cache_clear)
-       (if (= (ptr-read-u64 268435592 0) 1) 0   ; DEBUG: skip-mark when slot==1
-         (nl_gc_mark_roots ctx result out pool src cursor bsym))
        ;; Never compact under a live parallel section: worker-held raw arena
        ;; pointers have no forwarding path.  Empty-chunk reclaim remains
        ;; blocked independently by its existing ctx+24/active double guard.
-       (nl_gc_sweep)))
+       (if (= (nl_gc_index_mark_roots ctx result out pool src cursor bsym) 1)
+           (nl_gc_sweep)
+         0)))
     (defun nl_gc_collect_while_workers_parked
         (ctx result out pool src cursor bsym)
       (if (= (nl_thread_park_request_begin) 1)
@@ -4364,14 +4503,14 @@ arm64 Linux has no legacy x86 numbering)."
           (if (= (ptr-read-u64 (data-addr nl_gc_loop_ctx) 24) 1) 0
             (seq
              (nl_aref_cache_clear)
-             (if (= (ptr-read-u64 268435592 0) 1) 0 ; DEBUG: skip-mark
-               (nl_gc_mark_roots ctx result out pool src cursor bsym))
-             (if (= (ptr-read-u64 268435608 0) 1) ; Doc146 §5: compact
+             (if (= (nl_gc_index_mark_roots ctx result out pool src cursor bsym) 0)
+                 0
+               (if (= (ptr-read-u64 268435608 0) 1) ; Doc146 §5: compact
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
                           (nl_gc_debt_rearm))
-               (nl_gc_sweep)))))))
+                 (nl_gc_sweep))))))))
     ;; Form-boundary collections run after a top-level form has finished
     ;; evaluating.  The RAW reader parse pool allocation itself must remain
     ;; pinned for the next parse, but stale/unused slots from prior forms are

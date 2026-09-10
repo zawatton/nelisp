@@ -1336,10 +1336,10 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
         ;; Tier 3a/Tier 3b append 64 bytes of bounded section + park state. Tier 3b
         ;; appends the 1040-byte registry (16-byte header + 64*16 entries),
         ;; then the 64-byte large-free-list head array after the 192-byte
-        ;; aref cache table.
+        ;; aref cache table, then 40 bytes for the collector-only start index.
         (should (equal (+ 57616 4194304 96 176 64 56 40 1040
                           (if (eq target 'windows-x86_64) 8 0)
-                          64 192 64)
+                          64 192 64 40)
                        (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()

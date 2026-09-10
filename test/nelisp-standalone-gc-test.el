@@ -43,6 +43,9 @@ standalone reader's arena.")
       ;; arena membership and the header accessors with tiny test doubles.
       (defun nl_seq2 (_a b) b)
       (defun nl_gc_in_arena (_obj) 1)
+      ;; This older probe isolates the raw high-half guard.  The exact-start
+      ;; tests below exercise the production membership implementation.
+      (defun nl_gc_object_start_p (_obj) 1)
       (defun nl_hdr_mark (hdr)
         (logand (ptr-read-u64 hdr 0) 7))
       (defun nl_hdr_set_mark (hdr m)
@@ -247,6 +250,155 @@ same native probe returns a nonzero status there."
           (should (= (call-process path nil nil nil) 0)))
       (when (file-exists-p path)
         (delete-file path)))))
+
+(defun nelisp-standalone-gc-test--exact-source ()
+  "Exercise production indexing and marking against a mutable synthetic heap."
+  (let* ((base #x32000000) (extra #x32040000)
+         (ctx (+ base 4096)) (descriptor #x10000300)
+         (forms
+          (mapcar
+           (lambda (name)
+             (or (nelisp-standalone-gc-test--find-defun
+                  nelisp-standalone--gc-source name)
+                 (nelisp-standalone-gc-test--find-defun
+                  nelisp-standalone--arena-source name)
+                 (error "Missing production helper %s" name)))
+           '(nl_align_up nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
+             nl_alloc_zero_fill nl_gc_bt_ok nl_gc_chunk_cursor nl_gc_chunk_end
+             nl_gc_chunk_contains nl_gc_in_arena nl_gc_is_boot nl_gc_index_end
+             nl_gc_index_bytes nl_gc_index_fill nl_gc_index_prepare
+             nl_gc_index_contains nl_gc_index_test nl_gc_object_start_p
+             nl_gc_mark_block nl_gc_conserv_owner))))
+    (cl-subst
+     ctx '(data-addr nl_gc_start_index)
+     `(seq
+       (defun nl_seq2 (_a b) b)
+       ;; Only the OS boundary is doubled; all header walks and bit tests
+       ;; below are the actual compiled production bodies.
+       (defun nl_os_alloc_chunk (_size)
+         (if (= (ptr-read-u64 ,ctx 48) 1) 0 ,(+ base 8192)))
+       (defun nl_os_commit_range (_base _old _new)
+         (if (= (ptr-read-u64 ,ctx 48) 2) 0 1))
+       (defun nl_os_free_chunk (mapping _size)
+         (seq (ptr-write-u64 ,ctx 56 mapping) 1))
+       ,@forms
+       (defun gc_probe_commit_failure ()
+         (seq
+          (ptr-write-u64 ,ctx 48 2)
+          ;; A different old mapping must survive a failed replacement.
+          (ptr-write-u64 ,ctx 0 ,(+ base 12288))
+          (ptr-write-u64 ,ctx 8 1024)
+          (ptr-write-u64 ,ctx 56 0)
+          (if (or (= (nl_gc_index_prepare) 1)
+                  (= (ptr-read-u64 ,ctx 16) 1)
+                  (not (= (ptr-read-u64 ,ctx 0) ,(+ base 12288)))
+                  (not (= (ptr-read-u64 ,ctx 8) 1024))
+                  (not (= (ptr-read-u64 ,ctx 56) ,(+ base 8192)))) 20 0)))
+
+       (defun gc_probe_seed ()
+         (seq
+          (ptr-write-u64 268436160 0 ,descriptor)
+          (ptr-write-u64 268436168 0 ,descriptor)
+          (ptr-write-u64 268435456 0 96)
+          (ptr-write-u64 ,descriptor 0 ,base)
+          (ptr-write-u64 ,descriptor 24 ,base)
+          (ptr-write-u64 ,base 0 40)
+          (ptr-write-u64 ,base 8 4)
+          ;; A plausible size followed by another plausible size is still
+          ;; payload, not a header; the old two-level owner check accepts it.
+          (ptr-write-u64 ,base 16 32)
+          (ptr-write-u64 ,base 40 56)
+          (ptr-write-u64 ,base 48 32)
+          (ptr-write-u64 ,base 80 ,(ash #x5afec4ec 32))))
+       (defun gc_probe_edges ()
+         (if (and
+              (= (nl_gc_mark_block ,(+ base 16)) 0)
+              (= (ptr-read-u64 ,base 8) 4)
+              (= (nl_gc_mark_block ,(+ base 24)) 0)
+              (= (nl_gc_conserv_owner ,(+ base 24)) 0)
+              (= (ptr-read-u64 ,base 16) 32)
+              (= (nl_gc_mark_block ,(+ base 88)) 0)
+              (= (ptr-read-u64 ,base 80) ,(ash #x5afec4ec 32))
+              (= (nl_gc_mark_block ,base) 0)
+              (= (nl_gc_mark_block ,(+ base 9)) 0)
+              (= (nl_gc_mark_block ,(+ base 96)) 0)
+              (= (nl_gc_mark_block ,(+ base 8)) 1)
+              (= (ptr-read-u64 ,base 0) 41)
+              (= (nl_gc_mark_block ,(+ base 8)) 0)
+              (= (nl_gc_conserv_owner ,(+ base 48)) 1)
+              (= (ptr-read-u64 ,base 40) 60)
+              (= (nl_gc_mark_block ,(+ base 48)) 1)
+              (= (ptr-read-u64 ,base 40) 57)) 1 0))
+       (defun gc_probe_run ()
+         (seq
+          (syscall-direct 9 #x10000000 4096 3 50 -1 0)
+          (syscall-direct 9 ,base 131072 3 50 -1 0)
+          (gc_probe_seed)
+          (if (= (gc_probe_edges) 0) 11
+            (seq
+             (gc_probe_seed)
+             (if (= (nl_gc_index_prepare) 0) 12
+               (if (= (gc_probe_edges) 0) 13
+                 (seq
+                  ;; Coalesce/reset/restore change the header chain only
+                  ;; outside the mark phase.  Rebuild must erase old starts.
+                  (nl_gc_index_end)
+                  (ptr-write-u64 ,base 0 96)
+                  (if (or (= (nl_gc_object_start_p ,(+ base 48)) 1)
+                          (= (nl_gc_index_prepare) 0)
+                          (= (nl_gc_object_start_p ,(+ base 48)) 1)) 14
+                    (seq
+                     (nl_gc_index_end)
+                     (ptr-write-u64 268435456 0 0)
+                     (if (or (= (nl_gc_index_prepare) 0)
+                             (= (nl_gc_object_start_p ,(+ base 8)) 1)) 15
+                       (seq
+                        (nl_gc_index_end)
+                        (gc_probe_seed)
+                        ;; Add a growth chunk, then unmap and unlink it.
+                        (syscall-direct 9 ,extra 4096 3 50 -1 0)
+                        (ptr-write-u64 ,extra 0 40)
+                        (ptr-write-u64 ,(+ descriptor 128) 0 ,extra)
+                        (ptr-write-u64 ,(+ descriptor 128) 16 40)
+                        (ptr-write-u64 ,(+ descriptor 128) 24 ,extra)
+                        (ptr-write-u64 ,descriptor 48 ,(+ descriptor 128))
+                        (if (or (= (nl_gc_index_prepare) 0)
+                                (= (nl_gc_mark_block ,(+ extra 8)) 0)) 16
+                          (seq
+                           (nl_gc_index_end)
+                           (ptr-write-u64 ,descriptor 48 0)
+                           (syscall-direct 11 ,extra 4096 0 0 0 0)
+                           (if (or (= (nl_gc_index_prepare) 0)
+                                   (= (nl_gc_object_start_p ,(+ extra 8)) 1)) 17
+                             (seq
+                              (nl_gc_index_end)
+                              ;; Malformed headers and OS allocation failure
+                              ;; must not publish a partial active index.
+                              (ptr-write-u64 ,base 0 0)
+                              (if (or (= (nl_gc_index_prepare) 1)
+                                      (= (ptr-read-u64 ,ctx 16) 1)) 18
+                                (seq
+                                 (gc_probe_seed)
+                                 (ptr-write-u64 ,ctx 8 0)
+                                 (ptr-write-u64 ,ctx 48 1)
+                                 (if (or (= (nl_gc_index_prepare) 1)
+                                         (= (ptr-read-u64 ,ctx 16) 1)) 19
+                                   (gc_probe_commit_failure)))))))))))))))))))
+       (exit (gc_probe_run)))
+     :test #'equal)))
+
+(ert-deftest nelisp-standalone-gc-exact-start-rejects-interiors-and-rebuilds ()
+  "Interior payload is immutable; genuine starts survive index rebuilds."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-gc-exact-start-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--exact-source) path)
+          (should (= (call-process path nil nil nil) 0)))
+      (delete-file path))))
 
 (provide 'nelisp-standalone-gc-test)
 

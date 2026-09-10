@@ -79,7 +79,12 @@
       (should (nelisp-t95-test--member '(> nb 2147483647) form)))))
 
 (ert-deftest nelisp-t95-string-index-cache-clears-at-every-reuse-boundary ()
-  (dolist (spec `((nl_gc_collect_recorded_mark_sweep
+  ;; The preparation wrapper delegates only after a complete start index exists.
+  (should (nelisp-t95-test--member
+           '(nl_gc_collect_recorded_mark_sweep_body mode)
+           (nelisp-t95-test--defun 'nl_gc_collect_recorded_mark_sweep
+                                   nelisp-standalone--gc-source)))
+  (dolist (spec `((nl_gc_collect_recorded_mark_sweep_body
                    ,nelisp-standalone--gc-source)
                   (nl_gc_collect_parked_mark_sweep
                    ,nelisp-standalone--gc-source)
