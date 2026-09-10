@@ -20,11 +20,39 @@
 (require 'ert)
 (require 'emacs-parity-misc)
 
+(defconst emacs-parity-misc-test--source
+  (expand-file-name
+   "../src/emacs-parity-misc.el"
+   (file-name-directory (or load-file-name buffer-file-name))))
+
 (defvar emacs-parity-misc-test--var-1 1)
 (defvar emacs-parity-misc-test--var-2 1)
 
 (defun emacs-parity-misc-test--w1 (&rest _args) nil)
 (defun emacs-parity-misc-test--w2 (&rest _args) nil)
+
+(ert-deftest emacs-parity-misc-test/repairs-reversed-pcomplete-alias ()
+  "Repair Org's unresolved compatibility alias before adding the old alias."
+  (let ((new-cell (and (fboundp 'pcomplete-uniquify-list)
+                       (symbol-function 'pcomplete-uniquify-list)))
+        (old-cell (and (fboundp 'pcomplete-uniqify-list)
+                       (symbol-function 'pcomplete-uniqify-list))))
+    (unwind-protect
+        (progn
+          (fmakunbound 'pcomplete-uniquify-list)
+          (fmakunbound 'pcomplete-uniqify-list)
+          (defalias 'pcomplete-uniquify-list 'pcomplete-uniqify-list)
+          (load emacs-parity-misc-test--source nil t)
+          (should (equal '("a" "b")
+                         (pcomplete-uniquify-list '("b" "a" "a"))))
+          (should (equal '("a" "b")
+                         (pcomplete-uniqify-list '("b" "a" "a")))))
+      (if new-cell
+          (fset 'pcomplete-uniquify-list new-cell)
+        (fmakunbound 'pcomplete-uniquify-list))
+      (if old-cell
+          (fset 'pcomplete-uniqify-list old-cell)
+        (fmakunbound 'pcomplete-uniqify-list)))))
 
 (ert-deftest emacs-parity-misc-test/watchers-callable-and-arity ()
   (should (fboundp 'add-variable-watcher))
