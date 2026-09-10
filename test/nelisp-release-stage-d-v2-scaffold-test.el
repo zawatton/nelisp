@@ -104,7 +104,7 @@ run the ERT suite without a shell available for the wrapper)."
       (insert-file-contents yml)
       (let ((src (buffer-string)))
         ;; Header
-        (should (string-match-p "^name: stage-d-v2.0 release pipeline"
+        (should (string-match-p "^name: NeLisp semver release pipeline"
                                 src))
         ;; 3 platform matrix legs (= linux-x86_64 / macos-arm64 / linux-arm64)
         (should (string-match-p "build-linux-x86_64:" src))

@@ -1313,7 +1313,11 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                                 (cons "nl_thread_parallel_ctx" (+ 57888 4194304))
                                 (cons "nl_alloc_diag" (+ 57952 4194304))
                                 (cons "nl_gc_reclaim_scratch" (+ 58008 4194304))
-                                (cons "nl_thread_registry" (+ 58048 4194304))))
+                                (cons "nl_thread_registry" (+ 58048 4194304))
+                                (cons "nl_freelist_large_bins"
+                                      (+ 57616 4194304 96 176 64 56 40 1040
+                                         (if (eq target 'windows-x86_64) 8 0)
+                                         64 192))))
           (let ((sym (cdr (assoc (car expected) by-name))))
             (should sym)
             (should (equal (cdr expected) (plist-get sym :value)))
@@ -1330,10 +1334,12 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
         ;; Phase 2 item 3 (2026-08-23): +176 more bytes for `nl_bt_snapshot'
         ;; (the bounded backtrace capture buffer) appended after that.  Doc 199
         ;; Tier 3a/Tier 3b append 64 bytes of bounded section + park state. Tier 3b
-        ;; appends the 1040-byte registry (16-byte header + 64*16 entries).
+        ;; appends the 1040-byte registry (16-byte header + 64*16 entries),
+        ;; then the 64-byte large-free-list head array after the 192-byte
+        ;; aref cache table.
         (should (equal (+ 57616 4194304 96 176 64 56 40 1040
                           (if (eq target 'windows-x86_64) 8 0)
-                          64 192)
+                          64 192 64)
                        (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
