@@ -12,7 +12,15 @@
 ;;; Code:
 
 (require 'calc)
-(require 'emacs-tier3-facades)
+(require 'emacs-error)
+
+;; Keep the unsupported condition available without loading the complete Tier 3
+;; facade bundle.  That bundle also provides the `info' feature, which would
+;; prevent vendor `info-look.el' from loading when this small companion is
+;; required early in a test or bootstrap stream.
+(unless (get 'emacs-tier3-facade-unsupported 'error-conditions)
+  (define-error 'emacs-tier3-facade-unsupported
+    "Tier 3 subsystem facade is unsupported"))
 
 ;; GNU Calc creates this map while loading `calc'.  The standalone calculator
 ;; creates it during installation; create it here as well for host facade
@@ -32,7 +40,10 @@
 (defun calc-shift-prefix (&optional _argument)
   "Signal that GNU Calc letter-prefix mode is outside this facade."
   (interactive "P")
-  (emacs-tier3-facades--unsupported 'calc 'calc-shift-prefix))
+  (if (fboundp 'emacs-tier3-facades--unsupported)
+      (emacs-tier3-facades--unsupported 'calc 'calc-shift-prefix)
+    (signal 'emacs-tier3-facade-unsupported
+            '("calc does not implement calc-shift-prefix"))))
 
 (defun calc-init-prefixes ()
   "Install the prefix-independent bindings supported by the facade."
