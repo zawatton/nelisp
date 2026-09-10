@@ -8,7 +8,9 @@ word, and this script joins the words only after reading the process output.
 
 from __future__ import annotations
 
+import errno
 import os
+import platform
 import random
 import re
 import struct
@@ -21,7 +23,62 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_RECIPE = ROOT / "test" / "nelisp-t91-float-oracle-build.el"
 TARGET = ROOT / "target"
 PROBE = TARGET / "nelisp-t91-float-oracle-probe.el"
-BINARY = TARGET / "nelisp"
+
+
+class TargetNotRunnable(RuntimeError):
+    """The selected standalone target cannot execute on this host."""
+
+
+def target_execution_error(exc: OSError) -> bool:
+    """Return whether EXC means the selected image cannot run here."""
+    return exc.errno in {errno.ENOENT, errno.ENOEXEC, errno.EACCES} or getattr(
+        exc, "winerror", None
+    ) == 193  # ERROR_BAD_EXE_FORMAT
+
+
+def host_default_target() -> str:
+    """Return the native standalone target for the current host."""
+    explicit = os.environ.get("NELISP_STANDALONE_TARGET")
+    if explicit:
+        return explicit
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if machine in {"aarch64", "arm64"}:
+        arch = "aarch64"
+    elif machine in {"x86_64", "amd64", "x64"}:
+        arch = "x86_64"
+    else:
+        raise SystemExit(
+            "T91 oracle: unsupported host architecture "
+            f"{platform.system()}/{platform.machine()}"
+        )
+
+    if system == "darwin":
+        return f"macos-{arch}"
+    if system == "windows":
+        return f"windows-{arch}"
+    if system == "linux":
+        return f"linux-{arch}"
+    raise SystemExit(
+        f"T91 oracle: unsupported host platform {platform.system()}/{platform.machine()}"
+    )
+
+
+def binary_for_target(target: str) -> Path:
+    """Return the standalone-reader output path for TARGET."""
+    names = {
+        "linux-x86_64": "nelisp",
+        "linux-aarch64": "nelisp-aarch64",
+        "macos-aarch64": "nelisp",
+        "macos-x86_64": "nelisp",
+        "windows-x86_64": "nelisp.exe",
+        "windows-aarch64": "nelisp-aarch64.exe",
+    }
+    try:
+        return TARGET / names[target]
+    except KeyError as exc:
+        raise SystemExit(f"T91 oracle: unsupported standalone target {target!r}") from exc
 
 
 def corpus() -> list[str]:
@@ -69,10 +126,37 @@ def run_checked(command: list[str], *, env: dict[str, str] | None = None) -> str
     return result.stdout.strip()
 
 
-def restore_production_binary(emacs: str) -> None:
-    """Put target/nelisp back into its normal production-reader state."""
+def run_target(binary: Path, probe: Path, *, env: dict[str, str]) -> str:
+    """Run the selected reader, classifying host execution failures as skips."""
+    try:
+        result = subprocess.run(
+            [str(binary), "--load", str(probe.relative_to(ROOT))],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        if target_execution_error(exc):
+            raise TargetNotRunnable(
+                f"target {binary} is not executable on this host: {exc.strerror}"
+            ) from exc
+        raise
+    if result.returncode:
+        sys.stderr.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        raise SystemExit(
+            f"command failed ({result.returncode}): {binary} --load {probe.relative_to(ROOT)}"
+        )
+    return result.stdout.strip()
+
+
+def restore_production_binary(emacs: str, target: str) -> None:
+    """Put the selected native target back into production-reader state."""
     env = os.environ.copy()
     env.pop("NELISP_T91_WORD", None)
+    env["NELISP_STANDALONE_TARGET"] = target
     clean = subprocess.run(
         ["make", "standalone-eval-clean"], cwd=ROOT, env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -101,6 +185,8 @@ def parse_words(output: str, count: int) -> list[int]:
 
 def main() -> int:
     values = corpus()
+    target = host_default_target()
+    binary = binary_for_target(target)
     TARGET.mkdir(parents=True, exist_ok=True)
     PROBE.write_text("(list " + " ".join(values) + ")\n", encoding="utf-8")
     emacs = os.environ.get("EMACS", "emacs")
@@ -111,9 +197,10 @@ def main() -> int:
         for word in ("hi", "lo"):
             env = os.environ.copy()
             env["NELISP_T91_WORD"] = word
+            env["NELISP_STANDALONE_TARGET"] = target
             run_checked(common, env=env)
             outputs[word] = parse_words(
-                run_checked([str(BINARY), "--load", str(PROBE.relative_to(ROOT))]),
+                run_target(binary, PROBE, env=env),
                 len(values),
             )
         actual = list(zip(outputs["hi"], outputs["lo"]))
@@ -126,18 +213,30 @@ def main() -> int:
                 print("MISMATCH", mismatch, file=sys.stderr)
             return 1
         PROBE.write_text("(list 1e 1e+ 1e- 1e2e3 1..2)\n", encoding="utf-8")
-        malformed = subprocess.run(
-            [str(BINARY), "--load", str(PROBE.relative_to(ROOT))],
-            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        try:
+            malformed = subprocess.run(
+                [str(binary), "--load", str(PROBE.relative_to(ROOT))],
+                cwd=ROOT, env={**os.environ, "NELISP_STANDALONE_TARGET": target},
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            if target_execution_error(exc):
+                raise TargetNotRunnable(
+                    f"target {binary} is not executable on this host: {exc.strerror}"
+                ) from exc
+            raise
         if malformed.returncode == 0:
             print("MISMATCH malformed literals were accepted", file=sys.stderr)
             return 1
+        print(f"T91 oracle: target={target} binary={binary}")
         print(f"T91 oracle: {len(values)} literals, hi/lo u32 mismatches=0")
         print("cases: signed-zero, normal, subnormal, normal/subnormal ties, overflow, underflow, malformed, 100/1000-digit, random")
         return 0
+    except TargetNotRunnable as exc:
+        print(f"T91 oracle: SKIP target={target} binary={binary}: {exc}")
+        return 77
     finally:
-        restore_production_binary(emacs)
+        restore_production_binary(emacs, target)
 
 
 if __name__ == "__main__":

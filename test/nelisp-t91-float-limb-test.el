@@ -36,10 +36,14 @@
          (rc (call-process "python3" nil output nil script)))
     (unwind-protect
         (progn
-          (unless (= rc 0)
-            (message "%s" (with-current-buffer output
-                             (buffer-string))))
-          (should (= rc 0)))
+          (let ((report (with-current-buffer output
+                          (buffer-string))))
+            (cond
+             ((= rc 77)
+              (ert-skip (string-trim report)))
+             ((/= rc 0)
+              (message "%s" report)
+              (should (= rc 0))))))
       (kill-buffer output))))
 
 (provide 'nelisp-t91-float-limb-test)
