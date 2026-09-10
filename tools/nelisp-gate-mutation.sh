@@ -61,6 +61,16 @@ rebuild_checked() {
   make standalone-reader $MUTATION_TARGET_ARG >/dev/null 2>&1
 }
 
+report_harness_log() {
+  local label="$1" log="$2"
+  echo "gate-mutation: $label"
+  if [ -s "$log" ]; then
+    tail -80 "$log"
+  else
+    echo "  (command produced no output)"
+  fi
+}
+
 # Does this row need the binary rebuilt around it?  True when the file it
 # mutates is BAKED INTO the binary at build time, which is most of
 # scripts/ and lisp/: the gates below all carry the conditional
@@ -81,6 +91,15 @@ gate_needs_rebuild() {
   case "$1" in
     emacs-parity) return 0 ;;
     standalone-reader-buffer-smoke) return 0 ;;
+    standalone-reader-bignum-smoke) return 0 ;;
+    standalone-reader-test) return 0 ;;
+    standalone-reader-form-location-smoke) return 0 ;;
+    standalone-reader-frame-stack-pop-desync-smoke) return 0 ;;
+    standalone-reader-socket-smoke) return 0 ;;
+    precise-root-coverage) return 0 ;;
+    standalone-reader-ipv6-socket-smoke) return 0 ;;
+    standalone-reader-ffi-smoke) return 0 ;;
+    standalone-reader-host-parity-smoke) return 0 ;;
     standalone-reader-winpath-smoke) return 0 ;;
     standalone-reader-defvar-alloc-smoke) return 0 ;;
     standalone-reader-fileattrs-smoke) return 0 ;;
@@ -365,17 +384,20 @@ while IFS='|' read -r gate file expr what scope; do
     run_gate "$gate" "$file" "$baseline_before_log"
     baseline_before_rc=$?
     baseline_before_skip=$(grep -E '^GATE-SKIP ' "$baseline_before_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
-    rm -f "$baseline_before_log"
     if [ -n "$baseline_before_skip" ]; then
+      rm -f "$baseline_before_log"
       echo "  $gate: SKIP (clean baseline is not runnable: $baseline_before_skip)"
       skipped=$((skipped+1))
       continue
     fi
     if [ "$baseline_before_rc" -ne 0 ]; then
       echo "  $gate: HARNESS ERROR (clean baseline before mutation failed rc=$baseline_before_rc; timeout is not a mutation verdict)"
+      report_harness_log "clean baseline before mutation output:" "$baseline_before_log"
+      rm -f "$baseline_before_log"
       failed=$((failed+1))
       continue
     fi
+    rm -f "$baseline_before_log"
   fi
   backup="$(mktemp)"
   cp "$file" "$backup" || { echo "gate-mutation: FAIL (cannot back up $file)"; exit 1; }
@@ -459,23 +481,28 @@ while IFS='|' read -r gate file expr what scope; do
     run_gate "$gate" "$file" "$baseline_after_log"
     baseline_after_rc=$?
     baseline_after_skip=$(grep -E '^GATE-SKIP ' "$baseline_after_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
-    rm -f "$baseline_after_log"
     rm -f "$gate_log"
     rm -f "$backup"
     mutation_active_file=""; mutation_active_backup=""
     if [ -n "$baseline_after_skip" ]; then
+      rm -f "$baseline_after_log"
       echo "  $gate: HARNESS ERROR (clean baseline became non-runnable after restore: $baseline_after_skip; source restoration was not a clean PASS)"
       failed=$((failed+1))
     elif [ "$baseline_after_rc" -ne 0 ]; then
       echo "  $gate: HARNESS ERROR (clean baseline after restore failed rc=$baseline_after_rc; source restoration was not a clean PASS)"
+      report_harness_log "clean baseline after mutation output:" "$baseline_after_log"
+      rm -f "$baseline_after_log"
       failed=$((failed+1))
     elif [ "$gate_rc" -eq 0 ]; then
+      rm -f "$baseline_after_log"
       echo "  $gate: STAYED GREEN with a real defect in front of it (clean baseline before/after PASS; source restored byte-for-byte; $what)"
       failed=$((failed+1))
     elif [ "$gate_rc" -eq 124 ]; then
+      rm -f "$baseline_after_log"
       echo "  $gate: went red by timeout (rc=124 after ${nl_num_mutation_timeout}s; clean baseline before/after PASS; source restored byte-for-byte; $what)"
       passed=$((passed+1))
     else
+      rm -f "$baseline_after_log"
       echo "  $gate: went red (rc=$gate_rc; clean baseline before/after PASS; source restored byte-for-byte; $what)"
       passed=$((passed+1))
     fi
@@ -509,7 +536,13 @@ while IFS='|' read -r gate file expr what scope; do
     # dressed as "could not be asked".
     cp "$backup" "$file"
     if gate_needs_rebuild "$gate" "$file"; then
-      rebuild_checked || true
+      if ! rebuild_checked; then
+        echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt before the clean skip check)"
+        failed=$((failed+1))
+        rm -f "$backup"
+        mutation_active_file=""; mutation_active_backup=""
+        continue
+      fi
     fi
     baseline_log="$(mktemp)"
     run_gate "$gate" "$file" "$baseline_log"
@@ -534,7 +567,12 @@ while IFS='|' read -r gate file expr what scope; do
   fi
   cp "$backup" "$file"; rm -f "$backup"
   if gate_needs_rebuild "$gate" "$file"; then
-    rebuild_checked || true
+    if ! rebuild_checked; then
+      echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt; later rows would otherwise test the injected artifact)"
+      failed=$((failed+1))
+      mutation_active_file=""; mutation_active_backup=""
+      continue
+    fi
   fi
 done <<< "$rows"
 checked=$((passed+failed))
