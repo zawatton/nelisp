@@ -90,6 +90,10 @@ report_harness_log() {
 gate_needs_rebuild() {
   case "$1" in
     emacs-parity) return 0 ;;
+    # Drives target/nelisp and its Makefile target only builds when the
+    # binary is ABSENT, so without this the row would test the OLD binary
+    # and report STAYED GREEN against an injection that never reached it.
+    nelisp-sexp-clone-bind-smoke) return 0 ;;
     standalone-reader-buffer-smoke) return 0 ;;
     standalone-reader-bignum-smoke) return 0 ;;
     standalone-reader-test) return 0 ;;

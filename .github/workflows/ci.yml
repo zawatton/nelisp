@@ -317,6 +317,13 @@ jobs:
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lisp-byte-compile -- make lisp-byte-compile
 
+      # Arena boundary-reclaim zeroing.  Linux x86_64 only: it drives the
+      # standalone reader binary, which is where the defect lived.
+      - name: "Arena reclaim zeroing / sexp-clone bind smoke (tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke -- make nelisp-sexp-clone-bind-smoke
+
       # Every Linux gate report this lane produced.  The `verify' job
       # collects these together with the mutation and subsystem jobs' and
       # checks the union against gates.expected; on its own, no single job

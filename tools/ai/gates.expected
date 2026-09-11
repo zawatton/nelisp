@@ -1530,3 +1530,16 @@ native-unit-repl-smoke
 # cover for a later regression.  A nonzero exit that produced no attributable
 # diagnostic is a finding, not a pass.
 lisp-byte-compile
+# nelisp-sexp-clone-bind-smoke (2026-09-12): the arena's boundary reclaim
+# rewound a bump cursor back over a span the reader had already written to
+# and handed it out again WITHOUT zeroing it -- unlike the free-list reuse
+# path, which zero-fills.  A constructor that assumes fresh OS-zeroed memory
+# then inherited a stale Sexp::Cons with a garbage payload pointer and
+# SIGSEGVed on the first clone.  It stopped the real-user-init audit dead at
+# form 4 and was present in every standalone binary built that day, so it was
+# not a recent regression -- nothing had ever driven a shape that hit it.
+# The smoke pins the mechanism, not just the one input: it sweeps the
+# variable-name length across the 8-vs-9-byte boundary that decides whether
+# the reclaimed span gets reused, with both the `\='x' reader shorthand and
+# `(quote x)'.  Ten checks; against the pre-fix binary, four of them fail.
+nelisp-sexp-clone-bind-smoke
