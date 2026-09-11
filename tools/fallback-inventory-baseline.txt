@@ -128,7 +128,7 @@
 # failure after the result has already been determined.  Each shape is pinned
 # below so a different handler cannot replace it while the aggregate stays
 # unchanged.
-silent-fallback        80
+silent-fallback        85
 # 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
 # REPL-GC snapshot fields use deliberate structured rejection/unavailable
 # results when an optional raw export is absent.  They do not silently claim
@@ -234,7 +234,7 @@ ignore-errors   83
 # a nil condition variable because their fallback values do not inspect the
 # caught condition.  They are pinned individually below; this raises the
 # ceiling only for these reviewed additions.
-bare-handler    53
+bare-handler    54
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
 # a flag has to be turned off by whoever turned it on, and forgetting is
@@ -504,6 +504,20 @@ pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--debug	591cf6
 pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--arena	ac4b22237723 1
 pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--time-usec	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--time-usec	a81df0a3d5d3 1
+# DEV source errors become explicit failed diagnostic envelopes; parse EOF
+# inside a form is retained, not discarded.  The source contract tests expose
+# these failures and malformed UTF-8/input bounds to callers.
+pinned-site silent-fallback	nelisp-dev-source.el	defun nelisp-dev-source-dispatch	9f6e82ade353 1
+pinned-site silent-fallback	nelisp-dev-source.el	defun nelisp-dev-source--parse	b5b528b5b981 1
+# Missing optional runtime status makes GC identity unavailable and comparisons
+# inconclusive.  The adapter tests reject absent generation and host collection.
+pinned-site silent-fallback	nelisp-dev-gc.el	defun nelisp-dev-gc--reload-status	e3f2648caa3a 1
+pinned-site bare-handler	nelisp-dev-gc.el	defun nelisp-dev-gc--reload-status	badfebe558e0 1
+# Session I/O failures are retained in rejected/invalid results, then emitted
+# through the DEV envelope.  Tampered and missing manifest tests require those
+# failures, rather than treating failed validation as a successful replay.
+pinned-site silent-fallback	nelisp-dev-session.el	defun nelisp-dev-session--read-json	7b2f0d49c0b8 1
+pinned-site silent-fallback	nelisp-dev-session.el	defun nelisp-dev-session--export	2435b4ec8114 1
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-runtime-reload-source-file	e1da7eae609e 1
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-runtime-reload-status	94758ae03ed8 1
 pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-artifact	f321ffc9faf6 1

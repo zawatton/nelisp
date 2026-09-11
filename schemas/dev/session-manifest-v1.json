@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nelisp/dev/session-manifest-v1",
+  "$comment": "Initial explicit-record manifest. Native runtime/dependency qualification and replay execution remain separate.",
+  "type": "object",
+  "required": ["schema_version", "session_id", "recipe", "recipe_sha256", "recipe_bytes", "sources", "limitations", "record_count", "environment"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "session_id": {"type": "string", "minLength": 1},
+    "recipe": {"type": "string", "minLength": 1},
+    "recipe_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "recipe_bytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+    "record_count": {"type": "integer", "minimum": 0, "maximum": 128},
+    "sources": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/source"}},
+    "limitations": {"type": "array", "items": {"type": "string", "maxLength": 1024}},
+    "environment": {
+      "type": "object", "required": ["system_type", "emacs_version"],
+      "properties": {
+        "system_type": {"type": "string", "maxLength": 1024},
+        "emacs_version": {"type": "string", "maxLength": 1024}
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object", "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 16777216}
+      }
+    }
+  },
+  "additionalProperties": true
+}

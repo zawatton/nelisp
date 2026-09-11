@@ -55,6 +55,13 @@ must check their assertions, completion marker, and unexpected stderr.
 
 ## Inner loop
 
+For machine-readable queries, see
+[the development protocol guide](docs/development-protocol.md). Start with
+`tools/ai/nelisp-ai.sh dev --request examples/repl-development/capabilities.json --json`.
+Use the returned capabilities and limitations; a host source-query context is
+not an attachment to a standalone session, and reading an old gate report does
+not run a test.
+
 ```sh
 tools/ai/nelisp-ai.sh check                              # before every commit
 tools/ai/nelisp-ai.sh test-one test/nelisp-FOO-test.el   # seconds

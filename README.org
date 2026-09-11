@@ -41,6 +41,11 @@ It works as the starting point for a new human or AI session; prior chat
 history and private workspace configuration are not required. AI agents
 should also read [[file:AI.md][AI.md]] for the repository workflow and verification rules.
 
+For structured tool responses, start with the
+[[file:docs/development-protocol.md][development protocol guide]]. Its JSON CLI and host Emacs dispatcher share
+one backend, identify unavailable operations, and keep incomplete verification
+visible. This source-query interface complements the persistent REPL workflow.
+
 Allocator and GC development has a separate opt-in Linux x86_64 build:
 
 #+begin_src sh

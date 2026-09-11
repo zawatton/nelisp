@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "operation": "describe",
+  "request_id": "describe-demo",
+  "arguments": {
+    "path": "examples/repl-development/broken.el",
+    "symbol": "nelisp-repl-demo-step"
+  },
+  "target": "host-emacs",
+  "session_id": null,
+  "limits": {}
+}

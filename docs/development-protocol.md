@@ -1,0 +1,133 @@
+# Structured development queries
+
+Start with [the persistent REPL guide](repl-development.md) to reproduce an
+error, replace a function, and retry explicitly. The development protocol adds
+a common structured request/response interface for tools and host Emacs Lisp.
+It is an initial implementation of the
+[AI development platform specification](ai-development-platform-spec.md), not
+a declaration that every acceptance row in that specification is complete.
+
+## First query from a new checkout
+
+Run from the repository root, with host Emacs available:
+
+```sh
+tools/ai/nelisp-ai.sh dev --request examples/repl-development/capabilities.json --json
+```
+
+This needs no standalone build and starts no application. Standard output is
+one UTF-8 JSON response; tool errors remain on standard error. `capabilities`
+lists the registered operations and their limitations. A discovered adapter
+does not establish that a native target has passed its acceptance tests.
+
+Inspect the example definition, its exact reader span and raw source hash:
+
+```sh
+tools/ai/nelisp-ai.sh dev --request examples/repl-development/describe.json --json
+```
+
+`describe` and `impact` take `arguments.symbol` plus `arguments.path`, or an
+explicit `arguments.files` array (at most 32 files). `check` takes the same file
+selection without a symbol. Files must be inside the project, UTF-8, and at most
+2 MiB each. There is no implicit crawl through generated build directories.
+`check` currently validates reader syntax; valid syntax still returns
+`inconclusive` because arity and dependency closure have not been established.
+`impact` reports syntactic call candidates, excluding quoted data; unknown
+macros and dynamic dispatch prevent a complete runtime-call claim.
+
+To send the same request from an Emacs Lisp REPL:
+
+```elisp
+(add-to-list 'load-path (expand-file-name "lisp"))
+(require 'nelisp-dev)
+(let ((json-null :null) (json-false :false))
+  (nelisp-dev-dispatch
+   (nelisp-dev-protocol-string-keys
+    (json-read-file "examples/repl-development/capabilities.json"))
+   (nelisp-dev-context default-directory)))
+```
+
+The context above is a **host Emacs source-query context**. It does not attach
+to the standalone process used by the development launcher. A CLI request
+naming an unconnected live session returns `unsupported`, code
+`NELISP-DEV-LIVE-SESSION-REQUIRED`, and exit 4. Continue live repairs through
+the established REPL APIs; no automatic retry, replay or publication occurs.
+
+## Read a response
+
+| Status | Exit | Meaning |
+| --- | --- | --- |
+| `ok` | 0 | The requested, explicitly limited operation completed |
+| `failed` | 1 | A diagnostic or operation failure was observed |
+| Invalid request | 2 | A failed envelope identifies an invalid request or unknown operation |
+| `inconclusive` | 3 | Missing evidence, incomplete analysis or an output limit prevents a clean verdict |
+| `unsupported` | 4 | The current context lacks the target, session or adapter |
+| `cancelled` | 5 | An adapter reported cancellation |
+
+Read `diagnostics`, `limitations` and `identity` together. Unknown identities
+remain JSON `null`. `test` currently **inspects** `target/gates/NAME.json` via
+`arguments.gate`; it does not execute the gate. Its `data.executed` is false.
+A failing report remains failed; a historical passing report is inconclusive
+because the legacy format cannot verify its source/artifact binding. To execute
+a test, use the existing `test-one`, `test`, or `gate` commands in
+[AI.md](../AI.md), then inspect their evidence.
+
+Requests use string-key objects, arrays, JSON null and booleans. The Elisp
+representation uses string-key alists, vectors, `:null` and `:false`.
+`limits.bytes` accepts 1024–16384; `limits.page_size` accepts 1–200 (default 50).
+Diagnostic pages preserve full summary counts and expose `returned`, `omitted`
+and `next_cursor`. Repeat the same request with `limits.cursor` to continue.
+Changing source identity, diagnostic input, session or the live clear epoch
+invalidates a cursor. Cursors expire after 15 minutes. An individual response
+that cannot fit is reported as inconclusive; no serialized JSON is cut midway.
+
+## Current boundaries
+
+### Export and validate explicit host REPL records
+
+In the host Emacs Lisp REPL used above, keep one context and register only
+the setup operations you intend to export:
+
+```elisp
+(setq dev-context (nelisp-dev-session-context default-directory))
+(nelisp-repl-session-record '(setq demo-state 7))
+(nelisp-dev-dispatch
+ '(("schema_version" . "1") ("operation" . "session.export")
+   ("request_id" . "export-demo")
+   ("arguments" ("recipe" . "target/dev-session/demo.el")
+                ("manifest" . "target/dev-session/demo.json"))
+   ("target" . "host-emacs") ("session_id" . :null) ("limits"))
+ dev-context)
+```
+
+The context identifies this host process; it cannot export another process's
+records. The recipe and JSON manifest contain explicit registered forms and
+loaded-file hashes. To validate later, request `session.validate` with
+`arguments.manifest` set to the JSON manifest path, using the CLI or dispatcher.
+Paths are relative to the manifest, and Unicode paths are supported. Validation
+checks required fields, file sizes and SHA-256 hashes without loading any code.
+It does not establish native runtime, build-option or dependency compatibility.
+`session.replay` remains unsupported in this adapter. Validation never starts
+replay automatically; the existing native REPL recipe workflow remains in the
+[REPL guide](repl-development.md).
+
+### Remaining acceptance work
+
+The source adapter is a nonexecuting, bounded analysis path. It must report
+unknown dynamic calls and macro behavior rather than treating parsing as a
+proof that the program is correct. Source coordinates describe definitions or
+diagnostics, not a guaranteed native failing instruction.
+
+The native reload/replay plan state machine, cross-process transport, hash-bound
+editing and comparative development-efficiency study remain separate acceptance
+work. Existing failure capture, code identity, GC inspection and explicit replay
+are documented in the REPL guide. Do not infer their unified protocol support
+from the availability of those legacy APIs.
+
+Focused checks for protocol changes:
+
+```sh
+tools/ai/nelisp-ai.sh test-one test/nelisp-dev-protocol-test.el
+tools/ai/nelisp-ai.sh test-one test/nelisp-dev-source-test.el
+python3 test/nelisp-dev-cli-test.py
+```

@@ -658,7 +658,12 @@ ns-collision-divergent 127
 # REPL session/code/GC modules and their smoke/test entry points add public
 # `nelisp-*' definitions.  These are intentional new public APIs; the
 # namespace gate remains count-only for this established surface.
-ns-prefix-violation 959
+# DEV public entry points intentionally use a single hyphen while their modules
+# contain a majority of private helpers: context/dispatch, CLI main, source
+# dispatch, GC dispatch/clear, and session dispatch plus six version/limit
+# constants, plus the host process session context constructor.  Fourteen
+# named public APIs/constants, no new collision.
+ns-prefix-violation 973
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
@@ -792,7 +797,9 @@ ns-prefix-violation 959
 # checks AOT entry parameters.  The ABI/REPL adapters also reuse native-load
 # hashing and symbol resolution.  These explicit compiler/loader boundaries
 # remain part of the conceded private-escape inventory debt.
-ns-private-escape 742
+# The session adapter freezes the existing replay registry and binds it while
+# calling the legacy exporter; it does not maintain a second replay store.
+ns-private-escape 743
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent

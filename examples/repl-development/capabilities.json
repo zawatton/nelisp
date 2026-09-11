@@ -1,0 +1,9 @@
+{
+  "schema_version": "1",
+  "operation": "capabilities",
+  "request_id": "first-session",
+  "arguments": {},
+  "target": "host-emacs",
+  "session_id": null,
+  "limits": {"bytes": 16384, "page_size": 50}
+}

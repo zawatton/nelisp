@@ -27,7 +27,7 @@
 # one, and it should go to 0 once someone measures whether that file needs
 # the host library or only its name.
 
-hard-host-require 1
+hard-host-require 4
 
 # `pinned-host-require FEATURE FILE' pins the hard requires above by
 # identity.  Added 2026-08-21, same reason as the other 2026-08-21 pins: a
@@ -35,3 +35,8 @@ hard-host-require 1
 # require, net still 1.  Losing a pin is still green; a hard require that is
 # neither pinned nor already counted fails and names it.
 pinned-host-require filenotify nelisp-file-notify.el
+# The initial DEV CLI/source-query frontend is explicitly host Emacs only.
+# JSON encoding/parsing is required; native capabilities stay unverified.
+pinned-host-require json nelisp-dev-protocol.el
+pinned-host-require json nelisp-dev.el
+pinned-host-require json nelisp-dev-session.el

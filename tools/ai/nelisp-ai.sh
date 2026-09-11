@@ -100,6 +100,7 @@ usage: tools/ai/nelisp-ai.sh <command> [args]
   gate NAME -- CMD    run CMD and report it, reading its GATE-COUNT line
   probe EXPR          evaluate EXPR in the standalone runtime, output to files
   build-probe [-- CMD] build, then probe -- and refuse to probe if the build failed
+  dev --request FILE --json  dispatch a v0.2 development protocol request
   doctor              print the toolchain and binary identity of this checkout
   gates-clean         delete every gate report (they are per-machine)
 
@@ -801,6 +802,21 @@ cmd_doctor() {
         "$(ls "$GATE_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')"
 }
 
+cmd_dev() {
+    [ "$#" -eq 3 ] && [ "${1:-}" = "--request" ] || { printf 'dev requires --request FILE --json\n' >&2; exit 2; }
+    request=$2
+    [ "${3:-}" = "--json" ] || { printf 'dev requires --json\n' >&2; exit 2; }
+    [ -r "$request" ] || { printf 'request is not readable: %s\n' "$request" >&2; exit 2; }
+    NELISP_DEV_REQUEST_FILE=$(cd "$(dirname "$request")" && pwd)/$(basename "$request")
+    export NELISP_DEV_REQUEST_FILE
+    set +e
+    "$EMACS" --batch -Q -L lisp -L src -L test -L scripts \
+        --load scripts/nelisp-dev-cli.el --eval '(nelisp-dev-cli-main)'
+    code=$?
+    set -e
+    return "$code"
+}
+
 cmd_gates_clean() {
     rm -f "$GATE_DIR"/*.json
     printf 'cleared %s\n' "$GATE_DIR"
@@ -830,6 +846,7 @@ case "$command" in
     probe)          cmd_probe "$@" ;;
     repl)            cmd_repl "$@" ;;
     build-probe)    cmd_build_probe "$@" ;;
+    dev)            cmd_dev "$@" ;;
     doctor)         cmd_doctor ;;
     gates-clean)    cmd_gates_clean ;;
     *)              printf 'unknown command: %s\n\n' "$command" >&2; cmd_help >&2; exit 2 ;;
