@@ -736,6 +736,145 @@ A dispatch arm nothing installs is dead code that still links."
         (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
 
+(ert-deftest nelisp-standalone-target-macos-procargs-env-is-bounded ()
+  "Darwin procargs parsing preserves empty argv and installs child envp.
+
+The native fixture is represented by the generated forms: the bounded NUL
+walker is the parser used by both argv and environment paths, and the driver
+must leave the established envp ABI slot untouched after the Darwin init
+function fills it.  This catches the old skip-all-NULs/empty-environment
+implementation before a cross-host binary is available."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (cl-labels
+        ((tree-member-p
+          (needle tree)
+          (cond
+           ((equal needle tree) t)
+           ((consp tree)
+            (or (tree-member-p needle (car tree))
+                (tree-member-p needle (cdr tree))))))
+         (defun-form
+          (name forms)
+          (cl-find-if (lambda (form)
+                        (and (consp form) (eq (car form) 'defun)
+                             (eq (cadr form) name)))
+                      forms)))
+      (let* ((forms (nelisp-standalone--reader-os-source-forms))
+             (nul (defun-form 'nl_darwin_procargs_nul forms))
+             (env-walk (defun-form 'nl_darwin_procargs_env_walk forms))
+             (argv-end (defun-form 'nl_darwin_procargs_argv_end forms))
+             (fill (defun-form 'nl_darwin_procargs_fill forms))
+             (env-init (defun-form 'nl_os_environ_init forms))
+             (argv-init (defun-form 'nl_os_argv_init forms))
+             (driver (nelisp-standalone--reader-driver-source)))
+        (should nul)
+        (should env-walk)
+        (should argv-end)
+        (should fill)
+        (should env-init)
+        (should argv-init)
+        ;; Every byte access in the synthetic-buffer fixture is preceded by
+        ;; its length check; both consumers use the same bounded helper.
+        (should (tree-member-p
+                 '(while (and (= done 0) (< i limit))
+                    (if (= (ptr-read-u8 ptr i) 0)
+                        (setq done 1)
+                      (setq i (+ i 1))))
+                 nul))
+        (should (tree-member-p
+                 '(while (and (< i limit) (= (ptr-read-u8 ptr i) 0))
+                    (setq i (+ i 1)))
+                 (defun-form 'nl_darwin_procargs_skip_padding forms)))
+        (should (tree-member-p
+                 '(while (and (< i end) (< found 0))
+                    (if (= (ptr-read-u8 ptr i) 61)
+                        (setq found i)
+                      (setq i (+ i 1))))
+                 (defun-form 'nl_darwin_procargs_env_eq forms)))
+        (should (equal (caddr argv-end) '(ptr off limit argc i)))
+        (should (equal (caddr fill) '(argc buf off limit i argv)))
+        (should (tree-member-p
+                 '(nl_darwin_procargs_skip_padding
+                   buf (+ path-end 1) limit)
+                 argv-init))
+        (should (tree-member-p
+                 '(nl_alloc_str (+ buf off) (- eqpos off) name_sx)
+                 env-walk))
+        (should (tree-member-p
+                 '(ptr-write-u64 268435600 0 0)
+                 env-init))
+        (should (tree-member-p
+                 '(ptr-write-u64 268435600 0 envp)
+                 env-init))
+        ;; The old Linux-shaped write would overwrite the envp generated
+        ;; above with an offset into the synthetic argv vector.
+        (should-not
+         (tree-member-p
+          '(ptr-write-u64 268435600 0
+                          (if (= sp0 0)
+                              0
+                            (+ sp0 (* (+ argc 2) 8))))
+          driver))
+        ;; Truncation is an explicit fallback in both startup paths.
+        (should (tree-member-p
+                 '(or (< rc 0) (< limit 4) (> limit 65536))
+                 argv-init))
+        (should (tree-member-p '(>= argc (- limit off0)) argv-init))
+        (should (tree-member-p '(>= argv-end limit) argv-init))
+        (should (tree-member-p '(>= path-end limit) argv-init))
+        ;; Execute the generated bounded readers against a synthetic
+        ;; KERN_PROCARGS2 byte buffer as a host fixture.  This uses the actual
+        ;; generated function bodies (only ptr-read-u8 is adapted to a String),
+        ;; so padding, an empty middle argv, valid PATH/EMPTY values, a
+        ;; malformed entry, and truncation all exercise the same offsets that
+        ;; the native target will use.
+        (let* ((make-fn
+                (lambda (form)
+                  (eval (list 'lambda (nth 2 form) (nth 3 form)))))
+               (nul-fn (funcall make-fn nul))
+               (padding-fn
+                (funcall make-fn
+                         (defun-form 'nl_darwin_procargs_skip_padding forms)))
+               (argv-end-fn (funcall make-fn argv-end))
+               (eq-fn (funcall make-fn
+                               (defun-form 'nl_darwin_procargs_env_eq forms)))
+               (fixture
+                (concat "exec" "\0\0\0" "arg0" "\0" "" "\0"
+                        "arg2" "\0" "PATH=/x" "\0" "EMPTY=" "\0"
+                        "NOEQ" "\0" "\0"))
+               (limit (length fixture)))
+          (cl-letf (((symbol-function 'ptr-read-u8)
+                     (lambda (ptr off) (aref ptr off)))
+                    ((symbol-function 'nl_darwin_procargs_nul)
+                     nul-fn)
+                    ((symbol-function 'nl_darwin_procargs_argv_end)
+                     argv-end-fn))
+            (let* ((path-end (funcall nul-fn fixture 4 limit))
+                   (argv-off (funcall padding-fn fixture (+ path-end 1)
+                                      limit))
+                   (env-off (funcall argv-end-fn fixture argv-off limit 3 0))
+                   (path-eq (funcall eq-fn fixture env-off
+                                     (funcall nul-fn fixture env-off limit))))
+              (should (= path-end 4))
+              (should (= argv-off 7))
+              (should (equal (substring fixture argv-off (+ argv-off 4))
+                             "arg0"))
+              (should (= (aref fixture (+ argv-off 4)) 0))
+              ;; The fifth byte is the empty middle argv element; it was
+              ;; swallowed by the old skip-all-NULs implementation.
+              (should (= (aref fixture (+ argv-off 5)) 0))
+              (should (equal (substring fixture (+ argv-off 6)
+                                          (+ argv-off 10))
+                             "arg2"))
+              (should (= env-off 18))
+              (should (= path-eq 22))
+              (should (= (funcall eq-fn fixture 26 32) 31))
+              (should (= (funcall eq-fn fixture 33 37) -1))
+              (should (= (funcall nul-fn fixture 0 3) 3))
+              (should (= (funcall padding-fn fixture 4 5) 5))
+              (should (= (funcall argv-end-fn fixture argv-off 10 3 0)
+                         10)))))))))
+
 (ert-deftest nelisp-standalone-target-macos-access-translates-portable-number ()
   "macOS translates portable access(2) number 21 to Darwin syscall 33."
   (let ((nelisp-standalone--target 'macos-aarch64))
@@ -888,15 +1027,22 @@ A dispatch arm nothing installs is dead code that still links."
                                forms))))
     (let ((nelisp-standalone--target 'macos-aarch64))
       (let ((forms (nelisp-standalone--reader-os-source-forms)))
-        (should (tree-member-p '(syscall-direct 2 0 0 0 0 0 0) forms))
+        ;; Darwin fork/pipe return values are carried in x1 by the raw
+        ;; syscall shim; the helpers store that secondary result before the
+        ;; driver interprets it.
+        (should (tree-member-p
+                 '(syscall-direct-store-x1 2 0 0 0 0 0 0 childp 0)
+                 forms))
         (should (tree-member-p '(syscall-direct 59 path argv envp 0 0 0)
                                forms))
         (should (tree-member-p '(syscall-direct 7 pid statusp options 0 0 0)
                                forms))
         (should (tree-member-p '(syscall-direct 90 oldfd newfd 0 0 0 0)
                                forms))
-        (should (tree-member-p '(syscall-direct 42 pipev 0 0 0 0 0)
-                               forms))
+        (should (tree-member-p
+                 '(syscall-direct-store-x1 42 0 0 0 0 0 0 x1buf 0)
+                 forms))
+        (should (tree-member-p '(ptr-write-u32 pipev 0 rc) forms))
         (should (tree-member-p '(syscall-direct 92 fd 4 4 0 0 0)
                                forms))
         (should (tree-member-p '(syscall-direct 37 pid sig 0 0 0 0)

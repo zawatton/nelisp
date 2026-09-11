@@ -967,7 +967,8 @@ above already takes.  The prelude's `getenv' reads /proc/self/environ,
 which works but is far too late: it runs after the boot watermark is
 frozen, and the arming decision has to be made before it.
 
-The macOS arm keeps the no-op.  Its `nl_os_argv_init' is not the
+The macOS arm uses a separate bounded KERN_PROCARGS2 parser.  Its
+`nl_os_argv_init' is not the
 identity -- it reconstructs argv through sysctl KERN_PROCARGS2 -- so
 `sp' there is not the vector this walk assumes, and guessing is how a
 walker reads whatever happens to be on the stack."
@@ -24771,10 +24772,124 @@ target the same installed names signal catchable
      ;; constants; see the generator's docstring).
      (nelisp-standalone--alloc-check-env-probe-forms)))
     ('macos-aarch64
-     `(;; No-op on purpose: `nl_os_argv_init' below rebuilds argv through
-       ;; sysctl KERN_PROCARGS2, so SP is not the entry-stack vector the
-       ;; Linux walk reads (see `nelisp-standalone--reader-posix-env-forms').
-       (defun nl_os_environ_init (_sp result-slot) (wf_write_nil result-slot))
+     `(;; `KERN_PROCARGS2' returns argc, the executable path, argv, and the
+       ;; environment in one bounded byte buffer.  The old macOS arm left
+       ;; the environment empty because its synthetic argv vector is not an
+       ;; entry stack and cannot be used as Linux's envp.  Keep every offset
+       ;; below the length returned by sysctl: malformed/truncated argv data
+       ;; falls back to the original startup argument pointer, while the
+       ;; environment walker keeps only complete valid entries before a bad
+       ;; tail.  Neither path performs an out-of-bounds read.
+       (defun nl_darwin_procargs_nul (ptr off limit)
+         (let* ((i off) (done 0))
+           (while (and (= done 0) (< i limit))
+             (if (= (ptr-read-u8 ptr i) 0)
+                 (setq done 1)
+               (setq i (+ i 1))))
+           i))
+       ;; KERN_PROCARGS2 places one or more separator NULs after the
+       ;; executable path.  They are padding, whereas NULs encountered after
+       ;; argv[0] are empty arguments and must be preserved by the one-string
+       ;; step below.
+       (defun nl_darwin_procargs_skip_padding (ptr off limit)
+         (let* ((i off))
+           (while (and (< i limit) (= (ptr-read-u8 ptr i) 0))
+             (setq i (+ i 1)))
+           i))
+       ;; Advance over exactly one argv string.  In particular, an empty
+       ;; argv element is a real element and must not be swallowed by a
+       ;; skip-all-NULs helper.
+       (defun nl_darwin_procargs_argv_end (ptr off limit argc i)
+         (let* ((cursor off) (n i))
+           (while (and (< n argc) (< cursor limit))
+             (let ((end (nl_darwin_procargs_nul ptr cursor limit)))
+               (if (>= end limit)
+                   (setq cursor limit n argc)
+                 (setq cursor (+ end 1))
+                 (setq n (+ n 1)))))
+           cursor))
+       (defun nl_darwin_procargs_env_eq (ptr off end)
+         (let* ((i off) (found -1))
+           (while (and (< i end) (< found 0))
+             (if (= (ptr-read-u8 ptr i) 61)
+                 (setq found i)
+               (setq i (+ i 1))))
+           found))
+       ;; Build both views of the environment from the same procargs
+       ;; buffer.  ENVP contains pointers into BUF for direct execve use;
+       ;; OUT receives the ordinary (NAME . VALUE) alist.  Invalid entries
+       ;; without '=' are ignored, matching the POSIX walker.  A truncated
+       ;; final entry ends the walk after any complete valid prefix already
+       ;; collected.
+       (defun nl_darwin_procargs_env_walk (buf off limit envp i out)
+         (if (>= off limit)
+             (seq (ptr-write-u64 envp (* i 8) 0)
+                  (wf_write_nil out))
+           (let ((end (nl_darwin_procargs_nul buf off limit)))
+             (if (>= end limit)
+                 (seq (ptr-write-u64 envp (* i 8) 0)
+                      (wf_write_nil out))
+               (if (= end off)
+                   (seq (ptr-write-u64 envp (* i 8) 0)
+                        (wf_write_nil out))
+                 (let ((eqpos (nl_darwin_procargs_env_eq buf off end)))
+                   (if (< eqpos 0)
+                       (nl_darwin_procargs_env_walk
+                        buf (+ end 1) limit envp i out)
+                     (let* ((name_sx (alloc-bytes 32 8))
+                            (val_sx (alloc-bytes 32 8))
+                            (pair (alloc-bytes 32 8))
+                            (rest (alloc-bytes 32 8)))
+                       (seq
+                        (ptr-write-u64 envp (* i 8) (+ buf off))
+                        (nl_alloc_str (+ buf off) (- eqpos off) name_sx)
+                        (nl_alloc_str (+ buf eqpos 1)
+                                      (- end (+ eqpos 1)) val_sx)
+                        (nelisp_cons_construct name_sx val_sx pair)
+                        (nl_darwin_procargs_env_walk
+                         buf (+ end 1) limit envp (+ i 1) rest)
+                        (nelisp_cons_construct pair rest out))))))))))
+       ;; Populate the alist and the initial-stack envp slot together.  The
+       ;; slot is the existing process-substrate ABI location used by
+       ;; nl_bi_process_call_process; the driver leaves it intact on Mac.
+       ;; Both raw buffers are allocated before the boot watermark freezes,
+       ;; so the stored envp and its strings survive later collections.
+       (defun nl_os_environ_init (_sp result-slot)
+         (seq
+          (ptr-write-u64 268435600 0 0)
+          (let* ((mib (alloc-bytes 16 4))
+                 (lenp (alloc-bytes 8 8))
+                 (buf (alloc-bytes 65536 8))
+                 (pid (syscall-direct 20 0 0 0 0 0 0)))
+            (seq
+             (ptr-write-u32 mib 0 1)
+             (ptr-write-u32 mib 4 49)
+             (ptr-write-u32 mib 8 pid)
+             (ptr-write-u64 lenp 0 65536)
+             (let* ((rc (syscall-direct 202 mib 3 buf lenp 0 0)))
+               (if (< rc 0)
+                   (wf_write_nil result-slot)
+                 (let* ((limit (ptr-read-u64 lenp 0)))
+                   (if (or (< limit 4) (> limit 65536))
+                       (wf_write_nil result-slot)
+                     (let* ((argc (ptr-read-u32 buf 0))
+                            (path-end
+                             (nl_darwin_procargs_nul buf 4 limit))
+                            (argv-off
+                             (nl_darwin_procargs_skip_padding
+                              buf (+ path-end 1) limit))
+                            (env-off
+                             (nl_darwin_procargs_argv_end
+                              buf argv-off limit argc 0))
+                            ;; At most one environment pointer per byte in
+                            ;; the bounded buffer, plus its NULL terminator.
+                            (envp (alloc-bytes (* (+ limit 1) 8) 8)))
+                       (if (>= env-off limit)
+                           (wf_write_nil result-slot)
+                         (seq
+                          (ptr-write-u64 268435600 0 envp)
+                          (nl_darwin_procargs_env_walk
+                           buf env-off limit envp 0 result-slot))))))))))))
        (defun nl_darwin_skip_to_nul (ptr off)
          (if (= (ptr-read-u8 ptr off) 0)
              off
@@ -24823,20 +24938,23 @@ target the same installed names signal catchable
                                     (nl_alloc_str buf (+ n 1) out)))
                            (wf_write_nil out)))
                      (wf_write_nil out)))))))))
-       (defun nl_darwin_skip_nuls (ptr off)
-         (if (= (ptr-read-u8 ptr off) 0)
-             (nl_darwin_skip_nuls ptr (+ off 1))
-           off))
-       (defun nl_darwin_procargs_next (ptr off)
-         (nl_darwin_skip_nuls ptr (+ (nl_darwin_skip_to_nul ptr off) 1)))
-       (defun nl_darwin_procargs_fill (argc buf off i argv)
+       (defun nl_darwin_procargs_fill (argc buf off limit i argv)
          (if (= i argc)
              (nl_seq2 (ptr-write-u64 argv (* (+ i 1) 8) 0) argv)
-           (seq
-            (ptr-write-u64 argv (* (+ i 1) 8) (+ buf off))
-            (nl_darwin_procargs_fill argc buf
-                                      (nl_darwin_procargs_next buf off)
-                                      (+ i 1) argv))))
+           (if (>= off limit)
+               (seq
+                (ptr-write-u64 argv (* (+ i 1) 8) 0)
+                (nl_darwin_procargs_fill argc buf off limit (+ i 1) argv))
+             (let ((end (nl_darwin_procargs_nul buf off limit)))
+               (if (>= end limit)
+                   (seq
+                    (ptr-write-u64 argv (* (+ i 1) 8) 0)
+                    (nl_darwin_procargs_fill
+                     argc buf off limit (+ i 1) argv))
+                 (seq
+                  (ptr-write-u64 argv (* (+ i 1) 8) (+ buf off))
+                  (nl_darwin_procargs_fill
+                   argc buf (+ end 1) limit (+ i 1) argv)))))))
        (defun nl_os_argv_init (sp)
          (let* ((mib (alloc-bytes 16 4))
                 (lenp (alloc-bytes 8 8))
@@ -24847,16 +24965,32 @@ target the same installed names signal catchable
             (ptr-write-u32 mib 4 49)    ; KERN_PROCARGS2
             (ptr-write-u32 mib 8 pid)
             (ptr-write-u64 lenp 0 65536)
-            (let* ((rc (syscall-direct 202 mib 3 buf lenp 0 0)))
-              (if (< rc 0)
+            (let* ((rc (syscall-direct 202 mib 3 buf lenp 0 0))
+                   (limit (ptr-read-u64 lenp 0)))
+              (if (or (< rc 0) (< limit 4) (> limit 65536))
                   sp
                 (let* ((argc (ptr-read-u32 buf 0))
-                       (off0 (nl_darwin_skip_nuls
-                              buf (+ (nl_darwin_skip_to_nul buf 4) 1)))
-                       (argv (alloc-bytes (* (+ argc 2) 8) 8)))
-                  (seq
-                   (ptr-write-u64 argv 0 argc)
-                   (nl_darwin_procargs_fill argc buf off0 0 argv))))))))
+                       (path-end (nl_darwin_procargs_nul buf 4 limit))
+                       (off0
+                        (nl_darwin_procargs_skip_padding
+                         buf (+ path-end 1) limit)))
+                  ;; Before multiplying argc for alloc-bytes, prove that
+                  ;; every argument can have at least one in-buffer NUL and
+                  ;; that the bounded walk reaches the following separator.
+                  ;; This rejects a corrupt argc without a giant allocation.
+                  (if (or (>= path-end limit)
+                          (>= argc (- limit off0)))
+                      sp
+                    (let ((argv-end
+                           (nl_darwin_procargs_argv_end
+                            buf off0 limit argc 0)))
+                      (if (>= argv-end limit)
+                          sp
+                        (let ((argv (alloc-bytes (* (+ argc 2) 8) 8)))
+                          (seq
+                           (ptr-write-u64 argv 0 argc)
+                           (nl_darwin_procargs_fill
+                            argc buf off0 limit 0 argv))))))))))))
        (defun nl_os_open_read (path)
          (syscall-direct 5 path 0 0 0 0 0))
        (defun nl_os_open_write_truncate (path)
@@ -24880,15 +25014,27 @@ target the same installed names signal catchable
        (defun nl_os_write_stderr (ptr len)
          (syscall-direct 4 2 ptr len 0 0 0))
        (defun nl_os_process_fork ()
-         (syscall-direct 2 0 0 0 0 0 0))
+         ;; Darwin arm64 returns the child indicator in x1: x1=0 is the
+         ;; parent, x1!=0 is the child, which must return zero.
+         (let* ((childp (alloc-bytes 8 8))
+                (pid (syscall-direct-store-x1 2 0 0 0 0 0 0 childp 0)))
+           (if (< pid 0) pid
+             (if (> (ptr-read-u64 childp 0) 0) 0 pid))))
 	       (defun nl_os_process_execve (path argv envp)
 	         (syscall-direct 59 path argv envp 0 0 0))
 	       (defun nl_os_process_wait4 (pid statusp options)
 	         (syscall-direct 7 pid statusp options 0 0 0))
 	       (defun nl_os_process_dup2 (oldfd newfd)
 	         (syscall-direct 90 oldfd newfd 0 0 0 0))
-	       (defun nl_os_process_pipe (pipev)
-	         (syscall-direct 42 pipev 0 0 0 0 0))
+       (defun nl_os_process_pipe (pipev)
+         ;; Darwin pipe(2) returns read/write descriptors in x0/x1 rather
+         ;; than filling the pointer argument.  Preserve x1 and publish both.
+         (let* ((x1buf (alloc-bytes 8 8))
+                (rc (syscall-direct-store-x1 42 0 0 0 0 0 0 x1buf 0)))
+           (if (< rc 0) rc
+             (seq (ptr-write-u32 pipev 0 rc)
+                  (ptr-write-u32 pipev 4 (ptr-read-u64 x1buf 0))
+                  0))))
 	       (defun nl_os_process_set_nonblock (fd)
 	         (syscall-direct 92 fd 4 4 0 0 0))
 	       (defun nl_os_process_poll_readable (fd)
@@ -26179,14 +26325,16 @@ correctly."
 ;; `excessive-lisp-nesting': the guard could never fire.  The budget remains
 ;; best-effort: re-measure both root and native stack use when eval frames grow.
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 16000)
-        ;; M11 env inherit: stash the initial-stack envp (= sp0 + (argc+2)*8,
-        ;; the char** right after argv's NULL) in arena slot +144 (268435600)
-        ;; so the process substrate's execve passes the parent environment to
-        ;; children instead of an empty one.  0 = unavailable (no sp).
-        (ptr-write-u64 268435600 0
-                       (if (= sp0 0)
-                           0
-                         (+ sp0 (* (+ argc 2) 8))))
+        ;; M11 env inherit: POSIX entry stacks carry envp immediately after
+        ;; argv, while macOS `nl_os_environ_init' has already installed the
+        ;; KERN_PROCARGS2-derived envp in the same ABI slot.  Do not overwrite
+        ;; that pointer with an offset into the synthetic macOS argv vector.
+        ,@(if (eq nelisp-standalone--target 'macos-aarch64)
+              nil
+            '((ptr-write-u64 268435600 0
+                              (if (= sp0 0)
+                                  0
+                                (+ sp0 (* (+ argc 2) 8))))))
         (ptr-write-u64 268436448 0 32768)                       ; Doc 147 P1.5 — store the RAW parse-pool cap (32768 slots) for the GC pool arms.  Raised from 8192 after vendored eucjp-ms' 2069-entry generated alist exceeded the flat-list tail depth; 32768 => MAX_DEPTH ~8191 for the current 3+4*MAX_DEPTH reader slot shape.
         (ptr-write-u64 268436464 0 1)  ; Doc 152 §11.21: CONSERVATIVE native-stack scan ON — closes the eval root-coverage gap (Doc 146 §2) so a collection never frees/blanks a still-referenced in-flight box.  Pairs with compaction OFF (mark+sweep) below; verified to stop the anvil-pkg suite SIGSEGV (suite-readiness now completes cleanly).
         ;; GC trigger: collect at a form boundary once the bump offset

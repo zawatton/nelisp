@@ -48,6 +48,30 @@
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))
+ ;; Environment is a cross-substrate boundary: the hosted and standalone
+ ;; implementations must agree for a present value, an explicitly empty
+ ;; value, and an absent name.  Save and restore the two temporary names so
+ ;; this remains valid in standalone, whose environment API has no Emacs
+ ;; `process-environment' variable to dynamically bind.  Compare PATH's
+ ;; presence rather than its runner-specific contents.
+ (let* ((name "NELISP_SHADOW_ENV_MISSING_20260911")
+        (old (getenv name)))
+   (unwind-protect
+       (progn
+         (setenv name nil)
+         (list (stringp (getenv "PATH")) (getenv name)))
+     (setenv name old)))
+ (let* ((name "NELISP_SHADOW_ENV_EMPTY_20260911")
+        (missing "NELISP_SHADOW_ENV_MISSING_20260911")
+        (old (getenv name))
+        (old-missing (getenv missing)))
+   (unwind-protect
+       (progn
+         (setenv name "")
+         (setenv missing nil)
+         (list (getenv name) (getenv missing)))
+     (setenv name old)
+     (setenv missing old-missing)))
  ;; Doc 200 P2: the standalone must distinguish raw-byte strings from UTF-8
  ;; strings while keeping ASCII equality representation-independent.  Keep
  ;; every result derived: returning a raw-byte string here would compare the

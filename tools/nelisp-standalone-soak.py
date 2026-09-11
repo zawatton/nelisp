@@ -22,6 +22,26 @@ def rss_kib(pid):
     return 0
 
 
+def smaps_rollup_kib(pid):
+    """Return selected Linux smaps_rollup KiB fields, or None if unavailable."""
+    wanted = ("Rss", "Anonymous", "AnonHugePages", "Private_Dirty")
+    values = {}
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", encoding="ascii") as stream:
+            for line in stream:
+                name, _, rest = line.partition(":")
+                if name in wanted:
+                    fields = rest.split()
+                    if not fields or not fields[0].isdigit():
+                        return None
+                    values[name] = int(fields[0])
+    except (OSError, ValueError):
+        return None
+    if any(name not in values for name in wanted):
+        return None
+    return values
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default=str(Path(__file__).resolve().parents[1] / "target/nelisp"))
@@ -167,6 +187,12 @@ def main():
         print("nelisp-standalone-soak: PASS")
         return 0
     except (OSError, RuntimeError) as error:
+        smaps = (smaps_rollup_kib(child.pid)
+                 if child.poll() is None else None)
+        smaps_text = ("unavailable" if smaps is None
+                      else " ".join(f"{name}_kib={smaps[name]}"
+                                   for name in ("Rss", "Anonymous",
+                                                "AnonHugePages", "Private_Dirty")))
         elapsed = (time.monotonic() - started) if started is not None else 0.0
         growth = (peak_rss - start_rss
                   if peak_rss is not None and start_rss is not None else None)
@@ -177,7 +203,7 @@ def main():
             f"rss_growth_kib={growth!r} "
             f"growth_ceiling_kib={args.rss_growth_ceiling_kib} "
             f"absolute_ceiling_kib={args.rss_ceiling_kib} batches={batches} "
-            f"elapsed_seconds={elapsed:.3f}",
+            f"elapsed_seconds={elapsed:.3f} smaps_rollup={smaps_text}",
             file=sys.stderr,
         )
         return 1

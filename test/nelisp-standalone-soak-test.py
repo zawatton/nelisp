@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Failure detection tests for the Linux /proc standalone soak harness."""
 import os
+import importlib.util
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "tools" / "nelisp-standalone-soak.py"
+_SPEC = importlib.util.spec_from_file_location("nelisp_standalone_soak", HARNESS)
+SOAK = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(SOAK)
 
 
 class StandaloneSoakHarnessTests(unittest.TestCase):
@@ -38,6 +43,11 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
             result.stderr,
             r"start_rss_kib=None .*current_rss_kib=None .*peak_rss_kib=None "
             r".*batches=0 .*elapsed_seconds=0\.\d+",
+        )
+        self.assertRegex(
+            result.stderr,
+            r"smaps_rollup=(?:unavailable|Rss_kib=\d+ Anonymous_kib=\d+ "
+            r"AnonHugePages_kib=\d+ Private_Dirty_kib=\d+)",
         )
 
     def test_stderr_after_ready_is_failure(self):
@@ -84,6 +94,24 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
             print("NELISP_SOAK_READY", flush=True)
         """, "--duration", "nan")
         self.assertEqual(result.returncode, 2)
+
+    def test_smaps_rollup_handles_arbitrary_oserror(self):
+        """A vanished/protected proc file cannot replace the original failure."""
+        with mock.patch("builtins.open", side_effect=OSError("ESRCH")):
+            self.assertIsNone(SOAK.smaps_rollup_kib(12345))
+
+    def test_smaps_rollup_reads_selected_fields(self):
+        data = ("1234-5678 ---p 00000000 00:00 0\n"
+                "Rss:                120 kB\n"
+                "Anonymous:            80 kB\n"
+                "AnonHugePages:        64 kB\n"
+                "Private_Dirty:        72 kB\n")
+        with mock.patch("builtins.open", mock.mock_open(read_data=data)):
+            self.assertEqual(
+                SOAK.smaps_rollup_kib(12345),
+                {"Rss": 120, "Anonymous": 80,
+                 "AnonHugePages": 64, "Private_Dirty": 72},
+            )
 
 
 if __name__ == "__main__":

@@ -31,6 +31,10 @@ Release implementation and qualification notes, updated 2026-09-11.
   child exit status and stderr.
 - Darwin translates the portable file-access operation to its native syscall,
   allowing file existence checks to discover host helper executables.
+- Darwin startup reconstructs the environment and child-process environment
+  vector from bounded process arguments. Empty middle arguments are preserved;
+  fork child detection and pipe descriptors consume both syscall return
+  registers. macOS release qualification of these repairs is pending.
 
 ### Function introspection and API surface
 
@@ -120,13 +124,13 @@ Release implementation and qualification notes, updated 2026-09-11.
 | REPL development APIs | PASS: failure recording, explicit retry, export/replay, code provenance, GC snapshot/collect/compare, and integrated entry require |
 | Native runtime reload (Linux x86_64) | PASS: development binary SHA-256 prefix `86a0d4f947bc`; actual collection uses threshold percentage A 300 → new private helper B 301 → restored 300; changing B's expected result to 300 triggers the intended assertion |
 | Normal standalone binary | SHA-256 prefix `0c09c8af9fc4`; bounded memory probes below use this binary |
-| Full ERT suite | 5,589 PASS, 159 skipped, 5,748 total; the numeric oracle uses isolated artifacts while a production REPL remains running |
+| Full ERT suite | 5,593 PASS, 159 skipped, 5,752 total; the numeric oracle uses isolated artifacts while a production REPL remains running |
 | Check tier | 23/23 PASS |
 | Isolated mutation gate | 64/64 PASS on the isolated GC snapshot; all four CI mutation shards also pass on `ded6ebf13` |
 | Bounded memory probes | 6/6 PASS; 500,000 → 1,000,000 workload RSS 279,064 → 279,668 KiB; 1,006,632,960 bytes reclaimed |
 | Full real-init audit | `0c09c8af9fc4` reached form 260, then timed out after 9,001 seconds (exit 124, peak 741,376 KiB). A separate run with the library regex repair is in progress; all 930 forms and startup hooks remain unqualified |
-| 3-architecture semver tag CI | Pending |
-| Linux 1-hour soak | Pending |
+| 3-architecture semver tag CI | Incomplete: Linux ARM64 passes on `fbef9f74`; macOS ARM64 fails host-helper startup and is under repair |
+| Linux 1-hour soak | CI binary `620980fbe756` passes: 2,053 batches, 3,600.621 seconds, RSS 95,312 KiB unchanged. Local binary `0c09c8af9fc4` fails the 5,120 KiB growth ceiling after about 56 minutes; an accelerated repeat grows from 82,388 to 91,240 KiB in 199 batches. Memory qualification remains incomplete |
 
 The current results above are measured on the native-runtime-reload candidate
 and do not represent a completed public release. The branch is not integrated
