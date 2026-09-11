@@ -843,8 +843,53 @@ cross-unit call) before the freed payload is poisoned."
       (seq
        (ptr-write-u64 (data-addr nl_alloc_check) 0 1)
        (ptr-write-u64 (data-addr nl_alloc_check) 8 1)
+       (ptr-write-u64 (data-addr nl_alloc_check) 80 1)
        (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
        0))
+    ;; Doc 170 Stage 2 extension, 2026-09-12: reclaim poisoning.
+    ;;
+    ;; The boundary reclaim rewinds a bump cursor back over a span and hands
+    ;; it to the allocator again.  Until this release it did so WITHOUT
+    ;; zeroing, unlike the free-list reuse path -- so a constructor that
+    ;; assumes fresh, OS-zeroed memory inherited whatever the reader had
+    ;; written there, and crashed on the first clone.  The checked allocator
+    ;; did not catch it: it verifies a block's redzone and its frees, not the
+    ;; state of memory about to be redistributed.
+    ;;
+    ;; Armed (slot +80), `nl_alloc_check_poison_span' fills a span with a
+    ;; non-zero pattern immediately BEFORE it is rewound.  Any later reader
+    ;; of that memory that expected zeroes now sees 0x7E instead of a stale
+    ;; but plausible pointer, and `nl_alloc_check_expect_zero' counts a
+    ;; violation into slot +88 when a span that should have been cleared was
+    ;; not.  Two independent signals: the crash becomes deterministic and
+    ;; obviously wrong rather than layout-dependent, and the counter says so
+    ;; without needing a crash at all.
+    (defun nl_alloc_check_reclaim_armed ()
+      (ptr-read-u64 (data-addr nl_alloc_check) 80))
+    (defun nl_alloc_check_poison_span (addr nbytes)
+      (if (= (nl_alloc_check_reclaim_armed) 1)
+          (let* ((i 0))
+            (seq
+             (while (< i nbytes)
+               (seq (ptr-write-u8 addr i 126) (setq i (+ i 1))))
+             0))
+        0))
+    ;; Count, but never repair: repairing here would hide the very defect
+    ;; this exists to expose.  The zero-fill belongs at the reclaim site.
+    (defun nl_alloc_check_expect_zero (addr nbytes)
+      (if (= (nl_alloc_check_reclaim_armed) 1)
+          (let* ((i 0) (bad 0))
+            (seq
+             (while (< i nbytes)
+               (seq
+                (if (= (ptr-read-u8 addr i) 0) 0 (setq bad (+ bad 1)))
+                (setq i (+ i 1))))
+             (if (> bad 0)
+                 (ptr-write-u64 (data-addr nl_alloc_check) 88
+                                (+ (ptr-read-u64 (data-addr nl_alloc_check) 88) 1))
+               0)
+             bad))
+        0))
     (defun nl_alloc_check_size (size)
       (if (= (nl_alloc_check_enabled) 1) (+ size 16) size))
     ;; Stamp the guard + site suffix of a freshly-allocated block OBJ.
@@ -9099,9 +9144,14 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
       (if (= chunk 0) 0
         (nl_seq2 (bf_ac_scan_chunk chunk acc)
                  (bf_ac_scan_chunks (ptr-read-u64 (+ chunk 48) 0) acc))))
-    ;; `(nelisp--alloc-check-report)' — returns the 10-element list
+    ;; `(nelisp--alloc-check-report)' — returns the 11-element list
     ;;   (enable armed generation checked-allocs verified-frees
-    ;;    violations first-bad-hdr site live-blocks live-bytes).
+    ;;    violations first-bad-hdr site live-blocks live-bytes
+    ;;    reclaim-violations).
+    ;; reclaim-violations (slot +88) counts spans the boundary reclaim was
+    ;; about to redistribute that were NOT zero after their zero-fill.  It
+    ;; is the direct check for the class of defect the redzone cannot see:
+    ;; memory handed out again dirty rather than a block overrun.
     ;; live-blocks / live-bytes come from a fresh chunk walk; call
     ;; `garbage-collect' first for a true end-of-run leak residue.
     ;; The 8 counter slots are SNAPSHOTTED into ACC before any cons is
@@ -9109,8 +9159,9 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
     ;; each allocation bumps the generation / checked-alloc counters —
     ;; reading them lazily mid-consing would skew the reported values.
     (defun bf_alloc_check_report (out)
-      (let* ((acc (alloc-bytes 80 8))
+      (let* ((acc (alloc-bytes 88 8))
              (nil-slot (alloc-bytes 32 8))
+             (s10 (alloc-bytes 32 8))
              (s9 (alloc-bytes 32 8))
              (s8 (alloc-bytes 32 8))
              (s7 (alloc-bytes 32 8))
@@ -9132,8 +9183,10 @@ the same way `nelisp_eval_call' already reaches into `reader-gc.o'."
          (ptr-write-u64 (+ acc 56) 0 (ptr-read-u64 (data-addr nl_alloc_check) 32))
          (ptr-write-u64 (+ acc 64) 0 (ptr-read-u64 (data-addr nl_alloc_check) 40))
          (ptr-write-u64 (+ acc 72) 0 (ptr-read-u64 (data-addr nl_alloc_check) 24))
+         (ptr-write-u64 (+ acc 80) 0 (ptr-read-u64 (data-addr nl_alloc_check) 88))
          (wf_write_nil nil-slot)
-         (wf_cons_int (ptr-read-u64 (+ acc 8) 0) nil-slot s9)
+         (wf_cons_int (ptr-read-u64 (+ acc 80) 0) nil-slot s10)
+         (wf_cons_int (ptr-read-u64 (+ acc 8) 0) s10 s9)
          (wf_cons_int (ptr-read-u64 acc 0) s9 s8)
          (wf_cons_int (ptr-read-u64 (+ acc 72) 0) s8 s7)
          (wf_cons_int (ptr-read-u64 (+ acc 64) 0) s7 s6)
@@ -20027,9 +20080,21 @@ suffix, which is why only `--repl' crashed)."
          ;; clones it.  Zeroing here restores the same "every constructor
          ;; sees clean memory" invariant `nl_alloc_zero_fill' already
          ;; restores for the free-list path.
+         ;; Armed by NELISP_ALLOC_CHECK=1: poison the span, zero it, then
+         ;; assert it really is zero.  Ordered that way on purpose -- the
+         ;; poison guarantees the check is looking at bytes something wrote,
+         ;; not at memory that happened to be zero already, so a zero-fill
+         ;; that silently stops working is caught by slot +88 rather than by
+         ;; a layout-dependent crash days later.  Off by default: three
+         ;; predicate reads and nothing else.
          (if (> head-reclaimed 0)
-             (nl_alloc_zero_fill (+ (ptr-read-u64 mark_chunk 0) mark_cursor)
-                                 0 head-reclaimed)
+             (seq
+              (nl_alloc_check_poison_span
+               (+ (ptr-read-u64 mark_chunk 0) mark_cursor) head-reclaimed)
+              (nl_alloc_zero_fill (+ (ptr-read-u64 mark_chunk 0) mark_cursor)
+                                  0 head-reclaimed)
+              (nl_alloc_check_expect_zero
+               (+ (ptr-read-u64 mark_chunk 0) mark_cursor) head-reclaimed))
            0)
          (ptr-write-u64 cursor-addr 0 mark_cursor)
          (ptr-write-u64 268436168 0 mark_chunk)

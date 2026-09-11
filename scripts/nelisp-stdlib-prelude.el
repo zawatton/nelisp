@@ -10172,6 +10172,57 @@ Prefers the real process id; falls back to the clock, marked with a leading
          ;; (TICKS . HZ), when `current-time-list' is nil.
          ((consp now) (format "t%d-%d" (car now) (cdr now)))
          (t "t0"))))))
+(defconst nelisp--arena-stat-fields
+  '(:base :size :bump-offset :used-bytes :live-after-last-gc :next-trigger
+    :free-list-head :collect-disabled :reuse-disabled :chunk-count
+    :chunk-bytes-reserved :chunk-bytes-used)
+  "Field names of `nelisp--arena-stats\=', in the order it returns them.")
+
+(defun nelisp-arena-stats ()
+  "Return `nelisp--arena-stats\=' as a plist, keyed by what each number means.
+
+The underlying builtin answers twelve bare integers whose meaning lives only
+in a comment, and the two that matter most in a memory investigation --
+`:used-bytes\=' and `:live-after-last-gc\=' -- sit next to each other and are
+easy to swap.  Positional reads of that list have already been written into
+more than one tool; this is the accessor those tools should use instead.
+
+Extra fields a future runtime adds are returned under `:extra\=' rather than
+dropped, and a shorter list yields a shorter plist rather than nil padding,
+so a caller can tell \"this runtime does not report it\" from \"it is zero\"."
+  (let ((raw (and (fboundp 'nelisp--arena-stats) (nelisp--arena-stats)))
+        (names nelisp--arena-stat-fields)
+        (out nil))
+    (while (and raw names)
+      (setq out (cons (car raw) (cons (car names) out)))
+      (setq raw (cdr raw) names (cdr names)))
+    (setq out (nreverse out))
+    (if raw (append out (list :extra raw)) out)))
+
+(defconst nelisp--alloc-check-report-fields
+  '(:enable :armed :generation :checked-allocs :verified-frees
+    :violations :first-bad-header :site :live-blocks :live-bytes
+    :reclaim-violations)
+  "Field names of `nelisp--alloc-check-report\=', in the order it returns them.")
+
+(defun nelisp-alloc-check-report ()
+  "Return `nelisp--alloc-check-report\=' as a plist, keyed by meaning.
+
+`:violations\=' counts redzone overruns -- a block written past its end.
+`:reclaim-violations\=' counts something the redzone cannot see: a span the
+boundary reclaim was about to hand out again that was not zero.  They answer
+different questions and their positions are adjacent to fields that are easy
+to confuse, which is the whole reason for naming them."
+  (let ((raw (and (fboundp 'nelisp--alloc-check-report)
+                  (nelisp--alloc-check-report)))
+        (names nelisp--alloc-check-report-fields)
+        (out nil))
+    (while (and raw names)
+      (setq out (cons (car raw) (cons (car names) out)))
+      (setq raw (cdr raw) names (cdr names)))
+    (setq out (nreverse out))
+    (if raw (append out (list :extra raw)) out)))
+
 (defun nelisp--process-id ()
   "Return this process's id as an integer, or nil when it cannot be read.
 Linux publishes it as the first field of /proc/self/stat.  Separated from
