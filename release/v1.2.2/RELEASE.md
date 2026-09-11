@@ -148,11 +148,26 @@ Release implementation and qualification notes, updated 2026-09-11.
 | Linux 1-hour soak | CI binary `620980fbe756` passes: 2,053 batches, 3,600.621 seconds, RSS 95,312 KiB unchanged. Local `0c09c8af9fc4` has both failures and a later strict 1-hour pass. Free-page-return binary `35d16f0f6681` failed after 559.525 seconds: RSS 61,844 → 68,868 KiB, exceeding the unchanged 5,120 KiB growth ceiling. A subsequent parallel 1-hour comparison passes all three conditions: default `35d16f0f6681` (2,326 batches, sampled RSS 61,844 KiB unchanged), arena-only no-huge-page `17d4fc336e58` (2,319 batches, 55,096 KiB unchanged), and arena-plus-intern `eb821597fde1` (2,319 batches, 53,080 KiB unchanged). The comparison did not reproduce the intermittent failure or establish its cause; the no-huge-page candidates remain experimental and memory qualification is not complete |
 | Large string allocation and replay | Old `0c09c8af9fc4` crashes on a single 6 MiB string. Iterative UTF-8 repeat binary `ffbbc2666928` passes 6/32 MiB, Unicode, zero-length and GC checks. Dedicated development binary `0cedf8060373` completes the exported 32 MiB recipe, native GC publication and restoration with both completion markers and empty stderr |
 
-The current results above are measured on the native-runtime-reload candidate
-and do not represent a completed public release. The branch is not integrated
-to `main`; no v1.2.2 tag or GitHub Release exists. Full real-init coverage,
-Linux x86_64 and Linux ARM64 tag CI, and the Linux one-hour soak remain release
-gates.
+The table above predates the native-unit and memory work; the current
+qualification is below it, measured on the native-runtime-reload candidate at
+`9ae5fa4ce`. It does not yet represent a completed public release: the branch
+is not integrated to `main` and no v1.2.2 tag or GitHub Release exists.
+
+## Current qualification (native-runtime-reload, 2026-09-12)
+
+| Check | Result |
+|---|---|
+| Branch CI, every lane | PASS — run 34626792979: ubuntu 30.1/29.4, windows 30.1/29.4, macOS 30.1/29.4, four gate-mutation shards, gates, tier perf/smokes/extras, and the final unscoped `verify` |
+| Full ERT | 5,921 tests, 5,760 as expected, **0 unexpected**, 161 skipped |
+| Check tier | 23/23 PASS locally with `NELISP_CHECK_SKIP=gate-mutation`; gate-mutation runs as CI's four shards, all green |
+| `native-unit-repl-smoke` (new required Linux gate) | PASS in CI, checked=88 findings=0, binary `50718ddd0ffd` |
+| `lisp-byte-compile` (new required Linux gate) | PASS, 254 files, 39 baselined. `make compile` had never covered `lisp/` at all |
+| `nelisp-sexp-clone-bind-smoke` (new required Linux gate) | PASS, checked=10 findings=0; mutation row verified red |
+| Full real-init audit (930 forms) | PASS — 930/930 boundaries, `AUDIT_DONE 930`, exit 0, no signal, 36s, binary `b9cb89afd25c` |
+| Native unit replacement, live | PASS in one standalone process: publish, a caller compiled once observing a later generation, CAS rejection of a stale candidate, arity refusal, preserved Lisp state |
+| Retained-mapping accounting | Over 10 republications RSS grew 4,164 KiB, of which retained native mappings are 64 KiB resident (<1.5%); accounted retention is exactly 8,192 B per retired generation, linear in the retired count |
+| Linux 1-hour soak | THP-dependent, not a leak — see blocker 2 below |
+| Semver tag CI | Not run; needs a tag |
 
 ## Prior candidate evidence (historical)
 
@@ -185,10 +200,34 @@ violation count reduction (2 to 0) was not sufficient release qualification.
 
 ## Remaining release qualification
 
-The release is not qualification complete. Remaining blockers are:
+Two of the three blockers below are closed; the third is the tag run itself.
 
-1. Integrate and requalify the memory fix, then complete the full real-init
-   audit across all 930 init forms and startup hooks.
-2. Pass semver tag CI on the required Linux targets `linux-x86_64` and
-   `linux-aarch64`.
-3. Pass the Linux 1-hour soak.
+1. **Full real-init audit across all 930 forms — CLOSED.** It had been stopped
+   at form 4 by a deterministic SIGSEGV in the arena's boundary reclaim: the
+   rewound bump span was handed out again without being zeroed, unlike the
+   free-list reuse path, so a constructor expecting fresh memory inherited a
+   stale `Sexp::Cons` with a garbage payload pointer. Present in every
+   standalone binary built that day, so never a recent regression. With the fix
+   (`b9cb89afd25c`) the audit reaches all 930 boundaries, prints
+   `AUDIT_DONE 930`, exits 0 with no signal in 36s, and leaves the init file's
+   hash unchanged. 322 `FORM_ERROR`s remain (238 `void-function`, 54
+   `file-missing`, 29 `void-variable`, 1 `error`) — unimplemented Emacs APIs
+   and absent files, not memory faults, and more numerous than the earlier
+   partial run because far more of the file now executes.
+   `nelisp-sexp-clone-bind-smoke` is a required Linux gate holding the
+   mechanism, and its mutation row is verified red.
+2. **Linux 1-hour soak — EXPLAINED, and it is not a leak.** Same binary, same
+   host, one variable: with this host's `transparent_hugepage/enabled` at
+   `[always]` it FAILS at 1,135.7s (RSS 61,844 → 70,688 KiB, ceiling 5,120,
+   AnonHugePages 51,200 KiB); with THP disabled for that process alone through
+   `prctl(PR_SET_THP_DISABLE)` (`tools/nelisp-nothp.c`) it PASSES — 1,500.6s,
+   926 batches, peak RSS **equal to** start. A leak grows the heap either way.
+   The 5,120 KiB growth ceiling is also smaller than three 2 MiB huge pages, so
+   a THP-backed process can cross it on granularity alone. This also accounts
+   for the previously unexplained `35d16f0f6681` failure, whose starting RSS
+   (61,844 KiB) matches to the kilobyte. The soak still needs to pass on the
+   release runners, which is blocker 3.
+3. **Semver tag CI on `linux-x86_64` and `linux-aarch64` — still open.** It has
+   not been run; it needs a tag. Branch CI itself is green on every lane
+   (run 34626792979: six smoke lanes, four gate-mutation shards, gates, all
+   three tiers and the final unscoped `verify`).

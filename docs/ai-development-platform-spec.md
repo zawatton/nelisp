@@ -453,9 +453,22 @@ The inventory was inspected at core `185467cda`. The following Linux standalone
 fixtures passed on the opt-in reader (SHA-256 prefix `86a0d4f947bc`), with separate
 host ERT coverage. Native replacement remains Linux x86_64 only. macOS/Windows
 host-side compilation and rejection tests do not certify native replacement.
-The normal reader (`0c09c8af9fc4`) passed bounded memory probes, but the full
-930-form user initialization audit remains incomplete. Do not use that audit as
-a completed baseline for development-efficiency claims.
+The full 930-form user initialization audit is now complete. It had been
+stopped at form 4 by a deterministic SIGSEGV in the arena's boundary reclaim,
+which rewound a bump cursor back over a span the reader had already written to
+and handed it out again without zeroing it -- unlike the free-list reuse path,
+which zero-fills. The defect was present in every standalone binary built that
+day, so it was never a recent regression; nothing had driven a shape that hit
+it. With the fix (`b9cb89afd25c`), the audit reaches all 930 form boundaries,
+prints `AUDIT_DONE 930` and exits 0 with no signal, in 36 seconds, leaving the
+init file's hash unchanged. It records 322 `FORM_ERROR`s -- 238
+`void-function`, 54 `file-missing`, 29 `void-variable`, 1 `error` -- which are
+unimplemented Emacs APIs and absent files, not memory faults, and are a larger
+number than the previous partial run precisely because far more of the file now
+executes. `tools/nelisp-real-init-audit.sh` makes the run repeatable and
+`nelisp-sexp-clone-bind-smoke` is a required Linux gate holding the mechanism
+down. This audit is a completed correctness baseline; it is NOT a
+development-efficiency measurement and must not be cited as one.
 
 | Capability / current entry | Actual implementation and evidence | Platform requirement still open |
 | --- | --- | --- |
