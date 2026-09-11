@@ -42,6 +42,20 @@
   "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nhello"
   "Minimal canned HTTP/1.1 response used by integration tests.")
 
+;; `url-retrieve-synchronously' autoloads ~15 `url-*' features on its first
+;; call.  The first HTTP test in this file therefore pays library
+;; initialisation inside the same 10s budget it is measuring, and on the
+;; slowest CI lane that budget has been lost intermittently:
+;; `nelisp-daemon-three-layer-integration' -- the first HTTP test to run --
+;; failed with (= 200 nil) after 10.7s on ubuntu-latest/29.4 in runs
+;; 34600660501 (the third of that job's three suite passes; the first two
+;; passed) and 34611829217, while the warm test 40 lines below it passed in
+;; 0.017s in the same job.  Loading the stack up front removes that confound
+;; from the measurement; it weakens no assertion, and a request that never
+;; arrives still fails.
+(require 'url)
+(require 'url-http)
+
 (defun nelisp-daemon-test--start-http-server (response)
   (let ((srv
          (make-network-process
@@ -303,6 +317,10 @@ dispatcher path.  This is the §3.4 flagship test."
                         (list (cons 'name "http-get")
                               (cons 'arguments
                                     (list (cons 'url url)))))))
+             ;; A nil status means the transport gave up, not that the
+             ;; server answered wrongly; say which happened instead of
+             ;; signalling wrong-type-argument from `='.
+             (should (integerp (plist-get http :status)))
              (should (= 200 (plist-get http :status)))
              (should (string-match-p "hello" (plist-get http :body))))
            ;; Layer 3: file-notify via actor event pipeline.
