@@ -307,7 +307,11 @@
 # pin below so a future raw-memory addition cannot hide behind another file.
 # 847 -> 853: native-unit reads/writes generation slots and calls stable
 # executable gates / CAS publisher. This file is explicitly in the kernel.
-unsafe-call 854
+# 854 -> 873 on 2026-09-12: Doc 202's lisp/nelisp-native-callsite.el reads
+# the four documented u64 fields of the `nl_callsite_control' BSS record and
+# installs a table through the native `nl_callsite_install' stub, which owns
+# the CAS.  Same shape as nelisp-native-unit.el's own gate/table work.
+unsafe-call 873
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -338,6 +342,11 @@ pinned-kernel-call lisp/nelisp-native-load.el 48
 # here; it is retired and kept mapped, because this runtime exposes no
 # evidence that in-flight calls through a stable gate have returned.
 pinned-kernel-call lisp/nelisp-native-unit.el 7
+# Doc 202's REPL-side binding for the build-declared replacement table: reads
+# the four documented u64 fields of `nl_callsite_control' and enters the
+# native `nl_callsite_install' stub, which owns the CAS.  10 scanned call
+# sites, all against that one record and that one stub.
+pinned-kernel-call lisp/nelisp-native-callsite.el 10
 # The AOT evalport's `calln' provider.  12 unquoted calls: reads and writes
 # of the boundary Sexp slots the compiled calling convention passes its
 # arguments and result through.
@@ -440,7 +449,12 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # return-value bridge; those are required by the syscall ABI and are covered
 # by the Darwin process contract test.  These are kernel operations in the
 # generated target arm, not a blanket inventory exception.
-pinned-kernel-call scripts/nelisp-standalone-build.el 742
+# 742 -> 751 on 2026-09-12: Doc 202 adds the `nl_callsite_*' generated arm --
+# the wrapper bodies that read the control word and `call-ptr' through the
+# table slot, and `nl_callsite_install's CAS.  These are kernel operations in
+# emitted target code, contributed only when a build both sets
+# NELISP_RUNTIME_RELOAD=1 and declares at least one replaceable entry.
+pinned-kernel-call scripts/nelisp-standalone-build.el 751
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

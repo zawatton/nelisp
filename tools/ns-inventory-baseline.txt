@@ -696,7 +696,14 @@ ns-collision-divergent 127
 # Merged: 990 + 5 (provenance/reclamation API) + 4 (bounded-rebuild API)
 # = 999, confirmed by running the gate rather than by adding the two
 # branches' numbers on paper.
-ns-prefix-violation 999
+# 999 -> 1006 on 2026-09-12: Doc 202's lisp/nelisp-native-callsite.el public
+# surface -- `nelisp-native-callsite-entries'/`-status'/`-install'/
+# `-reachability' and its declared constants.  Counted the same way every
+# other public entry in a `--'-namespaced module is; `-reachability' in
+# particular is the API that stops this branch over-claiming which callers a
+# replacement reaches, so hiding it behind the private prefix is the wrong
+# trade.
+ns-prefix-violation 1006
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
@@ -840,7 +847,8 @@ ns-prefix-violation 999
 # Native plans reuse the common request helpers and loader binary identity.
 # 757 -> 764: the native unit kernel reuses the raw loader's validated
 # export, mapping, protection and executable-identity helpers.
-ns-private-escape 764
+# 764 -> 765 on 2026-09-12: one reference from the same new module.
+ns-private-escape 765
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent

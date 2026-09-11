@@ -34,6 +34,14 @@ lisp/nelisp-native-load.el
 # Stable entry gates and immutable generation tables: write new mmap pages,
 # protect code RX/tables R, and publish only through a cmpxchg machine stub.
 lisp/nelisp-native-unit.el
+# Doc 202's build-declared replacement table.  Reads the four documented u64
+# fields of the `nl_callsite_control' BSS record (table pointer, generation,
+# active-call count, install lock) and installs a table through the native
+# `nl_callsite_install' stub, which owns the CAS.  Same shape as the two
+# entries above and for the same reason: the record it inspects is raw
+# memory, and reading it anywhere else would move the calls one file over
+# while making them harder to audit.
+lisp/nelisp-native-callsite.el
 # Read-only REPL diagnostics: resolve documented BSS records only after
 # verifying the running development ABI, then read their bounded u64 fields.
 lisp/nelisp-repl-gc.el
@@ -49,7 +57,9 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 99
+# 99 -> 100 on 2026-09-12: lisp/nelisp-native-callsite.el, Doc 202's
+# build-declared replacement table, added to the kernel above.
+kernel-files 100
 
 # `pinned-kernel-touch NAME' pins the 96 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
@@ -162,6 +172,7 @@ pinned-kernel-touch lisp/nelisp-cc-val-load.el
 # machine code into it, patches relocations, and enters it via `ptr-call'.
 pinned-kernel-touch lisp/nelisp-native-load.el
 pinned-kernel-touch lisp/nelisp-native-unit.el
+pinned-kernel-touch lisp/nelisp-native-callsite.el
 # The AOT evalport's `calln' provider: reads and writes the boundary Sexp
 # slots the compiled call convention passes arguments and results through.
 pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-calln.el

@@ -164,12 +164,34 @@
 # so there's nothing further to record here.
 # Merged 2026-09-12: 95 + 1 (code-info, counted twice by the classifier)
 # + 1 (the bounded-rebuild work) = 97, taken from the scanner, not summed on paper.
-silent-fallback 97
+# 2026-09-12 +3: two Doc 202 resolve handlers and the shared quit-as-cancel macro; taken from the scanner.
+silent-fallback 100
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-info	e3f2648caa3a 1
 pinned-site ignore-errors	nelisp-native-unit.el	defun nelisp-native-unit--unload-handle	a2ff32dedaa2 1
+# 2026-09-12, Doc 202 (lisp/nelisp-native-callsite.el).  Three handlers, all
+# answering "is this symbol in THIS binary" rather than degrading a result:
+# `--classify' and `--resolve-index' resolve a declared entry's address, and
+# a binary built without that entry has no such symbol at all.  Absence and a
+# failed resolve read the same here on purpose -- both mean "this name is not
+# replaceable in this process", which is exactly the answer
+# `nelisp-native-callsite-reachability' must give rather than implying a
+# replacement would reach something.  Counted twice each, as bare-handler and
+# as silent-fallback; they are two handlers, not four.
+pinned-site bare-handler	nelisp-native-callsite.el	defun nelisp-native-callsite--classify	59926f74aabc 1
+pinned-site bare-handler	nelisp-native-callsite.el	defun nelisp-native-callsite--resolve-index	28299233f472 1
+pinned-site silent-fallback	nelisp-native-callsite.el	defun nelisp-native-callsite--classify	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-callsite.el	defun nelisp-native-callsite--resolve-index	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-callsite.el	defun nelisp-native-callsite-install	4ef0da6aa059 1
+# `nelisp-native-unit-development--quit-as-cancel' is the shared macro that
+# turns a C-g into cancellation.  Discarding the condition IS the contract:
+# a quit is not an error to report, it is the user asking to stop, and the
+# macro clears `quit-flag' so it cannot re-fire at the caller's next
+# checkpoint.  Counted twice, one macro.
+pinned-site bare-handler	nelisp-native-unit-development.el	defmacro nelisp-native-unit-development--quit-as-cancel	91d19d6192f6 1
+pinned-site silent-fallback	nelisp-native-unit-development.el	defmacro nelisp-native-unit-development--quit-as-cancel	6d043850b3a7 1
 pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-rebuild-and-reload	66184c1b9e41 1
 pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-rebuild-and-reload	af6b5fd2f4d1 1
 pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	6d043850b3a7 1
@@ -305,7 +327,8 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # inspect which condition fired, so a named variable would go unused.
 # Merged 2026-09-12: 54 + 1 (code-info) + 1 (the bounded-rebuild work) = 56,
 # taken from the scanner.
-bare-handler 56
+# 2026-09-12 +2: the same two Doc 202 handlers, counted in this kind as well; taken from the scanner.
+bare-handler 58
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
