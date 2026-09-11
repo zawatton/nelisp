@@ -24,9 +24,11 @@
           ;; the record mutator is installed.  Still install the macro there:
           ;; its expansion-time accessor branch checks the table later, while
           ;; delaying installation leaves the prelude `setf' in place forever.
+          ;; `nl-write-file' is a standalone-only runtime marker.  Do not
+          ;; infer the substrate merely from an eval helper: consumers may
+          ;; provide that helper while still using host GNU `setf'.
           (and (fboundp 'nelisp--eval-source-string)
-               (or (fboundp 'nl-write-file)
-                   (not (fboundp 'gv-ref)))))
+               (fboundp 'nl-write-file)))
   (defmacro setf (&rest pairs)
     "Generalised assignment (NeLisp; prelude places + cl-getf/if/gethash/...)."
     (when (null pairs) (signal 'error (list "setf: empty body")))
