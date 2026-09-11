@@ -2,17 +2,82 @@
 (require 'ert)
 (require 'nelisp-dev-source)
 
+(ert-deftest nelisp-dev-source-arity-scope-and-stable-occurrences ()
+  (let* ((text "(defun f (x) x)\n(defun caller () (f) (f) 42)\n")
+         (first (nelisp-dev-source-test--run text "check"))
+         (second (nelisp-dev-source-test--run text "check"))
+         (rows (cdr (assoc "diagnostics" first))))
+    (should (= 2 (length rows)))
+    (should (equal rows (cdr (assoc "diagnostics" second))))
+    (should-not (equal (cdr (assoc "id" (aref rows 0)))
+                       (cdr (assoc "id" (aref rows 1)))))
+    (should (equal "definition" (cdr (assoc "precision" (aref rows 0)))))
+    (should (= 0 (length (cdr (assoc "diagnostics"
+      (nelisp-dev-source-test--run text "describe" "f"))))))))
+
+(ert-deftest nelisp-dev-source-arity-rejects-unsupported-lambda-lists ()
+  (dolist (args '((x &rest rest tail) (x &rest nil) (x &optional &optional y)
+                  (&rest r &optional x) (&unknown x) (nil) (t) (x x)
+                  ((x)) (x . rest)))
+    (should-not (nelisp-dev-source--plain-arity args)))
+  (dolist (text '("(defun f (x) x) (defmacro f () nil) (defun caller () (f))"
+                  "(defun f (x) x) (cl-defun f () nil) (defun caller () (f))"
+                  "(defun f (x) x) (defmacro when (&rest x) nil) (defun caller () (when (f)))"))
+    (should (= 0 (length (cdr (assoc "diagnostics"
+                                   (nelisp-dev-source-test--run text "check"))))))))
+
 (defun nelisp-dev-source-test--run (text op &optional symbol)
   (let ((root (make-temp-file "nelisp-source-test-" t)))
     (unwind-protect
         (progn
-          (with-temp-file (expand-file-name "fixture.el" root)
-            (let ((coding-system-for-write 'utf-8-unix)) (insert text)))
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file (expand-file-name "fixture.el" root)
+              (insert text)))
           (nelisp-dev-source-dispatch
            (list (cons "operation" op) (cons "request_id" "test")
                  (cons "arguments" (list (cons "path" "fixture.el") (cons "symbol" symbol))))
            (list :root root :target "host-emacs")))
       (delete-directory root t))))
+
+(defun nelisp-dev-source-test--diagnostics (result)
+  (cdr (assoc "diagnostics" result)))
+
+(ert-deftest nelisp-dev-source-check-proves-plain-defun-arities ()
+  (let* ((text (concat
+                "(defun required (a b) nil)\n"
+                "(defun optional (a &optional b) nil)\n"
+                "(defun variadic (a &rest rest) nil)\n"
+                "(defun caller ()\n"
+                "  (required 1)\n"
+                "  (required 1 2 3)\n"
+                "  (optional)\n"
+                "  (optional 1 2 3)\n"
+                "  (variadic))\n"))
+         (result (nelisp-dev-source-test--run text "check"))
+         (diagnostics (nelisp-dev-source-test--diagnostics result)))
+    (should (equal "failed" (cdr (assoc "status" result))))
+    (should (= 5 (length diagnostics)))
+    (should (cl-every (lambda (diagnostic)
+                        (equal "NELISP-CHECK-ARITY"
+                               (cdr (assoc "code" diagnostic))))
+                      diagnostics))))
+
+(ert-deftest nelisp-dev-source-check-keeps-uncertain-calls-inconclusive ()
+  (let* ((text (concat
+                "(defun target (a b) nil)\n"
+                "(defun target (x) nil)\n"
+                "(cl-defun destructuring ((a b)) nil)\n"
+                "(defmacro known-macro (&rest body) body)\n"
+                "(defun caller ()\n"
+                "  '(target 1)\n"
+                "  (unknown-macro (target 1))\n"
+                "  (known-macro (target 1))\n"
+                "  (flet ((target (x y) x)) (target 1))\n"
+                "  (cl-labels ((target (x y) x)) (target 1))\n"
+                "  (destructuring 1))\n"))
+         (result (nelisp-dev-source-test--run text "check")))
+    (should (equal "inconclusive" (cdr (assoc "status" result))))
+    (should (= 0 (length (nelisp-dev-source-test--diagnostics result))))))
 
 (ert-deftest nelisp-dev-source-reader-distinguishes-boundary-eof ()
   (dolist (text '("(defun bad (x)" "(defun bad (x) (list x)" "\"" "(a . )" ")"))

@@ -3,7 +3,18 @@
 (require 'nelisp-dev-protocol)
 (declare-function nelisp-dev-source-dispatch "nelisp-dev-source" (request context))
 (declare-function nelisp-dev-session-dispatch "nelisp-dev-session" (request context))
+(declare-function nelisp-dev-failure-dispatch "nelisp-dev-failure" (request context))
+(declare-function nelisp-dev-failure-clear "nelisp-dev-failure" ())
+(declare-function nelisp-repl-session-clear "nelisp-repl-session" ())
+(defvar nelisp-repl-session--failures)
+(defvar nelisp-repl-session--records)
 (defvar nelisp-dev--session-id nil)
+
+(defun nelisp-dev--failure-adapters ()
+  "Load and register the host live failure adapter."
+  (require 'nelisp-dev-failure)
+  (list (cons "diagnose" #'nelisp-dev-failure-dispatch)
+        (cons "retry" #'nelisp-dev-failure-dispatch)))
 
 (defun nelisp-dev-session-context (&optional root)
   "Create a context for this host Emacs process's explicit replay registry.
@@ -13,11 +24,77 @@ The process-lifetime ID is local metadata, not a remote attachment credential."
       (setq nelisp-dev--session-id
             (secure-hash 'sha256 (format "%S:%S" (current-time) (random)))))
     (plist-put context :session-id nelisp-dev--session-id)
+    (plist-put context :live-session t)
     (plist-put context :adapters
                (append (plist-get context :adapters)
                        (list (cons "session.export" #'nelisp-dev-session-dispatch)
-                             (cons "session.replay" #'nelisp-dev-session-dispatch))))
+                             (cons "session.replay" #'nelisp-dev-session-dispatch)
+                             (cons "session.clear" #'nelisp-dev-session-clear))
+                       (nelisp-dev--failure-adapters)))
     context))
+
+(defun nelisp-dev--live-host-session-p (context)
+  "Return non-nil only for the current process's live host session context."
+  (and (eq (plist-get context :live-session) t)
+       (equal (plist-get context :target) "host-emacs")
+       (stringp (plist-get context :session-id))
+       (equal (plist-get context :session-id) nelisp-dev--session-id)))
+
+(defun nelisp-dev--failure-clear ()
+  "Clear an optional failure adapter handle table and return its count."
+  (cond
+   ((fboundp 'nelisp-dev-failure-clear)
+    (or (funcall #'nelisp-dev-failure-clear) 0))
+   (t 0)))
+
+(defun nelisp-dev-session-clear (request context)
+  "Clear retained live-session diagnostics for REQUEST in CONTEXT.
+This never invokes GC, replays records, or changes application state."
+  (if (not (nelisp-dev--live-host-session-p context))
+      (nelisp-dev-protocol-envelope
+       "session.clear" (nelisp-dev--request-id request) "unsupported"
+       (nelisp-dev--identity context) nil
+       (vector (list (cons "code" "NELISP-DEV-LIVE-SESSION-REQUIRED"))) nil
+       ["A current live host session context is required; nothing was cleared."])
+    (require 'nelisp-repl-session)
+    (let* ((failure-count (length nelisp-repl-session--failures))
+           (record-count (length nelisp-repl-session--records))
+           (detail-count (if (boundp 'nelisp-dev-protocol--details)
+                             (hash-table-count nelisp-dev-protocol--details) 0))
+           (code-count (if (and (fboundp 'nelisp-repl-code-forget)
+                                (boundp 'nelisp-repl-code--records))
+                              (hash-table-count nelisp-repl-code--records) 0))
+           (gc-snapshot-count 0)
+           (gc-epoch-count (if (and (boundp 'nelisp-dev-gc--epochs)
+                                    (hash-table-p nelisp-dev-gc--epochs)
+                                    (gethash (plist-get context :session-id)
+                                             nelisp-dev-gc--epochs)) 1 0))
+           (failure-handle-count 0))
+      (nelisp-repl-session-clear)
+      (when (fboundp 'nelisp-repl-code-forget)
+        (funcall #'nelisp-repl-code-forget))
+      (when (fboundp 'nelisp-dev-protocol-detail-clear)
+        (funcall #'nelisp-dev-protocol-detail-clear))
+      (when (fboundp 'nelisp-dev-gc-clear)
+        (setq gc-snapshot-count
+              (or (funcall #'nelisp-dev-gc-clear (plist-get context :session-id)) 0)))
+      (setq failure-handle-count (nelisp-dev--failure-clear))
+      (nelisp-dev-protocol-envelope
+       "session.clear" (nelisp-dev--request-id request) "ok"
+       (nelisp-dev--identity context)
+       (list (cons "failures" failure-count)
+             (cons "replay_records" record-count)
+             (cons "code_provenance" code-count)
+             (cons "protocol_details" detail-count)
+             (cons "gc_snapshots" gc-snapshot-count)
+             (cons "gc_epochs" gc-epoch-count)
+             (cons "failure_handles" failure-handle-count))
+       nil
+       (list (cons "process_scope" "current-host-session")
+             (cons "gc_invoked" :false)
+             (cons "replayed" :false)
+             (cons "application_state_affected" :false))
+       ["Only retained development diagnostics were released."]))))
 
 (defun nelisp-dev-context (&optional root)
   "Create a source-query context for this host Emacs process.

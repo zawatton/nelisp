@@ -5,6 +5,7 @@
 
 (defconst nelisp-dev-source--max-file-bytes (* 2 1024 1024))
 (defconst nelisp-dev-source--max-files 32)
+(defvar nelisp-dev-source--diagnostic-sequence 0)
 
 (defun nelisp-dev-source--arg (request key)
   (cdr (assoc key (cdr (assoc "arguments" request)))))
@@ -76,6 +77,109 @@
             (cons "provenance" "known: reader definition")
             (cons "effects" ["unknown"])))))
 
+(defun nelisp-dev-source--plain-arity (lambda-list)
+  "Return (MIN . MAX) for a simple plain defun LAMBDA-LIST.
+MAX is nil for an `&rest' function.  Return nil for unsupported shapes."
+  (catch 'invalid
+    (unless (proper-list-p lambda-list) (throw 'invalid nil))
+    (let ((state 'required) (required 0) (optional 0) rest names)
+      (while lambda-list
+        (let ((arg (pop lambda-list)))
+          (cond
+           ((eq arg '&optional)
+            (unless (eq state 'required) (throw 'invalid nil))
+            (setq state 'optional))
+           ((eq arg '&rest)
+            (when (or rest (not (= (length lambda-list) 1))
+                      (not (symbolp (car lambda-list)))
+                      (memq (car lambda-list) (append '(nil t) names))
+                      (string-match-p "\\`[&:]" (symbol-name (car lambda-list))))
+              (throw 'invalid nil))
+            (pop lambda-list) (setq rest t state 'rest))
+           ((memq arg '(&key &allow-other-keys &aux &body))
+            (throw 'invalid nil))
+           ((and (symbolp arg) (not (memq arg (append '(nil t) names)))
+                 (not (string-match-p "\\`[&:]" (symbol-name arg))))
+            (push arg names)
+            (pcase state
+              ('required (cl-incf required))
+              ('optional (cl-incf optional))
+              ('rest (throw 'invalid nil))))
+           (t (throw 'invalid nil)))))
+      (cons required (unless rest (+ required optional))))))
+
+(defun nelisp-dev-source--arity-diagnostic (source record symbol arity actual form)
+  (let ((diagnostic (nelisp-dev-source--diagnostic
+   "NELISP-CHECK-ARITY" source (plist-get record :start) (plist-get record :end)
+   (format "Call to %s has %d argument%s; expected %s"
+           symbol actual (if (= actual 1) "" "s")
+           (if (cdr arity)
+               (format "%d..%d" (car arity) (cdr arity))
+             (format "at least %d" (car arity))))
+   (list symbol actual form (cl-incf nelisp-dev-source--diagnostic-sequence)))))
+    (append diagnostic
+            (list (cons "precision" "definition")
+                  (cons "expected"
+                        (list (cons "minimum_arguments" (car arity))
+                              (cons "maximum_arguments" (or (cdr arity) :null))))
+                  (cons "actual" (list (cons "arguments" actual)))))))
+
+(defun nelisp-dev-source--known-call-forms (form defs macros diagnostics source)
+  "Collect only arity violations provable from a reader form.
+Unknown forms are deliberately opaque: they may be macros."
+  (if (not (and (consp form) (proper-list-p form)))
+      diagnostics
+    (let ((head (car form)))
+      (cond
+       ((memq head macros) diagnostics)
+       ((memq head '(quote function flet labels cl-flet cl-labels)) diagnostics)
+       ((and (memq head '(if and or progn prog1 prog2 when unless while))
+             (not (memq head macros)))
+       (dolist (child (cdr form))
+          (setq diagnostics
+                (nelisp-dev-source--known-call-forms
+                 child defs macros diagnostics source)))
+        diagnostics)
+       ((memq head '(let let*))
+        (dolist (binding (and (proper-list-p (cadr form)) (cadr form)))
+          (when (consp binding)
+            (setq diagnostics
+                  (nelisp-dev-source--known-call-forms
+                   (cadr binding) defs macros diagnostics source))))
+        (dolist (child (cddr form))
+          (setq diagnostics
+                (nelisp-dev-source--known-call-forms
+                 child defs macros diagnostics source)))
+        diagnostics)
+       ((eq head 'setq)
+        (let ((rest (cdr form)))
+          (while (consp rest)
+            (setq diagnostics
+                  (nelisp-dev-source--known-call-forms
+                   (cadr rest) defs macros diagnostics source)
+                  rest (cddr rest)))
+          diagnostics))
+       ((and (symbolp head) (assoc head defs))
+        (let* ((arity (cdr (assq head defs)))
+               (actual (1- (length form))))
+          (when (or (< actual (car arity))
+                    (and (cdr arity) (> actual (cdr arity))))
+            (push (nelisp-dev-source--arity-diagnostic
+                   source (list :start (plist-get source :scan-start)
+                                :end (plist-get source :scan-end))
+                   (symbol-name head) arity actual form)
+                  diagnostics))
+          (dolist (child (cdr form))
+            (setq diagnostics
+                  (nelisp-dev-source--known-call-forms
+                   child defs macros diagnostics source)))
+          diagnostics))
+       ((and (symbolp head) (memq head macros)) diagnostics)
+       ;; An unrecognised head may be an unexpanded macro.  Do not inspect
+       ;; its arguments, since that could turn a possible form into a false
+       ;; arity error.
+       (t diagnostics)))))
+
 (defun nelisp-dev-source--calls (form)
   "Return syntactic call-head candidates, excluding quoted data.
 Unknown macros and local function shadowing prevent these candidates from
@@ -119,6 +223,7 @@ It does not run application forms, macros, source loaders, or dependency builds.
                     (vector (nelisp-dev-source--arg request "path"))))
          (symbol (nelisp-dev-source--arg request "symbol"))
          sources diagnostics definitions edges errors)
+    (setq nelisp-dev-source--diagnostic-sequence 0)
     (condition-case err
         (progn
           (unless (and (vectorp paths) (< 0 (length paths))
@@ -128,7 +233,6 @@ It does not run application forms, macros, source loaders, or dependency builds.
             (error "arguments.symbol is required"))
           (dolist (path (delete-dups (sort (append paths nil) #'string<)))
             (let* ((source (nelisp-dev-source--read root path))
-                   (text (plist-get source :text))
                    (problem (plist-get source :problem)))
               (push source sources)
               (when problem
@@ -137,27 +241,74 @@ It does not run application forms, macros, source loaders, or dependency builds.
                        "NELISP-CHECK-SYNTAX" source (plist-get problem :start)
                        (plist-get problem :end) (plist-get problem :message) "reader")
                       diagnostics))
-              (dolist (record (plist-get source :forms))
-                (let* ((definition (nelisp-dev-source--definition record text))
-                       (form (plist-get record :form)))
-                  (when definition
-                    (when (equal symbol (cdr (assoc "symbol" definition)))
-                      (push (append (list (cons "path" (plist-get source :path))) definition)
-                            definitions))
-                    (when (and (equal op "impact")
-                               (cl-some (lambda (head) (equal (symbol-name head) symbol))
-                                        (cl-mapcan #'nelisp-dev-source--calls (cdddr form))))
-                      (push (list (cons "caller" (cdr (assoc "symbol" definition)))
-                                  (cons "path" (plist-get source :path))
-                                  (cons "kind" "syntactic-call-candidate")
-                                  (cons "provenance" "inferred: unexpanded reader form"))
-                            edges))))))))
+              nil)))
       (error
        (setq errors (1+ (or errors 0)))
        (push (list (cons "code" "NELISP-SOURCE-INPUT")
                    (cons "message" (error-message-string err))) diagnostics)))
-    (setq sources (nreverse sources) definitions (nreverse definitions)
+    (setq sources (nreverse sources)
           edges (nreverse edges) diagnostics (nreverse diagnostics))
+    ;; Build the index only from uniquely declared, simple plain defuns.
+    (let (plain macros all-names)
+      (dolist (source sources)
+        (dolist (record (plist-get source :forms))
+          (let* ((form (plist-get record :form))
+                 (definition (nelisp-dev-source--definition record
+                                                            (plist-get source :text))))
+            (when definition
+              (push (cdr (assoc "symbol" definition)) all-names)
+              (when (equal symbol (cdr (assoc "symbol" definition)))
+                (push (append (list (cons "path" (plist-get source :path))) definition)
+                      definitions))
+              (when (and (equal op "impact")
+                         (cl-some (lambda (head) (equal (symbol-name head) symbol))
+                                  (cl-mapcan #'nelisp-dev-source--calls (cdddr form))))
+                (push (list (cons "caller" (cdr (assoc "symbol" definition)))
+                            (cons "path" (plist-get source :path))
+                            (cons "kind" "syntactic-call-candidate")
+                            (cons "provenance" "inferred: unexpanded reader form"))
+                      edges))
+              (cond
+               ((equal "defmacro" (cdr (assoc "kind" definition)))
+                (push (intern (cdr (assoc "symbol" definition))) macros))
+               ((and (equal "defun" (cdr (assoc "kind" definition)))
+                     (nelisp-dev-source--plain-arity (nth 2 form)))
+                (let ((name (cadr form)))
+                  (push (cons name
+                              (cons (nelisp-dev-source--plain-arity (nth 2 form))
+                                    (cdr (assq name plain))))
+                        plain)))))))
+      ;; Any duplicate declaration makes the identity unknown and therefore
+      ;; removes the name from the provable index.
+      (let (unique)
+        (dolist (entry plain)
+          (when (and (cdr entry) (null (cddr entry))
+                     (= 1 (cl-count (symbol-name (car entry)) all-names :test #'equal)))
+            (push (cons (car entry) (cadr entry)) unique)))
+        (setq plain unique))
+      (dolist (source sources)
+        (dolist (record (plist-get source :forms))
+          (let ((form (plist-get record :form)))
+            (when (and (equal op "check") (consp form) (eq (car form) 'defun)
+                       (symbolp (cadr form))
+                       (assq (cadr form) plain))
+              (let ((source-copy (copy-sequence source)))
+                (plist-put source-copy :scan-start (plist-get record :start))
+                (plist-put source-copy :scan-end (plist-get record :end))
+                (dolist (body (cdddr form))
+                  (setq diagnostics
+                        (nelisp-dev-source--known-call-forms
+                         body plain macros diagnostics source-copy))))))))))
+    (setq definitions (nreverse definitions)
+          diagnostics (nreverse diagnostics))
+    (when (equal op "check")
+      (let ((arity-errors
+             (cl-count-if (lambda (diagnostic)
+                            (equal "NELISP-CHECK-ARITY"
+                                   (cdr (assoc "code" diagnostic))))
+                          diagnostics)))
+        (when (> arity-errors 0)
+          (setq errors (+ (or errors 0) arity-errors)))))
     (let ((identity
            (list (cons "target" (or (plist-get context :target) "host-emacs"))
                  (cons "source_revision" :null)
@@ -184,7 +335,8 @@ It does not run application forms, macros, source loaders, or dependency builds.
        (list (cons "definitions" (vconcat definitions)) (cons "callers" (vconcat edges))
              (cons "coverage" "Explicit files only; syntax and parsed definitions"))
        ["No application code or macro was executed."
-        "Arity, dynamic calls, macro expansion and complete dependency closure are not proven."
+        "Arity coverage is limited to uniquely declared plain defuns in the explicit input set."
+        "Dynamic calls, macro expansion and complete dependency closure are not proven."
         "Loaded artifact identity, runtime contracts and effects remain unknown."
         "Multiple source definitions do not identify which definition is currently loaded."]))))
 

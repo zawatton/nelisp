@@ -30,8 +30,13 @@ tools/ai/nelisp-ai.sh dev --request examples/repl-development/describe.json --js
 explicit `arguments.files` array (at most 32 files). `check` takes the same file
 selection without a symbol. Files must be inside the project, UTF-8, and at most
 2 MiB each. There is no implicit crawl through generated build directories.
-`check` currently validates reader syntax; valid syntax still returns
-`inconclusive` because arity and dependency closure have not been established.
+`check` validates reader syntax and checks argument counts for direct calls to
+uniquely declared plain `defun` functions in the explicit input files. Required,
+optional and rest arguments are supported; unknown macros, local function
+bindings and unsupported lambda lists limit coverage. Diagnostics identify the
+containing definition, not the exact failing expression. A check without errors
+still returns `inconclusive` because complete dependency and runtime coverage
+have not been established.
 `impact` reports syntactic call candidates, excluding quoted data; unknown
 macros and dynamic dispatch prevent a complete runtime-call claim.
 
@@ -82,6 +87,50 @@ invalidates a cursor. Cursors expire after 15 minutes. An individual response
 that cannot fit is reported as inconclusive; no serialized JSON is cut midway.
 
 ## Current boundaries
+
+### Diagnose, repair and retry in one host REPL
+
+Keep a live context in the host process where the failure was recorded:
+
+```elisp
+(setq dev-context (nelisp-dev-session-context default-directory))
+(defun demo-call (value) (error "repair this definition"))
+(condition-case nil (nelisp-repl-session-call 'demo-call 7) (error nil))
+(setq failure-id (plist-get (car (last (nelisp-repl-session-failures))) :id))
+(setq diagnosis
+      (nelisp-dev-dispatch
+       `(("schema_version" . "1") ("operation" . "diagnose")
+         ("request_id" . "diagnose-demo")
+         ("arguments" ("failure_id" . ,failure-id))
+         ("target" . "host-emacs") ("session_id" . :null) ("limits"))
+       dev-context))
+(setq failure-handle (cdr (assoc "failure_handle" (cdr (assoc "data" diagnosis)))))
+(defun demo-call (value) (setq demo-result (* value 2)))
+(nelisp-dev-dispatch
+ `(("schema_version" . "1") ("operation" . "retry")
+   ("request_id" . "retry-demo")
+   ("arguments" ("failure_handle" . ,failure-handle)
+                ("effects_policy" . "explicit-only"))
+   ("target" . "host-emacs") ("session_id" . :null) ("limits"))
+ dev-context)
+(= demo-result 14)
+```
+
+Diagnosis does not call the function or serialize its argument graph. Retry
+requires the returned live handle and an explicit effects policy. Argument
+objects are retained by reference, so their current values are used; this is
+not a snapshot or rollback. An opaque result is summarized without exporting
+the returned object graph. Missing call-chain, source and loaded-generation
+evidence remains unknown. These operations do not attach a CLI worker to a
+different REPL process.
+
+Request `session.clear` with empty arguments in this same context to release
+failure and replay records, code provenance, protocol details and loaded
+adapter diagnostic caches. It invalidates retained failure handles and live
+diagnostic cursors. It does not collect garbage, unload application functions,
+or undo application effects. Native publication state is outside this clear
+operation. Clear the diagnostics before measuring their retained memory;
+allocator reservations and RSS may remain even after objects are collectible.
 
 ### Export and validate explicit host REPL records
 
