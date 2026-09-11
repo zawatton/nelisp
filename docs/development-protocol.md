@@ -196,6 +196,60 @@ assertions in the recipe to verify the reproduced behavior.
 Effectful operations reject continuation cursors before execution; fetching
 another diagnostic page must never rerun a recipe or retry a saved call.
 
+### Plan and apply a native allocator/GC replacement
+
+Start the opt-in Linux x86_64 runtime using the [native REPL setup](repl-development.md#native-allocator-and-gc-development).
+Keep this process alive throughout the following requests:
+
+```elisp
+(require 'nelisp-dev-reload)
+(setq native-context (nelisp-dev-reload-context default-directory))
+(setq candidate
+      (nelisp-dev-dispatch
+       '(("schema_version" . "1") ("operation" . "reload.plan")
+         ("request_id" . "gc-plan")
+         ("arguments" ("unit" . "allocator-gc")
+                      ("atomicity" . "runtime-unit")
+                      ("effects_policy" . "explicit-only"))
+         ("target" . "native-linux-x86_64") ("session_id" . :null) ("limits"))
+       native-context))
+(cdr (assoc "status" candidate)) ; must be "ok" before continuing
+(setq candidate-id (cdr (assoc "plan_id" (cdr (assoc "data" candidate)))))
+(nelisp-dev-dispatch
+ (list '("schema_version" . "1") '("operation" . "reload.apply")
+       '("request_id" . "gc-apply")
+       (cons "arguments" (list (cons "plan_id" candidate-id)
+                               '("effects_policy" . "explicit-only")))
+       '("target" . "native-linux-x86_64") '("session_id" . :null) '("limits"))
+ native-context)
+(nelisp-runtime-reload-status)
+```
+
+Planning runs the host compiler and maps a validated candidate without changing
+the publication generation. It is effectful and requires explicit consent in
+the request. Applying never rebuilds or retries application code. Both operations
+reject cursors. The CLI's host context cannot apply a native process's plan.
+
+The plan ID binds the session, generation, binary and ABI hashes, named compiler
+environment options, candidate/source hashes, and a conservative inventory of
+`.el`/`.elc` files directly in `lisp`, `src`, and `scripts`. Files are limited to
+16 MiB each, with at most 1024 files and 32 MiB total. File additions, deletions
+and content edits invalidate the plan. Runtime identity is sampled again after
+the apply-time file checks, immediately before calling the existing guarded
+native installer. A stale request returns `NELISP-DEV-STALE-PLAN` and publishes
+nothing. An authorized apply attempt consumes the ID, including a failed attempt.
+
+Plans expire after 15 minutes and are limited to 64 per process. Use
+`nelisp-dev-reload-clear` to revoke them and their contexts, then create a new
+context. JSON reports are inspection data; importing one does not restore
+publication authority. Clearing does not unmap candidate code. To restore the
+executable's original GC, use `nelisp-runtime-reload-restore-originals`.
+
+This supports only the fixed allocator/GC unit and its existing safe-point
+contract. It does not establish a general native direct-caller closure, freeze
+host compiler libraries, or lock files against concurrent edits. Keep inputs
+unchanged while building or applying. It provides no heap migration or rollback.
+
 ### Remaining acceptance work
 
 The source adapter is a nonexecuting, bounded analysis path. It must report
@@ -203,7 +257,7 @@ unknown dynamic calls and macro behavior rather than treating parsing as a
 proof that the program is correct. Source coordinates describe definitions or
 diagnostics, not a guaranteed native failing instruction.
 
-The native reload/replay plan state machine, cross-process transport, hash-bound
+General Lisp/native caller reload plans, cross-process transport, hash-bound
 editing and comparative development-efficiency study remain separate acceptance
 work. Existing failure capture, code identity, GC inspection and explicit replay
 are documented in the REPL guide. Do not infer their unified protocol support

@@ -265,7 +265,8 @@ immediately before publication. Calling it again builds another candidate.
 These handles are process-local, and staging retains code mappings until
 process exit. This is not a saved, immutable reload plan: source hashes,
 session identity, and dependency closure are not frozen by this API. The
-common protocol's `reload.plan` and `reload.apply` remain unsupported.
+common protocol's [native `reload.plan` and `reload.apply`](development-protocol.md#plan-and-apply-a-native-allocatorgc-replacement)
+add process-local, single-use authority and stale-input checks above this API.
 
 The replacement contains the allocator and the complete collector unit.
 Collector helpers can be added, removed, renamed, or rewritten within the

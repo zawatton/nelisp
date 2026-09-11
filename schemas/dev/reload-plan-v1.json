@@ -1,1 +1,92 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"nelisp/dev/reload-plan-v1","type":"object","required":["schema_version","plan_id","session_id","expected_generation","target","limitations"],"properties":{"schema_version":{"const":"1"},"plan_id":{"type":"string"},"session_id":{"type":["string","null"]},"expected_generation":{"type":["integer","null"]},"target":{"type":"string"},"limitations":{"type":"array"}},"additionalProperties":true}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nelisp/dev/reload-plan-v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "plan_id",
+    "session_id",
+    "expected_generation",
+    "target",
+    "unit",
+    "atomicity",
+    "state",
+    "expires_at",
+    "source_files",
+    "limitations",
+    "source_set_hash",
+    "binary_hash",
+    "abi_hash",
+    "build_options_hash",
+    "artifact_hash",
+    "source_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "target": {
+      "const": "native-linux-x86_64"
+    },
+    "unit": {
+      "const": "allocator-gc"
+    },
+    "atomicity": {
+      "const": "runtime-unit"
+    },
+    "state": {
+      "const": "validated"
+    },
+    "expires_at": {
+      "type": "number"
+    },
+    "source_files": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1024
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_set_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "binary_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "abi_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "build_options_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

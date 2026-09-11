@@ -1,5 +1,5 @@
 ;;; nelisp-dev.el --- shared P1 development dispatcher -*- lexical-binding: t; -*-
-(require 'json)
+(require 'json nil t)
 (require 'nelisp-dev-protocol)
 (declare-function nelisp-dev-source-dispatch "nelisp-dev-source" (request context))
 (declare-function nelisp-dev-session-dispatch "nelisp-dev-session" (request context))
@@ -167,7 +167,12 @@ This does not connect to or impersonate a standalone REPL session."
                                      (mapcar #'car (plist-get context :adapters))))
          (cons "targets" (list (cons "host-emacs" "partial")
                                 (cons "normal-standalone" "unverified")
-                                (cons "native-linux-x86_64" "unsupported")))
+                                (cons "native-linux-x86_64"
+                                      (if (and (equal (plist-get context :target)
+                                                      "native-linux-x86_64")
+                                               (assoc "reload.apply"
+                                                      (plist-get context :adapters)))
+                                          "partial" "unsupported"))))
          (cons "adapters"
                (list (cons "DEV001" (list (cons "status" "partial")))
                      (cons "DEV010" (list (cons "status" "partial")))))
@@ -235,7 +240,7 @@ This does not connect to or impersonate a standalone REPL session."
     (let ((hook (cdr (assoc op (plist-get context :adapters)))))
       (cond
        ((and (member op '("retry" "session.replay" "session.export" "session.clear"
-                           "reload.apply" "gc.collect"))
+                           "reload.plan" "reload.apply" "gc.collect"))
              (let ((cursor (cdr (assoc "cursor" (cdr (assoc "limits" request))))))
                (and cursor (not (eq cursor :null)))))
         (error "NELISP-DEV-INVALID-REQUEST: effectful operations cannot use cursors"))

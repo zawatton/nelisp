@@ -1,5 +1,11 @@
 ;;; nelisp-dev-protocol.el --- bounded DEV protocol envelopes -*- lexical-binding: t; -*-
-(require 'json)
+(unless (require 'json nil t)
+  (add-to-list 'load-path
+               (expand-file-name "../packages/nelisp-json/src"
+                                 (file-name-directory
+                                  (or load-file-name buffer-file-name))))
+  (require 'nelisp-json))
+(declare-function nelisp-json-encode "nelisp-json" (value))
 (require 'cl-lib)
 (defconst nelisp-dev-protocol-version "1")
 (defconst nelisp-dev-protocol-budget 16384)
@@ -130,7 +136,9 @@ Use this for bounded diagnostic records, never for arbitrary application heaps."
   (let* ((json-encoding-pretty-print nil)
          (json-null nil)
          (json-false :json-false)
-         (json (json-encode (nelisp-dev-protocol--json-value value))))
+         (json (if (fboundp 'json-encode)
+                   (json-encode (nelisp-dev-protocol--json-value value))
+                 (nelisp-json-encode (nelisp-dev-protocol--json-value value)))))
     json))
 
 (defun nelisp-dev-protocol-json (value)
@@ -138,6 +146,14 @@ Use this for bounded diagnostic records, never for arbitrary application heaps."
     (if (<= (string-bytes json) nelisp-dev-protocol-budget)
         json
       (error "NELISP-DEV result exceeds encoded budget"))))
+
+(defun nelisp-dev-protocol--fields (object &rest pairs)
+  "Set string-key PAIRS without depending on substrate-specific setf expansion."
+  (while pairs
+    (let* ((key (pop pairs)) (value (pop pairs)) (cell (assoc key object)))
+      (if cell (setcdr cell value)
+        (push (cons key value) object))))
+  object)
 
 (defun nelisp-dev-protocol-page (result request context)
   "Page RESULT diagnostics with a cursor bound to the complete current result.
@@ -174,14 +190,15 @@ with an explicit limitation; callers never receive truncated JSON bytes."
               expiry (string-to-number (nth 2 parts)))))
     (let ((count (min size (- total offset))) (done nil))
       (while (not done)
-        (setf (alist-get "diagnostics" base nil nil #'equal)
-              (cl-subseq rows offset (+ offset count))
-              (alist-get "next_cursor" base nil nil #'equal)
-              (if (< (+ offset count) total)
-                  (format "%s:%d:%d" fingerprint (+ offset count) expiry) :null)
-              (alist-get "returned" summary nil nil #'equal) count
-              (alist-get "omitted" summary nil nil #'equal) (- total count)
-              (alist-get "summary" base nil nil #'equal) summary)
+        (setq summary (nelisp-dev-protocol--fields
+                       summary "returned" count "omitted" (- total count))
+              base (nelisp-dev-protocol--fields
+                    base "diagnostics"
+                    (vconcat (cl-subseq (append rows nil) offset (+ offset count)))
+                    "next_cursor" (if (< (+ offset count) total)
+                                      (format "%s:%d:%d" fingerprint (+ offset count) expiry)
+                                    :null)
+                    "summary" summary))
         (setq done (<= (string-bytes (nelisp-dev-protocol--encode base)) budget))
         (unless done
           (if (> count 0) (setq count (1- count))
@@ -195,18 +212,14 @@ with an explicit limitation; callers never receive truncated JSON bytes."
             (setq done t))))
       ;; No progress cursor: a single diagnostic cannot fit this budget.
       (when (and (= count 0) (> total 0))
-        (setf (alist-get "next_cursor" base nil nil #'equal) :null
-              (alist-get "status" base nil nil #'equal) "inconclusive"
-              (alist-get "limitations" base nil nil #'equal)
-              ["No diagnostic fits the byte budget; narrow the request."]))
+        (setq base (nelisp-dev-protocol--fields
+                    base "next_cursor" :null "status" "inconclusive"
+                    "limitations" ["No diagnostic fits the byte budget; narrow the request."])))
       (when (> (string-bytes (nelisp-dev-protocol--encode base)) budget)
-        (setf (alist-get "identity" base nil nil #'equal) :null
-              (alist-get "data" base nil nil #'equal) :null
-              (alist-get "diagnostics" base nil nil #'equal) []
-              (alist-get "next_cursor" base nil nil #'equal) :null
-              (alist-get "status" base nil nil #'equal) "inconclusive"
-              (alist-get "limitations" base nil nil #'equal)
-              ["Result metadata exceeds the byte budget; narrow the request."]))
+        (setq base (nelisp-dev-protocol--fields
+                    base "identity" :null "data" :null "diagnostics" []
+                    "next_cursor" :null "status" "inconclusive"
+                    "limitations" ["Result metadata exceeds the byte budget; narrow the request."])))
       base)))
 
 (provide 'nelisp-dev-protocol)

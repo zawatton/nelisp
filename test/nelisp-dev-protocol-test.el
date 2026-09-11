@@ -4,7 +4,7 @@
 
 (ert-deftest nelisp-dev-protocol-cursor-never-reexecutes-effects ()
   (dolist (op '("retry" "session.replay" "session.export" "session.clear"
-                "reload.apply" "gc.collect"))
+                "reload.plan" "reload.apply" "gc.collect"))
     (let* ((calls 0)
            (request (nelisp-dev-protocol-test--request op))
            (context (list :target "host-emacs" :adapters
@@ -102,6 +102,18 @@
     (should (eq :false (alist-get 'false value)))
     (should (null (alist-get 'object value)))
     (should (equal [] (alist-get 'empty value)))))
+
+(ert-deftest nelisp-dev-protocol-standalone-encoder-preserves-wire-values ()
+  (let ((load-path (cons (expand-file-name "packages/nelisp-json/src") load-path)))
+    (require 'nelisp-json))
+  (let* ((input (list (cons "null" :null) (cons "false" :false)
+                      (cons "array" []) (cons "object" nil)
+                      (cons "text" (concat "日本語" (string 1 8 12)))))
+         (expected (nelisp-dev-protocol-json input))
+         (actual (cl-letf (((symbol-function 'json-encode) nil))
+                   (nelisp-dev-protocol-json input))))
+    (should (equal (json-read-from-string expected)
+                   (json-read-from-string actual)))))
 
 (ert-deftest nelisp-dev-protocol-detail-overwrite-expire-and-capacity ()
   (let ((nelisp-dev-protocol--details (make-hash-table :test #'equal))
