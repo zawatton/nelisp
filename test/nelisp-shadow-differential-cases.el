@@ -57,6 +57,13 @@
    (garbage-collect)
    (list (length items) (length (aref items 0))
          (length (aref items 57)) (aref (aref items 57) 471)))
+ ;; Keep the zero-count and multi-byte repeat cases in the native/prelude
+ ;; differential corpus too.  The former exercises the repeat base case; the
+ ;; latter checks that one repeated codepoint remains one character at every
+ ;; sampled position.
+ (list (= (length (make-string 0 65)) 0)
+       (let ((s (make-string 3 12354)))
+         (list (length s) (aref s 0) (aref s 1) (aref s 2))))
  ;; Environment is a cross-substrate boundary: the hosted and standalone
  ;; implementations must agree for a present value, an explicitly empty
  ;; value, and an absent name.  Save and restore the two temporary names so

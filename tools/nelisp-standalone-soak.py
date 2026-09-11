@@ -2,6 +2,7 @@
 """Exercise the standalone NeLisp GC through one persistent REPL process."""
 import argparse
 import hashlib
+import json
 import math
 import os
 import selectors
@@ -51,6 +52,8 @@ def main():
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--rss-growth-ceiling-kib", type=int, default=5120)
     parser.add_argument("--rss-ceiling-kib", type=int, default=524288)
+    parser.add_argument("--diagnostic-dir", type=Path,
+                        help="save child smaps and metrics snapshots here")
     args = parser.parse_args()
     numeric = (args.duration, args.batch_interval, args.timeout,
                args.rss_growth_ceiling_kib, args.rss_ceiling_kib)
@@ -82,6 +85,28 @@ def main():
     peak_rss = None
     started = None
     batches = 0
+
+    def save_diagnostic(label):
+        """Best-effort full smaps/metrics capture; never changes the result."""
+        if args.diagnostic_dir is None or child.poll() is not None:
+            return
+        try:
+            args.diagnostic_dir.mkdir(parents=True, exist_ok=True)
+            with open(f"/proc/{child.pid}/smaps", encoding="ascii") as stream:
+                smaps_text = stream.read()
+            (args.diagnostic_dir / f"{label}.smaps").write_text(
+                smaps_text, encoding="ascii")
+            metrics = {
+                "label": label, "pid": child.pid, "start_rss_kib": start_rss,
+                "current_rss_kib": last_rss, "peak_rss_kib": peak_rss,
+                "batches": batches,
+                "elapsed_seconds": ((time.monotonic() - started)
+                                     if started is not None else 0.0),
+            }
+            (args.diagnostic_dir / f"{label}.json").write_text(
+                json.dumps(metrics, sort_keys=True) + "\n", encoding="ascii")
+        except (OSError, ValueError, TypeError):
+            return
 
     def sample_rss():
         nonlocal last_rss
@@ -163,6 +188,7 @@ def main():
         peak_rss = start_rss
         started = time.monotonic()
         batches = 0
+        save_diagnostic("baseline")
         while time.monotonic() - started < args.duration:
             current_rss = allocation_batch(f"NELISP_SOAK_BATCH_{batches}")
             batches += 1
@@ -173,6 +199,7 @@ def main():
                 time.sleep(min(args.batch_interval, max(0, args.duration - (time.monotonic() - started))))
         if batches == 0:
             raise RuntimeError("zero completed allocation batches")
+        save_diagnostic("final")
         print(f"batches={batches} start_rss_kib={start_rss} sampled_peak_rss_kib={peak_rss} elapsed_seconds={time.monotonic() - started:.3f}")
         if child.poll() is not None:
             raise RuntimeError(f"REPL child exited with status {child.returncode}")
@@ -187,6 +214,7 @@ def main():
         print("nelisp-standalone-soak: PASS")
         return 0
     except (OSError, RuntimeError) as error:
+        save_diagnostic("failure")
         smaps = (smaps_rollup_kib(child.pid)
                  if child.poll() is None else None)
         smaps_text = ("unavailable" if smaps is None

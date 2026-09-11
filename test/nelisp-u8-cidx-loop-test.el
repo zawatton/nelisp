@@ -23,6 +23,22 @@
     ;; The sole occurrence is the defun name itself.
     (should (= 1 (cl-count 'nl_u8_cidx_byte (flatten-tree form))))))
 
+(ert-deftest nelisp-u8-cidx-loop/repeat-helper-is-iterative ()
+  "The make-string UTF-8 repeat helper must not recurse per codepoint."
+  (let ((form (cl-find 'nl_u8_repeat
+                       nelisp-standalone--applyfn-m5-helpers
+                       :key (lambda (item)
+                              (and (consp item) (cadr item))))))
+    (should form)
+    (should (memq 'while (flatten-tree form)))
+    ;; The helper name occurs only in its defun header after the fix.
+    (should (= 1 (cl-count 'nl_u8_repeat (flatten-tree form))))
+    ;; Preserve the old zero return for both non-positive and successful runs.
+    (let ((body (nth 3 form)))
+      (should (equal (nth 1 body) '(<= n 0)))
+      (should (= (nth 2 body) 0))
+      (should (= (car (last (nth 3 body))) 0)))))
+
 (ert-deftest nelisp-u8-cidx-loop/long-string-probes ()
   "Check mutation and exceed the old recursive walk's 1 GiB stack."
   (let* ((binary (cl-find-if
@@ -48,6 +64,36 @@
                                 (car case))))
           (should (= rc 0))
           (should (equal (string-trim (buffer-string)) (cdr case))))))))
+
+(ert-deftest nelisp-u8-cidx-loop/large-make-string-gc ()
+  "A single large make-string survives allocation and an explicit GC."
+  (let* ((requested (getenv "NELISP_LARGE_STRING_BINARY"))
+         (binary (or (and requested (file-executable-p requested) requested)
+                     (cl-find-if
+                      #'file-executable-p
+                      (mapcar (lambda (name)
+                                (expand-file-name name nelisp-u8-cidx-loop-test--root))
+                              (if (eq system-type 'windows-nt)
+                                  '("target/nelisp.exe" "target/nelisp")
+                                '("target/nelisp" "target/nelisp.exe"))))))
+         (timeout (or (executable-find "gtimeout")
+                      (and (not (eq system-type 'windows-nt))
+                           (executable-find "timeout"))))
+         (forms '("(let ((s (make-string 6291456 66))) (garbage-collect) (and (= (length s) 6291456) (= (aref s 0) 66) (= (aref s 3145728) 66) (= (aref s 6291455) 66)))"
+                  "(let ((s (make-string 33554432 67))) (garbage-collect) (and (= (length s) 33554432) (= (aref s 0) 67) (= (aref s 16777216) 67) (= (aref s 33554431) 67)))"
+                  "(let ((s (make-string 200000 12354))) (and (= (length s) 200000) (= (aref s 0) 12354) (= (aref s 100000) 12354) (= (aref s 199999) 12354)))"
+                  "(= (length (make-string 0 65)) 0)")))
+    (unless binary (ert-skip "no executable target/nelisp[.exe]"))
+    (unless timeout (ert-skip "GNU timeout/gtimeout is required"))
+    (dolist (form forms)
+      (with-temp-buffer
+        (let ((rc (call-process timeout nil t nil "90s" binary "--eval" form)))
+          ;; `call-process' returns a signal description (a string) when the
+          ;; child dies by SIGSEGV; keep the assertion diagnostic instead of
+          ;; letting `=' raise a secondary type error.
+          (should (integerp rc))
+          (should (= rc 0))
+          (should (equal (string-trim (buffer-string)) "t")))))))
 
 (ert-deftest nelisp-u8-cidx-loop/long-multibyte-substring ()
   "Walk three- and four-byte characters with a bounded native stack."

@@ -120,6 +120,88 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
                  "AnonHugePages": 64, "Private_Dirty": 72},
             )
 
+    def test_diagnostic_dir_writes_baseline_and_final(self):
+        with tempfile.TemporaryDirectory(prefix="nelisp-soak-diag-") as directory:
+            fake = Path(directory) / "fake-child.py"
+            fake.write_text("#!" + sys.executable + "\n" + textwrap.dedent(r'''
+                import re
+                import sys
+                for line in sys.stdin:
+                    if "NELISP_SOAK_READY" in line:
+                        print("NELISP_SOAK_READY", flush=True)
+                    else:
+                        match = re.search(r'format "([^"]+)%d', line)
+                        if match:
+                            print(match.group(1).rstrip("_") + "_1", flush=True)
+            '''), encoding="utf-8")
+            fake.chmod(0o700)
+            diag = Path(directory) / "diag"
+            result = subprocess.run(
+                [sys.executable, str(HARNESS), "--binary", str(fake),
+                 "--duration", ".1", "--batch-size", "1", "--timeout", ".5",
+                 "--diagnostic-dir", str(diag)],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((diag / "baseline.smaps").is_file())
+            self.assertTrue((diag / "baseline.json").is_file())
+            self.assertTrue((diag / "final.smaps").is_file())
+            self.assertTrue((diag / "final.json").is_file())
+            blocked = Path(directory) / "blocked"
+            blocked.write_text("file", encoding="ascii")
+            result = subprocess.run(
+                [sys.executable, str(HARNESS), "--binary", str(fake),
+                 "--duration", ".1", "--batch-size", "1", "--timeout", ".5",
+                 "--diagnostic-dir", str(blocked)],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_diagnostic_dir_preserves_batch_failure_and_saves_failure(self):
+        with tempfile.TemporaryDirectory(prefix="nelisp-soak-failure-diag-") as directory:
+            fake = Path(directory) / "fake-child.py"
+            fake.write_text("#!" + sys.executable + "\n" + textwrap.dedent(r'''
+                import re
+                import sys
+                warmups = 0
+                for line in sys.stdin:
+                    if "NELISP_SOAK_READY" in line:
+                        print("NELISP_SOAK_READY", flush=True)
+                    else:
+                        match = re.search(r'format "([^"]+)%d', line)
+                        if not match:
+                            continue
+                        prefix = match.group(1).rstrip("_")
+                        if "WARMUP" in prefix:
+                            warmups += 1
+                            print(prefix + "_1", flush=True)
+                        else:
+                            print("WRONG_REPLY", flush=True)
+            '''), encoding="utf-8")
+            fake.chmod(0o700)
+            diag = Path(directory) / "diag"
+            command = [sys.executable, str(HARNESS), "--binary", str(fake),
+                       "--duration", ".1", "--batch-size", "1", "--timeout", ".5",
+                       "--diagnostic-dir", str(diag)]
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unexpected REPL response", result.stderr)
+            self.assertTrue((diag / "baseline.smaps").is_file())
+            self.assertTrue((diag / "baseline.json").is_file())
+            self.assertTrue((diag / "failure.smaps").is_file())
+            self.assertTrue((diag / "failure.json").is_file())
+            import json
+            metrics = json.loads((diag / "failure.json").read_text(encoding="ascii"))
+            self.assertGreater(metrics["pid"], 0)
+            self.assertEqual(metrics["batches"], 0)
+            self.assertGreater(metrics["start_rss_kib"], 0)
+
+            blocked = Path(directory) / "blocked"
+            blocked.write_text("file", encoding="ascii")
+            result = subprocess.run(command[:-1] + [str(blocked)],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unexpected REPL response", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

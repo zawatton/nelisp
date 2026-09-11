@@ -10888,7 +10888,18 @@ baked build's own `<'/`>'/`=' arms need it too.")
                  (mut-str-push-byte ms (logior 128 (logand (/ cp 64) 63)))
                  (mut-str-push-byte ms (logior 128 (logand cp 63))))))))
     (defun nl_u8_repeat (ms n cp)
-      (if (<= n 0) 0 (seq (nl_u8_encode ms cp) (nl_u8_repeat ms (- n 1) cp))))
+      ;; Keep large `make-string' calls iterative.  The recursive form used
+      ;; one native frame per encoded codepoint and overflowed the native
+      ;; stack around a single 6 MiB allocation.  Preserve its return
+      ;; contract: the old `seq' discarded every encode result and the
+      ;; recursive base case returned 0 for both empty and successful runs.
+      (if (<= n 0)
+          0
+        (let ((remaining n))
+          (while (> remaining 0)
+            (nl_u8_encode ms cp)
+            (setq remaining (- remaining 1)))
+          0)))
     (defun m5_length (p)
       (let* ((tag (ptr-read-u64 p 0)))
         (if (= tag 14) (m5_strlen p)
