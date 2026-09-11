@@ -48,6 +48,15 @@
  ;; Directory existence must use the target's access operation.  Darwin's
  ;; former ENOSYS stub made both checks false and hid host helper executables.
  (list (file-exists-p ".") (file-directory-p "."))
+ ;; Exercise varied small allocations while preserving their payloads across
+ ;; collection; allocator bucket-search changes must not alter live strings.
+ (let ((items (make-vector 58 nil)) (i 0))
+   (while (< i 58)
+     (aset items i (make-string (+ 16 (* i 8)) 65))
+     (setq i (1+ i)))
+   (garbage-collect)
+   (list (length items) (length (aref items 0))
+         (length (aref items 57)) (aref (aref items 57) 471)))
  ;; Environment is a cross-substrate boundary: the hosted and standalone
  ;; implementations must agree for a present value, an explicitly empty
  ;; value, and an absent name.  Save and restore the two temporary names so

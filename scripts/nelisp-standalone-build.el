@@ -1729,9 +1729,26 @@ directory tracks the tree rather than accumulating every key ever built."
               (nl_freelist_small_next_group mask (+ group 1) 0)
             (+ shift bit)))))
     (defun nl_freelist_small_next_index (mask start)
-      (if (= mask 0) -1
-        (nl_freelist_small_next_group
-         mask (/ start 8) (logand start 7))))
+      ;; Discard ineligible sizes once, then locate the lowest remaining bit
+      ;; in at most six steps.  The valid mask uses only bits 0..57.  Checking
+      ;; the tail first also avoids traversing eight empty byte groups when
+      ;; every occupied bucket is smaller than the requested size.
+      (if (> start 63) -1
+        (let* ((bits (sar mask start)) (index start))
+          (if (= bits 0) -1
+            (if (= (logand bits 1) 1) index
+              (seq
+               (if (= (logand bits 4294967295) 0)
+                   (seq (setq bits (sar bits 32)) (setq index (+ index 32))) 0)
+               (if (= (logand bits 65535) 0)
+                   (seq (setq bits (sar bits 16)) (setq index (+ index 16))) 0)
+               (if (= (logand bits 255) 0)
+                   (seq (setq bits (sar bits 8)) (setq index (+ index 8))) 0)
+               (if (= (logand bits 15) 0)
+                   (seq (setq bits (sar bits 4)) (setq index (+ index 4))) 0)
+               (if (= (logand bits 3) 0)
+                   (seq (setq bits (sar bits 2)) (setq index (+ index 2))) 0)
+               (+ index (if (= (logand bits 1) 0) 1 0))))))))
     (defun nl_freelist_bucket_pop (b want)
       (let* ((head (+ 268435696 (- b 16)))
              (cur (ptr-read-u64 head 0)))

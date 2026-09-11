@@ -87,6 +87,12 @@ Release implementation and qualification notes, updated 2026-09-11.
   Growing the marking queue no longer leaves a pointer to its unmapped old
   storage. Focused corruption and allocation-pressure probes pass; the full
   user configuration audit is still incomplete.
+- Small free-list lookup now finds the first eligible size in at most six
+  bit-search steps. Native probes cover 7,524 single-bit and mixed-mask/start
+  combinations on x86_64 and ARM64, plus existing split/relink/purge routes.
+  A running development REPL retained its data across installation and
+  restoration of the allocator change. This is not a completed real-init
+  performance or memory qualification.
 
 ### REPL debugging and native replacement
 

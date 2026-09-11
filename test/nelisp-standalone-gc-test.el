@@ -307,7 +307,7 @@ can use a scratch page while still observing the real mask transitions."
         (if (= (ptr-read-u64 (nl_freelist_small_mask_ptr) 0)
                ,(1- (ash 1 58))) 1 0))
       (defun nl_probe-next-index-p ()
-        (let ((start 0) (bit 0)
+        (let ((start 0) (bit 0) (mask 1) (round 0) (expected -1)
               (bad (if (and (= (nl_freelist_small_next_index 0 0) -1)
                               (= (nl_freelist_small_next_index 1 58) -1))
                          0
@@ -323,6 +323,25 @@ can use a scratch page while still observing the real mask transitions."
                  (setq bad 1))
                (setq bit (+ bit 1)))
              (setq start (+ start 1)))
+           ;; Mixed masks use an independent linear oracle.  Include starts
+           ;; beyond the valid 58-bit mask and the machine shift width: a
+           ;; shift by 64 must not wrap around to an eligible bucket.
+           (while (and (< round 64) (= bad 0))
+             (setq mask (logand (+ (* mask 1103515245) 12345)
+                               ,(1- (ash 1 58))))
+             (setq start 0)
+             (while (and (< start 65) (= bad 0))
+               (setq bit start)
+               (setq expected -1)
+               (while (and (< bit 58) (= expected -1))
+                 (if (= (logand mask (shl 1 bit)) 0)
+                     (setq bit (+ bit 1))
+                   (setq expected bit)))
+               (if (= (nl_freelist_small_next_index mask start) expected)
+                   0
+                 (setq bad 1))
+               (setq start (+ start 1)))
+             (setq round (+ round 1)))
            bad)))
       (defun nl_probe-split-route ()
         (let ((hdr (nl_probe-hdr 0)))
