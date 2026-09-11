@@ -57,9 +57,16 @@ def main():
     os.set_blocking(child.stdout.fileno(), False)
     os.set_blocking(child.stderr.fileno(), False)
     stdout_buffer = bytearray()
+    start_rss = None
+    last_rss = None
+    peak_rss = None
+    started = None
+    batches = 0
 
     def sample_rss():
+        nonlocal last_rss
         value = rss_kib(child.pid)
+        last_rss = value
         if value <= 0:
             raise RuntimeError("RSS is unavailable")
         if value > args.rss_ceiling_kib:
@@ -160,7 +167,19 @@ def main():
         print("nelisp-standalone-soak: PASS")
         return 0
     except (OSError, RuntimeError) as error:
-        print(f"FAIL: {error}", file=sys.stderr)
+        elapsed = (time.monotonic() - started) if started is not None else 0.0
+        growth = (peak_rss - start_rss
+                  if peak_rss is not None and start_rss is not None else None)
+        print(
+            "FAIL: "
+            f"{error}; start_rss_kib={start_rss!r} "
+            f"current_rss_kib={last_rss!r} peak_rss_kib={peak_rss!r} "
+            f"rss_growth_kib={growth!r} "
+            f"growth_ceiling_kib={args.rss_growth_ceiling_kib} "
+            f"absolute_ceiling_kib={args.rss_ceiling_kib} batches={batches} "
+            f"elapsed_seconds={elapsed:.3f}",
+            file=sys.stderr,
+        )
         return 1
     finally:
         try:

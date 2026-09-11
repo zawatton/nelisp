@@ -34,6 +34,11 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
         """)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("timeout", result.stderr)
+        self.assertRegex(
+            result.stderr,
+            r"start_rss_kib=None .*current_rss_kib=None .*peak_rss_kib=None "
+            r".*batches=0 .*elapsed_seconds=0\.\d+",
+        )
 
     def test_stderr_after_ready_is_failure(self):
         result = self.run_fake("""

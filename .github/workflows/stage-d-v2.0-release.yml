@@ -100,6 +100,41 @@ jobs:
       - name: Build and test standalone reader
         run: make standalone-reader-test
 
+      - name: Diagnose standalone host helper failure
+        if: failure()
+        shell: bash
+        run: |
+          export NELISP_HOST_EMACS="$(command -v emacs)"
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          binary = Path("target/nelisp").resolve()
+          if not binary.is_file():
+              raise SystemExit("No reader binary was produced")
+          print("Host Emacs:", os.environ["NELISP_HOST_EMACS"], flush=True)
+          host = json.dumps(os.environ["NELISP_HOST_EMACS"])
+          probes = [
+              "(list system-type (getenv \"PATH\"))",
+              "(list (file-exists-p \".\") (file-directory-p \".\") (file-exists-p (getenv \"NELISP_HOST_EMACS\")))",
+              f"(nelisp--syscall-path-int 21 {host} 0)",
+              f"(file-exists-p {host})",
+              "(executable-find \"emacs\")",
+              f"(call-process {host} nil nil nil \"--version\")",
+          ]
+          for form in probes:
+              print("Probe:", form, flush=True)
+              try:
+                  result = subprocess.run([str(binary), "--eval", form],
+                                          capture_output=True, text=True, timeout=30)
+                  print("Exit:", result.returncode,
+                        "stdout:", repr(result.stdout[:8192]),
+                        "stderr:", repr(result.stderr[:8192]), flush=True)
+              except subprocess.TimeoutExpired:
+                  print("Probe timed out after 30 seconds", flush=True)
+          PY
+
       - name: Build release artifact
         run: ./tools/build-release-artifact.sh macos-arm64 ${{ env.RELEASE_VERSION }}
 
