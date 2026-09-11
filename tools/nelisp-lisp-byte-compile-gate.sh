@@ -12,9 +12,16 @@
 # tools/nelisp-lisp-compile-baseline.txt with their current diagnostic counts;
 # every other file must stay at zero.
 #
-# The baseline is a ratchet in both directions.  A baselined file that becomes
-# clean fails the gate too, so the exception is removed rather than left to rot
-# into cover for a future regression.
+# The baseline is a CEILING, not an equality.  It has to be: the counts are
+# Emacs-version sensitive, and CI runs 29.4 and 30.1 while this was measured on
+# 31.1.  Pinning equality failed on the very first CI run --
+# `lisp/nelisp-cl-macros.el' reports 3 diagnostics on 31.1 and 1 on 30.1,
+# `lisp/nelisp-stdlib-eval-special.el' 4 and 3 -- because 31.1 added warnings
+# ("docstring wider than 80 characters", "not known to be defined") that older
+# compilers do not emit.  Fewer diagnostics is never a regression, so a count
+# below its baseline is reported and passes; only a count ABOVE it fails.  A
+# file that is clean everywhere is still worth removing from the baseline, and
+# the gate says so without failing over it.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -81,7 +88,7 @@ while read -r file count; do
   if [ -z "$want" ]; then
     echo "  $file: FAIL ($count diagnostic(s); this file compiled clean before)"
     findings=$((findings + 1))
-  elif [ "$want" != "$count" ]; then
+  elif [ "$count" -gt "$want" ]; then
     echo "  $file: FAIL ($count diagnostic(s), baseline records $want)"
     findings=$((findings + 1))
   fi
@@ -95,8 +102,7 @@ while read -r file want; do
     continue
   fi
   if ! awk -v f="$file" '$1==f {found=1} END {exit !found}' "$observed"; then
-    echo "  $file: FAIL (now compiles clean -- remove it from $baseline)"
-    findings=$((findings + 1))
+    echo "  $file: now compiles clean on this Emacs (baseline records $want)"
   fi
 done < "$expected"
 

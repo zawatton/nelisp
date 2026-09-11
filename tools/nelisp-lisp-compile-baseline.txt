@@ -1,9 +1,14 @@
 # Files under lisp/ that do NOT byte-compile clean, with their current
 # diagnostic count.  Every other lisp/*.el must produce zero diagnostics.
 #
-# This is a ratchet: a count that rises fails the gate, and so does a count
-# that falls (fix the file, then delete its row -- do not leave a stale
-# allowance behind).  A baselined file that disappears from the tree fails too.
+# Each number is a CEILING, not an equality.  It has to be: these counts are
+# Emacs-version sensitive.  They were measured on 31.1; CI runs 29.4 and 30.1,
+# where `nelisp-cl-macros.el' reports 1 rather than 3 and
+# `nelisp-stdlib-eval-special.el' 3 rather than 4, because 31.1 added warnings
+# older compilers do not emit ("docstring wider than 80 characters", "not known
+# to be defined").  Pinning equality failed on the first CI run for exactly
+# that reason.  A count that RISES fails; a count that falls is reported and
+# passes.  A baselined file that disappears from the tree still fails.
 #
 # Measured 2026-09-12 on Emacs 31.1 by tools/nelisp-lisp-byte-compile-gate.sh,
 # which compiles ONE FILE PER PROCESS.  That matters: the first version of
