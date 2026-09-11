@@ -295,7 +295,10 @@
 # calls exposed by this inventory; the mask's runtime set/clear/sync writes
 # remain inside generated quoted units and are covered by the existing kernel
 # surface accounting.  The file was already a pinned raw-memory generator.
-unsafe-call 815
+# 815 -> 817 on 2026-09-11: the explicit Darwin path arm adds access(2)
+# and repeats the existing exit(2) call formerly supplied by the default arm.
+# Access is read-only; unsupported mutating operations still return ENOSYS.
+unsafe-call 817
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -407,7 +410,9 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # 692 -> 710 on 2026-09-11: runtime-reload build forms add the BSS state
 # record and generated resolver/publication probes.  These are allocation-free
 # layout writes required by the opt-in native dispatch contract.
-pinned-kernel-call scripts/nelisp-standalone-build.el 710
+# 710 -> 712: Darwin access(2) plus its existing exit(2) in the new explicit
+# target arm.  This repairs executable discovery without adding path mutation.
+pinned-kernel-call scripts/nelisp-standalone-build.el 712
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

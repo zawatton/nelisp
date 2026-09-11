@@ -736,6 +736,17 @@ A dispatch arm nothing installs is dead code that still links."
         (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
 
+(ert-deftest nelisp-standalone-target-macos-access-translates-portable-number ()
+  "macOS translates portable access(2) number 21 to Darwin syscall 33."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (should
+     (member
+      '(defun nl_os_syscall_path_int (nr cpath iarg)
+         (if (= nr 21)
+             (syscall-direct 33 cpath iarg 0 0 0 0)
+           (- 0 38)))
+      (nelisp-standalone--os-syscall-xlat-forms)))))
+
 (ert-deftest nelisp-standalone-target-reader-installs-process-builtin ()
   "The reader exposes the synchronous process substrate primitive."
   (cl-labels ((tree-member-p

@@ -45,6 +45,9 @@
 ;;; Code:
 
 (list
+ ;; Directory existence must use the target's access operation.  Darwin's
+ ;; former ENOSYS stub made both checks false and hid host helper executables.
+ (list (file-exists-p ".") (file-directory-p "."))
  ;; Doc 200 P2: the standalone must distinguish raw-byte strings from UTF-8
  ;; strings while keeping ASCII equality representation-independent.  Keep
  ;; every result derived: returning a raw-byte string here would compare the

@@ -22578,8 +22578,29 @@ boundary (Doc 151 Phase B):
        (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
        (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
        (defun nl_os_nanosleep (_ts) (- 0 38))))
+    ('macos-aarch64
+     ;; Darwin's `access' is syscall 33, while the portable fileio layer
+     ;; addresses it by the Linux vocabulary number 21.  Keep every other
+     ;; path/stat primitive at its deliberate ENOSYS boundary until its own
+     ;; Darwin implementation is available.
+     `((defun nl_os_exit_process (code) (syscall-direct 1 code 0 0 0 0 0))
+       (defun nl_os_syscall_path (_nr _cpath) (- 0 38))
+       (defun nl_os_syscall_path_int (nr cpath iarg)
+         (if (= nr 21)
+             (syscall-direct 33 cpath iarg 0 0 0 0)
+           (- 0 38)))
+       (defun nl_os_syscall_path2 (_nr _c1 _c2) (- 0 38))
+       (defun nl_os_stat_path (_cpath _buf) (- 0 38))
+       (defun nl_os_lstat_path (_cpath _buf) (- 0 38))
+       (defun nl_os_readlink_path (_cpath _buf _cap) (- 0 38))
+       (defun nl_os_open_dir (_cpath) (- 0 38))
+       (defun nl_os_getdents64 (_fd _dbuf _cap) (- 0 38))
+       (defun nl_os_close_dir (fd) (nl_os_close_handle fd))
+       (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
+       (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
+       (defun nl_os_nanosleep (_ts) (- 0 38))))
     (_
-     `(;; macos-aarch64 and any future target: BSD exit(2) is syscall 1,
+     `(;; Any future target: BSD exit(2) is syscall 1,
        ;; which is also what this repo's darwin `nl_os_alloc_fail' uses.
        (defun nl_os_exit_process (code) (syscall-direct 1 code 0 0 0 0 0))
        (defun nl_os_syscall_path (_nr _cpath) (- 0 38))
@@ -30239,6 +30260,62 @@ Exits 0/1."
   (nelisp-standalone--run-focused-reader-test
    "bounded-backtrace" #'nelisp-standalone--reader-bounded-backtrace-smoke))
 
+(defun nelisp-standalone--reader-unsupported-socket-smoke ()
+  "Execute all eight unsupported socket calls and check their exact conditions."
+  (let* ((dir (make-temp-file "nelisp-unsupported-socket-" t))
+         (script (expand-file-name "probe.el" dir))
+         (stderr-file (expand-file-name "stderr" dir))
+         (calls '((nelisp-socket-listen "127.0.0.1" 1)
+                  (nelisp-socket-accept -1)
+                  (nelisp-socket-connect "127.0.0.1" 1)
+                  (nelisp-socket-send -1 "x")
+                  (nelisp-socket-recv -1 1)
+                  (nelisp-socket-close -1)
+                  (nelisp-socket-poll nil 0)
+                  (nelisp-socket-connect-error -1)))
+         out stderr rc)
+    (unwind-protect
+        (progn
+          (with-temp-file script
+            (let ((print-escape-newlines t)
+                  (print-length nil) (print-level nil))
+              (dolist (call calls)
+                (prin1
+                 `(condition-case err
+                      (progn ,call (princ "UNEXPECTED-SUCCESS\n"))
+                    (error
+                     (princ
+                      (if (equal err '(nelisp-unsupported-primitive ,(car call)))
+                          ,(format "SOCKET-UNSUPPORTED=%s\n" (car call))
+                        (format "WRONG-ERROR=%S\n" err)))))
+                 (current-buffer))
+                (insert "\n"))
+              (prin1 '(princ "SOCKET-UNSUPPORTED-DONE\n") (current-buffer))))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil
+                                   (list t stderr-file) nil "--load" script)
+                  out (buffer-string)))
+          (with-temp-buffer
+            (insert-file-contents stderr-file)
+            (setq stderr (buffer-string)))
+          (unless (and (eql rc 0) (string= stderr ""))
+            (error "unsupported socket smoke: exit=%S stderr=%S" rc stderr))
+          (dolist (call calls)
+            (unless (string-match-p
+                     (concat "^" (regexp-quote
+                                  (format "SOCKET-UNSUPPORTED=%s" (car call))) "$")
+                     out)
+              (error "unsupported socket smoke: wrong result for %s: %S"
+                     (car call) out)))
+          (when (string-match-p "^\\(?:UNEXPECTED-SUCCESS\\|WRONG-ERROR\\)" out)
+            (error "unsupported socket smoke: unexpected result: %S" out))
+          (unless (string-match-p "^SOCKET-UNSUPPORTED-DONE$" out)
+            (error "unsupported socket smoke: incomplete output: %S" out))
+          (message "[standalone-reader] unsupported socket contract PASS (8 calls)"))
+      (condition-case err
+          (delete-directory dir t)
+        (error (message "Socket probe cleanup failed: %S" err))))))
+
 (defun nelisp-standalone--reader-socket-smoke ()
   "Against-the-bug proof for the socket primitives (Doc 184 follow-on) AND
 Task A's `nelisp-unsupported-primitive' fix, both exercised in ONE process
@@ -30267,7 +30344,9 @@ actually runs a handler for.  Re-proving Task A's fix here (not just in
 this smoke's own manual probe history) means a future regression in
 `nelisp-standalone--applyfn-build-dispatch''s default arm fails THIS gate
 too, not only a standalone probe nobody re-runs."
-  (let* ((script (make-temp-file "nelisp-socket-smoke-" nil ".el"))
+  (if (not (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64)))
+      (nelisp-standalone--reader-unsupported-socket-smoke)
+    (let* ((script (make-temp-file "nelisp-socket-smoke-" nil ".el"))
          (jp-out "日本語")
          (jp-in "こんにちは")
          (src (concat
@@ -30336,7 +30415,7 @@ nelisp-unsupported-primitive, stdout=%S" out))
           (unless (string-match-p "^SOCKET-SMOKE-DONE$" out)
             (error "socket smoke: did not reach its own end marker, stdout=%S" out))
           (message "[standalone-reader] socket smoke PASS"))
-      (ignore-errors (delete-file script)))))
+      (ignore-errors (delete-file script))))))
 
 ;;;###autoload
 (defun nelisp-standalone-reader-socket-test ()
@@ -30383,7 +30462,9 @@ pattern, this file's sibling).
    ADAPTER layer (not the raw primitives) on `::1', including the
    `:family \\='ipv6' + `:host nil' loopback-default-becomes-::1' case
    (SCOPE item 5)."
-  (let* ((script (make-temp-file "nelisp-ipv6-socket-smoke-" nil ".el"))
+  (if (not (memq nelisp-standalone--target '(linux-x86_64 windows-x86_64)))
+      (nelisp-standalone--reader-unsupported-socket-smoke)
+    (let* ((script (make-temp-file "nelisp-ipv6-socket-smoke-" nil ".el"))
          (jp-out "日本語")
          (jp-in "こんにちは")
          (src (concat
@@ -30596,7 +30677,7 @@ default to ::1, stdout=%S" out))
             (error "ipv6 socket smoke: did not reach its own end marker, \
 stdout=%S" out))
           (message "[standalone-reader] ipv6 socket smoke PASS"))
-      (ignore-errors (delete-file script)))))
+      (ignore-errors (delete-file script))))))
 
 ;;;###autoload
 (defun nelisp-standalone-reader-ipv6-socket-test ()

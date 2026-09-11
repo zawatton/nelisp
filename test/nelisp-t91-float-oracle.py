@@ -13,16 +13,17 @@ import os
 import platform
 import random
 import re
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_RECIPE = ROOT / "test" / "nelisp-t91-float-oracle-build.el"
 TARGET = ROOT / "target"
-PROBE = TARGET / "nelisp-t91-float-oracle-probe.el"
 
 
 class TargetNotRunnable(RuntimeError):
@@ -155,27 +156,6 @@ def run_target(binary: Path, probe: Path, *, env: dict[str, str], skip_image_err
     return result.stdout.strip()
 
 
-def restore_production_binary(emacs: str, target: str) -> None:
-    """Put the selected native target back into production-reader state."""
-    env = os.environ.copy()
-    env.pop("NELISP_T91_WORD", None)
-    env["NELISP_STANDALONE_TARGET"] = target
-    clean = subprocess.run(
-        ["make", "standalone-eval-clean"], cwd=ROOT, env=env,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    build = subprocess.run(
-        ["make", "standalone-reader"], cwd=ROOT, env=env,
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    ) if clean.returncode == 0 else None
-    if clean.returncode or build is None or build.returncode:
-        for result in (clean, build):
-            if result is not None:
-                sys.stderr.write(result.stdout)
-                sys.stderr.write(result.stderr)
-        raise SystemExit("failed to restore production standalone reader")
-
-
 def parse_words(output: str, count: int) -> list[int]:
     match = re.fullmatch(r"\((?:\s*-?\d+\s*)*\)", output)
     if not match:
@@ -191,9 +171,15 @@ def main() -> int:
     target = host_default_target()
     native_target = detected_host_target()
     skip_image_error = target != native_target
-    binary = binary_for_target(target)
     TARGET.mkdir(parents=True, exist_ok=True)
-    PROBE.write_text("(list " + " ".join(values) + ")\n", encoding="utf-8")
+    scratch = Path(tempfile.mkdtemp(prefix="nelisp-t91-oracle-", dir=TARGET))
+    binary = scratch / binary_for_target(target).name
+    probe = scratch / "probe.el"
+    cache = scratch / "units"
+    artifact_source = scratch / "artifact-runtime.el"
+    artifact_cache = scratch / "artifact-runtime.el.nelc"
+    artifact_enable = scratch / "artifact-runtime.el.nelc.enable"
+    probe.write_text("(list " + " ".join(values) + ")\n", encoding="utf-8")
     emacs = os.environ.get("EMACS", "emacs")
     common = [emacs, "--batch", "-Q", "-L", "lisp", "-L", "src", "-L", "scripts",
               "-l", str(BUILD_RECIPE.relative_to(ROOT))]
@@ -203,9 +189,14 @@ def main() -> int:
             env = os.environ.copy()
             env["NELISP_T91_WORD"] = word
             env["NELISP_STANDALONE_TARGET"] = target
+            env["NELISP_STANDALONE_OUTPUT"] = str(binary)
+            env["NELISP_STANDALONE_CACHE_DIR"] = str(cache)
+            env["NELISP_T91_ARTIFACT_SOURCE"] = str(artifact_source)
+            env["NELISP_T91_ARTIFACT_CACHE"] = str(artifact_cache)
+            env["NELISP_T91_ARTIFACT_ENABLE"] = str(artifact_enable)
             run_checked(common, env=env)
             outputs[word] = parse_words(
-                run_target(binary, PROBE, env=env,
+                run_target(binary, probe, env=env,
                            skip_image_error=skip_image_error),
                 len(values),
             )
@@ -218,10 +209,10 @@ def main() -> int:
             for mismatch in mismatches[:10]:
                 print("MISMATCH", mismatch, file=sys.stderr)
             return 1
-        PROBE.write_text("(list 1e 1e+ 1e- 1e2e3 1..2)\n", encoding="utf-8")
+        probe.write_text("(list 1e 1e+ 1e- 1e2e3 1..2)\n", encoding="utf-8")
         try:
             malformed = subprocess.run(
-                [str(binary), "--load", str(PROBE.relative_to(ROOT))],
+                [str(binary), "--load", str(probe)],
                 cwd=ROOT, env={**os.environ, "NELISP_STANDALONE_TARGET": target},
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
@@ -244,7 +235,7 @@ def main() -> int:
         print(f"T91 oracle: SKIP target={target} binary={binary}: {exc}")
         return 77
     finally:
-        restore_production_binary(emacs, target)
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ Release implementation and qualification notes, updated 2026-09-11.
   spills exceed the immediate addressing range. This fixes a source-loading
   crash in `eval-elisp-source`; subprocess smoke failures now include the
   child exit status and stderr.
+- Darwin translates the portable file-access operation to its native syscall,
+  allowing file existence checks to discover host helper executables.
 
 ### Function introspection and API surface
 
@@ -97,6 +99,9 @@ Release implementation and qualification notes, updated 2026-09-11.
 - GC diagnostics expose aggregate conservative retention counts and collection
   counters. Collection-call elapsed time includes overhead; it is not an exact
   stop-the-world pause measurement or an individual object retention path.
+- Native socket primitives remain available on Linux and Windows x86_64 only.
+  ARM64 targets report the catchable `nelisp-unsupported-primitive` condition;
+  ARM64 release qualification does not imply native networking support.
 
 ### Release workflow and presence corpus
 
@@ -115,11 +120,11 @@ Release implementation and qualification notes, updated 2026-09-11.
 | REPL development APIs | PASS: failure recording, explicit retry, export/replay, code provenance, GC snapshot/collect/compare, and integrated entry require |
 | Native runtime reload (Linux x86_64) | PASS: development binary SHA-256 prefix `86a0d4f947bc`; actual collection uses threshold percentage A 300 → new private helper B 301 → restored 300; changing B's expected result to 300 triggers the intended assertion |
 | Normal standalone binary | SHA-256 prefix `0c09c8af9fc4`; bounded memory probes below use this binary |
-| Full ERT suite | 5,577 PASS, 159 skipped, 5,736 total |
+| Full ERT suite | 5,589 PASS, 159 skipped, 5,748 total; the numeric oracle uses isolated artifacts while a production REPL remains running |
 | Check tier | 23/23 PASS |
 | Isolated mutation gate | 64/64 PASS on the isolated GC snapshot; all four CI mutation shards also pass on `ded6ebf13` |
 | Bounded memory probes | 6/6 PASS; 500,000 → 1,000,000 workload RSS 279,064 → 279,668 KiB; 1,006,632,960 bytes reclaimed |
-| Full real-init audit | IN PROGRESS on `0c09c8af9fc4`; earlier candidate `77139d928aa8` completed form 259 and began 260, then timed out after 9,001 seconds (exit 124, peak 741,636 KiB); all 930 forms and startup hooks remain unqualified |
+| Full real-init audit | `0c09c8af9fc4` reached form 260, then timed out after 9,001 seconds (exit 124, peak 741,376 KiB). A separate run with the library regex repair is in progress; all 930 forms and startup hooks remain unqualified |
 | 3-architecture semver tag CI | Pending |
 | Linux 1-hour soak | Pending |
 

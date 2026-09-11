@@ -28,4 +28,20 @@
                                               ,(if (string= mode "lo") 8 12)))
                          1))))))
 
-(nelisp-standalone-build-reader)
+(let ((output (getenv "NELISP_STANDALONE_OUTPUT"))
+      (cache (getenv "NELISP_STANDALONE_CACHE_DIR"))
+      (artifact-source (getenv "NELISP_T91_ARTIFACT_SOURCE"))
+      (artifact-cache (getenv "NELISP_T91_ARTIFACT_CACHE"))
+      (artifact-enable (getenv "NELISP_T91_ARTIFACT_ENABLE")))
+  (unless (and output cache artifact-source artifact-cache artifact-enable)
+    (error "T91 oracle requires isolated output/cache/artifact paths"))
+  ;; The oracle is a scratch build.  Its output and unit cache are supplied
+  ;; by the driver so a running production reader can never be replaced or
+  ;; share mutable build state with the hi/lo variants.
+  (let ((nelisp-standalone--cache-dir cache)
+        (nelisp-standalone--artifact-runtime-source-path artifact-source)
+        (nelisp-standalone--artifact-runtime-cache-path artifact-cache)
+        (nelisp-standalone--artifact-runtime-cache-enable-path artifact-enable))
+    (cl-letf (((symbol-function 'nelisp-standalone--output-path)
+               (lambda (&optional _reader-p) output)))
+      (nelisp-standalone-build-reader))))
