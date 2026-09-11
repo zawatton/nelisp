@@ -522,6 +522,38 @@ for release here."
                   refused)))))
     (nelisp-native-unit--copy (list :released nil :refused (nreverse refused)))))
 
+(defun nelisp-native-unit-retained-addresses (&optional unit-id)
+  "Return one address inside every mapping UNIT-ID still holds.
+
+For UNIT-ID, or every unit when it is nil: the control page, the stable
+gate page, the active generation table and its artifact code page, and
+the table and code page of each retired generation still mapped.
+
+This exists so an external harness can measure what those mappings
+actually cost.  Retained native code and the GC heap both land in the
+same RSS figure, and subtracting a mapping's virtual size overstates its
+share -- a mapped page that was never touched is resident nowhere.  An
+address from this list locates the mapping in /proc/PID/smaps, whose Rss
+is the real number.  The list is deliberately addresses and not sizes:
+the caller reads the size from the kernel, not from our bookkeeping."
+  (let (addresses)
+    (dolist (entry nelisp-native-unit--units)
+      (when (or (null unit-id) (equal unit-id (car entry)))
+        (let ((unit (cdr entry)))
+          (dolist (address (list (plist-get unit :control)
+                                 (cdr (car (plist-get unit :gates)))
+                                 (plist-get unit :active-table)
+                                 (plist-get (plist-get unit :active-handle) :codepage)))
+            (when (and (integerp address) (/= address 0))
+              (push address addresses)))
+          (dolist (r (plist-get unit :retired))
+            (unless (plist-get r :released)
+              (dolist (address (list (plist-get r :table)
+                                     (plist-get (plist-get r :handle) :codepage)))
+                (when (and (integerp address) (/= address 0))
+                  (push address addresses))))))))
+    (nreverse (delete-dups addresses))))
+
 (defun nelisp-native-unit-address (unit-id name)
   "Return NAME's stable executable entry, available only after first publication."
   (let ((unit (nelisp-native-unit--find unit-id)))
