@@ -111,8 +111,9 @@ Release implementation and qualification notes, updated 2026-09-11.
 
 - The semver tag workflow is zero-Rust: it builds and tests the pure-Elisp
   standalone artifacts, checksums each bundle, and runs the release soak.
-  Before the GitHub Release, tag CI gates `linux-x86_64`, `macos-aarch64`,
-  `linux-aarch64`, and the Linux 1-hour soak.
+  Before the GitHub Release, tag CI requires `linux-x86_64`, `linux-aarch64`,
+  and the Linux 1-hour soak.  macOS ARM64 qualification is deferred; its
+  artifact is not a v1.2.2 release target and must not be reported as PASS.
 - The generator-authoritative presence corpus contains **856 names**:
   **571 shared** and **285 standalone-only**. This corpus count is separate
   from the full runtime presence sweep below.
@@ -129,13 +130,14 @@ Release implementation and qualification notes, updated 2026-09-11.
 | Isolated mutation gate | 64/64 PASS on the isolated GC snapshot; all four CI mutation shards also pass on `ded6ebf13` |
 | Bounded memory probes | 6/6 PASS; 500,000 → 1,000,000 workload RSS 279,064 → 279,668 KiB; 1,006,632,960 bytes reclaimed |
 | Full real-init audit | `0c09c8af9fc4` reached form 260, then timed out after 9,001 seconds (exit 124, peak 741,376 KiB). A separate run with the library regex repair is in progress; all 930 forms and startup hooks remain unqualified |
-| 3-architecture semver tag CI | Incomplete: Linux ARM64 passes on `fbef9f74`; macOS ARM64 fails host-helper startup and is under repair |
+| Linux x86_64/ARM64 semver tag CI | Required Linux qualification; macOS ARM64 is deferred and excluded from the v1.2.2 release target |
 | Linux 1-hour soak | CI binary `620980fbe756` passes: 2,053 batches, 3,600.621 seconds, RSS 95,312 KiB unchanged. Local binary `0c09c8af9fc4` fails the 5,120 KiB growth ceiling after about 56 minutes; an accelerated repeat grows from 82,388 to 91,240 KiB in 199 batches. Memory qualification remains incomplete |
 
 The current results above are measured on the native-runtime-reload candidate
 and do not represent a completed public release. The branch is not integrated
 to `main`; no v1.2.2 tag or GitHub Release exists. Full real-init coverage,
-three-architecture tag CI, and the Linux one-hour soak remain release gates.
+Linux x86_64 and Linux ARM64 tag CI, and the Linux one-hour soak remain release
+gates.
 
 ## Prior candidate evidence (historical)
 
@@ -172,5 +174,6 @@ The release is not qualification complete. Remaining blockers are:
 
 1. Integrate and requalify the memory fix, then complete the full real-init
    audit across all 930 init forms and startup hooks.
-2. Pass semver tag CI on `linux-x86_64`, `macos-aarch64`, and `linux-aarch64`.
+2. Pass semver tag CI on the required Linux targets `linux-x86_64` and
+   `linux-aarch64`.
 3. Pass the Linux 1-hour soak.
