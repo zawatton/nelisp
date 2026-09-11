@@ -31,6 +31,9 @@ scripts/nelisp-gc-pause-growth.el
 # and hiding the calls behind a wrapper would move the same 28 of them one
 # file over while making them harder to audit.
 lisp/nelisp-native-load.el
+# Stable entry gates and immutable generation tables: write new mmap pages,
+# protect code RX/tables R, and publish only through a cmpxchg machine stub.
+lisp/nelisp-native-unit.el
 # Read-only REPL diagnostics: resolve documented BSS records only after
 # verifying the running development ABI, then read their bounded u64 fields.
 lisp/nelisp-repl-gc.el
@@ -46,7 +49,7 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
-kernel-files 98
+kernel-files 99
 
 # `pinned-kernel-touch NAME' pins the 96 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
@@ -158,6 +161,7 @@ pinned-kernel-touch lisp/nelisp-cc-val-load.el
 # Doc 142 section 6.4's in-process `.neln' loader: mmaps a page, writes
 # machine code into it, patches relocations, and enters it via `ptr-call'.
 pinned-kernel-touch lisp/nelisp-native-load.el
+pinned-kernel-touch lisp/nelisp-native-unit.el
 # The AOT evalport's `calln' provider: reads and writes the boundary Sexp
 # slots the compiled call convention passes arguments and results through.
 pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-calln.el

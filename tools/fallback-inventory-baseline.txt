@@ -128,7 +128,12 @@
 # failure after the result has already been determined.  Each shape is pinned
 # below so a different handler cannot replace it while the aggregate stays
 # unchanged.
-silent-fallback        92
+# Three explicit native-unit rejection envelopes: preserve phase/reason,
+# never turn a failed stage, publication, or rebuild into success.
+silent-fallback        95
+pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
+pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
+pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-rebuild-and-reload	66184c1b9e41 1
 # 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
 # REPL-GC snapshot fields use deliberate structured rejection/unavailable
 # results when an optional raw export is absent.  They do not silently claim

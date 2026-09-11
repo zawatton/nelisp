@@ -57,6 +57,12 @@ The [[file:docs/repl-development.md][native runtime workflow]] explains how to e
 replacement, and publish it in the running REPL. Keep the public runtime
 ABI and heap layout compatible; layout changes require a new process.
 
+User-defined raw native functions can also expose stable entry addresses via
+=nelisp-native-unit-rebuild-and-reload=. The [[file:docs/repl-development.md#replace-user-defined-native-functions][native unit walkthrough]] shows
+how to replace a closed unit while its native callers keep the same address.
+This currently supports fixed integer/pointer SysV signatures on Linux x86_64;
+existing executable direct calls are not automatically redirected.
+
 * TL;DR
 
 NeLisp is a from-scratch Emacs Lisp runtime where essentially the

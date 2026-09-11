@@ -298,3 +298,67 @@ an active allocation/collection, and rejects incompatible artifacts.
 Use focused native tests, the normal gates, and the original memory-error
 reproducer after the interactive loop. A new session starts by rebuilding
 the development executable and replaying the setup forms above.
+
+## Replace user-defined native functions
+
+On the same Linux x86_64 development executable, a **closed raw native unit**
+can expose stable executable entry addresses. Compile native callers against
+those addresses once; later publications replace the whole unit without
+recompiling those callers. This is a separate API from the allocator/GC
+`reload.plan` adapter.
+
+Create `target/score.el` containing:
+
+```elisp
+(defun helper (x) (+ x 1))
+(defun score (x) (* (helper x) 2))
+```
+
+In the bootstrapped REPL, with the checkout as the current directory:
+
+```elisp
+(require 'nelisp-native-unit-development)
+(setq created
+      (nelisp-native-unit-rebuild-and-reload "target/score.el" nil '("score")))
+;; Require :status published before taking the unit ID or calling it.
+(setq score-unit (plist-get created :unit-id))
+(setq score-entry (nelisp-native-unit-address score-unit "score"))
+(nelisp-native-unit-call score-unit "score" '(5)) ; => 12
+```
+
+Change the file to `(defun helper_new (x) (+ x 10))` and
+`(defun score (x) (* (helper_new x) 2))`, then run:
+
+```elisp
+(nelisp-native-unit-rebuild-and-reload "target/score.el" score-unit)
+;; Inspect :status before rerunning the application operation.
+(nelisp-native-unit-call score-unit "score" '(5)) ; => 30
+(= score-entry (nelisp-native-unit-address score-unit "score")) ; => t
+(nelisp-native-unit-status score-unit) ; generation, binary hash, public contract
+```
+
+Native callers can use the returned integer address as the literal target
+of the raw compiler's `(call-ptr ADDRESS x)` operation. Addresses and unit IDs
+are process-local: rebuild these callers during setup in a new session.
+`sh test/nelisp-native-unit-repl-smoke.sh` demonstrates a caller compiled once,
+private helper renaming, preserved Lisp state, and stale-candidate rejection.
+Select the development executable with `NELISP_BIN`.
+
+For separate preparation and publication, use
+`(nelisp-native-unit-stage artifact unit-id)` followed by
+`(nelisp-native-unit-publish candidate-id)`. Stage results carry the candidate
+ID and expected generation. Publish consumes the candidate, checks source,
+artifact and executable hashes, and swaps one immutable table with CAS.
+Competing or expired candidates are rejected; discard a candidate with
+`nelisp-native-unit-discard`. No application call is automatically retried.
+
+The contract is fixed public names/order/arities, at most 64 exports and six
+integer/pointer-word arguments under the raw-v1 SysV ABI. Imports and private
+static data are unsupported; include internal direct callees in the unit.
+This does not redirect calls already compiled to the executable's original
+functions, support arbitrary C ABIs, or migrate heap layouts. An in-flight
+call may finish on its old generation. Executable pages and generation tables
+remain mapped until process exit, including discarded staged code; repeated
+reloads therefore consume additional memory. At most 64 units and 64 pending
+candidates are registered; candidates expire after 15 minutes. Restart the
+REPL to reclaim mappings and repeat the setup above.

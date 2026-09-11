@@ -667,7 +667,9 @@ ns-collision-divergent 127
 # nelisp-dev-session-clear, nelisp-dev-failure-clear and its dispatcher.
 # Explicit host replay adds its dispatcher and the subprocess main entry.
 # Native plan/context/clear/apply are four deliberate public DEV entry points.
-ns-prefix-violation 982
+# 982 -> 990: native-unit public constants/operations, REPL rebuild facade
+# and host compiler command; no existing symbol is redefined.
+ns-prefix-violation 990
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
@@ -809,7 +811,9 @@ ns-prefix-violation 982
 # The replay parent/worker reuse the session validator, bounded hash/JSON
 # reader and result normalization; four additional shared helper boundaries.
 # Native plans reuse the common request helpers and loader binary identity.
-ns-private-escape 757
+# 757 -> 764: the native unit kernel reuses the raw loader's validated
+# export, mapping, protection and executable-identity helpers.
+ns-private-escape 764
 ns-unreadable 0
 
 # `pinned-collision KEY' pins every ns-collision and ns-collision-divergent
