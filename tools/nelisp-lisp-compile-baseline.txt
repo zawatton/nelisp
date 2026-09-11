@@ -1,0 +1,15 @@
+# Files under lisp/ that do NOT byte-compile clean, with their current
+# diagnostic count.  Every other lisp/*.el must produce zero diagnostics.
+#
+# This is a ratchet: a count that rises fails the gate, and so does a count
+# that falls (fix the file, then delete its row -- do not leave a stale
+# allowance behind).  Measured 2026-09-12, Emacs 31.1, tools/nelisp-lisp-byte-compile-gate.sh.
+#
+# nelisp-aot-compiler.el   docstring quoting plus unused-variable and
+#                          unresolved-call warnings across the code generator.
+# nelisp-artifact.el       includes a malformed handler form at :1448 that is
+#                          worth a real look, not just a warning allowance.
+#
+# FILE                     DIAGNOSTICS
+lisp/nelisp-aot-compiler.el 92
+lisp/nelisp-artifact.el 15
