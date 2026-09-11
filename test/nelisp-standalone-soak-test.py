@@ -34,6 +34,8 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
     def test_partial_stdout_times_out(self):
         result = self.run_fake("""
             import time
+            import sys
+            sys.stdin.readline()  # consume the startup form
             print("NELISP_SOAK_READY", end="", flush=True)
             time.sleep(2)
         """)
@@ -53,6 +55,7 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
     def test_stderr_after_ready_is_failure(self):
         result = self.run_fake("""
             import sys
+            sys.stdin.readline()  # consume the startup form
             print("NELISP_SOAK_READY", flush=True)
             sys.stdin.readline()
             print("unexpected diagnostic", file=sys.stderr, flush=True)
@@ -63,6 +66,8 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
 
     def test_child_exit_is_failure(self):
         result = self.run_fake("""
+            import sys
+            sys.stdin.readline()  # consume the startup form
             print("NELISP_SOAK_READY", flush=True)
         """)
         self.assertNotEqual(result.returncode, 0)
@@ -71,6 +76,7 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
     def test_huge_stdout_is_bounded_failure(self):
         result = self.run_fake("""
             import sys
+            sys.stdin.readline()  # consume the startup form
             print("NELISP_SOAK_READY", flush=True)
             sys.stdin.readline()
             sys.stdout.write("X" * 5000 + "\\n")
@@ -82,6 +88,7 @@ class StandaloneSoakHarnessTests(unittest.TestCase):
     def test_wrong_reply_is_failure(self):
         result = self.run_fake("""
             import sys
+            sys.stdin.readline()  # consume the startup form
             print("NELISP_SOAK_READY", flush=True)
             for line in sys.stdin:
                 print("WRONG_REPLY", flush=True)
