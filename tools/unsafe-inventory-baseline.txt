@@ -311,7 +311,8 @@
 # the four documented u64 fields of the `nl_callsite_control' BSS record and
 # installs a table through the native `nl_callsite_install' stub, which owns
 # the CAS.  Same shape as nelisp-native-unit.el's own gate/table work.
-unsafe-call 873
+# 873 -> 879 on 2026-09-12: the same six calls, counted in the overall total.
+unsafe-call 879
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -454,7 +455,14 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # table slot, and `nl_callsite_install's CAS.  These are kernel operations in
 # emitted target code, contributed only when a build both sets
 # NELISP_RUNTIME_RELOAD=1 and declares at least one replaceable entry.
-pinned-kernel-call scripts/nelisp-standalone-build.el 751
+# 751 -> 757 on 2026-09-12: the checked allocator's reclaim poisoning.
+# `nl_alloc_check_poison_span' writes a byte pattern across a span the
+# boundary reclaim is about to rewind, and `nl_alloc_check_expect_zero'
+# reads it back to count spans that were redistributed dirty; both also
+# read and update the nl_alloc_check control block.  Raw-memory work by
+# construction -- it exists to inspect raw memory the allocator is handing
+# out again -- and it is inert unless NELISP_ALLOC_CHECK=1 armed it.
+pinned-kernel-call scripts/nelisp-standalone-build.el 757
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

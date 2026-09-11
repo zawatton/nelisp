@@ -626,7 +626,13 @@ pinned-site silent-fallback	nelisp-dev-failure.el	defun nelisp-dev-failure--retr
 # and condition.  No handler resumes the recipe or emits an ok completion.
 pinned-site silent-fallback	nelisp-dev-replay-worker.el	defun nelisp-dev-replay-worker-main	084063cb3af3 1
 pinned-site silent-fallback	nelisp-dev-replay-worker.el	defun nelisp-dev-replay-worker--run	e8770daaa090 1
-pinned-site silent-fallback	nelisp-dev-replay.el	defun nelisp-dev-replay-dispatch	3b20027a1aef 1
+# 2026-09-12, digest moved (3b20027a1aef -> 490e93079cda): the same handler,
+# now carrying `timeout_seconds' and a bounded `message' so a raise during
+# the worker's own teardown still reports the budget the caller asked for.
+# Strictly MORE recorded than before, not less -- the reason this arm is
+# accepted at all is that it turns a condition into a structured `failed'
+# envelope rather than a quieter wrong answer.
+pinned-site silent-fallback	nelisp-dev-replay.el	defun nelisp-dev-replay-dispatch	490e93079cda 1
 pinned-site silent-fallback	nelisp-dev-source.el	defun nelisp-dev-source-dispatch	9f6e82ade353 1
 pinned-site silent-fallback	nelisp-dev-source.el	defun nelisp-dev-source--parse	b5b528b5b981 1
 # Missing optional runtime status makes GC identity unavailable and comparisons

@@ -783,6 +783,13 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     kill-process delete-process accept-process-output
     process-id process-name process-command process-buffer
     set-process-sentinel set-process-filter
+    ;; This process's OWN id, as distinct from a child's `process-id'.
+    ;; On the list because the self-hosted evaluator has to look it up
+    ;; itself: `emacs-pid' became a real answer rather than a 0 stub, and
+    ;; source-fallback -- the one substrate that evaluates probed forms
+    ;; through `nelisp-eval' rather than the native evaluator -- would
+    ;; otherwise report void-function where every other substrate answers.
+    emacs-pid
     ;; Network primitives (Phase 5-C.0)
     make-network-process
     ;; File system primitives (Phase 5-C.0)
