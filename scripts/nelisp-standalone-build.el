@@ -632,7 +632,7 @@ storage — not an arena reservation."
    ;; and is zero-filled at process start.
    (list (cons 'bss (+ 57616 4194304 96 176 64 56 40 1040
                        (if (eq nelisp-standalone--target 'windows-x86_64) 8 0)
-                       64 192 64 40)))
+                       64 192 64 40 8)))
    ;; The aref cache follows the 64-byte GC statistics record in this BSS.
    (append
     (list (nelisp-link-symbol "nl_arena_base" 0
@@ -709,6 +709,14 @@ storage — not an arena reservation."
                                  (if (eq nelisp-standalone--target 'windows-x86_64)
                                      8 0)
                                  64 192 64)
+                              :section 'bss :bind 'global :type 'object)
+          ;; Named u64 appended after the baseline collector index record.
+          ;; This preserves every existing global's offset and ABI.
+          (nelisp-link-symbol "nl_freelist_small_mask"
+                              (+ 57616 4194304 96 176 64 56 40 1040
+                                 (if (eq nelisp-standalone--target 'windows-x86_64)
+                                     8 0)
+                                 64 192 64 40)
                               :section 'bss :bind 'global :type 'object)))
    nil))
 
@@ -1557,6 +1565,9 @@ directory tracks the tree rather than accumulating every key ever built."
          (ptr-write-u64 rem 0 (+ rembt 2))   ; tail: BT = rembt, mark 2 (FREE)
          (ptr-write-u64 (+ rem 8) 0 (ptr-read-u64 head 0))
          (ptr-write-u64 head 0 (+ rem 8))
+         (if (< rembt 473)
+             (nl_freelist_small_mask_set rembt)
+           0)
          0)))
     (defun nl_freelist_scan_head (prev cur want head)
       (let* ((p prev)
@@ -1653,42 +1664,109 @@ directory tracks the tree rather than accumulating every key ever built."
     ;; The block is returned still marked FREE: the caller chooses between
     ;; claiming it whole and splitting it.  WANT is only carried for the
     ;; diagnostic record.
+    (defun nl_freelist_small_mask_ptr ()
+      (data-addr nl_freelist_small_mask))
+    ;; One named BSS u64 tracks the 58 valid small block sizes (16..472 by 8).
+    ;; It is an allocation-free hint; the head arrays remain authoritative.
+    (defun nl_freelist_small_mask_bit (bt)
+      (shl 1 (/ (- bt 16) 8)))
+    (defun nl_freelist_small_mask_set (bt)
+      (let ((bit (nl_freelist_small_mask_bit bt)))
+        (ptr-write-u64
+         (nl_freelist_small_mask_ptr) 0
+         (logior (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) bit))))
+    (defun nl_freelist_small_mask_clear (bt)
+      (let* ((bit (nl_freelist_small_mask_bit bt))
+             (mask (ptr-read-u64 (nl_freelist_small_mask_ptr) 0)))
+        (ptr-write-u64
+         (nl_freelist_small_mask_ptr) 0
+         (if (= (logand mask bit) 0) mask (- mask bit)))))
+    (defun nl_freelist_small_mask_sync_head (bt head)
+      (if (= (ptr-read-u64 head 0) 0)
+          (nl_freelist_small_mask_clear bt)
+        (nl_freelist_small_mask_set bt)))
+    ;; Return the first set bit in BYTE at or above MIN (0..7), or -1.
+    ;; The fixed chain avoids integer-length/logcount dependencies.
+    (defun nl_freelist_small_first_bit (byte min)
+      (if (and (<= min 0) (= (logand byte 1) 1)) 0
+        (if (and (<= min 1) (= (logand byte 2) 2)) 1
+          (if (and (<= min 2) (= (logand byte 4) 4)) 2
+            (if (and (<= min 3) (= (logand byte 8) 8)) 3
+              (if (and (<= min 4) (= (logand byte 16) 16)) 4
+                (if (and (<= min 5) (= (logand byte 32) 32)) 5
+                  (if (and (<= min 6) (= (logand byte 64) 64)) 6
+                    (if (and (<= min 7) (= (logand byte 128) 128)) 7
+                      -1)))))))))
+    ;; Return the next occupied small-bucket index (0..57), or -1.  The
+    ;; eight byte groups skip runs of empty heads without calling bucket_pop.
+    (defun nl_freelist_small_next_group (mask group min)
+      (if (> group 7) -1
+        (let* ((shift (* group 8))
+               (byte (logand (sar mask shift) 255))
+               (bit (nl_freelist_small_first_bit byte min)))
+          (if (= bit -1)
+              (nl_freelist_small_next_group mask (+ group 1) 0)
+            (+ shift bit)))))
+    (defun nl_freelist_small_next_index (mask start)
+      (if (= mask 0) -1
+        (nl_freelist_small_next_group
+         mask (/ start 8) (logand start 7))))
     (defun nl_freelist_bucket_pop (b want)
       (let* ((head (+ 268435696 (- b 16)))
              (cur (ptr-read-u64 head 0)))
-        (if (= cur 0) 0
+        (if (= cur 0) (nl_seq2 (nl_freelist_small_mask_clear b) 0)
           (if (= (nl_gc_in_arena cur) 0)
               (nl_seq2 (nl_fl_record_trip cur 0 want)
-                       (nl_seq2 (ptr-write-u64 head 0 0) 0))
+                       (nl_seq2 (ptr-write-u64 head 0 0)
+                                (nl_seq2 (nl_freelist_small_mask_clear b) 0)))
             (if (= (logand cur 7) 0)
                 (if (= (nl_hdr_mark (- cur 8)) 2)
                     (if (= (nl_hdr_bt (- cur 8)) b)
-                        (nl_seq2 (ptr-write-u64 head 0 (ptr-read-u64 cur 0)) cur)
+                        (nl_seq2
+                         (ptr-write-u64 head 0 (ptr-read-u64 cur 0))
+                         (nl_seq2 (nl_freelist_small_mask_sync_head b head)
+                                  cur))
                       (nl_seq2 (nl_fl_record_trip cur (nl_hdr_bt (- cur 8)) want)
-                               (nl_seq2 (ptr-write-u64 head 0 0) 0)))
+                               (nl_seq2 (ptr-write-u64 head 0 0)
+                                        (nl_seq2 (nl_freelist_small_mask_clear b)
+                                                 0))))
                   (nl_seq2 (nl_fl_record_trip cur (nl_hdr_bt (- cur 8)) want)
-                           (nl_seq2 (ptr-write-u64 head 0 0) 0)))
+                           (nl_seq2 (ptr-write-u64 head 0 0)
+                                    (nl_seq2 (nl_freelist_small_mask_clear b) 0))))
               (nl_seq2 (nl_fl_record_trip cur 0 want)
-                       (nl_seq2 (ptr-write-u64 head 0 0) 0)))))))
-    ;; Small-request fallback: walk the exact-size buckets ABOVE WANT for the
-    ;; first block big enough to split.  Bounded by the bucket array itself
-    ;; (at most 57 head reads), so it can never degrade into a list walk.
+                       (nl_seq2 (ptr-write-u64 head 0 0)
+                                (nl_seq2 (nl_freelist_small_mask_clear b) 0))))))))
+    ;; Small-request fallback: use the occupancy mask to visit only candidate
+    ;; buckets ABOVE WANT for the first block big enough to split.  The eight
+    ;; byte groups skip runs of empty heads; each candidate still goes through
+    ;; the full integrity-checked bucket_pop.
     ;; Gated on 268435632, the cumulative dead-block counter the sweep bumps:
     ;; before the first collection every bucket is empty by construction, and
     ;; boot allocates hundreds of millions of blocks, so the scan must not run
     ;; then.
     (defun nl_freelist_bucket_split (want)
-      (let* ((b (+ want 16))
+      (let* ((start (/ want 8))
+             (idx 0)
+             (b 0)
              (res 0)
              (obj 0))
         (seq
-         (while (and (= res 0) (< b 473))
+         (setq idx
+               (nl_freelist_small_next_index
+                (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) start))
+         (while (and (= res 0) (>= idx 0))
            (seq
+            (setq b (+ 16 (* idx 8)))
             (setq obj (nl_freelist_bucket_pop b want))
             (if (= obj 0) 0
               (seq (nl_freelist_split_tail (- obj 8) b want)
                    (setq res obj)))
-            (setq b (+ b 8))))
+            (if (= res 0)
+                (setq idx
+                      (nl_freelist_small_next_index
+                       (ptr-read-u64 (nl_freelist_small_mask_ptr) 0)
+                       (+ idx 1)))
+              0)))
          res)))
     ;; Pop an exact-fit block for WANT (BLOCK_TOTAL): O(1) bucket pop for
     ;; 16<=WANT<=472, else scan the fallback list.  Clears the FREE sentinel
@@ -1940,6 +2018,7 @@ reservation above and removes guard-page-growth timing as a variable.")
       (ptr-write-u64 ,(+ base 8) 0 0)     ; quit flag
       (ptr-write-u64 ,(+ base 16) 0 0)    ; throw flag
       (ptr-write-u64 ,(+ base 96) 0 0)    ; free-list head
+      (ptr-write-u64 (nl_freelist_small_mask_ptr) 0 0)
       (ptr-write-u64 ,(+ base 104) 0 0)   ; gc trigger
       (ptr-write-u64 ,(+ base 112) 0 ,(+ base data-start)) ; data start
       (ptr-write-u64 ,(+ base 120) 0 0)   ; live bytes
@@ -2008,6 +2087,7 @@ with the base literal)."
       (ptr-write-u64 (+ ,b 8) 0 0)          ; quit flag
       (ptr-write-u64 (+ ,b 16) 0 0)         ; throw flag
       (ptr-write-u64 (+ ,b 96) 0 0)         ; free-list head
+      (ptr-write-u64 (nl_freelist_small_mask_ptr) 0 0)
       (ptr-write-u64 (+ ,b 104) 0 0)        ; gc trigger
       (ptr-write-u64 (+ ,b 112) 0 (+ ,b ,ds)) ; data start addr
       (ptr-write-u64 (+ ,b 120) 0 0)        ; live bytes
@@ -2842,12 +2922,16 @@ arm64 Linux has no legacy x86 numbering)."
            0))))))
     (defun nl_gc_free_block (hdr)
       (if (= (nl_gc_is_boot hdr) 1) 0   ; HARD: never free a chunk-0 boot block
-       (nl_gc_free_block_link hdr
-        (if (< (nl_hdr_bt hdr) 16) 268435552
-          (if (< 472 (nl_hdr_bt hdr))
-              (nl_freelist_large_head
-               (nl_freelist_large_bin (nl_hdr_bt hdr)))
-            (+ 268435696 (- (nl_hdr_bt hdr) 16)))))))
+       (let* ((bt (nl_hdr_bt hdr))
+              (head (if (< bt 16) 268435552
+                      (if (< 472 bt)
+                          (nl_freelist_large_head (nl_freelist_large_bin bt))
+                        (+ 268435696 (- bt 16))))))
+         (nl_seq2
+          (nl_gc_free_block_link hdr head)
+          (if (and (>= bt 16) (< bt 473))
+              (nl_freelist_small_mask_set bt)
+            0)))))
     ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
     ;; skip); returns the block's live byte contribution (bt if live, else
     ;; 0).  No control mutation -> safe to call from the iterative loop.
@@ -2968,8 +3052,9 @@ arm64 Linux has no legacy x86 numbering)."
     ;; merged endpoint has no single allocation redzone until it is reused.
     (defun nl_gc_clear_freelist_buckets (n)
       (if (> n 57)
-          (seq
-           (ptr-write-u64 268435552 0 0)
+        (seq
+         (ptr-write-u64 268435552 0 0)
+           (ptr-write-u64 (nl_freelist_small_mask_ptr) 0 0)
            (nl_gc_clear_freelist_large_bins 0))
         (nl_seq2
          (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
@@ -2988,6 +3073,9 @@ arm64 Linux has no legacy x86 numbering)."
         (seq
          (ptr-write-u64 (+ hdr 8) 0 (ptr-read-u64 head 0))
          (ptr-write-u64 head 0 (+ hdr 8))
+         (if (and (>= bt 16) (< bt 473))
+             (nl_freelist_small_mask_set bt)
+           0)
          0)))
     (defun nl_gc_relink_free_chunk (chunk)
       (let* ((hdr (ptr-read-u64 (+ chunk 24) 0))
@@ -3126,7 +3214,10 @@ arm64 Linux has no legacy x86 numbering)."
         (nl_seq2
          (nl_gc_freelist_purge_chain
           (+ 268435696 (* n 8)) base size (+ 16 (* n 8)))
-         (nl_gc_freelist_purge_buckets (+ n 1) base size))))
+         (nl_seq2
+          (nl_freelist_small_mask_sync_head
+           (+ 16 (* n 8)) (+ 268435696 (* n 8)))
+         (nl_gc_freelist_purge_buckets (+ n 1) base size)))))
     (defun nl_gc_freelist_purge_large_bins (n base size)
       (if (> n 7) 0
         (nl_seq2
@@ -4207,8 +4298,9 @@ arm64 Linux has no legacy x86 numbering)."
                    (nl_compact_munmap_growth next tospace)))))))
     (defun nl_compact_clear_fl (n)
       (if (> n 57)
-          (seq
+        (seq
            (ptr-write-u64 268435552 0 0)
+           (ptr-write-u64 (nl_freelist_small_mask_ptr) 0 0)
            (nl_compact_clear_large_fl 0))
         (nl_seq2 (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
                  (nl_compact_clear_fl (+ n 1)))))
@@ -19067,6 +19159,7 @@ suffix, which is why only `--repl' crashed)."
       (if (> n 57)
           (seq
            (ptr-write-u64 268435552 0 0)
+           (ptr-write-u64 (nl_freelist_small_mask_ptr) 0 0)
            (nl_boundary_clear_large_fl 0))
         (nl_seq2
          (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)

@@ -289,7 +289,13 @@
 # Sexp layout this generator's adjacent predicate arms already consume.
 # 767 -> 770 on 2026-09-08 (T104): three generated sexp-tag guards for
 # Symbol/Str/UnibyteStr length dispatch.
-unsafe-call 774
+# 774 -> 776 on 2026-09-11 (small free-list occupancy mask): the fixed and
+# dynamic arena metadata initializers each add one `ptr-write-u64' to clear
+# the new named BSS mask word at cold start.  These are the two unquoted
+# calls exposed by this inventory; the mask's runtime set/clear/sync writes
+# remain inside generated quoted units and are covered by the existing kernel
+# surface accounting.  The file was already a pinned raw-memory generator.
+unsafe-call 776
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -390,4 +396,9 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # 688 -> 690 on r11 iterative arglist/lambda integration: two additional
 # raw accesses support the reentrant rooted evaluation path in the generated
 # standalone reader.
-pinned-kernel-call scripts/nelisp-standalone-build.el 690
+# 690 -> 692 on 2026-09-11 (small free-list occupancy mask): one new
+# `ptr-write-u64' in each of `nelisp-standalone--arena-init-metadata-forms'
+# and its dynamic counterpart clears the mask before allocation begins.  The
+# mask is a BSS-only allocation-free hint; existing bucket heads remain the
+# authority, and the file's established kernel boundary is unchanged.
+pinned-kernel-call scripts/nelisp-standalone-build.el 692

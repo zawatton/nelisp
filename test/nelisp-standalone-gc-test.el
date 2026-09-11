@@ -139,6 +139,8 @@ same native probe returns a nonzero status there."
       ;; provider and unrelated cache/chunk dependencies are stubbed so all
       ;; writes stay inside this probe's mapped scratch pages.
       (defun nl_seq2 (_a b) b)
+      (defun nl_freelist_small_mask_ptr ()
+        (+ ,nelisp-standalone-gc-test--freelist-page 1024))
       (defun nl_freelist_large_head (bin)
         (+ ,nelisp-standalone-gc-test--freelist-large-page (* bin 8)))
       (defun nl_chunk_cursor_addr (chunk) (+ chunk 64))
@@ -164,7 +166,11 @@ same native probe returns a nonzero status there."
            (ptr-write-u64 (+ 268435696 (* n 8)) 0 (+ 1000 n))
            (nl_probe_seed-small (+ n 1)))))
       (defun nl_probe_seed-all ()
-        (nl_seq2 (nl_probe_seed-small 0) (nl_probe_seed-large 0)))
+        (nl_seq2
+         (nl_probe_seed-small 0)
+         (nl_seq2 (nl_probe_seed-large 0)
+                  (ptr-write-u64
+                   (nl_freelist_small_mask_ptr) 0 ,(1- (ash 1 58))))))
       (defun nl_probe-zero-large (n)
         (if (> n 7) 1
           (if (= (ptr-read-u64 (nl_freelist_large_head n) 0) 0)
@@ -177,7 +183,8 @@ same native probe returns a nonzero status there."
               (nl_probe-zero-small (+ n 1))
             0)))
       (defun nl_probe-all-zero ()
-        (if (and (= (nl_probe-zero-small 0) 1)
+        (if (and (= (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 0)
+                 (= (nl_probe-zero-small 0) 1)
                  (= (nl_probe-zero-large 0) 1))
             1
           0))
@@ -222,6 +229,203 @@ same native probe returns a nonzero status there."
       (when (file-exists-p path)
         (delete-file path)))))
 
+(defun nelisp-standalone-gc-test--mask-source ()
+  "Return a native probe for every small-bucket mask mutation route.
+
+The production free, split, relink, pop, and mask-search bodies are linked
+unchanged.  Only OS/address and allocator diagnostics are stubbed so the probe
+can use a scratch page while still observing the real mask transitions."
+  (let* ((arena (cdr nelisp-standalone--arena-source))
+         (gc (cdr nelisp-standalone--gc-source))
+         (names '(nl_freelist_small_mask_bit
+                  nl_freelist_small_mask_set
+                  nl_freelist_small_mask_clear
+                  nl_freelist_small_mask_sync_head
+                  nl_freelist_small_first_bit
+                  nl_freelist_small_next_group
+                  nl_freelist_small_next_index
+                  nl_freelist_bucket_pop
+                  nl_freelist_split_tail nl_freelist_large_bin
+                  nl_freelist_bucket_split
+                  nl_hdr_bt nl_hdr_mark nl_hdr_set_mark
+                  nl_gc_free_block_link nl_gc_free_block
+                  nl_gc_relink_free_one nl_gc_freelist_purge_buckets))
+         (forms nil))
+    (dolist (name names)
+      (let ((form (or (nelisp-standalone-gc-test--find-defun
+                      nelisp-standalone--arena-source name)
+                      (nelisp-standalone-gc-test--find-defun
+                       nelisp-standalone--gc-source name))))
+        (unless form
+          (error "production mask probe defun absent: %S" name))
+        ;; Keep the production `data-addr nl_gc_diag' form intact in the
+        ;; generator.  The extracted native probe redirects that external BSS
+        ;; slot to its scratch page without adding a production call bridge.
+        (setq form
+              (cl-subst (+ nelisp-standalone-gc-test--freelist-page 1040)
+                        '(data-addr nl_gc_diag) form))
+        (push form forms)))
+    `(seq
+      (defun nl_seq2 (_a b) b)
+      (defun nl_freelist_small_mask_ptr ()
+        (+ ,nelisp-standalone-gc-test--freelist-page 1024))
+      (defun nl_freelist_large_head (bin)
+        (+ ,nelisp-standalone-gc-test--freelist-large-page (* bin 8)))
+      (defun nl_gc_in_arena (_obj) 1)
+      (defun nl_gc_is_boot (_hdr) 0)
+      (defun nl_fl_record_trip (_cur _bt _want) 0)
+      (defun nl_alloc_check_verify (_hdr) 0)
+      (defun nl_gc_poison_fill (_hdr _off _bt) 0)
+      ;; The production purge walker is exercised below.  This stub models
+      ;; its already-tested chain removal while keeping unrelated scratch/
+      ;; chunk state out of this focused mask probe.
+      (defun nl_gc_freelist_purge_chain (head _base _size _want)
+        (if (= (ptr-read-u64 head 0) 8888)
+            8888
+          (ptr-write-u64 head 0 0)))
+      (defun nl_gc_freelist_purge_large_bins (_n _base _size) 0)
+      ,@(nreverse forms)
+      (defun nl_probe-head (i)
+        (+ 268435696 (* i 8)))
+      (defun nl_probe-hdr (i)
+        (+ ,nelisp-standalone-gc-test--freelist-page 2048 (* i 16)))
+      (defun nl_probe-free-all (i)
+        (if (> i 57) 0
+          (let* ((bt (+ 16 (* i 8)))
+                 (hdr (nl_probe-hdr i)))
+            (seq
+             (ptr-write-u64 hdr 0 bt)
+             (nl_gc_free_block hdr)
+             (nl_probe-free-all (+ i 1))))))
+      (defun nl_probe-pop-all (i)
+        (if (> i 57) 0
+          (let* ((bt (+ 16 (* i 8)))
+                 (obj (nl_freelist_bucket_pop bt bt)))
+            (if (= obj 0) (+ 10 i)
+              (nl_probe-pop-all (+ i 1))))))
+      (defun nl_probe-mask-all-p ()
+        (if (= (ptr-read-u64 (nl_freelist_small_mask_ptr) 0)
+               ,(1- (ash 1 58))) 1 0))
+      (defun nl_probe-next-index-p ()
+        (let ((start 0) (bit 0)
+              (bad (if (and (= (nl_freelist_small_next_index 0 0) -1)
+                              (= (nl_freelist_small_next_index 1 58) -1))
+                         0
+                       1)))
+          (seq
+           (while (and (< start 58) (= bad 0))
+             (setq bit 0)
+             (while (and (< bit 58) (= bad 0))
+               (if (= (nl_freelist_small_next_index
+                       (nl_freelist_small_mask_bit (+ 16 (* bit 8))) start)
+                      (if (>= bit start) bit -1))
+                   0
+                 (setq bad 1))
+               (setq bit (+ bit 1)))
+             (setq start (+ start 1)))
+           bad)))
+      (defun nl_probe-split-route ()
+        (let ((hdr (nl_probe-hdr 0)))
+          (seq
+           (ptr-write-u64 hdr 0 32)
+           (nl_gc_free_block hdr)
+           (let ((obj (nl_freelist_bucket_split 16)))
+             (if (= obj 0) 20
+               (if (and (= (logand
+                            (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 1)
+                           1)
+                        (= (logand
+                            (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 4)
+                           0))
+                   (if (= (nl_freelist_bucket_pop 16 16) 0) 21 0)
+                 22))))))
+      (defun nl_probe-split-tail-route ()
+        (let ((hdr (nl_probe-hdr 1)))
+          (seq
+           (nl_freelist_split_tail hdr 32 16)
+           (if (= (logand
+                   (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 1) 1)
+               (if (= (nl_freelist_bucket_pop 16 16) 0) 30 0)
+             31))))
+      (defun nl_probe-relink-route ()
+        (let ((hdr (nl_probe-hdr 2)))
+          (seq
+           (ptr-write-u64 hdr 0 (+ 24 2))
+           (nl_gc_relink_free_one hdr)
+           (if (= (logand
+                   (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 2) 2)
+               (if (= (nl_freelist_bucket_pop 24 24) 0) 40 0)
+             41))))
+      (defun nl_probe-stale-positive ()
+        (seq
+         (nl_freelist_small_mask_set 32)
+         (if (= (nl_freelist_bucket_split 16) 0)
+             (if (= (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 0)
+                 0
+               50)
+           51)))
+      (defun nl_probe-purge-route ()
+        (seq
+         (ptr-write-u64 268435696 0 7777)
+         (nl_freelist_small_mask_set 16)
+         (nl_gc_freelist_purge_buckets 0 0 0)
+         (if (and (= (ptr-read-u64 268435696 0) 0)
+                  (= (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 0))
+             0
+           70)))
+      (defun nl_probe-purge-nonempty-route ()
+        (seq
+         ;; The stub preserves this sentinel, so production purge must take
+         ;; its nonempty sync branch and retain bit 16.
+         (ptr-write-u64 268435696 0 8888)
+         (nl_freelist_small_mask_set 16)
+         (nl_gc_freelist_purge_buckets 0 0 0)
+         (if (and (= (ptr-read-u64 268435696 0) 8888)
+                  (= (logand
+                      (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 1)
+                     1))
+             0
+           71)))
+      (defun nelisp_standalone_gc_small_mask_probe ()
+        (syscall-direct 9 ,nelisp-standalone-gc-test--freelist-page 4096
+                        3 50 -1 0)
+        (syscall-direct 9 ,nelisp-standalone-gc-test--freelist-large-page 4096
+                        3 50 -1 0)
+        (if (= (nl_probe-next-index-p) 0)
+            (if (= (nl_probe-free-all 0) 0)
+                (if (= (nl_probe-mask-all-p) 1)
+                    (if (= (nl_probe-pop-all 0) 0)
+                        (if (= (nl_probe-split-route) 0)
+                            (if (= (nl_probe-split-tail-route) 0)
+                            (if (= (nl_probe-relink-route) 0)
+                                (if (= (nl_probe-stale-positive) 0)
+                                    (if (= (nl_probe-purge-route) 0)
+                                        (nl_probe-purge-nonempty-route)
+                                      72)
+                                  60)
+                              61)
+                          62)
+                      63)
+                  64)
+              65)
+          66)))
+      (exit (nelisp_standalone_gc_small_mask_probe)))))
+
+(ert-deftest nelisp-standalone-gc-small-mask-native-routes ()
+  "Native production routes maintain and consume every small mask bit."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-standalone-gc-small-mask-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--mask-source) path)
+          (should (file-executable-p path))
+          (should (= (call-process path nil nil nil) 0)))
+      (when (file-exists-p path)
+        (delete-file path)))))
+
 (ert-deftest nelisp-standalone-gc-free-list-clear-boundary-clears-every-head ()
   "REPL boundary clears every small, fallback, and large head."
   (unless (and (eq system-type 'gnu/linux)
@@ -235,6 +439,51 @@ same native probe returns a nonzero status there."
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
   (should (= (nelisp-standalone-gc-test--run-freelist-probe 1) 0)))
+
+(ert-deftest nelisp-standalone-gc-small-mask-init-resets-generated-metadata ()
+  "Both cold-init metadata generators reset the non-persisted mask slot."
+  (let ((mask-write
+         (lambda (forms)
+           (cl-find-if
+            (lambda (form)
+              (and (consp form)
+                   (eq (car form) 'ptr-write-u64)
+                   (equal (nth 1 form) '(nl_freelist_small_mask_ptr))
+                   (= (nth 2 form) 0)
+                   (= (nth 3 form) 0)))
+            forms))))
+    (should (funcall mask-write
+                     (nelisp-standalone--arena-init-metadata-forms
+                      #x10000000 4096)))
+    (should (funcall mask-write
+                     (nelisp-standalone--arena-init-metadata-forms-dynamic
+                      'base 4096)))))
+
+(defun nelisp-standalone-gc-test--strip-mask-reset (tree)
+  "Remove mask reset writes from TREE for the against-the-bug red probe."
+  (let ((target '(ptr-write-u64 (nl_freelist_small_mask_ptr) 0 0)))
+    (if (consp tree)
+        (let (out)
+          (dolist (item tree (nreverse out))
+            (unless (equal item target)
+              (push (nelisp-standalone-gc-test--strip-mask-reset item) out))))
+      tree)))
+
+(ert-deftest nelisp-standalone-gc-small-mask-clear-without-reset-is-red ()
+  "The seeded mask makes omission of the production reset observable."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-match-p "x86_64\\|amd64" system-configuration))
+    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+  (let ((path (make-temp-file "nelisp-standalone-gc-small-mask-red-")))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-sexp
+           (nelisp-standalone-gc-test--strip-mask-reset
+            (nelisp-standalone-gc-test--freelist-clear-source 0)) path)
+          (should (file-executable-p path))
+          (should-not (= (call-process path nil nil nil) 0)))
+      (when (file-exists-p path)
+        (delete-file path)))))
 
 (ert-deftest nelisp-standalone-gc-mark-block-protects-interior-guard-edge ()
   "A guard+8 interior edge is ignored while a real block is marked."
