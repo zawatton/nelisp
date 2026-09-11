@@ -724,3 +724,15 @@ standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fbou
 # landing: mutated, the smoke prints `FAIL: 10k-int list printed length ->
 # 60002' (exit 1); restored, `PASS: 10k-int list 70001 bytes exact, ...'.
 standalone-reader-print-large-sexp-smoke|scripts/nelisp-stdlib-prelude.el|s/(unless first (nelisp--prn-chunks-add chunks " "))/(unless first (ignore chunks " "))/|list elements print with no separator between them: a 10k-int list comes out 60002 bytes instead of 70001, text no reader could take back
+#
+# native-unit-repl-smoke (WS-F, 2026-09-12): widening the raw-v1 argument
+# ceiling by one lets a seven-argument export compile and publish, which
+# the smoke's requirement-3 boundary check expects refused.  Verified
+# red-then-green by hand and via `make gate-mutation-verify
+# GATE=native-unit-repl-smoke' before landing: mutated, `make
+# native-unit-repl-smoke' failed with `nelisp: uncaught error: ...
+# error: ("smoke check failed: seven-arg-export-refused-at-compile")' and
+# `GATE-COUNT checked=33 findings=1' (exit 2); restored (confirmed
+# byte-identical via `git diff --stat'), `nelisp-native-unit-repl-smoke:
+# PASS' and `GATE-COUNT checked=88 findings=0' (exit 0).
+native-unit-repl-smoke|lisp/nelisp-native-load.el|s/^(defconst nelisp-native-load-raw-max-arity 6)$/(defconst nelisp-native-load-raw-max-arity 7)/|the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true

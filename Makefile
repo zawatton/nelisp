@@ -471,6 +471,23 @@ runtime-reload-test:
 	  -l nelisp-native-runtime-safety-test \
 	  -l nelisp-runtime-reload-telemetry-test -f ert-run-tests-batch-and-exit
 
+# WS-F: the closed-raw-native-unit replace/publish REPL smoke, gated.
+# `ptr-call'/`syscall-direct' exist only in the standalone binary, so this
+# is the only place `nelisp-native-unit''s atomic-publish, stale-candidate,
+# argument-boundary and reclaim/retire behaviour can be exercised at all --
+# the host ERT suite can only ever report SKIP for that half of it (AI.md:
+# "a host ERT pass does not demonstrate native publication"). Opt-in
+# Linux x86_64 `runtime-reload-reader' build only; the `case' below skips
+# the build attempt gracefully everywhere else and lets the script's own
+# `GATE-SKIP' (missing binary / wrong platform / missing `timeout') carry
+# the reason instead of a hard `user-error' crash from the builder itself.
+.PHONY: native-unit-repl-smoke
+native-unit-repl-smoke:
+	@case "$$(uname -s)-$$(uname -m)" in \
+	  Linux-x86_64) $(MAKE) runtime-reload-reader ;; \
+	esac
+	sh test/nelisp-native-unit-repl-smoke.sh
+
 .PHONY: repl-development-test
 repl-development-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts -L test \

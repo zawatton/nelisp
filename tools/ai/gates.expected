@@ -1489,3 +1489,29 @@ gate-mutation
 # reports on -- listing them would count the same evidence six more times.
 # `release-checksum' and `alloc-check-collect' are tooling that produces
 # artifacts, not checks that can pass or fail.
+#
+# native-unit-repl-smoke (WS-F, 2026-09-12): `nelisp-native-unit''s atomic
+# unit publication (`ptr-call'/`syscall-direct') exists only in the
+# standalone binary, so the host `ert-full' suite can only ever SKIP the
+# ERT cases that need it -- AI.md is explicit that a host ERT pass does
+# not demonstrate native publication.  This is therefore the only gate
+# that runs the real thing, in one persistent standalone REPL process
+# (`tools/ai/nelisp-ai.sh repl'): multiple exports switching atomically
+# under one table-pointer CAS; a caller that entered the old generation
+# completing correctly and the next call through the same stable entry
+# observing the new one; the declared six-integer-argument boundary (six
+# works, seven is refused at compile, a call-time arity mismatch is
+# refused); at least three (ten, here) successive publications with the
+# generation incrementing by exactly one and the behaviour changing each
+# time; state preserved after both a refused stale candidate and a failed
+# build; and, as the primary signal for repeated-replacement memory,
+# `nelisp-native-unit-resources''s own :retired/:retained-bytes accounting
+# (a bounded, page-granular per-generation figure, not a leak) plus
+# `nelisp-native-unit-reclaim' honestly refusing to unmap what it cannot
+# prove unreachable -- /proc/self/statm RSS is carried only as a labelled
+# secondary signal.  Opt-in Linux x86_64 `runtime-reload-reader' build
+# only; every other host/binary-absent path is an explicit `GATE-SKIP',
+# never a silent or fake pass.  Mutation-proven (tools/gate-mutations.txt):
+# widening the raw-v1 argument-count ceiling by one turns the seven-
+# argument-refusal assertion, and so the whole gate, red.
+native-unit-repl-smoke

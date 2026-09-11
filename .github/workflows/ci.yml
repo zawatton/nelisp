@@ -295,6 +295,19 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash tools/ai/nelisp-ai.sh native-artifact
+      # WS-F: `ptr-call'/`syscall-direct' exist only in the standalone
+      # binary, so `nelisp-native-unit''s atomic publish/reclaim/retire
+      # behaviour can only ever be exercised here -- the host `ert-full'
+      # suite reports SKIP for that half of its own test file.  Opt-in
+      # Linux x86_64 `runtime-reload-reader' build (this target rebuilds
+      # it itself); every other host is an explicit `GATE-SKIP' from the
+      # script, never silent.  Wrapped through `nelisp-ai.sh gate' so this
+      # step writes target/gates/native-unit-repl-smoke.json, matching the
+      # `standalone-selfhost-test'/`standalone-reader-test' steps above.
+      - name: "AI toolchain binary-tier gate: native-unit REPL replacement smoke (tools/ai/nelisp-ai.sh gate native-unit-repl-smoke); Linux x86_64"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate native-unit-repl-smoke -- make native-unit-repl-smoke
 
       # Every Linux gate report this lane produced.  The `verify' job
       # collects these together with the mutation and subsystem jobs' and
