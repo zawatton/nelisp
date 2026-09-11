@@ -307,7 +307,7 @@
 # pin below so a future raw-memory addition cannot hide behind another file.
 # 847 -> 853: native-unit reads/writes generation slots and calls stable
 # executable gates / CAS publisher. This file is explicitly in the kernel.
-unsafe-call 853
+unsafe-call 854
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -329,7 +329,15 @@ pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
 pinned-kernel-call lisp/nelisp-native-load.el 48
 # Generation table reads/writes and the CAS publisher account for six
 # scanned primitive call sites in the new native unit kernel.
-pinned-kernel-call lisp/nelisp-native-unit.el 6
+# 2026-09-12, 6 -> 7: candidate reclamation adds one `syscall-direct' call,
+# munmap (11) of a generation table page.  It is reachable only for a table
+# that was never CAS-installed into a unit's control word -- discard, TTL
+# expiry, a staging failure after the table was allocated, or a refused
+# publish -- and the address it unmaps is always one this same file received
+# from `nelisp-native-load--mmap'.  A published generation is never unmapped
+# here; it is retired and kept mapped, because this runtime exposes no
+# evidence that in-flight calls through a stable gate have returned.
+pinned-kernel-call lisp/nelisp-native-unit.el 7
 # The AOT evalport's `calln' provider.  12 unquoted calls: reads and writes
 # of the boundary Sexp slots the compiled calling convention passes its
 # arguments and result through.

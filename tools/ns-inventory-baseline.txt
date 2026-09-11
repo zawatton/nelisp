@@ -669,7 +669,18 @@ ns-collision-divergent 127
 # Native plan/context/clear/apply are four deliberate public DEV entry points.
 # 982 -> 990: native-unit public constants/operations, REPL rebuild facade
 # and host compiler command; no existing symbol is redefined.
-ns-prefix-violation 990
+# 2026-09-12: 990 -> 995 (ns-prefix-violation).  Five new PUBLIC entry points
+# in lisp/nelisp-native-unit.el -- `nelisp-native-unit-code-info',
+# `-resources', `-reclaim', `-retained-addresses' and the `-history-max'
+# constant.  This gate counts a single-dash public name in a file whose
+# namespace is `nelisp-native-unit--' as a violation, so every public entry
+# this module already had (`-stage', `-publish', `-address', `-call',
+# `-status', `-discard', `-max-exports', `-candidate-ttl') is counted the same
+# way and is already inside the baseline.  These five are the intended public
+# surface of the provenance and reclamation work, documented in
+# docs/repl-development.md and docs/development-protocol.md; renaming them to
+# the private prefix would hide the API this branch exists to add.
+ns-prefix-violation 995
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file

@@ -130,9 +130,32 @@
 # unchanged.
 # Three explicit native-unit rejection envelopes: preserve phase/reason,
 # never turn a failed stage, publication, or rebuild into success.
-silent-fallback        95
+# 95 -> 96 on 2026-09-12: the second count of the one
+# `nelisp-native-unit-code-info' handler -- the classifier counts it as both
+# bare-handler and silent-fallback.  Pinned and justified individually below.
+silent-fallback        96
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
+# 2026-09-12, provenance and reclamation.  Three new sites, each deliberate:
+#
+# `nelisp-native-unit-code-info' rehashes the recorded source file on disk to
+# answer ":source-current".  A file that has been deleted, renamed or made
+# unreadable must make that nil with ":current-source-sha256" nil -- the one
+# answer it must never give is a silent t.  The handler discards the
+# condition because the condition is not the answer: "cannot hash it now" and
+# "hashes differently now" are the same verdict for this field, and reporting
+# a read error out of an inspection API would turn a question into a failure.
+# Counted twice, as bare-handler and as silent-fallback; it is one handler.
+pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
+pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-info	e3f2648caa3a 1
+# `nelisp-native-unit--unload-handle' wraps the loader's release call.  A
+# failed release is NOT recorded as success: `:code-size' is added to the
+# cumulative reclaimed-bytes total only when the loader returns an integer,
+# so a release that raised leaves the accounting unchanged and the mapping
+# counted as still held.  The error is swallowed rather than propagated
+# because this runs on the discard/expiry path, where refusing to continue
+# would strand the remaining resources it was called to release.
+pinned-site ignore-errors	nelisp-native-unit.el	defun nelisp-native-unit--unload-handle	a2ff32dedaa2 1
 pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-rebuild-and-reload	66184c1b9e41 1
 # 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
 # REPL-GC snapshot fields use deliberate structured rejection/unavailable
@@ -222,7 +245,10 @@ pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-nativ
 # checked; a failed delete cannot turn a failed or duplicate-name probe into
 # a pass.  They use the same reviewed cleanup idiom as the existing reader
 # smoke pins below.
-ignore-errors   83
+# 83 -> 84 on 2026-09-12: `nelisp-native-unit--unload-handle'.  Pinned and
+# justified individually below -- a failed release leaves the reclaimed-bytes
+# accounting untouched, so it cannot read as a successful release.
+ignore-errors   84
 # 34 -> 32 on 2026-08-19: the two handlers in
 # `nelisp-artifact--ensure-native-compiler' now record the error instead of
 # discarding it.  Between them they had hidden a chain of six failures --
@@ -239,7 +265,11 @@ ignore-errors   83
 # a nil condition variable because their fallback values do not inspect the
 # caught condition.  They are pinned individually below; this raises the
 # ceiling only for these reviewed additions.
-bare-handler    54
+# 54 -> 55 on 2026-09-12: `nelisp-native-unit-code-info' rehashing the
+# recorded source on disk.  Pinned and justified individually below -- the
+# handler exists so an unreadable source reports ":source-current" nil rather
+# than a silent t.
+bare-handler    55
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
 # a flag has to be turned off by whoever turned it on, and forgetting is
@@ -506,8 +536,16 @@ pinned-site silent-fallback	nelisp-runtime-development.el	defun nelisp-runtime-b
 pinned-site silent-fallback	nelisp-runtime-development.el	defun nelisp-runtime-rebuild-and-reload	df9c84e443d9 1
 # Both DEV operations report explicit failed envelopes with the original error
 # code/message. Apply consumes authority before validation/install can signal.
-pinned-site silent-fallback	nelisp-dev-reload.el	defun nelisp-dev-reload-plan-dispatch	5f9e23cdb386 1
-pinned-site silent-fallback	nelisp-dev-reload.el	defun nelisp-dev-reload-apply-dispatch	11ba3ca8a1b9 1
+# 2026-09-12, digest moved (5f9e23cdb386 -> 2ce2d71584ab): the dispatcher was
+# split into per-scope helpers when `native-unit' was added.  Same handler,
+# same behaviour -- it turns the condition into a `failed' envelope carrying
+# the NELISP-DEV-* code and a bounded message, which is the protocol's
+# defined way to report one, not a quieter wrong answer.
+pinned-site silent-fallback	nelisp-dev-reload.el	defun nelisp-dev-reload-plan-dispatch	2ce2d71584ab 1
+# 2026-09-12, digest moved (11ba3ca8a1b9 -> e1bd5564ea90): same split, same
+# handler.  An authorized apply consumes its plan even when it then fails,
+# and the envelope says which code it failed with.
+pinned-site silent-fallback	nelisp-dev-reload.el	defun nelisp-dev-reload-apply-dispatch	e1bd5564ea90 1
 pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-record	e2c3e961a55c 1
 pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-contract-ready-p	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-contract-ready-p	74a8a7cc22d7 1
