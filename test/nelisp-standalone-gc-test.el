@@ -157,6 +157,13 @@ same native probe returns a nonzero status there."
       ;; passes), so `head-reclaimed' is always 0 and this stub is never
       ;; actually invoked; it only needs to exist for the probe to compile.
       (defun nl_alloc_zero_fill (_obj _off _nbytes) 0)
+      ;; The checked allocator's reclaim poisoning, stubbed for the same
+      ;; reason `nl_alloc_zero_fill' is: this probe compiles
+      ;; `nl_boundary_reclaim' in isolation and does not link the arena unit
+      ;; that defines them.  Both are inert unless NELISP_ALLOC_CHECK=1
+      ;; armed them, so a zero stub is also their production behaviour here.
+      (defun nl_alloc_check_poison_span (_addr _nbytes) 0)
+      (defun nl_alloc_check_expect_zero (_addr _nbytes) 0)
       ,(or boundary-large
            '(defun nl_boundary_clear_large_fl (_n) 0))
       ,(or boundary-small
