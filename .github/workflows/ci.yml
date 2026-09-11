@@ -309,6 +309,14 @@ jobs:
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-unit-repl-smoke -- make native-unit-repl-smoke
 
+      # `make compile' above covers src/ and packages/*/src/ only; lisp/ has
+      # never been byte-compiled by CI.  Linux-only because one lane asserting
+      # it is enough and the baseline counts are Emacs-version sensitive.
+      - name: "Byte-compile lisp/ against its baseline (tools/ai/nelisp-ai.sh gate lisp-byte-compile); Linux"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate lisp-byte-compile -- make lisp-byte-compile
+
       # Every Linux gate report this lane produced.  The `verify' job
       # collects these together with the mutation and subsystem jobs' and
       # checks the union against gates.expected; on its own, no single job

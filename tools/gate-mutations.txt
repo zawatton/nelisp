@@ -736,3 +736,4 @@ standalone-reader-print-large-sexp-smoke|scripts/nelisp-stdlib-prelude.el|s/(unl
 # byte-identical via `git diff --stat'), `nelisp-native-unit-repl-smoke:
 # PASS' and `GATE-COUNT checked=88 findings=0' (exit 0).
 native-unit-repl-smoke|lisp/nelisp-native-load.el|s/^(defconst nelisp-native-load-raw-max-arity 6)$/(defconst nelisp-native-load-raw-max-arity 7)/|the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true
+lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(require 'nelisp-native-load)\n(defun nelisp-native-unit--mutation-probe () (let ((unused 1)) nil))/|a defun with an unused lexical binding in a lisp\/ file the baseline records as clean

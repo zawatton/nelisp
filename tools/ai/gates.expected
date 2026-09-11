@@ -1515,3 +1515,18 @@ gate-mutation
 # widening the raw-v1 argument-count ceiling by one turns the seven-
 # argument-refusal assertion, and so the whole gate, red.
 native-unit-repl-smoke
+# lisp-byte-compile (2026-09-12): `make compile' -- the only byte-compile
+# step CI runs, on every lane -- expands to $(SRCS) $(PACKAGE_SRCS), which are
+# `src/nelisp*.el' and `packages/*/src/nelisp*.el'.  It has never covered
+# `lisp/', where the AOT compiler, the artifact loader, the REPL development
+# modules and the whole DEV protocol live.  253 files were byte-compiled by CI
+# zero times, so a warning or a malformed form in any of them shipped with
+# nothing to notice.  Measured on Emacs 31.1: 251 of the 253 compile clean
+# under `byte-compile-error-on-warn'; all 107 diagnostics come from
+# `nelisp-aot-compiler.el' (92) and `nelisp-artifact.el' (15), recorded with
+# their counts in tools/nelisp-lisp-compile-baseline.txt.  The baseline
+# ratchets both ways -- a count that rises fails, and a baselined file that
+# becomes clean fails too, so the exception is deleted rather than left as
+# cover for a later regression.  A nonzero exit that produced no attributable
+# diagnostic is a finding, not a pass.
+lisp-byte-compile

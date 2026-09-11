@@ -1,4 +1,4 @@
-.PHONY: version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
+.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -482,6 +482,9 @@ runtime-reload-test:
 # `GATE-SKIP' (missing binary / wrong platform / missing `timeout') carry
 # the reason instead of a hard `user-error' crash from the builder itself.
 .PHONY: native-unit-repl-smoke
+lisp-byte-compile:
+	@bash tools/nelisp-lisp-byte-compile-gate.sh
+
 native-unit-repl-smoke:
 	@case "$$(uname -s)-$$(uname -m)" in \
 	  Linux-x86_64) $(MAKE) runtime-reload-reader ;; \

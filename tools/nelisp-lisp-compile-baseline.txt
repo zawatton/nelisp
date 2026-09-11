@@ -3,13 +3,59 @@
 #
 # This is a ratchet: a count that rises fails the gate, and so does a count
 # that falls (fix the file, then delete its row -- do not leave a stale
-# allowance behind).  Measured 2026-09-12, Emacs 31.1, tools/nelisp-lisp-byte-compile-gate.sh.
+# allowance behind).  A baselined file that disappears from the tree fails too.
 #
-# nelisp-aot-compiler.el   docstring quoting plus unused-variable and
-#                          unresolved-call warnings across the code generator.
-# nelisp-artifact.el       includes a malformed handler form at :1448 that is
-#                          worth a real look, not just a warning allowance.
+# Measured 2026-09-12 on Emacs 31.1 by tools/nelisp-lisp-byte-compile-gate.sh,
+# which compiles ONE FILE PER PROCESS.  That matters: the first version of
+# this baseline was taken from a single `batch-byte-compile lisp/*.el' run and
+# recorded 2 files / 107 diagnostics.  Compiling the same tree one file per
+# process reports 39 files / 312 diagnostics -- the batch form hid 37 files
+# entirely, including a deliberately injected defect, because an earlier file
+# in the batch had already `require'd the later one.  Do not "simplify" this
+# gate back into one batch.
+#
+# Two entries are worth a real look rather than an allowance:
+#   lisp/nelisp-artifact.el:1448  Malformed function
+#       (error (lambda (c) (nl-invoke-restart 'interpreted-fallback c)))
+#   lisp/nelisp-aot-compiler.el:240  defvar docstring quoting, plus 91 more
 #
 # FILE                     DIAGNOSTICS
 lisp/nelisp-aot-compiler.el 92
 lisp/nelisp-artifact.el 15
+lisp/nelisp-asm-x86_64.el 7
+lisp/nelisp-build-host.el 4
+lisp/nelisp-cc-bi-syscall-resolve-nr.el 1
+lisp/nelisp-cc-jit-secure-hash-ext.el 1
+lisp/nelisp-cc-rootstack.el 1
+lisp/nelisp-cc-sf-function.el 1
+lisp/nelisp-cc-sf-lambda.el 1
+lisp/nelisp-cli.el 1
+lisp/nelisp-cl-macros.el 3
+lisp/nelisp-dev-protocol.el 3
+lisp/nelisp-elf-write.el 6
+lisp/nelisp-env.el 4
+lisp/nelisp-jit-strategy.el 31
+lisp/nelisp-jit-substrate.el 2
+lisp/nelisp-lexframe.el 5
+lisp/nelisp-native-load.el 16
+lisp/nelisp-repl-code.el 1
+lisp/nelisp-repl-gc.el 3
+lisp/nelisp-repl-session.el 1
+lisp/nelisp-runtime-image.el 6
+lisp/nelisp-static-linker.el 13
+lisp/nelisp-stdlib.el 19
+lisp/nelisp-stdlib-env-shim.el 3
+lisp/nelisp-stdlib-error.el 4
+lisp/nelisp-stdlib-eval-core.el 2
+lisp/nelisp-stdlib-eval-special.el 4
+lisp/nelisp-stdlib-fast-hash.el 4
+lisp/nelisp-stdlib-format.el 2
+lisp/nelisp-stdlib-hash.el 7
+lisp/nelisp-stdlib-math.el 1
+lisp/nelisp-stdlib-misc.el 24
+lisp/nelisp-stdlib-plist-str.el 10
+lisp/nelisp-stdlib-prn.el 7
+lisp/nelisp-stdlib-regex.el 2
+lisp/nelisp-stdlib-regexp.el 2
+lisp/nelisp-stdlib-search.el 1
+lisp/nelisp-syscall-table.el 2

@@ -32,15 +32,29 @@ emacs="${EMACS:-emacs}"
 pkg_dirs=()
 for d in packages/*/src; do [ -d "$d" ] && pkg_dirs+=(-L "$d"); done
 
-# One batch, not one process per file: the diagnostics carry their own
-# `lisp/NAME.el:LINE:COL:' prefix, so a single run attributes every finding.
-# `error-on-warn' is deliberately NOT set here -- it aborts a file at its first
+# ONE PROCESS PER FILE, deliberately, and this is the whole point of the
+# gate's shape.  The obvious design -- one `batch-byte-compile' over
+# `lisp/*.el' -- was written first and then shown to be blind: injecting
+# `(defun nelisp-native-unit--mutation-probe () (let ((unused 1)) nil))' into
+# `lisp/nelisp-native-unit.el' produces "Unused lexical variable" when that
+# file is compiled alone or with one sibling, and produces a compile log
+# byte-identical to the clean one when the same file is compiled as part of
+# the full 253-file batch.  All 253 .elc were written either way, so nothing
+# was skipped -- the diagnostic simply does not survive the batch, because an
+# earlier file in the batch has already `require'd this one.  A gate that
+# stays green with a real defect in front of it is not a gate (AI.md rule 1),
+# so the batch form was discarded rather than shipped.  253 separate processes
+# cost about 40 seconds here; being able to see a defect is worth that.
+#
+# `error-on-warn' is deliberately NOT set: it aborts a file at its first
 # finding, which would hide the rest and make the recorded counts meaningless.
-"$emacs" --batch -Q -L lisp -L src -L scripts "${pkg_dirs[@]}" \
-  -f batch-byte-compile lisp/*.el > "$log" 2>&1
-compile_status=$?
-
-find lisp -name '*.elc' -type f -delete
+: > "$log"
+for file in lisp/*.el; do
+  [ -e "$file" ] || continue
+  "$emacs" --batch -Q -L lisp -L src -L scripts "${pkg_dirs[@]}" \
+    -f batch-byte-compile "$file" >> "$log" 2>&1
+done
+compile_status=0
 
 total_files=$(ls lisp/*.el 2>/dev/null | wc -l | tr -d ' ')
 if [ "$total_files" -eq 0 ]; then
