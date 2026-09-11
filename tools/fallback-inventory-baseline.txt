@@ -133,9 +133,6 @@
 # 95 -> 96 on 2026-09-12: the second count of the one
 # `nelisp-native-unit-code-info' handler -- the classifier counts it as both
 # bare-handler and silent-fallback.  Pinned and justified individually below.
-silent-fallback        96
-pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
-pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 # 2026-09-12, provenance and reclamation.  Three new sites, each deliberate:
 #
 # `nelisp-native-unit-code-info' rehashes the recorded source file on disk to
@@ -146,8 +143,6 @@ pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage
 # "hashes differently now" are the same verdict for this field, and reporting
 # a read error out of an inspection API would turn a question into a failure.
 # Counted twice, as bare-handler and as silent-fallback; it is one handler.
-pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
-pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-info	e3f2648caa3a 1
 # `nelisp-native-unit--unload-handle' wraps the loader's release call.  A
 # failed release is NOT recorded as success: `:code-size' is added to the
 # cumulative reclaimed-bytes total only when the loader returns an integer,
@@ -155,8 +150,29 @@ pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-
 # counted as still held.  The error is swallowed rather than propagated
 # because this runs on the discard/expiry path, where refusing to continue
 # would strand the remaining resources it was called to release.
+# 95 -> 96 on 2026-09-12 (WS-D bounded native-unit rebuild): re-digested
+# `nelisp-native-unit-rebuild-and-reload' below -- its body changed (it now
+# runs the compiler through a bounded, cancellable subprocess and derives a
+# native-unit-specific phase from the shared pure decision function) but the
+# handler shape (condition-case turning any error into a `:status rejected'
+# envelope, never success) did not, so this is a re-digest, not a new site.
+# One genuinely new site: `nelisp-native-unit-development--wait' swallows a
+# `quit' (C-g) and returns `:quit' instead of propagating, by design (see
+# `nelisp-native-unit-development-run-bounded' -- a caller-cancelled or
+# C-g'd compile must return a normal `:cancelled' result, not blow up the
+# REPL). The caller already reports the cancellation in its result plist,
+# so there's nothing further to record here.
+# Merged 2026-09-12: 95 + 1 (code-info, counted twice by the classifier)
+# + 1 (the bounded-rebuild work) = 97, taken from the scanner, not summed on paper.
+silent-fallback 97
+pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
+pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
+pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
+pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-code-info	e3f2648caa3a 1
 pinned-site ignore-errors	nelisp-native-unit.el	defun nelisp-native-unit--unload-handle	a2ff32dedaa2 1
 pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-rebuild-and-reload	66184c1b9e41 1
+pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-rebuild-and-reload	af6b5fd2f4d1 1
+pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	6d043850b3a7 1
 # 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
 # REPL-GC snapshot fields use deliberate structured rejection/unavailable
 # results when an optional raw export is absent.  They do not silently claim
@@ -248,7 +264,20 @@ pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-nativ
 # 83 -> 84 on 2026-09-12: `nelisp-native-unit--unload-handle'.  Pinned and
 # justified individually below -- a failed release leaves the reclaimed-bytes
 # accounting untouched, so it cannot read as a successful release.
-ignore-errors   84
+# 83 -> 86 on 2026-09-12 (WS-D bounded native-unit rebuild): three new
+# best-effort I/O sites in `lisp/nelisp-native-unit-development.el', none on
+# a correctness path -- `--kill' discards a `delete-process' failure on an
+# already-dead/never-live process (the whole point of calling it
+# unconditionally from every cleanup path); `--artifact-produced-p' and
+# `--cleanup-temp-files' discard a stat/delete failure while deciding
+# whether an artifact file exists/is gone, re-verifying with `file-exists-p'
+# immediately after rather than trusting the call's own success.
+# Merged 2026-09-12: 83 + 1 (--unload-handle) + 3 (the bounded-rebuild work) = 87,
+# taken from the scanner.
+ignore-errors 87
+pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--kill	49a1e5c4d66b 1
+pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--artifact-produced-p	7f74078abc35 1
+pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--cleanup-temp-files	dd8bb1462f63 1
 # 34 -> 32 on 2026-08-19: the two handlers in
 # `nelisp-artifact--ensure-native-compiler' now record the error instead of
 # discarding it.  Between them they had hidden a chain of six failures --
@@ -269,7 +298,15 @@ ignore-errors   84
 # recorded source on disk.  Pinned and justified individually below -- the
 # handler exists so an unreadable source reports ":source-current" nil rather
 # than a silent t.
-bare-handler    55
+# 54 -> 55 on 2026-09-12 (WS-D bounded native-unit rebuild): one new site.
+# `nelisp-native-unit-development--wait' wraps `accept-process-output' in a
+# nil-variable `condition-case' so a `quit' (C-g) is caught alongside every
+# other condition and turned into `:quit'; its fallback value does not
+# inspect which condition fired, so a named variable would go unused.
+# Merged 2026-09-12: 54 + 1 (code-info) + 1 (the bounded-rebuild work) = 56,
+# taken from the scanner.
+bare-handler 56
+pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
 # a flag has to be turned off by whoever turned it on, and forgetting is

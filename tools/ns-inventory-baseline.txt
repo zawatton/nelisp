@@ -680,7 +680,23 @@ ns-collision-divergent 127
 # surface of the provenance and reclamation work, documented in
 # docs/repl-development.md and docs/development-protocol.md; renaming them to
 # the private prefix would hide the API this branch exists to add.
-ns-prefix-violation 995
+# 990 -> 994 on 2026-09-12: `nelisp-native-unit-development-timeout' and
+# `-output-limit' (the bounded-subprocess timeout/output-budget constants)
+# and `nelisp-native-unit-development-run-bounded' (the generic bounded,
+# cancellable subprocess runner factored out of
+# `nelisp-native-unit-rebuild-and-reload' so a second call site,
+# `nelisp-dev-reload--native-compile', can share it instead of its own
+# unbounded `call-process') are new, deliberately public API. Adding them
+# also tips this file's majority prefix from `nelisp-native-unit-' to
+# `nelisp-native-unit-development-', which newly catches the pre-existing
+# `nelisp-native-unit-rebuild-and-reload' as a fourth finding -- same
+# symbol, same public/private status as before this commit, no behaviour
+# change; only the majority-prefix inference around it shifted. No
+# existing symbol is redefined.
+# Merged: 990 + 5 (provenance/reclamation API) + 4 (bounded-rebuild API)
+# = 999, confirmed by running the gate rather than by adding the two
+# branches' numbers on paper.
+ns-prefix-violation 999
 # 611 -> 613 on 2026-08-20: `nelisp--check-string'/`--check-symbol' and the
 # other argument-check helpers are referenced from the lisp/ mirrors that
 # carry copies of the functions using them.  This is the kind this file
