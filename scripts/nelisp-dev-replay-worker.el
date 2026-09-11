@@ -71,10 +71,13 @@
 
 (defun nelisp-dev-replay-worker-main ()
   "Write a terminal record only after validation and evaluation finish."
-  (let* ((manifest (pop command-line-args-left))
+  (let* ((locale-coding-system 'utf-8-unix)
+         (coding-system-for-write 'utf-8-unix)
+         (manifest (pop command-line-args-left))
          (result-path (pop command-line-args-left))
          (expected-hash (pop command-line-args-left))
          (nonce (pop command-line-args-left))
+         (_ (set-terminal-coding-system 'utf-8-unix))
          (result
           (condition-case err
               (nelisp-dev-replay-worker--run manifest expected-hash)

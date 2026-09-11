@@ -247,6 +247,26 @@ publication result. Inspect the status and generation before repeating
 the failing operation. Keep the returned artifacts when diagnosing a
 candidate-specific failure.
 
+To compile and validate a candidate without switching the running allocator
+or collector, use the separate staging command:
+
+```elisp
+(setq runtime-candidate (nelisp-runtime-build-and-stage))
+(plist-get runtime-candidate :status) ; staged, or rejected with a reason
+(plist-get runtime-candidate :generation)
+(nelisp-runtime-reload-status) ; generation is unchanged by staging
+```
+
+Staging maps the candidate code and returns `:alloc-handle` and `:gc-handle`
+for the native installation API. It checks the running executable identity
+and generation before and after compilation/loading. The convenience
+`nelisp-runtime-rebuild-and-reload` uses this boundary and checks them again
+immediately before publication. Calling it again builds another candidate.
+These handles are process-local, and staging retains code mappings until
+process exit. This is not a saved, immutable reload plan: source hashes,
+session identity, and dependency closure are not frozen by this API. The
+common protocol's `reload.plan` and `reload.apply` remain unsupported.
+
 The replacement contains the allocator and the complete collector unit.
 Collector helpers can be added, removed, renamed, or rewritten within the
 supported native compiler language. The public names and arities in

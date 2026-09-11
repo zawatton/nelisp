@@ -128,7 +128,7 @@
 # failure after the result has already been determined.  Each shape is pinned
 # below so a different handler cannot replace it while the aggregate stays
 # unchanged.
-silent-fallback        89
+silent-fallback        90
 # 2026-09-11 runtime reload additions: loader symbol/state/hash probes and
 # REPL-GC snapshot fields use deliberate structured rejection/unavailable
 # results when an optional raw export is absent.  They do not silently claim
@@ -494,7 +494,11 @@ pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--source-form-s
 pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact--source-form-spans	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact-reload-source-file	02e7e4104a95 1
 pinned-site silent-fallback	nelisp-artifact.el	defun nelisp-artifact-reload-source-file	e3f2648caa3a 1
-pinned-site silent-fallback	nelisp-runtime-development.el	defun nelisp-runtime-rebuild-and-reload	098b672091fc 1
+# Native staging and publication each return an explicit rejected status,
+# phase and error reason; neither reports success after a caught failure.
+# Splitting the old boundary adds one diagnostic handler, pinned separately.
+pinned-site silent-fallback	nelisp-runtime-development.el	defun nelisp-runtime-build-and-stage	4bb7cf44bfbc 1
+pinned-site silent-fallback	nelisp-runtime-development.el	defun nelisp-runtime-rebuild-and-reload	df9c84e443d9 1
 pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-record	e2c3e961a55c 1
 pinned-site silent-fallback	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-contract-ready-p	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-repl-gc.el	defun nelisp-repl-gc--raw-contract-ready-p	74a8a7cc22d7 1

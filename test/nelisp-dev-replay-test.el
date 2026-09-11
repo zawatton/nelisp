@@ -140,4 +140,23 @@
      (should (equal "inconclusive" (nelisp-dev-replay-test--status result)))
      (should (= 0 (cdr (assoc "executed_forms" (cdr (assoc "data" result)))))))))
 
+(ert-deftest nelisp-dev-replay/non-utf8-locale-preserves-worker-output ()
+  (nelisp-dev-replay-test--session
+   "(princ \"日本語\")\n"
+   (let ((original (symbol-function 'make-process)))
+     (cl-letf (((symbol-function 'make-process)
+                (lambda (&rest arguments)
+                  (let ((command (plist-get arguments :command)))
+                    (setq arguments
+                          (plist-put arguments :command
+                            (append (cl-subseq command 0 3)
+                                    '("--eval" "(progn (setq locale-coding-system 'us-ascii coding-system-for-write 'us-ascii) (set-terminal-coding-system 'us-ascii))")
+                                    (nthcdr 3 command))))
+                    (apply original arguments)))))
+       (let ((result (nelisp-dev-replay-dispatch
+                      (nelisp-dev-replay-test--request manifest "explicit-only")
+                      (list :target "host-emacs" :root directory))))
+         (should (equal "ok" (nelisp-dev-replay-test--status result)))
+         (should (equal "日本語" (cdr (assoc "stdout" (cdr (assoc "data" result)))))))))))
+
 (provide 'nelisp-dev-replay-test)
