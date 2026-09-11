@@ -239,8 +239,18 @@ bounded subprocess rather than from the test process."
       (delete-file source))))
 
 (ert-deftest nelisp-native-unit-development/quit-signal-is-treated-as-cancellation ()
+  "A C-g arriving inside the wait loop cancels, and cleans up as such.
+
+Driven through the cancel predicate rather than a timer setting `quit-flag\='.
+The timer form passed locally on Emacs 31.1 and failed on every CI platform
+with phase `:timeout\=' instead of `:cancelled\=' (run 34623283652): whether
+`accept-process-output\=' turns a timer-set `quit-flag\=' into a `quit\=' signal
+in batch mode is not something this test gets to assume.  Signalling `quit\='
+from the predicate reaches the same handler deterministically, and it also
+covers the window the predicate itself occupies -- a C-g can land while
+caller-supplied code is on the stack just as easily as during the wait."
   (let ((source (make-temp-file "native-unit-source-" nil ".el"))
-        timer)
+        (polls 0))
     (unwind-protect
         (progn
           (nelisp-native-unit-development-test--write source "(defun score (x) (+ x 1))\n")
@@ -249,17 +259,25 @@ bounded subprocess rather than from the test process."
                     (nelisp-native-unit-development--command-function
                      (lambda (&rest _)
                        (nelisp-native-unit-development-test--eval-form '(sleep-for 999)))))
-            (setq timer (run-at-time 0.3 nil (lambda () (setq quit-flag t))))
             (let* ((before (process-list)) (start (float-time))
-                   (result (nelisp-native-unit-rebuild-and-reload source nil nil nil 30)))
+                   (result (nelisp-native-unit-rebuild-and-reload
+                            source nil nil nil 30
+                            (lambda ()
+                              (setq polls (1+ polls))
+                              (when (> polls 1) (signal 'quit nil))
+                              nil))))
               (should (eq (plist-get result :status) 'rejected))
               (should (eq (plist-get result :phase) :cancelled))
-              (should (< (- (float-time) start) 5))
+              (should (> polls 1))
+              ;; Well inside the 30s deadline, so `:cancelled' cannot be a
+              ;; timeout wearing another name.
+              (should (< (- (float-time) start) 10))
+              ;; The quit must not survive the call and fire at the caller's
+              ;; next checkpoint.
               (should-not quit-flag)
               (should-not (file-exists-p (plist-get result :artifact)))
               (should-not (file-exists-p (plist-get result :snapshot)))
               (should (equal before (process-list))))))
-      (when timer (cancel-timer timer))
       (setq quit-flag nil)
       (delete-file source))))
 

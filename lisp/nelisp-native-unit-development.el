@@ -56,14 +56,33 @@ slicing raw bytes."
   "Delete PROCESS if it is non-nil. Safe to call more than once."
   (when process (ignore-errors (delete-process process))))
 
+(defmacro nelisp-native-unit-development--quit-as-cancel (&rest body)
+  "Run BODY, turning a `quit' (C-g) into the symbol `:quit\='.
+
+A C-g during a bounded run is cancellation, not an error to propagate, so
+it is swallowed and `quit-flag\=' is cleared -- otherwise it re-fires at the
+next quit checkpoint inside this same call and escapes anyway.  Returns
+BODY\='s value when no quit arrived."
+  (declare (indent 0) (debug t))
+  `(condition-case nil (progn ,@body)
+     (quit (setq quit-flag nil) :quit)))
+
 (defun nelisp-native-unit-development--wait (process seconds)
   "Call `accept-process-output' on PROCESS for SECONDS.
-A `quit' (C-g) during the wait is cancellation, not an error to propagate:
-swallow it, clear `quit-flag' so it cannot re-fire on the next checkpoint
-inside this same call, and return `:quit'. Otherwise return nil."
-  (condition-case nil
-      (progn (accept-process-output process seconds) nil)
-    (quit (setq quit-flag nil) :quit)))
+Return `:quit\=' when a C-g arrived during the wait, otherwise nil."
+  (nelisp-native-unit-development--quit-as-cancel
+    (accept-process-output process seconds) nil))
+
+(defun nelisp-native-unit-development--cancelled-p (cancel-predicate)
+  "Return non-nil when CANCEL-PREDICATE asks to cancel, or a C-g arrives.
+
+The predicate is caller-supplied code running inside our wait loop, so a
+C-g can land while it is on the stack just as easily as during
+`accept-process-output\='.  Catching it only in the wait left that window
+open, and the escaping quit would have abandoned the child process and its
+temporary files rather than going through the one cleanup path."
+  (when cancel-predicate
+    (nelisp-native-unit-development--quit-as-cancel (funcall cancel-predicate))))
 
 (defun nelisp-native-unit-development--artifact-produced-p (path)
   "Return non-nil when PATH exists and is non-empty.
@@ -200,7 +219,7 @@ limit, or cancellation through CANCEL-PREDICATE or a `quit'."
                          (nelisp-native-unit-development--kill process)))))))
           (while (and (process-live-p process) (not limited) (not cancelled)
                       (< (float-time) deadline))
-            (if (and cancel-predicate (funcall cancel-predicate))
+            (if (nelisp-native-unit-development--cancelled-p cancel-predicate)
                 (setq cancelled t)
               (when (eq :quit (nelisp-native-unit-development--wait
                                process nelisp-native-unit-development--poll-interval))
