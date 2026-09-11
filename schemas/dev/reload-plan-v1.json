@@ -12,11 +12,7 @@
     "atomicity",
     "state",
     "expires_at",
-    "source_files",
     "limitations",
-    "source_set_hash",
-    "binary_hash",
-    "abi_hash",
     "build_options_hash",
     "artifact_hash",
     "source_hash"
@@ -41,10 +37,10 @@
       "const": "native-linux-x86_64"
     },
     "unit": {
-      "const": "allocator-gc"
+      "enum": ["allocator-gc", "native-unit"]
     },
     "atomicity": {
-      "const": "runtime-unit"
+      "enum": ["runtime-unit", "native-unit"]
     },
     "state": {
       "const": "validated"
@@ -86,7 +82,83 @@
     "source_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "unit_id": {
+      "type": ["string", "null"]
+    },
+    "exports": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["name", "arity"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "arity": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": ["unit"],
+        "properties": {
+          "unit": {
+            "const": "allocator-gc"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "source_files",
+          "source_set_hash",
+          "binary_hash",
+          "abi_hash"
+        ],
+        "not": {
+          "anyOf": [
+            {"required": ["unit_id"]},
+            {"required": ["exports"]}
+          ]
+        },
+        "properties": {
+          "atomicity": {
+            "const": "runtime-unit"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["unit"],
+        "properties": {
+          "unit": {
+            "const": "native-unit"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "unit_id",
+          "exports",
+          "source_set_hash",
+          "binary_hash"
+        ],
+        "properties": {
+          "atomicity": {
+            "const": "native-unit"
+          }
+        }
+      }
+    }
+  ]
 }

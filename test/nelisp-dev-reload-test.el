@@ -243,5 +243,181 @@
            (should (equal "failed" (cdr (assoc "status" (nelisp-dev-dispatch request ctx)))))))
      (should (= install-calls (if (eq mode 'repeated) 1 0)))))))
 
+;; --- native-unit scope -----------------------------------------------
+
+(defmacro nelisp-dev-reload-test--with-native-stubs (&rest body)
+  "Stub every native-unit and runtime seam so BODY needs no native runtime."
+  `(let ((nelisp-dev-reload--plans (make-hash-table :test #'equal))
+         (nelisp-dev-reload--session-id "reload-native-test-session")
+         (generation 4) (status-generation 4)
+         (compile-calls 0) (stage-calls 0) (publish-calls 0) (discard-calls 0)
+         (discarded nil) (published nil))
+     (cl-letf (((symbol-function 'nelisp-runtime-reload-status)
+                (lambda () (list :status 'ready :generation generation)))
+               ((symbol-function 'nelisp-native-load--running-binary-sha256)
+                (lambda () "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+               ((symbol-function 'nelisp-runtime-reload-contract-hash)
+                (lambda () "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"))
+               ((symbol-function 'nelisp-dev-reload--inputs)
+                (lambda (_root)
+                  '(("scripts/compiler.el" .
+                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))))
+               ((symbol-function 'nelisp-dev-reload--sha256-file)
+                (lambda (_path) "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"))
+               ((symbol-function 'nelisp-dev-reload--native-compile)
+                (lambda (_root _path _binary)
+                  (setq compile-calls (1+ compile-calls))
+                  "native-artifact"))
+               ((symbol-function 'nelisp-native-unit-status)
+                (lambda (_id)
+                  (list :generation status-generation
+                        :binary-sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        :exports '(("run" . 1)) :published t)))
+               ((symbol-function 'nelisp-native-unit-stage)
+                (lambda (_artifact _unit-id _exports)
+                  (setq stage-calls (1+ stage-calls))
+                  (list :status 'staged :candidate-id "candidate-1" :unit-id "unit-1"
+                        :expected-generation status-generation :exports '(("run" . 1)))))
+               ((symbol-function 'nelisp-native-unit-publish)
+                (lambda (id)
+                  (setq publish-calls (1+ publish-calls) published id)
+                  (list :status 'published :unit-id "unit-1"
+                        :generation (1+ status-generation)
+                        :artifact-sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                        :source-sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")))
+               ((symbol-function 'nelisp-native-unit-discard)
+                (lambda (id) (setq discard-calls (1+ discard-calls) discarded id))))
+       ,@body)))
+
+(defun nelisp-dev-reload-test--native-plan-request (&optional extra)
+  (nelisp-dev-reload-test--request
+   "reload.plan"
+   (append '(("unit" . "native-unit") ("atomicity" . "native-unit")
+             ("effects_policy" . "explicit-only")
+             ("source" . "lisp/example.el"))
+           extra)))
+
+(ert-deftest nelisp-dev-reload/native-unit-plan-rejects-unknown-argument ()
+  "Pure-function guard check; no native runtime is touched."
+  (let ((nelisp-dev-reload--session-id "reload-native-test-session")
+        (nelisp-dev-reload--plans (make-hash-table :test #'equal)))
+    (let* ((ctx (nelisp-dev-reload-test--context))
+           (result (nelisp-dev-reload-plan-dispatch
+                    (nelisp-dev-reload-test--native-plan-request
+                     '(("scope" . "bogus")))
+                    ctx)))
+      (should (equal "failed" (cdr (assoc "status" result))))
+      (should (equal "NELISP-DEV-INVALID-REQUEST"
+                     (cdr (assoc "code" (aref (cdr (assoc "diagnostics" result)) 0))))))))
+
+(ert-deftest nelisp-dev-reload/plan-rejects-mismatched-unit-and-atomicity ()
+  "Pure-function scope check; no native runtime is touched."
+  (dolist (pair '(("native-unit" . "runtime-unit") ("allocator-gc" . "native-unit")))
+    (let ((nelisp-dev-reload--session-id "reload-native-test-session")
+          (nelisp-dev-reload--plans (make-hash-table :test #'equal)))
+      (let* ((ctx (nelisp-dev-reload-test--context))
+             (args (append (list (cons "unit" (car pair)) (cons "atomicity" (cdr pair))
+                                 (cons "effects_policy" "explicit-only"))
+                           (when (equal (car pair) "native-unit")
+                             (list (cons "source" "lisp/example.el")))))
+             (result (nelisp-dev-reload-plan-dispatch
+                      (nelisp-dev-reload-test--request "reload.plan" args) ctx)))
+        (should (equal "failed" (cdr (assoc "status" result))))
+        (should (equal "NELISP-DEV-UNSUPPORTED-SCOPE"
+                       (cdr (assoc "code" (aref (cdr (assoc "diagnostics" result)) 0)))))))))
+
+(ert-deftest nelisp-dev-reload/native-unit-plan-reports-null-unit-id-for-new-unit ()
+  (nelisp-dev-reload-test--with-native-stubs
+   (let* ((ctx (nelisp-dev-reload-test--context))
+          (result (nelisp-dev-reload-plan-dispatch
+                   (nelisp-dev-reload-test--native-plan-request) ctx))
+          (data (cdr (assoc "data" result))))
+     (should (equal "ok" (cdr (assoc "status" result))))
+     (should (= 1 stage-calls))
+     (should (= 1 compile-calls))
+     (should (eq :null (cdr (assoc "unit_id" data))))
+     (should (equal 4 (cdr (assoc "expected_generation" data))))
+     (should (equal [(("name" . "run") ("arity" . 1))] (cdr (assoc "exports" data))))
+     (should (= 1 (hash-table-count nelisp-dev-reload--plans))))))
+
+(ert-deftest nelisp-dev-reload/native-unit-plan-and-apply-publish-existing-unit ()
+  (nelisp-dev-reload-test--with-native-stubs
+   (let* ((ctx (nelisp-dev-reload-test--context))
+          (planned (nelisp-dev-reload-plan-dispatch
+                    (nelisp-dev-reload-test--native-plan-request
+                     '(("unit_id" . "unit-1")))
+                    ctx))
+          (data (cdr (assoc "data" planned)))
+          (id (cdr (assoc "plan_id" data))))
+     (should (equal "ok" (cdr (assoc "status" planned))))
+     (should (equal "unit-1" (cdr (assoc "unit_id" data))))
+     (let ((applied (nelisp-dev-reload-apply-dispatch
+                     (nelisp-dev-reload-test--request
+                      "reload.apply" `(("plan_id" . ,id) ("effects_policy" . "explicit-only")))
+                     ctx)))
+       (should (equal "ok" (cdr (assoc "status" applied))))
+       (should (= 1 publish-calls))
+       (should (equal "candidate-1" published))
+       (let ((adata (cdr (assoc "data" applied))))
+         (should (equal (1+ status-generation) (cdr (assoc "generation" adata))))
+         (should (equal "unit-1" (cdr (assoc "unit_id" adata))))
+         (should (equal ["run"] (cdr (assoc "published" adata)))))))))
+
+(ert-deftest nelisp-dev-reload/native-unit-apply-stale-generation-discards-candidate ()
+  "Against-the-bug: a competing publish must be refused, not installed,
+and must not leave a publishable candidate behind."
+  (nelisp-dev-reload-test--with-native-stubs
+   (let* ((ctx (nelisp-dev-reload-test--context))
+          (planned (nelisp-dev-reload-plan-dispatch
+                    (nelisp-dev-reload-test--native-plan-request) ctx))
+          (id (cdr (assoc "plan_id" (cdr (assoc "data" planned))))))
+     (should (equal "ok" (cdr (assoc "status" planned))))
+     (should (= 1 stage-calls))
+     ;; Simulate a competing publish advancing the unit's generation
+     ;; between plan and apply.
+     (setq status-generation (1+ status-generation))
+     (let ((result (nelisp-dev-reload-apply-dispatch
+                    (nelisp-dev-reload-test--request
+                     "reload.apply" `(("plan_id" . ,id) ("effects_policy" . "explicit-only")))
+                    ctx)))
+       (should (equal "failed" (cdr (assoc "status" result))))
+       (should (equal "NELISP-DEV-STALE-PLAN"
+                      (cdr (assoc "code" (aref (cdr (assoc "diagnostics" result)) 0)))))
+       (should (= 0 publish-calls))
+       (should (= 1 discard-calls))
+       (should (equal "candidate-1" discarded))))))
+
+(ert-deftest nelisp-dev-reload/expired-native-unit-plan-discards-candidate-on-purge ()
+  "Against-the-bug: TTL expiry must revoke the staged candidate, not just
+drop the plan record."
+  (nelisp-dev-reload-test--with-native-stubs
+   (let* ((ctx (nelisp-dev-reload-test--context))
+          (planned (nelisp-dev-reload-plan-dispatch
+                    (nelisp-dev-reload-test--native-plan-request) ctx))
+          (id (cdr (assoc "plan_id" (cdr (assoc "data" planned))))))
+     (setf (plist-get (gethash id nelisp-dev-reload--plans) :expires) 0)
+     (let ((result (nelisp-dev-reload-apply-dispatch
+                    (nelisp-dev-reload-test--request
+                     "reload.apply" `(("plan_id" . ,id) ("effects_policy" . "explicit-only")))
+                    ctx)))
+       (should (equal "failed" (cdr (assoc "status" result))))
+       (should (= 0 publish-calls))
+       (should (= 1 discard-calls))
+       (should (equal "candidate-1" discarded))))))
+
+(ert-deftest nelisp-dev-reload/clear-discards-staged-native-unit-candidates ()
+  "Against-the-bug: session.clear/`nelisp-dev-reload-clear' must revoke
+held native-unit candidates, not only drop plan records."
+  (nelisp-dev-reload-test--with-native-stubs
+   (let* ((ctx (nelisp-dev-reload-test--context))
+          (planned (nelisp-dev-reload-plan-dispatch
+                    (nelisp-dev-reload-test--native-plan-request) ctx)))
+     (should (equal "ok" (cdr (assoc "status" planned))))
+     (should (= 1 (hash-table-count nelisp-dev-reload--plans)))
+     (should (= 2 (nelisp-dev-reload-clear)))
+     (should (= 1 discard-calls))
+     (should (equal "candidate-1" discarded))
+     (should (= 0 (hash-table-count nelisp-dev-reload--plans))))))
+
 (provide 'nelisp-dev-reload-test)
 ;;; nelisp-dev-reload-test.el ends here
