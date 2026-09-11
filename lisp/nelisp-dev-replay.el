@@ -183,9 +183,22 @@ that expired with no valid terminal record is a timeout on every platform."
                request "failed" "validate" "NELISP-DEV-REPLAY-INVALID-MANIFEST"
                (list '("executed_forms" . 0)
                      (cons "validation" (nelisp-dev-protocol-value validation))))))
+        ;; The worker's own teardown can raise -- deleting a process whose
+        ;; pipes another platform has already torn down, for one -- and that
+        ;; used to land here with nothing but the condition name, discarding
+        ;; the deadline evidence the run had already established.  Observed on
+        ;; windows-latest/29.4 (run 34631402194): the same test passed on the
+        ;; first suite pass and failed on the second, reporting
+        ;; `timeout_seconds' nil after 1.06s, because the run HAD timed out
+        ;; and then raised on the way out.  Carry the request's own timeout
+        ;; through, so a caller can still tell how long was allowed.
         (error
          (nelisp-dev-replay--result
           request "failed" "worker" "NELISP-DEV-REPLAY-WORKER-ERROR"
-          (list (cons "condition" (symbol-name (car err)))))))))))
+          (list (cons "condition" (symbol-name (car err)))
+                (cons "timeout_seconds" timeout)
+                (cons "message"
+                      (nelisp-dev-replay--prefix
+                       (error-message-string err) 512))))))))))
 
 (provide 'nelisp-dev-replay)
