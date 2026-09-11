@@ -1263,6 +1263,18 @@ standalone-reader-require-provide-smoke: standalone-reader
 	  exit 1; \
 	fi
 
+# Regression check for the reader-boundary reclaim / bind-scratch
+# corruption fixed in `nl_boundary_reclaim' / `nl_boundary_reset_tail_chunks'
+# (scripts/nelisp-standalone-build.el): a top-level form's per-form arena
+# reclaim rewound the bump cursor over memory the reader had already used
+# to build the NEXT form's parse tree, without zeroing it, so a later
+# `nl_bind_frame_fast' scratch block could inherit a stale `Sexp::Cons' and
+# SIGSEGV in `nelisp_nlconsbox_clone' the first time anything cloned it.
+# See test/nelisp-sexp-clone-bind-smoke.sh for the full writeup and the
+# `condition-case' variable-name-length boundary (8 vs 9 bytes) this covers.
+nelisp-sexp-clone-bind-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_BIN=$(STANDALONE_BIN) sh test/nelisp-sexp-clone-bind-smoke.sh
+
 # Doc 170 Stage 2: checked-allocator smoke (redzone / generation tags /
 # alloc-site / poison / leak scan).  Three runs against the same binary:
 #   1. env OFF — behaviour must match the stock reader (43) and the

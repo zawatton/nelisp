@@ -146,6 +146,17 @@ same native probe returns a nonzero status there."
       (defun nl_chunk_cursor_addr (chunk) (+ chunk 64))
       (defun nl_boundary_reset_tail_chunks (_chunk _reclaimed) 0)
       (defun nl_aref_cache_clear () 0)
+      ;; `nl_boundary_reclaim' (production body, spliced in verbatim below)
+      ;; zero-fills its reclaimed head span before rewinding the cursor
+      ;; (fix for the reader-boundary reuse-without-zeroing defect); the
+      ;; real implementation lives in the arena unit, out of reach of this
+      ;; isolated probe, so stub it the same way every other cross-unit
+      ;; dependency here is stubbed.  MARK_CURSOR == CURSOR in every mode
+      ;; this probe drives (both call `nl_boundary_reclaim' with the fake
+      ;; chunk's cursor slot pre-set to the same 1024 the mark itself
+      ;; passes), so `head-reclaimed' is always 0 and this stub is never
+      ;; actually invoked; it only needs to exist for the probe to compile.
+      (defun nl_alloc_zero_fill (_obj _off _nbytes) 0)
       ,(or boundary-large
            '(defun nl_boundary_clear_large_fl (_n) 0))
       ,(or boundary-small

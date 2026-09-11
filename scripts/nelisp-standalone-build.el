@@ -19932,6 +19932,15 @@ suffix, which is why only `--repl' crashed)."
                    (cursor (ptr-read-u64 cursor-addr 0))
                    (used (nl_boundary_chunk_used cursor)))
               (seq
+               ;; FIX (2026-09-12): zero the whole [1024, cursor) span BEFORE
+               ;; rewinding it back to 1024 — see the matching fix in
+               ;; `nl_boundary_reclaim' below for the full defect writeup.
+               ;; This tail chunk's [1024, cursor) span is being handed back
+               ;; to the bump path exactly like `nl_boundary_reclaim''s own
+               ;; head span; the same stale-payload hazard applies.
+               (if (> used 0)
+                   (nl_alloc_zero_fill (+ (ptr-read-u64 chunk 0) 1024) 0 used)
+                 0)
                (ptr-write-u64 cursor-addr 0 1024)
                (nl_boundary_reset_tail_chunks next (+ reclaimed used))))))))
     (defun nl_boundary_immediate_result_p (out)
@@ -19960,6 +19969,49 @@ suffix, which is why only `--repl' crashed)."
               (nl_boundary_reset_tail_chunks (ptr-read-u64 (+ mark_chunk 48) 0) 0)))
         (seq
          (nl_aref_cache_clear)
+         ;; ROOT-CAUSE FIX (2026-09-12, mirrors `nl_alloc_zero_fill''s own
+         ;; free-list-reuse discipline above).  This rewinds MARK_CHUNK's
+         ;; bump cursor from CURSOR back down to MARK_CURSOR so the span in
+         ;; between can be handed out again by the ordinary bump path
+         ;; (`nl_chunk_try_alloc') — but unlike the free-list reuse path,
+         ;; that span had ALREADY been live, written-to memory (the reader's
+         ;; own parse of the top-level form whose boundary this is, plus
+         ;; whatever it evaluated to), not an untouched, OS-zero-filled page.
+         ;; Every allocator invariant downstream assumes a freshly-bumped
+         ;; block starts zero (see `nl_alloc_zero_fill''s comment); rewinding
+         ;; the cursor without zeroing silently broke that invariant for
+         ;; every later allocation that lands in the rewound span, via the
+         ;; ordinary bump path, with no free-list involved at all.
+         ;; Measured: given the 3-form file
+         ;;   (princ "MARK\n")
+         ;;   (condition-case aaaaaaaaa
+         ;;       (when (require 'zzz-absent nil t) (nelix-package-activate-emacs))
+         ;;     (t (princ "H\n")))
+         ;;   (princ "REACHED_END\n")
+         ;; reading form 2 (the `condition-case') builds one of its own cons
+         ;; cells (nl_val_clone_into -> nl_vci_box -> alloc-bytes(32,8), via
+         ;; the reader's `cons-make-with-clone') at an address inside form
+         ;; 2's OWN reclaimable span.  `require' returns nil without
+         ;; signalling, so `when' never runs its body and the handler
+         ;; clause never fires either; form 2's overall result is plain
+         ;; Nil, an immediate Sexp, and nothing in its dynamic extent moves
+         ;; the mutation epoch -- so THIS reclaim call (form 2's own
+         ;; boundary check) fires and rewinds the cursor UNDER that cons
+         ;; cell's bytes without clearing them.  Form 3 (`(princ
+         ;; "REACHED_END\n")') is read and evaluated next; binding `princ''s
+         ;; own formal parameters needs a `nl_bind_frame_fast' 128-byte
+         ;; scratch block, which bump-allocates into that exact rewound
+         ;; span and inherits the stale bytes -- observed: a Sexp::Cons tag
+         ;; (7) with a garbage payload pointer landing in
+         ;; `nelisp_frame_bind_prepend''s "caller-zeroed Nil seed" scratch
+         ;; slot, SIGSEGV in `nelisp_nlconsbox_clone' the first time anything
+         ;; clones it.  Zeroing here restores the same "every constructor
+         ;; sees clean memory" invariant `nl_alloc_zero_fill' already
+         ;; restores for the free-list path.
+         (if (> head-reclaimed 0)
+             (nl_alloc_zero_fill (+ (ptr-read-u64 mark_chunk 0) mark_cursor)
+                                 0 head-reclaimed)
+           0)
          (ptr-write-u64 cursor-addr 0 mark_cursor)
          (ptr-write-u64 268436168 0 mark_chunk)
          (nl_boundary_clear_fl 0)
