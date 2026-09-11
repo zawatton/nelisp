@@ -60,8 +60,19 @@ for file in lisp/*.el; do
   [ -e "$file" ] || continue
   "$emacs" --batch -Q -L lisp -L src -L scripts "${pkg_dirs[@]}" \
     -f batch-byte-compile "$file" >> "$log" 2>&1
+  # Delete each .elc as soon as it has been read, not after the loop.  A
+  # .elc left under lisp/ or scripts/ is not inert here: a later
+  # `make standalone-reader' loads the stale byte-code in preference to the
+  # source and dies with `Invalid function: nelisp-elf--build-rel-sym'.
+  # An earlier revision of this gate cleaned up only after the loop, and a
+  # single survivor broke the build minutes later.
+  rm -f "${file}c"
 done
 compile_status=0
+
+# Belt and braces: anything the compilations produced as a side effect of
+# `require', anywhere this gate can reach.
+find lisp src scripts packages -name '*.elc' -type f -delete 2>/dev/null
 
 total_files=$(ls lisp/*.el 2>/dev/null | wc -l | tr -d ' ')
 if [ "$total_files" -eq 0 ]; then
