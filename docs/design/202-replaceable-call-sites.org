@@ -11,9 +11,11 @@
 #+STATUS: =target/nelisp-runtime-reload=.  One composition — installing a
 #+STATUS: replacement body compiled through =nelisp-native-unit='s own
 #+STATUS: staging path, inside that SAME live binary — is blocked by a
-#+STATUS: pre-existing, unrelated gap (=secure-hash= is not available in
-#+STATUS: that binary's own REPL; see §7).  Not marked SHIPPED because of
-#+STATUS: that one unresolved item and because no gate name in
+#+STATUS: harness mistake (a bare =--repl= does not preload the artifact
+#+STATUS: runtime) and, underneath it, by a real `make-pipe-process'
+#+STATUS: regression -- both now fixed and the composition verified live;
+#+STATUS: see §6.5.  Not marked SHIPPED because
+#+STATUS: no gate name in
 #+STATUS: =tools/ai/gates.expected= yet exists for this specific file; see
 #+STATUS: §6 for the honest evidence this status rests on instead of a
 #+STATUS: =#+VERIFIED-BY:= line.
@@ -292,52 +294,47 @@ and =callsite.o= itself is small.
   =:build-declared=; the same call for an unknown name returns
   =:not-replaceable=. All against the REAL running binary, not a mock.
 
-** §6.5 What was NOT verified, stated plainly
+** §6.5 The live composition, verified after a correction
 
-=nelisp-native-callsite-install='s composition with a replacement body
-published through =nelisp-native-unit-stage=/=-publish=/=-development.el='s
-=nelisp-native-unit-rebuild-and-reload= was attempted live, in the same
-running =target/nelisp-runtime-reload --repl=, and failed at
-=secure-hash=: void-function inside
-=nelisp-native-unit-development--bytes=. Confirmed independently:
-=(fboundp 'secure-hash)= is =nil= in that same process. This is a
-pre-existing gap in files this change does not own
-(=lisp/nelisp-native-unit.el='s own =--hash=/=--id= helpers, and
-=lisp/nelisp-native-unit-development.el=, both call =secure-hash=
-directly with no fallback) — not introduced by this doc, and not fixed
-by it, since fixing it means editing those files. The install() function
-ITSELF is verified thoroughly by mock (§6.2) and its native counterpart
-=nl_callsite_install= is verified by real execution (§6.3); only the
-specific composition through a LIVE =nelisp-native-unit= publish, inside
-this exact opt-in binary, today, is unverified. Report this to whoever
-owns =lisp/nelisp-native-unit-development.el= as: "=secure-hash= is
-called by =nelisp-native-unit-development--bytes= (and, underneath it,
-=nelisp-native-unit--hash=/=--id=) but is not in
-=nelisp-standalone--reader-builtins= nor otherwise available in the
-=--repl= process =docs/repl-development.md='s own native-allocator
-section documents as the way to drive this exact workflow; every
-=nelisp-native-unit-stage= call that reaches =nelisp-native-unit--hash=
-fails the same way."
+An earlier revision of this section reported this composition as blocked by
+=secure-hash= being void in the opt-in binary, and named that a pre-existing
+gap in =lisp/nelisp-native-unit*.el=. That diagnosis was wrong and is
+withdrawn. =secure-hash= is available; what was missing was the runtime
+around it. A bare =target/nelisp-runtime-reload --repl= does not preload the
+artifact compilation runtime -- =AI.md= says so in as many words, and
+=docs/repl-development.md= tells you to use =tools/ai/nelisp-ai.sh repl=
+instead. Measured on the same binary: =(fboundp 'secure-hash)= is =nil=
+under the bare =--load=, and =t= through =nelisp-ai.sh repl=.
 
-** §6.6 An incidental, separate fix
+Running the composition the documented way then exposed a real defect, in a
+different place: =nelisp-native-unit-development-run-bounded= had replaced
+=call-process= with =make-process= plus =make-pipe-process=, and
+=make-pipe-process= is a host-Emacs primitive that the standalone runtime
+does not have. Every native-unit rebuild inside the standalone REPL failed
+with =void-function: make-pipe-process=. Separating stderr is a diagnostic
+nicety, not a requirement, so that call is now conditional and stderr merges
+into stdout where the primitive is absent -- bounded by the same budget and
+the same filter.
 
-=tools/ai/nelisp-ai.sh test-one test/nelisp-native-callsite-test.el=
-initially failed at =(require 'nelisp-standalone-build)= —
-=load_path_args= (used by both =test-one= and =check='s =compile=/gate
-steps) lacked =-L scripts=, and the root Makefile's own =test:= target
-has the identical gap (confirmed by reading both). This made
-=test/nelisp-native-runtime-dispatch-test.el= — an EXISTING file, not
-introduced here, and part of the plain =test/nelisp*-test.el= glob every
-=make test=/=ert-full= run collects — fail to load AT ALL under either
-runner: a =require= error inside a =-l= argument aborts the whole batch
-Emacs process before =ert-run-tests-batch-and-exit= runs a single case,
-which is precisely the "gate that executed zero cases" AI.md's own rule
-1 warns about. =load_path_args= in =tools/ai/nelisp-ai.sh= now adds
-=-L scripts= (a search-path addition can only add resolution, never
-remove it); both this file's tests and =test/nelisp-native-runtime-
-dispatch-test.el='s two tests were re-run and pass. This file is not in
-either the OWNED or the MUST-NOT-EDIT list for this task; reported here
-in full rather than left as a silent side effect.
+With that fixed, the composition runs end to end in one live
+=nelisp-ai.sh repl= process against =target/nelisp-runtime-reload=:
+
+#+begin_example
+secure-hash=t
+publish-status=published
+call=12                      ; (5+1)*2, through nelisp-native-unit-call
+addr-nonzero=t               ; nelisp-native-unit-address returned a real gate
+entries=0
+reach-declared=:not-replaceable
+reach-undeclared=:not-replaceable
+#+end_example
+
+The last three lines are the correct answer, not a failure: that binary was
+built before =tools/nelisp-replaceable-entries.txt= existed, so it declares
+no entries, and =nelisp-native-callsite-reachability= says =:not-replaceable=
+for every name rather than implying a replacement would reach anything. That
+is precisely the overclaim this module exists to refuse, answering correctly
+on a binary that genuinely cannot do it.
 
 * §7 Declaration format
 

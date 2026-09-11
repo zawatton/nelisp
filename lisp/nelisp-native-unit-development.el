@@ -186,8 +186,19 @@ limit, or cancellation through CANCEL-PREDICATE or a `quit'."
          (used 0) limited cancelled process stderr-pipe stdout stderr)
     (unwind-protect
         (progn
+          ;; `make-pipe-process' is a host-Emacs primitive and is NOT present
+          ;; in the standalone NeLisp runtime, where this module is driven from
+          ;; `docs/repl-development.md''s native-unit walkthrough.  Separating
+          ;; stderr is a diagnostic nicety, not a requirement: without it the
+          ;; child's stderr is merged into stdout, which the same budget and
+          ;; the same filter already bound.  Refusing to run there would have
+          ;; been a regression -- the `call-process' this replaced needed no
+          ;; such primitive, and a native-unit rebuild inside the standalone
+          ;; REPL failed with `void-function: make-pipe-process' until this
+          ;; fallback existed.
           (setq stderr-pipe
-                (make-pipe-process
+                (when (fboundp 'make-pipe-process)
+                  (make-pipe-process
                  :name "nelisp-native-unit-development-subprocess-stderr"
                  :noquery t :coding 'utf-8-unix
                  :filter
@@ -200,12 +211,14 @@ limit, or cancellation through CANCEL-PREDICATE or a `quit'."
                              used (+ used (string-bytes part)))
                        (unless (= (string-bytes part) (string-bytes text))
                          (setq limited t)
-                         (nelisp-native-unit-development--kill process)))))))
+                         (nelisp-native-unit-development--kill process))))))))
           (setq process
                 (make-process
                  :name "nelisp-native-unit-development-subprocess"
                  :noquery t :connection-type 'pipe :coding 'utf-8-unix
-                 :stderr stderr-pipe :command (cons command args)
+                 :command (cons command args)
+                 ;; nil merges stderr into stdout; see the comment above.
+                 :stderr stderr-pipe
                  :filter
                  (lambda (_process text)
                    (unless limited
