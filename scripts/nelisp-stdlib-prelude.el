@@ -8403,6 +8403,30 @@ write instead of ever touching a real buffer."
 (unless (fboundp 'nelisp-make-process)
   (defun nelisp-make-process (&rest plist)
     (apply #'make-process plist)))
+(unless (fboundp 'make-pipe-process)
+  (defun make-pipe-process (&rest plist)
+    "Create a pipe process object, for use as another process's `:stderr\='.
+
+This runtime has no separate pipe-process implementation, so the object
+answered here carries the caller's `:filter\=' and `:name\=' and nothing else;
+`make-process\=' stores it under `:stderr\=' and the child's standard error is
+merged with its standard output.  The distinction it loses is which stream a
+line came from, not whether the line is seen.
+
+Defined at all because its ABSENCE is worse than that.  A caller that
+replaces `call-process\=' with a bounded `make-process\=' reasonably reaches for
+a pipe to keep stderr separate, and a `void-function\=' there fails the whole
+operation over a diagnostic nicety -- measured 2026-09-12, when every
+native-unit rebuild driven from inside this runtime died that way while the
+host-Emacs path was fine.  Answering an object that behaves like a
+merged stream keeps such code working and keeps its output bounded by the
+filter it already wrote."
+    ;; A plain vector, not something `process-put' will accept: this object
+    ;; is not a process and `process-put' rightly refuses one
+    ;; (wrong-type-argument processp).  The filter travels in the vector.
+    (vector 'pipe-process
+            (or (plist-get plist :name) "pipe")
+            'open -1 nil (plist-get plist :filter) "")))
 (unless (fboundp 'call-process)
   (defun call-process (program &optional infile destination display &rest args)
     (let ((resolved (or (executable-find program) program)))
@@ -10137,11 +10161,8 @@ first `getenv' is not overwritten by the value the process started with."
   "Return a token that no other live process shares, for temp names.
 Prefers the real process id; falls back to the clock, marked with a leading
 `t' so a name built from the weaker source can be recognised as such."
-  (let* ((stat (and (fboundp 'nelisp--syscall-read-file)
-                    (nelisp--syscall-read-file "/proc/self/stat")))
-         (pid (and (stringp stat) (> (length stat) 0)
-                   (string-to-number stat))))
-    (if (and (integerp pid) (> pid 0))
+  (let ((pid (nelisp--process-id)))
+    (if pid
         (number-to-string pid)
       (let ((now (and (fboundp 'current-time) (current-time))))
         (cond
@@ -10151,6 +10172,30 @@ Prefers the real process id; falls back to the clock, marked with a leading
          ;; (TICKS . HZ), when `current-time-list' is nil.
          ((consp now) (format "t%d-%d" (car now) (cdr now)))
          (t "t0"))))))
+(defun nelisp--process-id ()
+  "Return this process's id as an integer, or nil when it cannot be read.
+Linux publishes it as the first field of /proc/self/stat.  Separated from
+`nelisp--temp-name-process-token\=' so `emacs-pid\=' can answer the real number
+without inheriting that function's clock fallback, which is a uniqueness
+token rather than a process id and must never be reported as one."
+  (let* ((stat (and (fboundp 'nelisp--syscall-read-file)
+                    (nelisp--syscall-read-file "/proc/self/stat")))
+         (pid (and (stringp stat) (> (length stat) 0)
+                   (string-to-number stat))))
+    (and (integerp pid) (> pid 0) pid)))
+
+(unless (fboundp 'emacs-pid)
+  (defun emacs-pid ()
+    "Return this process's id, or 0 when this runtime cannot determine it.
+
+A real number matters beyond curiosity: an external harness that wants to
+read this process's own /proc entries -- its smaps, its RSS -- needs to
+know which process it is.  The stub this replaces always answered 0, and a
+memory-audit driver that trusted it reported pid 0 for every sample, so the
+harness measured nothing at all.  0 is still the answer where /proc is
+absent; it is documented as \"unknown\", not as a process id."
+    (or (nelisp--process-id) 0)))
+
 (defvar nelisp--temp-name-counter 0)
 (defvar nelisp--temp-name-nonce nil
   "This process's share of `make-temp-name' output, computed on first use.")

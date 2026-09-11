@@ -15349,12 +15349,28 @@ extern arms in dynamic builds."
     ;; deliberately not attempted blind in the time available for this
     ;; session; left as-is (matching pre-existing behavior exactly) rather
     ;; than ship an unproven change to a foundational file-read primitive.
+    ;; Read to EOF, not "one more read".  A short `read' is NOT end of file:
+    ;; the kernel is free to return less than asked, and /proc does so
+    ;; routinely because it reports st_size 0 and generates its content a
+    ;; chunk at a time.  This function used to issue exactly one further read
+    ;; after the first 4 KiB and call the result the whole file.  Measured
+    ;; 2026-09-12: /proc/self/maps came back complete at 10 regions while
+    ;; /proc/self/smaps -- the same mappings, more lines each -- stopped at 5
+    ;; regions and 3,898 bytes, silently.  A caller reading its own smaps to
+    ;; account for memory saw half its address space and no error.
+    (defun nl_bi_rf_read_loop (fd buf pos cap out)
+      (let* ((room (- cap pos))
+             (n (if (< room 1) 0 (nl_os_read_file_handle fd (+ buf pos) room))))
+        (if (< n 1)
+            ;; n = 0 is EOF; n < 0 is an error, and keeping what was already
+            ;; read matches how the single-read form behaved on a late error.
+            (nl_seq2 (nl_alloc_str buf pos out) 0)
+          (nl_bi_rf_read_loop fd buf (+ pos n) cap out))))
     (defun nl_bi_rf_read_rest (fd head n0 out)
       (let* ((buf (alloc-bytes 8388608 1)))
         (seq
          (nl_bi_rf_copy4k head buf n0)
-         (let* ((n1 (nl_os_read_file_handle fd (+ buf n0) (- 8388608 n0))))
-           (nl_seq2 (nl_alloc_str buf (+ n0 (if (< n1 0) 0 n1)) out) 0)))))
+         (nl_bi_rf_read_loop fd buf n0 8388608 out))))
     ;; A file that could not be opened answers nil, NOT the empty string.
     ;; `rdf' handing back "" made a missing file indistinguishable from an
     ;; empty one: `bf_load' reported success for a path that does not exist
@@ -15374,8 +15390,11 @@ extern arms in dynamic builds."
           (nl_seq2 (wf_write_nil out) 0)
         (let* ((n (nl_os_read_file_handle fd buf 4096)))
           (nl_seq2
-           (if (< n 4096)
-               (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)
+           ;; Only n < 1 ends it here: 0 is EOF, negative is an error.  A
+           ;; short-but-positive first read continues into the loop, because
+           ;; short does not mean finished -- see `nl_bi_rf_read_loop'.
+           (if (< n 1)
+               (nl_seq2 (nl_alloc_str buf 0 out) 0)
              (nl_bi_rf_read_rest fd buf n out))
            (nl_seq2 (nl_os_close_handle fd) 0)))))
     (defun nl_bi_read_file (args out)
