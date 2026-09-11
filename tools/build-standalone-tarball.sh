@@ -120,7 +120,9 @@ make standalone-reader EMACS="$EMACS_BIN" NELISP_STANDALONE_TARGET="$PLATFORM"
 
 # 2. Stage the tarball directory.
 rm -rf "$STAGE_DIR"
-mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/scripts" "$STAGE_DIR/lisp"
+mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/scripts" "$STAGE_DIR/lisp" \
+  "$STAGE_DIR/tools/ai" "$STAGE_DIR/docs" \
+  "$STAGE_DIR/packages/nelisp-eventloop/src" "$STAGE_DIR/packages/nelisp-process-adapter/src"
 
 # bin/ — standalone reader binary.
 cp "$STANDALONE_BIN" "$STAGE_DIR/bin/$STAGED_BIN_NAME"
@@ -140,6 +142,18 @@ fi
 cp src/nelisp*.el "$STAGE_DIR/src/"
 [[ -d scripts ]] && cp scripts/*.el "$STAGE_DIR/scripts/" 2>/dev/null || true
 [[ -d lisp ]] && cp lisp/*.el "$STAGE_DIR/lisp/" 2>/dev/null || true
+# The bundled reader's development entry point is intentionally small: keep
+# the launcher and its usage contract alongside the copied Lisp sources so a
+# relocated extraction can start a normal REPL without a checkout.
+cp tools/ai/nelisp-ai.sh "$STAGE_DIR/tools/ai/nelisp-ai.sh"
+chmod +x "$STAGE_DIR/tools/ai/nelisp-ai.sh"
+cp tools/ai/README.md "$STAGE_DIR/tools/ai/README.md"
+cp docs/repl-development.md "$STAGE_DIR/docs/repl-development.md"
+# These two runtime support packages are the only package sources pulled by
+# the artifact-command REPL bootstrap; keep the bundle focused instead of
+# copying the repository's complete package tree.
+cp packages/nelisp-eventloop/src/*.el "$STAGE_DIR/packages/nelisp-eventloop/src/"
+cp packages/nelisp-process-adapter/src/*.el "$STAGE_DIR/packages/nelisp-process-adapter/src/"
 
 # Docs + version stamps.
 [[ -f LICENSE ]] && cp LICENSE "$STAGE_DIR/"
@@ -150,6 +164,21 @@ elif [[ -f README-stage-d.org ]]; then
 elif [[ -f README.org ]]; then
   cp README.org "$STAGE_DIR/README.org"
 fi
+cat >> "$STAGE_DIR/README.org" <<'EOF'
+
+* Using the bundled REPL development entry point
+
+From the extracted bundle directory, run:
+
+#+begin_src sh
+NELISP_BIN=bin/nelisp tools/ai/nelisp-ai.sh repl
+#+end_src
+
+This launcher requires a host Emacs to generate the REPL support runtime.
+For the Windows bundle, use =NELISP_BIN=bin/nelisp.exe= in a POSIX shell.
+Native runtime rebuild and native artifact checks require a source checkout;
+the bundled reader remains usable for normal REPL development commands.
+EOF
 [[ -f install.sh ]] && cp install.sh "$STAGE_DIR/install.sh" && chmod +x "$STAGE_DIR/install.sh" || true
 printf "%s\n" "$VERSION" > "$STAGE_DIR/VERSION"
 printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"

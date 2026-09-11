@@ -18,11 +18,6 @@
 (require 'nelisp-artifact)
 (load (expand-file-name "lisp/nelisp-native-load.el") nil t)
 
-(defconst nelisp-native-runtime-reload-test-root
-  (expand-file-name ".."
-                    (file-name-directory
-                     (or load-file-name buffer-file-name))))
-
 (let ((build-script (expand-file-name
                      "../scripts/nelisp-runtime-reload-build.el"
                      (file-name-directory
@@ -30,6 +25,22 @@
   (add-to-list 'load-path (file-name-directory build-script))
   (when (file-readable-p build-script)
     (load build-script nil t)))
+
+(defun nelisp-native-runtime-reload-test--linux-x86_64-p ()
+  "Return non-nil when the host can execute raw runtime units.
+
+The raw ABI is intentionally Linux x86_64 only.  Host-side staging and
+contract tests still run on every CI host; only assertions which require a
+live raw loader use this predicate."
+  (and (eq system-type 'gnu/linux)
+       (stringp system-configuration)
+       (string-match-p "x86_64\\|amd64" system-configuration)))
+
+(defun nelisp-native-runtime-reload-test--platform-only-problem-p (problems)
+  "Return non-nil when PROBLEMS is the documented host-platform refusal."
+  (and (not (nelisp-native-runtime-reload-test--linux-x86_64-p))
+       (= (length problems) 1)
+       (eq (caar problems) :raw-platform)))
 
 (defun nelisp-native-runtime-reload-test--manifest
     (&optional format kind runtime-abi layout-id data-size bss-size)
@@ -66,10 +77,17 @@
                     (secure-hash 'sha256 (prin1-to-string base)))))))
 
 (ert-deftest nelisp-native-runtime-reload/raw-manifest-contract-is-loadable ()
-  "The raw format is distinct and validates before any mmap call."
-  (should-not
-   (nelisp-native-load-raw-check
-    (nelisp-native-runtime-reload-test--manifest) "probe")))
+  "The raw format validates, or reports its documented host restriction."
+  (let ((problems
+         (nelisp-native-load-raw-check
+          (nelisp-native-runtime-reload-test--manifest) "probe")))
+    (if (nelisp-native-runtime-reload-test--linux-x86_64-p)
+        (should-not problems)
+      ;; This is a host-side contract test.  macOS and Windows must exercise
+      ;; the loader's refusal rather than pretending that a SysV unit is
+      ;; executable there.
+      (should (nelisp-native-runtime-reload-test--platform-only-problem-p
+               problems)))))
 
 (ert-deftest nelisp-native-runtime-reload/raw-imports-use-private-runtime-namespace ()
   "Raw units cannot resolve an object-mode or arbitrary runtime symbol."
@@ -210,12 +228,20 @@
 (ert-deftest nelisp-native-runtime-reload/v2-production-source-compiles-and-checks ()
   "The complete exported allocator/GC source forms a checked v2 unit."
   (skip-unless (fboundp 'nelisp-runtime-reload-production-source))
-  (let* ((source (expand-file-name "target/ai/runtime-production.el"
-                                  nelisp-native-runtime-reload-test-root))
-         (artifact (make-temp-file "nelisp-native-runtime-reload-v2-" nil ".nelr"))
+  (let* ((dir (make-temp-file "nelisp-native-runtime-reload-v2-" t))
+         (source (expand-file-name "runtime-production.el" dir))
+         (artifact (expand-file-name "runtime-production.nelr" dir))
          (binary (make-string 64 ?0)))
     (unwind-protect
         (progn
+          ;; CI must not depend on a developer's scratch export.  Generate
+          ;; the exact source from this checkout for every test invocation.
+          ;; The raw v2 ABI is Linux x86_64.  Keep the source fixture on that
+          ;; target even when the host is macOS or Windows; those hosts test
+          ;; cross-compilation and metadata, while native mapping remains a
+          ;; Linux-only operation.
+          (let ((nelisp-standalone--target 'linux-x86_64))
+            (nelisp-runtime-reload-export-source source))
           (should (file-readable-p source))
           (nelisp-native-load-raw-v2-compile-file source artifact "ert" binary)
           (let* ((manifest (nelisp-native-load-manifest artifact))
@@ -234,7 +260,9 @@
                                     (plist-get entry :index)))
                              (plist-get native :imports)))))
       (when (file-exists-p artifact)
-        (delete-file artifact)))))
+        (delete-file artifact))
+      (when (file-directory-p dir)
+        (delete-directory dir t)))))
 
 (ert-deftest nelisp-native-runtime-reload/v2-raw-call-allows-seven-args ()
   "The v2 raw ABI supports the seven argument GC entry points."
@@ -278,15 +306,21 @@
           ;; Host Emacs can stage and validate the candidate but has no
           ;; in-process `ptr-call' runtime, so the expected boundary is the
           ;; mapping phase.  A standalone opt-in reader continues past it.
-          (let ((result
-                 (nelisp-runtime-reload-source-file
-                  source "candidate-alloc" "candidate-gc" "source-test")))
-            (should (eq (plist-get result :status) 'rejected))
-            (should (eq (plist-get result :phase) :load-alloc))
-            (should (equal (plist-get result :attempted) nil))
-            (should (stringp (plist-get result :artifact)))
-            (should (stringp (plist-get result :source-sha256)))
-            (should (file-exists-p (plist-get result :artifact)))))
+          ;; A host Emacs is a cross-compiler here.  Give the staged unit an
+          ;; explicit consumer identity so the test reaches the documented
+          ;; load boundary; the raw loader then reports the platform refusal
+          ;; on non-Linux hosts.
+          (cl-letf (((symbol-function 'nelisp-native-load--running-binary-sha256)
+                     (lambda () (make-string 64 ?a))))
+            (let ((result
+                   (nelisp-runtime-reload-source-file
+                    source "candidate-alloc" "candidate-gc" "source-test")))
+              (should (eq (plist-get result :status) 'rejected))
+              (should (eq (plist-get result :phase) :load-alloc))
+              (should (equal (plist-get result :attempted) nil))
+              (should (stringp (plist-get result :artifact)))
+              (should (stringp (plist-get result :source-sha256)))
+              (should (file-exists-p (plist-get result :artifact))))))
       (delete-directory dir t))))
 
 (ert-deftest nelisp-native-runtime-reload/rejects-missing-opt-in-and-tampered-hash ()
@@ -384,7 +418,8 @@
             (insert "(defun raw-probe (a b) (+ a b))\n"))
           (let* ((manifest
                   (nelisp-native-load-raw-compile-file source artifact
-                                                       "test-layout" "test-build"))
+                                                       "test-layout" "test-build"
+                                                       (make-string 64 ?a)))
                  (native (plist-get manifest :native))
                  (export (nelisp-native-load--raw-export native "raw-probe")))
             (should (file-exists-p artifact))
@@ -446,16 +481,27 @@
               (artifact (expand-file-name "unit.nelr" dir)))
           (with-temp-file source
             (insert "(defun raw-cli (a) (+ a 1))\n"))
-          (should (= 0
-                     (compile-native-runtime-unit
-                      (list "compile-native-runtime-unit"
-                            "--input" source
-                            "--output" artifact
-                            "--build-id" "cli-test"))))
+          ;; `compile-native-runtime-unit' is a host cross-compile command.
+          ;; Supply an explicit identity for the synthetic consumer so this
+          ;; test does not depend on whether the host Emacs has a readable
+          ;; self-image (notably false on the macOS/Windows CI runners).
+          (cl-letf (((symbol-function 'nelisp-native-load--running-binary-sha256)
+                     (lambda () (make-string 64 ?b))))
+            (should (= 0
+                       (compile-native-runtime-unit
+                        (list "compile-native-runtime-unit"
+                              "--input" source
+                              "--output" artifact
+                              "--build-id" "cli-test")))))
           (let ((manifest (nelisp-native-load-manifest artifact)))
             (should (equal (plist-get manifest :kind) 'raw-runtime))
             (should (equal (plist-get manifest :build-id) "cli-test"))
-            (should-not (nelisp-native-load-raw-check manifest "raw-cli"))))
+            (let ((problems (nelisp-native-load-raw-check manifest "raw-cli")))
+              (if (nelisp-native-runtime-reload-test--linux-x86_64-p)
+                  (should-not problems)
+                (should
+                 (nelisp-native-runtime-reload-test--platform-only-problem-p
+                  problems))))))
       (delete-directory dir t))))
 
 (provide 'nelisp-native-runtime-reload-test)

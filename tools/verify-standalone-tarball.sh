@@ -72,6 +72,11 @@ NELISP_EXE="$INSTALL_DIR/bin/$NELISP_BIN_NAME"
 [[ -d "$INSTALL_DIR/src" ]] || { err "src/ missing"; exit 2; }
 [[ -d "$INSTALL_DIR/scripts" ]] || { err "scripts/ missing"; exit 2; }
 [[ -d "$INSTALL_DIR/lisp" ]] || { err "lisp/ missing"; exit 2; }
+[[ -x "$INSTALL_DIR/tools/ai/nelisp-ai.sh" ]] || { err "tools/ai/nelisp-ai.sh missing or not executable"; exit 2; }
+[[ -f "$INSTALL_DIR/tools/ai/README.md" ]] || { err "tools/ai/README.md missing"; exit 2; }
+[[ -f "$INSTALL_DIR/docs/repl-development.md" ]] || { err "docs/repl-development.md missing"; exit 2; }
+[[ -f "$INSTALL_DIR/packages/nelisp-eventloop/src/nelisp-async-core.el" ]] || { err "eventloop runtime source missing"; exit 2; }
+[[ -f "$INSTALL_DIR/packages/nelisp-process-adapter/src/nelisp-process-adapter.el" ]] || { err "process adapter runtime source missing"; exit 2; }
 [[ -f "$INSTALL_DIR/VERSION" ]] || { err "VERSION missing"; exit 2; }
 [[ -f "$INSTALL_DIR/PLATFORM" ]] || { err "PLATFORM missing"; exit 2; }
 [[ -f "$INSTALL_DIR/MANIFEST.txt" ]] || { err "MANIFEST.txt missing"; exit 2; }
@@ -143,6 +148,36 @@ run_expect_output() {
 }
 
 run_expect_output "bin/$NELISP_BIN_NAME --eval" "42" "$NELISP_EXE" --eval "(+ 40 2)"
+
+REPL_DEV_INPUT="$TEST_ROOT/repl-dev-input.el"
+REPL_DEV_OUTPUT="$TEST_ROOT/repl-dev-output"
+REPL_DEV_ERR="$TEST_ROOT/repl-dev-stderr"
+printf '%s\n' "(progn (require 'nelisp-repl-development) (unless (fboundp 'nelisp-repl-session-call) (error \"session API missing\")) (unless (= (nelisp-repl-session-call 'identity 41) 41) (error \"session call value mismatch\")) (nelisp--write-stdout-bytes \"REPL_DEV_BUNDLE_PASS\\n\") (exit))" > "$REPL_DEV_INPUT"
+set +e
+(cd "$INSTALL_DIR" && NELISP_BIN="$NELISP_EXE" tools/ai/nelisp-ai.sh repl --no-prompt < "$REPL_DEV_INPUT" > "$REPL_DEV_OUTPUT" 2> "$REPL_DEV_ERR")
+REPL_DEV_STATUS=$?
+set -e
+if [ "$REPL_DEV_STATUS" -ne 0 ] || [ -s "$REPL_DEV_ERR" ] || ! grep -Fxq 'REPL_DEV_BUNDLE_PASS' "$REPL_DEV_OUTPUT"; then
+  err "bundled REPL development entry point failed"
+  cat "$REPL_DEV_OUTPUT" "$REPL_DEV_ERR"
+  exit 2
+fi
+ok "bundled REPL development entry point"
+
+sed 's/(nelisp-repl-session-call '\''identity 41) 41)/(nelisp-repl-session-call '\''identity 41) 42)/' "$REPL_DEV_INPUT" > "$TEST_ROOT/repl-dev-mutated.el"
+set +e
+(cd "$INSTALL_DIR" && NELISP_BIN="$NELISP_EXE" tools/ai/nelisp-ai.sh repl --no-prompt < "$TEST_ROOT/repl-dev-mutated.el" > "$TEST_ROOT/repl-dev-mutated-output" 2> "$TEST_ROOT/repl-dev-mutated-stderr")
+set -e
+if grep -Fxq 'REPL_DEV_BUNDLE_PASS' "$TEST_ROOT/repl-dev-mutated-output"; then
+  err "mutated bundled REPL check unexpectedly passed"
+  exit 2
+fi
+if ! grep -Fq 'session call value mismatch' "$TEST_ROOT/repl-dev-mutated-stderr"; then
+  err "mutated bundled REPL failed without the expected assertion"
+  cat "$TEST_ROOT/repl-dev-mutated-stderr"
+  exit 2
+fi
+ok "bundled REPL mutation check went red"
 
 REPL_OUTPUT="$(printf '%s\n' \
   "(+ 40 2)" \
