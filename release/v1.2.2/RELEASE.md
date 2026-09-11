@@ -1,6 +1,6 @@
 # NeLisp v1.2.2
 
-Release implementation and qualification notes, prepared 2026-09-10.
+Release implementation and qualification notes, updated 2026-09-11.
 
 ## Changes since v1.2.1
 
@@ -72,6 +72,28 @@ Release implementation and qualification notes, prepared 2026-09-10.
   free blocks are split on reuse, closing the related allocator and header
   safety gaps.
 
+- Conservative roots are resolved against allocation starts before precise
+  tracing, including interior pointers, boot-heap edges, and large objects.
+  Growing the marking queue no longer leaves a pointer to its unmapped old
+  storage. Focused corruption and allocation-pressure probes pass; the full
+  user configuration audit is still incomplete.
+
+### REPL debugging and native replacement
+
+- The development launcher loads failure capture and explicit retry, function
+  source/hash/generation inspection, GC snapshots and comparisons, and session
+  reproduction scripts. Failure arguments retain references; replay runs only
+  explicitly recorded operations. These are not heap snapshots or automatic
+  retries of side effects. See `docs/repl-development.md` for a fresh-session
+  walkthrough.
+- An opt-in Linux x86_64 reader can compile and replace allocator and GC code
+  while retaining Lisp state. A fixed shared ABI permits changes to private GC
+  helpers; heap-layout migration is not supported. Restoring original code
+  does not roll back heap state, and old code mappings remain until process exit.
+- GC diagnostics expose aggregate conservative retention counts and collection
+  counters. Collection-call elapsed time includes overhead; it is not an exact
+  stop-the-world pause measurement or an individual object retention path.
+
 ### Release workflow and presence corpus
 
 - The semver tag workflow is zero-Rust: it builds and tests the pure-Elisp
@@ -86,25 +108,34 @@ Release implementation and qualification notes, prepared 2026-09-10.
 
 | Check | Result |
 |---|---|
-| Standalone reader | 32/32 PASS |
-| Smokes | 51/51 PASS |
-| Main-path binary size | `target/nelisp`: 7,683,840 bytes; ratchet ceiling 7,786,916; PASS |
-| Latest source bootstrap | 8/8 PASS |
-| Focused `nl-num` mutation | 1/1 PASS |
-| Full real-init audit | NOT COMPLETE; prior run stopped at form 206 with exit 139 and peak RSS 1,063,968 KiB; scope is 930 init forms plus startup hooks |
-| Luna memory-fix candidate | Checked allocator violations 2 → 0 under pressure; not integrated and not qualified |
+| REPL development APIs | PASS: failure recording, explicit retry, export/replay, code provenance, GC snapshot/collect/compare, and integrated entry require |
+| Native runtime reload (Linux x86_64) | PASS: development binary SHA-256 prefix `86a0d4f947bc`; actual collection uses threshold percentage A 300 → new private helper B 301 → restored 300; changing B's expected result to 300 triggers the intended assertion |
+| Normal standalone binary | SHA-256 prefix `0c09c8af9fc4`; bounded memory probes below use this binary |
+| Full ERT suite | 5,577 PASS, 159 skipped, 5,736 total |
+| Check tier | 23/23 PASS |
+| Isolated mutation gate | 64/64 PASS on the isolated GC snapshot; all four CI mutation shards also pass on `ded6ebf13` |
+| Bounded memory probes | 6/6 PASS; 500,000 → 1,000,000 workload RSS 279,064 → 279,668 KiB; 1,006,632,960 bytes reclaimed |
+| Full real-init audit | IN PROGRESS on `0c09c8af9fc4`; earlier candidate `77139d928aa8` completed form 259 and began 260, then timed out after 9,001 seconds (exit 124, peak 741,636 KiB); all 930 forms and startup hooks remain unqualified |
 | 3-architecture semver tag CI | Pending |
 | Linux 1-hour soak | Pending |
 
-The current results above are from the post-coalescing tree. They do not
-represent a completed release qualification while the real-init audit and
-release gates remain pending.
+The current results above are measured on the native-runtime-reload candidate
+and do not represent a completed public release. The branch is not integrated
+to `main`; no v1.2.2 tag or GitHub Release exists. Full real-init coverage,
+three-architecture tag CI, and the Linux one-hour soak remain release gates.
 
 ## Prior candidate evidence (historical)
 
 The following results belong to a prior candidate before the current GC and
 coalescing changes. They are retained for traceability and are not current
 qualification results.
+
+The previous post-coalescing checkpoint reported reader 32/32, smokes 51/51,
+source bootstrap 8/8, and focused numeric mutation 1/1 passing. Its binary size
+was 7,683,840 bytes against a 7,786,916-byte ceiling. An older real-init run
+crashed at form 206 with exit 139 and peak RSS 1,063,968 KiB. Those measurements
+do not describe the current binary; the earlier allocator candidate's reported
+violation count reduction (2 to 0) was not sufficient release qualification.
 
 | Check | Prior candidate result |
 |---|---|

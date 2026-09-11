@@ -87,7 +87,10 @@ ARTIFACT_NAME="${VERSION}-${PLATFORM}"
 ARTIFACT_DIR="dist/${ARTIFACT_NAME}"
 
 rm -rf "$ARTIFACT_DIR"
-mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/src" "$ARTIFACT_DIR/lisp" "$ARTIFACT_DIR/scripts"
+mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/src" "$ARTIFACT_DIR/lisp" "$ARTIFACT_DIR/scripts" \
+  "$ARTIFACT_DIR/tools/ai" "$ARTIFACT_DIR/docs" \
+  "$ARTIFACT_DIR/packages/nelisp-eventloop/src" \
+  "$ARTIFACT_DIR/packages/nelisp-process-adapter/src"
 
 # bin/anvil launcher.
 cp bin/anvil "$ARTIFACT_DIR/bin/"
@@ -96,11 +99,33 @@ cp bin/anvil "$ARTIFACT_DIR/bin/"
 # Pure-elisp standalone binary.
 cp "$STANDALONE_BIN" "$ARTIFACT_DIR/bin/nelisp"
 chmod +x "$ARTIFACT_DIR/bin/nelisp"
+if [[ ( "$PLATFORM" = "macos-arm64" || "$PLATFORM" = "macos-aarch64" ) \
+      && "$(uname -s)" = "Darwin" && "$(uname -m)" = "arm64" ]]; then
+  if ! command -v codesign >/dev/null 2>&1; then
+    err "codesign is required to build a runnable macOS arm64 release artifact"
+    exit 1
+  fi
+  log "ad-hoc signing bin/nelisp for macOS arm64"
+  codesign -f -s - "$ARTIFACT_DIR/bin/nelisp" >/dev/null
+fi
 
 # Elisp sources.
 cp src/nelisp*.el "$ARTIFACT_DIR/src/"
 [[ -d lisp ]] && cp lisp/*.el "$ARTIFACT_DIR/lisp/" 2>/dev/null || true
 [[ -d scripts ]] && cp scripts/*.el "$ARTIFACT_DIR/scripts/" 2>/dev/null || true
+# Keep the relocated artifact's REPL entry point beside its copied runtime.
+# `nelisp-ai.sh repl' generates the bootstrap from the extracted checkout,
+# so these files are part of the release surface rather than developer-only
+# tooling.  The two package directories are the runtime dependencies loaded
+# by `nelisp-standalone--artifact-command-runtime-src'.
+cp tools/ai/nelisp-ai.sh "$ARTIFACT_DIR/tools/ai/nelisp-ai.sh"
+chmod +x "$ARTIFACT_DIR/tools/ai/nelisp-ai.sh"
+cp tools/ai/README.md "$ARTIFACT_DIR/tools/ai/README.md"
+cp docs/repl-development.md "$ARTIFACT_DIR/docs/repl-development.md"
+cp packages/nelisp-eventloop/src/*.el \
+  "$ARTIFACT_DIR/packages/nelisp-eventloop/src/"
+cp packages/nelisp-process-adapter/src/*.el \
+  "$ARTIFACT_DIR/packages/nelisp-process-adapter/src/"
 
 # Documentation + license + version stamp.
 [[ -f LICENSE ]] && cp LICENSE "$ARTIFACT_DIR/" || true
@@ -108,8 +133,30 @@ cp src/nelisp*.el "$ARTIFACT_DIR/src/"
 [[ -f README-stage-d.org ]] && cp README-stage-d.org "$ARTIFACT_DIR/" || true
 [[ -f RELEASE_NOTES.md ]] && cp RELEASE_NOTES.md "$ARTIFACT_DIR/" || true
 [[ -f install.sh ]] && cp install.sh "$ARTIFACT_DIR/" || true
+cat >> "$ARTIFACT_DIR/README.org" <<'EOF'
+
+* Using the bundled REPL development entry point
+
+From the extracted bundle directory, run:
+
+#+begin_src sh
+NELISP_BIN=bin/nelisp tools/ai/nelisp-ai.sh repl
+#+end_src
+
+This launcher requires a host Emacs to generate the REPL support runtime.
+Native runtime rebuild, native artifact checks, and repository-wide checks
+require a source checkout; the bundled reader remains usable for normal REPL
+development commands.
+EOF
 printf "%s\n" "$VERSION" > "$ARTIFACT_DIR/VERSION"
 printf "%s\n" "$PLATFORM" > "$ARTIFACT_DIR/PLATFORM"
+{
+  printf "zero-Rust release manifest\n"
+  printf "version    %s\n" "$VERSION"
+  printf "platform   %s\n" "$PLATFORM"
+  printf "standalone bin/nelisp\n"
+  printf "built      %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$ARTIFACT_DIR/MANIFEST.txt"
 
 # 3. Tarball.
 TAR_FILE="${ARTIFACT_NAME}.tar.gz"

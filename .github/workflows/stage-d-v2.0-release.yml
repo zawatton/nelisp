@@ -52,13 +52,17 @@ jobs:
       - name: Build release artifact
         run: ./tools/build-release-artifact.sh linux-x86_64 ${{ env.RELEASE_VERSION }}
 
+      - name: Verify release artifact bundle
+        run: ./tools/verify-standalone-tarball.sh ${{ env.RELEASE_VERSION }} linux-x86_64 --release-artifact
+
       - name: Verify SHA256 checksum
         run: cd dist && sha256sum --check ${{ env.RELEASE_VERSION }}-linux-x86_64.tar.gz.sha256
 
-      - name: Soak (blocker tier、1h)
-        env:
-          SOAK_DURATION_HOURS: '1'
-        run: ./tools/soak-test.sh
+      - name: Verify standalone soak failure detection
+        run: python3 test/nelisp-standalone-soak-test.py
+
+      - name: Standalone NeLisp GC soak (blocker tier、1h)
+        run: python3 tools/nelisp-standalone-soak.py --binary target/nelisp --duration 3600
 
       - name: Verify ad-hoc signature payload (Doc 32 v2 §2.5)
         run: |
@@ -99,6 +103,9 @@ jobs:
       - name: Build release artifact
         run: ./tools/build-release-artifact.sh macos-arm64 ${{ env.RELEASE_VERSION }}
 
+      - name: Verify release artifact bundle
+        run: ./tools/verify-standalone-tarball.sh ${{ env.RELEASE_VERSION }} macos-arm64 --release-artifact
+
       - name: Verify SHA256 checksum
         run: cd dist && shasum -a 256 --check ${{ env.RELEASE_VERSION }}-macos-arm64.tar.gz.sha256
 
@@ -129,6 +136,9 @@ jobs:
 
       - name: Build release artifact
         run: ./tools/build-release-artifact.sh linux-arm64 ${{ env.RELEASE_VERSION }}
+
+      - name: Verify release artifact bundle
+        run: ./tools/verify-standalone-tarball.sh ${{ env.RELEASE_VERSION }} linux-arm64 --release-artifact
 
       - name: Verify SHA256 checksum
         run: cd dist && sha256sum --check ${{ env.RELEASE_VERSION }}-linux-arm64.tar.gz.sha256

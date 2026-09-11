@@ -12,22 +12,36 @@ default_platform() {
 }
 
 . "$(dirname "${BASH_SOURCE[0]}")/nelisp-version.sh"
-VERSION="${1:-$(nelisp_version)}"
-PLATFORM="${2:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
+POSITIONAL=()
 LAYOUT_ONLY=0
+RELEASE_ARTIFACT=0
 
-if [ "$#" -gt 0 ]; then shift; fi
-if [ "$#" -gt 0 ]; then shift; fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --layout-only) LAYOUT_ONLY=1; shift ;;
+    --release-artifact) RELEASE_ARTIFACT=1; shift ;;
     -h|--help)
-      echo "usage: $0 [VERSION] [PLATFORM] [--layout-only]"
+      echo "usage: $0 [VERSION] [PLATFORM] [--layout-only] [--release-artifact]"
       exit 0
       ;;
-    *) echo "usage: $0 [VERSION] [PLATFORM] [--layout-only]" >&2; exit 2 ;;
+    --)
+      shift
+      while [ "$#" -gt 0 ]; do
+        POSITIONAL+=("$1")
+        shift
+      done
+      ;;
+    --*) echo "usage: $0 [VERSION] [PLATFORM] [--layout-only] [--release-artifact]" >&2; exit 2 ;;
+    *) POSITIONAL+=("$1"); shift ;;
   esac
 done
+
+if [ "${#POSITIONAL[@]}" -gt 2 ]; then
+  echo "usage: $0 [VERSION] [PLATFORM] [--layout-only] [--release-artifact]" >&2
+  exit 2
+fi
+VERSION="${POSITIONAL[0]:-$(nelisp_version)}"
+PLATFORM="${POSITIONAL[1]:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -37,13 +51,22 @@ log() { printf "  \033[1;34m==>\033[0m %s\n" "$*"; }
 err() { printf "  \033[1;31merror:\033[0m %s\n" "$*" >&2; }
 ok()  { printf "  \033[1;32mOK\033[0m %s\n" "$*"; }
 
-ARTIFACT_NAME="anvil-${VERSION}-${PLATFORM}"
+if [ "$RELEASE_ARTIFACT" -eq 1 ]; then
+  # build-release-artifact.sh intentionally omits the historical `anvil-'
+  # prefix.  Keep that naming contract explicit at the verifier boundary.
+  ARTIFACT_NAME="${VERSION}-${PLATFORM}"
+else
+  ARTIFACT_NAME="anvil-${VERSION}-${PLATFORM}"
+fi
 TAR_FILE="dist/${ARTIFACT_NAME}.tar.gz"
 SHA_FILE="dist/${ARTIFACT_NAME}.tar.gz.sha256"
 
 case "$PLATFORM" in
   windows-x86_64) NELISP_BIN_NAME="nelisp.exe" ;;
   linux-x86_64|macos-aarch64) NELISP_BIN_NAME="nelisp" ;;
+  macos-arm64|linux-arm64|linux-aarch64)
+    NELISP_BIN_NAME="nelisp"
+    ;;
   *) err "unsupported platform: $PLATFORM"; exit 2 ;;
 esac
 
@@ -99,7 +122,10 @@ case "$PLATFORM" in
   linux-x86_64)
     [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && host_can_run=1
     ;;
-  macos-aarch64)
+  linux-arm64|linux-aarch64)
+    [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "aarch64" ] && host_can_run=1
+    ;;
+  macos-arm64|macos-aarch64)
     [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && host_can_run=1
     ;;
   windows-x86_64)
@@ -114,7 +140,7 @@ if [ "$host_can_run" -ne 1 ]; then
   exit 0
 fi
 
-if [ "$PLATFORM" = "macos-aarch64" ]; then
+if [ "$PLATFORM" = "macos-arm64" ] || [ "$PLATFORM" = "macos-aarch64" ]; then
   if ! command -v codesign >/dev/null 2>&1; then
     err "codesign is required to verify macOS arm64 tarballs"
     exit 2

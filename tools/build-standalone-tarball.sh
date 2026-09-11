@@ -176,8 +176,9 @@ NELISP_BIN=bin/nelisp tools/ai/nelisp-ai.sh repl
 
 This launcher requires a host Emacs to generate the REPL support runtime.
 For the Windows bundle, use =NELISP_BIN=bin/nelisp.exe= in a POSIX shell.
-Native runtime rebuild and native artifact checks require a source checkout;
-the bundled reader remains usable for normal REPL development commands.
+Native runtime rebuild, native artifact checks, and repository-wide checks
+require a source checkout; the bundled reader remains usable for normal REPL
+development commands.
 EOF
 [[ -f install.sh ]] && cp install.sh "$STAGE_DIR/install.sh" && chmod +x "$STAGE_DIR/install.sh" || true
 printf "%s\n" "$VERSION" > "$STAGE_DIR/VERSION"
