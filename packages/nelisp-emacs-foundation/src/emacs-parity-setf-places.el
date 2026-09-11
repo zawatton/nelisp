@@ -62,6 +62,7 @@
                    (cadr place)
                    val))
             ((and (consp place) (symbolp (car place))
+                  (boundp 'nelisp-cl-macros--accessor-info)
                   (assq (car place) nelisp-cl-macros--accessor-info))
              (let ((idx (cdr (assq (car place)
                                    nelisp-cl-macros--accessor-info))))
